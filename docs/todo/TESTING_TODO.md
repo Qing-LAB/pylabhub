@@ -73,7 +73,7 @@
 - [x] Test framework shared utilities
 
 ### Platform Coverage
-- [ ] **Linux** – Primary development platform (complete)
+- [x] **Linux** – Primary development platform; 1166/1166 tests ✅
 - [ ] **Windows** – Build and test (basic coverage)
 - [ ] **macOS** – Build and test (basic coverage)
 - [ ] **FreeBSD** – Build and test (pending)

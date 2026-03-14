@@ -64,6 +64,7 @@ ProducerScriptHost::~ProducerScriptHost()
 void ProducerScriptHost::set_config(ProducerConfig config)
 {
     config_ = std::move(config);
+    python_venv_ = config_.python_venv;
 }
 
 // ============================================================================

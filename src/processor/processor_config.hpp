@@ -254,6 +254,10 @@ struct ProcessorConfig
     std::string role_dir;         ///< Absolute base of the role directory (set by from_directory(); empty from from_json_file()).
     bool script_type_explicit{false}; ///< True when "type" was present in JSON; false = defaulted.
 
+    /// Virtual environment name for Python scripts. Empty = use base environment.
+    /// When set, activates opt/python/venvs/<name>/ at interpreter startup.
+    std::string python_venv;
+
     // Auth
     ProcessorAuthConfig auth{};
 

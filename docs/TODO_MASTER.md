@@ -22,6 +22,20 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
+### Code Review (CLOSED — 2026-03-14): REVIEW_CodeAndDocs_2026-03-14
+📋 Archived to `docs/archive/transient-2026-03-14/` — ✅ CLOSED; 8 fixed, 4 accepted; **1166/1166 tests**
+
+### Priority 0 (CLOSED — 2026-03-14): HEP-0025 System Config & Python Environment
+📍 **Status**: ✅ CLOSED — HEP written, config/venv support implemented; **1166/1166 tests**
+
+Completed 2026-03-14:
+- [x] `tools/pylabhub-pyenv.py` + bash/PowerShell wrappers; CMake `stage_pyenv_tools` target ✅
+- [x] `python_venv` config field in ProducerConfig/ConsumerConfig/ProcessorConfig + 6 tests ✅
+- [x] `PythonScriptHost`: 3-tier `resolve_python_home()`, venv activation via `site.addsitedir()` ✅
+- [x] `config/pylabhub.json` system config (python_home key) ✅
+- [x] HEP-CORE-0025 written (full spec) ✅
+- [x] README_Deployment.md §12 (Python environment guide) + `python_venv` in all config tables ✅
+
 ### Priority 0 (CLOSED — 2026-03-12): HEP-0024 Role Directory Service
 📍 **Status**: ✅ CLOSED — Phases 1–3, 5, 6, 8 implemented; Phases 4, 7 deferred; **1107/1108 tests**
 📋 **Details**: `docs/HEP/HEP-CORE-0024-Role-Directory-Service.md`, `docs/todo/API_TODO.md`

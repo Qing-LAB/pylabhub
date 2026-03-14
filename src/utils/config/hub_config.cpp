@@ -30,18 +30,6 @@
 #include <optional>
 #include <string>
 
-#if defined(PYLABHUB_IS_POSIX)
-#include <unistd.h>
-#include <climits>
-#endif
-
-#if defined(PYLABHUB_IS_WINDOWS)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#endif
-
 namespace pylabhub
 {
 
@@ -67,30 +55,16 @@ namespace
 {
 
 /// Returns the absolute path to the running executable's directory.
+/// Delegates to platform::get_executable_name() which correctly handles
+/// Linux (/proc/self/exe), macOS (_NSGetExecutablePath), and Windows
+/// (GetModuleFileNameW).
 fs::path get_binary_dir() noexcept
 {
     try
     {
-#if defined(PYLABHUB_IS_LINUX)
-        char buf[PATH_MAX];
-        ssize_t len = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-        if (len > 0)
-        {
-            buf[len] = '\0';
-            return fs::path(buf).parent_path();
-        }
-#elif defined(PYLABHUB_IS_APPLE)
-        uint32_t size = 0;
-        _NSGetExecutablePath(nullptr, &size);
-        std::string path(size, '\0');
-        if (_NSGetExecutablePath(path.data(), &size) == 0)
-            return fs::canonical(fs::path(path)).parent_path();
-#elif defined(PYLABHUB_IS_WINDOWS)
-        wchar_t buf[32767];
-        DWORD len = GetModuleFileNameW(nullptr, buf, 32767);
-        if (len > 0)
-            return fs::path(buf).parent_path();
-#endif
+        const std::string exe = platform::get_executable_name(/*include_path=*/true);
+        if (exe != "unknown" && exe != "unknown_win")
+            return fs::path(exe).parent_path();
     }
     catch (...) {}
     return {};

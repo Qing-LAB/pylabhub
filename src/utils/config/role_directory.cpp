@@ -30,8 +30,7 @@ RoleDirectory RoleDirectory::from_config_file(const std::filesystem::path &confi
     return open(config_path.parent_path());
 }
 
-RoleDirectory RoleDirectory::create(const std::filesystem::path &base,
-                                     std::string_view /*config_filename*/)
+RoleDirectory RoleDirectory::create(const std::filesystem::path &base)
 {
     namespace fs = std::filesystem;
 

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# pylabhub-pyenv — Manage the pyLabHub bundled Python environment.
+#
+# This wrapper locates the bundled standalone Python interpreter and
+# invokes pylabhub-pyenv.py with it.  It works in both the source tree
+# (tools/) and the staged/installed layout (bin/).
+#
+# Usage:
+#   pylabhub-pyenv install [-r requirements.txt] [--wheels-dir DIR]
+#   pylabhub-pyenv verify  [-r requirements.txt]
+#   pylabhub-pyenv info
+#   pylabhub-pyenv freeze
+#
+# Environment variables:
+#   PYLABHUB_PYTHON  — Override path to the Python interpreter.
+#                      Default: auto-detect from <prefix>/opt/python/bin/python3
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYENV_SCRIPT="${SCRIPT_DIR}/pylabhub-pyenv.py"
+
+# --- Locate the Python interpreter ---
+if [[ -n "${PYLABHUB_PYTHON:-}" ]]; then
+    PYTHON="$PYLABHUB_PYTHON"
+elif [[ -x "${SCRIPT_DIR}/../opt/python/bin/python3" ]]; then
+    # Staged/installed layout: bin/../opt/python/bin/python3
+    PYTHON="${SCRIPT_DIR}/../opt/python/bin/python3"
+else
+    echo "ERROR: Cannot find the bundled Python interpreter." >&2
+    echo "Expected at: ${SCRIPT_DIR}/../opt/python/bin/python3" >&2
+    echo "Set PYLABHUB_PYTHON=/path/to/python3 to override." >&2
+    exit 1
+fi
+
+# Resolve to absolute path
+PYTHON="$(cd "$(dirname "$PYTHON")" && pwd)/$(basename "$PYTHON")"
+
+if [[ ! -x "$PYTHON" ]]; then
+    echo "ERROR: Python interpreter not executable: $PYTHON" >&2
+    exit 1
+fi
+
+# --- Locate the .py script ---
+if [[ ! -f "$PYENV_SCRIPT" ]]; then
+    echo "ERROR: Cannot find pylabhub-pyenv.py at: $PYENV_SCRIPT" >&2
+    exit 1
+fi
+
+# --- Run ---
+exec "$PYTHON" "$PYENV_SCRIPT" "$@"

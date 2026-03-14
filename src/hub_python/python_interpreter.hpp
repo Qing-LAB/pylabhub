@@ -52,8 +52,6 @@ struct PyExecResult
     bool        success{false};  ///< True if no exception was raised.
     std::string output;          ///< Captured stdout + stderr during execution.
     std::string error;           ///< Exception message or traceback (empty on success).
-    std::string result_repr; ///< Not yet implemented; always empty. Reserved for future
-                             ///< AdminShell exec path (Python repr of last expression).
 };
 
 /**

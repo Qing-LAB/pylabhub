@@ -46,10 +46,9 @@ triplication of path/hub-resolution logic across the three role config classes.
 **Phase 8** — Tests ⚪ DEFERRED
 - [ ] L4 CLI tests: extend `test_producer_cli.cpp`, `test_consumer_cli.cpp`, `test_processor_cli.cpp` to verify `default_keyfile` path + `has_standard_layout()` after `--init`
 
-**Open Design Question (2026-03-12)**
-- Expose `RoleDirectory` path accessors to script engine (`api.role_dir()`, `api.logs_dir()`, `api.run_dir()`)
-  for scripts that need to read supplementary files or write runtime state from the role directory.
-  See discussion in chat 2026-03-12. Vault/security operations should NOT be exposed to scripts.
+**Open Design Question (2026-03-12)** — ✅ RESOLVED
+- `api.role_dir()`, `api.logs_dir()`, `api.run_dir()` implemented in all 3 APIs (ProducerAPI, ConsumerAPI, ProcessorAPI) with pybind11 bindings.
+  Vault/security operations are NOT exposed to scripts (as planned).
 
 ---
 
@@ -98,6 +97,23 @@ All phases done. Highlights:
 - [x] **LR-05** — ✅ FIXED (pre-existing): `parse_on_produce_return()` returns `is_err=true` on wrong type; caller at `producer_script_host.cpp:616` calls `api_.increment_script_errors()` when `is_err`. Confirmed by code read 2026-03-10.
 - [x] **MR-08** — ✅ FIXED 2026-03-12: stale `run_loop_shm_` reference removed from `consumer_script_host.hpp` file header comment.
 - [ ] **LOW-2 (gemini)** — `DataBlockProducer`/`DataBlockConsumer` lack a `flexzone_size()` accessor. `DataBlockConfig::flexible_zone_size` exists but is not exposed via the C++ API objects directly. Low priority — `get_metrics()` provides indirect access via `DataBlockMetrics`. Add `size_t flexzone_size() const noexcept` to both classes when a diagnostics round is done.
+
+### Code & Docs Review (2026-03-14) — `REVIEW_CodeAndDocs_2026-03-14.md` ✅ CLOSED
+
+All items resolved 2026-03-14; 1166/1166 tests pass.
+
+- [x] **CX-01** — ✅ FIXED: `get_binary_dir()` now delegates to `platform::get_executable_name(true)`.
+- [x] **CX-02** — ✅ FIXED: POSIX mutex `try_lock_for()` now uses `CLOCK_MONOTONIC` retry loop with 500 ms `CLOCK_REALTIME` chunks — immune to NTP clock jumps.
+- [x] **CX-03** — ✅ ACCEPTED: Guard destructors throw by design.
+- [x] **CX-04** — ✅ FIXED: `timeout_ms` → `slot_acquire_timeout_ms` in README_Deployment.md.
+- [x] **CX-05** — ✅ FIXED: test count updated to 1160+.
+- [x] **CX-06** — ✅ ACCEPTED: different enum types (`processor::OverflowPolicy` vs `hub::OverflowPolicy`).
+- [x] **CX-07** — ✅ ACCEPTED: startup-wait duplication acceptable.
+- [x] **CX-08** — ✅ ACCEPTED: inbox-thread shutdown duplication acceptable.
+- [x] **CX-09** — ✅ FIXED: removed dead `PyExecResult::result_repr` field.
+- [x] **CX-10** — ✅ FIXED: removed unused `config_filename` parameter from `RoleDirectory::create()`.
+- [x] **CX-11** — ✅ FIXED: README_DirectoryLayout.md updated to match actual staging layout.
+- [x] **RC-01** — ✅ FIXED: aligned `python_venv` docstrings across all 3 configs.
 
 ### Code Review + Bug Fixes (2026-03-08)
 

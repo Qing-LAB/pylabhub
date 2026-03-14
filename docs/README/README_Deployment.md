@@ -4,13 +4,14 @@
 pipeline. Covers install tree, hub and role instance directories, every configuration field,
 Python script authoring, connection policy, and operational patterns.
 
-**Last Updated:** 2026-03-10 (rewritten for producer/consumer/processor model)
+**Last Updated:** 2026-03-14 (added §12 Python environment; python_venv config field)
 
 **Related:**
 - `docs/README/README_DirectoryLayout.md` — architectural directory model reference
 - `docs/HEP/HEP-CORE-0018-Producer-Consumer-Binaries.md` — full producer/consumer spec
 - `docs/HEP/HEP-CORE-0015-Processor-Binary.md` — full processor spec
 - `docs/HEP/HEP-CORE-0007-DataHub-Protocol-and-Policy.md` — broker control plane protocol
+- `docs/HEP/HEP-CORE-0025-System-Config-and-Python-Environment.md` — system config and Python env spec
 - `docs/todo/SECURITY_TODO.md` — vault and CurveZMQ key management
 
 ---
@@ -45,6 +46,7 @@ Python script authoring, connection policy, and operational patterns.
 9. [Connection Policy — Securing the Hub](#9-connection-policy--securing-the-hub)
 10. [Multi-Hub Pipelines](#10-multi-hub-pipelines)
 11. [Operational Reference](#11-operational-reference)
+12. [Python Environment and Virtual Environments](#12-python-environment-and-virtual-environments)
 
 ---
 
@@ -120,9 +122,32 @@ bin/
   pylabhub-producer     ← producer role binary
   pylabhub-consumer     ← consumer role binary
   pylabhub-processor    ← processor role binary
+  pylabhub-pyenv        ← Python environment manager (Unix)
+  pylabhub-pyenv.py     ← Python environment manager (core)
+  pylabhub-pyenv.ps1    ← Python environment manager (Windows)
 
 lib/
   libpylabhub-utils.so  ← shared runtime library
+
+opt/
+  python/               ← standalone Python 3.14 (PYTHONHOME)
+    bin/python3          ← interpreter
+    lib/python3.14/
+      site-packages/     ← base packages (numpy, zarr, pyzmq, etc.)
+    venvs/               ← virtual environments (created post-install)
+  luajit/               ← bundled LuaJIT runtime
+
+config/                 ← system configuration (optional)
+  pylabhub.json         ← Python home override, future global settings
+
+docs/                   ← README guides + HEP design specifications
+  HEP/                  ← HEP design documents
+
+share/                  ← demos, examples, scripts
+  scripts/python/
+    requirements.txt    ← base Python package list
+  py-demo-*/            ← demo pipelines
+  py-examples/          ← example scripts
 
 tests/                  ← test binaries
 include/                ← development headers
@@ -300,7 +325,7 @@ Example `producer.json`:
 | `channel` | yes | — | Channel name to publish on |
 | `target_period_ms` | no | `0` | Write loop period in ms; `0` = free-run |
 | `loop_timing` | no | `"max_rate"` | `"max_rate"`, `"fixed_rate"`, `"fixed_rate_with_compensation"` |
-| `timeout_ms` | no | `-1` | `write_acquire()` timeout; `-1` = infinite, `0` = non-blocking |
+| `slot_acquire_timeout_ms` | no | `-1` | `write_acquire()` timeout; `-1` = derive from period, `0` = non-blocking |
 | `transport` | no | `"shm"` | `"shm"` or `"zmq"` |
 | `zmq_out_endpoint` | no† | — | ZMQ PUSH bind endpoint (required when `transport=zmq`) |
 | `zmq_out_bind` | no | `true` | Bind (true) or connect (false) for ZMQ PUSH socket |
@@ -320,6 +345,7 @@ Example `producer.json`:
 | `inbox_zmq_packing` | no | `"aligned"` | Packing for inbox messages |
 | `script.type` | no | `"python"` | Script type |
 | `script.path` | no | `"."` | Script directory; resolves `<path>/script/<type>/__init__.py` |
+| `python_venv` | no | `""` | Virtual environment name; empty = base env (see §12) |
 
 † Exactly one of `hub_dir` or `broker` is required.
 ‡ Exactly one of `slot_schema` or `schema_id` is required.
@@ -396,7 +422,7 @@ Example `consumer.json`:
 | `broker_pubkey` | no | `""` | CurveZMQ broker public key (Z85, 40 chars) |
 | `channel` | yes | — | Channel name to subscribe to |
 | `queue_type` | no | `"shm"` | `"shm"` (reads SHM ring) or `"zmq"` (ZMQ PULL from broker) |
-| `timeout_ms` | no | `5000` | Fires `on_consume(in_slot=None, ...)` after N ms of silence |
+| `slot_acquire_timeout_ms` | no | `-1` | Slot acquire timeout; `-1` = derive from period, `0` = non-blocking, `>0` = ms |
 | `slot_schema` | yes‡ | — | Expected input slot layout (must match producer schema) |
 | `schema_id` | no‡ | — | Named schema from HEP-CORE-0016 |
 | `validation.verify_checksum` | no | `false` | Enable BLAKE2b slot verification on `read_acquire()` (SHM only) |
@@ -413,6 +439,7 @@ Example `consumer.json`:
 | `inbox_zmq_packing` | no | `"aligned"` | Packing for inbox messages |
 | `script.type` | no | `"python"` | Script type |
 | `script.path` | no | `"."` | Script directory |
+| `python_venv` | no | `""` | Virtual environment name; empty = base env (see §12) |
 
 † Exactly one of `hub_dir` or `broker` is required.
 ‡ Exactly one of `slot_schema` or `schema_id` is required.
@@ -507,7 +534,7 @@ Example `processor.json`:
 | `out_zmq_buffer_depth` | no | `64` | PUSH send ring buffer depth |
 | `in_zmq_packing` | no | `"aligned"` | `"aligned"` or `"packed"` |
 | `out_zmq_packing` | no | `"aligned"` | `"aligned"` or `"packed"` |
-| `timeout_ms` | no | `-1` | Input timeout; `-1`=infinite (5 s default), `0`=non-blocking, `>0`=ms |
+| `slot_acquire_timeout_ms` | no | `-1` | Input acquire timeout; `-1` = derive from period, `0` = non-blocking, `>0` = ms |
 | `overflow_policy` | no | `"block"` | Output overflow policy: `"block"` or `"drop"` |
 | `validation.verify_checksum` | no | `false` | Enable BLAKE2b verification on SHM input |
 | `validation.update_checksum` | no | `true` | Write BLAKE2b checksum on SHM output |
@@ -530,6 +557,7 @@ Example `processor.json`:
 | `inbox_zmq_packing` | no | `"aligned"` | Packing for inbox messages |
 | `script.type` | no | `"python"` | Script type |
 | `script.path` | no | `"."` | Script directory |
+| `python_venv` | no | `""` | Virtual environment name; empty = base env (see §12) |
 
 † Exactly one of `hub_dir`, `in_hub_dir`/`out_hub_dir`, `broker`, or `in_broker`/`out_broker`
   combination is required per direction.
@@ -982,3 +1010,123 @@ is specified).
 | `[consumer] CONSUMER_REG_ACK: transport mismatch` | Consumer queue_type≠producer transport | Set matching `queue_type`/`transport` on both sides |
 | `[proc] Failed to create hub::Processor` | Could not attach to input or output SHM | Check SHM secrets and that producer started first |
 | `Segmentation fault at SHM attach` | Mismatched schema sizes | Ensure identical `slot_schema` on producer and consumer/processor sides |
+
+---
+
+## 12. Python Environment and Virtual Environments
+
+pyLabHub embeds a CPython interpreter in each role binary. The interpreter's base location
+is resolved at runtime via a 3-tier priority chain; virtual environments overlay the base
+with additional packages.
+
+**Full specification:** `docs/HEP/HEP-CORE-0025-System-Config-and-Python-Environment.md`
+
+### 12.1 Python home resolution (3-tier)
+
+When a role binary starts, it resolves the Python installation directory:
+
+| Priority | Source | Example |
+|----------|--------|---------|
+| 1 | `$PYLABHUB_PYTHON_HOME` environment variable | `export PYLABHUB_PYTHON_HOME=/usr/local` |
+| 2 | `config/pylabhub.json` → `"python_home"` key | `{"python_home": "/usr/local"}` |
+| 3 | `<prefix>/opt/python/` (standalone default) | Bundled python-build-standalone |
+
+`<prefix>` is the installation root (parent of `bin/`). Relative paths in tiers 1–2 are
+resolved relative to `<prefix>`.
+
+**Standalone builds** (Linux, macOS, Windows) use tier 3 automatically — the CMake build
+downloads and stages a python-build-standalone distribution to `opt/python/`.
+
+**System Python** (FreeBSD or custom builds): create `config/pylabhub.json`:
+
+```json
+{
+  "python_home": "/usr/local"
+}
+```
+
+### 12.2 System configuration file — `config/pylabhub.json`
+
+Located at `<prefix>/config/pylabhub.json`. Currently defines:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `python_home` | string | Path to Python installation root (lib/ and bin/ parent) |
+
+The file is optional — standalone builds work without it. Future keys may include
+log defaults, license paths, or other system-wide settings.
+
+### 12.3 Base environment
+
+The base Python environment is set up at build time:
+
+```bash
+cmake --build build --target stage_all
+# Installs base packages from share/scripts/python/requirements.txt
+pylabhub-pyenv install --requirements share/scripts/python/requirements.txt
+pylabhub-pyenv verify   # Checks Python + pip + installed packages
+```
+
+The base environment lives in `opt/python/` and provides packages available to all roles.
+
+### 12.4 Virtual environments
+
+Roles can use isolated virtual environments via the `python_venv` JSON config field.
+The venv overlays the base environment — base packages remain available, and venv
+packages take precedence.
+
+**Create a venv:**
+
+```bash
+pylabhub-pyenv create-venv myenv
+pylabhub-pyenv install --venv myenv -r my-requirements.txt
+pylabhub-pyenv verify --venv myenv
+```
+
+**Activate in a role config** (producer, consumer, or processor JSON):
+
+```json
+{
+  "python_venv": "myenv",
+  "script": {"type": "python", "path": "."}
+}
+```
+
+At startup, the C++ interpreter activation calls `site.addsitedir()` to prepend the
+venv's `site-packages` to `sys.path`. `PYTHONHOME` stays pointing at the base interpreter
+(stdlib always works); the venv packages overlay and take precedence.
+
+**Venv storage:** All venvs live under `<prefix>/opt/python/venvs/<name>/`. This path
+is not configurable — user customization is via `requirements.txt`, not directory layout.
+
+### 12.5 `pylabhub-pyenv` tool reference
+
+The `pylabhub-pyenv` tool manages the bundled Python environment. It runs under the
+bundled interpreter itself (or a system Python specified via `$PYLABHUB_PYTHON`).
+
+| Command | Description |
+|---------|-------------|
+| `pylabhub-pyenv install [-r FILE]` | Install packages into base env |
+| `pylabhub-pyenv install --venv NAME [-r FILE]` | Install packages into a venv |
+| `pylabhub-pyenv verify [--venv NAME]` | Verify Python + pip + packages |
+| `pylabhub-pyenv info [--venv NAME]` | Show Python version, paths, packages |
+| `pylabhub-pyenv freeze [--venv NAME]` | Print `pip freeze` output |
+| `pylabhub-pyenv create-venv NAME` | Create a new virtual environment |
+| `pylabhub-pyenv list-venvs` | List all virtual environments |
+| `pylabhub-pyenv remove-venv NAME` | Delete a virtual environment |
+
+**Platform wrappers:**
+- Linux/macOS: `bin/pylabhub-pyenv` (bash)
+- Windows: `bin/pylabhub-pyenv.ps1` (PowerShell)
+
+### 12.6 Cross-platform support
+
+| Platform | Python source | `python_home` |
+|----------|--------------|---------------|
+| Linux x86_64 / aarch64 | python-build-standalone (CMake) | `opt/python/` (auto) |
+| macOS x86_64 / arm64 | python-build-standalone (CMake) | `opt/python/` (auto) |
+| Windows x86_64 | python-build-standalone (CMake) | `opt/python/` (auto) |
+| FreeBSD / other | System package manager | Set in `config/pylabhub.json` |
+
+When using system Python, ensure the version matches the build-time pybind11 expectations
+(currently Python 3.10+). The `pylabhub-pyenv verify` command checks version compatibility.

@@ -44,6 +44,7 @@
 #include "utils/script_host.hpp"
 
 #include <filesystem>
+#include <string>
 
 namespace pylabhub::scripting
 {
@@ -64,6 +65,9 @@ public:
     [[nodiscard]] bool owns_dedicated_thread() const noexcept override { return true; }
 
 protected:
+    /// Name of the virtual environment to activate (empty = use base environment).
+    /// Set by subclasses from their config's "python_venv" field.
+    std::string python_venv_;
     /**
      * @brief Application-specific Python work. Called with interpreter live and GIL held.
      *

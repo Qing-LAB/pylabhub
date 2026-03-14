@@ -161,25 +161,24 @@ add_custom_target(create_staging_dirs
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/lib"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/include"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/tests"
-    # opt/ — external runtimes and interface ports (Python, IgorXOP, Lua, ...)
+    # opt/ — external runtimes (Python, LuaJIT) and interface ports (IgorXOP)
+    # Python and LuaJIT are staged as self-contained trees under opt/.
+    # Executables find them via relative paths:
+    #   RPATH: $ORIGIN/../opt/python/lib (for libpython3.x.so)
+    #   C++:   exe_path/../opt/python (PyConfig.home)
+    #   C++:   exe_path/../opt/luajit (Lua package.path)
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/opt"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/opt/python"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/opt/IgorXOP"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/opt/luajit"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/opt/luajit/jit"
-    # share/ — shared data and user scripts
+    # share/ — demos, examples, and utility scripts (populated below)
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/share"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/share/scripts"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/share/scripts/python"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/share/scripts/lua"
-    # config/ — hub configuration files (hub.json, key files)
+    # config/ — reserved for global configuration files
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/config"
-    # data/ — default run data directory
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/data"
-    # Remaining directories
+    # docs/ — README and HEP design specifications (populated below)
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/docs"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/tools"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/package"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PYLABHUB_STAGING_DIR}/docs/HEP"
     COMMENT "Initializing staging directories"
 )
 
@@ -191,6 +190,58 @@ add_custom_target(stage_project_source_headers
     COMMENT "Staging project source headers early"
 )
 add_dependencies(stage_project_source_headers create_staging_dirs)
+
+# --- Stage Documentation ---
+# Copy README guides and HEP design specifications so the staged/installed
+# package includes user-facing documentation.
+add_custom_target(stage_docs
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/docs/README" "${PYLABHUB_STAGING_DIR}/docs"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/docs/HEP" "${PYLABHUB_STAGING_DIR}/docs/HEP"
+    COMMENT "Staging documentation (README guides + HEP specifications)"
+)
+add_dependencies(stage_docs create_staging_dirs)
+
+# --- Stage Share Directory ---
+# Copy the entire share/ tree: demos (py-demo-*), examples (py-examples),
+# and utility scripts (scripts/python/hubshell_client.py, etc.).
+add_custom_target(stage_share
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/share" "${PYLABHUB_STAGING_DIR}/share"
+    COMMENT "Staging share directory (demos, examples, scripts)"
+)
+add_dependencies(stage_share create_staging_dirs)
+
+# --- Stage Python Environment Tools ---
+# pylabhub-pyenv: cross-platform tool for managing the bundled Python environment
+# (package installation, verification, environment inspection).
+# Staged to bin/ alongside the main executables so it's on PATH.
+if(PLATFORM_WIN64)
+  add_custom_target(stage_pyenv_tools
+      COMMAND ${CMAKE_COMMAND} -E copy
+              "${CMAKE_SOURCE_DIR}/tools/pylabhub-pyenv.py"
+              "${PYLABHUB_STAGING_DIR}/bin/pylabhub-pyenv.py"
+      COMMAND ${CMAKE_COMMAND} -E copy
+              "${CMAKE_SOURCE_DIR}/tools/pylabhub-pyenv.ps1"
+              "${PYLABHUB_STAGING_DIR}/bin/pylabhub-pyenv.ps1"
+      COMMENT "Staging pylabhub-pyenv tools to bin/ (Windows)"
+      VERBATIM
+  )
+else()
+  add_custom_target(stage_pyenv_tools
+      COMMAND ${CMAKE_COMMAND} -E copy
+              "${CMAKE_SOURCE_DIR}/tools/pylabhub-pyenv.py"
+              "${PYLABHUB_STAGING_DIR}/bin/pylabhub-pyenv.py"
+      COMMAND ${CMAKE_COMMAND} -E copy
+              "${CMAKE_SOURCE_DIR}/tools/pylabhub-pyenv"
+              "${PYLABHUB_STAGING_DIR}/bin/pylabhub-pyenv"
+      COMMAND chmod +x "${PYLABHUB_STAGING_DIR}/bin/pylabhub-pyenv"
+      COMMENT "Staging pylabhub-pyenv tools to bin/ (Unix)"
+      VERBATIM
+  )
+endif()
+add_dependencies(stage_pyenv_tools create_staging_dirs)
 
 # Hub config files (hub.json) are created by `pylabhub-hubshell --init <hub_dir>`.
 # They live in user-chosen hub instance directories, not in the staging tree.
@@ -224,7 +275,7 @@ add_custom_target(stage_core_artifacts)
 
 # Ensure that the core staging process and the overall staging process
 # wait for the directories to be created first.
-add_dependencies(stage_core_artifacts create_staging_dirs stage_project_source_headers)
+add_dependencies(stage_core_artifacts create_staging_dirs stage_project_source_headers stage_docs stage_share stage_pyenv_tools)
 
 # --- 3.4. Configure All Sub-Projects ---
 message(STATUS "--- Configuring Third-Party Dependencies ---")

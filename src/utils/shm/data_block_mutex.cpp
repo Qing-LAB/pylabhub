@@ -363,43 +363,72 @@ bool DataBlockMutex::try_lock_for(int timeout_ms)
         throw std::runtime_error("POSIX DataBlockMutex: pthread_mutex_trylock failed for '" +
                                  m_name + "'. Error: " + std::to_string(res));
     }
-    struct timespec abstime;
-    // XPLAT: Uses CLOCK_REALTIME — timeout unreliable if system time jumps backward.
-    // POSIX-only; Windows uses WaitForSingleObject with relative timeout (immune).
-    if (clock_gettime(CLOCK_REALTIME, &abstime) != 0)
+    // Monotonic clock tracks real elapsed time (immune to NTP / wall-clock jumps).
+    // We use it as the ground truth for when our timeout budget is exhausted.
+    // pthread_mutex_timedlock() requires CLOCK_REALTIME for the deadline, so we
+    // compute short CLOCK_REALTIME deadlines (capped at 500 ms) inside a retry
+    // loop, checking CLOCK_MONOTONIC elapsed time after each attempt.
+    struct timespec mono_start;
+    if (clock_gettime(CLOCK_MONOTONIC, &mono_start) != 0)
     {
-        throw std::runtime_error("POSIX DataBlockMutex: clock_gettime failed for '" + m_name + "'.");
+        throw std::runtime_error("POSIX DataBlockMutex: clock_gettime(MONOTONIC) failed for '"
+                                 + m_name + "'.");
     }
-    abstime.tv_sec += timeout_ms / kMsPerSecond;
-    abstime.tv_nsec += static_cast<long>(timeout_ms % kMsPerSecond) * kNsPerMs;
-    if (abstime.tv_nsec >= kNsPerSecond)
+    const long timeout_ns = static_cast<long>(timeout_ms) * kNsPerMs;
+
+    for (;;)
     {
-        abstime.tv_sec += 1;
-        abstime.tv_nsec -= kNsPerSecond;
-    }
-    int res = pthread_mutex_timedlock(mutex_ptr, &abstime);
-    if (res == 0)
-    {
-        return true;
-    }
-    if (res == EOWNERDEAD)
-    {
-        LOGGER_INFO("POSIX DataBlockMutex: Mutex for '{}' was abandoned. Marking consistent.",
-                    m_name);
-        if (pthread_mutex_consistent(mutex_ptr) != 0)
+        // How much monotonic time has elapsed?
+        struct timespec mono_now;
+        clock_gettime(CLOCK_MONOTONIC, &mono_now);
+        const long elapsed_ns = (mono_now.tv_sec - mono_start.tv_sec) * kNsPerSecond
+                               + (mono_now.tv_nsec - mono_start.tv_nsec);
+        if (elapsed_ns >= timeout_ns)
+            return false; // budget exhausted
+
+        // Remaining time, capped at 500 ms to limit exposure to clock jumps.
+        constexpr long kMaxChunkNs = 500L * kNsPerMs; // 500 ms
+        const long remaining_ns = timeout_ns - elapsed_ns;
+        const long chunk_ns     = (remaining_ns < kMaxChunkNs) ? remaining_ns : kMaxChunkNs;
+
+        // Compute a short CLOCK_REALTIME deadline for this iteration.
+        struct timespec abstime;
+        if (clock_gettime(CLOCK_REALTIME, &abstime) != 0)
         {
             throw std::runtime_error(
-                "POSIX DataBlockMutex: pthread_mutex_consistent failed for '" + m_name +
-                "' — mutex is permanently unrecoverable.");
+                "POSIX DataBlockMutex: clock_gettime(REALTIME) failed for '" + m_name + "'.");
         }
-        return true;
+        abstime.tv_nsec += chunk_ns;
+        while (abstime.tv_nsec >= kNsPerSecond)
+        {
+            abstime.tv_sec  += 1;
+            abstime.tv_nsec -= kNsPerSecond;
+        }
+
+        int res = pthread_mutex_timedlock(mutex_ptr, &abstime);
+        if (res == 0)
+            return true;
+
+        if (res == EOWNERDEAD)
+        {
+            LOGGER_INFO(
+                "POSIX DataBlockMutex: Mutex for '{}' was abandoned. Marking consistent.",
+                m_name);
+            if (pthread_mutex_consistent(mutex_ptr) != 0)
+            {
+                throw std::runtime_error(
+                    "POSIX DataBlockMutex: pthread_mutex_consistent failed for '" + m_name +
+                    "' — mutex is permanently unrecoverable.");
+            }
+            return true;
+        }
+        if (res == ETIMEDOUT)
+            continue; // chunk expired — loop checks monotonic budget
+
+        throw std::runtime_error(
+            "POSIX DataBlockMutex: pthread_mutex_timedlock failed for '" + m_name +
+            "'. Error: " + std::to_string(res));
     }
-    if (res == ETIMEDOUT)
-    {
-        return false;
-    }
-    throw std::runtime_error("POSIX DataBlockMutex: pthread_mutex_timedlock failed for '" + m_name +
-                             "'. Error: " + std::to_string(res));
 }
 
 void DataBlockMutex::unlock()

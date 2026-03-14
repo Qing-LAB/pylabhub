@@ -190,7 +190,7 @@ For embedding in custom applications, use the L2/L3 headers directly. See `examp
 ```
 pylabhub/
   src/                    # C++ source (libraries + 4 binaries)
-  tests/                  # GoogleTest suite (1120+ tests)
+  tests/                  # GoogleTest suite (1160+ tests)
   examples/               # C++ embedded API examples
   share/
     py-demo-single-processor-shm/   # SHM pipeline demo (4 processes)
