@@ -10,9 +10,38 @@ readme = "README.md"
 authors = [{name = "Quan Qing"}]
 license = {file = "LICENSE"}
 requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Interface Engine/Protocol Translator",
+    "Topic :: System :: Hardware :: Hardware Drivers",
+]
+keywords = [
+    "data-acquisition",
+    "ipc",
+    "shared-memory",
+    "zeromq",
+    "lab-automation",
+    "scientific-instruments",
+    "real-time",
+]
 
 [project.urls]
 Homepage = "https://github.com/Qing-LAB/pylabhub"
+Repository = "https://github.com/Qing-LAB/pylabhub"
+Issues = "https://github.com/Qing-LAB/pylabhub/issues"
 
 # NOTE: Python packaging is a placeholder for future pybind11-based bindings.
 # The core framework is C++ (CMake build). This pyproject.toml reserves the
