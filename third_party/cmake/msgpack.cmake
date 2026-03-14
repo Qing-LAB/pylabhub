@@ -23,6 +23,12 @@ set(_msgpack_include_dir "${CMAKE_CURRENT_SOURCE_DIR}/msgpack-c/include")
 target_include_directories(pylabhub_msgpack INTERFACE
   $<BUILD_INTERFACE:${_msgpack_include_dir}>
 )
+
+# msgpack-c defaults to using boost/predef for endian detection. We don't
+# bundle or require Boost — define MSGPACK_NO_BOOST to use msgpack's own
+# bundled predef headers instead.
+target_compile_definitions(pylabhub_msgpack INTERFACE MSGPACK_NO_BOOST)
+
 message(STATUS "[pylabhub-third-party] Configured pylabhub::third_party::msgpack with include directory: ${_msgpack_include_dir}")
 
 # --- 3. Stage artifacts for installation ---
