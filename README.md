@@ -16,25 +16,61 @@ The framework is built on a **C++ core** (C++20, CMake 3.29+) with **Python scri
 - **Cross-host bridging** -- relay data between machines via ZMQ with automatic endpoint discovery
 - **Custom interfaces** -- integrate with Python notebooks, GUIs, or existing scientific software
 
-## Quick Start
+## Installation
 
-### Prerequisites
-
-- GCC 12+ or Clang 15+ (C++20)
-- CMake 3.29+
-- System libraries: libzmq, libsodium
-
-Third-party dependencies (fmt, nlohmann_json, googletest, cppzmq, luajit, pybind11) are bundled under `third_party/`.
-
-### Build and test
+### Option A: Install from PyPI (recommended for users)
 
 ```bash
-git clone https://github.com/Qing-LAB/pylabhub.git
+pip install pylabhub
+```
+
+This installs prebuilt binaries, the shared library, public headers, and a bundled Python 3.14 runtime. After installation the four executables (`pylabhub-hubshell`, `-producer`, `-consumer`, `-processor`) and the `pylabhub-pyenv` tool are available on PATH.
+
+**Install Python packages for scripting** (not included in the wheel):
+
+```bash
+pylabhub-pyenv install                          # default requirements.txt
+pylabhub-pyenv install -r my-requirements.txt   # custom set
+```
+
+**Python path accessors** (for programmatic use):
+
+```python
+import pylabhub
+pylabhub.get_bin_dir()      # path to executables
+pylabhub.get_lib_dir()      # path to shared libraries
+pylabhub.get_include_dir()  # path to C++ headers
+```
+
+### Option B: Build from source (for developers)
+
+**Prerequisites**: GCC 12+ or Clang 15+ (C++20), CMake 3.29+
+
+Third-party dependencies (fmt, nlohmann_json, googletest, cppzmq, luajit, pybind11, libzmq, libsodium) are built automatically from bundled sources under `third_party/`.
+
+```bash
+git clone --recursive https://github.com/Qing-LAB/pylabhub.git
 cd pylabhub
 cmake -S . -B build
 cmake --build build -j2
 ctest --test-dir build -j2
 ```
+
+Build outputs go to `build/stage-debug/` (or `stage-release/`) with `bin/`, `lib/`, `tests/`, `include/` subdirectories.
+
+### Python environment management
+
+The bundled Python 3.14 runtime ships with the interpreter and stdlib but **no third-party packages**. Use `pylabhub-pyenv` to manage packages post-install:
+
+```bash
+pylabhub-pyenv install                          # install default packages (numpy, zarr, h5py, ...)
+pylabhub-pyenv create-venv daq-env              # create an isolated venv
+pylabhub-pyenv install --venv daq-env -r req.txt  # install packages into venv
+pylabhub-pyenv info                             # show environment details
+pylabhub-pyenv verify                           # check all required packages present
+```
+
+Role configs can target a specific venv: `"python_venv": "daq-env"`. See `docs/README/README_Deployment.md` §12 for details.
 
 ### Run the demo pipeline
 
@@ -189,22 +225,25 @@ For embedding in custom applications, use the L2/L3 headers directly. See `examp
 
 ```
 pylabhub/
-  src/                    # C++ source (libraries + 4 binaries)
+  src/
+    pylabhub/             # Python package (pip install shim + path accessors)
+    ...                   # C++ source (libraries + 4 binaries)
   tests/                  # GoogleTest suite (1160+ tests)
   examples/               # C++ embedded API examples
   share/
     py-demo-single-processor-shm/   # SHM pipeline demo (4 processes)
     py-demo-dual-processor-bridge/  # Cross-hub SHM+ZMQ bridge demo (6 processes)
     py-examples/                    # Standalone Python script examples
-    scripts/python/                 # Admin tools (hubshell_client.py)
+    scripts/python/                 # Admin tools + requirements.txt
   docs/
-    HEP/                  # Design specifications (HEP-CORE-0001 through 0024)
+    HEP/                  # Design specifications (HEP-CORE-0001 through 0025)
     README/               # Detailed library and deployment docs
     tech_draft/           # Active design drafts
     todo/                 # Open work items by area
-  third_party/            # Bundled dependencies (git submodules)
-  cmake/                  # CMake helpers
-  tools/                  # Developer tools (format.sh)
+  third_party/            # Bundled dependencies (git submodules + ExternalProject)
+  tools/                  # pylabhub-pyenv, format.sh
+  cmake/                  # CMake helpers (staging, platform, third-party)
+  pyproject.toml          # scikit-build-core config (pip install → wheel)
   CMakeLists.txt          # Top-level CMake build
   CLAUDE.md               # Build commands, project rules, architecture reference
   LICENSE                 # BSD 3-Clause
