@@ -60,9 +60,19 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/libzmq EXCLUDE_FROM_ALL)
 
   # --- 5. Create the explicit dependency ---
-  # This is the crucial step to fix the build order. It tells make/ninja that
-  # libzmq-static cannot be built until libsodium_external is finished.
+  # libzmq creates an OBJECT library ("objects") whose .o files are compiled
+  # independently and then linked into both libzmq (shared) and libzmq-static.
+  # add_dependencies on libzmq-static only gates the final link step — it does
+  # NOT prevent the object compilation from starting before libsodium headers
+  # are installed. We must add the dependency to every target that compiles
+  # libzmq source files.
   add_dependencies(libzmq-static libsodium_external)
+  if(TARGET objects)
+    add_dependencies(objects libsodium_external)
+  endif()
+  if(TARGET libzmq)
+    add_dependencies(libzmq libsodium_external)
+  endif()
 
   # --- 6. Create canonical targets ---
   # Create the canonical INTERFACE wrapper target.
