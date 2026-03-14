@@ -82,7 +82,7 @@ static int do_init(const std::string &prod_dir_str, const std::string &cli_name)
 
     try
     {
-        RoleDirectory::create(prod_dir, "producer.json");
+        RoleDirectory::create(prod_dir);
     }
     catch (const std::exception &e)
     {

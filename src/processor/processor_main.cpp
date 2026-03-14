@@ -100,7 +100,7 @@ static int do_init(const std::string &proc_dir_str, const std::string &cli_name)
 
     try
     {
-        RoleDirectory::create(proc_dir, "processor.json");
+        RoleDirectory::create(proc_dir);
     }
     catch (const std::exception &e)
     {

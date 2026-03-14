@@ -207,6 +207,9 @@ ConsumerConfig ConsumerConfig::from_json_file(const std::string &path)
         cfg.script_path = s.value("path", std::string{"."});
     }
 
+    // ── Python virtual environment (optional) ────────────────────────────────
+    cfg.python_venv = j.value("python_venv", std::string{});
+
     if (j.contains("validation") && j["validation"].is_object())
     {
         cfg.stop_on_script_error = j["validation"].value("stop_on_script_error", false);

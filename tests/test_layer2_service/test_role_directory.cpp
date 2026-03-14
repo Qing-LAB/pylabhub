@@ -71,7 +71,7 @@ TEST(RoleDirectoryTest, Create_MakesStandardLayout)
 {
     const auto tmp = unique_temp_dir("create");
 
-    const auto rd = RoleDirectory::create(tmp, "producer.json");
+    const auto rd = RoleDirectory::create(tmp);
 
     EXPECT_TRUE(fs::is_directory(rd.logs()))  << "logs/ missing";
     EXPECT_TRUE(fs::is_directory(rd.run()))   << "run/ missing";
@@ -88,9 +88,9 @@ TEST(RoleDirectoryTest, Create_IsIdempotent)
     const auto tmp = unique_temp_dir("idem");
 
     // First call
-    RoleDirectory::create(tmp, "producer.json");
+    RoleDirectory::create(tmp);
     // Second call — must not throw
-    EXPECT_NO_THROW(RoleDirectory::create(tmp, "producer.json"));
+    EXPECT_NO_THROW(RoleDirectory::create(tmp));
 
     fs::remove_all(tmp);
 }

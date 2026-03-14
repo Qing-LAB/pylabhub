@@ -119,8 +119,9 @@ The following helper functions are provided as part of the framework for third-p
 
 1. `pylabhub_add_external_prerequisite(...)`
    - The primary function for building and integrating prerequisites that use **non-CMake** build systems (or require special `ExternalProject_Add` handling).
-   - It wraps `ExternalProject_Add` and automates the creation of a stable `IMPORTED` target and the post-build detection/normalization step.
+   - It wraps `ExternalProject_Add` and automates the post-build detection/normalization step (renaming artifacts to stable names like `libsodium-stable.a`).
    - The caller provides platform-specific `CONFIGURE_COMMAND`, `BUILD_COMMAND`, and `INSTALL_COMMAND` lists.
+   - **Note**: This function creates the ExternalProject target (e.g., `libsodium_external`) but does NOT create the consumer-facing wrapper target. The caller must create an `INTERFACE` wrapper in `third_party/CMakeLists.txt` (see Example 3).
    - See the example below for detailed usage.
 
 2. `_resolve_alias_to_concrete(TARGET_NAME OUTVAR)`  
@@ -333,20 +334,19 @@ pylabhub_add_external_prerequisite(
 # Include wrapper (creates libsodium_external target)
 include(libsodium)
 
-# Manually create IMPORTED target and alias
-set(_pkg "libsodium")
-set(_internal_imported_target "_pylabhub_prereq_impl_${_pkg}")
-
-add_library(${_internal_imported_target} UNKNOWN IMPORTED GLOBAL)
-set_target_properties(${_internal_imported_target} PROPERTIES
-  IMPORTED_LOCATION "${PREREQ_INSTALL_DIR}/lib/${_pkg}-stable${CMAKE_STATIC_LIBRARY_SUFFIX}"
-  INTERFACE_INCLUDE_DIRECTORIES "$<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>;$<INSTALL_INTERFACE:include>"
+# Create INTERFACE wrapper and alias.
+# IMPORTANT: Use INTERFACE (not IMPORTED) so that add_dependencies propagates
+# transitively through target_link_libraries chains to all consumers.
+add_library(pylabhub_libsodium INTERFACE)
+target_link_libraries(pylabhub_libsodium INTERFACE
+  "${PREREQ_INSTALL_DIR}/lib/libsodium-stable${CMAKE_STATIC_LIBRARY_SUFFIX}"
 )
-add_dependencies(${_internal_imported_target} libsodium_external)
-
-add_library(pylabhub_${_pkg} INTERFACE)
-target_link_libraries(pylabhub_${_pkg} INTERFACE ${_internal_imported_target})
-add_library(pylabhub::third_party::${_pkg} ALIAS pylabhub_${_pkg})
+target_include_directories(pylabhub_libsodium INTERFACE
+  $<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+add_dependencies(pylabhub_libsodium libsodium_external)
+add_library(pylabhub::third_party::libsodium ALIAS pylabhub_libsodium)
 
 # NO pylabhub_register_*() calls! Bulk staging handles this automatically.
 ```
@@ -556,7 +556,7 @@ If DLLs aren't being copied, check the bulk staging template in `cmake/BulkStage
 - [ ] Call `pylabhub_add_external_prerequisite`, passing the commands and detection patterns.
 - [ ] In `third_party/CMakeLists.txt`:
 - [ ] Add the `include(<pkg>.cmake)` call.
-- [ ] Manually create the `IMPORTED` target and the final `pylabhub::third_party::<pkg>` alias that points to the artifact in the `prereqs` directory.
+- [ ] Create an `INTERFACE` wrapper target (e.g., `pylabhub_<pkg>`) that links the stable library path directly via `target_link_libraries(INTERFACE ...)` and sets include directories. Use `add_dependencies` to chain to the ExternalProject target, then create the `pylabhub::third_party::<pkg>` ALIAS. **Use INTERFACE, not IMPORTED** — IMPORTED targets do not propagate `add_dependencies` transitively.
 - [ ] **Do not** add any calls to `pylabhub_register_*` functions for this library. Staging is handled automatically by the global `pylabhub_register_directory_for_staging` call in `third_party/CMakeLists.txt` for the entire `prereqs` directory.
 
 ---

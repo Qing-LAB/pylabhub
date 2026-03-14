@@ -38,6 +38,8 @@ The root is `${CMAKE_INSTALL_PREFIX}` (install) or `${PYLABHUB_STAGING_DIR}` (st
     pylabhub-producer          ← producer role binary
     pylabhub-consumer          ← consumer role binary
     pylabhub-processor         ← processor role binary
+    pylabhub-pyenv             ← Python environment manager (bash wrapper)
+    pylabhub-pyenv.ps1         ← Python environment manager (PowerShell, Windows)
   lib/
     libpylabhub-utils-stable.so.M.m.p   ← shared library (POSIX versioned)
     libpylabhub-utils-stable.so.M       ← soname symlink
@@ -53,21 +55,22 @@ The root is `${CMAKE_INSTALL_PREFIX}` (install) or `${PYLABHUB_STAGING_DIR}` (st
     nlohmann/                  ← JSON library headers
     sodium.h / sodium/         ← libsodium headers
     cppzmq/                    ← ZMQ C++ bindings
+  config/
+    pylabhub.json              ← system config (python_home, etc.) — optional
   share/
     scripts/
       python/
-        examples/              ← Python SDK examples
-        pylabhub_sdk/          ← embedded Python module (pybind11)
+        hubshell_client.py     ← AdminShell interactive client
         requirements.txt       ← Python package requirements
-      lua/                     ← Lua scripts (future)
+    py-examples/               ← standalone Python script examples
+    py-demo-single-processor-shm/   ← SHM pipeline demo
+    py-demo-dual-processor-bridge/  ← cross-hub bridge demo
   opt/
-    python/                    ← python-build-standalone 3.14 runtime
+    python/                    ← python-build-standalone runtime
+      venvs/                   ← user virtual environments
     IgorXOP/                   ← Igor Pro XOP bindings (optional)
-    lua/                       ← LuaJIT runtime
-  data/                        ← default run-data directory (writable; created at install)
+    luajit/                    ← LuaJIT runtime
   docs/                        ← deployed documentation
-  tools/                       ← developer tools (clang-format, etc.)
-  package/                     ← CMake package config for find_package()
   tests/
     test_layer0_*              ← test executables (only in development builds)
     test_layer1_*

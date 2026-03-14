@@ -48,6 +48,7 @@ ConsumerScriptHost::~ConsumerScriptHost()
 void ConsumerScriptHost::set_config(ConsumerConfig config)
 {
     config_ = std::move(config);
+    python_venv_ = config_.python_venv;
 }
 
 // ============================================================================

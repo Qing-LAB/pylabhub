@@ -6,14 +6,17 @@
 
 ## Archive batches
 
-### 2026-03-14 (cmake/config review cleanup)
+### 2026-03-14 (code review closure + config review cleanup)
 
-Stale root-level TODO.md archived — canonical TODO system is `docs/TODO_MASTER.md` + `docs/todo/*.md`.
+Two code reviews closed and archived. All findings either fixed (8 items) or accepted (4 items).
+1166/1166 tests pass. Also archived stale root TODO.
 
 **Archived to `docs/archive/transient-2026-03-14/`:**
 
 | Archived | Origin | Reason |
 |---|---|---|
+| `REVIEW_CodeAndDocs_2026-03-14.md` | `docs/code_review/` | ✅ CLOSED — 12 findings triaged: CX-01 (HIGH, get_binary_dir platform macros), CX-02 (mutex CLOCK_REALTIME fix), CX-04 (doc timeout_ms rename), CX-09 (dead result_repr), CX-10 (unused config_filename param), CX-11 (stale dir layout), RC-01 (docstring alignment). 4 accepted. |
+| `high_level_codex_review.md` | `docs/code_review/` | External codex review — all 5 findings triaged and addressed in REVIEW_CodeAndDocs_2026-03-14.md above |
 | `TODO_root_orphaned.md` | `TODO.md` (root) | Severely stale; referenced Layer 2 migration from months ago; conflicts with canonical TODO in docs/ |
 
 ---
