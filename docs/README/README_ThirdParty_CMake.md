@@ -54,6 +54,46 @@ There are two primary categories for third-party libraries, each with a correspo
 
 ---
 
+## Target Type: INTERFACE vs STATIC IMPORTED
+
+When creating the wrapper target in `third_party/CMakeLists.txt`, the choice between
+`INTERFACE` and `STATIC IMPORTED GLOBAL` depends on whether the library's symbols are
+exposed in public headers of `pylabhub-utils`.
+
+### INTERFACE (public dependency)
+
+Use when the library's types or inline functions appear in public headers of
+`pylabhub-utils` — consumers of the `.so` may need to link the library themselves.
+
+- Created via `add_library(pylabhub_<pkg> INTERFACE)` wrapping a concrete target
+- Linked **PUBLIC** to `pylabhub-utils`
+- The concrete library (`.a`) and headers are staged separately alongside the `.so`
+- Consumers inherit both the link dependency and include directories
+- Examples: `fmt` (format macros in headers), `cppzmq` (zmq types in messenger API),
+  `nlohmann_json` (json types in config API)
+
+### STATIC IMPORTED GLOBAL (internal dependency)
+
+Use when the library is purely an internal implementation detail — only `.cpp` files
+inside `pylabhub-utils` reference its symbols, and no public headers expose its types.
+
+- Created via `add_library(pylabhub_<pkg> STATIC IMPORTED GLOBAL)` with `IMPORTED_LOCATION`
+- Linked **PRIVATE** to `pylabhub-utils`
+- The `.a` is linked directly into `pylabhub-utils.so` at build time — symbols are
+  embedded in the `.so` and do not need to be redistributed separately
+- Not propagated to downstream executables (avoids duplicate symbol copies)
+- `GLOBAL` is required so the `ALIAS` target works across directory scopes
+- Examples: `libsodium` (only `crypto_utils.cpp`), `luajit` (only `lua_script_host.cpp`)
+
+### Decision rule
+
+> **Does any public header in `src/include/` transitively include or reference types
+> from this library?**
+> - **Yes** → `INTERFACE` + `PUBLIC`
+> - **No** → `STATIC IMPORTED GLOBAL` + `PRIVATE`
+
+---
+
 ## Naming & Exported Symbols Conventions
 
 Each third-party helper script must (where possible) do the following **inside `third_party/cmake/<pkg>.cmake`**:
