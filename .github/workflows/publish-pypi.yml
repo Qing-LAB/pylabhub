@@ -71,6 +71,7 @@ jobs:
           # runtime deps and correct RPATH) but retag the platform from
           # linux_x86_64 → manylinux_2_28_x86_64 so PyPI accepts the upload.
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: >
+            pip install wheel &&
             python -m wheel tags --platform-tag manylinux_2_28_x86_64 --remove {wheel} &&
             cp $(dirname {wheel})/*manylinux*.whl {dest_dir}/
 
