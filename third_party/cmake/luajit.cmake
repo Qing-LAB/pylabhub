@@ -139,7 +139,6 @@ if(MSVC)
   set(_luajit_lib_patterns "lua*.lib;lua*.dll")
   # Expect the detection script to create luajit-stable.lib from lua*.lib
   set(_luajit_build_byproduct "${_install_dir}/lib/luajit-stable.lib")
-  set(_luajit_header_patterns "luajit.h;luajit_rolling.h;lua.h;lauxlib.h;lualib.h")
 
 else() # POSIX (Linux, macOS)
   # At BUILD time, the CONFIGURE_COMMAND will copy the source code.
@@ -180,7 +179,6 @@ else() # POSIX (Linux, macOS)
   # Existing LIB_PATTERNS and BUILD_BYPRODUCTS for POSIX
   set(_luajit_lib_patterns "libluajit*.a;luajit*.a;libluajit*.so;luajit*.so;libluajit*.dylib;luajit*.dylib")
   set(_luajit_build_byproduct "${_install_dir}/lib/luajit-stable.a")
-  set(_luajit_header_patterns "luajit.h;luajit_rolling.h;lua.h;lauxlib.h;lualib.h")
 
 endif()
 
@@ -202,15 +200,8 @@ pylabhub_add_external_prerequisite(
   # runs first and copies files with their original names; the detect script
   # then renames the first match to the stable name. No conflict.
   LIB_PATTERNS      "${_luajit_lib_patterns}"
-  # HEADER_SOURCE_PATTERNS not passed — headers are handled by luajit_install.cmake
-  # which has specific placement requirements (include/, opt/luajit/jit/).
-  # HEADER_SOURCE_PATTERNS "${_luajit_header_patterns}"
-
-  # The detection script creates the stable lib, which is our byproduct
   BUILD_BYPRODUCTS  "${_luajit_build_byproduct}"
-
-  # EXTRA_COPY_DIRECTIVES 
-  #   "src/jit" "share/luajit/jit"
+  # Headers handled by luajit_install.cmake (specific placement: include/, opt/luajit/jit/)
 )
 
 message(STATUS "[pylabhub-third-party] luajit configuration complete.")
