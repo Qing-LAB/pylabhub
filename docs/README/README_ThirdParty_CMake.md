@@ -93,7 +93,6 @@ Each third-party helper script must (where possible) do the following **inside `
 - The staging rules are now strict based on the integration pattern:
   - **CMake Subprojects**: The wrapper script **must** call `pylabhub_register_headers_for_staging` and `pylabhub_register_library_for_staging`. These registrations are processed to generate `POST_BUILD` copy commands.
   - **External Prerequisites**: The wrapper script **must not** call any registration functions. Staging is handled by a global process that bulk-copies the `prereqs` directory.
-  - **Installation Export Set**: Only the namespaced `pylabhub::third_party::*` alias targets should be added to the `pylabhubTargets` export set in `third_party/CMakeLists.txt`. Concrete internal targets should not be directly exported, as their properties are inherited via the aliases.
 
 ---
 
@@ -106,7 +105,7 @@ The top-level `CMakeLists.txt` will:
 3.  Include `third_party/CMakeLists.txt`, which defines its own `stage_third_party_deps` target and makes `stage_all` depend on it.
 4.  For CMake Subprojects (Type A), each `<pkg>.cmake` script calls `pylabhub_register_library_for_staging` and `pylabhub_register_headers_for_staging` to attach its specific staging commands to `stage_third_party_deps`. For External Prerequisites (Type B), the `pylabhub_register_directory_for_staging` function (called in `third_party/CMakeLists.txt`) attaches bulk staging commands for the `prereqs` directory to `stage_third_party_deps`.
 5.  The top-level project also attaches staging commands for its own targets (`pylabhub-corelib`, `pylabhub-shell`, etc.) to run `POST_BUILD`.
-6.  The final `install()` step involves installing the targets exported to `pylabhubTargets` and copying the contents of `${PYLABHUB_STAGING_DIR}` to the installation prefix via `install(DIRECTORY "${PYLABHUB_STAGING_DIR}/" DESTINATION ".")`.
+6.  The final `install()` step copies the contents of `${PYLABHUB_STAGING_DIR}` to the installation prefix via `install(DIRECTORY "${PYLABHUB_STAGING_DIR}/" DESTINATION ".")`. No CMake export targets or config files are generated.
 7.  This entire staging and installation mechanism is controlled by the `THIRD_PARTY_INSTALL` option. If `OFF`, no staging or installation rules are generated.
 
 This approach keeps the installation logic atomic and declarative. The responsibility for populating the staging directory is correctly distributed to the components that know about their own artifacts.
@@ -245,15 +244,9 @@ restore_cache_var(FMT_INSTALL BOOL)
 ```cmake
 # Include the wrapper
 include(fmt)
-
-# ... later, in the install section (line 194-206):
-install(TARGETS
-  pylabhub_fmt     # INTERFACE wrapper
-  fmt              # Concrete target
-  # ... other targets
-  EXPORT pylabhubTargets
-)
 ```
+
+No per-target `install()` rules are needed. The staging directory is copied as-is during `cmake --install`.
 
 ### Example 3: External Prerequisite with Platform-Specific Build (libsodium)
 
@@ -334,14 +327,13 @@ pylabhub_add_external_prerequisite(
 # Include wrapper (creates libsodium_external target)
 include(libsodium)
 
-# Create INTERFACE wrapper and alias.
-add_library(pylabhub_libsodium INTERFACE)
-target_link_libraries(pylabhub_libsodium INTERFACE
-  "${PREREQ_INSTALL_DIR}/lib/libsodium-stable${CMAKE_STATIC_LIBRARY_SUFFIX}"
-)
-target_include_directories(pylabhub_libsodium INTERFACE
-  $<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>
-  $<INSTALL_INTERFACE:include>
+# Create STATIC IMPORTED wrapper and alias.
+# STATIC IMPORTED ensures the .a is linked directly into pylabhub-utils.so
+# at shared-library build time, rather than deferred to downstream executables.
+add_library(pylabhub_libsodium STATIC IMPORTED GLOBAL)
+set_target_properties(pylabhub_libsodium PROPERTIES
+  IMPORTED_LOCATION "${PREREQ_INSTALL_DIR}/lib/libsodium-stable${CMAKE_STATIC_LIBRARY_SUFFIX}"
+  INTERFACE_INCLUDE_DIRECTORIES "${PREREQ_INSTALL_DIR}/include"
 )
 add_dependencies(pylabhub_libsodium libsodium_external)
 add_library(pylabhub::third_party::libsodium ALIAS pylabhub_libsodium)
@@ -422,21 +414,6 @@ The helper function handles all the `ExternalProject_Add` boilerplate, the post-
 ---
 
 ## Troubleshooting Third-Party Integration
-
-### Issue: "Target 'fmt' is not built by this project"
-
-**Symptom:** CMake error during configuration or installation.
-
-**Cause:** Attempting to export an ALIAS target or non-existent target.
-
-**Solution:** In the `install(TARGETS ... EXPORT pylabhubTargets)` section of `third_party/CMakeLists.txt`, export BOTH the wrapper AND the canonical target:
-```cmake
-install(TARGETS
-  pylabhub_fmt    # INTERFACE wrapper (OK to export)
-  fmt             # Concrete target (must also be exported)
-  EXPORT pylabhubTargets
-)
-```
 
 ### Issue: Headers staged to wrong location
 
@@ -547,7 +524,6 @@ If DLLs aren't being copied, check the bulk staging template in `cmake/BulkStage
 - [ ] Create a `pylabhub::third_party::<pkg>` alias target.
 - [ ] **Call `pylabhub_register_library_for_staging()` for the compiled library target.**
 - [ ] **Call `pylabhub_register_headers_for_staging()` for the header files.**
-- [ ] **Do NOT include `install(TARGETS ...)` in the wrapper script.** Instead, add the `pylabhub::third_party::<pkg>` alias target to the central `install(TARGETS ... EXPORT pylabhubTargets)` block in `third_party/CMakeLists.txt`.
 
 #### **NO -> Use the External Prerequisite Pattern**
 - [ ] In your `third_party/cmake/<pkg>.cmake` wrapper:
@@ -555,7 +531,7 @@ If DLLs aren't being copied, check the bulk staging template in `cmake/BulkStage
 - [ ] Call `pylabhub_add_external_prerequisite`, passing the commands and detection patterns.
 - [ ] In `third_party/CMakeLists.txt`:
 - [ ] Add the `include(<pkg>.cmake)` call.
-- [ ] Create an `INTERFACE` wrapper target (e.g., `pylabhub_<pkg>`) that links the stable library path directly via `target_link_libraries(INTERFACE ...)` and sets include directories. Use `add_dependencies` to chain to the ExternalProject target, then create the `pylabhub::third_party::<pkg>` ALIAS. **Use INTERFACE, not IMPORTED** — IMPORTED targets do not propagate `add_dependencies` transitively.
+- [ ] Create a `STATIC IMPORTED GLOBAL` wrapper target (e.g., `pylabhub_<pkg>`) with `IMPORTED_LOCATION` pointing to the stable library path and `INTERFACE_INCLUDE_DIRECTORIES` for headers. Use `add_dependencies` to chain to the ExternalProject target, then create the `pylabhub::third_party::<pkg>` ALIAS. `STATIC IMPORTED` ensures the archive is linked directly into `pylabhub-utils.so` rather than deferred to downstream executables. `GLOBAL` is required so the ALIAS works across directory scopes.
 - [ ] **Do not** add any calls to `pylabhub_register_*` functions for this library. Staging is handled automatically by the global `pylabhub_register_directory_for_staging` call in `third_party/CMakeLists.txt` for the entire `prereqs` directory.
 
 ---
