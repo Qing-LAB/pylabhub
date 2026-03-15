@@ -67,10 +67,12 @@ jobs:
             PATH=/opt/rh/gcc-toolset-13/root/usr/bin:$PATH
             CC=gcc CXX=g++
 
-          # Skip auditwheel — the wheel is self-contained with bundled
-          # runtime deps (libzmq, libsodium, libpython, luajit) and correct
-          # RPATH ($ORIGIN/../lib, $ORIGIN/../opt/python/lib).
-          CIBW_REPAIR_WHEEL_COMMAND_LINUX: ""
+          # Skip auditwheel repair (the wheel is self-contained with bundled
+          # runtime deps and correct RPATH) but retag the platform from
+          # linux_x86_64 → manylinux_2_28_x86_64 so PyPI accepts the upload.
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: >
+            wheel tags --platform-tag manylinux_2_28_x86_64 --remove {wheel} &&
+            cp $(dirname {wheel})/*manylinux*.whl {dest_dir}/
 
           # manylinux_2_28 image (AlmaLinux 8, glibc 2.28).
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
