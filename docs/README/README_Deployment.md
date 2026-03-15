@@ -4,7 +4,7 @@
 pipeline. Covers install tree, hub and role instance directories, every configuration field,
 Python script authoring, connection policy, and operational patterns.
 
-**Last Updated:** 2026-03-14 (added §12 Python environment; python_venv config field)
+**Last Updated:** 2026-03-15 (Python runtime no longer bundled in wheel; `pylabhub prepare-runtime`)
 
 **Related:**
 - `docs/README/README_DirectoryLayout.md` — architectural directory model reference
@@ -136,6 +136,10 @@ opt/
       site-packages/     ← base packages (numpy, zarr, pyzmq, etc.)
     venvs/               ← virtual environments (created post-install)
   luajit/               ← bundled LuaJIT runtime
+
+NOTE: In pip-installed wheels, opt/python/ is NOT included to meet PyPI size
+limits. Run 'pylabhub prepare-runtime' after pip install to download it (~130 MB).
+Developer builds (cmake) stage the runtime automatically.
 
 config/                 ← system configuration (optional)
   pylabhub.json         ← Python home override, future global settings
@@ -1034,8 +1038,17 @@ When a role binary starts, it resolves the Python installation directory:
 `<prefix>` is the installation root (parent of `bin/`). Relative paths in tiers 1–2 are
 resolved relative to `<prefix>`.
 
-**Standalone builds** (Linux, macOS, Windows) use tier 3 automatically — the CMake build
-downloads and stages a python-build-standalone distribution to `opt/python/`.
+**Developer builds** (CMake) use tier 3 automatically — the build downloads and stages
+a python-build-standalone distribution to `opt/python/`.
+
+**Pip-installed wheels** do not bundle the Python runtime (PyPI size limit). After
+`pip install pylabhub`, run:
+
+```bash
+pylabhub prepare-runtime                        # downloads ~130 MB from GitHub
+pylabhub prepare-runtime --from archive.tar.gz  # offline/air-gapped install
+pylabhub prepare-runtime --target /opt/pylabhub/python  # custom location
+```
 
 **System Python** (FreeBSD or custom builds): create `config/pylabhub.json`:
 
@@ -1058,13 +1071,21 @@ log defaults, license paths, or other system-wide settings.
 
 ### 12.3 Base environment
 
-The base Python environment is set up at build time:
+**Pip install** — the runtime is downloaded post-install:
+
+```bash
+pip install pylabhub
+pylabhub prepare-runtime                        # downloads Python 3.14 runtime
+pylabhub-pyenv install                          # install base packages
+pylabhub-pyenv verify                           # check Python + pip + installed packages
+```
+
+**Developer build** — the runtime is staged automatically:
 
 ```bash
 cmake --build build --target stage_all
-# Installs base packages from share/scripts/python/requirements.txt
 pylabhub-pyenv install --requirements share/scripts/python/requirements.txt
-pylabhub-pyenv verify   # Checks Python + pip + installed packages
+pylabhub-pyenv verify
 ```
 
 The base environment lives in `opt/python/` and provides packages available to all roles.
@@ -1123,9 +1144,9 @@ bundled interpreter itself (or a system Python specified via `$PYLABHUB_PYTHON`)
 
 | Platform | Python source | `python_home` |
 |----------|--------------|---------------|
-| Linux x86_64 / aarch64 | python-build-standalone (CMake) | `opt/python/` (auto) |
-| macOS x86_64 / arm64 | python-build-standalone (CMake) | `opt/python/` (auto) |
-| Windows x86_64 | python-build-standalone (CMake) | `opt/python/` (auto) |
+| Linux x86_64 / aarch64 | `pylabhub prepare-runtime` (pip) or CMake (dev) | `opt/python/` (auto) |
+| macOS x86_64 / arm64 | `pylabhub prepare-runtime` (pip) or CMake (dev) | `opt/python/` (auto) |
+| Windows x86_64 | `pylabhub prepare-runtime` (pip) or CMake (dev) | `opt/python/` (auto) |
 | FreeBSD / other | System package manager | Set in `config/pylabhub.json` |
 
 When using system Python, ensure the version matches the build-time pybind11 expectations
