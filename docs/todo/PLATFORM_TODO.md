@@ -10,7 +10,13 @@ platform-specific behaviour differences.
 
 ## Current Focus
 
-No open items. See Backlog for planned work.
+### Codex Review: Platform support claims vs CI validation (2026-03-15)
+
+- [ ] **CI is Linux-only** but `pyproject.toml` classifiers advertise macOS and Windows,
+  and `README_testing.md` says all tests must run on Windows/Linux/macOS/FreeBSD.
+  `README_utils.md` still says DataBlock-on-Windows is incomplete.
+  Either add macOS/Windows CI jobs or narrow the documented platform support to match
+  what is actually validated.
 
 ---
 
