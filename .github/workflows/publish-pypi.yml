@@ -3,9 +3,10 @@
 # Build platform wheels via cibuildwheel and publish to PyPI.
 #
 # The wheel contains prebuilt C++ binaries (hubshell, producer, consumer,
-# processor), the shared library, public headers, and a bundled standalone
-# Python 3.14 runtime. One wheel per platform serves all host Python
-# versions (>= 3.9).
+# processor), the shared library, and public headers.  The Python 3.14
+# runtime is NOT bundled --- users install it post-install via
+# 'pylabhub prepare-runtime'.  One wheel per platform serves all host
+# Python versions (>= 3.9).
 #
 # Triggers:
 #   - Push a version tag (v*) → build wheels + publish to PyPI
@@ -50,9 +51,9 @@ jobs:
       - name: Build wheels
         uses: pypa/cibuildwheel@v2.22
         env:
-          # Build ONE wheel per platform. The C++ binaries embed a bundled
-          # standalone Python 3.14 runtime, so one wheel serves all host
-          # Python versions (>= 3.9). We pick cp312 as the build host.
+          # Build ONE wheel per platform. The C++ binaries embed Python 3.14
+          # (downloaded post-install via 'pylabhub prepare-runtime'), so one
+          # wheel serves all host Python versions (>= 3.9). cp312 = build host.
           CIBW_BUILD: "cp312-manylinux_x86_64"
 
           # Install build dependencies inside the manylinux container.
@@ -67,11 +68,10 @@ jobs:
             PATH=/opt/rh/gcc-toolset-13/root/usr/bin:$PATH
             CC=gcc CXX=g++
 
-          # Retag platform for PyPI upload. auditwheel repair is not usable
-          # here because the bundled Python 3.14 runtime references glibc
-          # symbols newer than 2.28. The wheel is self-contained (static
-          # libzmq/libsodium, bundled Python with $ORIGIN RPATH), so a
-          # simple retag is sufficient.
+          # Retag platform for PyPI upload. The Python 3.14 runtime is not
+          # bundled in the wheel (downloaded post-install), but auditwheel
+          # still rejects repair due to glibc symbol versions. A simple
+          # retag is sufficient since all shared libs use $ORIGIN RPATH.
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: >
             pip install wheel &&
             python -m wheel tags --platform-tag manylinux_2_28_x86_64 --remove {wheel} &&

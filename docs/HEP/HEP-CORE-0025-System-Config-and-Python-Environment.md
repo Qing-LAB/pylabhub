@@ -4,7 +4,7 @@
 |-----------|--------------------------------------------------|
 | Status    | Implemented                                      |
 | Created   | 2026-03-14                                       |
-| Updated   | 2026-03-14                                       |
+| Updated   | 2026-03-15                                       |
 | Author    | pyLabHub team                                    |
 | Requires  | HEP-CORE-0011 (ScriptHost), HEP-CORE-0018 (Producer/Consumer) |
 
@@ -29,6 +29,14 @@ for cross-platform reproducibility.  However:
 
 A system config file provides the flexibility to handle these cases without
 recompilation, while virtual environments enable per-role package isolation.
+
+**Wheel packaging note (2026-03-15):** The PyPI wheel does NOT bundle the Python 3.14
+runtime (exceeds 100 MB PyPI limit).  Users run `pylabhub prepare-runtime` after
+`pip install pylabhub` to download the runtime (~130 MB) from the same
+astral-sh/python-build-standalone release used at build time.  Developer builds
+(CMake) stage the runtime automatically as before.  The `prepare-runtime` command
+supports `--from <archive>` for offline/air-gapped installs and `--target <dir>`
+for custom install locations.
 
 ## 3. System Configuration
 
