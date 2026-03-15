@@ -1,0 +1,43 @@
+{
+  "_comment": [
+    "Dual-hub demo producer — publishes 1k-sample blocks on 'lab.bridge.raw' at max rate.",
+    "Run with: pylabhub-producer <path-to-this-dir>",
+    "Script at: ./script/python/__init__.py  (on_init / on_produce / on_stop)"
+  ],
+  "hub_dir": "../hub-a",
+  "producer": {
+    "uid":       "PROD-BRIDGE-00000001",
+    "name":      "BridgeProducer",
+    "log_level": "info",
+    "auth": { "keyfile": "" }
+  },
+  "channel":          "lab.bridge.raw",
+  "broker":           "tcp://127.0.0.1:5570",
+  "target_period_ms": 0,
+  "loop_timing":      "max_rate",
+  "overflow_policy":  "block",
+
+  "shm": {
+    "enabled":    true,
+    "secret":     3333333333,
+    "slot_count": 64,
+    "reader_sync_policy": "sequential"
+  },
+
+  "slot_schema": {
+    "packing": "aligned",
+    "fields": [
+      {"name": "count",   "type": "int64"},
+      {"name": "ts",      "type": "float64"},
+      {"name": "samples", "type": "float32", "count": 1024}
+    ]
+  },
+  "flexzone_schema": null,
+
+  "script": { "type": "python", "path": "." },
+
+  "validation": {
+    "update_checksum":      true,
+    "stop_on_script_error": false
+  }
+}

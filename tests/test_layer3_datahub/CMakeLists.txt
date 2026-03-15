@@ -1,0 +1,216 @@
+# tests/test_layer3_datahub/CMakeLists.txt
+#
+# Layer 3 (DataHub) tests
+# Tests for plh_datahub.hpp (depends on plh_service.hpp)
+#
+# Structure (ordered by abstraction level — facility → C API → primitive → RAII → integration):
+#
+#   Facility (individual class/subsystem unit tests):
+#     test_datahub_schema_blds.cpp
+#     test_datahub_schema_validation.cpp
+#
+#   C API layer (slot_rw_coordinator, checksum, recovery):
+#     test_datahub_c_api_slot_protocol.cpp
+#     test_datahub_c_api_checksum.cpp
+#     test_datahub_c_api_recovery.cpp
+#
+#   C++ Primitive API (DataBlockProducer/Consumer, no RAII):
+#     test_datahub_producer_consumer.cpp
+#     test_datahub_mutex.cpp
+#
+#   C++ RAII layer (TransactionContext, SlotIterator, policies):
+#     test_datahub_transaction_api.cpp
+#     test_datahub_policy_enforcement.cpp
+#     test_datahub_exception_safety.cpp
+#     test_datahub_handle_semantics.cpp
+#
+#   Integration / Scenario (multi-module, end-to-end):
+#     test_datahub_messagehub.cpp
+#
+#   workers/ — Worker process implementations (spawned as subprocesses)
+#              Each worker file is named datahub_<module>_workers.{cpp,h}
+
+message(STATUS "** Configuring Layer 3 (DataHub) tests...")
+
+add_executable(test_layer3_datahub
+    # ── Facility ──────────────────────────────────────────────────────────────
+    test_datahub_schema_blds.cpp
+    workers/datahub_schema_blds_workers.cpp
+    test_datahub_schema_validation.cpp
+    workers/datahub_schema_validation_workers.cpp
+    test_datahub_config_validation.cpp
+    workers/datahub_config_validation_workers.cpp
+    test_datahub_header_structure.cpp
+    workers/datahub_header_structure_workers.cpp
+
+    # ── C API layer ───────────────────────────────────────────────────────────
+    test_datahub_c_api_slot_protocol.cpp
+    workers/datahub_c_api_slot_protocol_workers.cpp
+    workers/datahub_c_api_draining_workers.cpp
+    test_datahub_c_api_checksum.cpp
+    workers/datahub_c_api_checksum_workers.cpp
+    test_datahub_c_api_recovery.cpp
+    workers/datahub_c_api_recovery_workers.cpp
+    test_datahub_c_api_validation.cpp
+    workers/datahub_c_api_validation_workers.cpp
+
+    # ── C++ Primitive API ─────────────────────────────────────────────────────
+    test_datahub_producer_consumer.cpp
+    workers/datahub_producer_consumer_workers.cpp
+    test_datahub_mutex.cpp
+    workers/datahub_mutex_workers.cpp
+
+    # ── C++ RAII layer ────────────────────────────────────────────────────────
+    test_datahub_transaction_api.cpp
+    workers/datahub_transaction_api_workers.cpp
+    test_datahub_policy_enforcement.cpp
+    workers/datahub_policy_enforcement_workers.cpp
+    test_datahub_exception_safety.cpp
+    workers/datahub_exception_safety_workers.cpp
+    test_datahub_handle_semantics.cpp
+    workers/datahub_handle_semantics_workers.cpp
+    test_datahub_loop_policy.cpp
+
+    # ── Integration / Scenario ────────────────────────────────────────────────
+    test_datahub_messagehub.cpp
+    workers/datahub_messagehub_workers.cpp
+
+    # ── WriteAttach mode (broker-owned shared memory) ─────────────────────────
+    test_datahub_write_attach.cpp
+    workers/datahub_write_attach_workers.cpp
+
+    # ── Recovery scenarios (facility: zombie detection, force-reset, dead consumer) ──
+    test_datahub_recovery_scenarios.cpp
+    workers/datahub_recovery_scenario_workers.cpp
+
+    # ── Integrity validation and repair ───────────────────────────────────────────
+    test_datahub_integrity_repair.cpp
+    workers/datahub_integrity_repair_workers.cpp
+
+    # ── Broker service integration tests ─────────────────────────────────────────
+    test_datahub_broker.cpp
+    workers/datahub_broker_workers.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/ipc/channel_registry.cpp
+
+    # ── Channel access policy enforcement tests (Phase 3) ─────────────────────
+    test_datahub_channel_access_policy.cpp
+
+    # ── Consumer registration protocol tests ─────────────────────────────────────
+    test_datahub_broker_consumer.cpp
+    workers/datahub_broker_consumer_workers.cpp
+
+    # ── End-to-end multi-process integration test ────────────────────────────────
+    test_datahub_e2e.cpp
+    workers/datahub_e2e_workers.cpp
+
+    # ── ChannelHandle integration tests (Phase 6) ────────────────────────────────
+    test_datahub_channel.cpp
+    workers/datahub_channel_workers.cpp
+
+    # ── Hub Producer/Consumer unified API tests ───────────────────────────────────
+    test_datahub_hub_api.cpp
+    workers/datahub_hub_api_workers.cpp
+
+    # ── Broker/Producer/Consumer health and notification tests ────────────────────
+    test_datahub_broker_health.cpp
+    workers/datahub_broker_health_workers.cpp
+
+    # ── RAII layer stress tests (multi-process, full-capacity, random delays) ─────
+    test_datahub_stress_raii.cpp
+    workers/datahub_stress_raii_workers.cpp
+
+    # ── HubConfig script-block fields (lifecycle unit tests) ──────────────────
+    test_datahub_hub_config_script.cpp
+
+    # ── Hub ShmQueue unit tests ────────────────────────────────────────────────
+    test_datahub_hub_queue.cpp
+    workers/datahub_hub_queue_workers.cpp
+
+    # ── Hub Processor unit tests ───────────────────────────────────────────────
+    test_datahub_hub_processor.cpp
+    workers/datahub_hub_processor_workers.cpp
+
+    # ── Hub ZmqQueue unit tests ──────────────────────────────────────────────
+    test_datahub_hub_zmq_queue.cpp
+
+    # ── Schema Library unit tests (HEP-CORE-0016 Phase 1) ─────────────────────
+    test_datahub_schema_library.cpp
+
+    # ── Broker named schema protocol tests (HEP-CORE-0016 Phase 3) ────────────
+    test_datahub_broker_schema.cpp
+
+    # ── Schema Registry lifecycle tests (HEP-CORE-0016 Phase 4) ─────────────
+    test_datahub_schema_registry.cpp
+
+    # ── BrokerService admin API tests ─────────────────────────────────────────
+    test_datahub_broker_admin.cpp
+
+    # ── Broker control-plane protocol tests (broadcast, notify, list_channels) ──
+    test_datahub_broker_protocol.cpp
+
+    # ── Messenger hex codec tests (messenger_internal.hpp) ────────────────────
+    test_datahub_messenger_protocol.cpp
+
+    # ── ZmqPollLoop + HeartbeatTracker unit tests ────────────────────────────
+    test_datahub_zmq_poll_loop.cpp
+
+    # ── Two-tier graceful shutdown protocol tests ──────────────────────────
+    test_datahub_broker_shutdown.cpp
+
+    # ── HEP-CORE-0019 Metrics Plane tests ────────────────────────────────
+    test_datahub_metrics.cpp
+
+    # ── HEP-CORE-0021 ZMQ Virtual Channel Node protocol tests ────────────
+    test_datahub_zmq_virtual_channel.cpp
+
+    # ── HEP-CORE-0022 Hub Federation Broadcast protocol tests ────────────
+    test_datahub_hub_federation.cpp
+
+    # ── Hub InboxQueue + InboxClient unit tests (Phase 3 Inbox Facility) ─
+    test_datahub_hub_inbox_queue.cpp
+
+    # ── MonitoredQueue unit tests (ctrl-send queue with backpressure) ─────
+    test_datahub_hub_monitored_queue.cpp
+)
+
+target_include_directories(test_layer3_datahub PRIVATE
+    workers
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/utils
+    ${CMAKE_SOURCE_DIR}/src/utils/ipc
+)
+
+target_link_libraries(test_layer3_datahub
+    PRIVATE
+        pylabhub::test_framework
+        pylabhub::utils
+        GTest::gtest
+        GTest::gmock
+)
+
+target_compile_features(test_layer3_datahub PRIVATE cxx_std_20)
+target_compile_definitions(test_layer3_datahub PRIVATE LOGGER_COMPILE_LEVEL=0)
+# GCC false-positive: -Wmissing-field-initializers fires for C++20 designated
+# initializers even when omitted fields have in-class defaults.  Not applicable
+# to ChannelRegistrationOptions, which provides a default for every member.
+target_compile_options(test_layer3_datahub PRIVATE
+    $<$<CXX_COMPILER_ID:GNU>:-Wno-missing-field-initializers>)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer3_datahub)
+
+# Ensure pylabhub-utils is staged (soname symlink in stage-debug/lib/) before
+# test discovery tries to load it via RPATH ($ORIGIN/../lib).
+if(TARGET stage_pylabhub_utils)
+    add_dependencies(test_layer3_datahub stage_pylabhub_utils)
+endif()
+
+pylabhub_register_test_for_staging(TARGET test_layer3_datahub)
+
+gtest_discover_tests(test_layer3_datahub
+    PROPERTIES
+        LABELS "layer3;datahub"
+    DISCOVERY_TIMEOUT 60
+)
+
+message(STATUS "** Layer 3 (DataHub) tests configured.")
+message(STATUS "  - test_layer3_datahub: facility, c_api, primitive, raii, integration, broker_consumer, e2e")
