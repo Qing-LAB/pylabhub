@@ -27,9 +27,10 @@ include(StageHelpers)
 if(SKBUILD)
   message(STATUS "[pylabhub-third-party] SKBUILD mode: using host Python (no standalone download)")
 
-  # scikit-build-core already sets Python_EXECUTABLE etc. Just find it.
-  find_package(Python REQUIRED COMPONENTS Interpreter Development)
-  message(STATUS "[pylabhub-third-party] Found Python ${Python_VERSION}: ${Python_EXECUTABLE}")
+  # Do NOT call find_package(Python) here — let pybind11 handle Python
+  # discovery using the hints scikit-build-core passes to CMake.
+  # Calling it ourselves can fail on manylinux where Development.Embed
+  # (libpythonX.Y.so) may not be available for all Python versions.
 
   if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/pybind11/CMakeLists.txt")
     message(FATAL_ERROR
