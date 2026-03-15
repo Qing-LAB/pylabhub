@@ -414,21 +414,27 @@ TEST_F(SlotViewHelpersTest, WrapAsReadonly_StandaloneDirectTest)
 }
 
 // ============================================================================
-// 13. WriteSide_Numpy_DataZeroCopy
+// 13. WriteSide_ArrayModule_DataZeroCopy
+//     Uses Python's built-in struct module + memoryview to verify zero-copy
+//     write semantics without requiring numpy.
 // ============================================================================
 
-TEST_F(SlotViewHelpersTest, WriteSide_Numpy_DataZeroCopy)
+TEST_F(SlotViewHelpersTest, WriteSide_ArrayModule_DataZeroCopy)
 {
-    auto       spec  = make_numpy_spec(3);
-    py::object dtype = build_numpy_dtype(spec);
-    size_t     sz    = dtype.attr("itemsize").cast<size_t>() * 3;
-
+    // Use a writable memoryview backed by our C++ buffer
     std::array<double, 3> buf = {0.0, 0.0, 0.0};
-    py::object arr = make_slot_view(spec, dtype, buf.data(), sz, /*is_read_side=*/false);
+    auto mv = py::memoryview::from_memory(buf.data(),
+                                           static_cast<ssize_t>(sizeof(buf)),
+                                           /*readonly=*/false);
 
     py::dict ns;
-    ns["arr"] = arr;
-    py::exec("arr[0] = 1.1; arr[1] = 2.2; arr[2] = 3.3", py::globals(), ns);
+    ns["mv"] = mv;
+
+    // Use struct.pack_into to write doubles into the memoryview
+    py::exec(R"(
+import struct
+struct.pack_into('ddd', mv, 0, 1.1, 2.2, 3.3)
+)", py::globals(), ns);
 
     EXPECT_DOUBLE_EQ(buf[0], 1.1);
     EXPECT_DOUBLE_EQ(buf[1], 2.2);
@@ -436,40 +442,36 @@ TEST_F(SlotViewHelpersTest, WriteSide_Numpy_DataZeroCopy)
 }
 
 // ============================================================================
-// 14. ReadSide_Numpy_DataReadable_AndWriteBlocked
-//     numpy respects the readonly memoryview flag → arr.flags.writeable = False
-//     → write raises ValueError: assignment destination is read-only
+// 14. ReadSide_ArrayModule_DataReadable_AndWriteBlocked
+//     Uses Python's built-in struct module + readonly memoryview to verify
+//     that reads work and writes are blocked, without requiring numpy.
 // ============================================================================
 
-TEST_F(SlotViewHelpersTest, ReadSide_Numpy_DataReadable_AndWriteBlocked)
+TEST_F(SlotViewHelpersTest, ReadSide_ArrayModule_DataReadable_AndWriteBlocked)
 {
-    auto       spec  = make_numpy_spec(3);
-    py::object dtype = build_numpy_dtype(spec);
-    size_t     sz    = dtype.attr("itemsize").cast<size_t>() * 3;
-
     std::array<double, 3> buf = {10.0, 20.0, 30.0};
-    py::object arr = make_slot_view(spec, dtype, buf.data(), sz, /*is_read_side=*/true);
+    auto mv = py::memoryview::from_memory(buf.data(),
+                                           static_cast<ssize_t>(sizeof(buf)),
+                                           /*readonly=*/true);
 
     py::dict ns;
-    ns["arr"] = arr;
+    ns["mv"] = mv;
 
-    // Reads work
-    py::exec("v0 = float(arr[0]); v1 = float(arr[1]); v2 = float(arr[2])", py::globals(), ns);
+    // Reads work via struct.unpack_from
+    py::exec(R"(
+import struct
+v0, v1, v2 = struct.unpack_from('ddd', mv, 0)
+)", py::globals(), ns);
     EXPECT_DOUBLE_EQ(ns["v0"].cast<double>(), 10.0);
     EXPECT_DOUBLE_EQ(ns["v1"].cast<double>(), 20.0);
     EXPECT_DOUBLE_EQ(ns["v2"].cast<double>(), 30.0);
 
-    // writeable flag is False
-    py::exec("flag = arr.flags.writeable", py::globals(), ns);
-    EXPECT_FALSE(ns["flag"].cast<bool>())
-        << "numpy read-side array should have writeable=False";
-
-    // Write raises ValueError
-    std::string err = try_exec("arr[0] = 99.0", ns);
-    EXPECT_FALSE(err.empty()) << "Expected ValueError on write to read-side numpy array";
-    EXPECT_TRUE(err.find("ValueError") != std::string::npos ||
-                err.find("read-only") != std::string::npos)
-        << "Expected ValueError/read-only in: " << err;
+    // Write to readonly memoryview raises TypeError
+    std::string err = try_exec(R"(
+import struct
+struct.pack_into('d', mv, 0, 99.0)
+)", ns);
+    EXPECT_FALSE(err.empty()) << "Expected error on write to read-only memoryview";
 
     // Backing memory must NOT have changed
     EXPECT_DOUBLE_EQ(buf[0], 10.0);

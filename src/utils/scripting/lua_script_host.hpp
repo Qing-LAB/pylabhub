@@ -47,9 +47,10 @@
 #include "utils/script_host.hpp"
 #include "plh_platform.hpp"
 
-#include <lua.h>
-#include <lualib.h>
-#include <lauxlib.h>
+// lua.hpp is LuaJIT's official C++ wrapper — it includes lua.h, lauxlib.h,
+// lualib.h, and luajit.h inside an extern "C" block, ensuring correct
+// C linkage for all Lua API symbols.
+#include <lua.hpp>
 
 #include <cstdint>
 #include <thread>

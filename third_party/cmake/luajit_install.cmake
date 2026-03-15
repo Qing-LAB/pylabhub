@@ -149,6 +149,8 @@ endif()
 #
 # Dependency chain:
 #   lua.h       — core Lua C API; #include "luaconf.h" on line 16
+#   lua.hpp     — C++ wrapper; wraps lua.h, lauxlib.h, lualib.h, luajit.h
+#                  in extern "C" {} (required for correct C linkage in C++)
 #   luaconf.h   — configuration header; GENERATED during 'make' from luaconf.h.in
 #                  (does not exist in the source tree — only in the build dir)
 #   luajit.h    — LuaJIT version macros
@@ -163,6 +165,7 @@ endif()
 # will fail with "luaconf.h: No such file or directory".
 set(_header_names
   "lua.h"
+  "lua.hpp"
   "luaconf.h"
   "luajit.h"
   "lauxlib.h"

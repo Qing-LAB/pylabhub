@@ -68,40 +68,36 @@ list(APPEND CMAKE_PREFIX_PATH "${PREREQ_INSTALL_DIR}")
 # Create pylabhub::third_party targets for ExternalProject dependencies.
 #
 # Each ExternalProject prereq gets two targets:
-#   pylabhub_<name>                    — STATIC IMPORTED GLOBAL (location + includes + dep)
+#   pylabhub_<name>                    — INTERFACE (link path + includes + build-order dep)
 #   pylabhub::third_party::<name>      — ALIAS (namespaced, for consumers)
 #
-# These are modeled as STATIC IMPORTED (not INTERFACE) so that the static
-# archives (.a) are linked directly into pylabhub-utils.so at shared-library
-# build time. This ensures symbols are resolved inside the .so itself rather
-# than being deferred to downstream executables — which fails on toolchains
-# that don't resolve .so undefined references from subsequent .a archives.
-#
-# Consequence: libsodium and luajit symbols are embedded in the .so. Their
-# static archives are not needed at executable link time and should not be
-# redistributed separately. Only their headers are staged for development use.
-#
-# pylabhub-utils links these targets as PRIVATE (see src/utils/CMakeLists.txt)
-# to prevent the .a from being propagated to consumers of the .so.
+# pylabhub-utils links these targets as PRIVATE with WHOLE_ARCHIVE
+# (see src/utils/CMakeLists.txt) to:
+#   1. Embed the static archive symbols directly into pylabhub-utils.so
+#   2. Prevent the .a from propagating to downstream executables
+# This avoids CI link failures where some toolchains cannot resolve .so
+# undefined references from subsequent .a archives on the link line.
 
 # --- libsodium ---
-# STATIC IMPORTED so the archive is linked directly into pylabhub-utils.so
-# rather than deferred to downstream executables (which fails on some toolchains).
-add_library(pylabhub_libsodium STATIC IMPORTED GLOBAL)
-set_target_properties(pylabhub_libsodium PROPERTIES
-  IMPORTED_LOCATION "${PREREQ_INSTALL_DIR}/lib/libsodium-stable${CMAKE_STATIC_LIBRARY_SUFFIX}"
-  INTERFACE_INCLUDE_DIRECTORIES "${PREREQ_INSTALL_DIR}/include"
+add_library(pylabhub_libsodium INTERFACE)
+target_link_libraries(pylabhub_libsodium INTERFACE
+  "${PREREQ_INSTALL_DIR}/lib/libsodium-stable${CMAKE_STATIC_LIBRARY_SUFFIX}"
+)
+target_include_directories(pylabhub_libsodium INTERFACE
+  $<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>
+  $<INSTALL_INTERFACE:include>
 )
 add_dependencies(pylabhub_libsodium libsodium_external)
 add_library(pylabhub::third_party::libsodium ALIAS pylabhub_libsodium)
 
 # --- luajit ---
-# STATIC IMPORTED so the archive is linked directly into pylabhub-utils.so
-# rather than deferred to downstream executables (which fails on some toolchains).
-add_library(pylabhub_luajit STATIC IMPORTED GLOBAL)
-set_target_properties(pylabhub_luajit PROPERTIES
-  IMPORTED_LOCATION "${PREREQ_INSTALL_DIR}/lib/luajit-stable${CMAKE_STATIC_LIBRARY_SUFFIX}"
-  INTERFACE_INCLUDE_DIRECTORIES "${PREREQ_INSTALL_DIR}/include"
+add_library(pylabhub_luajit INTERFACE)
+target_link_libraries(pylabhub_luajit INTERFACE
+  "${PREREQ_INSTALL_DIR}/lib/luajit-stable${CMAKE_STATIC_LIBRARY_SUFFIX}"
+)
+target_include_directories(pylabhub_luajit INTERFACE
+  $<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>
+  $<INSTALL_INTERFACE:include>
 )
 add_dependencies(pylabhub_luajit luajit_external)
 add_library(pylabhub::third_party::luajit ALIAS pylabhub_luajit)
@@ -128,8 +124,8 @@ include(cmake/googletest.cmake)
 #
 # Prerequisites built via ExternalProject_Add into the 'prereq' directory (e.g., luajit, libsodium)
 # are staged via a bulk-copy of the prereqs directory. Note: the static archives (.a) for
-# libsodium and luajit are embedded in pylabhub-utils.so (see STATIC IMPORTED targets above)
-# and do not need to be redistributed. Only their headers are needed for development.
+# libsodium and luajit archives are embedded in pylabhub-utils.so via WHOLE_ARCHIVE
+# (see src/utils/CMakeLists.txt). Only their headers are needed for development.
 # We only need to process the final registrations for the remaining targets.
 
 
@@ -207,8 +203,8 @@ endif()
 # fully defined before they are added to the export set.
 # ===========================================================================
 install(TARGETS
-  # pylabhub_libsodium and pylabhub_luajit are STATIC IMPORTED — their
-  # archives are embedded in pylabhub-utils.so and don't need separate export.
+  pylabhub_libsodium
+  pylabhub_luajit
   pylabhub_libzmq # This is the INTERFACE target for libzmq
   libzmq-static # Concrete target linked by pylabhub_libzmq, must be exported too.
   pylabhub_fmt # This is the INTERFACE target for fmt
