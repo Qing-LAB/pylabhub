@@ -6,7 +6,6 @@ __pycache__/
 *.core
 
 # Distribution / packaging
-build/
 develop-eggs/
 dist/
 eggs/
@@ -34,27 +33,38 @@ htmlcov/
 **/.vscode/
 **/.idea/
 **/.cursor
+**/.cache/
 
 # OS files
 .DS_Store
 Thumbs.db
 
-# Ignore CMake build output directory
+# CMake build output
+build/
+build-rel/
 **/_build*/
-**/build*/
 **/CMakeFiles/
 **/CMakeCache.txt
 **/cmake_install.cmake
 **/Makefile
 **/Testing/
+tmp/
+**/tmp/
 
 # --- XOPToolkit: ignore vendor files but keep placeholder and README ---
-cpp/third_party/XOPToolkit/XOPSupport/*
-!cpp/third_party/XOPToolkit/XOPSupport/.placeholder
-!cpp/third_party/XOPToolkit/XOPSupport/README.install.md
+third_party/XOPToolkit/XOPSupport/*
+!third_party/XOPToolkit/XOPSupport/.placeholder
+!third_party/XOPToolkit/XOPSupport/README.install.md
 
-# -- Local log recording todo, progress and summary for feeding AI tools
+# Local logs and AI tool scratch files
 progress_log/
+cmake_log.txt
+*.log
+.gemini_commit_message.txt
+
+# scikit-build-core / wheel build artifacts
+_skbuild/
+*.whl
 
 # Packaged source code archives
 *.tar.gz

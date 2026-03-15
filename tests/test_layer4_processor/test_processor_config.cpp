@@ -1,0 +1,1383 @@
+/**
+ * @file test_processor_config.cpp
+ * @brief Unit tests for ProcessorConfig JSON parsing (no lifecycle, no Python).
+ *
+ * processor_config.cpp is compiled directly into this test binary so we can
+ * exercise ProcessorConfig::from_json_file() and from_directory() without the
+ * pybind11 / scripting dependencies that are private to the processor executable.
+ *
+ * Pattern 1 (PureApiTest) — no module init, no lifecycle.
+ */
+
+#include "processor_config.hpp"
+
+#include "test_patterns.h"
+
+#include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
+
+#include <atomic>
+#include <filesystem>
+#include <fstream>
+#include <stdexcept>
+#include <string>
+
+namespace fs = std::filesystem;
+
+// ── Temp-dir helper ──────────────────────────────────────────────────────────
+
+static fs::path unique_temp_dir(const std::string &prefix)
+{
+    static std::atomic<int> counter{0};
+    const int id = counter.fetch_add(1);
+    fs::path dir = fs::temp_directory_path()
+                   / ("plh_proccfg_" + prefix + "_" + std::to_string(id));
+    fs::create_directories(dir);
+    return dir;
+}
+
+static void write_file(const fs::path &path, const std::string &content)
+{
+    std::ofstream f(path);
+    f << content;
+}
+
+// ── Test fixture ─────────────────────────────────────────────────────────────
+
+class ProcessorConfigTest : public pylabhub::tests::PureApiTest {};
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+TEST_F(ProcessorConfigTest, FromJsonFile_Basic)
+{
+    const auto tmp      = unique_temp_dir("basic");
+    const auto cfg_path = tmp / "processor.json";
+
+    write_file(cfg_path, R"({
+        "processor": {
+            "uid":       "PROC-TESTSCL-AABBCCDD",
+            "name":      "TestScaler",
+            "log_level": "debug"
+        },
+        "in_channel":  "lab.input.channel",
+        "out_channel": "lab.output.channel",
+        "overflow_policy": "drop",
+        "slot_acquire_timeout_ms":  3000,
+        "heartbeat_interval_ms": 500,
+        "shm": {
+            "in":  { "enabled": true,  "secret": 11111 },
+            "out": { "enabled": true,  "secret": 22222, "slot_count": 8 }
+        },
+        "script": { "path": "./script", "type": "python" },
+        "validation": { "update_checksum": true, "stop_on_script_error": true }
+    })");
+
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+
+    EXPECT_EQ(cfg.processor_uid,    "PROC-TESTSCL-AABBCCDD");
+    EXPECT_EQ(cfg.processor_name,   "TestScaler");
+    EXPECT_EQ(cfg.log_level,        "debug");
+    EXPECT_EQ(cfg.in_channel,       "lab.input.channel");
+    EXPECT_EQ(cfg.out_channel,      "lab.output.channel");
+    EXPECT_EQ(cfg.overflow_policy,  pylabhub::processor::OverflowPolicy::Drop);
+    EXPECT_EQ(cfg.slot_acquire_timeout_ms, 3000);
+    EXPECT_EQ(cfg.heartbeat_interval_ms, 500);
+    EXPECT_TRUE(cfg.in_shm_enabled);
+    EXPECT_EQ(cfg.in_shm_secret,    uint64_t{11111});
+    EXPECT_TRUE(cfg.out_shm_enabled);
+    EXPECT_EQ(cfg.out_shm_secret,   uint64_t{22222});
+    EXPECT_EQ(cfg.out_shm_slot_count, uint32_t{8});
+    EXPECT_EQ(cfg.script_path,      "./script");
+    EXPECT_EQ(cfg.script_type,      "python");
+    EXPECT_TRUE(cfg.update_checksum);
+    EXPECT_TRUE(cfg.stop_on_script_error);
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, FromJsonFile_UidAutoGen)
+{
+    const auto tmp      = unique_temp_dir("uid");
+    const auto cfg_path = tmp / "processor.json";
+
+    // No "uid" field — should be auto-generated with PROC- prefix
+    write_file(cfg_path, R"({
+        "processor": { "name": "AutoProc" },
+        "in_channel":  "lab.auto.in",
+        "out_channel": "lab.auto.out"
+    })");
+
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+
+    EXPECT_FALSE(cfg.processor_uid.empty());
+    EXPECT_EQ(cfg.processor_uid.rfind("PROC-", 0), 0u)
+        << "Auto-generated uid must start with PROC-, got: " << cfg.processor_uid;
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, FromJsonFile_SchemaFields)
+{
+    const auto tmp      = unique_temp_dir("schema");
+    const auto cfg_path = tmp / "processor.json";
+
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-SCHTEST-00000001", "name": "SchTest" },
+        "in_channel":  "lab.schema.in",
+        "out_channel": "lab.schema.out",
+        "in_slot_schema": {
+            "fields": [
+                {"name": "raw_value", "type": "float32"},
+                {"name": "timestamp", "type": "uint64"}
+            ]
+        },
+        "out_slot_schema": {
+            "fields": [
+                {"name": "scaled_value", "type": "float64"}
+            ]
+        },
+        "flexzone_schema": {
+            "fields": [
+                {"name": "meta", "type": "uint8", "count": 64}
+            ]
+        }
+    })");
+
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+
+    ASSERT_FALSE(cfg.in_slot_schema_json.is_null());
+    ASSERT_FALSE(cfg.out_slot_schema_json.is_null());
+    ASSERT_FALSE(cfg.flexzone_schema_json.is_null());
+
+    const auto &in_fields = cfg.in_slot_schema_json["fields"];
+    ASSERT_EQ(in_fields.size(), 2u);
+    EXPECT_EQ(in_fields[0]["name"].get<std::string>(), "raw_value");
+    EXPECT_EQ(in_fields[0]["type"].get<std::string>(), "float32");
+    EXPECT_EQ(in_fields[1]["name"].get<std::string>(), "timestamp");
+    EXPECT_EQ(in_fields[1]["type"].get<std::string>(), "uint64");
+
+    const auto &out_fields = cfg.out_slot_schema_json["fields"];
+    ASSERT_EQ(out_fields.size(), 1u);
+    EXPECT_EQ(out_fields[0]["name"].get<std::string>(), "scaled_value");
+    EXPECT_EQ(out_fields[0]["type"].get<std::string>(), "float64");
+
+    const auto &fz_fields = cfg.flexzone_schema_json["fields"];
+    ASSERT_EQ(fz_fields.size(), 1u);
+    EXPECT_EQ(fz_fields[0]["name"].get<std::string>(), "meta");
+    EXPECT_EQ(fz_fields[0]["count"].get<int>(), 64);
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, FromJsonFile_MissingInChannel)
+{
+    const auto tmp      = unique_temp_dir("noin");
+    const auto cfg_path = tmp / "processor.json";
+
+    // Missing in_channel — should throw
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-NOIN-00000001", "name": "NoIn" },
+        "out_channel": "lab.output.test"
+    })");
+
+    EXPECT_THROW(
+        pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+        std::runtime_error);
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, FromJsonFile_MissingOutChannel)
+{
+    const auto tmp      = unique_temp_dir("noout");
+    const auto cfg_path = tmp / "processor.json";
+
+    // Missing out_channel — should throw
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-NOOUT-00000001", "name": "NoOut" },
+        "in_channel": "lab.input.test"
+    })");
+
+    EXPECT_THROW(
+        pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+        std::runtime_error);
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, FromJsonFile_MalformedJson)
+{
+    const auto tmp      = unique_temp_dir("badjs");
+    const auto cfg_path = tmp / "processor.json";
+
+    write_file(cfg_path, R"({ "processor": { broken json )");
+
+    EXPECT_THROW(
+        pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+        std::runtime_error);
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, FromJsonFile_FileNotFound)
+{
+    EXPECT_THROW(
+        pylabhub::processor::ProcessorConfig::from_json_file(
+            "/no/such/path/does/not/exist/processor.json"),
+        std::runtime_error);
+}
+
+TEST_F(ProcessorConfigTest, FromDirectory_Basic)
+{
+    const auto tmp      = unique_temp_dir("dir");
+    const auto cfg_path = tmp / "processor.json";
+
+    // No hub_dir: from_directory() skips hub.json lookup.
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-DIRTEST-00000001", "name": "DirTest" },
+        "in_channel":  "lab.dir.in",
+        "out_channel": "lab.dir.out",
+        "script": { "path": "./script", "type": "python" }
+    })");
+
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_directory(tmp.string());
+
+    EXPECT_EQ(cfg.processor_uid, "PROC-DIRTEST-00000001");
+    EXPECT_EQ(cfg.in_channel,    "lab.dir.in");
+    EXPECT_EQ(cfg.out_channel,   "lab.dir.out");
+
+    // from_directory() resolves relative script_path to absolute
+    EXPECT_TRUE(fs::path(cfg.script_path).is_absolute())
+        << "script_path should be absolute after from_directory(), got: " << cfg.script_path;
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, OverflowPolicy_DefaultBlock)
+{
+    const auto tmp      = unique_temp_dir("defpol");
+    const auto cfg_path = tmp / "processor.json";
+
+    // No "overflow_policy" field — should default to "block"
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-DEFPOL-00000001", "name": "DefPol" },
+        "in_channel":  "lab.policy.in",
+        "out_channel": "lab.policy.out"
+    })");
+
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+
+    EXPECT_EQ(cfg.overflow_policy, pylabhub::processor::OverflowPolicy::Block);
+    EXPECT_EQ(cfg.slot_acquire_timeout_ms, -1);  // default
+    EXPECT_FALSE(cfg.stop_on_script_error);       // default false
+    EXPECT_TRUE(cfg.update_checksum);             // default true
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, OverflowPolicy_InvalidThrows)
+{
+    const auto tmp      = unique_temp_dir("badpol");
+    const auto cfg_path = tmp / "processor.json";
+
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-BADPOL-00000001", "name": "BadPol" },
+        "in_channel":  "lab.badpol.in",
+        "out_channel": "lab.badpol.out",
+        "overflow_policy": "invalid_policy"
+    })");
+
+    EXPECT_THROW(
+        pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+        std::runtime_error);
+
+    fs::remove_all(tmp);
+}
+
+// ── Named schema string fields (HEP-CORE-0016 Phase 5) ──────────────────────
+
+TEST_F(ProcessorConfigTest, SchemaStringField_StoredAsString)
+{
+    const auto tmp      = unique_temp_dir("strsch");
+    const auto cfg_path = tmp / "processor.json";
+
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-STRSCH-00000001", "name": "StrSch" },
+        "in_channel":  "lab.strsch.in",
+        "out_channel": "lab.strsch.out",
+        "in_slot_schema":  "lab.sensors.temperature.raw@1",
+        "out_slot_schema": "lab.sensors.scaled@2",
+        "flexzone_schema": "lab.sensors.meta@1"
+    })");
+
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+
+    ASSERT_TRUE(cfg.in_slot_schema_json.is_string());
+    EXPECT_EQ(cfg.in_slot_schema_json.get<std::string>(), "lab.sensors.temperature.raw@1");
+
+    ASSERT_TRUE(cfg.out_slot_schema_json.is_string());
+    EXPECT_EQ(cfg.out_slot_schema_json.get<std::string>(), "lab.sensors.scaled@2");
+
+    ASSERT_TRUE(cfg.flexzone_schema_json.is_string());
+    EXPECT_EQ(cfg.flexzone_schema_json.get<std::string>(), "lab.sensors.meta@1");
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, SchemaObjectField_StillWorks)
+{
+    const auto tmp      = unique_temp_dir("objsch");
+    const auto cfg_path = tmp / "processor.json";
+
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-OBJSCH-00000001", "name": "ObjSch" },
+        "in_channel":  "lab.objsch.in",
+        "out_channel": "lab.objsch.out",
+        "in_slot_schema": {
+            "fields": [{"name": "x", "type": "float32"}]
+        }
+    })");
+
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+
+    ASSERT_TRUE(cfg.in_slot_schema_json.is_object());
+    ASSERT_TRUE(cfg.in_slot_schema_json.contains("fields"));
+    EXPECT_EQ(cfg.in_slot_schema_json["fields"].size(), 1u);
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, SchemaNullField_StillWorks)
+{
+    const auto tmp      = unique_temp_dir("nullsch");
+    const auto cfg_path = tmp / "processor.json";
+
+    // No schema fields at all — all default to null
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-NULLSCH-00000001", "name": "NullSch" },
+        "in_channel":  "lab.nullsch.in",
+        "out_channel": "lab.nullsch.out"
+    })");
+
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+
+    EXPECT_TRUE(cfg.in_slot_schema_json.is_null());
+    EXPECT_TRUE(cfg.out_slot_schema_json.is_null());
+    EXPECT_TRUE(cfg.flexzone_schema_json.is_null());
+
+    fs::remove_all(tmp);
+}
+
+// ── Dual-broker config tests (HEP-CORE-0015 Phase 2) ────────────────────────
+
+TEST_F(ProcessorConfigTest, DualBroker_BothPresent)
+{
+    const auto tmp      = unique_temp_dir("dualb");
+    const auto cfg_path = tmp / "processor.json";
+
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-DUALB-00000001", "name": "DualB" },
+        "in_channel":  "lab.dual.in",
+        "out_channel": "lab.dual.out",
+        "broker": "tcp://default:5570",
+        "broker_pubkey": "DEFAULTPUBKEY000000000000000000000000000",
+        "in_broker":  "tcp://input-hub:5570",
+        "out_broker": "tcp://output-hub:5570",
+        "in_broker_pubkey":  "INPUTPUBKEY0000000000000000000000000000000",
+        "out_broker_pubkey": "OUTPUTPUBKEY000000000000000000000000000000"
+    })");
+
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+
+    // Per-direction fields parsed correctly
+    EXPECT_EQ(cfg.in_broker,         "tcp://input-hub:5570");
+    EXPECT_EQ(cfg.out_broker,        "tcp://output-hub:5570");
+    EXPECT_EQ(cfg.in_broker_pubkey,  "INPUTPUBKEY0000000000000000000000000000000");
+    EXPECT_EQ(cfg.out_broker_pubkey, "OUTPUTPUBKEY000000000000000000000000000000");
+
+    // Resolvers return per-direction values
+    EXPECT_EQ(cfg.resolved_in_broker(),         "tcp://input-hub:5570");
+    EXPECT_EQ(cfg.resolved_out_broker(),        "tcp://output-hub:5570");
+    EXPECT_EQ(cfg.resolved_in_broker_pubkey(),  "INPUTPUBKEY0000000000000000000000000000000");
+    EXPECT_EQ(cfg.resolved_out_broker_pubkey(), "OUTPUTPUBKEY000000000000000000000000000000");
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, DualBroker_FallbackToSingle)
+{
+    const auto tmp      = unique_temp_dir("dualfb");
+    const auto cfg_path = tmp / "processor.json";
+
+    // No per-direction fields — resolvers should fall back to global broker
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-DUALFB-00000001", "name": "DualFB" },
+        "in_channel":  "lab.dualfb.in",
+        "out_channel": "lab.dualfb.out",
+        "broker": "tcp://single:5570",
+        "broker_pubkey": "SINGLEPUBKEY000000000000000000000000000000"
+    })");
+
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+
+    // Per-direction fields are empty
+    EXPECT_TRUE(cfg.in_broker.empty());
+    EXPECT_TRUE(cfg.out_broker.empty());
+
+    // Resolvers fall back to global
+    EXPECT_EQ(cfg.resolved_in_broker(),         "tcp://single:5570");
+    EXPECT_EQ(cfg.resolved_out_broker(),        "tcp://single:5570");
+    EXPECT_EQ(cfg.resolved_in_broker_pubkey(),  "SINGLEPUBKEY000000000000000000000000000000");
+    EXPECT_EQ(cfg.resolved_out_broker_pubkey(), "SINGLEPUBKEY000000000000000000000000000000");
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, DualBroker_InHubDir)
+{
+    const auto tmp = unique_temp_dir("dualihd");
+
+    // Create input hub directory with hub.json + hub.pubkey
+    const auto in_hub = tmp / "input_hub";
+    fs::create_directories(in_hub);
+    write_file(in_hub / "hub.json", R"({
+        "hub": { "broker_endpoint": "tcp://input-hub-from-dir:5570" }
+    })");
+    write_file(in_hub / "hub.pubkey", "INPUTDIRPUBKEY0000000000000000000000000000");
+
+    write_file(tmp / "processor.json", R"({
+        "processor": { "uid": "PROC-DUALIHD-00000001", "name": "DualIHD" },
+        "in_channel":  "lab.dualihd.in",
+        "out_channel": "lab.dualihd.out",
+        "in_hub_dir": "input_hub"
+    })");
+
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_directory(tmp.string());
+
+    // in_hub_dir resolved → in_broker and in_broker_pubkey populated
+    EXPECT_EQ(cfg.in_broker,        "tcp://input-hub-from-dir:5570");
+    EXPECT_EQ(cfg.in_broker_pubkey, "INPUTDIRPUBKEY0000000000000000000000000000");
+
+    // Resolvers use per-direction
+    EXPECT_EQ(cfg.resolved_in_broker(), "tcp://input-hub-from-dir:5570");
+
+    // Output side falls back to global
+    EXPECT_EQ(cfg.resolved_out_broker(), cfg.broker);
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, DualBroker_OutHubDir)
+{
+    const auto tmp = unique_temp_dir("dualohd");
+
+    // Create output hub directory
+    const auto out_hub = tmp / "output_hub";
+    fs::create_directories(out_hub);
+    write_file(out_hub / "hub.json", R"({
+        "hub": { "broker_endpoint": "tcp://output-hub-from-dir:5570" }
+    })");
+    write_file(out_hub / "hub.pubkey", "OUTPUTDIRPUBKEY000000000000000000000000000");
+
+    write_file(tmp / "processor.json", R"({
+        "processor": { "uid": "PROC-DUALOHD-00000001", "name": "DualOHD" },
+        "in_channel":  "lab.dualohd.in",
+        "out_channel": "lab.dualohd.out",
+        "out_hub_dir": "output_hub"
+    })");
+
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_directory(tmp.string());
+
+    EXPECT_EQ(cfg.out_broker,        "tcp://output-hub-from-dir:5570");
+    EXPECT_EQ(cfg.out_broker_pubkey, "OUTPUTDIRPUBKEY000000000000000000000000000");
+    EXPECT_EQ(cfg.resolved_out_broker(), "tcp://output-hub-from-dir:5570");
+
+    // Input side falls back to global
+    EXPECT_EQ(cfg.resolved_in_broker(), cfg.broker);
+
+    fs::remove_all(tmp);
+}
+
+// ── Transport config tests ─────────────────────────────────────────────────────
+// Input transport is auto-discovered via HEP-CORE-0021 (Consumer::queue()).
+// Only out_transport is configurable in processor.json.
+
+TEST_F(ProcessorConfigTest, Transport_DefaultsToShm)
+{
+    const auto tmp      = unique_temp_dir("tdefsh");
+    const auto cfg_path = tmp / "processor.json";
+
+    // No transport fields — output defaults to Shm
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-TDEFSH-00000001", "name": "TDefSh" },
+        "in_channel":  "lab.tdefsh.in",
+        "out_channel": "lab.tdefsh.out"
+    })");
+
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+
+    EXPECT_EQ(cfg.out_transport, pylabhub::processor::Transport::Shm);
+    EXPECT_TRUE(cfg.zmq_out_endpoint.empty());
+    EXPECT_TRUE(cfg.zmq_out_bind);  // default bind=true
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, Transport_ParsesZmq)
+{
+    const auto tmp      = unique_temp_dir("tzmq");
+    const auto cfg_path = tmp / "processor.json";
+
+    // HEP-CORE-0021: out_transport=zmq with endpoint; in_transport is auto-discovered
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-TZMQ-00000001", "name": "TZmq" },
+        "in_channel":  "lab.tzmq.in",
+        "out_channel": "lab.tzmq.out",
+        "out_transport": "zmq",
+        "zmq_out_endpoint": "tcp://127.0.0.1:5581"
+    })");
+
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+
+    EXPECT_EQ(cfg.out_transport,    pylabhub::processor::Transport::Zmq);
+    EXPECT_EQ(cfg.zmq_out_endpoint, "tcp://127.0.0.1:5581");
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, Transport_OutZmqInShm)
+{
+    const auto tmp      = unique_temp_dir("tmix");
+    const auto cfg_path = tmp / "processor.json";
+
+    // Typical bridge pattern: SHM in (auto-discovered) → ZMQ out
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-TMIX-00000001", "name": "TMix" },
+        "in_channel":  "lab.tmix.in",
+        "out_channel": "lab.tmix.out",
+        "out_transport": "zmq",
+        "zmq_out_endpoint": "tcp://127.0.0.1:5580"
+    })");
+
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+
+    EXPECT_EQ(cfg.out_transport, pylabhub::processor::Transport::Zmq);
+    EXPECT_EQ(cfg.zmq_out_endpoint, "tcp://127.0.0.1:5580");
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, Transport_ZmqMissingEndpoint_Throws)
+{
+    const auto tmp      = unique_temp_dir("tnoep");
+    const auto cfg_path = tmp / "processor.json";
+
+    // out_transport=zmq but no zmq_out_endpoint — must throw
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-TNOEP-00000001", "name": "TNoEp" },
+        "in_channel":  "lab.tnoep.in",
+        "out_channel": "lab.tnoep.out",
+        "out_transport": "zmq"
+    })");
+
+    EXPECT_THROW(
+        pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+        std::runtime_error);
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, Transport_InvalidValue_Throws)
+{
+    const auto tmp      = unique_temp_dir("tbadtr");
+    const auto cfg_path = tmp / "processor.json";
+
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-TBADTR-00000001", "name": "TBadTr" },
+        "in_channel":  "lab.tbadtr.in",
+        "out_channel": "lab.tbadtr.out",
+        "out_transport": "tcp"
+    })");
+
+    EXPECT_THROW(
+        pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+        std::runtime_error);
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, Transport_BindFlag)
+{
+    const auto tmp      = unique_temp_dir("tbind");
+    const auto cfg_path = tmp / "processor.json";
+
+    // zmq_out_bind=false — PUSH connects instead of binding
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-TBIND-00000001", "name": "TBind" },
+        "in_channel":  "lab.tbind.in",
+        "out_channel": "lab.tbind.out",
+        "out_transport": "zmq",
+        "zmq_out_endpoint": "tcp://127.0.0.1:5581",
+        "zmq_out_bind": false
+    })");
+
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+
+    EXPECT_FALSE(cfg.zmq_out_bind);
+
+    fs::remove_all(tmp);
+}
+
+// ── Dual-broker config tests (continued) ─────────────────────────────────────
+
+TEST_F(ProcessorConfigTest, DualBroker_MixedConfig)
+{
+    const auto tmp = unique_temp_dir("dualmix");
+
+    // Input: explicit in_broker field
+    // Output: out_hub_dir → resolved from directory
+    const auto out_hub = tmp / "out_hub";
+    fs::create_directories(out_hub);
+    write_file(out_hub / "hub.json", R"({
+        "hub": { "broker_endpoint": "tcp://outhub:5570" }
+    })");
+
+    write_file(tmp / "processor.json", R"({
+        "processor": { "uid": "PROC-DUALMX-00000001", "name": "DualMx" },
+        "in_channel":  "lab.dualmx.in",
+        "out_channel": "lab.dualmx.out",
+        "broker": "tcp://global:5570",
+        "in_broker": "tcp://explicit-input:5570",
+        "out_hub_dir": "out_hub"
+    })");
+
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_directory(tmp.string());
+
+    // Input: explicit in_broker takes precedence
+    EXPECT_EQ(cfg.resolved_in_broker(), "tcp://explicit-input:5570");
+
+    // Output: from out_hub_dir
+    EXPECT_EQ(cfg.resolved_out_broker(), "tcp://outhub:5570");
+
+    // Global broker is still "tcp://global:5570"
+    EXPECT_EQ(cfg.broker, "tcp://global:5570");
+
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, Validation_BadTimeoutThrows)
+{
+    const auto tmp = unique_temp_dir("valtmo");
+    write_file(tmp / "processor.json", R"({
+        "processor": { "uid": "PROC-VALTMO-00000001", "name": "ValTmo" },
+        "in_channel":  "lab.val.in",
+        "out_channel": "lab.val.out",
+        "slot_acquire_timeout_ms":  -5
+    })");
+    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_directory(tmp.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, Validation_ZeroOutSlotCountThrows)
+{
+    const auto tmp = unique_temp_dir("valslot");
+    write_file(tmp / "processor.json", R"({
+        "processor": { "uid": "PROC-VALSLOT-00000001", "name": "ValSlot" },
+        "in_channel":  "lab.val.in",
+        "out_channel": "lab.val.out",
+        "shm": { "out": { "enabled": true, "slot_count": 0 } }
+    })");
+    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_directory(tmp.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+// ── LoopTimingPolicy tests ────────────────────────────────────────────────────
+
+TEST_F(ProcessorConfigTest, LoopTiming_DefaultMaxRate)
+{
+    const auto tmp      = unique_temp_dir("lt_def");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-LT-00000001", "name": "LtDef" },
+        "in_channel":  "lab.lt.in",
+        "out_channel": "lab.lt.out"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    // Default target_period_ms=0 → MaxRate
+    EXPECT_EQ(cfg.target_period_ms, 0);
+    EXPECT_EQ(cfg.loop_timing, pylabhub::LoopTimingPolicy::MaxRate);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, LoopTiming_FixedRate_Explicit)
+{
+    const auto tmp      = unique_temp_dir("lt_fr");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":         { "uid": "PROC-LT-00000002", "name": "LtFr" },
+        "in_channel":        "lab.lt.in",
+        "out_channel":       "lab.lt.out",
+        "target_period_ms":  50,
+        "loop_timing":       "fixed_rate"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.target_period_ms, 50);
+    EXPECT_EQ(cfg.loop_timing, pylabhub::LoopTimingPolicy::FixedRate);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, LoopTiming_FixedRateWithCompensation)
+{
+    const auto tmp      = unique_temp_dir("lt_frc");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":         { "uid": "PROC-LT-00000003", "name": "LtFrc" },
+        "in_channel":        "lab.lt.in",
+        "out_channel":       "lab.lt.out",
+        "target_period_ms":  100,
+        "loop_timing":       "fixed_rate_with_compensation"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.target_period_ms, 100);
+    EXPECT_EQ(cfg.loop_timing, pylabhub::LoopTimingPolicy::FixedRateWithCompensation);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, LoopTiming_MaxRate_WithPeriod_Throws)
+{
+    const auto tmp      = unique_temp_dir("lt_max_inv");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":         { "uid": "PROC-LT-00000004", "name": "LtMaxInv" },
+        "in_channel":        "lab.lt.in",
+        "out_channel":       "lab.lt.out",
+        "target_period_ms":  100,
+        "loop_timing":       "max_rate"
+    })");
+    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, LoopTiming_FixedRate_ZeroPeriod_Throws)
+{
+    const auto tmp      = unique_temp_dir("lt_fr_inv");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":         { "uid": "PROC-LT-00000005", "name": "LtFrInv" },
+        "in_channel":        "lab.lt.in",
+        "out_channel":       "lab.lt.out",
+        "target_period_ms":  0,
+        "loop_timing":       "fixed_rate"
+    })");
+    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, LoopTiming_InvalidValue_Throws)
+{
+    const auto tmp      = unique_temp_dir("lt_inv");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":   { "uid": "PROC-LT-00000006", "name": "LtInv" },
+        "in_channel":  "lab.lt.in",
+        "out_channel": "lab.lt.out",
+        "loop_timing": "periodic"
+    })");
+    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+// ── InTransport tests ─────────────────────────────────────────────────────────
+
+TEST_F(ProcessorConfigTest, InTransport_DefaultsToShm)
+{
+    const auto tmp      = unique_temp_dir("itr_def");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-ITR-00000001", "name": "ItrDef" },
+        "in_channel":  "lab.itr.in",
+        "out_channel": "lab.itr.out"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.in_transport, pylabhub::processor::Transport::Shm);
+    EXPECT_TRUE(cfg.zmq_in_endpoint.empty());
+    EXPECT_FALSE(cfg.zmq_in_bind);  // default connect
+    EXPECT_EQ(cfg.in_zmq_buffer_depth, size_t{64});
+    EXPECT_EQ(cfg.in_zmq_packing, "aligned");
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, InTransport_ParsesZmq)
+{
+    const auto tmp      = unique_temp_dir("itr_zmq");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":       { "uid": "PROC-ITR-00000002", "name": "ItrZmq" },
+        "in_channel":      "lab.itr.in",
+        "out_channel":     "lab.itr.out",
+        "in_transport":    "zmq",
+        "zmq_in_endpoint": "tcp://127.0.0.1:5580"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.in_transport,    pylabhub::processor::Transport::Zmq);
+    EXPECT_EQ(cfg.zmq_in_endpoint, "tcp://127.0.0.1:5580");
+    EXPECT_FALSE(cfg.zmq_in_bind);  // PULL default=connect
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, InTransport_ZmqMissingEndpoint_Throws)
+{
+    const auto tmp      = unique_temp_dir("itr_noep");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":    { "uid": "PROC-ITR-00000003", "name": "ItrNoEp" },
+        "in_channel":   "lab.itr.in",
+        "out_channel":  "lab.itr.out",
+        "in_transport": "zmq"
+    })");
+    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, InTransport_InvalidValue_Throws)
+{
+    const auto tmp      = unique_temp_dir("itr_bad");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":    { "uid": "PROC-ITR-00000004", "name": "ItrBad" },
+        "in_channel":   "lab.itr.in",
+        "out_channel":  "lab.itr.out",
+        "in_transport": "tcp"
+    })");
+    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, InTransport_ZmqBindMode)
+{
+    const auto tmp      = unique_temp_dir("itr_bind");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":       { "uid": "PROC-ITR-00000005", "name": "ItrBind" },
+        "in_channel":      "lab.itr.in",
+        "out_channel":     "lab.itr.out",
+        "in_transport":    "zmq",
+        "zmq_in_endpoint": "tcp://0.0.0.0:5580",
+        "zmq_in_bind":     true
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_TRUE(cfg.zmq_in_bind);
+    fs::remove_all(tmp);
+}
+
+// ── ZMQ buffer depth and packing tests ────────────────────────────────────────
+
+TEST_F(ProcessorConfigTest, ZmqBufferDepth_Defaults)
+{
+    const auto tmp      = unique_temp_dir("zmqbd_def");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-ZMQBD-00000001", "name": "ZmqBdDef" },
+        "in_channel":  "lab.zmqbd.in",
+        "out_channel": "lab.zmqbd.out"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.in_zmq_buffer_depth,  size_t{64});
+    EXPECT_EQ(cfg.out_zmq_buffer_depth, size_t{64});
+    EXPECT_EQ(cfg.in_zmq_packing,  "aligned");
+    EXPECT_EQ(cfg.out_zmq_packing, "aligned");
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, ZmqBufferDepth_CustomValues)
+{
+    const auto tmp      = unique_temp_dir("zmqbd_cus");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":          { "uid": "PROC-ZMQBD-00000002", "name": "ZmqBdCus" },
+        "in_channel":         "lab.zmqbd.in",
+        "out_channel":        "lab.zmqbd.out",
+        "in_zmq_buffer_depth":  32,
+        "out_zmq_buffer_depth": 128,
+        "in_zmq_packing":       "packed",
+        "out_zmq_packing":      "packed"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.in_zmq_buffer_depth,  size_t{32});
+    EXPECT_EQ(cfg.out_zmq_buffer_depth, size_t{128});
+    EXPECT_EQ(cfg.in_zmq_packing,  "packed");
+    EXPECT_EQ(cfg.out_zmq_packing, "packed");
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, ZmqBufferDepth_ZeroInThrows)
+{
+    const auto tmp      = unique_temp_dir("zmqbd_0in");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":           { "uid": "PROC-ZMQBD-00000003", "name": "ZmqBd0In" },
+        "in_channel":          "lab.zmqbd.in",
+        "out_channel":         "lab.zmqbd.out",
+        "in_zmq_buffer_depth": 0
+    })");
+    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, ZmqBufferDepth_ZeroOutThrows)
+{
+    const auto tmp      = unique_temp_dir("zmqbd_0out");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":            { "uid": "PROC-ZMQBD-00000004", "name": "ZmqBd0Out" },
+        "in_channel":           "lab.zmqbd.in",
+        "out_channel":          "lab.zmqbd.out",
+        "out_zmq_buffer_depth": 0
+    })");
+    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, ZmqPacking_InvalidInThrows)
+{
+    const auto tmp      = unique_temp_dir("zmqpk_in");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":      { "uid": "PROC-ZMQPK-00000001", "name": "ZmqPkIn" },
+        "in_channel":     "lab.zmqpk.in",
+        "out_channel":    "lab.zmqpk.out",
+        "in_zmq_packing": "natural"
+    })");
+    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, ZmqPacking_InvalidOutThrows)
+{
+    const auto tmp      = unique_temp_dir("zmqpk_out");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":       { "uid": "PROC-ZMQPK-00000002", "name": "ZmqPkOut" },
+        "in_channel":      "lab.zmqpk.in",
+        "out_channel":     "lab.zmqpk.out",
+        "out_zmq_packing": "natural"
+    })");
+    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+// ── zmq_out_overflow_policy tests ────────────────────────────────────────────
+
+TEST_F(ProcessorConfigTest, ZmqOutOverflowPolicy_DefaultsEmpty)
+{
+    const auto tmp      = unique_temp_dir("zmqoutov_def");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":   { "uid": "PROC-ZMQOVDEF-00000001", "name": "ZmqOvDef" },
+        "in_channel":  "lab.zmqov.in",
+        "out_channel": "lab.zmqov.out"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_TRUE(cfg.zmq_out_overflow_policy.empty()); // absent = inherit from overflow_policy
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, ZmqOutOverflowPolicy_ParsesDrop)
+{
+    const auto tmp      = unique_temp_dir("zmqoutov_drop");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":              { "uid": "PROC-ZMQOVDRP-00000001", "name": "ZmqOvDrop" },
+        "in_channel":             "lab.zmqov.in",
+        "out_channel":            "lab.zmqov.out",
+        "zmq_out_overflow_policy": "drop"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.zmq_out_overflow_policy, "drop");
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, ZmqOutOverflowPolicy_ParsesBlock)
+{
+    const auto tmp      = unique_temp_dir("zmqoutov_block");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":              { "uid": "PROC-ZMQOVBLK-00000001", "name": "ZmqOvBlk" },
+        "in_channel":             "lab.zmqov.in",
+        "out_channel":            "lab.zmqov.out",
+        "zmq_out_overflow_policy": "block"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.zmq_out_overflow_policy, "block");
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, ZmqOutOverflowPolicy_InvalidValue_Throws)
+{
+    const auto tmp      = unique_temp_dir("zmqoutov_bad");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":              { "uid": "PROC-ZMQOVBAD-00000001", "name": "ZmqOvBad" },
+        "in_channel":             "lab.zmqov.in",
+        "out_channel":            "lab.zmqov.out",
+        "zmq_out_overflow_policy": "maybe"
+    })");
+    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+// ── Inbox facility tests ──────────────────────────────────────────────────────
+
+TEST_F(ProcessorConfigTest, Inbox_DefaultsToDisabled)
+{
+    const auto tmp      = unique_temp_dir("ibx_def");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-IBX-00000001", "name": "IbxDef" },
+        "in_channel":  "lab.ibx.in",
+        "out_channel": "lab.ibx.out"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_FALSE(cfg.has_inbox());
+    EXPECT_TRUE(cfg.inbox_schema_json.is_null());
+    EXPECT_TRUE(cfg.inbox_endpoint.empty());
+    EXPECT_EQ(cfg.inbox_buffer_depth, size_t{64});
+    EXPECT_EQ(cfg.inbox_overflow_policy, "drop");
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, Inbox_ParsesSchemaAndEndpoint)
+{
+    const auto tmp      = unique_temp_dir("ibx_ep");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":    { "uid": "PROC-IBX-00000002", "name": "IbxEp" },
+        "in_channel":   "lab.ibx.in",
+        "out_channel":  "lab.ibx.out",
+        "inbox_schema": { "fields": [{"name": "cmd", "type": "uint8"}] },
+        "inbox_endpoint": "tcp://127.0.0.1:9920",
+        "inbox_buffer_depth": 32,
+        "inbox_overflow_policy": "block"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_TRUE(cfg.has_inbox());
+    EXPECT_TRUE(cfg.inbox_schema_json.is_object());
+    EXPECT_EQ(cfg.inbox_endpoint, "tcp://127.0.0.1:9920");
+    EXPECT_EQ(cfg.inbox_buffer_depth, size_t{32});
+    EXPECT_EQ(cfg.inbox_overflow_policy, "block");
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, Inbox_SchemaAsString_Accepted)
+{
+    const auto tmp      = unique_temp_dir("ibx_str");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":      { "uid": "PROC-IBX-00000003", "name": "IbxStr" },
+        "in_channel":     "lab.ibx.in",
+        "out_channel":    "lab.ibx.out",
+        "inbox_schema":   "lab/demo/command.v1",
+        "inbox_endpoint": "tcp://127.0.0.1:9921"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_TRUE(cfg.has_inbox());
+    EXPECT_TRUE(cfg.inbox_schema_json.is_string());
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, Inbox_ZeroBufferDepth_Throws)
+{
+    const auto tmp      = unique_temp_dir("ibx_0bd");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":          { "uid": "PROC-IBX-00000004", "name": "IbxBd" },
+        "in_channel":         "lab.ibx.in",
+        "out_channel":        "lab.ibx.out",
+        "inbox_buffer_depth": 0
+    })");
+    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, Inbox_InvalidOverflowPolicy_Throws)
+{
+    const auto tmp      = unique_temp_dir("ibx_bpol");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":             { "uid": "PROC-IBX-00000005", "name": "IbxBPol" },
+        "in_channel":            "lab.ibx.in",
+        "out_channel":           "lab.ibx.out",
+        "inbox_overflow_policy": "reject"
+    })");
+    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+// ── Verification and validation tests ────────────────────────────────────────
+
+TEST_F(ProcessorConfigTest, VerifyChecksum_DefaultFalse)
+{
+    const auto tmp      = unique_temp_dir("vcks_def");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-VCKS-00000001", "name": "VcksDef" },
+        "in_channel":  "lab.vcks.in",
+        "out_channel": "lab.vcks.out"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_FALSE(cfg.verify_checksum);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, VerifyChecksum_ParsesTrue)
+{
+    const auto tmp      = unique_temp_dir("vcks_on");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":  { "uid": "PROC-VCKS-00000002", "name": "VcksOn" },
+        "in_channel":  "lab.vcks.in",
+        "out_channel": "lab.vcks.out",
+        "validation": { "verify_checksum": true }
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_TRUE(cfg.verify_checksum);
+    fs::remove_all(tmp);
+}
+
+// ── startup.wait_for_roles ─────────────────────────────────────────────────────
+
+TEST_F(ProcessorConfigTest, Startup_DefaultsToEmpty)
+{
+    const auto tmp      = unique_temp_dir("su_def");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":  { "uid": "PROC-SUDEF-00000001", "name": "SuDef" },
+        "in_channel":  "lab.su.in",
+        "out_channel": "lab.su.out"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_TRUE(cfg.wait_for_roles.empty());
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, Startup_ParsesSingleRole)
+{
+    const auto tmp      = unique_temp_dir("su_one");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":  { "uid": "PROC-SUONE-00000001", "name": "SuOne" },
+        "in_channel":  "lab.su.in",
+        "out_channel": "lab.su.out",
+        "startup": {
+            "wait_for_roles": [
+                { "uid": "PROD-SENSOR-AABBCCDD", "timeout_ms": 7000 }
+            ]
+        }
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    ASSERT_EQ(cfg.wait_for_roles.size(), size_t{1});
+    EXPECT_EQ(cfg.wait_for_roles[0].uid,        "PROD-SENSOR-AABBCCDD");
+    EXPECT_EQ(cfg.wait_for_roles[0].timeout_ms, 7000);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, Startup_DefaultTimeout)
+{
+    const auto tmp      = unique_temp_dir("su_deftmo");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":  { "uid": "PROC-SUDEFTMO-00000001", "name": "SuDefTmo" },
+        "in_channel":  "lab.su.in",
+        "out_channel": "lab.su.out",
+        "startup": {
+            "wait_for_roles": [ { "uid": "PROD-SENSOR-AABBCCDD" } ]
+        }
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    ASSERT_EQ(cfg.wait_for_roles.size(), size_t{1});
+    EXPECT_EQ(cfg.wait_for_roles[0].timeout_ms, pylabhub::kDefaultStartupWaitTimeoutMs);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, Startup_EmptyUid_Throws)
+{
+    const auto tmp      = unique_temp_dir("su_emptyuid");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":  { "uid": "PROC-SUEUID-00000001", "name": "SuEuid" },
+        "in_channel":  "lab.su.in",
+        "out_channel": "lab.su.out",
+        "startup": {
+            "wait_for_roles": [ { "uid": "", "timeout_ms": 5000 } ]
+        }
+    })");
+    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+
+TEST_F(ProcessorConfigTest, Startup_MaxTimeout_Throws)
+{
+    const auto tmp      = unique_temp_dir("su_maxtmo");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor": { "uid": "PROC-SUMXTMO-00000001", "name": "SuMxtmo" },
+        "channel":  "lab.su.mxtmo",
+        "startup": {
+            "wait_for_roles": [ { "uid": "CONS-LOGGER-AABBCCDD", "timeout_ms": 3600001 } ]
+        }
+    })");
+    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+TEST_F(ProcessorConfigTest, Startup_ZeroTimeout_Throws)
+{
+    const auto tmp      = unique_temp_dir("su_zerotmo");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":  { "uid": "PROC-SUZTMO-00000001", "name": "SuZtmo" },
+        "in_channel":  "lab.su.in",
+        "out_channel": "lab.su.out",
+        "startup": {
+            "wait_for_roles": [ { "uid": "PROD-SENSOR-AABBCCDD", "timeout_ms": 0 } ]
+        }
+    })");
+    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+// ── reader_sync_policy tests ─────────────────────────────────────────────────
+
+TEST_F(ProcessorConfigTest, ReaderSyncPolicy_DefaultSequential)
+{
+    const auto tmp      = unique_temp_dir("rsp_def");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":  { "uid": "PROC-RSPDEF-00000001", "name": "RspDef" },
+        "in_channel":  "lab.rsp.in",
+        "out_channel": "lab.rsp.out",
+        "shm": {
+            "in":  { "enabled": true, "secret": 11111 },
+            "out": { "enabled": true, "secret": 22222, "slot_count": 8 }
+        }
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.out_shm_consumer_sync_policy, pylabhub::hub::ConsumerSyncPolicy::Sequential);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, ReaderSyncPolicy_ExplicitSequential)
+{
+    const auto tmp      = unique_temp_dir("rsp_seq");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":  { "uid": "PROC-RSPSEQ-00000001", "name": "RspSeq" },
+        "in_channel":  "lab.rsp.in",
+        "out_channel": "lab.rsp.out",
+        "shm": {
+            "in":  { "enabled": true, "secret": 11111 },
+            "out": { "enabled": true, "secret": 22222, "slot_count": 8, "reader_sync_policy": "sequential" }
+        }
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.out_shm_consumer_sync_policy, pylabhub::hub::ConsumerSyncPolicy::Sequential);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, ReaderSyncPolicy_LatestOnly)
+{
+    const auto tmp      = unique_temp_dir("rsp_lo");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":  { "uid": "PROC-RSPLO-00000001", "name": "RspLo" },
+        "in_channel":  "lab.rsp.in",
+        "out_channel": "lab.rsp.out",
+        "shm": {
+            "in":  { "enabled": true, "secret": 11111 },
+            "out": { "enabled": true, "secret": 22222, "slot_count": 8, "reader_sync_policy": "latest_only" }
+        }
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.out_shm_consumer_sync_policy, pylabhub::hub::ConsumerSyncPolicy::Latest_only);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, ReaderSyncPolicy_InvalidValue_Throws)
+{
+    const auto tmp      = unique_temp_dir("rsp_inv");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":  { "uid": "PROC-RSPINV-00000001", "name": "RspInv" },
+        "in_channel":  "lab.rsp.in",
+        "out_channel": "lab.rsp.out",
+        "shm": {
+            "in":  { "enabled": true, "secret": 11111 },
+            "out": { "enabled": true, "secret": 22222, "slot_count": 8, "reader_sync_policy": "fifo" }
+        }
+    })");
+    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string()),
+                 std::runtime_error);
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, ReaderSyncPolicy_NoShmBlock_DefaultSequential)
+{
+    const auto tmp      = unique_temp_dir("rsp_noshm");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":  { "uid": "PROC-RSPNOSHM-00000001", "name": "RspNoShm" },
+        "in_channel":  "lab.rsp.in",
+        "out_channel": "lab.rsp.out"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.out_shm_consumer_sync_policy, pylabhub::hub::ConsumerSyncPolicy::Sequential);
+    fs::remove_all(tmp);
+}
+
+// ── Python venv field tests ──────────────────────────────────────────────────
+
+TEST_F(ProcessorConfigTest, PythonVenv_DefaultEmpty)
+{
+    const auto tmp      = unique_temp_dir("venv_def");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":  { "uid": "PROC-VENVDEF-00000001", "name": "VenvDef" },
+        "in_channel":  "lab.venv.in",
+        "out_channel": "lab.venv.out"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_TRUE(cfg.python_venv.empty());
+    fs::remove_all(tmp);
+}
+
+TEST_F(ProcessorConfigTest, PythonVenv_ParsesName)
+{
+    const auto tmp      = unique_temp_dir("venv_name");
+    const auto cfg_path = tmp / "processor.json";
+    write_file(cfg_path, R"({
+        "processor":  { "uid": "PROC-VENVNAME-00000001", "name": "VenvName" },
+        "in_channel":  "lab.venv.in",
+        "out_channel": "lab.venv.out",
+        "python_venv": "transform-env"
+    })");
+    const auto cfg = pylabhub::processor::ProcessorConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.python_venv, "transform-env");
+    fs::remove_all(tmp);
+}

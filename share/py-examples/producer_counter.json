@@ -1,0 +1,44 @@
+{
+  "_comment": "Example producer — publishes a typed counter + timestamp slot at full speed.",
+  "hub_dir": "",
+  "producer": {
+    "uid":       "PROD-COUNTER-00000001",
+    "name":      "CounterProducer",
+    "log_level": "info",
+    "auth": { "keyfile": "" }
+  },
+  "channel":     "lab.examples.counter",
+  "broker":      "tcp://127.0.0.1:5570",
+  "target_period_ms": 0,
+  "_comment_target_period": "0 = free-run (write as fast as SHM allows); >0 = target start-to-start period in ms",
+
+  "shm": {
+    "enabled":    true,
+    "slot_count": 4,
+    "secret":     1234567890
+  },
+
+  "slot_schema": {
+    "_comment": "Slot layout — C++ builds ctypes.LittleEndianStructure at start().",
+    "packing": "aligned",
+    "fields": [
+      {"name": "count", "type": "int64"},
+      {"name": "ts",    "type": "float64"}
+    ]
+  },
+  "flexzone_schema": {
+    "_comment": "Persistent producer metadata — readable by any connected consumer.",
+    "fields": [
+      {"name": "producer_pid",  "type": "uint64"},
+      {"name": "start_time",    "type": "float64"},
+      {"name": "label",         "type": "string", "length": 32}
+    ]
+  },
+
+  "script": { "type": "python", "path": "." },
+
+  "validation": {
+    "update_checksum":      true,
+    "stop_on_script_error": false
+  }
+}
