@@ -197,10 +197,10 @@ endif()
 
 
 # Link against necessary third-party libraries and system libraries.
-# libsodium and luajit are PRIVATE: their static archives are embedded directly
-# in pylabhub-utils.so and are not propagated to downstream executables.
-# Only internal .cpp files (crypto_utils, vault_crypto, lua_script_host, etc.)
-# use these libraries — no public headers expose their types.
+#
+# libsodium and luajit are PRIVATE: only internal .cpp files use them and
+# no public headers expose their types. PRIVATE prevents the .a archives
+# from propagating to downstream executables.
 target_link_libraries(pylabhub-utils
   PUBLIC
     pylabhub::third_party::fmt
