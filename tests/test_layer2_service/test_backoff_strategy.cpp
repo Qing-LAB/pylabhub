@@ -131,16 +131,22 @@ TEST(BackoffStrategyTest, ThreePhase_IsMonotonicallyIncreasing)
         return min;
     };
 
-    // Compare iterations spaced far enough that the expected difference is large.
-    // Phase 3 formula: sleep(iter * 10us)
-    //   iter=10 -> 100us, iter=20 -> 200us, iter=50 -> 500us
-    const int RUNS = 5;
-    uint64_t t10 = min_time_us(10, RUNS);
-    uint64_t t20 = min_time_us(20, RUNS);
-    uint64_t t50 = min_time_us(50, RUNS);
+    // Compare iterations spaced far enough that the expected difference dominates
+    // kernel timer overhead (~500us on Windows). Phase 3 formula: sleep(iter * 10us).
+    // We need the requested sleep durations to differ by more than the syscall
+    // overhead, so use iterations 50 (500us), 200 (2000us), 500 (5000us).
+    //
+    // Warmup: the first call to precise_sleep initializes a thread-local timer
+    // handle on Windows. Run one throwaway iteration to pay that cost.
+    { ThreePhaseBackoff warmup; warmup(20); }
 
-    EXPECT_LT(t10, t20) << "Iteration 20 (200us) should sleep longer than iteration 10 (100us)";
-    EXPECT_LT(t20, t50) << "Iteration 50 (500us) should sleep longer than iteration 20 (200us)";
+    const int RUNS = 10;
+    uint64_t t50  = min_time_us(50, RUNS);   // ~500us requested
+    uint64_t t200 = min_time_us(200, RUNS);  // ~2000us requested
+    uint64_t t500 = min_time_us(500, RUNS);  // ~5000us requested
+
+    EXPECT_LT(t50, t200) << "Iteration 200 (2000us) should sleep longer than iteration 50 (500us)";
+    EXPECT_LT(t200, t500) << "Iteration 500 (5000us) should sleep longer than iteration 200 (2000us)";
 }
 
 /**

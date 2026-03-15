@@ -18,6 +18,14 @@ if(BUILD_TESTS)
   include(GoogleTest)
   include(StageHelpers)
 
+  # Use PRE_TEST discovery mode on multi-config generators (Visual Studio).
+  # The default POST_BUILD mode runs the test executable at build time to
+  # enumerate tests, which fails with VS because the WORKING_DIRECTORY
+  # doesn't contain a CMakeLists.txt.  PRE_TEST defers discovery to ctest.
+  if(CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE "PRE_TEST" CACHE STRING "" FORCE)
+  endif()
+
   # Define staging paths for subdirectories to use
 
 
