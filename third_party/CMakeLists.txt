@@ -192,23 +192,11 @@ if(THIRD_PARTY_INSTALL)
 endif()
 
 # ===========================================================================
-# FINAL PHASE: Export all public-facing third-party targets for packaging
+# NOTE: No install(TARGETS ... EXPORT ...) here.
 #
-# This must be the very last thing in this file, ensuring all targets are
-# fully defined before they are added to the export set.
+# All third-party artifacts are already staged via the prereqs bulk-copy and
+# per-library staging registrations above. The top-level install rule copies
+# the entire staging directory to the install prefix, which is the single
+# source of truth for the installed layout.
 # ===========================================================================
-install(TARGETS
-  pylabhub_libsodium
-  pylabhub_luajit
-  pylabhub_libzmq # This is the INTERFACE target for libzmq
-  libzmq-static # Concrete target linked by pylabhub_libzmq, must be exported too.
-  pylabhub_fmt # This is the INTERFACE target for fmt
-  fmt # Concrete target linked by pylabhub_fmt, must be exported too.
-  pylabhub_nlohmann_json # Canonical INTERFACE target for nlohmann_json
-  pylabhub_msgpack # Canonical INTERFACE target for msgpack
-  pylabhub_cppzmq # Canonical INTERFACE target for cppzmq
-  pylabhub_pybind11_module # Canonical INTERFACE target for Python extension modules
-  # Add other targets as they are consistently defined
-  EXPORT pylabhubTargets
-)
 
