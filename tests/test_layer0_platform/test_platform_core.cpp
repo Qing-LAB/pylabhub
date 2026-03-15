@@ -332,6 +332,13 @@ TEST(PlatformCoreTest, VersionAPI_StringFormat)
     EXPECT_GT(strlen(ver), 0u) << "Version string should not be empty";
 
     // Format: major.minor.rolling (e.g., "0.1.42")
-    EXPECT_THAT(ver, MatchesRegex(R"(^[0-9]+\.[0-9]+\.[0-9]+$)"))
-        << "Version string should match major.minor.rolling format";
+    // Validate with sscanf — MatchesRegex("[0-9]") is unsupported by GTest on MSVC.
+    int ma = -1, mi = -1, ro = -1;
+    char trail = '\0';
+    int fields = std::sscanf(ver, "%d.%d.%d%c", &ma, &mi, &ro, &trail);
+    EXPECT_EQ(fields, 3) << "Version string should parse as three dot-separated integers, got: "
+                         << ver;
+    EXPECT_GE(ma, 0);
+    EXPECT_GE(mi, 0);
+    EXPECT_GE(ro, 0);
 }

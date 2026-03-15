@@ -22,7 +22,7 @@ EventLogSink::~EventLogSink()
         DeregisterEventSource(handle_);
 }
 
-void EventLogSink::write(const LogMessage &msg, Sink::WRITE_MODE /*mode*/)
+void EventLogSink::write(const LogMessage &msg, bool /*sync_flag*/)
 {
     if (!handle_)
         return;

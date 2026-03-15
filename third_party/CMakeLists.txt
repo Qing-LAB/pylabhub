@@ -84,6 +84,9 @@ target_include_directories(pylabhub_libsodium INTERFACE
   $<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
+# libsodium is always linked statically; on Windows, consumers must define
+# SODIUM_STATIC so that export.h omits __declspec(dllimport) decorations.
+target_compile_definitions(pylabhub_libsodium INTERFACE SODIUM_STATIC)
 add_dependencies(pylabhub_libsodium libsodium_external)
 add_library(pylabhub::third_party::libsodium ALIAS pylabhub_libsodium)
 

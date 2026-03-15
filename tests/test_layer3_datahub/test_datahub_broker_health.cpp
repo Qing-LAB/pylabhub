@@ -13,10 +13,10 @@
 #include "test_process_utils.h"
 #include <gtest/gtest.h>
 
+#include "plh_platform.hpp"
 #include <cstdlib>
 #include <filesystem>
 #include <string>
-#include <unistd.h>
 
 using namespace pylabhub::tests;
 namespace fs = std::filesystem;
@@ -58,7 +58,7 @@ TEST_F(DatahubBrokerHealthTest, DeadConsumerDetected)
 
     // Create a temp file path for inter-process coordination.
     fs::path tmp = fs::temp_directory_path() /
-                   ("plh_dead_consumer_" + std::to_string(getpid()) + ".txt");
+                   ("plh_dead_consumer_" + std::to_string(pylabhub::platform::get_pid()) + ".txt");
     const std::string tmp_str = tmp.string();
 
     auto orchestrator = SpawnWorkerWithReadySignal(
