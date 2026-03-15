@@ -54,10 +54,15 @@ jobs:
       - name: Build wheels
         uses: pypa/cibuildwheel@v2.22
         env:
-          # Build wheels for all supported Python versions (3.9+).
+          # Build wheels for supported Python versions.
           # The C++ binaries embed Python (pybind11::embed), so each wheel
-          # links against a specific libpythonX.Y.
+          # links against a specific libpythonX.Y and requires
+          # Development.Embed (libpython shared library).
           CIBW_BUILD: "cp3*-manylinux_x86_64"
+
+          # Skip Python versions where manylinux doesn't provide
+          # Development.Embed (libpythonX.Y.so) needed for embedding.
+          CIBW_SKIP: "cp36-* cp37-* cp38-* cp39-* cp310-*"
 
           # Install build dependencies inside the manylinux container.
           # manylinux_2_28 is AlmaLinux 8; gcc-toolset-13 provides GCC 13.
