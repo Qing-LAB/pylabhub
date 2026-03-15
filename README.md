@@ -24,9 +24,16 @@ The framework is built on a **C++ core** (C++20, CMake 3.29+) with **Python scri
 pip install pylabhub
 ```
 
-This installs prebuilt binaries, the shared library, public headers, and a bundled Python 3.14 runtime. After installation the four executables (`pylabhub-hubshell`, `-producer`, `-consumer`, `-processor`) and the `pylabhub-pyenv` tool are available on PATH.
+This installs prebuilt binaries, the shared library, and public headers. After installation the four executables (`pylabhub-hubshell`, `-producer`, `-consumer`, `-processor`) and the `pylabhub-pyenv` tool are available on PATH.
 
-**Install Python packages for scripting** (not included in the wheel):
+**Download the Python 3.14 runtime** (required, not included in the wheel to keep it under PyPI size limits):
+
+```bash
+pylabhub prepare-runtime                        # downloads ~130 MB from GitHub
+pylabhub prepare-runtime --from archive.tar.gz  # offline/air-gapped install
+```
+
+**Install Python packages for scripting** (optional):
 
 ```bash
 pylabhub-pyenv install                          # default requirements.txt
@@ -37,9 +44,10 @@ pylabhub-pyenv install -r my-requirements.txt   # custom set
 
 ```python
 import pylabhub
-pylabhub.get_bin_dir()      # path to executables
-pylabhub.get_lib_dir()      # path to shared libraries
-pylabhub.get_include_dir()  # path to C++ headers
+pylabhub.get_bin_dir()        # path to executables
+pylabhub.get_lib_dir()        # path to shared libraries
+pylabhub.get_include_dir()    # path to C++ headers
+pylabhub.runtime_available()  # True if Python 3.14 runtime is installed
 ```
 
 ### Option B: Build from source (for developers)
@@ -60,7 +68,7 @@ Build outputs go to `build/stage-debug/` (or `stage-release/`) with `bin/`, `lib
 
 ### Python environment management
 
-The bundled Python 3.14 runtime ships with the interpreter and stdlib but **no third-party packages**. Use `pylabhub-pyenv` to manage packages post-install:
+After `pylabhub prepare-runtime`, the Python 3.14 runtime has the interpreter and stdlib but **no third-party packages**. Use `pylabhub-pyenv` to manage packages:
 
 ```bash
 pylabhub-pyenv install                          # install default packages (numpy, zarr, h5py, ...)
