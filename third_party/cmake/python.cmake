@@ -22,35 +22,17 @@ include(ThirdPartyPolicyAndHelper)
 include(StageHelpers)
 
 # ===========================================================================
-# SKBUILD MODE — use host Python, skip standalone download
+# SKBUILD MODE — override scikit-build-core's Python hints
 # ===========================================================================
-if(SKBUILD)
-  message(STATUS "[pylabhub-third-party] SKBUILD mode: using host Python (no standalone download)")
-
-  # The executables use pybind11::embed, which requires Development.Embed
-  # (libpythonX.Y.so). This is NOT available on all manylinux Python builds
-  # (e.g., cp39 on manylinux_2_28). Those versions are skipped via CIBW_SKIP.
-  find_package(Python REQUIRED COMPONENTS Interpreter Development.Module Development.Embed)
-  message(STATUS "[pylabhub-third-party] Found Python ${Python_VERSION}: ${Python_EXECUTABLE}")
-
-  if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/pybind11/CMakeLists.txt")
-    message(FATAL_ERROR
-      "[pylabhub-third-party] pybind11 submodule not found at ${CMAKE_CURRENT_SOURCE_DIR}/pybind11. "
-      "Run: git submodule update --init third_party/pybind11")
-  endif()
-  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/pybind11 EXCLUDE_FROM_ALL)
-
-  add_library(pylabhub_pybind11_module INTERFACE)
-  target_link_libraries(pylabhub_pybind11_module INTERFACE pybind11::module)
-  add_library(pylabhub::third_party::pybind11_module ALIAS pylabhub_pybind11_module)
-
-  add_library(pylabhub_pybind11_embed INTERFACE)
-  target_link_libraries(pylabhub_pybind11_embed INTERFACE pybind11::embed)
-  add_library(pylabhub::third_party::pybind11_embed ALIAS pylabhub_pybind11_embed)
-
-  message(STATUS "[pylabhub-third-party] pybind11 targets created (wheel mode, no staging).")
-  return()  # Skip Parts 0-3 (standalone download, staging, pip env)
-endif()
+# Manylinux Python installations lack Development.Embed (libpythonX.Y.so),
+# which is required for pybind11::embed. We always use the standalone Python
+# 3.14 for compilation and bundle it in the wheel. The wheel ships one build
+# that works with any host Python >= 3.9 (the C++ binaries use the bundled
+# runtime, not the host Python).
+#
+# scikit-build-core sets Python_ROOT_DIR/Python_EXECUTABLE pointing at the
+# manylinux Python. We override these AFTER downloading the standalone below
+# (see "SKBUILD override" comment in Part 2).
 
 # ===========================================================================
 # PART 0: PLATFORM + VERSION (developer build only)
@@ -152,10 +134,15 @@ endif()
 # ===========================================================================
 
 # Point CMake's Python finder at our standalone installation.
-# Use CACHE variables so they survive re-configures without re-downloading.
-set(Python_ROOT_DIR  "${_py_root}"     CACHE PATH     "Standalone Python 3.14 root" FORCE)
-set(Python_FIND_STRATEGY "LOCATION"   CACHE STRING   "" FORCE)
-set(Python_FIND_VIRTUALENV "STANDARD"  CACHE STRING   "" FORCE)
+# In SKBUILD mode, scikit-build-core sets Python_EXECUTABLE etc. pointing at
+# the manylinux host Python. We must override ALL of these to force discovery
+# of our standalone Python 3.14 (which has Development.Embed).
+set(Python_ROOT_DIR      "${_py_root}"                CACHE PATH     "Standalone Python 3.14 root" FORCE)
+set(Python_EXECUTABLE    "${_py_root}/bin/python3"    CACHE FILEPATH "Standalone Python 3.14 interpreter" FORCE)
+set(Python_INCLUDE_DIR   ""                           CACHE PATH     "" FORCE)  # let FindPython re-discover
+set(Python_LIBRARY       ""                           CACHE FILEPATH "" FORCE)  # let FindPython re-discover
+set(Python_FIND_STRATEGY "LOCATION"                   CACHE STRING   "" FORCE)
+set(Python_FIND_VIRTUALENV "STANDARD"                 CACHE STRING   "" FORCE)
 
 find_package(Python 3.14 EXACT REQUIRED COMPONENTS Interpreter Development)
 message(STATUS "[pylabhub-third-party] Found Python ${Python_VERSION}: ${Python_EXECUTABLE}")

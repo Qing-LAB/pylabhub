@@ -8,9 +8,8 @@
 #      accessors so users can find the installed binaries programmatically.
 #
 # The wheel is NOT a Python extension module â€” it is a C++ application suite
-# that embeds Python via pybind11::embed. Wheels are built per Python version
-# (cp311, cp312, cp313) because the binaries link against libpythonX.Y.
-# Developer builds (cmake directly) use a bundled standalone Python 3.14.
+# that embeds a bundled standalone Python 3.14 runtime for scripting.
+# One wheel serves all host Python versions (>= 3.9).
 #
 # Build locally:
 #   pip install .                          # builds via CMake, installs wheel
@@ -31,7 +30,7 @@ description = "High-performance IPC framework for scientific data acquisition â€
 readme = "README.md"
 authors = [{name = "Quan Qing"}]
 license = {file = "LICENSE"}
-requires-python = ">=3.11"
+requires-python = ">=3.9"
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Science/Research",
@@ -41,6 +40,8 @@ classifiers = [
     "Operating System :: Microsoft :: Windows",
     "Programming Language :: C++",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
