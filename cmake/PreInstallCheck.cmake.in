@@ -1,0 +1,16 @@
+# Generated from PreInstallCheck.cmake.in — do not edit directly.
+#
+# This script runs at the beginning of `cmake --install` to verify that
+# the staging directory was fully populated by the build.
+
+set(_staging_dir "@PYLABHUB_STAGING_DIR@")
+
+if(NOT EXISTS "${_staging_dir}/.stage_complete")
+  message(FATAL_ERROR "Installation cannot proceed because the staging directory is incomplete. "
+    "Please build the 'stage_all' target first.\n"
+    "Run this command from your build directory:\n"
+    "  cmake --build . --target stage_all\n"
+  )
+else()
+  message(STATUS "[pylabhub-install] Pre-install check passed: Staging directory is complete.")
+endif()
