@@ -29,6 +29,13 @@
 - [ ] **Broker-coordinated recovery** – Cross-process zombie detection (blocked on broker protocol extension)
 - [ ] **Slot-checksum in-place repair** – Blocked: existing repair reinitialises header; needs WriteAttach approach
 
+### Codex Review: Testing docs staleness (2026-03-15)
+
+- [ ] **README_testing.md stale** — Phase C broker/message-plane still says "To be implemented"
+  but broker tests already exist. Platform matrix claims all 4 OS must run suite, but CI
+  is Linux-only. Examples reference `./test_layer2_filelock` (old style). Update to reflect
+  current ctest-based workflow and actual CI coverage.
+
 ---
 
 ## Test Phase Checklist
