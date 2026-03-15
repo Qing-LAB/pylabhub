@@ -12,9 +12,9 @@
 #    Part 3: Run-time staging — copies standalone Python to opt/python.
 #
 # B) Wheel build (SKBUILD=ON, set by scikit-build-core):
-#    Skips the standalone download. Uses the host Python provided by
-#    scikit-build-core/cibuildwheel. The wheel does NOT bundle a Python
-#    runtime — the user's own Python is used at runtime.
+#    Part 1 still downloads the standalone (needed for pybind11 headers).
+#    Part 3 is skipped — the runtime is NOT staged into the wheel.
+#    Users run 'pylabhub prepare-runtime' post-install to download it.
 #
 # Part 2 (pybind11 targets) is shared by both modes.
 
@@ -174,6 +174,12 @@ message(STATUS "[pylabhub-third-party] Created pylabhub::third_party::pybind11_e
 # ===========================================================================
 if(NOT THIRD_PARTY_INSTALL)
   message(STATUS "[pylabhub-third-party] Skipping Python run-time staging (THIRD_PARTY_INSTALL is OFF).")
+  return()
+endif()
+
+if(SKBUILD)
+  message(STATUS "[pylabhub-third-party] Skipping Python run-time staging (wheel build).")
+  message(STATUS "[pylabhub-third-party] Users install the runtime post-install via 'pylabhub prepare-runtime'.")
   return()
 endif()
 

@@ -67,6 +67,8 @@ The root is `${CMAKE_INSTALL_PREFIX}` (install) or `${PYLABHUB_STAGING_DIR}` (st
     py-demo-dual-processor-bridge/  ← cross-hub bridge demo
   opt/
     python/                    ← python-build-standalone runtime
+                                  (pip: downloaded via 'pylabhub prepare-runtime')
+                                  (dev: staged automatically by CMake)
       venvs/                   ← user virtual environments
     IgorXOP/                   ← Igor Pro XOP bindings (optional)
     luajit/                    ← LuaJIT runtime
