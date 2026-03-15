@@ -201,7 +201,15 @@ pylabhub_add_external_prerequisite(
   # then renames the first match to the stable name. No conflict.
   LIB_PATTERNS      "${_luajit_lib_patterns}"
   BUILD_BYPRODUCTS  "${_luajit_build_byproduct}"
-  # Headers handled by luajit_install.cmake (specific placement: include/, opt/luajit/jit/)
+
+  # Headers and JIT runtime files (src/jit/*.lua) are handled by
+  # luajit_install.cmake which has specific placement requirements:
+  #   - C API headers → prereqs/include/
+  #   - JIT runtime Lua files → prereqs/opt/luajit/jit/
+  # See third_party/luajit/doc/install.html for the required layout.
+  # HEADER_SOURCE_PATTERNS not passed for this reason.
+  # EXTRA_COPY_DIRECTIVES handled by the install script instead:
+  #   "src/jit" → "opt/luajit/jit"
 )
 
 message(STATUS "[pylabhub-third-party] luajit configuration complete.")
