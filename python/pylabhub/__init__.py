@@ -50,3 +50,15 @@ def get_share_dir() -> pathlib.Path:
 def get_config_dir() -> pathlib.Path:
     """Directory containing default configuration files."""
     return _DATA_DIR / "config"
+
+
+def get_python_dir() -> pathlib.Path:
+    """Directory containing the bundled Python 3.14 runtime."""
+    return _DATA_DIR / "opt" / "python"
+
+
+def runtime_available() -> bool:
+    """True if the bundled Python 3.14 runtime is installed."""
+    from pylabhub._runtime import runtime_is_installed
+
+    return runtime_is_installed()

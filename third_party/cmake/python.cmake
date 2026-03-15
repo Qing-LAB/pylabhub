@@ -177,6 +177,12 @@ if(NOT THIRD_PARTY_INSTALL)
   return()
 endif()
 
+if(SKBUILD)
+  message(STATUS "[pylabhub-third-party] Skipping Python run-time staging (wheel build).")
+  message(STATUS "[pylabhub-third-party] Users install the runtime post-install via 'pylabhub prepare-runtime'.")
+  return()
+endif()
+
 message(STATUS "[pylabhub-third-party] Configuring Python run-time staging...")
 
 # The standalone is already downloaded at configure time; staging is a fast copy.
