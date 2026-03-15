@@ -279,10 +279,10 @@ The core principle is to **separate platform-specific build knowledge from the u
     *   **Discover**: It scans for the library file using patterns provided by the wrapper script.
     *   **Stabilize**: It copies this file to a **stable, predictable path** (e.g., `build/prereqs/lib/libsodium-stable.a`). The rest of our build system can now rely on this stable artifact.
 
-4.  **Dependency Chaining**: Each prerequisite gets a `STATIC IMPORTED GLOBAL` target that points to the stable library path and carries an `add_dependencies` call to the `ExternalProject` target. The chain is:
-    *   `pylabhub::third_party::libsodium` (ALIAS) → `pylabhub_libsodium` (STATIC IMPORTED, `libsodium-stable.a`) → `libsodium_external` (ExternalProject).
-    *   **Why STATIC IMPORTED?** This ensures the static archive is linked directly into `pylabhub-utils.so` at shared-library build time. The alternative (INTERFACE target deferring the `.a` to downstream executables) fails on some toolchains where the linker cannot resolve `.so` undefined references from a subsequent `.a` archive. Since CMake 3.18, `ALIAS` targets can reference `IMPORTED GLOBAL` targets, so the three-layer pattern (IMPORTED + INTERFACE wrapper + ALIAS) is unnecessary.
-    *   `pylabhub-utils` links these targets as **PRIVATE** so the `.a` is not propagated to executables — symbols are fully resolved inside the `.so`.
+4.  **Dependency Chaining**: Each prerequisite gets an `INTERFACE` wrapper target that links the stable library path directly and carries an `add_dependencies` call to the `ExternalProject` target. The chain is:
+    *   `pylabhub::third_party::libsodium` (ALIAS) → `pylabhub_libsodium` (INTERFACE, links `libsodium-stable.a`) → `libsodium_external` (ExternalProject).
+    *   **Why INTERFACE?** `add_dependencies` on an INTERFACE target propagates transitively through `target_link_libraries` chains, ensuring build ordering.
+    *   `pylabhub-utils` links these targets as **PRIVATE** so the `.a` is not propagated to downstream executables — only internal `.cpp` files use libsodium and luajit.
     *   The master `build_prerequisites` target also depends on the `ExternalProject` target, providing a convenient way to build all prerequisites at once.
 
 This framework makes adding complex prerequisites declarative and consistent. Their artifacts are then staged using the **Bulk Staging** strategy described above.
@@ -331,33 +331,23 @@ Type B dependencies (libsodium, luajit) use a 2-layer approach:
 
 ```
 Consumer → pylabhub::third_party::libsodium (ALIAS)
-             → pylabhub_libsodium (STATIC IMPORTED GLOBAL)
-                → IMPORTED_LOCATION: "${PREREQ_INSTALL_DIR}/lib/libsodium-stable.a"
-                → INTERFACE_INCLUDE_DIRECTORIES: "${PREREQ_INSTALL_DIR}/include"
+             → pylabhub_libsodium (INTERFACE)
+                → links: "${PREREQ_INSTALL_DIR}/lib/libsodium-stable.a" (file path)
                 → add_dependencies: libsodium_external (ExternalProject)
 ```
 
-**Why STATIC IMPORTED GLOBAL?**
+**Key design decisions:**
 
-This is the single most important design decision in the third-party build system:
+1. **INTERFACE targets** for reliable dependency propagation: `add_dependencies` on INTERFACE
+   targets propagates transitively through `target_link_libraries` chains.
 
-1. **Direct symbol resolution**: The static archive (`.a`) is linked directly into `pylabhub-utils.so`
-   at shared-library build time. This avoids deferring Lua/sodium symbols to downstream executables,
-   which fails on some toolchains where the linker cannot resolve `.so` undefined references from
-   a subsequent `.a` archive on the link command line.
+2. **PRIVATE linkage**: `pylabhub-utils` links these targets as `PRIVATE` (see `src/utils/CMakeLists.txt`).
+   Only internal `.cpp` files use libsodium and luajit — no public headers expose their types.
+   PRIVATE prevents the `.a` from propagating to downstream executables.
 
-2. **PRIVATE linkage**: `pylabhub-utils` links these targets as `PRIVATE` (see `src/utils/CMakeLists.txt`),
-   preventing the `.a` from propagating to executables. This avoids duplicate symbol copies.
-
-3. **ALIAS support**: Since CMake 3.18, `add_library(... ALIAS ...)` works on `IMPORTED GLOBAL` targets,
-   so the old three-layer pattern (IMPORTED + INTERFACE wrapper + ALIAS) is unnecessary.
-
-4. **Build ordering**: `add_dependencies` on `IMPORTED` targets is honored by Ninja/Make for any
-   target that links against the IMPORTED target. Combined with `BUILD_BYPRODUCTS` on the
-   `ExternalProject`, Ninja knows the `.a` file will be produced by `luajit_external` and waits.
-
-**Note**: `IMPORTED` targets cannot be `install()`'d — this is fine because their archives are
-embedded in `pylabhub-utils.so` and do not need separate export.
+3. **C linkage for LuaJIT**: LuaJIT headers do not include `extern "C"` guards. The include site
+   (`lua_script_host.hpp`) wraps them in `extern "C" {}` to ensure correct C linkage.
+   Without this, C++ mangled symbol names won't match the C symbols in `libluajit.a`.
 
 ### 4.3. The libzmq Cross-Strategy Dependency
 
@@ -385,8 +375,8 @@ embedded in `pylabhub-utils.so` and do not need separate export.
 
 | Consumer Target | Target Type | Underlying | Staging | Install |
 |----------------|-------------|------------|---------|---------|
-| `pylabhub::third_party::libsodium` | ALIAS → STATIC IMPORTED | `libsodium-stable.a` embedded in `pylabhub-utils.so` (PRIVATE) | Bulk (prereqs dir; headers only needed) | Not exported (embedded) |
-| `pylabhub::third_party::luajit` | ALIAS → STATIC IMPORTED | `luajit-stable.a` embedded in `pylabhub-utils.so` (PRIVATE) | Bulk (prereqs dir; headers only needed) | Not exported (embedded) |
+| `pylabhub::third_party::libsodium` | ALIAS → INTERFACE | Links `libsodium-stable.a`; PRIVATE on `pylabhub-utils` | Bulk (prereqs dir) | INTERFACE export |
+| `pylabhub::third_party::luajit` | ALIAS → INTERFACE | Links `luajit-stable.a`; PRIVATE on `pylabhub-utils` | Bulk (prereqs dir) | INTERFACE export |
 | `pylabhub::third_party::libzmq` | ALIAS → INTERFACE | Links `libzmq-static` (concrete) | Per-target registration | INTERFACE + concrete export |
 | `pylabhub::third_party::fmt` | ALIAS → INTERFACE | Links `fmt` (concrete) | Per-target registration | INTERFACE + concrete export |
 | `pylabhub::third_party::nlohmann_json` | ALIAS → INTERFACE | Include dirs only | Header registration | INTERFACE export |

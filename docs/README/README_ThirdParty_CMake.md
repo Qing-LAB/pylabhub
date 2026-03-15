@@ -121,7 +121,7 @@ The following helper functions are provided as part of the framework for third-p
    - The primary function for building and integrating prerequisites that use **non-CMake** build systems (or require special `ExternalProject_Add` handling).
    - It wraps `ExternalProject_Add` and automates the post-build detection/normalization step (renaming artifacts to stable names like `libsodium-stable.a`).
    - The caller provides platform-specific `CONFIGURE_COMMAND`, `BUILD_COMMAND`, and `INSTALL_COMMAND` lists.
-   - **Note**: This function creates the ExternalProject target (e.g., `libsodium_external`) but does NOT create the consumer-facing wrapper target. The caller must create a `STATIC IMPORTED GLOBAL` target in `third_party/CMakeLists.txt` (see Example 3).
+   - **Note**: This function creates the ExternalProject target (e.g., `libsodium_external`) but does NOT create the consumer-facing wrapper target. The caller must create an `INTERFACE` wrapper in `third_party/CMakeLists.txt` (see Example 3).
    - See the example below for detailed usage.
 
 2. `_resolve_alias_to_concrete(TARGET_NAME OUTVAR)`  
@@ -334,19 +334,20 @@ pylabhub_add_external_prerequisite(
 # Include wrapper (creates libsodium_external target)
 include(libsodium)
 
-# Create STATIC IMPORTED target and alias.
-# STATIC IMPORTED ensures the .a is linked directly into pylabhub-utils.so
-# rather than deferred to downstream executables.
-add_library(pylabhub_libsodium STATIC IMPORTED GLOBAL)
-set_target_properties(pylabhub_libsodium PROPERTIES
-  IMPORTED_LOCATION "${PREREQ_INSTALL_DIR}/lib/libsodium-stable${CMAKE_STATIC_LIBRARY_SUFFIX}"
-  INTERFACE_INCLUDE_DIRECTORIES "${PREREQ_INSTALL_DIR}/include"
+# Create INTERFACE wrapper and alias.
+add_library(pylabhub_libsodium INTERFACE)
+target_link_libraries(pylabhub_libsodium INTERFACE
+  "${PREREQ_INSTALL_DIR}/lib/libsodium-stable${CMAKE_STATIC_LIBRARY_SUFFIX}"
+)
+target_include_directories(pylabhub_libsodium INTERFACE
+  $<BUILD_INTERFACE:${PREREQ_INSTALL_DIR}/include>
+  $<INSTALL_INTERFACE:include>
 )
 add_dependencies(pylabhub_libsodium libsodium_external)
 add_library(pylabhub::third_party::libsodium ALIAS pylabhub_libsodium)
 
-# pylabhub-utils links this target as PRIVATE (symbols embedded in .so).
-# NO pylabhub_register_*() calls! Bulk staging handles headers automatically.
+# pylabhub-utils links this target as PRIVATE (only internal .cpp files use it).
+# NO pylabhub_register_*() calls! Bulk staging handles this automatically.
 ```
 
 ---
