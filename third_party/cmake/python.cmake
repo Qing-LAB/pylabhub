@@ -2,23 +2,56 @@
 #
 # Python integration using astral-sh/python-build-standalone.
 #
-# Part 1: Configure-time download + extraction (cached after first run).
-#         Downloads the standalone tarball, extracts it into the build tree,
-#         then points find_package(Python) at it so pybind11 can compile
-#         against the exact 3.14 headers/libs.
+# Two modes:
 #
-# Part 2: Build-time pybind11 configuration.
-#         Creates pylabhub::third_party::pybind11_module INTERFACE target.
+# A) Developer build (default):
+#    Part 1: Configure-time download + extraction (cached after first run).
+#            Downloads the standalone tarball, extracts it into the build tree,
+#            then points find_package(Python) at it so pybind11 can compile
+#            against the exact 3.14 headers/libs.
+#    Part 3: Run-time staging — copies standalone Python to opt/python.
 #
-# Part 3: Run-time staging (only when THIRD_PARTY_INSTALL is ON).
-#         Copies the already-extracted standalone Python to
-#         ${PYLABHUB_STAGING_DIR}/opt/python via a custom target.
+# B) Wheel build (SKBUILD=ON, set by scikit-build-core):
+#    Skips the standalone download. Uses the host Python provided by
+#    scikit-build-core/cibuildwheel. The wheel does NOT bundle a Python
+#    runtime — the user's own Python is used at runtime.
+#
+# Part 2 (pybind11 targets) is shared by both modes.
 
 include(ThirdPartyPolicyAndHelper)
 include(StageHelpers)
 
 # ===========================================================================
-# PART 0: PLATFORM + VERSION
+# SKBUILD MODE — use host Python, skip standalone download
+# ===========================================================================
+if(SKBUILD)
+  message(STATUS "[pylabhub-third-party] SKBUILD mode: using host Python (no standalone download)")
+
+  # scikit-build-core already sets Python_EXECUTABLE etc. Just find it.
+  find_package(Python REQUIRED COMPONENTS Interpreter Development)
+  message(STATUS "[pylabhub-third-party] Found Python ${Python_VERSION}: ${Python_EXECUTABLE}")
+
+  if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/pybind11/CMakeLists.txt")
+    message(FATAL_ERROR
+      "[pylabhub-third-party] pybind11 submodule not found at ${CMAKE_CURRENT_SOURCE_DIR}/pybind11. "
+      "Run: git submodule update --init third_party/pybind11")
+  endif()
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/pybind11 EXCLUDE_FROM_ALL)
+
+  add_library(pylabhub_pybind11_module INTERFACE)
+  target_link_libraries(pylabhub_pybind11_module INTERFACE pybind11::module)
+  add_library(pylabhub::third_party::pybind11_module ALIAS pylabhub_pybind11_module)
+
+  add_library(pylabhub_pybind11_embed INTERFACE)
+  target_link_libraries(pylabhub_pybind11_embed INTERFACE pybind11::embed)
+  add_library(pylabhub::third_party::pybind11_embed ALIAS pylabhub_pybind11_embed)
+
+  message(STATUS "[pylabhub-third-party] pybind11 targets created (wheel mode, no staging).")
+  return()  # Skip Parts 0-3 (standalone download, staging, pip env)
+endif()
+
+# ===========================================================================
+# PART 0: PLATFORM + VERSION (developer build only)
 # ===========================================================================
 message(STATUS "[pylabhub-third-party] Configuring Python build-time dependencies...")
 
