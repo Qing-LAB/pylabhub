@@ -8,7 +8,9 @@
 #      accessors so users can find the installed binaries programmatically.
 #
 # The wheel is NOT a Python extension module — it is a C++ application suite
-# that embeds its own Python 3.14 runtime for scripting.
+# that embeds Python via pybind11::embed. Wheels are built per Python version
+# (cp311, cp312, cp313) because the binaries link against libpythonX.Y.
+# Developer builds (cmake directly) use a bundled standalone Python 3.14.
 #
 # Build locally:
 #   pip install .                          # builds via CMake, installs wheel
