@@ -1,0 +1,41 @@
+{
+  "_comment": "Example consumer — logs counter slots from the producer_counter example.",
+  "hub_dir": "",
+  "consumer": {
+    "uid":       "CONS-LOGGER-00000002",
+    "name":      "CounterLogger",
+    "log_level": "info",
+    "auth": { "keyfile": "" }
+  },
+  "channel":    "lab.examples.counter",
+  "broker":     "tcp://127.0.0.1:5570",
+  "slot_acquire_timeout_ms": -1,
+
+  "shm": {
+    "enabled": true,
+    "secret":  1234567890
+  },
+
+  "slot_schema": {
+    "_comment": "Must match the producer's slot_schema (names + types).",
+    "packing": "aligned",
+    "fields": [
+      {"name": "count", "type": "int64"},
+      {"name": "ts",    "type": "float64"}
+    ]
+  },
+  "flexzone_schema": {
+    "_comment": "Must match the producer's flexzone_schema.",
+    "fields": [
+      {"name": "producer_pid",  "type": "uint64"},
+      {"name": "start_time",    "type": "float64"},
+      {"name": "label",         "type": "string", "length": 32}
+    ]
+  },
+
+  "script": { "type": "python", "path": "." },
+
+  "validation": {
+    "stop_on_script_error": false
+  }
+}

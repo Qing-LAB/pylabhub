@@ -1,0 +1,47 @@
+{
+  "_comment": [
+    "Example sensor producer — publishes temperature measurements at 10 Hz.",
+    "Equivalent to the 'raw_out' role of the old multi-role sensor_node actor.",
+    "Run with: pylabhub-producer <prod_dir>  (place this file in prod_dir/producer.json)"
+  ],
+  "hub_dir": "",
+  "producer": {
+    "uid":       "PROD-SENSOR-00000003",
+    "name":      "TemperatureSensor",
+    "log_level": "info",
+    "auth": { "keyfile": "" }
+  },
+  "channel":     "lab.sensor.temperature",
+  "broker":      "tcp://127.0.0.1:5570",
+  "target_period_ms": 100,
+
+  "shm": {
+    "enabled":    true,
+    "slot_count": 8,
+    "secret":     9876543210
+  },
+
+  "slot_schema": {
+    "packing": "aligned",
+    "fields": [
+      {"name": "ts",      "type": "float64"},
+      {"name": "value",   "type": "float32"},
+      {"name": "flags",   "type": "uint8"},
+      {"name": "samples", "type": "float32", "count": 8}
+    ]
+  },
+  "flexzone_schema": {
+    "fields": [
+      {"name": "device_id",   "type": "uint16"},
+      {"name": "sample_rate", "type": "uint32"},
+      {"name": "label",       "type": "string", "length": 32}
+    ]
+  },
+
+  "script": { "type": "python", "path": "." },
+
+  "validation": {
+    "update_checksum":      true,
+    "stop_on_script_error": false
+  }
+}

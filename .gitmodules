@@ -1,23 +1,26 @@
-[submodule "cpp/third_party/libzmq"]
-	path = cpp/third_party/libzmq
+[submodule "third_party/libzmq"]
+	path = third_party/libzmq
 	url = https://github.com/zeromq/libzmq.git
 	branch = master
-[submodule "cpp/third_party/fmt"]
-	path = cpp/third_party/fmt
+[submodule "third_party/fmt"]
+	path = third_party/fmt
 	url = https://github.com/fmtlib/fmt.git
-[submodule "cpp/third_party/googletest"]
-	path = cpp/third_party/googletest
+[submodule "third_party/googletest"]
+	path = third_party/googletest
 	url = https://github.com/google/googletest.git
-[submodule "cpp/third_party/libsodium"]
-	path = cpp/third_party/libsodium
+[submodule "third_party/libsodium"]
+	path = third_party/libsodium
 	url = https://github.com/jedisct1/libsodium.git
-[submodule "cpp/third_party/cppzmq"]
-	path = cpp/third_party/cppzmq
+[submodule "third_party/cppzmq"]
+	path = third_party/cppzmq
 	url = https://github.com/zeromq/cppzmq.git
-[submodule "cpp/third_party/msgpack-c"]
-	path = cpp/third_party/msgpack-c
+[submodule "third_party/msgpack-c"]
+	path = third_party/msgpack-c
 	url = https://github.com/msgpack/msgpack-c.git
 	branch = cpp_master
-[submodule "cpp/third_party/luajit"]
-	path = cpp/third_party/luajit
+[submodule "third_party/luajit"]
+	path = third_party/luajit
 	url = https://github.com/LuaJIT/LuaJIT.git
+[submodule "third_party/pybind11"]
+	path = third_party/pybind11
+	url = https://github.com/pybind/pybind11.git

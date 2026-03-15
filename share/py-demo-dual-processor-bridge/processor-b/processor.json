@@ -1,0 +1,60 @@
+{
+  "_comment": [
+    "Bridge B: receives 1k-sample blocks via ZMQ PULL, doubles all samples, writes scale=2.0 to SHM on Hub B.",
+    "in_transport=zmq  → ZMQ PULL; connects to processor-a PUSH on tcp://127.0.0.1:5580",
+    "out_transport=shm → writes DataBlock (secret 4444444444) on Hub B (5571)",
+    "Run with: pylabhub-processor <path-to-this-dir>"
+  ],
+  "processor": {
+    "uid":       "PROC-BRIDGEB-00000001",
+    "name":      "BridgeB",
+    "log_level": "info"
+  },
+  "in_channel":  "lab.bridge.raw.bridge",
+  "out_channel": "lab.bridge.processed",
+  "hub_dir":     "../hub-b",
+  "in_hub_dir":  "../hub-a",
+  "broker":      "tcp://127.0.0.1:5571",
+  "slot_acquire_timeout_ms": -1,
+  "target_period_ms": 0,
+  "loop_timing":      "max_rate",
+  "overflow_policy":  "block",
+
+  "in_transport":     "zmq",
+  "out_transport":    "shm",
+  "zmq_in_endpoint":  "tcp://127.0.0.1:5580",
+  "zmq_in_bind":      false,
+  "in_zmq_buffer_depth": 64,
+  "in_zmq_packing":   "aligned",
+
+  "shm": {
+    "in":  {"enabled": false},
+    "out": {"enabled": true, "secret": 4444444444, "slot_count": 64, "reader_sync_policy": "sequential"}
+  },
+
+  "in_slot_schema": {
+    "packing": "aligned",
+    "fields": [
+      {"name": "count",   "type": "int64"},
+      {"name": "ts",      "type": "float64"},
+      {"name": "samples", "type": "float32", "count": 1024}
+    ]
+  },
+  "out_slot_schema": {
+    "packing": "aligned",
+    "fields": [
+      {"name": "count",   "type": "int64"},
+      {"name": "ts",      "type": "float64"},
+      {"name": "samples", "type": "float32", "count": 1024},
+      {"name": "scale",   "type": "float32"}
+    ]
+  },
+  "flexzone_schema": null,
+
+  "script": {"type": "python", "path": "."},
+
+  "validation": {
+    "update_checksum":      true,
+    "stop_on_script_error": false
+  }
+}

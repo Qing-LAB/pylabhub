@@ -1,0 +1,58 @@
+#include "utils/logger_sinks/syslog_sink.hpp"
+#include "utils/logger_sinks/sink.hpp"
+
+#if !defined(PYLABHUB_PLATFORM_WIN64)
+#include <syslog.h>
+
+namespace pylabhub::utils
+{
+
+SyslogSink::SyslogSink(const char *ident, int option, int facility)
+{
+    openlog(ident, option, facility);
+}
+
+SyslogSink::~SyslogSink()
+{
+    closelog();
+}
+
+void SyslogSink::write(const LogMessage &msg, bool sync_flag)
+{
+    auto strmsg = pylabhub::utils::Sink::format_logmsg(msg, sync_flag);
+    syslog(level_to_syslog_priority(msg.level), "%.*s", (int)strmsg.size(), strmsg.data());
+}
+
+void SyslogSink::flush()
+{
+    // No-op for syslog
+}
+
+std::string SyslogSink::description() const
+{
+    return "Syslog";
+}
+
+int SyslogSink::level_to_syslog_priority(int level)
+{
+    constexpr int kSystemLevel = 5;
+    switch (level)
+    {
+    case 0: // TRACE
+    case 1: // DEBUG
+        return LOG_DEBUG;
+    case 2: // INFO
+        return LOG_INFO;
+    case 3: // WARNING
+        return LOG_WARNING;
+    case 4: // ERROR
+        return LOG_ERR;
+    case kSystemLevel: // SYSTEM
+        return LOG_CRIT;
+    default:
+        return LOG_INFO;
+    }
+}
+
+} // namespace pylabhub::utils
+#endif

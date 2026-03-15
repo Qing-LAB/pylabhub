@@ -1,0 +1,33 @@
+{
+  "_comment": [
+    "Demo consumer — reads processed 1k-sample slots and reports throughput.",
+    "Run with: pylabhub-consumer <path-to-this-dir>",
+    "Script at: ./script/python/__init__.py  (on_init / on_consume / on_stop)"
+  ],
+  "hub_dir": "../hub",
+  "consumer": {
+    "uid":       "CONS-LOGGER-00000004",
+    "name":      "DemoConsumer",
+    "log_level": "info",
+    "auth": { "keyfile": "" }
+  },
+  "channel":    "lab.demo.processed",
+  "broker":     "tcp://127.0.0.1:5570",
+  "slot_acquire_timeout_ms": -1,
+
+  "shm": {
+    "enabled": true,
+    "secret":  2222222222
+  },
+
+  "slot_schema": "lab.demo.processed@1",
+  "flexzone_schema": null,
+
+  "script": { "type": "python", "path": "." },
+
+  "max_slots": 1000000,
+
+  "validation": {
+    "stop_on_script_error": false
+  }
+}

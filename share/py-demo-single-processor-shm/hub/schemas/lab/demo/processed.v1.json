@@ -1,0 +1,14 @@
+{
+  "id": "lab.demo.processed",
+  "version": 1,
+  "description": "Throughput demo processed stream: samples doubled, scale factor appended",
+  "slot": {
+    "packing": "aligned",
+    "fields": [
+      {"name": "count",  "type": "int64"},
+      {"name": "ts",     "type": "float64"},
+      {"name": "samples","type": "float32", "count": 1024},
+      {"name": "scale",  "type": "float32"}
+    ]
+  }
+}
