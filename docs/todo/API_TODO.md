@@ -288,6 +288,32 @@ Docs updated: HEP-0008, 0009, 0015, 0017, 0018.
 
 ## Backlog
 
+### Codex Review Items (2026-03-15)
+
+**Source:** `docs/code_review/codex_review.md` (external review, archived 2026-03-15)
+
+- [ ] **MEDIUM: Throwing lock RAII destructors** — `DataBlockLockGuard::~DataBlockLockGuard()`
+  (`data_block_mutex.cpp:461`) and `SharedSpinLockGuard::~SharedSpinLockGuard()`
+  (`shared_memory_spinlock.cpp:176`) can throw in destructors, risking `std::terminate()`
+  during stack unwinding or racey shutdown. Both have `NOLINTNEXTLINE` suppressions.
+  Consider `noexcept` unlock with logged-but-swallowed errors.
+
+- [ ] **MEDIUM: Role config parsing duplication** — Startup-wait parsing blocks are
+  near-identical copies in `producer_config.cpp:205`, `consumer_config.cpp:168`,
+  `processor_config.cpp:307`. Transport/overflow parsing also duplicated. Extract
+  shared config parsing helpers to reduce drift risk.
+
+- [ ] **MEDIUM: Non-working remap APIs in public headers** — `request_structure_remap()`,
+  `commit_structure_remap()`, `release_for_remap()`, `reattach_after_remap()` in
+  `data_block.hpp` are public, deprecated, and always throw. `recovery_api.hpp:58`
+  `stuck_duration_ms` is always zero. Either implement or remove from public API.
+
+- [ ] **HIGH: Lua role support gap** — Config accepts `"lua"` as `script_type` in all
+  3 role configs; `RoleDirectory::script_entry()` maps non-python to `.lua`; but all
+  3 role hosts inherit `PythonRoleHostBase` only, `script_host_helpers.hpp` hardcodes
+  `__init__.py`, and `lua_role_host_base.hpp` is a stub. Either implement Lua role
+  support or restrict config to `"python"` only with a validation error.
+
 ### C++ Pipeline Demo — ✅ Processor Template Done (2026-03-03)
 
 **Status**: Core processor pipeline template complete; additional templates deferred.

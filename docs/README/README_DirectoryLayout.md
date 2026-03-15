@@ -326,17 +326,19 @@ Each role binary has a symmetric `--init` flow and directory-based startup:
 # First-time setup (producer example; same pattern for consumer/processor)
 pylabhub-producer --init <producer_dir>
   # → prompts: role name (e.g. "Sensor1")
-  # → prompts: master password (twice, confirm) — written to producer.vault
   # → generates producer_uid (PROD-{NAME}-{8HEX})
   # → writes producer.json with uid, name, defaults
   # → creates script/python/__init__.py with template callbacks
-  # → creates logs/, run/ subdirectories
+  # → creates logs/, run/, vault/ subdirectories
+
+# Optional: generate CurveZMQ keypair (separate step)
+pylabhub-producer --config <producer_dir>/producer.json --keygen
 
 # Subsequent runs
 pylabhub-producer <producer_dir>
   # → reads producer.json (broker endpoint, channel, schema, transport)
-  # → decrypts producer.vault (password prompt or PYLABHUB_MASTER_PASSWORD env var)
-  # → connects to broker with CurveZMQ using hub.pubkey from broker_pubkey field
+  # → resolves hub_dir to read broker endpoint and pubkey
+  # → connects to broker with CurveZMQ
   # → runs producer loop: on_init → on_produce (per period) → on_stop
 ```
 
@@ -350,9 +352,10 @@ pylabhub-processor --init <processor_dir>
 pylabhub-processor <processor_dir>
 ```
 
-The broker's CurveZMQ public key is embedded in the role config as `broker_pubkey`
-(a Z85 40-char string). This is copied from `<hub_dir>/hub.pubkey` at setup time.
-There is no runtime `hub_dir` reference — the role config is self-contained.
+The role config contains a `hub_dir` field pointing to the hub instance directory.
+At startup, the role resolves `hub_dir` (relative to the role directory) and reads
+the broker endpoint and CurveZMQ public key from `<hub_dir>/hub.json`. This means
+the hub directory must exist at runtime — the role config is **not** self-contained.
 
 ---
 
