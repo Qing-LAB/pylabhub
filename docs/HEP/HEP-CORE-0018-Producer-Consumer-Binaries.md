@@ -660,29 +660,32 @@ on_stop(api) → GIL re-acquired → Py_Finalize
 ### Producer
 
 ```
-pylabhub-producer --init <dir> [--name <name>]  # Create producer.json + vault + script/python/__init__.py
-pylabhub-producer <dir>                          # Run (open vault, register, start loop)
+pylabhub-producer --init <dir> [--name <name>]  # Create directory + producer.json + script stub
+pylabhub-producer <dir>                          # Run (resolve hub, register, start loop)
 pylabhub-producer --config <path> --validate     # Validate config + script; exit 0 on success
-pylabhub-producer --config <path> --keygen       # Generate vault keypair; print public key to stdout
-pylabhub-producer --dev [dir]                    # Ephemeral keypair; dir optional (uses cwd)
-pylabhub-producer --version                      # Print version string
+pylabhub-producer --config <path> --keygen       # Generate CurveZMQ keypair at auth.keyfile path
+pylabhub-producer <dir> --log-file <path>        # Run with log output redirected to file
+pylabhub-producer --help                         # Show usage
 ```
 
 ### Consumer
 
 ```
-pylabhub-consumer --init <dir> [--name <name>]  # Create consumer.json + vault + script/python/__init__.py
-pylabhub-consumer <dir>                          # Run (open vault, discover channel, start loop)
+pylabhub-consumer --init <dir> [--name <name>]  # Create directory + consumer.json + script stub
+pylabhub-consumer <dir>                          # Run (resolve hub, discover channel, start loop)
 pylabhub-consumer --config <path> --validate     # Validate config + script; exit 0 on success
-pylabhub-consumer --config <path> --keygen       # Generate vault keypair; print public key to stdout
-pylabhub-consumer --dev [dir]                    # Ephemeral keypair
-pylabhub-consumer --version                      # Print version string
+pylabhub-consumer --config <path> --keygen       # Generate CurveZMQ keypair at auth.keyfile path
+pylabhub-consumer <dir> --log-file <path>        # Run with log output redirected to file
+pylabhub-consumer --help                         # Show usage
 ```
 
 `--init` generates:
 - `producer.json` / `consumer.json` with template values and a generated UID
-- `vault/producer.vault` / `vault/consumer.vault` via vault `create()` (prompts for password)
 - `script/python/__init__.py` with template callbacks
+- Directory structure: `logs/`, `run/`, `vault/` (0700 on POSIX)
+
+Vault creation and password prompting are **not** part of `--init`. Use `--keygen`
+separately to generate a CurveZMQ keypair at the `auth.keyfile` path.
 
 `--name` is optional for `--init`. If provided, sets the component name in the generated config.
 If omitted and stdin is a terminal, prompts interactively. If omitted and stdin is not a terminal

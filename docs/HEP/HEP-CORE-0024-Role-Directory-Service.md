@@ -153,8 +153,7 @@ public:
     // ── Construction ──────────────────────────────────────────────────────────
 
     /// Open an existing role directory.
-    /// Does not validate that the expected subdirectories exist.
-    /// Throws std::invalid_argument if base is not an existing directory.
+    /// Weakly canonicalizes the path; does not validate subdirectories.
     static RoleDirectory open(const std::filesystem::path &base);
 
     /// Open from an explicit config file path (--config <path> mode).
@@ -162,11 +161,9 @@ public:
     static RoleDirectory from_config_file(const std::filesystem::path &config_path);
 
     /// Create the standard layout: logs/, run/, vault/ (0700), script/python/.
-    /// config_filename: "producer.json", "consumer.json", etc.
-    /// Throws std::runtime_error if config_filename already exists at base,
-    /// or if directory creation fails.
-    static RoleDirectory create(const std::filesystem::path &base,
-                                std::string_view            config_filename);
+    /// Idempotent: creates directories if they don't exist.
+    /// Throws std::runtime_error if directory creation fails.
+    static RoleDirectory create(const std::filesystem::path &base);
 
     // ── Standard paths ────────────────────────────────────────────────────────
 
