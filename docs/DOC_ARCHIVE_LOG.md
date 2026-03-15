@@ -6,6 +6,24 @@
 
 ## Archive batches
 
+### 2026-03-15 (codex deep review — doc fixes + TODO routing)
+
+External codex review (2-pass, read-only). 14 findings triaged:
+- 4 doc inaccuracies fixed directly (--init flow, self-contained claim, HEP-0024 API sig, HEP-0018 CLI flags)
+- 4 code/design items routed to API_TODO (Lua gap, throwing destructors, config duplication, remap placeholders)
+- 2 items routed to PLATFORM_TODO + TESTING_TODO (CI platform claims, stale test docs)
+- 1 fixed previously (test count 884→1166)
+- 1 false positive (g_hub_config_initialized — actually g_hub_config_state, properly used)
+- 2 duplicates of #1 (Lua finding repeated in pass 2)
+
+**Archived to `docs/archive/transient-2026-03-15/`:**
+
+| Archived | Origin | Reason |
+|---|---|---|
+| `REVIEW_Codex_2026-03-15.md` | `docs/code_review/codex_review.md` | External codex review — all findings triaged; doc fixes applied; code items routed to subtopic TODOs |
+
+---
+
 ### 2026-03-14 (code review closure + config review cleanup)
 
 Two code reviews closed and archived. All findings either fixed (8 items) or accepted (4 items).
