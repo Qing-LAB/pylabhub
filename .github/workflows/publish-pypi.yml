@@ -67,9 +67,15 @@ jobs:
             PATH=/opt/rh/gcc-toolset-13/root/usr/bin:$PATH
             CC=gcc CXX=g++
 
-          # Retag platform and verify bundled shared libs meet manylinux_2_28.
+          # Retag platform for PyPI upload. auditwheel repair is not usable
+          # here because the bundled Python 3.14 runtime references glibc
+          # symbols newer than 2.28. The wheel is self-contained (static
+          # libzmq/libsodium, bundled Python with $ORIGIN RPATH), so a
+          # simple retag is sufficient.
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: >
-            auditwheel repair --plat manylinux_2_28_x86_64 -w {dest_dir} {wheel}
+            pip install wheel &&
+            python -m wheel tags --platform-tag manylinux_2_28_x86_64 --remove {wheel} &&
+            cp $(dirname {wheel})/*manylinux*.whl {dest_dir}/
 
           # manylinux_2_28 image (AlmaLinux 8, glibc 2.28).
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
