@@ -75,8 +75,7 @@ Understanding what each CMake file does and where it lives is essential before m
 | `SanitizeDebugInformation.cmake` | Strips/optimizes debug info in release binaries |
 | `MsvcHelper.cmake` | MSVC-specific configuration (runtime library, compiler options) |
 | `ProjectToolChainSetup.cmake` | Pre-`project()` toolchain setup (runs before project command) |
-| `PreInstallCheck.cmake` | Validates that staging completed before `cmake --install` runs |
-| `pylabhubConfig.cmake.in` | Template for the generated CMake package config (`find_package(pylabhub)` support) |
+| `PreInstallCheck.cmake.in` | Template for the pre-install validation script; `configure_file` bakes in the staging directory path at configure time |
 | `pylabhub_version.h.in` | C++ version header template (generates `#define PYLABHUB_VERSION_*`) |
 | `pylabhub_utils_version.rc.in` | Windows VERSIONINFO resource template for DLL metadata |
 | `BulkStageSingleDirectory.cmake.in` | Template script for bulk directory staging (Type B prereqs → staging dir) |
@@ -105,7 +104,7 @@ Understanding what each CMake file does and where it lives is essential before m
 | File | Purpose |
 |------|---------|
 | `CMakeLists.txt` (root) | Top-level orchestrator: options, project definition, version, platform config, staging infrastructure, sub-project inclusion, install rules |
-| `third_party/CMakeLists.txt` | Includes all third-party wrappers, creates `build_prerequisites` target, defines INTERFACE/ALIAS targets for ExternalProject prereqs, processes staging registrations, export set |
+| `third_party/CMakeLists.txt` | Includes all third-party wrappers, creates `build_prerequisites` target, defines INTERFACE/ALIAS targets for ExternalProject prereqs, processes staging registrations |
 | `src/CMakeLists.txt` | Includes `utils/`, `scripting/`, `producer/`, `consumer/`, `processor/`; defines `pylabhub-hubshell` executable |
 | `src/utils/CMakeLists.txt` | Builds `pylabhub-utils` shared library (70+ .cpp files), links all third-party deps, generates export header, applies sanitizers/clang-tidy, stages to lib/ |
 | `src/scripting/CMakeLists.txt` | Builds `pylabhub-scripting` (script host implementations, pybind11 modules) |
@@ -164,10 +163,12 @@ Collects all `CORE_STAGE_TARGETS` from global property and wires them as depende
 
 ### Phase 7: Installation & Packaging
 If `PYLABHUB_CREATE_INSTALL_TARGET` is ON:
-- Runs `PreInstallCheck.cmake` to verify staging is complete
-- Exports targets via `install(EXPORT pylabhubTargets ...)`
-- Generates `pylabhubConfig.cmake` for downstream `find_package(pylabhub)` support
-- Final `install(DIRECTORY "${PYLABHUB_STAGING_DIR}/" DESTINATION ".")` copies the staged layout as-is
+- `configure_file` generates `PreInstallCheck.cmake` from `PreInstallCheck.cmake.in`, baking in the staging directory path
+- `install(SCRIPT ...)` runs the pre-install check to verify staging is complete
+- `install(DIRECTORY "${PYLABHUB_STAGING_DIR}/" DESTINATION ".")` copies the staged layout as-is
+- In SKBUILD (wheel) mode, `.a` files, tests, and pkgconfig are excluded from the install
+
+No CMake export/target machinery is used — no `pylabhubTargets.cmake`, `pylabhubConfig.cmake`, or `find_package(pylabhub)` support is generated. The installation is a direct copy of the staging directory.
 
 ## 3. Core Design Principles
 
@@ -321,9 +322,7 @@ Consumer → pylabhub::third_party::nlohmann_json (ALIAS)
              → pylabhub_nlohmann_json (INTERFACE, include dirs only)
 ```
 
-The INTERFACE wrapper serves two purposes:
-1. **Stable naming**: The wrapper name (`pylabhub_fmt`) is deterministic even if upstream changes their target name.
-2. **Installable**: ALIAS targets cannot be `install()`'d. The wrapper is what gets exported.
+The INTERFACE wrapper provides **stable naming**: the wrapper name (`pylabhub_fmt`) is deterministic even if upstream changes their target name. It also enables consistent dependency propagation within the build graph.
 
 ### 4.2. Target Layers for Type B Dependencies (External Prerequisites)
 
@@ -373,18 +372,20 @@ Consumer → pylabhub::third_party::libsodium (ALIAS)
 
 ### 4.4. Complete Target Map
 
-| Consumer Target | Target Type | Underlying | Staging | Install |
-|----------------|-------------|------------|---------|---------|
-| `pylabhub::third_party::libsodium` | ALIAS → INTERFACE | Links `libsodium-stable.a`; PRIVATE on `pylabhub-utils` | Bulk (prereqs dir) | INTERFACE export |
-| `pylabhub::third_party::luajit` | ALIAS → INTERFACE | Links `luajit-stable.a`; PRIVATE on `pylabhub-utils` | Bulk (prereqs dir) | INTERFACE export |
-| `pylabhub::third_party::libzmq` | ALIAS → INTERFACE | Links `libzmq-static` (concrete) | Per-target registration | INTERFACE + concrete export |
-| `pylabhub::third_party::fmt` | ALIAS → INTERFACE | Links `fmt` (concrete) | Per-target registration | INTERFACE + concrete export |
-| `pylabhub::third_party::nlohmann_json` | ALIAS → INTERFACE | Include dirs only | Header registration | INTERFACE export |
-| `pylabhub::third_party::msgpack` | ALIAS → INTERFACE | Include dirs + `MSGPACK_NO_BOOST` | Header registration | INTERFACE export |
-| `pylabhub::third_party::cppzmq` | ALIAS → INTERFACE | Include dirs only | Header registration | INTERFACE export |
-| `pylabhub::third_party::pybind11_module` | ALIAS → INTERFACE | Python extension module config | N/A | INTERFACE export |
-| `pylabhub::utils` | ALIAS → SHARED | `pylabhub-utils` (70+ .cpp files) | Core staging | Library + export header |
-| `pylabhub::hubshell` | ALIAS → EXECUTABLE | Hub broker shell | Core staging | Executable |
+| Consumer Target | Target Type | Underlying | Staging |
+|----------------|-------------|------------|---------|
+| `pylabhub::third_party::libsodium` | ALIAS → INTERFACE | Links `libsodium-stable.a`; PRIVATE on `pylabhub-utils` | Bulk (prereqs dir) |
+| `pylabhub::third_party::luajit` | ALIAS → INTERFACE | Links `luajit-stable.a`; PRIVATE on `pylabhub-utils` | Bulk (prereqs dir) |
+| `pylabhub::third_party::libzmq` | ALIAS → INTERFACE | Links `libzmq-static` (concrete) | Per-target registration |
+| `pylabhub::third_party::fmt` | ALIAS → INTERFACE | Links `fmt` (concrete) | Per-target registration |
+| `pylabhub::third_party::nlohmann_json` | ALIAS → INTERFACE | Include dirs only | Header registration |
+| `pylabhub::third_party::msgpack` | ALIAS → INTERFACE | Include dirs + `MSGPACK_NO_BOOST` | Header registration |
+| `pylabhub::third_party::cppzmq` | ALIAS → INTERFACE | Include dirs only | Header registration |
+| `pylabhub::third_party::pybind11_module` | ALIAS → INTERFACE | Python extension module config | N/A |
+| `pylabhub::utils` | ALIAS → SHARED | `pylabhub-utils` (70+ .cpp files) | Core staging |
+| `pylabhub::hubshell` | ALIAS → EXECUTABLE | Hub broker shell | Core staging |
+
+Installation is handled by copying the entire staging directory to the install prefix — no per-target `install(TARGETS ... EXPORT ...)` rules are needed.
 
 ## 5. System Diagrams
 
@@ -747,24 +748,9 @@ This recipe shows the actual pattern used in the project (based on `src/utils/CM
 
     # Register with global staging system
     set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS stage_pylabhub_networking)
-
-    # --- Installation ---
-    install(TARGETS pylabhub-networking
-      EXPORT pylabhubTargets
-      RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-      LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-      ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    )
-
-    install(FILES
-      "${CMAKE_CURRENT_BINARY_DIR}/pylabhub_networking_export.h"
-      DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-    )
-    
-    install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/include/networking/
-      DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/networking
-    )
     ```
+
+    **Note:** No per-target `install()` rules are needed. The staging directory is copied as-is during `cmake --install`.
 
 3.  **Add to `src/CMakeLists.txt`:**
     ```cmake
@@ -833,10 +819,7 @@ This recipe is for libraries that have a CMake build system and can be integrate
       pylabhub_register_library_for_staging(TARGET ${_canonical_target})
     endif()
     
-    # 7. Add these targets to the install export set for packaging in `third_party/CMakeLists.txt`.
-    #    (e.g., in `third_party/CMakeLists.txt`: `install(TARGETS pylabhub_new-lib EXPORT pylabhubTargets)`)
-
-    # 8. Restore the cache variables to prevent leakage.
+    # 7. Restore the cache variables to prevent leakage.
     restore_cache_var(BUILD_SHARED_LIBS BOOL)
     restore_cache_var(BUILD_TESTS BOOL)
     ```
@@ -1011,21 +994,6 @@ The `BulkStageSingleDirectory.cmake` script should automatically move DLLs from 
      $<BUILD_INTERFACE:${PYLABHUB_STAGING_DIR}/include>
    )
    ```
-
-### Issue: "Cannot specify link libraries for target X which is not built by this project"
-
-**Symptom:** CMake error when trying to `install(TARGETS ...)` an ALIAS target.
-
-**Cause:** Attempting to export an ALIAS target directly.
-
-**Solution:** In `third_party/CMakeLists.txt` or wherever you're exporting, include BOTH the wrapper and canonical targets:
-```cmake
-install(TARGETS
-  pylabhub_mylib      # The INTERFACE wrapper
-  mylib               # The concrete target (if applicable)
-  EXPORT pylabhubTargets
-)
-```
 
 ### Issue: Staging commands not executing
 
