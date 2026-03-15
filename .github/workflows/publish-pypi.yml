@@ -3,8 +3,13 @@
 # Build platform wheels via cibuildwheel and publish to PyPI.
 #
 # The wheel contains prebuilt C++ binaries (hubshell, producer, consumer,
-# processor), the shared library, public headers, bundled Python 3.14
-# runtime, and a thin Python shim for path discovery.
+# processor), the shared library, and public headers. It does NOT bundle
+# a Python runtime — the executables link against the user's installed
+# Python at runtime.
+#
+# Separate wheels are built for each supported Python version (3.11–3.13)
+# because the C++ binaries embed Python via pybind11::embed and link
+# against a specific libpythonX.Y.
 #
 # Triggers:
 #   - Push a version tag (v*) → build wheels + publish to PyPI
@@ -49,9 +54,10 @@ jobs:
       - name: Build wheels
         uses: pypa/cibuildwheel@v2.22
         env:
-          # Build a single wheel per platform — this is a C++ application,
-          # not a Python extension, so one wheel serves all Python versions.
-          CIBW_BUILD: "cp312-manylinux_x86_64"
+          # Build wheels for all supported Python versions (3.9+).
+          # The C++ binaries embed Python (pybind11::embed), so each wheel
+          # links against a specific libpythonX.Y.
+          CIBW_BUILD: "cp3*-manylinux_x86_64"
 
           # Install build dependencies inside the manylinux container.
           # manylinux_2_28 is AlmaLinux 8; gcc-toolset-13 provides GCC 13.
