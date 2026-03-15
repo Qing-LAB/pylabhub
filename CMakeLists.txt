@@ -369,49 +369,23 @@ if(BUILD_TESTS)
 endif()
 
 # --- 3.6. Final Installation and Packaging ---
+#
+# Installation is a simple copy of the staging directory to the install prefix.
+# All artifacts (binaries, libraries, headers, third-party prereqs) are already
+# staged with the correct layout during the build. No CMake export/target
+# machinery is needed — the staging directory IS the installed layout.
 if(PYLABHUB_CREATE_INSTALL_TARGET)
-  # First, run a pre-install check to ensure staging was completed.
-  install(SCRIPT cmake/PreInstallCheck.cmake)
-
-  # Install the exported targets file.
-  install(EXPORT pylabhubTargets
-    FILE
-      pylabhubTargets.cmake
-    NAMESPACE
-      pylabhub::
-    DESTINATION
-      ${CMAKE_INSTALL_LIBDIR}/cmake/pylabhub
+  # Bake the staging directory path into the install-time check script.
+  configure_file(
+    "${CMAKE_SOURCE_DIR}/cmake/PreInstallCheck.cmake.in"
+    "${CMAKE_BINARY_DIR}/PreInstallCheck.cmake"
+    @ONLY
   )
+  install(SCRIPT "${CMAKE_BINARY_DIR}/PreInstallCheck.cmake")
 
-  # Generate and install the package version file.
-  include(CMakePackageConfigHelpers)
-  write_basic_package_version_file(
-    "${CMAKE_CURRENT_BINARY_DIR}/pylabhubConfigVersion.cmake"
-    VERSION ${PROJECT_VERSION}
-    COMPATIBILITY AnyNewerVersion
-  )
-
-  # Generate the main package config file.
-  configure_package_config_file(
-    "${CMAKE_SOURCE_DIR}/cmake/pylabhubConfig.cmake.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/pylabhubConfig.cmake"
-    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/pylabhub
-  )
-
-  # Install the generated config files.
-  install(FILES
-    "${CMAKE_CURRENT_BINARY_DIR}/pylabhubConfig.cmake"
-    "${CMAKE_CURRENT_BINARY_DIR}/pylabhubConfigVersion.cmake"
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/pylabhub
-  )
-
-  # --- Final Installation Step ---
-  # This is the core installation command. It takes the entire contents of the
-  # fully populated staging directory and copies it to the installation prefix.
-  # This ensures the installed layout perfectly mirrors the development layout.
   if(SKBUILD)
-    # In wheel mode, exclude static archives (.a/.la), test binaries,
-    # pkgconfig, and cmake config files — only ship runtime artifacts.
+    # Wheel mode: exclude static archives, test binaries, pkgconfig —
+    # only ship runtime artifacts.
     install(
       DIRECTORY "${PYLABHUB_STAGING_DIR}/"
       DESTINATION .
@@ -429,7 +403,7 @@ if(PYLABHUB_CREATE_INSTALL_TARGET)
     )
   endif()
 
-  message(STATUS "Installation target enabled. Run 'cmake --install' to create a package.")
+  message(STATUS "Installation target enabled. Run 'cmake --install' to install staged artifacts.")
 else()
   message(STATUS "Installation target disabled.")
 endif()

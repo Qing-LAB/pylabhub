@@ -232,15 +232,9 @@ target_compile_definitions(pylabhub-utils
 # ==============================================================================
 # Installation
 #
-# Defines the rules for installing this library as part of a package that can
-# be used by other CMake projects via `find_package`.
-# ==============================================================================
-install(TARGETS pylabhub-utils
-  EXPORT pylabhubTargets
-  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)
+# NOTE: No install(TARGETS) here. The shared library is staged to
+# ${PYLABHUB_STAGING_DIR}/lib/ during the build. The top-level install
+# rule copies the entire staging directory to the install prefix.
 
 # Install the public headers for this library.
 # The `pylabhub_utils_export.h` and `pylabhub_version.h` headers are essential for consumers.
