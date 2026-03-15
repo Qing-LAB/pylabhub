@@ -71,12 +71,9 @@ list(APPEND CMAKE_PREFIX_PATH "${PREREQ_INSTALL_DIR}")
 #   pylabhub_<name>                    — INTERFACE (link path + includes + build-order dep)
 #   pylabhub::third_party::<name>      — ALIAS (namespaced, for consumers)
 #
-# pylabhub-utils links these targets as PRIVATE with WHOLE_ARCHIVE
-# (see src/utils/CMakeLists.txt) to:
-#   1. Embed the static archive symbols directly into pylabhub-utils.so
-#   2. Prevent the .a from propagating to downstream executables
-# This avoids CI link failures where some toolchains cannot resolve .so
-# undefined references from subsequent .a archives on the link line.
+# pylabhub-utils links these targets as PRIVATE (see src/utils/CMakeLists.txt)
+# so the .a archives do not propagate to downstream executables. Only internal
+# .cpp files (crypto, vault, lua_script_host) use these libraries.
 
 # --- libsodium ---
 add_library(pylabhub_libsodium INTERFACE)
@@ -123,9 +120,7 @@ include(cmake/googletest.cmake)
 # that are configured as native CMake sub-projects (e.g., fmt, libzmq).
 #
 # Prerequisites built via ExternalProject_Add into the 'prereq' directory (e.g., luajit, libsodium)
-# are staged via a bulk-copy of the prereqs directory. Note: the static archives (.a) for
-# libsodium and luajit archives are embedded in pylabhub-utils.so via WHOLE_ARCHIVE
-# (see src/utils/CMakeLists.txt). Only their headers are needed for development.
+# are staged via a bulk-copy of the prereqs directory.
 # We only need to process the final registrations for the remaining targets.
 
 
