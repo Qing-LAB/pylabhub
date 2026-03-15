@@ -3,13 +3,14 @@
 #
 # This pyproject.toml drives two things:
 #   1. CMake build (via scikit-build-core) → platform wheel with prebuilt C++
-#      binaries, shared libraries, headers, bundled Python runtime, and tools.
-#   2. A thin Python package (python/pylabhub/) providing version info and path
-#      accessors so users can find the installed binaries programmatically.
+#      binaries, shared libraries, headers, and tools.
+#   2. A thin Python package (python/pylabhub/) providing version info, path
+#      accessors, and the 'pylabhub prepare-runtime' command.
 #
 # The wheel is NOT a Python extension module — it is a C++ application suite
-# that embeds a bundled standalone Python 3.14 runtime for scripting.
-# One wheel serves all host Python versions (>= 3.9).
+# that embeds Python 3.14 for scripting.  The Python runtime is NOT bundled
+# in the wheel (PyPI size limit); users download it post-install via
+# 'pylabhub prepare-runtime'.  One wheel serves all host Python versions (>= 3.9).
 #
 # Build locally:
 #   pip install .                          # builds via CMake, installs wheel
