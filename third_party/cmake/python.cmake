@@ -137,8 +137,8 @@ endif()
 # In SKBUILD mode, scikit-build-core sets Python_EXECUTABLE etc. pointing at
 # the manylinux host Python. We must override ALL of these to force discovery
 # of our standalone Python 3.14 (which has Development.Embed).
-set(Python_ROOT_DIR      "${_py_root}"                CACHE PATH     "Standalone Python 3.14 root" FORCE)
-set(Python_EXECUTABLE    "${_py_root}/bin/python3"    CACHE FILEPATH "Standalone Python 3.14 interpreter" FORCE)
+set(Python_ROOT_DIR      "${_py_root}"                          CACHE PATH     "Standalone Python 3.14 root" FORCE)
+set(Python_EXECUTABLE    "${_py_root}/${_py_sentinel_rel}"      CACHE FILEPATH "Standalone Python 3.14 interpreter" FORCE)
 set(Python_INCLUDE_DIR   ""                           CACHE PATH     "" FORCE)  # let FindPython re-discover
 set(Python_LIBRARY       ""                           CACHE FILEPATH "" FORCE)  # let FindPython re-discover
 set(Python_FIND_STRATEGY "LOCATION"                   CACHE STRING   "" FORCE)

@@ -17,6 +17,8 @@
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
 
+#include "utils/format_tools.hpp" // ws2s() for wstring→string conversion
+
 #if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable : 5105) // Disable warning about including deprecated header dbghelp.h
@@ -30,7 +32,7 @@
 #pragma warning(pop)
 #endif
 
-#endif // for WINDOWS PLATFORM
+#endif // PYLABHUB_PLATFORM_WIN64
 
 #include <thread>
 

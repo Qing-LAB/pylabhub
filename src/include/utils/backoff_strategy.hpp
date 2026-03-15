@@ -26,8 +26,87 @@
  *
  * @see HEP-CORE-0002-DataHub-FINAL.md Section 4.2 (SlotRWState coordination)
  */
+#include "plh_platform.hpp" // PYLABHUB_PLATFORM_WIN64, windows.h (with LEAN_AND_MEAN)
+
 #include <chrono>
 #include <thread>
+
+namespace pylabhub::utils
+{
+
+// ============================================================================
+// High-Resolution Sleep (cross-platform)
+// ============================================================================
+
+/**
+ * @brief Sleep with microsecond-level precision on all platforms.
+ *
+ * On POSIX, std::this_thread::sleep_for() already achieves ~1us precision.
+ * On Windows, the default timer resolution is ~15.6ms, making sleep_for(1us)
+ * actually sleep ~15ms. This function uses CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+ * (available since Windows 10 1803) for ~500ns precision, falling back to the
+ * standard sleep_for if the high-res timer is unavailable.
+ *
+ * The Windows implementation caches the timer handle per-thread to avoid the
+ * ~500us overhead of CreateWaitableTimerExW on every call.
+ *
+ * @param us Duration to sleep in microseconds.
+ */
+inline void precise_sleep(std::chrono::microseconds us) noexcept
+{
+#if defined(PYLABHUB_PLATFORM_WIN64)
+    // Thread-local cached high-resolution timer handle.
+    // Created once per thread, destroyed when the thread exits.
+    struct TimerHandle
+    {
+        HANDLE h{nullptr};
+        bool   tried{false}; // true after first attempt (avoids retrying on failure)
+
+        TimerHandle() = default;
+        ~TimerHandle()
+        {
+            if (h)
+                CloseHandle(h);
+        }
+        TimerHandle(const TimerHandle &) = delete;
+        TimerHandle &operator=(const TimerHandle &) = delete;
+
+        HANDLE get() noexcept
+        {
+            if (!tried)
+            {
+                tried = true;
+                // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION = 0x00000002 (Win10 1803+)
+                static constexpr DWORD kHighResFlag = 0x00000002;
+                h = CreateWaitableTimerExW(nullptr, nullptr, kHighResFlag, TIMER_ALL_ACCESS);
+            }
+            return h;
+        }
+    };
+
+    static thread_local TimerHandle tl_timer;
+    HANDLE timer = tl_timer.get();
+    if (timer)
+    {
+        // SetWaitableTimer uses 100ns intervals, negative = relative.
+        LARGE_INTEGER due;
+        due.QuadPart = -(static_cast<LONGLONG>(us.count()) * 10);
+        if (SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE))
+        {
+            WaitForSingleObject(timer, INFINITE);
+        }
+    }
+    else
+    {
+        // Fallback: standard sleep (coarse ~15ms resolution)
+        std::this_thread::sleep_for(us);
+    }
+#else
+    std::this_thread::sleep_for(us);
+#endif
+}
+
+} // namespace pylabhub::utils
 
 namespace pylabhub::utils
 {
@@ -42,8 +121,8 @@ namespace pylabhub::utils
  *          but may occasionally persist.
  *
  * Phase 1 (iterations 0-3): yield() - cooperative multitasking, minimal overhead
- * Phase 2 (iterations 4-9): 1us sleep - transition to light sleep
- * Phase 3 (iterations 10+): linear sleep (N*10us) - reduce bus traffic
+ * Phase 2 (iterations 4-9): 1us sleep - transition to light sleep (via precise_sleep)
+ * Phase 3 (iterations 10+): linear sleep (N*10us) - reduce bus traffic (via precise_sleep)
  *
  * Total backoff time at iteration N:
  * - N=0-3:  ~0us (just yield)
@@ -84,16 +163,13 @@ struct ThreePhaseBackoff
         {
             // Phase 2: Light sleep - reduce CPU usage but stay responsive
             // Typical latency: 1-100us depending on OS timer resolution
-            // XPLAT: sleep_for(1us) resolution varies: Linux ~1-10us, macOS ~1us,
-            // Windows ~15.6ms. Backoff phases chosen for Linux; Windows gets coarser.
-            std::this_thread::sleep_for(std::chrono::microseconds(1));
+            precise_sleep(std::chrono::microseconds(1));
         }
         else
         {
             // Phase 3: Linear backoff - reduce memory bus contention
             // Latency = iteration * 10us (linear growth)
-            std::this_thread::sleep_for(
-                std::chrono::microseconds(static_cast<long>(iteration * 10)));
+            precise_sleep(std::chrono::microseconds(static_cast<long>(iteration * 10)));
         }
     }
 };
@@ -144,7 +220,7 @@ struct ConstantBackoff
     void operator()(int iteration) const noexcept
     {
         (void)iteration; // Unused
-        std::this_thread::sleep_for(delay);
+        precise_sleep(delay);
     }
 };
 
@@ -230,7 +306,7 @@ struct AggressiveBackoff
         }
         else if (iteration < 6)
         {
-            std::this_thread::sleep_for(std::chrono::microseconds(10));
+            precise_sleep(std::chrono::microseconds(10));
         }
         else
         {
@@ -241,7 +317,7 @@ struct AggressiveBackoff
             {
                 delay_us = 100000;
             }
-            std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+            precise_sleep(std::chrono::microseconds(delay_us));
         }
     }
 };
