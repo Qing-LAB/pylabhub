@@ -26,6 +26,13 @@ set(_install_dir "${PREREQ_INSTALL_DIR}")
 pylabhub_sanitize_compiler_flags("CMAKE_C_FLAGS" _clean_c_flags)
 pylabhub_sanitize_compiler_flags("CMAKE_CXX_FLAGS" _clean_cxx_flags)
 
+# LuaJIT archive is linked into pylabhub-utils.so (shared library) so it
+# must be compiled with -fPIC. Without this, the linker fails with
+# "relocation R_X86_64_TPOFF32 ... can not be used when making a shared object".
+if(NOT WIN32)
+  string(APPEND _clean_c_flags " -fPIC")
+endif()
+
 # LuaJIT uses Makefiles, not CMake — we need a POSIX make program regardless
 # of CMAKE_MAKE_PROGRAM (which is 'ninja' when using -G Ninja).
 find_program(_LUAJIT_MAKE_PROGRAM NAMES gmake make REQUIRED)
