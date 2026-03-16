@@ -3,6 +3,7 @@
  * @brief Shared Argon2id + XSalsa20-Poly1305 vault crypto implementation.
  */
 #include "vault_crypto.hpp"
+#include "plh_platform.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -10,6 +11,12 @@
 #include <sodium.h>
 #include <stdexcept>
 #include <vector>
+
+#if defined(PYLABHUB_PLATFORM_WIN64)
+#include <aclapi.h>
+#include <sddl.h>
+#pragma comment(lib, "advapi32.lib")
+#endif
 
 namespace fs = std::filesystem;
 
@@ -20,6 +27,54 @@ namespace pylabhub::utils::detail
 
 namespace
 {
+
+/// Set file to owner-only access (equivalent to chmod 0600).
+/// On POSIX this uses std::filesystem::permissions; on Windows it sets a DACL
+/// granting GENERIC_ALL only to the current user.
+void set_owner_only_permissions(const fs::path &path)
+{
+#if defined(PYLABHUB_PLATFORM_WIN64)
+    // Build SDDL: Owner=current user, DACL=only owner has full access.
+    // "D:P(A;;GA;;;OW)" = DACL Protected, Allow Generic All to Owner.
+    // We use the SID of the current process token for precision.
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+        return;
+
+    DWORD len = 0;
+    GetTokenInformation(token, TokenUser, nullptr, 0, &len);
+    std::vector<uint8_t> buf(len);
+    if (!GetTokenInformation(token, TokenUser, buf.data(), len, &len))
+    {
+        CloseHandle(token);
+        return;
+    }
+    CloseHandle(token);
+
+    auto *user = reinterpret_cast<TOKEN_USER *>(buf.data());
+    PSID sid = user->User.Sid;
+
+    EXPLICIT_ACCESS_W ea{};
+    ea.grfAccessPermissions = GENERIC_ALL;
+    ea.grfAccessMode = SET_ACCESS;
+    ea.grfInheritance = NO_INHERITANCE;
+    ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+    ea.Trustee.ptstrName = reinterpret_cast<LPWSTR>(sid);
+
+    PACL acl = nullptr;
+    if (SetEntriesInAclW(1, &ea, nullptr, &acl) == ERROR_SUCCESS)
+    {
+        SetNamedSecurityInfoW(const_cast<wchar_t *>(path.wstring().c_str()), SE_FILE_OBJECT,
+                              DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                              nullptr, nullptr, acl, nullptr);
+        LocalFree(acl);
+    }
+#else
+    fs::permissions(path,
+                    fs::perms::owner_read | fs::perms::owner_write,
+                    fs::perm_options::replace);
+#endif
+}
 
 void write_secure_file(const fs::path &path, const std::vector<uint8_t> &data)
 {
@@ -33,9 +88,7 @@ void write_secure_file(const fs::path &path, const std::vector<uint8_t> &data)
         if (!ofs)
             throw std::runtime_error("vault: write failed: " + path.string());
     } // flush + close before chmod
-    fs::permissions(path,
-                    fs::perms::owner_read | fs::perms::owner_write,
-                    fs::perm_options::replace);
+    set_owner_only_permissions(path);
 }
 
 std::vector<uint8_t> read_file(const fs::path &path)

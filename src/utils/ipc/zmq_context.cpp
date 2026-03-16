@@ -1,7 +1,10 @@
 #include "utils/zmq_context.hpp"
+#include "plh_platform.hpp"
 #include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
 #include <atomic>
+#include <chrono>
+#include <thread>
 
 namespace pylabhub::hub
 {
@@ -71,6 +74,15 @@ void zmq_context_shutdown()
     // zmq_ctx_term() normally returns quickly.  shutdown() handles the edge case
     // where a socket was explicitly set to LINGER > 0 after creation.
     ctx->shutdown();
+
+#if defined(PYLABHUB_PLATFORM_WIN64)
+    // Yield to let I/O threads process the ETERM signal before context
+    // destruction.  Without this, libzmq's wepoll layer may hit an
+    // errno_assert in epoll_t::rm_fd() when epoll_ctl(EPOLL_CTL_DEL) is
+    // called on an already-closed fd during zmq_ctx_term() teardown.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+#endif
+
     // [REVIEW-22] Store nullptr BEFORE delete so no other thread can observe a
     // valid-looking pointer to freed memory between delete and the store.
     g_context.store(nullptr, std::memory_order_release);
