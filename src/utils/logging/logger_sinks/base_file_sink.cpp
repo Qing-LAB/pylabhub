@@ -10,6 +10,10 @@
 #include <unistd.h>
 #endif
 
+#if defined(PYLABHUB_PLATFORM_WIN64)
+#include "utils/format_tools.hpp" // win32_to_long_path()
+#endif
+
 #include "utils/logger_sinks/base_file_sink.hpp"
 
 namespace pylabhub::utils

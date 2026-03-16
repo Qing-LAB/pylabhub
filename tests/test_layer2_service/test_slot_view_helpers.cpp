@@ -424,7 +424,7 @@ TEST_F(SlotViewHelpersTest, WriteSide_ArrayModule_DataZeroCopy)
     // Use a writable memoryview backed by our C++ buffer
     std::array<double, 3> buf = {0.0, 0.0, 0.0};
     auto mv = py::memoryview::from_memory(buf.data(),
-                                           static_cast<ssize_t>(sizeof(buf)),
+                                           static_cast<py::ssize_t>(sizeof(buf)),
                                            /*readonly=*/false);
 
     py::dict ns;
@@ -451,7 +451,7 @@ TEST_F(SlotViewHelpersTest, ReadSide_ArrayModule_DataReadable_AndWriteBlocked)
 {
     std::array<double, 3> buf = {10.0, 20.0, 30.0};
     auto mv = py::memoryview::from_memory(buf.data(),
-                                           static_cast<ssize_t>(sizeof(buf)),
+                                           static_cast<py::ssize_t>(sizeof(buf)),
                                            /*readonly=*/true);
 
     py::dict ns;

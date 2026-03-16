@@ -34,7 +34,7 @@ static ProcessHandle spawn_worker_process(const std::string &exe_path, const std
                                           bool redirect_stderr_to_console)
 {
 #if defined(PLATFORM_WIN64)
-    std::string cmdline = fmt::format("\"{}\" {}", exe_path, mode);
+    std::string cmdline = fmt::format("\"{}\" \"{}\"", exe_path, mode);
     for (const auto &a : args)
         cmdline += fmt::format(" \"{}\"", a);
 
@@ -185,7 +185,7 @@ static ProcessHandle spawn_worker_process_with_ready_pipe(const std::string &exe
     std::string handle_val = std::to_string(reinterpret_cast<uintptr_t>(hWrite));
     SetEnvironmentVariableA("PLH_TEST_READY_HANDLE", handle_val.c_str());
 
-    std::string cmdline = fmt::format("\"{}\" {}", exe_path, mode);
+    std::string cmdline = fmt::format("\"{}\" \"{}\"", exe_path, mode);
     for (const auto &a : args)
         cmdline += fmt::format(" \"{}\"", a);
     std::wstring wcmd = pylabhub::format_tools::s2ws(cmdline);
@@ -403,8 +403,13 @@ WorkerProcess::WorkerProcess(const std::string &exe_path, const std::string &mod
     : redirect_stderr_to_console_(redirect_stderr_to_console),
       with_ready_signal_(with_ready_signal)
 {
-    auto base_name = fs::path(exe_path).filename().string() + "_" + mode;
-    std::replace(base_name.begin(), base_name.end(), '.', '_');
+    auto base_name = fs::path(exe_path).filename().string() + "_" + fs::path(mode).filename().string();
+    // Sanitize: replace characters invalid in Windows filenames.
+    for (char &c : base_name)
+    {
+        if (c == '.' || c == ':' || c == '\\' || c == '/' || c == ' ')
+            c = '_';
+    }
     auto ts = std::chrono::high_resolution_clock::now().time_since_epoch().count();
 
     stdout_path_ = fs::temp_directory_path() / fmt::format("{}_{}_stdout.log", base_name, ts);
