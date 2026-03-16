@@ -53,8 +53,12 @@ inline bool is_stdin_tty()
 {
 #if defined(PYLABHUB_IS_POSIX)
     return ::isatty(STDIN_FILENO) != 0;
-#elif defined(_WIN32)
-    return ::_isatty(::_fileno(stdin)) != 0;
+#elif defined(PYLABHUB_PLATFORM_WIN64)
+    // _isatty() returns true for any character device (including NUL),
+    // which gives a false positive when stdin is redirected to NUL.
+    // GetConsoleMode() only succeeds for actual console handles.
+    DWORD mode = 0;
+    return GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &mode) != 0;
 #else
     return false;
 #endif
