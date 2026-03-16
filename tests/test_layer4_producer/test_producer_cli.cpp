@@ -35,7 +35,8 @@ static fs::path unique_temp_dir(const std::string &prefix)
     const int id = counter.fetch_add(1);
     fs::path dir = fs::temp_directory_path()
                    / ("plh_prodcli_" + prefix + "_" + std::to_string(id));
-    fs::remove_all(dir);          // start fresh regardless of previous runs
+    std::error_code ec;
+    fs::remove_all(dir, ec);      // best-effort cleanup of previous runs
     fs::create_directories(dir);
     return dir;
 }
@@ -76,7 +77,8 @@ TEST_F(ProducerCliTest, Init_CreatesDirectoryStructure)
     EXPECT_TRUE(fs::is_directory(tmp / "logs"))              << "logs/ missing";
     EXPECT_TRUE(fs::is_directory(tmp / "run"))               << "run/ missing";
 
-    fs::remove_all(tmp);
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
 }
 
 /// --init default values: uid starts with PROD-, script.path=".", stop_on_script_error=false.
@@ -111,7 +113,8 @@ TEST_F(ProducerCliTest, Init_DefaultValues)
     EXPECT_FALSE(j.contains("interval_ms"))
         << "Generated config contains obsolete 'interval_ms'";
 
-    fs::remove_all(tmp);
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
 }
 
 /// --keygen creates the vault file at the path specified in auth.keyfile.
@@ -127,13 +130,15 @@ TEST_F(ProducerCliTest, Keygen_WritesVaultFile)
         "  \"producer\": {\n"
         "    \"uid\": \"PROD-KGTEST-00000001\",\n"
         "    \"name\": \"KgTest\",\n"
-        "    \"auth\": { \"keyfile\": \"" + vault_path.string() + "\" }\n"
+        "    \"auth\": { \"keyfile\": \"" + vault_path.generic_string() + "\" }\n"
         "  },\n"
         "  \"channel\": \"lab.keygen.test\"\n"
         "}\n");
 
     // ActorVault::create() creates parent dirs automatically
-#if defined(PYLABHUB_IS_POSIX)
+#if defined(PYLABHUB_PLATFORM_WIN64)
+    _putenv_s("PYLABHUB_ACTOR_PASSWORD", "test-vault-password");
+#else
     ::setenv("PYLABHUB_ACTOR_PASSWORD", "test-vault-password", 1);
 #endif
 
@@ -142,7 +147,9 @@ TEST_F(ProducerCliTest, Keygen_WritesVaultFile)
     EXPECT_EQ(proc.wait_for_exit(), 0)
         << "stderr:\n" << proc.get_stderr();
 
-#if defined(PYLABHUB_IS_POSIX)
+#if defined(PYLABHUB_PLATFORM_WIN64)
+    _putenv_s("PYLABHUB_ACTOR_PASSWORD", "");
+#else
     ::unsetenv("PYLABHUB_ACTOR_PASSWORD");
 #endif
 
@@ -156,7 +163,8 @@ TEST_F(ProducerCliTest, Keygen_WritesVaultFile)
     EXPECT_NE(out.find("public_key"), std::string::npos)
         << "Expected 'public_key' in stdout, got:\n" << out;
 
-    fs::remove_all(tmp);
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
 }
 
 /// --validate loads config + script, prints "Validation passed.", exits 0.
@@ -188,7 +196,7 @@ TEST_F(ProducerCliTest, Validate_ExitZero)
         "{\n"
         "  \"producer\": { \"uid\": \"PROD-VALTEST-00000001\", \"name\": \"ValTest\" },\n"
         "  \"channel\": \"lab.validate.test\",\n"
-        "  \"script\": { \"path\": \"" + tmp.string() + "\", \"type\": \"python\" }\n"
+        "  \"script\": { \"path\": \"" + tmp.generic_string() + "\", \"type\": \"python\" }\n"
         "}\n");
 
     WorkerProcess proc(producer_binary(), "--config",
@@ -200,7 +208,8 @@ TEST_F(ProducerCliTest, Validate_ExitZero)
     EXPECT_NE(proc.get_stdout().find("Validation passed"), std::string::npos)
         << "Expected 'Validation passed' in stdout, got:\n" << proc.get_stdout();
 
-    fs::remove_all(tmp);
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
 }
 
 /// Malformed JSON config: binary exits non-zero and prints "Config error" to stderr.
@@ -217,7 +226,8 @@ TEST_F(ProducerCliTest, Config_MalformedJson_NonZeroExit)
     EXPECT_NE(proc.get_stderr().find("Config error"), std::string::npos)
         << "Expected 'Config error' in stderr, got:\n" << proc.get_stderr();
 
-    fs::remove_all(tmp);
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
 }
 
 /// Non-existent config file: binary exits non-zero and writes error to stderr.
@@ -243,7 +253,8 @@ TEST_F(ProducerCliTest, Init_NonInteractiveNoName_ExitsWithError)
     EXPECT_NE(proc.get_stderr().find("--name"), std::string::npos)
         << "Expected '--name' in error message, got:\n" << proc.get_stderr();
 
-    fs::remove_all(tmp);
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
 }
 
 /// After --init, RoleDirectory::has_standard_layout() returns true.
@@ -259,7 +270,8 @@ TEST_F(ProducerCliTest, Init_HasStandardLayout)
     EXPECT_TRUE(role_dir.has_standard_layout())
         << "has_standard_layout() returned false after --init";
 
-    fs::remove_all(tmp);
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
 }
 
 /// After --init, default_keyfile(uid) resolves to vault/<uid>.vault inside the role dir.
@@ -289,5 +301,6 @@ TEST_F(ProducerCliTest, Init_DefaultKeyfileInsideVault)
     EXPECT_EQ(keyfile_path.filename().string(), uid + ".vault")
         << "Unexpected default_keyfile filename: " << keyfile_path.filename();
 
-    fs::remove_all(tmp);
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
 }

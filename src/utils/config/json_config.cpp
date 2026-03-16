@@ -213,6 +213,19 @@ bool JsonConfig::init(const std::filesystem::path &configFile, bool createIfMiss
         {
             std::lock_guard<std::mutex> init_guard(pImpl->initMutex);
 
+            // Reject empty paths explicitly. On Linux, fs::is_symlink("") throws,
+            // which is caught below — but on Windows it silently returns false,
+            // allowing init to succeed with an empty path. Guard here for consistency.
+            if (configFile.empty())
+            {
+                if (err_code != nullptr)
+                {
+                    *err_code = std::make_error_code(std::errc::invalid_argument);
+                }
+                LOGGER_ERROR("JsonConfig::init: config path is empty, refusing to initialize.");
+                return false;
+            }
+
             // Security: refuse to operate on a path that is a symbolic link.
             // This prevents attacks where the config file is replaced with a symlink
             // to overwrite a sensitive system file.
