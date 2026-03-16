@@ -56,12 +56,14 @@ inline std::vector<ZmqSchemaField> blob_schema(size_t n)
     return {{"bytes", 1, static_cast<uint32_t>(n)}};
 }
 
-/// Separate port range for schema-mode tests: 48000 + (pid % 1460) * 12 + offset.
-/// Max offset in use is 10, so max port = 48000 + 1459*12 + 10 = 65518 < 65535.
-/// (pid%2000 would overflow: 48000 + 1999*12 = 71988 > 65535.)
+/// Deterministic endpoint for factory-only tests (no bind/start).
+/// These tests only create queue objects to test construction and schema logic;
+/// they never call start() so the port is never actually bound.
+/// Tests that bind must use "tcp://127.0.0.1:0" + actual_endpoint() instead.
 std::string schema_ep(int offset = 0)
 {
-    int base_port = 48000 + static_cast<int>(getpid() % 1460) * 12 + offset;
+    constexpr int kPidModulus = 1459; // prime — reduces hash collisions in parallel runs
+    int base_port = 48000 + static_cast<int>(pylabhub::platform::get_pid() % kPidModulus) * 12 + offset;
     return "tcp://127.0.0.1:" + std::to_string(base_port);
 }
 
@@ -1665,8 +1667,8 @@ TEST_F(ZmqQueueTest, ActualEndpoint_BeforeStart_ReturnsConfiguredEndpoint)
 {
     // actual_endpoint() before start() must return the configured endpoint string.
     // This covers the fallback path: pImpl->actual_endpoint.empty() → pImpl->endpoint.
-    // (After start() with port 0, it returns the OS-assigned port instead.)
-    const std::string ep = schema_ep(21);
+    // After start() with port 0, it returns the OS-assigned port instead.
+    const std::string ep = "tcp://127.0.0.1:0";
     auto push = ZmqQueue::push_to(ep, blob_schema(8), "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     EXPECT_FALSE(push->is_running());
@@ -1674,9 +1676,14 @@ TEST_F(ZmqQueueTest, ActualEndpoint_BeforeStart_ReturnsConfiguredEndpoint)
     // Before start(), actual_endpoint() returns the configured endpoint.
     EXPECT_EQ(static_cast<ZmqQueue*>(push.get())->actual_endpoint(), ep);
 
-    // After start(), actual_endpoint() returns the bound address (same for non-zero port).
+    // After start(), actual_endpoint() returns the OS-assigned port (differs from ":0").
     ASSERT_TRUE(push->start());
-    EXPECT_EQ(static_cast<ZmqQueue*>(push.get())->actual_endpoint(), ep);
+    const std::string bound_ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    EXPECT_NE(bound_ep, ep) << "After start(), actual_endpoint() should return the OS-assigned port";
+    EXPECT_TRUE(bound_ep.find("tcp://127.0.0.1:") == 0) << "Bound endpoint should be tcp://127.0.0.1:<port>";
+    // Verify the assigned port is a valid non-zero port.
+    const int port = std::stoi(bound_ep.substr(std::string("tcp://127.0.0.1:").size()));
+    EXPECT_GT(port, 0) << "OS-assigned port must be non-zero";
     push->stop();
 }
 
