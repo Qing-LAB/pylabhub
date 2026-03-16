@@ -26,9 +26,9 @@
 #include "shared_test_helpers.h"
 #include <gtest/gtest.h>
 
+#include "plh_platform.hpp"
 #include <filesystem>
 #include <string>
-#include <unistd.h>
 
 using namespace pylabhub::tests;
 namespace fs = std::filesystem;
@@ -43,7 +43,7 @@ TEST_F(DatahubStressRaiiTest, MultiProcessFullCapacityStress)
 {
     // Channel name includes PID so concurrent test runs don't conflict.
     const std::string channel =
-        "stress_raii_full_" + std::to_string(static_cast<unsigned long>(getpid()));
+        "stress_raii_full_" + std::to_string(pylabhub::platform::get_pid());
 
     // Orchestrator spawns producer + 2 consumers; coordinates via DataBlock ready signal.
     auto proc = SpawnWorker("stress_raii.multi_process_stress_orchestrator", {channel});
@@ -55,7 +55,7 @@ TEST_F(DatahubStressRaiiTest, MultiProcessFullCapacityStress)
 TEST_F(DatahubStressRaiiTest, SingleReaderBackpressure)
 {
     const std::string channel =
-        "stress_raii_bp_" + std::to_string(static_cast<unsigned long>(getpid()));
+        "stress_raii_bp_" + std::to_string(pylabhub::platform::get_pid());
 
     auto proc = SpawnWorker("stress_raii.backpressure_orchestrator", {channel});
     ExpectWorkerOk(proc);

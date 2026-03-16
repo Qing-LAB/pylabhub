@@ -32,6 +32,17 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
   snapshot_cache_var(WITH_LIBSODIUM_STATIC)
 
   # --- 2. Set options for the isolated build scope ---
+  snapshot_cache_var(POLLER)
+  snapshot_cache_var(ZMQ_HAVE_IPC)
+  if(MSVC)
+    # libzmq's wepoll (epoll emulation via IOCP) has a teardown bug:
+    # epoll_ctl(EPOLL_CTL_DEL) returns EINVAL during zmq_ctx_term() when
+    # the socket fd is already closed, hitting errno_assert → abort().
+    # libzmq's own poll.hpp recommends using select on Windows instead.
+    # IPC transport requires epoll, but we only use TCP — disable IPC.
+    set(POLLER "select" CACHE STRING "pylab: avoid wepoll teardown crash" FORCE)
+    set(ZMQ_HAVE_IPC OFF CACHE BOOL "pylab: disable IPC (not used, incompatible with select poller)" FORCE)
+  endif()
   set(BUILD_STATIC ON CACHE BOOL "pylab: build static libzmq" FORCE)
   set(BUILD_SHARED ON CACHE BOOL "pylab: build shared libzmq as a workaround" FORCE)
   set(ZMQ_BUILD_TESTS OFF CACHE BOOL "pylab: disable libzmq tests" FORCE)
@@ -101,6 +112,8 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libzmq/CMakeLists.txt")
   restore_cache_var(ENABLE_CURVE BOOL)
   restore_cache_var(WITH_LIBSODIUM BOOL)
   restore_cache_var(WITH_LIBSODIUM_STATIC BOOL)
+  restore_cache_var(POLLER STRING)
+  restore_cache_var(ZMQ_HAVE_IPC BOOL)
 
   message(STATUS "[pylabhub-third-party] libzmq configuration complete.")
 else()

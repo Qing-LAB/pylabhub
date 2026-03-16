@@ -28,7 +28,7 @@
 
 #if defined(_MSC_VER)
 #include <BaseTsd.h>
-typedef SSIZE_T ssize_t;
+typedef SSIZE_T ptrdiff_t;
 #endif
 
 #include <fmt/chrono.h>
@@ -451,8 +451,8 @@ void Logger::Impl::worker_loop()
         }
 
         // --- Find last SetSinkCommand ---
-        ssize_t last_set_sink_idx = -1;
-        for (ssize_t i = static_cast<ssize_t>(local_queue.size()) - 1; i >= 0; --i)
+        ptrdiff_t last_set_sink_idx = -1;
+        for (ptrdiff_t i = static_cast<ptrdiff_t>(local_queue.size()) - 1; i >= 0; --i)
         {
             if (std::holds_alternative<SetSinkCommand>(local_queue[i]))
             {
@@ -462,7 +462,7 @@ void Logger::Impl::worker_loop()
         }
 
         // --- Process the dequeued batch ---
-        for (ssize_t i = 0; i < static_cast<ssize_t>(local_queue.size()); ++i)
+        for (ptrdiff_t i = 0; i < static_cast<ptrdiff_t>(local_queue.size()); ++i)
         {
             try
             {

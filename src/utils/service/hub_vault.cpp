@@ -6,6 +6,7 @@
  * This file handles only hub-specific payload structure (broker keypair + admin token).
  */
 #include "utils/hub_vault.hpp"
+#include "plh_platform.hpp"
 
 #include "vault_crypto.hpp"
 
@@ -18,6 +19,12 @@
 #include <fstream>
 #include <stdexcept>
 #include <string>
+
+#if defined(PYLABHUB_PLATFORM_WIN64)
+#include <aclapi.h>
+#include <sddl.h>
+#pragma comment(lib, "advapi32.lib")
+#endif
 
 namespace fs = std::filesystem;
 using json   = nlohmann::json;
@@ -171,10 +178,57 @@ void HubVault::publish_public_key(const fs::path &hub_dir) const
         if (!ofs)
             throw std::runtime_error("HubVault: write failed: " + pubkey_path.string());
     }
+#if defined(PYLABHUB_PLATFORM_WIN64)
+    // Windows: set DACL granting owner full access + everyone read.
+    {
+        WELL_KNOWN_SID_TYPE everyone_type = WinWorldSid;
+        BYTE everyone_sid[SECURITY_MAX_SID_SIZE];
+        DWORD sid_size = sizeof(everyone_sid);
+        CreateWellKnownSid(everyone_type, nullptr, everyone_sid, &sid_size);
+
+        HANDLE token = nullptr;
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+        {
+            DWORD len = 0;
+            GetTokenInformation(token, TokenUser, nullptr, 0, &len);
+            std::vector<uint8_t> buf(len);
+            if (GetTokenInformation(token, TokenUser, buf.data(), len, &len))
+            {
+                auto *user = reinterpret_cast<TOKEN_USER *>(buf.data());
+
+                EXPLICIT_ACCESS_W ea[2]{};
+                // Owner: full access
+                ea[0].grfAccessPermissions = GENERIC_ALL;
+                ea[0].grfAccessMode = SET_ACCESS;
+                ea[0].grfInheritance = NO_INHERITANCE;
+                ea[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+                ea[0].Trustee.ptstrName = reinterpret_cast<LPWSTR>(user->User.Sid);
+                // Everyone: read
+                ea[1].grfAccessPermissions = GENERIC_READ;
+                ea[1].grfAccessMode = SET_ACCESS;
+                ea[1].grfInheritance = NO_INHERITANCE;
+                ea[1].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+                ea[1].Trustee.ptstrName = reinterpret_cast<LPWSTR>(everyone_sid);
+
+                PACL acl = nullptr;
+                if (SetEntriesInAclW(2, ea, nullptr, &acl) == ERROR_SUCCESS)
+                {
+                    SetNamedSecurityInfoW(
+                        const_cast<wchar_t *>(pubkey_path.wstring().c_str()), SE_FILE_OBJECT,
+                        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                        nullptr, nullptr, acl, nullptr);
+                    LocalFree(acl);
+                }
+            }
+            CloseHandle(token);
+        }
+    }
+#else
     fs::permissions(pubkey_path,
                     fs::perms::owner_read | fs::perms::owner_write |
                         fs::perms::group_read | fs::perms::others_read,
                     fs::perm_options::replace);
+#endif
 }
 
 } // namespace pylabhub::utils
