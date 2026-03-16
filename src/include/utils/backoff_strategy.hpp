@@ -168,8 +168,14 @@ struct ThreePhaseBackoff
         else
         {
             // Phase 3: Linear backoff - reduce memory bus contention
-            // Latency = iteration * 10us (linear growth)
-            precise_sleep(std::chrono::microseconds(static_cast<long>(iteration * 10)));
+            // Latency = iteration * 10us (linear growth), capped at kMaxPhase3DelayUs.
+            // Without the cap, iteration counts in the thousands cause multi-second
+            // sleeps that collapse throughput under sustained contention.
+            static constexpr long kMaxPhase3DelayUs = 10000; // 10ms
+            long delay_us = static_cast<long>(iteration) * 10;
+            if (delay_us > kMaxPhase3DelayUs)
+                delay_us = kMaxPhase3DelayUs;
+            precise_sleep(std::chrono::microseconds(delay_us));
         }
     }
 };

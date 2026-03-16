@@ -465,13 +465,17 @@ TEST(InProcessSpinStateTest, ManyConcurrentProducerConsumerPairs)
                     std::lock_guard<std::mutex> lk(q_mutex);
                     if (q.empty() && done.load(std::memory_order_acquire))
                         break;
-                    if (q.empty())
+                    if (!q.empty())
                     {
-                        std::this_thread::sleep_for(std::chrono::microseconds(100));
-                        continue;
+                        fut = std::move(q.front());
+                        q.pop_front();
                     }
-                    fut = std::move(q.front());
-                    q.pop_front();
+                }
+                // Release mutex before sleeping to avoid blocking producers.
+                if (!fut.valid())
+                {
+                    std::this_thread::yield();
+                    continue;
                 }
                 if (!fut.valid())
                     continue;
