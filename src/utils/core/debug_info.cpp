@@ -13,6 +13,8 @@
 #include "plh_platform.hpp"
 #include "utils/debug_info.hpp"
 
+#include <array>
+
 #if defined(PYLABHUB_PLATFORM_WIN64)
 
 #if defined(_MSC_VER)

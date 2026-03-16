@@ -115,7 +115,7 @@ void LuaScriptHost::do_finalize() noexcept
     L_ = nullptr;
 
     // Clear thread-local state (we own this thread in direct mode).
-    g_script_thread_state = {};
+    g_script_thread_state() = {};
 
     LOGGER_INFO("LuaScriptHost: finalized");
 }

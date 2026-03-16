@@ -119,7 +119,8 @@ std::unique_ptr<pylabhub::utils::LifecycleGuard> HubConfigScriptConfiguredTest::
 TEST_F(HubConfigScriptConfiguredTest, HubScriptDirResolved)
 {
     // hub_script_dir() = hub_dir / "my_script" / "python"
-    const fs::path expected = s_hub_dir_ / "my_script" / "python";
+    // Use weakly_canonical to normalize the path (resolves 8.3 short names on Windows).
+    const fs::path expected = fs::weakly_canonical(s_hub_dir_ / "my_script" / "python");
     EXPECT_EQ(cfg().hub_script_dir(), expected);
 }
 

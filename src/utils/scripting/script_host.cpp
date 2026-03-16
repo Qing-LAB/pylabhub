@@ -12,7 +12,11 @@ namespace pylabhub::utils
 // Thread-local state definition
 // ---------------------------------------------------------------------------
 
-thread_local ScriptHostThreadState g_script_thread_state;
+ScriptHostThreadState &g_script_thread_state() noexcept
+{
+    static thread_local ScriptHostThreadState instance;
+    return instance;
+}
 
 // ---------------------------------------------------------------------------
 // ScriptHost::signal_ready_
@@ -37,8 +41,8 @@ void ScriptHost::signal_ready_()
 
 void ScriptHost::thread_fn_(const std::filesystem::path& script_path)
 {
-    g_script_thread_state.owner                = this;
-    g_script_thread_state.is_interpreter_thread = true;
+    g_script_thread_state().owner                = this;
+    g_script_thread_state().is_interpreter_thread = true;
 
     try
     {
@@ -76,7 +80,7 @@ void ScriptHost::thread_fn_(const std::filesystem::path& script_path)
     }
 
     // Clear thread-local state.
-    g_script_thread_state = {};
+    g_script_thread_state() = {};
 }
 
 // ---------------------------------------------------------------------------
@@ -93,13 +97,13 @@ void ScriptHost::base_startup_(const std::filesystem::path& script_path)
     else
     {
         // Direct mode: caller's thread owns the runtime.
-        g_script_thread_state.owner                = this;
-        g_script_thread_state.is_interpreter_thread = true;
+        g_script_thread_state().owner                = this;
+        g_script_thread_state().is_interpreter_thread = true;
 
         const bool ok = do_initialize(script_path);
         if (!ok)
         {
-            g_script_thread_state = {};
+            g_script_thread_state() = {};
             throw std::runtime_error("ScriptHost: do_initialize() failed");
         }
 

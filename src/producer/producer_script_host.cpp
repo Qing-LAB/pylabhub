@@ -433,7 +433,7 @@ bool ProducerScriptHost::start_role()
             fz != nullptr && queue_->flexzone_size() > 0)
         {
             const size_t fz_sz = queue_->flexzone_size();
-            fz_mv_ = py::memoryview::from_memory(fz, static_cast<ssize_t>(fz_sz),
+            fz_mv_ = py::memoryview::from_memory(fz, static_cast<py::ssize_t>(fz_sz),
                                                  /*readonly=*/false);
 
             if (core_.fz_spec.exposure == scripting::SlotExposure::Ctypes)
@@ -454,7 +454,7 @@ bool ProducerScriptHost::start_role()
                     const size_t items =
                         fz_sz / fz_type_.attr("itemsize").cast<size_t>();
                     fz_inst_ = np.attr("ndarray")(
-                        py::make_tuple(static_cast<ssize_t>(items)), fz_type_, fz_mv_);
+                        py::make_tuple(static_cast<py::ssize_t>(items)), fz_type_, fz_mv_);
                 }
             }
         }
@@ -833,7 +833,7 @@ py::object ProducerScriptHost::make_inbox_slot_view_(const void* data, size_t si
 {
     auto mv = py::memoryview::from_memory(
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-        const_cast<void*>(data), static_cast<ssize_t>(size), /*readonly=*/true);
+        const_cast<void*>(data), static_cast<py::ssize_t>(size), /*readonly=*/true);
     if (inbox_spec_.exposure == scripting::SlotExposure::Ctypes)
         return inbox_type_.attr("from_buffer_copy")(mv);
     // NumpyArray or raw: return bytes view

@@ -33,9 +33,12 @@ if(NOT WIN32)
   string(APPEND _clean_c_flags " -fPIC")
 endif()
 
-# LuaJIT uses Makefiles, not CMake — we need a POSIX make program regardless
+# LuaJIT uses Makefiles on POSIX — we need a POSIX make program regardless
 # of CMAKE_MAKE_PROGRAM (which is 'ninja' when using -G Ninja).
-find_program(_LUAJIT_MAKE_PROGRAM NAMES gmake make REQUIRED)
+# On MSVC, the build uses msvcbuild.bat instead, so make is not required.
+if(NOT MSVC)
+  find_program(_LUAJIT_MAKE_PROGRAM NAMES gmake make REQUIRED)
+endif()
 
 # Parallel build args
 if(DEFINED CMAKE_BUILD_PARALLEL_LEVEL AND CMAKE_BUILD_PARALLEL_LEVEL)

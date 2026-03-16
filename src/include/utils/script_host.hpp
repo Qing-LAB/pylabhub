@@ -100,8 +100,8 @@ struct ScriptHostThreadState
 };
 
 /// Thread-local state — one instance per OS thread, zero-initialized.
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-PYLABHUB_UTILS_EXPORT extern thread_local ScriptHostThreadState g_script_thread_state;
+/// Accessed via function to avoid MSVC C2492 (thread_local + dllexport).
+PYLABHUB_UTILS_EXPORT ScriptHostThreadState &g_script_thread_state() noexcept;
 
 // ---------------------------------------------------------------------------
 // ScriptHost abstract base

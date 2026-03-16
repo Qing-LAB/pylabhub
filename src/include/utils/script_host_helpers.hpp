@@ -224,7 +224,7 @@ inline py::object make_slot_view(const SchemaSpec &spec, const py::object &type,
         // is not blocked at the ctypes level — a known limitation of the approach.
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
         auto mv = py::memoryview::from_memory(const_cast<void *>(data),
-                                               static_cast<ssize_t>(size),
+                                               static_cast<py::ssize_t>(size),
                                                /*readonly=*/false);
         return type.attr("from_buffer")(mv);
     }
@@ -234,7 +234,7 @@ inline py::object make_slot_view(const SchemaSpec &spec, const py::object &type,
     // flag and sets ndarray.flags.writeable = False, raising ValueError on write.
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
     auto mv = py::memoryview::from_memory(const_cast<void *>(data),
-                                           static_cast<ssize_t>(size),
+                                           static_cast<py::ssize_t>(size),
                                            /*readonly=*/is_read_side);
     py::module_ np = py::module_::import("numpy");
     if (!spec.numpy_shape.empty())
@@ -245,7 +245,7 @@ inline py::object make_slot_view(const SchemaSpec &spec, const py::object &type,
     }
     const size_t itemsize = type.attr("itemsize").cast<size_t>();
     const size_t count    = (itemsize > 0) ? (size / itemsize) : 0;
-    return np.attr("ndarray")(py::make_tuple(static_cast<ssize_t>(count)), type, mv);
+    return np.attr("ndarray")(py::make_tuple(static_cast<py::ssize_t>(count)), type, mv);
 }
 
 // ── Read-only ctypes wrapper ──────────────────────────────────────────────────

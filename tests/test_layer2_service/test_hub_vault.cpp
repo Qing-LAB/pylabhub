@@ -10,8 +10,9 @@
  * hardware. Each test that invokes create() or open() will therefore take ~0.5–1 s.
  * The suite timeout is set to 120 s to accommodate this.
  */
-#include "utils/uuid_utils.hpp"
+#include "plh_platform.hpp"
 #include "utils/hub_vault.hpp"
+#include "utils/uuid_utils.hpp"
 
 #include <gtest/gtest.h>
 
@@ -21,7 +22,41 @@
 #include <stdexcept>
 #include <string>
 
+#if defined(PYLABHUB_PLATFORM_WIN64)
+#include <aclapi.h>
+#pragma comment(lib, "advapi32.lib")
+#endif
+
 namespace fs = std::filesystem;
+
+#if defined(PYLABHUB_PLATFORM_WIN64)
+/// Check whether a well-known SID has specific access rights on a file.
+static bool win32_sid_has_access(const fs::path &path, WELL_KNOWN_SID_TYPE sid_type,
+                                 DWORD desired_access)
+{
+    BYTE sid[SECURITY_MAX_SID_SIZE];
+    DWORD sid_size = sizeof(sid);
+    if (!CreateWellKnownSid(sid_type, nullptr, sid, &sid_size))
+        return false;
+
+    PACL dacl = nullptr;
+    PSECURITY_DESCRIPTOR sd = nullptr;
+    if (GetNamedSecurityInfoW(path.wstring().c_str(), SE_FILE_OBJECT,
+                              DACL_SECURITY_INFORMATION, nullptr, nullptr, &dacl, nullptr,
+                              &sd) != ERROR_SUCCESS)
+        return false;
+
+    TRUSTEE_W trustee{};
+    trustee.TrusteeForm = TRUSTEE_IS_SID;
+    trustee.ptstrName = reinterpret_cast<LPWSTR>(sid);
+
+    ACCESS_MASK granted = 0;
+    GetEffectiveRightsFromAclW(dacl, &trustee, &granted);
+    LocalFree(sd);
+
+    return (granted & desired_access) == desired_access;
+}
+#endif
 using pylabhub::utils::HubVault;
 using pylabhub::utils::generate_uuid4;
 
@@ -105,12 +140,22 @@ TEST_F(HubVaultTest, CreateVaultFileHasRestrictedPermissions)
     HubVault::create(hub_dir_, hub_uid_, kPassword);
 
     const fs::path vault_path = hub_dir_ / "hub.vault";
+#if defined(PYLABHUB_PLATFORM_WIN64)
+    // Windows: verify the DACL denies access to the "Everyone" group.
+    // fs::permissions() cannot represent POSIX group/other bits on Windows;
+    // the actual security enforcement is via Win32 ACLs.
+    EXPECT_FALSE(win32_sid_has_access(vault_path, WinWorldSid, FILE_GENERIC_READ))
+        << "Everyone should NOT have read access to hub.vault";
+    EXPECT_FALSE(win32_sid_has_access(vault_path, WinWorldSid, FILE_GENERIC_WRITE))
+        << "Everyone should NOT have write access to hub.vault";
+#else
     const fs::perms p = fs::status(vault_path).permissions();
     // Must be owner read/write only (0600) — no group/other bits.
     EXPECT_EQ(p & fs::perms::group_read,    fs::perms::none) << "group_read should be off";
     EXPECT_EQ(p & fs::perms::group_write,   fs::perms::none) << "group_write should be off";
     EXPECT_EQ(p & fs::perms::others_read,   fs::perms::none) << "others_read should be off";
     EXPECT_EQ(p & fs::perms::others_write,  fs::perms::none) << "others_write should be off";
+#endif
 }
 
 TEST_F(HubVaultTest, CreateReturnsValidZ85Keypair)
@@ -327,6 +372,13 @@ TEST_F(HubVaultTest, PublishPublicKeyHasWorldReadablePermissions)
     v.publish_public_key(hub_dir_);
 
     const fs::path pubkey_path = hub_dir_ / "hub.pubkey";
+#if defined(PYLABHUB_PLATFORM_WIN64)
+    // Windows: verify DACL grants Everyone read but NOT write.
+    EXPECT_TRUE(win32_sid_has_access(pubkey_path, WinWorldSid, FILE_GENERIC_READ))
+        << "Everyone should have read access to hub.pubkey";
+    EXPECT_FALSE(win32_sid_has_access(pubkey_path, WinWorldSid, FILE_GENERIC_WRITE))
+        << "Everyone should NOT have write access to hub.pubkey";
+#else
     const fs::perms p = fs::status(pubkey_path).permissions();
     // Must be 0644: owner rw, group r, others r.
     EXPECT_NE(p & fs::perms::owner_read,  fs::perms::none) << "owner_read should be set";
@@ -334,4 +386,5 @@ TEST_F(HubVaultTest, PublishPublicKeyHasWorldReadablePermissions)
     EXPECT_NE(p & fs::perms::group_read,  fs::perms::none) << "group_read should be set";
     EXPECT_NE(p & fs::perms::others_read, fs::perms::none) << "others_read should be set";
     EXPECT_EQ(p & fs::perms::others_write, fs::perms::none) << "others_write should be off";
+#endif
 }
