@@ -22,6 +22,23 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
+### Priority 0 (IN PROGRESS — 2026-03-16): Lua Role Support (feature/lua-role-support)
+📍 **Status**: Phase 1+2 complete (all 3 roles); dedup done; API gaps remaining
+📋 **Branch**: `feature/lua-role-support`
+
+Completed 2026-03-15/16:
+- [x] `LuaRoleHostBase`: worker thread, `run_data_loop_()` hook, cached `ffi.cast`, shared API closures, `drain_inbox_sync_()`, `wait_for_roles_()` ✅
+- [x] `LuaProducerHost`: transport-agnostic data loop, FFI slot views, synchronous inbox drain, full API table, `snapshot_metrics_json()` ✅
+- [x] `LuaConsumerHost`: read-only slots, demand-driven loop, bare-bytes messages ✅
+- [x] `LuaProcessorHost`: dual-channel manual loop, dual messengers, multi-hub support ✅
+- [x] All 3 `main.cpp` dispatch: `script.type == "lua"` → Lua host ✅
+- [x] Code review + dedup: common closures/inbox/wait-for-roles moved to base class ✅
+- [x] 12 unit tests for `LuaRoleHostBase` ✅
+- [x] HubConfig lifecycle state machine (assert on out-of-order access) ✅
+- [ ] HIGH: `open_inbox()`, `wait_for_role()`, `set_verify_checksum()` API gaps
+- [ ] MEDIUM: expanded API (`broadcast_channel`, `list_channels`, `flexzone()`, `metrics()`)
+- [ ] Phase 3: ScriptEngine interface refactor (deferred)
+
 ### Code Review (CLOSED — 2026-03-15): REVIEW_Codex_2026-03-15
 📋 Archived to `docs/archive/transient-2026-03-15/` — ✅ CLOSED; 4 doc fixes applied, 4 code items routed to API_TODO, 2 routed to PLATFORM/TESTING_TODO, 1 false positive, 1 pre-fixed
 

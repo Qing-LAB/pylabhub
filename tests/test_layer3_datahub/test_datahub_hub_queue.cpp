@@ -61,6 +61,17 @@ TEST_F(DatahubShmQueueTest, ShmQueueReadFlexzone)
 TEST_F(DatahubShmQueueTest, ShmQueueWriteFlexzone)
 {
     // flexzone_sz > 0: write_flexzone() returns non-null pointer.
+    //
+    // NOTE (2026-03-16): This test intermittently timed out at 60s under
+    // ctest -j2, yet passes instantly in isolation (~0.06s).  The worker logic
+    // is entirely non-blocking (create producer, call write_flexzone, assert),
+    // with a unique shared_secret (70007) and nanosecond-timestamped channel
+    // name — no SHM contention is possible.  Likely root cause: uncapped
+    // ThreePhaseBackoff Phase 3 (iteration * 10us with no ceiling) could grow
+    // to multi-second sleeps if SharedSpinLock contention occurred during
+    // LifecycleGuard shutdown under parallel load.  Fixed by capping Phase 3
+    // at 10ms (kMaxPhase3DelayUs, commit 1d3e584).  If this recurs after the
+    // cap fix, investigate Logger cv_.notify_one miss or fork scheduling.
     auto proc = SpawnWorker("hub_queue.shm_queue_write_flexzone", {});
     ExpectWorkerOk(proc);
 }

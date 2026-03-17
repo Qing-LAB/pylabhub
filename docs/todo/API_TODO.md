@@ -308,11 +308,11 @@ Docs updated: HEP-0008, 0009, 0015, 0017, 0018.
   `data_block.hpp` are public, deprecated, and always throw. `recovery_api.hpp:58`
   `stuck_duration_ms` is always zero. Either implement or remove from public API.
 
-- [ ] **HIGH: Lua role support gap** — Config accepts `"lua"` as `script_type` in all
-  3 role configs; `RoleDirectory::script_entry()` maps non-python to `.lua`; but all
-  3 role hosts inherit `PythonRoleHostBase` only, `script_host_helpers.hpp` hardcodes
-  `__init__.py`, and `lua_role_host_base.hpp` is a stub. Either implement Lua role
-  support or restrict config to `"python"` only with a validation error.
+- [ ] **HIGH: Lua role support — API gaps remaining** — All 3 Lua role hosts
+  implemented and deduplicated (2026-03-16). Remaining gaps: `open_inbox()`,
+  `wait_for_role()`, `set_verify_checksum()` missing from Lua API tables;
+  expanded API (`broadcast_channel`, `list_channels`, `flexzone()`, `metrics()`)
+  not yet exposed. Phase 3 (ScriptEngine interface) deferred.
 
 ### C++ Pipeline Demo — ✅ Processor Template Done (2026-03-03)
 
