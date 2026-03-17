@@ -20,6 +20,7 @@
 #include "utils/json_config.hpp"
 #include "uid_utils.hpp"
 
+#include <cassert>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -39,7 +40,16 @@ namespace fs = std::filesystem;
 // Module-level state
 // ---------------------------------------------------------------------------
 
-static std::atomic<bool> g_hub_config_initialized{false};
+/// Lifecycle state for HubConfig — mirrors the Logger's state-machine pattern.
+///
+///   Uninitialized ──► Initializing ──► Initialized ──► ShuttingDown
+///
+/// get_instance() is allowed in Initializing (the startup callback loads the
+/// config via get_instance().load_()) and Initialized (normal runtime).
+/// Calls during Uninitialized or ShuttingDown trigger an assertion failure,
+/// catching modules that forget to declare a dependency on pylabhub::HubConfig.
+enum class HubConfigState : int { Uninitialized, Initializing, Initialized, ShuttingDown };
+static std::atomic<HubConfigState> g_hub_config_state{HubConfigState::Uninitialized};
 
 static std::mutex g_config_path_mu;
 static fs::path   g_config_path_override; ///< Set by set_config_path() before startup.
@@ -470,8 +480,18 @@ void HubConfig::set_admin_token(const std::string& token)
 }
 
 // static
+bool HubConfig::lifecycle_initialized() noexcept
+{
+    return g_hub_config_state.load(std::memory_order_acquire) == HubConfigState::Initialized;
+}
+
+// static
 HubConfig& HubConfig::get_instance()
 {
+    const auto st = g_hub_config_state.load(std::memory_order_acquire);
+    assert((st == HubConfigState::Initializing || st == HubConfigState::Initialized) &&
+           "HubConfig::get_instance() called outside valid lifecycle state — "
+           "ensure your module declares a dependency on pylabhub::HubConfig");
     static HubConfig instance;
     return instance;
 }
@@ -544,18 +564,19 @@ namespace
 {
 void do_hub_config_startup(const char* /*arg*/)
 {
+    g_hub_config_state.store(HubConfigState::Initializing, std::memory_order_release);
     fs::path override_path;
     {
         std::lock_guard lock(g_config_path_mu);
         override_path = g_config_path_override;
     }
     HubConfig::get_instance().load_(override_path);
-    g_hub_config_initialized.store(true, std::memory_order_release);
+    g_hub_config_state.store(HubConfigState::Initialized, std::memory_order_release);
 }
 
 void do_hub_config_shutdown(const char* /*arg*/)
 {
-    g_hub_config_initialized.store(false, std::memory_order_release);
+    g_hub_config_state.store(HubConfigState::ShuttingDown, std::memory_order_release);
     std::lock_guard lock(g_admin_token_mu);
     g_admin_token.clear();
 }

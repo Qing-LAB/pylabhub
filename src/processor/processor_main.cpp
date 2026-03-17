@@ -58,6 +58,7 @@
 
 #include "processor_config.hpp"
 #include "processor_script_host.hpp"
+#include "lua_processor_host.hpp"
 
 #include "plh_datahub.hpp"
 #include "utils/actor_vault.hpp"
@@ -341,19 +342,72 @@ int main(int argc, char *argv[])
         config.auth.load_keypair(config.processor_uid, *vault_password);
     }
 
-    // ── Processor script host ─────────────────────────────────────────────────
-    // ProcessorScriptHost owns the Python interpreter lifetime via PythonScriptHost.
-    // The interpreter thread:
-    //   1. Loads the processor script package (GIL held)
-    //   2. Connects Consumer + Producer, starts ZMQ + loop threads (releases GIL)
-    //   3. Calls signal_ready_() — unblocks startup_() below
-    //   4. Waits until stop_ is set (by shutdown_()) or api.stop() fires
-    //   5. Stops threads, calls on_stop, releases all py::objects (Py_Finalize)
     // Resolve the config directory for status display.
     const std::string config_dir = !args.role_dir.empty()
         ? args.role_dir
         : std::filesystem::path(args.config_path).parent_path().string();
 
+    // ── Dispatch based on script engine ────────────────────────────────────────
+    if (config.script_type == "lua")
+    {
+        pylabhub::processor::LuaProcessorHost lua_host;
+        lua_host.set_config(std::move(config));
+        lua_host.set_validate_only(args.validate_only);
+        lua_host.set_shutdown_flag(&g_shutdown);
+
+        try { lua_host.startup_(); }
+        catch (const std::exception &e)
+        {
+            std::cerr << "Lua startup failed: " << e.what() << "\n";
+            return 1;
+        }
+
+        if (!lua_host.script_load_ok())
+        {
+            std::cerr << "Lua script load failed.\n";
+            lua_host.shutdown_();
+            return 1;
+        }
+
+        if (args.validate_only)
+        {
+            std::cout << "\nValidation passed.\n";
+            lua_host.shutdown_();
+            return 0;
+        }
+
+        if (!lua_host.is_running())
+        {
+            std::cerr << "Failed to start Lua processor — loop did not start.\n";
+            lua_host.shutdown_();
+            return 1;
+        }
+
+        const auto start_time = std::chrono::steady_clock::now();
+        const auto &cfg = lua_host.config();
+        signal_handler.set_status_callback([&]() -> std::string
+        {
+            const auto elapsed = std::chrono::steady_clock::now() - start_time;
+            const auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+            return fmt::format(
+                "  pyLabHub {} (pylabhub-processor, lua)\n"
+                "  Config:      {}\n"
+                "  UID:         {}\n"
+                "  In channel:  {}\n"
+                "  Out channel: {}\n"
+                "  Uptime:      {}h {}m {}s",
+                pylabhub::platform::get_version_string(),
+                config_dir, cfg.processor_uid, cfg.in_channel, cfg.out_channel,
+                secs / 3600, (secs % 3600) / 60, secs % 60);
+        });
+
+        scripting::run_role_main_loop(g_shutdown, lua_host, "[proc-main]");
+        lua_host.shutdown_();
+        return 0;
+    }
+
+    // ── Python path (default) ──────────────────────────────────────────────────
+    // ProcessorScriptHost owns the Python interpreter lifetime via PythonScriptHost.
     pylabhub::processor::ProcessorScriptHost proc_script;
     proc_script.set_config(std::move(config));
     proc_script.set_validate_only(args.validate_only);

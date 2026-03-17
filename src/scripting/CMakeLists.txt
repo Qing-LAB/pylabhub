@@ -22,6 +22,7 @@ add_library(pylabhub-scripting STATIC
     python_script_host.cpp
     role_host_core.cpp
     python_role_host_base.cpp
+    lua_role_host_base.cpp
 )
 add_library(pylabhub::scripting ALIAS pylabhub-scripting)
 
@@ -44,8 +45,9 @@ target_include_directories(pylabhub-scripting PRIVATE
 target_link_libraries(pylabhub-scripting PUBLIC
     pylabhub::utils
     pylabhub::third_party::pybind11_embed
+    pylabhub::third_party::luajit
 )
 
 pylabhub_apply_sanitizer_to_target(pylabhub-scripting)
 
-message(STATUS "Configured static lib 'pylabhub::scripting' (PythonScriptHost, PythonRoleHostBase, RoleHostCore).")
+message(STATUS "Configured static lib 'pylabhub::scripting' (PythonScriptHost, PythonRoleHostBase, LuaRoleHostBase, RoleHostCore).")

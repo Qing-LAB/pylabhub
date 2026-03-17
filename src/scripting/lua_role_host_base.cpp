@@ -1,0 +1,799 @@
+/**
+ * @file lua_role_host_base.cpp
+ * @brief LuaRoleHostBase — common do_lua_work_() skeleton and helpers.
+ *
+ * This file contains the common Lua role host skeleton shared by all three
+ * role script hosts (LuaProducerHost, LuaConsumerHost, LuaProcessorHost).
+ * Role-specific behavior is dispatched via virtual hooks.
+ */
+#include "lua_role_host_base.hpp"
+
+#include "utils/format_tools.hpp"
+#include "utils/lifecycle.hpp"
+#include "utils/logger.hpp"
+#include "plh_platform.hpp"
+
+#include <lua.hpp>
+
+#include <chrono>
+#include <filesystem>
+#include <sstream>
+#include <string>
+#include <thread>
+
+namespace fs = std::filesystem;
+
+namespace pylabhub::scripting
+{
+
+// ============================================================================
+// Destructor
+// ============================================================================
+
+LuaRoleHostBase::~LuaRoleHostBase()
+{
+    shutdown_();
+}
+
+// ============================================================================
+// Common lifecycle
+// ============================================================================
+
+void LuaRoleHostBase::startup_()
+{
+    worker_thread_ = std::thread([this] { do_lua_work_(); });
+    // Block until the worker signals ready (script loaded, role started or failed).
+    ready_future_.get();
+}
+
+void LuaRoleHostBase::shutdown_() noexcept
+{
+    signal_shutdown();
+
+    if (worker_thread_.joinable())
+        worker_thread_.join();
+
+    if (L_)
+    {
+        clear_lua_refs_();
+        lua_close(L_);
+        L_ = nullptr;
+    }
+}
+
+void LuaRoleHostBase::signal_ready_()
+{
+    ready_promise_.set_value();
+}
+
+void LuaRoleHostBase::signal_shutdown() noexcept
+{
+    core_.shutdown_requested.store(true, std::memory_order_release);
+    stop_.store(true, std::memory_order_release);
+}
+
+// ============================================================================
+// do_lua_work_ — the common skeleton (mirrors PythonRoleHostBase::do_python_work)
+// ============================================================================
+
+void LuaRoleHostBase::do_lua_work_()
+{
+    // ── Early exit: signal fired before we started ───────────────────────────
+    if (stop_.load(std::memory_order_acquire))
+    {
+        core_.script_load_ok = false;
+        signal_ready_();
+        return;
+    }
+
+    // ── Create Lua state ─────────────────────────────────────────────────────
+    L_ = luaL_newstate();
+    if (!L_)
+    {
+        LOGGER_ERROR("[{}] LuaRoleHostBase: luaL_newstate() failed (out of memory)", role_tag());
+        core_.script_load_ok = false;
+        signal_ready_();
+        return;
+    }
+
+    luaL_openlibs(L_);
+
+    // Cache ffi.cast for fast slot view creation in the data loop.
+    {
+        lua_getglobal(L_, "require");
+        lua_pushstring(L_, "ffi");
+        if (lua_pcall(L_, 1, 1, 0) == LUA_OK)
+        {
+            lua_getfield(L_, -1, "cast");
+            ref_ffi_cast_ = luaL_ref(L_, LUA_REGISTRYINDEX);
+            lua_pop(L_, 1); // pop ffi table
+        }
+        else
+        {
+            LOGGER_WARN("[{}] Failed to cache ffi.cast — slot views will use require() fallback",
+                        role_tag());
+            lua_pop(L_, 1); // pop error
+        }
+    }
+
+    // Apply sandbox: disable io.*, os.execute/exit, dofile, loadfile, package.loadlib.
+    {
+        static const char *const disabled[] = {"dofile", "loadfile", "io", nullptr};
+        for (int i = 0; disabled[i]; ++i)
+        {
+            lua_pushnil(L_);
+            lua_setglobal(L_, disabled[i]);
+        }
+        lua_getglobal(L_, "os");
+        if (lua_istable(L_, -1))
+        {
+            lua_pushnil(L_);
+            lua_setfield(L_, -2, "execute");
+            lua_pushnil(L_);
+            lua_setfield(L_, -2, "exit");
+        }
+        lua_pop(L_, 1);
+        lua_getglobal(L_, "package");
+        if (lua_istable(L_, -1))
+        {
+            lua_pushnil(L_);
+            lua_setfield(L_, -2, "loadlib");
+        }
+        lua_pop(L_, 1);
+    }
+
+    // Setup package.path for LuaJIT runtime libs.
+    {
+        try
+        {
+            const fs::path exe       = platform::get_executable_name(true);
+            const fs::path luajit_home = fs::weakly_canonical(exe.parent_path() / ".." / "opt" / "luajit");
+            if (fs::exists(luajit_home))
+            {
+                const std::string jit_path = (luajit_home / "jit" / "?.lua").string();
+                lua_getglobal(L_, "package");
+                lua_getfield(L_, -1, "path");
+                const char *current  = lua_tostring(L_, -1);
+                std::string new_path = (current ? std::string(current) + ";" : std::string{}) + jit_path;
+                lua_pop(L_, 1);
+                lua_pushstring(L_, new_path.c_str());
+                lua_setfield(L_, -2, "path");
+                lua_pop(L_, 1);
+            }
+        }
+        catch (const std::exception &e)
+        {
+            LOGGER_WARN("[{}] Could not derive luajit home: {}", role_tag(), e.what());
+        }
+    }
+
+    // ── Load script ──────────────────────────────────────────────────────────
+    const fs::path script_dir = fs::path(script_base_dir()) / "script" / "lua";
+    const fs::path init_lua   = script_dir / "init.lua";
+
+    if (!fs::exists(init_lua))
+    {
+        LOGGER_ERROR("[{}] Lua script not found: {}", role_tag(), init_lua.string());
+        core_.script_load_ok = false;
+        signal_ready_();
+        return;
+    }
+
+    // Also add the script directory to package.path so require() works.
+    {
+        const std::string script_path_pattern = (script_dir / "?.lua").string();
+        lua_getglobal(L_, "package");
+        lua_getfield(L_, -1, "path");
+        const char *current  = lua_tostring(L_, -1);
+        std::string new_path = (current ? std::string(current) + ";" : std::string{}) + script_path_pattern;
+        lua_pop(L_, 1);
+        lua_pushstring(L_, new_path.c_str());
+        lua_setfield(L_, -2, "path");
+        lua_pop(L_, 1);
+    }
+
+    if (luaL_loadfile(L_, init_lua.string().c_str()) != LUA_OK)
+    {
+        const char *err = lua_tostring(L_, -1);
+        LOGGER_ERROR("[{}] Failed to load '{}': {}", role_tag(), init_lua.string(),
+                     err ? err : "(unknown error)");
+        core_.script_load_ok = false;
+        signal_ready_();
+        return;
+    }
+
+    if (lua_pcall(L_, 0, 0, 0) != LUA_OK)
+    {
+        const char *err = lua_tostring(L_, -1);
+        LOGGER_ERROR("[{}] Error executing '{}': {}", role_tag(), init_lua.string(),
+                     err ? err : "(unknown error)");
+        core_.script_load_ok = false;
+        signal_ready_();
+        return;
+    }
+
+    LOGGER_INFO("[{}] Loaded Lua script: {}", role_tag(), init_lua.string());
+
+    // ── Extract callbacks ────────────────────────────────────────────────────
+    extract_callbacks_();
+
+    if (!has_required_callback())
+    {
+        LOGGER_ERROR("[{}] Script has no '{}' function — {} not started",
+                     role_tag(), required_callback_name(), role_name());
+        core_.script_load_ok = false;
+        signal_ready_();
+        return;
+    }
+
+    // Extract common callbacks: on_init, on_stop.
+    lua_getglobal(L_, "on_init");
+    ref_on_init_ = lua_isfunction(L_, -1) ? luaL_ref(L_, LUA_REGISTRYINDEX) : (lua_pop(L_, 1), LUA_NOREF);
+
+    lua_getglobal(L_, "on_stop");
+    ref_on_stop_ = lua_isfunction(L_, -1) ? luaL_ref(L_, LUA_REGISTRYINDEX) : (lua_pop(L_, 1), LUA_NOREF);
+
+    core_.script_load_ok = true;
+
+    // ── Validate mode: print layout and exit ─────────────────────────────────
+    if (core_.validate_only)
+    {
+        if (!build_role_types())
+        {
+            signal_ready_();
+            return;
+        }
+        print_validate_layout();
+        signal_ready_();
+        return;
+    }
+
+    // ── Build API table and store in registry ────────────────────────────────
+    build_role_api_table_(L_);
+    ref_api_ = luaL_ref(L_, LUA_REGISTRYINDEX);
+
+    // ── Start role ───────────────────────────────────────────────────────────
+    if (!start_role())
+    {
+        LOGGER_ERROR("[{}] Failed to start {}", role_tag(), role_name());
+        cleanup_on_start_failure();
+        signal_ready_();
+        return;
+    }
+
+    core_.running = true;
+    signal_ready_(); // Unblocks startup_() on the main thread.
+
+    // ── Data loop ────────────────────────────────────────────────────────────
+    // Runs on THIS thread — the worker thread that owns lua_State.
+    // All Lua callbacks (on_produce, on_consume, on_process, on_inbox) happen here.
+    // Replaces the Python model where loop_thread_ acquires the GIL per-callback.
+    run_data_loop_();
+
+    // If internal shutdown (api.stop()), propagate to the main thread.
+    if (core_.shutdown_requested.load() && core_.g_shutdown)
+        core_.g_shutdown->store(true, std::memory_order_release);
+
+    // ── Stop role ────────────────────────────────────────────────────────────
+    stop_role();
+    core_.running = false;
+
+    LOGGER_INFO("[{}] LuaRoleHostBase: all done", role_tag());
+}
+
+// ============================================================================
+// FFI schema generation
+// ============================================================================
+
+std::string ffi_c_type_for_field(const std::string &type_str)
+{
+    if (type_str == "bool")    return "bool";
+    if (type_str == "int8")    return "int8_t";
+    if (type_str == "uint8")   return "uint8_t";
+    if (type_str == "int16")   return "int16_t";
+    if (type_str == "uint16")  return "uint16_t";
+    if (type_str == "int32")   return "int32_t";
+    if (type_str == "uint32")  return "uint32_t";
+    if (type_str == "int64")   return "int64_t";
+    if (type_str == "uint64")  return "uint64_t";
+    if (type_str == "float32") return "float";
+    if (type_str == "float64") return "double";
+    if (type_str == "string")  return "char";   // with [length]
+    if (type_str == "bytes")   return "uint8_t"; // with [length]
+    return {};
+}
+
+std::string LuaRoleHostBase::build_ffi_cdef_(const SchemaSpec &spec, const char *struct_name,
+                                              const std::string &packing)
+{
+    std::ostringstream ss;
+
+    // Packed structs use #pragma pack / __attribute__((packed)).
+    // For LuaJIT FFI, __attribute__((packed)) works.
+    const bool is_packed = (packing == "packed");
+
+    ss << "typedef struct ";
+    if (is_packed)
+        ss << "__attribute__((packed)) ";
+    ss << "{\n";
+
+    for (const auto &f : spec.fields)
+    {
+        const std::string c_type = ffi_c_type_for_field(f.type_str);
+        if (c_type.empty())
+        {
+            LOGGER_ERROR("LuaRoleHostBase: unsupported field type '{}' in schema", f.type_str);
+            return {};
+        }
+
+        ss << "    " << c_type << " " << f.name;
+
+        // Array dimension: string/bytes use length, numeric use count.
+        if (f.type_str == "string" || f.type_str == "bytes")
+        {
+            ss << "[" << f.length << "]";
+        }
+        else if (f.count > 1)
+        {
+            ss << "[" << f.count << "]";
+        }
+
+        ss << ";\n";
+    }
+
+    ss << "} " << struct_name << ";\n";
+    return ss.str();
+}
+
+bool LuaRoleHostBase::register_ffi_type_(const std::string &cdef_str)
+{
+    if (cdef_str.empty())
+        return false;
+
+    // ffi = require("ffi"); ffi.cdef(cdef_str)
+    lua_getglobal(L_, "require");
+    lua_pushstring(L_, "ffi");
+    if (lua_pcall(L_, 1, 1, 0) != LUA_OK)
+    {
+        const char *err = lua_tostring(L_, -1);
+        LOGGER_ERROR("[{}] Failed to require('ffi'): {}", role_tag(), err ? err : "(unknown)");
+        lua_pop(L_, 1);
+        return false;
+    }
+
+    // Stack: ffi table
+    lua_getfield(L_, -1, "cdef");
+    lua_pushstring(L_, cdef_str.c_str());
+    if (lua_pcall(L_, 1, 0, 0) != LUA_OK)
+    {
+        const char *err = lua_tostring(L_, -1);
+        LOGGER_ERROR("[{}] ffi.cdef error: {}", role_tag(), err ? err : "(unknown)");
+        lua_pop(L_, 2); // error + ffi table
+        return false;
+    }
+
+    lua_pop(L_, 1); // pop ffi table
+    return true;
+}
+
+// ============================================================================
+// ffi_sizeof_ — query ffi.sizeof(type_name) from Lua
+// ============================================================================
+
+size_t LuaRoleHostBase::ffi_sizeof_(const char *type_name)
+{
+    // ffi = require("ffi"); return ffi.sizeof(type_name)
+    lua_getglobal(L_, "require");
+    lua_pushstring(L_, "ffi");
+    if (lua_pcall(L_, 1, 1, 0) != LUA_OK)
+    {
+        lua_pop(L_, 1);
+        return 0;
+    }
+
+    lua_getfield(L_, -1, "sizeof");
+    lua_pushstring(L_, type_name);
+    if (lua_pcall(L_, 1, 1, 0) != LUA_OK)
+    {
+        lua_pop(L_, 2); // error + ffi table
+        return 0;
+    }
+
+    size_t sz = static_cast<size_t>(lua_tointeger(L_, -1));
+    lua_pop(L_, 2); // result + ffi table
+    return sz;
+}
+
+// ============================================================================
+// Slot view creation via ffi.cast
+// ============================================================================
+
+bool LuaRoleHostBase::push_slot_view_(void *data, size_t /*size*/, const char *type_name)
+{
+    return push_ffi_cast_(data, type_name, /*readonly=*/false);
+}
+
+bool LuaRoleHostBase::push_slot_view_readonly_(const void *data, size_t /*size*/, const char *type_name)
+{
+    return push_ffi_cast_(const_cast<void *>(data), type_name, /*readonly=*/true);
+}
+
+bool LuaRoleHostBase::push_ffi_cast_(void *data, const char *type_name, bool readonly)
+{
+    // Use cached ffi.cast ref (fast path) or fall back to require("ffi").
+    if (ref_ffi_cast_ != LUA_NOREF)
+    {
+        lua_rawgeti(L_, LUA_REGISTRYINDEX, ref_ffi_cast_);
+    }
+    else
+    {
+        lua_getglobal(L_, "require");
+        lua_pushstring(L_, "ffi");
+        if (lua_pcall(L_, 1, 1, 0) != LUA_OK)
+        {
+            lua_pop(L_, 1);
+            return false;
+        }
+        lua_getfield(L_, -1, "cast");
+        lua_remove(L_, -2); // remove ffi table
+    }
+
+    std::string cast_type = readonly
+        ? (std::string("const ") + type_name + "*")
+        : (std::string(type_name) + "*");
+    lua_pushstring(L_, cast_type.c_str());
+    lua_pushlightuserdata(L_, data);
+
+    if (lua_pcall(L_, 2, 1, 0) != LUA_OK)
+    {
+        const char *err = lua_tostring(L_, -1);
+        LOGGER_ERROR("[{}] ffi.cast error: {}", role_tag(), err ? err : "(unknown)");
+        lua_pop(L_, 1);
+        return false;
+    }
+
+    return true; // cdata on top of stack
+}
+
+// ============================================================================
+// Message table builder
+// ============================================================================
+
+void LuaRoleHostBase::push_messages_table_(std::vector<IncomingMessage> &msgs)
+{
+    lua_newtable(L_);
+    int idx = 1;
+    for (auto &m : msgs)
+    {
+        if (!m.event.empty())
+        {
+            // Event message → Lua table: {event="...", key=val, ...}
+            lua_newtable(L_);
+            lua_pushstring(L_, m.event.c_str());
+            lua_setfield(L_, -2, "event");
+            for (auto &[key, val] : m.details.items())
+            {
+                if (val.is_string())
+                {
+                    lua_pushstring(L_, val.get<std::string>().c_str());
+                }
+                else if (val.is_boolean())
+                {
+                    lua_pushboolean(L_, val.get<bool>() ? 1 : 0);
+                }
+                else if (val.is_number_integer())
+                {
+                    lua_pushinteger(L_, val.get<lua_Integer>());
+                }
+                else if (val.is_number_float())
+                {
+                    lua_pushnumber(L_, val.get<double>());
+                }
+                else
+                {
+                    lua_pushstring(L_, val.dump().c_str());
+                }
+                lua_setfield(L_, -2, key.c_str());
+            }
+        }
+        else
+        {
+            // Data message → Lua table: {sender="hex", data="bytes"}
+            lua_newtable(L_);
+            lua_pushstring(L_, format_tools::bytes_to_hex(m.sender).c_str());
+            lua_setfield(L_, -2, "sender");
+            lua_pushlstring(L_, reinterpret_cast<const char *>(m.data.data()), m.data.size());
+            lua_setfield(L_, -2, "data");
+        }
+        lua_rawseti(L_, -2, idx++);
+    }
+}
+
+// ============================================================================
+// call_on_init_common_ / call_on_stop_common_
+// ============================================================================
+
+void LuaRoleHostBase::call_on_init_common_()
+{
+    if (!is_ref_callable_(ref_on_init_))
+        return;
+
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, ref_on_init_); // function
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, ref_api_);     // arg: api
+
+    if (lua_pcall(L_, 1, 0, 0) != LUA_OK)
+    {
+        on_script_error();
+        const char *err = lua_tostring(L_, -1);
+        LOGGER_ERROR("[{}] on_init error: {}", role_tag(), err ? err : "(unknown)");
+        lua_pop(L_, 1);
+    }
+
+    update_fz_checksum_after_init();
+}
+
+void LuaRoleHostBase::call_on_stop_common_()
+{
+    if (!is_ref_callable_(ref_on_stop_) || !has_connection_for_stop())
+        return;
+
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, ref_on_stop_); // function
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, ref_api_);     // arg: api
+
+    if (lua_pcall(L_, 1, 0, 0) != LUA_OK)
+    {
+        on_script_error();
+        const char *err = lua_tostring(L_, -1);
+        LOGGER_ERROR("[{}] on_stop error: {}", role_tag(), err ? err : "(unknown)");
+        lua_pop(L_, 1);
+    }
+}
+
+// ============================================================================
+// Lua helpers
+// ============================================================================
+
+void LuaRoleHostBase::clear_lua_refs_()
+{
+    if (!L_)
+        return;
+    if (ref_on_init_ != LUA_NOREF)
+    {
+        luaL_unref(L_, LUA_REGISTRYINDEX, ref_on_init_);
+        ref_on_init_ = LUA_NOREF;
+    }
+    if (ref_on_stop_ != LUA_NOREF)
+    {
+        luaL_unref(L_, LUA_REGISTRYINDEX, ref_on_stop_);
+        ref_on_stop_ = LUA_NOREF;
+    }
+    if (ref_api_ != LUA_NOREF)
+    {
+        luaL_unref(L_, LUA_REGISTRYINDEX, ref_api_);
+        ref_api_ = LUA_NOREF;
+    }
+    if (ref_ffi_cast_ != LUA_NOREF)
+    {
+        luaL_unref(L_, LUA_REGISTRYINDEX, ref_ffi_cast_);
+        ref_ffi_cast_ = LUA_NOREF;
+    }
+}
+
+bool LuaRoleHostBase::call_lua_fn_(const char *name, int nargs, int nresults)
+{
+    // Get the function by name; if absent, discard args and return.
+    lua_getglobal(L_, name);
+    if (!lua_isfunction(L_, -1))
+    {
+        lua_pop(L_, 1 + nargs);
+        return true; // absent callback is not an error
+    }
+
+    // Move function below its args: stack is [..., arg1, ..., argN, fn]
+    // We need: [..., fn, arg1, ..., argN]
+    lua_insert(L_, -(nargs + 1));
+
+    if (lua_pcall(L_, nargs, nresults, 0) != LUA_OK)
+    {
+        const char *err = lua_tostring(L_, -1);
+        LOGGER_WARN("[{}] Lua error in '{}': {}", role_tag(), name, err ? err : "(unknown)");
+        lua_pop(L_, 1);
+        return false;
+    }
+    return true;
+}
+
+bool LuaRoleHostBase::is_ref_callable_(int ref) const
+{
+    if (ref == LUA_NOREF || !L_)
+        return false;
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
+    bool ok = lua_isfunction(L_, -1);
+    lua_pop(L_, 1);
+    return ok;
+}
+
+// ============================================================================
+// Common API closures — shared across all Lua role hosts
+// ============================================================================
+
+void LuaRoleHostBase::push_common_api_closures_(lua_State *L)
+{
+    // Helper: push a C closure with `this` as upvalue(1).
+    auto push_closure = [&](const char *name, lua_CFunction fn) {
+        lua_pushlightuserdata(L, this);
+        lua_pushcclosure(L, fn, 1);
+        lua_setfield(L, -2, name);
+    };
+
+    push_closure("log",                lua_api_log);
+    push_closure("stop",               lua_api_stop);
+    push_closure("set_critical_error", lua_api_set_critical_error);
+    push_closure("stop_reason",        lua_api_stop_reason);
+    push_closure("script_errors",      lua_api_script_errors);
+
+    // String fields as direct table entries.
+    lua_pushstring(L, config_log_level().c_str());
+    lua_setfield(L, -2, "log_level");
+
+    lua_pushstring(L, config_script_path().c_str());
+    lua_setfield(L, -2, "script_dir");
+
+    lua_pushstring(L, config_role_dir().c_str());
+    lua_setfield(L, -2, "role_dir");
+}
+
+int LuaRoleHostBase::lua_api_log(lua_State *L)
+{
+    auto *self = static_cast<LuaRoleHostBase *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *level = luaL_checkstring(L, 1);
+    const char *msg   = luaL_checkstring(L, 2);
+
+    const auto tag = fmt::format("[{}-lua]", self->role_tag());
+    if (std::string_view(level) == "error")
+        LOGGER_ERROR("{} {}", tag, msg);
+    else if (std::string_view(level) == "warn" || std::string_view(level) == "warning")
+        LOGGER_WARN("{} {}", tag, msg);
+    else if (std::string_view(level) == "debug")
+        LOGGER_DEBUG("{} {}", tag, msg);
+    else
+        LOGGER_INFO("{} {}", tag, msg);
+
+    return 0;
+}
+
+int LuaRoleHostBase::lua_api_stop(lua_State *L)
+{
+    auto *self = static_cast<LuaRoleHostBase *>(lua_touserdata(L, lua_upvalueindex(1)));
+    self->core_.shutdown_requested.store(true, std::memory_order_release);
+    return 0;
+}
+
+int LuaRoleHostBase::lua_api_set_critical_error(lua_State *L)
+{
+    auto *self = static_cast<LuaRoleHostBase *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *msg = lua_tostring(L, 1);
+    LOGGER_ERROR("[{}-lua] CRITICAL: {}", self->role_tag(), msg ? msg : "(no message)");
+    self->critical_error_.store(true, std::memory_order_release);
+    self->core_.shutdown_requested.store(true, std::memory_order_release);
+    return 0;
+}
+
+int LuaRoleHostBase::lua_api_stop_reason(lua_State *L)
+{
+    auto *self = static_cast<LuaRoleHostBase *>(lua_touserdata(L, lua_upvalueindex(1)));
+    int reason = self->stop_reason_.load(std::memory_order_relaxed);
+    const char *name = "normal";
+    switch (reason)
+    {
+    case 1: name = "peer_dead"; break;
+    case 2: name = "hub_dead"; break;
+    case 3: name = "critical_error"; break;
+    default: break;
+    }
+    lua_pushstring(L, name);
+    return 1;
+}
+
+int LuaRoleHostBase::lua_api_script_errors(lua_State *L)
+{
+    auto *self = static_cast<LuaRoleHostBase *>(lua_touserdata(L, lua_upvalueindex(1)));
+    lua_pushinteger(L, static_cast<lua_Integer>(self->script_errors_.load(std::memory_order_relaxed)));
+    return 1;
+}
+
+// ============================================================================
+// drain_inbox_sync_ — shared non-blocking inbox drain
+// ============================================================================
+
+void LuaRoleHostBase::drain_inbox_sync_()
+{
+    if (!inbox_queue_ || ref_on_inbox_ == LUA_NOREF)
+        return;
+
+    static constexpr auto kNonBlocking = std::chrono::milliseconds{0};
+
+    while (core_.running_threads.load() && !core_.shutdown_requested.load())
+    {
+        const auto *item = inbox_queue_->recv_one(kNonBlocking);
+        if (!item) break;
+
+        uint8_t ack_code = 0;
+
+        lua_rawgeti(L_, LUA_REGISTRYINDEX, ref_on_inbox_);
+
+        // Push inbox slot view.
+        if (inbox_spec_.has_schema && inbox_schema_slot_size_ > 0)
+        {
+            if (!push_slot_view_readonly_(item->data, inbox_schema_slot_size_,
+                                          inbox_ffi_type_.c_str()))
+            {
+                lua_pop(L_, 1); // pop function
+                ack_code = 3;
+                inbox_queue_->send_ack(ack_code);
+                continue;
+            }
+        }
+        else
+        {
+            lua_pushlstring(L_, reinterpret_cast<const char *>(item->data),
+                           inbox_schema_slot_size_);
+        }
+
+        lua_pushstring(L_, item->sender_id.c_str());
+        lua_rawgeti(L_, LUA_REGISTRYINDEX, ref_api_);
+
+        // Call: on_inbox(slot, sender, api)
+        if (lua_pcall(L_, 3, 0, 0) != LUA_OK)
+        {
+            const char *err = lua_tostring(L_, -1);
+            LOGGER_ERROR("[{}] on_inbox error: {}", role_tag(), err ? err : "(unknown)");
+            lua_pop(L_, 1);
+            on_script_error();
+            ack_code = 3;
+            if (stop_on_script_error())
+                core_.shutdown_requested.store(true, std::memory_order_release);
+        }
+
+        inbox_queue_->send_ack(ack_code);
+    }
+}
+
+// ============================================================================
+// wait_for_roles_ — HEP-0023 startup coordination
+// ============================================================================
+
+bool LuaRoleHostBase::wait_for_roles_(hub::Messenger &messenger,
+                                       const std::vector<pylabhub::WaitForRole> &wait_list)
+{
+    for (const auto &wr : wait_list)
+    {
+        LOGGER_INFO("[{}] Startup: waiting for role '{}' (timeout {}ms)...",
+                    role_tag(), wr.uid, wr.timeout_ms);
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds{wr.timeout_ms};
+        static constexpr int kPollMs = 200;
+        bool found = false;
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()).count();
+            if (remaining <= 0) break;
+            const int poll_ms = static_cast<int>(std::min<long long>(kPollMs, remaining));
+            if (messenger.query_role_presence(wr.uid, poll_ms))
+            {
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+        {
+            LOGGER_ERROR("[{}] Startup wait failed: role '{}' not present after {}ms",
+                         role_tag(), wr.uid, wr.timeout_ms);
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace pylabhub::scripting

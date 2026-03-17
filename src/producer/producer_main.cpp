@@ -40,6 +40,7 @@
 
 #include "producer_config.hpp"
 #include "producer_script_host.hpp"
+#include "lua_producer_host.hpp"
 
 #include "plh_datahub.hpp"
 #include "utils/actor_vault.hpp"
@@ -287,6 +288,65 @@ int main(int argc, char *argv[])
         config.auth.load_keypair(config.producer_uid, *vault_password);
     }
 
+    // ── Dispatch based on script engine ────────────────────────────────────────
+    if (config.script_type == "lua")
+    {
+        pylabhub::producer::LuaProducerHost lua_host;
+        lua_host.set_config(std::move(config));
+        lua_host.set_validate_only(args.validate_only);
+        lua_host.set_shutdown_flag(&g_shutdown);
+
+        try { lua_host.startup_(); }
+        catch (const std::exception &e)
+        {
+            std::cerr << "Lua startup failed: " << e.what() << "\n";
+            return 1;
+        }
+
+        if (!lua_host.script_load_ok())
+        {
+            std::cerr << "Lua script load failed.\n";
+            lua_host.shutdown_();
+            return 1;
+        }
+
+        if (args.validate_only)
+        {
+            std::cout << "\nValidation passed.\n";
+            lua_host.shutdown_();
+            return 0;
+        }
+
+        if (!lua_host.is_running())
+        {
+            std::cerr << "Failed to start Lua producer — loop did not start.\n";
+            lua_host.shutdown_();
+            return 1;
+        }
+
+        const auto start_time = std::chrono::steady_clock::now();
+        const auto &cfg = lua_host.config();
+        signal_handler.set_status_callback([&]() -> std::string
+        {
+            const auto elapsed = std::chrono::steady_clock::now() - start_time;
+            const auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+            return fmt::format(
+                "  pyLabHub {} (pylabhub-producer, lua)\n"
+                "  Config:    {}\n"
+                "  UID:       {}\n"
+                "  Channel:   {}\n"
+                "  Uptime:    {}h {}m {}s",
+                pylabhub::platform::get_version_string(),
+                config_dir, cfg.producer_uid, cfg.channel,
+                secs / 3600, (secs % 3600) / 60, secs % 60);
+        });
+
+        scripting::run_role_main_loop(g_shutdown, lua_host, "[prod-main]");
+        lua_host.shutdown_();
+        return 0;
+    }
+
+    // ── Python path (default) ────────────────────────────────────────────────
     pylabhub::producer::ProducerScriptHost prod_script;
     prod_script.set_config(std::move(config));
     prod_script.set_validate_only(args.validate_only);

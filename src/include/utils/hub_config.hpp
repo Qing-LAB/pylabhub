@@ -112,9 +112,14 @@ class PYLABHUB_UTILS_EXPORT HubConfig
 
     /**
      * @brief Returns the global HubConfig instance.
-     * @pre Must be called after the lifecycle module is started.
+     * @pre Must be called after the lifecycle module is started (Initializing or
+     *      Initialized state).  Asserts in debug builds if called too early or
+     *      after shutdown.
      */
     static HubConfig& get_instance();
+
+    /// True once the lifecycle startup callback has completed (config loaded).
+    [[nodiscard]] static bool lifecycle_initialized() noexcept;
 
     // -----------------------------------------------------------------------
     // Hub identity
