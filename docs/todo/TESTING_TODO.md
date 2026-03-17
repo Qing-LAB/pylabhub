@@ -29,6 +29,20 @@
 - [ ] **Broker-coordinated recovery** – Cross-process zombie detection (blocked on broker protocol extension)
 - [ ] **Slot-checksum in-place repair** – Blocked: existing repair reinitialises header; needs WriteAttach approach
 
+### Watchlist: ShmQueueWriteFlexzone intermittent timeout (2026-03-16)
+
+- [ ] **DatahubShmQueueTest.ShmQueueWriteFlexzone** — intermittently times out at 60s under
+  `-j2` but passes instantly in isolation. Deep analysis (2026-03-16) confirmed: test logic is
+  entirely non-blocking (create DataBlockProducer, call write_flexzone(), assert non-null);
+  shared_secret 70007 is unique; channel name has nanosecond timestamp; no SHM contention
+  possible. **Likely root cause identified:** uncapped ThreePhaseBackoff Phase 3
+  (`iteration * 10us` with no ceiling) could grow to multi-second sleeps if SharedSpinLock
+  contention occurred during LifecycleGuard shutdown under parallel load. Fixed by capping
+  Phase 3 at 10ms (kMaxPhase3DelayUs, commit 1d3e584). **If this recurs after the cap fix,**
+  investigate: (1) Logger cv_.notify_one miss, (2) fork/exec scheduling starvation,
+  (3) whether the *same* test consistently fails or different tests rotate.
+  - Also seen on `DatahubSlotDrainingTest.DrainHoldTrueNeverReturnsNullptr` (same session).
+
 ### Codex Review: Testing docs staleness (2026-03-15)
 
 - [ ] **README_testing.md stale** — Phase C broker/message-plane still says "To be implemented"

@@ -276,6 +276,11 @@ static void write_processor_config(const fs::path& dir, const fs::path& hub_dir)
         {"validation", {
             {"update_checksum", true},
             {"stop_on_script_error", true}
+        }},
+        {"startup", {
+            {"wait_for_roles", json::array({
+                {{"uid", "PROD-PIPE-00000001"}, {"timeout_ms", 15000}}
+            })}
         }}
     };
 
@@ -344,6 +349,11 @@ static void write_consumer_config(const fs::path& dir, const fs::path& hub_dir,
         {"script", {{"type", "python"}, {"path", "."}}},
         {"validation", {
             {"stop_on_script_error", true}
+        }},
+        {"startup", {
+            {"wait_for_roles", json::array({
+                {{"uid", "PROC-PIPE-00000002"}, {"timeout_ms", 15000}}
+            })}
         }}
     };
 
@@ -560,8 +570,8 @@ TEST_F(PipelineRoundtripTest, ProducerProcessorConsumer_E2E)
         << "Channel 'test.pipe.out' has no consumers (consumer not connected)";
     TLOG("TEST", "E2E: all roles connected, pipeline fully wired");
 
-    // Small delay to ensure all ZMQ subscriptions and SHM connections are fully established.
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    // Roles use startup.wait_for_roles for self-coordination, and
+    // wait_for_channel_ready confirms from the test side. No sleep needed.
 
     // =========================================================================
     // Phase 3: Broadcast "start" to begin data flow
