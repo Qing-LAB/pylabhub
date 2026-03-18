@@ -43,6 +43,7 @@
  * See HEP-CORE-0011 for the ScriptHost abstraction framework.
  */
 
+#include "lua_state.hpp"
 #include "role_host_core.hpp"
 
 #include "utils/hub_inbox_queue.hpp"
@@ -111,8 +112,13 @@ class LuaRoleHostBase
 
     RoleHostCore core_;
 
-    // ── Lua state ────────────────────────────────────────────────────────────
+    // ── Lua state (RAII, thread-owned) ──────────────────────────────────────
 
+    LuaState state_;   ///< Primary lua_State (data loop thread).
+
+    /// Raw pointer shortcut — valid only while state_ is alive.
+    /// Used in subclass data loops and static closures that receive lua_State*
+    /// from Lua callbacks.  Initialized in do_lua_work_().
     lua_State *L_{nullptr};
 
     // ── Lua callback references (stored in Lua registry) ─────────────────────
@@ -120,7 +126,6 @@ class LuaRoleHostBase
     int ref_on_init_{LUA_NOREF};
     int ref_on_stop_{LUA_NOREF};
     int ref_api_{LUA_NOREF};
-    int ref_ffi_cast_{LUA_NOREF}; ///< Cached ffi.cast function (avoids require per iteration)
 
     // ── Shutdown flag ────────────────────────────────────────────────────────
 
@@ -179,9 +184,6 @@ class LuaRoleHostBase
 
     /** Push a read-only slot view (const cast).  Pushes cdata onto Lua stack. */
     bool push_slot_view_readonly_(const void *data, size_t size, const char *type_name);
-
-    /** Internal: push ffi.cast result onto Lua stack using cached ffi.cast ref. */
-    bool push_ffi_cast_(void *data, const char *type_name, bool readonly);
 
     /** Build a Lua table from incoming messages.  Pushes table onto stack. */
     virtual void push_messages_table_(std::vector<IncomingMessage> &msgs);
