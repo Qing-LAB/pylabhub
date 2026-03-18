@@ -59,18 +59,19 @@ SHM layout version, MessagingFacade sizeof, protocol fields, script API surface)
 No single place to query "what versions does this build support?" and no way for
 scripts to check compatibility at runtime.
 
-**Design** (needs HEP):
-- [ ] `plh_version_registry.hpp` — compile-time `ComponentVersions` struct aggregating:
-  library major/minor, SHM layout version, facade sizes, protocol version, script API version
-- [ ] `version_info_string()` — human-readable one-liner for logs/diagnostics
-- [ ] `version_info_json()` — JSON for script consumption
-- [ ] pybind11 exposure: `pylabhub.version_info()` in the module
-- [ ] Lua exposure: `api.version_info()` closure
-- [ ] Define bump policy: when each component version increments
+**Implemented** (HEP-CORE-0026, 2026-03-17):
+- [x] `plh_version_registry.hpp` — `ComponentVersions` struct, `version_info_string/json()`, `release_version()`, `python_runtime_version()`
+- [x] `pylabhub_abi_info_json()` — `extern "C"` ABI-stable entry point for ctypes/dlsym
+- [x] `cmake/Versions.cmake` — single source of truth for release + Python runtime versions
+- [x] pybind11 exposure: `api.version_info()` in embedded Python module
+- [x] Lua exposure: `api.version_info()` closure
+- [x] 6 L0 VersionRegistryTest cases (no regex, MSVC-safe)
+- [x] `python/__init__.py` `abi_versions()` via ctypes to shared lib
+
+**Remaining**:
 - [ ] Validation integration: SHM attach checks layout version; messenger handshake exchanges
   protocol version; script API version logged at startup
 - [ ] Decide: is facade sizeof the version, or does it need a separate semantic number?
-- [ ] HEP required before implementation
 
 
 ### Code Review REVIEW_FullStack_2026-03-17 — API items

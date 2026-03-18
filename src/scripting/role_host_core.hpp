@@ -14,7 +14,7 @@
  *  - State flags (validate_only, script_load_ok, running)
  *  - FlexZone schema storage (engine-agnostic SchemaSpec)
  *
- * Composed (not inherited) by PythonRoleHostBase and future LuaRoleHostBase.
+ * Composed (not inherited) by PythonRoleHostBase and LuaRoleHostBase.
  *
  * See HEP-CORE-0011 for the ScriptHost abstraction framework.
  */

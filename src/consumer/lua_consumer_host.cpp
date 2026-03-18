@@ -733,7 +733,7 @@ void LuaConsumerHost::call_on_consume_(const void *buf, size_t buf_sz,
         lua_pop(L_, 1);
         on_script_error();
         if (config_.stop_on_script_error)
-            core_.running_threads.store(false);
+            core_.shutdown_requested.store(true, std::memory_order_release);
     }
 }
 
@@ -758,7 +758,7 @@ void LuaConsumerHost::call_on_consume_no_slot_(std::vector<IncomingMessage> &msg
         lua_pop(L_, 1);
         on_script_error();
         if (config_.stop_on_script_error)
-            core_.running_threads.store(false);
+            core_.shutdown_requested.store(true, std::memory_order_release);
     }
 }
 

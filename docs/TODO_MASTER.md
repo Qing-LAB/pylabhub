@@ -35,9 +35,12 @@ Completed 2026-03-15/16:
 - [x] Code review + dedup: common closures/inbox/wait-for-roles moved to base class ✅
 - [x] 12 unit tests for `LuaRoleHostBase` ✅
 - [x] HubConfig lifecycle state machine (assert on out-of-order access) ✅
-- [ ] HIGH: `open_inbox()`, `wait_for_role()`, `set_verify_checksum()` API gaps
+- [x] `open_inbox()`, `wait_for_role()`, `set_verify_checksum()` — implemented 2026-03-17 ✅
+- [x] Unified versioning: `cmake/Versions.cmake`, `pylabhub_abi_info_json()`, ctypes loader ✅
+- [x] `LuaState` RAII wrapper: thread ownership, sandbox, FFI helpers ✅
+- [x] Code review fixes: lua_close thread safety, stop_on_script_error flag, sandbox hardening ✅
 - [ ] MEDIUM: expanded API (`broadcast_channel`, `list_channels`, `flexzone()`, `metrics()`)
-- [ ] Phase 3: ScriptEngine interface refactor (deferred)
+- [ ] Phase 3: ScriptEngine interface + multi-state Lua (deferred)
 
 ### Code Review (CLOSED — 2026-03-17): REVIEW_FullStack_2026-03-17
 📋 `docs/code_review/REVIEW_FullStack_2026-03-17.md` — 30 non-Lua findings: 17 FIXED, 8 ACCEPTED, 4 DEFERRED, 1 Lua WIP; **1184/1184 tests**
