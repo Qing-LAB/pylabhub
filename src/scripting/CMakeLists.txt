@@ -23,6 +23,7 @@ add_library(pylabhub-scripting STATIC
     role_host_core.cpp
     python_role_host_base.cpp
     lua_state.cpp
+    lua_engine.cpp
     lua_role_host_base.cpp
 )
 add_library(pylabhub::scripting ALIAS pylabhub-scripting)
