@@ -69,7 +69,9 @@ ActorVault ActorVault::create(const fs::path    &vault_path,
     std::array<char, kZ85BufSize> pub{};
     std::array<char, kZ85BufSize> sec{};
     if (zmq_curve_keypair(pub.data(), sec.data()) != 0)
+    {
         throw std::runtime_error("ActorVault: zmq_curve_keypair failed");
+    }
     const std::string pub_str(pub.data(), kZ85KeyLen);
     const std::string sec_str(sec.data(), kZ85KeyLen);
     sodium_memzero(sec.data(), sec.size()); // zero secret key stack buffer after copying to sec_str
@@ -127,7 +129,9 @@ ActorVault ActorVault::open(const fs::path    &vault_path,
     }
 
     if (v.pImpl->public_key_.size() != kZ85KeyLen || v.pImpl->secret_key_.size() != kZ85KeyLen)
+    {
         throw std::runtime_error("ActorVault: vault contains invalid key lengths (expected 40-char Z85)");
+    }
 
     return v;
 }

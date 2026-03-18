@@ -26,6 +26,8 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "pylabhub"
+# IMPORTANT: Keep in sync with cmake/Versions.cmake PYLABHUB_RELEASE_VERSION.
+# See docs/README/README_Versioning.md for the update procedure.
 version = "0.1.0a0"
 description = "High-performance IPC framework for scientific data acquisition — C++ core with Python scripting"
 readme = "README.md"

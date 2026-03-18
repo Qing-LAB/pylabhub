@@ -56,7 +56,7 @@ struct PendingCtrlSend
 // ============================================================================
 // ProducerImpl — internal state (defined in .cpp for pImpl idiom)
 // ============================================================================
-
+// NOLINTNEXTLINE(clang-analyzer-optin.performance.Padding) — field order kept for clarity; reorder in a dedicated layout pass if desired
 struct ProducerImpl
 {
     ChannelHandle                      handle;
@@ -472,6 +472,13 @@ Producer::create_from_parts(Messenger &messenger, ChannelHandle channel,
 
     // Fill the messaging facade. Function pointers capture nothing except `ctx` (the
     // heap-stable ProducerImpl*). The facade itself lives inside ProducerImpl, so
+    // ABI guard: ProducerMessagingFacade is exported across the shared library boundary.
+    // Field insertion would silently corrupt function pointer offsets in pre-compiled templates.
+    // 8 pointers × 8 bytes = 64 bytes on LP64/LLP64.
+    static_assert(sizeof(ProducerMessagingFacade) == 64,
+                  "ProducerMessagingFacade size changed — ABI break! "
+                  "Append new fields at the end and bump SOVERSION.");
+
     // `&impl->facade` is stable for the lifetime of ProducerImpl.
     ProducerImpl *raw = impl.get();
     impl->facade.context = raw;

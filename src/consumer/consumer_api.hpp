@@ -71,6 +71,7 @@ class ConsumerAPI
     void set_shutdown_flag(std::atomic<bool> *f) noexcept { shutdown_flag_ = f; }
     void set_shutdown_requested(std::atomic<bool> *f) noexcept { shutdown_requested_ = f; }
     void set_stop_reason(std::atomic<int> *r) noexcept { stop_reason_ = r; }
+    void set_critical_error_ptr(std::atomic<bool> *p) noexcept { critical_error_ptr_ = p; }
     void set_reader(const hub::QueueReader *r) noexcept
         { reader_.store(r, std::memory_order_release); }
     void update_last_seq(uint64_t seq) noexcept
@@ -97,7 +98,8 @@ class ConsumerAPI
     void log(const std::string &level, const std::string &msg);
     void stop();
     void set_critical_error();
-    [[nodiscard]] bool critical_error() const noexcept { return critical_error_.load(); }
+    [[nodiscard]] bool critical_error() const noexcept
+        { return critical_error_ptr_ && critical_error_ptr_->load(std::memory_order_acquire); }
 
     /// Send an event notification to a target channel's producer via the broker.
     void notify_channel(const std::string &target_channel, const std::string &event,
@@ -172,7 +174,7 @@ class ConsumerAPI
 
     // ── Python-accessible — shutdown diagnostics ─────────────────────────────
 
-    /// Returns reason the role stopped: "normal", "peer_dead", or "critical_error".
+    /// Returns reason the role stopped: "normal", "peer_dead", "hub_dead", or "critical_error".
     [[nodiscard]] std::string stop_reason() const noexcept;
     /// Number of ctrl-send messages dropped due to queue overflow.
     [[nodiscard]] uint64_t ctrl_queue_dropped() const noexcept;
@@ -185,7 +187,7 @@ class ConsumerAPI
     std::atomic<bool>     *shutdown_requested_{nullptr};
     std::atomic<int>      *stop_reason_{nullptr};
 
-    std::atomic<bool> critical_error_{false};
+    std::atomic<bool> *critical_error_ptr_{nullptr};
 
     std::string uid_;
     std::string name_;

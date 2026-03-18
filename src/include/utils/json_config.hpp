@@ -40,6 +40,7 @@
  */
 #include "utils/file_lock.hpp"
 #include "utils/lifecycle.hpp"
+#include "utils/logger.hpp"
 
 #include "utils/json_fwd.hpp"
 #include <list>
@@ -613,12 +614,30 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
                     *ec = std::make_error_code(std::errc::not_connected);
                 return;
             }
-            fLock.emplace(path);
-            if (!fLock->valid())
+            // Retry with timeout rather than blocking forever — a config file
+            // lock should never take more than a few seconds.  If another
+            // process holds the lock and hangs (e.g. NFS stale lock), we
+            // fail with an error the caller can handle, rather than blocking
+            // the entire program indefinitely.
+            constexpr int kLockRetries   = 3;
+            constexpr auto kLockTimeout  = std::chrono::seconds(2);
+            for (int attempt = 0; attempt < kLockRetries; ++attempt)
             {
+                fLock.emplace(path, /*is_directory=*/false, kLockTimeout);
+                if (fLock->valid())
+                    break;
+                LOGGER_WARN("JsonConfig: file lock timeout on '{}' (attempt {}/{})",
+                            path.string(), attempt + 1, kLockRetries);
+                fLock.reset();
+            }
+            if (!fLock || !fLock->valid())
+            {
+                LOGGER_ERROR("JsonConfig: failed to acquire file lock on '{}' after {} retries "
+                             "({}s total) — write transaction aborted",
+                             path.string(), kLockRetries, kLockRetries * 2);
                 destroy_transaction_internal(id);
                 if (ec)
-                    *ec = fLock->error_code();
+                    *ec = std::make_error_code(std::errc::timed_out);
                 return;
             }
         }

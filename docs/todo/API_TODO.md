@@ -52,6 +52,50 @@ triplication of path/hub-resolution logic across the three role config classes.
 
 ---
 
+### Future: Centralized Version Registry (2026-03-17)
+
+**Motivation**: Version information is scattered across components (library SOVERSION,
+SHM layout version, MessagingFacade sizeof, protocol fields, script API surface).
+No single place to query "what versions does this build support?" and no way for
+scripts to check compatibility at runtime.
+
+**Design** (needs HEP):
+- [ ] `plh_version_registry.hpp` — compile-time `ComponentVersions` struct aggregating:
+  library major/minor, SHM layout version, facade sizes, protocol version, script API version
+- [ ] `version_info_string()` — human-readable one-liner for logs/diagnostics
+- [ ] `version_info_json()` — JSON for script consumption
+- [ ] pybind11 exposure: `pylabhub.version_info()` in the module
+- [ ] Lua exposure: `api.version_info()` closure
+- [ ] Define bump policy: when each component version increments
+- [ ] Validation integration: SHM attach checks layout version; messenger handshake exchanges
+  protocol version; script API version logged at startup
+- [ ] Decide: is facade sizeof the version, or does it need a separate semantic number?
+- [ ] HEP required before implementation
+
+
+### Code Review REVIEW_FullStack_2026-03-17 — API items
+
+**Completed 2026-03-17:**
+- [x] SL-05: `stop_reason_` — escalated to full refactor; StopReason unified in RoleHostCore ✅
+- [x] SL-04: StopReason/LuaStopReason unified via `using` aliases ✅
+- [x] SL-02: `drain_messages()` — ACCEPTED (move+clear preserves capacity; comment added) ✅
+- [x] L3-A1: `parse_consumer_sync_policy` now accepts `"sequential_sync"` + test ✅
+- [x] L0-03: `monotonic_time_ns()` docstring fixed (cross-platform description) ✅
+- [x] L0-04: `get_pid()` noexcept added ✅
+- [x] L0-07: Duplicate include removed ✅
+- [x] L2-02: ZMQ context shutdown — FALSE POSITIVE (two-phase design correct) ✅
+- [x] L2-06: Logger pre-init — ACCEPTED (intentional design) ✅
+- [x] L2-09: ScriptHost member ordering — comment added ✅
+
+**Remaining (deferred):**
+- [ ] **PR-03 LOW: Missing const overload on `hub::Producer::shm()`** — Lua hosts use
+  `const_cast` (deferred with Lua WIP)
+- [ ] **L3-C1 LOW: ProducerMessagingFacade ABI guard** — Add `static_assert(sizeof)` (requires
+  measuring current sizeof across platforms)
+- [ ] **L3-D2 LOW: BrokerService callback lifetime warnings** — doc-only
+- [ ] **HS-02 LOW: Consolidate duplicated TTY/password helpers** — `hubshell.cpp` vs `role_cli.hpp`
+- [ ] **HS-01 LOW: AdminShell constant-time token comparison** — deferred to security sprint
+
 ### Design Gap Fixes (2026-03-09, ✅ CLOSED 2026-03-10)
 
 **Formal review**: `docs/code_review/REVIEW_DesignAndCode_2026-03-09.md` — all 6 items triaged.

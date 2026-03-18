@@ -1828,12 +1828,13 @@ std::string BrokerService::list_channels_json_str() const
     std::lock_guard<std::mutex> lock(pImpl->m_query_mu);
     for (const auto& [name, entry] : pImpl->registry.all_channels())
     {
-        const char* status_str = "Unknown";
+        const char* status_str;
         switch (entry.status)
         {
         case ChannelStatus::PendingReady: status_str = "PendingReady"; break;
         case ChannelStatus::Ready:        status_str = "Ready";        break;
         case ChannelStatus::Closing:      status_str = "Closing";      break;
+        default:                          status_str = "Unknown";      break;
         }
         result.push_back(nlohmann::json{
             {"name",           name},
@@ -1853,12 +1854,13 @@ ChannelSnapshot BrokerService::query_channel_snapshot() const
     snap.channels.reserve(pImpl->registry.size());
     for (const auto& [name, entry] : pImpl->registry.all_channels())
     {
-        const char* status_str = "Unknown";
+        const char* status_str;
         switch (entry.status)
         {
         case ChannelStatus::PendingReady: status_str = "PendingReady"; break;
         case ChannelStatus::Ready:        status_str = "Ready";        break;
         case ChannelStatus::Closing:      status_str = "Closing";      break;
+        default:                          status_str = "Unknown";      break;
         }
         ChannelSnapshotEntry e;
         e.name                = name;

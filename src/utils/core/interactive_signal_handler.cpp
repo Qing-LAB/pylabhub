@@ -94,7 +94,7 @@ struct InteractiveSignalHandler::Impl
 
     // ── Platform init/cleanup ──────────────────────────────────────────────
 
-    void platform_init()
+    static void platform_init()
     {
 #if defined(PYLABHUB_IS_POSIX)
 #if defined(__linux__)
@@ -126,13 +126,17 @@ struct InteractiveSignalHandler::Impl
 #endif
     }
 
-    void platform_cleanup()
+    static void platform_cleanup()
     {
 #if defined(PYLABHUB_IS_POSIX)
         if (g_wake_pipe[0] >= 0)
+        {
             ::close(g_wake_pipe[0]);
+        }
         if (g_wake_pipe[1] >= 0)
+        {
             ::close(g_wake_pipe[1]);
+        }
         g_wake_pipe[0] = g_wake_pipe[1] = -1;
 #elif defined(PYLABHUB_IS_WINDOWS)
         if (g_wake_event != nullptr)
@@ -148,7 +152,7 @@ struct InteractiveSignalHandler::Impl
     static bool detect_tty()
     {
 #if defined(PYLABHUB_IS_POSIX)
-        return ::isatty(STDIN_FILENO) && ::isatty(STDERR_FILENO);
+        return (::isatty(STDIN_FILENO) != 0) && (::isatty(STDERR_FILENO) != 0);
 #elif defined(PYLABHUB_IS_WINDOWS)
         return (::GetFileType(::GetStdHandle(STD_INPUT_HANDLE)) == FILE_TYPE_CHAR) &&
                (::GetFileType(::GetStdHandle(STD_ERROR_HANDLE)) == FILE_TYPE_CHAR);
@@ -165,11 +169,15 @@ struct InteractiveSignalHandler::Impl
         {
             // Block until woken by signal handler.
             if (!wait_for_signal(/* timeout_ms = */ 500))
+            {
                 continue; // Periodic check of g_force_exit.
+            }
 
             const int count = g_signal_count.load(std::memory_order_acquire);
             if (count <= 0)
+            {
                 continue; // Spurious wake.
+            }
 
             if (!interactive || count >= 2)
             {
@@ -229,7 +237,9 @@ struct InteractiveSignalHandler::Impl
         fmt::print(stderr, "{}\n", msg);
         LOGGER_INFO("{}: {}", config.binary_name, msg);
         if (shutdown_flag != nullptr)
+        {
             shutdown_flag->store(true, std::memory_order_release);
+        }
     }
 
     void print_interrupted()
@@ -265,7 +275,9 @@ struct InteractiveSignalHandler::Impl
             }
         }
         if (!status.empty())
+        {
             fmt::print(stderr, "{}\n\n", status);
+        }
     }
 
     enum class PromptResult { Confirm, Decline, Timeout, DoubleInterrupt };
@@ -282,7 +294,7 @@ struct InteractiveSignalHandler::Impl
     // ── Platform-specific blocking ─────────────────────────────────────────
 
     /// Wait for the wake pipe/event. Returns true if woken, false on timeout.
-    bool wait_for_signal(int timeout_ms)
+    static bool wait_for_signal(int timeout_ms)
     {
 #if defined(PYLABHUB_IS_POSIX)
         if (g_wake_pipe[0] < 0)
@@ -322,7 +334,7 @@ struct InteractiveSignalHandler::Impl
     }
 
     /// Read stdin with a timeout, also watching the wake pipe for a second signal.
-    PromptResult read_stdin_with_wake(int timeout_ms)
+    static PromptResult read_stdin_with_wake(int timeout_ms)
     {
 #if defined(PYLABHUB_IS_POSIX)
         struct pollfd fds[2] = {
@@ -333,10 +345,12 @@ struct InteractiveSignalHandler::Impl
         int ret = ::poll(fds, static_cast<nfds_t>(nfds), timeout_ms);
 
         if (ret <= 0)
+        {
             return PromptResult::Timeout;
+        }
 
         // Check wake pipe first — another Ctrl-C arrived during prompt.
-        if (nfds == 2 && (fds[1].revents & POLLIN))
+        if (nfds == 2 && ((fds[1].revents & POLLIN) != 0))
         {
             char buf[16];
             (void)::read(g_wake_pipe[0], buf, sizeof(buf));
@@ -344,12 +358,14 @@ struct InteractiveSignalHandler::Impl
         }
 
         // Check stdin.
-        if (fds[0].revents & POLLIN)
+        if ((fds[0].revents & POLLIN) != 0)
         {
             char buf[16];
             ssize_t n = ::read(STDIN_FILENO, buf, sizeof(buf));
             if (n > 0 && (buf[0] == 'y' || buf[0] == 'Y'))
+            {
                 return PromptResult::Confirm;
+            }
             return PromptResult::Decline;
         }
 
@@ -411,7 +427,7 @@ struct InteractiveSignalHandler::Impl
 #endif
     }
 
-    void drain_pipe()
+    static void drain_pipe()
     {
 #if defined(PYLABHUB_IS_POSIX)
         if (g_wake_pipe[0] >= 0)
@@ -422,7 +438,9 @@ struct InteractiveSignalHandler::Impl
         }
 #elif defined(PYLABHUB_IS_WINDOWS)
         if (g_wake_event != nullptr)
+        {
             ::ResetEvent(g_wake_event);
+        }
 #endif
     }
 };
@@ -455,15 +473,23 @@ void InteractiveSignalHandler::set_status_callback(SignalStatusCallback cb)
 void InteractiveSignalHandler::install()
 {
     if (impl_->installed.exchange(true))
+    {
         return; // Already installed.
+    }
 
     // Determine interactive mode.
     if (impl_->config.force_daemon)
+    {
         impl_->interactive = false;
+    }
     else if (impl_->config.force_interactive)
+    {
         impl_->interactive = true;
+    }
     else
+    {
         impl_->interactive = Impl::detect_tty();
+    }
 
     // Reset globals.
     g_signal_count.store(0, std::memory_order_relaxed);
@@ -483,7 +509,9 @@ void InteractiveSignalHandler::install()
 void InteractiveSignalHandler::uninstall()
 {
     if (!impl_->installed.exchange(false))
+    {
         return;
+    }
 
     // Signal the watcher thread to exit.
     g_force_exit.store(true, std::memory_order_release);
@@ -497,17 +525,25 @@ void InteractiveSignalHandler::uninstall()
     }
 #elif defined(PYLABHUB_IS_WINDOWS)
     if (g_wake_event != nullptr)
+    {
         ::SetEvent(g_wake_event);
+    }
 #endif
 
     if (impl_->watcher_thread.joinable())
+    {
         impl_->watcher_thread.join();
+    }
 
     // Restore previous signal handlers.
     if (impl_->prev_sigint != SIG_ERR)
+    {
         std::signal(SIGINT, impl_->prev_sigint);
+    }
     if (impl_->prev_sigterm != SIG_ERR)
+    {
         std::signal(SIGTERM, impl_->prev_sigterm);
+    }
 
     impl_->platform_cleanup();
 }
@@ -522,13 +558,19 @@ bool InteractiveSignalHandler::is_installed() const noexcept
 // ============================================================================
 
 // Process-global pointer for the C-style lifecycle callback.
-// Only one InteractiveSignalHandler may be active per process.
+// Only one InteractiveSignalHandler may be active per process (one SIGINT
+// handler is the OS-level reality).  Lifecycle's duplicate-registration
+// rejection (LifecycleManager::register_module returns false on duplicate
+// name) prevents a second "SignalHandler" module from being registered,
+// so this pointer is written exactly once per process lifetime.
 static InteractiveSignalHandler *s_lifecycle_instance = nullptr;
 
-static void signal_handler_lifecycle_cleanup(const char *) noexcept
+static void signal_handler_lifecycle_cleanup(const char * /*unused*/) noexcept
 {
-    if (s_lifecycle_instance)
+    if (s_lifecycle_instance != nullptr)
+    {
         s_lifecycle_instance->uninstall();
+    }
 }
 
 utils::ModuleDef InteractiveSignalHandler::make_lifecycle_module()

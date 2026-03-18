@@ -34,6 +34,14 @@ platform-specific behaviour differences.
   cmake --build build-clang 2>&1 | grep -E "warning:|error:" | grep -v third_party
   ```
 
+### Code Review REVIEW_FullStack_2026-03-17 — Platform items (all completed)
+
+- [x] L0-01: Windows `shm_create()` >4GB — split size into high/low DWORD ✅ 2026-03-17
+- [x] L0-02: POSIX `shm_create()` defensive unlink guard + HEP §2.2 ownership principle ✅ 2026-03-17
+- [x] L2-01: DataBlockMutex `long` → `int64_t` for timeout computation ✅ 2026-03-17
+- [x] L2-04: `try_lock_for(-1)` fixed on BOTH POSIX and Windows + 2 tests ✅ 2026-03-17
+- [x] L0-05: Windows `GetModuleFileNameW` truncation off-by-one ✅ 2026-03-17
+
 ### Windows (MSVC) — Known Gaps
 
 - [ ] **`/Zc:preprocessor` PUBLIC propagation audit** — Confirm that all consumers of

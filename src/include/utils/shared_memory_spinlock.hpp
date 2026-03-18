@@ -18,6 +18,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <stdexcept>
 #include <chrono>
@@ -65,6 +66,7 @@ inline void init_spinlock_state(SharedSpinLockState *state) noexcept
     state->owner_tid.store(0, std::memory_order_release);
     state->generation.store(0, std::memory_order_release);
     state->recursion_count.store(0, std::memory_order_release);
+    std::memset(state->padding, 0, sizeof(state->padding));
 }
 
 /**

@@ -147,16 +147,19 @@ public:
 
         /// Called (from run() thread) when a peer completes the HELLO handshake.
         /// @param hub_uid  UID reported by the peer in HUB_PEER_HELLO.
+        /// **Lifetime**: same as on_ready — callback must outlive run(). See on_ready doc.
         std::function<void(const std::string& hub_uid)> on_hub_connected;
 
         /// Called (from run() thread) when a peer sends BYE or times out.
         /// @param hub_uid  UID of the disconnecting peer.
+        /// **Lifetime**: same as on_ready — callback must outlive run(). See on_ready doc.
         std::function<void(const std::string& hub_uid)> on_hub_disconnected;
 
         /// Called (from run() thread) when a HUB_TARGETED_MSG arrives for this hub.
         /// @param channel       Context channel name from the message.
         /// @param payload       Raw payload bytes.
         /// @param source_hub_uid UID of the sending hub.
+        /// **Lifetime**: same as on_ready — callback must outlive run(). See on_ready doc.
         std::function<void(const std::string& channel,
                            const std::string& payload,
                            const std::string& source_hub_uid)> on_hub_message;

@@ -204,7 +204,7 @@ PYLABHUB_UTILS_EXPORT uint64_t get_native_thread_id() noexcept;
  * @brief Gets the process ID (PID) for the current process.
  * @return A 64-bit unsigned integer representing the process ID.
  */
-PYLABHUB_UTILS_EXPORT uint64_t get_pid();
+PYLABHUB_UTILS_EXPORT uint64_t get_pid() noexcept;
 /**
  * @brief Gets the name of the current executable.
  * @param include_path If `true`, returns the full absolute path to the executable.
@@ -248,9 +248,9 @@ PYLABHUB_UTILS_EXPORT bool is_process_alive(uint64_t pid) noexcept;
 
 /**
  * @brief Gets a monotonic timestamp in nanoseconds.
- * @details Uses std::chrono::high_resolution_clock for maximum precision.
- *          This clock is monotonic (never goes backwards) and suitable for
- *          measuring elapsed time, timeouts, and performance metrics.
+ * @details Cross-platform monotonic clock (CLOCK_MONOTONIC on POSIX,
+ *          QueryPerformanceCounter on Windows).  Never goes backwards;
+ *          suitable for measuring elapsed time, timeouts, and performance metrics.
  * @return Monotonic timestamp in nanoseconds since an unspecified epoch.
  * @note The absolute value is meaningless; use for computing time deltas only.
  * @note This is the preferred timestamp source for all IPC timeouts and metrics.

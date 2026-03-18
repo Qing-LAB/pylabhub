@@ -91,7 +91,9 @@ HubVault HubVault::create(const fs::path    &hub_dir,
     std::array<char, kZ85BufSize> pub{};
     std::array<char, kZ85BufSize> sec{};
     if (zmq_curve_keypair(pub.data(), sec.data()) != 0)
+    {
         throw std::runtime_error("HubVault: zmq_curve_keypair failed");
+    }
     const std::string broker_public(pub.data(), kZ85KeyLen);
     const std::string broker_secret(sec.data(), kZ85KeyLen);
     sodium_memzero(sec.data(), sec.size()); // zero secret key buffer after copying to string
@@ -172,11 +174,15 @@ void HubVault::publish_public_key(const fs::path &hub_dir) const
     {
         std::ofstream ofs(pubkey_path, std::ios::trunc);
         if (!ofs)
+        {
             throw std::runtime_error("HubVault: cannot write hub.pubkey: " +
                                      pubkey_path.string());
+        }
         ofs << pImpl->broker_public_key;
         if (!ofs)
+        {
             throw std::runtime_error("HubVault: write failed: " + pubkey_path.string());
+        }
     }
 #if defined(PYLABHUB_PLATFORM_WIN64)
     // Windows: set DACL granting owner full access + everyone read.

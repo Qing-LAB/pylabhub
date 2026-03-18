@@ -465,6 +465,12 @@ Consumer::connect_from_parts(Messenger &messenger, ChannelHandle channel,
         impl->shm->set_loop_policy(opts.loop_policy, opts.period_ms);
     }
 
+    // ABI guard: ConsumerMessagingFacade is exported across the shared library boundary.
+    // 6 pointers × 8 bytes = 48 bytes on LP64/LLP64.
+    static_assert(sizeof(ConsumerMessagingFacade) == 48,
+                  "ConsumerMessagingFacade size changed — ABI break! "
+                  "Append new fields at the end and bump SOVERSION.");
+
     // Fill the messaging facade. Function pointers capture nothing except `ctx` (the
     // heap-stable ConsumerImpl*). The facade itself lives inside ConsumerImpl.
     ConsumerImpl *raw    = impl.get();

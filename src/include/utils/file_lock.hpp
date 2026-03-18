@@ -172,6 +172,16 @@ class PYLABHUB_UTILS_EXPORT FileLock
      *                     false (default) for a file (uses `.lock` suffix).
      * @param blocking     True (default): wait indefinitely. False: return immediately
      *                     if the lock cannot be acquired.
+     *
+     * @note  When `blocking=true`, the intra-process registry layer uses an
+     *        unconditional `cv.wait()`.  If the owning thread terminates
+     *        abnormally (e.g. `std::terminate`, caught SIGSEGV with longjmp)
+     *        without running the FileLock deleter, the `owners` count is never
+     *        decremented and the waiter blocks forever.  In practice this is
+     *        moot: abnormal thread termination typically terminates the whole
+     *        process.  The OS-level lock (`flock`/`LockFileEx`) is released
+     *        automatically by the kernel on process exit.  Use the timeout
+     *        constructor overload if bounded waiting is required.
      */
     explicit FileLock(const std::filesystem::path &path, bool is_directory = false,
                       bool blocking = true) noexcept;

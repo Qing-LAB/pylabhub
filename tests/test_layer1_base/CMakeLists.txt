@@ -203,6 +203,41 @@ gtest_discover_tests(test_layer1_backoff_strategy
 )
 
 # ============================================================================
+# Test: PortableAtomicSharedPtr
+# ============================================================================
+
+add_executable(test_layer1_portable_atomic_shared_ptr
+    test_portable_atomic_shared_ptr.cpp
+)
+
+target_include_directories(test_layer1_portable_atomic_shared_ptr
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/utils
+)
+
+target_link_libraries(test_layer1_portable_atomic_shared_ptr
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer1_portable_atomic_shared_ptr)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer1_portable_atomic_shared_ptr
+    SUITE_NAME "Layer1_PortableAtomicSharedPtr"
+)
+layer1_require_staged_utils(test_layer1_portable_atomic_shared_ptr)
+
+gtest_discover_tests(test_layer1_portable_atomic_shared_ptr
+    PROPERTIES
+        LABELS "layer1;base;atomic;shared_ptr"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: ModuleDef builder API (Pimpl, links pylabhub::utils)
 # ============================================================================
 

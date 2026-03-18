@@ -69,9 +69,10 @@ class LuaProducerHost : public scripting::LuaRoleHostBase
     void stop_role() override;
     void cleanup_on_start_failure() override;
 
-    void on_script_error() override { ++script_errors_; }
+    void on_script_error() override { core_.script_errors_.fetch_add(1, std::memory_order_relaxed); }
     bool has_connection_for_stop() const override { return out_producer_.has_value(); }
     void update_fz_checksum_after_init() override;
+    hub::Messenger *role_messenger_() override { return &out_messenger_; }
 
     void run_data_loop_() override;
 
@@ -104,7 +105,7 @@ class LuaProducerHost : public scripting::LuaRoleHostBase
     std::thread              ctrl_thread_;
     std::atomic<uint64_t>    iteration_count_{0};
 
-    // Metrics (role-specific; script_errors_ and critical_error_ are in base)
+    // Metrics (role-specific; script_errors_ and critical_error_ are in core_)
     std::atomic<uint64_t> out_slots_written_{0};
     std::atomic<uint64_t> out_drops_{0};
     std::atomic<uint64_t> last_cycle_work_us_{0};

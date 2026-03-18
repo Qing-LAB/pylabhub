@@ -79,6 +79,7 @@ class ProcessorAPI
     /// immediately to api.stop() without waiting for the main thread to set stop_.
     void set_shutdown_requested(std::atomic<bool> *f) noexcept { shutdown_requested_ = f; }
     void set_stop_reason(std::atomic<int> *r) noexcept { stop_reason_ = r; }
+    void set_critical_error_ptr(std::atomic<bool> *p) noexcept { critical_error_ptr_ = p; }
 
     /// Pointer to the Python flexzone object returned by api.flexzone().
     void set_flexzone_obj(py::object *fz) noexcept { flexzone_obj_ = fz; }
@@ -128,7 +129,8 @@ class ProcessorAPI
     void set_critical_error();
 
     /// True if set_critical_error() has been called.
-    [[nodiscard]] bool critical_error() const noexcept { return critical_error_.load(); }
+    [[nodiscard]] bool critical_error() const noexcept
+        { return critical_error_ptr_ && critical_error_ptr_->load(std::memory_order_acquire); }
 
     /// Return the persistent output flexzone Python object, or None.
     [[nodiscard]] py::object flexzone() const;
@@ -228,7 +230,7 @@ class ProcessorAPI
 
     // ── Python-accessible — shutdown diagnostics ─────────────────────────────
 
-    /// Returns reason the role stopped: "normal", "peer_dead", or "critical_error".
+    /// Returns reason the role stopped: "normal", "peer_dead", "hub_dead", or "critical_error".
     [[nodiscard]] std::string stop_reason() const noexcept;
     /// Number of ctrl-send messages dropped due to queue overflow (sum of in + out queues).
     [[nodiscard]] uint64_t ctrl_queue_dropped() const noexcept;
@@ -253,7 +255,7 @@ class ProcessorAPI
     std::atomic<int> *stop_reason_{nullptr};
     py::object       *flexzone_obj_{nullptr};
 
-    std::atomic<bool>              critical_error_{false};
+    std::atomic<bool>             *critical_error_ptr_{nullptr};
     std::atomic<const hub::QueueReader*> in_queue_{nullptr}; ///< Non-owning read side; set by ProcessorScriptHost
     std::atomic<hub::QueueWriter*> out_queue_{nullptr};
 
