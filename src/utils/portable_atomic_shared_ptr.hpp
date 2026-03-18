@@ -6,18 +6,32 @@
 // Clang libc++ (as of 17) does not fully implement it, causing build failures on macOS and
 // any project using libc++.
 //
-// This file provides PortableAtomicSharedPtr<T>: a drop-in replacement using a
-// std::mutex for load/store operations. The mutex guarantees full sequential consistency
-// (stronger than any std::memory_order_*), so the memory_order parameters on load() and
-// store() are accepted but ignored — the mutex provides the necessary synchronisation.
+// This file provides PortableAtomicSharedPtr<T>: when the standard library supports
+// std::atomic<std::shared_ptr<T>> (C++20, __cpp_lib_atomic_shared_ptr), it delegates
+// directly and honours the caller's memory_order.  Otherwise it falls back to a
+// std::mutex wrapper where the mutex guarantees full sequential consistency (stronger
+// than any std::memory_order_*).  Define PLH_FORCE_MUTEX_ATOMIC_SHARED_PTR=1 to force
+// the mutex path (e.g. for testing both paths on platforms that support the native one).
 //
 // Usage:
 //   PortableAtomicSharedPtr<Foo> m_handler;      // default-constructed (null)
 //   m_handler.store(std::make_shared<Foo>(), std::memory_order_release);
 //   auto h = m_handler.load(std::memory_order_acquire);
 
+#include <atomic>
 #include <memory>
 #include <mutex>
+#if __has_include(<version>)
+#include <version>
+#endif
+
+#if defined(PLH_FORCE_MUTEX_ATOMIC_SHARED_PTR) && PLH_FORCE_MUTEX_ATOMIC_SHARED_PTR
+#define PLH_HAS_STD_ATOMIC_SHARED_PTR 0
+#elif defined(__cpp_lib_atomic_shared_ptr) && (__cpp_lib_atomic_shared_ptr >= 201711L)
+#define PLH_HAS_STD_ATOMIC_SHARED_PTR 1
+#else
+#define PLH_HAS_STD_ATOMIC_SHARED_PTR 0
+#endif
 
 namespace pylabhub::utils::detail
 {
@@ -34,22 +48,34 @@ class PortableAtomicSharedPtr
     PortableAtomicSharedPtr &operator=(const PortableAtomicSharedPtr &) = delete;
 
     [[nodiscard]] std::shared_ptr<T> load(
-        std::memory_order /*order*/ = std::memory_order_acquire) const noexcept
+        std::memory_order order = std::memory_order_acquire) const noexcept
     {
+#if PLH_HAS_STD_ATOMIC_SHARED_PTR
+        return ptr_.load(order);
+#else
         std::lock_guard<std::mutex> lk(mu_);
         return ptr_;
+#endif
     }
 
     void store(std::shared_ptr<T> p,
-               std::memory_order /*order*/ = std::memory_order_release) noexcept
+               std::memory_order order = std::memory_order_release) noexcept
     {
+#if PLH_HAS_STD_ATOMIC_SHARED_PTR
+        ptr_.store(std::move(p), order);
+#else
         std::lock_guard<std::mutex> lk(mu_);
         ptr_ = std::move(p);
+#endif
     }
 
   private:
+#if PLH_HAS_STD_ATOMIC_SHARED_PTR
+    std::atomic<std::shared_ptr<T>> ptr_{nullptr};
+#else
     mutable std::mutex mu_;
     std::shared_ptr<T> ptr_;
+#endif
 };
 
 } // namespace pylabhub::utils::detail

@@ -90,7 +90,12 @@ public:
     /// callback automatically calls uninstall(), so no explicit uninstall()
     /// call is needed in the main loop exit path.
     ///
-    /// @note Only one InteractiveSignalHandler may use this at a time (one per process).
+    /// @note Only one InteractiveSignalHandler may use this at a time (one per
+    ///   process).  This is enforced by two mechanisms: (1) the OS permits only
+    ///   one SIGINT handler, and (2) LifecycleManager rejects duplicate module
+    ///   names, so a second "SignalHandler" registration returns false.  The
+    ///   lifecycle module stores a process-global raw pointer to `this`; the
+    ///   pointer is written exactly once and cleared on shutdown.
     [[nodiscard]] utils::ModuleDef make_lifecycle_module();
 
 private:

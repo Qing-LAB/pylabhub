@@ -70,7 +70,10 @@ class PYLABHUB_UTILS_EXPORT DataBlockMutex
 
     /**
      * @brief Tries to acquire the mutex within a timeout.
-     * @param timeout_ms Maximum wait in milliseconds (0 = try once, no wait).
+     * @param timeout_ms  Timeout convention (consistent with SharedSpinLock):
+     *   -  `< 0` : wait indefinitely until acquired.
+     *   - `== 0` : non-blocking — return false immediately if not available.
+     *   -  `> 0` : wait up to N milliseconds, then return false.
      * @return true if the mutex was acquired (including after EOWNERDEAD/WAIT_ABANDONED recovery),
      *         false if the timeout expired without acquiring.
      * @throws std::runtime_error on other errors (invalid state, etc.).

@@ -17,7 +17,56 @@ from __future__ import annotations
 
 import pathlib
 
-__version__ = "0.1.0a0"
+# Version from cmake/Versions.cmake (generated at configure time).
+try:
+    from pylabhub._version_generated import __version__
+    from pylabhub._version_generated import PYTHON_RUNTIME_VERSION as python_runtime_version
+    from pylabhub._version_generated import PYTHON_RELEASE_TAG as python_release_tag
+except ImportError:
+    __version__ = "0.1.0a0"
+    python_runtime_version = "unknown"
+    python_release_tag = "unknown"
+
+
+def abi_versions() -> dict:
+    """Query ABI/protocol versions from the installed C++ shared library.
+
+    Loads ``libpylabhub-utils`` via ctypes and calls the C-linkage function
+    ``pylabhub_abi_info_json()`` which returns a stable ``const char*``.
+
+    Returns a dict with keys: release, library, python_runtime, shm_major,
+    shm_minor, wire_major, wire_minor, script_api_major, script_api_minor,
+    facade_producer, facade_consumer.
+
+    Falls back to a minimal dict if the library is not available.
+    """
+    import ctypes
+    import json
+    import platform as plat
+    import sys
+
+    try:
+        lib_dir = get_lib_dir()
+        if sys.platform == "win32":
+            lib_path = lib_dir / "pylabhub-utils.dll"
+        elif plat.system() == "Darwin":
+            lib_path = lib_dir / "libpylabhub-utils.dylib"
+        else:
+            lib_path = lib_dir / "libpylabhub-utils.so"
+
+        if not lib_path.exists():
+            return {"release": __version__, "python_runtime": python_runtime_version}
+
+        lib = ctypes.CDLL(str(lib_path))
+        lib.pylabhub_abi_info_json.restype = ctypes.c_char_p
+        lib.pylabhub_abi_info_json.argtypes = []
+        raw = lib.pylabhub_abi_info_json()
+        if raw:
+            return json.loads(raw.decode("utf-8"))
+    except Exception:
+        pass
+
+    return {"release": __version__, "python_runtime": python_runtime_version}
 
 _DATA_DIR = pathlib.Path(__file__).parent / "data"
 

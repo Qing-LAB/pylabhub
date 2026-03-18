@@ -29,6 +29,18 @@
 - [ ] **Broker-coordinated recovery** – Cross-process zombie detection (blocked on broker protocol extension)
 - [ ] **Slot-checksum in-place repair** – Blocked: existing repair reinitialises header; needs WriteAttach approach
 
+### Code Review REVIEW_FullStack_2026-03-17 — Testing gaps
+
+- [ ] **PARITY-01 HIGH: No Lua role integration tests** — LuaProducerHost, LuaConsumerHost,
+  LuaProcessorHost data loops, inbox drain, and startup coordination have zero integration test
+  coverage. Need `test_lua_producer_roundtrip`, `test_lua_consumer_roundtrip`,
+  `test_lua_processor_roundtrip` in test_layer4_*.
+- [ ] **L0 gap: No `uuid_utils` unit tests** — `generate_uuid4()` has no L0 test.
+- [ ] **L0 gap: No `bytes_to_hex`/`bytes_from_hex` tests** — Used in ZMQ identity encoding.
+- [ ] **L2 gap: ZMQ context tests minimal** (88 lines) — No concurrent start/stop, no double-start.
+- [ ] **L2 gap: No DataBlockMutex WAIT_ABANDONED test** for Windows robust mutex path.
+- [ ] **L2 gap: No vault corruption detection test** — truncated file, bit-flip in ciphertext.
+
 ### Watchlist: ShmQueueWriteFlexzone intermittent timeout (2026-03-16)
 
 - [ ] **DatahubShmQueueTest.ShmQueueWriteFlexzone** — intermittently times out at 60s under
@@ -42,6 +54,10 @@
   investigate: (1) Logger cv_.notify_one miss, (2) fork/exec scheduling starvation,
   (3) whether the *same* test consistently fails or different tests rotate.
   - Also seen on `DatahubSlotDrainingTest.DrainHoldTrueNeverReturnsNullptr` (same session).
+  - Also seen on `DatahubHeaderStructureTest.SchemaHashesPopulatedWithTemplateApi` (2026-03-18,
+    exit code 143 = SIGTERM after 60s, child stderr shows test lambda completed successfully;
+    possible lifecycle teardown hang under `-j2` load). Failed once, passed 10/10 in isolation
+    and 1/1 on full-suite rerun. Same class of issue: non-reproducing under load.
 
 ### Codex Review: Testing docs staleness (2026-03-15)
 

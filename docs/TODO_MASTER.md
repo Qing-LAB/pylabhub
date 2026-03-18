@@ -39,6 +39,10 @@ Completed 2026-03-15/16:
 - [ ] MEDIUM: expanded API (`broadcast_channel`, `list_channels`, `flexzone()`, `metrics()`)
 - [ ] Phase 3: ScriptEngine interface refactor (deferred)
 
+### Code Review (CLOSED — 2026-03-17): REVIEW_FullStack_2026-03-17
+📋 `docs/code_review/REVIEW_FullStack_2026-03-17.md` — 30 non-Lua findings: 17 FIXED, 8 ACCEPTED, 4 DEFERRED, 1 Lua WIP; **1184/1184 tests**
+Key fixes: DataBlockMutex try_lock_for(-1) on both platforms, SharedSpinLock generation guard, StopReason/critical_error unified in RoleHostCore, SHM ownership principle (HEP §2.2), sequential_sync parser, JsonConfig retry-with-timeout
+
 ### Code Review (CLOSED — 2026-03-15): REVIEW_Codex_2026-03-15
 📋 Archived to `docs/archive/transient-2026-03-15/` — ✅ CLOSED; 4 doc fixes applied, 4 code items routed to API_TODO, 2 routed to PLATFORM/TESTING_TODO, 1 false positive, 1 pre-fixed
 

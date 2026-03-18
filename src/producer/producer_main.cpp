@@ -279,6 +279,7 @@ int main(int argc, char *argv[])
 
     LifecycleGuard runner_lifecycle(scripting::role_lifecycle_modules(args.log_file));
     scripting::register_signal_handler_lifecycle(signal_handler, "[prod-main]");
+    scripting::log_version_info("[prod-main]");
 
     if (!config.auth.keyfile.empty())
     {

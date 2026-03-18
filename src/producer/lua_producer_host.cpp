@@ -295,7 +295,7 @@ nlohmann::json LuaProducerHost::snapshot_metrics_json() const
     nlohmann::json base;
     base["out_written"]        = out_slots_written_.load(std::memory_order_relaxed);
     base["drops"]              = out_drops_.load(std::memory_order_relaxed);
-    base["script_errors"]      = script_errors_.load(std::memory_order_relaxed);
+    base["script_errors"]      = core_.script_errors_.load(std::memory_order_relaxed);
     base["last_cycle_work_us"] = last_cycle_work_us_.load(std::memory_order_relaxed);
     base["loop_overrun_count"] = 0; // No ProducerAPI; TODO: wire SHM metrics
 
@@ -483,13 +483,13 @@ bool LuaProducerHost::start_role()
 
     // Wire peer-dead and hub-dead monitoring.
     out_producer_->on_peer_dead([this]() {
-        stop_reason_.store(static_cast<int>(scripting::LuaStopReason::PeerDead),
+        core_.stop_reason_.store(static_cast<int>(scripting::LuaStopReason::PeerDead),
                            std::memory_order_relaxed);
         core_.shutdown_requested.store(true, std::memory_order_release);
     });
 
     out_messenger_.on_hub_dead([this]() {
-        stop_reason_.store(static_cast<int>(scripting::LuaStopReason::HubDead),
+        core_.stop_reason_.store(static_cast<int>(scripting::LuaStopReason::HubDead),
                            std::memory_order_relaxed);
         core_.shutdown_requested.store(true, std::memory_order_release);
     });
@@ -647,7 +647,7 @@ void LuaProducerHost::run_data_loop_()
     const auto period        = std::chrono::milliseconds{config_.target_period_ms};
 
     while (core_.running_threads.load() && !core_.shutdown_requested.load() &&
-           !critical_error_.load(std::memory_order_relaxed))
+           !core_.critical_error_.load(std::memory_order_relaxed))
     {
         const auto iter_start = std::chrono::steady_clock::now();
 
@@ -731,7 +731,7 @@ void LuaProducerHost::run_data_loop_()
     LOGGER_INFO("[prod] run_data_loop_ exiting: running_threads={} shutdown_requested={} "
                 "critical_error={}",
                 core_.running_threads.load(), core_.shutdown_requested.load(),
-                critical_error_.load());
+                core_.critical_error_.load());
 }
 
 // ============================================================================

@@ -39,10 +39,17 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+# CMake-generated files
+python/pylabhub/_version_generated.py
+
 # CMake build output
 build/
-build-rel/
-**/_build*/
+build-*/
+_build/
+_build-*/
+**/build/
+**/build-*/
+**/_build-*/
 **/CMakeFiles/
 **/CMakeCache.txt
 **/cmake_install.cmake

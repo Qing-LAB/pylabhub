@@ -153,8 +153,37 @@ gtest_discover_tests(test_layer0_platform_sanitizers
         TIMEOUT 60
 )
 
+# ============================================================================
+# Test: UUID Utils and Format Tools (bytes_to_hex, bytes_from_hex)
+# ============================================================================
+
+add_executable(test_layer0_uuid_and_format test_uuid_and_format.cpp)
+
+target_link_libraries(test_layer0_uuid_and_format
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer0_uuid_and_format)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer0_uuid_and_format
+    SUITE_NAME "Layer0_UuidAndFormat"
+)
+layer0_require_staged_utils(test_layer0_uuid_and_format)
+
+gtest_discover_tests(test_layer0_uuid_and_format
+    PROPERTIES
+        LABELS "layer0;platform;uuid;format"
+        TIMEOUT 30
+)
+
 message(STATUS "Layer 0 (Platform) tests configured successfully")
 message(STATUS "  - test_layer0_platform_core")
 message(STATUS "  - test_layer0_platform_debug")
 message(STATUS "  - test_layer0_platform_shm")
 message(STATUS "  - test_layer0_platform_sanitizers")
+message(STATUS "  - test_layer0_uuid_and_format")

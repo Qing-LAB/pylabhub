@@ -1150,8 +1150,10 @@ ModuleDef Logger::GetStartupLogFileSinkModule(
         sink_mod.set_startup(
             [](const char *arg)
             {
-                if (!arg || arg[0] == '\0')
+                if (arg == nullptr || arg[0] == '\0')
+                {
                     return;
+                }
 
                 // Parse "path|max_size|max_backups".
                 const std::string encoded(arg);
@@ -1184,7 +1186,7 @@ ModuleDef Logger::GetStartupLogFileSinkModule(
         sink_mod.set_startup(
             [](const char *path)
             {
-                if (path && path[0] != '\0')
+                if (path != nullptr && path[0] != '\0')
                 {
                     if (!Logger::instance().set_logfile(path))
                     {

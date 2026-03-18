@@ -22,6 +22,7 @@ set(UTILS_SOURCES
   core/platform.cpp
   core/uuid_utils.cpp
   core/interactive_signal_handler.cpp
+  core/version_registry.cpp
 
   # --- service: lifecycle, I/O, crypto, secrets ---
   service/lifecycle.cpp
@@ -144,6 +145,13 @@ target_include_directories(pylabhub-utils
 configure_file(
   "${CMAKE_SOURCE_DIR}/cmake/pylabhub_version.h.in"
   "${CMAKE_CURRENT_BINARY_DIR}/pylabhub_version.h"
+  @ONLY
+)
+
+# Generate Python version module (consumed by python/pylabhub/__init__.py).
+configure_file(
+  "${CMAKE_SOURCE_DIR}/cmake/pylabhub_version.py.in"
+  "${CMAKE_SOURCE_DIR}/python/pylabhub/_version_generated.py"
   @ONLY
 )
 

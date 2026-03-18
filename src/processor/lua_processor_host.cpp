@@ -217,6 +217,7 @@ void LuaProcessorHost::build_role_api_table_(lua_State *L)
     push_closure("out_written",              lua_api_out_written);
     push_closure("in_received",              lua_api_in_received);
     push_closure("drops",                    lua_api_drops);
+    push_closure("set_verify_checksum",      lua_api_set_verify_checksum);
 
     // api table is now on top of the stack — caller stores in registry.
 }
@@ -336,6 +337,15 @@ int LuaProcessorHost::lua_api_drops(lua_State *L)
     return 1;
 }
 
+int LuaProcessorHost::lua_api_set_verify_checksum(lua_State *L)
+{
+    auto *self = static_cast<LuaProcessorHost *>(lua_touserdata(L, lua_upvalueindex(1)));
+    bool enable = lua_toboolean(L, 1) != 0;
+    if (self->in_q_)
+        self->in_q_->set_verify_checksum(enable, false);
+    return 0;
+}
+
 // ============================================================================
 // snapshot_metrics_json — for heartbeat reporting
 // ============================================================================
@@ -346,7 +356,7 @@ nlohmann::json LuaProcessorHost::snapshot_metrics_json() const
     base["in_received"]        = in_slots_received_.load(std::memory_order_relaxed);
     base["out_written"]        = out_slots_written_.load(std::memory_order_relaxed);
     base["drops"]              = out_drops_.load(std::memory_order_relaxed);
-    base["script_errors"]      = script_errors_.load(std::memory_order_relaxed);
+    base["script_errors"]      = core_.script_errors_.load(std::memory_order_relaxed);
     base["last_cycle_work_us"] = last_cycle_work_us_.load(std::memory_order_relaxed);
     base["loop_overrun_count"] = 0;
 
@@ -646,7 +656,7 @@ bool LuaProcessorHost::start_role()
     in_consumer_->on_peer_dead([this]() {
         LOGGER_WARN("[proc] peer-dead: upstream producer silent for {} ms; triggering shutdown",
                     config_.peer_dead_timeout_ms);
-        stop_reason_.store(static_cast<int>(scripting::LuaStopReason::PeerDead),
+        core_.stop_reason_.store(static_cast<int>(scripting::LuaStopReason::PeerDead),
                            std::memory_order_relaxed);
         core_.shutdown_requested.store(true, std::memory_order_release);
     });
@@ -654,14 +664,14 @@ bool LuaProcessorHost::start_role()
     out_producer_->on_peer_dead([this]() {
         LOGGER_WARN("[proc] peer-dead: downstream consumer silent for {} ms; triggering shutdown",
                     config_.peer_dead_timeout_ms);
-        stop_reason_.store(static_cast<int>(scripting::LuaStopReason::PeerDead),
+        core_.stop_reason_.store(static_cast<int>(scripting::LuaStopReason::PeerDead),
                            std::memory_order_relaxed);
         core_.shutdown_requested.store(true, std::memory_order_release);
     });
 
     auto hub_dead_cb = [this]() {
         LOGGER_WARN("[proc] hub-dead: broker connection lost; triggering shutdown");
-        stop_reason_.store(static_cast<int>(scripting::LuaStopReason::HubDead),
+        core_.stop_reason_.store(static_cast<int>(scripting::LuaStopReason::HubDead),
                            std::memory_order_relaxed);
         core_.shutdown_requested.store(true, std::memory_order_release);
     };
@@ -867,7 +877,7 @@ void LuaProcessorHost::run_data_loop_()
     const auto period        = std::chrono::milliseconds{config_.target_period_ms};
 
     while (core_.running_threads.load() && !core_.shutdown_requested.load() &&
-           !critical_error_.load(std::memory_order_relaxed))
+           !core_.critical_error_.load(std::memory_order_relaxed))
     {
         const auto iter_start = std::chrono::steady_clock::now();
 
@@ -996,7 +1006,7 @@ void LuaProcessorHost::run_data_loop_()
     LOGGER_INFO("[proc] run_data_loop_ exiting: running_threads={} shutdown_requested={} "
                 "critical_error={}",
                 core_.running_threads.load(), core_.shutdown_requested.load(),
-                critical_error_.load());
+                core_.critical_error_.load());
 }
 
 // ============================================================================

@@ -44,6 +44,7 @@
  * avoid hanging on a slow teardown (e.g., stuck ZMQ socket).
  */
 #include "plh_datahub.hpp"
+#include "plh_version_registry.hpp"
 #include "hub_python/admin_shell.hpp"
 #include "hub_python/hub_script.hpp"
 #include "hub_python/python_interpreter.hpp"
@@ -55,6 +56,7 @@
 #include "utils/uid_utils.hpp"
 #include "utils/uuid_utils.hpp"
 #include "utils/hub_vault.hpp"
+#include "utils/role_cli.hpp"
 #include "utils/zmq_context.hpp"
 
 #include <pybind11/embed.h>
@@ -93,57 +95,8 @@ using namespace pylabhub::utils;
 static std::atomic<bool> g_shutdown_requested{false};
 
 // ---------------------------------------------------------------------------
-// Password helpers
+// Password helpers (TTY detection and password reading delegated to role_cli.hpp)
 // ---------------------------------------------------------------------------
-
-/// Return true when stdin is an interactive terminal.
-static bool is_stdin_tty()
-{
-#if defined(PYLABHUB_IS_POSIX)
-    return ::isatty(STDIN_FILENO) != 0;
-#elif defined(_WIN32)
-    return ::_isatty(::_fileno(stdin)) != 0;
-#else
-    return false;
-#endif
-}
-
-/// Read password from terminal with echo suppressed.
-static std::string read_password_interactive(const char* prompt)
-{
-#if defined(PYLABHUB_IS_POSIX)
-    char* pw = ::getpass(prompt);
-    if (!pw)
-    {
-        std::fprintf(stderr, "hubshell: failed to read password from terminal.\n");
-        return {};
-    }
-    return pw;
-#elif defined(_WIN32)
-    HANDLE hStdin     = ::GetStdHandle(STD_INPUT_HANDLE);
-    DWORD  old_mode   = 0;
-    const bool is_con = (hStdin != INVALID_HANDLE_VALUE) &&
-                        (::GetConsoleMode(hStdin, &old_mode) != 0);
-    if (is_con)
-        ::SetConsoleMode(hStdin, old_mode & ~ENABLE_ECHO_INPUT);
-    std::fprintf(stderr, "%s", prompt);
-    std::fflush(stderr);
-    std::string pw;
-    std::getline(std::cin, pw);
-    if (is_con)
-    {
-        ::SetConsoleMode(hStdin, old_mode);
-        std::fprintf(stderr, "\n"); // newline since echo was suppressed
-    }
-    return pw;
-#else
-    std::fprintf(stderr, "%s", prompt);
-    std::fflush(stderr);
-    std::string pw;
-    std::getline(std::cin, pw);
-    return pw;
-#endif
-}
 
 /// Get master password: PYLABHUB_MASTER_PASSWORD env var → interactive prompt → error.
 /// Returns false (with error already printed) when non-interactive and env var not set.
@@ -154,14 +107,14 @@ static bool get_password(const char* prompt, std::string& out)
         out = env;
         return true;
     }
-    if (!is_stdin_tty())
+    if (!pylabhub::role_cli::is_stdin_tty())
     {
         std::fprintf(stderr,
                      "hubshell: vault password required; set PYLABHUB_MASTER_PASSWORD "
                      "for non-interactive use\n");
         return false;
     }
-    out = read_password_interactive(prompt);
+    out = pylabhub::role_cli::read_password_interactive("hubshell",prompt);
     return true;
 }
 
@@ -199,7 +152,7 @@ static int do_init(const fs::path& hub_dir, const std::string& cli_name = {})
     {
         hub_name = cli_name;
     }
-    else if (is_stdin_tty())
+    else if (pylabhub::role_cli::is_stdin_tty())
     {
         std::printf("Hub name (reverse-domain, e.g. lab.physics.daq1): ");
         std::fflush(stdout);
@@ -222,7 +175,7 @@ static int do_init(const fs::path& hub_dir, const std::string& cli_name = {})
         password = env;
         std::printf("Using password from PYLABHUB_MASTER_PASSWORD.\n");
     }
-    else if (!is_stdin_tty())
+    else if (!pylabhub::role_cli::is_stdin_tty())
     {
         std::fprintf(stderr,
                      "hubshell --init: vault password required; set PYLABHUB_MASTER_PASSWORD "
@@ -231,8 +184,8 @@ static int do_init(const fs::path& hub_dir, const std::string& cli_name = {})
     }
     else
     {
-        password = read_password_interactive("Master password (empty = no encryption): ");
-        const std::string confirm = read_password_interactive("Confirm password: ");
+        password = pylabhub::role_cli::read_password_interactive("hubshell","Master password (empty = no encryption): ");
+        const std::string confirm = pylabhub::role_cli::read_password_interactive("hubshell","Confirm password: ");
         if (password != confirm)
         {
             std::fprintf(stderr, "hubshell --init: passwords do not match.\n");
@@ -603,6 +556,25 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
     }
 
     LifecycleGuard app_lifecycle(std::move(mods));
+    LOGGER_INFO("[hub-main] {}", pylabhub::version::version_info_string());
+
+    // -----------------------------------------------------------------------
+    // Write runtime info so tests (and tools) can discover actual bound endpoints
+    // when port 0 is used.  Written after LifecycleGuard starts AdminShell.
+    // -----------------------------------------------------------------------
+    if (!hub_dir.empty())
+    {
+        const auto admin_ep = pylabhub::AdminShell::get_instance().actual_endpoint();
+        const nlohmann::json runtime = {
+            {"admin_endpoint", admin_ep}
+        };
+        std::ofstream rf(hub_dir / "runtime.json");
+        if (rf.is_open())
+        {
+            rf << runtime.dump(2) << '\n';
+            LOGGER_INFO("HubShell: wrote runtime.json (admin_endpoint={})", admin_ep);
+        }
+    }
 
     // -----------------------------------------------------------------------
     // BrokerService — built from HubConfig, runs in its own thread.

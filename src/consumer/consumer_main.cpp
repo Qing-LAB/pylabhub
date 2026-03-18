@@ -278,6 +278,7 @@ int main(int argc, char *argv[])
 
     LifecycleGuard runner_lifecycle(scripting::role_lifecycle_modules(args.log_file));
     scripting::register_signal_handler_lifecycle(signal_handler, "[cons-main]");
+    scripting::log_version_info("[cons-main]");
 
     if (!config.auth.keyfile.empty())
     {

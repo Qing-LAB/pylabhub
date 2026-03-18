@@ -69,8 +69,9 @@ class LuaConsumerHost : public scripting::LuaRoleHostBase
     void stop_role() override;
     void cleanup_on_start_failure() override;
 
-    void on_script_error() override { ++script_errors_; }
+    void on_script_error() override { core_.script_errors_.fetch_add(1, std::memory_order_relaxed); }
     bool has_connection_for_stop() const override { return in_consumer_.has_value(); }
+    hub::Messenger *role_messenger_() override { return &in_messenger_; }
 
     /** Consumer messages are bare bytes (no sender). */
     void push_messages_table_(std::vector<scripting::IncomingMessage> &msgs) override;
@@ -109,7 +110,7 @@ class LuaConsumerHost : public scripting::LuaRoleHostBase
     std::thread              ctrl_thread_;
     std::atomic<uint64_t>    iteration_count_{0};
 
-    // Metrics (role-specific; script_errors_ and critical_error_ are in base)
+    // Metrics (role-specific; script_errors_ and critical_error_ are in core_)
     std::atomic<uint64_t> in_slots_received_{0};
     std::atomic<uint64_t> last_cycle_work_us_{0};
 
@@ -119,6 +120,7 @@ class LuaConsumerHost : public scripting::LuaRoleHostBase
     static int lua_api_name(lua_State *L);
     static int lua_api_channel(lua_State *L);
     static int lua_api_in_received(lua_State *L);
+    static int lua_api_set_verify_checksum(lua_State *L);
 
     nlohmann::json snapshot_metrics_json() const;
 

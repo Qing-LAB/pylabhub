@@ -29,6 +29,10 @@ void RoleHostCore::enqueue_message(IncomingMessage msg)
 
 std::vector<IncomingMessage> RoleHostCore::drain_messages()
 {
+    // Move elements individually + clear() rather than swap() so that
+    // incoming_queue_ retains its allocated capacity across drain cycles.
+    // With kMaxIncomingQueue=64, this avoids a heap allocation on every
+    // drain-then-refill cycle (swap would reset capacity to zero).
     std::vector<IncomingMessage> msgs;
     std::unique_lock<std::mutex> lk(incoming_mu_);
     if (!incoming_queue_.empty())

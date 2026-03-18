@@ -22,10 +22,17 @@ import tempfile
 import urllib.request
 
 # ---------------------------------------------------------------------------
-# Pinned release (must match third_party/cmake/python.cmake)
+# Pinned release — sourced from cmake/Versions.cmake via generated module.
+# Falls back to hardcoded values if the generated module is not available
+# (e.g., when installed from a wheel built without CMake configure).
 # ---------------------------------------------------------------------------
-PYTHON_STANDALONE_VERSION = "3.14.3+20260211"
-PYTHON_RELEASE_TAG = "20260211"
+try:
+    from pylabhub._version_generated import PYTHON_RUNTIME_VERSION, PYTHON_RELEASE_TAG
+    PYTHON_STANDALONE_VERSION = PYTHON_RUNTIME_VERSION
+except ImportError:
+    PYTHON_STANDALONE_VERSION = "3.14.3+20260211"
+    PYTHON_RELEASE_TAG = "20260211"
+
 BASE_URL = (
     f"https://github.com/astral-sh/python-build-standalone"
     f"/releases/download/{PYTHON_RELEASE_TAG}"

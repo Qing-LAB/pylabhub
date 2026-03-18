@@ -116,6 +116,35 @@ class RoleHostCore
     size_t     schema_fz_size{0};
     bool       has_fz{false};
 
+    // ── Role-level error/stop state ──────────────────────────────────────────
+    //
+    // These are role-level facts independent of scripting engine.  All engines
+    // and API objects read/write through these fields — no per-engine copies.
+    //
+    // StopReason: why the role stopped (set by peer-dead, hub-dead, or
+    //   set_critical_error before shutdown_requested is raised).
+
+    enum class StopReason : int
+    {
+        Normal        = 0,
+        PeerDead      = 1,
+        HubDead       = 2,
+        CriticalError = 3,
+    };
+
+    std::atomic<int>      stop_reason_{0};       ///< StopReason value
+    std::atomic<bool>     critical_error_{false}; ///< Script called set_critical_error()
+    std::atomic<uint64_t> script_errors_{0};      ///< Cumulative script callback error count
+
+    /// Set critical error flag and stop reason atomically, then request shutdown.
+    void set_critical_error() noexcept
+    {
+        critical_error_.store(true, std::memory_order_release);
+        stop_reason_.store(static_cast<int>(StopReason::CriticalError),
+                           std::memory_order_relaxed);
+        shutdown_requested.store(true, std::memory_order_release);
+    }
+
   private:
     std::vector<IncomingMessage> incoming_queue_;
     std::mutex                   incoming_mu_;
