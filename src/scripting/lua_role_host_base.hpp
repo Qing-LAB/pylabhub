@@ -9,9 +9,9 @@
  *
  * ## What LuaRoleHostBase provides
  *
- * **From LuaScriptHost:**
+ * **From LuaState (composed RAII wrapper):**
  *  - lua_State lifecycle, sandbox, package.path setup
- *  - call_lua_fn_() protected helper for safe pcall
+ *  - FFI helpers (register_ffi_type, ffi_sizeof, push_slot_view)
  *
  * **Own common code:**
  *  - do_lua_work_() skeleton (~100 lines shared across all roles)
@@ -126,10 +126,6 @@ class LuaRoleHostBase
     int ref_on_init_{LUA_NOREF};
     int ref_on_stop_{LUA_NOREF};
     int ref_api_{LUA_NOREF};
-
-    // ── Shutdown flag ────────────────────────────────────────────────────────
-
-    std::atomic<bool> stop_{false};
 
     // stop_reason_, critical_error_, script_errors_ are in core_ (RoleHostCore).
 

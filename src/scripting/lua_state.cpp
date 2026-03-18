@@ -85,14 +85,17 @@ void LuaState::apply_sandbox()
         lua_setglobal(L_, disabled[i]);
     }
 
-    // Disable os.execute and os.exit (keep os.clock, os.time, etc.).
+    // Disable dangerous os.* functions (keep os.clock, os.time, os.date, os.difftime).
     lua_getglobal(L_, "os");
     if (lua_istable(L_, -1))
     {
-        lua_pushnil(L_);
-        lua_setfield(L_, -2, "execute");
-        lua_pushnil(L_);
-        lua_setfield(L_, -2, "exit");
+        static const char *const disabled_os[] = {
+            "execute", "exit", "remove", "rename", "tmpname", "setlocale", nullptr};
+        for (int i = 0; disabled_os[i]; ++i)
+        {
+            lua_pushnil(L_);
+            lua_setfield(L_, -2, disabled_os[i]);
+        }
     }
     lua_pop(L_, 1);
 
