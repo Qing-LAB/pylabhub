@@ -4,6 +4,7 @@
  */
 #include "consumer_api.hpp"
 
+#include "plh_version_registry.hpp"
 #include "utils/logger.hpp"
 
 #include <chrono>
@@ -41,7 +42,10 @@ void ConsumerAPI::stop()
 
 void ConsumerAPI::set_critical_error()
 {
-    critical_error_.store(true, std::memory_order_release);
+    if (critical_error_ptr_)
+        critical_error_ptr_->store(true, std::memory_order_release);
+    if (stop_reason_)
+        stop_reason_->store(3, std::memory_order_relaxed); // RoleHostCore::StopReason::CriticalError
     stop();
 }
 
@@ -410,6 +414,11 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
              "Why the role stopped: 'normal', 'peer_dead', 'hub_dead', or 'critical_error'.")
         .def("ctrl_queue_dropped", &ConsumerAPI::ctrl_queue_dropped,
              "Number of ctrl-send messages dropped due to queue overflow.");
+
+    m.def("version_info", []() -> py::str
+    {
+        return pylabhub::version::version_info_json();
+    }, "Return JSON string with all component version information.");
 
     py::class_<ConsumerSpinLockPy>(m, "ConsumerSpinLock")
         .def("lock",   &ConsumerSpinLockPy::lock)

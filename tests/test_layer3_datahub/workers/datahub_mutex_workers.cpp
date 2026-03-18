@@ -156,6 +156,53 @@ int zombie_attacher_recovers(const std::string &shm_name)
 #endif
 }
 
+
+int acquire_creator_signal_then_hold(const std::string &shm_name)
+{
+    try
+    {
+        pylabhub::hub::DataBlockMutex mutex(shm_name, nullptr, 0, true);
+        mutex.lock();
+        // Signal parent that we hold the lock; parent spawns attacher.
+        pylabhub::tests::helper::signal_test_ready();
+        // Hold long enough for attacher to start and call try_lock_for(-1).
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        uint64_t release_ts = pylabhub::platform::monotonic_time_ns();
+        mutex.unlock();
+        fmt::print(stderr, "RELEASE_TS={}\n", release_ts);
+        return 0;
+    }
+    catch (const std::exception &e)
+    {
+        fmt::print(stderr, "Exception: {}\n", e.what());
+        return 1;
+    }
+}
+
+int try_lock_infinite_with_timestamps(const std::string &shm_name)
+{
+    try
+    {
+        pylabhub::hub::DataBlockMutex mutex(shm_name, nullptr, 0, false);
+        uint64_t try_ts = pylabhub::platform::monotonic_time_ns();
+        fmt::print(stderr, "TRY_TS={}\n", try_ts);
+        if (!mutex.try_lock_for(-1))
+        {
+            fmt::print(stderr, "try_lock_for(-1) returned false\n");
+            return 1;
+        }
+        uint64_t acquired_ts = pylabhub::platform::monotonic_time_ns();
+        fmt::print(stderr, "ACQUIRED_TS={}\n", acquired_ts);
+        mutex.unlock();
+        return 0;
+    }
+    catch (const std::exception &e)
+    {
+        fmt::print(stderr, "Exception: {}\n", e.what());
+        return 1;
+    }
+}
+
 int attach_nonexistent_fails(const std::string &shm_name)
 {
     try
@@ -204,6 +251,10 @@ struct DataBlockMutexWorkerRegistrar
                     return zombie_creator_acquire_then_exit(shm_name);
                 if (scenario == "zombie_attacher_recovers")
                     return zombie_attacher_recovers(shm_name);
+                if (scenario == "acquire_creator_signal_then_hold")
+                    return acquire_creator_signal_then_hold(shm_name);
+                if (scenario == "try_lock_infinite_with_timestamps")
+                    return try_lock_infinite_with_timestamps(shm_name);
                 if (scenario == "attach_nonexistent_fails")
                     return attach_nonexistent_fails(shm_name);
                 fmt::print(stderr, "ERROR: Unknown datablock_mutex scenario '{}'\n", scenario);

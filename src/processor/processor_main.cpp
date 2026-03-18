@@ -332,6 +332,7 @@ int main(int argc, char *argv[])
     // ── Lifecycle guard ───────────────────────────────────────────────────────
     LifecycleGuard runner_lifecycle(scripting::role_lifecycle_modules(args.log_file));
     scripting::register_signal_handler_lifecycle(signal_handler, "[proc-main]");
+    scripting::log_version_info("[proc-main]");
 
     // ── Load processor keypair (if keyfile configured) ────────────────────────
     if (!config.auth.keyfile.empty())

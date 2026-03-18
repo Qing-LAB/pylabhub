@@ -56,15 +56,8 @@ namespace pylabhub::scripting
 /// Recursively convert nlohmann::json to py::object (dict, list, str, int, float, bool, None).
 py::object json_to_py(const nlohmann::json &val);
 
-/// Reason why the role script host stopped.
-/// 0=Normal, 1=PeerDead, 2=HubDead, 3=CriticalError
-enum class StopReason : int
-{
-    Normal        = 0,
-    PeerDead      = 1,
-    HubDead       = 2,
-    CriticalError = 3,
-};
+/// StopReason is now in RoleHostCore (engine-agnostic).
+using StopReason = RoleHostCore::StopReason;
 
 class PythonRoleHostBase : public PythonScriptHost
 {
@@ -116,10 +109,6 @@ class PythonRoleHostBase : public PythonScriptHost
 
     std::optional<py::gil_scoped_release> main_thread_release_;
     std::thread                           ctrl_thread_;
-
-    // ── Stop reason (set from peer/hub-dead callbacks before shutdown_requested) ──
-
-    std::atomic<int> stop_reason_{0};  // 0=Normal, 1=PeerDead, 2=CriticalError
 
     // ── Common implementations ───────────────────────────────────────────────
 

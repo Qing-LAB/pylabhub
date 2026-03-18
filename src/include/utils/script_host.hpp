@@ -229,7 +229,7 @@ private:
     std::atomic<bool>  ready_{false};
     std::thread        thread_;
     std::promise<void> init_promise_;
-    std::future<void>  init_future_{init_promise_.get_future()};
+    std::future<void>  init_future_{init_promise_.get_future()}; // must be declared after init_promise_ (member init order)
 };
 
 } // namespace pylabhub::utils

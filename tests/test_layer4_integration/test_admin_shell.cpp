@@ -46,30 +46,10 @@ static std::string now_ms()
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-static std::atomic<int> s_port_counter{0};
-
 static std::string hubshell_binary()
 {
     return (fs::path(g_self_exe_path).parent_path() / ".." / "bin" / "pylabhub-hubshell")
                .string();
-}
-
-struct PortPair
-{
-    int broker;
-    int admin;
-};
-
-static PortPair allocate_ports()
-{
-    // Port range: 10000–12999 (admin shell tests).
-    // Non-overlapping with pipeline (13000–15999) and broadcast (16000–18999).
-    // pid%500*6 → max offset 2994; with slot*2 → max port 12999 < 65535.
-    // L3 ZmqQueue tests use 33000+, so no cross-binary collision possible.
-    const int pid_offset = (::getpid() % 500) * 6;
-    constexpr int kBasePort = 10000;
-    const int slot = s_port_counter.fetch_add(1);
-    return {kBasePort + pid_offset + slot * 2, kBasePort + pid_offset + slot * 2 + 1};
 }
 
 static fs::path unique_temp_dir(const std::string& prefix)
@@ -83,14 +63,17 @@ static fs::path unique_temp_dir(const std::string& prefix)
     return dir;
 }
 
-static void write_hub_json(const fs::path& dir, const PortPair& ports)
+/// Writes hub.json with port 0 for both broker and admin endpoints.
+/// The hubshell will bind to OS-assigned ports and write actual endpoints
+/// to runtime.json, which the test reads in wait_ready().
+static void write_hub_json(const fs::path& dir)
 {
     const json hub_json = {
         {"hub", {
             {"name",            "test-hub"},
             {"uid",             "HUB-TEST-00000001"},
-            {"broker_endpoint", fmt::format("tcp://127.0.0.1:{}", ports.broker)},
-            {"admin_endpoint",  fmt::format("tcp://127.0.0.1:{}", ports.admin)}
+            {"broker_endpoint", "tcp://127.0.0.1:0"},
+            {"admin_endpoint",  "tcp://127.0.0.1:0"}
         }},
         {"broker", {
             {"channel_timeout_s",         10},
@@ -126,14 +109,14 @@ static void write_hub_json(const fs::path& dir, const PortPair& ports)
 class HubShellProcess
 {
   public:
-    HubShellProcess(const fs::path& hub_dir, const PortPair& ports, const std::string& tag)
+    HubShellProcess(const fs::path& hub_dir, const std::string& tag)
         : tag_(tag)
-        , admin_ep_(fmt::format("tcp://127.0.0.1:{}", ports.admin))
+        , hub_dir_(hub_dir)
         , ctx_(1)
         , sock_(ctx_, zmq::socket_type::req)
         , proc_(hubshell_binary(), hub_dir.string(), {"--dev"}, /*redirect_stderr_to_console=*/true)
     {
-        TLOG(tag_, "spawned hubshell (valid={}), admin_ep={}", proc_.valid(), admin_ep_);
+        TLOG(tag_, "spawned hubshell (valid={})", proc_.valid());
         sock_.set(zmq::sockopt::linger, 0);
         sock_.set(zmq::sockopt::rcvtimeo, 10000);
     }
@@ -153,14 +136,45 @@ class HubShellProcess
 
     bool wait_ready(int timeout_ms = 15000)
     {
-        TLOG(tag_, "wait_ready: sleeping 2s for startup...");
-        std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+        // Phase 1: poll for runtime.json to discover the actual admin endpoint.
+        const auto runtime_path = hub_dir_ / "runtime.json";
+        const auto deadline = std::chrono::steady_clock::now()
+                            + std::chrono::milliseconds(timeout_ms);
 
+        TLOG(tag_, "wait_ready: polling for runtime.json...");
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            if (fs::exists(runtime_path))
+            {
+                std::ifstream rf(runtime_path);
+                if (rf.is_open())
+                {
+                    try
+                    {
+                        auto runtime = json::parse(rf);
+                        admin_ep_ = runtime.at("admin_endpoint").get<std::string>();
+                        TLOG(tag_, "wait_ready: discovered admin_endpoint={}", admin_ep_);
+                        break;
+                    }
+                    catch (const std::exception& e)
+                    {
+                        TLOG(tag_, "wait_ready: runtime.json parse error: {}", e.what());
+                    }
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+
+        if (admin_ep_.empty())
+        {
+            TLOG(tag_, "wait_ready: TIMED OUT waiting for runtime.json");
+            return false;
+        }
+
+        // Phase 2: connect and probe the admin endpoint.
         sock_.connect(admin_ep_);
         TLOG(tag_, "wait_ready: connected to {}", admin_ep_);
 
-        const auto deadline = std::chrono::steady_clock::now()
-                            + std::chrono::milliseconds(timeout_ms);
         int attempt = 0;
         while (std::chrono::steady_clock::now() < deadline)
         {
@@ -257,7 +271,8 @@ class HubShellProcess
     }
 
     std::string tag_;
-    std::string admin_ep_;
+    fs::path hub_dir_;
+    std::string admin_ep_; // discovered from runtime.json
     zmq::context_t ctx_;
     zmq::socket_t sock_;
     WorkerProcess proc_;
@@ -272,13 +287,11 @@ class AdminShellTest : public pylabhub::tests::IsolatedProcessTest {};
 
 TEST_F(AdminShellTest, HP_C1_Reset_NoDeadlock)
 {
-    const auto ports = allocate_ports();
     const auto tmp = unique_temp_dir("hpc1_nodeadlock");
-    write_hub_json(tmp, ports);
-    TLOG("TEST", "HP_C1_Reset_NoDeadlock: ports=({},{}), dir={}",
-         ports.broker, ports.admin, tmp.string());
+    write_hub_json(tmp);
+    TLOG("TEST", "HP_C1_Reset_NoDeadlock: dir={}", tmp.string());
 
-    HubShellProcess hub(tmp, ports, "HUB1");
+    HubShellProcess hub(tmp, "HUB1");
     ASSERT_TRUE(hub.valid()) << "Failed to spawn hubshell";
     ASSERT_TRUE(hub.wait_ready()) << "Admin shell did not become ready";
 
@@ -300,12 +313,11 @@ TEST_F(AdminShellTest, HP_C1_Reset_NoDeadlock)
 
 TEST_F(AdminShellTest, HP_C1_Reset_ClearsNamespace)
 {
-    const auto ports = allocate_ports();
     const auto tmp = unique_temp_dir("hpc1_clear");
-    write_hub_json(tmp, ports);
-    TLOG("TEST", "HP_C1_Reset_ClearsNamespace: ports=({},{})", ports.broker, ports.admin);
+    write_hub_json(tmp);
+    TLOG("TEST", "HP_C1_Reset_ClearsNamespace: dir={}", tmp.string());
 
-    HubShellProcess hub(tmp, ports, "HUB2");
+    HubShellProcess hub(tmp, "HUB2");
     ASSERT_TRUE(hub.valid());
     ASSERT_TRUE(hub.wait_ready());
 
@@ -343,12 +355,11 @@ TEST_F(AdminShellTest, HP_C1_Reset_ClearsNamespace)
 
 TEST_F(AdminShellTest, HP_C2_Exception_StdoutRestored)
 {
-    const auto ports = allocate_ports();
     const auto tmp = unique_temp_dir("hpc2_stdout");
-    write_hub_json(tmp, ports);
-    TLOG("TEST", "HP_C2_Exception_StdoutRestored: ports=({},{})", ports.broker, ports.admin);
+    write_hub_json(tmp);
+    TLOG("TEST", "HP_C2_Exception_StdoutRestored: dir={}", tmp.string());
 
-    HubShellProcess hub(tmp, ports, "HUB3");
+    HubShellProcess hub(tmp, "HUB3");
     ASSERT_TRUE(hub.valid());
     ASSERT_TRUE(hub.wait_ready());
 
@@ -373,12 +384,11 @@ TEST_F(AdminShellTest, HP_C2_Exception_StdoutRestored)
 
 TEST_F(AdminShellTest, HP_C2_Exception_ErrorReturned)
 {
-    const auto ports = allocate_ports();
     const auto tmp = unique_temp_dir("hpc2_error");
-    write_hub_json(tmp, ports);
-    TLOG("TEST", "HP_C2_Exception_ErrorReturned: ports=({},{})", ports.broker, ports.admin);
+    write_hub_json(tmp);
+    TLOG("TEST", "HP_C2_Exception_ErrorReturned: dir={}", tmp.string());
 
-    HubShellProcess hub(tmp, ports, "HUB4");
+    HubShellProcess hub(tmp, "HUB4");
     ASSERT_TRUE(hub.valid());
     ASSERT_TRUE(hub.wait_ready());
 
@@ -402,12 +412,11 @@ TEST_F(AdminShellTest, HP_C2_Exception_ErrorReturned)
 
 TEST_F(AdminShellTest, Probe_Config)
 {
-    const auto ports = allocate_ports();
     const auto tmp = unique_temp_dir("probe_cfg");
-    write_hub_json(tmp, ports);
-    TLOG("TEST", "Probe_Config: ports=({},{})", ports.broker, ports.admin);
+    write_hub_json(tmp);
+    TLOG("TEST", "Probe_Config: dir={}", tmp.string());
 
-    HubShellProcess hub(tmp, ports, "HUB5");
+    HubShellProcess hub(tmp, "HUB5");
     ASSERT_TRUE(hub.valid());
     ASSERT_TRUE(hub.wait_ready());
 
@@ -424,17 +433,15 @@ TEST_F(AdminShellTest, Probe_Config)
             << "config()['uid'] missing, got: " << out;
     }
 
-    // Verify network address keys
+    // Verify network address keys are present and contain tcp://
     {
         auto resp = hub.exec("c = pylabhub.config()\n"
                              "print(c['broker_address'], c['shell_address'])");
         ASSERT_TRUE(resp.has_value());
         EXPECT_TRUE(resp->at("success").get<bool>());
         auto out = resp->at("output").get<std::string>();
-        EXPECT_NE(out.find(std::to_string(ports.broker)), std::string::npos)
-            << "config()['broker_address'] missing port, got: " << out;
-        EXPECT_NE(out.find(std::to_string(ports.admin)), std::string::npos)
-            << "config()['shell_address'] missing port, got: " << out;
+        EXPECT_NE(out.find("tcp://127.0.0.1:"), std::string::npos)
+            << "config() addresses should contain tcp://127.0.0.1:, got: " << out;
     }
 
     // Verify path keys are non-empty strings
@@ -470,12 +477,11 @@ TEST_F(AdminShellTest, Probe_Config)
 
 TEST_F(AdminShellTest, Probe_ChannelsEmpty)
 {
-    const auto ports = allocate_ports();
     const auto tmp = unique_temp_dir("probe_ch_empty");
-    write_hub_json(tmp, ports);
-    TLOG("TEST", "Probe_ChannelsEmpty: ports=({},{})", ports.broker, ports.admin);
+    write_hub_json(tmp);
+    TLOG("TEST", "Probe_ChannelsEmpty: dir={}", tmp.string());
 
-    HubShellProcess hub(tmp, ports, "HUB9");
+    HubShellProcess hub(tmp, "HUB9");
     ASSERT_TRUE(hub.valid());
     ASSERT_TRUE(hub.wait_ready());
 

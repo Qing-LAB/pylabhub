@@ -41,7 +41,7 @@ Multiple processes or threads often need to access and modify shared files (e.g.
 | Simple, safe API | RAII: lock acquired in constructor, released in destructor |
 | Cross-platform | `flock` (POSIX) / `LockFileEx` (Windows) |
 | Inter- and intra-process | Two-layer model: OS lock + process-local registry |
-| Blocking, non-blocking, timed | `LockMode::Blocking`, `NonBlocking`, timeout constructor |
+| Blocking, non-blocking, timed | `blocking=true`, `blocking=false`, timeout constructor |
 
 ---
 
@@ -83,7 +83,7 @@ flowchart TB
     subgraph Client["Client Thread"]
         direction TB
         A[FileLock constructor / try_lock]
-        B{LockMode?}
+        B{blocking?}
     end
 
     subgraph Intra["Intra-Process Layer"]
@@ -211,11 +211,11 @@ static std::optional<FileLock> try_lock(const fs::path& path,
 |--------|--------------------|-------------|
 | `GetLifecycleModule` | `static ModuleDef GetLifecycleModule()` | ModuleDef for LifecycleManager |
 | `lifecycle_initialized` | `static bool lifecycle_initialized() noexcept` | True if FileLock module is initialized |
-| `get_expected_lock_fullname_for` | `static path get_expected_lock_fullname_for(path, ResourceType) noexcept` | Predict canonical lock file path; empty path on failure |
-| `FileLock(path, type, mode)` | `explicit FileLock(path, ResourceType, LockMode = Blocking) noexcept` | Construct and acquire; Blocking or NonBlocking |
-| `FileLock(path, type, timeout)` | `explicit FileLock(path, ResourceType, chrono::milliseconds) noexcept` | Construct and acquire with timeout |
-| `try_lock` | `static optional<FileLock> try_lock(path, type, mode) noexcept` | Factory; returns optional with valid lock or nullopt |
-| `try_lock` | `static optional<FileLock> try_lock(path, type, timeout) noexcept` | Factory with timeout |
+| `get_expected_lock_fullname_for` | `static path get_expected_lock_fullname_for(path, bool is_directory = false) noexcept` | Predict canonical lock file path; empty path on failure |
+| `FileLock(path, is_dir, blocking)` | `explicit FileLock(path, bool is_directory = false, bool blocking = true) noexcept` | Construct and acquire; blocking or non-blocking |
+| `FileLock(path, is_dir, timeout)` | `explicit FileLock(path, bool is_directory, chrono::milliseconds) noexcept` | Construct and acquire with timeout |
+| `try_lock` | `static optional<FileLock> try_lock(path, bool is_directory = false, bool blocking = true) noexcept` | Factory; returns optional with valid lock or nullopt |
+| `try_lock` | `static optional<FileLock> try_lock(path, bool is_directory, chrono::milliseconds) noexcept` | Factory with timeout |
 | `valid` | `bool valid() const noexcept` | True if lock is held |
 | `error_code` | `std::error_code error_code() const noexcept` | Error from failed acquisition; empty if valid |
 | `get_locked_resource_path` | `optional<path> get_locked_resource_path() const noexcept` | Path of protected resource if valid; else empty optional |
@@ -236,7 +236,7 @@ sequenceDiagram
     participant ProcRegistry
     participant OS
 
-    Client->>FileLock: FileLock(path, File, Blocking)
+    Client->>FileLock: FileLock(path, is_directory=false, blocking=true)
     FileLock->>ProcRegistry: Lock mutex, lookup path
     alt Another thread holds lock
         ProcRegistry->>ProcRegistry: Wait on condition_variable
@@ -256,7 +256,7 @@ sequenceDiagram
     participant ProcRegistry
     participant OS
 
-    Client->>FileLock: try_lock(path, File, NonBlocking)
+    Client->>FileLock: try_lock(path, is_directory=false, blocking=false)
     FileLock->>ProcRegistry: Lock mutex, lookup path
     alt owners > 0
         ProcRegistry-->>FileLock: fail
@@ -289,7 +289,7 @@ void perform_exclusive_work(const std::filesystem::path& resource) {
     );
 
     pylabhub::utils::FileLock lock(resource,
-        pylabhub::utils::ResourceType::File,
+        false,                     // is_directory
         std::chrono::seconds(5));
 
     if (lock.valid()) {
@@ -304,14 +304,28 @@ void perform_exclusive_work(const std::filesystem::path& resource) {
 
 ```cpp
 if (auto lock = pylabhub::utils::FileLock::try_lock(
-        path, pylabhub::utils::ResourceType::File,
-        pylabhub::utils::LockMode::NonBlocking)) {
+        path, false,               // is_directory
+        false)) {                  // blocking
     LOGGER_INFO("Lock acquired for {}", lock->get_locked_resource_path()->string());
     // ... use resource ...
 } else {
     LOGGER_WARN("Lock busy: {}", path.string());
 }
 ```
+
+---
+
+## Internal Usage: JsonConfig Write Transactions
+
+`JsonConfig::consume_write_()` uses `FileLock` to serialize disk I/O across processes.
+Rather than blocking indefinitely, it uses a retry-with-timeout strategy:
+
+- **3 retries × 2 s timeout** = 6 s maximum wait
+- Each retry logs `LOGGER_WARN` with the attempt number
+- On final failure, logs `LOGGER_ERROR` and returns `std::errc::timed_out` via the
+  error-code output parameter — the write transaction is aborted, not silently dropped
+
+This ensures config file contention produces visible diagnostics rather than silent hangs.
 
 ---
 
@@ -322,6 +336,7 @@ if (auto lock = pylabhub::utils::FileLock::try_lock(
 | Advisory lock ignored by non-cooperating process | Inherent limitation; document cooperative use |
 | Polling overhead (POSIX timed/NonBlocking) | 20ms interval; configurable in source |
 | Stale lock files after crash | `.lock` files are harmless; use an external script to remove when nothing is running |
+| Blocking CV wait in intra-process registry | Documented in header; bounded by OS thread liveness |
 | Unreliable on NFS | Documented warning; recommend local filesystem |
 | Self-deadlock (re-acquire same path) | Intra-process registry blocks or fails; no system deadlock |
 

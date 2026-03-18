@@ -247,11 +247,12 @@ namespace pylabhub
 inline hub::ConsumerSyncPolicy parse_consumer_sync_policy(
     const std::string &s, const char *context = "config")
 {
-    if (s == "latest_only") return hub::ConsumerSyncPolicy::Latest_only;
-    if (s == "sequential")  return hub::ConsumerSyncPolicy::Sequential;
+    if (s == "latest_only")      return hub::ConsumerSyncPolicy::Latest_only;
+    if (s == "sequential")       return hub::ConsumerSyncPolicy::Sequential;
+    if (s == "sequential_sync")  return hub::ConsumerSyncPolicy::Sequential_sync;
     throw std::runtime_error(
         std::string(context) + ": invalid 'reader_sync_policy' = '" + s +
-        "' (expected 'latest_only' or 'sequential')");
+        "' (expected 'latest_only', 'sequential', or 'sequential_sync')");
 }
 
 } // namespace pylabhub

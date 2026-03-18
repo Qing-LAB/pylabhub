@@ -183,7 +183,7 @@ void RotatingFileSink::rotate()
                 .level = kSystemLevel,
                 .body = pylabhub::format_tools::make_buffer("--- Log rotated successfully ---"),
             },
-            /*synchronous=*/false);
+            /*sync_flag=*/false);
         BaseFileSink::fwrite(formatted_message);
         BaseFileSink::fflush();
         m_current_size_bytes += formatted_message.length();

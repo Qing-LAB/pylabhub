@@ -9,9 +9,11 @@
  * - Cross-platform behavior verification
  */
 #include "plh_platform.hpp"
+#include "plh_version_registry.hpp"
 #include "shared_test_helpers.h"
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
+#include <nlohmann/json.hpp>
 #include <thread>
 #include <chrono>
 #include <atomic>
@@ -341,4 +343,103 @@ TEST(PlatformCoreTest, VersionAPI_StringFormat)
     EXPECT_GE(ma, 0);
     EXPECT_GE(mi, 0);
     EXPECT_GE(ro, 0);
+}
+
+// ============================================================================
+// Version Registry Tests (HEP-CORE-0026)
+// ============================================================================
+
+TEST(VersionRegistryTest, CurrentReturnsConsistentValues)
+{
+    using namespace pylabhub;
+    const auto v = version::current();
+
+    // Library version must match platform API.
+    EXPECT_EQ(v.library_major, static_cast<uint16_t>(platform::get_version_major()));
+    EXPECT_EQ(v.library_minor, static_cast<uint16_t>(platform::get_version_minor()));
+    EXPECT_EQ(v.library_rolling, static_cast<uint16_t>(platform::get_version_rolling()));
+
+    // ABI/protocol versions must be positive.
+    EXPECT_GT(v.shm_major, 0);
+    EXPECT_GT(v.wire_major, 0);
+    EXPECT_GT(v.script_api_major, 0);
+
+    // Facade sizes must be non-zero (ABI canary).
+    EXPECT_GT(v.facade_producer_size, 0);
+    EXPECT_GT(v.facade_consumer_size, 0);
+}
+
+TEST(VersionRegistryTest, ReleaseVersionNotEmpty)
+{
+    const char *rel = pylabhub::version::release_version();
+    ASSERT_NE(rel, nullptr);
+    EXPECT_GT(std::strlen(rel), 0u);
+
+    // Must contain at least one dot (major.minor).
+    EXPECT_NE(std::string(rel).find('.'), std::string::npos)
+        << "Release version should contain a dot: " << rel;
+}
+
+TEST(VersionRegistryTest, PythonRuntimeVersionNotEmpty)
+{
+    const char *pyrt = pylabhub::version::python_runtime_version();
+    ASSERT_NE(pyrt, nullptr);
+    EXPECT_GT(std::strlen(pyrt), 0u);
+
+    // Must contain at least one dot (e.g., "3.14.3+20260211").
+    EXPECT_NE(std::string(pyrt).find('.'), std::string::npos)
+        << "Python runtime version should contain a dot: " << pyrt;
+}
+
+TEST(VersionRegistryTest, VersionInfoStringContainsRelease)
+{
+    const std::string info = pylabhub::version::version_info_string();
+    const char *rel = pylabhub::version::release_version();
+
+    EXPECT_NE(info.find(rel), std::string::npos)
+        << "version_info_string() should contain the release version.\n"
+        << "  info: " << info << "\n"
+        << "  release: " << rel;
+}
+
+TEST(VersionRegistryTest, VersionInfoJsonParsesCorrectly)
+{
+    const std::string raw = pylabhub::version::version_info_json();
+    nlohmann::json j;
+    ASSERT_NO_THROW(j = nlohmann::json::parse(raw))
+        << "version_info_json() should return valid JSON: " << raw;
+
+    // Required keys.
+    EXPECT_TRUE(j.contains("release"));
+    EXPECT_TRUE(j.contains("library"));
+    EXPECT_TRUE(j.contains("python_runtime"));
+    EXPECT_TRUE(j.contains("shm_major"));
+    EXPECT_TRUE(j.contains("wire_major"));
+    EXPECT_TRUE(j.contains("script_api_major"));
+    EXPECT_TRUE(j.contains("facade_producer"));
+    EXPECT_TRUE(j.contains("facade_consumer"));
+
+    // Release field matches the C API.
+    EXPECT_EQ(j["release"].get<std::string>(), pylabhub::version::release_version());
+
+    // Numeric fields are positive.
+    EXPECT_GT(j["shm_major"].get<int>(), 0);
+    EXPECT_GT(j["wire_major"].get<int>(), 0);
+    EXPECT_GT(j["script_api_major"].get<int>(), 0);
+}
+
+TEST(VersionRegistryTest, AbiInfoJsonCLinkageMatchesCpp)
+{
+    // The extern "C" function must return the same content as the C++ API.
+    const char *c_result = pylabhub_abi_info_json();
+    ASSERT_NE(c_result, nullptr);
+
+    const std::string cpp_result = pylabhub::version::version_info_json();
+    EXPECT_EQ(std::string(c_result), cpp_result)
+        << "C-linkage and C++ version info should match";
+
+    // Must parse as valid JSON.
+    nlohmann::json j;
+    ASSERT_NO_THROW(j = nlohmann::json::parse(c_result));
+    EXPECT_TRUE(j.contains("release"));
 }

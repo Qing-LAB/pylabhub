@@ -12,6 +12,7 @@
 #include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
 #include "plh_platform.hpp"
+#include "plh_version_registry.hpp"
 
 #include <lua.hpp>
 
@@ -166,6 +167,9 @@ void LuaRoleHostBase::do_lua_work_()
             LOGGER_WARN("[{}] Could not derive luajit home: {}", role_tag(), e.what());
         }
     }
+
+    // Register InboxHandle metatable (needed by api.open_inbox()).
+    register_inbox_handle_metatable_();
 
     // ── Load script ──────────────────────────────────────────────────────────
     const fs::path script_dir = fs::path(script_base_dir()) / "script" / "lua";
@@ -577,6 +581,14 @@ void LuaRoleHostBase::clear_lua_refs_()
         luaL_unref(L_, LUA_REGISTRYINDEX, ref_ffi_cast_);
         ref_ffi_cast_ = LUA_NOREF;
     }
+
+    // Stop all cached InboxClients before lua_close.
+    for (auto &[uid, entry] : inbox_cache_)
+    {
+        if (entry.client)
+            entry.client->stop();
+    }
+    inbox_cache_.clear();
 }
 
 bool LuaRoleHostBase::call_lua_fn_(const char *name, int nargs, int nresults)
@@ -631,6 +643,9 @@ void LuaRoleHostBase::push_common_api_closures_(lua_State *L)
     push_closure("set_critical_error", lua_api_set_critical_error);
     push_closure("stop_reason",        lua_api_stop_reason);
     push_closure("script_errors",      lua_api_script_errors);
+    push_closure("version_info",       lua_api_version_info);
+    push_closure("wait_for_role",      lua_api_wait_for_role);
+    push_closure("open_inbox",         lua_api_open_inbox);
 
     // String fields as direct table entries.
     lua_pushstring(L, config_log_level().c_str());
@@ -674,15 +689,14 @@ int LuaRoleHostBase::lua_api_set_critical_error(lua_State *L)
     auto *self = static_cast<LuaRoleHostBase *>(lua_touserdata(L, lua_upvalueindex(1)));
     const char *msg = lua_tostring(L, 1);
     LOGGER_ERROR("[{}-lua] CRITICAL: {}", self->role_tag(), msg ? msg : "(no message)");
-    self->critical_error_.store(true, std::memory_order_release);
-    self->core_.shutdown_requested.store(true, std::memory_order_release);
+    self->core_.set_critical_error();
     return 0;
 }
 
 int LuaRoleHostBase::lua_api_stop_reason(lua_State *L)
 {
     auto *self = static_cast<LuaRoleHostBase *>(lua_touserdata(L, lua_upvalueindex(1)));
-    int reason = self->stop_reason_.load(std::memory_order_relaxed);
+    int reason = self->core_.stop_reason_.load(std::memory_order_relaxed);
     const char *name = "normal";
     switch (reason)
     {
@@ -695,11 +709,262 @@ int LuaRoleHostBase::lua_api_stop_reason(lua_State *L)
     return 1;
 }
 
+int LuaRoleHostBase::lua_api_version_info(lua_State *L)
+{
+    (void)L; // no upvalue needed — version is global
+    lua_pushstring(L, pylabhub::version::version_info_json().c_str());
+    return 1;
+}
+
 int LuaRoleHostBase::lua_api_script_errors(lua_State *L)
 {
     auto *self = static_cast<LuaRoleHostBase *>(lua_touserdata(L, lua_upvalueindex(1)));
-    lua_pushinteger(L, static_cast<lua_Integer>(self->script_errors_.load(std::memory_order_relaxed)));
+    lua_pushinteger(L, static_cast<lua_Integer>(self->core_.script_errors_.load(std::memory_order_relaxed)));
     return 1;
+}
+
+// ============================================================================
+// lua_api_wait_for_role — poll broker for role presence
+// ============================================================================
+
+int LuaRoleHostBase::lua_api_wait_for_role(lua_State *L)
+{
+    auto *self = static_cast<LuaRoleHostBase *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *uid = luaL_checkstring(L, 1);
+    int timeout_ms  = static_cast<int>(luaL_optinteger(L, 2, 5000));
+
+    auto *messenger = self->role_messenger_();
+    if (!messenger)
+    {
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds{timeout_ms};
+    static constexpr int kPollMs = 200;
+
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now()).count();
+        if (remaining <= 0) break;
+        const int poll_ms = static_cast<int>(std::min<long long>(kPollMs, remaining));
+        if (messenger->query_role_presence(uid, poll_ms))
+        {
+            lua_pushboolean(L, 1);
+            return 1;
+        }
+    }
+
+    lua_pushboolean(L, 0);
+    return 1;
+}
+
+// ============================================================================
+// lua_api_open_inbox — discover target's inbox and return InboxHandle userdata
+// ============================================================================
+
+int LuaRoleHostBase::lua_api_open_inbox(lua_State *L)
+{
+    auto *self = static_cast<LuaRoleHostBase *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *target_uid = luaL_checkstring(L, 1);
+
+    // Cache hit — return existing handle.
+    auto it = self->inbox_cache_.find(target_uid);
+    if (it != self->inbox_cache_.end() && it->second.client && it->second.client->is_running())
+    {
+        auto *ud = static_cast<LuaInboxUD *>(lua_newuserdata(L, sizeof(LuaInboxUD)));
+        new (ud) LuaInboxUD{self, target_uid};
+        luaL_getmetatable(L, kInboxHandleMT);
+        lua_setmetatable(L, -2);
+        return 1;
+    }
+
+    auto *messenger = self->role_messenger_();
+    if (!messenger)
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    // Broker round-trip — discover target's inbox endpoint and schema.
+    auto info = messenger->query_role_info(target_uid, /*timeout_ms=*/1000);
+    if (!info.has_value())
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    if (!info->inbox_schema.is_object() || !info->inbox_schema.contains("fields"))
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    SchemaSpec spec;
+    try
+    {
+        spec = parse_schema_json(info->inbox_schema);
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_WARN("[{}] open_inbox('{}'): schema parse error: {}", self->role_tag(), target_uid, e.what());
+        lua_pushnil(L);
+        return 1;
+    }
+
+    // Build FFI type for inbox slot.
+    std::string ffi_type = fmt::format("InboxSlot_{}", target_uid);
+    // Sanitize: replace hyphens with underscores for valid C identifier.
+    for (auto &c : ffi_type)
+        if (c == '-') c = '_';
+
+    std::string cdef = build_ffi_cdef_(spec, ffi_type.c_str(), info->inbox_packing);
+    if (!self->register_ffi_type_(cdef))
+    {
+        LOGGER_WARN("[{}] open_inbox('{}'): FFI cdef failed", self->role_tag(), target_uid);
+        lua_pushnil(L);
+        return 1;
+    }
+
+    size_t item_size = self->ffi_sizeof_(ffi_type.c_str());
+    if (item_size == 0)
+    {
+        LOGGER_WARN("[{}] open_inbox('{}'): ffi.sizeof returned 0", self->role_tag(), target_uid);
+        lua_pushnil(L);
+        return 1;
+    }
+
+    // Build ZMQ schema fields for the InboxClient wire format.
+    auto zmq_fields = schema_spec_to_zmq_fields(spec, item_size);
+
+    // Connect DEALER to target's ROUTER.
+    auto client_ptr = hub::InboxClient::connect_to(
+        info->inbox_endpoint, self->role_uid(), std::move(zmq_fields), info->inbox_packing);
+    if (!client_ptr)
+    {
+        LOGGER_WARN("[{}] open_inbox('{}'): connect_to '{}' failed",
+                    self->role_tag(), target_uid, info->inbox_endpoint);
+        lua_pushnil(L);
+        return 1;
+    }
+    if (!client_ptr->start())
+    {
+        LOGGER_WARN("[{}] open_inbox('{}'): start() failed", self->role_tag(), target_uid);
+        lua_pushnil(L);
+        return 1;
+    }
+
+    // Cache the entry.
+    auto shared_client = std::shared_ptr<hub::InboxClient>(std::move(client_ptr));
+    self->inbox_cache_[target_uid] = LuaInboxEntry{shared_client, ffi_type, item_size};
+
+    // Return userdata handle.
+    auto *ud = static_cast<LuaInboxUD *>(lua_newuserdata(L, sizeof(LuaInboxUD)));
+    new (ud) LuaInboxUD{self, target_uid};
+    luaL_getmetatable(L, kInboxHandleMT);
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
+// ============================================================================
+// Lua InboxHandle metatable methods
+// ============================================================================
+
+void LuaRoleHostBase::register_inbox_handle_metatable_()
+{
+    if (luaL_newmetatable(L_, kInboxHandleMT))
+    {
+        // __index points to itself for method dispatch.
+        lua_pushvalue(L_, -1);
+        lua_setfield(L_, -2, "__index");
+
+        auto set_method = [&](const char *name, lua_CFunction fn) {
+            lua_pushcfunction(L_, fn);
+            lua_setfield(L_, -2, name);
+        };
+
+        set_method("acquire",  lua_inbox_acquire);
+        set_method("send",     lua_inbox_send);
+        set_method("discard",  lua_inbox_discard);
+        set_method("is_ready", lua_inbox_is_ready);
+        set_method("close",    lua_inbox_close);
+    }
+    lua_pop(L_, 1); // pop metatable
+}
+
+LuaRoleHostBase::LuaInboxEntry *LuaRoleHostBase::get_inbox_entry_(lua_State *L)
+{
+    auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(L, 1, kInboxHandleMT));
+    auto it = ud->host->inbox_cache_.find(ud->target_uid);
+    if (it == ud->host->inbox_cache_.end())
+        return nullptr;
+    return &it->second;
+}
+
+int LuaRoleHostBase::lua_inbox_acquire(lua_State *L)
+{
+    auto *entry = get_inbox_entry_(L);
+    if (!entry || !entry->client || !entry->client->is_running())
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    void *buf = entry->client->acquire();
+    if (!buf)
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    // Push writable FFI slot view.
+    auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(L, 1, kInboxHandleMT));
+    if (!ud->host->push_slot_view_(buf, entry->item_size, entry->ffi_type.c_str()))
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+    return 1;
+}
+
+int LuaRoleHostBase::lua_inbox_send(lua_State *L)
+{
+    auto *entry = get_inbox_entry_(L);
+    if (!entry || !entry->client || !entry->client->is_running())
+    {
+        lua_pushinteger(L, 255);
+        return 1;
+    }
+
+    int timeout_ms = static_cast<int>(luaL_optinteger(L, 2, 5000));
+    uint8_t rc = entry->client->send(std::chrono::milliseconds{timeout_ms});
+    lua_pushinteger(L, static_cast<lua_Integer>(rc));
+    return 1;
+}
+
+int LuaRoleHostBase::lua_inbox_discard(lua_State *L)
+{
+    auto *entry = get_inbox_entry_(L);
+    if (entry && entry->client)
+        entry->client->abort();
+    return 0;
+}
+
+int LuaRoleHostBase::lua_inbox_is_ready(lua_State *L)
+{
+    auto *entry = get_inbox_entry_(L);
+    lua_pushboolean(L, (entry && entry->client && entry->client->is_running()) ? 1 : 0);
+    return 1;
+}
+
+int LuaRoleHostBase::lua_inbox_close(lua_State *L)
+{
+    auto *entry = get_inbox_entry_(L);
+    if (entry && entry->client)
+        entry->client->stop();
+    return 0;
 }
 
 // ============================================================================

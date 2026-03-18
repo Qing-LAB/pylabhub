@@ -81,12 +81,16 @@ void write_secure_file(const fs::path &path, const std::vector<uint8_t> &data)
     {
         std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
         if (!ofs)
+        {
             throw std::runtime_error("vault: cannot write: " + path.string());
+        }
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
         ofs.write(reinterpret_cast<const char *>(data.data()),
                   static_cast<std::streamsize>(data.size()));
         if (!ofs)
+        {
             throw std::runtime_error("vault: write failed: " + path.string());
+        }
     } // flush + close before chmod
     set_owner_only_permissions(path);
 }
@@ -95,14 +99,18 @@ std::vector<uint8_t> read_file(const fs::path &path)
 {
     std::ifstream ifs(path, std::ios::binary | std::ios::ate);
     if (!ifs)
+    {
         throw std::runtime_error("vault: cannot open: " + path.string());
+    }
     const auto size = static_cast<std::size_t>(ifs.tellg());
     ifs.seekg(0, std::ios::beg);
     std::vector<uint8_t> buf(size);
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     ifs.read(reinterpret_cast<char *>(buf.data()), static_cast<std::streamsize>(size));
     if (!ifs)
+    {
         throw std::runtime_error("vault: read failed: " + path.string());
+    }
     return buf;
 }
 
@@ -113,7 +121,9 @@ std::vector<uint8_t> read_file(const fs::path &path)
 void vault_require_sodium()
 {
     if (sodium_init() == -1)
+    {
         throw std::runtime_error("vault: sodium_init() failed");
+    }
 }
 
 std::array<uint8_t, kVaultKeyBytes> vault_derive_key(const std::string &password,
@@ -133,7 +143,9 @@ std::array<uint8_t, kVaultKeyBytes> vault_derive_key(const std::string &password
                       kVaultOpsLimit,
                       kVaultMemLimit,
                       crypto_pwhash_ALG_ARGON2ID13) != 0)
+    {
         throw std::runtime_error("vault: Argon2id key derivation failed (insufficient memory?)");
+    }
     return key;
 }
 
@@ -181,7 +193,9 @@ std::string vault_read(const fs::path &path,
 
     constexpr std::size_t kMinSize = kVaultNonceBytes + kVaultMacBytes + 1;
     if (vault_bytes.size() < kMinSize)
+    {
         throw std::runtime_error("vault: file too small or corrupted: " + path.string());
+    }
 
     const uint8_t *nonce      = vault_bytes.data();
     const uint8_t *ciphertext = vault_bytes.data() + kVaultNonceBytes;
@@ -196,10 +210,12 @@ std::string vault_read(const fs::path &path,
 
     std::vector<uint8_t> plaintext(clen - kVaultMacBytes);
     if (crypto_secretbox_open_easy(plaintext.data(), ciphertext, clen, nonce, key.data()) != 0)
+    {
         throw std::runtime_error(
             "vault: decryption failed — wrong password or corrupted file: " + path.string());
+    }
 
-    return std::string(plaintext.begin(), plaintext.end());
+    return std::string{plaintext.begin(), plaintext.end()};
 }
 
 } // namespace pylabhub::utils::detail

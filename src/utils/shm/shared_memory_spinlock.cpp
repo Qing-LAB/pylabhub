@@ -48,11 +48,21 @@ bool SharedSpinLock::try_lock_for(int timeout_ms)
     //     thread cannot see a stale my_pid after the lock has been released.
     // H3: acquire on owner_tid synchronizes with the release stores made after zombie
     //     reclaim and normal acquisition, preventing a false recursion match on a stale TID.
-    if (m_state->owner_pid.load(std::memory_order_acquire) == my_pid &&
-        m_state->owner_tid.load(std::memory_order_acquire) == my_tid)
+    //
+    // Generation-counter guard: snapshot generation before and after the pid/tid check.
+    // If generation changed between the two reads, the lock was released and possibly
+    // re-acquired by another process — so the pid/tid match is stale, not recursive.
+    // This closes a theoretical TOCTOU window where owner_pid and owner_tid are loaded
+    // non-atomically and the lock changes hands between the two loads.
     {
-        m_state->recursion_count.fetch_add(1, std::memory_order_relaxed);
-        return true;
+        const uint64_t gen_before = m_state->generation.load(std::memory_order_acquire);
+        if (m_state->owner_pid.load(std::memory_order_relaxed) == my_pid &&
+            m_state->owner_tid.load(std::memory_order_relaxed) == my_tid &&
+            m_state->generation.load(std::memory_order_acquire) == gen_before)
+        {
+            m_state->recursion_count.fetch_add(1, std::memory_order_relaxed);
+            return true;
+        }
     }
 
     uint64_t start_ns = pylabhub::platform::monotonic_time_ns();
@@ -159,8 +169,10 @@ void SharedSpinLock::unlock()
 
 bool SharedSpinLock::is_locked_by_current_process() const
 {
-    return m_state->owner_pid.load(std::memory_order_acquire) == get_current_pid() &&
-           m_state->owner_tid.load(std::memory_order_acquire) == get_current_thread_id();
+    const uint64_t gen_before = m_state->generation.load(std::memory_order_acquire);
+    return m_state->owner_pid.load(std::memory_order_relaxed) == get_current_pid() &&
+           m_state->owner_tid.load(std::memory_order_relaxed) == get_current_thread_id() &&
+           m_state->generation.load(std::memory_order_acquire) == gen_before;
 }
 
 // ============================================================================

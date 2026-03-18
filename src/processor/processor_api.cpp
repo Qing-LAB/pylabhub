@@ -4,6 +4,7 @@
  */
 #include "processor_api.hpp"
 
+#include "plh_version_registry.hpp"
 #include "utils/format_tools.hpp"
 #include "utils/logger.hpp"
 
@@ -50,7 +51,10 @@ void ProcessorAPI::stop()
 
 void ProcessorAPI::set_critical_error()
 {
-    critical_error_.store(true, std::memory_order_release);
+    if (critical_error_ptr_)
+        critical_error_ptr_->store(true, std::memory_order_release);
+    if (stop_reason_)
+        stop_reason_->store(3, std::memory_order_relaxed); // RoleHostCore::StopReason::CriticalError
     stop();
 }
 
@@ -560,6 +564,11 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
              "Why the role stopped: 'normal', 'peer_dead', 'hub_dead', or 'critical_error'.")
         .def("ctrl_queue_dropped", &ProcessorAPI::ctrl_queue_dropped,
              "Total ctrl-send messages dropped by both in and out queues due to overflow.");
+
+    m.def("version_info", []() -> py::str
+    {
+        return pylabhub::version::version_info_json();
+    }, "Return JSON string with all component version information.");
 
     // ProcessorSpinLock
     py::class_<ProcessorSpinLockPy>(m, "ProcessorSpinLock")

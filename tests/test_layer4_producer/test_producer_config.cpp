@@ -1059,6 +1059,20 @@ TEST_F(ProducerConfigTest, ReaderSyncPolicy_LatestOnly)
     fs::remove_all(tmp);
 }
 
+TEST_F(ProducerConfigTest, ReaderSyncPolicy_SequentialSync)
+{
+    const auto tmp      = unique_temp_dir("rsp_seqsync");
+    const auto cfg_path = tmp / "producer.json";
+    write_file(cfg_path, R"({
+        "producer": { "uid": "PROD-RSPSS-00000001", "name": "RspSS" },
+        "channel":  "lab.rsp.seqsync",
+        "shm": { "enabled": true, "slot_count": 8, "reader_sync_policy": "sequential_sync" }
+    })");
+    const auto cfg = pylabhub::producer::ProducerConfig::from_json_file(cfg_path.string());
+    EXPECT_EQ(cfg.shm_consumer_sync_policy, pylabhub::hub::ConsumerSyncPolicy::Sequential_sync);
+    fs::remove_all(tmp);
+}
+
 TEST_F(ProducerConfigTest, ReaderSyncPolicy_InvalidValue_Throws)
 {
     const auto tmp      = unique_temp_dir("rsp_inv");

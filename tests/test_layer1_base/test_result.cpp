@@ -48,6 +48,16 @@ TEST(ResultTest, ConstructionErrorDefaultCode)
     EXPECT_EQ(result.error_code(), 0);
 }
 
+TEST(ResultTest, DefaultConstructor_IsErrorState)
+{
+    Result<int, TestError> result;
+    EXPECT_FALSE(result.is_ok());
+    EXPECT_TRUE(result.is_error());
+    // Default error is E{} which maps to TestError(0) = NotFound
+    EXPECT_EQ(result.error(), TestError::NotFound);
+    EXPECT_EQ(result.error_code(), 0);
+}
+
 // ============================================================================
 // Value Access Tests
 // ============================================================================

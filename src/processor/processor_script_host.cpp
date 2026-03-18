@@ -82,7 +82,8 @@ void ProcessorScriptHost::wire_api_identity()
     api_.set_role_dir(config_.role_dir);
     api_.set_shutdown_flag(core_.g_shutdown);
     api_.set_shutdown_requested(&core_.shutdown_requested);
-    api_.set_stop_reason(&stop_reason_);
+    api_.set_stop_reason(&core_.stop_reason_);
+    api_.set_critical_error_ptr(&core_.critical_error_);
 }
 
 void ProcessorScriptHost::extract_callbacks(py::module_ &mod)
@@ -490,14 +491,14 @@ bool ProcessorScriptHost::start_role()
     in_consumer_->on_peer_dead([this]() {
         LOGGER_WARN("[proc] peer-dead: upstream producer silent for {} ms; triggering shutdown",
                     config_.peer_dead_timeout_ms);
-        stop_reason_.store(static_cast<int>(scripting::StopReason::PeerDead), std::memory_order_relaxed);
+        core_.stop_reason_.store(static_cast<int>(scripting::StopReason::PeerDead), std::memory_order_relaxed);
         core_.shutdown_requested.store(true, std::memory_order_release);
     });
 
     out_producer_->on_peer_dead([this]() {
         LOGGER_WARN("[proc] peer-dead: downstream consumer silent for {} ms; triggering shutdown",
                     config_.peer_dead_timeout_ms);
-        stop_reason_.store(static_cast<int>(scripting::StopReason::PeerDead), std::memory_order_relaxed);
+        core_.stop_reason_.store(static_cast<int>(scripting::StopReason::PeerDead), std::memory_order_relaxed);
         core_.shutdown_requested.store(true, std::memory_order_release);
     });
 
@@ -505,7 +506,7 @@ bool ProcessorScriptHost::start_role()
     // broker connection should trigger shutdown.
     auto hub_dead_cb = [this]() {
         LOGGER_WARN("[proc] hub-dead: broker connection lost; triggering shutdown");
-        stop_reason_.store(static_cast<int>(scripting::StopReason::HubDead), std::memory_order_relaxed);
+        core_.stop_reason_.store(static_cast<int>(scripting::StopReason::HubDead), std::memory_order_relaxed);
         core_.shutdown_requested.store(true, std::memory_order_release);
     };
     in_messenger_.on_hub_dead(hub_dead_cb);

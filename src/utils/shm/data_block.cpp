@@ -24,13 +24,19 @@ DataBlockPageSize system_page_size()
 #else
     const long sc = sysconf(_SC_PAGESIZE);
     if (sc > 0)
+    {
         page_bytes = sc;
+    }
 #endif
     const auto ps = static_cast<size_t>(page_bytes);
     if (ps <= to_bytes(DataBlockPageSize::Size4K))
+    {
         return DataBlockPageSize::Size4K;
+    }
     if (ps <= to_bytes(DataBlockPageSize::Size4M))
+    {
         return DataBlockPageSize::Size4M;
+    }
     return DataBlockPageSize::Size16M;
 }
 
@@ -311,12 +317,7 @@ struct DataBlockLayout
         const size_t expected_total =
             (structured_buffer_offset + structured_buffer_size +
              detail::PAGE_ALIGNMENT - 1) & ~(detail::PAGE_ALIGNMENT - 1);
-        if (total_size != expected_total)
-        {
-            return false;
-        }
-        
-        return true;
+        return total_size == expected_total;
     }
 #endif
 };
@@ -1344,7 +1345,11 @@ void DataBlockProducer::set_loop_policy(LoopPolicy policy,
 const ContextMetrics &DataBlockProducer::metrics() const noexcept
 {
     static const ContextMetrics kEmpty{};
-    return (pImpl != nullptr) ? pImpl->metrics_ : kEmpty;
+    if (pImpl == nullptr)
+    {
+        return kEmpty;
+    }
+    return pImpl->metrics_;
 }
 
 void DataBlockProducer::clear_metrics() noexcept
@@ -1367,7 +1372,7 @@ namespace
 std::string read_id_field(const char *field, size_t max_len) noexcept
 {
     size_t len = strnlen(field, max_len);
-    return std::string(field, len);
+    return std::string{field, len};
 }
 } // anonymous namespace
 
@@ -1382,7 +1387,9 @@ std::string DataBlockProducer::hub_uid() const noexcept
 std::string DataBlockProducer::hub_name() const noexcept
 {
     if (pImpl == nullptr || pImpl->dataBlock == nullptr)
+    {
         return {};
+    }
     auto *h = pImpl->dataBlock->header();
     return (h != nullptr) ? read_id_field(h->hub_name, sizeof(h->hub_name)) : std::string{};
 }
@@ -1390,7 +1397,9 @@ std::string DataBlockProducer::hub_name() const noexcept
 std::string DataBlockProducer::producer_uid() const noexcept
 {
     if (pImpl == nullptr || pImpl->dataBlock == nullptr)
+    {
         return {};
+    }
     auto *h = pImpl->dataBlock->header();
     return (h != nullptr) ? read_id_field(h->producer_uid, sizeof(h->producer_uid))
                           : std::string{};
@@ -1399,7 +1408,9 @@ std::string DataBlockProducer::producer_uid() const noexcept
 std::string DataBlockProducer::producer_name() const noexcept
 {
     if (pImpl == nullptr || pImpl->dataBlock == nullptr)
+    {
         return {};
+    }
     auto *h = pImpl->dataBlock->header();
     return (h != nullptr) ? read_id_field(h->producer_name, sizeof(h->producer_name))
                           : std::string{};
@@ -2450,7 +2461,11 @@ void DataBlockConsumer::set_loop_policy(LoopPolicy policy,
 const ContextMetrics &DataBlockConsumer::metrics() const noexcept
 {
     static const ContextMetrics kEmpty{};
-    return (pImpl != nullptr) ? pImpl->metrics_ : kEmpty;
+    if (pImpl == nullptr)
+    {
+        return kEmpty;
+    }
+    return pImpl->metrics_;
 }
 
 void DataBlockConsumer::clear_metrics() noexcept

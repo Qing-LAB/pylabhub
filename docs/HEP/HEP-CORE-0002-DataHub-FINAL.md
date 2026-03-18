@@ -393,6 +393,35 @@ sequenceDiagram
 4. **Memory ordering critical** - acquire/release synchronization
 5. **Consumer validates schema** - Before any data access
 
+### 2.2 SHM Ownership Principle
+
+**Rule: Exactly one process creates the shared memory segment; all others attach.**
+
+The shared memory segment for a channel is **created by the producer** (via
+`DataBlock` constructor in Create mode → `shm_create(UNLINK_FIRST)`), never by
+the broker.  The broker is a **passive discovery service** — it stores the SHM
+name reported by the producer in `REG_REQ` and returns it to consumers in
+`DISC_ACK`.  Consumers attach to the existing segment via `shm_attach()`.
+
+| Role | SHM operation | Platform call | When |
+|------|--------------|---------------|------|
+| Producer | Create + initialise header | `shm_create(name, size, UNLINK_FIRST)` | `DataBlockProducer` construction |
+| Broker | Store name as metadata | — (no SHM access) | `REG_REQ` handler |
+| Consumer | Attach + validate header | `shm_attach(name)` | `DataBlockConsumer` construction |
+
+**Design rationale:**
+- **No entangled ownership**: The creator of the data is the creator of the
+  memory.  The broker never holds an SHM file descriptor, so broker restart
+  cannot corrupt the data plane.
+- **Clean lifecycle**: Producer `shm_unlink` on teardown destroys the segment
+  after all consumers have detached.  If the producer crashes, the OS reclaims
+  the segment when the last mapping is closed.
+- **Future designs must follow this principle**: Any new shared resource (SHM
+  segment, memory-mapped file, GPU buffer) must have a single, well-defined
+  creator.  The broker may mediate discovery but must never own the resource.
+  This avoids split-brain scenarios where two processes both believe they own
+  a resource and race to initialise it.
+
 ---
 
 ## 3. Memory Layout and Data Structures
@@ -1793,6 +1822,61 @@ flexible zone access + Messenger handle + shutdown signal.
 > build on top of this API via their respective ScriptHost classes. The Python callbacks
 > (`on_produce`, `on_consume`, `on_process`) are the script-level equivalents.
 > See HEP-CORE-0015, HEP-CORE-0018.
+
+### 6.9.1 MessagingFacade — Type-Erasure Bridge (ABI-Frozen)
+
+`WriteProcessorContext<F,D>` is a header-only template that needs to call
+`Producer` internals (broadcast, send_to, get SHM, etc.) without seeing
+`ProducerImpl` (which is Pimpl-hidden in the `.cpp`).  The bridge is
+`ProducerMessagingFacade`: a plain struct of C-style function pointers + a
+`void* context` pointing to `ProducerImpl`.  `ConsumerMessagingFacade` serves
+the same role for `ReadProcessorContext<F,D>`.
+
+```
+┌─────────────────────────┐       ┌─────────────────────────┐
+│ WriteProcessorContext   │       │ ProducerImpl (Pimpl)    │
+│ (header template)       │──────►│ (compiled in .cpp)      │
+│                         │ calls │                         │
+│ facade.fn_broadcast(    │       │ handle.send(data, size) │
+│   facade.context, ...)  │       │ shm->...                │
+└─────────────────────────┘       └─────────────────────────┘
+```
+
+**Why the ABI is frozen:**
+These structs are `PYLABHUB_UTILS_EXPORT` — they cross the shared library
+boundary.  A pre-compiled binary (e.g., a user's custom role linked against
+`libpylabhub-utils.so`) embeds the facade field offsets in its compiled template
+code.  If a field is inserted or reordered, the old binary calls the wrong
+function pointer at the new offset — **silent corruption, not a compile error**.
+
+**Versioning and change policy:**
+
+| Concern | Versioned by | Detected at |
+|---------|-------------|-------------|
+| SHM layout (`SharedMemoryHeader`, slot stride) | `magic` + `version_major` in SHM header | Attach time (`DataBlock` constructor validates) |
+| MessagingFacade field layout | Shared library **SOVERSION** | Compile time (`static_assert(sizeof)` in .cpp) |
+| Control-plane protocol (REG_REQ fields) | JSON field presence | Runtime (broker validates) |
+
+These are **independent concerns**.  A SHM layout change does not require a
+facade change, and vice versa.
+
+**When to change the facade:**
+1. **Append a new field at the end** — safe for forward compatibility if old
+   binaries never access the new field (they see the old, smaller struct).
+   Still requires SOVERSION bump because `sizeof` changes.
+2. **Insert or reorder fields** — ABI break.  Requires SOVERSION bump **and**
+   recompilation of all consumers.
+3. **Change a function pointer signature** — ABI break.  Same policy as (2).
+
+**Compile-time guard:**
+```cpp
+// In hub_producer.cpp (Producer::create_from_parts):
+static_assert(sizeof(ProducerMessagingFacade) == 64,
+              "ProducerMessagingFacade size changed — ABI break!");
+// In hub_consumer.cpp (Consumer::connect):
+static_assert(sizeof(ConsumerMessagingFacade) == 48,
+              "ConsumerMessagingFacade size changed — ABI break!");
+```
 
 ---
 

@@ -19,6 +19,7 @@
  */
 #include "python_interpreter.hpp"
 #include "plh_datahub.hpp"
+#include "plh_version_registry.hpp"
 
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
@@ -110,6 +111,24 @@ Example::
     // Version
     // ------------------------------------------------------------------
     m.attr("__version__") = py::str(pylabhub::platform::get_version_string());
+
+    m.def("version_info", []() -> py::str
+    {
+        return pylabhub::version::version_info_json();
+    },
+    R"doc(
+Return a JSON string with all component version information.
+
+Keys: library, shm_major, shm_minor, wire_major, wire_minor,
+script_api_major, script_api_minor, facade_producer, facade_consumer.
+
+Example::
+
+    import json
+    info = json.loads(pylabhub.version_info())
+    print(info['library'])
+    print(f"SHM layout: {info['shm_major']}.{info['shm_minor']}")
+)doc");
 
     // ------------------------------------------------------------------
     // Config — single consolidated dict with all non-secret hub settings

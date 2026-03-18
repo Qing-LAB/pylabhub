@@ -6,10 +6,11 @@
 #include <windows.h>
 #include <string> // For std::to_string
 #else
-#include <cerrno>  // For ETIMEDOUT, EOWNERDEAD
+#include <cerrno>   // For ETIMEDOUT, EOWNERDEAD
+#include <cstdint>  // For int64_t
 #include <pthread.h>
-#include <string>  // For std::to_string
-#include <ctime>  // For clock_gettime, CLOCK_REALTIME
+#include <string>   // For std::to_string
+#include <ctime>    // For clock_gettime, CLOCK_REALTIME
 #endif
 
 namespace pylabhub::hub
@@ -128,7 +129,9 @@ bool DataBlockMutex::try_lock_for(int timeout_ms)
             "Windows DataBlockMutex: Attempt to lock an invalid mutex handle for '" + m_name +
             "'.");
     }
-    DWORD ms = (timeout_ms <= 0) ? 0 : static_cast<DWORD>(timeout_ms);
+    // Timeout convention: -1 = infinite wait, 0 = non-blocking, >0 = wait N ms.
+    // INFINITE is 0xFFFFFFFF (~49.7 days), matching the POSIX branch semantics.
+    DWORD ms = (timeout_ms < 0) ? INFINITE : static_cast<DWORD>(timeout_ms);
     DWORD wait_result = WaitForSingleObject(m_mutex_handle, ms);
     if (wait_result == WAIT_OBJECT_0 || wait_result == WAIT_ABANDONED)
     {
@@ -325,8 +328,8 @@ void DataBlockMutex::lock()
 namespace
 {
 constexpr long kMsPerSecond = 1000;
-constexpr long kNsPerMs = 1'000'000L;
-constexpr long kNsPerSecond = 1'000'000'000L;
+constexpr int64_t kNsPerMs      = 1'000'000;
+constexpr int64_t kNsPerSecond  = 1'000'000'000;
 }
 
 bool DataBlockMutex::try_lock_for(int timeout_ms)
@@ -337,7 +340,16 @@ bool DataBlockMutex::try_lock_for(int timeout_ms)
             "POSIX DataBlockMutex: Attempt to lock an uninitialized mutex for '" + m_name + "'.");
     }
     pthread_mutex_t *mutex_ptr = get_pthread_mutex();
-    if (timeout_ms <= 0)
+
+    // Infinite wait: delegate to lock() which calls pthread_mutex_lock().
+    if (timeout_ms < 0)
+    {
+        lock();
+        return true;
+    }
+
+    // Non-blocking (timeout_ms == 0): single try.
+    if (timeout_ms == 0)
     {
         int res = pthread_mutex_trylock(mutex_ptr);
         if (res == 0)
@@ -363,6 +375,8 @@ bool DataBlockMutex::try_lock_for(int timeout_ms)
         throw std::runtime_error("POSIX DataBlockMutex: pthread_mutex_trylock failed for '" +
                                  m_name + "'. Error: " + std::to_string(res));
     }
+
+    // Timed wait (timeout_ms > 0).
     // Monotonic clock tracks real elapsed time (immune to NTP / wall-clock jumps).
     // We use it as the ground truth for when our timeout budget is exhausted.
     // pthread_mutex_timedlock() requires CLOCK_REALTIME for the deadline, so we
@@ -374,22 +388,22 @@ bool DataBlockMutex::try_lock_for(int timeout_ms)
         throw std::runtime_error("POSIX DataBlockMutex: clock_gettime(MONOTONIC) failed for '"
                                  + m_name + "'.");
     }
-    const long timeout_ns = static_cast<long>(timeout_ms) * kNsPerMs;
+    const int64_t timeout_ns = static_cast<int64_t>(timeout_ms) * kNsPerMs;
 
     for (;;)
     {
         // How much monotonic time has elapsed?
         struct timespec mono_now;
         clock_gettime(CLOCK_MONOTONIC, &mono_now);
-        const long elapsed_ns = (mono_now.tv_sec - mono_start.tv_sec) * kNsPerSecond
-                               + (mono_now.tv_nsec - mono_start.tv_nsec);
+        const int64_t elapsed_ns = (mono_now.tv_sec - mono_start.tv_sec) * kNsPerSecond
+                                 + (mono_now.tv_nsec - mono_start.tv_nsec);
         if (elapsed_ns >= timeout_ns)
             return false; // budget exhausted
 
         // Remaining time, capped at 500 ms to limit exposure to clock jumps.
-        constexpr long kMaxChunkNs = 500L * kNsPerMs; // 500 ms
-        const long remaining_ns = timeout_ns - elapsed_ns;
-        const long chunk_ns     = (remaining_ns < kMaxChunkNs) ? remaining_ns : kMaxChunkNs;
+        constexpr int64_t kMaxChunkNs = 500 * kNsPerMs; // 500 ms
+        const int64_t remaining_ns = timeout_ns - elapsed_ns;
+        const int64_t chunk_ns     = (remaining_ns < kMaxChunkNs) ? remaining_ns : kMaxChunkNs;
 
         // Compute a short CLOCK_REALTIME deadline for this iteration.
         struct timespec abstime;
@@ -398,7 +412,7 @@ bool DataBlockMutex::try_lock_for(int timeout_ms)
             throw std::runtime_error(
                 "POSIX DataBlockMutex: clock_gettime(REALTIME) failed for '" + m_name + "'.");
         }
-        abstime.tv_nsec += chunk_ns;
+        abstime.tv_nsec += static_cast<long>(chunk_ns);
         while (abstime.tv_nsec >= kNsPerSecond)
         {
             abstime.tv_sec  += 1;

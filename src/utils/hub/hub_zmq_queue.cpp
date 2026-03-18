@@ -37,7 +37,7 @@ static constexpr std::chrono::seconds kMismatchWarnInterval{1};
 // ============================================================================
 // ZmqQueueImpl — internal state
 // ============================================================================
-
+// NOLINTNEXTLINE(clang-analyzer-optin.performance.Padding) — field order kept for clarity; reorder in a dedicated layout pass if desired
 struct ZmqQueueImpl
 {
     enum class Mode { Read, Write } mode;

@@ -68,7 +68,7 @@ namespace pylabhub::platform
  * @brief Gets the current process ID in a cross-platform way.
  * @return The process ID (PID) of the calling process.
  */
-uint64_t get_pid()
+uint64_t get_pid() noexcept
 {
 #if defined(PYLABHUB_PLATFORM_WIN64)
     return static_cast<uint64_t>(GetCurrentProcessId());
@@ -128,7 +128,10 @@ std::string get_executable_name(bool include_path) noexcept
             {
                 return "unknown_win";
             }
-            if (len < buf.size() - 1)
+            // GetModuleFileNameW returns the character count EXCLUDING the null
+            // terminator. If len < buf.size(), the full path fit in the buffer.
+            // If len == buf.size(), the path was truncated — resize and retry.
+            if (len < buf.size())
             {
                 break;
             }
@@ -397,8 +400,9 @@ ShmHandle shm_create(const char *name, size_t size, unsigned flags)
     if (!name || size == 0)
         return h;
     HANDLE mapping =
-        CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0,
-                          static_cast<DWORD>(size), name);
+        CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
+                          static_cast<DWORD>(size >> 32),
+                          static_cast<DWORD>(size & 0xFFFFFFFF), name);
     if (mapping == NULL)
         return h;
     if ((flags & SHM_CREATE_EXCLUSIVE) != 0 && GetLastError() == ERROR_ALREADY_EXISTS)
@@ -491,6 +495,12 @@ ShmHandle shm_create(const char *name, size_t size, unsigned flags)
     {
         open_flags |= O_EXCL;
     }
+    // Track whether this call is guaranteed to have created a new segment.
+    // Only unlink on failure if we know we created it — otherwise we could
+    // destroy a pre-existing segment owned by another process.
+    const bool created_by_us =
+        (flags & (SHM_CREATE_EXCLUSIVE | SHM_CREATE_UNLINK_FIRST)) != 0;
+
     int shm_fd = shm_open(name, open_flags, kShmModeRw);
     if (shm_fd == -1)
     {
@@ -499,14 +509,20 @@ ShmHandle shm_create(const char *name, size_t size, unsigned flags)
     if (ftruncate(shm_fd, static_cast<off_t>(size)) == -1)
     {
         close(shm_fd);
-        shm_unlink(name);
+        if (created_by_us)
+        {
+            shm_unlink(name);
+        }
         return handle;
     }
     void *base = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     if (base == MAP_FAILED)
     {
         close(shm_fd);
-        shm_unlink(name);
+        if (created_by_us)
+        {
+            shm_unlink(name);
+        }
         return handle;
     }
     handle.base = base;

@@ -10,6 +10,7 @@
 
 #include "cppzmq/zmq.hpp"
 #include "utils/json_fwd.hpp"
+#include <sodium.h>
 
 #include <atomic>
 #include <fstream>
@@ -41,12 +42,14 @@ struct AdminShell::Impl
     // Startup / shutdown
     // -----------------------------------------------------------------------
 
+    std::string bound_endpoint; // resolved after bind (e.g. port 0 → real port)
+
     void startup(const std::string& endpoint, const std::string& auth_token)
     {
         token = auth_token;
         socket.bind(endpoint);
-        const std::string bound = socket.get(zmq::sockopt::last_endpoint);
-        LOGGER_INFO("AdminShell: listening on {}", bound);
+        bound_endpoint = socket.get(zmq::sockopt::last_endpoint);
+        LOGGER_INFO("AdminShell: listening on {}", bound_endpoint);
         if (token.empty())
         {
             LOGGER_INFO("AdminShell: no token configured — any local connection is accepted");
@@ -164,10 +167,13 @@ struct AdminShell::Impl
             return error_reply("invalid JSON request");
         }
 
-        // Token authentication.
+        // Token authentication (constant-time comparison via libsodium to
+        // prevent timing side-channel attacks on the token value).
         if (!token.empty())
         {
-            if (req.value("token", "") != token)
+            const std::string user_token = req.value("token", "");
+            if (user_token.size() != token.size() ||
+                sodium_memcmp(user_token.data(), token.data(), token.size()) != 0)
             {
                 LOGGER_WARN("AdminShell: rejected request — invalid token");
                 return error_reply("unauthorized");
@@ -229,6 +235,11 @@ void AdminShell::startup_()
 void AdminShell::shutdown_()
 {
     pImpl->shutdown();
+}
+
+std::string AdminShell::actual_endpoint() const
+{
+    return pImpl->bound_endpoint;
 }
 
 // ---------------------------------------------------------------------------

@@ -88,6 +88,9 @@ class AdminShell
     /// @internal Called by lifecycle shutdown function.
     void shutdown_();
 
+    /// Returns the actual bound endpoint (resolved after bind, e.g. port 0 → real port).
+    [[nodiscard]] std::string actual_endpoint() const;
+
     // -----------------------------------------------------------------------
     // Non-copyable, non-movable singleton
     // -----------------------------------------------------------------------

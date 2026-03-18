@@ -57,20 +57,14 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace pylabhub::scripting
 {
 
-/// Reason why the Lua role script host stopped.
-/// Same values as the Python StopReason enum for consistency.
-enum class LuaStopReason : int
-{
-    Normal        = 0,
-    PeerDead      = 1,
-    HubDead       = 2,
-    CriticalError = 3,
-};
+/// StopReason is now in RoleHostCore (engine-agnostic).
+using LuaStopReason = RoleHostCore::StopReason;
 
 class LuaRoleHostBase
 {
@@ -128,18 +122,11 @@ class LuaRoleHostBase
     int ref_api_{LUA_NOREF};
     int ref_ffi_cast_{LUA_NOREF}; ///< Cached ffi.cast function (avoids require per iteration)
 
-    // ── Stop reason ──────────────────────────────────────────────────────────
-
-    std::atomic<int> stop_reason_{0};
-
     // ── Shutdown flag ────────────────────────────────────────────────────────
 
     std::atomic<bool> stop_{false};
 
-    // ── Shared metrics (common to all roles) ─────────────────────────────────
-
-    std::atomic<uint64_t> script_errors_{0};
-    std::atomic<bool>     critical_error_{false};
+    // stop_reason_, critical_error_, script_errors_ are in core_ (RoleHostCore).
 
     // ── Inbox facility (common to all roles) ─────────────────────────────────
 
@@ -148,6 +135,16 @@ class LuaRoleHostBase
     size_t      inbox_schema_slot_size_{0};
     std::string inbox_ffi_type_;
     int         ref_on_inbox_{LUA_NOREF};
+
+    // ── Outgoing inbox cache (for api.open_inbox) ────────────────────────────
+
+    struct LuaInboxEntry
+    {
+        std::shared_ptr<hub::InboxClient> client;
+        std::string ffi_type;
+        size_t      item_size{0};
+    };
+    std::unordered_map<std::string, LuaInboxEntry> inbox_cache_;
 
     // ── Worker thread (non-blocking startup) ─────────────────────────────────
 
@@ -222,6 +219,27 @@ class LuaRoleHostBase
     static int lua_api_set_critical_error(lua_State *L);
     static int lua_api_stop_reason(lua_State *L);
     static int lua_api_script_errors(lua_State *L);
+    static int lua_api_version_info(lua_State *L);
+    static int lua_api_wait_for_role(lua_State *L);
+    static int lua_api_open_inbox(lua_State *L);
+
+    // ── Lua InboxHandle userdata ────────────────────────────────────────────
+
+    /// Lua userdata payload for inbox handles returned by api.open_inbox().
+    struct LuaInboxUD
+    {
+        LuaRoleHostBase *host;
+        std::string      target_uid; ///< key into inbox_cache_
+    };
+
+    static constexpr const char *kInboxHandleMT = "pylabhub.InboxHandle";
+    void register_inbox_handle_metatable_();
+    static LuaInboxEntry *get_inbox_entry_(lua_State *L);
+    static int lua_inbox_acquire(lua_State *L);
+    static int lua_inbox_send(lua_State *L);
+    static int lua_inbox_discard(lua_State *L);
+    static int lua_inbox_is_ready(lua_State *L);
+    static int lua_inbox_close(lua_State *L);
 
     // ── Inbox drain (shared by all roles) ───────────────────────────────────
 
@@ -289,6 +307,10 @@ class LuaRoleHostBase
 
     // FlexZone checksum update after on_init (default: no-op)
     virtual void update_fz_checksum_after_init() {}
+
+    /// Return a reference to the messenger used for broker queries (open_inbox, wait_for_role).
+    /// Each role subclass owns its messenger; this provides uniform access from the base class.
+    virtual hub::Messenger *role_messenger_() { return nullptr; }
 
     /**
      * @brief Run the role's data loop on the worker thread (blocking).

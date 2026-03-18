@@ -84,7 +84,7 @@ pylabhub-scripting (thin STATIC lib)
   src/scripting/python_script_host.hpp/.cpp     ← PythonScriptHost concrete class
   src/scripting/role_host_core.hpp/.cpp          ← RoleHostCore (engine-agnostic infrastructure)
   src/scripting/python_role_host_base.hpp/.cpp   ← PythonRoleHostBase (common Python layer)
-  src/scripting/lua_role_host_base.hpp           ← LuaRoleHostBase (stub for future Lua)
+  src/scripting/lua_role_host_base.hpp/.cpp       ← LuaRoleHostBase (common Lua role layer)
   (linked by all four standalone binaries; NOT by pure-C++ consumers)
 
 pylabhub-hubshell (executable)
@@ -92,12 +92,15 @@ pylabhub-hubshell (executable)
 
 pylabhub-producer (executable)
   src/producer/producer_script_host.hpp/.cpp    ← ProducerScriptHost : PythonRoleHostBase
+  src/producer/lua_producer_host.hpp/.cpp       ← LuaProducerHost : LuaRoleHostBase
 
 pylabhub-consumer (executable)
   src/consumer/consumer_script_host.hpp/.cpp    ← ConsumerScriptHost : PythonRoleHostBase
+  src/consumer/lua_consumer_host.hpp/.cpp       ← LuaConsumerHost : LuaRoleHostBase
 
 pylabhub-processor (executable)
   src/processor/processor_script_host.hpp/.cpp  ← ProcessorScriptHost : PythonRoleHostBase
+  src/processor/lua_processor_host.hpp/.cpp     ← LuaProcessorHost : LuaRoleHostBase
 ```
 
 ### Class Hierarchy
@@ -115,8 +118,10 @@ ScriptHost (abstract)                     (lifecycle contract — in pylabhub-ut
 │       ├── ProducerScriptHost            (thin: ~120 lines, timer-driven production loop)
 │       ├── ConsumerScriptHost            (thin: ~120 lines, demand-driven consumption loop)
 │       └── ProcessorScriptHost           (thin: ~150 lines, delegates to hub::Processor)
-└── (future) LuaRoleHostBase              (Lua runtime + same virtual hooks — stub exists)
-        └── (future role subclasses)
+└── LuaRoleHostBase                       (Lua runtime + same virtual hooks)
+        ├── LuaProducerHost              (timer-driven production loop)
+        ├── LuaConsumerHost              (demand-driven consumption loop)
+        └── LuaProcessorHost             (dual-channel manual loop)
 ```
 
 ```mermaid
@@ -172,8 +177,21 @@ classDiagram
         ~150 lines
     }
     class LuaRoleHostBase {
-        <<stub>>
-        future Lua support
+        +do_lua_work()
+        +role_tag()* string
+        +role_name()* string
+        +build_role_api_table_()*
+        +extract_callbacks_()*
+        +run_data_loop_()*
+    }
+    class LuaProducerHost {
+        timer-driven loop
+    }
+    class LuaConsumerHost {
+        demand-driven loop
+    }
+    class LuaProcessorHost {
+        dual-channel loop
     }
 
     ScriptHost <|-- PythonScriptHost
@@ -185,11 +203,14 @@ classDiagram
     PythonRoleHostBase <|-- ProcessorScriptHost
     PythonRoleHostBase *-- RoleHostCore : composes
     LuaRoleHostBase *-- RoleHostCore : composes
+    LuaRoleHostBase <|-- LuaProducerHost
+    LuaRoleHostBase <|-- LuaConsumerHost
+    LuaRoleHostBase <|-- LuaProcessorHost
 ```
 
 **Design: Composition + Inheritance.**
 
-- `RoleHostCore` is **composed** (has-a) by `PythonRoleHostBase` and future `LuaRoleHostBase`.
+- `RoleHostCore` is **composed** (has-a) by `PythonRoleHostBase` and `LuaRoleHostBase`.
   No virtual methods — pure infrastructure. No diamond inheritance problems.
 - `PythonRoleHostBase` **inherits** `PythonScriptHost` for interpreter lifecycle, and
   provides the shared `do_python_work()` skeleton with ~15 virtual hooks for role dispatch.
@@ -673,11 +694,11 @@ coordination without changing call sites.
 | 6 | `script_host_schema.hpp` — SchemaSpec, FieldDef types | Done | 2026-03-02 |
 | 7 | `role_host_core.hpp/.cpp` — engine-agnostic infrastructure | Done | 2026-03-03 |
 | 8 | `python_role_host_base.hpp/.cpp` — common Python layer | Done | 2026-03-03 |
-| 9 | `lua_role_host_base.hpp` — Lua stub | Done | 2026-03-03 |
+| 9 | `lua_role_host_base.hpp/.cpp` — LuaRoleHostBase common layer | Done | 2026-03-16 |
 | 10 | Slim down 3 role subclasses to ~120-150 lines each | Done | 2026-03-03 |
-| 11 | `luajit_install.cmake` — LuaJIT staging to `opt/luajit/jit/` | Pending | — |
-| 12 | `lua_script_host.hpp/.cpp` — LuaScriptHost concrete class | Pending | — |
-| 13 | Full Lua role subclasses (via LuaRoleHostBase) | Pending | — |
+| 11 | `luajit_install.cmake` — LuaJIT staging to `opt/luajit/jit/` | Done | 2026-03-16 |
+| 12 | `lua_script_host.hpp/.cpp` — LuaScriptHost concrete class | Done | 2026-03-16 |
+| 13 | Full Lua role subclasses (via LuaRoleHostBase) | Done | 2026-03-16 |
 
 ---
 
@@ -816,7 +837,11 @@ See also HEP-CORE-0007 §12.3 for the shutdown pitfalls that motivated centralis
 | `src/scripting/zmq_poll_loop.hpp` | scripting | `ZmqPollLoop` + `HeartbeatTracker` — shared ZMQ event loop |
 | `src/scripting/python_role_host_base.hpp` | scripting | `PythonRoleHostBase` — common Python layer (~15 virtual hooks) |
 | `src/scripting/python_role_host_base.cpp` | scripting | `do_python_work()` skeleton |
-| `src/scripting/lua_role_host_base.hpp` | scripting | `LuaRoleHostBase` — stub for future Lua support |
+| `src/scripting/lua_role_host_base.hpp/.cpp` | scripting | `LuaRoleHostBase` — common Lua role layer (~15 virtual hooks) |
+| `src/producer/lua_producer_host.hpp/.cpp` | L4 | `LuaProducerHost` — timer-driven Lua production |
+| `src/consumer/lua_consumer_host.hpp/.cpp` | L4 | `LuaConsumerHost` — demand-driven Lua consumption |
+| `src/processor/lua_processor_host.hpp/.cpp` | L4 | `LuaProcessorHost` — dual-channel Lua processing |
+| `tests/test_layer2_service/test_lua_role_host_base.cpp` | test | LuaRoleHostBase lifecycle and FFI tests |
 | `src/producer/producer_script_host.hpp` | L4 | `ProducerScriptHost` — timer-driven production |
 | `src/consumer/consumer_script_host.hpp` | L4 | `ConsumerScriptHost` — demand-driven consumption |
 | `src/processor/processor_script_host.hpp` | L4 | `ProcessorScriptHost` — delegates to hub::Processor |

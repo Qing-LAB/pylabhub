@@ -15,6 +15,7 @@
  */
 
 #include "plh_datahub.hpp"
+#include "plh_version_registry.hpp"
 #include "utils/interactive_signal_handler.hpp"
 #include "utils/role_cli.hpp"      // public TTY + password helpers (HEP-CORE-0024)
 #include "utils/timeout_constants.hpp"
@@ -136,6 +137,22 @@ inline void register_signal_handler_lifecycle(
         LOGGER_WARN("{} SignalHandler lifecycle module registration failed — "
                     "falling back to explicit uninstall on exit.", log_tag);
     }
+}
+
+// ============================================================================
+// Version info logging (call after LifecycleGuard construction)
+// ============================================================================
+
+/**
+ * @brief Log the centralized version info string at startup.
+ *
+ * Call immediately after LifecycleGuard construction (Logger is ready).
+ *
+ * @param log_tag  Tag for the log message, e.g. "[prod-main]".
+ */
+inline void log_version_info(const char *log_tag)
+{
+    LOGGER_INFO("{} {}", log_tag, pylabhub::version::version_info_string());
 }
 
 // ============================================================================

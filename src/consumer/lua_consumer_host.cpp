@@ -171,10 +171,11 @@ void LuaConsumerHost::build_role_api_table_(lua_State *L)
         lua_setfield(L, -2, name);
     };
 
-    push_closure("uid",                lua_api_uid);
-    push_closure("name",               lua_api_name);
-    push_closure("channel",            lua_api_channel);
-    push_closure("in_received",        lua_api_in_received);
+    push_closure("uid",                  lua_api_uid);
+    push_closure("name",                 lua_api_name);
+    push_closure("channel",              lua_api_channel);
+    push_closure("in_received",          lua_api_in_received);
+    push_closure("set_verify_checksum",  lua_api_set_verify_checksum);
 
     // api table is now on top of the stack — caller stores in registry.
 }
@@ -209,6 +210,15 @@ int LuaConsumerHost::lua_api_in_received(lua_State *L)
     auto *self = static_cast<LuaConsumerHost *>(lua_touserdata(L, lua_upvalueindex(1)));
     lua_pushinteger(L, static_cast<lua_Integer>(self->in_slots_received_.load(std::memory_order_relaxed)));
     return 1;
+}
+
+int LuaConsumerHost::lua_api_set_verify_checksum(lua_State *L)
+{
+    auto *self = static_cast<LuaConsumerHost *>(lua_touserdata(L, lua_upvalueindex(1)));
+    bool enable = lua_toboolean(L, 1) != 0;
+    if (self->queue_reader_)
+        self->queue_reader_->set_verify_checksum(enable, false);
+    return 0;
 }
 
 // ============================================================================
@@ -259,7 +269,7 @@ nlohmann::json LuaConsumerHost::snapshot_metrics_json() const
 {
     nlohmann::json base;
     base["in_received"]        = in_slots_received_.load(std::memory_order_relaxed);
-    base["script_errors"]      = script_errors_.load(std::memory_order_relaxed);
+    base["script_errors"]      = core_.script_errors_.load(std::memory_order_relaxed);
     base["last_cycle_work_us"] = last_cycle_work_us_.load(std::memory_order_relaxed);
     base["loop_overrun_count"] = uint64_t{0}; // consumer is demand-driven, no deadline
 
@@ -397,14 +407,14 @@ bool LuaConsumerHost::start_role()
     in_consumer_->on_peer_dead([this]() {
         LOGGER_WARN("[cons] peer-dead: producer silent for {} ms; triggering shutdown",
                     config_.peer_dead_timeout_ms);
-        stop_reason_.store(static_cast<int>(scripting::LuaStopReason::PeerDead),
+        core_.stop_reason_.store(static_cast<int>(scripting::LuaStopReason::PeerDead),
                            std::memory_order_relaxed);
         core_.shutdown_requested.store(true, std::memory_order_release);
     });
 
     in_messenger_.on_hub_dead([this]() {
         LOGGER_WARN("[cons] hub-dead: broker connection lost; triggering shutdown");
-        stop_reason_.store(static_cast<int>(scripting::LuaStopReason::HubDead),
+        core_.stop_reason_.store(static_cast<int>(scripting::LuaStopReason::HubDead),
                            std::memory_order_relaxed);
         core_.shutdown_requested.store(true, std::memory_order_release);
     });
@@ -584,7 +594,7 @@ void LuaConsumerHost::run_data_loop_()
     auto next_deadline = std::chrono::steady_clock::now() + period;
 
     while (core_.running_threads.load() && !core_.shutdown_requested.load() &&
-           !critical_error_.load(std::memory_order_relaxed))
+           !core_.critical_error_.load(std::memory_order_relaxed))
     {
         const auto iter_start = std::chrono::steady_clock::now();
 
@@ -623,7 +633,7 @@ void LuaConsumerHost::run_data_loop_()
 
         in_slots_received_.fetch_add(1, std::memory_order_relaxed);
 
-        if (!core_.running_threads.load() || critical_error_.load(std::memory_order_relaxed))
+        if (!core_.running_threads.load() || core_.critical_error_.load(std::memory_order_relaxed))
         {
             queue_reader_->read_release();
             break;
@@ -667,7 +677,7 @@ void LuaConsumerHost::run_data_loop_()
     LOGGER_INFO("[cons] run_data_loop_ exiting: running_threads={} shutdown_requested={} "
                 "critical_error={}",
                 core_.running_threads.load(), core_.shutdown_requested.load(),
-                critical_error_.load());
+                core_.critical_error_.load());
 }
 
 // ============================================================================

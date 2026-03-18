@@ -39,8 +39,9 @@ include(StageHelpers)
 # ===========================================================================
 message(STATUS "[pylabhub-third-party] Configuring Python build-time dependencies...")
 
-set(PYTHON_STANDALONE_VERSION "3.14.3+20260211")
-set(PYTHON_RELEASE_TAG        "20260211")
+# Version comes from cmake/Versions.cmake (single source of truth).
+set(PYTHON_STANDALONE_VERSION "${PYLABHUB_PYTHON_RUNTIME_VERSION}")
+set(PYTHON_RELEASE_TAG        "${PYLABHUB_PYTHON_RELEASE_TAG}")
 set(PYTHON_RELEASE_BASE_URL
     "https://github.com/astral-sh/python-build-standalone/releases/download/${PYTHON_RELEASE_TAG}")
 

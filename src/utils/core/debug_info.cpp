@@ -32,7 +32,6 @@
 #elif defined(PYLABHUB_IS_POSIX) && (PYLABHUB_IS_POSIX)
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -60,7 +59,6 @@
 
 #endif // platform selection
 
-#include "utils/debug_info.hpp"
 #include "utils/format_tools.hpp"
 
 namespace pylabhub::debug

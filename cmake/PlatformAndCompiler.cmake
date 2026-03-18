@@ -26,6 +26,17 @@
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# Toolchain escape hatch for std::atomic<std::shared_ptr<T>> support.
+# Keep this option close to the compiler/platform logic because it is intended
+# for library/toolchain compatibility problems rather than general feature selection.
+option(PYLABHUB_FORCE_MUTEX_ATOMIC_SHARED_PTR
+  "Force PortableAtomicSharedPtr to use its mutex fallback instead of std::atomic<std::shared_ptr<T>>."
+  OFF)
+if(PYLABHUB_FORCE_MUTEX_ATOMIC_SHARED_PTR)
+  add_compile_definitions(PLH_FORCE_MUTEX_ATOMIC_SHARED_PTR=1)
+endif()
+message(STATUS "[pylabhub-platform] PYLABHUB_FORCE_MUTEX_ATOMIC_SHARED_PTR = ${PYLABHUB_FORCE_MUTEX_ATOMIC_SHARED_PTR}")
+
 # -------------------------------------------------------------------------------
 # Platform detection & compile-time macros (robust, with diagnostics)
 # -------------------------------------------------------------------------------
