@@ -686,7 +686,12 @@ bool LuaProcessorHost::start_role()
         in_queue_ = hub::ZmqQueue::pull_from(
             config_.zmq_in_endpoint, std::move(zmq_fields),
             config_.in_zmq_packing, config_.zmq_in_bind, config_.in_zmq_buffer_depth);
-        in_queue_->start();
+        if (!in_queue_->start())
+        {
+            LOGGER_ERROR("[proc] ZMQ input queue start() failed (endpoint='{}')",
+                         config_.zmq_in_endpoint);
+            return false;
+        }
         in_q_ = in_queue_.get();
     }
     else if (auto *zmq_in = in_consumer_->queue())
@@ -706,7 +711,12 @@ bool LuaProcessorHost::start_role()
         }
         in_queue_ = hub::ShmQueue::from_consumer_ref(
             *in_shm, in_schema_slot_size_, core_.schema_fz_size, config_.in_channel);
-        in_queue_->start();
+        if (!in_queue_->start())
+        {
+            LOGGER_ERROR("[proc] SHM input queue start() failed (channel='{}')",
+                         config_.in_channel);
+            return false;
+        }
         if (config_.verify_checksum)
             in_queue_->set_verify_checksum(true, core_.has_fz);
         in_q_ = in_queue_.get();
@@ -1076,7 +1086,7 @@ bool LuaProcessorHost::call_on_process_(const void *in_buf, size_t in_sz,
         lua_pop(L_, 1);
         on_script_error();
         if (config_.stop_on_script_error)
-            core_.running_threads.store(false);
+            core_.shutdown_requested.store(true, std::memory_order_release);
         return false;
     }
 
@@ -1128,7 +1138,7 @@ bool LuaProcessorHost::call_on_process_no_input_(void *out_buf, size_t out_sz,
         lua_pop(L_, 1);
         on_script_error();
         if (config_.stop_on_script_error)
-            core_.running_threads.store(false);
+            core_.shutdown_requested.store(true, std::memory_order_release);
         return false;
     }
 

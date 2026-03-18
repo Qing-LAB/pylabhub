@@ -54,14 +54,10 @@ void LuaRoleHostBase::shutdown_() noexcept
     if (worker_thread_.joinable())
         worker_thread_.join();
 
-    if (state_)
-    {
-        clear_lua_refs_();
-        // LuaState destructor will call lua_close when state_ goes out of scope
-        // or is reassigned.  For explicit shutdown, move to a temporary.
-        state_ = LuaState{nullptr};
-        L_ = nullptr;
-    }
+    // Lua state cleanup happens in do_lua_work_() on the worker thread
+    // (which owns the lua_State).  After join(), the state is already closed.
+    // Clear the raw pointer as a safety net.
+    L_ = nullptr;
 }
 
 void LuaRoleHostBase::signal_ready_()
@@ -72,7 +68,6 @@ void LuaRoleHostBase::signal_ready_()
 void LuaRoleHostBase::signal_shutdown() noexcept
 {
     core_.shutdown_requested.store(true, std::memory_order_release);
-    stop_.store(true, std::memory_order_release);
 }
 
 // ============================================================================
@@ -82,7 +77,7 @@ void LuaRoleHostBase::signal_shutdown() noexcept
 void LuaRoleHostBase::do_lua_work_()
 {
     // ── Early exit: signal fired before we started ───────────────────────────
-    if (stop_.load(std::memory_order_acquire))
+    if (core_.shutdown_requested.load(std::memory_order_acquire))
     {
         core_.script_load_ok = false;
         signal_ready_();
@@ -210,6 +205,11 @@ void LuaRoleHostBase::do_lua_work_()
     stop_role();
     core_.running = false;
 
+    // ── Cleanup Lua state on the owning thread ──────────────────────────────
+    clear_lua_refs_();
+    state_ = LuaState{};  // lua_close via RAII, on the thread that created it
+    L_ = nullptr;
+
     LOGGER_INFO("[{}] LuaRoleHostBase: all done", role_tag());
 }
 
@@ -299,7 +299,6 @@ bool LuaRoleHostBase::push_slot_view_readonly_(const void *data, size_t size, co
     return state_.push_slot_view_readonly(data, size, type_name);
 }
 
-// push_ffi_cast_ is no longer needed — delegated to LuaState.
 
 // ============================================================================
 // Message table builder
@@ -418,7 +417,7 @@ void LuaRoleHostBase::clear_lua_refs_()
         luaL_unref(L_, LUA_REGISTRYINDEX, ref_api_);
         ref_api_ = LUA_NOREF;
     }
-    // ref_ffi_cast_ is managed by LuaState — no need to unref here.
+    // ffi.cast cache is managed by LuaState — cleaned up in its destructor.
 
     // Stop all cached InboxClients before lua_close.
     for (auto &[uid, entry] : inbox_cache_)
@@ -834,8 +833,9 @@ void LuaRoleHostBase::drain_inbox_sync_()
         }
         else
         {
+            // Schemaless or zero-size: push raw bytes using the queue's item size.
             lua_pushlstring(L_, reinterpret_cast<const char *>(item->data),
-                           inbox_schema_slot_size_);
+                           inbox_queue_->item_size());
         }
 
         lua_pushstring(L_, item->sender_id.c_str());
