@@ -40,8 +40,10 @@
  */
 
 #include "consumer_config.hpp"
+#include "consumer_role_host.hpp"
 #include "consumer_script_host.hpp"
 #include "lua_consumer_host.hpp"
+#include "lua_engine.hpp"
 
 #include "plh_datahub.hpp"
 #include "utils/actor_vault.hpp"
@@ -291,41 +293,45 @@ int main(int argc, char *argv[])
     // -- Dispatch based on script engine ----------------------------------------
     if (config.script_type == "lua")
     {
-        pylabhub::consumer::LuaConsumerHost lua_host;
-        lua_host.set_config(std::move(config));
-        lua_host.set_validate_only(args.validate_only);
-        lua_host.set_shutdown_flag(&g_shutdown);
+        // Unified ConsumerRoleHost + LuaEngine (ScriptEngine interface).
+        auto engine = std::make_unique<pylabhub::scripting::LuaEngine>();
 
-        try { lua_host.startup_(); }
+        pylabhub::consumer::ConsumerRoleHost host;
+        host.set_engine(std::move(engine));
+        host.set_config(std::move(config));
+        host.set_validate_only(args.validate_only);
+        host.set_shutdown_flag(&g_shutdown);
+
+        try { host.startup_(); }
         catch (const std::exception &e)
         {
             std::cerr << "Lua startup failed: " << e.what() << "\n";
             return 1;
         }
 
-        if (!lua_host.script_load_ok())
+        if (!host.script_load_ok())
         {
             std::cerr << "Lua script load failed.\n";
-            lua_host.shutdown_();
+            host.shutdown_();
             return 1;
         }
 
         if (args.validate_only)
         {
             std::cout << "\nValidation passed.\n";
-            lua_host.shutdown_();
+            host.shutdown_();
             return 0;
         }
 
-        if (!lua_host.is_running())
+        if (!host.is_running())
         {
             std::cerr << "Failed to start Lua consumer — loop did not start.\n";
-            lua_host.shutdown_();
+            host.shutdown_();
             return 1;
         }
 
         const auto start_time = std::chrono::steady_clock::now();
-        const auto &cfg = lua_host.config();
+        const auto &cfg = host.config();
         signal_handler.set_status_callback([&]() -> std::string
         {
             const auto elapsed = std::chrono::steady_clock::now() - start_time;
@@ -341,8 +347,8 @@ int main(int argc, char *argv[])
                 secs / 3600, (secs % 3600) / 60, secs % 60);
         });
 
-        scripting::run_role_main_loop(g_shutdown, lua_host, "[cons-main]");
-        lua_host.shutdown_();
+        scripting::run_role_main_loop(g_shutdown, host, "[cons-main]");
+        host.shutdown_();
         return 0;
     }
 

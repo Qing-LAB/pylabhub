@@ -19,6 +19,7 @@ add_executable(pylabhub-consumer
     consumer_config.cpp
     consumer_api.cpp
     consumer_script_host.cpp
+    consumer_role_host.cpp
     lua_consumer_host.cpp
 )
 add_executable(pylabhub::consumer ALIAS pylabhub-consumer)

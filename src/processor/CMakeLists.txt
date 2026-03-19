@@ -20,6 +20,7 @@ add_executable(pylabhub-processor
     processor_api.cpp
     processor_script_host.cpp
     lua_processor_host.cpp
+    processor_role_host.cpp
 )
 add_executable(pylabhub::processor ALIAS pylabhub-processor)
 
