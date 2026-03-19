@@ -337,7 +337,7 @@ bool LuaProducerHost::start_role()
     if (config_.target_period_ms > 0)
     {
         opts.loop_policy = hub::LoopPolicy::FixedRate;
-        opts.period_ms   = std::chrono::milliseconds{config_.target_period_ms};
+        opts.period_ms   = std::chrono::milliseconds{static_cast<int>(config_.target_period_ms)};
     }
     opts.ctrl_queue_max_depth = config_.ctrl_queue_max_depth;
     opts.peer_dead_timeout_ms = config_.peer_dead_timeout_ms;
@@ -641,10 +641,10 @@ void LuaProducerHost::run_data_loop_()
             config_.slot_acquire_timeout_ms, config_.target_period_ms)};
 
     auto next_deadline = std::chrono::steady_clock::now() +
-                         std::chrono::milliseconds{config_.target_period_ms};
+                         std::chrono::milliseconds{static_cast<int>(config_.target_period_ms)};
 
     const bool is_fixed_rate = (config_.loop_timing != LoopTimingPolicy::MaxRate);
-    const auto period        = std::chrono::milliseconds{config_.target_period_ms};
+    const auto period        = std::chrono::milliseconds{static_cast<int>(config_.target_period_ms)};
 
     while (core_.running_threads.load() && !core_.shutdown_requested.load() &&
            !core_.critical_error_.load(std::memory_order_relaxed))

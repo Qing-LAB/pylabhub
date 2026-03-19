@@ -135,14 +135,24 @@ struct ProducerConfig
     /// Target start-to-start period between successive on_produce calls (ms).
     /// 0 = free-run (no sleep, produce as fast as SHM allows).
     /// When > 0, activates DataBlock overrun detection at the same period.
-    int target_period_ms{100};
+    double target_period_ms{100.0};
+
+    /// Target rate in Hz (alternative to target_period_ms). 0 = not set.
+    /// Cannot specify both target_rate_hz and target_period_ms > 0.
+    double target_rate_hz{0.0};
 
     /// Loop timing policy. Default: FixedRate (since target_period_ms defaults to 100).
     /// See loop_timing_policy.hpp for cross-field constraints.
     LoopTimingPolicy loop_timing{LoopTimingPolicy::FixedRate};
 
-    /// Slot acquire timeout (ms). -1 = derive from target_period_ms (see
-    /// compute_slot_acquire_timeout), 0 = non-blocking, >0 = explicit ms.
+    /// Queue I/O wait timeout ratio (fraction of period per acquire attempt).
+    /// Used by the unified data loop's inner retry-acquire pattern.
+    /// Range: 0.1–0.5. Default: 0.1 (10% of period = ~10 retry attempts).
+    /// For MaxRate (period=0): the floor kMinQueueIoTimeoutUs (10 μs) applies.
+    double queue_io_wait_timeout_ratio{0.1};
+
+    /// @deprecated Use queue_io_wait_timeout_ratio instead.
+    /// Kept for backward compatibility with old hosts during migration.
     int slot_acquire_timeout_ms{-1};
     int heartbeat_interval_ms{0};
 
