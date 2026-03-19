@@ -625,7 +625,10 @@ void ConsumerRoleHost::run_data_loop_()
         // --- Step D: Invoke callback ---
         // Update last_seq and in_received when data arrives.
         if (data != nullptr)
+        {
+            last_seq_.store(queue_reader_->last_seq(), std::memory_order_relaxed);
             in_received_.fetch_add(1, std::memory_order_relaxed);
+        }
 
         // Read-only flexzone pointer (re-read each cycle for ShmQueue).
         const void *fz_ptr = core_.has_fz ? queue_reader_->read_flexzone() : nullptr;
