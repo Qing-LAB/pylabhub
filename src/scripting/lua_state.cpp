@@ -279,6 +279,79 @@ bool LuaState::push_ffi_cast_(void *data, const char *type_name, bool readonly)
 }
 
 // ============================================================================
+// cache_ffi_typeof — cache ctype object for hot-path slot views
+// ============================================================================
+
+int LuaState::cache_ffi_typeof(const char *type_name, bool readonly)
+{
+    if (!L_ || !type_name)
+        return LUA_NOREF;
+
+    // ffi.typeof("TypeName*") or ffi.typeof("TypeName const*")
+    std::string type_str = std::string(type_name) + (readonly ? " const*" : "*");
+
+    // Get ffi.typeof
+    lua_getglobal(L_, "require");
+    lua_pushstring(L_, "ffi");
+    if (lua_pcall(L_, 1, 1, 0) != LUA_OK)
+    {
+        lua_pop(L_, 1);
+        return LUA_NOREF;
+    }
+    lua_getfield(L_, -1, "typeof");
+    lua_remove(L_, -2); // remove ffi table, keep typeof
+
+    lua_pushstring(L_, type_str.c_str());
+    if (lua_pcall(L_, 1, 1, 0) != LUA_OK)
+    {
+        lua_pop(L_, 1); // pop error
+        return LUA_NOREF;
+    }
+
+    // Store ctype object in registry.
+    return luaL_ref(L_, LUA_REGISTRYINDEX);
+}
+
+// ============================================================================
+// push_slot_view_cached — hot-path slot view using cached ctype ref
+// ============================================================================
+
+bool LuaState::push_slot_view_cached(void *data, int ctype_ref)
+{
+    if (!L_ || ctype_ref == LUA_NOREF || !data)
+        return false;
+
+    // Get cached ffi.cast function.
+    if (ref_ffi_cast_ != LUA_NOREF)
+    {
+        lua_rawgeti(L_, LUA_REGISTRYINDEX, ref_ffi_cast_);
+    }
+    else
+    {
+        lua_getglobal(L_, "require");
+        lua_pushstring(L_, "ffi");
+        if (lua_pcall(L_, 1, 1, 0) != LUA_OK)
+        {
+            lua_pop(L_, 1);
+            return false;
+        }
+        lua_getfield(L_, -1, "cast");
+        lua_remove(L_, -2);
+    }
+
+    // ffi.cast(cached_ctype, ptr) — no string lookup.
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, ctype_ref);
+    lua_pushlightuserdata(L_, data);
+    if (lua_pcall(L_, 2, 1, 0) != LUA_OK)
+    {
+        lua_pop(L_, 1);
+        return false;
+    }
+
+    return true; // cdata on top of stack
+}
+
+// ============================================================================
 // Registry reference helpers
 // ============================================================================
 
