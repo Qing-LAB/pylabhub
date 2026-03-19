@@ -801,10 +801,6 @@ void ProcessorRoleHost::run_data_loop_()
             short_timeout_us + std::chrono::microseconds{999});
 
     const bool drop_mode = (config_.overflow_policy == OverflowPolicy::Drop);
-    // Output timeout: for Drop mode, non-blocking; for Block mode, same short_timeout.
-    const auto output_timeout = drop_mode
-        ? std::chrono::milliseconds{0}
-        : short_timeout;
 
     const size_t in_sz  = in_q_->item_size();
     const size_t out_sz = out_q_->item_size();
@@ -817,6 +813,12 @@ void ProcessorRoleHost::run_data_loop_()
     // First cycle: no deadline — fire immediately.
     auto deadline = Clock::time_point::max();
 
+    // Input-hold state for Block mode (§5.3 of loop_design_unified.md).
+    // When Block mode output fails, held_input retains the input pointer
+    // across cycles. SHM: lock held, pointer valid. ZMQ: current_read_buf_
+    // unchanged, pointer valid. See §5.1 for transport semantics.
+    const void *held_input = nullptr;
+
     // --- Outer loop ---
     while (core_.running_threads.load(std::memory_order_acquire) &&
            !core_.shutdown_requested.load(std::memory_order_acquire) &&
@@ -828,41 +830,74 @@ void ProcessorRoleHost::run_data_loop_()
 
         const auto cycle_start = Clock::now();
 
-        // --- Step A: Acquire INPUT with inner retry ---
-        const void *in_buf = nullptr;
-        while (true)
+        // --- Step A: Acquire INPUT (skip if held from previous cycle) ---
+        //
+        // If held_input is set (Block mode, previous output failed),
+        // reuse the held data — don't re-acquire.
+        //
+        if (held_input == nullptr)
         {
-            in_buf = in_q_->read_acquire(short_timeout);
-            if (in_buf != nullptr)
-                break; // got input
-
-            if (is_max_rate)
-                break; // MaxRate: single attempt
-
-            // Check shutdown between retries.
-            if (!core_.running_threads.load(std::memory_order_relaxed) ||
-                core_.shutdown_requested.load(std::memory_order_relaxed) ||
-                core_.critical_error_.load(std::memory_order_relaxed))
+            while (true)
             {
-                break;
-            }
-            if (core_.g_shutdown && core_.g_shutdown->load(std::memory_order_relaxed))
-                break;
+                held_input = in_q_->read_acquire(short_timeout);
+                if (held_input != nullptr)
+                    break; // got input
 
-            // For first cycle (deadline=max), remaining is effectively infinite — always retry.
-            if (deadline != Clock::time_point::max())
-            {
-                const auto remaining =
-                    std::chrono::duration_cast<std::chrono::microseconds>(
-                        deadline - Clock::now());
-                if (remaining <= short_timeout_us)
-                    break; // not enough time to retry
+                if (is_max_rate)
+                    break; // MaxRate: single attempt
+
+                // Check shutdown between retries.
+                if (!core_.running_threads.load(std::memory_order_relaxed) ||
+                    core_.shutdown_requested.load(std::memory_order_relaxed) ||
+                    core_.critical_error_.load(std::memory_order_relaxed))
+                {
+                    break;
+                }
+                if (core_.g_shutdown && core_.g_shutdown->load(std::memory_order_relaxed))
+                    break;
+
+                // For first cycle (deadline=max), remaining is effectively infinite — always retry.
+                if (deadline != Clock::time_point::max())
+                {
+                    const auto remaining =
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            deadline - Clock::now());
+                    if (remaining <= short_timeout_us)
+                        break; // not enough time to retry
+                }
+                // else: retry acquire
             }
-            // else: retry acquire
         }
 
-        // --- Step B: Acquire OUTPUT ---
-        void *out_buf = out_q_->write_acquire(output_timeout);
+        // --- Step B: Acquire OUTPUT (only if input available) ---
+        //
+        // No input → no output attempt. Script called with both nil.
+        // Input available → try output with policy-dependent timeout:
+        //   Drop: 0ms (non-blocking)
+        //   Block: max(remaining_until_deadline, short_timeout)
+        //
+        void *out_buf = nullptr;
+        if (held_input != nullptr)
+        {
+            if (drop_mode)
+            {
+                out_buf = out_q_->write_acquire(std::chrono::milliseconds{0});
+            }
+            else
+            {
+                // Block mode: use remaining cycle budget, floor = short_timeout.
+                auto output_timeout = short_timeout;
+                if (deadline != Clock::time_point::max())
+                {
+                    const auto remaining =
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            deadline - Clock::now());
+                    if (remaining > short_timeout)
+                        output_timeout = remaining;
+                }
+                out_buf = out_q_->write_acquire(output_timeout);
+            }
+        }
 
         // --- Step C: Deadline wait (FixedRate) ---
         // Skip sleep when deadline is max() (first cycle) or MaxRate.
@@ -877,10 +912,13 @@ void ProcessorRoleHost::run_data_loop_()
             core_.shutdown_requested.load(std::memory_order_relaxed) ||
             core_.critical_error_.load(std::memory_order_relaxed))
         {
+            if (held_input != nullptr)
+            {
+                in_q_->read_release();
+                held_input = nullptr;
+            }
             if (out_buf != nullptr)
                 out_q_->write_discard();
-            if (in_buf != nullptr)
-                in_q_->read_release();
             break;
         }
 
@@ -897,10 +935,12 @@ void ProcessorRoleHost::run_data_loop_()
             fz_ptr = out_q_->write_flexzone();
 
         InvokeResult result =
-            engine_->invoke_process(in_buf, in_sz, out_buf, out_sz,
+            engine_->invoke_process(held_input, in_sz, out_buf, out_sz,
                                     fz_ptr, fz_sz, fz_type, msgs);
 
-        // --- Step F: Commit/discard OUTPUT, release INPUT ---
+        // --- Step F: Commit/discard OUTPUT, release/hold INPUT ---
+        //
+        // Output:
         if (out_buf != nullptr)
         {
             if (result == InvokeResult::Commit)
@@ -914,15 +954,25 @@ void ProcessorRoleHost::run_data_loop_()
                 out_drops_.fetch_add(1, std::memory_order_relaxed);
             }
         }
-        else
+        else if (held_input != nullptr)
         {
+            // Had input but no output slot — count as drop.
             out_drops_.fetch_add(1, std::memory_order_relaxed);
         }
 
-        if (in_buf != nullptr)
+        // Input: release or hold depending on output success + policy.
+        if (held_input != nullptr)
         {
-            in_q_->read_release();
-            in_received_.fetch_add(1, std::memory_order_relaxed);
+            if (out_buf != nullptr || drop_mode)
+            {
+                // Normal: data processed or dropped. Advance input.
+                in_q_->read_release();
+                held_input = nullptr;
+                in_received_.fetch_add(1, std::memory_order_relaxed);
+            }
+            // else: Block mode + output failed → keep held_input for next cycle.
+            // SHM: lock still held, pointer valid.
+            // ZMQ: current_read_buf_ unchanged, pointer valid.
         }
 
         if (result == InvokeResult::Error)
@@ -941,6 +991,13 @@ void ProcessorRoleHost::run_data_loop_()
         iteration_count_.fetch_add(1, std::memory_order_relaxed);
 
         deadline = compute_next_deadline(config_.loop_timing, deadline, cycle_start, period_us);
+    }
+
+    // Clean up held input on loop exit.
+    if (held_input != nullptr)
+    {
+        in_q_->read_release();
+        held_input = nullptr;
     }
 
     LOGGER_INFO("[proc] run_data_loop_ exiting: running_threads={} shutdown_requested={} "
