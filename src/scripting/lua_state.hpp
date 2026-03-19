@@ -110,11 +110,35 @@ class LuaState
      * @param size Size of the buffer in bytes (used for validation).
      * @param type_name FFI type name (e.g., "SlotFrame").
      * @return true if the cdata was pushed, false on error.
+     *
+     * @note For hot-path usage, prefer the cached variant: cache_ffi_typeof()
+     * + push_slot_view_cached() to avoid per-call string operations.
      */
     bool push_slot_view(void *data, size_t size, const char *type_name);
 
     /** Push a read-only slot view (const void*). */
     bool push_slot_view_readonly(const void *data, size_t size, const char *type_name);
+
+    /**
+     * @brief Cache an FFI ctype object for fast hot-path slot view creation.
+     *
+     * Calls `ffi.typeof("type_name*")` or `ffi.typeof("type_name const*")`
+     * once and stores the result as a Lua registry reference.
+     *
+     * @param type_name FFI type name (e.g., "SlotFrame").
+     * @param readonly  If true, caches "type_name const*".
+     * @return Registry reference to the ctype object (LUA_NOREF on error).
+     */
+    [[nodiscard]] int cache_ffi_typeof(const char *type_name, bool readonly);
+
+    /**
+     * @brief Push a slot view using a cached ctype reference (zero string ops).
+     *
+     * @param data      Raw memory pointer.
+     * @param ctype_ref Registry reference from cache_ffi_typeof().
+     * @return true if the cdata was pushed, false on error.
+     */
+    bool push_slot_view_cached(void *data, int ctype_ref);
 
     // ── Registry reference management ────────────────────────────────────
 
