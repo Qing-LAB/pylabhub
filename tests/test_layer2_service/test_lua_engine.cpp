@@ -1,0 +1,626 @@
+/**
+ * @file test_lua_engine.cpp
+ * @brief Unit tests for LuaEngine — the ScriptEngine implementation for Lua.
+ *
+ * Tests the engine in isolation: no broker, no queues, no role host.
+ * Uses raw memory buffers and temporary Lua script files.
+ *
+ * Covers:
+ *   1. Lifecycle: initialize → load → register → build_api → invoke → finalize
+ *   2. Type registration: ffi.typeof caching, sizeof validation
+ *   3. invoke_produce: commit, discard, nil slot, error paths
+ *   4. invoke_consume: read-only slot, no return value, error detection
+ *   5. invoke_process: dual slots, nil combinations
+ *   6. Messages: table format for producer/consumer
+ *   7. API closures: log, stop, version_info
+ *   8. Error handling: script_error_count, stop_on_script_error
+ *   9. create_thread_state: independent engine
+ */
+#include <gtest/gtest.h>
+
+#include "lua_engine.hpp"
+#include "role_host_core.hpp"
+
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
+
+namespace fs = std::filesystem;
+using pylabhub::scripting::LuaEngine;
+using pylabhub::scripting::ScriptEngine;
+using pylabhub::scripting::InvokeResult;
+using pylabhub::scripting::RoleContext;
+using pylabhub::scripting::RoleHostCore;
+using pylabhub::scripting::IncomingMessage;
+using pylabhub::scripting::SchemaSpec;
+using pylabhub::scripting::FieldDef;
+
+namespace
+{
+
+// ============================================================================
+// Test fixture
+// ============================================================================
+
+class LuaEngineTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        tmp_ = fs::temp_directory_path() / ("lua_engine_test_" +
+               std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        fs::create_directories(tmp_);
+    }
+
+    void TearDown() override
+    {
+        fs::remove_all(tmp_);
+    }
+
+    void write_script(const std::string &content)
+    {
+        std::ofstream f(tmp_ / "init.lua");
+        f << content;
+    }
+
+    /// Create a simple schema with one float32 field.
+    SchemaSpec simple_schema()
+    {
+        SchemaSpec spec;
+        FieldDef f;
+        f.name     = "value";
+        f.type_str = "float32";
+        f.count    = 1;
+        f.length   = 0;
+        spec.fields.push_back(f);
+        return spec;
+    }
+
+    /// Build a minimal RoleContext for producer.
+    RoleContext producer_context()
+    {
+        RoleContext ctx{};
+        ctx.role_tag  = "test";
+        ctx.uid       = "TEST-ENGINE-00000001";
+        ctx.name      = "TestEngine";
+        ctx.channel   = "test.channel";
+        ctx.log_level = "error";
+        ctx.stop_on_script_error = false;
+        return ctx;
+    }
+
+    /// Initialize engine, load script, register type, build API.
+    /// Returns true if all steps succeed.
+    bool setup_engine(LuaEngine &engine, const std::string &required_cb = "on_produce")
+    {
+        if (!engine.initialize("test"))
+            return false;
+        if (!engine.load_script(tmp_, "init.lua", required_cb.c_str()))
+            return false;
+
+        auto spec = simple_schema();
+        if (!engine.register_slot_type(spec, "SlotFrame", "aligned"))
+            return false;
+
+        auto ctx = producer_context();
+        engine.build_api(ctx);
+        return true;
+    }
+
+    fs::path tmp_;
+};
+
+// ============================================================================
+// 1. Lifecycle
+// ============================================================================
+
+TEST_F(LuaEngineTest, FullLifecycle)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            return true
+        end
+        function on_init(api) end
+        function on_stop(api) end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    engine.invoke_on_init();
+    engine.invoke_on_stop();
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, InitializeFailsGracefully)
+{
+    // Double initialize should not crash (engine manages state).
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test"));
+    engine.finalize();
+}
+
+// ============================================================================
+// 2. Type Registration
+// ============================================================================
+
+TEST_F(LuaEngineTest, RegisterSlotType_SizeofCorrect)
+{
+    write_script("function on_produce(out_slot, fz, msgs, api) return true end");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+
+    // float32 = 4 bytes
+    EXPECT_EQ(engine.type_sizeof("SlotFrame"), 4u);
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, RegisterSlotType_MultiField)
+{
+    write_script("function on_produce(out_slot, fz, msgs, api) return true end");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
+
+    SchemaSpec spec;
+    FieldDef f1; f1.name = "x"; f1.type_str = "float32"; f1.count = 1; f1.length = 0;
+    FieldDef f2; f2.name = "y"; f2.type_str = "float32"; f2.count = 1; f2.length = 0;
+    FieldDef f3; f3.name = "z"; f3.type_str = "float32"; f3.count = 1; f3.length = 0;
+    spec.fields = {f1, f2, f3};
+
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    EXPECT_EQ(engine.type_sizeof("SlotFrame"), 12u); // 3 * 4 bytes
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 3. invoke_produce
+// ============================================================================
+
+TEST_F(LuaEngineTest, InvokeProduce_CommitOnTrue)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            if out_slot then
+                out_slot.value = 42.0
+            end
+            return true
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+
+    auto result = engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+    EXPECT_FLOAT_EQ(buf, 42.0f);
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, InvokeProduce_DiscardOnFalse)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            return false
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+
+    auto result = engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(result, InvokeResult::Discard);
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, InvokeProduce_CommitOnNilReturn)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            -- no explicit return → nil → commit
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+
+    auto result = engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, InvokeProduce_NilSlot)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            assert(out_slot == nil, "expected nil slot")
+            return false
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    std::vector<IncomingMessage> msgs;
+
+    auto result = engine.invoke_produce(nullptr, 0, nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(result, InvokeResult::Discard);
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, InvokeProduce_ScriptError)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            error("intentional error")
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    auto result = engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(result, InvokeResult::Error);
+    EXPECT_EQ(engine.script_error_count(), 1u);
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 4. invoke_consume
+// ============================================================================
+
+TEST_F(LuaEngineTest, InvokeConsume_ReceivesReadOnlySlot)
+{
+    write_script(R"(
+        received_value = nil
+        function on_consume(in_slot, fz, msgs, api)
+            if in_slot then
+                received_value = in_slot.value
+            end
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_consume"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+
+    auto ctx = producer_context();
+    engine.build_api(ctx);
+
+    float data = 99.5f;
+    std::vector<IncomingMessage> msgs;
+
+    engine.invoke_consume(&data, sizeof(data), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, InvokeConsume_NilSlot)
+{
+    write_script(R"(
+        function on_consume(in_slot, fz, msgs, api)
+            assert(in_slot == nil, "expected nil")
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_consume"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+
+    auto ctx = producer_context();
+    engine.build_api(ctx);
+
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_consume(nullptr, 0, nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, InvokeConsume_ScriptErrorDetected)
+{
+    write_script(R"(
+        function on_consume(in_slot, fz, msgs, api)
+            error("consume error")
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_consume"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+
+    auto ctx = producer_context();
+    engine.build_api(ctx);
+
+    float data = 1.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_consume(&data, sizeof(data), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 1u);
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 5. invoke_process
+// ============================================================================
+
+TEST_F(LuaEngineTest, InvokeProcess_DualSlots)
+{
+    write_script(R"(
+        function on_process(in_slot, out_slot, fz, msgs, api)
+            if in_slot and out_slot then
+                out_slot.value = in_slot.value * 2.0
+                return true
+            end
+            return false
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_process"));
+
+    auto spec = simple_schema();
+    // Processor: separate in/out types.
+    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+
+    auto ctx = producer_context();
+    engine.build_api(ctx);
+
+    float in_data  = 21.0f;
+    float out_data = 0.0f;
+    std::vector<IncomingMessage> msgs;
+
+    auto result = engine.invoke_process(&in_data, sizeof(in_data),
+                                         &out_data, sizeof(out_data),
+                                         nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+    EXPECT_FLOAT_EQ(out_data, 42.0f);
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, InvokeProcess_NilInput)
+{
+    write_script(R"(
+        function on_process(in_slot, out_slot, fz, msgs, api)
+            assert(in_slot == nil, "expected nil input")
+            assert(out_slot == nil, "expected nil output")
+            return false
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_process"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+
+    auto ctx = producer_context();
+    engine.build_api(ctx);
+
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_process(nullptr, 0, nullptr, 0,
+                                         nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(result, InvokeResult::Discard);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, InvokeProcess_InputOnlyNoOutput)
+{
+    write_script(R"(
+        function on_process(in_slot, out_slot, fz, msgs, api)
+            assert(in_slot ~= nil, "expected input data")
+            assert(out_slot == nil, "expected nil output")
+            return false
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_process"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+
+    auto ctx = producer_context();
+    engine.build_api(ctx);
+
+    float in_data = 10.0f;
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_process(&in_data, sizeof(in_data),
+                                         nullptr, 0,
+                                         nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(result, InvokeResult::Discard);
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 6. Messages
+// ============================================================================
+
+TEST_F(LuaEngineTest, InvokeProduce_ReceivesMessages)
+{
+    write_script(R"(
+        received_events = {}
+        function on_produce(out_slot, fz, msgs, api)
+            for _, m in ipairs(msgs) do
+                if m.event then
+                    table.insert(received_events, m.event)
+                end
+            end
+            return false
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    std::vector<IncomingMessage> msgs;
+    IncomingMessage m1;
+    m1.event = "consumer_joined";
+    m1.details["identity"] = "abc123";
+    msgs.push_back(std::move(m1));
+
+    IncomingMessage m2;
+    m2.event = "channel_closing";
+    msgs.push_back(std::move(m2));
+
+    float buf = 0.0f;
+    auto result = engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(result, InvokeResult::Discard);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 7. API closures
+// ============================================================================
+
+TEST_F(LuaEngineTest, ApiVersionInfo_ReturnsJson)
+{
+    write_script(R"(
+        version_json = nil
+        function on_produce(out_slot, fz, msgs, api)
+            version_json = api.version_info()
+            return false
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 8. Error handling
+// ============================================================================
+
+TEST_F(LuaEngineTest, MultipleErrors_CountAccumulates)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            error("oops")
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+
+    for (int i = 0; i < 5; ++i)
+    {
+        engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    }
+    EXPECT_EQ(engine.script_error_count(), 5u);
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 9. create_thread_state
+// ============================================================================
+
+TEST_F(LuaEngineTest, CreateThreadState_IndependentEngine)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            return true
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    EXPECT_TRUE(engine.supports_multi_state());
+
+    auto child = engine.create_thread_state();
+    ASSERT_NE(child, nullptr);
+    EXPECT_TRUE(child->has_callback("on_produce"));
+
+    // Child has independent error counter.
+    EXPECT_EQ(child->script_error_count(), 0u);
+
+    child->finalize();
+    engine.finalize();
+}
+
+// ============================================================================
+// 10. has_callback
+// ============================================================================
+
+TEST_F(LuaEngineTest, HasCallback_DetectsPresenceAbsence)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api) return true end
+        function on_init(api) end
+        -- on_stop intentionally absent
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
+
+    EXPECT_TRUE(engine.has_callback("on_produce"));
+    EXPECT_TRUE(engine.has_callback("on_init"));
+    EXPECT_FALSE(engine.has_callback("on_stop"));
+    EXPECT_FALSE(engine.has_callback("on_consume"));
+
+    engine.finalize();
+}
+
+} // anonymous namespace
