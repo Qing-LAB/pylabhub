@@ -20,6 +20,7 @@ add_executable(pylabhub-producer
     producer_api.cpp
     producer_script_host.cpp
     lua_producer_host.cpp
+    producer_role_host.cpp
 )
 add_executable(pylabhub::producer ALIAS pylabhub-producer)
 

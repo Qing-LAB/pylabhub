@@ -240,17 +240,28 @@ inline std::chrono::microseconds compute_short_timeout(
 /**
  * @brief Compute the next deadline based on timing policy.
  *
- * @param policy      Timing policy.
- * @param cycle_start Start time of the current cycle (from steady_clock).
- * @param period_us   Period in microseconds.
+ * Called at the END of each cycle (after callback returns) to set the
+ * deadline for the NEXT cycle.
+ *
+ * @param policy          Timing policy.
+ * @param prev_deadline   The deadline that was used for THIS cycle.
+ *                        For the first cycle, pass time_point::max().
+ * @param cycle_start     Start time of the current cycle.
+ * @param period_us       Period in microseconds.
  * @return Next deadline. For MaxRate: time_point::max() (no deadline).
  *
- * For FixedRate: deadline = now() + period (reset from current time).
- * For FixedRateWithCompensation: deadline = cycle_start + period
- * (advance from original start — maintains steady average rate).
+ * ## FixedRate
+ * If on time (cycle completed before deadline + period): advance deadline
+ * by one period.  If overrun (callback took longer than period): reset
+ * deadline to now + period (skip the missed beat, no catch-up).
+ *
+ * ## FixedRateWithCompensation
+ * Always advance from previous deadline by period (maintains steady average
+ * rate even if individual cycles overrun — risk of cascading overruns).
  */
 inline std::chrono::steady_clock::time_point compute_next_deadline(
     LoopTimingPolicy                          policy,
+    std::chrono::steady_clock::time_point     prev_deadline,
     std::chrono::steady_clock::time_point     cycle_start,
     double                                    period_us) noexcept
 {
@@ -259,12 +270,25 @@ inline std::chrono::steady_clock::time_point compute_next_deadline(
         return std::chrono::steady_clock::time_point::max();
     }
     const auto period = std::chrono::microseconds{static_cast<int64_t>(period_us)};
+
     if (policy == LoopTimingPolicy::FixedRateWithCompensation)
     {
-        return cycle_start + period;
+        // Advance from the previous deadline to maintain steady average rate.
+        // For the first cycle (prev_deadline == max), use cycle_start + period.
+        if (prev_deadline == std::chrono::steady_clock::time_point::max())
+            return cycle_start + period;
+        return prev_deadline + period;
     }
-    // FixedRate: reset from now.
-    return std::chrono::steady_clock::now() + period;
+
+    // FixedRate: if on time, advance from prev_deadline; if overrun, reset from now.
+    if (prev_deadline == std::chrono::steady_clock::time_point::max())
+        return cycle_start + period; // first cycle
+
+    const auto ideal = prev_deadline + period;
+    const auto now   = std::chrono::steady_clock::now();
+    if (now <= ideal)
+        return ideal;       // on time — advance cleanly
+    return now + period;    // overrun — reset from now (no catch-up)
 }
 
 // ============================================================================
