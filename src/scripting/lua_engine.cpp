@@ -334,20 +334,28 @@ bool LuaEngine::register_slot_type(const SchemaSpec &spec,
     //   "OutSlotFrame" → processor output writable
     //   "FlexFrame"    → flexzone (cached separately via fz_type param)
     //   "InboxFrame"   → inbox (not cached — low frequency)
+    // Helper: unref old ref before overwriting to prevent registry leak.
+    auto safe_cache = [&](int &ref, const char *name, bool readonly) {
+        if (ref != LUA_NOREF)
+            state_.unref(ref);
+        ref = state_.cache_ffi_typeof(name, readonly);
+    };
+
     const std::string tn{type_name};
     if (tn == "InSlotFrame")
     {
-        ref_in_slot_readonly_ = state_.cache_ffi_typeof(type_name, /*readonly=*/true);
+        safe_cache(ref_in_slot_readonly_, type_name, /*readonly=*/true);
     }
     else if (tn == "OutSlotFrame")
     {
-        ref_out_slot_writable_ = state_.cache_ffi_typeof(type_name, /*readonly=*/false);
+        safe_cache(ref_out_slot_writable_, type_name, /*readonly=*/false);
     }
     else if (tn == "SlotFrame")
     {
-        ref_slot_writable_ = state_.cache_ffi_typeof(type_name, /*readonly=*/false);
-        ref_slot_readonly_ = state_.cache_ffi_typeof(type_name, /*readonly=*/true);
-        // Also set in/out refs for unified context.
+        safe_cache(ref_slot_writable_, type_name, /*readonly=*/false);
+        safe_cache(ref_slot_readonly_, type_name, /*readonly=*/true);
+        // Also set in/out refs for unified context (if not already set by
+        // an explicit InSlotFrame/OutSlotFrame registration).
         if (ref_in_slot_readonly_ == LUA_NOREF)
             ref_in_slot_readonly_ = state_.cache_ffi_typeof(type_name, /*readonly=*/true);
         if (ref_out_slot_writable_ == LUA_NOREF)
@@ -695,6 +703,16 @@ void LuaEngine::clear_refs_()
     ref_on_inbox_ = LUA_NOREF;
     state_.unref(ref_api_);
     ref_api_ = LUA_NOREF;
+
+    // Release cached ffi.typeof refs (created during register_slot_type).
+    state_.unref(ref_slot_writable_);
+    ref_slot_writable_ = LUA_NOREF;
+    state_.unref(ref_slot_readonly_);
+    ref_slot_readonly_ = LUA_NOREF;
+    state_.unref(ref_in_slot_readonly_);
+    ref_in_slot_readonly_ = LUA_NOREF;
+    state_.unref(ref_out_slot_writable_);
+    ref_out_slot_writable_ = LUA_NOREF;
 }
 
 // ============================================================================
