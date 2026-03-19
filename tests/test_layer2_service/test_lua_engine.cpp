@@ -109,6 +109,25 @@ class LuaEngineTest : public ::testing::Test
         return true;
     }
 
+    /// Setup engine with a RoleHostCore wired into the context.
+    bool setup_engine_with_core(LuaEngine &engine, RoleHostCore &core,
+                                 const std::string &required_cb = "on_produce")
+    {
+        if (!engine.initialize("test"))
+            return false;
+        if (!engine.load_script(tmp_, "init.lua", required_cb.c_str()))
+            return false;
+
+        auto spec = simple_schema();
+        if (!engine.register_slot_type(spec, "SlotFrame", "aligned"))
+            return false;
+
+        auto ctx = producer_context();
+        ctx.core = &core;
+        engine.build_api(ctx);
+        return true;
+    }
+
     fs::path tmp_;
 };
 
@@ -832,6 +851,161 @@ TEST_F(LuaEngineTest, InvokeConsume_BareDataMessages)
     engine.invoke_consume(nullptr, 0, nullptr, 0, nullptr, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed — consumer message format incorrect";
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 15. api.stop() triggers shutdown
+// ============================================================================
+
+TEST_F(LuaEngineTest, ApiStop_SetsShutdownRequested)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            api.stop()
+            return false
+        end
+    )");
+
+    RoleHostCore core;
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine_with_core(engine, core));
+
+    EXPECT_FALSE(core.shutdown_requested.load());
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+
+    EXPECT_TRUE(core.shutdown_requested.load())
+        << "api.stop() should set shutdown_requested";
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 16. api.set_critical_error() triggers critical shutdown
+// ============================================================================
+
+TEST_F(LuaEngineTest, ApiSetCriticalError_SetsCriticalFlag)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            api.set_critical_error("test critical error")
+            return false
+        end
+    )");
+
+    RoleHostCore core;
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine_with_core(engine, core));
+
+    EXPECT_FALSE(core.critical_error_.load());
+    EXPECT_FALSE(core.shutdown_requested.load());
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+
+    EXPECT_TRUE(core.critical_error_.load())
+        << "api.set_critical_error() should set critical_error_";
+    EXPECT_TRUE(core.shutdown_requested.load())
+        << "api.set_critical_error() should also set shutdown_requested";
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 17. api.stop_reason() returns correct values
+// ============================================================================
+
+TEST_F(LuaEngineTest, ApiStopReason_DefaultIsNormal)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            local reason = api.stop_reason()
+            assert(reason == "normal",
+                   "expected 'normal', got '" .. tostring(reason) .. "'")
+            return false
+        end
+    )");
+
+    RoleHostCore core;
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine_with_core(engine, core));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u) << "stop_reason should be 'normal'";
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, ApiStopReason_ReflectsPeerDead)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            local reason = api.stop_reason()
+            assert(reason == "peer_dead",
+                   "expected 'peer_dead', got '" .. tostring(reason) .. "'")
+            return false
+        end
+    )");
+
+    RoleHostCore core;
+    core.stop_reason_.store(1, std::memory_order_relaxed); // PeerDead
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine_with_core(engine, core));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u) << "stop_reason should be 'peer_dead'";
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 18. Metrics closures read from RoleContext counters
+// ============================================================================
+
+TEST_F(LuaEngineTest, MetricsClosures_ReadFromRoleHostCounters)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            local ow = api.out_written()
+            local dr = api.drops()
+            assert(ow == 42, "expected out_written=42, got " .. tostring(ow))
+            assert(dr == 7,  "expected drops=7, got " .. tostring(dr))
+            return false
+        end
+    )");
+
+    RoleHostCore core;
+    std::atomic<uint64_t> out_written{42};
+    std::atomic<uint64_t> drops{7};
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+
+    auto ctx = producer_context();
+    ctx.core        = &core;
+    ctx.out_written = &out_written;
+    ctx.drops       = &drops;
+    engine.build_api(ctx);
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "Script assertion failed — metrics values incorrect";
 
     engine.finalize();
 }

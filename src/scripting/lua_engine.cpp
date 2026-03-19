@@ -160,59 +160,45 @@ void LuaEngine::build_api(const RoleContext &ctx)
 
     // ── Role-specific closures based on non-null context pointers ─────────
 
-    // Producer-specific (ctx.producer != nullptr).
+    // ── Identity closures (always present) ──────────────────────────────
+    push_closure("uid", lua_api_uid);
+    push_closure("name", lua_api_name);
+    push_closure("channel", lua_api_channel);
+
+    // ── Producer-specific (ctx.producer != nullptr) ──────────────────────
     if (ctx_.producer != nullptr)
     {
-        push_closure("uid", lua_api_uid);
-        push_closure("name", lua_api_name);
-        push_closure("channel", lua_api_channel);
         push_closure("broadcast", lua_api_broadcast);
         push_closure("send", lua_api_send);
         push_closure("consumers", lua_api_consumers);
-        push_closure("update_flexzone_checksum", lua_api_update_flexzone_checksum);
-        push_closure("out_written", lua_api_out_written);
-        push_closure("drops", lua_api_drops);
     }
 
-    // Consumer-specific (ctx.consumer != nullptr).
-    if (ctx_.consumer != nullptr)
+    // ── QueueWriter closures (producer / processor output) ───────────────
+    if (ctx_.queue_writer != nullptr)
     {
-        // uid/name/channel might already be set by producer section for processor.
-        // For pure consumer, producer is null, so we set them here.
-        if (ctx_.producer == nullptr)
-        {
-            push_closure("uid", lua_api_uid);
-            push_closure("name", lua_api_name);
-            push_closure("channel", lua_api_channel);
-        }
+        push_closure("update_flexzone_checksum", lua_api_update_flexzone_checksum);
     }
 
-    // Processor-specific: in_channel / out_channel.
+    // ── QueueReader closures (consumer / processor input) ────────────────
+    if (ctx_.queue_reader != nullptr)
+    {
+        push_closure("set_verify_checksum", lua_api_set_verify_checksum);
+    }
+
+    // ── Processor-specific ───────────────────────────────────────────────
     if (ctx_.out_channel != nullptr)
     {
         push_closure("in_channel", lua_api_in_channel);
         push_closure("out_channel", lua_api_out_channel);
-        // For processor, uid/name use the same closure but read from ctx_.
-        if (ctx_.producer == nullptr && ctx_.consumer == nullptr)
-        {
-            push_closure("uid", lua_api_uid);
-            push_closure("name", lua_api_name);
-        }
     }
 
-    // QueueReader-based closures (consumer / processor input).
-    if (ctx_.queue_reader != nullptr)
-    {
-        push_closure("set_verify_checksum", lua_api_set_verify_checksum);
+    // ── Metrics closures (pushed based on counter pointer availability) ──
+    if (ctx_.out_written != nullptr)
+        push_closure("out_written", lua_api_out_written);
+    if (ctx_.in_received != nullptr)
         push_closure("in_received", lua_api_in_received);
-    }
-
-    // QueueWriter-based closures (producer / processor output).
-    if (ctx_.queue_writer != nullptr && ctx_.producer == nullptr)
-    {
-        // Producer already added update_flexzone_checksum above via producer path.
-        push_closure("update_flexzone_checksum", lua_api_update_flexzone_checksum);
-    }
+    if (ctx_.drops != nullptr)
+        push_closure("drops", lua_api_drops);
 
     // Store api table in the registry.
     ref_api_ = luaL_ref(L, LUA_REGISTRYINDEX);
@@ -677,12 +663,11 @@ InvokeResult LuaEngine::on_pcall_error_(const char *callback_name)
 {
     script_errors_.fetch_add(1, std::memory_order_relaxed);
     // Error message is already logged by state_.pcall().
-    if (stop_on_script_error_ && ctx_.messenger != nullptr)
+    if (stop_on_script_error_ && ctx_.core != nullptr)
     {
-        // Request shutdown — the RoleHost checks this.
-        // We signal via the log; the host framework handles the actual shutdown.
         LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} error",
                      log_tag_, callback_name);
+        ctx_.core->shutdown_requested.store(true, std::memory_order_release);
     }
     return InvokeResult::Error;
 }
@@ -931,6 +916,13 @@ void LuaEngine::register_inbox_metatable_()
             auto it = ud->engine->inbox_cache_.find(ud->target_uid);
             if (it != ud->engine->inbox_cache_.end() && it->second.client)
                 it->second.client->stop();
+            return 0;
+        });
+
+        // __gc: call destructor on LuaInboxUD to release std::string.
+        set_method("__gc", [](lua_State *Ls) -> int {
+            auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
+            ud->~LuaInboxUD();
             return 0;
         });
     }
@@ -1347,28 +1339,31 @@ int LuaEngine::lua_api_set_verify_checksum(lua_State *L)
 
 int LuaEngine::lua_api_out_written(lua_State *L)
 {
-    // out_written is tracked by the RoleHost, not the engine.
-    // Return 0 as a placeholder; the RoleHost may override the API table entry.
-    (void)lua_touserdata(L, lua_upvalueindex(1));
-    lua_pushinteger(L, 0);
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    uint64_t val = self->ctx_.out_written
+                       ? self->ctx_.out_written->load(std::memory_order_relaxed)
+                       : 0;
+    lua_pushinteger(L, static_cast<lua_Integer>(val));
     return 1;
 }
 
 int LuaEngine::lua_api_in_received(lua_State *L)
 {
-    // in_received is tracked by the RoleHost, not the engine.
-    // Return 0 as a placeholder; the RoleHost may override the API table entry.
-    (void)lua_touserdata(L, lua_upvalueindex(1));
-    lua_pushinteger(L, 0);
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    uint64_t val = self->ctx_.in_received
+                       ? self->ctx_.in_received->load(std::memory_order_relaxed)
+                       : 0;
+    lua_pushinteger(L, static_cast<lua_Integer>(val));
     return 1;
 }
 
 int LuaEngine::lua_api_drops(lua_State *L)
 {
-    // drops is tracked by the RoleHost, not the engine.
-    // Return 0 as a placeholder; the RoleHost may override the API table entry.
-    (void)lua_touserdata(L, lua_upvalueindex(1));
-    lua_pushinteger(L, 0);
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    uint64_t val = self->ctx_.drops
+                       ? self->ctx_.drops->load(std::memory_order_relaxed)
+                       : 0;
+    lua_pushinteger(L, static_cast<lua_Integer>(val));
     return 1;
 }
 
