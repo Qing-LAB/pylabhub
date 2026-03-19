@@ -16,6 +16,7 @@
 #include "plh_datahub.hpp"
 #include "plh_datahub_client.hpp"
 
+#include "role_host_helpers.hpp"
 #include "zmq_poll_loop.hpp"
 #include "utils/script_host_helpers.hpp" // resolve_schema, schema_spec_to_zmq_fields, compute_schema_hash
 
@@ -714,35 +715,8 @@ bool ProcessorRoleHost::setup_infrastructure_()
                 config_.in_channel, config_.out_channel);
 
     // ── Startup coordination (HEP-0023) ─────────────────────────────────────
-    for (const auto &wr : config_.wait_for_roles)
-    {
-        LOGGER_INFO("[proc] Startup: waiting for role '{}' (timeout {}ms)...",
-                    wr.uid, wr.timeout_ms);
-        const auto deadline = Clock::now() + std::chrono::milliseconds{wr.timeout_ms};
-        static constexpr int kPollMs = 200;
-        bool found = false;
-        while (Clock::now() < deadline)
-        {
-            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-                deadline - Clock::now()).count();
-            if (remaining <= 0)
-                break;
-            const int poll_ms = static_cast<int>(
-                std::min<long long>(kPollMs, remaining));
-            if (out_messenger_.query_role_presence(wr.uid, poll_ms))
-            {
-                found = true;
-                break;
-            }
-        }
-        if (!found)
-        {
-            LOGGER_ERROR("[proc] Startup wait failed: role '{}' not present after {}ms",
-                         wr.uid, wr.timeout_ms);
-            return false;
-        }
-        LOGGER_INFO("[proc] Startup: role '{}' found", wr.uid);
-    }
+    if (!scripting::wait_for_roles(out_messenger_, config_.wait_for_roles, "[proc]"))
+        return false;
 
     return true;
 }
@@ -1014,24 +988,7 @@ void ProcessorRoleHost::run_ctrl_thread_()
 
 void ProcessorRoleHost::drain_inbox_sync_()
 {
-    if (!inbox_queue_)
-        return;
-
-    while (true)
-    {
-        const auto *item =
-            inbox_queue_->recv_one(std::chrono::milliseconds{0}); // non-blocking
-        if (item == nullptr)
-            break;
-
-        engine_->invoke_on_inbox(item->data, inbox_queue_->item_size(),
-                                 inbox_type_name_.empty() ? nullptr
-                                                          : inbox_type_name_.c_str(),
-                                 item->sender_id.c_str());
-
-        // Always ack success — don't drop inbox messages on script errors.
-        inbox_queue_->send_ack(0);
-    }
+    scripting::drain_inbox_sync(inbox_queue_.get(), engine_.get(), inbox_type_name_);
 }
 
 // ============================================================================
