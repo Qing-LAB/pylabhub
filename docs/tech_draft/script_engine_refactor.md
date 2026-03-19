@@ -208,60 +208,173 @@ public:
 
 ## 5. Engine Implementations
 
+### 5.0 Engine Lifecycle: Init Stage vs Hot Path
+
+Both engines follow the same two-phase pattern:
+
+**Init stage** (called once, on the working thread, before the data loop):
+- Create interpreter/state
+- Apply sandbox
+- Load script, extract callbacks
+- **Pre-build all type objects** for the hot path (zero per-cycle cost)
+- Build API object/table
+
+**Hot path** (called every cycle, on the working thread, inside the data loop):
+- Push pre-built type refs (one registry lookup, no string ops)
+- Cast raw memory pointer to typed view
+- Call script callback via pcall
+- Interpret return value
+
+The key design principle: **all type resolution, string operations, and
+object construction happen at init time.** The hot path does only:
+registry lookups, pointer casts, and function calls.
+
 ### 5.1 LuaEngine
+
+#### Init stage (register_slot_type)
+
+When the role host calls `engine->register_slot_type(spec, "SlotFrame", packing)`:
+
+1. Build FFI cdef string from SchemaSpec → `ffi.cdef("typedef struct { ... } SlotFrame;")`
+2. Cache writable ctype: `ffi.typeof("SlotFrame*")` → stored as Lua registry ref
+3. Cache readonly ctype: `ffi.typeof("SlotFrame const*")` → stored as registry ref
+
+For the processor (dual schemas):
+- `register_slot_type(in_spec, "InSlotFrame", ...)` → caches `ref_in_slot_readonly_`
+- `register_slot_type(out_spec, "OutSlotFrame", ...)` → caches `ref_out_slot_writable_`
+
+After registration, the engine holds 4 cached ctype refs:
+```
+ref_slot_writable_     = ffi.typeof("SlotFrame*")         # producer write
+ref_slot_readonly_     = ffi.typeof("SlotFrame const*")    # consumer read
+ref_in_slot_readonly_  = ffi.typeof("InSlotFrame const*")  # processor input
+ref_out_slot_writable_ = ffi.typeof("OutSlotFrame*")       # processor output
+```
+
+#### Hot path (invoke_produce)
+
+```
+push cached ffi.cast function (registry ref, one lookup)
+push cached ctype ref         (registry ref, one lookup)
+push raw pointer              (lightuserdata)
+lua_pcall(ffi.cast, ctype, ptr)  → cdata on stack (zero-copy view)
+push flexzone view             (same pattern)
+push messages table
+push api table
+lua_pcall(on_produce, slot, fz, msgs, api)
+interpret return → InvokeResult
+```
+
+No `std::string` allocation, no string concatenation, no string hashing.
+The `ffi.cast(ctype, ptr)` with a pre-resolved ctype object is the fastest
+path LuaJIT supports for pointer-to-struct casting.
+
+#### Stored state
 
 ```cpp
 class LuaEngine : public ScriptEngine
 {
-    LuaState state_;           // RAII, created in initialize()
-    int ref_on_produce_{LUA_NOREF};
-    int ref_on_consume_{LUA_NOREF};
-    int ref_on_process_{LUA_NOREF};
-    int ref_on_init_{LUA_NOREF};
-    int ref_on_stop_{LUA_NOREF};
-    int ref_on_inbox_{LUA_NOREF};
-    int ref_api_{LUA_NOREF};
-    // ...
+    LuaState state_;
+    // Callback registry refs (from load_script)
+    int ref_on_init_, ref_on_stop_, ref_on_produce_, ref_on_consume_,
+        ref_on_process_, ref_on_inbox_, ref_api_;
+    // Cached ctype refs (from register_slot_type, init-time only)
+    int ref_slot_writable_, ref_slot_readonly_;
+    int ref_in_slot_readonly_, ref_out_slot_writable_;
+    // Error counter (atomic — read by ctrl_thread_ for metrics)
+    std::atomic<uint64_t> script_errors_;
+    // Role context (from build_api)
+    RoleContext ctx_;
 };
 ```
 
-- `initialize()`: `LuaState::create()`, sandbox, package.path
-- `load_script()`: `state_.load_script()`, extract callback refs from globals
-- `build_api()`: build Lua table with closures capturing RoleContext pointers
-- `invoke_produce()`: push args → `lua_pcall` → interpret return → pop
-- `finalize()`: unref all, `state_ = LuaState{}`
-- No GIL, no locking. All calls on the working thread.
-
 ### 5.2 PythonEngine
+
+#### Init stage (register_slot_type equivalent)
+
+When the role host calls `engine->register_slot_type(spec, "SlotFrame", packing)`:
+
+1. Build `ctypes.Structure` subclass from SchemaSpec:
+   - Define `_fields_` list from field types/names
+   - If packing == "packed": set `_pack_ = 1`
+2. Cache the type object: `slot_type_ = py::object(SlotFrameType)`
+3. For numpy exposure: build `numpy.dtype` from SchemaSpec, cache it
+
+For the processor: two separate type objects cached (`in_slot_type_`, `out_slot_type_`).
+
+After registration, the engine holds cached Python type objects:
+```python
+slot_type_      = ctypes.Structure subclass   # producer write
+in_slot_type_   = ctypes.Structure subclass   # processor input (read-only via memoryview)
+out_slot_type_  = ctypes.Structure subclass   # processor output
+fz_type_        = ctypes.Structure subclass   # flexzone
+```
+
+#### Hot path (invoke_produce)
+
+```
+py::gil_scoped_acquire
+memoryview = py::memoryview::from_memory(ptr, size)
+slot_view  = slot_type_.attr("from_buffer")(memoryview)    # wraps pointer, no copy
+fz_view    = fz_type_.attr("from_buffer")(fz_memoryview)
+msgs_list  = build_messages_list(msgs)
+result     = py_on_produce_(slot_view, fz_view, msgs_list, api_obj_)
+py::gil_scoped_release
+interpret return → InvokeResult
+```
+
+The `from_buffer()` call wraps the raw pointer in the pre-built ctypes
+Structure — no type resolution per cycle, just a memoryview wrap.
+
+#### GIL management
+
+- `initialize()`: creates interpreter, holds GIL
+- `load_script()` / `build_api()`: run with GIL held (init stage)
+- After init: GIL released for the data loop
+- `invoke_*()`: each call does `gil_scoped_acquire` → work → `gil_scoped_release`
+- `finalize()`: re-acquires GIL, clears all py::objects, destroys interpreter
+
+**Critical**: `py::scoped_interpreter` is a member, not a stack local. Its lifetime
+is controlled explicitly by `initialize()`/`finalize()`. This eliminates the need for
+a dedicated interpreter thread.
+
+#### Stored state
 
 ```cpp
 class PythonEngine : public ScriptEngine
 {
     std::optional<py::scoped_interpreter> interp_;
     py::object module_;
-    py::object py_on_produce_;
-    py::object py_on_init_;
-    py::object py_on_stop_;
+    // Callback objects (from load_script)
+    py::object py_on_init_, py_on_stop_, py_on_produce_,
+               py_on_consume_, py_on_process_, py_on_inbox_;
+    // Cached type objects (from register_slot_type, init-time only)
+    py::object slot_type_, in_slot_type_, out_slot_type_, fz_type_;
+    // API object (from build_api)
     py::object api_obj_;
-    // ...
+    // Error counter
+    std::atomic<uint64_t> script_errors_;
+    // Role context
+    RoleContext ctx_;
 };
 ```
 
-- `initialize()`: `interp_.emplace(&pyconfig)`, configure PYTHONHOME, optional venv
-- `load_script()`: `py::module_::import()`, extract callbacks
-- `build_api()`: `py::cast(&api)` where api wraps RoleContext
-- `invoke_produce()`: `py::gil_scoped_acquire` → build slot view → pcall → release
-- `finalize()`: clear all py::objects, `interp_.reset()` → Py_Finalize
-- GIL acquire/release around each invoke call.
+### 5.3 Comparison: Init Stage vs Hot Path
 
-**Critical**: `py::scoped_interpreter` is a member, not a stack local. Its lifetime
-is controlled explicitly by `initialize()`/`finalize()`. This eliminates the need for
-a dedicated interpreter thread and the 50ms sleep loop.
+| Operation | Lua (init) | Python (init) |
+|-----------|-----------|--------------|
+| Create interpreter | `luaL_newstate()` | `py::scoped_interpreter` |
+| Register type | `ffi.cdef` + `ffi.typeof` → cache ref | `ctypes.Structure` subclass → cache object |
+| Load script | `luaL_loadfile` + `lua_pcall` | `py::module_::import` |
+| Extract callbacks | `lua_getglobal` → registry ref | `module_.attr("on_produce")` → py::object |
+| Build API | Lua table with cclosures | `py::cast(&api)` |
 
-**GIL note**: The working thread creates the interpreter (holds the GIL initially).
-After `build_api()`, it releases the GIL for the data loop. Each `invoke_*()` call
-re-acquires the GIL, calls Python, and releases. This is the same pattern as the
-current `loop_thread_` — just without the extra thread.
+| Operation | Lua (hot path) | Python (hot path) |
+|-----------|---------------|-------------------|
+| Create slot view | `ffi.cast(cached_ctype, ptr)` — 2 registry lookups | `from_buffer(memoryview)` — 1 method call |
+| Call script | `lua_pcall` — direct | `py::call` — GIL acquire/release |
+| String ops | **None** | **None** (type pre-built) |
+| Memory alloc | **None** (zero-copy FFI) | **None** (memoryview wraps pointer) |
 
 ## 6. Unified Role Host
 
