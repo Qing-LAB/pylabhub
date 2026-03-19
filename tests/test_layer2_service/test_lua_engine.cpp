@@ -299,12 +299,12 @@ TEST_F(LuaEngineTest, InvokeProduce_ScriptError)
 
 TEST_F(LuaEngineTest, InvokeConsume_ReceivesReadOnlySlot)
 {
+    // Script asserts the value — if wrong type or nil, assert fails → pcall error.
     write_script(R"(
-        received_value = nil
         function on_consume(in_slot, fz, msgs, api)
-            if in_slot then
-                received_value = in_slot.value
-            end
+            assert(in_slot ~= nil, "expected non-nil slot")
+            assert(math.abs(in_slot.value - 99.5) < 0.01,
+                   "expected value ~99.5, got " .. tostring(in_slot.value))
         end
     )");
 
@@ -322,7 +322,7 @@ TEST_F(LuaEngineTest, InvokeConsume_ReceivesReadOnlySlot)
     std::vector<IncomingMessage> msgs;
 
     engine.invoke_consume(&data, sizeof(data), nullptr, 0, nullptr, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
+    EXPECT_EQ(engine.script_error_count(), 0u) << "Script assertion failed — slot value incorrect";
 
     engine.finalize();
 }
@@ -486,14 +486,23 @@ TEST_F(LuaEngineTest, InvokeProcess_InputOnlyNoOutput)
 
 TEST_F(LuaEngineTest, InvokeProduce_ReceivesMessages)
 {
+    // Script counts event messages and asserts the expected count.
+    // If messages are not received, the assertion fails → pcall error.
     write_script(R"(
-        received_events = {}
         function on_produce(out_slot, fz, msgs, api)
+            local event_count = 0
             for _, m in ipairs(msgs) do
                 if m.event then
-                    table.insert(received_events, m.event)
+                    event_count = event_count + 1
                 end
             end
+            assert(event_count == 2,
+                   "expected 2 events, got " .. tostring(event_count))
+            -- Verify specific event names.
+            assert(msgs[1].event == "consumer_joined",
+                   "expected consumer_joined, got " .. tostring(msgs[1].event))
+            assert(msgs[2].event == "channel_closing",
+                   "expected channel_closing, got " .. tostring(msgs[2].event))
             return false
         end
     )");
@@ -514,7 +523,8 @@ TEST_F(LuaEngineTest, InvokeProduce_ReceivesMessages)
     float buf = 0.0f;
     auto result = engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
     EXPECT_EQ(result, InvokeResult::Discard);
-    EXPECT_EQ(engine.script_error_count(), 0u);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "Script assertion failed — messages not received correctly";
 
     engine.finalize();
 }
@@ -523,12 +533,15 @@ TEST_F(LuaEngineTest, InvokeProduce_ReceivesMessages)
 // 7. API closures
 // ============================================================================
 
-TEST_F(LuaEngineTest, ApiVersionInfo_ReturnsJson)
+TEST_F(LuaEngineTest, ApiVersionInfo_ReturnsNonEmptyString)
 {
+    // Script asserts that version_info returns a non-empty string containing '{'.
     write_script(R"(
-        version_json = nil
         function on_produce(out_slot, fz, msgs, api)
-            version_json = api.version_info()
+            local info = api.version_info()
+            assert(type(info) == "string", "version_info should return string")
+            assert(#info > 10, "version_info too short: " .. info)
+            assert(info:find("{") ~= nil, "version_info should be JSON: " .. info)
             return false
         end
     )");
@@ -538,8 +551,10 @@ TEST_F(LuaEngineTest, ApiVersionInfo_ReturnsJson)
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
+    auto result = engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(result, InvokeResult::Discard);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "Script assertion failed — version_info returned unexpected value";
 
     engine.finalize();
 }
@@ -619,6 +634,204 @@ TEST_F(LuaEngineTest, HasCallback_DetectsPresenceAbsence)
     EXPECT_TRUE(engine.has_callback("on_init"));
     EXPECT_FALSE(engine.has_callback("on_stop"));
     EXPECT_FALSE(engine.has_callback("on_consume"));
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 11. Flexzone
+// ============================================================================
+
+TEST_F(LuaEngineTest, InvokeProduce_WithFlexzone)
+{
+    // Script writes to both slot and flexzone.
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            assert(out_slot ~= nil, "expected slot")
+            assert(fz ~= nil, "expected flexzone")
+            out_slot.value = 10.0
+            fz.value = 20.0
+            return true
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "FlexFrame", "aligned"));
+
+    auto ctx = producer_context();
+    engine.build_api(ctx);
+
+    float slot_buf = 0.0f;
+    float fz_buf   = 0.0f;
+    std::vector<IncomingMessage> msgs;
+
+    auto result = engine.invoke_produce(&slot_buf, sizeof(slot_buf),
+                                         &fz_buf, sizeof(fz_buf), "FlexFrame", msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+    EXPECT_FLOAT_EQ(slot_buf, 10.0f);
+    EXPECT_FLOAT_EQ(fz_buf, 20.0f);
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 12. invoke_on_inbox
+// ============================================================================
+
+TEST_F(LuaEngineTest, InvokeOnInbox_TypedData)
+{
+    // Script asserts the inbox data value and sender string.
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api) return false end
+        function on_inbox(slot, sender, api)
+            assert(slot ~= nil, "expected inbox data")
+            assert(math.abs(slot.value - 77.0) < 0.01,
+                   "expected ~77.0, got " .. tostring(slot.value))
+            assert(sender == "PROD-SENDER-00000001",
+                   "expected sender UID, got " .. tostring(sender))
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
+
+    auto ctx = producer_context();
+    engine.build_api(ctx);
+
+    float inbox_data = 77.0f;
+    engine.invoke_on_inbox(&inbox_data, sizeof(inbox_data),
+                            "InboxFrame", "PROD-SENDER-00000001");
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "Script assertion failed — inbox data or sender incorrect";
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, InvokeOnInbox_RawBytes)
+{
+    // Script receives raw bytes (no type name).
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api) return false end
+        function on_inbox(data, sender, api)
+            assert(type(data) == "string", "expected raw bytes as string")
+            assert(#data == 4, "expected 4 bytes, got " .. #data)
+            assert(sender == "CONS-SENDER-00000001")
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+
+    auto ctx = producer_context();
+    engine.build_api(ctx);
+
+    float raw = 1.0f;
+    engine.invoke_on_inbox(&raw, sizeof(raw), nullptr, "CONS-SENDER-00000001");
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "Script assertion failed — raw inbox data incorrect";
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 13. State persistence across calls
+// ============================================================================
+
+TEST_F(LuaEngineTest, StatePersistsAcrossCalls)
+{
+    // Script maintains a counter across multiple invoke calls.
+    write_script(R"(
+        call_count = 0
+        function on_produce(out_slot, fz, msgs, api)
+            call_count = call_count + 1
+            if out_slot then
+                out_slot.value = call_count
+            end
+            return true
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    std::vector<IncomingMessage> msgs;
+
+    // Call 3 times — counter should increment.
+    float buf1 = 0.0f;
+    engine.invoke_produce(&buf1, sizeof(buf1), nullptr, 0, nullptr, msgs);
+    EXPECT_FLOAT_EQ(buf1, 1.0f);
+
+    float buf2 = 0.0f;
+    engine.invoke_produce(&buf2, sizeof(buf2), nullptr, 0, nullptr, msgs);
+    EXPECT_FLOAT_EQ(buf2, 2.0f);
+
+    float buf3 = 0.0f;
+    engine.invoke_produce(&buf3, sizeof(buf3), nullptr, 0, nullptr, msgs);
+    EXPECT_FLOAT_EQ(buf3, 3.0f);
+
+    EXPECT_EQ(engine.script_error_count(), 0u);
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 14. Consumer bare messages format
+// ============================================================================
+
+TEST_F(LuaEngineTest, InvokeConsume_BareDataMessages)
+{
+    // Consumer data messages are bare byte strings (not {sender, data} tables).
+    // Event messages are still tables.
+    write_script(R"(
+        function on_consume(in_slot, fz, msgs, api)
+            assert(#msgs == 2, "expected 2 messages, got " .. #msgs)
+            -- First msg: data message → bare bytes string
+            assert(type(msgs[1]) == "string", "data msg should be string, got " .. type(msgs[1]))
+            -- Second msg: event message → table with .event
+            assert(type(msgs[2]) == "table", "event msg should be table")
+            assert(msgs[2].event == "channel_closing")
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_consume"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+
+    auto ctx = producer_context();
+    engine.build_api(ctx);
+
+    std::vector<IncomingMessage> msgs;
+    // Data message (has sender + data, no event).
+    IncomingMessage dm;
+    dm.sender = "sender-id";
+    dm.data   = {std::byte{0x41}, std::byte{0x42}};
+    msgs.push_back(std::move(dm));
+
+    // Event message.
+    IncomingMessage em;
+    em.event = "channel_closing";
+    msgs.push_back(std::move(em));
+
+    engine.invoke_consume(nullptr, 0, nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "Script assertion failed — consumer message format incorrect";
 
     engine.finalize();
 }
