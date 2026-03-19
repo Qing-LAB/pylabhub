@@ -245,6 +245,56 @@ class ScriptEngine
      * @return New engine instance, or nullptr if !supports_multi_state().
      */
     virtual std::unique_ptr<ScriptEngine> create_thread_state() = 0;
+
+    // ── Script reload (future) ────────────────────────────────────────────
+
+    /**
+     * @brief Reload the script from disk without destroying engine state.
+     *
+     * Re-executes the script file and re-extracts callback function references.
+     * The C++ infrastructure (queues, messenger, API table, FFI/ctypes types)
+     * is NOT rebuilt — only the script's function bodies are updated.
+     *
+     * ## Semantics
+     *
+     * - Called on the working thread, between data loop cycles.
+     * - The engine re-loads the same file path used in load_script().
+     * - Old callback refs are released; new ones extracted from the re-executed script.
+     * - Cached FFI/ctypes type objects remain valid (schema is immutable).
+     * - The API table/object remains valid (C++ pointers unchanged).
+     * - Script-side global state: preserved or reset depending on what the
+     *   new script file does. This is the script author's responsibility.
+     *
+     * ## Error handling
+     *
+     * If the new script has syntax errors or is missing the required callback:
+     * - Returns false.
+     * - The old callbacks remain active (the engine continues with the
+     *   previous version of the script).
+     * - The error is logged.
+     *
+     * ## Trigger mechanism (not yet defined)
+     *
+     * How reload is triggered is a protocol-level decision:
+     * - `api.reload_script()` called from within the script itself
+     * - External control message via inbox or broker command
+     * - File-system watcher detecting script modification
+     * - Interactive signal (e.g., SIGUSR1)
+     *
+     * The trigger mechanism and the protocol for coordinating reload across
+     * a pipeline (e.g., reload producer script without disrupting consumers)
+     * are deferred to a future HEP.
+     *
+     * ## Implementation notes
+     *
+     * - Lua: `loadfile(path) + pcall()` on the existing lua_State.
+     *   Overwrites global functions. No state destruction.
+     * - Python: `importlib.reload(module)`. Re-executes the module.
+     *   Existing py::objects for callbacks are replaced.
+     *
+     * @return true if reload succeeded, false on error (old script remains active).
+     */
+    virtual bool reload_script() { return false; } // default: not implemented
 };
 
 } // namespace pylabhub::scripting
