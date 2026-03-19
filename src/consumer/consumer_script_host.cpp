@@ -170,7 +170,7 @@ bool ConsumerScriptHost::start_role()
     if (config_.target_period_ms > 0)
     {
         opts.loop_policy = hub::LoopPolicy::FixedRate;
-        opts.period_ms   = std::chrono::milliseconds{config_.target_period_ms};
+        opts.period_ms   = std::chrono::milliseconds{static_cast<int>(config_.target_period_ms)};
     }
     // Transport declaration (Phase 7): explicit queue_type avoids TRANSPORT_MISMATCH false-positive.
     opts.queue_type = (config_.queue_type == QueueType::Zmq) ? "zmq" : "shm";
@@ -614,7 +614,7 @@ void ConsumerScriptHost::run_loop_()
     const size_t item_sz = queue_reader_->item_size();
 
     const bool is_fixed_rate = (config_.loop_timing != LoopTimingPolicy::MaxRate);
-    const auto period        = std::chrono::milliseconds{config_.target_period_ms};
+    const auto period        = std::chrono::milliseconds{static_cast<int>(config_.target_period_ms)};
 
     // Deadline tracking (applies when loop_timing != MaxRate).
     auto next_deadline = std::chrono::steady_clock::now() + period;
