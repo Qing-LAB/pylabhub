@@ -963,16 +963,11 @@ int LuaEngine::lua_api_log(lua_State *L)
 int LuaEngine::lua_api_stop(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    // Signal shutdown through the RoleHostCore referenced from the context.
-    // The RoleHost checks this flag in its data loop.
-    // Since LuaEngine doesn't own RoleHostCore directly, we use a convention:
-    // set a critical error through the messenger if available, but the primary
-    // mechanism is for the host to poll script_error_count or a separate flag.
-    // For now, we log and rely on the host framework to handle api.stop().
-    (void)self;
-    // The engine cannot directly access the shutdown flag.
-    // The RoleHost framework wraps this into its loop condition.
-    LOGGER_INFO("[{}-lua] api.stop() called", self->log_tag_);
+    LOGGER_INFO("[{}-lua] api.stop() called — requesting shutdown", self->log_tag_);
+    if (self->ctx_.core != nullptr)
+    {
+        self->ctx_.core->shutdown_requested.store(true, std::memory_order_release);
+    }
     return 0;
 }
 
@@ -981,14 +976,27 @@ int LuaEngine::lua_api_set_critical_error(lua_State *L)
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     const char *msg = lua_tostring(L, 1);
     LOGGER_ERROR("[{}-lua] CRITICAL: {}", self->log_tag_, msg ? msg : "(no message)");
+    if (self->ctx_.core != nullptr)
+    {
+        self->ctx_.core->set_critical_error();
+    }
     return 0;
 }
 
 int LuaEngine::lua_api_stop_reason(lua_State *L)
 {
-    (void)lua_touserdata(L, lua_upvalueindex(1)); // self (unused currently)
-    // The engine doesn't own stop_reason — return "normal" as default.
-    // The RoleHost can override this by storing the reason in the API table.
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    if (self->ctx_.core != nullptr)
+    {
+        const int reason = self->ctx_.core->stop_reason_.load(std::memory_order_relaxed);
+        switch (reason)
+        {
+        case 1: lua_pushstring(L, "peer_dead"); return 1;
+        case 2: lua_pushstring(L, "hub_dead"); return 1;
+        case 3: lua_pushstring(L, "critical_error"); return 1;
+        default: break;
+        }
+    }
     lua_pushstring(L, "normal");
     return 1;
 }
