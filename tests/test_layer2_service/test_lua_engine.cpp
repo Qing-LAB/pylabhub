@@ -1146,4 +1146,46 @@ TEST_F(LuaEngineTest, RegisterSlotType_BadFieldType_ReturnsFalse)
     engine.finalize();
 }
 
+TEST_F(LuaEngineTest, LoadScript_SyntaxError_ReturnsFalse)
+{
+    write_script("function on_produce(out_slot, fz, msgs, api)  -- unterminated");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test"));
+    EXPECT_FALSE(engine.load_script(tmp_, "init.lua", "on_produce"));
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, MetricsClosures_InReceivedWorks)
+{
+    write_script(R"(
+        function on_consume(in_slot, fz, msgs, api)
+            local ir = api.in_received()
+            assert(ir == 15, "expected in_received=15, got " .. tostring(ir))
+        end
+    )");
+
+    RoleHostCore core;
+    std::atomic<uint64_t> in_received{15};
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_consume"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+
+    auto ctx = producer_context();
+    ctx.core        = &core;
+    ctx.in_received = &in_received;
+    engine.build_api(ctx);
+
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_consume(nullptr, 0, nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "Script assertion failed — in_received value incorrect";
+
+    engine.finalize();
+}
+
 } // anonymous namespace
