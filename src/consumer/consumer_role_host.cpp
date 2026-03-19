@@ -261,7 +261,7 @@ bool ConsumerRoleHost::setup_infrastructure_()
     if (config_.target_period_ms > 0)
     {
         opts.loop_policy = hub::LoopPolicy::FixedRate;
-        opts.period_ms   = std::chrono::milliseconds{config_.target_period_ms};
+        opts.period_ms   = std::chrono::milliseconds{static_cast<int>(config_.target_period_ms)};
     }
 
     // Transport declaration (Phase 7).
@@ -544,7 +544,7 @@ void ConsumerRoleHost::run_data_loop_()
     const double period_us =
         static_cast<double>(config_.target_period_ms) * kUsPerMs;
     const bool is_max_rate = (config_.loop_timing == LoopTimingPolicy::MaxRate);
-    const auto short_timeout_us = compute_short_timeout(period_us, kDefaultQueueIoWaitRatio);
+    const auto short_timeout_us = compute_short_timeout(period_us, config_.queue_io_wait_timeout_ratio);
     // read_acquire takes milliseconds; convert with rounding up to avoid 0ms.
     const auto short_timeout =
         std::chrono::duration_cast<std::chrono::milliseconds>(short_timeout_us + std::chrono::microseconds{999});

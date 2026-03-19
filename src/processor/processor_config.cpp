@@ -18,6 +18,10 @@
 namespace pylabhub::processor
 {
 
+using ::pylabhub::kDefaultQueueIoWaitRatio;
+using ::pylabhub::kMinQueueIoWaitRatio;
+using ::pylabhub::kMaxQueueIoWaitRatio;
+
 // ============================================================================
 // ProcessorAuthConfig::load_keypair
 // ============================================================================
@@ -197,21 +201,51 @@ ProcessorConfig ProcessorConfig::from_json_file(const std::string &path)
 
     // ── Timing / policy ───────────────────────────────────────────────────────
     cfg.overflow_policy  = parse_overflow_policy(j.value("overflow_policy", "block"));
+    cfg.target_period_ms = j.value("target_period_ms", 0.0);
+    cfg.target_rate_hz   = j.value("target_rate_hz",   0.0);
+    cfg.queue_io_wait_timeout_ratio = j.value("queue_io_wait_timeout_ratio",
+                                               kDefaultQueueIoWaitRatio);
     cfg.slot_acquire_timeout_ms = j.value("slot_acquire_timeout_ms", -1);
-    cfg.heartbeat_interval_ms = j.value("heartbeat_interval_ms", 0);
+    cfg.heartbeat_interval_ms   = j.value("heartbeat_interval_ms",   0);
 
-    if (cfg.slot_acquire_timeout_ms < -1)
-        throw std::runtime_error("Processor config: 'slot_acquire_timeout_ms' must be >= -1 (-1=derive, 0=non-blocking, >0=ms)");
-
-    cfg.target_period_ms = j.value("target_period_ms", 0);
-    if (cfg.target_period_ms < 0)
+    if (cfg.target_period_ms < 0.0)
+    {
         throw std::runtime_error("Processor config: 'target_period_ms' must be >= 0");
+    }
+    if (cfg.target_rate_hz < 0.0)
+    {
+        throw std::runtime_error("Processor config: 'target_rate_hz' must be >= 0");
+    }
+    if (cfg.queue_io_wait_timeout_ratio < kMinQueueIoWaitRatio ||
+        cfg.queue_io_wait_timeout_ratio > kMaxQueueIoWaitRatio)
+    {
+        throw std::runtime_error(
+            "Processor config: 'queue_io_wait_timeout_ratio' must be between " +
+            std::to_string(kMinQueueIoWaitRatio) + " and " +
+            std::to_string(kMaxQueueIoWaitRatio));
+    }
 
-    if (j.contains("loop_timing")) {
+    // Resolve period: rate_hz and period_ms are mutually exclusive.
+    // resolve_period_us validates mutual exclusion and minimum period.
+    const double period_us = ::pylabhub::resolve_period_us(
+        cfg.target_rate_hz, cfg.target_period_ms, "Processor config");
+
+    if (j.contains("loop_timing"))
+    {
         cfg.loop_timing = ::pylabhub::parse_loop_timing_policy(
-            j["loop_timing"].get<std::string>(), cfg.target_period_ms, "Processor config");
-    } else {
-        cfg.loop_timing = ::pylabhub::default_loop_timing_policy(cfg.target_period_ms);
+            j["loop_timing"].get<std::string>(), period_us, "Processor config");
+    }
+    else
+    {
+        cfg.loop_timing = ::pylabhub::default_loop_timing_policy(period_us);
+    }
+
+    // Warn if deprecated slot_acquire_timeout_ms is set.
+    if (j.contains("slot_acquire_timeout_ms"))
+    {
+        LOGGER_WARN("[proc] 'slot_acquire_timeout_ms' is deprecated; use "
+                    "'queue_io_wait_timeout_ratio' instead (current: {})",
+                    cfg.queue_io_wait_timeout_ratio);
     }
 
     // ── SHM ───────────────────────────────────────────────────────────────────

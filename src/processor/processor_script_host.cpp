@@ -665,7 +665,7 @@ bool ProcessorScriptHost::start_role()
     const bool proc_is_fixed_rate =
         (config_.loop_timing != LoopTimingPolicy::MaxRate);
     const auto proc_period =
-        std::chrono::milliseconds{config_.target_period_ms};
+        std::chrono::milliseconds{static_cast<int>(config_.target_period_ms)};
 
     // Shared mutable deadline — both lambdas capture by value (same pointer).
     auto next_dl = std::make_shared<std::chrono::steady_clock::time_point>(

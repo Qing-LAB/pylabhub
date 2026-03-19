@@ -133,14 +133,19 @@ struct ConsumerConfig
     /// Target start-to-start period for DataBlock acquire pacing (ms).
     /// 0 = free-run (block until next slot, no sleep). Default for consumers.
     /// >0 with FixedRate/FixedRateWithCompensation: activates DataBlock overrun_count tracking.
-    int target_period_ms{0};
+    double target_period_ms{0.0};
+
+    /// Target rate in Hz (alternative to target_period_ms). 0 = not set.
+    double target_rate_hz{0.0};
 
     /// Loop timing policy. Default: MaxRate (since target_period_ms defaults to 0).
     /// See loop_timing_policy.hpp for cross-field constraints.
     LoopTimingPolicy loop_timing{LoopTimingPolicy::MaxRate};
 
-    /// Slot acquire timeout (ms). -1 = derive from target_period_ms (see
-    /// compute_slot_acquire_timeout), 0 = non-blocking, >0 = explicit ms.
+    /// Queue I/O wait timeout ratio. See producer_config.hpp for docs.
+    double queue_io_wait_timeout_ratio{0.1};
+
+    /// @deprecated Use queue_io_wait_timeout_ratio instead.
     int slot_acquire_timeout_ms{-1};
     int heartbeat_interval_ms{0};
 

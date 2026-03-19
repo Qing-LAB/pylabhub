@@ -665,18 +665,34 @@ TEST_F(ProcessorConfigTest, DualBroker_MixedConfig)
     fs::remove_all(tmp);
 }
 
-TEST_F(ProcessorConfigTest, Validation_BadTimeoutThrows)
+TEST_F(ProcessorConfigTest, Validation_QueueIoWaitRatioOutOfRange)
 {
-    const auto tmp = unique_temp_dir("valtmo");
-    write_file(tmp / "processor.json", R"({
-        "processor": { "uid": "PROC-VALTMO-00000001", "name": "ValTmo" },
-        "in_channel":  "lab.val.in",
-        "out_channel": "lab.val.out",
-        "slot_acquire_timeout_ms":  -5
-    })");
-    EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_directory(tmp.string()),
-                 std::runtime_error);
-    fs::remove_all(tmp);
+    // queue_io_wait_timeout_ratio below minimum (0.1) should throw.
+    {
+        const auto tmp = unique_temp_dir("ratio_lo");
+        write_file(tmp / "processor.json", R"({
+            "processor": { "uid": "PROC-RATIO-00000001", "name": "RatioLo" },
+            "in_channel":  "lab.val.in",
+            "out_channel": "lab.val.out",
+            "queue_io_wait_timeout_ratio": 0.01
+        })");
+        EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_directory(tmp.string()),
+                     std::runtime_error);
+        fs::remove_all(tmp);
+    }
+    // queue_io_wait_timeout_ratio above maximum (0.5) should throw.
+    {
+        const auto tmp = unique_temp_dir("ratio_hi");
+        write_file(tmp / "processor.json", R"({
+            "processor": { "uid": "PROC-RATIO-00000002", "name": "RatioHi" },
+            "in_channel":  "lab.val.in",
+            "out_channel": "lab.val.out",
+            "queue_io_wait_timeout_ratio": 0.9
+        })");
+        EXPECT_THROW(pylabhub::processor::ProcessorConfig::from_directory(tmp.string()),
+                     std::runtime_error);
+        fs::remove_all(tmp);
+    }
 }
 
 TEST_F(ProcessorConfigTest, Validation_ZeroOutSlotCountThrows)

@@ -185,7 +185,7 @@ bool ProducerScriptHost::start_role()
     if (config_.target_period_ms > 0)
     {
         opts.loop_policy = hub::LoopPolicy::FixedRate;
-        opts.period_ms   = std::chrono::milliseconds{config_.target_period_ms};
+        opts.period_ms   = std::chrono::milliseconds{static_cast<int>(config_.target_period_ms)};
     }
     opts.ctrl_queue_max_depth = config_.ctrl_queue_max_depth;
     opts.peer_dead_timeout_ms = config_.peer_dead_timeout_ms;
@@ -676,10 +676,10 @@ void ProducerScriptHost::run_loop_()
     // When target_period_ms == 0, free-run mode: no sleep, no deadline.
     // The first iteration fires immediately; subsequent iterations sleep to hit the deadline.
     auto next_deadline = std::chrono::steady_clock::now() +
-                         std::chrono::milliseconds{config_.target_period_ms};
+                         std::chrono::milliseconds{static_cast<int>(config_.target_period_ms)};
 
     const bool is_fixed_rate = (config_.loop_timing != LoopTimingPolicy::MaxRate);
-    const auto period        = std::chrono::milliseconds{config_.target_period_ms};
+    const auto period        = std::chrono::milliseconds{static_cast<int>(config_.target_period_ms)};
 
     while (core_.running_threads.load() && !core_.shutdown_requested.load() &&
            !api_.critical_error())

@@ -881,10 +881,10 @@ void LuaProcessorHost::run_data_loop_()
         : input_timeout;
 
     auto next_deadline = std::chrono::steady_clock::now() +
-                         std::chrono::milliseconds{config_.target_period_ms};
+                         std::chrono::milliseconds{static_cast<int>(config_.target_period_ms)};
 
     const bool is_fixed_rate = (config_.loop_timing != LoopTimingPolicy::MaxRate);
-    const auto period        = std::chrono::milliseconds{config_.target_period_ms};
+    const auto period        = std::chrono::milliseconds{static_cast<int>(config_.target_period_ms)};
 
     while (core_.running_threads.load() && !core_.shutdown_requested.load() &&
            !core_.critical_error_.load(std::memory_order_relaxed))

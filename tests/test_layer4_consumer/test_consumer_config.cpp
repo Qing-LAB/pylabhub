@@ -241,18 +241,34 @@ TEST_F(ConsumerConfigTest, FromDirectory_Basic)
     fs::remove_all(tmp);
 }
 
-TEST_F(ConsumerConfigTest, Validation_BadTimeoutThrows)
+TEST_F(ConsumerConfigTest, Validation_QueueIoWaitRatioOutOfRange)
 {
-    const auto tmp      = unique_temp_dir("valtmo");
-    const auto cfg_path = tmp / "consumer.json";
-    write_file(cfg_path, R"({
-        "consumer": { "uid": "CONS-VALTMO-00000001", "name": "ValTmo" },
-        "channel":    "lab.val.tmo",
-        "slot_acquire_timeout_ms": -5
-    })");
-    EXPECT_THROW(pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string()),
-                 std::runtime_error);
-    fs::remove_all(tmp);
+    // queue_io_wait_timeout_ratio below minimum (0.1) should throw.
+    {
+        const auto tmp      = unique_temp_dir("ratio_lo");
+        const auto cfg_path = tmp / "consumer.json";
+        write_file(cfg_path, R"({
+            "consumer": { "uid": "CONS-RATIO-00000001", "name": "RatioLo" },
+            "channel":    "lab.val.ratio",
+            "queue_io_wait_timeout_ratio": 0.01
+        })");
+        EXPECT_THROW(pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string()),
+                     std::runtime_error);
+        fs::remove_all(tmp);
+    }
+    // queue_io_wait_timeout_ratio above maximum (0.5) should throw.
+    {
+        const auto tmp      = unique_temp_dir("ratio_hi");
+        const auto cfg_path = tmp / "consumer.json";
+        write_file(cfg_path, R"({
+            "consumer": { "uid": "CONS-RATIO-00000002", "name": "RatioHi" },
+            "channel":    "lab.val.ratio",
+            "queue_io_wait_timeout_ratio": 0.9
+        })");
+        EXPECT_THROW(pylabhub::consumer::ConsumerConfig::from_json_file(cfg_path.string()),
+                     std::runtime_error);
+        fs::remove_all(tmp);
+    }
 }
 
 // ── Loop driver / timing tests ────────────────────────────────────────────────
