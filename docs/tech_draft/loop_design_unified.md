@@ -674,18 +674,32 @@ Worst-case latency: `short_timeout`.
 - ✅ `resolve_period_us()` for rate_hz/period_ms unification
 - ✅ `ProducerRoleHost` + `LuaEngine` (wired, tested)
 - ✅ `ConsumerRoleHost` + `LuaEngine` (wired, tested)
-- ✅ `ProcessorRoleHost` + `LuaEngine` (wired, tested)
+- ✅ `ProcessorRoleHost` + `LuaEngine` (wired, tested, input-hold §5.2 implemented)
 - ✅ `drain_inbox_sync()`, `wait_for_roles()` — shared helpers
+- ✅ `queue_io_wait_timeout_ratio` in all 3 config structs, parsed, validated (0.1–0.5)
+- ✅ `target_rate_hz` (double) in all 3 config structs, parsed, mutual exclusion validated
+- ✅ `target_period_ms` changed from `int` to `double`
+- ✅ Config ratio wired into `compute_short_timeout()` in all 3 role hosts
+- ✅ Consumer `last_seq` tracking (stored as atomic, updated from `queue_reader_->last_seq()`)
+- ✅ `slot_acquire_timeout_ms` deprecated with LOGGER_WARN
+- ✅ Config tests updated: `Validation_QueueIoWaitRatioOutOfRange` replaces old timeout test
 - ✅ 1220/1220 tests pass
 
 ### Remaining
-- [ ] Add `queue_io_wait_timeout_ratio` to all 3 config structs (currently hardcoded)
-- [ ] Wire config ratio into `compute_short_timeout()` calls
-- [ ] Add `target_rate_hz` (double) to all 3 config structs
-- [ ] Change `target_period_ms` from `int` to `double`
-- [ ] Update processor `run_data_loop_()` with input-hold strategy (§5.2)
 - [ ] `PythonEngine` implementation
-- [ ] Delete old hosts (LuaProducerHost, etc.)
-- [ ] Consumer `last_seq` tracking
+- [ ] Delete old hosts (LuaProducerHost, LuaConsumerHost, LuaProcessorHost,
+      LuaRoleHostBase, ProducerScriptHost, ConsumerScriptHost,
+      ProcessorScriptHost, PythonRoleHostBase, PythonScriptHost)
 - [ ] `validate_only` mode layout printing
 - [ ] Update HEP-0011 with ScriptEngine architecture
+- [ ] Timing loop tests (config interpretation + runtime behavior)
+
+### Notes on doc vs code
+- Code uses `config_.target_period_ms * kUsPerMs` for period derivation.
+  Doc says `config.target_period_us` (a pre-computed field). Both are correct;
+  `target_period_us` as a pre-computed config field is a future cleanup.
+- Code checks `core_.g_shutdown` (external signal handler flag) in the outer
+  loop and inner retry. The doc omits these checks for clarity but the code
+  is correct to include them.
+- Processor post-loop cleanup releases any `held_input` — not shown in §5
+  pseudo-code but present in code. Should be added to pseudo-code.
