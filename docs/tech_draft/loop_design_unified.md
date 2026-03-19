@@ -559,7 +559,178 @@ engine, no inbox, no timing policy).
 
 ---
 
-## 6. Inbox Drain — Unified Design
+## 6. Script Callback Contract
+
+This section defines the exact parameter combinations each callback receives,
+and the expected script behavior for each. This is the contract between the
+C++ framework (Layer 2) and the user script.
+
+### 6.1 Producer: `on_produce(out_slot, fz, msgs, api)`
+
+| `out_slot` | `msgs` | Situation | Correct action |
+|------------|--------|-----------|---------------|
+| buffer | empty | Normal: write slot acquired | Fill slot with data. Return `true` to commit. |
+| buffer | non-empty | Slot acquired + control events arrived | Process messages first (e.g., check for `channel_closing`), then fill slot. Return `true`. |
+| nil | empty | Acquire timeout — ring full or no consumer | Idle cycle. Return `false` (discard). Script can do housekeeping. |
+| nil | non-empty | Timeout + control events | Process messages. Return `false`. |
+
+**Return value**: `true`/`nil` = commit (publish slot). `false` = discard.
+Wrong type = error (logged, counted, treated as discard).
+
+**Flexzone** (`fz`): Writable. Persists across cycles. Script can write during
+`on_init` and update on any `on_produce` call. Checksum synced after `on_init`.
+
+```lua
+-- Example: producer script (Lua)
+function on_produce(out_slot, fz, msgs, api)
+    -- 1. Process control messages
+    for _, m in ipairs(msgs) do
+        if m.event == "channel_closing" then
+            api.log("info", "Channel closing, finishing up")
+            api.stop()
+            return false
+        end
+    end
+
+    -- 2. No slot available — nothing to produce
+    if out_slot == nil then
+        return false
+    end
+
+    -- 3. Fill the output slot
+    out_slot.timestamp = api_clock()
+    out_slot.value     = read_sensor()
+    return true  -- commit
+end
+```
+
+### 6.2 Consumer: `on_consume(in_slot, fz, msgs, api)`
+
+| `in_slot` | `msgs` | Situation | Correct action |
+|-----------|--------|-----------|---------------|
+| data | empty | Normal: new data from producer | Process data. |
+| data | non-empty | Data + control events | Process messages, then process data. |
+| nil | empty | Read timeout — no new data | Idle cycle. Script can do periodic work. |
+| nil | non-empty | Timeout + control events | Process messages. |
+
+**No return value**. The slot is released automatically after the callback.
+Errors are detected by the framework via error count comparison.
+
+**Flexzone** (`fz`): Read-only. Points to the producer's flexzone data.
+
+```lua
+-- Example: consumer script (Lua)
+function on_consume(in_slot, fz, msgs, api)
+    -- 1. Process control messages
+    for _, m in ipairs(msgs) do
+        if m.event == "channel_closing" then
+            api.log("info", "Producer shutting down")
+            return
+        end
+    end
+
+    -- 2. No data — idle
+    if in_slot == nil then
+        return
+    end
+
+    -- 3. Process incoming data
+    local value = in_slot.value
+    api.log("debug", string.format("Received: %.2f", value))
+    store_to_database(value)
+end
+```
+
+### 6.3 Processor: `on_process(in_slot, out_slot, fz, msgs, api)`
+
+The processor has the most complex callback contract due to dual queues
+and the input-hold strategy.
+
+| `in_slot` | `out_slot` | Situation | Correct action |
+|-----------|-----------|-----------|---------------|
+| data | buffer | **Normal**: input + output available | Transform `in_slot` → `out_slot`. Return `true` (commit output). |
+| data | nil | **Output full** (Drop mode): input available but output ring full | Cannot write. Log/count. Return `false`. Input is released (Drop mode). |
+| data (held) | buffer | **Block retry**: same input re-presented after output became available | Transform same data. Return `true`. |
+| data (held) | nil | **Still blocked**: output still unavailable (Block mode) | Still cannot write. Return `false`. Input stays held for next cycle. |
+| nil | nil | **No input**: read timeout, no output attempted | Idle/messages-only cycle. Return `false`. |
+
+**Key**: `in_slot=nil, out_slot=buffer` **never happens** — the framework
+only acquires output when input is available (§5.2 Step B).
+
+**Return value**: `true`/`nil` = commit output. `false` = discard output.
+Same contract as producer.
+
+**Commit/release logic** (framework, not script):
+- Output: committed or discarded based on return value.
+- Input:
+  - If `out_slot` was available (commit or discard happened) → input released, queue advances.
+  - If `drop_mode` → input always released regardless of output.
+  - If Block mode + output nil → input **held** for next cycle.
+
+**The script does NOT control input release.** It only controls output
+commit/discard via the return value. The framework manages input lifecycle
+based on the overflow policy and output availability.
+
+**Flexzone** (`fz`): Writable, from the output queue. Persists across cycles.
+
+**How the script knows it's a retry (held input)**: The data in `in_slot`
+is identical to the previous call. The script can detect this by comparing
+a sequence number or timestamp field in the slot, or by maintaining a
+flag in its own state.
+
+```lua
+-- Example: processor script (Lua)
+local last_processed_seq = -1
+
+function on_process(in_slot, out_slot, fz, msgs, api)
+    -- 1. Process control messages
+    for _, m in ipairs(msgs) do
+        if m.event == "channel_closing" then
+            api.log("info", "Pipeline shutting down")
+            api.stop()
+            return false
+        end
+    end
+
+    -- 2. No input — idle cycle
+    if in_slot == nil then
+        return false
+    end
+
+    -- 3. No output slot — blocked or dropped
+    if out_slot == nil then
+        api.log("warn", "Output full, data held for retry")
+        return false
+    end
+
+    -- 4. Check if this is a retry (same data re-presented)
+    if in_slot.seq == last_processed_seq then
+        api.log("debug", "Retry: re-processing held data")
+    end
+    last_processed_seq = in_slot.seq
+
+    -- 5. Transform input → output
+    out_slot.timestamp = in_slot.timestamp
+    out_slot.value     = in_slot.value * calibration_factor
+    return true  -- commit output
+end
+```
+
+### 6.4 Inbox: `on_inbox(slot, sender, api)`
+
+Called synchronously during Step C drain. All inbox messages are presented
+in FIFO order, one at a time.
+
+| `slot` | `sender` | Situation |
+|--------|----------|-----------|
+| typed data | sender UID | Normal: typed inbox message |
+| raw bytes | sender UID | Schemaless inbox message |
+
+No return value. No ack control — framework always acks success.
+
+---
+
+## 7. Inbox Drain — Unified Design
 
 ```
 DRAIN_INBOX_SYNC(inbox_queue, engine):
