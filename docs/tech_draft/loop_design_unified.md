@@ -42,17 +42,84 @@ Internal storage:
 double target_period_us;  // microseconds, computed from rate_hz or period_ms
 ```
 
-### 1.2 slot_acquire_timeout_ms → Replaced by Inner Retry Logic
+### 1.2 Queue I/O Timeout Config
 
-The `slot_acquire_timeout_ms` field is **replaced** by the new inner retry
-pattern. The loop computes its own short timeout:
-- MaxRate: `queue_check_timeout_ms` (new config field, default 50ms)
-- FixedRate: `max(period_us * 0.1, 1000)` μs (10% of period, floor 1ms)
+The old `slot_acquire_timeout_ms` field (with its confusing `-1 = derive`
+convention) is **replaced** by `queue_io_wait_timeout_ratio`.
 
-The `queue_check_timeout_ms` field gives MaxRate users explicit control
-over how long the loop waits for data before calling the script.
+```json
+"queue_io_wait_timeout_ratio": 0.1
+```
 
-For FixedRate, no user config needed — the timeout is derived from the period.
+This is the fraction of the period budget allocated to each queue I/O
+attempt in the inner retry-acquire loop. It controls how long the loop
+waits per attempt to acquire a queue slot (read or write).
+
+| Policy | Timeout per attempt | Rationale |
+|--------|-------------------|-----------|
+| MaxRate | `queue_check_timeout_ms` (default 50ms) | No period to derive from; use explicit value. Never zero — prevents busy-spinning. |
+| FixedRate | `max(period * ratio, 1ms)` | Fraction of period, with 1ms floor for OS scheduler granularity. |
+| FixedRateWithCompensation | Same as FixedRate | Same inner retry pattern. |
+
+Validation:
+- Range: 0.1–0.5 (10%–50% of period per attempt)
+- Default: 0.1 (10 attempts per period)
+- MaxRate: field is ignored (uses `queue_check_timeout_ms`)
+- The old `slot_acquire_timeout_ms` field emits `LOGGER_WARN` if set
+
+#### Design rationale: why "I/O" in the name
+
+The timeout controls the **I/O side** of the queue — the point where the
+role interacts with the data transport:
+
+- **Producer**: `write_acquire()` — waiting for a free slot to write into.
+  The producer acquires first, then the script generates data directly into
+  the slot (zero-copy). This ensures (a) data freshness — no stale gap
+  between generation and publish, and (b) early backpressure — if the ring
+  is full, we know before wasting time on I/O.
+
+- **Consumer**: `read_acquire()` — waiting for data to arrive from upstream.
+
+- **Processor input**: `read_acquire()` — same as consumer.
+
+All three are the same concern: waiting for the queue to become ready for
+the next I/O operation. The ratio controls how aggressively the loop
+retries within each period.
+
+#### Processor output timeout — a different concern
+
+The processor has a **second** acquire on the output side (Step B). This
+timeout is **not** controlled by `queue_io_wait_timeout_ratio` because it
+represents a different concern: **pipeline backpressure**, not I/O timing.
+
+If the processor's output queue is full, it means the downstream consumer
+can't keep up. The correct response depends on the overflow policy:
+
+| Policy | Output timeout | Behavior |
+|--------|---------------|----------|
+| Drop (default) | 0 ms (non-blocking) | Immediate failure. Script still called with `out_slot=nil`. Drops counted in metrics. Fast — no cascading delay. |
+| Block | `remaining_until_deadline` | Wait up to whatever time budget the cycle has left. If past deadline (overrun), fall back to 0ms. This ensures output waiting never steals time from the next cycle. |
+
+```
+PROCESSOR_OUTPUT_TIMEOUT:
+    if overflow_policy == Drop:
+        return 0ms
+
+    if timing_policy == MaxRate:
+        return queue_check_timeout_ms    # small minimum, same as input
+
+    # FixedRate / FixedRateWithCompensation:
+    remaining = deadline - now()
+    return max(remaining, 0ms)           # bounded by deadline
+```
+
+This design means:
+1. **Drop mode** (default): The processor never stalls on output. Downstream
+   congestion is visible as `out_drops` in metrics.
+2. **Block mode, on time**: The processor uses remaining cycle budget to wait.
+   Downstream gets more chances to drain.
+3. **Block mode, overrun**: Fall back to 0ms. Don't compound the overrun by
+   blocking on output when we're already behind schedule.
 
 ---
 
@@ -67,11 +134,11 @@ enum LoopTimingPolicy { MaxRate, FixedRate, FixedRateWithCompensation }
 ### 2.2 Short Timeout Derivation
 
 ```
-compute_short_timeout(timing_policy, period_us, queue_check_timeout_ms):
+compute_short_timeout(timing_policy, period_us, ratio, queue_check_timeout_ms):
     if timing_policy == MaxRate:
         return milliseconds(queue_check_timeout_ms)    # user-provided, never zero
     else:
-        return microseconds(max(period_us * 0.1, 1000))  # 10% of period, floor 1ms
+        return microseconds(max(period_us * ratio, 1000))  # ratio of period, floor 1ms
 ```
 
 ### 2.3 Deadline Calculation
@@ -102,7 +169,8 @@ PRODUCER_DATA_LOOP(queue, engine, core, config, inbox_queue):
     # ── Setup ──
     period_us = config.target_period_us
     is_max_rate = (config.loop_timing == MaxRate)
-    short_timeout = compute_short_timeout(config.loop_timing, period_us,
+    ratio = config.queue_io_wait_timeout_ratio   # 0.1–0.5, default 0.1
+    short_timeout = compute_short_timeout(config.loop_timing, period_us, ratio,
                                            config.queue_check_timeout_ms)
     buf_sz = queue.item_size()
 
@@ -311,11 +379,10 @@ Dual-queue loop. Does NOT use `hub::Processor` (see §5.3 for rationale).
 PROCESSOR_DATA_LOOP(in_q, out_q, engine, core, config, inbox_queue):
     period_us = config.target_period_us
     is_max_rate = (config.loop_timing == MaxRate)
-    short_timeout = compute_short_timeout(...)
+    ratio = config.queue_io_wait_timeout_ratio   # 0.1–0.5, default 0.1
+    short_timeout = compute_short_timeout(config.loop_timing, period_us,
+                                           ratio, config.queue_check_timeout_ms)
     drop_mode = (config.overflow_policy == Drop)
-    # Output timeout: for Drop mode, non-blocking (don't wait for output);
-    # for Block mode, use same short_timeout (keeps loop responsive).
-    output_timeout = drop_mode ? 0ms : short_timeout
 
     in_sz = in_q.item_size()
     out_sz = out_q.item_size()
@@ -326,6 +393,10 @@ PROCESSOR_DATA_LOOP(in_q, out_q, engine, core, config, inbox_queue):
         cycle_start = now()
 
         # ── Step A: Acquire input with retry ─────────────────────────
+        #
+        # Uses queue_io_wait_timeout_ratio — same concern for all roles:
+        # waiting for the queue to become ready for the next I/O operation.
+        #
         in_buf = nullptr
         while true:
             in_buf = in_q.read_acquire(short_timeout)
@@ -338,9 +409,28 @@ PROCESSOR_DATA_LOOP(in_q, out_q, engine, core, config, inbox_queue):
 
         # ── Step B: Acquire output ───────────────────────────────────
         #
-        # Always attempt output acquire (even if input is nil —
-        # on_process can produce output without input).
+        # Output timeout is a DIFFERENT concern from input: it reflects
+        # pipeline backpressure (downstream consumer can't keep up), not
+        # I/O timing. Therefore it uses a different timeout strategy:
         #
+        #   Drop (default): 0ms — immediate failure, script called with
+        #     out_slot=nil, drops counted. No cascading delay.
+        #
+        #   Block + MaxRate: queue_check_timeout_ms — small wait, same
+        #     as input side minimum.
+        #
+        #   Block + FixedRate: remaining_until_deadline — uses whatever
+        #     time budget this cycle has left. Never steals from the next
+        #     cycle. On overrun (past deadline), falls back to 0ms.
+        #
+        if drop_mode:
+            output_timeout = 0ms
+        elif is_max_rate:
+            output_timeout = queue_check_timeout_ms
+        else:
+            remaining = deadline - now()
+            output_timeout = max(remaining, 0ms)
+
         out_buf = out_q.write_acquire(output_timeout)
 
         # ── Step C: Deadline wait (FixedRate) ────────────────────────
