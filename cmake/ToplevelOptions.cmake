@@ -80,6 +80,15 @@ Vaults are incompatible between INTERACTIVE and SENSITIVE builds — re-keygen a
 # Option to enable Clang-Tidy static analysis.
 option(PYLABHUB_ENABLE_CLANG_TIDY "Enable Clang-Tidy static analysis for project targets." OFF)
 
+# Maximum loop rate (Hz) for FixedRate/FixedRateWithCompensation timing policies.
+# Defines the minimum allowed period (= 1e6 / rate μs).  Default: 10 kHz (100 μs).
+# Users who need higher rates should use MaxRate (no period constraint).
+set(PYLABHUB_MAX_LOOP_RATE_HZ 10000 CACHE STRING
+    "Maximum loop rate in Hz for FixedRate policies (minimum period = 1e6/rate μs). Default 10000 (10 kHz).")
+if(PYLABHUB_MAX_LOOP_RATE_HZ LESS 100 OR PYLABHUB_MAX_LOOP_RATE_HZ GREATER 1000000)
+    message(FATAL_ERROR "PYLABHUB_MAX_LOOP_RATE_HZ must be between 100 and 1000000, got ${PYLABHUB_MAX_LOOP_RATE_HZ}")
+endif()
+
 # Option to build the C++ example templates.
 # Demonstrates direct use of pylabhub-utils without Python scripting.
 option(PYLABHUB_BUILD_EXAMPLES "Build C++ example templates (hub, producer, consumer, processor)" OFF)
