@@ -658,19 +658,20 @@ void ConsumerRoleHost::run_data_loop_()
         const void *fz_ptr = core_.has_fz ? queue_reader_->read_flexzone() : nullptr;
         const size_t fz_sz = core_.has_fz ? queue_reader_->flexzone_size() : 0;
 
+        // Track error count before invoke to detect new errors (invoke_consume is void).
+        const uint64_t errors_before = engine_->script_error_count();
+
         engine_->invoke_consume(data, item_sz, fz_ptr, fz_sz, fz_type, msgs);
 
         // --- Step E: Release slot ---
         if (data != nullptr)
             queue_reader_->read_release();
 
-        // Check stop_on_script_error after invoke.
+        // Check stop_on_script_error: compare error count before/after invoke.
         if (config_.stop_on_script_error &&
-            engine_->script_error_count() > 0)
+            engine_->script_error_count() > errors_before)
         {
-            // Engine increments script_errors internally — check if new errors appeared.
-            // Note: stop_on_script_error is handled by the engine setting core state,
-            // but we also check here for safety.
+            core_.shutdown_requested.store(true, std::memory_order_release);
         }
 
         // --- Step F: Metrics ---
