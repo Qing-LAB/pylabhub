@@ -347,6 +347,11 @@ bool LuaEngine::register_slot_type(const SchemaSpec &spec,
         if (ref_out_slot_writable_ == LUA_NOREF)
             ref_out_slot_writable_ = state_.cache_ffi_typeof(type_name, /*readonly=*/false);
     }
+    else if (tn == "FlexFrame")
+    {
+        safe_cache(ref_fz_writable_, type_name, /*readonly=*/false);
+        safe_cache(ref_fz_readonly_, type_name, /*readonly=*/true);
+    }
 
     return true;
 }
@@ -424,11 +429,23 @@ InvokeResult LuaEngine::invoke_produce(
         lua_pushnil(L);
     }
 
-    // Arg 2: flexzone (writable cdata or nil).
-    if (flexzone != nullptr && fz_type != nullptr && fz_sz > 0)
+    // Arg 2: flexzone (writable cdata or nil). Uses cached ctype if available.
+    if (flexzone != nullptr && fz_sz > 0)
     {
-        if (!state_.push_slot_view(flexzone, fz_sz, fz_type))
-            lua_pushnil(L); // fallback to nil on error
+        if (ref_fz_writable_ != LUA_NOREF)
+        {
+            if (!state_.push_slot_view_cached(flexzone, ref_fz_writable_))
+                lua_pushnil(L);
+        }
+        else if (fz_type != nullptr)
+        {
+            if (!state_.push_slot_view(flexzone, fz_sz, fz_type))
+                lua_pushnil(L);
+        }
+        else
+        {
+            lua_pushnil(L);
+        }
     }
     else
     {
@@ -482,11 +499,24 @@ void LuaEngine::invoke_consume(
         lua_pushnil(L);
     }
 
-    // Arg 2: flexzone (read-only cdata or nil).
-    if (flexzone != nullptr && fz_type != nullptr && fz_sz > 0)
+    // Arg 2: flexzone (read-only cdata or nil). Uses cached ctype if available.
+    if (flexzone != nullptr && fz_sz > 0)
     {
-        if (!state_.push_slot_view_readonly(flexzone, fz_sz, fz_type))
+        if (ref_fz_readonly_ != LUA_NOREF)
+        {
+            if (!state_.push_slot_view_cached(
+                    const_cast<void *>(flexzone), ref_fz_readonly_))
+                lua_pushnil(L);
+        }
+        else if (fz_type != nullptr)
+        {
+            if (!state_.push_slot_view_readonly(flexzone, fz_sz, fz_type))
+                lua_pushnil(L);
+        }
+        else
+        {
             lua_pushnil(L);
+        }
     }
     else
     {
@@ -551,11 +581,23 @@ InvokeResult LuaEngine::invoke_process(
         lua_pushnil(L);
     }
 
-    // Arg 3: flexzone (writable cdata or nil).
-    if (flexzone != nullptr && fz_type != nullptr && fz_sz > 0)
+    // Arg 3: flexzone (writable cdata or nil). Uses cached ctype if available.
+    if (flexzone != nullptr && fz_sz > 0)
     {
-        if (!state_.push_slot_view(flexzone, fz_sz, fz_type))
+        if (ref_fz_writable_ != LUA_NOREF)
+        {
+            if (!state_.push_slot_view_cached(flexzone, ref_fz_writable_))
+                lua_pushnil(L);
+        }
+        else if (fz_type != nullptr)
+        {
+            if (!state_.push_slot_view(flexzone, fz_sz, fz_type))
+                lua_pushnil(L);
+        }
+        else
+        {
             lua_pushnil(L);
+        }
     }
     else
     {
@@ -698,6 +740,10 @@ void LuaEngine::clear_refs_()
     ref_in_slot_readonly_ = LUA_NOREF;
     state_.unref(ref_out_slot_writable_);
     ref_out_slot_writable_ = LUA_NOREF;
+    state_.unref(ref_fz_writable_);
+    ref_fz_writable_ = LUA_NOREF;
+    state_.unref(ref_fz_readonly_);
+    ref_fz_readonly_ = LUA_NOREF;
 }
 
 // ============================================================================

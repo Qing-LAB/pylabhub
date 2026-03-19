@@ -118,6 +118,8 @@ class LuaEngine : public ScriptEngine
     int ref_slot_readonly_{LUA_NOREF};   ///< ffi.typeof("SlotFrame const*")
     int ref_in_slot_readonly_{LUA_NOREF};  ///< ffi.typeof("InSlotFrame const*") (processor)
     int ref_out_slot_writable_{LUA_NOREF}; ///< ffi.typeof("OutSlotFrame*") (processor)
+    int ref_fz_writable_{LUA_NOREF};    ///< ffi.typeof("FlexFrame*") (producer/processor)
+    int ref_fz_readonly_{LUA_NOREF};    ///< ffi.typeof("FlexFrame const*") (consumer)
 
     // ── RoleContext captured at build_api time ────────────────────────────
     RoleContext ctx_{};
