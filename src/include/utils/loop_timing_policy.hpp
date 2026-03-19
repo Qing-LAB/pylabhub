@@ -53,15 +53,24 @@ namespace pylabhub
 #define PYLABHUB_MAX_LOOP_RATE_HZ 10000
 #endif
 
-static constexpr double kUsPerSecond        = 1'000'000.0;
-static constexpr double kUsPerMs            = 1'000.0;
-static constexpr int    kDefaultQueueCheckMs = 50; ///< Default MaxRate queue check timeout (ms).
+static constexpr double kUsPerSecond         = 1'000'000.0;
+static constexpr double kUsPerMs             = 1'000.0;
 
 /// Minimum period in microseconds, derived from the max rate.
 static constexpr double kMinPeriodUs = kUsPerSecond / PYLABHUB_MAX_LOOP_RATE_HZ;
 
-/// Minimum short timeout in microseconds (floor for 10%-of-period).
-static constexpr double kMinShortTimeoutUs = kUsPerMs; // 1 ms
+/// Minimum queue I/O wait timeout in microseconds.
+/// This is the floor for the unified formula: `max(period * ratio, kMinQueueIoTimeoutUs)`.
+/// 10 μs is achievable on modern CPU/OS (Linux high-res timers, Windows QPC).
+/// For MaxRate (period=0), the formula yields 0 which clamps to this floor.
+static constexpr double kMinQueueIoTimeoutUs = 10.0; // 10 μs
+
+/// Default queue I/O wait timeout ratio (fraction of period per acquire attempt).
+static constexpr double kDefaultQueueIoWaitRatio = 0.1; // 10%
+
+/// Valid range for queue_io_wait_timeout_ratio.
+static constexpr double kMinQueueIoWaitRatio = 0.1;
+static constexpr double kMaxQueueIoWaitRatio = 0.5;
 
 // ============================================================================
 // LoopTimingPolicy
@@ -208,28 +217,23 @@ inline LoopTimingPolicy default_loop_timing_policy(double period_us) noexcept
 /**
  * @brief Compute the short timeout for the inner retry-acquire loop.
  *
- * The data loop retries slot acquisition with a short timeout:
- *   - MaxRate: uses `queue_check_timeout_ms` (user-provided, never zero).
- *   - FixedRate: 10% of period, with a floor of kMinShortTimeoutUs (1 ms).
+ * Unified formula for ALL timing policies (no branching):
  *
- * @param policy               Timing policy.
- * @param period_us            Period in microseconds (0 for MaxRate).
- * @param queue_check_timeout_ms  User-provided timeout for MaxRate (ms, > 0).
+ *     short_timeout = max(period_us * ratio, kMinQueueIoTimeoutUs)
+ *
+ * For MaxRate (period_us=0): yields the floor (10 μs).
+ * For FixedRate: yields ratio × period (e.g., 100 μs at 1 kHz with ratio=0.1).
+ *
+ * @param period_us  Period in microseconds (0 for MaxRate).
+ * @param ratio      Queue I/O wait timeout ratio (0.1–0.5, from config).
  * @return Short timeout as std::chrono::microseconds.
  */
 inline std::chrono::microseconds compute_short_timeout(
-    LoopTimingPolicy policy,
-    double           period_us,
-    int              queue_check_timeout_ms) noexcept
+    double period_us,
+    double ratio) noexcept
 {
-    if (policy == LoopTimingPolicy::MaxRate)
-    {
-        return std::chrono::milliseconds{queue_check_timeout_ms > 0 ? queue_check_timeout_ms
-                                                                          : kDefaultQueueCheckMs};
-    }
-    // FixedRate / FixedRateWithCompensation: 10% of period, floor 1ms.
-    const double tenth = period_us * 0.1;
-    const double clamped = std::max(tenth, kMinShortTimeoutUs);
+    const double computed = period_us * ratio;
+    const double clamped  = std::max(computed, kMinQueueIoTimeoutUs);
     return std::chrono::microseconds{static_cast<int64_t>(clamped)};
 }
 

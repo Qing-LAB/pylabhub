@@ -1,13 +1,17 @@
 # Unified Loop Design — Canonical Reference
 
-**Status**: v2 — Redesigned (2026-03-18)
+**Status**: v4 — Consolidated (2026-03-19)
 **Purpose**: Precise pseudo-code for the unified data loop, config changes,
 timing policies, and abstraction layer boundaries. This document is the
 correctness reference for the ScriptEngine integration.
 
-**Change from v1**: The loop is redesigned with an inner retry-acquire
-pattern that maximizes data availability before deadline. Config gains
-`target_rate_hz` (float) as an alternative to `target_period_ms` (float).
+**Change log**:
+- v1 (2026-03-18): Initial extraction of existing loop logic from 6 host files.
+- v2 (2026-03-18): Inner retry-acquire pattern, `target_rate_hz` config.
+- v3 (2026-03-19): `queue_io_wait_timeout_ratio`, processor output timing.
+- v4 (2026-03-19): Unified timeout formula (one formula, no branching),
+  processor input-hold strategy, `compute_next_deadline` 4-parameter version,
+  corrected pseudo-code consolidated from all discussion points.
 
 ---
 
@@ -55,16 +59,30 @@ This is the fraction of the period budget allocated to each queue I/O
 attempt in the inner retry-acquire loop. It controls how long the loop
 waits per attempt to acquire a queue slot (read or write).
 
-| Policy | Timeout per attempt | Rationale |
-|--------|-------------------|-----------|
-| MaxRate | `queue_check_timeout_ms` (default 50ms) | No period to derive from; use explicit value. Never zero — prevents busy-spinning. |
-| FixedRate | `max(period * ratio, 1ms)` | Fraction of period, with 1ms floor for OS scheduler granularity. |
-| FixedRateWithCompensation | Same as FixedRate | Same inner retry pattern. |
+**Unified formula** (ONE formula for ALL timing policies, no branching):
+
+```
+short_timeout_us = max(period_us * queue_io_wait_timeout_ratio, kMinQueueIoTimeoutUs)
+```
+
+Where `kMinQueueIoTimeoutUs = 10` (10 μs — reasonable floor for modern
+CPU/OS scheduler granularity on both Linux and Windows).
+
+| Policy | period_us | ratio=0.1 | short_timeout_us |
+|--------|----------|-----------|-----------------|
+| MaxRate | 0 | 0.1 | 10 μs (floor) |
+| FixedRate 10 kHz | 100 | 0.1 | 10 μs (floor) |
+| FixedRate 1 kHz | 1000 | 0.1 | 100 μs |
+| FixedRate 100 Hz | 10000 | 0.1 | 1000 μs = 1 ms |
+| FixedRate 10 Hz | 100000 | 0.1 | 10000 μs = 10 ms |
+
+No special cases. The floor (10 μs) handles MaxRate naturally:
+`0 * ratio = 0 → clamped to 10 μs`.
 
 Validation:
 - Range: 0.1–0.5 (10%–50% of period per attempt)
-- Default: 0.1 (10 attempts per period)
-- MaxRate: field is ignored (uses `queue_check_timeout_ms`)
+- Default: 0.1 (gives ~10 retry attempts per period for FixedRate;
+  gives 10 μs attempts for MaxRate)
 - The old `slot_acquire_timeout_ms` field emits `LOGGER_WARN` if set
 
 #### Design rationale: why "I/O" in the name
@@ -88,44 +106,33 @@ retries within each period.
 
 #### Processor output timeout — a different concern
 
-The processor has a **second** acquire on the output side (Step B). This
-timeout is **not** controlled by `queue_io_wait_timeout_ratio` because it
-represents a different concern: **pipeline backpressure**, not I/O timing.
+The processor has a **second** acquire on the output side. This timeout
+is **not** controlled by `queue_io_wait_timeout_ratio` because it represents
+a different concern: **pipeline backpressure**, not I/O timing.
 
 If the processor's output queue is full, it means the downstream consumer
 can't keep up. The correct response depends on the overflow policy:
 
 | Policy | Output timeout | Behavior |
 |--------|---------------|----------|
-| Drop (default) | 0 ms (non-blocking) | Immediate failure. Script still called with `out_slot=nil`. Drops counted in metrics. Fast — no cascading delay. |
-| Block | `remaining_until_deadline` | Wait up to whatever time budget the cycle has left. If past deadline (overrun), fall back to 0ms. This ensures output waiting never steals time from the next cycle. |
+| Drop (default) | 0 ms (non-blocking) | Immediate failure. Drops counted. No cascading delay. |
+| Block | `max(remaining_until_deadline, short_timeout)` | Wait up to the remaining cycle budget. On overrun, fall back to `short_timeout` (10 μs floor for MaxRate). |
 
 ```
 PROCESSOR_OUTPUT_TIMEOUT:
     if overflow_policy == Drop:
         return 0ms
 
-    if timing_policy == MaxRate:
-        return queue_check_timeout_ms    # small minimum, same as input
-
-    # FixedRate / FixedRateWithCompensation:
+    # Block mode (all timing policies — unified):
     remaining = deadline - now()
-    return max(remaining, 0ms)           # bounded by deadline
+    return max(remaining, short_timeout)  # bounded by deadline, floor = short_timeout
 ```
-
-This design means:
-1. **Drop mode** (default): The processor never stalls on output. Downstream
-   congestion is visible as `out_drops` in metrics.
-2. **Block mode, on time**: The processor uses remaining cycle budget to wait.
-   Downstream gets more chances to drain.
-3. **Block mode, overrun**: Fall back to 0ms. Don't compound the overrun by
-   blocking on output when we're already behind schedule.
 
 ---
 
 ## 2. Timing Policy
 
-### 2.1 LoopTimingPolicy (unchanged enum, updated semantics)
+### 2.1 LoopTimingPolicy (unchanged enum)
 
 ```
 enum LoopTimingPolicy { MaxRate, FixedRate, FixedRateWithCompensation }
@@ -133,46 +140,68 @@ enum LoopTimingPolicy { MaxRate, FixedRate, FixedRateWithCompensation }
 
 ### 2.2 Short Timeout Derivation
 
+One formula, no branching on timing policy:
+
 ```
-compute_short_timeout(timing_policy, period_us, ratio, queue_check_timeout_ms):
-    if timing_policy == MaxRate:
-        return milliseconds(queue_check_timeout_ms)    # user-provided, never zero
-    else:
-        return microseconds(max(period_us * ratio, 1000))  # ratio of period, floor 1ms
+kMinQueueIoTimeoutUs = 10   # 10 μs floor
+
+compute_short_timeout(period_us, ratio):
+    return microseconds(max(period_us * ratio, kMinQueueIoTimeoutUs))
 ```
 
 ### 2.3 Deadline Calculation
 
 ```
-compute_next_deadline(timing_policy, cycle_start, period_us):
-    if timing_policy == MaxRate:
-        return time_point::max()   # no deadline (bypass all deadline checks)
-    if timing_policy == FixedRate:
-        return now() + period_us   # reset from current time
-    if timing_policy == FixedRateWithCompensation:
-        return cycle_start + period_us  # advance from cycle start
+compute_next_deadline(policy, prev_deadline, cycle_start, period_us):
+    if policy == MaxRate:
+        return time_point::max()               # no deadline
+
+    period = microseconds(period_us)
+
+    if policy == FixedRateWithCompensation:
+        if prev_deadline == time_point::max():  # first cycle
+            return cycle_start + period
+        return prev_deadline + period           # advance from prev (steady rate)
+
+    # FixedRate:
+    if prev_deadline == time_point::max():      # first cycle
+        return cycle_start + period
+    ideal = prev_deadline + period
+    if now() <= ideal:
+        return ideal                            # on time — advance cleanly
+    return now() + period                       # overrun — reset from now
 ```
 
-Note: FixedRate uses `now()` (after script returns) to reset. FixedRateWith-
-Compensation uses `cycle_start` (start of this cycle) to maintain steady
-average rate. This matches the current behavior.
+Note: The function takes 4 parameters: `policy`, `prev_deadline`,
+`cycle_start`, and `period_us`. For the first cycle, `prev_deadline`
+is `time_point::max()` — the function detects this and uses
+`cycle_start + period` to establish the initial deadline.
+
+### 2.4 Period Definition
+
+**Period** = time between successive script calls (start-to-start).
+
+For all three roles, the script is called once per cycle. The period
+governs when the next call should happen, measured from the start of
+the current cycle (`cycle_start`).
+
+For the **processor**, the period means the same thing: time between
+successive `on_process` calls, regardless of whether input or output
+was available.
 
 ---
 
 ## 3. Unified Data Loop — Producer
 
-This is the canonical loop that replaces both `ProducerScriptHost::run_loop_`
-and `LuaProducerHost::run_data_loop_`.
-
 ```
 PRODUCER_DATA_LOOP(queue, engine, core, config, inbox_queue):
     # ── Setup ──
-    period_us = config.target_period_us
-    is_max_rate = (config.loop_timing == MaxRate)
-    ratio = config.queue_io_wait_timeout_ratio   # 0.1–0.5, default 0.1
-    short_timeout = compute_short_timeout(config.loop_timing, period_us, ratio,
-                                           config.queue_check_timeout_ms)
-    buf_sz = queue.item_size()
+    period_us     = config.target_period_us
+    is_max_rate   = (config.loop_timing == MaxRate)
+    ratio         = config.queue_io_wait_timeout_ratio   # 0.1–0.5
+    short_timeout = compute_short_timeout(period_us, ratio)
+    buf_sz        = queue.item_size()
+    deadline      = time_point::max()                    # first cycle: no deadline
 
     # ── Loop ──
     while core.running_threads AND NOT core.shutdown_requested
@@ -180,58 +209,62 @@ PRODUCER_DATA_LOOP(queue, engine, core, config, inbox_queue):
 
         cycle_start = now()
 
-        # ── Step A: Acquire data with retry ──────────────────────────
+        # ── Step A: Acquire slot with inner retry ─────────────────
         #
-        # Inner retry loop: attempt acquire with short timeout.
-        # Retry until data arrives or deadline approaches.
-        # This gives ~9-10 chances per period (FixedRate) vs 1 chance
-        # in the old design.
+        # Retry acquire with short_timeout. Gives multiple chances to
+        # get a slot before deadline (FixedRate), or single attempt
+        # with 10μs timeout (MaxRate).
         #
         buf = nullptr
         while true:
             buf = queue.write_acquire(short_timeout)
-            if buf != nullptr: break              # got data
+            if buf != nullptr: break
 
-            if is_max_rate: break                  # MaxRate: one attempt
+            if is_max_rate: break    # MaxRate: one attempt
 
             # Check shutdown between retries
             if NOT core.running_threads OR core.shutdown_requested
                OR core.critical_error_:
                 break
 
-            remaining = deadline - now()
-            if remaining <= short_timeout: break   # not enough time to retry
-            # else: go back and retry acquire
+            # Skip remaining-time check on first cycle (deadline == max)
+            if deadline != time_point::max():
+                remaining = deadline - now()
+                if remaining <= short_timeout: break
+            # else: retry
 
-        # ── Step B: Deadline wait (FixedRate with early data) ────────
+        # ── Step B: Deadline wait ─────────────────────────────────
         #
-        # If we got data before deadline, sleep until deadline.
-        # This ensures predictable callback timing.
-        # The slot is held during sleep — acceptable for FixedRate
-        # (users choosing FixedRate accept periodic scheduling).
+        # FixedRate with early data: sleep until deadline for
+        # predictable callback timing. Slot held during sleep.
         #
-        if NOT is_max_rate AND buf != nullptr AND now() < deadline:
+        if NOT is_max_rate AND buf != nullptr
+           AND deadline != time_point::max() AND now() < deadline:
             sleep_until(deadline)
 
-        # ── Step C: Drain everything right before script call ────────
+        # Shutdown check after potential sleep
+        if NOT core.running_threads OR core.shutdown_requested
+           OR core.critical_error_:
+            if buf: queue.write_discard()
+            break
+
+        # ── Step C: Drain right before callback ───────────────────
         #
         # Freshest possible: messages + inbox drained at the last
-        # moment before the callback. No messages are dropped.
+        # moment. All messages in FIFO order, no dropping.
         #
-        msgs = core.drain_messages()         # non-blocking, FIFO
-        drain_inbox_sync_(engine)            # non-blocking, all in sequence
+        msgs = core.drain_messages()
+        drain_inbox_sync(engine)
 
-        # ── Step D: Prepare and invoke callback ──────────────────────
+        # ── Step D: Invoke callback ───────────────────────────────
         #
         if buf != nullptr:
             memset(buf, 0, buf_sz)
 
         result = engine.invoke_produce(buf, buf_sz, flexzone, fz_sz,
                                         fz_type, msgs)
-        # Engine handles: GIL (Python), pcall (Lua), error catch,
-        # return value → InvokeResult{Commit, Discard, Error}
 
-        # ── Step E: Commit/discard ───────────────────────────────────
+        # ── Step E: Commit/discard ────────────────────────────────
         #
         if buf != nullptr:
             if result == Commit:
@@ -241,40 +274,25 @@ PRODUCER_DATA_LOOP(queue, engine, core, config, inbox_queue):
                 queue.write_discard()
                 ++drops
         else:
-            ++drops   # no slot acquired
+            ++drops
 
         if result == Error:
             ON_SCRIPT_ERROR(config, core)
 
-        # ── Step F: Metrics ──────────────────────────────────────────
+        # ── Step F: Metrics ───────────────────────────────────────
         #
         work_us = duration_us(now() - cycle_start)
         store last_cycle_work_us = work_us
         ++iteration_count
 
-        # ── Step G: Compute next deadline ────────────────────────────
+        # ── Step G: Next deadline ─────────────────────────────────
         #
         deadline = compute_next_deadline(config.loop_timing,
-                                          cycle_start, period_us)
+                                          deadline, cycle_start, period_us)
 
     # ── Exit ──
-    log exit state (running_threads, shutdown_requested, critical_error)
+    log exit state
 ```
-
-### Key differences from current design
-
-| Aspect | Current (v1) | New (v2) |
-|--------|-------------|----------|
-| Acquire attempts | 1 per cycle | ~9-10 per cycle (FixedRate) |
-| No-slot path | Separate code path with DUE_CHECK | Same path — script always called at deadline |
-| Inbox drain | After acquire (or separate thread) | Right before callback (freshest) |
-| Message drain | After acquire | Right before callback (freshest) |
-| MaxRate timeout | 50ms magic constant | User-provided `queue_check_timeout_ms` |
-| FixedRate timeout | period/2 | 10% of period (retried) |
-| Deadline sleep | After callback | Before callback (predictable timing) |
-| DUE_CHECK | Complex condition | Eliminated (retry loop handles it) |
-| ADVANCE_DEADLINE | Separate function | Eliminated (compute_next_deadline at end) |
-| Period config | `int target_period_ms` | `double target_period_ms` or `double target_rate_hz` |
 
 ---
 
@@ -284,17 +302,19 @@ Same structure as producer, with read semantics:
 
 ```
 CONSUMER_DATA_LOOP(queue_reader, engine, core, config, inbox_queue):
-    period_us = config.target_period_us
-    is_max_rate = (config.loop_timing == MaxRate)
-    short_timeout = compute_short_timeout(...)
-    item_sz = queue_reader.item_size()
+    period_us     = config.target_period_us
+    is_max_rate   = (config.loop_timing == MaxRate)
+    ratio         = config.queue_io_wait_timeout_ratio
+    short_timeout = compute_short_timeout(period_us, ratio)
+    item_sz       = queue_reader.item_size()
+    deadline      = time_point::max()
 
     while core.running_threads AND NOT core.shutdown_requested
           AND NOT core.critical_error_:
 
         cycle_start = now()
 
-        # ── Step A: Acquire data with retry ──────────────────────────
+        # ── Step A: Acquire data with inner retry ─────────────────
         data = nullptr
         while true:
             data = queue_reader.read_acquire(short_timeout)
@@ -302,42 +322,45 @@ CONSUMER_DATA_LOOP(queue_reader, engine, core, config, inbox_queue):
             if is_max_rate: break
             if NOT core.running_threads OR core.shutdown_requested
                OR core.critical_error_: break
-            remaining = deadline - now()
-            if remaining <= short_timeout: break
-            # retry
+            if deadline != time_point::max():
+                remaining = deadline - now()
+                if remaining <= short_timeout: break
 
-        # ── Step B: Deadline wait (FixedRate with early data) ────────
-        if NOT is_max_rate AND data != nullptr AND now() < deadline:
+        # ── Step B: Deadline wait ─────────────────────────────────
+        if NOT is_max_rate AND data != nullptr
+           AND deadline != time_point::max() AND now() < deadline:
             sleep_until(deadline)
 
-        # ── Step C: Drain everything right before callback ───────────
-        msgs = core.drain_messages()
-        drain_inbox_sync_(engine)
+        # Shutdown check after potential sleep
+        if NOT core.running_threads OR core.shutdown_requested
+           OR core.critical_error_:
+            if data: queue_reader.read_release()
+            break
 
-        # ── Step D: Invoke callback ──────────────────────────────────
-        #
-        # Consumer: read-only slot, no return value.
-        # Engine increments script_errors internally on error.
-        #
+        # ── Step C: Drain right before callback ───────────────────
+        msgs = core.drain_messages()
+        drain_inbox_sync(engine)
+
+        # ── Step D: Invoke callback ───────────────────────────────
         if data != nullptr:
             update last_seq = queue_reader.last_seq()
             ++in_received
 
-        engine.invoke_consume(data, item_sz, flexzone, fz_sz,
-                               fz_type, msgs)
+        engine.invoke_consume(data, item_sz, flexzone, fz_sz, fz_type, msgs)
+        # invoke_consume is void. Error detection via error count comparison.
 
-        # ── Step E: Release slot ─────────────────────────────────────
+        # ── Step E: Release slot ──────────────────────────────────
         if data != nullptr:
             queue_reader.read_release()
 
-        # ── Step F: Metrics ──────────────────────────────────────────
+        # ── Step F: Metrics ───────────────────────────────────────
         work_us = duration_us(now() - cycle_start)
         store last_cycle_work_us = work_us
         ++iteration_count
 
-        # ── Step G: Next deadline ────────────────────────────────────
+        # ── Step G: Next deadline ─────────────────────────────────
         deadline = compute_next_deadline(config.loop_timing,
-                                          cycle_start, period_us)
+                                          deadline, cycle_start, period_us)
 
     log exit state
 ```
@@ -345,110 +368,118 @@ CONSUMER_DATA_LOOP(queue_reader, engine, core, config, inbox_queue):
 ### Differences from Producer
 
 1. `read_acquire` / `read_release` instead of `write_acquire` / `write_commit`
-2. No commit/discard decision — slot is released after callback
+2. No commit/discard — slot released after callback
 3. No drops counter
-4. `invoke_consume` is void (no InvokeResult)
+4. `invoke_consume` is void (error detected via error count comparison)
 5. `last_seq` updated when data arrives
 6. Read-only slot (`const void*`)
-
-### Note: Early exit check removed
-
-The current design has an early exit check between `read_acquire` success
-and callback (consumer_script_host.cpp:679-683). In the new design, the
-inner retry loop already checks shutdown between retries, and the outer
-while condition catches it before the next cycle. The early exit check is
-redundant — if shutdown was requested during `read_acquire`, the outer
-loop condition catches it at the top of the next iteration. The slot is
-released normally after the callback.
-
-However, for safety, we could add a check after Step B (deadline wait):
-```
-if NOT core.running_threads OR core.critical_error_:
-    if data: queue_reader.read_release()
-    break
-```
-This catches shutdowns that arrive during the deadline sleep.
 
 ---
 
 ## 5. Unified Data Loop — Processor
 
-Dual-queue loop. Does NOT use `hub::Processor` (see §5.3 for rationale).
+Dual-queue loop with input-hold strategy for Block mode.
+
+### 5.1 Queue Acquire Semantics (transport-dependent)
+
+| | SHM | ZMQ |
+|---|---|---|
+| `read_acquire` | Shared lock, zero-copy, ring NOT advanced | Copy to internal buffer, ring advanced immediately |
+| `read_release` | Releases lock, advances index | No-op (data already consumed) |
+| Data valid until | `read_release()` called | Next `read_acquire()` called |
+
+**Both transports support input-hold**: skip `read_acquire()` on the next
+cycle and the pointer remains valid (SHM: lock held; ZMQ: `current_read_buf_`
+unchanged).
+
+### 5.2 Processor Loop
 
 ```
 PROCESSOR_DATA_LOOP(in_q, out_q, engine, core, config, inbox_queue):
-    period_us = config.target_period_us
-    is_max_rate = (config.loop_timing == MaxRate)
-    ratio = config.queue_io_wait_timeout_ratio   # 0.1–0.5, default 0.1
-    short_timeout = compute_short_timeout(config.loop_timing, period_us,
-                                           ratio, config.queue_check_timeout_ms)
-    drop_mode = (config.overflow_policy == Drop)
+    period_us     = config.target_period_us
+    is_max_rate   = (config.loop_timing == MaxRate)
+    ratio         = config.queue_io_wait_timeout_ratio
+    short_timeout = compute_short_timeout(period_us, ratio)
+    drop_mode     = (config.overflow_policy == Drop)
 
-    in_sz = in_q.item_size()
-    out_sz = out_q.item_size()
+    in_sz         = in_q.item_size()
+    out_sz        = out_q.item_size()
+    deadline      = time_point::max()
+
+    # Input-hold state for Block mode (see §5.3)
+    held_input    = nullptr
 
     while core.running_threads AND NOT core.shutdown_requested
           AND NOT core.critical_error_:
 
         cycle_start = now()
 
-        # ── Step A: Acquire input with retry ─────────────────────────
+        # ── Step A: Acquire input ─────────────────────────────────
         #
-        # Uses queue_io_wait_timeout_ratio — same concern for all roles:
-        # waiting for the queue to become ready for the next I/O operation.
+        # If held_input is set (Block mode, previous output failed),
+        # skip acquire — reuse the held data.
         #
-        in_buf = nullptr
-        while true:
-            in_buf = in_q.read_acquire(short_timeout)
-            if in_buf != nullptr: break
-            if is_max_rate: break
-            if NOT core.running_threads OR core.shutdown_requested
-               OR core.critical_error_: break
-            remaining = deadline - now()
-            if remaining <= short_timeout: break
+        # Otherwise, inner retry acquire with short_timeout.
+        #
+        if held_input == nullptr:
+            while true:
+                held_input = in_q.read_acquire(short_timeout)
+                if held_input != nullptr: break
+                if is_max_rate: break
+                if NOT core.running_threads OR core.shutdown_requested
+                   OR core.critical_error_: break
+                if deadline != time_point::max():
+                    remaining = deadline - now()
+                    if remaining <= short_timeout: break
 
-        # ── Step B: Acquire output ───────────────────────────────────
+        # ── Step B: Acquire output (only if input available) ──────
         #
-        # Output timeout is a DIFFERENT concern from input: it reflects
-        # pipeline backpressure (downstream consumer can't keep up), not
-        # I/O timing. Therefore it uses a different timeout strategy:
+        # No input → no point acquiring output. Script called with
+        # both nil (messages-only cycle).
         #
-        #   Drop (default): 0ms — immediate failure, script called with
-        #     out_slot=nil, drops counted. No cascading delay.
+        # Input available → try output with policy-dependent timeout.
         #
-        #   Block + MaxRate: queue_check_timeout_ms — small wait, same
-        #     as input side minimum.
-        #
-        #   Block + FixedRate: remaining_until_deadline — uses whatever
-        #     time budget this cycle has left. Never steals from the next
-        #     cycle. On overrun (past deadline), falls back to 0ms.
-        #
-        if drop_mode:
-            output_timeout = 0ms
-        elif is_max_rate:
-            output_timeout = queue_check_timeout_ms
-        else:
-            remaining = deadline - now()
-            output_timeout = max(remaining, 0ms)
+        out_buf = nullptr
+        if held_input != nullptr:
+            if drop_mode:
+                out_buf = out_q.write_acquire(0ms)
+            else:
+                # Block mode: use remaining time until deadline.
+                # On overrun or first cycle, fall back to short_timeout.
+                if deadline != time_point::max():
+                    remaining = deadline - now()
+                    output_timeout = max(remaining, short_timeout)
+                else:
+                    output_timeout = short_timeout
+                out_buf = out_q.write_acquire(output_timeout)
 
-        out_buf = out_q.write_acquire(output_timeout)
-
-        # ── Step C: Deadline wait (FixedRate) ────────────────────────
-        if NOT is_max_rate AND now() < deadline:
+        # ── Step C: Deadline wait ─────────────────────────────────
+        if NOT is_max_rate
+           AND deadline != time_point::max() AND now() < deadline:
             sleep_until(deadline)
 
-        # ── Step D: Drain everything right before callback ───────────
-        msgs = core.drain_messages()
-        drain_inbox_sync_(engine)
+        # Shutdown check after potential sleep
+        if NOT core.running_threads OR core.shutdown_requested
+           OR core.critical_error_:
+            if held_input: in_q.read_release(); held_input = nullptr
+            if out_buf:    out_q.write_discard()
+            break
 
-        # ── Step E: Prepare and invoke callback ──────────────────────
+        # ── Step D: Drain right before callback ───────────────────
+        msgs = core.drain_messages()
+        drain_inbox_sync(engine)
+
+        # ── Step E: Invoke callback ───────────────────────────────
         if out_buf != nullptr:
             memset(out_buf, 0, out_sz)
 
-        result = engine.invoke_process(in_buf, in_sz, out_buf, out_sz,
+        result = engine.invoke_process(held_input, in_sz,
+                                        out_buf, out_sz,
                                         flexzone, fz_sz, fz_type, msgs)
 
-        # ── Step F: Commit/discard output, release input ─────────────
+        # ── Step F: Commit/discard output, release/hold input ─────
+        #
+        # Output:
         if out_buf != nullptr:
             if result == Commit:
                 out_q.write_commit()
@@ -456,57 +487,72 @@ PROCESSOR_DATA_LOOP(in_q, out_q, engine, core, config, inbox_queue):
             else:
                 out_q.write_discard()
                 ++out_drops
-        else:
-            ++out_drops  # no output slot acquired
+        elif held_input != nullptr:
+            ++out_drops   # had input but no output slot
 
-        if in_buf != nullptr:
-            in_q.read_release()
-            ++in_received
+        # Input:
+        if held_input != nullptr:
+            if out_buf != nullptr OR drop_mode:
+                # Normal: data processed or dropped. Advance input.
+                in_q.read_release()
+                held_input = nullptr
+                ++in_received
+            else:
+                # Block mode + output failed: HOLD input for next cycle.
+                # SHM: lock still held, pointer valid.
+                # ZMQ: current_read_buf_ unchanged, pointer valid.
+                # (held_input stays set → Step A skips acquire next cycle)
+                pass
 
         if result == Error:
             ON_SCRIPT_ERROR(config, core)
 
-        # ── Step G: Metrics + next deadline ──────────────────────────
+        # ── Step G: Metrics + next deadline ───────────────────────
         work_us = duration_us(now() - cycle_start)
         store last_cycle_work_us = work_us
         ++iteration_count
         deadline = compute_next_deadline(config.loop_timing,
-                                          cycle_start, period_us)
+                                          deadline, cycle_start, period_us)
 
     log exit state
 ```
 
-### 5.1 Processor: Output Acquire Strategy
+### 5.3 Input-Hold Strategy (Block Mode)
 
-For the processor, output acquire is always attempted (even without input).
-This differs from the current Lua processor which only acquires output
-after input succeeds.
+When the processor operates in **Block mode** and the output acquire fails
+(downstream congestion), the input data is **held** across cycles:
 
-Rationale: the script may want to produce output based on timer/messages
-alone (e.g., heartbeat output without input). The script receives
-`in_slot=nil, out_slot=nil_or_buf` and decides what to do.
+1. `held_input` pointer remains set
+2. Next cycle: Step A skips `read_acquire()` — reuses the held pointer
+3. The script is called again with the **same input data** and a fresh
+   output attempt
+4. This continues until output becomes available, at which point the input
+   is released normally
 
-If output acquire fails:
-- Drop mode: `out_buf = nullptr`, script called with nil output, drops incremented
-- Block mode: `out_buf` blocks up to `short_timeout`, may still be nullptr
+**Why this works for both transports:**
+- **SHM**: `read_release()` was never called, so the shared lock is held
+  and the pointer remains valid. The upstream producer cannot overwrite the slot.
+- **ZMQ**: `read_acquire()` copied data into `current_read_buf_`. Since we
+  skip the next `read_acquire()`, that buffer is never overwritten. The
+  pointer remains valid.
 
-### 5.2 Processor: Input Release Timing
+**Why not dequeue and copy?** Because holding is zero-cost — no extra
+allocation, no memcpy. The existing queue abstraction already supports it.
 
-Input is released AFTER the callback returns (same as consumer). The
-script accesses the input data during the callback; releasing before
-the callback would invalidate the pointer.
+**Why hold instead of dropping?** In Block mode, the user explicitly chose
+backpressure over data loss. Dropping the input would violate that contract.
+The upstream should slow down naturally because the input ring stays full
+(SHM: slot locked; ZMQ: ring entry consumed but no new recv completes).
 
-### 5.3 Why Not hub::Processor
+### 5.4 Why Not hub::Processor
 
 `hub::Processor` (hub_processor.cpp) does NOT handle:
 - Control messages (`core.drain_messages()`)
 - Inbox drain
 - Timing policy (FixedRate / FixedRateWithCompensation)
 - The inner retry-acquire pattern
+- Input-hold strategy for Block mode
 - `compute_next_deadline` at cycle end
-
-It handles: read→handler→write with Drop/Block, hot-swap handler,
-pre-hook. These are insufficient for the unified design.
 
 `hub::Processor` remains available for C++ embedded usage (no script
 engine, no inbox, no timing policy).
@@ -525,19 +571,12 @@ DRAIN_INBOX_SYNC(inbox_queue, engine):
 
         engine.invoke_on_inbox(item.data, item.size,
                                 inbox_type_name, item.sender_id)
-        # Engine handles: GIL (Python), pcall (Lua), errors
 
-        ack_code = 0     # success
-        # If engine reported error: ack_code stays 0
-        # (we don't drop inbox messages on script errors)
-        inbox_queue.send_ack(ack_code)
+        inbox_queue.send_ack(0)                   # always ack success
 ```
 
-All messages are preserved in FIFO order. No dropping.
-
-Inbox is drained in Step C (right before the script callback) for
-maximum freshness. The script receives the most up-to-date inbox
-state at call time.
+All messages preserved in FIFO order. No dropping. Drained in Step C
+(right before callback) for maximum freshness.
 
 ---
 
@@ -565,15 +604,15 @@ Already engine-agnostic. No changes needed.
 | Error | Source | Layer | Action |
 |-------|--------|-------|--------|
 | Script exception | L1 (engine) | Engine catches → `InvokeResult::Error` | L2 checks, applies `stop_on_script_error` |
-| Wrong return type | L1 (engine) | Engine logs, returns `InvokeResult::Error` | Same as above |
-| `api.set_critical_error()` | L1 (engine→L0) | Engine calls `core.set_critical_error()` | Outer loop exits on `critical_error_` |
+| Wrong return type | L1 (engine) | Engine logs → `InvokeResult::Error` | Same |
+| `api.set_critical_error()` | L1→L0 | `core.set_critical_error()` | Outer loop exits |
 | `stop_on_script_error` | L2 (loop) | `core.shutdown_requested = true` | Outer loop exits |
-| Peer dead | L3 (host) | Callback: `core.stop_reason_ = PeerDead; core.shutdown_requested = true` | Outer loop exits |
-| Hub dead | L3 (host) | Callback: `core.stop_reason_ = HubDead; core.shutdown_requested = true` | Outer loop exits |
-| Queue nullptr | L2 (loop) | Early return before loop starts | Host reports startup failure |
-| Config invalid | L3 (host) | Throws during `setup_infrastructure_()` | Host catches, signals failure |
+| Peer dead | L3 (host) | `core.stop_reason_ = PeerDead; core.shutdown_requested = true` | Outer loop exits |
+| Hub dead | L3 (host) | `core.stop_reason_ = HubDead; core.shutdown_requested = true` | Outer loop exits |
+| Queue nullptr | L2 (loop) | Early return before loop | Startup failure |
+| Config invalid | L3 (host) | Throws during setup | Startup failure |
 
-### 8.2 ON_SCRIPT_ERROR (in data loop)
+### 8.2 ON_SCRIPT_ERROR
 
 ```
 ON_SCRIPT_ERROR(config, core):
@@ -582,18 +621,20 @@ ON_SCRIPT_ERROR(config, core):
         core.shutdown_requested = true
 ```
 
+For `invoke_consume` (void return): detect via error count comparison
+(before/after invoke).
+
 ### 8.3 Shutdown Responsiveness
 
-Shutdown is checked at:
+Checked at:
 1. Outer loop condition (every cycle)
-2. Inner retry loop (between acquire attempts, every `short_timeout`)
-3. After deadline sleep (optional safety check)
+2. Inner retry loop (every `short_timeout`)
+3. After deadline sleep (safety check)
 
-Worst-case latency: `short_timeout` (10% of period, or `queue_check_timeout_ms`
-for MaxRate).
-
-For a 100ms period: worst-case 10ms response. For MaxRate with 50ms
-queue_check_timeout: worst-case 50ms response. Both acceptable.
+Worst-case latency: `short_timeout`.
+- MaxRate: 10 μs (practically instant)
+- FixedRate 100 Hz (period=10ms, ratio=0.1): 1 ms
+- FixedRate 10 Hz (period=100ms, ratio=0.1): 10 ms
 
 ---
 
@@ -609,7 +650,7 @@ queue_check_timeout: worst-case 50ms response. Both acceptable.
 ├──────────────────────────────────────────┤
 │  Layer 2: Data Loop                      │  Inner retry acquire, deadline
 │  (run_data_loop_ per role)               │  wait, drain, invoke, commit,
-│                                          │  timing, metrics
+│                                          │  timing, metrics, input-hold
 ├──────────────────────────────────────────┤
 │  Layer 1: ScriptEngine                   │  invoke_produce/consume/process,
 │  (LuaEngine / PythonEngine)              │  slot views, GIL, return parsing,
@@ -621,75 +662,30 @@ queue_check_timeout: worst-case 50ms response. Both acceptable.
 └──────────────────────────────────────────┘
 ```
 
-### 9.1 ScriptEngine Responsibilities (Layer 1)
-
-The engine is a **stateful callback dispatcher**:
-- Manages all script instances (owner + children)
-- Ownership is single-threaded (move-only, mutex-protected transfer)
-- Child instances can be spawned for other threads (Lua), with the
-  engine tracking all instances for unified metrics/health
-- Handles GIL (Python) or direct pcall (Lua) internally
-- Returns `InvokeResult` from produce/process callbacks
-- Catches all script errors → `InvokeResult::Error` + increment counter
-- Builds typed slot views in the engine's type system
-
-### 9.2 Data Loop Responsibilities (Layer 2)
-
-One implementation per role (producer/consumer/processor). Engine-agnostic.
-Steps A through G as described in §3-§5.
-
-### 9.3 Role Host Responsibilities (Layer 3)
-
-One implementation per role. Engine-agnostic. Owns:
-- `worker_thread_` lifecycle (spawn, ready_promise, join)
-- Engine creation: `config.script_type` → `LuaEngine` or `PythonEngine`
-- Infrastructure: Messenger, Producer/Consumer, queue(s)
-- Event wiring: peer-dead, hub-dead → `core_` flags
-- ctrl_thread_: `ZmqPollLoop` (pure C++)
-- Heartbeat: `snapshot_metrics_json()`
-- `wait_for_roles_()` coordination
-- Engine lifecycle calls on worker thread:
-  `initialize → load_script → register_slot_type → build_api → invoke_on_init
-   → [data loop] → invoke_on_stop → finalize`
-
 ---
 
-## 10. Implementation Sequence
+## 10. Implementation Status
 
-### Phase 1: Config + Utilities
-- Add `target_rate_hz` (double) to all 3 configs
-- Change `target_period_ms` from `int` to `double`
-- Add `queue_check_timeout_ms` (int, default 50) to all 3 configs
-- Remove `slot_acquire_timeout_ms`
-- Add `PYLABHUB_MAX_LOOP_RATE_HZ` CMake option (default 10000)
-- Implement `compute_short_timeout()` and `compute_next_deadline()`
-- Update `parse_loop_timing_policy()` validation
+### Done
+- ✅ `compute_short_timeout(period_us, ratio)` — unified formula, 10 μs floor
+- ✅ `compute_next_deadline(policy, prev_deadline, cycle_start, period_us)` — 4 parameters
+- ✅ `kMinQueueIoTimeoutUs`, `kDefaultQueueIoWaitRatio`, `kMinQueueIoWaitRatio`, `kMaxQueueIoWaitRatio`
+- ✅ `PYLABHUB_MAX_LOOP_RATE_HZ` CMake option
+- ✅ `resolve_period_us()` for rate_hz/period_ms unification
+- ✅ `ProducerRoleHost` + `LuaEngine` (wired, tested)
+- ✅ `ConsumerRoleHost` + `LuaEngine` (wired, tested)
+- ✅ `ProcessorRoleHost` + `LuaEngine` (wired, tested)
+- ✅ `drain_inbox_sync()`, `wait_for_roles()` — shared helpers
+- ✅ 1220/1220 tests pass
 
-### Phase 2: ProducerRoleHost
-- Implement `ProducerRoleHost` (Layer 3 + Layer 2)
-- Wire with LuaEngine first
-- Verify behavior matches existing LuaProducerHost
-- All tests pass
-
-### Phase 3: PythonEngine
-- Implement `PythonEngine` (wraps py::scoped_interpreter)
-- Wire ProducerRoleHost with PythonEngine
-- Verify behavior matches existing ProducerScriptHost
-- All tests pass
-
-### Phase 4: Consumer + Processor RoleHosts
-- ConsumerRoleHost (Layer 3 + Layer 2)
-- ProcessorRoleHost (Layer 3 + Layer 2)
-- Wire both with LuaEngine + PythonEngine
-
-### Phase 5: Cleanup
-- Delete old hosts: LuaProducerHost, LuaConsumerHost, LuaProcessorHost,
-  LuaRoleHostBase, ProducerScriptHost, ConsumerScriptHost,
-  ProcessorScriptHost, PythonRoleHostBase, PythonScriptHost
-- Delete old ScriptHost base class
-- Update HEP-0011
-
-### Phase 6: Multi-state + Rate Config
-- Implement `create_thread_state()` for Lua ctrl_thread_ callbacks
-- Add `target_rate_hz` config support end-to-end
-- Update all config tests
+### Remaining
+- [ ] Add `queue_io_wait_timeout_ratio` to all 3 config structs (currently hardcoded)
+- [ ] Wire config ratio into `compute_short_timeout()` calls
+- [ ] Add `target_rate_hz` (double) to all 3 config structs
+- [ ] Change `target_period_ms` from `int` to `double`
+- [ ] Update processor `run_data_loop_()` with input-hold strategy (§5.2)
+- [ ] `PythonEngine` implementation
+- [ ] Delete old hosts (LuaProducerHost, etc.)
+- [ ] Consumer `last_seq` tracking
+- [ ] `validate_only` mode layout printing
+- [ ] Update HEP-0011 with ScriptEngine architecture
