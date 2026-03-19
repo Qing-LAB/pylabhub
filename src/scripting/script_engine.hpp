@@ -29,6 +29,7 @@
 
 #include "role_host_core.hpp"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -89,6 +90,12 @@ struct RoleContext
 
     /// Pointer to RoleHostCore for shutdown flags (api.stop, api.set_critical_error).
     RoleHostCore *core{nullptr};
+
+    /// Metrics counters (owned by role host, read by engine API closures).
+    /// Set to nullptr when the metric doesn't apply to the role.
+    std::atomic<uint64_t> *out_written{nullptr};   ///< Producer/processor: committed slots
+    std::atomic<uint64_t> *in_received{nullptr};   ///< Consumer/processor: received slots
+    std::atomic<uint64_t> *drops{nullptr};          ///< Producer/processor: dropped cycles
 
     bool stop_on_script_error{false};
 };

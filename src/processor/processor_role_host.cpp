@@ -245,7 +245,10 @@ void ProcessorRoleHost::worker_main_()
     ctx.queue_reader = in_q_;
     ctx.producer     = out_producer_.has_value() ? &(*out_producer_) : nullptr;
     ctx.consumer     = in_consumer_.has_value() ? &(*in_consumer_) : nullptr;
-    ctx.core = &core_;
+    ctx.core         = &core_;
+    ctx.out_written  = &out_written_;
+    ctx.in_received  = &in_received_;
+    ctx.drops        = &out_drops_;
     ctx.stop_on_script_error = config_.stop_on_script_error;
 
     engine_->build_api(ctx);
