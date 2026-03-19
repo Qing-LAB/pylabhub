@@ -376,6 +376,88 @@ class PythonEngine : public ScriptEngine
 | String ops | **None** | **None** (type pre-built) |
 | Memory alloc | **None** (zero-copy FFI) | **None** (memoryview wraps pointer) |
 
+### 5.4 Design Differences: Lua vs Python Engine
+
+#### API object approach
+
+| Aspect | Lua | Python |
+|--------|-----|--------|
+| API type | Lua table of closures | pybind11 C++ class (typed) |
+| Method dispatch | Table lookup → closure call (~70ns) | Direct C++ dispatch via pybind11 (~20ns) |
+| Type safety | Runtime only (duck typing) | Compile-time (pybind11 binding + Python type hints) |
+| IDE support | None (table is opaque) | Autocomplete + type checking via `.pyi` stubs |
+| Build cost | Zero (table built at runtime) | Already compiled into binaries (existing modules) |
+
+**Design decision**: Python keeps the existing pybind11 `ProducerAPI`/`ConsumerAPI`/
+`ProcessorAPI` classes because they provide compile-time type safety at the C++ boundary
+and zero additional build cost (already compiled). The engine internally dispatches to
+the correct role API based on `RoleContext` pointers — this dispatch happens once at
+init time, not on the hot path.
+
+#### Slot view creation
+
+| Aspect | Lua | Python |
+|--------|-----|--------|
+| Mechanism | `ffi.cast(cached_ctype, raw_ptr)` | `ctypes.from_buffer(memoryview)` |
+| Type caching | `ffi.typeof()` at init → registry ref | `ctypes.Structure` subclass at init → py::object |
+| Read-only enforcement | FFI `const*` (convention, not enforced by LuaJIT) | `ReadonlyStructure` subclass with `__setattr__` override |
+| numpy support | No | Yes — `numpy.ndarray(shape, dtype, memoryview)` |
+| Hot-path cost | 2 registry lookups + ffi.cast | 1 memoryview creation + from_buffer call |
+
+#### GIL management
+
+Lua has no GIL. Python requires GIL acquire/release around every `invoke_*()` call.
+
+```
+LuaEngine::invoke_produce():
+    push args → lua_pcall → read return → done
+
+PythonEngine::invoke_produce():
+    py::gil_scoped_acquire
+    build slot view (memoryview + from_buffer)
+    py_on_produce_(slot, fz, msgs, api)
+    parse return
+    py::gil_scoped_release (scope exit)
+```
+
+The GIL acquire/release adds ~100-200ns per invoke call. At 10kHz (100μs period),
+this is 0.1-0.2% overhead — negligible.
+
+#### Script threading model
+
+| Aspect | Lua | Python |
+|--------|-----|--------|
+| Multi-state | Yes (`create_thread_state()`) | No (single interpreter per process) |
+| Parallel callbacks | Possible (separate lua_State per thread) | Not possible (GIL serializes everything) |
+| Future | Already supported | PEP 684 sub-interpreters (Python 3.13+) |
+
+#### What Python scripts should/should not do
+
+**Should do:**
+- Return `True` or `False` explicitly from `on_produce`/`on_process` (same strict contract as Lua)
+- Use `api.stop()` for graceful shutdown, `api.set_critical_error()` for fatal errors
+- Access slot data via ctypes fields (`out_slot.value = 42.0`) — zero-copy
+- Use `api.log()` instead of `print()` (logger is thread-safe, print is not)
+- Release large Python objects (numpy arrays, dicts) promptly — the GIL is held
+  during the callback, and long GIL hold times block the ctrl_thread_ metrics
+
+**Should NOT do:**
+- Import heavy modules inside callbacks (import once in `on_init`)
+- Spawn threads that access the API object (API is not thread-safe — all calls
+  must happen on the callback thread)
+- Hold references to slot memoryviews across cycles (the underlying SHM pointer
+  may change or be released between calls)
+- Call blocking I/O inside callbacks without `api.log` awareness (the data loop
+  is blocked during the callback — long I/O causes deadline overruns)
+- Use `time.sleep()` inside callbacks (use the framework's timing policy instead)
+
+#### What Lua scripts should/should not do
+
+Same rules as Python, plus:
+- Do NOT use `os.execute()`, `io.open()`, `loadfile()` (sandboxed — will error)
+- Use `ffi.new()` for local buffers, not Lua tables (FFI arrays are C-compatible)
+- Avoid creating closures inside callbacks (allocates per cycle — use module-level functions)
+
 ## 6. Unified Role Host
 
 ```cpp
