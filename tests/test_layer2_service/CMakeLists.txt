@@ -617,6 +617,7 @@ add_executable(test_layer2_lua_role_host_base
 
 target_include_directories(test_layer2_lua_role_host_base PRIVATE
     ${CMAKE_SOURCE_DIR}/src/scripting
+    ${CMAKE_SOURCE_DIR}/tests/test_framework
 )
 
 target_link_libraries(test_layer2_lua_role_host_base
@@ -640,6 +641,40 @@ layer2_require_staged_utils(test_layer2_lua_role_host_base)
 gtest_discover_tests(test_layer2_lua_role_host_base
     PROPERTIES
         LABELS "layer2;service;scripting;lua"
+        TIMEOUT 30
+)
+
+# --- LuaEngine unit tests ---
+add_executable(test_layer2_lua_engine
+    test_lua_engine.cpp
+)
+
+target_include_directories(test_layer2_lua_engine PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/scripting
+    ${CMAKE_SOURCE_DIR}/tests/test_framework
+)
+
+target_link_libraries(test_layer2_lua_engine
+    PRIVATE
+        pylabhub::utils
+        pylabhub::scripting
+        GTest::gtest
+        GTest::gtest_main
+)
+
+target_compile_definitions(test_layer2_lua_engine PRIVATE LOGGER_COMPILE_LEVEL=0)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_lua_engine)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_lua_engine
+    SUITE_NAME "Layer2_LuaEngine"
+)
+layer2_require_staged_utils(test_layer2_lua_engine)
+
+gtest_discover_tests(test_layer2_lua_engine
+    PROPERTIES
+        LABELS "layer2;service;scripting;lua;engine"
         TIMEOUT 30
 )
 
