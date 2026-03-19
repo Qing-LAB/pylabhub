@@ -218,6 +218,7 @@ void ProducerRoleHost::worker_main_()
     ctx.queue_reader = nullptr;
     ctx.producer    = out_producer_.has_value() ? &(*out_producer_) : nullptr;
     ctx.consumer    = nullptr;
+    ctx.core = &core_;
     ctx.stop_on_script_error = config_.stop_on_script_error;
 
     engine_->build_api(ctx);

@@ -217,6 +217,7 @@ void ConsumerRoleHost::worker_main_()
     ctx.queue_reader = queue_reader_;
     ctx.producer    = nullptr;
     ctx.consumer    = in_consumer_.has_value() ? &(*in_consumer_) : nullptr;
+    ctx.core = &core_;
     ctx.stop_on_script_error = config_.stop_on_script_error;
 
     engine_->build_api(ctx);

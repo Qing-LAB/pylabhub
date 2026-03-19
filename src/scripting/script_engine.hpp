@@ -87,6 +87,9 @@ struct RoleContext
     /// Pointer to the hub::Consumer (for consumer-specific API).
     void *consumer{nullptr};
 
+    /// Pointer to RoleHostCore for shutdown flags (api.stop, api.set_critical_error).
+    RoleHostCore *core{nullptr};
+
     bool stop_on_script_error{false};
 };
 
