@@ -120,6 +120,7 @@ class ConsumerRoleHost
 
     // Metrics (atomic, written by worker, read by ctrl_thread_ heartbeat).
     std::atomic<uint64_t>                  in_received_{0};
+    std::atomic<uint64_t>                  last_seq_{0};
     std::atomic<uint64_t>                  iteration_count_{0};
     std::atomic<uint64_t>                  last_cycle_work_us_{0};
 };
