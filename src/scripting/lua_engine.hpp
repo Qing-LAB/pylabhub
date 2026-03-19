@@ -111,6 +111,14 @@ class LuaEngine : public ScriptEngine
 
     std::atomic<uint64_t> script_errors_{0};
 
+    // ── Cached FFI ctype refs (set during register_slot_type) ───────────
+    // Created via ffi.typeof() at init time. Used by invoke_* for zero-string-op
+    // slot view creation on the hot path.
+    int ref_slot_writable_{LUA_NOREF};   ///< ffi.typeof("SlotFrame*")
+    int ref_slot_readonly_{LUA_NOREF};   ///< ffi.typeof("SlotFrame const*")
+    int ref_in_slot_readonly_{LUA_NOREF};  ///< ffi.typeof("InSlotFrame const*") (processor)
+    int ref_out_slot_writable_{LUA_NOREF}; ///< ffi.typeof("OutSlotFrame*") (processor)
+
     // ── RoleContext captured at build_api time ────────────────────────────
     RoleContext ctx_{};
     bool stop_on_script_error_{false};

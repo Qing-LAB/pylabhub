@@ -324,7 +324,37 @@ bool LuaEngine::register_slot_type(const SchemaSpec &spec,
     if (cdef.empty())
         return false;
 
-    return state_.register_ffi_type(cdef, log_tag_.c_str());
+    if (!state_.register_ffi_type(cdef, log_tag_.c_str()))
+        return false;
+
+    // Cache ffi.typeof() for hot-path slot views — no string ops per cycle.
+    // Convention:
+    //   "SlotFrame"    → producer writable / consumer readonly
+    //   "InSlotFrame"  → processor input readonly
+    //   "OutSlotFrame" → processor output writable
+    //   "FlexFrame"    → flexzone (cached separately via fz_type param)
+    //   "InboxFrame"   → inbox (not cached — low frequency)
+    const std::string tn{type_name};
+    if (tn == "InSlotFrame")
+    {
+        ref_in_slot_readonly_ = state_.cache_ffi_typeof(type_name, /*readonly=*/true);
+    }
+    else if (tn == "OutSlotFrame")
+    {
+        ref_out_slot_writable_ = state_.cache_ffi_typeof(type_name, /*readonly=*/false);
+    }
+    else if (tn == "SlotFrame")
+    {
+        ref_slot_writable_ = state_.cache_ffi_typeof(type_name, /*readonly=*/false);
+        ref_slot_readonly_ = state_.cache_ffi_typeof(type_name, /*readonly=*/true);
+        // Also set in/out refs for unified context.
+        if (ref_in_slot_readonly_ == LUA_NOREF)
+            ref_in_slot_readonly_ = state_.cache_ffi_typeof(type_name, /*readonly=*/true);
+        if (ref_out_slot_writable_ == LUA_NOREF)
+            ref_out_slot_writable_ = state_.cache_ffi_typeof(type_name, /*readonly=*/false);
+    }
+
+    return true;
 }
 
 size_t LuaEngine::type_sizeof(const char *type_name) const
@@ -388,9 +418,8 @@ InvokeResult LuaEngine::invoke_produce(
     // Arg 1: out_slot (writable cdata or nil).
     if (out_slot != nullptr)
     {
-        // type_name for the slot — we rely on the caller having registered "SlotFrame"
-        // via register_slot_type(). Push as writable cdata.
-        if (!state_.push_slot_view(out_slot, out_sz, "SlotFrame"))
+        // Hot path: use cached ffi.typeof ref (no string ops).
+        if (!state_.push_slot_view_cached(out_slot, ref_slot_writable_))
         {
             lua_pop(L, 1); // pop function
             return InvokeResult::Error;
@@ -446,7 +475,9 @@ void LuaEngine::invoke_consume(
     // Arg 1: in_slot (read-only cdata or nil).
     if (in_slot != nullptr)
     {
-        if (!state_.push_slot_view_readonly(in_slot, in_sz, "SlotFrame"))
+        // Hot path: use cached ffi.typeof ref (no string ops).
+        // const_cast is safe: push_slot_view_cached uses the readonly ctype ref.
+        if (!state_.push_slot_view_cached(const_cast<void *>(in_slot), ref_slot_readonly_))
         {
             lua_pop(L, 1); // pop function
             return;
@@ -500,7 +531,8 @@ InvokeResult LuaEngine::invoke_process(
     // Arg 1: in_slot (read-only cdata or nil).
     if (in_slot != nullptr)
     {
-        if (!state_.push_slot_view_readonly(in_slot, in_sz, "SlotFrame"))
+        // Hot path: use cached ffi.typeof ref (no string ops).
+        if (!state_.push_slot_view_cached(const_cast<void *>(in_slot), ref_in_slot_readonly_))
         {
             lua_pop(L, 1); // pop function
             return InvokeResult::Error;
@@ -514,7 +546,7 @@ InvokeResult LuaEngine::invoke_process(
     // Arg 2: out_slot (writable cdata or nil).
     if (out_slot != nullptr)
     {
-        if (!state_.push_slot_view(out_slot, out_sz, "SlotFrame"))
+        if (!state_.push_slot_view_cached(out_slot, ref_out_slot_writable_))
         {
             lua_pop(L, 2); // pop function + in_slot
             return InvokeResult::Error;
