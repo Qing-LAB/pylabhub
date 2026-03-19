@@ -544,8 +544,7 @@ void ConsumerRoleHost::run_data_loop_()
     const double period_us =
         static_cast<double>(config_.target_period_ms) * kUsPerMs;
     const bool is_max_rate = (config_.loop_timing == LoopTimingPolicy::MaxRate);
-    const auto short_timeout_us = compute_short_timeout(
-        config_.loop_timing, period_us, kDefaultQueueCheckMs);
+    const auto short_timeout_us = compute_short_timeout(period_us, kDefaultQueueIoWaitRatio);
     // read_acquire takes milliseconds; convert with rounding up to avoid 0ms.
     const auto short_timeout =
         std::chrono::duration_cast<std::chrono::milliseconds>(short_timeout_us + std::chrono::microseconds{999});
