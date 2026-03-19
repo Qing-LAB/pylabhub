@@ -250,11 +250,12 @@ TEST_F(LuaEngineTest, InvokeProduce_DiscardOnFalse)
     engine.finalize();
 }
 
-TEST_F(LuaEngineTest, InvokeProduce_CommitOnNilReturn)
+TEST_F(LuaEngineTest, InvokeProduce_NilReturn_IsError)
 {
+    // Missing return value is an error — explicit return true/false required.
     write_script(R"(
         function on_produce(out_slot, fz, msgs, api)
-            -- no explicit return → nil → commit
+            -- no explicit return → nil → error (must be explicit)
         end
     )");
 
@@ -265,7 +266,9 @@ TEST_F(LuaEngineTest, InvokeProduce_CommitOnNilReturn)
     std::vector<IncomingMessage> msgs;
 
     auto result = engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
+    EXPECT_EQ(result, InvokeResult::Error)
+        << "Missing return should be Error, not Commit";
+    EXPECT_EQ(engine.script_error_count(), 1u);
 
     engine.finalize();
 }
@@ -1007,6 +1010,139 @@ TEST_F(LuaEngineTest, MetricsClosures_ReadFromRoleHostCounters)
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed — metrics values incorrect";
 
+    engine.finalize();
+}
+
+// ============================================================================
+// 19. Wrong return type detection
+// ============================================================================
+
+TEST_F(LuaEngineTest, InvokeProduce_WrongReturnType_IsError)
+{
+    // Returning a number instead of boolean should be an Error.
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            return 42
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+
+    auto result = engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(result, InvokeResult::Error)
+        << "Returning a number should be Error, not Commit";
+    EXPECT_EQ(engine.script_error_count(), 1u);
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, InvokeProduce_WrongReturnString_IsError)
+{
+    // Returning a string instead of boolean should be an Error.
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            return "ok"
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+
+    auto result = engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(result, InvokeResult::Error)
+        << "Returning a string should be Error, not Commit";
+    EXPECT_EQ(engine.script_error_count(), 1u);
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 20. stop_on_script_error at engine level
+// ============================================================================
+
+TEST_F(LuaEngineTest, StopOnScriptError_SetsShutdownOnError)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            error("intentional error")
+        end
+    )");
+
+    RoleHostCore core;
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+
+    auto ctx = producer_context();
+    ctx.core = &core;
+    ctx.stop_on_script_error = true;  // enable
+    engine.build_api(ctx);
+
+    EXPECT_FALSE(core.shutdown_requested.load());
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+
+    EXPECT_EQ(result, InvokeResult::Error);
+    EXPECT_TRUE(core.shutdown_requested.load())
+        << "stop_on_script_error should set shutdown_requested on error";
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 21. Negative paths: load_script failures
+// ============================================================================
+
+TEST_F(LuaEngineTest, LoadScript_MissingFile_ReturnsFalse)
+{
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test"));
+    EXPECT_FALSE(engine.load_script(tmp_, "nonexistent.lua", "on_produce"));
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, LoadScript_MissingRequiredCallback_ReturnsFalse)
+{
+    write_script(R"(
+        function on_init(api) end
+        -- on_produce intentionally absent
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test"));
+    EXPECT_FALSE(engine.load_script(tmp_, "init.lua", "on_produce"));
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, RegisterSlotType_BadFieldType_ReturnsFalse)
+{
+    write_script("function on_produce(out_slot, fz, msgs, api) return true end");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
+
+    SchemaSpec bad_spec;
+    FieldDef f;
+    f.name = "x";
+    f.type_str = "complex128";  // unsupported type
+    f.count = 1;
+    f.length = 0;
+    bad_spec.fields.push_back(f);
+
+    EXPECT_FALSE(engine.register_slot_type(bad_spec, "BadFrame", "aligned"));
     engine.finalize();
 }
 

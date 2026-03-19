@@ -462,10 +462,34 @@ InvokeResult LuaEngine::invoke_produce(
     if (!state_.pcall(4, 1, "on_produce"))
         return on_pcall_error_("on_produce");
 
-    // Parse return: nil/true -> Commit, false -> Discard.
-    bool commit = lua_isnil(L, -1) || lua_toboolean(L, -1);
+    // Strict return value contract:
+    //   true  → Commit (publish the slot)
+    //   false → Discard (script chose not to publish)
+    //   nil   → Error (script omitted return — must be explicit)
+    //   other → Error (wrong type — log, count, treat as Discard)
+    InvokeResult result;
+    if (lua_isboolean(L, -1))
+    {
+        result = lua_toboolean(L, -1) ? InvokeResult::Commit : InvokeResult::Discard;
+    }
+    else if (lua_isnil(L, -1))
+    {
+        LOGGER_WARN("[{}] on_produce returned nil — explicit 'return true' or "
+                    "'return false' is required. Treating as discard.",
+                    log_tag_);
+        result = on_pcall_error_("on_produce [missing return value]");
+    }
+    else
+    {
+        LOGGER_ERROR("[{}] on_produce returned non-boolean type '{}' (value: {}) — "
+                     "expected 'return true' or 'return false'. Treating as discard.",
+                     log_tag_,
+                     lua_typename(L, lua_type(L, -1)),
+                     lua_tostring(L, -1) ? lua_tostring(L, -1) : "?");
+        result = on_pcall_error_("on_produce [wrong return type]");
+    }
     lua_pop(L, 1);
-    return commit ? InvokeResult::Commit : InvokeResult::Discard;
+    return result;
 }
 
 // ============================================================================
@@ -614,10 +638,30 @@ InvokeResult LuaEngine::invoke_process(
     if (!state_.pcall(5, 1, "on_process"))
         return on_pcall_error_("on_process");
 
-    // Parse return: nil/true -> Commit, false -> Discard.
-    bool commit = lua_isnil(L, -1) || lua_toboolean(L, -1);
+    // Strict return value contract (same as on_produce).
+    InvokeResult result;
+    if (lua_isboolean(L, -1))
+    {
+        result = lua_toboolean(L, -1) ? InvokeResult::Commit : InvokeResult::Discard;
+    }
+    else if (lua_isnil(L, -1))
+    {
+        LOGGER_WARN("[{}] on_process returned nil — explicit 'return true' or "
+                    "'return false' is required. Treating as discard.",
+                    log_tag_);
+        result = on_pcall_error_("on_process [missing return value]");
+    }
+    else
+    {
+        LOGGER_ERROR("[{}] on_process returned non-boolean type '{}' (value: {}) — "
+                     "expected 'return true' or 'return false'. Treating as discard.",
+                     log_tag_,
+                     lua_typename(L, lua_type(L, -1)),
+                     lua_tostring(L, -1) ? lua_tostring(L, -1) : "?");
+        result = on_pcall_error_("on_process [wrong return type]");
+    }
     lua_pop(L, 1);
-    return commit ? InvokeResult::Commit : InvokeResult::Discard;
+    return result;
 }
 
 // ============================================================================

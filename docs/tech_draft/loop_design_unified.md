@@ -574,8 +574,12 @@ C++ framework (Layer 2) and the user script.
 | nil | empty | Acquire timeout — ring full or no consumer | Idle cycle. Return `false` (discard). Script can do housekeeping. |
 | nil | non-empty | Timeout + control events | Process messages. Return `false`. |
 
-**Return value**: `true`/`nil` = commit (publish slot). `false` = discard.
-Wrong type = error (logged, counted, treated as discard).
+**Return value** (strict — explicit return required):
+- `return true` → Commit (publish the slot)
+- `return false` → Discard (do not publish)
+- No return / `return nil` → **Error** (script must explicitly return true or false;
+  omitting return is treated as a bug — logged as WARN, counted as error, treated as discard)
+- Wrong type (number, string, table) → **Error** (logged as ERROR, counted, treated as discard)
 
 **Flexzone** (`fz`): Writable. Persists across cycles. Script can write during
 `on_init` and update on any `on_produce` call. Checksum synced after `on_init`.
