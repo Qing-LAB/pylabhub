@@ -610,6 +610,18 @@ def on_stop(api):
 //
 // Consumer calls api.notify_channel() targeting the same channel's producer.
 // Producer should receive it; consumer should NOT.
+//
+// Test design:
+//   - No data flow: producer always returns false (discard). This test is
+//     purely about control-plane notify routing, not data-plane behavior.
+//   - Consumer sends api.notify_channel('test.notify', 'test_ping') on first call.
+//   - Producer checks messages for the 'test_ping' event.
+//   - Consumer verifies it does NOT receive its own notify (events are
+//     routed to the channel's producer, not back to the sender).
+//   - Consumer uses time-based exit (2s wall clock) instead of iteration count
+//     because the unified data loop runs MaxRate at 10μs per cycle —
+//     iteration-count-based exits are timing-sensitive and unreliable.
+//   - Producer exits via CHANNEL_CLOSING_NOTIFY when the test closes the channel.
 
 TEST_F(ChannelBroadcastTest, NotifyChannel_ProducerOnly)
 {
@@ -645,27 +657,34 @@ def on_stop(api):
     // Consumer: sends notify on first iteration, then checks it does NOT
     // receive the notify event itself. Writes result to file.
     const std::string cons_script = fmt::format(R"py(
+import time as _time
 _sent = False
-_iterations = 0
+_start_time = None
 _got_notify = False
 
 def on_init(api):
     api.log('info', 'Notify consumer on_init')
 
 def on_consume(in_slot, flexzone, messages, api):
-    global _sent, _iterations, _got_notify
-    _iterations += 1
+    global _sent, _start_time, _got_notify
 
+    if _start_time is None:
+        _start_time = _time.monotonic()
+
+    # Process control messages.
+    for m in messages:
+        if isinstance(m, dict) and m.get('event') == 'test_ping':
+            _got_notify = True
+
+    # Send notify on first opportunity.
     if not _sent:
         api.notify_channel('test.notify', 'test_ping')
         _sent = True
         api.log('info', 'Consumer: sent notify')
 
-    for m in messages:
-        if isinstance(m, dict) and m.get('event') == 'test_ping':
-            _got_notify = True
-
-    if _iterations >= 8:
+    # Wait 2 seconds (enough time for broker to route the notify),
+    # then write result and stop.
+    if _time.monotonic() - _start_time >= 2.0:
         with open(r'{}', 'w') as f:
             if _got_notify:
                 f.write('CONS_GOT_NOTIFY:UNEXPECTED\n')
