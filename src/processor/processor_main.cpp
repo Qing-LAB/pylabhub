@@ -61,6 +61,7 @@
 #include "lua_processor_host.hpp"
 #include "processor_role_host.hpp"
 #include "lua_engine.hpp"
+#include "python_engine.hpp"
 
 #include "plh_datahub.hpp"
 #include "utils/actor_vault.hpp"
@@ -413,76 +414,64 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    // ── Python path (default) ──────────────────────────────────────────────────
-    // ProcessorScriptHost owns the Python interpreter lifetime via PythonScriptHost.
-    pylabhub::processor::ProcessorScriptHost proc_script;
-    proc_script.set_config(std::move(config));
-    proc_script.set_validate_only(args.validate_only);
-    proc_script.set_shutdown_flag(&g_shutdown);
-
-    try
+    // ── Python path (default) — unified ProcessorRoleHost + PythonEngine ─────
     {
-        proc_script.startup_();
+        auto engine = std::make_unique<pylabhub::scripting::PythonEngine>();
+
+        pylabhub::processor::ProcessorRoleHost host;
+        host.set_engine(std::move(engine));
+        host.set_config(std::move(config));
+        host.set_validate_only(args.validate_only);
+        host.set_shutdown_flag(&g_shutdown);
+
+        try { host.startup_(); }
+        catch (const std::exception &e)
+        {
+            std::cerr << "Python startup failed: " << e.what() << "\n";
+            return 1;
+        }
+
+        if (!host.script_load_ok())
+        {
+            std::cerr << "Python script load failed.\n";
+            host.shutdown_();
+            return 1;
+        }
+
+        if (args.validate_only)
+        {
+            std::cout << "\nValidation passed.\n";
+            host.shutdown_();
+            return 0;
+        }
+
+        if (!host.is_running())
+        {
+            std::cerr << "Failed to start processor — loop did not start.\n";
+            host.shutdown_();
+            return 1;
+        }
+
+        const auto start_time = std::chrono::steady_clock::now();
+        const auto &cfg = host.config();
+        signal_handler.set_status_callback([&]() -> std::string
+        {
+            const auto elapsed = std::chrono::steady_clock::now() - start_time;
+            const auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+            return fmt::format(
+                "  pyLabHub {} (pylabhub-processor, python)\n"
+                "  Config:      {}\n"
+                "  UID:         {}\n"
+                "  In channel:  {}\n"
+                "  Out channel: {}\n"
+                "  Uptime:      {}h {}m {}s",
+                pylabhub::platform::get_version_string(),
+                config_dir, cfg.processor_uid, cfg.in_channel, cfg.out_channel,
+                secs / 3600, (secs % 3600) / 60, secs % 60);
+        });
+
+        scripting::run_role_main_loop(g_shutdown, host, "[proc-main]");
+        host.shutdown_();
     }
-    catch (const std::exception &e)
-    {
-        std::cerr << "Interpreter startup failed: " << e.what() << "\n";
-        return 1;
-    }
-
-    // ── Check script load result ───────────────────────────────────────────────
-    if (!proc_script.script_load_ok())
-    {
-        std::cerr << "Script load failed.\n";
-        proc_script.shutdown_();
-        return 1;
-    }
-
-    // ── validate mode: print layout and exit ─────────────────────────────────
-    if (args.validate_only)
-    {
-        std::cout << "\nValidation passed.\n";
-        proc_script.shutdown_();
-        return 0;
-    }
-
-    // ── Run mode ──────────────────────────────────────────────────────────────
-    if (!proc_script.is_running())
-    {
-        std::cerr << "Failed to start processor — loop did not start.\n";
-        proc_script.shutdown_();
-        return 1;
-    }
-
-    // Register status callback now that config and API are available.
-    const auto start_time = std::chrono::steady_clock::now();
-    const auto &api = proc_script.api();
-    const auto &cfg = proc_script.config();
-    signal_handler.set_status_callback([&]() -> std::string
-    {
-        const auto elapsed = std::chrono::steady_clock::now() - start_time;
-        const auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
-        return fmt::format(
-            "  pyLabHub {} (pylabhub-processor)\n"
-            "  Config:      {}\n"
-            "  UID:         {}\n"
-            "  In channel:  {}\n"
-            "  Out channel: {}\n"
-            "  Status:      running ({} in, {} out, {} drops, {} errors)\n"
-            "  Uptime:      {}h {}m {}s",
-            pylabhub::platform::get_version_string(),
-            config_dir, cfg.processor_uid, cfg.in_channel, cfg.out_channel,
-            api.in_slots_received(), api.out_slots_written(),
-            api.out_drop_count(), api.script_error_count(),
-            secs / 3600, (secs % 3600) / 60, secs % 60);
-    });
-
-    scripting::run_role_main_loop(g_shutdown, proc_script, "[proc-main]");
-
-    // ── Tear down ─────────────────────────────────────────────────────────────
-    proc_script.shutdown_();
     return 0;
-    // runner_lifecycle destructor calls finalize():
-    //   → SignalHandler (dynamic persistent) uninstalled first
-    //   → Logger, ZMQContext, etc. stopped in reverse init order
 }

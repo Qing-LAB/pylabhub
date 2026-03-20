@@ -44,6 +44,7 @@
 #include "consumer_script_host.hpp"
 #include "lua_consumer_host.hpp"
 #include "lua_engine.hpp"
+#include "python_engine.hpp"
 
 #include "plh_datahub.hpp"
 #include "utils/actor_vault.hpp"
@@ -352,68 +353,63 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    // -- Python path (default) ------------------------------------------------
-    pylabhub::consumer::ConsumerScriptHost cons_script;
-    cons_script.set_config(std::move(config));
-    cons_script.set_validate_only(args.validate_only);
-    cons_script.set_shutdown_flag(&g_shutdown);
-
-    try
+    // ── Python path (default) — unified ConsumerRoleHost + PythonEngine ─────
     {
-        cons_script.startup_();
+        auto engine = std::make_unique<pylabhub::scripting::PythonEngine>();
+
+        pylabhub::consumer::ConsumerRoleHost host;
+        host.set_engine(std::move(engine));
+        host.set_config(std::move(config));
+        host.set_validate_only(args.validate_only);
+        host.set_shutdown_flag(&g_shutdown);
+
+        try { host.startup_(); }
+        catch (const std::exception &e)
+        {
+            std::cerr << "Python startup failed: " << e.what() << "\n";
+            return 1;
+        }
+
+        if (!host.script_load_ok())
+        {
+            std::cerr << "Python script load failed.\n";
+            host.shutdown_();
+            return 1;
+        }
+
+        if (args.validate_only)
+        {
+            std::cout << "\nValidation passed.\n";
+            host.shutdown_();
+            return 0;
+        }
+
+        if (!host.is_running())
+        {
+            std::cerr << "Failed to start consumer — loop did not start.\n";
+            host.shutdown_();
+            return 1;
+        }
+
+        const auto start_time = std::chrono::steady_clock::now();
+        const auto &cfg = host.config();
+        signal_handler.set_status_callback([&]() -> std::string
+        {
+            const auto elapsed = std::chrono::steady_clock::now() - start_time;
+            const auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+            return fmt::format(
+                "  pyLabHub {} (pylabhub-consumer, python)\n"
+                "  Config:    {}\n"
+                "  UID:       {}\n"
+                "  Channel:   {}\n"
+                "  Uptime:    {}h {}m {}s",
+                pylabhub::platform::get_version_string(),
+                config_dir, cfg.consumer_uid, cfg.channel,
+                secs / 3600, (secs % 3600) / 60, secs % 60);
+        });
+
+        scripting::run_role_main_loop(g_shutdown, host, "[cons-main]");
+        host.shutdown_();
     }
-    catch (const std::exception &e)
-    {
-        std::cerr << "Interpreter startup failed: " << e.what() << "\n";
-        return 1;
-    }
-
-    if (!cons_script.script_load_ok())
-    {
-        std::cerr << "Script load failed.\n";
-        cons_script.shutdown_();
-        return 1;
-    }
-
-    if (args.validate_only)
-    {
-        std::cout << "\nValidation passed.\n";
-        cons_script.shutdown_();
-        return 0;
-    }
-
-    if (!cons_script.is_running())
-    {
-        std::cerr << "Failed to start consumer — loop did not start.\n";
-        cons_script.shutdown_();
-        return 1;
-    }
-
-    // Register status callback now that config and API are available.
-    const auto start_time = std::chrono::steady_clock::now();
-    const auto &api = cons_script.api();
-    const auto &cfg = cons_script.config();
-    signal_handler.set_status_callback([&]() -> std::string
-    {
-        const auto elapsed = std::chrono::steady_clock::now() - start_time;
-        const auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
-        return fmt::format(
-            "  pyLabHub {} (pylabhub-consumer)\n"
-            "  Config:    {}\n"
-            "  UID:       {}\n"
-            "  Channel:   {}\n"
-            "  Status:    running ({} slots received, {} errors)\n"
-            "  Uptime:    {}h {}m {}s",
-            pylabhub::platform::get_version_string(),
-            config_dir, cfg.consumer_uid, cfg.channel,
-            api.in_slots_received(), api.script_error_count(),
-            secs / 3600, (secs % 3600) / 60, secs % 60);
-    });
-
-    scripting::run_role_main_loop(g_shutdown, cons_script, "[cons-main]");
-    cons_script.shutdown_();
     return 0;
-    // runner_lifecycle destructor calls finalize():
-    //   → SignalHandler (dynamic persistent) uninstalled first
-    //   → Logger, ZMQContext, etc. stopped in reverse init order
 }

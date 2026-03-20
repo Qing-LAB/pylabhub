@@ -25,6 +25,12 @@ add_library(pylabhub-scripting STATIC
     lua_state.cpp
     lua_engine.cpp
     lua_role_host_base.cpp
+    python_engine.cpp
+    # Role API classes — in the shared lib so PythonEngine and future
+    # dynamic bindings can access all 3 without per-binary compilation.
+    ${CMAKE_SOURCE_DIR}/src/producer/producer_api.cpp
+    ${CMAKE_SOURCE_DIR}/src/consumer/consumer_api.cpp
+    ${CMAKE_SOURCE_DIR}/src/processor/processor_api.cpp
 )
 add_library(pylabhub::scripting ALIAS pylabhub-scripting)
 
@@ -38,10 +44,12 @@ target_compile_definitions(pylabhub-scripting PRIVATE
     LOGGER_COMPILE_LEVEL=${PYLABHUB_LOGGER_COMPILE_LEVEL}
 )
 
-# Private: only the scripting lib's own .cpp needs this directory.
-# Consumers find python_script_host.hpp via their own include path addition.
+# Include paths: scripting dir + role directories (for API headers).
 target_include_directories(pylabhub-scripting PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/src/producer
+    ${CMAKE_SOURCE_DIR}/src/consumer
+    ${CMAKE_SOURCE_DIR}/src/processor
 )
 
 target_link_libraries(pylabhub-scripting PUBLIC
