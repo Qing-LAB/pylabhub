@@ -430,8 +430,12 @@ void PythonEngine::build_api(const RoleContext &ctx)
         api_obj_ = py::cast(&api, py::return_value_policy::reference);
     }
 
-    // Release the GIL for the data loop. Each invoke_*() will re-acquire it.
-    gil_release_.emplace();
+    // GIL stays held on the worker thread. Each invoke_*() uses
+    // py::gil_scoped_acquire which is a no-op when already held (reentrant).
+    // The GIL is not explicitly released between calls — this is safe because
+    // all engine calls happen on the same worker thread.
+    // TODO: evaluate if GIL release between calls improves responsiveness
+    // for ctrl_thread_ Python work (future multi-state support).
 }
 
 // ============================================================================
