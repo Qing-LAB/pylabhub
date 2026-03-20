@@ -16,6 +16,7 @@
 
 #include "test_patterns.h"
 #include "test_process_utils.h"
+#include "test_sync_utils.h"   // poll_until
 #include "test_entrypoint.h"
 
 #include <cppzmq/zmq.hpp>
@@ -611,17 +612,20 @@ def on_stop(api):
 // Consumer calls api.notify_channel() targeting the same channel's producer.
 // Producer should receive it; consumer should NOT.
 //
-// Test design:
+// Test design (event-driven, no timing assumptions):
 //   - No data flow: producer always returns false (discard). This test is
 //     purely about control-plane notify routing, not data-plane behavior.
 //   - Consumer sends api.notify_channel('test.notify', 'test_ping') on first call.
-//   - Producer checks messages for the 'test_ping' event.
-//   - Consumer verifies it does NOT receive its own notify (events are
-//     routed to the channel's producer, not back to the sender).
-//   - Consumer uses time-based exit (2s wall clock) instead of iteration count
-//     because the unified data loop runs MaxRate at 10μs per cycle —
-//     iteration-count-based exits are timing-sensitive and unreliable.
-//   - Producer exits via CHANNEL_CLOSING_NOTIFY when the test closes the channel.
+//   - Producer checks messages for the 'test_ping' event → writes result file.
+//   - Consumer does NOT receive its own notify (events are routed to the
+//     channel's producer, not back to the sender).
+//   - Exit sequence (fully event-driven):
+//     1. Test harness waits 500ms for broker to route the notify.
+//     2. Test harness sends close_channel('test.notify').
+//     3. Consumer receives 'channel_closing' event → writes result file → api.stop().
+//     4. Producer receives 'channel_closing' → api.stop().
+//     5. Test harness reads both result files and verifies contents.
+//   - No iteration counts, no timers in scripts. Exit triggered by protocol event.
 
 TEST_F(ChannelBroadcastTest, NotifyChannel_ProducerOnly)
 {
@@ -657,24 +661,23 @@ def on_stop(api):
     // Consumer: sends notify on first iteration, then checks it does NOT
     // receive the notify event itself. Writes result to file.
     const std::string cons_script = fmt::format(R"py(
-import time as _time
 _sent = False
-_start_time = None
 _got_notify = False
 
 def on_init(api):
     api.log('info', 'Notify consumer on_init')
 
 def on_consume(in_slot, flexzone, messages, api):
-    global _sent, _start_time, _got_notify
+    global _sent, _got_notify
 
-    if _start_time is None:
-        _start_time = _time.monotonic()
-
-    # Process control messages.
     for m in messages:
-        if isinstance(m, dict) and m.get('event') == 'test_ping':
-            _got_notify = True
+        if isinstance(m, dict):
+            ev = m.get('event', '')
+            if ev == 'test_ping':
+                _got_notify = True
+            elif ev == 'channel_closing':
+                api.stop()
+                return
 
     # Send notify on first opportunity.
     if not _sent:
@@ -682,18 +685,13 @@ def on_consume(in_slot, flexzone, messages, api):
         _sent = True
         api.log('info', 'Consumer: sent notify')
 
-    # Wait 2 seconds (enough time for broker to route the notify),
-    # then write result and stop.
-    if _time.monotonic() - _start_time >= 2.0:
-        with open(r'{}', 'w') as f:
-            if _got_notify:
-                f.write('CONS_GOT_NOTIFY:UNEXPECTED\n')
-            else:
-                f.write('CONS_DONE:no_notify_received\n')
-        api.stop()
-
 def on_stop(api):
-    pass
+    # Write result at exit — summarize all events observed during lifetime.
+    with open(r'{}', 'w') as f:
+        if _got_notify:
+            f.write('CONS_GOT_NOTIFY:UNEXPECTED\n')
+        else:
+            f.write('CONS_DONE:no_notify_received\n')
 )py", cons_result.string());
 
     write_producer_config(prod_dir, hub_dir, "test.notify", prod_script);
@@ -720,13 +718,19 @@ def on_stop(api):
     ASSERT_TRUE(hub.wait_for_channel("test.notify", /*min_consumers=*/1))
         << "Consumer never connected";
 
-    // Wait for consumer to complete its iterations and stop.
-    int cons_rc = consumer.wait_for_exit();
-    TLOG("TEST", "NotifyChannel: consumer exited rc={}", cons_rc);
+    // Wait for the producer to confirm it received the notify.
+    // The producer script writes its result file immediately upon seeing
+    // the 'test_ping' event — polling for this file is the event-driven
+    // proof that broker routing completed.
+    ASSERT_TRUE(poll_until(
+        [&]() { return fs::exists(prod_result); },
+        std::chrono::seconds(10)))
+        << "Producer did not receive notify within 10s — broker routing failed";
 
-    // Give producer time to receive the notify.
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    // Close the channel → both scripts receive channel_closing → exit.
+    // Consumer writes its result in on_stop (summarizes all events observed).
     hub.exec("pylabhub.close_channel('test.notify')");
+    (void)consumer.wait_for_exit();
     (void)producer.wait_for_exit();
     hub.shutdown();
 
@@ -734,7 +738,7 @@ def on_stop(api):
     ASSERT_TRUE(fs::exists(prod_result))
         << "Producer did not write result file — notify may not have been received";
     ASSERT_TRUE(fs::exists(cons_result))
-        << "Consumer did not write result file — script did not complete 8 iterations";
+        << "Consumer did not write result file — channel_closing event may not have arrived";
 
     // Read result files.
     std::string prod_out, cons_out;
