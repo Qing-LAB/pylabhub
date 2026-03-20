@@ -163,9 +163,8 @@ class PythonEngine : public ScriptEngine
 
     // script_errors is in ctx_.core->script_errors_ (RoleHostCore).
 
-    // ── GIL release ───────────────────────────────────────────────────────
-    /// Released after build_api(); each invoke_*() does gil_scoped_acquire.
-    std::optional<py::gil_scoped_release> gil_release_;
+    // GIL stays held on the worker thread (py::scoped_interpreter holds it).
+    // Each invoke_*() uses py::gil_scoped_acquire which is reentrant (no-op).
 
     // ── Context ────────────────────────────────────────────────────────────
     RoleContext ctx_{};
