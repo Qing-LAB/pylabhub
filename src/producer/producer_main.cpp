@@ -357,6 +357,8 @@ int main(int argc, char *argv[])
     // ── Python path (default) — unified ProducerRoleHost + PythonEngine ──────
     {
         auto engine = std::make_unique<pylabhub::scripting::PythonEngine>();
+        if (!config.python_venv.empty())
+            engine->set_python_venv(config.python_venv);
 
         pylabhub::producer::ProducerRoleHost host;
         host.set_engine(std::move(engine));

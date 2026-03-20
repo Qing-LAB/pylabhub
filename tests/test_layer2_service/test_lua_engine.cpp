@@ -91,11 +91,13 @@ class LuaEngineTest : public ::testing::Test
         return ctx;
     }
 
+    RoleHostCore default_core_;  ///< Default core for tests that don't provide one.
+
     /// Initialize engine, load script, register type, build API.
     /// Returns true if all steps succeed.
     bool setup_engine(LuaEngine &engine, const std::string &required_cb = "on_produce")
     {
-        if (!engine.initialize("test"))
+        if (!engine.initialize("test", &default_core_))
             return false;
         if (!engine.load_script(tmp_, "init.lua", required_cb.c_str()))
             return false;
@@ -113,7 +115,7 @@ class LuaEngineTest : public ::testing::Test
     bool setup_engine_with_core(LuaEngine &engine, RoleHostCore &core,
                                  const std::string &required_cb = "on_produce")
     {
-        if (!engine.initialize("test"))
+        if (!engine.initialize("test", &core))
             return false;
         if (!engine.load_script(tmp_, "init.lua", required_cb.c_str()))
             return false;
@@ -157,7 +159,7 @@ TEST_F(LuaEngineTest, InitializeFailsGracefully)
 {
     // Double initialize should not crash (engine manages state).
     LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
     engine.finalize();
 }
 
@@ -170,7 +172,7 @@ TEST_F(LuaEngineTest, RegisterSlotType_SizeofCorrect)
     write_script("function on_produce(out_slot, fz, msgs, api) return true end");
 
     LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
     ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
 
     auto spec = simple_schema();
@@ -187,7 +189,7 @@ TEST_F(LuaEngineTest, RegisterSlotType_MultiField)
     write_script("function on_produce(out_slot, fz, msgs, api) return true end");
 
     LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
     ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
 
     SchemaSpec spec;
@@ -331,7 +333,7 @@ TEST_F(LuaEngineTest, InvokeConsume_ReceivesReadOnlySlot)
     )");
 
     LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
     ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_consume"));
 
     auto spec = simple_schema();
@@ -358,7 +360,7 @@ TEST_F(LuaEngineTest, InvokeConsume_NilSlot)
     )");
 
     LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
     ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_consume"));
 
     auto spec = simple_schema();
@@ -383,7 +385,7 @@ TEST_F(LuaEngineTest, InvokeConsume_ScriptErrorDetected)
     )");
 
     LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
     ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_consume"));
 
     auto spec = simple_schema();
@@ -417,7 +419,7 @@ TEST_F(LuaEngineTest, InvokeProcess_DualSlots)
     )");
 
     LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
     ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_process"));
 
     auto spec = simple_schema();
@@ -452,7 +454,7 @@ TEST_F(LuaEngineTest, InvokeProcess_NilInput)
     )");
 
     LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
     ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_process"));
 
     auto spec = simple_schema();
@@ -482,7 +484,7 @@ TEST_F(LuaEngineTest, InvokeProcess_InputOnlyNoOutput)
     )");
 
     LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
     ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_process"));
 
     auto spec = simple_schema();
@@ -649,7 +651,7 @@ TEST_F(LuaEngineTest, HasCallback_DetectsPresenceAbsence)
     )");
 
     LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
     ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
 
     EXPECT_TRUE(engine.has_callback("on_produce"));
@@ -678,7 +680,7 @@ TEST_F(LuaEngineTest, InvokeProduce_WithFlexzone)
     )");
 
     LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
     ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
 
     auto spec = simple_schema();
@@ -720,7 +722,7 @@ TEST_F(LuaEngineTest, InvokeOnInbox_TypedData)
     )");
 
     LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
     ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
 
     auto spec = simple_schema();
@@ -752,7 +754,7 @@ TEST_F(LuaEngineTest, InvokeOnInbox_RawBytes)
     )");
 
     LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
     ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
 
     auto spec = simple_schema();
@@ -830,7 +832,7 @@ TEST_F(LuaEngineTest, InvokeConsume_BareDataMessages)
     )");
 
     LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
     ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_consume"));
 
     auto spec = simple_schema();
@@ -988,20 +990,18 @@ TEST_F(LuaEngineTest, MetricsClosures_ReadFromRoleHostCounters)
     )");
 
     RoleHostCore core;
-    std::atomic<uint64_t> out_written{42};
-    std::atomic<uint64_t> drops{7};
+    core.out_written_.store(42, std::memory_order_relaxed);
+    core.drops_.store(7, std::memory_order_relaxed);
 
     LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
     ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
 
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
 
     auto ctx = producer_context();
-    ctx.core        = &core;
-    ctx.out_written = &out_written;
-    ctx.drops       = &drops;
+    ctx.core = &core;
     engine.build_api(ctx);
 
     float buf = 0.0f;
@@ -1077,7 +1077,7 @@ TEST_F(LuaEngineTest, StopOnScriptError_SetsShutdownOnError)
 
     RoleHostCore core;
     LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
     ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
 
     auto spec = simple_schema();
@@ -1108,7 +1108,7 @@ TEST_F(LuaEngineTest, StopOnScriptError_SetsShutdownOnError)
 TEST_F(LuaEngineTest, LoadScript_MissingFile_ReturnsFalse)
 {
     LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
     EXPECT_FALSE(engine.load_script(tmp_, "nonexistent.lua", "on_produce"));
     engine.finalize();
 }
@@ -1121,7 +1121,7 @@ TEST_F(LuaEngineTest, LoadScript_MissingRequiredCallback_ReturnsFalse)
     )");
 
     LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
     EXPECT_FALSE(engine.load_script(tmp_, "init.lua", "on_produce"));
     engine.finalize();
 }
@@ -1131,7 +1131,7 @@ TEST_F(LuaEngineTest, RegisterSlotType_BadFieldType_ReturnsFalse)
     write_script("function on_produce(out_slot, fz, msgs, api) return true end");
 
     LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
     ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
 
     SchemaSpec bad_spec;
@@ -1151,7 +1151,7 @@ TEST_F(LuaEngineTest, LoadScript_SyntaxError_ReturnsFalse)
     write_script("function on_produce(out_slot, fz, msgs, api)  -- unterminated");
 
     LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
     EXPECT_FALSE(engine.load_script(tmp_, "init.lua", "on_produce"));
     engine.finalize();
 }
@@ -1166,18 +1166,17 @@ TEST_F(LuaEngineTest, MetricsClosures_InReceivedWorks)
     )");
 
     RoleHostCore core;
-    std::atomic<uint64_t> in_received{15};
+    core.in_received_.store(15, std::memory_order_relaxed);
 
     LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test"));
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
     ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_consume"));
 
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
 
     auto ctx = producer_context();
-    ctx.core        = &core;
-    ctx.in_received = &in_received;
+    ctx.core = &core;
     engine.build_api(ctx);
 
     std::vector<IncomingMessage> msgs;

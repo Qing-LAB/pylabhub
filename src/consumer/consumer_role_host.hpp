@@ -118,11 +118,9 @@ class ConsumerRoleHost
     size_t                                 schema_slot_size_{0};
     std::string                            inbox_type_name_;
 
-    // Metrics (atomic, written by worker, read by ctrl_thread_ heartbeat).
-    std::atomic<uint64_t>                  in_received_{0};
-    std::atomic<uint64_t>                  last_seq_{0};
-    std::atomic<uint64_t>                  iteration_count_{0};
-    std::atomic<uint64_t>                  last_cycle_work_us_{0};
+    // Metrics are in core_ (RoleHostCore) — single source of truth.
+    // See core_.in_received_, core_.iteration_count_, core_.last_cycle_work_us_.
+    std::atomic<uint64_t>                  last_seq_{0}; // consumer-specific, not in core
 };
 
 } // namespace pylabhub::consumer

@@ -29,7 +29,6 @@
 
 #include "role_host_core.hpp"
 
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -88,14 +87,10 @@ struct RoleContext
     /// Pointer to the hub::Consumer (for consumer-specific API).
     void *consumer{nullptr};
 
-    /// Pointer to RoleHostCore for shutdown flags (api.stop, api.set_critical_error).
+    /// Pointer to RoleHostCore — single source of truth for shutdown flags
+    /// AND metrics (out_written, in_received, drops, script_errors, etc.).
+    /// All engines read metrics from core->out_written_.load() etc.
     RoleHostCore *core{nullptr};
-
-    /// Metrics counters (owned by role host, read by engine API closures).
-    /// Set to nullptr when the metric doesn't apply to the role.
-    std::atomic<uint64_t> *out_written{nullptr};   ///< Producer/processor: committed slots
-    std::atomic<uint64_t> *in_received{nullptr};   ///< Consumer/processor: received slots
-    std::atomic<uint64_t> *drops{nullptr};          ///< Producer/processor: dropped cycles
 
     bool stop_on_script_error{false};
 };
@@ -114,9 +109,13 @@ class ScriptEngine
     /**
      * @brief Create the interpreter/state and apply sandbox.
      * @param log_tag Tag for log messages (e.g., "prod").
+     * @param core    Pointer to RoleHostCore — provides metrics counters
+     *                (script_errors, etc.) and shutdown flags. Must remain
+     *                valid for the engine's lifetime. Passed at init time
+     *                so error counting works from the first load_script() call.
      * @return true on success.
      */
-    virtual bool initialize(const char *log_tag) = 0;
+    virtual bool initialize(const char *log_tag, RoleHostCore *core) = 0;
 
     /**
      * @brief Load script file and extract callbacks.

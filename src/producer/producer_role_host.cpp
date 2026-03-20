@@ -94,7 +94,7 @@ void ProducerRoleHost::shutdown_()
 void ProducerRoleHost::worker_main_()
 {
     // Step 1: Initialize the engine.
-    if (!engine_->initialize("prod"))
+    if (!engine_->initialize("prod", &core_))
     {
         LOGGER_ERROR("[prod] Engine initialize() failed");
         ready_promise_.set_value(false);
@@ -219,8 +219,6 @@ void ProducerRoleHost::worker_main_()
     ctx.producer    = out_producer_.has_value() ? &(*out_producer_) : nullptr;
     ctx.consumer    = nullptr;
     ctx.core         = &core_;
-    ctx.out_written  = &out_written_;
-    ctx.drops        = &drops_;
     ctx.stop_on_script_error = config_.stop_on_script_error;
 
     engine_->build_api(ctx);
@@ -682,17 +680,17 @@ void ProducerRoleHost::run_data_loop_()
             if (result == InvokeResult::Commit)
             {
                 queue_->write_commit();
-                out_written_.fetch_add(1, std::memory_order_relaxed);
+                core_.out_written_.fetch_add(1, std::memory_order_relaxed);
             }
             else
             {
                 queue_->write_discard();
-                drops_.fetch_add(1, std::memory_order_relaxed);
+                core_.drops_.fetch_add(1, std::memory_order_relaxed);
             }
         }
         else
         {
-            drops_.fetch_add(1, std::memory_order_relaxed);
+            core_.drops_.fetch_add(1, std::memory_order_relaxed);
         }
 
         if (result == InvokeResult::Error)
@@ -707,8 +705,8 @@ void ProducerRoleHost::run_data_loop_()
         const auto work_us = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
                 now - cycle_start).count());
-        last_cycle_work_us_.store(work_us, std::memory_order_relaxed);
-        iteration_count_.fetch_add(1, std::memory_order_relaxed);
+        core_.last_cycle_work_us_.store(work_us, std::memory_order_relaxed);
+        core_.iteration_count_.fetch_add(1, std::memory_order_relaxed);
 
         // --- Step G: Compute next deadline ---
         deadline = compute_next_deadline(config_.loop_timing, deadline, cycle_start, period_us);
@@ -732,7 +730,7 @@ void ProducerRoleHost::run_ctrl_thread_()
          [&] { out_producer_->handle_peer_events_nowait(); }},
     };
     loop.get_iteration = [&] {
-        return iteration_count_.load(std::memory_order_relaxed);
+        return core_.iteration_count_.load(std::memory_order_relaxed);
     };
     loop.periodic_tasks.emplace_back(
         [&] {
@@ -759,10 +757,10 @@ void ProducerRoleHost::drain_inbox_sync_()
 nlohmann::json ProducerRoleHost::snapshot_metrics_json() const
 {
     nlohmann::json base;
-    base["out_written"]        = out_written_.load(std::memory_order_relaxed);
-    base["drops"]              = drops_.load(std::memory_order_relaxed);
+    base["out_written"]        = core_.out_written_.load(std::memory_order_relaxed);
+    base["drops"]              = core_.drops_.load(std::memory_order_relaxed);
     base["script_errors"]      = engine_ ? engine_->script_error_count() : 0;
-    base["last_cycle_work_us"] = last_cycle_work_us_.load(std::memory_order_relaxed);
+    base["last_cycle_work_us"] = core_.last_cycle_work_us_.load(std::memory_order_relaxed);
     base["loop_overrun_count"] = 0; // overwritten below if SHM is available
 
     if (out_producer_.has_value())
@@ -771,7 +769,7 @@ nlohmann::json ProducerRoleHost::snapshot_metrics_json() const
     }
 
     // Use our own iteration_count (always available, regardless of transport).
-    base["iteration_count"] = iteration_count_.load(std::memory_order_relaxed);
+    base["iteration_count"] = core_.iteration_count_.load(std::memory_order_relaxed);
 
     if (out_producer_.has_value())
     {

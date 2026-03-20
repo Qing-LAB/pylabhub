@@ -136,6 +136,18 @@ class RoleHostCore
     std::atomic<bool>     critical_error_{false}; ///< Script called set_critical_error()
     std::atomic<uint64_t> script_errors_{0};      ///< Cumulative script callback error count
 
+    // ── Data loop metrics (single source of truth) ───────────────────────
+    //
+    // Written by: role host data loop (Layer 2).
+    // Read by: script API (any engine), ctrl_thread_ heartbeat, snapshot_metrics_json.
+    // All counters use relaxed ordering (metrics are advisory, not synchronization).
+
+    std::atomic<uint64_t> out_written_{0};       ///< Committed output slots (producer/processor)
+    std::atomic<uint64_t> in_received_{0};       ///< Consumed input slots (consumer/processor)
+    std::atomic<uint64_t> drops_{0};              ///< Dropped cycles (no slot / discard)
+    std::atomic<uint64_t> iteration_count_{0};   ///< Total loop iterations
+    std::atomic<uint64_t> last_cycle_work_us_{0}; ///< Last cycle wall time (μs)
+
     /// Set critical error flag and stop reason atomically, then request shutdown.
     void set_critical_error() noexcept
     {
