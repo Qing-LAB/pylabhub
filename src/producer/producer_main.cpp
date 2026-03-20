@@ -43,6 +43,7 @@
 #include "lua_producer_host.hpp"
 #include "producer_role_host.hpp"
 #include "lua_engine.hpp"
+#include "python_engine.hpp"
 
 #include "plh_datahub.hpp"
 #include "utils/actor_vault.hpp"
@@ -353,69 +354,63 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    // ── Python path (default) ────────────────────────────────────────────────
-    pylabhub::producer::ProducerScriptHost prod_script;
-    prod_script.set_config(std::move(config));
-    prod_script.set_validate_only(args.validate_only);
-    prod_script.set_shutdown_flag(&g_shutdown);
-
-    try
+    // ── Python path (default) — unified ProducerRoleHost + PythonEngine ──────
     {
-        prod_script.startup_();
+        auto engine = std::make_unique<pylabhub::scripting::PythonEngine>();
+
+        pylabhub::producer::ProducerRoleHost host;
+        host.set_engine(std::move(engine));
+        host.set_config(std::move(config));
+        host.set_validate_only(args.validate_only);
+        host.set_shutdown_flag(&g_shutdown);
+
+        try { host.startup_(); }
+        catch (const std::exception &e)
+        {
+            std::cerr << "Python startup failed: " << e.what() << "\n";
+            return 1;
+        }
+
+        if (!host.script_load_ok())
+        {
+            std::cerr << "Python script load failed.\n";
+            host.shutdown_();
+            return 1;
+        }
+
+        if (args.validate_only)
+        {
+            std::cout << "\nValidation passed.\n";
+            host.shutdown_();
+            return 0;
+        }
+
+        if (!host.is_running())
+        {
+            std::cerr << "Failed to start producer — loop did not start.\n";
+            host.shutdown_();
+            return 1;
+        }
+
+        const auto start_time = std::chrono::steady_clock::now();
+        const auto &cfg = host.config();
+        signal_handler.set_status_callback([&]() -> std::string
+        {
+            const auto elapsed = std::chrono::steady_clock::now() - start_time;
+            const auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+            return fmt::format(
+                "  pyLabHub {} (pylabhub-producer, python)\n"
+                "  Config:    {}\n"
+                "  UID:       {}\n"
+                "  Channel:   {}\n"
+                "  Uptime:    {}h {}m {}s",
+                pylabhub::platform::get_version_string(),
+                config_dir, cfg.producer_uid, cfg.channel,
+                secs / 3600, (secs % 3600) / 60, secs % 60);
+        });
+
+        scripting::run_role_main_loop(g_shutdown, host, "[prod-main]");
+        host.shutdown_();
     }
-    catch (const std::exception &e)
-    {
-        std::cerr << "Interpreter startup failed: " << e.what() << "\n";
-        return 1;
-    }
-
-    if (!prod_script.script_load_ok())
-    {
-        std::cerr << "Script load failed.\n";
-        prod_script.shutdown_();
-        return 1;
-    }
-
-    if (args.validate_only)
-    {
-        std::cout << "\nValidation passed.\n";
-        prod_script.shutdown_();
-        return 0;
-    }
-
-    if (!prod_script.is_running())
-    {
-        std::cerr << "Failed to start producer — loop did not start.\n";
-        prod_script.shutdown_();
-        return 1;
-    }
-
-    // Register status callback now that config and API are available.
-    const auto start_time = std::chrono::steady_clock::now();
-    const auto &api = prod_script.api();
-    const auto &cfg = prod_script.config();
-    signal_handler.set_status_callback([&]() -> std::string
-    {
-        const auto elapsed = std::chrono::steady_clock::now() - start_time;
-        const auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
-        return fmt::format(
-            "  pyLabHub {} (pylabhub-producer)\n"
-            "  Config:    {}\n"
-            "  UID:       {}\n"
-            "  Channel:   {}\n"
-            "  Status:    running ({} slots written, {} drops, {} errors)\n"
-            "  Uptime:    {}h {}m {}s",
-            pylabhub::platform::get_version_string(),
-            config_dir, cfg.producer_uid, cfg.channel,
-            api.out_slots_written(), api.out_drop_count(),
-            api.script_error_count(),
-            secs / 3600, (secs % 3600) / 60, secs % 60);
-    });
-
-    scripting::run_role_main_loop(g_shutdown, prod_script, "[prod-main]");
-    prod_script.shutdown_();
     return 0;
-    // runner_lifecycle destructor calls finalize():
-    //   → SignalHandler (dynamic persistent) uninstalled first
-    //   → Logger, ZMQContext, etc. stopped in reverse init order
 }
