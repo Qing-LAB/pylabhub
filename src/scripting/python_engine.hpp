@@ -117,7 +117,6 @@ class PythonEngine : public ScriptEngine
   private:
     // ── Interpreter ────────────────────────────────────────────────────────
     std::optional<py::scoped_interpreter> interp_;
-    bool gil_released_{false};   ///< True after init releases GIL for data loop.
 
     // ── Script ─────────────────────────────────────────────────────────────
     std::string log_tag_;

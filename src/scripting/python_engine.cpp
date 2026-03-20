@@ -192,6 +192,7 @@ bool PythonEngine::initialize(const char *log_tag)
 
         // Create the interpreter. GIL is held after this.
         interp_.emplace(&config);
+        PyConfig_Clear(&config); // Free wchar strings allocated by PyConfig_Init.
 
         LOGGER_INFO("[{}] PythonEngine: Python {} initialized",
                     log_tag_, Py_GetVersion());
@@ -364,6 +365,8 @@ void PythonEngine::build_api(const RoleContext &ctx)
 
         api.set_consumer(static_cast<hub::Consumer *>(ctx_.consumer));
         api.set_messenger(ctx_.messenger);
+        if (ctx_.queue_reader)
+            api.set_reader(ctx_.queue_reader);
         if (ctx_.uid)    api.set_uid(ctx_.uid);
         if (ctx_.name)   api.set_name(ctx_.name);
         if (ctx_.channel) api.set_channel(ctx_.channel);
@@ -427,84 +430,41 @@ void PythonEngine::finalize()
     if (!interp_.has_value())
         return;
 
-    // If GIL was released, re-acquire it before touching Python objects.
-    if (gil_released_)
+    // GIL is held (py::scoped_interpreter holds it on the creating thread).
+    // Clear all Python objects before destroying the interpreter.
+    clear_pyobjects_();
+
+    // Null out API pointers before role host tears down infrastructure.
+    if (producer_api_)
     {
-        // We cannot use py::gil_scoped_acquire as a stack RAII here because
-        // we need the GIL held through interpreter destruction. Instead,
-        // use the low-level PyGILState API.
-        PyGILState_STATE gstate = PyGILState_Ensure();
-        gil_released_ = false;
-
-        clear_pyobjects_();
-
-        // Null out API pointers before role host tears down infrastructure.
-        if (producer_api_)
-        {
-            producer_api_->clear_inbox_cache();
-            producer_api_->set_producer(nullptr);
-            producer_api_->set_messenger(nullptr);
-            producer_api_->set_queue(nullptr);
-        }
-        if (consumer_api_)
-        {
-            consumer_api_->clear_inbox_cache();
-            consumer_api_->set_consumer(nullptr);
-            consumer_api_->set_messenger(nullptr);
-        }
-        if (processor_api_)
-        {
-            processor_api_->clear_inbox_cache();
-            processor_api_->set_producer(nullptr);
-            processor_api_->set_consumer(nullptr);
-            processor_api_->set_messenger(nullptr);
-        }
-
-        producer_api_.reset();
-        consumer_api_.reset();
-        processor_api_.reset();
-
-        // Destroy interpreter (calls Py_Finalize).
-        interp_.reset();
-
-        // Release the GIL state. Py_Finalize has already been called, so
-        // we use PyGILState_Release only if the interpreter is still alive.
-        // Since interp_.reset() called Py_Finalize, the GIL state is invalid.
-        // In practice, scoped_interpreter's destructor handles GIL cleanup.
-        (void)gstate; // suppress unused warning — GIL released by Py_Finalize
+        producer_api_->clear_inbox_cache();
+        producer_api_->set_producer(nullptr);
+        producer_api_->set_messenger(nullptr);
+        producer_api_->set_queue(nullptr);
     }
-    else
+    if (consumer_api_)
     {
-        // GIL is held (common path during normal shutdown).
-        clear_pyobjects_();
-
-        if (producer_api_)
-        {
-            producer_api_->clear_inbox_cache();
-            producer_api_->set_producer(nullptr);
-            producer_api_->set_messenger(nullptr);
-            producer_api_->set_queue(nullptr);
-        }
-        if (consumer_api_)
-        {
-            consumer_api_->clear_inbox_cache();
-            consumer_api_->set_consumer(nullptr);
-            consumer_api_->set_messenger(nullptr);
-        }
-        if (processor_api_)
-        {
-            processor_api_->clear_inbox_cache();
-            processor_api_->set_producer(nullptr);
-            processor_api_->set_consumer(nullptr);
-            processor_api_->set_messenger(nullptr);
-        }
-
-        producer_api_.reset();
-        consumer_api_.reset();
-        processor_api_.reset();
-
-        interp_.reset();
+        consumer_api_->clear_inbox_cache();
+        consumer_api_->set_consumer(nullptr);
+        consumer_api_->set_messenger(nullptr);
+        consumer_api_->set_reader(nullptr);
     }
+    if (processor_api_)
+    {
+        processor_api_->clear_inbox_cache();
+        processor_api_->set_producer(nullptr);
+        processor_api_->set_consumer(nullptr);
+        processor_api_->set_messenger(nullptr);
+        processor_api_->set_in_queue(nullptr);
+        processor_api_->set_out_queue(nullptr);
+    }
+
+    producer_api_.reset();
+    consumer_api_.reset();
+    processor_api_.reset();
+
+    // Destroy interpreter (calls Py_Finalize).
+    interp_.reset();
 }
 
 // ============================================================================
