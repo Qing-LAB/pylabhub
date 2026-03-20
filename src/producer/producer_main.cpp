@@ -39,8 +39,6 @@
  */
 
 #include "producer_config.hpp"
-#include "producer_script_host.hpp"
-#include "lua_producer_host.hpp"
 #include "producer_role_host.hpp"
 #include "lua_engine.hpp"
 #include "python_engine.hpp"

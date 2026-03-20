@@ -84,7 +84,6 @@ class ProcessorAPI
         core_ = c;
         if (c)
         {
-            shutdown_flag_      = &c->shutdown_requested;
             shutdown_requested_ = &c->shutdown_requested;
             stop_reason_        = &c->stop_reason_;
             critical_error_ptr_ = &c->critical_error_;
@@ -93,7 +92,6 @@ class ProcessorAPI
 
     // Legacy individual setters (used by old script host path, will be removed).
     /// Global shutdown flag pointer — set by api_.stop().
-    void set_shutdown_flag(std::atomic<bool> *f) noexcept { shutdown_flag_ = f; }
 
     /// Internal shutdown flag — used so do_python_work() wait loop can react
     /// immediately to api.stop() without waiting for the main thread to set stop_.
@@ -275,7 +273,6 @@ class ProcessorAPI
     hub::Producer    *producer_{nullptr};
     hub::Consumer    *consumer_{nullptr};
     hub::Messenger   *messenger_{nullptr};
-    std::atomic<bool>*shutdown_flag_{nullptr};
     std::atomic<bool>*shutdown_requested_{nullptr};
     std::atomic<int> *stop_reason_{nullptr};
     py::object       *flexzone_obj_{nullptr};

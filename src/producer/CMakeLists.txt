@@ -17,8 +17,6 @@ cmake_minimum_required(VERSION 3.28)
 add_executable(pylabhub-producer
     producer_main.cpp
     producer_config.cpp
-    producer_script_host.cpp
-    lua_producer_host.cpp
     producer_role_host.cpp
 )
 add_executable(pylabhub::producer ALIAS pylabhub-producer)

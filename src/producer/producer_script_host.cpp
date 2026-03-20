@@ -79,7 +79,7 @@ void ProducerScriptHost::wire_api_identity()
     api_.set_log_level(config_.log_level);
     api_.set_script_dir(config_.script_path);
     api_.set_role_dir(config_.role_dir);
-    api_.set_shutdown_flag(core_.g_shutdown);
+    // REMOVED: api_.set_shutdown_flag — g_shutdown is not written by api.stop() (see shutdown protocol)
     api_.set_shutdown_requested(&core_.shutdown_requested);
     api_.set_stop_reason(&core_.stop_reason_);
     api_.set_critical_error_ptr(&core_.critical_error_);

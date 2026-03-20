@@ -17,8 +17,6 @@ cmake_minimum_required(VERSION 3.28)
 add_executable(pylabhub-processor
     processor_main.cpp
     processor_config.cpp
-    processor_script_host.cpp
-    lua_processor_host.cpp
     processor_role_host.cpp
 )
 add_executable(pylabhub::processor ALIAS pylabhub-processor)

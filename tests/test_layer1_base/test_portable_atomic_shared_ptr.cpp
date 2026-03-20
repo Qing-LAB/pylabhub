@@ -61,9 +61,13 @@ TEST(PortableAtomicSharedPtrTest, ConcurrentLoadStoreObservesConsistentPayloads)
     constexpr int iterations = 20000;
     const int     reader_count = std::max(2, pylabhub::tests::helper::get_stress_num_readers());
 
-    // Barrier: writer waits until all readers are ready before starting.
-    // This prevents the writer from completing all iterations before any
-    // reader thread is scheduled (which caused non_null_reads == 0 under load).
+    // Synchronization:
+    //   1. All readers signal ready, then spin on `go`.
+    //   2. Writer also spins on `go`.
+    //   3. Main thread sets `go` — all threads start concurrently.
+    //   4. Writer pauses at the midpoint until at least one reader has confirmed
+    //      a non-null read. This feedback barrier guarantees non_null_reads > 0
+    //      without relying on scheduling timing.
     std::atomic<int>  readers_ready{0};
     std::atomic<bool> go{false};
     std::atomic<bool> writer_done{false};
@@ -88,7 +92,7 @@ TEST(PortableAtomicSharedPtrTest, ConcurrentLoadStoreObservesConsistentPayloads)
                     if (!snapshot)
                         continue;
 
-                    ++non_null_reads;
+                    non_null_reads.fetch_add(1, std::memory_order_release);
                     if (snapshot->doubled != snapshot->seq * 2 || snapshot->seq <= 0)
                     {
                         invariant_ok.store(false, std::memory_order_relaxed);
@@ -119,6 +123,15 @@ TEST(PortableAtomicSharedPtrTest, ConcurrentLoadStoreObservesConsistentPayloads)
             {
                 ptr.store(std::make_shared<Payload>(Payload{i, i * 2}),
                           std::memory_order_release);
+
+                // Feedback barrier at midpoint: pause until at least one reader
+                // has observed a non-null value. This guarantees non_null_reads > 0
+                // regardless of OS scheduling pressure.
+                if (i == iterations / 2)
+                {
+                    while (non_null_reads.load(std::memory_order_acquire) == 0)
+                        std::this_thread::yield();
+                }
             }
             writer_done.store(true, std::memory_order_release);
         });
