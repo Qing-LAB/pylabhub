@@ -93,7 +93,7 @@ void ConsumerRoleHost::shutdown_()
 void ConsumerRoleHost::worker_main_()
 {
     // Step 1: Initialize the engine.
-    if (!engine_->initialize("cons"))
+    if (!engine_->initialize("cons", &core_))
     {
         LOGGER_ERROR("[cons] Engine initialize() failed");
         ready_promise_.set_value(false);
@@ -218,7 +218,6 @@ void ConsumerRoleHost::worker_main_()
     ctx.producer    = nullptr;
     ctx.consumer    = in_consumer_.has_value() ? &(*in_consumer_) : nullptr;
     ctx.core         = &core_;
-    ctx.in_received  = &in_received_;
     ctx.stop_on_script_error = config_.stop_on_script_error;
 
     engine_->build_api(ctx);
@@ -629,7 +628,7 @@ void ConsumerRoleHost::run_data_loop_()
         if (data != nullptr)
         {
             last_seq_.store(queue_reader_->last_seq(), std::memory_order_relaxed);
-            in_received_.fetch_add(1, std::memory_order_relaxed);
+            core_.in_received_.fetch_add(1, std::memory_order_relaxed);
         }
 
         // Read-only flexzone pointer (re-read each cycle for ShmQueue).
@@ -657,8 +656,8 @@ void ConsumerRoleHost::run_data_loop_()
         const auto work_us = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
                 now - cycle_start).count());
-        last_cycle_work_us_.store(work_us, std::memory_order_relaxed);
-        iteration_count_.fetch_add(1, std::memory_order_relaxed);
+        core_.last_cycle_work_us_.store(work_us, std::memory_order_relaxed);
+        core_.iteration_count_.fetch_add(1, std::memory_order_relaxed);
 
         // --- Step G: Compute next deadline ---
         deadline = compute_next_deadline(config_.loop_timing, deadline, cycle_start, period_us);
@@ -684,7 +683,7 @@ void ConsumerRoleHost::run_ctrl_thread_()
          [&] { in_consumer_->handle_data_events_nowait(); }},
     };
     loop.get_iteration = [&] {
-        return iteration_count_.load(std::memory_order_relaxed);
+        return core_.iteration_count_.load(std::memory_order_relaxed);
     };
     loop.periodic_tasks.emplace_back(
         [&] {
@@ -718,13 +717,13 @@ void ConsumerRoleHost::drain_inbox_sync_()
 nlohmann::json ConsumerRoleHost::snapshot_metrics_json() const
 {
     nlohmann::json base;
-    base["in_received"]        = in_received_.load(std::memory_order_relaxed);
+    base["in_received"]        = core_.in_received_.load(std::memory_order_relaxed);
     base["script_errors"]      = engine_ ? engine_->script_error_count() : 0;
-    base["last_cycle_work_us"] = last_cycle_work_us_.load(std::memory_order_relaxed);
+    base["last_cycle_work_us"] = core_.last_cycle_work_us_.load(std::memory_order_relaxed);
     base["loop_overrun_count"] = uint64_t{0}; // consumer is demand-driven, no deadline
 
     // Use our own iteration_count (always available, regardless of transport).
-    base["iteration_count"] = iteration_count_.load(std::memory_order_relaxed);
+    base["iteration_count"] = core_.iteration_count_.load(std::memory_order_relaxed);
 
     if (in_consumer_.has_value())
     {

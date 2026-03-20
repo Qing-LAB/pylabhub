@@ -58,7 +58,11 @@ class PythonEngine : public ScriptEngine
 
     // ── Lifecycle ──────────────────────────────────────────────────────────
 
-    bool initialize(const char *log_tag) override;
+    /// Set the Python virtual environment name before initialize().
+    /// Empty = use base environment (default).
+    void set_python_venv(const std::string &venv) { python_venv_ = venv; }
+
+    bool initialize(const char *log_tag, RoleHostCore *core) override;
     bool load_script(const std::filesystem::path &script_dir,
                      const char *entry_point,
                      const char *required_callback) override;
@@ -106,7 +110,8 @@ class PythonEngine : public ScriptEngine
 
     [[nodiscard]] uint64_t script_error_count() const noexcept override
     {
-        return script_errors_.load(std::memory_order_relaxed);
+        return ctx_.core ? ctx_.core->script_errors_.load(std::memory_order_relaxed)
+                         : 0;
     }
 
     // ── Threading ──────────────────────────────────────────────────────────
@@ -156,8 +161,11 @@ class PythonEngine : public ScriptEngine
     SchemaSpec out_slot_spec_;
     SchemaSpec fz_spec_;
 
-    // ── Metrics ────────────────────────────────────────────────────────────
-    std::atomic<uint64_t> script_errors_{0};
+    // script_errors is in ctx_.core->script_errors_ (RoleHostCore).
+
+    // ── GIL release ───────────────────────────────────────────────────────
+    /// Released after build_api(); each invoke_*() does gil_scoped_acquire.
+    std::optional<py::gil_scoped_release> gil_release_;
 
     // ── Context ────────────────────────────────────────────────────────────
     RoleContext ctx_{};

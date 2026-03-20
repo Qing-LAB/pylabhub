@@ -153,9 +153,10 @@ static fs::path resolve_venvs_dir_for_engine(const fs::path &exe_path)
 // initialize — create interpreter, apply config, optionally activate venv
 // ============================================================================
 
-bool PythonEngine::initialize(const char *log_tag)
+bool PythonEngine::initialize(const char *log_tag, RoleHostCore *core)
 {
     log_tag_ = log_tag ? log_tag : "python";
+    ctx_.core = core;
 
     try
     {
@@ -325,7 +326,10 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
 
 void PythonEngine::build_api(const RoleContext &ctx)
 {
+    RoleHostCore *saved_core = ctx_.core;
     ctx_ = ctx;
+    if (ctx_.core == nullptr)
+        ctx_.core = saved_core;
     stop_on_script_error_ = ctx.stop_on_script_error;
 
     // Detect role from context pointers and build the appropriate API.
@@ -354,6 +358,8 @@ void PythonEngine::build_api(const RoleContext &ctx)
             api.set_critical_error_ptr(&ctx_.core->critical_error_);
         }
 
+        api.set_external_counters(&ctx_.core->out_written_, &ctx_.core->drops_, &ctx_.core->script_errors_);
+
         py::module_ mod = py::module_::import("pylabhub_producer");
         api_obj_ = py::cast(&api, py::return_value_policy::reference);
     }
@@ -381,6 +387,8 @@ void PythonEngine::build_api(const RoleContext &ctx)
             api.set_stop_reason(&ctx_.core->stop_reason_);
             api.set_critical_error_ptr(&ctx_.core->critical_error_);
         }
+
+        api.set_external_counters(&ctx_.core->in_received_, &ctx_.core->script_errors_);
 
         py::module_ mod = py::module_::import("pylabhub_consumer");
         api_obj_ = py::cast(&api, py::return_value_policy::reference);
@@ -416,9 +424,14 @@ void PythonEngine::build_api(const RoleContext &ctx)
             api.set_critical_error_ptr(&ctx_.core->critical_error_);
         }
 
+        api.set_external_counters(&ctx_.core->out_written_, &ctx_.core->in_received_, &ctx_.core->drops_, &ctx_.core->script_errors_);
+
         py::module_ mod = py::module_::import("pylabhub_processor");
         api_obj_ = py::cast(&api, py::return_value_policy::reference);
     }
+
+    // Release the GIL for the data loop. Each invoke_*() will re-acquire it.
+    gil_release_.emplace();
 }
 
 // ============================================================================
@@ -922,7 +935,7 @@ InvokeResult PythonEngine::parse_return_value_(const py::object &ret, const char
         LOGGER_WARN("[{}] {} returned None — explicit 'return True' or "
                     "'return False' is required. Treating as error.",
                     log_tag_, callback_name);
-        script_errors_.fetch_add(1, std::memory_order_relaxed);
+        if (ctx_.core) ctx_.core->script_errors_.fetch_add(1, std::memory_order_relaxed);
         if (stop_on_script_error_ && ctx_.core != nullptr)
         {
             LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} [missing return]",
@@ -937,7 +950,7 @@ InvokeResult PythonEngine::parse_return_value_(const py::object &ret, const char
                  "expected 'return True' or 'return False'. Treating as error.",
                  log_tag_, callback_name,
                  py::str(ret.get_type().attr("__name__")).cast<std::string>());
-    script_errors_.fetch_add(1, std::memory_order_relaxed);
+    if (ctx_.core) ctx_.core->script_errors_.fetch_add(1, std::memory_order_relaxed);
     if (stop_on_script_error_ && ctx_.core != nullptr)
     {
         LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} [wrong return type]",
@@ -950,7 +963,7 @@ InvokeResult PythonEngine::parse_return_value_(const py::object &ret, const char
 InvokeResult PythonEngine::on_python_error_(const char *callback_name,
                                              const py::error_already_set &e)
 {
-    script_errors_.fetch_add(1, std::memory_order_relaxed);
+    if (ctx_.core) ctx_.core->script_errors_.fetch_add(1, std::memory_order_relaxed);
     LOGGER_ERROR("[{}] {} error: {}", log_tag_, callback_name, e.what());
 
     if (stop_on_script_error_ && ctx_.core != nullptr)

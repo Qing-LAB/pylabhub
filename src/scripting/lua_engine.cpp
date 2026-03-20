@@ -55,9 +55,11 @@ LuaEngine::~LuaEngine()
 // initialize — create LuaState, sandbox, luajit path, inbox metatable
 // ============================================================================
 
-bool LuaEngine::initialize(const char *log_tag)
+bool LuaEngine::initialize(const char *log_tag, RoleHostCore *core)
 {
     log_tag_ = log_tag ? log_tag : "lua";
+    // Store core early so script_errors can be incremented from any callback.
+    ctx_.core = core;
 
     state_ = LuaState::create();
     if (!state_)
@@ -140,7 +142,10 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir,
 
 void LuaEngine::build_api(const RoleContext &ctx)
 {
+    RoleHostCore *saved_core = ctx_.core; // preserve core from initialize()
     ctx_ = ctx;
+    if (ctx_.core == nullptr)
+        ctx_.core = saved_core; // don't lose core if caller didn't set it
     stop_on_script_error_ = ctx.stop_on_script_error;
 
     lua_State *L = state_.raw();
@@ -193,11 +198,11 @@ void LuaEngine::build_api(const RoleContext &ctx)
     }
 
     // ── Metrics closures (pushed based on counter pointer availability) ──
-    if (ctx_.out_written != nullptr)
+    if (ctx_.core != nullptr)
         push_closure("out_written", lua_api_out_written);
-    if (ctx_.in_received != nullptr)
+    if (ctx_.core != nullptr)
         push_closure("in_received", lua_api_in_received);
-    if (ctx_.drops != nullptr)
+    if (ctx_.core != nullptr)
         push_closure("drops", lua_api_drops);
 
     // Store api table in the registry.
@@ -376,7 +381,7 @@ void LuaEngine::invoke_on_init()
 
     if (!state_.pcall(1, 0, "on_init"))
     {
-        script_errors_.fetch_add(1, std::memory_order_relaxed);
+        if (ctx_.core) ctx_.core->script_errors_.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
@@ -395,7 +400,7 @@ void LuaEngine::invoke_on_stop()
 
     if (!state_.pcall(1, 0, "on_stop"))
     {
-        script_errors_.fetch_add(1, std::memory_order_relaxed);
+        if (ctx_.core) ctx_.core->script_errors_.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
@@ -717,7 +722,7 @@ void LuaEngine::invoke_on_inbox(
 std::unique_ptr<ScriptEngine> LuaEngine::create_thread_state()
 {
     auto engine = std::make_unique<LuaEngine>();
-    if (!engine->initialize(log_tag_.c_str()))
+    if (!engine->initialize(log_tag_.c_str(), ctx_.core))
         return nullptr;
 
     if (script_dir_str_.empty())
@@ -747,7 +752,7 @@ int LuaEngine::extract_callback_ref_(const char *name)
 
 InvokeResult LuaEngine::on_pcall_error_(const char *callback_name)
 {
-    script_errors_.fetch_add(1, std::memory_order_relaxed);
+    if (ctx_.core) ctx_.core->script_errors_.fetch_add(1, std::memory_order_relaxed);
     // Error message is already logged by state_.pcall().
     if (stop_on_script_error_ && ctx_.core != nullptr)
     {
@@ -1092,8 +1097,10 @@ int LuaEngine::lua_api_version_info(lua_State *L)
 int LuaEngine::lua_api_script_errors(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    lua_pushinteger(L,
-                    static_cast<lua_Integer>(self->script_errors_.load(std::memory_order_relaxed)));
+    uint64_t val = self->ctx_.core
+                       ? self->ctx_.core->script_errors_.load(std::memory_order_relaxed)
+                       : 0;
+    lua_pushinteger(L, static_cast<lua_Integer>(val));
     return 1;
 }
 
@@ -1430,8 +1437,8 @@ int LuaEngine::lua_api_set_verify_checksum(lua_State *L)
 int LuaEngine::lua_api_out_written(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    uint64_t val = self->ctx_.out_written
-                       ? self->ctx_.out_written->load(std::memory_order_relaxed)
+    uint64_t val = self->ctx_.core
+                       ? self->ctx_.core->out_written_.load(std::memory_order_relaxed)
                        : 0;
     lua_pushinteger(L, static_cast<lua_Integer>(val));
     return 1;
@@ -1440,8 +1447,8 @@ int LuaEngine::lua_api_out_written(lua_State *L)
 int LuaEngine::lua_api_in_received(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    uint64_t val = self->ctx_.in_received
-                       ? self->ctx_.in_received->load(std::memory_order_relaxed)
+    uint64_t val = self->ctx_.core
+                       ? self->ctx_.core->in_received_.load(std::memory_order_relaxed)
                        : 0;
     lua_pushinteger(L, static_cast<lua_Integer>(val));
     return 1;
@@ -1450,8 +1457,8 @@ int LuaEngine::lua_api_in_received(lua_State *L)
 int LuaEngine::lua_api_drops(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    uint64_t val = self->ctx_.drops
-                       ? self->ctx_.drops->load(std::memory_order_relaxed)
+    uint64_t val = self->ctx_.core
+                       ? self->ctx_.core->drops_.load(std::memory_order_relaxed)
                        : 0;
     lua_pushinteger(L, static_cast<lua_Integer>(val));
     return 1;

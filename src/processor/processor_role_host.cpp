@@ -96,7 +96,7 @@ void ProcessorRoleHost::shutdown_()
 void ProcessorRoleHost::worker_main_()
 {
     // Step 1: Initialize the engine.
-    if (!engine_->initialize("proc"))
+    if (!engine_->initialize("proc", &core_))
     {
         LOGGER_ERROR("[proc] Engine initialize() failed");
         ready_promise_.set_value(false);
@@ -246,9 +246,6 @@ void ProcessorRoleHost::worker_main_()
     ctx.producer     = out_producer_.has_value() ? &(*out_producer_) : nullptr;
     ctx.consumer     = in_consumer_.has_value() ? &(*in_consumer_) : nullptr;
     ctx.core         = &core_;
-    ctx.out_written  = &out_written_;
-    ctx.in_received  = &in_received_;
-    ctx.drops        = &out_drops_;
     ctx.stop_on_script_error = config_.stop_on_script_error;
 
     engine_->build_api(ctx);
@@ -950,18 +947,18 @@ void ProcessorRoleHost::run_data_loop_()
             if (result == InvokeResult::Commit)
             {
                 out_q_->write_commit();
-                out_written_.fetch_add(1, std::memory_order_relaxed);
+                core_.out_written_.fetch_add(1, std::memory_order_relaxed);
             }
             else
             {
                 out_q_->write_discard();
-                out_drops_.fetch_add(1, std::memory_order_relaxed);
+                core_.drops_.fetch_add(1, std::memory_order_relaxed);
             }
         }
         else if (held_input != nullptr)
         {
             // Had input but no output slot — count as drop.
-            out_drops_.fetch_add(1, std::memory_order_relaxed);
+            core_.drops_.fetch_add(1, std::memory_order_relaxed);
         }
 
         // Input: release or hold depending on output success + policy.
@@ -972,7 +969,7 @@ void ProcessorRoleHost::run_data_loop_()
                 // Normal: data processed or dropped. Advance input.
                 in_q_->read_release();
                 held_input = nullptr;
-                in_received_.fetch_add(1, std::memory_order_relaxed);
+                core_.in_received_.fetch_add(1, std::memory_order_relaxed);
             }
             // else: Block mode + output failed → keep held_input for next cycle.
             // SHM: lock still held, pointer valid.
@@ -991,8 +988,8 @@ void ProcessorRoleHost::run_data_loop_()
         const auto work_us = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
                 now - cycle_start).count());
-        last_cycle_work_us_.store(work_us, std::memory_order_relaxed);
-        iteration_count_.fetch_add(1, std::memory_order_relaxed);
+        core_.last_cycle_work_us_.store(work_us, std::memory_order_relaxed);
+        core_.iteration_count_.fetch_add(1, std::memory_order_relaxed);
 
         deadline = compute_next_deadline(config_.loop_timing, deadline, cycle_start, period_us);
     }
@@ -1031,7 +1028,7 @@ void ProcessorRoleHost::run_ctrl_thread_()
              [&] { in_consumer_->handle_data_events_nowait(); }});
     }
     loop.get_iteration = [&] {
-        return iteration_count_.load(std::memory_order_relaxed);
+        return core_.iteration_count_.load(std::memory_order_relaxed);
     };
     loop.periodic_tasks.emplace_back(
         [&] {
@@ -1058,11 +1055,11 @@ void ProcessorRoleHost::drain_inbox_sync_()
 nlohmann::json ProcessorRoleHost::snapshot_metrics_json() const
 {
     nlohmann::json base;
-    base["in_received"]        = in_received_.load(std::memory_order_relaxed);
-    base["out_written"]        = out_written_.load(std::memory_order_relaxed);
-    base["drops"]              = out_drops_.load(std::memory_order_relaxed);
+    base["in_received"]        = core_.in_received_.load(std::memory_order_relaxed);
+    base["out_written"]        = core_.out_written_.load(std::memory_order_relaxed);
+    base["drops"]              = core_.drops_.load(std::memory_order_relaxed);
     base["script_errors"]      = engine_ ? engine_->script_error_count() : 0;
-    base["last_cycle_work_us"] = last_cycle_work_us_.load(std::memory_order_relaxed);
+    base["last_cycle_work_us"] = core_.last_cycle_work_us_.load(std::memory_order_relaxed);
     base["loop_overrun_count"] = 0; // overwritten below if SHM is available
 
     if (out_producer_.has_value())
@@ -1071,7 +1068,7 @@ nlohmann::json ProcessorRoleHost::snapshot_metrics_json() const
     }
 
     // Use our own iteration_count (always available, regardless of transport).
-    base["iteration_count"] = iteration_count_.load(std::memory_order_relaxed);
+    base["iteration_count"] = core_.iteration_count_.load(std::memory_order_relaxed);
 
     if (out_producer_.has_value())
     {

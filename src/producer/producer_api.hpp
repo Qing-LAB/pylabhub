@@ -140,11 +140,26 @@ class ProducerAPI
     // ── Python-accessible — diagnostics ──────────────────────────────────────
 
     [[nodiscard]] uint64_t script_error_count()  const noexcept
-        { return script_errors_.load(std::memory_order_relaxed); }
+        { return ext_script_errors_ ? ext_script_errors_->load(std::memory_order_relaxed)
+                                    : script_errors_.load(std::memory_order_relaxed); }
     [[nodiscard]] uint64_t out_slots_written()   const noexcept
-        { return out_slots_written_.load(std::memory_order_relaxed); }
+        { return ext_out_written_ ? ext_out_written_->load(std::memory_order_relaxed)
+                                  : out_slots_written_.load(std::memory_order_relaxed); }
     [[nodiscard]] uint64_t out_drop_count()      const noexcept
-        { return out_drops_.load(std::memory_order_relaxed); }
+        { return ext_drops_ ? ext_drops_->load(std::memory_order_relaxed)
+                            : out_drops_.load(std::memory_order_relaxed); }
+
+    /// Redirect metric reads to external counters (unified role host path).
+    /// When set, script-visible accessors read from the external atomics
+    /// instead of the internal ones. Null = use internal (legacy path).
+    void set_external_counters(std::atomic<uint64_t> *out_written,
+                               std::atomic<uint64_t> *drops,
+                               std::atomic<uint64_t> *script_errors) noexcept
+    {
+        ext_out_written_    = out_written;
+        ext_drops_          = drops;
+        ext_script_errors_  = script_errors;
+    }
     /// Number of cycles where start-to-start time exceeded target_period_ms.
     /// Reads from the DataBlock acquire layer (same counter used for overrun detection).
     /// Returns 0 if target_period_ms == 0 (free-run) or SHM is not connected.
@@ -204,6 +219,12 @@ class ProducerAPI
     std::atomic<uint64_t> out_slots_written_{0};
     std::atomic<uint64_t> out_drops_{0};
     std::atomic<uint64_t> last_cycle_work_us_{0};
+
+    // External counter pointers (unified role host path).
+    // When non-null, script-visible accessors read from these instead of internal atomics.
+    std::atomic<uint64_t> *ext_out_written_{nullptr};
+    std::atomic<uint64_t> *ext_drops_{nullptr};
+    std::atomic<uint64_t> *ext_script_errors_{nullptr};
 
     mutable hub::InProcessSpinState                  metrics_spin_;
     std::unordered_map<std::string, double>          custom_metrics_;

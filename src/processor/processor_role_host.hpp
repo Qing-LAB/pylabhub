@@ -127,12 +127,8 @@ class ProcessorRoleHost
     size_t                                   out_schema_slot_size_{0};
     std::string                              inbox_type_name_;
 
-    // Metrics (atomic, written by worker, read by ctrl_thread_ heartbeat).
-    std::atomic<uint64_t>                    in_received_{0};
-    std::atomic<uint64_t>                    out_written_{0};
-    std::atomic<uint64_t>                    out_drops_{0};
-    std::atomic<uint64_t>                    iteration_count_{0};
-    std::atomic<uint64_t>                    last_cycle_work_us_{0};
+    // Metrics are in core_ (RoleHostCore) — single source of truth.
+    // See core_.out_written_, core_.in_received_, core_.drops_, core_.iteration_count_, core_.last_cycle_work_us_.
 };
 
 } // namespace pylabhub::processor

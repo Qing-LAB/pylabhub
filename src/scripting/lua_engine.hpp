@@ -37,7 +37,7 @@ class LuaEngine : public ScriptEngine
 
     // ── ScriptEngine lifecycle ───────────────────────────────────────────
 
-    bool initialize(const char *log_tag) override;
+    bool initialize(const char *log_tag, RoleHostCore *core) override;
     bool load_script(const std::filesystem::path &script_dir,
                      const char *entry_point,
                      const char *required_callback) override;
@@ -85,7 +85,8 @@ class LuaEngine : public ScriptEngine
 
     [[nodiscard]] uint64_t script_error_count() const noexcept override
     {
-        return script_errors_.load(std::memory_order_relaxed);
+        return ctx_.core ? ctx_.core->script_errors_.load(std::memory_order_relaxed)
+                         : 0;
     }
 
     // ── Threading ────────────────────────────────────────────────────────
@@ -109,7 +110,11 @@ class LuaEngine : public ScriptEngine
     int ref_on_inbox_{LUA_NOREF};
     int ref_api_{LUA_NOREF};
 
-    std::atomic<uint64_t> script_errors_{0};
+    // script_errors is in ctx_.core->script_errors_ (RoleHostCore).
+    // Only valid after build_api() sets ctx_. All pcall error paths
+    // guard with `if (ctx_.core)` — errors before build_api() are
+    // reported via return values (load_script, register_slot_type),
+    // not via script_errors.
 
     // ── Cached FFI ctype refs (set during register_slot_type) ───────────
     // Created via ffi.typeof() at init time. Used by invoke_* for zero-string-op
