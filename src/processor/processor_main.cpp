@@ -57,8 +57,6 @@
  */
 
 #include "processor_config.hpp"
-#include "processor_script_host.hpp"
-#include "lua_processor_host.hpp"
 #include "processor_role_host.hpp"
 #include "lua_engine.hpp"
 #include "python_engine.hpp"

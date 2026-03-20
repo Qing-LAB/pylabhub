@@ -41,8 +41,6 @@
 
 #include "consumer_config.hpp"
 #include "consumer_role_host.hpp"
-#include "consumer_script_host.hpp"
-#include "lua_consumer_host.hpp"
 #include "lua_engine.hpp"
 #include "python_engine.hpp"
 

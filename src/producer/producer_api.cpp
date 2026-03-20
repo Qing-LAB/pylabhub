@@ -43,8 +43,6 @@ void ProducerAPI::stop()
 {
     // LR-04: use release ordering so any stores before stop() are visible to threads
     // reading the shutdown flag with acquire ordering.
-    if (shutdown_flag_)
-        shutdown_flag_->store(true, std::memory_order_release);
     if (shutdown_requested_)
         shutdown_requested_->store(true, std::memory_order_release);
 }
