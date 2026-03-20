@@ -48,7 +48,7 @@
 namespace py = pybind11;
 
 // RoleHostCore is needed for inline metric accessors that read core_->field.
-#include "role_host_core.hpp"
+#include "utils/role_host_core.hpp"
 
 namespace pylabhub::processor
 {
