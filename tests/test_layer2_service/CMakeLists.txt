@@ -640,6 +640,41 @@ gtest_discover_tests(test_layer2_lua_engine
         TIMEOUT 30
 )
 
+# --- PythonEngine unit tests ---
+add_executable(test_layer2_python_engine
+    test_python_engine.cpp
+)
+
+target_include_directories(test_layer2_python_engine PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/scripting
+    ${CMAKE_SOURCE_DIR}/tests/test_framework
+)
+
+target_link_libraries(test_layer2_python_engine
+    PRIVATE
+        pylabhub::utils
+        pylabhub::scripting
+        pylabhub::third_party::pybind11_embed
+        GTest::gtest
+        GTest::gtest_main
+)
+
+target_compile_definitions(test_layer2_python_engine PRIVATE LOGGER_COMPILE_LEVEL=0)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_python_engine)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_python_engine
+    SUITE_NAME "Layer2_PythonEngine"
+)
+layer2_require_staged_utils(test_layer2_python_engine)
+
+gtest_discover_tests(test_layer2_python_engine
+    PROPERTIES
+        LABELS "layer2;service;scripting;python;engine"
+        TIMEOUT 60
+)
+
 message(STATUS "Layer 2 (Service) tests configured successfully")
 message(STATUS "  - test_layer2_framework_selftest (CRITICAL - framework self-verification)")
 message(STATUS "  - test_layer2_backoff_strategy   (pure API, no dispatcher)")
