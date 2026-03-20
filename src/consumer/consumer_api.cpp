@@ -147,9 +147,9 @@ uint64_t ConsumerAPI::ctrl_queue_dropped() const noexcept
 nlohmann::json ConsumerAPI::snapshot_metrics_json() const
 {
     nlohmann::json base;
-    base["in_received"]        = in_slots_received_.load(std::memory_order_relaxed);
-    base["script_errors"]      = script_errors_.load(std::memory_order_relaxed);
-    base["last_cycle_work_us"] = last_cycle_work_us_.load(std::memory_order_relaxed);
+    base["in_received"]        = in_slots_received();
+    base["script_errors"]      = script_error_count();
+    base["last_cycle_work_us"] = last_cycle_work_us();
     base["loop_overrun_count"] = uint64_t{0}; // consumer is demand-driven, no deadline
     base["ctrl_queue_dropped"] = ctrl_queue_dropped();
 
@@ -182,10 +182,10 @@ nlohmann::json ConsumerAPI::snapshot_metrics_json() const
 py::dict ConsumerAPI::metrics() const
 {
     py::dict d;
-    d["last_cycle_work_us"] = py::int_(last_cycle_work_us_.load(std::memory_order_relaxed));
+    d["last_cycle_work_us"] = py::int_(last_cycle_work_us());
     d["loop_overrun_count"] = py::int_(uint64_t{0}); // consumer is demand-driven, no deadline
-    d["script_errors"]      = py::int_(script_errors_.load(std::memory_order_relaxed));
-    d["in_received"]        = py::int_(in_slots_received_.load(std::memory_order_relaxed));
+    d["script_errors"]      = py::int_(script_error_count());
+    d["in_received"]        = py::int_(in_slots_received());
 
     if (consumer_ != nullptr)
     {

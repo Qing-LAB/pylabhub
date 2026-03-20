@@ -43,6 +43,11 @@
 
 namespace py = pybind11;
 
+// RoleHostCore is needed for inline metric accessors that read core_->field.
+// From pylabhub-producer: available via ../scripting include path.
+// From pylabhub-scripting: available via ${CMAKE_CURRENT_SOURCE_DIR}.
+#include "role_host_core.hpp"
+
 namespace pylabhub::producer
 {
 
@@ -66,6 +71,23 @@ class ProducerAPI
     void set_script_dir(std::string d){ script_dir_ = std::move(d); }
     void set_role_dir(std::string d)  { role_dir_   = std::move(d); }
 
+    /// Set the RoleHostCore pointer — single source of truth for shutdown flags,
+    /// stop reason, critical error, and all metrics (out_written, drops, script_errors,
+    /// last_cycle_work_us, etc.). Call once during build_api().
+    /// Also wires legacy pointer members so stop(), set_critical_error(), etc. work.
+    void set_core(scripting::RoleHostCore *c) noexcept
+    {
+        core_ = c;
+        if (c)
+        {
+            shutdown_flag_      = &c->shutdown_requested;
+            shutdown_requested_ = &c->shutdown_requested;
+            stop_reason_        = &c->stop_reason_;
+            critical_error_ptr_ = &c->critical_error_;
+        }
+    }
+
+    // Legacy individual setters (used by old script host path, will be removed).
     void set_shutdown_flag(std::atomic<bool> *f) noexcept { shutdown_flag_ = f; }
     void set_shutdown_requested(std::atomic<bool> *f) noexcept { shutdown_requested_ = f; }
     void set_stop_reason(std::atomic<int> *r) noexcept { stop_reason_ = r; }
@@ -140,26 +162,14 @@ class ProducerAPI
     // ── Python-accessible — diagnostics ──────────────────────────────────────
 
     [[nodiscard]] uint64_t script_error_count()  const noexcept
-        { return ext_script_errors_ ? ext_script_errors_->load(std::memory_order_relaxed)
-                                    : script_errors_.load(std::memory_order_relaxed); }
+        { return core_ ? core_->script_errors_.load(std::memory_order_relaxed)
+                       : script_errors_.load(std::memory_order_relaxed); }
     [[nodiscard]] uint64_t out_slots_written()   const noexcept
-        { return ext_out_written_ ? ext_out_written_->load(std::memory_order_relaxed)
-                                  : out_slots_written_.load(std::memory_order_relaxed); }
+        { return core_ ? core_->out_written_.load(std::memory_order_relaxed)
+                       : out_slots_written_.load(std::memory_order_relaxed); }
     [[nodiscard]] uint64_t out_drop_count()      const noexcept
-        { return ext_drops_ ? ext_drops_->load(std::memory_order_relaxed)
-                            : out_drops_.load(std::memory_order_relaxed); }
-
-    /// Redirect metric reads to external counters (unified role host path).
-    /// When set, script-visible accessors read from the external atomics
-    /// instead of the internal ones. Null = use internal (legacy path).
-    void set_external_counters(std::atomic<uint64_t> *out_written,
-                               std::atomic<uint64_t> *drops,
-                               std::atomic<uint64_t> *script_errors) noexcept
-    {
-        ext_out_written_    = out_written;
-        ext_drops_          = drops;
-        ext_script_errors_  = script_errors;
-    }
+        { return core_ ? core_->drops_.load(std::memory_order_relaxed)
+                       : out_drops_.load(std::memory_order_relaxed); }
     /// Number of cycles where start-to-start time exceeded target_period_ms.
     /// Reads from the DataBlock acquire layer (same counter used for overrun detection).
     /// Returns 0 if target_period_ms == 0 (free-run) or SHM is not connected.
@@ -171,7 +181,8 @@ class ProducerAPI
     [[nodiscard]] std::string out_policy()   const;
     /// Microseconds of active work (acquire+script+commit) in the last loop iteration.
     [[nodiscard]] uint64_t last_cycle_work_us()  const noexcept
-        { return last_cycle_work_us_.load(std::memory_order_relaxed); }
+        { return core_ ? core_->last_cycle_work_us_.load(std::memory_order_relaxed)
+                       : last_cycle_work_us_.load(std::memory_order_relaxed); }
     /// Combined metrics dict: DataBlock ContextMetrics + loop_overruns + script_errors.
     [[nodiscard]] py::dict metrics() const;
 
@@ -220,11 +231,9 @@ class ProducerAPI
     std::atomic<uint64_t> out_drops_{0};
     std::atomic<uint64_t> last_cycle_work_us_{0};
 
-    // External counter pointers (unified role host path).
-    // When non-null, script-visible accessors read from these instead of internal atomics.
-    std::atomic<uint64_t> *ext_out_written_{nullptr};
-    std::atomic<uint64_t> *ext_drops_{nullptr};
-    std::atomic<uint64_t> *ext_script_errors_{nullptr};
+    // RoleHostCore pointer (unified role host path).
+    // When non-null, metric accessors read from core_ instead of internal atomics.
+    scripting::RoleHostCore *core_{nullptr};
 
     mutable hub::InProcessSpinState                  metrics_spin_;
     std::unordered_map<std::string, double>          custom_metrics_;

@@ -212,11 +212,11 @@ uint64_t ProcessorAPI::ctrl_queue_dropped() const noexcept
 nlohmann::json ProcessorAPI::snapshot_metrics_json() const
 {
     nlohmann::json base;
-    base["in_received"]        = in_slots_received_.load(std::memory_order_relaxed);
-    base["out_written"]        = out_slots_written_.load(std::memory_order_relaxed);
-    base["drops"]              = out_drops_.load(std::memory_order_relaxed);
-    base["script_errors"]      = script_errors_.load(std::memory_order_relaxed);
-    base["last_cycle_work_us"] = last_cycle_work_us_.load(std::memory_order_relaxed);
+    base["in_received"]        = in_slots_received();
+    base["out_written"]        = out_slots_written();
+    base["drops"]              = out_drop_count();
+    base["script_errors"]      = script_error_count();
+    base["last_cycle_work_us"] = last_cycle_work_us();
     base["ctrl_queue_dropped"] = ctrl_queue_dropped();
 
     // Input side ContextMetrics (consumer SHM handle, D2+D3).
@@ -269,12 +269,12 @@ py::dict ProcessorAPI::metrics() const
 {
     py::dict d;
     // D4 — script supervision
-    d["script_error_count"] = py::int_(script_errors_.load(std::memory_order_relaxed));
+    d["script_error_count"] = py::int_(script_error_count());
     d["loop_overrun_count"] = py::int_(uint64_t{0}); // processor is queue-driven, no deadline
-    d["last_cycle_work_us"] = py::int_(last_cycle_work_us_.load(std::memory_order_relaxed));
-    d["in_received"]        = py::int_(in_slots_received_.load(std::memory_order_relaxed));
-    d["out_written"]        = py::int_(out_slots_written_.load(std::memory_order_relaxed));
-    d["drops"]              = py::int_(out_drops_.load(std::memory_order_relaxed));
+    d["last_cycle_work_us"] = py::int_(last_cycle_work_us());
+    d["in_received"]        = py::int_(in_slots_received());
+    d["out_written"]        = py::int_(out_slots_written());
+    d["drops"]              = py::int_(out_drop_count());
 
     // D2+D3 — input side (consumer SHM)
     if (consumer_ != nullptr)
