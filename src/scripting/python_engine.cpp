@@ -351,14 +351,7 @@ void PythonEngine::build_api(const RoleContext &ctx)
         if (ctx_.role_dir)   api.set_role_dir(ctx_.role_dir);
 
         if (ctx_.core)
-        {
-            api.set_shutdown_flag(&ctx_.core->shutdown_requested);
-            api.set_shutdown_requested(&ctx_.core->shutdown_requested);
-            api.set_stop_reason(&ctx_.core->stop_reason_);
-            api.set_critical_error_ptr(&ctx_.core->critical_error_);
-        }
-
-        api.set_external_counters(&ctx_.core->out_written_, &ctx_.core->drops_, &ctx_.core->script_errors_);
+            api.set_core(ctx_.core);
 
         py::module_ mod = py::module_::import("pylabhub_producer");
         api_obj_ = py::cast(&api, py::return_value_policy::reference);
@@ -381,14 +374,7 @@ void PythonEngine::build_api(const RoleContext &ctx)
         if (ctx_.role_dir)   api.set_role_dir(ctx_.role_dir);
 
         if (ctx_.core)
-        {
-            api.set_shutdown_flag(&ctx_.core->shutdown_requested);
-            api.set_shutdown_requested(&ctx_.core->shutdown_requested);
-            api.set_stop_reason(&ctx_.core->stop_reason_);
-            api.set_critical_error_ptr(&ctx_.core->critical_error_);
-        }
-
-        api.set_external_counters(&ctx_.core->in_received_, &ctx_.core->script_errors_);
+            api.set_core(ctx_.core);
 
         py::module_ mod = py::module_::import("pylabhub_consumer");
         api_obj_ = py::cast(&api, py::return_value_policy::reference);
@@ -417,14 +403,7 @@ void PythonEngine::build_api(const RoleContext &ctx)
         if (ctx_.role_dir)    api.set_role_dir(ctx_.role_dir);
 
         if (ctx_.core)
-        {
-            api.set_shutdown_flag(&ctx_.core->shutdown_requested);
-            api.set_shutdown_requested(&ctx_.core->shutdown_requested);
-            api.set_stop_reason(&ctx_.core->stop_reason_);
-            api.set_critical_error_ptr(&ctx_.core->critical_error_);
-        }
-
-        api.set_external_counters(&ctx_.core->out_written_, &ctx_.core->in_received_, &ctx_.core->drops_, &ctx_.core->script_errors_);
+            api.set_core(ctx_.core);
 
         py::module_ mod = py::module_::import("pylabhub_processor");
         api_obj_ = py::cast(&api, py::return_value_policy::reference);
