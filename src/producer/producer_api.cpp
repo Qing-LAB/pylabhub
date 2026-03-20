@@ -235,10 +235,10 @@ uint64_t ProducerAPI::ctrl_queue_dropped() const noexcept
 nlohmann::json ProducerAPI::snapshot_metrics_json() const
 {
     nlohmann::json base;
-    base["out_written"]        = out_slots_written_.load(std::memory_order_relaxed);
-    base["drops"]              = out_drops_.load(std::memory_order_relaxed);
-    base["script_errors"]      = script_errors_.load(std::memory_order_relaxed);
-    base["last_cycle_work_us"] = last_cycle_work_us_.load(std::memory_order_relaxed);
+    base["out_written"]        = out_slots_written();
+    base["drops"]              = out_drop_count();
+    base["script_errors"]      = script_error_count();
+    base["last_cycle_work_us"] = last_cycle_work_us();
     base["ctrl_queue_dropped"] = ctrl_queue_dropped();
 
     // ContextMetrics from SHM handle (if available).
@@ -272,10 +272,10 @@ nlohmann::json ProducerAPI::snapshot_metrics_json() const
 py::dict ProducerAPI::metrics() const
 {
     py::dict d;
-    d["last_cycle_work_us"] = py::int_(last_cycle_work_us_.load(std::memory_order_relaxed));
-    d["script_errors"]      = py::int_(script_errors_.load(std::memory_order_relaxed));
-    d["out_written"]        = py::int_(out_slots_written_.load(std::memory_order_relaxed));
-    d["drops"]              = py::int_(out_drops_.load(std::memory_order_relaxed));
+    d["last_cycle_work_us"] = py::int_(last_cycle_work_us());
+    d["script_errors"]      = py::int_(script_error_count());
+    d["out_written"]        = py::int_(out_slots_written());
+    d["drops"]              = py::int_(out_drop_count());
 
     if (producer_ != nullptr)
     {

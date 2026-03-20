@@ -45,6 +45,9 @@
 
 namespace py = pybind11;
 
+// RoleHostCore is needed for inline metric accessors that read core_->field.
+#include "role_host_core.hpp"
+
 namespace pylabhub::consumer
 {
 
@@ -68,6 +71,23 @@ class ConsumerAPI
     void set_script_dir(std::string d){ script_dir_ = std::move(d); }
     void set_role_dir(std::string d)  { role_dir_   = std::move(d); }
 
+    /// Set the RoleHostCore pointer — single source of truth for shutdown flags,
+    /// stop reason, critical error, and all metrics (in_received, script_errors,
+    /// last_cycle_work_us, etc.). Call once during build_api().
+    /// Also wires legacy pointer members so stop(), set_critical_error(), etc. work.
+    void set_core(scripting::RoleHostCore *c) noexcept
+    {
+        core_ = c;
+        if (c)
+        {
+            shutdown_flag_      = &c->shutdown_requested;
+            shutdown_requested_ = &c->shutdown_requested;
+            stop_reason_        = &c->stop_reason_;
+            critical_error_ptr_ = &c->critical_error_;
+        }
+    }
+
+    // Legacy individual setters (used by old script host path, will be removed).
     void set_shutdown_flag(std::atomic<bool> *f) noexcept { shutdown_flag_ = f; }
     void set_shutdown_requested(std::atomic<bool> *f) noexcept { shutdown_requested_ = f; }
     void set_stop_reason(std::atomic<int> *r) noexcept { stop_reason_ = r; }
@@ -131,9 +151,11 @@ class ConsumerAPI
     // ── Python-accessible — diagnostics ──────────────────────────────────────
 
     [[nodiscard]] uint64_t script_error_count()  const noexcept
-        { return script_errors_.load(std::memory_order_relaxed); }
+        { return core_ ? core_->script_errors_.load(std::memory_order_relaxed)
+                       : script_errors_.load(std::memory_order_relaxed); }
     [[nodiscard]] uint64_t in_slots_received()   const noexcept
-        { return in_slots_received_.load(std::memory_order_relaxed); }
+        { return core_ ? core_->in_received_.load(std::memory_order_relaxed)
+                       : in_slots_received_.load(std::memory_order_relaxed); }
     /// Consumer is demand-driven (no deadline); always returns 0. Present for API symmetry.
     [[nodiscard]] uint64_t loop_overrun_count()  const noexcept { return 0; }
 
@@ -142,7 +164,8 @@ class ConsumerAPI
     void set_verify_checksum(bool enable);
     /// Microseconds of active work (GIL acquire + on_consume callback + slot release) last iteration.
     [[nodiscard]] uint64_t last_cycle_work_us()  const noexcept
-        { return last_cycle_work_us_.load(std::memory_order_relaxed); }
+        { return core_ ? core_->last_cycle_work_us_.load(std::memory_order_relaxed)
+                       : last_cycle_work_us_.load(std::memory_order_relaxed); }
     /// Sequence number of the last slot returned by read_acquire(). 0 until first slot.
     /// IC-04: semantics are transport-specific.
     ///   SHM  — ring-buffer slot index (0-based, wraps at capacity); NOT a global monotone counter.
@@ -200,6 +223,10 @@ class ConsumerAPI
     std::atomic<uint64_t> in_slots_received_{0};
     std::atomic<uint64_t> last_cycle_work_us_{0};
     std::atomic<uint64_t> last_seq_snapshot_{0};  ///< Updated by loop_thread_ after each read_acquire()
+
+    // RoleHostCore pointer (unified role host path).
+    // When non-null, metric accessors read from core_ instead of internal atomics.
+    scripting::RoleHostCore *core_{nullptr};
 
     mutable hub::InProcessSpinState                  metrics_spin_;
     std::unordered_map<std::string, double>          custom_metrics_;
