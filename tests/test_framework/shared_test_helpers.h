@@ -17,11 +17,12 @@ namespace fs = std::filesystem;
  * lifecycle management and exception handling.
  */
 
+#include <cstdio>  // for std::fflush (run_gtest_worker)
+
 #if PYLABHUB_IS_POSIX
 #include <fcntl.h>
 #include <unistd.h>
 #else              // Windows
-#include <cstdio>  // for _fileno, stderr
 #include <fcntl.h> // For _O_BINARY
 #include <io.h>
 #define STDERR_FILENO _fileno(stderr)
@@ -243,33 +244,58 @@ int run_gtest_worker(Fn test_logic, const char *test_name, Mods &&...mods)
     // AssertionException) when throw_on_failure is set.
     GTEST_FLAG_SET(throw_on_failure, true);
 
-    pylabhub::utils::LifecycleGuard guard(
-        pylabhub::utils::MakeModDefList(std::forward<Mods>(mods)...));
+    int exit_code = 0;
+    {
+        pylabhub::utils::LifecycleGuard guard(
+            pylabhub::utils::MakeModDefList(std::forward<Mods>(mods)...));
 
-    try
-    {
-        test_logic();
-    }
-    catch (const ::testing::internal::GoogleTestFailureException &e)
-    {
-        fmt::print(stderr, "[WORKER FAILURE] GTest assertion failed in {}: \n{}\n", test_name,
-                   e.what());
-        pylabhub::debug::print_stack_trace();
-        return 1;
-    }
-    catch (const std::exception &e)
-    {
-        fmt::print(stderr, "[WORKER FAILURE] {} threw an exception: {}\n", test_name, e.what());
-        pylabhub::debug::print_stack_trace();
-        return 2;
-    }
-    catch (...)
-    {
-        fmt::print(stderr, "[WORKER FAILURE] {} threw an unknown exception.\n", test_name);
-        pylabhub::debug::print_stack_trace();
-        return 3;
-    }
-    return 0; // Success
+        try
+        {
+            test_logic();
+        }
+        catch (const ::testing::internal::GoogleTestFailureException &e)
+        {
+            fmt::print(stderr, "[WORKER FAILURE] GTest assertion failed in {}: \n{}\n", test_name,
+                       e.what());
+            pylabhub::debug::print_stack_trace();
+            exit_code = 1;
+        }
+        catch (const std::exception &e)
+        {
+            fmt::print(stderr, "[WORKER FAILURE] {} threw an exception: {}\n", test_name, e.what());
+            pylabhub::debug::print_stack_trace();
+            exit_code = 2;
+        }
+        catch (...)
+        {
+            fmt::print(stderr, "[WORKER FAILURE] {} threw an unknown exception.\n", test_name);
+            pylabhub::debug::print_stack_trace();
+            exit_code = 3;
+        }
+    } // LifecycleGuard destructor runs here — all pylabhub modules (Logger,
+      // ZMQ context, crypto, etc.) are shut down cleanly via reverse-order
+      // teardown.  At this point only library-global static destructors remain.
+
+    // WHY _exit() instead of return:
+    //
+    // run_gtest_worker() always executes inside a *subprocess* spawned by
+    // IsolatedProcessTest::SpawnWorker() (fork+execv).  The subprocess links
+    // the full pylabhub-utils shared library plus third-party libraries
+    // (libzmq, luajit, libsodium, etc.).  After LifecycleGuard has shut down
+    // all pylabhub modules above, the C++ runtime would still run static
+    // destructors for those library globals.  Their teardown order is
+    // unspecified and can hang indefinitely on CI runners (observed: 60 s hang
+    // on GCC 13/14 Release, GitHub Actions ubuntu-24.04).
+    //
+    // _exit() skips static destructors while preserving all meaningful cleanup
+    // (LifecycleGuard RAII above).  The parent process only observes the exit
+    // code and the captured stderr temp file — both are fully written before
+    // this point.
+    //
+    // NOTE: If a future test needs to verify static-destructor behavior, use
+    // run_worker_bare() instead — that path returns normally.
+    std::fflush(nullptr);
+    _exit(exit_code);
 }
 
 /**

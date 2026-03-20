@@ -80,7 +80,6 @@ class ProducerAPI
         core_ = c;
         if (c)
         {
-            shutdown_flag_      = &c->shutdown_requested;
             shutdown_requested_ = &c->shutdown_requested;
             stop_reason_        = &c->stop_reason_;
             critical_error_ptr_ = &c->critical_error_;
@@ -88,7 +87,6 @@ class ProducerAPI
     }
 
     // Legacy individual setters (used by old script host path, will be removed).
-    void set_shutdown_flag(std::atomic<bool> *f) noexcept { shutdown_flag_ = f; }
     void set_shutdown_requested(std::atomic<bool> *f) noexcept { shutdown_requested_ = f; }
     void set_stop_reason(std::atomic<int> *r) noexcept { stop_reason_ = r; }
     void set_critical_error_ptr(std::atomic<bool> *p) noexcept { critical_error_ptr_ = p; }
@@ -212,7 +210,6 @@ class ProducerAPI
     hub::Producer    *producer_{nullptr};
     hub::Messenger   *messenger_{nullptr};
     hub::QueueWriter *queue_{nullptr};
-    std::atomic<bool>*shutdown_flag_{nullptr};
     std::atomic<bool>*shutdown_requested_{nullptr};
     std::atomic<int> *stop_reason_{nullptr};
     py::object       *flexzone_obj_{nullptr};

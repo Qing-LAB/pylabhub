@@ -56,6 +56,9 @@ add_executable(pylabhub-hubshell
     hub_python/admin_shell.cpp
     hub_python/hub_script_api.cpp   # HubScriptAPI, ChannelInfo, HubTickInfo + pybind11 module
     hub_python/hub_script.cpp       # HubScript tick thread + script loading
+    # PythonScriptHost is used only by HubScript (admin shell).
+    # Role binaries use PythonEngine instead. Will be migrated in a future PR.
+    scripting/python_script_host.cpp
 )
 add_executable(pylabhub::hubshell ALIAS pylabhub-hubshell)
 

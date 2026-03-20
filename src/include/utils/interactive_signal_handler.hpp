@@ -67,7 +67,7 @@ public:
     InteractiveSignalHandler &operator=(const InteractiveSignalHandler &) = delete;
 
     /// Register the status callback (before or after install).
-    void set_status_callback(SignalStatusCallback cb);
+    void set_status_callback(SignalStatusCallback status_callback);
 
     /// Install signal handlers and start the watcher thread.
     void install();

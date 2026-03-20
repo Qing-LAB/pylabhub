@@ -12,8 +12,6 @@
  */
 #include "python_engine.hpp"
 
-#include "python_role_host_base.hpp" // json_to_py declaration
-
 #include "utils/format_tools.hpp"
 #include "utils/hub_producer.hpp"
 #include "utils/hub_inbox_queue.hpp"
@@ -43,6 +41,41 @@ namespace fs = std::filesystem;
 
 namespace pylabhub::scripting
 {
+
+// ============================================================================
+// json_to_py — recursive nlohmann::json → py::object conversion
+// ============================================================================
+
+static py::object json_to_py(const nlohmann::json &val)
+{
+    if (val.is_string())
+        return py::str(val.get<std::string>());
+    if (val.is_boolean())
+        return py::bool_(val.get<bool>());
+    if (val.is_number_unsigned())
+        return py::int_(val.get<uint64_t>());
+    if (val.is_number_integer())
+        return py::int_(val.get<int64_t>());
+    if (val.is_number_float())
+        return py::float_(val.get<double>());
+    if (val.is_object())
+    {
+        py::dict d;
+        for (auto &[k, v] : val.items())
+            d[py::str(k)] = json_to_py(v);
+        return std::move(d);
+    }
+    if (val.is_array())
+    {
+        py::list l;
+        for (auto &elem : val)
+            l.append(json_to_py(elem));
+        return std::move(l);
+    }
+    if (val.is_null())
+        return py::none();
+    return py::str(val.dump());
+}
 
 // ============================================================================
 // Destructor

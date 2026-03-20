@@ -20,6 +20,7 @@
 // Include the header directly; the test links pylabhub-scripting.
 #include "lua_role_host_base.hpp"
 
+#include "test_sync_utils.h" // poll_until
 #include "utils/logger.hpp"
 
 #include <atomic>
@@ -263,11 +264,15 @@ TEST_F(LuaRoleHostBaseTest, StartupShutdown_WithValidScript)
     host.startup_();
     EXPECT_TRUE(host.script_load_ok());
     EXPECT_TRUE(host.is_running());
-    EXPECT_TRUE(host.loop_entered);
 
-    // Give the loop a moment to be running.
-    std::this_thread::sleep_for(std::chrono::milliseconds{50});
-    EXPECT_TRUE(host.loop_running.load());
+    // startup_() returns after signal_ready_(), but the worker thread may not
+    // have entered run_data_loop_() yet. Poll the atomic flag rather than
+    // checking instantly — eliminates scheduling-dependent flake under CI load.
+    ASSERT_TRUE(pylabhub::tests::helper::poll_until(
+        [&] { return host.loop_running.load(std::memory_order_acquire); },
+        std::chrono::milliseconds{2000}))
+        << "Worker thread did not enter run_data_loop_() within 2 s";
+    EXPECT_TRUE(host.loop_entered);
 
     host.shutdown_();
     EXPECT_TRUE(host.loop_exited);

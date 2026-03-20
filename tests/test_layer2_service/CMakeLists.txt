@@ -606,44 +606,6 @@ gtest_discover_tests(test_layer2_loop_timing_policy
         TIMEOUT 30
 )
 
-# ============================================================================
-# Test: LuaRoleHostBase (worker thread lifecycle, FFI helpers, slot views)
-# Requires pylabhub-scripting (LuaJIT FFI integration).
-# ============================================================================
-
-add_executable(test_layer2_lua_role_host_base
-    test_lua_role_host_base.cpp
-)
-
-target_include_directories(test_layer2_lua_role_host_base PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/scripting
-    ${CMAKE_SOURCE_DIR}/tests/test_framework
-)
-
-target_link_libraries(test_layer2_lua_role_host_base
-    PRIVATE
-        pylabhub::utils
-        pylabhub::scripting
-        GTest::gtest
-        GTest::gtest_main
-)
-
-target_compile_definitions(test_layer2_lua_role_host_base PRIVATE LOGGER_COMPILE_LEVEL=0)
-
-pylabhub_ensure_sanitizer_for_executable(test_layer2_lua_role_host_base)
-
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_lua_role_host_base
-    SUITE_NAME "Layer2_LuaRoleHostBase"
-)
-layer2_require_staged_utils(test_layer2_lua_role_host_base)
-
-gtest_discover_tests(test_layer2_lua_role_host_base
-    PROPERTIES
-        LABELS "layer2;service;scripting;lua"
-        TIMEOUT 30
-)
-
 # --- LuaEngine unit tests ---
 add_executable(test_layer2_lua_engine
     test_lua_engine.cpp

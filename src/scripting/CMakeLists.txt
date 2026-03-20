@@ -19,12 +19,9 @@
 cmake_minimum_required(VERSION 3.28)
 
 add_library(pylabhub-scripting STATIC
-    python_script_host.cpp
     role_host_core.cpp
-    python_role_host_base.cpp
     lua_state.cpp
     lua_engine.cpp
-    lua_role_host_base.cpp
     python_engine.cpp
     # Role API classes — in the shared lib so PythonEngine and future
     # dynamic bindings can access all 3 without per-binary compilation.
