@@ -4,10 +4,19 @@
  */
 #include "utils/role_directory.hpp"
 
+#include "utils/config/auth_config.hpp"
+#include "utils/config/identity_config.hpp"
+#include "utils/config/inbox_config.hpp"
+#include "utils/config/monitoring_config.hpp"
+#include "utils/config/script_config.hpp"
+#include "utils/config/startup_config.hpp"
+#include "utils/config/timing_config.hpp"
+#include "utils/config/validation_config.hpp"
 #include "plh_platform.hpp" // PYLABHUB_IS_POSIX
 
+#include <cassert>
 #include <fstream>
-#include "utils/json_fwd.hpp"
+#include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <system_error>
 
@@ -17,6 +26,33 @@
 
 namespace pylabhub::utils
 {
+
+namespace cfg = pylabhub::config;
+
+// ── ConfigState (must precede defaulted special members) ──────────────────────
+
+struct RoleDirectory::ConfigState
+{
+    nlohmann::json raw;
+    std::string    role_tag;
+
+    cfg::IdentityConfig   identity;
+    cfg::AuthConfig       auth;
+    cfg::ScriptConfig     script;
+    cfg::TimingConfig     timing;
+    cfg::InboxConfig      inbox;
+    cfg::ValidationConfig validation;
+    cfg::StartupConfig    startup;
+    cfg::MonitoringConfig monitoring;
+};
+
+RoleDirectory::RoleDirectory(std::filesystem::path base) noexcept
+    : base_(std::move(base))
+{
+}
+RoleDirectory::~RoleDirectory() = default;
+RoleDirectory::RoleDirectory(RoleDirectory &&) noexcept = default;
+RoleDirectory &RoleDirectory::operator=(RoleDirectory &&) noexcept = default;
 
 // ── Factory methods ────────────────────────────────────────────────────────────
 
@@ -171,6 +207,128 @@ bool RoleDirectory::has_standard_layout() const
            fs::is_directory(base_ / "run") &&
            fs::is_directory(base_ / "vault") &&
            fs::is_directory(base_ / "script" / "python");
+}
+
+// ============================================================================
+// load_config and accessors
+// ============================================================================
+
+void RoleDirectory::load_config(std::string_view filename, std::string_view role_tag)
+{
+    namespace fs = std::filesystem;
+
+    const fs::path cfg_path = config_file(filename);
+    std::ifstream ifs(cfg_path);
+    if (!ifs)
+        throw std::runtime_error(
+            "RoleDirectory: cannot open config '" + cfg_path.string() + "'");
+
+    nlohmann::json j;
+    try
+    {
+        j = nlohmann::json::parse(ifs);
+    }
+    catch (const nlohmann::json::parse_error &e)
+    {
+        throw std::runtime_error(
+            "RoleDirectory: JSON parse error in '" + cfg_path.string() + "': " + e.what());
+    }
+
+    const std::string tag_str(role_tag);
+    const char *tag = tag_str.c_str();
+
+    // Determine default period: producer=100ms, consumer/processor=0.
+    const double default_period = (role_tag == "producer") ? 100.0 : 0.0;
+
+    auto state = std::make_unique<ConfigState>();
+    state->raw      = j;
+    state->role_tag = tag_str;
+
+    // ── Shared categorical parsers ────────────────────────────────────────────
+    state->identity   = cfg::parse_identity_config(j, role_tag);
+    state->auth       = cfg::parse_auth_config(j, role_tag);
+    state->script     = cfg::parse_script_config(j, base_, tag);
+    state->timing     = cfg::parse_timing_config(j, tag, default_period);
+    state->inbox      = cfg::parse_inbox_config(j, tag);
+    state->validation = cfg::parse_validation_config(j);
+    state->startup    = cfg::parse_startup_config(j, tag);
+    state->monitoring = cfg::parse_monitoring_config(j);
+
+    // ── Hub resolution (integrated) ──────────────────────────────────────────
+    // Hub dir is resolved relative to the role directory.
+    // Broker and pubkey are read from the hub directory if present.
+    // This is currently still done by the per-role from_directory() methods
+    // and will be migrated here in Phase 3.
+
+    // ── Security check ───────────────────────────────────────────────────────
+    warn_if_keyfile_in_role_dir(base_, state->auth.keyfile);
+
+    config_ = std::move(state);
+}
+
+bool RoleDirectory::config_loaded() const noexcept
+{
+    return config_ != nullptr;
+}
+
+const cfg::IdentityConfig &RoleDirectory::identity() const
+{
+    assert(config_ && "load_config() not called");
+    return config_->identity;
+}
+
+const cfg::AuthConfig &RoleDirectory::auth() const
+{
+    assert(config_ && "load_config() not called");
+    return config_->auth;
+}
+
+const cfg::ScriptConfig &RoleDirectory::script() const
+{
+    assert(config_ && "load_config() not called");
+    return config_->script;
+}
+
+const cfg::TimingConfig &RoleDirectory::timing() const
+{
+    assert(config_ && "load_config() not called");
+    return config_->timing;
+}
+
+const cfg::InboxConfig &RoleDirectory::inbox() const
+{
+    assert(config_ && "load_config() not called");
+    return config_->inbox;
+}
+
+const cfg::ValidationConfig &RoleDirectory::validation() const
+{
+    assert(config_ && "load_config() not called");
+    return config_->validation;
+}
+
+const cfg::StartupConfig &RoleDirectory::startup() const
+{
+    assert(config_ && "load_config() not called");
+    return config_->startup;
+}
+
+const cfg::MonitoringConfig &RoleDirectory::monitoring() const
+{
+    assert(config_ && "load_config() not called");
+    return config_->monitoring;
+}
+
+const nlohmann::json &RoleDirectory::raw_json() const
+{
+    assert(config_ && "load_config() not called");
+    return config_->raw;
+}
+
+const std::string &RoleDirectory::role_tag() const
+{
+    assert(config_ && "load_config() not called");
+    return config_->role_tag;
 }
 
 } // namespace pylabhub::utils
