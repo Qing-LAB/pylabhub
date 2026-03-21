@@ -9,8 +9,8 @@
  * InboxQueue, and Messenger without knowing the underlying script engine type.
  */
 
-#include "role_host_core.hpp"
-#include "script_engine.hpp"
+#include "utils/role_host_core.hpp"
+#include "utils/script_engine.hpp"
 #include "plh_datahub.hpp"
 #include "plh_datahub_client.hpp"
 #include "utils/hub_inbox_queue.hpp"

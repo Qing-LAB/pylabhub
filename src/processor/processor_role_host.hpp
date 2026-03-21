@@ -16,8 +16,8 @@
  */
 
 #include "processor_config.hpp"
-#include "role_host_core.hpp"
-#include "script_engine.hpp"
+#include "utils/role_host_core.hpp"
+#include "utils/script_engine.hpp"
 #include "plh_datahub.hpp"
 
 #include <atomic>
@@ -67,7 +67,7 @@ class ProcessorRoleHost
 
     // ── Queries (called from main thread) ────────────────────────────────────
 
-    [[nodiscard]] bool is_running() const { return core_.running_threads.load(std::memory_order_acquire); }
+    [[nodiscard]] bool is_running() const { return core_.is_running(); }
     [[nodiscard]] bool script_load_ok() const { return script_load_ok_.load(std::memory_order_acquire); }
     [[nodiscard]] const ProcessorConfig &config() const { return config_; }
 

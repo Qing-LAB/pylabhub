@@ -11,7 +11,7 @@
  */
 
 #include "lua_state.hpp"
-#include "script_engine.hpp"
+#include "utils/script_engine.hpp"
 
 #include "utils/hub_inbox_queue.hpp"
 
@@ -85,8 +85,7 @@ class LuaEngine : public ScriptEngine
 
     [[nodiscard]] uint64_t script_error_count() const noexcept override
     {
-        return ctx_.core ? ctx_.core->script_errors_.load(std::memory_order_relaxed)
-                         : 0;
+        return ctx_.core->script_errors();
     }
 
     // ── Threading ────────────────────────────────────────────────────────

@@ -6,6 +6,19 @@
 
 ## Archive batches
 
+### 2026-03-20 (ScriptEngine refactor review — cleanup)
+
+Two review files archived. All items resolved except PARITY-01 (Lua API parity), which carries forward into the new active review `REVIEW_ScriptEngine_2026-03-20.md`.
+
+| Archived | Origin | Reason |
+|---|---|---|
+| `REVIEW_FullStack_2026-03-17.md` | `docs/code_review/` | All 30+ items FIXED/ACCEPTED/DEFERRED; one OPEN (PARITY-01) carried forward |
+| `cursor_code_and_document_review_report.md` | `docs/code_review/` | Cursor IDE export; informational analysis; actionable items already captured in other reviews |
+
+**Retained (deferred):** `LINT_FIXES_PLAN.md` — Section 2 (7 categories) still awaiting user confirmation.
+
+---
+
 ### 2026-03-15 (codex deep review — doc fixes + TODO routing)
 
 External codex review (2-pass, read-only). 14 findings triaged:

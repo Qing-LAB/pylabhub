@@ -153,7 +153,7 @@ class ZmqPollLoopTest : public ::testing::Test
 TEST_F(ZmqPollLoopTest, EmptySocketsReturnsImmediately)
 {
     RoleHostCore core;
-    core.running_threads.store(true);
+    core.set_running(true);
 
     ZmqPollLoop loop{core, "test"};
     // No sockets added.
@@ -163,7 +163,7 @@ TEST_F(ZmqPollLoopTest, EmptySocketsReturnsImmediately)
 TEST_F(ZmqPollLoopTest, AllNullptrSocketsReturnsImmediately)
 {
     RoleHostCore core;
-    core.running_threads.store(true);
+    core.set_running(true);
 
     ZmqPollLoop loop{core, "test"};
     loop.sockets = {
@@ -181,7 +181,7 @@ TEST_F(ZmqPollLoopTest, ShutdownStopsLoop)
     ASSERT_EQ(zmq_bind(sock, "inproc://test-shutdown"), 0);
 
     RoleHostCore core;
-    core.running_threads.store(true);
+    core.set_running(true);
 
     ZmqPollLoop loop{core, "test"};
     loop.sockets = {{sock, [] {}}};
@@ -191,7 +191,7 @@ TEST_F(ZmqPollLoopTest, ShutdownStopsLoop)
     std::thread t([&] { loop.run(); });
 
     std::this_thread::sleep_for(std::chrono::milliseconds{20});
-    core.running_threads.store(false);
+    core.set_running(false);
 
     t.join(); // Should complete quickly.
 
@@ -205,7 +205,7 @@ TEST_F(ZmqPollLoopTest, ShutdownRequestedStopsLoop)
     ASSERT_EQ(zmq_bind(sock, "inproc://test-shutdown-req"), 0);
 
     RoleHostCore core;
-    core.running_threads.store(true);
+    core.set_running(true);
 
     ZmqPollLoop loop{core, "test"};
     loop.sockets = {{sock, [] {}}};
@@ -214,7 +214,7 @@ TEST_F(ZmqPollLoopTest, ShutdownRequestedStopsLoop)
     std::thread t([&] { loop.run(); });
 
     std::this_thread::sleep_for(std::chrono::milliseconds{20});
-    core.shutdown_requested.store(true);
+    core.request_stop();
 
     t.join();
 
@@ -233,7 +233,7 @@ TEST_F(ZmqPollLoopTest, DispatchCalledOnPollin)
     std::atomic<int> dispatch_count{0};
 
     RoleHostCore core;
-    core.running_threads.store(true);
+    core.set_running(true);
 
     ZmqPollLoop loop{core, "test"};
     loop.sockets = {
@@ -262,7 +262,7 @@ TEST_F(ZmqPollLoopTest, DispatchCalledOnPollin)
 
     EXPECT_GE(dispatch_count.load(), 1);
 
-    core.running_threads.store(false);
+    core.set_running(false);
     t.join();
 
     zmq_close(sender);
@@ -279,7 +279,7 @@ TEST_F(ZmqPollLoopTest, PeriodicTasksFire)
     std::atomic<uint64_t> iter{0};
 
     RoleHostCore core;
-    core.running_threads.store(true);
+    core.set_running(true);
 
     ZmqPollLoop loop{core, "test"};
     loop.sockets = {{sock, [] {}}};
@@ -297,7 +297,7 @@ TEST_F(ZmqPollLoopTest, PeriodicTasksFire)
 
     EXPECT_GE(task_count.load(), 1);
 
-    core.running_threads.store(false);
+    core.set_running(false);
     t.join();
 
     zmq_close(sock);
@@ -316,7 +316,7 @@ TEST_F(ZmqPollLoopTest, NullptrSocketsFiltered)
     std::atomic<int> dispatch_count{0};
 
     RoleHostCore core;
-    core.running_threads.store(true);
+    core.set_running(true);
 
     ZmqPollLoop loop{core, "test"};
     loop.sockets = {
@@ -344,7 +344,7 @@ TEST_F(ZmqPollLoopTest, NullptrSocketsFiltered)
 
     EXPECT_GE(dispatch_count.load(), 1);
 
-    core.running_threads.store(false);
+    core.set_running(false);
     t.join();
 
     zmq_close(sender);
@@ -369,7 +369,7 @@ TEST_F(ZmqPollLoopTest, MultipleSocketsDispatchCorrectly)
     std::atomic<int> count1{0}, count2{0};
 
     RoleHostCore core;
-    core.running_threads.store(true);
+    core.set_running(true);
 
     ZmqPollLoop loop{core, "test"};
     loop.sockets = {
@@ -411,7 +411,7 @@ TEST_F(ZmqPollLoopTest, MultipleSocketsDispatchCorrectly)
 
     EXPECT_GE(count2.load(), 1);
 
-    core.running_threads.store(false);
+    core.set_running(false);
     t.join();
 
     zmq_close(send1);
@@ -429,7 +429,7 @@ TEST_F(ZmqPollLoopTest, NoGetIterationSkipsPeriodicTasks)
     std::atomic<int> task_count{0};
 
     RoleHostCore core;
-    core.running_threads.store(true);
+    core.set_running(true);
 
     ZmqPollLoop loop{core, "test"};
     loop.sockets = {{sock, [] {}}};
@@ -444,7 +444,7 @@ TEST_F(ZmqPollLoopTest, NoGetIterationSkipsPeriodicTasks)
     // Task should NOT have fired because get_iteration is empty.
     EXPECT_EQ(task_count.load(), 0);
 
-    core.running_threads.store(false);
+    core.set_running(false);
     t.join();
 
     zmq_close(sock);
@@ -457,7 +457,7 @@ TEST_F(ZmqPollLoopTest, CustomPollInterval)
     ASSERT_EQ(zmq_bind(sock, "inproc://test-custom-poll"), 0);
 
     RoleHostCore core;
-    core.running_threads.store(true);
+    core.set_running(true);
 
     ZmqPollLoop loop{core, "test"};
     loop.sockets = {{sock, [] {}}};
@@ -467,7 +467,7 @@ TEST_F(ZmqPollLoopTest, CustomPollInterval)
     std::thread t([&] { loop.run(); });
 
     std::this_thread::sleep_for(std::chrono::milliseconds{30});
-    core.running_threads.store(false);
+    core.set_running(false);
     t.join();
 
     auto elapsed = std::chrono::steady_clock::now() - start;

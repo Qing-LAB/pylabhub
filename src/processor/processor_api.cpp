@@ -41,19 +41,12 @@ void ProcessorAPI::log(const std::string &level, const std::string &msg)
 
 void ProcessorAPI::stop()
 {
-    // LR-04: release ordering so any stores before stop() are visible to threads
-    // reading the shutdown flag with acquire ordering.
-    if (shutdown_requested_)
-        shutdown_requested_->store(true, std::memory_order_release);
+    core_->request_stop();
 }
 
 void ProcessorAPI::set_critical_error()
 {
-    if (critical_error_ptr_)
-        critical_error_ptr_->store(true, std::memory_order_release);
-    if (stop_reason_)
-        stop_reason_->store(3, std::memory_order_relaxed); // RoleHostCore::StopReason::CriticalError
-    stop();
+    core_->set_critical_error();
 }
 
 // ============================================================================
@@ -189,14 +182,7 @@ void ProcessorAPI::clear_custom_metrics()
 
 std::string ProcessorAPI::stop_reason() const noexcept
 {
-    if (!stop_reason_) return "normal";
-    switch (stop_reason_->load(std::memory_order_relaxed))
-    {
-    case 1:  return "peer_dead";
-    case 2:  return "hub_dead";
-    case 3:  return "critical_error";
-    default: return "normal";
-    }
+    return core_->stop_reason_string();
 }
 
 uint64_t ProcessorAPI::ctrl_queue_dropped() const noexcept

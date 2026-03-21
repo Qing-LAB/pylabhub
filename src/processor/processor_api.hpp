@@ -20,7 +20,7 @@
  *       if in_slot is None:
  *           return False
  *       out_slot.value = in_slot.value * 2.0
- *       return True  # True/None=commit; False=discard
+ *       return True  # True=commit; False=discard; None=error
  *
  *   def on_stop(api: proc.ProcessorAPI):
  *       api.log('info', "Processor stopping")
@@ -60,7 +60,11 @@ namespace pylabhub::processor
 class ProcessorAPI
 {
   public:
-    ProcessorAPI() = default;
+    /// Construct with RoleHostCore — single source of truth for all metrics
+    /// and shutdown state. Must outlive this object.
+    explicit ProcessorAPI(scripting::RoleHostCore &core)
+        : core_(&core)
+    {}
 
     // ── C++ host setters (never called from Python) ───────────────────────────
 
@@ -75,49 +79,10 @@ class ProcessorAPI
     void set_script_dir(std::string d)  { script_dir_  = std::move(d); }
     void set_role_dir(std::string d)    { role_dir_    = std::move(d); }
 
-    /// Set the RoleHostCore pointer — single source of truth for shutdown flags,
-    /// stop reason, critical error, and all metrics (out_written, in_received, drops,
-    /// script_errors, last_cycle_work_us, etc.). Call once during build_api().
-    /// Also wires legacy pointer members so stop(), set_critical_error(), etc. work.
-    void set_core(scripting::RoleHostCore *c) noexcept
-    {
-        core_ = c;
-        if (c)
-        {
-            shutdown_requested_ = &c->shutdown_requested;
-            stop_reason_        = &c->stop_reason_;
-            critical_error_ptr_ = &c->critical_error_;
-        }
-    }
-
-    // Legacy individual setters (used by old script host path, will be removed).
-    /// Global shutdown flag pointer — set by api_.stop().
-
-    /// Internal shutdown flag — used so do_python_work() wait loop can react
-    /// immediately to api.stop() without waiting for the main thread to set stop_.
-    void set_shutdown_requested(std::atomic<bool> *f) noexcept { shutdown_requested_ = f; }
-    void set_stop_reason(std::atomic<int> *r) noexcept { stop_reason_ = r; }
-    void set_critical_error_ptr(std::atomic<bool> *p) noexcept { critical_error_ptr_ = p; }
-
-    /// Pointer to the Python flexzone object returned by api.flexzone().
-    void set_flexzone_obj(py::object *fz) noexcept { flexzone_obj_ = fz; }
-
     /// Input/output queue pointers — set by ProcessorScriptHost after queue creation.
     /// Raw pointers (non-owning); valid between start_role() and stop_role().
     void set_in_queue(const hub::QueueReader *q) noexcept { in_queue_.store(q, std::memory_order_release); }
     void set_out_queue(hub::QueueWriter *q) noexcept { out_queue_.store(q, std::memory_order_release); }
-
-    /// Increment Python-exception counter (called in every callback catch block).
-    void increment_script_errors() noexcept
-        { script_errors_.fetch_add(1, std::memory_order_relaxed); }
-
-    /// Increment counters (called by the loop thread).
-    void increment_in_received()  noexcept { in_slots_received_.fetch_add(1, std::memory_order_relaxed); }
-    void increment_out_written()  noexcept { out_slots_written_.fetch_add(1, std::memory_order_relaxed); }
-    void increment_drops()        noexcept { out_drops_.fetch_add(1, std::memory_order_relaxed); }
-    /// Record µs of active work per on_process invocation (GIL acquire + callback).
-    void set_last_cycle_work_us(uint64_t us) noexcept
-        { last_cycle_work_us_.store(us, std::memory_order_relaxed); }
 
     // ── Python-accessible — identity / environment ────────────────────────────
 
@@ -148,7 +113,7 @@ class ProcessorAPI
 
     /// True if set_critical_error() has been called.
     [[nodiscard]] bool critical_error() const noexcept
-        { return critical_error_ptr_ && critical_error_ptr_->load(std::memory_order_acquire); }
+        { return core_->is_critical_error(); }
 
     /// Return the persistent output flexzone Python object, or None.
     [[nodiscard]] py::object flexzone() const;
@@ -200,23 +165,18 @@ class ProcessorAPI
     // ── Python-accessible — diagnostics ──────────────────────────────────────
 
     [[nodiscard]] uint64_t script_error_count()  const noexcept
-        { return core_ ? core_->script_errors_.load(std::memory_order_relaxed)
-                       : script_errors_.load(std::memory_order_relaxed); }
+        { return core_->script_errors(); }
     [[nodiscard]] uint64_t in_slots_received()   const noexcept
-        { return core_ ? core_->in_received_.load(std::memory_order_relaxed)
-                       : in_slots_received_.load(std::memory_order_relaxed); }
+        { return core_->in_received(); }
     [[nodiscard]] uint64_t out_slots_written()   const noexcept
-        { return core_ ? core_->out_written_.load(std::memory_order_relaxed)
-                       : out_slots_written_.load(std::memory_order_relaxed); }
+        { return core_->out_written(); }
     [[nodiscard]] uint64_t out_drop_count()      const noexcept
-        { return core_ ? core_->drops_.load(std::memory_order_relaxed)
-                       : out_drops_.load(std::memory_order_relaxed); }
+        { return core_->drops(); }
     /// Processor is queue-driven (no deadline); always returns 0. Present for API symmetry.
     [[nodiscard]] uint64_t loop_overrun_count()  const noexcept { return 0; }
     /// Microseconds of active work (GIL acquire + on_process callback) in the last iteration.
     [[nodiscard]] uint64_t last_cycle_work_us()  const noexcept
-        { return core_ ? core_->last_cycle_work_us_.load(std::memory_order_relaxed)
-                       : last_cycle_work_us_.load(std::memory_order_relaxed); }
+        { return core_->last_cycle_work_us(); }
     /// Combined metrics dict: in/out DataBlock ContextMetrics + D4 binary-level counters.
     [[nodiscard]] py::dict metrics() const;
 
@@ -273,11 +233,9 @@ class ProcessorAPI
     hub::Producer    *producer_{nullptr};
     hub::Consumer    *consumer_{nullptr};
     hub::Messenger   *messenger_{nullptr};
-    std::atomic<bool>*shutdown_requested_{nullptr};
-    std::atomic<int> *stop_reason_{nullptr};
     py::object       *flexzone_obj_{nullptr};
 
-    std::atomic<bool>             *critical_error_ptr_{nullptr};
+
     std::atomic<const hub::QueueReader*> in_queue_{nullptr}; ///< Non-owning read side; set by ProcessorScriptHost
     std::atomic<hub::QueueWriter*> out_queue_{nullptr};
 
@@ -289,15 +247,9 @@ class ProcessorAPI
     std::string script_dir_;
     std::string role_dir_;
 
-    std::atomic<uint64_t> script_errors_{0};
-    std::atomic<uint64_t> in_slots_received_{0};
-    std::atomic<uint64_t> out_slots_written_{0};
-    std::atomic<uint64_t> out_drops_{0};
-    std::atomic<uint64_t> last_cycle_work_us_{0};
-
-    // RoleHostCore pointer (unified role host path).
-    // When non-null, metric accessors read from core_ instead of internal atomics.
-    scripting::RoleHostCore *core_{nullptr};
+    // RoleHostCore — single source of truth for all metrics and shutdown state.
+    // Set by the constructor; always non-null.
+    scripting::RoleHostCore *core_;
 
     mutable hub::InProcessSpinState                  metrics_spin_;
     std::unordered_map<std::string, double>          custom_metrics_;

@@ -321,8 +321,11 @@ def on_process(input_queue, output_queue, messages, api) -> bool | None:
     messages:      list of (sender: str, data: bytes) and/or event dicts.
     api:           ProcessorAPI — see §6.3.
 
-    Return True or None  → commit output_queue.slot to the output channel.
-    Return False         → discard; nothing written to output channel.
+    Return True           → commit output_queue.slot to the output channel.
+    Return False          → discard; nothing written to output channel.
+    Return None           → Error: increments script_errors, logs warning.
+                            If stop_on_script_error=true, requests shutdown.
+                            Catches the common bug of omitting a return statement.
     """
     if input_queue.is_timeout:
         return False   # no new input; skip this iteration

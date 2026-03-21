@@ -58,7 +58,11 @@ namespace pylabhub::consumer
 class ConsumerAPI
 {
   public:
-    ConsumerAPI() = default;
+    /// Construct with RoleHostCore — single source of truth for all metrics
+    /// and shutdown state. Must outlive this object.
+    explicit ConsumerAPI(scripting::RoleHostCore &core)
+        : core_(&core)
+    {}
 
     // ── C++ host setters (never called from Python) ───────────────────────────
 
@@ -71,36 +75,10 @@ class ConsumerAPI
     void set_script_dir(std::string d){ script_dir_ = std::move(d); }
     void set_role_dir(std::string d)  { role_dir_   = std::move(d); }
 
-    /// Set the RoleHostCore pointer — single source of truth for shutdown flags,
-    /// stop reason, critical error, and all metrics (in_received, script_errors,
-    /// last_cycle_work_us, etc.). Call once during build_api().
-    /// Also wires legacy pointer members so stop(), set_critical_error(), etc. work.
-    void set_core(scripting::RoleHostCore *c) noexcept
-    {
-        core_ = c;
-        if (c)
-        {
-            shutdown_requested_ = &c->shutdown_requested;
-            stop_reason_        = &c->stop_reason_;
-            critical_error_ptr_ = &c->critical_error_;
-        }
-    }
-
-    // Legacy individual setters (used by old script host path, will be removed).
-    void set_shutdown_requested(std::atomic<bool> *f) noexcept { shutdown_requested_ = f; }
-    void set_stop_reason(std::atomic<int> *r) noexcept { stop_reason_ = r; }
-    void set_critical_error_ptr(std::atomic<bool> *p) noexcept { critical_error_ptr_ = p; }
     void set_reader(const hub::QueueReader *r) noexcept
         { reader_.store(r, std::memory_order_release); }
     void update_last_seq(uint64_t seq) noexcept
         { last_seq_snapshot_.store(seq, std::memory_order_relaxed); }
-
-    void increment_script_errors() noexcept
-        { script_errors_.fetch_add(1, std::memory_order_relaxed); }
-    void increment_in_received() noexcept
-        { in_slots_received_.fetch_add(1, std::memory_order_relaxed); }
-    void set_last_cycle_work_us(uint64_t us) noexcept
-        { last_cycle_work_us_.store(us, std::memory_order_relaxed); }
 
     // ── Python-accessible — identity / environment ────────────────────────────
 
@@ -117,7 +95,7 @@ class ConsumerAPI
     void stop();
     void set_critical_error();
     [[nodiscard]] bool critical_error() const noexcept
-        { return critical_error_ptr_ && critical_error_ptr_->load(std::memory_order_acquire); }
+        { return core_->is_critical_error(); }
 
     /// Send an event notification to a target channel's producer via the broker.
     void notify_channel(const std::string &target_channel, const std::string &event,
@@ -149,11 +127,9 @@ class ConsumerAPI
     // ── Python-accessible — diagnostics ──────────────────────────────────────
 
     [[nodiscard]] uint64_t script_error_count()  const noexcept
-        { return core_ ? core_->script_errors_.load(std::memory_order_relaxed)
-                       : script_errors_.load(std::memory_order_relaxed); }
+        { return core_->script_errors(); }
     [[nodiscard]] uint64_t in_slots_received()   const noexcept
-        { return core_ ? core_->in_received_.load(std::memory_order_relaxed)
-                       : in_slots_received_.load(std::memory_order_relaxed); }
+        { return core_->in_received(); }
     /// Consumer is demand-driven (no deadline); always returns 0. Present for API symmetry.
     [[nodiscard]] uint64_t loop_overrun_count()  const noexcept { return 0; }
 
@@ -162,8 +138,7 @@ class ConsumerAPI
     void set_verify_checksum(bool enable);
     /// Microseconds of active work (GIL acquire + on_consume callback + slot release) last iteration.
     [[nodiscard]] uint64_t last_cycle_work_us()  const noexcept
-        { return core_ ? core_->last_cycle_work_us_.load(std::memory_order_relaxed)
-                       : last_cycle_work_us_.load(std::memory_order_relaxed); }
+        { return core_->last_cycle_work_us(); }
     /// Sequence number of the last slot returned by read_acquire(). 0 until first slot.
     /// IC-04: semantics are transport-specific.
     ///   SHM  — ring-buffer slot index (0-based, wraps at capacity); NOT a global monotone counter.
@@ -204,10 +179,7 @@ class ConsumerAPI
     hub::Consumer         *consumer_{nullptr};
     hub::Messenger        *messenger_{nullptr};
     std::atomic<const hub::QueueReader*> reader_{nullptr}; ///< Non-owning; set by ConsumerScriptHost
-    std::atomic<bool>     *shutdown_requested_{nullptr};
-    std::atomic<int>      *stop_reason_{nullptr};
 
-    std::atomic<bool> *critical_error_ptr_{nullptr};
 
     std::string uid_;
     std::string name_;
@@ -216,14 +188,11 @@ class ConsumerAPI
     std::string script_dir_;
     std::string role_dir_;
 
-    std::atomic<uint64_t> script_errors_{0};
-    std::atomic<uint64_t> in_slots_received_{0};
-    std::atomic<uint64_t> last_cycle_work_us_{0};
     std::atomic<uint64_t> last_seq_snapshot_{0};  ///< Updated by loop_thread_ after each read_acquire()
 
-    // RoleHostCore pointer (unified role host path).
-    // When non-null, metric accessors read from core_ instead of internal atomics.
-    scripting::RoleHostCore *core_{nullptr};
+    // RoleHostCore — single source of truth for all metrics and shutdown state.
+    // Set by the constructor; always non-null.
+    scripting::RoleHostCore *core_;
 
     mutable hub::InProcessSpinState                  metrics_spin_;
     std::unordered_map<std::string, double>          custom_metrics_;

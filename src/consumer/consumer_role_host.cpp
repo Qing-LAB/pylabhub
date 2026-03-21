@@ -79,7 +79,7 @@ void ConsumerRoleHost::startup_()
 
 void ConsumerRoleHost::shutdown_()
 {
-    core_.shutdown_requested.store(true, std::memory_order_release);
+    core_.request_stop();
     core_.notify_incoming();
 
     if (worker_thread_.joinable())
@@ -96,6 +96,7 @@ void ConsumerRoleHost::worker_main_()
     if (!engine_->initialize("cons", &core_))
     {
         LOGGER_ERROR("[cons] Engine initialize() failed");
+        engine_->finalize(); // Clean up any partial state (e.g. live interpreter).
         ready_promise_.set_value(false);
         return;
     }
@@ -226,7 +227,7 @@ void ConsumerRoleHost::worker_main_()
     engine_->invoke_on_init();
 
     // Step 7: Spawn ctrl_thread_ and signal ready.
-    core_.running_threads.store(true, std::memory_order_release);
+    core_.set_running(true);
     ctrl_thread_ = std::thread([this] { run_ctrl_thread_(); });
 
     // Step 8: Signal ready.
@@ -384,7 +385,7 @@ bool ConsumerRoleHost::setup_infrastructure_()
 
     in_consumer_->on_force_shutdown([this]() {
         LOGGER_WARN("[cons] FORCE_SHUTDOWN received, forcing immediate shutdown");
-        core_.shutdown_requested.store(true, std::memory_order_release);
+        core_.request_stop();
     });
 
     // ZMQ data routing for SHM queue_type: ZMQ frames → message queue.
@@ -435,18 +436,14 @@ bool ConsumerRoleHost::setup_infrastructure_()
     in_consumer_->on_peer_dead([this]() {
         LOGGER_WARN("[cons] peer-dead: producer silent for {} ms; triggering shutdown",
                     config_.peer_dead_timeout_ms);
-        core_.stop_reason_.store(
-            static_cast<int>(scripting::RoleHostCore::StopReason::PeerDead),
-            std::memory_order_relaxed);
-        core_.shutdown_requested.store(true, std::memory_order_release);
+        core_.set_stop_reason(scripting::RoleHostCore::StopReason::PeerDead);
+        core_.request_stop();
     });
 
     in_messenger_.on_hub_dead([this]() {
         LOGGER_WARN("[cons] hub-dead: broker connection lost; triggering shutdown");
-        core_.stop_reason_.store(
-            static_cast<int>(scripting::RoleHostCore::StopReason::HubDead),
-            std::memory_order_relaxed);
-        core_.shutdown_requested.store(true, std::memory_order_release);
+        core_.set_stop_reason(scripting::RoleHostCore::StopReason::HubDead);
+        core_.request_stop();
     });
 
     // --- Create transport QueueReader ---
@@ -494,7 +491,7 @@ bool ConsumerRoleHost::setup_infrastructure_()
 
 void ConsumerRoleHost::teardown_infrastructure_()
 {
-    core_.running_threads.store(false, std::memory_order_release);
+    core_.set_running(false);
     core_.notify_incoming();
 
     // Join ctrl_thread_.
@@ -537,7 +534,7 @@ void ConsumerRoleHost::run_data_loop_()
     if (!queue_reader_)
     {
         LOGGER_ERROR("[cons] run_data_loop_: QueueReader not initialized — aborting");
-        core_.running_threads.store(false, std::memory_order_release);
+        core_.set_running(false);
         return;
     }
 
@@ -558,12 +555,12 @@ void ConsumerRoleHost::run_data_loop_()
     auto deadline = Clock::time_point::max();
 
     // --- Outer loop ---
-    while (core_.running_threads.load(std::memory_order_acquire) &&
-           !core_.shutdown_requested.load(std::memory_order_acquire) &&
-           !core_.critical_error_.load(std::memory_order_relaxed))
+    while (core_.is_running() &&
+           !core_.is_shutdown_requested() &&
+           !core_.is_critical_error())
     {
         // Check external shutdown flag.
-        if (core_.g_shutdown && core_.g_shutdown->load(std::memory_order_relaxed))
+        if (core_.is_process_exit_requested())
             break;
 
         const auto cycle_start = Clock::now();
@@ -580,13 +577,13 @@ void ConsumerRoleHost::run_data_loop_()
                 break; // MaxRate: single attempt
 
             // Check shutdown between retries.
-            if (!core_.running_threads.load(std::memory_order_relaxed) ||
-                core_.shutdown_requested.load(std::memory_order_relaxed) ||
-                core_.critical_error_.load(std::memory_order_relaxed))
+            if (!core_.is_running() ||
+                core_.is_shutdown_requested() ||
+                core_.is_critical_error())
             {
                 break;
             }
-            if (core_.g_shutdown && core_.g_shutdown->load(std::memory_order_relaxed))
+            if (core_.is_process_exit_requested())
                 break;
 
             // For first cycle (deadline=max), remaining is effectively infinite — always retry.
@@ -610,9 +607,9 @@ void ConsumerRoleHost::run_data_loop_()
         }
 
         // Safety check after potential sleep: shutdown may have been requested.
-        if (!core_.running_threads.load(std::memory_order_relaxed) ||
-            core_.shutdown_requested.load(std::memory_order_relaxed) ||
-            core_.critical_error_.load(std::memory_order_relaxed))
+        if (!core_.is_running() ||
+            core_.is_shutdown_requested() ||
+            core_.is_critical_error())
         {
             if (data != nullptr)
                 queue_reader_->read_release();
@@ -628,7 +625,7 @@ void ConsumerRoleHost::run_data_loop_()
         if (data != nullptr)
         {
             last_seq_.store(queue_reader_->last_seq(), std::memory_order_relaxed);
-            core_.in_received_.fetch_add(1, std::memory_order_relaxed);
+            core_.inc_in_received();
         }
 
         // Read-only flexzone pointer (re-read each cycle for ShmQueue).
@@ -648,7 +645,7 @@ void ConsumerRoleHost::run_data_loop_()
         if (config_.stop_on_script_error &&
             engine_->script_error_count() > errors_before)
         {
-            core_.shutdown_requested.store(true, std::memory_order_release);
+            core_.request_stop();
         }
 
         // --- Step F: Metrics ---
@@ -656,8 +653,8 @@ void ConsumerRoleHost::run_data_loop_()
         const auto work_us = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
                 now - cycle_start).count());
-        core_.last_cycle_work_us_.store(work_us, std::memory_order_relaxed);
-        core_.iteration_count_.fetch_add(1, std::memory_order_relaxed);
+        core_.set_last_cycle_work_us(work_us);
+        core_.inc_iteration_count();
 
         // --- Step G: Compute next deadline ---
         deadline = compute_next_deadline(config_.loop_timing, deadline, cycle_start, period_us);
@@ -665,8 +662,8 @@ void ConsumerRoleHost::run_data_loop_()
 
     LOGGER_INFO("[cons] run_data_loop_ exiting: running_threads={} shutdown_requested={} "
                 "critical_error={}",
-                core_.running_threads.load(), core_.shutdown_requested.load(),
-                core_.critical_error_.load());
+                core_.is_running(), core_.is_shutdown_requested(),
+                core_.is_critical_error());
 }
 
 // ============================================================================
@@ -683,7 +680,7 @@ void ConsumerRoleHost::run_ctrl_thread_()
          [&] { in_consumer_->handle_data_events_nowait(); }},
     };
     loop.get_iteration = [&] {
-        return core_.iteration_count_.load(std::memory_order_relaxed);
+        return core_.iteration_count();
     };
     loop.periodic_tasks.emplace_back(
         [&] {
@@ -717,13 +714,13 @@ void ConsumerRoleHost::drain_inbox_sync_()
 nlohmann::json ConsumerRoleHost::snapshot_metrics_json() const
 {
     nlohmann::json base;
-    base["in_received"]        = core_.in_received_.load(std::memory_order_relaxed);
+    base["in_received"]        = core_.in_received();
     base["script_errors"]      = engine_ ? engine_->script_error_count() : 0;
-    base["last_cycle_work_us"] = core_.last_cycle_work_us_.load(std::memory_order_relaxed);
+    base["last_cycle_work_us"] = core_.last_cycle_work_us();
     base["loop_overrun_count"] = uint64_t{0}; // consumer is demand-driven, no deadline
 
     // Use our own iteration_count (always available, regardless of transport).
-    base["iteration_count"] = core_.iteration_count_.load(std::memory_order_relaxed);
+    base["iteration_count"] = core_.iteration_count();
 
     if (in_consumer_.has_value())
     {
