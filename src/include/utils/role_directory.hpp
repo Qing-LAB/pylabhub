@@ -23,11 +23,26 @@
  */
 
 #include "pylabhub_utils_export.h"
+#include "utils/json_fwd.hpp"
 
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+
+// Forward declarations for categorical configs (avoid heavy includes).
+namespace pylabhub::config
+{
+struct IdentityConfig;
+struct AuthConfig;
+struct ScriptConfig;
+struct TimingConfig;
+struct InboxConfig;
+struct ValidationConfig;
+struct StartupConfig;
+struct MonitoringConfig;
+} // namespace pylabhub::config
 
 namespace pylabhub::utils
 {
@@ -56,6 +71,12 @@ public:
      * @param base  Path to the role directory root (absolute or relative).
      *              Stored as weakly-canonical.
      */
+    ~RoleDirectory();
+    RoleDirectory(RoleDirectory &&) noexcept;
+    RoleDirectory &operator=(RoleDirectory &&) noexcept;
+    RoleDirectory(const RoleDirectory &) = delete;
+    RoleDirectory &operator=(const RoleDirectory &) = delete;
+
     static RoleDirectory open(const std::filesystem::path &base);
 
     /**
@@ -232,13 +253,51 @@ public:
      */
     bool has_standard_layout() const;
 
+    // ── Config loading ────────────────────────────────────────────────────────
+
+    /**
+     * @brief Load and parse a role config file via categorical parsers.
+     *
+     * Reads the JSON file, runs all shared parsers (identity, auth, script,
+     * timing, inbox, startup, monitoring, validation), integrates hub
+     * resolution and path normalization. Also reads role-specific fields
+     * (channel, transport, SHM, schemas) from the JSON.
+     *
+     * After this call, typed accessors (identity(), script(), etc.) are valid.
+     *
+     * @param filename   Config file name, e.g. "producer.json".
+     * @param role_tag   Role type: "producer", "consumer", "processor".
+     * @throws std::runtime_error on file-not-found, parse error, or validation failure.
+     */
+    void load_config(std::string_view filename, std::string_view role_tag);
+
+    /** @brief True after load_config() succeeds. */
+    bool config_loaded() const noexcept;
+
+    // ── Typed config accessors (valid after load_config) ──────────────────────
+
+    const config::IdentityConfig   &identity()   const;
+    const config::AuthConfig       &auth()       const;
+    const config::ScriptConfig     &script()     const;
+    const config::TimingConfig     &timing()     const;
+    const config::InboxConfig      &inbox()      const;
+    const config::ValidationConfig &validation() const;
+    const config::StartupConfig    &startup()    const;
+    const config::MonitoringConfig &monitoring() const;
+
+    /** @brief The raw parsed JSON. Valid after load_config(). */
+    const nlohmann::json &raw_json() const;
+
+    /** @brief The role tag passed to load_config(). */
+    const std::string &role_tag() const;
+
 private:
-    explicit RoleDirectory(std::filesystem::path base) noexcept
-        : base_(std::move(base))
-    {
-    }
+    explicit RoleDirectory(std::filesystem::path base) noexcept;
 
     std::filesystem::path base_;
+
+    struct ConfigState;
+    std::unique_ptr<ConfigState> config_;
 };
 
 } // namespace pylabhub::utils
