@@ -132,7 +132,7 @@ public:
      * @param script_path  Value of `script.path` from the role JSON config.
      *                     Relative paths are resolved relative to @ref base().
      * @param type         Script type: "python" (→ `__init__.py`) or
-     *                     "lua" (→ `__init__.lua`).
+     *                     "lua" (→ `init.lua`).
      * @return Absolute path to the script entry-point file.
      */
     std::filesystem::path script_entry(std::string_view script_path,

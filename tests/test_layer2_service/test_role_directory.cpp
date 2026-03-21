@@ -155,7 +155,7 @@ TEST(RoleDirectoryTest, ScriptEntry_LuaExtension)
     const auto tmp = unique_temp_dir("se_lua");
     fs::create_directories(tmp);
     const auto rd = RoleDirectory::open(tmp);
-    EXPECT_EQ(rd.script_entry(".", "lua").filename().string(), "__init__.lua");
+    EXPECT_EQ(rd.script_entry(".", "lua").filename().string(), "init.lua");
 }
 
 // ── default_keyfile ────────────────────────────────────────────────────────────

@@ -1,31 +1,31 @@
 #pragma once
 /**
  * @file role_host_core.hpp
- * @brief RoleHostCore — engine-agnostic infrastructure for script host roles.
+ * @brief RoleHostCore — single source of truth for role state, metrics, and messages.
  *
- * Pure C++ infrastructure shared by all scripting engines (Python, Lua, etc.)
- * and all roles (producer, consumer, processor).  No pybind11, no Lua headers.
+ * All role hosts, engines, and API classes access state through this class.
+ * No raw atomic access outside this class — all reads and writes go through
+ * proper methods with correct memory ordering decided in one place.
  *
- * Provides:
- *  - Thread-safe bounded incoming message queue (ZMQ → handler path)
- *  - Condvar-based wakeup for the monitoring loop (notify_incoming / wait_for_incoming)
- *  - Shutdown coordination flags
- *  - Worker thread lifecycle flag
- *  - State flags (validate_only, script_load_ok, running)
- *  - FlexZone schema storage (engine-agnostic SchemaSpec)
+ * ## Ownership
+ * - Created by: role host (member variable)
+ * - Passed to: engine via initialize(), API class via constructor
+ * - Lifetime: must outlive engine and API class
  *
- * Composed (not inherited) by PythonRoleHostBase and LuaRoleHostBase.
- *
- * See HEP-CORE-0011 for the ScriptHost abstraction framework.
+ * ## Thread safety
+ * - Atomic state (shutdown, metrics, errors): safe to read/write from any thread
+ * - Message queue: mutex-protected, safe from any thread
+ * - Plain state (validate_only, script_load_ok, running): protected by
+ *   promise/future synchronization between worker and main thread
  */
 
-#include "utils/script_host_schema.hpp"
-
-#include "utils/json_fwd.hpp"
+#include "utils/script_host_schema.hpp" // SchemaSpec, FieldDef
+#include "utils/json_fwd.hpp"           // nlohmann::json (project buffer header)
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
-#include <cstddef>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -33,96 +33,47 @@
 namespace pylabhub::scripting
 {
 
-// ============================================================================
-// IncomingMessage — ZMQ message queued for the script handler
-// ============================================================================
-
 struct IncomingMessage
 {
-    std::string            sender;  ///< ZMQ identity of sender (empty for consumer data msgs)
-    std::vector<std::byte> data;    ///< Raw payload bytes
-    std::string            event;   ///< Non-empty → event message (not data)
-    nlohmann::json         details; ///< Event payload (for events only)
+    std::string              event;
+    std::string              sender;
+    std::vector<std::byte>   data;
+    nlohmann::json           details;
 };
-
-// ============================================================================
-// RoleHostCore
-// ============================================================================
 
 class RoleHostCore
 {
   public:
-    static constexpr std::size_t kMaxIncomingQueue{64};
+    // ── External shutdown flag (from main) ────────────────────────────────
+    //
+    // g_shutdown is owned by main(). Set ONLY by the signal handler.
+    // The role host stores a non-owning pointer and polls it in the loop.
+    // Scripts cannot write to it — they use request_stop() instead.
 
-    // ── Message queue ────────────────────────────────────────────────────────
+    std::atomic<bool> *g_shutdown{nullptr};
 
-    /** Thread-safe enqueue; drops if at capacity. Notifies any wait_for_incoming() waiter. */
+    // ── Message queue ────────────────────────────────────────────────────
+
+    static constexpr size_t kMaxIncomingQueue = 64;
+
     void enqueue_message(IncomingMessage msg);
-
-    /** Drain all queued messages (returns empty vector if none). */
     std::vector<IncomingMessage> drain_messages();
-
-    /**
-     * @brief Wake all wait_for_incoming() waiters immediately.
-     *
-     * Called from stop_role() so the monitoring loop (run_role_main_loop) exits
-     * without waiting the full kAdminPollIntervalMs sleep.
-     */
     void notify_incoming() noexcept;
-
-    /**
-     * @brief Block until notified or timeout_ms elapses.
-     *
-     * Used by the monitoring loop (run_role_main_loop) instead of sleep_for so
-     * that stop_role() can unblock it instantly via notify_incoming().
-     */
     void wait_for_incoming(int timeout_ms) noexcept;
 
-    // ── Shutdown coordination ────────────────────────────────────────────────
-    //
-    // Two separate shutdown paths by design:
-    //   g_shutdown        — EXTERNAL: pointer to the process-level flag set by
-    //                       the signal handler in main(). All role threads poll
-    //                       this flag to react to SIGINT/SIGTERM. The flag is
-    //                       owned by main(); we hold only a non-owning pointer.
-    //   shutdown_requested — INTERNAL: set by Python API stop() or by the role
-    //                        itself (e.g., set_critical_error). Independent of
-    //                        the external signal — allows graceful self-stop
-    //                        without affecting the whole process.
-    //
-    // Both are checked in the role main loop; either one triggers shutdown.
-
-    std::atomic<bool> *g_shutdown{nullptr};        ///< External shutdown flag (from main)
-    std::atomic<bool>  shutdown_requested{false};   ///< Internal shutdown (from API stop())
-
-    // ── Worker thread lifecycle ──────────────────────────────────────────────
-
-    std::atomic<bool> running_threads{false};
-
-    // ── State flags ──────────────────────────────────────────────────────────
-    //
-    // These plain bools are written by the interpreter thread BEFORE signal_ready_()
-    // (which does memory_order_release), and read by the main thread AFTER future.get()
-    // (which provides the corresponding acquire). The release-acquire chain through
-    // the promise/future makes these reads safe without extra atomics.
+    // ── Plain state (protected by promise/future, not atomics) ───────────
 
     bool validate_only{false};
     bool script_load_ok{false};
     bool running{false};
 
-    // ── FlexZone schema (engine-agnostic) ────────────────────────────────────
+    // ── Schema (engine-agnostic) ─────────────────────────────────────────
 
     SchemaSpec fz_spec;
     size_t     schema_fz_size{0};
     bool       has_fz{false};
 
-    // ── Role-level error/stop state ──────────────────────────────────────────
-    //
-    // These are role-level facts independent of scripting engine.  All engines
-    // and API objects read/write through these fields — no per-engine copies.
-    //
-    // StopReason: why the role stopped (set by peer-dead, hub-dead, or
-    //   set_critical_error before shutdown_requested is raised).
+    // ── Stop reason enum ─────────────────────────────────────────────────
 
     enum class StopReason : int
     {
@@ -132,32 +83,130 @@ class RoleHostCore
         CriticalError = 3,
     };
 
-    std::atomic<int>      stop_reason_{0};       ///< StopReason value
-    std::atomic<bool>     critical_error_{false}; ///< Script called set_critical_error()
-    std::atomic<uint64_t> script_errors_{0};      ///< Cumulative script callback error count
-
-    // ── Data loop metrics (single source of truth) ───────────────────────
+    // ── Shutdown / error control ─────────────────────────────────────────
     //
-    // Written by: role host data loop (Layer 2).
-    // Read by: script API (any engine), ctrl_thread_ heartbeat, snapshot_metrics_json.
-    // All counters use relaxed ordering (metrics are advisory, not synchronization).
+    // All writers use release ordering. The loop condition uses
+    // should_exit_loop() which acquires once, then inner checks
+    // use relaxed (the acquire at loop top establishes happens-before).
 
-    std::atomic<uint64_t> out_written_{0};       ///< Committed output slots (producer/processor)
-    std::atomic<uint64_t> in_received_{0};       ///< Consumed input slots (consumer/processor)
-    std::atomic<uint64_t> drops_{0};              ///< Dropped cycles (no slot / discard)
-    std::atomic<uint64_t> iteration_count_{0};   ///< Total loop iterations
-    std::atomic<uint64_t> last_cycle_work_us_{0}; ///< Last cycle wall time (μs)
+    void request_stop() noexcept
+    {
+        shutdown_requested_.store(true, std::memory_order_release);
+    }
 
-    /// Set critical error flag and stop reason atomically, then request shutdown.
+    void set_stop_reason(StopReason r) noexcept
+    {
+        stop_reason_.store(static_cast<int>(r), std::memory_order_relaxed);
+    }
+
     void set_critical_error() noexcept
     {
         critical_error_.store(true, std::memory_order_release);
         stop_reason_.store(static_cast<int>(StopReason::CriticalError),
                            std::memory_order_relaxed);
-        shutdown_requested.store(true, std::memory_order_release);
+        shutdown_requested_.store(true, std::memory_order_release);
     }
 
+    void set_running(bool v) noexcept
+    {
+        running_threads_.store(v, std::memory_order_release);
+    }
+
+    // ── Shutdown / error queries ─────────────────────────────────────────
+
+    [[nodiscard]] bool is_running() const noexcept
+    {
+        return running_threads_.load(std::memory_order_acquire);
+    }
+
+    [[nodiscard]] bool is_shutdown_requested() const noexcept
+    {
+        return shutdown_requested_.load(std::memory_order_acquire);
+    }
+
+    [[nodiscard]] bool is_critical_error() const noexcept
+    {
+        return critical_error_.load(std::memory_order_acquire);
+    }
+
+    /// Check all loop exit conditions in one call.
+    /// Used as the data loop's while condition.
+    [[nodiscard]] bool should_continue_loop() const noexcept
+    {
+        return running_threads_.load(std::memory_order_acquire) &&
+               !shutdown_requested_.load(std::memory_order_acquire) &&
+               !critical_error_.load(std::memory_order_relaxed);
+    }
+
+    /// Relaxed check for inner retry loops (happens-before established by
+    /// should_continue_loop() at the outer loop top).
+    [[nodiscard]] bool should_exit_inner() const noexcept
+    {
+        return !running_threads_.load(std::memory_order_relaxed) ||
+               shutdown_requested_.load(std::memory_order_relaxed) ||
+               critical_error_.load(std::memory_order_relaxed);
+    }
+
+    /// Check if external signal handler requested process exit.
+    [[nodiscard]] bool is_process_exit_requested() const noexcept
+    {
+        return g_shutdown && g_shutdown->load(std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] std::string stop_reason_string() const noexcept
+    {
+        switch (stop_reason_.load(std::memory_order_relaxed))
+        {
+        case 1: return "peer_dead";
+        case 2: return "hub_dead";
+        case 3: return "critical_error";
+        default: return "normal";
+        }
+    }
+
+    // ── Metric accessors (read) ──────────────────────────────────────────
+
+    [[nodiscard]] uint64_t out_written()       const noexcept { return out_written_.load(std::memory_order_relaxed); }
+    [[nodiscard]] uint64_t in_received()       const noexcept { return in_received_.load(std::memory_order_relaxed); }
+    [[nodiscard]] uint64_t drops()             const noexcept { return drops_.load(std::memory_order_relaxed); }
+    [[nodiscard]] uint64_t script_errors()     const noexcept { return script_errors_.load(std::memory_order_relaxed); }
+    [[nodiscard]] uint64_t iteration_count()   const noexcept { return iteration_count_.load(std::memory_order_relaxed); }
+    [[nodiscard]] uint64_t last_cycle_work_us() const noexcept { return last_cycle_work_us_.load(std::memory_order_relaxed); }
+
+    // ── Metric mutators (write) ──────────────────────────────────────────
+
+    void inc_out_written()       noexcept { out_written_.fetch_add(1, std::memory_order_relaxed); }
+    void inc_in_received()       noexcept { in_received_.fetch_add(1, std::memory_order_relaxed); }
+    void inc_drops()             noexcept { drops_.fetch_add(1, std::memory_order_relaxed); }
+    void inc_script_errors()     noexcept { script_errors_.fetch_add(1, std::memory_order_relaxed); }
+    void inc_iteration_count()   noexcept { iteration_count_.fetch_add(1, std::memory_order_relaxed); }
+
+    void set_last_cycle_work_us(uint64_t v) noexcept { last_cycle_work_us_.store(v, std::memory_order_relaxed); }
+
+#ifdef PYLABHUB_BUILD_TESTS
+    /// Test-only: directly set counter values for test setup.
+    /// Production code should use inc_*() only.
+    void test_set_out_written(uint64_t v) noexcept { out_written_.store(v, std::memory_order_relaxed); }
+    void test_set_in_received(uint64_t v) noexcept { in_received_.store(v, std::memory_order_relaxed); }
+    void test_set_drops(uint64_t v)       noexcept { drops_.store(v, std::memory_order_relaxed); }
+#endif
+
   private:
+    // ── Shutdown / error state ────────────────────────────────────────────
+    std::atomic<bool>     running_threads_{false};
+    std::atomic<bool>     shutdown_requested_{false};
+    std::atomic<bool>     critical_error_{false};
+    std::atomic<int>      stop_reason_{0};
+
+    // ── Metrics ───────────────────────────────────────────────────────────
+    std::atomic<uint64_t> script_errors_{0};
+    std::atomic<uint64_t> out_written_{0};
+    std::atomic<uint64_t> in_received_{0};
+    std::atomic<uint64_t> drops_{0};
+    std::atomic<uint64_t> iteration_count_{0};
+    std::atomic<uint64_t> last_cycle_work_us_{0};
+
+    // ── Message queue ─────────────────────────────────────────────────────
     std::vector<IncomingMessage> incoming_queue_;
     std::mutex                   incoming_mu_;
     std::condition_variable      incoming_cv_;

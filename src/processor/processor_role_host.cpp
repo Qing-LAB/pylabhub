@@ -82,7 +82,7 @@ void ProcessorRoleHost::startup_()
 
 void ProcessorRoleHost::shutdown_()
 {
-    core_.shutdown_requested.store(true, std::memory_order_release);
+    core_.request_stop();
     core_.notify_incoming();
 
     if (worker_thread_.joinable())
@@ -99,6 +99,7 @@ void ProcessorRoleHost::worker_main_()
     if (!engine_->initialize("proc", &core_))
     {
         LOGGER_ERROR("[proc] Engine initialize() failed");
+        engine_->finalize(); // Clean up any partial state (e.g. live interpreter).
         ready_promise_.set_value(false);
         return;
     }
@@ -258,7 +259,7 @@ void ProcessorRoleHost::worker_main_()
         out_q_->sync_flexzone_checksum();
 
     // Step 7: Spawn ctrl_thread_ and signal ready.
-    core_.running_threads.store(true, std::memory_order_release);
+    core_.set_running(true);
     ctrl_thread_ = std::thread([this] { run_ctrl_thread_(); });
 
     // Step 8: Signal ready.
@@ -330,7 +331,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
     // Forced shutdown: broker grace period expired (input side).
     in_consumer_->on_force_shutdown([this]() {
         LOGGER_WARN("[proc] FORCE_SHUTDOWN received (in_channel), forcing immediate shutdown");
-        core_.shutdown_requested.store(true, std::memory_order_release);
+        core_.request_stop();
     });
 
     // Route ZMQ data messages to the incoming queue.
@@ -546,7 +547,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
 
     // Forced shutdown: broker grace period expired (output side).
     out_producer_->on_force_shutdown([this]() {
-        core_.shutdown_requested.store(true, std::memory_order_release);
+        core_.request_stop();
     });
 
     auto hex_identity = [](const std::string &raw) -> std::string {
@@ -621,27 +622,21 @@ bool ProcessorRoleHost::setup_infrastructure_()
     in_consumer_->on_peer_dead([this]() {
         LOGGER_WARN("[proc] peer-dead: upstream producer silent for {} ms; triggering shutdown",
                     config_.peer_dead_timeout_ms);
-        core_.stop_reason_.store(
-            static_cast<int>(scripting::RoleHostCore::StopReason::PeerDead),
-            std::memory_order_relaxed);
-        core_.shutdown_requested.store(true, std::memory_order_release);
+        core_.set_stop_reason(scripting::RoleHostCore::StopReason::PeerDead);
+        core_.request_stop();
     });
 
     out_producer_->on_peer_dead([this]() {
         LOGGER_WARN("[proc] peer-dead: downstream consumer silent for {} ms; triggering shutdown",
                     config_.peer_dead_timeout_ms);
-        core_.stop_reason_.store(
-            static_cast<int>(scripting::RoleHostCore::StopReason::PeerDead),
-            std::memory_order_relaxed);
-        core_.shutdown_requested.store(true, std::memory_order_release);
+        core_.set_stop_reason(scripting::RoleHostCore::StopReason::PeerDead);
+        core_.request_stop();
     });
 
     auto hub_dead_cb = [this]() {
         LOGGER_WARN("[proc] hub-dead: broker connection lost; triggering shutdown");
-        core_.stop_reason_.store(
-            static_cast<int>(scripting::RoleHostCore::StopReason::HubDead),
-            std::memory_order_relaxed);
-        core_.shutdown_requested.store(true, std::memory_order_release);
+        core_.set_stop_reason(scripting::RoleHostCore::StopReason::HubDead);
+        core_.request_stop();
     };
     in_messenger_.on_hub_dead(hub_dead_cb);
     out_messenger_.on_hub_dead(hub_dead_cb);
@@ -728,7 +723,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
 
 void ProcessorRoleHost::teardown_infrastructure_()
 {
-    core_.running_threads.store(false, std::memory_order_release);
+    core_.set_running(false);
     core_.notify_incoming();
 
     // Join ctrl_thread_.
@@ -787,7 +782,7 @@ void ProcessorRoleHost::run_data_loop_()
     if (!in_q_ || !out_q_)
     {
         LOGGER_ERROR("[proc] run_data_loop_: transport queues not initialized — aborting");
-        core_.running_threads.store(false, std::memory_order_release);
+        core_.set_running(false);
         return;
     }
 
@@ -821,12 +816,12 @@ void ProcessorRoleHost::run_data_loop_()
     const void *held_input = nullptr;
 
     // --- Outer loop ---
-    while (core_.running_threads.load(std::memory_order_acquire) &&
-           !core_.shutdown_requested.load(std::memory_order_acquire) &&
-           !core_.critical_error_.load(std::memory_order_relaxed))
+    while (core_.is_running() &&
+           !core_.is_shutdown_requested() &&
+           !core_.is_critical_error())
     {
         // Check external shutdown flag.
-        if (core_.g_shutdown && core_.g_shutdown->load(std::memory_order_relaxed))
+        if (core_.is_process_exit_requested())
             break;
 
         const auto cycle_start = Clock::now();
@@ -848,13 +843,13 @@ void ProcessorRoleHost::run_data_loop_()
                     break; // MaxRate: single attempt
 
                 // Check shutdown between retries.
-                if (!core_.running_threads.load(std::memory_order_relaxed) ||
-                    core_.shutdown_requested.load(std::memory_order_relaxed) ||
-                    core_.critical_error_.load(std::memory_order_relaxed))
+                if (!core_.is_running() ||
+                    core_.is_shutdown_requested() ||
+                    core_.is_critical_error())
                 {
                     break;
                 }
-                if (core_.g_shutdown && core_.g_shutdown->load(std::memory_order_relaxed))
+                if (core_.is_process_exit_requested())
                     break;
 
                 // For first cycle (deadline=max), remaining is effectively infinite — always retry.
@@ -909,9 +904,9 @@ void ProcessorRoleHost::run_data_loop_()
         }
 
         // Safety check after potential sleep: shutdown may have been requested.
-        if (!core_.running_threads.load(std::memory_order_relaxed) ||
-            core_.shutdown_requested.load(std::memory_order_relaxed) ||
-            core_.critical_error_.load(std::memory_order_relaxed))
+        if (!core_.is_running() ||
+            core_.is_shutdown_requested() ||
+            core_.is_critical_error())
         {
             if (held_input != nullptr)
             {
@@ -947,18 +942,18 @@ void ProcessorRoleHost::run_data_loop_()
             if (result == InvokeResult::Commit)
             {
                 out_q_->write_commit();
-                core_.out_written_.fetch_add(1, std::memory_order_relaxed);
+                core_.inc_out_written();
             }
             else
             {
                 out_q_->write_discard();
-                core_.drops_.fetch_add(1, std::memory_order_relaxed);
+                core_.inc_drops();
             }
         }
         else if (held_input != nullptr)
         {
             // Had input but no output slot — count as drop.
-            core_.drops_.fetch_add(1, std::memory_order_relaxed);
+            core_.inc_drops();
         }
 
         // Input: release or hold depending on output success + policy.
@@ -969,7 +964,7 @@ void ProcessorRoleHost::run_data_loop_()
                 // Normal: data processed or dropped. Advance input.
                 in_q_->read_release();
                 held_input = nullptr;
-                core_.in_received_.fetch_add(1, std::memory_order_relaxed);
+                core_.inc_in_received();
             }
             // else: Block mode + output failed → keep held_input for next cycle.
             // SHM: lock still held, pointer valid.
@@ -980,7 +975,7 @@ void ProcessorRoleHost::run_data_loop_()
         {
             // script_errors already incremented by engine.
             if (config_.stop_on_script_error)
-                core_.shutdown_requested.store(true, std::memory_order_release);
+                core_.request_stop();
         }
 
         // --- Step G: Metrics + next deadline ---
@@ -988,8 +983,8 @@ void ProcessorRoleHost::run_data_loop_()
         const auto work_us = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
                 now - cycle_start).count());
-        core_.last_cycle_work_us_.store(work_us, std::memory_order_relaxed);
-        core_.iteration_count_.fetch_add(1, std::memory_order_relaxed);
+        core_.set_last_cycle_work_us(work_us);
+        core_.inc_iteration_count();
 
         deadline = compute_next_deadline(config_.loop_timing, deadline, cycle_start, period_us);
     }
@@ -1003,8 +998,8 @@ void ProcessorRoleHost::run_data_loop_()
 
     LOGGER_INFO("[proc] run_data_loop_ exiting: running_threads={} shutdown_requested={} "
                 "critical_error={}",
-                core_.running_threads.load(), core_.shutdown_requested.load(),
-                core_.critical_error_.load());
+                core_.is_running(), core_.is_shutdown_requested(),
+                core_.is_critical_error());
 }
 
 // ============================================================================
@@ -1028,7 +1023,7 @@ void ProcessorRoleHost::run_ctrl_thread_()
              [&] { in_consumer_->handle_data_events_nowait(); }});
     }
     loop.get_iteration = [&] {
-        return core_.iteration_count_.load(std::memory_order_relaxed);
+        return core_.iteration_count();
     };
     loop.periodic_tasks.emplace_back(
         [&] {
@@ -1055,11 +1050,11 @@ void ProcessorRoleHost::drain_inbox_sync_()
 nlohmann::json ProcessorRoleHost::snapshot_metrics_json() const
 {
     nlohmann::json base;
-    base["in_received"]        = core_.in_received_.load(std::memory_order_relaxed);
-    base["out_written"]        = core_.out_written_.load(std::memory_order_relaxed);
-    base["drops"]              = core_.drops_.load(std::memory_order_relaxed);
+    base["in_received"]        = core_.in_received();
+    base["out_written"]        = core_.out_written();
+    base["drops"]              = core_.drops();
     base["script_errors"]      = engine_ ? engine_->script_error_count() : 0;
-    base["last_cycle_work_us"] = core_.last_cycle_work_us_.load(std::memory_order_relaxed);
+    base["last_cycle_work_us"] = core_.last_cycle_work_us();
     base["loop_overrun_count"] = 0; // overwritten below if SHM is available
 
     if (out_producer_.has_value())
@@ -1068,7 +1063,7 @@ nlohmann::json ProcessorRoleHost::snapshot_metrics_json() const
     }
 
     // Use our own iteration_count (always available, regardless of transport).
-    base["iteration_count"] = core_.iteration_count_.load(std::memory_order_relaxed);
+    base["iteration_count"] = core_.iteration_count();
 
     if (out_producer_.has_value())
     {

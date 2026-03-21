@@ -47,10 +47,10 @@ add_subdirectory(consumer)
 # Standalone data-processor host (embeds CPython + pybind11).
 add_subdirectory(processor)
 
-# Define the main application executable.
-# hub_python/ sources embed the CPython interpreter + pybind11 bindings.
-# DISABLED: hubshell uses legacy PythonScriptHost which is being migrated
-# to PythonEngine. Re-enable after hubshell is refactored.
+# Define the main application executable (hubshell).
+# DISABLED: hubshell still uses legacy ScriptHost/PythonScriptHost stack
+# which predates the ScriptEngine abstraction (LuaEngine/PythonEngine).
+# Re-enable after migrating hubshell to PythonEngine.
 # See: docs/todo/API_TODO.md — hubshell PythonEngine migration
 if(FALSE)
 add_executable(pylabhub-hubshell

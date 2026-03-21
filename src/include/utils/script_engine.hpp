@@ -121,6 +121,8 @@ class ScriptEngine
      * @brief Load script file and extract callbacks.
      * @param script_dir Directory containing the script (e.g., .../script/lua/).
      * @param entry_point Script entry point filename (e.g., "init.lua", "__init__.py").
+     *        Lua loads this file directly. Python uses package-based import derived
+     *        from script_dir and ignores entry_point (always imports __init__.py).
      * @param required_callback Name of the required callback (e.g., "on_produce").
      * @return true if script loaded and required callback exists.
      */

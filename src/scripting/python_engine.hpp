@@ -6,7 +6,9 @@
  * Key design differences from LuaEngine (see script_engine_refactor.md §5.4):
  *   - Uses existing pybind11 ProducerAPI/ConsumerAPI/ProcessorAPI classes
  *     (compile-time type safety at the C++ boundary)
- *   - GIL acquire/release inside every invoke_*() call
+ *   - GIL held for engine lifetime on worker thread; per-invoke acquire is
+ *     reentrant no-op. Cross-thread access uses engine request queue
+ *     (see docs/tech_draft/engine_thread_model.md §6)
  *   - py::scoped_interpreter as member (no dedicated interpreter thread)
  *   - Slot views via ctypes.from_buffer(memoryview) — pre-built at init
  *   - Single-interpreter (supports_multi_state = false)
@@ -22,7 +24,7 @@
  * host tears down infrastructure.
  */
 
-#include "script_engine.hpp"
+#include "utils/script_engine.hpp"
 
 #include <pybind11/pybind11.h>
 #include <pybind11/embed.h>
@@ -110,8 +112,7 @@ class PythonEngine : public ScriptEngine
 
     [[nodiscard]] uint64_t script_error_count() const noexcept override
     {
-        return ctx_.core ? ctx_.core->script_errors_.load(std::memory_order_relaxed)
-                         : 0;
+        return ctx_.core->script_errors();
     }
 
     // ── Threading ──────────────────────────────────────────────────────────

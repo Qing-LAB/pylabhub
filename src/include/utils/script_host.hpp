@@ -3,6 +3,11 @@
  * @file script_host.hpp
  * @brief ScriptHost — abstract base for embedded scripting runtime lifecycle.
  *
+ * @deprecated This is the legacy abstraction used only by hubshell.
+ * New role hosts (producer, consumer, processor) use ScriptEngine
+ * (script_engine.hpp) with LuaEngine/PythonEngine instead.
+ * This file will be removed when hubshell is migrated to PythonEngine.
+ *
  * `ScriptHost` unifies lifecycle management and thread ownership for embedded
  * scripting runtimes (Python, LuaJIT, and future engines) across all pylabhub
  * executables.
@@ -11,7 +16,7 @@
  *
  * The abstract interface owns **lifecycle and thread model only** — not invocation.
  * Concrete classes (`PythonScriptHost`, `LuaScriptHost`) expose their native-typed
- * calling conventions. Client code (`HubScript`, `ActorHost`) talks to the concrete
+ * calling conventions. Client code (`HubScript`) talks to the concrete
  * type, not to this interface.
  *
  * ## Threading model

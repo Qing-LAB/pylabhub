@@ -76,8 +76,10 @@ std::filesystem::path RoleDirectory::script_entry(std::string_view script_path,
                               ? sp
                               : fs::weakly_canonical(base_ / sp);
 
-    const std::string ext = (type == "python") ? ".py" : ".lua";
-    return resolved / "script" / type / ("__init__" + ext);
+    // Python: __init__.py (package convention)
+    // Lua:    init.lua   (LuaRocks/LÖVE community convention)
+    const char* entry = (type == "lua") ? "init.lua" : "__init__.py";
+    return resolved / "script" / type / entry;
 }
 
 // ── Hub reference resolution ───────────────────────────────────────────────────

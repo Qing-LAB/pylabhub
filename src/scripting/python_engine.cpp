@@ -2,10 +2,11 @@
  * @file python_engine.cpp
  * @brief PythonEngine — ScriptEngine implementation for CPython via pybind11.
  *
- * All invoke methods acquire/release the GIL internally.  The interpreter is
- * created in initialize() and destroyed in finalize().  Between init and the
- * first invoke, the GIL is released so ctrl_thread_ (metrics, heartbeat) can
- * run Python-agnostic work without blocking.
+ * GIL is held for the engine's entire lifetime on the worker thread.
+ * py::scoped_interpreter acquires it at creation; each invoke_*() uses
+ * py::gil_scoped_acquire which is reentrant (no-op on the owning thread).
+ * Cross-thread script execution is handled via the engine's request queue
+ * (see docs/tech_draft/engine_thread_model.md §6).
  *
  * Ported from the legacy PythonRoleHostBase / ProducerScriptHost /
  * ConsumerScriptHost / ProcessorScriptHost monolithic implementations.
@@ -31,6 +32,7 @@
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
 
+#include <cassert>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -189,6 +191,7 @@ static fs::path resolve_venvs_dir_for_engine(const fs::path &exe_path)
 bool PythonEngine::initialize(const char *log_tag, RoleHostCore *core)
 {
     log_tag_ = log_tag ? log_tag : "python";
+    assert(core && "RoleHostCore must be provided to initialize()");
     ctx_.core = core;
 
     try
@@ -240,6 +243,7 @@ bool PythonEngine::initialize(const char *log_tag, RoleHostCore *core)
             {
                 LOGGER_ERROR("[{}] PythonEngine: venv '{}' not found at '{}'",
                              log_tag_, python_venv_, venv_dir.string());
+                interp_.reset(); // Destroy interpreter on this thread before returning.
                 return false;
             }
 
@@ -266,6 +270,7 @@ bool PythonEngine::initialize(const char *log_tag, RoleHostCore *core)
             {
                 LOGGER_ERROR("[{}] PythonEngine: venv '{}' site-packages not found",
                              log_tag_, python_venv_);
+                interp_.reset(); // Destroy interpreter on this thread before returning.
                 return false;
             }
 
@@ -277,6 +282,7 @@ bool PythonEngine::initialize(const char *log_tag, RoleHostCore *core)
     catch (const std::exception &e)
     {
         LOGGER_ERROR("[{}] PythonEngine: initialization failed: {}", log_tag_, e.what());
+        interp_.reset(); // Destroy interpreter on this thread if it was created.
         return false;
     }
 
@@ -298,6 +304,15 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
     script_dir_str_     = script_dir.string();
     entry_point_        = entry_point ? entry_point : "__init__.py";
     required_callback_  = required_callback ? required_callback : "";
+
+    // PythonEngine uses package-based import (always __init__.py).
+    // Warn if caller specified a different entry_point.
+    if (entry_point_ != "__init__.py")
+    {
+        LOGGER_WARN("[{}] PythonEngine ignores entry_point '{}' — "
+                    "Python always imports __init__.py via package convention",
+                    log_tag_, entry_point_);
+    }
 
     try
     {
@@ -369,7 +384,7 @@ void PythonEngine::build_api(const RoleContext &ctx)
     if (ctx_.producer != nullptr && ctx_.consumer == nullptr)
     {
         // Producer role.
-        producer_api_ = std::make_unique<producer::ProducerAPI>();
+        producer_api_ = std::make_unique<producer::ProducerAPI>(*ctx_.core);
         auto &api = *producer_api_;
 
         api.set_producer(static_cast<hub::Producer *>(ctx_.producer));
@@ -383,16 +398,13 @@ void PythonEngine::build_api(const RoleContext &ctx)
         if (ctx_.script_dir) api.set_script_dir(ctx_.script_dir);
         if (ctx_.role_dir)   api.set_role_dir(ctx_.role_dir);
 
-        if (ctx_.core)
-            api.set_core(ctx_.core);
-
         py::module_ mod = py::module_::import("pylabhub_producer");
         api_obj_ = py::cast(&api, py::return_value_policy::reference);
     }
     else if (ctx_.consumer != nullptr && ctx_.producer == nullptr)
     {
         // Consumer role.
-        consumer_api_ = std::make_unique<consumer::ConsumerAPI>();
+        consumer_api_ = std::make_unique<consumer::ConsumerAPI>(*ctx_.core);
         auto &api = *consumer_api_;
 
         api.set_consumer(static_cast<hub::Consumer *>(ctx_.consumer));
@@ -406,16 +418,13 @@ void PythonEngine::build_api(const RoleContext &ctx)
         if (ctx_.script_dir) api.set_script_dir(ctx_.script_dir);
         if (ctx_.role_dir)   api.set_role_dir(ctx_.role_dir);
 
-        if (ctx_.core)
-            api.set_core(ctx_.core);
-
         py::module_ mod = py::module_::import("pylabhub_consumer");
         api_obj_ = py::cast(&api, py::return_value_policy::reference);
     }
     else
     {
         // Processor role.
-        processor_api_ = std::make_unique<processor::ProcessorAPI>();
+        processor_api_ = std::make_unique<processor::ProcessorAPI>(*ctx_.core);
         auto &api = *processor_api_;
 
         if (ctx_.producer)
@@ -434,9 +443,6 @@ void PythonEngine::build_api(const RoleContext &ctx)
         if (ctx_.log_level)   api.set_log_level(ctx_.log_level);
         if (ctx_.script_dir)  api.set_script_dir(ctx_.script_dir);
         if (ctx_.role_dir)    api.set_role_dir(ctx_.role_dir);
-
-        if (ctx_.core)
-            api.set_core(ctx_.core);
 
         py::module_ mod = py::module_::import("pylabhub_processor");
         api_obj_ = py::cast(&api, py::return_value_policy::reference);
@@ -951,12 +957,12 @@ InvokeResult PythonEngine::parse_return_value_(const py::object &ret, const char
         LOGGER_WARN("[{}] {} returned None — explicit 'return True' or "
                     "'return False' is required. Treating as error.",
                     log_tag_, callback_name);
-        if (ctx_.core) ctx_.core->script_errors_.fetch_add(1, std::memory_order_relaxed);
-        if (stop_on_script_error_ && ctx_.core != nullptr)
+        ctx_.core->inc_script_errors();
+        if (stop_on_script_error_)
         {
             LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} [missing return]",
                          log_tag_, callback_name);
-            ctx_.core->shutdown_requested.store(true, std::memory_order_release);
+            ctx_.core->request_stop();
         }
         return InvokeResult::Error;
     }
@@ -966,12 +972,12 @@ InvokeResult PythonEngine::parse_return_value_(const py::object &ret, const char
                  "expected 'return True' or 'return False'. Treating as error.",
                  log_tag_, callback_name,
                  py::str(ret.get_type().attr("__name__")).cast<std::string>());
-    if (ctx_.core) ctx_.core->script_errors_.fetch_add(1, std::memory_order_relaxed);
-    if (stop_on_script_error_ && ctx_.core != nullptr)
+    ctx_.core->inc_script_errors();
+    if (stop_on_script_error_)
     {
         LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} [wrong return type]",
                      log_tag_, callback_name);
-        ctx_.core->shutdown_requested.store(true, std::memory_order_release);
+        ctx_.core->request_stop();
     }
     return InvokeResult::Error;
 }
@@ -979,14 +985,14 @@ InvokeResult PythonEngine::parse_return_value_(const py::object &ret, const char
 InvokeResult PythonEngine::on_python_error_(const char *callback_name,
                                              const py::error_already_set &e)
 {
-    if (ctx_.core) ctx_.core->script_errors_.fetch_add(1, std::memory_order_relaxed);
+    ctx_.core->inc_script_errors();
     LOGGER_ERROR("[{}] {} error: {}", log_tag_, callback_name, e.what());
 
-    if (stop_on_script_error_ && ctx_.core != nullptr)
+    if (stop_on_script_error_)
     {
         LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} error",
                      log_tag_, callback_name);
-        ctx_.core->shutdown_requested.store(true, std::memory_order_release);
+        ctx_.core->request_stop();
     }
     return InvokeResult::Error;
 }

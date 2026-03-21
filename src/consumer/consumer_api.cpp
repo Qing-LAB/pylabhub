@@ -32,19 +32,12 @@ void ConsumerAPI::log(const std::string &level, const std::string &msg)
 
 void ConsumerAPI::stop()
 {
-    // LR-04: release ordering so any stores before stop() are visible to threads
-    // reading the shutdown flag with acquire ordering.
-    if (shutdown_requested_)
-        shutdown_requested_->store(true, std::memory_order_release);
+    core_->request_stop();
 }
 
 void ConsumerAPI::set_critical_error()
 {
-    if (critical_error_ptr_)
-        critical_error_ptr_->store(true, std::memory_order_release);
-    if (stop_reason_)
-        stop_reason_->store(3, std::memory_order_relaxed); // RoleHostCore::StopReason::CriticalError
-    stop();
+    core_->set_critical_error();
 }
 
 void ConsumerAPI::notify_channel(const std::string &target_channel,
@@ -126,14 +119,7 @@ void ConsumerAPI::set_verify_checksum(bool enable)
 
 std::string ConsumerAPI::stop_reason() const noexcept
 {
-    if (!stop_reason_) return "normal";
-    switch (stop_reason_->load(std::memory_order_relaxed))
-    {
-    case 1:  return "peer_dead";
-    case 2:  return "hub_dead";
-    case 3:  return "critical_error";
-    default: return "normal";
-    }
+    return core_->stop_reason_string();
 }
 
 uint64_t ConsumerAPI::ctrl_queue_dropped() const noexcept
@@ -162,6 +148,7 @@ nlohmann::json ConsumerAPI::snapshot_metrics_json() const
             base["max_iteration_us"]  = m.max_iteration_us;
             base["last_slot_work_us"] = m.last_slot_work_us;
             base["last_slot_wait_us"] = m.last_slot_wait_us;
+            base["period_ms"]         = m.period_ms;
         }
     }
 
