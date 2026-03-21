@@ -19,7 +19,7 @@
 #include <gtest/gtest.h>
 
 #include "lua_engine.hpp"
-#include "role_host_core.hpp"
+#include "utils/role_host_core.hpp"
 
 #include <cstring>
 #include <filesystem>
@@ -877,13 +877,13 @@ TEST_F(LuaEngineTest, ApiStop_SetsShutdownRequested)
     LuaEngine engine;
     ASSERT_TRUE(setup_engine_with_core(engine, core));
 
-    EXPECT_FALSE(core.shutdown_requested.load());
+    EXPECT_FALSE(core.is_shutdown_requested());
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
     engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
 
-    EXPECT_TRUE(core.shutdown_requested.load())
+    EXPECT_TRUE(core.is_shutdown_requested())
         << "api.stop() should set shutdown_requested";
 
     engine.finalize();
@@ -906,16 +906,16 @@ TEST_F(LuaEngineTest, ApiSetCriticalError_SetsCriticalFlag)
     LuaEngine engine;
     ASSERT_TRUE(setup_engine_with_core(engine, core));
 
-    EXPECT_FALSE(core.critical_error_.load());
-    EXPECT_FALSE(core.shutdown_requested.load());
+    EXPECT_FALSE(core.is_critical_error());
+    EXPECT_FALSE(core.is_shutdown_requested());
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
     engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
 
-    EXPECT_TRUE(core.critical_error_.load())
+    EXPECT_TRUE(core.is_critical_error())
         << "api.set_critical_error() should set critical_error_";
-    EXPECT_TRUE(core.shutdown_requested.load())
+    EXPECT_TRUE(core.is_shutdown_requested())
         << "api.set_critical_error() should also set shutdown_requested";
 
     engine.finalize();
@@ -960,7 +960,7 @@ TEST_F(LuaEngineTest, ApiStopReason_ReflectsPeerDead)
     )");
 
     RoleHostCore core;
-    core.stop_reason_.store(1, std::memory_order_relaxed); // PeerDead
+    core.set_stop_reason(RoleHostCore::StopReason::PeerDead); // PeerDead
 
     LuaEngine engine;
     ASSERT_TRUE(setup_engine_with_core(engine, core));
@@ -990,8 +990,8 @@ TEST_F(LuaEngineTest, MetricsClosures_ReadFromRoleHostCounters)
     )");
 
     RoleHostCore core;
-    core.out_written_.store(42, std::memory_order_relaxed);
-    core.drops_.store(7, std::memory_order_relaxed);
+    core.test_set_out_written(42);
+    core.test_set_drops(7);
 
     LuaEngine engine;
     ASSERT_TRUE(engine.initialize("test", &default_core_));
@@ -1088,14 +1088,14 @@ TEST_F(LuaEngineTest, StopOnScriptError_SetsShutdownOnError)
     ctx.stop_on_script_error = true;  // enable
     engine.build_api(ctx);
 
-    EXPECT_FALSE(core.shutdown_requested.load());
+    EXPECT_FALSE(core.is_shutdown_requested());
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
     auto result = engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
 
     EXPECT_EQ(result, InvokeResult::Error);
-    EXPECT_TRUE(core.shutdown_requested.load())
+    EXPECT_TRUE(core.is_shutdown_requested())
         << "stop_on_script_error should set shutdown_requested on error";
 
     engine.finalize();
@@ -1166,7 +1166,7 @@ TEST_F(LuaEngineTest, MetricsClosures_InReceivedWorks)
     )");
 
     RoleHostCore core;
-    core.in_received_.store(15, std::memory_order_relaxed);
+    core.test_set_in_received(15);
 
     LuaEngine engine;
     ASSERT_TRUE(engine.initialize("test", &default_core_));

@@ -273,6 +273,9 @@ ProducerConfig ProducerConfig::from_json_file(const std::string &path)
         const auto &s = j["script"];
         cfg.script_type_explicit = s.contains("type");
         cfg.script_type = s.value("type", std::string{"python"});
+        if (cfg.script_type != "python" && cfg.script_type != "lua")
+            throw std::invalid_argument(
+                "script.type must be \"python\" or \"lua\", got: \"" + cfg.script_type + "\"");
         cfg.script_path = s.value("path", std::string{"."});
     }
 

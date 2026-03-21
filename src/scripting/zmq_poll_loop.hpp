@@ -13,7 +13,7 @@
  * See HEP-CORE-0007 §12.3 (shutdown pitfalls — the bug that motivated this).
  */
 
-#include "role_host_core.hpp"
+#include "utils/role_host_core.hpp"
 
 #include "plh_service.hpp" // LOGGER_WARN
 
@@ -127,8 +127,8 @@ struct ZmqPollLoop
                     periodic_tasks.size(),
                     periodic_tasks.size() == 1 ? "" : "s");
 
-        while (core.running_threads.load(std::memory_order_relaxed) &&
-               !core.shutdown_requested.load(std::memory_order_relaxed))
+        while (core.is_running() &&
+               !core.is_shutdown_requested())
         {
             const int rc = zmq_poll(items.data(), nfds, poll_interval_ms);
             if (rc < 0)

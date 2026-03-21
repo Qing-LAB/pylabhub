@@ -3,7 +3,7 @@
  * @file role_host_core.cpp
  * @brief RoleHostCore — engine-agnostic infrastructure implementation.
  */
-#include "role_host_core.hpp"
+#include "utils/role_host_core.hpp"
 
 #include "utils/logger.hpp"
 

@@ -2,8 +2,8 @@
 # src/scripting/CMakeLists.txt
 #
 # Purpose:
-#   Configures the `pylabhub-scripting` static library — a thin layer that
-#   provides `PythonScriptHost`, the concrete CPython `ScriptHost` subclass.
+#   Configures the `pylabhub-scripting` static library — the script engine
+#   layer providing LuaEngine, PythonEngine, RoleHostCore, and role API classes.
 #
 # Rationale for a separate static library:
 #   `libpython` (embedded via pybind11::embed) must NOT become a hard dependency
@@ -13,8 +13,9 @@
 #   link against this additional static lib.
 #
 # Dependencies:
-#   - pylabhub::utils   — ScriptHost base, Logger, platform utilities
+#   - pylabhub::utils   — RoleHostCore, Logger, platform utilities
 #   - pylabhub::third_party::pybind11_embed — pybind11/embed.h + libpython
+#   - pylabhub::third_party::luajit — LuaJIT for LuaEngine
 # ------------------------------------------------------------------------------
 cmake_minimum_required(VERSION 3.28)
 
@@ -57,4 +58,4 @@ target_link_libraries(pylabhub-scripting PUBLIC
 
 pylabhub_apply_sanitizer_to_target(pylabhub-scripting)
 
-message(STATUS "Configured static lib 'pylabhub::scripting' (PythonScriptHost, PythonRoleHostBase, LuaState, LuaRoleHostBase, RoleHostCore).")
+message(STATUS "Configured static lib 'pylabhub::scripting' (LuaEngine, PythonEngine, RoleHostCore, role API classes).")

@@ -14,6 +14,7 @@
 #include "producer/producer_api.hpp"
 #include "consumer/consumer_api.hpp"
 #include "processor/processor_api.hpp"
+#include "utils/role_host_core.hpp"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -29,14 +30,15 @@ using json = nlohmann::json;
 
 TEST(MetricsApiTest, ProducerAPI_SnapshotBase_NoSHM)
 {
-    pylabhub::producer::ProducerAPI api;
+    pylabhub::scripting::RoleHostCore core;
+    pylabhub::producer::ProducerAPI api(core);
     api.set_uid("PROD-test");
     api.set_name("test-prod");
     api.set_channel("test.chan");
 
-    api.increment_out_written();
-    api.increment_out_written();
-    api.increment_drops();
+    core.inc_out_written();
+    core.inc_out_written();
+    core.inc_drops();
 
     json snap = api.snapshot_metrics_json();
     ASSERT_TRUE(snap.contains("base"));
@@ -52,7 +54,8 @@ TEST(MetricsApiTest, ProducerAPI_SnapshotBase_NoSHM)
 
 TEST(MetricsApiTest, ProducerAPI_ReportMetric)
 {
-    pylabhub::producer::ProducerAPI api;
+    pylabhub::scripting::RoleHostCore core;
+    pylabhub::producer::ProducerAPI api(core);
     api.report_metric("events", 42.0);
     api.report_metric("rate_hz", 1000.5);
 
@@ -64,7 +67,8 @@ TEST(MetricsApiTest, ProducerAPI_ReportMetric)
 
 TEST(MetricsApiTest, ProducerAPI_ReportMetrics_Batch)
 {
-    pylabhub::producer::ProducerAPI api;
+    pylabhub::scripting::RoleHostCore core;
+    pylabhub::producer::ProducerAPI api(core);
     std::unordered_map<std::string, double> kv{{"a", 1.0}, {"b", 2.0}, {"c", 3.0}};
     api.report_metrics(kv);
 
@@ -76,7 +80,8 @@ TEST(MetricsApiTest, ProducerAPI_ReportMetrics_Batch)
 
 TEST(MetricsApiTest, ProducerAPI_ClearCustomMetrics)
 {
-    pylabhub::producer::ProducerAPI api;
+    pylabhub::scripting::RoleHostCore core;
+    pylabhub::producer::ProducerAPI api(core);
     api.report_metric("x", 1.0);
     api.clear_custom_metrics();
 
@@ -86,7 +91,8 @@ TEST(MetricsApiTest, ProducerAPI_ClearCustomMetrics)
 
 TEST(MetricsApiTest, ProducerAPI_ReportMetric_Overwrite)
 {
-    pylabhub::producer::ProducerAPI api;
+    pylabhub::scripting::RoleHostCore core;
+    pylabhub::producer::ProducerAPI api(core);
     api.report_metric("x", 1.0);
     api.report_metric("x", 99.0);
 
@@ -100,7 +106,8 @@ TEST(MetricsApiTest, ProducerAPI_ReportMetric_Overwrite)
 
 TEST(MetricsApiTest, ConsumerAPI_SnapshotBase_NoSHM)
 {
-    pylabhub::consumer::ConsumerAPI api;
+    pylabhub::scripting::RoleHostCore core;
+    pylabhub::consumer::ConsumerAPI api(core);
     api.set_uid("CONS-test");
     api.set_name("test-cons");
     api.set_channel("test.chan");
@@ -115,7 +122,8 @@ TEST(MetricsApiTest, ConsumerAPI_SnapshotBase_NoSHM)
 
 TEST(MetricsApiTest, ConsumerAPI_ReportAndClear)
 {
-    pylabhub::consumer::ConsumerAPI api;
+    pylabhub::scripting::RoleHostCore core;
+    pylabhub::consumer::ConsumerAPI api(core);
     api.report_metric("bytes_logged", 2048.0);
 
     json snap = api.snapshot_metrics_json();
@@ -132,7 +140,8 @@ TEST(MetricsApiTest, ConsumerAPI_ReportAndClear)
 
 TEST(MetricsApiTest, ProcessorAPI_SnapshotBase_NoSHM)
 {
-    pylabhub::processor::ProcessorAPI api;
+    pylabhub::scripting::RoleHostCore core;
+    pylabhub::processor::ProcessorAPI api(core);
     api.set_uid("PROC-test");
     api.set_name("test-proc");
 
@@ -147,7 +156,8 @@ TEST(MetricsApiTest, ProcessorAPI_SnapshotBase_NoSHM)
 
 TEST(MetricsApiTest, ProcessorAPI_ReportAndSnapshot)
 {
-    pylabhub::processor::ProcessorAPI api;
+    pylabhub::scripting::RoleHostCore core;
+    pylabhub::processor::ProcessorAPI api(core);
     api.report_metric("avg_latency_ms", 2.5);
     api.report_metrics({{"throughput", 500.0}, {"errors", 0.0}});
 
