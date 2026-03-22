@@ -10,13 +10,14 @@
  * Layer 1 (engine): delegated to ScriptEngine via invoke_consume / invoke_on_inbox.
  */
 #include "consumer_role_host.hpp"
+#include "consumer_fields.hpp"
 
 #include "plh_datahub.hpp"
 #include "plh_datahub_client.hpp"
 
 #include "role_host_helpers.hpp"
 #include "zmq_poll_loop.hpp"
-#include "utils/script_host_helpers.hpp" // resolve_schema, schema_spec_to_zmq_fields, compute_schema_hash
+#include "utils/script_host_helpers.hpp"
 
 #include <chrono>
 #include <cstring>
@@ -34,23 +35,18 @@ using Clock = std::chrono::steady_clock;
 // Destructor
 // ============================================================================
 
+ConsumerRoleHost::ConsumerRoleHost(config::RoleConfig config,
+                                     std::unique_ptr<scripting::ScriptEngine> engine,
+                                     std::atomic<bool> *shutdown_flag)
+    : config_(std::move(config))
+    , engine_(std::move(engine))
+{
+    core_.g_shutdown = shutdown_flag;
+}
+
 ConsumerRoleHost::~ConsumerRoleHost()
 {
     shutdown_();
-}
-
-// ============================================================================
-// Configuration
-// ============================================================================
-
-void ConsumerRoleHost::set_engine(std::unique_ptr<scripting::ScriptEngine> engine)
-{
-    engine_ = std::move(engine);
-}
-
-void ConsumerRoleHost::set_config(ConsumerConfig config)
-{
-    config_ = std::move(config);
 }
 
 // ============================================================================
@@ -67,7 +63,6 @@ void ConsumerRoleHost::startup_()
     const bool ok = ready_future.get();
     if (!ok)
     {
-        // Worker failed during setup — join immediately.
         if (worker_thread_.joinable())
             worker_thread_.join();
     }
@@ -92,30 +87,36 @@ void ConsumerRoleHost::shutdown_()
 
 void ConsumerRoleHost::worker_main_()
 {
+    const auto &id   = config_.identity();
+    const auto &sc   = config_.script();
+    const auto &hub  = config_.in_hub();
+    const auto &tr   = config_.in_transport();
+    const auto &vld  = config_.validation();
+
     // Step 1: Initialize the engine.
     if (!engine_->initialize("cons", &core_))
     {
         LOGGER_ERROR("[cons] Engine initialize() failed");
-        engine_->finalize(); // Clean up any partial state (e.g. live interpreter).
+        engine_->finalize();
         ready_promise_.set_value(false);
         return;
     }
 
     // Warn if script type was not explicitly set in config.
-    if (!config_.script_type_explicit)
+    if (!sc.type_explicit)
     {
         LOGGER_WARN("[cons] 'script.type' not set in config — defaulting to '{}'. "
                     "Set \"script\": {{\"type\": \"{}\"}} explicitly.",
-                    config_.script_type, config_.script_type);
+                    sc.type, sc.type);
     }
 
     // Step 2: Load script and extract callbacks.
     const std::filesystem::path base_path =
-        config_.script_path.empty() ? std::filesystem::current_path()
-                                    : std::filesystem::weakly_canonical(config_.script_path);
-    const std::filesystem::path script_dir = base_path / "script" / config_.script_type;
+        sc.path.empty() ? std::filesystem::current_path()
+                        : std::filesystem::weakly_canonical(sc.path);
+    const std::filesystem::path script_dir = base_path / "script" / sc.type;
     const char *entry_point =
-        (config_.script_type == "lua") ? "init.lua" : "__init__.py";
+        (sc.type == "lua") ? "init.lua" : "__init__.py";
 
     if (!engine_->load_script(script_dir, entry_point, "on_consume"))
     {
@@ -128,18 +129,22 @@ void ConsumerRoleHost::worker_main_()
     script_load_ok_.store(true, std::memory_order_release);
 
     // Step 3: Resolve schemas and register slot types (read-only access).
+    // Consumer discovers schemas from the broker — slot_schema_json in config
+    // is for offline validation only. If absent, schema comes at connect time.
     {
         std::vector<std::string> schema_dirs;
-        if (!config_.hub_dir.empty())
+        if (!hub.hub_dir.empty())
             schema_dirs.push_back(
-                (std::filesystem::path(config_.hub_dir) / "schemas").string());
+                (std::filesystem::path(hub.hub_dir) / "schemas").string());
 
         try
         {
+            // Consumer reads schemas from raw JSON (not role-specific fields).
+            const auto &raw = config_.raw();
             slot_spec_ = scripting::resolve_schema(
-                config_.slot_schema_json, false, "cons", schema_dirs);
+                raw.value("slot_schema", nlohmann::json{}), false, "cons", schema_dirs);
             core_.fz_spec = scripting::resolve_schema(
-                config_.flexzone_schema_json, true, "cons", schema_dirs);
+                raw.value("flexzone_schema", nlohmann::json{}), true, "cons", schema_dirs);
         }
         catch (const std::exception &e)
         {
@@ -151,7 +156,7 @@ void ConsumerRoleHost::worker_main_()
     }
 
     const std::string packing =
-        config_.zmq_packing.empty() ? "aligned" : config_.zmq_packing;
+        tr.zmq_packing.empty() ? "aligned" : tr.zmq_packing;
 
     // Register slot type (read-only).
     if (slot_spec_.has_schema)
@@ -178,7 +183,6 @@ void ConsumerRoleHost::worker_main_()
             return;
         }
         core_.schema_fz_size = engine_->type_sizeof("FlexFrame");
-        // Page-align flexzone size.
         core_.schema_fz_size = (core_.schema_fz_size + 4095U) & ~size_t{4095U};
     }
 
@@ -201,25 +205,25 @@ void ConsumerRoleHost::worker_main_()
     }
 
     // Step 5: Build RoleContext and engine API.
-    // Store script_dir string so ctx.script_dir doesn't dangle.
     const std::string script_dir_str = script_dir.string();
+    const std::string base_dir_str = config_.base_dir().string();
 
     scripting::RoleContext ctx;
     ctx.role_tag    = "cons";
-    ctx.uid         = config_.consumer_uid.c_str();
-    ctx.name        = config_.consumer_name.c_str();
-    ctx.channel     = config_.channel.c_str();
+    ctx.uid         = id.uid.c_str();
+    ctx.name        = id.name.c_str();
+    ctx.channel     = config_.in_channel().c_str();
     ctx.out_channel = nullptr;
-    ctx.log_level   = config_.log_level.c_str();
+    ctx.log_level   = id.log_level.c_str();
     ctx.script_dir  = script_dir_str.c_str();
-    ctx.role_dir    = config_.role_dir.c_str();
+    ctx.role_dir    = base_dir_str.c_str();
     ctx.messenger   = &in_messenger_;
     ctx.queue_writer = nullptr;
     ctx.queue_reader = queue_reader_;
     ctx.producer    = nullptr;
     ctx.consumer    = in_consumer_.has_value() ? &(*in_consumer_) : nullptr;
     ctx.core         = &core_;
-    ctx.stop_on_script_error = config_.stop_on_script_error;
+    ctx.stop_on_script_error = vld.stop_on_script_error;
 
     engine_->build_api(ctx);
 
@@ -252,48 +256,59 @@ void ConsumerRoleHost::worker_main_()
 
 bool ConsumerRoleHost::setup_infrastructure_()
 {
+    const auto &id    = config_.identity();
+    const auto &hub   = config_.in_hub();
+    const auto &tr    = config_.in_transport();
+    const auto &shm   = config_.in_shm();
+    const auto &val   = config_.in_validation();
+    const auto &tc    = config_.timing();
+    const auto &inbox = config_.inbox();
+    const auto &mon   = config_.monitoring();
+    const auto &auth  = config_.auth();
+    const auto &ch    = config_.in_channel();
+
     // --- Consumer options ---
     hub::ConsumerOptions opts;
-    opts.channel_name         = config_.channel;
-    opts.shm_shared_secret    = config_.shm_enabled ? config_.shm_secret : 0u;
+    opts.channel_name         = ch;
+    opts.shm_shared_secret    = shm.enabled ? shm.secret : 0u;
     opts.expected_schema_hash = scripting::compute_schema_hash(slot_spec_, core_.fz_spec);
-    opts.consumer_uid         = config_.consumer_uid;
-    opts.consumer_name        = config_.consumer_name;
+    opts.consumer_uid         = id.uid;
+    opts.consumer_name        = id.name;
 
-    if (config_.target_period_ms > 0)
+    if (tc.target_period_ms > 0)
     {
         opts.loop_policy = hub::LoopPolicy::FixedRate;
-        opts.period_ms   = std::chrono::milliseconds{static_cast<int>(config_.target_period_ms)};
+        opts.period_ms   = std::chrono::milliseconds{static_cast<int>(tc.target_period_ms)};
     }
 
-    // Transport declaration (Phase 7).
-    opts.queue_type = (config_.queue_type == QueueType::Zmq) ? "zmq" : "shm";
+    // Transport declaration.
+    const bool is_zmq = (tr.transport == config::Transport::Zmq);
+    opts.queue_type = is_zmq ? "zmq" : "shm";
 
-    // ZMQ data loop (HEP-CORE-0021).
-    if (config_.queue_type == QueueType::Zmq)
+    if (is_zmq)
     {
         opts.zmq_schema       = scripting::schema_spec_to_zmq_fields(slot_spec_, schema_slot_size_);
-        opts.zmq_buffer_depth = config_.zmq_buffer_depth;
+        opts.zmq_buffer_depth = tr.zmq_buffer_depth;
     }
 
-    opts.ctrl_queue_max_depth = config_.ctrl_queue_max_depth;
-    opts.peer_dead_timeout_ms = config_.peer_dead_timeout_ms;
+    opts.ctrl_queue_max_depth = mon.ctrl_queue_max_depth;
+    opts.peer_dead_timeout_ms = mon.peer_dead_timeout_ms;
 
     // --- Inbox setup (optional) ---
     scripting::SchemaSpec inbox_spec;
     size_t inbox_schema_slot_size = 0;
 
-    if (config_.has_inbox())
+    if (inbox.has_inbox())
     {
         std::vector<std::string> schema_dirs;
-        if (!config_.hub_dir.empty())
+        if (!hub.hub_dir.empty())
             schema_dirs.push_back(
-                (std::filesystem::path(config_.hub_dir) / "schemas").string());
+                (std::filesystem::path(hub.hub_dir) / "schemas").string());
 
         try
         {
             inbox_spec = scripting::resolve_schema(
-                config_.inbox_schema_json, false, "cons", schema_dirs);
+                inbox.schema_json, false, "cons", schema_dirs);
         }
         catch (const std::exception &e)
         {
@@ -302,9 +317,8 @@ bool ConsumerRoleHost::setup_infrastructure_()
         }
 
         const std::string inbox_packing =
-            config_.zmq_packing.empty() ? "aligned" : config_.zmq_packing;
+            tr.zmq_packing.empty() ? "aligned" : tr.zmq_packing;
 
-        // Register inbox type in the engine.
         if (inbox_spec.has_schema)
         {
             if (!engine_->register_slot_type(inbox_spec, "InboxFrame", inbox_packing))
@@ -316,12 +330,11 @@ bool ConsumerRoleHost::setup_infrastructure_()
             inbox_type_name_ = "InboxFrame";
         }
 
-        const std::string ep = config_.inbox_endpoint.empty()
+        const std::string ep = inbox.endpoint.empty()
             ? "tcp://127.0.0.1:0"
-            : config_.inbox_endpoint;
+            : inbox.endpoint;
         auto zmq_fields = scripting::schema_spec_to_zmq_fields(inbox_spec, inbox_schema_slot_size);
 
-        // Serialize full SchemaSpec JSON for ROLE_INFO_REQ discovery.
         nlohmann::json spec_json;
         spec_json["fields"] = nlohmann::json::array();
         for (const auto &f : inbox_spec.fields)
@@ -334,9 +347,9 @@ bool ConsumerRoleHost::setup_infrastructure_()
         if (inbox_spec.packing != "aligned")
             spec_json["packing"] = inbox_spec.packing;
 
-        const int inbox_rcvhwm = (config_.inbox_overflow_policy == "block")
+        const int inbox_rcvhwm = (inbox.overflow_policy == "block")
             ? 0
-            : static_cast<int>(config_.inbox_buffer_depth);
+            : static_cast<int>(inbox.buffer_depth);
 
         inbox_queue_ = hub::InboxQueue::bind_at(
             ep, std::move(zmq_fields), inbox_packing, inbox_rcvhwm);
@@ -346,19 +359,16 @@ bool ConsumerRoleHost::setup_infrastructure_()
             inbox_queue_.reset();
             return false;
         }
-        else
-        {
-            LOGGER_INFO("[cons] InboxQueue bound at '{}'", inbox_queue_->actual_endpoint());
-        }
+        LOGGER_INFO("[cons] InboxQueue bound at '{}'", inbox_queue_->actual_endpoint());
     }
 
     // --- Broker connect ---
-    if (!config_.broker.empty())
+    if (!hub.broker.empty())
     {
-        if (!in_messenger_.connect(config_.broker, config_.broker_pubkey,
-                                    config_.auth.client_pubkey, config_.auth.client_seckey))
+        if (!in_messenger_.connect(hub.broker, hub.broker_pubkey,
+                                    auth.client_pubkey, auth.client_seckey))
         {
-            LOGGER_ERROR("[cons] broker connect failed ({}); aborting", config_.broker);
+            LOGGER_ERROR("[cons] broker connect failed ({}); aborting", hub.broker);
             return false;
         }
     }
@@ -367,7 +377,7 @@ bool ConsumerRoleHost::setup_infrastructure_()
     auto maybe_consumer = hub::Consumer::connect(in_messenger_, opts);
     if (!maybe_consumer.has_value())
     {
-        LOGGER_ERROR("[cons] Failed to connect consumer to channel '{}'", config_.channel);
+        LOGGER_ERROR("[cons] Failed to connect consumer to channel '{}'", ch);
         return false;
     }
     in_consumer_ = std::move(maybe_consumer);
@@ -388,8 +398,8 @@ bool ConsumerRoleHost::setup_infrastructure_()
         core_.request_stop();
     });
 
-    // ZMQ data routing for SHM queue_type: ZMQ frames → message queue.
-    if (config_.queue_type == QueueType::Shm)
+    // ZMQ data routing for SHM transport: ZMQ frames → message queue.
+    if (!is_zmq)
     {
         in_consumer_->on_zmq_data(
             [this](std::span<const std::byte> data)
@@ -433,9 +443,9 @@ bool ConsumerRoleHost::setup_infrastructure_()
     }
 
     // --- Wire peer-dead and hub-dead monitoring ---
-    in_consumer_->on_peer_dead([this]() {
+    in_consumer_->on_peer_dead([this, &mon]() {
         LOGGER_WARN("[cons] peer-dead: producer silent for {} ms; triggering shutdown",
-                    config_.peer_dead_timeout_ms);
+                    mon.peer_dead_timeout_ms);
         core_.set_stop_reason(scripting::RoleHostCore::StopReason::PeerDead);
         core_.request_stop();
     });
@@ -447,39 +457,37 @@ bool ConsumerRoleHost::setup_infrastructure_()
     });
 
     // --- Create transport QueueReader ---
-    if (config_.queue_type == QueueType::Shm)
+    if (!is_zmq)
     {
         auto *in_shm = in_consumer_->shm();
         if (in_shm == nullptr)
         {
-            LOGGER_ERROR("[cons] queue_type='shm' but SHM unavailable for channel '{}'",
-                         config_.channel);
+            LOGGER_ERROR("[cons] transport='shm' but SHM unavailable for channel '{}'", ch);
             return false;
         }
         shm_queue_    = hub::ShmQueue::from_consumer_ref(
-            *in_shm, schema_slot_size_, core_.schema_fz_size, config_.channel);
+            *in_shm, schema_slot_size_, core_.schema_fz_size, ch);
         queue_reader_ = shm_queue_.get();
     }
-    else // QueueType::Zmq
+    else
     {
         queue_reader_ = in_consumer_->queue_reader();
         if (queue_reader_ == nullptr)
         {
-            LOGGER_ERROR("[cons] queue_type='zmq' but broker reported SHM transport for "
-                         "channel '{}'; check that the producer uses ZMQ transport",
-                         config_.channel);
+            LOGGER_ERROR("[cons] transport='zmq' but broker reported SHM transport for "
+                         "channel '{}'; check that the producer uses ZMQ transport", ch);
             return false;
         }
     }
 
     if (queue_reader_)
-        queue_reader_->set_verify_checksum(config_.verify_checksum, core_.has_fz);
+        queue_reader_->set_verify_checksum(val.verify_checksum, core_.has_fz);
 
-    LOGGER_INFO("[cons] Consumer started on channel '{}' (shm={})", config_.channel,
+    LOGGER_INFO("[cons] Consumer started on channel '{}' (shm={})", ch,
                 in_consumer_->has_shm());
 
     // --- Startup coordination (HEP-0023) ---
-    if (!scripting::wait_for_roles(in_messenger_, config_.wait_for_roles, "[cons]"))
+    if (!scripting::wait_for_roles(in_messenger_, config_.startup().wait_for_roles, "[cons]"))
         return false;
 
     return true;
@@ -494,18 +502,15 @@ void ConsumerRoleHost::teardown_infrastructure_()
     core_.set_running(false);
     core_.notify_incoming();
 
-    // Join ctrl_thread_.
     if (ctrl_thread_.joinable())
         ctrl_thread_.join();
 
-    // Stop inbox_queue_ (if exists).
     if (inbox_queue_)
     {
         inbox_queue_->stop();
         inbox_queue_.reset();
     }
 
-    // Null out the QueueReader pointer before destroying the SHM queue or consumer.
     queue_reader_ = nullptr;
     if (shm_queue_)
     {
@@ -513,10 +518,8 @@ void ConsumerRoleHost::teardown_infrastructure_()
         shm_queue_.reset();
     }
 
-    // Deregister hub-dead callback.
     in_messenger_.on_hub_dead(nullptr);
 
-    // Stop/close consumer.
     if (in_consumer_.has_value())
     {
         in_consumer_->stop();
@@ -538,28 +541,25 @@ void ConsumerRoleHost::run_data_loop_()
         return;
     }
 
-    // --- Setup ---
+    const auto &tc  = config_.timing();
+    const auto &vld = config_.validation();
+
     const double period_us =
-        static_cast<double>(config_.target_period_ms) * kUsPerMs;
-    const bool is_max_rate = (config_.loop_timing == LoopTimingPolicy::MaxRate);
-    const auto short_timeout_us = compute_short_timeout(period_us, config_.queue_io_wait_timeout_ratio);
-    // read_acquire takes milliseconds; convert with rounding up to avoid 0ms.
+        static_cast<double>(tc.target_period_ms) * kUsPerMs;
+    const bool is_max_rate = (tc.loop_timing == LoopTimingPolicy::MaxRate);
+    const auto short_timeout_us = compute_short_timeout(period_us, tc.queue_io_wait_timeout_ratio);
     const auto short_timeout =
         std::chrono::duration_cast<std::chrono::milliseconds>(short_timeout_us + std::chrono::microseconds{999});
     const size_t item_sz = queue_reader_->item_size();
 
-    // Flexzone pointers — read-only for consumer.
     const char *fz_type = core_.has_fz ? "FlexFrame" : nullptr;
 
-    // First cycle: no deadline — fire immediately.
     auto deadline = Clock::time_point::max();
 
-    // --- Outer loop ---
     while (core_.is_running() &&
            !core_.is_shutdown_requested() &&
            !core_.is_critical_error())
     {
-        // Check external shutdown flag.
         if (core_.is_process_exit_requested())
             break;
 
@@ -571,42 +571,35 @@ void ConsumerRoleHost::run_data_loop_()
         {
             data = queue_reader_->read_acquire(short_timeout);
             if (data != nullptr)
-                break; // got slot
+                break;
 
             if (is_max_rate)
-                break; // MaxRate: single attempt
+                break;
 
-            // Check shutdown between retries.
             if (!core_.is_running() ||
                 core_.is_shutdown_requested() ||
                 core_.is_critical_error())
-            {
                 break;
-            }
             if (core_.is_process_exit_requested())
                 break;
 
-            // For first cycle (deadline=max), remaining is effectively infinite — always retry.
             if (deadline != Clock::time_point::max())
             {
                 const auto remaining =
                     std::chrono::duration_cast<std::chrono::microseconds>(
                         deadline - Clock::now());
                 if (remaining <= short_timeout_us)
-                    break; // not enough time to retry
+                    break;
             }
-            // else: retry acquire
         }
 
-        // --- Step B: Deadline wait (FixedRate with early data) ---
-        // Skip sleep when deadline is max() (first cycle) or MaxRate.
+        // --- Step B: Deadline wait ---
         if (!is_max_rate && data != nullptr &&
             deadline != Clock::time_point::max() && Clock::now() < deadline)
         {
             std::this_thread::sleep_until(deadline);
         }
 
-        // Safety check after potential sleep: shutdown may have been requested.
         if (!core_.is_running() ||
             core_.is_shutdown_requested() ||
             core_.is_critical_error())
@@ -616,23 +609,20 @@ void ConsumerRoleHost::run_data_loop_()
             break;
         }
 
-        // --- Step C: Drain everything right before script call ---
+        // --- Step C: Drain ---
         auto msgs = core_.drain_messages();
         drain_inbox_sync_();
 
         // --- Step D: Invoke callback ---
-        // Update last_seq and in_received when data arrives.
         if (data != nullptr)
         {
             last_seq_.store(queue_reader_->last_seq(), std::memory_order_relaxed);
             core_.inc_in_received();
         }
 
-        // Read-only flexzone pointer (re-read each cycle for ShmQueue).
         const void *fz_ptr = core_.has_fz ? queue_reader_->read_flexzone() : nullptr;
         const size_t fz_sz = core_.has_fz ? queue_reader_->flexzone_size() : 0;
 
-        // Track error count before invoke to detect new errors (invoke_consume is void).
         const uint64_t errors_before = engine_->script_error_count();
 
         engine_->invoke_consume(data, item_sz, fz_ptr, fz_sz, fz_type, msgs);
@@ -641,8 +631,7 @@ void ConsumerRoleHost::run_data_loop_()
         if (data != nullptr)
             queue_reader_->read_release();
 
-        // Check stop_on_script_error: compare error count before/after invoke.
-        if (config_.stop_on_script_error &&
+        if (vld.stop_on_script_error &&
             engine_->script_error_count() > errors_before)
         {
             core_.request_stop();
@@ -657,7 +646,7 @@ void ConsumerRoleHost::run_data_loop_()
         core_.inc_iteration_count();
 
         // --- Step G: Compute next deadline ---
-        deadline = compute_next_deadline(config_.loop_timing, deadline, cycle_start, period_us);
+        deadline = compute_next_deadline(tc.loop_timing, deadline, cycle_start, period_us);
     }
 
     LOGGER_INFO("[cons] run_data_loop_ exiting: running_threads={} shutdown_requested={} "
@@ -667,12 +656,16 @@ void ConsumerRoleHost::run_data_loop_()
 }
 
 // ============================================================================
-// run_ctrl_thread_ — polls consumer ZMQ sockets, sends heartbeats
+// run_ctrl_thread_
 // ============================================================================
 
 void ConsumerRoleHost::run_ctrl_thread_()
 {
-    scripting::ZmqPollLoop loop{core_, "cons:" + config_.consumer_uid};
+    const auto &id = config_.identity();
+    const auto &ch = config_.in_channel();
+    const auto &tc = config_.timing();
+
+    scripting::ZmqPollLoop loop{core_, "cons:" + id.uid};
     loop.sockets = {
         {in_consumer_->ctrl_zmq_socket_handle(),
          [&] { in_consumer_->handle_ctrl_events_nowait(); }},
@@ -684,22 +677,20 @@ void ConsumerRoleHost::run_ctrl_thread_()
     };
     loop.periodic_tasks.emplace_back(
         [&] {
-            in_messenger_.enqueue_heartbeat(config_.channel);
+            in_messenger_.enqueue_heartbeat(ch);
         },
-        config_.heartbeat_interval_ms);
-    // HEP-CORE-0019: periodic metrics report.
+        tc.heartbeat_interval_ms);
     loop.periodic_tasks.emplace_back(
         [&] {
             in_messenger_.enqueue_metrics_report(
-                config_.channel, config_.consumer_uid,
-                snapshot_metrics_json());
+                ch, id.uid, snapshot_metrics_json());
         },
-        config_.heartbeat_interval_ms);
+        tc.heartbeat_interval_ms);
     loop.run();
 }
 
 // ============================================================================
-// drain_inbox_sync_ — drain all inbox messages non-blocking
+// drain_inbox_sync_
 // ============================================================================
 
 void ConsumerRoleHost::drain_inbox_sync_()
@@ -708,7 +699,7 @@ void ConsumerRoleHost::drain_inbox_sync_()
 }
 
 // ============================================================================
-// snapshot_metrics_json — for heartbeat/metrics reporting
+// snapshot_metrics_json
 // ============================================================================
 
 nlohmann::json ConsumerRoleHost::snapshot_metrics_json() const
@@ -717,9 +708,8 @@ nlohmann::json ConsumerRoleHost::snapshot_metrics_json() const
     base["in_received"]        = core_.in_received();
     base["script_errors"]      = engine_ ? engine_->script_error_count() : 0;
     base["last_cycle_work_us"] = core_.last_cycle_work_us();
-    base["loop_overrun_count"] = uint64_t{0}; // consumer is demand-driven, no deadline
+    base["loop_overrun_count"] = uint64_t{0};
 
-    // Use our own iteration_count (always available, regardless of transport).
     base["iteration_count"] = core_.iteration_count();
 
     if (in_consumer_.has_value())
@@ -729,15 +719,16 @@ nlohmann::json ConsumerRoleHost::snapshot_metrics_json() const
 
     if (in_consumer_.has_value())
     {
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) — shm() is non-const but we only read
-        if (const auto *shm = const_cast<hub::Consumer &>(*in_consumer_).shm();
-            shm != nullptr)
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+        if (const auto *shm_ptr = const_cast<hub::Consumer &>(*in_consumer_).shm();
+            shm_ptr != nullptr)
         {
-            const auto &m = shm->metrics();
+            const auto &m = shm_ptr->metrics();
             base["last_iteration_us"] = m.last_iteration_us;
             base["max_iteration_us"]  = m.max_iteration_us;
             base["last_slot_work_us"] = m.last_slot_work_us;
             base["last_slot_wait_us"] = m.last_slot_wait_us;
+            base["period_ms"]         = m.period_ms;
         }
     }
     return base;
