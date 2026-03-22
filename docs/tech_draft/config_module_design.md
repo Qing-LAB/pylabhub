@@ -1,6 +1,6 @@
-# Tech Draft: Unified Config Module via RoleDirectory
+# Tech Draft: Unified Config Module — RoleConfig + JsonConfig
 
-**Status**: Draft (2026-03-20)
+**Status**: Draft (2026-03-21, revised)
 **Branch**: `feature/lua-role-support`
 **Relates to**: HEP-CORE-0024 (Role Directory Service), SE-14 (script.type validation)
 
@@ -8,164 +8,121 @@
 
 The current config system has three independent monolithic config structs
 (ProducerConfig, ConsumerConfig, ProcessorConfig) with ~45-70 fields each.
-Parsing logic is duplicated across their `from_json_file()` implementations:
+Parsing logic is duplicated across their `from_json_file()` implementations.
+Adding a validation requires editing three files identically. No central
+place holds the truth of config schema, defaults, or validation rules.
 
-| Duplicated block | Lines per copy | Copies |
-|-----------------|---------------|--------|
-| Script section (type, path, venv) | ~10 | 3 |
-| Inbox section (schema, endpoint, depth, overflow) | ~18 | 3 |
-| Startup wait_for_roles | ~28 | 3 |
-| Timing/period resolution | ~35 | 3 |
-| from_directory() flow | ~25 | 3 |
-| Auth keyfile loading (main.cpp) | ~8 | 3 |
+Additionally:
+- JSON field names are inconsistent across roles (`hub_dir` vs `in_hub_dir`,
+  `zmq_out_endpoint` vs `zmq_in_endpoint`)
+- `JsonConfig` (thread-safe transactional file I/O) is not used for role
+  config loading — only raw `ifstream + json::parse()`
+- No encapsulation — config structs are flat bags of public fields
+- No common base — each role reinvents identity, timing, auth, etc.
 
-Adding a validation (e.g., SE-14's `script.type` check) requires editing
-three files identically. No central place holds the truth of config schema,
-defaults, or validation rules.
+## 2. Design Principles
 
-Meanwhile, `RoleDirectory` already owns path resolution, hub discovery, and
-script entry-point logic — but stops short of JSON parsing. `JsonConfig`
-provides thread-safe transactional file I/O — but is only used by `HubConfig`,
-not by role configs.
+1. **RoleConfig is the single config class.** No ProducerConfig, ConsumerConfig,
+   ProcessorConfig. One class with a pluggable role-specific extension.
 
-## 2. Design: RoleDirectory as Unified Config Manager
+2. **JsonConfig is the file backend.** All config I/O goes through JsonConfig
+   for thread-safety, process-safety, reload detection, and transactional writes.
 
-### 2.1 Current architecture
+3. **All directional fields use `in_`/`out_` prefixes.** Consistently, in
+   both JSON and C++ accessors. No legacy unprefixed forms.
 
+4. **Two slots for everything directional.** Hub, transport, validation,
+   SHM, channel — RoleConfig always holds `in_` and `out_` variants.
+   Producer populates `out_` only. Consumer populates `in_` only.
+   Processor populates both. No special cases in the loader.
+
+5. **Private data, public const accessors.** RoleConfig uses pImpl. External
+   code can only read config, never write it.
+
+6. **Role-specific data via factory callback.** Each role defines a fields
+   struct and a parser function. RoleConfig stores the result as type-erased
+   `std::any` inside its pImpl. Typed access via template convenience wrapper.
+
+## 3. JSON Field Naming Convention (Clean Break)
+
+All directional fields use `in_`/`out_` prefixes consistently:
+
+```json
+// Producer — "out" direction
+{
+  "producer": { "uid": "PROD-TEMPSENS-12345678", "name": "TempSensor" },
+  "out_hub_dir": "/var/pylabhub/my_hub",
+  "out_channel": "lab.sensors.temperature",
+  "out_transport": "shm",
+  "out_shm_enabled": true,
+  "out_shm_slot_count": 8,
+  "out_update_checksum": true,
+  "out_slot_schema": { "fields": [{"name": "value", "type": "float32"}] },
+  "target_period_ms": 100,
+  "script": { "type": "python", "path": "." }
+}
+
+// Consumer — "in" direction
+{
+  "consumer": { "uid": "CONS-DISPLAY-87654321", "name": "Display" },
+  "in_hub_dir": "/var/pylabhub/my_hub",
+  "in_channel": "lab.sensors.temperature",
+  "in_transport": "shm",
+  "in_verify_checksum": false,
+  "script": { "type": "lua", "path": "." }
+}
+
+// Processor — both directions
+{
+  "processor": { "uid": "PROC-FILTER-11111111", "name": "Filter" },
+  "in_hub_dir": "/var/pylabhub/hub_a",
+  "out_hub_dir": "/var/pylabhub/hub_b",
+  "in_channel": "lab.sensors.raw",
+  "out_channel": "lab.sensors.processed",
+  "in_transport": "shm",
+  "out_transport": "zmq",
+  "out_zmq_endpoint": "tcp://0.0.0.0:5590",
+  "in_verify_checksum": true,
+  "out_update_checksum": true,
+  "script": { "type": "python", "path": "." }
+}
 ```
-role.json (on disk)
-    ↓
-std::ifstream + nlohmann::json::parse()    ← raw file read
-    ↓
-ProducerConfig::from_json_file()           ← monolithic parser (300+ lines)
-    ↓
-ProducerConfig struct                       ← flat bag of 50+ fields
-    ↓
-ProducerConfig::from_directory()           ← bolt-on: RoleDirectory path fixes
-    ↓
-main.cpp: host.set_config(std::move(cfg))  ← consumed once
-```
 
-### 2.2 Proposed architecture
+Non-directional fields (identity, timing, script, inbox, startup, monitoring,
+auth) use unprefixed names — they apply to the role as a whole.
 
-```
-RoleDirectory::open(base) or ::from_config_file(path)
-    ↓
-RoleDirectory::load_config("producer.json", "producer")
-    ↓
-    ├── JsonConfig (thread-safe, process-safe, transactional file IO)
-    │   ├── FileLock (cross-process exclusive access during load)
-    │   ├── std::shared_mutex (concurrent in-memory reads)
-    │   └── Atomic writes (temp file + rename on persist)
-    │       ↓
-    │   raw nlohmann::json (cached in JsonConfig)
-    │       ↓
-    ├── Categorical parsers (shared, validated, single source of truth)
-    │   ├── parse_identity_config(j, "producer")  → IdentityConfig
-    │   ├── parse_hub_config(j, prefix, dir)      → RoleHubConfig
-    │   │   └── RoleDirectory::resolve_hub_dir()  (integrated, not bolt-on)
-    │   ├── parse_script_config(j, base_path)     → ScriptConfig
-    │   ├── parse_timing_config(j)                → TimingConfig
-    │   ├── parse_transport_config(j, prefix)     → TransportConfig
-    │   ├── parse_shm_config(j, prefix)           → ShmConfig
-    │   ├── parse_inbox_config(j)                 → InboxConfig
-    │   ├── parse_validation_config(j)            → ValidationConfig
-    │   ├── parse_startup_config(j)               → StartupConfig
-    │   ├── parse_monitoring_config(j)            → MonitoringConfig
-    │   └── parse_auth_config(j)                  → AuthConfig
-    │       ↓
-    └── Stored in RoleDirectory::ConfigState (pImpl)
-            ↓
-        Any component: dir.script(), dir.timing(), dir.hub(), ...
-        Runtime update: dir.update<TimingConfig>([](auto& t) { ... })
-            → JsonConfig::transaction(FullSync).write(...)
-            → re-parse + re-validate category
-```
+## 4. Categorical Config Structs
 
-**Key**: `JsonConfig` replaces raw `ifstream + json::parse()`. This gives
-role configs the same thread-safety, process-safety, and transactional
-guarantees that `HubConfig` already has. Runtime config reload and
-persistence become available without additional plumbing.
+All structs are plain data holders in `src/include/utils/config/`. Each has
+an inline `parse_*()` function — single source of truth for validation and
+defaults.
 
-### 2.3 Core principle
-
-**RoleDirectory is the single source of truth for all role configuration.**
-It owns the directory, the config file, the parsed state, and the path
-resolution. No separate config struct exists. Components query the directory
-for what they need.
-
-## 3. Categorical Config Structs
-
-Each struct is a plain data holder with no methods beyond convenience
-queries. All parsing, validation, and defaulting happens in the
-corresponding `parse_*()` inline function.
-
-### 3.1 IdentityConfig
+### 4.1 IdentityConfig
 
 ```cpp
 struct IdentityConfig
 {
-    std::string uid;            // e.g., "PROD-TEMPSENS-12345678"
-    std::string name;           // human-readable name
-    std::string log_level;      // "info", "debug", "warn", "error"
+    std::string uid;
+    std::string name;
+    std::string log_level{"info"};
 };
+// parse_identity_config(json, role_tag) — reads <role_tag>.uid, .name, .log_level
 ```
 
-Parser takes a role tag ("producer", "consumer", "processor") to derive
-the JSON field names (`producer_uid`, `consumer_uid`, etc.).
-
-### 3.2 RoleHubConfig
+### 4.2 HubConfig
 
 ```cpp
-struct RoleHubConfig
+struct HubConfig
 {
     std::string hub_dir;          // resolved absolute path (or empty)
     std::string broker;           // "tcp://127.0.0.1:5570"
-    std::string broker_pubkey;    // Z85-encoded CURVE public key (or empty)
+    std::string broker_pubkey;    // Z85 CURVE pubkey (or empty)
 };
+// parse_hub_config(json, base_dir, direction) — reads <direction>_hub_dir,
+// resolves broker endpoint + pubkey from hub directory
 ```
 
-Parser integrates hub resolution: if `hub_dir` is set, automatically calls
-`RoleDirectory::resolve_hub_dir()`, `hub_broker_endpoint()`, and
-`hub_broker_pubkey()`. No separate "bolt-on" step needed.
-
-For Processor dual-broker, the directory stores two instances:
-`hub(Direction::In)` and `hub(Direction::Out)`.
-
-### 3.3 ScriptConfig
-
-```cpp
-struct ScriptConfig
-{
-    std::string type{"python"};     // "python", "lua", or "native" (future)
-    std::string path{"."};          // resolved absolute path to script dir
-    std::string python_venv;        // venv name (Python only)
-    bool        type_explicit{false}; // true if "type" was in JSON
-};
-```
-
-Parser validates `type ∈ {"python", "lua"}` (SE-14 fix — single location).
-Path resolution integrated: relative paths resolved against directory base.
-
-### 3.4 TimingConfig
-
-```cpp
-struct TimingConfig
-{
-    double              target_period_ms{0.0};
-    double              target_rate_hz{0.0};
-    int64_t             period_us{0};           // resolved from above
-    LoopTimingPolicy    loop_timing{LoopTimingPolicy::MaxRate};
-    double              queue_io_wait_timeout_ratio{kDefaultQueueIoWaitRatio};
-    int                 slot_acquire_timeout_ms{-1};  // deprecated alias
-    int                 heartbeat_interval_ms{5000};
-};
-```
-
-Parser calls existing shared helpers: `resolve_period_us()`,
-`parse_loop_timing_policy()`, `default_loop_timing_policy()`.
-
-### 3.5 TransportConfig
+### 4.3 TransportConfig
 
 ```cpp
 struct TransportConfig
@@ -173,60 +130,91 @@ struct TransportConfig
     Transport   transport{Transport::Shm};
     std::string zmq_endpoint;
     bool        zmq_bind{true};
-    uint32_t    zmq_buffer_depth{hub::kZmqDefaultBufferDepth};
-    std::string zmq_packing{"aligned"};
+    size_t      zmq_buffer_depth{64};
     std::string zmq_overflow_policy{"drop"};
+    std::string zmq_packing{"aligned"};
+};
+// parse_transport_config(json, direction, tag) — reads <direction>_transport,
+// <direction>_zmq_endpoint, etc.
+```
+
+### 4.4 ValidationConfig (per-direction)
+
+```cpp
+struct DirectionalValidationConfig
+{
+    bool update_checksum{true};    // writer side
+    bool verify_checksum{false};   // reader side
+};
+// parse_directional_validation(json, direction) — reads <direction>_update_checksum,
+// <direction>_verify_checksum
+```
+
+Shared (non-directional) validation:
+
+```cpp
+struct ValidationConfig
+{
+    bool stop_on_script_error{false};
 };
 ```
 
-Parser is parameterized by direction prefix for JSON field names.
-Producer uses no prefix (flat fields). Processor uses `"in_"` / `"out_"`
-prefixes. Consumer uses `queue_type` as the transport field name.
-
-### 3.6 ShmConfig
+### 4.5 ShmConfig
 
 ```cpp
 struct ShmConfig
 {
     bool        enabled{true};
     uint64_t    secret{0};
-    uint32_t    slot_count{8};              // writer-side only
-    ConsumerSyncPolicy sync_policy{ConsumerSyncPolicy::Sequential};  // writer-side only
+    uint32_t    slot_count{8};
+    hub::ConsumerSyncPolicy sync_policy{hub::ConsumerSyncPolicy::Sequential};
 };
+// parse_shm_config(json, direction) — reads <direction>_shm_enabled, etc.
 ```
 
-Parser handles flat (producer/consumer) and nested (processor `shm.in`/`shm.out`).
+### 4.6 ScriptConfig
 
-### 3.7 InboxConfig
+```cpp
+struct ScriptConfig
+{
+    std::string type{"python"};      // "python", "lua", "native" (future)
+    std::string path{"."};           // resolved absolute
+    std::string python_venv;
+    bool        type_explicit{false};
+};
+// parse_script_config(json, base_dir, tag) — validates type ∈ {"python","lua"}
+```
+
+### 4.7 TimingConfig
+
+```cpp
+struct TimingConfig
+{
+    double           target_period_ms{0.0};
+    double           target_rate_hz{0.0};
+    int64_t          period_us{0};
+    LoopTimingPolicy loop_timing{LoopTimingPolicy::MaxRate};
+    double           queue_io_wait_timeout_ratio{kDefaultQueueIoWaitRatio};
+    int              heartbeat_interval_ms{0};
+};
+// parse_timing_config(json, tag, default_period)
+```
+
+### 4.8 InboxConfig
 
 ```cpp
 struct InboxConfig
 {
-    nlohmann::json schema_json;              // object or string (named ref)
+    nlohmann::json schema_json;
     std::string    endpoint;
-    uint32_t       buffer_depth{hub::kZmqDefaultBufferDepth};
+    size_t         buffer_depth{64};
     std::string    overflow_policy{"drop"};
 
-    bool has_inbox() const { return !schema_json.is_null(); }
+    bool has_inbox() const noexcept;
 };
 ```
 
-Single parser, used by all 3 roles identically.
-
-### 3.8 ValidationConfig
-
-```cpp
-struct ValidationConfig
-{
-    bool update_checksum{true};           // writer-side only
-    bool verify_checksum{false};          // reader-side only
-    bool stop_on_script_error{false};
-};
-```
-
-Parser reads all fields; each role uses only the relevant subset.
-
-### 3.9 StartupConfig
+### 4.9 StartupConfig
 
 ```cpp
 struct StartupConfig
@@ -235,333 +223,432 @@ struct StartupConfig
 };
 ```
 
-Parser extracted from the identical 28-line block duplicated 3×.
-
-### 3.10 MonitoringConfig
+### 4.10 MonitoringConfig
 
 ```cpp
 struct MonitoringConfig
 {
-    uint32_t ctrl_queue_max_depth{1024};
-    int      peer_dead_timeout_ms{30000};
+    size_t ctrl_queue_max_depth{256};
+    int    peer_dead_timeout_ms{30000};
 };
 ```
 
-### 3.11 AuthConfig
+### 4.11 AuthConfig
 
 ```cpp
-struct AuthConfig
+struct PYLABHUB_UTILS_EXPORT AuthConfig
 {
     std::string keyfile;
-    std::string client_pubkey;   // populated by load_keypair()
-    std::string client_seckey;   // populated by load_keypair()
+    std::string client_pubkey;
+    std::string client_seckey;
 
-    void load_keypair(const std::string& uid, const std::string& password);
+    bool load_keypair(const std::string& uid, const std::string& password,
+                      const char* role_tag);
 };
 ```
 
-## 4. RoleDirectory Extended Interface
+## 5. RoleConfig Class
+
+### 5.1 Public interface
 
 ```cpp
-class RoleDirectory
+class PYLABHUB_UTILS_EXPORT RoleConfig
 {
 public:
-    // ── Existing (unchanged) ──────────────────────────────────────────
-    static RoleDirectory open(const std::filesystem::path& base);
-    static RoleDirectory from_config_file(const std::filesystem::path& config_path);
-    static RoleDirectory create(const std::filesystem::path& base);
+    /// Role-specific parser callback.
+    /// Receives the raw JSON and a reference to the partially-loaded RoleConfig
+    /// (common fields already populated). Returns role-specific data as std::any.
+    using RoleParser = std::function<std::any(const nlohmann::json&,
+                                              const RoleConfig&)>;
 
-    const std::filesystem::path& base() const noexcept;
-    std::filesystem::path logs() const;
-    std::filesystem::path run() const;
-    std::filesystem::path vault() const;
-    std::filesystem::path config_file(std::string_view filename) const;
-    std::filesystem::path script_entry(std::string_view script_path,
-                                        std::string_view type) const;
-    // ... hub resolution, security helpers, layout inspection ...
+    // ── Factory ───────────────────────────────────────────────────────
 
-    // ── New: config loading ───────────────────────────────────────────
+    /// Load from file path. Uses JsonConfig as backend.
+    static RoleConfig load(const std::string& path,
+                           const char* role_tag,
+                           RoleParser role_parser = nullptr);
 
-    /// Load and parse a role config file. Calls all categorical parsers,
-    /// integrates hub resolution and path normalization.
-    /// @param filename  Config file name, e.g. "producer.json".
-    /// @param role_tag  Role type: "producer", "consumer", "processor".
-    /// @throws std::runtime_error on parse/validation error.
-    void load_config(std::string_view filename, std::string_view role_tag);
+    /// Load from role directory.
+    static RoleConfig load_from_directory(const std::string& dir,
+                                          const char* role_tag,
+                                          RoleParser role_parser = nullptr);
 
-    /// True after load_config() succeeds.
-    bool config_loaded() const noexcept;
+    // ── Common accessors (always available) ───────────────────────────
 
-    // ── New: typed config accessors ───────────────────────────────────
+    const config::IdentityConfig&   identity()   const;
+    const config::AuthConfig&       auth()       const;
+    const config::ScriptConfig&     script()     const;
+    const config::TimingConfig&     timing()     const;
+    const config::InboxConfig&      inbox()      const;
+    const config::ValidationConfig& validation() const;  // non-directional
+    const config::StartupConfig&    startup()    const;
+    const config::MonitoringConfig& monitoring() const;
 
-    const IdentityConfig&    identity()    const;
-    const ScriptConfig&      script()      const;
-    const TimingConfig&      timing()      const;
-    const InboxConfig&       inbox()       const;
-    const ValidationConfig&  validation()  const;
-    const StartupConfig&     startup()     const;
-    const MonitoringConfig&  monitoring()  const;
-    const AuthConfig&        auth()        const;
+    // ── Directional accessors (two slots each) ───────────────────────
 
-    /// Hub config. For processor dual-broker, use hub(Direction).
-    const RoleHubConfig&     hub() const;
-    const RoleHubConfig&     hub(Direction d) const;
+    const config::HubConfig&        in_hub()        const;
+    const config::HubConfig&        out_hub()       const;
+    const config::TransportConfig&  in_transport()  const;
+    const config::TransportConfig&  out_transport() const;
+    const config::ShmConfig&        in_shm()        const;
+    const config::ShmConfig&        out_shm()       const;
+    const config::DirectionalValidationConfig& in_validation()  const;
+    const config::DirectionalValidationConfig& out_validation() const;
+    const std::string&              in_channel()    const;
+    const std::string&              out_channel()   const;
 
-    /// Transport config. For processor, use transport(Direction).
-    const TransportConfig&   transport() const;
-    const TransportConfig&   transport(Direction d) const;
+    // ── Mutable auth (post-parse vault decryption) ────────────────────
 
-    /// SHM config. For processor, use shm(Direction).
-    const ShmConfig&         shm() const;
-    const ShmConfig&         shm(Direction d) const;
+    config::AuthConfig& mutable_auth();
 
-    /// Channel name(s). Producer/consumer have one, processor has two.
-    const std::string&       channel() const;           // producer/consumer
-    const std::string&       channel(Direction d) const; // processor
+    // ── JsonConfig-backed operations ──────────────────────────────────
 
-    /// Raw JSON access for extension/custom fields.
-    const nlohmann::json&    raw() const;
+    const nlohmann::json& raw() const;
+    bool reload_if_changed();
+
+    // ── Role-specific typed access ────────────────────────────────────
+
+    /// Returns true if role-specific data was loaded.
+    bool has_role_data() const;
+
+    /// Typed access to role-specific data. Throws std::bad_any_cast on
+    /// type mismatch. Template is header-only; storage is in pImpl.
+    template<typename T>
+    const T& role_data() const
+    {
+        return std::any_cast<const T&>(role_data_any_());
+    }
+
+    template<typename T>
+    T& mutable_role_data()
+    {
+        return std::any_cast<T&>(mutable_role_data_any_());
+    }
+
+    // ── Role tag ──────────────────────────────────────────────────────
+
+    const std::string& role_tag() const;
+    const std::filesystem::path& base_dir() const;
+
+    // ── Special members ───────────────────────────────────────────────
+
+    ~RoleConfig();
+    RoleConfig(RoleConfig&&) noexcept;
+    RoleConfig& operator=(RoleConfig&&) noexcept;
 
 private:
-    std::filesystem::path base_;
+    RoleConfig();  // private — use factory methods
 
-    // JsonConfig backend — thread-safe, process-safe, transactional
-    JsonConfig json_config_;
+    // Non-template bridges to pImpl (compiled in .cpp)
+    const std::any& role_data_any_() const;
+    std::any& mutable_role_data_any_();
 
-    // Parsed config state (populated by load_config)
-    struct ConfigState;
-    std::unique_ptr<ConfigState> config_;
+    struct Impl;
+    std::unique_ptr<Impl> impl_;   // ONLY member — pure pImpl, ABI-safe
 };
 ```
 
-### 4.1 ConfigState (pImpl)
+### 5.2 Impl structure
 
 ```cpp
-struct RoleDirectory::ConfigState
+struct RoleConfig::Impl
 {
-    nlohmann::json    raw;
+    // JsonConfig backend
+    JsonConfig jcfg;
 
-    IdentityConfig    identity;
-    RoleHubConfig     hub;
-    RoleHubConfig     in_hub;      // processor only
-    RoleHubConfig     out_hub;     // processor only
-    ScriptConfig      script;
-    TimingConfig      timing;
-    TransportConfig   transport;
-    TransportConfig   in_transport;  // processor only
-    TransportConfig   out_transport; // processor only
-    ShmConfig         shm;
-    ShmConfig         in_shm;        // processor only
-    ShmConfig         out_shm;       // processor only
-    InboxConfig       inbox;
-    ValidationConfig  validation;
-    StartupConfig     startup;
-    MonitoringConfig  monitoring;
-    AuthConfig        auth;
+    // Role metadata
+    std::string role_tag;
+    std::filesystem::path base_dir;
 
-    std::string       channel;
-    std::string       in_channel;    // processor only
-    std::string       out_channel;   // processor only
+    // Non-directional categories
+    config::IdentityConfig   identity;
+    config::AuthConfig       auth;
+    config::ScriptConfig     script;
+    config::TimingConfig     timing;
+    config::InboxConfig      inbox;
+    config::ValidationConfig validation;
+    config::StartupConfig    startup;
+    config::MonitoringConfig monitoring;
 
-    std::string       role_tag;      // "producer", "consumer", "processor"
+    // Directional categories (two slots each)
+    config::HubConfig        in_hub;
+    config::HubConfig        out_hub;
+    config::TransportConfig  in_transport;
+    config::TransportConfig  out_transport;
+    config::ShmConfig        in_shm;
+    config::ShmConfig        out_shm;
+    config::DirectionalValidationConfig in_validation;
+    config::DirectionalValidationConfig out_validation;
+    std::string              in_channel;
+    std::string              out_channel;
+
+    // Role-specific extension (type-erased)
+    std::any                 role_data;
 };
 ```
 
-### 4.2 load_config() implementation
+### 5.3 Factory implementation
 
 ```cpp
-void RoleDirectory::load_config(std::string_view filename, std::string_view role_tag)
+RoleConfig RoleConfig::load(const std::string& path,
+                             const char* role_tag,
+                             RoleParser role_parser)
 {
-    namespace fs = std::filesystem;
+    RoleConfig cfg;
+    cfg.impl_ = std::make_unique<Impl>();
+    auto& s = *cfg.impl_;
 
-    // Use JsonConfig for thread-safe, process-safe file access.
-    // ReloadFirst ensures we read the latest on-disk state.
-    json_config_ = JsonConfig(config_file(filename), /*createIfMissing=*/false);
+    s.role_tag = role_tag;
+    s.base_dir = std::filesystem::path(path).parent_path();
 
-    auto state = std::make_unique<ConfigState>();
-    state->role_tag = std::string(role_tag);
+    // JsonConfig as backend — thread-safe, process-safe
+    s.jcfg.init(path);
+    const auto& j = s.jcfg.data();
 
-    json_config_.transaction(AccessFlags::ReloadFirst).read([&](const json& j) {
-    state->raw = j;
+    // Determine default period: producer=100ms, others=0
+    const double default_period =
+        (std::string_view(role_tag) == "producer") ? 100.0 : 0.0;
 
-    // Parse all categories (single source of truth for each)
-    state->identity   = parse_identity_config(j, role_tag);
-    state->script     = parse_script_config(j, base_);   // resolves path against base
-    state->timing     = parse_timing_config(j);
-    state->inbox      = parse_inbox_config(j);
-    state->validation = parse_validation_config(j);
-    state->startup    = parse_startup_config(j);
-    state->monitoring = parse_monitoring_config(j);
-    state->auth       = parse_auth_config(j);
+    // ── Non-directional categories ───────────────────────────────────
+    s.identity   = config::parse_identity_config(j, role_tag);
+    s.auth       = config::parse_auth_config(j, role_tag);
+    s.script     = config::parse_script_config(j, s.base_dir, role_tag);
+    s.timing     = config::parse_timing_config(j, role_tag, default_period);
+    s.inbox      = config::parse_inbox_config(j, role_tag);
+    s.validation = config::parse_validation_config(j);
+    s.startup    = config::parse_startup_config(j, role_tag);
+    s.monitoring = config::parse_monitoring_config(j);
 
-    // Hub resolution (integrated — no bolt-on step)
-    if (role_tag == "processor")
+    // ── Directional categories (always load both slots) ──────────────
+    s.in_hub        = config::parse_hub_config(j, s.base_dir, "in");
+    s.out_hub       = config::parse_hub_config(j, s.base_dir, "out");
+    s.in_transport  = config::parse_transport_config(j, "in", role_tag);
+    s.out_transport = config::parse_transport_config(j, "out", role_tag);
+    s.in_shm        = config::parse_shm_config(j, "in");
+    s.out_shm       = config::parse_shm_config(j, "out");
+    s.in_validation  = config::parse_directional_validation(j, "in");
+    s.out_validation = config::parse_directional_validation(j, "out");
+    s.in_channel    = j.value("in_channel", std::string{});
+    s.out_channel   = j.value("out_channel", std::string{});
+
+    // ── Security check ───────────────────────────────────────────────
+    RoleDirectory::warn_if_keyfile_in_role_dir(s.base_dir, s.auth.keyfile);
+
+    // ── Role-specific extension ──────────────────────────────────────
+    if (role_parser)
+        s.role_data = role_parser(j, cfg);
+
+    return cfg;
+}
+```
+
+No role-specific branching. No `if (role_tag == "processor")`. Every role
+gets both slots parsed. Empty fields stay at defaults.
+
+### 5.4 RTTI safety of std::any
+
+The `std::any` is:
+- **Constructed** by the `RoleParser` callback (binary-side code)
+- **Stored** in `Impl` (shared lib memory, but opaque — shared lib never
+  touches the `std::any_cast`)
+- **Cast** by `role_data<T>()` template (binary-side code, instantiated
+  in the binary)
+
+Both construction and cast use the same binary's `typeid(T)`. The shared
+lib only stores the raw bytes. No RTTI mismatch possible.
+
+## 6. Role-Specific Field Structs
+
+Each role defines a lightweight struct for its unique fields. These live
+in the binary source, not the shared lib.
+
+### 6.1 ProducerFields
+
+```cpp
+// src/producer/producer_fields.hpp
+struct ProducerFields
+{
+    nlohmann::json slot_schema_json;
+    nlohmann::json flexzone_schema_json;
+};
+
+inline std::any parse_producer_fields(const nlohmann::json& j,
+                                       const RoleConfig& /*cfg*/)
+{
+    ProducerFields pf;
+    pf.slot_schema_json     = j.value("out_slot_schema", nlohmann::json{});
+    pf.flexzone_schema_json = j.value("out_flexzone_schema", nlohmann::json{});
+    if (pf.slot_schema_json.is_null() || pf.slot_schema_json.empty())
+        throw std::runtime_error("producer: 'out_slot_schema' is required");
+    return pf;
+}
+```
+
+### 6.2 ConsumerFields
+
+```cpp
+// src/consumer/consumer_fields.hpp
+struct ConsumerFields
+{
+    // Consumer has no unique fields beyond what RoleConfig provides.
+    // This struct exists for future extensibility.
+};
+
+inline std::any parse_consumer_fields(const nlohmann::json& /*j*/,
+                                       const RoleConfig& /*cfg*/)
+{
+    return ConsumerFields{};
+}
+```
+
+### 6.3 ProcessorFields
+
+```cpp
+// src/processor/processor_fields.hpp
+struct ProcessorFields
+{
+    nlohmann::json in_slot_schema_json;
+    nlohmann::json out_slot_schema_json;
+    nlohmann::json out_flexzone_schema_json;
+};
+
+inline std::any parse_processor_fields(const nlohmann::json& j,
+                                        const RoleConfig& /*cfg*/)
+{
+    ProcessorFields pf;
+    pf.in_slot_schema_json      = j.value("in_slot_schema", nlohmann::json{});
+    pf.out_slot_schema_json     = j.value("out_slot_schema", nlohmann::json{});
+    pf.out_flexzone_schema_json = j.value("out_flexzone_schema", nlohmann::json{});
+    // Validation ...
+    return pf;
+}
+```
+
+## 7. Usage in main.cpp
+
+```cpp
+// producer_main.cpp
+int run_producer(int argc, char** argv)
+{
+    auto args = role_cli::parse_role_args(argc, argv, "producer");
+
+    auto config = RoleConfig::load_from_directory(
+        args.role_dir, "producer", parse_producer_fields);
+
+    // Auth
+    if (!config.auth().keyfile.empty())
     {
-        state->in_hub  = parse_hub_config(j, "in_", *this);
-        state->out_hub = parse_hub_config(j, "out_", *this);
-        state->hub     = parse_hub_config(j, "", *this);  // fallback
-        state->in_channel  = j.value("in_channel", std::string{});
-        state->out_channel = j.value("out_channel", std::string{});
-        state->in_transport  = parse_transport_config(j, "in_");
-        state->out_transport = parse_transport_config(j, "out_");
-        state->in_shm  = parse_shm_config(j, "in_");
-        state->out_shm = parse_shm_config(j, "out_");
+        auto pw = scripting::get_role_password("producer", "Vault password: ");
+        config.mutable_auth().load_keypair(
+            config.identity().uid, *pw, "prod");
     }
+
+    // Engine selection
+    auto engine = (config.script().type == "lua")
+        ? std::unique_ptr<ScriptEngine>(std::make_unique<LuaEngine>())
+        : std::unique_ptr<ScriptEngine>(std::make_unique<PythonEngine>());
+
+    if (config.script().type == "python" && !config.script().python_venv.empty())
+        static_cast<PythonEngine*>(engine.get())->set_python_venv(
+            config.script().python_venv);
+
+    // Host
+    ProducerRoleHost host;
+    host.set_engine(std::move(engine));
+    host.set_config(std::move(config));    // RoleConfig, not ProducerConfig
+    host.set_shutdown_flag(&g_shutdown);
+    host.startup_();
+    // ...
+}
+```
+
+## 8. Usage in role host
+
+```cpp
+void ProducerRoleHost::setup_infrastructure_()
+{
+    // Common accessors
+    const auto& id   = config_.identity();
+    const auto& hub  = config_.out_hub();
+    const auto& tc   = config_.out_transport();
+    const auto& shm  = config_.out_shm();
+    const auto& val  = config_.out_validation();
+
+    // Role-specific
+    const auto& pf   = config_.role_data<ProducerFields>();
+
+    // Use them
+    out_messenger_.connect(hub.broker, id.uid, hub.broker_pubkey, ...);
+    if (tc.transport == Transport::Shm)
+        queue_ = make_shm_queue(shm.slot_count, shm.secret, ...);
     else
-    {
-        state->hub       = parse_hub_config(j, "", *this);
-        state->channel   = j.value("channel", std::string{});
-        state->transport = parse_transport_config(j, "");
-        state->shm       = parse_shm_config(j, "");
-    }
-
-    // Security check
-    warn_if_keyfile_in_role_dir(base_, state->auth.keyfile);
-
-    }); // end transaction
-
-    config_ = std::move(state);
+        queue_ = make_zmq_queue(tc.zmq_endpoint, tc.zmq_bind, ...);
+    // ...
 }
 ```
 
-Runtime updates use the transactional write path:
+## 9. ActorVault → RoleVault Rename
 
-```cpp
-template <typename T, typename Fn>
-void RoleDirectory::update(Fn&& fn)
-{
-    json_config_.transaction(AccessFlags::FullSync).write([&](json& j) {
-        // Re-parse the category from current JSON, apply user mutation, validate
-        T category = parse_category<T>(j);
-        fn(category);
-        // Write mutated category back to JSON
-        serialize_category(j, category);
-        // Update cached state
-        set_cached<T>(std::move(category));
-    });
-}
-```
+`ActorVault` is a legacy name from the deleted `pylabhub-actor` binary.
+Rename to `RoleVault` as part of this migration:
 
-## 5. Categorical Parsers — Header Location
+- `src/include/utils/actor_vault.hpp` → `src/include/utils/role_vault.hpp`
+- `src/utils/security/actor_vault.cpp` → `src/utils/security/role_vault.cpp`
+- Class: `pylabhub::utils::ActorVault` → `pylabhub::utils::RoleVault`
+- All callers: `auth_config.cpp`, 3× `*_main.cpp`
 
-Following the existing pattern (inline functions in headers next to their
-struct/enum definitions):
+## 10. Implementation Phases
 
-| Parser | Header | Struct defined in |
-|--------|--------|-------------------|
-| `parse_identity_config()` | `config/identity_config.hpp` | same |
-| `parse_hub_config()` | `config/hub_config.hpp` (role-level, not broker-level) | same |
-| `parse_script_config()` | `config/script_config.hpp` | same |
-| `parse_timing_config()` | `loop_timing_policy.hpp` (extends existing) | same |
-| `parse_transport_config()` | `config/transport_config.hpp` | same |
-| `parse_shm_config()` | `config/shm_config.hpp` | same |
-| `parse_inbox_config()` | `config/inbox_config.hpp` | same |
-| `parse_validation_config()` | `config/validation_config.hpp` | same |
-| `parse_startup_config()` | `startup_wait.hpp` (extends existing) | same |
-| `parse_monitoring_config()` | `config/monitoring_config.hpp` | same |
-| `parse_auth_config()` | `config/auth_config.hpp` | same |
+### Phase 1 (DONE): Categorical config headers + shared parsers
+- 7 headers in `src/include/utils/config/`
+- Role configs delegate to shared parsers
+- `config::AuthConfig::load_keypair()` shared impl
 
-All new headers go in `src/include/utils/config/` alongside the existing
-`role_directory.hpp`.
+### Phase 2 (DONE): RoleDirectory::load_config() + typed accessors
+- pImpl-backed ConfigState, categorical accessors
+- 1273/1273 tests passing
 
-## 6. Migration Path
+### Phase 3: RoleConfig class
+- Create `src/include/utils/config/role_config.hpp` (public header)
+- Create `src/utils/config/role_config.cpp` (Impl, factory, accessors)
+- Add to `pylabhub-utils` build
+- Add `HubConfig`, `TransportConfig`, `ShmConfig`, `DirectionalValidationConfig`
+  categorical headers (new directional parsers)
+- Wire JsonConfig as backend (replace raw ifstream everywhere)
+- L2 tests for RoleConfig::load() with all 3 role types
 
-### Phase 1: Extract categorical structs + parsers (no behavior change)
-- Create `config/*.hpp` headers with structs and inline parsers
-- Each parser is tested independently (L2 unit tests)
-- Existing role configs still work — no callers changed yet
-
-### Phase 2: Wire RoleDirectory::load_config()
-- Add `load_config()`, `ConfigState`, and typed accessors to RoleDirectory
-- Add L2 tests for `load_config()` with each role type
-
-### Phase 3: Migrate role hosts to use RoleDirectory
-- Role hosts take `const RoleDirectory&` instead of `RoleConfig`
-- Access fields via `dir.script().type`, `dir.timing().period_us`, etc.
-- Old config structs become thin wrappers (or removed)
-
-### Phase 4: Migrate main.cpp
-- `main()` creates `RoleDirectory`, calls `load_config()`, passes to host
-- Remove `ProducerConfig::from_json_file()` / `from_directory()`
-- Remove monolithic config structs
+### Phase 4: Migrate role hosts + mains
+- Role hosts take `RoleConfig` instead of ProducerConfig/etc.
+- Access via `config_.identity().uid`, `config_.out_hub().broker`, etc.
+- Mains use `RoleConfig::load()/load_from_directory()` with role parser
+- `--init` templates updated to `in_`/`out_` field names
 
 ### Phase 5: Cleanup
-- Remove old config .cpp files
-- Update HEP-0024 to reflect expanded RoleDirectory scope
-- Update README_Deployment.md field reference tables
+- Remove `ProducerConfig`, `ConsumerConfig`, `ProcessorConfig` structs
+- Remove `producer_config.cpp`, `consumer_config.cpp`, `processor_config.cpp`
+- Remove `ProducerAuthConfig`, `ConsumerAuthConfig`, `ProcessorAuthConfig`
+- `ActorVault` → `RoleVault` rename
+- Update HEP-0024, HEP-0018, HEP-0015, README_Deployment.md
 
-## 7. Compatibility with Future Designs
+### Phase 6: RoleDirectory integration
+- `RoleDirectory::load_config()` delegates to `RoleConfig::load()`
+- Or: `RoleConfig::load_from_directory()` uses `RoleDirectory` internally
+- Resolve the relationship — avoid two parallel config paths
 
-### 7.1 NativeEngine (§11 of engine_thread_model.md)
+## 11. Compatibility with Future Designs
+
+### 11.1 NativeEngine
 `ScriptConfig.type` expands to `{"python", "lua", "native"}`. Single
 validation point in `parse_script_config()`.
 
-### 7.2 Runtime config updates
-`RoleDirectory` uses `JsonConfig` internally as its storage backend.
-This means runtime config updates are already supported through JsonConfig's
-transactional API. The typed accessors hide this — callers don't know or
-care about the storage backend.
+### 11.2 Runtime config reload
+`RoleConfig` uses `JsonConfig` internally. `reload_if_changed()` re-reads
+the file, re-runs all parsers, updates cached state. Thread-safe.
 
-### 7.3 Config-from-broker (remote config)
-A future feature where the broker pushes config to roles. `RoleDirectory`
-could accept a JSON blob via `load_config_from_json(json)` using the same
-categorical parsers. No separate code path needed.
+### 11.3 Config-from-broker
+`RoleConfig::load_from_json(json, role_tag, parser)` — same categorical
+parsers, no file I/O. Enables broker-pushed config.
 
-### 7.4 Build info integration
-`plh::build_info` (from `engine_thread_model.md` §11.11) can be included in
-`RoleDirectory` for native plugin ABI verification. The directory already
-knows the script type — it can check plugin compatibility at load time.
-
-## 8. Impact on Existing Codebase
-
-### Files eliminated (Phase 4)
-- `src/producer/producer_config.cpp` (~330 lines)
-- `src/consumer/consumer_config.cpp` (~285 lines)
-- `src/processor/processor_config.cpp` (~450 lines)
-- Total: ~1065 lines of duplicated parsing removed
-
-### Files created (Phase 1)
-- `src/include/utils/config/identity_config.hpp`
-- `src/include/utils/config/hub_role_config.hpp`
-- `src/include/utils/config/script_config.hpp`
-- `src/include/utils/config/transport_config.hpp`
-- `src/include/utils/config/shm_config.hpp`
-- `src/include/utils/config/inbox_config.hpp`
-- `src/include/utils/config/validation_config.hpp`
-- `src/include/utils/config/monitoring_config.hpp`
-- `src/include/utils/config/auth_config.hpp`
-
-### Files modified
-- `src/include/utils/role_directory.hpp` — add `load_config()`, `ConfigState`, accessors
-- `src/utils/config/role_directory.cpp` — implement `load_config()`
-- `src/include/utils/startup_wait.hpp` — add `parse_startup_config()` inline
-- `src/include/utils/loop_timing_policy.hpp` — add `parse_timing_config()` inline
-- All 3 `*_role_host.cpp` — read from `dir.script()` etc. instead of `config_.*`
-- All 3 `*_main.cpp` — simplified: create dir, load config, pass dir to host
-- Test files: new L2 tests for each parser, update existing config tests
-
-### HEP documents
-- **HEP-CORE-0024**: Update to document expanded RoleDirectory scope (config
-  loading, typed accessors, categorical parsing)
-- **HEP-CORE-0018**: Update config section references
-- **HEP-CORE-0015**: Update config section references
-- **README_Deployment.md**: Update field reference tables to use categorical
-  section names
-
-## 9. Test Strategy
-
-### L2 unit tests (per category)
-Each `parse_*_config()` gets its own test file:
-- Valid defaults, valid explicit values, missing optional fields
-- Invalid values (wrong type, out of range, unknown enum)
-- Edge cases (empty strings, zero values, negative timeouts)
-
-### L2 integration tests (RoleDirectory::load_config)
-- Load a minimal producer.json → verify all categories populated
-- Load a full processor.json with dual-broker → verify direction routing
-- Invalid JSON → verify clear error messages
-- Missing required fields → verify throws
-
-### Regression
-- Existing L4 integration tests continue to pass (behavior unchanged)
-- Config test suites verify same field values as before migration
+### 11.4 Build info / plugin ABI verification
+`plh::build_info` from `engine_thread_model.md` §11 can be stored in
+RoleConfig for native plugin compatibility checks at load time.

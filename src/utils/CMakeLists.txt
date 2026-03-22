@@ -48,6 +48,8 @@ set(UTILS_SOURCES
   config/json_config.cpp
   config/hub_config.cpp
   config/role_directory.cpp
+  config/auth_config.cpp
+  config/role_config.cpp
 
   # --- shm: shared memory DataBlock layer ---
   shm/data_block.cpp
