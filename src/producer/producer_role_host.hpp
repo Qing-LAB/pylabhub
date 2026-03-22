@@ -13,7 +13,7 @@
  * See docs/tech_draft/loop_design_unified.md for the full design.
  */
 
-#include "producer_config.hpp"
+#include "utils/config/role_config.hpp"
 #include "utils/role_host_core.hpp"
 #include "utils/script_engine.hpp"
 #include "plh_datahub.hpp"
@@ -37,7 +37,9 @@ namespace pylabhub::producer
 class ProducerRoleHost
 {
   public:
-    ProducerRoleHost() = default;
+    explicit ProducerRoleHost(config::RoleConfig config,
+                              std::unique_ptr<scripting::ScriptEngine> engine,
+                              std::atomic<bool> *shutdown_flag = nullptr);
     ~ProducerRoleHost();
 
     // Non-copyable, non-movable (owns threads).
@@ -46,12 +48,9 @@ class ProducerRoleHost
     ProducerRoleHost(ProducerRoleHost &&) = delete;
     ProducerRoleHost &operator=(ProducerRoleHost &&) = delete;
 
-    // ── Configuration (call before startup_) ────────────────────────────────
+    // ── Configuration ────────────────────────────────────────────────────────
 
-    void set_engine(std::unique_ptr<scripting::ScriptEngine> engine);
-    void set_config(ProducerConfig config);
     void set_validate_only(bool v) { validate_only_ = v; }
-    void set_shutdown_flag(std::atomic<bool> *flag) { core_.g_shutdown = flag; }
 
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -65,7 +64,7 @@ class ProducerRoleHost
 
     [[nodiscard]] bool is_running() const { return core_.is_running(); }
     [[nodiscard]] bool script_load_ok() const { return script_load_ok_.load(std::memory_order_acquire); }
-    [[nodiscard]] const ProducerConfig &config() const { return config_; }
+    [[nodiscard]] const config::RoleConfig &config() const { return config_; }
 
     /// Block until wakeup (shutdown, incoming message, or timeout).
     void wait_for_wakeup(int timeout_ms) { core_.wait_for_incoming(timeout_ms); }
@@ -90,7 +89,7 @@ class ProducerRoleHost
     // ── Members ──────────────────────────────────────────────────────────────
 
     scripting::RoleHostCore                core_;
-    ProducerConfig                         config_;
+    config::RoleConfig                     config_;
     std::unique_ptr<scripting::ScriptEngine> engine_;
     bool                                   validate_only_{false};
     std::atomic<bool>                      script_load_ok_{false};

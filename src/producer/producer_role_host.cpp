@@ -10,6 +10,7 @@
  * Layer 1 (engine): delegated to ScriptEngine via invoke_produce / invoke_on_inbox.
  */
 #include "producer_role_host.hpp"
+#include "producer_fields.hpp"
 
 #include "plh_datahub.hpp"
 #include "plh_datahub_client.hpp"
@@ -32,26 +33,21 @@ using scripting::InvokeResult;
 using Clock = std::chrono::steady_clock;
 
 // ============================================================================
-// Destructor
+// Constructor / Destructor
 // ============================================================================
+
+ProducerRoleHost::ProducerRoleHost(config::RoleConfig config,
+                                     std::unique_ptr<scripting::ScriptEngine> engine,
+                                     std::atomic<bool> *shutdown_flag)
+    : config_(std::move(config))
+    , engine_(std::move(engine))
+{
+    core_.g_shutdown = shutdown_flag;
+}
 
 ProducerRoleHost::~ProducerRoleHost()
 {
     shutdown_();
-}
-
-// ============================================================================
-// Configuration
-// ============================================================================
-
-void ProducerRoleHost::set_engine(std::unique_ptr<scripting::ScriptEngine> engine)
-{
-    engine_ = std::move(engine);
-}
-
-void ProducerRoleHost::set_config(ProducerConfig config)
-{
-    config_ = std::move(config);
 }
 
 // ============================================================================
@@ -93,6 +89,17 @@ void ProducerRoleHost::shutdown_()
 
 void ProducerRoleHost::worker_main_()
 {
+    const auto &id   = config_.identity();
+    const auto &sc   = config_.script();
+    const auto &tc   = config_.timing();
+    const auto &hub  = config_.out_hub();
+    const auto &tr   = config_.out_transport();
+    const auto &shm  = config_.out_shm();
+    const auto &val  = config_.out_validation();
+    const auto &vld  = config_.validation();
+    const auto &inbox = config_.inbox();
+    const auto &pf   = config_.role_data<ProducerFields>();
+
     // Step 1: Initialize the engine.
     if (!engine_->initialize("prod", &core_))
     {
@@ -103,20 +110,20 @@ void ProducerRoleHost::worker_main_()
     }
 
     // Warn if script type was not explicitly set in config.
-    if (!config_.script_type_explicit)
+    if (!sc.type_explicit)
     {
         LOGGER_WARN("[prod] 'script.type' not set in config — defaulting to '{}'. "
                     "Set \"script\": {{\"type\": \"{}\"}} explicitly.",
-                    config_.script_type, config_.script_type);
+                    sc.type, sc.type);
     }
 
     // Step 2: Load script and extract callbacks.
     const std::filesystem::path base_path =
-        config_.script_path.empty() ? std::filesystem::current_path()
-                                    : std::filesystem::weakly_canonical(config_.script_path);
-    const std::filesystem::path script_dir = base_path / "script" / config_.script_type;
+        sc.path.empty() ? std::filesystem::current_path()
+                        : std::filesystem::weakly_canonical(sc.path);
+    const std::filesystem::path script_dir = base_path / "script" / sc.type;
     const char *entry_point =
-        (config_.script_type == "lua") ? "init.lua" : "__init__.py";
+        (sc.type == "lua") ? "init.lua" : "__init__.py";
 
     if (!engine_->load_script(script_dir, entry_point, "on_produce"))
     {
@@ -131,16 +138,16 @@ void ProducerRoleHost::worker_main_()
     // Step 3: Resolve schemas and register slot types.
     {
         std::vector<std::string> schema_dirs;
-        if (!config_.hub_dir.empty())
+        if (!hub.hub_dir.empty())
             schema_dirs.push_back(
-                (std::filesystem::path(config_.hub_dir) / "schemas").string());
+                (std::filesystem::path(hub.hub_dir) / "schemas").string());
 
         try
         {
             slot_spec_ = scripting::resolve_schema(
-                config_.slot_schema_json, false, "prod", schema_dirs);
+                pf.out_slot_schema_json, false, "prod", schema_dirs);
             core_.fz_spec = scripting::resolve_schema(
-                config_.flexzone_schema_json, true, "prod", schema_dirs);
+                pf.out_flexzone_schema_json, true, "prod", schema_dirs);
         }
         catch (const std::exception &e)
         {
@@ -152,7 +159,7 @@ void ProducerRoleHost::worker_main_()
     }
 
     const std::string packing =
-        config_.zmq_packing.empty() ? "aligned" : config_.zmq_packing;
+        tr.zmq_packing.empty() ? "aligned" : tr.zmq_packing;
 
     // Register slot type.
     if (slot_spec_.has_schema)
@@ -204,23 +211,24 @@ void ProducerRoleHost::worker_main_()
     // Step 5: Build RoleContext and engine API.
     // Store script_dir string so ctx.script_dir doesn't dangle.
     const std::string script_dir_str = script_dir.string();
+    const std::string base_dir_str = config_.base_dir().string();
 
     scripting::RoleContext ctx;
     ctx.role_tag    = "prod";
-    ctx.uid         = config_.producer_uid.c_str();
-    ctx.name        = config_.producer_name.c_str();
-    ctx.channel     = config_.channel.c_str();
+    ctx.uid         = id.uid.c_str();
+    ctx.name        = id.name.c_str();
+    ctx.channel     = config_.out_channel().c_str();
     ctx.out_channel = nullptr;
-    ctx.log_level   = config_.log_level.c_str();
+    ctx.log_level   = id.log_level.c_str();
     ctx.script_dir  = script_dir_str.c_str();
-    ctx.role_dir    = config_.role_dir.c_str();
+    ctx.role_dir    = base_dir_str.c_str();
     ctx.messenger   = &out_messenger_;
     ctx.queue_writer = queue_.get();
     ctx.queue_reader = nullptr;
     ctx.producer    = out_producer_.has_value() ? &(*out_producer_) : nullptr;
     ctx.consumer    = nullptr;
     ctx.core         = &core_;
-    ctx.stop_on_script_error = config_.stop_on_script_error;
+    ctx.stop_on_script_error = vld.stop_on_script_error;
 
     engine_->build_api(ctx);
 
@@ -257,38 +265,49 @@ void ProducerRoleHost::worker_main_()
 
 bool ProducerRoleHost::setup_infrastructure_()
 {
+    const auto &id    = config_.identity();
+    const auto &hub   = config_.out_hub();
+    const auto &tr    = config_.out_transport();
+    const auto &shm   = config_.out_shm();
+    const auto &val   = config_.out_validation();
+    const auto &tc    = config_.timing();
+    const auto &inbox = config_.inbox();
+    const auto &mon   = config_.monitoring();
+    const auto &auth  = config_.auth();
+    const auto &ch    = config_.out_channel();
+
     // --- Producer options ---
     hub::ProducerOptions opts;
-    opts.channel_name = config_.channel;
+    opts.channel_name = ch;
     opts.pattern      = hub::ChannelPattern::PubSub;
-    opts.has_shm      = config_.shm_enabled;
+    opts.has_shm      = shm.enabled;
     opts.schema_hash  = scripting::compute_schema_hash(slot_spec_, core_.fz_spec);
-    opts.actor_name   = config_.producer_name;
-    opts.actor_uid    = config_.producer_uid;
+    opts.actor_name   = id.name;
+    opts.actor_uid    = id.uid;
 
-    if (config_.target_period_ms > 0)
+    if (tc.target_period_ms > 0)
     {
         opts.loop_policy = hub::LoopPolicy::FixedRate;
-        opts.period_ms   = std::chrono::milliseconds{static_cast<int>(config_.target_period_ms)};
+        opts.period_ms   = std::chrono::milliseconds{static_cast<int>(tc.target_period_ms)};
     }
-    opts.ctrl_queue_max_depth = config_.ctrl_queue_max_depth;
-    opts.peer_dead_timeout_ms = config_.peer_dead_timeout_ms;
+    opts.ctrl_queue_max_depth = mon.ctrl_queue_max_depth;
+    opts.peer_dead_timeout_ms = mon.peer_dead_timeout_ms;
 
     // --- Inbox setup (optional) ---
     scripting::SchemaSpec inbox_spec;
     size_t inbox_schema_slot_size = 0;
 
-    if (config_.has_inbox())
+    if (inbox.has_inbox())
     {
         std::vector<std::string> schema_dirs;
-        if (!config_.hub_dir.empty())
+        if (!hub.hub_dir.empty())
             schema_dirs.push_back(
-                (std::filesystem::path(config_.hub_dir) / "schemas").string());
+                (std::filesystem::path(hub.hub_dir) / "schemas").string());
 
         try
         {
             inbox_spec = scripting::resolve_schema(
-                config_.inbox_schema_json, false, "prod", schema_dirs);
+                inbox.schema_json, false, "prod", schema_dirs);
         }
         catch (const std::exception &e)
         {
@@ -297,7 +316,7 @@ bool ProducerRoleHost::setup_infrastructure_()
         }
 
         const std::string inbox_packing =
-            config_.zmq_packing.empty() ? "aligned" : config_.zmq_packing;
+            tr.zmq_packing.empty() ? "aligned" : tr.zmq_packing;
 
         // Register inbox type in the engine.
         if (inbox_spec.has_schema)
@@ -311,9 +330,9 @@ bool ProducerRoleHost::setup_infrastructure_()
             inbox_type_name_ = "InboxFrame";
         }
 
-        const std::string ep = config_.inbox_endpoint.empty()
+        const std::string ep = inbox.endpoint.empty()
             ? "tcp://127.0.0.1:0"
-            : config_.inbox_endpoint;
+            : inbox.endpoint;
         auto zmq_fields = scripting::schema_spec_to_zmq_fields(inbox_spec, inbox_schema_slot_size);
 
         // Serialize full SchemaSpec JSON for ROLE_INFO_REQ discovery.
@@ -329,16 +348,15 @@ bool ProducerRoleHost::setup_infrastructure_()
         if (inbox_spec.packing != "aligned")
             spec_json["packing"] = inbox_spec.packing;
 
-        const int inbox_rcvhwm = (config_.inbox_overflow_policy == "block")
+        const int inbox_rcvhwm = (inbox.overflow_policy == "block")
             ? 0
-            : static_cast<int>(config_.inbox_buffer_depth);
+            : static_cast<int>(inbox.buffer_depth);
 
         inbox_queue_ = hub::InboxQueue::bind_at(
             ep, std::move(zmq_fields), inbox_packing, inbox_rcvhwm);
         if (!inbox_queue_ || !inbox_queue_->start())
         {
-            LOGGER_ERROR("[prod] Failed to start InboxQueue for channel '{}'",
-                         config_.channel);
+            LOGGER_ERROR("[prod] Failed to start InboxQueue for channel '{}'", ch);
             if (inbox_queue_)
                 inbox_queue_.reset();
             return false;
@@ -349,12 +367,12 @@ bool ProducerRoleHost::setup_infrastructure_()
     }
 
     // --- SHM config ---
-    if (config_.shm_enabled)
+    if (shm.enabled)
     {
-        opts.shm_config.shared_secret        = config_.shm_secret;
-        opts.shm_config.ring_buffer_capacity = config_.shm_slot_count;
+        opts.shm_config.shared_secret        = shm.secret;
+        opts.shm_config.ring_buffer_capacity = shm.slot_count;
         opts.shm_config.policy               = hub::DataBlockPolicy::RingBuffer;
-        opts.shm_config.consumer_sync_policy = config_.shm_consumer_sync_policy;
+        opts.shm_config.consumer_sync_policy = shm.sync_policy;
         opts.shm_config.checksum_policy      = hub::ChecksumPolicy::Manual;
         opts.shm_config.flex_zone_size       = core_.schema_fz_size;
 
@@ -364,12 +382,12 @@ bool ProducerRoleHost::setup_infrastructure_()
     }
 
     // --- Broker connect ---
-    if (!config_.broker.empty())
+    if (!hub.broker.empty())
     {
-        if (!out_messenger_.connect(config_.broker, config_.broker_pubkey,
-                                    config_.auth.client_pubkey, config_.auth.client_seckey))
+        if (!out_messenger_.connect(hub.broker, hub.broker_pubkey,
+                                    auth.client_pubkey, auth.client_seckey))
         {
-            LOGGER_ERROR("[prod] broker connect failed ({}); aborting", config_.broker);
+            LOGGER_ERROR("[prod] broker connect failed ({}); aborting", hub.broker);
             return false;
         }
     }
@@ -378,7 +396,7 @@ bool ProducerRoleHost::setup_infrastructure_()
     auto maybe_producer = hub::Producer::create(out_messenger_, opts);
     if (!maybe_producer.has_value())
     {
-        LOGGER_ERROR("[prod] Failed to create producer for channel '{}'", config_.channel);
+        LOGGER_ERROR("[prod] Failed to create producer for channel '{}'", ch);
         return false;
     }
     out_producer_ = std::move(maybe_producer);
@@ -386,10 +404,10 @@ bool ProducerRoleHost::setup_infrastructure_()
     if (auto *out_shm = out_producer_->shm(); out_shm != nullptr)
         out_shm->clear_metrics();
 
-    if (!config_.channel.empty())
+    if (!ch.empty())
     {
-        out_messenger_.suppress_periodic_heartbeat(config_.channel);
-        out_messenger_.enqueue_heartbeat(config_.channel);
+        out_messenger_.suppress_periodic_heartbeat(ch);
+        out_messenger_.enqueue_heartbeat(ch);
     }
 
     // --- Wire event callbacks → IncomingMessage queue ---
@@ -427,7 +445,7 @@ bool ProducerRoleHost::setup_infrastructure_()
             core_.enqueue_message(std::move(msg));
         });
 
-    out_messenger_.on_consumer_died(config_.channel,
+    out_messenger_.on_consumer_died(ch,
         [this](uint64_t pid, std::string reason) {
             LOGGER_INFO("[prod] broker_notify: consumer_died pid={} reason={}",
                         pid, reason);
@@ -438,7 +456,7 @@ bool ProducerRoleHost::setup_infrastructure_()
             core_.enqueue_message(std::move(msg));
         });
 
-    out_messenger_.on_channel_error(config_.channel,
+    out_messenger_.on_channel_error(ch,
         [this](std::string event, nlohmann::json details) {
             LOGGER_INFO("[prod] broker_notify: channel_event event='{}' details={}",
                         event, details.dump());
@@ -476,49 +494,48 @@ bool ProducerRoleHost::setup_infrastructure_()
     });
 
     // --- Create transport queue ---
-    if (config_.transport == Transport::Shm)
+    if (tr.transport == config::Transport::Shm)
     {
-        auto *out_shm = out_producer_->shm();
-        if (out_shm == nullptr)
+        auto *out_shm_ptr = out_producer_->shm();
+        if (out_shm_ptr == nullptr)
         {
-            LOGGER_ERROR("[prod] transport=shm but SHM unavailable for channel '{}'",
-                         config_.channel);
+            LOGGER_ERROR("[prod] transport=shm but SHM unavailable for channel '{}'", ch);
             return false;
         }
         queue_ = hub::ShmQueue::from_producer_ref(
-            *out_shm, schema_slot_size_, core_.schema_fz_size, config_.channel);
+            *out_shm_ptr, schema_slot_size_, core_.schema_fz_size, ch);
     }
     else
     {
         auto zmq_fields =
             scripting::schema_spec_to_zmq_fields(slot_spec_, schema_slot_size_);
-        const auto zmq_policy = (config_.zmq_overflow_policy == "block")
+        const auto zmq_policy = (tr.zmq_overflow_policy == "block")
                                      ? hub::OverflowPolicy::Block
                                      : hub::OverflowPolicy::Drop;
         queue_ = hub::ZmqQueue::push_to(
-            config_.zmq_out_endpoint, std::move(zmq_fields), config_.zmq_packing,
-            config_.zmq_out_bind, std::nullopt, 0, config_.zmq_buffer_depth, zmq_policy);
+            tr.zmq_endpoint, std::move(zmq_fields), tr.zmq_packing,
+            tr.zmq_bind, std::nullopt, 0, tr.zmq_buffer_depth, zmq_policy);
         if (!queue_)
         {
             LOGGER_ERROR("[prod] Failed to create ZmqQueue for endpoint '{}'",
-                         config_.zmq_out_endpoint);
+                         tr.zmq_endpoint);
             return false;
         }
     }
 
     if (!queue_->start())
     {
-        LOGGER_ERROR("[prod] Queue::start() failed for channel '{}'", config_.channel);
+        LOGGER_ERROR("[prod] Queue::start() failed for channel '{}'", ch);
         queue_.reset();
         return false;
     }
-    queue_->set_checksum_options(config_.update_checksum, core_.has_fz);
+    queue_->set_checksum_options(val.update_checksum, core_.has_fz);
 
-    LOGGER_INFO("[prod] Producer started on channel '{}' (shm={})", config_.channel,
+    LOGGER_INFO("[prod] Producer started on channel '{}' (shm={})", ch,
                 out_producer_->has_shm());
 
     // --- Startup coordination (HEP-0023) ---
-    if (!scripting::wait_for_roles(out_messenger_, config_.wait_for_roles, "[prod]"))
+    if (!scripting::wait_for_roles(out_messenger_, config_.startup().wait_for_roles, "[prod]"))
         return false;
 
     return true;
@@ -576,11 +593,14 @@ void ProducerRoleHost::run_data_loop_()
         return;
     }
 
+    const auto &tc = config_.timing();
+    const auto &vld = config_.validation();
+
     // --- Setup ---
     const double period_us =
-        static_cast<double>(config_.target_period_ms) * kUsPerMs;
-    const bool is_max_rate = (config_.loop_timing == LoopTimingPolicy::MaxRate);
-    const auto short_timeout_us = compute_short_timeout(period_us, config_.queue_io_wait_timeout_ratio);
+        static_cast<double>(tc.target_period_ms) * kUsPerMs;
+    const bool is_max_rate = (tc.loop_timing == LoopTimingPolicy::MaxRate);
+    const auto short_timeout_us = compute_short_timeout(period_us, tc.queue_io_wait_timeout_ratio);
     // write_acquire takes milliseconds; convert with rounding up to avoid 0ms.
     const auto short_timeout =
         std::chrono::duration_cast<std::chrono::milliseconds>(short_timeout_us + std::chrono::microseconds{999});
@@ -693,7 +713,7 @@ void ProducerRoleHost::run_data_loop_()
         if (result == InvokeResult::Error)
         {
             // script_errors already incremented by engine.
-            if (config_.stop_on_script_error)
+            if (vld.stop_on_script_error)
                 core_.request_stop();
         }
 
@@ -706,7 +726,7 @@ void ProducerRoleHost::run_data_loop_()
         core_.inc_iteration_count();
 
         // --- Step G: Compute next deadline ---
-        deadline = compute_next_deadline(config_.loop_timing, deadline, cycle_start, period_us);
+        deadline = compute_next_deadline(tc.loop_timing, deadline, cycle_start, period_us);
     }
 
     LOGGER_INFO("[prod] run_data_loop_ exiting: running_threads={} shutdown_requested={} "
@@ -721,7 +741,11 @@ void ProducerRoleHost::run_data_loop_()
 
 void ProducerRoleHost::run_ctrl_thread_()
 {
-    scripting::ZmqPollLoop loop{core_, "prod:" + config_.producer_uid};
+    const auto &id = config_.identity();
+    const auto &ch = config_.out_channel();
+    const auto &tc = config_.timing();
+
+    scripting::ZmqPollLoop loop{core_, "prod:" + id.uid};
     loop.sockets = {
         {out_producer_->peer_ctrl_socket_handle(),
          [&] { out_producer_->handle_peer_events_nowait(); }},
@@ -731,10 +755,9 @@ void ProducerRoleHost::run_ctrl_thread_()
     };
     loop.periodic_tasks.emplace_back(
         [&] {
-            out_messenger_.enqueue_heartbeat(config_.channel,
-                                             snapshot_metrics_json());
+            out_messenger_.enqueue_heartbeat(ch, snapshot_metrics_json());
         },
-        config_.heartbeat_interval_ms);
+        tc.heartbeat_interval_ms);
     loop.run();
 }
 
@@ -771,10 +794,10 @@ nlohmann::json ProducerRoleHost::snapshot_metrics_json() const
     if (out_producer_.has_value())
     {
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) — shm() is non-const but we only read
-        if (const auto *shm = const_cast<hub::Producer &>(*out_producer_).shm();
-            shm != nullptr)
+        if (const auto *shm_ptr = const_cast<hub::Producer &>(*out_producer_).shm();
+            shm_ptr != nullptr)
         {
-            const auto &m = shm->metrics();
+            const auto &m = shm_ptr->metrics();
             base["loop_overrun_count"] = m.overrun_count;
             base["last_iteration_us"]  = m.last_iteration_us;
             base["max_iteration_us"]   = m.max_iteration_us;
