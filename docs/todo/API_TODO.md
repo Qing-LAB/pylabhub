@@ -10,6 +10,23 @@
 
 ## Current Focus
 
+### Config Module Redesign (2026-03-21)
+
+**Review**: `docs/code_review/REVIEW_ConfigAndEngine_2026-03-21.md`
+**Design**: `docs/tech_draft/config_module_design.md`, `docs/tech_draft/engine_thread_model.md`
+
+- [x] Phase 1: Categorical config headers + shared parsers ✅ cb7e4b5 2026-03-21
+- [x] Phase 2: RoleDirectory::load_config() + typed accessors ✅ e44ddfa 2026-03-21
+- [x] CR-01: config::AuthConfig::load_keypair() shared impl ✅ 2026-03-21
+- [ ] Phase 3: Migrate role hosts + mains to RoleDirectory (includes CR-03, CR-06)
+- [ ] Phase 4: Remove monolithic config structs
+
+### ScriptEngine Post-Refactor Deferred Items (2026-03-21)
+
+- [ ] **SE-03 HIGH**: HEP-CORE-0011 fundamentally stale — rewrite §3.2, §3.3, §4.2, §8, §8.2 for composition model
+- [ ] **SE-08 MED**: HEP-0018/0015 partially stale — update class name refs and thread model
+- [ ] **SE-07 MED**: `--validate` stub in all 3 role hosts — design what validate should check, implement
+
 ### HEP-0024: Role Directory Service (NEW — 2026-03-12)
 
 **Design**: `docs/HEP/HEP-CORE-0024-Role-Directory-Service.md`
@@ -105,7 +122,7 @@ scripts to check compatibility at runtime.
 - [x] **P1**: HEP-0022 peer UID validation — already implemented (`broker_service.cpp:2137–2157`, handle_hub_peer_hello rejects unknown hub_uid) ✅ PRE-FIXED
 - [x] **P1**: hub callback thread-safety — already implemented (callbacks_mu in hub_producer.cpp:71, copy-under-lock pattern) ✅ PRE-FIXED
 - [x] **P1**: METRICS_REQ SHM merge gap — implemented 2026-03-10 (`broker_service.cpp` handle_metrics_req now calls `query_shm_blocks()` and appends `shm_blocks` key) ✅ FIXED
-- [x] **P2**: Script config type defaults silently to Python — ⚪ DEFERRED (Python is only type; revisit when second type added)
+- [x] **P2**: Script config type defaults silently to Python — ✅ FIXED 2026-03-21 (config::parse_script_config validates "python"/"lua"; SE-14)
 - [x] **P2**: Consumer registry dedup under reconnect — fixed 2026-03-09 (zmq_identity dedup key in `channel_registry.cpp`) ✅ FIXED
 - [x] **P2**: Messenger API redundancy — ⚪ DEFERRED (legacy surface, not harmful)
 

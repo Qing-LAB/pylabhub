@@ -716,3 +716,32 @@ gtest_discover_tests(test_layer2_slot_rw_coordinator
         LABELS "layer2;service;slotrw"
         TIMEOUT 60
 )
+
+# ============================================================================
+# Test: RoleConfig — unified config class
+# ============================================================================
+
+add_executable(test_layer2_role_config
+    test_role_config.cpp
+)
+
+target_link_libraries(test_layer2_role_config
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_role_config)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_role_config
+    SUITE_NAME "Layer2_RoleConfig"
+)
+layer2_require_staged_utils(test_layer2_role_config)
+
+gtest_discover_tests(test_layer2_role_config
+    PROPERTIES
+        LABELS "layer2;service;config"
+        TIMEOUT 30
+)

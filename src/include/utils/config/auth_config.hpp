@@ -7,16 +7,16 @@
  * load_keypair() decrypts the vault file at runtime.
  */
 
+#include "pylabhub_utils_export.h"
 #include "utils/json_fwd.hpp"
 
-#include <filesystem>
 #include <string>
 #include <string_view>
 
 namespace pylabhub::config
 {
 
-struct AuthConfig
+struct PYLABHUB_UTILS_EXPORT AuthConfig
 {
     std::string keyfile;       ///< Path to encrypted vault; empty = no CURVE auth.
     std::string client_pubkey; ///< Z85 CURVE25519 public key (40 chars); resolved at runtime.
