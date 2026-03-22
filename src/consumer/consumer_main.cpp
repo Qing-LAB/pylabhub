@@ -14,12 +14,11 @@
  *
  *     {
  *       "consumer": { "uid": "CONS-LOGGER-12345678", "name": "Logger" },
- *       "hub_dir": "/var/pylabhub/my_hub",
- *       "channel":    "lab.sensors.temperature",
- *       "slot_acquire_timeout_ms": -1,
- *       "shm": { "enabled": true, "secret": 0 },
- *       "slot_schema": { "fields": [{"name": "value", "type": "float32"}] },
- *       "script": { "path": "." }
+ *       "in_hub_dir":         "/var/pylabhub/my_hub",
+ *       "in_channel":         "lab.sensors.temperature",
+ *       "in_transport":       "shm",
+ *       "in_verify_checksum": false,
+ *       "script": { "type": "python", "path": "." }
  *     }
  *
  * ## Python script interface

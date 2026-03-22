@@ -11,26 +11,23 @@
  *     pylabhub-processor --init [<proc_dir>]         # Create processor directory; exit 0
  *
  * When <proc_dir> is given, processor.json is read from <proc_dir>/processor.json.
- * If processor.json contains a "hub_dir" key, broker endpoint and pubkey are
- * loaded from <hub_dir>/hub.json and <hub_dir>/hub.pubkey, overriding the inline values.
+ * Hub broker endpoint and pubkey are resolved from <in/out_hub_dir>/hub.json.
  *
  * ## Config format
  *
  *     {
- *       "processor": { "uid": "PROC-Doubler-12345678", "name": "Doubler", "log_level": "info" },
- *       "hub_dir": "/var/pylabhub/my_hub",
- *       "in_channel":  "lab.sensor.raw",
- *       "out_channel": "lab.sensor.processed",
- *       "slot_acquire_timeout_ms": -1,
- *       "overflow_policy": "drop",
- *       "shm": {
- *         "in":  { "enabled": true, "secret": 0 },
- *         "out": { "enabled": true, "secret": 0, "slot_count": 4 }
- *       },
- *       "in_slot_schema":   { "fields": [{"name": "value", "type": "float32"}] },
- *       "out_slot_schema":  { "fields": [{"name": "value", "type": "float32"}] },
- *       "flexzone_schema":  null,
- *       "script": { "path": "." }
+ *       "processor": { "uid": "PROC-Doubler-12345678", "name": "Doubler" },
+ *       "in_hub_dir":         "/var/pylabhub/hub_a",
+ *       "out_hub_dir":        "/var/pylabhub/hub_b",
+ *       "in_channel":         "lab.sensor.raw",
+ *       "out_channel":        "lab.sensor.processed",
+ *       "in_transport":       "shm",
+ *       "out_transport":      "shm",
+ *       "out_shm_slot_count": 4,
+ *       "in_slot_schema":     { "fields": [{"name": "value", "type": "float32"}] },
+ *       "out_slot_schema":    { "fields": [{"name": "value", "type": "float32"}] },
+ *       "out_update_checksum": true,
+ *       "script": { "type": "python", "path": "." }
  *     }
  *
  * ## Python script interface
