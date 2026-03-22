@@ -12,6 +12,7 @@
  * Layer 1 (engine): delegated to ScriptEngine via invoke_process / invoke_on_inbox.
  */
 #include "processor_role_host.hpp"
+#include "processor_fields.hpp"
 
 #include "plh_datahub.hpp"
 #include "plh_datahub_client.hpp"
@@ -46,15 +47,15 @@ ProcessorRoleHost::~ProcessorRoleHost()
 // Configuration
 // ============================================================================
 
-void ProcessorRoleHost::set_engine(std::unique_ptr<scripting::ScriptEngine> engine)
+ProcessorRoleHost::ProcessorRoleHost(config::RoleConfig config,
+                                       std::unique_ptr<scripting::ScriptEngine> engine,
+                                       std::atomic<bool> *shutdown_flag)
+    : config_(std::move(config))
+    , engine_(std::move(engine))
 {
-    engine_ = std::move(engine);
+    core_.g_shutdown = shutdown_flag;
 }
 
-void ProcessorRoleHost::set_config(ProcessorConfig config)
-{
-    config_ = std::move(config);
-}
 
 // ============================================================================
 // startup_ — spawn worker thread, block until ready or failure
@@ -105,20 +106,20 @@ void ProcessorRoleHost::worker_main_()
     }
 
     // Warn if script type was not explicitly set in config.
-    if (!config_.script_type_explicit)
+    if (!config_.script().type_explicit)
     {
         LOGGER_WARN("[proc] 'script.type' not set in config — defaulting to '{}'. "
                     "Set \"script\": {{\"type\": \"{}\"}} explicitly.",
-                    config_.script_type, config_.script_type);
+                    config_.script().type, config_.script().type);
     }
 
     // Step 2: Load script and extract callbacks.
     const std::filesystem::path base_path =
-        config_.script_path.empty() ? std::filesystem::current_path()
-                                    : std::filesystem::weakly_canonical(config_.script_path);
-    const std::filesystem::path script_dir = base_path / "script" / config_.script_type;
+        config_.script().path.empty() ? std::filesystem::current_path()
+                                    : std::filesystem::weakly_canonical(config_.script().path);
+    const std::filesystem::path script_dir = base_path / "script" / config_.script().type;
     const char *entry_point =
-        (config_.script_type == "lua") ? "init.lua" : "__init__.py";
+        (config_.script().type == "lua") ? "init.lua" : "__init__.py";
 
     if (!engine_->load_script(script_dir, entry_point, "on_process"))
     {
@@ -140,18 +141,18 @@ void ProcessorRoleHost::worker_main_()
             if (std::find(schema_dirs.begin(), schema_dirs.end(), d) == schema_dirs.end())
                 schema_dirs.push_back(d);
         };
-        add_schema_dir(config_.in_hub_dir);
-        add_schema_dir(config_.out_hub_dir);
-        add_schema_dir(config_.hub_dir);
+        add_schema_dir(config_.in_hub().hub_dir);
+        add_schema_dir(config_.out_hub().hub_dir);
+        add_schema_dir(config_.out_hub().hub_dir);
 
         try
         {
             in_slot_spec_  = scripting::resolve_schema(
-                config_.in_slot_schema_json, false, "proc", schema_dirs);
+                config_.role_data<ProcessorFields>().in_slot_schema_json, false, "proc", schema_dirs);
             out_slot_spec_ = scripting::resolve_schema(
-                config_.out_slot_schema_json, false, "proc", schema_dirs);
+                config_.role_data<ProcessorFields>().out_slot_schema_json, false, "proc", schema_dirs);
             core_.fz_spec  = scripting::resolve_schema(
-                config_.flexzone_schema_json, true, "proc", schema_dirs);
+                config_.role_data<ProcessorFields>().out_flexzone_schema_json, true, "proc", schema_dirs);
         }
         catch (const std::exception &e)
         {
@@ -164,9 +165,9 @@ void ProcessorRoleHost::worker_main_()
 
     // Determine packing: input and output may use different ZMQ packing.
     const std::string in_packing =
-        config_.in_zmq_packing.empty() ? "aligned" : config_.in_zmq_packing;
+        config_.in_transport().zmq_packing.empty() ? "aligned" : config_.in_transport().zmq_packing;
     const std::string out_packing =
-        config_.out_zmq_packing.empty() ? "aligned" : config_.out_zmq_packing;
+        config_.out_transport().zmq_packing.empty() ? "aligned" : config_.out_transport().zmq_packing;
 
     // Register input slot type.
     if (in_slot_spec_.has_schema)
@@ -231,23 +232,24 @@ void ProcessorRoleHost::worker_main_()
     // Step 5: Build RoleContext and engine API.
     // Store script_dir string so ctx.script_dir doesn't dangle.
     const std::string script_dir_str = script_dir.string();
+    const std::string base_dir_str = config_.base_dir().string();
 
     scripting::RoleContext ctx;
     ctx.role_tag     = "proc";
-    ctx.uid          = config_.processor_uid.c_str();
-    ctx.name         = config_.processor_name.c_str();
-    ctx.channel      = config_.in_channel.c_str();
-    ctx.out_channel  = config_.out_channel.c_str();
-    ctx.log_level    = config_.log_level.c_str();
+    ctx.uid          = config_.identity().uid.c_str();
+    ctx.name         = config_.identity().name.c_str();
+    ctx.channel      = config_.in_channel().c_str();
+    ctx.out_channel  = config_.out_channel().c_str();
+    ctx.log_level    = config_.identity().log_level.c_str();
     ctx.script_dir   = script_dir_str.c_str();
-    ctx.role_dir     = config_.role_dir.c_str();
+    ctx.role_dir     = base_dir_str.c_str();
     ctx.messenger    = &out_messenger_;
     ctx.queue_writer = out_q_;
     ctx.queue_reader = in_q_;
     ctx.producer     = out_producer_.has_value() ? &(*out_producer_) : nullptr;
     ctx.consumer     = in_consumer_.has_value() ? &(*in_consumer_) : nullptr;
     ctx.core         = &core_;
-    ctx.stop_on_script_error = config_.stop_on_script_error;
+    ctx.stop_on_script_error = config_.validation().stop_on_script_error;
 
     engine_->build_api(ctx);
 
@@ -286,24 +288,24 @@ bool ProcessorRoleHost::setup_infrastructure_()
 {
     // ── Consumer side (in_channel) ──────────────────────────────────────────
     hub::ConsumerOptions in_opts;
-    in_opts.channel_name         = config_.in_channel;
-    in_opts.shm_shared_secret    = config_.in_shm_enabled ? config_.in_shm_secret : 0u;
+    in_opts.channel_name         = config_.in_channel();
+    in_opts.shm_shared_secret    = config_.in_shm().enabled ? config_.in_shm().secret : 0u;
     in_opts.expected_schema_hash = scripting::compute_schema_hash(
                                        in_slot_spec_, scripting::SchemaSpec{});
-    in_opts.consumer_uid         = config_.processor_uid;
-    in_opts.consumer_name        = config_.processor_name;
+    in_opts.consumer_uid         = config_.identity().uid;
+    in_opts.consumer_name        = config_.identity().name;
     in_opts.zmq_schema           = scripting::schema_spec_to_zmq_fields(
                                        in_slot_spec_, in_schema_slot_size_);
-    in_opts.zmq_packing          = config_.in_zmq_packing;
-    in_opts.ctrl_queue_max_depth = config_.ctrl_queue_max_depth;
-    in_opts.peer_dead_timeout_ms = config_.peer_dead_timeout_ms;
+    in_opts.zmq_packing          = config_.in_transport().zmq_packing;
+    in_opts.ctrl_queue_max_depth = config_.monitoring().ctrl_queue_max_depth;
+    in_opts.peer_dead_timeout_ms = config_.monitoring().peer_dead_timeout_ms;
 
-    const auto &in_ep  = config_.resolved_in_broker();
-    const auto &in_pub = config_.resolved_in_broker_pubkey();
+    const auto &in_ep  = config_.in_hub().broker;
+    const auto &in_pub = config_.in_hub().broker_pubkey;
     if (!in_ep.empty())
     {
         if (!in_messenger_.connect(in_ep, in_pub,
-                                   config_.auth.client_pubkey, config_.auth.client_seckey))
+                                   config_.auth().client_pubkey, config_.auth().client_seckey))
         {
             LOGGER_ERROR("[proc] in_messenger broker connect failed ({}); aborting", in_ep);
             return false;
@@ -314,7 +316,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
     if (!maybe_consumer.has_value())
     {
         LOGGER_ERROR("[proc] Failed to connect consumer to in_channel '{}'",
-                     config_.in_channel);
+                     config_.in_channel());
         return false;
     }
     in_consumer_ = std::move(maybe_consumer);
@@ -324,7 +326,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
         LOGGER_INFO("[proc] CHANNEL_CLOSING_NOTIFY received (in_channel), queuing event");
         IncomingMessage msg;
         msg.event = "channel_closing";
-        msg.details["channel"] = config_.in_channel;
+        msg.details["channel"] = config_.in_channel();
         core_.enqueue_message(std::move(msg));
     });
 
@@ -375,28 +377,28 @@ bool ProcessorRoleHost::setup_infrastructure_()
 
     // ── Producer side (out_channel) ─────────────────────────────────────────
     hub::ProducerOptions out_opts;
-    out_opts.channel_name = config_.out_channel;
+    out_opts.channel_name = config_.out_channel();
     out_opts.pattern      = hub::ChannelPattern::PubSub;
-    out_opts.has_shm      = config_.out_shm_enabled;
+    out_opts.has_shm      = config_.out_shm().enabled;
     out_opts.schema_hash  = scripting::compute_schema_hash(out_slot_spec_, core_.fz_spec);
-    out_opts.actor_name   = config_.processor_name;
-    out_opts.actor_uid    = config_.processor_uid;
+    out_opts.actor_name   = config_.identity().name;
+    out_opts.actor_uid    = config_.identity().uid;
 
-    if (config_.target_period_ms > 0)
+    if (config_.timing().target_period_ms > 0)
     {
         out_opts.loop_policy = hub::LoopPolicy::FixedRate;
-        out_opts.period_ms   = std::chrono::milliseconds{static_cast<int>(config_.target_period_ms)};
+        out_opts.period_ms   = std::chrono::milliseconds{static_cast<int>(config_.timing().target_period_ms)};
     }
-    out_opts.ctrl_queue_max_depth = config_.ctrl_queue_max_depth;
-    out_opts.peer_dead_timeout_ms = config_.peer_dead_timeout_ms;
+    out_opts.ctrl_queue_max_depth = config_.monitoring().ctrl_queue_max_depth;
+    out_opts.peer_dead_timeout_ms = config_.monitoring().peer_dead_timeout_ms;
 
     // SHM config (output side).
-    if (config_.out_shm_enabled)
+    if (config_.out_shm().enabled)
     {
-        out_opts.shm_config.shared_secret        = config_.out_shm_secret;
-        out_opts.shm_config.ring_buffer_capacity = config_.out_shm_slot_count;
+        out_opts.shm_config.shared_secret        = config_.out_shm().secret;
+        out_opts.shm_config.ring_buffer_capacity = config_.out_shm().slot_count;
         out_opts.shm_config.policy               = hub::DataBlockPolicy::RingBuffer;
-        out_opts.shm_config.consumer_sync_policy = config_.out_shm_consumer_sync_policy;
+        out_opts.shm_config.consumer_sync_policy = config_.out_shm().sync_policy;
         out_opts.shm_config.checksum_policy      = hub::ChecksumPolicy::Manual;
         out_opts.shm_config.flex_zone_size       = core_.schema_fz_size;
 
@@ -406,19 +408,19 @@ bool ProcessorRoleHost::setup_infrastructure_()
     }
 
     // HEP-CORE-0021: for ZMQ output, register as a ZMQ Virtual Channel Node.
-    if (config_.out_transport == Transport::Zmq)
+    if (config_.out_transport().transport == config::Transport::Zmq)
     {
         out_opts.has_shm           = false;
         out_opts.data_transport    = "zmq";
-        out_opts.zmq_node_endpoint = config_.zmq_out_endpoint;
-        out_opts.zmq_bind          = config_.zmq_out_bind;
+        out_opts.zmq_node_endpoint = config_.out_transport().zmq_endpoint;
+        out_opts.zmq_bind          = config_.out_transport().zmq_bind;
         out_opts.zmq_schema        = scripting::schema_spec_to_zmq_fields(
                                          out_slot_spec_, out_schema_slot_size_);
-        out_opts.zmq_packing       = config_.out_zmq_packing;
-        out_opts.zmq_buffer_depth  = config_.out_zmq_buffer_depth;
-        const bool zmq_drop = config_.zmq_out_overflow_policy.empty()
-            ? (config_.overflow_policy == OverflowPolicy::Drop)
-            : (config_.zmq_out_overflow_policy == "drop");
+        out_opts.zmq_packing       = config_.out_transport().zmq_packing;
+        out_opts.zmq_buffer_depth  = config_.out_transport().zmq_buffer_depth;
+        const bool zmq_drop = config_.out_transport().zmq_overflow_policy.empty()
+            ? (config_.out_transport().zmq_overflow_policy == "drop")
+            : (config_.out_transport().zmq_overflow_policy == "drop");
         out_opts.zmq_overflow_policy = zmq_drop
                                            ? hub::OverflowPolicy::Drop
                                            : hub::OverflowPolicy::Block;
@@ -428,7 +430,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
     scripting::SchemaSpec inbox_spec;
     size_t inbox_schema_slot_size = 0;
 
-    if (config_.has_inbox())
+    if (config_.inbox().has_inbox())
     {
         std::vector<std::string> schema_dirs;
         auto add_schema_dir = [&schema_dirs](const std::string &hub_dir) {
@@ -438,14 +440,14 @@ bool ProcessorRoleHost::setup_infrastructure_()
             if (std::find(schema_dirs.begin(), schema_dirs.end(), d) == schema_dirs.end())
                 schema_dirs.push_back(d);
         };
-        add_schema_dir(config_.in_hub_dir);
-        add_schema_dir(config_.out_hub_dir);
-        add_schema_dir(config_.hub_dir);
+        add_schema_dir(config_.in_hub().hub_dir);
+        add_schema_dir(config_.out_hub().hub_dir);
+        add_schema_dir(config_.out_hub().hub_dir);
 
         try
         {
             inbox_spec = scripting::resolve_schema(
-                config_.inbox_schema_json, false, "proc", schema_dirs);
+                config_.inbox().schema_json, false, "proc", schema_dirs);
         }
         catch (const std::exception &e)
         {
@@ -455,7 +457,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
 
         const std::string inbox_packing =
             inbox_spec.packing.empty()
-                ? config_.in_zmq_packing
+                ? config_.in_transport().zmq_packing
                 : inbox_spec.packing;
 
         // Register inbox type in the engine.
@@ -471,9 +473,9 @@ bool ProcessorRoleHost::setup_infrastructure_()
             inbox_type_name_ = "InboxFrame";
         }
 
-        const std::string ep = config_.inbox_endpoint.empty()
+        const std::string ep = config_.inbox().endpoint.empty()
             ? "tcp://127.0.0.1:0"
-            : config_.inbox_endpoint;
+            : config_.inbox().endpoint;
         auto zmq_fields = scripting::schema_spec_to_zmq_fields(inbox_spec, inbox_schema_slot_size);
 
         // Serialize full SchemaSpec JSON for ROLE_INFO_REQ discovery.
@@ -489,9 +491,9 @@ bool ProcessorRoleHost::setup_infrastructure_()
         if (inbox_spec.packing != "aligned")
             spec_json["packing"] = inbox_spec.packing;
 
-        const int inbox_rcvhwm = (config_.inbox_overflow_policy == "block")
+        const int inbox_rcvhwm = (config_.inbox().overflow_policy == "block")
             ? 0
-            : static_cast<int>(config_.inbox_buffer_depth);
+            : static_cast<int>(config_.inbox().buffer_depth);
 
         inbox_queue_ = hub::InboxQueue::bind_at(
             ep, std::move(zmq_fields),
@@ -512,12 +514,12 @@ bool ProcessorRoleHost::setup_infrastructure_()
     }
 
     // ── Output broker connect ───────────────────────────────────────────────
-    const auto &out_ep  = config_.resolved_out_broker();
-    const auto &out_pub = config_.resolved_out_broker_pubkey();
+    const auto &out_ep  = config_.out_hub().broker;
+    const auto &out_pub = config_.out_hub().broker_pubkey;
     if (!out_ep.empty())
     {
         if (!out_messenger_.connect(out_ep, out_pub,
-                                    config_.auth.client_pubkey, config_.auth.client_seckey))
+                                    config_.auth().client_pubkey, config_.auth().client_seckey))
         {
             LOGGER_ERROR("[proc] out_messenger broker connect failed ({}); aborting", out_ep);
             return false;
@@ -529,7 +531,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
     if (!maybe_producer.has_value())
     {
         LOGGER_ERROR("[proc] Failed to create producer for out_channel '{}'",
-                     config_.out_channel);
+                     config_.out_channel());
         return false;
     }
     out_producer_ = std::move(maybe_producer);
@@ -541,7 +543,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
     out_producer_->on_channel_closing([this]() {
         IncomingMessage msg;
         msg.event = "channel_closing";
-        msg.details["channel"] = config_.out_channel;
+        msg.details["channel"] = config_.out_channel();
         core_.enqueue_message(std::move(msg));
     });
 
@@ -574,7 +576,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
             core_.enqueue_message(std::move(msg));
         });
 
-    out_messenger_.on_consumer_died(config_.out_channel,
+    out_messenger_.on_consumer_died(config_.out_channel(),
         [this](uint64_t pid, std::string reason) {
             LOGGER_INFO("[proc] broker_notify: consumer_died pid={} reason={}",
                         pid, reason);
@@ -585,7 +587,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
             core_.enqueue_message(std::move(msg));
         });
 
-    out_messenger_.on_channel_error(config_.out_channel,
+    out_messenger_.on_channel_error(config_.out_channel(),
         [this](std::string event, nlohmann::json details) {
             LOGGER_INFO("[proc] broker_notify: channel_event event='{}' details={}",
                         event, details.dump());
@@ -597,10 +599,10 @@ bool ProcessorRoleHost::setup_infrastructure_()
             core_.enqueue_message(std::move(msg));
         });
 
-    if (!config_.out_channel.empty())
+    if (!config_.out_channel().empty())
     {
-        out_messenger_.suppress_periodic_heartbeat(config_.out_channel);
-        out_messenger_.enqueue_heartbeat(config_.out_channel);
+        out_messenger_.suppress_periodic_heartbeat(config_.out_channel());
+        out_messenger_.enqueue_heartbeat(config_.out_channel());
     }
 
     out_producer_->on_consumer_message(
@@ -621,14 +623,14 @@ bool ProcessorRoleHost::setup_infrastructure_()
     // ── Wire peer-dead and hub-dead monitoring ─────────────────────────────────
     in_consumer_->on_peer_dead([this]() {
         LOGGER_WARN("[proc] peer-dead: upstream producer silent for {} ms; triggering shutdown",
-                    config_.peer_dead_timeout_ms);
+                    config_.monitoring().peer_dead_timeout_ms);
         core_.set_stop_reason(scripting::RoleHostCore::StopReason::PeerDead);
         core_.request_stop();
     });
 
     out_producer_->on_peer_dead([this]() {
         LOGGER_WARN("[proc] peer-dead: downstream consumer silent for {} ms; triggering shutdown",
-                    config_.peer_dead_timeout_ms);
+                    config_.monitoring().peer_dead_timeout_ms);
         core_.set_stop_reason(scripting::RoleHostCore::StopReason::PeerDead);
         core_.request_stop();
     });
@@ -643,24 +645,24 @@ bool ProcessorRoleHost::setup_infrastructure_()
 
     // ── Create data queues ─────────────────────────────────────────────────
     // Input queue.
-    if (config_.in_transport == Transport::Zmq)
+    if (config_.in_transport().transport == config::Transport::Zmq)
     {
         auto zmq_fields = scripting::schema_spec_to_zmq_fields(
             in_slot_spec_, in_schema_slot_size_);
         in_queue_ = hub::ZmqQueue::pull_from(
-            config_.zmq_in_endpoint, std::move(zmq_fields),
-            config_.in_zmq_packing, config_.zmq_in_bind, config_.in_zmq_buffer_depth);
+            config_.in_transport().zmq_endpoint, std::move(zmq_fields),
+            config_.in_transport().zmq_packing, config_.in_transport().zmq_bind, config_.in_transport().zmq_buffer_depth);
         if (!in_queue_->start())
         {
             LOGGER_ERROR("[proc] ZMQ input queue start() failed (endpoint='{}')",
-                         config_.zmq_in_endpoint);
+                         config_.in_transport().zmq_endpoint);
             return false;
         }
         in_q_ = in_queue_.get();
     }
     else if (auto *zmq_in = in_consumer_->queue())
     {
-        if (config_.verify_checksum)
+        if (config_.in_validation().verify_checksum)
             LOGGER_WARN("[proc] verify_checksum=true has no effect on ZMQ input transport "
                         "(TCP provides integrity); consider SHM input if checksum is needed");
         in_q_ = zmq_in;
@@ -670,18 +672,18 @@ bool ProcessorRoleHost::setup_infrastructure_()
         auto *in_shm = in_consumer_->shm();
         if (in_shm == nullptr)
         {
-            LOGGER_ERROR("[proc] Input SHM unavailable (in_channel='{}')", config_.in_channel);
+            LOGGER_ERROR("[proc] Input SHM unavailable (in_channel='{}')", config_.in_channel());
             return false;
         }
         in_queue_ = hub::ShmQueue::from_consumer_ref(
-            *in_shm, in_schema_slot_size_, core_.schema_fz_size, config_.in_channel);
+            *in_shm, in_schema_slot_size_, core_.schema_fz_size, config_.in_channel());
         if (!in_queue_->start())
         {
             LOGGER_ERROR("[proc] SHM input queue start() failed (channel='{}')",
-                         config_.in_channel);
+                         config_.in_channel());
             return false;
         }
-        if (config_.verify_checksum)
+        if (config_.in_validation().verify_checksum)
             in_queue_->set_verify_checksum(true, core_.has_fz);
         in_q_ = in_queue_.get();
     }
@@ -697,21 +699,21 @@ bool ProcessorRoleHost::setup_infrastructure_()
         if (out_shm == nullptr)
         {
             LOGGER_ERROR("[proc] Output SHM unavailable (out_channel='{}')",
-                         config_.out_channel);
+                         config_.out_channel());
             return false;
         }
         out_queue_ = hub::ShmQueue::from_producer_ref(
-            *out_shm, out_schema_slot_size_, core_.schema_fz_size, config_.out_channel);
+            *out_shm, out_schema_slot_size_, core_.schema_fz_size, config_.out_channel());
         out_queue_->start();
         out_q_ = out_queue_.get();
     }
-    out_q_->set_checksum_options(config_.update_checksum, core_.has_fz);
+    out_q_->set_checksum_options(config_.out_validation().update_checksum, core_.has_fz);
 
     LOGGER_INFO("[proc] Processor started: '{}' -> '{}'",
-                config_.in_channel, config_.out_channel);
+                config_.in_channel(), config_.out_channel());
 
     // ── Startup coordination (HEP-0023) ─────────────────────────────────────
-    if (!scripting::wait_for_roles(out_messenger_, config_.wait_for_roles, "[proc]"))
+    if (!scripting::wait_for_roles(out_messenger_, config_.startup().wait_for_roles, "[proc]"))
         return false;
 
     return true;
@@ -788,15 +790,15 @@ void ProcessorRoleHost::run_data_loop_()
 
     // --- Setup ---
     const double period_us =
-        static_cast<double>(config_.target_period_ms) * kUsPerMs;
-    const bool is_max_rate = (config_.loop_timing == LoopTimingPolicy::MaxRate);
-    const auto short_timeout_us = compute_short_timeout(period_us, config_.queue_io_wait_timeout_ratio);
+        static_cast<double>(config_.timing().target_period_ms) * kUsPerMs;
+    const bool is_max_rate = (config_.timing().loop_timing == LoopTimingPolicy::MaxRate);
+    const auto short_timeout_us = compute_short_timeout(period_us, config_.timing().queue_io_wait_timeout_ratio);
     // Acquire takes milliseconds; convert with rounding up to avoid 0ms.
     const auto short_timeout =
         std::chrono::duration_cast<std::chrono::milliseconds>(
             short_timeout_us + std::chrono::microseconds{999});
 
-    const bool drop_mode = (config_.overflow_policy == OverflowPolicy::Drop);
+    const bool drop_mode = (config_.out_transport().zmq_overflow_policy == "drop");
 
     const size_t in_sz  = in_q_->item_size();
     const size_t out_sz = out_q_->item_size();
@@ -974,7 +976,7 @@ void ProcessorRoleHost::run_data_loop_()
         if (result == InvokeResult::Error)
         {
             // script_errors already incremented by engine.
-            if (config_.stop_on_script_error)
+            if (config_.validation().stop_on_script_error)
                 core_.request_stop();
         }
 
@@ -986,7 +988,7 @@ void ProcessorRoleHost::run_data_loop_()
         core_.set_last_cycle_work_us(work_us);
         core_.inc_iteration_count();
 
-        deadline = compute_next_deadline(config_.loop_timing, deadline, cycle_start, period_us);
+        deadline = compute_next_deadline(config_.timing().loop_timing, deadline, cycle_start, period_us);
     }
 
     // Clean up held input on loop exit.
@@ -1008,7 +1010,7 @@ void ProcessorRoleHost::run_data_loop_()
 
 void ProcessorRoleHost::run_ctrl_thread_()
 {
-    scripting::ZmqPollLoop loop{core_, "proc:" + config_.processor_uid};
+    scripting::ZmqPollLoop loop{core_, "proc:" + config_.identity().uid};
     loop.sockets = {
         {out_producer_->peer_ctrl_socket_handle(),
          [&] { out_producer_->handle_peer_events_nowait(); }},
@@ -1016,7 +1018,7 @@ void ProcessorRoleHost::run_ctrl_thread_()
          [&] { in_consumer_->handle_ctrl_events_nowait(); }},
     };
     // Consumer data socket is only needed when data comes via broker relay (SHM transport).
-    if (config_.in_transport != Transport::Zmq && in_consumer_->data_transport() != "zmq")
+    if (config_.in_transport().transport != config::Transport::Zmq && in_consumer_->data_transport() != "zmq")
     {
         loop.sockets.push_back(
             {in_consumer_->data_zmq_socket_handle(),
@@ -1027,10 +1029,10 @@ void ProcessorRoleHost::run_ctrl_thread_()
     };
     loop.periodic_tasks.emplace_back(
         [&] {
-            out_messenger_.enqueue_heartbeat(config_.out_channel,
+            out_messenger_.enqueue_heartbeat(config_.out_channel(),
                                              snapshot_metrics_json());
         },
-        config_.heartbeat_interval_ms);
+        config_.timing().heartbeat_interval_ms);
     loop.run();
 }
 
