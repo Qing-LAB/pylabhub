@@ -130,24 +130,22 @@ static int do_init(const std::string &proc_dir_str, const std::string &cli_name)
 
     // ── Build processor.json template ─────────────────────────────────────────
     nlohmann::json j;
-    j["hub_dir"] = "<replace with hub directory path, e.g. /var/pylabhub/my_hub>";
 
     j["processor"]["uid"]       = proc_uid;
     j["processor"]["name"]      = proc_name;
     j["processor"]["log_level"] = "info";
-    // auth.keyfile: set to a valid path, then run --keygen to create the encrypted vault.
     j["processor"]["auth"]["keyfile"] = "";
 
-    j["in_channel"]  = "lab.source.channel";
-    j["out_channel"] = "lab.output.channel";
-    j["slot_acquire_timeout_ms"] = -1;
-    j["overflow_policy"] = "drop";
+    j["in_hub_dir"]   = "<replace with input hub directory path>";
+    j["out_hub_dir"]  = "<replace with output hub directory path>";
+    j["in_channel"]   = "lab.source.channel";
+    j["out_channel"]  = "lab.output.channel";
 
-    j["shm"]["in"]["enabled"]  = true;
-    j["shm"]["in"]["secret"]   = 0;
-    j["shm"]["out"]["enabled"]     = true;
-    j["shm"]["out"]["secret"]      = 0;
-    j["shm"]["out"]["slot_count"]  = 4;
+    j["in_transport"]       = "shm";
+    j["out_transport"]      = "shm";
+    j["in_shm_enabled"]     = true;
+    j["out_shm_enabled"]    = true;
+    j["out_shm_slot_count"] = 4;
 
     j["in_slot_schema"]["fields"] = nlohmann::json::array({
         nlohmann::json{{"name", "value"}, {"type", "float32"}}
@@ -155,24 +153,14 @@ static int do_init(const std::string &proc_dir_str, const std::string &cli_name)
     j["out_slot_schema"]["fields"] = nlohmann::json::array({
         nlohmann::json{{"name", "value"}, {"type", "float32"}}
     });
-    j["flexzone_schema"] = nullptr;
+    j["out_flexzone_schema"] = nullptr;
 
-    // script.path is the base directory containing the "script/" package.
-    // "." means <proc_dir>/script/python/__init__.py (the default layout).
+    j["out_update_checksum"]  = true;
+    j["in_verify_checksum"]   = false;
+    j["stop_on_script_error"] = false;
+
     j["script"]["path"] = ".";
     j["script"]["type"] = "python";
-
-    // ── Dual-broker (optional) ─────────────────────────────────────────────
-    // Uncomment to use separate brokers for input and output channels:
-    // j["in_hub_dir"]         = "/path/to/input_hub";
-    // j["out_hub_dir"]        = "/path/to/output_hub";
-    // j["in_broker"]          = "tcp://192.168.1.10:5570";
-    // j["out_broker"]         = "tcp://192.168.1.20:5570";
-    // j["in_broker_pubkey"]   = "";
-    // j["out_broker_pubkey"]  = "";
-
-    j["validation"]["update_checksum"]      = true;
-    j["validation"]["stop_on_script_error"] = false;
 
     // ── Write processor.json ──────────────────────────────────────────────────
     std::ofstream out(json_path);
@@ -277,35 +265,37 @@ int main(int argc, char *argv[])
 
     // ── Init mode: create processor directory and exit ────────────────────────
     if (args.init_only)
-    {
         return do_init(args.role_dir, args.init_name);
-    }
+
+    // ── Lifecycle init (required before JsonConfig/RoleConfig) ────────────────
+    LifecycleGuard runner_lifecycle(scripting::role_lifecycle_modules(args.log_file));
+    scripting::register_signal_handler_lifecycle(signal_handler, "[proc-main]");
+    scripting::log_version_info("[proc-main]");
 
     // ── Load config via RoleConfig ───────────────────────────────────────────
-    pylabhub::config::RoleConfig config = [&]
+    std::optional<pylabhub::config::RoleConfig> config;
+    try
     {
-        try
-        {
-            if (!args.role_dir.empty())
-                return pylabhub::config::RoleConfig::load_from_directory(
-                    args.role_dir, "processor", pylabhub::processor::parse_processor_fields);
-            else
-                return pylabhub::config::RoleConfig::load(
-                    args.config_path, "processor", pylabhub::processor::parse_processor_fields);
-        }
-        catch (const std::exception &e)
-        {
-            std::cerr << "Config error: " << e.what() << "\n";
-            std::exit(1);
-        }
-    }();
+        if (!args.role_dir.empty())
+            config.emplace(pylabhub::config::RoleConfig::load_from_directory(
+                args.role_dir, "processor", pylabhub::processor::parse_processor_fields));
+        else
+            config.emplace(pylabhub::config::RoleConfig::load(
+                args.config_path, "processor", pylabhub::processor::parse_processor_fields));
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Config error: " << e.what() << "\n";
+        return 1;
+    }
+    auto &c = *config;
 
-    const std::string config_dir = config.base_dir().string();
+    const std::string config_dir = c.base_dir().string();
 
     // ── Keygen mode ──────────────────────────────────────────────────────────
     if (args.keygen_only)
     {
-        if (config.auth().keyfile.empty())
+        if (c.auth().keyfile.empty())
         {
             std::cerr << "Error: --keygen requires 'processor.auth.keyfile' in config\n";
             return 1;
@@ -321,9 +311,9 @@ int main(int argc, char *argv[])
         try
         {
             const auto vault = pylabhub::utils::ActorVault::create(
-                config.auth().keyfile, config.identity().uid, *pw_opt);
-            std::cout << "Processor vault written to: " << config.auth().keyfile << "\n"
-                      << "  processor_uid : " << config.identity().uid << "\n"
+                c.auth().keyfile, c.identity().uid, *pw_opt);
+            std::cout << "Processor vault written to: " << c.auth().keyfile << "\n"
+                      << "  processor_uid : " << c.identity().uid << "\n"
                       << "  public_key    : " << vault.public_key() << "\n";
         }
         catch (const std::exception &e)
@@ -334,23 +324,18 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    // ── Lifecycle init ───────────────────────────────────────────────────────
-    LifecycleGuard runner_lifecycle(scripting::role_lifecycle_modules(args.log_file));
-    scripting::register_signal_handler_lifecycle(signal_handler, "[proc-main]");
-    scripting::log_version_info("[proc-main]");
-
     // ── Auth ─────────────────────────────────────────────────────────────────
-    if (!config.auth().keyfile.empty())
+    if (!c.auth().keyfile.empty())
     {
         const auto vault_password = scripting::get_role_password("processor", "Processor vault password: ");
         if (!vault_password)
             return 1;
-        config.mutable_auth().load_keypair(config.identity().uid, *vault_password, "proc");
+        c.mutable_auth().load_keypair(c.identity().uid, *vault_password, "proc");
     }
 
     // ── Create engine based on script type ───────────────────────────────────
     std::unique_ptr<pylabhub::scripting::ScriptEngine> engine;
-    const auto &script_type = config.script().type;
+    const auto &script_type = c.script().type;
 
     if (script_type == "lua")
     {
@@ -359,14 +344,14 @@ int main(int argc, char *argv[])
     else
     {
         auto py = std::make_unique<pylabhub::scripting::PythonEngine>();
-        if (!config.script().python_venv.empty())
-            py->set_python_venv(config.script().python_venv);
+        if (!c.script().python_venv.empty())
+            py->set_python_venv(c.script().python_venv);
         engine = std::move(py);
     }
 
     // ── Run role host ────────────────────────────────────────────────────────
     pylabhub::processor::ProcessorRoleHost host(
-        std::move(config), std::move(engine), &g_shutdown);
+        std::move(*config), std::move(engine), &g_shutdown);
     host.set_validate_only(args.validate_only);
 
     try { host.startup_(); }
