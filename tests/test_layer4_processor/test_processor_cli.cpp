@@ -107,14 +107,11 @@ TEST_F(ProcessorCliTest, Init_DefaultValues)
     EXPECT_EQ(j["script"]["type"].get<std::string>(), "python");
 
     // stop_on_script_error defaults to false
-    EXPECT_FALSE(j["validation"]["stop_on_script_error"].get<bool>());
+    EXPECT_FALSE(j["stop_on_script_error"].get<bool>());
 
     // Processor-specific: both channels should be present
     EXPECT_TRUE(j.contains("in_channel"));
     EXPECT_TRUE(j.contains("out_channel"));
-
-    // overflow_policy should be present
-    EXPECT_TRUE(j.contains("overflow_policy"));
 
     { std::error_code ec; fs::remove_all(tmp, ec); }
 }
@@ -135,7 +132,8 @@ TEST_F(ProcessorCliTest, Keygen_WritesVaultFile)
         "    \"auth\": { \"keyfile\": \"" + vault_path.generic_string() + "\" }\n"
         "  },\n"
         "  \"in_channel\":  \"lab.keygen.in\",\n"
-        "  \"out_channel\": \"lab.keygen.out\"\n"
+        "  \"out_channel\": \"lab.keygen.out\",\n"
+        "  \"out_slot_schema\": { \"fields\": [{\"name\": \"v\", \"type\": \"float32\"}] }\n"
         "}\n");
 
     // ActorVault::create() creates parent dirs automatically
@@ -199,6 +197,7 @@ TEST_F(ProcessorCliTest, Validate_ExitZero)
         "  \"processor\": { \"uid\": \"PROC-VALTEST-00000001\", \"name\": \"ValTest\" },\n"
         "  \"in_channel\":  \"lab.validate.in\",\n"
         "  \"out_channel\": \"lab.validate.out\",\n"
+        "  \"out_slot_schema\": { \"fields\": [{\"name\": \"v\", \"type\": \"float32\"}] },\n"
         "  \"script\": { \"path\": \"" + tmp.generic_string() + "\", \"type\": \"python\" }\n"
         "}\n");
 
@@ -223,7 +222,7 @@ TEST_F(ProcessorCliTest, Config_MalformedJson_NonZeroExit)
     write_file(cfg_path, R"({ "processor": { broken json )");
 
     WorkerProcess proc(processor_binary(), "--config", {cfg_path.string()});
-    EXPECT_NE(proc.wait_for_exit(), 0)
+    EXPECT_EQ(proc.wait_for_exit(), 1)
         << "Expected non-zero exit for malformed JSON";
     EXPECT_NE(proc.get_stderr().find("Config error"), std::string::npos)
         << "Expected 'Config error' in stderr, got:\n" << proc.get_stderr();
@@ -236,7 +235,7 @@ TEST_F(ProcessorCliTest, Config_FileNotFound_NonZeroExit)
 {
     WorkerProcess proc(processor_binary(), "--config",
                        {"/no/such/path/does/not/exist/processor.json"});
-    EXPECT_NE(proc.wait_for_exit(), 0)
+    EXPECT_EQ(proc.wait_for_exit(), 1)
         << "Expected non-zero exit for missing config file";
     EXPECT_FALSE(proc.get_stderr().empty())
         << "Expected error text in stderr";
@@ -249,7 +248,7 @@ TEST_F(ProcessorCliTest, Init_NonInteractiveNoName_ExitsWithError)
     const auto tmp = unique_temp_dir("noname");
 
     WorkerProcess proc(processor_binary(), "--init", {tmp.string()});
-    EXPECT_NE(proc.wait_for_exit(), 0)
+    EXPECT_EQ(proc.wait_for_exit(), 1)
         << "Expected non-zero exit when --name not provided in non-interactive mode";
     EXPECT_NE(proc.get_stderr().find("--name"), std::string::npos)
         << "Expected '--name' in error message, got:\n" << proc.get_stderr();

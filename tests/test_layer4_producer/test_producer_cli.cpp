@@ -105,7 +105,7 @@ TEST_F(ProducerCliTest, Init_DefaultValues)
     EXPECT_EQ(j["script"]["path"].get<std::string>(), ".");
 
     // stop_on_script_error defaults to false
-    EXPECT_FALSE(j["validation"]["stop_on_script_error"].get<bool>());
+    EXPECT_FALSE(j["stop_on_script_error"].get<bool>());
 
     // target_period_ms must be present (not the obsolete interval_ms)
     EXPECT_TRUE(j.contains("target_period_ms"))
@@ -132,7 +132,8 @@ TEST_F(ProducerCliTest, Keygen_WritesVaultFile)
         "    \"name\": \"KgTest\",\n"
         "    \"auth\": { \"keyfile\": \"" + vault_path.generic_string() + "\" }\n"
         "  },\n"
-        "  \"channel\": \"lab.keygen.test\"\n"
+        "  \"out_channel\": \"lab.keygen.test\",\n"
+        "  \"out_slot_schema\": { \"fields\": [{\"name\": \"v\", \"type\": \"float32\"}] }\n"
         "}\n");
 
     // ActorVault::create() creates parent dirs automatically
@@ -195,7 +196,8 @@ TEST_F(ProducerCliTest, Validate_ExitZero)
     write_file(cfg_path,
         "{\n"
         "  \"producer\": { \"uid\": \"PROD-VALTEST-00000001\", \"name\": \"ValTest\" },\n"
-        "  \"channel\": \"lab.validate.test\",\n"
+        "  \"out_channel\": \"lab.validate.test\",\n"
+        "  \"out_slot_schema\": { \"fields\": [{\"name\": \"v\", \"type\": \"float32\"}] },\n"
         "  \"script\": { \"path\": \"" + tmp.generic_string() + "\", \"type\": \"python\" }\n"
         "}\n");
 
@@ -221,7 +223,7 @@ TEST_F(ProducerCliTest, Config_MalformedJson_NonZeroExit)
     write_file(cfg_path, R"({ "producer": { broken json )");
 
     WorkerProcess proc(producer_binary(), "--config", {cfg_path.string()});
-    EXPECT_NE(proc.wait_for_exit(), 0)
+    EXPECT_EQ(proc.wait_for_exit(), 1)
         << "Expected non-zero exit for malformed JSON";
     EXPECT_NE(proc.get_stderr().find("Config error"), std::string::npos)
         << "Expected 'Config error' in stderr, got:\n" << proc.get_stderr();
@@ -235,7 +237,7 @@ TEST_F(ProducerCliTest, Config_FileNotFound_NonZeroExit)
 {
     WorkerProcess proc(producer_binary(), "--config",
                        {"/no/such/path/does/not/exist/producer.json"});
-    EXPECT_NE(proc.wait_for_exit(), 0)
+    EXPECT_EQ(proc.wait_for_exit(), 1)
         << "Expected non-zero exit for missing config file";
     EXPECT_FALSE(proc.get_stderr().empty())
         << "Expected error text in stderr";
@@ -248,7 +250,7 @@ TEST_F(ProducerCliTest, Init_NonInteractiveNoName_ExitsWithError)
     const auto tmp = unique_temp_dir("noname");
 
     WorkerProcess proc(producer_binary(), "--init", {tmp.string()});
-    EXPECT_NE(proc.wait_for_exit(), 0)
+    EXPECT_EQ(proc.wait_for_exit(), 1)
         << "Expected non-zero exit when --name not provided in non-interactive mode";
     EXPECT_NE(proc.get_stderr().find("--name"), std::string::npos)
         << "Expected '--name' in error message, got:\n" << proc.get_stderr();

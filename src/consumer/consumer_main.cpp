@@ -222,31 +222,35 @@ int main(int argc, char *argv[])
     if (args.init_only)
         return do_init(args.role_dir, args.init_name);
 
-    // ── Load config via RoleConfig ───────────────────────────────────────────
-    pylabhub::config::RoleConfig config = [&]
-    {
-        try
-        {
-            if (!args.role_dir.empty())
-                return pylabhub::config::RoleConfig::load_from_directory(
-                    args.role_dir, "consumer", pylabhub::consumer::parse_consumer_fields);
-            else
-                return pylabhub::config::RoleConfig::load(
-                    args.config_path, "consumer", pylabhub::consumer::parse_consumer_fields);
-        }
-        catch (const std::exception &e)
-        {
-            std::cerr << "Config error: " << e.what() << "\n";
-            std::exit(1);
-        }
-    }();
+    // ── Lifecycle init (required before JsonConfig/RoleConfig) ────────────────
+    LifecycleGuard runner_lifecycle(scripting::role_lifecycle_modules(args.log_file));
+    scripting::register_signal_handler_lifecycle(signal_handler, "[cons-main]");
+    scripting::log_version_info("[cons-main]");
 
-    const std::string config_dir = config.base_dir().string();
+    // ── Load config via RoleConfig ───────────────────────────────────────────
+    std::optional<pylabhub::config::RoleConfig> config;
+    try
+    {
+        if (!args.role_dir.empty())
+            config.emplace(pylabhub::config::RoleConfig::load_from_directory(
+                args.role_dir, "consumer", pylabhub::consumer::parse_consumer_fields));
+        else
+            config.emplace(pylabhub::config::RoleConfig::load(
+                args.config_path, "consumer", pylabhub::consumer::parse_consumer_fields));
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Config error: " << e.what() << "\n";
+        return 1;
+    }
+    auto &c = *config;
+
+    const std::string config_dir = c.base_dir().string();
 
     // ── Keygen mode ──────────────────────────────────────────────────────────
     if (args.keygen_only)
     {
-        if (config.auth().keyfile.empty())
+        if (c.auth().keyfile.empty())
         {
             std::cerr << "Error: --keygen requires 'consumer.auth.keyfile' in config\n";
             return 1;
@@ -262,9 +266,9 @@ int main(int argc, char *argv[])
         try
         {
             const auto vault = pylabhub::utils::ActorVault::create(
-                config.auth().keyfile, config.identity().uid, *pw_opt);
-            std::cout << "Consumer vault written to: " << config.auth().keyfile << "\n"
-                      << "  consumer_uid : " << config.identity().uid << "\n"
+                c.auth().keyfile, c.identity().uid, *pw_opt);
+            std::cout << "Consumer vault written to: " << c.auth().keyfile << "\n"
+                      << "  consumer_uid : " << c.identity().uid << "\n"
                       << "  public_key   : " << vault.public_key() << "\n";
         }
         catch (const std::exception &e)
@@ -275,23 +279,18 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    // ── Lifecycle init ───────────────────────────────────────────────────────
-    LifecycleGuard runner_lifecycle(scripting::role_lifecycle_modules(args.log_file));
-    scripting::register_signal_handler_lifecycle(signal_handler, "[cons-main]");
-    scripting::log_version_info("[cons-main]");
-
     // ── Auth ─────────────────────────────────────────────────────────────────
-    if (!config.auth().keyfile.empty())
+    if (!c.auth().keyfile.empty())
     {
         const auto vault_password = scripting::get_role_password("consumer", "Consumer vault password: ");
         if (!vault_password)
             return 1;
-        config.mutable_auth().load_keypair(config.identity().uid, *vault_password, "cons");
+        c.mutable_auth().load_keypair(c.identity().uid, *vault_password, "cons");
     }
 
     // ── Create engine based on script type ───────────────────────────────────
     std::unique_ptr<pylabhub::scripting::ScriptEngine> engine;
-    const auto &script_type = config.script().type;
+    const auto &script_type = c.script().type;
 
     if (script_type == "lua")
     {
@@ -300,14 +299,14 @@ int main(int argc, char *argv[])
     else
     {
         auto py = std::make_unique<pylabhub::scripting::PythonEngine>();
-        if (!config.script().python_venv.empty())
-            py->set_python_venv(config.script().python_venv);
+        if (!c.script().python_venv.empty())
+            py->set_python_venv(c.script().python_venv);
         engine = std::move(py);
     }
 
     // ── Run role host ────────────────────────────────────────────────────────
     pylabhub::consumer::ConsumerRoleHost host(
-        std::move(config), std::move(engine), &g_shutdown);
+        std::move(*config), std::move(engine), &g_shutdown);
     host.set_validate_only(args.validate_only);
 
     try { host.startup_(); }

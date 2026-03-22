@@ -105,7 +105,7 @@ TEST_F(ConsumerCliTest, Init_DefaultValues)
     EXPECT_EQ(j["script"]["type"].get<std::string>(), "python");
 
     // stop_on_script_error defaults to false
-    EXPECT_FALSE(j["validation"]["stop_on_script_error"].get<bool>());
+    EXPECT_FALSE(j["stop_on_script_error"].get<bool>());
 
     { std::error_code ec; fs::remove_all(tmp, ec); }
 }
@@ -124,7 +124,7 @@ TEST_F(ConsumerCliTest, Keygen_WritesVaultFile)
         "    \"name\": \"KgTest\",\n"
         "    \"auth\": { \"keyfile\": \"" + vault_path.generic_string() + "\" }\n"
         "  },\n"
-        "  \"channel\": \"lab.keygen.test\"\n"
+        "  \"in_channel\": \"lab.keygen.test\"\n"
         "}\n");
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
@@ -183,7 +183,7 @@ TEST_F(ConsumerCliTest, Validate_ExitZero)
     write_file(cfg_path,
         "{\n"
         "  \"consumer\": { \"uid\": \"CONS-VALTEST-00000001\", \"name\": \"ValTest\" },\n"
-        "  \"channel\": \"lab.validate.test\",\n"
+        "  \"in_channel\": \"lab.validate.test\",\n"
         "  \"script\": { \"path\": \"" + tmp.generic_string() + "\", \"type\": \"python\" }\n"
         "}\n");
 
@@ -208,7 +208,7 @@ TEST_F(ConsumerCliTest, Config_MalformedJson_NonZeroExit)
     write_file(cfg_path, R"({ "consumer": { broken json )");
 
     WorkerProcess proc(consumer_binary(), "--config", {cfg_path.string()});
-    EXPECT_NE(proc.wait_for_exit(), 0)
+    EXPECT_EQ(proc.wait_for_exit(), 1)
         << "Expected non-zero exit for malformed JSON";
     EXPECT_NE(proc.get_stderr().find("Config error"), std::string::npos)
         << "Expected 'Config error' in stderr, got:\n" << proc.get_stderr();
@@ -221,7 +221,7 @@ TEST_F(ConsumerCliTest, Config_FileNotFound_NonZeroExit)
 {
     WorkerProcess proc(consumer_binary(), "--config",
                        {"/no/such/path/does/not/exist/consumer.json"});
-    EXPECT_NE(proc.wait_for_exit(), 0)
+    EXPECT_EQ(proc.wait_for_exit(), 1)
         << "Expected non-zero exit for missing config file";
     EXPECT_FALSE(proc.get_stderr().empty())
         << "Expected error text in stderr";
@@ -234,7 +234,7 @@ TEST_F(ConsumerCliTest, Init_NonInteractiveNoName_ExitsWithError)
     const auto tmp = unique_temp_dir("noname");
 
     WorkerProcess proc(consumer_binary(), "--init", {tmp.string()});
-    EXPECT_NE(proc.wait_for_exit(), 0)
+    EXPECT_EQ(proc.wait_for_exit(), 1)
         << "Expected non-zero exit when --name not provided in non-interactive mode";
     EXPECT_NE(proc.get_stderr().find("--name"), std::string::npos)
         << "Expected '--name' in error message, got:\n" << proc.get_stderr();
