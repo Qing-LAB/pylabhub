@@ -21,6 +21,7 @@ namespace pylabhub::processor
 /// Flexzone schema is shared (applies to output side).
 struct ProcessorFields
 {
+    nlohmann::json in_slot_schema_json;        ///< Required. Input slot schema.
     nlohmann::json out_slot_schema_json;       ///< Required. Output slot schema.
     nlohmann::json out_flexzone_schema_json;    ///< Optional. Flexzone schema (null = no flexzone).
 };
@@ -31,6 +32,7 @@ inline std::any parse_processor_fields(const nlohmann::json &j,
                                         const config::RoleConfig & /*cfg*/)
 {
     ProcessorFields pf;
+    pf.in_slot_schema_json = j.value("in_slot_schema", nlohmann::json{});
     pf.out_slot_schema_json = j.value("out_slot_schema", nlohmann::json{});
     pf.out_flexzone_schema_json = j.value("out_flexzone_schema", nlohmann::json{});
 
