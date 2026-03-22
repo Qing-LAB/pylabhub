@@ -15,7 +15,7 @@
  * See docs/tech_draft/loop_design_unified.md §5 for the full design.
  */
 
-#include "processor_config.hpp"
+#include "utils/config/role_config.hpp"
 #include "utils/role_host_core.hpp"
 #include "utils/script_engine.hpp"
 #include "plh_datahub.hpp"
@@ -41,7 +41,9 @@ namespace pylabhub::processor
 class ProcessorRoleHost
 {
   public:
-    ProcessorRoleHost() = default;
+    explicit ProcessorRoleHost(config::RoleConfig config,
+                               std::unique_ptr<scripting::ScriptEngine> engine,
+                               std::atomic<bool> *shutdown_flag = nullptr);
     ~ProcessorRoleHost();
 
     // Non-copyable, non-movable (owns threads).
@@ -50,12 +52,9 @@ class ProcessorRoleHost
     ProcessorRoleHost(ProcessorRoleHost &&) = delete;
     ProcessorRoleHost &operator=(ProcessorRoleHost &&) = delete;
 
-    // ── Configuration (call before startup_) ────────────────────────────────
+    // ── Configuration ────────────────────────────────────────────────────────
 
-    void set_engine(std::unique_ptr<scripting::ScriptEngine> engine);
-    void set_config(ProcessorConfig config);
     void set_validate_only(bool v) { validate_only_ = v; }
-    void set_shutdown_flag(std::atomic<bool> *flag) { core_.g_shutdown = flag; }
 
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -69,7 +68,7 @@ class ProcessorRoleHost
 
     [[nodiscard]] bool is_running() const { return core_.is_running(); }
     [[nodiscard]] bool script_load_ok() const { return script_load_ok_.load(std::memory_order_acquire); }
-    [[nodiscard]] const ProcessorConfig &config() const { return config_; }
+    [[nodiscard]] const config::RoleConfig &config() const { return config_; }
 
     /// Block until wakeup (shutdown, incoming message, or timeout).
     void wait_for_wakeup(int timeout_ms) { core_.wait_for_incoming(timeout_ms); }
@@ -94,7 +93,7 @@ class ProcessorRoleHost
     // ── Members ──────────────────────────────────────────────────────────────
 
     scripting::RoleHostCore                  core_;
-    ProcessorConfig                          config_;
+    config::RoleConfig                       config_;
     std::unique_ptr<scripting::ScriptEngine> engine_;
     bool                                     validate_only_{false};
     std::atomic<bool>                        script_load_ok_{false};
@@ -120,15 +119,11 @@ class ProcessorRoleHost
     std::thread                              ctrl_thread_;
 
     // Schema info (resolved from config during setup).
-    // fz_spec is stored in core_.fz_spec (shared with engine for flexzone exposure).
     scripting::SchemaSpec                    in_slot_spec_;
     scripting::SchemaSpec                    out_slot_spec_;
     size_t                                   in_schema_slot_size_{0};
     size_t                                   out_schema_slot_size_{0};
     std::string                              inbox_type_name_;
-
-    // Metrics are in core_ (RoleHostCore) — single source of truth.
-    // See core_.out_written_, core_.in_received_, core_.drops_, core_.iteration_count_, core_.last_cycle_work_us_.
 };
 
 } // namespace pylabhub::processor

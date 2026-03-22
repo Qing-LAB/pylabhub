@@ -56,13 +56,14 @@
  *         api.log('info', "Processor stopping")
  */
 
-#include "processor_config.hpp"
 #include "processor_role_host.hpp"
+#include "processor_fields.hpp"
 #include "lua_engine.hpp"
 #include "python_engine.hpp"
 
 #include "plh_datahub.hpp"
 #include "utils/actor_vault.hpp"
+#include "utils/config/role_config.hpp"
 #include "utils/role_cli.hpp"
 #include "utils/role_directory.hpp"
 #include "utils/uid_utils.hpp"
@@ -280,29 +281,33 @@ int main(int argc, char *argv[])
         return do_init(args.role_dir, args.init_name);
     }
 
-    // ── Load config ───────────────────────────────────────────────────────────
-    pylabhub::processor::ProcessorConfig config;
-    try
+    // ── Load config via RoleConfig ───────────────────────────────────────────
+    pylabhub::config::RoleConfig config = [&]
     {
-        if (!args.role_dir.empty())
-            config = pylabhub::processor::ProcessorConfig::from_directory(args.role_dir);
-        else
-            config = pylabhub::processor::ProcessorConfig::from_json_file(args.config_path);
-    }
-    catch (const std::exception &e)
-    {
-        std::cerr << "Config error: " << e.what() << "\n";
-        return 1;
-    }
+        try
+        {
+            if (!args.role_dir.empty())
+                return pylabhub::config::RoleConfig::load_from_directory(
+                    args.role_dir, "processor", pylabhub::processor::parse_processor_fields);
+            else
+                return pylabhub::config::RoleConfig::load(
+                    args.config_path, "processor", pylabhub::processor::parse_processor_fields);
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "Config error: " << e.what() << "\n";
+            std::exit(1);
+        }
+    }();
 
-    // ── keygen mode: generate NaCl CURVE keypair and exit ────────────────────
+    const std::string config_dir = config.base_dir().string();
+
+    // ── Keygen mode ──────────────────────────────────────────────────────────
     if (args.keygen_only)
     {
-        if (config.auth.keyfile.empty())
+        if (config.auth().keyfile.empty())
         {
-            std::cerr << "Error: --keygen requires 'processor.auth.keyfile' in config\n"
-                      << "  Set \"processor\": { \"auth\": { \"keyfile\": \"proc.key\" } } "
-                         "in processor.json\n";
+            std::cerr << "Error: --keygen requires 'processor.auth.keyfile' in config\n";
             return 1;
         }
 
@@ -316,12 +321,10 @@ int main(int argc, char *argv[])
         try
         {
             const auto vault = pylabhub::utils::ActorVault::create(
-                config.auth.keyfile, config.processor_uid, *pw_opt);
-
-            std::cout << "Processor vault written to: " << config.auth.keyfile << "\n"
-                      << "  processor_uid : " << config.processor_uid << "\n"
-                      << "  public_key    : " << vault.public_key() << "\n"
-                      << "  (secret_key encrypted in vault — keep vault file private)\n";
+                config.auth().keyfile, config.identity().uid, *pw_opt);
+            std::cout << "Processor vault written to: " << config.auth().keyfile << "\n"
+                      << "  processor_uid : " << config.identity().uid << "\n"
+                      << "  public_key    : " << vault.public_key() << "\n";
         }
         catch (const std::exception &e)
         {
@@ -331,148 +334,89 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    // ── Lifecycle guard ───────────────────────────────────────────────────────
+    // ── Lifecycle init ───────────────────────────────────────────────────────
     LifecycleGuard runner_lifecycle(scripting::role_lifecycle_modules(args.log_file));
     scripting::register_signal_handler_lifecycle(signal_handler, "[proc-main]");
     scripting::log_version_info("[proc-main]");
 
-    // ── Load processor keypair (if keyfile configured) ────────────────────────
-    if (!config.auth.keyfile.empty())
+    // ── Auth ─────────────────────────────────────────────────────────────────
+    if (!config.auth().keyfile.empty())
     {
         const auto vault_password = scripting::get_role_password("processor", "Processor vault password: ");
         if (!vault_password)
             return 1;
-        config.auth.load_keypair(config.processor_uid, *vault_password);
+        config.mutable_auth().load_keypair(config.identity().uid, *vault_password, "proc");
     }
 
-    // Resolve the config directory for status display.
-    const std::string config_dir = !args.role_dir.empty()
-        ? args.role_dir
-        : std::filesystem::path(args.config_path).parent_path().string();
+    // ── Create engine based on script type ───────────────────────────────────
+    std::unique_ptr<pylabhub::scripting::ScriptEngine> engine;
+    const auto &script_type = config.script().type;
 
-    // ── Dispatch based on script engine ────────────────────────────────────────
-    if (config.script_type == "lua")
+    if (script_type == "lua")
     {
-        // Unified ProcessorRoleHost + LuaEngine (ScriptEngine interface).
-        auto engine = std::make_unique<pylabhub::scripting::LuaEngine>();
+        engine = std::make_unique<pylabhub::scripting::LuaEngine>();
+    }
+    else
+    {
+        auto py = std::make_unique<pylabhub::scripting::PythonEngine>();
+        if (!config.script().python_venv.empty())
+            py->set_python_venv(config.script().python_venv);
+        engine = std::move(py);
+    }
 
-        pylabhub::processor::ProcessorRoleHost host;
-        host.set_engine(std::move(engine));
-        host.set_config(std::move(config));
-        host.set_validate_only(args.validate_only);
-        host.set_shutdown_flag(&g_shutdown);
+    // ── Run role host ────────────────────────────────────────────────────────
+    pylabhub::processor::ProcessorRoleHost host(
+        std::move(config), std::move(engine), &g_shutdown);
+    host.set_validate_only(args.validate_only);
 
-        try { host.startup_(); }
-        catch (const std::exception &e)
-        {
-            std::cerr << "Lua startup failed: " << e.what() << "\n";
-            return 1;
-        }
+    try { host.startup_(); }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Startup failed: " << e.what() << "\n";
+        return 1;
+    }
 
-        if (!host.script_load_ok())
-        {
-            std::cerr << "Lua script load failed.\n";
-            host.shutdown_();
-            return 1;
-        }
+    if (!host.script_load_ok())
+    {
+        std::cerr << "Script load failed.\n";
+        host.shutdown_();
+        return 1;
+    }
 
-        if (args.validate_only)
-        {
-            std::cout << "\nValidation passed.\n";
-            host.shutdown_();
-            return 0;
-        }
-
-        if (!host.is_running())
-        {
-            std::cerr << "Failed to start Lua processor — loop did not start.\n";
-            host.shutdown_();
-            return 1;
-        }
-
-        const auto start_time = std::chrono::steady_clock::now();
-        const auto &cfg = host.config();
-        signal_handler.set_status_callback([&]() -> std::string
-        {
-            const auto elapsed = std::chrono::steady_clock::now() - start_time;
-            const auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
-            return fmt::format(
-                "  pyLabHub {} (pylabhub-processor, lua)\n"
-                "  Config:      {}\n"
-                "  UID:         {}\n"
-                "  In channel:  {}\n"
-                "  Out channel: {}\n"
-                "  Uptime:      {}h {}m {}s",
-                pylabhub::platform::get_version_string(),
-                config_dir, cfg.processor_uid, cfg.in_channel, cfg.out_channel,
-                secs / 3600, (secs % 3600) / 60, secs % 60);
-        });
-
-        scripting::run_role_main_loop(g_shutdown, host, "[proc-main]");
+    if (args.validate_only)
+    {
+        std::cout << "\nValidation passed.\n";
         host.shutdown_();
         return 0;
     }
 
-    // ── Python path (default) — unified ProcessorRoleHost + PythonEngine ─────
+    if (!host.is_running())
     {
-        auto engine = std::make_unique<pylabhub::scripting::PythonEngine>();
-        if (!config.python_venv.empty())
-            engine->set_python_venv(config.python_venv);
-
-        pylabhub::processor::ProcessorRoleHost host;
-        host.set_engine(std::move(engine));
-        host.set_config(std::move(config));
-        host.set_validate_only(args.validate_only);
-        host.set_shutdown_flag(&g_shutdown);
-
-        try { host.startup_(); }
-        catch (const std::exception &e)
-        {
-            std::cerr << "Python startup failed: " << e.what() << "\n";
-            return 1;
-        }
-
-        if (!host.script_load_ok())
-        {
-            std::cerr << "Python script load failed.\n";
-            host.shutdown_();
-            return 1;
-        }
-
-        if (args.validate_only)
-        {
-            std::cout << "\nValidation passed.\n";
-            host.shutdown_();
-            return 0;
-        }
-
-        if (!host.is_running())
-        {
-            std::cerr << "Failed to start processor — loop did not start.\n";
-            host.shutdown_();
-            return 1;
-        }
-
-        const auto start_time = std::chrono::steady_clock::now();
-        const auto &cfg = host.config();
-        signal_handler.set_status_callback([&]() -> std::string
-        {
-            const auto elapsed = std::chrono::steady_clock::now() - start_time;
-            const auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
-            return fmt::format(
-                "  pyLabHub {} (pylabhub-processor, python)\n"
-                "  Config:      {}\n"
-                "  UID:         {}\n"
-                "  In channel:  {}\n"
-                "  Out channel: {}\n"
-                "  Uptime:      {}h {}m {}s",
-                pylabhub::platform::get_version_string(),
-                config_dir, cfg.processor_uid, cfg.in_channel, cfg.out_channel,
-                secs / 3600, (secs % 3600) / 60, secs % 60);
-        });
-
-        scripting::run_role_main_loop(g_shutdown, host, "[proc-main]");
+        std::cerr << "Failed to start processor — loop did not start.\n";
         host.shutdown_();
+        return 1;
     }
+
+    const auto start_time = std::chrono::steady_clock::now();
+    const auto &cfg = host.config();
+    signal_handler.set_status_callback([&]() -> std::string
+    {
+        const auto elapsed = std::chrono::steady_clock::now() - start_time;
+        const auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+        return fmt::format(
+            "  pyLabHub {} (pylabhub-processor, {})\n"
+            "  Config:      {}\n"
+            "  UID:         {}\n"
+            "  In channel:  {}\n"
+            "  Out channel: {}\n"
+            "  Uptime:      {}h {}m {}s",
+            pylabhub::platform::get_version_string(),
+            cfg.script().type,
+            config_dir, cfg.identity().uid, cfg.in_channel(), cfg.out_channel(),
+            secs / 3600, (secs % 3600) / 60, secs % 60);
+    });
+
+    scripting::run_role_main_loop(g_shutdown, host, "[proc-main]");
+    host.shutdown_();
     return 0;
 }
