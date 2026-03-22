@@ -129,8 +129,9 @@ void ConsumerRoleHost::worker_main_()
     script_load_ok_.store(true, std::memory_order_release);
 
     // Step 3: Resolve schemas and register slot types (read-only access).
-    // Consumer discovers schemas from the broker — slot_schema_json in config
-    // is for offline validation only. If absent, schema comes at connect time.
+    // Consumer discovers schemas from the broker at connect time. The optional
+    // in_slot_schema / in_flexzone_schema in config are for offline type
+    // registration (engine builds ctypes views before connecting).
     {
         std::vector<std::string> schema_dirs;
         if (!hub.hub_dir.empty())
@@ -139,12 +140,11 @@ void ConsumerRoleHost::worker_main_()
 
         try
         {
-            // Consumer reads schemas from raw JSON (not role-specific fields).
             const auto &raw = config_.raw();
             slot_spec_ = scripting::resolve_schema(
-                raw.value("slot_schema", nlohmann::json{}), false, "cons", schema_dirs);
+                raw.value("in_slot_schema", nlohmann::json{}), false, "cons", schema_dirs);
             core_.fz_spec = scripting::resolve_schema(
-                raw.value("flexzone_schema", nlohmann::json{}), true, "cons", schema_dirs);
+                raw.value("in_flexzone_schema", nlohmann::json{}), true, "cons", schema_dirs);
         }
         catch (const std::exception &e)
         {
