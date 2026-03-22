@@ -38,13 +38,14 @@
  *         api.log('info', "Producer stopping")
  */
 
-#include "producer_config.hpp"
 #include "producer_role_host.hpp"
+#include "producer_fields.hpp"
 #include "lua_engine.hpp"
 #include "python_engine.hpp"
 
 #include "plh_datahub.hpp"
 #include "utils/actor_vault.hpp"
+#include "utils/config/role_config.hpp"
 #include "utils/role_cli.hpp"
 #include "utils/role_directory.hpp"
 #include "utils/uid_utils.hpp"
@@ -109,30 +110,31 @@ static int do_init(const std::string &prod_dir_str, const std::string &cli_name)
     const std::string prod_uid = pylabhub::uid::generate_producer_uid(prod_name);
 
     nlohmann::json j;
-    j["hub_dir"] = "<replace with hub directory path, e.g. /var/pylabhub/my_hub>";
 
     j["producer"]["uid"]       = prod_uid;
     j["producer"]["name"]      = prod_name;
     j["producer"]["log_level"] = "info";
     j["producer"]["auth"]["keyfile"] = "";
 
-    j["channel"]          = "lab.my.channel";
-    j["target_period_ms"] = 100;
+    j["out_hub_dir"]          = "<replace with hub directory path, e.g. /var/pylabhub/my_hub>";
+    j["out_channel"]          = "lab.my.channel";
+    j["target_period_ms"]     = 100;
 
-    j["shm"]["enabled"]    = true;
-    j["shm"]["secret"]     = 0;
-    j["shm"]["slot_count"] = 8;
+    j["out_transport"]        = "shm";
+    j["out_shm_enabled"]      = true;
+    j["out_shm_secret"]       = 0;
+    j["out_shm_slot_count"]   = 8;
 
-    j["slot_schema"]["fields"] = nlohmann::json::array({
+    j["out_slot_schema"]["fields"] = nlohmann::json::array({
         nlohmann::json{{"name", "value"}, {"type", "float32"}}
     });
-    j["flexzone_schema"] = nullptr;
+    j["out_flexzone_schema"]  = nullptr;
+
+    j["out_update_checksum"]      = true;
+    j["stop_on_script_error"]     = false;
 
     j["script"]["path"] = ".";
     j["script"]["type"] = "python";
-
-    j["validation"]["update_checksum"]      = true;
-    j["validation"]["stop_on_script_error"] = false;
 
     std::ofstream out(json_path);
     if (!out)
@@ -229,28 +231,31 @@ int main(int argc, char *argv[])
     if (args.init_only)
         return do_init(args.role_dir, args.init_name);
 
-    pylabhub::producer::ProducerConfig config;
-    try
+    // ── Load config via RoleConfig ───────────────────────────────────────────
+    pylabhub::config::RoleConfig config = [&]
     {
-        if (!args.role_dir.empty())
-            config = pylabhub::producer::ProducerConfig::from_directory(args.role_dir);
-        else
-            config = pylabhub::producer::ProducerConfig::from_json_file(args.config_path);
-    }
-    catch (const std::exception &e)
-    {
-        std::cerr << "Config error: " << e.what() << "\n";
-        return 1;
-    }
+        try
+        {
+            if (!args.role_dir.empty())
+                return pylabhub::config::RoleConfig::load_from_directory(
+                    args.role_dir, "producer", pylabhub::producer::parse_producer_fields);
+            else
+                return pylabhub::config::RoleConfig::load(
+                    args.config_path, "producer", pylabhub::producer::parse_producer_fields);
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "Config error: " << e.what() << "\n";
+            std::exit(1);
+        }
+    }();
 
-    // Resolve the config directory for status display.
-    const std::string config_dir = !args.role_dir.empty()
-        ? args.role_dir
-        : std::filesystem::path(args.config_path).parent_path().string();
+    const std::string config_dir = config.base_dir().string();
 
+    // ── Keygen mode ──────────────────────────────────────────────────────────
     if (args.keygen_only)
     {
-        if (config.auth.keyfile.empty())
+        if (config.auth().keyfile.empty())
         {
             std::cerr << "Error: --keygen requires 'producer.auth.keyfile' in config\n";
             return 1;
@@ -266,9 +271,9 @@ int main(int argc, char *argv[])
         try
         {
             const auto vault = pylabhub::utils::ActorVault::create(
-                config.auth.keyfile, config.producer_uid, *pw_opt);
-            std::cout << "Producer vault written to: " << config.auth.keyfile << "\n"
-                      << "  producer_uid : " << config.producer_uid << "\n"
+                config.auth().keyfile, config.identity().uid, *pw_opt);
+            std::cout << "Producer vault written to: " << config.auth().keyfile << "\n"
+                      << "  producer_uid : " << config.identity().uid << "\n"
                       << "  public_key   : " << vault.public_key() << "\n";
         }
         catch (const std::exception &e)
@@ -279,139 +284,88 @@ int main(int argc, char *argv[])
         return 0;
     }
 
+    // ── Lifecycle init ───────────────────────────────────────────────────────
     LifecycleGuard runner_lifecycle(scripting::role_lifecycle_modules(args.log_file));
     scripting::register_signal_handler_lifecycle(signal_handler, "[prod-main]");
     scripting::log_version_info("[prod-main]");
 
-    if (!config.auth.keyfile.empty())
+    // ── Auth ─────────────────────────────────────────────────────────────────
+    if (!config.auth().keyfile.empty())
     {
         const auto vault_password = scripting::get_role_password("producer", "Producer vault password: ");
         if (!vault_password)
             return 1;
-        config.auth.load_keypair(config.producer_uid, *vault_password);
+        config.mutable_auth().load_keypair(config.identity().uid, *vault_password, "prod");
     }
 
-    // ── Dispatch based on script engine ────────────────────────────────────────
-    if (config.script_type == "lua")
+    // ── Create engine based on script type ───────────────────────────────────
+    std::unique_ptr<pylabhub::scripting::ScriptEngine> engine;
+    const auto &script_type = config.script().type;
+
+    if (script_type == "lua")
     {
-        // Unified ProducerRoleHost + LuaEngine (ScriptEngine interface).
-        auto engine = std::make_unique<pylabhub::scripting::LuaEngine>();
+        engine = std::make_unique<pylabhub::scripting::LuaEngine>();
+    }
+    else
+    {
+        auto py = std::make_unique<pylabhub::scripting::PythonEngine>();
+        if (!config.script().python_venv.empty())
+            py->set_python_venv(config.script().python_venv);
+        engine = std::move(py);
+    }
 
-        pylabhub::producer::ProducerRoleHost host;
-        host.set_engine(std::move(engine));
-        host.set_config(std::move(config));
-        host.set_validate_only(args.validate_only);
-        host.set_shutdown_flag(&g_shutdown);
+    // ── Run role host ────────────────────────────────────────────────────────
+    pylabhub::producer::ProducerRoleHost host(
+        std::move(config), std::move(engine), &g_shutdown);
+    host.set_validate_only(args.validate_only);
 
-        try { host.startup_(); }
-        catch (const std::exception &e)
-        {
-            std::cerr << "Lua startup failed: " << e.what() << "\n";
-            return 1;
-        }
+    try { host.startup_(); }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Startup failed: " << e.what() << "\n";
+        return 1;
+    }
 
-        if (!host.script_load_ok())
-        {
-            std::cerr << "Lua script load failed.\n";
-            host.shutdown_();
-            return 1;
-        }
+    if (!host.script_load_ok())
+    {
+        std::cerr << "Script load failed.\n";
+        host.shutdown_();
+        return 1;
+    }
 
-        if (args.validate_only)
-        {
-            std::cout << "\nValidation passed.\n";
-            host.shutdown_();
-            return 0;
-        }
-
-        if (!host.is_running())
-        {
-            std::cerr << "Failed to start Lua producer — loop did not start.\n";
-            host.shutdown_();
-            return 1;
-        }
-
-        const auto start_time = std::chrono::steady_clock::now();
-        const auto &cfg = host.config();
-        signal_handler.set_status_callback([&]() -> std::string
-        {
-            const auto elapsed = std::chrono::steady_clock::now() - start_time;
-            const auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
-            return fmt::format(
-                "  pyLabHub {} (pylabhub-producer, lua)\n"
-                "  Config:    {}\n"
-                "  UID:       {}\n"
-                "  Channel:   {}\n"
-                "  Uptime:    {}h {}m {}s",
-                pylabhub::platform::get_version_string(),
-                config_dir, cfg.producer_uid, cfg.channel,
-                secs / 3600, (secs % 3600) / 60, secs % 60);
-        });
-
-        scripting::run_role_main_loop(g_shutdown, host, "[prod-main]");
+    if (args.validate_only)
+    {
+        std::cout << "\nValidation passed.\n";
         host.shutdown_();
         return 0;
     }
 
-    // ── Python path (default) — unified ProducerRoleHost + PythonEngine ──────
+    if (!host.is_running())
     {
-        auto engine = std::make_unique<pylabhub::scripting::PythonEngine>();
-        if (!config.python_venv.empty())
-            engine->set_python_venv(config.python_venv);
-
-        pylabhub::producer::ProducerRoleHost host;
-        host.set_engine(std::move(engine));
-        host.set_config(std::move(config));
-        host.set_validate_only(args.validate_only);
-        host.set_shutdown_flag(&g_shutdown);
-
-        try { host.startup_(); }
-        catch (const std::exception &e)
-        {
-            std::cerr << "Python startup failed: " << e.what() << "\n";
-            return 1;
-        }
-
-        if (!host.script_load_ok())
-        {
-            std::cerr << "Python script load failed.\n";
-            host.shutdown_();
-            return 1;
-        }
-
-        if (args.validate_only)
-        {
-            std::cout << "\nValidation passed.\n";
-            host.shutdown_();
-            return 0;
-        }
-
-        if (!host.is_running())
-        {
-            std::cerr << "Failed to start producer — loop did not start.\n";
-            host.shutdown_();
-            return 1;
-        }
-
-        const auto start_time = std::chrono::steady_clock::now();
-        const auto &cfg = host.config();
-        signal_handler.set_status_callback([&]() -> std::string
-        {
-            const auto elapsed = std::chrono::steady_clock::now() - start_time;
-            const auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
-            return fmt::format(
-                "  pyLabHub {} (pylabhub-producer, python)\n"
-                "  Config:    {}\n"
-                "  UID:       {}\n"
-                "  Channel:   {}\n"
-                "  Uptime:    {}h {}m {}s",
-                pylabhub::platform::get_version_string(),
-                config_dir, cfg.producer_uid, cfg.channel,
-                secs / 3600, (secs % 3600) / 60, secs % 60);
-        });
-
-        scripting::run_role_main_loop(g_shutdown, host, "[prod-main]");
+        std::cerr << "Failed to start producer — loop did not start.\n";
         host.shutdown_();
+        return 1;
     }
+
+    const auto start_time = std::chrono::steady_clock::now();
+    const auto &cfg = host.config();
+    signal_handler.set_status_callback([&]() -> std::string
+    {
+        const auto elapsed = std::chrono::steady_clock::now() - start_time;
+        const auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+        return fmt::format(
+            "  pyLabHub {} (pylabhub-producer, {})\n"
+            "  Config:    {}\n"
+            "  UID:       {}\n"
+            "  Channel:   {}\n"
+            "  Uptime:    {}h {}m {}s",
+            pylabhub::platform::get_version_string(),
+            cfg.script().type,
+            config_dir, cfg.identity().uid, cfg.out_channel(),
+            secs / 3600, (secs % 3600) / 60, secs % 60);
+    });
+
+    scripting::run_role_main_loop(g_shutdown, host, "[prod-main]");
+    host.shutdown_();
     return 0;
 }

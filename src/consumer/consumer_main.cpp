@@ -39,13 +39,14 @@
  *         api.log('info', "Consumer stopping")
  */
 
-#include "consumer_config.hpp"
 #include "consumer_role_host.hpp"
+#include "consumer_fields.hpp"
 #include "lua_engine.hpp"
 #include "python_engine.hpp"
 
 #include "plh_datahub.hpp"
 #include "utils/actor_vault.hpp"
+#include "utils/config/role_config.hpp"
 #include "utils/role_cli.hpp"
 #include "utils/role_directory.hpp"
 #include "utils/uid_utils.hpp"
@@ -110,28 +111,22 @@ static int do_init(const std::string &cons_dir_str, const std::string &cli_name)
     const std::string cons_uid = pylabhub::uid::generate_consumer_uid(cons_name);
 
     nlohmann::json j;
-    j["hub_dir"] = "<replace with hub directory path, e.g. /var/pylabhub/my_hub>";
 
     j["consumer"]["uid"]       = cons_uid;
     j["consumer"]["name"]      = cons_name;
     j["consumer"]["log_level"] = "info";
     j["consumer"]["auth"]["keyfile"] = "";
 
-    j["channel"]    = "lab.my.channel";
-    j["slot_acquire_timeout_ms"] = -1;
+    j["in_hub_dir"]          = "<replace with hub directory path, e.g. /var/pylabhub/my_hub>";
+    j["in_channel"]          = "lab.my.channel";
+    j["in_transport"]        = "shm";
+    j["in_shm_enabled"]      = true;
+    j["in_verify_checksum"]  = false;
 
-    j["shm"]["enabled"] = true;
-    j["shm"]["secret"]  = 0;
-
-    j["slot_schema"]["fields"] = nlohmann::json::array({
-        nlohmann::json{{"name", "value"}, {"type", "float32"}}
-    });
-    j["flexzone_schema"] = nullptr;
+    j["stop_on_script_error"] = false;
 
     j["script"]["path"] = ".";
     j["script"]["type"] = "python";
-
-    j["validation"]["stop_on_script_error"] = false;
 
     std::ofstream out(json_path);
     if (!out)
@@ -227,23 +222,31 @@ int main(int argc, char *argv[])
     if (args.init_only)
         return do_init(args.role_dir, args.init_name);
 
-    pylabhub::consumer::ConsumerConfig config;
-    try
+    // ── Load config via RoleConfig ───────────────────────────────────────────
+    pylabhub::config::RoleConfig config = [&]
     {
-        if (!args.role_dir.empty())
-            config = pylabhub::consumer::ConsumerConfig::from_directory(args.role_dir);
-        else
-            config = pylabhub::consumer::ConsumerConfig::from_json_file(args.config_path);
-    }
-    catch (const std::exception &e)
-    {
-        std::cerr << "Config error: " << e.what() << "\n";
-        return 1;
-    }
+        try
+        {
+            if (!args.role_dir.empty())
+                return pylabhub::config::RoleConfig::load_from_directory(
+                    args.role_dir, "consumer", pylabhub::consumer::parse_consumer_fields);
+            else
+                return pylabhub::config::RoleConfig::load(
+                    args.config_path, "consumer", pylabhub::consumer::parse_consumer_fields);
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "Config error: " << e.what() << "\n";
+            std::exit(1);
+        }
+    }();
 
+    const std::string config_dir = config.base_dir().string();
+
+    // ── Keygen mode ──────────────────────────────────────────────────────────
     if (args.keygen_only)
     {
-        if (config.auth.keyfile.empty())
+        if (config.auth().keyfile.empty())
         {
             std::cerr << "Error: --keygen requires 'consumer.auth.keyfile' in config\n";
             return 1;
@@ -259,9 +262,9 @@ int main(int argc, char *argv[])
         try
         {
             const auto vault = pylabhub::utils::ActorVault::create(
-                config.auth.keyfile, config.consumer_uid, *pw_opt);
-            std::cout << "Consumer vault written to: " << config.auth.keyfile << "\n"
-                      << "  consumer_uid : " << config.consumer_uid << "\n"
+                config.auth().keyfile, config.identity().uid, *pw_opt);
+            std::cout << "Consumer vault written to: " << config.auth().keyfile << "\n"
+                      << "  consumer_uid : " << config.identity().uid << "\n"
                       << "  public_key   : " << vault.public_key() << "\n";
         }
         catch (const std::exception &e)
@@ -272,144 +275,88 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    // Resolve the config directory for status display.
-    const std::string config_dir = !args.role_dir.empty()
-        ? args.role_dir
-        : std::filesystem::path(args.config_path).parent_path().string();
-
+    // ── Lifecycle init ───────────────────────────────────────────────────────
     LifecycleGuard runner_lifecycle(scripting::role_lifecycle_modules(args.log_file));
     scripting::register_signal_handler_lifecycle(signal_handler, "[cons-main]");
     scripting::log_version_info("[cons-main]");
 
-    if (!config.auth.keyfile.empty())
+    // ── Auth ─────────────────────────────────────────────────────────────────
+    if (!config.auth().keyfile.empty())
     {
         const auto vault_password = scripting::get_role_password("consumer", "Consumer vault password: ");
         if (!vault_password)
             return 1;
-        config.auth.load_keypair(config.consumer_uid, *vault_password);
+        config.mutable_auth().load_keypair(config.identity().uid, *vault_password, "cons");
     }
 
-    // -- Dispatch based on script engine ----------------------------------------
-    if (config.script_type == "lua")
+    // ── Create engine based on script type ───────────────────────────────────
+    std::unique_ptr<pylabhub::scripting::ScriptEngine> engine;
+    const auto &script_type = config.script().type;
+
+    if (script_type == "lua")
     {
-        // Unified ConsumerRoleHost + LuaEngine (ScriptEngine interface).
-        auto engine = std::make_unique<pylabhub::scripting::LuaEngine>();
+        engine = std::make_unique<pylabhub::scripting::LuaEngine>();
+    }
+    else
+    {
+        auto py = std::make_unique<pylabhub::scripting::PythonEngine>();
+        if (!config.script().python_venv.empty())
+            py->set_python_venv(config.script().python_venv);
+        engine = std::move(py);
+    }
 
-        pylabhub::consumer::ConsumerRoleHost host;
-        host.set_engine(std::move(engine));
-        host.set_config(std::move(config));
-        host.set_validate_only(args.validate_only);
-        host.set_shutdown_flag(&g_shutdown);
+    // ── Run role host ────────────────────────────────────────────────────────
+    pylabhub::consumer::ConsumerRoleHost host(
+        std::move(config), std::move(engine), &g_shutdown);
+    host.set_validate_only(args.validate_only);
 
-        try { host.startup_(); }
-        catch (const std::exception &e)
-        {
-            std::cerr << "Lua startup failed: " << e.what() << "\n";
-            return 1;
-        }
+    try { host.startup_(); }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Startup failed: " << e.what() << "\n";
+        return 1;
+    }
 
-        if (!host.script_load_ok())
-        {
-            std::cerr << "Lua script load failed.\n";
-            host.shutdown_();
-            return 1;
-        }
+    if (!host.script_load_ok())
+    {
+        std::cerr << "Script load failed.\n";
+        host.shutdown_();
+        return 1;
+    }
 
-        if (args.validate_only)
-        {
-            std::cout << "\nValidation passed.\n";
-            host.shutdown_();
-            return 0;
-        }
-
-        if (!host.is_running())
-        {
-            std::cerr << "Failed to start Lua consumer — loop did not start.\n";
-            host.shutdown_();
-            return 1;
-        }
-
-        const auto start_time = std::chrono::steady_clock::now();
-        const auto &cfg = host.config();
-        signal_handler.set_status_callback([&]() -> std::string
-        {
-            const auto elapsed = std::chrono::steady_clock::now() - start_time;
-            const auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
-            return fmt::format(
-                "  pyLabHub {} (pylabhub-consumer, lua)\n"
-                "  Config:    {}\n"
-                "  UID:       {}\n"
-                "  Channel:   {}\n"
-                "  Uptime:    {}h {}m {}s",
-                pylabhub::platform::get_version_string(),
-                config_dir, cfg.consumer_uid, cfg.channel,
-                secs / 3600, (secs % 3600) / 60, secs % 60);
-        });
-
-        scripting::run_role_main_loop(g_shutdown, host, "[cons-main]");
+    if (args.validate_only)
+    {
+        std::cout << "\nValidation passed.\n";
         host.shutdown_();
         return 0;
     }
 
-    // ── Python path (default) — unified ConsumerRoleHost + PythonEngine ─────
+    if (!host.is_running())
     {
-        auto engine = std::make_unique<pylabhub::scripting::PythonEngine>();
-        if (!config.python_venv.empty())
-            engine->set_python_venv(config.python_venv);
-
-        pylabhub::consumer::ConsumerRoleHost host;
-        host.set_engine(std::move(engine));
-        host.set_config(std::move(config));
-        host.set_validate_only(args.validate_only);
-        host.set_shutdown_flag(&g_shutdown);
-
-        try { host.startup_(); }
-        catch (const std::exception &e)
-        {
-            std::cerr << "Python startup failed: " << e.what() << "\n";
-            return 1;
-        }
-
-        if (!host.script_load_ok())
-        {
-            std::cerr << "Python script load failed.\n";
-            host.shutdown_();
-            return 1;
-        }
-
-        if (args.validate_only)
-        {
-            std::cout << "\nValidation passed.\n";
-            host.shutdown_();
-            return 0;
-        }
-
-        if (!host.is_running())
-        {
-            std::cerr << "Failed to start consumer — loop did not start.\n";
-            host.shutdown_();
-            return 1;
-        }
-
-        const auto start_time = std::chrono::steady_clock::now();
-        const auto &cfg = host.config();
-        signal_handler.set_status_callback([&]() -> std::string
-        {
-            const auto elapsed = std::chrono::steady_clock::now() - start_time;
-            const auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
-            return fmt::format(
-                "  pyLabHub {} (pylabhub-consumer, python)\n"
-                "  Config:    {}\n"
-                "  UID:       {}\n"
-                "  Channel:   {}\n"
-                "  Uptime:    {}h {}m {}s",
-                pylabhub::platform::get_version_string(),
-                config_dir, cfg.consumer_uid, cfg.channel,
-                secs / 3600, (secs % 3600) / 60, secs % 60);
-        });
-
-        scripting::run_role_main_loop(g_shutdown, host, "[cons-main]");
+        std::cerr << "Failed to start consumer — loop did not start.\n";
         host.shutdown_();
+        return 1;
     }
+
+    const auto start_time = std::chrono::steady_clock::now();
+    const auto &cfg = host.config();
+    signal_handler.set_status_callback([&]() -> std::string
+    {
+        const auto elapsed = std::chrono::steady_clock::now() - start_time;
+        const auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+        return fmt::format(
+            "  pyLabHub {} (pylabhub-consumer, {})\n"
+            "  Config:    {}\n"
+            "  UID:       {}\n"
+            "  Channel:   {}\n"
+            "  Uptime:    {}h {}m {}s",
+            pylabhub::platform::get_version_string(),
+            cfg.script().type,
+            config_dir, cfg.identity().uid, cfg.in_channel(),
+            secs / 3600, (secs % 3600) / 60, secs % 60);
+    });
+
+    scripting::run_role_main_loop(g_shutdown, host, "[cons-main]");
+    host.shutdown_();
     return 0;
 }
