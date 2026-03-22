@@ -14,12 +14,15 @@
  *
  *     {
  *       "producer": { "uid": "PROD-TEMPSENS-12345678", "name": "TempSensor" },
- *       "hub_dir": "/var/pylabhub/my_hub",
- *       "channel":          "lab.sensors.temperature",
- *       "target_period_ms": 100,
- *       "shm": { "enabled": true, "secret": 0, "slot_count": 8 },
- *       "slot_schema": { "fields": [{"name": "value", "type": "float32"}] },
- *       "script": { "path": "." }
+ *       "out_hub_dir":        "/var/pylabhub/my_hub",
+ *       "out_channel":        "lab.sensors.temperature",
+ *       "target_period_ms":   100,
+ *       "out_transport":      "shm",
+ *       "out_shm_enabled":    true,
+ *       "out_shm_slot_count": 8,
+ *       "out_slot_schema":    { "fields": [{"name": "value", "type": "float32"}] },
+ *       "out_update_checksum": true,
+ *       "script": { "type": "python", "path": "." }
  *     }
  *
  * ## Python script interface
