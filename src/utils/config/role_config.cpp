@@ -127,34 +127,27 @@ RoleConfig RoleConfig::load(const std::string &path,
         throw std::runtime_error(
             "RoleConfig: cannot open config file '" + path + "': " + ec.message());
 
-    // Read JSON via JsonConfig transaction (thread-safe, process-safe).
-    // Parsing errors are captured (not thrown inside the lambda) and
-    // reported after the transaction completes. JsonConfig logs any
-    // exceptions internally — we don't need them to escape.
-    std::string parse_error;
-    s.jcfg.transaction(utils::JsonConfig::AccessFlags::ReloadFirst)
-        .read([&](const nlohmann::json &j)
+    // Step 1: Read from JsonConfig's in-memory cache (no file I/O —
+    // the constructor already loaded the file).
     {
-        try
-        {
-            s.raw_json = j;
-            s.load_common(j);
+        std::error_code lock_ec;
+        auto rlock = s.jcfg.lock_for_read(&lock_ec);
+        if (!rlock)
+            throw std::runtime_error(
+                "RoleConfig: cannot read config '" + path + "': " + lock_ec.message());
+        s.raw_json = rlock->json();
+    }
 
-            // Security check.
-            utils::RoleDirectory::warn_if_keyfile_in_role_dir(s.base_dir, s.auth.keyfile);
+    // Step 2: Parse outside the transaction — exceptions propagate normally.
+    // Clean separation: JsonConfig does file I/O, we do config validation.
+    s.load_common(s.raw_json);
 
-            // Role-specific extension.
-            if (role_parser)
-                s.role_data = role_parser(j, cfg);
-        }
-        catch (const std::exception &e)
-        {
-            parse_error = e.what();
-        }
-    });
+    // Security check.
+    utils::RoleDirectory::warn_if_keyfile_in_role_dir(s.base_dir, s.auth.keyfile);
 
-    if (!parse_error.empty())
-        throw std::runtime_error("RoleConfig: " + parse_error);
+    // Role-specific extension.
+    if (role_parser)
+        s.role_data = role_parser(s.raw_json, cfg);
 
     return cfg;
 }

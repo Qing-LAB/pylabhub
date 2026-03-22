@@ -788,11 +788,14 @@ void ProcessorRoleHost::run_data_loop_()
         return;
     }
 
+    const auto &tc  = config_.timing();
+    const auto &vld = config_.validation();
+
     // --- Setup ---
     const double period_us =
-        static_cast<double>(config_.timing().target_period_ms) * kUsPerMs;
-    const bool is_max_rate = (config_.timing().loop_timing == LoopTimingPolicy::MaxRate);
-    const auto short_timeout_us = compute_short_timeout(period_us, config_.timing().queue_io_wait_timeout_ratio);
+        static_cast<double>(tc.target_period_ms) * kUsPerMs;
+    const bool is_max_rate = (tc.loop_timing == LoopTimingPolicy::MaxRate);
+    const auto short_timeout_us = compute_short_timeout(period_us, tc.queue_io_wait_timeout_ratio);
     // Acquire takes milliseconds; convert with rounding up to avoid 0ms.
     const auto short_timeout =
         std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -976,7 +979,7 @@ void ProcessorRoleHost::run_data_loop_()
         if (result == InvokeResult::Error)
         {
             // script_errors already incremented by engine.
-            if (config_.validation().stop_on_script_error)
+            if (vld.stop_on_script_error)
                 core_.request_stop();
         }
 
@@ -988,7 +991,7 @@ void ProcessorRoleHost::run_data_loop_()
         core_.set_last_cycle_work_us(work_us);
         core_.inc_iteration_count();
 
-        deadline = compute_next_deadline(config_.timing().loop_timing, deadline, cycle_start, period_us);
+        deadline = compute_next_deadline(tc.loop_timing, deadline, cycle_start, period_us);
     }
 
     // Clean up held input on loop exit.
