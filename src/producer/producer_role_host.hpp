@@ -50,7 +50,7 @@ class ProducerRoleHost
 
     // ── Configuration ────────────────────────────────────────────────────────
 
-    void set_validate_only(bool v) { validate_only_ = v; }
+    void set_validate_only(bool v) { core_.set_validate_only(v); }
 
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -63,7 +63,7 @@ class ProducerRoleHost
     // ── Queries (called from main thread) ────────────────────────────────────
 
     [[nodiscard]] bool is_running() const { return core_.is_running(); }
-    [[nodiscard]] bool script_load_ok() const { return script_load_ok_.load(std::memory_order_acquire); }
+    [[nodiscard]] bool script_load_ok() const { return core_.is_script_load_ok(); }
     [[nodiscard]] const config::RoleConfig &config() const { return config_; }
 
     /// Block until wakeup (shutdown, incoming message, or timeout).
@@ -91,8 +91,6 @@ class ProducerRoleHost
     scripting::RoleHostCore                core_;
     config::RoleConfig                     config_;
     std::unique_ptr<scripting::ScriptEngine> engine_;
-    bool                                   validate_only_{false};
-    std::atomic<bool>                      script_load_ok_{false};
 
     // Worker thread.
     std::thread                            worker_thread_;
@@ -106,7 +104,7 @@ class ProducerRoleHost
     std::thread                            ctrl_thread_;
 
     // Schema info (resolved from config during setup).
-    // fz_spec is stored in core_.fz_spec (shared with engine for flexzone exposure).
+    // fz_spec is stored in core_.fz_spec() (shared with engine for flexzone exposure).
     scripting::SchemaSpec                  slot_spec_;
     size_t                                 schema_slot_size_{0};
     std::string                            inbox_type_name_;

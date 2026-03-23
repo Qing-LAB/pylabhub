@@ -53,7 +53,7 @@ ProcessorRoleHost::ProcessorRoleHost(config::RoleConfig config,
     : config_(std::move(config))
     , engine_(std::move(engine))
 {
-    core_.g_shutdown = shutdown_flag;
+    core_.set_shutdown_flag(shutdown_flag);
 }
 
 
@@ -124,14 +124,15 @@ void ProcessorRoleHost::worker_main_()
     if (!engine_->load_script(script_dir, entry_point, "on_process"))
     {
         LOGGER_ERROR("[proc] Engine load_script() failed");
-        script_load_ok_.store(false, std::memory_order_release);
+        core_.set_script_load_ok(false);
         engine_->finalize();
         ready_promise_.set_value(false);
         return;
     }
-    script_load_ok_.store(true, std::memory_order_release);
+    core_.set_script_load_ok(true);
 
     // Step 3: Resolve schemas and register slot types.
+    scripting::SchemaSpec fz_spec_local;
     {
         std::vector<std::string> schema_dirs;
         auto add_schema_dir = [&schema_dirs](const std::string &hub_dir) {
@@ -151,7 +152,7 @@ void ProcessorRoleHost::worker_main_()
                 config_.role_data<ProcessorFields>().in_slot_schema_json, false, "proc", schema_dirs);
             out_slot_spec_ = scripting::resolve_schema(
                 config_.role_data<ProcessorFields>().out_slot_schema_json, false, "proc", schema_dirs);
-            core_.fz_spec  = scripting::resolve_schema(
+            fz_spec_local  = scripting::resolve_schema(
                 config_.role_data<ProcessorFields>().out_flexzone_schema_json, true, "proc", schema_dirs);
         }
         catch (const std::exception &e)
@@ -196,23 +197,26 @@ void ProcessorRoleHost::worker_main_()
     }
 
     // Register flexzone type (output side).
-    if (core_.fz_spec.has_schema)
+    if (fz_spec_local.has_schema)
     {
-        core_.has_fz = true;
-        if (!engine_->register_slot_type(core_.fz_spec, "FlexFrame", out_packing))
+        if (!engine_->register_slot_type(fz_spec_local, "FlexFrame", out_packing))
         {
             LOGGER_ERROR("[proc] Failed to register FlexFrame type");
             engine_->finalize();
             ready_promise_.set_value(false);
             return;
         }
-        core_.schema_fz_size = engine_->type_sizeof("FlexFrame");
-        // Page-align flexzone size.
-        core_.schema_fz_size = (core_.schema_fz_size + 4095U) & ~size_t{4095U};
+        size_t fz_size = engine_->type_sizeof("FlexFrame");
+        fz_size = (fz_size + 4095U) & ~size_t{4095U};
+        core_.set_fz_spec(std::move(fz_spec_local), fz_size);
+    }
+    else
+    {
+        core_.set_fz_spec(std::move(fz_spec_local), 0);
     }
 
     // Validate-only mode: print layout and exit.
-    if (validate_only_)
+    if (core_.is_validate_only())
     {
         // TODO: print layout via engine
         engine_->finalize();
@@ -230,19 +234,15 @@ void ProcessorRoleHost::worker_main_()
     }
 
     // Step 5: Build RoleContext and engine API.
-    // Store script_dir string so ctx.script_dir doesn't dangle.
-    const std::string script_dir_str = script_dir.string();
-    const std::string base_dir_str = config_.base_dir().string();
-
     scripting::RoleContext ctx;
     ctx.role_tag     = "proc";
-    ctx.uid          = config_.identity().uid.c_str();
-    ctx.name         = config_.identity().name.c_str();
-    ctx.channel      = config_.in_channel().c_str();
-    ctx.out_channel  = config_.out_channel().c_str();
-    ctx.log_level    = config_.identity().log_level.c_str();
-    ctx.script_dir   = script_dir_str.c_str();
-    ctx.role_dir     = base_dir_str.c_str();
+    ctx.uid          = config_.identity().uid;
+    ctx.name         = config_.identity().name;
+    ctx.channel      = config_.in_channel();
+    ctx.out_channel  = config_.out_channel();
+    ctx.log_level    = config_.identity().log_level;
+    ctx.script_dir   = script_dir.string();
+    ctx.role_dir     = config_.base_dir().string();
     ctx.messenger    = &out_messenger_;
     ctx.queue_writer = out_q_;
     ctx.queue_reader = in_q_;
@@ -257,7 +257,7 @@ void ProcessorRoleHost::worker_main_()
     engine_->invoke_on_init();
 
     // Sync flexzone checksum after on_init (user may have written to flexzone).
-    if (out_q_ && core_.has_fz)
+    if (out_q_ && core_.has_fz())
         out_q_->sync_flexzone_checksum();
 
     // Step 7: Spawn ctrl_thread_ and signal ready.
@@ -380,7 +380,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
     out_opts.channel_name = config_.out_channel();
     out_opts.pattern      = hub::ChannelPattern::PubSub;
     out_opts.has_shm      = config_.out_shm().enabled;
-    out_opts.schema_hash  = scripting::compute_schema_hash(out_slot_spec_, core_.fz_spec);
+    out_opts.schema_hash  = scripting::compute_schema_hash(out_slot_spec_, core_.fz_spec());
     out_opts.role_name   = config_.identity().name;
     out_opts.role_uid    = config_.identity().uid;
 
@@ -400,7 +400,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
         out_opts.shm_config.policy               = hub::DataBlockPolicy::RingBuffer;
         out_opts.shm_config.consumer_sync_policy = config_.out_shm().sync_policy;
         out_opts.shm_config.checksum_policy      = hub::ChecksumPolicy::Manual;
-        out_opts.shm_config.flex_zone_size       = core_.schema_fz_size;
+        out_opts.shm_config.flex_zone_size       = core_.schema_fz_size();
 
         out_opts.shm_config.physical_page_size = hub::system_page_size();
         out_opts.shm_config.logical_unit_size  =
@@ -676,7 +676,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
             return false;
         }
         in_queue_ = hub::ShmQueue::from_consumer_ref(
-            *in_shm, in_schema_slot_size_, core_.schema_fz_size, config_.in_channel());
+            *in_shm, in_schema_slot_size_, core_.schema_fz_size(), config_.in_channel());
         if (!in_queue_->start())
         {
             LOGGER_ERROR("[proc] SHM input queue start() failed (channel='{}')",
@@ -684,7 +684,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
             return false;
         }
         if (config_.in_shm().verify_checksum)
-            in_queue_->set_verify_checksum(true, core_.has_fz);
+            in_queue_->set_verify_checksum(true, core_.has_fz());
         in_q_ = in_queue_.get();
     }
 
@@ -703,11 +703,11 @@ bool ProcessorRoleHost::setup_infrastructure_()
             return false;
         }
         out_queue_ = hub::ShmQueue::from_producer_ref(
-            *out_shm, out_schema_slot_size_, core_.schema_fz_size, config_.out_channel());
+            *out_shm, out_schema_slot_size_, core_.schema_fz_size(), config_.out_channel());
         out_queue_->start();
         out_q_ = out_queue_.get();
     }
-    out_q_->set_checksum_options(config_.out_shm().update_checksum, core_.has_fz);
+    out_q_->set_checksum_options(config_.out_shm().update_checksum, core_.has_fz());
 
     LOGGER_INFO("[proc] Processor started: '{}' -> '{}'",
                 config_.in_channel(), config_.out_channel());
@@ -806,9 +806,9 @@ void ProcessorRoleHost::run_data_loop_()
     const size_t out_sz = out_q_->item_size();
 
     // Flexzone pointers — valid after queue start.
-    void       *fz_ptr  = core_.has_fz ? out_q_->write_flexzone() : nullptr;
-    const size_t fz_sz  = core_.has_fz ? out_q_->flexzone_size()  : 0;
-    const char *fz_type = core_.has_fz ? "FlexFrame" : nullptr;
+    void       *fz_ptr  = core_.has_fz() ? out_q_->write_flexzone() : nullptr;
+    const size_t fz_sz  = core_.has_fz() ? out_q_->flexzone_size()  : 0;
+    const char *fz_type = core_.has_fz() ? "FlexFrame" : nullptr;
 
     // First cycle: no deadline — fire immediately.
     auto deadline = Clock::time_point::max();
@@ -931,7 +931,7 @@ void ProcessorRoleHost::run_data_loop_()
             std::memset(out_buf, 0, out_sz);
 
         // Re-read flexzone pointer each cycle (ShmQueue may move it).
-        if (core_.has_fz)
+        if (core_.has_fz())
             fz_ptr = out_q_->write_flexzone();
 
         InvokeResult result =

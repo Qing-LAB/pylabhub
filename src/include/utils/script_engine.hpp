@@ -67,14 +67,14 @@ enum class InvokeResult
  */
 struct RoleContext
 {
-    const char *role_tag{nullptr};    ///< "prod", "cons", "proc"
-    const char *uid{nullptr};
-    const char *name{nullptr};
-    const char *channel{nullptr};     ///< Primary channel (or in_channel for processor)
-    const char *out_channel{nullptr}; ///< out_channel for processor (nullptr for producer/consumer)
-    const char *log_level{nullptr};
-    const char *script_dir{nullptr};
-    const char *role_dir{nullptr};
+    std::string role_tag;              ///< "prod", "cons", "proc"
+    std::string uid;
+    std::string name;
+    std::string channel;               ///< Primary channel (or in_channel for processor)
+    std::string out_channel;           ///< out_channel for processor (empty for producer/consumer)
+    std::string log_level;
+    std::string script_dir;
+    std::string role_dir;
 
     hub::Messenger   *messenger{nullptr};     ///< For open_inbox, wait_for_role, broadcast, send
     hub::QueueWriter *queue_writer{nullptr};   ///< For update_flexzone_checksum (producer/processor out)
@@ -89,7 +89,6 @@ struct RoleContext
 
     /// Pointer to RoleHostCore — single source of truth for shutdown flags
     /// AND metrics (out_written, in_received, drops, script_errors, etc.).
-    /// All engines read metrics from core->out_written_.load() etc.
     RoleHostCore *core{nullptr};
 
     bool stop_on_script_error{false};

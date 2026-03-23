@@ -15,8 +15,8 @@
  * ## Thread safety
  * - Atomic state (shutdown, metrics, errors): safe to read/write from any thread
  * - Message queue: mutex-protected, safe from any thread
- * - Plain state (validate_only, script_load_ok, running): protected by
- *   promise/future synchronization between worker and main thread
+ * - Init-time state (script_load_ok, fz_spec, schema_fz_size): set once
+ *   during worker_main_ init, then read-only
  */
 
 #include "utils/script_host_schema.hpp" // SchemaSpec, FieldDef
@@ -44,14 +44,6 @@ struct IncomingMessage
 class RoleHostCore
 {
   public:
-    // ── External shutdown flag (from main) ────────────────────────────────
-    //
-    // g_shutdown is owned by main(). Set ONLY by the signal handler.
-    // The role host stores a non-owning pointer and polls it in the loop.
-    // Scripts cannot write to it — they use request_stop() instead.
-
-    std::atomic<bool> *g_shutdown{nullptr};
-
     // ── Message queue ────────────────────────────────────────────────────
 
     static constexpr size_t kMaxIncomingQueue = 64;
@@ -61,17 +53,35 @@ class RoleHostCore
     void notify_incoming() noexcept;
     void wait_for_incoming(int timeout_ms) noexcept;
 
-    // ── Plain state (protected by promise/future, not atomics) ───────────
+    // ── External shutdown flag (from main) ────────────────────────────────
 
-    bool validate_only{false};
-    bool script_load_ok{false};
-    bool running{false};
+    void set_shutdown_flag(std::atomic<bool> *flag) noexcept { g_shutdown_ = flag; }
 
-    // ── Schema (engine-agnostic) ─────────────────────────────────────────
+    // ── Plain state (set once during init, read during loop) ─────────────
 
-    SchemaSpec fz_spec;
-    size_t     schema_fz_size{0};
-    bool       has_fz{false};
+    void set_validate_only(bool v) noexcept { validate_only_ = v; }
+    [[nodiscard]] bool is_validate_only() const noexcept { return validate_only_; }
+
+    void set_script_load_ok(bool v) noexcept
+    {
+        script_load_ok_.store(v, std::memory_order_release);
+    }
+    [[nodiscard]] bool is_script_load_ok() const noexcept
+    {
+        return script_load_ok_.load(std::memory_order_acquire);
+    }
+
+    // ── Schema (engine-agnostic, set once during init) ───────────────────
+
+    void set_fz_spec(SchemaSpec spec, size_t fz_size) noexcept
+    {
+        fz_spec_        = std::move(spec);
+        schema_fz_size_ = fz_size;
+        has_fz_         = fz_spec_.has_schema;
+    }
+    [[nodiscard]] const SchemaSpec &fz_spec()        const noexcept { return fz_spec_; }
+    [[nodiscard]] size_t            schema_fz_size() const noexcept { return schema_fz_size_; }
+    [[nodiscard]] bool              has_fz()         const noexcept { return has_fz_; }
 
     // ── Stop reason enum ─────────────────────────────────────────────────
 
@@ -150,7 +160,7 @@ class RoleHostCore
     /// Check if external signal handler requested process exit.
     [[nodiscard]] bool is_process_exit_requested() const noexcept
     {
-        return g_shutdown && g_shutdown->load(std::memory_order_relaxed);
+        return g_shutdown_ && g_shutdown_->load(std::memory_order_relaxed);
     }
 
     [[nodiscard]] std::string stop_reason_string() const noexcept
@@ -210,6 +220,16 @@ class RoleHostCore
     std::vector<IncomingMessage> incoming_queue_;
     std::mutex                   incoming_mu_;
     std::condition_variable      incoming_cv_;
+
+    // ── External shutdown flag ───────────────────────────────────────────
+    std::atomic<bool> *g_shutdown_{nullptr};
+
+    // ── Init-time state (set once, read during loop) ─────────────────────
+    bool              validate_only_{false};
+    std::atomic<bool> script_load_ok_{false};
+    SchemaSpec fz_spec_;
+    size_t     schema_fz_size_{0};
+    bool       has_fz_{false};
 };
 
 } // namespace pylabhub::scripting
