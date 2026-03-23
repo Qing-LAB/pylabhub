@@ -1176,4 +1176,118 @@ TEST_F(PythonEngineTest, SupportsMultiState_ReturnsFalse)
     EXPECT_EQ(child, nullptr);
 }
 
+// ============================================================================
+// Generic invoke() tests
+// ============================================================================
+
+TEST_F(PythonEngineTest, Invoke_ExistingFunction_ReturnsTrue)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    return True
+
+def on_heartbeat():
+    pass
+)");
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    EXPECT_TRUE(engine.invoke("on_heartbeat"));
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Invoke_NonExistentFunction_ReturnsFalse)
+{
+    write_script("def on_produce(out_slot, fz, msgs, api):\n    return True\n");
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    EXPECT_FALSE(engine.invoke("no_such_function"));
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Invoke_Nullptr_ReturnsFalse)
+{
+    write_script("def on_produce(out_slot, fz, msgs, api):\n    return True\n");
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    EXPECT_FALSE(engine.invoke(nullptr));
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Invoke_ScriptError_ReturnsFalseAndIncrementsErrors)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    return True
+
+def bad_func():
+    raise RuntimeError("intentional test error")
+)");
+    RoleHostCore core;
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine_with_core(engine, core));
+
+    EXPECT_FALSE(engine.invoke("bad_func"));
+    EXPECT_EQ(core.script_errors(), 1u);
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Invoke_FromNonOwnerThread_Queued)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    return True
+
+def on_heartbeat():
+    pass
+)");
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    // Non-owner thread: enqueues request, blocks on future.
+    // Owner must process via process_pending_() which is called
+    // at the end of each hot-path invoke.
+    std::atomic<bool> done{false};
+    bool result = false;
+
+    std::thread t([&]
+    {
+        result = engine.invoke("on_heartbeat");
+        done.store(true, std::memory_order_release);
+    });
+
+    // Owner thread: trigger process_pending_() by calling a hot-path invoke.
+    // Use invoke_on_init which is lightweight (may be no-op if on_init not defined).
+    // Poll until the non-owner thread is done.
+    while (!done.load(std::memory_order_acquire))
+    {
+        std::vector<IncomingMessage> msgs;
+        engine.invoke_produce(nullptr, 0, nullptr, 0, nullptr, msgs);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    t.join();
+    EXPECT_TRUE(result);
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Invoke_AfterFinalize_ReturnsFalse)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    return True
+
+def on_heartbeat():
+    pass
+)");
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+    engine.finalize();
+
+    // After finalize, invoke should return false immediately.
+    EXPECT_FALSE(engine.invoke("on_heartbeat"));
+}
+
 } // anonymous namespace
