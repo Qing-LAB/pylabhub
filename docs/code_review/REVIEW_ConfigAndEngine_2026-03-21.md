@@ -2,7 +2,7 @@
 
 **Date**: 2026-03-21
 **Scope**: Config module Phase 1-2, ScriptEngine lifecycle, role hosts, design docs
-**Status**: Active
+**Status**: CLOSED (config complete 2026-03-23; deferred items tracked in API_TODO)
 
 ## Findings
 
@@ -23,10 +23,10 @@
 | SE-15 | LOW | GIL comments contradictory | ✅ FIXED 2026-03-21 |
 | CR-01 | MED | config::AuthConfig::load_keypair declared but not implemented | ✅ FIXED 2026-03-21 |
 | CR-02 | LOW | Unused <filesystem> include in auth_config.hpp | ✅ FIXED 2026-03-21 |
-| CR-03 | MED | RoleHostCore has 6 public plain members (should be private) | ⏳ Phase 3 (role host migration) |
+| CR-03 | MED | RoleHostCore has 6 public plain members (should be private) | ⏳ DEFERRED (ScriptEngine cleanup) |
 | CR-04 | — | should_continue_loop() memory ordering: CORRECT | ✅ VERIFIED |
 | CR-05 | — | PYLABHUB_BUILD_TESTS guard: CORRECT | ✅ VERIFIED |
-| CR-06 | LOW | 3 identical role-specific AuthConfig::load_keypair() | ⏳ Phase 3 (replace with config::AuthConfig) |
+| CR-06 | LOW | 3 identical role-specific AuthConfig::load_keypair() | ✅ FIXED (RoleConfig::load_keypair) |
 | CR-07 | — | No config constant duplication | ✅ VERIFIED |
 
 ## Deferred Items Tracked In
@@ -41,9 +41,11 @@
 | Phase | Description | Status |
 |-------|-------------|--------|
 | 1 | Categorical config headers + shared parsers | ✅ cb7e4b5 |
-| 2 | RoleDirectory::load_config() + typed accessors | ✅ e44ddfa |
-| 3 | Migrate role hosts + mains to RoleDirectory | ⏳ NEXT |
-| 4 | Remove monolithic config structs | ⏳ After Phase 3 |
+| 2 | RoleConfig unified class with JsonConfig backend | ✅ 36f1902 |
+| 3 | Migrate role hosts + mains to RoleConfig | ✅ c0100d1, a445dca |
+| 4 | Remove monolithic config structs | ✅ 9dbfa59 |
+| 5 | Dead field cleanup + struct merges | ✅ cc4c581, f2a805e |
+| 6 | HEP/README doc sync | ✅ fcaaf33 |
 
 ## Design Documents Created
 

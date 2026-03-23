@@ -3,7 +3,8 @@
  * @file shm_config.hpp
  * @brief ShmConfig — categorical config for shared-memory data plane.
  *
- * Parsed from directional JSON fields: <direction>_shm_enabled, etc.
+ * Parsed from directional JSON fields: <direction>_shm_enabled,
+ * <direction>_update_checksum, <direction>_verify_checksum, etc.
  */
 
 #include "utils/data_block_policy.hpp" // ConsumerSyncPolicy, parse_consumer_sync_policy

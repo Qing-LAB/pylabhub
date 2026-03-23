@@ -12,7 +12,7 @@
  * - **Common fields** are parsed by categorical parsers and stored in the pImpl.
  *   Accessed via typed const accessors: identity(), timing(), in_hub(), out_transport(), etc.
  *
- * - **Directional fields** (hub, transport, SHM, validation, channel) always have
+ * - **Directional fields** (hub, transport, SHM, channel) always have
  *   two slots: in_ and out_. Producer populates out_ only, consumer populates in_ only,
  *   processor populates both. No role-specific branching in the loader.
  *
