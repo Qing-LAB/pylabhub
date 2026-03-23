@@ -30,8 +30,11 @@
 #include <pybind11/embed.h>
 
 #include <atomic>
+#include <deque>
 #include <filesystem>
+#include <future>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -108,6 +111,12 @@ class PythonEngine : public ScriptEngine
         const char *type_name,
         const char *sender) override;
 
+    // ── Generic invoke (thread-safe) ─────────────────────────────────────
+
+    bool invoke(const char *name) override;
+    bool invoke(const char *name, const nlohmann::json &args) override;
+    nlohmann::json eval(const char *code) override;
+
     // ── Error state ────────────────────────────────────────────────────────
 
     [[nodiscard]] uint64_t script_error_count() const noexcept override
@@ -170,6 +179,23 @@ class PythonEngine : public ScriptEngine
     // ── Context ────────────────────────────────────────────────────────────
     RoleContext ctx_{};
     bool stop_on_script_error_{false};
+
+    // ── Generic invoke queue (§4/§6 of engine_thread_model.md) ────────────
+    struct PendingRequest
+    {
+        std::string                      name;
+        nlohmann::json                   args;
+        bool                             is_eval{false};
+        std::promise<InvokeResponse>     promise;
+    };
+    std::deque<PendingRequest>  request_queue_;
+    std::mutex                  queue_mu_;
+    std::atomic<bool>           accepting_{true};
+
+    InvokeResponse execute_direct_(const char *name);
+    InvokeResponse execute_direct_(const char *name, const nlohmann::json &args);
+    nlohmann::json eval_direct_(const char *code);
+    void process_pending_();
 
     // ── Internal helpers ───────────────────────────────────────────────────
 
