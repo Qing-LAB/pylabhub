@@ -419,8 +419,8 @@ Producer::create(Messenger &messenger, const ProducerOptions &opts)
     ch_opts.schema_hash       = opts.schema_hash;
     ch_opts.schema_version    = opts.schema_version;
     ch_opts.timeout_ms        = opts.timeout_ms;
-    ch_opts.actor_name        = opts.actor_name;
-    ch_opts.actor_uid         = opts.actor_uid;
+    ch_opts.role_name        = opts.role_name;
+    ch_opts.role_uid         = opts.role_uid;
     ch_opts.data_transport    = opts.data_transport;
     ch_opts.zmq_node_endpoint = opts.zmq_node_endpoint;
     ch_opts.inbox_endpoint    = opts.inbox_endpoint;
@@ -463,7 +463,7 @@ Producer::create_from_parts(Messenger &messenger, ChannelHandle channel,
     impl->messenger = &messenger;
     impl->closed    = false;
 
-    // Wire LoopPolicy (HEP-CORE-0008 Pass 3): actor_host.cpp overrides this after start_embedded().
+    // Wire LoopPolicy (HEP-CORE-0008 Pass 3): role host overrides this after start_embedded().
     if (impl->shm != nullptr &&
         (opts.loop_policy != LoopPolicy::MaxRate || opts.period_ms.count() > 0))
     {

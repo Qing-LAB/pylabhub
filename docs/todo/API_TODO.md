@@ -24,8 +24,27 @@
 ### ScriptEngine Post-Refactor Deferred Items (2026-03-21)
 
 - [ ] **SE-03 HIGH**: HEP-CORE-0011 fundamentally stale — rewrite §3.2, §3.3, §4.2, §8, §8.2 for composition model
-- [ ] **SE-08 MED**: HEP-0018/0015 partially stale — update class name refs and thread model
+- [ ] **SE-04 MED**: Lua API parity — Lua role hosts currently lack most API bindings (open_inbox, wait_for_role, queue-state, metrics); needs design decision on scope
 - [ ] **SE-07 MED**: `--validate` stub in all 3 role hosts — design what validate should check, implement
+- [ ] **SE-08 MED**: HEP-0018/0015 partially stale — update class name refs and thread model
+
+### ScriptEngine Thread Model Implementation (2026-03-21)
+
+**Design**: `docs/tech_draft/engine_thread_model.md`
+**Motivation**: Enable cross-thread script execution (ctrl_thread_, inbox_thread_) + shared state + native C++ plugin engine.
+
+- [ ] Phase 1: `invoke(name)` / `invoke(name, args)` / `eval(code)` on ScriptEngine interface
+- [ ] Phase 2: Engine infrastructure — owner thread detection, Lua thread-state cache
+- [ ] Phase 3: Cross-thread dispatch — Python request queue + drain at safe point; Lua multi-state
+- [ ] Phase 4: Shared JSON state in RoleHostCore (`get_state`/`set_state` script API)
+- [ ] Phase 5: ctrl_thread_ script support (script-driven control-plane responses)
+- [ ] Phase 6: NativeEngine — `.so`/`.dll` plugin engine with `build_info` ABI verification, zero-copy data access
+
+### ScriptEngine Cleanup (post-refactor)
+
+- [ ] RoleHostCore encapsulation (CR-03): `g_shutdown`, `validate_only`, `fz_spec` → private with accessors
+- [ ] RoleContext: `const char*` members → `std::string` (dangling pointer risk)
+- [ ] Hubshell migration to PythonEngine (currently uses raw pybind11 embed)
 
 ### HEP-0024: Role Directory Service (NEW — 2026-03-12)
 

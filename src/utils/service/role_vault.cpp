@@ -1,9 +1,9 @@
 /**
  * @file role_vault.cpp
- * @brief RoleVault — encrypted actor keypair store.
+ * @brief RoleVault — encrypted role keypair store.
  *
  * Crypto layer delegated to vault_crypto.hpp (shared with HubVault).
- * This file handles only actor-specific payload (CurveZMQ keypair).
+ * This file handles only role-specific payload (CurveZMQ keypair).
  */
 #include "utils/role_vault.hpp"
 
@@ -29,7 +29,7 @@ namespace pylabhub::utils
 
 struct RoleVault::Impl
 {
-    std::string actor_uid_;   ///< Actor UID from payload
+    std::string role_uid_;   ///< Role UID from payload
     std::string public_key_;  ///< Z85, 40 chars
     std::string secret_key_;  ///< Z85, 40 chars
 };
@@ -60,7 +60,7 @@ RoleVault &RoleVault::operator=(RoleVault &&) noexcept = default;
 // ============================================================================
 
 RoleVault RoleVault::create(const fs::path    &vault_path,
-                               const std::string &actor_uid,
+                               const std::string &role_uid,
                                const std::string &password)
 {
     detail::vault_require_sodium();
@@ -89,14 +89,14 @@ RoleVault RoleVault::create(const fs::path    &vault_path,
 
     // Serialize and encrypt payload.
     const json payload = {
-        {"actor_uid",  actor_uid},
+        {"role_uid",  role_uid},
         {"public_key", pub_str},
         {"secret_key", sec_str}
     };
-    detail::vault_write(vault_path, payload.dump(), password, actor_uid);
+    detail::vault_write(vault_path, payload.dump(), password, role_uid);
 
     RoleVault v;
-    v.pImpl->actor_uid_  = actor_uid;
+    v.pImpl->role_uid_  = role_uid;
     v.pImpl->public_key_ = pub_str;
     v.pImpl->secret_key_ = sec_str;
     return v;
@@ -107,19 +107,19 @@ RoleVault RoleVault::create(const fs::path    &vault_path,
 // ============================================================================
 
 RoleVault RoleVault::open(const fs::path    &vault_path,
-                             const std::string &actor_uid,
+                             const std::string &role_uid,
                              const std::string &password)
 {
     detail::vault_require_sodium();
 
     // vault_read throws on wrong password or I/O failure.
-    const std::string plaintext = detail::vault_read(vault_path, password, actor_uid);
+    const std::string plaintext = detail::vault_read(vault_path, password, role_uid);
 
     RoleVault v;
     try
     {
         const json j = json::parse(plaintext);
-        v.pImpl->actor_uid_  = j.at("actor_uid").get<std::string>();
+        v.pImpl->role_uid_  = j.at("role_uid").get<std::string>();
         v.pImpl->public_key_ = j.at("public_key").get<std::string>();
         v.pImpl->secret_key_ = j.at("secret_key").get<std::string>();
     }
@@ -142,6 +142,6 @@ RoleVault RoleVault::open(const fs::path    &vault_path,
 
 const std::string &RoleVault::public_key() const noexcept { return pImpl->public_key_; }
 const std::string &RoleVault::secret_key() const noexcept { return pImpl->secret_key_; }
-const std::string &RoleVault::actor_uid()  const noexcept { return pImpl->actor_uid_;  }
+const std::string &RoleVault::role_uid()  const noexcept { return pImpl->role_uid_;  }
 
 } // namespace pylabhub::utils

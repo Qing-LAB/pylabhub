@@ -816,8 +816,8 @@ TEST_F(BrokerProtocolTest, PeerHandshake_HelloTriggersConsumerJoined)
     opts.channel_name = channel;
     opts.pattern      = ChannelPattern::PubSub;
     opts.has_shm      = false;
-    opts.actor_name   = "test-producer";
-    opts.actor_uid    = "TEST-PROD-001";
+    opts.role_name   = "test-producer";
+    opts.role_uid    = "TEST-PROD-001";
 
     auto maybe_producer = Producer::create(prod_messenger, opts);
     ASSERT_TRUE(maybe_producer.has_value());
@@ -871,8 +871,8 @@ TEST_F(BrokerProtocolTest, PeerHandshake_ByeTriggersConsumerLeft)
     opts.channel_name = channel;
     opts.pattern      = ChannelPattern::PubSub;
     opts.has_shm      = false;
-    opts.actor_name   = "test-producer";
-    opts.actor_uid    = "TEST-PROD-002";
+    opts.role_name   = "test-producer";
+    opts.role_uid    = "TEST-PROD-002";
 
     auto maybe_producer = Producer::create(prod_messenger, opts);
     ASSERT_TRUE(maybe_producer.has_value());
@@ -940,8 +940,8 @@ TEST_F(BrokerProtocolTest, PeerHandshake_MultipleConsumers_IndependentHelloBye)
     opts.channel_name = channel;
     opts.pattern      = ChannelPattern::PubSub;
     opts.has_shm      = false;
-    opts.actor_name   = "test-producer";
-    opts.actor_uid    = "TEST-PROD-003";
+    opts.role_name   = "test-producer";
+    opts.role_uid    = "TEST-PROD-003";
 
     auto maybe_producer = Producer::create(prod_messenger, opts);
     ASSERT_TRUE(maybe_producer.has_value());
@@ -1047,7 +1047,7 @@ TEST_F(BrokerProtocolTest, RolePresenceReq_ProducerUid_ReturnsTrue)
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
     auto handle = producer.create_channel(
-        channel, {.timeout_ms = 3000, .actor_name = "PresTestProd", .actor_uid = uid});
+        channel, {.timeout_ms = 3000, .role_name = "PresTestProd", .role_uid = uid});
     ASSERT_TRUE(handle.has_value());
 
     Messenger querier;
@@ -1086,7 +1086,7 @@ TEST_F(BrokerProtocolTest, RoleInfoReq_NoInbox_ReturnsNullopt)
     Messenger producer;
     ASSERT_TRUE(producer.connect(ep(), pk()));
     auto handle = producer.create_channel(
-        channel, {.timeout_ms = 3000, .actor_name = "NoInboxProd", .actor_uid = uid});
+        channel, {.timeout_ms = 3000, .role_name = "NoInboxProd", .role_uid = uid});
     ASSERT_TRUE(handle.has_value());
 
     Messenger querier;
@@ -1107,8 +1107,8 @@ TEST_F(BrokerProtocolTest, RoleInfoReq_WithInbox_ReturnsInfo)
     ASSERT_TRUE(producer.connect(ep(), pk()));
     ChannelRegistrationOptions opts;
     opts.timeout_ms        = 3000;
-    opts.actor_uid         = uid;
-    opts.actor_name        = "InboxProd";
+    opts.role_uid         = uid;
+    opts.role_name        = "InboxProd";
     opts.inbox_endpoint    = inbox_ep;
     opts.inbox_schema_json = schema_json;
     opts.inbox_packing     = packing;
@@ -1201,8 +1201,8 @@ TEST_F(BrokerProtocolTest, EmbeddedMode_Producer_PeerDead_FiresViaHandlePeerEven
     opts.channel_name        = channel;
     opts.pattern             = ChannelPattern::PubSub;
     opts.has_shm             = false;
-    opts.actor_name          = "test-producer-peerdead";
-    opts.actor_uid           = "TEST-PROD-PD-001";
+    opts.role_name          = "test-producer-peerdead";
+    opts.role_uid           = "TEST-PROD-PD-001";
     opts.peer_dead_timeout_ms = 100; // Short timeout for fast test
 
     auto maybe_producer = Producer::create(prod_messenger, opts);
@@ -1271,8 +1271,8 @@ TEST_F(BrokerProtocolTest, EmbeddedMode_Consumer_PeerDead_FiresViaHandleCtrlEven
     opts.channel_name = channel;
     opts.pattern      = ChannelPattern::PubSub;
     opts.has_shm      = false;
-    opts.actor_name   = "test-producer-cpd";
-    opts.actor_uid    = "TEST-PROD-CPD-001";
+    opts.role_name   = "test-producer-cpd";
+    opts.role_uid    = "TEST-PROD-CPD-001";
 
     auto maybe_producer = Producer::create(prod_messenger, opts);
     ASSERT_TRUE(maybe_producer.has_value());

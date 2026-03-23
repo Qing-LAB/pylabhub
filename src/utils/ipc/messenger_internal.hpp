@@ -106,8 +106,8 @@ struct ConnectCmd
 {
     std::string endpoint;
     std::string server_key;    ///< Broker Z85 public key; empty = plain TCP
-    std::string client_pubkey; ///< Actor Z85 public key; empty = ephemeral (only when CURVE)
-    std::string client_seckey; ///< Actor Z85 secret key; empty = ephemeral (only when CURVE)
+    std::string client_pubkey; ///< Role Z85 public key; empty = ephemeral (only when CURVE)
+    std::string client_seckey; ///< Role Z85 secret key; empty = ephemeral (only when CURVE)
     std::promise<bool> result;
 };
 struct DisconnectCmd
@@ -159,9 +159,9 @@ struct CreateChannelCmd
     std::string    zmq_data_endpoint;
     std::string    zmq_pubkey; ///< Z85 producer public key for P2C sockets
     int            timeout_ms;
-    // Phase 2: actor identity included in REG_REQ payload.
-    std::string actor_name; ///< Human-readable actor name; empty = omit from payload
-    std::string actor_uid;  ///< Actor UUID4; empty = omit from payload
+    // Phase 2: role identity included in REG_REQ payload.
+    std::string role_name; ///< Human-readable role name; empty = omit from payload
+    std::string role_uid;  ///< Role UID; empty = omit from payload
     // Phase 3: named schema (HEP-CORE-0016).
     std::string schema_id;   ///< Named schema ID (e.g. "lab.sensors.temperature.raw@1"); empty = unnamed
     std::string schema_blds; ///< BLDS string; empty when DataT has no PYLABHUB_SCHEMA macros
@@ -183,8 +183,8 @@ struct ConnectChannelCmd
     int         timeout_ms;
     std::string expected_schema_hash; ///< raw bytes; empty = accept any
     // Phase 2: consumer identity included in CONSUMER_REG_REQ payload.
-    std::string consumer_uid;  ///< Consumer actor UUID4; empty = omit from payload
-    std::string consumer_name; ///< Consumer actor name; empty = omit from payload
+    std::string consumer_uid;  ///< Consumer role UID; empty = omit from payload
+    std::string consumer_name; ///< Consumer role name; empty = omit from payload
     // Phase 3: named schema (HEP-CORE-0016).
     std::string expected_schema_id; ///< If non-empty, consumer requests named schema validation
     // Phase 6: transport arbitration — sent to broker in CONSUMER_REG_REQ.
@@ -262,14 +262,14 @@ struct StopCmd
 {
 };
 /// Phase 3: suppress or restore the periodic heartbeat for one channel.
-/// When suppressed, the actor's zmq_thread_ takes over heartbeat responsibility.
+/// When suppressed, the role's zmq_thread_ takes over heartbeat responsibility.
 struct SuppressHeartbeatCmd
 {
     std::string channel;
     bool        suppress; ///< true = suppress periodic; false = restore
 };
 /// Phase 3: send HEARTBEAT_REQ immediately for one channel (fire-and-forget).
-/// Used by the actor's zmq_thread_ to deliver application-level heartbeats.
+/// Used by the role's zmq_thread_ to deliver application-level heartbeats.
 struct HeartbeatNowCmd
 {
     std::string    channel;
@@ -295,7 +295,7 @@ struct HeartbeatEntry
 {
     std::string channel;
     uint64_t    producer_pid;
-    bool        suppressed{false}; ///< Phase 3: true when actor zmq_thread_ owns this heartbeat
+    bool        suppressed{false}; ///< Phase 3: true when role zmq_thread_ owns this heartbeat
 };
 
 class MessengerImpl

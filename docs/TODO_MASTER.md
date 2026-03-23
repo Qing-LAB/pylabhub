@@ -43,11 +43,19 @@ Config module redesign (IN PROGRESS 2026-03-21):
 - [ ] Phase 3: Migrate role hosts + mains to RoleDirectory
 - [ ] Phase 4: Remove monolithic config structs
 
+Naming cleanup (IN PROGRESS 2026-03-23):
+- [x] ActorVault → RoleVault + vault integrated into RoleConfig ✅ 38172de
+- [x] KnownActor → KnownRole, known_actors → known_roles, actor_name → role_name ✅ 38172de
+- [ ] Remaining "actor" comments/docstrings/test-data → "role" ✅ (pending commit)
+- [ ] `generate_uid(prefix, name)` unified core + delete ACTOR- generator ✅ (pending commit)
+
 Deferred (after code stabilizes):
 - [ ] SE-03: HEP-0011 rewrite for composition model
-- [ ] SE-07: --validate implementation
 - [ ] SE-04: Lua API parity (design decision pending)
-- [ ] Engine thread model: `invoke(name)`, cross-thread dispatch, shared state (tech_draft)
+- [ ] SE-07: --validate implementation
+- [ ] SE-08: HEP-0018/0015 class name refs update
+- [ ] Engine thread model: 6 phases — invoke/eval, cross-thread dispatch, shared state, NativeEngine (see `docs/tech_draft/engine_thread_model.md`)
+- [ ] ScriptEngine cleanup: RoleHostCore encapsulation (CR-03), RoleContext const char*→string, hubshell migration
 
 ### Code Review (CLOSED — 2026-03-17): REVIEW_FullStack_2026-03-17
 📋 `docs/code_review/REVIEW_FullStack_2026-03-17.md` — 30 non-Lua findings: 17 FIXED, 8 ACCEPTED, 4 DEFERRED, 1 Lua WIP; **1184/1184 tests**

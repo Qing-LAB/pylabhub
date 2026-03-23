@@ -243,8 +243,8 @@ class PYLABHUB_UTILS_EXPORT HubConfig
     /** Hub-wide connection policy for channel registration. Default: Open. */
     broker::ConnectionPolicy connection_policy() const noexcept;
 
-    /** Known actors allowlist. Non-empty only when policy is Verified (or pre-populated). */
-    std::vector<broker::KnownActor> known_actors() const;
+    /** Known roles allowlist. Non-empty only when policy is Verified (or pre-populated). */
+    std::vector<broker::KnownRole> known_roles() const;
 
     /** Per-channel policy overrides (first matching glob wins over hub-wide policy). */
     std::vector<broker::ChannelPolicy> channel_policies() const;

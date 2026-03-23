@@ -3,7 +3,7 @@
  * @brief Unit tests for RoleVault: create, open, encryption verification.
  *
  * Mirrors the HubVault test pattern. RoleVault is simpler (no admin_token,
- * no publish_public_key) — stores only public_key + secret_key + actor_uid.
+ * no publish_public_key) — stores only public_key + secret_key + role_uid.
  *
  * Pure API test — no lifecycle, no workers. Each test gets an isolated temp
  * directory. Argon2id KDF takes ~0.5s per call; timeout set to 120s.
@@ -28,7 +28,7 @@ using pylabhub::utils::generate_uuid4;
 namespace
 {
 
-constexpr const char *kPassword      = "test-actor-password-123";
+constexpr const char *kPassword      = "test-role-password-123";
 constexpr const char *kWrongPassword = "wrong-password-456";
 
 /// Validate a Z85 key: exactly 40 printable ASCII chars (no space).
@@ -53,15 +53,15 @@ class RoleVaultTest : public ::testing::Test
 protected:
     fs::path    vault_dir_;
     fs::path    vault_path_;
-    std::string actor_uid_;
+    std::string role_uid_;
 
     void SetUp() override
     {
-        actor_uid_ = "PROD-TEST-" + generate_uuid4().substr(0, 8);
+        role_uid_ = "PROD-TEST-" + generate_uuid4().substr(0, 8);
         vault_dir_ =
             fs::temp_directory_path() / ("plh_test_role_vault_" + generate_uuid4().substr(0, 8));
         fs::create_directories(vault_dir_);
-        vault_path_ = vault_dir_ / "actor.key";
+        vault_path_ = vault_dir_ / "role.key";
     }
 
     void TearDown() override
@@ -83,7 +83,7 @@ protected:
 
 TEST_F(RoleVaultTest, Create_WritesFile)
 {
-    RoleVault::create(vault_path_, actor_uid_, kPassword);
+    RoleVault::create(vault_path_, role_uid_, kPassword);
     ASSERT_TRUE(fs::exists(vault_path_)) << "Vault file not created";
     EXPECT_GT(fs::file_size(vault_path_), 40u) << "Vault file suspiciously small";
 }
@@ -92,7 +92,7 @@ TEST_F(RoleVaultTest, Create_RestrictedPerms)
 {
 #if !defined(PYLABHUB_PLATFORM_WIN64)
     // Windows has no POSIX file modes; skip permission check.
-    RoleVault::create(vault_path_, actor_uid_, kPassword);
+    RoleVault::create(vault_path_, role_uid_, kPassword);
 
     const fs::perms p = fs::status(vault_path_).permissions();
     EXPECT_EQ(p & fs::perms::group_read, fs::perms::none)  << "group_read should be off";
@@ -106,7 +106,7 @@ TEST_F(RoleVaultTest, Create_RestrictedPerms)
 
 TEST_F(RoleVaultTest, Create_ValidZ85Keypair)
 {
-    RoleVault v = RoleVault::create(vault_path_, actor_uid_, kPassword);
+    RoleVault v = RoleVault::create(vault_path_, role_uid_, kPassword);
     EXPECT_TRUE(is_valid_z85_key(v.public_key()))
         << "public_key is not a valid 40-char Z85 key: '" << v.public_key() << "'";
     EXPECT_TRUE(is_valid_z85_key(v.secret_key()))
@@ -116,7 +116,7 @@ TEST_F(RoleVaultTest, Create_ValidZ85Keypair)
 TEST_F(RoleVaultTest, Create_EmptyPassword)
 {
     // Dev-mode: empty password is allowed.
-    EXPECT_NO_THROW(RoleVault::create(vault_path_, actor_uid_, ""));
+    EXPECT_NO_THROW(RoleVault::create(vault_path_, role_uid_, ""));
     EXPECT_TRUE(fs::exists(vault_path_));
 }
 
@@ -126,23 +126,23 @@ TEST_F(RoleVaultTest, Create_EmptyPassword)
 
 TEST_F(RoleVaultTest, Open_CorrectPassword)
 {
-    RoleVault created = RoleVault::create(vault_path_, actor_uid_, kPassword);
-    RoleVault opened  = RoleVault::open(vault_path_, actor_uid_, kPassword);
+    RoleVault created = RoleVault::create(vault_path_, role_uid_, kPassword);
+    RoleVault opened  = RoleVault::open(vault_path_, role_uid_, kPassword);
 
     EXPECT_EQ(created.public_key(), opened.public_key());
     EXPECT_EQ(created.secret_key(), opened.secret_key());
-    EXPECT_EQ(created.actor_uid(), opened.actor_uid());
+    EXPECT_EQ(created.role_uid(), opened.role_uid());
 }
 
 TEST_F(RoleVaultTest, Open_WrongPassword_Throws)
 {
-    RoleVault::create(vault_path_, actor_uid_, kPassword);
-    EXPECT_THROW(RoleVault::open(vault_path_, actor_uid_, kWrongPassword), std::runtime_error);
+    RoleVault::create(vault_path_, role_uid_, kPassword);
+    EXPECT_THROW(RoleVault::open(vault_path_, role_uid_, kWrongPassword), std::runtime_error);
 }
 
 TEST_F(RoleVaultTest, Open_CorruptedFile_Throws)
 {
-    RoleVault::create(vault_path_, actor_uid_, kPassword);
+    RoleVault::create(vault_path_, role_uid_, kPassword);
 
     // Flip bytes in the ciphertext (after the 24-byte nonce).
     {
@@ -157,12 +157,12 @@ TEST_F(RoleVaultTest, Open_CorruptedFile_Throws)
                     fs::perm_options::replace);
 #endif
 
-    EXPECT_THROW(RoleVault::open(vault_path_, actor_uid_, kPassword), std::runtime_error);
+    EXPECT_THROW(RoleVault::open(vault_path_, role_uid_, kPassword), std::runtime_error);
 }
 
 TEST_F(RoleVaultTest, Open_MissingFile_Throws)
 {
-    EXPECT_THROW(RoleVault::open(vault_path_, actor_uid_, kPassword), std::runtime_error);
+    EXPECT_THROW(RoleVault::open(vault_path_, role_uid_, kPassword), std::runtime_error);
 }
 
 // ============================================================================
@@ -171,7 +171,7 @@ TEST_F(RoleVaultTest, Open_MissingFile_Throws)
 
 TEST_F(RoleVaultTest, Encrypt_SecretsNotInPlaintext)
 {
-    RoleVault v = RoleVault::create(vault_path_, actor_uid_, kPassword);
+    RoleVault v = RoleVault::create(vault_path_, role_uid_, kPassword);
 
     std::ifstream ifs(vault_path_, std::ios::binary);
     const std::string raw_bytes((std::istreambuf_iterator<char>(ifs)),
@@ -202,22 +202,22 @@ TEST_F(RoleVaultTest, Encrypt_DifferentUid_DifferentCiphertext)
 // Identity tests
 // ============================================================================
 
-TEST_F(RoleVaultTest, ActorUid_Roundtrip)
+TEST_F(RoleVaultTest, RoleUid_Roundtrip)
 {
-    RoleVault created = RoleVault::create(vault_path_, actor_uid_, kPassword);
-    EXPECT_EQ(created.actor_uid(), actor_uid_);
+    RoleVault created = RoleVault::create(vault_path_, role_uid_, kPassword);
+    EXPECT_EQ(created.role_uid(), role_uid_);
 
-    RoleVault opened = RoleVault::open(vault_path_, actor_uid_, kPassword);
-    EXPECT_EQ(opened.actor_uid(), actor_uid_);
+    RoleVault opened = RoleVault::open(vault_path_, role_uid_, kPassword);
+    EXPECT_EQ(opened.role_uid(), role_uid_);
 }
 
 TEST_F(RoleVaultTest, Create_OverExistingVault_Overwrites)
 {
-    RoleVault v1 = RoleVault::create(vault_path_, actor_uid_, kPassword);
+    RoleVault v1 = RoleVault::create(vault_path_, role_uid_, kPassword);
     const std::string pk1 = v1.public_key();
 
     // Create again on same path — should overwrite with fresh keys.
-    RoleVault v2 = RoleVault::create(vault_path_, actor_uid_, kPassword);
+    RoleVault v2 = RoleVault::create(vault_path_, role_uid_, kPassword);
     const std::string pk2 = v2.public_key();
 
     EXPECT_NE(pk1, pk2) << "Second create should generate fresh keys";
@@ -225,15 +225,15 @@ TEST_F(RoleVaultTest, Create_OverExistingVault_Overwrites)
 
 TEST_F(RoleVaultTest, MoveConstructor_TransfersOwnership)
 {
-    RoleVault v1 = RoleVault::create(vault_path_, actor_uid_, kPassword);
+    RoleVault v1 = RoleVault::create(vault_path_, role_uid_, kPassword);
     const std::string pk = v1.public_key();
     const std::string sk = v1.secret_key();
-    const std::string uid = v1.actor_uid();
+    const std::string uid = v1.role_uid();
 
     RoleVault v2(std::move(v1));
     EXPECT_EQ(v2.public_key(), pk);
     EXPECT_EQ(v2.secret_key(), sk);
-    EXPECT_EQ(v2.actor_uid(), uid);
+    EXPECT_EQ(v2.role_uid(), uid);
 }
 
 TEST_F(RoleVaultTest, DifferentUids_DifferentKeys)

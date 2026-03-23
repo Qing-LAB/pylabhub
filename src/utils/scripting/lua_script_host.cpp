@@ -121,7 +121,7 @@ void LuaScriptHost::do_finalize() noexcept
 }
 
 // ---------------------------------------------------------------------------
-// tick — called periodically by the owner (hub or actor)
+// tick — called periodically by the owner (hub or role host)
 // ---------------------------------------------------------------------------
 
 bool LuaScriptHost::tick(const LuaTickInfo& tick_info)

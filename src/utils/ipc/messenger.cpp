@@ -307,7 +307,7 @@ void MessengerImpl::send_heartbeats(zmq::socket_t &socket)
     for (const auto &entry : m_heartbeat_channels)
     {
         if (entry.suppressed)
-            continue; // Phase 3: actor zmq_thread_ owns this channel's heartbeat
+            continue; // Phase 3: role zmq_thread_ owns this channel's heartbeat
         try
         {
             nlohmann::json payload;
@@ -437,16 +437,16 @@ bool MessengerImpl::handle_command(ConnectCmd &cmd, std::optional<zmq::socket_t>
 
         if (use_curve)
         {
-            // Resolve client keypair: use actor's own identity if provided, else ephemeral.
-            const bool have_actor_keys =
+            // Resolve client keypair: use role's own identity if provided, else ephemeral.
+            const bool have_role_keys =
                 is_valid_z85_key(cmd.client_pubkey) &&
                 is_valid_z85_key(cmd.client_seckey);
 
-            if (have_actor_keys)
+            if (have_role_keys)
             {
                 m_client_public_key_z85 = cmd.client_pubkey;
                 m_client_secret_key_z85 = cmd.client_seckey;
-                LOGGER_INFO("Messenger: Using actor keypair for CurveZMQ (pubkey: {}...)",
+                LOGGER_INFO("Messenger: Using role keypair for CurveZMQ (pubkey: {}...)",
                             cmd.client_pubkey.substr(0, 8));
             }
             else
@@ -711,8 +711,8 @@ Messenger::create_channel(const std::string              &channel_name,
     const std::string    &schema_hash       = opts.schema_hash;
     const uint32_t        schema_version    = opts.schema_version;
     const int             timeout_ms        = opts.timeout_ms;
-    const std::string    &actor_name        = opts.actor_name;
-    const std::string    &actor_uid         = opts.actor_uid;
+    const std::string    &role_name        = opts.role_name;
+    const std::string    &role_uid         = opts.role_uid;
     const std::string    &schema_id         = opts.schema_id;
     const std::string    &schema_blds       = opts.schema_blds;
     const std::string    &data_transport    = opts.data_transport;
@@ -786,8 +786,8 @@ Messenger::create_channel(const std::string              &channel_name,
     cmd.zmq_data_endpoint = data_endpoint;
     cmd.zmq_pubkey        = pubkey;
     cmd.timeout_ms        = timeout_ms;
-    cmd.actor_name        = actor_name;
-    cmd.actor_uid         = actor_uid;
+    cmd.role_name        = role_name;
+    cmd.role_uid         = role_uid;
     cmd.schema_id         = schema_id;
     cmd.schema_blds       = schema_blds;
     cmd.data_transport    = data_transport.empty() ? std::string{"shm"} : data_transport;
@@ -985,7 +985,7 @@ void Messenger::report_checksum_error(const std::string &channel, int32_t slot_i
                                           std::string(error_description)});
 }
 
-// Phase 3 — actor zmq_thread_ heartbeat integration
+// Phase 3 — role zmq_thread_ heartbeat integration
 
 void Messenger::suppress_periodic_heartbeat(const std::string &channel,
                                              bool suppress) noexcept

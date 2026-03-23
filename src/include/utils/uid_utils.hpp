@@ -5,8 +5,10 @@
  *
  * ## UID format
  *
- *   Hub:   HUB-{NAME}-{SUFFIX}    (max ~21 chars; fits char[40] SHM field)
- *   Actor: ACTOR-{NAME}-{SUFFIX}  (max ~23 chars; fits char[40] SHM field)
+ *   Hub:       HUB-{NAME}-{SUFFIX}   (max ~21 chars; fits char[40] SHM field)
+ *   Producer:  PROD-{NAME}-{SUFFIX}  (max ~22 chars)
+ *   Consumer:  CONS-{NAME}-{SUFFIX}  (max ~22 chars)
+ *   Processor: PROC-{NAME}-{SUFFIX}  (max ~22 chars)
  *
  * Where:
  *   {NAME}   -- Up to 8 uppercase alphanumeric characters derived from the
@@ -18,7 +20,7 @@
  *
  * Examples:
  *   "my lab hub"         -> HUB-MYLABHUB-3A7F2B1C
- *   "Temperature Sensor" -> ACTOR-TEMPERAT-9E1D4C2A
+ *   "Temperature Sensor" -> PROD-TEMPERAT-9E1D4C2A
  *   (empty name)         -> HUB-NODE-B3F12E9A
  *
  * Properties:
@@ -102,108 +104,41 @@ inline uint32_t random_u32()
 // ---------------------------------------------------------------------------
 
 /**
- * @brief Generate a hub UID: @c "HUB-{NAME}-{8HEX}".
+ * @brief Generate a UID: @c "{PREFIX}-{NAME}-{8HEX}".
  *
- * @param hub_name Human-readable hub name (e.g. "asu.lab.main").
- *                 May be empty — "NODE" is used in that case.
- * @return         A UID string of the form @c "HUB-MYLABHUB-3A7F2B1C".
+ * @param prefix Role prefix (e.g. "HUB", "PROD", "CONS", "PROC").
+ * @param name   Human-readable name (e.g. "TempSensor").
+ *               May be empty — "NODE" is used in that case.
+ * @return       A UID string of the form @c "PROD-TEMPSENS-3A7F2B1C".
  */
-inline std::string generate_hub_uid(const std::string &hub_name = "")
+inline std::string generate_uid(std::string_view prefix, const std::string &name = "")
 {
-    const auto name_part = detail::sanitize_name_part(hub_name, 8U);
+    const auto name_part = detail::sanitize_name_part(name, 8U);
     char suffix[9];
     std::snprintf(suffix, sizeof(suffix), "%08X", detail::random_u32());
-    return "HUB-" + name_part + "-" + suffix;
+    return std::string(prefix) + "-" + name_part + "-" + suffix;
 }
 
-/**
- * @brief Generate an actor UID: @c "ACTOR-{NAME}-{8HEX}".
- *
- * @param actor_name Human-readable actor name (e.g. "TempSensor").
- * @return           A UID string of the form @c "ACTOR-TEMPSENS-9E1D4C2A".
- */
-inline std::string generate_actor_uid(const std::string &actor_name = "")
-{
-    const auto name_part = detail::sanitize_name_part(actor_name, 8U);
-    char suffix[9];
-    std::snprintf(suffix, sizeof(suffix), "%08X", detail::random_u32());
-    return "ACTOR-" + name_part + "-" + suffix;
-}
-
-/**
- * @brief Generate a processor UID: @c "PROC-{NAME}-{8HEX}".
- *
- * @param proc_name Human-readable processor name (e.g. "Scaler").
- * @return          A UID string of the form @c "PROC-SCALER-3A7F2B1C".
- */
-inline std::string generate_processor_uid(const std::string &proc_name = "")
-{
-    const auto name_part = detail::sanitize_name_part(proc_name, 8U);
-    char suffix[9];
-    std::snprintf(suffix, sizeof(suffix), "%08X", detail::random_u32());
-    return "PROC-" + name_part + "-" + suffix;
-}
-
-/**
- * @brief Generate a producer UID: @c "PROD-{NAME}-{8HEX}".
- *
- * @param prod_name Human-readable producer name (e.g. "TempSensor").
- * @return          A UID string of the form @c "PROD-TEMPSENS-3A7F2B1C".
- */
-inline std::string generate_producer_uid(const std::string &prod_name = "")
-{
-    const auto name_part = detail::sanitize_name_part(prod_name, 8U);
-    char suffix[9];
-    std::snprintf(suffix, sizeof(suffix), "%08X", detail::random_u32());
-    return "PROD-" + name_part + "-" + suffix;
-}
-
-/**
- * @brief Generate a consumer UID: @c "CONS-{NAME}-{8HEX}".
- *
- * @param cons_name Human-readable consumer name (e.g. "Logger").
- * @return          A UID string of the form @c "CONS-LOGGER-3A7F2B1C".
- */
-inline std::string generate_consumer_uid(const std::string &cons_name = "")
-{
-    const auto name_part = detail::sanitize_name_part(cons_name, 8U);
-    char suffix[9];
-    std::snprintf(suffix, sizeof(suffix), "%08X", detail::random_u32());
-    return "CONS-" + name_part + "-" + suffix;
-}
+inline std::string generate_hub_uid(const std::string &name = "")       { return generate_uid("HUB", name); }
+inline std::string generate_producer_uid(const std::string &name = "")  { return generate_uid("PROD", name); }
+inline std::string generate_consumer_uid(const std::string &name = "")  { return generate_uid("CONS", name); }
+inline std::string generate_processor_uid(const std::string &name = "") { return generate_uid("PROC", name); }
 
 // ---------------------------------------------------------------------------
 // Validators
 // ---------------------------------------------------------------------------
 
-/// True if @p uid starts with @c "HUB-" and has at least one more character.
-inline bool has_hub_prefix(std::string_view uid) noexcept
+/// True if @p uid starts with @c "{prefix}-" and has content after it.
+inline bool has_uid_prefix(std::string_view uid, std::string_view prefix) noexcept
 {
-    return uid.size() >= 8U && uid.substr(0, 4) == "HUB-";
+    return uid.size() > prefix.size() + 1 &&
+           uid.substr(0, prefix.size()) == prefix &&
+           uid[prefix.size()] == '-';
 }
 
-/// True if @p uid starts with @c "ACTOR-" and has at least one more character.
-inline bool has_actor_prefix(std::string_view uid) noexcept
-{
-    return uid.size() >= 10U && uid.substr(0, 6) == "ACTOR-";
-}
-
-/// True if @p uid starts with @c "PROC-" and has at least one more character.
-inline bool has_processor_prefix(std::string_view uid) noexcept
-{
-    return uid.size() >= 9U && uid.substr(0, 5) == "PROC-";
-}
-
-/// True if @p uid starts with @c "PROD-" and has at least one more character.
-inline bool has_producer_prefix(std::string_view uid) noexcept
-{
-    return uid.size() >= 9U && uid.substr(0, 5) == "PROD-";
-}
-
-/// True if @p uid starts with @c "CONS-" and has at least one more character.
-inline bool has_consumer_prefix(std::string_view uid) noexcept
-{
-    return uid.size() >= 9U && uid.substr(0, 5) == "CONS-";
-}
+inline bool has_hub_prefix(std::string_view uid) noexcept       { return has_uid_prefix(uid, "HUB"); }
+inline bool has_producer_prefix(std::string_view uid) noexcept  { return has_uid_prefix(uid, "PROD"); }
+inline bool has_consumer_prefix(std::string_view uid) noexcept  { return has_uid_prefix(uid, "CONS"); }
+inline bool has_processor_prefix(std::string_view uid) noexcept { return has_uid_prefix(uid, "PROC"); }
 
 } // namespace pylabhub::uid

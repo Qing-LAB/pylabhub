@@ -12,13 +12,13 @@
  * Decrypted payload is UTF-8 JSON:
  * @code{.json}
  * {
- *   "actor_uid":  "PROD-SENSOR1-3A7F2B1C",
+ *   "role_uid":   "PROD-SENSOR1-3A7F2B1C",
  *   "public_key": "<Z85 40-char>",
  *   "secret_key": "<Z85 40-char>"
  * }
  * @endcode
  *
- * The "actor_uid" key stores the role UID (PROD-/CONS-/PROC- prefix) and
+ * The "role_uid" key stores the role UID (PROD-/CONS-/PROC- prefix) and
  * is used as the per-vault KDF domain separator so two roles using the same
  * password produce independent encryption keys.
  *
@@ -46,14 +46,14 @@ namespace pylabhub::utils
 {
 
 /**
- * @brief Encrypted actor keypair store.
+ * @brief Encrypted role keypair store.
  *
  * Construct via RoleVault::create() (--keygen) or RoleVault::open() (runtime).
  * Both factory functions throw std::runtime_error on failure (wrong password,
  * corrupted file, I/O error).
  *
- * The vault holds only the actor's CurveZMQ keypair (Z85).
- * Nothing secret is ever written to actor.json.
+ * The vault holds only the role's CurveZMQ keypair (Z85).
+ * Nothing secret is ever written to role config files.
  */
 class PYLABHUB_UTILS_EXPORT RoleVault
 {
@@ -62,30 +62,30 @@ public:
      * @brief Create a new vault file at vault_path.
      *
      * - Generates a CurveZMQ keypair with zmq_curve_keypair().
-     * - Derives a 256-bit key via Argon2id (salt = BLAKE2b-16(actor_uid)).
+     * - Derives a 256-bit key via Argon2id (salt = BLAKE2b-16(role_uid)).
      * - Encrypts the JSON payload with XSalsa20-Poly1305.
      * - Writes the vault file with mode 0600.
      *
-     * @param vault_path  Destination file path (e.g. actor_dir / "actor.key").
-     * @param actor_uid   Actor UID string — determines the KDF salt.
+     * @param vault_path  Destination file path (e.g. role_dir / "role.key").
+     * @param role_uid    Role UID string — determines the KDF salt.
      * @param password    Master password. Empty string = no encryption (dev mode).
      * @throws std::runtime_error on crypto or I/O failure.
      */
     static RoleVault create(const std::filesystem::path &vault_path,
-                             const std::string           &actor_uid,
+                             const std::string           &role_uid,
                              const std::string           &password);
 
     /**
      * @brief Open an existing vault file at vault_path.
      *
-     * Derives the key from actor_uid + password and decrypts.
+     * Derives the key from role_uid + password and decrypts.
      * The Poly1305 MAC authenticates the ciphertext — a wrong password or
      * corrupted file throws rather than returning garbage.
      *
      * @throws std::runtime_error on MAC failure, I/O error, or malformed JSON.
      */
     static RoleVault open(const std::filesystem::path &vault_path,
-                           const std::string           &actor_uid,
+                           const std::string           &role_uid,
                            const std::string           &password);
 
     /// CurveZMQ public key (Z85, 40 chars). Safe to distribute.
@@ -94,8 +94,8 @@ public:
     /// CurveZMQ secret key (Z85, 40 chars). Never write this to disk in plaintext.
     const std::string &secret_key() const noexcept;
 
-    /// Actor UID stored in the vault payload (matches the actor_uid used at create time).
-    const std::string &actor_uid() const noexcept;
+    /// Role UID stored in the vault payload (matches the role_uid used at create time).
+    const std::string &role_uid() const noexcept;
 
     ~RoleVault();
     RoleVault(RoleVault &&) noexcept;

@@ -27,7 +27,7 @@ namespace py = pybind11;
 namespace fs = std::filesystem;
 
 // ---------------------------------------------------------------------------
-// Script package loader (mirrors import_role_script_module in actor_worker_helpers)
+// Script package loader (mirrors import_role_script_module in role host helpers)
 // ---------------------------------------------------------------------------
 
 namespace

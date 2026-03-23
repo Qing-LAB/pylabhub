@@ -75,9 +75,9 @@ struct ProducerInfo
     std::string    zmq_ctrl_endpoint; ///< Producer ROUTER endpoint
     std::string    zmq_data_endpoint; ///< Producer XPUB/PUSH endpoint; empty for Bidir
     std::string    zmq_pubkey;        ///< Producer CurveZMQ public key (Z85, 40 chars)
-    // ── actor identity (Phase 2) ─────────────────────────────────────────────
-    std::string actor_name; ///< Human-readable actor name; empty = anonymous
-    std::string actor_uid;  ///< Actor UUID4 or ACTOR-{NAME}-{8HEX}; empty = anonymous
+    // ── role identity (Phase 2) ──────────────────────────────────────────────
+    std::string role_name; ///< Human-readable role name; empty = anonymous
+    std::string role_uid;  ///< Role UID (PROD-/CONS-/PROC-{NAME}-{8HEX}); empty = anonymous
 };
 
 /**
@@ -105,9 +105,9 @@ struct ConsumerInfo
     std::string    zmq_data_endpoint;
     std::string    zmq_pubkey;
     uint32_t       consumer_count{0};
-    // ── actor identity (Phase 2) ─────────────────────────────────────────────
-    std::string consumer_uid;  ///< Consumer actor UUID4; empty = anonymous
-    std::string consumer_name; ///< Human-readable consumer actor name; empty = anonymous
+    // ── role identity (Phase 2) ──────────────────────────────────────────────
+    std::string consumer_uid;  ///< Consumer role UID; empty = anonymous
+    std::string consumer_name; ///< Human-readable consumer role name; empty = anonymous
     // ── ZMQ Virtual Channel Node (HEP-CORE-0021) ─────────────────────────────
     /// Data transport type: "shm" (default) or "zmq".
     /// Set by the broker in DISC_ACK based on the producer's REG_REQ registration.
@@ -145,8 +145,8 @@ struct PYLABHUB_UTILS_EXPORT ChannelRegistrationOptions
     std::string    schema_hash;       ///< Raw 32 bytes; empty = all-zeros
     uint32_t       schema_version{0};
     int            timeout_ms{5000};
-    std::string    actor_name;
-    std::string    actor_uid;
+    std::string    role_name;
+    std::string    role_uid;
     std::string    schema_id;         ///< Named schema ID (e.g. "lab.temp.raw@1")
     std::string    schema_blds;       ///< BLDS raw bytes for schema registry
     std::string    data_transport;    ///< "shm" (default) or "zmq"
@@ -175,10 +175,10 @@ class PYLABHUB_UTILS_EXPORT Messenger
      * @param endpoint     Broker ZMQ endpoint (e.g. "tcp://127.0.0.1:5570"). Required.
      * @param server_key   Broker CurveZMQ public key (Z85, 40 chars).
      *                     Empty string = plain TCP (no encryption).
-     * @param client_pubkey Actor's own CurveZMQ public key (Z85, 40 chars).
+     * @param client_pubkey Role's own CurveZMQ public key (Z85, 40 chars).
      *                     Used only when server_key is non-empty.
      *                     Empty = generate an ephemeral keypair for this connection.
-     * @param client_seckey Actor's own CurveZMQ secret key (Z85, 40 chars).
+     * @param client_seckey Role's own CurveZMQ secret key (Z85, 40 chars).
      *                     Must be paired with client_pubkey.
      * @return true if connection was established.
      */
@@ -305,14 +305,14 @@ class PYLABHUB_UTILS_EXPORT Messenger
      */
     void unregister_channel(const std::string &channel);
 
-    // ── Phase 3: actor zmq_thread_ heartbeat integration ──────────────────────
+    // ── Phase 3: role zmq_thread_ heartbeat integration ───────────────────────
 
     /**
      * @brief Suppress or restore the periodic heartbeat for @p channel (thread-safe,
      *        fire-and-forget).
      *
      * When @p suppress is true, the Messenger worker skips @p channel in its
-     * periodic heartbeat loop. The caller (actor zmq_thread_) is responsible for
+     * periodic heartbeat loop. The caller (role zmq_thread_) is responsible for
      * sending application-level HEARTBEAT_REQ via enqueue_heartbeat() instead.
      *
      * No-op if @p channel is not registered for heartbeat (e.g., consumer roles)
@@ -325,7 +325,7 @@ class PYLABHUB_UTILS_EXPORT Messenger
      * @brief Enqueue an immediate HEARTBEAT_REQ for @p channel (thread-safe,
      *        fire-and-forget).
      *
-     * Used by the actor's zmq_thread_ to deliver application-level heartbeats
+     * Used by the role's zmq_thread_ to deliver application-level heartbeats
      * when @c iteration_count_ has advanced, proving the Python loop is progressing.
      *
      * No-op if @p channel is not registered for heartbeat, or if not connected.
@@ -402,7 +402,7 @@ class PYLABHUB_UTILS_EXPORT Messenger
      * @brief Query the broker for whether a role UID is alive in any channel (Phase 4).
      *
      * Sends ROLE_PRESENCE_REQ to the broker. The broker scans all channel entries
-     * (producer_actor_uid and consumer actor_uid fields). Returns true if the UID
+     * (producer_role_uid and consumer role_uid fields). Returns true if the UID
      * is found in any currently registered channel.
      *
      * @param uid         Role UID to look up (e.g. "PROD-MYNAME-AABBCCDD").
@@ -415,7 +415,7 @@ class PYLABHUB_UTILS_EXPORT Messenger
      * @brief Query the broker for inbox connection info for a role UID (Phase 4).
      *
      * Sends ROLE_INFO_REQ to the broker. The broker looks up the channel whose
-     * producer_actor_uid matches @p uid and returns the inbox endpoint, schema,
+     * producer_role_uid matches @p uid and returns the inbox endpoint, schema,
      * and packing. Returns nullopt if the UID is not found or has no inbox.
      *
      * @param uid         Producer role UID to look up.

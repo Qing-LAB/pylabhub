@@ -314,7 +314,7 @@ class PYLABHUB_UTILS_EXPORT Consumer
 
     /**
      * @brief Embedded mode: set running=true WITHOUT launching data_thread/ctrl_thread/shm_thread.
-     * Use when the caller (actor ZMQ thread) drives all ZMQ polling itself via
+     * Use when the caller (role ZMQ thread) drives all ZMQ polling itself via
      * data_zmq_socket_handle() / ctrl_zmq_socket_handle() + handle_*_events_nowait().
      * @return true if successfully transitioned to running; false if already running or invalid.
      */
@@ -337,14 +337,14 @@ class PYLABHUB_UTILS_EXPORT Consumer
     /**
      * @brief Non-blocking: process all pending POLLIN on the data socket.
      * Fires on_zmq_data callback for each received data frame.
-     * MUST be called from the socket-owning thread (actor ZMQ thread only).
+     * MUST be called from the socket-owning thread (role ZMQ thread only).
      */
     void handle_data_events_nowait() noexcept;
 
     /**
      * @brief Non-blocking: drain ctrl send queue + process all pending POLLIN on ctrl socket.
      * Fires on_producer_message (and on_zmq_data for Bidir) callbacks.
-     * MUST be called from the socket-owning thread (actor ZMQ thread only).
+     * MUST be called from the socket-owning thread (role ZMQ thread only).
      */
     void handle_ctrl_events_nowait() noexcept;
 

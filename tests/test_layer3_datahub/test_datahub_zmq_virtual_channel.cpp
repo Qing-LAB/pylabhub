@@ -278,8 +278,8 @@ TEST_F(ZmqVirtualChannelTest, HubProducer_ZmqTransport_RoundTrip)
 
     ProducerOptions opts;
     opts.channel_name      = channel;
-    opts.actor_uid         = "PROD-ZMQVC-00000001";
-    opts.actor_name        = "zmqvc-producer";
+    opts.role_uid         = "PROD-ZMQVC-00000001";
+    opts.role_name        = "zmqvc-producer";
     opts.has_shm           = false;
     opts.data_transport    = "zmq";
     opts.zmq_node_endpoint = endpoint;
@@ -494,7 +494,7 @@ TEST_F(ZmqVirtualChannelTest, HubProducer_ZmqTransport_QueueNonNull)
 
     ProducerOptions opts;
     opts.channel_name      = channel;
-    opts.actor_uid         = "PROD-ZMQVC-00000002";
+    opts.role_uid         = "PROD-ZMQVC-00000002";
     opts.has_shm           = false;
     opts.data_transport    = "zmq";
     opts.zmq_node_endpoint = endpoint;
@@ -518,7 +518,7 @@ TEST_F(ZmqVirtualChannelTest, HubProducer_ShmTransport_QueueNull)
 
     ProducerOptions opts;
     opts.channel_name   = channel;
-    opts.actor_uid      = "PROD-ZMQVC-00000003";
+    opts.role_uid      = "PROD-ZMQVC-00000003";
     opts.has_shm        = false;
     opts.data_transport = "shm";
 
@@ -600,7 +600,7 @@ TEST_F(ZmqVirtualChannelTest, ZmqTransport_ProducerToConsumer_DataFlow)
 
     ProducerOptions po;
     po.channel_name      = channel;
-    po.actor_uid         = "PROD-ZMQVC-E2E-0001";
+    po.role_uid         = "PROD-ZMQVC-E2E-0001";
     po.has_shm           = false;
     po.data_transport    = "zmq";
     po.zmq_node_endpoint = endpoint;

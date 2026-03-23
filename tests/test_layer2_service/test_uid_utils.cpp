@@ -29,11 +29,11 @@ TEST_F(UidUtilsTest, GenerateHubUid_HasPrefix)
     EXPECT_GT(uid.size(), 4u);
 }
 
-TEST_F(UidUtilsTest, GenerateActorUid_HasPrefix)
+TEST_F(UidUtilsTest, GenerateUid_CustomPrefix)
 {
-    auto uid = generate_actor_uid();
-    EXPECT_TRUE(uid.starts_with("ACTOR-")) << "uid=" << uid;
-    EXPECT_GT(uid.size(), 6u);
+    auto uid = generate_uid("CUSTOM", "TestNode");
+    EXPECT_TRUE(uid.starts_with("CUSTOM-")) << "uid=" << uid;
+    EXPECT_NE(uid.find("TESTNOD"), std::string::npos) << "uid=" << uid;
 }
 
 TEST_F(UidUtilsTest, GenerateProcessorUid_HasPrefix)

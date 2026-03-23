@@ -1,9 +1,9 @@
 #pragma once
 /**
  * @file uuid_utils.hpp
- * @brief UUID4 generation and validation for hub and actor identities.
+ * @brief UUID4 generation and validation for hub and role identities.
  *
- * Used by `--init` flows for hub and actor directories. Provides
+ * Used by `--init` flows for hub and role directories. Provides
  * cryptographically random UUID4 strings (RFC 4122, version 4) via
  * libsodium's `randombytes_buf()`.
  *

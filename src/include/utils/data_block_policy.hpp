@@ -156,9 +156,9 @@ enum class ChecksumType
  *   after segment creation.
  * **Where checked:** data_block.cpp — release_write_slot() and release_consume_slot()
  *   read this to decide whether to call update/verify automatically.
- * **Actor override:** ValidationPolicy::Checksum (actor_config.hpp) overrides this
- *   at the actor-script layer: "update" maps to Manual, "enforce" maps to Enforced,
- *   "none" maps to None for the specific actor role.
+ * **Role override:** ValidationPolicy::Checksum (role_config.hpp) overrides this
+ *   at the role-script layer: "update" maps to Manual, "enforce" maps to Enforced,
+ *   "none" maps to None for the specific role instance.
  *
  * | Value    | Producer (write release)       | Consumer (consume release)          |
  * |----------|-------------------------------|--------------------------------------|
@@ -184,14 +184,14 @@ enum class ChecksumPolicy
  * @brief Slot-acquisition pacing strategy in a write or read loop.
  *
  * This is the **DataBlock layer** policy — distinct from RoleConfig::LoopTimingPolicy
- * (actor_config.hpp), which is the **actor layer** policy for deadline advancement.
- * Both policies can be active simultaneously on the same actor role.
+ * (role_config.hpp), which is the **role layer** policy for deadline advancement.
+ * Both policies can be active simultaneously on the same role instance.
  *
  * **Where set:**
  *   - DataBlockProducer::set_loop_policy() / DataBlockConsumer::set_loop_policy()
- *   - Actor layer: parsed from RoleConfig::loop_policy
+ *   - Role host layer: parsed from RoleConfig::loop_policy
  *     (JSON: `"loop_policy": "max_rate"` | `"fixed_rate"`; default: max_rate)
- *     and applied in actor_host.cpp before the loop starts.
+ *     and applied in the role host before the loop starts.
  * **Where checked:** data_block.cpp — acquire_write_slot() and acquire_consume_slot()
  *   apply the sleep and update ContextMetrics::overrun_count.
  * **Where read back:** TransactionContext::metrics() (pass-through to DataBlockImpl).
@@ -211,7 +211,7 @@ enum class ChecksumPolicy
  * **Contrast with RoleConfig::LoopTimingPolicy:**
  *   - LoopPolicy (this enum): controls the *sleep inside* acquire_*_slot().
  *     It is a DataBlock-level knob that slows down slot consumption.
- *   - LoopTimingPolicy: controls *when the next deadline is computed* in the actor
+ *   - LoopTimingPolicy: controls *when the next deadline is computed* in the role
  *     write loop (after on_iteration returns). FixedRate resets from now();
  *     FixedRateWithCompensation advances from the previous deadline, catching up after overruns.
  *
