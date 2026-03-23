@@ -316,8 +316,8 @@ def _make_channels_table(api, tick):
     table.add_column("Status", justify="center")
     table.add_column("Consumers", justify="right")
     table.add_column("PID", justify="right", style="dim")
-    table.add_column("Actor", style="magenta")
-    table.add_column("Actor UID", style="dim")
+    table.add_column("Role", style="magenta")
+    table.add_column("Role UID", style="dim")
 
     channels = api.channels()
     if not channels:
@@ -330,8 +330,8 @@ def _make_channels_table(api, tick):
                 f"[{color}]{ch.status()}[/{color}]",
                 str(ch.consumer_count()),
                 str(ch.producer_pid()) if ch.producer_pid() else "\u2014",
-                ch.producer_actor_name() or "\u2014",
-                ch.producer_actor_uid() or "\u2014",
+                ch.producer_role_name() or "\u2014",
+                ch.producer_role_uid() or "\u2014",
             )
     return table
 
@@ -590,7 +590,7 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
     broker_cfg.server_secret_key                = broker_cfg.use_curve ? vault_broker_secret : std::string{};
     broker_cfg.server_public_key                = broker_cfg.use_curve ? vault_broker_public : std::string{};
     broker_cfg.connection_policy                = hub_cfg.connection_policy();
-    broker_cfg.known_actors                     = hub_cfg.known_actors();
+    broker_cfg.known_roles                     = hub_cfg.known_roles();
     broker_cfg.channel_policies                 = hub_cfg.channel_policies();
     // HEP-CORE-0022: federation peers (convert HubPeerConfig → FederationPeer)
     broker_cfg.self_hub_uid = hub_cfg.hub_uid();
@@ -635,9 +635,9 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
     };
     if (hub_cfg.connection_policy() != pylabhub::broker::ConnectionPolicy::Open)
     {
-        LOGGER_INFO("HubShell: connection_policy={} known_actors={}",
+        LOGGER_INFO("HubShell: connection_policy={} known_roles={}",
                     pylabhub::broker::connection_policy_to_str(hub_cfg.connection_policy()),
-                    hub_cfg.known_actors().size());
+                    hub_cfg.known_roles().size());
     }
 
     if (!broker_cfg.use_curve)

@@ -46,8 +46,8 @@ struct ChannelSnapshotEntry
     int         consumer_count{0};
     uint64_t    producer_pid{0};
     std::string schema_hash;
-    std::string producer_actor_name;
-    std::string producer_actor_uid;
+    std::string producer_role_name;
+    std::string producer_role_uid;
 };
 
 /// Thread-safe snapshot of all channels at a point in time.
@@ -122,9 +122,9 @@ public:
         /// precedence (first match wins). Defaults to Open.
         ConnectionPolicy            connection_policy{ConnectionPolicy::Open};
 
-        /// Actors allowed to register when policy is Verified.
+        /// Roles allowed to register when policy is Verified.
         /// Also consulted for logging in Tracked/Required modes.
-        std::vector<KnownActor>     known_actors;
+        std::vector<KnownRole>     known_roles;
 
         /// Per-channel policy overrides (first matching glob wins).
         std::vector<ChannelPolicy>  channel_policies;

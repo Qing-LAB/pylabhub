@@ -494,9 +494,9 @@ bool MessengerImpl::handle_command(CreateChannelCmd &cmd,
         payload["zmq_ctrl_endpoint"] = cmd.zmq_ctrl_endpoint;
         payload["zmq_data_endpoint"] = cmd.zmq_data_endpoint;
         payload["zmq_pubkey"]        = cmd.zmq_pubkey;
-        // Actor identity fields are optional (omitted when not configured).
-        if (!cmd.actor_name.empty()) payload["actor_name"]  = cmd.actor_name;
-        if (!cmd.actor_uid.empty())  payload["actor_uid"]   = cmd.actor_uid;
+        // Role identity fields are optional (omitted when not configured).
+        if (!cmd.role_name.empty()) payload["role_name"]  = cmd.role_name;
+        if (!cmd.role_uid.empty())  payload["role_uid"]   = cmd.role_uid;
         // Named schema fields (HEP-CORE-0016 Phase 3) are optional.
         if (!cmd.schema_id.empty())  payload["schema_id"]   = cmd.schema_id;
         if (!cmd.schema_blds.empty()) payload["schema_blds"] = cmd.schema_blds;
@@ -626,7 +626,7 @@ bool MessengerImpl::handle_command(ConnectChannelCmd &cmd,
         reg_payload["channel_name"]      = cmd.channel;
         reg_payload["consumer_pid"]      = pylabhub::platform::get_pid();
         reg_payload["consumer_hostname"] = "";
-        // Actor identity fields are optional (omitted when not configured).
+        // Role identity fields are optional (omitted when not configured).
         if (!cmd.consumer_uid.empty())  reg_payload["consumer_uid"]          = cmd.consumer_uid;
         if (!cmd.consumer_name.empty()) reg_payload["consumer_name"]         = cmd.consumer_name;
         // Named schema field (HEP-CORE-0016 Phase 3) is optional.

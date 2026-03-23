@@ -145,7 +145,7 @@ struct HubConfig::Impl
 
     // ── Connection policy (Phase 3) ──────────────────────────────────────────
     broker::ConnectionPolicy             connection_policy{broker::ConnectionPolicy::Open};
-    std::vector<broker::KnownActor>      known_actors;
+    std::vector<broker::KnownRole>      known_roles;
     std::vector<broker::ChannelPolicy>   channel_policies;
 
     // ── Federation peers (HEP-CORE-0022) ────────────────────────────────────
@@ -178,7 +178,7 @@ struct HubConfig::Impl
         tick_interval_ms_       = 1000;
         health_log_interval_ms_ = 60000;
         connection_policy  = broker::ConnectionPolicy::Open;
-        known_actors.clear();
+        known_roles.clear();
         channel_policies.clear();
         peers_.clear();
         cfg = utils::JsonConfig{};
@@ -212,18 +212,18 @@ struct HubConfig::Impl
                         policy_str);
                 }
             }
-            if (h.contains("known_actors") && h.at("known_actors").is_array())
+            if (h.contains("known_roles") && h.at("known_roles").is_array())
             {
-                known_actors.clear();
-                for (const auto& a : h.at("known_actors"))
+                known_roles.clear();
+                for (const auto& a : h.at("known_roles"))
                 {
-                    broker::KnownActor ka;
+                    broker::KnownRole ka;
                     ka.name = a.value("name", "");
                     ka.uid  = a.value("uid", "");
                     ka.role = a.value("role", "any");
                     if (!ka.name.empty() && !ka.uid.empty())
                     {
-                        known_actors.push_back(std::move(ka));
+                        known_roles.push_back(std::move(ka));
                     }
                 }
             }
@@ -532,9 +532,9 @@ broker::ConnectionPolicy HubConfig::connection_policy() const noexcept
 {
     return pImpl->connection_policy;
 }
-std::vector<broker::KnownActor> HubConfig::known_actors() const
+std::vector<broker::KnownRole> HubConfig::known_roles() const
 {
-    return pImpl->known_actors;
+    return pImpl->known_roles;
 }
 std::vector<broker::ChannelPolicy> HubConfig::channel_policies() const
 {

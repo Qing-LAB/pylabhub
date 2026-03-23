@@ -175,16 +175,16 @@ status()               → str   — "Ready" | "PendingReady" | "Closing"
 consumer_count()       → int   — Number of registered consumers.
 producer_pid()         → int   — PID of the producer (0 if unknown).
 schema_hash()          → str   — 64-char hex hash, or "" if no schema.
-producer_actor_name()  → str   — Actor name (empty if not set).
-producer_actor_uid()   → str   — Actor UID (empty if not set).
+producer_role_name()  → str   — Role name (empty if not set).
+producer_role_uid()   → str   — Role UID (empty if not set).
 )doc")
         .def("name",                &ChannelInfo::name)
         .def("status",              &ChannelInfo::status)
         .def("consumer_count",      &ChannelInfo::consumer_count)
         .def("producer_pid",        &ChannelInfo::producer_pid)
         .def("schema_hash",         &ChannelInfo::schema_hash)
-        .def("producer_actor_name", &ChannelInfo::producer_actor_name)
-        .def("producer_actor_uid",  &ChannelInfo::producer_actor_uid)
+        .def("producer_role_name", &ChannelInfo::producer_role_name)
+        .def("producer_role_uid",  &ChannelInfo::producer_role_uid)
         .def("__repr__", [](const ChannelInfo& c) {
             return "<ChannelInfo name='" + c.name() + "' status='" + c.status() +
                    "' consumers=" + std::to_string(c.consumer_count()) + ">";

@@ -282,8 +282,8 @@ bool ProducerRoleHost::setup_infrastructure_()
     opts.pattern      = hub::ChannelPattern::PubSub;
     opts.has_shm      = shm.enabled;
     opts.schema_hash  = scripting::compute_schema_hash(slot_spec_, core_.fz_spec);
-    opts.actor_name   = id.name;
-    opts.actor_uid    = id.uid;
+    opts.role_name   = id.name;
+    opts.role_uid    = id.uid;
 
     if (tc.target_period_ms > 0)
     {

@@ -1,7 +1,7 @@
 #pragma once
 /**
  * @file plh_datahub_client.hpp
- * @brief Lightweight DataHub client API — for actors, scripts, and DataBlock-only consumers.
+ * @brief Lightweight DataHub client API — for roles, scripts, and DataBlock-only consumers.
  *
  * Provides everything needed to read and write shared-memory channels:
  *   - DataBlock SHM layer (data_block.hpp)

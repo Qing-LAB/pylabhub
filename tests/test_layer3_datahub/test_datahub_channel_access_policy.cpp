@@ -86,15 +86,15 @@ LocalBrokerHandle start_local_broker(BrokerService::Config cfg)
 bool try_register(const std::string& endpoint,
                   const std::string& pubkey,
                   const std::string& channel,
-                  const std::string& actor_name = {},
-                  const std::string& actor_uid  = {})
+                  const std::string& role_name = {},
+                  const std::string& role_uid  = {})
 {
     Messenger m;
     if (!m.connect(endpoint, pubkey))
         return false;
     auto handle = m.create_channel(channel,
-                                   {.timeout_ms = 3000, .actor_name = actor_name,
-                                    .actor_uid = actor_uid});
+                                   {.timeout_ms = 3000, .role_name = role_name,
+                                    .role_uid = role_uid});
     return handle.has_value();
 }
 
@@ -205,7 +205,7 @@ TEST_F(ConnectionPolicyBrokerTest, OpenPolicyAcceptsWithIdentity)
     StartBroker(std::move(cfg));
 
     EXPECT_TRUE(try_register(ep(), pk(), pid_chan("lab.open.id"),
-                             "lab.sensor1", "ACTOR-SENSOR-AABBCCDD"));
+                             "lab.sensor1", "PROD-SENSOR-AABBCCDD"));
 }
 
 TEST_F(ConnectionPolicyBrokerTest, RequiredPolicyRejectsAnonymous)
@@ -224,41 +224,41 @@ TEST_F(ConnectionPolicyBrokerTest, RequiredPolicyAcceptsWithIdentity)
     StartBroker(std::move(cfg));
 
     EXPECT_TRUE(try_register(ep(), pk(), pid_chan("lab.req.id"),
-                             "lab.sensor1", "ACTOR-SENSOR-AABBCCDD"));
+                             "lab.sensor1", "PROD-SENSOR-AABBCCDD"));
 }
 
-TEST_F(ConnectionPolicyBrokerTest, VerifiedPolicyRejectsUnknownActor)
+TEST_F(ConnectionPolicyBrokerTest, VerifiedPolicyRejectsUnknownRole)
 {
     BrokerService::Config cfg;
     cfg.connection_policy = ConnectionPolicy::Verified;
-    cfg.known_actors.push_back({"lab.sensor1", "ACTOR-SENSOR-AABBCCDD", "producer"});
+    cfg.known_roles.push_back({"lab.sensor1", "PROD-SENSOR-AABBCCDD", "producer"});
     StartBroker(std::move(cfg));
 
-    // Different UID — not in known_actors.
+    // Different UID — not in known_roles.
     EXPECT_FALSE(try_register(ep(), pk(), pid_chan("lab.ver.unknown"),
-                              "lab.intruder", "ACTOR-INTRUDE-11223344"));
+                              "lab.intruder", "PROD-INTRUDE-11223344"));
 }
 
-TEST_F(ConnectionPolicyBrokerTest, VerifiedPolicyAcceptsKnownActor)
+TEST_F(ConnectionPolicyBrokerTest, VerifiedPolicyAcceptsKnownRole)
 {
     BrokerService::Config cfg;
     cfg.connection_policy = ConnectionPolicy::Verified;
-    cfg.known_actors.push_back({"lab.sensor1", "ACTOR-SENSOR-AABBCCDD", "producer"});
+    cfg.known_roles.push_back({"lab.sensor1", "PROD-SENSOR-AABBCCDD", "producer"});
     StartBroker(std::move(cfg));
 
     EXPECT_TRUE(try_register(ep(), pk(), pid_chan("lab.ver.known"),
-                             "lab.sensor1", "ACTOR-SENSOR-AABBCCDD"));
+                             "lab.sensor1", "PROD-SENSOR-AABBCCDD"));
 }
 
 TEST_F(ConnectionPolicyBrokerTest, PerChannelGlobOverrideRestrictsChannel)
 {
     // Hub-wide = Tracked (permissive).
-    // "lab.secure.*" channels override to Verified with an empty known_actors list
-    // → any actor rejected for the secured glob, while the regular channel succeeds.
+    // "lab.secure.*" channels override to Verified with an empty known_roles list
+    // → any role rejected for the secured glob, while the regular channel succeeds.
     BrokerService::Config cfg;
     cfg.connection_policy = ConnectionPolicy::Tracked;
     cfg.channel_policies.push_back({"lab.secure.*", ConnectionPolicy::Verified});
-    // known_actors intentionally empty — Verified rejects everyone.
+    // known_roles intentionally empty — Verified rejects everyone.
     StartBroker(std::move(cfg));
 
     // Regular channel (Tracked) accepts without identity.
@@ -266,5 +266,5 @@ TEST_F(ConnectionPolicyBrokerTest, PerChannelGlobOverrideRestrictsChannel)
 
     // Secured channel (Verified, empty allowlist) rejects even with identity.
     EXPECT_FALSE(try_register(ep(), pk(), "lab.secure." + std::to_string(getpid()),
-                              "lab.sensor1", "ACTOR-SENSOR-AABBCCDD"));
+                              "lab.sensor1", "PROD-SENSOR-AABBCCDD"));
 }
