@@ -7,8 +7,8 @@
  * and consumer script hosts.  Each per-component `*_schema.hpp` imports these
  * types via `using` declarations into its own namespace.
  *
- * This header is internal to the script host layer and is NOT part of the
- * public pylabhub-utils API.
+ * Public header — required by role_host_core.hpp (SchemaSpec is a member of
+ * RoleHostCore). No external dependencies beyond the standard library.
  */
 
 #include <cstdint>

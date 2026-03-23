@@ -31,7 +31,7 @@
 #include "utils/hub_queue.hpp"
 #include "utils/in_process_spin_state.hpp"
 #include "utils/messenger.hpp"
-#include "utils/script_host_helpers.hpp"
+#include "script_host_helpers.hpp"
 #include "utils/shared_memory_spinlock.hpp"
 
 #include "utils/json_fwd.hpp"

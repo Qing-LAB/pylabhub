@@ -527,6 +527,10 @@ add_executable(test_layer2_slot_view_helpers
     test_slot_view_helpers.cpp
 )
 
+target_include_directories(test_layer2_slot_view_helpers PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/scripting
+)
+
 target_link_libraries(test_layer2_slot_view_helpers
     PRIVATE
         pylabhub::scripting
