@@ -136,11 +136,11 @@ TEST_F(ProcessorCliTest, Keygen_WritesVaultFile)
         "  \"out_slot_schema\": { \"fields\": [{\"name\": \"v\", \"type\": \"float32\"}] }\n"
         "}\n");
 
-    // ActorVault::create() creates parent dirs automatically
+    // RoleVault::create() creates parent dirs automatically
 #if defined(PYLABHUB_PLATFORM_WIN64)
-    _putenv_s("PYLABHUB_ACTOR_PASSWORD", "test-vault-password");
+    _putenv_s("PYLABHUB_ROLE_PASSWORD", "test-vault-password");
 #else
-    ::setenv("PYLABHUB_ACTOR_PASSWORD", "test-vault-password", 1);
+    ::setenv("PYLABHUB_ROLE_PASSWORD", "test-vault-password", 1);
 #endif
 
     WorkerProcess proc(processor_binary(), "--config",
@@ -149,9 +149,9 @@ TEST_F(ProcessorCliTest, Keygen_WritesVaultFile)
         << "stderr:\n" << proc.get_stderr();
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
-    _putenv_s("PYLABHUB_ACTOR_PASSWORD", "");
+    _putenv_s("PYLABHUB_ROLE_PASSWORD", "");
 #else
-    ::unsetenv("PYLABHUB_ACTOR_PASSWORD");
+    ::unsetenv("PYLABHUB_ROLE_PASSWORD");
 #endif
 
     EXPECT_TRUE(fs::exists(vault_path))

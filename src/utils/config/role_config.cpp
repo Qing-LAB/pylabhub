@@ -5,6 +5,7 @@
 #include "utils/config/role_config.hpp"
 #include "utils/json_config.hpp"
 #include "utils/role_directory.hpp"
+#include "utils/role_vault.hpp"
 
 #include <any>
 #include <cassert>
@@ -191,13 +192,45 @@ const std::string                 &RoleConfig::in_channel()    const { assert(im
 const std::string                 &RoleConfig::out_channel()   const { assert(impl_); return impl_->out_channel; }
 
 // ============================================================================
-// Mutable auth
+// Vault operations
 // ============================================================================
 
-AuthConfig &RoleConfig::mutable_auth()
+bool RoleConfig::load_keypair(const std::string &password)
 {
     assert(impl_);
-    return impl_->auth;
+    auto &auth = impl_->auth;
+    if (auth.keyfile.empty())
+        return false;
+
+    const auto &uid = impl_->identity.uid;
+    const char *tag = impl_->role_tag.c_str();
+
+    if (!std::filesystem::exists(auth.keyfile))
+    {
+        std::fprintf(stderr,
+                     "[%s] auth.keyfile '%s': not found — using ephemeral CURVE identity\n",
+                     tag, auth.keyfile.c_str());
+        return false;
+    }
+
+    const auto vault = utils::RoleVault::open(auth.keyfile, uid, password);
+    auth.client_pubkey = vault.public_key();
+    auth.client_seckey = vault.secret_key();
+    std::fprintf(stderr, "[%s] Loaded vault from '%s' (pubkey: %.8s...)\n",
+                 tag, auth.keyfile.c_str(), vault.public_key().c_str());
+    return true;
+}
+
+std::string RoleConfig::create_keypair(const std::string &password)
+{
+    assert(impl_);
+    const auto &auth = impl_->auth;
+    if (auth.keyfile.empty())
+        throw std::runtime_error("RoleConfig: auth.keyfile not configured");
+
+    const auto &uid = impl_->identity.uid;
+    const auto vault = utils::RoleVault::create(auth.keyfile, uid, password);
+    return vault.public_key();
 }
 
 // ============================================================================

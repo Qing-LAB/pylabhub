@@ -108,9 +108,21 @@ class PYLABHUB_UTILS_EXPORT RoleConfig
     const std::string                  &in_channel()    const;
     const std::string                  &out_channel()   const;
 
-    // ── Mutable auth (post-parse vault decryption) ────────────────────
+    // ── Vault operations ────────────────────────────────────────────
 
-    AuthConfig &mutable_auth();
+    /// Decrypt the vault file and load keypair into auth config.
+    /// Uses identity().uid as the KDF domain separator.
+    /// @param password  Vault password.
+    /// @return true if keys were loaded; false if no keyfile configured.
+    /// @throws std::runtime_error if vault exists but decryption fails.
+    bool load_keypair(const std::string &password);
+
+    /// Create a new vault file with a generated keypair.
+    /// Uses identity().uid as the KDF domain separator.
+    /// @param password  Vault password (empty = no encryption).
+    /// @return The public key string.
+    /// @throws std::runtime_error if vault creation fails.
+    std::string create_keypair(const std::string &password);
 
     // ── Raw JSON / JsonConfig operations ──────────────────────────────
 
