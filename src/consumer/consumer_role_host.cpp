@@ -41,7 +41,7 @@ ConsumerRoleHost::ConsumerRoleHost(config::RoleConfig config,
     : config_(std::move(config))
     , engine_(std::move(engine))
 {
-    core_.g_shutdown = shutdown_flag;
+    core_.set_shutdown_flag(shutdown_flag);
 }
 
 ConsumerRoleHost::~ConsumerRoleHost()
@@ -120,17 +120,15 @@ void ConsumerRoleHost::worker_main_()
     if (!engine_->load_script(script_dir, entry_point, "on_consume"))
     {
         LOGGER_ERROR("[cons] Engine load_script() failed");
-        script_load_ok_.store(false, std::memory_order_release);
+        core_.set_script_load_ok(false);
         engine_->finalize();
         ready_promise_.set_value(false);
         return;
     }
-    script_load_ok_.store(true, std::memory_order_release);
+    core_.set_script_load_ok(true);
 
     // Step 3: Resolve schemas and register slot types (read-only access).
-    // Consumer discovers schemas from the broker at connect time. The optional
-    // in_slot_schema / in_flexzone_schema in config are for offline type
-    // registration (engine builds ctypes views before connecting).
+    scripting::SchemaSpec fz_spec_local;
     {
         std::vector<std::string> schema_dirs;
         if (!hub.hub_dir.empty())
@@ -142,7 +140,7 @@ void ConsumerRoleHost::worker_main_()
             const auto &cf = config_.role_data<consumer::ConsumerFields>();
             slot_spec_ = scripting::resolve_schema(
                 cf.in_slot_schema_json, false, "cons", schema_dirs);
-            core_.fz_spec = scripting::resolve_schema(
+            fz_spec_local = scripting::resolve_schema(
                 cf.in_flexzone_schema_json, true, "cons", schema_dirs);
         }
         catch (const std::exception &e)
@@ -171,22 +169,26 @@ void ConsumerRoleHost::worker_main_()
     }
 
     // Register flexzone type.
-    if (core_.fz_spec.has_schema)
+    if (fz_spec_local.has_schema)
     {
-        core_.has_fz = true;
-        if (!engine_->register_slot_type(core_.fz_spec, "FlexFrame", packing))
+        if (!engine_->register_slot_type(fz_spec_local, "FlexFrame", packing))
         {
             LOGGER_ERROR("[cons] Failed to register FlexFrame type");
             engine_->finalize();
             ready_promise_.set_value(false);
             return;
         }
-        core_.schema_fz_size = engine_->type_sizeof("FlexFrame");
-        core_.schema_fz_size = (core_.schema_fz_size + 4095U) & ~size_t{4095U};
+        size_t fz_size = engine_->type_sizeof("FlexFrame");
+        fz_size = (fz_size + 4095U) & ~size_t{4095U};
+        core_.set_fz_spec(std::move(fz_spec_local), fz_size);
+    }
+    else
+    {
+        core_.set_fz_spec(std::move(fz_spec_local), 0);
     }
 
     // Validate-only mode: print layout and exit.
-    if (validate_only_)
+    if (core_.is_validate_only())
     {
         // TODO: print layout via engine
         engine_->finalize();
@@ -204,18 +206,14 @@ void ConsumerRoleHost::worker_main_()
     }
 
     // Step 5: Build RoleContext and engine API.
-    const std::string script_dir_str = script_dir.string();
-    const std::string base_dir_str = config_.base_dir().string();
-
     scripting::RoleContext ctx;
     ctx.role_tag    = "cons";
-    ctx.uid         = id.uid.c_str();
-    ctx.name        = id.name.c_str();
-    ctx.channel     = config_.in_channel().c_str();
-    ctx.out_channel = nullptr;
-    ctx.log_level   = id.log_level.c_str();
-    ctx.script_dir  = script_dir_str.c_str();
-    ctx.role_dir    = base_dir_str.c_str();
+    ctx.uid         = id.uid;
+    ctx.name        = id.name;
+    ctx.channel     = config_.in_channel();
+    ctx.log_level   = id.log_level;
+    ctx.script_dir  = script_dir.string();
+    ctx.role_dir    = config_.base_dir().string();
     ctx.messenger   = &in_messenger_;
     ctx.queue_writer = nullptr;
     ctx.queue_reader = queue_reader_;
@@ -269,7 +267,7 @@ bool ConsumerRoleHost::setup_infrastructure_()
     hub::ConsumerOptions opts;
     opts.channel_name         = ch;
     opts.shm_shared_secret    = shm.enabled ? shm.secret : 0u;
-    opts.expected_schema_hash = scripting::compute_schema_hash(slot_spec_, core_.fz_spec);
+    opts.expected_schema_hash = scripting::compute_schema_hash(slot_spec_, core_.fz_spec());
     opts.consumer_uid         = id.uid;
     opts.consumer_name        = id.name;
 
@@ -464,7 +462,7 @@ bool ConsumerRoleHost::setup_infrastructure_()
             return false;
         }
         shm_queue_    = hub::ShmQueue::from_consumer_ref(
-            *in_shm, schema_slot_size_, core_.schema_fz_size, ch);
+            *in_shm, schema_slot_size_, core_.schema_fz_size(), ch);
         queue_reader_ = shm_queue_.get();
     }
     else
@@ -479,7 +477,7 @@ bool ConsumerRoleHost::setup_infrastructure_()
     }
 
     if (queue_reader_)
-        queue_reader_->set_verify_checksum(shm.verify_checksum, core_.has_fz);
+        queue_reader_->set_verify_checksum(shm.verify_checksum, core_.has_fz());
 
     LOGGER_INFO("[cons] Consumer started on channel '{}' (shm={})", ch,
                 in_consumer_->has_shm());
@@ -549,7 +547,7 @@ void ConsumerRoleHost::run_data_loop_()
         std::chrono::duration_cast<std::chrono::milliseconds>(short_timeout_us + std::chrono::microseconds{999});
     const size_t item_sz = queue_reader_->item_size();
 
-    const char *fz_type = core_.has_fz ? "FlexFrame" : nullptr;
+    const char *fz_type = core_.has_fz() ? "FlexFrame" : nullptr;
 
     auto deadline = Clock::time_point::max();
 
@@ -617,8 +615,8 @@ void ConsumerRoleHost::run_data_loop_()
             core_.inc_in_received();
         }
 
-        const void *fz_ptr = core_.has_fz ? queue_reader_->read_flexzone() : nullptr;
-        const size_t fz_sz = core_.has_fz ? queue_reader_->flexzone_size() : 0;
+        const void *fz_ptr = core_.has_fz() ? queue_reader_->read_flexzone() : nullptr;
+        const size_t fz_sz = core_.has_fz() ? queue_reader_->flexzone_size() : 0;
 
         const uint64_t errors_before = engine_->script_error_count();
 

@@ -42,7 +42,7 @@ ProducerRoleHost::ProducerRoleHost(config::RoleConfig config,
     : config_(std::move(config))
     , engine_(std::move(engine))
 {
-    core_.g_shutdown = shutdown_flag;
+    core_.set_shutdown_flag(shutdown_flag);
 }
 
 ProducerRoleHost::~ProducerRoleHost()
@@ -126,14 +126,15 @@ void ProducerRoleHost::worker_main_()
     if (!engine_->load_script(script_dir, entry_point, "on_produce"))
     {
         LOGGER_ERROR("[prod] Engine load_script() failed");
-        script_load_ok_.store(false, std::memory_order_release);
+        core_.set_script_load_ok(false);
         engine_->finalize();
         ready_promise_.set_value(false);
         return;
     }
-    script_load_ok_.store(true, std::memory_order_release);
+    core_.set_script_load_ok(true);
 
     // Step 3: Resolve schemas and register slot types.
+    scripting::SchemaSpec fz_spec_local;
     {
         std::vector<std::string> schema_dirs;
         if (!hub.hub_dir.empty())
@@ -144,7 +145,7 @@ void ProducerRoleHost::worker_main_()
         {
             slot_spec_ = scripting::resolve_schema(
                 pf.out_slot_schema_json, false, "prod", schema_dirs);
-            core_.fz_spec = scripting::resolve_schema(
+            fz_spec_local = scripting::resolve_schema(
                 pf.out_flexzone_schema_json, true, "prod", schema_dirs);
         }
         catch (const std::exception &e)
@@ -173,23 +174,26 @@ void ProducerRoleHost::worker_main_()
     }
 
     // Register flexzone type.
-    if (core_.fz_spec.has_schema)
+    if (fz_spec_local.has_schema)
     {
-        core_.has_fz = true;
-        if (!engine_->register_slot_type(core_.fz_spec, "FlexFrame", packing))
+        if (!engine_->register_slot_type(fz_spec_local, "FlexFrame", packing))
         {
             LOGGER_ERROR("[prod] Failed to register FlexFrame type");
             engine_->finalize();
             ready_promise_.set_value(false);
             return;
         }
-        core_.schema_fz_size = engine_->type_sizeof("FlexFrame");
-        // Page-align flexzone size.
-        core_.schema_fz_size = (core_.schema_fz_size + 4095U) & ~size_t{4095U};
+        size_t fz_size = engine_->type_sizeof("FlexFrame");
+        fz_size = (fz_size + 4095U) & ~size_t{4095U};
+        core_.set_fz_spec(std::move(fz_spec_local), fz_size);
+    }
+    else
+    {
+        core_.set_fz_spec(std::move(fz_spec_local), 0);
     }
 
     // Validate-only mode: print layout and exit.
-    if (validate_only_)
+    if (core_.is_validate_only())
     {
         // TODO: print layout via engine
         engine_->finalize();
@@ -207,19 +211,14 @@ void ProducerRoleHost::worker_main_()
     }
 
     // Step 5: Build RoleContext and engine API.
-    // Store script_dir string so ctx.script_dir doesn't dangle.
-    const std::string script_dir_str = script_dir.string();
-    const std::string base_dir_str = config_.base_dir().string();
-
     scripting::RoleContext ctx;
     ctx.role_tag    = "prod";
-    ctx.uid         = id.uid.c_str();
-    ctx.name        = id.name.c_str();
-    ctx.channel     = config_.out_channel().c_str();
-    ctx.out_channel = nullptr;
-    ctx.log_level   = id.log_level.c_str();
-    ctx.script_dir  = script_dir_str.c_str();
-    ctx.role_dir    = base_dir_str.c_str();
+    ctx.uid         = id.uid;
+    ctx.name        = id.name;
+    ctx.channel     = config_.out_channel();
+    ctx.log_level   = id.log_level;
+    ctx.script_dir  = script_dir.string();
+    ctx.role_dir    = config_.base_dir().string();
     ctx.messenger   = &out_messenger_;
     ctx.queue_writer = queue_.get();
     ctx.queue_reader = nullptr;
@@ -234,7 +233,7 @@ void ProducerRoleHost::worker_main_()
     engine_->invoke_on_init();
 
     // Sync flexzone checksum after on_init (user may have written to flexzone).
-    if (queue_ && core_.has_fz)
+    if (queue_ && core_.has_fz())
         queue_->sync_flexzone_checksum();
 
     // Step 7: Spawn ctrl_thread_ and signal ready.
@@ -278,7 +277,7 @@ bool ProducerRoleHost::setup_infrastructure_()
     opts.channel_name = ch;
     opts.pattern      = hub::ChannelPattern::PubSub;
     opts.has_shm      = shm.enabled;
-    opts.schema_hash  = scripting::compute_schema_hash(slot_spec_, core_.fz_spec);
+    opts.schema_hash  = scripting::compute_schema_hash(slot_spec_, core_.fz_spec());
     opts.role_name   = id.name;
     opts.role_uid    = id.uid;
 
@@ -371,7 +370,7 @@ bool ProducerRoleHost::setup_infrastructure_()
         opts.shm_config.policy               = hub::DataBlockPolicy::RingBuffer;
         opts.shm_config.consumer_sync_policy = shm.sync_policy;
         opts.shm_config.checksum_policy      = hub::ChecksumPolicy::Manual;
-        opts.shm_config.flex_zone_size       = core_.schema_fz_size;
+        opts.shm_config.flex_zone_size       = core_.schema_fz_size();
 
         opts.shm_config.physical_page_size = hub::system_page_size();
         opts.shm_config.logical_unit_size  =
@@ -500,7 +499,7 @@ bool ProducerRoleHost::setup_infrastructure_()
             return false;
         }
         queue_ = hub::ShmQueue::from_producer_ref(
-            *out_shm_ptr, schema_slot_size_, core_.schema_fz_size, ch);
+            *out_shm_ptr, schema_slot_size_, core_.schema_fz_size(), ch);
     }
     else
     {
@@ -526,7 +525,7 @@ bool ProducerRoleHost::setup_infrastructure_()
         queue_.reset();
         return false;
     }
-    queue_->set_checksum_options(shm.update_checksum, core_.has_fz);
+    queue_->set_checksum_options(shm.update_checksum, core_.has_fz());
 
     LOGGER_INFO("[prod] Producer started on channel '{}' (shm={})", ch,
                 out_producer_->has_shm());
@@ -603,9 +602,9 @@ void ProducerRoleHost::run_data_loop_()
     const size_t buf_sz = queue_->item_size();
 
     // Flexzone pointers — valid after queue start.
-    void       *fz_ptr  = core_.has_fz ? queue_->write_flexzone() : nullptr;
-    const size_t fz_sz  = core_.has_fz ? queue_->flexzone_size()  : 0;
-    const char *fz_type = core_.has_fz ? "FlexFrame" : nullptr;
+    void       *fz_ptr  = core_.has_fz() ? queue_->write_flexzone() : nullptr;
+    const size_t fz_sz  = core_.has_fz() ? queue_->flexzone_size()  : 0;
+    const char *fz_type = core_.has_fz() ? "FlexFrame" : nullptr;
 
     // First cycle: no deadline — fire immediately.
     auto deadline = Clock::time_point::max();
@@ -681,7 +680,7 @@ void ProducerRoleHost::run_data_loop_()
             std::memset(buf, 0, buf_sz);
 
         // Re-read flexzone pointer each cycle (ShmQueue may move it).
-        if (core_.has_fz)
+        if (core_.has_fz())
             fz_ptr = queue_->write_flexzone();
 
         InvokeResult result =
