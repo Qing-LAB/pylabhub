@@ -14,7 +14,7 @@
 #include "utils/hub_producer.hpp"
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/logger.hpp"
-#include "utils/script_host_helpers.hpp"
+#include "script_host_helpers.hpp"
 #include "plh_platform.hpp"
 
 #include <cassert>
