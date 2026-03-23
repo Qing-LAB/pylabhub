@@ -218,7 +218,6 @@ remains active).
 |-------|----------|---------|-------------|
 | `target_period_ms` | no | `0` | Target loop period in ms; 0 = free-run (max rate) |
 | `loop_timing` | no | implicit (0→`"max_rate"`, >0→`"fixed_rate"`) | `"max_rate"`, `"fixed_rate"`, or `"fixed_rate_with_compensation"` |
-| `slot_acquire_timeout_ms` | no | `-1` | Queue slot acquire timeout; -1 = derive from `target_period_ms` (`max(period/2, 1)` or 50ms for MaxRate), 0 = non-blocking, >0 = explicit ms |
 | `overflow_policy` | no | `"block"` | Output overflow handling: `"block"` or `"drop"` |
 | `verify_checksum` | no | `false` | Verify input slot BLAKE2b checksum before processing |
 
@@ -520,7 +519,6 @@ struct ProcessorConfig {
     // Loop policy
     int         target_period_ms{0};          // 0 = free-run
     pylabhub::LoopTimingPolicy loop_timing{pylabhub::LoopTimingPolicy::MaxRate};
-    int         slot_acquire_timeout_ms{-1};  // -1 = derive from target_period_ms
     OverflowPolicy overflow_policy{OverflowPolicy::Block};  // output side
     bool        verify_checksum{false};
 
@@ -553,7 +551,7 @@ struct ProcessorConfig {
 ```
 
 **Removed fields** (clean break — no backward compat):
-- `timeout_ms` — renamed to `slot_acquire_timeout_ms`; -1 (default) derives timeout from `target_period_ms` via `compute_slot_acquire_timeout()`
+- `timeout_ms` — removed; acquire timeout is now derived from `queue_io_wait_timeout_ratio`
 
 ### 8.2 ProcessorScriptHost Thread Model
 

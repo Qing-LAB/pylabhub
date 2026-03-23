@@ -105,7 +105,7 @@ Started by: `pylabhub-hubshell <hub_dir>`
 ```
 <hub_dir>/
   hub.json          ← public config: hub_name, hub_uid, broker_endpoint,
-  |                     connection_policy, known_actors, channel_policies
+  |                     connection_policy, known_roles, channel_policies
   hub.vault         ← encrypted secrets (binary: [nonce(24)][ciphertext+MAC])
   |                     decrypted payload: broker CurveZMQ keypair + admin token
   hub.pubkey        ← broker CurveZMQ public key, 40-char Z85, mode 0644
@@ -134,7 +134,7 @@ field reference).
     "channel_policies": [
       { "channel": "lab.daq.raw.*", "connection_policy": "verified" }
     ],
-    "known_actors": [
+    "known_roles": [
       { "name": "lab.daq.sensor1", "uid": "PROD-SENSOR1-A1B2C3D4", "role": "producer" },
       { "name": "lab.daq.logger",  "uid": "CONS-LOGGER-B5C6D7E8",  "role": "consumer" }
     ]
@@ -279,7 +279,7 @@ reference is used).
 | Processor | `PROC-{NAME}-{8HEX}` | `PROC-SCALER-B3F12E9D` |
 
 UIDs are auto-generated at `--init` and reused across restarts. They are what the
-broker records in its channel registry and what `known_actors` in `hub.json` must
+broker records in its channel registry and what `known_roles` in `hub.json` must
 reference for `verified` connection policy enforcement.
 
 ---

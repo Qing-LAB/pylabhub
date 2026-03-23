@@ -79,7 +79,7 @@ consistent custom role binary development with correct security properties by de
   <role>.json                       ← config file  (e.g. producer.json)
   logs/                             ← RoleDirectory::logs()    — Logger sink
   run/                              ← RoleDirectory::run()     — PID, FileLock artefacts
-  vault/                            ← RoleDirectory::vault()   — ActorVault files (0700)
+  vault/                            ← RoleDirectory::vault()   — RoleVault files (0700)
   script/
     python/
       __init__.py                   ← default script entry point
@@ -257,7 +257,7 @@ throw `std::runtime_error` if the hub directory is present but malformed.
 On POSIX, `create()` sets `vault/` to mode `0700` immediately after `create_directories`.
 On Windows, the directory ACL is set to owner-only using `SetFileSecurity`. If the
 permission call fails, `create()` logs a warning but does not throw — the vault file
-itself is still protected by `ActorVault` encryption.
+itself is still protected by `RoleVault` encryption.
 
 ---
 
@@ -526,7 +526,7 @@ int main(int argc, char *argv[])
         const auto pw = rc::get_new_role_password("sensor",
             "Sensor vault password: ", "Confirm: ");
         if (!pw) return 1;
-        const auto vault = pylabhub::utils::ActorVault::create(
+        const auto vault = pylabhub::utils::RoleVault::create(
             role_dir.default_keyfile(sensor_uid).string(), sensor_uid, *pw);
         std::cout << "Vault written to: " << vault.path() << "\n"
                   << "  public_key: " << vault.public_key() << "\n";
