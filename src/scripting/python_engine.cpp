@@ -518,6 +518,9 @@ void PythonEngine::finalize()
 
 bool PythonEngine::invoke(const char *name)
 {
+    if (!accepting_.load(std::memory_order_acquire))
+        return false;
+
     if (std::this_thread::get_id() == owner_thread_id_)
         return execute_direct_(name).status == InvokeStatus::Ok;
 
@@ -534,6 +537,9 @@ bool PythonEngine::invoke(const char *name)
 
 bool PythonEngine::invoke(const char *name, const nlohmann::json &args)
 {
+    if (!accepting_.load(std::memory_order_acquire))
+        return false;
+
     if (std::this_thread::get_id() == owner_thread_id_)
         return execute_direct_(name, args).status == InvokeStatus::Ok;
 
@@ -550,6 +556,9 @@ bool PythonEngine::invoke(const char *name, const nlohmann::json &args)
 
 nlohmann::json PythonEngine::eval(const char *code)
 {
+    if (!accepting_.load(std::memory_order_acquire))
+        return {};
+
     if (std::this_thread::get_id() == owner_thread_id_)
         return eval_direct_(code);
 

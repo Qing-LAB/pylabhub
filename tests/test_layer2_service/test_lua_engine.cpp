@@ -1187,4 +1187,87 @@ TEST_F(LuaEngineTest, MetricsClosures_InReceivedWorks)
     engine.finalize();
 }
 
+// ============================================================================
+// Generic invoke() tests
+// ============================================================================
+
+TEST_F(LuaEngineTest, Invoke_ExistingFunction_ReturnsTrue)
+{
+    write_script(R"(
+function on_produce(out_slot, fz, msgs, api) return true end
+function on_heartbeat() end
+)");
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    EXPECT_TRUE(engine.invoke("on_heartbeat"));
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Invoke_NonExistentFunction_ReturnsFalse)
+{
+    write_script("function on_produce(out_slot, fz, msgs, api) return true end");
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    EXPECT_FALSE(engine.invoke("no_such_function"));
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Invoke_Nullptr_ReturnsFalse)
+{
+    write_script("function on_produce(out_slot, fz, msgs, api) return true end");
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    EXPECT_FALSE(engine.invoke(nullptr));
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Invoke_ScriptError_ReturnsFalseAndIncrementsErrors)
+{
+    write_script(R"(
+function on_produce(out_slot, fz, msgs, api) return true end
+function bad_func() error("intentional test error") end
+)");
+    RoleHostCore core;
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine_with_core(engine, core));
+
+    EXPECT_FALSE(engine.invoke("bad_func"));
+    EXPECT_EQ(core.script_errors(), 1u);
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Invoke_FromNonOwnerThread_Works)
+{
+    write_script(R"(
+function on_produce(out_slot, fz, msgs, api) return true end
+function on_heartbeat() end
+)");
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    bool result = false;
+    std::thread t([&] { result = engine.invoke("on_heartbeat"); });
+    t.join();
+
+    EXPECT_TRUE(result);
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Invoke_WithArgs_ReturnsTrue)
+{
+    write_script(R"(
+function on_produce(out_slot, fz, msgs, api) return true end
+function greet() end
+)");
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    nlohmann::json args = {{"name", "test"}};
+    EXPECT_TRUE(engine.invoke("greet", args));
+    engine.finalize();
+}
+
 } // anonymous namespace
