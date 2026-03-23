@@ -295,55 +295,5 @@ inline std::chrono::steady_clock::time_point compute_next_deadline(
     return now + period;    // overrun — reset from now (no catch-up)
 }
 
-// ============================================================================
-// Backward compatibility — old API (deprecated, will be removed)
-// ============================================================================
-
-/**
- * @brief Old-style parse that accepts int period_ms.
- * @deprecated Use the double period_us overload instead.
- */
-inline LoopTimingPolicy parse_loop_timing_policy(const std::string &timing_str,
-                                                  int                period_ms,
-                                                  const std::string &context)
-{
-    return parse_loop_timing_policy(timing_str, static_cast<double>(period_ms) * kUsPerMs, context);
-}
-
-/**
- * @brief Old-style default that accepts int period_ms.
- * @deprecated Use the double period_us overload instead.
- */
-inline LoopTimingPolicy default_loop_timing_policy(int period_ms) noexcept
-{
-    return default_loop_timing_policy(static_cast<double>(period_ms) * kUsPerMs);
-}
-
-/**
- * @brief Old-style slot acquire timeout computation.
- * @deprecated Replaced by compute_short_timeout() in the new loop design.
- *
- * Kept for backward compatibility during migration. Will be removed when
- * all role hosts switch to the unified data loop.
- */
-inline int compute_slot_acquire_timeout(int explicit_ms, int period_ms) noexcept
-{
-    static constexpr int kMaxRateDefaultMs = 50;
-
-    if (explicit_ms == 0)
-    {
-        return 0;
-    }
-    if (explicit_ms > 0)
-    {
-        return explicit_ms;
-    }
-    // explicit_ms == -1 (or any negative): derive from period.
-    if (period_ms > 0)
-    {
-        return period_ms / 2 > 0 ? period_ms / 2 : 1;
-    }
-    return kMaxRateDefaultMs;
-}
 
 } // namespace pylabhub

@@ -91,7 +91,6 @@ void ConsumerRoleHost::worker_main_()
     const auto &sc   = config_.script();
     const auto &hub  = config_.in_hub();
     const auto &tr   = config_.in_transport();
-    const auto &vld  = config_.validation();
 
     // Step 1: Initialize the engine.
     if (!engine_->initialize("cons", &core_))
@@ -223,7 +222,7 @@ void ConsumerRoleHost::worker_main_()
     ctx.producer    = nullptr;
     ctx.consumer    = in_consumer_.has_value() ? &(*in_consumer_) : nullptr;
     ctx.core         = &core_;
-    ctx.stop_on_script_error = vld.stop_on_script_error;
+    ctx.stop_on_script_error = sc.stop_on_script_error;
 
     engine_->build_api(ctx);
 
@@ -260,7 +259,6 @@ bool ConsumerRoleHost::setup_infrastructure_()
     const auto &hub   = config_.in_hub();
     const auto &tr    = config_.in_transport();
     const auto &shm   = config_.in_shm();
-    const auto &val   = config_.in_validation();
     const auto &tc    = config_.timing();
     const auto &inbox = config_.inbox();
     const auto &mon   = config_.monitoring();
@@ -481,7 +479,7 @@ bool ConsumerRoleHost::setup_infrastructure_()
     }
 
     if (queue_reader_)
-        queue_reader_->set_verify_checksum(val.verify_checksum, core_.has_fz);
+        queue_reader_->set_verify_checksum(shm.verify_checksum, core_.has_fz);
 
     LOGGER_INFO("[cons] Consumer started on channel '{}' (shm={})", ch,
                 in_consumer_->has_shm());
@@ -542,7 +540,7 @@ void ConsumerRoleHost::run_data_loop_()
     }
 
     const auto &tc  = config_.timing();
-    const auto &vld = config_.validation();
+    const auto &sc  = config_.script();
 
     const double period_us = tc.period_us;
     const bool is_max_rate = (tc.loop_timing == LoopTimingPolicy::MaxRate);
@@ -630,7 +628,7 @@ void ConsumerRoleHost::run_data_loop_()
         if (data != nullptr)
             queue_reader_->read_release();
 
-        if (vld.stop_on_script_error &&
+        if (sc.stop_on_script_error &&
             engine_->script_error_count() > errors_before)
         {
             core_.request_stop();

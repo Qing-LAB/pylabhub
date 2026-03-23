@@ -249,7 +249,7 @@ void ProcessorRoleHost::worker_main_()
     ctx.producer     = out_producer_.has_value() ? &(*out_producer_) : nullptr;
     ctx.consumer     = in_consumer_.has_value() ? &(*in_consumer_) : nullptr;
     ctx.core         = &core_;
-    ctx.stop_on_script_error = config_.validation().stop_on_script_error;
+    ctx.stop_on_script_error = config_.script().stop_on_script_error;
 
     engine_->build_api(ctx);
 
@@ -662,7 +662,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
     }
     else if (auto *zmq_in = in_consumer_->queue())
     {
-        if (config_.in_validation().verify_checksum)
+        if (config_.in_shm().verify_checksum)
             LOGGER_WARN("[proc] verify_checksum=true has no effect on ZMQ input transport "
                         "(TCP provides integrity); consider SHM input if checksum is needed");
         in_q_ = zmq_in;
@@ -683,7 +683,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
                          config_.in_channel());
             return false;
         }
-        if (config_.in_validation().verify_checksum)
+        if (config_.in_shm().verify_checksum)
             in_queue_->set_verify_checksum(true, core_.has_fz);
         in_q_ = in_queue_.get();
     }
@@ -707,7 +707,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
         out_queue_->start();
         out_q_ = out_queue_.get();
     }
-    out_q_->set_checksum_options(config_.out_validation().update_checksum, core_.has_fz);
+    out_q_->set_checksum_options(config_.out_shm().update_checksum, core_.has_fz);
 
     LOGGER_INFO("[proc] Processor started: '{}' -> '{}'",
                 config_.in_channel(), config_.out_channel());
@@ -789,7 +789,7 @@ void ProcessorRoleHost::run_data_loop_()
     }
 
     const auto &tc  = config_.timing();
-    const auto &vld = config_.validation();
+    const auto &sc  = config_.script();
 
     // --- Setup ---
     const double period_us = tc.period_us;
@@ -978,7 +978,7 @@ void ProcessorRoleHost::run_data_loop_()
         if (result == InvokeResult::Error)
         {
             // script_errors already incremented by engine.
-            if (vld.stop_on_script_error)
+            if (sc.stop_on_script_error)
                 core_.request_stop();
         }
 

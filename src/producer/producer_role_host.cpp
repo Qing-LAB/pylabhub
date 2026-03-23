@@ -95,8 +95,6 @@ void ProducerRoleHost::worker_main_()
     const auto &hub  = config_.out_hub();
     const auto &tr   = config_.out_transport();
     const auto &shm  = config_.out_shm();
-    const auto &val  = config_.out_validation();
-    const auto &vld  = config_.validation();
     const auto &inbox = config_.inbox();
     const auto &pf   = config_.role_data<ProducerFields>();
 
@@ -228,7 +226,7 @@ void ProducerRoleHost::worker_main_()
     ctx.producer    = out_producer_.has_value() ? &(*out_producer_) : nullptr;
     ctx.consumer    = nullptr;
     ctx.core         = &core_;
-    ctx.stop_on_script_error = vld.stop_on_script_error;
+    ctx.stop_on_script_error = sc.stop_on_script_error;
 
     engine_->build_api(ctx);
 
@@ -269,7 +267,6 @@ bool ProducerRoleHost::setup_infrastructure_()
     const auto &hub   = config_.out_hub();
     const auto &tr    = config_.out_transport();
     const auto &shm   = config_.out_shm();
-    const auto &val   = config_.out_validation();
     const auto &tc    = config_.timing();
     const auto &inbox = config_.inbox();
     const auto &mon   = config_.monitoring();
@@ -529,7 +526,7 @@ bool ProducerRoleHost::setup_infrastructure_()
         queue_.reset();
         return false;
     }
-    queue_->set_checksum_options(val.update_checksum, core_.has_fz);
+    queue_->set_checksum_options(shm.update_checksum, core_.has_fz);
 
     LOGGER_INFO("[prod] Producer started on channel '{}' (shm={})", ch,
                 out_producer_->has_shm());
@@ -594,7 +591,7 @@ void ProducerRoleHost::run_data_loop_()
     }
 
     const auto &tc = config_.timing();
-    const auto &vld = config_.validation();
+    const auto &sc = config_.script();
 
     // --- Setup ---
     const double period_us = tc.period_us;
@@ -712,7 +709,7 @@ void ProducerRoleHost::run_data_loop_()
         if (result == InvokeResult::Error)
         {
             // script_errors already incremented by engine.
-            if (vld.stop_on_script_error)
+            if (sc.stop_on_script_error)
                 core_.request_stop();
         }
 

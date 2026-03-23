@@ -22,6 +22,8 @@ struct ShmConfig
     uint64_t                 secret{0};
     uint32_t                 slot_count{8};
     hub::ConsumerSyncPolicy  sync_policy{hub::ConsumerSyncPolicy::Sequential};
+    bool                     update_checksum{true};   ///< Update BLAKE2b checksum on commit (writer-side).
+    bool                     verify_checksum{false};  ///< Verify checksum on read (reader-side).
 };
 
 /// Parse SHM config for a given direction.
@@ -41,6 +43,9 @@ inline ShmConfig parse_shm_config(const nlohmann::json &j,
 
     const std::string sync_str = j.value(pfx + "shm_sync_policy", std::string{"sequential"});
     sc.sync_policy = ::pylabhub::parse_consumer_sync_policy(sync_str);
+
+    sc.update_checksum = j.value(pfx + "update_checksum", true);
+    sc.verify_checksum = j.value(pfx + "verify_checksum", false);
 
     if (sc.enabled && sc.slot_count == 0)
         throw std::invalid_argument(
