@@ -762,8 +762,8 @@ Payload (REG_REQ):
   zmq_ctrl_endpoint     string   Producer ROUTER bind endpoint (e.g. "tcp://127.0.0.1:56789")
   zmq_data_endpoint     string   Producer XPUB/PUSH bind endpoint (empty for Bidir)
   zmq_pubkey            string   Producer CurveZMQ public key (Z85, 40 chars)
-  actor_name            string   (opt) Human-readable producer name
-  actor_uid             string   (opt) Producer UID (e.g. "PROD-MySensor-A1B2C3D4")
+  role_name             string   (opt) Human-readable producer name
+  role_uid              string   (opt) Producer UID (e.g. "PROD-MySensor-A1B2C3D4")
   schema_id             string   (opt) Named schema ID (e.g. "lab.sensors.temperature.raw@1")
   schema_blds           string   (opt) BLDS type description string
 

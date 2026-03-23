@@ -329,7 +329,6 @@ Example `producer.json`:
 | `channel` | yes | — | Channel name to publish on |
 | `target_period_ms` | no | `0` | Write loop period in ms; `0` = free-run |
 | `loop_timing` | no | `"max_rate"` | `"max_rate"`, `"fixed_rate"`, `"fixed_rate_with_compensation"` |
-| `slot_acquire_timeout_ms` | no | `-1` | `write_acquire()` timeout; `-1` = derive from period, `0` = non-blocking |
 | `transport` | no | `"shm"` | `"shm"` or `"zmq"` |
 | `zmq_out_endpoint` | no† | — | ZMQ PUSH bind endpoint (required when `transport=zmq`) |
 | `zmq_out_bind` | no | `true` | Bind (true) or connect (false) for ZMQ PUSH socket |
@@ -396,7 +395,6 @@ Example `consumer.json`:
   "channel":     "lab.sensors.temperature",
 
   "queue_type":  "shm",
-  "slot_acquire_timeout_ms":  -1,
 
   "slot_schema": {
     "packing": "aligned",
@@ -426,7 +424,6 @@ Example `consumer.json`:
 | `broker_pubkey` | no | `""` | CurveZMQ broker public key (Z85, 40 chars) |
 | `channel` | yes | — | Channel name to subscribe to |
 | `queue_type` | no | `"shm"` | `"shm"` (reads SHM ring) or `"zmq"` (ZMQ PULL from broker) |
-| `slot_acquire_timeout_ms` | no | `-1` | Slot acquire timeout; `-1` = derive from period, `0` = non-blocking, `>0` = ms |
 | `slot_schema` | yes‡ | — | Expected input slot layout (must match producer schema) |
 | `schema_id` | no‡ | — | Named schema from HEP-CORE-0016 |
 | `validation.verify_checksum` | no | `false` | Enable BLAKE2b slot verification on `read_acquire()` (SHM only) |
@@ -491,7 +488,6 @@ Example `processor.json`:
 
   "in_transport":  "shm",
   "out_transport": "shm",
-  "slot_acquire_timeout_ms":    -1,
 
   "in_slot_schema": {
     "fields": [
@@ -538,7 +534,6 @@ Example `processor.json`:
 | `out_zmq_buffer_depth` | no | `64` | PUSH send ring buffer depth |
 | `in_zmq_packing` | no | `"aligned"` | `"aligned"` or `"packed"` |
 | `out_zmq_packing` | no | `"aligned"` | `"aligned"` or `"packed"` |
-| `slot_acquire_timeout_ms` | no | `-1` | Input acquire timeout; `-1` = derive from period, `0` = non-blocking, `>0` = ms |
 | `overflow_policy` | no | `"block"` | Output overflow policy: `"block"` or `"drop"` |
 | `validation.verify_checksum` | no | `false` | Enable BLAKE2b verification on SHM input |
 | `validation.update_checksum` | no | `true` | Write BLAKE2b checksum on SHM output |
@@ -878,7 +873,7 @@ under `hub.connection_policy`):
 | `"open"` | Any role connecting with a valid CurveZMQ identity is accepted (default) |
 | `"tracked"` | All roles are logged; no enforcement |
 | `"required"` | Roles must present a known UID |
-| `"verified"` | Roles must be in `hub.known_actors[]` with matching UID and public key |
+| `"verified"` | Roles must be in `hub.known_roles[]` with matching UID and public key |
 
 ### 9.5 ZMQ socket lifecycle policy
 
