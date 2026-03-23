@@ -1,6 +1,6 @@
 /**
- * @file actor_vault.hpp
- * @brief ActorVault: encrypted CurveZMQ keypair store for a role instance.
+ * @file role_vault.hpp
+ * @brief RoleVault: encrypted CurveZMQ keypair store for a role instance.
  *
  * Used by all three role types (producer, consumer, processor) to store their
  * CurveZMQ keypair encrypted at rest, using the same Argon2id KDF +
@@ -26,10 +26,10 @@
  *                           kVaultOpsLimit, kVaultMemLimit)
  *
  * Password sources (checked in order by caller):
- *   1. PYLABHUB_ACTOR_PASSWORD environment variable (service / CI)
+ *   1. PYLABHUB_ROLE_PASSWORD environment variable (service / CI)
  *   2. Interactive terminal prompt via getpass()
  *      XPLAT: getpass() is POSIX-only. Windows interactive mode needs
- *      ReadConsoleW() or equivalent. CI uses PYLABHUB_ACTOR_PASSWORD env var
+ *      ReadConsoleW() or equivalent. CI uses PYLABHUB_ROLE_PASSWORD env var
  *      (cross-platform).
  *
  * No password is stored in any file or config field.
@@ -48,14 +48,14 @@ namespace pylabhub::utils
 /**
  * @brief Encrypted actor keypair store.
  *
- * Construct via ActorVault::create() (--keygen) or ActorVault::open() (runtime).
+ * Construct via RoleVault::create() (--keygen) or RoleVault::open() (runtime).
  * Both factory functions throw std::runtime_error on failure (wrong password,
  * corrupted file, I/O error).
  *
  * The vault holds only the actor's CurveZMQ keypair (Z85).
  * Nothing secret is ever written to actor.json.
  */
-class PYLABHUB_UTILS_EXPORT ActorVault
+class PYLABHUB_UTILS_EXPORT RoleVault
 {
 public:
     /**
@@ -71,7 +71,7 @@ public:
      * @param password    Master password. Empty string = no encryption (dev mode).
      * @throws std::runtime_error on crypto or I/O failure.
      */
-    static ActorVault create(const std::filesystem::path &vault_path,
+    static RoleVault create(const std::filesystem::path &vault_path,
                              const std::string           &actor_uid,
                              const std::string           &password);
 
@@ -84,7 +84,7 @@ public:
      *
      * @throws std::runtime_error on MAC failure, I/O error, or malformed JSON.
      */
-    static ActorVault open(const std::filesystem::path &vault_path,
+    static RoleVault open(const std::filesystem::path &vault_path,
                            const std::string           &actor_uid,
                            const std::string           &password);
 
@@ -97,14 +97,14 @@ public:
     /// Actor UID stored in the vault payload (matches the actor_uid used at create time).
     const std::string &actor_uid() const noexcept;
 
-    ~ActorVault();
-    ActorVault(ActorVault &&) noexcept;
-    ActorVault &operator=(ActorVault &&) noexcept;
-    ActorVault(const ActorVault &)            = delete;
-    ActorVault &operator=(const ActorVault &) = delete;
+    ~RoleVault();
+    RoleVault(RoleVault &&) noexcept;
+    RoleVault &operator=(RoleVault &&) noexcept;
+    RoleVault(const RoleVault &)            = delete;
+    RoleVault &operator=(const RoleVault &) = delete;
 
 private:
-    ActorVault();
+    RoleVault();
     struct Impl;
     std::unique_ptr<Impl> pImpl;
 };

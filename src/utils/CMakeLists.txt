@@ -33,7 +33,7 @@ set(UTILS_SOURCES
   service/crypto_utils.cpp
   service/vault_crypto.cpp
   service/hub_vault.cpp
-  service/actor_vault.cpp
+  service/role_vault.cpp
 
   # --- logging: async logger + pluggable sinks ---
   logging/logger.cpp
@@ -48,7 +48,6 @@ set(UTILS_SOURCES
   config/json_config.cpp
   config/hub_config.cpp
   config/role_directory.cpp
-  config/auth_config.cpp
   config/role_config.cpp
 
   # --- shm: shared memory DataBlock layer ---

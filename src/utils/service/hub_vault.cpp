@@ -2,7 +2,7 @@
  * @file hub_vault.cpp
  * @brief HubVault — encrypted hub secrets store.
  *
- * Crypto layer delegated to vault_crypto.hpp (shared with ActorVault).
+ * Crypto layer delegated to vault_crypto.hpp (shared with RoleVault).
  * This file handles only hub-specific payload structure (broker keypair + admin token).
  */
 #include "utils/hub_vault.hpp"

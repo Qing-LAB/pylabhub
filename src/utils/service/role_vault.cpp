@@ -1,11 +1,11 @@
 /**
- * @file actor_vault.cpp
- * @brief ActorVault — encrypted actor keypair store.
+ * @file role_vault.cpp
+ * @brief RoleVault — encrypted actor keypair store.
  *
  * Crypto layer delegated to vault_crypto.hpp (shared with HubVault).
  * This file handles only actor-specific payload (CurveZMQ keypair).
  */
-#include "utils/actor_vault.hpp"
+#include "utils/role_vault.hpp"
 
 #include "vault_crypto.hpp"
 
@@ -27,7 +27,7 @@ namespace pylabhub::utils
 // Pimpl
 // ============================================================================
 
-struct ActorVault::Impl
+struct RoleVault::Impl
 {
     std::string actor_uid_;   ///< Actor UID from payload
     std::string public_key_;  ///< Z85, 40 chars
@@ -50,16 +50,16 @@ constexpr std::size_t kZ85KeyLen  = 40;
 // Constructors / destructor
 // ============================================================================
 
-ActorVault::ActorVault() : pImpl(std::make_unique<Impl>()) {}
-ActorVault::~ActorVault()                          = default;
-ActorVault::ActorVault(ActorVault &&) noexcept     = default;
-ActorVault &ActorVault::operator=(ActorVault &&) noexcept = default;
+RoleVault::RoleVault() : pImpl(std::make_unique<Impl>()) {}
+RoleVault::~RoleVault()                          = default;
+RoleVault::RoleVault(RoleVault &&) noexcept     = default;
+RoleVault &RoleVault::operator=(RoleVault &&) noexcept = default;
 
 // ============================================================================
-// ActorVault::create
+// RoleVault::create
 // ============================================================================
 
-ActorVault ActorVault::create(const fs::path    &vault_path,
+RoleVault RoleVault::create(const fs::path    &vault_path,
                                const std::string &actor_uid,
                                const std::string &password)
 {
@@ -70,7 +70,7 @@ ActorVault ActorVault::create(const fs::path    &vault_path,
     std::array<char, kZ85BufSize> sec{};
     if (zmq_curve_keypair(pub.data(), sec.data()) != 0)
     {
-        throw std::runtime_error("ActorVault: zmq_curve_keypair failed");
+        throw std::runtime_error("RoleVault: zmq_curve_keypair failed");
     }
     const std::string pub_str(pub.data(), kZ85KeyLen);
     const std::string sec_str(sec.data(), kZ85KeyLen);
@@ -83,7 +83,7 @@ ActorVault ActorVault::create(const fs::path    &vault_path,
         std::error_code ec;
         fs::create_directories(vault_path.parent_path(), ec);
         if (ec)
-            throw std::runtime_error("ActorVault: cannot create parent directory for '" +
+            throw std::runtime_error("RoleVault: cannot create parent directory for '" +
                                      vault_path.string() + "': " + ec.message());
     }
 
@@ -95,7 +95,7 @@ ActorVault ActorVault::create(const fs::path    &vault_path,
     };
     detail::vault_write(vault_path, payload.dump(), password, actor_uid);
 
-    ActorVault v;
+    RoleVault v;
     v.pImpl->actor_uid_  = actor_uid;
     v.pImpl->public_key_ = pub_str;
     v.pImpl->secret_key_ = sec_str;
@@ -103,10 +103,10 @@ ActorVault ActorVault::create(const fs::path    &vault_path,
 }
 
 // ============================================================================
-// ActorVault::open
+// RoleVault::open
 // ============================================================================
 
-ActorVault ActorVault::open(const fs::path    &vault_path,
+RoleVault RoleVault::open(const fs::path    &vault_path,
                              const std::string &actor_uid,
                              const std::string &password)
 {
@@ -115,7 +115,7 @@ ActorVault ActorVault::open(const fs::path    &vault_path,
     // vault_read throws on wrong password or I/O failure.
     const std::string plaintext = detail::vault_read(vault_path, password, actor_uid);
 
-    ActorVault v;
+    RoleVault v;
     try
     {
         const json j = json::parse(plaintext);
@@ -125,12 +125,12 @@ ActorVault ActorVault::open(const fs::path    &vault_path,
     }
     catch (const json::exception &e)
     {
-        throw std::runtime_error(std::string("ActorVault: vault payload invalid: ") + e.what());
+        throw std::runtime_error(std::string("RoleVault: vault payload invalid: ") + e.what());
     }
 
     if (v.pImpl->public_key_.size() != kZ85KeyLen || v.pImpl->secret_key_.size() != kZ85KeyLen)
     {
-        throw std::runtime_error("ActorVault: vault contains invalid key lengths (expected 40-char Z85)");
+        throw std::runtime_error("RoleVault: vault contains invalid key lengths (expected 40-char Z85)");
     }
 
     return v;
@@ -140,8 +140,8 @@ ActorVault ActorVault::open(const fs::path    &vault_path,
 // Accessors
 // ============================================================================
 
-const std::string &ActorVault::public_key() const noexcept { return pImpl->public_key_; }
-const std::string &ActorVault::secret_key() const noexcept { return pImpl->secret_key_; }
-const std::string &ActorVault::actor_uid()  const noexcept { return pImpl->actor_uid_;  }
+const std::string &RoleVault::public_key() const noexcept { return pImpl->public_key_; }
+const std::string &RoleVault::secret_key() const noexcept { return pImpl->secret_key_; }
+const std::string &RoleVault::actor_uid()  const noexcept { return pImpl->actor_uid_;  }
 
 } // namespace pylabhub::utils

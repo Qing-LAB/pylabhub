@@ -2,7 +2,7 @@
  * @file vault_crypto.hpp
  * @brief Internal shared Argon2id + XSalsa20-Poly1305 vault crypto helpers.
  *
- * Used by HubVault and ActorVault. NOT a public header — do not include from
+ * Used by HubVault and RoleVault. NOT a public header — do not include from
  * outside src/utils/service/.
  *
  * Vault binary format (written/read by vault_write / vault_read):

@@ -23,7 +23,7 @@ target_include_directories(test_layer4_producer PRIVATE
 target_link_libraries(test_layer4_producer
     PRIVATE
         pylabhub::test_framework   # WorkerProcess, g_self_exe_path, custom main()
-        pylabhub::utils            # actor_vault, uid_utils, nlohmann_json, etc.
+        pylabhub::utils            # role_vault, uid_utils, nlohmann_json, etc.
         GTest::gtest
 )
 

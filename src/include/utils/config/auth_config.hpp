@@ -4,10 +4,10 @@
  * @brief AuthConfig — categorical config for CURVE authentication.
  *
  * Parsed from the role-specific "auth" JSON sub-object.
- * load_keypair() decrypts the vault file at runtime.
+ * Vault operations (keypair loading/creation) are handled by RoleConfig,
+ * not AuthConfig — see RoleConfig::load_keypair() and create_keypair().
  */
 
-#include "pylabhub_utils_export.h"
 #include "utils/json_fwd.hpp"
 
 #include <string>
@@ -16,23 +16,11 @@
 namespace pylabhub::config
 {
 
-struct PYLABHUB_UTILS_EXPORT AuthConfig
+struct AuthConfig
 {
     std::string keyfile;       ///< Path to encrypted vault; empty = no CURVE auth.
-    std::string client_pubkey; ///< Z85 CURVE25519 public key (40 chars); resolved at runtime.
-    std::string client_seckey; ///< Z85 CURVE25519 secret key; resolved at runtime.
-
-    /**
-     * @brief Decrypt the vault at keyfile and populate client_pubkey / client_seckey.
-     * No-op if keyfile is empty.
-     * @param uid       Role UID — used as Argon2id KDF domain separator.
-     * @param password  Vault password.
-     * @param role_tag  Short role tag for log messages ("prod", "cons", "proc").
-     * @return true if keys were loaded; false if keyfile absent.
-     * @throws std::runtime_error if vault exists but decryption fails.
-     */
-    bool load_keypair(const std::string &uid, const std::string &password,
-                      const char *role_tag);
+    std::string client_pubkey; ///< Z85 CURVE25519 public key (40 chars); populated by RoleConfig::load_keypair().
+    std::string client_seckey; ///< Z85 CURVE25519 secret key; populated by RoleConfig::load_keypair().
 };
 
 /// Parse auth from the role-specific JSON section.

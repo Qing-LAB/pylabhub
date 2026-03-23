@@ -122,7 +122,7 @@ inline std::string read_password_interactive(const char *role_name,
 /**
  * @brief Return the vault password from the environment or by prompting.
  *
- * Priority: PYLABHUB_ACTOR_PASSWORD env var → interactive terminal prompt.
+ * Priority: PYLABHUB_ROLE_PASSWORD env var → interactive terminal prompt.
  * Returns nullopt when stdin is not a TTY and the env var is not set; the
  * caller should treat nullopt as a fatal error (message already on stderr).
  *
@@ -132,12 +132,12 @@ inline std::string read_password_interactive(const char *role_name,
 inline std::optional<std::string> get_role_password(const char *role_name,
                                                       const char *prompt)
 {
-    if (const char *env = std::getenv("PYLABHUB_ACTOR_PASSWORD"))
+    if (const char *env = std::getenv("PYLABHUB_ROLE_PASSWORD"))
         return std::string(env);
     if (!is_stdin_tty())
     {
         std::fprintf(stderr,
-                     "%s: vault password required; set PYLABHUB_ACTOR_PASSWORD "
+                     "%s: vault password required; set PYLABHUB_ROLE_PASSWORD "
                      "for non-interactive use\n",
                      role_name);
         return std::nullopt;
@@ -149,7 +149,7 @@ inline std::optional<std::string> get_role_password(const char *role_name,
  * @brief Read a new vault password with confirmation.
  *
  * When stdin is a TTY: prompts twice and verifies the passwords match.
- * Otherwise falls back to PYLABHUB_ACTOR_PASSWORD (no confirmation).
+ * Otherwise falls back to PYLABHUB_ROLE_PASSWORD (no confirmation).
  *
  * Returns nullopt on mismatch or when no source is available (error on stderr).
  *
@@ -162,13 +162,13 @@ inline std::optional<std::string> get_new_role_password(
     const char *prompt,
     const char *confirm_prompt)
 {
-    if (const char *env = std::getenv("PYLABHUB_ACTOR_PASSWORD"))
+    if (const char *env = std::getenv("PYLABHUB_ROLE_PASSWORD"))
         return std::string(env);
 
     if (!is_stdin_tty())
     {
         std::fprintf(stderr,
-                     "%s: vault password required; set PYLABHUB_ACTOR_PASSWORD "
+                     "%s: vault password required; set PYLABHUB_ROLE_PASSWORD "
                      "for non-interactive use\n",
                      role_name);
         return std::nullopt;
