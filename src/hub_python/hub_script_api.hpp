@@ -73,11 +73,11 @@ public:
     /** 64-char hex schema hash, or empty when no schema is declared. */
     const std::string& schema_hash() const noexcept { return snap_.schema_hash; }
 
-    /** Human-readable name of the producer actor (empty if not set). */
-    const std::string& producer_actor_name() const noexcept { return snap_.producer_actor_name; }
+    /** Human-readable name of the producer role (empty if not set). */
+    const std::string& producer_role_name() const noexcept { return snap_.producer_role_name; }
 
-    /** UID of the producer actor (empty if not set). */
-    const std::string& producer_actor_uid() const noexcept { return snap_.producer_actor_uid; }
+    /** UID of the producer role (empty if not set). */
+    const std::string& producer_role_uid() const noexcept { return snap_.producer_role_uid; }
 
 private:
     broker::ChannelSnapshotEntry snap_;

@@ -63,8 +63,8 @@ struct ConsumerEntry
     std::string zmq_identity;
 
     // ── Identity (Phase 3) ────────────────────────────────────────────────────
-    std::string actor_name;  ///< Human name if provided in CONSUMER_REG_REQ; empty otherwise.
-    std::string actor_uid;   ///< Actor UID if provided in CONSUMER_REG_REQ; empty otherwise.
+    std::string role_name;  ///< Human name if provided in CONSUMER_REG_REQ; empty otherwise.
+    std::string role_uid;   ///< Role UID if provided in CONSUMER_REG_REQ; empty otherwise.
     std::chrono::system_clock::time_point connected_at{std::chrono::system_clock::now()};
 };
 
@@ -78,8 +78,8 @@ struct ChannelEntry
     std::string    producer_hostname;
 
     // ── Identity (Phase 3) ────────────────────────────────────────────────────
-    std::string    producer_actor_name; ///< Human name if provided in REG_REQ; empty otherwise.
-    std::string    producer_actor_uid;  ///< Actor UID if provided in REG_REQ; empty otherwise.
+    std::string    producer_role_name; ///< Human name if provided in REG_REQ; empty otherwise.
+    std::string    producer_role_uid;  ///< Role UID if provided in REG_REQ; empty otherwise.
     nlohmann::json metadata;          ///< ring_buffer_capacity, policy, etc.
     std::vector<ConsumerEntry> consumers;
 

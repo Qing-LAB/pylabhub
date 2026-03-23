@@ -303,8 +303,8 @@ public:
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     [[nodiscard]] std::optional<nlohmann::json>
     check_connection_policy(const std::string& channel_name,
-                            const std::string& actor_name,
-                            const std::string& actor_uid,
+                            const std::string& role_name,
+                            const std::string& role_uid,
                             const std::string& corr_id,
                             bool               is_consumer) const;
 };
@@ -745,9 +745,9 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     const uint64_t    attempted_pid    = req.value("producer_pid", uint64_t{0});
 
     // ── Connection policy check (Phase 3) ───────────────────────────────────
-    const std::string actor_name = req.value("actor_name", "");
-    const std::string actor_uid  = req.value("actor_uid", "");
-    if (auto err = check_connection_policy(channel_name, actor_name, actor_uid, corr_id,
+    const std::string role_name = req.value("role_name", "");
+    const std::string role_uid  = req.value("role_uid", "");
+    if (auto err = check_connection_policy(channel_name, role_name, role_uid, corr_id,
                                            /*is_consumer=*/false))
     {
         return *err;
@@ -759,8 +759,8 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     entry.schema_version        = req.value("schema_version", uint32_t{0});
     entry.producer_pid          = attempted_pid;
     entry.producer_hostname     = req.value("producer_hostname", "");
-    entry.producer_actor_name   = actor_name;
-    entry.producer_actor_uid    = actor_uid;
+    entry.producer_role_name   = role_name;
+    entry.producer_role_uid    = role_uid;
     entry.has_shared_memory     = req.value("has_shared_memory", false);
     entry.pattern               = channel_pattern_from_str(req.value("channel_pattern", "PubSub"));
     entry.zmq_ctrl_endpoint     = req.value("zmq_ctrl_endpoint", "");
@@ -1036,9 +1036,9 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     }
 
     // ── Connection policy check (Phase 3) ───────────────────────────────────
-    const std::string actor_name = req.value("consumer_name", "");
-    const std::string actor_uid  = req.value("consumer_uid", "");
-    if (auto err = check_connection_policy(channel_name, actor_name, actor_uid, corr_id,
+    const std::string role_name = req.value("consumer_name", "");
+    const std::string role_uid  = req.value("consumer_uid", "");
+    if (auto err = check_connection_policy(channel_name, role_name, role_uid, corr_id,
                                            /*is_consumer=*/true))
     {
         return *err;
@@ -1047,8 +1047,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     ConsumerEntry entry;
     entry.consumer_pid       = req.value("consumer_pid", uint64_t{0});
     entry.consumer_hostname  = req.value("consumer_hostname", "");
-    entry.actor_name         = actor_name;
-    entry.actor_uid          = actor_uid;
+    entry.role_name         = role_name;
+    entry.role_uid          = role_uid;
     // Capture ZMQ identity for future CHANNEL_CLOSING_NOTIFY.
     entry.zmq_identity.assign(static_cast<const char*>(identity.data()), identity.size());
     registry.register_consumer(channel_name, std::move(entry));
@@ -1184,8 +1184,8 @@ ConnectionPolicy BrokerServiceImpl::effective_policy(const std::string& channel_
 
 std::optional<nlohmann::json>
 BrokerServiceImpl::check_connection_policy(const std::string& channel_name,
-                                            const std::string& actor_name,
-                                            const std::string& actor_uid,
+                                            const std::string& role_name,
+                                            const std::string& role_uid,
                                             const std::string& corr_id,
                                             bool               is_consumer) const
 {
@@ -1194,12 +1194,12 @@ BrokerServiceImpl::check_connection_policy(const std::string& channel_name,
 
     if (policy == ConnectionPolicy::Required || policy == ConnectionPolicy::Verified)
     {
-        if (actor_name.empty() || actor_uid.empty())
+        if (role_name.empty() || role_uid.empty())
         {
-            LOGGER_WARN("Broker: policy={} rejected {} for '{}': missing actor_name/uid",
+            LOGGER_WARN("Broker: policy={} rejected {} for '{}': missing role_name/uid",
                         connection_policy_to_str(policy), role_str, channel_name);
             return make_error(corr_id, "IDENTITY_REQUIRED",
-                              fmt::format("Connection policy '{}' requires actor_name and actor_uid",
+                              fmt::format("Connection policy '{}' requires role_name and role_uid",
                                           connection_policy_to_str(policy)));
         }
     }
@@ -1207,10 +1207,10 @@ BrokerServiceImpl::check_connection_policy(const std::string& channel_name,
     if (policy == ConnectionPolicy::Verified)
     {
         const bool found = std::any_of(
-            cfg.known_actors.begin(), cfg.known_actors.end(),
-            [&](const KnownActor& ka)
+            cfg.known_roles.begin(), cfg.known_roles.end(),
+            [&](const KnownRole& ka)
             {
-                if (ka.name != actor_name || ka.uid != actor_uid)
+                if (ka.name != role_name || ka.uid != role_uid)
                 {
                     return false;
                 }
@@ -1220,18 +1220,18 @@ BrokerServiceImpl::check_connection_policy(const std::string& channel_name,
         if (!found)
         {
             LOGGER_WARN("Broker: Verified policy rejected {} '{}' uid='{}' for '{}': "
-                        "not in known_actors",
-                        role_str, actor_name, actor_uid, channel_name);
-            return make_error(corr_id, "NOT_IN_KNOWN_ACTORS",
-                              fmt::format("Actor '{}' (uid={}) is not in the hub's known_actors list",
-                                          actor_name, actor_uid));
+                        "not in known_roles",
+                        role_str, role_name, role_uid, channel_name);
+            return make_error(corr_id, "NOT_IN_KNOWN_ROLES",
+                              fmt::format("Role '{}' (uid={}) is not in the hub's known_roles list",
+                                          role_name, role_uid));
         }
     }
 
-    if (policy != ConnectionPolicy::Open && (!actor_name.empty() || !actor_uid.empty()))
+    if (policy != ConnectionPolicy::Open && (!role_name.empty() || !role_uid.empty()))
     {
         LOGGER_INFO("Broker: {} identity recorded for '{}': name='{}' uid='{}'",
-                    role_str, channel_name, actor_name, actor_uid);
+                    role_str, channel_name, role_name, role_uid);
     }
 
     return std::nullopt;
@@ -1612,7 +1612,7 @@ nlohmann::json BrokerServiceImpl::handle_channel_list_req()
     {
         nlohmann::json ch;
         ch["name"]           = name;
-        ch["producer_uid"]   = entry.producer_actor_uid;
+        ch["producer_uid"]   = entry.producer_role_uid;
         ch["schema_id"]      = entry.schema_id;
         ch["consumer_count"] = entry.consumers.size();
         switch (entry.status)
@@ -1642,10 +1642,10 @@ nlohmann::json BrokerServiceImpl::handle_role_presence_req(const nlohmann::json&
         return resp;
     }
 
-    // Scan all channels: check producer_actor_uid and each consumer's actor_uid.
+    // Scan all channels: check producer_role_uid and each consumer's role_uid.
     for (const auto& [name, entry] : registry.all_channels())
     {
-        if (!entry.producer_actor_uid.empty() && entry.producer_actor_uid == uid)
+        if (!entry.producer_role_uid.empty() && entry.producer_role_uid == uid)
         {
             nlohmann::json resp;
             resp["present"] = true;
@@ -1657,7 +1657,7 @@ nlohmann::json BrokerServiceImpl::handle_role_presence_req(const nlohmann::json&
         }
         for (const auto& c : entry.consumers)
         {
-            if (!c.actor_uid.empty() && c.actor_uid == uid)
+            if (!c.role_uid.empty() && c.role_uid == uid)
             {
                 nlohmann::json resp;
                 resp["present"] = true;
@@ -1687,10 +1687,10 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
         return resp;
     }
 
-    // Search for a channel whose producer_actor_uid matches.
+    // Search for a channel whose producer_role_uid matches.
     for (const auto& [name, entry] : registry.all_channels())
     {
-        if (!entry.producer_actor_uid.empty() && entry.producer_actor_uid == uid)
+        if (!entry.producer_role_uid.empty() && entry.producer_role_uid == uid)
         {
             nlohmann::json resp;
             resp["found"]           = !entry.inbox_endpoint.empty();
@@ -1868,8 +1868,8 @@ ChannelSnapshot BrokerService::query_channel_snapshot() const
         e.consumer_count      = static_cast<int>(entry.consumers.size());
         e.producer_pid        = entry.producer_pid;
         e.schema_hash         = entry.schema_hash;
-        e.producer_actor_name = entry.producer_actor_name;
-        e.producer_actor_uid  = entry.producer_actor_uid;
+        e.producer_role_name = entry.producer_role_name;
+        e.producer_role_uid  = entry.producer_role_uid;
         snap.channels.push_back(std::move(e));
     }
     return snap;
@@ -1912,8 +1912,8 @@ nlohmann::json BrokerServiceImpl::query_shm_blocks(const std::string& channel) c
             bi.channel       = name;
             bi.shm_name      = entry.shm_name;
             bi.producer_pid  = entry.producer_pid;
-            bi.producer_uid  = entry.producer_actor_uid;
-            bi.producer_name = entry.producer_actor_name;
+            bi.producer_uid  = entry.producer_role_uid;
+            bi.producer_name = entry.producer_role_name;
             bi.consumers     = entry.consumers;
             blocks.push_back(std::move(bi));
         }
@@ -1942,8 +1942,8 @@ nlohmann::json BrokerServiceImpl::query_shm_blocks(const std::string& channel) c
         {
             nlohmann::json c;
             c["pid"]  = ce.consumer_pid;
-            c["uid"]  = ce.actor_uid;
-            c["name"] = ce.actor_name;
+            c["uid"]  = ce.role_uid;
+            c["name"] = ce.role_name;
             cons_arr.push_back(std::move(c));
         }
         blk["consumers"] = std::move(cons_arr);

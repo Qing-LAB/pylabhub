@@ -92,7 +92,7 @@ public:
      * @brief Write the broker public key to <hub_dir>/hub.pubkey.
      *
      * Writes exactly 40 characters (no newline). Permissions: 0644.
-     * Actors read this file to configure CurveZMQ server-key before connecting.
+     * Roles read this file to configure CurveZMQ server-key before connecting.
      */
     void publish_public_key(const std::filesystem::path &hub_dir) const;
 

@@ -209,9 +209,9 @@ struct ProducerOptions
 
     int timeout_ms{5000};
 
-    // ── actor identity (Phase 2) ──────────────────────────────────────────────
-    std::string actor_name{}; ///< Human-readable actor name; empty = anonymous
-    std::string actor_uid{};  ///< Actor UID (ACTOR-{NAME}-{8HEX}); empty = anonymous
+    // ── role identity (Phase 2) ───────────────────────────────────────────────
+    std::string role_name{}; ///< Human-readable role name; empty = anonymous
+    std::string role_uid{};  ///< Role UID (PROD-{NAME}-{8HEX}); empty = anonymous
 
     // ── Loop policy (HEP-CORE-0008 Pass 3) ───────────────────────────────────
     LoopPolicy                loop_policy{LoopPolicy::MaxRate}; ///< Acquire-pacing policy
@@ -357,7 +357,7 @@ class PYLABHUB_UTILS_EXPORT Producer
 
     /**
      * @brief Embedded mode: set running=true WITHOUT launching peer_thread/write_thread.
-     * Use when the caller (actor ZMQ thread) drives all ZMQ polling itself via
+     * Use when the caller (role ZMQ thread) drives all ZMQ polling itself via
      * peer_ctrl_socket_handle() + handle_peer_events_nowait().
      * @return true if successfully transitioned to running; false if already running or invalid.
      */
@@ -573,8 +573,8 @@ Producer::create(Messenger &messenger, const ProducerOptions &opts)
     ch_opts.schema_hash       = opts.schema_hash;
     ch_opts.schema_version    = opts.schema_version;
     ch_opts.timeout_ms        = opts.timeout_ms;
-    ch_opts.actor_name        = opts.actor_name;
-    ch_opts.actor_uid         = opts.actor_uid;
+    ch_opts.role_name        = opts.role_name;
+    ch_opts.role_uid         = opts.role_uid;
     ch_opts.schema_id         = opts.schema_id;
     ch_opts.schema_blds       = schema_blds_str;
     ch_opts.data_transport    = opts.data_transport;

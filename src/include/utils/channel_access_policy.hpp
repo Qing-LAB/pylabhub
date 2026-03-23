@@ -10,8 +10,8 @@
  *
  *   Open     — no identity required; any client connects (default for dev)
  *   Tracked  — identity accepted and recorded if provided; not required
- *   Required — actor_name + actor_uid must be present in every REG_REQ / CONSUMER_REG_REQ
- *   Verified — actor_name + actor_uid must match an entry in the hub's known_actors list
+ *   Required — role_name + role_uid must be present in every REG_REQ / CONSUMER_REG_REQ
+ *   Verified — role_name + role_uid must match an entry in the hub's known_roles list
  */
 #include "pylabhub_utils_export.h"
 
@@ -40,7 +40,7 @@ namespace pylabhub::broker
  * **Effective policy:** BrokerServiceImpl::effective_policy() picks the
  *   most-restrictive matching ChannelPolicy override, falling back to Config default.
  *
- * | Value    | actor_name/uid required? | Must be in known_actors? | Suitable for   |
+ * | Value    | role_name/uid required? | Must be in known_roles? | Suitable for   |
  * |----------|--------------------------|--------------------------|----------------|
  * | Open     | No                       | No                       | Dev/local hubs |
  * | Tracked  | Optional (if provided,   | No                       | Observability  |
@@ -49,14 +49,14 @@ namespace pylabhub::broker
  * | Verified | Yes (both fields)        | Yes (allowlist)          | Production     |
  *
  * JSON hub.json key: `"connection_policy": "open"` | `"tracked"` | `"required"` | `"verified"`.
- * **Design doc:** HEP-CORE-0010-Actor-Thread-Model.md §5.3 (Phase 3)
+ * **Design doc:** HEP-CORE-0010-Role-Thread-Model.md §5.3 (Phase 3)
  */
 enum class ConnectionPolicy : uint8_t
 {
     Open,     ///< No identity required. Any client connects. (default — suitable for dev)
     Tracked,  ///< Identity accepted and recorded in registry if provided; not required.
-    Required, ///< actor_name + actor_uid must be present in REG_REQ / CONSUMER_REG_REQ.
-    Verified, ///< actor_name + actor_uid must match an entry in known_actors allowlist.
+    Required, ///< role_name + role_uid must be present in REG_REQ / CONSUMER_REG_REQ.
+    Verified, ///< role_name + role_uid must match an entry in known_roles allowlist.
 };
 
 /// Convert ConnectionPolicy to its JSON/config string representation.
@@ -80,10 +80,10 @@ inline ConnectionPolicy connection_policy_from_str(const std::string& s) noexcep
     return ConnectionPolicy::Open;
 }
 
-/// One entry in the hub's known-actors allowlist (hub.json::known_actors).
-struct PYLABHUB_UTILS_EXPORT KnownActor
+/// One entry in the hub's known-roles allowlist (hub.json::known_roles).
+struct PYLABHUB_UTILS_EXPORT KnownRole
 {
-    std::string name; ///< Actor human name (e.g. "lab.daq.sensor1")
+    std::string name; ///< Role human name (e.g. "lab.daq.sensor1")
     std::string uid;  ///< Role UID string (e.g. "PROD-SENSOR-12345678", "CONS-LOGGER-9E1D4C2A")
     std::string role; ///< "producer", "consumer", or "any" (empty = "any")
 };

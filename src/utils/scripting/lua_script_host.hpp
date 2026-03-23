@@ -77,8 +77,8 @@ struct LuaTickInfo
  * @brief LuaJIT concrete ScriptHost. Runs on the calling thread.
  *
  * Subclass and implement `build_api_table_()` to inject the application-specific
- * API into Lua's `api` parameter. For hub scripts this is the hub API; for actor
- * scripts it is the actor-role API.
+ * API into Lua's `api` parameter. For hub scripts this is the hub API; for role
+ * scripts it is the role-specific API.
  */
 class LuaScriptHost : public ScriptHost
 {

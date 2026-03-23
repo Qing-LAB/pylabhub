@@ -381,8 +381,8 @@ bool ProcessorRoleHost::setup_infrastructure_()
     out_opts.pattern      = hub::ChannelPattern::PubSub;
     out_opts.has_shm      = config_.out_shm().enabled;
     out_opts.schema_hash  = scripting::compute_schema_hash(out_slot_spec_, core_.fz_spec);
-    out_opts.actor_name   = config_.identity().name;
-    out_opts.actor_uid    = config_.identity().uid;
+    out_opts.role_name   = config_.identity().name;
+    out_opts.role_uid    = config_.identity().uid;
 
     if (config_.timing().target_period_ms > 0)
     {
