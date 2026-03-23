@@ -578,7 +578,7 @@ gtest_discover_tests(test_layer2_role_directory
 )
 
 # ============================================================================
-# Test: LoopTimingPolicy + compute_slot_acquire_timeout (pure header-only API)
+# Test: LoopTimingPolicy (pure header-only API)
 # ============================================================================
 
 add_executable(test_layer2_loop_timing_policy

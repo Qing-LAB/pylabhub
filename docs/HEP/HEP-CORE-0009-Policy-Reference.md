@@ -234,7 +234,7 @@ Pimpl; `TransactionContext::metrics()` is a pass-through reference).
 **Applied by**: `BrokerServiceImpl::check_connection_policy()` in `broker_service.cpp`,
 called on every incoming REG_REQ (producer) and CONSUMER_REG_REQ (consumer).
 
-| Value | Identity required? | Must be in known_actors? | Suitable for |
+| Value | Identity required? | Must be in known_roles? | Suitable for |
 |-------|--------------------|--------------------------|--------------|
 | `Open` | No | No | Dev/local hubs (default) |
 | `Tracked` | Optional (if provided, stored in registry) | No | Observability and auditing |

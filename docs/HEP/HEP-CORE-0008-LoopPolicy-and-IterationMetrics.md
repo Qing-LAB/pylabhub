@@ -36,12 +36,12 @@ the same Pimpl storage. `set_loop_policy()` implemented on both `DataBlockProduc
 Three remaining items now complete:
 
 1. **`SlotIterator::operator++()`** gains `apply_loop_policy_sleep_()` — reads
-   `period_ms` from the DataBlock Pimpl; if non-zero, sleeps `sleep_until(m_last_acquire_ + period_ms)`
+   `configured_period_us` from the DataBlock Pimpl; if non-zero, sleeps `sleep_until(m_last_acquire_ + configured_period_us)`
    before the next `acquire_next_slot()` call. Start-to-start anchor `m_last_acquire_` is
    recorded after each successful acquisition. First call has `m_last_acquire_` = zero →
    skip sleep (correct). Heartbeat fires before the sleep so liveness is refreshed first.
 
-2. **`ProducerOptions::loop_policy` + `period_ms`** and **`ConsumerOptions::loop_policy` + `period_ms`**
+2. **`ProducerOptions::loop_policy` + `configured_period_us`** and **`ConsumerOptions::loop_policy` + `configured_period_us`**
    added. `hub::Producer::create()` / `hub::Consumer::connect()` wire `set_loop_policy()`
    from options at creation time. Binary-level `set_loop_policy()` call (in the script host)
    overrides this if needed (binary config takes precedence).
@@ -110,7 +110,7 @@ Five natural domains in the stack:
 |--------|-----------------|------------------|---------------|
 | 1. Channel throughput | `slots_written`, `commit_index` | SHM `SharedMemoryHeader` (cross-process) | All parties via SHM read |
 | 2. Acquire/release timing | `last_slot_wait_us`, `iteration_count`, `last_iteration_us`, `max_iteration_us` | `acquire_write_slot()` / `acquire_consume_slot()` in data_block.cpp | DataBlock Pimpl → RAII ctx → Python |
-| 3. Loop scheduling | `overrun_count`, `last_slot_work_us`, `period_ms`, `context_elapsed_us` | Whoever runs the timing loop — `SlotIterator` (RAII path) or script host (binary path) | DataBlock Pimpl → RAII ctx → Python |
+| 3. Loop scheduling | `overrun_count`, `last_slot_work_us`, `configured_period_us`, `context_elapsed_us` | Whoever runs the timing loop — `SlotIterator` (RAII path) or script host (binary path) | DataBlock Pimpl → RAII ctx → Python |
 | 4. Script supervision | `script_error_count`, `slot_valid` | Script host (Python error paths) | Python only (binary-specific) |
 | 5. Channel topology | `consumer_count`, `last_heartbeat_us` | Broker / heartbeat protocol | Broker; Python via broker query |
 
@@ -125,7 +125,7 @@ Domains 4 and 5 are out of scope.
   needing a `TransactionContext` in scope. `TransactionContext::metrics()` is a
   pass-through reference to the same Pimpl storage.
 
-**Unification via `set_loop_policy()`**: calling `set_loop_policy(FixedRate, period_ms)` on
+**Unification via `set_loop_policy()`**: calling `set_loop_policy(FixedRate, configured_period_us)` on
 the DataBlockProducer/Consumer stores the timing target in the Pimpl. The primitive
 `acquire_write_slot()` implementation then detects overruns using that target. Since both
 the binary path (primitive calls in the script host) and the RAII path (via SlotIterator)
@@ -140,7 +140,7 @@ go through `acquire_write_slot()`, the measurement is shared — no duplication.
 ```cpp
 enum class LoopPolicy : uint8_t {
     MaxRate,      ///< No sleep — run as fast as possible (default).
-    FixedRate,    ///< Start-to-start period: sleep(max(0, period_ms − elapsed)).
+    FixedRate,    ///< Start-to-start period: sleep(max(0, configured_period_us − elapsed)).
     MixTriggered, ///< Reserved — not implemented this version.
 };
 ```
@@ -150,7 +150,7 @@ enum class LoopPolicy : uint8_t {
 | Policy | Behavior | Use case |
 |--------|----------|----------|
 | `MaxRate` | No sleep; `operator++()` returns immediately after slot acquire | Maximum throughput; backlog drain |
-| `FixedRate` | Measures start-to-start interval; sleeps the remainder of `period_ms` | Fixed-rate DAQ (e.g. 100 Hz sensor) |
+| `FixedRate` | Measures start-to-start interval; sleeps the remainder of `configured_period_us` | Fixed-rate DAQ (e.g. 100 Hz sensor) |
 | `MixTriggered` | Reserved; behaviour undefined until designed | Event-driven mixed timing |
 
 **Configuration API** (on `DataBlockProducer` / `DataBlockConsumer`):
@@ -167,12 +167,12 @@ For `FixedRate`, `period = 0ms` is treated as `MaxRate` (no sleep).
 
 ```json
 "loop_policy": "fixed_rate",
-"period_ms": 10
+"configured_period_us": 10000
 ```
 
-Both fields are optional; `loop_policy` defaults to `"max_rate"` and `period_ms` defaults to `0`.
+Both fields are optional; `loop_policy` defaults to `"max_rate"` and `configured_period_us` defaults to `0`.
 The `target_period_ms` field controls the binary-level deadline loop (separate concern);
-`loop_policy`/`period_ms` control the DataBlock Pimpl overrun detection and (in a future pass)
+`loop_policy`/`configured_period_us` control the DataBlock Pimpl overrun detection and (in a future pass)
 the RAII `SlotIterator` sleep.
 
 ---
@@ -197,11 +197,11 @@ struct ContextMetrics {
     uint64_t iteration_count{0};    ///< Successful slot acquisitions since session start.
 
     // ── Domain 3: Loop scheduling ──────────────────────────────────────────────
-    uint64_t overrun_count{0};      ///< Iterations where start-to-start gap > period_ms.
+    uint64_t overrun_count{0};      ///< Iterations where start-to-start gap > configured_period_us.
     uint64_t last_slot_work_us{0};  ///< Time from acquire to release (user code + overhead).
 
     // ── Config reference (informational, not a metric) ─────────────────────────
-    uint64_t period_ms{0};          ///< Configured target period (0 = MaxRate).
+    uint64_t configured_period_us{0}; ///< Configured target period in µs (0 = MaxRate).
 };
 ```
 
@@ -255,8 +255,8 @@ acquire_write_slot() called:
     metrics_.max_iteration_us   = max(max, elapsed_us)
     metrics_.context_elapsed_us = (t_now − context_start_time) as us
 
-    if loop_policy_ == FixedRate and period_ms_ > 0:
-      if elapsed_us > period_ms_us:
+    if loop_policy_ == FixedRate and configured_period_us_ > 0:
+      if elapsed_us > configured_period_us_us:
         ++metrics_.overrun_count     // start-to-start was late
 
   t_acquire_start = Clock::now()
@@ -286,15 +286,15 @@ Before calling into `acquire_next_slot()`, operator++() paces to the target peri
 operator++() called:
   update_heartbeat()    // existing — unchanged
 
-  if loop_policy_ == FixedRate and period_ms_ > 0 and t_last_acquire_ is valid:
+  if loop_policy_ == FixedRate and configured_period_us_ > 0 and t_last_acquire_ is valid:
     elapsed = Clock::now() − t_last_acquire_
-    if elapsed < period_ms:
-      sleep_for(period_ms − elapsed)   // pace before next acquire
+    if elapsed < configured_period_us:
+      sleep_for(configured_period_us − elapsed)   // pace before next acquire
 
   acquire_next_slot()   // calls acquire_write_slot() → timing updates happen there
 ```
 
-`SlotIterator` reads `loop_policy_` and `period_ms_` from the DataBlock Pimpl at
+`SlotIterator` reads `loop_policy_` and `configured_period_us_` from the DataBlock Pimpl at
 construction. It does **not** update ContextMetrics directly — that happens inside
 `acquire_write_slot()`.
 
@@ -306,13 +306,13 @@ overrun measurement occurs at `acquire_write_slot()` — the same code path.
 
 ### 4.4 Overrun Definition
 
-**Overrun** = gap between `t_iter_N_acquire` and `t_iter_N+1_acquire` exceeds `period_ms`.
+**Overrun** = gap between `t_iter_N_acquire` and `t_iter_N+1_acquire` exceeds `configured_period_us`.
 
 Both slow user code **and** blocked slot acquisition contribute to the gap. This
 matches real-time system semantics: the period budget is "start to start", so any
 time spent anywhere in the iteration is charged against the budget.
 
-`MaxRate` (period_ms = 0): `overrun_count` is never incremented.
+`MaxRate` (configured_period_us = 0): `overrun_count` is never incremented.
 
 ---
 
@@ -358,9 +358,9 @@ api.metrics() -> dict:
     "last_slot_wait_us":  int,   # time blocked waiting for a free slot (us)
 
     # Domain 3 — Loop scheduling (from DataBlock Pimpl / LoopPolicy config)
-    "overrun_count":      int,   # acquire cycles exceeding period_ms
+    "overrun_count":      int,   # acquire cycles exceeding configured_period_us
     "last_slot_work_us":  int,   # time from acquire to release (us)
-    "period_ms":          int,   # configured target period (0 = MaxRate)
+    "configured_period_us":  int,   # configured target period (0 = MaxRate)
 
     # Domain 4 — Script supervision (from script host metrics, binary-specific)
     "script_error_count":  int,  # unhandled Python exceptions in any callback
@@ -370,7 +370,7 @@ api.metrics() -> dict:
 ```
 
 `overrun_count` (D3) and `loop_overrun_count` (D4) measure different things:
-- D3: DataBlock Pimpl detects start-to-start acquisition interval exceeded `period_ms`
+- D3: DataBlock Pimpl detects start-to-start acquisition interval exceeded `configured_period_us`
   (i.e., SHM was slow or write body was slow). Works for both producer and consumer.
 - D4: Script host measures write-loop deadline was already past when checked
   (i.e., Python callback was slow relative to `target_period_ms`).
@@ -386,7 +386,7 @@ After `create_datablock_producer(opts)` / `hub::Consumer::connect(opts)`:
 
 ```cpp
 // Wire loop policy so acquire_write_slot() can detect overruns:
-producer_->set_loop_policy(role_cfg_.loop_policy, role_cfg_.period_ms);
+producer_->set_loop_policy(role_cfg_.loop_policy, role_cfg_.configured_period_us);
 
 // Reset metrics at the start of each role run:
 producer_->clear_metrics();
@@ -403,13 +403,13 @@ LoopTimingPolicy loop_timing{LoopTimingPolicy::FixedRate}; // policy for period>
 
 // DataBlock-layer pacing (HEP-CORE-0008)
 hub::LoopPolicy           loop_policy{hub::LoopPolicy::MaxRate};
-std::chrono::milliseconds period_ms{0};
+std::chrono::microseconds configured_period_us{0};
 ```
 
 `target_period_ms` drives the binary-level deadline loop in the script host.
-`loop_policy`/`period_ms` drive the DataBlock Pimpl overrun detection in `acquire_write_slot()`.
+`loop_policy`/`configured_period_us` drive the DataBlock Pimpl overrun detection in `acquire_write_slot()`.
 They are independent: a binary can have `target_period_ms=10` (script host sleep) and
-`loop_policy=fixed_rate, period_ms=10` (DataBlock overrun tracking) simultaneously.
+`loop_policy=fixed_rate, configured_period_us=10000` (DataBlock overrun tracking) simultaneously.
 
 ---
 
@@ -420,10 +420,10 @@ They are independent: a binary can have `target_period_ms=10` (script host sleep
 | File | Change | Domain |
 |------|--------|--------|
 | `src/include/utils/data_block.hpp` | `LoopPolicy` enum; `ContextMetrics` struct; `set_loop_policy()`, `metrics()`, `clear_metrics()` declarations on DataBlockProducer/Consumer | D2+D3 |
-| `src/utils/data_block.cpp` | Pimpl gains `ContextMetrics`, `t_iter_start_`, `t_last_acquire_`, `loop_policy_`, `period_ms_`; timing in `acquire_write_slot()` / `release_write_slot()` / `acquire_consume_slot()` / `release_consume_slot()` | D2+D3 |
+| `src/utils/data_block.cpp` | Pimpl gains `ContextMetrics`, `t_iter_start_`, `t_last_acquire_`, `loop_policy_`, `configured_period_us_`; timing in `acquire_write_slot()` / `release_write_slot()` / `acquire_consume_slot()` / `release_consume_slot()` | D2+D3 |
 | `src/include/utils/transaction_context.hpp` | `metrics()` pass-through (const ref to Pimpl); `now()` static; `update_context_elapsed()`, `increment_overrun()` manual helpers | D2+D3 |
-| `src/producer/producer_config.hpp` | `loop_policy` + `period_ms` in config | config |
-| `src/producer/producer_config.cpp` | Parse `loop_policy` + `period_ms` JSON | config |
+| `src/producer/producer_config.hpp` | `loop_policy` + `configured_period_us` in config | config |
+| `src/producer/producer_config.cpp` | Parse `loop_policy` + `configured_period_us` JSON | config |
 | `src/producer/producer_script_host.cpp` | Wire `set_loop_policy()` + `clear_metrics()` after producer create | D3 |
 | `src/producer/producer_api.cpp` | `api.metrics()` → dict from DataBlock Pimpl + script host counters | D2+D3+D4 |
 
@@ -432,9 +432,9 @@ They are independent: a binary can have `target_period_ms=10` (script host sleep
 | File | Change | Domain |
 |------|--------|--------|
 | `src/include/utils/slot_iterator.hpp` | `m_last_acquire_` member; `apply_loop_policy_sleep_()` helper; sleep call in `operator++()`; anchor recorded after each successful acquisition | D3 |
-| `src/include/utils/hub_producer.hpp` | `ProducerOptions::loop_policy` + `period_ms` | config |
+| `src/include/utils/hub_producer.hpp` | `ProducerOptions::loop_policy` + `configured_period_us` | config |
 | `src/utils/hub_producer.cpp` | Wire `set_loop_policy()` in `create_from_parts()` from opts | config |
-| `src/include/utils/hub_consumer.hpp` | `ConsumerOptions::loop_policy` + `period_ms` | config |
+| `src/include/utils/hub_consumer.hpp` | `ConsumerOptions::loop_policy` + `configured_period_us` | config |
 | `src/utils/hub_consumer.cpp` | Wire `set_loop_policy()` in `connect_from_parts()` from opts | config |
 | `src/producer/producer_api.cpp` | `loop_overrun_count` + `last_cycle_work_us` in metrics dict; D4 block always live | D4 |
 | (analogous for consumer/processor APIs) | Same D4 keys in respective API modules | doc |
@@ -481,7 +481,7 @@ ctest --test-dir build -R "ProducerConfig|ConsumerConfig|ProcessorConfig" --outp
 | `src/include/utils/data_block_policy.hpp` | L3 (public) | `LoopPolicy` enum definition |
 | `src/include/utils/transaction_context.hpp` | L3 (public) | `TransactionContext::metrics()` pass-through to Pimpl |
 | `src/utils/shm/data_block.cpp` | impl | Timing in `acquire_write_slot()` / `release_write_slot()`, overrun detection |
-| `src/producer/producer_config.hpp` | L4 | `loop_policy`, `period_ms`, `loop_timing` config fields |
+| `src/producer/producer_config.hpp` | L4 | `loop_policy`, `configured_period_us`, `loop_timing` config fields |
 | `src/consumer/consumer_config.hpp` | L4 | Same config fields for consumer |
 | `src/producer/producer_api.cpp` | L4 | `api.metrics()` dict assembly (D2+D3+D4) |
 | `tests/test_layer3_datahub/test_datahub_loop_policy.cpp` | test | 5 tests: metrics accumulate/clear, overrun detect, SlotIterator pacing |

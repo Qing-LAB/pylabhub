@@ -201,7 +201,6 @@ Created by `pylabhub-consumer --init <dir>`:
   "broker":     "tcp://127.0.0.1:5570",
   "channel":    "lab.sensors.temperature",
 
-  "slot_acquire_timeout_ms": -1,
   "queue_type": "shm",
 
   "slot_schema": {
@@ -244,7 +243,6 @@ Created by `pylabhub-consumer --init <dir>`:
 | `zmq_buffer_depth` | no | `64` | Internal send buffer depth (>0); for `transport=zmq` |
 | `target_period_ms` | no | `0` | Write loop period; 0 = free-run |
 | `loop_timing` | no | implicit (0→`"max_rate"`, >0→`"fixed_rate"`) | `"max_rate"`, `"fixed_rate"`, or `"fixed_rate_with_compensation"` |
-| `slot_acquire_timeout_ms` | no | `-1` | `write_acquire()` timeout; -1 = derive from `target_period_ms` (see `compute_slot_acquire_timeout`), 0 = non-blocking, >0 = explicit ms |
 | `slot_schema` | yes‡ | — | Output slot layout (or use `schema_id` from HEP-CORE-0016) |
 | `flexzone_schema` | no | absent | Writable flexzone layout; ignored (LOGGER_WARN) when `transport=zmq` |
 | `shm.enabled` | no | `true` | Allocate SHM segment (must be true for `transport=shm`) |
@@ -273,7 +271,6 @@ Created by `pylabhub-consumer --init <dir>`:
 | `hub_dir` | no | — | Hub directory; derives `broker`/`broker_pubkey` from `hub.json` |
 | `channel` | yes | — | Channel name to subscribe to |
 | `queue_type` | no | `"shm"` | `"shm"` (SHM read via DataBlockConsumer) or `"zmq"` (ZMQ PULL; endpoint from broker) |
-| `slot_acquire_timeout_ms` | no | `-1` | `read_acquire()` timeout; -1 = derive from `target_period_ms` (see `compute_slot_acquire_timeout`), 0 = non-blocking, >0 = explicit ms |
 | `slot_schema` | yes‡ | — | Expected input slot layout (must match producer's schema) |
 | `flexzone_schema` | no | absent | Flexzone layout (zero-copy writable view, user-coordinated R/W); SHM only |
 | `verify_checksum` | no | `false` | Enable framework-level BLAKE2b slot verification on `read_acquire()` (SHM only; no-op for ZMQ) |
@@ -731,7 +728,7 @@ If omitted and stdin is a terminal, prompts interactively. If omitted and stdin 
 | `hub::Producer` (`hub_producer.hpp/cpp`) | Embedded inside `ProducerScriptHost` — owns SHM segment |
 | `hub::Consumer` (`hub_consumer.hpp/cpp`) | Embedded inside `ConsumerScriptHost` — attaches SHM |
 | `Messenger` (`messenger.hpp/cpp`) | One per binary for ZMQ control plane |
-| `ActorVault` | Reused: `using ProducerVault = ActorVault; using ConsumerVault = ActorVault;` (ActorVault is a generic vault — name is legacy) |
+| `RoleVault` | Reused: `using ProducerVault = RoleVault; using ConsumerVault = RoleVault;` (RoleVault is a generic vault — name is legacy) |
 | `uid_utils` | Add `generate_producer_uid()`, `generate_consumer_uid()` |
 | `scripting::PythonScriptHost` | Base class for both `ProducerScriptHost` and `ConsumerScriptHost` |
 | `LifecycleGuard` | Manages Logger + Crypto modules |
@@ -790,7 +787,6 @@ struct ConsumerConfig {
 
     std::string  channel;
 
-    int          slot_acquire_timeout_ms{-1};
     std::string  queue_type{"shm"};  // "shm" or "zmq"; sets queue_type in CONSUMER_REG_REQ
 
     nlohmann::json slot_schema_json;
