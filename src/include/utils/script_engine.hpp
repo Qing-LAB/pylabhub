@@ -34,6 +34,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace pylabhub::hub { class Messenger; }
@@ -44,7 +45,7 @@ namespace pylabhub::scripting
 {
 
 // ============================================================================
-// InvokeResult — return value from on_produce / on_process
+// InvokeResult — return value from hot-path on_produce / on_process
 // ============================================================================
 
 enum class InvokeResult
@@ -52,6 +53,26 @@ enum class InvokeResult
     Commit,   ///< Script returned true/nil — publish the slot.
     Discard,  ///< Script returned false — discard the slot, loop continues.
     Error,    ///< Script raised an error — discard, increment error count.
+};
+
+// ============================================================================
+// InvokeStatus — mechanical result of a generic invoke() / eval() call
+// ============================================================================
+
+/// Distinct from InvokeResult which is the semantic data-callback result.
+enum class InvokeStatus : uint8_t
+{
+    Ok              = 0,   ///< Function executed successfully.
+    NotFound        = 1,   ///< Function name not found in script.
+    ScriptError     = 2,   ///< Script raised an exception.
+    EngineShutdown  = 3,   ///< Engine is finalizing; request rejected.
+};
+
+/// Response from a generic invoke() or eval() call.
+struct InvokeResponse
+{
+    InvokeStatus   status{InvokeStatus::Ok};
+    nlohmann::json value;   ///< Populated only for eval(); empty for invoke().
 };
 
 // ============================================================================
@@ -170,7 +191,34 @@ class ScriptEngine
      */
     [[nodiscard]] virtual size_t type_sizeof(const char *type_name) const = 0;
 
-    // ── Callback invocation (called from working thread) ─────────────────
+    // ── Generic invoke (thread-safe — engine handles internal locking) ────
+
+    /**
+     * @brief Invoke a named script function with no arguments.
+     *
+     * Safe to call from any thread. The engine handles all internal locking,
+     * queue management, and thread dispatch. Owner thread gets priority.
+     * @return false if function not found, engine shutting down, or error.
+     */
+    virtual bool invoke(const char *name) = 0;
+
+    /**
+     * @brief Invoke a named script function with JSON arguments.
+     *
+     * The engine unpacks args into the script's native format (Python dict,
+     * Lua table) before calling. Same thread-safety contract as invoke(name).
+     */
+    virtual bool invoke(const char *name, const nlohmann::json &args) = 0;
+
+    /**
+     * @brief Evaluate a script code string. For admin/debug use.
+     *
+     * Same thread-safety contract as invoke(). Returns result as JSON,
+     * or empty object on error.
+     */
+    virtual nlohmann::json eval(const char *code) = 0;
+
+    // ── Hot-path invocation (owner thread — data loop) ──────────────────
 
     virtual void invoke_on_init() = 0;
     virtual void invoke_on_stop() = 0;
@@ -303,6 +351,11 @@ class ScriptEngine
      * @return true if reload succeeded, false on error (old script remains active).
      */
     virtual bool reload_script() { return false; } // default: not implemented
+
+  protected:
+    /// Thread that called initialize(). Engines use this to detect whether
+    /// invoke() is called from the owner (hot path) or another thread.
+    std::thread::id owner_thread_id_;
 };
 
 } // namespace pylabhub::scripting

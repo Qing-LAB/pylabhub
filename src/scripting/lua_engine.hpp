@@ -81,6 +81,12 @@ class LuaEngine : public ScriptEngine
         const char *type_name,
         const char *sender) override;
 
+    // ── Generic invoke (thread-safe) ───────────────────────────────────
+
+    bool invoke(const char *name) override;
+    bool invoke(const char *name, const nlohmann::json &args) override;
+    nlohmann::json eval(const char *code) override;
+
     // ── Error state ──────────────────────────────────────────────────────
 
     [[nodiscard]] uint64_t script_error_count() const noexcept override
