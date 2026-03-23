@@ -347,7 +347,7 @@ class SlotIterator
      *
      * Uses `m_last_acquire_` as the start-to-start anchor — the same reference
      * point that `acquire_write_slot()` uses for `overrun_count`, so both
-     * measurements agree. Sleep target = `m_last_acquire_ + period_ms`.
+     * measurements agree. Sleep target = `m_last_acquire_ + configured_period_us`.
      *
      * Called from `operator++()` after heartbeat, before the acquire attempt.
      * On the first call from `begin()`, `m_last_acquire_` is zero → skip.
@@ -357,10 +357,10 @@ class SlotIterator
     {
         if (!m_handle || m_last_acquire_ == ContextMetrics::Clock::time_point{})
             return;
-        const auto period_ms = m_handle->metrics().period_ms;
-        if (period_ms == 0)
+        const auto period_us = m_handle->metrics().configured_period_us;
+        if (period_us == 0)
             return; // MaxRate — no sleep
-        const auto next = m_last_acquire_ + std::chrono::milliseconds(period_ms);
+        const auto next = m_last_acquire_ + std::chrono::microseconds(period_us);
         if (const auto now = ContextMetrics::Clock::now(); now < next)
             std::this_thread::sleep_until(next);
     }

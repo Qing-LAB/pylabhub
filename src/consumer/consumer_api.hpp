@@ -13,7 +13,7 @@
  *
  *   def on_consume(in_slot, flexzone, messages, api: cons.ConsumerAPI) -> None:
  *       # in_slot   — ctypes/numpy read-only view of the input SHM slot,
- *       #             or None on timeout (if slot_acquire_timeout_ms > 0)
+ *       #             or None on timeout
  *       # flexzone  — persistent read-only flexzone ctypes struct, or None
  *       # messages  — list of (sender: str, data: bytes) from ZMQ publisher
  *       # api       — ConsumerAPI proxy

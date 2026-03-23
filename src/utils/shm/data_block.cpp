@@ -1056,7 +1056,7 @@ struct DataBlockProducerImpl
 
     // ── LoopPolicy / ContextMetrics (HEP-CORE-0008) ──────────────────────────
     LoopPolicy loop_policy{LoopPolicy::MaxRate};
-    uint64_t   period_ms{0};
+    uint64_t   configured_period_us{0};
     ContextMetrics metrics_;
     /// Timestamp when the previous slot acquire completed (start of the previous iteration).
     /// Zero-initialized; set on first successful acquire.
@@ -1103,7 +1103,7 @@ struct DataBlockConsumerImpl
 
     // ── LoopPolicy / ContextMetrics (HEP-CORE-0008) ──────────────────────────
     LoopPolicy loop_policy{LoopPolicy::MaxRate};
-    uint64_t   period_ms{0};
+    uint64_t   configured_period_us{0};
     ContextMetrics metrics_;
     /// Timestamp when the previous slot acquire completed (start of the previous iteration).
     /// Zero-initialized; set on first successful acquire.
@@ -1328,7 +1328,7 @@ int DataBlockProducer::reset_metrics() noexcept
 // ─── LoopPolicy / ContextMetrics (HEP-CORE-0008) — DataBlockProducer ────────
 
 void DataBlockProducer::set_loop_policy(LoopPolicy policy,
-                                         std::chrono::milliseconds period) noexcept
+                                         std::chrono::microseconds period) noexcept
 {
     if (pImpl == nullptr)
     {
@@ -1336,10 +1336,10 @@ void DataBlockProducer::set_loop_policy(LoopPolicy policy,
     }
     std::lock_guard<std::mutex> lock(pImpl->mutex);
     pImpl->loop_policy = policy;
-    pImpl->period_ms   = (policy == LoopPolicy::MaxRate)
-                             ? 0ULL
-                             : static_cast<uint64_t>(period.count());
-    pImpl->metrics_.period_ms = pImpl->period_ms;
+    pImpl->configured_period_us = (policy == LoopPolicy::MaxRate)
+                                      ? 0ULL
+                                      : static_cast<uint64_t>(period.count());
+    pImpl->metrics_.configured_period_us = pImpl->configured_period_us;
 }
 
 const ContextMetrics &DataBlockProducer::metrics() const noexcept
@@ -1359,9 +1359,9 @@ void DataBlockProducer::clear_metrics() noexcept
         return;
     }
     std::lock_guard<std::mutex> lock(pImpl->mutex);
-    const auto saved_period   = pImpl->metrics_.period_ms;
-    pImpl->metrics_            = ContextMetrics{};
-    pImpl->metrics_.period_ms  = saved_period;
+    const auto saved_period              = pImpl->metrics_.configured_period_us;
+    pImpl->metrics_                      = ContextMetrics{};
+    pImpl->metrics_.configured_period_us = saved_period;
     pImpl->t_iter_start_       = {};
 }
 
@@ -1597,8 +1597,9 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
             m.context_elapsed_us = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::microseconds>(
                     t_acquired - m.context_start_time).count());
-            if (pImpl->loop_policy == LoopPolicy::FixedRate && pImpl->period_ms > 0 &&
-                elapsed_us > pImpl->period_ms * 1000ULL)
+            if (pImpl->loop_policy == LoopPolicy::FixedRate &&
+                pImpl->configured_period_us > 0 &&
+                elapsed_us > pImpl->configured_period_us)
                 ++m.overrun_count;
         }
         else
@@ -2223,8 +2224,9 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
             m.context_elapsed_us = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::microseconds>(
                     t_acquired - m.context_start_time).count());
-            if (pImpl->loop_policy == LoopPolicy::FixedRate && pImpl->period_ms > 0 &&
-                elapsed_us > pImpl->period_ms * 1000ULL)
+            if (pImpl->loop_policy == LoopPolicy::FixedRate &&
+                pImpl->configured_period_us > 0 &&
+                elapsed_us > pImpl->configured_period_us)
                 ++m.overrun_count;
         }
         else
@@ -2444,7 +2446,7 @@ int DataBlockConsumer::reset_metrics() noexcept
 // ─── LoopPolicy / ContextMetrics (HEP-CORE-0008) — DataBlockConsumer ────────
 
 void DataBlockConsumer::set_loop_policy(LoopPolicy policy,
-                                         std::chrono::milliseconds period) noexcept
+                                         std::chrono::microseconds period) noexcept
 {
     if (pImpl == nullptr)
     {
@@ -2452,10 +2454,10 @@ void DataBlockConsumer::set_loop_policy(LoopPolicy policy,
     }
     std::lock_guard<std::recursive_mutex> lock(pImpl->mutex);
     pImpl->loop_policy = policy;
-    pImpl->period_ms   = (policy == LoopPolicy::MaxRate)
-                             ? 0ULL
-                             : static_cast<uint64_t>(period.count());
-    pImpl->metrics_.period_ms = pImpl->period_ms;
+    pImpl->configured_period_us = (policy == LoopPolicy::MaxRate)
+                                      ? 0ULL
+                                      : static_cast<uint64_t>(period.count());
+    pImpl->metrics_.configured_period_us = pImpl->configured_period_us;
 }
 
 const ContextMetrics &DataBlockConsumer::metrics() const noexcept
@@ -2475,9 +2477,9 @@ void DataBlockConsumer::clear_metrics() noexcept
         return;
     }
     std::lock_guard<std::recursive_mutex> lock(pImpl->mutex);
-    const auto saved_period   = pImpl->metrics_.period_ms;
-    pImpl->metrics_            = ContextMetrics{};
-    pImpl->metrics_.period_ms  = saved_period;
+    const auto saved_period              = pImpl->metrics_.configured_period_us;
+    pImpl->metrics_                      = ContextMetrics{};
+    pImpl->metrics_.configured_period_us = saved_period;
     pImpl->t_iter_start_       = {};
 }
 

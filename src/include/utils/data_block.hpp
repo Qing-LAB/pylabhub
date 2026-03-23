@@ -670,7 +670,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
      * @note Not thread-safe: call from the writer thread only, before acquiring any slot.
      */
     void set_loop_policy(LoopPolicy policy,
-                         std::chrono::milliseconds period = {}) noexcept;
+                         std::chrono::microseconds period = {}) noexcept;
 
     /**
      * @brief Live view of per-handle timing metrics (process-local; not in SHM).
@@ -967,7 +967,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
     // ─── Loop Policy and Context Metrics (HEP-CORE-0008) ─────────────────────
     /** @brief Configure pacing policy for the read loop. See DataBlockProducer::set_loop_policy(). */
     void set_loop_policy(LoopPolicy policy,
-                         std::chrono::milliseconds period = {}) noexcept;
+                         std::chrono::microseconds period = {}) noexcept;
 
     /** @brief Live view of per-handle timing metrics (process-local; not in SHM). */
     [[nodiscard]] const ContextMetrics &metrics() const noexcept;

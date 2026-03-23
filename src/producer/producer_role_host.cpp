@@ -285,10 +285,10 @@ bool ProducerRoleHost::setup_infrastructure_()
     opts.role_name   = id.name;
     opts.role_uid    = id.uid;
 
-    if (tc.target_period_ms > 0)
+    if (tc.period_us > 0.0)
     {
-        opts.loop_policy = hub::LoopPolicy::FixedRate;
-        opts.period_ms   = std::chrono::milliseconds{static_cast<int>(tc.target_period_ms)};
+        opts.loop_policy          = hub::LoopPolicy::FixedRate;
+        opts.configured_period_us = std::chrono::microseconds{static_cast<int64_t>(tc.period_us)};
     }
     opts.ctrl_queue_max_depth = mon.ctrl_queue_max_depth;
     opts.peer_dead_timeout_ms = mon.peer_dead_timeout_ms;
@@ -597,8 +597,7 @@ void ProducerRoleHost::run_data_loop_()
     const auto &vld = config_.validation();
 
     // --- Setup ---
-    const double period_us =
-        static_cast<double>(tc.target_period_ms) * kUsPerMs;
+    const double period_us = tc.period_us;
     const bool is_max_rate = (tc.loop_timing == LoopTimingPolicy::MaxRate);
     const auto short_timeout_us = compute_short_timeout(period_us, tc.queue_io_wait_timeout_ratio);
     // write_acquire takes milliseconds; convert with rounding up to avoid 0ms.
@@ -803,7 +802,7 @@ nlohmann::json ProducerRoleHost::snapshot_metrics_json() const
             base["max_iteration_us"]   = m.max_iteration_us;
             base["last_slot_work_us"]  = m.last_slot_work_us;
             base["last_slot_wait_us"]  = m.last_slot_wait_us;
-            base["period_ms"]          = m.period_ms;
+            base["configured_period_us"]          = m.configured_period_us;
         }
     }
     return base;

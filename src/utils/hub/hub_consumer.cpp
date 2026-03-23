@@ -460,9 +460,9 @@ Consumer::connect_from_parts(Messenger &messenger, ChannelHandle channel,
 
     // Wire LoopPolicy (HEP-CORE-0008 Pass 3)
     if (impl->shm != nullptr &&
-        (opts.loop_policy != LoopPolicy::MaxRate || opts.period_ms.count() > 0))
+        (opts.loop_policy != LoopPolicy::MaxRate || opts.configured_period_us.count() > 0))
     {
-        impl->shm->set_loop_policy(opts.loop_policy, opts.period_ms);
+        impl->shm->set_loop_policy(opts.loop_policy, opts.configured_period_us);
     }
 
     // ABI guard: ConsumerMessagingFacade is exported across the shared library boundary.
