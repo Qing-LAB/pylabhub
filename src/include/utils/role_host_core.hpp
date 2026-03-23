@@ -19,6 +19,7 @@
  *   during worker_main_ init, then read-only
  */
 
+#include "pylabhub_utils_export.h"
 #include "utils/script_host_schema.hpp" // SchemaSpec, FieldDef
 #include "utils/json_fwd.hpp"           // nlohmann::json (project buffer header)
 
@@ -41,7 +42,7 @@ struct IncomingMessage
     nlohmann::json           details;
 };
 
-class RoleHostCore
+class PYLABHUB_UTILS_EXPORT RoleHostCore
 {
   public:
     // ── Message queue ────────────────────────────────────────────────────

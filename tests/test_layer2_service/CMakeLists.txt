@@ -718,6 +718,35 @@ gtest_discover_tests(test_layer2_slot_rw_coordinator
 )
 
 # ============================================================================
+# Test: RoleHostCore — shared state container for role hosts
+# ============================================================================
+
+add_executable(test_layer2_role_host_core
+    test_role_host_core.cpp
+)
+
+target_link_libraries(test_layer2_role_host_core
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_role_host_core)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_role_host_core
+    SUITE_NAME "Layer2_RoleHostCore"
+)
+layer2_require_staged_utils(test_layer2_role_host_core)
+
+gtest_discover_tests(test_layer2_role_host_core
+    PROPERTIES
+        LABELS "layer2;service;scripting"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: RoleConfig — unified config class
 # ============================================================================
 
