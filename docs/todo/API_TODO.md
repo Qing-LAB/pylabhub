@@ -21,6 +21,11 @@
 - [ ] Phase 3: Migrate role hosts + mains to RoleDirectory (includes CR-03, CR-06)
 - [ ] Phase 4: Remove monolithic config structs
 
+### Header Contamination (2026-03-23)
+
+- [ ] **HIGH**: `script_host_helpers.hpp` is in public include tree (`src/include/utils/`) but is internal; includes `<pybind11/embed.h>` which contaminates all consumers. Move to `src/scripting/` (private header).
+- [ ] **MED**: `script_host_schema.hpp` is in public include tree but marked internal. Either move to `src/scripting/` or document as public API.
+
 ### ScriptEngine Post-Refactor Deferred Items (2026-03-21)
 
 - [ ] **SE-03 HIGH**: HEP-CORE-0011 fundamentally stale — rewrite §3.2, §3.3, §4.2, §8, §8.2 for composition model

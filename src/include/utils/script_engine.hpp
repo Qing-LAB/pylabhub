@@ -22,7 +22,7 @@
  * ## Engine implementations
  *
  *   - LuaEngine:    wraps LuaState (direct pcall, no GIL)
- *   - PythonEngine:  wraps py::scoped_interpreter (GIL acquire/release per invoke)
+ *   - PythonEngine:  wraps py::scoped_interpreter (GIL held for lifetime; per-invoke acquire is no-op)
  *
  * See docs/tech_draft/script_engine_refactor.md for the full design.
  */
@@ -192,6 +192,10 @@ class ScriptEngine
 
     /**
      * @brief Invoke on_consume(in_slot, flexzone, messages, api).
+     *
+     * Returns void (not InvokeResult) because the consumer callback does not
+     * produce publishable output — there is no slot to commit/discard.
+     * Script errors are tracked via core->inc_script_errors().
      */
     virtual void invoke_consume(
         const void *in_slot, size_t in_sz,
@@ -209,6 +213,10 @@ class ScriptEngine
 
     /**
      * @brief Invoke on_inbox(slot_data, sender_uid, api).
+     *
+     * Returns void — inbox delivery is fire-and-forget from the framework's
+     * perspective. Script errors are tracked via core->inc_script_errors().
+     *
      * @param data     Raw inbox payload.
      * @param sz       Payload size in bytes.
      * @param type_name FFI/ctypes type name for the inbox slot, or nullptr for raw bytes.
