@@ -54,7 +54,7 @@ class ProcessorRoleHost
 
     // ── Configuration ────────────────────────────────────────────────────────
 
-    void set_validate_only(bool v) { validate_only_ = v; }
+    void set_validate_only(bool v) { core_.set_validate_only(v); }
 
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -67,7 +67,7 @@ class ProcessorRoleHost
     // ── Queries (called from main thread) ────────────────────────────────────
 
     [[nodiscard]] bool is_running() const { return core_.is_running(); }
-    [[nodiscard]] bool script_load_ok() const { return script_load_ok_.load(std::memory_order_acquire); }
+    [[nodiscard]] bool script_load_ok() const { return core_.is_script_load_ok(); }
     [[nodiscard]] const config::RoleConfig &config() const { return config_; }
 
     /// Block until wakeup (shutdown, incoming message, or timeout).
@@ -95,8 +95,6 @@ class ProcessorRoleHost
     scripting::RoleHostCore                  core_;
     config::RoleConfig                       config_;
     std::unique_ptr<scripting::ScriptEngine> engine_;
-    bool                                     validate_only_{false};
-    std::atomic<bool>                        script_load_ok_{false};
 
     // Worker thread.
     std::thread                              worker_thread_;

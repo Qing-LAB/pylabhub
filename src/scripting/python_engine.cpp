@@ -391,12 +391,12 @@ void PythonEngine::build_api(const RoleContext &ctx)
         api.set_messenger(ctx_.messenger);
         if (ctx_.queue_writer)
             api.set_queue(ctx_.queue_writer);
-        if (ctx_.uid)    api.set_uid(ctx_.uid);
-        if (ctx_.name)   api.set_name(ctx_.name);
-        if (ctx_.channel) api.set_channel(ctx_.channel);
-        if (ctx_.log_level)  api.set_log_level(ctx_.log_level);
-        if (ctx_.script_dir) api.set_script_dir(ctx_.script_dir);
-        if (ctx_.role_dir)   api.set_role_dir(ctx_.role_dir);
+        api.set_uid(ctx_.uid);
+        api.set_name(ctx_.name);
+        api.set_channel(ctx_.channel);
+        api.set_log_level(ctx_.log_level);
+        api.set_script_dir(ctx_.script_dir);
+        api.set_role_dir(ctx_.role_dir);
 
         py::module_ mod = py::module_::import("pylabhub_producer");
         api_obj_ = py::cast(&api, py::return_value_policy::reference);
@@ -411,12 +411,12 @@ void PythonEngine::build_api(const RoleContext &ctx)
         api.set_messenger(ctx_.messenger);
         if (ctx_.queue_reader)
             api.set_reader(ctx_.queue_reader);
-        if (ctx_.uid)    api.set_uid(ctx_.uid);
-        if (ctx_.name)   api.set_name(ctx_.name);
-        if (ctx_.channel) api.set_channel(ctx_.channel);
-        if (ctx_.log_level)  api.set_log_level(ctx_.log_level);
-        if (ctx_.script_dir) api.set_script_dir(ctx_.script_dir);
-        if (ctx_.role_dir)   api.set_role_dir(ctx_.role_dir);
+        api.set_uid(ctx_.uid);
+        api.set_name(ctx_.name);
+        api.set_channel(ctx_.channel);
+        api.set_log_level(ctx_.log_level);
+        api.set_script_dir(ctx_.script_dir);
+        api.set_role_dir(ctx_.role_dir);
 
         py::module_ mod = py::module_::import("pylabhub_consumer");
         api_obj_ = py::cast(&api, py::return_value_policy::reference);
@@ -436,13 +436,13 @@ void PythonEngine::build_api(const RoleContext &ctx)
             api.set_out_queue(ctx_.queue_writer);
         if (ctx_.queue_reader)
             api.set_in_queue(ctx_.queue_reader);
-        if (ctx_.uid)    api.set_uid(ctx_.uid);
-        if (ctx_.name)   api.set_name(ctx_.name);
-        if (ctx_.channel)     api.set_in_channel(ctx_.channel);
-        if (ctx_.out_channel) api.set_out_channel(ctx_.out_channel);
-        if (ctx_.log_level)   api.set_log_level(ctx_.log_level);
-        if (ctx_.script_dir)  api.set_script_dir(ctx_.script_dir);
-        if (ctx_.role_dir)    api.set_role_dir(ctx_.role_dir);
+        api.set_uid(ctx_.uid);
+        api.set_name(ctx_.name);
+        api.set_in_channel(ctx_.channel);
+        api.set_out_channel(ctx_.out_channel);
+        api.set_log_level(ctx_.log_level);
+        api.set_script_dir(ctx_.script_dir);
+        api.set_role_dir(ctx_.role_dir);
 
         py::module_ mod = py::module_::import("pylabhub_processor");
         api_obj_ = py::cast(&api, py::return_value_policy::reference);

@@ -193,7 +193,7 @@ void LuaEngine::build_api(const RoleContext &ctx)
     }
 
     // ── Processor-specific ───────────────────────────────────────────────
-    if (ctx_.out_channel != nullptr)
+    if (!ctx_.out_channel.empty())
     {
         push_closure("in_channel", lua_api_in_channel);
         push_closure("out_channel", lua_api_out_channel);
@@ -903,23 +903,14 @@ void LuaEngine::push_common_api_closures_(lua_State *L)
     push_closure("open_inbox", lua_api_open_inbox);
 
     // String fields as direct table entries.
-    if (ctx_.log_level)
-    {
-        lua_pushstring(L, ctx_.log_level);
-        lua_setfield(L, -2, "log_level");
-    }
+    lua_pushstring(L, ctx_.log_level.c_str());
+    lua_setfield(L, -2, "log_level");
 
-    if (ctx_.script_dir)
-    {
-        lua_pushstring(L, ctx_.script_dir);
-        lua_setfield(L, -2, "script_dir");
-    }
+    lua_pushstring(L, ctx_.script_dir.c_str());
+    lua_setfield(L, -2, "script_dir");
 
-    if (ctx_.role_dir)
-    {
-        lua_pushstring(L, ctx_.role_dir);
-        lua_setfield(L, -2, "role_dir");
-    }
+    lua_pushstring(L, ctx_.role_dir.c_str());
+    lua_setfield(L, -2, "role_dir");
 }
 
 // ============================================================================
@@ -1269,7 +1260,7 @@ int LuaEngine::lua_api_open_inbox(lua_State *L)
     auto zmq_fields = schema_spec_to_zmq_fields(spec, item_size);
 
     // Connect DEALER to target's ROUTER.
-    const char *role_uid = self->ctx_.uid ? self->ctx_.uid : "";
+    const auto &role_uid = self->ctx_.uid;
     auto client_ptr = hub::InboxClient::connect_to(
         info->inbox_endpoint, role_uid, std::move(zmq_fields), info->inbox_packing);
     if (!client_ptr)
@@ -1305,35 +1296,35 @@ int LuaEngine::lua_api_open_inbox(lua_State *L)
 int LuaEngine::lua_api_uid(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    lua_pushstring(L, self->ctx_.uid ? self->ctx_.uid : "");
+    lua_pushstring(L, self->ctx_.uid.c_str());
     return 1;
 }
 
 int LuaEngine::lua_api_name(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    lua_pushstring(L, self->ctx_.name ? self->ctx_.name : "");
+    lua_pushstring(L, self->ctx_.name.c_str());
     return 1;
 }
 
 int LuaEngine::lua_api_channel(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    lua_pushstring(L, self->ctx_.channel ? self->ctx_.channel : "");
+    lua_pushstring(L, self->ctx_.channel.c_str());
     return 1;
 }
 
 int LuaEngine::lua_api_in_channel(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    lua_pushstring(L, self->ctx_.channel ? self->ctx_.channel : "");
+    lua_pushstring(L, self->ctx_.channel.c_str());
     return 1;
 }
 
 int LuaEngine::lua_api_out_channel(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    lua_pushstring(L, self->ctx_.out_channel ? self->ctx_.out_channel : "");
+    lua_pushstring(L, self->ctx_.out_channel.c_str());
     return 1;
 }
 
