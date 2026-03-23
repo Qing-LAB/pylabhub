@@ -43,7 +43,6 @@
 #include "utils/config/startup_config.hpp"
 #include "utils/config/timing_config.hpp"
 #include "utils/config/transport_config.hpp"
-#include "utils/config/validation_config.hpp"
 
 #include <any>
 #include <filesystem>
@@ -91,7 +90,6 @@ class PYLABHUB_UTILS_EXPORT RoleConfig
     const ScriptConfig     &script()     const;
     const TimingConfig     &timing()     const;
     const InboxConfig      &inbox()      const;
-    const ValidationConfig &validation() const;
     const StartupConfig    &startup()    const;
     const MonitoringConfig &monitoring() const;
 
@@ -103,8 +101,6 @@ class PYLABHUB_UTILS_EXPORT RoleConfig
     const TransportConfig              &out_transport() const;
     const ShmConfig                    &in_shm()        const;
     const ShmConfig                    &out_shm()       const;
-    const DirectionalValidationConfig  &in_validation() const;
-    const DirectionalValidationConfig  &out_validation() const;
     const std::string                  &in_channel()    const;
     const std::string                  &out_channel()   const;
 

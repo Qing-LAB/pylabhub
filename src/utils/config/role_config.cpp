@@ -37,7 +37,6 @@ struct RoleConfig::Impl
     ScriptConfig     script;
     TimingConfig     timing;
     InboxConfig      inbox;
-    ValidationConfig validation;
     StartupConfig    startup;
     MonitoringConfig monitoring;
 
@@ -48,8 +47,6 @@ struct RoleConfig::Impl
     TransportConfig              out_transport;
     ShmConfig                    in_shm;
     ShmConfig                    out_shm;
-    DirectionalValidationConfig  in_validation;
-    DirectionalValidationConfig  out_validation;
     std::string                  in_channel;
     std::string                  out_channel;
 
@@ -87,7 +84,6 @@ void RoleConfig::Impl::load_common(const nlohmann::json &j)
     script     = parse_script_config(j, base_dir, tag);
     timing     = parse_timing_config(j, tag, default_period);
     inbox      = parse_inbox_config(j, tag);
-    validation = parse_validation_config(j);
     startup    = parse_startup_config(j, tag);
     monitoring = parse_monitoring_config(j);
 
@@ -98,8 +94,6 @@ void RoleConfig::Impl::load_common(const nlohmann::json &j)
     out_transport = parse_transport_config(j, "out", tag);
     in_shm        = parse_shm_config(j, "in",  tag);
     out_shm       = parse_shm_config(j, "out", tag);
-    in_validation  = parse_directional_validation(j, "in");
-    out_validation = parse_directional_validation(j, "out");
     in_channel    = j.value("in_channel", std::string{});
     out_channel   = j.value("out_channel", std::string{});
 }
@@ -172,7 +166,6 @@ const AuthConfig       &RoleConfig::auth()       const { assert(impl_); return i
 const ScriptConfig     &RoleConfig::script()     const { assert(impl_); return impl_->script; }
 const TimingConfig     &RoleConfig::timing()     const { assert(impl_); return impl_->timing; }
 const InboxConfig      &RoleConfig::inbox()      const { assert(impl_); return impl_->inbox; }
-const ValidationConfig &RoleConfig::validation() const { assert(impl_); return impl_->validation; }
 const StartupConfig    &RoleConfig::startup()    const { assert(impl_); return impl_->startup; }
 const MonitoringConfig &RoleConfig::monitoring() const { assert(impl_); return impl_->monitoring; }
 
@@ -186,8 +179,6 @@ const TransportConfig             &RoleConfig::in_transport()  const { assert(im
 const TransportConfig             &RoleConfig::out_transport() const { assert(impl_); return impl_->out_transport; }
 const ShmConfig                   &RoleConfig::in_shm()        const { assert(impl_); return impl_->in_shm; }
 const ShmConfig                   &RoleConfig::out_shm()       const { assert(impl_); return impl_->out_shm; }
-const DirectionalValidationConfig &RoleConfig::in_validation() const { assert(impl_); return impl_->in_validation; }
-const DirectionalValidationConfig &RoleConfig::out_validation() const { assert(impl_); return impl_->out_validation; }
 const std::string                 &RoleConfig::in_channel()    const { assert(impl_); return impl_->in_channel; }
 const std::string                 &RoleConfig::out_channel()   const { assert(impl_); return impl_->out_channel; }
 

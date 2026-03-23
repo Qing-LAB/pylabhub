@@ -22,6 +22,7 @@ struct ScriptConfig
     std::string path{"."};               ///< Parent dir of the script/<type>/ package
     std::string python_venv;             ///< venv name (Python only), empty = base env
     bool        type_explicit{false};    ///< true when "type" was present in JSON
+    bool        stop_on_script_error{false}; ///< Fatal on script exception in callback.
 };
 
 /// Parse the "script" section from a JSON config object.
@@ -51,6 +52,7 @@ inline ScriptConfig parse_script_config(const nlohmann::json &j,
     }
 
     sc.python_venv = j.value("python_venv", std::string{});
+    sc.stop_on_script_error = j.value("stop_on_script_error", false);
 
     // Resolve relative script.path against the role directory base.
     if (!base.empty() && !sc.path.empty() && !fs::path(sc.path).is_absolute())

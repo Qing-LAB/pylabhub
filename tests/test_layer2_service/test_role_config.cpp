@@ -195,7 +195,7 @@ TEST_F(RoleConfigTest, LoadProducer_OutValidation)
     auto path = write_json("producer.json", minimal_producer_json());
     auto cfg = RoleConfig::load(path.string(), "producer");
 
-    EXPECT_TRUE(cfg.out_validation().update_checksum);
+    EXPECT_TRUE(cfg.out_shm().update_checksum);
 }
 
 TEST_F(RoleConfigTest, LoadProducer_Validation_StopOnScriptError)
@@ -205,7 +205,7 @@ TEST_F(RoleConfigTest, LoadProducer_Validation_StopOnScriptError)
     auto path = write_json("producer.json", j);
     auto cfg = RoleConfig::load(path.string(), "producer");
 
-    EXPECT_TRUE(cfg.validation().stop_on_script_error);
+    EXPECT_TRUE(cfg.script().stop_on_script_error);
 }
 
 // ============================================================================
@@ -235,7 +235,7 @@ TEST_F(RoleConfigTest, LoadConsumer_InValidation)
     auto path = write_json("consumer.json", minimal_consumer_json());
     auto cfg = RoleConfig::load(path.string(), "consumer");
 
-    EXPECT_TRUE(cfg.in_validation().verify_checksum);
+    EXPECT_TRUE(cfg.in_shm().verify_checksum);
 }
 
 TEST_F(RoleConfigTest, LoadConsumer_DefaultTiming)
@@ -277,8 +277,8 @@ TEST_F(RoleConfigTest, LoadProcessor_DualValidation)
     auto path = write_json("processor.json", minimal_processor_json());
     auto cfg = RoleConfig::load(path.string(), "processor");
 
-    EXPECT_TRUE(cfg.out_validation().update_checksum);
-    EXPECT_FALSE(cfg.in_validation().verify_checksum);
+    EXPECT_TRUE(cfg.out_shm().update_checksum);
+    EXPECT_FALSE(cfg.in_shm().verify_checksum);
 }
 
 // ============================================================================
