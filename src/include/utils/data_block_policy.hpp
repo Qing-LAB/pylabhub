@@ -202,10 +202,10 @@ enum class ChecksumPolicy
  * |              | Runs at the maximum rate the SHM ring can sustain.         |
  * |              | Default for high-throughput sensor capture.                |
  * | FixedRate    | After each slot release: sleeps for                        |
- * |              |   max(0, period_ms − elapsed_since_last_acquire)           |
+ * |              |   max(0, configured_period_us − elapsed_since_last_acquire)           |
  * |              | Increments ContextMetrics::overrun_count when              |
- * |              |   elapsed ≥ period_ms (iteration took longer than target). |
- * |              | Requires period_ms > 0 in DataBlockConfig.                 |
+ * |              |   elapsed ≥ configured_period_us (iteration took longer than target). |
+ * |              | Requires configured_period_us > 0 in DataBlockConfig.                 |
  * | MixTriggered | Reserved — trigger-based mode, not implemented.            |
  *
  * **Contrast with RoleConfig::LoopTimingPolicy:**
@@ -220,7 +220,7 @@ enum class ChecksumPolicy
 enum class LoopPolicy : uint8_t
 {
     MaxRate,      ///< No sleep — acquire slots as fast as possible (default)
-    FixedRate,    ///< Start-to-start period: sleep(max(0, period_ms − elapsed)); tracks overruns
+    FixedRate,    ///< Start-to-start period: sleep(max(0, configured_period_us − elapsed)); tracks overruns
     MixTriggered, ///< Reserved — trigger-based mode, not yet implemented
 };
 

@@ -17,6 +17,9 @@
 - [x] **hub::Producer + hub::Consumer active API** – 15 tests; HELLO/BYE tracking, SHM callbacks, ctrl messaging, idempotency, destructor-BYE regression
 - [ ] **Cross-platform consistency** – Run same tests on Linux (done), Windows, macOS, FreeBSD
 
+### BrokerProtocolTest Timing Audit (2026-03-23)
+- [ ] BrokerProtocolTest suite passes but execution times cluster near typical timeout values (~2s). Risk: tests could be masking timing-dependent failures by passing on timeout rather than on correct event sequence. Audit should verify each test validates actual event logs and message ordering, not just return codes or "didn't hang" outcomes.
+
 ### Phase D: High-Load and Edge Cases
 **Status**: 🔵 Partial — RAII stress tests added; extended/platform tests deferred
 

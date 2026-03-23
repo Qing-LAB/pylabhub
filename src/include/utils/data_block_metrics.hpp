@@ -40,7 +40,7 @@ namespace pylabhub::hub
  *
  * Metric domains (HEP-CORE-0008 §3):
  *   Domain 2: Acquire/release timing (wait time, start-to-start interval).
- *   Domain 3: Loop scheduling (overrun count relative to configured period_ms).
+ *   Domain 3: Loop scheduling (overrun count relative to configured_period_us).
  */
 struct PYLABHUB_UTILS_EXPORT ContextMetrics
 {
@@ -58,11 +58,11 @@ struct PYLABHUB_UTILS_EXPORT ContextMetrics
     uint64_t iteration_count{0};    ///< Successful slot acquisitions since session start.
 
     // ── Domain 3: Loop scheduling ─────────────────────────────────────────────
-    uint64_t overrun_count{0};     ///< Iterations where start-to-start gap exceeded period_ms.
+    uint64_t overrun_count{0};     ///< Iterations where start-to-start gap exceeded configured_period_us.
     uint64_t last_slot_work_us{0}; ///< Time from acquire to release (user code + overhead) (µs).
 
     // ── Config reference (informational) ──────────────────────────────────────
-    uint64_t period_ms{0}; ///< Configured target period (0 = MaxRate / no sleep).
+    uint64_t configured_period_us{0}; ///< Target period from config (µs). 0 = MaxRate. Used for overrun detection only.
 };
 
 } // namespace pylabhub::hub

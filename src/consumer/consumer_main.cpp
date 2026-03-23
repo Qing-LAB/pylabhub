@@ -165,7 +165,7 @@ static int do_init(const std::string &cons_dir_str, const std::string &cli_name)
         "\n"
         "def on_consume(in_slot, flexzone, messages, api: cons.ConsumerAPI) -> None:\n"
         "    \"\"\"\n"
-        "    Called on each incoming slot (or timeout if slot_acquire_timeout_ms > 0).\n"
+        "    Called on each incoming slot (or None on timeout).\n"
         "\n"
         "    in_slot:  ctypes/numpy read-only copy of the input SHM slot,\n"
         "              or None on timeout.\n"
