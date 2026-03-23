@@ -1,25 +1,23 @@
 # tests/test_layer4_processor/CMakeLists.txt
 #
-# Layer 4 processor tests — config unit tests + CLI integration tests.
+# Layer 4 processor tests — CLI behavior tests.
 #
-# Two test classes in one executable:
-#   ProcessorConfigTest (PureApiTest)   — tests ProcessorConfig::from_json_file/from_directory
-#   ProcessorCliTest (IsolatedProcessTest) — spawns pylabhub-processor binary via WorkerProcess
+# Spawns pylabhub-processor binary via WorkerProcess.
+# Tests: --init, --keygen, --validate, config errors.
+# Config parsing is tested via L2 RoleConfigTest.
 #
-# processor_config.cpp is compiled directly into this binary (it is private to the
+# CLI behavior tests (--init, --keygen, --validate, error handling).
 # pylabhub-processor executable, not part of pylabhub-utils).
 
 message(STATUS "** Configuring Layer 4 (Processor) tests...")
 
 add_executable(test_layer4_processor
-    test_processor_config.cpp
     test_processor_cli.cpp
-    ${CMAKE_SOURCE_DIR}/src/processor/processor_config.cpp
 )
 
 target_include_directories(test_layer4_processor PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/processor          # processor_config.hpp
-    ${CMAKE_SOURCE_DIR}/src/scripting         # scripting/python_script_host.hpp (transitive)
+    ${CMAKE_SOURCE_DIR}/src/processor
+    ${CMAKE_SOURCE_DIR}/src/scripting
 )
 
 target_link_libraries(test_layer4_processor

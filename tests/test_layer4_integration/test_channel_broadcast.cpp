@@ -153,27 +153,24 @@ static void write_producer_config(const fs::path& dir, const fs::path& hub_dir,
                                   const std::string& script)
 {
     const json cfg = {
-        {"hub_dir", hub_dir.string()},
         {"producer", {
             {"uid",       "PROD-BCAST-00000001"},
             {"name",      "BcastTestProducer"},
             {"log_level", "info"},
             {"auth",      {{"keyfile", ""}}}
         }},
-        {"channel",     channel},
-        {"target_period_ms", 200},   // 5 Hz — slow, just needs to keep alive
-        {"shm", {
-            {"enabled",    true},
-            {"secret",     kShmSecret},
-            {"slot_count", 8}
-        }},
-        {"slot_schema",     make_slot_schema()},
-        {"flexzone_schema", nullptr},
-        {"script", {{"type", "python"}, {"path", "."}}},
-        {"validation", {
-            {"update_checksum", true},
-            {"stop_on_script_error", true}
-        }}
+        {"out_hub_dir",        hub_dir.string()},
+        {"out_channel",        channel},
+        {"target_period_ms",   200},
+        {"out_transport",      "shm"},
+        {"out_shm_enabled",    true},
+        {"out_shm_secret",     kShmSecret},
+        {"out_shm_slot_count", 8},
+        {"out_slot_schema",    make_slot_schema()},
+        {"out_flexzone_schema", nullptr},
+        {"out_update_checksum", true},
+        {"stop_on_script_error", true},
+        {"script", {{"type", "python"}, {"path", "."}}}
     };
 
     fs::create_directories(dir / "script" / "python");
@@ -195,25 +192,21 @@ static void write_consumer_config(const fs::path& dir, const fs::path& hub_dir,
                                   int timeout_ms = 2000)
 {
     const json cfg = {
-        {"hub_dir", hub_dir.string()},
         {"consumer", {
             {"uid",       "CONS-BCAST-00000002"},
             {"name",      "BcastTestConsumer"},
             {"log_level", "info"},
             {"auth",      {{"keyfile", ""}}}
         }},
-        {"channel",    channel},
-        {"slot_acquire_timeout_ms", timeout_ms},
-        {"shm", {
-            {"enabled", true},
-            {"secret",  kShmSecret}
-        }},
-        {"slot_schema",     make_slot_schema()},
-        {"flexzone_schema", nullptr},
-        {"script", {{"type", "python"}, {"path", "."}}},
-        {"validation", {
-            {"stop_on_script_error", true}
-        }}
+        {"in_hub_dir",         hub_dir.string()},
+        {"in_channel",         channel},
+        {"in_transport",       "shm"},
+        {"in_shm_enabled",     true},
+        {"in_shm_secret",      kShmSecret},
+        {"in_slot_schema",     make_slot_schema()},
+        {"in_flexzone_schema", nullptr},
+        {"stop_on_script_error", true},
+        {"script", {{"type", "python"}, {"path", "."}}}
     };
 
     fs::create_directories(dir / "script" / "python");

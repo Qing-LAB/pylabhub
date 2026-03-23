@@ -16,7 +16,6 @@ cmake_minimum_required(VERSION 3.28)
 
 add_executable(pylabhub-consumer
     consumer_main.cpp
-    consumer_config.cpp
     consumer_role_host.cpp
 )
 add_executable(pylabhub::consumer ALIAS pylabhub-consumer)

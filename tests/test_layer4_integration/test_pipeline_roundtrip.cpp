@@ -163,33 +163,30 @@ static void write_hub_config(const fs::path& dir, const PipelinePorts& ports)
 static void write_producer_config(const fs::path& dir, const fs::path& hub_dir)
 {
     const json cfg = {
-        {"hub_dir", hub_dir.string()},
         {"producer", {
             {"uid",       "PROD-PIPE-00000001"},
             {"name",      "PipeTestProducer"},
             {"log_level", "info"},
             {"auth",      {{"keyfile", ""}}}
         }},
-        {"channel",     "test.pipe.raw"},
-        {"target_period_ms", 50},  // 20 Hz — continuous high-frequency production
-        {"shm", {
-            {"enabled",    true},
-            {"secret",     kShmSecretA},
-            {"slot_count", 16}
-        }},
-        {"slot_schema", {
+        {"out_hub_dir",        hub_dir.string()},
+        {"out_channel",        "test.pipe.raw"},
+        {"target_period_ms",   50},  // 20 Hz — continuous high-frequency production
+        {"out_transport",      "shm"},
+        {"out_shm_enabled",    true},
+        {"out_shm_secret",     kShmSecretA},
+        {"out_shm_slot_count", 16},
+        {"out_slot_schema", {
             {"packing", "aligned"},
             {"fields", json::array({
                 {{"name", "counter"}, {"type", "int64"}},
                 {{"name", "value"},   {"type", "float64"}}
             })}
         }},
-        {"flexzone_schema", nullptr},
-        {"script", {{"type", "python"}, {"path", "."}}},
-        {"validation", {
-            {"update_checksum", true},
-            {"stop_on_script_error", true}
-        }}
+        {"out_flexzone_schema", nullptr},
+        {"out_update_checksum", true},
+        {"stop_on_script_error", true},
+        {"script", {{"type", "python"}, {"path", "."}}}
     };
 
     fs::create_directories(dir / "script" / "python");
@@ -248,15 +245,17 @@ static void write_processor_config(const fs::path& dir, const fs::path& hub_dir)
             {"name",      "PipeTestProcessor"},
             {"log_level", "info"}
         }},
-        {"in_channel",  "test.pipe.raw"},
-        {"out_channel", "test.pipe.out"},
-        {"hub_dir",     hub_dir.string()},
-        {"slot_acquire_timeout_ms",  2000},
-        {"overflow_policy", "drop"},
-        {"shm", {
-            {"in",  {{"enabled", true}, {"secret", kShmSecretA}}},
-            {"out", {{"enabled", true}, {"secret", kShmSecretB}, {"slot_count", 16}}}
-        }},
+        {"in_hub_dir",         hub_dir.string()},
+        {"out_hub_dir",        hub_dir.string()},
+        {"in_channel",         "test.pipe.raw"},
+        {"out_channel",        "test.pipe.out"},
+        {"in_transport",       "shm"},
+        {"out_transport",      "shm"},
+        {"in_shm_enabled",     true},
+        {"in_shm_secret",      kShmSecretA},
+        {"out_shm_enabled",    true},
+        {"out_shm_secret",     kShmSecretB},
+        {"out_shm_slot_count", 16},
         {"in_slot_schema", {
             {"packing", "aligned"},
             {"fields", json::array({
@@ -271,12 +270,10 @@ static void write_processor_config(const fs::path& dir, const fs::path& hub_dir)
                 {{"name", "doubled"}, {"type", "float64"}}
             })}
         }},
-        {"flexzone_schema", nullptr},
+        {"out_flexzone_schema", nullptr},
+        {"out_update_checksum", true},
+        {"stop_on_script_error", true},
         {"script", {{"type", "python"}, {"path", "."}}},
-        {"validation", {
-            {"update_checksum", true},
-            {"stop_on_script_error", true}
-        }},
         {"startup", {
             {"wait_for_roles", json::array({
                 {{"uid", "PROD-PIPE-00000001"}, {"timeout_ms", 15000}}
@@ -325,31 +322,27 @@ static void write_consumer_config(const fs::path& dir, const fs::path& hub_dir,
                                   const fs::path& result_file)
 {
     const json cfg = {
-        {"hub_dir", hub_dir.string()},
         {"consumer", {
             {"uid",       "CONS-PIPE-00000003"},
             {"name",      "PipeTestConsumer"},
             {"log_level", "info"},
             {"auth",      {{"keyfile", ""}}}
         }},
-        {"channel",    "test.pipe.out"},
-        {"slot_acquire_timeout_ms", 2000},
-        {"shm", {
-            {"enabled", true},
-            {"secret",  kShmSecretB}
-        }},
-        {"slot_schema", {
+        {"in_hub_dir",         hub_dir.string()},
+        {"in_channel",         "test.pipe.out"},
+        {"in_transport",       "shm"},
+        {"in_shm_enabled",     true},
+        {"in_shm_secret",      kShmSecretB},
+        {"in_slot_schema", {
             {"packing", "aligned"},
             {"fields", json::array({
                 {{"name", "counter"}, {"type", "int64"}},
                 {{"name", "doubled"}, {"type", "float64"}}
             })}
         }},
-        {"flexzone_schema", nullptr},
+        {"in_flexzone_schema", nullptr},
+        {"stop_on_script_error", true},
         {"script", {{"type", "python"}, {"path", "."}}},
-        {"validation", {
-            {"stop_on_script_error", true}
-        }},
         {"startup", {
             {"wait_for_roles", json::array({
                 {{"uid", "PROC-PIPE-00000002"}, {"timeout_ms", 15000}}
