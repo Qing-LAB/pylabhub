@@ -62,6 +62,7 @@ bool LuaEngine::initialize(const char *log_tag, RoleHostCore *core)
     log_tag_ = log_tag ? log_tag : "lua";
     assert(core && "RoleHostCore must be provided to initialize()");
     ctx_.core = core;
+    owner_thread_id_ = std::this_thread::get_id();
 
     state_ = LuaState::create();
     if (!state_)
@@ -228,6 +229,42 @@ void LuaEngine::finalize()
     inbox_cache_.clear();
 
     state_ = LuaState{}; // lua_close via RAII
+}
+
+// ============================================================================
+// Generic invoke / eval
+// ============================================================================
+
+bool LuaEngine::invoke(const char *name)
+{
+    if (!name)
+        return false;
+
+    auto *L = state_.raw();
+    lua_getglobal(L, name);
+    if (!lua_isfunction(L, -1))
+    {
+        lua_pop(L, 1);
+        return false;
+    }
+    if (lua_pcall(L, 0, 0, 0) != 0)
+    {
+        on_pcall_error_(name);
+        return false;
+    }
+    return true;
+}
+
+bool LuaEngine::invoke(const char *name, const nlohmann::json & /*args*/)
+{
+    // TODO Phase 2: unpack JSON args into Lua table argument
+    return invoke(name);
+}
+
+nlohmann::json LuaEngine::eval(const char * /*code*/)
+{
+    // TODO Phase 2: luaL_dostring + capture result as JSON
+    return {};
 }
 
 // ============================================================================

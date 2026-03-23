@@ -193,6 +193,7 @@ bool PythonEngine::initialize(const char *log_tag, RoleHostCore *core)
     log_tag_ = log_tag ? log_tag : "python";
     assert(core && "RoleHostCore must be provided to initialize()");
     ctx_.core = core;
+    owner_thread_id_ = std::this_thread::get_id();
 
     try
     {
@@ -466,6 +467,15 @@ void PythonEngine::finalize()
         return;
 
     // GIL is held (py::scoped_interpreter holds it on the creating thread).
+    // Cancel all pending generic invoke requests.
+    accepting_.store(false, std::memory_order_release);
+    {
+        std::lock_guard lk(queue_mu_);
+        for (auto &req : request_queue_)
+            req.promise.set_value({InvokeStatus::EngineShutdown, {}});
+        request_queue_.clear();
+    }
+
     // Clear all Python objects before destroying the interpreter.
     clear_pyobjects_();
 
@@ -500,6 +510,144 @@ void PythonEngine::finalize()
 
     // Destroy interpreter (calls Py_Finalize).
     interp_.reset();
+}
+
+// ============================================================================
+// Generic invoke / eval
+// ============================================================================
+
+bool PythonEngine::invoke(const char *name)
+{
+    if (std::this_thread::get_id() == owner_thread_id_)
+        return execute_direct_(name).status == InvokeStatus::Ok;
+
+    std::promise<InvokeResponse> promise;
+    auto future = promise.get_future();
+    {
+        std::lock_guard lk(queue_mu_);
+        if (!accepting_.load(std::memory_order_relaxed))
+            return false;
+        request_queue_.push_back({name, {}, false, std::move(promise)});
+    }
+    return future.get().status == InvokeStatus::Ok;
+}
+
+bool PythonEngine::invoke(const char *name, const nlohmann::json &args)
+{
+    if (std::this_thread::get_id() == owner_thread_id_)
+        return execute_direct_(name, args).status == InvokeStatus::Ok;
+
+    std::promise<InvokeResponse> promise;
+    auto future = promise.get_future();
+    {
+        std::lock_guard lk(queue_mu_);
+        if (!accepting_.load(std::memory_order_relaxed))
+            return false;
+        request_queue_.push_back({name, args, false, std::move(promise)});
+    }
+    return future.get().status == InvokeStatus::Ok;
+}
+
+nlohmann::json PythonEngine::eval(const char *code)
+{
+    if (std::this_thread::get_id() == owner_thread_id_)
+        return eval_direct_(code);
+
+    std::promise<InvokeResponse> promise;
+    auto future = promise.get_future();
+    {
+        std::lock_guard lk(queue_mu_);
+        if (!accepting_.load(std::memory_order_relaxed))
+            return {};
+        request_queue_.push_back({code, {}, true, std::move(promise)});
+    }
+    return future.get().value;
+}
+
+InvokeResponse PythonEngine::execute_direct_(const char *name)
+{
+    if (!name)
+        return {InvokeStatus::NotFound, {}};
+
+    py::gil_scoped_acquire gil;
+    py::object fn = py::getattr(module_, name, py::none());
+    if (fn.is_none())
+        return {InvokeStatus::NotFound, {}};
+
+    try
+    {
+        fn();
+        return {InvokeStatus::Ok, {}};
+    }
+    catch (const py::error_already_set &e)
+    {
+        LOGGER_ERROR("[{}] invoke('{}'): {}", log_tag_, name, e.what());
+        if (ctx_.core)
+            ctx_.core->inc_script_errors();
+        return {InvokeStatus::ScriptError, {}};
+    }
+}
+
+InvokeResponse PythonEngine::execute_direct_(const char *name,
+                                              const nlohmann::json & /*args*/)
+{
+    // TODO: unpack JSON args into Python dict/kwargs
+    return execute_direct_(name);
+}
+
+nlohmann::json PythonEngine::eval_direct_(const char *code)
+{
+    if (!code)
+        return {};
+
+    py::gil_scoped_acquire gil;
+    try
+    {
+        py::object result = py::eval(code);
+        // TODO: convert py::object → nlohmann::json
+        (void)result;
+        return {};
+    }
+    catch (const py::error_already_set &e)
+    {
+        LOGGER_ERROR("[{}] eval(): {}", log_tag_, e.what());
+        if (ctx_.core)
+            ctx_.core->inc_script_errors();
+        return {};
+    }
+}
+
+void PythonEngine::process_pending_()
+{
+    if (!accepting_.load(std::memory_order_relaxed))
+        return;
+
+    std::deque<PendingRequest> local;
+    {
+        std::lock_guard lk(queue_mu_);
+        if (request_queue_.empty())
+            return;
+        local.swap(request_queue_);
+    }
+
+    for (auto &req : local)
+    {
+        if (!accepting_.load(std::memory_order_relaxed))
+        {
+            req.promise.set_value({InvokeStatus::EngineShutdown, {}});
+            continue;
+        }
+        if (req.is_eval)
+        {
+            auto val = eval_direct_(req.name.c_str());
+            req.promise.set_value({InvokeStatus::Ok, std::move(val)});
+        }
+        else
+        {
+            auto resp = execute_direct_(req.name.c_str());
+            req.promise.set_value(std::move(resp));
+        }
+    }
 }
 
 // ============================================================================
@@ -668,34 +816,31 @@ InvokeResult PythonEngine::invoke_produce(
     void *flexzone, size_t fz_sz, const char * /*fz_type*/,
     std::vector<IncomingMessage> &msgs)
 {
-    if (!is_callable(py_on_produce_))
-        return InvokeResult::Error;
-
-    py::gil_scoped_acquire g;
-    try
+    InvokeResult result = InvokeResult::Error;
+    if (is_callable(py_on_produce_))
     {
-        // Arg 1: out_slot (writable ctypes view or None).
-        py::object slot_view = py::none();
-        if (out_slot != nullptr && !slot_type_.is_none())
-            slot_view = make_slot_view_(slot_spec_, slot_type_, out_slot, out_sz, false);
+        py::gil_scoped_acquire g;
+        try
+        {
+            py::object slot_view = py::none();
+            if (out_slot != nullptr && !slot_type_.is_none())
+                slot_view = make_slot_view_(slot_spec_, slot_type_, out_slot, out_sz, false);
 
-        // Arg 2: flexzone (writable ctypes view or None).
-        py::object fz_view = py::none();
-        if (flexzone != nullptr && fz_sz > 0 && !fz_type_.is_none())
-            fz_view = make_slot_view_(fz_spec_, fz_type_, flexzone, fz_sz, false);
+            py::object fz_view = py::none();
+            if (flexzone != nullptr && fz_sz > 0 && !fz_type_.is_none())
+                fz_view = make_slot_view_(fz_spec_, fz_type_, flexzone, fz_sz, false);
 
-        // Arg 3: messages list.
-        py::list msgs_list = build_messages_list_(msgs);
-
-        // Call script.
-        py::object ret = py_on_produce_(slot_view, fz_view, msgs_list, api_obj_);
-
-        return parse_return_value_(ret, "on_produce");
+            py::list msgs_list = build_messages_list_(msgs);
+            py::object ret = py_on_produce_(slot_view, fz_view, msgs_list, api_obj_);
+            result = parse_return_value_(ret, "on_produce");
+        }
+        catch (py::error_already_set &e)
+        {
+            result = on_python_error_("on_produce", e);
+        }
     }
-    catch (py::error_already_set &e)
-    {
-        return on_python_error_("on_produce", e);
-    }
+    process_pending_();
+    return result;
 }
 
 // ============================================================================
@@ -707,40 +852,36 @@ void PythonEngine::invoke_consume(
     const void *flexzone, size_t fz_sz, const char * /*fz_type*/,
     std::vector<IncomingMessage> &msgs)
 {
-    if (!is_callable(py_on_consume_))
-        return;
-
-    py::gil_scoped_acquire g;
-    try
+    if (is_callable(py_on_consume_))
     {
-        // Arg 1: in_slot (read-only ctypes view or None).
-        py::object slot_view = py::none();
-        if (in_slot != nullptr && !slot_type_ro_.is_none())
+        py::gil_scoped_acquire g;
+        try
         {
-            slot_view = make_slot_view_(
-                slot_spec_, slot_type_ro_,
-                const_cast<void *>(in_slot), in_sz, true);
-        }
+            py::object slot_view = py::none();
+            if (in_slot != nullptr && !slot_type_ro_.is_none())
+            {
+                slot_view = make_slot_view_(
+                    slot_spec_, slot_type_ro_,
+                    const_cast<void *>(in_slot), in_sz, true);
+            }
 
-        // Arg 2: flexzone (read-only ctypes view or None).
-        py::object fz_view = py::none();
-        if (flexzone != nullptr && fz_sz > 0 && !fz_type_ro_.is_none())
+            py::object fz_view = py::none();
+            if (flexzone != nullptr && fz_sz > 0 && !fz_type_ro_.is_none())
+            {
+                fz_view = make_slot_view_(
+                    fz_spec_, fz_type_ro_,
+                    const_cast<void *>(flexzone), fz_sz, true);
+            }
+
+            py::list msgs_list = build_messages_list_bare_(msgs);
+            py_on_consume_(slot_view, fz_view, msgs_list, api_obj_);
+        }
+        catch (py::error_already_set &e)
         {
-            fz_view = make_slot_view_(
-                fz_spec_, fz_type_ro_,
-                const_cast<void *>(flexzone), fz_sz, true);
+            on_python_error_("on_consume", e);
         }
-
-        // Arg 3: messages list (consumer format — bare bytes, no sender).
-        py::list msgs_list = build_messages_list_bare_(msgs);
-
-        // Call script.
-        py_on_consume_(slot_view, fz_view, msgs_list, api_obj_);
     }
-    catch (py::error_already_set &e)
-    {
-        on_python_error_("on_consume", e);
-    }
+    process_pending_();
 }
 
 // ============================================================================
@@ -753,52 +894,48 @@ InvokeResult PythonEngine::invoke_process(
     void *flexzone, size_t fz_sz, const char * /*fz_type*/,
     std::vector<IncomingMessage> &msgs)
 {
-    if (!is_callable(py_on_process_))
-        return InvokeResult::Error;
-
-    py::gil_scoped_acquire g;
-    try
+    InvokeResult result = InvokeResult::Error;
+    if (is_callable(py_on_process_))
     {
-        // Arg 1: in_slot (read-only).
-        py::object in_view = py::none();
-        if (in_slot != nullptr)
+        py::gil_scoped_acquire g;
+        try
         {
-            const auto &type = in_slot_type_ro_.is_none() ? slot_type_ro_ : in_slot_type_ro_;
-            const auto &spec = in_slot_type_ro_.is_none() ? slot_spec_ : in_slot_spec_;
-            if (!type.is_none())
+            py::object in_view = py::none();
+            if (in_slot != nullptr)
             {
-                in_view = make_slot_view_(
-                    spec, type, const_cast<void *>(in_slot), in_sz, true);
+                const auto &type = in_slot_type_ro_.is_none() ? slot_type_ro_ : in_slot_type_ro_;
+                const auto &spec = in_slot_type_ro_.is_none() ? slot_spec_ : in_slot_spec_;
+                if (!type.is_none())
+                {
+                    in_view = make_slot_view_(
+                        spec, type, const_cast<void *>(in_slot), in_sz, true);
+                }
             }
-        }
 
-        // Arg 2: out_slot (writable).
-        py::object out_view = py::none();
-        if (out_slot != nullptr)
+            py::object out_view = py::none();
+            if (out_slot != nullptr)
+            {
+                const auto &type = out_slot_type_.is_none() ? slot_type_ : out_slot_type_;
+                const auto &spec = out_slot_type_.is_none() ? slot_spec_ : out_slot_spec_;
+                if (!type.is_none())
+                    out_view = make_slot_view_(spec, type, out_slot, out_sz, false);
+            }
+
+            py::object fz_view = py::none();
+            if (flexzone != nullptr && fz_sz > 0 && !fz_type_.is_none())
+                fz_view = make_slot_view_(fz_spec_, fz_type_, flexzone, fz_sz, false);
+
+            py::list msgs_list = build_messages_list_(msgs);
+            py::object ret = py_on_process_(in_view, out_view, fz_view, msgs_list, api_obj_);
+            result = parse_return_value_(ret, "on_process");
+        }
+        catch (py::error_already_set &e)
         {
-            const auto &type = out_slot_type_.is_none() ? slot_type_ : out_slot_type_;
-            const auto &spec = out_slot_type_.is_none() ? slot_spec_ : out_slot_spec_;
-            if (!type.is_none())
-                out_view = make_slot_view_(spec, type, out_slot, out_sz, false);
+            result = on_python_error_("on_process", e);
         }
-
-        // Arg 3: flexzone (writable — processor writes to output flexzone).
-        py::object fz_view = py::none();
-        if (flexzone != nullptr && fz_sz > 0 && !fz_type_.is_none())
-            fz_view = make_slot_view_(fz_spec_, fz_type_, flexzone, fz_sz, false);
-
-        // Arg 4: messages list.
-        py::list msgs_list = build_messages_list_(msgs);
-
-        // Call script: on_process(in_slot, out_slot, flexzone, messages, api).
-        py::object ret = py_on_process_(in_view, out_view, fz_view, msgs_list, api_obj_);
-
-        return parse_return_value_(ret, "on_process");
     }
-    catch (py::error_already_set &e)
-    {
-        return on_python_error_("on_process", e);
-    }
+    process_pending_();
+    return result;
 }
 
 // ============================================================================
@@ -810,59 +947,48 @@ void PythonEngine::invoke_on_inbox(
     const char *type_name,
     const char *sender)
 {
-    if (!is_callable(py_on_inbox_))
-        return;
-
-    py::gil_scoped_acquire g;
-    try
+    if (is_callable(py_on_inbox_))
     {
-        // Arg 1: typed slot view or raw bytes.
-        py::object data_view = py::none();
-        if (data != nullptr && sz > 0)
+        py::gil_scoped_acquire g;
+        try
         {
-            if (type_name != nullptr && type_name[0] != '\0')
+            py::object data_view = py::none();
+            if (data != nullptr && sz > 0)
             {
-                // Try to build a typed view. InboxFrame types are not cached
-                // (low frequency), so build from_buffer_copy for safety
-                // (inbox data lifetime is only until next recv_one).
-                try
+                if (type_name != nullptr && type_name[0] != '\0')
                 {
-                    auto mv = py::memoryview::from_memory(
-                        const_cast<void *>(data),
-                        static_cast<py::ssize_t>(sz),
-                        /*readonly=*/false);
-                    // Use from_buffer_copy for inbox — data is only valid
-                    // until next recv_one() call.
-                    py::module_ ct = py::module_::import("ctypes");
-                    // Build a temporary ctypes type for this inbox message.
-                    // In practice, inbox schema is registered and cached elsewhere.
-                    // For now, pass raw bytes as a fallback.
-                    data_view = py::bytes(
-                        reinterpret_cast<const char *>(data), sz);
+                    try
+                    {
+                        auto mv = py::memoryview::from_memory(
+                            const_cast<void *>(data),
+                            static_cast<py::ssize_t>(sz),
+                            /*readonly=*/false);
+                        py::module_ ct = py::module_::import("ctypes");
+                        data_view = py::bytes(
+                            reinterpret_cast<const char *>(data), sz);
+                    }
+                    catch (...)
+                    {
+                        data_view = py::bytes(
+                            reinterpret_cast<const char *>(data), sz);
+                    }
                 }
-                catch (...)
+                else
                 {
                     data_view = py::bytes(
                         reinterpret_cast<const char *>(data), sz);
                 }
             }
-            else
-            {
-                data_view = py::bytes(
-                    reinterpret_cast<const char *>(data), sz);
-            }
+
+            py::str sender_str(sender ? sender : "");
+            py_on_inbox_(data_view, sender_str, api_obj_);
         }
-
-        // Arg 2: sender UID.
-        py::str sender_str(sender ? sender : "");
-
-        // Call script.
-        py_on_inbox_(data_view, sender_str, api_obj_);
+        catch (py::error_already_set &e)
+        {
+            on_python_error_("on_inbox", e);
+        }
     }
-    catch (py::error_already_set &e)
-    {
-        on_python_error_("on_inbox", e);
-    }
+    process_pending_();
 }
 
 // ============================================================================
