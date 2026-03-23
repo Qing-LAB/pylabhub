@@ -20,7 +20,6 @@
 cmake_minimum_required(VERSION 3.28)
 
 add_library(pylabhub-scripting STATIC
-    role_host_core.cpp
     lua_state.cpp
     lua_engine.cpp
     python_engine.cpp
