@@ -3,8 +3,8 @@
  * @file script_config.hpp
  * @brief ScriptConfig — categorical config for script engine selection and paths.
  *
- * Parsed from the "script" JSON section + top-level "python_venv".
- * Single source of truth for script.type validation.
+ * Parsed from the "script" JSON section + top-level "python_venv" and
+ * "stop_on_script_error". Single source of truth for script.type validation.
  */
 
 #include "utils/json_fwd.hpp"

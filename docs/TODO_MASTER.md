@@ -22,8 +22,8 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
-### Priority 0 (IN PROGRESS — 2026-03-21): ScriptEngine + Config Module Redesign
-📍 **Status**: ScriptEngine refactor complete; config Phase 1-2 done; Phase 3 next
+### Priority 0 (DONE — 2026-03-23): ScriptEngine + Config Module Redesign
+📍 **Status**: ScriptEngine refactor + config module redesign COMPLETE; 1115/1115 tests
 📋 **Branch**: `feature/lua-role-support`
 📋 **Active review**: `docs/code_review/REVIEW_ConfigAndEngine_2026-03-21.md`
 
@@ -36,18 +36,18 @@ ScriptEngine refactor (DONE 2026-03-20):
 - [x] Legacy host code removed (~5000 lines) ✅
 - [x] Code review SE-01/02/05/06/10/11/12/13/14/15 fixed ✅ 2026-03-21
 
-Config module redesign (IN PROGRESS 2026-03-21):
-- [x] Phase 1: 7 categorical config headers + shared parsers ✅ cb7e4b5
-- [x] Phase 2: RoleDirectory::load_config() + typed accessors ✅ e44ddfa
-- [x] config::AuthConfig::load_keypair() shared impl ✅
-- [ ] Phase 3: Migrate role hosts + mains to RoleDirectory
-- [ ] Phase 4: Remove monolithic config structs
+Config module redesign (DONE 2026-03-23):
+- [x] Phase 1: Categorical config headers + shared parsers ✅ cb7e4b5
+- [x] Phase 2: RoleConfig unified class with JsonConfig backend ✅ 36f1902
+- [x] Phase 3: Migrate role hosts + mains to RoleConfig ✅ c0100d1, a445dca
+- [x] Phase 4: Remove monolithic config structs ✅ 9dbfa59
+- [x] Dead field cleanup: ValidationConfig merged, period_ms → configured_period_us ✅ cc4c581, f2a805e
+- [x] HEP/README doc sync ✅ fcaaf33
 
-Naming cleanup (IN PROGRESS 2026-03-23):
+Naming cleanup (DONE 2026-03-23):
 - [x] ActorVault → RoleVault + vault integrated into RoleConfig ✅ 38172de
-- [x] KnownActor → KnownRole, known_actors → known_roles, actor_name → role_name ✅ 38172de
-- [ ] Remaining "actor" comments/docstrings/test-data → "role" ✅ (pending commit)
-- [ ] `generate_uid(prefix, name)` unified core + delete ACTOR- generator ✅ (pending commit)
+- [x] KnownActor → KnownRole, all "actor" terminology → "role" ✅ 154c1c3
+- [x] `generate_uid(prefix, name)` unified core ✅ 154c1c3
 
 Deferred (after code stabilizes):
 - [ ] SE-03: HEP-0011 rewrite for composition model
