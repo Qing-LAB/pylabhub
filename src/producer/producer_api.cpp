@@ -237,7 +237,7 @@ nlohmann::json ProducerAPI::snapshot_metrics_json() const
             base["max_iteration_us"]  = m.max_iteration_us;
             base["last_slot_work_us"] = m.last_slot_work_us;
             base["last_slot_wait_us"] = m.last_slot_wait_us;
-            base["period_ms"]         = m.period_ms;
+            base["configured_period_us"]         = m.configured_period_us;
         }
     }
 
@@ -273,7 +273,7 @@ py::dict ProducerAPI::metrics() const
             d["last_slot_wait_us"]  = py::int_(m.last_slot_wait_us);
             d["loop_overrun_count"] = py::int_(m.overrun_count);
             d["last_slot_work_us"]  = py::int_(m.last_slot_work_us);
-            d["period_ms"]          = py::int_(m.period_ms);
+            d["configured_period_us"]          = py::int_(m.configured_period_us);
         }
     }
 
@@ -454,8 +454,8 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
         .def("out_slots_written",  &ProducerAPI::out_slots_written)
         .def("out_drop_count",     &ProducerAPI::out_drop_count)
         .def("loop_overrun_count", &ProducerAPI::loop_overrun_count,
-             "Cycles where start-to-start time exceeded target_period_ms. "
-             "0 when target_period_ms==0 (free-run) or not connected.")
+             "Cycles where start-to-start time exceeded configured period. "
+             "0 when period==0 (free-run) or not connected.")
         .def("out_capacity",       &ProducerAPI::out_capacity,
              "Ring/send buffer slot count for the output transport queue. 0 if not connected.")
         .def("out_policy",         &ProducerAPI::out_policy,

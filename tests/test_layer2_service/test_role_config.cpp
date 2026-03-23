@@ -158,8 +158,8 @@ TEST_F(RoleConfigTest, LoadProducer_Timing)
     auto path = write_json("producer.json", minimal_producer_json());
     auto cfg = RoleConfig::load(path.string(), "producer");
 
-    EXPECT_DOUBLE_EQ(cfg.timing().target_period_ms, 50.0);
-    EXPECT_GT(cfg.timing().period_us, 0);
+    // 50ms = 50000us
+    EXPECT_DOUBLE_EQ(cfg.timing().period_us, 50000.0);
 }
 
 TEST_F(RoleConfigTest, LoadProducer_Script)
@@ -244,7 +244,7 @@ TEST_F(RoleConfigTest, LoadConsumer_DefaultTiming)
     auto cfg = RoleConfig::load(path.string(), "consumer");
 
     // Consumer default: period=0 (demand-driven), MaxRate
-    EXPECT_DOUBLE_EQ(cfg.timing().target_period_ms, 0.0);
+    EXPECT_DOUBLE_EQ(cfg.timing().period_us, 0.0);
     EXPECT_EQ(cfg.timing().loop_timing, pylabhub::LoopTimingPolicy::MaxRate);
 }
 

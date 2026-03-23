@@ -465,9 +465,9 @@ Producer::create_from_parts(Messenger &messenger, ChannelHandle channel,
 
     // Wire LoopPolicy (HEP-CORE-0008 Pass 3): role host overrides this after start_embedded().
     if (impl->shm != nullptr &&
-        (opts.loop_policy != LoopPolicy::MaxRate || opts.period_ms.count() > 0))
+        (opts.loop_policy != LoopPolicy::MaxRate || opts.configured_period_us.count() > 0))
     {
-        impl->shm->set_loop_policy(opts.loop_policy, opts.period_ms);
+        impl->shm->set_loop_policy(opts.loop_policy, opts.configured_period_us);
     }
 
     // Fill the messaging facade. Function pointers capture nothing except `ctx` (the

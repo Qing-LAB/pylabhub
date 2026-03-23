@@ -216,7 +216,7 @@ nlohmann::json ProcessorAPI::snapshot_metrics_json() const
             base["in_last_slot_wait_us"]  = m.last_slot_wait_us;
             base["in_last_slot_work_us"]  = m.last_slot_work_us;
             base["in_overrun_count"]      = m.overrun_count;
-            base["in_period_ms"]          = m.period_ms;
+            base["in_configured_period_us"]          = m.configured_period_us;
         }
     }
 
@@ -233,7 +233,7 @@ nlohmann::json ProcessorAPI::snapshot_metrics_json() const
             base["out_last_slot_wait_us"]  = m.last_slot_wait_us;
             base["out_last_slot_work_us"]  = m.last_slot_work_us;
             base["out_overrun_count"]      = m.overrun_count;
-            base["out_period_ms"]          = m.period_ms;
+            base["out_configured_period_us"]          = m.configured_period_us;
         }
     }
 
@@ -273,7 +273,7 @@ py::dict ProcessorAPI::metrics() const
             d["in_last_slot_wait_us"]  = py::int_(m.last_slot_wait_us);
             d["in_overrun_count"]      = py::int_(m.overrun_count);
             d["in_last_slot_work_us"]  = py::int_(m.last_slot_work_us);
-            d["in_period_ms"]          = py::int_(m.period_ms);
+            d["in_configured_period_us"]          = py::int_(m.configured_period_us);
         }
     }
 
@@ -290,7 +290,7 @@ py::dict ProcessorAPI::metrics() const
             d["out_last_slot_wait_us"]  = py::int_(m.last_slot_wait_us);
             d["out_overrun_count"]      = py::int_(m.overrun_count);
             d["out_last_slot_work_us"]  = py::int_(m.last_slot_work_us);
-            d["out_period_ms"]          = py::int_(m.period_ms);
+            d["out_configured_period_us"]          = py::int_(m.configured_period_us);
         }
     }
 

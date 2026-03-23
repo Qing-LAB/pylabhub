@@ -148,7 +148,7 @@ nlohmann::json ConsumerAPI::snapshot_metrics_json() const
             base["max_iteration_us"]  = m.max_iteration_us;
             base["last_slot_work_us"] = m.last_slot_work_us;
             base["last_slot_wait_us"] = m.last_slot_wait_us;
-            base["period_ms"]         = m.period_ms;
+            base["configured_period_us"]         = m.configured_period_us;
         }
     }
 

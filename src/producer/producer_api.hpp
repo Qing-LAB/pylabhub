@@ -139,9 +139,9 @@ class ProducerAPI
         { return core_->out_written(); }
     [[nodiscard]] uint64_t out_drop_count()      const noexcept
         { return core_->drops(); }
-    /// Number of cycles where start-to-start time exceeded target_period_ms.
+    /// Number of cycles where start-to-start time exceeded configured period.
     /// Reads from the DataBlock acquire layer (same counter used for overrun detection).
-    /// Returns 0 if target_period_ms == 0 (free-run) or SHM is not connected.
+    /// Returns 0 if period == 0 (free-run) or SHM is not connected.
     [[nodiscard]] uint64_t loop_overrun_count() const noexcept;
     /// Ring/send buffer slot count for the output transport queue. 0 if not connected.
     [[nodiscard]] size_t      out_capacity() const noexcept;

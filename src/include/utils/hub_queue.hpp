@@ -100,7 +100,7 @@ struct QueueMetrics
     /// write_acquire() returned nullptr because the send buffer was full.
     /// ZmqQueue (Drop policy): incremented on each overflowing write_acquire().
     /// ZmqQueue (Block policy): incremented on timeout.
-    /// ShmQueue: DataBlockProducer scheduling overruns (period_ms exceeded).
+    /// ShmQueue: DataBlockProducer scheduling overruns (configured_period_us exceeded).
     uint64_t overrun_count{0};
 };
 

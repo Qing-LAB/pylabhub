@@ -148,13 +148,13 @@ TEST_F(DatahubLoopPolicyTest, ProducerMetricsClear)
 
     // Clear and set FixedRate policy
     producer->clear_metrics();
-    producer->set_loop_policy(LoopPolicy::FixedRate, 50ms);
+    producer->set_loop_policy(LoopPolicy::FixedRate, std::chrono::microseconds{50000});
 
     const auto &m = producer->metrics();
     EXPECT_EQ(m.iteration_count, uint64_t{0});
     EXPECT_EQ(m.overrun_count,   uint64_t{0});
-    // period_ms is config, not a counter — preserved through clear_metrics()
-    EXPECT_EQ(m.period_ms, uint64_t{50});
+    // configured_period_us is config, not a counter — preserved through clear_metrics()
+    EXPECT_EQ(m.configured_period_us, uint64_t{50000});
 }
 
 // ============================================================================
@@ -170,8 +170,8 @@ TEST_F(DatahubLoopPolicyTest, ProducerFixedRateOverrunDetect)
         channel, DataBlockPolicy::RingBuffer, cfg);
     ASSERT_NE(producer, nullptr);
 
-    // period_ms = 1 ms; body sleeps 5 ms → every iteration after the first overruns.
-    producer->set_loop_policy(LoopPolicy::FixedRate, 1ms);
+    // configured_period_us = 1000 us (1 ms); body sleeps 5 ms → every iteration after the first overruns.
+    producer->set_loop_policy(LoopPolicy::FixedRate, std::chrono::microseconds{1000});
 
     for (int i = 0; i < 5; ++i)
     {
@@ -285,7 +285,7 @@ TEST_F(DatahubLoopPolicyTest, ZeroOnCreation)
     EXPECT_EQ(m.max_iteration_us,   uint64_t{0});
     EXPECT_EQ(m.last_slot_work_us,  uint64_t{0});
     EXPECT_EQ(m.context_elapsed_us, uint64_t{0});
-    EXPECT_EQ(m.period_ms,          uint64_t{0});
+    EXPECT_EQ(m.configured_period_us,          uint64_t{0});
     EXPECT_EQ(m.context_start_time, ContextMetrics::Clock::time_point{});
 }
 
@@ -315,7 +315,7 @@ TEST_F(DatahubLoopPolicyTest, MaxRateNoOverrun)
     }
 
     EXPECT_EQ(producer->metrics().overrun_count, uint64_t{0});
-    EXPECT_EQ(producer->metrics().period_ms,     uint64_t{0});
+    EXPECT_EQ(producer->metrics().configured_period_us,     uint64_t{0});
 }
 
 // ============================================================================

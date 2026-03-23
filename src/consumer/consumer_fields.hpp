@@ -16,19 +16,22 @@ namespace pylabhub::consumer
 {
 
 /// Consumer-specific config fields.
-/// Schemas are discovered from the broker — consumer doesn't define them.
-/// Currently empty; exists for future extensibility and type-safe role_data access.
+/// Input schemas are optional — when present they are used for ctypes struct
+/// building at startup (before broker discovery).
 struct ConsumerFields
 {
-    // Consumer discovers slot_schema and flexzone_schema from the broker at connect time.
-    // No producer-defined schema fields needed here.
+    nlohmann::json in_slot_schema_json;      ///< Optional. Input slot schema for ctypes.
+    nlohmann::json in_flexzone_schema_json;  ///< Optional. Flexzone schema (null = no flexzone).
 };
 
 /// Parse consumer-specific fields from JSON.
-inline std::any parse_consumer_fields(const nlohmann::json & /*j*/,
+inline std::any parse_consumer_fields(const nlohmann::json &j,
                                        const config::RoleConfig & /*cfg*/)
 {
-    return ConsumerFields{};
+    ConsumerFields cf;
+    cf.in_slot_schema_json     = j.value("in_slot_schema",     nlohmann::json{});
+    cf.in_flexzone_schema_json = j.value("in_flexzone_schema", nlohmann::json{});
+    return cf;
 }
 
 } // namespace pylabhub::consumer

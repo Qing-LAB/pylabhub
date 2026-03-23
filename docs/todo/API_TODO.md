@@ -21,6 +21,12 @@
 - [ ] Phase 3: Migrate role hosts + mains to RoleDirectory (includes CR-03, CR-06)
 - [ ] Phase 4: Remove monolithic config structs
 
+### Deprecated loop_timing_policy.hpp Overloads (2026-03-23)
+
+- [ ] Remove old `int period_ms` overloads of `parse_loop_timing_policy()` / `default_loop_timing_policy()` — only called by tests, not production code
+- [ ] Remove deprecated `compute_slot_acquire_timeout()` — replaced by `compute_short_timeout()`, only called by tests
+- [ ] Migrate `test_loop_timing_policy.cpp` tests to use the `double period_us` API directly
+
 ### ScriptEngine Post-Refactor Deferred Items (2026-03-21)
 
 - [ ] **SE-03 HIGH**: HEP-CORE-0011 fundamentally stale — rewrite §3.2, §3.3, §4.2, §8, §8.2 for composition model

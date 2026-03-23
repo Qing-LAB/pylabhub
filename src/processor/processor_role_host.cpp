@@ -384,10 +384,10 @@ bool ProcessorRoleHost::setup_infrastructure_()
     out_opts.role_name   = config_.identity().name;
     out_opts.role_uid    = config_.identity().uid;
 
-    if (config_.timing().target_period_ms > 0)
+    if (config_.timing().period_us > 0.0)
     {
-        out_opts.loop_policy = hub::LoopPolicy::FixedRate;
-        out_opts.period_ms   = std::chrono::milliseconds{static_cast<int>(config_.timing().target_period_ms)};
+        out_opts.loop_policy          = hub::LoopPolicy::FixedRate;
+        out_opts.configured_period_us = std::chrono::microseconds{static_cast<int64_t>(config_.timing().period_us)};
     }
     out_opts.ctrl_queue_max_depth = config_.monitoring().ctrl_queue_max_depth;
     out_opts.peer_dead_timeout_ms = config_.monitoring().peer_dead_timeout_ms;
@@ -792,8 +792,7 @@ void ProcessorRoleHost::run_data_loop_()
     const auto &vld = config_.validation();
 
     // --- Setup ---
-    const double period_us =
-        static_cast<double>(tc.target_period_ms) * kUsPerMs;
+    const double period_us = tc.period_us;
     const bool is_max_rate = (tc.loop_timing == LoopTimingPolicy::MaxRate);
     const auto short_timeout_us = compute_short_timeout(period_us, tc.queue_io_wait_timeout_ratio);
     // Acquire takes milliseconds; convert with rounding up to avoid 0ms.
@@ -1082,7 +1081,7 @@ nlohmann::json ProcessorRoleHost::snapshot_metrics_json() const
             base["max_iteration_us"]   = m.max_iteration_us;
             base["last_slot_work_us"]  = m.last_slot_work_us;
             base["last_slot_wait_us"]  = m.last_slot_wait_us;
-            base["period_ms"]          = m.period_ms;
+            base["configured_period_us"]          = m.configured_period_us;
         }
     }
     return base;

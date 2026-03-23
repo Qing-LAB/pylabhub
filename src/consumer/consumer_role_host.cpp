@@ -140,11 +140,11 @@ void ConsumerRoleHost::worker_main_()
 
         try
         {
-            const auto &raw = config_.raw();
+            const auto &cf = config_.role_data<consumer::ConsumerFields>();
             slot_spec_ = scripting::resolve_schema(
-                raw.value("in_slot_schema", nlohmann::json{}), false, "cons", schema_dirs);
+                cf.in_slot_schema_json, false, "cons", schema_dirs);
             core_.fz_spec = scripting::resolve_schema(
-                raw.value("in_flexzone_schema", nlohmann::json{}), true, "cons", schema_dirs);
+                cf.in_flexzone_schema_json, true, "cons", schema_dirs);
         }
         catch (const std::exception &e)
         {
@@ -275,10 +275,10 @@ bool ConsumerRoleHost::setup_infrastructure_()
     opts.consumer_uid         = id.uid;
     opts.consumer_name        = id.name;
 
-    if (tc.target_period_ms > 0)
+    if (tc.period_us > 0.0)
     {
-        opts.loop_policy = hub::LoopPolicy::FixedRate;
-        opts.period_ms   = std::chrono::milliseconds{static_cast<int>(tc.target_period_ms)};
+        opts.loop_policy          = hub::LoopPolicy::FixedRate;
+        opts.configured_period_us = std::chrono::microseconds{static_cast<int64_t>(tc.period_us)};
     }
 
     // Transport declaration.
@@ -544,8 +544,7 @@ void ConsumerRoleHost::run_data_loop_()
     const auto &tc  = config_.timing();
     const auto &vld = config_.validation();
 
-    const double period_us =
-        static_cast<double>(tc.target_period_ms) * kUsPerMs;
+    const double period_us = tc.period_us;
     const bool is_max_rate = (tc.loop_timing == LoopTimingPolicy::MaxRate);
     const auto short_timeout_us = compute_short_timeout(period_us, tc.queue_io_wait_timeout_ratio);
     const auto short_timeout =
@@ -728,7 +727,7 @@ nlohmann::json ConsumerRoleHost::snapshot_metrics_json() const
             base["max_iteration_us"]  = m.max_iteration_us;
             base["last_slot_work_us"] = m.last_slot_work_us;
             base["last_slot_wait_us"] = m.last_slot_wait_us;
-            base["period_ms"]         = m.period_ms;
+            base["configured_period_us"]         = m.configured_period_us;
         }
     }
     return base;

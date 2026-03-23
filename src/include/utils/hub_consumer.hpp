@@ -192,7 +192,7 @@ struct ConsumerOptions
 
     // ── Loop policy (HEP-CORE-0008 Pass 3) ───────────────────────────────────
     LoopPolicy                loop_policy{LoopPolicy::MaxRate}; ///< Acquire-pacing policy
-    std::chrono::milliseconds period_ms{};                      ///< FixedRate target period
+    std::chrono::microseconds configured_period_us{};            ///< FixedRate target period (µs)
 
     // ── Named schema validation (HEP-CORE-0016 Phase 2) ──────────────────────
     /// Optional named schema ID (e.g. `"lab.sensors.temperature.raw@1"`).
