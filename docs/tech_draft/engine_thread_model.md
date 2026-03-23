@@ -53,51 +53,72 @@ owner (working) thread. This works for the data loop but prevents:
 
 ## 3. Interface Changes to ScriptEngine
 
-### 3.1 Generic script execution
+### 3.1 Status and result types
+
+```cpp
+/// Mechanical result of a generic invoke/eval call.
+/// Distinct from InvokeResult (Commit/Discard/Error) which is the semantic
+/// result of a data callback — what to do with the output slot.
+enum class InvokeStatus : uint8_t
+{
+    Ok              = 0,   // function executed successfully
+    NotFound        = 1,   // function name not found in script
+    ScriptError     = 2,   // script raised an exception / pcall failed
+    EngineShutdown  = 3,   // engine is finalizing, request rejected
+};
+
+/// Response from a generic invoke or eval call.
+/// invoke() callers check .status. eval() callers use .value.
+struct InvokeResponse
+{
+    InvokeStatus   status{InvokeStatus::Ok};
+    nlohmann::json value;   // populated only for eval()
+};
+```
+
+### 3.2 Generic script execution
 
 ```cpp
 class ScriptEngine
 {
 public:
-    // ── Generic script execution (thread-safe) ──────────────────────
+    // ── Generic invoke (thread-safe) ────────────────────────────────
 
     /// Invoke a named script function with no arguments.
     /// Safe to call from any thread. The engine handles all internal
-    /// locking, queue management, and thread dispatch.
-    /// Owner thread gets priority (front of queue).
-    /// Returns false if function not found or engine shutting down.
-    virtual bool invoke(const char* function_name) = 0;
+    /// queue management and thread dispatch.
+    ///   - Owner thread: executes directly (zero overhead).
+    ///   - Non-owner (single-state engine): enqueues request, blocks on
+    ///     future until owner processes it in process_pending_().
+    ///   - Non-owner (multi-state engine): executes on thread-local
+    ///     state concurrently (no queue, no blocking).
+    virtual bool invoke(const char* name) = 0;
 
-    /// Invoke a named script function with JSON arguments.
-    /// The engine unpacks args into the script's native format
-    /// (Python dict, Lua table) before calling.
-    virtual bool invoke(const char* function_name,
-                        const nlohmann::json& args) = 0;
+    /// Invoke with JSON arguments. Engine unpacks to native format.
+    virtual bool invoke(const char* name, const nlohmann::json& args) = 0;
 
-    /// Evaluate a script code string. For admin/debug use.
-    /// Same thread-safety contract as invoke().
-    /// Returns result as JSON, or empty on error.
+    /// Evaluate a code string. Returns result as JSON, empty on error.
     virtual nlohmann::json eval(const char* code) = 0;
 ```
 
-### 3.2 Existing hot-path methods (unchanged)
+### 3.3 Hot-path methods (data loop)
 
 The specialized invoke methods remain for the data loop hot path. They deal
-with raw memory pointers, slot views, and typed return contracts. They are
-always called from the owner thread. They acquire the execution mutex
-internally and process any pending queue requests after returning:
+with raw memory pointers, slot views, and typed return contracts. Always
+called from the owner thread. After each call, the engine checks the
+pending request queue and processes any waiting requests:
 
 ```cpp
+    // InvokeResult = Commit/Discard/Error (slot semantic, not invoke status)
     virtual void invoke_on_init() = 0;
     virtual void invoke_on_stop() = 0;
-    virtual InvokeResult invoke_produce(void* out, size_t out_sz, ...) = 0;
-    virtual void invoke_consume(const void* in, size_t in_sz, ...) = 0;
-    virtual InvokeResult invoke_process(const void* in, size_t in_sz,
-                                         void* out, size_t out_sz, ...) = 0;
-    virtual void invoke_on_inbox(const void* data, size_t sz, ...) = 0;
+    virtual InvokeResult invoke_produce(void* out, ...) = 0;
+    virtual void invoke_consume(const void* in, ...) = 0;
+    virtual InvokeResult invoke_process(const void* in, void* out, ...) = 0;
+    virtual void invoke_on_inbox(const void* data, ...) = 0;
 ```
 
-### 3.3 Thread model queries (unchanged)
+### 3.4 Thread model queries (unchanged)
 
 ```cpp
     virtual bool supports_multi_state() const noexcept = 0;
@@ -130,52 +151,129 @@ Multiple non-owner threads submit concurrently:
     → Each caller blocks on its own future.get()
 ```
 
-### 4.2 Owner Thread Priority
+### 4.2 Queue Model
 
-The owner thread (data loop) gets priority placement — its requests go to
-the front of the queue. This ensures the hot-path `invoke_produce/consume/
-process` calls are not delayed behind non-owner requests.
+All thread synchronization is through a single `queue_mu_` mutex protecting
+the request queue. No execution mutex — the owner thread is the sole
+executor for single-state engines (Python), and multi-state engines (Lua)
+use independent per-thread states with no shared lock.
 
-The owner still waits for the execution mutex — if a non-owner request is
-mid-execution, the owner blocks until it finishes (cannot preempt a running
-script call). This is correct: script calls are short and atomic.
+```cpp
+struct PendingRequest
+{
+    std::string              name;
+    nlohmann::json           args;      // empty for no-args invoke
+    bool                     is_eval;   // true for eval(), false for invoke()
+    std::promise<InvokeResponse> promise;
+};
 
-### 4.3 Engine-Specific Execution
+// Engine internal state:
+std::deque<PendingRequest>  request_queue_;
+std::mutex                  queue_mu_;
+std::atomic<bool>           accepting_{true};
+```
 
-The queue and mutex are base-class infrastructure. Each engine implements
-`execute_direct_()` — the actual script function call:
+### 4.3 Owner Thread — Hot Path
 
-| Engine | Owner thread | Non-owner thread |
-|--------|-------------|-----------------|
-| Python | Direct pcall (GIL held for lifetime) | Request queued, owner executes at its turn (owner holds GIL) |
-| Lua    | Direct pcall on owner state | Get/create thread-local state, direct pcall (independent, concurrent) |
-| Native | Direct function pointer call | Direct call (plugin's thread-safety contract) |
+The owner thread calls the hot-path methods directly. After each call,
+`process_pending_()` checks the queue:
 
-For Lua multi-state, non-owner threads bypass the queue entirely — they
-have their own independent state and execute concurrently with the owner.
-No serialization needed.
+```
+invoke_produce(slot, ...):
+    pcall("on_produce", slot, ...)      ← direct call, zero overhead
+    process_pending_()                  ← check queue, execute any waiting requests
+```
 
-### 4.4 GIL Strategy (Python)
+`process_pending_()`:
+```
+    if (!accepting_) return
+    lock queue_mu_
+    if empty: unlock, return            ← fast path (~5ns)
+    swap queue → local
+    unlock queue_mu_
+    for each request:
+        if (!accepting_):
+            promise.set_value({EngineShutdown, {}})
+            continue
+        result = execute_direct_(request.name)
+        promise.set_value(result)       ← unblocks waiting thread
+```
 
-The owner thread holds the GIL for the entire engine lifetime (initialize
-to finalize). No per-invoke acquire/release — zero GIL overhead on the
-hot path. The execution mutex is the sole synchronization mechanism.
+### 4.4 Non-Owner Thread — Queue Path (Single-State Engine)
 
-Non-owner requests are always processed by the owner thread (which already
-holds the GIL). The non-owner thread never touches the Python interpreter.
+```
+invoke("on_heartbeat"):
+    lock queue_mu_
+    if (!accepting_):                   ← TOCTOU-safe: checked inside lock
+        unlock
+        return false
+    push {name, promise}
+    unlock queue_mu_
+    return future.get()                 ← blocks until owner processes
+```
 
-Future optimization: release GIL between invokes to unblock other Python
-threads. This is independent of the execution mutex and can be added later
-as an opt-in without changing the interface.
+The non-owner thread never touches the interpreter. The owner thread
+processes the request in `process_pending_()` and fulfills the promise.
 
-### 4.5 Runtime Overhead
+### 4.5 Non-Owner Thread — Direct Path (Multi-State Engine)
 
-Hot path (owner thread, uncontended — 99.99% of invocations):
-- Mutex lock/unlock: ~20ns (futex fast path, no syscall)
-- Queue check (empty): one pointer comparison
+For Lua, non-owner threads bypass the queue entirely:
+
+```
+invoke("on_heartbeat"):
+    get_or_create_thread_state_()       ← thread-local LuaState
+    execute_direct_("on_heartbeat")     ← pcall on independent state
+    return result                       ← no blocking, no queue
+```
+
+No synchronization between owner and non-owner — independent states.
+
+### 4.6 Shutdown
+
+```
+finalize():
+    accepting_ = false                  ← stop new requests
+    lock queue_mu_
+    for each: promise.set_value({EngineShutdown, {}})
+    clear queue
+    unlock queue_mu_
+    ... destroy interpreter / states ...
+```
+
+All blocked non-owner threads are unblocked with `EngineShutdown` status.
+New `invoke()` calls after `accepting_ = false` return immediately.
+
+### 4.7 GIL Strategy (Python)
+
+GIL held for the entire engine lifetime (initialize to finalize). No
+per-invoke acquire/release — zero GIL overhead. The queue mutex is the
+only synchronization primitive. Non-owner requests are always executed by
+the owner thread which already holds the GIL.
+
+Future optimization: release GIL between invokes to allow other Python
+threads to run. Independent of the queue model — can be added later
+without interface changes.
+
+### 4.8 Runtime Overhead
+
+Hot path (owner thread, queue empty — 99.99% of invocations):
+- process_pending_(): lock + empty check + unlock: ~20ns
 - Script call: same as today
+- Total: ~20ns overhead per iteration
 
-Total overhead: ~20ns per iteration. At 10kHz this is 0.02%.
+### 4.9 Known Limitations
+
+1. **Reentrancy**: Scripts cannot call `engine->invoke()` from within a
+   callback. Not possible in current design (scripts access API objects,
+   not the engine). If `api.eval()` is exposed to scripts in the future,
+   reentrancy must be handled (Lua pcall and Python GIL are both reentrant).
+
+2. **Non-owner latency**: Bounded by loop iteration time. MaxRate ≈ 100us-1ms,
+   FixedRate ≈ one period. Acceptable for heartbeat/admin use cases.
+
+3. **Crash safety**: If the engine crashes without `finalize()`, pending
+   promises are never fulfilled. Mitigated by the shutdown design: signal
+   handler → `request_stop()` → loop exits → `finalize()` always runs.
 
 ## 5. LuaEngine Thread-State Management
 
@@ -249,48 +347,56 @@ void LuaEngine::finalize()
 ## 6. PythonEngine — Single-State Serialized Execution
 
 Python uses a single interpreter with GIL held for the engine lifetime.
-All requests — owner or non-owner — are serialized through the execution
-mutex. Non-owner requests are always executed by the owner thread.
+Non-owner requests are queued and executed by the owner thread. The queue
+mutex (`queue_mu_`) is the only synchronization primitive — no execution
+mutex, no per-invoke GIL acquire/release.
 
 ### 6.1 invoke() implementation
 
 ```cpp
 bool PythonEngine::invoke(const char *name)
 {
+    // Owner thread: execute directly (zero overhead).
     if (std::this_thread::get_id() == owner_thread_id_)
-    {
-        // Owner: priority — lock mutex, execute directly.
-        std::lock_guard lk(execution_mu_);
-        return execute_direct_(name);    // direct pcall, GIL already held
-    }
+        return execute_direct_(name).status == InvokeStatus::Ok;
 
-    // Non-owner: enqueue, block on future.
-    std::promise<bool> promise;
+    // Non-owner: enqueue + block on future.
+    std::promise<InvokeResponse> promise;
     auto future = promise.get_future();
     {
         std::lock_guard lk(queue_mu_);
-        request_queue_.push_back({std::string(name), {}, std::move(promise)});
+        if (!accepting_)                  // TOCTOU-safe: checked inside lock
+            return false;
+        request_queue_.push_back({name, {}, false, std::move(promise)});
     }
-    return future.get();  // blocks until owner processes this request
+    return future.get().status == InvokeStatus::Ok;
 }
 ```
 
-### 6.2 Queue processing
+### 6.2 process_pending_()
 
-The owner thread processes pending requests whenever it acquires the
-execution mutex — either during its own invoke() or at the end of each
-hot-path invoke_produce/consume/process call:
+Called after each hot-path invoke (invoke_produce, invoke_consume, etc.):
 
 ```cpp
 void PythonEngine::process_pending_()
 {
-    std::lock_guard lk(queue_mu_);
-    for (auto &req : request_queue_)
+    if (!accepting_) return;
+    std::deque<PendingRequest> local;
     {
-        bool ok = execute_direct_(req.name.c_str());
-        req.promise.set_value(ok);    // unblocks the waiting thread
+        std::lock_guard lk(queue_mu_);
+        if (request_queue_.empty()) return;
+        local.swap(request_queue_);
     }
-    request_queue_.clear();
+    for (auto &req : local)
+    {
+        if (!accepting_)
+        {
+            req.promise.set_value({InvokeStatus::EngineShutdown, {}});
+            continue;
+        }
+        auto result = execute_direct_(req.name.c_str());
+        req.promise.set_value(std::move(result));
+    }
 }
 ```
 
@@ -299,31 +405,28 @@ void PythonEngine::process_pending_()
 ```cpp
 void PythonEngine::finalize()
 {
-    // 1. Cancel all pending requests (set promise to false)
+    accepting_ = false;
     {
         std::lock_guard lk(queue_mu_);
         for (auto &req : request_queue_)
-            req.promise.set_value(false);
+            req.promise.set_value({InvokeStatus::EngineShutdown, {}});
         request_queue_.clear();
     }
-
-    // 2. Existing cleanup (clear py::objects, destroy interpreter)
-    // ...
+    // ... existing cleanup (clear py::objects, destroy interpreter) ...
 }
 ```
 
 ### 6.4 Latency characteristics
 
 Non-owner request latency = time until the owner thread finishes its
-current script call and processes the queue. This depends on loop timing:
+current script call and reaches `process_pending_()`. Depends on loop timing:
 
 | Loop policy | Typical latency | Max latency |
 |-------------|----------------|-------------|
 | MaxRate (period=0) | ~100us-1ms (one script call) | ~10ms |
 | FixedRate (period=10ms) | ~1 script call + timing sleep | ~10ms |
 
-This is acceptable for the target use cases (admin commands, heartbeat
-callbacks, hot-reload notifications) which are all low-frequency operations.
+Acceptable for target use cases (heartbeat, admin, hot-reload).
 
 ## 7. Shared Script State (RoleHostCore)
 
