@@ -4,8 +4,7 @@
  * @brief TransportConfig — categorical config for data-plane transport.
  *
  * Parsed from directional JSON fields: <direction>_transport, etc.
- * Transport enum is defined here as the canonical location (replaces
- * per-role Transport enums in producer_config.hpp / processor_config.hpp).
+ * Transport enum is defined here as the canonical location.
  */
 
 #include "utils/hub_zmq_queue.hpp" // kZmqDefaultBufferDepth

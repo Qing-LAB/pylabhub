@@ -1,25 +1,23 @@
 # tests/test_layer4_consumer/CMakeLists.txt
 #
-# Layer 4 consumer tests — config unit tests + CLI integration tests.
+# Layer 4 consumer tests — CLI behavior tests.
 #
-# Two test classes in one executable:
-#   ConsumerConfigTest (PureApiTest)      — tests ConsumerConfig::from_json_file/from_directory
-#   ConsumerCliTest (IsolatedProcessTest) — spawns pylabhub-consumer binary via WorkerProcess
+# Spawns pylabhub-consumer binary via WorkerProcess.
+# Tests: --init, --keygen, --validate, config errors.
+# Config parsing is tested via L2 RoleConfigTest.
 #
-# consumer_config.cpp is compiled directly into this binary (it is private to the
+# CLI behavior tests (--init, --keygen, --validate, error handling).
 # pylabhub-consumer executable, not part of pylabhub-utils).
 
 message(STATUS "** Configuring Layer 4 (Consumer) tests...")
 
 add_executable(test_layer4_consumer
-    test_consumer_config.cpp
     test_consumer_cli.cpp
-    ${CMAKE_SOURCE_DIR}/src/consumer/consumer_config.cpp
 )
 
 target_include_directories(test_layer4_consumer PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/consumer          # consumer_config.hpp
-    ${CMAKE_SOURCE_DIR}/src/scripting         # scripting/python_script_host.hpp (transitive)
+    ${CMAKE_SOURCE_DIR}/src/consumer
+    ${CMAKE_SOURCE_DIR}/src/scripting
 )
 
 target_link_libraries(test_layer4_consumer

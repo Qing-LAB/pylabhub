@@ -1,25 +1,23 @@
 # tests/test_layer4_producer/CMakeLists.txt
 #
-# Layer 4 producer tests — config unit tests + CLI integration tests.
+# Layer 4 producer tests — CLI behavior tests.
 #
-# Two test classes in one executable:
-#   ProducerConfigTest (PureApiTest)   — tests ProducerConfig::from_json_file/from_directory
-#   ProducerCliTest (IsolatedProcessTest) — spawns pylabhub-producer binary via WorkerProcess
+# Spawns pylabhub-producer binary via WorkerProcess.
+# Tests: --init, --keygen, --validate, config errors.
+# Config parsing is tested via L2 RoleConfigTest.
 #
-# producer_config.cpp is compiled directly into this binary (it is private to the
+# CLI behavior tests (--init, --keygen, --validate, error handling).
 # pylabhub-producer executable, not part of pylabhub-utils).
 
 message(STATUS "** Configuring Layer 4 (Producer) tests...")
 
 add_executable(test_layer4_producer
-    test_producer_config.cpp
     test_producer_cli.cpp
-    ${CMAKE_SOURCE_DIR}/src/producer/producer_config.cpp
 )
 
 target_include_directories(test_layer4_producer PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/producer          # producer_config.hpp
-    ${CMAKE_SOURCE_DIR}/src/scripting         # scripting/python_script_host.hpp (transitive)
+    ${CMAKE_SOURCE_DIR}/src/producer
+    ${CMAKE_SOURCE_DIR}/src/scripting
 )
 
 target_link_libraries(test_layer4_producer
