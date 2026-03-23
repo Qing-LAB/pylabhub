@@ -44,7 +44,6 @@
 #include "python_engine.hpp"
 
 #include "plh_datahub.hpp"
-#include "utils/actor_vault.hpp"
 #include "utils/config/role_config.hpp"
 #include "utils/role_cli.hpp"
 #include "utils/role_directory.hpp"
@@ -264,11 +263,10 @@ int main(int argc, char *argv[])
 
         try
         {
-            const auto vault = pylabhub::utils::ActorVault::create(
-                c.auth().keyfile, c.identity().uid, *pw_opt);
+            const auto pubkey = c.create_keypair(*pw_opt);
             std::cout << "Consumer vault written to: " << c.auth().keyfile << "\n"
                       << "  consumer_uid : " << c.identity().uid << "\n"
-                      << "  public_key   : " << vault.public_key() << "\n";
+                      << "  public_key   : " << pubkey << "\n";
         }
         catch (const std::exception &e)
         {
@@ -284,7 +282,7 @@ int main(int argc, char *argv[])
         const auto vault_password = scripting::get_role_password("consumer", "Consumer vault password: ");
         if (!vault_password)
             return 1;
-        c.mutable_auth().load_keypair(c.identity().uid, *vault_password, "cons");
+        c.load_keypair(*vault_password);
     }
 
     // ── Create engine based on script type ───────────────────────────────────

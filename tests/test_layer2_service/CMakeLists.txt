@@ -400,30 +400,30 @@ gtest_discover_tests(test_layer2_script_host
 )
 
 # ============================================================================
-# Test: ActorVault (pure API — no lifecycle, no worker dispatcher)
+# Test: RoleVault (pure API — no lifecycle, no worker dispatcher)
 # Note: Argon2id KDF takes ~0.5s per call; timeout set to 120s.
 # ============================================================================
 
-add_executable(test_layer2_actor_vault
-    test_actor_vault.cpp
+add_executable(test_layer2_role_vault
+    test_role_vault.cpp
 )
 
-target_link_libraries(test_layer2_actor_vault
+target_link_libraries(test_layer2_role_vault
     PRIVATE
         pylabhub::utils
         GTest::gtest
         GTest::gtest_main
 )
 
-pylabhub_ensure_sanitizer_for_executable(test_layer2_actor_vault)
+pylabhub_ensure_sanitizer_for_executable(test_layer2_role_vault)
 
 pylabhub_register_test_for_staging(
-    TARGET test_layer2_actor_vault
-    SUITE_NAME "Layer2_ActorVault"
+    TARGET test_layer2_role_vault
+    SUITE_NAME "Layer2_RoleVault"
 )
-layer2_require_staged_utils(test_layer2_actor_vault)
+layer2_require_staged_utils(test_layer2_role_vault)
 
-gtest_discover_tests(test_layer2_actor_vault
+gtest_discover_tests(test_layer2_role_vault
     PROPERTIES
         LABELS "layer2;service;vault;security"
         TIMEOUT 120

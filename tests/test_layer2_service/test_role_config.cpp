@@ -318,14 +318,22 @@ TEST_F(RoleConfigTest, RoleData_WrongTypeCast_Throws)
 // Tests: Mutable auth
 // ============================================================================
 
-TEST_F(RoleConfigTest, MutableAuth)
+TEST_F(RoleConfigTest, Auth_DefaultEmpty)
 {
     auto path = write_json("producer.json", minimal_producer_json());
     auto cfg = RoleConfig::load(path.string(), "producer");
 
+    EXPECT_TRUE(cfg.auth().keyfile.empty());
     EXPECT_TRUE(cfg.auth().client_pubkey.empty());
-    cfg.mutable_auth().client_pubkey = "TESTKEY";
-    EXPECT_EQ(cfg.auth().client_pubkey, "TESTKEY");
+    EXPECT_TRUE(cfg.auth().client_seckey.empty());
+}
+
+TEST_F(RoleConfigTest, LoadKeypair_NoKeyfile_ReturnsFalse)
+{
+    auto path = write_json("producer.json", minimal_producer_json());
+    auto cfg = RoleConfig::load(path.string(), "producer");
+
+    EXPECT_FALSE(cfg.load_keypair("dummy-password"));
 }
 
 // ============================================================================
