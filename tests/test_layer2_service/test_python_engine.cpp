@@ -1258,18 +1258,105 @@ def on_heartbeat():
         done.store(true, std::memory_order_release);
     });
 
-    // Owner thread: trigger process_pending_() by calling a hot-path invoke.
-    // Use invoke_on_init which is lightweight (may be no-op if on_init not defined).
-    // Poll until the non-owner thread is done.
+    // Owner thread: trigger process_pending_() by calling hot-path invokes.
+    // Use a bounded loop with timeout to detect deadlock.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (!done.load(std::memory_order_acquire))
     {
+        ASSERT_LT(std::chrono::steady_clock::now(), deadline)
+            << "Timeout: non-owner invoke() was never processed by process_pending_()";
         std::vector<IncomingMessage> msgs;
         engine.invoke_produce(nullptr, 0, nullptr, 0, nullptr, msgs);
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        std::this_thread::yield();
     }
 
     t.join();
     EXPECT_TRUE(result);
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Invoke_FromNonOwnerThread_FinalizeUnblocks)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    return True
+
+def slow_func():
+    pass
+)");
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    // Non-owner thread: enqueues request, blocks on future.
+    std::atomic<bool> started{false};
+    bool result = true; // expect false after finalize cancels
+
+    std::thread t([&]
+    {
+        started.store(true, std::memory_order_release);
+        result = engine.invoke("slow_func");
+    });
+
+    // Wait for non-owner thread to submit the request.
+    while (!started.load(std::memory_order_acquire))
+        std::this_thread::yield();
+
+    // Small delay to let the thread block on future.get().
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+    // finalize() should cancel the pending promise with EngineShutdown.
+    engine.finalize();
+    t.join();
+
+    EXPECT_FALSE(result) << "Pending invoke should return false after finalize()";
+}
+
+TEST_F(PythonEngineTest, Invoke_ConcurrentNonOwnerThreads)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    return True
+
+def on_heartbeat():
+    pass
+)");
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    constexpr int kThreads = 4;
+    constexpr int kCallsPerThread = 10;
+    std::atomic<int> success_count{0};
+    std::atomic<bool> all_submitted{false};
+
+    std::vector<std::thread> threads;
+    for (int i = 0; i < kThreads; ++i)
+    {
+        threads.emplace_back([&]
+        {
+            for (int j = 0; j < kCallsPerThread; ++j)
+            {
+                if (engine.invoke("on_heartbeat"))
+                    success_count.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+    }
+
+    // Owner: drain the queue by calling hot-path invokes until all threads finish.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (success_count.load(std::memory_order_relaxed) < kThreads * kCallsPerThread)
+    {
+        ASSERT_LT(std::chrono::steady_clock::now(), deadline)
+            << "Timeout: only " << success_count.load() << " of "
+            << kThreads * kCallsPerThread << " invokes completed";
+        std::vector<IncomingMessage> msgs;
+        engine.invoke_produce(nullptr, 0, nullptr, 0, nullptr, msgs);
+        std::this_thread::yield();
+    }
+
+    for (auto &t : threads)
+        t.join();
+
+    EXPECT_EQ(success_count.load(), kThreads * kCallsPerThread);
     engine.finalize();
 }
 
