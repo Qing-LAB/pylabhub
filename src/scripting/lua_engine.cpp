@@ -57,12 +57,10 @@ LuaEngine::~LuaEngine()
 // initialize — create LuaState, sandbox, luajit path, inbox metatable
 // ============================================================================
 
-bool LuaEngine::initialize(const char *log_tag, RoleHostCore *core)
+bool LuaEngine::init_engine_(const char *log_tag, RoleHostCore *core)
 {
     log_tag_ = log_tag ? log_tag : "lua";
-    assert(core && "RoleHostCore must be provided to initialize()");
-    ctx_.core = core;
-    owner_thread_id_ = std::this_thread::get_id();
+    // owner_thread_id_, accepting_, ctx_.core set by base class initialize().
 
     state_ = LuaState::create();
     if (!state_)
@@ -215,15 +213,14 @@ void LuaEngine::build_api(const RoleContext &ctx)
 // finalize — clear all refs, inbox cache, reset state
 // ============================================================================
 
-void LuaEngine::finalize()
+void LuaEngine::finalize_engine_()
 {
     if (!state_)
         return;
 
-    // Ensure no new requests (may already be set by stop_accepting).
-    accepting_.store(false, std::memory_order_release);
+    // accepting_ already set false by base class finalize().
 
-    // 2. Destroy all child thread states.
+    // Destroy all child thread states.
     {
         std::lock_guard lk(thread_states_mu_);
         thread_states_.clear();
