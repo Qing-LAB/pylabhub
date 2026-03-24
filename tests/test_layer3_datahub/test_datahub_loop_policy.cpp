@@ -13,8 +13,8 @@
  *
  * Tests:
  *   1. ProducerMetricsAccumulate   — iteration_count rises with each acquire/release
- *   2. ProducerMetricsClear        — clear_metrics() zeroes counters; period_ms survives
- *   3. ProducerFixedRateOverrunDetect — overrun_count > 0 after body sleeps past period_ms
+ *   2. ProducerMetricsClear        — clear_metrics() zeroes counters; configured_period_us survives
+ *   3. ProducerFixedRateOverrunDetect — overrun_count > 0 after body sleeps past configured_period_us
  *   4. SlotIteratorFixedRatePacing — ctx.slots() sleeps maintain start-to-start interval
  *   5. ConsumerMetricsAccumulate   — consumer iteration_count rises with each acquire/release
  *   6. ZeroOnCreation              — all ContextMetrics fields are zero before first acquire
@@ -302,7 +302,7 @@ TEST_F(DatahubLoopPolicyTest, MaxRateNoOverrun)
         channel, DataBlockPolicy::RingBuffer, cfg);
     ASSERT_NE(producer, nullptr);
 
-    // MaxRate (period_ms = 0) disables overrun detection entirely.
+    // MaxRate (configured_period_us = 0) disables overrun detection entirely.
     producer->set_loop_policy(LoopPolicy::MaxRate);
 
     // Slow body: would overrun a FixedRate 1 ms policy, but MaxRate never counts overruns.
