@@ -5,6 +5,7 @@
  */
 #include "utils/role_host_core.hpp"
 
+#include "utils/hub_inbox_queue.hpp"
 #include "utils/logger.hpp"
 
 #include <chrono>
@@ -55,6 +56,48 @@ void RoleHostCore::wait_for_incoming(int timeout_ms) noexcept
 {
     std::unique_lock<std::mutex> lk(incoming_mu_);
     incoming_cv_.wait_for(lk, std::chrono::milliseconds(timeout_ms));
+}
+
+// ============================================================================
+// Inbox cache
+// ============================================================================
+
+std::shared_ptr<hub::InboxClient>
+RoleHostCore::get_inbox_client(const std::string &target_uid) const
+{
+    std::lock_guard lk(inbox_cache_mu_);
+    auto it = inbox_cache_.find(target_uid);
+    if (it != inbox_cache_.end())
+        return it->second.client;
+    return nullptr;
+}
+
+std::optional<RoleHostCore::InboxCacheEntry>
+RoleHostCore::get_inbox_entry(const std::string &target_uid) const
+{
+    std::lock_guard lk(inbox_cache_mu_);
+    auto it = inbox_cache_.find(target_uid);
+    if (it != inbox_cache_.end())
+        return it->second;
+    return std::nullopt;
+}
+
+void RoleHostCore::set_inbox_entry(const std::string &target_uid,
+                                    InboxCacheEntry entry)
+{
+    std::lock_guard lk(inbox_cache_mu_);
+    inbox_cache_[target_uid] = std::move(entry);
+}
+
+void RoleHostCore::clear_inbox_cache()
+{
+    std::lock_guard lk(inbox_cache_mu_);
+    for (auto &[uid, entry] : inbox_cache_)
+    {
+        if (entry.client)
+            entry.client->stop();
+    }
+    inbox_cache_.clear();
 }
 
 } // namespace pylabhub::scripting
