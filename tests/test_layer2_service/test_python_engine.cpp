@@ -1427,24 +1427,42 @@ TEST_F(PythonEngineTest, Eval_ErrorReturnsEmpty)
 
 TEST_F(PythonEngineTest, SharedData_PersistsAcrossCallbacks)
 {
-    // Test that api.shared_data dict persists across on_produce calls.
-    // The script stores and increments a counter in shared_data.
+    // Test that api.shared_data dict persists across callbacks.
+    // on_init sets counter=0, on_produce increments, get_counter returns it.
+    // We verify the ACTUAL VALUE (5 after 5 calls), not just "no errors".
     write_script(R"(
+_api_ref = None
+
+def on_init(api):
+    global _api_ref
+    _api_ref = api
+    api.shared_data["counter"] = 0
+
 def on_produce(out_slot, fz, msgs, api):
-    if "counter" not in api.shared_data:
-        api.shared_data["counter"] = 0
     api.shared_data["counter"] += 1
     return True
+
+def get_counter():
+    return _api_ref.shared_data["counter"]
 )");
     PythonEngine engine;
     ASSERT_TRUE(setup_engine(engine));
+
+    engine.invoke_on_init();
+    ASSERT_EQ(engine.script_error_count(), 0u)
+        << "on_init failed";
 
     std::vector<IncomingMessage> msgs;
     for (int i = 0; i < 5; ++i)
         engine.invoke_produce(nullptr, 0, nullptr, 0, nullptr, msgs);
 
-    // No script errors means shared_data access worked across all calls.
-    EXPECT_EQ(engine.script_error_count(), 0u);
+    ASSERT_EQ(engine.script_error_count(), 0u)
+        << "on_produce failed";
+
+    // Verify actual value via generic invoke + eval.
+    auto result = engine.eval("get_counter()");
+    EXPECT_EQ(result, 5) << "Counter should be 5 after 5 on_produce calls";
+
     engine.finalize();
 }
 
