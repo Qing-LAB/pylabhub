@@ -37,12 +37,12 @@ class LuaEngine : public ScriptEngine
 
     // ── ScriptEngine lifecycle ───────────────────────────────────────────
 
-    bool initialize(const char *log_tag, RoleHostCore *core) override;
+    bool init_engine_(const char *log_tag, RoleHostCore *core) override;
     bool load_script(const std::filesystem::path &script_dir,
                      const char *entry_point,
                      const char *required_callback) override;
     void build_api(const RoleContext &ctx) override;
-    void finalize() override;
+    void finalize_engine_() override;
 
     // ── Queries ──────────────────────────────────────────────────────────
 

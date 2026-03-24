@@ -188,12 +188,10 @@ static fs::path resolve_venvs_dir_for_engine(const fs::path &exe_path)
 // initialize — create interpreter, apply config, optionally activate venv
 // ============================================================================
 
-bool PythonEngine::initialize(const char *log_tag, RoleHostCore *core)
+bool PythonEngine::init_engine_(const char *log_tag, RoleHostCore *core)
 {
     log_tag_ = log_tag ? log_tag : "python";
-    assert(core && "RoleHostCore must be provided to initialize()");
-    ctx_.core = core;
-    owner_thread_id_ = std::this_thread::get_id();
+    // owner_thread_id_, accepting_, ctx_.core set by base class initialize().
 
     try
     {
@@ -467,14 +465,14 @@ void PythonEngine::build_api(const RoleContext &ctx)
 // finalize — clear all Python objects and destroy interpreter
 // ============================================================================
 
-void PythonEngine::finalize()
+void PythonEngine::finalize_engine_()
 {
     if (!interp_.has_value())
         return;
 
     // GIL is held (py::scoped_interpreter holds it on the creating thread).
+    // accepting_ already set false by base class finalize().
     // Cancel all pending generic invoke requests.
-    accepting_.store(false, std::memory_order_release);
     {
         std::lock_guard lk(queue_mu_);
         for (auto &req : request_queue_)
