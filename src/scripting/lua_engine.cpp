@@ -889,27 +889,6 @@ void LuaEngine::invoke_on_inbox(
 }
 
 // ============================================================================
-// create_thread_state — create an independent LuaEngine for another thread
-// ============================================================================
-
-std::unique_ptr<ScriptEngine> LuaEngine::create_thread_state()
-{
-    auto engine = std::make_unique<LuaEngine>();
-    if (!engine->initialize(log_tag_.c_str(), ctx_.core))
-        return nullptr;
-
-    if (script_dir_str_.empty())
-        return nullptr;
-
-    fs::path script_dir(script_dir_str_);
-    if (!engine->load_script(script_dir, entry_point_.c_str(), required_callback_.c_str()))
-        return nullptr;
-
-    // build_api must be called separately by the caller with the appropriate context.
-    return engine;
-}
-
-// ============================================================================
 // Internal helpers
 // ============================================================================
 
