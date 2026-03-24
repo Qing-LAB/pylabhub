@@ -27,9 +27,14 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
+
+namespace pylabhub::hub { class InboxClient; }
 
 namespace pylabhub::scripting
 {
@@ -83,6 +88,27 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     [[nodiscard]] const SchemaSpec &fz_spec()        const noexcept { return fz_spec_; }
     [[nodiscard]] size_t            schema_fz_size() const noexcept { return schema_fz_size_; }
     [[nodiscard]] bool              has_fz()         const noexcept { return has_fz_; }
+
+    // ── Inbox cache (role-level, shared across engine states) ────────────
+
+    struct InboxCacheEntry
+    {
+        std::shared_ptr<hub::InboxClient> client;
+        std::string type_name;     ///< FFI/ctypes type name for the inbox slot.
+        size_t      item_size{0};  ///< Size of one inbox slot in bytes.
+    };
+
+    /// Get a cached inbox client for the given target UID, or nullptr.
+    std::shared_ptr<hub::InboxClient> get_inbox_client(const std::string &target_uid) const;
+
+    /// Get the full cache entry (client + type info), or nullopt if not cached.
+    std::optional<InboxCacheEntry> get_inbox_entry(const std::string &target_uid) const;
+
+    /// Store an inbox client in the cache.
+    void set_inbox_entry(const std::string &target_uid, InboxCacheEntry entry);
+
+    /// Stop and remove all cached inbox clients.
+    void clear_inbox_cache();
 
     // ── Stop reason enum ─────────────────────────────────────────────────
 
@@ -231,6 +257,10 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     SchemaSpec fz_spec_;
     size_t     schema_fz_size_{0};
     bool       has_fz_{false};
+
+    // ── Inbox cache ──────────────────────────────────────────────────────
+    mutable std::unordered_map<std::string, InboxCacheEntry> inbox_cache_;
+    mutable std::mutex inbox_cache_mu_;
 };
 
 } // namespace pylabhub::scripting
