@@ -199,8 +199,8 @@ void ConsumerRoleHost::worker_main_()
     // Step 4: setup_infrastructure_
     if (!setup_infrastructure_())
     {
-        teardown_infrastructure_();
         engine_->finalize();
+        teardown_infrastructure_();
         ready_promise_.set_value(false);
         return;
     }
@@ -240,11 +240,11 @@ void ConsumerRoleHost::worker_main_()
     // Step 10: invoke on_stop.
     engine_->invoke_on_stop();
 
-    // Step 11: teardown infrastructure.
-    teardown_infrastructure_();
-
-    // Step 12: finalize engine.
+    // Step 11: finalize engine first — no scripts running after this.
     engine_->finalize();
+
+    // Step 12: teardown infrastructure — safe, all scripts done.
+    teardown_infrastructure_();
 }
 
 // ============================================================================
@@ -500,6 +500,8 @@ void ConsumerRoleHost::teardown_infrastructure_()
 
     if (ctrl_thread_.joinable())
         ctrl_thread_.join();
+
+    core_.clear_inbox_cache();
 
     if (inbox_queue_)
     {
