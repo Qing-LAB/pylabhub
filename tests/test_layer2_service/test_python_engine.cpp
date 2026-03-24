@@ -1297,18 +1297,16 @@ def slow_func():
         result = engine.invoke("slow_func");
     });
 
-    // Wait for non-owner thread to submit the request.
+    // Wait for non-owner thread to enter invoke().
     while (!started.load(std::memory_order_acquire))
         std::this_thread::yield();
 
-    // Small delay to let the thread block on future.get().
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
-    // finalize() should cancel the pending promise with EngineShutdown.
+    // finalize() cancels pending promises OR the thread sees accepting_=false.
+    // Either way, the non-owner thread's invoke() must return false.
     engine.finalize();
     t.join();
 
-    EXPECT_FALSE(result) << "Pending invoke should return false after finalize()";
+    EXPECT_FALSE(result) << "Non-owner invoke must return false after finalize()";
 }
 
 TEST_F(PythonEngineTest, Invoke_ConcurrentNonOwnerThreads)
@@ -1326,7 +1324,6 @@ def on_heartbeat():
     constexpr int kThreads = 4;
     constexpr int kCallsPerThread = 10;
     std::atomic<int> success_count{0};
-    std::atomic<bool> all_submitted{false};
 
     std::vector<std::thread> threads;
     for (int i = 0; i < kThreads; ++i)
