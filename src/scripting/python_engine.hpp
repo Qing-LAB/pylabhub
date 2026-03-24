@@ -176,8 +176,7 @@ class PythonEngine : public ScriptEngine
     // GIL stays held on the worker thread (py::scoped_interpreter holds it).
     // Each invoke_*() uses py::gil_scoped_acquire which is reentrant (no-op).
 
-    // ── Context ────────────────────────────────────────────────────────────
-    RoleContext ctx_{};
+    // ctx_ is inherited from ScriptEngine (set by build_api).
     bool stop_on_script_error_{false};
 
     // ── Generic invoke queue (§4/§6 of engine_thread_model.md) ────────────

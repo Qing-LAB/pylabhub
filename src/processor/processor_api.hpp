@@ -50,6 +50,7 @@ namespace py = pybind11;
 // RoleHostCore is needed for inline metric accessors that read core_->field.
 #include "utils/role_host_core.hpp"
 
+namespace pylabhub::scripting { class ScriptEngine; }
 namespace pylabhub::processor
 {
 
@@ -71,6 +72,7 @@ class ProcessorAPI
     void set_producer(hub::Producer *p) noexcept { producer_ = p; }
     void set_consumer(hub::Consumer *c) noexcept { consumer_ = c; }
     void set_messenger(hub::Messenger *m) noexcept { messenger_ = m; }
+    void set_engine(scripting::ScriptEngine *e) noexcept { engine_ = e; }
     void set_uid(std::string uid)   { uid_   = std::move(uid); }
     void set_name(std::string name) { name_  = std::move(name); }
     void set_in_channel(std::string c)  { in_channel_  = std::move(c); }
@@ -238,6 +240,7 @@ class ProcessorAPI
 
     std::atomic<const hub::QueueReader*> in_queue_{nullptr}; ///< Non-owning read side; set by ProcessorScriptHost
     std::atomic<hub::QueueWriter*> out_queue_{nullptr};
+    scripting::ScriptEngine     *engine_{nullptr};
 
     std::string uid_;
     std::string name_;

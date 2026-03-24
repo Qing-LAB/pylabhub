@@ -390,6 +390,7 @@ void PythonEngine::build_api(const RoleContext &ctx)
 
         api.set_producer(static_cast<hub::Producer *>(ctx_.producer));
         api.set_messenger(ctx_.messenger);
+        api.set_engine(this);
         if (ctx_.queue_writer)
             api.set_queue(ctx_.queue_writer);
         api.set_uid(ctx_.uid);
@@ -411,6 +412,7 @@ void PythonEngine::build_api(const RoleContext &ctx)
 
         api.set_consumer(static_cast<hub::Consumer *>(ctx_.consumer));
         api.set_messenger(ctx_.messenger);
+        api.set_engine(this);
         if (ctx_.queue_reader)
             api.set_reader(ctx_.queue_reader);
         api.set_uid(ctx_.uid);
@@ -435,6 +437,7 @@ void PythonEngine::build_api(const RoleContext &ctx)
         if (ctx_.consumer)
             api.set_consumer(static_cast<hub::Consumer *>(ctx_.consumer));
         api.set_messenger(ctx_.messenger);
+        api.set_engine(this);
         if (ctx_.queue_writer)
             api.set_out_queue(ctx_.queue_writer);
         if (ctx_.queue_reader)

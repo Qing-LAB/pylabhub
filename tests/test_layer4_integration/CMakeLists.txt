@@ -75,9 +75,6 @@ endif() # END DISABLED — hubshell migration pending
 
 add_executable(test_metrics_api
     test_metrics_api.cpp
-    ${CMAKE_SOURCE_DIR}/src/producer/producer_api.cpp
-    ${CMAKE_SOURCE_DIR}/src/consumer/consumer_api.cpp
-    ${CMAKE_SOURCE_DIR}/src/processor/processor_api.cpp
 )
 
 target_include_directories(test_metrics_api PRIVATE
@@ -91,7 +88,7 @@ target_include_directories(test_metrics_api PRIVATE
 target_link_libraries(test_metrics_api
     PRIVATE
         pylabhub::utils
-        pylabhub::third_party::pybind11_embed
+        pylabhub::scripting
         GTest::gtest_main
 )
 

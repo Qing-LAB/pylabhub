@@ -271,6 +271,21 @@ LuaEngine *LuaEngine::get_or_create_thread_state_()
     return ptr;
 }
 
+void LuaEngine::release_thread()
+{
+    auto tid = std::this_thread::get_id();
+    if (tid == owner_thread_id_)
+        return; // owner thread — don't destroy the primary state
+
+    std::lock_guard lk(thread_states_mu_);
+    auto it = thread_states_.find(tid);
+    if (it != thread_states_.end())
+    {
+        it->second->finalize();
+        thread_states_.erase(it);
+    }
+}
+
 // ============================================================================
 // Generic invoke / eval
 // ============================================================================
@@ -1336,163 +1351,63 @@ int LuaEngine::lua_api_open_inbox(lua_State *L)
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     const char *target_uid = luaL_checkstring(L, 1);
 
-    // Cache hit — return existing handle.
-    auto cached = self->ctx_.core->get_inbox_entry(target_uid);
-    if (cached && cached->client && cached->client->is_running())
-    {
-        auto *ud = static_cast<LuaInboxUD *>(lua_newuserdata(L, sizeof(LuaInboxUD)));
-        new (ud) LuaInboxUD{self, target_uid};
-        luaL_getmetatable(L, kInboxHandleMT);
-        lua_setmetatable(L, -2);
-        return 1;
-    }
-
-    auto *messenger = self->ctx_.messenger;
-    if (!messenger)
+    // Delegate to ScriptEngine base — handles broker query, client
+    // creation, and core_ cache in one place.
+    auto result = self->open_inbox_client(target_uid);
+    if (!result)
     {
         lua_pushnil(L);
         return 1;
     }
 
-    // Broker round-trip — discover target's inbox endpoint and schema.
-    auto info = messenger->query_role_info(target_uid, /*timeout_ms=*/1000);
-    if (!info.has_value())
+    // Build FFI type for this inbox slot (Lua-specific).
+    // On cache hit the spec is empty — type was already registered on first call.
+    if (!result->spec.fields.empty())
     {
-        lua_pushnil(L);
-        return 1;
-    }
+        std::string ffi_type = fmt::format("InboxSlot_{}", target_uid);
+        for (auto &c : ffi_type)
+            if (c == '-') c = '_';
 
-    if (!info->inbox_schema.is_object() || !info->inbox_schema.contains("fields"))
-    {
-        lua_pushnil(L);
-        return 1;
-    }
+        std::ostringstream ss;
+        const bool is_packed = (result->packing == "packed");
+        ss << "typedef struct ";
+        if (is_packed) ss << "__attribute__((packed)) ";
+        ss << "{\n";
 
-    SchemaSpec spec;
-    try
-    {
-        spec = parse_schema_json(info->inbox_schema);
-    }
-    catch (const std::exception &e)
-    {
-        LOGGER_WARN("[{}] open_inbox('{}'): schema parse error: {}",
-                    self->log_tag_, target_uid, e.what());
-        lua_pushnil(L);
-        return 1;
-    }
-
-    // Build FFI type for inbox slot.
-    std::string ffi_type = fmt::format("InboxSlot_{}", target_uid);
-    // Sanitize: replace hyphens with underscores for valid C identifier.
-    for (auto &c : ffi_type)
-    {
-        if (c == '-')
-            c = '_';
-    }
-
-    // Build cdef string.
-    std::ostringstream ss;
-    const bool is_packed = (info->inbox_packing == "packed");
-    ss << "typedef struct ";
-    if (is_packed)
-        ss << "__attribute__((packed)) ";
-    ss << "{\n";
-
-    bool cdef_ok = true;
-    for (const auto &f : spec.fields)
-    {
-        std::string c_type;
-        if (f.type_str == "bool")
-            c_type = "bool";
-        else if (f.type_str == "int8")
-            c_type = "int8_t";
-        else if (f.type_str == "uint8")
-            c_type = "uint8_t";
-        else if (f.type_str == "int16")
-            c_type = "int16_t";
-        else if (f.type_str == "uint16")
-            c_type = "uint16_t";
-        else if (f.type_str == "int32")
-            c_type = "int32_t";
-        else if (f.type_str == "uint32")
-            c_type = "uint32_t";
-        else if (f.type_str == "int64")
-            c_type = "int64_t";
-        else if (f.type_str == "uint64")
-            c_type = "uint64_t";
-        else if (f.type_str == "float32")
-            c_type = "float";
-        else if (f.type_str == "float64")
-            c_type = "double";
-        else if (f.type_str == "string")
-            c_type = "char";
-        else if (f.type_str == "bytes")
-            c_type = "uint8_t";
-        else
+        bool cdef_ok = true;
+        for (const auto &f : result->spec.fields)
         {
-            LOGGER_WARN("[{}] open_inbox('{}'): unsupported type '{}'",
-                        self->log_tag_, target_uid, f.type_str);
-            cdef_ok = false;
-            break;
+            std::string c_type;
+            if      (f.type_str == "bool")    c_type = "bool";
+            else if (f.type_str == "int8")    c_type = "int8_t";
+            else if (f.type_str == "uint8")   c_type = "uint8_t";
+            else if (f.type_str == "int16")   c_type = "int16_t";
+            else if (f.type_str == "uint16")  c_type = "uint16_t";
+            else if (f.type_str == "int32")   c_type = "int32_t";
+            else if (f.type_str == "uint32")  c_type = "uint32_t";
+            else if (f.type_str == "int64")   c_type = "int64_t";
+            else if (f.type_str == "uint64")  c_type = "uint64_t";
+            else if (f.type_str == "float32") c_type = "float";
+            else if (f.type_str == "float64") c_type = "double";
+            else if (f.type_str == "string")  c_type = "char";
+            else if (f.type_str == "bytes")   c_type = "uint8_t";
+            else { cdef_ok = false; break; }
+
+            ss << "    " << c_type << " " << f.name;
+            if (f.type_str == "string" || f.type_str == "bytes")
+                ss << "[" << f.length << "]";
+            else if (f.count > 1)
+                ss << "[" << f.count << "]";
+            ss << ";\n";
         }
+        ss << "} " << ffi_type << ";\n";
 
-        ss << "    " << c_type << " " << f.name;
-        if (f.type_str == "string" || f.type_str == "bytes")
-            ss << "[" << f.length << "]";
-        else if (f.count > 1)
-            ss << "[" << f.count << "]";
-        ss << ";\n";
+        if (!cdef_ok || !self->state_.register_ffi_type(ss.str(), self->log_tag_.c_str()))
+        {
+            lua_pushnil(L);
+            return 1;
+        }
     }
-    ss << "} " << ffi_type << ";\n";
-
-    if (!cdef_ok)
-    {
-        lua_pushnil(L);
-        return 1;
-    }
-
-    std::string cdef = ss.str();
-    if (!self->state_.register_ffi_type(cdef, self->log_tag_.c_str()))
-    {
-        LOGGER_WARN("[{}] open_inbox('{}'): FFI cdef failed", self->log_tag_, target_uid);
-        lua_pushnil(L);
-        return 1;
-    }
-
-    size_t item_size = self->state_.ffi_sizeof(ffi_type.c_str());
-    if (item_size == 0)
-    {
-        LOGGER_WARN("[{}] open_inbox('{}'): ffi.sizeof returned 0",
-                    self->log_tag_, target_uid);
-        lua_pushnil(L);
-        return 1;
-    }
-
-    // Build ZMQ schema fields for the InboxClient wire format.
-    auto zmq_fields = schema_spec_to_zmq_fields(spec, item_size);
-
-    // Connect DEALER to target's ROUTER.
-    const auto &role_uid = self->ctx_.uid;
-    auto client_ptr = hub::InboxClient::connect_to(
-        info->inbox_endpoint, role_uid, std::move(zmq_fields), info->inbox_packing);
-    if (!client_ptr)
-    {
-        LOGGER_WARN("[{}] open_inbox('{}'): connect_to '{}' failed",
-                    self->log_tag_, target_uid, info->inbox_endpoint);
-        lua_pushnil(L);
-        return 1;
-    }
-    if (!client_ptr->start())
-    {
-        LOGGER_WARN("[{}] open_inbox('{}'): start() failed", self->log_tag_, target_uid);
-        lua_pushnil(L);
-        return 1;
-    }
-
-    // Cache the entry in core_ (shared across engine states).
-    auto shared_client = std::shared_ptr<hub::InboxClient>(std::move(client_ptr));
-    self->ctx_.core->set_inbox_entry(target_uid,
-        {shared_client, ffi_type, item_size});
 
     // Return userdata handle.
     auto *ud = static_cast<LuaInboxUD *>(lua_newuserdata(L, sizeof(LuaInboxUD)));

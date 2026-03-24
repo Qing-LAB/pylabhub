@@ -48,6 +48,7 @@ namespace py = pybind11;
 // From pylabhub-scripting: available via ${CMAKE_CURRENT_SOURCE_DIR}.
 #include "utils/role_host_core.hpp"
 
+namespace pylabhub::scripting { class ScriptEngine; }
 namespace pylabhub::producer
 {
 
@@ -68,6 +69,7 @@ class ProducerAPI
 
     void set_producer(hub::Producer *p) noexcept { producer_ = p; }
     void set_messenger(hub::Messenger *m) noexcept { messenger_ = m; }
+    void set_engine(scripting::ScriptEngine *e) noexcept { engine_ = e; }
     void set_uid(std::string uid)    { uid_        = std::move(uid); }
     void set_name(std::string name)  { name_       = std::move(name); }
     void set_channel(std::string c)  { channel_    = std::move(c); }
@@ -177,9 +179,10 @@ class ProducerAPI
     [[nodiscard]] uint32_t spinlock_count() const noexcept;
 
   private:
-    hub::Producer    *producer_{nullptr};
-    hub::Messenger   *messenger_{nullptr};
-    hub::QueueWriter *queue_{nullptr};
+    hub::Producer          *producer_{nullptr};
+    hub::Messenger         *messenger_{nullptr};
+    hub::QueueWriter       *queue_{nullptr};
+    scripting::ScriptEngine *engine_{nullptr};
     py::object       *flexzone_obj_{nullptr};
 
 
