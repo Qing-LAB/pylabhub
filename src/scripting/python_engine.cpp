@@ -656,7 +656,9 @@ nlohmann::json PythonEngine::eval_direct_(const char *code)
     executing_.store(true, std::memory_order_release);
     try
     {
-        py::object result = py::eval(code);
+        // Evaluate in the script module's namespace so module-level
+        // functions and variables are accessible.
+        py::object result = py::eval(code, module_.attr("__dict__"));
         executing_.store(false, std::memory_order_release);
 
         // Convert py::object → nlohmann::json (scalars only).
