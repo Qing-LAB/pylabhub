@@ -1164,16 +1164,13 @@ TEST_F(PythonEngineTest, InvokeOnInbox_RawBytes)
 }
 
 // ============================================================================
-// 14. supports_multi_state / create_thread_state
+// 14. supports_multi_state
 // ============================================================================
 
 TEST_F(PythonEngineTest, SupportsMultiState_ReturnsFalse)
 {
     PythonEngine engine;
     EXPECT_FALSE(engine.supports_multi_state());
-
-    auto child = engine.create_thread_state();
-    EXPECT_EQ(child, nullptr);
 }
 
 // ============================================================================
