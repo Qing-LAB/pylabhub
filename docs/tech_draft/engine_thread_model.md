@@ -367,6 +367,50 @@ be false by the time finalize runs. The flags are defensive insurance.
 - RoleHostCore owns: inbox cache, shared data map, metrics, message queue
 - Role host owns: messenger, queues, producer/consumer, core_, engine
 
+**Template Method pattern**: The ScriptEngine base class controls lifecycle
+state transitions (accepting_, owner_thread_id_, ctx_.core). Derived engines
+implement `init_engine_()` and `finalize_engine_()` for interpreter-specific
+work. This eliminates duplicate flag management across engines.
+
+**Init failure handling**: If `init_engine_()` returns false, the base class
+sets `accepting_ = false` — no invoke() calls can reach a broken engine.
+
+**Thread join guarantee**: ctrl_thread_ is joined AFTER `stop_accepting()`
+and BEFORE `finalize()`. Between stop_accepting and join, ctrl_thread may
+still run its poll loop but all `invoke()` calls return false immediately
+(accepting_ is false). After join, no non-owner thread is alive — finalize
+is safe.
+
+### 4.11 Future: LifecycleManager Integration
+
+The ScriptEngine will register as a dynamic module via
+`register_dynamic_module()`. The module declares dependencies on Messenger
+and ZmqContext. The framework guarantees:
+- Engine loaded AFTER its dependencies
+- Engine unloaded BEFORE its dependencies
+- No manual ordering in the role host — framework handles it
+
+```cpp
+ModuleDef engine_mod("ScriptEngine");
+engine_mod.add_dependency("Messenger");
+engine_mod.set_startup([&](const char*) {
+    engine_->initialize(tag, &core_);
+    engine_->load_script(dir, entry, cb);
+    engine_->build_api(ctx);
+});
+engine_mod.set_shutdown([&](const char*) {
+    engine_->stop_accepting();
+    // join ctrl_thread before finalize
+    engine_->finalize();
+}, std::chrono::seconds(5));
+RegisterDynamicModule(std::move(engine_mod));
+LoadModule("ScriptEngine");
+```
+
+`unload_module()` is async with timeout. `wait_for_unload()` blocks until
+complete. The role host calls `wait_for_unload("ScriptEngine")` before
+`teardown_infrastructure_()` to ensure the engine is fully stopped.
+
 ### 4.11 Known Limitations
 
 1. **Reentrancy**: Scripts cannot call `engine->invoke()` from within a
