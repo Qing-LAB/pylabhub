@@ -491,6 +491,7 @@ void PythonEngine::finalize()
         producer_api_->clear_inbox_cache();
         producer_api_->set_producer(nullptr);
         producer_api_->set_messenger(nullptr);
+        producer_api_->set_engine(nullptr);
         producer_api_->set_queue(nullptr);
     }
     if (consumer_api_)
@@ -498,6 +499,7 @@ void PythonEngine::finalize()
         consumer_api_->clear_inbox_cache();
         consumer_api_->set_consumer(nullptr);
         consumer_api_->set_messenger(nullptr);
+        consumer_api_->set_engine(nullptr);
         consumer_api_->set_reader(nullptr);
     }
     if (processor_api_)
@@ -506,6 +508,7 @@ void PythonEngine::finalize()
         processor_api_->set_producer(nullptr);
         processor_api_->set_consumer(nullptr);
         processor_api_->set_messenger(nullptr);
+        processor_api_->set_engine(nullptr);
         processor_api_->set_in_queue(nullptr);
         processor_api_->set_out_queue(nullptr);
     }
@@ -1165,7 +1168,7 @@ InvokeResult PythonEngine::parse_return_value_(const py::object &ret, const char
     LOGGER_ERROR("[{}] {} returned non-boolean type '{}' — "
                  "expected 'return True' or 'return False'. Treating as error.",
                  log_tag_, callback_name,
-                 py::str(ret.get_type().attr("__name__")).cast<std::string>());
+                 py::str(py::type::of(ret).attr("__name__")).cast<std::string>());
     ctx_.core->inc_script_errors();
     if (stop_on_script_error_)
     {
