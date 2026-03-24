@@ -324,3 +324,123 @@ TEST_F(RoleHostCoreTest, FzSpec_NoSchema_HasFzFalse)
     EXPECT_FALSE(core_.has_fz());
     EXPECT_EQ(core_.schema_fz_size(), 0u);
 }
+
+// ============================================================================
+// Shared data
+// ============================================================================
+
+TEST_F(RoleHostCoreTest, SharedData_DefaultEmpty)
+{
+    EXPECT_FALSE(core_.get_shared_data("anything").has_value());
+}
+
+TEST_F(RoleHostCoreTest, SharedData_SetAndGet_Int64)
+{
+    core_.set_shared_data("counter", int64_t{42});
+    auto val = core_.get_shared_data("counter");
+    ASSERT_TRUE(val.has_value());
+    EXPECT_EQ(std::get<int64_t>(*val), 42);
+}
+
+TEST_F(RoleHostCoreTest, SharedData_SetAndGet_Double)
+{
+    core_.set_shared_data("ratio", 3.14);
+    auto val = core_.get_shared_data("ratio");
+    ASSERT_TRUE(val.has_value());
+    EXPECT_DOUBLE_EQ(std::get<double>(*val), 3.14);
+}
+
+TEST_F(RoleHostCoreTest, SharedData_SetAndGet_Bool)
+{
+    core_.set_shared_data("active", true);
+    auto val = core_.get_shared_data("active");
+    ASSERT_TRUE(val.has_value());
+    EXPECT_TRUE(std::get<bool>(*val));
+}
+
+TEST_F(RoleHostCoreTest, SharedData_SetAndGet_String)
+{
+    core_.set_shared_data("mode", std::string{"warmup"});
+    auto val = core_.get_shared_data("mode");
+    ASSERT_TRUE(val.has_value());
+    EXPECT_EQ(std::get<std::string>(*val), "warmup");
+}
+
+TEST_F(RoleHostCoreTest, SharedData_Overwrite)
+{
+    core_.set_shared_data("x", int64_t{1});
+    core_.set_shared_data("x", int64_t{2});
+    auto val = core_.get_shared_data("x");
+    ASSERT_TRUE(val.has_value());
+    EXPECT_EQ(std::get<int64_t>(*val), 2);
+}
+
+TEST_F(RoleHostCoreTest, SharedData_OverwriteChangesType)
+{
+    core_.set_shared_data("x", int64_t{1});
+    core_.set_shared_data("x", std::string{"hello"});
+    auto val = core_.get_shared_data("x");
+    ASSERT_TRUE(val.has_value());
+    EXPECT_EQ(std::get<std::string>(*val), "hello");
+}
+
+TEST_F(RoleHostCoreTest, SharedData_Remove)
+{
+    core_.set_shared_data("key", int64_t{99});
+    core_.remove_shared_data("key");
+    EXPECT_FALSE(core_.get_shared_data("key").has_value());
+}
+
+TEST_F(RoleHostCoreTest, SharedData_RemoveNonExistent_NoOp)
+{
+    core_.remove_shared_data("nonexistent"); // should not throw
+}
+
+TEST_F(RoleHostCoreTest, SharedData_Clear)
+{
+    core_.set_shared_data("a", int64_t{1});
+    core_.set_shared_data("b", std::string{"two"});
+    core_.clear_shared_data();
+    EXPECT_FALSE(core_.get_shared_data("a").has_value());
+    EXPECT_FALSE(core_.get_shared_data("b").has_value());
+}
+
+TEST_F(RoleHostCoreTest, SharedData_CrossThread)
+{
+    // Writer thread sets a value; reader thread reads it after join.
+    std::thread writer([&]
+    {
+        core_.set_shared_data("from_thread", int64_t{777});
+    });
+    writer.join();
+
+    auto val = core_.get_shared_data("from_thread");
+    ASSERT_TRUE(val.has_value());
+    EXPECT_EQ(std::get<int64_t>(*val), 777);
+}
+
+TEST_F(RoleHostCoreTest, SharedData_ConcurrentReadWrite)
+{
+    constexpr int kIterations = 1000;
+
+    std::thread writer([&]
+    {
+        for (int i = 0; i < kIterations; ++i)
+            core_.set_shared_data("counter", int64_t{i});
+    });
+
+    int reads = 0;
+    for (int i = 0; i < kIterations; ++i)
+    {
+        auto val = core_.get_shared_data("counter");
+        if (val.has_value())
+            ++reads;
+    }
+    writer.join();
+
+    // Final value must be the last written.
+    auto final_val = core_.get_shared_data("counter");
+    ASSERT_TRUE(final_val.has_value());
+    EXPECT_EQ(std::get<int64_t>(*final_val), kIterations - 1);
+    EXPECT_GT(reads, 0); // reader saw at least some values
+}
