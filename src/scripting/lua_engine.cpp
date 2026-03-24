@@ -205,7 +205,9 @@ void LuaEngine::build_api(const RoleContext &ctx)
     push_closure("in_received", lua_api_in_received);
     push_closure("drops", lua_api_drops);
 
-    // Store api table in the registry.
+    // Store api table in the registry AND as a global (for generic invoke).
+    lua_pushvalue(L, -1);            // duplicate the api table
+    lua_setglobal(L, "api");         // set as global for scripts calling api.* from free functions
     ref_api_ = luaL_ref(L, LUA_REGISTRYINDEX);
 }
 

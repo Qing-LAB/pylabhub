@@ -1351,4 +1351,107 @@ function on_heartbeat() end
     EXPECT_FALSE(engine.invoke("on_heartbeat"));
 }
 
+// ============================================================================
+// Shared data tests (api.get_shared_data / api.set_shared_data)
+// ============================================================================
+
+TEST_F(LuaEngineTest, SharedData_SetAndGetFromScript)
+{
+    write_script(R"(
+function on_produce(out_slot, fz, msgs, api)
+    api.set_shared_data("counter", 42)
+    api.set_shared_data("label", "hello")
+    api.set_shared_data("flag", true)
+    api.set_shared_data("ratio", 3.14)
+    return true
+end
+)");
+    RoleHostCore core;
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine_with_core(engine, core));
+
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(nullptr, 0, nullptr, 0, nullptr, msgs);
+
+    // Verify values stored in core_ shared data.
+    auto v1 = core.get_shared_data("counter");
+    ASSERT_TRUE(v1.has_value());
+    EXPECT_EQ(std::get<int64_t>(*v1), 42);
+
+    auto v2 = core.get_shared_data("label");
+    ASSERT_TRUE(v2.has_value());
+    EXPECT_EQ(std::get<std::string>(*v2), "hello");
+
+    auto v3 = core.get_shared_data("flag");
+    ASSERT_TRUE(v3.has_value());
+    EXPECT_TRUE(std::get<bool>(*v3));
+
+    auto v4 = core.get_shared_data("ratio");
+    ASSERT_TRUE(v4.has_value());
+    EXPECT_DOUBLE_EQ(std::get<double>(*v4), 3.14);
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, SharedData_GetReturnsNilForMissingKey)
+{
+    write_script(R"(
+function on_produce(out_slot, fz, msgs, api)
+    local val = api.get_shared_data("nonexistent")
+    if val ~= nil then error("expected nil") end
+    return true
+end
+)");
+    RoleHostCore core;
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine_with_core(engine, core));
+
+    std::vector<IncomingMessage> msgs;
+    auto r = engine.invoke_produce(nullptr, 0, nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(r, InvokeResult::Commit);
+    EXPECT_EQ(core.script_errors(), 0u);
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, SharedData_NilRemovesKey)
+{
+    write_script(R"(
+function on_produce(out_slot, fz, msgs, api)
+    api.set_shared_data("temp", 99)
+    api.set_shared_data("temp", nil)
+    return true
+end
+)");
+    RoleHostCore core;
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine_with_core(engine, core));
+
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(nullptr, 0, nullptr, 0, nullptr, msgs);
+
+    EXPECT_FALSE(core.get_shared_data("temp").has_value());
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, SharedData_CrossThread_Visible)
+{
+    write_script(R"(
+function on_produce(out_slot, fz, msgs, api) return true end
+function set_marker() api.set_shared_data("from_thread", 123) end
+)");
+    RoleHostCore core;
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine_with_core(engine, core));
+
+    // Non-owner thread sets shared data via its own Lua state.
+    std::thread t([&] { engine.invoke("set_marker"); });
+    t.join();
+
+    // Verify from C++ (shared map in core_).
+    auto val = core.get_shared_data("from_thread");
+    ASSERT_TRUE(val.has_value());
+    EXPECT_EQ(std::get<int64_t>(*val), 123);
+    engine.finalize();
+}
+
 } // anonymous namespace
