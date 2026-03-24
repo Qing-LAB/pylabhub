@@ -270,14 +270,22 @@ void ProcessorRoleHost::worker_main_()
     // Step 9: Run the data loop.
     run_data_loop_();
 
-    // Step 10: stop accepting new invoke requests, then call on_stop.
+    // Step 10: stop accepting invoke from non-owner threads.
     engine_->stop_accepting();
+
+    // Step 11: join ctrl_thread — ensure no non-owner thread is using the engine.
+    core_.set_running(false);
+    core_.notify_incoming();
+    if (ctrl_thread_.joinable())
+        ctrl_thread_.join();
+
+    // Step 12: last script callback.
     engine_->invoke_on_stop();
 
-    // Step 11: finalize engine — destroy child states, close interpreter.
+    // Step 13: finalize engine.
     engine_->finalize();
 
-    // Step 12: teardown infrastructure — safe, all scripts done.
+    // Step 14: teardown infrastructure.
     teardown_infrastructure_();
 }
 
@@ -726,12 +734,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
 
 void ProcessorRoleHost::teardown_infrastructure_()
 {
-    core_.set_running(false);
-    core_.notify_incoming();
-
-    // Join ctrl_thread_.
-    if (ctrl_thread_.joinable())
-        ctrl_thread_.join();
+    // ctrl_thread_ already joined before finalize (shutdown sequence).
 
     core_.clear_inbox_cache();
 
