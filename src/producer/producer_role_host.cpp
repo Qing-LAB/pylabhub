@@ -246,10 +246,11 @@ void ProducerRoleHost::worker_main_()
     // Step 9: Run the data loop.
     run_data_loop_();
 
-    // Step 10: invoke on_stop.
+    // Step 10: stop accepting new invoke requests, then call on_stop.
+    engine_->stop_accepting();
     engine_->invoke_on_stop();
 
-    // Step 11: finalize engine — stop accepting, wait for child threads,
+    // Step 11: finalize engine — destroy child states, close interpreter.
     //          close all script states. Must happen BEFORE infrastructure
     //          teardown so no script can access destroyed resources.
     engine_->finalize();

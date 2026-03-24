@@ -29,6 +29,7 @@
 
 #include "role_host_core.hpp"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -160,11 +161,20 @@ class ScriptEngine
     virtual void build_api(const RoleContext &ctx) = 0;
 
     /**
+     * @brief Stop accepting new invoke() requests from non-owner threads.
+     *
+     * Called by the role host before invoke_on_stop(). After this call,
+     * all non-owner invoke() calls return false immediately. Owner-thread
+     * hot-path methods (invoke_on_stop, invoke_produce, etc.) still work.
+     */
+    void stop_accepting() noexcept { accepting_.store(false, std::memory_order_release); }
+
+    /**
      * @brief Release all script objects, close interpreter/state.
      *
-     * Called on the working thread after the data loop exits and
-     * invoke_on_stop() has returned.  After this call, the engine
-     * is in a destroyed state — no further calls are valid.
+     * Called on the owner thread after invoke_on_stop() has returned.
+     * After this call, the engine is in a destroyed state — no further
+     * calls are valid. Must be called BEFORE infrastructure teardown.
      */
     virtual void finalize() = 0;
 
@@ -395,6 +405,9 @@ class ScriptEngine
     /// Thread that called initialize(). Engines use this to detect whether
     /// invoke() is called from the owner (hot path) or another thread.
     std::thread::id owner_thread_id_;
+
+    /// False after stop_accepting() — rejects new invoke()/eval() calls.
+    std::atomic<bool> accepting_{true};
 
     /// Context captured at build_api() — provides core_, messenger, identity.
     /// Used by open_inbox_client() for broker queries and cache access.
