@@ -220,7 +220,7 @@ void LuaEngine::finalize()
     if (!state_)
         return;
 
-    // 1. Stop accepting new invoke requests.
+    // Ensure no new requests (may already be set by stop_accepting).
     accepting_.store(false, std::memory_order_release);
 
     // 2. Destroy all child thread states.

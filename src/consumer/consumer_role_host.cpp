@@ -237,10 +237,11 @@ void ConsumerRoleHost::worker_main_()
     // Step 9: Run the data loop.
     run_data_loop_();
 
-    // Step 10: invoke on_stop.
+    // Step 10: stop accepting new invoke requests, then call on_stop.
+    engine_->stop_accepting();
     engine_->invoke_on_stop();
 
-    // Step 11: finalize engine first — no scripts running after this.
+    // Step 11: finalize engine — destroy child states, close interpreter.
     engine_->finalize();
 
     // Step 12: teardown infrastructure — safe, all scripts done.
