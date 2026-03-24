@@ -1270,4 +1270,85 @@ function greet() end
     engine.finalize();
 }
 
+TEST_F(LuaEngineTest, Invoke_NonOwnerThread_UsesIndependentState)
+{
+    // Verify that a non-owner thread gets its own lua_State:
+    // setting a global on the non-owner thread should NOT be visible
+    // on the owner's state.
+    write_script(R"(
+function on_produce(out_slot, fz, msgs, api) return true end
+function set_marker() marker_set = true end
+)");
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    // Non-owner thread sets a global variable.
+    std::thread t([&] { engine.invoke("set_marker"); });
+    t.join();
+
+    // Owner thread: marker should NOT be visible (different state).
+    auto result = engine.eval("return marker_set");
+    // marker_set is nil in owner's state → eval returns null JSON.
+    EXPECT_TRUE(result.is_null()) << "Non-owner global leaked to owner state";
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Invoke_ConcurrentOwnerAndNonOwner)
+{
+    // Verify owner and non-owner can invoke concurrently without crash.
+    write_script(R"(
+function on_produce(out_slot, fz, msgs, api) return true end
+function work() local s = 0; for i=1,1000 do s = s + i end end
+)");
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    std::atomic<bool> done{false};
+    std::thread t([&]
+    {
+        for (int i = 0; i < 50; ++i)
+            engine.invoke("work");
+        done.store(true);
+    });
+
+    // Owner does work concurrently.
+    while (!done.load())
+        engine.invoke("work");
+
+    t.join();
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Eval_ReturnsScalarResult)
+{
+    write_script("function on_produce(out_slot, fz, msgs, api) return true end");
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    auto r1 = engine.eval("return 42");
+    EXPECT_EQ(r1, 42);
+
+    auto r2 = engine.eval("return 'hello'");
+    EXPECT_EQ(r2, "hello");
+
+    auto r3 = engine.eval("return true");
+    EXPECT_EQ(r3, true);
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Invoke_AfterFinalize_ReturnsFalse)
+{
+    write_script(R"(
+function on_produce(out_slot, fz, msgs, api) return true end
+function on_heartbeat() end
+)");
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+    engine.finalize();
+
+    EXPECT_FALSE(engine.invoke("on_heartbeat"));
+}
+
 } // anonymous namespace

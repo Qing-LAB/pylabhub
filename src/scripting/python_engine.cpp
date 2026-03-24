@@ -583,13 +583,16 @@ InvokeResponse PythonEngine::execute_direct_(const char *name)
     if (fn.is_none())
         return {InvokeStatus::NotFound, {}};
 
+    executing_.store(true, std::memory_order_release);
     try
     {
         fn();
+        executing_.store(false, std::memory_order_release);
         return {InvokeStatus::Ok, {}};
     }
     catch (const py::error_already_set &e)
     {
+        executing_.store(false, std::memory_order_release);
         LOGGER_ERROR("[{}] invoke('{}'): {}", log_tag_, name, e.what());
         if (ctx_.core)
             ctx_.core->inc_script_errors();
@@ -598,10 +601,46 @@ InvokeResponse PythonEngine::execute_direct_(const char *name)
 }
 
 InvokeResponse PythonEngine::execute_direct_(const char *name,
-                                              const nlohmann::json & /*args*/)
+                                              const nlohmann::json &args)
 {
-    // TODO: unpack JSON args into Python dict/kwargs
-    return execute_direct_(name);
+    if (!name)
+        return {InvokeStatus::NotFound, {}};
+
+    py::gil_scoped_acquire gil;
+    py::object fn = py::getattr(module_, name, py::none());
+    if (fn.is_none())
+        return {InvokeStatus::NotFound, {}};
+
+    executing_.store(true, std::memory_order_release);
+    try
+    {
+        // Unpack JSON args as keyword arguments.
+        py::dict kwargs;
+        for (auto it = args.begin(); it != args.end(); ++it)
+        {
+            if (it.value().is_number_integer())
+                kwargs[py::str(it.key())] = it.value().get<int64_t>();
+            else if (it.value().is_number_float())
+                kwargs[py::str(it.key())] = it.value().get<double>();
+            else if (it.value().is_boolean())
+                kwargs[py::str(it.key())] = it.value().get<bool>();
+            else if (it.value().is_string())
+                kwargs[py::str(it.key())] = it.value().get<std::string>();
+            else
+                kwargs[py::str(it.key())] = py::none();
+        }
+        fn(**kwargs);
+        executing_.store(false, std::memory_order_release);
+        return {InvokeStatus::Ok, {}};
+    }
+    catch (const py::error_already_set &e)
+    {
+        executing_.store(false, std::memory_order_release);
+        LOGGER_ERROR("[{}] invoke('{}', args): {}", log_tag_, name, e.what());
+        if (ctx_.core)
+            ctx_.core->inc_script_errors();
+        return {InvokeStatus::ScriptError, {}};
+    }
 }
 
 nlohmann::json PythonEngine::eval_direct_(const char *code)
@@ -610,15 +649,29 @@ nlohmann::json PythonEngine::eval_direct_(const char *code)
         return {};
 
     py::gil_scoped_acquire gil;
+    executing_.store(true, std::memory_order_release);
     try
     {
         py::object result = py::eval(code);
-        // TODO: convert py::object → nlohmann::json
-        (void)result;
-        return {};
+        executing_.store(false, std::memory_order_release);
+
+        // Convert py::object → nlohmann::json (scalars only).
+        if (result.is_none())
+            return nullptr;
+        if (py::isinstance<py::bool_>(result))
+            return result.cast<bool>();
+        if (py::isinstance<py::int_>(result))
+            return result.cast<int64_t>();
+        if (py::isinstance<py::float_>(result))
+            return result.cast<double>();
+        if (py::isinstance<py::str>(result))
+            return result.cast<std::string>();
+        // Complex types: repr as string.
+        return py::str(result).cast<std::string>();
     }
     catch (const py::error_already_set &e)
     {
+        executing_.store(false, std::memory_order_release);
         LOGGER_ERROR("[{}] eval(): {}", log_tag_, e.what());
         if (ctx_.core)
             ctx_.core->inc_script_errors();
