@@ -84,9 +84,7 @@ set(UTILS_SOURCES
   schema/schema_library.cpp
   schema/schema_registry.cpp
 
-  # --- scripting: abstract ScriptHost base + LuaJIT concrete implementation ---
-  scripting/script_host.cpp
-  scripting/lua_script_host.cpp
+  # --- scripting: removed (ScriptHost/LuaScriptHost replaced by ScriptEngine in pylabhub-scripting) ---
 
   # Add any new .cpp files to the appropriate group above.
 )
@@ -208,9 +206,9 @@ endif()
 
 # Link against necessary third-party libraries and system libraries.
 #
-# libsodium and luajit are PRIVATE: only internal .cpp files use them and
-# no public headers expose their types. PRIVATE prevents the .a archives
-# from propagating to downstream executables.
+# libsodium is PRIVATE: only internal .cpp files use it and no public
+# headers expose its types.
+# LuaJIT removed — only needed by pylabhub-scripting (LuaEngine).
 target_link_libraries(pylabhub-utils
   PUBLIC
     pylabhub::third_party::fmt
@@ -219,7 +217,6 @@ target_link_libraries(pylabhub-utils
     Threads::Threads
   PRIVATE
     pylabhub::third_party::libsodium
-    pylabhub::third_party::luajit
     pylabhub::third_party::msgpack
 )
 

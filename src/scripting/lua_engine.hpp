@@ -98,6 +98,7 @@ class LuaEngine : public ScriptEngine
 
     [[nodiscard]] bool supports_multi_state() const noexcept override { return true; }
     std::unique_ptr<ScriptEngine> create_thread_state() override;
+    void release_thread() override;
 
   private:
     LuaState    state_;
@@ -131,8 +132,7 @@ class LuaEngine : public ScriptEngine
     int ref_fz_writable_{LUA_NOREF};    ///< ffi.typeof("FlexFrame*") (producer/processor)
     int ref_fz_readonly_{LUA_NOREF};    ///< ffi.typeof("FlexFrame const*") (consumer)
 
-    // ── RoleContext captured at build_api time ────────────────────────────
-    RoleContext ctx_{};
+    // ctx_ is inherited from ScriptEngine (set by build_api).
     bool stop_on_script_error_{false};
 
     // Inbox cache is shared in core_ (RoleHostCore::inbox_cache_).
