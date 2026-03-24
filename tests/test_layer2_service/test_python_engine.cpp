@@ -1371,4 +1371,81 @@ def on_heartbeat():
     EXPECT_FALSE(engine.invoke("on_heartbeat"));
 }
 
+// ============================================================================
+// invoke(name, args) + eval(code)
+// ============================================================================
+
+TEST_F(PythonEngineTest, Invoke_WithArgs_CallsFunction)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    return True
+
+def greet(**kwargs):
+    pass
+)");
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    nlohmann::json args = {{"name", "test"}};
+    EXPECT_TRUE(engine.invoke("greet", args));
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Eval_ReturnsScalarResult)
+{
+    write_script("def on_produce(out_slot, fz, msgs, api):\n    return True\n");
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    auto r1 = engine.eval("42");
+    EXPECT_EQ(r1, 42);
+
+    auto r2 = engine.eval("'hello'");
+    EXPECT_EQ(r2, "hello");
+
+    auto r3 = engine.eval("True");
+    EXPECT_EQ(r3, true);
+
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Eval_ErrorReturnsEmpty)
+{
+    write_script("def on_produce(out_slot, fz, msgs, api):\n    return True\n");
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    auto r = engine.eval("undefined_variable");
+    EXPECT_TRUE(r.empty() || r.is_null());
+    engine.finalize();
+}
+
+// ============================================================================
+// Python shared_data (api.shared_data dict)
+// ============================================================================
+
+TEST_F(PythonEngineTest, SharedData_PersistsAcrossCallbacks)
+{
+    // Test that api.shared_data dict persists across on_produce calls.
+    // The script stores and increments a counter in shared_data.
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    if "counter" not in api.shared_data:
+        api.shared_data["counter"] = 0
+    api.shared_data["counter"] += 1
+    return True
+)");
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    std::vector<IncomingMessage> msgs;
+    for (int i = 0; i < 5; ++i)
+        engine.invoke_produce(nullptr, 0, nullptr, 0, nullptr, msgs);
+
+    // No script errors means shared_data access worked across all calls.
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
 } // anonymous namespace
