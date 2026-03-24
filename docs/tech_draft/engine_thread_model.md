@@ -228,16 +228,36 @@ invoke("on_heartbeat"):
 
 No synchronization between owner and non-owner — independent states.
 
-### 4.6 Shutdown
+### 4.6 Shutdown Procedure
+
+The role host shuts down in this order:
 
 ```
-finalize():
-    accepting_ = false                  ← stop new requests
-    lock queue_mu_
-    for each: promise.set_value({EngineShutdown, {}})
-    clear queue
-    unlock queue_mu_
-    ... destroy interpreter / states ...
+1. invoke_on_stop()              ← last script callback on owner thread
+2. engine_->finalize()           ← BEFORE infrastructure teardown
+3. teardown_infrastructure_()    ← safe — no scripts running
+```
+
+**engine_->finalize()** (called by role host, must be owner thread):
+```
+  accepting_ = false                       ← reject new invoke() calls
+  cancel all pending promises (Python)     ← unblock waiting threads
+  destroy child thread states (Lua)        ← join/finalize children
+  clear script objects                     ← release callbacks, API refs
+  close interpreter/state                  ← lua_close / Py_Finalize
+```
+
+**The engine MUST NOT clean up core_ shared resources** (inbox cache,
+shared data). Those are owned by the role host and cleaned in
+`teardown_infrastructure_()` after engine finalize.
+
+**teardown_infrastructure_()** (called by role host, after engine finalize):
+```
+  core_.set_running(false)                 ← signal any remaining threads
+  join ctrl_thread_                        ← wait for control thread
+  core_.clear_inbox_cache()                ← stop InboxClient connections
+  stop inbox_queue_, queues, messenger     ← retract infrastructure
+  close producer/consumer                  ← disconnect from broker
 ```
 
 All blocked non-owner threads are unblocked with `EngineShutdown` status.
@@ -272,12 +292,15 @@ std::atomic<bool> accepting_{true};    // false = reject new invoke() requests
 ```
 
 **Multi-state model (Lua)**: Each thread-local child state has its own
-`executing_` flag. The owner thread can observe which children are
-mid-script during shutdown. Shutdown sequence:
+`executing_` flag. The parent's `accepting_` flag gates all invoke()
+calls (checked before thread dispatch). Shutdown sequence:
 
-1. Owner sets `accepting_ = false` on parent (propagates to children)
-2. Owner waits for all `executing_` flags to clear (children finish)
-3. Owner destroys child states + parent state
+1. Owner sets `accepting_ = false` on parent — all invoke() calls
+   (owner or non-owner) return false immediately
+2. Owner destroys child states via `thread_states_.clear()`
+   (child destructors close their lua_States — no shared resource cleanup)
+3. Owner clears its own refs and closes primary state
+4. **Engine does NOT touch core_ resources** — that's the role host's job
 
 **Single-state model (Python)**: One `executing_` flag on the owner.
 Non-owner threads only enqueue — they never set `executing_`. The owner
@@ -289,11 +312,45 @@ checks `accepting_` before processing the queue. Shutdown sequence:
    should not happen since finalize is called after the data loop exits)
 4. Owner destroys interpreter
 
-**Invariant**: `finalize()` is only called after the data loop exits and
-all non-owner threads have been joined. So `executing_` should be false
-by the time finalize runs. The flags are defensive insurance.
+**Invariant**: `finalize()` is only called by the owner thread, after the
+data loop exits and `invoke_on_stop()` has returned. `executing_` should
+be false by the time finalize runs. The flags are defensive insurance.
 
-### 4.10 Known Limitations
+### 4.10 Lifecycle Contract
+
+**Initialization sequence** (role host, owner thread):
+```
+1. engine = create_engine()                 ← construct LuaEngine/PythonEngine
+2. engine->initialize("tag", &core_)        ← create interpreter, set owner_thread_id_
+3. engine->load_script(dir, entry, cb)      ← load file, extract callbacks
+4. engine->register_slot_type(spec, ...)    ← build FFI/ctypes types
+5. engine->build_api(ctx)                   ← wire API to infrastructure, set ctx_
+6. engine->invoke_on_init()                 ← call script's on_init()
+7. [data loop: invoke_produce/consume/process per iteration]
+8. engine->invoke_on_stop()                 ← call script's on_stop()
+9. engine->finalize()                       ← stop accepting, close states
+10. [role host: teardown_infrastructure_]   ← retract resources
+```
+
+**What the script should expect**:
+- `on_init(api)` is called once before the data loop starts. Set up state here.
+- `on_produce/consume/process(...)` is called every iteration. Keep it fast.
+- `on_stop(api)` is called once after the data loop exits. Clean up here.
+- `api.shared_data` (Python) / `api.get_shared_data()`/`api.set_shared_data()` (Lua)
+  persists across all callbacks and is visible to all threads.
+- `api.open_inbox(uid)` returns a handle to send messages to another role.
+  Handles are cached — calling again for the same UID returns the same connection.
+- After `on_stop()` returns, no more callbacks will be called.
+- The engine may be used by multiple threads (Lua: independent states per thread;
+  Python: queued to owner thread). Scripts should not assume single-threaded access
+  to `api.shared_data` without understanding the concurrency model.
+
+**Resource ownership**:
+- Engine owns: interpreter/state, callback refs, FFI/ctypes types, child states
+- RoleHostCore owns: inbox cache, shared data map, metrics, message queue
+- Role host owns: messenger, queues, producer/consumer, core_, engine
+
+### 4.11 Known Limitations
 
 1. **Reentrancy**: Scripts cannot call `engine->invoke()` from within a
    callback. Not possible in current design (scripts access API objects,
