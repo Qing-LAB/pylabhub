@@ -142,9 +142,15 @@ class ScriptEngine
     bool initialize(const char *log_tag, RoleHostCore *core)
     {
         owner_thread_id_ = std::this_thread::get_id();
-        accepting_.store(true, std::memory_order_release);
         ctx_.core = core;
-        return init_engine_(log_tag, core);
+        if (!init_engine_(log_tag, core))
+        {
+            // Init failed — don't accept requests on a broken engine.
+            accepting_.store(false, std::memory_order_release);
+            return false;
+        }
+        accepting_.store(true, std::memory_order_release);
+        return true;
     }
 
     /**
@@ -189,7 +195,7 @@ class ScriptEngine
     void finalize()
     {
         accepting_.store(false, std::memory_order_release);
-        finalize_engine_();
+        finalize_engine_(); // Engine guards against double-finalize internally.
     }
 
     // ── Queries ──────────────────────────────────────────────────────────
