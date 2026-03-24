@@ -137,6 +137,15 @@ class LuaEngine : public ScriptEngine
 
     // Inbox cache is shared in core_ (RoleHostCore::inbox_cache_).
 
+    // ── Thread-state cache (multi-state: non-owner threads) ──────────────
+    std::unordered_map<std::thread::id,
+                       std::unique_ptr<LuaEngine>> thread_states_;
+    std::mutex thread_states_mu_;
+    std::atomic<bool> accepting_{true};
+    std::atomic<bool> executing_{false};
+
+    LuaEngine *get_or_create_thread_state_();
+
     // ── Internal helpers ─────────────────────────────────────────────────
 
     void push_messages_table_(std::vector<IncomingMessage> &msgs);

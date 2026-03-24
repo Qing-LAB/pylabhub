@@ -218,13 +218,55 @@ void LuaEngine::finalize()
     if (!state_)
         return;
 
-    clear_refs_();
+    // 1. Stop accepting new invoke requests.
+    accepting_.store(false, std::memory_order_release);
 
-    // Stop all cached InboxClients (shared in core_).
+    // 2. Destroy all child thread states.
+    {
+        std::lock_guard lk(thread_states_mu_);
+        thread_states_.clear();
+    }
+
+    // 3. Clear Lua refs and inbox cache.
+    clear_refs_();
     if (ctx_.core)
         ctx_.core->clear_inbox_cache();
 
+    // 4. Destroy primary state.
     state_ = LuaState{}; // lua_close via RAII
+}
+
+// ============================================================================
+// Thread-state cache
+// ============================================================================
+
+LuaEngine *LuaEngine::get_or_create_thread_state_()
+{
+    auto tid = std::this_thread::get_id();
+    std::lock_guard lk(thread_states_mu_);
+    auto it = thread_states_.find(tid);
+    if (it != thread_states_.end())
+        return it->second.get();
+
+    // Create fully initialized child state.
+    auto child = std::make_unique<LuaEngine>();
+    if (!child->initialize(log_tag_.c_str(), ctx_.core))
+    {
+        LOGGER_ERROR("[{}] Failed to create thread-local LuaEngine", log_tag_);
+        return nullptr;
+    }
+    if (!child->load_script(script_dir_str_, entry_point_.c_str(),
+                             required_callback_.c_str()))
+    {
+        LOGGER_ERROR("[{}] Thread-local LuaEngine: load_script failed", log_tag_);
+        child->finalize();
+        return nullptr;
+    }
+    child->build_api(ctx_);
+
+    auto *ptr = child.get();
+    thread_states_.emplace(tid, std::move(child));
+    return ptr;
 }
 
 // ============================================================================
@@ -233,34 +275,122 @@ void LuaEngine::finalize()
 
 bool LuaEngine::invoke(const char *name)
 {
-    if (!name)
+    if (!name || !accepting_.load(std::memory_order_acquire))
         return false;
 
+    // Non-owner thread: dispatch to thread-local state.
+    if (std::this_thread::get_id() != owner_thread_id_)
+    {
+        auto *child = get_or_create_thread_state_();
+        if (!child)
+            return false;
+        return child->invoke(name);
+    }
+
+    // Owner thread: direct pcall.
+    executing_.store(true, std::memory_order_release);
     auto *L = state_.raw();
     lua_getglobal(L, name);
     if (!lua_isfunction(L, -1))
     {
         lua_pop(L, 1);
+        executing_.store(false, std::memory_order_release);
         return false;
     }
-    if (lua_pcall(L, 0, 0, 0) != 0)
-    {
+    bool ok = (lua_pcall(L, 0, 0, 0) == 0);
+    if (!ok)
         on_pcall_error_(name);
+    executing_.store(false, std::memory_order_release);
+    return ok;
+}
+
+bool LuaEngine::invoke(const char *name, const nlohmann::json &args)
+{
+    if (!name || !accepting_.load(std::memory_order_acquire))
+        return false;
+
+    // Non-owner thread: dispatch to thread-local state.
+    if (std::this_thread::get_id() != owner_thread_id_)
+    {
+        auto *child = get_or_create_thread_state_();
+        if (!child)
+            return false;
+        return child->invoke(name, args);
+    }
+
+    // Owner thread: push args as Lua table, call.
+    executing_.store(true, std::memory_order_release);
+    auto *L = state_.raw();
+    lua_getglobal(L, name);
+    if (!lua_isfunction(L, -1))
+    {
+        lua_pop(L, 1);
+        executing_.store(false, std::memory_order_release);
         return false;
     }
-    return true;
+
+    // Push args as a Lua table.
+    lua_newtable(L);
+    for (auto it = args.begin(); it != args.end(); ++it)
+    {
+        lua_pushstring(L, it.key().c_str());
+        if (it.value().is_number_integer())
+            lua_pushinteger(L, it.value().get<lua_Integer>());
+        else if (it.value().is_number_float())
+            lua_pushnumber(L, it.value().get<double>());
+        else if (it.value().is_boolean())
+            lua_pushboolean(L, it.value().get<bool>() ? 1 : 0);
+        else if (it.value().is_string())
+            lua_pushstring(L, it.value().get<std::string>().c_str());
+        else
+            lua_pushnil(L); // unsupported type → nil
+        lua_settable(L, -3);
+    }
+
+    bool ok = (lua_pcall(L, 1, 0, 0) == 0);
+    if (!ok)
+        on_pcall_error_(name);
+    executing_.store(false, std::memory_order_release);
+    return ok;
 }
 
-bool LuaEngine::invoke(const char *name, const nlohmann::json & /*args*/)
+nlohmann::json LuaEngine::eval(const char *code)
 {
-    // TODO Phase 2: unpack JSON args into Lua table argument
-    return invoke(name);
-}
+    if (!code || !accepting_.load(std::memory_order_acquire))
+        return {};
 
-nlohmann::json LuaEngine::eval(const char * /*code*/)
-{
-    // TODO Phase 2: luaL_dostring + capture result as JSON
-    return {};
+    if (std::this_thread::get_id() != owner_thread_id_)
+    {
+        auto *child = get_or_create_thread_state_();
+        if (!child)
+            return {};
+        return child->eval(code);
+    }
+
+    executing_.store(true, std::memory_order_release);
+    auto *L = state_.raw();
+    if (luaL_dostring(L, code) != 0)
+    {
+        on_pcall_error_("eval");
+        executing_.store(false, std::memory_order_release);
+        return {};
+    }
+
+    // Capture top-of-stack result as JSON.
+    nlohmann::json result;
+    if (lua_gettop(L) > 0)
+    {
+        int top = lua_gettop(L);
+        if (lua_isboolean(L, top))
+            result = static_cast<bool>(lua_toboolean(L, top));
+        else if (lua_isnumber(L, top))
+            result = lua_tonumber(L, top);
+        else if (lua_isstring(L, top))
+            result = lua_tostring(L, top);
+        lua_settop(L, 0);
+    }
+    executing_.store(false, std::memory_order_release);
+    return result;
 }
 
 // ============================================================================
