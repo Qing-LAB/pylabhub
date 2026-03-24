@@ -135,14 +135,7 @@ class LuaEngine : public ScriptEngine
     RoleContext ctx_{};
     bool stop_on_script_error_{false};
 
-    // ── Inbox handle cache ───────────────────────────────────────────────
-    struct InboxEntry
-    {
-        std::shared_ptr<hub::InboxClient> client;
-        std::string ffi_type;
-        size_t item_size{0};
-    };
-    std::unordered_map<std::string, InboxEntry> inbox_cache_;
+    // Inbox cache is shared in core_ (RoleHostCore::inbox_cache_).
 
     // ── Internal helpers ─────────────────────────────────────────────────
 
