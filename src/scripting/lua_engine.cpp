@@ -1064,6 +1064,8 @@ void LuaEngine::push_common_api_closures_(lua_State *L)
     push_closure("version_info", lua_api_version_info);
     push_closure("wait_for_role", lua_api_wait_for_role);
     push_closure("open_inbox", lua_api_open_inbox);
+    push_closure("get_shared_data", lua_api_get_shared_data);
+    push_closure("set_shared_data", lua_api_set_shared_data);
 
     // String fields as direct table entries.
     lua_pushstring(L, ctx_.log_level.c_str());
@@ -1230,6 +1232,57 @@ int LuaEngine::lua_api_script_errors(lua_State *L)
     uint64_t val = self->ctx_.core->script_errors();
     lua_pushinteger(L, static_cast<lua_Integer>(val));
     return 1;
+}
+
+// ============================================================================
+// lua_api_get_shared_data / lua_api_set_shared_data — shared script state
+// ============================================================================
+
+int LuaEngine::lua_api_get_shared_data(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *key = luaL_checkstring(L, 1);
+    auto val = self->ctx_.core->get_shared_data(key);
+    if (!val)
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+    std::visit([L](const auto &v)
+    {
+        using T = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<T, int64_t>)
+            lua_pushinteger(L, static_cast<lua_Integer>(v));
+        else if constexpr (std::is_same_v<T, double>)
+            lua_pushnumber(L, v);
+        else if constexpr (std::is_same_v<T, bool>)
+            lua_pushboolean(L, v ? 1 : 0);
+        else if constexpr (std::is_same_v<T, std::string>)
+            lua_pushlstring(L, v.data(), v.size());
+    }, *val);
+    return 1;
+}
+
+int LuaEngine::lua_api_set_shared_data(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *key = luaL_checkstring(L, 1);
+    if (lua_isboolean(L, 2))
+        self->ctx_.core->set_shared_data(key, static_cast<bool>(lua_toboolean(L, 2)));
+    else if (lua_isnumber(L, 2))
+    {
+        // LuaJIT: all numbers are doubles. Store as int64 if whole number.
+        double num = lua_tonumber(L, 2);
+        if (num == static_cast<double>(static_cast<int64_t>(num)))
+            self->ctx_.core->set_shared_data(key, static_cast<int64_t>(num));
+        else
+            self->ctx_.core->set_shared_data(key, num);
+    }
+    else if (lua_isstring(L, 2))
+        self->ctx_.core->set_shared_data(key, std::string(lua_tostring(L, 2)));
+    else
+        self->ctx_.core->remove_shared_data(key); // nil → remove key
+    return 0;
 }
 
 // ============================================================================

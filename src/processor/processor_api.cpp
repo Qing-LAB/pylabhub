@@ -547,7 +547,9 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
         .def("stop_reason",        &ProcessorAPI::stop_reason,
              "Why the role stopped: 'normal', 'peer_dead', 'hub_dead', or 'critical_error'.")
         .def("ctrl_queue_dropped", &ProcessorAPI::ctrl_queue_dropped,
-             "Total ctrl-send messages dropped by both in and out queues due to overflow.");
+             "Total ctrl-send messages dropped by both in and out queues due to overflow.")
+        .def_readwrite("shared_data",   &ProcessorAPI::shared_data_,
+             "Shared script data dictionary. Persists across callbacks.");
 
     m.def("version_info", []() -> py::str
     {

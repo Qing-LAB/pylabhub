@@ -398,6 +398,7 @@ void PythonEngine::build_api(const RoleContext &ctx)
         api.set_log_level(ctx_.log_level);
         api.set_script_dir(ctx_.script_dir);
         api.set_role_dir(ctx_.role_dir);
+        api.shared_data_ = py::dict();
 
         py::module_ mod = py::module_::import("pylabhub_producer");
         api_obj_ = py::cast(&api, py::return_value_policy::reference);
@@ -418,6 +419,7 @@ void PythonEngine::build_api(const RoleContext &ctx)
         api.set_log_level(ctx_.log_level);
         api.set_script_dir(ctx_.script_dir);
         api.set_role_dir(ctx_.role_dir);
+        api.shared_data_ = py::dict();
 
         py::module_ mod = py::module_::import("pylabhub_consumer");
         api_obj_ = py::cast(&api, py::return_value_policy::reference);
@@ -444,6 +446,7 @@ void PythonEngine::build_api(const RoleContext &ctx)
         api.set_log_level(ctx_.log_level);
         api.set_script_dir(ctx_.script_dir);
         api.set_role_dir(ctx_.role_dir);
+        api.shared_data_ = py::dict();
 
         py::module_ mod = py::module_::import("pylabhub_processor");
         api_obj_ = py::cast(&api, py::return_value_policy::reference);

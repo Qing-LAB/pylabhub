@@ -30,8 +30,10 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 namespace pylabhub::hub { class InboxClient; }
@@ -109,6 +111,22 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
 
     /// Stop and remove all cached inbox clients.
     void clear_inbox_cache();
+
+    // ── Shared script data (Lua: C++ map; Python: uses native dict) ────
+
+    using StateValue = std::variant<int64_t, double, bool, std::string>;
+
+    /// Get a state value by key, or nullopt if not found.
+    std::optional<StateValue> get_shared_data(const std::string &key) const;
+
+    /// Set a state value. Creates the key if it doesn't exist.
+    void set_shared_data(const std::string &key, StateValue value);
+
+    /// Remove a state key. No-op if key doesn't exist.
+    void remove_shared_data(const std::string &key);
+
+    /// Clear all state.
+    void clear_shared_data();
 
     // ── Stop reason enum ─────────────────────────────────────────────────
 
@@ -261,6 +279,10 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     // ── Inbox cache ──────────────────────────────────────────────────────
     mutable std::unordered_map<std::string, InboxCacheEntry> inbox_cache_;
     mutable std::mutex inbox_cache_mu_;
+
+    // ── Shared script data ──────────────────────────────────────────────
+    std::unordered_map<std::string, StateValue> shared_data_;
+    mutable std::shared_mutex shared_data_mu_;
 };
 
 } // namespace pylabhub::scripting

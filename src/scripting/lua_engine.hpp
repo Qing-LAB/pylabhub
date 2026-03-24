@@ -171,6 +171,8 @@ class LuaEngine : public ScriptEngine
     static int lua_api_version_info(lua_State *L);
     static int lua_api_wait_for_role(lua_State *L);
     static int lua_api_open_inbox(lua_State *L);
+    static int lua_api_get_shared_data(lua_State *L);
+    static int lua_api_set_shared_data(lua_State *L);
     static int lua_api_uid(lua_State *L);
     static int lua_api_name(lua_State *L);
     static int lua_api_channel(lua_State *L);

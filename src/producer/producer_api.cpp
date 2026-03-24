@@ -480,7 +480,9 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
         .def("stop_reason",        &ProducerAPI::stop_reason,
              "Why the role stopped: 'normal', 'peer_dead', 'hub_dead', or 'critical_error'.")
         .def("ctrl_queue_dropped", &ProducerAPI::ctrl_queue_dropped,
-             "Number of ctrl-send messages dropped due to queue overflow.");
+             "Number of ctrl-send messages dropped due to queue overflow.")
+        .def_readwrite("shared_data",   &ProducerAPI::shared_data_,
+             "Shared script state dictionary. Persists across callbacks.");
 
     m.def("version_info", []() -> py::str
     {
