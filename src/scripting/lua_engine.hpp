@@ -97,7 +97,6 @@ class LuaEngine : public ScriptEngine
     // ── Threading ────────────────────────────────────────────────────────
 
     [[nodiscard]] bool supports_multi_state() const noexcept override { return true; }
-    std::unique_ptr<ScriptEngine> create_thread_state() override;
     void release_thread() override;
 
   private:

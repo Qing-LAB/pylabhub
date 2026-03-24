@@ -611,30 +611,16 @@ TEST_F(LuaEngineTest, MultipleErrors_CountAccumulates)
 }
 
 // ============================================================================
-// 9. create_thread_state
+// 9. supports_multi_state
 // ============================================================================
 
-TEST_F(LuaEngineTest, CreateThreadState_IndependentEngine)
+TEST_F(LuaEngineTest, SupportsMultiState_ReturnsTrue)
 {
-    write_script(R"(
-        function on_produce(out_slot, fz, msgs, api)
-            return true
-        end
-    )");
-
+    write_script("function on_produce(out_slot, fz, msgs, api) return true end");
     LuaEngine engine;
     ASSERT_TRUE(setup_engine(engine));
 
     EXPECT_TRUE(engine.supports_multi_state());
-
-    auto child = engine.create_thread_state();
-    ASSERT_NE(child, nullptr);
-    EXPECT_TRUE(child->has_callback("on_produce"));
-
-    // Child has independent error counter.
-    EXPECT_EQ(child->script_error_count(), 0u);
-
-    child->finalize();
     engine.finalize();
 }
 

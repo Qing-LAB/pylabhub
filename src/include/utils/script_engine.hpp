@@ -333,26 +333,16 @@ class ScriptEngine
 
     // ── Threading capability ─────────────────────────────────────────────
 
-    /**
-     * @brief True if the engine supports independent states on other threads.
-     *
-     * When true, the framework may create secondary engine states for
-     * ctrl_thread_ (on_heartbeat), the main loop (admin requests), or
-     * user-spawned threads (api.spawn_thread).
-     *
-     * When false, ALL script invocations must happen on the working thread.
-     */
-    [[nodiscard]] virtual bool supports_multi_state() const noexcept = 0;
+    // ── Threading capability ─────────────────────────────────────────────
 
     /**
-     * @brief Create an independent engine state for use on another thread.
+     * @brief True if the engine handles multi-threaded invoke() internally.
      *
-     * Loads the same script, but operates on a separate interpreter/state
-     * with no shared script objects.  Data sharing goes through C++.
-     *
-     * @return New engine instance, or nullptr if !supports_multi_state().
+     * When true (Lua): non-owner threads get independent thread-local states.
+     * When false (Python): non-owner requests are queued to the owner thread.
+     * The engine manages threading internally — callers just call invoke().
      */
-    virtual std::unique_ptr<ScriptEngine> create_thread_state() = 0;
+    [[nodiscard]] virtual bool supports_multi_state() const noexcept = 0;
 
     // ── Script reload (future) ────────────────────────────────────────────
 
