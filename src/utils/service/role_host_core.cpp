@@ -62,16 +62,6 @@ void RoleHostCore::wait_for_incoming(int timeout_ms) noexcept
 // Inbox cache
 // ============================================================================
 
-std::shared_ptr<hub::InboxClient>
-RoleHostCore::get_inbox_client(const std::string &target_uid) const
-{
-    std::lock_guard lk(inbox_cache_mu_);
-    auto it = inbox_cache_.find(target_uid);
-    if (it != inbox_cache_.end())
-        return it->second.client;
-    return nullptr;
-}
-
 std::optional<RoleHostCore::InboxCacheEntry>
 RoleHostCore::get_inbox_entry(const std::string &target_uid) const
 {
@@ -82,11 +72,25 @@ RoleHostCore::get_inbox_entry(const std::string &target_uid) const
     return std::nullopt;
 }
 
-void RoleHostCore::set_inbox_entry(const std::string &target_uid,
-                                    InboxCacheEntry entry)
+std::optional<RoleHostCore::InboxCacheEntry>
+RoleHostCore::open_inbox(const std::string &target_uid,
+                                   InboxCreator creator)
 {
     std::lock_guard lk(inbox_cache_mu_);
-    inbox_cache_[target_uid] = std::move(entry);
+
+    // Check — return existing if valid.
+    auto it = inbox_cache_.find(target_uid);
+    if (it != inbox_cache_.end() && it->second.client && it->second.client->is_running())
+        return it->second;
+
+    // Create — caller provides the creation logic.
+    auto entry = creator();
+    if (!entry)
+        return std::nullopt;
+
+    // Store.
+    inbox_cache_[target_uid] = *entry;
+    return entry;
 }
 
 void RoleHostCore::clear_inbox_cache()

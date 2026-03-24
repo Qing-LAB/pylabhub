@@ -27,6 +27,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -100,14 +101,15 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
         size_t      item_size{0};  ///< Size of one inbox slot in bytes.
     };
 
-    /// Get a cached inbox client for the given target UID, or nullptr.
-    std::shared_ptr<hub::InboxClient> get_inbox_client(const std::string &target_uid) const;
-
-    /// Get the full cache entry (client + type info), or nullopt if not cached.
+    /// Get a cached inbox entry, or nullopt if not cached.
     std::optional<InboxCacheEntry> get_inbox_entry(const std::string &target_uid) const;
 
-    /// Store an inbox client in the cache.
-    void set_inbox_entry(const std::string &target_uid, InboxCacheEntry entry);
+    /// Atomically check cache → if miss, call creator → store result.
+    /// The mutex is held for the entire operation — no TOCTOU race.
+    /// Creator returns nullopt on failure (entry not stored).
+    using InboxCreator = std::function<std::optional<InboxCacheEntry>()>;
+    std::optional<InboxCacheEntry> open_inbox(
+        const std::string &target_uid, InboxCreator creator);
 
     /// Stop and remove all cached inbox clients.
     void clear_inbox_cache();
