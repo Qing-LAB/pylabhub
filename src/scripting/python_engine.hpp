@@ -71,7 +71,7 @@ class PythonEngine : public ScriptEngine
     bool load_script(const std::filesystem::path &script_dir,
                      const char *entry_point,
                      const char *required_callback) override;
-    void build_api(const RoleContext &ctx) override;
+    void build_api_(const RoleContext &ctx) override;
     void finalize_engine_() override;
 
     // ── Queries ────────────────────────────────────────────────────────────

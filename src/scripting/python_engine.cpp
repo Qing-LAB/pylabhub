@@ -371,12 +371,9 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
 // build_api — create role-specific Python API object
 // ============================================================================
 
-void PythonEngine::build_api(const RoleContext &ctx)
+void PythonEngine::build_api_(const RoleContext &ctx)
 {
-    RoleHostCore *saved_core = ctx_.core;
-    ctx_ = ctx;
-    if (ctx_.core == nullptr)
-        ctx_.core = saved_core;
+    // ctx_ and core preservation handled by base class build_api().
     stop_on_script_error_ = ctx.stop_on_script_error;
 
     // Detect role from context pointers and build the appropriate API.
@@ -525,7 +522,7 @@ void PythonEngine::finalize_engine_()
 
 bool PythonEngine::invoke(const char *name)
 {
-    if (!accepting_.load(std::memory_order_acquire))
+    if (!is_accepting())
         return false;
 
     if (std::this_thread::get_id() == owner_thread_id_)
@@ -535,7 +532,7 @@ bool PythonEngine::invoke(const char *name)
     auto future = promise.get_future();
     {
         std::lock_guard lk(queue_mu_);
-        if (!accepting_.load(std::memory_order_relaxed))
+        if (!is_accepting())
             return false;
         request_queue_.push_back({name, {}, false, std::move(promise)});
     }
@@ -544,7 +541,7 @@ bool PythonEngine::invoke(const char *name)
 
 bool PythonEngine::invoke(const char *name, const nlohmann::json &args)
 {
-    if (!accepting_.load(std::memory_order_acquire))
+    if (!is_accepting())
         return false;
 
     if (std::this_thread::get_id() == owner_thread_id_)
@@ -554,7 +551,7 @@ bool PythonEngine::invoke(const char *name, const nlohmann::json &args)
     auto future = promise.get_future();
     {
         std::lock_guard lk(queue_mu_);
-        if (!accepting_.load(std::memory_order_relaxed))
+        if (!is_accepting())
             return false;
         request_queue_.push_back({name, args, false, std::move(promise)});
     }
@@ -563,7 +560,7 @@ bool PythonEngine::invoke(const char *name, const nlohmann::json &args)
 
 nlohmann::json PythonEngine::eval(const char *code)
 {
-    if (!accepting_.load(std::memory_order_acquire))
+    if (!is_accepting())
         return {};
 
     if (std::this_thread::get_id() == owner_thread_id_)
@@ -573,7 +570,7 @@ nlohmann::json PythonEngine::eval(const char *code)
     auto future = promise.get_future();
     {
         std::lock_guard lk(queue_mu_);
-        if (!accepting_.load(std::memory_order_relaxed))
+        if (!is_accepting())
             return {};
         request_queue_.push_back({code, {}, true, std::move(promise)});
     }
@@ -688,7 +685,7 @@ nlohmann::json PythonEngine::eval_direct_(const char *code)
 
 void PythonEngine::process_pending_()
 {
-    if (!accepting_.load(std::memory_order_relaxed))
+    if (!is_accepting())
         return;
 
     std::deque<PendingRequest> local;
@@ -701,7 +698,7 @@ void PythonEngine::process_pending_()
 
     for (auto &req : local)
     {
-        if (!accepting_.load(std::memory_order_relaxed))
+        if (!is_accepting())
         {
             req.promise.set_value({InvokeStatus::EngineShutdown, {}});
             continue;

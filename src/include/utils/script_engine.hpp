@@ -130,8 +130,8 @@ class ScriptEngine
     /**
      * @brief Create the interpreter/state and apply sandbox.
      *
-     * Sets owner_thread_id_, accepting_=true, ctx_.core. Then calls the
-     * engine-specific init_engine_() to create the interpreter.
+     * Sets owner_thread_id_ and ctx_.core. On success, sets accepting_=true.
+     * On failure, accepting_ stays false. Calls init_engine_() for specifics.
      *
      * @param log_tag Tag for log messages (e.g., "prod").
      * @param core    Pointer to RoleHostCore — provides metrics counters
@@ -143,14 +143,8 @@ class ScriptEngine
     {
         owner_thread_id_ = std::this_thread::get_id();
         ctx_.core = core;
-        if (!init_engine_(log_tag, core))
-        {
-            // Init failed — don't accept requests on a broken engine.
-            accepting_.store(false, std::memory_order_release);
-            return false;
-        }
-        accepting_.store(true, std::memory_order_release);
-        return true;
+        // accepting_ stays false until build_api() succeeds.
+        return init_engine_(log_tag, core);
     }
 
     /**
@@ -169,20 +163,48 @@ class ScriptEngine
     /**
      * @brief Build the API object/table using role-specific context.
      *
-     * Called after load_script() and before invoke_on_init().  The engine
-     * creates its API representation (Lua table or Python object) using
-     * the pointers in ctx.
+     * Called after load_script() and before invoke_on_init().  Sets ctx_
+     * on the base class, calls engine-specific build_api_(), then sets
+     * accepting_=true — the engine is fully ready for invoke() calls.
      */
-    virtual void build_api(const RoleContext &ctx) = 0;
+    void build_api(const RoleContext &ctx)
+    {
+        auto *saved_core = ctx_.core; // preserve core from initialize()
+        ctx_ = ctx;
+        if (ctx_.core == nullptr)
+            ctx_.core = saved_core;
+        build_api_(ctx);
+        accepting_.store(true, std::memory_order_release);
+    }
 
     /**
      * @brief Stop accepting new invoke() requests from non-owner threads.
      *
      * Called by the role host before invoke_on_stop(). After this call,
-     * all non-owner invoke() calls return false immediately. Owner-thread
-     * hot-path methods (invoke_on_stop, invoke_produce, etc.) still work.
+     * all non-owner invoke() calls return false immediately (including
+     * child engines that check the owner's flag). Owner-thread hot-path
+     * methods (invoke_on_stop, invoke_produce, etc.) still work.
      */
     void stop_accepting() noexcept { accepting_.store(false, std::memory_order_release); }
+
+    /**
+     * @brief Check if the engine is accepting invoke() requests.
+     *
+     * Child engines delegate to the owner's flag. Owner engines check their own.
+     * All invoke()/eval() paths call this before executing.
+     */
+    [[nodiscard]] bool is_accepting() const noexcept
+    {
+        if (owner_engine_)
+            return owner_engine_->is_accepting();
+        return accepting_.load(std::memory_order_acquire);
+    }
+
+    /**
+     * @brief Set the owner engine pointer (for child/thread-local states).
+     * Child engines delegate is_accepting() to the parent.
+     */
+    void set_owner_engine(ScriptEngine *owner) noexcept { owner_engine_ = parent; }
 
     /**
      * @brief Release all script objects, close interpreter/state.
@@ -427,6 +449,9 @@ class ScriptEngine
     /// Create the interpreter/state. Called by initialize().
     virtual bool init_engine_(const char *log_tag, RoleHostCore *core) = 0;
 
+    /// Build engine-specific API (Lua table / Python pybind11). Called by build_api().
+    virtual void build_api_(const RoleContext &ctx) = 0;
+
     /// Release all script objects, close interpreter. Called by finalize().
     virtual void finalize_engine_() = 0;
 
@@ -434,12 +459,18 @@ class ScriptEngine
     /// invoke() is called from the owner (hot path) or another thread.
     std::thread::id owner_thread_id_;
 
-    /// False after stop_accepting() — rejects new invoke()/eval() calls.
-    std::atomic<bool> accepting_{true};
-
     /// Context captured at build_api() — provides core_, messenger, identity.
     /// Used by open_inbox_client() for broker queries and cache access.
     RoleContext ctx_{};
+
+  private:
+    /// Accepting flag — true only between successful build_api() and stop_accepting().
+    /// Child engines delegate to owner's flag via owner_engine_ pointer.
+    std::atomic<bool> accepting_{false};
+
+    /// Non-null for child engines (thread-local states). Points to the parent
+    /// engine that owns the lifecycle. is_accepting() checks owner's flag.
+    ScriptEngine *owner_engine_{nullptr};
 };
 
 /**
