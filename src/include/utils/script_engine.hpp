@@ -129,14 +129,23 @@ class ScriptEngine
 
     /**
      * @brief Create the interpreter/state and apply sandbox.
+     *
+     * Sets owner_thread_id_, accepting_=true, ctx_.core. Then calls the
+     * engine-specific init_engine_() to create the interpreter.
+     *
      * @param log_tag Tag for log messages (e.g., "prod").
      * @param core    Pointer to RoleHostCore — provides metrics counters
      *                (script_errors, etc.) and shutdown flags. Must remain
-     *                valid for the engine's lifetime. Passed at init time
-     *                so error counting works from the first load_script() call.
+     *                valid for the engine's lifetime.
      * @return true on success.
      */
-    virtual bool initialize(const char *log_tag, RoleHostCore *core) = 0;
+    bool initialize(const char *log_tag, RoleHostCore *core)
+    {
+        owner_thread_id_ = std::this_thread::get_id();
+        accepting_.store(true, std::memory_order_release);
+        ctx_.core = core;
+        return init_engine_(log_tag, core);
+    }
 
     /**
      * @brief Load script file and extract callbacks.
@@ -172,11 +181,16 @@ class ScriptEngine
     /**
      * @brief Release all script objects, close interpreter/state.
      *
+     * Sets accepting_=false, then calls engine-specific finalize_engine_().
      * Called on the owner thread after invoke_on_stop() has returned.
      * After this call, the engine is in a destroyed state — no further
      * calls are valid. Must be called BEFORE infrastructure teardown.
      */
-    virtual void finalize() = 0;
+    void finalize()
+    {
+        accepting_.store(false, std::memory_order_release);
+        finalize_engine_();
+    }
 
     // ── Queries ──────────────────────────────────────────────────────────
 
@@ -402,6 +416,14 @@ class ScriptEngine
     std::optional<InboxOpenResult> open_inbox_client(const std::string &target_uid);
 
   protected:
+    // ── Engine-specific overrides (Template Method pattern) ──────────────
+
+    /// Create the interpreter/state. Called by initialize().
+    virtual bool init_engine_(const char *log_tag, RoleHostCore *core) = 0;
+
+    /// Release all script objects, close interpreter. Called by finalize().
+    virtual void finalize_engine_() = 0;
+
     /// Thread that called initialize(). Engines use this to detect whether
     /// invoke() is called from the owner (hot path) or another thread.
     std::thread::id owner_thread_id_;
