@@ -492,49 +492,65 @@ Script state is managed by **script-native dictionary objects**, not
 C++ data structures. The framework creates and provides the dictionary;
 scripts access it with native syntax.
 
-**Python**: A `py::dict` created by the framework and exposed as
-`api.state`. Since there is one interpreter per role (GIL-serialized),
-no additional synchronization is needed. All callbacks see the same dict.
+**Python**: A `py::dict` created by the framework at `build_api()` time
+and exposed as `api.shared_data`. Since there is one interpreter per role
+(GIL-serialized), no additional synchronization is needed. All callbacks
+see the same dict. Initialized to `py::none()` at construction (before
+interpreter exists); replaced with `py::dict()` in `build_api()`.
 
 ```python
-api.state["counter"] = 0
-api.state["mode"] = "warmup"
-val = api.state.get("counter", 0)
+api.shared_data["counter"] = 0
+api.shared_data["mode"] = "warmup"
+val = api.shared_data.get("counter", 0)
 ```
 
 **Lua**: Independent states cannot share a Lua table. A C-side map in
-RoleHostCore stores the state, exposed through closures:
+RoleHostCore stores the data, exposed through closures:
 
 ```cpp
 // In RoleHostCore (private)
 using StateValue = std::variant<int64_t, double, bool, std::string>;
-std::unordered_map<std::string, StateValue> shared_state_;
-mutable std::shared_mutex shared_state_mu_;   // concurrent reads, exclusive writes
+std::unordered_map<std::string, StateValue> shared_data_;
+mutable std::shared_mutex shared_data_mu_;
 ```
 
 ```lua
-api.set_state("counter", 0)
-api.set_state("mode", "warmup")
-local val = api.get_state("counter")   -- returns 0
+api.set_shared_data("counter", 0)
+api.set_shared_data("mode", "warmup")
+local val = api.get_shared_data("counter")   -- returns 0
 ```
 
 Each Lua state gets closures that call into the C++ map via the
 `core_` pointer. `shared_mutex` allows concurrent reads (~5-10ns)
 with exclusive writes.
 
+**Supported value types** (Lua C++ map):
+
+| Type | Lua → C++ | C++ → Lua |
+|------|-----------|-----------|
+| integer | `lua_isnumber` + whole-number check → `int64_t` | `lua_pushinteger` |
+| float | `lua_isnumber` → `double` | `lua_pushnumber` |
+| boolean | `lua_isboolean` → `bool` | `lua_pushboolean` |
+| string | `lua_isstring` → `std::string` | `lua_pushlstring` |
+| nil | removes key | `lua_pushnil` (key not found) |
+
+Python `api.shared_data` supports any Python object (native dict).
+For complex Lua data (arrays, nested tables), serialize to JSON string
+on the script side: `api.set_shared_data("config", json.encode(tbl))`.
+
 ### 7.3 Design rationale
 
 | Concern | Python | Lua |
 |---------|--------|-----|
 | Storage | Native `py::dict` (zero-copy) | C++ map in RoleHostCore |
-| Access | `api.state[key]` (native) | `api.get_state(k)` / `api.set_state(k,v)` |
+| Access | `api.shared_data[key]` (native) | `api.get_shared_data(k)` / `api.set_shared_data(k,v)` |
 | Thread safety | GIL (single interpreter) | `shared_mutex` on C++ map |
 | Read perf | ~50ns (native dict) | ~100ns (Lua→C + map lookup) |
 | Value types | Any Python object | int64, double, bool, string |
-| Complex data | Native (nested dicts, lists) | Script-side JSON string |
+| Complex data | Native (nested dicts, lists) | JSON-encode to string |
 
 Python gets zero-overhead native dict. Lua gets near-native performance
-through C closures. Both share state correctly across threads.
+through C closures. Both share data correctly across threads.
 
 ### 7.4 Use cases
 
