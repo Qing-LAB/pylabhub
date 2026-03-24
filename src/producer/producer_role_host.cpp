@@ -246,16 +246,22 @@ void ProducerRoleHost::worker_main_()
     // Step 9: Run the data loop.
     run_data_loop_();
 
-    // Step 10: stop accepting new invoke requests, then call on_stop.
+    // Step 10: stop accepting invoke from non-owner threads.
     engine_->stop_accepting();
+
+    // Step 11: join ctrl_thread — ensure no non-owner thread is using the engine.
+    core_.set_running(false);
+    core_.notify_incoming();
+    if (ctrl_thread_.joinable())
+        ctrl_thread_.join();
+
+    // Step 12: last script callback (no other threads using engine).
     engine_->invoke_on_stop();
 
-    // Step 11: finalize engine — destroy child states, close interpreter.
-    //          close all script states. Must happen BEFORE infrastructure
-    //          teardown so no script can access destroyed resources.
+    // Step 13: finalize engine — destroy child states, close interpreter.
     engine_->finalize();
 
-    // Step 12: teardown infrastructure — safe now, no scripts running.
+    // Step 14: teardown infrastructure — retract resources.
     teardown_infrastructure_();
 }
 
@@ -546,12 +552,8 @@ bool ProducerRoleHost::setup_infrastructure_()
 
 void ProducerRoleHost::teardown_infrastructure_()
 {
-    core_.set_running(false);
-    core_.notify_incoming();
-
-    // Join ctrl_thread_.
-    if (ctrl_thread_.joinable())
-        ctrl_thread_.join();
+    // ctrl_thread_ already joined before finalize (shutdown sequence).
+    // set_running(false) also already called. Defensive re-set is safe.
 
     // Clean up shared resources (engine already finalized — no scripts running).
     core_.clear_inbox_cache();
