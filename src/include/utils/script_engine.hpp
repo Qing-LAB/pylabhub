@@ -352,10 +352,72 @@ class ScriptEngine
      */
     virtual bool reload_script() { return false; } // default: not implemented
 
+    // ── Thread lifecycle ─────────────────────────────────────────────────
+
+    /**
+     * @brief Release any thread-local resources for the calling thread.
+     *
+     * Called when a non-owner thread is done using this engine. The engine
+     * cleans up thread-specific state:
+     *   - Lua: destroys the thread-local LuaState from the cache
+     *   - Python: no-op (single-state, no per-thread resources)
+     *   - Native: no-op (plugin manages its own threads)
+     *
+     * Safe to call from any thread. No-op if the thread has no state.
+     */
+    virtual void release_thread() {}
+
+    // ── Inbox client management (shared via RoleHostCore) ────────────────
+
+    /// Result from open_inbox_client() — everything an engine needs to build
+    /// its script-native inbox handle.
+    struct InboxOpenResult
+    {
+        std::shared_ptr<hub::InboxClient> client;
+        SchemaSpec spec;        ///< Parsed schema (for FFI cdef / ctypes struct building).
+        std::string packing;    ///< "aligned" or "packed".
+        size_t item_size{0};    ///< Size of one inbox slot in bytes.
+    };
+
+    /**
+     * @brief Open (or reuse) an InboxClient connection to the given target.
+     *
+     * Handles broker discovery, schema parsing, InboxClient creation, and
+     * core_ cache management. Returns everything the engine needs to build
+     * its script-native handle (FFI type for Lua, ctypes struct for Python).
+     *
+     * @param target_uid  The target role's UID.
+     * @return InboxOpenResult, or nullopt on failure.
+     */
+    std::optional<InboxOpenResult> open_inbox_client(const std::string &target_uid);
+
   protected:
     /// Thread that called initialize(). Engines use this to detect whether
     /// invoke() is called from the owner (hot path) or another thread.
     std::thread::id owner_thread_id_;
+
+    /// Context captured at build_api() — provides core_, messenger, identity.
+    /// Used by open_inbox_client() for broker queries and cache access.
+    RoleContext ctx_{};
+};
+
+/**
+ * @brief RAII guard for non-owner thread engine lifecycle.
+ *
+ * Construct at thread start, destructor calls engine.release_thread()
+ * to clean up thread-local resources (Lua thread-state, etc.).
+ */
+class ThreadEngineGuard
+{
+  public:
+    explicit ThreadEngineGuard(ScriptEngine &engine) : engine_(engine) {}
+    ~ThreadEngineGuard() { engine_.release_thread(); }
+
+    ThreadEngineGuard(const ThreadEngineGuard &) = delete;
+    ThreadEngineGuard &operator=(const ThreadEngineGuard &) = delete;
+
+  private:
+    ScriptEngine &engine_;
 };
 
 } // namespace pylabhub::scripting

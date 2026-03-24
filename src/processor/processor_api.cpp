@@ -2,6 +2,7 @@
  * @file processor_api.cpp
  * @brief ProcessorAPI method implementations + pylabhub_processor pybind11 module.
  */
+#include "utils/script_engine.hpp"
 #include "processor_api.hpp"
 
 #include "plh_version_registry.hpp"
@@ -328,64 +329,28 @@ uint32_t ProcessorAPI::spinlock_count() const noexcept
 
 py::object ProcessorAPI::open_inbox(const std::string &target_uid)
 {
-    // Cache hit — return existing handle without broker round-trip.
     auto it = inbox_cache_.find(target_uid);
     if (it != inbox_cache_.end())
         return it->second;
 
-    if (!messenger_)
+    if (!engine_)
         return py::none();
 
-    // HR-05: release GIL during broker round-trip so interpreter stays responsive.
-    std::optional<hub::RoleInfoResult> info;
+    std::optional<scripting::ScriptEngine::InboxOpenResult> result;
     {
         py::gil_scoped_release release;
-        info = messenger_->query_role_info(target_uid, /*timeout_ms=*/1000);
+        result = engine_->open_inbox_client(target_uid);
     }
-    if (!info.has_value())
+    if (!result)
         return py::none();
 
-    // inbox_schema is the full SchemaSpec JSON {"fields":[{"name":...,"type":...}]}.
-    if (!info->inbox_schema.is_object() || !info->inbox_schema.contains("fields"))
-        return py::none();
+    py::object slot_type = result->spec.fields.empty()
+        ? py::none()
+        : scripting::build_ctypes_struct(result->spec, "InboxSlot");
 
-    scripting::SchemaSpec spec;
-    try
-    {
-        spec = scripting::parse_schema_json(info->inbox_schema);
-    }
-    catch (const std::exception &e)
-    {
-        LOGGER_WARN("[proc] open_inbox('{}'): schema parse error: {}", target_uid, e.what());
-        return py::none();
-    }
-
-    // Build ctypes slot type (GIL already held — called from Python).
-    py::object slot_type = scripting::build_ctypes_struct(spec, "InboxSlot");
-    const size_t item_size = scripting::ctypes_sizeof(slot_type);
-
-    // Build ZmqSchemaField list from SchemaSpec.
-    auto zmq_fields = scripting::schema_spec_to_zmq_fields(spec, item_size);
-
-    // Connect InboxClient (DEALER connecting to target's ROUTER).
-    auto client_ptr = hub::InboxClient::connect_to(
-        info->inbox_endpoint, uid_, std::move(zmq_fields), info->inbox_packing);
-    if (!client_ptr)
-    {
-        LOGGER_WARN("[proc] open_inbox('{}'): connect_to '{}' failed",
-                    target_uid, info->inbox_endpoint);
-        return py::none();
-    }
-    if (!client_ptr->start())
-    {
-        LOGGER_WARN("[proc] open_inbox('{}'): start() failed", target_uid);
-        return py::none();
-    }
-
-    auto shared_client = std::shared_ptr<hub::InboxClient>(std::move(client_ptr));
-    py::object handle  = py::cast(
-        scripting::InboxHandle(std::move(shared_client), std::move(spec),
-                               std::move(slot_type), item_size),
+    py::object handle = py::cast(
+        scripting::InboxHandle(std::move(result->client), std::move(result->spec),
+                               std::move(slot_type), result->item_size),
         py::return_value_policy::move);
     inbox_cache_[target_uid] = handle;
     return handle;

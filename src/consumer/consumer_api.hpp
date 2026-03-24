@@ -48,6 +48,7 @@ namespace py = pybind11;
 // RoleHostCore is needed for inline metric accessors that read core_->field.
 #include "utils/role_host_core.hpp"
 
+namespace pylabhub::scripting { class ScriptEngine; }
 namespace pylabhub::consumer
 {
 
@@ -68,6 +69,7 @@ class ConsumerAPI
 
     void set_consumer(hub::Consumer *c) noexcept { consumer_ = c; }
     void set_messenger(hub::Messenger *m) noexcept { messenger_ = m; }
+    void set_engine(scripting::ScriptEngine *e) noexcept { engine_ = e; }
     void set_uid(std::string uid)    { uid_        = std::move(uid); }
     void set_name(std::string name)  { name_       = std::move(name); }
     void set_channel(std::string c)  { channel_    = std::move(c); }
@@ -176,8 +178,9 @@ class ConsumerAPI
     [[nodiscard]] uint64_t ctrl_queue_dropped() const noexcept;
 
   private:
-    hub::Consumer         *consumer_{nullptr};
-    hub::Messenger        *messenger_{nullptr};
+    hub::Consumer               *consumer_{nullptr};
+    hub::Messenger              *messenger_{nullptr};
+    scripting::ScriptEngine     *engine_{nullptr};
     std::atomic<const hub::QueueReader*> reader_{nullptr}; ///< Non-owning; set by ConsumerScriptHost
 
 
