@@ -141,12 +141,9 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir,
 // build_api — save RoleContext, build Lua table with closures
 // ============================================================================
 
-void LuaEngine::build_api(const RoleContext &ctx)
+void LuaEngine::build_api_(const RoleContext &ctx)
 {
-    RoleHostCore *saved_core = ctx_.core; // preserve core from initialize()
-    ctx_ = ctx;
-    if (ctx_.core == nullptr)
-        ctx_.core = saved_core; // don't lose core if caller didn't set it
+    // ctx_ and core preservation handled by base class build_api().
     stop_on_script_error_ = ctx.stop_on_script_error;
 
     lua_State *L = state_.raw();
@@ -248,6 +245,7 @@ LuaEngine *LuaEngine::get_or_create_thread_state_()
 
     // Create fully initialized child state.
     auto child = std::make_unique<LuaEngine>();
+    child->set_owner_engine(this); // child delegates is_accepting() to parent
     if (!child->initialize(log_tag_.c_str(), ctx_.core))
     {
         LOGGER_ERROR("[{}] Failed to create thread-local LuaEngine", log_tag_);
@@ -288,7 +286,7 @@ void LuaEngine::release_thread()
 
 bool LuaEngine::invoke(const char *name)
 {
-    if (!name || !accepting_.load(std::memory_order_acquire))
+    if (!name || !is_accepting())
         return false;
 
     // Non-owner thread: dispatch to thread-local state.
@@ -319,7 +317,7 @@ bool LuaEngine::invoke(const char *name)
 
 bool LuaEngine::invoke(const char *name, const nlohmann::json &args)
 {
-    if (!name || !accepting_.load(std::memory_order_acquire))
+    if (!name || !is_accepting())
         return false;
 
     // Non-owner thread: dispatch to thread-local state.
@@ -369,7 +367,7 @@ bool LuaEngine::invoke(const char *name, const nlohmann::json &args)
 
 nlohmann::json LuaEngine::eval(const char *code)
 {
-    if (!code || !accepting_.load(std::memory_order_acquire))
+    if (!code || !is_accepting())
         return {};
 
     if (std::this_thread::get_id() != owner_thread_id_)
