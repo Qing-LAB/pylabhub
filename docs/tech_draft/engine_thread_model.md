@@ -316,18 +316,20 @@ class LuaEngine : public ScriptEngine
 
 ### 5.2 What is shared vs independent
 
-| Aspect | Shared (process-wide) | Independent (per state) |
-|--------|----------------------|------------------------|
-| `RoleHostCore` (metrics, shutdown) | Shared via `ctx_.core` pointer | — |
-| Infrastructure (messenger, queues) | Shared via `RoleContext` pointers | — |
+| Aspect | Shared (via RoleHostCore/RoleContext) | Independent (per state) |
+|--------|--------------------------------------|------------------------|
+| Metrics, shutdown flags | `core_` pointer (atomics) | — |
+| Infrastructure (messenger, queues) | `RoleContext` pointers | — |
+| Inbox cache | `core_->inbox_cache_` (mutex-protected) | — |
+| Shared script state | `core_->shared_state_` (shared_mutex) | — |
 | Script code | Same file loaded independently | — |
 | Script global variables | — | Each state has own global table |
 | Registered types (ffi.typeof cache) | — | Each state builds own ctypes |
 | API closures | — | Each state has own api table |
 
-The `RoleContext` is safe to share because all its members are either
-immutable after init (identity strings) or thread-safe (RoleHostCore,
-Messenger, QueueReader/QueueWriter).
+`RoleContext` is safe to share: identity strings are immutable after init;
+`RoleHostCore`, `Messenger`, `QueueReader/QueueWriter` are thread-safe.
+Inbox cache and shared state use explicit mutexes.
 
 ### 5.3 Cleanup
 
@@ -428,56 +430,93 @@ current script call and reaches `process_pending_()`. Depends on loop timing:
 
 Acceptable for target use cases (heartbeat, admin, hot-reload).
 
-## 7. Shared Script State (RoleHostCore)
+## 7. Shared Resources (RoleHostCore)
 
-### 7.1 Storage
+### 7.1 Inbox Cache (role-level, shared across engine states)
+
+The inbox cache stores `InboxClient` connections to other roles' inbox
+ROUTER sockets. It is a **role-level resource** — all engine states
+(owner + Lua thread-local children) share the same connections.
 
 ```cpp
 // In RoleHostCore (private)
-nlohmann::json shared_state_ = nlohmann::json::object();
-mutable std::mutex shared_state_mu_;
-
-// Public API
-void set_shared_state(nlohmann::json state);
-nlohmann::json get_shared_state() const;
-void update_shared_state(const std::string& key, nlohmann::json value);
+struct InboxCacheEntry
+{
+    std::shared_ptr<hub::InboxClient> client;
+    std::string type_name;     // FFI/ctypes type name
+    size_t      item_size{0};
+};
+std::unordered_map<std::string, InboxCacheEntry> inbox_cache_;
+std::mutex inbox_cache_mu_;
 ```
 
-### 7.2 Script-facing API
+This unifies the current asymmetry where Lua stores inbox cache in
+`LuaEngine::inbox_cache_` and Python delegates to role API classes.
+Both engines access the same cache through `core_->` methods.
 
-Exposed in all role API classes (ProducerAPI, ConsumerAPI, ProcessorAPI)
-and Lua closures:
+### 7.2 Shared Script State
+
+Script state is managed by **script-native dictionary objects**, not
+C++ data structures. The framework creates and provides the dictionary;
+scripts access it with native syntax.
+
+**Python**: A `py::dict` created by the framework and exposed as
+`api.state`. Since there is one interpreter per role (GIL-serialized),
+no additional synchronization is needed. All callbacks see the same dict.
 
 ```python
-# Python — all operations are atomic
-api.set_shared_state({"counter": 0, "mode": "warmup"})
-state = api.get_shared_state()           # returns deep copy
-api.update_shared_state("counter", 42)   # atomic per-key update
+api.state["counter"] = 0
+api.state["mode"] = "warmup"
+val = api.state.get("counter", 0)
+```
+
+**Lua**: Independent states cannot share a Lua table. A C-side map in
+RoleHostCore stores the state, exposed through closures:
+
+```cpp
+// In RoleHostCore (private)
+using StateValue = std::variant<int64_t, double, bool, std::string>;
+std::unordered_map<std::string, StateValue> shared_state_;
+mutable std::shared_mutex shared_state_mu_;   // concurrent reads, exclusive writes
 ```
 
 ```lua
--- Lua — same semantics, JSON ↔ Lua table conversion
-api.set_shared_state({counter = 0, mode = "warmup"})
-local state = api.get_shared_state()
-api.update_shared_state("counter", 42)
+api.set_state("counter", 0)
+api.set_state("mode", "warmup")
+local val = api.get_state("counter")   -- returns 0
 ```
 
-### 7.3 Thread safety contract
+Each Lua state gets closures that call into the C++ map via the
+`core_` pointer. `shared_mutex` allows concurrent reads (~5-10ns)
+with exclusive writes.
 
-- `set_shared_state()` — atomic full replace under mutex
-- `get_shared_state()` — returns deep copy under mutex (no dangling refs)
-- `update_shared_state()` — atomic single-key merge under mutex
-- No partial reads or writes visible to any thread
-- Size limit: optional `kMaxSharedStateBytes` (default 64KB) with LOGGER_WARN
+### 7.3 Design rationale
+
+| Concern | Python | Lua |
+|---------|--------|-----|
+| Storage | Native `py::dict` (zero-copy) | C++ map in RoleHostCore |
+| Access | `api.state[key]` (native) | `api.get_state(k)` / `api.set_state(k,v)` |
+| Thread safety | GIL (single interpreter) | `shared_mutex` on C++ map |
+| Read perf | ~50ns (native dict) | ~100ns (Lua→C + map lookup) |
+| Value types | Any Python object | int64, double, bool, string |
+| Complex data | Native (nested dicts, lists) | Script-side JSON string |
+
+Python gets zero-overhead native dict. Lua gets near-native performance
+through C closures. Both share state correctly across threads.
 
 ### 7.4 Use cases
 
-1. **Worker ↔ ctrl_thread** (Lua): Worker script sets mode/status, ctrl_thread
-   script reads it in `on_heartbeat()` to include in heartbeat payload.
+1. **Worker ↔ ctrl_thread** (Lua): Worker script sets mode/status,
+   ctrl_thread script reads it via `api.get_state()` to include in
+   heartbeat payload. Both go through the C++ map — thread-safe.
 
 2. **Cross-callback state** (Python): Replaces the module-level variable
-   pattern. `on_init` sets initial state, `on_produce` reads/updates it.
+   pattern. `on_init` populates `api.state`, `on_produce` reads/updates.
    Properly documented and API-supported.
+
+3. **Inbox sharing** (both): `api.open_inbox("target")` returns a handle
+   backed by the shared inbox cache. Multiple Lua thread states or the
+   Python data loop all use the same `InboxClient` connection.
 
 3. **Admin interaction**: Admin thread sets a command in shared state, worker
    script picks it up on next iteration.
