@@ -1296,27 +1296,60 @@ function set_marker() marker_set = true end
 
 TEST_F(LuaEngineTest, Invoke_ConcurrentOwnerAndNonOwner)
 {
-    // Verify owner and non-owner can invoke concurrently without crash.
+    // Verify: owner and non-owner invoke concurrently, both complete
+    // their work, shared_data reflects both threads' contributions.
     write_script(R"(
 function on_produce(out_slot, fz, msgs, api) return true end
-function work() local s = 0; for i=1,1000 do s = s + i end end
+function inc_owner()
+    local v = api.get_shared_data("owner_count") or 0
+    api.set_shared_data("owner_count", v + 1)
+end
+function inc_child()
+    local v = api.get_shared_data("child_count") or 0
+    api.set_shared_data("child_count", v + 1)
+end
 )");
+    RoleHostCore core;
     LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
+    ASSERT_TRUE(setup_engine_with_core(engine, core));
 
-    std::atomic<bool> done{false};
+    constexpr int kCalls = 20;
+    std::atomic<bool> barrier{false};
+    std::atomic<int> child_ok{0};
+
     std::thread t([&]
     {
-        for (int i = 0; i < 50; ++i)
-            engine.invoke("work");
-        done.store(true);
+        // Wait for barrier so both threads start together.
+        while (!barrier.load(std::memory_order_acquire)) {}
+        for (int i = 0; i < kCalls; ++i)
+        {
+            if (engine.invoke("inc_child"))
+                child_ok.fetch_add(1, std::memory_order_relaxed);
+        }
     });
 
-    // Owner does work concurrently.
-    while (!done.load())
-        engine.invoke("work");
+    int owner_ok = 0;
+    barrier.store(true, std::memory_order_release); // release both
+    for (int i = 0; i < kCalls; ++i)
+    {
+        if (engine.invoke("inc_owner"))
+            ++owner_ok;
+    }
 
     t.join();
+
+    // Both threads completed their calls.
+    EXPECT_EQ(owner_ok, kCalls);
+    EXPECT_EQ(child_ok.load(), kCalls);
+
+    // shared_data has evidence from both threads.
+    auto ov = core.get_shared_data("owner_count");
+    auto cv = core.get_shared_data("child_count");
+    ASSERT_TRUE(ov.has_value());
+    ASSERT_TRUE(cv.has_value());
+    EXPECT_EQ(std::get<int64_t>(*ov), kCalls);
+    EXPECT_EQ(std::get<int64_t>(*cv), kCalls);
+
     engine.finalize();
 }
 
