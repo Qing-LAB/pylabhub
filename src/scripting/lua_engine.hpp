@@ -141,7 +141,7 @@ class LuaEngine : public ScriptEngine
     std::unordered_map<std::thread::id,
                        std::unique_ptr<LuaEngine>> thread_states_;
     std::mutex thread_states_mu_;
-    std::atomic<bool> accepting_{true};
+    // accepting_ is inherited from ScriptEngine base class.
     std::atomic<bool> executing_{false};
 
     LuaEngine *get_or_create_thread_state_();

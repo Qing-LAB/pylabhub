@@ -189,7 +189,7 @@ class PythonEngine : public ScriptEngine
     };
     std::deque<PendingRequest>  request_queue_;
     std::mutex                  queue_mu_;
-    std::atomic<bool>           accepting_{true};
+    // accepting_ is inherited from ScriptEngine base class.
     std::atomic<bool>           executing_{false};
 
     InvokeResponse execute_direct_(const char *name);

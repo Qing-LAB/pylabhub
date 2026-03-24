@@ -233,10 +233,17 @@ No synchronization between owner and non-owner — independent states.
 The role host shuts down in this order:
 
 ```
-1. invoke_on_stop()              ← last script callback on owner thread
-2. engine_->finalize()           ← BEFORE infrastructure teardown
-3. teardown_infrastructure_()    ← safe — no scripts running
+1. engine_->stop_accepting()     ← reject new invoke() from non-owner threads
+2. engine_->invoke_on_stop()     ← last script callback on owner thread
+3. engine_->finalize()           ← destroy states, BEFORE infrastructure teardown
+4. teardown_infrastructure_()    ← safe — no scripts running
 ```
+
+`stop_accepting()` is a non-virtual method on the ScriptEngine base class.
+It sets the `accepting_` atomic flag to false. All `invoke()`/`eval()` calls
+from non-owner threads check this flag and return false immediately.
+Owner-thread hot-path methods (invoke_on_stop, invoke_produce) do not
+check this flag — they are direct calls that always execute.
 
 **engine_->finalize()** (called by role host, must be owner thread):
 ```
@@ -327,9 +334,10 @@ be false by the time finalize runs. The flags are defensive insurance.
 5. engine->build_api(ctx)                   ← wire API to infrastructure, set ctx_
 6. engine->invoke_on_init()                 ← call script's on_init()
 7. [data loop: invoke_produce/consume/process per iteration]
-8. engine->invoke_on_stop()                 ← call script's on_stop()
-9. engine->finalize()                       ← stop accepting, close states
-10. [role host: teardown_infrastructure_]   ← retract resources
+8. engine->stop_accepting()                 ← reject new non-owner invoke() calls
+9. engine->invoke_on_stop()                 ← call script's on_stop()
+10. engine->finalize()                      ← destroy child states, close interpreter
+11. [role host: teardown_infrastructure_]   ← retract resources (inbox, queues, messenger)
 ```
 
 **What the script should expect**:
