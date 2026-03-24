@@ -220,13 +220,9 @@ void LuaEngine::finalize()
 
     clear_refs_();
 
-    // Stop all cached InboxClients before lua_close.
-    for (auto &[uid, entry] : inbox_cache_)
-    {
-        if (entry.client)
-            entry.client->stop();
-    }
-    inbox_cache_.clear();
+    // Stop all cached InboxClients (shared in core_).
+    if (ctx_.core)
+        ctx_.core->clear_inbox_cache();
 
     state_ = LuaState{}; // lua_close via RAII
 }
@@ -973,24 +969,22 @@ void LuaEngine::register_inbox_metatable_()
 
         set_method("acquire", [](lua_State *Ls) -> int {
             auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
-            auto it = ud->engine->inbox_cache_.find(ud->target_uid);
-            if (it == ud->engine->inbox_cache_.end() || !it->second.client ||
-                !it->second.client->is_running())
+            auto entry = ud->engine->ctx_.core->get_inbox_entry(ud->target_uid);
+            if (!entry || !entry->client || !entry->client->is_running())
             {
                 lua_pushnil(Ls);
                 return 1;
             }
 
-            void *buf = it->second.client->acquire();
+            void *buf = entry->client->acquire();
             if (!buf)
             {
                 lua_pushnil(Ls);
                 return 1;
             }
 
-            // Push writable FFI slot view.
-            if (!ud->engine->state_.push_slot_view(buf, it->second.item_size,
-                                                    it->second.ffi_type.c_str()))
+            if (!ud->engine->state_.push_slot_view(buf, entry->item_size,
+                                                    entry->type_name.c_str()))
             {
                 lua_pushnil(Ls);
                 return 1;
@@ -1000,44 +994,40 @@ void LuaEngine::register_inbox_metatable_()
 
         set_method("send", [](lua_State *Ls) -> int {
             auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
-            auto it = ud->engine->inbox_cache_.find(ud->target_uid);
-            if (it == ud->engine->inbox_cache_.end() || !it->second.client ||
-                !it->second.client->is_running())
+            auto entry = ud->engine->ctx_.core->get_inbox_entry(ud->target_uid);
+            if (!entry || !entry->client || !entry->client->is_running())
             {
                 lua_pushinteger(Ls, 255);
                 return 1;
             }
 
             int timeout_ms = static_cast<int>(luaL_optinteger(Ls, 2, 5000));
-            uint8_t rc = it->second.client->send(std::chrono::milliseconds{timeout_ms});
+            uint8_t rc = entry->client->send(std::chrono::milliseconds{timeout_ms});
             lua_pushinteger(Ls, static_cast<lua_Integer>(rc));
             return 1;
         });
 
         set_method("discard", [](lua_State *Ls) -> int {
             auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
-            auto it = ud->engine->inbox_cache_.find(ud->target_uid);
-            if (it != ud->engine->inbox_cache_.end() && it->second.client)
-                it->second.client->abort();
+            auto entry = ud->engine->ctx_.core->get_inbox_entry(ud->target_uid);
+            if (entry && entry->client)
+                entry->client->abort();
             return 0;
         });
 
         set_method("is_ready", [](lua_State *Ls) -> int {
             auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
-            auto it = ud->engine->inbox_cache_.find(ud->target_uid);
+            auto entry = ud->engine->ctx_.core->get_inbox_entry(ud->target_uid);
             lua_pushboolean(Ls,
-                            (it != ud->engine->inbox_cache_.end() && it->second.client &&
-                             it->second.client->is_running())
-                                ? 1
-                                : 0);
+                            (entry && entry->client && entry->client->is_running()) ? 1 : 0);
             return 1;
         });
 
         set_method("close", [](lua_State *Ls) -> int {
             auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
-            auto it = ud->engine->inbox_cache_.find(ud->target_uid);
-            if (it != ud->engine->inbox_cache_.end() && it->second.client)
-                it->second.client->stop();
+            auto entry = ud->engine->ctx_.core->get_inbox_entry(ud->target_uid);
+            if (entry && entry->client)
+                entry->client->stop();
             return 0;
         });
 
@@ -1162,8 +1152,8 @@ int LuaEngine::lua_api_open_inbox(lua_State *L)
     const char *target_uid = luaL_checkstring(L, 1);
 
     // Cache hit — return existing handle.
-    auto it = self->inbox_cache_.find(target_uid);
-    if (it != self->inbox_cache_.end() && it->second.client && it->second.client->is_running())
+    auto cached = self->ctx_.core->get_inbox_entry(target_uid);
+    if (cached && cached->client && cached->client->is_running())
     {
         auto *ud = static_cast<LuaInboxUD *>(lua_newuserdata(L, sizeof(LuaInboxUD)));
         new (ud) LuaInboxUD{self, target_uid};
@@ -1314,9 +1304,10 @@ int LuaEngine::lua_api_open_inbox(lua_State *L)
         return 1;
     }
 
-    // Cache the entry.
+    // Cache the entry in core_ (shared across engine states).
     auto shared_client = std::shared_ptr<hub::InboxClient>(std::move(client_ptr));
-    self->inbox_cache_[target_uid] = InboxEntry{shared_client, ffi_type, item_size};
+    self->ctx_.core->set_inbox_entry(target_uid,
+        {shared_client, ffi_type, item_size});
 
     // Return userdata handle.
     auto *ud = static_cast<LuaInboxUD *>(lua_newuserdata(L, sizeof(LuaInboxUD)));
