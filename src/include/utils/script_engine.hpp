@@ -202,9 +202,9 @@ class ScriptEngine
 
     /**
      * @brief Set the owner engine pointer (for child/thread-local states).
-     * Child engines delegate is_accepting() to the parent.
+     * Child engines delegate is_accepting() to the owner.
      */
-    void set_owner_engine(ScriptEngine *owner) noexcept { owner_engine_ = parent; }
+    void set_owner_engine(ScriptEngine *owner) noexcept { owner_engine_ = owner; }
 
     /**
      * @brief Release all script objects, close interpreter/state.
@@ -216,7 +216,7 @@ class ScriptEngine
      */
     void finalize()
     {
-        accepting_.store(false, std::memory_order_release);
+        stop_accepting();
         finalize_engine_(); // Engine guards against double-finalize internally.
     }
 
@@ -468,7 +468,7 @@ class ScriptEngine
     /// Child engines delegate to owner's flag via owner_engine_ pointer.
     std::atomic<bool> accepting_{false};
 
-    /// Non-null for child engines (thread-local states). Points to the parent
+    /// Non-null for child engines (thread-local states). Points to the owner
     /// engine that owns the lifecycle. is_accepting() checks owner's flag.
     ScriptEngine *owner_engine_{nullptr};
 };
