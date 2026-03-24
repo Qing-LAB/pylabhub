@@ -100,4 +100,36 @@ void RoleHostCore::clear_inbox_cache()
     inbox_cache_.clear();
 }
 
+// ============================================================================
+// Shared script data
+// ============================================================================
+
+std::optional<RoleHostCore::StateValue>
+RoleHostCore::get_shared_data(const std::string &key) const
+{
+    std::shared_lock lk(shared_data_mu_);
+    auto it = shared_data_.find(key);
+    if (it != shared_data_.end())
+        return it->second;
+    return std::nullopt;
+}
+
+void RoleHostCore::set_shared_data(const std::string &key, StateValue value)
+{
+    std::unique_lock lk(shared_data_mu_);
+    shared_data_[key] = std::move(value);
+}
+
+void RoleHostCore::remove_shared_data(const std::string &key)
+{
+    std::unique_lock lk(shared_data_mu_);
+    shared_data_.erase(key);
+}
+
+void RoleHostCore::clear_shared_data()
+{
+    std::unique_lock lk(shared_data_mu_);
+    shared_data_.clear();
+}
+
 } // namespace pylabhub::scripting

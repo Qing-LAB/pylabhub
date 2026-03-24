@@ -254,6 +254,8 @@ class ProcessorAPI
     mutable hub::InProcessSpinState                  metrics_spin_;
     std::unordered_map<std::string, double>          custom_metrics_;
     std::unordered_map<std::string, py::object>      inbox_cache_;
+public:
+    py::object shared_data_{py::none()};  ///< Shared script data dict.
 };
 
 // ============================================================================
