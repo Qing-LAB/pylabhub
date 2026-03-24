@@ -261,7 +261,39 @@ Hot path (owner thread, queue empty — 99.99% of invocations):
 - Script call: same as today
 - Total: ~20ns overhead per iteration
 
-### 4.9 Known Limitations
+### 4.9 Execution and Shutdown Coordination Flags
+
+Each engine state maintains atomic flags for coordination:
+
+```cpp
+// Per engine state (in ScriptEngine base or engine-specific):
+std::atomic<bool> executing_{false};   // true while a script call is in progress
+std::atomic<bool> accepting_{true};    // false = reject new invoke() requests
+```
+
+**Multi-state model (Lua)**: Each thread-local child state has its own
+`executing_` flag. The owner thread can observe which children are
+mid-script during shutdown. Shutdown sequence:
+
+1. Owner sets `accepting_ = false` on parent (propagates to children)
+2. Owner waits for all `executing_` flags to clear (children finish)
+3. Owner destroys child states + parent state
+
+**Single-state model (Python)**: One `executing_` flag on the owner.
+Non-owner threads only enqueue — they never set `executing_`. The owner
+checks `accepting_` before processing the queue. Shutdown sequence:
+
+1. Owner sets `accepting_ = false`
+2. Owner cancels all pending promises with `EngineShutdown`
+3. Owner waits for `executing_` to clear (if a pcall is in progress —
+   should not happen since finalize is called after the data loop exits)
+4. Owner destroys interpreter
+
+**Invariant**: `finalize()` is only called after the data loop exits and
+all non-owner threads have been joined. So `executing_` should be false
+by the time finalize runs. The flags are defensive insurance.
+
+### 4.10 Known Limitations
 
 1. **Reentrancy**: Scripts cannot call `engine->invoke()` from within a
    callback. Not possible in current design (scripts access API objects,
