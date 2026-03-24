@@ -191,6 +191,7 @@ class PythonEngine : public ScriptEngine
     std::deque<PendingRequest>  request_queue_;
     std::mutex                  queue_mu_;
     std::atomic<bool>           accepting_{true};
+    std::atomic<bool>           executing_{false};
 
     InvokeResponse execute_direct_(const char *name);
     InvokeResponse execute_direct_(const char *name, const nlohmann::json &args);
