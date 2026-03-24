@@ -229,10 +229,9 @@ void LuaEngine::finalize()
         thread_states_.clear();
     }
 
-    // 3. Clear Lua refs and inbox cache.
+    // 3. Clear Lua refs. Shared resources (inbox cache, shared data) are
+    //    owned by RoleHostCore — cleaned up by the role host, not the engine.
     clear_refs_();
-    if (ctx_.core)
-        ctx_.core->clear_inbox_cache();
 
     // 4. Destroy primary state.
     state_ = LuaState{}; // lua_close via RAII
