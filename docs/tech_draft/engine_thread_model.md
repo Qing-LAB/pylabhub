@@ -232,51 +232,100 @@ No synchronization between owner and non-owner — independent states.
 
 The role host shuts down in this order:
 
+### Thread Creation and Joining
+
+**When threads are created** (startup, all on owner thread):
+
 ```
-1. engine_->stop_accepting()     ← reject new invoke() from non-owner threads
-2. core_.set_running(false)      ← signal ctrl_thread to exit its poll loop
-3. ctrl_thread_.join()           ← wait for ctrl_thread to finish + release_thread()
-4. engine_->invoke_on_stop()     ← last script callback (no other threads using engine)
-5. engine_->finalize()           ← destroy child states, close interpreter
-6. teardown_infrastructure_()    ← retract resources (inbox, queues, messenger)
+Step 5: build_api(ctx)          ← accepting_ = true (engine ready)
+Step 6: invoke_on_init()        ← script's on_init callback
+Step 7: ctrl_thread_ spawned    ← non-owner thread starts, uses engine
+Step 8: [data loop begins]      ← owner thread runs hot-path invokes
 ```
 
-**Why ctrl_thread must be joined before invoke_on_stop/finalize**:
-ctrl_thread may be mid-`invoke("on_heartbeat")` using a thread-local Lua
-state. If `finalize()` destroys the child states while ctrl_thread is still
-using one → crash. Joining ensures all non-owner threads are done before
-any cleanup begins.
+`ctrl_thread_` is the ONLY non-owner thread created by the role host.
+It runs a ZmqPollLoop and may call `engine->invoke("on_heartbeat")`
+via the generic invoke path. For Lua, this creates a thread-local child
+state on first call. For Python, requests are queued to the owner.
 
-`stop_accepting()` is a non-virtual method on the ScriptEngine base class.
-It sets the `accepting_` atomic flag (protected member) to false. All
-`invoke()`/`eval()` calls from non-owner threads check this flag and
-return false immediately. Owner-thread hot-path methods (invoke_on_stop,
-invoke_produce) do not check this flag — they are direct calls.
+**Thread-local state creation** (lazy, on non-owner thread):
 
-**engine_->finalize()** (called by role host, must be owner thread):
+For Lua, the first `invoke()` from a non-owner thread calls
+`get_or_create_thread_state_()` which:
+1. Calls `set_owner_engine(this)` — child delegates `is_accepting()` to owner
+2. Calls `initialize()` → creates child lua_State, sets child's owner_thread_id_
+3. Calls `load_script()` → loads same script into child state
+4. Calls `build_api(ctx_)` → builds child's API table, sets child accepting_=true
+
+After this, the child's `invoke()` runs directly on the non-owner thread.
+The child state is cached in `thread_states_[thread_id]`.
+
+**When threads must be joined** (shutdown, all on owner thread):
+
 ```
-  accepting_ = false                       ← reject new invoke() calls
-  cancel all pending promises (Python)     ← unblock waiting threads
-  destroy child thread states (Lua)        ← join/finalize children
-  clear script objects                     ← release callbacks, API refs
-  close interpreter/state                  ← lua_close / Py_Finalize
+Step 10: stop_accepting()       ← is_accepting() returns false for all threads
+                                  (children delegate to owner's flag)
+         ctrl_thread's next invoke() returns false immediately.
+
+Step 11: core_.set_running(false) + notify
+         ctrl_thread's poll loop checks should_continue_loop() → exits.
+
+Step 12: ctrl_thread_.join()    ← BLOCKS until ctrl_thread finishes.
+         ThreadEngineGuard destructor calls release_thread() → removes
+         the thread-local child state from thread_states_ cache.
+         After join: ZERO non-owner threads are alive.
+
+Step 13: invoke_on_stop()       ← safe — only owner thread exists.
+
+Step 14: finalize()             ← stop_accepting() (redundant but safe),
+                                  destroy remaining child states (if any
+                                  thread didn't call release_thread()),
+                                  clear script objects, close interpreter.
+
+Step 15: teardown_infrastructure_()
+         core_.clear_inbox_cache()  ← stop InboxClient connections
+         stop inbox_queue_, queues  ← retract ZMQ infrastructure
+         stop messenger             ← disconnect from broker
+         close producer/consumer    ← release hub resources
 ```
+
+**Key invariants**:
+- Non-owner threads can only be created AFTER `build_api()` (accepting_=true)
+- Non-owner threads must be joined BEFORE `finalize()`
+- Between `stop_accepting()` and `join()`: non-owner threads may still run
+  but all invoke() calls return false — no script execution
+- Between `join()` and `finalize()`: only the owner thread exists
+- After `finalize()`: engine is dead — no calls are valid
+- `teardown_infrastructure_()` runs last — engine is finalized,
+  all threads joined, safe to destroy infrastructure
+
+**`is_accepting()` flag flow**:
+```
+                false (construction)
+                  │
+   initialize()   │
+   load_script()  │  (engine not ready, no threads can invoke)
+                  │
+   build_api() ───┤──→ true  (engine ready, threads may invoke)
+                  │
+   [data loop]    │
+                  │
+   stop_accepting() → false  (all invoke() calls return false)
+                  │
+   [join threads] │  (threads see false, exit their loops)
+                  │
+   finalize() ────┘  (redundant stop_accepting, then destroy)
+```
+
+**`stop_accepting()` and `finalize()`** are non-virtual methods on the
+ScriptEngine base class. `accepting_` is private — only accessed through
+`is_accepting()` (read) and `stop_accepting()` / `finalize()` (write).
+Child engines delegate `is_accepting()` to the owner engine's flag via
+`owner_engine_` pointer.
 
 **The engine MUST NOT clean up core_ shared resources** (inbox cache,
 shared data). Those are owned by the role host and cleaned in
 `teardown_infrastructure_()` after engine finalize.
-
-**teardown_infrastructure_()** (called by role host, after engine finalize):
-```
-  core_.set_running(false)                 ← signal any remaining threads
-  join ctrl_thread_                        ← wait for control thread
-  core_.clear_inbox_cache()                ← stop InboxClient connections
-  stop inbox_queue_, queues, messenger     ← retract infrastructure
-  close producer/consumer                  ← disconnect from broker
-```
-
-All blocked non-owner threads are unblocked with `EngineShutdown` status.
-New `invoke()` calls after `accepting_ = false` return immediately.
 
 ### 4.7 GIL Strategy (Python)
 
@@ -301,13 +350,20 @@ Hot path (owner thread, queue empty — 99.99% of invocations):
 Each engine state maintains atomic flags for coordination:
 
 ```cpp
-// Per engine state (in ScriptEngine base or engine-specific):
+// In ScriptEngine base class (private):
+std::atomic<bool> accepting_{false};   // true only after build_api() succeeds
+ScriptEngine *owner_engine_{nullptr};  // non-null for child engines
+
+// Per engine state (engine-specific):
 std::atomic<bool> executing_{false};   // true while a script call is in progress
-std::atomic<bool> accepting_{true};    // false = reject new invoke() requests
 ```
 
+`accepting_` is private — accessed only through `is_accepting()` (read),
+`stop_accepting()` (write), and `build_api()` / `finalize()` (transitions).
+Child engines delegate `is_accepting()` to the owner engine's flag.
+
 **Multi-state model (Lua)**: Each thread-local child state has its own
-`executing_` flag. The parent's `accepting_` flag gates all invoke()
+`executing_` flag. The owner's `accepting_` flag gates all invoke()
 calls (checked before thread dispatch). Shutdown sequence:
 
 1. Owner sets `accepting_ = false` on parent — all invoke() calls
@@ -333,19 +389,23 @@ be false by the time finalize runs. The flags are defensive insurance.
 
 ### 4.10 Lifecycle Contract
 
-**Initialization sequence** (role host, owner thread):
+**Full lifecycle** (role host, owner thread):
 ```
-1. engine = create_engine()                 ← construct LuaEngine/PythonEngine
-2. engine->initialize("tag", &core_)        ← create interpreter, set owner_thread_id_
-3. engine->load_script(dir, entry, cb)      ← load file, extract callbacks
-4. engine->register_slot_type(spec, ...)    ← build FFI/ctypes types
-5. engine->build_api(ctx)                   ← wire API to infrastructure, set ctx_
-6. engine->invoke_on_init()                 ← call script's on_init()
-7. [data loop: invoke_produce/consume/process per iteration]
-8. engine->stop_accepting()                 ← reject new non-owner invoke() calls
-9. core.set_running(false) + join ctrl      ← ensure non-owner threads are done
-10. engine->invoke_on_stop()                ← call script's on_stop() (no other threads)
-11. engine->finalize()                      ← destroy child states, close interpreter
+ 1. engine = create_engine()                ← accepting_=false (default)
+ 2. engine->initialize("tag", &core_)       ← create interpreter, set owner_thread_id_
+ 3. engine->load_script(dir, entry, cb)     ← load file, extract callbacks
+ 4. engine->register_slot_type(spec, ...)   ← build FFI/ctypes types
+ 5. engine->build_api(ctx)                  ← wire API, accepting_=true
+ 6. engine->invoke_on_init()                ← script's on_init()
+ 7. spawn ctrl_thread_                      ← non-owner thread starts (may call invoke)
+ 8. [data loop]                             ← invoke_produce/consume/process
+ 9. data loop exits
+10. engine->stop_accepting()                ← accepting_=false, all invoke()→false
+11. core_.set_running(false) + notify       ← ctrl_thread exits its poll loop
+12. ctrl_thread_.join()                     ← BLOCK until thread done; release_thread()
+13. engine->invoke_on_stop()                ← last callback (only owner thread alive)
+14. engine->finalize()                      ← stop_accepting(), destroy states, close
+15. teardown_infrastructure_()              ← clear inbox cache, stop queues/messenger
 12. [role host: teardown_infrastructure_]   ← retract resources (inbox, queues, messenger)
 ```
 
