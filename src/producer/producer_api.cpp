@@ -231,7 +231,7 @@ nlohmann::json ProducerAPI::snapshot_metrics_json() const
         base["loop_overrun_count"]   = m.overrun_count;
         base["last_iteration_us"]    = m.last_iteration_us;
         base["max_iteration_us"]     = m.max_iteration_us;
-        base["last_slot_work_us"]    = m.last_slot_work_us;
+        base["last_slot_exec_us"]    = m.last_slot_exec_us;
         base["last_slot_wait_us"]    = m.last_slot_wait_us;
         base["configured_period_us"] = m.configured_period_us;
     }
@@ -265,7 +265,7 @@ py::dict ProducerAPI::metrics() const
         d["max_iteration_us"]    = py::int_(m.max_iteration_us);
         d["last_slot_wait_us"]   = py::int_(m.last_slot_wait_us);
         d["loop_overrun_count"]  = py::int_(m.overrun_count);
-        d["last_slot_work_us"]   = py::int_(m.last_slot_work_us);
+        d["last_slot_exec_us"]   = py::int_(m.last_slot_exec_us);
         d["configured_period_us"] = py::int_(m.configured_period_us);
     }
 

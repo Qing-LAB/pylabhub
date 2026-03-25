@@ -745,7 +745,7 @@ nlohmann::json ConsumerRoleHost::snapshot_metrics_json() const
         const auto m = queue_reader_->metrics();
         base["last_iteration_us"]   = m.last_iteration_us;
         base["max_iteration_us"]    = m.max_iteration_us;
-        base["last_slot_work_us"]   = m.last_slot_work_us;
+        base["last_slot_exec_us"]   = m.last_slot_exec_us;
         base["last_slot_wait_us"]   = m.last_slot_wait_us;
         base["configured_period_us"] = m.configured_period_us;
     }

@@ -59,7 +59,7 @@ struct PYLABHUB_UTILS_EXPORT ContextMetrics
 
     // ── Domain 3: Loop scheduling ─────────────────────────────────────────────
     uint64_t overrun_count{0};     ///< Iterations where start-to-start gap exceeded configured_period_us.
-    uint64_t last_slot_work_us{0}; ///< Time from acquire to release (user code + overhead) (µs).
+    uint64_t last_slot_exec_us{0}; ///< Time from acquire to release (user code + overhead) (µs).
 
     // ── Config reference (informational) ──────────────────────────────────────
     uint64_t configured_period_us{0}; ///< Target period from config (µs). 0 = MaxRate. Used for overrun detection only.

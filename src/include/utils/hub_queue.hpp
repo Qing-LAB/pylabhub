@@ -89,7 +89,7 @@ struct QueueMetrics
     uint64_t context_elapsed_us{0};   ///< Elapsed since first acquire (µs). Updated per acquire.
 
     // ── Domain 3: Loop scheduling (both transports) ──────────────────────────
-    uint64_t last_slot_work_us{0};    ///< Time from acquire to release (µs).
+    uint64_t last_slot_exec_us{0};    ///< Time from acquire to release (µs).
     uint64_t overrun_count{0};        ///< Iterations where start-to-start gap > configured_period_us.
     uint64_t configured_period_us{0}; ///< Target period (µs). 0 = MaxRate. Config input, not measured.
 

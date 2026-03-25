@@ -204,12 +204,12 @@ unconventional. Consider documenting them as frozen/internal-only, or switching 
 - Added 7 edge-case tests to `test_datahub_loop_policy.cpp` (secrets 80006–80012):
   - ZeroOnCreation (all fields zero before first acquire, including context_start_time)
   - MaxRateNoOverrun (MaxRate policy → overrun_count = 0 even with slow body)
-  - LastSlotWorkUsPopulated (RAII destructor path records last_slot_work_us correctly)
+  - LastSlotWorkUsPopulated (RAII destructor path records last_slot_exec_us correctly)
   - LastIterationUsPopulated (non-zero after 2 acquires)
   - MaxIterationUsPeak (tracks peak; never decreases; ≥ last_iteration_us)
   - ContextElapsedUsMonotonic (grows monotonically between acquires)
   - CtxMetricsPassThrough (&ctx.metrics() == &producer->metrics() — same Pimpl storage)
-- Fixed RAII release path: `last_slot_work_us` now set in `release_write_handle()` and
+- Fixed RAII release path: `last_slot_exec_us` now set in `release_write_handle()` and
   `release_consume_handle()` directly (both RAII destructor and explicit paths are symmetric)
 - Fixed RAII multi-iteration producer race: SlotWriteHandle/SlotConsumeHandle now store
   per-handle `t_slot_acquired_` (set at acquisition time) rather than relying on

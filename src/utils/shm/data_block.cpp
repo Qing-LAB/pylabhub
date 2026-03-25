@@ -980,7 +980,7 @@ struct SlotWriteHandleImpl
     bool committed = false;
     bool released = false;
     SlotRWState *rw_state = nullptr; // Pointer to the SlotRWState for this slot
-    /// Per-handle acquire timestamp for last_slot_work_us.
+    /// Per-handle acquire timestamp for last_slot_exec_us.
     /// Stored here (not in owner) so the RAII multi-iteration path records the
     /// correct work time even after the owner's t_iter_start_ is overwritten by the
     /// next acquire_write_slot() call (HEP-CORE-0008 §4.2).
@@ -1001,7 +1001,7 @@ struct SlotConsumeHandleImpl
     SlotRWState *rw_state = nullptr;  // Pointer to the SlotRWState for this slot
     uint64_t captured_generation = 0; // Captured generation for validation
     int consumer_heartbeat_slot = -1; // For Sequential_sync: which consumer slot to update on release
-    /// Per-handle acquire timestamp for last_slot_work_us (symmetric with SlotWriteHandleImpl).
+    /// Per-handle acquire timestamp for last_slot_exec_us (symmetric with SlotWriteHandleImpl).
     ContextMetrics::Clock::time_point t_slot_acquired_{};
 };
 
@@ -1623,7 +1623,7 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
     impl->buffer_ptr = slot_buffer_ptr(buf, slot_index, slot_stride_bytes);
     impl->buffer_size = slot_stride_bytes;
     impl->rw_state = rw_state;
-    impl->t_slot_acquired_ = t_acquired; // per-handle anchor for last_slot_work_us
+    impl->t_slot_acquired_ = t_acquired; // per-handle anchor for last_slot_exec_us
     // flexible_ptr and flexible_size are no longer directly used in SlotWriteHandleImpl
     // NOLINTNEXTLINE(bugprone-unhandled-exception-at-new) -- OOM would terminate; noexcept design choice
     return std::unique_ptr<SlotWriteHandle>(new SlotWriteHandle(std::move(impl)));
@@ -1714,7 +1714,7 @@ bool release_write_handle(SlotWriteHandleImpl &impl)
         const ContextMetrics::Clock::time_point t_zero{};
         if (impl.t_slot_acquired_ != t_zero)
         {
-            impl.owner->metrics_.last_slot_work_us = static_cast<uint64_t>(
+            impl.owner->metrics_.last_slot_exec_us = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::microseconds>(
                     ContextMetrics::Clock::now() - impl.t_slot_acquired_).count());
         }
@@ -1799,7 +1799,7 @@ bool release_consume_handle(SlotConsumeHandleImpl &impl)
         const ContextMetrics::Clock::time_point t_zero{};
         if (impl.t_slot_acquired_ != t_zero)
         {
-            impl.owner->metrics_.last_slot_work_us = static_cast<uint64_t>(
+            impl.owner->metrics_.last_slot_exec_us = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::microseconds>(
                     ContextMetrics::Clock::now() - impl.t_slot_acquired_).count());
         }
@@ -2244,7 +2244,7 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
         pImpl.get(), pImpl->dataBlock.get(), header, slot_id, slot_index,
         buf, slot_stride_bytes, rw_state, captured_generation,
         (policy == ConsumerSyncPolicy::Sequential_sync) ? pImpl->heartbeat_slot : -1);
-    handle_impl->t_slot_acquired_ = t_acquired; // per-handle anchor for last_slot_work_us
+    handle_impl->t_slot_acquired_ = t_acquired; // per-handle anchor for last_slot_exec_us
 
     // Note: last_consumed_slot_id is NOT updated here. It is updated only when the slot is
     // explicitly consumed via release_consume_slot() (mark_as_consumed=true). Exception-path
@@ -2304,7 +2304,7 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(uint6
         pImpl.get(), pImpl->dataBlock.get(), header, slot_id, slot_index,
         buf, slot_stride_bytes, rw_state, captured_generation,
         (header->consumer_sync_policy == ConsumerSyncPolicy::Sequential_sync) ? pImpl->heartbeat_slot : -1);
-    handle_impl->t_slot_acquired_ = ContextMetrics::Clock::now(); // per-handle anchor for last_slot_work_us
+    handle_impl->t_slot_acquired_ = ContextMetrics::Clock::now(); // per-handle anchor for last_slot_exec_us
 
     // Note: last_consumed_slot_id updated only on explicit release_consume_slot() call.
     // NOLINTNEXTLINE(bugprone-unhandled-exception-at-new) -- OOM would terminate; noexcept design choice
