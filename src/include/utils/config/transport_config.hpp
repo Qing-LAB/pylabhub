@@ -9,6 +9,7 @@
 
 #include "utils/hub_zmq_queue.hpp" // kZmqDefaultBufferDepth
 #include "utils/json_fwd.hpp"
+#include "utils/net_address.hpp"
 
 #include <cstdint>
 #include <stdexcept>
@@ -70,6 +71,11 @@ inline TransportConfig parse_transport_config(const nlohmann::json &j,
             throw std::invalid_argument(
                 std::string(tag) + ": '" + pfx + "zmq_endpoint' is required when " +
                 pfx + "transport is \"zmq\"");
+
+        auto ep_result = pylabhub::validate_tcp_endpoint(tc.zmq_endpoint);
+        if (!ep_result.ok())
+            throw std::invalid_argument(
+                std::string(tag) + ": invalid " + pfx + "zmq_endpoint: " + ep_result.error);
 
         if (tc.zmq_buffer_depth == 0)
             throw std::invalid_argument(
