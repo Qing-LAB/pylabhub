@@ -145,7 +145,7 @@ nlohmann::json ConsumerAPI::snapshot_metrics_json() const
         base["iteration_count"]      = m.iteration_count;
         base["last_iteration_us"]    = m.last_iteration_us;
         base["max_iteration_us"]     = m.max_iteration_us;
-        base["last_slot_work_us"]    = m.last_slot_work_us;
+        base["last_slot_exec_us"]    = m.last_slot_exec_us;
         base["last_slot_wait_us"]    = m.last_slot_wait_us;
         base["configured_period_us"] = m.configured_period_us;
     }
@@ -178,7 +178,7 @@ py::dict ConsumerAPI::metrics() const
         d["last_iteration_us"]   = py::int_(m.last_iteration_us);
         d["max_iteration_us"]    = py::int_(m.max_iteration_us);
         d["last_slot_wait_us"]   = py::int_(m.last_slot_wait_us);
-        d["last_slot_work_us"]   = py::int_(m.last_slot_work_us);
+        d["last_slot_exec_us"]   = py::int_(m.last_slot_exec_us);
     }
 
     return d;

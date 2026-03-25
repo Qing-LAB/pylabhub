@@ -59,7 +59,7 @@
 **Goal**: Role hosts work entirely through `QueueReader`/`QueueWriter` — no transport branching, no `shm()` access.
 
 **Phase 1 — Unified metrics at queue level**:
-- Expand `QueueMetrics` with timing fields: `last_iteration_us`, `max_iteration_us`, `last_slot_work_us`, `last_slot_wait_us`, `configured_period_us`
+- Expand `QueueMetrics` with timing fields: `last_iteration_us`, `max_iteration_us`, `last_slot_exec_us`, `last_slot_wait_us`, `configured_period_us`
 - ShmQueue: populate from existing `ContextMetrics`
 - ZmqQueue: track internally in recv/send thread (measure wait vs work per iteration)
 - Add `virtual void reset_metrics() {}` to QueueReader/QueueWriter base

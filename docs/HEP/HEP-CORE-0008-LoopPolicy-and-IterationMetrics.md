@@ -110,7 +110,7 @@ Five natural domains in the stack:
 |--------|-----------------|------------------|---------------|
 | 1. Channel throughput | `slots_written`, `commit_index` | SHM `SharedMemoryHeader` (cross-process) | All parties via SHM read |
 | 2. Acquire/release timing | `last_slot_wait_us`, `iteration_count`, `last_iteration_us`, `max_iteration_us` | `acquire_write_slot()` / `acquire_consume_slot()` in data_block.cpp | DataBlock Pimpl → RAII ctx → Python |
-| 3. Loop scheduling | `overrun_count`, `last_slot_work_us`, `configured_period_us`, `context_elapsed_us` | Whoever runs the timing loop — `SlotIterator` (RAII path) or script host (binary path) | DataBlock Pimpl → RAII ctx → Python |
+| 3. Loop scheduling | `overrun_count`, `last_slot_exec_us`, `configured_period_us`, `context_elapsed_us` | Whoever runs the timing loop — `SlotIterator` (RAII path) or script host (binary path) | DataBlock Pimpl → RAII ctx → Python |
 | 4. Script supervision | `script_error_count`, `slot_valid` | Script host (Python error paths) | Python only (binary-specific) |
 | 5. Channel topology | `consumer_count`, `last_heartbeat_us` | Broker / heartbeat protocol | Broker; Python via broker query |
 
@@ -198,7 +198,7 @@ struct ContextMetrics {
 
     // ── Domain 3: Loop scheduling ──────────────────────────────────────────────
     uint64_t overrun_count{0};      ///< Iterations where start-to-start gap > configured_period_us.
-    uint64_t last_slot_work_us{0};  ///< Time from acquire to release (user code + overhead).
+    uint64_t last_slot_exec_us{0};  ///< Time from acquire to release (user code + overhead).
 
     // ── Config reference (informational, not a metric) ─────────────────────────
     uint64_t configured_period_us{0}; ///< Configured target period in µs (0 = MaxRate).
@@ -273,7 +273,7 @@ acquire_write_slot() called:
 
 ```
 release_write_slot() called:
-  metrics_.last_slot_work_us = (Clock::now() − t_iter_start_) as us
+  metrics_.last_slot_exec_us = (Clock::now() − t_iter_start_) as us
   // then existing release logic
 ```
 
@@ -359,7 +359,7 @@ api.metrics() -> dict:
 
     # Domain 3 — Loop scheduling (from DataBlock Pimpl / LoopPolicy config)
     "overrun_count":      int,   # acquire cycles exceeding configured_period_us
-    "last_slot_work_us":  int,   # time from acquire to release (us)
+    "last_slot_exec_us":  int,   # time from acquire to release (us)
     "configured_period_us":  int,   # configured target period (0 = MaxRate)
 
     # Domain 4 — Script supervision (from script host metrics, binary-specific)
@@ -497,7 +497,7 @@ flowchart TB
     subgraph D2D3["Domains 2+3: Timing + Scheduling"]
         subgraph ShmPath["SHM Transport"]
             Acquire["acquire_write_slot()\n• last_slot_wait_us\n• last_iteration_us\n• overrun_count"]
-            Release["release_write_slot()\n• last_slot_work_us"]
+            Release["release_write_slot()\n• last_slot_exec_us"]
             Pimpl["DataBlock Pimpl\n(ContextMetrics storage)"]
         end
         subgraph ZmqPath["ZMQ Transport"]
@@ -592,7 +592,7 @@ uint64_t iteration_count{0};      ///< Successful slot acquisitions since reset.
 uint64_t context_elapsed_us{0};   ///< Elapsed since first acquire (µs). Updated per acquire.
 
 // Domain 3: Loop scheduling
-uint64_t last_slot_work_us{0};    ///< Time from acquire to release (µs).
+uint64_t last_slot_exec_us{0};    ///< Time from acquire to release (µs).
 uint64_t configured_period_us{0}; ///< Target period (0 = MaxRate). Config input, not measured.
 ```
 
@@ -601,13 +601,33 @@ uint64_t configured_period_us{0}; ///< Target period (0 = MaxRate). Config input
 | Field | Measurement | When updated | Meaning |
 |-------|-------------|-------------|---------|
 | `last_slot_wait_us` | `t_acquired - t_enter_acquire` | Each successful acquire | How long the queue blocked waiting for data |
-| `last_iteration_us` | `t_enter_acquire(N) - t_enter_acquire(N-1)` | Each acquire (after first) | Start-to-start gap between consecutive iterations |
-| `max_iteration_us` | running max of `last_iteration_us` | Each acquire (after first) | Peak iteration time since reset |
+| `last_iteration_us` | `t_acquired(N) - t_acquired(N-1)` | Each successful acquire (after first) | Full cycle time: user exec + sleep + drain + wait |
+| `max_iteration_us` | running max of `last_iteration_us` | Each successful acquire (after first) | Peak full cycle time since reset |
 | `iteration_count` | +1 per successful acquire | Each successful acquire | Total successful slot acquisitions since reset |
-| `context_elapsed_us` | `t_enter_acquire - t_first_acquire` | Each acquire (after first) | Total elapsed time since the queue started processing |
-| `last_slot_work_us` | `t_release - t_acquired` | Each release/commit | Time the caller held the slot (user callback time) |
-| `overrun_count` | +1 when `last_iteration_us > configured_period_us` | Each acquire (when period > 0) | Iterations that missed the target deadline |
+| `context_elapsed_us` | `t_acquired - t_first_acquired` | Each successful acquire (after first) | Total elapsed time since the queue started processing |
+| `last_slot_exec_us` | `t_release - t_acquired` | Each release/commit | Time the caller held the slot (user callback execution) |
+| `overrun_count` | +1 when `last_iteration_us > configured_period_us` | Each successful acquire (when period > 0) | Full cycles that missed the target deadline |
 | `configured_period_us` | set once at startup | `set_configured_period()` | Target loop period; 0 = MaxRate (no overrun detection) |
+
+**Behavior on failed acquire:**
+
+When `read_acquire()` times out (no data) or `write_acquire()` fails (buffer full / timeout),
+no timing fields are updated. The `t_iter_start_` anchor remains at the previous successful
+acquire's `t_acquired`. This means:
+
+- `last_iteration_us` on the **next** successful acquire will include the time spent in
+  the failed attempt(s). This is correct: the full cycle time reflects reality — the loop
+  was stalled and the deadline was missed.
+- `iteration_count` is NOT incremented for failed acquires — it counts only successful ones.
+- `overrun_count` is checked only on successful acquires. A failed acquire that caused
+  a long gap will trigger the overrun on the subsequent successful acquire (when
+  `last_iteration_us` exceeds `configured_period_us`).
+- For ZmqQueue write mode with Drop policy, a buffer-full failure increments
+  `overrun_count` immediately (buffer capacity overrun, distinct from timing overrun).
+
+This design ensures metrics reflect the caller's actual experience: if the queue was
+unavailable for 100ms, the next `last_iteration_us` will show ~100ms, and the overrun
+detector will fire if that exceeds the configured period.
 
 ### 10.4 Queue Lifecycle API Additions
 
@@ -632,7 +652,7 @@ virtual void set_configured_period(uint64_t period_us) { (void)period_us; }
 | `max_iteration_us` | DataBlock acquire (existing) | read_acquire/write_acquire: running max |
 | `iteration_count` | DataBlock acquire (existing) | read_acquire/write_acquire: successful count |
 | `context_elapsed_us` | DataBlock acquire (existing) | read_acquire/write_acquire: elapsed since first acquire |
-| `last_slot_work_us` | DataBlock release (existing) | read_release/write_commit: acquire-to-release gap |
+| `last_slot_exec_us` | DataBlock release (existing) | read_release/write_commit: acquire-to-release gap |
 | `overrun_count` | DataBlock acquire (existing) | read_acquire/write_acquire: iteration exceeded `configured_period_us` |
 | `configured_period_us` | `set_configured_period()` → DataBlock `set_loop_policy()` | `set_configured_period()` → stored in Impl |
 
