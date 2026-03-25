@@ -760,7 +760,7 @@ void* ZmqQueue::write_acquire(std::chrono::milliseconds timeout) noexcept
         std::lock_guard<std::mutex> lk(pImpl->send_mu_);
         if (pImpl->send_count_ >= pImpl->send_depth_)
         {
-            pImpl->overrun_count_.fetch_add(1, std::memory_order_relaxed); // buffer-full drop — not a timing overrun
+            pImpl->overrun_count_.fetch_add(1, std::memory_order_relaxed); // buffer-full: cycle failed
             return nullptr;
         }
     }
@@ -774,7 +774,7 @@ void* ZmqQueue::write_acquire(std::chrono::milliseconds timeout) noexcept
         });
         if (!ok || impl_ptr->send_stop_.load(std::memory_order_relaxed))
         {
-            impl_ptr->overrun_count_.fetch_add(1, std::memory_order_relaxed); // timeout or shutdown
+            impl_ptr->overrun_count_.fetch_add(1, std::memory_order_relaxed); // timeout or shutdown: cycle failed
             return nullptr;
         }
     }
