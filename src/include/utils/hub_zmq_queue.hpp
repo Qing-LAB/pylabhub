@@ -289,8 +289,8 @@ public:
 
     /**
      * @brief Bind/connect socket and start recv_thread_ (read mode) or send_thread_ (write mode).
-     * @return true on success; false if already running, socket setup failed,
-     *         or bind/connect failed.  Callers MUST check the return value.
+     * @return true on success or if already running (idempotent).
+     *         false only on actual startup failure (socket/bind/connect error).
      */
     bool start() override;
 
