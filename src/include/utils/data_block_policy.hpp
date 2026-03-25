@@ -192,9 +192,12 @@ enum class ChecksumPolicy
  *   - Role host layer: parsed from RoleConfig::loop_policy
  *     (JSON: `"loop_policy": "max_rate"` | `"fixed_rate"`; default: max_rate)
  *     and applied in the role host before the loop starts.
- * **Where checked:** data_block.cpp — acquire_write_slot() and acquire_consume_slot()
- *   apply the sleep and update ContextMetrics::overrun_count.
+ * **Where checked:** data_block.cpp — acquire_write_slot() and acquire_consume_slot().
  * **Where read back:** TransactionContext::metrics() (pass-through to DataBlockImpl).
+ *
+ * DataBlock measures timing (last_iteration_us, last_slot_exec_us, etc.) and counts
+ * data drops (ContextMetrics::data_drop_count — Latest_only slot overwrites).
+ * Timing overrun detection (now > deadline) is the main loop's responsibility.
  *
  * | Value        | Behaviour                                                   |
  * |--------------|-------------------------------------------------------------|
@@ -202,10 +205,9 @@ enum class ChecksumPolicy
  * |              | Runs at the maximum rate the SHM ring can sustain.         |
  * |              | Default for high-throughput sensor capture.                |
  * | FixedRate    | After each slot release: sleeps for                        |
- * |              |   max(0, configured_period_us − elapsed_since_last_acquire)           |
- * |              | Increments ContextMetrics::overrun_count when              |
- * |              |   elapsed ≥ configured_period_us (iteration took longer than target). |
- * |              | Requires configured_period_us > 0 in DataBlockConfig.                 |
+ * |              |   max(0, configured_period_us − elapsed_since_last_acquire)|
+ * |              | Requires configured_period_us > 0 in DataBlockConfig.      |
+ * |              |   FixedRateWithCompensation advances from the previous deadline, catching up after overruns. |
  * | MixTriggered | Reserved — trigger-based mode, not implemented.            |
  *
  * **Contrast with RoleConfig::LoopTimingPolicy:**

@@ -761,6 +761,8 @@ void ProducerRoleHost::run_data_loop_()
                 now - cycle_start).count());
         core_.set_last_cycle_work_us(work_us);
         core_.inc_iteration_count();
+        if (deadline != Clock::time_point::max() && now > deadline)
+            core_.inc_loop_overrun();
 
         // --- Step G: Compute next deadline ---
         deadline = compute_next_deadline(tc.loop_timing, deadline, cycle_start, period_us);
@@ -818,7 +820,7 @@ nlohmann::json ProducerRoleHost::snapshot_metrics_json() const
     base["drops"]              = core_.drops();
     base["script_errors"]      = engine_ ? engine_->script_error_count() : 0;
     base["last_cycle_work_us"] = core_.last_cycle_work_us();
-    base["loop_overrun_count"] = 0; // overwritten below if SHM is available
+    base["loop_overrun_count"] = core_.loop_overrun_count();
 
     if (out_producer_.has_value())
     {
@@ -831,7 +833,7 @@ nlohmann::json ProducerRoleHost::snapshot_metrics_json() const
     if (queue_)
     {
         const auto m = queue_->metrics();
-        base["loop_overrun_count"]  = m.overrun_count;
+        base["data_drop_count"]     = m.data_drop_count;
         base["last_iteration_us"]   = m.last_iteration_us;
         base["max_iteration_us"]    = m.max_iteration_us;
         base["last_slot_exec_us"]   = m.last_slot_exec_us;
