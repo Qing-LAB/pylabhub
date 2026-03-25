@@ -174,8 +174,8 @@ class ProcessorAPI
         { return core_->out_written(); }
     [[nodiscard]] uint64_t out_drop_count()      const noexcept
         { return core_->drops(); }
-    /// Processor is queue-driven (no deadline); always returns 0. Present for API symmetry.
-    [[nodiscard]] uint64_t loop_overrun_count()  const noexcept { return 0; }
+    /// Loop overrun count from the main loop deadline check. 0 when no period configured.
+    [[nodiscard]] uint64_t loop_overrun_count()  const noexcept { return core_->loop_overrun_count(); }
     /// Microseconds of active work (GIL acquire + on_process callback) in the last iteration.
     [[nodiscard]] uint64_t last_cycle_work_us()  const noexcept
         { return core_->last_cycle_work_us(); }

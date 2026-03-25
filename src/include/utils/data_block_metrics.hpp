@@ -57,12 +57,12 @@ struct PYLABHUB_UTILS_EXPORT ContextMetrics
     uint64_t max_iteration_us{0};   ///< Peak start-to-start elapsed since session start (µs).
     uint64_t iteration_count{0};    ///< Successful slot acquisitions since session start.
 
-    // ── Domain 3: Loop scheduling ─────────────────────────────────────────────
-    uint64_t overrun_count{0};     ///< Iterations where start-to-start gap exceeded configured_period_us.
+    // ── Domain 3: Data flow ─────────────────────────────────────────────────
+    uint64_t data_drop_count{0};   ///< Producer: slots overwritten before consumer read (Latest_only). Consumer: always 0.
     uint64_t last_slot_exec_us{0}; ///< Time from acquire to release (user code + overhead) (µs).
 
     // ── Config reference (informational) ──────────────────────────────────────
-    uint64_t configured_period_us{0}; ///< Target period from config (µs). 0 = MaxRate. Used for overrun detection only.
+    uint64_t configured_period_us{0}; ///< Target period from config (µs). 0 = MaxRate. Informational only.
 };
 
 } // namespace pylabhub::hub

@@ -14,11 +14,11 @@
  * Tests:
  *   1. ProducerMetricsAccumulate   — iteration_count rises with each acquire/release
  *   2. ProducerMetricsClear        — clear_metrics() zeroes counters; configured_period_us survives
- *   3. ProducerFixedRateOverrunDetect — overrun_count > 0 after body sleeps past configured_period_us
+ *   3. ProducerFixedRateOverrunDetect — data_drop_count stays 0 (timing overrun moved to main loop); body sleeps past configured_period_us
  *   4. SlotIteratorFixedRatePacing — ctx.slots() sleeps maintain start-to-start interval
  *   5. ConsumerMetricsAccumulate   — consumer iteration_count rises with each acquire/release
  *   6. ZeroOnCreation              — all ContextMetrics fields are zero before first acquire
- *   7. MaxRateNoOverrun            — MaxRate policy never increments overrun_count
+ *   7. MaxRateNoOverrun            — MaxRate policy: data_drop_count stays 0 (no data loss)
  *   8. LastSlotWorkUsPopulated     — last_slot_exec_us > 0 after measurable body sleep
  *   9. LastIterationUsPopulated    — last_iteration_us > 0 after two acquires
  *  10. MaxIterationUsPeak          — max_iteration_us tracks the peak and never decreases
@@ -40,6 +40,7 @@
 #include "shared_test_helpers.h"
 #include "test_datahub_types.h"
 #include "plh_datahub.hpp"
+#include "utils/role_host_core.hpp"
 
 #include <gtest/gtest.h>
 #include <chrono>
@@ -152,7 +153,7 @@ TEST_F(DatahubLoopPolicyTest, ProducerMetricsClear)
 
     const auto &m = producer->metrics();
     EXPECT_EQ(m.iteration_count, uint64_t{0});
-    EXPECT_EQ(m.overrun_count,   uint64_t{0});
+    EXPECT_EQ(m.data_drop_count,   uint64_t{0});
     // configured_period_us is config, not a counter — preserved through clear_metrics()
     EXPECT_EQ(m.configured_period_us, uint64_t{50000});
 }
@@ -181,7 +182,26 @@ TEST_F(DatahubLoopPolicyTest, ProducerFixedRateOverrunDetect)
         (void)h->commit(sizeof(TestDataBlock));
     }
 
-    EXPECT_GT(producer->metrics().overrun_count, uint64_t{0});
+    EXPECT_EQ(producer->metrics().data_drop_count, uint64_t{0}); // No data loss in SHM; timing overrun → RoleHostCore::loop_overrun_count
+}
+
+// ============================================================================
+// Test 3b: LoopOverrunCount — deadline-based overrun tracked in RoleHostCore
+// ============================================================================
+
+TEST_F(DatahubLoopPolicyTest, LoopOverrunCount_IncrementAndAccumulate)
+{
+    // Verify RoleHostCore::loop_overrun_count tracks deadline overruns.
+    // Deterministic: directly call inc_loop_overrun() — no timing dependency.
+    pylabhub::scripting::RoleHostCore core;
+    EXPECT_EQ(core.loop_overrun_count(), 0u);
+
+    core.inc_loop_overrun();
+    EXPECT_EQ(core.loop_overrun_count(), 1u);
+
+    core.inc_loop_overrun();
+    core.inc_loop_overrun();
+    EXPECT_EQ(core.loop_overrun_count(), 3u);
 }
 
 // ============================================================================
@@ -279,7 +299,7 @@ TEST_F(DatahubLoopPolicyTest, ZeroOnCreation)
     // Before any acquire, all metric counters and context_start_time must be zero.
     const auto &m = producer->metrics();
     EXPECT_EQ(m.iteration_count,    uint64_t{0});
-    EXPECT_EQ(m.overrun_count,      uint64_t{0});
+    EXPECT_EQ(m.data_drop_count,      uint64_t{0});
     EXPECT_EQ(m.last_slot_wait_us,  uint64_t{0});
     EXPECT_EQ(m.last_iteration_us,  uint64_t{0});
     EXPECT_EQ(m.max_iteration_us,   uint64_t{0});
@@ -314,7 +334,7 @@ TEST_F(DatahubLoopPolicyTest, MaxRateNoOverrun)
         (void)h->commit(sizeof(TestDataBlock));
     }
 
-    EXPECT_EQ(producer->metrics().overrun_count, uint64_t{0});
+    EXPECT_EQ(producer->metrics().data_drop_count, uint64_t{0});
     EXPECT_EQ(producer->metrics().configured_period_us,     uint64_t{0});
 }
 
@@ -591,7 +611,7 @@ TEST_F(DatahubLoopPolicyTest, RaiiProducerOverrunViaSlots)
             EXPECT_EQ(count, 3);
         });
 
-    EXPECT_GT(producer->metrics().overrun_count, uint64_t{0});
+    EXPECT_EQ(producer->metrics().data_drop_count, uint64_t{0}); // No data loss in SHM; timing overrun → RoleHostCore::loop_overrun_count
 }
 
 // ============================================================================

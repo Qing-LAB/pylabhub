@@ -1210,7 +1210,7 @@ TEST_F(ZmqQueueTest, Metrics_ZeroOnCreation_PushQueue)
     auto q = ZmqQueue::push_to(schema_ep(11), blob_schema(16), "aligned");
     ASSERT_NE(q, nullptr);
 
-    EXPECT_EQ(q->metrics().overrun_count,    0u);
+    EXPECT_EQ(q->metrics().data_drop_count,    0u);
     EXPECT_EQ(q->metrics().send_drop_count,  0u);
     EXPECT_EQ(q->metrics().send_retry_count, 0u);
 
@@ -1220,7 +1220,7 @@ TEST_F(ZmqQueueTest, Metrics_ZeroOnCreation_PushQueue)
     EXPECT_EQ(m.recv_gap_count,         0u);
     EXPECT_EQ(m.send_drop_count,        0u);
     EXPECT_EQ(m.send_retry_count,       0u);
-    EXPECT_EQ(m.overrun_count,          0u);
+    EXPECT_EQ(m.data_drop_count,          0u);
 }
 
 TEST_F(ZmqQueueTest, Metrics_ZeroOnCreation_PullQueue)
@@ -1239,7 +1239,7 @@ TEST_F(ZmqQueueTest, Metrics_ZeroOnCreation_PullQueue)
     EXPECT_EQ(m.recv_gap_count,         0u);
     EXPECT_EQ(m.send_drop_count,        0u);
     EXPECT_EQ(m.send_retry_count,       0u);
-    EXPECT_EQ(m.overrun_count,          0u);
+    EXPECT_EQ(m.data_drop_count,          0u);
 }
 
 // ── OverflowPolicy::Drop ──────────────────────────────────────────────────────
@@ -1248,7 +1248,7 @@ TEST_F(ZmqQueueTest, OverflowDrop_FullBuffer_ReturnsNullAndIncrements)
 {
     // Create a push queue with depth=2, no start() (send_thread_ not running).
     // After 2 successful write_acquire/commit pairs, buffer is full.
-    // The 3rd write_acquire must return nullptr and increment overrun_count.
+    // The 3rd write_acquire must return nullptr and increment data_drop_count.
     auto push = ZmqQueue::push_to(schema_ep(12), blob_schema(8), "aligned",
                                   /*bind=*/true, /*tag=*/std::nullopt, /*sndhwm=*/0,
                                   /*depth=*/2, OverflowPolicy::Drop);
@@ -1263,19 +1263,19 @@ TEST_F(ZmqQueueTest, OverflowDrop_FullBuffer_ReturnsNullAndIncrements)
     push->write_commit();
 
     // Buffer is now full (send_thread_ not running, nothing drained).
-    EXPECT_EQ(push->metrics().overrun_count, 0u) << "overrun must be 0 before overflow";
+    EXPECT_EQ(push->metrics().data_drop_count, 0u) << "data_drop must be 0 before overflow";
 
     void* b3 = push->write_acquire(0ms);
     EXPECT_EQ(b3, nullptr) << "Drop policy: 3rd acquire on full buffer must return nullptr";
-    EXPECT_EQ(push->metrics().overrun_count, 1u) << "overrun_count must increment on drop";
+    EXPECT_EQ(push->metrics().data_drop_count, 1u) << "data_drop_count must increment on drop";
 
     // A 4th attempt also drops.
     void* b4 = push->write_acquire(0ms);
     EXPECT_EQ(b4, nullptr);
-    EXPECT_EQ(push->metrics().overrun_count, 2u);
+    EXPECT_EQ(push->metrics().data_drop_count, 2u);
 
     // metrics() struct agrees with individual accessor.
-    EXPECT_EQ(push->metrics().overrun_count, 2u);
+    EXPECT_EQ(push->metrics().data_drop_count, 2u);
 }
 
 TEST_F(ZmqQueueTest, OverflowDrop_Discard_DoesNotFillSlot)
@@ -1295,7 +1295,7 @@ TEST_F(ZmqQueueTest, OverflowDrop_Discard_DoesNotFillSlot)
     EXPECT_NE(b2, nullptr) << "after discard, slot must still be available";
     push->write_commit();
 
-    EXPECT_EQ(push->metrics().overrun_count, 0u);
+    EXPECT_EQ(push->metrics().data_drop_count, 0u);
 }
 
 // ── OverflowPolicy::Block ─────────────────────────────────────────────────────
@@ -1320,8 +1320,8 @@ TEST_F(ZmqQueueTest, OverflowBlock_Timeout_ReturnsNullAndIncrements)
 
     EXPECT_EQ(b2, nullptr) << "Block policy: timeout must return nullptr";
     EXPECT_GE(elapsed, 80ms) << "must have actually waited close to the timeout";
-    EXPECT_EQ(push->metrics().overrun_count, 1u);
-    EXPECT_EQ(push->metrics().overrun_count, 1u);
+    EXPECT_EQ(push->metrics().data_drop_count, 1u);
+    EXPECT_EQ(push->metrics().data_drop_count, 1u);
 }
 
 // ── Individual accessors agree with metrics() struct ─────────────────────────
@@ -1342,10 +1342,10 @@ TEST_F(ZmqQueueTest, Metrics_IndividualAccessorsMatchStruct)
     push->write_acquire(0ms); // overflow 3
 
     const QueueMetrics m = push->metrics();
-    EXPECT_EQ(m.overrun_count,    push->metrics().overrun_count);
+    EXPECT_EQ(m.data_drop_count,    push->metrics().data_drop_count);
     EXPECT_EQ(m.send_drop_count,  push->metrics().send_drop_count);
     EXPECT_EQ(m.send_retry_count, push->metrics().send_retry_count);
-    EXPECT_EQ(m.overrun_count,    3u);
+    EXPECT_EQ(m.data_drop_count,    3u);
     EXPECT_EQ(m.send_drop_count,  0u);
     EXPECT_EQ(m.send_retry_count, 0u);
 }
@@ -1423,7 +1423,7 @@ TEST_F(ZmqQueueTest, SendThread_Roundtrip_ThenStop)
         pull->read_release();
     }
 
-    EXPECT_EQ(push->metrics().overrun_count,          0u);
+    EXPECT_EQ(push->metrics().data_drop_count,          0u);
     EXPECT_EQ(push->metrics().send_drop_count,        0u);
     EXPECT_EQ(pull->metrics().recv_frame_error_count, 0u);
     EXPECT_EQ(pull->metrics().recv_gap_count,         0u);
@@ -1495,7 +1495,7 @@ TEST_F(ZmqQueueTest, AbstractQueue_Metrics_ViaBasePointer)
 
     // Read metrics via Queue* base pointer (virtual dispatch).
     const QueueMetrics m = push->metrics();
-    EXPECT_EQ(m.overrun_count,          2u);
+    EXPECT_EQ(m.data_drop_count,          2u);
     EXPECT_EQ(m.send_drop_count,        0u);
     EXPECT_EQ(m.recv_frame_error_count, 0u);
     EXPECT_EQ(m.recv_gap_count,         0u);
@@ -1538,7 +1538,7 @@ TEST_F(ZmqQueueTest, ConcurrentMetrics_NoDataRaceUnderIO)
         while (!stop_flag.load(std::memory_order_relaxed))
         {
             QueueMetrics m = qptr->metrics();
-            (void)m.overrun_count; // access each field to exercise all atomic loads
+            (void)m.data_drop_count; // access each field to exercise all atomic loads
             (void)m.send_drop_count;
             (void)m.recv_overflow_count;
             ++reads_done;
@@ -1562,8 +1562,8 @@ TEST_F(ZmqQueueTest, ConcurrentMetrics_NoDataRaceUnderIO)
 
     EXPECT_GT(reads_done.load(), 0) << "reader thread must have executed";
     // Some items must have overflowed (depth=2, 200 commits, no send_thread_).
-    EXPECT_GT(push->metrics().overrun_count, 0u);
-    EXPECT_EQ(push->metrics().overrun_count, push->metrics().overrun_count);
+    EXPECT_GT(push->metrics().data_drop_count, 0u);
+    EXPECT_EQ(push->metrics().data_drop_count, push->metrics().data_drop_count);
 }
 
 // ── Directional field zero-guarantee ─────────────────────────────────────────
@@ -1577,10 +1577,10 @@ TEST_F(ZmqQueueTest, PullQueue_SendFieldsAreZero)
     const QueueMetrics m = pull->metrics();
     EXPECT_EQ(m.send_drop_count,  0u);
     EXPECT_EQ(m.send_retry_count, 0u);
-    EXPECT_EQ(m.overrun_count,    0u);
+    EXPECT_EQ(m.data_drop_count,    0u);
     EXPECT_EQ(pull->metrics().send_drop_count,  0u);
     EXPECT_EQ(pull->metrics().send_retry_count, 0u);
-    EXPECT_EQ(pull->metrics().overrun_count,    0u);
+    EXPECT_EQ(pull->metrics().data_drop_count,    0u);
 }
 
 TEST_F(ZmqQueueTest, PushQueue_RecvFieldsAreZero)
@@ -1742,7 +1742,7 @@ TEST_F(ZmqQueueTest, Block_WriteAcquire_Timeout_IncrementsOverrun)
                                   OverflowPolicy::Block,
                                   /*send_retry_interval_ms=*/10);
     ASSERT_NE(push, nullptr);
-    EXPECT_EQ(push->metrics().overrun_count, 0u);
+    EXPECT_EQ(push->metrics().data_drop_count, 0u);
 
     // Fill the ring (predicate immediately satisfied — no waiting).
     for (int i = 0; i < 2; ++i)
@@ -1751,7 +1751,7 @@ TEST_F(ZmqQueueTest, Block_WriteAcquire_Timeout_IncrementsOverrun)
         ASSERT_NE(buf, nullptr) << "Slot " << i << " must be available";
         push->write_commit();
     }
-    EXPECT_EQ(push->metrics().overrun_count, 0u);
+    EXPECT_EQ(push->metrics().data_drop_count, 0u);
 
     // Ring is full; Block policy must block for ~100ms then return nullptr.
     const auto t0 = std::chrono::steady_clock::now();
@@ -1760,7 +1760,7 @@ TEST_F(ZmqQueueTest, Block_WriteAcquire_Timeout_IncrementsOverrun)
 
     EXPECT_EQ(buf, nullptr)     << "Block policy must return nullptr when send ring is full";
     EXPECT_GE(elapsed, 80ms)    << "Block policy must have waited for the timeout";
-    EXPECT_EQ(push->metrics().overrun_count, 1u) << "Timeout must increment overrun_count";
+    EXPECT_EQ(push->metrics().data_drop_count, 1u) << "Timeout must increment data_drop_count";
 }
 
 // ============================================================================

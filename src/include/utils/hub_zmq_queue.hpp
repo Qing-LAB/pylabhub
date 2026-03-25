@@ -50,8 +50,8 @@
  * @par Write mode
  * write_acquire() returns a pointer to an internal send buffer.
  * OverflowPolicy::Drop (default): returns nullptr immediately when the send buffer
- * is full; overrun_count() increments.
- * OverflowPolicy::Block: blocks up to @p timeout waiting for space; overrun_count()
+ * is full; data_drop_count() increments.
+ * OverflowPolicy::Block: blocks up to @p timeout waiting for space; data_drop_count()
  * increments on timeout.
  * write_commit() enqueues the buffer to an internal send ring; a dedicated
  * send_thread_ drains the ring, encodes msgpack frames, and calls zmq_send with
@@ -152,7 +152,7 @@ public:
      * On stop(), pending items are sent if possible; remaining items are dropped.
      *
      * write_acquire() is non-blocking when the buffer has space.  When full:
-     *   OverflowPolicy::Drop  — returns nullptr immediately; overrun_count()++.
+     *   OverflowPolicy::Drop  — returns nullptr immediately; data_drop_count()++.
      *   OverflowPolicy::Block — blocks until space is available or @p timeout elapses.
      *
      * @param endpoint              ZMQ endpoint.
@@ -222,8 +222,8 @@ public:
     /**
      * @brief Acquire the internal send buffer.
      *
-     * Drop policy: returns nullptr immediately if send buffer is full (overrun_count()++).
-     * Block policy: waits up to @p timeout for space; returns nullptr on timeout (overrun_count()++).
+     * Drop policy: returns nullptr immediately if send buffer is full (data_drop_count()++).
+     * Block policy: waits up to @p timeout for space; returns nullptr on timeout (data_drop_count()++).
      * @p timeout is ignored for Drop policy.
      */
     void* write_acquire(std::chrono::milliseconds timeout) noexcept override;
@@ -276,13 +276,13 @@ public:
     /** PUSH: EAGAIN retries by send_thread_ (ZMQ HWM temporarily exceeded). */
     [[nodiscard]] uint64_t send_retry_count()       const noexcept;
     /** PUSH: write_acquire() returned nullptr (send buffer full, Drop/Block timeout). */
-    [[nodiscard]] uint64_t overrun_count()          const noexcept;
+    [[nodiscard]] uint64_t data_drop_count()          const noexcept;
 
     /** Unified metrics snapshot — timing (D2+D3) + transport counters. */
     QueueMetrics metrics() const noexcept override;
     /** Reset all counters and timing state. */
     void reset_metrics() override;
-    /** Set target loop period for overrun detection. 0 = no detection. */
+    /** Set target loop period (informational, reported in metrics). 0 = MaxRate. */
     void set_configured_period(uint64_t period_us) override;
 
     // ── Lifecycle (overrides both QueueReader and QueueWriter no-ops) ──────────

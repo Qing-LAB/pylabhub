@@ -135,7 +135,7 @@ nlohmann::json ConsumerAPI::snapshot_metrics_json() const
     base["in_received"]        = in_slots_received();
     base["script_errors"]      = script_error_count();
     base["last_cycle_work_us"] = last_cycle_work_us();
-    base["loop_overrun_count"] = uint64_t{0}; // consumer is demand-driven, no deadline
+    base["loop_overrun_count"] = core_->loop_overrun_count();
     base["ctrl_queue_dropped"] = ctrl_queue_dropped();
 
     // Domain 2+3 timing from queue abstraction (transport-agnostic).
@@ -166,7 +166,7 @@ py::dict ConsumerAPI::metrics() const
 {
     py::dict d;
     d["last_cycle_work_us"] = py::int_(last_cycle_work_us());
-    d["loop_overrun_count"] = py::int_(uint64_t{0}); // consumer is demand-driven, no deadline
+    d["loop_overrun_count"] = py::int_(core_->loop_overrun_count());
     d["script_errors"]      = py::int_(script_error_count());
     d["in_received"]        = py::int_(in_slots_received());
 

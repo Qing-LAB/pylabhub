@@ -346,7 +346,7 @@ class SlotIterator
      * @brief Sleep to maintain FixedRate pacing (HEP-CORE-0008 Pass 3).
      *
      * Uses `m_last_acquire_` as the start-to-start anchor — the same reference
-     * point that `acquire_write_slot()` uses for `overrun_count`, so both
+     * point that `acquire_write_slot()` uses for `data_drop_count`, so both
      * measurements agree. Sleep target = `m_last_acquire_ + configured_period_us`.
      *
      * Called from `operator++()` after heartbeat, before the acquire attempt.

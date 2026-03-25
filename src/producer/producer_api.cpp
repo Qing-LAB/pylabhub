@@ -184,9 +184,7 @@ void ProducerAPI::clear_custom_metrics()
 
 uint64_t ProducerAPI::loop_overrun_count() const noexcept
 {
-    if (queue_)
-        return queue_->metrics().overrun_count;
-    return 0;
+    return core_->loop_overrun_count();
 }
 
 size_t ProducerAPI::out_capacity() const noexcept
@@ -224,11 +222,12 @@ nlohmann::json ProducerAPI::snapshot_metrics_json() const
     base["ctrl_queue_dropped"] = ctrl_queue_dropped();
 
     // Domain 2+3 timing from queue abstraction (transport-agnostic).
+    base["loop_overrun_count"] = core_->loop_overrun_count();
     if (queue_ != nullptr)
     {
         const auto m = queue_->metrics();
         base["iteration_count"]      = m.iteration_count;
-        base["loop_overrun_count"]   = m.overrun_count;
+        base["data_drop_count"]      = m.data_drop_count;
         base["last_iteration_us"]    = m.last_iteration_us;
         base["max_iteration_us"]     = m.max_iteration_us;
         base["last_slot_exec_us"]    = m.last_slot_exec_us;
@@ -256,15 +255,16 @@ py::dict ProducerAPI::metrics() const
     d["out_written"]        = py::int_(out_slots_written());
     d["drops"]              = py::int_(out_drop_count());
 
+    d["loop_overrun_count"]  = py::int_(core_->loop_overrun_count());
     if (queue_ != nullptr)
     {
         const auto m = queue_->metrics();
         d["context_elapsed_us"]  = py::int_(m.context_elapsed_us);
         d["iteration_count"]     = py::int_(m.iteration_count);
+        d["data_drop_count"]     = py::int_(m.data_drop_count);
         d["last_iteration_us"]   = py::int_(m.last_iteration_us);
         d["max_iteration_us"]    = py::int_(m.max_iteration_us);
         d["last_slot_wait_us"]   = py::int_(m.last_slot_wait_us);
-        d["loop_overrun_count"]  = py::int_(m.overrun_count);
         d["last_slot_exec_us"]   = py::int_(m.last_slot_exec_us);
         d["configured_period_us"] = py::int_(m.configured_period_us);
     }
