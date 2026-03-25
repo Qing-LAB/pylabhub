@@ -341,9 +341,8 @@ bool ConsumerRoleHost::setup_infrastructure_()
             inbox_schema_slot_size = engine_->type_sizeof("InboxFrame");
         }
 
-        const std::string ep = inbox.endpoint.empty()
-            ? "tcp://127.0.0.1:0"
-            : inbox.endpoint;
+        // Endpoint validated by parse_inbox_config(); default is tcp://127.0.0.1:0.
+        const std::string &ep = inbox.endpoint;
         auto zmq_fields = scripting::schema_spec_to_zmq_fields(inbox_spec, inbox_schema_slot_size);
 
         nlohmann::json spec_json;
@@ -367,6 +366,18 @@ bool ConsumerRoleHost::setup_infrastructure_()
         if (!inbox_queue_ || !inbox_queue_->start())
         {
             LOGGER_ERROR("[cons] Failed to start InboxQueue at '{}'", ep);
+            inbox_queue_.reset();
+            return false;
+        }
+        // Validate: engine type size must match queue decode buffer size.
+        if (inbox_schema_slot_size > 0 &&
+            inbox_queue_->item_size() != inbox_schema_slot_size)
+        {
+            LOGGER_ERROR("[cons] InboxFrame size mismatch: engine type_sizeof={} "
+                         "but InboxQueue item_size={} (packing='{}') — "
+                         "check schema/packing consistency",
+                         inbox_schema_slot_size, inbox_queue_->item_size(),
+                         inbox_packing);
             inbox_queue_.reset();
             return false;
         }

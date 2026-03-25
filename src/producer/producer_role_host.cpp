@@ -338,12 +338,19 @@ bool ProducerRoleHost::setup_infrastructure_()
                 LOGGER_ERROR("[prod] Failed to register InboxFrame type");
                 return false;
             }
+            // Engine type size: computed from the ctypes/FFI struct built by
+            // register_slot_type(). This is the size of the struct that scripts
+            // will receive in on_inbox(slot, sender, api).
             inbox_schema_slot_size = engine_->type_sizeof("InboxFrame");
         }
 
-        const std::string ep = inbox.endpoint.empty()
-            ? "tcp://127.0.0.1:0"
-            : inbox.endpoint;
+        // Endpoint validated by parse_inbox_config(); default is tcp://127.0.0.1:0.
+        const std::string &ep = inbox.endpoint;
+
+        // ZMQ wire field layout: computed from the SchemaSpec field definitions.
+        // schema_spec_to_zmq_fields uses the individual field types/counts to
+        // build the msgpack wire format. The slot_size param is only used as a
+        // fallback for NumpyArray/empty-fields schemas (not inbox).
         auto zmq_fields = scripting::schema_spec_to_zmq_fields(inbox_spec, inbox_schema_slot_size);
 
         // Serialize full SchemaSpec JSON for ROLE_INFO_REQ discovery.
@@ -363,6 +370,9 @@ bool ProducerRoleHost::setup_infrastructure_()
             ? 0
             : static_cast<int>(inbox.buffer_depth);
 
+        // InboxQueue item size: computed by compute_field_layout() from the same
+        // ZmqSchemaField list + packing. This is the C struct size with alignment
+        // padding — must match the engine's type_sizeof("InboxFrame").
         inbox_queue_ = hub::InboxQueue::bind_at(
             ep, std::move(zmq_fields), inbox_packing, inbox_rcvhwm);
         if (!inbox_queue_ || !inbox_queue_->start())
@@ -372,6 +382,22 @@ bool ProducerRoleHost::setup_infrastructure_()
                 inbox_queue_.reset();
             return false;
         }
+
+        // Validate: engine type size must match queue decode buffer size.
+        // A mismatch means the ctypes/FFI struct and the ZMQ wire decode buffer
+        // have different layouts — data would be corrupted on inbox delivery.
+        if (inbox_schema_slot_size > 0 &&
+            inbox_queue_->item_size() != inbox_schema_slot_size)
+        {
+            LOGGER_ERROR("[prod] InboxFrame size mismatch: engine type_sizeof={} "
+                         "but InboxQueue item_size={} (packing='{}') — "
+                         "check schema/packing consistency",
+                         inbox_schema_slot_size, inbox_queue_->item_size(),
+                         inbox_packing);
+            inbox_queue_.reset();
+            return false;
+        }
+
         opts.inbox_endpoint    = inbox_queue_->actual_endpoint();
         opts.inbox_schema_json = spec_json.dump();
         opts.inbox_packing     = inbox_packing;

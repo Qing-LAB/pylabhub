@@ -860,7 +860,7 @@ size_t PythonEngine::type_sizeof(const std::string &type_name) const
 {
     
 
-    // Return size for the cached writable type (represents the actual struct size).
+    // Return size for the cached type (represents the actual struct size).
     py::object type = py::none();
     if (type_name == "SlotFrame")
         type = slot_type_;
@@ -870,6 +870,8 @@ size_t PythonEngine::type_sizeof(const std::string &type_name) const
         type = out_slot_type_;
     else if (type_name == "FlexFrame")
         type = fz_type_;
+    else if (type_name == "InboxFrame")
+        type = inbox_type_ro_;
 
     if (type.is_none())
         return 0;

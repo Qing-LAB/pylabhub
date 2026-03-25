@@ -81,6 +81,34 @@ pylabhub_register_test_for_staging(
 )
 layer2_require_staged_utils(test_layer2_backoff_strategy)
 
+# ── Net Address Validation ──────────────────────────────────────────────────
+
+add_executable(test_layer2_net_address
+    test_net_address.cpp
+)
+
+target_link_libraries(test_layer2_net_address
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_net_address)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_net_address
+    SUITE_NAME "Layer2_NetAddress"
+)
+layer2_require_staged_utils(test_layer2_net_address)
+
+gtest_discover_tests(test_layer2_net_address
+    PROPERTIES
+        LABELS "layer2;service;net"
+        TIMEOUT 30
+)
+
 gtest_discover_tests(test_layer2_backoff_strategy
     PROPERTIES
         LABELS "layer2;service;backoff;critical"

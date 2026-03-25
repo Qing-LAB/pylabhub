@@ -732,6 +732,44 @@ TEST_F(LuaEngineTest, InvokeOnInbox_TypedData)
     engine.finalize();
 }
 
+TEST_F(LuaEngineTest, TypeSizeof_InboxFrame_ReturnsCorrectSize)
+{
+    // Multi-type schema with alignment padding:
+    //   uint8 flag (1) + pad(3) + float64 value (8) + uint16 count (2) +
+    //   pad(2) + int32 status (4) + char[5] label (5) + pad(3) = 28 bytes aligned
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api) return true end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
+
+    SchemaSpec spec;
+    spec.has_schema = true;
+    spec.fields.push_back({"flag",   "uint8",   1, 0});
+    spec.fields.push_back({"value",  "float64", 1, 0});
+    spec.fields.push_back({"count",  "uint16",  1, 0});
+    spec.fields.push_back({"status", "int32",   1, 0});
+    spec.fields.push_back({"label",  "string",  1, 5});
+
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
+
+    auto ctx = producer_context();
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    size_t slot_sz  = engine.type_sizeof("SlotFrame");
+    size_t inbox_sz = engine.type_sizeof("InboxFrame");
+    EXPECT_GT(slot_sz, 0u) << "SlotFrame size must be > 0";
+    EXPECT_GT(inbox_sz, 0u) << "InboxFrame size must be > 0";
+    EXPECT_EQ(slot_sz, inbox_sz) << "Same schema → same size";
+    // Aligned: 1 + 7pad + 8 + 2 + 2pad + 4 + 5 + 3pad = 32
+    EXPECT_EQ(inbox_sz, 32u) << "Expected 28 bytes with alignment padding";
+
+    engine.finalize();
+}
+
 TEST_F(LuaEngineTest, InvokeOnInbox_MissingType_ReportsError)
 {
     // If InboxFrame is not registered, invoke_on_inbox must report an error.
@@ -747,6 +785,7 @@ TEST_F(LuaEngineTest, InvokeOnInbox_MissingType_ReportsError)
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
     // Deliberately NOT registering "InboxFrame".
+
 
     auto ctx = producer_context();
     ASSERT_TRUE(engine.build_api(ctx));
