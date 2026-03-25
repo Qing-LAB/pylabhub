@@ -32,7 +32,7 @@ struct ShmQueueImpl
     DataBlockConsumer* dbc_ref{nullptr};
     DataBlockProducer* dbp_ref{nullptr};
 
-    // Current acquired handles (valid between acquire and release/commit/abort):
+    // Current acquired handles (valid between acquire and release/commit/discard):
     std::unique_ptr<SlotConsumeHandle> read_handle;
     std::unique_ptr<SlotWriteHandle>   write_handle;
 
@@ -377,7 +377,9 @@ QueueMetrics ShmQueue::metrics() const noexcept
         m.last_slot_exec_us    = cm.last_slot_exec_us;
         m.overrun_count        = cm.overrun_count;
         m.configured_period_us = cm.configured_period_us;
-        m.recv_overflow_count  = cm.overrun_count;
+        // recv_overflow_count stays 0 for SHM. DataBlock sync policies (Sequential,
+        // Latest_only) prevent data loss at the queue level — Sequential blocks the
+        // producer, Latest_only skips by design. No receive buffer overflow is possible.
         return m;
     }
 

@@ -90,13 +90,13 @@ struct QueueMetrics
 
     // ── Domain 3: Loop scheduling (both transports) ──────────────────────────
     uint64_t last_slot_exec_us{0};    ///< Time from acquire to release (µs).
-    uint64_t overrun_count{0};        ///< Iterations where start-to-start gap > configured_period_us.
+    uint64_t overrun_count{0};        ///< Failed cycles: timing overrun (cycle > period) or capacity failure (buffer full/timeout).
     uint64_t configured_period_us{0}; ///< Target period (µs). 0 = MaxRate. Config input, not measured.
 
     // ── Receive side (read_acquire path) ─────────────────────────────────────
-    /// Items dropped because the receive ring buffer was full (oldest discarded).
-    /// ZmqQueue: internal recv ring overflow.
-    /// ShmQueue: DataBlockConsumer scheduling overruns.
+    /// Items permanently lost because the receive ring buffer was full (oldest discarded).
+    /// ZmqQueue: recv thread overwrote oldest unread item when ring was full.
+    /// ShmQueue: always 0 — DataBlock sync policies prevent data loss at the queue level.
     uint64_t recv_overflow_count{0};
 
     /// Frames rejected due to bad magic, schema tag mismatch, or field type/size error.
