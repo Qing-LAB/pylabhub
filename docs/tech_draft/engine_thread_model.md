@@ -237,7 +237,7 @@ The role host shuts down in this order:
 **When threads are created** (startup, all on owner thread):
 
 ```
-Step 5: build_api(ctx)          ← accepting_ = true (engine ready)
+Step 5: build_api(ctx)          ← [[nodiscard]] bool; accepting_ = true only on success
 Step 6: invoke_on_init()        ← script's on_init callback
 Step 7: ctrl_thread_ spawned    ← non-owner thread starts, uses engine
 Step 8: [data loop begins]      ← owner thread runs hot-path invokes
@@ -306,7 +306,8 @@ Step 15: teardown_infrastructure_()
    initialize()   │
    load_script()  │  (engine not ready, no threads can invoke)
                   │
-   build_api() ───┤──→ true  (engine ready, threads may invoke)
+   build_api() ───┤──→ true on success (engine ready, threads may invoke)
+                  │    false on failure (engine stays non-accepting)
                   │
    [data loop]    │
                   │
@@ -395,7 +396,7 @@ be false by the time finalize runs. The flags are defensive insurance.
  2. engine->initialize("tag", &core_)       ← create interpreter, set owner_thread_id_
  3. engine->load_script(dir, entry, cb)     ← load file, extract callbacks
  4. engine->register_slot_type(spec, ...)   ← build FFI/ctypes types
- 5. engine->build_api(ctx)                  ← wire API, accepting_=true
+ 5. engine->build_api(ctx)                  ← [[nodiscard]] bool; accepting_=true only on success
  6. engine->invoke_on_init()                ← script's on_init()
  7. spawn ctrl_thread_                      ← non-owner thread starts (may call invoke)
  8. [data loop]                             ← invoke_produce/consume/process
@@ -839,8 +840,14 @@ One new call per iteration at the drain point:
 
 ```cpp
 // In run_data_loop_() — right after drain_inbox_sync():
-drain_inbox_sync(inbox_queue_.get(), engine_.get(), inbox_type);
+drain_inbox_sync(inbox_queue_.get(), engine_.get());
 engine_->drain_pending_requests();   // ← NEW (no-op for Lua)
+
+// Inbox invariants:
+// - inbox_queue_ is non-null ONLY when inbox_schema is configured
+// - engine has InboxFrame type cached via register_slot_type() at startup
+// - invoke_on_inbox(data, sz, sender) uses cached type — no type_name param
+// - null inbox cache = error (not fallback); no schemaless inbox by protocol
 ```
 
 ### 9.2 RoleHostCore

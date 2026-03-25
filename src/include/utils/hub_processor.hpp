@@ -282,8 +282,8 @@ public:
     /**
      * @brief Start the Processor.
      *
-     * Calls in_queue.start() + out_queue.start() (idempotent for ShmQueue),
-     * then launches process_thread_.
+     * Calls in_queue.start() + out_queue.start() (idempotent — returns true
+     * if already running), then launches process_thread_.
      *
      * @return true on success; false if already running.
      */

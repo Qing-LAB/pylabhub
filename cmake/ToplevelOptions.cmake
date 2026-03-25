@@ -77,6 +77,11 @@ option(PYLABHUB_VAULT_HIGH_SECURITY
 Vaults are incompatible between INTERACTIVE and SENSITIVE builds — re-keygen after changing."
     OFF)
 
+# Maximum recursion depth for JSON ↔ script type conversion (eval results, invoke args,
+# message details). Prevents stack overflow from deeply nested or circular structures.
+set(PYLABHUB_SCRIPT_MAX_RECURSION_DEPTH 20 CACHE STRING
+    "Maximum recursion depth for JSON/script type conversion in script engines.")
+
 # Option to enable Clang-Tidy static analysis.
 option(PYLABHUB_ENABLE_CLANG_TIDY "Enable Clang-Tidy static analysis for project targets." OFF)
 

@@ -36,6 +36,107 @@ namespace pylabhub::scripting
 // Inbox handle metatable name and userdata layout
 // ============================================================================
 
+// ============================================================================
+// lua_to_json — recursive Lua stack value → nlohmann::json conversion
+// ============================================================================
+
+static nlohmann::json lua_to_json(lua_State *L, int idx, int depth = 0)
+{
+    if (depth > kScriptMaxRecursionDepth)
+        return "<recursion limit>";
+
+    int t = lua_type(L, idx);
+    switch (t)
+    {
+    case LUA_TNIL:
+        return nullptr;
+    case LUA_TBOOLEAN:
+        return static_cast<bool>(lua_toboolean(L, idx));
+    case LUA_TNUMBER:
+        return lua_tonumber(L, idx);
+    case LUA_TSTRING:
+        return std::string(lua_tostring(L, idx));
+    case LUA_TTABLE:
+    {
+        // Detect array vs object: if consecutive integer keys 1..N, treat as array.
+        int len = static_cast<int>(lua_objlen(L, idx));
+        if (len > 0)
+        {
+            nlohmann::json arr = nlohmann::json::array();
+            for (int i = 1; i <= len; ++i)
+            {
+                lua_rawgeti(L, idx, i);
+                arr.push_back(lua_to_json(L, -1, depth + 1));
+                lua_pop(L, 1);
+            }
+            return arr;
+        }
+        // Object (string keys).
+        nlohmann::json obj = nlohmann::json::object();
+        lua_pushnil(L);
+        while (lua_next(L, idx < 0 ? idx - 1 : idx) != 0)
+        {
+            if (lua_type(L, -2) == LUA_TSTRING)
+            {
+                std::string key = lua_tostring(L, -2);
+                obj[key] = lua_to_json(L, -1, depth + 1);
+            }
+            lua_pop(L, 1); // pop value, keep key
+        }
+        return obj;
+    }
+    default:
+        return "<" + std::string(lua_typename(L, t)) + ">";
+    }
+}
+
+// ============================================================================
+// json_to_lua — recursive nlohmann::json → Lua stack push
+// ============================================================================
+
+static void json_to_lua(lua_State *L, const nlohmann::json &val, int depth = 0)
+{
+    if (depth > kScriptMaxRecursionDepth)
+    {
+        lua_pushstring(L, "<recursion limit>");
+        return;
+    }
+
+    if (val.is_null())
+        lua_pushnil(L);
+    else if (val.is_boolean())
+        lua_pushboolean(L, val.get<bool>() ? 1 : 0);
+    else if (val.is_number_integer())
+        lua_pushinteger(L, val.get<lua_Integer>());
+    else if (val.is_number_float())
+        lua_pushnumber(L, val.get<double>());
+    else if (val.is_string())
+        lua_pushstring(L, val.get<std::string>().c_str());
+    else if (val.is_object())
+    {
+        lua_newtable(L);
+        for (auto &[k, v] : val.items())
+        {
+            json_to_lua(L, v, depth + 1);
+            lua_setfield(L, -2, k.c_str());
+        }
+    }
+    else if (val.is_array())
+    {
+        lua_newtable(L);
+        int idx = 1;
+        for (auto &elem : val)
+        {
+            json_to_lua(L, elem, depth + 1);
+            lua_rawseti(L, -2, idx++);
+        }
+    }
+    else
+    {
+        lua_pushstring(L, val.dump().c_str());
+    }
+}
+
 static constexpr const char *kInboxHandleMT = "pylabhub.InboxHandle";
 
 struct LuaInboxUD
@@ -57,9 +158,9 @@ LuaEngine::~LuaEngine()
 // initialize — create LuaState, sandbox, luajit path, inbox metatable
 // ============================================================================
 
-bool LuaEngine::init_engine_(const char *log_tag, RoleHostCore *core)
+bool LuaEngine::init_engine_(const std::string &log_tag, RoleHostCore *core)
 {
-    log_tag_ = log_tag ? log_tag : "lua";
+    log_tag_ = log_tag.empty() ? "lua" : log_tag;
     // owner_thread_id_, accepting_, ctx_.core set by base class initialize().
 
     state_ = LuaState::create();
@@ -97,12 +198,12 @@ bool LuaEngine::init_engine_(const char *log_tag, RoleHostCore *core)
 // ============================================================================
 
 bool LuaEngine::load_script(const std::filesystem::path &script_dir,
-                             const char *entry_point,
-                             const char *required_callback)
+                             const std::string &entry_point,
+                             const std::string &required_callback)
 {
     script_dir_str_ = script_dir.string();
-    entry_point_ = entry_point ? entry_point : "init.lua";
-    required_callback_ = required_callback ? required_callback : "";
+    entry_point_ = entry_point.empty() ? "init.lua" : entry_point;
+    required_callback_ = required_callback;
 
     // Add script dir to package.path for require().
     state_.add_package_path((script_dir / "?.lua").string());
@@ -128,7 +229,7 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir,
     ref_on_inbox_ = extract_callback_ref_("on_inbox");
 
     // Check that the required callback is present.
-    if (!required_callback_.empty() && !has_callback(required_callback_.c_str()))
+    if (!required_callback_.empty() && !has_callback(required_callback_))
     {
         LOGGER_ERROR("[{}] Script has no '{}' function", log_tag_, required_callback_);
         return false;
@@ -141,7 +242,7 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir,
 // build_api — save RoleContext, build Lua table with closures
 // ============================================================================
 
-void LuaEngine::build_api_(const RoleContext &ctx)
+bool LuaEngine::build_api_(const RoleContext &ctx)
 {
     // ctx_ and core preservation handled by base class build_api().
     stop_on_script_error_ = ctx.stop_on_script_error;
@@ -161,49 +262,53 @@ void LuaEngine::build_api_(const RoleContext &ctx)
         lua_setfield(L, -2, name);
     };
 
-    // ── Role-specific closures based on non-null context pointers ─────────
-
-    // ── Identity closures (always present) ──────────────────────────────
+    // ── Common closures (all roles) ────────────────────────────────────
     push_closure("uid", lua_api_uid);
     push_closure("name", lua_api_name);
     push_closure("channel", lua_api_channel);
-
-    // ── Producer-specific (ctx.producer != nullptr) ──────────────────────
-    if (ctx_.producer != nullptr)
-    {
-        push_closure("broadcast", lua_api_broadcast);
-        push_closure("send", lua_api_send);
-        push_closure("consumers", lua_api_consumers);
-    }
-
-    // ── QueueWriter closures (producer / processor output) ───────────────
-    if (ctx_.queue_writer != nullptr)
-    {
-        push_closure("update_flexzone_checksum", lua_api_update_flexzone_checksum);
-    }
-
-    // ── QueueReader closures (consumer / processor input) ────────────────
-    if (ctx_.queue_reader != nullptr)
-    {
-        push_closure("set_verify_checksum", lua_api_set_verify_checksum);
-    }
-
-    // ── Processor-specific ───────────────────────────────────────────────
-    if (!ctx_.out_channel.empty())
-    {
-        push_closure("in_channel", lua_api_in_channel);
-        push_closure("out_channel", lua_api_out_channel);
-    }
-
-    // ── Metrics closures (pushed based on counter pointer availability) ──
     push_closure("out_written", lua_api_out_written);
     push_closure("in_received", lua_api_in_received);
     push_closure("drops", lua_api_drops);
+
+    // ── Role-specific closures based on role_tag ────────────────────────
+    if (ctx_.role_tag == "prod")
+    {
+        if (ctx_.producer)
+        {
+            push_closure("broadcast", lua_api_broadcast);
+            push_closure("send", lua_api_send);
+            push_closure("consumers", lua_api_consumers);
+        }
+        if (ctx_.queue_writer)
+            push_closure("update_flexzone_checksum", lua_api_update_flexzone_checksum);
+    }
+    else if (ctx_.role_tag == "cons")
+    {
+        if (ctx_.queue_reader)
+            push_closure("set_verify_checksum", lua_api_set_verify_checksum);
+    }
+    else if (ctx_.role_tag == "proc")
+    {
+        push_closure("in_channel", lua_api_in_channel);
+        push_closure("out_channel", lua_api_out_channel);
+        if (ctx_.queue_writer)
+            push_closure("update_flexzone_checksum", lua_api_update_flexzone_checksum);
+        if (ctx_.queue_reader)
+            push_closure("set_verify_checksum", lua_api_set_verify_checksum);
+    }
+    else
+    {
+        LOGGER_ERROR("[{}] build_api: unknown role_tag '{}' — must be 'prod', 'cons', or 'proc'",
+                     log_tag_, ctx_.role_tag);
+        lua_pop(L, 1); // pop the api table
+        return false;
+    }
 
     // Store api table in the registry AND as a global (for generic invoke).
     lua_pushvalue(L, -1);            // duplicate the api table
     lua_setglobal(L, "api");         // set as global for scripts calling api.* from free functions
     ref_api_ = luaL_ref(L, LUA_REGISTRYINDEX);
+    return true;
 }
 
 // ============================================================================
@@ -246,19 +351,24 @@ LuaEngine *LuaEngine::get_or_create_thread_state_()
     // Create fully initialized child state.
     auto child = std::make_unique<LuaEngine>();
     child->set_owner_engine(this); // child delegates is_accepting() to parent
-    if (!child->initialize(log_tag_.c_str(), ctx_.core))
+    if (!child->initialize(log_tag_, ctx_.core))
     {
         LOGGER_ERROR("[{}] Failed to create thread-local LuaEngine", log_tag_);
         return nullptr;
     }
-    if (!child->load_script(script_dir_str_, entry_point_.c_str(),
-                             required_callback_.c_str()))
+    if (!child->load_script(script_dir_str_, entry_point_,
+                             required_callback_))
     {
         LOGGER_ERROR("[{}] Thread-local LuaEngine: load_script failed", log_tag_);
         child->finalize();
         return nullptr;
     }
-    child->build_api(ctx_);
+    if (!child->build_api(ctx_))
+    {
+        LOGGER_ERROR("[{}] Thread-local LuaEngine: build_api failed", log_tag_);
+        child->finalize();
+        return nullptr;
+    }
 
     auto *ptr = child.get();
     thread_states_.emplace(tid, std::move(child));
@@ -284,9 +394,9 @@ void LuaEngine::release_thread()
 // Generic invoke / eval
 // ============================================================================
 
-bool LuaEngine::invoke(const char *name)
+bool LuaEngine::invoke(const std::string &name)
 {
-    if (!name || !is_accepting())
+    if (name.empty() || !is_accepting())
         return false;
 
     // Non-owner thread: dispatch to thread-local state.
@@ -301,7 +411,7 @@ bool LuaEngine::invoke(const char *name)
     // Owner thread: direct pcall.
     executing_.store(true, std::memory_order_release);
     auto *L = state_.raw();
-    lua_getglobal(L, name);
+    lua_getglobal(L, name.c_str());
     if (!lua_isfunction(L, -1))
     {
         lua_pop(L, 1);
@@ -310,14 +420,19 @@ bool LuaEngine::invoke(const char *name)
     }
     bool ok = (lua_pcall(L, 0, 0, 0) == 0);
     if (!ok)
+    {
+        const char *err = lua_tostring(L, -1);
+        LOGGER_ERROR("[{}] invoke('{}'): {}", log_tag_, name, err ? err : "unknown error");
+        lua_pop(L, 1);
         on_pcall_error_(name);
+    }
     executing_.store(false, std::memory_order_release);
     return ok;
 }
 
-bool LuaEngine::invoke(const char *name, const nlohmann::json &args)
+bool LuaEngine::invoke(const std::string &name, const nlohmann::json &args)
 {
-    if (!name || !is_accepting())
+    if (name.empty() || !is_accepting())
         return false;
 
     // Non-owner thread: dispatch to thread-local state.
@@ -332,7 +447,7 @@ bool LuaEngine::invoke(const char *name, const nlohmann::json &args)
     // Owner thread: push args as Lua table, call.
     executing_.store(true, std::memory_order_release);
     auto *L = state_.raw();
-    lua_getglobal(L, name);
+    lua_getglobal(L, name.c_str());
     if (!lua_isfunction(L, -1))
     {
         lua_pop(L, 1);
@@ -340,110 +455,94 @@ bool LuaEngine::invoke(const char *name, const nlohmann::json &args)
         return false;
     }
 
-    // Push args as a Lua table.
-    lua_newtable(L);
-    for (auto it = args.begin(); it != args.end(); ++it)
-    {
-        lua_pushstring(L, it.key().c_str());
-        if (it.value().is_number_integer())
-            lua_pushinteger(L, it.value().get<lua_Integer>());
-        else if (it.value().is_number_float())
-            lua_pushnumber(L, it.value().get<double>());
-        else if (it.value().is_boolean())
-            lua_pushboolean(L, it.value().get<bool>() ? 1 : 0);
-        else if (it.value().is_string())
-            lua_pushstring(L, it.value().get<std::string>().c_str());
-        else
-            lua_pushnil(L); // unsupported type → nil
-        lua_settable(L, -3);
-    }
+    // Push args as a Lua table (recursive for nested objects/arrays).
+    json_to_lua(L, args);
 
     bool ok = (lua_pcall(L, 1, 0, 0) == 0);
     if (!ok)
+    {
+        const char *err = lua_tostring(L, -1);
+        LOGGER_ERROR("[{}] invoke('{}', args): {}", log_tag_, name, err ? err : "unknown error");
+        lua_pop(L, 1);
         on_pcall_error_(name);
+    }
     executing_.store(false, std::memory_order_release);
     return ok;
 }
 
-nlohmann::json LuaEngine::eval(const char *code)
+InvokeResponse LuaEngine::eval(const std::string &code)
 {
-    if (!code || !is_accepting())
-        return {};
+    if (code.empty())
+        return {InvokeStatus::NotFound, {}};
+    if (!is_accepting())
+        return {InvokeStatus::EngineShutdown, {}};
 
     if (std::this_thread::get_id() != owner_thread_id_)
     {
         auto *child = get_or_create_thread_state_();
         if (!child)
-            return {};
+            return {InvokeStatus::ScriptError, {}};
         return child->eval(code);
     }
 
     executing_.store(true, std::memory_order_release);
     auto *L = state_.raw();
-    if (luaL_dostring(L, code) != 0)
+    if (luaL_dostring(L, code.c_str()) != 0)
     {
         on_pcall_error_("eval");
         executing_.store(false, std::memory_order_release);
-        return {};
+        return {InvokeStatus::ScriptError, {}};
     }
 
-    // Capture top-of-stack result as JSON.
-    nlohmann::json result;
+    // Capture top-of-stack result as JSON (recursive for tables).
+    nlohmann::json val;
     if (lua_gettop(L) > 0)
     {
-        int top = lua_gettop(L);
-        if (lua_isboolean(L, top))
-            result = static_cast<bool>(lua_toboolean(L, top));
-        else if (lua_isnumber(L, top))
-            result = lua_tonumber(L, top);
-        else if (lua_isstring(L, top))
-            result = lua_tostring(L, top);
+        val = lua_to_json(L, lua_gettop(L));
         lua_settop(L, 0);
     }
     executing_.store(false, std::memory_order_release);
-    return result;
+    return {InvokeStatus::Ok, std::move(val)};
 }
 
 // ============================================================================
 // has_callback
 // ============================================================================
 
-bool LuaEngine::has_callback(const char *name) const
+bool LuaEngine::has_callback(const std::string &name) const
 {
-    if (!name)
+    if (name.empty())
         return false;
 
-    if (std::strcmp(name, "on_init") == 0)
+    if (name == "on_init")
         return state_.is_ref_callable(ref_on_init_);
-    if (std::strcmp(name, "on_stop") == 0)
+    if (name == "on_stop")
         return state_.is_ref_callable(ref_on_stop_);
-    if (std::strcmp(name, "on_produce") == 0)
+    if (name == "on_produce")
         return state_.is_ref_callable(ref_on_produce_);
-    if (std::strcmp(name, "on_consume") == 0)
+    if (name == "on_consume")
         return state_.is_ref_callable(ref_on_consume_);
-    if (std::strcmp(name, "on_process") == 0)
+    if (name == "on_process")
         return state_.is_ref_callable(ref_on_process_);
-    if (std::strcmp(name, "on_inbox") == 0)
+    if (name == "on_inbox")
         return state_.is_ref_callable(ref_on_inbox_);
 
     // Unknown callback name — check as a global function.
     lua_State *L = state_.raw();
-    lua_getglobal(L, name);
+    lua_getglobal(L, name.c_str());
     bool is_fn = lua_isfunction(L, -1);
     lua_pop(L, 1);
     return is_fn;
 }
 
 // ============================================================================
-// register_slot_type / type_sizeof
+// build_ffi_cdef_ — shared SchemaSpec → FFI typedef string builder
 // ============================================================================
 
-bool LuaEngine::register_slot_type(const SchemaSpec &spec,
-                                    const char *type_name,
-                                    const std::string &packing)
+std::string LuaEngine::build_ffi_cdef_(const SchemaSpec &spec,
+                                        const std::string &type_name,
+                                        const std::string &packing)
 {
-    // Build FFI cdef string from SchemaSpec.
-    // Reuse the same logic as LuaRoleHostBase::build_ffi_cdef_.
     std::ostringstream ss;
     const bool is_packed = (packing == "packed");
 
@@ -471,7 +570,7 @@ bool LuaEngine::register_slot_type(const SchemaSpec &spec,
         else
         {
             LOGGER_ERROR("[{}] Unsupported field type '{}' in schema", log_tag_, f.type_str);
-            return false;
+            return {};
         }
 
         ss << "    " << c_type << " " << f.name;
@@ -483,60 +582,67 @@ bool LuaEngine::register_slot_type(const SchemaSpec &spec,
     }
 
     ss << "} " << type_name << ";\n";
-    std::string cdef = ss.str();
+    return ss.str();
+}
 
+// ============================================================================
+// register_slot_type / type_sizeof
+// ============================================================================
+
+bool LuaEngine::register_slot_type(const SchemaSpec &spec,
+                                    const std::string &type_name,
+                                    const std::string &packing)
+{
+    std::string cdef = build_ffi_cdef_(spec, type_name, packing);
     if (cdef.empty())
         return false;
 
     if (!state_.register_ffi_type(cdef, log_tag_.c_str()))
         return false;
 
-    // Cache ffi.typeof() for hot-path slot views — no string ops per cycle.
-    // Convention:
-    //   "SlotFrame"    → producer writable / consumer readonly
-    //   "InSlotFrame"  → processor input readonly
-    //   "OutSlotFrame" → processor output writable
-    //   "FlexFrame"    → flexzone (cached separately via fz_type param)
-    //   "InboxFrame"   → inbox (not cached — low frequency)
+    // Cache ffi.typeof() for slot views — no string ops per invoke call.
+    // All known type names must be cached (see script_engine.hpp §register_slot_type).
     // Helper: unref old ref before overwriting to prevent registry leak.
-    auto safe_cache = [&](int &ref, const char *name, bool readonly) {
+    auto safe_cache = [&](int &ref, const std::string &name, bool readonly) {
         if (ref != LUA_NOREF)
             state_.unref(ref);
-        ref = state_.cache_ffi_typeof(name, readonly);
+        ref = state_.cache_ffi_typeof(name.c_str(), readonly);
     };
-
-    const std::string tn{type_name};
-    if (tn == "InSlotFrame")
+    if (type_name == "InSlotFrame")
     {
         safe_cache(ref_in_slot_readonly_, type_name, /*readonly=*/true);
     }
-    else if (tn == "OutSlotFrame")
+    else if (type_name == "OutSlotFrame")
     {
         safe_cache(ref_out_slot_writable_, type_name, /*readonly=*/false);
     }
-    else if (tn == "SlotFrame")
+    else if (type_name == "SlotFrame")
     {
         safe_cache(ref_slot_writable_, type_name, /*readonly=*/false);
         safe_cache(ref_slot_readonly_, type_name, /*readonly=*/true);
         // Also set in/out refs for unified context (if not already set by
         // an explicit InSlotFrame/OutSlotFrame registration).
         if (ref_in_slot_readonly_ == LUA_NOREF)
-            ref_in_slot_readonly_ = state_.cache_ffi_typeof(type_name, /*readonly=*/true);
+            ref_in_slot_readonly_ = state_.cache_ffi_typeof(type_name.c_str(), /*readonly=*/true);
         if (ref_out_slot_writable_ == LUA_NOREF)
-            ref_out_slot_writable_ = state_.cache_ffi_typeof(type_name, /*readonly=*/false);
+            ref_out_slot_writable_ = state_.cache_ffi_typeof(type_name.c_str(), /*readonly=*/false);
     }
-    else if (tn == "FlexFrame")
+    else if (type_name == "FlexFrame")
     {
         safe_cache(ref_fz_writable_, type_name, /*readonly=*/false);
         safe_cache(ref_fz_readonly_, type_name, /*readonly=*/true);
+    }
+    else if (type_name == "InboxFrame")
+    {
+        safe_cache(ref_inbox_readonly_, type_name, /*readonly=*/true);
     }
 
     return true;
 }
 
-size_t LuaEngine::type_sizeof(const char *type_name) const
+size_t LuaEngine::type_sizeof(const std::string &type_name) const
 {
-    return state_.ffi_sizeof(type_name);
+    return state_.ffi_sizeof(type_name.c_str());
 }
 
 // ============================================================================
@@ -640,11 +746,10 @@ InvokeResult LuaEngine::invoke_produce(
     if (!state_.pcall(4, 1, "on_produce"))
         return on_pcall_error_("on_produce");
 
-    // Strict return value contract:
+    // Return value contract:
     //   true  → Commit (publish the slot)
     //   false → Discard (script chose not to publish)
-    //   nil   → Error (script omitted return — must be explicit)
-    //   other → Error (wrong type — log, count, treat as Discard)
+    //   anything else → Error (only explicit 'return true' commits)
     InvokeResult result;
     if (lua_isboolean(L, -1))
     {
@@ -652,15 +757,15 @@ InvokeResult LuaEngine::invoke_produce(
     }
     else if (lua_isnil(L, -1))
     {
-        LOGGER_WARN("[{}] on_produce returned nil — explicit 'return true' or "
-                    "'return false' is required. Treating as discard.",
-                    log_tag_);
+        LOGGER_ERROR("[{}] on_produce returned nil — explicit 'return true' or "
+                     "'return false' is required. Treating as error.",
+                     log_tag_);
         result = on_pcall_error_("on_produce [missing return value]");
     }
     else
     {
         LOGGER_ERROR("[{}] on_produce returned non-boolean type '{}' (value: {}) — "
-                     "expected 'return true' or 'return false'. Treating as discard.",
+                     "expected 'return true' or 'return false'. Treating as error.",
                      log_tag_,
                      lua_typename(L, lua_type(L, -1)),
                      lua_tostring(L, -1) ? lua_tostring(L, -1) : "?");
@@ -816,7 +921,7 @@ InvokeResult LuaEngine::invoke_process(
     if (!state_.pcall(5, 1, "on_process"))
         return on_pcall_error_("on_process");
 
-    // Strict return value contract (same as on_produce).
+    // Return value contract (same as on_produce).
     InvokeResult result;
     if (lua_isboolean(L, -1))
     {
@@ -824,15 +929,15 @@ InvokeResult LuaEngine::invoke_process(
     }
     else if (lua_isnil(L, -1))
     {
-        LOGGER_WARN("[{}] on_process returned nil — explicit 'return true' or "
-                    "'return false' is required. Treating as discard.",
-                    log_tag_);
+        LOGGER_ERROR("[{}] on_process returned nil — explicit 'return true' or "
+                     "'return false' is required. Treating as error.",
+                     log_tag_);
         result = on_pcall_error_("on_process [missing return value]");
     }
     else
     {
         LOGGER_ERROR("[{}] on_process returned non-boolean type '{}' (value: {}) — "
-                     "expected 'return true' or 'return false'. Treating as discard.",
+                     "expected 'return true' or 'return false'. Treating as error.",
                      log_tag_,
                      lua_typename(L, lua_type(L, -1)),
                      lua_tostring(L, -1) ? lua_tostring(L, -1) : "?");
@@ -848,8 +953,7 @@ InvokeResult LuaEngine::invoke_process(
 
 void LuaEngine::invoke_on_inbox(
     const void *data, size_t sz,
-    const char *type_name,
-    const char *sender)
+    const std::string &sender)
 {
     if (!state_.is_ref_callable(ref_on_inbox_))
         return;
@@ -857,26 +961,34 @@ void LuaEngine::invoke_on_inbox(
     lua_State *L = state_.raw();
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_inbox_);
 
-    // Arg 1: inbox slot view or raw bytes.
-    if (type_name != nullptr && type_name[0] != '\0' && data != nullptr && sz > 0)
+    // Inbox type must be cached at startup via register_slot_type("InboxFrame").
+    if (ref_inbox_readonly_ == LUA_NOREF)
     {
-        if (!state_.push_slot_view_readonly(data, sz, type_name))
+        LOGGER_ERROR("[{}] invoke_on_inbox: InboxFrame type not registered — "
+                     "inbox_schema must be configured and registered before use",
+                     log_tag_);
+        ctx_.core->inc_script_errors();
+        lua_pop(L, 1); // pop function
+        return;
+    }
+
+    // Arg 1: typed readonly slot view using cached ctype ref.
+    if (data != nullptr && sz > 0)
+    {
+        if (!state_.push_slot_view_cached(const_cast<void *>(data), ref_inbox_readonly_))
         {
-            // Fallback to raw bytes on ffi.cast failure.
-            lua_pushlstring(L, reinterpret_cast<const char *>(data), sz);
+            lua_pop(L, 1); // pop function
+            ctx_.core->inc_script_errors();
+            return;
         }
     }
     else
     {
-        // No type name or no data — push raw bytes.
-        if (data != nullptr && sz > 0)
-            lua_pushlstring(L, reinterpret_cast<const char *>(data), sz);
-        else
-            lua_pushnil(L);
+        lua_pushnil(L);
     }
 
     // Arg 2: sender UID string.
-    lua_pushstring(L, sender ? sender : "");
+    lua_pushstring(L, sender.c_str());
 
     // Arg 3: api ref.
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
@@ -902,10 +1014,11 @@ int LuaEngine::extract_callback_ref_(const char *name)
     return LUA_NOREF;
 }
 
-InvokeResult LuaEngine::on_pcall_error_(const char *callback_name)
+InvokeResult LuaEngine::on_pcall_error_(const std::string &callback_name)
 {
     ctx_.core->inc_script_errors();
-    // Error message is already logged by state_.pcall().
+    // Hot-path callers (invoke_produce etc.) use state_.pcall() which logs the error.
+    // Generic invoke() callers log the error themselves before calling this.
     if (stop_on_script_error_)
     {
         LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} error",
@@ -945,6 +1058,8 @@ void LuaEngine::clear_refs_()
     ref_fz_writable_ = LUA_NOREF;
     state_.unref(ref_fz_readonly_);
     ref_fz_readonly_ = LUA_NOREF;
+    state_.unref(ref_inbox_readonly_);
+    ref_inbox_readonly_ = LUA_NOREF;
 }
 
 // ============================================================================
@@ -967,16 +1082,7 @@ void LuaEngine::push_messages_table_(std::vector<IncomingMessage> &msgs)
             lua_setfield(L, -2, "event");
             for (auto &[key, val] : m.details.items())
             {
-                if (val.is_string())
-                    lua_pushstring(L, val.get<std::string>().c_str());
-                else if (val.is_boolean())
-                    lua_pushboolean(L, val.get<bool>() ? 1 : 0);
-                else if (val.is_number_integer())
-                    lua_pushinteger(L, val.get<lua_Integer>());
-                else if (val.is_number_float())
-                    lua_pushnumber(L, val.get<double>());
-                else
-                    lua_pushstring(L, val.dump().c_str());
+                json_to_lua(L, val);
                 lua_setfield(L, -2, key.c_str());
             }
         }
@@ -1012,16 +1118,7 @@ void LuaEngine::push_messages_table_bare_(std::vector<IncomingMessage> &msgs)
             lua_setfield(L, -2, "event");
             for (auto &[key, val] : m.details.items())
             {
-                if (val.is_string())
-                    lua_pushstring(L, val.get<std::string>().c_str());
-                else if (val.is_boolean())
-                    lua_pushboolean(L, val.get<bool>() ? 1 : 0);
-                else if (val.is_number_integer())
-                    lua_pushinteger(L, val.get<lua_Integer>());
-                else if (val.is_number_float())
-                    lua_pushnumber(L, val.get<double>());
-                else
-                    lua_pushstring(L, val.dump().c_str());
+                json_to_lua(L, val);
                 lua_setfield(L, -2, key.c_str());
             }
         }
@@ -1341,41 +1438,8 @@ int LuaEngine::lua_api_open_inbox(lua_State *L)
         for (auto &c : ffi_type)
             if (c == '-') c = '_';
 
-        std::ostringstream ss;
-        const bool is_packed = (result->packing == "packed");
-        ss << "typedef struct ";
-        if (is_packed) ss << "__attribute__((packed)) ";
-        ss << "{\n";
-
-        bool cdef_ok = true;
-        for (const auto &f : result->spec.fields)
-        {
-            std::string c_type;
-            if      (f.type_str == "bool")    c_type = "bool";
-            else if (f.type_str == "int8")    c_type = "int8_t";
-            else if (f.type_str == "uint8")   c_type = "uint8_t";
-            else if (f.type_str == "int16")   c_type = "int16_t";
-            else if (f.type_str == "uint16")  c_type = "uint16_t";
-            else if (f.type_str == "int32")   c_type = "int32_t";
-            else if (f.type_str == "uint32")  c_type = "uint32_t";
-            else if (f.type_str == "int64")   c_type = "int64_t";
-            else if (f.type_str == "uint64")  c_type = "uint64_t";
-            else if (f.type_str == "float32") c_type = "float";
-            else if (f.type_str == "float64") c_type = "double";
-            else if (f.type_str == "string")  c_type = "char";
-            else if (f.type_str == "bytes")   c_type = "uint8_t";
-            else { cdef_ok = false; break; }
-
-            ss << "    " << c_type << " " << f.name;
-            if (f.type_str == "string" || f.type_str == "bytes")
-                ss << "[" << f.length << "]";
-            else if (f.count > 1)
-                ss << "[" << f.count << "]";
-            ss << ";\n";
-        }
-        ss << "} " << ffi_type << ";\n";
-
-        if (!cdef_ok || !self->state_.register_ffi_type(ss.str(), self->log_tag_.c_str()))
+        std::string cdef = self->build_ffi_cdef_(result->spec, ffi_type, result->packing);
+        if (cdef.empty() || !self->state_.register_ffi_type(cdef, self->log_tag_.c_str()))
         {
             lua_pushnil(L);
             return 1;

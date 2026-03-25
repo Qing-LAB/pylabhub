@@ -1613,20 +1613,19 @@ TEST_F(ZmqQueueTest, Schema_InvalidTypeStr_ReturnsNull)
     EXPECT_EQ(pull, nullptr) << "pull_from: invalid type_str must return nullptr";
 }
 
-TEST_F(ZmqQueueTest, DoubleStart_ReturnsFalse)
+TEST_F(ZmqQueueTest, DoubleStart_IsIdempotent)
 {
-    // Calling start() on an already-running queue must return false (idempotent guard).
-    // The queue must remain running and usable after the spurious second start().
+    // Calling start() on an already-running queue must return true (idempotent).
+    // The queue must remain running and usable.
     auto q = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(8), "aligned", /*bind=*/true);
     ASSERT_NE(q, nullptr);
 
     ASSERT_TRUE(q->start());
     EXPECT_TRUE(q->is_running());
 
-    // Second start() on the same running queue must return false without side effects.
-    bool second = q->start();
-    EXPECT_FALSE(second) << "start() on running queue must return false";
-    EXPECT_TRUE(q->is_running()) << "queue must remain running after failed double-start";
+    // Second start() on running queue returns true without side effects.
+    EXPECT_TRUE(q->start()) << "start() on running queue must return true (idempotent)";
+    EXPECT_TRUE(q->is_running()) << "queue must remain running after idempotent start()";
 
     q->stop();
     EXPECT_FALSE(q->is_running());

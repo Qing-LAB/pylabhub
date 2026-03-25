@@ -358,16 +358,66 @@ std::string ShmQueue::policy_info() const
 QueueMetrics ShmQueue::metrics() const noexcept
 {
     if (!pImpl) return {};
+
+    // ShmQueue wraps exactly one DataBlock handle — either consumer (read mode)
+    // or producer (write mode), never both. The metrics reflect this handle's
+    // perspective: how this role experiences the shared memory interaction.
+    // The mode is fixed at factory time and never changes.
+
     QueueMetrics m;
-    // Read side: consumer scheduling overruns → recv_overflow_count.
+
     if (const DataBlockConsumer* c = pImpl->consumer())
-        m.recv_overflow_count = c->metrics().overrun_count;
-    // Write side: producer scheduling overruns → overrun_count.
+    {
+        const auto &cm = c->metrics();
+        m.last_slot_wait_us    = cm.last_slot_wait_us;
+        m.last_iteration_us    = cm.last_iteration_us;
+        m.max_iteration_us     = cm.max_iteration_us;
+        m.iteration_count      = cm.iteration_count;
+        m.context_elapsed_us   = cm.context_elapsed_us;
+        m.last_slot_work_us    = cm.last_slot_work_us;
+        m.overrun_count        = cm.overrun_count;
+        m.configured_period_us = cm.configured_period_us;
+        m.recv_overflow_count  = cm.overrun_count;
+        return m;
+    }
+
     if (const DataBlockProducer* p = pImpl->producer())
-        m.overrun_count = p->metrics().overrun_count;
-    // ZMQ-specific fields (recv_frame_error_count, recv_gap_count,
-    // send_drop_count, send_retry_count) are always 0 for ShmQueue.
-    return m;
+    {
+        const auto &cm = p->metrics();
+        m.last_slot_wait_us    = cm.last_slot_wait_us;
+        m.last_iteration_us    = cm.last_iteration_us;
+        m.max_iteration_us     = cm.max_iteration_us;
+        m.iteration_count      = cm.iteration_count;
+        m.context_elapsed_us   = cm.context_elapsed_us;
+        m.last_slot_work_us    = cm.last_slot_work_us;
+        m.overrun_count        = cm.overrun_count;
+        m.configured_period_us = cm.configured_period_us;
+        return m;
+    }
+
+    return m; // moved-from or invalid — all zeros
+}
+
+void ShmQueue::reset_metrics()
+{
+    if (!pImpl) return;
+    // Reset both sides unconditionally — safe on null (returns immediately).
+    if (DataBlockConsumer* c = pImpl->consumer())
+        c->clear_metrics();
+    if (DataBlockProducer* p = pImpl->producer())
+        p->clear_metrics();
+}
+
+void ShmQueue::set_configured_period(uint64_t period_us)
+{
+    if (!pImpl) return;
+    auto policy = (period_us > 0) ? LoopPolicy::FixedRate : LoopPolicy::MaxRate;
+    auto period = std::chrono::microseconds{period_us};
+    // Single-mode: only one handle is non-null.
+    if (DataBlockConsumer* c = pImpl->consumer())
+        c->set_loop_policy(policy, period);
+    else if (DataBlockProducer* p = pImpl->producer())
+        p->set_loop_policy(policy, period);
 }
 
 } // namespace pylabhub::hub

@@ -45,6 +45,13 @@ namespace pylabhub::hub { class QueueReader; }
 namespace pylabhub::scripting
 {
 
+// Maximum recursion depth for JSON ↔ script type conversion.
+// Set via CMake option PYLABHUB_SCRIPT_MAX_RECURSION_DEPTH (default: 20).
+#ifndef PYLABHUB_SCRIPT_MAX_RECURSION_DEPTH
+#define PYLABHUB_SCRIPT_MAX_RECURSION_DEPTH 20
+#endif
+inline constexpr int kScriptMaxRecursionDepth = PYLABHUB_SCRIPT_MAX_RECURSION_DEPTH;
+
 // ============================================================================
 // InvokeResult — return value from hot-path on_produce / on_process
 // ============================================================================
@@ -139,7 +146,7 @@ class ScriptEngine
      *                valid for the engine's lifetime.
      * @return true on success.
      */
-    bool initialize(const char *log_tag, RoleHostCore *core)
+    bool initialize(const std::string &log_tag, RoleHostCore *core)
     {
         owner_thread_id_ = std::this_thread::get_id();
         ctx_.core = core;
@@ -157,24 +164,27 @@ class ScriptEngine
      * @return true if script loaded and required callback exists.
      */
     virtual bool load_script(const std::filesystem::path &script_dir,
-                             const char *entry_point,
-                             const char *required_callback) = 0;
+                             const std::string &entry_point,
+                             const std::string &required_callback) = 0;
 
     /**
      * @brief Build the API object/table using role-specific context.
      *
      * Called after load_script() and before invoke_on_init().  Sets ctx_
      * on the base class, calls engine-specific build_api_(), then sets
-     * accepting_=true — the engine is fully ready for invoke() calls.
+     * accepting_=true on success. Returns false if build_api_() fails
+     * (e.g. unknown role_tag) — engine remains non-accepting.
      */
-    void build_api(const RoleContext &ctx)
+    [[nodiscard]] bool build_api(const RoleContext &ctx)
     {
         auto *saved_core = ctx_.core; // preserve core from initialize()
         ctx_ = ctx;
         if (ctx_.core == nullptr)
             ctx_.core = saved_core;
-        build_api_(ctx);
+        if (!build_api_(ctx))
+            return false;
         accepting_.store(true, std::memory_order_release);
+        return true;
     }
 
     /**
@@ -222,26 +232,38 @@ class ScriptEngine
 
     // ── Queries ──────────────────────────────────────────────────────────
 
-    [[nodiscard]] virtual bool has_callback(const char *name) const = 0;
+    [[nodiscard]] virtual bool has_callback(const std::string &name) const = 0;
 
     // ── Schema / type building ───────────────────────────────────────────
 
     /**
      * @brief Register a slot type from SchemaSpec.
+     *
+     * Known type_name values and their caching:
+     *   "SlotFrame"    — producer writable / consumer readonly
+     *   "InSlotFrame"  — processor input (readonly)
+     *   "OutSlotFrame" — processor output (writable)
+     *   "FlexFrame"    — flexzone (writable + readonly)
+     *   "InboxFrame"   — inbox (readonly; uses from_buffer_copy for Python)
+     *
+     * All types MUST be cached by the engine for hot-path use. In particular,
+     * "InboxFrame" is registered at startup when inbox_schema is configured.
+     * invoke_on_inbox() requires the cached type — null cache is an error.
+     *
      * @param spec The schema specification.
-     * @param type_name Name for the type (e.g., "SlotFrame", "FlexFrame").
+     * @param type_name Name for the type.
      * @param packing "aligned" or "packed".
      * @return true on success.
      */
     virtual bool register_slot_type(const SchemaSpec &spec,
-                                    const char *type_name,
+                                    const std::string &type_name,
                                     const std::string &packing) = 0;
 
     /**
      * @brief Query the size of a registered type.
      * @return Size in bytes, or 0 on error.
      */
-    [[nodiscard]] virtual size_t type_sizeof(const char *type_name) const = 0;
+    [[nodiscard]] virtual size_t type_sizeof(const std::string &type_name) const = 0;
 
     // ── Generic invoke (thread-safe — engine handles internal locking) ────
 
@@ -252,7 +274,7 @@ class ScriptEngine
      * queue management, and thread dispatch. Owner thread gets priority.
      * @return false if function not found, engine shutting down, or error.
      */
-    virtual bool invoke(const char *name) = 0;
+    virtual bool invoke(const std::string &name) = 0;
 
     /**
      * @brief Invoke a named script function with JSON arguments.
@@ -260,15 +282,15 @@ class ScriptEngine
      * The engine unpacks args into the script's native format (Python dict,
      * Lua table) before calling. Same thread-safety contract as invoke(name).
      */
-    virtual bool invoke(const char *name, const nlohmann::json &args) = 0;
+    virtual bool invoke(const std::string &name, const nlohmann::json &args) = 0;
 
     /**
      * @brief Evaluate a script code string. For admin/debug use.
      *
-     * Same thread-safety contract as invoke(). Returns result as JSON,
-     * or empty object on error.
+     * Same thread-safety contract as invoke(). Returns InvokeResponse with
+     * status (Ok/ScriptError/EngineShutdown) and value (JSON result or empty).
      */
-    virtual nlohmann::json eval(const char *code) = 0;
+    virtual InvokeResponse eval(const std::string &code) = 0;
 
     // ── Hot-path invocation (owner thread — data loop) ──────────────────
 
@@ -317,15 +339,24 @@ class ScriptEngine
      * Returns void — inbox delivery is fire-and-forget from the framework's
      * perspective. Script errors are tracked via core->inc_script_errors().
      *
-     * @param data     Raw inbox payload.
-     * @param sz       Payload size in bytes.
-     * @param type_name FFI/ctypes type name for the inbox slot, or nullptr for raw bytes.
+     * ## Invariants
+     *
+     * - Inbox only exists when inbox_schema is configured (no schemaless inbox).
+     * - "InboxFrame" type is registered via register_slot_type() at startup,
+     *   before any invoke_on_inbox() call.
+     * - The engine MUST use the cached inbox type to build a typed view.
+     *   If the cached type is null, that is a bug — log error and return.
+     * - Data lifetime: valid only until the next InboxQueue::recv_one() call.
+     *   Python must use from_buffer_copy (not from_buffer). Lua ffi.cast is
+     *   safe because the callback completes before the next recv_one().
+     *
+     * @param data     Inbox payload (InboxQueue-owned buffer).
+     * @param sz       Payload size in bytes (= item_size()).
      * @param sender   Sender's pylabhub UID.
      */
     virtual void invoke_on_inbox(
         const void *data, size_t sz,
-        const char *type_name,
-        const char *sender) = 0;
+        const std::string &sender) = 0;
 
     // ── Error state ──────────────────────────────────────────────────────
 
@@ -437,10 +468,11 @@ class ScriptEngine
     // ── Engine-specific overrides (Template Method pattern) ──────────────
 
     /// Create the interpreter/state. Called by initialize().
-    virtual bool init_engine_(const char *log_tag, RoleHostCore *core) = 0;
+    virtual bool init_engine_(const std::string &log_tag, RoleHostCore *core) = 0;
 
     /// Build engine-specific API (Lua table / Python pybind11). Called by build_api().
-    virtual void build_api_(const RoleContext &ctx) = 0;
+    /// Returns true on success. If false, build_api() does NOT set accepting_=true.
+    virtual bool build_api_(const RoleContext &ctx) = 0;
 
     /// Release all script objects, close interpreter. Called by finalize().
     virtual void finalize_engine_() = 0;

@@ -197,8 +197,10 @@ InboxQueue& InboxQueue::operator=(InboxQueue&& o) noexcept
 bool InboxQueue::start()
 {
     if (!pImpl) return false;
+    if (pImpl->running_.load(std::memory_order_acquire))
+        return true; // already running — idempotent
     if (pImpl->running_.exchange(true, std::memory_order_acq_rel))
-        return false; // already running
+        return true; // lost race
 
     pImpl->zmq_ctx = zmq_ctx_new();
     if (!pImpl->zmq_ctx)
@@ -508,8 +510,10 @@ InboxClient& InboxClient::operator=(InboxClient&& o) noexcept
 bool InboxClient::start()
 {
     if (!pImpl) return false;
+    if (pImpl->running_.load(std::memory_order_acquire))
+        return true; // already running — idempotent
     if (pImpl->running_.exchange(true, std::memory_order_acq_rel))
-        return false;
+        return true; // lost race
 
     pImpl->zmq_ctx = zmq_ctx_new();
     if (!pImpl->zmq_ctx)

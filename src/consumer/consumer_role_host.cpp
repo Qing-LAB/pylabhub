@@ -222,7 +222,14 @@ void ConsumerRoleHost::worker_main_()
     ctx.core         = &core_;
     ctx.stop_on_script_error = sc.stop_on_script_error;
 
-    engine_->build_api(ctx);
+    if (!engine_->build_api(ctx))
+    {
+        LOGGER_ERROR("[cons] build_api failed — aborting role start");
+        engine_->finalize();
+        teardown_infrastructure_();
+        ready_promise_.set_value(false);
+        return;
+    }
 
     // Step 6: invoke on_init.
     engine_->invoke_on_init();
@@ -332,7 +339,6 @@ bool ConsumerRoleHost::setup_infrastructure_()
                 return false;
             }
             inbox_schema_slot_size = engine_->type_sizeof("InboxFrame");
-            inbox_type_name_ = "InboxFrame";
         }
 
         const std::string ep = inbox.endpoint.empty()
@@ -387,8 +393,7 @@ bool ConsumerRoleHost::setup_infrastructure_()
     }
     in_consumer_ = std::move(maybe_consumer);
 
-    if (auto *in_shm = in_consumer_->shm(); in_shm != nullptr)
-        in_shm->clear_metrics();
+    // Metrics reset moved to after queue creation (reset_metrics() on queue).
 
     // --- Wire event callbacks → IncomingMessage queue ---
     in_consumer_->on_channel_closing([this]() {
@@ -486,7 +491,12 @@ bool ConsumerRoleHost::setup_infrastructure_()
     }
 
     if (queue_reader_)
+    {
         queue_reader_->set_verify_checksum(shm.verify_checksum, core_.has_fz());
+        queue_reader_->reset_metrics();
+        if (tc.period_us > 0.0)
+            queue_reader_->set_configured_period(static_cast<uint64_t>(tc.period_us));
+    }
 
     LOGGER_INFO("[cons] Consumer started on channel '{}' (shm={})", ch,
                 in_consumer_->has_shm());
@@ -697,7 +707,7 @@ void ConsumerRoleHost::run_ctrl_thread_()
 
 void ConsumerRoleHost::drain_inbox_sync_()
 {
-    scripting::drain_inbox_sync(inbox_queue_.get(), engine_.get(), inbox_type_name_);
+    scripting::drain_inbox_sync(inbox_queue_.get(), engine_.get());
 }
 
 // ============================================================================
@@ -719,19 +729,14 @@ nlohmann::json ConsumerRoleHost::snapshot_metrics_json() const
         base["ctrl_queue_dropped"] = in_consumer_->ctrl_queue_dropped();
     }
 
-    if (in_consumer_.has_value())
+    if (queue_reader_)
     {
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-        if (const auto *shm_ptr = const_cast<hub::Consumer &>(*in_consumer_).shm();
-            shm_ptr != nullptr)
-        {
-            const auto &m = shm_ptr->metrics();
-            base["last_iteration_us"] = m.last_iteration_us;
-            base["max_iteration_us"]  = m.max_iteration_us;
-            base["last_slot_work_us"] = m.last_slot_work_us;
-            base["last_slot_wait_us"] = m.last_slot_wait_us;
-            base["configured_period_us"]         = m.configured_period_us;
-        }
+        const auto m = queue_reader_->metrics();
+        base["last_iteration_us"]   = m.last_iteration_us;
+        base["max_iteration_us"]    = m.max_iteration_us;
+        base["last_slot_work_us"]   = m.last_slot_work_us;
+        base["last_slot_wait_us"]   = m.last_slot_wait_us;
+        base["configured_period_us"] = m.configured_period_us;
     }
     return base;
 }

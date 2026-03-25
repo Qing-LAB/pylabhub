@@ -47,9 +47,43 @@
 
 ### ScriptEngine Cleanup (post-refactor)
 
+- [ ] RoleAPIBase extraction: eliminate 3× duplication across ProducerAPI/ConsumerAPI/ProcessorAPI; shared base holds uid, name, channel, log, metrics, inbox, shared_data
+- [ ] RoleHostCore log_tag: add log_tag to RoleHostCore so role hosts and engines get it from one place (currently each manages its own copy, hardcoded "[prod]"/"[cons]"/"[proc]" in role hosts)
 - [ ] RoleHostCore encapsulation (CR-03): `g_shutdown`, `validate_only`, `fz_spec` → private with accessors
-- [ ] RoleContext: `const char*` members → `std::string` (dangling pointer risk)
+- [ ] RoleContext: `const char*` members → `std::string` — PARTIALLY DONE (ScriptEngine interface changed 2026-03-24; RoleContext itself still uses std::string already)
 - [ ] Hubshell migration to PythonEngine (currently uses raw pybind11 embed)
+- [ ] Remove `fz_type` param from invoke_produce/invoke_consume/invoke_process — dead code, engines use cached FlexFrame type (same pattern as InboxFrame removal)
+
+### Queue Abstraction Unification
+
+**Goal**: Role hosts work entirely through `QueueReader`/`QueueWriter` — no transport branching, no `shm()` access.
+
+**Phase 1 — Unified metrics at queue level**:
+- Expand `QueueMetrics` with timing fields: `last_iteration_us`, `max_iteration_us`, `last_slot_work_us`, `last_slot_wait_us`, `configured_period_us`
+- ShmQueue: populate from existing `ContextMetrics`
+- ZmqQueue: track internally in recv/send thread (measure wait vs work per iteration)
+- Add `virtual void reset_metrics() {}` to QueueReader/QueueWriter base
+- Role hosts use `queue->metrics()` uniformly — eliminate all `->shm()->metrics()` access (3 sites)
+- Role hosts use `queue->reset_metrics()` — eliminate all `->shm()->clear_metrics()` (3 sites)
+
+**Phase 2 — Unified queue ownership**:
+- `hub::Producer` always owns a `QueueWriter*` (creates ShmQueue wrapper internally for SHM transport)
+- `hub::Consumer` always owns a `QueueReader*` (same)
+- `queue_writer()`/`queue_reader()` never return null
+- Queue abstraction already carries `item_size()`, `flexzone_size()`, `capacity()`
+- Transport-absent features (checksum, flexzone sync) are no-ops at base class
+- `start()` is idempotent (done 2026-03-25)
+
+**Phase 3 — Role host simplification**:
+- Eliminate all transport branching in role host queue setup
+- Role hosts receive `QueueWriter*`/`QueueReader*`, call `start()`, use, call `stop()`
+- No `ShmQueue::from_*_ref()` calls in role hosts
+- No `->queue()` / `->shm()` null-check transport detection
+
+**Remains transport-specific** (correctly below the abstraction):
+- Spinlock access in API classes — DataBlock-specific, no ZMQ equivalent
+- `actual_endpoint()` — ZMQ-specific, used only for broker registration
+- DataBlock ring-buffer internals (slot indices, spinlock contention) — SHM implementation detail
 
 ### HEP-0024: Role Directory Service (NEW — 2026-03-12)
 

@@ -160,3 +160,27 @@ The compile-time layer (L0) uses BLDS codes (b, i8, f32, c, etc.) which map 1:1.
 3. **Single conversion path** — registry->scripting->wire, all in `script_host_helpers.hpp`
 4. **Type parity** — FieldDef and ZmqSchemaField share the same 13-type vocabulary by design
 5. **Lazy evaluation** — config stores raw JSON; conversion happens only when needed
+
+## 6. Engine Type Caching
+
+The ScriptEngine caches typed views at `register_slot_type()` time for hot-path use.
+All known type_name values MUST be cached — no deferred or lazy type building.
+
+| type_name | Role | Cached as | View mode |
+|-----------|------|-----------|-----------|
+| `SlotFrame` | Producer/Consumer | writable + readonly | `from_buffer` (Python), `ffi.cast` (Lua) |
+| `InSlotFrame` | Processor input | readonly | `from_buffer` / `ffi.cast` |
+| `OutSlotFrame` | Processor output | writable | `from_buffer` / `ffi.cast` |
+| `FlexFrame` | All (optional) | writable + readonly | `from_buffer` / `ffi.cast` |
+| `InboxFrame` | All (optional) | readonly | `from_buffer_copy` (Python), `ffi.cast` (Lua) |
+
+### Inbox type invariants
+
+- **No schemaless inbox.** InboxQueue is created only when `inbox_schema` is in config.
+- **Schema is known at startup.** `register_slot_type("InboxFrame", ...)` is called before
+  any `invoke_on_inbox()`. The type MUST be cached at registration time.
+- **Null cache = error.** If `invoke_on_inbox()` finds no cached inbox type, it logs an
+  error, increments `script_errors`, and returns. No raw-bytes fallback.
+- **Data lifetime.** Inbox payload is valid only until the next `recv_one()`.
+  Python uses `from_buffer_copy` (copies data into ctypes struct).
+  Lua `ffi.cast` is safe because the callback returns before `recv_one()`.

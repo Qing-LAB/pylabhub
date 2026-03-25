@@ -314,7 +314,7 @@ inline py::object json_type_to_ctypes(py::module_ &ct, const FieldDef &fd)
     return base;
 }
 
-inline py::object build_ctypes_struct(const SchemaSpec &spec, const char *name)
+inline py::object build_ctypes_struct(const SchemaSpec &spec, const std::string &name)
 {
     py::module_ ct = py::module_::import("ctypes");
     py::list    fields;

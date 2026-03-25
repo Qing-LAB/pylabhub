@@ -278,8 +278,12 @@ public:
     /** PUSH: write_acquire() returned nullptr (send buffer full, Drop/Block timeout). */
     [[nodiscard]] uint64_t overrun_count()          const noexcept;
 
-    /** Unified metrics snapshot (implements QueueReader::metrics() + QueueWriter::metrics()). */
+    /** Unified metrics snapshot — timing (D2+D3) + transport counters. */
     QueueMetrics metrics() const noexcept override;
+    /** Reset all counters and timing state. */
+    void reset_metrics() override;
+    /** Set target loop period for overrun detection. 0 = no detection. */
+    void set_configured_period(uint64_t period_us) override;
 
     // ── Lifecycle (overrides both QueueReader and QueueWriter no-ops) ──────────
 

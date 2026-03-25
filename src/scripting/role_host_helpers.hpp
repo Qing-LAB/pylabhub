@@ -34,18 +34,17 @@ namespace pylabhub::scripting
  * Called from the data loop right before the main script callback (Step C).
  * All messages are processed in FIFO order — no dropping.
  *
+ * The engine uses its cached InboxFrame type (registered at startup via
+ * register_slot_type) to build typed views. No type name is passed per call.
+ *
  * @param inbox_queue   The inbox queue (may be nullptr if no inbox configured).
  * @param engine        The script engine for invoking on_inbox.
- * @param inbox_type    FFI/ctypes type name for typed inbox, or empty for raw bytes.
  */
 inline void drain_inbox_sync(hub::InboxQueue *inbox_queue,
-                              ScriptEngine    *engine,
-                              const std::string &inbox_type)
+                              ScriptEngine    *engine)
 {
     if (inbox_queue == nullptr || engine == nullptr)
         return;
-
-    const char *type_name = inbox_type.empty() ? nullptr : inbox_type.c_str();
 
     while (true)
     {
@@ -55,7 +54,7 @@ inline void drain_inbox_sync(hub::InboxQueue *inbox_queue,
             break;
 
         engine->invoke_on_inbox(item->data, inbox_queue->item_size(),
-                                type_name, item->sender_id.c_str());
+                                item->sender_id);
 
         // Always ack success — don't drop inbox messages on script errors.
         inbox_queue->send_ack(0);

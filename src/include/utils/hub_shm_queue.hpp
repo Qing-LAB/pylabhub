@@ -175,12 +175,16 @@ public:
     /**
      * @brief Unified metrics snapshot (implements QueueReader::metrics() and QueueWriter::metrics()).
      *
-     * Populates fields from DataBlock ContextMetrics where available:
-     *   recv_overflow_count — DataBlockConsumer scheduling overruns (read mode).
-     *   overrun_count       — DataBlockProducer scheduling overruns (write mode).
-     * ZMQ-specific fields are always 0.
+     * Bridges Domain 2+3 timing fields from DataBlock ContextMetrics.
+     * ZMQ-specific counters (recv_frame_error_count, recv_gap_count, etc.) are always 0.
      */
     QueueMetrics metrics() const noexcept override;
+
+    /** @brief Reset all counters. Delegates to DataBlock clear_metrics(). */
+    void reset_metrics() override;
+
+    /** @brief Set target period. Delegates to DataBlock set_loop_policy(). */
+    void set_configured_period(uint64_t period_us) override;
 
 private:
     explicit ShmQueue(std::unique_ptr<ShmQueueImpl> impl);

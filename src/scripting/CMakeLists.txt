@@ -40,6 +40,7 @@ endif()
 
 target_compile_definitions(pylabhub-scripting PRIVATE
     LOGGER_COMPILE_LEVEL=${PYLABHUB_LOGGER_COMPILE_LEVEL}
+    PYLABHUB_SCRIPT_MAX_RECURSION_DEPTH=${PYLABHUB_SCRIPT_MAX_RECURSION_DEPTH}
 )
 
 # Include paths: scripting dir + role directories (for API headers).

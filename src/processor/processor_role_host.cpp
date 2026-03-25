@@ -251,7 +251,14 @@ void ProcessorRoleHost::worker_main_()
     ctx.core         = &core_;
     ctx.stop_on_script_error = config_.script().stop_on_script_error;
 
-    engine_->build_api(ctx);
+    if (!engine_->build_api(ctx))
+    {
+        LOGGER_ERROR("[proc] build_api failed — aborting role start");
+        engine_->finalize();
+        teardown_infrastructure_();
+        ready_promise_.set_value(false);
+        return;
+    }
 
     // Step 6: invoke on_init.
     engine_->invoke_on_init();
@@ -479,7 +486,6 @@ bool ProcessorRoleHost::setup_infrastructure_()
                 return false;
             }
             inbox_schema_slot_size = engine_->type_sizeof("InboxFrame");
-            inbox_type_name_ = "InboxFrame";
         }
 
         const std::string ep = config_.inbox().endpoint.empty()
@@ -545,8 +551,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
     }
     out_producer_ = std::move(maybe_producer);
 
-    if (auto *out_shm = out_producer_->shm(); out_shm != nullptr)
-        out_shm->clear_metrics();
+    // Metrics reset moved to after queue creation (reset_metrics() on queue).
 
     // Graceful shutdown: queue channel_closing event (output side).
     out_producer_->on_channel_closing([this]() {
@@ -713,10 +718,26 @@ bool ProcessorRoleHost::setup_infrastructure_()
         }
         out_queue_ = hub::ShmQueue::from_producer_ref(
             *out_shm, out_schema_slot_size_, core_.schema_fz_size(), config_.out_channel());
-        out_queue_->start();
         out_q_ = out_queue_.get();
     }
+    // Uniform lifecycle: start() is idempotent (true if already running).
+    if (!out_q_->start())
+    {
+        LOGGER_ERROR("[proc] Output queue start() failed (channel='{}')",
+                     config_.out_channel());
+        return false;
+    }
     out_q_->set_checksum_options(config_.out_shm().update_checksum, core_.has_fz());
+
+    // Reset metrics and configure period on both queues.
+    in_q_->reset_metrics();
+    out_q_->reset_metrics();
+    if (config_.timing().period_us > 0.0)
+    {
+        auto period = static_cast<uint64_t>(config_.timing().period_us);
+        in_q_->set_configured_period(period);
+        out_q_->set_configured_period(period);
+    }
 
     LOGGER_INFO("[proc] Processor started: '{}' -> '{}'",
                 config_.in_channel(), config_.out_channel());
@@ -1050,7 +1071,7 @@ void ProcessorRoleHost::run_ctrl_thread_()
 
 void ProcessorRoleHost::drain_inbox_sync_()
 {
-    scripting::drain_inbox_sync(inbox_queue_.get(), engine_.get(), inbox_type_name_);
+    scripting::drain_inbox_sync(inbox_queue_.get(), engine_.get());
 }
 
 // ============================================================================
@@ -1075,20 +1096,15 @@ nlohmann::json ProcessorRoleHost::snapshot_metrics_json() const
     // Use our own iteration_count (always available, regardless of transport).
     base["iteration_count"] = core_.iteration_count();
 
-    if (out_producer_.has_value())
+    if (out_q_)
     {
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) — shm() is non-const but we only read
-        if (const auto *shm = const_cast<hub::Producer &>(*out_producer_).shm();
-            shm != nullptr)
-        {
-            const auto &m = shm->metrics();
-            base["loop_overrun_count"] = m.overrun_count;
-            base["last_iteration_us"]  = m.last_iteration_us;
-            base["max_iteration_us"]   = m.max_iteration_us;
-            base["last_slot_work_us"]  = m.last_slot_work_us;
-            base["last_slot_wait_us"]  = m.last_slot_wait_us;
-            base["configured_period_us"]          = m.configured_period_us;
-        }
+        const auto m = out_q_->metrics();
+        base["loop_overrun_count"]  = m.overrun_count;
+        base["last_iteration_us"]   = m.last_iteration_us;
+        base["max_iteration_us"]    = m.max_iteration_us;
+        base["last_slot_work_us"]   = m.last_slot_work_us;
+        base["last_slot_wait_us"]   = m.last_slot_wait_us;
+        base["configured_period_us"] = m.configured_period_us;
     }
     return base;
 }
