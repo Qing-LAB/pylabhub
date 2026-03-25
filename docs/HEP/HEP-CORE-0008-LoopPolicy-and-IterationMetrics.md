@@ -1,6 +1,6 @@
 # HEP-CORE-0008: LoopPolicy and Iteration Metrics
 
-**Status**: Pass 3 complete (2026-02-25) — SlotIterator FixedRate sleep, ProducerOptions/ConsumerOptions loop_policy fields, api.metrics() dict completeness (D4 keys added); **585/585 tests passing** (as of 2026-02-28)
+**Status**: Pass 3 complete (2026-02-25); **Pass 4 designed** (2026-03-25) — Queue-level metrics unification: expand QueueMetrics with D2+D3 timing fields, add `reset_metrics()`/`set_configured_period()` to QueueReader/QueueWriter, ZmqQueue adds timing measurement in recv/send thread
 **Created**: 2026-02-22
 **Area**: DataHub RAII Layer / Standalone Binaries
 **Depends on**: HEP-CORE-0002 (DataHub), HEP-CORE-0011 (ScriptHost), HEP-CORE-0006 (SlotProcessor API)
@@ -495,9 +495,19 @@ flowchart TB
     end
 
     subgraph D2D3["Domains 2+3: Timing + Scheduling"]
-        Acquire["acquire_write_slot()\n• last_slot_wait_us\n• last_iteration_us\n• overrun_count"]
-        Release["release_write_slot()\n• last_slot_work_us"]
-        Pimpl["DataBlock Pimpl\n(ContextMetrics storage)"]
+        subgraph ShmPath["SHM Transport"]
+            Acquire["acquire_write_slot()\n• last_slot_wait_us\n• last_iteration_us\n• overrun_count"]
+            Release["release_write_slot()\n• last_slot_work_us"]
+            Pimpl["DataBlock Pimpl\n(ContextMetrics storage)"]
+        end
+        subgraph ZmqPath["ZMQ Transport"]
+            ZmqThread["recv/send thread\n• same timing fields\n• steady_clock measurement"]
+            ZmqImpl["ZmqQueueImpl\n(atomic counters)"]
+        end
+    end
+
+    subgraph QueueLayer["Queue Abstraction Layer"]
+        QM["QueueMetrics\n(unified D2+D3 fields)"]
     end
 
     subgraph D4["Domain 4: Script Supervision"]
@@ -510,16 +520,157 @@ flowchart TB
 
     Acquire --> Pimpl
     Release --> Pimpl
-    Pimpl -->|"const ref"| MetricsDict
+    Pimpl -->|"ShmQueue::metrics()"| QM
+    ZmqThread --> ZmqImpl
+    ZmqImpl -->|"ZmqQueue::metrics()"| QM
+    QM -->|"queue->metrics()"| MetricsDict
     ScriptHost --> MetricsDict
     SHM -.->|"read via SHM"| MetricsDict
 ```
 
 ---
 
-## 10. Related Documents
+## 10. Pass 4 — Queue-Level Metrics Unification (2026-03-25)
+
+### 10.1 Problem
+
+`ContextMetrics` timing fields (Domains 2+3) are tracked inside DataBlock's acquire/release
+methods. `ShmQueue` wraps DataBlock but only bridges `overrun_count` to `QueueMetrics` — the
+5 timing fields are not surfaced through the queue abstraction layer.
+
+`ZmqQueue` has no timing measurement at all — only error/gap/drop counters.
+
+Role hosts bypass the queue abstraction entirely (`producer->shm()->metrics()`) to access
+timing data. This breaks the transport-agnostic design: role hosts must know whether the
+underlying transport is SHM to get timing metrics.
+
+### 10.2 Design Principles
+
+**The queue abstraction layer owns the metrics contract.** Both `QueueReader` and
+`QueueWriter` define the timing fields. Each implementation fulfills them:
+
+- **ShmQueue**: delegates to DataBlock's `ContextMetrics` (measurements happen in
+  `acquire_write_slot()` / `release_write_slot()` etc. — unchanged)
+- **ZmqQueue**: tracks timing in its own acquire/release methods using `steady_clock`
+
+The user (role host, script API) accesses metrics only through `queue->metrics()`.
+No transport detection, no `shm()` access for metrics.
+
+**Metrics reflect the handle's perspective, not the shared resource.**
+
+A DataBlock shared memory segment is accessed by multiple roles (producer writes,
+consumer reads). Each role creates its own handle (`DataBlockProducer` or
+`DataBlockConsumer`), and the ShmQueue wraps exactly one handle. The metrics
+returned by `queue->metrics()` reflect **this handle's timing** — how long this
+role waited for a slot, how fast this role is iterating, whether this role is
+meeting its target period.
+
+Two roles accessing the same DataBlock will have different metrics because they
+have different access patterns (write vs read), different contention profiles,
+and potentially different configured periods.
+
+For the Processor, which has both an input queue (reader on channel A) and an
+output queue (writer on channel B), each queue independently tracks its own
+metrics. They are separate handles on separate DataBlock segments.
+
+This per-handle design means:
+- No cross-role metric contamination
+- Each `queue->metrics()` call returns a self-consistent snapshot for one direction
+- The factory determines the mode (read or write) at construction; the queue
+  never changes mode
+
+### 10.3 QueueMetrics Expansion
+
+Add to `QueueMetrics` (read-only snapshot, returned by `metrics()`):
+
+```cpp
+// Domain 2: Acquire/release timing
+uint64_t last_slot_wait_us{0};    ///< Time blocked inside acquire (µs).
+uint64_t last_iteration_us{0};    ///< Start-to-start time between consecutive acquires (µs).
+uint64_t max_iteration_us{0};     ///< Peak start-to-start time since reset (µs).
+uint64_t iteration_count{0};      ///< Successful slot acquisitions since reset.
+uint64_t context_elapsed_us{0};   ///< Elapsed since first acquire (µs). Updated per acquire.
+
+// Domain 3: Loop scheduling
+uint64_t last_slot_work_us{0};    ///< Time from acquire to release (µs).
+uint64_t configured_period_us{0}; ///< Target period (0 = MaxRate). Config input, not measured.
+```
+
+**Field definitions:**
+
+| Field | Measurement | When updated | Meaning |
+|-------|-------------|-------------|---------|
+| `last_slot_wait_us` | `t_acquired - t_enter_acquire` | Each successful acquire | How long the queue blocked waiting for data |
+| `last_iteration_us` | `t_enter_acquire(N) - t_enter_acquire(N-1)` | Each acquire (after first) | Start-to-start gap between consecutive iterations |
+| `max_iteration_us` | running max of `last_iteration_us` | Each acquire (after first) | Peak iteration time since reset |
+| `iteration_count` | +1 per successful acquire | Each successful acquire | Total successful slot acquisitions since reset |
+| `context_elapsed_us` | `t_enter_acquire - t_first_acquire` | Each acquire (after first) | Total elapsed time since the queue started processing |
+| `last_slot_work_us` | `t_release - t_acquired` | Each release/commit | Time the caller held the slot (user callback time) |
+| `overrun_count` | +1 when `last_iteration_us > configured_period_us` | Each acquire (when period > 0) | Iterations that missed the target deadline |
+| `configured_period_us` | set once at startup | `set_configured_period()` | Target loop period; 0 = MaxRate (no overrun detection) |
+
+### 10.4 Queue Lifecycle API Additions
+
+```cpp
+// On QueueReader and QueueWriter base classes:
+
+/// Reset all counters. Preserves configured_period_us.
+/// Called at role startup before the data loop.
+virtual void reset_metrics() {}
+
+/// Set the target loop period for overrun detection.
+/// Called once at startup after queue creation.
+virtual void set_configured_period(uint64_t period_us) { (void)period_us; }
+```
+
+### 10.5 Measurement Responsibility
+
+| Field | ShmQueue | ZmqQueue |
+|-------|----------|----------|
+| `last_slot_wait_us` | DataBlock acquire (existing) | read_acquire/write_acquire: time blocked |
+| `last_iteration_us` | DataBlock acquire (existing) | read_acquire/write_acquire: start-to-start gap |
+| `max_iteration_us` | DataBlock acquire (existing) | read_acquire/write_acquire: running max |
+| `iteration_count` | DataBlock acquire (existing) | read_acquire/write_acquire: successful count |
+| `context_elapsed_us` | DataBlock acquire (existing) | read_acquire/write_acquire: elapsed since first acquire |
+| `last_slot_work_us` | DataBlock release (existing) | read_release/write_commit: acquire-to-release gap |
+| `overrun_count` | DataBlock acquire (existing) | read_acquire/write_acquire: iteration exceeded `configured_period_us` |
+| `configured_period_us` | `set_configured_period()` → DataBlock `set_loop_policy()` | `set_configured_period()` → stored in Impl |
+
+For ShmQueue: no new measurement code. `metrics()` reads from `ContextMetrics` (the data is
+already tracked by DataBlock). `set_configured_period()` delegates to DataBlock's
+`set_loop_policy()`.
+
+For ZmqQueue: new timing code in recv_thread_/send_thread_ using `steady_clock`. Same
+measurement points as DataBlock (start-of-acquire, end-of-acquire, release).
+
+### 10.6 Access Rules
+
+| Operation | Who calls | When |
+|-----------|-----------|------|
+| `metrics()` | Role host, script API | Any time (read-only snapshot) |
+| `reset_metrics()` | Role host | Once at startup, before data loop |
+| `set_configured_period()` | Role host | Once at startup, after queue creation |
+| Timing updates | Queue implementation internally | Every acquire/release cycle |
+
+**No external code writes to individual metric fields.** The queue owns the measurement.
+The role host configures the period and reads the results.
+
+### 10.7 What Stays Below the Abstraction
+
+These remain DataBlock-specific, not surfaced through QueueMetrics:
+
+- `context_start_time`, `context_end_time`, `context_elapsed_us` — session boundaries (DataBlock lifecycle concept)
+- Spinlock contention counters — SHM-specific
+- Ring buffer slot indices — SHM implementation detail
+- `recv_frame_error_count`, `recv_gap_count`, `send_drop_count`, `send_retry_count` — ZMQ-specific diagnostic counters (already in QueueMetrics, ZMQ-only)
+
+---
+
+## 11. Related Documents
 
 - HEP-CORE-0002: DataHub FINAL — SHM layout and slot state machine
 - HEP-CORE-0011: ScriptHost Abstraction Framework — Python callback model
 - HEP-CORE-0006: SlotProcessor API — C++ RAII transaction layer
 - HEP-CORE-0009: Policy Reference — all policy enums in one place
+- `docs/tech_draft/schema_architecture.md` §6 — Engine type caching and queue abstraction
+- `docs/todo/API_TODO.md` §Queue Abstraction Unification — phased implementation plan

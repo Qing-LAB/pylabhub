@@ -107,7 +107,6 @@ class ProducerRoleHost
     // fz_spec is stored in core_.fz_spec() (shared with engine for flexzone exposure).
     scripting::SchemaSpec                  slot_spec_;
     size_t                                 schema_slot_size_{0};
-    std::string                            inbox_type_name_;
 
     // Metrics are in core_ (RoleHostCore) — single source of truth.
     // See core_.out_written_, core_.drops_, core_.iteration_count_, core_.last_cycle_work_us_.

@@ -319,10 +319,11 @@ def on_produce(out_slot, flexzone, messages, api) -> bool:
     Return value determines what the C++ framework does with out_slot:
       True          → write_commit(): publishes out_slot to the ring/queue
       False         → write_discard(): discards out_slot (loop continues normally)
-      None          → Error: increments script_errors, logs warning.
+      None          → Error: increments script_errors, logs error.
                       If stop_on_script_error=true, requests shutdown.
                       Catches the common bug of omitting a return statement.
-      Wrong type    → write_discard() + LOGGER_ERROR (loop continues; error is logged)
+      Wrong type    → Error: increments script_errors, logs error.
+                      Only explicit 'return True' commits; everything else is an error.
 
     "Discard" means the slot for this cycle is abandoned without publishing.
     It does NOT stop or abort the loop — the loop continues to the next iteration.

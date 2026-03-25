@@ -68,12 +68,31 @@ inline OverflowPolicy parse_overflow_policy(const std::string &s, const char *co
  * acceptable for diagnostics.  For a fully consistent snapshot, stop() the queue
  * first so all background threads have quiesced.
  *
- * ZMQ-specific counters (recv_frame_error_count, recv_gap_count, send_retry_count)
- * are always 0 for ShmQueue.  ShmQueue::overrun_count reflects loop scheduling
- * overruns from DataBlock ContextMetrics.
+ * ## Timing fields (Domain 2+3, HEP-CORE-0008 §10)
+ *
+ * Both ShmQueue and ZmqQueue track the same timing metrics:
+ * - ShmQueue: delegates to DataBlock ContextMetrics (measured in acquire/release)
+ * - ZmqQueue: measures directly in recv/send thread using steady_clock
+ *
+ * ## Transport-specific counters
+ *
+ * ZMQ-specific: recv_frame_error_count, recv_gap_count, send_drop_count, send_retry_count
+ * (always 0 for ShmQueue).
  */
 struct QueueMetrics
 {
+    // ── Domain 2: Acquire/release timing (both transports) ───────────────────
+    uint64_t last_slot_wait_us{0};    ///< Time blocked inside acquire (µs).
+    uint64_t last_iteration_us{0};    ///< Start-to-start time between consecutive acquires (µs).
+    uint64_t max_iteration_us{0};     ///< Peak start-to-start time since reset (µs).
+    uint64_t iteration_count{0};      ///< Successful slot acquisitions since reset.
+    uint64_t context_elapsed_us{0};   ///< Elapsed since first acquire (µs). Updated per acquire.
+
+    // ── Domain 3: Loop scheduling (both transports) ──────────────────────────
+    uint64_t last_slot_work_us{0};    ///< Time from acquire to release (µs).
+    uint64_t overrun_count{0};        ///< Iterations where start-to-start gap > configured_period_us.
+    uint64_t configured_period_us{0}; ///< Target period (µs). 0 = MaxRate. Config input, not measured.
+
     // ── Receive side (read_acquire path) ─────────────────────────────────────
     /// Items dropped because the receive ring buffer was full (oldest discarded).
     /// ZmqQueue: internal recv ring overflow.
@@ -96,12 +115,6 @@ struct QueueMetrics
     /// Transient EAGAIN retries by the send_thread_ (ZMQ HWM temporarily exceeded).
     /// ZmqQueue only; always 0 for ShmQueue.
     uint64_t send_retry_count{0};
-
-    /// write_acquire() returned nullptr because the send buffer was full.
-    /// ZmqQueue (Drop policy): incremented on each overflowing write_acquire().
-    /// ZmqQueue (Block policy): incremented on timeout.
-    /// ShmQueue: DataBlockProducer scheduling overruns (configured_period_us exceeded).
-    uint64_t overrun_count{0};
 };
 
 /**
@@ -203,20 +216,34 @@ public:
     virtual size_t      flexzone_size() const noexcept { return 0; }
     /** @brief Human-readable channel or endpoint name (for diagnostics). */
     virtual std::string name()          const = 0;
-    /** @brief Diagnostic counter snapshot. Thread-safe. */
+    /** @brief Diagnostic counter snapshot (timing + transport counters). Thread-safe. */
     virtual QueueMetrics metrics()      const noexcept { return {}; }
+
+    /** @brief Reset all metric counters. Called at role startup before the data loop. */
+    virtual void reset_metrics() {}
+
+    /**
+     * @brief Set the target loop period for overrun detection.
+     * Called once at startup after queue creation. 0 = MaxRate (no overrun detection).
+     */
+    virtual void set_configured_period(uint64_t /*period_us*/) {}
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     // Default implementations are no-ops (suitable for ShmQueue).
     // ZmqQueue overrides start()/stop() to manage its recv_thread_.
+    //
+    // Contract: start() → use → stop(). Both are idempotent:
+    //   start() on already-running queue returns true (not false).
+    //   stop()  on already-stopped queue is a safe no-op.
 
     /**
      * @brief Start the reader (bind/connect socket, start background threads).
-     * @return true on success; false if already running or an error occurred.
+     * @return true on success or if already running (idempotent).
+     *         false only on actual startup failure.
      */
     virtual bool start() { return true; }
 
-    /** @brief Stop the reader (join background threads, close sockets). */
+    /** @brief Stop the reader (join background threads, close sockets). Idempotent. */
     virtual void stop()  {}
 
     /** @brief Returns true if running (after start(), before stop()). */
@@ -329,20 +356,34 @@ public:
     virtual size_t      flexzone_size() const noexcept { return 0; }
     /** @brief Human-readable channel or endpoint name (for diagnostics). */
     virtual std::string name()          const = 0;
-    /** @brief Diagnostic counter snapshot. Thread-safe. */
+    /** @brief Diagnostic counter snapshot (timing + transport counters). Thread-safe. */
     virtual QueueMetrics metrics()      const noexcept { return {}; }
+
+    /** @brief Reset all metric counters. Called at role startup before the data loop. */
+    virtual void reset_metrics() {}
+
+    /**
+     * @brief Set the target loop period for overrun detection.
+     * Called once at startup after queue creation. 0 = MaxRate (no overrun detection).
+     */
+    virtual void set_configured_period(uint64_t /*period_us*/) {}
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     // Default implementations are no-ops (suitable for ShmQueue).
     // ZmqQueue overrides start()/stop() to manage its send_thread_.
+    //
+    // Contract: start() → use → stop(). Both are idempotent:
+    //   start() on already-running queue returns true (not false).
+    //   stop()  on already-stopped queue is a safe no-op.
 
     /**
      * @brief Start the writer (bind/connect socket, start background threads).
-     * @return true on success; false if already running or an error occurred.
+     * @return true on success or if already running (idempotent).
+     *         false only on actual startup failure.
      */
     virtual bool start() { return true; }
 
-    /** @brief Stop the writer (join background threads, close sockets). */
+    /** @brief Stop the writer (join background threads, close sockets). Idempotent. */
     virtual void stop()  {}
 
     /** @brief Returns true if running (after start(), before stop()). */

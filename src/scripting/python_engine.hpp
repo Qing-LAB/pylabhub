@@ -67,23 +67,23 @@ class PythonEngine : public ScriptEngine
     /// Empty = use base environment (default).
     void set_python_venv(const std::string &venv) { python_venv_ = venv; }
 
-    bool init_engine_(const char *log_tag, RoleHostCore *core) override;
+    bool init_engine_(const std::string &log_tag, RoleHostCore *core) override;
     bool load_script(const std::filesystem::path &script_dir,
-                     const char *entry_point,
-                     const char *required_callback) override;
-    void build_api_(const RoleContext &ctx) override;
+                     const std::string &entry_point,
+                     const std::string &required_callback) override;
+    bool build_api_(const RoleContext &ctx) override;
     void finalize_engine_() override;
 
     // ── Queries ────────────────────────────────────────────────────────────
 
-    [[nodiscard]] bool has_callback(const char *name) const override;
+    [[nodiscard]] bool has_callback(const std::string &name) const override;
 
     // ── Schema / type building ─────────────────────────────────────────────
 
     bool register_slot_type(const SchemaSpec &spec,
-                            const char *type_name,
+                            const std::string &type_name,
                             const std::string &packing) override;
-    [[nodiscard]] size_t type_sizeof(const char *type_name) const override;
+    [[nodiscard]] size_t type_sizeof(const std::string &type_name) const override;
 
     // ── Callback invocation ────────────────────────────────────────────────
 
@@ -108,14 +108,13 @@ class PythonEngine : public ScriptEngine
 
     void invoke_on_inbox(
         const void *data, size_t sz,
-        const char *type_name,
-        const char *sender) override;
+        const std::string &sender) override;
 
     // ── Generic invoke (thread-safe) ─────────────────────────────────────
 
-    bool invoke(const char *name) override;
-    bool invoke(const char *name, const nlohmann::json &args) override;
-    nlohmann::json eval(const char *code) override;
+    bool invoke(const std::string &name) override;
+    bool invoke(const std::string &name, const nlohmann::json &args) override;
+    InvokeResponse eval(const std::string &code) override;
 
     // ── Error state ────────────────────────────────────────────────────────
 
@@ -164,11 +163,13 @@ class PythonEngine : public ScriptEngine
     py::object out_slot_type_{py::none()};   ///< Processor output (writable)
     py::object fz_type_{py::none()};         ///< Flexzone type (writable)
     py::object fz_type_ro_{py::none()};      ///< Flexzone type (read-only, consumer)
+    py::object inbox_type_ro_{py::none()};   ///< Inbox type (read-only, from_buffer_copy)
 
     SchemaSpec slot_spec_;                    ///< For slot view creation mode
     SchemaSpec in_slot_spec_;
     SchemaSpec out_slot_spec_;
     SchemaSpec fz_spec_;
+    SchemaSpec inbox_spec_;
 
     // script_errors is in ctx_.core->script_errors_ (RoleHostCore).
 
@@ -191,15 +192,15 @@ class PythonEngine : public ScriptEngine
     // accepting_ is inherited from ScriptEngine base class.
     std::atomic<bool>           executing_{false};
 
-    InvokeResponse execute_direct_(const char *name);
-    InvokeResponse execute_direct_(const char *name, const nlohmann::json &args);
-    nlohmann::json eval_direct_(const char *code);
+    InvokeResponse execute_direct_(const std::string &name);
+    InvokeResponse execute_direct_(const std::string &name, const nlohmann::json &args);
+    InvokeResponse eval_direct_(const std::string &code);
     void process_pending_();
 
     // ── Internal helpers ───────────────────────────────────────────────────
 
     /// Build a ctypes.Structure subclass from SchemaSpec.
-    py::object build_ctypes_type_(const SchemaSpec &spec, const char *name,
+    py::object build_ctypes_type_(const SchemaSpec &spec, const std::string &name,
                                    const std::string &packing);
 
     /// Wrap a type as read-only (adds __setattr__ override).

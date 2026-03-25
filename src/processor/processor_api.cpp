@@ -204,38 +204,30 @@ nlohmann::json ProcessorAPI::snapshot_metrics_json() const
     base["last_cycle_work_us"] = last_cycle_work_us();
     base["ctrl_queue_dropped"] = ctrl_queue_dropped();
 
-    // Input side ContextMetrics (consumer SHM handle, D2+D3).
-    if (consumer_ != nullptr)
+    // Domain 2+3 timing from queue abstraction (transport-agnostic).
+    if (const auto *iq = in_queue_.load(std::memory_order_acquire); iq != nullptr)
     {
-        if (const auto *shm = consumer_->shm(); shm != nullptr)
-        {
-            const auto &m = shm->metrics();
-            base["in_iteration_count"]    = m.iteration_count;
-            base["in_context_elapsed_us"] = m.context_elapsed_us;
-            base["in_last_iteration_us"]  = m.last_iteration_us;
-            base["in_max_iteration_us"]   = m.max_iteration_us;
-            base["in_last_slot_wait_us"]  = m.last_slot_wait_us;
-            base["in_last_slot_work_us"]  = m.last_slot_work_us;
-            base["in_overrun_count"]      = m.overrun_count;
-            base["in_configured_period_us"]          = m.configured_period_us;
-        }
+        const auto m = iq->metrics();
+        base["in_iteration_count"]       = m.iteration_count;
+        base["in_context_elapsed_us"]    = m.context_elapsed_us;
+        base["in_last_iteration_us"]     = m.last_iteration_us;
+        base["in_max_iteration_us"]      = m.max_iteration_us;
+        base["in_last_slot_wait_us"]     = m.last_slot_wait_us;
+        base["in_last_slot_work_us"]     = m.last_slot_work_us;
+        base["in_overrun_count"]         = m.overrun_count;
+        base["in_configured_period_us"]  = m.configured_period_us;
     }
-
-    // Output side ContextMetrics (producer SHM handle, D2+D3).
-    if (producer_ != nullptr)
+    if (const auto *oq = out_queue_.load(std::memory_order_acquire); oq != nullptr)
     {
-        if (const auto *shm = producer_->shm(); shm != nullptr)
-        {
-            const auto &m = shm->metrics();
-            base["out_iteration_count"]    = m.iteration_count;
-            base["out_context_elapsed_us"] = m.context_elapsed_us;
-            base["out_last_iteration_us"]  = m.last_iteration_us;
-            base["out_max_iteration_us"]   = m.max_iteration_us;
-            base["out_last_slot_wait_us"]  = m.last_slot_wait_us;
-            base["out_last_slot_work_us"]  = m.last_slot_work_us;
-            base["out_overrun_count"]      = m.overrun_count;
-            base["out_configured_period_us"]          = m.configured_period_us;
-        }
+        const auto m = oq->metrics();
+        base["out_iteration_count"]      = m.iteration_count;
+        base["out_context_elapsed_us"]   = m.context_elapsed_us;
+        base["out_last_iteration_us"]    = m.last_iteration_us;
+        base["out_max_iteration_us"]     = m.max_iteration_us;
+        base["out_last_slot_wait_us"]    = m.last_slot_wait_us;
+        base["out_last_slot_work_us"]    = m.last_slot_work_us;
+        base["out_overrun_count"]        = m.overrun_count;
+        base["out_configured_period_us"] = m.configured_period_us;
     }
 
     nlohmann::json custom;
@@ -261,38 +253,32 @@ py::dict ProcessorAPI::metrics() const
     d["out_written"]        = py::int_(out_slots_written());
     d["drops"]              = py::int_(out_drop_count());
 
-    // D2+D3 — input side (consumer SHM)
-    if (consumer_ != nullptr)
+    // D2+D3 — input side (transport-agnostic).
+    if (const auto *iq = in_queue_.load(std::memory_order_acquire); iq != nullptr)
     {
-        if (const auto *shm = consumer_->shm(); shm != nullptr)
-        {
-            const auto &m = shm->metrics();
-            d["in_context_elapsed_us"] = py::int_(m.context_elapsed_us);
-            d["in_iteration_count"]    = py::int_(m.iteration_count);
-            d["in_last_iteration_us"]  = py::int_(m.last_iteration_us);
-            d["in_max_iteration_us"]   = py::int_(m.max_iteration_us);
-            d["in_last_slot_wait_us"]  = py::int_(m.last_slot_wait_us);
-            d["in_overrun_count"]      = py::int_(m.overrun_count);
-            d["in_last_slot_work_us"]  = py::int_(m.last_slot_work_us);
-            d["in_configured_period_us"]          = py::int_(m.configured_period_us);
-        }
+        const auto m = iq->metrics();
+        d["in_context_elapsed_us"]  = py::int_(m.context_elapsed_us);
+        d["in_iteration_count"]     = py::int_(m.iteration_count);
+        d["in_last_iteration_us"]   = py::int_(m.last_iteration_us);
+        d["in_max_iteration_us"]    = py::int_(m.max_iteration_us);
+        d["in_last_slot_wait_us"]   = py::int_(m.last_slot_wait_us);
+        d["in_overrun_count"]       = py::int_(m.overrun_count);
+        d["in_last_slot_work_us"]   = py::int_(m.last_slot_work_us);
+        d["in_configured_period_us"] = py::int_(m.configured_period_us);
     }
 
-    // D2+D3 — output side (producer SHM)
-    if (producer_ != nullptr)
+    // D2+D3 — output side (transport-agnostic).
+    if (const auto *oq = out_queue_.load(std::memory_order_acquire); oq != nullptr)
     {
-        if (const auto *shm = producer_->shm(); shm != nullptr)
-        {
-            const auto &m = shm->metrics();
-            d["out_context_elapsed_us"] = py::int_(m.context_elapsed_us);
-            d["out_iteration_count"]    = py::int_(m.iteration_count);
-            d["out_last_iteration_us"]  = py::int_(m.last_iteration_us);
-            d["out_max_iteration_us"]   = py::int_(m.max_iteration_us);
-            d["out_last_slot_wait_us"]  = py::int_(m.last_slot_wait_us);
-            d["out_overrun_count"]      = py::int_(m.overrun_count);
-            d["out_last_slot_work_us"]  = py::int_(m.last_slot_work_us);
-            d["out_configured_period_us"]          = py::int_(m.configured_period_us);
-        }
+        const auto m = oq->metrics();
+        d["out_context_elapsed_us"]  = py::int_(m.context_elapsed_us);
+        d["out_iteration_count"]     = py::int_(m.iteration_count);
+        d["out_last_iteration_us"]   = py::int_(m.last_iteration_us);
+        d["out_max_iteration_us"]    = py::int_(m.max_iteration_us);
+        d["out_last_slot_wait_us"]   = py::int_(m.last_slot_wait_us);
+        d["out_overrun_count"]       = py::int_(m.overrun_count);
+        d["out_last_slot_work_us"]   = py::int_(m.last_slot_work_us);
+        d["out_configured_period_us"] = py::int_(m.configured_period_us);
     }
 
     return d;

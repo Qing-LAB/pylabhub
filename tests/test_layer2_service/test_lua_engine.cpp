@@ -31,6 +31,8 @@ namespace fs = std::filesystem;
 using pylabhub::scripting::LuaEngine;
 using pylabhub::scripting::ScriptEngine;
 using pylabhub::scripting::InvokeResult;
+using pylabhub::scripting::InvokeStatus;
+using pylabhub::scripting::InvokeResponse;
 using pylabhub::scripting::RoleContext;
 using pylabhub::scripting::RoleHostCore;
 using pylabhub::scripting::IncomingMessage;
@@ -82,7 +84,7 @@ class LuaEngineTest : public ::testing::Test
     RoleContext producer_context()
     {
         RoleContext ctx{};
-        ctx.role_tag  = "test";
+        ctx.role_tag  = "prod";
         ctx.uid       = "TEST-ENGINE-00000001";
         ctx.name      = "TestEngine";
         ctx.channel   = "test.channel";
@@ -107,8 +109,7 @@ class LuaEngineTest : public ::testing::Test
             return false;
 
         auto ctx = producer_context();
-        engine.build_api(ctx);
-        return true;
+        return engine.build_api(ctx);
     }
 
     /// Setup engine with a RoleHostCore wired into the context.
@@ -126,8 +127,7 @@ class LuaEngineTest : public ::testing::Test
 
         auto ctx = producer_context();
         ctx.core = &core;
-        engine.build_api(ctx);
-        return true;
+        return engine.build_api(ctx);
     }
 
     fs::path tmp_;
@@ -340,7 +340,8 @@ TEST_F(LuaEngineTest, InvokeConsume_ReceivesReadOnlySlot)
     ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
 
     auto ctx = producer_context();
-    engine.build_api(ctx);
+    ctx.role_tag = "cons";
+    ASSERT_TRUE(engine.build_api(ctx));
 
     float data = 99.5f;
     std::vector<IncomingMessage> msgs;
@@ -367,7 +368,8 @@ TEST_F(LuaEngineTest, InvokeConsume_NilSlot)
     ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
 
     auto ctx = producer_context();
-    engine.build_api(ctx);
+    ctx.role_tag = "cons";
+    ASSERT_TRUE(engine.build_api(ctx));
 
     std::vector<IncomingMessage> msgs;
     engine.invoke_consume(nullptr, 0, nullptr, 0, nullptr, msgs);
@@ -392,7 +394,8 @@ TEST_F(LuaEngineTest, InvokeConsume_ScriptErrorDetected)
     ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
 
     auto ctx = producer_context();
-    engine.build_api(ctx);
+    ctx.role_tag = "cons";
+    ASSERT_TRUE(engine.build_api(ctx));
 
     float data = 1.0f;
     std::vector<IncomingMessage> msgs;
@@ -428,7 +431,8 @@ TEST_F(LuaEngineTest, InvokeProcess_DualSlots)
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
     auto ctx = producer_context();
-    engine.build_api(ctx);
+    ctx.role_tag = "proc";
+    ASSERT_TRUE(engine.build_api(ctx));
 
     float in_data  = 21.0f;
     float out_data = 0.0f;
@@ -462,7 +466,8 @@ TEST_F(LuaEngineTest, InvokeProcess_NilInput)
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
     auto ctx = producer_context();
-    engine.build_api(ctx);
+    ctx.role_tag = "proc";
+    ASSERT_TRUE(engine.build_api(ctx));
 
     std::vector<IncomingMessage> msgs;
     auto result = engine.invoke_process(nullptr, 0, nullptr, 0,
@@ -492,7 +497,8 @@ TEST_F(LuaEngineTest, InvokeProcess_InputOnlyNoOutput)
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
     auto ctx = producer_context();
-    engine.build_api(ctx);
+    ctx.role_tag = "proc";
+    ASSERT_TRUE(engine.build_api(ctx));
 
     float in_data = 10.0f;
     std::vector<IncomingMessage> msgs;
@@ -674,7 +680,7 @@ TEST_F(LuaEngineTest, InvokeProduce_WithFlexzone)
     ASSERT_TRUE(engine.register_slot_type(spec, "FlexFrame", "aligned"));
 
     auto ctx = producer_context();
-    engine.build_api(ctx);
+    ASSERT_TRUE(engine.build_api(ctx));
 
     float slot_buf = 0.0f;
     float fz_buf   = 0.0f;
@@ -716,27 +722,22 @@ TEST_F(LuaEngineTest, InvokeOnInbox_TypedData)
     ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
 
     auto ctx = producer_context();
-    engine.build_api(ctx);
+    ASSERT_TRUE(engine.build_api(ctx));
 
     float inbox_data = 77.0f;
-    engine.invoke_on_inbox(&inbox_data, sizeof(inbox_data),
-                            "InboxFrame", "PROD-SENDER-00000001");
+    engine.invoke_on_inbox(&inbox_data, sizeof(inbox_data), "PROD-SENDER-00000001");
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed — inbox data or sender incorrect";
 
     engine.finalize();
 }
 
-TEST_F(LuaEngineTest, InvokeOnInbox_RawBytes)
+TEST_F(LuaEngineTest, InvokeOnInbox_MissingType_ReportsError)
 {
-    // Script receives raw bytes (no type name).
+    // If InboxFrame is not registered, invoke_on_inbox must report an error.
     write_script(R"(
         function on_produce(out_slot, fz, msgs, api) return false end
-        function on_inbox(data, sender, api)
-            assert(type(data) == "string", "expected raw bytes as string")
-            assert(#data == 4, "expected 4 bytes, got " .. #data)
-            assert(sender == "CONS-SENDER-00000001")
-        end
+        function on_inbox(data, sender, api) end
     )");
 
     LuaEngine engine;
@@ -745,14 +746,15 @@ TEST_F(LuaEngineTest, InvokeOnInbox_RawBytes)
 
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    // Deliberately NOT registering "InboxFrame".
 
     auto ctx = producer_context();
-    engine.build_api(ctx);
+    ASSERT_TRUE(engine.build_api(ctx));
 
     float raw = 1.0f;
-    engine.invoke_on_inbox(&raw, sizeof(raw), nullptr, "CONS-SENDER-00000001");
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed — raw inbox data incorrect";
+    engine.invoke_on_inbox(&raw, sizeof(raw), "CONS-SENDER-00000001");
+    EXPECT_GE(engine.script_error_count(), 1u)
+        << "Missing InboxFrame type should increment error count";
 
     engine.finalize();
 }
@@ -825,7 +827,8 @@ TEST_F(LuaEngineTest, InvokeConsume_BareDataMessages)
     ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
 
     auto ctx = producer_context();
-    engine.build_api(ctx);
+    ctx.role_tag = "cons";
+    ASSERT_TRUE(engine.build_api(ctx));
 
     std::vector<IncomingMessage> msgs;
     // Data message (has sender + data, no event).
@@ -988,7 +991,7 @@ TEST_F(LuaEngineTest, MetricsClosures_ReadFromRoleHostCounters)
 
     auto ctx = producer_context();
     ctx.core = &core;
-    engine.build_api(ctx);
+    ASSERT_TRUE(engine.build_api(ctx));
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
@@ -1072,7 +1075,7 @@ TEST_F(LuaEngineTest, StopOnScriptError_SetsShutdownOnError)
     auto ctx = producer_context();
     ctx.core = &core;
     ctx.stop_on_script_error = true;  // enable
-    engine.build_api(ctx);
+    ASSERT_TRUE(engine.build_api(ctx));
 
     EXPECT_FALSE(core.is_shutdown_requested());
 
@@ -1162,8 +1165,9 @@ TEST_F(LuaEngineTest, MetricsClosures_InReceivedWorks)
     ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
 
     auto ctx = producer_context();
+    ctx.role_tag = "cons";
     ctx.core = &core;
-    engine.build_api(ctx);
+    ASSERT_TRUE(engine.build_api(ctx));
 
     std::vector<IncomingMessage> msgs;
     engine.invoke_consume(nullptr, 0, nullptr, 0, nullptr, msgs);
@@ -1200,13 +1204,13 @@ TEST_F(LuaEngineTest, Invoke_NonExistentFunction_ReturnsFalse)
     engine.finalize();
 }
 
-TEST_F(LuaEngineTest, Invoke_Nullptr_ReturnsFalse)
+TEST_F(LuaEngineTest, Invoke_EmptyName_ReturnsFalse)
 {
     write_script("function on_produce(out_slot, fz, msgs, api) return true end");
     LuaEngine engine;
     ASSERT_TRUE(setup_engine(engine));
 
-    EXPECT_FALSE(engine.invoke(nullptr));
+    EXPECT_FALSE(engine.invoke(""));
     engine.finalize();
 }
 
@@ -1275,7 +1279,8 @@ function set_marker() marker_set = true end
     // Owner thread: marker should NOT be visible (different state).
     auto result = engine.eval("return marker_set");
     // marker_set is nil in owner's state → eval returns null JSON.
-    EXPECT_TRUE(result.is_null()) << "Non-owner global leaked to owner state";
+    EXPECT_EQ(result.status, InvokeStatus::Ok);
+    EXPECT_TRUE(result.value.is_null()) << "Non-owner global leaked to owner state";
 
     engine.finalize();
 }
@@ -1346,13 +1351,16 @@ TEST_F(LuaEngineTest, Eval_ReturnsScalarResult)
     ASSERT_TRUE(setup_engine(engine));
 
     auto r1 = engine.eval("return 42");
-    EXPECT_EQ(r1, 42);
+    EXPECT_EQ(r1.status, InvokeStatus::Ok);
+    EXPECT_EQ(r1.value, 42);
 
     auto r2 = engine.eval("return 'hello'");
-    EXPECT_EQ(r2, "hello");
+    EXPECT_EQ(r2.status, InvokeStatus::Ok);
+    EXPECT_EQ(r2.value, "hello");
 
     auto r3 = engine.eval("return true");
-    EXPECT_EQ(r3, true);
+    EXPECT_EQ(r3.status, InvokeStatus::Ok);
+    EXPECT_EQ(r3.value, true);
 
     engine.finalize();
 }

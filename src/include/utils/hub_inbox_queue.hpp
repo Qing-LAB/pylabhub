@@ -112,7 +112,8 @@ public:
 
     /**
      * @brief Bind ROUTER socket and start listening.
-     * @return true on success; false if already running or bind failed.
+     * @return true on success or if already running (idempotent).
+     *         false only on actual startup failure.
      */
     bool start();
 
@@ -207,7 +208,8 @@ public:
 
     /**
      * @brief Set ZMQ_IDENTITY and connect DEALER socket to the configured endpoint.
-     * @return true on success; false if already running or connect failed.
+     * @return true on success or if already running (idempotent).
+     *         false only on actual startup failure.
      */
     bool start();
 

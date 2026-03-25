@@ -121,7 +121,6 @@ class ProcessorRoleHost
     scripting::SchemaSpec                    out_slot_spec_;
     size_t                                   in_schema_slot_size_{0};
     size_t                                   out_schema_slot_size_{0};
-    std::string                              inbox_type_name_;
 };
 
 } // namespace pylabhub::processor

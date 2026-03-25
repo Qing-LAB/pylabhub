@@ -227,7 +227,14 @@ void ProducerRoleHost::worker_main_()
     ctx.core         = &core_;
     ctx.stop_on_script_error = sc.stop_on_script_error;
 
-    engine_->build_api(ctx);
+    if (!engine_->build_api(ctx))
+    {
+        LOGGER_ERROR("[prod] build_api failed — aborting role start");
+        engine_->finalize();
+        teardown_infrastructure_();
+        ready_promise_.set_value(false);
+        return;
+    }
 
     // Step 6: invoke on_init.
     engine_->invoke_on_init();
@@ -332,7 +339,6 @@ bool ProducerRoleHost::setup_infrastructure_()
                 return false;
             }
             inbox_schema_slot_size = engine_->type_sizeof("InboxFrame");
-            inbox_type_name_ = "InboxFrame";
         }
 
         const std::string ep = inbox.endpoint.empty()
@@ -406,8 +412,7 @@ bool ProducerRoleHost::setup_infrastructure_()
     }
     out_producer_ = std::move(maybe_producer);
 
-    if (auto *out_shm = out_producer_->shm(); out_shm != nullptr)
-        out_shm->clear_metrics();
+    // Metrics reset moved to after queue creation (reset_metrics() on queue).
 
     if (!ch.empty())
     {
@@ -535,6 +540,9 @@ bool ProducerRoleHost::setup_infrastructure_()
         return false;
     }
     queue_->set_checksum_options(shm.update_checksum, core_.has_fz());
+    queue_->reset_metrics();
+    if (tc.period_us > 0.0)
+        queue_->set_configured_period(static_cast<uint64_t>(tc.period_us));
 
     LOGGER_INFO("[prod] Producer started on channel '{}' (shm={})", ch,
                 out_producer_->has_shm());
@@ -770,7 +778,7 @@ void ProducerRoleHost::run_ctrl_thread_()
 
 void ProducerRoleHost::drain_inbox_sync_()
 {
-    scripting::drain_inbox_sync(inbox_queue_.get(), engine_.get(), inbox_type_name_);
+    scripting::drain_inbox_sync(inbox_queue_.get(), engine_.get());
 }
 
 // ============================================================================
@@ -794,20 +802,15 @@ nlohmann::json ProducerRoleHost::snapshot_metrics_json() const
     // Use our own iteration_count (always available, regardless of transport).
     base["iteration_count"] = core_.iteration_count();
 
-    if (out_producer_.has_value())
+    if (queue_)
     {
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) — shm() is non-const but we only read
-        if (const auto *shm_ptr = const_cast<hub::Producer &>(*out_producer_).shm();
-            shm_ptr != nullptr)
-        {
-            const auto &m = shm_ptr->metrics();
-            base["loop_overrun_count"] = m.overrun_count;
-            base["last_iteration_us"]  = m.last_iteration_us;
-            base["max_iteration_us"]   = m.max_iteration_us;
-            base["last_slot_work_us"]  = m.last_slot_work_us;
-            base["last_slot_wait_us"]  = m.last_slot_wait_us;
-            base["configured_period_us"]          = m.configured_period_us;
-        }
+        const auto m = queue_->metrics();
+        base["loop_overrun_count"]  = m.overrun_count;
+        base["last_iteration_us"]   = m.last_iteration_us;
+        base["max_iteration_us"]    = m.max_iteration_us;
+        base["last_slot_work_us"]   = m.last_slot_work_us;
+        base["last_slot_wait_us"]   = m.last_slot_wait_us;
+        base["configured_period_us"] = m.configured_period_us;
     }
     return base;
 }
