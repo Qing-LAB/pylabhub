@@ -18,6 +18,7 @@
 #include "utils/channel_access_policy.hpp"
 #include "utils/hub_config.hpp"
 #include "utils/json_config.hpp"
+#include "utils/net_address.hpp"
 #include "uid_utils.hpp"
 
 #include <cassert>
@@ -197,6 +198,18 @@ struct HubConfig::Impl
             if (h.contains("uid"))              hub_uid         = h.at("uid").get<std::string>();
             if (h.contains("broker_endpoint"))  broker_endpoint = h.at("broker_endpoint").get<std::string>();
             if (h.contains("admin_endpoint"))   admin_endpoint  = h.at("admin_endpoint").get<std::string>();
+
+            // Validate endpoints.
+            {
+                auto r = pylabhub::validate_tcp_endpoint(broker_endpoint);
+                if (!r.ok())
+                    throw std::runtime_error("hub config: invalid broker_endpoint: " + r.error);
+            }
+            {
+                auto r = pylabhub::validate_tcp_endpoint(admin_endpoint);
+                if (!r.ok())
+                    throw std::runtime_error("hub config: invalid admin_endpoint: " + r.error);
+            }
 
             // ── Connection policy (Phase 3) ──────────────────────────────────
             if (h.contains("connection_policy") && h.at("connection_policy").is_string())
