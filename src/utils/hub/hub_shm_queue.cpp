@@ -374,7 +374,7 @@ QueueMetrics ShmQueue::metrics() const noexcept
         m.max_iteration_us     = cm.max_iteration_us;
         m.iteration_count      = cm.iteration_count;
         m.context_elapsed_us   = cm.context_elapsed_us;
-        m.last_slot_work_us    = cm.last_slot_work_us;
+        m.last_slot_exec_us    = cm.last_slot_exec_us;
         m.overrun_count        = cm.overrun_count;
         m.configured_period_us = cm.configured_period_us;
         m.recv_overflow_count  = cm.overrun_count;
@@ -389,7 +389,7 @@ QueueMetrics ShmQueue::metrics() const noexcept
         m.max_iteration_us     = cm.max_iteration_us;
         m.iteration_count      = cm.iteration_count;
         m.context_elapsed_us   = cm.context_elapsed_us;
-        m.last_slot_work_us    = cm.last_slot_work_us;
+        m.last_slot_exec_us    = cm.last_slot_exec_us;
         m.overrun_count        = cm.overrun_count;
         m.configured_period_us = cm.configured_period_us;
         return m;

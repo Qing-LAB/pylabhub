@@ -471,7 +471,7 @@ LoopPolicy C++ metrics tests (HEP-CORE-0008) are fully covered in
     LastIterationUsPopulated, MaxIterationUsPeak, ContextElapsedUsMonotonic, CtxMetricsPassThrough
   - 4 RAII-specific tests (secrets 80013–80016): RaiiProducerLastSlotWorkUsMultiIter,
     RaiiProducerMetricsViaSlots, RaiiProducerOverrunViaSlots, RaiiConsumerLastSlotWorkUs
-  - Fixed RAII release path: `last_slot_work_us` set in `release_write_handle()` and
+  - Fixed RAII release path: `last_slot_exec_us` set in `release_write_handle()` and
     `release_consume_handle()` (symmetric RAII destructor + explicit call paths)
   - Fixed RAII multi-iter producer race: `SlotWriteHandle`/`SlotConsumeHandle` store per-handle
     `t_slot_acquired_` (not `owner->t_iter_start_` which gets overwritten between iterations)

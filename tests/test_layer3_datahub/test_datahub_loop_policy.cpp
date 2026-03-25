@@ -19,7 +19,7 @@
  *   5. ConsumerMetricsAccumulate   — consumer iteration_count rises with each acquire/release
  *   6. ZeroOnCreation              — all ContextMetrics fields are zero before first acquire
  *   7. MaxRateNoOverrun            — MaxRate policy never increments overrun_count
- *   8. LastSlotWorkUsPopulated     — last_slot_work_us > 0 after measurable body sleep
+ *   8. LastSlotWorkUsPopulated     — last_slot_exec_us > 0 after measurable body sleep
  *   9. LastIterationUsPopulated    — last_iteration_us > 0 after two acquires
  *  10. MaxIterationUsPeak          — max_iteration_us tracks the peak and never decreases
  *  11. ContextElapsedUsMonotonic   — context_elapsed_us grows between acquires
@@ -27,10 +27,10 @@
  *
  * RAII path tests (via with_transaction + ctx.slots()):
  *  13. RaiiProducerLastSlotWorkUsMultiIter — key regression: per-handle t_slot_acquired_ fix
- *      (pre-fix: last_slot_work_us was ~0 due to t_iter_start_ being overwritten by next acquire)
+ *      (pre-fix: last_slot_exec_us was ~0 due to t_iter_start_ being overwritten by next acquire)
  *  14. RaiiProducerMetricsViaSlots        — iteration_count/last/max_iteration_us via ctx.slots()
  *  15. RaiiProducerOverrunViaSlots        — overrun detection works through RAII slot loop
- *  16. RaiiConsumerLastSlotWorkUs         — consumer RAII destructor records last_slot_work_us
+ *  16. RaiiConsumerLastSlotWorkUs         — consumer RAII destructor records last_slot_exec_us
  *
  * Shared-memory names are generated via make_test_channel_name() (timestamp-unique), so
  * tests can run in parallel (ctest -j2) without collisions.
@@ -283,7 +283,7 @@ TEST_F(DatahubLoopPolicyTest, ZeroOnCreation)
     EXPECT_EQ(m.last_slot_wait_us,  uint64_t{0});
     EXPECT_EQ(m.last_iteration_us,  uint64_t{0});
     EXPECT_EQ(m.max_iteration_us,   uint64_t{0});
-    EXPECT_EQ(m.last_slot_work_us,  uint64_t{0});
+    EXPECT_EQ(m.last_slot_exec_us,  uint64_t{0});
     EXPECT_EQ(m.context_elapsed_us, uint64_t{0});
     EXPECT_EQ(m.configured_period_us,          uint64_t{0});
     EXPECT_EQ(m.context_start_time, ContextMetrics::Clock::time_point{});
@@ -336,10 +336,10 @@ TEST_F(DatahubLoopPolicyTest, LastSlotWorkUsPopulated)
         ASSERT_TRUE(h);
         std::this_thread::sleep_for(2ms); // measurable body time
         (void)h->commit(sizeof(TestDataBlock));
-        // h destructor calls release_write_handle() which records last_slot_work_us.
+        // h destructor calls release_write_handle() which records last_slot_exec_us.
     }
 
-    EXPECT_GT(producer->metrics().last_slot_work_us, uint64_t{0});
+    EXPECT_GT(producer->metrics().last_slot_exec_us, uint64_t{0});
 }
 
 // ============================================================================
@@ -486,7 +486,7 @@ TEST_F(DatahubLoopPolicyTest, CtxMetricsPassThrough)
  *   SlotIterator::acquire_next_slot() acquires the NEW slot (updating owner->t_iter_start_)
  *   BEFORE the OLD handle's unique_ptr is replaced, which fires ~SlotWriteHandle().
  *   If release_write_handle() used owner->t_iter_start_, it would see the NEW slot's
- *   acquire time → last_slot_work_us ≈ 0 (wrong).
+ *   acquire time → last_slot_exec_us ≈ 0 (wrong).
  *
  * Post-fix: each SlotWriteHandle stores its own t_slot_acquired_ at creation time.
  *   ~SlotWriteHandle() uses impl.t_slot_acquired_ → correctly records body time.
@@ -519,8 +519,8 @@ TEST_F(DatahubLoopPolicyTest, RaiiProducerLastSlotWorkUsMultiIter)
 
     // Without the per-handle fix, the RAII multi-iter path recorded ~0 here
     // because t_iter_start_ was overwritten by the next acquire before ~SlotWriteHandle fired.
-    EXPECT_GE(producer->metrics().last_slot_work_us, uint64_t{3000})
-        << "RAII multi-iter: last_slot_work_us should reflect body sleep (~5 ms)";
+    EXPECT_GE(producer->metrics().last_slot_exec_us, uint64_t{3000})
+        << "RAII multi-iter: last_slot_exec_us should reflect body sleep (~5 ms)";
 }
 
 // ============================================================================
@@ -620,7 +620,7 @@ TEST_F(DatahubLoopPolicyTest, RaiiConsumerLastSlotWorkUs)
 
     // Consumer reads via RAII ctx.slots() — break after one slot.
     // The SlotIterator destructor releases the handle via ~SlotConsumeHandle()
-    // → release_consume_handle() records last_slot_work_us using per-handle t_slot_acquired_.
+    // → release_consume_handle() records last_slot_exec_us using per-handle t_slot_acquired_.
     consumer->with_transaction<EmptyFlexZone, TestDataBlock>(
         2000ms,
         [](ReadTransactionContext<EmptyFlexZone, TestDataBlock> &ctx)
@@ -634,6 +634,6 @@ TEST_F(DatahubLoopPolicyTest, RaiiConsumerLastSlotWorkUs)
             }
         });
 
-    EXPECT_GT(consumer->metrics().last_slot_work_us, uint64_t{0})
-        << "RAII consumer: last_slot_work_us should reflect body sleep (~2 ms)";
+    EXPECT_GT(consumer->metrics().last_slot_exec_us, uint64_t{0})
+        << "RAII consumer: last_slot_exec_us should reflect body sleep (~2 ms)";
 }
