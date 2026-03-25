@@ -375,7 +375,7 @@ QueueMetrics ShmQueue::metrics() const noexcept
         m.iteration_count      = cm.iteration_count;
         m.context_elapsed_us   = cm.context_elapsed_us;
         m.last_slot_exec_us    = cm.last_slot_exec_us;
-        m.overrun_count        = cm.overrun_count;
+        m.data_drop_count        = cm.data_drop_count;
         m.configured_period_us = cm.configured_period_us;
         // recv_overflow_count stays 0 for SHM. DataBlock sync policies (Sequential,
         // Latest_only) prevent data loss at the queue level — Sequential blocks the
@@ -392,7 +392,7 @@ QueueMetrics ShmQueue::metrics() const noexcept
         m.iteration_count      = cm.iteration_count;
         m.context_elapsed_us   = cm.context_elapsed_us;
         m.last_slot_exec_us    = cm.last_slot_exec_us;
-        m.overrun_count        = cm.overrun_count;
+        m.data_drop_count        = cm.data_drop_count;
         m.configured_period_us = cm.configured_period_us;
         return m;
     }

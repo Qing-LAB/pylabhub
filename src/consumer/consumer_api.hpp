@@ -132,8 +132,8 @@ class ConsumerAPI
         { return core_->script_errors(); }
     [[nodiscard]] uint64_t in_slots_received()   const noexcept
         { return core_->in_received(); }
-    /// Consumer is demand-driven (no deadline); always returns 0. Present for API symmetry.
-    [[nodiscard]] uint64_t loop_overrun_count()  const noexcept { return 0; }
+    /// Loop overrun count from the main loop deadline check. 0 when no period configured.
+    [[nodiscard]] uint64_t loop_overrun_count()  const noexcept { return core_->loop_overrun_count(); }
 
     /// Enable/disable BLAKE2b checksum verification on input slots (SHM path only).
     /// No-op when the input path is ZMQ (TCP provides integrity).

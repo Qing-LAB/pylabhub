@@ -104,7 +104,7 @@ struct ZmqQueueImpl
     std::atomic<uint64_t> recv_gap_count_{0};  ///< [ZQ10] sequence gaps
     std::atomic<uint64_t> send_drop_count_{0};
     std::atomic<uint64_t> send_retry_count_{0};
-    std::atomic<uint64_t> overrun_count_{0};
+    std::atomic<uint64_t> data_drop_count_{0};
 
     // ── Domain 2+3 timing (HEP-CORE-0008 §10) ──────────────────────────────
     // Measured in read_acquire/read_release (read mode) or
@@ -705,10 +705,8 @@ const void* ZmqQueue::read_acquire(std::chrono::milliseconds timeout) noexcept
             static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
                 t_acquired - pImpl->context_start_time_).count()),
             std::memory_order_relaxed);
-
-        const auto period = pImpl->configured_period_us_.load(std::memory_order_relaxed);
-        if (period > 0 && elapsed_us > period)
-            pImpl->overrun_count_.fetch_add(1, std::memory_order_relaxed);
+        // No timing overrun detection — the main loop owns the deadline.
+        // Reader never drops data (data_drop_count stays 0).
     }
     else
     {
@@ -760,7 +758,7 @@ void* ZmqQueue::write_acquire(std::chrono::milliseconds timeout) noexcept
         std::lock_guard<std::mutex> lk(pImpl->send_mu_);
         if (pImpl->send_count_ >= pImpl->send_depth_)
         {
-            pImpl->overrun_count_.fetch_add(1, std::memory_order_relaxed); // buffer-full: cycle failed
+            pImpl->data_drop_count_.fetch_add(1, std::memory_order_relaxed); // buffer-full: cycle failed
             return nullptr;
         }
     }
@@ -774,7 +772,7 @@ void* ZmqQueue::write_acquire(std::chrono::milliseconds timeout) noexcept
         });
         if (!ok || impl_ptr->send_stop_.load(std::memory_order_relaxed))
         {
-            impl_ptr->overrun_count_.fetch_add(1, std::memory_order_relaxed); // timeout or shutdown: cycle failed
+            impl_ptr->data_drop_count_.fetch_add(1, std::memory_order_relaxed); // timeout or shutdown: cycle failed
             return nullptr;
         }
     }
@@ -797,9 +795,8 @@ void* ZmqQueue::write_acquire(std::chrono::milliseconds timeout) noexcept
                 t_acquired - pImpl->context_start_time_).count()),
             std::memory_order_relaxed);
 
-        const auto period = pImpl->configured_period_us_.load(std::memory_order_relaxed);
-        if (period > 0 && elapsed_us > period)
-            pImpl->overrun_count_.fetch_add(1, std::memory_order_relaxed);
+        // No timing overrun detection — the main loop owns the deadline.
+        // Write-side data_drop_count is incremented above on buffer-full/timeout only.
     }
     else
     {
@@ -932,9 +929,9 @@ uint64_t ZmqQueue::send_retry_count() const noexcept
     return pImpl ? pImpl->send_retry_count_.load(std::memory_order_relaxed) : 0;
 }
 
-uint64_t ZmqQueue::overrun_count() const noexcept
+uint64_t ZmqQueue::data_drop_count() const noexcept
 {
-    return pImpl ? pImpl->overrun_count_.load(std::memory_order_relaxed) : 0;
+    return pImpl ? pImpl->data_drop_count_.load(std::memory_order_relaxed) : 0;
 }
 
 QueueMetrics ZmqQueue::metrics() const noexcept
@@ -948,7 +945,7 @@ QueueMetrics ZmqQueue::metrics() const noexcept
     m.iteration_count      = pImpl->iteration_count_.load(std::memory_order_relaxed);
     m.context_elapsed_us   = pImpl->context_elapsed_us_.load(std::memory_order_relaxed);
     m.last_slot_exec_us    = pImpl->last_slot_exec_us_.load(std::memory_order_relaxed);
-    m.overrun_count        = pImpl->overrun_count_.load(std::memory_order_relaxed);
+    m.data_drop_count        = pImpl->data_drop_count_.load(std::memory_order_relaxed);
     m.configured_period_us = pImpl->configured_period_us_.load(std::memory_order_relaxed);
     // Transport-specific counters.
     m.recv_overflow_count    = pImpl->recv_overflow_count_.load(std::memory_order_relaxed);
@@ -967,7 +964,7 @@ void ZmqQueue::reset_metrics()
     pImpl->max_iteration_us_.store(0, std::memory_order_relaxed);
     pImpl->iteration_count_.store(0, std::memory_order_relaxed);
     pImpl->last_slot_exec_us_.store(0, std::memory_order_relaxed);
-    pImpl->overrun_count_.store(0, std::memory_order_relaxed);
+    pImpl->data_drop_count_.store(0, std::memory_order_relaxed);
     pImpl->context_elapsed_us_.store(0, std::memory_order_relaxed);
     pImpl->recv_overflow_count_.store(0, std::memory_order_relaxed);
     pImpl->recv_frame_error_count_.store(0, std::memory_order_relaxed);

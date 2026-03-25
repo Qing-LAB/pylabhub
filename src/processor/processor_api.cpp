@@ -214,7 +214,7 @@ nlohmann::json ProcessorAPI::snapshot_metrics_json() const
         base["in_max_iteration_us"]      = m.max_iteration_us;
         base["in_last_slot_wait_us"]     = m.last_slot_wait_us;
         base["in_last_slot_exec_us"]     = m.last_slot_exec_us;
-        base["in_overrun_count"]         = m.overrun_count;
+        base["in_data_drop_count"]     = m.data_drop_count;
         base["in_configured_period_us"]  = m.configured_period_us;
     }
     if (const auto *oq = out_queue_.load(std::memory_order_acquire); oq != nullptr)
@@ -226,7 +226,7 @@ nlohmann::json ProcessorAPI::snapshot_metrics_json() const
         base["out_max_iteration_us"]     = m.max_iteration_us;
         base["out_last_slot_wait_us"]    = m.last_slot_wait_us;
         base["out_last_slot_exec_us"]    = m.last_slot_exec_us;
-        base["out_overrun_count"]        = m.overrun_count;
+        base["out_data_drop_count"]    = m.data_drop_count;
         base["out_configured_period_us"] = m.configured_period_us;
     }
 
@@ -247,7 +247,7 @@ py::dict ProcessorAPI::metrics() const
     py::dict d;
     // D4 — script supervision
     d["script_error_count"] = py::int_(script_error_count());
-    d["loop_overrun_count"] = py::int_(uint64_t{0}); // processor is queue-driven, no deadline
+    d["loop_overrun_count"] = py::int_(core_->loop_overrun_count());
     d["last_cycle_work_us"] = py::int_(last_cycle_work_us());
     d["in_received"]        = py::int_(in_slots_received());
     d["out_written"]        = py::int_(out_slots_written());
@@ -262,7 +262,7 @@ py::dict ProcessorAPI::metrics() const
         d["in_last_iteration_us"]   = py::int_(m.last_iteration_us);
         d["in_max_iteration_us"]    = py::int_(m.max_iteration_us);
         d["in_last_slot_wait_us"]   = py::int_(m.last_slot_wait_us);
-        d["in_overrun_count"]       = py::int_(m.overrun_count);
+        d["in_data_drop_count"]   = py::int_(m.data_drop_count);
         d["in_last_slot_exec_us"]   = py::int_(m.last_slot_exec_us);
         d["in_configured_period_us"] = py::int_(m.configured_period_us);
     }
@@ -276,7 +276,7 @@ py::dict ProcessorAPI::metrics() const
         d["out_last_iteration_us"]   = py::int_(m.last_iteration_us);
         d["out_max_iteration_us"]    = py::int_(m.max_iteration_us);
         d["out_last_slot_wait_us"]   = py::int_(m.last_slot_wait_us);
-        d["out_overrun_count"]       = py::int_(m.overrun_count);
+        d["out_data_drop_count"]  = py::int_(m.data_drop_count);
         d["out_last_slot_exec_us"]   = py::int_(m.last_slot_exec_us);
         d["out_configured_period_us"] = py::int_(m.configured_period_us);
     }

@@ -228,7 +228,8 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     [[nodiscard]] uint64_t drops()             const noexcept { return drops_.load(std::memory_order_relaxed); }
     [[nodiscard]] uint64_t script_errors()     const noexcept { return script_errors_.load(std::memory_order_relaxed); }
     [[nodiscard]] uint64_t iteration_count()   const noexcept { return iteration_count_.load(std::memory_order_relaxed); }
-    [[nodiscard]] uint64_t last_cycle_work_us() const noexcept { return last_cycle_work_us_.load(std::memory_order_relaxed); }
+    [[nodiscard]] uint64_t last_cycle_work_us()  const noexcept { return last_cycle_work_us_.load(std::memory_order_relaxed); }
+    [[nodiscard]] uint64_t loop_overrun_count() const noexcept { return loop_overrun_count_.load(std::memory_order_relaxed); }
 
     // ── Metric mutators (write) ──────────────────────────────────────────
 
@@ -239,6 +240,7 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     void inc_iteration_count()   noexcept { iteration_count_.fetch_add(1, std::memory_order_relaxed); }
 
     void set_last_cycle_work_us(uint64_t v) noexcept { last_cycle_work_us_.store(v, std::memory_order_relaxed); }
+    void inc_loop_overrun()    noexcept { loop_overrun_count_.fetch_add(1, std::memory_order_relaxed); }
 
 #ifdef PYLABHUB_BUILD_TESTS
     /// Test-only: directly set counter values for test setup.
@@ -262,6 +264,7 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     std::atomic<uint64_t> drops_{0};
     std::atomic<uint64_t> iteration_count_{0};
     std::atomic<uint64_t> last_cycle_work_us_{0};
+    std::atomic<uint64_t> loop_overrun_count_{0}; ///< Cycles where now > deadline (set by main loop).
 
     // ── Message queue ─────────────────────────────────────────────────────
     std::vector<IncomingMessage> incoming_queue_;

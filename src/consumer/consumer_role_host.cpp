@@ -731,7 +731,7 @@ nlohmann::json ConsumerRoleHost::snapshot_metrics_json() const
     base["in_received"]        = core_.in_received();
     base["script_errors"]      = engine_ ? engine_->script_error_count() : 0;
     base["last_cycle_work_us"] = core_.last_cycle_work_us();
-    base["loop_overrun_count"] = uint64_t{0};
+    base["loop_overrun_count"] = core_.loop_overrun_count();
 
     base["iteration_count"] = core_.iteration_count();
 

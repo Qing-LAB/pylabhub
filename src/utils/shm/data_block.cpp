@@ -1534,13 +1534,26 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
     // SHM-C2 design: write_index is advanced FIRST (fetch_add) to atomically claim a
     // unique slot_id, then acquire_write() confirms the physical slot is ready.
     //
-    // SHM-C2 fix (Phase 2 drain-hold): if readers are still active when the Phase 2
-    // timeout expires, acquire_write() resets its timer and keeps waiting rather than
-    // releasing write_lock and restoring COMMITTED. While DRAINING is held, no new readers
-    // can enter the slot — existing readers will eventually drain — so slot_id can never
-    // be burned by a Phase 2 timeout. acquire_write() only returns SLOT_ACQUIRE_TIMEOUT
-    // for Phase 1 failures (zombie write_lock reclaim), which are impossible under normal
-    // single-writer operation.
+    // Slot_id recovery: if the write is discarded (not committed), release_write_slot()
+    // calls write_index.fetch_sub(1) to reclaim the position. No slot_id is "burned."
+    //
+    // drain_hold=true: if readers are active in the target slot, acquire_write() enters
+    // DRAINING state and waits indefinitely (resets timer on Phase 2 timeout). This
+    // avoids giving up when readers are slow — the writer will always eventually write.
+    // acquire_write() only returns SLOT_ACQUIRE_TIMEOUT for Phase 1 failures (zombie
+    // write_lock reclaim), which are unreachable under normal single-writer operation.
+    //
+    // Why Sequential pre-checks ring capacity (lines 1510-1529) but Latest_only doesn't:
+    //   Sequential: the pre-check avoids entering acquire_write() when the ring is full.
+    //   This is a performance optimization — without it, the writer would claim a slot,
+    //   find all slots occupied by readers, drain-wait, and potentially discard+retry.
+    //   Latest_only: the writer proceeds unconditionally. Drain-wait is the normal path.
+    //   The consumer reads commit_index (newest), so slot ordering gaps don't matter.
+    //
+    // Data loss: neither policy loses data at the queue level.
+    //   Sequential: writer blocks when ring full — consumer reads every slot in order.
+    //   Latest_only: writer overwrites freely — consumer reads newest by design.
+    //   Both: drain ensures no active read is corrupted; recovery ensures no slot_id burn.
     //
     // NOTE — single-writer only: this design assumes exactly one producer. For future
     // multi-writer support, two changes are required before touching this code:
@@ -1549,6 +1562,7 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
     //   2. Consumer read sequencing (latest slot_id tracking, Sequential ordering) must
     //      be redesigned for the multi-writer commit ordering that results.
     // Do not extend to multi-writer without fully resolving both protocols first.
+
     uint64_t slot_id = header->write_index.fetch_add(1, std::memory_order_acq_rel); // claim unique slot_id
     auto slot_index = static_cast<size_t>(slot_id % slot_count);
 
@@ -1597,10 +1611,8 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
             m.context_elapsed_us = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::microseconds>(
                     t_acquired - m.context_start_time).count());
-            if (pImpl->loop_policy == LoopPolicy::FixedRate &&
-                pImpl->configured_period_us > 0 &&
-                elapsed_us > pImpl->configured_period_us)
-                ++m.overrun_count;
+            // Overrun detection removed from DataBlock — timing measurement only.
+            // Overrun judgement belongs to the main loop which owns the deadline.
         }
         else
         {
@@ -2224,10 +2236,8 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
             m.context_elapsed_us = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::microseconds>(
                     t_acquired - m.context_start_time).count());
-            if (pImpl->loop_policy == LoopPolicy::FixedRate &&
-                pImpl->configured_period_us > 0 &&
-                elapsed_us > pImpl->configured_period_us)
-                ++m.overrun_count;
+            // No timing overrun detection here — the main loop owns the deadline.
+            // Consumer never drops data (data_drop_count stays 0).
         }
         else
         {

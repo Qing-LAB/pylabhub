@@ -1097,7 +1097,7 @@ nlohmann::json ProcessorRoleHost::snapshot_metrics_json() const
     base["drops"]              = core_.drops();
     base["script_errors"]      = engine_ ? engine_->script_error_count() : 0;
     base["last_cycle_work_us"] = core_.last_cycle_work_us();
-    base["loop_overrun_count"] = 0; // overwritten below if SHM is available
+    base["loop_overrun_count"] = core_.loop_overrun_count();
 
     if (out_producer_.has_value())
     {
@@ -1110,7 +1110,7 @@ nlohmann::json ProcessorRoleHost::snapshot_metrics_json() const
     if (out_q_)
     {
         const auto m = out_q_->metrics();
-        base["loop_overrun_count"]  = m.overrun_count;
+        base["data_drop_count"]     = m.data_drop_count;
         base["last_iteration_us"]   = m.last_iteration_us;
         base["max_iteration_us"]    = m.max_iteration_us;
         base["last_slot_exec_us"]   = m.last_slot_exec_us;
