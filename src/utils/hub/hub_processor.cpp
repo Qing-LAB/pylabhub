@@ -333,9 +333,14 @@ bool Processor::start()
     if (pImpl->running_.exchange(true, std::memory_order_acq_rel))
         return false; // already running
 
-    // Start queues (no-op for ShmQueue; meaningful for ZmqQueue).
-    (void)pImpl->in_queue->start();
-    (void)pImpl->out_queue->start();
+    // Start queues (idempotent — no-op if already running).
+    if (!pImpl->in_queue->start() || !pImpl->out_queue->start())
+    {
+        pImpl->running_.store(false, std::memory_order_release);
+        return false;
+    }
+    pImpl->in_queue->reset_metrics();
+    pImpl->out_queue->reset_metrics();
 
     pImpl->stop_.store(false, std::memory_order_release);
     pImpl->process_thread_ = std::thread([this] { pImpl->run_process_thread_(); });

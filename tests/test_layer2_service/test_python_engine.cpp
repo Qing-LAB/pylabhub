@@ -41,6 +41,8 @@ namespace fs = std::filesystem;
 using pylabhub::scripting::PythonEngine;
 using pylabhub::scripting::ScriptEngine;
 using pylabhub::scripting::InvokeResult;
+using pylabhub::scripting::InvokeStatus;
+using pylabhub::scripting::InvokeResponse;
 using pylabhub::scripting::RoleContext;
 using pylabhub::scripting::RoleHostCore;
 using pylabhub::scripting::IncomingMessage;
@@ -96,7 +98,7 @@ class PythonEngineTest : public ::testing::Test
     RoleContext producer_context()
     {
         RoleContext ctx{};
-        ctx.role_tag  = "test";
+        ctx.role_tag  = "prod";
         ctx.uid       = "TEST-ENGINE-00000001";
         ctx.name      = "TestEngine";
         ctx.channel   = "test.channel";
@@ -124,8 +126,7 @@ class PythonEngineTest : public ::testing::Test
             return false;
 
         auto ctx = producer_context();
-        engine.build_api(ctx);
-        return true;
+        return engine.build_api(ctx);
     }
 
     /// Setup engine with a RoleHostCore wired into the context.
@@ -145,8 +146,7 @@ class PythonEngineTest : public ::testing::Test
 
         auto ctx = producer_context();
         ctx.core = &core;
-        engine.build_api(ctx);
-        return true;
+        return engine.build_api(ctx);
     }
 
     fs::path tmp_;
@@ -408,7 +408,8 @@ TEST_F(PythonEngineTest, InvokeConsume_ReceivesReadOnlySlot)
     ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
 
     auto ctx = producer_context();
-    engine.build_api(ctx);
+    ctx.role_tag = "cons";
+    ASSERT_TRUE(engine.build_api(ctx));
 
     float data = 99.5f;
     std::vector<IncomingMessage> msgs;
@@ -436,7 +437,8 @@ TEST_F(PythonEngineTest, InvokeConsume_NoneSlot)
     ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
 
     auto ctx = producer_context();
-    engine.build_api(ctx);
+    ctx.role_tag = "cons";
+    ASSERT_TRUE(engine.build_api(ctx));
 
     std::vector<IncomingMessage> msgs;
     engine.invoke_consume(nullptr, 0, nullptr, 0, nullptr, msgs);
@@ -461,7 +463,8 @@ TEST_F(PythonEngineTest, InvokeConsume_ScriptErrorDetected)
     ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
 
     auto ctx = producer_context();
-    engine.build_api(ctx);
+    ctx.role_tag = "cons";
+    ASSERT_TRUE(engine.build_api(ctx));
 
     float data = 1.0f;
     std::vector<IncomingMessage> msgs;
@@ -496,7 +499,8 @@ TEST_F(PythonEngineTest, InvokeProcess_DualSlots)
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
     auto ctx = producer_context();
-    engine.build_api(ctx);
+    ctx.role_tag = "proc";
+    ASSERT_TRUE(engine.build_api(ctx));
 
     float in_data  = 21.0f;
     float out_data = 0.0f;
@@ -530,7 +534,8 @@ TEST_F(PythonEngineTest, InvokeProcess_NoneInput)
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
     auto ctx = producer_context();
-    engine.build_api(ctx);
+    ctx.role_tag = "proc";
+    ASSERT_TRUE(engine.build_api(ctx));
 
     std::vector<IncomingMessage> msgs;
     auto result = engine.invoke_process(
@@ -560,7 +565,8 @@ TEST_F(PythonEngineTest, InvokeProcess_InputOnlyNoOutput)
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
     auto ctx = producer_context();
-    engine.build_api(ctx);
+    ctx.role_tag = "proc";
+    ASSERT_TRUE(engine.build_api(ctx));
 
     float in_data = 10.0f;
     std::vector<IncomingMessage> msgs;
@@ -636,7 +642,8 @@ TEST_F(PythonEngineTest, InvokeConsume_BareDataMessages)
     ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
 
     auto ctx = producer_context();
-    engine.build_api(ctx);
+    ctx.role_tag = "cons";
+    ASSERT_TRUE(engine.build_api(ctx));
 
     std::vector<IncomingMessage> msgs;
     // Data message (has sender + data, no event).
@@ -664,12 +671,12 @@ TEST_F(PythonEngineTest, InvokeConsume_BareDataMessages)
 TEST_F(PythonEngineTest, ApiVersionInfo)
 {
     // version_info() is a module-level function in the pybind11 module,
-    // not a method on the API object. Import it from the module.
+    // not a method on the API object. Import it from the role's module.
     write_script(
-        "import pylabhub_processor\n"
+        "import pylabhub_producer\n"
         "\n"
         "def on_produce(out_slot, fz, msgs, api):\n"
-        "    info = pylabhub_processor.version_info()\n"
+        "    info = pylabhub_producer.version_info()\n"
         "    assert isinstance(info, str), 'version_info should return string'\n"
         "    assert len(info) > 10, f'version_info too short: {info}'\n"
         "    assert '{' in info, f'version_info should be JSON: {info}'\n"
@@ -685,6 +692,27 @@ TEST_F(PythonEngineTest, ApiVersionInfo)
     EXPECT_EQ(result, InvokeResult::Discard);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed -- version_info returned unexpected value";
+
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, WrongRoleModuleImport_RaisesError)
+{
+    // After build_api, importing the wrong role module must raise an error,
+    // not segfault. build_api removes inactive modules from sys.modules.
+    write_script(
+        "def on_produce(out_slot, fz, msgs, api):\n"
+        "    return False\n");
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    // Engine is set up as producer. Importing consumer/processor should fail.
+    auto result = engine.eval("__import__('pylabhub_consumer')");
+    EXPECT_EQ(result.status, InvokeStatus::ScriptError)
+        << "Expected ScriptError from wrong module import";
+    EXPECT_GE(engine.script_error_count(), 1u)
+        << "Wrong module import should increment error count";
 
     engine.finalize();
 }
@@ -815,7 +843,7 @@ TEST_F(PythonEngineTest, MetricsClosures_ReadFromRoleHostCounters)
 
     auto ctx = producer_context();
     ctx.core = &core;
-    engine.build_api(ctx);
+    ASSERT_TRUE(engine.build_api(ctx));
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
@@ -848,8 +876,9 @@ TEST_F(PythonEngineTest, MetricsClosures_InReceivedWorks)
     ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
 
     auto ctx = producer_context();
+    ctx.role_tag = "cons";  // consumer role for in_slots_received
     ctx.core = &core;
-    engine.build_api(ctx);
+    ASSERT_TRUE(engine.build_api(ctx));
 
     std::vector<IncomingMessage> msgs;
     engine.invoke_consume(nullptr, 0, nullptr, 0, nullptr, msgs);
@@ -903,7 +932,7 @@ TEST_F(PythonEngineTest, StopOnScriptError_SetsShutdownOnError)
     auto ctx = producer_context();
     ctx.core = &core;
     ctx.stop_on_script_error = true; // enable
-    engine.build_api(ctx);
+    ASSERT_TRUE(engine.build_api(ctx));
 
     EXPECT_FALSE(core.is_shutdown_requested());
 
@@ -1076,7 +1105,7 @@ TEST_F(PythonEngineTest, InvokeProduce_WithFlexzone)
     ASSERT_TRUE(engine.register_slot_type(spec, "FlexFrame", "aligned"));
 
     auto ctx = producer_context();
-    engine.build_api(ctx);
+    ASSERT_TRUE(engine.build_api(ctx));
 
     float slot_buf = 0.0f;
     float fz_buf   = 0.0f;
@@ -1097,16 +1126,16 @@ TEST_F(PythonEngineTest, InvokeProduce_WithFlexzone)
 
 TEST_F(PythonEngineTest, InvokeOnInbox_TypedData)
 {
-    // PythonEngine currently sends typed inbox as bytes (implementation detail).
-    // Script asserts the inbox data and sender.
+    // Script receives a typed ctypes struct (from_buffer_copy) and sender UID.
     write_script(
         "def on_produce(out_slot, fz, msgs, api):\n"
         "    return False\n"
         "\n"
         "def on_inbox(data, sender, api):\n"
         "    assert data is not None, 'expected inbox data'\n"
-        "    assert isinstance(data, bytes), f'expected bytes, got {type(data)}'\n"
-        "    assert len(data) == 4, f'expected 4 bytes, got {len(data)}'\n"
+        "    assert hasattr(data, 'value'), f'expected typed struct, got {type(data)}'\n"
+        "    assert abs(data.value - 77.0) < 0.01, (\n"
+        "        f'expected value ~77.0, got {data.value}')\n"
         "    assert sender == 'PROD-SENDER-00000001', (\n"
         "        f'expected sender UID, got {sender}')\n");
 
@@ -1118,30 +1147,28 @@ TEST_F(PythonEngineTest, InvokeOnInbox_TypedData)
 
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
 
     auto ctx = producer_context();
-    engine.build_api(ctx);
+    ASSERT_TRUE(engine.build_api(ctx));
 
     float inbox_data = 77.0f;
-    engine.invoke_on_inbox(
-        &inbox_data, sizeof(inbox_data), "InboxFrame", "PROD-SENDER-00000001");
+    engine.invoke_on_inbox(&inbox_data, sizeof(inbox_data), "PROD-SENDER-00000001");
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed -- inbox data or sender incorrect";
 
     engine.finalize();
 }
 
-TEST_F(PythonEngineTest, InvokeOnInbox_RawBytes)
+TEST_F(PythonEngineTest, InvokeOnInbox_MissingType_ReportsError)
 {
-    // Script receives raw bytes (no type name).
+    // If InboxFrame is not registered, invoke_on_inbox must report an error.
     write_script(
         "def on_produce(out_slot, fz, msgs, api):\n"
         "    return False\n"
         "\n"
         "def on_inbox(data, sender, api):\n"
-        "    assert isinstance(data, bytes), f'expected bytes, got {type(data)}'\n"
-        "    assert len(data) == 4, f'expected 4 bytes, got {len(data)}'\n"
-        "    assert sender == 'CONS-SENDER-00000001'\n");
+        "    pass\n");
 
     PythonEngine engine;
     engine.set_python_venv("");
@@ -1151,14 +1178,15 @@ TEST_F(PythonEngineTest, InvokeOnInbox_RawBytes)
 
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    // Deliberately NOT registering "InboxFrame".
 
     auto ctx = producer_context();
-    engine.build_api(ctx);
+    ASSERT_TRUE(engine.build_api(ctx));
 
     float raw = 1.0f;
-    engine.invoke_on_inbox(&raw, sizeof(raw), nullptr, "CONS-SENDER-00000001");
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed -- raw inbox data incorrect";
+    engine.invoke_on_inbox(&raw, sizeof(raw), "CONS-SENDER-00000001");
+    EXPECT_GE(engine.script_error_count(), 1u)
+        << "Missing InboxFrame type should increment error count";
 
     engine.finalize();
 }
@@ -1203,13 +1231,13 @@ TEST_F(PythonEngineTest, Invoke_NonExistentFunction_ReturnsFalse)
     engine.finalize();
 }
 
-TEST_F(PythonEngineTest, Invoke_Nullptr_ReturnsFalse)
+TEST_F(PythonEngineTest, Invoke_EmptyName_ReturnsFalse)
 {
     write_script("def on_produce(out_slot, fz, msgs, api):\n    return True\n");
     PythonEngine engine;
     ASSERT_TRUE(setup_engine(engine));
 
-    EXPECT_FALSE(engine.invoke(nullptr));
+    EXPECT_FALSE(engine.invoke(""));
     engine.finalize();
 }
 
@@ -1399,13 +1427,16 @@ TEST_F(PythonEngineTest, Eval_ReturnsScalarResult)
     ASSERT_TRUE(setup_engine(engine));
 
     auto r1 = engine.eval("42");
-    EXPECT_EQ(r1, 42);
+    EXPECT_EQ(r1.status, InvokeStatus::Ok);
+    EXPECT_EQ(r1.value, 42);
 
     auto r2 = engine.eval("'hello'");
-    EXPECT_EQ(r2, "hello");
+    EXPECT_EQ(r2.status, InvokeStatus::Ok);
+    EXPECT_EQ(r2.value, "hello");
 
     auto r3 = engine.eval("True");
-    EXPECT_EQ(r3, true);
+    EXPECT_EQ(r3.status, InvokeStatus::Ok);
+    EXPECT_EQ(r3.value, true);
 
     engine.finalize();
 }
@@ -1417,7 +1448,7 @@ TEST_F(PythonEngineTest, Eval_ErrorReturnsEmpty)
     ASSERT_TRUE(setup_engine(engine));
 
     auto r = engine.eval("undefined_variable");
-    EXPECT_TRUE(r.empty() || r.is_null());
+    EXPECT_EQ(r.status, InvokeStatus::ScriptError);
     engine.finalize();
 }
 
@@ -1461,7 +1492,8 @@ def get_counter():
 
     // Verify actual value via generic invoke + eval.
     auto result = engine.eval("get_counter()");
-    EXPECT_EQ(result, 5) << "Counter should be 5 after 5 on_produce calls";
+    EXPECT_EQ(result.status, InvokeStatus::Ok);
+    EXPECT_EQ(result.value, 5) << "Counter should be 5 after 5 on_produce calls";
 
     engine.finalize();
 }

@@ -48,8 +48,10 @@ namespace pylabhub::scripting
 // json_to_py — recursive nlohmann::json → py::object conversion
 // ============================================================================
 
-static py::object json_to_py(const nlohmann::json &val)
+static py::object json_to_py(const nlohmann::json &val, int depth = 0)
 {
+    if (depth > kScriptMaxRecursionDepth)
+        return py::str("<recursion limit>");
     if (val.is_string())
         return py::str(val.get<std::string>());
     if (val.is_boolean())
@@ -64,19 +66,64 @@ static py::object json_to_py(const nlohmann::json &val)
     {
         py::dict d;
         for (auto &[k, v] : val.items())
-            d[py::str(k)] = json_to_py(v);
+            d[py::str(k)] = json_to_py(v, depth + 1);
         return std::move(d);
     }
     if (val.is_array())
     {
         py::list l;
         for (auto &elem : val)
-            l.append(json_to_py(elem));
+            l.append(json_to_py(elem, depth + 1));
         return std::move(l);
     }
     if (val.is_null())
         return py::none();
     return py::str(val.dump());
+}
+
+// ============================================================================
+// py_to_json — recursive py::object → nlohmann::json conversion
+// ============================================================================
+
+static nlohmann::json py_to_json(const py::object &obj, int depth = 0)
+{
+    if (depth > kScriptMaxRecursionDepth)
+        return "<recursion limit>";
+    if (obj.is_none())
+        return nullptr;
+    // Check bool before int — isinstance(True, int) is True in Python.
+    if (py::isinstance<py::bool_>(obj))
+        return obj.cast<bool>();
+    if (py::isinstance<py::int_>(obj))
+        return obj.cast<int64_t>();
+    if (py::isinstance<py::float_>(obj))
+        return obj.cast<double>();
+    if (py::isinstance<py::str>(obj))
+        return obj.cast<std::string>();
+    if (py::isinstance<py::dict>(obj))
+    {
+        nlohmann::json j = nlohmann::json::object();
+        for (auto &item : obj.cast<py::dict>())
+            j[item.first.cast<std::string>()] =
+                py_to_json(item.second.cast<py::object>(), depth + 1);
+        return j;
+    }
+    if (py::isinstance<py::list>(obj))
+    {
+        nlohmann::json j = nlohmann::json::array();
+        for (auto &elem : obj.cast<py::list>())
+            j.push_back(py_to_json(elem.cast<py::object>(), depth + 1));
+        return j;
+    }
+    if (py::isinstance<py::tuple>(obj))
+    {
+        nlohmann::json j = nlohmann::json::array();
+        for (auto &elem : obj.cast<py::tuple>())
+            j.push_back(py_to_json(elem.cast<py::object>(), depth + 1));
+        return j;
+    }
+    // Fallback: repr as string.
+    return py::str(obj).cast<std::string>();
 }
 
 // ============================================================================
@@ -188,9 +235,9 @@ static fs::path resolve_venvs_dir_for_engine(const fs::path &exe_path)
 // initialize — create interpreter, apply config, optionally activate venv
 // ============================================================================
 
-bool PythonEngine::init_engine_(const char *log_tag, RoleHostCore *core)
+bool PythonEngine::init_engine_(const std::string &log_tag, RoleHostCore *core)
 {
-    log_tag_ = log_tag ? log_tag : "python";
+    log_tag_ = log_tag.empty() ? "python" : log_tag;
     // owner_thread_id_, accepting_, ctx_.core set by base class initialize().
 
     try
@@ -297,12 +344,12 @@ bool PythonEngine::init_engine_(const char *log_tag, RoleHostCore *core)
 // ============================================================================
 
 bool PythonEngine::load_script(const std::filesystem::path &script_dir,
-                                const char *entry_point,
-                                const char *required_callback)
+                                const std::string &entry_point,
+                                const std::string &required_callback)
 {
     script_dir_str_     = script_dir.string();
-    entry_point_        = entry_point ? entry_point : "__init__.py";
-    required_callback_  = required_callback ? required_callback : "";
+    entry_point_        = entry_point.empty() ? "__init__.py" : entry_point;
+    required_callback_  = required_callback;
 
     // PythonEngine uses package-based import (always __init__.py).
     // Warn if caller specified a different entry_point.
@@ -351,7 +398,7 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
         py_on_inbox_   = py::getattr(module_, "on_inbox",   py::none());
 
         // Check required callback.
-        if (!required_callback_.empty() && !has_callback(required_callback_.c_str()))
+        if (!required_callback_.empty() && !has_callback(required_callback_))
         {
             LOGGER_ERROR("[{}] Script has no '{}' function", log_tag_, required_callback_);
             return false;
@@ -371,13 +418,13 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
 // build_api — create role-specific Python API object
 // ============================================================================
 
-void PythonEngine::build_api_(const RoleContext &ctx)
+bool PythonEngine::build_api_(const RoleContext &ctx)
 {
     // ctx_ and core preservation handled by base class build_api().
     stop_on_script_error_ = ctx.stop_on_script_error;
 
-    // Detect role from context pointers and build the appropriate API.
-    if (ctx_.producer != nullptr && ctx_.consumer == nullptr)
+    // Detect role from role_tag (authoritative). Validate expected pointers.
+    if (ctx_.role_tag == "prod")
     {
         // Producer role.
         producer_api_ = std::make_unique<producer::ProducerAPI>(*ctx_.core);
@@ -399,7 +446,7 @@ void PythonEngine::build_api_(const RoleContext &ctx)
         py::module_ mod = py::module_::import("pylabhub_producer");
         api_obj_ = py::cast(&api, py::return_value_policy::reference);
     }
-    else if (ctx_.consumer != nullptr && ctx_.producer == nullptr)
+    else if (ctx_.role_tag == "cons")
     {
         // Consumer role.
         consumer_api_ = std::make_unique<consumer::ConsumerAPI>(*ctx_.core);
@@ -421,7 +468,7 @@ void PythonEngine::build_api_(const RoleContext &ctx)
         py::module_ mod = py::module_::import("pylabhub_consumer");
         api_obj_ = py::cast(&api, py::return_value_policy::reference);
     }
-    else
+    else if (ctx_.role_tag == "proc")
     {
         // Processor role.
         processor_api_ = std::make_unique<processor::ProcessorAPI>(*ctx_.core);
@@ -449,13 +496,30 @@ void PythonEngine::build_api_(const RoleContext &ctx)
         py::module_ mod = py::module_::import("pylabhub_processor");
         api_obj_ = py::cast(&api, py::return_value_policy::reference);
     }
+    else
+    {
+        LOGGER_ERROR("[{}] build_api: unknown role_tag '{}' — must be 'prod', 'cons', or 'proc'",
+                     log_tag_, ctx_.role_tag);
+        return false;
+    }
 
-    // GIL stays held on the worker thread. Each invoke_*() uses
-    // py::gil_scoped_acquire which is a no-op when already held (reentrant).
-    // The GIL is not explicitly released between calls — this is safe because
-    // all engine calls happen on the same worker thread.
-    // TODO: evaluate if GIL release between calls improves responsiveness
-    // for ctrl_thread_ Python work (future multi-state support).
+    // Block non-active role modules: setting sys.modules[name] = None is the
+    // standard Python convention for marking a module as unavailable. This
+    // makes `import pylabhub_<wrong_role>` raise ImportError at runtime.
+    {
+        static const char *all_modules[] = {
+            "pylabhub_producer", "pylabhub_consumer", "pylabhub_processor"};
+        const char *active = (ctx_.role_tag == "prod") ? "pylabhub_producer"
+                           : (ctx_.role_tag == "cons") ? "pylabhub_consumer"
+                                                       : "pylabhub_processor";
+        py::object sys_modules = py::module_::import("sys").attr("modules");
+        for (const char *mod : all_modules)
+        {
+            if (std::strcmp(mod, active) != 0)
+                sys_modules[py::str(mod)] = py::none();
+        }
+    }
+    return true;
 }
 
 // ============================================================================
@@ -520,7 +584,7 @@ void PythonEngine::finalize_engine_()
 // Generic invoke / eval
 // ============================================================================
 
-bool PythonEngine::invoke(const char *name)
+bool PythonEngine::invoke(const std::string &name)
 {
     if (!is_accepting())
         return false;
@@ -539,7 +603,7 @@ bool PythonEngine::invoke(const char *name)
     return future.get().status == InvokeStatus::Ok;
 }
 
-bool PythonEngine::invoke(const char *name, const nlohmann::json &args)
+bool PythonEngine::invoke(const std::string &name, const nlohmann::json &args)
 {
     if (!is_accepting())
         return false;
@@ -558,10 +622,10 @@ bool PythonEngine::invoke(const char *name, const nlohmann::json &args)
     return future.get().status == InvokeStatus::Ok;
 }
 
-nlohmann::json PythonEngine::eval(const char *code)
+InvokeResponse PythonEngine::eval(const std::string &code)
 {
     if (!is_accepting())
-        return {};
+        return {InvokeStatus::EngineShutdown, {}};
 
     if (std::this_thread::get_id() == owner_thread_id_)
         return eval_direct_(code);
@@ -571,19 +635,19 @@ nlohmann::json PythonEngine::eval(const char *code)
     {
         std::lock_guard lk(queue_mu_);
         if (!is_accepting())
-            return {};
+            return {InvokeStatus::EngineShutdown, {}};
         request_queue_.push_back({code, {}, true, std::move(promise)});
     }
-    return future.get().value;
+    return future.get();
 }
 
-InvokeResponse PythonEngine::execute_direct_(const char *name)
+InvokeResponse PythonEngine::execute_direct_(const std::string &name)
 {
-    if (!name)
+    if (name.empty())
         return {InvokeStatus::NotFound, {}};
 
     py::gil_scoped_acquire gil;
-    py::object fn = py::getattr(module_, name, py::none());
+    py::object fn = py::getattr(module_, name.c_str(), py::none());
     if (fn.is_none())
         return {InvokeStatus::NotFound, {}};
 
@@ -604,35 +668,24 @@ InvokeResponse PythonEngine::execute_direct_(const char *name)
     }
 }
 
-InvokeResponse PythonEngine::execute_direct_(const char *name,
+InvokeResponse PythonEngine::execute_direct_(const std::string &name,
                                               const nlohmann::json &args)
 {
-    if (!name)
+    if (name.empty())
         return {InvokeStatus::NotFound, {}};
 
     py::gil_scoped_acquire gil;
-    py::object fn = py::getattr(module_, name, py::none());
+    py::object fn = py::getattr(module_, name.c_str(), py::none());
     if (fn.is_none())
         return {InvokeStatus::NotFound, {}};
 
     executing_.store(true, std::memory_order_release);
     try
     {
-        // Unpack JSON args as keyword arguments.
+        // Unpack JSON args as keyword arguments (recursive for nested types).
         py::dict kwargs;
         for (auto it = args.begin(); it != args.end(); ++it)
-        {
-            if (it.value().is_number_integer())
-                kwargs[py::str(it.key())] = it.value().get<int64_t>();
-            else if (it.value().is_number_float())
-                kwargs[py::str(it.key())] = it.value().get<double>();
-            else if (it.value().is_boolean())
-                kwargs[py::str(it.key())] = it.value().get<bool>();
-            else if (it.value().is_string())
-                kwargs[py::str(it.key())] = it.value().get<std::string>();
-            else
-                kwargs[py::str(it.key())] = py::none();
-        }
+            kwargs[py::str(it.key())] = json_to_py(it.value());
         fn(**kwargs);
         executing_.store(false, std::memory_order_release);
         return {InvokeStatus::Ok, {}};
@@ -647,10 +700,10 @@ InvokeResponse PythonEngine::execute_direct_(const char *name,
     }
 }
 
-nlohmann::json PythonEngine::eval_direct_(const char *code)
+InvokeResponse PythonEngine::eval_direct_(const std::string &code)
 {
-    if (!code)
-        return {};
+    if (code.empty())
+        return {InvokeStatus::NotFound, {}};
 
     py::gil_scoped_acquire gil;
     executing_.store(true, std::memory_order_release);
@@ -661,19 +714,7 @@ nlohmann::json PythonEngine::eval_direct_(const char *code)
         py::object result = py::eval(code, module_.attr("__dict__"));
         executing_.store(false, std::memory_order_release);
 
-        // Convert py::object → nlohmann::json (scalars only).
-        if (result.is_none())
-            return nullptr;
-        if (py::isinstance<py::bool_>(result))
-            return result.cast<bool>();
-        if (py::isinstance<py::int_>(result))
-            return result.cast<int64_t>();
-        if (py::isinstance<py::float_>(result))
-            return result.cast<double>();
-        if (py::isinstance<py::str>(result))
-            return result.cast<std::string>();
-        // Complex types: repr as string.
-        return py::str(result).cast<std::string>();
+        return {InvokeStatus::Ok, py_to_json(result)};
     }
     catch (const py::error_already_set &e)
     {
@@ -681,7 +722,7 @@ nlohmann::json PythonEngine::eval_direct_(const char *code)
         LOGGER_ERROR("[{}] eval(): {}", log_tag_, e.what());
         if (ctx_.core)
             ctx_.core->inc_script_errors();
-        return {};
+        return {InvokeStatus::ScriptError, {}};
     }
 }
 
@@ -707,12 +748,15 @@ void PythonEngine::process_pending_()
         }
         if (req.is_eval)
         {
-            auto val = eval_direct_(req.name.c_str());
-            req.promise.set_value({InvokeStatus::Ok, std::move(val)});
+            req.promise.set_value(eval_direct_(req.name));
         }
         else
         {
-            auto resp = execute_direct_(req.name.c_str());
+            InvokeResponse resp;
+            if (req.args.is_null() || req.args.empty())
+                resp = execute_direct_(req.name.c_str());
+            else
+                resp = execute_direct_(req.name.c_str(), req.args);
             req.promise.set_value(std::move(resp));
         }
     }
@@ -722,28 +766,28 @@ void PythonEngine::process_pending_()
 // has_callback
 // ============================================================================
 
-bool PythonEngine::has_callback(const char *name) const
+bool PythonEngine::has_callback(const std::string &name) const
 {
-    if (!name)
+    if (name.empty())
         return false;
 
-    if (std::strcmp(name, "on_init") == 0)
+    if (name == "on_init")
         return is_callable(py_on_init_);
-    if (std::strcmp(name, "on_stop") == 0)
+    if (name == "on_stop")
         return is_callable(py_on_stop_);
-    if (std::strcmp(name, "on_produce") == 0)
+    if (name == "on_produce")
         return is_callable(py_on_produce_);
-    if (std::strcmp(name, "on_consume") == 0)
+    if (name == "on_consume")
         return is_callable(py_on_consume_);
-    if (std::strcmp(name, "on_process") == 0)
+    if (name == "on_process")
         return is_callable(py_on_process_);
-    if (std::strcmp(name, "on_inbox") == 0)
+    if (name == "on_inbox")
         return is_callable(py_on_inbox_);
 
     // Unknown callback — try getattr on the module.
     if (!module_.is_none())
     {
-        py::object fn = py::getattr(module_, name, py::none());
+        py::object fn = py::getattr(module_, name.c_str(), py::none());
         return is_callable(fn);
     }
     return false;
@@ -754,7 +798,7 @@ bool PythonEngine::has_callback(const char *name) const
 // ============================================================================
 
 bool PythonEngine::register_slot_type(const SchemaSpec &spec,
-                                       const char *type_name,
+                                       const std::string &type_name,
                                        const std::string &packing)
 {
     if (!spec.has_schema)
@@ -764,28 +808,33 @@ bool PythonEngine::register_slot_type(const SchemaSpec &spec,
     {
         py::object type = build_ctypes_type_(spec, type_name, packing);
 
-        const std::string tn{type_name};
-        if (tn == "SlotFrame")
+        
+        if (type_name == "SlotFrame")
         {
             slot_type_    = type;
             slot_type_ro_ = wrap_readonly_(type);
             slot_spec_    = spec;
         }
-        else if (tn == "InSlotFrame")
+        else if (type_name == "InSlotFrame")
         {
             in_slot_type_ro_ = wrap_readonly_(type);
             in_slot_spec_    = spec;
         }
-        else if (tn == "OutSlotFrame")
+        else if (type_name == "OutSlotFrame")
         {
             out_slot_type_ = type;
             out_slot_spec_ = spec;
         }
-        else if (tn == "FlexFrame")
+        else if (type_name == "FlexFrame")
         {
             fz_type_    = type;
             fz_type_ro_ = wrap_readonly_(type);
             fz_spec_    = spec;
+        }
+        else if (type_name == "InboxFrame")
+        {
+            inbox_type_ro_ = wrap_readonly_(type);
+            inbox_spec_    = spec;
         }
         else
         {
@@ -807,19 +856,19 @@ bool PythonEngine::register_slot_type(const SchemaSpec &spec,
 // type_sizeof
 // ============================================================================
 
-size_t PythonEngine::type_sizeof(const char *type_name) const
+size_t PythonEngine::type_sizeof(const std::string &type_name) const
 {
-    const std::string tn{type_name};
+    
 
     // Return size for the cached writable type (represents the actual struct size).
     py::object type = py::none();
-    if (tn == "SlotFrame")
+    if (type_name == "SlotFrame")
         type = slot_type_;
-    else if (tn == "InSlotFrame")
+    else if (type_name == "InSlotFrame")
         type = in_slot_type_ro_;
-    else if (tn == "OutSlotFrame")
+    else if (type_name == "OutSlotFrame")
         type = out_slot_type_;
-    else if (tn == "FlexFrame")
+    else if (type_name == "FlexFrame")
         type = fz_type_;
 
     if (type.is_none())
@@ -841,6 +890,8 @@ size_t PythonEngine::type_sizeof(const char *type_name) const
 
 void PythonEngine::invoke_on_init()
 {
+    // No process_pending_() needed: called before ctrl_thread_ is spawned,
+    // so no non-owner threads exist yet to queue requests.
     if (!is_callable(py_on_init_))
         return;
 
@@ -861,6 +912,9 @@ void PythonEngine::invoke_on_init()
 
 void PythonEngine::invoke_on_stop()
 {
+    // No process_pending_() needed: called after stop_accepting() + ctrl_thread_.join(),
+    // so no non-owner threads are running and no new requests can be queued.
+    // Any remaining pending requests are cancelled in finalize_engine_().
     if (!is_callable(py_on_stop_))
         return;
 
@@ -1012,49 +1066,44 @@ InvokeResult PythonEngine::invoke_process(
 
 void PythonEngine::invoke_on_inbox(
     const void *data, size_t sz,
-    const char *type_name,
-    const char *sender)
+    const std::string &sender)
 {
-    if (is_callable(py_on_inbox_))
+    if (!is_callable(py_on_inbox_))
     {
-        py::gil_scoped_acquire g;
-        try
-        {
-            py::object data_view = py::none();
-            if (data != nullptr && sz > 0)
-            {
-                if (type_name != nullptr && type_name[0] != '\0')
-                {
-                    try
-                    {
-                        auto mv = py::memoryview::from_memory(
-                            const_cast<void *>(data),
-                            static_cast<py::ssize_t>(sz),
-                            /*readonly=*/false);
-                        py::module_ ct = py::module_::import("ctypes");
-                        data_view = py::bytes(
-                            reinterpret_cast<const char *>(data), sz);
-                    }
-                    catch (...)
-                    {
-                        data_view = py::bytes(
-                            reinterpret_cast<const char *>(data), sz);
-                    }
-                }
-                else
-                {
-                    data_view = py::bytes(
-                        reinterpret_cast<const char *>(data), sz);
-                }
-            }
+        process_pending_();
+        return;
+    }
 
-            py::str sender_str(sender ? sender : "");
-            py_on_inbox_(data_view, sender_str, api_obj_);
-        }
-        catch (py::error_already_set &e)
+    // Inbox type must be cached at startup via register_slot_type("InboxFrame").
+    // Null cache means a bug in the startup sequence.
+    if (inbox_type_ro_.is_none())
+    {
+        LOGGER_ERROR("[{}] invoke_on_inbox: InboxFrame type not registered — "
+                     "inbox_schema must be configured and registered before use",
+                     log_tag_);
+        ctx_.core->inc_script_errors();
+        process_pending_();
+        return;
+    }
+
+    py::gil_scoped_acquire g;
+    try
+    {
+        py::object data_view = py::none();
+        if (data != nullptr && sz > 0)
         {
-            on_python_error_("on_inbox", e);
+            // Use from_buffer_copy: inbox data is only valid until the next
+            // recv_one() call, so we must copy into the ctypes struct.
+            auto buf = py::bytes(reinterpret_cast<const char *>(data), sz);
+            data_view = inbox_type_ro_.attr("from_buffer_copy")(buf);
         }
+
+        py::str sender_str(sender);
+        py_on_inbox_(data_view, sender_str, api_obj_);
+    }
+    catch (py::error_already_set &e)
+    {
+        on_python_error_("on_inbox", e);
     }
     process_pending_();
 }
@@ -1063,7 +1112,7 @@ void PythonEngine::invoke_on_inbox(
 // Internal helpers
 // ============================================================================
 
-py::object PythonEngine::build_ctypes_type_(const SchemaSpec &spec, const char *name,
+py::object PythonEngine::build_ctypes_type_(const SchemaSpec &spec, const std::string &name,
                                              const std::string &packing)
 {
     if (spec.exposure == SlotExposure::NumpyArray)
@@ -1208,6 +1257,7 @@ void PythonEngine::clear_pyobjects_()
     out_slot_type_   = py::none();
     fz_type_         = py::none();
     fz_type_ro_      = py::none();
+    inbox_type_ro_   = py::none();
 }
 
 } // namespace pylabhub::scripting

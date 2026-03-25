@@ -106,6 +106,23 @@ struct ZmqQueueImpl
     std::atomic<uint64_t> send_retry_count_{0};
     std::atomic<uint64_t> overrun_count_{0};
 
+    // ── Domain 2+3 timing (HEP-CORE-0008 §10) ──────────────────────────────
+    // Measured in read_acquire/read_release (read mode) or
+    // write_acquire/write_commit (write mode). Same semantics as DataBlock ContextMetrics.
+    using Clock = std::chrono::steady_clock;
+    std::atomic<uint64_t> last_slot_wait_us_{0};
+    std::atomic<uint64_t> last_iteration_us_{0};
+    std::atomic<uint64_t> max_iteration_us_{0};
+    std::atomic<uint64_t> iteration_count_{0};
+    std::atomic<uint64_t> last_slot_work_us_{0};
+    std::atomic<uint64_t> configured_period_us_{0};
+    std::atomic<uint64_t> context_elapsed_us_{0};
+
+    // Per-thread timestamps (not atomic — only accessed from caller thread).
+    Clock::time_point t_iter_start_{};       ///< Start of previous acquire (for iteration gap).
+    Clock::time_point t_acquired_{};         ///< When last acquire returned (for work time).
+    Clock::time_point context_start_time_{}; ///< First acquire timestamp (for context_elapsed_us).
+
     // ── Sequence tracking [ZQ10] ─────────────────────────────────────────────
     uint64_t expected_seq_{0};
     bool     seq_initialized_{false};
@@ -527,8 +544,10 @@ ZmqQueue& ZmqQueue::operator=(ZmqQueue&& o) noexcept
 bool ZmqQueue::start()
 {
     if (!pImpl) return false;
+    if (pImpl->running_.load(std::memory_order_acquire))
+        return true; // already running — idempotent
     if (pImpl->running_.exchange(true, std::memory_order_acq_rel))
-        return false; // already running
+        return true; // lost race — another thread started it
 
     pImpl->zmq_ctx = zmq_ctx_new();
     if (!pImpl->zmq_ctx)
@@ -650,6 +669,32 @@ const void* ZmqQueue::read_acquire(std::chrono::milliseconds timeout) noexcept
 {
     if (!pImpl || pImpl->mode != ZmqQueueImpl::Mode::Read) return nullptr;
 
+    const auto t_entry = ZmqQueueImpl::Clock::now();
+
+    // Compute iteration gap and context elapsed.
+    const ZmqQueueImpl::Clock::time_point t_zero{};
+    if (pImpl->t_iter_start_ != t_zero)
+    {
+        const auto elapsed_us = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                t_entry - pImpl->t_iter_start_).count());
+        pImpl->last_iteration_us_.store(elapsed_us, std::memory_order_relaxed);
+        if (elapsed_us > pImpl->max_iteration_us_.load(std::memory_order_relaxed))
+            pImpl->max_iteration_us_.store(elapsed_us, std::memory_order_relaxed);
+        pImpl->context_elapsed_us_.store(
+            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                t_entry - pImpl->context_start_time_).count()),
+            std::memory_order_relaxed);
+
+        const auto period = pImpl->configured_period_us_.load(std::memory_order_relaxed);
+        if (period > 0 && elapsed_us > period)
+            pImpl->overrun_count_.fetch_add(1, std::memory_order_relaxed);
+    }
+    else
+    {
+        pImpl->context_start_time_ = t_entry;
+    }
+
     std::unique_lock<std::mutex> lk(pImpl->recv_mu_);
     pImpl->recv_cv_.wait_for(lk, timeout, [this] {
         return pImpl->ring_count_ > 0 ||
@@ -658,18 +703,42 @@ const void* ZmqQueue::read_acquire(std::chrono::milliseconds timeout) noexcept
 
     if (pImpl->ring_count_ == 0) return nullptr;
 
+    const auto t_acquired = ZmqQueueImpl::Clock::now();
+
     // Copy from ring slot to current_read_buf_ (pre-allocated; no heap alloc). [ZQ9]
     std::memcpy(pImpl->current_read_buf_.data(),
                 pImpl->recv_ring_[pImpl->ring_head_].data(),
                 pImpl->item_sz);
     pImpl->ring_head_ = (pImpl->ring_head_ + 1) % pImpl->max_depth;
     --pImpl->ring_count_;
+
+    // Update timing metrics.
+    pImpl->last_slot_wait_us_.store(
+        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+            t_acquired - t_entry).count()),
+        std::memory_order_relaxed);
+    pImpl->iteration_count_.fetch_add(1, std::memory_order_relaxed);
+    pImpl->t_iter_start_ = t_acquired;
+    pImpl->t_acquired_   = t_acquired;
+
     return pImpl->current_read_buf_.data();
 }
 
 void ZmqQueue::read_release() noexcept
 {
-    // No-op: item already copied to current_read_buf_ in read_acquire().
+    // Item already copied to current_read_buf_ in read_acquire().
+    // Measure work time: acquire return → release call.
+    if (pImpl)
+    {
+        const ZmqQueueImpl::Clock::time_point t_zero{};
+        if (pImpl->t_acquired_ != t_zero)
+        {
+            pImpl->last_slot_work_us_.store(
+                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                    ZmqQueueImpl::Clock::now() - pImpl->t_acquired_).count()),
+                std::memory_order_relaxed);
+        }
+    }
 }
 
 // ============================================================================
@@ -679,26 +748,22 @@ void ZmqQueue::read_release() noexcept
 void* ZmqQueue::write_acquire(std::chrono::milliseconds timeout) noexcept
 {
     if (!pImpl || pImpl->mode != ZmqQueueImpl::Mode::Write) return nullptr;
-    // MR-10: guard against write_acquire() called after stop().
-    // send_stop_ is set to true ONLY in stop() (not in the pre-start state), so it
-    // correctly rejects post-stop writes while allowing pre-start offline fills.
-    // The Block policy already checks send_stop_ in its wait predicate.
     if (pImpl->send_stop_.load(std::memory_order_relaxed))
         return nullptr;
 
+    const auto t_entry = ZmqQueueImpl::Clock::now();
+
     if (pImpl->overflow_policy_ == OverflowPolicy::Drop)
     {
-        // Fast path: check send buffer capacity without blocking.
         std::lock_guard<std::mutex> lk(pImpl->send_mu_);
         if (pImpl->send_count_ >= pImpl->send_depth_)
         {
-            ++pImpl->overrun_count_;
+            pImpl->overrun_count_.fetch_add(1, std::memory_order_relaxed); // buffer-full drop — not a timing overrun
             return nullptr;
         }
     }
     else // Block
     {
-        // [ZQ5] Capture impl_ptr not this — safe across ZmqQueue moves (see start()).
         ZmqQueueImpl* impl_ptr = pImpl.get();
         std::unique_lock<std::mutex> lk(impl_ptr->send_mu_);
         const bool ok = impl_ptr->send_cv_.wait_for(lk, timeout, [impl_ptr] {
@@ -707,10 +772,44 @@ void* ZmqQueue::write_acquire(std::chrono::milliseconds timeout) noexcept
         });
         if (!ok || impl_ptr->send_stop_.load(std::memory_order_relaxed))
         {
-            ++impl_ptr->overrun_count_;
+            impl_ptr->overrun_count_.fetch_add(1, std::memory_order_relaxed); // timeout or shutdown
             return nullptr;
         }
     }
+
+    // Successful acquire — update timing metrics.
+    const auto t_acquired = ZmqQueueImpl::Clock::now();
+
+    const ZmqQueueImpl::Clock::time_point t_zero{};
+    if (pImpl->t_iter_start_ != t_zero)
+    {
+        const auto elapsed_us = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                t_entry - pImpl->t_iter_start_).count());
+        pImpl->last_iteration_us_.store(elapsed_us, std::memory_order_relaxed);
+        if (elapsed_us > pImpl->max_iteration_us_.load(std::memory_order_relaxed))
+            pImpl->max_iteration_us_.store(elapsed_us, std::memory_order_relaxed);
+        pImpl->context_elapsed_us_.store(
+            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                t_entry - pImpl->context_start_time_).count()),
+            std::memory_order_relaxed);
+
+        const auto period = pImpl->configured_period_us_.load(std::memory_order_relaxed);
+        if (period > 0 && elapsed_us > period)
+            pImpl->overrun_count_.fetch_add(1, std::memory_order_relaxed);
+    }
+    else
+    {
+        pImpl->context_start_time_ = t_entry;
+    }
+
+    pImpl->last_slot_wait_us_.store(
+        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+            t_acquired - t_entry).count()),
+        std::memory_order_relaxed);
+    pImpl->iteration_count_.fetch_add(1, std::memory_order_relaxed);
+    pImpl->t_iter_start_ = t_acquired;
+    pImpl->t_acquired_   = t_acquired;
 
     return pImpl->write_buf_.data();
 }
@@ -719,17 +818,26 @@ void ZmqQueue::write_commit() noexcept
 {
     if (!pImpl || pImpl->mode != ZmqQueueImpl::Mode::Write) return;
 
+    // Measure work time: acquire return → commit call.
+    {
+        const ZmqQueueImpl::Clock::time_point t_zero{};
+        if (pImpl->t_acquired_ != t_zero)
+        {
+            pImpl->last_slot_work_us_.store(
+                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                    ZmqQueueImpl::Clock::now() - pImpl->t_acquired_).count()),
+                std::memory_order_relaxed);
+        }
+    }
+
     // Copy write_buf_ into the next send ring slot under lock.
     {
         std::lock_guard<std::mutex> lk(pImpl->send_mu_);
-        // This must never trigger under the single-acquire-at-a-time contract.
-        // If it does, the caller violated the "one outstanding acquire" rule.
         if (pImpl->send_count_ >= pImpl->send_depth_)
         {
             LOGGER_ERROR("[hub::ZmqQueue] write_commit on '{}': ring full — "
                          "violated single-acquire contract; item dropped",
                          pImpl->queue_name);
-            ++pImpl->overrun_count_;
             return;
         }
         std::memcpy(pImpl->send_ring_[pImpl->send_tail_].data(),
@@ -829,17 +937,49 @@ uint64_t ZmqQueue::overrun_count() const noexcept
 QueueMetrics ZmqQueue::metrics() const noexcept
 {
     if (!pImpl) return {};
-    // Each counter is read from its own std::atomic — individually safe.
-    // Fields may not reflect the exact same instant under concurrent I/O
-    // (documented in QueueMetrics); stop() the queue for a consistent snapshot.
     QueueMetrics m;
+    // Domain 2+3 timing fields.
+    m.last_slot_wait_us    = pImpl->last_slot_wait_us_.load(std::memory_order_relaxed);
+    m.last_iteration_us    = pImpl->last_iteration_us_.load(std::memory_order_relaxed);
+    m.max_iteration_us     = pImpl->max_iteration_us_.load(std::memory_order_relaxed);
+    m.iteration_count      = pImpl->iteration_count_.load(std::memory_order_relaxed);
+    m.context_elapsed_us   = pImpl->context_elapsed_us_.load(std::memory_order_relaxed);
+    m.last_slot_work_us    = pImpl->last_slot_work_us_.load(std::memory_order_relaxed);
+    m.overrun_count        = pImpl->overrun_count_.load(std::memory_order_relaxed);
+    m.configured_period_us = pImpl->configured_period_us_.load(std::memory_order_relaxed);
+    // Transport-specific counters.
     m.recv_overflow_count    = pImpl->recv_overflow_count_.load(std::memory_order_relaxed);
     m.recv_frame_error_count = pImpl->recv_frame_error_count_.load(std::memory_order_relaxed);
     m.recv_gap_count         = pImpl->recv_gap_count_.load(std::memory_order_relaxed);
     m.send_drop_count        = pImpl->send_drop_count_.load(std::memory_order_relaxed);
     m.send_retry_count       = pImpl->send_retry_count_.load(std::memory_order_relaxed);
-    m.overrun_count          = pImpl->overrun_count_.load(std::memory_order_relaxed);
     return m;
+}
+
+void ZmqQueue::reset_metrics()
+{
+    if (!pImpl) return;
+    pImpl->last_slot_wait_us_.store(0, std::memory_order_relaxed);
+    pImpl->last_iteration_us_.store(0, std::memory_order_relaxed);
+    pImpl->max_iteration_us_.store(0, std::memory_order_relaxed);
+    pImpl->iteration_count_.store(0, std::memory_order_relaxed);
+    pImpl->last_slot_work_us_.store(0, std::memory_order_relaxed);
+    pImpl->overrun_count_.store(0, std::memory_order_relaxed);
+    pImpl->context_elapsed_us_.store(0, std::memory_order_relaxed);
+    pImpl->recv_overflow_count_.store(0, std::memory_order_relaxed);
+    pImpl->recv_frame_error_count_.store(0, std::memory_order_relaxed);
+    pImpl->recv_gap_count_.store(0, std::memory_order_relaxed);
+    pImpl->send_drop_count_.store(0, std::memory_order_relaxed);
+    pImpl->send_retry_count_.store(0, std::memory_order_relaxed);
+    pImpl->t_iter_start_       = {};
+    pImpl->t_acquired_         = {};
+    pImpl->context_start_time_ = {};
+}
+
+void ZmqQueue::set_configured_period(uint64_t period_us)
+{
+    if (!pImpl) return;
+    pImpl->configured_period_us_.store(period_us, std::memory_order_relaxed);
 }
 
 } // namespace pylabhub::hub

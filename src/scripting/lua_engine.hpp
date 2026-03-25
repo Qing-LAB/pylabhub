@@ -37,23 +37,23 @@ class LuaEngine : public ScriptEngine
 
     // ── ScriptEngine lifecycle ───────────────────────────────────────────
 
-    bool init_engine_(const char *log_tag, RoleHostCore *core) override;
+    bool init_engine_(const std::string &log_tag, RoleHostCore *core) override;
     bool load_script(const std::filesystem::path &script_dir,
-                     const char *entry_point,
-                     const char *required_callback) override;
-    void build_api_(const RoleContext &ctx) override;
+                     const std::string &entry_point,
+                     const std::string &required_callback) override;
+    bool build_api_(const RoleContext &ctx) override;
     void finalize_engine_() override;
 
     // ── Queries ──────────────────────────────────────────────────────────
 
-    [[nodiscard]] bool has_callback(const char *name) const override;
+    [[nodiscard]] bool has_callback(const std::string &name) const override;
 
     // ── Schema / type building ───────────────────────────────────────────
 
     bool register_slot_type(const SchemaSpec &spec,
-                            const char *type_name,
+                            const std::string &type_name,
                             const std::string &packing) override;
-    [[nodiscard]] size_t type_sizeof(const char *type_name) const override;
+    [[nodiscard]] size_t type_sizeof(const std::string &type_name) const override;
 
     // ── Callback invocation ──────────────────────────────────────────────
 
@@ -78,14 +78,13 @@ class LuaEngine : public ScriptEngine
 
     void invoke_on_inbox(
         const void *data, size_t sz,
-        const char *type_name,
-        const char *sender) override;
+        const std::string &sender) override;
 
     // ── Generic invoke (thread-safe) ───────────────────────────────────
 
-    bool invoke(const char *name) override;
-    bool invoke(const char *name, const nlohmann::json &args) override;
-    nlohmann::json eval(const char *code) override;
+    bool invoke(const std::string &name) override;
+    bool invoke(const std::string &name, const nlohmann::json &args) override;
+    InvokeResponse eval(const std::string &code) override;
 
     // ── Error state ──────────────────────────────────────────────────────
 
@@ -130,6 +129,7 @@ class LuaEngine : public ScriptEngine
     int ref_out_slot_writable_{LUA_NOREF}; ///< ffi.typeof("OutSlotFrame*") (processor)
     int ref_fz_writable_{LUA_NOREF};    ///< ffi.typeof("FlexFrame*") (producer/processor)
     int ref_fz_readonly_{LUA_NOREF};    ///< ffi.typeof("FlexFrame const*") (consumer)
+    int ref_inbox_readonly_{LUA_NOREF}; ///< ffi.typeof("InboxFrame const*") (inbox)
 
     // ctx_ is inherited from ScriptEngine (set by build_api).
     bool stop_on_script_error_{false};
@@ -147,6 +147,11 @@ class LuaEngine : public ScriptEngine
 
     // ── Internal helpers ─────────────────────────────────────────────────
 
+    /// Build FFI cdef string from SchemaSpec. Returns empty string on error.
+    std::string build_ffi_cdef_(const SchemaSpec &spec,
+                                const std::string &type_name,
+                                const std::string &packing);
+
     void push_messages_table_(std::vector<IncomingMessage> &msgs);
     void push_messages_table_bare_(std::vector<IncomingMessage> &msgs);
     void clear_refs_();
@@ -155,7 +160,7 @@ class LuaEngine : public ScriptEngine
     int extract_callback_ref_(const char *name);
 
     /// Handle pcall error: log, increment counter, optionally request shutdown.
-    InvokeResult on_pcall_error_(const char *callback_name);
+    InvokeResult on_pcall_error_(const std::string &callback_name);
 
     // ── API closure statics ──────────────────────────────────────────────
 
