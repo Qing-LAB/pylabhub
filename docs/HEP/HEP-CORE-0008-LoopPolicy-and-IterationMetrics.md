@@ -343,53 +343,132 @@ For the single-slot break pattern:
 
 ### 6.1 Python `api.metrics()` dict
 
-In each binary's API module, `api.metrics()` assembles a dict from two sources:
-- **Domains 2 + 3**: from `producer_->metrics()` (DataBlock Pimpl)
-- **Domain 4** (binary-specific): from script host metrics
+`api.metrics()` assembles a dict from three sources:
+- **Queue metrics** (`queue->metrics()` → `QueueMetrics`): timing fields measured by DataBlock (SHM) or ZmqQueue
+- **RoleHostCore**: loop-level counters (iteration_count, loop_overrun_count, drops, etc.)
+- **ScriptEngine**: script_errors (via core_)
+
+#### Producer / Consumer dict
 
 ```python
 api.metrics() -> dict:
 {
-    # Domain 2 — Acquire/release timing (from DataBlock Pimpl)
-    "context_elapsed_us": int,   # µs since first slot acquisition this run
-    "iteration_count":    int,   # successful slot acquisitions
-    "last_iteration_us":  int,   # start-to-start time between last two acquires (us)
-    "max_iteration_us":   int,   # peak start-to-start time this run (us)
-    "last_slot_wait_us":  int,   # time blocked waiting for a free slot (us)
+    # ── Queue timing (from QueueMetrics — transport-agnostic) ──────────
+    "context_elapsed_us":  int,   # µs since first slot acquisition
+    "last_iteration_us":   int,   # full cycle time: acquire(N) to acquire(N+1) (µs)
+    "max_iteration_us":    int,   # peak cycle time since reset (µs)
+    "last_slot_wait_us":   int,   # time blocked in acquire waiting for data/slot (µs)
+    "last_slot_exec_us":   int,   # time from acquire to release — user callback execution (µs)
+    "data_drop_count":     int,   # data lost: ZMQ write buffer full/timeout. Always 0 for SHM.
+    "configured_period_us": int,  # target loop period (0 = MaxRate). Config input.
 
-    # Domain 3 — Loop scheduling (from DataBlock Pimpl / LoopPolicy config)
-    "overrun_count":      int,   # acquire cycles exceeding configured_period_us
-    "last_slot_exec_us":  int,   # time from acquire to release (us)
-    "configured_period_us":  int,   # configured target period (0 = MaxRate)
+    # ── Loop metrics (from RoleHostCore) ──────────────────────────────
+    "iteration_count":     int,   # main loop cycles completed
+    "loop_overrun_count":  int,   # cycles where now > deadline (0 if no period configured)
+    "last_cycle_work_us":  int,   # µs of active work in the last completed cycle
+    "script_errors":       int,   # unhandled exceptions in any callback
 
-    # Domain 4 — Script supervision (from script host metrics, binary-specific)
-    "script_error_count":  int,  # unhandled Python exceptions in any callback
-    "loop_overrun_count":  int,  # write-loop deadline overruns (target_period_ms exceeded)
-    "last_cycle_work_us":  int,  # µs of active work in the last completed write cycle
+    # ── Role-specific ─────────────────────────────────────────────────
+    "out_written":         int,   # (producer) committed slots
+    "drops":               int,   # (producer) discarded slots
+    "in_received":         int,   # (consumer) consumed slots
+    "ctrl_queue_dropped":  int,   # ctrl send queue overflow (oldest dropped)
 }
 ```
 
-`overrun_count` (D3) and `loop_overrun_count` (D4) measure different things:
-- D3: DataBlock Pimpl detects start-to-start acquisition interval exceeded `configured_period_us`
-  (i.e., SHM was slow or write body was slow). Works for both producer and consumer.
-- D4: Script host measures write-loop deadline was already past when checked
-  (i.e., Python callback was slow relative to `target_period_ms`).
-  Producer-only. Requires `target_period_ms > 0` in config.
+#### Processor dict
 
-**Individual getters**: `api.loop_overrun_count()` and `api.last_cycle_work_us()` on
-the script API remain as convenience aliases for the corresponding D4 dict keys.
-`api.metrics()` is the canonical single-call access for all metric domains.
+The processor has two queues (input and output). Queue timing fields are prefixed:
 
-### 6.2 Config wiring in script host
+```python
+api.metrics() -> dict:
+{
+    # ── Per-side queue timing (prefixed) ──────────────────────────────
+    "in_context_elapsed_us":  int,   "out_context_elapsed_us":  int,
+    "in_last_iteration_us":   int,   "out_last_iteration_us":   int,
+    "in_max_iteration_us":    int,   "out_max_iteration_us":    int,
+    "in_last_slot_wait_us":   int,   "out_last_slot_wait_us":   int,
+    "in_last_slot_exec_us":   int,   "out_last_slot_exec_us":   int,
+    "in_data_drop_count":     int,   "out_data_drop_count":     int,
+    "in_configured_period_us": int,  "out_configured_period_us": int,
 
-After `create_datablock_producer(opts)` / `hub::Consumer::connect(opts)`:
+    # ── Loop metrics (from RoleHostCore) ──────────────────────────────
+    "iteration_count":     int,   # main loop cycles
+    "loop_overrun_count":  int,   # cycles where now > deadline
+    "last_cycle_work_us":  int,   # active work time
+    "script_errors":       int,   # callback exceptions
+
+    # ── Role-specific ─────────────────────────────────────────────────
+    "in_received":         int,   # consumed input slots
+    "out_written":         int,   # committed output slots
+    "drops":               int,   # discarded output slots
+    "ctrl_queue_dropped":  dict,  # {"input": int, "output": int}
+    "in_ctrl_queue_dropped":  int,  # flat alias for convenience
+    "out_ctrl_queue_dropped": int,  # flat alias for convenience
+}
+```
+
+#### Metric sources and ownership
+
+| Source | What it measures | Who writes | Where stored |
+|--------|-----------------|------------|-------------|
+| Queue (DataBlock/ZmqQueue) | Timing: wait, iteration, exec, max, elapsed | acquire/release internals | QueueMetrics |
+| Queue (ZmqQueue only) | Data drops: write buffer full/timeout | write_acquire failure | QueueMetrics::data_drop_count |
+| RoleHostCore | Loop: iteration count, overrun, cycle work time | Main loop after each cycle | Atomic fields in core_ |
+| ScriptEngine | Script errors | Exception handler in invoke | core_->script_errors() |
+
+**`loop_overrun_count`** is the authoritative overrun counter. It compares `now > deadline`
+after each cycle in the main loop — the only place that knows the actual deadline (accounting
+for FixedRate vs FixedRateWithCompensation slack). DataBlock and ZmqQueue do NOT detect
+overruns — they only measure timing. The main loop judges.
+
+**`data_drop_count`** counts data that was supposed to be sent/written but wasn't:
+- SHM: always 0 (Sequential blocks writer; Latest_only skips by design — no loss)
+- ZMQ write: buffer full (Drop policy) or timeout (Block policy) = caller's data not sent
+
+**`iteration_count`** is the main loop cycle count from RoleHostCore, NOT the queue's
+acquire count. Every loop iteration increments it, even if acquire returned nullptr.
+
+#### Convenience method getters
+
+These methods return individual fields (same values as the dict):
+- `api.loop_overrun_count()` → `core_->loop_overrun_count()`
+- `api.last_cycle_work_us()` → `core_->last_cycle_work_us()`
+- `api.script_error_count()` → `core_->script_errors()`
+- `api.ctrl_queue_dropped()` → sum of both sides (processor) or single value (producer/consumer)
+
+#### Not exposed to scripts (transport-internal diagnostics)
+
+The following QueueMetrics fields are tracked by ZmqQueue but not surfaced in `api.metrics()`:
+- `recv_overflow_count` — recv ring buffer overflow (data loss in recv thread)
+- `recv_frame_error_count` — frames rejected (bad magic, schema mismatch)
+- `recv_gap_count` — sequence gaps (frames lost between PUSH and PULL)
+- `send_drop_count` — zmq_send permanently failed
+- `send_retry_count` — transient EAGAIN retries
+
+These are available via `queue->metrics()` in C++ but not in the Python dict.
+A future pass may expose them for ZMQ transport diagnostics.
+
+### 6.2 Metrics wiring in role host startup
+
+After queue creation and start:
 
 ```cpp
-// Wire loop policy so acquire_write_slot() can detect overruns:
-producer_->set_loop_policy(role_cfg_.loop_policy, role_cfg_.configured_period_us);
+// Reset counters for a clean session:
+queue_->reset_metrics();
 
-// Reset metrics at the start of each role run:
-producer_->clear_metrics();
+// Set target period for metrics reporting (informational — overrun detection is in main loop):
+if (tc.period_us > 0.0)
+    queue_->set_configured_period(static_cast<uint64_t>(tc.period_us));
+```
+
+After each main loop cycle (Step F):
+
+```cpp
+core_.set_last_cycle_work_us(work_us);
+core_.inc_iteration_count();
+if (deadline != Clock::time_point::max() && now > deadline)
+    core_.inc_loop_overrun();
 ```
 
 ### 6.3 Config additions
@@ -591,23 +670,32 @@ uint64_t max_iteration_us{0};     ///< Peak start-to-start time since reset (µs
 uint64_t iteration_count{0};      ///< Successful slot acquisitions since reset.
 uint64_t context_elapsed_us{0};   ///< Elapsed since first acquire (µs). Updated per acquire.
 
-// Domain 3: Loop scheduling
+// Domain 2: Acquire/release timing (continued)
 uint64_t last_slot_exec_us{0};    ///< Time from acquire to release (µs).
-uint64_t configured_period_us{0}; ///< Target period (0 = MaxRate). Config input, not measured.
+
+// Data flow
+uint64_t data_drop_count{0};      ///< ZMQ write: buffer full/timeout. SHM: always 0.
+uint64_t configured_period_us{0}; ///< Target period (0 = MaxRate). Config input.
 ```
 
-**Field definitions:**
+**QueueMetrics field definitions:**
 
 | Field | Measurement | When updated | Meaning |
 |-------|-------------|-------------|---------|
 | `last_slot_wait_us` | `t_acquired - t_enter_acquire` | Each successful acquire | How long the queue blocked waiting for data |
 | `last_iteration_us` | `t_acquired(N) - t_acquired(N-1)` | Each successful acquire (after first) | Full cycle time: user exec + sleep + drain + wait |
 | `max_iteration_us` | running max of `last_iteration_us` | Each successful acquire (after first) | Peak full cycle time since reset |
-| `iteration_count` | +1 per successful acquire | Each successful acquire | Total successful slot acquisitions since reset |
 | `context_elapsed_us` | `t_acquired - t_first_acquired` | Each successful acquire (after first) | Total elapsed time since the queue started processing |
 | `last_slot_exec_us` | `t_release - t_acquired` | Each release/commit | Time the caller held the slot (user callback execution) |
-| `overrun_count` | +1 when `last_iteration_us > configured_period_us` | Each successful acquire (when period > 0) | Full cycles that missed the target deadline |
-| `configured_period_us` | set once at startup | `set_configured_period()` | Target loop period; 0 = MaxRate (no overrun detection) |
+| `data_drop_count` | +1 on write_acquire failure | ZMQ write buffer full or timeout | Data not sent. SHM: always 0. |
+| `configured_period_us` | set once at startup | `set_configured_period()` | Target loop period; 0 = MaxRate. Informational only. |
+
+**Fields NOT in QueueMetrics (owned by RoleHostCore):**
+
+| Field | Where | Meaning |
+|-------|-------|---------|
+| `iteration_count` | `core_.iteration_count()` | Main loop cycles (inc'd every cycle, even failed acquire) |
+| `loop_overrun_count` | `core_.loop_overrun_count()` | Cycles where `now > deadline` (deadline-based, not elapsed-based) |
 
 **Behavior on failed acquire:**
 
@@ -616,11 +704,11 @@ no timing fields are updated. The `t_iter_start_` anchor remains at the previous
 acquire's `t_acquired`. This means:
 
 - `last_iteration_us` on the **next** successful acquire will include the time spent in
-  the failed attempt(s). This is correct: the full cycle time reflects reality — the loop
-  was stalled and the deadline was missed.
-- `iteration_count` is NOT incremented for failed acquires — it counts only successful ones.
-- `overrun_count` is checked only on successful acquires. A failed acquire that caused
-  a long gap will trigger the overrun on the subsequent successful acquire (when
+  the failed attempt(s). This reflects reality — the loop was stalled.
+- For ZMQ write mode, a failed write_acquire increments `data_drop_count` (the caller's
+  data was not sent).
+- The main loop's `iteration_count` still increments (the loop ran, even though acquire
+  failed). The main loop's `loop_overrun_count` checks the deadline independently (when
   `last_iteration_us` exceeds `configured_period_us`).
 - For ZmqQueue write mode with Drop policy, a buffer-full failure increments
   `overrun_count` immediately (buffer capacity overrun, distinct from timing overrun).
