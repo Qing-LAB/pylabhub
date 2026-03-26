@@ -3,8 +3,8 @@
 | Property       | Value                                                                            |
 |----------------|----------------------------------------------------------------------------------|
 | **HEP**        | `HEP-CORE-0019`                                                                  |
-| **Title**      | Metrics Plane — Passive SHM Metrics, Voluntary ZMQ Reporting, Broker Aggregation |
-| **Status**     | Implemented — 2026-03-05 (19 tests; 828/828 passing)                              |
+| **Title**      | Metrics Plane — Passive SHM Metrics, Broker-Initiated Pull, Global Role Table |
+| **Status**     | Phase 1 Implemented — 2026-03-05; **Phase 2 redesign** — 2026-03-25 (heartbeat/metrics separation) |
 | **Created**    | 2026-03-02                                                                        |
 | **Area**       | Framework Architecture (`pylabhub-utils`, all binaries, `BrokerService`)          |
 | **Depends on** | HEP-CORE-0002 (DataHub), HEP-CORE-0007 (Protocol), HEP-CORE-0017 (Pipeline)     |
@@ -44,162 +44,218 @@ through the broker as the single aggregation point.
 ## 2. Design Principles
 
 1. **Passive SHM, active ZMQ**: SHM metrics are always being collected (they're
-   embedded in `SharedMemoryHeader`). ZMQ metric reports are voluntary — a binary
-   sends them when it chooses to, on its own schedule.
+   embedded in `SharedMemoryHeader`). ZMQ metrics are collected by roles and
+   reported on demand when the broker requests them.
 
-2. **Broker aggregates, never proxies data**: The broker stores the latest metrics
-   snapshot per (channel, participant). It never relays metrics between participants.
-   Monitoring tools query the broker.
+2. **Broker maintains a global role table**: The broker stores the latest metrics
+   snapshot per (channel, role UID), with timestamps. Monitoring tools query the
+   broker. The broker never relays metrics between participants.
 
-3. **Heartbeat carries base metrics automatically**: The existing `HEARTBEAT_REQ`
-   message is extended with an optional `metrics` object. This piggybacks on the
-   existing heartbeat interval — no new timer, no new socket, no extra traffic.
+3. **Heartbeat is liveness only**: `HEARTBEAT_REQ` carries `channel_name`, `uid`,
+   and `role_type` — enough to identify the sender and confirm it is alive. No
+   metrics payload. All roles (producer, consumer, processor) send heartbeats
+   using the same message format.
 
-4. **Scripts extend via `api.report_metric()`**: Custom key-value metrics are
-   accumulated on the API object and included in the next heartbeat automatically.
+4. **Metrics are broker-initiated pull**: When a monitoring tool sends `METRICS_REQ`,
+   the broker requests metrics from each active role via `METRICS_COLLECT_REQ`.
+   Roles respond with their current `snapshot_metrics_json()`. The broker stores
+   the response in its global table and returns the aggregated view to the requester.
+
+5. **Scripts extend via `api.report_metric()`**: Custom key-value metrics are
+   accumulated on the API object and included in the next metrics response.
    Zero configuration — just call the API.
-
-5. **Pull model for queries**: External tools (AdminShell, CLI, future dashboards)
-   query the broker via a new `METRICS_REQ`/`METRICS_ACK` command pair. The broker
-   never pushes metrics unsolicited.
 
 6. **SHM metrics read locally**: Processes that have SHM mapped can read
    `DataBlockMetrics` directly (zero-copy, no ZMQ). The broker also reads SHM
    metrics for channels it knows about, merging them into the aggregated view.
 
+### 2.1 Phase 2 changes (2026-03-25)
+
+Phase 1 piggybacked metrics on heartbeats (producer/processor) and used a separate
+`METRICS_REPORT_REQ` for consumers. This created:
+- Inconsistency: three different reporting paths for the same logical operation
+- Heartbeat bloat: liveness pings carried large JSON payloads
+- No broker-to-role pull: the broker stored whatever was last pushed
+
+Phase 2 separates concerns:
+- **Heartbeat** → lightweight liveness ping (all roles, same format)
+- **Metrics** → broker pulls from roles on demand (all roles, same format)
+- **Global role table** → broker indexes by (channel, UID) with role_type and timestamps
+
 ---
 
 ## 3. Architecture
 
-```mermaid
-graph LR
-    subgraph Participants
-        PROD["Producer<br/>counters + custom KV"]
-        PROC["Processor<br/>counters + custom KV"]
-        CONS["Consumer<br/>counters + custom KV"]
-    end
-
-    subgraph "BrokerService"
-        MS["MetricsStore"]
-        CR["ChannelRegistry"]
-    end
-
-    subgraph Query
-        ADMIN["AdminShell / CLI / Monitor"]
-    end
-
-    SHM["SharedMemoryHeader<br/>(DataBlockMetrics)"]
-
-    PROD -->|"HEARTBEAT_REQ<br/>+ metrics{}"| MS
-    PROC -->|"HEARTBEAT_REQ<br/>+ metrics{}"| MS
-    CONS -->|"METRICS_REPORT_REQ"| MS
-    SHM -.->|"SHM direct read<br/>(on query)"| MS
-    ADMIN -->|"METRICS_REQ"| MS
-    MS -->|"METRICS_ACK"| ADMIN
-```
-
-**ASCII reference** (original diagram):
+### Phase 2 architecture (2026-03-25)
 
 ```
-┌─────────────┐   HEARTBEAT_REQ          ┌──────────────┐
-│  Producer    │  + { metrics: {...} }    │              │
-│  - counters  │──────────────────────────│              │
-│  - custom KV │                          │   Broker     │
-└─────────────┘                           │              │
-                                          │  ┌────────┐  │   METRICS_REQ / METRICS_ACK
-┌─────────────┐   HEARTBEAT_REQ          │  │Metrics │  │◄──────────────────────────────┐
-│  Processor   │  + { metrics: {...} }    │  │Store   │  │                               │
-│  - counters  │──────────────────────────│  └────────┘  │                   ┌───────────┤
-│  - custom KV │                          │              │                   │  Admin    │
-└─────────────┘                           │  ┌────────┐  │                   │  Shell /  │
-                                          │  │Channel │  │                   │  CLI /    │
-┌─────────────┐   (no heartbeat;          │  │Registry│  │                   │  Monitor  │
-│  Consumer    │   PID liveness only)     │  └────────┘  │                   └───────────┘
-│  - counters  │                          │              │
-│  - custom KV │  METRICS_REPORT_REQ ────►│              │
-└─────────────┘                           └──────────────┘
-                                                 ▲
-                                                 │ SHM direct read
-                                          ┌──────────────┐
-                                          │ SharedMemory  │
-                                          │ Header        │
-                                          │ (DataBlock    │
-                                          │  Metrics)     │
-                                          └──────────────┘
+┌─────────────┐   HEARTBEAT_REQ              ┌──────────────────────┐
+│  Producer    │  {channel, uid, role_type}   │                      │
+│              │─────────────────────────────►│                      │
+└─────────────┘                               │     Broker           │
+                                              │                      │
+┌─────────────┐   HEARTBEAT_REQ              │  ┌────────────────┐  │   METRICS_REQ
+│  Processor   │  {channel, uid, role_type}   │  │ Global Role    │  │◄─────────────┐
+│              │─────────────────────────────►│  │ Table          │  │              │
+└─────────────┘                               │  │                │  │   ┌──────────┤
+                                              │  │ channel → {    │  │   │  Admin   │
+┌─────────────┐   HEARTBEAT_REQ              │  │   uid → {      │  │   │  Shell / │
+│  Consumer    │  {channel, uid, role_type}   │  │     role_type  │  │   │  CLI /   │
+│              │─────────────────────────────►│  │     heartbeat  │  │   │  Monitor │
+└─────────────┘                               │  │     metrics    │  │   └──────────┘
+                                              │  │     timestamp  │  │
+        ┌─────────────────────────────────────│  │   }            │──┤
+        │  METRICS_COLLECT_REQ (broker→role)  │  │ }              │  │ METRICS_ACK
+        │  METRICS_COLLECT_ACK (role→broker)  │  └────────────────┘  │──────────────►
+        └─────────────────────────────────────│                      │
+                                              │  ┌────────────────┐  │
+                                              │  │ SHM direct     │  │
+                                              │  │ read (on query)│  │
+                                              │  └────────────────┘  │
+                                              └──────────────────────┘
 ```
 
-### 3.1 Reporting paths
+### 3.1 Message flows
 
-| Source | Transport | Frequency | Payload |
-|--------|-----------|-----------|---------|
-| Producer base counters | Piggyback on `HEARTBEAT_REQ` | Every heartbeat interval (~1-2s) | `out_written`, `drops`, `script_errors`, `iteration_count` |
-| Producer custom metrics | Piggyback on `HEARTBEAT_REQ` | Same as above | Arbitrary `{key: number}` dict |
-| Processor base counters | Piggyback on `HEARTBEAT_REQ` | Every heartbeat interval | `in_received`, `out_written`, `drops`, `script_errors`, `iteration_count` |
-| Processor custom metrics | Piggyback on `HEARTBEAT_REQ` | Same as above | Arbitrary `{key: number}` dict |
-| Consumer base counters | Dedicated `METRICS_REPORT_REQ` | Voluntary (timer or script-driven) | `in_received`, `script_errors`, `iteration_count` |
-| Consumer custom metrics | Same `METRICS_REPORT_REQ` | Same as above | Arbitrary `{key: number}` dict |
-| SHM `DataBlockMetrics` | Broker reads SHM directly | On `METRICS_REQ` query (lazy) | `write_lock_contention`, `writer_timeout_count`, `reader_race_detected`, etc. |
+**Heartbeat** (role → broker, periodic, all roles):
 
-**Why consumer is different:** Consumers don't send `HEARTBEAT_REQ` — the broker
-tracks their liveness via PID checks. So consumers use a separate
-`METRICS_REPORT_REQ` message (fire-and-forget, same as heartbeat).
+| Field | Description |
+|-------|-------------|
+| `channel_name` | Channel this role is registered on |
+| `uid` | Role's unique identity (e.g. "PROD-Sensor-AABBCCDD") |
+| `role_type` | "producer", "consumer", or "processor" |
+
+Lightweight liveness ping. No metrics payload. All roles use the same format.
+The broker updates `last_heartbeat` in its global role table.
+
+**Metrics collection** (broker → role → broker, on demand):
+
+| Step | Message | Direction | Content |
+|------|---------|-----------|---------|
+| 1 | `METRICS_REQ` | Admin → Broker | `{channel_name}` (optional — omit for all channels) |
+| 2 | `METRICS_COLLECT_REQ` | Broker → each active role | `{channel_name, uid}` |
+| 3 | `METRICS_COLLECT_ACK` | Role → Broker | `{channel_name, uid, metrics: {...}}` |
+| 4 | `METRICS_ACK` | Broker → Admin | Aggregated table (all roles' responses + SHM) |
+
+The broker fans out `METRICS_COLLECT_REQ` to each role that sent a heartbeat
+for the requested channel. Roles respond with `snapshot_metrics_json()`. The
+broker stores the response in its global table and returns the aggregated view.
+
+Roles that do not respond within a timeout are marked stale in the table
+(metrics retained with old timestamp, heartbeat continues to track liveness).
+
+**SHM metrics** (broker reads directly, on query):
+
+The broker reads `DataBlockMetrics` from SharedMemoryHeader for channels it
+can access. These are merged into the `METRICS_ACK` response under the `shm`
+key (unchanged from Phase 1).
+
+### 3.2 Global role table
+
+The broker maintains a table indexed by `(channel_name, uid)`:
+
+```json
+{
+  "sensor.data": {
+    "PROD-Sensor-AABBCCDD": {
+      "role_type": "producer",
+      "last_heartbeat": "2026-03-25T10:30:00.123Z",
+      "metrics": {
+        "base": {
+          "out_written": 50042,
+          "drops": 3,
+          "iteration_count": 50045,
+          "loop_overrun_count": 0,
+          "last_cycle_work_us": 150,
+          "script_errors": 0,
+          "data_drop_count": 0,
+          "last_iteration_us": 10012,
+          "max_iteration_us": 15200,
+          "last_slot_wait_us": 45,
+          "last_slot_exec_us": 9800,
+          "configured_period_us": 10000,
+          "context_elapsed_us": 500420000,
+          "ctrl_queue_dropped": 0
+        },
+        "custom": {
+          "events_above_threshold": 127
+        }
+      },
+      "metrics_timestamp": "2026-03-25T10:29:58.456Z"
+    },
+    "CONS-Display-11223344": {
+      "role_type": "consumer",
+      "last_heartbeat": "2026-03-25T10:30:01.789Z",
+      "metrics": { ... },
+      "metrics_timestamp": "2026-03-25T10:29:59.012Z"
+    }
+  }
+}
+```
+
+**Lifecycle:**
+- Entry created on first `HEARTBEAT_REQ` from a role
+- `last_heartbeat` updated on each heartbeat
+- `metrics` + `metrics_timestamp` updated on each `METRICS_COLLECT_ACK`
+- Entry removed on `DISC_ACK` (role deregistered) or heartbeat timeout
+
+### 3.3 Removed from Phase 2
+
+- **`METRICS_REPORT_REQ`**: voluntary push from consumer — replaced by broker-initiated pull
+- **Heartbeat metrics piggybacking**: `HEARTBEAT_REQ` no longer carries `metrics` field
+- **Different heartbeat formats**: all roles now use the same `{channel_name, uid, role_type}` format
 
 ---
 
 ## 4. Protocol Extensions
 
-### 4.1 Extended `HEARTBEAT_REQ` (backward-compatible)
+### 4.1 `HEARTBEAT_REQ` (Phase 2 — liveness only)
 
-Current:
-```json
-{ "channel_name": "ch", "producer_pid": 1234 }
-```
+All roles send the same format:
 
-Extended:
 ```json
 {
-  "channel_name": "ch",
-  "producer_pid": 1234,
+  "msg_type": "HEARTBEAT_REQ",
+  "channel_name": "sensor.data",
+  "uid": "PROD-Sensor-AABBCCDD",
+  "role_type": "producer"
+}
+```
+
+No metrics payload. The broker updates `last_heartbeat` in the global role table.
+`role_type` is one of `"producer"`, `"consumer"`, `"processor"`.
+
+### 4.2 `METRICS_COLLECT_REQ` / `METRICS_COLLECT_ACK` (broker ↔ role)
+
+Broker → role (triggered by `METRICS_REQ` from admin):
+```json
+{
+  "msg_type": "METRICS_COLLECT_REQ",
+  "channel_name": "sensor.data",
+  "uid": "PROD-Sensor-AABBCCDD"
+}
+```
+
+Role → broker (response):
+```json
+{
+  "msg_type": "METRICS_COLLECT_ACK",
+  "channel_name": "sensor.data",
+  "uid": "PROD-Sensor-AABBCCDD",
   "metrics": {
-    "out_written": 50042,
-    "drops": 3,
-    "script_errors": 0,
-    "iteration_count": 50045,
-    "custom": {
-      "events_above_threshold": 127,
-      "avg_processing_ms": 2.3
-    }
+    "base": { ... },
+    "custom": { ... }
   }
 }
 ```
 
-The `metrics` field is **optional**. Brokers that predate this HEP ignore it
-(unknown JSON fields are silently dropped). No version negotiation needed.
+The `metrics` object is the role's `snapshot_metrics_json()` output — same
+format as the Python `api.metrics()` dict. The broker stores it with a timestamp.
 
-### 4.2 New `METRICS_REPORT_REQ` (consumer → broker)
+Timeout: if a role does not respond within 2s (configurable), the broker returns
+the stale entry from the global table (if any) with the old timestamp.
 
-```json
-{
-  "msg_type": "METRICS_REPORT_REQ",
-  "channel_name": "ch",
-  "consumer_pid": 5678,
-  "consumer_uid": "CONS-LOGGER-A1B2C3D4",
-  "metrics": {
-    "in_received": 49980,
-    "script_errors": 0,
-    "iteration_count": 49981,
-    "custom": {
-      "bytes_logged": 2048576
-    }
-  }
-}
-```
-
-**Fire-and-forget** — no response. The broker updates its metrics store and
-discards the message. If the consumer UID is unknown, the report is dropped
-(same as an unknown heartbeat).
-
-### 4.3 New `METRICS_REQ` / `METRICS_ACK` (query → broker)
+### 4.3 `METRICS_REQ` / `METRICS_ACK` (admin → broker)
 
 Request:
 ```json
