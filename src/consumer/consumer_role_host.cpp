@@ -216,7 +216,7 @@ void ConsumerRoleHost::worker_main_()
     ctx.role_dir    = config_.base_dir().string();
     ctx.messenger   = &in_messenger_;
     ctx.queue_writer = nullptr;
-    ctx.queue_reader = queue_reader_;
+    ctx.queue_reader = in_consumer_.has_value() ? in_consumer_->queue_reader() : nullptr;
     ctx.producer    = nullptr;
     ctx.consumer    = in_consumer_.has_value() ? &(*in_consumer_) : nullptr;
     ctx.core         = &core_;
@@ -293,6 +293,10 @@ bool ConsumerRoleHost::setup_infrastructure_()
         opts.configured_period_us = std::chrono::microseconds{static_cast<int64_t>(tc.period_us)};
     }
 
+    // Queue abstraction Phase 2: sizes for internal queue creation.
+    opts.item_size     = schema_slot_size_;
+    opts.flexzone_size = core_.schema_fz_size();
+
     // Transport declaration.
     const bool is_zmq = (tr.transport == config::Transport::Zmq);
     opts.queue_type = is_zmq ? "zmq" : "shm";
@@ -300,6 +304,7 @@ bool ConsumerRoleHost::setup_infrastructure_()
     if (is_zmq)
     {
         opts.zmq_schema       = scripting::schema_spec_to_zmq_fields(slot_spec_, schema_slot_size_);
+        opts.zmq_packing      = tr.zmq_packing;
         opts.zmq_buffer_depth = tr.zmq_buffer_depth;
     }
 
@@ -477,37 +482,16 @@ bool ConsumerRoleHost::setup_infrastructure_()
         core_.request_stop();
     });
 
-    // --- Create transport QueueReader ---
-    if (!is_zmq)
+    // --- Start and configure data queue ---
+    if (!in_consumer_->start_queue())
     {
-        auto *in_shm = in_consumer_->shm();
-        if (in_shm == nullptr)
-        {
-            LOGGER_ERROR("[cons] transport='shm' but SHM unavailable for channel '{}'", ch);
-            return false;
-        }
-        shm_queue_    = hub::ShmQueue::from_consumer_ref(
-            *in_shm, schema_slot_size_, core_.schema_fz_size(), ch);
-        queue_reader_ = shm_queue_.get();
+        LOGGER_ERROR("[cons] start_queue() failed for channel '{}'", ch);
+        return false;
     }
-    else
-    {
-        queue_reader_ = in_consumer_->queue_reader();
-        if (queue_reader_ == nullptr)
-        {
-            LOGGER_ERROR("[cons] transport='zmq' but broker reported SHM transport for "
-                         "channel '{}'; check that the producer uses ZMQ transport", ch);
-            return false;
-        }
-    }
-
-    if (queue_reader_)
-    {
-        queue_reader_->set_verify_checksum(shm.verify_checksum, core_.has_fz());
-        queue_reader_->reset_metrics();
-        if (tc.period_us > 0.0)
-            queue_reader_->set_configured_period(static_cast<uint64_t>(tc.period_us));
-    }
+    in_consumer_->set_verify_checksum(shm.verify_checksum, core_.has_fz());
+    in_consumer_->reset_queue_metrics();
+    if (tc.period_us > 0.0)
+        in_consumer_->set_queue_period(static_cast<uint64_t>(tc.period_us));
 
     LOGGER_INFO("[cons] Consumer started on channel '{}' (shm={})", ch,
                 in_consumer_->has_shm());
@@ -535,13 +519,6 @@ void ConsumerRoleHost::teardown_infrastructure_()
         inbox_queue_.reset();
     }
 
-    queue_reader_ = nullptr;
-    if (shm_queue_)
-    {
-        shm_queue_->stop();
-        shm_queue_.reset();
-    }
-
     in_messenger_.on_hub_dead(nullptr);
 
     if (in_consumer_.has_value())
@@ -558,7 +535,7 @@ void ConsumerRoleHost::teardown_infrastructure_()
 
 void ConsumerRoleHost::run_data_loop_()
 {
-    if (!queue_reader_)
+    if (!in_consumer_.has_value())
     {
         LOGGER_ERROR("[cons] run_data_loop_: QueueReader not initialized — aborting");
         core_.set_running(false);
@@ -573,7 +550,7 @@ void ConsumerRoleHost::run_data_loop_()
     const auto short_timeout_us = compute_short_timeout(period_us, tc.queue_io_wait_timeout_ratio);
     const auto short_timeout =
         std::chrono::duration_cast<std::chrono::milliseconds>(short_timeout_us + std::chrono::microseconds{999});
-    const size_t item_sz = queue_reader_->item_size();
+    const size_t item_sz = in_consumer_->queue_item_size();
 
     const char *fz_type = core_.has_fz() ? "FlexFrame" : nullptr;
 
@@ -592,7 +569,7 @@ void ConsumerRoleHost::run_data_loop_()
         const void *data = nullptr;
         while (true)
         {
-            data = queue_reader_->read_acquire(short_timeout);
+            data = in_consumer_->read_acquire(short_timeout);
             if (data != nullptr)
                 break;
 
@@ -628,7 +605,7 @@ void ConsumerRoleHost::run_data_loop_()
             core_.is_critical_error())
         {
             if (data != nullptr)
-                queue_reader_->read_release();
+                in_consumer_->read_release();
             break;
         }
 
@@ -639,12 +616,12 @@ void ConsumerRoleHost::run_data_loop_()
         // --- Step D: Invoke callback ---
         if (data != nullptr)
         {
-            last_seq_.store(queue_reader_->last_seq(), std::memory_order_relaxed);
+            last_seq_.store(in_consumer_->last_seq(), std::memory_order_relaxed);
             core_.inc_in_received();
         }
 
-        const void *fz_ptr = core_.has_fz() ? queue_reader_->read_flexzone() : nullptr;
-        const size_t fz_sz = core_.has_fz() ? queue_reader_->flexzone_size() : 0;
+        const void *fz_ptr = core_.has_fz() ? in_consumer_->read_flexzone() : nullptr;
+        const size_t fz_sz = core_.has_fz() ? in_consumer_->flexzone_size() : 0;
 
         const uint64_t errors_before = engine_->script_error_count();
 
@@ -652,7 +629,7 @@ void ConsumerRoleHost::run_data_loop_()
 
         // --- Step E: Release slot ---
         if (data != nullptr)
-            queue_reader_->read_release();
+            in_consumer_->read_release();
 
         if (sc.stop_on_script_error &&
             engine_->script_error_count() > errors_before)
@@ -742,9 +719,9 @@ nlohmann::json ConsumerRoleHost::snapshot_metrics_json() const
         base["ctrl_queue_dropped"] = in_consumer_->ctrl_queue_dropped();
     }
 
-    if (queue_reader_)
+    if (in_consumer_.has_value())
     {
-        const auto m = queue_reader_->metrics();
+        const auto m = in_consumer_->queue_metrics();
         base["data_drop_count"]      = m.data_drop_count;
         base["last_iteration_us"]    = m.last_iteration_us;
         base["max_iteration_us"]     = m.max_iteration_us;

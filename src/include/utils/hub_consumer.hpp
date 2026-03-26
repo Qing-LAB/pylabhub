@@ -212,6 +212,12 @@ struct ConsumerOptions
     /// Internal receive-buffer depth for ZmqQueue PULL.
     size_t zmq_buffer_depth{kZmqDefaultBufferDepth};
 
+    // ── Queue abstraction (Phase 2) ──────────────────────────────────────────
+    /// Slot data size in bytes (from engine type_sizeof("SlotFrame")). Required for ShmQueue wrapper.
+    size_t item_size{0};
+    /// Flexzone size in bytes (page-aligned). 0 = no flexzone.
+    size_t flexzone_size{0};
+
     /// Max depth of ctrl send queue before oldest items are dropped. 0 = unbounded.
     size_t ctrl_queue_max_depth{256};
     /// Peer silence timeout before on_peer_dead fires (ms). 0 = disabled.
@@ -442,15 +448,47 @@ class PYLABHUB_UTILS_EXPORT Consumer
     /// Number of ctrl queue items dropped due to max_depth overflow.
     [[nodiscard]] uint64_t ctrl_queue_dropped() const;
 
-    /**
-     * @brief Transport-agnostic read side: returns the ZmqQueue cast to QueueReader*,
-     * or nullptr when data_transport()=="shm" (SHM consumers use the DataBlock API).
-     * Convenience wrapper for ProcessorScriptHost / ConsumerScriptHost.
-     */
-    [[nodiscard]] QueueReader *queue_reader() noexcept { return queue(); }
+    // ── Queue data operations (delegated to internal QueueReader) ──────────
+
+    /// Acquire the next readable slot. Returns nullptr on timeout or no queue.
+    [[nodiscard]] const void *read_acquire(std::chrono::milliseconds timeout) noexcept;
+    /// Release the slot acquired by read_acquire().
+    void read_release() noexcept;
+    /// Monotonic sequence number of the last acquired slot.
+    [[nodiscard]] uint64_t last_seq() const noexcept;
+    /// Size of one data slot in bytes.
+    [[nodiscard]] size_t queue_item_size() const noexcept;
+    /// Ring/recv buffer capacity (slot count).
+    [[nodiscard]] size_t queue_capacity() const noexcept;
+    /// Diagnostic counter snapshot. Thread-safe.
+    [[nodiscard]] QueueMetrics queue_metrics() const noexcept;
+    /// Reset all queue metric counters.
+    void reset_queue_metrics() noexcept;
+
+    // ── Queue lifecycle ─────────────────────────────────────────────────────
+
+    /// Start the internal data queue. Idempotent.
+    bool start_queue();
+    /// Stop the internal data queue. Idempotent.
+    void stop_queue();
+
+    // ── Channel data operations (flexzone, checksum — SHM-specific) ─────────
+
+    /// Read-only pointer to the shared flexzone. nullptr if no flexzone or ZMQ transport.
+    [[nodiscard]] const void *read_flexzone() const noexcept;
+    /// Flexzone size in bytes. 0 if not configured or ZMQ transport.
+    [[nodiscard]] size_t flexzone_size() const noexcept;
+    /// Configure BLAKE2b verification on read_acquire(). No-op for ZMQ.
+    void set_verify_checksum(bool slot, bool fz) noexcept;
+    /// Set the target loop period for metrics reporting. 0 = MaxRate.
+    void set_queue_period(uint64_t period_us) noexcept;
 
     /// Returns the Messenger used by this Consumer.
     [[nodiscard]] Messenger &messenger() const;
+
+    /// Internal: returns the raw QueueReader pointer (for engine RoleContext handoff).
+    /// Prefer the named forwarding methods above for role host use.
+    [[nodiscard]] QueueReader *queue_reader() noexcept;
 
     /**
      * @brief Deregisters from broker, closes sockets and SHM. Called by destructor.

@@ -30,8 +30,6 @@ namespace pylabhub::hub
 {
 class Consumer;
 class Producer;
-class QueueReader;
-class QueueWriter;
 class InboxQueue;
 } // namespace pylabhub::hub
 
@@ -106,12 +104,6 @@ class ProcessorRoleHost
     std::optional<hub::Consumer>             in_consumer_;
     std::optional<hub::Producer>             out_producer_;
 
-    // Owned queue storage (non-null only for SHM or direct-ZMQ transport).
-    std::unique_ptr<hub::QueueReader>        in_queue_;
-    std::unique_ptr<hub::QueueWriter>        out_queue_;
-    // Raw pointers: point to either owned queue or broker-ZMQ queue from Consumer/Producer.
-    hub::QueueReader                        *in_q_{nullptr};
-    hub::QueueWriter                        *out_q_{nullptr};
 
     std::unique_ptr<hub::InboxQueue>         inbox_queue_;
     std::thread                              ctrl_thread_;

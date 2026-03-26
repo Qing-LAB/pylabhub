@@ -1019,7 +1019,201 @@ See HEP-CORE-0015 §8.2 for the processor's three-thread model (`loop_thread_`,
 
 ---
 
+## 15. Channel Establishment and Communication Planes
+
+This section is the canonical reference for how each role establishes its data and
+control connections. All roles follow the same layered pattern — the only variable is
+whether a role is the **channel creator** (Producer) or **channel joiner** (Consumer).
+The Processor is both: a joiner on its input channel and a creator on its output channel.
+
+### 15.1 Communication Planes
+
+Each role operates on three independent communication planes:
+
+| Plane | Purpose | Transport | Ownership |
+|-------|---------|-----------|-----------|
+| **Data plane** | Streaming slot data (main loop) | SHM ring buffer or ZMQ PUSH/PULL | `hub::Producer` (write) / `hub::Consumer` (read) |
+| **Control plane** | Broker protocol: registration, heartbeat, channel events, shutdown | ZMQ DEALER/ROUTER (via `Messenger`) | `hub::Producer` / `hub::Consumer` ctrl socket, driven by `ctrl_thread_` |
+| **Inbox plane** | Targeted point-to-point messaging between roles | ZMQ ROUTER/DEALER (`InboxQueue` / `InboxClient`) | Role host owns `InboxQueue`; clients connect via `api.open_inbox()` |
+
+These three planes are fully independent. The data plane carries slot data for the main
+processing loop. The control plane carries broker protocol messages (heartbeats, channel
+lifecycle events, shutdown). The inbox plane carries application-level messages between
+roles (commands, queries, coordination).
+
+### 15.2 API Layering
+
+The role host interacts with each plane through a specific API layer:
+
+```
+Role Host (ProducerRoleHost / ConsumerRoleHost / ProcessorRoleHost)
+    │
+    ├── Data plane:    queue_writer() / queue_reader()     ← QueueWriter / QueueReader abstract API
+    ├── Control plane: hub::Producer / hub::Consumer        ← callbacks + ctrl_thread_
+    └── Inbox plane:   InboxQueue (ROUTER bind)             ← role host owns directly
+```
+
+**Critical invariant**: The role host accesses the data plane **only** through the
+`QueueWriter` / `QueueReader` abstract interface. It never creates queue objects directly,
+never inspects the transport type, and never calls transport-specific methods. The
+`hub::Producer` / `hub::Consumer` module owns the queue and returns it via
+`queue_writer()` / `queue_reader()`.
+
+### 15.3 SHM Transport — Channel Establishment Sequence
+
+**Producer role (channel creator):**
+
+1. Role host builds `ProducerOptions` with `item_size`, `flexzone_size`, SHM config
+2. `hub::Producer::create()` → `CREATE_CHANNEL_REQ` to broker (data_transport="shm")
+3. Broker creates channel entry, replies `CREATE_CHANNEL_ACK`
+4. `create_from_parts()`: allocates `DataBlockProducer` (shared memory segment),
+   creates `ShmQueue` wrapper → sets internal `queue_writer_`
+5. Role host: `out_producer_->start_queue()`
+6. Role host: `out_producer_->set_checksum_options()` → `reset_queue_metrics()` → `set_queue_period()`
+
+**Consumer role (channel joiner):**
+
+1. Role host builds `ConsumerOptions` with `item_size`, `flexzone_size`, SHM secret
+2. `hub::Consumer::connect()` → `CONSUMER_REG_REQ` to broker
+3. Broker replies `DISC_ACK` with SHM name, `data_transport="shm"`
+4. `connect_from_parts()`: attaches `DataBlockConsumer` to Producer's shared memory
+   (using SHM name + secret), creates `ShmQueue` wrapper → sets internal `queue_reader_`
+5. Role host: `in_consumer_->start_queue()`
+6. Role host: `in_consumer_->set_verify_checksum()` → `reset_queue_metrics()` → `set_queue_period()`
+
+**Processor role (joiner on input, creator on output):**
+
+- Input: identical to Consumer sequence above (steps 1–6)
+- Output: identical to Producer sequence above (steps 1–6)
+
+**Underlying resource**: One `DataBlock` shared memory segment, created by the Producer.
+The Consumer attaches to it. Both sides wrap their handle in a `ShmQueue` for the abstract
+`QueueReader` / `QueueWriter` interface. `ShmQueue::start()` is a no-op (SHM is always
+operational once attached).
+
+### 15.4 ZMQ Transport — Channel Establishment Sequence
+
+**Producer role (channel creator):**
+
+1. Role host builds `ProducerOptions` with `data_transport="zmq"`, `zmq_node_endpoint`,
+   `zmq_schema`, `zmq_packing`, `item_size`, `flexzone_size`
+2. `hub::Producer::create()` → `CREATE_CHANNEL_REQ` to broker (data_transport="zmq",
+   zmq_node_endpoint advertised)
+3. Broker creates channel entry, stores ZMQ endpoint, replies `CREATE_CHANNEL_ACK`
+4. `create_from_parts()`: creates `ZmqQueue` PUSH socket, binds to endpoint,
+   calls `start()` → sets internal `queue_writer_`
+5. Role host: `out_producer_->start_queue()` (idempotent)
+6. Role host: `out_producer_->set_checksum_options()` → `reset_queue_metrics()` → `set_queue_period()`
+
+**Consumer role (channel joiner):**
+
+1. Role host builds `ConsumerOptions` with `queue_type="zmq"`, `zmq_schema`, `zmq_packing`,
+   `item_size`, `flexzone_size`
+2. `hub::Consumer::connect()` → `CONSUMER_REG_REQ` to broker
+3. Broker replies `DISC_ACK` with `data_transport="zmq"`, `zmq_node_endpoint`
+   (the Producer's bind address, discovered automatically)
+4. `connect_from_parts()`: creates `ZmqQueue` PULL socket, connects to endpoint from
+   DISC_ACK, calls `start()` → sets internal `queue_reader_`
+5. Role host: `in_consumer_->start_queue()` (idempotent)
+6. Role host: `in_consumer_->set_verify_checksum()` → `reset_queue_metrics()` → `set_queue_period()`
+
+**Processor role (joiner on input, creator on output):**
+
+- Input: identical to Consumer sequence above (steps 1–6)
+- Output: identical to Producer sequence above (steps 1–6)
+
+**Underlying resource**: A ZMQ PUSH/PULL socket pair. Producer binds PUSH, Consumer
+connects PULL. The endpoint is discovered through the broker — neither side hardcodes the
+other's address. `ZmqQueue::start()` initiates the background send/recv thread.
+
+### 15.5 Control Plane
+
+All roles use the same control plane architecture:
+
+1. `hub::Producer` / `hub::Consumer` owns a DEALER ctrl socket (part of `ChannelHandle`)
+2. The role host runs a `ctrl_thread_` that polls this socket via `zmq_pollitem_t`
+3. Control messages include: heartbeats (periodic, to broker), `CHANNEL_CLOSING_NOTIFY`,
+   `FORCE_SHUTDOWN`, `CHANNEL_ERROR_NOTIFY`, peer ctrl messages (producer↔consumer)
+4. The `ctrl_thread_` dispatches incoming messages to the role host's `IncomingMessage` queue
+5. The data loop drains this queue between iterations (via `drain_inbox_sync_()`)
+
+The control plane is transport-independent — it operates identically regardless of whether
+the data plane uses SHM or ZMQ.
+
+### 15.6 Inbox Plane
+
+The inbox is an optional point-to-point messaging channel available to all roles:
+
+1. Role host creates `InboxQueue` (ROUTER socket, binds to configured or ephemeral endpoint)
+2. Endpoint is advertised to broker via `opts.inbox_endpoint` during channel registration
+3. Other roles discover the endpoint via `ROLE_INFO_REQ` to the broker
+4. Callers connect via `InboxClient` (DEALER socket) using `api.open_inbox(target_uid)`
+5. `inbox_thread_` on the role host receives and dispatches inbox messages to the script's
+   `on_inbox(slot, sender, api)` callback
+
+The inbox uses the same ZMQ wire format as `ZmqQueue` (msgpack fixarray with schema tag),
+but is logically independent from the data plane. Each role has at most one inbox.
+
+### 15.7 Unified Pattern
+
+Abstracting away transport, every channel follows the same protocol:
+
+```
+Creator (Producer):
+  1. Build Options with item_size, flexzone_size, transport config
+  2. hub::Producer::create(messenger, opts)    → broker registration + internal queue creation
+  3. producer->start_queue()                   → lifecycle
+  4. producer->set_checksum_options(...)       → configure
+  5. Main loop: producer->write_acquire() → fill → producer->write_commit()
+
+Joiner (Consumer):
+  1. Build Options with item_size, flexzone_size, transport preference
+  2. hub::Consumer::connect(messenger, opts)   → broker discovery + internal queue creation
+  3. consumer->start_queue()                   → lifecycle
+  4. consumer->set_verify_checksum(...)        → configure
+  5. Main loop: consumer->read_acquire() → process → consumer->read_release()
+```
+
+The role host never:
+- Creates `ShmQueue` or `ZmqQueue` directly
+- Holds a raw pointer to the internal queue
+- Inspects `data_transport()` to decide queue behavior
+- Passes different code paths based on transport type
+- Hardcodes endpoints that the broker should provide
+
+The transport is a configuration concern resolved at the `hub::Producer` / `hub::Consumer`
+level during channel establishment. The role host accesses all data-plane operations
+through forwarding methods on `hub::Producer` / `hub::Consumer`, which delegate to the
+internal queue. The queue object is fully encapsulated — never exposed to the role host.
+
+### 15.8 API Categories on hub::Producer / hub::Consumer
+
+Each class provides three categories of operations:
+
+**Queue operations** (forwarded to internal QueueWriter/QueueReader):
+- `write_acquire()`, `write_commit()`, `write_discard()` (Producer)
+- `read_acquire()`, `read_release()`, `last_seq()` (Consumer)
+- `queue_item_size()`, `queue_capacity()`, `queue_metrics()`, `reset_queue_metrics()`
+- `start_queue()`, `stop_queue()`
+
+**Channel operations** (flexzone, checksum — SHM-specific, no-op for ZMQ):
+- `write_flexzone()`, `read_flexzone()`, `flexzone_size()`
+- `set_checksum_options()`, `set_verify_checksum()`, `sync_flexzone_checksum()`
+- `set_queue_period()`
+
+**Service operations** (broker protocol, peer management, ctrl messaging):
+- `create()` / `connect()`, `close()`, `start()`, `stop()`
+- Callbacks: `on_channel_closing()`, `on_force_shutdown()`, `on_peer_dead()`, etc.
+- Ctrl messaging: `send_ctrl()`, `send_to()`, `connected_consumers()`
+- Introspection: `channel_name()`, `has_shm()`, `data_transport()`, `messenger()`
+
+This separation keeps queue internals fully encapsulated while providing the role host
+with a clean, transport-agnostic API for all data-plane operations.
+
+---
+
 ## Document Status
 
-**Fully implemented — 1044/1045 tests (2026-03-11).** All phases complete. See §0 for
-the complete implementation timeline. §13 updated 2026-03-11 to document `role_main_helpers.hpp`.
+**Fully implemented — 1191/1191 tests (2026-03-26).** All phases complete. See §0 for
+the complete implementation timeline. §15 added 2026-03-26 to document channel
+establishment protocol, communication planes, and queue abstraction invariant.
