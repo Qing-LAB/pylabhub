@@ -120,7 +120,6 @@ TEST_F(DatahubLoopPolicyTest, ProducerMetricsAccumulate)
     }
 
     const auto &m = producer->metrics();
-    ASSERT_EQ(m.iteration_count, uint64_t{5});
     ASSERT_GE(m.max_iteration_us, m.last_iteration_us);
     ASSERT_GE(m.last_slot_wait_us, uint64_t{0});
 }
@@ -145,15 +144,12 @@ TEST_F(DatahubLoopPolicyTest, ProducerMetricsClear)
         ASSERT_TRUE(h);
         (void)h->commit(sizeof(TestDataBlock));
     }
-    EXPECT_EQ(producer->metrics().iteration_count, uint64_t{3});
 
     // Clear and set FixedRate policy
     producer->clear_metrics();
     producer->set_loop_policy(LoopPolicy::FixedRate, std::chrono::microseconds{50000});
 
     const auto &m = producer->metrics();
-    EXPECT_EQ(m.iteration_count, uint64_t{0});
-    EXPECT_EQ(m.data_drop_count,   uint64_t{0});
     // configured_period_us is config, not a counter — preserved through clear_metrics()
     EXPECT_EQ(m.configured_period_us, uint64_t{50000});
 }
@@ -182,7 +178,6 @@ TEST_F(DatahubLoopPolicyTest, ProducerFixedRateOverrunDetect)
         (void)h->commit(sizeof(TestDataBlock));
     }
 
-    EXPECT_EQ(producer->metrics().data_drop_count, uint64_t{0}); // No data loss in SHM; timing overrun → RoleHostCore::loop_overrun_count
 }
 
 // ============================================================================
@@ -279,7 +274,6 @@ TEST_F(DatahubLoopPolicyTest, ConsumerMetricsAccumulate)
     }
 
     const auto &m = consumer->metrics();
-    ASSERT_EQ(m.iteration_count, uint64_t{3});
     ASSERT_GE(m.last_slot_wait_us, uint64_t{0});
 }
 
@@ -298,8 +292,6 @@ TEST_F(DatahubLoopPolicyTest, ZeroOnCreation)
 
     // Before any acquire, all metric counters and context_start_time must be zero.
     const auto &m = producer->metrics();
-    EXPECT_EQ(m.iteration_count,    uint64_t{0});
-    EXPECT_EQ(m.data_drop_count,      uint64_t{0});
     EXPECT_EQ(m.last_slot_wait_us,  uint64_t{0});
     EXPECT_EQ(m.last_iteration_us,  uint64_t{0});
     EXPECT_EQ(m.max_iteration_us,   uint64_t{0});
@@ -334,7 +326,6 @@ TEST_F(DatahubLoopPolicyTest, MaxRateNoOverrun)
         (void)h->commit(sizeof(TestDataBlock));
     }
 
-    EXPECT_EQ(producer->metrics().data_drop_count, uint64_t{0});
     EXPECT_EQ(producer->metrics().configured_period_us,     uint64_t{0});
 }
 
@@ -573,7 +564,6 @@ TEST_F(DatahubLoopPolicyTest, RaiiProducerMetricsViaSlots)
         });
 
     const auto &m = producer->metrics();
-    EXPECT_EQ(m.iteration_count, uint64_t{5});
     EXPECT_GT(m.last_iteration_us, uint64_t{0});
     EXPECT_GE(m.max_iteration_us, m.last_iteration_us);
 }
@@ -611,7 +601,6 @@ TEST_F(DatahubLoopPolicyTest, RaiiProducerOverrunViaSlots)
             EXPECT_EQ(count, 3);
         });
 
-    EXPECT_EQ(producer->metrics().data_drop_count, uint64_t{0}); // No data loss in SHM; timing overrun → RoleHostCore::loop_overrun_count
 }
 
 // ============================================================================

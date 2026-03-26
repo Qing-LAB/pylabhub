@@ -39,8 +39,9 @@ namespace pylabhub::hub
  *   TransactionContext::metrics() — pass-through reference to the same storage.
  *
  * Metric domains (HEP-CORE-0008 §3):
- *   Domain 2: Acquire/release timing (wait time, start-to-start interval).
- *   Domain 3: Loop scheduling (overrun count relative to configured_period_us).
+ *   Domain 2: Acquire/release timing (wait time, iteration interval, exec time).
+ *   Timing overrun detection is the main loop's responsibility (RoleHostCore::loop_overrun_count).
+ *   Data drop counting is the queue abstraction's responsibility (QueueMetrics::data_drop_count).
  */
 struct PYLABHUB_UTILS_EXPORT ContextMetrics
 {
@@ -49,17 +50,12 @@ struct PYLABHUB_UTILS_EXPORT ContextMetrics
     // ── Session boundaries ────────────────────────────────────────────────────
     Clock::time_point context_start_time{};  ///< Set on first acquire; zero until then.
     uint64_t          context_elapsed_us{0}; ///< Elapsed since context_start_time (µs); updated per acquire.
-    Clock::time_point context_end_time{};    ///< Zero while running; set on handle destruction.
 
     // ── Domain 2: Acquire/release timing ─────────────────────────────────────
     uint64_t last_slot_wait_us{0};  ///< Time spent blocking inside acquire_*_slot() (µs).
     uint64_t last_iteration_us{0};  ///< Start-to-start elapsed between the last two acquires (µs).
     uint64_t max_iteration_us{0};   ///< Peak start-to-start elapsed since session start (µs).
-    uint64_t iteration_count{0};    ///< Successful slot acquisitions since session start.
-
-    // ── Domain 3: Data flow ─────────────────────────────────────────────────
-    uint64_t data_drop_count{0};   ///< Producer: slots overwritten before consumer read (Latest_only). Consumer: always 0.
-    uint64_t last_slot_exec_us{0}; ///< Time from acquire to release (user code + overhead) (µs).
+    uint64_t last_slot_exec_us{0};  ///< Time from acquire to release (user code + overhead) (µs).
 
     // ── Config reference (informational) ──────────────────────────────────────
     uint64_t configured_period_us{0}; ///< Target period from config (µs). 0 = MaxRate. Informational only.
