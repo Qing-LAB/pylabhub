@@ -72,7 +72,7 @@ int shm_queue_from_consumer()
                                               g.channel_name());
             ASSERT_NE(q, nullptr);
             EXPECT_EQ(q->item_size(), sizeof(double));
-            EXPECT_EQ(q->flexzone_size(), 0u);
+            EXPECT_EQ(static_cast<ShmQueue*>(q.get())->flexzone_size(), 0u);
             EXPECT_FALSE(q->name().empty());
         },
         "hub_queue.shm_queue_from_consumer",
@@ -99,7 +99,7 @@ int shm_queue_from_producer()
                                               g.channel_name());
             ASSERT_NE(q, nullptr);
             EXPECT_EQ(q->item_size(), sizeof(double));
-            EXPECT_EQ(q->flexzone_size(), 0u);
+            EXPECT_EQ(static_cast<ShmQueue*>(q.get())->flexzone_size(), 0u);
             EXPECT_FALSE(q->name().empty());
         },
         "hub_queue.shm_queue_from_producer",
@@ -232,10 +232,10 @@ int shm_queue_read_flexzone()
 
             auto q = ShmQueue::from_consumer(std::move(dbc), sizeof(double), kFzSize);
             ASSERT_NE(q, nullptr);
-            EXPECT_EQ(q->flexzone_size(), kFzSize);
+            EXPECT_EQ(static_cast<ShmQueue*>(q.get())->flexzone_size(), kFzSize);
 
             // flexzone exists → read_flexzone() must return non-null.
-            const void* fz = q->read_flexzone();
+            const void* fz = static_cast<ShmQueue*>(q.get())->read_flexzone();
             EXPECT_NE(fz, nullptr);
         },
         "hub_queue.shm_queue_read_flexzone",
@@ -261,9 +261,9 @@ int shm_queue_write_flexzone()
 
             auto q = ShmQueue::from_producer(std::move(dbp), sizeof(double), kFzSize);
             ASSERT_NE(q, nullptr);
-            EXPECT_EQ(q->flexzone_size(), kFzSize);
+            EXPECT_EQ(static_cast<ShmQueue*>(q.get())->flexzone_size(), kFzSize);
 
-            void* fz = q->write_flexzone();
+            void* fz = static_cast<ShmQueue*>(q.get())->write_flexzone();
             EXPECT_NE(fz, nullptr);
         },
         "hub_queue.shm_queue_write_flexzone",
@@ -295,10 +295,10 @@ int shm_queue_no_flexzone()
             ASSERT_NE(q_write, nullptr);
             ASSERT_NE(q_read, nullptr);
 
-            EXPECT_EQ(q_write->flexzone_size(), 0u);
-            EXPECT_EQ(q_read->flexzone_size(), 0u);
-            EXPECT_EQ(q_write->write_flexzone(), nullptr);
-            EXPECT_EQ(q_read->read_flexzone(), nullptr);
+            EXPECT_EQ(static_cast<ShmQueue*>(q_write.get())->flexzone_size(), 0u);
+            EXPECT_EQ(static_cast<ShmQueue*>(q_read.get())->flexzone_size(), 0u);
+            EXPECT_EQ(static_cast<ShmQueue*>(q_write.get())->write_flexzone(), nullptr);
+            EXPECT_EQ(static_cast<ShmQueue*>(q_read.get())->read_flexzone(), nullptr);
         },
         "hub_queue.shm_queue_no_flexzone",
         logger_module(), crypto_module(), hub_module());
@@ -438,7 +438,7 @@ int shm_queue_flexzone_round_trip()
             ASSERT_NE(q_read, nullptr);
 
             // Write known pattern into the flexzone.
-            void* wfz = q_write->write_flexzone();
+            void* wfz = static_cast<ShmQueue*>(q_write.get())->write_flexzone();
             ASSERT_NE(wfz, nullptr);
             static const char kPattern[] = "fz_test_payload";
             std::memcpy(wfz, kPattern, sizeof(kPattern));
@@ -455,7 +455,7 @@ int shm_queue_flexzone_round_trip()
             EXPECT_EQ(*static_cast<const int*>(in), 7);
             q_read->read_release();
 
-            const void* rfz = q_read->read_flexzone();
+            const void* rfz = static_cast<ShmQueue*>(q_read.get())->read_flexzone();
             ASSERT_NE(rfz, nullptr);
             EXPECT_EQ(std::memcmp(rfz, kPattern, sizeof(kPattern)), 0);
         },
@@ -763,13 +763,13 @@ int shm_queue_verify_checksum_mismatch()
 
             // 2. Enable checksum VERIFICATION on the reader side.
             //    slot_valid==0 → verify_checksum_slot() returns false → read_acquire returns nullptr.
-            q_read->set_verify_checksum(true, false);
+            static_cast<ShmQueue*>(q_read.get())->set_verify_checksum(true, false);
             const void* in_bad = q_read->read_acquire(std::chrono::milliseconds{200});
             EXPECT_EQ(in_bad, nullptr) << "Expected nullptr when slot_valid=0 (no checksum stored)";
 
             // 3. Write WITH set_checksum_options: ShmQueue calls update_checksum_slot()
             //    before commit → slot_valid becomes 1 → verify succeeds → read returns data.
-            q_write->set_checksum_options(true, false);
+            static_cast<ShmQueue*>(q_write.get())->set_checksum_options(true, false);
 
             void* out2 = q_write->write_acquire(std::chrono::milliseconds{200});
             ASSERT_NE(out2, nullptr);

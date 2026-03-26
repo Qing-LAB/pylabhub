@@ -314,6 +314,10 @@ bool ProcessorRoleHost::setup_infrastructure_()
                                        in_slot_spec_, in_schema_slot_size_);
     in_opts.zmq_packing          = config_.in_transport().zmq_packing;
     in_opts.zmq_buffer_depth     = config_.in_transport().zmq_buffer_depth;
+    in_opts.verify_checksum      = config_.in_shm().verify_checksum;
+    in_opts.verify_checksum_fz   = core_.has_fz() && config_.in_shm().verify_checksum;
+    in_opts.queue_period_us      = (config_.timing().period_us > 0.0)
+                                       ? static_cast<uint64_t>(config_.timing().period_us) : 0;
     in_opts.ctrl_queue_max_depth = config_.monitoring().ctrl_queue_max_depth;
     in_opts.peer_dead_timeout_ms = config_.monitoring().peer_dead_timeout_ms;
 
@@ -404,8 +408,12 @@ bool ProcessorRoleHost::setup_infrastructure_()
     out_opts.schema_hash   = scripting::compute_schema_hash(out_slot_spec_, core_.fz_spec());
     out_opts.role_name     = config_.identity().name;
     out_opts.role_uid      = config_.identity().uid;
-    out_opts.item_size     = out_schema_slot_size_;
-    out_opts.flexzone_size = core_.schema_fz_size();
+    out_opts.item_size          = out_schema_slot_size_;
+    out_opts.flexzone_size      = core_.schema_fz_size();
+    out_opts.update_checksum    = config_.out_shm().update_checksum;
+    out_opts.update_checksum_fz = core_.has_fz() && config_.out_shm().update_checksum;
+    out_opts.queue_period_us    = (config_.timing().period_us > 0.0)
+                                      ? static_cast<uint64_t>(config_.timing().period_us) : 0;
 
     if (config_.timing().period_us > 0.0)
     {
@@ -682,26 +690,15 @@ bool ProcessorRoleHost::setup_infrastructure_()
                      config_.in_channel());
         return false;
     }
-    if (config_.in_shm().verify_checksum)
-        in_consumer_->set_verify_checksum(true, core_.has_fz());
-
     if (!out_producer_->start_queue())
     {
         LOGGER_ERROR("[proc] Output start_queue() failed (out_channel='{}')",
                      config_.out_channel());
         return false;
     }
-    out_producer_->set_checksum_options(config_.out_shm().update_checksum, core_.has_fz());
-
-    // Reset metrics and configure period on both queues.
+    // Reset metrics (checksum and period already configured via Options).
     in_consumer_->reset_queue_metrics();
     out_producer_->reset_queue_metrics();
-    if (config_.timing().period_us > 0.0)
-    {
-        auto period = static_cast<uint64_t>(config_.timing().period_us);
-        in_consumer_->set_queue_period(period);
-        out_producer_->set_queue_period(period);
-    }
 
     LOGGER_INFO("[proc] Processor started: '{}' -> '{}'",
                 config_.in_channel(), config_.out_channel());

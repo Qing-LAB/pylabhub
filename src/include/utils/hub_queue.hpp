@@ -153,14 +153,6 @@ public:
      */
     virtual void read_release() noexcept = 0;
 
-    /**
-     * @brief Read-only pointer to the shared flexzone.
-     *
-     * Returns nullptr if no flexzone is configured or if ZMQ-backed.
-     * Valid for the entire lifetime of the QueueReader (not acquire-scoped).
-     */
-    virtual const void* read_flexzone() const noexcept { return nullptr; }
-
     // ── Slot sequence number ──────────────────────────────────────────────────
 
     /**
@@ -176,18 +168,6 @@ public:
      * Both return 0 until the first successful decode/read_acquire().
      */
     virtual uint64_t last_seq() const noexcept { return 0; }
-
-    // ── Checksum verification ─────────────────────────────────────────────────
-
-    /**
-     * @brief Configure BLAKE2b verification on read_acquire().
-     *
-     * ShmQueue: verifies slot and/or flexzone checksum after acquiring; returns nullptr
-     * on mismatch (logs LOGGER_ERROR with channel name and slot_id).
-     * ZmqQueue: no-op (TCP ensures transport integrity; different threat model).
-     * Call once at initialization before the first read_acquire().
-     */
-    virtual void set_verify_checksum(bool /*slot*/, bool /*fz*/) const noexcept {}
 
     // ── Ring buffer status ────────────────────────────────────────────────────
 
@@ -211,8 +191,6 @@ public:
 
     /** @brief Size of one data item in bytes (set at construction). */
     virtual size_t      item_size()     const noexcept = 0;
-    /** @brief Size of the flexzone in bytes; 0 if not configured. */
-    virtual size_t      flexzone_size() const noexcept { return 0; }
     /** @brief Human-readable channel or endpoint name (for diagnostics). */
     virtual std::string name()          const = 0;
     /** @brief Diagnostic counter snapshot (timing + transport counters). Thread-safe. */
@@ -220,12 +198,6 @@ public:
 
     /** @brief Reset all metric counters. Called at role startup before the data loop. */
     virtual void reset_metrics() {}
-
-    /**
-     * @brief Set the target loop period for metrics reporting.
-     * Called once at startup after queue creation. 0 = MaxRate.
-     */
-    virtual void set_configured_period(uint64_t /*period_us*/) {}
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     // Default implementations are no-ops (suitable for ShmQueue).
@@ -298,37 +270,6 @@ public:
      */
     virtual void  write_discard() noexcept = 0;
 
-    /**
-     * @brief Writable pointer to the shared flexzone.
-     *
-     * Returns nullptr if no flexzone is configured or ZMQ-backed.
-     * Valid for the entire lifetime of the QueueWriter (not acquire-scoped).
-     */
-    virtual void* write_flexzone() noexcept { return nullptr; }
-
-    // ── Checksum ──────────────────────────────────────────────────────────────
-
-    /**
-     * @brief Configure BLAKE2b checksum update on write_commit().
-     *
-     * ShmQueue: updates slot and/or flexzone checksum automatically on each commit.
-     * ZmqQueue: no-op (TCP provides transport integrity).
-     * Call once at initialization before the first write_acquire().
-     */
-    virtual void set_checksum_options(bool /*slot*/, bool /*fz*/) noexcept {}
-
-    /**
-     * @brief Initialize the flexzone checksum after on_start() populates its contents.
-     *
-     * ShmQueue: calls DataBlockProducer::update_checksum_flexible_zone() directly on the
-     *           shared memory segment (outside the normal write_acquire/write_commit cycle).
-     *           Ensures readers can verify the initial flexzone state before the first
-     *           write_commit() re-stamps it.
-     * ZmqQueue: no-op (TCP integrity; no flexzone concept).
-     * Call once after on_init() has written the initial flexzone content.
-     */
-    virtual void sync_flexzone_checksum() noexcept {}
-
     // ── Ring buffer status ────────────────────────────────────────────────────
 
     /**
@@ -351,8 +292,6 @@ public:
 
     /** @brief Size of one data item in bytes (set at construction). */
     virtual size_t      item_size()     const noexcept = 0;
-    /** @brief Size of the flexzone in bytes; 0 if not configured. */
-    virtual size_t      flexzone_size() const noexcept { return 0; }
     /** @brief Human-readable channel or endpoint name (for diagnostics). */
     virtual std::string name()          const = 0;
     /** @brief Diagnostic counter snapshot (timing + transport counters). Thread-safe. */
@@ -360,12 +299,6 @@ public:
 
     /** @brief Reset all metric counters. Called at role startup before the data loop. */
     virtual void reset_metrics() {}
-
-    /**
-     * @brief Set the target loop period for metrics reporting.
-     * Called once at startup after queue creation. 0 = MaxRate.
-     */
-    virtual void set_configured_period(uint64_t /*period_us*/) {}
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     // Default implementations are no-ops (suitable for ShmQueue).

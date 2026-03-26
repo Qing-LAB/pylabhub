@@ -126,10 +126,6 @@ add_executable(test_layer3_datahub
     test_datahub_hub_queue.cpp
     workers/datahub_hub_queue_workers.cpp
 
-    # ── Hub Processor unit tests ───────────────────────────────────────────────
-    test_datahub_hub_processor.cpp
-    workers/datahub_hub_processor_workers.cpp
-
     # ── Hub ZmqQueue unit tests ──────────────────────────────────────────────
     test_datahub_hub_zmq_queue.cpp
 

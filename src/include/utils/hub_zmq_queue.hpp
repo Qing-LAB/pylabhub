@@ -192,9 +192,6 @@ public:
     const void* read_acquire(std::chrono::milliseconds timeout) noexcept override;
     /** No-op — item is already consumed from the internal buffer. */
     void        read_release() noexcept override;
-    /** Always nullptr for ZmqQueue (no flexzone in ZMQ transport). */
-    // read_flexzone() — inherited nullptr default from QueueReader.
-
     /**
      * @brief Returns the wire frame seq of the most recently decoded frame.
      *
@@ -203,14 +200,6 @@ public:
      * (most recently decoded), not the read_acquire() perspective.
      */
     uint64_t last_seq() const noexcept override;
-
-    /**
-     * @brief No-op for ZmqQueue (TCP provides transport integrity).
-     *
-     * ZMQ has its own frame-level validation (magic, schema_tag, field types).
-     * BLAKE2b slot verification is not applicable to ZMQ transport.
-     */
-    void set_verify_checksum(bool, bool) const noexcept override {}
 
     /** ZMQ recv buffer depth (max_buffer_depth configured at construction). */
     size_t      capacity()    const override;
@@ -231,14 +220,6 @@ public:
     void  write_commit() noexcept override;
     /** Discards the write buffer without sending. */
     void  write_discard() noexcept override;
-    /** Always nullptr for ZmqQueue. */
-    // write_flexzone() — inherited nullptr default from QueueWriter.
-
-    /**
-     * @brief No-op for ZmqQueue (TCP provides transport integrity).
-     */
-    void set_checksum_options(bool, bool) noexcept override {}
-
     /** ZMQ send buffer depth (send_buffer_depth configured at construction). */
     // capacity() — shared implementation; returns mode-appropriate depth.
     /** Returns "zmq_push_drop" or "zmq_push_block" depending on overflow_policy. */
@@ -247,7 +228,6 @@ public:
     // ── Shared metadata (both QueueReader and QueueWriter) ────────────────────
 
     size_t      item_size()     const noexcept override;
-    // flexzone_size() — inherited 0 default from both bases.
     std::string name()          const override;
 
     /**
@@ -283,7 +263,7 @@ public:
     /** Reset all counters and timing state. */
     void reset_metrics() override;
     /** Set target loop period (informational, reported in metrics). 0 = MaxRate. */
-    void set_configured_period(uint64_t period_us) override;
+    void set_configured_period(uint64_t period_us);
 
     // ── Lifecycle (overrides both QueueReader and QueueWriter no-ops) ──────────
 
