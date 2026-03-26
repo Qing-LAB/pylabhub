@@ -398,9 +398,12 @@ bool ProducerRoleHost::setup_infrastructure_()
         opts.inbox_packing     = inbox_packing;
     }
 
-    // --- Queue abstraction Phase 2: sizes for internal queue creation ---
-    opts.item_size     = schema_slot_size_;
-    opts.flexzone_size = core_.schema_fz_size();
+    // --- Queue abstraction: sizes + checksum + period for internal queue creation ---
+    opts.item_size         = schema_slot_size_;
+    opts.flexzone_size     = core_.schema_fz_size();
+    opts.update_checksum   = shm.update_checksum;
+    opts.update_checksum_fz = core_.has_fz() && shm.update_checksum;
+    opts.queue_period_us   = (tc.period_us > 0.0) ? static_cast<uint64_t>(tc.period_us) : 0;
 
     // --- SHM config ---
     if (shm.enabled)
@@ -550,10 +553,7 @@ bool ProducerRoleHost::setup_infrastructure_()
         LOGGER_ERROR("[prod] start_queue() failed for channel '{}'", ch);
         return false;
     }
-    out_producer_->set_checksum_options(shm.update_checksum, core_.has_fz());
     out_producer_->reset_queue_metrics();
-    if (tc.period_us > 0.0)
-        out_producer_->set_queue_period(static_cast<uint64_t>(tc.period_us));
 
     LOGGER_INFO("[prod] Producer started on channel '{}' (shm={})", ch,
                 out_producer_->has_shm());

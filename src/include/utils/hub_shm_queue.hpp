@@ -61,7 +61,9 @@ public:
     [[nodiscard]] static std::unique_ptr<QueueReader>
     from_consumer(std::unique_ptr<DataBlockConsumer> dbc,
                   size_t item_size, size_t flexzone_sz = 0,
-                  std::string channel_name = {});
+                  std::string channel_name = {},
+                  bool verify_slot = false, bool verify_fz = false,
+                  uint64_t configured_period_us = 0);
 
     /**
      * @brief Create a write-mode ShmQueue from a DataBlockProducer.
@@ -71,7 +73,9 @@ public:
     [[nodiscard]] static std::unique_ptr<QueueWriter>
     from_producer(std::unique_ptr<DataBlockProducer> dbp,
                   size_t item_size, size_t flexzone_sz = 0,
-                  std::string channel_name = {});
+                  std::string channel_name = {},
+                  bool checksum_slot = false, bool checksum_fz = false,
+                  uint64_t configured_period_us = 0);
 
     /**
      * @brief Create a read-mode ShmQueue wrapping an existing DataBlockConsumer.
@@ -81,7 +85,9 @@ public:
      */
     [[nodiscard]] static std::unique_ptr<QueueReader>
     from_consumer_ref(DataBlockConsumer& dbc, size_t item_size,
-                      size_t flexzone_sz = 0, std::string channel_name = {});
+                      size_t flexzone_sz = 0, std::string channel_name = {},
+                      bool verify_slot = false, bool verify_fz = false,
+                      uint64_t configured_period_us = 0);
 
     /**
      * @brief Create a write-mode ShmQueue wrapping an existing DataBlockProducer.
@@ -90,7 +96,9 @@ public:
      */
     [[nodiscard]] static std::unique_ptr<QueueWriter>
     from_producer_ref(DataBlockProducer& dbp, size_t item_size,
-                      size_t flexzone_sz = 0, std::string channel_name = {});
+                      size_t flexzone_sz = 0, std::string channel_name = {},
+                      bool checksum_slot = false, bool checksum_fz = false,
+                      uint64_t configured_period_us = 0);
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -104,51 +112,19 @@ public:
 
     const void* read_acquire(std::chrono::milliseconds timeout) noexcept override;
     void        read_release() noexcept override;
-    const void* read_flexzone() const noexcept override;
-
-    // ── QueueReader extras ────────────────────────────────────────────────────
 
     /** Monotonic slot id from the last successful read_acquire(); 0 until then. */
     uint64_t last_seq() const noexcept override;
-
-    /**
-     * @brief Configure BLAKE2b checksum verification on read_acquire().
-     *
-     * When @p slot is true: verify_checksum_slot() is checked after acquire;
-     * read_acquire() returns nullptr on mismatch and logs an error.
-     * When @p fz is true: verify_checksum_flexible_zone() is also checked.
-     * Call once before the first read_acquire().
-     */
-    void set_verify_checksum(bool slot, bool fz) const noexcept override;
 
     // ── QueueWriter interface — writing ────────────────────────────────────────
 
     void* write_acquire(std::chrono::milliseconds timeout) noexcept override;
     void  write_commit() noexcept override;
     void  write_discard() noexcept override;
-    void* write_flexzone() noexcept override;
-
-    /**
-     * @brief Enable BLAKE2b checksum updates on write_commit().
-     *
-     * When enabled, write_commit() calls update_checksum_slot() and
-     * optionally update_checksum_flexible_zone() before releasing the slot.
-     * Only meaningful for write-mode ShmQueues.
-     */
-    void set_checksum_options(bool slot, bool fz) noexcept override;
-
-    /**
-     * @brief Initialize flexzone checksum after on_start() writes the initial content.
-     *
-     * Calls DataBlockProducer::update_checksum_flexible_zone() directly on the segment.
-     * No-op if this ShmQueue is in read mode or has no flexzone.
-     */
-    void sync_flexzone_checksum() noexcept override;
 
     // ── Shared metadata (both QueueReader and QueueWriter) ────────────────────
 
     size_t      item_size()     const noexcept override;
-    size_t      flexzone_size() const noexcept override;
     std::string name()          const override;
 
     /**
@@ -183,8 +159,24 @@ public:
     /** @brief Reset all counters. Delegates to DataBlock clear_metrics(). */
     void reset_metrics() override;
 
+    // ── SHM-specific operations (not on base QueueReader/QueueWriter) ─────────
+
     /** @brief Set target period. Delegates to DataBlock set_loop_policy(). */
-    void set_configured_period(uint64_t period_us) override;
+    void set_configured_period(uint64_t period_us);
+
+    /** @brief Read-only pointer to the shared flexzone. nullptr if no flexzone. */
+    const void* read_flexzone() const noexcept;
+    /** @brief Writable pointer to the shared flexzone. nullptr if no flexzone. */
+    void* write_flexzone() noexcept;
+    /** @brief Size of the flexzone in bytes; 0 if not configured. */
+    size_t flexzone_size() const noexcept;
+
+    /** @brief Configure BLAKE2b checksum verification on read_acquire(). */
+    void set_verify_checksum(bool slot, bool fz) const noexcept;
+    /** @brief Enable BLAKE2b checksum updates on write_commit(). */
+    void set_checksum_options(bool slot, bool fz) noexcept;
+    /** @brief Stamp flexzone checksum after on_init() writes initial content. */
+    void sync_flexzone_checksum() noexcept;
 
 private:
     explicit ShmQueue(std::unique_ptr<ShmQueueImpl> impl);

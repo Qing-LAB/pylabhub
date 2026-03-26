@@ -581,6 +581,8 @@ Consumer::connect_from_parts(Messenger &messenger, ChannelHandle channel,
             LOGGER_ERROR("[consumer] ZMQ PULL socket start() failed for '{}'", ep);
             return std::nullopt;
         }
+        if (opts.queue_period_us > 0)
+            static_cast<ZmqQueue *>(impl->zmq_queue_.get())->set_configured_period(opts.queue_period_us);
         LOGGER_INFO("[consumer] ZMQ PULL socket connected to '{}'", ep);
     }
 
@@ -598,7 +600,8 @@ Consumer::connect_from_parts(Messenger &messenger, ChannelHandle channel,
     if (impl->shm && opts.item_size > 0)
     {
         impl->shm_queue_reader_ = ShmQueue::from_consumer_ref(
-            *impl->shm, opts.item_size, opts.flexzone_size, opts.channel_name);
+            *impl->shm, opts.item_size, opts.flexzone_size, opts.channel_name,
+            opts.verify_checksum, opts.verify_checksum_fz, opts.queue_period_us);
         impl->queue_reader_ = impl->shm_queue_reader_.get();
     }
     else if (impl->zmq_queue_)
@@ -1041,24 +1044,21 @@ void Consumer::stop_queue()
 
 const void *Consumer::read_flexzone() const noexcept
 {
-    return (pImpl && pImpl->queue_reader_) ? pImpl->queue_reader_->read_flexzone() : nullptr;
+    if (!pImpl || !pImpl->shm) return nullptr;
+    auto fz = pImpl->shm->flexible_zone_span();
+    return fz.empty() ? nullptr : fz.data();
 }
 
 size_t Consumer::flexzone_size() const noexcept
 {
-    return (pImpl && pImpl->queue_reader_) ? pImpl->queue_reader_->flexzone_size() : 0;
+    if (!pImpl || !pImpl->shm) return 0;
+    return pImpl->shm->flexible_zone_span().size();
 }
 
 void Consumer::set_verify_checksum(bool slot, bool fz) noexcept
 {
-    if (pImpl && pImpl->queue_reader_)
-        pImpl->queue_reader_->set_verify_checksum(slot, fz);
-}
-
-void Consumer::set_queue_period(uint64_t period_us) noexcept
-{
-    if (pImpl && pImpl->queue_reader_)
-        pImpl->queue_reader_->set_configured_period(period_us);
+    auto *sq = pImpl ? static_cast<ShmQueue *>(pImpl->shm_queue_reader_.get()) : nullptr;
+    if (sq) sq->set_verify_checksum(slot, fz);
 }
 
 std::string Consumer::queue_policy_info() const
