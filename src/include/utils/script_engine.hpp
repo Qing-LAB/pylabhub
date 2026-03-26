@@ -39,8 +39,6 @@
 #include <vector>
 
 namespace pylabhub::hub { class Messenger; }
-namespace pylabhub::hub { class QueueWriter; }
-namespace pylabhub::hub { class QueueReader; }
 
 namespace pylabhub::scripting
 {
@@ -106,14 +104,12 @@ struct RoleContext
     std::string role_dir;
 
     hub::Messenger   *messenger{nullptr};     ///< For open_inbox, wait_for_role, broadcast, send
-    hub::QueueWriter *queue_writer{nullptr};   ///< For update_flexzone_checksum (producer/processor out)
-    hub::QueueReader *queue_reader{nullptr};   ///< For set_verify_checksum (consumer/processor in)
 
-    /// Pointer to the hub::Producer (for connected_consumers, send, broadcast).
+    /// Pointer to the hub::Producer — queue operations + connected_consumers, send, broadcast.
     /// Opaque to the engine — cast in engine-specific API builders.
     void *producer{nullptr};
 
-    /// Pointer to the hub::Consumer (for consumer-specific API).
+    /// Pointer to the hub::Consumer — queue operations + consumer-specific API.
     void *consumer{nullptr};
 
     /// Pointer to RoleHostCore — single source of truth for shutdown flags

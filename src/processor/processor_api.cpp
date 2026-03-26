@@ -96,10 +96,9 @@ py::list ProcessorAPI::consumers()
 
 bool ProcessorAPI::update_flexzone_checksum()
 {
-    auto *q = out_queue_.load(std::memory_order_acquire);
-    if (!q)
+    if (!producer_)
         return false;
-    q->sync_flexzone_checksum(); // no-op for ZmqQueue; ShmQueue updates segment checksum
+    producer_->sync_flexzone_checksum();
     return true;
 }
 
@@ -212,9 +211,9 @@ nlohmann::json ProcessorAPI::snapshot_metrics_json() const
     }
 
     // Domain 2+3 timing from queue abstraction (transport-agnostic).
-    if (const auto *iq = in_queue_.load(std::memory_order_acquire); iq != nullptr)
+    if (consumer_ != nullptr)
     {
-        const auto m = iq->metrics();
+        const auto m = consumer_->queue_metrics();
         base["iteration_count"]          = core_->iteration_count();
         base["in_context_elapsed_us"]    = m.context_elapsed_us;
         base["in_last_iteration_us"]     = m.last_iteration_us;
@@ -224,9 +223,9 @@ nlohmann::json ProcessorAPI::snapshot_metrics_json() const
         base["in_data_drop_count"]     = m.data_drop_count;
         base["in_configured_period_us"]  = m.configured_period_us;
     }
-    if (const auto *oq = out_queue_.load(std::memory_order_acquire); oq != nullptr)
+    if (producer_ != nullptr)
     {
-        const auto m = oq->metrics();
+        const auto m = producer_->queue_metrics();
         base["out_context_elapsed_us"]   = m.context_elapsed_us;
         base["out_last_iteration_us"]    = m.last_iteration_us;
         base["out_max_iteration_us"]     = m.max_iteration_us;
@@ -270,9 +269,9 @@ py::dict ProcessorAPI::metrics() const
     }
 
     // D2+D3 — input side (transport-agnostic).
-    if (const auto *iq = in_queue_.load(std::memory_order_acquire); iq != nullptr)
+    if (consumer_ != nullptr)
     {
-        const auto m = iq->metrics();
+        const auto m = consumer_->queue_metrics();
         d["in_context_elapsed_us"]  = py::int_(m.context_elapsed_us);
         d["iteration_count"]         = py::int_(core_->iteration_count());
         d["in_last_iteration_us"]   = py::int_(m.last_iteration_us);
@@ -284,9 +283,9 @@ py::dict ProcessorAPI::metrics() const
     }
 
     // D2+D3 — output side (transport-agnostic).
-    if (const auto *oq = out_queue_.load(std::memory_order_acquire); oq != nullptr)
+    if (producer_ != nullptr)
     {
-        const auto m = oq->metrics();
+        const auto m = producer_->queue_metrics();
         d["out_context_elapsed_us"]  = py::int_(m.context_elapsed_us);
         d["out_last_iteration_us"]   = py::int_(m.last_iteration_us);
         d["out_max_iteration_us"]    = py::int_(m.max_iteration_us);
@@ -394,39 +393,33 @@ void ProcessorAPI::clear_inbox_cache()
 
 uint64_t ProcessorAPI::last_seq() const noexcept
 {
-    const auto *q = in_queue_.load(std::memory_order_acquire);
-    return q ? q->last_seq() : 0u;
+    return consumer_ ? consumer_->last_seq() : 0u;
 }
 
 uint64_t ProcessorAPI::in_capacity() const noexcept
 {
-    const auto *q = in_queue_.load(std::memory_order_acquire);
-    return q ? q->capacity() : 0u;
+    return consumer_ ? consumer_->queue_capacity() : 0u;
 }
 
 std::string ProcessorAPI::in_policy() const
 {
-    const auto *q = in_queue_.load(std::memory_order_acquire);
-    return q ? q->policy_info() : std::string{};
+    return consumer_ ? consumer_->queue_policy_info() : std::string{};
 }
 
 uint64_t ProcessorAPI::out_capacity() const noexcept
 {
-    const auto *q = out_queue_.load(std::memory_order_acquire);
-    return q ? q->capacity() : 0u;
+    return producer_ ? producer_->queue_capacity() : 0u;
 }
 
 std::string ProcessorAPI::out_policy() const
 {
-    const auto *q = out_queue_.load(std::memory_order_acquire);
-    return q ? q->policy_info() : std::string{};
+    return producer_ ? producer_->queue_policy_info() : std::string{};
 }
 
 void ProcessorAPI::set_verify_checksum(bool enable)
 {
-    const auto *q = in_queue_.load(std::memory_order_acquire);
-    if (q)
-        q->set_verify_checksum(enable, false);
+    if (consumer_)
+        consumer_->set_verify_checksum(enable, false);
 }
 
 } // namespace pylabhub::processor

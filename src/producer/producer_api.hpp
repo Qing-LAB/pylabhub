@@ -76,8 +76,6 @@ class ProducerAPI
     void set_log_level(std::string l){ log_level_  = std::move(l); }
     void set_script_dir(std::string d){ script_dir_ = std::move(d); }
     void set_role_dir(std::string d)  { role_dir_   = std::move(d); }
-    void set_queue(hub::QueueWriter *q) noexcept { queue_ = q; }
-
     // ── Python-accessible — identity / environment ────────────────────────────
 
     [[nodiscard]] const std::string &uid()        const noexcept { return uid_; }
@@ -181,7 +179,6 @@ class ProducerAPI
   private:
     hub::Producer          *producer_{nullptr};
     hub::Messenger         *messenger_{nullptr};
-    hub::QueueWriter       *queue_{nullptr};
     scripting::ScriptEngine *engine_{nullptr};
     py::object       *flexzone_obj_{nullptr};
 

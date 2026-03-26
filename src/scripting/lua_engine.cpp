@@ -12,6 +12,7 @@
 
 #include "utils/format_tools.hpp"
 #include "utils/hub_producer.hpp"
+#include "utils/hub_consumer.hpp"
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/logger.hpp"
 #include "script_host_helpers.hpp"
@@ -279,21 +280,21 @@ bool LuaEngine::build_api_(const RoleContext &ctx)
             push_closure("send", lua_api_send);
             push_closure("consumers", lua_api_consumers);
         }
-        if (ctx_.queue_writer)
+        if (ctx_.producer)
             push_closure("update_flexzone_checksum", lua_api_update_flexzone_checksum);
     }
     else if (ctx_.role_tag == "cons")
     {
-        if (ctx_.queue_reader)
+        if (ctx_.consumer)
             push_closure("set_verify_checksum", lua_api_set_verify_checksum);
     }
     else if (ctx_.role_tag == "proc")
     {
         push_closure("in_channel", lua_api_in_channel);
         push_closure("out_channel", lua_api_out_channel);
-        if (ctx_.queue_writer)
+        if (ctx_.producer)
             push_closure("update_flexzone_checksum", lua_api_update_flexzone_checksum);
-        if (ctx_.queue_reader)
+        if (ctx_.consumer)
             push_closure("set_verify_checksum", lua_api_set_verify_checksum);
     }
     else
@@ -1553,10 +1554,10 @@ int LuaEngine::lua_api_consumers(lua_State *L)
 int LuaEngine::lua_api_update_flexzone_checksum(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto *qw = self->ctx_.queue_writer;
-    if (qw)
-        qw->sync_flexzone_checksum();
-    lua_pushboolean(L, qw ? 1 : 0);
+    auto *p = static_cast<hub::Producer *>(self->ctx_.producer);
+    if (p)
+        p->sync_flexzone_checksum();
+    lua_pushboolean(L, p ? 1 : 0);
     return 1;
 }
 
@@ -1564,9 +1565,9 @@ int LuaEngine::lua_api_set_verify_checksum(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     bool enable = lua_toboolean(L, 1) != 0;
-    auto *qr = self->ctx_.queue_reader;
-    if (qr)
-        qr->set_verify_checksum(enable, false);
+    auto *c = static_cast<hub::Consumer *>(self->ctx_.consumer);
+    if (c)
+        c->set_verify_checksum(enable, false);
     return 0;
 }
 

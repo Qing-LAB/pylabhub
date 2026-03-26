@@ -217,8 +217,6 @@ void ProducerRoleHost::worker_main_()
     ctx.script_dir  = script_dir.string();
     ctx.role_dir    = config_.base_dir().string();
     ctx.messenger   = &out_messenger_;
-    ctx.queue_writer = out_producer_.has_value() ? out_producer_->queue_writer() : nullptr;
-    ctx.queue_reader = nullptr;
     ctx.producer    = out_producer_.has_value() ? &(*out_producer_) : nullptr;
     ctx.consumer    = nullptr;
     ctx.core         = &core_;

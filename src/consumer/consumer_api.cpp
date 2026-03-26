@@ -113,9 +113,8 @@ void ConsumerAPI::clear_custom_metrics()
 
 void ConsumerAPI::set_verify_checksum(bool enable)
 {
-    auto *q = reader_.load(std::memory_order_acquire);
-    if (q)
-        q->set_verify_checksum(enable, false);
+    if (consumer_)
+        consumer_->set_verify_checksum(enable, false);
 }
 
 std::string ConsumerAPI::stop_reason() const noexcept
@@ -139,9 +138,9 @@ nlohmann::json ConsumerAPI::snapshot_metrics_json() const
     base["ctrl_queue_dropped"] = ctrl_queue_dropped();
 
     // Domain 2+3 timing from queue abstraction (transport-agnostic).
-    if (const auto *r = reader_.load(std::memory_order_acquire); r != nullptr)
+    if (consumer_ != nullptr)
     {
-        const auto m = r->metrics();
+        const auto m = consumer_->queue_metrics();
         base["iteration_count"]      = core_->iteration_count();
         base["data_drop_count"]      = m.data_drop_count;
         base["last_iteration_us"]    = m.last_iteration_us;
@@ -171,9 +170,9 @@ py::dict ConsumerAPI::metrics() const
     d["script_errors"]      = py::int_(script_error_count());
     d["in_received"]        = py::int_(in_slots_received());
 
-    if (const auto *r = reader_.load(std::memory_order_acquire); r != nullptr)
+    if (consumer_ != nullptr)
     {
-        const auto m = r->metrics();
+        const auto m = consumer_->queue_metrics();
         d["context_elapsed_us"]   = py::int_(m.context_elapsed_us);
         d["iteration_count"]      = py::int_(core_->iteration_count());
         d["data_drop_count"]      = py::int_(m.data_drop_count);
@@ -240,20 +239,14 @@ bool ConsumerAPI::wait_for_role(const std::string &uid, int timeout_ms)
 
 size_t ConsumerAPI::in_capacity() const noexcept
 {
-    const auto *r = reader_.load(std::memory_order_acquire);
-    if (!r)
+    if (!consumer_)
         return 0;
-    try { return r->capacity(); }
-    catch (...) { return 0; }
+    return consumer_->queue_capacity();
 }
 
 std::string ConsumerAPI::in_policy() const
 {
-    const auto *r = reader_.load(std::memory_order_acquire);
-    if (!r)
-        return {};
-    try { return r->policy_info(); }
-    catch (...) { return {}; }
+    return consumer_ ? consumer_->queue_policy_info() : std::string{};
 }
 
 py::object ConsumerAPI::spinlock(std::size_t index)

@@ -215,8 +215,6 @@ void ConsumerRoleHost::worker_main_()
     ctx.script_dir  = script_dir.string();
     ctx.role_dir    = config_.base_dir().string();
     ctx.messenger   = &in_messenger_;
-    ctx.queue_writer = nullptr;
-    ctx.queue_reader = in_consumer_.has_value() ? in_consumer_->queue_reader() : nullptr;
     ctx.producer    = nullptr;
     ctx.consumer    = in_consumer_.has_value() ? &(*in_consumer_) : nullptr;
     ctx.core         = &core_;

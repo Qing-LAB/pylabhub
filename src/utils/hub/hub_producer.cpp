@@ -998,11 +998,6 @@ ZmqQueue *Producer::queue() noexcept
     return pImpl ? static_cast<ZmqQueue *>(pImpl->zmq_queue_.get()) : nullptr;
 }
 
-QueueWriter *Producer::queue_writer() noexcept
-{
-    return pImpl ? pImpl->queue_writer_ : nullptr;
-}
-
 // ============================================================================
 // Producer — Queue data operations (forwarded to internal QueueWriter)
 // ============================================================================
@@ -1093,6 +1088,11 @@ void Producer::set_queue_period(uint64_t period_us) noexcept
 {
     if (pImpl && pImpl->queue_writer_)
         pImpl->queue_writer_->set_configured_period(period_us);
+}
+
+std::string Producer::queue_policy_info() const
+{
+    return (pImpl && pImpl->queue_writer_) ? pImpl->queue_writer_->policy_info() : std::string{};
 }
 
 ChannelHandle &Producer::channel_handle()
