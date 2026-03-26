@@ -71,4 +71,16 @@ int flexzone_through_service_layer(int argc, char **argv);
 /** queue_metrics() returns valid data through Producer/Consumer forwarding. */
 int queue_metrics_forwarding(int argc, char **argv);
 
+/** ZMQ transport: write/read through Producer/Consumer forwarding; metrics; flexzone=null. */
+int zmq_forwarding_api(int argc, char **argv);
+
+/** Forwarding error paths: no queue (item_size=0) returns safe defaults. */
+int forwarding_error_paths(int argc, char **argv);
+
+/** Runtime set_verify_checksum toggle: disable→read OK, enable→checksum reject. */
+int runtime_verify_checksum_toggle(int argc, char **argv);
+
+/** Checksum end-to-end: Producer stamps checksum, Consumer verifies successfully. */
+int checksum_mismatch_through_forwarding(int argc, char **argv);
+
 } // namespace pylabhub::tests::worker::hub_api
