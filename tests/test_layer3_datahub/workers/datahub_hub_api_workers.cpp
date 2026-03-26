@@ -1243,6 +1243,241 @@ int consumer_identity_in_shm(int /*argc*/, char ** /*argv*/)
         logger_module(), crypto_module(), hub_module());
 }
 
+// ============================================================================
+// producer_consumer_forwarding_api — write/read through Producer/Consumer
+// ============================================================================
+
+int producer_consumer_forwarding_api(int /*argc*/, char ** /*argv*/)
+{
+    return run_gtest_worker(
+        []() {
+            auto broker = start_broker();
+            Messenger &messenger = Messenger::get_instance();
+            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
+
+            ProducerOptions popts;
+            popts.channel_name = make_test_channel_name("hub.fwd_api");
+            popts.pattern      = ChannelPattern::PubSub;
+            popts.has_shm      = true;
+            popts.shm_config   = make_shm_config();
+            popts.item_size    = sizeof(double);
+            popts.timeout_ms   = 3000;
+
+            auto producer = Producer::create(messenger, popts);
+            ASSERT_TRUE(producer.has_value());
+
+            // Verify forwarding API metadata.
+            EXPECT_EQ(producer->queue_item_size(), sizeof(double));
+            EXPECT_GT(producer->queue_capacity(), 0u);
+
+            // Start queue through forwarding API.
+            EXPECT_TRUE(producer->start_queue());
+
+            // Write through forwarding API.
+            void *buf = producer->write_acquire(std::chrono::milliseconds{1000});
+            ASSERT_NE(buf, nullptr);
+            *static_cast<double *>(buf) = 42.5;
+            producer->write_commit();
+
+            // Consumer side.
+            ConsumerOptions copts;
+            copts.channel_name      = popts.channel_name;
+            copts.shm_shared_secret = kTestShmSecret;
+            copts.item_size         = sizeof(double);
+            copts.timeout_ms        = 3000;
+
+            auto consumer = Consumer::connect(messenger, copts);
+            ASSERT_TRUE(consumer.has_value());
+            EXPECT_TRUE(consumer->start_queue());
+            EXPECT_EQ(consumer->queue_item_size(), sizeof(double));
+
+            // Read through forwarding API.
+            const void *data = consumer->read_acquire(std::chrono::milliseconds{1000});
+            ASSERT_NE(data, nullptr);
+            EXPECT_DOUBLE_EQ(*static_cast<const double *>(data), 42.5);
+            consumer->read_release();
+
+            consumer->close();
+            producer->close();
+            messenger.disconnect();
+            broker.stop_and_join();
+        },
+        "hub_api.producer_consumer_forwarding_api",
+        logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// construction_time_checksum — checksum configured via Options, not setters
+// ============================================================================
+
+int construction_time_checksum(int /*argc*/, char ** /*argv*/)
+{
+    return run_gtest_worker(
+        []() {
+            auto broker = start_broker();
+            Messenger &messenger = Messenger::get_instance();
+            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
+
+            ProducerOptions popts;
+            popts.channel_name    = make_test_channel_name("hub.cksum");
+            popts.pattern         = ChannelPattern::PubSub;
+            popts.has_shm         = true;
+            popts.shm_config      = make_shm_config();
+            popts.shm_config.checksum_policy = ChecksumPolicy::Manual;
+            popts.item_size       = sizeof(uint64_t);
+            popts.update_checksum = true;  // construction-time flag
+            popts.timeout_ms      = 3000;
+
+            auto producer = Producer::create(messenger, popts);
+            ASSERT_TRUE(producer.has_value());
+            EXPECT_TRUE(producer->start_queue());
+
+            // Write a value — checksum should be stamped automatically by ShmQueue.
+            void *buf = producer->write_acquire(std::chrono::milliseconds{1000});
+            ASSERT_NE(buf, nullptr);
+            *static_cast<uint64_t *>(buf) = 0xCAFEBABE;
+            producer->write_commit();
+
+            // Consumer with verify_checksum enabled at construction.
+            ConsumerOptions copts;
+            copts.channel_name      = popts.channel_name;
+            copts.shm_shared_secret = kTestShmSecret;
+            copts.item_size         = sizeof(uint64_t);
+            copts.verify_checksum   = true;  // construction-time flag
+            copts.timeout_ms        = 3000;
+
+            auto consumer = Consumer::connect(messenger, copts);
+            ASSERT_TRUE(consumer.has_value());
+            EXPECT_TRUE(consumer->start_queue());
+
+            // Read — should succeed (checksum valid because producer stamped it).
+            const void *data = consumer->read_acquire(std::chrono::milliseconds{1000});
+            ASSERT_NE(data, nullptr) << "read_acquire failed — checksum mismatch?";
+            EXPECT_EQ(*static_cast<const uint64_t *>(data), 0xCAFEBABEu);
+            consumer->read_release();
+
+            consumer->close();
+            producer->close();
+            messenger.disconnect();
+            broker.stop_and_join();
+        },
+        "hub_api.construction_time_checksum",
+        logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// flexzone_through_service_layer — access via Producer/Consumer DataBlock path
+// ============================================================================
+
+int flexzone_through_service_layer(int /*argc*/, char ** /*argv*/)
+{
+    return run_gtest_worker(
+        []() {
+            auto broker = start_broker();
+            Messenger &messenger = Messenger::get_instance();
+            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
+
+            constexpr size_t kFzSize = 4096; // page-aligned
+
+            auto shm_cfg = make_shm_config();
+            shm_cfg.flex_zone_size = kFzSize;
+
+            ProducerOptions popts;
+            popts.channel_name = make_test_channel_name("hub.fz_svc");
+            popts.pattern      = ChannelPattern::PubSub;
+            popts.has_shm      = true;
+            popts.shm_config   = shm_cfg;
+            popts.item_size    = sizeof(double);
+            popts.flexzone_size = kFzSize;
+            popts.timeout_ms   = 3000;
+
+            auto producer = Producer::create(messenger, popts);
+            ASSERT_TRUE(producer.has_value());
+
+            // Flexzone through Producer — DataBlock-direct path.
+            EXPECT_EQ(producer->flexzone_size(), kFzSize);
+            void *wfz = producer->write_flexzone();
+            ASSERT_NE(wfz, nullptr);
+
+            // Write marker to flexzone.
+            std::memset(wfz, 0, kFzSize);
+            static_cast<uint32_t *>(wfz)[0] = 0xDEAD;
+
+            // Consumer reads flexzone.
+            ConsumerOptions copts;
+            copts.channel_name      = popts.channel_name;
+            copts.shm_shared_secret = kTestShmSecret;
+            copts.item_size         = sizeof(double);
+            copts.flexzone_size     = kFzSize;
+            copts.timeout_ms        = 3000;
+
+            auto consumer = Consumer::connect(messenger, copts);
+            ASSERT_TRUE(consumer.has_value());
+            EXPECT_EQ(consumer->flexzone_size(), kFzSize);
+
+            const void *rfz = consumer->read_flexzone();
+            ASSERT_NE(rfz, nullptr);
+            EXPECT_EQ(static_cast<const uint32_t *>(rfz)[0], 0xDEADu);
+
+            consumer->close();
+            producer->close();
+            messenger.disconnect();
+            broker.stop_and_join();
+        },
+        "hub_api.flexzone_through_service_layer",
+        logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// queue_metrics_forwarding — metrics() through Producer/Consumer
+// ============================================================================
+
+int queue_metrics_forwarding(int /*argc*/, char ** /*argv*/)
+{
+    return run_gtest_worker(
+        []() {
+            auto broker = start_broker();
+            Messenger &messenger = Messenger::get_instance();
+            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
+
+            ProducerOptions popts;
+            popts.channel_name  = make_test_channel_name("hub.metrics_fwd");
+            popts.pattern       = ChannelPattern::PubSub;
+            popts.has_shm       = true;
+            popts.shm_config    = make_shm_config();
+            popts.item_size     = sizeof(uint64_t);
+            popts.queue_period_us = 1000; // 1ms
+            popts.timeout_ms    = 3000;
+
+            auto producer = Producer::create(messenger, popts);
+            ASSERT_TRUE(producer.has_value());
+            EXPECT_TRUE(producer->start_queue());
+            producer->reset_queue_metrics();
+
+            // Write 3 slots.
+            for (int i = 0; i < 3; ++i)
+            {
+                void *buf = producer->write_acquire(std::chrono::milliseconds{1000});
+                ASSERT_NE(buf, nullptr);
+                *static_cast<uint64_t *>(buf) = static_cast<uint64_t>(i);
+                producer->write_commit();
+            }
+
+            // Check metrics through forwarding.
+            auto m = producer->queue_metrics();
+            EXPECT_EQ(m.configured_period_us, 1000u);
+            // policy_info through forwarding.
+            auto pi = producer->queue_policy_info();
+            EXPECT_FALSE(pi.empty());
+
+            producer->close();
+            messenger.disconnect();
+            broker.stop_and_join();
+        },
+        "hub_api.queue_metrics_forwarding",
+        logger_module(), crypto_module(), hub_module());
+}
+
 } // namespace pylabhub::tests::worker::hub_api
 
 // ============================================================================
@@ -1304,6 +1539,14 @@ struct HubApiWorkerRegistrar
                     return producer_channel_identity(argc, argv);
                 if (scenario == "consumer_identity_in_shm")
                     return consumer_identity_in_shm(argc, argv);
+                if (scenario == "producer_consumer_forwarding_api")
+                    return producer_consumer_forwarding_api(argc, argv);
+                if (scenario == "construction_time_checksum")
+                    return construction_time_checksum(argc, argv);
+                if (scenario == "flexzone_through_service_layer")
+                    return flexzone_through_service_layer(argc, argv);
+                if (scenario == "queue_metrics_forwarding")
+                    return queue_metrics_forwarding(argc, argv);
                 fmt::print(stderr, "ERROR: Unknown hub_api scenario '{}'\n", scenario);
                 return 1;
             });

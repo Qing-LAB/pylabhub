@@ -144,3 +144,34 @@ TEST_F(DatahubHubApiTest, ConsumerIdentityInShm)
     auto proc = SpawnWorker("hub_api.consumer_identity_in_shm", {});
     ExpectWorkerOk(proc);
 }
+
+// ── Queue abstraction forwarding API tests (Phase 4) ─────────────────────────
+
+TEST_F(DatahubHubApiTest, ProducerConsumerForwardingApi)
+{
+    // write_acquire/commit through Producer, read_acquire/release through Consumer.
+    auto proc = SpawnWorker("hub_api.producer_consumer_forwarding_api", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubHubApiTest, ConstructionTimeChecksum)
+{
+    // update_checksum in ProducerOptions → verify_checksum in ConsumerOptions;
+    // checksum stamped at write_commit, verified at read_acquire — no post-creation setters.
+    auto proc = SpawnWorker("hub_api.construction_time_checksum", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubHubApiTest, FlexzoneThroughServiceLayer)
+{
+    // write_flexzone/read_flexzone through Producer/Consumer (DataBlock-direct path).
+    auto proc = SpawnWorker("hub_api.flexzone_through_service_layer", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubHubApiTest, QueueMetricsForwarding)
+{
+    // queue_metrics() + queue_policy_info() through Producer forwarding.
+    auto proc = SpawnWorker("hub_api.queue_metrics_forwarding", {});
+    ExpectWorkerOk(proc);
+}
