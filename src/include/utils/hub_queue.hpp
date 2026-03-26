@@ -85,10 +85,9 @@ struct QueueMetrics
     uint64_t last_slot_wait_us{0};    ///< Time blocked inside acquire (µs).
     uint64_t last_iteration_us{0};    ///< Start-to-start time between consecutive acquires (µs).
     uint64_t max_iteration_us{0};     ///< Peak start-to-start time since reset (µs).
-    uint64_t iteration_count{0};      ///< Successful slot acquisitions since reset.
     uint64_t context_elapsed_us{0};   ///< Elapsed since first acquire (µs). Updated per acquire.
 
-    // ── Domain 3: Loop scheduling (both transports) ──────────────────────────
+    // ── Domain 3: Data flow (both transports) ──────────────────────────
     uint64_t last_slot_exec_us{0};    ///< Time from acquire to release (µs).
     uint64_t data_drop_count{0};        ///< Data lost: SHM Latest_only overwrite, ZMQ write buffer full/timeout. 0 for readers.
     uint64_t configured_period_us{0}; ///< Target period (µs). 0 = MaxRate. Config input, not measured.
@@ -223,8 +222,8 @@ public:
     virtual void reset_metrics() {}
 
     /**
-     * @brief Set the target loop period for overrun detection.
-     * Called once at startup after queue creation. 0 = MaxRate (no overrun detection).
+     * @brief Set the target loop period for metrics reporting.
+     * Called once at startup after queue creation. 0 = MaxRate.
      */
     virtual void set_configured_period(uint64_t /*period_us*/) {}
 
@@ -363,8 +362,8 @@ public:
     virtual void reset_metrics() {}
 
     /**
-     * @brief Set the target loop period for overrun detection.
-     * Called once at startup after queue creation. 0 = MaxRate (no overrun detection).
+     * @brief Set the target loop period for metrics reporting.
+     * Called once at startup after queue creation. 0 = MaxRate.
      */
     virtual void set_configured_period(uint64_t /*period_us*/) {}
 

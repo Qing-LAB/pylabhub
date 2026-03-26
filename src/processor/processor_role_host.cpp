@@ -1027,6 +1027,8 @@ void ProcessorRoleHost::run_data_loop_()
                 now - cycle_start).count());
         core_.set_last_cycle_work_us(work_us);
         core_.inc_iteration_count();
+        if (deadline != Clock::time_point::max() && now > deadline)
+            core_.inc_loop_overrun();
 
         deadline = compute_next_deadline(tc.loop_timing, deadline, cycle_start, period_us);
     }
@@ -1099,23 +1101,36 @@ nlohmann::json ProcessorRoleHost::snapshot_metrics_json() const
     base["last_cycle_work_us"] = core_.last_cycle_work_us();
     base["loop_overrun_count"] = core_.loop_overrun_count();
 
-    if (out_producer_.has_value())
     {
-        base["ctrl_queue_dropped"] = out_producer_->ctrl_queue_dropped();
+        uint64_t in_dropped  = in_consumer_.has_value()  ? in_consumer_->ctrl_queue_dropped()  : 0;
+        uint64_t out_dropped = out_producer_.has_value() ? out_producer_->ctrl_queue_dropped() : 0;
+        base["ctrl_queue_dropped"]     = nlohmann::json{{"input", in_dropped}, {"output", out_dropped}};
+        base["in_ctrl_queue_dropped"]  = in_dropped;
+        base["out_ctrl_queue_dropped"] = out_dropped;
     }
 
     // Use our own iteration_count (always available, regardless of transport).
     base["iteration_count"] = core_.iteration_count();
 
+    if (in_q_)
+    {
+        const auto m = in_q_->metrics();
+        base["in_data_drop_count"]      = m.data_drop_count;
+        base["in_last_iteration_us"]    = m.last_iteration_us;
+        base["in_max_iteration_us"]     = m.max_iteration_us;
+        base["in_last_slot_exec_us"]    = m.last_slot_exec_us;
+        base["in_last_slot_wait_us"]    = m.last_slot_wait_us;
+        base["in_configured_period_us"] = m.configured_period_us;
+    }
     if (out_q_)
     {
         const auto m = out_q_->metrics();
-        base["data_drop_count"]     = m.data_drop_count;
-        base["last_iteration_us"]   = m.last_iteration_us;
-        base["max_iteration_us"]    = m.max_iteration_us;
-        base["last_slot_exec_us"]   = m.last_slot_exec_us;
-        base["last_slot_wait_us"]   = m.last_slot_wait_us;
-        base["configured_period_us"] = m.configured_period_us;
+        base["out_data_drop_count"]      = m.data_drop_count;
+        base["out_last_iteration_us"]    = m.last_iteration_us;
+        base["out_max_iteration_us"]     = m.max_iteration_us;
+        base["out_last_slot_exec_us"]    = m.last_slot_exec_us;
+        base["out_last_slot_wait_us"]    = m.last_slot_wait_us;
+        base["out_configured_period_us"] = m.configured_period_us;
     }
     return base;
 }

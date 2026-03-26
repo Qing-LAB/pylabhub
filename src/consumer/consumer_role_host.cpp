@@ -667,6 +667,8 @@ void ConsumerRoleHost::run_data_loop_()
                 now - cycle_start).count());
         core_.set_last_cycle_work_us(work_us);
         core_.inc_iteration_count();
+        if (deadline != Clock::time_point::max() && now > deadline)
+            core_.inc_loop_overrun();
 
         // --- Step G: Compute next deadline ---
         deadline = compute_next_deadline(tc.loop_timing, deadline, cycle_start, period_us);
@@ -743,10 +745,11 @@ nlohmann::json ConsumerRoleHost::snapshot_metrics_json() const
     if (queue_reader_)
     {
         const auto m = queue_reader_->metrics();
-        base["last_iteration_us"]   = m.last_iteration_us;
-        base["max_iteration_us"]    = m.max_iteration_us;
-        base["last_slot_exec_us"]   = m.last_slot_exec_us;
-        base["last_slot_wait_us"]   = m.last_slot_wait_us;
+        base["data_drop_count"]      = m.data_drop_count;
+        base["last_iteration_us"]    = m.last_iteration_us;
+        base["max_iteration_us"]     = m.max_iteration_us;
+        base["last_slot_exec_us"]    = m.last_slot_exec_us;
+        base["last_slot_wait_us"]    = m.last_slot_wait_us;
         base["configured_period_us"] = m.configured_period_us;
     }
     return base;

@@ -226,7 +226,7 @@ nlohmann::json ProducerAPI::snapshot_metrics_json() const
     if (queue_ != nullptr)
     {
         const auto m = queue_->metrics();
-        base["iteration_count"]      = m.iteration_count;
+        base["iteration_count"]      = core_->iteration_count();
         base["data_drop_count"]      = m.data_drop_count;
         base["last_iteration_us"]    = m.last_iteration_us;
         base["max_iteration_us"]     = m.max_iteration_us;
@@ -260,7 +260,7 @@ py::dict ProducerAPI::metrics() const
     {
         const auto m = queue_->metrics();
         d["context_elapsed_us"]  = py::int_(m.context_elapsed_us);
-        d["iteration_count"]     = py::int_(m.iteration_count);
+        d["iteration_count"]     = py::int_(core_->iteration_count());
         d["data_drop_count"]     = py::int_(m.data_drop_count);
         d["last_iteration_us"]   = py::int_(m.last_iteration_us);
         d["max_iteration_us"]    = py::int_(m.max_iteration_us);

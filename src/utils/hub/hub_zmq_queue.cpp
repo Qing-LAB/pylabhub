@@ -113,7 +113,6 @@ struct ZmqQueueImpl
     std::atomic<uint64_t> last_slot_wait_us_{0};
     std::atomic<uint64_t> last_iteration_us_{0};
     std::atomic<uint64_t> max_iteration_us_{0};
-    std::atomic<uint64_t> iteration_count_{0};
     std::atomic<uint64_t> last_slot_exec_us_{0};
     std::atomic<uint64_t> configured_period_us_{0};
     std::atomic<uint64_t> context_elapsed_us_{0};
@@ -717,7 +716,6 @@ const void* ZmqQueue::read_acquire(std::chrono::milliseconds timeout) noexcept
         static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
             t_acquired - t_entry).count()),
         std::memory_order_relaxed);
-    pImpl->iteration_count_.fetch_add(1, std::memory_order_relaxed);
     pImpl->t_iter_start_ = t_acquired;
     pImpl->t_acquired_   = t_acquired;
 
@@ -807,7 +805,6 @@ void* ZmqQueue::write_acquire(std::chrono::milliseconds timeout) noexcept
         static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
             t_acquired - t_entry).count()),
         std::memory_order_relaxed);
-    pImpl->iteration_count_.fetch_add(1, std::memory_order_relaxed);
     pImpl->t_iter_start_ = t_acquired;
     pImpl->t_acquired_   = t_acquired;
 
@@ -942,7 +939,6 @@ QueueMetrics ZmqQueue::metrics() const noexcept
     m.last_slot_wait_us    = pImpl->last_slot_wait_us_.load(std::memory_order_relaxed);
     m.last_iteration_us    = pImpl->last_iteration_us_.load(std::memory_order_relaxed);
     m.max_iteration_us     = pImpl->max_iteration_us_.load(std::memory_order_relaxed);
-    m.iteration_count      = pImpl->iteration_count_.load(std::memory_order_relaxed);
     m.context_elapsed_us   = pImpl->context_elapsed_us_.load(std::memory_order_relaxed);
     m.last_slot_exec_us    = pImpl->last_slot_exec_us_.load(std::memory_order_relaxed);
     m.data_drop_count        = pImpl->data_drop_count_.load(std::memory_order_relaxed);
@@ -962,7 +958,6 @@ void ZmqQueue::reset_metrics()
     pImpl->last_slot_wait_us_.store(0, std::memory_order_relaxed);
     pImpl->last_iteration_us_.store(0, std::memory_order_relaxed);
     pImpl->max_iteration_us_.store(0, std::memory_order_relaxed);
-    pImpl->iteration_count_.store(0, std::memory_order_relaxed);
     pImpl->last_slot_exec_us_.store(0, std::memory_order_relaxed);
     pImpl->data_drop_count_.store(0, std::memory_order_relaxed);
     pImpl->context_elapsed_us_.store(0, std::memory_order_relaxed);
