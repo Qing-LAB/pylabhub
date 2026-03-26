@@ -98,9 +98,9 @@ py::list ProducerAPI::consumers()
 
 bool ProducerAPI::update_flexzone_checksum()
 {
-    if (!queue_)
+    if (!producer_)
         return false;
-    queue_->sync_flexzone_checksum(); // no-op for ZmqQueue; ShmQueue updates segment checksum
+    producer_->sync_flexzone_checksum();
     return true;
 }
 
@@ -189,16 +189,14 @@ uint64_t ProducerAPI::loop_overrun_count() const noexcept
 
 size_t ProducerAPI::out_capacity() const noexcept
 {
-    if (!queue_)
+    if (!producer_)
         return 0;
-    return queue_->capacity();
+    return producer_->queue_capacity();
 }
 
 std::string ProducerAPI::out_policy() const
 {
-    if (!queue_)
-        return {};
-    return queue_->policy_info();
+    return producer_ ? producer_->queue_policy_info() : std::string{};
 }
 
 std::string ProducerAPI::stop_reason() const noexcept
@@ -223,9 +221,9 @@ nlohmann::json ProducerAPI::snapshot_metrics_json() const
 
     // Domain 2+3 timing from queue abstraction (transport-agnostic).
     base["loop_overrun_count"] = core_->loop_overrun_count();
-    if (queue_ != nullptr)
+    if (producer_ != nullptr)
     {
-        const auto m = queue_->metrics();
+        const auto m = producer_->queue_metrics();
         base["iteration_count"]      = core_->iteration_count();
         base["data_drop_count"]      = m.data_drop_count;
         base["last_iteration_us"]    = m.last_iteration_us;
@@ -256,9 +254,9 @@ py::dict ProducerAPI::metrics() const
     d["drops"]              = py::int_(out_drop_count());
 
     d["loop_overrun_count"]  = py::int_(core_->loop_overrun_count());
-    if (queue_ != nullptr)
+    if (producer_ != nullptr)
     {
-        const auto m = queue_->metrics();
+        const auto m = producer_->queue_metrics();
         d["context_elapsed_us"]  = py::int_(m.context_elapsed_us);
         d["iteration_count"]     = py::int_(core_->iteration_count());
         d["data_drop_count"]     = py::int_(m.data_drop_count);

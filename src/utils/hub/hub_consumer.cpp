@@ -982,11 +982,6 @@ ZmqQueue *Consumer::queue() noexcept
     return pImpl ? static_cast<ZmqQueue *>(pImpl->zmq_queue_.get()) : nullptr;
 }
 
-QueueReader *Consumer::queue_reader() noexcept
-{
-    return pImpl ? pImpl->queue_reader_ : nullptr;
-}
-
 // ============================================================================
 // Consumer — Queue data operations (forwarded to internal QueueReader)
 // ============================================================================
@@ -1064,6 +1059,11 @@ void Consumer::set_queue_period(uint64_t period_us) noexcept
 {
     if (pImpl && pImpl->queue_reader_)
         pImpl->queue_reader_->set_configured_period(period_us);
+}
+
+std::string Consumer::queue_policy_info() const
+{
+    return (pImpl && pImpl->queue_reader_) ? pImpl->queue_reader_->policy_info() : std::string{};
 }
 
 // ============================================================================

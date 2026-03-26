@@ -482,13 +482,11 @@ class PYLABHUB_UTILS_EXPORT Consumer
     void set_verify_checksum(bool slot, bool fz) noexcept;
     /// Set the target loop period for metrics reporting. 0 = MaxRate.
     void set_queue_period(uint64_t period_us) noexcept;
+    /// Overflow policy description for diagnostics (e.g. "shm_read", "zmq_pull_ring_64").
+    [[nodiscard]] std::string queue_policy_info() const;
 
     /// Returns the Messenger used by this Consumer.
     [[nodiscard]] Messenger &messenger() const;
-
-    /// Internal: returns the raw QueueReader pointer (for engine RoleContext handoff).
-    /// Prefer the named forwarding methods above for role host use.
-    [[nodiscard]] QueueReader *queue_reader() noexcept;
 
     /**
      * @brief Deregisters from broker, closes sockets and SHM. Called by destructor.
