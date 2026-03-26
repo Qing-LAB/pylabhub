@@ -549,6 +549,7 @@ No `zmq_in_endpoint` in Processor-B — it is discovered from Hub A at runtime.
 | 5 | `ProcessorConfig` cleanup: remove `in_transport`/`zmq_in_endpoint`; keep `out_transport`/`zmq_out_endpoint` | Done | `processor_config.hpp/cpp` |
 | 6 | Demo update: Processor-B uses `in_hub_dir` only, no hardcoded ZMQ endpoint | Done | `share/py-demo-dual-processor-bridge/` |
 | Tests | 12 L3 protocol tests (ZmqVirtualChannelTest) | Done | `test_datahub_zmq_virtual_channel.cpp` |
+| 7 | Ephemeral port resolution: `ENDPOINT_UPDATE_REQ`, broker readiness guard, `establish_channel` rename | Design | §16 (2026-03-26) |
 
 ---
 
@@ -687,3 +688,124 @@ sock.bind(endpoint);
 This also applies when sockets are moved or reassigned — the LINGER=0 is preserved
 in the socket option, not the C++ object. Reassignment creates a new socket; always
 set LINGER=0 immediately after.
+
+---
+
+## 16. Ephemeral Port Resolution (port-0 binding)
+
+**Status**: Design — 2026-03-26. Not yet implemented.
+
+### 16.1 Problem
+
+When `zmq_node_endpoint` is configured as `tcp://127.0.0.1:0`, the OS assigns an
+ephemeral port at bind time. The current flow registers the **config value** (`:0`)
+with the broker before the ZmqQueue binds. Consumers discover `:0` from the broker
+and cannot connect.
+
+### 16.2 Current Factory Flow
+
+The Producer has three functions involved in creation:
+
+- **`messenger.create_channel(name, opts)`** — sends `CREATE_CHANNEL_REQ` to broker,
+  returns a `ChannelHandle` (ctrl/data sockets). This is the broker registration step.
+- **`Producer::create(messenger, opts)`** — public entry point (template and non-template
+  variants). Validates types/schemas, calls `create_channel`, creates DataBlock,
+  then calls `establish_channel`.
+- **`Producer::establish_channel(...)`** (currently named `create_from_parts`) — assembles
+  the Producer: wires callbacks, creates ZmqQueue, creates ShmQueue wrapper, configures
+  ctrl_queue and peer timeout.
+
+```
+create() / create<F,D>():
+  1. Validate types/schemas (template only)
+  2. messenger.create_channel() → broker stores ":0"          ← BUG: useless endpoint
+  3. Create DataBlock (if SHM)
+  4. Call establish_channel()
+
+establish_channel():
+  5. Wire Messenger callbacks
+  6. ZmqQueue::push_to(":0") → bind → OS assigns :45782
+  7. ZmqQueue::start()                                        ← actual_endpoint() now available
+  8. Create ShmQueue wrapper
+  9. Return Producer
+```
+
+At step 2, the broker stores `:0`. At step 7, the actual port is known but never
+communicated back to the broker.
+
+### 16.3 Design: ENDPOINT_UPDATE
+
+After the ZmqQueue binds and starts (step 7), `establish_channel` sends an
+`ENDPOINT_UPDATE_REQ` to the broker with the resolved endpoint from
+`ZmqQueue::actual_endpoint()`.
+
+**New protocol message:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `channel_name` | string | Channel to update |
+| `zmq_node_endpoint` | string | Resolved endpoint (e.g., `tcp://127.0.0.1:45782`) |
+
+**Broker response:** `ENDPOINT_UPDATE_ACK` with status `"ok"` or `"error"`.
+
+### 16.4 Broker Readiness Guard
+
+The broker maintains a **readiness flag** on each ZMQ channel entry:
+
+- On `CREATE_CHANNEL` with `transport=zmq`: if the registered `zmq_node_endpoint`
+  contains port `0` (parsed), mark the channel as **not ready**.
+- On `ENDPOINT_UPDATE_REQ`: validate the new endpoint (non-zero port), update the
+  stored endpoint, mark the channel as **ready**.
+- On `CONSUMER_REG_REQ` (discovery): if the target channel is ZMQ and **not ready**,
+  reject with a clear error (`CHANNEL_NOT_READY`). The consumer can retry after a
+  short delay.
+
+For channels registered with a specific port (not `:0`), the channel is immediately
+**ready** — no update required.
+
+### 16.5 Updated Factory Flow
+
+```
+create() / create<F,D>():
+  1. Validate types/schemas (template only)
+  2. messenger.create_channel() → broker stores ":0", marks NOT READY
+  3. Create DataBlock (if SHM)
+  4. Call establish_channel()
+
+establish_channel():
+  5. Wire Messenger callbacks
+  6. ZmqQueue::push_to(":0") → bind → OS assigns :45782
+  7. ZmqQueue::start()
+  8. messenger.update_endpoint(channel, actual_endpoint())    ← NEW
+     → broker stores ":45782", marks READY
+  9. Create ShmQueue wrapper
+  10. Return Producer
+```
+
+### 16.6 Design Notes
+
+- **No factory reordering**: The create → establish_channel split is unchanged.
+  The update happens within `establish_channel` after ZmqQueue is ready.
+- **Cleanup on failure**: If `ENDPOINT_UPDATE_REQ` fails, `establish_channel`
+  returns nullopt. The ZmqQueue unique_ptr is destroyed automatically.
+  The channel remains in the broker as not-ready; the Producer destructor's
+  `close()` sends the deregistration.
+- **SHM channels unaffected**: The readiness guard only applies when
+  `transport=zmq` and the registered endpoint has port 0.
+- **Existing deployments**: Channels registered with a specific port are
+  immediately ready. No behavior change for non-port-0 configs.
+- **Template vs non-template**: Both `create()` variants call `establish_channel`
+  which handles the update. No duplication.
+- **Rename**: `create_from_parts` → `establish_channel` to reflect its role:
+  establish all local resources for a broker-registered channel.
+
+### 16.7 Relation to Producer/Consumer API Layering
+
+This change is internal to `establish_channel` and the broker. No impact on:
+- Role host code (calls `Producer::create()` as before)
+- Forwarding API (`write_acquire`, `queue_metrics`, etc.)
+- Consumer discovery flow (broker returns the correct endpoint once ready)
+
+The only visible change is that consumers connecting to a port-0 channel before the
+producer is fully ready receive `CHANNEL_NOT_READY` instead of a bad endpoint.
+
