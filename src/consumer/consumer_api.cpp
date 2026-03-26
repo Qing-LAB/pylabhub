@@ -142,7 +142,8 @@ nlohmann::json ConsumerAPI::snapshot_metrics_json() const
     if (const auto *r = reader_.load(std::memory_order_acquire); r != nullptr)
     {
         const auto m = r->metrics();
-        base["iteration_count"]      = m.iteration_count;
+        base["iteration_count"]      = core_->iteration_count();
+        base["data_drop_count"]      = m.data_drop_count;
         base["last_iteration_us"]    = m.last_iteration_us;
         base["max_iteration_us"]     = m.max_iteration_us;
         base["last_slot_exec_us"]    = m.last_slot_exec_us;
@@ -173,12 +174,14 @@ py::dict ConsumerAPI::metrics() const
     if (const auto *r = reader_.load(std::memory_order_acquire); r != nullptr)
     {
         const auto m = r->metrics();
-        d["context_elapsed_us"]  = py::int_(m.context_elapsed_us);
-        d["iteration_count"]     = py::int_(m.iteration_count);
-        d["last_iteration_us"]   = py::int_(m.last_iteration_us);
-        d["max_iteration_us"]    = py::int_(m.max_iteration_us);
-        d["last_slot_wait_us"]   = py::int_(m.last_slot_wait_us);
-        d["last_slot_exec_us"]   = py::int_(m.last_slot_exec_us);
+        d["context_elapsed_us"]   = py::int_(m.context_elapsed_us);
+        d["iteration_count"]      = py::int_(core_->iteration_count());
+        d["data_drop_count"]      = py::int_(m.data_drop_count);
+        d["last_iteration_us"]    = py::int_(m.last_iteration_us);
+        d["max_iteration_us"]     = py::int_(m.max_iteration_us);
+        d["last_slot_wait_us"]    = py::int_(m.last_slot_wait_us);
+        d["last_slot_exec_us"]    = py::int_(m.last_slot_exec_us);
+        d["configured_period_us"] = py::int_(m.configured_period_us);
     }
 
     return d;
@@ -327,7 +330,7 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
         .def("script_error_count", &ConsumerAPI::script_error_count)
         .def("in_slots_received",  &ConsumerAPI::in_slots_received)
         .def("loop_overrun_count", &ConsumerAPI::loop_overrun_count,
-             "Always 0 — consumer is demand-driven (no deadline to overrun).")
+             "Cycles where the loop exceeded its configured deadline. 0 when no period configured.")
         .def("last_cycle_work_us", &ConsumerAPI::last_cycle_work_us,
              "Microseconds of active work (callback + release) in the last consume iteration.")
         .def("last_seq",       &ConsumerAPI::last_seq,

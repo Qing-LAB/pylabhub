@@ -1622,7 +1622,6 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
         m.last_slot_wait_us = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
                 t_acquired - t_entry).count());
-        ++m.iteration_count;
         pImpl->t_iter_start_  = t_acquired;
     }
 
@@ -2246,7 +2245,6 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
         m.last_slot_wait_us = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
                 t_acquired - t_entry).count());
-        ++m.iteration_count;
         pImpl->t_iter_start_   = t_acquired;
     }
 

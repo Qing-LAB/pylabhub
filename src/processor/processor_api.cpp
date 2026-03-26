@@ -202,13 +202,20 @@ nlohmann::json ProcessorAPI::snapshot_metrics_json() const
     base["drops"]              = out_drop_count();
     base["script_errors"]      = script_error_count();
     base["last_cycle_work_us"] = last_cycle_work_us();
-    base["ctrl_queue_dropped"] = ctrl_queue_dropped();
+    base["loop_overrun_count"] = core_->loop_overrun_count();
+    {
+        uint64_t in_dropped  = consumer_ ? consumer_->ctrl_queue_dropped() : 0;
+        uint64_t out_dropped = producer_ ? producer_->ctrl_queue_dropped() : 0;
+        base["ctrl_queue_dropped"]     = nlohmann::json{{"input", in_dropped}, {"output", out_dropped}};
+        base["in_ctrl_queue_dropped"]  = in_dropped;
+        base["out_ctrl_queue_dropped"] = out_dropped;
+    }
 
     // Domain 2+3 timing from queue abstraction (transport-agnostic).
     if (const auto *iq = in_queue_.load(std::memory_order_acquire); iq != nullptr)
     {
         const auto m = iq->metrics();
-        base["in_iteration_count"]       = m.iteration_count;
+        base["iteration_count"]          = core_->iteration_count();
         base["in_context_elapsed_us"]    = m.context_elapsed_us;
         base["in_last_iteration_us"]     = m.last_iteration_us;
         base["in_max_iteration_us"]      = m.max_iteration_us;
@@ -220,7 +227,6 @@ nlohmann::json ProcessorAPI::snapshot_metrics_json() const
     if (const auto *oq = out_queue_.load(std::memory_order_acquire); oq != nullptr)
     {
         const auto m = oq->metrics();
-        base["out_iteration_count"]      = m.iteration_count;
         base["out_context_elapsed_us"]   = m.context_elapsed_us;
         base["out_last_iteration_us"]    = m.last_iteration_us;
         base["out_max_iteration_us"]     = m.max_iteration_us;
@@ -246,19 +252,29 @@ py::dict ProcessorAPI::metrics() const
 {
     py::dict d;
     // D4 — script supervision
-    d["script_error_count"] = py::int_(script_error_count());
+    d["script_errors"] = py::int_(script_error_count());
     d["loop_overrun_count"] = py::int_(core_->loop_overrun_count());
     d["last_cycle_work_us"] = py::int_(last_cycle_work_us());
     d["in_received"]        = py::int_(in_slots_received());
     d["out_written"]        = py::int_(out_slots_written());
     d["drops"]              = py::int_(out_drop_count());
+    {
+        uint64_t in_dropped  = consumer_ ? consumer_->ctrl_queue_dropped() : 0;
+        uint64_t out_dropped = producer_ ? producer_->ctrl_queue_dropped() : 0;
+        py::dict cqd;
+        cqd["input"]  = py::int_(in_dropped);
+        cqd["output"] = py::int_(out_dropped);
+        d["ctrl_queue_dropped"]     = cqd;
+        d["in_ctrl_queue_dropped"]  = py::int_(in_dropped);
+        d["out_ctrl_queue_dropped"] = py::int_(out_dropped);
+    }
 
     // D2+D3 — input side (transport-agnostic).
     if (const auto *iq = in_queue_.load(std::memory_order_acquire); iq != nullptr)
     {
         const auto m = iq->metrics();
         d["in_context_elapsed_us"]  = py::int_(m.context_elapsed_us);
-        d["in_iteration_count"]     = py::int_(m.iteration_count);
+        d["iteration_count"]         = py::int_(core_->iteration_count());
         d["in_last_iteration_us"]   = py::int_(m.last_iteration_us);
         d["in_max_iteration_us"]    = py::int_(m.max_iteration_us);
         d["in_last_slot_wait_us"]   = py::int_(m.last_slot_wait_us);
@@ -272,7 +288,6 @@ py::dict ProcessorAPI::metrics() const
     {
         const auto m = oq->metrics();
         d["out_context_elapsed_us"]  = py::int_(m.context_elapsed_us);
-        d["out_iteration_count"]     = py::int_(m.iteration_count);
         d["out_last_iteration_us"]   = py::int_(m.last_iteration_us);
         d["out_max_iteration_us"]    = py::int_(m.max_iteration_us);
         d["out_last_slot_wait_us"]   = py::int_(m.last_slot_wait_us);
@@ -464,7 +479,7 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
         .def("out_slots_written",  &ProcessorAPI::out_slots_written)
         .def("out_drop_count",     &ProcessorAPI::out_drop_count)
         .def("loop_overrun_count", &ProcessorAPI::loop_overrun_count,
-             "Always 0 — processor is queue-driven (no deadline to overrun).")
+             "Cycles where the loop exceeded its configured deadline. 0 when no period configured.")
         .def("last_cycle_work_us", &ProcessorAPI::last_cycle_work_us,
              "Microseconds of active work (GIL acquire + on_process callback) in the last iteration.")
         .def("metrics",            &ProcessorAPI::metrics,
