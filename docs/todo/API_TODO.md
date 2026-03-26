@@ -90,17 +90,37 @@
 - `actual_endpoint()` — ZMQ-specific, used only for broker registration
 - DataBlock ring-buffer internals (slot indices, spinlock contention) — SHM implementation detail
 
-### Metrics / Heartbeat Protocol Redesign (HEP-0019 Phase 2)
+### Queue Ownership + Messenger + Protocol Redesign
 
-**Design**: `docs/HEP/HEP-CORE-0019-Metrics-Plane.md` §2.1, §3, §4 (2026-03-25)
-**Status**: Design complete. Implementation pending.
+**Design docs**: HEP-0019 §2.1+§3+§4, API_TODO §Queue Abstraction Phase 2+3
+**Status**: Design complete. Implementation order: Queue Phase 2 → Messenger cleanup → Protocol.
+**Dependency**: Queue ownership must land first so registration and heartbeat use the correct abstraction.
 
-- [ ] HEARTBEAT_REQ: all roles use same format `{channel_name, uid, role_type}`, no metrics payload
-- [ ] METRICS_COLLECT_REQ/ACK: broker→role pull for on-demand metrics collection
+**Phase 2 — Queue ownership** (do first):
+- [ ] `hub::Producer` internally creates `QueueWriter*` (ShmQueue or ZmqQueue based on transport)
+- [ ] `hub::Producer::queue_writer()` always returns non-null after successful create
+- [ ] `hub::Consumer` internally creates `QueueReader*` (same)
+- [ ] `hub::Consumer::queue_reader()` always returns non-null after successful connect
+- [ ] Role hosts stop creating ShmQueue wrappers — use `producer->queue_writer()` / `consumer->queue_reader()`
+- [ ] Role hosts stop branching on `queue() != nullptr` vs `shm() != nullptr`
+- [ ] `shm()` accessor remains for spinlock access only (DataBlock-specific, no queue equivalent)
+
+**Phase 3 — Messenger cleanup** (after queue ownership):
+- [ ] `create_channel()` → `register_producer()` (one path, transport-agnostic)
+- [ ] `unregister_channel()` → `deregister_producer()`
+- [ ] Remove dead legacy `register_producer(ProducerInfo)` + `ProducerInfo` + `RegisterProducerCmd`
+- [ ] Remove `MetricsReportCmd` + `enqueue_metrics_report()`
+- [ ] Registration payload: transport-agnostic (queue handles transport internally)
+
+**Phase 4 — Heartbeat/Metrics protocol** (HEP-0019 Phase 2, after messenger cleanup):
+- [ ] `enqueue_heartbeat(channel, uid, role_type, metrics={})` — one API, all roles
+- [ ] HEARTBEAT_REQ: `{channel_name, uid, role_type}` — liveness only (no metrics by default)
+- [ ] METRICS_COLLECT_REQ: broker → role nudge (one-way, sets `metrics_requested_` flag)
+- [ ] Enriched heartbeat: after nudge, next heartbeat includes `snapshot_metrics_json()`
 - [ ] Global role table in broker: indexed by (channel, uid), stores role_type + heartbeat + metrics + timestamps
-- [ ] Remove METRICS_REPORT_REQ (consumer voluntary push — replaced by broker pull)
-- [ ] Remove heartbeat metrics piggybacking (producer/processor — heartbeat becomes liveness-only)
-- [ ] Consumer heartbeat: currently two messages (bare heartbeat + metrics_report) → single heartbeat
+- [ ] `metrics_requested_` atomic flag on RoleHostCore
+- [ ] Remove heartbeat metrics piggybacking
+- [ ] Remove consumer two-message pattern (bare heartbeat + metrics_report → single heartbeat)
 
 ### Pending Code Review Items (2026-03-25)
 
