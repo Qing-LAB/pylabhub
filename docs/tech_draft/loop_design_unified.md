@@ -544,18 +544,13 @@ backpressure over data loss. Dropping the input would violate that contract.
 The upstream should slow down naturally because the input ring stays full
 (SHM: slot locked; ZMQ: ring entry consumed but no new recv completes).
 
-### 5.4 Why Not hub::Processor
+### 5.4 hub::Processor (deleted 2026-03-26)
 
-`hub::Processor` (hub_processor.cpp) does NOT handle:
-- Control messages (`core.drain_messages()`)
-- Inbox drain
-- Timing policy (FixedRate / FixedRateWithCompensation)
-- The inner retry-acquire pattern
-- Input-hold strategy for Block mode
-- `compute_next_deadline` at cycle end
-
-`hub::Processor` remains available for C++ embedded usage (no script
-engine, no inbox, no timing policy).
+`hub::Processor` was a standalone data-loop class (`hub_processor.hpp/cpp`)
+that wrapped two queues with a typed handler callback. It was 100% superseded
+by `ProcessorRoleHost::run_data_loop_()` which handles all the features
+`hub::Processor` lacked: control messages, inbox, timing policy, inner
+retry-acquire, input-hold, and deadline management. Deleted in commit 929649b.
 
 ---
 

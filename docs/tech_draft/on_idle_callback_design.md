@@ -50,9 +50,9 @@ while running:
     read_release()
 ```
 
-### Processor (today — two-layer)
+### Processor (historical — hub::Processor deleted 2026-03-26)
 ```
-# hub::Processor C++ loop:
+# Former hub::Processor C++ loop (now handled by ProcessorRoleHost::run_data_loop_):
 while running:
     in_data = read_acquire(input_timeout)
     if !in_data:

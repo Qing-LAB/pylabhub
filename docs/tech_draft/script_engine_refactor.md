@@ -98,9 +98,9 @@ struct RoleContext
     const char*       name;
     const char*       channel;
     hub::Messenger*   messenger;      // for open_inbox, wait_for_role
-    hub::QueueWriter* queue_writer;   // for update_flexzone_checksum (producer/processor)
-    hub::QueueReader* queue_reader;   // for set_verify_checksum (consumer/processor)
-    // ... other role-specific pointers
+    void*             producer;       // hub::Producer* — queue ops + checksum + flexzone
+    void*             consumer;       // hub::Consumer* — queue ops + verify checksum
+    // NOTE: queue_writer/queue_reader removed 2026-03-26 — engines use Producer/Consumer directly
 };
 
 /// Result of invoking on_produce / on_process.

@@ -45,8 +45,8 @@ struct ShmQueueImpl
     bool checksum_fz{false};
 
     // Read-side checksum verification flags.
-    // mutable: set_verify_checksum() is const on the QueueReader interface
-    // (ConsumerAPI holds a const pointer; these are behavior flags, not queue state).
+    // mutable: set_verify_checksum() is const on ShmQueue
+    // (behavior flags, not queue state).
     mutable bool verify_slot{false};
     mutable bool verify_fz{false};
 
@@ -145,7 +145,7 @@ ShmQueue::from_producer_ref(DataBlockProducer& dbp, size_t item_size,
 }
 
 // ============================================================================
-// set_checksum_options  (QueueWriter interface)
+// set_checksum_options  (ShmQueue-specific)
 // ============================================================================
 
 void ShmQueue::set_checksum_options(bool slot, bool fz) noexcept
@@ -164,7 +164,7 @@ void ShmQueue::sync_flexzone_checksum() noexcept
 }
 
 // ============================================================================
-// set_verify_checksum  (QueueReader interface)
+// set_verify_checksum  (ShmQueue-specific)
 // ============================================================================
 
 void ShmQueue::set_verify_checksum(bool slot, bool fz) const noexcept

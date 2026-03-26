@@ -120,8 +120,8 @@ struct QueueMetrics
  * @class QueueReader
  * @brief Transport-agnostic read-side contract for the hub pipeline.
  *
- * Provides blocking slot acquisition with optional checksum verification,
- * last-sequence tracking, and ring buffer status queries.
+ * Provides blocking slot acquisition, last-sequence tracking, and ring
+ * buffer status queries.
  *
  * @par Usage contract
  * - Only ONE outstanding acquire at a time (no nested acquires).
@@ -225,7 +225,7 @@ public:
  * @class QueueWriter
  * @brief Transport-agnostic write-side contract for the hub pipeline.
  *
- * Provides slot acquisition with checksum update, overflow policy, and ring buffer status.
+ * Provides slot acquisition with overflow policy and ring buffer status.
  *
  * @par Usage contract
  * - Only ONE outstanding acquire at a time (no nested acquires).
