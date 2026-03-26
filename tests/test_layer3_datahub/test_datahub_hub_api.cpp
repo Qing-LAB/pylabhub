@@ -175,3 +175,22 @@ TEST_F(DatahubHubApiTest, QueueMetricsForwarding)
     auto proc = SpawnWorker("hub_api.queue_metrics_forwarding", {});
     ExpectWorkerOk(proc);
 }
+
+// ZmqForwardingApi: BLOCKED on HEP-0021 §16 (port-0 endpoint update).
+// RuntimeVerifyChecksumToggle: BLOCKED on checksum timing investigation.
+// Both test workers exist in datahub_hub_api_workers.cpp but are not wired
+// into TEST_F until the underlying issues are resolved.
+
+TEST_F(DatahubHubApiTest, ForwardingErrorPaths)
+{
+    // item_size=0: forwarding returns nullptr/0/false safely, no crash.
+    auto proc = SpawnWorker("hub_api.forwarding_error_paths", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubHubApiTest, ChecksumMismatchThroughForwarding)
+{
+    // End-to-end: Producer stamps checksum, Consumer verifies — two consecutive reads pass.
+    auto proc = SpawnWorker("hub_api.checksum_mismatch_through_forwarding", {});
+    ExpectWorkerOk(proc);
+}
