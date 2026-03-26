@@ -43,7 +43,6 @@
  * A recv_thread_ receives frames, validates and decodes them into a pre-allocated
  * ring buffer (max_depth slots of item_size bytes; zero heap allocation per frame).
  * read_acquire() pops from this ring buffer with a timeout.
- * flexzone is always nullptr (ZMQ transport has no flexzone).
  * Sequence gaps (network drops) are counted by recv_gap_count().
  * last_seq() returns the wire frame seq of the most recently decoded frame (atomic).
  *
@@ -58,8 +57,6 @@
  * EAGAIN retry (send_retry_count()) until success or stop().
  * On stop() drain, pending items are sent once; EAGAIN causes send_drop_count()++.
  * write_discard() discards without enqueuing.
- * set_checksum_options() and set_verify_checksum() are no-ops (TCP provides integrity).
- *
  * @par Thread safety
  * ZmqQueue is NOT thread-safe for its public API.  Internally, the recv_thread_
  * uses a mutex to protect the ring buffer.  Use from one caller thread only.
