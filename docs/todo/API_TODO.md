@@ -58,23 +58,28 @@
 
 **Goal**: Role hosts work entirely through `QueueReader`/`QueueWriter` — no transport branching, no `shm()` access.
 
-**Phase 1 — Unified metrics at queue level**:
-- Expand `QueueMetrics` with timing fields: `last_iteration_us`, `max_iteration_us`, `last_slot_exec_us`, `last_slot_wait_us`, `configured_period_us`
-- ShmQueue: populate from existing `ContextMetrics`
-- ZmqQueue: track internally in recv/send thread (measure wait vs work per iteration)
-- Add `virtual void reset_metrics() {}` to QueueReader/QueueWriter base
-- Role hosts use `queue->metrics()` uniformly — eliminate all `->shm()->metrics()` access (3 sites)
-- Role hosts use `queue->reset_metrics()` — eliminate all `->shm()->clear_metrics()` (3 sites)
+**Phase 1 — Unified metrics at queue level** ✅ DONE 2026-03-25:
+- QueueMetrics expanded with D2 timing fields + context_elapsed_us + data_drop_count
+- ShmQueue: bridges from ContextMetrics (single-mode, per-handle perspective)
+- ZmqQueue: timing measured in read_acquire/release, write_acquire/commit using steady_clock
+- reset_metrics() + set_configured_period() on QueueReader/QueueWriter base
+- All role hosts + API classes use queue->metrics() (no more shm()->metrics())
+- start() idempotent across ZmqQueue, InboxQueue, InboxClient
+- Overrun/drop redesign: timing overrun → RoleHostCore::loop_overrun_count (deadline-based);
+  data_drop_count → ZMQ write buffer full/timeout only (SHM always 0)
+- ContextMetrics cleaned: removed context_end_time (dead), data_drop_count (moved to QueueMetrics),
+  iteration_count (moved to RoleHostCore)
+- Endpoint validation: net_address.hpp with IPv4/IPv6/hostname support, wired in inbox/transport/hub configs
+- InboxFrame type_sizeof fix + schema size validation at startup
 
-**Phase 2 — Unified queue ownership**:
+**Phase 2 — Unified queue ownership** (pending):
 - `hub::Producer` always owns a `QueueWriter*` (creates ShmQueue wrapper internally for SHM transport)
 - `hub::Consumer` always owns a `QueueReader*` (same)
 - `queue_writer()`/`queue_reader()` never return null
 - Queue abstraction already carries `item_size()`, `flexzone_size()`, `capacity()`
 - Transport-absent features (checksum, flexzone sync) are no-ops at base class
-- `start()` is idempotent (done 2026-03-25)
 
-**Phase 3 — Role host simplification**:
+**Phase 3 — Role host simplification** (pending):
 - Eliminate all transport branching in role host queue setup
 - Role hosts receive `QueueWriter*`/`QueueReader*`, call `start()`, use, call `stop()`
 - No `ShmQueue::from_*_ref()` calls in role hosts
@@ -84,6 +89,39 @@
 - Spinlock access in API classes — DataBlock-specific, no ZMQ equivalent
 - `actual_endpoint()` — ZMQ-specific, used only for broker registration
 - DataBlock ring-buffer internals (slot indices, spinlock contention) — SHM implementation detail
+
+### Metrics / Heartbeat Protocol Redesign (HEP-0019 Phase 2)
+
+**Design**: `docs/HEP/HEP-CORE-0019-Metrics-Plane.md` §2.1, §3, §4 (2026-03-25)
+**Status**: Design complete. Implementation pending.
+
+- [ ] HEARTBEAT_REQ: all roles use same format `{channel_name, uid, role_type}`, no metrics payload
+- [ ] METRICS_COLLECT_REQ/ACK: broker→role pull for on-demand metrics collection
+- [ ] Global role table in broker: indexed by (channel, uid), stores role_type + heartbeat + metrics + timestamps
+- [ ] Remove METRICS_REPORT_REQ (consumer voluntary push — replaced by broker pull)
+- [ ] Remove heartbeat metrics piggybacking (producer/processor — heartbeat becomes liveness-only)
+- [ ] Consumer heartbeat: currently two messages (bare heartbeat + metrics_report) → single heartbeat
+
+### Pending Code Review Items (2026-03-25)
+
+**Low severity — deferred from code review:**
+- [ ] CR-02: Processor tautological ternary (`zmq_drop` both branches identical) — `processor_role_host.cpp:437-439`
+- [ ] CR-03: Duplicate `add_schema_dir(config_.out_hub().hub_dir)` — `processor_role_host.cpp:145-147,459-461`
+- [ ] CR-07: Stale `create_thread_state()` reference in `lua_engine.hpp:9-10` docstring
+- [ ] CR-13: Processor inbox packing fallback chain inconsistent with producer/consumer pattern — `processor_role_host.cpp:474-477`
+
+**Metrics gaps — deferred:**
+- [ ] ZMQ transport counters (recv_overflow_count, recv_frame_error_count, recv_gap_count, send_drop_count, send_retry_count) not exposed to Python scripts
+- [ ] `context_elapsed_us` in Python dict but not in heartbeat/API JSON
+- [ ] Double `set_loop_policy` on SHM path (hub::Producer/Consumer sets it, then role host sets it again via queue)
+- [ ] Blocking overrun test: L3 test with queue + deadline + barrier coordination (deterministic, no sleep)
+
+### Pending Tests (2026-03-25)
+
+- [ ] Queue timing tests: SHM metrics bridge (verify all fields populated), ZMQ timing (verify measurement points match DataBlock)
+- [ ] Queue data_drop_count tests: ZMQ write buffer full, ZMQ block timeout
+- [ ] net_address validation: 24 tests done; could add edge cases (very long hostname, unicode)
+- [ ] InboxFrame schema size validation test (multi-type with alignment — done; could add packed variant)
 
 ### HEP-0024: Role Directory Service (NEW — 2026-03-12)
 
