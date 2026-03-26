@@ -27,7 +27,6 @@
 namespace pylabhub::hub
 {
 class Consumer;
-class QueueReader;
 class InboxQueue;
 } // namespace pylabhub::hub
 
@@ -99,12 +98,6 @@ class ConsumerRoleHost
     // Infrastructure (created on worker thread in setup_infrastructure_).
     hub::Messenger                         in_messenger_;
     std::optional<hub::Consumer>           in_consumer_;
-
-    /// SHM transport: owned QueueReader wrapping DataBlockConsumer.
-    /// ZMQ transport: nullptr (queue_reader_ points to Consumer-owned ZmqQueue).
-    std::unique_ptr<hub::QueueReader>      shm_queue_;
-    /// Non-owning pointer to the active QueueReader (shm_queue_.get() or Consumer::queue_reader()).
-    hub::QueueReader                      *queue_reader_{nullptr};
 
     std::unique_ptr<hub::InboxQueue>       inbox_queue_;
     std::thread                            ctrl_thread_;

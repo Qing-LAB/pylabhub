@@ -256,6 +256,12 @@ struct ProducerOptions
     /// Block: write_acquire() waits up to the caller's timeout for a free slot.
     OverflowPolicy zmq_overflow_policy{OverflowPolicy::Drop};
 
+    // ── Queue abstraction (Phase 2) ──────────────────────────────────────────
+    /// Slot data size in bytes (from engine type_sizeof("SlotFrame")). Required for ShmQueue wrapper.
+    size_t item_size{0};
+    /// Flexzone size in bytes (page-aligned). 0 = no flexzone.
+    size_t flexzone_size{0};
+
     /// Max depth of P2P ctrl send queue before oldest items are dropped. 0 = unbounded.
     size_t ctrl_queue_max_depth{256};
     /// Peer silence timeout before on_peer_dead fires (ms). 0 = disabled.
@@ -484,15 +490,51 @@ class PYLABHUB_UTILS_EXPORT Producer
     /// Number of ctrl queue items dropped due to max_depth overflow.
     [[nodiscard]] uint64_t ctrl_queue_dropped() const;
 
-    /**
-     * @brief Transport-agnostic write side: returns the ZmqQueue cast to QueueWriter*,
-     * or nullptr when data_transport()=="shm" (SHM producers use the DataBlock API).
-     * Convenience wrapper for ProcessorScriptHost / ProducerScriptHost.
-     */
-    [[nodiscard]] QueueWriter *queue_writer() noexcept { return queue(); }
+    // ── Queue data operations (delegated to internal QueueWriter) ──────────
+
+    /// Acquire a writable slot buffer. Returns nullptr on timeout or no queue.
+    [[nodiscard]] void *write_acquire(std::chrono::milliseconds timeout) noexcept;
+    /// Publish the acquired slot (makes it visible to readers).
+    void write_commit() noexcept;
+    /// Discard the acquired slot without publishing. Loop continues.
+    void write_discard() noexcept;
+    /// Size of one data slot in bytes.
+    [[nodiscard]] size_t queue_item_size() const noexcept;
+    /// Ring/send buffer capacity (slot count).
+    [[nodiscard]] size_t queue_capacity() const noexcept;
+    /// Diagnostic counter snapshot. Thread-safe.
+    [[nodiscard]] QueueMetrics queue_metrics() const noexcept;
+    /// Reset all queue metric counters.
+    void reset_queue_metrics() noexcept;
+
+    // ── Queue lifecycle ─────────────────────────────────────────────────────
+
+    /// Start the internal data queue. Idempotent.
+    bool start_queue();
+    /// Stop the internal data queue. Idempotent.
+    void stop_queue();
+
+    // ── Channel data operations (flexzone, checksum — SHM-specific) ─────────
+
+    /// Writable pointer to the shared flexzone. nullptr if no flexzone or ZMQ transport.
+    [[nodiscard]] void *write_flexzone() noexcept;
+    /// Read-only pointer to the shared flexzone. nullptr if no flexzone or ZMQ transport.
+    [[nodiscard]] const void *read_flexzone() const noexcept;
+    /// Flexzone size in bytes. 0 if not configured or ZMQ transport.
+    [[nodiscard]] size_t flexzone_size() const noexcept;
+    /// Configure BLAKE2b checksum update on write_commit(). No-op for ZMQ.
+    void set_checksum_options(bool slot, bool fz) noexcept;
+    /// Stamp the flexzone checksum after on_init() writes initial content. No-op for ZMQ.
+    void sync_flexzone_checksum() noexcept;
+    /// Set the target loop period for metrics reporting. 0 = MaxRate.
+    void set_queue_period(uint64_t period_us) noexcept;
 
     /// Returns the Messenger used by this Producer.
     [[nodiscard]] Messenger &messenger() const;
+
+    /// Internal: returns the raw QueueWriter pointer (for engine RoleContext handoff).
+    /// Prefer the named forwarding methods above for role host use.
+    [[nodiscard]] QueueWriter *queue_writer() noexcept;
 
     /**
      * @brief Deregisters from broker, closes sockets and SHM. Called by destructor.

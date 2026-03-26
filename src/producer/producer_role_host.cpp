@@ -91,11 +91,8 @@ void ProducerRoleHost::worker_main_()
 {
     const auto &id   = config_.identity();
     const auto &sc   = config_.script();
-    const auto &tc   = config_.timing();
     const auto &hub  = config_.out_hub();
     const auto &tr   = config_.out_transport();
-    const auto &shm  = config_.out_shm();
-    const auto &inbox = config_.inbox();
     const auto &pf   = config_.role_data<ProducerFields>();
 
     // Step 1: Initialize the engine.
@@ -220,7 +217,7 @@ void ProducerRoleHost::worker_main_()
     ctx.script_dir  = script_dir.string();
     ctx.role_dir    = config_.base_dir().string();
     ctx.messenger   = &out_messenger_;
-    ctx.queue_writer = queue_.get();
+    ctx.queue_writer = out_producer_.has_value() ? out_producer_->queue_writer() : nullptr;
     ctx.queue_reader = nullptr;
     ctx.producer    = out_producer_.has_value() ? &(*out_producer_) : nullptr;
     ctx.consumer    = nullptr;
@@ -240,8 +237,8 @@ void ProducerRoleHost::worker_main_()
     engine_->invoke_on_init();
 
     // Sync flexzone checksum after on_init (user may have written to flexzone).
-    if (queue_ && core_.has_fz())
-        queue_->sync_flexzone_checksum();
+    if (out_producer_.has_value() && core_.has_fz())
+        out_producer_->sync_flexzone_checksum();
 
     // Step 7: Spawn ctrl_thread_ and signal ready.
     core_.set_running(true);
@@ -403,6 +400,10 @@ bool ProducerRoleHost::setup_infrastructure_()
         opts.inbox_packing     = inbox_packing;
     }
 
+    // --- Queue abstraction Phase 2: sizes for internal queue creation ---
+    opts.item_size     = schema_slot_size_;
+    opts.flexzone_size = core_.schema_fz_size();
+
     // --- SHM config ---
     if (shm.enabled)
     {
@@ -416,6 +417,22 @@ bool ProducerRoleHost::setup_infrastructure_()
         opts.shm_config.physical_page_size = hub::system_page_size();
         opts.shm_config.logical_unit_size  =
             (schema_slot_size_ == 0) ? 1 : schema_slot_size_;
+    }
+
+    // --- ZMQ transport (HEP-CORE-0021) ---
+    if (tr.transport == config::Transport::Zmq)
+    {
+        opts.has_shm           = false;
+        opts.data_transport    = "zmq";
+        opts.zmq_node_endpoint = tr.zmq_endpoint;
+        opts.zmq_bind          = tr.zmq_bind;
+        opts.zmq_schema        = scripting::schema_spec_to_zmq_fields(
+                                     slot_spec_, schema_slot_size_);
+        opts.zmq_packing       = tr.zmq_packing;
+        opts.zmq_buffer_depth  = tr.zmq_buffer_depth;
+        opts.zmq_overflow_policy =
+            (tr.zmq_overflow_policy == "block") ? hub::OverflowPolicy::Block
+                                                : hub::OverflowPolicy::Drop;
     }
 
     // --- Broker connect ---
@@ -529,46 +546,16 @@ bool ProducerRoleHost::setup_infrastructure_()
         core_.request_stop();
     });
 
-    // --- Create transport queue ---
-    if (tr.transport == config::Transport::Shm)
+    // --- Start and configure data queue ---
+    if (!out_producer_->start_queue())
     {
-        auto *out_shm_ptr = out_producer_->shm();
-        if (out_shm_ptr == nullptr)
-        {
-            LOGGER_ERROR("[prod] transport=shm but SHM unavailable for channel '{}'", ch);
-            return false;
-        }
-        queue_ = hub::ShmQueue::from_producer_ref(
-            *out_shm_ptr, schema_slot_size_, core_.schema_fz_size(), ch);
-    }
-    else
-    {
-        auto zmq_fields =
-            scripting::schema_spec_to_zmq_fields(slot_spec_, schema_slot_size_);
-        const auto zmq_policy = (tr.zmq_overflow_policy == "block")
-                                     ? hub::OverflowPolicy::Block
-                                     : hub::OverflowPolicy::Drop;
-        queue_ = hub::ZmqQueue::push_to(
-            tr.zmq_endpoint, std::move(zmq_fields), tr.zmq_packing,
-            tr.zmq_bind, std::nullopt, 0, tr.zmq_buffer_depth, zmq_policy);
-        if (!queue_)
-        {
-            LOGGER_ERROR("[prod] Failed to create ZmqQueue for endpoint '{}'",
-                         tr.zmq_endpoint);
-            return false;
-        }
-    }
-
-    if (!queue_->start())
-    {
-        LOGGER_ERROR("[prod] Queue::start() failed for channel '{}'", ch);
-        queue_.reset();
+        LOGGER_ERROR("[prod] start_queue() failed for channel '{}'", ch);
         return false;
     }
-    queue_->set_checksum_options(shm.update_checksum, core_.has_fz());
-    queue_->reset_metrics();
+    out_producer_->set_checksum_options(shm.update_checksum, core_.has_fz());
+    out_producer_->reset_queue_metrics();
     if (tc.period_us > 0.0)
-        queue_->set_configured_period(static_cast<uint64_t>(tc.period_us));
+        out_producer_->set_queue_period(static_cast<uint64_t>(tc.period_us));
 
     LOGGER_INFO("[prod] Producer started on channel '{}' (shm={})", ch,
                 out_producer_->has_shm());
@@ -599,13 +586,6 @@ void ProducerRoleHost::teardown_infrastructure_()
         inbox_queue_.reset();
     }
 
-    // Stop queue.
-    if (queue_)
-    {
-        queue_->stop();
-        queue_.reset();
-    }
-
     // Deregister hub-dead callback.
     out_messenger_.on_hub_dead(nullptr);
 
@@ -624,9 +604,9 @@ void ProducerRoleHost::teardown_infrastructure_()
 
 void ProducerRoleHost::run_data_loop_()
 {
-    if (!queue_)
+    if (!out_producer_.has_value())
     {
-        LOGGER_ERROR("[prod] run_data_loop_: transport queue not initialized — aborting");
+        LOGGER_ERROR("[prod] run_data_loop_: producer not initialized — aborting");
         core_.set_running(false);
         return;
     }
@@ -641,11 +621,11 @@ void ProducerRoleHost::run_data_loop_()
     // write_acquire takes milliseconds; convert with rounding up to avoid 0ms.
     const auto short_timeout =
         std::chrono::duration_cast<std::chrono::milliseconds>(short_timeout_us + std::chrono::microseconds{999});
-    const size_t buf_sz = queue_->item_size();
+    const size_t buf_sz = out_producer_->queue_item_size();
 
     // Flexzone pointers — valid after queue start.
-    void       *fz_ptr  = core_.has_fz() ? queue_->write_flexzone() : nullptr;
-    const size_t fz_sz  = core_.has_fz() ? queue_->flexzone_size()  : 0;
+    void       *fz_ptr  = core_.has_fz() ? out_producer_->write_flexzone() : nullptr;
+    const size_t fz_sz  = core_.has_fz() ? out_producer_->flexzone_size()  : 0;
     const char *fz_type = core_.has_fz() ? "FlexFrame" : nullptr;
 
     // First cycle: no deadline — fire immediately.
@@ -666,7 +646,7 @@ void ProducerRoleHost::run_data_loop_()
         void *buf = nullptr;
         while (true)
         {
-            buf = queue_->write_acquire(short_timeout);
+            buf = out_producer_->write_acquire(short_timeout);
             if (buf != nullptr)
                 break; // got slot
 
@@ -709,7 +689,7 @@ void ProducerRoleHost::run_data_loop_()
             core_.is_critical_error())
         {
             if (buf != nullptr)
-                queue_->write_discard();
+                out_producer_->write_discard();
             break;
         }
 
@@ -723,7 +703,7 @@ void ProducerRoleHost::run_data_loop_()
 
         // Re-read flexzone pointer each cycle (ShmQueue may move it).
         if (core_.has_fz())
-            fz_ptr = queue_->write_flexzone();
+            fz_ptr = out_producer_->write_flexzone();
 
         InvokeResult result =
             engine_->invoke_produce(buf, buf_sz, fz_ptr, fz_sz, fz_type, msgs);
@@ -733,12 +713,12 @@ void ProducerRoleHost::run_data_loop_()
         {
             if (result == InvokeResult::Commit)
             {
-                queue_->write_commit();
+                out_producer_->write_commit();
                 core_.inc_out_written();
             }
             else
             {
-                queue_->write_discard();
+                out_producer_->write_discard();
                 core_.inc_drops();
             }
         }
@@ -830,9 +810,9 @@ nlohmann::json ProducerRoleHost::snapshot_metrics_json() const
     // Use our own iteration_count (always available, regardless of transport).
     base["iteration_count"] = core_.iteration_count();
 
-    if (queue_)
+    if (out_producer_.has_value())
     {
-        const auto m = queue_->metrics();
+        const auto m = out_producer_->queue_metrics();
         base["data_drop_count"]     = m.data_drop_count;
         base["last_iteration_us"]   = m.last_iteration_us;
         base["max_iteration_us"]    = m.max_iteration_us;
