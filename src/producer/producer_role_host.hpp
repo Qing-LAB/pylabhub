@@ -27,7 +27,6 @@
 namespace pylabhub::hub
 {
 class Producer;
-class QueueWriter;
 class InboxQueue;
 } // namespace pylabhub::hub
 
@@ -99,7 +98,6 @@ class ProducerRoleHost
     // Infrastructure (created on worker thread in setup_infrastructure_).
     hub::Messenger                         out_messenger_;
     std::optional<hub::Producer>           out_producer_;
-    std::unique_ptr<hub::QueueWriter>      queue_;
     std::unique_ptr<hub::InboxQueue>       inbox_queue_;
     std::thread                            ctrl_thread_;
 

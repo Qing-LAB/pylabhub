@@ -244,8 +244,8 @@ void ProcessorRoleHost::worker_main_()
     ctx.script_dir   = script_dir.string();
     ctx.role_dir     = config_.base_dir().string();
     ctx.messenger    = &out_messenger_;
-    ctx.queue_writer = out_q_;
-    ctx.queue_reader = in_q_;
+    ctx.queue_writer = out_producer_.has_value() ? out_producer_->queue_writer() : nullptr;
+    ctx.queue_reader = in_consumer_.has_value() ? in_consumer_->queue_reader() : nullptr;
     ctx.producer     = out_producer_.has_value() ? &(*out_producer_) : nullptr;
     ctx.consumer     = in_consumer_.has_value() ? &(*in_consumer_) : nullptr;
     ctx.core         = &core_;
@@ -264,8 +264,8 @@ void ProcessorRoleHost::worker_main_()
     engine_->invoke_on_init();
 
     // Sync flexzone checksum after on_init (user may have written to flexzone).
-    if (out_q_ && core_.has_fz())
-        out_q_->sync_flexzone_checksum();
+    if (out_producer_.has_value() && core_.has_fz())
+        out_producer_->sync_flexzone_checksum();
 
     // Step 7: Spawn ctrl_thread_ and signal ready.
     core_.set_running(true);
@@ -310,11 +310,18 @@ bool ProcessorRoleHost::setup_infrastructure_()
                                        in_slot_spec_, scripting::SchemaSpec{});
     in_opts.consumer_uid         = config_.identity().uid;
     in_opts.consumer_name        = config_.identity().name;
+    in_opts.item_size            = in_schema_slot_size_;
+    in_opts.flexzone_size        = core_.schema_fz_size();
     in_opts.zmq_schema           = scripting::schema_spec_to_zmq_fields(
                                        in_slot_spec_, in_schema_slot_size_);
     in_opts.zmq_packing          = config_.in_transport().zmq_packing;
+    in_opts.zmq_buffer_depth     = config_.in_transport().zmq_buffer_depth;
     in_opts.ctrl_queue_max_depth = config_.monitoring().ctrl_queue_max_depth;
     in_opts.peer_dead_timeout_ms = config_.monitoring().peer_dead_timeout_ms;
+
+    // Transport declaration — broker validates mismatch.
+    const bool in_is_zmq = (config_.in_transport().transport == config::Transport::Zmq);
+    in_opts.queue_type = in_is_zmq ? "zmq" : "shm";
 
     const auto &in_ep  = config_.in_hub().broker;
     const auto &in_pub = config_.in_hub().broker_pubkey;
@@ -393,12 +400,14 @@ bool ProcessorRoleHost::setup_infrastructure_()
 
     // ── Producer side (out_channel) ─────────────────────────────────────────
     hub::ProducerOptions out_opts;
-    out_opts.channel_name = config_.out_channel();
-    out_opts.pattern      = hub::ChannelPattern::PubSub;
-    out_opts.has_shm      = config_.out_shm().enabled;
-    out_opts.schema_hash  = scripting::compute_schema_hash(out_slot_spec_, core_.fz_spec());
-    out_opts.role_name   = config_.identity().name;
-    out_opts.role_uid    = config_.identity().uid;
+    out_opts.channel_name  = config_.out_channel();
+    out_opts.pattern       = hub::ChannelPattern::PubSub;
+    out_opts.has_shm       = config_.out_shm().enabled;
+    out_opts.schema_hash   = scripting::compute_schema_hash(out_slot_spec_, core_.fz_spec());
+    out_opts.role_name     = config_.identity().name;
+    out_opts.role_uid      = config_.identity().uid;
+    out_opts.item_size     = out_schema_slot_size_;
+    out_opts.flexzone_size = core_.schema_fz_size();
 
     if (config_.timing().period_us > 0.0)
     {
@@ -434,12 +443,10 @@ bool ProcessorRoleHost::setup_infrastructure_()
                                          out_slot_spec_, out_schema_slot_size_);
         out_opts.zmq_packing       = config_.out_transport().zmq_packing;
         out_opts.zmq_buffer_depth  = config_.out_transport().zmq_buffer_depth;
-        const bool zmq_drop = config_.out_transport().zmq_overflow_policy.empty()
-            ? (config_.out_transport().zmq_overflow_policy == "drop")
-            : (config_.out_transport().zmq_overflow_policy == "drop");
-        out_opts.zmq_overflow_policy = zmq_drop
-                                           ? hub::OverflowPolicy::Drop
-                                           : hub::OverflowPolicy::Block;
+        out_opts.zmq_overflow_policy =
+            (config_.out_transport().zmq_overflow_policy == "block")
+                ? hub::OverflowPolicy::Block
+                : hub::OverflowPolicy::Drop;
     }
 
     // ── Inbox facility (optional) ───────────────────────────────────────────
@@ -669,85 +676,33 @@ bool ProcessorRoleHost::setup_infrastructure_()
     out_messenger_.on_hub_dead(hub_dead_cb);
 
     // ── Create data queues ─────────────────────────────────────────────────
-    // Input queue.
-    if (config_.in_transport().transport == config::Transport::Zmq)
-    {
-        auto zmq_fields = scripting::schema_spec_to_zmq_fields(
-            in_slot_spec_, in_schema_slot_size_);
-        in_queue_ = hub::ZmqQueue::pull_from(
-            config_.in_transport().zmq_endpoint, std::move(zmq_fields),
-            config_.in_transport().zmq_packing, config_.in_transport().zmq_bind, config_.in_transport().zmq_buffer_depth);
-        if (!in_queue_->start())
-        {
-            LOGGER_ERROR("[proc] ZMQ input queue start() failed (endpoint='{}')",
-                         config_.in_transport().zmq_endpoint);
-            return false;
-        }
-        in_q_ = in_queue_.get();
-    }
-    else if (auto *zmq_in = in_consumer_->queue())
-    {
-        if (config_.in_shm().verify_checksum)
-            LOGGER_WARN("[proc] verify_checksum=true has no effect on ZMQ input transport "
-                        "(TCP provides integrity); consider SHM input if checksum is needed");
-        in_q_ = zmq_in;
-    }
-    else
-    {
-        auto *in_shm = in_consumer_->shm();
-        if (in_shm == nullptr)
-        {
-            LOGGER_ERROR("[proc] Input SHM unavailable (in_channel='{}')", config_.in_channel());
-            return false;
-        }
-        in_queue_ = hub::ShmQueue::from_consumer_ref(
-            *in_shm, in_schema_slot_size_, core_.schema_fz_size(), config_.in_channel());
-        if (!in_queue_->start())
-        {
-            LOGGER_ERROR("[proc] SHM input queue start() failed (channel='{}')",
-                         config_.in_channel());
-            return false;
-        }
-        if (config_.in_shm().verify_checksum)
-            in_queue_->set_verify_checksum(true, core_.has_fz());
-        in_q_ = in_queue_.get();
-    }
 
-    // Output queue.
-    if (auto *zmq_out = out_producer_->queue())
+    // --- Start and configure data queues ---
+    if (!in_consumer_->start_queue())
     {
-        out_q_ = zmq_out;
+        LOGGER_ERROR("[proc] Input start_queue() failed (in_channel='{}')",
+                     config_.in_channel());
+        return false;
     }
-    else
+    if (config_.in_shm().verify_checksum)
+        in_consumer_->set_verify_checksum(true, core_.has_fz());
+
+    if (!out_producer_->start_queue())
     {
-        auto *out_shm = out_producer_->shm();
-        if (out_shm == nullptr)
-        {
-            LOGGER_ERROR("[proc] Output SHM unavailable (out_channel='{}')",
-                         config_.out_channel());
-            return false;
-        }
-        out_queue_ = hub::ShmQueue::from_producer_ref(
-            *out_shm, out_schema_slot_size_, core_.schema_fz_size(), config_.out_channel());
-        out_q_ = out_queue_.get();
-    }
-    // Uniform lifecycle: start() is idempotent (true if already running).
-    if (!out_q_->start())
-    {
-        LOGGER_ERROR("[proc] Output queue start() failed (channel='{}')",
+        LOGGER_ERROR("[proc] Output start_queue() failed (out_channel='{}')",
                      config_.out_channel());
         return false;
     }
-    out_q_->set_checksum_options(config_.out_shm().update_checksum, core_.has_fz());
+    out_producer_->set_checksum_options(config_.out_shm().update_checksum, core_.has_fz());
 
     // Reset metrics and configure period on both queues.
-    in_q_->reset_metrics();
-    out_q_->reset_metrics();
+    in_consumer_->reset_queue_metrics();
+    out_producer_->reset_queue_metrics();
     if (config_.timing().period_us > 0.0)
     {
         auto period = static_cast<uint64_t>(config_.timing().period_us);
-        in_q_->set_configured_period(period);
-        out_q_->set_configured_period(period);
+        in_consumer_->set_queue_period(period);
+        out_producer_->set_queue_period(period);
     }
 
     LOGGER_INFO("[proc] Processor started: '{}' -> '{}'",
@@ -777,21 +732,6 @@ void ProcessorRoleHost::teardown_infrastructure_()
         inbox_queue_.reset();
     }
 
-    // Null raw pointers BEFORE destroying owned queues (prevent dangling).
-    in_q_  = nullptr;
-    out_q_ = nullptr;
-
-    if (in_queue_)
-    {
-        in_queue_->stop();
-        in_queue_.reset();
-    }
-    if (out_queue_)
-    {
-        out_queue_->stop();
-        out_queue_.reset();
-    }
-
     // Deregister hub-dead callbacks on both messengers.
     in_messenger_.on_hub_dead(nullptr);
     out_messenger_.on_hub_dead(nullptr);
@@ -819,7 +759,7 @@ void ProcessorRoleHost::teardown_infrastructure_()
 
 void ProcessorRoleHost::run_data_loop_()
 {
-    if (!in_q_ || !out_q_)
+    if (!in_consumer_.has_value() || !out_producer_.has_value())
     {
         LOGGER_ERROR("[proc] run_data_loop_: transport queues not initialized — aborting");
         core_.set_running(false);
@@ -840,12 +780,12 @@ void ProcessorRoleHost::run_data_loop_()
 
     const bool drop_mode = (config_.out_transport().zmq_overflow_policy == "drop");
 
-    const size_t in_sz  = in_q_->item_size();
-    const size_t out_sz = out_q_->item_size();
+    const size_t in_sz  = in_consumer_->queue_item_size();
+    const size_t out_sz = out_producer_->queue_item_size();
 
     // Flexzone pointers — valid after queue start.
-    void       *fz_ptr  = core_.has_fz() ? out_q_->write_flexzone() : nullptr;
-    const size_t fz_sz  = core_.has_fz() ? out_q_->flexzone_size()  : 0;
+    void       *fz_ptr  = core_.has_fz() ? out_producer_->write_flexzone() : nullptr;
+    const size_t fz_sz  = core_.has_fz() ? out_producer_->flexzone_size()  : 0;
     const char *fz_type = core_.has_fz() ? "FlexFrame" : nullptr;
 
     // First cycle: no deadline — fire immediately.
@@ -877,7 +817,7 @@ void ProcessorRoleHost::run_data_loop_()
         {
             while (true)
             {
-                held_input = in_q_->read_acquire(short_timeout);
+                held_input = in_consumer_->read_acquire(short_timeout);
                 if (held_input != nullptr)
                     break; // got input
 
@@ -919,7 +859,7 @@ void ProcessorRoleHost::run_data_loop_()
         {
             if (drop_mode)
             {
-                out_buf = out_q_->write_acquire(std::chrono::milliseconds{0});
+                out_buf = out_producer_->write_acquire(std::chrono::milliseconds{0});
             }
             else
             {
@@ -933,7 +873,7 @@ void ProcessorRoleHost::run_data_loop_()
                     if (remaining > short_timeout)
                         output_timeout = remaining;
                 }
-                out_buf = out_q_->write_acquire(output_timeout);
+                out_buf = out_producer_->write_acquire(output_timeout);
             }
         }
 
@@ -952,11 +892,11 @@ void ProcessorRoleHost::run_data_loop_()
         {
             if (held_input != nullptr)
             {
-                in_q_->read_release();
+                in_consumer_->read_release();
                 held_input = nullptr;
             }
             if (out_buf != nullptr)
-                out_q_->write_discard();
+                out_producer_->write_discard();
             break;
         }
 
@@ -970,7 +910,7 @@ void ProcessorRoleHost::run_data_loop_()
 
         // Re-read flexzone pointer each cycle (ShmQueue may move it).
         if (core_.has_fz())
-            fz_ptr = out_q_->write_flexzone();
+            fz_ptr = out_producer_->write_flexzone();
 
         InvokeResult result =
             engine_->invoke_process(held_input, in_sz, out_buf, out_sz,
@@ -983,12 +923,12 @@ void ProcessorRoleHost::run_data_loop_()
         {
             if (result == InvokeResult::Commit)
             {
-                out_q_->write_commit();
+                out_producer_->write_commit();
                 core_.inc_out_written();
             }
             else
             {
-                out_q_->write_discard();
+                out_producer_->write_discard();
                 core_.inc_drops();
             }
         }
@@ -1004,7 +944,7 @@ void ProcessorRoleHost::run_data_loop_()
             if (out_buf != nullptr || drop_mode)
             {
                 // Normal: data processed or dropped. Advance input.
-                in_q_->read_release();
+                in_consumer_->read_release();
                 held_input = nullptr;
                 core_.inc_in_received();
             }
@@ -1036,7 +976,7 @@ void ProcessorRoleHost::run_data_loop_()
     // Clean up held input on loop exit.
     if (held_input != nullptr)
     {
-        in_q_->read_release();
+        in_consumer_->read_release();
         held_input = nullptr;
     }
 
@@ -1059,8 +999,9 @@ void ProcessorRoleHost::run_ctrl_thread_()
         {in_consumer_->ctrl_zmq_socket_handle(),
          [&] { in_consumer_->handle_ctrl_events_nowait(); }},
     };
-    // Consumer data socket is only needed when data comes via broker relay (SHM transport).
-    if (config_.in_transport().transport != config::Transport::Zmq && in_consumer_->data_transport() != "zmq")
+    // Consumer data socket is only needed when data comes via ZMQ relay (SHM transport
+    // uses the DataBlock directly, not the data socket).
+    if (in_consumer_->data_transport() != "zmq")
     {
         loop.sockets.push_back(
             {in_consumer_->data_zmq_socket_handle(),
@@ -1112,9 +1053,9 @@ nlohmann::json ProcessorRoleHost::snapshot_metrics_json() const
     // Use our own iteration_count (always available, regardless of transport).
     base["iteration_count"] = core_.iteration_count();
 
-    if (in_q_)
+    if (in_consumer_.has_value())
     {
-        const auto m = in_q_->metrics();
+        const auto m = in_consumer_->queue_metrics();
         base["in_data_drop_count"]      = m.data_drop_count;
         base["in_last_iteration_us"]    = m.last_iteration_us;
         base["in_max_iteration_us"]     = m.max_iteration_us;
@@ -1122,9 +1063,9 @@ nlohmann::json ProcessorRoleHost::snapshot_metrics_json() const
         base["in_last_slot_wait_us"]    = m.last_slot_wait_us;
         base["in_configured_period_us"] = m.configured_period_us;
     }
-    if (out_q_)
+    if (out_producer_.has_value())
     {
-        const auto m = out_q_->metrics();
+        const auto m = out_producer_->queue_metrics();
         base["out_data_drop_count"]      = m.data_drop_count;
         base["out_last_iteration_us"]    = m.last_iteration_us;
         base["out_max_iteration_us"]     = m.max_iteration_us;

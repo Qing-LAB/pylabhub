@@ -1,5 +1,6 @@
 // src/utils/hub_producer.cpp
 #include "utils/hub_producer.hpp"
+#include "utils/hub_shm_queue.hpp"
 #include "utils/hub_zmq_queue.hpp"
 #include "channel_handle_internals.hpp"
 #include "utils/logger.hpp"
@@ -119,9 +120,13 @@ struct ProducerImpl
     ProducerMessagingFacade facade{};
 
     // HEP-CORE-0021: ZMQ PUSH socket (non-null only when data_transport=="zmq").
-    // Stored as QueueWriter* since push_to() now returns unique_ptr<QueueWriter>.
-    // Actual runtime type is always ZmqQueue (created by ZmqQueue::push_to).
     std::unique_ptr<QueueWriter> zmq_queue_;
+
+    // Queue abstraction Phase 2: unified QueueWriter.
+    // SHM transport: ShmQueue wrapping `shm`. ZMQ transport: alias for zmq_queue_.
+    // Non-null when item_size > 0 (SHM) or data_transport=="zmq".
+    std::unique_ptr<QueueWriter> shm_queue_writer_; ///< Owned ShmQueue (SHM only)
+    QueueWriter *queue_writer_{nullptr};
 
     void run_peer_thread();
     void run_write_thread();
@@ -611,6 +616,19 @@ Producer::create_from_parts(Messenger &messenger, ChannelHandle channel,
     }
     impl->peer_dead_timeout_ms_ = opts.peer_dead_timeout_ms;
 
+    // Queue abstraction Phase 2: create unified QueueWriter.
+    // SHM: wrap DataBlockProducer in ShmQueue. ZMQ: use existing zmq_queue_.
+    if (impl->shm && opts.item_size > 0)
+    {
+        impl->shm_queue_writer_ = ShmQueue::from_producer_ref(
+            *impl->shm, opts.item_size, opts.flexzone_size, opts.channel_name);
+        impl->queue_writer_ = impl->shm_queue_writer_.get();
+    }
+    else if (impl->zmq_queue_)
+    {
+        impl->queue_writer_ = impl->zmq_queue_.get();
+    }
+
     return Producer(std::move(impl));
 }
 
@@ -980,6 +998,103 @@ ZmqQueue *Producer::queue() noexcept
     return pImpl ? static_cast<ZmqQueue *>(pImpl->zmq_queue_.get()) : nullptr;
 }
 
+QueueWriter *Producer::queue_writer() noexcept
+{
+    return pImpl ? pImpl->queue_writer_ : nullptr;
+}
+
+// ============================================================================
+// Producer — Queue data operations (forwarded to internal QueueWriter)
+// ============================================================================
+
+void *Producer::write_acquire(std::chrono::milliseconds timeout) noexcept
+{
+    auto *q = pImpl ? pImpl->queue_writer_ : nullptr;
+    return q ? q->write_acquire(timeout) : nullptr;
+}
+
+void Producer::write_commit() noexcept
+{
+    if (pImpl && pImpl->queue_writer_)
+        pImpl->queue_writer_->write_commit();
+}
+
+void Producer::write_discard() noexcept
+{
+    if (pImpl && pImpl->queue_writer_)
+        pImpl->queue_writer_->write_discard();
+}
+
+size_t Producer::queue_item_size() const noexcept
+{
+    return (pImpl && pImpl->queue_writer_) ? pImpl->queue_writer_->item_size() : 0;
+}
+
+size_t Producer::queue_capacity() const noexcept
+{
+    return (pImpl && pImpl->queue_writer_) ? pImpl->queue_writer_->capacity() : 0;
+}
+
+QueueMetrics Producer::queue_metrics() const noexcept
+{
+    return (pImpl && pImpl->queue_writer_) ? pImpl->queue_writer_->metrics() : QueueMetrics{};
+}
+
+void Producer::reset_queue_metrics() noexcept
+{
+    if (pImpl && pImpl->queue_writer_)
+        pImpl->queue_writer_->reset_metrics();
+}
+
+bool Producer::start_queue()
+{
+    return (pImpl && pImpl->queue_writer_) ? pImpl->queue_writer_->start() : false;
+}
+
+void Producer::stop_queue()
+{
+    if (pImpl && pImpl->queue_writer_)
+        pImpl->queue_writer_->stop();
+}
+
+// ============================================================================
+// Producer — Channel data operations (flexzone, checksum)
+// ============================================================================
+
+void *Producer::write_flexzone() noexcept
+{
+    return (pImpl && pImpl->queue_writer_) ? pImpl->queue_writer_->write_flexzone() : nullptr;
+}
+
+const void *Producer::read_flexzone() const noexcept
+{
+    // Writer side can read its own flexzone for verification / on_init populate.
+    return (pImpl && pImpl->queue_writer_) ? pImpl->queue_writer_->write_flexzone() : nullptr;
+}
+
+size_t Producer::flexzone_size() const noexcept
+{
+    return (pImpl && pImpl->queue_writer_) ? pImpl->queue_writer_->flexzone_size() : 0;
+}
+
+void Producer::set_checksum_options(bool slot, bool fz) noexcept
+{
+    if (pImpl && pImpl->queue_writer_)
+        pImpl->queue_writer_->set_checksum_options(slot, fz);
+}
+
+void Producer::sync_flexzone_checksum() noexcept
+{
+    if (pImpl && pImpl->queue_writer_)
+        pImpl->queue_writer_->sync_flexzone_checksum();
+}
+
+void Producer::set_queue_period(uint64_t period_us) noexcept
+{
+    if (pImpl && pImpl->queue_writer_)
+        pImpl->queue_writer_->set_configured_period(period_us);
+}
+
 ChannelHandle &Producer::channel_handle()
 {
     assert(pImpl);
@@ -1046,6 +1161,10 @@ void Producer::close()
     pImpl->on_peer_dead_cb        = nullptr;
 
     pImpl->handle.invalidate();
+    // Reset queue abstraction before shm — ShmQueue holds non-owning ref to DataBlock.
+    pImpl->queue_writer_ = nullptr;
+    pImpl->shm_queue_writer_.reset();
+    pImpl->zmq_queue_.reset();
     pImpl->shm.reset();
     pImpl->closed = true;
 }

@@ -1,5 +1,6 @@
 // src/utils/hub_consumer.cpp
 #include "utils/hub_consumer.hpp"
+#include "utils/hub_shm_queue.hpp"
 #include "utils/hub_zmq_queue.hpp"
 #include "channel_handle_internals.hpp"
 #include "utils/logger.hpp"
@@ -104,9 +105,13 @@ struct ConsumerImpl
     ConsumerMessagingFacade facade{};
 
     // HEP-CORE-0021: ZMQ PULL socket (non-null only when data_transport=="zmq").
-    // Stored as QueueReader* since pull_from() now returns unique_ptr<QueueReader>.
-    // Actual runtime type is always ZmqQueue (created by ZmqQueue::pull_from).
     std::unique_ptr<QueueReader> zmq_queue_;
+
+    // Queue abstraction Phase 2: unified QueueReader.
+    // SHM transport: ShmQueue wrapping `shm`. ZMQ transport: alias for zmq_queue_.
+    // Non-null when item_size > 0 (SHM) or data_transport=="zmq".
+    std::unique_ptr<QueueReader> shm_queue_reader_; ///< Owned ShmQueue (SHM only)
+    QueueReader *queue_reader_{nullptr};
 
     void run_data_thread();
     void run_ctrl_thread();
@@ -588,6 +593,19 @@ Consumer::connect_from_parts(Messenger &messenger, ChannelHandle channel,
     }
     impl->peer_dead_timeout_ms_ = opts.peer_dead_timeout_ms;
 
+    // Queue abstraction Phase 2: create unified QueueReader.
+    // SHM: wrap DataBlockConsumer in ShmQueue. ZMQ: use existing zmq_queue_.
+    if (impl->shm && opts.item_size > 0)
+    {
+        impl->shm_queue_reader_ = ShmQueue::from_consumer_ref(
+            *impl->shm, opts.item_size, opts.flexzone_size, opts.channel_name);
+        impl->queue_reader_ = impl->shm_queue_reader_.get();
+    }
+    else if (impl->zmq_queue_)
+    {
+        impl->queue_reader_ = impl->zmq_queue_.get();
+    }
+
     return Consumer(std::move(impl));
 }
 
@@ -964,6 +982,90 @@ ZmqQueue *Consumer::queue() noexcept
     return pImpl ? static_cast<ZmqQueue *>(pImpl->zmq_queue_.get()) : nullptr;
 }
 
+QueueReader *Consumer::queue_reader() noexcept
+{
+    return pImpl ? pImpl->queue_reader_ : nullptr;
+}
+
+// ============================================================================
+// Consumer — Queue data operations (forwarded to internal QueueReader)
+// ============================================================================
+
+const void *Consumer::read_acquire(std::chrono::milliseconds timeout) noexcept
+{
+    auto *q = pImpl ? pImpl->queue_reader_ : nullptr;
+    return q ? q->read_acquire(timeout) : nullptr;
+}
+
+void Consumer::read_release() noexcept
+{
+    if (pImpl && pImpl->queue_reader_)
+        pImpl->queue_reader_->read_release();
+}
+
+uint64_t Consumer::last_seq() const noexcept
+{
+    return (pImpl && pImpl->queue_reader_) ? pImpl->queue_reader_->last_seq() : 0;
+}
+
+size_t Consumer::queue_item_size() const noexcept
+{
+    return (pImpl && pImpl->queue_reader_) ? pImpl->queue_reader_->item_size() : 0;
+}
+
+size_t Consumer::queue_capacity() const noexcept
+{
+    return (pImpl && pImpl->queue_reader_) ? pImpl->queue_reader_->capacity() : 0;
+}
+
+QueueMetrics Consumer::queue_metrics() const noexcept
+{
+    return (pImpl && pImpl->queue_reader_) ? pImpl->queue_reader_->metrics() : QueueMetrics{};
+}
+
+void Consumer::reset_queue_metrics() noexcept
+{
+    if (pImpl && pImpl->queue_reader_)
+        pImpl->queue_reader_->reset_metrics();
+}
+
+bool Consumer::start_queue()
+{
+    return (pImpl && pImpl->queue_reader_) ? pImpl->queue_reader_->start() : false;
+}
+
+void Consumer::stop_queue()
+{
+    if (pImpl && pImpl->queue_reader_)
+        pImpl->queue_reader_->stop();
+}
+
+// ============================================================================
+// Consumer — Channel data operations (flexzone, checksum)
+// ============================================================================
+
+const void *Consumer::read_flexzone() const noexcept
+{
+    return (pImpl && pImpl->queue_reader_) ? pImpl->queue_reader_->read_flexzone() : nullptr;
+}
+
+size_t Consumer::flexzone_size() const noexcept
+{
+    return (pImpl && pImpl->queue_reader_) ? pImpl->queue_reader_->flexzone_size() : 0;
+}
+
+void Consumer::set_verify_checksum(bool slot, bool fz) noexcept
+{
+    if (pImpl && pImpl->queue_reader_)
+        pImpl->queue_reader_->set_verify_checksum(slot, fz);
+}
+
+void Consumer::set_queue_period(uint64_t period_us) noexcept
+{
+    if (pImpl && pImpl->queue_reader_)
+        pImpl->queue_reader_->set_configured_period(period_us);
+}
+
 // ============================================================================
 // Consumer::close — idempotent teardown
 // ============================================================================
@@ -1016,6 +1118,10 @@ void Consumer::close()
     }
 
     pImpl->handle.invalidate();
+    // Reset queue abstraction before shm — ShmQueue holds non-owning ref to DataBlock.
+    pImpl->queue_reader_ = nullptr;
+    pImpl->shm_queue_reader_.reset();
+    pImpl->zmq_queue_.reset();
     pImpl->shm.reset();
     pImpl->closed = true;
 }
