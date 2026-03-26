@@ -72,11 +72,25 @@
 - Endpoint validation: net_address.hpp with IPv4/IPv6/hostname support, wired in inbox/transport/hub configs
 - InboxFrame type_sizeof fix + schema size validation at startup
 
-**Phase 2 — Unified queue ownership** (pending):
-- `hub::Producer` always owns a `QueueWriter*` (creates ShmQueue wrapper internally for SHM transport)
-- `hub::Consumer` always owns a `QueueReader*` (same)
-- `queue_writer()`/`queue_reader()` never return null
-- Queue abstraction already carries `item_size()`, `flexzone_size()`, `capacity()`
+**Phase 2–4 — Queue abstraction complete** ✅ DONE 2026-03-26:
+- Producer/Consumer own queues internally (ShmQueue or ZmqQueue from Options)
+- Forwarding API on Producer/Consumer (12+11 methods): write_acquire/commit/discard,
+  read_acquire/release, queue_metrics, flexzone, checksum, etc.
+- Role hosts call through owned Producer/Consumer — no raw queue pointers, no transport branching
+- API classes + engines use Producer/Consumer — queue_writer()/queue_reader() removed from public API
+- QueueReader/QueueWriter base stripped to pure queue ops (acquire/release/commit, metrics, lifecycle)
+- Flexzone/checksum → ShmQueue-specific + DataBlock-direct access from Producer/Consumer
+- Checksum/period config passed at construction via Options (not post-creation setters)
+- Runtime toggles (set_checksum_options, set_verify_checksum) kept for script API
+- hub::Processor deleted (dead code, 100% superseded by ProcessorRoleHost)
+- Processor direct-ZMQ input eliminated — uses Consumer broker discovery
+- HEP-0018 §15 documents channel establishment protocol + API layering
+- 1164/1164 tests (27 removed: 26 hub::Processor + 1 obsolete ZmqQueue flexzone test)
+
+**Remaining (deferred):**
+- [ ] L2/L3 test redesign for new queue architecture (tests currently use static_cast to ShmQueue)
+- [ ] New tests for forwarding API + construction-time config
+- [ ] `hub::Producer::queue()` / `hub::Consumer::queue()` accessors — still return ZmqQueue* for legacy; consider removal
 - Transport-absent features (checksum, flexzone sync) are no-ops at base class
 
 **Phase 3 — Role host simplification** (pending):
