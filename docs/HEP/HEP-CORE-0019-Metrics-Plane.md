@@ -128,21 +128,31 @@ Phase 2 separates concerns:
 Lightweight liveness ping. No metrics payload. All roles use the same format.
 The broker updates `last_heartbeat` in its global role table.
 
-**Metrics collection** (broker → role → broker, on demand):
+**Metrics collection** (nudge + enriched heartbeat):
 
 | Step | Message | Direction | Content |
 |------|---------|-----------|---------|
 | 1 | `METRICS_REQ` | Admin → Broker | `{channel_name}` (optional — omit for all channels) |
-| 2 | `METRICS_COLLECT_REQ` | Broker → each active role | `{channel_name, uid}` |
-| 3 | `METRICS_COLLECT_ACK` | Role → Broker | `{channel_name, uid, metrics: {...}}` |
-| 4 | `METRICS_ACK` | Broker → Admin | Aggregated table (all roles' responses + SHM) |
+| 2 | `METRICS_COLLECT_REQ` | Broker → each active role | `{channel_name, uid}` (one-way nudge, no response expected) |
+| 3 | (role sets internal flag: "include metrics in next heartbeat") | | |
+| 4 | `HEARTBEAT_REQ` | Role → Broker (next heartbeat cycle) | `{channel_name, uid, role_type, metrics: {...}}` (enriched) |
+| 5 | Broker stores metrics in global table | | |
+| 6 | `METRICS_ACK` | Broker → Admin | Current table contents + live SHM data |
 
-The broker fans out `METRICS_COLLECT_REQ` to each role that sent a heartbeat
-for the requested channel. Roles respond with `snapshot_metrics_json()`. The
-broker stores the response in its global table and returns the aggregated view.
+The `METRICS_COLLECT_REQ` is a one-way nudge — no response expected. The role
+sets an internal flag and includes `snapshot_metrics_json()` in its next heartbeat.
+The broker returns immediately to the admin with whatever is currently in the
+global table (may be stale). The admin can poll again after one heartbeat interval
+(~1-2s) to get fresh data.
 
-Roles that do not respond within a timeout are marked stale in the table
-(metrics retained with old timestamp, heartbeat continues to track liveness).
+**SHM metrics are always fresh**: the broker reads `DataBlockMetrics` directly
+from SharedMemoryHeader on every `METRICS_REQ`. These are low-level SHM counters
+(contention, timeouts, reader peaks). Role-level metrics (timing, drops, loop
+overrun) require the nudge+heartbeat path because they are process-local.
+
+**Heartbeat with vs without metrics**: most heartbeats are bare `{channel_name,
+uid, role_type}`. Only the heartbeat immediately after a `METRICS_COLLECT_REQ`
+nudge carries the `metrics` field. The flag is cleared after one enriched heartbeat.
 
 **SHM metrics** (broker reads directly, on query):
 
@@ -201,9 +211,10 @@ The broker maintains a table indexed by `(channel_name, uid)`:
 
 ### 3.3 Removed from Phase 2
 
-- **`METRICS_REPORT_REQ`**: voluntary push from consumer — replaced by broker-initiated pull
-- **Heartbeat metrics piggybacking**: `HEARTBEAT_REQ` no longer carries `metrics` field
-- **Different heartbeat formats**: all roles now use the same `{channel_name, uid, role_type}` format
+- **`METRICS_REPORT_REQ`**: voluntary push from consumer — replaced by nudge+heartbeat
+- **Always-on heartbeat metrics piggybacking**: metrics are included only after a `METRICS_COLLECT_REQ` nudge, not on every heartbeat
+- **Different heartbeat formats**: all roles now use the same `{channel_name, uid, role_type}` base format
+- **`METRICS_COLLECT_ACK`**: no separate response message — metrics come via the next enriched heartbeat
 
 ---
 
@@ -225,9 +236,11 @@ All roles send the same format:
 No metrics payload. The broker updates `last_heartbeat` in the global role table.
 `role_type` is one of `"producer"`, `"consumer"`, `"processor"`.
 
-### 4.2 `METRICS_COLLECT_REQ` / `METRICS_COLLECT_ACK` (broker ↔ role)
+### 4.2 `METRICS_COLLECT_REQ` (broker → role, one-way nudge)
 
-Broker → role (triggered by `METRICS_REQ` from admin):
+Triggered by `METRICS_REQ` from admin. Broker sends to each active role on the
+requested channel:
+
 ```json
 {
   "msg_type": "METRICS_COLLECT_REQ",
@@ -236,12 +249,20 @@ Broker → role (triggered by `METRICS_REQ` from admin):
 }
 ```
 
-Role → broker (response):
+**No response expected.** The role sets an internal flag (`metrics_requested_`).
+On its next heartbeat cycle, the role includes `snapshot_metrics_json()` in the
+heartbeat payload, then clears the flag.
+
+### 4.3 Enriched `HEARTBEAT_REQ` (role → broker, after nudge)
+
+When `metrics_requested_` is set, the role sends:
+
 ```json
 {
-  "msg_type": "METRICS_COLLECT_ACK",
+  "msg_type": "HEARTBEAT_REQ",
   "channel_name": "sensor.data",
   "uid": "PROD-Sensor-AABBCCDD",
+  "role_type": "producer",
   "metrics": {
     "base": { ... },
     "custom": { ... }
@@ -249,11 +270,10 @@ Role → broker (response):
 }
 ```
 
-The `metrics` object is the role's `snapshot_metrics_json()` output — same
-format as the Python `api.metrics()` dict. The broker stores it with a timestamp.
+The `metrics` field is present ONLY when the flag is set. The broker stores it
+in the global role table with a timestamp and clears the pending flag.
 
-Timeout: if a role does not respond within 2s (configurable), the broker returns
-the stale entry from the global table (if any) with the old timestamp.
+Normal heartbeats (no nudge) carry no `metrics` field.
 
 ### 4.3 `METRICS_REQ` / `METRICS_ACK` (admin → broker)
 
