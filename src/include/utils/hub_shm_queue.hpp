@@ -30,18 +30,21 @@ struct ShmQueueImpl;
  * @class ShmQueue
  * @brief Shared-memory QueueReader (read mode) or QueueWriter (write mode).
  *
- * Inherits both QueueReader and QueueWriter so it can be used as either side
- * of a Processor pipeline. Factories return the appropriate abstract base pointer.
+ * Inherits both QueueReader and QueueWriter. Factories return the appropriate
+ * abstract base pointer.
  *
  * @par Read mode (from_consumer / from_consumer_ref)
  * Wraps a DataBlockConsumer. read_acquire() acquires the next committed slot.
  * read_release() releases the read lock on that slot.
- * Supports: last_seq(), set_verify_checksum(), capacity(), policy_info().
+ * Base interface: last_seq(), capacity(), policy_info().
+ * SHM-specific: read_flexzone(), flexzone_size(), set_verify_checksum().
  *
  * @par Write mode (from_producer / from_producer_ref)
  * Wraps a DataBlockProducer. write_acquire() acquires a free slot.
  * write_commit() commits it; write_discard() releases without committing.
- * Supports: set_checksum_options(), capacity(), policy_info().
+ * Base interface: capacity(), policy_info().
+ * SHM-specific: write_flexzone(), flexzone_size(), set_checksum_options(),
+ * sync_flexzone_checksum().
  */
 class PYLABHUB_UTILS_EXPORT ShmQueue final : public QueueReader, public QueueWriter
 {
