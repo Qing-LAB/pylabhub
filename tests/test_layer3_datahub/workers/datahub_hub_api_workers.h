@@ -57,4 +57,18 @@ int producer_channel_identity(int argc, char **argv);
 /** Consumer with uid/name: heartbeat slot carries identity; list_consumers returns it; close clears. */
 int consumer_identity_in_shm(int argc, char **argv);
 
+// ── Queue abstraction forwarding API tests (Phase 4) ─────────────────────────
+
+/** Producer::write_acquire/commit through forwarding API; Consumer reads back correct data. */
+int producer_consumer_forwarding_api(int argc, char **argv);
+
+/** Construction-time checksum: update_checksum in Options → Consumer verifies on read. */
+int construction_time_checksum(int argc, char **argv);
+
+/** Flexzone access through Producer/Consumer (DataBlock-direct path). */
+int flexzone_through_service_layer(int argc, char **argv);
+
+/** queue_metrics() returns valid data through Producer/Consumer forwarding. */
+int queue_metrics_forwarding(int argc, char **argv);
+
 } // namespace pylabhub::tests::worker::hub_api

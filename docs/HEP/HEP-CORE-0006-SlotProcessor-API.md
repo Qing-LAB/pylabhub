@@ -5,10 +5,10 @@
 | **HEP**          | `HEP-CORE-0006`                                            |
 | **Title**        | Pluggable Slot-Processor API for Producer and Consumer     |
 | **Author**       | Quan Qing, AI assistant                                    |
-| **Status**       | ✅ Implemented — 2026-02-21                                |
+| **Status**       | ⚠️ SUPERSEDED — `hub::Processor` deleted 2026-03-26 (100% replaced by `ProcessorRoleHost::run_data_loop_()`) |
 | **Category**     | Core                                                       |
 | **Created**      | 2026-02-19                                                 |
-| **Implemented**  | 2026-02-21; used by `hub::Processor` and all standalone binaries |
+| **Implemented**  | 2026-02-21 (original). `hub::Processor` removed 2026-03-26; role hosts own the data loop directly. |
 | **C++-Standard** | C++20                                                      |
 | **Version**      | 1.0                                                        |
 | **Depends-on**   | HEP-CORE-0002 (DataHub), Messenger/Broker layer            |
