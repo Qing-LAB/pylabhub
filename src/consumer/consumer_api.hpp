@@ -77,8 +77,6 @@ class ConsumerAPI
     void set_script_dir(std::string d){ script_dir_ = std::move(d); }
     void set_role_dir(std::string d)  { role_dir_   = std::move(d); }
 
-    void set_reader(const hub::QueueReader *r) noexcept
-        { reader_.store(r, std::memory_order_release); }
     void update_last_seq(uint64_t seq) noexcept
         { last_seq_snapshot_.store(seq, std::memory_order_relaxed); }
 
@@ -181,7 +179,6 @@ class ConsumerAPI
     hub::Consumer               *consumer_{nullptr};
     hub::Messenger              *messenger_{nullptr};
     scripting::ScriptEngine     *engine_{nullptr};
-    std::atomic<const hub::QueueReader*> reader_{nullptr}; ///< Non-owning; set by ConsumerScriptHost
 
 
     std::string uid_;

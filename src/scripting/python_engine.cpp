@@ -433,8 +433,6 @@ bool PythonEngine::build_api_(const RoleContext &ctx)
         api.set_producer(static_cast<hub::Producer *>(ctx_.producer));
         api.set_messenger(ctx_.messenger);
         api.set_engine(this);
-        if (ctx_.queue_writer)
-            api.set_queue(ctx_.queue_writer);
         api.set_uid(ctx_.uid);
         api.set_name(ctx_.name);
         api.set_channel(ctx_.channel);
@@ -455,8 +453,6 @@ bool PythonEngine::build_api_(const RoleContext &ctx)
         api.set_consumer(static_cast<hub::Consumer *>(ctx_.consumer));
         api.set_messenger(ctx_.messenger);
         api.set_engine(this);
-        if (ctx_.queue_reader)
-            api.set_reader(ctx_.queue_reader);
         api.set_uid(ctx_.uid);
         api.set_name(ctx_.name);
         api.set_channel(ctx_.channel);
@@ -480,10 +476,6 @@ bool PythonEngine::build_api_(const RoleContext &ctx)
             api.set_consumer(static_cast<hub::Consumer *>(ctx_.consumer));
         api.set_messenger(ctx_.messenger);
         api.set_engine(this);
-        if (ctx_.queue_writer)
-            api.set_out_queue(ctx_.queue_writer);
-        if (ctx_.queue_reader)
-            api.set_in_queue(ctx_.queue_reader);
         api.set_uid(ctx_.uid);
         api.set_name(ctx_.name);
         api.set_in_channel(ctx_.channel);
@@ -551,7 +543,6 @@ void PythonEngine::finalize_engine_()
         producer_api_->set_producer(nullptr);
         producer_api_->set_messenger(nullptr);
         producer_api_->set_engine(nullptr);
-        producer_api_->set_queue(nullptr);
     }
     if (consumer_api_)
     {
@@ -559,7 +550,6 @@ void PythonEngine::finalize_engine_()
         consumer_api_->set_consumer(nullptr);
         consumer_api_->set_messenger(nullptr);
         consumer_api_->set_engine(nullptr);
-        consumer_api_->set_reader(nullptr);
     }
     if (processor_api_)
     {
@@ -568,8 +558,6 @@ void PythonEngine::finalize_engine_()
         processor_api_->set_consumer(nullptr);
         processor_api_->set_messenger(nullptr);
         processor_api_->set_engine(nullptr);
-        processor_api_->set_in_queue(nullptr);
-        processor_api_->set_out_queue(nullptr);
     }
 
     producer_api_.reset();

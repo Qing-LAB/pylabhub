@@ -81,11 +81,6 @@ class ProcessorAPI
     void set_script_dir(std::string d)  { script_dir_  = std::move(d); }
     void set_role_dir(std::string d)    { role_dir_    = std::move(d); }
 
-    /// Input/output queue pointers — set by ProcessorScriptHost after queue creation.
-    /// Raw pointers (non-owning); valid between start_role() and stop_role().
-    void set_in_queue(const hub::QueueReader *q) noexcept { in_queue_.store(q, std::memory_order_release); }
-    void set_out_queue(hub::QueueWriter *q) noexcept { out_queue_.store(q, std::memory_order_release); }
-
     // ── Python-accessible — identity / environment ────────────────────────────
 
     /// Processor UID (PROC-{NAME}-{8HEX}).
@@ -238,8 +233,6 @@ class ProcessorAPI
     py::object       *flexzone_obj_{nullptr};
 
 
-    std::atomic<const hub::QueueReader*> in_queue_{nullptr}; ///< Non-owning read side; set by ProcessorScriptHost
-    std::atomic<hub::QueueWriter*> out_queue_{nullptr};
     scripting::ScriptEngine     *engine_{nullptr};
 
     std::string uid_;
