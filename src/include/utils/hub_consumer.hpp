@@ -217,6 +217,12 @@ struct ConsumerOptions
     size_t item_size{0};
     /// Flexzone size in bytes (page-aligned). 0 = no flexzone.
     size_t flexzone_size{0};
+    /// Enable BLAKE2b verification on read_acquire() (SHM only).
+    bool verify_checksum{false};
+    /// Also verify the flexzone checksum on read_acquire() (SHM only).
+    bool verify_checksum_fz{false};
+    /// Target loop period in microseconds. 0 = MaxRate.
+    uint64_t queue_period_us{0};
 
     /// Max depth of ctrl send queue before oldest items are dropped. 0 = unbounded.
     size_t ctrl_queue_max_depth{256};
@@ -478,10 +484,8 @@ class PYLABHUB_UTILS_EXPORT Consumer
     [[nodiscard]] const void *read_flexzone() const noexcept;
     /// Flexzone size in bytes. 0 if not configured or ZMQ transport.
     [[nodiscard]] size_t flexzone_size() const noexcept;
-    /// Configure BLAKE2b verification on read_acquire(). No-op for ZMQ.
+    /// Runtime toggle: enable/disable BLAKE2b verification on read_acquire(). No-op for ZMQ.
     void set_verify_checksum(bool slot, bool fz) noexcept;
-    /// Set the target loop period for metrics reporting. 0 = MaxRate.
-    void set_queue_period(uint64_t period_us) noexcept;
     /// Overflow policy description for diagnostics (e.g. "shm_read", "zmq_pull_ring_64").
     [[nodiscard]] std::string queue_policy_info() const;
 

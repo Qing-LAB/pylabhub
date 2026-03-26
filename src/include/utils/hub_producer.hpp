@@ -261,6 +261,12 @@ struct ProducerOptions
     size_t item_size{0};
     /// Flexzone size in bytes (page-aligned). 0 = no flexzone.
     size_t flexzone_size{0};
+    /// Enable BLAKE2b checksum on write_commit() (SHM only).
+    bool update_checksum{false};
+    /// Also checksum the flexzone on write_commit() (SHM only).
+    bool update_checksum_fz{false};
+    /// Target loop period in microseconds. 0 = MaxRate.
+    uint64_t queue_period_us{0};
 
     /// Max depth of P2P ctrl send queue before oldest items are dropped. 0 = unbounded.
     size_t ctrl_queue_max_depth{256};
@@ -522,12 +528,10 @@ class PYLABHUB_UTILS_EXPORT Producer
     [[nodiscard]] const void *read_flexzone() const noexcept;
     /// Flexzone size in bytes. 0 if not configured or ZMQ transport.
     [[nodiscard]] size_t flexzone_size() const noexcept;
-    /// Configure BLAKE2b checksum update on write_commit(). No-op for ZMQ.
+    /// Runtime toggle: enable/disable BLAKE2b checksum on write_commit(). No-op for ZMQ.
     void set_checksum_options(bool slot, bool fz) noexcept;
     /// Stamp the flexzone checksum after on_init() writes initial content. No-op for ZMQ.
     void sync_flexzone_checksum() noexcept;
-    /// Set the target loop period for metrics reporting. 0 = MaxRate.
-    void set_queue_period(uint64_t period_us) noexcept;
     /// Overflow policy description for diagnostics (e.g. "shm_write", "zmq_push_drop").
     [[nodiscard]] std::string queue_policy_info() const;
 

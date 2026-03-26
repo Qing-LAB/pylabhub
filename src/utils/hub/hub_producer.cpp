@@ -604,6 +604,8 @@ Producer::create_from_parts(Messenger &messenger, ChannelHandle channel,
                          opts.zmq_node_endpoint);
             return std::nullopt;
         }
+        if (opts.queue_period_us > 0)
+            static_cast<ZmqQueue *>(impl->zmq_queue_.get())->set_configured_period(opts.queue_period_us);
         LOGGER_INFO("[producer] ZMQ PUSH socket created at '{}'", opts.zmq_node_endpoint);
     }
 
@@ -621,7 +623,8 @@ Producer::create_from_parts(Messenger &messenger, ChannelHandle channel,
     if (impl->shm && opts.item_size > 0)
     {
         impl->shm_queue_writer_ = ShmQueue::from_producer_ref(
-            *impl->shm, opts.item_size, opts.flexzone_size, opts.channel_name);
+            *impl->shm, opts.item_size, opts.flexzone_size, opts.channel_name,
+            opts.update_checksum, opts.update_checksum_fz, opts.queue_period_us);
         impl->queue_writer_ = impl->shm_queue_writer_.get();
     }
     else if (impl->zmq_queue_)
@@ -1058,36 +1061,34 @@ void Producer::stop_queue()
 
 void *Producer::write_flexzone() noexcept
 {
-    return (pImpl && pImpl->queue_writer_) ? pImpl->queue_writer_->write_flexzone() : nullptr;
+    if (!pImpl || !pImpl->shm) return nullptr;
+    auto fz = pImpl->shm->flexible_zone_span();
+    return fz.empty() ? nullptr : fz.data();
 }
 
 const void *Producer::read_flexzone() const noexcept
 {
-    // Writer side can read its own flexzone for verification / on_init populate.
-    return (pImpl && pImpl->queue_writer_) ? pImpl->queue_writer_->write_flexzone() : nullptr;
+    if (!pImpl || !pImpl->shm) return nullptr;
+    auto fz = pImpl->shm->flexible_zone_span();
+    return fz.empty() ? nullptr : fz.data();
 }
 
 size_t Producer::flexzone_size() const noexcept
 {
-    return (pImpl && pImpl->queue_writer_) ? pImpl->queue_writer_->flexzone_size() : 0;
+    if (!pImpl || !pImpl->shm) return 0;
+    return pImpl->shm->flexible_zone_span().size();
 }
 
 void Producer::set_checksum_options(bool slot, bool fz) noexcept
 {
-    if (pImpl && pImpl->queue_writer_)
-        pImpl->queue_writer_->set_checksum_options(slot, fz);
+    auto *sq = pImpl ? static_cast<ShmQueue *>(pImpl->shm_queue_writer_.get()) : nullptr;
+    if (sq) sq->set_checksum_options(slot, fz);
 }
 
 void Producer::sync_flexzone_checksum() noexcept
 {
-    if (pImpl && pImpl->queue_writer_)
-        pImpl->queue_writer_->sync_flexzone_checksum();
-}
-
-void Producer::set_queue_period(uint64_t period_us) noexcept
-{
-    if (pImpl && pImpl->queue_writer_)
-        pImpl->queue_writer_->set_configured_period(period_us);
+    if (pImpl && pImpl->shm)
+        (void)pImpl->shm->update_checksum_flexible_zone();
 }
 
 std::string Producer::queue_policy_info() const

@@ -67,7 +67,9 @@ struct ShmQueueImpl
 std::unique_ptr<QueueReader>
 ShmQueue::from_consumer(std::unique_ptr<DataBlockConsumer> dbc,
                         size_t item_size, size_t flexzone_sz,
-                        std::string channel_name)
+                        std::string channel_name,
+                        bool verify_slot, bool verify_fz,
+                        uint64_t configured_period_us)
 {
     assert(dbc != nullptr);
     auto impl          = std::make_unique<ShmQueueImpl>();
@@ -75,44 +77,70 @@ ShmQueue::from_consumer(std::unique_ptr<DataBlockConsumer> dbc,
     impl->item_sz      = item_size;
     impl->fz_sz        = flexzone_sz;
     impl->chan_name     = std::move(channel_name);
+    impl->verify_slot  = verify_slot;
+    impl->verify_fz    = verify_fz;
+    if (configured_period_us > 0 && impl->consumer())
+        impl->consumer()->set_loop_policy(LoopPolicy::FixedRate,
+            std::chrono::microseconds{configured_period_us});
     return std::unique_ptr<QueueReader>(new ShmQueue(std::move(impl)));
 }
 
 std::unique_ptr<QueueWriter>
 ShmQueue::from_producer(std::unique_ptr<DataBlockProducer> dbp,
                         size_t item_size, size_t flexzone_sz,
-                        std::string channel_name)
+                        std::string channel_name,
+                        bool checksum_slot, bool checksum_fz,
+                        uint64_t configured_period_us)
 {
     assert(dbp != nullptr);
-    auto impl          = std::make_unique<ShmQueueImpl>();
-    impl->dbp          = std::move(dbp);
-    impl->item_sz      = item_size;
-    impl->fz_sz        = flexzone_sz;
-    impl->chan_name     = std::move(channel_name);
+    auto impl            = std::make_unique<ShmQueueImpl>();
+    impl->dbp            = std::move(dbp);
+    impl->item_sz        = item_size;
+    impl->fz_sz          = flexzone_sz;
+    impl->chan_name       = std::move(channel_name);
+    impl->checksum_slot  = checksum_slot;
+    impl->checksum_fz    = checksum_fz;
+    if (configured_period_us > 0 && impl->producer())
+        impl->producer()->set_loop_policy(LoopPolicy::FixedRate,
+            std::chrono::microseconds{configured_period_us});
     return std::unique_ptr<QueueWriter>(new ShmQueue(std::move(impl)));
 }
 
 std::unique_ptr<QueueReader>
 ShmQueue::from_consumer_ref(DataBlockConsumer& dbc, size_t item_size,
-                             size_t flexzone_sz, std::string channel_name)
+                             size_t flexzone_sz, std::string channel_name,
+                             bool verify_slot, bool verify_fz,
+                             uint64_t configured_period_us)
 {
     auto impl          = std::make_unique<ShmQueueImpl>();
     impl->dbc_ref      = &dbc;
     impl->item_sz      = item_size;
     impl->fz_sz        = flexzone_sz;
     impl->chan_name     = std::move(channel_name);
+    impl->verify_slot  = verify_slot;
+    impl->verify_fz    = verify_fz;
+    if (configured_period_us > 0)
+        dbc.set_loop_policy(LoopPolicy::FixedRate,
+            std::chrono::microseconds{configured_period_us});
     return std::unique_ptr<QueueReader>(new ShmQueue(std::move(impl)));
 }
 
 std::unique_ptr<QueueWriter>
 ShmQueue::from_producer_ref(DataBlockProducer& dbp, size_t item_size,
-                             size_t flexzone_sz, std::string channel_name)
+                             size_t flexzone_sz, std::string channel_name,
+                             bool checksum_slot, bool checksum_fz,
+                             uint64_t configured_period_us)
 {
-    auto impl          = std::make_unique<ShmQueueImpl>();
-    impl->dbp_ref      = &dbp;
-    impl->item_sz      = item_size;
-    impl->fz_sz        = flexzone_sz;
-    impl->chan_name     = std::move(channel_name);
+    auto impl            = std::make_unique<ShmQueueImpl>();
+    impl->dbp_ref        = &dbp;
+    impl->item_sz        = item_size;
+    impl->fz_sz          = flexzone_sz;
+    impl->chan_name       = std::move(channel_name);
+    impl->checksum_slot  = checksum_slot;
+    impl->checksum_fz    = checksum_fz;
+    if (configured_period_us > 0)
+        dbp.set_loop_policy(LoopPolicy::FixedRate,
+            std::chrono::microseconds{configured_period_us});
     return std::unique_ptr<QueueWriter>(new ShmQueue(std::move(impl)));
 }
 

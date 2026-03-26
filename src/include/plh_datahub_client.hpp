@@ -29,7 +29,6 @@
 #include "utils/hub_queue.hpp"
 #include "utils/hub_shm_queue.hpp"
 #include "utils/hub_zmq_queue.hpp"
-#include "utils/hub_processor.hpp"
 #include "utils/schema_def.hpp"
 #include "utils/schema_library.hpp"
 #include "utils/schema_registry.hpp"

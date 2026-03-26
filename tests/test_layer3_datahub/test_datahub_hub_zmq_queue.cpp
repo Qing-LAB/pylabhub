@@ -1502,21 +1502,6 @@ TEST_F(ZmqQueueTest, AbstractQueue_Metrics_ViaBasePointer)
     EXPECT_EQ(m.send_retry_count,       0u);
 }
 
-TEST_F(ZmqQueueTest, AbstractQueue_Flexzone_AlwaysNull)
-{
-    // ZmqQueue has no flexzone — inherited defaults must return nullptr/0.
-    std::unique_ptr<QueueWriter> push = ZmqQueue::push_to(schema_ep(16), blob_schema(4), "aligned");
-    ASSERT_NE(push, nullptr);
-    EXPECT_EQ(push->write_flexzone(), nullptr);
-    EXPECT_EQ(push->flexzone_size(),  0u);
-
-    std::unique_ptr<QueueReader> pull = ZmqQueue::pull_from(
-        schema_ep(16), blob_schema(4), "aligned", /*bind=*/true);
-    ASSERT_NE(pull, nullptr);
-    EXPECT_EQ(pull->read_flexzone(), nullptr);
-    EXPECT_EQ(pull->flexzone_size(), 0u);
-}
-
 // ── Concurrent metrics() reads during active I/O (race safety) ───────────────
 
 TEST_F(ZmqQueueTest, ConcurrentMetrics_NoDataRaceUnderIO)

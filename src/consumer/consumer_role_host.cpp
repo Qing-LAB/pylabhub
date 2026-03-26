@@ -291,9 +291,12 @@ bool ConsumerRoleHost::setup_infrastructure_()
         opts.configured_period_us = std::chrono::microseconds{static_cast<int64_t>(tc.period_us)};
     }
 
-    // Queue abstraction Phase 2: sizes for internal queue creation.
-    opts.item_size     = schema_slot_size_;
-    opts.flexzone_size = core_.schema_fz_size();
+    // Queue abstraction: sizes + checksum + period for internal queue creation.
+    opts.item_size          = schema_slot_size_;
+    opts.flexzone_size      = core_.schema_fz_size();
+    opts.verify_checksum    = shm.verify_checksum;
+    opts.verify_checksum_fz = core_.has_fz() && shm.verify_checksum;
+    opts.queue_period_us    = (tc.period_us > 0.0) ? static_cast<uint64_t>(tc.period_us) : 0;
 
     // Transport declaration.
     const bool is_zmq = (tr.transport == config::Transport::Zmq);
@@ -486,10 +489,7 @@ bool ConsumerRoleHost::setup_infrastructure_()
         LOGGER_ERROR("[cons] start_queue() failed for channel '{}'", ch);
         return false;
     }
-    in_consumer_->set_verify_checksum(shm.verify_checksum, core_.has_fz());
     in_consumer_->reset_queue_metrics();
-    if (tc.period_us > 0.0)
-        in_consumer_->set_queue_period(static_cast<uint64_t>(tc.period_us));
 
     LOGGER_INFO("[cons] Consumer started on channel '{}' (shm={})", ch,
                 in_consumer_->has_shm());
