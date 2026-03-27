@@ -1066,7 +1066,7 @@ never inspects the transport type, and never calls transport-specific methods. T
 1. Role host builds `ProducerOptions` with `item_size`, `flexzone_size`, SHM config
 2. `hub::Producer::create()` → `CREATE_CHANNEL_REQ` to broker (data_transport="shm")
 3. Broker creates channel entry, replies `CREATE_CHANNEL_ACK`
-4. `create_from_parts()`: allocates `DataBlockProducer` (shared memory segment),
+4. `establish_channel()`: allocates `DataBlockProducer` (shared memory segment),
    creates `ShmQueue` wrapper → sets internal `queue_writer_`
 5. Role host: `out_producer_->start_queue()`
 6. Role host: `out_producer_->set_checksum_options()` → `reset_queue_metrics()` → `set_queue_period()`
@@ -1100,7 +1100,7 @@ operational once attached).
 2. `hub::Producer::create()` → `CREATE_CHANNEL_REQ` to broker (data_transport="zmq",
    zmq_node_endpoint advertised)
 3. Broker creates channel entry, stores ZMQ endpoint, replies `CREATE_CHANNEL_ACK`
-4. `create_from_parts()`: creates `ZmqQueue` PUSH socket, binds to endpoint,
+4. `establish_channel()`: creates `ZmqQueue` PUSH socket, binds to endpoint,
    calls `start()` → sets internal `queue_writer_`
 5. Role host: `out_producer_->start_queue()` (idempotent)
 6. Role host: `out_producer_->set_checksum_options()` → `reset_queue_metrics()` → `set_queue_period()`

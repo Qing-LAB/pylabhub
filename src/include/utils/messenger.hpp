@@ -426,6 +426,26 @@ class PYLABHUB_UTILS_EXPORT Messenger
     query_role_info(const std::string &uid, int timeout_ms = 5000);
 
     /**
+     * @brief Update a channel's endpoint after ephemeral port bind (HEP-0021 §16).
+     *
+     * Sends ENDPOINT_UPDATE_REQ to the broker. The broker updates the stored
+     * endpoint if the current value has port 0 (ephemeral).
+     * If the endpoint is already set to a non-zero port: returns true if the
+     * new value matches (idempotent), false if different (one-time update only).
+     *
+     * @param channel_name  Channel to update.
+     * @param endpoint_type Which endpoint: "zmq_node". ("inbox" is rejected —
+     *                      inbox must be resolved before channel registration.)
+     * @param endpoint      Resolved endpoint (e.g., "tcp://127.0.0.1:45782").
+     * @param timeout_ms    Max time to wait for broker response.
+     * @return true on success; false on error or not connected.
+     */
+    [[nodiscard]] bool update_endpoint(const std::string &channel_name,
+                                       const std::string &endpoint_type,
+                                       const std::string &endpoint,
+                                       int timeout_ms = 5000);
+
+    /**
      * @brief Query the broker for SHM block topology and DataBlockMetrics.
      *
      * Sends SHM_BLOCK_QUERY_REQ to the broker; the broker opens each SHM segment

@@ -1,5 +1,6 @@
 #include "utils/broker_service.hpp"
 #include "utils/format_tools.hpp"
+#include "utils/net_address.hpp"
 
 #include "channel_registry.hpp"
 
@@ -217,6 +218,8 @@ public:
                                            const zmq::message_t& identity);
     nlohmann::json handle_consumer_dereg_req(const nlohmann::json& req);
     void           handle_heartbeat_req(const nlohmann::json& req);
+    nlohmann::json handle_endpoint_update_req(const nlohmann::json& req,
+                                               const zmq::message_t& identity);
     nlohmann::json handle_schema_req(const nlohmann::json& req);
 
     // ── Schema library (HEP-CORE-0016 Phase 3) ──────────────────────────────
@@ -716,6 +719,14 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
         // HEP-CORE-0022: hub-targeted message from a peer (via peer's DEALER → our ROUTER).
         handle_hub_targeted_msg(payload);
     }
+    else if (msg_type == "ENDPOINT_UPDATE_REQ")
+    {
+        // HEP-0021 §16: update a channel's endpoint after ephemeral port bind.
+        nlohmann::json resp = handle_endpoint_update_req(payload, identity);
+        const std::string ack =
+            (resp.value("status", "") == "success") ? "ENDPOINT_UPDATE_ACK" : "ERROR";
+        send_reply(socket, identity, ack, resp);
+    }
     else
     {
         LOGGER_WARN("Broker: unknown msg_type '{}'", msg_type);
@@ -772,6 +783,21 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     entry.inbox_endpoint        = req.value("inbox_endpoint", "");
     entry.inbox_schema_json     = req.value("inbox_schema_json", "");
     entry.inbox_packing         = req.value("inbox_packing", "");
+
+    // HEP-0021 §16: reject registration if inbox_endpoint has unresolved port 0.
+    if (!entry.inbox_endpoint.empty())
+    {
+        auto inbox_ep = pylabhub::validate_tcp_endpoint(entry.inbox_endpoint);
+        if (inbox_ep.ok() && inbox_ep.port == 0)
+        {
+            LOGGER_WARN("Broker: REG_REQ for '{}' rejected — inbox_endpoint '{}' has port 0",
+                        channel_name, entry.inbox_endpoint);
+            return make_error(corr_id, "INVALID_INBOX_ENDPOINT",
+                              "inbox_endpoint '" + entry.inbox_endpoint +
+                                  "' has unresolved port 0");
+        }
+    }
+
     if (req.contains("metadata") && req["metadata"].is_object())
     {
         entry.metadata = req["metadata"];
@@ -899,6 +925,20 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
                               channel_name + "'");
     }
 
+    // HEP-0021 §16: reject if ZMQ endpoint has unresolved port 0.
+    if (entry->data_transport == "zmq" && !entry->zmq_node_endpoint.empty())
+    {
+        auto ep_check = pylabhub::validate_tcp_endpoint(entry->zmq_node_endpoint);
+        if (ep_check.ok() && ep_check.port == 0)
+        {
+            LOGGER_INFO("Broker: DISC_REQ channel '{}' ZMQ endpoint has port 0 (not ready)",
+                        channel_name);
+            return make_error(corr_id, "CHANNEL_NOT_READY",
+                              "ZMQ endpoint for channel '" + channel_name +
+                                  "' has unresolved port 0");
+        }
+    }
+
     LOGGER_INFO("Broker: discovered channel '{}'", channel_name);
     nlohmann::json resp;
     resp["status"]            = "success";
@@ -980,6 +1020,20 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
         LOGGER_WARN("Broker: CONSUMER_REG_REQ channel '{}' not found", channel_name);
         return make_error(corr_id, "CHANNEL_NOT_FOUND",
                           "Channel '" + channel_name + "' is not registered");
+    }
+
+    // HEP-0021 §16: reject if ZMQ endpoint has unresolved port 0.
+    if (channel_entry->data_transport == "zmq" && !channel_entry->zmq_node_endpoint.empty())
+    {
+        auto ep_check = pylabhub::validate_tcp_endpoint(channel_entry->zmq_node_endpoint);
+        if (ep_check.ok() && ep_check.port == 0)
+        {
+            LOGGER_INFO("Broker: CONSUMER_REG_REQ channel '{}' ZMQ endpoint has port 0 (not ready)",
+                        channel_name);
+            return make_error(corr_id, "CHANNEL_NOT_READY",
+                              "ZMQ endpoint for channel '" + channel_name +
+                                  "' has unresolved port 0");
+        }
     }
 
     // ── Transport arbitration (Phase 6) ─────────────────────────────────────
@@ -1117,6 +1171,116 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
     {
         LOGGER_WARN("Broker: HEARTBEAT_REQ for unknown channel '{}'", channel_name);
     }
+}
+
+// ============================================================================
+// ENDPOINT_UPDATE_REQ handler (HEP-0021 §16)
+// ============================================================================
+
+nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
+    const nlohmann::json &req, const zmq::message_t &identity)
+{
+    const std::string corr_id       = req.value("correlation_id", "");
+    const std::string channel_name  = req.value("channel_name", "");
+    const std::string endpoint_type = req.value("endpoint_type", "");
+    const std::string endpoint      = req.value("endpoint", "");
+
+    if (channel_name.empty() || endpoint_type.empty() || endpoint.empty())
+    {
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "Missing channel_name, endpoint_type, or endpoint");
+    }
+
+    // Validate the new endpoint.
+    auto ep_check = pylabhub::validate_tcp_endpoint(endpoint);
+    if (!ep_check.ok() || ep_check.port == 0)
+    {
+        return make_error(corr_id, "INVALID_ENDPOINT",
+                          "Endpoint '" + endpoint + "' is invalid or has port 0");
+    }
+
+    auto *entry = registry.find_channel_mutable(channel_name);
+    if (!entry)
+    {
+        return make_error(corr_id, "CHANNEL_NOT_FOUND",
+                          "Channel '" + channel_name + "' is not registered");
+    }
+
+    // Verify sender is the channel creator.
+    const std::string sender_id(static_cast<const char *>(identity.data()), identity.size());
+    if (sender_id != entry->producer_zmq_identity)
+    {
+        LOGGER_WARN("Broker: ENDPOINT_UPDATE_REQ for '{}' rejected — sender is not creator",
+                    channel_name);
+        return make_error(corr_id, "NOT_CHANNEL_OWNER",
+                          "Sender is not the creator of channel '" + channel_name + "'");
+    }
+
+    // Resolve the target field.
+    std::string *target_field = nullptr;
+    if (endpoint_type == "zmq_node")
+    {
+        target_field = &entry->zmq_node_endpoint;
+    }
+    else if (endpoint_type == "inbox")
+    {
+        // Inbox endpoints must be resolved before REG_REQ — runtime update is not
+        // supported. If the inbox port is 0, that's a registration bug, not an
+        // update scenario.
+        auto inbox_check = pylabhub::validate_tcp_endpoint(entry->inbox_endpoint);
+        if (inbox_check.ok() && inbox_check.port == 0)
+        {
+            LOGGER_ERROR("Broker: ENDPOINT_UPDATE_REQ for '{}' inbox — current port is 0; "
+                         "inbox endpoint should be resolved before registration",
+                         channel_name);
+        }
+        LOGGER_WARN("Broker: ENDPOINT_UPDATE_REQ for '{}' inbox rejected — "
+                    "inbox endpoint update is not supported; "
+                    "inbox must be resolved before channel registration",
+                    channel_name);
+        return make_error(corr_id, "INBOX_UPDATE_NOT_SUPPORTED",
+                          "Inbox endpoint must be resolved before REG_REQ, "
+                          "not updated afterwards");
+    }
+    else
+    {
+        return make_error(corr_id, "UNKNOWN_ENDPOINT_TYPE",
+                          "endpoint_type must be 'zmq_node', got: '" +
+                              endpoint_type + "'");
+    }
+
+    // Check current value: already non-zero → reject unless same value (idempotent).
+    auto current = pylabhub::validate_tcp_endpoint(*target_field);
+    if (current.ok() && current.port != 0)
+    {
+        if (*target_field == endpoint)
+        {
+            LOGGER_DEBUG("Broker: ENDPOINT_UPDATE_REQ for '{}' {} — "
+                         "already set to '{}' (idempotent)",
+                         channel_name, endpoint_type, endpoint);
+        }
+        else
+        {
+            LOGGER_WARN("Broker: ENDPOINT_UPDATE_REQ for '{}' {} rejected — "
+                        "already set to '{}', cannot change to '{}'",
+                        channel_name, endpoint_type, *target_field, endpoint);
+            return make_error(corr_id, "ENDPOINT_ALREADY_SET",
+                              endpoint_type + " endpoint already set to '" +
+                                  *target_field + "'");
+        }
+    }
+    else
+    {
+        *target_field = endpoint;
+        LOGGER_INFO("Broker: ENDPOINT_UPDATE_REQ for '{}' {} updated to '{}'",
+                    channel_name, endpoint_type, endpoint);
+    }
+
+    nlohmann::json resp;
+    resp["status"] = "success";
+    if (!corr_id.empty())
+        resp["correlation_id"] = corr_id;
+    return resp;
 }
 
 // ============================================================================
