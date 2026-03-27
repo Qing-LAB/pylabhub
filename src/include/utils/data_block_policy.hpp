@@ -154,25 +154,26 @@ enum class ChecksumType
  *
  * **Where set:** DataBlockConfig::checksum_policy (default: Enforced). Immutable
  *   after segment creation.
- * **Where checked:** data_block.cpp — release_write_slot() and release_consume_slot()
- *   read this to decide whether to call update/verify automatically.
- * **Role override:** ValidationPolicy::Checksum (role_config.hpp) overrides this
- *   at the role-script layer: "update" maps to Manual, "enforce" maps to Enforced,
- *   "none" maps to None for the specific role instance.
+ * **Where checked:** release_write_slot() and release_consume_slot() evaluate this
+ *   to decide whether to auto-call checksum functions.
  *
- * | Value    | Producer (write release)       | Consumer (consume release)          |
- * |----------|-------------------------------|--------------------------------------|
- * | None     | No checksum call               | No checksum call                     |
- * | Manual   | Caller calls update_checksum_* | Caller calls verify_checksum_*       |
- * | Enforced | Auto-update on slot commit     | Auto-verify; error if mismatch       |
+ * | Value    | Write (release_write_slot)             | Read (release_consume_slot)               |
+ * |----------|----------------------------------------|-------------------------------------------|
+ * | None     | No checksum action                     | No verification                           |
+ * | Manual   | No auto-action; caller (ShmQueue) calls update/verify at its own decision points |
+ * | Enforced | Auto-compute checksum on commit        | Auto-verify on release (post-read audit)  |
  *
- * **Design doc:** HEP-CORE-0002-DataHub-FINAL.md §4.3
+ * **slot_valid flag:** Per-slot reader-side cache (0 = unverified, 1 = verified correct).
+ * Set to 0 by checksum update (writer). Set to 1 only by successful verification (reader).
+ * See HEP-CORE-0002 §11.2 for full semantics.
+ *
+ * **Design doc:** HEP-CORE-0002-DataHub-FINAL.md §11.2
  */
 enum class ChecksumPolicy
 {
     None,    ///< Checksum storage present but not used — no compute, no verify
-    Manual,  ///< Caller explicitly calls update_checksum_* / verify_checksum_*
-    Enforced ///< Auto-update on release_write_slot; auto-verify on release_consume_slot
+    Manual,  ///< No auto-action; caller (ShmQueue) decides when to compute/verify
+    Enforced ///< Auto-compute on write release; auto-verify on consume release
 };
 
 // ============================================================================

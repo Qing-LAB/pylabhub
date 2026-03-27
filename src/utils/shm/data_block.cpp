@@ -1733,8 +1733,8 @@ bool release_write_handle(SlotWriteHandleImpl &impl)
 
     bool success = true;
 
-    // Perform checksum updates if policy requires and committed. On checksum failure the slot is already committed (visible to readers); we log and return false.
-    if (impl.committed && impl.owner != nullptr && impl.owner->checksum_policy != ChecksumPolicy::None &&
+    // Auto-checksum on commit only when Enforced. Manual policy: caller (ShmQueue) handles it.
+    if (impl.committed && impl.owner != nullptr && impl.owner->checksum_policy == ChecksumPolicy::Enforced &&
         impl.header != nullptr &&
         static_cast<ChecksumType>(impl.header->checksum_type) != ChecksumType::Unset)
     {
@@ -1833,8 +1833,8 @@ bool release_consume_handle(SlotConsumeHandleImpl &impl)
         success = false; // Invalid state
     }
 
-    // 2. Perform checksum verification if policy requires
-    if (success && impl.owner != nullptr && impl.owner->checksum_policy != ChecksumPolicy::None &&
+    // 2. Auto-verify only when Enforced. Manual policy: caller (ShmQueue) handles it.
+    if (success && impl.owner != nullptr && impl.owner->checksum_policy == ChecksumPolicy::Enforced &&
         impl.header != nullptr &&
         static_cast<ChecksumType>(impl.header->checksum_type) != ChecksumType::Unset)
     {

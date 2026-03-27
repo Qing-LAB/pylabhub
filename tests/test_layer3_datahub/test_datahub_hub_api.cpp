@@ -183,8 +183,12 @@ TEST_F(DatahubHubApiTest, ZmqForwardingApi)
     ExpectWorkerOk(proc);
 }
 
-// RuntimeVerifyChecksumToggle: BLOCKED on checksum timing investigation.
-// Test worker exists in datahub_hub_api_workers.cpp but not wired into TEST_F.
+TEST_F(DatahubHubApiTest, RuntimeVerifyChecksumToggle)
+{
+    // Runtime toggle: write without checksum, enable verify, write with checksum, verify passes.
+    auto proc = SpawnWorker("hub_api.runtime_verify_checksum_toggle", {});
+    ExpectWorkerOk(proc);
+}
 
 TEST_F(DatahubHubApiTest, ForwardingErrorPaths)
 {
