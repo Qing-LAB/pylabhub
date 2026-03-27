@@ -974,6 +974,8 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
 
     /** @brief Live view of per-handle timing metrics (process-local; not in SHM). */
     [[nodiscard]] const ContextMetrics &metrics() const noexcept;
+    /** @brief Mutable metrics access (for checksum_error_count increment). */
+    [[nodiscard]] ContextMetrics &metrics() noexcept;
 
     /** @brief Reset all ContextMetrics counters to zero; preserve context_start_time. */
     void clear_metrics() noexcept;

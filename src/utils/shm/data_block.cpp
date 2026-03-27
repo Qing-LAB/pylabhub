@@ -799,7 +799,7 @@ inline std::pair<SharedMemoryHeader *, uint32_t> get_header_and_slot_count(DataB
     return {hdr, dataBlock->layout().slot_count_value()};
 }
 
-inline bool update_checksum_flexible_zone_impl(DataBlock *block)
+inline bool update_checksum_flexible_zone_impl(DataBlock *block, bool compute = true)
 {
     if (block == nullptr || block->header() == nullptr)
     {
@@ -822,26 +822,34 @@ inline bool update_checksum_flexible_zone_impl(DataBlock *block)
 
     char *flex = block->flexible_data_zone();
     size_t len = layout.flexible_zone_size;
-    char *zone_ptr = flex; // Single zone starts at offset 0
 
-    if (zone_ptr == nullptr || len == 0)
+    if (flex == nullptr || len == 0)
     {
         return false;
     }
 
-    // Checksum data stored in SharedMemoryHeader::flexible_zone_checksums[0]
-    if (!pylabhub::crypto::compute_blake2b(
-            hdr->flexible_zone_checksums[flex_zone_idx].checksum_bytes, zone_ptr, len))
-    {
-        return false;
-    }
+    // Fresh write — mark as unverified by readers.
+    hdr->flexible_zone_checksums[flex_zone_idx].valid.store(0, std::memory_order_release);
 
-    hdr->flexible_zone_checksums[flex_zone_idx].valid.store(
-        1, std::memory_order_release);
+    if (compute)
+    {
+        if (!pylabhub::crypto::compute_blake2b(
+                hdr->flexible_zone_checksums[flex_zone_idx].checksum_bytes, flex, len))
+        {
+            return false;
+        }
+    }
+    else
+    {
+        std::memset(hdr->flexible_zone_checksums[flex_zone_idx].checksum_bytes, 0,
+                    sizeof(hdr->flexible_zone_checksums[flex_zone_idx].checksum_bytes));
+    }
     return true;
 }
 
-inline bool update_checksum_slot_impl(DataBlock *block, size_t slot_index)
+/// @param compute  true = compute BLAKE2b hash; false = zero out hash (invalidate).
+/// Always sets slot_cks_is_valid = 0 (fresh write, unverified by readers).
+inline bool update_checksum_slot_impl(DataBlock *block, size_t slot_index, bool compute)
 {
     if (block == nullptr || block->header() == nullptr)
     {
@@ -870,18 +878,31 @@ inline bool update_checksum_slot_impl(DataBlock *block, size_t slot_index)
     char *slot_checksum_base_ptr = block->layout().slot_checksum_base(base);
     auto *slot_checksum = reinterpret_cast<uint8_t *>(
         slot_checksum_base_ptr + slot_index * detail::SLOT_CHECKSUM_ENTRY_SIZE);
-    auto *slot_valid =
+    auto *slot_cks_is_valid =
         reinterpret_cast<std::atomic<uint8_t> *>(slot_checksum + detail::CHECKSUM_BYTES);
-    const void *slot_data = buf + slot_index * slot_size;
-    if (!pylabhub::crypto::compute_blake2b(slot_checksum, slot_data, slot_size))
+
+    // Fresh write — mark as unverified.
+    slot_cks_is_valid->store(0, std::memory_order_release);
+
+    if (compute)
     {
-        return false;
+        const void *slot_data = buf + slot_index * slot_size;
+        if (!pylabhub::crypto::compute_blake2b(slot_checksum, slot_data, slot_size))
+        {
+            return false;
+        }
     }
-    slot_valid->store(1, std::memory_order_release);
+    else
+    {
+        // Invalidate: zero out checksum bytes so verify detects "no checksum".
+        std::memset(slot_checksum, 0, detail::CHECKSUM_BYTES);
+    }
     return true;
 }
 
-inline bool verify_checksum_flexible_zone_impl(const DataBlock *block)
+/// @param honor_valid  true = skip if already verified. false = always compute.
+inline bool verify_checksum_flexible_zone_impl(const DataBlock *block,
+                                                bool honor_valid = true)
 {
     if (block == nullptr || block->header() == nullptr)
     {
@@ -891,37 +912,57 @@ inline bool verify_checksum_flexible_zone_impl(const DataBlock *block)
     {
         return false;
     }
-    auto *hdr = block->header();
+    // const_cast: valid flag is a reader-side cache in shared memory.
+    auto *hdr = const_cast<SharedMemoryHeader *>(block->header());
 
-    // Phase 2: Single flex zone (always at index 0)
     constexpr size_t flex_zone_idx = 0;
-    
     const auto &layout = block->layout();
     if (layout.flexible_zone_size == 0)
     {
-        return false; // No flex zone configured
+        return false;
     }
 
-    if (hdr->flexible_zone_checksums[flex_zone_idx].valid.load(std::memory_order_acquire) != 1)
+    auto &entry = hdr->flexible_zone_checksums[flex_zone_idx];
+
+    // Check if checksum is all zero (invalidated).
+    bool all_zero = true;
+    for (size_t i = 0; i < sizeof(entry.checksum_bytes); ++i)
     {
+        if (entry.checksum_bytes[i] != 0) { all_zero = false; break; }
+    }
+    if (all_zero)
+    {
+        entry.valid.store(0, std::memory_order_release);
         return false;
+    }
+
+    // If honoring and already verified, skip.
+    if (honor_valid && entry.valid.load(std::memory_order_acquire) == 1)
+    {
+        return true;
     }
 
     const char *flex = block->flexible_data_zone();
     size_t len = layout.flexible_zone_size;
-    const char *zone_ptr = flex; // Single zone starts at offset 0
-
-    if (zone_ptr == nullptr || len == 0)
+    if (flex == nullptr || len == 0)
     {
         return false;
     }
 
-    // Checksum data stored in SharedMemoryHeader::flexible_zone_checksums[0]
-    return pylabhub::crypto::verify_blake2b(
-        hdr->flexible_zone_checksums[flex_zone_idx].checksum_bytes, zone_ptr, len);
+    if (pylabhub::crypto::verify_blake2b(entry.checksum_bytes, flex, len))
+    {
+        entry.valid.store(1, std::memory_order_release);
+        return true;
+    }
+    entry.valid.store(0, std::memory_order_release);
+    return false;
 }
 
-inline bool verify_checksum_slot_impl(const DataBlock *block, size_t slot_index)
+/// @param honor_slot_valid  true = skip computation if already verified (pre-read gate).
+///                          false = always compute (post-read integrity audit).
+/// Always leaves slot_cks_is_valid in the correct state on return.
+inline bool verify_checksum_slot_impl(const DataBlock *block, size_t slot_index,
+                                       bool honor_slot_valid)
 {
     if (block == nullptr || block->header() == nullptr)
     {
@@ -939,13 +980,31 @@ inline bool verify_checksum_slot_impl(const DataBlock *block, size_t slot_index)
     const char *slot_checksum_base_ptr = block->layout().slot_checksum_base(base);
     const auto *slot_checksum = reinterpret_cast<const uint8_t *>(
         slot_checksum_base_ptr + slot_index * detail::SLOT_CHECKSUM_ENTRY_SIZE);
-    const auto *slot_valid =
-        reinterpret_cast<const std::atomic<uint8_t> *>(slot_checksum + detail::CHECKSUM_BYTES);
-    if (slot_valid->load(std::memory_order_acquire) != 1)
+    // Non-const cast for atomic store — slot_cks_is_valid is a reader-side cache.
+    auto *slot_cks_is_valid =
+        const_cast<std::atomic<uint8_t> *>(
+            reinterpret_cast<const std::atomic<uint8_t> *>(
+                slot_checksum + detail::CHECKSUM_BYTES));
+
+    // Check if checksum bytes are all zero (invalidated by writer).
+    bool all_zero = true;
+    for (size_t i = 0; i < detail::CHECKSUM_BYTES; ++i)
     {
+        if (slot_checksum[i] != 0) { all_zero = false; break; }
+    }
+    if (all_zero)
+    {
+        slot_cks_is_valid->store(0, std::memory_order_release);
         return false;
     }
-    // Step size for slot data = logical (slot_stride_bytes).
+
+    // If honoring and already verified by a previous reader, skip computation.
+    if (honor_slot_valid && slot_cks_is_valid->load(std::memory_order_acquire) == 1)
+    {
+        return true;
+    }
+
+    // Compute hash and compare.
     const size_t slot_size = block->layout().slot_stride_bytes();
     if (slot_size == 0)
     {
@@ -957,7 +1016,13 @@ inline bool verify_checksum_slot_impl(const DataBlock *block, size_t slot_index)
         return false;
     }
     const void *slot_data = buf + slot_index * slot_size;
-    return pylabhub::crypto::verify_blake2b(slot_checksum, slot_data, slot_size);
+    if (pylabhub::crypto::verify_blake2b(slot_checksum, slot_data, slot_size))
+    {
+        slot_cks_is_valid->store(1, std::memory_order_release);
+        return true;
+    }
+    slot_cks_is_valid->store(0, std::memory_order_release);
+    return false;
 }
 } // namespace
 
@@ -1359,10 +1424,16 @@ void DataBlockProducer::clear_metrics() noexcept
         return;
     }
     std::lock_guard<std::mutex> lock(pImpl->mutex);
-    const auto saved_period              = pImpl->metrics_.configured_period_us;
-    pImpl->metrics_                      = ContextMetrics{};
+    const auto saved_period = pImpl->metrics_.configured_period_us;
+    pImpl->metrics_.context_start_time = {};
+    pImpl->metrics_.context_elapsed_us = 0;
+    pImpl->metrics_.last_slot_wait_us  = 0;
+    pImpl->metrics_.last_iteration_us  = 0;
+    pImpl->metrics_.max_iteration_us   = 0;
+    pImpl->metrics_.last_slot_exec_us  = 0;
+    pImpl->metrics_.checksum_error_count.store(0, std::memory_order_relaxed);
     pImpl->metrics_.configured_period_us = saved_period;
-    pImpl->t_iter_start_       = {};
+    pImpl->t_iter_start_ = {};
 }
 
 // ─── Channel Identity Accessors (DataBlockProducer) ───
@@ -1482,7 +1553,7 @@ std::span<std::byte> DataBlockProducer::flexible_zone_span() noexcept
 bool DataBlockProducer::update_checksum_slot(size_t slot_index) noexcept
 {
     return (pImpl != nullptr && pImpl->dataBlock != nullptr)
-               ? update_checksum_slot_impl(pImpl->dataBlock.get(), slot_index)
+               ? update_checksum_slot_impl(pImpl->dataBlock.get(), slot_index, /*compute=*/true)
                : false;
 }
 
@@ -1738,7 +1809,7 @@ bool release_write_handle(SlotWriteHandleImpl &impl)
         impl.header != nullptr &&
         static_cast<ChecksumType>(impl.header->checksum_type) != ChecksumType::Unset)
     {
-        if (!update_checksum_slot_impl(impl.dataBlock, impl.slot_index))
+        if (!update_checksum_slot_impl(impl.dataBlock, impl.slot_index, /*compute=*/true))
         {
             LOGGER_WARN("DataBlock '{}': release_write_slot failed — checksum update failed for slot_index={} slot_id={}.",
                         impl.owner != nullptr ? impl.owner->name : "(unknown)", impl.slot_index, impl.slot_id);
@@ -1838,19 +1909,21 @@ bool release_consume_handle(SlotConsumeHandleImpl &impl)
         impl.header != nullptr &&
         static_cast<ChecksumType>(impl.header->checksum_type) != ChecksumType::Unset)
     {
-        if (!verify_checksum_slot_impl(impl.dataBlock, impl.slot_index))
+        if (!verify_checksum_slot_impl(impl.dataBlock, impl.slot_index, /*honor_slot_valid=*/false))
         {
-            LOGGER_WARN("DataBlock '{}': release_consume_slot failed — slot checksum verification failed for slot_index={} slot_id={}.",
-                        impl.owner != nullptr ? impl.owner->name : "(unknown)", impl.slot_index, impl.slot_id);
+            impl.owner->metrics_.checksum_error_count.fetch_add(1, std::memory_order_relaxed);
+            LOGGER_WARN("DataBlock '{}': release_consume_slot — slot checksum verification failed for slot_index={} slot_id={}.",
+                        impl.owner->name, impl.slot_index, impl.slot_id);
             success = false;
         }
         // Verify flexible zone checksums (Phase 2: single flex zone)
         if (impl.dataBlock->layout().flexible_zone_size > 0)
         {
-            if (!verify_checksum_flexible_zone_impl(impl.dataBlock))
+            if (!verify_checksum_flexible_zone_impl(impl.dataBlock, /*honor_valid=*/false))
             {
-                LOGGER_WARN("DataBlock '{}': release_consume_slot failed — flexible zone checksum verification failed for slot_index={}.",
-                            impl.owner != nullptr ? impl.owner->name : "(unknown)", impl.slot_index);
+                impl.owner->metrics_.checksum_error_count.fetch_add(1, std::memory_order_relaxed);
+                LOGGER_WARN("DataBlock '{}': release_consume_slot — flexzone checksum verification failed for slot_index={}.",
+                            impl.owner->name, impl.slot_index);
                 success = false;
             }
         }
@@ -1991,7 +2064,16 @@ bool SlotWriteHandle::update_checksum_slot() noexcept
     {
         return false;
     }
-    return update_checksum_slot_impl(pImpl->dataBlock, pImpl->slot_index);
+    return update_checksum_slot_impl(pImpl->dataBlock, pImpl->slot_index, /*compute=*/true);
+}
+
+void SlotWriteHandle::invalidate_checksum_slot() noexcept
+{
+    if (pImpl == nullptr || pImpl->dataBlock == nullptr)
+    {
+        return;
+    }
+    (void)update_checksum_slot_impl(pImpl->dataBlock, pImpl->slot_index, /*compute=*/false);
 }
 
 bool SlotWriteHandle::update_checksum_flexible_zone() noexcept
@@ -2068,7 +2150,7 @@ bool SlotConsumeHandle::verify_checksum_slot() const noexcept
     {
         return false;
     }
-    return verify_checksum_slot_impl(pImpl->dataBlock, pImpl->slot_index);
+    return verify_checksum_slot_impl(pImpl->dataBlock, pImpl->slot_index, /*honor_slot_valid=*/true);
 }
 
 bool SlotConsumeHandle::verify_checksum_flexible_zone() const noexcept
@@ -2136,7 +2218,7 @@ std::span<const std::byte> DataBlockConsumer::flexible_zone_span() const noexcep
 bool DataBlockConsumer::verify_checksum_slot(size_t slot_index) const noexcept
 {
     return (pImpl != nullptr && pImpl->dataBlock != nullptr)
-               ? verify_checksum_slot_impl(pImpl->dataBlock.get(), slot_index)
+               ? verify_checksum_slot_impl(pImpl->dataBlock.get(), slot_index, /*honor_slot_valid=*/true)
                : false;
 }
 
@@ -2478,6 +2560,12 @@ const ContextMetrics &DataBlockConsumer::metrics() const noexcept
     return pImpl->metrics_;
 }
 
+ContextMetrics &DataBlockConsumer::metrics() noexcept
+{
+    // Caller must ensure pImpl is non-null (only called from ShmQueue which checks).
+    return pImpl->metrics_;
+}
+
 void DataBlockConsumer::clear_metrics() noexcept
 {
     if (pImpl == nullptr)
@@ -2485,10 +2573,16 @@ void DataBlockConsumer::clear_metrics() noexcept
         return;
     }
     std::lock_guard<std::recursive_mutex> lock(pImpl->mutex);
-    const auto saved_period              = pImpl->metrics_.configured_period_us;
-    pImpl->metrics_                      = ContextMetrics{};
+    const auto saved_period = pImpl->metrics_.configured_period_us;
+    pImpl->metrics_.context_start_time = {};
+    pImpl->metrics_.context_elapsed_us = 0;
+    pImpl->metrics_.last_slot_wait_us  = 0;
+    pImpl->metrics_.last_iteration_us  = 0;
+    pImpl->metrics_.max_iteration_us   = 0;
+    pImpl->metrics_.last_slot_exec_us  = 0;
+    pImpl->metrics_.checksum_error_count.store(0, std::memory_order_relaxed);
     pImpl->metrics_.configured_period_us = saved_period;
-    pImpl->t_iter_start_       = {};
+    pImpl->t_iter_start_ = {};
 }
 
 // ─── Channel Identity Accessors (DataBlockConsumer) ───

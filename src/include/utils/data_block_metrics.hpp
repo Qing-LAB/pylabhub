@@ -15,6 +15,7 @@
  */
 #include "pylabhub_utils_export.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 
@@ -56,6 +57,11 @@ struct PYLABHUB_UTILS_EXPORT ContextMetrics
     uint64_t last_iteration_us{0};  ///< Start-to-start elapsed between the last two acquires (µs).
     uint64_t max_iteration_us{0};   ///< Peak start-to-start elapsed since session start (µs).
     uint64_t last_slot_exec_us{0};  ///< Time from acquire to release (user code + overhead) (µs).
+
+    // ── Checksum ──────────────────────────────────────────────────────────────
+    /// Verification failures (slot or flexzone). Atomic: incremented by ShmQueue read_acquire
+    /// and DataBlock release_consume_handle; read by metrics() from any thread.
+    std::atomic<uint64_t> checksum_error_count{0};
 
     // ── Config reference (informational) ──────────────────────────────────────
     uint64_t configured_period_us{0}; ///< Target period from config (µs). 0 = MaxRate. Informational only.

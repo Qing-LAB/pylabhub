@@ -228,10 +228,11 @@ const void* ShmQueue::read_acquire(std::chrono::milliseconds timeout) noexcept
     // Store monotonic slot id for last_seq().
     pImpl->last_seq = pImpl->read_handle->slot_id();
 
-    // Optional checksum verification.
+    // Optional checksum verification (pre-read gate, honors slot_cks_is_valid).
     if (pImpl->verify_slot && !pImpl->read_handle->verify_checksum_slot())
     {
-        LOGGER_ERROR("[ShmQueue] slot checksum mismatch on slot {} channel '{}'",
+        pImpl->consumer()->metrics().checksum_error_count.fetch_add(1, std::memory_order_relaxed);
+        LOGGER_ERROR("[ShmQueue] slot checksum error on slot {} channel '{}'",
                      pImpl->last_seq, pImpl->chan_name);
         (void)pImpl->consumer()->release_consume_slot(*pImpl->read_handle);
         pImpl->read_handle.reset();
@@ -239,7 +240,8 @@ const void* ShmQueue::read_acquire(std::chrono::milliseconds timeout) noexcept
     }
     if (pImpl->verify_fz && !pImpl->read_handle->verify_checksum_flexible_zone())
     {
-        LOGGER_ERROR("[ShmQueue] flexzone checksum mismatch on slot {} channel '{}'",
+        pImpl->consumer()->metrics().checksum_error_count.fetch_add(1, std::memory_order_relaxed);
+        LOGGER_ERROR("[ShmQueue] flexzone checksum error on slot {} channel '{}'",
                      pImpl->last_seq, pImpl->chan_name);
         (void)pImpl->consumer()->release_consume_slot(*pImpl->read_handle);
         pImpl->read_handle.reset();
@@ -287,18 +289,23 @@ void* ShmQueue::write_acquire(std::chrono::milliseconds timeout) noexcept
         return nullptr;
 
     std::span<std::byte> buf = pImpl->write_handle->buffer_span();
-    return buf.empty() ? nullptr : buf.data();
+    if (buf.empty()) return nullptr;
+    // Zero buffer so padding bytes are deterministic and no historical data leaks.
+    std::fill(buf.begin(), buf.end(), std::byte{0});
+    return buf.data();
 }
 
 void ShmQueue::write_commit() noexcept
 {
     if (!pImpl || !pImpl->producer() || !pImpl->write_handle)
         return;
-    // Compute checksums BEFORE commit() marks the slot as written.
+    // Compute or invalidate checksum BEFORE commit() marks the slot as written.
     // commit() sets the slot size header; a reader racing past release_write_slot()
     // must see a consistent checksum.  CR-03: always checksum before publishing.
     if (pImpl->checksum_slot)
         (void)pImpl->write_handle->update_checksum_slot();
+    else
+        pImpl->write_handle->invalidate_checksum_slot();
     if (pImpl->checksum_fz)
         (void)pImpl->write_handle->update_checksum_flexible_zone();
     (void)pImpl->write_handle->commit(pImpl->item_sz);
@@ -403,9 +410,8 @@ QueueMetrics ShmQueue::metrics() const noexcept
         m.context_elapsed_us   = cm.context_elapsed_us;
         m.last_slot_exec_us    = cm.last_slot_exec_us;
         m.configured_period_us = cm.configured_period_us;
-        // recv_overflow_count stays 0 for SHM. DataBlock sync policies (Sequential,
-        // Latest_only) prevent data loss at the queue level — Sequential blocks the
-        // producer, Latest_only skips by design. No receive buffer overflow is possible.
+        // recv_overflow_count stays 0 for SHM (no receive buffer overflow possible).
+        m.checksum_error_count = cm.checksum_error_count.load(std::memory_order_relaxed);
         return m;
     }
 

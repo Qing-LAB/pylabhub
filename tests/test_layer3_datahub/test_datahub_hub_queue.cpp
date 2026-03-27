@@ -159,7 +159,7 @@ TEST_F(DatahubShmQueueTest, ShmQueueVerifyChecksumMismatch)
     // read_acquire() with set_verify_checksum(true,false) must return nullptr (logs ERROR).
     // After enabling set_checksum_options on the writer, read_acquire() succeeds.
     auto proc = SpawnWorker("hub_queue.shm_queue_verify_checksum_mismatch", {});
-    ExpectWorkerOk(proc, {}, {"slot checksum mismatch"});
+    ExpectWorkerOk(proc, {}, {"slot checksum error"});
 }
 
 TEST_F(DatahubShmQueueTest, ShmQueueIsRunning)
