@@ -258,6 +258,16 @@ struct RoleInfoReqCmd
     std::promise<std::optional<RoleInfoResult>>     result;
 };
 
+/// HEP-0021 §16: update a channel's endpoint after ephemeral port bind.
+struct EndpointUpdateCmd
+{
+    std::string        channel_name;
+    std::string        endpoint_type;  ///< "zmq_node" or "inbox"
+    std::string        endpoint;       ///< Resolved endpoint (e.g., "tcp://127.0.0.1:45782")
+    int                timeout_ms{5000};
+    std::promise<bool> result;
+};
+
 struct StopCmd
 {
 };
@@ -285,7 +295,8 @@ using MessengerCommand = std::variant<ConnectCmd, DisconnectCmd, RegisterProduce
                                       QuerySchemaCmd, ChannelNotifyCmd,
                                       ChannelBroadcastCmd, ChannelListCmd,
                                       MetricsReportCmd, QueryShmBlocksCmd,
-                                      RolePresenceReqCmd, RoleInfoReqCmd>;
+                                      RolePresenceReqCmd, RoleInfoReqCmd,
+                                      EndpointUpdateCmd>;
 
 // ============================================================================
 // MessengerImpl
@@ -382,43 +393,45 @@ class MessengerImpl
 
     // ── Connection management (defined in messenger.cpp) ─────────────────────
 
-    bool handle_command(ConnectCmd &cmd, std::optional<zmq::socket_t> &socket);
-    bool handle_command(DisconnectCmd &cmd, std::optional<zmq::socket_t> &socket);
-    bool handle_command(StopCmd &cmd, std::optional<zmq::socket_t> &socket);
-    bool handle_command(SuppressHeartbeatCmd &cmd, std::optional<zmq::socket_t> &socket);
-    bool handle_command(HeartbeatNowCmd &cmd, std::optional<zmq::socket_t> &socket);
+    void handle_command(ConnectCmd &cmd, std::optional<zmq::socket_t> &socket);
+    void handle_command(DisconnectCmd &cmd, std::optional<zmq::socket_t> &socket);
+    void handle_command(StopCmd &cmd, std::optional<zmq::socket_t> &socket);
+    void handle_command(SuppressHeartbeatCmd &cmd, std::optional<zmq::socket_t> &socket);
+    void handle_command(HeartbeatNowCmd &cmd, std::optional<zmq::socket_t> &socket);
 
     // ── Broker protocol (defined in messenger_protocol.cpp) ──────────────────
 
-    bool handle_command(RegisterProducerCmd &cmd,
+    void handle_command(RegisterProducerCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
-    bool handle_command(RegisterConsumerCmd &cmd,
+    void handle_command(RegisterConsumerCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
-    bool handle_command(DeregisterConsumerCmd &cmd,
+    void handle_command(DeregisterConsumerCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
-    bool handle_command(UnregisterChannelCmd &cmd, std::optional<zmq::socket_t> &socket);
-    bool handle_command(ChecksumErrorReportCmd &cmd,
+    void handle_command(UnregisterChannelCmd &cmd, std::optional<zmq::socket_t> &socket);
+    void handle_command(ChecksumErrorReportCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
-    bool handle_command(DiscoverChannelCmd &cmd,
+    void handle_command(DiscoverChannelCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
-    bool handle_command(CreateChannelCmd &cmd, std::optional<zmq::socket_t> &socket);
-    bool handle_command(ConnectChannelCmd &cmd,
+    void handle_command(CreateChannelCmd &cmd, std::optional<zmq::socket_t> &socket);
+    void handle_command(ConnectChannelCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
-    bool handle_command(QuerySchemaCmd &cmd,
+    void handle_command(QuerySchemaCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
-    bool handle_command(ChannelNotifyCmd &cmd,
+    void handle_command(ChannelNotifyCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
-    bool handle_command(ChannelBroadcastCmd &cmd,
+    void handle_command(ChannelBroadcastCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
-    bool handle_command(ChannelListCmd &cmd,
+    void handle_command(ChannelListCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
-    bool handle_command(MetricsReportCmd &cmd,
+    void handle_command(MetricsReportCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
-    bool handle_command(QueryShmBlocksCmd &cmd,
+    void handle_command(QueryShmBlocksCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
-    bool handle_command(RolePresenceReqCmd &cmd,
+    void handle_command(RolePresenceReqCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
-    bool handle_command(RoleInfoReqCmd &cmd,
+    void handle_command(RoleInfoReqCmd &cmd,
+                        std::optional<zmq::socket_t> &socket) const;
+    void handle_command(EndpointUpdateCmd &cmd,
                         std::optional<zmq::socket_t> &socket) const;
 
     std::optional<nlohmann::json> send_disc_req(zmq::socket_t &socket,

@@ -28,14 +28,14 @@ using namespace internal;
 // Broker Protocol Handlers
 // ============================================================================
 
-bool MessengerImpl::handle_command(RegisterProducerCmd &cmd,
+void MessengerImpl::handle_command(RegisterProducerCmd &cmd,
                                    std::optional<zmq::socket_t> &socket) const
 {
     if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
     {
         LOGGER_WARN("Messenger: register_producer('{}') skipped — not connected.",
                     cmd.channel);
-        return false;
+        return;
     }
     try
     {
@@ -60,7 +60,7 @@ bool MessengerImpl::handle_command(RegisterProducerCmd &cmd,
         if (!zmq::send_multipart(*socket, msgs))
         {
             LOGGER_ERROR("Messenger: register_producer('{}') send failed.", cmd.channel);
-            return false;
+            return;
         }
 
         std::vector<zmq::pollitem_t> items = {{socket->handle(), 0, ZMQ_POLLIN, 0}};
@@ -68,14 +68,14 @@ bool MessengerImpl::handle_command(RegisterProducerCmd &cmd,
         if ((items[0].revents & ZMQ_POLLIN) == 0)
         {
             LOGGER_ERROR("Messenger: register_producer('{}') timed out.", cmd.channel);
-            return false;
+            return;
         }
         std::vector<zmq::message_t> recv_msgs;
         static_cast<void>(zmq::recv_multipart(*socket, std::back_inserter(recv_msgs)));
         if (recv_msgs.size() < 3)
         {
             LOGGER_ERROR("Messenger: register_producer('{}') invalid response.", cmd.channel);
-            return false;
+            return;
         }
         nlohmann::json response = nlohmann::json::parse(recv_msgs.back().to_string());
         const bool ok = response.value("status", "") == "success";
@@ -83,7 +83,7 @@ bool MessengerImpl::handle_command(RegisterProducerCmd &cmd,
         {
             LOGGER_ERROR("Messenger: register_producer('{}') failed: {}", cmd.channel,
                          response.value("message", std::string("unknown")));
-            return false;
+            return;
         }
         // Send one immediate heartbeat so the channel transitions to Ready.
         // This makes discover_producer work without waiting for the periodic timer.
@@ -99,17 +99,17 @@ bool MessengerImpl::handle_command(RegisterProducerCmd &cmd,
         LOGGER_ERROR("Messenger: JSON error in register_producer('{}'): {}",
                      cmd.channel, e.what());
     }
-    return false;
+    return;
 }
 
-bool MessengerImpl::handle_command(RegisterConsumerCmd &cmd,
+void MessengerImpl::handle_command(RegisterConsumerCmd &cmd,
                                    std::optional<zmq::socket_t> &socket) const
 {
     if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
     {
         LOGGER_WARN("Messenger: register_consumer('{}') skipped — not connected.",
                     cmd.channel);
-        return false;
+        return;
     }
     try
     {
@@ -126,7 +126,7 @@ bool MessengerImpl::handle_command(RegisterConsumerCmd &cmd,
         if (!zmq::send_multipart(*socket, msgs))
         {
             LOGGER_ERROR("Messenger: register_consumer('{}') send failed.", cmd.channel);
-            return false;
+            return;
         }
 
         std::vector<zmq::pollitem_t> items = {{socket->handle(), 0, ZMQ_POLLIN, 0}};
@@ -134,14 +134,14 @@ bool MessengerImpl::handle_command(RegisterConsumerCmd &cmd,
         if ((items[0].revents & ZMQ_POLLIN) == 0)
         {
             LOGGER_ERROR("Messenger: register_consumer('{}') timed out.", cmd.channel);
-            return false;
+            return;
         }
         std::vector<zmq::message_t> recv_msgs;
         static_cast<void>(zmq::recv_multipart(*socket, std::back_inserter(recv_msgs)));
         if (recv_msgs.size() < 3)
         {
             LOGGER_ERROR("Messenger: register_consumer('{}') invalid response.", cmd.channel);
-            return false;
+            return;
         }
         nlohmann::json response = nlohmann::json::parse(recv_msgs.back().to_string());
         if (response.value("status", "") != "success")
@@ -160,17 +160,17 @@ bool MessengerImpl::handle_command(RegisterConsumerCmd &cmd,
         LOGGER_ERROR("Messenger: JSON error in register_consumer('{}'): {}",
                      cmd.channel, e.what());
     }
-    return false;
+    return;
 }
 
-bool MessengerImpl::handle_command(DeregisterConsumerCmd &cmd,
+void MessengerImpl::handle_command(DeregisterConsumerCmd &cmd,
                                    std::optional<zmq::socket_t> &socket) const
 {
     if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
     {
         LOGGER_WARN("Messenger: deregister_consumer('{}') skipped — not connected.",
                     cmd.channel);
-        return false;
+        return;
     }
     try
     {
@@ -186,7 +186,7 @@ bool MessengerImpl::handle_command(DeregisterConsumerCmd &cmd,
         if (!zmq::send_multipart(*socket, msgs))
         {
             LOGGER_ERROR("Messenger: deregister_consumer('{}') send failed.", cmd.channel);
-            return false;
+            return;
         }
 
         std::vector<zmq::pollitem_t> items = {{socket->handle(), 0, ZMQ_POLLIN, 0}};
@@ -194,7 +194,7 @@ bool MessengerImpl::handle_command(DeregisterConsumerCmd &cmd,
         if ((items[0].revents & ZMQ_POLLIN) == 0)
         {
             LOGGER_ERROR("Messenger: deregister_consumer('{}') timed out.", cmd.channel);
-            return false;
+            return;
         }
         std::vector<zmq::message_t> recv_msgs;
         static_cast<void>(zmq::recv_multipart(*socket, std::back_inserter(recv_msgs)));
@@ -202,7 +202,7 @@ bool MessengerImpl::handle_command(DeregisterConsumerCmd &cmd,
         {
             LOGGER_ERROR("Messenger: deregister_consumer('{}') invalid response.",
                          cmd.channel);
-            return false;
+            return;
         }
         nlohmann::json response = nlohmann::json::parse(recv_msgs.back().to_string());
         if (response.value("status", "") != "success")
@@ -223,10 +223,10 @@ bool MessengerImpl::handle_command(DeregisterConsumerCmd &cmd,
         LOGGER_ERROR("Messenger: JSON error in deregister_consumer('{}'): {}",
                      cmd.channel, e.what());
     }
-    return false;
+    return;
 }
 
-bool MessengerImpl::handle_command(UnregisterChannelCmd &cmd,
+void MessengerImpl::handle_command(UnregisterChannelCmd &cmd,
                                    std::optional<zmq::socket_t> &socket)
 {
     // Remove from heartbeat list first (even if not connected).
@@ -240,7 +240,7 @@ bool MessengerImpl::handle_command(UnregisterChannelCmd &cmd,
     {
         LOGGER_WARN("Messenger: unregister_channel('{}') skipped — not connected.",
                     cmd.channel);
-        return false;
+        return;
     }
     try
     {
@@ -256,7 +256,7 @@ bool MessengerImpl::handle_command(UnregisterChannelCmd &cmd,
         if (!zmq::send_multipart(*socket, msgs))
         {
             LOGGER_ERROR("Messenger: unregister_channel('{}') send failed.", cmd.channel);
-            return false;
+            return;
         }
 
         std::vector<zmq::pollitem_t> items = {{socket->handle(), 0, ZMQ_POLLIN, 0}};
@@ -265,7 +265,7 @@ bool MessengerImpl::handle_command(UnregisterChannelCmd &cmd,
         {
             LOGGER_WARN("Messenger: unregister_channel('{}') timed out (non-fatal).",
                         cmd.channel);
-            return false;
+            return;
         }
         std::vector<zmq::message_t> recv_msgs;
         static_cast<void>(zmq::recv_multipart(*socket, std::back_inserter(recv_msgs)));
@@ -291,17 +291,17 @@ bool MessengerImpl::handle_command(UnregisterChannelCmd &cmd,
         LOGGER_ERROR("Messenger: ZMQ error in unregister_channel('{}'): {}",
                      cmd.channel, e.what());
     }
-    return false;
+    return;
 }
 
-bool MessengerImpl::handle_command(ChecksumErrorReportCmd &cmd,
+void MessengerImpl::handle_command(ChecksumErrorReportCmd &cmd,
                                    std::optional<zmq::socket_t> &socket) const
 {
     if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
     {
         LOGGER_WARN("Messenger: report_checksum_error('{}') skipped — not connected.",
                     cmd.channel);
-        return false;
+        return;
     }
     try
     {
@@ -326,7 +326,7 @@ bool MessengerImpl::handle_command(ChecksumErrorReportCmd &cmd,
         LOGGER_ERROR("Messenger: ZMQ error in report_checksum_error('{}'): {}",
                      cmd.channel, e.what());
     }
-    return false;
+    return;
 }
 
 // ── DISC_REQ round-trip helper ────────────────────────────────────────────────
@@ -376,14 +376,14 @@ std::optional<nlohmann::json> MessengerImpl::send_disc_req(zmq::socket_t &socket
     }
 }
 
-bool MessengerImpl::handle_command(DiscoverChannelCmd &cmd,
+void MessengerImpl::handle_command(DiscoverChannelCmd &cmd,
                                    std::optional<zmq::socket_t> &socket) const
 {
     if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
     {
         LOGGER_WARN("Messenger: discover_producer('{}') — not connected.", cmd.channel);
         cmd.result.set_value(std::nullopt);
-        return false;
+        return;
     }
     try
     {
@@ -399,7 +399,7 @@ bool MessengerImpl::handle_command(DiscoverChannelCmd &cmd,
                 LOGGER_ERROR("Messenger: discover_producer('{}') timed out ({}ms).",
                              cmd.channel, cmd.timeout_ms);
                 cmd.result.set_value(std::nullopt);
-                return false;
+                return;
             }
             const int remaining_ms = static_cast<int>(
                 std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now)
@@ -425,7 +425,7 @@ bool MessengerImpl::handle_command(DiscoverChannelCmd &cmd,
                     LOGGER_ERROR("Messenger: discover_producer('{}') missing fields.",
                                  cmd.channel);
                     cmd.result.set_value(std::nullopt);
-                    return false;
+                    return;
                 }
                 ConsumerInfo cinfo{};
                 cinfo.shm_name          = (*resp)["shm_name"].get<std::string>();
@@ -443,7 +443,7 @@ bool MessengerImpl::handle_command(DiscoverChannelCmd &cmd,
                 cinfo.data_transport     = resp->value("data_transport", std::string{"shm"});
                 cinfo.zmq_node_endpoint  = resp->value("zmq_node_endpoint", "");
                 cmd.result.set_value(cinfo);
-                return false;
+                return;
             }
             if (error_code == "CHANNEL_NOT_READY")
             {
@@ -460,7 +460,7 @@ bool MessengerImpl::handle_command(DiscoverChannelCmd &cmd,
             LOGGER_ERROR("Messenger: discover_producer('{}') failed: {}", cmd.channel,
                          resp->value("message", std::string("unknown")));
             cmd.result.set_value(std::nullopt);
-            return false;
+            return;
         }
     }
     catch (const zmq::error_t &e)
@@ -469,17 +469,17 @@ bool MessengerImpl::handle_command(DiscoverChannelCmd &cmd,
                      cmd.channel, e.what());
         cmd.result.set_value(std::nullopt);
     }
-    return false;
+    return;
 }
 
-bool MessengerImpl::handle_command(CreateChannelCmd &cmd,
+void MessengerImpl::handle_command(CreateChannelCmd &cmd,
                                    std::optional<zmq::socket_t> &socket)
 {
     if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
     {
         LOGGER_ERROR("Messenger: create_channel('{}') — not connected.", cmd.channel);
         cmd.result.set_value(false);
-        return false;
+        return;
     }
     try
     {
@@ -518,7 +518,7 @@ bool MessengerImpl::handle_command(CreateChannelCmd &cmd,
             LOGGER_ERROR("Messenger: create_channel('{}') REG_REQ send failed.",
                          cmd.channel);
             cmd.result.set_value(false);
-            return false;
+            return;
         }
 
         std::vector<zmq::pollitem_t> items = {{socket->handle(), 0, ZMQ_POLLIN, 0}};
@@ -528,7 +528,7 @@ bool MessengerImpl::handle_command(CreateChannelCmd &cmd,
             LOGGER_ERROR("Messenger: create_channel('{}') timed out waiting for REG_ACK.",
                          cmd.channel);
             cmd.result.set_value(false);
-            return false;
+            return;
         }
         std::vector<zmq::message_t> recv_msgs;
         static_cast<void>(zmq::recv_multipart(*socket, std::back_inserter(recv_msgs)));
@@ -537,7 +537,7 @@ bool MessengerImpl::handle_command(CreateChannelCmd &cmd,
             LOGGER_ERROR("Messenger: create_channel('{}') invalid REG_ACK format.",
                          cmd.channel);
             cmd.result.set_value(false);
-            return false;
+            return;
         }
         nlohmann::json response = nlohmann::json::parse(recv_msgs.back().to_string());
         if (response.value("status", "") != "success")
@@ -545,7 +545,7 @@ bool MessengerImpl::handle_command(CreateChannelCmd &cmd,
             LOGGER_ERROR("Messenger: create_channel('{}') REG_ACK failed: {}", cmd.channel,
                          response.value("message", std::string("unknown")));
             cmd.result.set_value(false);
-            return false;
+            return;
         }
 
         // Send immediate heartbeat → channel becomes Ready on broker.
@@ -569,17 +569,17 @@ bool MessengerImpl::handle_command(CreateChannelCmd &cmd,
                      e.what());
         cmd.result.set_value(false);
     }
-    return false;
+    return;
 }
 
-bool MessengerImpl::handle_command(ConnectChannelCmd &cmd,
+void MessengerImpl::handle_command(ConnectChannelCmd &cmd,
                                    std::optional<zmq::socket_t> &socket) const
 {
     if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
     {
         LOGGER_ERROR("Messenger: connect_channel('{}') — not connected.", cmd.channel);
         cmd.result.set_value(std::nullopt);
-        return false;
+        return;
     }
     try
     {
@@ -597,7 +597,7 @@ bool MessengerImpl::handle_command(ConnectChannelCmd &cmd,
         {
             // discover already logged the error.
             cmd.result.set_value(std::nullopt);
-            return false;
+            return;
         }
 
         // Validate schema hash if an expectation was provided.
@@ -616,7 +616,7 @@ bool MessengerImpl::handle_command(ConnectChannelCmd &cmd,
                     LOGGER_ERROR("Messenger: connect_channel('{}') schema mismatch.",
                                  cmd.channel);
                     cmd.result.set_value(std::nullopt);
-                    return false;
+                    return;
                 }
             }
         }
@@ -664,7 +664,7 @@ bool MessengerImpl::handle_command(ConnectChannelCmd &cmd,
                             // Broker explicitly rejected this consumer (e.g., schema_id
                             // mismatch). Return nullopt — the connection must not proceed.
                             cmd.result.set_value(std::nullopt);
-                            return false;
+                            return;
                         }
                     }
                     catch (...)
@@ -682,19 +682,19 @@ bool MessengerImpl::handle_command(ConnectChannelCmd &cmd,
                      e.what());
         cmd.result.set_value(std::nullopt);
     }
-    return false;
+    return;
 }
 
 // ── SCHEMA_REQ handler (HEP-CORE-0016 Phase 3) ───────────────────────────────
 
-bool MessengerImpl::handle_command(QuerySchemaCmd &cmd,
+void MessengerImpl::handle_command(QuerySchemaCmd &cmd,
                                    std::optional<zmq::socket_t> &socket) const
 {
     if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
     {
         LOGGER_WARN("Messenger: query_channel_schema('{}') — not connected.", cmd.channel);
         cmd.result.set_value(std::nullopt);
-        return false;
+        return;
     }
     try
     {
@@ -710,7 +710,7 @@ bool MessengerImpl::handle_command(QuerySchemaCmd &cmd,
         {
             LOGGER_ERROR("Messenger: query_channel_schema('{}') send failed.", cmd.channel);
             cmd.result.set_value(std::nullopt);
-            return false;
+            return;
         }
 
         // Poll+recv loop: skip non-matching messages (e.g. heartbeat ACKs).
@@ -727,7 +727,7 @@ bool MessengerImpl::handle_command(QuerySchemaCmd &cmd,
             {
                 LOGGER_WARN("Messenger: query_channel_schema('{}') timed out.", cmd.channel);
                 cmd.result.set_value(std::nullopt);
-                return false;
+                return;
             }
 
             std::vector<zmq::pollitem_t> items = {{socket->handle(), 0, ZMQ_POLLIN, 0}};
@@ -736,7 +736,7 @@ bool MessengerImpl::handle_command(QuerySchemaCmd &cmd,
             {
                 LOGGER_WARN("Messenger: query_channel_schema('{}') timed out.", cmd.channel);
                 cmd.result.set_value(std::nullopt);
-                return false;
+                return;
             }
 
             std::vector<zmq::message_t> recv_msgs;
@@ -758,7 +758,7 @@ bool MessengerImpl::handle_command(QuerySchemaCmd &cmd,
             LOGGER_WARN("Messenger: query_channel_schema('{}') failed: {}", cmd.channel,
                         response.value("message", std::string("unknown")));
             cmd.result.set_value(std::nullopt);
-            return false;
+            return;
         }
 
         ChannelSchemaInfo info;
@@ -779,19 +779,19 @@ bool MessengerImpl::handle_command(QuerySchemaCmd &cmd,
                      cmd.channel, e.what());
         cmd.result.set_value(std::nullopt);
     }
-    return false;
+    return;
 }
 
 // ── SHM_BLOCK_QUERY_REQ ───────────────────────────────────────────────────────
 
-bool MessengerImpl::handle_command(QueryShmBlocksCmd &cmd,
+void MessengerImpl::handle_command(QueryShmBlocksCmd &cmd,
                                    std::optional<zmq::socket_t> &socket) const
 {
     if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
     {
         LOGGER_WARN("Messenger: query_shm_blocks('{}') — not connected.", cmd.channel);
         cmd.result.set_value({});
-        return false;
+        return;
     }
     try
     {
@@ -807,7 +807,7 @@ bool MessengerImpl::handle_command(QueryShmBlocksCmd &cmd,
         {
             LOGGER_ERROR("Messenger: query_shm_blocks('{}') send failed.", cmd.channel);
             cmd.result.set_value({});
-            return false;
+            return;
         }
 
         const auto deadline = std::chrono::steady_clock::now() +
@@ -821,7 +821,7 @@ bool MessengerImpl::handle_command(QueryShmBlocksCmd &cmd,
             {
                 LOGGER_WARN("Messenger: query_shm_blocks('{}') timed out.", cmd.channel);
                 cmd.result.set_value({});
-                return false;
+                return;
             }
 
             std::vector<zmq::pollitem_t> items = {{socket->handle(), 0, ZMQ_POLLIN, 0}};
@@ -830,7 +830,7 @@ bool MessengerImpl::handle_command(QueryShmBlocksCmd &cmd,
             {
                 LOGGER_WARN("Messenger: query_shm_blocks('{}') timed out.", cmd.channel);
                 cmd.result.set_value({});
-                return false;
+                return;
             }
 
             std::vector<zmq::message_t> recv_msgs;
@@ -844,7 +844,7 @@ bool MessengerImpl::handle_command(QueryShmBlocksCmd &cmd,
                 continue; // skip unrelated messages (e.g. heartbeat ACKs)
 
             cmd.result.set_value(recv_msgs.back().to_string());
-            return false;
+            return;
         }
     }
     catch (const zmq::error_t &e)
@@ -859,19 +859,19 @@ bool MessengerImpl::handle_command(QueryShmBlocksCmd &cmd,
                      cmd.channel, e.what());
         cmd.result.set_value({});
     }
-    return false;
+    return;
 }
 
 // ── CHANNEL_NOTIFY_REQ (fire-and-forget) ─────────────────────────────────────
 
-bool MessengerImpl::handle_command(ChannelNotifyCmd &cmd,
+void MessengerImpl::handle_command(ChannelNotifyCmd &cmd,
                                    std::optional<zmq::socket_t> &socket) const
 {
     if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
     {
         LOGGER_WARN("Messenger: channel_notify('{}') skipped — not connected.",
                     cmd.target_channel);
-        return false;
+        return;
     }
     try
     {
@@ -896,19 +896,19 @@ bool MessengerImpl::handle_command(ChannelNotifyCmd &cmd,
         LOGGER_WARN("Messenger: CHANNEL_NOTIFY_REQ failed for '{}': {}",
                     cmd.target_channel, e.what());
     }
-    return false;
+    return;
 }
 
 // ── CHANNEL_BROADCAST_REQ (fire-and-forget) ──────────────────────────────────
 
-bool MessengerImpl::handle_command(ChannelBroadcastCmd &cmd,
+void MessengerImpl::handle_command(ChannelBroadcastCmd &cmd,
                                    std::optional<zmq::socket_t> &socket) const
 {
     if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
     {
         LOGGER_WARN("Messenger: channel_broadcast('{}') skipped — not connected.",
                     cmd.target_channel);
-        return false;
+        return;
     }
     try
     {
@@ -933,19 +933,19 @@ bool MessengerImpl::handle_command(ChannelBroadcastCmd &cmd,
         LOGGER_WARN("Messenger: CHANNEL_BROADCAST_REQ failed for '{}': {}",
                     cmd.target_channel, e.what());
     }
-    return false;
+    return;
 }
 
 // ── CHANNEL_LIST_REQ (synchronous) ───────────────────────────────────────────
 
-bool MessengerImpl::handle_command(ChannelListCmd &cmd,
+void MessengerImpl::handle_command(ChannelListCmd &cmd,
                                    std::optional<zmq::socket_t> &socket) const
 {
     if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
     {
         LOGGER_WARN("Messenger: list_channels() — not connected.");
         cmd.result.set_value({});
-        return false;
+        return;
     }
     try
     {
@@ -963,7 +963,7 @@ bool MessengerImpl::handle_command(ChannelListCmd &cmd,
         {
             LOGGER_ERROR("Messenger: list_channels() send failed.");
             cmd.result.set_value({});
-            return false;
+            return;
         }
 
         // Poll+recv loop: skip non-matching messages (e.g. heartbeat ACKs)
@@ -981,7 +981,7 @@ bool MessengerImpl::handle_command(ChannelListCmd &cmd,
             {
                 LOGGER_WARN("Messenger: list_channels() timed out.");
                 cmd.result.set_value({});
-                return false;
+                return;
             }
 
             std::vector<zmq::pollitem_t> items = {{socket->handle(), 0, ZMQ_POLLIN, 0}};
@@ -990,7 +990,7 @@ bool MessengerImpl::handle_command(ChannelListCmd &cmd,
             {
                 LOGGER_WARN("Messenger: list_channels() poll timeout.");
                 cmd.result.set_value({});
-                return false;
+                return;
             }
 
             std::vector<zmq::message_t> recv_msgs;
@@ -1017,7 +1017,7 @@ bool MessengerImpl::handle_command(ChannelListCmd &cmd,
             LOGGER_WARN("Messenger: list_channels() failed: {}",
                         response.value("message", std::string("unknown")));
             cmd.result.set_value({});
-            return false;
+            return;
         }
 
         std::vector<nlohmann::json> result;
@@ -1038,19 +1038,19 @@ bool MessengerImpl::handle_command(ChannelListCmd &cmd,
         LOGGER_ERROR("Messenger: JSON error in list_channels(): {}", e.what());
         cmd.result.set_value({});
     }
-    return false;
+    return;
 }
 
 // ── ROLE_PRESENCE_REQ (Phase 4) ───────────────────────────────────────────────
 
-bool MessengerImpl::handle_command(RolePresenceReqCmd &cmd,
+void MessengerImpl::handle_command(RolePresenceReqCmd &cmd,
                                    std::optional<zmq::socket_t> &socket) const
 {
     if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
     {
         LOGGER_WARN("Messenger: query_role_presence('{}') — not connected.", cmd.uid);
         cmd.result.set_value(false);
-        return false;
+        return;
     }
     try
     {
@@ -1066,7 +1066,7 @@ bool MessengerImpl::handle_command(RolePresenceReqCmd &cmd,
         {
             LOGGER_ERROR("Messenger: query_role_presence('{}') send failed.", cmd.uid);
             cmd.result.set_value(false);
-            return false;
+            return;
         }
 
         const auto deadline = std::chrono::steady_clock::now() +
@@ -1082,7 +1082,7 @@ bool MessengerImpl::handle_command(RolePresenceReqCmd &cmd,
             {
                 LOGGER_WARN("Messenger: query_role_presence('{}') timed out.", cmd.uid);
                 cmd.result.set_value(false);
-                return false;
+                return;
             }
 
             std::vector<zmq::pollitem_t> items = {{socket->handle(), 0, ZMQ_POLLIN, 0}};
@@ -1091,7 +1091,7 @@ bool MessengerImpl::handle_command(RolePresenceReqCmd &cmd,
             {
                 LOGGER_WARN("Messenger: query_role_presence('{}') timed out.", cmd.uid);
                 cmd.result.set_value(false);
-                return false;
+                return;
             }
 
             std::vector<zmq::message_t> recv_msgs;
@@ -1122,19 +1122,19 @@ bool MessengerImpl::handle_command(RolePresenceReqCmd &cmd,
                      cmd.uid, e.what());
         cmd.result.set_value(false);
     }
-    return false;
+    return;
 }
 
 // ── ROLE_INFO_REQ (Phase 4) ───────────────────────────────────────────────────
 
-bool MessengerImpl::handle_command(RoleInfoReqCmd &cmd,
+void MessengerImpl::handle_command(RoleInfoReqCmd &cmd,
                                    std::optional<zmq::socket_t> &socket) const
 {
     if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
     {
         LOGGER_WARN("Messenger: query_role_info('{}') — not connected.", cmd.uid);
         cmd.result.set_value(std::nullopt);
-        return false;
+        return;
     }
     try
     {
@@ -1150,7 +1150,7 @@ bool MessengerImpl::handle_command(RoleInfoReqCmd &cmd,
         {
             LOGGER_ERROR("Messenger: query_role_info('{}') send failed.", cmd.uid);
             cmd.result.set_value(std::nullopt);
-            return false;
+            return;
         }
 
         const auto deadline = std::chrono::steady_clock::now() +
@@ -1166,7 +1166,7 @@ bool MessengerImpl::handle_command(RoleInfoReqCmd &cmd,
             {
                 LOGGER_WARN("Messenger: query_role_info('{}') timed out.", cmd.uid);
                 cmd.result.set_value(std::nullopt);
-                return false;
+                return;
             }
 
             std::vector<zmq::pollitem_t> items = {{socket->handle(), 0, ZMQ_POLLIN, 0}};
@@ -1175,7 +1175,7 @@ bool MessengerImpl::handle_command(RoleInfoReqCmd &cmd,
             {
                 LOGGER_WARN("Messenger: query_role_info('{}') timed out.", cmd.uid);
                 cmd.result.set_value(std::nullopt);
-                return false;
+                return;
             }
 
             std::vector<zmq::message_t> recv_msgs;
@@ -1196,7 +1196,7 @@ bool MessengerImpl::handle_command(RoleInfoReqCmd &cmd,
         {
             LOGGER_DEBUG("Messenger: query_role_info('{}') — not found.", cmd.uid);
             cmd.result.set_value(std::nullopt);
-            return false;
+            return;
         }
 
         RoleInfoResult info;
@@ -1216,7 +1216,105 @@ bool MessengerImpl::handle_command(RoleInfoReqCmd &cmd,
         LOGGER_ERROR("Messenger: JSON error in query_role_info('{}'): {}", cmd.uid, e.what());
         cmd.result.set_value(std::nullopt);
     }
-    return false;
+    return;
+}
+
+// ── ENDPOINT_UPDATE_REQ (HEP-0021 §16) ──────────────────────────────────────
+
+void MessengerImpl::handle_command(EndpointUpdateCmd &cmd,
+                                   std::optional<zmq::socket_t> &socket) const
+{
+    if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
+    {
+        LOGGER_WARN("Messenger: update_endpoint('{}', '{}') — not connected.",
+                    cmd.channel_name, cmd.endpoint_type);
+        cmd.result.set_value(false);
+        return;
+    }
+    try
+    {
+        nlohmann::json payload;
+        payload["channel_name"]  = cmd.channel_name;
+        payload["endpoint_type"] = cmd.endpoint_type;
+        payload["endpoint"]      = cmd.endpoint;
+
+        const std::string msg_type    = "ENDPOINT_UPDATE_REQ";
+        const std::string payload_str = payload.dump();
+        std::vector<zmq::const_buffer> msgs = {zmq::buffer(&kFrameTypeControl, 1),
+                                               zmq::buffer(msg_type),
+                                               zmq::buffer(payload_str)};
+        if (!zmq::send_multipart(*socket, msgs))
+        {
+            LOGGER_ERROR("Messenger: update_endpoint('{}', '{}') send failed.",
+                         cmd.channel_name, cmd.endpoint_type);
+            cmd.result.set_value(false);
+            return;
+        }
+
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(cmd.timeout_ms);
+        nlohmann::json response;
+        bool got_response = false;
+
+        while (!got_response)
+        {
+            auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()).count();
+            if (remaining <= 0)
+            {
+                LOGGER_WARN("Messenger: update_endpoint('{}', '{}') timed out.",
+                            cmd.channel_name, cmd.endpoint_type);
+                cmd.result.set_value(false);
+                return;
+            }
+
+            std::vector<zmq::pollitem_t> items = {{socket->handle(), 0, ZMQ_POLLIN, 0}};
+            zmq::poll(items, std::chrono::milliseconds(remaining));
+            if ((items[0].revents & ZMQ_POLLIN) == 0)
+            {
+                LOGGER_WARN("Messenger: update_endpoint('{}', '{}') timed out.",
+                            cmd.channel_name, cmd.endpoint_type);
+                cmd.result.set_value(false);
+                return;
+            }
+
+            std::vector<zmq::message_t> recv_msgs;
+            static_cast<void>(zmq::recv_multipart(*socket, std::back_inserter(recv_msgs)));
+            if (recv_msgs.size() < 3)
+                continue;
+
+            const std::string resp_type(static_cast<const char *>(recv_msgs[1].data()),
+                                        recv_msgs[1].size());
+            if (resp_type != "ENDPOINT_UPDATE_ACK" && resp_type != "ERROR")
+                continue;
+
+            response     = nlohmann::json::parse(recv_msgs.back().to_string());
+            got_response = true;
+        }
+
+        const bool success = (response.value("status", "") == "success");
+        if (!success)
+        {
+            LOGGER_WARN("Messenger: update_endpoint('{}', '{}') rejected: {}",
+                        cmd.channel_name, cmd.endpoint_type,
+                        response.value("error", "unknown"));
+        }
+        cmd.result.set_value(success);
+        return; // false = continue worker loop; true = stop (DisconnectCmd/StopCmd only)
+    }
+    catch (const zmq::error_t &e)
+    {
+        LOGGER_ERROR("Messenger: ZMQ error in update_endpoint('{}', '{}'): {}",
+                     cmd.channel_name, cmd.endpoint_type, e.what());
+        cmd.result.set_value(false);
+    }
+    catch (const nlohmann::json::exception &e)
+    {
+        LOGGER_ERROR("Messenger: JSON error in update_endpoint('{}', '{}'): {}",
+                     cmd.channel_name, cmd.endpoint_type, e.what());
+        cmd.result.set_value(false);
+    }
+    return;
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -1250,11 +1348,11 @@ void MessengerImpl::send_immediate_heartbeat(zmq::socket_t &socket,
 }
 
 /// Send METRICS_REPORT_REQ (fire-and-forget, HEP-CORE-0019).
-bool MessengerImpl::handle_command(MetricsReportCmd &cmd,
+void MessengerImpl::handle_command(MetricsReportCmd &cmd,
                                     std::optional<zmq::socket_t> &socket) const
 {
     if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
-        return false;
+        return;
     try
     {
         nlohmann::json payload;
@@ -1274,7 +1372,7 @@ bool MessengerImpl::handle_command(MetricsReportCmd &cmd,
         LOGGER_WARN("Messenger: METRICS_REPORT_REQ failed for '{}': {}", cmd.channel,
                     e.what());
     }
-    return false;
+    return;
 }
 
 } // namespace pylabhub::hub

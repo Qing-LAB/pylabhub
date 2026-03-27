@@ -101,7 +101,7 @@ struct ConsumerImpl
     std::mutex              m_handler_cv_mu;
     std::condition_variable m_handler_cv;
 
-    // Messaging facade: filled by connect_from_parts(); used by ReadProcessorContext<F,D>.
+    // Messaging facade: filled by establish_channel(); used by ReadProcessorContext<F,D>.
     ConsumerMessagingFacade facade{};
 
     // HEP-CORE-0021: ZMQ PULL socket (non-null only when data_transport=="zmq").
@@ -444,16 +444,16 @@ Consumer::connect(Messenger &messenger, const ConsumerOptions &opts)
         // nullptr is acceptable — secret mismatch or SHM unavailable; ZMQ still works
     }
 
-    return Consumer::connect_from_parts(messenger, std::move(*ch), std::move(shm_consumer),
+    return Consumer::establish_channel(messenger, std::move(*ch), std::move(shm_consumer),
                                          opts);
 }
 
 // ============================================================================
-// Consumer::connect_from_parts — assembles a Consumer from pre-built parts
+// Consumer::establish_channel — wire callbacks, create queues, configure channel
 // ============================================================================
 
 std::optional<Consumer>
-Consumer::connect_from_parts(Messenger &messenger, ChannelHandle channel,
+Consumer::establish_channel(Messenger &messenger, ChannelHandle channel,
                                std::unique_ptr<DataBlockConsumer> shm_consumer,
                                const ConsumerOptions &opts)
 {

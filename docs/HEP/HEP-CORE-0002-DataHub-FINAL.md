@@ -1870,7 +1870,7 @@ facade change, and vice versa.
 
 **Compile-time guard:**
 ```cpp
-// In hub_producer.cpp (Producer::create_from_parts):
+// In hub_producer.cpp (Producer::establish_channel):
 static_assert(sizeof(ProducerMessagingFacade) == 64,
               "ProducerMessagingFacade size changed — ABI break!");
 // In hub_consumer.cpp (Consumer::connect):

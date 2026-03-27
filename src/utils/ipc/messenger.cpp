@@ -54,14 +54,11 @@ void MessengerImpl::worker_loop()
 
         for (auto &cmd : batch)
         {
-            bool stop = std::visit(
-                [&](auto &&variant_cmd) { return handle_command(variant_cmd, socket); },
+            std::visit(
+                [&](auto &&variant_cmd) { handle_command(variant_cmd, socket); },
                 cmd);
-            if (stop)
-            {
-                m_running.store(false, std::memory_order_release);
+            if (!m_running.load(std::memory_order_acquire))
                 return;
-            }
         }
 
         // Process any unsolicited incoming broker messages
@@ -94,7 +91,7 @@ void MessengerImpl::worker_loop()
                 {
                     if (e.num() != ETERM)
                         LOGGER_WARN("Messenger: ZMQ error polling monitor: {} ({})",
-                                    e.what(), e.num());
+                                e.what(), e.num());
                 }
             }
         }
@@ -121,7 +118,7 @@ void MessengerImpl::worker_loop()
             }
             m_next_heartbeat = now + kHeartbeatInterval;
         }
-    }
+    } // while(true)
 }
 
 // ============================================================================
@@ -407,19 +404,19 @@ void MessengerImpl::close_monitor()
 // ============================================================================
 
 // Returns true if the worker should stop.
-bool MessengerImpl::handle_command(ConnectCmd &cmd, std::optional<zmq::socket_t> &socket)
+void MessengerImpl::handle_command(ConnectCmd &cmd, std::optional<zmq::socket_t> &socket)
 {
     if (m_is_connected.load(std::memory_order_acquire))
     {
         LOGGER_WARN("Messenger: Already connected.");
         cmd.result.set_value(true);
-        return false;
+        return;
     }
     if (cmd.endpoint.empty())
     {
         LOGGER_ERROR("Messenger: Broker endpoint cannot be empty.");
         cmd.result.set_value(false);
-        return false;
+        return;
     }
 
     const bool use_curve = !cmd.server_key.empty();
@@ -427,7 +424,7 @@ bool MessengerImpl::handle_command(ConnectCmd &cmd, std::optional<zmq::socket_t>
     {
         LOGGER_ERROR("Messenger: broker_pubkey must be 40 Z85 chars or empty (plain TCP).");
         cmd.result.set_value(false);
-        return false;
+        return;
     }
 
     try
@@ -458,7 +455,7 @@ bool MessengerImpl::handle_command(ConnectCmd &cmd, std::optional<zmq::socket_t>
                     LOGGER_ERROR("Messenger: Failed to generate ephemeral CurveZMQ key pair.");
                     cmd.result.set_value(false);
                     socket.reset();
-                    return false;
+                    return;
                 }
                 m_client_public_key_z85 = z85_public.data();
                 m_client_secret_key_z85 = z85_secret.data();
@@ -513,15 +510,15 @@ bool MessengerImpl::handle_command(ConnectCmd &cmd, std::optional<zmq::socket_t>
         m_is_connected.store(false, std::memory_order_release);
         cmd.result.set_value(false);
     }
-    return false;
+    return;
 }
 
-bool MessengerImpl::handle_command(DisconnectCmd &cmd, std::optional<zmq::socket_t> &socket)
+void MessengerImpl::handle_command(DisconnectCmd &cmd, std::optional<zmq::socket_t> &socket)
 {
     if (!m_is_connected.load(std::memory_order_acquire))
     {
         cmd.result.set_value();
-        return false;
+        return;
     }
     // Close monitor first so any pending ZMQ_EVENT_DISCONNECTED from our voluntary close
     // is discarded rather than triggering the hub-dead callback.
@@ -545,14 +542,14 @@ bool MessengerImpl::handle_command(DisconnectCmd &cmd, std::optional<zmq::socket
         m_is_connected.store(false, std::memory_order_release);
     }
     cmd.result.set_value();
-    return false;
+    return;
 }
 
 // ============================================================================
 // Command handlers — Phase 3 heartbeat control + lifecycle
 // ============================================================================
 
-bool MessengerImpl::handle_command(SuppressHeartbeatCmd &cmd,
+void MessengerImpl::handle_command(SuppressHeartbeatCmd &cmd,
                                    std::optional<zmq::socket_t> & /*socket*/)
 {
     for (auto &entry : m_heartbeat_channels)
@@ -562,28 +559,28 @@ bool MessengerImpl::handle_command(SuppressHeartbeatCmd &cmd,
             entry.suppressed = cmd.suppress;
             LOGGER_DEBUG("Messenger: periodic heartbeat for '{}' {}.",
                          cmd.channel, cmd.suppress ? "suppressed" : "restored");
-            return false;
+            return;
         }
     }
     // Channel not in heartbeat list (e.g. consumer role); silently ignore.
-    return false;
+    return;
 }
 
-bool MessengerImpl::handle_command(HeartbeatNowCmd &cmd,
+void MessengerImpl::handle_command(HeartbeatNowCmd &cmd,
                                    std::optional<zmq::socket_t> &socket)
 {
     if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
-        return false;
+        return;
     auto it = std::find_if(m_heartbeat_channels.begin(), m_heartbeat_channels.end(),
                            [&](const HeartbeatEntry &e)
                            { return e.channel == cmd.channel; });
     if (it == m_heartbeat_channels.end())
-        return false; // Channel not registered; silently ignore.
+        return; // Channel not registered; silently ignore.
     send_immediate_heartbeat(*socket, it->channel, it->producer_pid, cmd.metrics);
-    return false;
+    return;
 }
 
-bool MessengerImpl::handle_command(StopCmd & /*cmd*/, std::optional<zmq::socket_t> &socket)
+void MessengerImpl::handle_command(StopCmd & /*cmd*/, std::optional<zmq::socket_t> &socket)
 {
     close_monitor(); // Discard any pending monitor events before tearing down
     if (socket.has_value())
@@ -601,7 +598,7 @@ bool MessengerImpl::handle_command(StopCmd & /*cmd*/, std::optional<zmq::socket_
     }
     m_is_connected.store(false, std::memory_order_release);
     m_heartbeat_channels.clear();
-    return true; // signal worker to exit
+    m_running.store(false, std::memory_order_release); // signal worker to exit
 }
 
 // ============================================================================
@@ -1103,6 +1100,24 @@ Messenger::query_role_info(const std::string &uid, int timeout_ms)
     std::promise<std::optional<RoleInfoResult>> promise;
     auto future = promise.get_future();
     pImpl->enqueue(RoleInfoReqCmd{uid, timeout_ms, std::move(promise)});
+    return future.get();
+}
+
+bool Messenger::update_endpoint(const std::string &channel_name,
+                                const std::string &endpoint_type,
+                                const std::string &endpoint,
+                                int timeout_ms)
+{
+    if (!pImpl->m_is_connected.load(std::memory_order_acquire))
+    {
+        LOGGER_WARN("Messenger: update_endpoint('{}', '{}') — not connected.",
+                    channel_name, endpoint_type);
+        return false;
+    }
+    std::promise<bool> promise;
+    auto future = promise.get_future();
+    pImpl->enqueue(EndpointUpdateCmd{channel_name, endpoint_type, endpoint,
+                                      timeout_ms, std::move(promise)});
     return future.get();
 }
 

@@ -512,9 +512,9 @@ They are independent: a binary can have `target_period_ms=10` (script host sleep
 |------|--------|--------|
 | `src/include/utils/slot_iterator.hpp` | `m_last_acquire_` member; `apply_loop_policy_sleep_()` helper; sleep call in `operator++()`; anchor recorded after each successful acquisition | D3 |
 | `src/include/utils/hub_producer.hpp` | `ProducerOptions::loop_policy` + `configured_period_us` | config |
-| `src/utils/hub_producer.cpp` | Wire `set_loop_policy()` in `create_from_parts()` from opts | config |
+| `src/utils/hub_producer.cpp` | Wire `set_loop_policy()` in `establish_channel()` from opts | config |
 | `src/include/utils/hub_consumer.hpp` | `ConsumerOptions::loop_policy` + `configured_period_us` | config |
-| `src/utils/hub_consumer.cpp` | Wire `set_loop_policy()` in `connect_from_parts()` from opts | config |
+| `src/utils/hub_consumer.cpp` | Wire `set_loop_policy()` in `establish_channel()` from opts | config |
 | `src/producer/producer_api.cpp` | `loop_overrun_count` + `last_cycle_work_us` in metrics dict; D4 block always live | D4 |
 | (analogous for consumer/processor APIs) | Same D4 keys in respective API modules | doc |
 | `tests/test_layer3_datahub/test_datahub_loop_policy.cpp` | New: 5 tests (ProducerMetricsAccumulate, ProducerMetricsClear, ProducerFixedRateOverrunDetect, SlotIteratorFixedRatePacing, ConsumerMetricsAccumulate) | — |

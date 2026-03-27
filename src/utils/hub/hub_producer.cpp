@@ -116,7 +116,7 @@ struct ProducerImpl
     // nullptr = Queue mode (default). Swapped atomically via _store_write_handler().
     pylabhub::utils::detail::PortableAtomicSharedPtr<InternalWriteHandlerFn> m_write_handler;
 
-    // Messaging facade: filled by create_from_parts(); used by WriteProcessorContext<F,D>.
+    // Messaging facade: filled by establish_channel(); used by WriteProcessorContext<F,D>.
     ProducerMessagingFacade facade{};
 
     // HEP-CORE-0021: ZMQ PUSH socket (non-null only when data_transport=="zmq").
@@ -450,15 +450,15 @@ Producer::create(Messenger &messenger, const ProducerOptions &opts)
         }
     }
 
-    return Producer::create_from_parts(messenger, std::move(*ch), std::move(shm_producer), opts);
+    return Producer::establish_channel(messenger, std::move(*ch), std::move(shm_producer), opts);
 }
 
 // ============================================================================
-// Producer::create_from_parts — assembles a Producer from pre-built parts
+// Producer::establish_channel — wire callbacks, create queues, resolve endpoints
 // ============================================================================
 
 std::optional<Producer>
-Producer::create_from_parts(Messenger &messenger, ChannelHandle channel,
+Producer::establish_channel(Messenger &messenger, ChannelHandle channel,
                               std::unique_ptr<DataBlockProducer> shm_producer,
                               const ProducerOptions &opts)
 {
@@ -606,7 +606,25 @@ Producer::create_from_parts(Messenger &messenger, ChannelHandle channel,
         }
         if (opts.queue_period_us > 0)
             static_cast<ZmqQueue *>(impl->zmq_queue_.get())->set_configured_period(opts.queue_period_us);
-        LOGGER_INFO("[producer] ZMQ PUSH socket created at '{}'", opts.zmq_node_endpoint);
+
+        // HEP-0021 §16: update broker with actual endpoint if port was ephemeral.
+        const std::string actual_ep =
+            static_cast<ZmqQueue *>(impl->zmq_queue_.get())->actual_endpoint();
+        if (!actual_ep.empty() && actual_ep != opts.zmq_node_endpoint)
+        {
+            if (!messenger.update_endpoint(opts.channel_name, "zmq_node", actual_ep))
+            {
+                LOGGER_ERROR("[producer] ENDPOINT_UPDATE_REQ failed for channel '{}' "
+                             "endpoint '{}'", opts.channel_name, actual_ep);
+                return std::nullopt;
+            }
+            LOGGER_INFO("[producer] ZMQ PUSH socket created at '{}' (resolved from '{}')",
+                        actual_ep, opts.zmq_node_endpoint);
+        }
+        else
+        {
+            LOGGER_INFO("[producer] ZMQ PUSH socket created at '{}'", opts.zmq_node_endpoint);
+        }
     }
 
     // ctrl_queue_ is fire_and_forget (ZMQ always accepts sends); no monitoring callbacks needed.

@@ -711,7 +711,7 @@ The Producer has three functions involved in creation:
 - **`Producer::create(messenger, opts)`** — public entry point (template and non-template
   variants). Validates types/schemas, calls `create_channel`, creates DataBlock,
   then calls `establish_channel`.
-- **`Producer::establish_channel(...)`** (currently named `create_from_parts`) — assembles
+- **`Producer::establish_channel(...)`** — assembles
   the Producer: wires callbacks, creates ZmqQueue, creates ShmQueue wrapper, configures
   ctrl_queue and peer timeout.
 
@@ -796,8 +796,7 @@ establish_channel():
   immediately ready. No behavior change for non-port-0 configs.
 - **Template vs non-template**: Both `create()` variants call `establish_channel`
   which handles the update. No duplication.
-- **Rename**: `create_from_parts` → `establish_channel` to reflect its role:
-  establish all local resources for a broker-registered channel.
+- **Rename**: `create_from_parts` → `establish_channel` — done (this commit).
 
 ### 16.7 Relation to Producer/Consumer API Layering
 
