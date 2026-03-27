@@ -642,7 +642,8 @@ Producer::establish_channel(Messenger &messenger, ChannelHandle channel,
     {
         impl->shm_queue_writer_ = ShmQueue::from_producer_ref(
             *impl->shm, opts.item_size, opts.flexzone_size, opts.channel_name,
-            opts.update_checksum, opts.update_checksum_fz, opts.queue_period_us);
+            opts.update_checksum, opts.update_checksum_fz, opts.queue_period_us,
+            opts.always_clear_slot);
         impl->queue_writer_ = impl->shm_queue_writer_.get();
     }
     else if (impl->zmq_queue_)
@@ -1101,6 +1102,12 @@ void Producer::set_checksum_options(bool slot, bool fz) noexcept
 {
     auto *sq = pImpl ? static_cast<ShmQueue *>(pImpl->shm_queue_writer_.get()) : nullptr;
     if (sq) sq->set_checksum_options(slot, fz);
+}
+
+void Producer::set_always_clear_slot(bool enable) noexcept
+{
+    auto *sq = pImpl ? static_cast<ShmQueue *>(pImpl->shm_queue_writer_.get()) : nullptr;
+    if (sq) sq->set_always_clear_slot(enable);
 }
 
 void Producer::sync_flexzone_checksum() noexcept
