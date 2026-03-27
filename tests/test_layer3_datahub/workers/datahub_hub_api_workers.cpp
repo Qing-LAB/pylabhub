@@ -1659,31 +1659,38 @@ int runtime_verify_checksum_toggle(int /*argc*/, char ** /*argv*/)
             Messenger &messenger = Messenger::get_instance();
             ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
 
-            // Producer WITHOUT checksum → writes unprotected data.
+            // Use a struct with sequence index for tracking.
+            struct TestSlot { uint64_t seq; uint64_t value; };
+
             ProducerOptions popts;
             popts.channel_name    = make_test_channel_name("hub.rt_verify");
             popts.has_shm         = true;
             popts.shm_config      = make_shm_config();
             popts.shm_config.checksum_policy = ChecksumPolicy::Manual;
-            popts.item_size       = sizeof(uint64_t);
-            popts.update_checksum = false; // NO checksum stamped
+            popts.shm_config.logical_unit_size = sizeof(TestSlot);
+            popts.item_size       = sizeof(TestSlot);
+            popts.update_checksum = false; // NO ShmQueue-level checksum
             popts.timeout_ms      = 3000;
 
             auto producer = Producer::create(messenger, popts);
             ASSERT_TRUE(producer.has_value());
             EXPECT_TRUE(producer->start_queue());
 
-            // Write a slot (no checksum).
+            // Write slot seq=1 (no ShmQueue checksum, but DataBlock may auto-checksum).
             void *buf = producer->write_acquire(std::chrono::milliseconds{1000});
             ASSERT_NE(buf, nullptr);
-            *static_cast<uint64_t *>(buf) = 0xBEEF;
+            auto *slot = static_cast<TestSlot *>(buf);
+            slot->seq = 1;
+            slot->value = 0xBEEF;
+            fmt::print(stderr, "[T] wrote seq={} value=0x{:X} tid={}\n",
+                       slot->seq, slot->value, pylabhub::platform::get_native_thread_id());
             producer->write_commit();
 
-            // Consumer with verify_checksum=false initially → can read fine.
+            // Consumer with verify_checksum=false initially.
             ConsumerOptions copts;
             copts.channel_name      = popts.channel_name;
             copts.shm_shared_secret = kTestShmSecret;
-            copts.item_size         = sizeof(uint64_t);
+            copts.item_size         = sizeof(TestSlot);
             copts.verify_checksum   = false;
             copts.timeout_ms        = 3000;
 
@@ -1691,26 +1698,39 @@ int runtime_verify_checksum_toggle(int /*argc*/, char ** /*argv*/)
             ASSERT_TRUE(consumer.has_value());
             EXPECT_TRUE(consumer->start_queue());
 
-            // Read succeeds (no verification).
+            // Read slot — should get seq=1.
             const void *data = consumer->read_acquire(std::chrono::milliseconds{1000});
             ASSERT_NE(data, nullptr);
-            EXPECT_EQ(*static_cast<const uint64_t *>(data), 0xBEEFu);
+            auto *rslot = static_cast<const TestSlot *>(data);
+            fmt::print(stderr, "[T] read  seq={} value=0x{:X} last_seq={} tid={}\n",
+                       rslot->seq, rslot->value, consumer->last_seq(),
+                       pylabhub::platform::get_native_thread_id());
+            EXPECT_EQ(rslot->seq, 1u);
+            EXPECT_EQ(rslot->value, 0xBEEFu);
             consumer->read_release();
 
-            // Now enable checksum on BOTH sides at runtime.
+            // Enable checksum verification at runtime.
             consumer->set_verify_checksum(true, false);
             producer->set_checksum_options(true, false);
+            fmt::print(stderr, "[T] toggled: verify=true, checksum=true\n");
 
-            // Write another slot — now WITH checksum.
+            // Write slot seq=2 (now WITH ShmQueue checksum).
             buf = producer->write_acquire(std::chrono::milliseconds{1000});
             ASSERT_NE(buf, nullptr);
-            *static_cast<uint64_t *>(buf) = 0xDEAD;
-            producer->write_commit(); // checksum now stamped
+            slot = static_cast<TestSlot *>(buf);
+            slot->seq = 2;
+            slot->value = 0xDEAD;
+            fmt::print(stderr, "[T] wrote seq={} value=0x{:X}\n", slot->seq, slot->value);
+            producer->write_commit();
 
-            // Read should succeed (checksum valid after runtime toggle).
+            // Read — should get seq=2 with valid checksum.
             data = consumer->read_acquire(std::chrono::milliseconds{1000});
             ASSERT_NE(data, nullptr) << "Runtime toggle: should read checksummed slot";
-            EXPECT_EQ(*static_cast<const uint64_t *>(data), 0xDEADu);
+            rslot = static_cast<const TestSlot *>(data);
+            fmt::print(stderr, "[T] read  seq={} value=0x{:X} last_seq={}\n",
+                       rslot->seq, rslot->value, consumer->last_seq());
+            EXPECT_EQ(rslot->seq, 2u);
+            EXPECT_EQ(rslot->value, 0xDEADu);
             consumer->read_release();
 
             consumer->close();

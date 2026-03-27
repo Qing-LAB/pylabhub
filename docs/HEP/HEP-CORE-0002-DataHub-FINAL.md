@@ -2885,11 +2885,74 @@ Producer generates random 64-byte secret, stores in header. Consumer must provid
 
 ### 11.2 BLAKE2b Checksum
 
-**Two Policies:**
-1. **Manual:** User calls `update_checksum()` / `verify_checksum()` explicitly
-2. **Enforced:** Auto-computed on write release, auto-verified on read release
-
 **Performance:** ~1.2 μs per 4KB (BLAKE2b faster than SHA-256)
+
+#### 11.2.1 Per-Slot Checksum Storage
+
+Each ring buffer slot has a checksum entry in shared memory:
+- `checksum_bytes[32]`: BLAKE2b-256 hash of the slot data
+- `slot_valid` (atomic uint8_t): reader-side verification cache flag
+
+`slot_valid` meaning:
+- `0`: checksum has not been verified by a reader (or is known invalid)
+- `1`: a reader has verified the data matches the stored checksum
+
+#### 11.2.2 Checksum Policy
+
+| Policy     | Write side (`release_write_slot`)        | Read side (`release_consume_slot`)             |
+|------------|------------------------------------------|------------------------------------------------|
+| `None`     | No checksum action                       | No verification                                |
+| `Manual`   | No auto-action; caller (ShmQueue) decides| No auto-action; caller (ShmQueue) decides      |
+| `Enforced` | Auto-compute checksum on commit          | Auto-verify on release (post-read integrity)   |
+
+Policy is evaluated at the decision points (`write_commit`, `read_acquire`,
+`release_write_slot`, `release_consume_slot`). The underlying checksum functions
+do not know about policy — they are called by the decision layer.
+
+#### 11.2.3 Checksum Update Function (`update_checksum_slot_impl`)
+
+Called by the write-side decision layer. Takes a parameter indicating whether to
+compute a real checksum or invalidate:
+
+1. **Always** set `slot_valid = 0` (data is fresh, unverified by any reader)
+2. If caller requests checksum: compute BLAKE2b-256 of slot data, store hash
+3. If caller requests invalidation: zero out the checksum bytes
+
+The updater never sets `slot_valid = 1`. Only verification sets it.
+
+#### 11.2.4 Checksum Verification Function (`verify_checksum_slot_impl`)
+
+Called by the read-side decision layer. Takes `honor_slot_valid` parameter:
+
+1. If checksum bytes are all zero → fail, set `slot_valid = 0`, return false
+2. If `honor_slot_valid = true` and `slot_valid == 1` → pass (skip computation)
+3. Compute BLAKE2b-256 of slot data, compare to stored hash
+4. Match → set `slot_valid = 1`, return true
+5. Mismatch → set `slot_valid = 0`, return false
+
+`slot_valid` is always in the correct state after the function returns.
+
+**Two verification contexts:**
+- **Pre-read gate** (ShmQueue `read_acquire`): `honor_slot_valid = true`.
+  Optimization: if a previous reader already verified, skip re-computation.
+- **Post-read audit** (DataBlock `release_consume_slot` with `Enforced`):
+  `honor_slot_valid = false`. Always compute to detect if the reader corrupted
+  the data while holding the slot. Sets `slot_valid = 1` on success so the
+  next reader's pre-read gate can skip.
+
+#### 11.2.5 ShmQueue Integration
+
+ShmQueue provides the "manual caller" for `Manual` policy:
+- **Write**: `ShmQueue::write_commit()` calls `update_checksum_slot` if
+  `checksum_slot` flag is set (construction-time or runtime toggle).
+- **Read**: `ShmQueue::read_acquire()` calls `verify_checksum_slot` with
+  `honor_slot_valid = true` if `verify_slot` flag is set.
+- **Forced update**: ShmQueue exposes a pass-through for forced checksum
+  recomputation (repair/recovery use case).
+
+ShmQueue does not duplicate DataBlock `Enforced` auto-checksum — the two
+layers operate at different points (ShmQueue pre-commit vs DataBlock on-release)
+and serve different purposes.
 
 ---
 
