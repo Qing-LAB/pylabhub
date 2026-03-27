@@ -460,6 +460,9 @@ class PYLABHUB_UTILS_EXPORT SlotWriteHandle
 
     /** @brief Update checksum for this slot (if enabled). */
     [[nodiscard]] bool update_checksum_slot() noexcept;
+    /** @brief Clear checksum and validity flag for this slot.
+     * Call when writing without checksum to prevent stale validity from ring reuse. */
+    void invalidate_checksum_slot() noexcept;
     /** 
      * @brief Update checksum for flexible zone (if enabled).
      * @note Phase 2: Single flex zone design. Old index parameter removed.
