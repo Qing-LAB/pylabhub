@@ -214,6 +214,169 @@ int none_skips_verification()
         "none_skips_verification", logger_module(), crypto_module(), hub_module());
 }
 
+// ============================================================================
+// 4. manual_no_auto_checksum
+// ChecksumPolicy::Manual — DataBlock does NOT auto-checksum on write release,
+// does NOT auto-verify on consume release. Corruption goes undetected at
+// DataBlock level (caller is responsible for explicit checksum calls).
+// ============================================================================
+
+int manual_no_auto_checksum()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("CApiCsManual");
+            auto cfg = make_config(ChecksumPolicy::Manual, 72004);
+
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
+                                                           cfg, nullptr, nullptr);
+            ASSERT_NE(producer, nullptr);
+            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
+                                                         nullptr, nullptr);
+            ASSERT_NE(consumer, nullptr);
+
+            std::span<std::byte> slot_span;
+            {
+                auto h = producer->acquire_write_slot(1000);
+                ASSERT_NE(h, nullptr);
+                slot_span = h->buffer_span();
+                ASSERT_GE(slot_span.size(), 8u);
+                uint64_t val = 0xDEADC0DEULL;
+                std::memcpy(slot_span.data(), &val, sizeof(val));
+                EXPECT_TRUE(h->commit(sizeof(val)));
+                // No explicit update_checksum_slot() call — testing Manual "no auto" behavior.
+                EXPECT_TRUE(producer->release_write_slot(*h));
+            }
+
+            // Corrupt data — Manual policy should not detect this at DataBlock level.
+            slot_span[0] = std::byte(static_cast<uint8_t>(slot_span[0]) ^ 0xFF);
+
+            // Consumer: release_consume_slot must return true (no auto-verify with Manual).
+            {
+                auto rh = consumer->acquire_consume_slot(1000);
+                ASSERT_NE(rh, nullptr);
+                bool ok = consumer->release_consume_slot(*rh);
+                EXPECT_TRUE(ok) << "Manual policy: DataBlock must NOT auto-verify";
+            }
+
+            producer.reset();
+            consumer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "manual_no_auto_checksum", logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// 5. manual_explicit_checksum_roundtrip
+// ChecksumPolicy::Manual — caller explicitly computes and verifies checksum.
+// Writer calls update_checksum_slot() before release. Consumer calls
+// verify_checksum_slot() after acquire. Data integrity verified end-to-end.
+// ============================================================================
+
+int manual_explicit_checksum_roundtrip()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("CApiCsManualExplicit");
+            auto cfg = make_config(ChecksumPolicy::Manual, 72005);
+
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
+                                                           cfg, nullptr, nullptr);
+            ASSERT_NE(producer, nullptr);
+            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
+                                                         nullptr, nullptr);
+            ASSERT_NE(consumer, nullptr);
+
+            const uint64_t kData = 0xFEEDFACECAFEBEEFULL;
+
+            // Writer: fill data, explicitly compute checksum, commit, release.
+            {
+                auto h = producer->acquire_write_slot(1000);
+                ASSERT_NE(h, nullptr);
+                auto span = h->buffer_span();
+                // Zero buffer first (deterministic padding).
+                std::fill(span.begin(), span.end(), std::byte{0});
+                std::memcpy(span.data(), &kData, sizeof(kData));
+                EXPECT_TRUE(h->update_checksum_slot());
+                EXPECT_TRUE(h->commit(sizeof(kData)));
+                EXPECT_TRUE(producer->release_write_slot(*h));
+            }
+
+            // Reader: acquire, explicitly verify checksum, read data.
+            {
+                auto rh = consumer->acquire_consume_slot(1000);
+                ASSERT_NE(rh, nullptr);
+                EXPECT_TRUE(rh->verify_checksum_slot())
+                    << "Manual policy: explicit verify after explicit update must pass";
+
+                // Verify data content.
+                auto rspan = rh->buffer_span();
+                uint64_t read_val = 0;
+                std::memcpy(&read_val, rspan.data(), sizeof(read_val));
+                EXPECT_EQ(read_val, kData);
+
+                EXPECT_TRUE(consumer->release_consume_slot(*rh));
+            }
+
+            producer.reset();
+            consumer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "manual_explicit_checksum_roundtrip", logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// 6. invalidate_checksum_zero_hash_rejected
+// Writer calls invalidate_checksum_slot() — zeros the hash bytes.
+// Consumer calls verify_checksum_slot() — detects zero hash, returns false.
+// ============================================================================
+
+int invalidate_checksum_zero_hash_rejected()
+{
+    return run_gtest_worker(
+        []()
+        {
+            std::string channel = make_test_channel_name("CApiCsInvalidate");
+            auto cfg = make_config(ChecksumPolicy::Manual, 72006);
+
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
+                                                           cfg, nullptr, nullptr);
+            ASSERT_NE(producer, nullptr);
+            auto consumer = find_datablock_consumer_impl(channel, cfg.shared_secret, &cfg,
+                                                         nullptr, nullptr);
+            ASSERT_NE(consumer, nullptr);
+
+            {
+                auto h = producer->acquire_write_slot(1000);
+                ASSERT_NE(h, nullptr);
+                auto span = h->buffer_span();
+                std::fill(span.begin(), span.end(), std::byte{0});
+                uint64_t val = 0x12345678;
+                std::memcpy(span.data(), &val, sizeof(val));
+                // Invalidate: zeros checksum bytes, sets slot_cks_is_valid=0.
+                h->invalidate_checksum_slot();
+                EXPECT_TRUE(h->commit(sizeof(val)));
+                EXPECT_TRUE(producer->release_write_slot(*h));
+            }
+
+            // Consumer: verify must fail (zero hash detected).
+            {
+                auto rh = consumer->acquire_consume_slot(1000);
+                ASSERT_NE(rh, nullptr);
+                EXPECT_FALSE(rh->verify_checksum_slot())
+                    << "Invalidated slot: zero hash must cause verify to fail";
+                EXPECT_TRUE(consumer->release_consume_slot(*rh));
+            }
+
+            producer.reset();
+            consumer.reset();
+            cleanup_test_datablock(channel);
+        },
+        "invalidate_checksum_zero_hash_rejected", logger_module(), crypto_module(), hub_module());
+}
+
 } // namespace pylabhub::tests::worker::c_api_checksum
 
 // ============================================================================
@@ -243,6 +406,12 @@ struct CApiChecksumWorkerRegistrar
                     return enforced_corruption_detected();
                 if (scenario == "none_skips_verification")
                     return none_skips_verification();
+                if (scenario == "manual_no_auto_checksum")
+                    return manual_no_auto_checksum();
+                if (scenario == "manual_explicit_checksum_roundtrip")
+                    return manual_explicit_checksum_roundtrip();
+                if (scenario == "invalidate_checksum_zero_hash_rejected")
+                    return invalidate_checksum_zero_hash_rejected();
                 fmt::print(stderr, "ERROR: Unknown c_api_checksum scenario '{}'\n", scenario);
                 return 1;
             });

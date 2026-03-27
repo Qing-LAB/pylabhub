@@ -40,3 +40,27 @@ TEST_F(DatahubCApiChecksumTest, NoneSkipsVerification)
     auto proc = SpawnWorker("c_api_checksum.none_skips_verification", {});
     ExpectWorkerOk(proc, {"DataBlock"});
 }
+
+// ─── ChecksumPolicy::Manual ──────────────────────────────────────────────────
+
+TEST_F(DatahubCApiChecksumTest, ManualNoAutoChecksum)
+{
+    // Manual policy: DataBlock does NOT auto-checksum on write or auto-verify on read.
+    // Corruption goes undetected at DataBlock level.
+    auto proc = SpawnWorker("c_api_checksum.manual_no_auto_checksum", {});
+    ExpectWorkerOk(proc, {"DataBlock"});
+}
+
+TEST_F(DatahubCApiChecksumTest, ManualExplicitChecksumRoundtrip)
+{
+    // Manual policy: caller explicitly computes and verifies checksum. End-to-end integrity.
+    auto proc = SpawnWorker("c_api_checksum.manual_explicit_checksum_roundtrip", {});
+    ExpectWorkerOk(proc, {"DataBlock"});
+}
+
+TEST_F(DatahubCApiChecksumTest, InvalidateChecksumZeroHashRejected)
+{
+    // invalidate_checksum_slot() zeros hash. verify_checksum_slot() detects and rejects.
+    auto proc = SpawnWorker("c_api_checksum.invalidate_checksum_zero_hash_rejected", {});
+    ExpectWorkerOk(proc, {"DataBlock"});
+}
