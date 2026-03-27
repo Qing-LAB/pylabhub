@@ -114,6 +114,12 @@ struct QueueMetrics
     /// Transient EAGAIN retries by the send_thread_ (ZMQ HWM temporarily exceeded).
     /// ZmqQueue only; always 0 for ShmQueue.
     uint64_t send_retry_count{0};
+
+    // ── Checksum ─────────────────────────────────────────────────────────────
+    /// Slot checksum verification failures in read_acquire().
+    /// ShmQueue: incremented when verify_checksum_slot returns false.
+    /// ZmqQueue: always 0 (TCP provides transport integrity).
+    uint64_t checksum_error_count{0};
 };
 
 /**

@@ -3,10 +3,12 @@
  * @file hub_zmq_queue.cpp
  * @brief ZmqQueue implementation — ZMQ PULL/PUSH-backed Queue with MessagePack schema framing.
  *
- * Wire format: msgpack fixarray[4] = [magic:uint32, schema_tag:bin8, seq:uint64, payload:array(N)]
+ * Wire format: msgpack fixarray[5] = [magic:uint32, schema_tag:bin8, seq:uint64, payload:array(N), checksum:bin32]
  *   payload element i: scalar → native msgpack type; array/string/bytes → bin(byte_size)
+ *   checksum: BLAKE2b-256 of the raw (pre-pack) slot data
  */
 #include "utils/hub_zmq_queue.hpp"
+#include "utils/crypto_utils.hpp"
 #include "utils/logger.hpp"
 #include "zmq_wire_helpers.hpp"
 
@@ -105,6 +107,7 @@ struct ZmqQueueImpl
     std::atomic<uint64_t> send_drop_count_{0};
     std::atomic<uint64_t> send_retry_count_{0};
     std::atomic<uint64_t> data_drop_count_{0};
+    std::atomic<uint64_t> checksum_error_count_{0};
 
     // ── Domain 2+3 timing (HEP-CORE-0008 §10) ──────────────────────────────
     // Measured in read_acquire/read_release (read mode) or
@@ -177,8 +180,8 @@ struct ZmqQueueImpl
                     frame_buf.data(), static_cast<size_t>(rc));
                 const msgpack::object& obj = oh.get();
 
-                // Outer frame: array of 4
-                if (obj.type != msgpack::type::ARRAY || obj.via.array.size != 4)
+                // Outer frame: array of 5 [magic, tag, seq, payload, checksum]
+                if (obj.type != msgpack::type::ARRAY || obj.via.array.size != 5)
                     { ++recv_frame_error_count_; continue; }
                 const auto* elems = obj.via.array.ptr;
 
@@ -247,6 +250,19 @@ struct ZmqQueueImpl
                 }
                 if (!ok) continue;
 
+                // [4] checksum: bin, 32 bytes — verify decoded data integrity.
+                if (elems[4].type != msgpack::type::BIN || elems[4].via.bin.size != 32)
+                    { ++recv_frame_error_count_; continue; }
+                if (!pylabhub::crypto::verify_blake2b(
+                        reinterpret_cast<const uint8_t*>(elems[4].via.bin.ptr),
+                        decode_tmp_.data(), item_sz))
+                {
+                    checksum_error_count_.fetch_add(1, std::memory_order_relaxed);
+                    LOGGER_ERROR("[hub::ZmqQueue] checksum error after decode on '{}'",
+                                 queue_name);
+                    continue; // drop frame
+                }
+
                 // Push to ring buffer (pre-allocated; memcpy under lock). [ZQ9]
                 {
                     std::unique_lock<std::mutex> lk(recv_mu_);
@@ -300,7 +316,12 @@ struct ZmqQueueImpl
                 send_sbuf_.clear();
                 msgpack::packer<msgpack::sbuffer> pk(send_sbuf_);
 
-                pk.pack_array(4);
+                // Compute BLAKE2b checksum of raw data before packing.
+                uint8_t checksum[32];
+                pylabhub::crypto::compute_blake2b(
+                    checksum, send_local_buf_.data(), item_sz);
+
+                pk.pack_array(5);
                 pk.pack(wire_detail::kFrameMagic);
                 pk.pack_bin(8);
                 pk.pack_bin_body(reinterpret_cast<const char*>(schema_tag_.data()), 8);
@@ -309,6 +330,8 @@ struct ZmqQueueImpl
                 const char* src = reinterpret_cast<const char*>(send_local_buf_.data());
                 for (const auto& fd : schema_defs_)
                     wire_detail::pack_field(pk, fd, src);
+                pk.pack_bin(32);
+                pk.pack_bin_body(reinterpret_cast<const char*>(checksum), 32);
             }
 
             // ── Send with retry on EAGAIN ─────────────────────────────────
@@ -808,6 +831,8 @@ void* ZmqQueue::write_acquire(std::chrono::milliseconds timeout) noexcept
     pImpl->t_iter_start_ = t_acquired;
     pImpl->t_acquired_   = t_acquired;
 
+    // Zero buffer so padding bytes are deterministic (checksum consistency).
+    std::fill(pImpl->write_buf_.begin(), pImpl->write_buf_.end(), std::byte{0});
     return pImpl->write_buf_.data();
 }
 
@@ -949,6 +974,7 @@ QueueMetrics ZmqQueue::metrics() const noexcept
     m.recv_gap_count         = pImpl->recv_gap_count_.load(std::memory_order_relaxed);
     m.send_drop_count        = pImpl->send_drop_count_.load(std::memory_order_relaxed);
     m.send_retry_count       = pImpl->send_retry_count_.load(std::memory_order_relaxed);
+    m.checksum_error_count   = pImpl->checksum_error_count_.load(std::memory_order_relaxed);
     return m;
 }
 
@@ -966,6 +992,7 @@ void ZmqQueue::reset_metrics()
     pImpl->recv_gap_count_.store(0, std::memory_order_relaxed);
     pImpl->send_drop_count_.store(0, std::memory_order_relaxed);
     pImpl->send_retry_count_.store(0, std::memory_order_relaxed);
+    pImpl->checksum_error_count_.store(0, std::memory_order_relaxed);
     pImpl->t_iter_start_       = {};
     pImpl->t_acquired_         = {};
     pImpl->context_start_time_ = {};

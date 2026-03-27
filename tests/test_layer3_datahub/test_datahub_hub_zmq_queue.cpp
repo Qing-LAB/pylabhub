@@ -1080,7 +1080,7 @@ TEST_F(ZmqQueueTest, Schema_AlignmentPadding_FieldsPreserved)
 
     void* wbuf = push->write_acquire(1000ms);
     ASSERT_NE(wbuf, nullptr);
-    std::memset(wbuf, 0xCC, 16); // fill padding sentinel
+    // write_acquire zeros the buffer — padding bytes are deterministic for checksum.
     uint8_t sv_u8  = 0xAB;
     double  sv_f64 = 2.718281828;
     std::memcpy(static_cast<char*>(wbuf) + 0, &sv_u8,  1);

@@ -13,6 +13,7 @@
  *   DEALER receives ACK:    ["", ack_byte]  (ZMQ strips identity; app drains empty frame)
  */
 #include "utils/hub_inbox_queue.hpp"
+#include "utils/crypto_utils.hpp"
 #include "utils/logger.hpp"
 #include "zmq_wire_helpers.hpp"
 
@@ -354,7 +355,7 @@ const InboxItem* InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
                                                      static_cast<size_t>(payload_rc));
         const msgpack::object& obj = oh.get();
 
-        if (obj.type != msgpack::type::ARRAY || obj.via.array.size != 4)
+        if (obj.type != msgpack::type::ARRAY || obj.via.array.size != 5)
         { ++pImpl->recv_frame_error_count_; return nullptr; }
         const auto* elems = obj.via.array.ptr;
 
@@ -402,6 +403,18 @@ const InboxItem* InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
                 ++pImpl->recv_frame_error_count_;
                 return nullptr;
             }
+        }
+
+        // [4] checksum: bin, 32 bytes — verify decoded data integrity.
+        if (elems[4].type != msgpack::type::BIN || elems[4].via.bin.size != 32)
+        { ++pImpl->recv_frame_error_count_; return nullptr; }
+        if (!pylabhub::crypto::verify_blake2b(
+                reinterpret_cast<const uint8_t*>(elems[4].via.bin.ptr),
+                pImpl->decode_buf_.data(), pImpl->item_sz))
+        {
+            LOGGER_ERROR("[hub::InboxQueue] checksum error after decode from '{}'",
+                         sender_id);
+            return nullptr;
         }
     }
     catch (const std::exception& e)
@@ -597,18 +610,23 @@ uint8_t InboxClient::send(std::chrono::milliseconds ack_timeout) noexcept
     // Pack msgpack frame
     pImpl->sbuf_.clear();
     msgpack::packer<msgpack::sbuffer> pk(pImpl->sbuf_);
-    pk.pack_array(4);
+
+    // Compute BLAKE2b checksum of raw data before packing.
+    uint8_t checksum[32];
+    pylabhub::crypto::compute_blake2b(
+        checksum, pImpl->write_buf_.data(), pImpl->item_sz);
+
+    pk.pack_array(5);
     pk.pack(wire_detail::kFrameMagic);
-    // schema_tag: 8 zero bytes (inbox doesn't use schema tag guard)
     pk.pack_bin(8);
     pk.pack_bin_body(reinterpret_cast<const char*>(pImpl->schema_tag_.data()), 8);
-    // seq
     pk.pack(pImpl->send_seq_.fetch_add(1, std::memory_order_relaxed));
-    // payload array
     pk.pack_array(static_cast<uint32_t>(pImpl->schema_defs_.size()));
     const char* src = reinterpret_cast<const char*>(pImpl->write_buf_.data());
     for (const auto& fd : pImpl->schema_defs_)
         wire_detail::pack_field(pk, fd, src);
+    pk.pack_bin(32);
+    pk.pack_bin_body(reinterpret_cast<const char*>(checksum), 32);
 
     // DEALER sends: [empty_delimiter, payload]
     // ROUTER receives: [identity, empty_delimiter, payload]
