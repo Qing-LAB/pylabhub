@@ -63,7 +63,7 @@ namespace pylabhub::hub
  * @struct ProducerMessagingFacade
  * @brief ABI-stable bridge between WriteProcessorContext<F,D> (header template) and
  *        ProducerImpl internals (defined in .cpp). Function pointers are filled by
- *        Producer::create_from_parts(); context points to the ProducerImpl on the heap.
+ *        Producer::establish_channel(); context points to the ProducerImpl on the heap.
  *
  * **Internal use only — do not use directly.**
  * This struct is exposed in the header solely so that the template WriteProcessorContext<F,D>
@@ -544,13 +544,14 @@ class PYLABHUB_UTILS_EXPORT Producer
      */
     void close();
 
-    // ── Internal factory helper (used by template create<>) ───────────────────
+    // ── Internal: establish local channel resources (used by create<>) ─────────
 
     /**
-     * @brief Assemble a Producer from pre-created parts (internal use by templates).
+     * @brief Establish local channel resources: wire callbacks, create queues,
+     *        resolve ephemeral endpoints (internal use by create() factories).
      */
     [[nodiscard]] static std::optional<Producer>
-    create_from_parts(Messenger &messenger, ChannelHandle channel,
+    establish_channel(Messenger &messenger, ChannelHandle channel,
                       std::unique_ptr<DataBlockProducer> shm_producer,
                       const ProducerOptions &opts);
 
@@ -642,7 +643,7 @@ Producer::create(Messenger &messenger, const ProducerOptions &opts)
         }
     }
 
-    return Producer::create_from_parts(messenger, std::move(*ch), std::move(shm_producer), opts);
+    return Producer::establish_channel(messenger, std::move(*ch), std::move(shm_producer), opts);
 }
 
 // ============================================================================

@@ -1487,11 +1487,14 @@ int zmq_forwarding_api(int /*argc*/, char ** /*argv*/)
     return run_gtest_worker(
         []() {
             auto broker = start_broker();
-            Messenger &messenger = Messenger::get_instance();
-            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
+
+            // Separate Messengers for producer and consumer — avoids single-worker
+            // deadlock where heartbeat delivery blocks behind connect_channel.
+            Messenger prod_m;
+            ASSERT_TRUE(prod_m.connect(broker.endpoint, broker.pubkey));
 
             constexpr size_t kItemSz = 8;
-            const std::string endpoint = "tcp://127.0.0.1:15590";
+            const std::string endpoint = "tcp://127.0.0.1:0"; // ephemeral — tests HEP-0021 §16
 
             ProducerOptions popts;
             popts.channel_name      = make_test_channel_name("hub.zmq_fwd");
@@ -1503,13 +1506,16 @@ int zmq_forwarding_api(int /*argc*/, char ** /*argv*/)
             popts.queue_period_us   = 500;
             popts.timeout_ms        = 3000;
 
-            auto producer = Producer::create(messenger, popts);
+            fmt::print(stderr, "[T] creating producer...\n");
+            auto producer = Producer::create(prod_m, popts);
             ASSERT_TRUE(producer.has_value());
+            fmt::print(stderr, "[T] producer created OK\n");
 
             // Forwarding API metadata works for ZMQ.
             EXPECT_EQ(producer->queue_item_size(), kItemSz);
             EXPECT_GT(producer->queue_capacity(), 0u);
-            EXPECT_TRUE(producer->start_queue()); // idempotent (already started in create)
+            EXPECT_TRUE(producer->start_queue());
+            fmt::print(stderr, "[T] producer queue started\n");
 
             // Flexzone returns nullptr for ZMQ (no DataBlock).
             EXPECT_EQ(producer->write_flexzone(), nullptr);
@@ -1524,8 +1530,13 @@ int zmq_forwarding_api(int /*argc*/, char ** /*argv*/)
             auto m = producer->queue_metrics();
             EXPECT_EQ(m.configured_period_us, 500u);
             EXPECT_FALSE(producer->queue_policy_info().empty());
+            fmt::print(stderr, "[T] producer verified, connecting consumer messenger...\n");
 
-            // Consumer via broker discovery.
+            // Consumer via broker discovery (separate Messenger).
+            Messenger cons_m;
+            ASSERT_TRUE(cons_m.connect(broker.endpoint, broker.pubkey));
+            fmt::print(stderr, "[T] consumer messenger connected, calling Consumer::connect...\n");
+
             ConsumerOptions copts;
             copts.channel_name  = popts.channel_name;
             copts.consumer_uid  = "CONS-ZMQ-FWD-0001";
@@ -1534,36 +1545,48 @@ int zmq_forwarding_api(int /*argc*/, char ** /*argv*/)
             copts.queue_period_us = 500;
             copts.timeout_ms    = 3000;
 
-            auto consumer = Consumer::connect(messenger, copts);
-            ASSERT_TRUE(consumer.has_value());
+            auto consumer = Consumer::connect(cons_m, copts);
+            fmt::print(stderr, "[T] Consumer::connect returned has_value={}\n",
+                       consumer.has_value());
+            ASSERT_TRUE(consumer.has_value()) << "Consumer::connect failed";
+            fmt::print(stderr, "[T] consumer transport='{}' ep='{}' queue={}\n",
+                       consumer->data_transport(), consumer->zmq_node_endpoint(),
+                       static_cast<void*>(consumer->queue()));
             EXPECT_EQ(consumer->queue_item_size(), kItemSz);
 
-            // ZMQ TCP establishment.
+            fmt::print(stderr, "[T] sleeping 100ms for ZMQ TCP...\n");
             std::this_thread::sleep_for(std::chrono::milliseconds{100});
+            fmt::print(stderr, "[T] sleep done, writing...\n");
 
             // Write through forwarding.
             void *buf = producer->write_acquire(std::chrono::milliseconds{1000});
+            fmt::print(stderr, "[T] write_acquire returned {}\n", static_cast<void*>(buf));
             ASSERT_NE(buf, nullptr);
             const std::array<uint8_t, kItemSz> payload{10, 20, 30, 40, 50, 60, 70, 80};
             std::memcpy(buf, payload.data(), kItemSz);
             producer->write_commit();
+            fmt::print(stderr, "[T] write_commit done, reading...\n");
 
             // Read through forwarding.
             const void *data = consumer->read_acquire(std::chrono::milliseconds{3000});
+            fmt::print(stderr, "[T] read_acquire returned {}\n", static_cast<const void*>(data));
             ASSERT_NE(data, nullptr) << "ZMQ read_acquire timed out";
             std::array<uint8_t, kItemSz> received{};
             std::memcpy(received.data(), data, kItemSz);
             consumer->read_release();
             EXPECT_EQ(received, payload);
+            fmt::print(stderr, "[T] data verified OK\n");
 
             // Consumer metrics.
             auto cm = consumer->queue_metrics();
             EXPECT_EQ(cm.configured_period_us, 500u);
 
+            // Cleanup: close channels while broker is alive, then stop broker.
             consumer->close();
             producer->close();
-            messenger.disconnect();
             broker.stop_and_join();
+            cons_m.disconnect();
+            prod_m.disconnect();
         },
         "hub_api.zmq_forwarding_api",
         logger_module(), crypto_module(), hub_module());

@@ -62,7 +62,7 @@ namespace pylabhub::hub
  * @struct ConsumerMessagingFacade
  * @brief ABI-stable bridge between ReadProcessorContext<F,D> (header template) and
  *        ConsumerImpl internals (defined in .cpp). Function pointers are filled by
- *        Consumer::connect_from_parts(); context points to the ConsumerImpl on the heap.
+ *        Consumer::establish_channel(); context points to the ConsumerImpl on the heap.
  *
  * **Internal use only — do not use directly.**
  * This struct is exposed in the header solely so that the template ReadProcessorContext<F,D>
@@ -498,10 +498,10 @@ class PYLABHUB_UTILS_EXPORT Consumer
      */
     void close();
 
-    // ── Internal factory helper (used by template connect<>) ──────────────────
+    // ── Internal: establish local channel resources (used by connect<>) ─────────
 
     [[nodiscard]] static std::optional<Consumer>
-    connect_from_parts(Messenger &messenger, ChannelHandle channel,
+    establish_channel(Messenger &messenger, ChannelHandle channel,
                        std::unique_ptr<DataBlockConsumer> shm_consumer,
                        const ConsumerOptions &opts);
 
@@ -586,7 +586,7 @@ Consumer::connect(Messenger &messenger, const ConsumerOptions &opts)
         // ZMQ transport still works.
     }
 
-    return Consumer::connect_from_parts(messenger, std::move(*ch), std::move(shm_consumer),
+    return Consumer::establish_channel(messenger, std::move(*ch), std::move(shm_consumer),
                                          opts);
 }
 
