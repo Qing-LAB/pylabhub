@@ -78,7 +78,8 @@ public:
                   size_t item_size, size_t flexzone_sz = 0,
                   std::string channel_name = {},
                   bool checksum_slot = false, bool checksum_fz = false,
-                  uint64_t configured_period_us = 0);
+                  uint64_t configured_period_us = 0,
+                  bool zero_on_acquire = true);
 
     /**
      * @brief Create a read-mode ShmQueue wrapping an existing DataBlockConsumer.
@@ -101,7 +102,8 @@ public:
     from_producer_ref(DataBlockProducer& dbp, size_t item_size,
                       size_t flexzone_sz = 0, std::string channel_name = {},
                       bool checksum_slot = false, bool checksum_fz = false,
-                      uint64_t configured_period_us = 0);
+                      uint64_t configured_period_us = 0,
+                      bool always_clear_slot = true);
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -178,6 +180,8 @@ public:
     void set_verify_checksum(bool slot, bool fz) const noexcept;
     /** @brief Enable BLAKE2b checksum updates on write_commit(). */
     void set_checksum_options(bool slot, bool fz) noexcept;
+    /** @brief Enable/disable zero-fill of slot buffer on write_acquire(). */
+    void set_always_clear_slot(bool enable) noexcept;
     /** @brief Stamp flexzone checksum after on_init() writes initial content. */
     void sync_flexzone_checksum() noexcept;
 

@@ -267,6 +267,10 @@ struct ProducerOptions
     bool update_checksum_fz{false};
     /// Target loop period in microseconds. 0 = MaxRate.
     uint64_t queue_period_us{0};
+    /// Zero the slot buffer on write_acquire() (SHM only). Default true for safety
+    /// (prevents historical data leaks, ensures deterministic padding). Set false
+    /// for performance when the writer guarantees full field writes.
+    bool always_clear_slot{true};
 
     /// Max depth of P2P ctrl send queue before oldest items are dropped. 0 = unbounded.
     size_t ctrl_queue_max_depth{256};
@@ -530,6 +534,8 @@ class PYLABHUB_UTILS_EXPORT Producer
     [[nodiscard]] size_t flexzone_size() const noexcept;
     /// Runtime toggle: enable/disable BLAKE2b checksum on write_commit(). No-op for ZMQ.
     void set_checksum_options(bool slot, bool fz) noexcept;
+    /// Runtime toggle: enable/disable zero-fill of slot buffer on write_acquire() (SHM only).
+    void set_always_clear_slot(bool enable) noexcept;
     /// Stamp the flexzone checksum after on_init() writes initial content. No-op for ZMQ.
     void sync_flexzone_checksum() noexcept;
     /// Overflow policy description for diagnostics (e.g. "shm_write", "zmq_push_drop").

@@ -43,6 +43,7 @@ struct ShmQueueImpl
     // Write-side checksum flags.
     bool checksum_slot{false};
     bool checksum_fz{false};
+    bool always_clear_slot{true}; ///< Zero buffer on write_acquire (default: true for safety).
 
     // Read-side checksum verification flags.
     // mutable: set_verify_checksum() is const on ShmQueue
@@ -90,16 +91,18 @@ ShmQueue::from_producer(std::unique_ptr<DataBlockProducer> dbp,
                         size_t item_size, size_t flexzone_sz,
                         std::string channel_name,
                         bool checksum_slot, bool checksum_fz,
-                        uint64_t configured_period_us)
+                        uint64_t configured_period_us,
+                        bool always_clear_slot)
 {
     assert(dbp != nullptr);
-    auto impl            = std::make_unique<ShmQueueImpl>();
-    impl->dbp            = std::move(dbp);
-    impl->item_sz        = item_size;
-    impl->fz_sz          = flexzone_sz;
-    impl->chan_name       = std::move(channel_name);
-    impl->checksum_slot  = checksum_slot;
-    impl->checksum_fz    = checksum_fz;
+    auto impl                = std::make_unique<ShmQueueImpl>();
+    impl->dbp                = std::move(dbp);
+    impl->item_sz            = item_size;
+    impl->fz_sz              = flexzone_sz;
+    impl->chan_name           = std::move(channel_name);
+    impl->checksum_slot      = checksum_slot;
+    impl->checksum_fz        = checksum_fz;
+    impl->always_clear_slot  = always_clear_slot;
     if (configured_period_us > 0 && impl->producer())
         impl->producer()->set_loop_policy(LoopPolicy::FixedRate,
             std::chrono::microseconds{configured_period_us});
@@ -129,15 +132,17 @@ std::unique_ptr<QueueWriter>
 ShmQueue::from_producer_ref(DataBlockProducer& dbp, size_t item_size,
                              size_t flexzone_sz, std::string channel_name,
                              bool checksum_slot, bool checksum_fz,
-                             uint64_t configured_period_us)
+                             uint64_t configured_period_us,
+                             bool always_clear_slot)
 {
-    auto impl            = std::make_unique<ShmQueueImpl>();
-    impl->dbp_ref        = &dbp;
-    impl->item_sz        = item_size;
-    impl->fz_sz          = flexzone_sz;
-    impl->chan_name       = std::move(channel_name);
-    impl->checksum_slot  = checksum_slot;
-    impl->checksum_fz    = checksum_fz;
+    auto impl                = std::make_unique<ShmQueueImpl>();
+    impl->dbp_ref            = &dbp;
+    impl->item_sz            = item_size;
+    impl->fz_sz              = flexzone_sz;
+    impl->chan_name           = std::move(channel_name);
+    impl->checksum_slot      = checksum_slot;
+    impl->checksum_fz        = checksum_fz;
+    impl->always_clear_slot  = always_clear_slot;
     if (configured_period_us > 0)
         dbp.set_loop_policy(LoopPolicy::FixedRate,
             std::chrono::microseconds{configured_period_us});
@@ -147,6 +152,12 @@ ShmQueue::from_producer_ref(DataBlockProducer& dbp, size_t item_size,
 // ============================================================================
 // set_checksum_options  (ShmQueue-specific)
 // ============================================================================
+
+void ShmQueue::set_always_clear_slot(bool enable) noexcept
+{
+    if (pImpl)
+        pImpl->always_clear_slot = enable;
+}
 
 void ShmQueue::set_checksum_options(bool slot, bool fz) noexcept
 {
@@ -290,8 +301,8 @@ void* ShmQueue::write_acquire(std::chrono::milliseconds timeout) noexcept
 
     std::span<std::byte> buf = pImpl->write_handle->buffer_span();
     if (buf.empty()) return nullptr;
-    // Zero buffer so padding bytes are deterministic and no historical data leaks.
-    std::fill(buf.begin(), buf.end(), std::byte{0});
+    if (pImpl->always_clear_slot)
+        std::fill(buf.begin(), buf.end(), std::byte{0});
     return buf.data();
 }
 
