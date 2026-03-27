@@ -123,7 +123,7 @@ compute_field_layout(const std::vector<ZmqSchemaField>& fields,
 /// Payload array header: 3 bytes.  Per scalar: 9 bytes max.  Per bin: 5+byte_size.
 inline size_t max_frame_size(const std::vector<WireFieldDesc>& defs)
 {
-    size_t sz = 25 + 3 + 4; // outer + inner array header + slack
+    size_t sz = 25 + 3 + 4 + 34; // outer + inner array header + slack + checksum(bin32)
     for (const auto& d : defs)
         sz += d.is_bin ? (5 + d.byte_size) : 9;
     return sz;
