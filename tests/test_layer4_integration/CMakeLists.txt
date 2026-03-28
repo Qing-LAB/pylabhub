@@ -73,42 +73,4 @@ endif() # END DISABLED — hubshell migration pending
 # ProducerAPI, ConsumerAPI, ProcessorAPI embed pybind11 module definitions,
 # so we compile their .cpp files directly and link pybind11_embed.
 
-add_executable(test_metrics_api
-    test_metrics_api.cpp
-)
-
-target_include_directories(test_metrics_api PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/src/producer
-    ${CMAKE_SOURCE_DIR}/src/consumer
-    ${CMAKE_SOURCE_DIR}/src/processor
-    ${CMAKE_SOURCE_DIR}/src/scripting
-)
-
-target_link_libraries(test_metrics_api
-    PRIVATE
-        pylabhub::utils
-        pylabhub::scripting
-        GTest::gtest_main
-)
-
-target_compile_features(test_metrics_api PRIVATE cxx_std_20)
-target_compile_definitions(test_metrics_api PRIVATE LOGGER_COMPILE_LEVEL=0)
-
-pylabhub_ensure_sanitizer_for_executable(test_metrics_api)
-
-if(TARGET stage_pylabhub_utils)
-    add_dependencies(test_metrics_api stage_pylabhub_utils)
-endif()
-
-pylabhub_register_test_for_staging(TARGET test_metrics_api)
-
-gtest_discover_tests(test_metrics_api
-    PROPERTIES
-        LABELS "layer4;metrics"
-        TIMEOUT 60
-    DISCOVERY_TIMEOUT 60
-)
-
-message(STATUS "  - test_metrics_api: API-level metrics unit tests (pybind11)")
 message(STATUS "** Layer 4 (Integration) tests configured.")

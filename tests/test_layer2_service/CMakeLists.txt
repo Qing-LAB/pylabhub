@@ -777,3 +777,45 @@ gtest_discover_tests(test_layer2_role_config
         LABELS "layer2;service;config"
         TIMEOUT 30
 )
+
+# ============================================================================
+# Test: MetricsAPI — hierarchical metrics serialization (JSON + py::dict)
+# ============================================================================
+
+add_executable(test_layer2_metrics_api
+    test_metrics_api.cpp
+)
+
+target_include_directories(test_layer2_metrics_api PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/producer
+    ${CMAKE_SOURCE_DIR}/src/consumer
+    ${CMAKE_SOURCE_DIR}/src/processor
+    ${CMAKE_SOURCE_DIR}/src/scripting
+)
+
+target_link_libraries(test_layer2_metrics_api
+    PRIVATE
+        pylabhub::utils
+        pylabhub::scripting
+        pylabhub::third_party::pybind11_embed
+        GTest::gtest_main
+)
+
+target_compile_features(test_layer2_metrics_api PRIVATE cxx_std_20)
+target_compile_definitions(test_layer2_metrics_api PRIVATE LOGGER_COMPILE_LEVEL=0)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_metrics_api)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_metrics_api
+    SUITE_NAME "Layer2_MetricsAPI"
+)
+layer2_require_staged_utils(test_layer2_metrics_api)
+
+gtest_discover_tests(test_layer2_metrics_api
+    PROPERTIES
+        LABELS "layer2;service;metrics"
+        TIMEOUT 60
+    DISCOVERY_TIMEOUT 60
+)
