@@ -18,6 +18,7 @@
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
+#include <pybind11/embed.h>
 
 #include <string>
 #include <unordered_map>
@@ -185,4 +186,88 @@ TEST(MetricsApiTest, ProcessorAPI_ReportAndSnapshot)
     EXPECT_DOUBLE_EQ(snap["custom"]["avg_latency_ms"].get<double>(), 2.5);
     EXPECT_DOUBLE_EQ(snap["custom"]["throughput"].get<double>(), 500.0);
     EXPECT_DOUBLE_EQ(snap["custom"]["errors"].get<double>(), 0.0);
+}
+
+// ============================================================================
+// Python py::dict api.metrics() — hierarchical structure
+// ============================================================================
+
+namespace py = pybind11;
+
+class MetricsApiPyDictTest : public ::testing::Test
+{
+  protected:
+    static void SetUpTestSuite()
+    {
+        if (!Py_IsInitialized())
+        {
+            interp_ = std::make_unique<py::scoped_interpreter>();
+        }
+    }
+    static void TearDownTestSuite() { interp_.reset(); }
+    static inline std::unique_ptr<py::scoped_interpreter> interp_;
+};
+
+TEST_F(MetricsApiPyDictTest, ProducerAPI_PyDict_Hierarchical_NoQueue)
+{
+    pylabhub::scripting::RoleHostCore core;
+    pylabhub::producer::ProducerAPI api(core);
+    core.inc_out_written();
+    core.inc_out_written();
+    core.inc_out_written();
+    core.inc_drops();
+
+    py::dict d = api.metrics();
+
+    // "loop" group must be present (always available from RoleHostCore).
+    ASSERT_TRUE(d.contains("loop"));
+    py::dict loop = d["loop"].cast<py::dict>();
+    EXPECT_EQ(loop["iteration_count"].cast<uint64_t>(), 0u);
+    EXPECT_EQ(loop["loop_overrun_count"].cast<uint64_t>(), 0u);
+
+    // "role" group must be present.
+    ASSERT_TRUE(d.contains("role"));
+    py::dict role = d["role"].cast<py::dict>();
+    EXPECT_EQ(role["out_written"].cast<uint64_t>(), 3u);
+    EXPECT_EQ(role["drops"].cast<uint64_t>(), 1u);
+    EXPECT_EQ(role["script_errors"].cast<uint64_t>(), 0u);
+
+    // No queue connected → no "queue" key.
+    EXPECT_FALSE(d.contains("queue"));
+
+    // No inbox → no "inbox" key.
+    EXPECT_FALSE(d.contains("inbox"));
+}
+
+TEST_F(MetricsApiPyDictTest, ConsumerAPI_PyDict_Hierarchical_NoQueue)
+{
+    pylabhub::scripting::RoleHostCore core;
+    pylabhub::consumer::ConsumerAPI api(core);
+
+    py::dict d = api.metrics();
+
+    ASSERT_TRUE(d.contains("loop"));
+    ASSERT_TRUE(d.contains("role"));
+    py::dict role = d["role"].cast<py::dict>();
+    EXPECT_EQ(role["in_received"].cast<uint64_t>(), 0u);
+    EXPECT_FALSE(d.contains("queue"));
+}
+
+TEST_F(MetricsApiPyDictTest, ProcessorAPI_PyDict_Hierarchical_NoQueue)
+{
+    pylabhub::scripting::RoleHostCore core;
+    pylabhub::processor::ProcessorAPI api(core);
+
+    py::dict d = api.metrics();
+
+    ASSERT_TRUE(d.contains("loop"));
+    ASSERT_TRUE(d.contains("role"));
+    py::dict role = d["role"].cast<py::dict>();
+    EXPECT_EQ(role["in_received"].cast<uint64_t>(), 0u);
+    EXPECT_EQ(role["out_written"].cast<uint64_t>(), 0u);
+    EXPECT_TRUE(role.contains("ctrl_queue_dropped"));
+
+    // Processor: no in_queue/out_queue when disconnected.
+    EXPECT_FALSE(d.contains("in_queue"));
+    EXPECT_FALSE(d.contains("out_queue"));
 }
