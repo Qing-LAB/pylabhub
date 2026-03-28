@@ -1520,4 +1520,106 @@ function set_marker() api.set_shared_data("from_thread", 123) end
     engine.finalize();
 }
 
+// ============================================================================
+// Lua api.metrics() — hierarchical table structure
+// ============================================================================
+
+TEST_F(LuaEngineTest, Metrics_HierarchicalTable_Producer)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            local m = api.metrics()
+            -- Top-level must have "loop" and "role" (no "queue" — no queue connected)
+            assert(type(m) == "table", "metrics() must return a table")
+            assert(type(m.loop) == "table", "loop group must be a table")
+            assert(type(m.role) == "table", "role group must be a table")
+            assert(m.queue == nil, "queue must be absent when no queue connected")
+            assert(m.inbox == nil, "inbox must be absent when no inbox connected")
+
+            -- Loop fields
+            assert(type(m.loop.iteration_count) == "number",
+                   "loop.iteration_count must be a number")
+            assert(type(m.loop.loop_overrun_count) == "number",
+                   "loop.loop_overrun_count must be a number")
+            assert(type(m.loop.last_cycle_work_us) == "number",
+                   "loop.last_cycle_work_us must be a number")
+
+            -- Role fields
+            assert(m.role.out_written == 5,
+                   "role.out_written expected 5, got " .. tostring(m.role.out_written))
+            assert(m.role.drops == 2,
+                   "role.drops expected 2, got " .. tostring(m.role.drops))
+            assert(type(m.role.script_errors) == "number",
+                   "role.script_errors must be a number")
+            return false
+        end
+    )");
+
+    RoleHostCore core;
+    core.test_set_out_written(5);
+    core.test_set_drops(2);
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &core));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+
+    auto ctx = producer_context();
+    ctx.core = &core;
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "Lua assertion failed — hierarchical metrics structure incorrect";
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Metrics_HierarchicalTable_Consumer)
+{
+    write_script(R"(
+        function on_consume(in_slot, fz, msgs, api)
+            local m = api.metrics()
+            assert(type(m.loop) == "table", "loop group must be a table")
+            assert(type(m.role) == "table", "role group must be a table")
+            assert(m.queue == nil, "queue absent without connection")
+
+            assert(m.role.in_received == 10,
+                   "role.in_received expected 10, got " .. tostring(m.role.in_received))
+            return -- consumer returns nothing
+        end
+    )");
+
+    RoleHostCore core;
+    core.test_set_in_received(10);
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &core));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_consume"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+
+    RoleContext ctx{};
+    ctx.role_tag = "cons";
+    ctx.uid      = "TEST-ENGINE-00000001";
+    ctx.name     = "TestEngine";
+    ctx.channel  = "test.channel";
+    ctx.log_level = "error";
+    ctx.core     = &core;
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    float buf = 1.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_consume(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "Lua assertion failed — consumer hierarchical metrics incorrect";
+
+    engine.finalize();
+}
+
 } // anonymous namespace
