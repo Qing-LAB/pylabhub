@@ -14,6 +14,7 @@
 
 #include "plh_datahub.hpp"
 #include "plh_datahub_client.hpp"
+#include "utils/metrics_json.hpp"
 
 #include "role_host_helpers.hpp"
 #include "zmq_poll_loop.hpp"
@@ -219,6 +220,7 @@ void ProducerRoleHost::worker_main_()
     ctx.messenger   = &out_messenger_;
     ctx.producer    = out_producer_.has_value() ? &(*out_producer_) : nullptr;
     ctx.consumer    = nullptr;
+    ctx.inbox_queue = inbox_queue_.get();
     ctx.core         = &core_;
     ctx.stop_on_script_error = sc.stop_on_script_error;
 
@@ -793,32 +795,36 @@ void ProducerRoleHost::drain_inbox_sync_()
 
 nlohmann::json ProducerRoleHost::snapshot_metrics_json() const
 {
-    nlohmann::json base;
-    base["out_written"]        = core_.out_written();
-    base["drops"]              = core_.drops();
-    base["script_errors"]      = engine_ ? engine_->script_error_count() : 0;
-    base["last_cycle_work_us"] = core_.last_cycle_work_us();
-    base["loop_overrun_count"] = core_.loop_overrun_count();
+    nlohmann::json result;
 
     if (out_producer_.has_value())
     {
-        base["ctrl_queue_dropped"] = out_producer_->ctrl_queue_dropped();
+        nlohmann::json q;
+        hub::queue_metrics_to_json(q, out_producer_->queue_metrics());
+        result["queue"] = std::move(q);
     }
 
-    // Use our own iteration_count (always available, regardless of transport).
-    base["iteration_count"] = core_.iteration_count();
-
-    if (out_producer_.has_value())
     {
-        const auto m = out_producer_->queue_metrics();
-        base["data_drop_count"]     = m.data_drop_count;
-        base["last_iteration_us"]   = m.last_iteration_us;
-        base["max_iteration_us"]    = m.max_iteration_us;
-        base["last_slot_exec_us"]   = m.last_slot_exec_us;
-        base["last_slot_wait_us"]   = m.last_slot_wait_us;
-        base["configured_period_us"] = m.configured_period_us;
+        nlohmann::json lm;
+        hub::loop_metrics_to_json(lm, core_.loop_metrics());
+        result["loop"] = std::move(lm);
     }
-    return base;
+
+    result["role"] = {
+        {"out_written",        core_.out_written()},
+        {"drops",              core_.drops()},
+        {"script_errors",      engine_ ? engine_->script_error_count() : 0},
+        {"ctrl_queue_dropped", out_producer_.has_value() ? out_producer_->ctrl_queue_dropped() : 0}
+    };
+
+    if (inbox_queue_)
+    {
+        nlohmann::json ib;
+        hub::inbox_metrics_to_json(ib, inbox_queue_->inbox_metrics());
+        result["inbox"] = std::move(ib);
+    }
+
+    return result;
 }
 
 } // namespace pylabhub::producer

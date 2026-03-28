@@ -188,6 +188,7 @@ class LuaEngine : public ScriptEngine
     static int lua_api_out_written(lua_State *L);
     static int lua_api_in_received(lua_State *L);
     static int lua_api_drops(lua_State *L);
+    static int lua_api_metrics(lua_State *L);
     static int lua_api_in_channel(lua_State *L);
     static int lua_api_out_channel(lua_State *L);
 };

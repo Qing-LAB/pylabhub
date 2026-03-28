@@ -430,8 +430,9 @@ bool PythonEngine::build_api_(const RoleContext &ctx)
         producer_api_ = std::make_unique<producer::ProducerAPI>(*ctx_.core);
         auto &api = *producer_api_;
 
-        api.set_producer(static_cast<hub::Producer *>(ctx_.producer));
+        api.set_producer(ctx_.producer);
         api.set_messenger(ctx_.messenger);
+        api.set_inbox_queue(ctx_.inbox_queue);
         api.set_engine(this);
         api.set_uid(ctx_.uid);
         api.set_name(ctx_.name);
@@ -450,8 +451,9 @@ bool PythonEngine::build_api_(const RoleContext &ctx)
         consumer_api_ = std::make_unique<consumer::ConsumerAPI>(*ctx_.core);
         auto &api = *consumer_api_;
 
-        api.set_consumer(static_cast<hub::Consumer *>(ctx_.consumer));
+        api.set_consumer(ctx_.consumer);
         api.set_messenger(ctx_.messenger);
+        api.set_inbox_queue(ctx_.inbox_queue);
         api.set_engine(this);
         api.set_uid(ctx_.uid);
         api.set_name(ctx_.name);
@@ -471,10 +473,11 @@ bool PythonEngine::build_api_(const RoleContext &ctx)
         auto &api = *processor_api_;
 
         if (ctx_.producer)
-            api.set_producer(static_cast<hub::Producer *>(ctx_.producer));
+            api.set_producer(ctx_.producer);
         if (ctx_.consumer)
-            api.set_consumer(static_cast<hub::Consumer *>(ctx_.consumer));
+            api.set_consumer(ctx_.consumer);
         api.set_messenger(ctx_.messenger);
+        api.set_inbox_queue(ctx_.inbox_queue);
         api.set_engine(this);
         api.set_uid(ctx_.uid);
         api.set_name(ctx_.name);

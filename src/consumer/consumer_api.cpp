@@ -10,6 +10,8 @@
 
 #include <chrono>
 #include "utils/json_fwd.hpp"
+#include "utils/metrics_json.hpp"
+#include "metrics_pydict.hpp"
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
 
@@ -130,57 +132,70 @@ uint64_t ConsumerAPI::ctrl_queue_dropped() const noexcept
 
 nlohmann::json ConsumerAPI::snapshot_metrics_json() const
 {
-    nlohmann::json base;
-    base["in_received"]        = in_slots_received();
-    base["script_errors"]      = script_error_count();
-    base["last_cycle_work_us"] = last_cycle_work_us();
-    base["loop_overrun_count"] = core_->loop_overrun_count();
-    base["ctrl_queue_dropped"] = ctrl_queue_dropped();
+    nlohmann::json result;
 
-    // Domain 2+3 timing from queue abstraction (transport-agnostic).
     if (consumer_ != nullptr)
     {
-        const auto m = consumer_->queue_metrics();
-        base["iteration_count"]      = core_->iteration_count();
-        base["data_drop_count"]      = m.data_drop_count;
-        base["last_iteration_us"]    = m.last_iteration_us;
-        base["max_iteration_us"]     = m.max_iteration_us;
-        base["last_slot_exec_us"]    = m.last_slot_exec_us;
-        base["last_slot_wait_us"]    = m.last_slot_wait_us;
-        base["configured_period_us"] = m.configured_period_us;
+        nlohmann::json q;
+        hub::queue_metrics_to_json(q, consumer_->queue_metrics());
+        result["queue"] = std::move(q);
     }
 
-    nlohmann::json custom;
+    {
+        nlohmann::json lm;
+        hub::loop_metrics_to_json(lm, core_->loop_metrics());
+        result["loop"] = std::move(lm);
+    }
+
+    result["role"] = {
+        {"in_received",        in_slots_received()},
+        {"script_errors",      script_error_count()},
+        {"ctrl_queue_dropped", ctrl_queue_dropped()}
+    };
+
+    if (inbox_queue_ != nullptr)
+    {
+        nlohmann::json ib;
+        hub::inbox_metrics_to_json(ib, inbox_queue_->inbox_metrics());
+        result["inbox"] = std::move(ib);
+    }
+
     {
         hub::InProcessSpinStateGuard guard(metrics_spin_);
-        custom = nlohmann::json(custom_metrics_);
+        result["custom"] = nlohmann::json(custom_metrics_);
     }
 
-    nlohmann::json result;
-    result["base"]   = std::move(base);
-    result["custom"] = std::move(custom);
     return result;
 }
 
 py::dict ConsumerAPI::metrics() const
 {
     py::dict d;
-    d["last_cycle_work_us"] = py::int_(last_cycle_work_us());
-    d["loop_overrun_count"] = py::int_(core_->loop_overrun_count());
-    d["script_errors"]      = py::int_(script_error_count());
-    d["in_received"]        = py::int_(in_slots_received());
 
     if (consumer_ != nullptr)
     {
-        const auto m = consumer_->queue_metrics();
-        d["context_elapsed_us"]   = py::int_(m.context_elapsed_us);
-        d["iteration_count"]      = py::int_(core_->iteration_count());
-        d["data_drop_count"]      = py::int_(m.data_drop_count);
-        d["last_iteration_us"]    = py::int_(m.last_iteration_us);
-        d["max_iteration_us"]     = py::int_(m.max_iteration_us);
-        d["last_slot_wait_us"]    = py::int_(m.last_slot_wait_us);
-        d["last_slot_exec_us"]    = py::int_(m.last_slot_exec_us);
-        d["configured_period_us"] = py::int_(m.configured_period_us);
+        py::dict q;
+        scripting::queue_metrics_to_pydict(q, consumer_->queue_metrics());
+        d["queue"] = q;
+    }
+
+    {
+        py::dict loop;
+        scripting::loop_metrics_to_pydict(loop, core_->loop_metrics());
+        d["loop"] = loop;
+    }
+
+    py::dict role;
+    role["in_received"]        = py::int_(in_slots_received());
+    role["script_errors"]      = py::int_(script_error_count());
+    role["ctrl_queue_dropped"] = py::int_(ctrl_queue_dropped());
+    d["role"] = role;
+
+    if (inbox_queue_ != nullptr)
+    {
+        py::dict ib;
+        scripting::inbox_metrics_to_pydict(ib, inbox_queue_->inbox_metrics());
+        d["inbox"] = ib;
     }
 
     return d;
