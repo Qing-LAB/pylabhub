@@ -378,6 +378,44 @@ api.report_metrics({
 
 Clears all custom metrics. Base counters are never cleared.
 
+### 5.4 Hierarchical metrics serialization architecture
+
+All metrics output (heartbeat JSON, Python `api.metrics()`, Lua `api.metrics()`) follows
+a hierarchical structure with 5 top-level groups:
+
+```
+{
+    "queue":  { ... },    // or "in_queue"/"out_queue" for processor
+    "loop":   { ... },
+    "role":   { ... },
+    "inbox":  { ... },    // only if inbox configured
+    "custom": { ... }
+}
+```
+
+Each group except `role` and `custom` has an X-macro that defines its canonical field list:
+
+| Macro | Header | Struct |
+|-------|--------|--------|
+| `PYLABHUB_QUEUE_METRICS_FIELDS` | `hub_queue.hpp` | `QueueMetrics` (13 fields) |
+| `PYLABHUB_LOOP_METRICS_FIELDS` | `role_host_core.hpp` | `LoopMetricsSnapshot` (3 fields) |
+| `PYLABHUB_INBOX_METRICS_FIELDS` | `hub_inbox_queue.hpp` | `InboxMetricsSnapshot` (3 fields) |
+
+Each output format provides adapter functions that expand the macros:
+
+| Output | Header | Namespace |
+|--------|--------|-----------|
+| JSON (`nlohmann::json`) | `queue_metrics_json.hpp` | `pylabhub::hub` |
+| Python (`py::dict`) | `queue_metrics_pydict.hpp` | `pylabhub::scripting` |
+| Lua (table) | `queue_metrics_lua.hpp` | `pylabhub::scripting` |
+
+`role` fields vary per role type (no X-macro). `custom` is user-defined (string→double map).
+
+Adding a new metric: (1) add to the struct, (2) add one line to the X-macro.
+All serialization targets pick it up at compile time.
+
+See HEP-CORE-0008 §6.1 for the full field list and per-role dict layout.
+
 ---
 
 ## 6. Broker-side Storage

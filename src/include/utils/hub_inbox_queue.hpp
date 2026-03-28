@@ -158,6 +158,22 @@ public:
     [[nodiscard]] uint64_t ack_send_error_count() const noexcept;
     /** Sequence number gaps detected (sender restarts or dropped frames). */
     [[nodiscard]] uint64_t recv_gap_count() const noexcept;
+    /** BLAKE2b checksum verification failures. */
+    [[nodiscard]] uint64_t checksum_error_count() const noexcept;
+
+    /// Snapshot inbox metrics.
+    struct InboxMetricsSnapshot
+    {
+        uint64_t recv_frame_error_count{0};
+        uint64_t ack_send_error_count{0};
+        uint64_t recv_gap_count{0};
+        uint64_t checksum_error_count{0};
+    };
+    [[nodiscard]] InboxMetricsSnapshot inbox_metrics() const noexcept
+    {
+        return {recv_frame_error_count(), ack_send_error_count(),
+                recv_gap_count(), checksum_error_count()};
+    }
 
 private:
     explicit InboxQueue(std::unique_ptr<InboxQueueImpl> impl);
@@ -250,3 +266,15 @@ private:
 };
 
 } // namespace pylabhub::hub
+
+/**
+ * @brief Canonical field list for InboxQueue::InboxMetricsSnapshot serialization.
+ * Same X-macro pattern as PYLABHUB_QUEUE_METRICS_FIELDS (see hub_queue.hpp).
+ */
+// NOLINTBEGIN(cppcoreguidelines-macro-usage)
+#define PYLABHUB_INBOX_METRICS_FIELDS(X) \
+    X(recv_frame_error_count)            \
+    X(ack_send_error_count)              \
+    X(recv_gap_count)                    \
+    X(checksum_error_count)
+// NOLINTEND(cppcoreguidelines-macro-usage)

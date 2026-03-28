@@ -1142,17 +1142,13 @@ the data plane uses SHM or ZMQ.
 
 ### 15.6 Inbox Plane
 
-The inbox is an optional point-to-point messaging channel available to all roles:
+The inbox is an optional point-to-point messaging channel available to all roles.
+See **HEP-CORE-0027** for the complete specification: architecture, wire protocol,
+threading model, configuration, script API, metrics, and use cases.
 
-1. Role host creates `InboxQueue` (ROUTER socket, binds to configured or ephemeral endpoint)
-2. Endpoint is advertised to broker via `opts.inbox_endpoint` during channel registration
-3. Other roles discover the endpoint via `ROLE_INFO_REQ` to the broker
-4. Callers connect via `InboxClient` (DEALER socket) using `api.open_inbox(target_uid)`
-5. `inbox_thread_` on the role host receives and dispatches inbox messages to the script's
-   `on_inbox(slot, sender, api)` callback
-
-The inbox uses the same ZMQ wire format as `ZmqQueue` (msgpack fixarray with schema tag),
-but is logically independent from the data plane. Each role has at most one inbox.
+Summary: Each role can bind an InboxQueue (ZMQ ROUTER) that receives typed messages
+from InboxClient (ZMQ DEALER) peers. Discovery is via the broker (ROLE_INFO_REQ);
+message flow is direct P2P. Same wire format as ZmqQueue (msgpack fixarray[5]).
 
 ### 15.7 Unified Pattern
 

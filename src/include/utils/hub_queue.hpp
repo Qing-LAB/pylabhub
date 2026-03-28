@@ -123,6 +123,37 @@ struct QueueMetrics
 };
 
 /**
+ * @brief Canonical field list for QueueMetrics serialization.
+ *
+ * Expand with an adapter macro to serialize all fields to JSON, py::dict, Lua table, etc.
+ * Adding a field to QueueMetrics: (1) add the member above, (2) add one X() line here.
+ * All consumers pick it up at compile time.
+ *
+ * @code
+ * // Example — JSON adapter:
+ * #define X(field) j[prefix + #field] = m.field;
+ * PYLABHUB_QUEUE_METRICS_FIELDS(X)
+ * #undef X
+ * @endcode
+ */
+// NOLINTBEGIN(cppcoreguidelines-macro-usage) — X-macro is the standard pattern for struct↔serialization sync
+#define PYLABHUB_QUEUE_METRICS_FIELDS(X) \
+    X(last_slot_wait_us)                 \
+    X(last_iteration_us)                 \
+    X(max_iteration_us)                  \
+    X(context_elapsed_us)                \
+    X(last_slot_exec_us)                 \
+    X(data_drop_count)                   \
+    X(configured_period_us)              \
+    X(recv_overflow_count)               \
+    X(recv_frame_error_count)            \
+    X(recv_gap_count)                    \
+    X(send_drop_count)                   \
+    X(send_retry_count)                  \
+    X(checksum_error_count)
+// NOLINTEND(cppcoreguidelines-macro-usage)
+
+/**
  * @class QueueReader
  * @brief Transport-agnostic read-side contract for the hub pipeline.
  *

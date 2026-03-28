@@ -144,11 +144,28 @@
 - [ ] CR-07: Stale `create_thread_state()` reference in `lua_engine.hpp:9-10` docstring
 - [ ] CR-13: Processor inbox packing fallback chain inconsistent with producer/consumer pattern — `processor_role_host.cpp:474-477`
 
-**Metrics gaps — deferred:**
-- [ ] ZMQ transport counters (recv_overflow_count, recv_frame_error_count, recv_gap_count, send_drop_count, send_retry_count) not exposed to Python scripts
-- [ ] `context_elapsed_us` in Python dict but not in heartbeat/API JSON
+**Metrics serialization — hierarchical X-macro unification** (in progress 2026-03-27):
+- [x] `PYLABHUB_QUEUE_METRICS_FIELDS` X-macro in `hub_queue.hpp` (13 fields)
+- [x] `PYLABHUB_LOOP_METRICS_FIELDS` X-macro in `role_host_core.hpp` (3 fields) + `LoopMetricsSnapshot`
+- [x] `PYLABHUB_INBOX_METRICS_FIELDS` X-macro in `hub_inbox_queue.hpp` (3 fields) + `InboxMetricsSnapshot`
+- [x] `queue_metrics_json.hpp`: JSON adapters for all 3 groups (`pylabhub::hub` namespace)
+- [x] `queue_metrics_pydict.hpp`: py::dict adapters for all 3 groups (`pylabhub::scripting` namespace)
+- [x] `queue_metrics_lua.hpp`: Lua table adapters for all 3 groups (`pylabhub::scripting` namespace)
+- [x] Hierarchical output: `{queue, loop, role, inbox, custom}` (processor: `in_queue`/`out_queue`)
+- [x] All 9 serialization sites replaced (3 role host JSON + 3 API JSON + 3 API dict)
+- [x] Lua `api.metrics()` — full hierarchical table with queue/loop/role groups
+- Fixes: all QueueMetrics fields (incl. ZMQ counters, checksum_error_count) now exposed; context_elapsed_us in heartbeat JSON
+- Design: HEP-0008 §6.1, HEP-0019 §5.4
+
+**Metrics gaps — remaining:**
+- [x] Wire `"inbox"` group into all serialization sites via `RoleContext::inbox_queue` ✅ 2026-03-27
+- [x] InboxQueue: `checksum_error_count` added (was log-only; now increments counter like ZmqQueue) ✅ 2026-03-27
+- [x] InboxQueue: schema_tag validation added (BLAKE2b hash of canonical field defs; rejects mismatch) ✅ 2026-03-27
+- [ ] `"custom"` metrics in `api.metrics()` (Python/Lua) — currently only in `snapshot_metrics_json()` for heartbeat
+- [ ] Tests for Python `api.metrics()` hierarchical dict and Lua `api.metrics()` table
 - [ ] Double `set_loop_policy` on SHM path (hub::Producer/Consumer sets it, then role host sets it again via queue)
 - [ ] Blocking overrun test: L3 test with queue + deadline + barrier coordination (deterministic, no sleep)
+- [ ] `RoleContext` void* cleanup: done for producer/consumer; evaluate other void* patterns in scripting layer
 
 ### Pending Tests (2026-03-25)
 

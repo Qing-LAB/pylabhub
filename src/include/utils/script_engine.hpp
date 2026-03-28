@@ -38,7 +38,7 @@
 #include <thread>
 #include <vector>
 
-namespace pylabhub::hub { class Messenger; }
+namespace pylabhub::hub { class Messenger; class Producer; class Consumer; class InboxQueue; }
 
 namespace pylabhub::scripting
 {
@@ -105,12 +105,9 @@ struct RoleContext
 
     hub::Messenger   *messenger{nullptr};     ///< For open_inbox, wait_for_role, broadcast, send
 
-    /// Pointer to the hub::Producer — queue operations + connected_consumers, send, broadcast.
-    /// Opaque to the engine — cast in engine-specific API builders.
-    void *producer{nullptr};
-
-    /// Pointer to the hub::Consumer — queue operations + consumer-specific API.
-    void *consumer{nullptr};
+    hub::Producer   *producer{nullptr};      ///< Output data queue ops.
+    hub::Consumer   *consumer{nullptr};      ///< Input data queue ops.
+    hub::InboxQueue *inbox_queue{nullptr};   ///< Incoming peer messages (ROUTER). nullptr if no inbox.
 
     /// Pointer to RoleHostCore — single source of truth for shutdown flags
     /// AND metrics (out_written, in_received, drops, script_errors, etc.).
