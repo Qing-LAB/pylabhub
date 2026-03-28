@@ -231,6 +231,18 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     [[nodiscard]] uint64_t last_cycle_work_us()  const noexcept { return last_cycle_work_us_.load(std::memory_order_relaxed); }
     [[nodiscard]] uint64_t loop_overrun_count() const noexcept { return loop_overrun_count_.load(std::memory_order_relaxed); }
 
+    /// Snapshot loop metrics into a caller-provided struct.
+    struct LoopMetricsSnapshot
+    {
+        uint64_t iteration_count{0};
+        uint64_t loop_overrun_count{0};
+        uint64_t last_cycle_work_us{0};
+    };
+    [[nodiscard]] LoopMetricsSnapshot loop_metrics() const noexcept
+    {
+        return {iteration_count(), loop_overrun_count(), last_cycle_work_us()};
+    }
+
     // ── Metric mutators (write) ──────────────────────────────────────────
 
     void inc_out_written()       noexcept { out_written_.fetch_add(1, std::memory_order_relaxed); }
@@ -291,3 +303,14 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
 };
 
 } // namespace pylabhub::scripting
+
+/**
+ * @brief Canonical field list for RoleHostCore::LoopMetricsSnapshot serialization.
+ * Same X-macro pattern as PYLABHUB_QUEUE_METRICS_FIELDS (see hub_queue.hpp).
+ */
+// NOLINTBEGIN(cppcoreguidelines-macro-usage)
+#define PYLABHUB_LOOP_METRICS_FIELDS(X) \
+    X(iteration_count)                  \
+    X(loop_overrun_count)               \
+    X(last_cycle_work_us)
+// NOLINTEND(cppcoreguidelines-macro-usage)

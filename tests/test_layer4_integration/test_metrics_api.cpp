@@ -41,13 +41,20 @@ TEST(MetricsApiTest, ProducerAPI_SnapshotBase_NoSHM)
     core.inc_drops();
 
     json snap = api.snapshot_metrics_json();
-    ASSERT_TRUE(snap.contains("base"));
-    EXPECT_EQ(snap["base"]["out_written"], 2);
-    EXPECT_EQ(snap["base"]["drops"], 1);
-    EXPECT_EQ(snap["base"]["script_errors"], 0);
-    // No SHM → no loop timing fields.
-    EXPECT_FALSE(snap["base"].contains("iteration_count"));
-    // Custom should be empty.
+
+    // Hierarchical structure: role, loop, custom (no queue when disconnected).
+    ASSERT_TRUE(snap.contains("role"));
+    EXPECT_EQ(snap["role"]["out_written"], 2);
+    EXPECT_EQ(snap["role"]["drops"], 1);
+    EXPECT_EQ(snap["role"]["script_errors"], 0);
+
+    ASSERT_TRUE(snap.contains("loop"));
+    EXPECT_EQ(snap["loop"]["iteration_count"], 0);
+    EXPECT_EQ(snap["loop"]["loop_overrun_count"], 0);
+
+    // No queue connected → no "queue" key.
+    EXPECT_FALSE(snap.contains("queue"));
+
     ASSERT_TRUE(snap.contains("custom"));
     EXPECT_TRUE(snap["custom"].empty());
 }
@@ -113,10 +120,16 @@ TEST(MetricsApiTest, ConsumerAPI_SnapshotBase_NoSHM)
     api.set_channel("test.chan");
 
     json snap = api.snapshot_metrics_json();
-    ASSERT_TRUE(snap.contains("base"));
-    EXPECT_EQ(snap["base"]["in_received"], 0);
-    EXPECT_EQ(snap["base"]["script_errors"], 0);
-    EXPECT_FALSE(snap["base"].contains("out_written"));
+
+    ASSERT_TRUE(snap.contains("role"));
+    EXPECT_EQ(snap["role"]["in_received"], 0);
+    EXPECT_EQ(snap["role"]["script_errors"], 0);
+    EXPECT_FALSE(snap["role"].contains("out_written"));
+
+    ASSERT_TRUE(snap.contains("loop"));
+    EXPECT_EQ(snap["loop"]["iteration_count"], 0);
+
+    EXPECT_FALSE(snap.contains("queue"));
     EXPECT_TRUE(snap["custom"].empty());
 }
 
@@ -146,11 +159,18 @@ TEST(MetricsApiTest, ProcessorAPI_SnapshotBase_NoSHM)
     api.set_name("test-proc");
 
     json snap = api.snapshot_metrics_json();
-    ASSERT_TRUE(snap.contains("base"));
-    EXPECT_EQ(snap["base"]["in_received"], 0);
-    EXPECT_EQ(snap["base"]["out_written"], 0);
-    EXPECT_EQ(snap["base"]["drops"], 0);
-    EXPECT_EQ(snap["base"]["script_errors"], 0);
+
+    ASSERT_TRUE(snap.contains("role"));
+    EXPECT_EQ(snap["role"]["in_received"], 0);
+    EXPECT_EQ(snap["role"]["out_written"], 0);
+    EXPECT_EQ(snap["role"]["drops"], 0);
+    EXPECT_EQ(snap["role"]["script_errors"], 0);
+
+    ASSERT_TRUE(snap.contains("loop"));
+    EXPECT_EQ(snap["loop"]["iteration_count"], 0);
+
+    EXPECT_FALSE(snap.contains("in_queue"));
+    EXPECT_FALSE(snap.contains("out_queue"));
     EXPECT_TRUE(snap["custom"].empty());
 }
 

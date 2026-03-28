@@ -11,6 +11,8 @@
 
 #include <chrono>
 #include "utils/json_fwd.hpp"
+#include "utils/metrics_json.hpp"
+#include "metrics_pydict.hpp"
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
 
@@ -212,59 +214,72 @@ uint64_t ProducerAPI::ctrl_queue_dropped() const noexcept
 
 nlohmann::json ProducerAPI::snapshot_metrics_json() const
 {
-    nlohmann::json base;
-    base["out_written"]        = out_slots_written();
-    base["drops"]              = out_drop_count();
-    base["script_errors"]      = script_error_count();
-    base["last_cycle_work_us"] = last_cycle_work_us();
-    base["ctrl_queue_dropped"] = ctrl_queue_dropped();
+    nlohmann::json result;
 
-    // Domain 2+3 timing from queue abstraction (transport-agnostic).
-    base["loop_overrun_count"] = core_->loop_overrun_count();
     if (producer_ != nullptr)
     {
-        const auto m = producer_->queue_metrics();
-        base["iteration_count"]      = core_->iteration_count();
-        base["data_drop_count"]      = m.data_drop_count;
-        base["last_iteration_us"]    = m.last_iteration_us;
-        base["max_iteration_us"]     = m.max_iteration_us;
-        base["last_slot_exec_us"]    = m.last_slot_exec_us;
-        base["last_slot_wait_us"]    = m.last_slot_wait_us;
-        base["configured_period_us"] = m.configured_period_us;
+        nlohmann::json q;
+        hub::queue_metrics_to_json(q, producer_->queue_metrics());
+        result["queue"] = std::move(q);
     }
 
-    nlohmann::json custom;
+    {
+        nlohmann::json lm;
+        hub::loop_metrics_to_json(lm, core_->loop_metrics());
+        result["loop"] = std::move(lm);
+    }
+
+    result["role"] = {
+        {"out_written",        out_slots_written()},
+        {"drops",              out_drop_count()},
+        {"script_errors",      script_error_count()},
+        {"ctrl_queue_dropped", ctrl_queue_dropped()}
+    };
+
+    if (inbox_queue_ != nullptr)
+    {
+        nlohmann::json ib;
+        hub::inbox_metrics_to_json(ib, inbox_queue_->inbox_metrics());
+        result["inbox"] = std::move(ib);
+    }
+
     {
         hub::InProcessSpinStateGuard guard(metrics_spin_);
-        custom = nlohmann::json(custom_metrics_);
+        result["custom"] = nlohmann::json(custom_metrics_);
     }
 
-    nlohmann::json result;
-    result["base"]   = std::move(base);
-    result["custom"] = std::move(custom);
     return result;
 }
 
 py::dict ProducerAPI::metrics() const
 {
     py::dict d;
-    d["last_cycle_work_us"] = py::int_(last_cycle_work_us());
-    d["script_errors"]      = py::int_(script_error_count());
-    d["out_written"]        = py::int_(out_slots_written());
-    d["drops"]              = py::int_(out_drop_count());
 
-    d["loop_overrun_count"]  = py::int_(core_->loop_overrun_count());
     if (producer_ != nullptr)
     {
-        const auto m = producer_->queue_metrics();
-        d["context_elapsed_us"]  = py::int_(m.context_elapsed_us);
-        d["iteration_count"]     = py::int_(core_->iteration_count());
-        d["data_drop_count"]     = py::int_(m.data_drop_count);
-        d["last_iteration_us"]   = py::int_(m.last_iteration_us);
-        d["max_iteration_us"]    = py::int_(m.max_iteration_us);
-        d["last_slot_wait_us"]   = py::int_(m.last_slot_wait_us);
-        d["last_slot_exec_us"]   = py::int_(m.last_slot_exec_us);
-        d["configured_period_us"] = py::int_(m.configured_period_us);
+        py::dict q;
+        scripting::queue_metrics_to_pydict(q, producer_->queue_metrics());
+        d["queue"] = q;
+    }
+
+    {
+        py::dict loop;
+        scripting::loop_metrics_to_pydict(loop, core_->loop_metrics());
+        d["loop"] = loop;
+    }
+
+    py::dict role;
+    role["out_written"]        = py::int_(out_slots_written());
+    role["drops"]              = py::int_(out_drop_count());
+    role["script_errors"]      = py::int_(script_error_count());
+    role["ctrl_queue_dropped"] = py::int_(ctrl_queue_dropped());
+    d["role"] = role;
+
+    if (inbox_queue_ != nullptr)
+    {
+        py::dict ib;
+        scripting::inbox_metrics_to_pydict(ib, inbox_queue_->inbox_metrics());
+        d["inbox"] = ib;
     }
 
     return d;

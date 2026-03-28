@@ -801,10 +801,10 @@ inline std::pair<SharedMemoryHeader *, uint32_t> get_header_and_slot_count(DataB
 
 inline bool update_checksum_flexible_zone_impl(DataBlock *block, bool compute = true)
 {
-    if (block == nullptr || block->header() == nullptr)
-    {
-        return false;
-    }
+    // block is a heap pointer; all callers validate non-null before calling.
+    // header() is a computed offset from mmap base; valid if DataBlock exists.
+    assert(block != nullptr && "caller must validate block");
+    assert(block->header() != nullptr && "DataBlock header must be mapped");
     if (block->layout().slot_checksum_size == 0)
     {
         return false;
@@ -813,23 +813,20 @@ inline bool update_checksum_flexible_zone_impl(DataBlock *block, bool compute = 
 
     // Phase 2: Single flex zone (always at index 0)
     constexpr size_t flex_zone_idx = 0;
-    
+
     const auto &layout = block->layout();
     if (layout.flexible_zone_size == 0)
     {
         return false; // No flex zone configured
     }
 
+    // flexible_data_zone() is base+offset (always non-null when DataBlock exists);
+    // len == flexible_zone_size which was just checked > 0 above.
     char *flex = block->flexible_data_zone();
     size_t len = layout.flexible_zone_size;
 
-    if (flex == nullptr || len == 0)
-    {
-        return false;
-    }
-
     // Fresh write — mark as unverified by readers.
-    hdr->flexible_zone_checksums[flex_zone_idx].valid.store(0, std::memory_order_release);
+    hdr->flexible_zone_checksums[flex_zone_idx].cks_is_valid.store(0, std::memory_order_release);
 
     if (compute)
     {
@@ -851,10 +848,10 @@ inline bool update_checksum_flexible_zone_impl(DataBlock *block, bool compute = 
 /// Always sets slot_cks_is_valid = 0 (fresh write, unverified by readers).
 inline bool update_checksum_slot_impl(DataBlock *block, size_t slot_index, bool compute)
 {
-    if (block == nullptr || block->header() == nullptr)
-    {
-        return false;
-    }
+    // block is a heap pointer; all callers validate non-null before calling.
+    // header() is a computed offset from mmap base; valid if DataBlock exists.
+    assert(block != nullptr && "caller must validate block");
+    assert(block->header() != nullptr && "DataBlock header must be mapped");
     if (block->layout().slot_checksum_size == 0)
     {
         return false;
@@ -863,17 +860,11 @@ inline bool update_checksum_slot_impl(DataBlock *block, size_t slot_index, bool 
     {
         return false;
     }
-    // Slot data pointer: step size = logical (slot_stride_bytes), so ring iteration uses logical size.
+    // Layout validated at DataBlock construction; stride and buffer are always valid.
     const size_t slot_size = block->layout().slot_stride_bytes();
-    if (slot_size == 0)
-    {
-        return false;
-    }
+    assert(slot_size > 0 && "slot_stride_bytes must be positive after construction");
     char *buf = block->structured_data_buffer();
-    if (buf == nullptr)
-    {
-        return false;
-    }
+    assert(buf != nullptr && "structured_data_buffer must be mapped after construction");
     char *base = reinterpret_cast<char *>(block->segment());
     char *slot_checksum_base_ptr = block->layout().slot_checksum_base(base);
     auto *slot_checksum = reinterpret_cast<uint8_t *>(
@@ -904,10 +895,10 @@ inline bool update_checksum_slot_impl(DataBlock *block, size_t slot_index, bool 
 inline bool verify_checksum_flexible_zone_impl(const DataBlock *block,
                                                 bool honor_valid = true)
 {
-    if (block == nullptr || block->header() == nullptr)
-    {
-        return false;
-    }
+    // block is a heap pointer; all callers validate non-null before calling.
+    // header() is a computed offset from mmap base; valid if DataBlock exists.
+    assert(block != nullptr && "caller must validate block");
+    assert(block->header() != nullptr && "DataBlock header must be mapped");
     if (block->layout().slot_checksum_size == 0)
     {
         return false;
@@ -932,29 +923,27 @@ inline bool verify_checksum_flexible_zone_impl(const DataBlock *block,
     }
     if (all_zero)
     {
-        entry.valid.store(0, std::memory_order_release);
+        entry.cks_is_valid.store(0, std::memory_order_release);
         return false;
     }
 
     // If honoring and already verified, skip.
-    if (honor_valid && entry.valid.load(std::memory_order_acquire) == 1)
+    if (honor_valid && entry.cks_is_valid.load(std::memory_order_acquire) == 1)
     {
         return true;
     }
 
+    // flexible_data_zone() is base+offset (always non-null when DataBlock exists);
+    // len == flexible_zone_size which was just checked > 0 above.
     const char *flex = block->flexible_data_zone();
     size_t len = layout.flexible_zone_size;
-    if (flex == nullptr || len == 0)
-    {
-        return false;
-    }
 
     if (pylabhub::crypto::verify_blake2b(entry.checksum_bytes, flex, len))
     {
-        entry.valid.store(1, std::memory_order_release);
+        entry.cks_is_valid.store(1, std::memory_order_release);
         return true;
     }
-    entry.valid.store(0, std::memory_order_release);
+    entry.cks_is_valid.store(0, std::memory_order_release);
     return false;
 }
 
@@ -964,10 +953,10 @@ inline bool verify_checksum_flexible_zone_impl(const DataBlock *block,
 inline bool verify_checksum_slot_impl(const DataBlock *block, size_t slot_index,
                                        bool honor_slot_valid)
 {
-    if (block == nullptr || block->header() == nullptr)
-    {
-        return false;
-    }
+    // block is a heap pointer; all callers validate non-null before calling.
+    // header() is a computed offset from mmap base; valid if DataBlock exists.
+    assert(block != nullptr && "caller must validate block");
+    assert(block->header() != nullptr && "DataBlock header must be mapped");
     if (block->layout().slot_checksum_size == 0)
     {
         return false;
@@ -1004,17 +993,11 @@ inline bool verify_checksum_slot_impl(const DataBlock *block, size_t slot_index,
         return true;
     }
 
-    // Compute hash and compare.
+    // Layout validated at DataBlock construction; stride and buffer are always valid.
     const size_t slot_size = block->layout().slot_stride_bytes();
-    if (slot_size == 0)
-    {
-        return false;
-    }
+    assert(slot_size > 0 && "slot_stride_bytes must be positive after construction");
     const char *buf = block->structured_data_buffer();
-    if (buf == nullptr)
-    {
-        return false;
-    }
+    assert(buf != nullptr && "structured_data_buffer must be mapped after construction");
     const void *slot_data = buf + slot_index * slot_size;
     if (pylabhub::crypto::verify_blake2b(slot_checksum, slot_data, slot_size))
     {

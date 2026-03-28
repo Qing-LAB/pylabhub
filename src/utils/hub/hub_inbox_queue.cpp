@@ -3,7 +3,7 @@
  * @file hub_inbox_queue.cpp
  * @brief InboxQueue (ROUTER receiver) and InboxClient (DEALER sender) implementations.
  *
- * Wire format: msgpack fixarray[4] = [magic:uint32, schema_tag:bin8, seq:uint64, payload:array(N)]
+ * Wire format: msgpack fixarray[5] = [magic:uint32, schema_tag:bin8, seq:uint64, payload:array(N), checksum:bin32]
  * Same wire format as ZmqQueue; shared helpers in zmq_wire_helpers.hpp.
  *
  * ZMQ framing (ROUTER-DEALER):
@@ -45,7 +45,7 @@ struct InboxQueueImpl
     int         rcvhwm{1000};    ///< ZMQ_RCVHWM applied at start(). 0 = unlimited.
     int         last_rcvtimeo{-2}; ///< Cached ZMQ_RCVTIMEO. -2 = not yet set.
 
-    std::array<uint8_t, 8> schema_tag_{};  // first 8 bytes of BLAKE2b-256 (unused/zero for inbox)
+    std::array<uint8_t, 8> schema_tag_{};  // first 8 bytes of BLAKE2b-256 of canonical schema string
     std::vector<wire_detail::WireFieldDesc> schema_defs_;
 
     void* zmq_ctx{nullptr};
@@ -66,6 +66,7 @@ struct InboxQueueImpl
     std::atomic<uint64_t> recv_frame_error_count_{0};
     std::atomic<uint64_t> ack_send_error_count_{0};
     std::atomic<uint64_t> recv_gap_count_{0};
+    std::atomic<uint64_t> checksum_error_count_{0};
 
     // Sequence tracking — per-sender (keyed by sender_id from ZMQ identity frame)
     // A single global counter is meaningless with multiple senders; each sender's
@@ -95,7 +96,7 @@ struct InboxClientImpl
     msgpack::sbuffer sbuf_;
     std::atomic<uint64_t> send_seq_{0};
 
-    std::array<uint8_t, 8> schema_tag_{};  // unused/zero for inbox
+    std::array<uint8_t, 8> schema_tag_{};  // first 8 bytes of BLAKE2b-256 of canonical schema string
     int last_acktimeo{-2}; ///< Cached ZMQ_RCVTIMEO for ACK receives. -2 = not yet set.
 };
 
@@ -132,6 +133,27 @@ static bool validate_inbox_schema(const std::vector<ZmqSchemaField>& schema,
     return true;
 }
 
+/// Compute 8-byte schema tag from ZmqSchemaField list (BLAKE2b-256 of canonical string).
+/// Same concept as ZmqQueue schema_tag: deterministic hash of field definitions.
+static std::array<uint8_t, 8> compute_inbox_schema_tag(const std::vector<ZmqSchemaField>& schema)
+{
+    // Build canonical string: "type:count:length;" per field
+    std::string canonical;
+    for (const auto& f : schema)
+    {
+        canonical += f.type_str;
+        canonical += ':';
+        canonical += std::to_string(f.count);
+        canonical += ':';
+        canonical += std::to_string(f.length);
+        canonical += ';';
+    }
+    auto full_hash = pylabhub::crypto::compute_blake2b_array(canonical.data(), canonical.size());
+    std::array<uint8_t, 8> tag{};
+    std::memcpy(tag.data(), full_hash.data(), 8);
+    return tag;
+}
+
 static bool validate_inbox_packing(const std::string& packing, const std::string& endpoint)
 {
     if (packing != "aligned" && packing != "packed")
@@ -161,6 +183,7 @@ InboxQueue::bind_at(const std::string& endpoint, std::vector<ZmqSchemaField> sch
     impl->item_sz        = item_sz;
     impl->max_frame_sz   = wire_detail::max_frame_size(layouts);
     impl->rcvhwm         = rcvhwm;
+    impl->schema_tag_    = compute_inbox_schema_tag(schema);
     impl->schema_defs_   = std::move(layouts);
     impl->decode_buf_.resize(item_sz, std::byte{0});
     impl->frame_recv_buf_.resize(impl->max_frame_sz, '\0');
@@ -364,8 +387,10 @@ const InboxItem* InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
         elems[0].convert(magic);
         if (magic != wire_detail::kFrameMagic) { ++pImpl->recv_frame_error_count_; return nullptr; }
 
-        // [1] schema_tag (bin, 8 bytes) — not validated for inbox (accept any tag)
+        // [1] schema_tag (bin, 8 bytes) — validate against our computed tag
         if (elems[1].type != msgpack::type::BIN || elems[1].via.bin.size != 8)
+        { ++pImpl->recv_frame_error_count_; return nullptr; }
+        if (std::memcmp(elems[1].via.bin.ptr, pImpl->schema_tag_.data(), 8) != 0)
         { ++pImpl->recv_frame_error_count_; return nullptr; }
 
         // [2] seq — track gaps per sender
@@ -412,6 +437,7 @@ const InboxItem* InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
                 reinterpret_cast<const uint8_t*>(elems[4].via.bin.ptr),
                 pImpl->decode_buf_.data(), pImpl->item_sz))
         {
+            pImpl->checksum_error_count_.fetch_add(1, std::memory_order_relaxed);
             LOGGER_ERROR("[hub::InboxQueue] checksum error after decode from '{}'",
                          sender_id);
             return nullptr;
@@ -470,6 +496,11 @@ uint64_t InboxQueue::recv_gap_count() const noexcept
     return pImpl ? pImpl->recv_gap_count_.load(std::memory_order_relaxed) : 0;
 }
 
+uint64_t InboxQueue::checksum_error_count() const noexcept
+{
+    return pImpl ? pImpl->checksum_error_count_.load(std::memory_order_relaxed) : 0;
+}
+
 // ============================================================================
 // InboxClient — factory
 // ============================================================================
@@ -487,6 +518,7 @@ InboxClient::connect_to(const std::string& endpoint, const std::string& sender_u
     impl->endpoint       = endpoint;
     impl->sender_uid     = sender_uid;
     impl->item_sz        = item_sz;
+    impl->schema_tag_    = compute_inbox_schema_tag(schema);
     impl->schema_defs_   = std::move(layouts);
     impl->write_buf_.resize(item_sz, std::byte{0});
 

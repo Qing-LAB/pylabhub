@@ -306,7 +306,7 @@ struct alignas(4096) SharedMemoryHeader
     struct FlexibleZoneChecksumEntry
     {
         uint8_t checksum_bytes[32];
-        std::atomic<uint8_t> valid{0};
+        std::atomic<uint8_t> cks_is_valid{0}; // Reader-side verification cache: 0=unverified, 1=verified
         uint8_t padding[31];
     } flexible_zone_checksums[detail::MAX_FLEXIBLE_ZONE_CHECKSUMS];
 

@@ -348,63 +348,70 @@ For the single-slot break pattern:
 - **RoleHostCore**: loop-level counters (iteration_count, loop_overrun_count, drops, etc.)
 - **ScriptEngine**: script_errors (via core_)
 
-#### Producer / Consumer dict
+#### Producer / Consumer dict (hierarchical)
 
 ```python
 api.metrics() -> dict:
 {
-    # ── Queue timing (from QueueMetrics — transport-agnostic) ──────────
-    "context_elapsed_us":  int,   # µs since first slot acquisition
-    "last_iteration_us":   int,   # full cycle time: acquire(N) to acquire(N+1) (µs)
-    "max_iteration_us":    int,   # peak cycle time since reset (µs)
-    "last_slot_wait_us":   int,   # time blocked in acquire waiting for data/slot (µs)
-    "last_slot_exec_us":   int,   # time from acquire to release — user callback execution (µs)
-    "data_drop_count":     int,   # data lost: ZMQ write buffer full/timeout. Always 0 for SHM.
-    "configured_period_us": int,  # target loop period (0 = MaxRate). Config input.
-
-    # ── Loop metrics (from RoleHostCore) ──────────────────────────────
-    "iteration_count":     int,   # main loop cycles completed
-    "loop_overrun_count":  int,   # cycles where now > deadline (0 if no period configured)
-    "last_cycle_work_us":  int,   # µs of active work in the last completed cycle
-    "script_errors":       int,   # unhandled exceptions in any callback
-
-    # ── Role-specific ─────────────────────────────────────────────────
-    "out_written":         int,   # (producer) committed slots
-    "drops":               int,   # (producer) discarded slots
-    "in_received":         int,   # (consumer) consumed slots
-    "ctrl_queue_dropped":  int,   # ctrl send queue overflow (oldest dropped)
+    "queue": {                             # from QueueMetrics (PYLABHUB_QUEUE_METRICS_FIELDS)
+        "context_elapsed_us":     int,     # µs since first slot acquisition
+        "last_iteration_us":      int,     # full cycle time: acquire(N) to acquire(N+1) (µs)
+        "max_iteration_us":       int,     # peak cycle time since reset (µs)
+        "last_slot_wait_us":      int,     # time blocked in acquire waiting for data/slot (µs)
+        "last_slot_exec_us":      int,     # time from acquire to release — callback execution (µs)
+        "data_drop_count":        int,     # ZMQ write buffer full/timeout. Always 0 for SHM.
+        "configured_period_us":   int,     # target loop period (0 = MaxRate). Config input.
+        "recv_overflow_count":    int,     # ZMQ recv ring full. Always 0 for SHM.
+        "recv_frame_error_count": int,     # ZMQ bad frames. Always 0 for SHM.
+        "recv_gap_count":         int,     # ZMQ sequence gaps. Always 0 for SHM.
+        "send_drop_count":        int,     # ZMQ send failure. Always 0 for SHM.
+        "send_retry_count":       int,     # ZMQ EAGAIN retries. Always 0 for SHM.
+        "checksum_error_count":   int,     # BLAKE2b verification failures.
+    },
+    "loop": {                              # from RoleHostCore (PYLABHUB_LOOP_METRICS_FIELDS)
+        "iteration_count":     int,        # main loop cycles completed
+        "loop_overrun_count":  int,        # cycles where now > deadline
+        "last_cycle_work_us":  int,        # µs of active work in last cycle
+    },
+    "role": {                              # role-specific counters
+        "out_written":         int,        # (producer) committed slots
+        "drops":               int,        # (producer) discarded slots
+        "in_received":         int,        # (consumer) consumed slots
+        "script_errors":       int,        # unhandled callback exceptions
+        "ctrl_queue_dropped":  int,        # ctrl send queue overflow
+    },
+    "inbox": {                             # from InboxQueue (PYLABHUB_INBOX_METRICS_FIELDS)
+        "recv_frame_error_count": int,     # if inbox configured; absent otherwise
+        "ack_send_error_count":   int,
+        "recv_gap_count":         int,
+    },
+    "custom": { ... }                      # user-reported via api.report_metric()
 }
 ```
 
-#### Processor dict
+#### Processor dict (hierarchical, dual queue)
 
-The processor has two queues (input and output). Queue timing fields are prefixed:
+The processor has two queues. Each gets its own sub-dict (`"in_queue"`, `"out_queue"`):
 
 ```python
 api.metrics() -> dict:
 {
-    # ── Per-side queue timing (prefixed) ──────────────────────────────
-    "in_context_elapsed_us":  int,   "out_context_elapsed_us":  int,
-    "in_last_iteration_us":   int,   "out_last_iteration_us":   int,
-    "in_max_iteration_us":    int,   "out_max_iteration_us":    int,
-    "in_last_slot_wait_us":   int,   "out_last_slot_wait_us":   int,
-    "in_last_slot_exec_us":   int,   "out_last_slot_exec_us":   int,
-    "in_data_drop_count":     int,   "out_data_drop_count":     int,
-    "in_configured_period_us": int,  "out_configured_period_us": int,
-
-    # ── Loop metrics (from RoleHostCore) ──────────────────────────────
-    "iteration_count":     int,   # main loop cycles
-    "loop_overrun_count":  int,   # cycles where now > deadline
-    "last_cycle_work_us":  int,   # active work time
-    "script_errors":       int,   # callback exceptions
-
-    # ── Role-specific ─────────────────────────────────────────────────
-    "in_received":         int,   # consumed input slots
-    "out_written":         int,   # committed output slots
-    "drops":               int,   # discarded output slots
-    "ctrl_queue_dropped":  dict,  # {"input": int, "output": int}
-    "in_ctrl_queue_dropped":  int,  # flat alias for convenience
-    "out_ctrl_queue_dropped": int,  # flat alias for convenience
+    "in_queue":  { <13 QueueMetrics fields> },   # input queue
+    "out_queue": { <13 QueueMetrics fields> },   # output queue
+    "loop": {
+        "iteration_count":     int,
+        "loop_overrun_count":  int,
+        "last_cycle_work_us":  int,
+    },
+    "role": {
+        "in_received":         int,
+        "out_written":         int,
+        "drops":               int,
+        "script_errors":       int,
+        "ctrl_queue_dropped":  {"input": int, "output": int},
+    },
+    "inbox": { ... },                            # if inbox configured
+    "custom": { ... }
 }
 ```
 
@@ -437,17 +444,30 @@ These methods return individual fields (same values as the dict):
 - `api.script_error_count()` → `core_->script_errors()`
 - `api.ctrl_queue_dropped()` → sum of both sides (processor) or single value (producer/consumer)
 
-#### Not exposed to scripts (transport-internal diagnostics)
+#### Metrics serialization — X-macro pattern
 
-The following QueueMetrics fields are tracked by ZmqQueue but not surfaced in `api.metrics()`:
-- `recv_overflow_count` — recv ring buffer overflow (data loss in recv thread)
-- `recv_frame_error_count` — frames rejected (bad magic, schema mismatch)
-- `recv_gap_count` — sequence gaps (frames lost between PUSH and PULL)
-- `send_drop_count` — zmq_send permanently failed
-- `send_retry_count` — transient EAGAIN retries
+Each metrics group defines a canonical field list via an X-macro, co-located with its struct:
 
-These are available via `queue->metrics()` in C++ but not in the Python dict.
-A future pass may expose them for ZMQ transport diagnostics.
+| Macro | Header | Fields |
+|-------|--------|--------|
+| `PYLABHUB_QUEUE_METRICS_FIELDS` | `hub_queue.hpp` | 13 QueueMetrics fields |
+| `PYLABHUB_LOOP_METRICS_FIELDS` | `role_host_core.hpp` | 3 LoopMetricsSnapshot fields |
+| `PYLABHUB_INBOX_METRICS_FIELDS` | `hub_inbox_queue.hpp` | 3 InboxMetricsSnapshot fields |
+
+Each output format provides adapter functions that expand the macros:
+
+| Output | Header | Functions |
+|--------|--------|-----------|
+| JSON (`nlohmann::json`) | `queue_metrics_json.hpp` | `queue_metrics_to_json`, `loop_metrics_to_json`, `inbox_metrics_to_json` |
+| Python (`py::dict`) | `queue_metrics_pydict.hpp` | `queue_metrics_to_pydict`, `loop_metrics_to_pydict`, `inbox_metrics_to_pydict` |
+| Lua (table) | `queue_metrics_lua.hpp` | `queue_metrics_to_lua`, `loop_metrics_to_lua`, `inbox_metrics_to_lua` |
+| C/C++ NativeEngine | NativeEngine header (future) | POD struct via X-macro |
+
+Adding a new field: add to the struct + add one line to the macro. All adapters pick it up.
+
+The output is hierarchical — each group becomes a named sub-object (`"queue"`, `"loop"`,
+`"role"`, `"inbox"`, `"custom"`). The processor uses `"in_queue"` / `"out_queue"` for its
+dual-queue layout. Role-specific fields vary per role type and are built inline (no X-macro).
 
 ### 6.2 Metrics wiring in role host startup
 

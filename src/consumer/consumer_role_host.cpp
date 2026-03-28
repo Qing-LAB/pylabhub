@@ -14,6 +14,7 @@
 
 #include "plh_datahub.hpp"
 #include "plh_datahub_client.hpp"
+#include "utils/metrics_json.hpp"
 
 #include "role_host_helpers.hpp"
 #include "zmq_poll_loop.hpp"
@@ -217,6 +218,7 @@ void ConsumerRoleHost::worker_main_()
     ctx.messenger   = &in_messenger_;
     ctx.producer    = nullptr;
     ctx.consumer    = in_consumer_.has_value() ? &(*in_consumer_) : nullptr;
+    ctx.inbox_queue = inbox_queue_.get();
     ctx.core         = &core_;
     ctx.stop_on_script_error = sc.stop_on_script_error;
 
@@ -704,30 +706,35 @@ void ConsumerRoleHost::drain_inbox_sync_()
 
 nlohmann::json ConsumerRoleHost::snapshot_metrics_json() const
 {
-    nlohmann::json base;
-    base["in_received"]        = core_.in_received();
-    base["script_errors"]      = engine_ ? engine_->script_error_count() : 0;
-    base["last_cycle_work_us"] = core_.last_cycle_work_us();
-    base["loop_overrun_count"] = core_.loop_overrun_count();
-
-    base["iteration_count"] = core_.iteration_count();
+    nlohmann::json result;
 
     if (in_consumer_.has_value())
     {
-        base["ctrl_queue_dropped"] = in_consumer_->ctrl_queue_dropped();
+        nlohmann::json q;
+        hub::queue_metrics_to_json(q, in_consumer_->queue_metrics());
+        result["queue"] = std::move(q);
     }
 
-    if (in_consumer_.has_value())
     {
-        const auto m = in_consumer_->queue_metrics();
-        base["data_drop_count"]      = m.data_drop_count;
-        base["last_iteration_us"]    = m.last_iteration_us;
-        base["max_iteration_us"]     = m.max_iteration_us;
-        base["last_slot_exec_us"]    = m.last_slot_exec_us;
-        base["last_slot_wait_us"]    = m.last_slot_wait_us;
-        base["configured_period_us"] = m.configured_period_us;
+        nlohmann::json lm;
+        hub::loop_metrics_to_json(lm, core_.loop_metrics());
+        result["loop"] = std::move(lm);
     }
-    return base;
+
+    result["role"] = {
+        {"in_received",        core_.in_received()},
+        {"script_errors",      engine_ ? engine_->script_error_count() : 0},
+        {"ctrl_queue_dropped", in_consumer_.has_value() ? in_consumer_->ctrl_queue_dropped() : 0}
+    };
+
+    if (inbox_queue_)
+    {
+        nlohmann::json ib;
+        hub::inbox_metrics_to_json(ib, inbox_queue_->inbox_metrics());
+        result["inbox"] = std::move(ib);
+    }
+
+    return result;
 }
 
 } // namespace pylabhub::consumer

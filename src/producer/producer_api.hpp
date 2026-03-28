@@ -69,6 +69,7 @@ class ProducerAPI
 
     void set_producer(hub::Producer *p) noexcept { producer_ = p; }
     void set_messenger(hub::Messenger *m) noexcept { messenger_ = m; }
+    void set_inbox_queue(hub::InboxQueue *q) noexcept { inbox_queue_ = q; }
     void set_engine(scripting::ScriptEngine *e) noexcept { engine_ = e; }
     void set_uid(std::string uid)    { uid_        = std::move(uid); }
     void set_name(std::string name)  { name_       = std::move(name); }
@@ -179,6 +180,7 @@ class ProducerAPI
   private:
     hub::Producer          *producer_{nullptr};
     hub::Messenger         *messenger_{nullptr};
+    hub::InboxQueue        *inbox_queue_{nullptr};
     scripting::ScriptEngine *engine_{nullptr};
     py::object       *flexzone_obj_{nullptr};
 

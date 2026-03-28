@@ -9,6 +9,7 @@
  * LuaProcessorHost monolithic implementations.
  */
 #include "lua_engine.hpp"
+#include "metrics_lua.hpp"
 
 #include "utils/format_tools.hpp"
 #include "utils/hub_producer.hpp"
@@ -270,6 +271,7 @@ bool LuaEngine::build_api_(const RoleContext &ctx)
     push_closure("out_written", lua_api_out_written);
     push_closure("in_received", lua_api_in_received);
     push_closure("drops", lua_api_drops);
+    push_closure("metrics", lua_api_metrics);
 
     // ── Role-specific closures based on role_tag ────────────────────────
     if (ctx_.role_tag == "prod")
@@ -1500,7 +1502,7 @@ int LuaEngine::lua_api_broadcast(lua_State *L)
     size_t len = 0;
     const char *data = luaL_checklstring(L, 1, &len);
 
-    auto *producer = static_cast<hub::Producer *>(self->ctx_.producer);
+    auto *producer = self->ctx_.producer;
     if (!producer)
     {
         lua_pushboolean(L, 0);
@@ -1519,7 +1521,7 @@ int LuaEngine::lua_api_send(lua_State *L)
     size_t len = 0;
     const char *data = luaL_checklstring(L, 2, &len);
 
-    auto *producer = static_cast<hub::Producer *>(self->ctx_.producer);
+    auto *producer = self->ctx_.producer;
     if (!producer)
     {
         lua_pushboolean(L, 0);
@@ -1534,7 +1536,7 @@ int LuaEngine::lua_api_send(lua_State *L)
 int LuaEngine::lua_api_consumers(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto *producer = static_cast<hub::Producer *>(self->ctx_.producer);
+    auto *producer = self->ctx_.producer;
     if (!producer)
     {
         lua_newtable(L);
@@ -1554,7 +1556,7 @@ int LuaEngine::lua_api_consumers(lua_State *L)
 int LuaEngine::lua_api_update_flexzone_checksum(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto *p = static_cast<hub::Producer *>(self->ctx_.producer);
+    auto *p = self->ctx_.producer;
     if (p)
         p->sync_flexzone_checksum();
     lua_pushboolean(L, p ? 1 : 0);
@@ -1565,7 +1567,7 @@ int LuaEngine::lua_api_set_verify_checksum(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     bool enable = lua_toboolean(L, 1) != 0;
-    auto *c = static_cast<hub::Consumer *>(self->ctx_.consumer);
+    auto *c = self->ctx_.consumer;
     if (c)
         c->set_verify_checksum(enable, false);
     return 0;
@@ -1593,6 +1595,106 @@ int LuaEngine::lua_api_drops(lua_State *L)
     uint64_t val = self->ctx_.core->drops();
     lua_pushinteger(L, static_cast<lua_Integer>(val));
     return 1;
+}
+
+// ============================================================================
+// api.metrics() — hierarchical metrics table
+// ============================================================================
+
+int LuaEngine::lua_api_metrics(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    auto *core = self->ctx_.core;
+
+    // Top-level metrics table.
+    lua_newtable(L);
+
+    // "queue" (or "in_queue"/"out_queue" for processor)
+    auto *producer = self->ctx_.producer;
+    auto *consumer = self->ctx_.consumer;
+
+    if (self->ctx_.role_tag == "proc")
+    {
+        if (consumer)
+        {
+            lua_newtable(L);
+            queue_metrics_to_lua(L, consumer->queue_metrics());
+            lua_setfield(L, -2, "in_queue");
+        }
+        if (producer)
+        {
+            lua_newtable(L);
+            queue_metrics_to_lua(L, producer->queue_metrics());
+            lua_setfield(L, -2, "out_queue");
+        }
+    }
+    else if (self->ctx_.role_tag == "prod" && producer)
+    {
+        lua_newtable(L);
+        queue_metrics_to_lua(L, producer->queue_metrics());
+        lua_setfield(L, -2, "queue");
+    }
+    else if (self->ctx_.role_tag == "cons" && consumer)
+    {
+        lua_newtable(L);
+        queue_metrics_to_lua(L, consumer->queue_metrics());
+        lua_setfield(L, -2, "queue");
+    }
+
+    // "loop"
+    {
+        lua_newtable(L);
+        loop_metrics_to_lua(L, core->loop_metrics());
+        lua_setfield(L, -2, "loop");
+    }
+
+    // "role" (role-specific, built inline)
+    {
+        lua_newtable(L);
+        lua_pushinteger(L, static_cast<lua_Integer>(core->out_written()));
+        lua_setfield(L, -2, "out_written");
+        lua_pushinteger(L, static_cast<lua_Integer>(core->in_received()));
+        lua_setfield(L, -2, "in_received");
+        lua_pushinteger(L, static_cast<lua_Integer>(core->drops()));
+        lua_setfield(L, -2, "drops");
+        lua_pushinteger(L, static_cast<lua_Integer>(core->script_errors()));
+        lua_setfield(L, -2, "script_errors");
+
+        // ctrl_queue_dropped — processor gets {input, output} sub-table
+        if (self->ctx_.role_tag == "proc")
+        {
+            lua_newtable(L);
+            lua_pushinteger(L, static_cast<lua_Integer>(
+                producer ? producer->ctrl_queue_dropped() : 0));
+            lua_setfield(L, -2, "output");
+            lua_pushinteger(L, static_cast<lua_Integer>(
+                consumer ? consumer->ctrl_queue_dropped() : 0));
+            lua_setfield(L, -2, "input");
+            lua_setfield(L, -2, "ctrl_queue_dropped");
+        }
+        else if (producer)
+        {
+            lua_pushinteger(L, static_cast<lua_Integer>(producer->ctrl_queue_dropped()));
+            lua_setfield(L, -2, "ctrl_queue_dropped");
+        }
+        else if (consumer)
+        {
+            lua_pushinteger(L, static_cast<lua_Integer>(consumer->ctrl_queue_dropped()));
+            lua_setfield(L, -2, "ctrl_queue_dropped");
+        }
+
+        lua_setfield(L, -2, "role");
+    }
+
+    // "inbox" (optional — only if inbox configured)
+    if (self->ctx_.inbox_queue)
+    {
+        lua_newtable(L);
+        inbox_metrics_to_lua(L, self->ctx_.inbox_queue->inbox_metrics());
+        lua_setfield(L, -2, "inbox");
+    }
+
+    return 1; // one table on stack
 }
 
 } // namespace pylabhub::scripting

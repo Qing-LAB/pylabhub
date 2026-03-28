@@ -11,6 +11,8 @@
 
 #include <chrono>
 #include "utils/json_fwd.hpp"
+#include "utils/metrics_json.hpp"
+#include "metrics_pydict.hpp"
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
 
@@ -195,104 +197,97 @@ uint64_t ProcessorAPI::ctrl_queue_dropped() const noexcept
 
 nlohmann::json ProcessorAPI::snapshot_metrics_json() const
 {
-    nlohmann::json base;
-    base["in_received"]        = in_slots_received();
-    base["out_written"]        = out_slots_written();
-    base["drops"]              = out_drop_count();
-    base["script_errors"]      = script_error_count();
-    base["last_cycle_work_us"] = last_cycle_work_us();
-    base["loop_overrun_count"] = core_->loop_overrun_count();
-    {
-        uint64_t in_dropped  = consumer_ ? consumer_->ctrl_queue_dropped() : 0;
-        uint64_t out_dropped = producer_ ? producer_->ctrl_queue_dropped() : 0;
-        base["ctrl_queue_dropped"]     = nlohmann::json{{"input", in_dropped}, {"output", out_dropped}};
-        base["in_ctrl_queue_dropped"]  = in_dropped;
-        base["out_ctrl_queue_dropped"] = out_dropped;
-    }
+    nlohmann::json result;
 
-    // Domain 2+3 timing from queue abstraction (transport-agnostic).
     if (consumer_ != nullptr)
     {
-        const auto m = consumer_->queue_metrics();
-        base["iteration_count"]          = core_->iteration_count();
-        base["in_context_elapsed_us"]    = m.context_elapsed_us;
-        base["in_last_iteration_us"]     = m.last_iteration_us;
-        base["in_max_iteration_us"]      = m.max_iteration_us;
-        base["in_last_slot_wait_us"]     = m.last_slot_wait_us;
-        base["in_last_slot_exec_us"]     = m.last_slot_exec_us;
-        base["in_data_drop_count"]     = m.data_drop_count;
-        base["in_configured_period_us"]  = m.configured_period_us;
+        nlohmann::json q;
+        hub::queue_metrics_to_json(q, consumer_->queue_metrics());
+        result["in_queue"] = std::move(q);
     }
     if (producer_ != nullptr)
     {
-        const auto m = producer_->queue_metrics();
-        base["out_context_elapsed_us"]   = m.context_elapsed_us;
-        base["out_last_iteration_us"]    = m.last_iteration_us;
-        base["out_max_iteration_us"]     = m.max_iteration_us;
-        base["out_last_slot_wait_us"]    = m.last_slot_wait_us;
-        base["out_last_slot_exec_us"]    = m.last_slot_exec_us;
-        base["out_data_drop_count"]    = m.data_drop_count;
-        base["out_configured_period_us"] = m.configured_period_us;
+        nlohmann::json q;
+        hub::queue_metrics_to_json(q, producer_->queue_metrics());
+        result["out_queue"] = std::move(q);
     }
 
-    nlohmann::json custom;
+    {
+        nlohmann::json lm;
+        hub::loop_metrics_to_json(lm, core_->loop_metrics());
+        result["loop"] = std::move(lm);
+    }
+
+    {
+        uint64_t in_dropped  = consumer_ ? consumer_->ctrl_queue_dropped() : 0;
+        uint64_t out_dropped = producer_ ? producer_->ctrl_queue_dropped() : 0;
+        result["role"] = {
+            {"in_received",        in_slots_received()},
+            {"out_written",        out_slots_written()},
+            {"drops",              out_drop_count()},
+            {"script_errors",      script_error_count()},
+            {"ctrl_queue_dropped", {{"input", in_dropped}, {"output", out_dropped}}}
+        };
+    }
+
+    if (inbox_queue_ != nullptr)
+    {
+        nlohmann::json ib;
+        hub::inbox_metrics_to_json(ib, inbox_queue_->inbox_metrics());
+        result["inbox"] = std::move(ib);
+    }
+
     {
         hub::InProcessSpinStateGuard guard(metrics_spin_);
-        custom = nlohmann::json(custom_metrics_);
+        result["custom"] = nlohmann::json(custom_metrics_);
     }
 
-    nlohmann::json result;
-    result["base"]   = std::move(base);
-    result["custom"] = std::move(custom);
     return result;
 }
 
 py::dict ProcessorAPI::metrics() const
 {
     py::dict d;
-    // D4 — script supervision
-    d["script_errors"] = py::int_(script_error_count());
-    d["loop_overrun_count"] = py::int_(core_->loop_overrun_count());
-    d["last_cycle_work_us"] = py::int_(last_cycle_work_us());
-    d["in_received"]        = py::int_(in_slots_received());
-    d["out_written"]        = py::int_(out_slots_written());
-    d["drops"]              = py::int_(out_drop_count());
+
+    if (consumer_ != nullptr)
+    {
+        py::dict q;
+        scripting::queue_metrics_to_pydict(q, consumer_->queue_metrics());
+        d["in_queue"] = q;
+    }
+    if (producer_ != nullptr)
+    {
+        py::dict q;
+        scripting::queue_metrics_to_pydict(q, producer_->queue_metrics());
+        d["out_queue"] = q;
+    }
+
+    {
+        py::dict loop;
+        scripting::loop_metrics_to_pydict(loop, core_->loop_metrics());
+        d["loop"] = loop;
+    }
+
     {
         uint64_t in_dropped  = consumer_ ? consumer_->ctrl_queue_dropped() : 0;
         uint64_t out_dropped = producer_ ? producer_->ctrl_queue_dropped() : 0;
+        py::dict role;
+        role["in_received"]        = py::int_(in_slots_received());
+        role["out_written"]        = py::int_(out_slots_written());
+        role["drops"]              = py::int_(out_drop_count());
+        role["script_errors"]      = py::int_(script_error_count());
         py::dict cqd;
         cqd["input"]  = py::int_(in_dropped);
         cqd["output"] = py::int_(out_dropped);
-        d["ctrl_queue_dropped"]     = cqd;
-        d["in_ctrl_queue_dropped"]  = py::int_(in_dropped);
-        d["out_ctrl_queue_dropped"] = py::int_(out_dropped);
+        role["ctrl_queue_dropped"] = cqd;
+        d["role"] = role;
     }
 
-    // D2+D3 — input side (transport-agnostic).
-    if (consumer_ != nullptr)
+    if (inbox_queue_ != nullptr)
     {
-        const auto m = consumer_->queue_metrics();
-        d["in_context_elapsed_us"]  = py::int_(m.context_elapsed_us);
-        d["iteration_count"]         = py::int_(core_->iteration_count());
-        d["in_last_iteration_us"]   = py::int_(m.last_iteration_us);
-        d["in_max_iteration_us"]    = py::int_(m.max_iteration_us);
-        d["in_last_slot_wait_us"]   = py::int_(m.last_slot_wait_us);
-        d["in_data_drop_count"]   = py::int_(m.data_drop_count);
-        d["in_last_slot_exec_us"]   = py::int_(m.last_slot_exec_us);
-        d["in_configured_period_us"] = py::int_(m.configured_period_us);
-    }
-
-    // D2+D3 — output side (transport-agnostic).
-    if (producer_ != nullptr)
-    {
-        const auto m = producer_->queue_metrics();
-        d["out_context_elapsed_us"]  = py::int_(m.context_elapsed_us);
-        d["out_last_iteration_us"]   = py::int_(m.last_iteration_us);
-        d["out_max_iteration_us"]    = py::int_(m.max_iteration_us);
-        d["out_last_slot_wait_us"]   = py::int_(m.last_slot_wait_us);
-        d["out_data_drop_count"]  = py::int_(m.data_drop_count);
-        d["out_last_slot_exec_us"]   = py::int_(m.last_slot_exec_us);
-        d["out_configured_period_us"] = py::int_(m.configured_period_us);
+        py::dict ib;
+        scripting::inbox_metrics_to_pydict(ib, inbox_queue_->inbox_metrics());
+        d["inbox"] = ib;
     }
 
     return d;
