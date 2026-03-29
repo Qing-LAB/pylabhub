@@ -8,6 +8,7 @@
  *   checksum: BLAKE2b-256 of the raw (pre-pack) slot data
  */
 #include "utils/hub_zmq_queue.hpp"
+#include "utils/context_metrics.hpp"
 #include "utils/crypto_utils.hpp"
 #include "utils/logger.hpp"
 #include "zmq_wire_helpers.hpp"
@@ -107,23 +108,17 @@ struct ZmqQueueImpl
     std::atomic<uint64_t> send_drop_count_{0};
     std::atomic<uint64_t> send_retry_count_{0};
     std::atomic<uint64_t> data_drop_count_{0};
-    std::atomic<uint64_t> checksum_error_count_{0};
 
     // ── Domain 2+3 timing (HEP-CORE-0008 §10) ──────────────────────────────
     // Measured in read_acquire/read_release (read mode) or
     // write_acquire/write_commit (write mode). Same semantics as DataBlock ContextMetrics.
-    using Clock = std::chrono::steady_clock;
-    std::atomic<uint64_t> last_slot_wait_us_{0};
-    std::atomic<uint64_t> last_iteration_us_{0};
-    std::atomic<uint64_t> max_iteration_us_{0};
-    std::atomic<uint64_t> last_slot_exec_us_{0};
-    std::atomic<uint64_t> configured_period_us_{0};
-    std::atomic<uint64_t> context_elapsed_us_{0};
+    ContextMetrics ctx_metrics_;  ///< Unified timing + checksum metrics.
+
+    using Clock = ContextMetrics::Clock;
 
     // Per-thread timestamps (not atomic — only accessed from caller thread).
     Clock::time_point t_iter_start_{};       ///< Start of previous acquire (for iteration gap).
     Clock::time_point t_acquired_{};         ///< When last acquire returned (for work time).
-    Clock::time_point context_start_time_{}; ///< First acquire timestamp (for context_elapsed_us).
 
     // ── Sequence tracking [ZQ10] ─────────────────────────────────────────────
     uint64_t expected_seq_{0};
@@ -257,7 +252,7 @@ struct ZmqQueueImpl
                         reinterpret_cast<const uint8_t*>(elems[4].via.bin.ptr),
                         decode_tmp_.data(), item_sz))
                 {
-                    checksum_error_count_.fetch_add(1, std::memory_order_relaxed);
+                    ctx_metrics_.inc_checksum_error();
                     LOGGER_ERROR("[hub::ZmqQueue] checksum error after decode on '{}'",
                                  queue_name);
                     continue; // drop frame
@@ -720,25 +715,22 @@ const void* ZmqQueue::read_acquire(std::chrono::milliseconds timeout) noexcept
         const auto elapsed_us = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
                 t_acquired - pImpl->t_iter_start_).count());
-        pImpl->last_iteration_us_.store(elapsed_us, std::memory_order_relaxed);
-        if (elapsed_us > pImpl->max_iteration_us_.load(std::memory_order_relaxed))
-            pImpl->max_iteration_us_.store(elapsed_us, std::memory_order_relaxed);
-        pImpl->context_elapsed_us_.store(
+        pImpl->ctx_metrics_.set_last_iteration(elapsed_us);
+        pImpl->ctx_metrics_.update_max_iteration(elapsed_us);
+        pImpl->ctx_metrics_.set_context_elapsed(
             static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-                t_acquired - pImpl->context_start_time_).count()),
-            std::memory_order_relaxed);
+                t_acquired - pImpl->ctx_metrics_.context_start_time_val()).count()));
         // No timing overrun detection — the main loop owns the deadline.
         // Reader never drops data (data_drop_count stays 0).
     }
     else
     {
-        pImpl->context_start_time_ = t_acquired;
+        pImpl->ctx_metrics_.set_context_start(t_acquired);
     }
 
-    pImpl->last_slot_wait_us_.store(
+    pImpl->ctx_metrics_.set_last_slot_wait(
         static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-            t_acquired - t_entry).count()),
-        std::memory_order_relaxed);
+            t_acquired - t_entry).count()));
     pImpl->t_iter_start_ = t_acquired;
     pImpl->t_acquired_   = t_acquired;
 
@@ -754,10 +746,9 @@ void ZmqQueue::read_release() noexcept
         const ZmqQueueImpl::Clock::time_point t_zero{};
         if (pImpl->t_acquired_ != t_zero)
         {
-            pImpl->last_slot_exec_us_.store(
+            pImpl->ctx_metrics_.set_last_slot_exec(
                 static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-                    ZmqQueueImpl::Clock::now() - pImpl->t_acquired_).count()),
-                std::memory_order_relaxed);
+                    ZmqQueueImpl::Clock::now() - pImpl->t_acquired_).count()));
         }
     }
 }
@@ -808,26 +799,23 @@ void* ZmqQueue::write_acquire(std::chrono::milliseconds timeout) noexcept
         const auto elapsed_us = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
                 t_acquired - pImpl->t_iter_start_).count());
-        pImpl->last_iteration_us_.store(elapsed_us, std::memory_order_relaxed);
-        if (elapsed_us > pImpl->max_iteration_us_.load(std::memory_order_relaxed))
-            pImpl->max_iteration_us_.store(elapsed_us, std::memory_order_relaxed);
-        pImpl->context_elapsed_us_.store(
+        pImpl->ctx_metrics_.set_last_iteration(elapsed_us);
+        pImpl->ctx_metrics_.update_max_iteration(elapsed_us);
+        pImpl->ctx_metrics_.set_context_elapsed(
             static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-                t_acquired - pImpl->context_start_time_).count()),
-            std::memory_order_relaxed);
+                t_acquired - pImpl->ctx_metrics_.context_start_time_val()).count()));
 
         // No timing overrun detection — the main loop owns the deadline.
         // Write-side data_drop_count is incremented above on buffer-full/timeout only.
     }
     else
     {
-        pImpl->context_start_time_ = t_acquired;
+        pImpl->ctx_metrics_.set_context_start(t_acquired);
     }
 
-    pImpl->last_slot_wait_us_.store(
+    pImpl->ctx_metrics_.set_last_slot_wait(
         static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-            t_acquired - t_entry).count()),
-        std::memory_order_relaxed);
+            t_acquired - t_entry).count()));
     pImpl->t_iter_start_ = t_acquired;
     pImpl->t_acquired_   = t_acquired;
 
@@ -845,10 +833,9 @@ void ZmqQueue::write_commit() noexcept
         const ZmqQueueImpl::Clock::time_point t_zero{};
         if (pImpl->t_acquired_ != t_zero)
         {
-            pImpl->last_slot_exec_us_.store(
+            pImpl->ctx_metrics_.set_last_slot_exec(
                 static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-                    ZmqQueueImpl::Clock::now() - pImpl->t_acquired_).count()),
-                std::memory_order_relaxed);
+                    ZmqQueueImpl::Clock::now() - pImpl->t_acquired_).count()));
         }
     }
 
@@ -960,48 +947,42 @@ QueueMetrics ZmqQueue::metrics() const noexcept
 {
     if (!pImpl) return {};
     QueueMetrics m;
-    // Domain 2+3 timing fields.
-    m.last_slot_wait_us    = pImpl->last_slot_wait_us_.load(std::memory_order_relaxed);
-    m.last_iteration_us    = pImpl->last_iteration_us_.load(std::memory_order_relaxed);
-    m.max_iteration_us     = pImpl->max_iteration_us_.load(std::memory_order_relaxed);
-    m.context_elapsed_us   = pImpl->context_elapsed_us_.load(std::memory_order_relaxed);
-    m.last_slot_exec_us    = pImpl->last_slot_exec_us_.load(std::memory_order_relaxed);
+    // Domain 2+3 timing fields (from unified ContextMetrics).
+    m.last_slot_wait_us    = pImpl->ctx_metrics_.last_slot_wait_us_val();
+    m.last_iteration_us    = pImpl->ctx_metrics_.last_iteration_us_val();
+    m.max_iteration_us     = pImpl->ctx_metrics_.max_iteration_us_val();
+    m.context_elapsed_us   = pImpl->ctx_metrics_.context_elapsed_us_val();
+    m.last_slot_exec_us    = pImpl->ctx_metrics_.last_slot_exec_us_val();
     m.data_drop_count        = pImpl->data_drop_count_.load(std::memory_order_relaxed);
-    m.configured_period_us = pImpl->configured_period_us_.load(std::memory_order_relaxed);
+    m.configured_period_us = pImpl->ctx_metrics_.configured_period_us_val();
     // Transport-specific counters.
     m.recv_overflow_count    = pImpl->recv_overflow_count_.load(std::memory_order_relaxed);
     m.recv_frame_error_count = pImpl->recv_frame_error_count_.load(std::memory_order_relaxed);
     m.recv_gap_count         = pImpl->recv_gap_count_.load(std::memory_order_relaxed);
     m.send_drop_count        = pImpl->send_drop_count_.load(std::memory_order_relaxed);
     m.send_retry_count       = pImpl->send_retry_count_.load(std::memory_order_relaxed);
-    m.checksum_error_count   = pImpl->checksum_error_count_.load(std::memory_order_relaxed);
+    m.checksum_error_count   = pImpl->ctx_metrics_.checksum_error_count_val();
     return m;
 }
 
 void ZmqQueue::reset_metrics()
 {
     if (!pImpl) return;
-    pImpl->last_slot_wait_us_.store(0, std::memory_order_relaxed);
-    pImpl->last_iteration_us_.store(0, std::memory_order_relaxed);
-    pImpl->max_iteration_us_.store(0, std::memory_order_relaxed);
-    pImpl->last_slot_exec_us_.store(0, std::memory_order_relaxed);
+    pImpl->ctx_metrics_.clear();
     pImpl->data_drop_count_.store(0, std::memory_order_relaxed);
-    pImpl->context_elapsed_us_.store(0, std::memory_order_relaxed);
     pImpl->recv_overflow_count_.store(0, std::memory_order_relaxed);
     pImpl->recv_frame_error_count_.store(0, std::memory_order_relaxed);
     pImpl->recv_gap_count_.store(0, std::memory_order_relaxed);
     pImpl->send_drop_count_.store(0, std::memory_order_relaxed);
     pImpl->send_retry_count_.store(0, std::memory_order_relaxed);
-    pImpl->checksum_error_count_.store(0, std::memory_order_relaxed);
-    pImpl->t_iter_start_       = {};
-    pImpl->t_acquired_         = {};
-    pImpl->context_start_time_ = {};
+    pImpl->t_iter_start_ = {};
+    pImpl->t_acquired_   = {};
 }
 
 void ZmqQueue::set_configured_period(uint64_t period_us)
 {
     if (!pImpl) return;
-    pImpl->configured_period_us_.store(period_us, std::memory_order_relaxed);
+    pImpl->ctx_metrics_.set_configured_period(period_us);
 }
 
 } // namespace pylabhub::hub
