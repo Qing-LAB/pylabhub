@@ -1369,7 +1369,7 @@ int DataBlockProducer::reset_metrics() noexcept
     return (header != nullptr) ? slot_rw_reset_metrics(header) : -1;
 }
 
-// ─── LoopPolicy / ContextMetrics (HEP-CORE-0008) — DataBlockProducer ────────
+// ─── ContextMetrics (HEP-CORE-0008) — DataBlockProducer ─────────────────────
 
 const ContextMetrics &DataBlockProducer::metrics() const noexcept
 {
@@ -1381,8 +1381,13 @@ const ContextMetrics &DataBlockProducer::metrics() const noexcept
     return pImpl->metrics_;
 }
 
-ContextMetrics &DataBlockProducer::metrics() noexcept
+ContextMetrics &DataBlockProducer::mutable_metrics() noexcept
 {
+    static ContextMetrics kFallback{};
+    if (pImpl == nullptr)
+    {
+        return kFallback;
+    }
     return pImpl->metrics_;
 }
 
@@ -2504,9 +2509,13 @@ const ContextMetrics &DataBlockConsumer::metrics() const noexcept
     return pImpl->metrics_;
 }
 
-ContextMetrics &DataBlockConsumer::metrics() noexcept
+ContextMetrics &DataBlockConsumer::mutable_metrics() noexcept
 {
-    // Caller must ensure pImpl is non-null (only called from ShmQueue which checks).
+    static ContextMetrics kFallback{};
+    if (pImpl == nullptr)
+    {
+        return kFallback;
+    }
     return pImpl->metrics_;
 }
 

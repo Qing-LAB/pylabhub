@@ -667,7 +667,10 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
      * @return const ref into Pimpl storage. Valid for the lifetime of this producer.
      */
     [[nodiscard]] const ContextMetrics &metrics() const noexcept;
-    [[nodiscard]] ContextMetrics &metrics() noexcept;
+
+    /// Mutable metrics access. Queue-layer internal — used by ShmQueue to write
+    /// configured_period_us and checksum_error_count. Not for external callers.
+    [[nodiscard]] ContextMetrics &mutable_metrics() noexcept;
 
     /**
      * @brief Reset all ContextMetrics counters to zero; preserve configured_period_us.
@@ -958,10 +961,12 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
     // ─── Context Metrics (HEP-CORE-0008) ──────────────────────────────────────
     /** @brief Live view of per-handle timing metrics (process-local; not in SHM). */
     [[nodiscard]] const ContextMetrics &metrics() const noexcept;
-    /** @brief Mutable metrics access (for checksum_error_count increment). */
-    [[nodiscard]] ContextMetrics &metrics() noexcept;
 
-    /** @brief Reset all ContextMetrics counters to zero; preserve context_start_time. */
+    /// Mutable metrics access. Queue-layer internal — used by ShmQueue to write
+    /// configured_period_us and checksum_error_count. Not for external callers.
+    [[nodiscard]] ContextMetrics &mutable_metrics() noexcept;
+
+    /** @brief Reset all ContextMetrics counters to zero; preserve configured_period_us. */
     void clear_metrics() noexcept;
 
     // ─── Structure Re-Mapping API (NOT IMPLEMENTED) ─────────────────────────
