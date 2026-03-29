@@ -197,22 +197,6 @@ inline LoopTimingPolicy parse_loop_timing_policy(const std::string &timing_str,
 }
 
 // ============================================================================
-// default_loop_timing_policy — implicit default when "loop_timing" is absent
-// ============================================================================
-
-/**
- * @brief Derive LoopTimingPolicy when "loop_timing" is absent from config.
- *
- * Implicit defaults:
- *   - period_us == 0  → MaxRate
- *   - period_us > 0   → FixedRate
- */
-inline LoopTimingPolicy default_loop_timing_policy(double period_us) noexcept
-{
-    return period_us == 0.0 ? LoopTimingPolicy::MaxRate : LoopTimingPolicy::FixedRate;
-}
-
-// ============================================================================
 // compute_short_timeout — inner retry acquire timeout
 // ============================================================================
 

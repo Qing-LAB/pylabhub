@@ -47,17 +47,4 @@ TEST(LoopTimingPolicyTest, Parse_InvalidString_Throws)
 // Cross-field validation (MaxRate+period, FixedRate+no period, etc.) is now
 // enforced by parse_timing_config() — tested in test_role_config.cpp.
 
-// ============================================================================
-// default_loop_timing_policy (period_us: double)
-// ============================================================================
-
-TEST(LoopTimingPolicyTest, Default_Period0_MaxRate)
-{
-    EXPECT_EQ(pylabhub::default_loop_timing_policy(0.0), LoopTimingPolicy::MaxRate);
-}
-
-TEST(LoopTimingPolicyTest, Default_PeriodPositive_FixedRate)
-{
-    EXPECT_EQ(pylabhub::default_loop_timing_policy(100000.0), LoopTimingPolicy::FixedRate);
-    EXPECT_EQ(pylabhub::default_loop_timing_policy(500.0), LoopTimingPolicy::FixedRate);
-}
+// default_loop_timing_policy() removed — loop_timing is now required in config.

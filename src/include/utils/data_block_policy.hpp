@@ -182,43 +182,17 @@ enum class ChecksumPolicy
 
 /**
  * @enum LoopPolicy
- * @brief Slot-acquisition pacing strategy in a write or read loop.
+ * @brief DEPRECATED — dead code. Retained for ABI compatibility only.
  *
- * This is the **DataBlock layer** policy — distinct from RoleConfig::LoopTimingPolicy
- * (role_config.hpp), which is the **role layer** policy for deadline advancement.
- * Both policies can be active simultaneously on the same role instance.
+ * Previously controlled DataBlock-level pacing via set_loop_policy().
+ * After the timing unification (2026-03-29), loop timing is managed
+ * at the queue and role level:
+ *   - LoopTimingPolicy (loop_timing_policy.hpp): config enum used by main loop
+ *   - LoopTimingParams: carries policy + period through Options
+ *   - configured_period_us: set on ContextMetrics via queue set_configured_period()
  *
- * **Where set:**
- *   - DataBlockProducer::set_loop_policy() / DataBlockConsumer::set_loop_policy()
- *   - Role host layer: parsed from RoleConfig::loop_policy
- *     (JSON: `"loop_policy": "max_rate"` | `"fixed_rate"`; default: max_rate)
- *     and applied in the role host before the loop starts.
- * **Where checked:** data_block.cpp — acquire_write_slot() and acquire_consume_slot().
- * **Where read back:** TransactionContext::metrics() (pass-through to DataBlockImpl).
- *
- * DataBlock measures timing (last_iteration_us, last_slot_exec_us, etc.) and counts
- * data drops (ContextMetrics::data_drop_count — Latest_only slot overwrites).
- * Timing overrun detection (now > deadline) is the main loop's responsibility.
- *
- * | Value        | Behaviour                                                   |
- * |--------------|-------------------------------------------------------------|
- * | MaxRate      | No sleep. Returns immediately when a slot is available.     |
- * |              | Runs at the maximum rate the SHM ring can sustain.         |
- * |              | Default for high-throughput sensor capture.                |
- * | FixedRate    | After each slot release: sleeps for                        |
- * |              |   max(0, configured_period_us − elapsed_since_last_acquire)|
- * |              | Requires configured_period_us > 0 in DataBlockConfig.      |
- * |              |   FixedRateWithCompensation advances from the previous deadline, catching up after overruns. |
- * | MixTriggered | Reserved — trigger-based mode, not implemented.            |
- *
- * **Contrast with RoleConfig::LoopTimingPolicy:**
- *   - LoopPolicy (this enum): controls the *sleep inside* acquire_*_slot().
- *     It is a DataBlock-level knob that slows down slot consumption.
- *   - LoopTimingPolicy: controls *when the next deadline is computed* in the role
- *     write loop (after on_iteration returns). FixedRate resets from now();
- *     FixedRateWithCompensation advances from the previous deadline, catching up after overruns.
- *
- * **Design doc:** HEP-CORE-0008-LoopPolicy-and-IterationMetrics.md §2.1
+ * DataBlock no longer has set_loop_policy(). This enum has no readers.
+ * Remove when ABI version is bumped.
  */
 enum class LoopPolicy : uint8_t
 {
