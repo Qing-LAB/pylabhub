@@ -357,7 +357,7 @@ class SlotIterator
     {
         if (!m_handle || m_last_acquire_ == ContextMetrics::Clock::time_point{})
             return;
-        const auto period_us = m_handle->metrics().configured_period_us;
+        const auto period_us = m_handle->metrics().configured_period_us_val();
         if (period_us == 0)
             return; // MaxRate — no sleep
         const auto next = m_last_acquire_ + std::chrono::microseconds(period_us);

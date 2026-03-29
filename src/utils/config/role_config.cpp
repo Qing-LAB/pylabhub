@@ -74,15 +74,11 @@ void RoleConfig::Impl::load_common(const nlohmann::json &j)
 {
     const char *tag = role_tag.c_str();
 
-    // Default period: producer=100ms, others=0.
-    const double default_period =
-        (role_tag == "producer") ? 100.0 : 0.0;
-
     // ── Non-directional categories ───────────────────────────────────
     identity   = parse_identity_config(j, role_tag);
     auth       = parse_auth_config(j, role_tag);
     script     = parse_script_config(j, base_dir, tag);
-    timing     = parse_timing_config(j, tag, default_period);
+    timing     = parse_timing_config(j, tag);
     inbox      = parse_inbox_config(j, tag);
     startup    = parse_startup_config(j, tag);
     monitoring = parse_monitoring_config(j);

@@ -36,6 +36,7 @@
 #include "utils/channel_handle.hpp"
 #include "utils/channel_pattern.hpp"
 #include "utils/data_block.hpp"
+#include "utils/loop_timing_policy.hpp"
 #include "utils/hub_zmq_queue.hpp"  // ZmqQueue — returned by queue() accessor (HEP-CORE-0021)
 #include "utils/messenger.hpp"
 #include "utils/module_def.hpp"
@@ -190,9 +191,8 @@ struct ConsumerOptions
 
     int timeout_ms{5000};
 
-    // ── Loop policy (HEP-CORE-0008 Pass 3) ───────────────────────────────────
-    LoopPolicy                loop_policy{LoopPolicy::MaxRate}; ///< Acquire-pacing policy
-    std::chrono::microseconds configured_period_us{};            ///< FixedRate target period (µs)
+    // ── Loop timing (HEP-CORE-0008) ─────────────────────────────────────────
+    LoopTimingParams timing{};  ///< Policy + period + io_wait_ratio. Set from config.
 
     // ── Named schema validation (HEP-CORE-0016 Phase 2) ──────────────────────
     /// Optional named schema ID (e.g. `"lab.sensors.temperature.raw@1"`).
@@ -221,8 +221,6 @@ struct ConsumerOptions
     bool verify_checksum{false};
     /// Also verify the flexzone checksum on read_acquire() (SHM only).
     bool verify_checksum_fz{false};
-    /// Target loop period in microseconds. 0 = MaxRate.
-    uint64_t queue_period_us{0};
 
     /// Max depth of ctrl send queue before oldest items are dropped. 0 = unbounded.
     size_t ctrl_queue_max_depth{256};

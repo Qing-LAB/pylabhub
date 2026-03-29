@@ -69,8 +69,7 @@ std::unique_ptr<QueueReader>
 ShmQueue::from_consumer(std::unique_ptr<DataBlockConsumer> dbc,
                         size_t item_size, size_t flexzone_sz,
                         std::string channel_name,
-                        bool verify_slot, bool verify_fz,
-                        uint64_t configured_period_us)
+                        bool verify_slot, bool verify_fz)
 {
     assert(dbc != nullptr);
     auto impl          = std::make_unique<ShmQueueImpl>();
@@ -80,9 +79,8 @@ ShmQueue::from_consumer(std::unique_ptr<DataBlockConsumer> dbc,
     impl->chan_name     = std::move(channel_name);
     impl->verify_slot  = verify_slot;
     impl->verify_fz    = verify_fz;
-    if (configured_period_us > 0 && impl->consumer())
-        impl->consumer()->set_loop_policy(LoopPolicy::FixedRate,
-            std::chrono::microseconds{configured_period_us});
+    // Loop policy is set by hub::Consumer::establish_channel() on the DataBlock
+    // before ShmQueue creation. ShmQueue does not own loop policy.
     return std::unique_ptr<QueueReader>(new ShmQueue(std::move(impl)));
 }
 
@@ -91,7 +89,6 @@ ShmQueue::from_producer(std::unique_ptr<DataBlockProducer> dbp,
                         size_t item_size, size_t flexzone_sz,
                         std::string channel_name,
                         bool checksum_slot, bool checksum_fz,
-                        uint64_t configured_period_us,
                         bool always_clear_slot)
 {
     assert(dbp != nullptr);
@@ -103,17 +100,13 @@ ShmQueue::from_producer(std::unique_ptr<DataBlockProducer> dbp,
     impl->checksum_slot      = checksum_slot;
     impl->checksum_fz        = checksum_fz;
     impl->always_clear_slot  = always_clear_slot;
-    if (configured_period_us > 0 && impl->producer())
-        impl->producer()->set_loop_policy(LoopPolicy::FixedRate,
-            std::chrono::microseconds{configured_period_us});
     return std::unique_ptr<QueueWriter>(new ShmQueue(std::move(impl)));
 }
 
 std::unique_ptr<QueueReader>
 ShmQueue::from_consumer_ref(DataBlockConsumer& dbc, size_t item_size,
                              size_t flexzone_sz, std::string channel_name,
-                             bool verify_slot, bool verify_fz,
-                             uint64_t configured_period_us)
+                             bool verify_slot, bool verify_fz)
 {
     auto impl          = std::make_unique<ShmQueueImpl>();
     impl->dbc_ref      = &dbc;
@@ -122,9 +115,6 @@ ShmQueue::from_consumer_ref(DataBlockConsumer& dbc, size_t item_size,
     impl->chan_name     = std::move(channel_name);
     impl->verify_slot  = verify_slot;
     impl->verify_fz    = verify_fz;
-    if (configured_period_us > 0)
-        dbc.set_loop_policy(LoopPolicy::FixedRate,
-            std::chrono::microseconds{configured_period_us});
     return std::unique_ptr<QueueReader>(new ShmQueue(std::move(impl)));
 }
 
@@ -132,7 +122,6 @@ std::unique_ptr<QueueWriter>
 ShmQueue::from_producer_ref(DataBlockProducer& dbp, size_t item_size,
                              size_t flexzone_sz, std::string channel_name,
                              bool checksum_slot, bool checksum_fz,
-                             uint64_t configured_period_us,
                              bool always_clear_slot)
 {
     auto impl                = std::make_unique<ShmQueueImpl>();
@@ -143,9 +132,6 @@ ShmQueue::from_producer_ref(DataBlockProducer& dbp, size_t item_size,
     impl->checksum_slot      = checksum_slot;
     impl->checksum_fz        = checksum_fz;
     impl->always_clear_slot  = always_clear_slot;
-    if (configured_period_us > 0)
-        dbp.set_loop_policy(LoopPolicy::FixedRate,
-            std::chrono::microseconds{configured_period_us});
     return std::unique_ptr<QueueWriter>(new ShmQueue(std::move(impl)));
 }
 
@@ -242,7 +228,7 @@ const void* ShmQueue::read_acquire(std::chrono::milliseconds timeout) noexcept
     // Optional checksum verification (pre-read gate, honors slot_cks_is_valid).
     if (pImpl->verify_slot && !pImpl->read_handle->verify_checksum_slot())
     {
-        pImpl->consumer()->metrics().checksum_error_count.fetch_add(1, std::memory_order_relaxed);
+        pImpl->consumer()->metrics().inc_checksum_error();
         LOGGER_ERROR("[ShmQueue] slot checksum error on slot {} channel '{}'",
                      pImpl->last_seq, pImpl->chan_name);
         (void)pImpl->consumer()->release_consume_slot(*pImpl->read_handle);
@@ -251,7 +237,7 @@ const void* ShmQueue::read_acquire(std::chrono::milliseconds timeout) noexcept
     }
     if (pImpl->verify_fz && !pImpl->read_handle->verify_checksum_flexible_zone())
     {
-        pImpl->consumer()->metrics().checksum_error_count.fetch_add(1, std::memory_order_relaxed);
+        pImpl->consumer()->metrics().inc_checksum_error();
         LOGGER_ERROR("[ShmQueue] flexzone checksum error on slot {} channel '{}'",
                      pImpl->last_seq, pImpl->chan_name);
         (void)pImpl->consumer()->release_consume_slot(*pImpl->read_handle);
@@ -415,26 +401,26 @@ QueueMetrics ShmQueue::metrics() const noexcept
     if (const DataBlockConsumer* c = pImpl->consumer())
     {
         const auto &cm = c->metrics();
-        m.last_slot_wait_us    = cm.last_slot_wait_us;
-        m.last_iteration_us    = cm.last_iteration_us;
-        m.max_iteration_us     = cm.max_iteration_us;
-        m.context_elapsed_us   = cm.context_elapsed_us;
-        m.last_slot_exec_us    = cm.last_slot_exec_us;
-        m.configured_period_us = cm.configured_period_us;
+        m.last_slot_wait_us    = cm.last_slot_wait_us_val();
+        m.last_iteration_us    = cm.last_iteration_us_val();
+        m.max_iteration_us     = cm.max_iteration_us_val();
+        m.context_elapsed_us   = cm.context_elapsed_us_val();
+        m.last_slot_exec_us    = cm.last_slot_exec_us_val();
+        m.configured_period_us = cm.configured_period_us_val();
         // recv_overflow_count stays 0 for SHM (no receive buffer overflow possible).
-        m.checksum_error_count = cm.checksum_error_count.load(std::memory_order_relaxed);
+        m.checksum_error_count = cm.checksum_error_count_val();
         return m;
     }
 
     if (const DataBlockProducer* p = pImpl->producer())
     {
         const auto &cm = p->metrics();
-        m.last_slot_wait_us    = cm.last_slot_wait_us;
-        m.last_iteration_us    = cm.last_iteration_us;
-        m.max_iteration_us     = cm.max_iteration_us;
-        m.context_elapsed_us   = cm.context_elapsed_us;
-        m.last_slot_exec_us    = cm.last_slot_exec_us;
-        m.configured_period_us = cm.configured_period_us;
+        m.last_slot_wait_us    = cm.last_slot_wait_us_val();
+        m.last_iteration_us    = cm.last_iteration_us_val();
+        m.max_iteration_us     = cm.max_iteration_us_val();
+        m.context_elapsed_us   = cm.context_elapsed_us_val();
+        m.last_slot_exec_us    = cm.last_slot_exec_us_val();
+        m.configured_period_us = cm.configured_period_us_val();
         return m;
     }
 
@@ -454,13 +440,11 @@ void ShmQueue::reset_metrics()
 void ShmQueue::set_configured_period(uint64_t period_us)
 {
     if (!pImpl) return;
-    auto policy = (period_us > 0) ? LoopPolicy::FixedRate : LoopPolicy::MaxRate;
-    auto period = std::chrono::microseconds{period_us};
-    // Single-mode: only one handle is non-null.
+    // Write directly to ContextMetrics via DataBlock mutable metrics() accessor.
     if (DataBlockConsumer* c = pImpl->consumer())
-        c->set_loop_policy(policy, period);
+        c->metrics().set_configured_period(period_us);
     else if (DataBlockProducer* p = pImpl->producer())
-        p->set_loop_policy(policy, period);
+        p->metrics().set_configured_period(period_us);
 }
 
 } // namespace pylabhub::hub

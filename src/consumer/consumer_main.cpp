@@ -115,6 +115,7 @@ static int do_init(const std::string &cons_dir_str, const std::string &cli_name)
     j["consumer"]["log_level"] = "info";
     j["consumer"]["auth"]["keyfile"] = "";
 
+    j["loop_timing"]         = "max_rate";
     j["in_hub_dir"]          = "<replace with hub directory path, e.g. /var/pylabhub/my_hub>";
     j["in_channel"]          = "lab.my.channel";
     j["in_transport"]        = "shm";

@@ -287,18 +287,13 @@ bool ConsumerRoleHost::setup_infrastructure_()
     opts.consumer_uid         = id.uid;
     opts.consumer_name        = id.name;
 
-    if (tc.period_us > 0.0)
-    {
-        opts.loop_policy          = hub::LoopPolicy::FixedRate;
-        opts.configured_period_us = std::chrono::microseconds{static_cast<int64_t>(tc.period_us)};
-    }
+    opts.timing = tc.timing_params();
 
-    // Queue abstraction: sizes + checksum + period for internal queue creation.
+    // Queue abstraction: sizes + checksum for internal queue creation.
     opts.item_size          = schema_slot_size_;
     opts.flexzone_size      = core_.schema_fz_size();
     opts.verify_checksum    = shm.verify_checksum;
     opts.verify_checksum_fz = core_.has_fz() && shm.verify_checksum;
-    opts.queue_period_us    = (tc.period_us > 0.0) ? static_cast<uint64_t>(tc.period_us) : 0;
 
     // Transport declaration.
     const bool is_zmq = (tr.transport == config::Transport::Zmq);

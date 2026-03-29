@@ -34,6 +34,7 @@
 #include "utils/channel_handle.hpp"
 #include "utils/channel_pattern.hpp"
 #include "utils/data_block.hpp"
+#include "utils/loop_timing_policy.hpp"
 #include "utils/hub_zmq_queue.hpp"  // ZmqQueue — returned by queue() accessor (HEP-CORE-0021)
 #include "utils/messenger.hpp"
 #include "utils/module_def.hpp"
@@ -213,9 +214,8 @@ struct ProducerOptions
     std::string role_name{}; ///< Human-readable role name; empty = anonymous
     std::string role_uid{};  ///< Role UID (PROD-{NAME}-{8HEX}); empty = anonymous
 
-    // ── Loop policy (HEP-CORE-0008 Pass 3) ───────────────────────────────────
-    LoopPolicy                loop_policy{LoopPolicy::MaxRate}; ///< Acquire-pacing policy
-    std::chrono::microseconds configured_period_us{};            ///< FixedRate target period (µs)
+    // ── Loop timing (HEP-CORE-0008) ─────────────────────────────────────────
+    LoopTimingParams timing{};  ///< Policy + period + io_wait_ratio. Set from config.
 
     // ── Named schema validation (HEP-CORE-0016 Phase 2) ──────────────────────
     /// Optional named schema ID (e.g. `"lab.sensors.temperature.raw@1"`).
@@ -265,8 +265,6 @@ struct ProducerOptions
     bool update_checksum{false};
     /// Also checksum the flexzone on write_commit() (SHM only).
     bool update_checksum_fz{false};
-    /// Target loop period in microseconds. 0 = MaxRate.
-    uint64_t queue_period_us{0};
     /// Zero the slot buffer on write_acquire() (SHM only). Default true for safety
     /// (prevents historical data leaks, ensures deterministic padding). Set false
     /// for performance when the writer guarantees full field writes.

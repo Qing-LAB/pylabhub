@@ -107,7 +107,9 @@ TEST_F(ProducerCliTest, Init_DefaultValues)
     // stop_on_script_error defaults to false
     EXPECT_FALSE(j["stop_on_script_error"].get<bool>());
 
-    // target_period_ms must be present (not the obsolete interval_ms)
+    // loop_timing is required
+    EXPECT_TRUE(j.contains("loop_timing"))
+        << "Generated config missing 'loop_timing'";
     EXPECT_TRUE(j.contains("target_period_ms"))
         << "Generated config missing 'target_period_ms'";
     EXPECT_FALSE(j.contains("interval_ms"))
@@ -133,6 +135,7 @@ TEST_F(ProducerCliTest, Keygen_WritesVaultFile)
         "    \"auth\": { \"keyfile\": \"" + vault_path.generic_string() + "\" }\n"
         "  },\n"
         "  \"out_channel\": \"lab.keygen.test\",\n"
+        "  \"loop_timing\": \"max_rate\",\n"
         "  \"out_slot_schema\": { \"fields\": [{\"name\": \"v\", \"type\": \"float32\"}] }\n"
         "}\n");
 
@@ -197,6 +200,7 @@ TEST_F(ProducerCliTest, Validate_ExitZero)
         "{\n"
         "  \"producer\": { \"uid\": \"PROD-VALTEST-00000001\", \"name\": \"ValTest\" },\n"
         "  \"out_channel\": \"lab.validate.test\",\n"
+        "  \"loop_timing\": \"max_rate\",\n"
         "  \"out_slot_schema\": { \"fields\": [{\"name\": \"v\", \"type\": \"float32\"}] },\n"
         "  \"script\": { \"path\": \"" + tmp.generic_string() + "\", \"type\": \"python\" }\n"
         "}\n");

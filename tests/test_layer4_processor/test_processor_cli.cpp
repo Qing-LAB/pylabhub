@@ -133,6 +133,7 @@ TEST_F(ProcessorCliTest, Keygen_WritesVaultFile)
         "  },\n"
         "  \"in_channel\":  \"lab.keygen.in\",\n"
         "  \"out_channel\": \"lab.keygen.out\",\n"
+        "  \"loop_timing\": \"max_rate\",\n"
         "  \"out_slot_schema\": { \"fields\": [{\"name\": \"v\", \"type\": \"float32\"}] }\n"
         "}\n");
 
@@ -197,6 +198,7 @@ TEST_F(ProcessorCliTest, Validate_ExitZero)
         "  \"processor\": { \"uid\": \"PROC-VALTEST-00000001\", \"name\": \"ValTest\" },\n"
         "  \"in_channel\":  \"lab.validate.in\",\n"
         "  \"out_channel\": \"lab.validate.out\",\n"
+        "  \"loop_timing\": \"max_rate\",\n"
         "  \"out_slot_schema\": { \"fields\": [{\"name\": \"v\", \"type\": \"float32\"}] },\n"
         "  \"script\": { \"path\": \"" + tmp.generic_string() + "\", \"type\": \"python\" }\n"
         "}\n");
