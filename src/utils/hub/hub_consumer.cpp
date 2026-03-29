@@ -463,12 +463,7 @@ Consumer::establish_channel(Messenger &messenger, ChannelHandle channel,
     impl->messenger = &messenger;
     impl->closed    = false;
 
-    // Wire LoopPolicy (HEP-CORE-0008 Pass 3)
-    if (impl->shm != nullptr &&
-        (opts.loop_policy != LoopPolicy::MaxRate || opts.configured_period_us.count() > 0))
-    {
-        impl->shm->set_loop_policy(opts.loop_policy, opts.configured_period_us);
-    }
+    // Timing is set at the queue level after ShmQueue/ZmqQueue creation (see below).
 
     // ABI guard: ConsumerMessagingFacade is exported across the shared library boundary.
     // 6 pointers × 8 bytes = 48 bytes on LP64/LLP64.
@@ -581,8 +576,6 @@ Consumer::establish_channel(Messenger &messenger, ChannelHandle channel,
             LOGGER_ERROR("[consumer] ZMQ PULL socket start() failed for '{}'", ep);
             return std::nullopt;
         }
-        if (opts.queue_period_us > 0)
-            static_cast<ZmqQueue *>(impl->zmq_queue_.get())->set_configured_period(opts.queue_period_us);
         LOGGER_INFO("[consumer] ZMQ PULL socket connected to '{}'", ep);
     }
 
@@ -601,12 +594,18 @@ Consumer::establish_channel(Messenger &messenger, ChannelHandle channel,
     {
         impl->shm_queue_reader_ = ShmQueue::from_consumer_ref(
             *impl->shm, opts.item_size, opts.flexzone_size, opts.channel_name,
-            opts.verify_checksum, opts.verify_checksum_fz, opts.queue_period_us);
+            opts.verify_checksum, opts.verify_checksum_fz);
         impl->queue_reader_ = impl->shm_queue_reader_.get();
     }
     else if (impl->zmq_queue_)
     {
         impl->queue_reader_ = impl->zmq_queue_.get();
+    }
+
+    // Set timing on the queue (single path for both SHM and ZMQ).
+    if (impl->queue_reader_ && opts.timing.period_us > 0)
+    {
+        impl->queue_reader_->set_configured_period(opts.timing.period_us);
     }
 
     return Consumer(std::move(impl));

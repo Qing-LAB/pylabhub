@@ -132,6 +132,7 @@ static int do_init(const std::string &proc_dir_str, const std::string &cli_name)
     j["processor"]["log_level"] = "info";
     j["processor"]["auth"]["keyfile"] = "";
 
+    j["loop_timing"]  = "max_rate";
     j["in_hub_dir"]   = "<replace with input hub directory path>";
     j["out_hub_dir"]  = "<replace with output hub directory path>";
     j["in_channel"]   = "lab.source.channel";

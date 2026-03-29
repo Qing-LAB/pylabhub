@@ -468,12 +468,7 @@ Producer::establish_channel(Messenger &messenger, ChannelHandle channel,
     impl->messenger = &messenger;
     impl->closed    = false;
 
-    // Wire LoopPolicy (HEP-CORE-0008 Pass 3): role host overrides this after start_embedded().
-    if (impl->shm != nullptr &&
-        (opts.loop_policy != LoopPolicy::MaxRate || opts.configured_period_us.count() > 0))
-    {
-        impl->shm->set_loop_policy(opts.loop_policy, opts.configured_period_us);
-    }
+    // Timing is set at the queue level after ShmQueue/ZmqQueue creation (see below).
 
     // Fill the messaging facade. Function pointers capture nothing except `ctx` (the
     // heap-stable ProducerImpl*). The facade itself lives inside ProducerImpl, so
@@ -604,9 +599,6 @@ Producer::establish_channel(Messenger &messenger, ChannelHandle channel,
                          opts.zmq_node_endpoint);
             return std::nullopt;
         }
-        if (opts.queue_period_us > 0)
-            static_cast<ZmqQueue *>(impl->zmq_queue_.get())->set_configured_period(opts.queue_period_us);
-
         // HEP-0021 §16: update broker with actual endpoint if port was ephemeral.
         const std::string actual_ep =
             static_cast<ZmqQueue *>(impl->zmq_queue_.get())->actual_endpoint();
@@ -642,13 +634,19 @@ Producer::establish_channel(Messenger &messenger, ChannelHandle channel,
     {
         impl->shm_queue_writer_ = ShmQueue::from_producer_ref(
             *impl->shm, opts.item_size, opts.flexzone_size, opts.channel_name,
-            opts.update_checksum, opts.update_checksum_fz, opts.queue_period_us,
+            opts.update_checksum, opts.update_checksum_fz,
             opts.always_clear_slot);
         impl->queue_writer_ = impl->shm_queue_writer_.get();
     }
     else if (impl->zmq_queue_)
     {
         impl->queue_writer_ = impl->zmq_queue_.get();
+    }
+
+    // Set timing on the queue (single path for both SHM and ZMQ).
+    if (impl->queue_writer_ && opts.timing.period_us > 0)
+    {
+        impl->queue_writer_->set_configured_period(opts.timing.period_us);
     }
 
     return Producer(std::move(impl));

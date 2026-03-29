@@ -200,7 +200,12 @@ JSON: `"queue_type": "shm"` (default) | `"zmq"`.
 | `FixedRateWithCompensation` | `"fixed_rate_with_compensation"` | `next += target_period_ms` | Fires immediately; average rate converges to target |
 
 JSON: `"loop_timing": "max_rate"` | `"fixed_rate"` | `"fixed_rate_with_compensation"`.
-Cross-field constraint: `"max_rate"` requires `target_period_ms == 0`; `"fixed_rate"` / `"fixed_rate_with_compensation"` require `target_period_ms > 0`. Absent field → implicit default (0→MaxRate, >0→FixedRate).
+
+**Configuration rules (enforced by `parse_timing_config()`):**
+- `loop_timing` is **required** — error if absent.
+- `"max_rate"`: `target_period_ms` and `target_rate_hz` must NOT be present — error if either set.
+- `"fixed_rate"` / `"fixed_rate_with_compensation"`: exactly one of `target_period_ms` or
+  `target_rate_hz` must be present — error if both, error if neither.
 Observability: `api.overrun_count()`, `api.last_cycle_work_us()`.
 
 #### 2.6.2 RAII-layer: LoopPolicy ✅ Implemented (Pass 3 complete 2026-02-25)

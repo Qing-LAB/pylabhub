@@ -15,7 +15,7 @@
  */
 #include "pylabhub_utils_export.h"
 #include "utils/data_block_config.hpp"   // Layer 1: DataBlockConfig, DataBlockPageSize, timeouts, policy enums
-#include "utils/data_block_metrics.hpp"  // Layer 1: ContextMetrics
+#include "utils/context_metrics.hpp"  // ContextMetrics — transport-agnostic timing
 #include "utils/shared_memory_spinlock.hpp" // SharedSpinLockState and SharedSpinLock (abstraction over shared memory)
 #include "utils/schema_blds.hpp"         // For SchemaInfo and generate_schema_info
 
@@ -663,26 +663,14 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
 
     // ─── Loop Policy and Context Metrics (HEP-CORE-0008) ─────────────────────
     /**
-     * @brief Configure pacing policy for the write loop.
-     *
-     * Must be called before the first acquire_write_slot() (or before entering
-     * with_transaction) so the timing anchor is correct.
-     * @param policy  LoopPolicy::MaxRate (default) or LoopPolicy::FixedRate.
-     * @param period  Target start-to-start period. Ignored when policy == MaxRate.
-     *               period == 0 with FixedRate is treated as MaxRate (no sleep).
-     * @note Not thread-safe: call from the writer thread only, before acquiring any slot.
-     */
-    void set_loop_policy(LoopPolicy policy,
-                         std::chrono::microseconds period = {}) noexcept;
-
-    /**
      * @brief Live view of per-handle timing metrics (process-local; not in SHM).
      * @return const ref into Pimpl storage. Valid for the lifetime of this producer.
      */
     [[nodiscard]] const ContextMetrics &metrics() const noexcept;
+    [[nodiscard]] ContextMetrics &metrics() noexcept;
 
     /**
-     * @brief Reset all ContextMetrics counters to zero; preserve context_start_time.
+     * @brief Reset all ContextMetrics counters to zero; preserve configured_period_us.
      * Call at the start of each role run to get per-run statistics.
      */
     void clear_metrics() noexcept;
@@ -967,11 +955,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
      */
     [[nodiscard]] int reset_metrics() noexcept;
 
-    // ─── Loop Policy and Context Metrics (HEP-CORE-0008) ─────────────────────
-    /** @brief Configure pacing policy for the read loop. See DataBlockProducer::set_loop_policy(). */
-    void set_loop_policy(LoopPolicy policy,
-                         std::chrono::microseconds period = {}) noexcept;
-
+    // ─── Context Metrics (HEP-CORE-0008) ──────────────────────────────────────
     /** @brief Live view of per-handle timing metrics (process-local; not in SHM). */
     [[nodiscard]] const ContextMetrics &metrics() const noexcept;
     /** @brief Mutable metrics access (for checksum_error_count increment). */

@@ -124,7 +124,8 @@ TEST_F(ConsumerCliTest, Keygen_WritesVaultFile)
         "    \"name\": \"KgTest\",\n"
         "    \"auth\": { \"keyfile\": \"" + vault_path.generic_string() + "\" }\n"
         "  },\n"
-        "  \"in_channel\": \"lab.keygen.test\"\n"
+        "  \"in_channel\": \"lab.keygen.test\",\n"
+        "  \"loop_timing\": \"max_rate\"\n"
         "}\n");
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
@@ -184,6 +185,7 @@ TEST_F(ConsumerCliTest, Validate_ExitZero)
         "{\n"
         "  \"consumer\": { \"uid\": \"CONS-VALTEST-00000001\", \"name\": \"ValTest\" },\n"
         "  \"in_channel\": \"lab.validate.test\",\n"
+        "  \"loop_timing\": \"max_rate\",\n"
         "  \"script\": { \"path\": \"" + tmp.generic_string() + "\", \"type\": \"python\" }\n"
         "}\n");
 

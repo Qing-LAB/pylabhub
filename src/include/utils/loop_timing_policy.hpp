@@ -95,6 +95,24 @@ enum class LoopTimingPolicy : uint8_t
     FixedRateWithCompensation, ///< Fixed period; advance deadline from cycle start on overrun.
 };
 
+/**
+ * @struct LoopTimingParams
+ * @brief Single source of truth for timing configuration.
+ *
+ * Created by parse_timing_config() after strict validation. Carried through
+ * ProducerOptions/ConsumerOptions to establish_channel(), the queue (for metrics
+ * reporting), and the main loop / SlotIterator (for execution).
+ *
+ * All fields are validated at parse time: MaxRate requires period_us == 0,
+ * FixedRate/Compensation requires period_us > 0.
+ */
+struct LoopTimingParams
+{
+    LoopTimingPolicy policy{LoopTimingPolicy::MaxRate};
+    uint64_t         period_us{0};       ///< Target period (µs). 0 = MaxRate.
+    double           io_wait_ratio{kDefaultQueueIoWaitRatio}; ///< Fraction of period per acquire attempt.
+};
+
 // ============================================================================
 // resolve_period_us — unify rate_hz / period_ms into microseconds
 // ============================================================================
@@ -144,54 +162,38 @@ inline double resolve_period_us(double rate_hz, double period_ms, const std::str
 }
 
 // ============================================================================
-// parse_loop_timing_policy — cross-field validated parse
+// parse_loop_timing_policy — string → enum
 // ============================================================================
 
 /**
- * @brief Parse "loop_timing" JSON field and validate against period.
+ * @brief Parse "loop_timing" JSON string to LoopTimingPolicy enum.
+ *
+ * Pure string parser — no cross-field validation. Cross-field checks
+ * (policy vs period presence) are in parse_timing_config().
  *
  * @param timing_str  Value of the "loop_timing" JSON field.
- * @param period_us   Already-resolved period in microseconds (0 or positive).
  * @param context     Prefix for error messages.
- * @throws std::runtime_error on invalid value or cross-field violation.
+ * @throws std::runtime_error on unrecognized value.
  */
 inline LoopTimingPolicy parse_loop_timing_policy(const std::string &timing_str,
-                                                  double             period_us,
                                                   const std::string &context)
 {
-    LoopTimingPolicy policy;
     if (timing_str == "max_rate")
     {
-        policy = LoopTimingPolicy::MaxRate;
+        return LoopTimingPolicy::MaxRate;
     }
-    else if (timing_str == "fixed_rate")
+    if (timing_str == "fixed_rate")
     {
-        policy = LoopTimingPolicy::FixedRate;
+        return LoopTimingPolicy::FixedRate;
     }
-    else if (timing_str == "fixed_rate_with_compensation")
+    if (timing_str == "fixed_rate_with_compensation")
     {
-        policy = LoopTimingPolicy::FixedRateWithCompensation;
-    }
-    else
-    {
-        throw std::runtime_error(context + ": invalid 'loop_timing': '" + timing_str +
-                                 "' (expected 'max_rate', 'fixed_rate', or "
-                                 "'fixed_rate_with_compensation')");
+        return LoopTimingPolicy::FixedRateWithCompensation;
     }
 
-    if (policy == LoopTimingPolicy::MaxRate && period_us > 0.0)
-    {
-        throw std::runtime_error(
-            context + ": 'loop_timing: max_rate' requires period to be 0 "
-                      "(neither 'target_period_ms' nor 'target_rate_hz' may be set)");
-    }
-    if (policy != LoopTimingPolicy::MaxRate && period_us == 0.0)
-    {
-        throw std::runtime_error(
-            context + ": 'loop_timing: " + timing_str +
-            "' requires a positive period ('target_period_ms' or 'target_rate_hz')");
-    }
-    return policy;
+    throw std::runtime_error(context + ": invalid 'loop_timing': '" + timing_str +
+                             "' (expected 'max_rate', 'fixed_rate', or "
+                             "'fixed_rate_with_compensation')");
 }
 
 // ============================================================================
@@ -280,18 +282,24 @@ inline std::chrono::steady_clock::time_point compute_next_deadline(
         // Advance from the previous deadline to maintain steady average rate.
         // For the first cycle (prev_deadline == max), use cycle_start + period.
         if (prev_deadline == std::chrono::steady_clock::time_point::max())
+        {
             return cycle_start + period;
+        }
         return prev_deadline + period;
     }
 
     // FixedRate: if on time, advance from prev_deadline; if overrun, reset from now.
     if (prev_deadline == std::chrono::steady_clock::time_point::max())
+    {
         return cycle_start + period; // first cycle
+    }
 
     const auto ideal = prev_deadline + period;
     const auto now   = std::chrono::steady_clock::now();
     if (now <= ideal)
+    {
         return ideal;       // on time — advance cleanly
+    }
     return now + period;    // overrun — reset from now (no catch-up)
 }
 

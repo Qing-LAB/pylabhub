@@ -294,11 +294,7 @@ bool ProducerRoleHost::setup_infrastructure_()
     opts.role_name   = id.name;
     opts.role_uid    = id.uid;
 
-    if (tc.period_us > 0.0)
-    {
-        opts.loop_policy          = hub::LoopPolicy::FixedRate;
-        opts.configured_period_us = std::chrono::microseconds{static_cast<int64_t>(tc.period_us)};
-    }
+    opts.timing = tc.timing_params();
     opts.ctrl_queue_max_depth = mon.ctrl_queue_max_depth;
     opts.peer_dead_timeout_ms = mon.peer_dead_timeout_ms;
 
@@ -405,7 +401,8 @@ bool ProducerRoleHost::setup_infrastructure_()
     opts.flexzone_size     = core_.schema_fz_size();
     opts.update_checksum   = shm.update_checksum;
     opts.update_checksum_fz = core_.has_fz() && shm.update_checksum;
-    opts.queue_period_us   = (tc.period_us > 0.0) ? static_cast<uint64_t>(tc.period_us) : 0;
+    // queue_period_us removed: loop policy set by establish_channel() on DataBlock;
+    // ZmqQueue informational period set from configured_period_us in hub_producer.cpp.
 
     // --- SHM config ---
     if (shm.enabled)

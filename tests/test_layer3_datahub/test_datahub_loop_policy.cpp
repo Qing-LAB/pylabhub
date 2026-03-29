@@ -120,8 +120,8 @@ TEST_F(DatahubLoopPolicyTest, ProducerMetricsAccumulate)
     }
 
     const auto &m = producer->metrics();
-    ASSERT_GE(m.max_iteration_us, m.last_iteration_us);
-    ASSERT_GE(m.last_slot_wait_us, uint64_t{0});
+    ASSERT_GE(m.max_iteration_us_val(), m.last_iteration_us_val());
+    ASSERT_GE(m.last_slot_wait_us_val(), uint64_t{0});
 }
 
 // ============================================================================
@@ -145,13 +145,13 @@ TEST_F(DatahubLoopPolicyTest, ProducerMetricsClear)
         (void)h->commit(sizeof(TestDataBlock));
     }
 
-    // Clear and set FixedRate policy
+    // Clear and set configured period
     producer->clear_metrics();
-    producer->set_loop_policy(LoopPolicy::FixedRate, std::chrono::microseconds{50000});
+    producer->metrics().set_configured_period(50000);
 
     const auto &m = producer->metrics();
     // configured_period_us is config, not a counter — preserved through clear_metrics()
-    EXPECT_EQ(m.configured_period_us, uint64_t{50000});
+    EXPECT_EQ(m.configured_period_us_val(), uint64_t{50000});
 }
 
 // ============================================================================
@@ -168,7 +168,7 @@ TEST_F(DatahubLoopPolicyTest, ProducerFixedRateOverrunDetect)
     ASSERT_NE(producer, nullptr);
 
     // configured_period_us = 1000 us (1 ms); body sleeps 5 ms → every iteration after the first overruns.
-    producer->set_loop_policy(LoopPolicy::FixedRate, std::chrono::microseconds{1000});
+    producer->metrics().set_configured_period(1000);
 
     for (int i = 0; i < 5; ++i)
     {
@@ -212,8 +212,8 @@ TEST_F(DatahubLoopPolicyTest, SlotIteratorFixedRatePacing)
         channel, DataBlockPolicy::RingBuffer, cfg);
     ASSERT_NE(producer, nullptr);
 
-    // Configure 30 ms FixedRate — 5 iterations → 4 inter-iteration sleeps → ≥ 120 ms.
-    producer->set_loop_policy(LoopPolicy::FixedRate, 30ms);
+    // Configure 30 ms period — 5 iterations → 4 inter-iteration sleeps → ≥ 120 ms.
+    producer->metrics().set_configured_period(30000); // 30 ms in µs
 
     auto t0 = std::chrono::steady_clock::now();
 
@@ -274,7 +274,7 @@ TEST_F(DatahubLoopPolicyTest, ConsumerMetricsAccumulate)
     }
 
     const auto &m = consumer->metrics();
-    ASSERT_GE(m.last_slot_wait_us, uint64_t{0});
+    ASSERT_GE(m.last_slot_wait_us_val(), uint64_t{0});
 }
 
 // ============================================================================
@@ -292,13 +292,13 @@ TEST_F(DatahubLoopPolicyTest, ZeroOnCreation)
 
     // Before any acquire, all metric counters and context_start_time must be zero.
     const auto &m = producer->metrics();
-    EXPECT_EQ(m.last_slot_wait_us,  uint64_t{0});
-    EXPECT_EQ(m.last_iteration_us,  uint64_t{0});
-    EXPECT_EQ(m.max_iteration_us,   uint64_t{0});
-    EXPECT_EQ(m.last_slot_exec_us,  uint64_t{0});
-    EXPECT_EQ(m.context_elapsed_us, uint64_t{0});
-    EXPECT_EQ(m.configured_period_us,          uint64_t{0});
-    EXPECT_EQ(m.context_start_time, ContextMetrics::Clock::time_point{});
+    EXPECT_EQ(m.last_slot_wait_us_val(),  uint64_t{0});
+    EXPECT_EQ(m.last_iteration_us_val(),  uint64_t{0});
+    EXPECT_EQ(m.max_iteration_us_val(),   uint64_t{0});
+    EXPECT_EQ(m.last_slot_exec_us_val(),  uint64_t{0});
+    EXPECT_EQ(m.context_elapsed_us_val(), uint64_t{0});
+    EXPECT_EQ(m.configured_period_us_val(),          uint64_t{0});
+    EXPECT_EQ(m.context_start_time_val(), ContextMetrics::Clock::time_point{});
 }
 
 // ============================================================================
@@ -314,8 +314,8 @@ TEST_F(DatahubLoopPolicyTest, MaxRateNoOverrun)
         channel, DataBlockPolicy::RingBuffer, cfg);
     ASSERT_NE(producer, nullptr);
 
-    // MaxRate (configured_period_us = 0) disables overrun detection entirely.
-    producer->set_loop_policy(LoopPolicy::MaxRate);
+    // MaxRate (configured_period_us = 0) — default after clear_metrics().
+    // No set_configured_period needed; period is already 0.
 
     // Slow body: would overrun a FixedRate 1 ms policy, but MaxRate never counts overruns.
     for (int i = 0; i < 3; ++i)
@@ -326,7 +326,7 @@ TEST_F(DatahubLoopPolicyTest, MaxRateNoOverrun)
         (void)h->commit(sizeof(TestDataBlock));
     }
 
-    EXPECT_EQ(producer->metrics().configured_period_us,     uint64_t{0});
+    EXPECT_EQ(producer->metrics().configured_period_us_val(),     uint64_t{0});
 }
 
 // ============================================================================
@@ -350,7 +350,7 @@ TEST_F(DatahubLoopPolicyTest, LastSlotWorkUsPopulated)
         // h destructor calls release_write_handle() which records last_slot_exec_us.
     }
 
-    EXPECT_GT(producer->metrics().last_slot_exec_us, uint64_t{0});
+    EXPECT_GT(producer->metrics().last_slot_exec_us_val(), uint64_t{0});
 }
 
 // ============================================================================
@@ -374,7 +374,7 @@ TEST_F(DatahubLoopPolicyTest, LastIterationUsPopulated)
         (void)h->commit(sizeof(TestDataBlock));
     }
 
-    EXPECT_GT(producer->metrics().last_iteration_us, uint64_t{0});
+    EXPECT_GT(producer->metrics().last_iteration_us_val(), uint64_t{0});
 }
 
 // ============================================================================
@@ -407,7 +407,7 @@ TEST_F(DatahubLoopPolicyTest, MaxIterationUsPeak)
         (void)h->commit(sizeof(TestDataBlock));
     }
 
-    const uint64_t peak_after_2 = producer->metrics().max_iteration_us;
+    const uint64_t peak_after_2 = producer->metrics().max_iteration_us_val();
 
     // Iteration 3: fast (no sleep before it) — last_iteration_us should be small.
     {
@@ -418,9 +418,9 @@ TEST_F(DatahubLoopPolicyTest, MaxIterationUsPeak)
 
     const auto &m = producer->metrics();
     // max_iteration_us must never decrease.
-    EXPECT_GE(m.max_iteration_us, peak_after_2);
+    EXPECT_GE(m.max_iteration_us_val(), peak_after_2);
     // max_iteration_us must always be >= last_iteration_us.
-    EXPECT_GE(m.max_iteration_us, m.last_iteration_us);
+    EXPECT_GE(m.max_iteration_us_val(), m.last_iteration_us_val());
 }
 
 // ============================================================================
@@ -442,7 +442,7 @@ TEST_F(DatahubLoopPolicyTest, ContextElapsedUsMonotonic)
         ASSERT_TRUE(h);
         (void)h->commit(sizeof(TestDataBlock));
     }
-    const uint64_t elapsed_1 = producer->metrics().context_elapsed_us;
+    const uint64_t elapsed_1 = producer->metrics().context_elapsed_us_val();
 
     std::this_thread::sleep_for(2ms); // ensure the clock advances
 
@@ -452,7 +452,7 @@ TEST_F(DatahubLoopPolicyTest, ContextElapsedUsMonotonic)
         ASSERT_TRUE(h);
         (void)h->commit(sizeof(TestDataBlock));
     }
-    const uint64_t elapsed_2 = producer->metrics().context_elapsed_us;
+    const uint64_t elapsed_2 = producer->metrics().context_elapsed_us_val();
 
     EXPECT_GE(elapsed_2, elapsed_1) << "context_elapsed_us must be non-decreasing";
 }
@@ -530,7 +530,7 @@ TEST_F(DatahubLoopPolicyTest, RaiiProducerLastSlotWorkUsMultiIter)
 
     // Without the per-handle fix, the RAII multi-iter path recorded ~0 here
     // because t_iter_start_ was overwritten by the next acquire before ~SlotWriteHandle fired.
-    EXPECT_GE(producer->metrics().last_slot_exec_us, uint64_t{3000})
+    EXPECT_GE(producer->metrics().last_slot_exec_us_val(), uint64_t{3000})
         << "RAII multi-iter: last_slot_exec_us should reflect body sleep (~5 ms)";
 }
 
@@ -564,8 +564,8 @@ TEST_F(DatahubLoopPolicyTest, RaiiProducerMetricsViaSlots)
         });
 
     const auto &m = producer->metrics();
-    EXPECT_GT(m.last_iteration_us, uint64_t{0});
-    EXPECT_GE(m.max_iteration_us, m.last_iteration_us);
+    EXPECT_GT(m.last_iteration_us_val(), uint64_t{0});
+    EXPECT_GE(m.max_iteration_us_val(), m.last_iteration_us_val());
 }
 
 // ============================================================================
@@ -581,8 +581,8 @@ TEST_F(DatahubLoopPolicyTest, RaiiProducerOverrunViaSlots)
         channel, DataBlockPolicy::RingBuffer, cfg);
     ASSERT_NE(producer, nullptr);
 
-    // FixedRate 1 ms + 5 ms body sleep guarantees overruns via the RAII ctx.slots() path.
-    producer->set_loop_policy(LoopPolicy::FixedRate, 1ms);
+    // 1 ms period + 5 ms body sleep guarantees overruns via the RAII ctx.slots() path.
+    producer->metrics().set_configured_period(1000); // 1 ms in µs
 
     producer->with_transaction<EmptyFlexZone, TestDataBlock>(
         5000ms,
@@ -643,6 +643,6 @@ TEST_F(DatahubLoopPolicyTest, RaiiConsumerLastSlotWorkUs)
             }
         });
 
-    EXPECT_GT(consumer->metrics().last_slot_exec_us, uint64_t{0})
+    EXPECT_GT(consumer->metrics().last_slot_exec_us_val(), uint64_t{0})
         << "RAII consumer: last_slot_exec_us should reflect body sleep (~2 ms)";
 }

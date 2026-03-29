@@ -26,6 +26,7 @@
 using namespace pylabhub::tests::helper;
 using namespace pylabhub::hub;
 using pylabhub::broker::BrokerService;
+using pylabhub::LoopTimingPolicy;
 
 namespace pylabhub::tests::worker::hub_api
 {
@@ -1446,7 +1447,7 @@ int queue_metrics_forwarding(int /*argc*/, char ** /*argv*/)
             popts.has_shm       = true;
             popts.shm_config    = make_shm_config();
             popts.item_size     = sizeof(uint64_t);
-            popts.queue_period_us = 1000; // 1ms
+            popts.timing = {LoopTimingPolicy::FixedRate, 1000, 0.1}; // 1ms
             popts.timeout_ms    = 3000;
 
             auto producer = Producer::create(messenger, popts);
@@ -1503,7 +1504,7 @@ int zmq_forwarding_api(int /*argc*/, char ** /*argv*/)
             popts.zmq_node_endpoint = endpoint;
             popts.zmq_schema        = {{"bytes", 1, static_cast<uint32_t>(kItemSz)}};
             popts.item_size         = kItemSz;
-            popts.queue_period_us   = 500;
+            popts.timing = {LoopTimingPolicy::FixedRate, 500, 0.1};
             popts.timeout_ms        = 3000;
 
             fmt::print(stderr, "[T] creating producer...\n");
@@ -1542,7 +1543,7 @@ int zmq_forwarding_api(int /*argc*/, char ** /*argv*/)
             copts.consumer_uid  = "CONS-ZMQ-FWD-0001";
             copts.zmq_schema    = {{"bytes", 1, static_cast<uint32_t>(kItemSz)}};
             copts.item_size     = kItemSz;
-            copts.queue_period_us = 500;
+            copts.timing = {LoopTimingPolicy::FixedRate, 500, 0.1};
             copts.timeout_ms    = 3000;
 
             auto consumer = Consumer::connect(cons_m, copts);
