@@ -174,14 +174,16 @@ the manual loop, `overrun_count()` replaces `core_.loop_overrun_count()`.
 
 ## 5. Migration Path
 
-### Phase 1: Timing unification (prerequisite)
-- Remove timing from DataBlock
-- Add `LoopTimingParams` struct
-- Add `set_timing_params()` to QueueReader/QueueWriter
-- Update `establish_channel()` to use new API
-- Update config parser (strict validation)
-- Update role host Options (remove queue_period_us)
-- All existing tests pass (main loop behavior unchanged)
+### Phase 1: Timing unification (prerequisite) ✅ DONE 2026-03-29
+- [x] Remove timing from DataBlock (`set_loop_policy`, `loop_policy`, `configured_period_us` pImpl fields)
+- [x] Add `LoopTimingParams` struct to `loop_timing_policy.hpp`
+- [x] Add `set_configured_period()` to QueueReader/QueueWriter base class
+- [x] `establish_channel()` uses unified `queue->set_configured_period()` for both SHM and ZMQ
+- [x] Config parser: `loop_timing` required, strict cross-field validation, null-as-absent
+- [x] Role host Options: `LoopTimingParams timing` replaces 3 separate fields
+- [x] ContextMetrics: private fields, accessor API (`set_*`/`*_val()`/`clear()`), renamed to `context_metrics.hpp`
+- [x] `DataBlockProducer::mutable_metrics()` for queue-layer write access
+- [x] 1177/1177 tests pass
 
 ### Phase 2: Typed queue wrappers
 - Create `typed_queue.hpp`
