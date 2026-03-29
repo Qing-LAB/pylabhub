@@ -228,7 +228,7 @@ const void* ShmQueue::read_acquire(std::chrono::milliseconds timeout) noexcept
     // Optional checksum verification (pre-read gate, honors slot_cks_is_valid).
     if (pImpl->verify_slot && !pImpl->read_handle->verify_checksum_slot())
     {
-        pImpl->consumer()->metrics().inc_checksum_error();
+        pImpl->consumer()->mutable_metrics().inc_checksum_error();
         LOGGER_ERROR("[ShmQueue] slot checksum error on slot {} channel '{}'",
                      pImpl->last_seq, pImpl->chan_name);
         (void)pImpl->consumer()->release_consume_slot(*pImpl->read_handle);
@@ -237,7 +237,7 @@ const void* ShmQueue::read_acquire(std::chrono::milliseconds timeout) noexcept
     }
     if (pImpl->verify_fz && !pImpl->read_handle->verify_checksum_flexible_zone())
     {
-        pImpl->consumer()->metrics().inc_checksum_error();
+        pImpl->consumer()->mutable_metrics().inc_checksum_error();
         LOGGER_ERROR("[ShmQueue] flexzone checksum error on slot {} channel '{}'",
                      pImpl->last_seq, pImpl->chan_name);
         (void)pImpl->consumer()->release_consume_slot(*pImpl->read_handle);
@@ -440,11 +440,11 @@ void ShmQueue::reset_metrics()
 void ShmQueue::set_configured_period(uint64_t period_us)
 {
     if (!pImpl) return;
-    // Write directly to ContextMetrics via DataBlock mutable metrics() accessor.
+    // Write directly to ContextMetrics via DataBlock mutable_metrics() accessor.
     if (DataBlockConsumer* c = pImpl->consumer())
-        c->metrics().set_configured_period(period_us);
+        c->mutable_metrics().set_configured_period(period_us);
     else if (DataBlockProducer* p = pImpl->producer())
-        p->metrics().set_configured_period(period_us);
+        p->mutable_metrics().set_configured_period(period_us);
 }
 
 } // namespace pylabhub::hub

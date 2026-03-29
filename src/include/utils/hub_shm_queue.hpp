@@ -163,7 +163,7 @@ public:
     // ── SHM-specific operations (not on base QueueReader/QueueWriter) ─────────
 
     /** @brief Set target period. Writes to DataBlock ContextMetrics directly. */
-    void set_configured_period(uint64_t period_us);
+    void set_configured_period(uint64_t period_us) override;
 
     /** @brief Read-only pointer to the shared flexzone. nullptr if no flexzone. */
     const void* read_flexzone() const noexcept;

@@ -260,7 +260,7 @@ public:
     /** Reset all counters and timing state. */
     void reset_metrics() override;
     /** Set target loop period (informational, reported in metrics). 0 = MaxRate. */
-    void set_configured_period(uint64_t period_us);
+    void set_configured_period(uint64_t period_us) override;
 
     // ── Lifecycle (overrides both QueueReader and QueueWriter no-ops) ──────────
 

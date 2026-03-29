@@ -147,7 +147,7 @@ TEST_F(DatahubLoopPolicyTest, ProducerMetricsClear)
 
     // Clear and set configured period
     producer->clear_metrics();
-    producer->metrics().set_configured_period(50000);
+    producer->mutable_metrics().set_configured_period(50000);
 
     const auto &m = producer->metrics();
     // configured_period_us is config, not a counter — preserved through clear_metrics()
@@ -168,7 +168,7 @@ TEST_F(DatahubLoopPolicyTest, ProducerFixedRateOverrunDetect)
     ASSERT_NE(producer, nullptr);
 
     // configured_period_us = 1000 us (1 ms); body sleeps 5 ms → every iteration after the first overruns.
-    producer->metrics().set_configured_period(1000);
+    producer->mutable_metrics().set_configured_period(1000);
 
     for (int i = 0; i < 5; ++i)
     {
@@ -213,7 +213,7 @@ TEST_F(DatahubLoopPolicyTest, SlotIteratorFixedRatePacing)
     ASSERT_NE(producer, nullptr);
 
     // Configure 30 ms period — 5 iterations → 4 inter-iteration sleeps → ≥ 120 ms.
-    producer->metrics().set_configured_period(30000); // 30 ms in µs
+    producer->mutable_metrics().set_configured_period(30000); // 30 ms in µs
 
     auto t0 = std::chrono::steady_clock::now();
 
@@ -582,7 +582,7 @@ TEST_F(DatahubLoopPolicyTest, RaiiProducerOverrunViaSlots)
     ASSERT_NE(producer, nullptr);
 
     // 1 ms period + 5 ms body sleep guarantees overruns via the RAII ctx.slots() path.
-    producer->metrics().set_configured_period(1000); // 1 ms in µs
+    producer->mutable_metrics().set_configured_period(1000); // 1 ms in µs
 
     producer->with_transaction<EmptyFlexZone, TestDataBlock>(
         5000ms,
