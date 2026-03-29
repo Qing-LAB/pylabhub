@@ -81,6 +81,7 @@ class RoleConfigTest : public ::testing::Test
             {"out_shm_slot_count", 8},
             {"out_update_checksum", true},
             {"out_slot_schema", {{"fields", {{{"name", "value"}, {"type", "float32"}}}}}},
+            {"loop_timing", "fixed_rate"},
             {"target_period_ms", 50.0},
             {"script", {{"type", "python"}, {"path", "."}}},
         };
@@ -95,6 +96,7 @@ class RoleConfigTest : public ::testing::Test
             {"in_channel", "test.channel"},
             {"in_transport", "shm"},
             {"in_verify_checksum", true},
+            {"loop_timing", "max_rate"},
             {"script", {{"type", "lua"}, {"path", "."}}},
         };
     }
@@ -115,6 +117,7 @@ class RoleConfigTest : public ::testing::Test
             {"out_slot_schema", {{"fields", {{{"name", "result"}, {"type", "float64"}}}}}},
             {"out_update_checksum", true},
             {"in_verify_checksum", false},
+            {"loop_timing", "max_rate"},
             {"script", {{"type", "python"}, {"path", "."}}},
         };
     }

@@ -1102,9 +1102,7 @@ struct DataBlockProducerImpl
     mutable std::once_flag name_fallback_once;
     mutable std::string name_fallback;
 
-    // ── LoopPolicy / ContextMetrics (HEP-CORE-0008) ──────────────────────────
-    LoopPolicy loop_policy{LoopPolicy::MaxRate};
-    uint64_t   configured_period_us{0};
+    // ── ContextMetrics (HEP-CORE-0008) ─────────────────────────────────────────
     ContextMetrics metrics_;
     /// Timestamp when the previous slot acquire completed (start of the previous iteration).
     /// Zero-initialized; set on first successful acquire.
@@ -1149,9 +1147,7 @@ struct DataBlockConsumerImpl
     mutable std::once_flag name_fallback_once;
     mutable std::string name_fallback;
 
-    // ── LoopPolicy / ContextMetrics (HEP-CORE-0008) ──────────────────────────
-    LoopPolicy loop_policy{LoopPolicy::MaxRate};
-    uint64_t   configured_period_us{0};
+    // ── ContextMetrics (HEP-CORE-0008) ─────────────────────────────────────────
     ContextMetrics metrics_;
     /// Timestamp when the previous slot acquire completed (start of the previous iteration).
     /// Zero-initialized; set on first successful acquire.
@@ -1375,21 +1371,6 @@ int DataBlockProducer::reset_metrics() noexcept
 
 // ─── LoopPolicy / ContextMetrics (HEP-CORE-0008) — DataBlockProducer ────────
 
-void DataBlockProducer::set_loop_policy(LoopPolicy policy,
-                                         std::chrono::microseconds period) noexcept
-{
-    if (pImpl == nullptr)
-    {
-        return;
-    }
-    std::lock_guard<std::mutex> lock(pImpl->mutex);
-    pImpl->loop_policy = policy;
-    pImpl->configured_period_us = (policy == LoopPolicy::MaxRate)
-                                      ? 0ULL
-                                      : static_cast<uint64_t>(period.count());
-    pImpl->metrics_.configured_period_us = pImpl->configured_period_us;
-}
-
 const ContextMetrics &DataBlockProducer::metrics() const noexcept
 {
     static const ContextMetrics kEmpty{};
@@ -1400,6 +1381,11 @@ const ContextMetrics &DataBlockProducer::metrics() const noexcept
     return pImpl->metrics_;
 }
 
+ContextMetrics &DataBlockProducer::metrics() noexcept
+{
+    return pImpl->metrics_;
+}
+
 void DataBlockProducer::clear_metrics() noexcept
 {
     if (pImpl == nullptr)
@@ -1407,15 +1393,7 @@ void DataBlockProducer::clear_metrics() noexcept
         return;
     }
     std::lock_guard<std::mutex> lock(pImpl->mutex);
-    const auto saved_period = pImpl->metrics_.configured_period_us;
-    pImpl->metrics_.context_start_time = {};
-    pImpl->metrics_.context_elapsed_us = 0;
-    pImpl->metrics_.last_slot_wait_us  = 0;
-    pImpl->metrics_.last_iteration_us  = 0;
-    pImpl->metrics_.max_iteration_us   = 0;
-    pImpl->metrics_.last_slot_exec_us  = 0;
-    pImpl->metrics_.checksum_error_count.store(0, std::memory_order_relaxed);
-    pImpl->metrics_.configured_period_us = saved_period;
+    pImpl->metrics_.clear();  // preserves configured_period_us by default
     pImpl->t_iter_start_ = {};
 }
 
@@ -1659,23 +1637,22 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
             const auto elapsed_us = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::microseconds>(
                     t_acquired - pImpl->t_iter_start_).count());
-            m.last_iteration_us = elapsed_us;
-            if (elapsed_us > m.max_iteration_us)
-                m.max_iteration_us = elapsed_us;
-            m.context_elapsed_us = static_cast<uint64_t>(
+            m.set_last_iteration(elapsed_us);
+            m.update_max_iteration(elapsed_us);
+            m.set_context_elapsed(static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::microseconds>(
-                    t_acquired - m.context_start_time).count());
+                    t_acquired - m.context_start_time_val()).count()));
             // Overrun detection removed from DataBlock — timing measurement only.
             // Overrun judgement belongs to the main loop which owns the deadline.
         }
         else
         {
             // First acquisition: set session start time.
-            m.context_start_time = t_acquired;
+            m.set_context_start(t_acquired);
         }
-        m.last_slot_wait_us = static_cast<uint64_t>(
+        m.set_last_slot_wait(static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
-                t_acquired - t_entry).count());
+                t_acquired - t_entry).count()));
         pImpl->t_iter_start_  = t_acquired;
     }
 
@@ -1779,9 +1756,9 @@ bool release_write_handle(SlotWriteHandleImpl &impl)
         const ContextMetrics::Clock::time_point t_zero{};
         if (impl.t_slot_acquired_ != t_zero)
         {
-            impl.owner->metrics_.last_slot_exec_us = static_cast<uint64_t>(
+            impl.owner->metrics_.set_last_slot_exec(static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::microseconds>(
-                    ContextMetrics::Clock::now() - impl.t_slot_acquired_).count());
+                    ContextMetrics::Clock::now() - impl.t_slot_acquired_).count()));
         }
     }
 
@@ -1864,9 +1841,9 @@ bool release_consume_handle(SlotConsumeHandleImpl &impl)
         const ContextMetrics::Clock::time_point t_zero{};
         if (impl.t_slot_acquired_ != t_zero)
         {
-            impl.owner->metrics_.last_slot_exec_us = static_cast<uint64_t>(
+            impl.owner->metrics_.set_last_slot_exec(static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::microseconds>(
-                    ContextMetrics::Clock::now() - impl.t_slot_acquired_).count());
+                    ContextMetrics::Clock::now() - impl.t_slot_acquired_).count()));
         }
     }
 
@@ -1894,7 +1871,7 @@ bool release_consume_handle(SlotConsumeHandleImpl &impl)
     {
         if (!verify_checksum_slot_impl(impl.dataBlock, impl.slot_index, /*honor_slot_valid=*/false))
         {
-            impl.owner->metrics_.checksum_error_count.fetch_add(1, std::memory_order_relaxed);
+            impl.owner->metrics_.inc_checksum_error();
             LOGGER_WARN("DataBlock '{}': release_consume_slot — slot checksum verification failed for slot_index={} slot_id={}.",
                         impl.owner->name, impl.slot_index, impl.slot_id);
             success = false;
@@ -1904,7 +1881,7 @@ bool release_consume_handle(SlotConsumeHandleImpl &impl)
         {
             if (!verify_checksum_flexible_zone_impl(impl.dataBlock, /*honor_valid=*/false))
             {
-                impl.owner->metrics_.checksum_error_count.fetch_add(1, std::memory_order_relaxed);
+                impl.owner->metrics_.inc_checksum_error();
                 LOGGER_WARN("DataBlock '{}': release_consume_slot — flexzone checksum verification failed for slot_index={}.",
                             impl.owner->name, impl.slot_index);
                 success = false;
@@ -2294,22 +2271,21 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
             const auto elapsed_us = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::microseconds>(
                     t_acquired - pImpl->t_iter_start_).count());
-            m.last_iteration_us = elapsed_us;
-            if (elapsed_us > m.max_iteration_us)
-                m.max_iteration_us = elapsed_us;
-            m.context_elapsed_us = static_cast<uint64_t>(
+            m.set_last_iteration(elapsed_us);
+            m.update_max_iteration(elapsed_us);
+            m.set_context_elapsed(static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::microseconds>(
-                    t_acquired - m.context_start_time).count());
+                    t_acquired - m.context_start_time_val()).count()));
             // No timing overrun detection here — the main loop owns the deadline.
             // Consumer never drops data (data_drop_count stays 0).
         }
         else
         {
-            m.context_start_time = t_acquired;
+            m.set_context_start(t_acquired);
         }
-        m.last_slot_wait_us = static_cast<uint64_t>(
+        m.set_last_slot_wait(static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
-                t_acquired - t_entry).count());
+                t_acquired - t_entry).count()));
         pImpl->t_iter_start_   = t_acquired;
     }
 
@@ -2516,22 +2492,7 @@ int DataBlockConsumer::reset_metrics() noexcept
     return (header != nullptr) ? slot_rw_reset_metrics(header) : -1;
 }
 
-// ─── LoopPolicy / ContextMetrics (HEP-CORE-0008) — DataBlockConsumer ────────
-
-void DataBlockConsumer::set_loop_policy(LoopPolicy policy,
-                                         std::chrono::microseconds period) noexcept
-{
-    if (pImpl == nullptr)
-    {
-        return;
-    }
-    std::lock_guard<std::recursive_mutex> lock(pImpl->mutex);
-    pImpl->loop_policy = policy;
-    pImpl->configured_period_us = (policy == LoopPolicy::MaxRate)
-                                      ? 0ULL
-                                      : static_cast<uint64_t>(period.count());
-    pImpl->metrics_.configured_period_us = pImpl->configured_period_us;
-}
+// ─── ContextMetrics (HEP-CORE-0008) — DataBlockConsumer ─────────────────────
 
 const ContextMetrics &DataBlockConsumer::metrics() const noexcept
 {
@@ -2556,15 +2517,7 @@ void DataBlockConsumer::clear_metrics() noexcept
         return;
     }
     std::lock_guard<std::recursive_mutex> lock(pImpl->mutex);
-    const auto saved_period = pImpl->metrics_.configured_period_us;
-    pImpl->metrics_.context_start_time = {};
-    pImpl->metrics_.context_elapsed_us = 0;
-    pImpl->metrics_.last_slot_wait_us  = 0;
-    pImpl->metrics_.last_iteration_us  = 0;
-    pImpl->metrics_.max_iteration_us   = 0;
-    pImpl->metrics_.last_slot_exec_us  = 0;
-    pImpl->metrics_.checksum_error_count.store(0, std::memory_order_relaxed);
-    pImpl->metrics_.configured_period_us = saved_period;
+    pImpl->metrics_.clear();  // preserves configured_period_us by default
     pImpl->t_iter_start_ = {};
 }
 

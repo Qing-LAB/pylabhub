@@ -161,9 +161,28 @@
 - [x] Wire `"inbox"` group into all serialization sites via `RoleContext::inbox_queue` ✅ 2026-03-27
 - [x] InboxQueue: `checksum_error_count` added (was log-only; now increments counter like ZmqQueue) ✅ 2026-03-27
 - [x] InboxQueue: schema_tag validation added (BLAKE2b hash of canonical field defs; rejects mismatch) ✅ 2026-03-27
-- [ ] `"custom"` metrics in `api.metrics()` (Python/Lua) — currently only in `snapshot_metrics_json()` for heartbeat
+- [ ] Custom metrics redesign (deferred to HEP-0019 Phase 2):
+  - UID scoping: already provided by heartbeat envelope (`{uid, channel, metrics}`) and
+    broker global role table indexed by `(channel, uid)` — no structural change needed
+  - `api.report_metric()` reports to system (broker queryable via METRICS_REQ) — already works
+  - Separate collection path: `api.custom_metrics()` reads custom map (map iteration);
+    `api.metrics()` stays fast (atomic reads only, no map ops) — new API, not yet implemented
+  - Target use: admin/hubshell queries, not hot-path producer/consumer scripts
+  - Facilities already in place: `custom_metrics_` map, `metrics_spin_`, heartbeat JSON path,
+    broker global role table with UID indexing
 - [ ] Tests for Python `api.metrics()` hierarchical dict and Lua `api.metrics()` table
-- [ ] Double `set_loop_policy` on SHM path (hub::Producer/Consumer sets it, then role host sets it again via queue)
+- [ ] Loop timing config hardening + single-path loop policy (in progress 2026-03-28):
+  - `loop_timing` required in config (no implicit default)
+  - `max_rate` conflicts with target_period_ms/target_rate_hz → error
+  - `fixed_rate` requires exactly one of period/rate → error if both/neither
+  - Remove `queue_period_us` from Options (redundant with `configured_period_us`)
+  - Remove `set_loop_policy` from ShmQueue factories (layer violation)
+  - Role hosts map `tc.loop_timing` → `opts.loop_policy` (not hardcode FixedRate)
+  - Single path: config → Options → establish_channel → DataBlock/ZmqQueue
+- [ ] Move `configured_period_us` from QueueMetrics/ContextMetrics to loop level (LoopMetricsSnapshot).
+  Queue has no timing role — period is loop config, not queue config.
+- [ ] Rewrite `test_datahub_loop_policy.cpp`: timing measurement tests stay at L3 (DataBlock);
+  policy execution tests (FixedRate sleep, compensation, overrun) move to role/RAII level
 - [ ] Blocking overrun test: L3 test with queue + deadline + barrier coordination (deterministic, no sleep)
 - [ ] `RoleContext` void* cleanup: done for producer/consumer; evaluate other void* patterns in scripting layer
 

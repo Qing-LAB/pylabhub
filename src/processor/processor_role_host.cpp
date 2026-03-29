@@ -318,8 +318,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
     in_opts.zmq_buffer_depth     = config_.in_transport().zmq_buffer_depth;
     in_opts.verify_checksum      = config_.in_shm().verify_checksum;
     in_opts.verify_checksum_fz   = core_.has_fz() && config_.in_shm().verify_checksum;
-    in_opts.queue_period_us      = (config_.timing().period_us > 0.0)
-                                       ? static_cast<uint64_t>(config_.timing().period_us) : 0;
+    // queue_period_us removed: loop policy set by establish_channel().
     in_opts.ctrl_queue_max_depth = config_.monitoring().ctrl_queue_max_depth;
     in_opts.peer_dead_timeout_ms = config_.monitoring().peer_dead_timeout_ms;
 
@@ -414,14 +413,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
     out_opts.flexzone_size      = core_.schema_fz_size();
     out_opts.update_checksum    = config_.out_shm().update_checksum;
     out_opts.update_checksum_fz = core_.has_fz() && config_.out_shm().update_checksum;
-    out_opts.queue_period_us    = (config_.timing().period_us > 0.0)
-                                      ? static_cast<uint64_t>(config_.timing().period_us) : 0;
-
-    if (config_.timing().period_us > 0.0)
-    {
-        out_opts.loop_policy          = hub::LoopPolicy::FixedRate;
-        out_opts.configured_period_us = std::chrono::microseconds{static_cast<int64_t>(config_.timing().period_us)};
-    }
+    out_opts.timing = config_.timing().timing_params();
     out_opts.ctrl_queue_max_depth = config_.monitoring().ctrl_queue_max_depth;
     out_opts.peer_dead_timeout_ms = config_.monitoring().peer_dead_timeout_ms;
 

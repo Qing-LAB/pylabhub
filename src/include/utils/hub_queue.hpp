@@ -236,6 +236,9 @@ public:
     /** @brief Reset all metric counters. Called at role startup before the data loop. */
     virtual void reset_metrics() {}
 
+    /** @brief Set the target loop period (informational — stored in ContextMetrics). */
+    virtual void set_configured_period(uint64_t /*period_us*/) {}
+
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     // Default implementations are no-ops (suitable for ShmQueue).
     // ZmqQueue overrides start()/stop() to manage its recv_thread_.
@@ -336,6 +339,9 @@ public:
 
     /** @brief Reset all metric counters. Called at role startup before the data loop. */
     virtual void reset_metrics() {}
+
+    /** @brief Set the target loop period (informational — stored in ContextMetrics). */
+    virtual void set_configured_period(uint64_t /*period_us*/) {}
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     // Default implementations are no-ops (suitable for ShmQueue).

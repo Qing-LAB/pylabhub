@@ -65,8 +65,7 @@ public:
     from_consumer(std::unique_ptr<DataBlockConsumer> dbc,
                   size_t item_size, size_t flexzone_sz = 0,
                   std::string channel_name = {},
-                  bool verify_slot = false, bool verify_fz = false,
-                  uint64_t configured_period_us = 0);
+                  bool verify_slot = false, bool verify_fz = false);
 
     /**
      * @brief Create a write-mode ShmQueue from a DataBlockProducer.
@@ -78,7 +77,6 @@ public:
                   size_t item_size, size_t flexzone_sz = 0,
                   std::string channel_name = {},
                   bool checksum_slot = false, bool checksum_fz = false,
-                  uint64_t configured_period_us = 0,
                   bool zero_on_acquire = true);
 
     /**
@@ -90,8 +88,7 @@ public:
     [[nodiscard]] static std::unique_ptr<QueueReader>
     from_consumer_ref(DataBlockConsumer& dbc, size_t item_size,
                       size_t flexzone_sz = 0, std::string channel_name = {},
-                      bool verify_slot = false, bool verify_fz = false,
-                      uint64_t configured_period_us = 0);
+                      bool verify_slot = false, bool verify_fz = false);
 
     /**
      * @brief Create a write-mode ShmQueue wrapping an existing DataBlockProducer.
@@ -102,7 +99,6 @@ public:
     from_producer_ref(DataBlockProducer& dbp, size_t item_size,
                       size_t flexzone_sz = 0, std::string channel_name = {},
                       bool checksum_slot = false, bool checksum_fz = false,
-                      uint64_t configured_period_us = 0,
                       bool always_clear_slot = true);
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -166,7 +162,7 @@ public:
 
     // ── SHM-specific operations (not on base QueueReader/QueueWriter) ─────────
 
-    /** @brief Set target period. Delegates to DataBlock set_loop_policy(). */
+    /** @brief Set target period. Writes to DataBlock ContextMetrics directly. */
     void set_configured_period(uint64_t period_us);
 
     /** @brief Read-only pointer to the shared flexzone. nullptr if no flexzone. */

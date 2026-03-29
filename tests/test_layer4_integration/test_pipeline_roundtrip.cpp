@@ -171,6 +171,7 @@ static void write_producer_config(const fs::path& dir, const fs::path& hub_dir)
         }},
         {"out_hub_dir",        hub_dir.string()},
         {"out_channel",        "test.pipe.raw"},
+        {"loop_timing",        "fixed_rate"},
         {"target_period_ms",   50},  // 20 Hz — continuous high-frequency production
         {"out_transport",      "shm"},
         {"out_shm_enabled",    true},

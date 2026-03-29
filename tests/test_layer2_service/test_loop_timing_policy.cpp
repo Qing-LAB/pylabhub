@@ -20,47 +20,32 @@ using pylabhub::LoopTimingPolicy;
 // parse_loop_timing_policy (period_us: double, in microseconds)
 // ============================================================================
 
-TEST(LoopTimingPolicyTest, Parse_MaxRate_Period0_OK)
+TEST(LoopTimingPolicyTest, Parse_MaxRate_OK)
 {
-    EXPECT_EQ(pylabhub::parse_loop_timing_policy("max_rate", 0.0, "test"),
+    EXPECT_EQ(pylabhub::parse_loop_timing_policy("max_rate", "test"),
               LoopTimingPolicy::MaxRate);
 }
 
-TEST(LoopTimingPolicyTest, Parse_FixedRate_PeriodPositive_OK)
+TEST(LoopTimingPolicyTest, Parse_FixedRate_OK)
 {
-    EXPECT_EQ(pylabhub::parse_loop_timing_policy("fixed_rate", 100000.0, "test"),
+    EXPECT_EQ(pylabhub::parse_loop_timing_policy("fixed_rate", "test"),
               LoopTimingPolicy::FixedRate);
 }
 
-TEST(LoopTimingPolicyTest, Parse_FixedRateWithCompensation_PeriodPositive_OK)
+TEST(LoopTimingPolicyTest, Parse_FixedRateWithCompensation_OK)
 {
-    EXPECT_EQ(pylabhub::parse_loop_timing_policy("fixed_rate_with_compensation", 50000.0, "test"),
+    EXPECT_EQ(pylabhub::parse_loop_timing_policy("fixed_rate_with_compensation", "test"),
               LoopTimingPolicy::FixedRateWithCompensation);
-}
-
-TEST(LoopTimingPolicyTest, Parse_MaxRate_PeriodPositive_Throws)
-{
-    EXPECT_THROW(pylabhub::parse_loop_timing_policy("max_rate", 100000.0, "ctx"),
-                 std::runtime_error);
-}
-
-TEST(LoopTimingPolicyTest, Parse_FixedRate_Period0_Throws)
-{
-    EXPECT_THROW(pylabhub::parse_loop_timing_policy("fixed_rate", 0.0, "ctx"),
-                 std::runtime_error);
-}
-
-TEST(LoopTimingPolicyTest, Parse_FixedRateWithCompensation_Period0_Throws)
-{
-    EXPECT_THROW(pylabhub::parse_loop_timing_policy("fixed_rate_with_compensation", 0.0, "ctx"),
-                 std::runtime_error);
 }
 
 TEST(LoopTimingPolicyTest, Parse_InvalidString_Throws)
 {
-    EXPECT_THROW(pylabhub::parse_loop_timing_policy("turbo", 0.0, "ctx"),
+    EXPECT_THROW(pylabhub::parse_loop_timing_policy("turbo", "ctx"),
                  std::runtime_error);
 }
+
+// Cross-field validation (MaxRate+period, FixedRate+no period, etc.) is now
+// enforced by parse_timing_config() — tested in test_role_config.cpp.
 
 // ============================================================================
 // default_loop_timing_policy (period_us: double)

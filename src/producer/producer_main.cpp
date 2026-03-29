@@ -120,6 +120,7 @@ static int do_init(const std::string &prod_dir_str, const std::string &cli_name)
 
     j["out_hub_dir"]          = "<replace with hub directory path, e.g. /var/pylabhub/my_hub>";
     j["out_channel"]          = "lab.my.channel";
+    j["loop_timing"]          = "fixed_rate";
     j["target_period_ms"]     = 100;
 
     j["out_transport"]        = "shm";

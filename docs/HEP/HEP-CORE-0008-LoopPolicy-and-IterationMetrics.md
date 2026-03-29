@@ -166,14 +166,31 @@ For `FixedRate`, `period = 0ms` is treated as `MaxRate` (no sleep).
 **JSON config** (per-binary config):
 
 ```json
-"loop_policy": "fixed_rate",
-"configured_period_us": 10000
+"loop_timing": "fixed_rate",
+"target_period_ms": 10.0
 ```
 
-Both fields are optional; `loop_policy` defaults to `"max_rate"` and `configured_period_us` defaults to `0`.
-The `target_period_ms` field controls the binary-level deadline loop (separate concern);
-`loop_policy`/`configured_period_us` control the DataBlock Pimpl overrun detection and (in a future pass)
-the RAII `SlotIterator` sleep.
+**Configuration rules (enforced by `parse_timing_config()`):**
+- `loop_timing` is **required** — no implicit default. Error if absent.
+- `"max_rate"`: neither `target_period_ms` nor `target_rate_hz` may be present. Error if either set.
+- `"fixed_rate"` / `"fixed_rate_with_compensation"`: exactly one of `target_period_ms` or
+  `target_rate_hz` must be present. Error if both. Error if neither.
+- Config validation is the **single source of truth** — downstream code receives clean,
+  non-contradictory values and never re-derives policy from period.
+
+**Config → DataBlock mapping (single path):**
+```
+parse_timing_config() → TimingConfig {loop_timing, period_us}
+    ↓ role host (trivial mapping)
+ProducerOptions / ConsumerOptions {loop_policy, configured_period_us}
+    ↓ establish_channel() — single call
+DataBlock::set_loop_policy(policy, period)
+ZmqQueue::set_configured_period(period)   [informational only]
+```
+
+`LoopTimingPolicy::FixedRate` and `FixedRateWithCompensation` both map to
+`LoopPolicy::FixedRate` at the DataBlock level. The compensation logic lives in
+the main loop deadline calculation, not in DataBlock.
 
 ---
 
@@ -471,16 +488,31 @@ dual-queue layout. Role-specific fields vary per role type and are built inline 
 
 ### 6.2 Metrics wiring in role host startup
 
-After queue creation and start:
+The role host maps `TimingConfig` to `ProducerOptions`/`ConsumerOptions`:
 
 ```cpp
-// Reset counters for a clean session:
-queue_->reset_metrics();
-
-// Set target period for metrics reporting (informational — overrun detection is in main loop):
+const auto &tc = config_.timing();
 if (tc.period_us > 0.0)
-    queue_->set_configured_period(static_cast<uint64_t>(tc.period_us));
+{
+    opts.loop_policy = (tc.loop_timing == LoopTimingPolicy::MaxRate)
+                           ? hub::LoopPolicy::MaxRate
+                           : hub::LoopPolicy::FixedRate;
+    opts.configured_period_us = std::chrono::microseconds{static_cast<int64_t>(tc.period_us)};
+}
 ```
+
+`establish_channel()` applies these to DataBlock (SHM) and ZmqQueue:
+
+```cpp
+// Single call — the only place loop policy is set on DataBlock:
+impl->shm->set_loop_policy(opts.loop_policy, opts.configured_period_us);
+
+// ZmqQueue: informational only (no timing effect):
+zmq_queue->set_configured_period(opts.configured_period_us.count());
+```
+
+ShmQueue factories do **NOT** touch loop policy — that is exclusively the service
+layer's responsibility (hub::Producer/Consumer).
 
 After each main loop cycle (Step F):
 
@@ -491,21 +523,18 @@ if (deadline != Clock::time_point::max() && now > deadline)
     core_.inc_loop_overrun();
 ```
 
-### 6.3 Config additions
+### 6.3 Config fields
 
-Each binary's config has:
+Timing is configured via `parse_timing_config()` in `timing_config.hpp`:
 
-```cpp
-// In producer_config.hpp / consumer_config.hpp:
-int target_period_ms{100};                    // binary-level deadline loop (0 = free-run)
-LoopTimingPolicy loop_timing{LoopTimingPolicy::FixedRate}; // policy for period>0
+| Field | Required | Values | Description |
+|-------|----------|--------|-------------|
+| `loop_timing` | **yes** | `"max_rate"`, `"fixed_rate"`, `"fixed_rate_with_compensation"` | Loop timing policy. No default. |
+| `target_period_ms` | if fixed_rate | double > 0 | Target period in milliseconds |
+| `target_rate_hz` | if fixed_rate | double > 0 | Target rate (alternative to period) |
 
-// DataBlock-layer pacing (HEP-CORE-0008)
-hub::LoopPolicy           loop_policy{hub::LoopPolicy::MaxRate};
-std::chrono::microseconds configured_period_us{0};
-```
-
-`target_period_ms` drives the binary-level deadline loop in the script host.
+Exactly one of `target_period_ms` / `target_rate_hz` for fixed_rate policies.
+Neither for `max_rate`. See §2 for the validation rules.
 `loop_policy`/`configured_period_us` drive the DataBlock Pimpl overrun detection in `acquire_write_slot()`.
 They are independent: a binary can have `target_period_ms=10` (script host sleep) and
 `loop_policy=fixed_rate, configured_period_us=10000` (DataBlock overrun tracking) simultaneously.
