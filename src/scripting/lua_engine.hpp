@@ -215,6 +215,20 @@ class LuaEngine : public ScriptEngine
     static int lua_api_notify_channel(lua_State *L);
     static int lua_api_broadcast_channel(lua_State *L);
     static int lua_api_list_channels(lua_State *L);
+
+    // ── Group F: spinlocks (SHM-only) ─────────────────────────────────
+    static int lua_api_spinlock(lua_State *L);
+    static int lua_api_spinlock_count(lua_State *L);
+    void register_spinlock_metatable_();
+
+    static int lua_spinlock_lock(lua_State *L);
+    static int lua_spinlock_unlock(lua_State *L);
+    static int lua_spinlock_try_lock_for(lua_State *L);
+    static int lua_spinlock_is_locked(lua_State *L);
+    static int lua_spinlock_gc(lua_State *L);
+
+    // ── Group G: flexzone getter ──────────────────────────────────────
+    static int lua_api_flexzone(lua_State *L);
 };
 
 } // namespace pylabhub::scripting

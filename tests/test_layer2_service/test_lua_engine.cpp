@@ -2336,4 +2336,75 @@ TEST_F(LuaEngineTest, FullLifecycle_VerifiesCallbackExecution)
     engine.finalize();
 }
 
+// ============================================================================
+// Group F: Spinlocks — L2 tests (no SHM, safe defaults)
+// ============================================================================
+
+TEST_F(LuaEngineTest, Api_SpinlockCount_WithoutSHM)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            assert(api.spinlock_count() == 0,
+                   "spinlock_count should be 0 without SHM")
+            return false
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Api_Spinlock_WithoutSHM_IsError)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            local ok, err = pcall(api.spinlock, 0)
+            assert(not ok, "spinlock(0) should error without SHM")
+            assert(string.find(err, "SHM"),
+                   "error message should mention SHM: " .. tostring(err))
+            return false
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "pcall should catch the error, not propagate";
+    engine.finalize();
+}
+
+// ============================================================================
+// Group G: Flexzone — L2 tests (no SHM, safe defaults)
+// ============================================================================
+
+TEST_F(LuaEngineTest, Api_Flexzone_WithoutSHM_ReturnsNil)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            local fz_obj = api.flexzone()
+            assert(fz_obj == nil, "flexzone should be nil without SHM")
+            return false
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
 } // anonymous namespace
