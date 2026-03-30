@@ -56,8 +56,8 @@ TEST(MetricsApiTest, ProducerAPI_SnapshotBase_NoSHM)
     // No queue connected → no "queue" key.
     EXPECT_FALSE(snap.contains("queue"));
 
-    ASSERT_TRUE(snap.contains("custom"));
-    EXPECT_TRUE(snap["custom"].empty());
+    // No custom metrics reported → no "custom" key.
+    EXPECT_FALSE(snap.contains("custom"));
 }
 
 TEST(MetricsApiTest, ProducerAPI_ReportMetric)
@@ -131,7 +131,7 @@ TEST(MetricsApiTest, ConsumerAPI_SnapshotBase_NoSHM)
     EXPECT_EQ(snap["loop"]["iteration_count"], 0);
 
     EXPECT_FALSE(snap.contains("queue"));
-    EXPECT_TRUE(snap["custom"].empty());
+    EXPECT_FALSE(snap.contains("custom"));
 }
 
 TEST(MetricsApiTest, ConsumerAPI_ReportAndClear)

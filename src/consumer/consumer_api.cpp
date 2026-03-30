@@ -96,21 +96,17 @@ py::object ConsumerAPI::shm_blocks(const std::string& channel)
 
 void ConsumerAPI::report_metric(const std::string &key, double value)
 {
-    hub::InProcessSpinStateGuard guard(metrics_spin_);
-    custom_metrics_[key] = value;
+    core_->report_metric(key, value);
 }
 
 void ConsumerAPI::report_metrics(const std::unordered_map<std::string, double> &kv)
 {
-    hub::InProcessSpinStateGuard guard(metrics_spin_);
-    for (const auto &[k, v] : kv)
-        custom_metrics_[k] = v;
+    core_->report_metrics(kv);
 }
 
 void ConsumerAPI::clear_custom_metrics()
 {
-    hub::InProcessSpinStateGuard guard(metrics_spin_);
-    custom_metrics_.clear();
+    core_->clear_custom_metrics();
 }
 
 void ConsumerAPI::set_verify_checksum(bool enable)
@@ -161,8 +157,9 @@ nlohmann::json ConsumerAPI::snapshot_metrics_json() const
     }
 
     {
-        hub::InProcessSpinStateGuard guard(metrics_spin_);
-        result["custom"] = nlohmann::json(custom_metrics_);
+        auto cm = core_->custom_metrics_snapshot();
+        if (!cm.empty())
+            result["custom"] = nlohmann::json(cm);
     }
 
     return result;
@@ -196,6 +193,17 @@ py::dict ConsumerAPI::metrics() const
         py::dict ib;
         scripting::inbox_metrics_to_pydict(ib, inbox_queue_->inbox_metrics());
         d["inbox"] = ib;
+    }
+
+    {
+        auto cm = core_->custom_metrics_snapshot();
+        if (!cm.empty())
+        {
+            py::dict custom;
+            for (auto &[k, v] : cm)
+                custom[py::str(k)] = py::float_(v);
+            d["custom"] = custom;
+        }
     }
 
     return d;

@@ -1729,7 +1729,7 @@ int LuaEngine::lua_api_report_metric(lua_State *L)
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     const char *key = luaL_checkstring(L, 1);
     double value = luaL_checknumber(L, 2);
-    self->custom_metrics_[key] = value;
+    self->ctx_.core->report_metric(key, value);
     return 0;
 }
 
@@ -1744,7 +1744,7 @@ int LuaEngine::lua_api_report_metrics(lua_State *L)
         {
             const char *key = lua_tostring(L, -2);
             double val = lua_tonumber(L, -1);
-            self->custom_metrics_[key] = val;
+            self->ctx_.core->report_metric(key, val);
         }
         lua_pop(L, 1); // pop value, keep key for next iteration
     }
@@ -1754,7 +1754,7 @@ int LuaEngine::lua_api_report_metrics(lua_State *L)
 int LuaEngine::lua_api_clear_custom_metrics(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    self->custom_metrics_.clear();
+    self->ctx_.core->clear_custom_metrics();
     return 0;
 }
 
@@ -1921,15 +1921,18 @@ int LuaEngine::lua_api_metrics(lua_State *L)
     }
 
     // "custom" (optional — only if custom metrics reported)
-    if (!self->custom_metrics_.empty())
     {
-        lua_newtable(L);
-        for (auto &[k, v] : self->custom_metrics_)
+        auto cm = core->custom_metrics_snapshot();
+        if (!cm.empty())
         {
-            lua_pushnumber(L, v);
-            lua_setfield(L, -2, k.c_str());
+            lua_newtable(L);
+            for (auto &[k, v] : cm)
+            {
+                lua_pushnumber(L, v);
+                lua_setfield(L, -2, k.c_str());
+            }
+            lua_setfield(L, -2, "custom");
         }
-        lua_setfield(L, -2, "custom");
     }
 
     return 1; // one table on stack

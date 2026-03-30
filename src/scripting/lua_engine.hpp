@@ -134,10 +134,6 @@ class LuaEngine : public ScriptEngine
     // ctx_ is inherited from ScriptEngine (set by build_api).
     bool stop_on_script_error_{false};
 
-    // ── Custom metrics (HEP-CORE-0019) ──────────────────────────────────
-    // Lua is single-threaded so no lock needed.
-    std::unordered_map<std::string, double> custom_metrics_;
-
     // Inbox cache is shared in core_ (RoleHostCore::inbox_cache_).
 
     // ── Thread-state cache (multi-state: non-owner threads) ──────────────
