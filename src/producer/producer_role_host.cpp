@@ -399,8 +399,8 @@ bool ProducerRoleHost::setup_infrastructure_()
     // --- Queue abstraction: sizes + checksum + period for internal queue creation ---
     opts.item_size         = schema_slot_size_;
     opts.flexzone_size     = core_.schema_fz_size();
-    opts.update_checksum   = shm.update_checksum;
-    opts.update_checksum_fz = core_.has_fz() && shm.update_checksum;
+    opts.checksum_policy    = config_.checksum().policy;
+    opts.flexzone_checksum  = config_.checksum().flexzone && core_.has_fz();
     // queue_period_us removed: loop policy set by establish_channel() on DataBlock;
     // ZmqQueue informational period set from configured_period_us in hub_producer.cpp.
 
@@ -411,7 +411,7 @@ bool ProducerRoleHost::setup_infrastructure_()
         opts.shm_config.ring_buffer_capacity = shm.slot_count;
         opts.shm_config.policy               = hub::DataBlockPolicy::RingBuffer;
         opts.shm_config.consumer_sync_policy = shm.sync_policy;
-        opts.shm_config.checksum_policy      = hub::ChecksumPolicy::Manual;
+        opts.shm_config.checksum_policy      = config_.checksum().policy;
         opts.shm_config.flex_zone_size       = core_.schema_fz_size();
 
         opts.shm_config.physical_page_size = hub::system_page_size();

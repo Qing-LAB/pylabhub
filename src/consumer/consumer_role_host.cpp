@@ -292,8 +292,8 @@ bool ConsumerRoleHost::setup_infrastructure_()
     // Queue abstraction: sizes + checksum for internal queue creation.
     opts.item_size          = schema_slot_size_;
     opts.flexzone_size      = core_.schema_fz_size();
-    opts.verify_checksum    = shm.verify_checksum;
-    opts.verify_checksum_fz = core_.has_fz() && shm.verify_checksum;
+    opts.checksum_policy    = config_.checksum().policy;
+    opts.flexzone_checksum  = config_.checksum().flexzone && core_.has_fz();
 
     // Transport declaration.
     const bool is_zmq = (tr.transport == config::Transport::Zmq);

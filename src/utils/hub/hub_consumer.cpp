@@ -594,7 +594,7 @@ Consumer::establish_channel(Messenger &messenger, ChannelHandle channel,
     {
         impl->shm_queue_reader_ = ShmQueue::from_consumer_ref(
             *impl->shm, opts.item_size, opts.flexzone_size, opts.channel_name,
-            opts.verify_checksum, opts.verify_checksum_fz);
+            false, false);  // checksum flags: set via set_checksum_policy() below
         impl->queue_reader_ = impl->shm_queue_reader_.get();
     }
     else if (impl->zmq_queue_)
@@ -606,6 +606,13 @@ Consumer::establish_channel(Messenger &messenger, ChannelHandle channel,
     if (impl->queue_reader_ && opts.timing.period_us > 0)
     {
         impl->queue_reader_->set_configured_period(opts.timing.period_us);
+    }
+
+    // Set checksum policy on the queue (single path for both SHM and ZMQ).
+    if (impl->queue_reader_)
+    {
+        impl->queue_reader_->set_checksum_policy(opts.checksum_policy);
+        impl->queue_reader_->set_flexzone_checksum(opts.flexzone_checksum);
     }
 
     return Consumer(std::move(impl));

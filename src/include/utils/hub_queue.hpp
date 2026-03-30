@@ -17,6 +17,7 @@
  * See docs/HEP/HEP-CORE-0015-Processor-Binary.md for design rationale.
  */
 #include "pylabhub_utils_export.h"
+#include "utils/data_block_policy.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -241,6 +242,17 @@ public:
     /** @brief Set the target loop period (informational — stored in ContextMetrics). */
     virtual void set_configured_period(uint64_t /*period_us*/) {}
 
+    // ── Checksum (unified interface — per-role policy) ───────────────────────
+
+    /** @brief Set the checksum policy. Applied uniformly to this queue. */
+    virtual void set_checksum_policy(ChecksumPolicy /*policy*/) {}
+    /** @brief Enable/disable flexzone checksum. SHM-specific; ZMQ no-op. */
+    virtual void set_flexzone_checksum(bool /*enabled*/) {}
+    /** @brief Verify slot checksum on current read buffer. Returns true if valid or no checksum. */
+    virtual bool verify_checksum() { return true; }
+    /** @brief Verify flexzone checksum. SHM-specific; ZMQ returns true. */
+    virtual bool verify_flexzone_checksum() { return true; }
+
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     // Default implementations are no-ops (suitable for ShmQueue).
     // ZmqQueue overrides start()/stop() to manage its recv_thread_.
@@ -348,6 +360,17 @@ public:
 
     /** @brief Set the target loop period (informational — stored in ContextMetrics). */
     virtual void set_configured_period(uint64_t /*period_us*/) {}
+
+    // ── Checksum (unified interface — per-role policy) ───────────────────────
+
+    /** @brief Set the checksum policy. Applied uniformly to this queue. */
+    virtual void set_checksum_policy(ChecksumPolicy /*policy*/) {}
+    /** @brief Enable/disable flexzone checksum. SHM-specific; ZMQ no-op. */
+    virtual void set_flexzone_checksum(bool /*enabled*/) {}
+    /** @brief Compute slot checksum on current write buffer. */
+    virtual void update_checksum() {}
+    /** @brief Compute flexzone checksum. SHM-specific; ZMQ no-op. */
+    virtual void update_flexzone_checksum() {}
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     // Default implementations are no-ops (suitable for ShmQueue).

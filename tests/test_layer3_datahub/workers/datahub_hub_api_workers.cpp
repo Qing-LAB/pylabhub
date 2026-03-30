@@ -1326,7 +1326,7 @@ int construction_time_checksum(int /*argc*/, char ** /*argv*/)
             popts.shm_config      = make_shm_config();
             popts.shm_config.checksum_policy = ChecksumPolicy::Manual;
             popts.item_size       = sizeof(uint64_t);
-            popts.update_checksum = true;  // construction-time flag
+            popts.checksum_policy = ChecksumPolicy::Enforced;  // construction-time flag
             popts.timeout_ms      = 3000;
 
             auto producer = Producer::create(messenger, popts);
@@ -1344,7 +1344,7 @@ int construction_time_checksum(int /*argc*/, char ** /*argv*/)
             copts.channel_name      = popts.channel_name;
             copts.shm_shared_secret = kTestShmSecret;
             copts.item_size         = sizeof(uint64_t);
-            copts.verify_checksum   = true;  // construction-time flag
+            copts.checksum_policy   = ChecksumPolicy::Enforced;  // construction-time flag
             copts.timeout_ms        = 3000;
 
             auto consumer = Consumer::connect(messenger, copts);
@@ -1667,7 +1667,7 @@ int runtime_verify_checksum_toggle(int /*argc*/, char ** /*argv*/)
             popts.shm_config.checksum_policy = ChecksumPolicy::Manual;
             popts.shm_config.logical_unit_size = sizeof(TestSlot);
             popts.item_size       = sizeof(TestSlot);
-            popts.update_checksum = false; // NO ShmQueue-level checksum
+            popts.checksum_policy = ChecksumPolicy::None; // NO ShmQueue-level checksum
             popts.timeout_ms      = 3000;
 
             auto producer = Producer::create(messenger, popts);
@@ -1689,7 +1689,7 @@ int runtime_verify_checksum_toggle(int /*argc*/, char ** /*argv*/)
             copts.channel_name      = popts.channel_name;
             copts.shm_shared_secret = kTestShmSecret;
             copts.item_size         = sizeof(TestSlot);
-            copts.verify_checksum   = false;
+            copts.checksum_policy   = ChecksumPolicy::None;
             copts.timeout_ms        = 3000;
 
             auto consumer = Consumer::connect(messenger, copts);
@@ -1759,7 +1759,7 @@ int checksum_mismatch_through_forwarding(int /*argc*/, char ** /*argv*/)
             popts.shm_config      = make_shm_config();
             popts.shm_config.checksum_policy = ChecksumPolicy::Manual;
             popts.item_size       = sizeof(uint64_t);
-            popts.update_checksum = true;
+            popts.checksum_policy = ChecksumPolicy::Enforced;
             popts.timeout_ms      = 3000;
 
             auto producer = Producer::create(messenger, popts);
@@ -1777,7 +1777,7 @@ int checksum_mismatch_through_forwarding(int /*argc*/, char ** /*argv*/)
             copts.channel_name      = popts.channel_name;
             copts.shm_shared_secret = kTestShmSecret;
             copts.item_size         = sizeof(uint64_t);
-            copts.verify_checksum   = true;
+            copts.checksum_policy   = ChecksumPolicy::Enforced;
             copts.timeout_ms        = 3000;
 
             auto consumer = Consumer::connect(messenger, copts);
