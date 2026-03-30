@@ -132,9 +132,14 @@ The DEALER/ROUTER envelope uses ZMQ's built-in identity routing:
 1. Role host reads inbox config (schema, endpoint, buffer_depth, packing)
 2. InboxQueue::bind_at(endpoint, schema_fields, packing, rcvhwm) → unique_ptr
 3. inbox_queue_->start()                    — bind ROUTER socket
-4. inbox_queue_->actual_endpoint()          — resolve port-0 if used
-5. Endpoint included in Producer/Consumer Options → REG_REQ to broker
-6. inbox_thread_ started: loop { recv_one() → invoke_on_inbox() → send_ack() }
+4. inbox_queue_->set_checksum_policy(config_.checksum().policy)
+5. inbox_queue_->actual_endpoint()          — resolve port-0 if used
+6. Inbox info included in registration:
+   - Producer/Processor: ProducerOptions → REG_REQ
+   - Consumer: ConsumerOptions → CONSUMER_REG_REQ
+   Fields: inbox_endpoint, inbox_schema_json, inbox_packing, inbox_checksum
+7. Broker stores inbox info on ChannelEntry (producer) or ConsumerEntry (consumer)
+8. inbox_thread_ started: loop { recv_one() → invoke_on_inbox() → send_ack() }
 ```
 
 ### 4.2 Sender Connection (on demand)
@@ -143,10 +148,14 @@ The DEALER/ROUTER envelope uses ZMQ's built-in identity routing:
 1. Script calls api.open_inbox("TARGET-UID-1234")
 2. ScriptEngine → RoleHostCore::open_inbox() (cached, thread-safe)
 3. Messenger sends ROLE_INFO_REQ to broker
-4. Broker returns inbox_endpoint + inbox_schema_json + inbox_packing
-5. InboxClient::connect_to(endpoint, my_uid, schema, packing) → shared_ptr
-6. client->start()                          — connect DEALER socket
-7. InboxHandle wraps client for script use
+4. Broker searches producer entries (by producer_role_uid), then consumer entries
+   (by role_uid). Returns first match.
+5. ROLE_INFO_ACK: inbox_endpoint, inbox_schema, inbox_packing, inbox_checksum
+6. InboxClient::connect_to(endpoint, my_uid, schema, packing) → shared_ptr
+7. client->start()                          — connect DEALER socket
+8. client->set_checksum_policy(owner's policy from inbox_checksum)
+   The inbox OWNER dictates the checksum policy. The sender adopts it.
+9. InboxHandle wraps client for script use
 ```
 
 ### 4.3 Message Exchange

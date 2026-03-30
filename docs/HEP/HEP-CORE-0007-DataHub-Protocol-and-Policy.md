@@ -1062,24 +1062,49 @@ Payload (ROLE_PRESENCE_ACK):
   present               bool     true if any matching role is currently registered
 ```
 
-#### ROLE_INFO_REQ / ROLE_INFO_ACK — Query Role Details (added 2026-03-10)
+#### ROLE_INFO_REQ / ROLE_INFO_ACK — Query Role Details (added 2026-03-10, updated 2026-03-30)
 
 ```
 Direction:  Any role → Broker → Any role
-Trigger:    api.open_inbox(uid): needs inbox_endpoint + schema to connect DEALER
+Trigger:    api.open_inbox(uid): needs inbox_endpoint + schema + checksum policy
 Pattern:    Synchronous request/response
 
 Payload (ROLE_INFO_REQ):
   role_uid              string   Exact UID match
 
 Payload (ROLE_INFO_ACK):
-  status                string   "success"
-  role_uid              string
-  role_type             string   "producer" | "consumer" | "processor"
+  found                 bool     true if role found, false otherwise
   channel               string   Channel name the role is registered on
   inbox_endpoint        string   ZMQ ROUTER bind endpoint (empty if no inbox)
-  inbox_schema_json     string   JSON string of inbox slot schema (empty if no inbox)
+  inbox_schema          json     Array of {type,count,length} field defs (empty = no inbox)
   inbox_packing         string   "aligned" | "packed" (empty if no inbox)
+  inbox_checksum        string   "enforced" | "manual" | "none" (empty = enforced)
+```
+
+**Broker search order** (2026-03-30):
+1. Search `ChannelEntry::producer_role_uid` across all channels (producer/processor)
+2. Search `ConsumerEntry::role_uid` across all channels (consumer)
+3. Return first match. If no match, `found=false`.
+
+**Inbox registration sources:**
+- Producer: inbox fields in `REG_REQ` → stored on `ChannelEntry`
+- Consumer: inbox fields in `CONSUMER_REG_REQ` → stored on `ConsumerEntry`
+- Processor: inbox fields in `REG_REQ` (output channel) → stored on `ChannelEntry`
+
+The inbox owner dictates the checksum policy. The sender (InboxClient) reads
+`inbox_checksum` from ROLE_INFO_ACK and adopts the owner's policy.
+
+**CONSUMER_REG_REQ inbox fields** (added 2026-03-30):
+```
+  inbox_endpoint        string   Optional. Empty = no inbox.
+  inbox_schema_json     string   Optional. JSON schema for ROLE_INFO_REQ discovery.
+  inbox_packing         string   Optional. "aligned" or "packed".
+  inbox_checksum        string   Optional. "enforced", "manual", "none".
+```
+
+**REG_REQ inbox_checksum field** (added 2026-03-30):
+```
+  inbox_checksum        string   Optional. "enforced", "manual", "none".
 ```
 
 ### 12.5 Unsolicited Broker Notifications
