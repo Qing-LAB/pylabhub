@@ -257,8 +257,10 @@ public:
 
     /** Unified metrics snapshot — timing (D2+D3) + transport counters. */
     QueueMetrics metrics() const noexcept override;
-    /** Reset all counters and timing state. */
+    /** Reset counters and timing (preserves sequence state for mid-session use). */
     void reset_metrics() override;
+    /** Full init: reset_metrics() + sequence state. Call at session start only. */
+    void init_metrics() override;
     /** Set target loop period (informational, reported in metrics). 0 = MaxRate. */
     void set_configured_period(uint64_t period_us) override;
 

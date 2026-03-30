@@ -1023,7 +1023,7 @@ QueueMetrics Consumer::queue_metrics() const noexcept
 void Consumer::reset_queue_metrics() noexcept
 {
     if (pImpl && pImpl->queue_reader_)
-        pImpl->queue_reader_->reset_metrics();
+        pImpl->queue_reader_->init_metrics();
 }
 
 bool Consumer::start_queue()
