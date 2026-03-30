@@ -134,6 +134,10 @@ class LuaEngine : public ScriptEngine
     // ctx_ is inherited from ScriptEngine (set by build_api).
     bool stop_on_script_error_{false};
 
+    // ── Custom metrics (HEP-CORE-0019) ──────────────────────────────────
+    // Lua is single-threaded so no lock needed.
+    std::unordered_map<std::string, double> custom_metrics_;
+
     // Inbox cache is shared in core_ (RoleHostCore::inbox_cache_).
 
     // ── Thread-state cache (multi-state: non-owner threads) ──────────────
@@ -191,6 +195,30 @@ class LuaEngine : public ScriptEngine
     static int lua_api_metrics(lua_State *L);
     static int lua_api_in_channel(lua_State *L);
     static int lua_api_out_channel(lua_State *L);
+
+    // ── Group A: diagnostics (common) ─────────────────────────────────
+    static int lua_api_loop_overrun_count(lua_State *L);
+    static int lua_api_last_cycle_work_us(lua_State *L);
+    static int lua_api_critical_error(lua_State *L);
+
+    // ── Group B: queue-state (role-specific) ──────────────────────────
+    static int lua_api_out_capacity(lua_State *L);
+    static int lua_api_out_policy(lua_State *L);
+    static int lua_api_in_capacity(lua_State *L);
+    static int lua_api_in_policy(lua_State *L);
+    static int lua_api_last_seq(lua_State *L);
+    static int lua_api_ctrl_queue_dropped(lua_State *L);
+
+    // ── Group C: custom metrics ───────────────────────────────────────
+    static int lua_api_report_metric(lua_State *L);
+    static int lua_api_report_metrics(lua_State *L);
+    static int lua_api_clear_custom_metrics(lua_State *L);
+
+    // ── Group E: broker operations ────────────────────────────────────
+    static int lua_api_clear_inbox_cache(lua_State *L);
+    static int lua_api_notify_channel(lua_State *L);
+    static int lua_api_broadcast_channel(lua_State *L);
+    static int lua_api_list_channels(lua_State *L);
 };
 
 } // namespace pylabhub::scripting
