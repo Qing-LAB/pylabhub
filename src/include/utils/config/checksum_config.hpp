@@ -65,4 +65,24 @@ inline ChecksumConfig parse_checksum_config(const nlohmann::json &j, const char 
     return cc;
 }
 
+/// Convert ChecksumPolicy enum to wire string.
+inline const char *checksum_policy_to_string(hub::ChecksumPolicy p) noexcept
+{
+    switch (p)
+    {
+        case hub::ChecksumPolicy::Enforced: return "enforced";
+        case hub::ChecksumPolicy::Manual:   return "manual";
+        case hub::ChecksumPolicy::None:     return "none";
+    }
+    return "enforced";
+}
+
+/// Convert wire string to ChecksumPolicy enum.
+inline hub::ChecksumPolicy string_to_checksum_policy(const std::string &s) noexcept
+{
+    if (s == "manual") { return hub::ChecksumPolicy::Manual; }
+    if (s == "none")   { return hub::ChecksumPolicy::None; }
+    return hub::ChecksumPolicy::Enforced; // default
+}
+
 } // namespace pylabhub::config

@@ -633,6 +633,11 @@ void MessengerImpl::handle_command(ConnectChannelCmd &cmd,
         if (!cmd.expected_schema_id.empty()) reg_payload["expected_schema_id"] = cmd.expected_schema_id;
         // Transport arbitration (Phase 6): broker validates against channel's data_transport.
         if (!cmd.consumer_queue_type.empty()) reg_payload["consumer_queue_type"] = cmd.consumer_queue_type;
+        // Inbox fields for ROLE_INFO_REQ discovery.
+        if (!cmd.inbox_endpoint.empty())    reg_payload["inbox_endpoint"]    = cmd.inbox_endpoint;
+        if (!cmd.inbox_schema_json.empty()) reg_payload["inbox_schema_json"] = cmd.inbox_schema_json;
+        if (!cmd.inbox_packing.empty())     reg_payload["inbox_packing"]     = cmd.inbox_packing;
+        if (!cmd.inbox_checksum.empty())    reg_payload["inbox_checksum"]    = cmd.inbox_checksum;
         const std::string msg_type   = "CONSUMER_REG_REQ";
         const std::string reg_str    = reg_payload.dump();
         std::vector<zmq::const_buffer> reg_msgs = {zmq::buffer(&kFrameTypeControl, 1),

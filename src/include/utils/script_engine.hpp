@@ -39,6 +39,7 @@
 #include <vector>
 
 namespace pylabhub::hub { class Messenger; class Producer; class Consumer; class InboxQueue; }
+#include "utils/data_block_policy.hpp" // ChecksumPolicy enum
 
 namespace pylabhub::scripting
 {
@@ -108,6 +109,7 @@ struct RoleContext
     hub::Producer   *producer{nullptr};      ///< Output data queue ops.
     hub::Consumer   *consumer{nullptr};      ///< Input data queue ops.
     hub::InboxQueue *inbox_queue{nullptr};   ///< Incoming peer messages (ROUTER). nullptr if no inbox.
+    hub::ChecksumPolicy checksum_policy{hub::ChecksumPolicy::Enforced}; ///< Per-role checksum policy.
 
     /// Pointer to RoleHostCore — single source of truth for shutdown flags
     /// AND metrics (out_written, in_received, drops, script_errors, etc.).

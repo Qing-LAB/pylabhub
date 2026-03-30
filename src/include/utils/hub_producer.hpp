@@ -242,6 +242,8 @@ struct ProducerOptions
     std::string inbox_schema_json{};
     /// Packing for inbox schema (Phase 4): "aligned" or "packed". Empty = no inbox.
     std::string inbox_packing{};
+    /// Inbox checksum policy string for broker storage. Empty = default (enforced).
+    std::string inbox_checksum{};
     /// Schema for ZMQ PUSH frames (required when data_transport=="zmq").
     /// Empty schema → LOGGER_ERROR + Producer::create returns nullopt.
     /// Use {{"bytes",1,N}} as a single-blob schema for opaque N-byte payloads.

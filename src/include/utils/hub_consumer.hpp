@@ -212,6 +212,12 @@ struct ConsumerOptions
     /// Internal receive-buffer depth for ZmqQueue PULL.
     size_t zmq_buffer_depth{kZmqDefaultBufferDepth};
 
+    // ── Inbox (advertised to broker for ROLE_INFO_REQ discovery) ──────────────
+    std::string inbox_endpoint{};       ///< ROUTER bind endpoint. Empty = no inbox.
+    std::string inbox_schema_json{};    ///< JSON schema for ROLE_INFO_REQ.
+    std::string inbox_packing{};        ///< "aligned" or "packed".
+    std::string inbox_checksum{};       ///< "enforced", "manual", "none".
+
     // ── Queue abstraction (Phase 2) ──────────────────────────────────────────
     /// Slot data size in bytes (from engine type_sizeof("SlotFrame")). Required for ShmQueue wrapper.
     size_t item_size{0};

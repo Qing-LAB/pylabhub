@@ -173,6 +173,7 @@ struct CreateChannelCmd
     // Phase 4: inbox schema info (stored by broker for ROLE_INFO_REQ responses).
     std::string inbox_schema_json;     ///< JSON-serialized ZmqSchemaField list; empty = no inbox.
     std::string inbox_packing;         ///< "aligned" or "packed"; empty = no inbox.
+    std::string inbox_checksum;        ///< "enforced", "manual", or "none"; empty = enforced.
     std::promise<bool> result; ///< true = broker accepted (REG_ACK received)
 };
 /// Internal: sent by connect_channel() to discover and register as consumer.
@@ -189,6 +190,11 @@ struct ConnectChannelCmd
     std::string expected_schema_id; ///< If non-empty, consumer requests named schema validation
     // Phase 6: transport arbitration — sent to broker in CONSUMER_REG_REQ.
     std::string consumer_queue_type; ///< "shm" or "zmq"; empty = no server-side validation
+    // Inbox fields — advertised to broker for ROLE_INFO_REQ discovery.
+    std::string inbox_endpoint;
+    std::string inbox_schema_json;
+    std::string inbox_packing;
+    std::string inbox_checksum;
     std::promise<std::optional<ConsumerInfo>> result;
 };
 /// Phase 3 (HEP-CORE-0016): query broker for schema info of a registered channel.

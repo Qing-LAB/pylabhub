@@ -161,6 +161,9 @@ public:
     /** BLAKE2b checksum verification failures. */
     [[nodiscard]] uint64_t checksum_error_count() const noexcept;
 
+    /** Set checksum policy. Enforced = auto verify on recv. None = skip. */
+    void set_checksum_policy(ChecksumPolicy policy) noexcept;
+
     /// Snapshot inbox metrics.
     struct InboxMetricsSnapshot
     {
@@ -259,6 +262,9 @@ public:
      * @brief Discard the current buffer contents without sending.  Next acquire() is fresh.
      */
     void abort() noexcept;
+
+    /** Set checksum policy. Enforced = auto compute on send. None = send zeros. */
+    void set_checksum_policy(ChecksumPolicy policy) noexcept;
 
 private:
     explicit InboxClient(std::unique_ptr<InboxClientImpl> impl);

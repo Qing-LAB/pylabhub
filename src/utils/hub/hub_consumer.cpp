@@ -424,7 +424,9 @@ Consumer::connect(Messenger &messenger, const ConsumerOptions &opts)
     auto ch = messenger.connect_channel(opts.channel_name, opts.timeout_ms,
                                          opts.expected_schema_hash,
                                          opts.consumer_uid, opts.consumer_name,
-                                         {}, opts.queue_type);
+                                         {}, opts.queue_type,
+                                         opts.inbox_endpoint, opts.inbox_schema_json,
+                                         opts.inbox_packing, opts.inbox_checksum);
     if (!ch.has_value())
     {
         return std::nullopt;
