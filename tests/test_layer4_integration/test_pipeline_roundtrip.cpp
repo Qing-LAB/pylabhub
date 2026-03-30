@@ -185,7 +185,7 @@ static void write_producer_config(const fs::path& dir, const fs::path& hub_dir)
             })}
         }},
         {"out_flexzone_schema", nullptr},
-        {"out_update_checksum", true},
+        {"checksum", "enforced"},
         {"stop_on_script_error", true},
         {"script", {{"type", "python"}, {"path", "."}}}
     };
@@ -272,7 +272,7 @@ static void write_processor_config(const fs::path& dir, const fs::path& hub_dir)
             })}
         }},
         {"out_flexzone_schema", nullptr},
-        {"out_update_checksum", true},
+        {"checksum", "enforced"},
         {"stop_on_script_error", true},
         {"script", {{"type", "python"}, {"path", "."}}},
         {"startup", {

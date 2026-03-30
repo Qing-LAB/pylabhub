@@ -183,6 +183,17 @@
   Queue has no timing role — period is loop config, not queue config.
 - [ ] Rewrite `test_datahub_loop_policy.cpp`: timing measurement tests stay at L3 (DataBlock);
   policy execution tests (FixedRate sleep, compensation, overrun) move to role/RAII level
+- [x] Config strict validation framework: whitelist of allowed keys per role type. ✅ 2026-03-30
+- [ ] Config reference document: comprehensive JSON config guide covering:
+  - Every allowed key, its type, default, and valid values
+  - Which level each parameter belongs to (role / per-direction / transport-specific)
+  - How each parameter propagates from JSON → config parser → Options → queue/DataBlock
+  - Which execution layer consumes each parameter
+  - Example configs for each role type (producer, consumer, processor)
+  - Cross-field validation rules (loop_timing + period, checksum + flexzone, etc.)
+  Unknown keys → error at parse time. Prevents typos, obsolete keys, ambiguity.
+  Single validation layer in RoleConfig::load_common() after all parsers run.
+  Each parser registers its consumed keys; remainder = unknown = error.
 - [ ] Config single-truth unification (see docs/tech_draft/config_single_truth.md):
   - Checksum: per-role `checksum: true/false` replaces per-direction booleans;
     derive DataBlock ChecksumPolicy from config (not hardcode Manual)

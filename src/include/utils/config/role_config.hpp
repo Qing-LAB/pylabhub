@@ -23,7 +23,7 @@
  * ## JSON naming convention
  *
  * All directional fields use in_/out_ prefixes consistently:
- *   out_hub_dir, out_transport, out_zmq_endpoint, in_verify_checksum, etc.
+ *   out_hub_dir, out_transport, out_zmq_endpoint, etc.
  * Non-directional fields are unprefixed:
  *   script.type, target_period_ms, stop_on_script_error, etc.
  *
