@@ -34,6 +34,7 @@
 #include "utils/json_fwd.hpp"
 
 #include "utils/config/auth_config.hpp"
+#include "utils/config/checksum_config.hpp"
 #include "utils/config/hub_config.hpp"
 #include "utils/config/identity_config.hpp"
 #include "utils/config/inbox_config.hpp"
@@ -92,6 +93,7 @@ class PYLABHUB_UTILS_EXPORT RoleConfig
     const InboxConfig      &inbox()      const;
     const StartupConfig    &startup()    const;
     const MonitoringConfig &monitoring() const;
+    const ChecksumConfig   &checksum()   const;
 
     // ── Directional accessors (two slots each) ───────────────────────
 

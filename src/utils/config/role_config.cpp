@@ -36,6 +36,7 @@ struct RoleConfig::Impl
     AuthConfig       auth;
     ScriptConfig     script;
     TimingConfig     timing;
+    ChecksumConfig   checksum;
     InboxConfig      inbox;
     StartupConfig    startup;
     MonitoringConfig monitoring;
@@ -79,6 +80,7 @@ void RoleConfig::Impl::load_common(const nlohmann::json &j)
     auth       = parse_auth_config(j, role_tag);
     script     = parse_script_config(j, base_dir, tag);
     timing     = parse_timing_config(j, tag);
+    checksum   = parse_checksum_config(j, tag);
     inbox      = parse_inbox_config(j, tag);
     startup    = parse_startup_config(j, tag);
     monitoring = parse_monitoring_config(j);
@@ -164,6 +166,7 @@ const TimingConfig     &RoleConfig::timing()     const { assert(impl_); return i
 const InboxConfig      &RoleConfig::inbox()      const { assert(impl_); return impl_->inbox; }
 const StartupConfig    &RoleConfig::startup()    const { assert(impl_); return impl_->startup; }
 const MonitoringConfig &RoleConfig::monitoring() const { assert(impl_); return impl_->monitoring; }
+const ChecksumConfig   &RoleConfig::checksum()   const { assert(impl_); return impl_->checksum; }
 
 // ============================================================================
 // Directional accessors

@@ -174,6 +174,51 @@ void ShmQueue::set_verify_checksum(bool slot, bool fz) const noexcept
 }
 
 // ============================================================================
+// Unified checksum interface (overrides QueueReader/QueueWriter base)
+// ============================================================================
+
+void ShmQueue::set_checksum_policy(ChecksumPolicy policy)
+{
+    if (!pImpl) return;
+    const bool enabled = (policy != ChecksumPolicy::None);
+    // Write side: compute checksum on commit.
+    pImpl->checksum_slot = enabled;
+    // Read side: verify checksum on acquire.
+    pImpl->verify_slot = enabled;
+}
+
+void ShmQueue::set_flexzone_checksum(bool enabled)
+{
+    if (!pImpl) return;
+    pImpl->checksum_fz = enabled;
+    pImpl->verify_fz   = enabled;
+}
+
+void ShmQueue::update_checksum()
+{
+    if (!pImpl || !pImpl->write_handle) return;
+    (void)pImpl->write_handle->update_checksum_slot();
+}
+
+void ShmQueue::update_flexzone_checksum()
+{
+    if (!pImpl || !pImpl->write_handle) return;
+    (void)pImpl->write_handle->update_checksum_flexible_zone();
+}
+
+bool ShmQueue::verify_checksum()
+{
+    if (!pImpl || !pImpl->read_handle) return true;
+    return pImpl->read_handle->verify_checksum_slot();
+}
+
+bool ShmQueue::verify_flexzone_checksum()
+{
+    if (!pImpl || !pImpl->read_handle) return true;
+    return pImpl->read_handle->verify_checksum_flexible_zone();
+}
+
+// ============================================================================
 // Constructor / destructor / move
 // ============================================================================
 

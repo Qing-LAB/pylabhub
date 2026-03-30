@@ -634,7 +634,7 @@ Producer::establish_channel(Messenger &messenger, ChannelHandle channel,
     {
         impl->shm_queue_writer_ = ShmQueue::from_producer_ref(
             *impl->shm, opts.item_size, opts.flexzone_size, opts.channel_name,
-            opts.update_checksum, opts.update_checksum_fz,
+            false, false,  // checksum flags: set via set_checksum_policy() below
             opts.always_clear_slot);
         impl->queue_writer_ = impl->shm_queue_writer_.get();
     }
@@ -647,6 +647,13 @@ Producer::establish_channel(Messenger &messenger, ChannelHandle channel,
     if (impl->queue_writer_ && opts.timing.period_us > 0)
     {
         impl->queue_writer_->set_configured_period(opts.timing.period_us);
+    }
+
+    // Set checksum policy on the queue (single path for both SHM and ZMQ).
+    if (impl->queue_writer_)
+    {
+        impl->queue_writer_->set_checksum_policy(opts.checksum_policy);
+        impl->queue_writer_->set_flexzone_checksum(opts.flexzone_checksum);
     }
 
     return Producer(std::move(impl));

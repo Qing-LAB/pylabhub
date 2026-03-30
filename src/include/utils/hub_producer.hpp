@@ -261,10 +261,10 @@ struct ProducerOptions
     size_t item_size{0};
     /// Flexzone size in bytes (page-aligned). 0 = no flexzone.
     size_t flexzone_size{0};
-    /// Enable BLAKE2b checksum on write_commit() (SHM only).
-    bool update_checksum{false};
-    /// Also checksum the flexzone on write_commit() (SHM only).
-    bool update_checksum_fz{false};
+    /// Checksum policy for this channel. Applied to all queues via set_checksum_policy().
+    ChecksumPolicy checksum_policy{ChecksumPolicy::Enforced};
+    /// Checksum flexzone (SHM-specific). Applied via set_flexzone_checksum().
+    bool flexzone_checksum{true};
     /// Zero the slot buffer on write_acquire() (SHM only). Default true for safety
     /// (prevents historical data leaks, ensures deterministic padding). Set false
     /// for performance when the writer guarantees full field writes.

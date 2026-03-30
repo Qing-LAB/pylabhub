@@ -152,8 +152,8 @@ static int do_init(const std::string &proc_dir_str, const std::string &cli_name)
     });
     j["out_flexzone_schema"] = nullptr;
 
-    j["out_update_checksum"]  = true;
-    j["in_verify_checksum"]   = false;
+    j["checksum"]             = "enforced";
+    j["flexzone_checksum"]    = true;
     j["stop_on_script_error"] = false;
 
     j["script"]["path"] = ".";

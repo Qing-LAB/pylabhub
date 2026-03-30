@@ -113,6 +113,7 @@ struct ZmqQueueImpl
     // Measured in read_acquire/read_release (read mode) or
     // write_acquire/write_commit (write mode). Same semantics as DataBlock ContextMetrics.
     ContextMetrics ctx_metrics_;  ///< Unified timing + checksum metrics.
+    ChecksumPolicy checksum_policy_{ChecksumPolicy::Enforced}; ///< Default: auto checksum.
 
     using Clock = ContextMetrics::Clock;
 
@@ -245,17 +246,26 @@ struct ZmqQueueImpl
                 }
                 if (!ok) continue;
 
-                // [4] checksum: bin, 32 bytes — verify decoded data integrity.
+                // [4] checksum: bin, 32 bytes.
                 if (elems[4].type != msgpack::type::BIN || elems[4].via.bin.size != 32)
                     { ++recv_frame_error_count_; continue; }
-                if (!pylabhub::crypto::verify_blake2b(
-                        reinterpret_cast<const uint8_t*>(elems[4].via.bin.ptr),
-                        decode_tmp_.data(), item_sz))
+                // Verify if policy is not None. Zero-checksum = producer skipped → skip verify.
+                if (checksum_policy_ != ChecksumPolicy::None)
                 {
-                    ctx_metrics_.inc_checksum_error();
-                    LOGGER_ERROR("[hub::ZmqQueue] checksum error after decode on '{}'",
-                                 queue_name);
-                    continue; // drop frame
+                    const auto *cks = reinterpret_cast<const uint8_t*>(elems[4].via.bin.ptr);
+                    bool all_zero = true;
+                    for (size_t i = 0; i < 32 && all_zero; ++i)
+                    {
+                        if (cks[i] != 0) { all_zero = false; }
+                    }
+                    if (!all_zero && !pylabhub::crypto::verify_blake2b(
+                            cks, decode_tmp_.data(), item_sz))
+                    {
+                        ctx_metrics_.inc_checksum_error();
+                        LOGGER_ERROR("[hub::ZmqQueue] checksum error after decode on '{}'",
+                                     queue_name);
+                        continue; // drop frame
+                    }
                 }
 
                 // Push to ring buffer (pre-allocated; memcpy under lock). [ZQ9]
@@ -311,10 +321,13 @@ struct ZmqQueueImpl
                 send_sbuf_.clear();
                 msgpack::packer<msgpack::sbuffer> pk(send_sbuf_);
 
-                // Compute BLAKE2b checksum of raw data before packing.
-                uint8_t checksum[32];
-                pylabhub::crypto::compute_blake2b(
-                    checksum, send_local_buf_.data(), item_sz);
+                // Compute BLAKE2b checksum if policy is not None; else zeros.
+                uint8_t checksum[32]{};
+                if (checksum_policy_ != ChecksumPolicy::None)
+                {
+                    pylabhub::crypto::compute_blake2b(
+                        checksum, send_local_buf_.data(), item_sz);
+                }
 
                 pk.pack_array(5);
                 pk.pack(wire_detail::kFrameMagic);
@@ -995,6 +1008,12 @@ void ZmqQueue::set_configured_period(uint64_t period_us)
 {
     if (!pImpl) return;
     pImpl->ctx_metrics_.set_configured_period(period_us);
+}
+
+void ZmqQueue::set_checksum_policy(ChecksumPolicy policy)
+{
+    if (!pImpl) return;
+    pImpl->checksum_policy_ = policy;
 }
 
 } // namespace pylabhub::hub

@@ -217,10 +217,10 @@ struct ConsumerOptions
     size_t item_size{0};
     /// Flexzone size in bytes (page-aligned). 0 = no flexzone.
     size_t flexzone_size{0};
-    /// Enable BLAKE2b verification on read_acquire() (SHM only).
-    bool verify_checksum{false};
-    /// Also verify the flexzone checksum on read_acquire() (SHM only).
-    bool verify_checksum_fz{false};
+    /// Checksum policy for this channel. Applied to all queues via set_checksum_policy().
+    ChecksumPolicy checksum_policy{ChecksumPolicy::Enforced};
+    /// Verify flexzone checksum (SHM-specific). Applied via set_flexzone_checksum().
+    bool flexzone_checksum{true};
 
     /// Max depth of ctrl send queue before oldest items are dropped. 0 = unbounded.
     size_t ctrl_queue_max_depth{256};

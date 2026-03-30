@@ -120,7 +120,7 @@ static int do_init(const std::string &cons_dir_str, const std::string &cli_name)
     j["in_channel"]          = "lab.my.channel";
     j["in_transport"]        = "shm";
     j["in_shm_enabled"]      = true;
-    j["in_verify_checksum"]  = false;
+    j["checksum"]            = "enforced";
 
     j["stop_on_script_error"] = false;
 

@@ -817,7 +817,7 @@ inline bool update_checksum_flexible_zone_impl(DataBlock *block, bool compute = 
     const auto &layout = block->layout();
     if (layout.flexible_zone_size == 0)
     {
-        return false; // No flex zone configured
+        return true; // No flex zone configured — nothing to checksum, not an error
     }
 
     // flexible_data_zone() is base+offset (always non-null when DataBlock exists);
@@ -910,7 +910,7 @@ inline bool verify_checksum_flexible_zone_impl(const DataBlock *block,
     const auto &layout = block->layout();
     if (layout.flexible_zone_size == 0)
     {
-        return false;
+        return true; // No flex zone configured — nothing to verify, not an error
     }
 
     auto &entry = hdr->flexible_zone_checksums[flex_zone_idx];
