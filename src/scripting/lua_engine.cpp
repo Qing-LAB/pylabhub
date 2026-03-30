@@ -309,7 +309,12 @@ bool LuaEngine::build_api_(const RoleContext &ctx)
         push_closure("in_channel", lua_api_in_channel);
         push_closure("out_channel", lua_api_out_channel);
         if (ctx_.producer)
+        {
+            push_closure("broadcast", lua_api_broadcast);
+            push_closure("send", lua_api_send);
+            push_closure("consumers", lua_api_consumers);
             push_closure("update_flexzone_checksum", lua_api_update_flexzone_checksum);
+        }
         push_closure("flexzone", lua_api_flexzone);
         push_closure("spinlock", lua_api_spinlock);
         push_closure("spinlock_count", lua_api_spinlock_count);
