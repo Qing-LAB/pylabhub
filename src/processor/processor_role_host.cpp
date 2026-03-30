@@ -693,6 +693,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
     // Reset metrics (checksum and period already configured via Options).
     in_consumer_->reset_queue_metrics();
     out_producer_->reset_queue_metrics();
+    core_.set_configured_period(static_cast<uint64_t>(config_.timing().period_us));
 
     LOGGER_INFO("[proc] Processor started: '{}' -> '{}'",
                 config_.in_channel(), config_.out_channel());

@@ -90,7 +90,6 @@ struct QueueMetrics
     // ── Domain 3: Data flow (both transports) ──────────────────────────
     uint64_t last_slot_exec_us{0};    ///< Time from acquire to release (µs).
     uint64_t data_drop_count{0};        ///< Data lost: SHM Latest_only overwrite, ZMQ write buffer full/timeout. 0 for readers.
-    uint64_t configured_period_us{0}; ///< Target period (µs). 0 = MaxRate. Config input, not measured.
 
     // ── Receive side (read_acquire path) ─────────────────────────────────────
     /// Items permanently lost because the receive ring buffer was full (oldest discarded).
@@ -144,7 +143,6 @@ struct QueueMetrics
     X(context_elapsed_us)                \
     X(last_slot_exec_us)                 \
     X(data_drop_count)                   \
-    X(configured_period_us)              \
     X(recv_overflow_count)               \
     X(recv_frame_error_count)            \
     X(recv_gap_count)                    \
