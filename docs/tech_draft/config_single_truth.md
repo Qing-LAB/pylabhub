@@ -79,17 +79,52 @@ RoleHostCore::set_timing_params(params)
 
 **Checksum:**
 ```
-parse_checksum_config() → ChecksumParams { bool slot, bool flexzone }
-    ↓ (single struct, passed once)
-Role host propagates to all owned queues:
-    ├─ ShmQueue: set_checksum_options(slot, fz) + DataBlock policy derived
-    ├─ ZmqQueue: checksum always-on (wire integrity)
-    └─ InboxQueue: checksum always-on (wire integrity)
-DataBlock ChecksumPolicy: derived from ChecksumParams, not hardcoded
-    - slot=true → Enforced (DataBlock handles automatically)
-    - slot=false → None (no checksums)
-    - Manual: reserved for advanced C API users only
+JSON: "checksum": "enforced" | "manual" | "none"
+      "flexzone_checksum": true | false
+    ↓
+parse_checksum_config() → { ChecksumPolicy policy, bool flexzone_checksum }
+    ↓
+Role host propagates to all owned queues via unified interface:
+    queue->set_checksum_policy(policy)
+    queue->set_flexzone_checksum(flexzone_enabled)
+    ↓
+ShmQueue: passes policy to DataBlockConfig; DataBlock executes
+ZmqQueue: stores policy; skips compute/verify when None
+InboxQueue: same as ZmqQueue
 ```
+
+**Unified checksum API on QueueWriter/QueueReader base class:**
+```
+set_checksum_policy(ChecksumPolicy)     — all transports
+set_flexzone_checksum(bool)             — SHM acts, ZMQ/Inbox no-op
+update_checksum()                       — compute slot checksum (writer)
+update_flexzone_checksum()              — compute flexzone checksum (writer)
+verify_checksum() → bool                — verify slot checksum (reader)
+verify_flexzone_checksum() → bool       — verify flexzone checksum (reader)
+```
+
+ShmQueue delegates to DataBlock SlotWriteHandle/SlotConsumeHandle.
+ZmqQueue/InboxQueue compute/verify BLAKE2b on raw payload data.
+Flexzone variants are no-ops on ZMQ/Inbox (no flexzone concept).
+
+When Enforced: queue calls update/verify automatically in commit/release.
+When Manual: caller calls explicitly via script API. If caller doesn't call
+  update_checksum(), checksum bytes are zero.
+When None: all checksum operations skipped. Checksum bytes are zero.
+
+**Zero-checksum convention (wire-level signal):**
+Both SHM and ZMQ use all-zero checksum bytes to signal "no checksum computed."
+- Writer with None or Manual (not explicitly computed): checksum field = zeros
+- Reader detects all-zero checksum: skips verification, no error
+- Reader detects non-zero checksum: verifies BLAKE2b, increments
+  checksum_error_count on mismatch
+
+This convention is already implemented in DataBlock (verify_checksum_slot_impl
+checks for all_zero before computing). ZMQ/Inbox recv path needs the same check.
+
+For ZMQ/Inbox: the consumer follows the producer's checksum policy automatically
+via the wire format. No separate configuration or broker coordination needed.
+The producer's intent is encoded in the existing checksum field.
 
 ### 2.3 Per-role, not per-direction
 
