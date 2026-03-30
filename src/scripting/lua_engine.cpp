@@ -16,6 +16,7 @@
 #include "utils/hub_consumer.hpp"
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/messenger.hpp"
+#include "utils/shared_memory_spinlock.hpp"
 #include "utils/logger.hpp"
 #include "script_host_helpers.hpp"
 #include "plh_platform.hpp"
@@ -258,6 +259,9 @@ bool LuaEngine::build_api_(const RoleContext &ctx)
     // Common closures.
     push_common_api_closures_(L);
 
+    // Register metatables for userdata types.
+    register_spinlock_metatable_();
+
     // Helper: push a C closure with `this` as upvalue(1).
     auto push_closure = [&](const char *name, lua_CFunction fn) {
         lua_pushlightuserdata(L, this);
@@ -284,6 +288,9 @@ bool LuaEngine::build_api_(const RoleContext &ctx)
             push_closure("consumers", lua_api_consumers);
             push_closure("update_flexzone_checksum", lua_api_update_flexzone_checksum);
         }
+        push_closure("flexzone", lua_api_flexzone);
+        push_closure("spinlock", lua_api_spinlock);
+        push_closure("spinlock_count", lua_api_spinlock_count);
         push_closure("out_capacity", lua_api_out_capacity);
         push_closure("out_policy", lua_api_out_policy);
     }
@@ -291,6 +298,8 @@ bool LuaEngine::build_api_(const RoleContext &ctx)
     {
         if (ctx_.consumer)
             push_closure("set_verify_checksum", lua_api_set_verify_checksum);
+        push_closure("spinlock", lua_api_spinlock);
+        push_closure("spinlock_count", lua_api_spinlock_count);
         push_closure("in_capacity", lua_api_in_capacity);
         push_closure("in_policy", lua_api_in_policy);
         push_closure("last_seq", lua_api_last_seq);
@@ -300,9 +309,10 @@ bool LuaEngine::build_api_(const RoleContext &ctx)
         push_closure("in_channel", lua_api_in_channel);
         push_closure("out_channel", lua_api_out_channel);
         if (ctx_.producer)
-        {
             push_closure("update_flexzone_checksum", lua_api_update_flexzone_checksum);
-        }
+        push_closure("flexzone", lua_api_flexzone);
+        push_closure("spinlock", lua_api_spinlock);
+        push_closure("spinlock_count", lua_api_spinlock_count);
         push_closure("out_capacity", lua_api_out_capacity);
         push_closure("out_policy", lua_api_out_policy);
         if (ctx_.consumer)
@@ -1936,6 +1946,167 @@ int LuaEngine::lua_api_metrics(lua_State *L)
     }
 
     return 1; // one table on stack
+}
+
+// ============================================================================
+// Group F: Spinlocks (SHM-only)
+// ============================================================================
+
+static const char *kSpinlockMT = "pylabhub.SharedSpinLock";
+
+int LuaEngine::lua_api_spinlock_count(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    uint32_t count = 0;
+    if (self->ctx_.producer)
+    {
+        auto *shm = self->ctx_.producer->shm();
+        if (shm) count = shm->spinlock_count();
+    }
+    else if (self->ctx_.consumer)
+    {
+        auto *shm = self->ctx_.consumer->shm();
+        if (shm) count = shm->spinlock_count();
+    }
+    lua_pushinteger(L, static_cast<lua_Integer>(count));
+    return 1;
+}
+
+int LuaEngine::lua_api_spinlock(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    int idx = static_cast<int>(luaL_checkinteger(L, 1));
+
+    hub::DataBlockProducer *shm_prod = nullptr;
+    hub::DataBlockConsumer *shm_cons = nullptr;
+    if (self->ctx_.producer)
+        shm_prod = self->ctx_.producer->shm();
+    else if (self->ctx_.consumer)
+        shm_cons = self->ctx_.consumer->shm();
+
+    if (!shm_prod && !shm_cons)
+        return luaL_error(L, "spinlock: SHM not connected");
+
+    uint32_t count = shm_prod ? shm_prod->spinlock_count()
+                              : shm_cons->spinlock_count();
+    if (idx < 0 || static_cast<uint32_t>(idx) >= count)
+        return luaL_error(L, "spinlock: index %d out of range [0, %d)",
+                          idx, static_cast<int>(count));
+
+    // Create userdata with placement-new SharedSpinLock.
+    void *ud = lua_newuserdata(L, sizeof(hub::SharedSpinLock));
+    if (shm_prod)
+        new (ud) hub::SharedSpinLock(shm_prod->get_spinlock(static_cast<size_t>(idx)));
+    else
+        new (ud) hub::SharedSpinLock(shm_cons->get_spinlock(static_cast<size_t>(idx)));
+
+    luaL_setmetatable(L, kSpinlockMT);
+    return 1;
+}
+
+int LuaEngine::lua_spinlock_lock(lua_State *L)
+{
+    auto *lock = static_cast<hub::SharedSpinLock *>(
+        luaL_checkudata(L, 1, kSpinlockMT));
+    lock->lock();
+    return 0;
+}
+
+int LuaEngine::lua_spinlock_unlock(lua_State *L)
+{
+    auto *lock = static_cast<hub::SharedSpinLock *>(
+        luaL_checkudata(L, 1, kSpinlockMT));
+    lock->unlock();
+    return 0;
+}
+
+int LuaEngine::lua_spinlock_try_lock_for(lua_State *L)
+{
+    auto *lock = static_cast<hub::SharedSpinLock *>(
+        luaL_checkudata(L, 1, kSpinlockMT));
+    int timeout_ms = static_cast<int>(luaL_checkinteger(L, 2));
+    lua_pushboolean(L, lock->try_lock_for(timeout_ms) ? 1 : 0);
+    return 1;
+}
+
+int LuaEngine::lua_spinlock_is_locked(lua_State *L)
+{
+    auto *lock = static_cast<hub::SharedSpinLock *>(
+        luaL_checkudata(L, 1, kSpinlockMT));
+    lua_pushboolean(L, lock->is_locked_by_current_process() ? 1 : 0);
+    return 1;
+}
+
+int LuaEngine::lua_spinlock_gc(lua_State *L)
+{
+    auto *lock = static_cast<hub::SharedSpinLock *>(
+        luaL_checkudata(L, 1, kSpinlockMT));
+    // If still locked by us, unlock to prevent deadlock on GC.
+    if (lock->is_locked_by_current_process())
+        lock->unlock();
+    lock->~SharedSpinLock();
+    return 0;
+}
+
+void LuaEngine::register_spinlock_metatable_()
+{
+    lua_State *L = state_.raw();
+    if (luaL_newmetatable(L, kSpinlockMT))
+    {
+        // __index points to itself for method dispatch.
+        lua_pushvalue(L, -1);
+        lua_setfield(L, -2, "__index");
+
+        auto reg = [&](const char *name, lua_CFunction fn) {
+            lua_pushcfunction(L, fn);
+            lua_setfield(L, -2, name);
+        };
+
+        reg("lock", lua_spinlock_lock);
+        reg("unlock", lua_spinlock_unlock);
+        reg("try_lock_for", lua_spinlock_try_lock_for);
+        reg("is_locked", lua_spinlock_is_locked);
+
+        lua_pushcfunction(L, lua_spinlock_gc);
+        lua_setfield(L, -2, "__gc");
+    }
+    lua_pop(L, 1); // pop metatable
+}
+
+// ============================================================================
+// Group G: Flexzone getter
+// ============================================================================
+
+int LuaEngine::lua_api_flexzone(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+
+    // Only producer/processor have writable flexzone.
+    auto *producer = self->ctx_.producer;
+    if (!producer)
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    void *fz_ptr = producer->write_flexzone();
+    size_t fz_sz = producer->flexzone_size();
+    if (!fz_ptr || fz_sz == 0)
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    // Use cached FlexFrame ctype ref for type-safe FFI cast.
+    if (self->ref_fz_writable_ != LUA_NOREF)
+    {
+        if (self->state_.push_slot_view_cached(fz_ptr, self->ref_fz_writable_))
+            return 1;
+    }
+
+    // Fallback: push as raw lightuserdata (no type safety).
+    lua_pushlightuserdata(L, fz_ptr);
+    return 1;
 }
 
 } // namespace pylabhub::scripting
