@@ -762,9 +762,13 @@ void ProducerRoleHost::run_data_loop_()
 
 void ProducerRoleHost::run_ctrl_thread_()
 {
+    scripting::ThreadEngineGuard engine_guard(*engine_);
+
     const auto &id = config_.identity();
     const auto &ch = config_.out_channel();
     const auto &tc = config_.timing();
+
+    const bool has_heartbeat_cb = engine_->has_callback("on_heartbeat");
 
     scripting::ZmqPollLoop loop{core_, "prod:" + id.uid};
     loop.sockets = {
@@ -777,6 +781,8 @@ void ProducerRoleHost::run_ctrl_thread_()
     loop.periodic_tasks.emplace_back(
         [&] {
             out_messenger_.enqueue_heartbeat(ch, snapshot_metrics_json());
+            if (has_heartbeat_cb)
+                engine_->invoke("on_heartbeat");
         },
         tc.heartbeat_interval_ms);
     loop.run();

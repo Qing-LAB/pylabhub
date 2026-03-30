@@ -988,6 +988,10 @@ void ProcessorRoleHost::run_data_loop_()
 
 void ProcessorRoleHost::run_ctrl_thread_()
 {
+    scripting::ThreadEngineGuard engine_guard(*engine_);
+
+    const bool has_heartbeat_cb = engine_->has_callback("on_heartbeat");
+
     scripting::ZmqPollLoop loop{core_, "proc:" + config_.identity().uid};
     loop.sockets = {
         {out_producer_->peer_ctrl_socket_handle(),
@@ -1010,6 +1014,8 @@ void ProcessorRoleHost::run_ctrl_thread_()
         [&] {
             out_messenger_.enqueue_heartbeat(config_.out_channel(),
                                              snapshot_metrics_json());
+            if (has_heartbeat_cb)
+                engine_->invoke("on_heartbeat");
         },
         config_.timing().heartbeat_interval_ms);
     loop.run();
