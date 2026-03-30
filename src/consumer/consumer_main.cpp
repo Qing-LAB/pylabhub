@@ -17,7 +17,7 @@
  *       "in_hub_dir":         "/var/pylabhub/my_hub",
  *       "in_channel":         "lab.sensors.temperature",
  *       "in_transport":       "shm",
- *       "in_verify_checksum": false,
+ *       "checksum": "enforced",
  *       "script": { "type": "python", "path": "." }
  *     }
  *

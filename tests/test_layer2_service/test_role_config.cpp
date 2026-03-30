@@ -79,7 +79,7 @@ class RoleConfigTest : public ::testing::Test
             {"out_transport", "shm"},
             {"out_shm_enabled", true},
             {"out_shm_slot_count", 8},
-            {"out_update_checksum", true},
+            {"checksum", "enforced"},
             {"out_slot_schema", {{"fields", {{{"name", "value"}, {"type", "float32"}}}}}},
             {"loop_timing", "fixed_rate"},
             {"target_period_ms", 50.0},
@@ -95,7 +95,7 @@ class RoleConfigTest : public ::testing::Test
             {"in_hub_dir", ""},
             {"in_channel", "test.channel"},
             {"in_transport", "shm"},
-            {"in_verify_checksum", true},
+            {"checksum", "enforced"},
             {"loop_timing", "max_rate"},
             {"script", {{"type", "lua"}, {"path", "."}}},
         };
@@ -115,8 +115,8 @@ class RoleConfigTest : public ::testing::Test
             {"out_zmq_endpoint", "tcp://0.0.0.0:5599"},
             {"out_zmq_bind", true},
             {"out_slot_schema", {{"fields", {{{"name", "result"}, {"type", "float64"}}}}}},
-            {"out_update_checksum", true},
-            {"in_verify_checksum", false},
+            {"checksum", "enforced"},
+            {"checksum", "enforced"},
             {"loop_timing", "max_rate"},
             {"script", {{"type", "python"}, {"path", "."}}},
         };
@@ -198,7 +198,7 @@ TEST_F(RoleConfigTest, LoadProducer_OutValidation)
     auto path = write_json("producer.json", minimal_producer_json());
     auto cfg = RoleConfig::load(path.string(), "producer");
 
-    EXPECT_TRUE(cfg.out_shm().update_checksum);
+    EXPECT_EQ(cfg.checksum().policy, pylabhub::hub::ChecksumPolicy::Enforced);
 }
 
 TEST_F(RoleConfigTest, LoadProducer_Validation_StopOnScriptError)
@@ -238,7 +238,7 @@ TEST_F(RoleConfigTest, LoadConsumer_InValidation)
     auto path = write_json("consumer.json", minimal_consumer_json());
     auto cfg = RoleConfig::load(path.string(), "consumer");
 
-    EXPECT_TRUE(cfg.in_shm().verify_checksum);
+    EXPECT_EQ(cfg.checksum().policy, pylabhub::hub::ChecksumPolicy::Enforced);
 }
 
 TEST_F(RoleConfigTest, LoadConsumer_DefaultTiming)
@@ -280,8 +280,8 @@ TEST_F(RoleConfigTest, LoadProcessor_DualValidation)
     auto path = write_json("processor.json", minimal_processor_json());
     auto cfg = RoleConfig::load(path.string(), "processor");
 
-    EXPECT_TRUE(cfg.out_shm().update_checksum);
-    EXPECT_FALSE(cfg.in_shm().verify_checksum);
+    EXPECT_EQ(cfg.checksum().policy, pylabhub::hub::ChecksumPolicy::Enforced);
+    // checksum policy is per-role, verified above.
 }
 
 // ============================================================================

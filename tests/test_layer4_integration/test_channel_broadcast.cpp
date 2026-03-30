@@ -169,7 +169,7 @@ static void write_producer_config(const fs::path& dir, const fs::path& hub_dir,
         {"out_shm_slot_count", 8},
         {"out_slot_schema",    make_slot_schema()},
         {"out_flexzone_schema", nullptr},
-        {"out_update_checksum", true},
+        {"checksum", "enforced"},
         {"stop_on_script_error", true},
         {"script", {{"type", "python"}, {"path", "."}}}
     };
