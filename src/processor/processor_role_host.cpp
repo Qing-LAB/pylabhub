@@ -549,6 +549,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
         out_opts.inbox_endpoint    = inbox_queue_->actual_endpoint();
         out_opts.inbox_schema_json = spec_json.dump();
         out_opts.inbox_packing     = inbox_packing.empty() ? "aligned" : inbox_packing;
+        out_opts.inbox_checksum    = config::checksum_policy_to_string(config_.checksum().policy);
     }
 
     // ── Output broker connect ───────────────────────────────────────────────
