@@ -2238,4 +2238,102 @@ TEST_F(LuaEngineTest, Api_ProcessorChannels_InOut)
     engine.finalize();
 }
 
+// ============================================================================
+// 32. Eval syntax error returns ScriptError
+// ============================================================================
+
+TEST_F(LuaEngineTest, Eval_SyntaxError_ReturnsScriptError)
+{
+    write_script(R"(function on_produce(out_slot, fz, msgs, api) return false end)");
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+    auto result = engine.eval("invalid syntax {{{");
+    EXPECT_EQ(result.status, InvokeStatus::ScriptError);
+    engine.finalize();
+}
+
+// ============================================================================
+// 33. api.stop_reason() reflects CriticalError
+// ============================================================================
+
+TEST_F(LuaEngineTest, ApiStopReason_AfterCriticalError)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            local reason = api.stop_reason()
+            assert(reason == "critical_error",
+                   "expected 'critical_error', got '" .. tostring(reason) .. "'")
+            return false
+        end
+    )");
+
+    RoleHostCore core;
+    core.set_stop_reason(RoleHostCore::StopReason::CriticalError);
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine_with_core(engine, core));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u) << "stop_reason should be 'critical_error'";
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 34. api.report_metrics() with non-table argument is an error
+// ============================================================================
+
+TEST_F(LuaEngineTest, Api_ReportMetrics_NonTableArg_IsError)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            api.report_metrics(42)  -- wrong type, should error
+            return false
+        end
+    )");
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_GE(engine.script_error_count(), 1u);
+    engine.finalize();
+}
+
+// ============================================================================
+// 35. Full lifecycle verifies callback execution via shared_data
+// ============================================================================
+
+TEST_F(LuaEngineTest, FullLifecycle_VerifiesCallbackExecution)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api) return false end
+        function on_init(api)
+            api.set_shared_data("init_ran", true)
+        end
+        function on_stop(api)
+            api.set_shared_data("stop_ran", true)
+        end
+    )");
+    RoleHostCore core;
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine_with_core(engine, core));
+
+    EXPECT_FALSE(core.get_shared_data("init_ran").has_value());
+    engine.invoke_on_init();
+    auto init_val = core.get_shared_data("init_ran");
+    ASSERT_TRUE(init_val.has_value());
+    EXPECT_TRUE(std::get<bool>(*init_val));
+
+    EXPECT_FALSE(core.get_shared_data("stop_ran").has_value());
+    engine.invoke_on_stop();
+    auto stop_val = core.get_shared_data("stop_ran");
+    ASSERT_TRUE(stop_val.has_value());
+    EXPECT_TRUE(std::get<bool>(*stop_val));
+
+    engine.finalize();
+}
+
 } // anonymous namespace
