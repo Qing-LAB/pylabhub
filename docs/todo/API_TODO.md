@@ -183,11 +183,12 @@
   Queue has no timing role — period is loop config, not queue config.
 - [ ] Rewrite `test_datahub_loop_policy.cpp`: timing measurement tests stay at L3 (DataBlock);
   policy execution tests (FixedRate sleep, compensation, overrun) move to role/RAII level
-- [ ] ChecksumPolicy unification: move from DataBlock to queue level. Currently:
-  - DataBlock has 3-way policy (None/Manual/Enforced) — ShmQueue always uses Manual
-  - ZmqQueue/InboxQueue always checksum (no policy choice)
-  - Unify: queue level decides checksum behavior, DataBlock executes.
-  Same pattern as configured_period_us migration.
+- [ ] Config single-truth unification (see docs/tech_draft/config_single_truth.md):
+  - Checksum: per-role `checksum: true/false` replaces per-direction booleans;
+    derive DataBlock ChecksumPolicy from config (not hardcode Manual)
+  - Flexzone checksum: separate `flexzone_checksum: true/false` (SHM-specific)
+  - Timing: main loop reads from RoleHostCore stored params (not config directly)
+  - Processor: same timing + checksum policy for both input and output queues
 - [ ] Blocking overrun test: L3 test with queue + deadline + barrier coordination (deterministic, no sleep)
 - [ ] `RoleContext` void* cleanup: done for producer/consumer; evaluate other void* patterns in scripting layer
 
