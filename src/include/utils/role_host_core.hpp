@@ -237,10 +237,18 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
         uint64_t iteration_count{0};
         uint64_t loop_overrun_count{0};
         uint64_t last_cycle_work_us{0};
+        uint64_t configured_period_us{0};
     };
     [[nodiscard]] LoopMetricsSnapshot loop_metrics() const noexcept
     {
-        return {iteration_count(), loop_overrun_count(), last_cycle_work_us()};
+        return {iteration_count(), loop_overrun_count(), last_cycle_work_us(),
+                configured_period_us_.load(std::memory_order_relaxed)};
+    }
+
+    /// Set loop target period (informational — reported in loop metrics).
+    void set_configured_period(uint64_t us) noexcept
+    {
+        configured_period_us_.store(us, std::memory_order_relaxed);
     }
 
     // ── Metric mutators (write) ──────────────────────────────────────────
@@ -277,6 +285,7 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     std::atomic<uint64_t> iteration_count_{0};
     std::atomic<uint64_t> last_cycle_work_us_{0};
     std::atomic<uint64_t> loop_overrun_count_{0}; ///< Cycles where now > deadline (set by main loop).
+    std::atomic<uint64_t> configured_period_us_{0}; ///< Target loop period (µs). Set at startup from config.
 
     // ── Message queue ─────────────────────────────────────────────────────
     std::vector<IncomingMessage> incoming_queue_;
@@ -312,5 +321,6 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
 #define PYLABHUB_LOOP_METRICS_FIELDS(X) \
     X(iteration_count)                  \
     X(loop_overrun_count)               \
-    X(last_cycle_work_us)
+    X(last_cycle_work_us)               \
+    X(configured_period_us)
 // NOLINTEND(cppcoreguidelines-macro-usage)

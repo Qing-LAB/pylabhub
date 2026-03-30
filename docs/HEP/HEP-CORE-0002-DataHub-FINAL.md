@@ -1518,7 +1518,6 @@ classDiagram
     class DataBlockProducer {
         +with_transaction~F,D~(timeout, lambda)
         +acquire_write_slot(timeout) SlotWriteHandle
-        +set_loop_policy(policy, period_ms)
         +flexible_zone~T~(index) T&
         +update_checksum_flexible_zone()
         +metrics() ContextMetrics
@@ -1736,7 +1735,6 @@ auto p = create_datablock_producer<MetaData, SensorData>(config, "channel_name")
 producer.with_transaction<F,D>(timeout_ms, lambda);        // recommended
 producer.acquire_write_slot(timeout_ms);                   // → unique_ptr<SlotWriteHandle>
 producer.with_typed_write<D>(timeout_ms, lambda);          // typed, no FlexZone
-producer.set_loop_policy(policy, period_ms);               // HEP-CORE-0008 FixedRate/MaxRate
 producer.metrics();                                        // → const ContextMetrics&
 producer.update_checksum_flexible_zone();                  // manual BLAKE2b update
 producer.check_consumer_health();                          // PID-based liveness check
@@ -3221,7 +3219,6 @@ to their callers:
 
 - **Spinlocks** (`api.spinlock(i)`) — shared-memory spinlocks on flexzone pages
 - **Metrics** (`acquire_timing`, `loop_overrun_count`, `last_slot_wait_us`) — derived from SHM acquire timing; meaningless for ZMQ transport
-- **LoopPolicy** (`set_loop_policy()`) — SHM acquire pacing; governs the timing plane
 - **WriteProcessorContext / ReadProcessorContext** — typed TransactionContext with full SHM slot API
 
 This is a **feature, not a limitation**. Callers choose `hub::Producer` /
@@ -3250,8 +3247,8 @@ hub::Queue (abstract)
 
 - Control plane — no HELLO/BYE, no REG/DISC, no broker protocol
 - Message plane — no Messenger, no `send()` / `broadcast()`
-- Timing plane — no LoopPolicy (ShmQueue exposes a `set_loop_policy()` passthrough
-  for callers that need it; ZmqQueue ignores it)
+- Timing plane — loop timing is configured at the role level via `LoopTimingParams`;
+  queues store `configured_period_us` in ContextMetrics for RAII SlotIterator use
 
 **Runtime cost of the Queue abstraction over raw DataBlock:**
 Virtual dispatch per acquire/release is ~2 ns. A typical SHM acquire is 100–500 ns.

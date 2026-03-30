@@ -1466,7 +1466,7 @@ int queue_metrics_forwarding(int /*argc*/, char ** /*argv*/)
 
             // Check metrics through forwarding.
             auto m = producer->queue_metrics();
-            EXPECT_EQ(m.configured_period_us, 1000u);
+            // configured_period_us now reported at loop level, not in QueueMetrics.
             // policy_info through forwarding.
             auto pi = producer->queue_policy_info();
             EXPECT_FALSE(pi.empty());
@@ -1527,9 +1527,7 @@ int zmq_forwarding_api(int /*argc*/, char ** /*argv*/)
             producer->set_checksum_options(true, true);
             producer->sync_flexzone_checksum();
 
-            // Metrics show configured_period_us.
-            auto m = producer->queue_metrics();
-            EXPECT_EQ(m.configured_period_us, 500u);
+            // configured_period_us now reported at loop level, not in QueueMetrics.
             EXPECT_FALSE(producer->queue_policy_info().empty());
             fmt::print(stderr, "[T] producer verified, connecting consumer messenger...\n");
 
@@ -1579,8 +1577,7 @@ int zmq_forwarding_api(int /*argc*/, char ** /*argv*/)
             fmt::print(stderr, "[T] data verified OK\n");
 
             // Consumer metrics.
-            auto cm = consumer->queue_metrics();
-            EXPECT_EQ(cm.configured_period_us, 500u);
+            // configured_period_us now reported at loop level, not in QueueMetrics.
 
             // Cleanup: close channels while broker is alive, then stop broker.
             consumer->close();
