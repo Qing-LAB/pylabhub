@@ -1,7 +1,7 @@
 # Config Single Truth — Role-Level Policy Unification
 
-**Status**: Draft (2026-03-29)
-**Scope**: Timing config, checksum config, single-truth propagation
+**Status**: Implemented (2026-03-30)
+**Scope**: Timing config, checksum config, single-truth propagation, config validation
 **Depends on**: ContextMetrics unification (done), LoopTimingParams (done)
 
 ---
@@ -199,7 +199,129 @@ No separate `in_opts` / `out_opts` for these parameters.
 ## 5. What Does NOT Change
 
 - DataBlock checksum implementation (compute, verify, invalidate, caching)
-- ZMQ/Inbox wire checksum (always-on, independent of policy)
+- ZMQ/Inbox wire checksum (conditional on policy, not always-on)
 - ContextMetrics (timing measurement, checksum_error_count)
 - QueueMetrics reporting structure
 - Hierarchical metrics output
+
+---
+
+## 6. Implementation Summary (2026-03-30)
+
+### 6.1 Config layer architecture
+
+```
+JSON config file
+    ↓  parse_timing_config()     → TimingConfig { loop_timing, period_us, io_wait_ratio }
+    ↓  parse_checksum_config()   → ChecksumConfig { policy, flexzone }
+    ↓  parse_shm_config()        → ShmConfig { enabled, secret, slot_count, sync_policy }
+    ↓  parse_transport_config()  → TransportConfig { transport, zmq_* fields }
+    ↓  ... (identity, auth, script, inbox, startup, monitoring)
+    ↓
+    ↓  validate_known_keys()     → reject unknown JSON keys (whitelist)
+    ↓
+RoleConfig (unified config class)
+    ├── timing()      → LoopTimingParams via timing_params()
+    ├── checksum()    → ChecksumConfig { policy, flexzone }
+    ├── in_shm()      → ShmConfig (per-direction: slot_count, sync_policy — no checksum)
+    ├── out_shm()     → ShmConfig
+    └── ... other accessors
+```
+
+**Config levels:**
+
+| Level | Parameters | Scope |
+|-------|-----------|-------|
+| **Role** | loop_timing, target_period_ms/target_rate_hz, checksum, flexzone_checksum, script, identity, auth, inbox, startup, monitoring | One per role instance |
+| **Per-direction** | hub_dir, channel, transport, zmq_*, shm_enabled/secret/slot_count/sync_policy | Separate in_ and out_ |
+| **Role-specific** | slot_schema, flexzone_schema | Varies by role type |
+
+### 6.2 Config → role host → execution
+
+**Timing:**
+```
+config_.timing()
+    → opts.timing = tc.timing_params()              (role host)
+    → establish_channel():
+        queue->set_configured_period(period_us)      (ContextMetrics storage)
+    → core_.set_configured_period(period_us)         (LoopMetricsSnapshot reporting)
+    → main loop reads config_.timing() directly      (deadline computation)
+```
+
+**Checksum:**
+```
+config_.checksum()
+    → opts.checksum_policy = config_.checksum().policy    (role host)
+    → opts.shm_config.checksum_policy = config_.checksum().policy
+    → establish_channel():
+        DataBlock created with policy from DataBlockConfig
+        queue->set_checksum_policy(policy)
+        queue->set_flexzone_checksum(flexzone)
+    → inbox_queue_->set_checksum_policy(policy)           (inbox receiver)
+    → ctx.checksum_policy = policy                        (RoleContext for InboxClient)
+```
+
+### 6.3 Config key whitelist
+
+`validate_known_keys()` in `role_config.cpp` checks all top-level JSON keys against
+`kAllowedKeys`. Unknown keys → `std::runtime_error` at parse time.
+
+This prevents:
+- Typos (`"cheksum"` instead of `"checksum"`)
+- Obsolete keys (`"out_update_checksum"` — removed)
+- Ambiguous config (keys that look valid but are ignored)
+
+Every new config parameter must be added to the whitelist.
+
+### 6.4 Role registration and inbox discovery
+
+**Registration** (role host startup):
+
+All roles register with the broker. Inbox info is carried in the registration message:
+
+| Role | Registration | Inbox stored on |
+|------|-------------|-----------------|
+| Producer | REG_REQ (creates channel) | ChannelEntry |
+| Consumer | CONSUMER_REG_REQ (subscribes) | ConsumerEntry |
+| Processor | REG_REQ (output) + CONSUMER_REG_REQ (input) | ChannelEntry (via output REG_REQ) |
+
+Registration payload includes: `inbox_endpoint`, `inbox_schema_json`, `inbox_packing`,
+`inbox_checksum`. All optional — empty = no inbox.
+
+**Discovery** (api.open_inbox):
+
+```
+Script: api.open_inbox("TARGET-UID")
+    → ScriptEngine → RoleHostCore cache (check for existing client)
+    → Cache miss: Messenger.query_role_info("TARGET-UID")
+    → ROLE_INFO_REQ to broker
+    → Broker searches:
+        1. ChannelEntry::producer_role_uid (producers + processors)
+        2. ConsumerEntry::role_uid (consumers)
+    → ROLE_INFO_ACK: endpoint, schema, packing, checksum_policy
+    → InboxClient::connect_to(endpoint, schema, packing)
+    → client->set_checksum_policy(owner's policy)
+    → Cached in RoleHostCore for reuse
+```
+
+The inbox **owner** dictates the checksum policy. The sender reads it from
+ROLE_INFO_ACK and adopts it. Mismatched policies (sender computes, receiver
+expects none, or vice versa) work correctly: the receiver enforces its own policy.
+
+### 6.5 Future: role-level identity separation
+
+Currently role identity (UID, name, role_type, inbox) is embedded in data channel
+registration (REG_REQ / CONSUMER_REG_REQ). A future `ROLE_REG_REQ` would separate
+role identity from data channel participation:
+
+```
+ROLE_REG_REQ: { uid, name, role_type, inbox_endpoint, inbox_schema, inbox_packing, inbox_checksum }
+    → Broker stores in global role table (HEP-0019 Phase 2)
+    → ROLE_INFO_REQ queries this table directly
+
+REG_REQ / CONSUMER_REG_REQ: data channel operations only
+    → No inbox/identity fields (already in role table)
+```
+
+This cleanly supports the processor which has one identity but participates in
+two data channels (input + output).
