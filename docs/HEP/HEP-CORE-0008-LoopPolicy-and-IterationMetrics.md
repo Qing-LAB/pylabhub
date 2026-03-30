@@ -135,7 +135,8 @@ Five natural domains in the stack:
 |--------|-----------------|------------------|---------------|
 | 1. Channel throughput | `slots_written`, `commit_index` | SHM `SharedMemoryHeader` (cross-process) | All parties via SHM read |
 | 2. Acquire/release timing | `last_slot_wait_us`, `iteration_count`, `last_iteration_us`, `max_iteration_us` | `acquire_write_slot()` / `acquire_consume_slot()` in data_block.cpp | Queue impl -> ContextMetrics -> QueueMetrics |
-| 3. Loop scheduling | `last_slot_exec_us`, `configured_period_us`, `context_elapsed_us` | Queue implementation's acquire/release methods | Queue impl -> ContextMetrics -> QueueMetrics |
+| 3. Loop scheduling | `last_slot_exec_us`, `context_elapsed_us` | Queue implementation's acquire/release methods | Queue impl -> ContextMetrics -> QueueMetrics |
+| 3b. Loop config | `configured_period_us` | Set at startup from config | ContextMetrics (storage) -> LoopMetricsSnapshot (reporting) |
 | 4. Script supervision | `script_error_count`, `slot_valid` | Script host (Python error paths) | Python only (binary-specific) |
 | 5. Channel topology | `consumer_count`, `last_heartbeat_us` | Broker / heartbeat protocol | Broker; Python via broker query |
 
@@ -437,7 +438,6 @@ api.metrics() -> dict:
         "last_slot_wait_us":      int,     # time blocked in acquire waiting for data/slot (us)
         "last_slot_exec_us":      int,     # time from acquire to release -- callback execution (us)
         "data_drop_count":        int,     # ZMQ write buffer full/timeout. Always 0 for SHM.
-        "configured_period_us":   int,     # target loop period (0 = MaxRate). Config input.
         "recv_overflow_count":    int,     # ZMQ recv ring full. Always 0 for SHM.
         "recv_frame_error_count": int,     # ZMQ bad frames. Always 0 for SHM.
         "recv_gap_count":         int,     # ZMQ sequence gaps. Always 0 for SHM.
@@ -446,9 +446,10 @@ api.metrics() -> dict:
         "checksum_error_count":   int,     # BLAKE2b verification failures.
     },
     "loop": {                              # from RoleHostCore (PYLABHUB_LOOP_METRICS_FIELDS)
-        "iteration_count":     int,        # main loop cycles completed
-        "loop_overrun_count":  int,        # cycles where now > deadline
-        "last_cycle_work_us":  int,        # us of active work in last cycle
+        "iteration_count":       int,      # main loop cycles completed
+        "loop_overrun_count":    int,      # cycles where now > deadline
+        "last_cycle_work_us":    int,      # us of active work in last cycle
+        "configured_period_us":  int,      # target loop period (0 = MaxRate). Config input.
     },
     "role": {                              # role-specific counters
         "out_written":         int,        # (producer) committed slots
@@ -473,12 +474,13 @@ The processor has two queues. Each gets its own sub-dict (`"in_queue"`, `"out_qu
 ```python
 api.metrics() -> dict:
 {
-    "in_queue":  { <13 QueueMetrics fields> },   # input queue
-    "out_queue": { <13 QueueMetrics fields> },   # output queue
+    "in_queue":  { <12 QueueMetrics fields> },   # input queue
+    "out_queue": { <12 QueueMetrics fields> },   # output queue
     "loop": {
-        "iteration_count":     int,
-        "loop_overrun_count":  int,
-        "last_cycle_work_us":  int,
+        "iteration_count":       int,
+        "loop_overrun_count":    int,
+        "last_cycle_work_us":    int,
+        "configured_period_us":  int,
     },
     "role": {
         "in_received":         int,

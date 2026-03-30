@@ -487,6 +487,7 @@ bool ConsumerRoleHost::setup_infrastructure_()
         return false;
     }
     in_consumer_->reset_queue_metrics();
+    core_.set_configured_period(static_cast<uint64_t>(tc.period_us));
 
     LOGGER_INFO("[cons] Consumer started on channel '{}' (shm={})", ch,
                 in_consumer_->has_shm());

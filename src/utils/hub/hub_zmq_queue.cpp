@@ -954,7 +954,7 @@ QueueMetrics ZmqQueue::metrics() const noexcept
     m.context_elapsed_us   = pImpl->ctx_metrics_.context_elapsed_us_val();
     m.last_slot_exec_us    = pImpl->ctx_metrics_.last_slot_exec_us_val();
     m.data_drop_count        = pImpl->data_drop_count_.load(std::memory_order_relaxed);
-    m.configured_period_us = pImpl->ctx_metrics_.configured_period_us_val();
+    // configured_period_us reported at loop level (LoopMetricsSnapshot), not queue level.
     // Transport-specific counters.
     m.recv_overflow_count    = pImpl->recv_overflow_count_.load(std::memory_order_relaxed);
     m.recv_frame_error_count = pImpl->recv_frame_error_count_.load(std::memory_order_relaxed);

@@ -553,6 +553,7 @@ bool ProducerRoleHost::setup_infrastructure_()
         return false;
     }
     out_producer_->reset_queue_metrics();
+    core_.set_configured_period(static_cast<uint64_t>(tc.period_us));
 
     LOGGER_INFO("[prod] Producer started on channel '{}' (shm={})", ch,
                 out_producer_->has_shm());

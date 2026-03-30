@@ -406,7 +406,7 @@ QueueMetrics ShmQueue::metrics() const noexcept
         m.max_iteration_us     = cm.max_iteration_us_val();
         m.context_elapsed_us   = cm.context_elapsed_us_val();
         m.last_slot_exec_us    = cm.last_slot_exec_us_val();
-        m.configured_period_us = cm.configured_period_us_val();
+        // configured_period_us reported at loop level (LoopMetricsSnapshot), not queue level.
         // recv_overflow_count stays 0 for SHM (no receive buffer overflow possible).
         m.checksum_error_count = cm.checksum_error_count_val();
         return m;
@@ -420,7 +420,7 @@ QueueMetrics ShmQueue::metrics() const noexcept
         m.max_iteration_us     = cm.max_iteration_us_val();
         m.context_elapsed_us   = cm.context_elapsed_us_val();
         m.last_slot_exec_us    = cm.last_slot_exec_us_val();
-        m.configured_period_us = cm.configured_period_us_val();
+        // configured_period_us reported at loop level (LoopMetricsSnapshot), not queue level.
         return m;
     }
 

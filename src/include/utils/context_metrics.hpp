@@ -8,9 +8,30 @@
  *   - SHM path: DataBlock pImpl owns the instance; ShmQueue reads via DataBlock::metrics()
  *   - ZMQ path: ZmqQueueImpl owns the instance directly
  *
- * All fields are std::atomic<uint64_t> with relaxed ordering — safe for
+ * All uint64_t fields are std::atomic with relaxed ordering — safe for
  * cross-thread reads (e.g., metrics snapshot from a monitoring thread while
  * the data thread writes). Zero cost on x86-64 (relaxed atomic = plain mov).
+ * context_start_time_ is a plain Clock::time_point (single-writer, same-thread).
+ *
+ * ## Field categories
+ *
+ * **Timing measurements** (written by queue acquire/release internals):
+ *   context_elapsed_us, last_slot_wait_us, last_iteration_us, max_iteration_us,
+ *   last_slot_exec_us — reported in QueueMetrics (queue-level reporting).
+ *
+ * **Error counter** (written by queue checksum verification):
+ *   checksum_error_count — reported in QueueMetrics.
+ *
+ * **Config context** (written by queue set_configured_period at startup):
+ *   configured_period_us — NOT reported in QueueMetrics. Reported at the loop
+ *   level (LoopMetricsSnapshot) because loop timing is a role-level concern,
+ *   not a queue concern. Stored here because the RAII SlotIterator reads it
+ *   from ContextMetrics to determine sleep duration. The queue provides storage;
+ *   the loop provides reporting.
+ *
+ * **Measurement anchor** (non-atomic, single-writer):
+ *   context_start_time_ — first acquire timestamp, used to compute
+ *   context_elapsed_us. Not reported externally.
  *
  * See docs/HEP/HEP-CORE-0008-LoopPolicy-and-IterationMetrics.md §3.
  */

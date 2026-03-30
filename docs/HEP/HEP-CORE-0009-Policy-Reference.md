@@ -222,8 +222,8 @@ See `tests/test_layer3_datahub/test_datahub_loop_policy.cpp` — 5 tests passing
 
 See **HEP-CORE-0008** for the full design, including the five-domain metrics model
 (Channel throughput / Acquire timing / Loop scheduling / Script supervision / Topology)
-and the `set_loop_policy()` unification mechanism (`ContextMetrics` lives in DataBlock
-Pimpl; `TransactionContext::metrics()` is a pass-through reference).
+and the `ContextMetrics` unification (transport-agnostic timing container in
+`context_metrics.hpp`; timing set at queue level, reporting at loop level).
 
 **JSON config** (per role, Pass 2):
 ```json
