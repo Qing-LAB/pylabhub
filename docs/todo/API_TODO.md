@@ -184,7 +184,15 @@
 - [ ] Rewrite `test_datahub_loop_policy.cpp`: timing measurement tests stay at L3 (DataBlock);
   policy execution tests (FixedRate sleep, compensation, overrun) move to role/RAII level
 - [x] Config strict validation framework: whitelist of allowed keys per role type. ✅ 2026-03-30
-- [ ] Inbox discovery gap: ROLE_INFO_REQ only finds producers. Consumer/processor inboxes
+- [ ] Role-level identity and inbox registration: processor piggybacks inbox on producer
+  REG_REQ (out_opts), not registered as a processor. Broker should have a proper
+  role registration concept (independent of channel create/subscribe) so all roles
+  are discoverable by UID with their inbox/identity/role_type. Currently:
+  - Producer: REG_REQ carries inbox → ChannelEntry stores it
+  - Consumer: CONSUMER_REG_REQ carries inbox → ConsumerEntry stores it
+  - Processor: uses producer REG_REQ for inbox → found via producer_role_uid search
+  All work, but the processor identity is split across producer + consumer entries.
+- [x] Inbox discovery gap: ROLE_INFO_REQ now searches both producer and consumer entries. ✅ 2026-03-30
   are created but never registered with broker (CONSUMER_REG_REQ lacks inbox fields).
   api.open_inbox("CONS-...") returns None even when consumer has inbox configured.
   Fix: add inbox fields to CONSUMER_REG_REQ and extend ROLE_INFO_REQ to search consumers.
