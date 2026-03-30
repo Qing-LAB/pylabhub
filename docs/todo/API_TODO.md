@@ -37,18 +37,18 @@
 
 **Design**: `docs/tech_draft/engine_thread_model.md`
 **Motivation**: Enable cross-thread script execution (ctrl_thread_, inbox_thread_) + shared state + native C++ plugin engine.
-**Ordering**: Depends on RoleAPIBase extraction (which depends on SE-04 Lua parity). Sequence: SE-04 → RoleAPIBase → Engine thread model.
+**Ordering**: SE-04 ✅ → RoleAPIBase (NEXT) → Engine Phases 5-6. Phases 1-4 done; 5-6 are independent features that use the model.
 
-- [ ] Phase 1: `invoke(name)` / `invoke(name, args)` / `eval(code)` on ScriptEngine interface
-- [ ] Phase 2: Engine infrastructure — owner thread detection, Lua thread-state cache
-- [ ] Phase 3: Cross-thread dispatch — Python request queue + drain at safe point; Lua multi-state
-- [ ] Phase 4: Shared JSON state in RoleHostCore (`get_state`/`set_state` script API)
-- [ ] Phase 5: ctrl_thread_ script support (script-driven control-plane responses)
+- [x] Phase 1: `invoke(name)` / `invoke(name, args)` / `eval(code)` on ScriptEngine interface ✅
+- [x] Phase 2: Engine infrastructure — owner thread detection, Lua thread-state cache ✅
+- [x] Phase 3: Cross-thread dispatch — Python request queue + drain at safe point; Lua multi-state ✅
+- [x] Phase 4: Shared state in RoleHostCore — Lua get/set_shared_data, Python api.shared_data dict ✅
+- [ ] Phase 5: ctrl_thread_ script support — on_heartbeat/on_admin callbacks from control thread (infrastructure ready from Phases 1-3; no role host wiring yet)
 - [ ] Phase 6: NativeEngine — `.so`/`.dll` plugin engine with `build_info` ABI verification, zero-copy data access
 
 ### ScriptEngine Cleanup (post-refactor)
 
-- [ ] RoleAPIBase extraction — **AFTER SE-04**: eliminate 3× duplication across ProducerAPI/ConsumerAPI/ProcessorAPI; shared base holds uid, name, channel, log, metrics, inbox, shared_data. Blocked on SE-04 (Lua API parity) because Lua bindings will surface the correct shared method set and define the abstraction boundary.
+- [ ] RoleAPIBase extraction — **NEXT** (SE-04 ✅): eliminate 3× duplication across ProducerAPI/ConsumerAPI/ProcessorAPI; shared base holds uid, name, channel, log, stop, critical_error, stop_reason, metrics, inbox, spinlock, broker ops, custom metrics (already on RoleHostCore). Lua parity confirmed the shared method set.
 - [ ] RoleHostCore log_tag: add log_tag to RoleHostCore so role hosts and engines get it from one place (currently each manages its own copy, hardcoded "[prod]"/"[cons]"/"[proc]" in role hosts)
 - [ ] RoleHostCore encapsulation (CR-03): `g_shutdown`, `validate_only`, `fz_spec` → private with accessors
 - [ ] RoleContext: `const char*` members → `std::string` — PARTIALLY DONE (ScriptEngine interface changed 2026-03-24; RoleContext itself still uses std::string already)
