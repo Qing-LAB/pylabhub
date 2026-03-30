@@ -792,6 +792,7 @@ Messenger::create_channel(const std::string              &channel_name,
     cmd.inbox_endpoint    = inbox_endpoint;
     cmd.inbox_schema_json = opts.inbox_schema_json;
     cmd.inbox_packing     = opts.inbox_packing;
+    cmd.inbox_checksum    = opts.inbox_checksum;
     cmd.result            = std::move(reg_promise);
     pImpl->enqueue(std::move(cmd));
 

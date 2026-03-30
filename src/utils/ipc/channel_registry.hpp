@@ -65,6 +65,11 @@ struct ConsumerEntry
     // ── Identity (Phase 3) ────────────────────────────────────────────────────
     std::string role_name;  ///< Human name if provided in CONSUMER_REG_REQ; empty otherwise.
     std::string role_uid;   ///< Role UID if provided in CONSUMER_REG_REQ; empty otherwise.
+    // ── Inbox (Phase 5) ──────────────────────────────────────────────────────
+    std::string inbox_endpoint;     ///< ROUTER bind endpoint; empty = no inbox.
+    std::string inbox_schema_json;  ///< JSON schema; empty = no inbox.
+    std::string inbox_packing;      ///< "aligned" or "packed"; empty = no inbox.
+    std::string inbox_checksum;     ///< "enforced", "manual", "none"; empty = enforced.
     std::chrono::system_clock::time_point connected_at{std::chrono::system_clock::now()};
 };
 
@@ -108,6 +113,8 @@ struct ChannelEntry
     std::string    inbox_schema_json;
     /// Packing for the inbox schema (Phase 4): "aligned" or "packed". Empty if no inbox.
     std::string    inbox_packing;
+    /// Checksum policy for the inbox: "enforced", "manual", "none". Empty = enforced.
+    std::string    inbox_checksum;
 
     // ── Schema identity (HEP-CORE-0016 Phase 3) ───────────────────────────────
     /// Named schema ID set by producer in REG_REQ or annotated by broker via reverse hash

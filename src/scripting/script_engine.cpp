@@ -10,6 +10,7 @@
 
 #include "script_host_helpers.hpp"
 #include "utils/hub_inbox_queue.hpp"
+#include "utils/config/checksum_config.hpp"
 #include "utils/logger.hpp"
 #include "utils/messenger.hpp"
 
@@ -75,7 +76,9 @@ ScriptEngine::open_inbox_client(const std::string &target_uid)
                             target_uid);
                 return std::nullopt;
             }
-            client_ptr->set_checksum_policy(ctx_.checksum_policy);
+            // Use the inbox OWNER's checksum policy (from ROLE_INFO_ACK), not our own.
+            client_ptr->set_checksum_policy(
+                config::string_to_checksum_policy(info->inbox_checksum));
 
             result_spec = std::move(spec);
             result_packing = info->inbox_packing;
