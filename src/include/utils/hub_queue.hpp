@@ -236,6 +236,10 @@ public:
     /** @brief Reset all metric counters. Called at role startup before the data loop. */
     virtual void reset_metrics() {}
 
+    /** @brief Full initialization at session start. Resets counters AND transport state
+     *  (e.g., sequence tracking). Call once before the data loop. Default: calls reset_metrics(). */
+    virtual void init_metrics() { reset_metrics(); }
+
     /** @brief Set the target loop period (informational — stored in ContextMetrics). */
     virtual void set_configured_period(uint64_t /*period_us*/) {}
 
@@ -339,6 +343,10 @@ public:
 
     /** @brief Reset all metric counters. Called at role startup before the data loop. */
     virtual void reset_metrics() {}
+
+    /** @brief Full initialization at session start. Resets counters AND transport state
+     *  (e.g., sequence tracking). Call once before the data loop. Default: calls reset_metrics(). */
+    virtual void init_metrics() { reset_metrics(); }
 
     /** @brief Set the target loop period (informational — stored in ContextMetrics). */
     virtual void set_configured_period(uint64_t /*period_us*/) {}
