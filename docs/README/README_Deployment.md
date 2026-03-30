@@ -296,7 +296,9 @@ Example `producer.json`:
   "hub_dir":  "../hub",
   "channel":  "lab.sensors.temperature",
 
+  "loop_timing":      "fixed_rate",
   "target_period_ms": 100,
+  "checksum":         "enforced",
   "transport":        "shm",
 
   "slot_schema": {
@@ -327,8 +329,11 @@ Example `producer.json`:
 | `broker` | no† | `"tcp://127.0.0.1:5570"` | Broker endpoint (alternative to `hub_dir`) |
 | `broker_pubkey` | no | `""` | CurveZMQ broker public key (Z85, 40 chars) |
 | `channel` | yes | — | Channel name to publish on |
-| `target_period_ms` | no | `0` | Write loop period in ms; `0` = free-run |
-| `loop_timing` | no | `"max_rate"` | `"max_rate"`, `"fixed_rate"`, `"fixed_rate_with_compensation"` |
+| `loop_timing` | **yes** | — | `"max_rate"`, `"fixed_rate"`, `"fixed_rate_with_compensation"` |
+| `target_period_ms` | cond. | — | Write loop period in ms; required for `fixed_rate`/`fixed_rate_with_compensation`; forbidden for `max_rate`. Mutually exclusive with `target_rate_hz`. |
+| `target_rate_hz` | cond. | — | Write loop rate in Hz; alternative to `target_period_ms` |
+| `checksum` | no | `"enforced"` | `"enforced"` (auto), `"manual"` (caller controls), `"none"` (skip) |
+| `flexzone_checksum` | no | `true` | BLAKE2b checksum on flexzone writes (SHM only) |
 | `transport` | no | `"shm"` | `"shm"` or `"zmq"` |
 | `zmq_out_endpoint` | no† | — | ZMQ PUSH bind endpoint (required when `transport=zmq`) |
 | `zmq_out_bind` | no | `true` | Bind (true) or connect (false) for ZMQ PUSH socket |
@@ -394,6 +399,8 @@ Example `consumer.json`:
   "hub_dir":     "../hub",
   "channel":     "lab.sensors.temperature",
 
+  "loop_timing": "max_rate",
+  "checksum":    "enforced",
   "queue_type":  "shm",
 
   "slot_schema": {
@@ -423,11 +430,15 @@ Example `consumer.json`:
 | `broker` | no† | `"tcp://127.0.0.1:5570"` | Broker endpoint |
 | `broker_pubkey` | no | `""` | CurveZMQ broker public key (Z85, 40 chars) |
 | `channel` | yes | — | Channel name to subscribe to |
+| `loop_timing` | **yes** | — | `"max_rate"`, `"fixed_rate"`, `"fixed_rate_with_compensation"` |
+| `target_period_ms` | cond. | — | Loop period in ms; required for fixed-rate policies; forbidden for `max_rate` |
+| `target_rate_hz` | cond. | — | Loop rate in Hz; alternative to `target_period_ms` |
 | `queue_type` | no | `"shm"` | `"shm"` (reads SHM ring) or `"zmq"` (ZMQ PULL from broker) |
 | `slot_schema` | yes‡ | — | Expected input slot layout (must match producer schema) |
 | `schema_id` | no‡ | — | Named schema from HEP-CORE-0016 |
-| `validation.verify_checksum` | no | `false` | Enable BLAKE2b slot verification on `read_acquire()` (SHM only) |
-| `validation.stop_on_script_error` | no | `false` | Halt consumer if `on_consume` raises an exception |
+| `checksum` | no | `"enforced"` | `"enforced"` (auto verify), `"manual"` (caller controls), `"none"` (skip) |
+| `flexzone_checksum` | no | `true` | Verify flexzone checksum on read (SHM only) |
+| `stop_on_script_error` | no | `false` | Halt consumer if `on_consume` raises an exception |
 | `flexzone_schema` | no | absent | Input flexzone layout (SHM only; zero-copy read) |
 | `zmq_buffer_depth` | no | `64` | Internal recv-ring buffer depth for ZMQ transport (must be > 0) |
 | `zmq_packing` | no | `"aligned"` | ZMQ frame packing: `"aligned"` or `"packed"` |
@@ -486,6 +497,9 @@ Example `processor.json`:
   "in_channel":  "lab.sensors.temperature",
   "out_channel": "lab.processed.temperature",
 
+  "loop_timing":   "max_rate",
+  "checksum":      "enforced",
+
   "in_transport":  "shm",
   "out_transport": "shm",
 
@@ -524,6 +538,9 @@ Example `processor.json`:
 | `out_broker` | no† | — | Per-direction output broker endpoint |
 | `in_channel` | yes | — | Input channel name |
 | `out_channel` | yes | — | Output channel name |
+| `loop_timing` | **yes** | — | `"max_rate"`, `"fixed_rate"`, `"fixed_rate_with_compensation"` |
+| `target_period_ms` | cond. | — | Loop period in ms; required for fixed-rate policies; forbidden for `max_rate` |
+| `target_rate_hz` | cond. | — | Loop rate in Hz; alternative to `target_period_ms` |
 | `in_transport` | no | `"shm"` | `"shm"` or `"zmq"` (direct ZMQ PULL; endpoint from broker) |
 | `out_transport` | no | `"shm"` | `"shm"` or `"zmq"` (direct ZMQ PUSH) |
 | `zmq_in_endpoint` | no† | — | ZMQ PULL endpoint (required when `in_transport=zmq` + direct mode) |
@@ -535,9 +552,9 @@ Example `processor.json`:
 | `in_zmq_packing` | no | `"aligned"` | `"aligned"` or `"packed"` |
 | `out_zmq_packing` | no | `"aligned"` | `"aligned"` or `"packed"` |
 | `overflow_policy` | no | `"block"` | Output overflow policy: `"block"` or `"drop"` |
-| `validation.verify_checksum` | no | `false` | Enable BLAKE2b verification on SHM input |
-| `validation.update_checksum` | no | `true` | Write BLAKE2b checksum on SHM output |
-| `validation.stop_on_script_error` | no | `false` | Halt processor if `on_process` raises an exception |
+| `checksum` | no | `"enforced"` | `"enforced"` (auto), `"manual"` (caller controls), `"none"` (skip). Applies to both input verification and output computation. |
+| `flexzone_checksum` | no | `true` | Flexzone checksum on output writes (SHM only) |
+| `stop_on_script_error` | no | `false` | Halt processor if `on_process` raises an exception |
 | `in_slot_schema` | yes‡ | — | Input slot layout |
 | `out_slot_schema` | yes‡ | — | Output slot layout |
 | `in_schema_id` | no‡ | — | Named schema for input (HEP-CORE-0016) |
@@ -679,7 +696,7 @@ api.in_slots_received()      # → int
 api.last_seq()               # → int: SHM=ring-buffer slot index (wraps); ZMQ=monotone wire seq
 api.in_capacity()            # → int: ring buffer slot count (SHM) or recv buffer depth (ZMQ)
 api.in_policy()              # → str: overflow policy info
-api.set_verify_checksum(enable)  # toggle BLAKE2b slot verification at runtime (SHM only)
+api.set_verify_checksum(enable)  # manual checksum toggle (only meaningful when checksum="manual")
 
 # Queue metadata — processor (both input and output sides)
 api.in_slots_received()      # → int
@@ -688,7 +705,7 @@ api.out_drop_count()         # → int
 api.last_seq()               # → int: SHM=ring-buffer slot index (wraps); ZMQ=monotone wire seq
 api.in_capacity()  / api.in_policy()
 api.out_capacity() / api.out_policy()
-api.set_verify_checksum(enable)
+api.set_verify_checksum(enable)  # manual checksum toggle (only meaningful when checksum="manual")
 
 # Spinlocks (SHM transport only)
 api.spinlock(idx)            # → context manager; GIL released during lock wait
