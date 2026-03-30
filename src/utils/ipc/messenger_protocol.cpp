@@ -507,6 +507,7 @@ void MessengerImpl::handle_command(CreateChannelCmd &cmd,
         // Phase 4: inbox schema + packing for ROLE_INFO_REQ discovery.
         if (!cmd.inbox_schema_json.empty()) payload["inbox_schema_json"] = cmd.inbox_schema_json;
         if (!cmd.inbox_packing.empty())     payload["inbox_packing"]     = cmd.inbox_packing;
+        if (!cmd.inbox_checksum.empty())    payload["inbox_checksum"]    = cmd.inbox_checksum;
 
         const std::string msg_type    = "REG_REQ";
         const std::string payload_str = payload.dump();
@@ -1209,6 +1210,7 @@ void MessengerImpl::handle_command(RoleInfoReqCmd &cmd,
         if (response.contains("inbox_schema") && response["inbox_schema"].is_array())
             info.inbox_schema = response["inbox_schema"];
         info.inbox_packing  = response.value("inbox_packing", "");
+        info.inbox_checksum = response.value("inbox_checksum", "");
         cmd.result.set_value(std::move(info));
     }
     catch (const zmq::error_t &e)

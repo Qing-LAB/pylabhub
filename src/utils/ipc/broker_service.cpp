@@ -783,6 +783,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     entry.inbox_endpoint        = req.value("inbox_endpoint", "");
     entry.inbox_schema_json     = req.value("inbox_schema_json", "");
     entry.inbox_packing         = req.value("inbox_packing", "");
+    entry.inbox_checksum        = req.value("inbox_checksum", "");
 
     // HEP-0021 §16: reject registration if inbox_endpoint has unresolved port 0.
     if (!entry.inbox_endpoint.empty())
@@ -1103,6 +1104,10 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     entry.consumer_hostname  = req.value("consumer_hostname", "");
     entry.role_name         = role_name;
     entry.role_uid          = role_uid;
+    entry.inbox_endpoint    = req.value("inbox_endpoint", "");
+    entry.inbox_schema_json = req.value("inbox_schema_json", "");
+    entry.inbox_packing     = req.value("inbox_packing", "");
+    entry.inbox_checksum    = req.value("inbox_checksum", "");
     // Capture ZMQ identity for future CHANNEL_CLOSING_NOTIFY.
     entry.zmq_identity.assign(static_cast<const char*>(identity.data()), identity.size());
     registry.register_consumer(channel_name, std::move(entry));
@@ -1861,6 +1866,7 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
             resp["channel"]         = name;
             resp["inbox_endpoint"]  = entry.inbox_endpoint;
             resp["inbox_packing"]   = entry.inbox_packing;
+            resp["inbox_checksum"]  = entry.inbox_checksum;
             if (!entry.inbox_schema_json.empty())
             {
                 try
@@ -1879,6 +1885,41 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
             LOGGER_DEBUG("Broker: ROLE_INFO_REQ uid='{}' found on '{}', inbox='{}'",
                          uid, name, entry.inbox_endpoint);
             return resp;
+        }
+    }
+
+    // Search consumer entries across all channels.
+    for (const auto& [name, entry] : registry.all_channels())
+    {
+        for (const auto& cons : registry.find_consumers(name))
+        {
+            if (!cons.role_uid.empty() && cons.role_uid == uid)
+            {
+                nlohmann::json resp;
+                resp["found"]           = !cons.inbox_endpoint.empty();
+                resp["channel"]         = name;
+                resp["inbox_endpoint"]  = cons.inbox_endpoint;
+                resp["inbox_packing"]   = cons.inbox_packing;
+                resp["inbox_checksum"]  = cons.inbox_checksum;
+                if (!cons.inbox_schema_json.empty())
+                {
+                    try
+                    {
+                        resp["inbox_schema"] = nlohmann::json::parse(cons.inbox_schema_json);
+                    }
+                    catch (const nlohmann::json::exception &)
+                    {
+                        resp["inbox_schema"] = nlohmann::json::array();
+                    }
+                }
+                else
+                {
+                    resp["inbox_schema"] = nlohmann::json::array();
+                }
+                LOGGER_DEBUG("Broker: ROLE_INFO_REQ uid='{}' found as consumer on '{}', inbox='{}'",
+                             uid, name, cons.inbox_endpoint);
+                return resp;
+            }
         }
     }
 
