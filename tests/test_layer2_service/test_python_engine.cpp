@@ -2003,4 +2003,154 @@ def on_produce(out_slot, fz, msgs, api):
     engine.finalize();
 }
 
+// ============================================================================
+// 22. Processor channels (in_channel / out_channel)
+// ============================================================================
+
+TEST_F(PythonEngineTest, Api_ProcessorChannels_InOut)
+{
+    write_script(R"(
+def on_process(in_slot, out_slot, fz, msgs, api):
+    ic = api.in_channel()
+    oc = api.out_channel()
+    assert ic == "sensor.input", f"in_channel mismatch: {ic}"
+    assert oc == "sensor.output", f"out_channel mismatch: {oc}"
+    return False
+)");
+
+    RoleHostCore core;
+    PythonEngine engine;
+    engine.set_python_venv("");
+    ASSERT_TRUE(engine.initialize("test", &core));
+    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
+                                   "__init__.py", "on_process"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+
+    RoleContext ctx{};
+    ctx.role_tag    = "proc";
+    ctx.uid         = "TEST-ENGINE-00000001";
+    ctx.name        = "TestEngine";
+    ctx.channel     = "sensor.input";
+    ctx.out_channel = "sensor.output";
+    ctx.log_level   = "error";
+    ctx.core        = &core;
+    ctx.stop_on_script_error = false;
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    float in_data  = 1.0f;
+    float out_data = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_process(&in_data, sizeof(in_data),
+                                         &out_data, sizeof(out_data),
+                                         nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(result, InvokeResult::Discard);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "Script assertion failed -- processor channels do not match context";
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 23. open_inbox without broker returns None
+// ============================================================================
+
+TEST_F(PythonEngineTest, Api_OpenInbox_WithoutBroker)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    result = api.open_inbox("some-uid")
+    assert result is None, f"expected None, got {result}"
+    return False
+)");
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    auto result =
+        engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(result, InvokeResult::Discard);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "api.open_inbox() without broker should return None, not raise";
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 24. report_metrics with non-dict argument produces error
+// ============================================================================
+
+TEST_F(PythonEngineTest, Api_ReportMetrics_NonDictArg_IsError)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    api.report_metrics(42)  # wrong type
+    return False
+)");
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_GE(engine.script_error_count(), 1u)
+        << "report_metrics(42) should produce a script error (type mismatch)";
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 25. Full lifecycle with verified callback execution
+// ============================================================================
+
+TEST_F(PythonEngineTest, FullLifecycle_VerifiesCallbackExecution)
+{
+    write_script(R"(
+_api_ref = None
+
+def on_init(api):
+    global _api_ref
+    _api_ref = api
+    api.shared_data['init_ran'] = True
+
+def on_produce(out_slot, fz, msgs, api):
+    return False
+
+def on_stop(api):
+    api.shared_data['stop_ran'] = True
+
+def get_init_ran():
+    return _api_ref.shared_data.get('init_ran')
+
+def get_stop_ran():
+    return _api_ref.shared_data.get('stop_ran')
+)");
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    // Verify on_init sets the flag.
+    engine.invoke_on_init();
+    ASSERT_EQ(engine.script_error_count(), 0u) << "on_init failed";
+
+    auto r1 = engine.eval("get_init_ran()");
+    EXPECT_EQ(r1.status, InvokeStatus::Ok);
+    EXPECT_EQ(r1.value, true) << "on_init should have set init_ran=True";
+
+    // Verify on_stop sets the flag.
+    engine.invoke_on_stop();
+    ASSERT_EQ(engine.script_error_count(), 0u) << "on_stop failed";
+
+    auto r2 = engine.eval("get_stop_ran()");
+    EXPECT_EQ(r2.status, InvokeStatus::Ok);
+    EXPECT_EQ(r2.value, true) << "on_stop should have set stop_ran=True";
+
+    engine.finalize();
+}
+
 } // anonymous namespace
