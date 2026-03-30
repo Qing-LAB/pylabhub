@@ -208,28 +208,66 @@ JSON: `"loop_timing": "max_rate"` | `"fixed_rate"` | `"fixed_rate_with_compensat
   `target_rate_hz` must be present — error if both, error if neither.
 Observability: `api.overrun_count()`, `api.last_cycle_work_us()`.
 
-#### 2.6.2 RAII-layer: LoopPolicy ✅ Implemented (Pass 3 complete 2026-02-25)
+#### 2.6.2 LoopPolicy (DEPRECATED — removed 2026-03-29)
 
-**`LoopPolicy`** — `src/include/utils/data_block_policy.hpp` (included by `data_block_config.hpp` → `data_block.hpp`)
-**Applied by**: `SlotIterator::operator++()` (sleep); `acquire_write_slot()` (overrun detection).
-See `tests/test_layer3_datahub/test_datahub_loop_policy.cpp` — 5 tests passing.
+`LoopPolicy` enum (MaxRate/FixedRate/MixTriggered) was a DataBlock-level knob.
+Removed: `set_loop_policy()` deleted from DataBlock. Timing is now managed entirely
+by `LoopTimingPolicy` at the role/config level. `LoopTimingParams` carries policy +
+period through `ProducerOptions`/`ConsumerOptions` to `establish_channel()`.
 
-| Value | Sleep behaviour | Overrun tracking |
-|-------|----------------|-----------------|
-| `MaxRate` | None — iterate as fast as possible | No |
-| `FixedRate` | `sleep(max(0, period_ms − elapsed))` in `SlotIterator::operator++()` | Yes — `acquire_write_slot()` increments `ContextMetrics::overrun_count` |
-| `MixTriggered` | Reserved | Reserved |
+See **HEP-CORE-0008** for the full timing design and `ContextMetrics` unification.
 
-See **HEP-CORE-0008** for the full design, including the five-domain metrics model
-(Channel throughput / Acquire timing / Loop scheduling / Script supervision / Topology)
-and the `ContextMetrics` unification (transport-agnostic timing container in
-`context_metrics.hpp`; timing set at queue level, reporting at loop level).
+#### 2.6.3 ChecksumPolicy (IMPLEMENTED, 2026-03-30)
 
-**JSON config** (per role, Pass 2):
+**`ChecksumPolicy`** — defined in `utils/data_block_policy.hpp` (`pylabhub::hub` namespace)
+
+| Value | JSON | Writer behaviour | Reader behaviour |
+|-------|------|-----------------|-----------------|
+| `Enforced` | `"enforced"` | Auto-checksum on release | Auto-verify on release |
+| `Manual` | `"manual"` | Caller computes explicitly | Caller verifies explicitly |
+| `None` | `"none"` | No checksum | No verification |
+
+**Configuration** (`checksum_config.hpp`):
 ```json
-"loop_policy": "fixed_rate",
-"period_ms": 10
+"checksum": "enforced",
+"flexzone_checksum": true
 ```
+
+**Config design principles:**
+- `checksum` is **per-role** — one policy for all data streams owned by the role.
+  Not per-direction (no `in_`/`out_` prefix). The role decides; all queues obey.
+- `flexzone_checksum` is separate (SHM-specific; ZMQ/Inbox ignore it).
+- Config is the **single source of truth**. All layers read from config, no hardcoding.
+
+**Config → execution propagation:**
+```
+JSON: "checksum": "enforced"
+  → parse_checksum_config() → ChecksumConfig { policy, flexzone }
+  → Role host reads config_.checksum()
+  → ProducerOptions / ConsumerOptions: checksum_policy, flexzone_checksum
+  → establish_channel():
+      SHM: DataBlockConfig.checksum_policy = Enforced → DataBlock auto path
+           queue->set_checksum_policy(Enforced) → ShmQueue flags
+      ZMQ: queue->set_checksum_policy(Enforced) → conditional BLAKE2b
+  → InboxQueue: set_checksum_policy(Enforced) → conditional verify on recv
+  → InboxClient: adopts inbox OWNER's policy from ROLE_INFO_ACK
+```
+
+**Unified queue checksum API** (on QueueWriter/QueueReader base class):
+- `set_checksum_policy(ChecksumPolicy)` — all transports
+- `set_flexzone_checksum(bool)` — SHM acts, ZMQ/Inbox no-op
+- `update_checksum()` / `update_flexzone_checksum()` — writer explicit compute
+- `verify_checksum()` / `verify_flexzone_checksum()` — reader explicit verify
+
+**Config validation:**
+- `"checksum"` field is optional (default: Enforced).
+- Invalid value (e.g., `"turbo"`) → parse-time error.
+- Old per-direction keys (`out_update_checksum`, `in_verify_checksum`) removed from
+  ShmConfig and rejected by the config key whitelist.
+
+**Config key whitelist** (`role_config.cpp`):
+All top-level JSON keys must be in `kAllowedKeys`. Unknown keys cause a hard error
+at parse time. Prevents typos, obsolete keys, and ambiguous configuration.
 
 ---
 
