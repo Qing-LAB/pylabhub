@@ -10,12 +10,17 @@
 ## Current Focus
 
 ### Phase C: Integration Tests
-**Status**: ✅ Complete (424/424 as of 2026-02-19; suite grown to **1045/1045** by 2026-03-10)
+**Status**: ✅ Complete (424/424 as of 2026-02-19; suite grown to **1181/1181** by 2026-03-30)
 
 - [x] **MessageHub and broker tests** – Phase C broker integration + consumer registration complete
 - [x] **Multi-process IPC tests** – Producer/consumer across process boundaries (E2E test)
 - [x] **hub::Producer + hub::Consumer active API** – 15 tests; HELLO/BYE tracking, SHM callbacks, ctrl messaging, idempotency, destructor-BYE regression
 - [ ] **Cross-platform consistency** – Run same tests on Linux (done), Windows, macOS, FreeBSD
+
+### New Gaps Discovered (2026-03-30)
+
+- [ ] **ZMQ checksum policy execution tests** — ZmqQueue now supports `set_checksum_policy()` with compute + verify paths, but no L3 tests exercise the ZMQ-specific checksum compute/verify logic (only SHM checksum paths have coverage). Need: write with enforced checksum → read with verify → confirm match; write corrupted → read with verify → confirm `checksum_error_count` increments.
+- [ ] **Config key whitelist edge case tests** — Config parser now rejects unknown JSON keys, but edge cases need coverage: empty object `{}`, keys with Unicode, keys that are prefixes of valid keys (e.g. `"script_"` vs `"script"`), nested unknown keys inside known objects.
 
 ### BrokerProtocolTest Timing Audit (2026-03-23)
 - [ ] BrokerProtocolTest suite passes but execution times cluster near typical timeout values (~2s). Risk: tests could be masking timing-dependent failures by passing on timeout rather than on correct event sequence. Audit should verify each test validates actual event logs and message ordering, not just return codes or "didn't hang" outcomes.
@@ -113,7 +118,7 @@
 - [x] Test framework shared utilities
 
 ### Platform Coverage
-- [x] **Linux** – Primary development platform; 1166/1166 tests ✅
+- [x] **Linux** – Primary development platform; 1181/1181 tests ✅
 - [ ] **Windows** – Build and test (basic coverage)
 - [ ] **macOS** – Build and test (basic coverage)
 - [ ] **FreeBSD** – Build and test (pending)
@@ -239,6 +244,14 @@ LoopPolicy C++ metrics tests (HEP-CORE-0008) are fully covered in
 ---
 
 ## Recent Completions
+
+### 2026-03-30 (Metrics/Timing/Checksum unification session)
+- ✅ ContextMetrics all-atomic + ZmqQueue adoption, X-macro adapters (JSON/pydict/Lua)
+- ✅ LoopTimingParams strict validation, `loop_timing` required, DataBlock timing removal
+- ✅ Checksum policy unification (per-role config, unified queue API, inbox support)
+- ✅ Config key whitelist validation
+- ✅ Consumer inbox registration, ROLE_INFO_REQ both entries
+- **Total: 1181/1181 tests passing**
 
 ### 2026-03-12 (MR-01 wire dedup + MR-09 is_running + LOW-2 deprecated remap stubs)
 - ✅ **MR-01**: `zmq_wire_helpers.hpp` internal header; `hub_zmq_queue.cpp` + `hub_inbox_queue.cpp` deduped (~260 lines removed)
