@@ -667,9 +667,13 @@ void ConsumerRoleHost::run_data_loop_()
 
 void ConsumerRoleHost::run_ctrl_thread_()
 {
+    scripting::ThreadEngineGuard engine_guard(*engine_);
+
     const auto &id = config_.identity();
     const auto &ch = config_.in_channel();
     const auto &tc = config_.timing();
+
+    const bool has_heartbeat_cb = engine_->has_callback("on_heartbeat");
 
     scripting::ZmqPollLoop loop{core_, "cons:" + id.uid};
     loop.sockets = {
@@ -684,6 +688,8 @@ void ConsumerRoleHost::run_ctrl_thread_()
     loop.periodic_tasks.emplace_back(
         [&] {
             in_messenger_.enqueue_heartbeat(ch);
+            if (has_heartbeat_cb)
+                engine_->invoke("on_heartbeat");
         },
         tc.heartbeat_interval_ms);
     loop.periodic_tasks.emplace_back(
