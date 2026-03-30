@@ -1681,4 +1681,326 @@ def on_produce(out_slot, fz, msgs, api):
     engine.finalize();
 }
 
+// ============================================================================
+// 15. Error paths for on_init / on_stop / on_inbox
+// ============================================================================
+
+TEST_F(PythonEngineTest, InvokeOnInit_ScriptError)
+{
+    write_script(
+        "def on_produce(out_slot, fz, msgs, api):\n"
+        "    return True\n"
+        "\n"
+        "def on_init(api):\n"
+        "    raise RuntimeError('init exploded')\n");
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.invoke_on_init();
+    EXPECT_GE(engine.script_error_count(), 1u)
+        << "on_init raising RuntimeError should increment script_error_count";
+
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, InvokeOnStop_ScriptError)
+{
+    write_script(
+        "def on_produce(out_slot, fz, msgs, api):\n"
+        "    return True\n"
+        "\n"
+        "def on_stop(api):\n"
+        "    raise RuntimeError('stop exploded')\n");
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.invoke_on_stop();
+    EXPECT_GE(engine.script_error_count(), 1u)
+        << "on_stop raising RuntimeError should increment script_error_count";
+
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, InvokeOnInbox_ScriptError)
+{
+    write_script(
+        "def on_produce(out_slot, fz, msgs, api):\n"
+        "    return False\n"
+        "\n"
+        "def on_inbox(data, sender, api):\n"
+        "    raise RuntimeError('inbox exploded')\n");
+
+    PythonEngine engine;
+    engine.set_python_venv("");
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
+    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
+                                   "__init__.py", "on_produce"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
+
+    auto ctx = producer_context();
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    float inbox_data = 1.0f;
+    engine.invoke_on_inbox(&inbox_data, sizeof(inbox_data), "SENDER-00000001");
+    EXPECT_GE(engine.script_error_count(), 1u)
+        << "on_inbox raising RuntimeError should increment script_error_count";
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 16. Queue-state API defaults (no queue connected)
+// ============================================================================
+
+TEST_F(PythonEngineTest, Api_ProducerQueueState_WithoutQueue)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    cap = api.out_capacity()
+    pol = api.out_policy()
+    assert cap == 0, f"expected out_capacity==0, got {cap}"
+    assert pol == "", f"expected out_policy=='', got '{pol}'"
+    return False
+)");
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "Script assertion failed -- producer queue-state defaults incorrect";
+
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Api_ProcessorQueueState_DualDefaults)
+{
+    write_script(R"(
+def on_process(in_slot, out_slot, fz, msgs, api):
+    assert api.in_capacity() == 0, f"in_capacity={api.in_capacity()}"
+    assert api.in_policy() == "", f"in_policy='{api.in_policy()}'"
+    assert api.out_capacity() == 0, f"out_capacity={api.out_capacity()}"
+    assert api.out_policy() == "", f"out_policy='{api.out_policy()}'"
+    assert api.last_seq() == 0, f"last_seq={api.last_seq()}"
+    return False
+)");
+
+    RoleHostCore core;
+    PythonEngine engine;
+    engine.set_python_venv("");
+    ASSERT_TRUE(engine.initialize("test", &core));
+    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
+                                   "__init__.py", "on_process"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+
+    RoleContext ctx{};
+    ctx.role_tag    = "proc";
+    ctx.uid         = "TEST-ENGINE-00000001";
+    ctx.name        = "TestEngine";
+    ctx.channel     = "test.in.channel";
+    ctx.out_channel = "test.out.channel";
+    ctx.log_level   = "error";
+    ctx.core        = &core;
+    ctx.stop_on_script_error = false;
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_process(
+        nullptr, 0, nullptr, 0, nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(result, InvokeResult::Discard);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "Script assertion failed -- processor queue-state defaults incorrect";
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 17. ctrl_queue_dropped default
+// ============================================================================
+
+TEST_F(PythonEngineTest, Api_CtrlQueueDropped_DefaultZero)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    v = api.ctrl_queue_dropped()
+    assert v == 0, f"expected ctrl_queue_dropped==0, got {v}"
+    return False
+)");
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "Script assertion failed -- ctrl_queue_dropped should be 0";
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 18. Metrics loop group completeness
+// ============================================================================
+
+TEST_F(PythonEngineTest, Metrics_AllLoopFields_Present)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    m = api.metrics()
+    assert "loop" in m, "loop group must exist in metrics"
+    loop = m["loop"]
+    assert isinstance(loop["iteration_count"], int), "iteration_count must be int"
+    assert isinstance(loop["loop_overrun_count"], int), "loop_overrun_count must be int"
+    assert isinstance(loop["last_cycle_work_us"], int), "last_cycle_work_us must be int"
+    assert isinstance(loop["configured_period_us"], int), "configured_period_us must be int"
+
+    # Verify non-zero values from core
+    assert loop["iteration_count"] == 5, f"iteration_count={loop['iteration_count']}"
+    assert loop["loop_overrun_count"] == 2, f"loop_overrun_count={loop['loop_overrun_count']}"
+    assert loop["last_cycle_work_us"] == 999, f"last_cycle_work_us={loop['last_cycle_work_us']}"
+    assert loop["configured_period_us"] == 10000, f"configured_period_us={loop['configured_period_us']}"
+    return False
+)");
+
+    RoleHostCore core;
+    for (int i = 0; i < 5; ++i)
+        core.inc_iteration_count();
+    core.inc_loop_overrun();
+    core.inc_loop_overrun();
+    core.set_last_cycle_work_us(999);
+    core.set_configured_period(10000);
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine_with_core(engine, core));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "Script assertion failed -- loop metrics fields incorrect";
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 19. Custom metrics edge cases
+// ============================================================================
+
+TEST_F(PythonEngineTest, Api_CustomMetrics_OverwriteSameKey)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    api.report_metric("x", 1)
+    api.report_metric("x", 2)
+    m = api.metrics()
+    assert "custom" in m, "custom group must exist"
+    assert m["custom"]["x"] == 2, f"expected x==2 after overwrite, got {m['custom']['x']}"
+    return False
+)");
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "Script assertion failed -- custom metric overwrite incorrect";
+
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Api_CustomMetrics_ZeroValue)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    api.report_metric("x", 0.0)
+    m = api.metrics()
+    assert "custom" in m, "custom group must exist even with zero value"
+    assert "x" in m["custom"], "key 'x' must be present"
+    assert m["custom"]["x"] == 0.0, f"expected x==0.0, got {m['custom']['x']}"
+    return False
+)");
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "Script assertion failed -- zero-value custom metric incorrect";
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 20. invoke_produce with empty messages list
+// ============================================================================
+
+TEST_F(PythonEngineTest, InvokeProduce_EmptyMessagesList)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    assert len(msgs) == 0, f"expected empty msgs, got {len(msgs)}"
+    return False
+)");
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs; // empty
+
+    auto result =
+        engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(result, InvokeResult::Discard);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "Script assertion failed -- empty msgs list incorrect";
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 21. stop_reason after critical error
+// ============================================================================
+
+TEST_F(PythonEngineTest, Api_StopReason_AfterCriticalError)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    reason = api.stop_reason()
+    assert reason == "critical_error", f"expected 'critical_error', got '{reason}'"
+    return False
+)");
+
+    RoleHostCore core;
+    core.set_critical_error(); // sets StopReason::CriticalError(3) + shutdown_requested
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine_with_core(engine, core));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "stop_reason should be 'critical_error' after set_critical_error()";
+
+    engine.finalize();
+}
+
 } // anonymous namespace

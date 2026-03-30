@@ -1827,4 +1827,415 @@ TEST_F(LuaEngineTest, Api_ConsumerQueueState_WithoutQueue)
     engine.finalize();
 }
 
+// ============================================================================
+// 22. on_init / on_stop / on_inbox script error detection
+// ============================================================================
+
+TEST_F(LuaEngineTest, InvokeOnInit_ScriptError)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api) return true end
+        function on_init(api)
+            error("init failed")
+        end
+    )");
+
+    RoleHostCore core;
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine_with_core(engine, core, "on_produce"));
+
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.invoke_on_init();
+    EXPECT_GE(engine.script_error_count(), 1u)
+        << "on_init error should increment script_error_count";
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, InvokeOnStop_ScriptError)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api) return true end
+        function on_stop(api)
+            error("stop failed")
+        end
+    )");
+
+    RoleHostCore core;
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine_with_core(engine, core, "on_produce"));
+
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.invoke_on_stop();
+    EXPECT_GE(engine.script_error_count(), 1u)
+        << "on_stop error should increment script_error_count";
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, InvokeOnInbox_ScriptError)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api) return false end
+        function on_inbox(slot, sender, api)
+            error("inbox failed")
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
+
+    auto ctx = producer_context();
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    EXPECT_EQ(engine.script_error_count(), 0u);
+
+    float inbox_data = 1.0f;
+    engine.invoke_on_inbox(&inbox_data, sizeof(inbox_data), "SENDER-00000001");
+    EXPECT_GE(engine.script_error_count(), 1u)
+        << "on_inbox error should increment script_error_count";
+
+    engine.finalize();
+}
+
+// ============================================================================
+// 23. Queue-state defaults for producer and processor
+// ============================================================================
+
+TEST_F(LuaEngineTest, Api_ProducerQueueState_WithoutQueue)
+{
+    // Without a real producer object, queue-state methods return safe defaults.
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            assert(api.out_capacity() == 0, "out_capacity should be 0 without queue")
+            assert(api.out_policy() == "", "out_policy should be '' without queue")
+            return false
+        end
+    )");
+
+    RoleHostCore core;
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine_with_core(engine, core));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Api_ProcessorQueueState_DualDefaults)
+{
+    // Processor context with no real queues — all queue-state accessors return defaults.
+    write_script(R"(
+        function on_process(in_slot, out_slot, fz, msgs, api)
+            assert(api.in_capacity() == 0, "in_capacity should be 0")
+            assert(api.out_capacity() == 0, "out_capacity should be 0")
+            assert(api.in_policy() == "", "in_policy should be ''")
+            assert(api.out_policy() == "", "out_policy should be ''")
+            assert(api.last_seq() == 0, "last_seq should be 0")
+            return false
+        end
+    )");
+
+    RoleHostCore core;
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &core));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_process"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+
+    RoleContext ctx{};
+    ctx.role_tag  = "proc";
+    ctx.uid       = "TEST-ENGINE-00000001";
+    ctx.name      = "TestEngine";
+    ctx.channel   = "test.in_channel";
+    ctx.out_channel = "test.out_channel";
+    ctx.log_level = "error";
+    ctx.core      = &core;
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    float in_data = 1.0f;
+    float out_data = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_process(&in_data, sizeof(in_data),
+                                         &out_data, sizeof(out_data),
+                                         nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(result, InvokeResult::Discard);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+// ============================================================================
+// 24. Identity fields match context
+// ============================================================================
+
+TEST_F(LuaEngineTest, Api_IdentityFields_MatchContext)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            assert(api.uid() == "TEST-ENGINE-00000001",
+                   "uid mismatch: " .. tostring(api.uid()))
+            assert(api.name() == "TestEngine",
+                   "name mismatch: " .. tostring(api.name()))
+            assert(api.channel() == "test.channel",
+                   "channel mismatch: " .. tostring(api.channel()))
+            return false
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "Script assertion failed — identity fields do not match context";
+    engine.finalize();
+}
+
+// ============================================================================
+// 25. ctrl_queue_dropped default
+// ============================================================================
+
+TEST_F(LuaEngineTest, Api_CtrlQueueDropped_DefaultZero)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            local v = api.ctrl_queue_dropped()
+            assert(v == 0, "ctrl_queue_dropped should be 0 without queue, got " .. tostring(v))
+            return false
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+// ============================================================================
+// 26. Metrics — all loop fields present with non-zero verification
+// ============================================================================
+
+TEST_F(LuaEngineTest, Metrics_AllLoopFields_Present)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            local m = api.metrics()
+            assert(type(m.loop) == "table", "loop group must be a table")
+
+            assert(type(m.loop.iteration_count) == "number",
+                   "iteration_count must be a number")
+            assert(m.loop.iteration_count == 10,
+                   "iteration_count expected 10, got " .. tostring(m.loop.iteration_count))
+
+            assert(type(m.loop.loop_overrun_count) == "number",
+                   "loop_overrun_count must be a number")
+            assert(m.loop.loop_overrun_count == 3,
+                   "loop_overrun_count expected 3, got " .. tostring(m.loop.loop_overrun_count))
+
+            assert(type(m.loop.last_cycle_work_us) == "number",
+                   "last_cycle_work_us must be a number")
+            assert(m.loop.last_cycle_work_us == 500,
+                   "last_cycle_work_us expected 500, got " .. tostring(m.loop.last_cycle_work_us))
+
+            assert(type(m.loop.configured_period_us) == "number",
+                   "configured_period_us must be a number")
+            assert(m.loop.configured_period_us == 1000,
+                   "configured_period_us expected 1000, got " .. tostring(m.loop.configured_period_us))
+
+            return false
+        end
+    )");
+
+    RoleHostCore core;
+    for (int i = 0; i < 10; ++i) core.inc_iteration_count();
+    for (int i = 0; i < 3; ++i) core.inc_loop_overrun();
+    core.set_last_cycle_work_us(500);
+    core.set_configured_period(1000);
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &core));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+
+    auto ctx = producer_context();
+    ctx.core = &core;
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "Lua assertion failed — loop metrics fields incorrect";
+    engine.finalize();
+}
+
+// ============================================================================
+// 27. Custom metrics — overwrite same key
+// ============================================================================
+
+TEST_F(LuaEngineTest, Api_CustomMetrics_OverwriteSameKey)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            api.report_metric("x", 1)
+            api.report_metric("x", 2)
+            local m = api.metrics()
+            assert(m.custom ~= nil, "custom metrics must exist")
+            assert(m.custom.x == 2,
+                   "x should be overwritten to 2, got " .. tostring(m.custom.x))
+            return false
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+// ============================================================================
+// 28. Custom metrics — zero value is preserved (not nil)
+// ============================================================================
+
+TEST_F(LuaEngineTest, Api_CustomMetrics_ZeroValue)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            api.report_metric("x", 0.0)
+            local m = api.metrics()
+            assert(m.custom ~= nil, "custom metrics must exist")
+            assert(m.custom.x ~= nil, "x must not be nil")
+            assert(m.custom.x == 0, "x should be 0, got " .. tostring(m.custom.x))
+            return false
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+// ============================================================================
+// 29. invoke_produce with empty messages list
+// ============================================================================
+
+TEST_F(LuaEngineTest, InvokeProduce_EmptyMessagesList)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            assert(#msgs == 0, "expected 0 msgs, got " .. tostring(#msgs))
+            return false
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs; // empty
+
+    auto result = engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(result, InvokeResult::Discard);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+// ============================================================================
+// 30. open_inbox without broker returns nil
+// ============================================================================
+
+TEST_F(LuaEngineTest, Api_OpenInbox_WithoutBroker)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            local handle = api.open_inbox("some-uid")
+            assert(handle == nil,
+                   "open_inbox without broker should return nil")
+            return false
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+// ============================================================================
+// 31. Processor in_channel / out_channel match context
+// ============================================================================
+
+TEST_F(LuaEngineTest, Api_ProcessorChannels_InOut)
+{
+    write_script(R"(
+        function on_process(in_slot, out_slot, fz, msgs, api)
+            assert(api.in_channel() == "sensor.input",
+                   "in_channel mismatch: " .. tostring(api.in_channel()))
+            assert(api.out_channel() == "sensor.output",
+                   "out_channel mismatch: " .. tostring(api.out_channel()))
+            return false
+        end
+    )");
+
+    RoleHostCore core;
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &core));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_process"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+
+    RoleContext ctx{};
+    ctx.role_tag    = "proc";
+    ctx.uid         = "TEST-ENGINE-00000001";
+    ctx.name        = "TestEngine";
+    ctx.channel     = "sensor.input";
+    ctx.out_channel = "sensor.output";
+    ctx.log_level   = "error";
+    ctx.core        = &core;
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    float in_data = 1.0f;
+    float out_data = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_process(&in_data, sizeof(in_data),
+                                         &out_data, sizeof(out_data),
+                                         nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(result, InvokeResult::Discard);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "Script assertion failed — processor channels do not match context";
+    engine.finalize();
+}
+
 } // anonymous namespace
