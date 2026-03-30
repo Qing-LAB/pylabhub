@@ -465,3 +465,62 @@ TEST_F(RoleConfigTest, MoveAssign)
     EXPECT_EQ(cfg2.identity().uid, "PROD-TEST-00000001");
     EXPECT_EQ(cfg2.role_tag(), "producer");
 }
+
+// ============================================================================
+// Tests: Checksum config
+// ============================================================================
+
+TEST_F(RoleConfigTest, ChecksumDefault_Enforced)
+{
+    // No "checksum" key → default Enforced
+    auto path = write_json("producer.json", minimal_producer_json());
+    auto cfg = RoleConfig::load(path.string(), "producer");
+    EXPECT_EQ(cfg.checksum().policy, pylabhub::hub::ChecksumPolicy::Enforced);
+    EXPECT_TRUE(cfg.checksum().flexzone);
+}
+
+TEST_F(RoleConfigTest, ChecksumExplicit_Manual)
+{
+    auto j = minimal_producer_json();
+    j["checksum"] = "manual";
+    j["flexzone_checksum"] = false;
+    auto path = write_json("producer.json", j);
+    auto cfg = RoleConfig::load(path.string(), "producer");
+    EXPECT_EQ(cfg.checksum().policy, pylabhub::hub::ChecksumPolicy::Manual);
+    EXPECT_FALSE(cfg.checksum().flexzone);
+}
+
+TEST_F(RoleConfigTest, ChecksumExplicit_None)
+{
+    auto j = minimal_consumer_json();
+    j["checksum"] = "none";
+    auto path = write_json("consumer.json", j);
+    auto cfg = RoleConfig::load(path.string(), "consumer");
+    EXPECT_EQ(cfg.checksum().policy, pylabhub::hub::ChecksumPolicy::None);
+}
+
+TEST_F(RoleConfigTest, ChecksumInvalid_Throws)
+{
+    auto j = minimal_producer_json();
+    j["checksum"] = "turbo";
+    auto path = write_json("producer.json", j);
+    EXPECT_THROW(RoleConfig::load(path.string(), "producer"), std::runtime_error);
+}
+
+TEST_F(RoleConfigTest, ChecksumNull_DefaultEnforced)
+{
+    // null value treated as absent → default Enforced
+    auto j = minimal_producer_json();
+    j["checksum"] = nullptr;
+    auto path = write_json("producer.json", j);
+    auto cfg = RoleConfig::load(path.string(), "producer");
+    EXPECT_EQ(cfg.checksum().policy, pylabhub::hub::ChecksumPolicy::Enforced);
+}
+
+TEST_F(RoleConfigTest, UnknownKey_Throws)
+{
+    auto j = minimal_producer_json();
+    j["unknown_bogus_key"] = 42;
+    auto path = write_json("producer.json", j);
+    EXPECT_THROW(RoleConfig::load(path.string(), "producer"), std::runtime_error);
+}
