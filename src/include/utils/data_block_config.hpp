@@ -8,7 +8,7 @@
  * constants used by acquire_*_slot().
  *
  * Includes data_block_policy.hpp — all policy enums (DataBlockPolicy,
- * ConsumerSyncPolicy, ChecksumType, ChecksumPolicy, DataBlockOpenMode, LoopPolicy)
+ * ConsumerSyncPolicy, ChecksumType, ChecksumPolicy, DataBlockOpenMode)
  * are available when this header is included.
  *
  * Included automatically by data_block.hpp and data_block_fwd.hpp.
