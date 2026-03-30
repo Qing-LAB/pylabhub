@@ -26,7 +26,7 @@
  *       "out_shm_slot_count": 4,
  *       "in_slot_schema":     { "fields": [{"name": "value", "type": "float32"}] },
  *       "out_slot_schema":    { "fields": [{"name": "value", "type": "float32"}] },
- *       "out_update_checksum": true,
+ *       "checksum": "enforced",
  *       "script": { "type": "python", "path": "." }
  *     }
  *

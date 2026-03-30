@@ -9,6 +9,7 @@
 
 #include <any>
 #include <cassert>
+#include <unordered_set>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 
@@ -71,9 +72,65 @@ RoleConfig &RoleConfig::operator=(RoleConfig &&) noexcept = default;
 // Impl::load_common
 // ============================================================================
 
+/// Allowed top-level JSON keys. Unknown keys cause a hard error.
+/// Nested objects (producer.uid, script.type, etc.) are validated by their parsers.
+static const std::unordered_set<std::string> kAllowedKeys = {
+    // Identity (nested object — role_tag is the key: "producer", "consumer", "processor")
+    "producer", "consumer", "processor",
+    // Script
+    "script", "stop_on_script_error", "python_venv",
+    // Timing
+    "loop_timing", "target_period_ms", "target_rate_hz",
+    "queue_io_wait_timeout_ratio", "heartbeat_interval_ms",
+    // Checksum
+    "checksum", "flexzone_checksum",
+    // Inbox
+    "inbox_schema", "inbox_endpoint", "inbox_buffer_depth",
+    "inbox_overflow_policy", "inbox_zmq_packing",
+    // Startup
+    "startup",
+    // Monitoring
+    "ctrl_queue_max_depth", "peer_dead_timeout_ms",
+    // Per-direction: hub
+    "in_hub_dir", "out_hub_dir",
+    // Per-direction: channel
+    "in_channel", "out_channel",
+    // Per-direction: transport
+    "in_transport", "out_transport",
+    "in_zmq_endpoint", "out_zmq_endpoint",
+    "in_zmq_bind", "out_zmq_bind",
+    "in_zmq_buffer_depth", "out_zmq_buffer_depth",
+    "in_zmq_overflow_policy", "out_zmq_overflow_policy",
+    "in_zmq_packing", "out_zmq_packing",
+    // Per-direction: SHM
+    "in_shm_enabled", "out_shm_enabled",
+    "in_shm_secret", "out_shm_secret",
+    "in_shm_slot_count", "out_shm_slot_count",
+    "in_shm_sync_policy", "out_shm_sync_policy",
+    // Role-specific (schemas — validated by role parser, not here)
+    "in_slot_schema", "out_slot_schema",
+    "in_flexzone_schema", "out_flexzone_schema",
+};
+
+/// Validate that all top-level JSON keys are in the whitelist.
+static void validate_known_keys(const nlohmann::json &j, const char *tag)
+{
+    for (auto it = j.begin(); it != j.end(); ++it)
+    {
+        if (kAllowedKeys.find(it.key()) == kAllowedKeys.end())
+        {
+            throw std::runtime_error(
+                std::string(tag) + ": unknown config key '" + it.key() + "'");
+        }
+    }
+}
+
 void RoleConfig::Impl::load_common(const nlohmann::json &j)
 {
     const char *tag = role_tag.c_str();
+
+    // ── Reject unknown keys before parsing ──────────────────────────
+    validate_known_keys(j, tag);
 
     // ── Non-directional categories ───────────────────────────────────
     identity   = parse_identity_config(j, role_tag);
