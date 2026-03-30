@@ -15,6 +15,7 @@
 #include "utils/hub_producer.hpp"
 #include "utils/hub_consumer.hpp"
 #include "utils/hub_inbox_queue.hpp"
+#include "utils/messenger.hpp"
 #include "utils/logger.hpp"
 #include "script_host_helpers.hpp"
 #include "plh_platform.hpp"
@@ -281,23 +282,34 @@ bool LuaEngine::build_api_(const RoleContext &ctx)
             push_closure("broadcast", lua_api_broadcast);
             push_closure("send", lua_api_send);
             push_closure("consumers", lua_api_consumers);
-        }
-        if (ctx_.producer)
             push_closure("update_flexzone_checksum", lua_api_update_flexzone_checksum);
+        }
+        push_closure("out_capacity", lua_api_out_capacity);
+        push_closure("out_policy", lua_api_out_policy);
     }
     else if (ctx_.role_tag == "cons")
     {
         if (ctx_.consumer)
             push_closure("set_verify_checksum", lua_api_set_verify_checksum);
+        push_closure("in_capacity", lua_api_in_capacity);
+        push_closure("in_policy", lua_api_in_policy);
+        push_closure("last_seq", lua_api_last_seq);
     }
     else if (ctx_.role_tag == "proc")
     {
         push_closure("in_channel", lua_api_in_channel);
         push_closure("out_channel", lua_api_out_channel);
         if (ctx_.producer)
+        {
             push_closure("update_flexzone_checksum", lua_api_update_flexzone_checksum);
+        }
+        push_closure("out_capacity", lua_api_out_capacity);
+        push_closure("out_policy", lua_api_out_policy);
         if (ctx_.consumer)
             push_closure("set_verify_checksum", lua_api_set_verify_checksum);
+        push_closure("in_capacity", lua_api_in_capacity);
+        push_closure("in_policy", lua_api_in_policy);
+        push_closure("last_seq", lua_api_last_seq);
     }
     else
     {
@@ -1149,13 +1161,30 @@ void LuaEngine::push_common_api_closures_(lua_State *L)
     push_closure("log", lua_api_log);
     push_closure("stop", lua_api_stop);
     push_closure("set_critical_error", lua_api_set_critical_error);
+    push_closure("critical_error", lua_api_critical_error);
     push_closure("stop_reason", lua_api_stop_reason);
     push_closure("script_errors", lua_api_script_errors);
     push_closure("version_info", lua_api_version_info);
     push_closure("wait_for_role", lua_api_wait_for_role);
     push_closure("open_inbox", lua_api_open_inbox);
+    push_closure("clear_inbox_cache", lua_api_clear_inbox_cache);
     push_closure("get_shared_data", lua_api_get_shared_data);
     push_closure("set_shared_data", lua_api_set_shared_data);
+
+    // Diagnostics — common to all roles.
+    push_closure("loop_overrun_count", lua_api_loop_overrun_count);
+    push_closure("last_cycle_work_us", lua_api_last_cycle_work_us);
+    push_closure("ctrl_queue_dropped", lua_api_ctrl_queue_dropped);
+
+    // Custom metrics (HEP-CORE-0019).
+    push_closure("report_metric", lua_api_report_metric);
+    push_closure("report_metrics", lua_api_report_metrics);
+    push_closure("clear_custom_metrics", lua_api_clear_custom_metrics);
+
+    // Broker operations.
+    push_closure("notify_channel", lua_api_notify_channel);
+    push_closure("broadcast_channel", lua_api_broadcast_channel);
+    push_closure("list_channels", lua_api_list_channels);
 
     // String fields as direct table entries.
     lua_pushstring(L, ctx_.log_level.c_str());
@@ -1166,6 +1195,15 @@ void LuaEngine::push_common_api_closures_(lua_State *L)
 
     lua_pushstring(L, ctx_.role_dir.c_str());
     lua_setfield(L, -2, "role_dir");
+
+    // Derived directory paths.
+    std::string logs = ctx_.role_dir.empty() ? "" : ctx_.role_dir + "/logs";
+    lua_pushstring(L, logs.c_str());
+    lua_setfield(L, -2, "logs_dir");
+
+    std::string run = ctx_.role_dir.empty() ? "" : ctx_.role_dir + "/run";
+    lua_pushstring(L, run.c_str());
+    lua_setfield(L, -2, "run_dir");
 }
 
 // ============================================================================
@@ -1598,6 +1636,194 @@ int LuaEngine::lua_api_drops(lua_State *L)
 }
 
 // ============================================================================
+// Group A: diagnostics (common to all roles)
+// ============================================================================
+
+int LuaEngine::lua_api_loop_overrun_count(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    lua_pushinteger(L, static_cast<lua_Integer>(self->ctx_.core->loop_overrun_count()));
+    return 1;
+}
+
+int LuaEngine::lua_api_last_cycle_work_us(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    lua_pushinteger(L, static_cast<lua_Integer>(self->ctx_.core->last_cycle_work_us()));
+    return 1;
+}
+
+int LuaEngine::lua_api_critical_error(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    lua_pushboolean(L, self->ctx_.core->is_critical_error() ? 1 : 0);
+    return 1;
+}
+
+// ============================================================================
+// Group B: queue-state (role-specific)
+// ============================================================================
+
+int LuaEngine::lua_api_out_capacity(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    auto *p = self->ctx_.producer;
+    lua_pushinteger(L, p ? static_cast<lua_Integer>(p->queue_capacity()) : 0);
+    return 1;
+}
+
+int LuaEngine::lua_api_out_policy(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    auto *p = self->ctx_.producer;
+    if (p)
+        lua_pushstring(L, p->queue_policy_info().c_str());
+    else
+        lua_pushstring(L, "");
+    return 1;
+}
+
+int LuaEngine::lua_api_in_capacity(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    auto *c = self->ctx_.consumer;
+    lua_pushinteger(L, c ? static_cast<lua_Integer>(c->queue_capacity()) : 0);
+    return 1;
+}
+
+int LuaEngine::lua_api_in_policy(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    auto *c = self->ctx_.consumer;
+    if (c)
+        lua_pushstring(L, c->queue_policy_info().c_str());
+    else
+        lua_pushstring(L, "");
+    return 1;
+}
+
+int LuaEngine::lua_api_last_seq(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    auto *c = self->ctx_.consumer;
+    lua_pushinteger(L, c ? static_cast<lua_Integer>(c->last_seq()) : 0);
+    return 1;
+}
+
+int LuaEngine::lua_api_ctrl_queue_dropped(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    uint64_t total = 0;
+    if (self->ctx_.producer) total += self->ctx_.producer->ctrl_queue_dropped();
+    if (self->ctx_.consumer) total += self->ctx_.consumer->ctrl_queue_dropped();
+    lua_pushinteger(L, static_cast<lua_Integer>(total));
+    return 1;
+}
+
+// ============================================================================
+// Group C: custom metrics (HEP-CORE-0019)
+// ============================================================================
+
+int LuaEngine::lua_api_report_metric(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *key = luaL_checkstring(L, 1);
+    double value = luaL_checknumber(L, 2);
+    self->custom_metrics_[key] = value;
+    return 0;
+}
+
+int LuaEngine::lua_api_report_metrics(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    luaL_checktype(L, 1, LUA_TTABLE);
+    lua_pushnil(L); // first key
+    while (lua_next(L, 1) != 0)
+    {
+        if (lua_type(L, -2) == LUA_TSTRING && lua_type(L, -1) == LUA_TNUMBER)
+        {
+            const char *key = lua_tostring(L, -2);
+            double val = lua_tonumber(L, -1);
+            self->custom_metrics_[key] = val;
+        }
+        lua_pop(L, 1); // pop value, keep key for next iteration
+    }
+    return 0;
+}
+
+int LuaEngine::lua_api_clear_custom_metrics(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    self->custom_metrics_.clear();
+    return 0;
+}
+
+// ============================================================================
+// Group E: broker operations
+// ============================================================================
+
+int LuaEngine::lua_api_clear_inbox_cache(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    self->ctx_.core->clear_inbox_cache();
+    return 0;
+}
+
+int LuaEngine::lua_api_notify_channel(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    auto *m = self->ctx_.messenger;
+    if (!m) return 0;
+    const char *target  = luaL_checkstring(L, 1);
+    const char *event   = luaL_checkstring(L, 2);
+    const char *data    = luaL_optstring(L, 3, "");
+    m->enqueue_channel_notify(target, self->ctx_.uid, event, data);
+    return 0;
+}
+
+int LuaEngine::lua_api_broadcast_channel(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    auto *m = self->ctx_.messenger;
+    if (!m) return 0;
+    const char *target  = luaL_checkstring(L, 1);
+    const char *message = luaL_checkstring(L, 2);
+    const char *data    = luaL_optstring(L, 3, "");
+    m->enqueue_channel_broadcast(target, self->ctx_.uid, message, data);
+    return 0;
+}
+
+int LuaEngine::lua_api_list_channels(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    auto *m = self->ctx_.messenger;
+    if (!m)
+    {
+        lua_newtable(L);
+        return 1;
+    }
+    auto channels = m->list_channels();
+    lua_newtable(L);
+    for (int i = 0; i < static_cast<int>(channels.size()); ++i)
+    {
+        lua_newtable(L); // channel entry table
+        auto &ch = channels[i];
+        lua_pushstring(L, ch.value("name", "").c_str());
+        lua_setfield(L, -2, "name");
+        lua_pushstring(L, ch.value("status", "").c_str());
+        lua_setfield(L, -2, "status");
+        lua_pushstring(L, ch.value("schema_id", "").c_str());
+        lua_setfield(L, -2, "schema_id");
+        lua_pushstring(L, ch.value("producer_uid", "").c_str());
+        lua_setfield(L, -2, "producer_uid");
+        lua_pushinteger(L, ch.value("consumer_count", 0));
+        lua_setfield(L, -2, "consumer_count");
+        lua_rawseti(L, -2, i + 1);
+    }
+    return 1;
+}
+
+// ============================================================================
 // api.metrics() — hierarchical metrics table
 // ============================================================================
 
@@ -1692,6 +1918,18 @@ int LuaEngine::lua_api_metrics(lua_State *L)
         lua_newtable(L);
         inbox_metrics_to_lua(L, self->ctx_.inbox_queue->inbox_metrics());
         lua_setfield(L, -2, "inbox");
+    }
+
+    // "custom" (optional — only if custom metrics reported)
+    if (!self->custom_metrics_.empty())
+    {
+        lua_newtable(L);
+        for (auto &[k, v] : self->custom_metrics_)
+        {
+            lua_pushnumber(L, v);
+            lua_setfield(L, -2, k.c_str());
+        }
+        lua_setfield(L, -2, "custom");
     }
 
     return 1; // one table on stack
