@@ -1058,7 +1058,7 @@ QueueMetrics Producer::queue_metrics() const noexcept
 void Producer::reset_queue_metrics() noexcept
 {
     if (pImpl && pImpl->queue_writer_)
-        pImpl->queue_writer_->reset_metrics();
+        pImpl->queue_writer_->init_metrics();
 }
 
 bool Producer::start_queue()

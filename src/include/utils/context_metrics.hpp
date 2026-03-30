@@ -47,7 +47,7 @@ struct PYLABHUB_UTILS_EXPORT ContextMetrics
 
     [[nodiscard]] Clock::time_point context_start_time_val() const noexcept
     {
-        return Clock::time_point{Clock::duration{context_start_ns_.load(std::memory_order_relaxed)}};
+        return context_start_time_;
     }
     [[nodiscard]] uint64_t context_elapsed_us_val()   const noexcept { return context_elapsed_us_.load(std::memory_order_relaxed); }
     [[nodiscard]] uint64_t last_slot_wait_us_val()    const noexcept { return last_slot_wait_us_.load(std::memory_order_relaxed); }
@@ -62,7 +62,7 @@ struct PYLABHUB_UTILS_EXPORT ContextMetrics
     // Session boundaries
     void set_context_start(Clock::time_point t) noexcept
     {
-        context_start_ns_.store(t.time_since_epoch().count(), std::memory_order_relaxed);
+        context_start_time_ = t;
     }
     void set_context_elapsed(uint64_t us) noexcept { context_elapsed_us_.store(us, std::memory_order_relaxed); }
 
@@ -97,7 +97,7 @@ struct PYLABHUB_UTILS_EXPORT ContextMetrics
     void clear(bool preserve_config = true) noexcept
     {
         const auto saved = preserve_config ? configured_period_us_.load(std::memory_order_relaxed) : uint64_t{0};
-        context_start_ns_.store(0, std::memory_order_relaxed);
+        context_start_time_ = {};
         context_elapsed_us_.store(0, std::memory_order_relaxed);
         last_slot_wait_us_.store(0, std::memory_order_relaxed);
         last_iteration_us_.store(0, std::memory_order_relaxed);
@@ -112,7 +112,7 @@ struct PYLABHUB_UTILS_EXPORT ContextMetrics
     // Relaxed ordering: no inter-field consistency guarantee — acceptable for diagnostics.
 
     // Session boundaries
-    std::atomic<int64_t>  context_start_ns_{0};    ///< steady_clock time_since_epoch in ns. 0 = not started.
+    Clock::time_point context_start_time_{};        ///< Set on first acquire; not atomic (single-writer).
     std::atomic<uint64_t> context_elapsed_us_{0};   ///< Elapsed since first acquire (us).
 
     // Acquire/release timing

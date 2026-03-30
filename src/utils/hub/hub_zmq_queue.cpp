@@ -979,6 +979,18 @@ void ZmqQueue::reset_metrics()
     pImpl->t_acquired_   = {};
 }
 
+void ZmqQueue::init_metrics()
+{
+    reset_metrics();
+    if (!pImpl) return;
+    // Reset sequence tracking — only safe at session start (not mid-session,
+    // where it would cause false gap detection on the receiver).
+    pImpl->send_seq_.store(0, std::memory_order_relaxed);
+    pImpl->last_seq_.store(0, std::memory_order_relaxed);
+    pImpl->expected_seq_ = 0;
+    pImpl->seq_initialized_ = false;
+}
+
 void ZmqQueue::set_configured_period(uint64_t period_us)
 {
     if (!pImpl) return;
