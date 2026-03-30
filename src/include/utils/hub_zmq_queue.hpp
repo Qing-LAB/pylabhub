@@ -264,6 +264,12 @@ public:
     /** Set target loop period (informational, reported in metrics). 0 = MaxRate. */
     void set_configured_period(uint64_t period_us) override;
 
+    // ── Unified checksum interface ───────────────────────────────────────────
+    void set_checksum_policy(ChecksumPolicy policy) override;
+    // set_flexzone_checksum: base class no-op (ZMQ has no flexzone)
+    // update_flexzone_checksum: base class no-op
+    // verify_flexzone_checksum: base class returns true
+
     // ── Lifecycle (overrides both QueueReader and QueueWriter no-ops) ──────────
 
     /**

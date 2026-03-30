@@ -316,8 +316,9 @@ bool ProcessorRoleHost::setup_infrastructure_()
                                        in_slot_spec_, in_schema_slot_size_);
     in_opts.zmq_packing          = config_.in_transport().zmq_packing;
     in_opts.zmq_buffer_depth     = config_.in_transport().zmq_buffer_depth;
-    in_opts.verify_checksum      = config_.in_shm().verify_checksum;
-    in_opts.verify_checksum_fz   = core_.has_fz() && config_.in_shm().verify_checksum;
+    // Per-role checksum policy — same value on both input and output (see config_single_truth.md).
+    in_opts.checksum_policy      = config_.checksum().policy;
+    in_opts.flexzone_checksum    = config_.checksum().flexzone && core_.has_fz();
     // queue_period_us removed: loop policy set by establish_channel().
     in_opts.ctrl_queue_max_depth = config_.monitoring().ctrl_queue_max_depth;
     in_opts.peer_dead_timeout_ms = config_.monitoring().peer_dead_timeout_ms;
@@ -411,8 +412,9 @@ bool ProcessorRoleHost::setup_infrastructure_()
     out_opts.role_uid      = config_.identity().uid;
     out_opts.item_size          = out_schema_slot_size_;
     out_opts.flexzone_size      = core_.schema_fz_size();
-    out_opts.update_checksum    = config_.out_shm().update_checksum;
-    out_opts.update_checksum_fz = core_.has_fz() && config_.out_shm().update_checksum;
+    // Per-role checksum policy — same value on both input and output (see config_single_truth.md).
+    out_opts.checksum_policy    = config_.checksum().policy;
+    out_opts.flexzone_checksum  = config_.checksum().flexzone && core_.has_fz();
     out_opts.timing = config_.timing().timing_params();
     out_opts.ctrl_queue_max_depth = config_.monitoring().ctrl_queue_max_depth;
     out_opts.peer_dead_timeout_ms = config_.monitoring().peer_dead_timeout_ms;
@@ -424,7 +426,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
         out_opts.shm_config.ring_buffer_capacity = config_.out_shm().slot_count;
         out_opts.shm_config.policy               = hub::DataBlockPolicy::RingBuffer;
         out_opts.shm_config.consumer_sync_policy = config_.out_shm().sync_policy;
-        out_opts.shm_config.checksum_policy      = hub::ChecksumPolicy::Manual;
+        out_opts.shm_config.checksum_policy      = config_.checksum().policy;
         out_opts.shm_config.flex_zone_size       = core_.schema_fz_size();
 
         out_opts.shm_config.physical_page_size = hub::system_page_size();

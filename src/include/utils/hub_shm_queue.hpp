@@ -176,6 +176,14 @@ public:
     void set_verify_checksum(bool slot, bool fz) const noexcept;
     /** @brief Enable BLAKE2b checksum updates on write_commit(). */
     void set_checksum_options(bool slot, bool fz) noexcept;
+
+    // ── Unified checksum interface (overrides base QueueReader/QueueWriter) ──
+    void set_checksum_policy(ChecksumPolicy policy) override;
+    void set_flexzone_checksum(bool enabled) override;
+    void update_checksum() override;
+    void update_flexzone_checksum() override;
+    bool verify_checksum() override;
+    bool verify_flexzone_checksum() override;
     /** @brief Enable/disable zero-fill of slot buffer on write_acquire(). */
     void set_always_clear_slot(bool enable) noexcept;
     /** @brief Stamp flexzone checksum after on_init() writes initial content. */
