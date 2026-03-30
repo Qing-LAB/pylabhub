@@ -2153,4 +2153,123 @@ def get_stop_ran():
     engine.finalize();
 }
 
+// ============================================================================
+// Parity tests — match Lua coverage
+// ============================================================================
+
+TEST_F(PythonEngineTest, Api_ConsumerQueueState_WithoutQueue)
+{
+    write_script(R"(
+def on_consume(in_slot, fz, msgs, api):
+    assert api.in_capacity() == 0, f"in_capacity: {api.in_capacity()}"
+    assert api.in_policy() == "", f"in_policy: {api.in_policy()}"
+    assert api.last_seq() == 0, f"last_seq: {api.last_seq()}"
+)");
+
+    RoleHostCore core;
+    PythonEngine engine;
+    engine.set_python_venv("");
+    ASSERT_TRUE(engine.initialize("test", &core));
+    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
+                                   "__init__.py", "on_consume"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+
+    RoleContext ctx{};
+    ctx.role_tag  = "cons";
+    ctx.uid       = "TEST-ENGINE-00000001";
+    ctx.name      = "TestEngine";
+    ctx.channel   = "test.channel";
+    ctx.log_level = "error";
+    ctx.core      = &core;
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    float buf = 1.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_consume(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Api_EnvironmentStrings_LogsDirRunDir)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    assert isinstance(api.logs_dir(), str), "logs_dir must be str"
+    assert isinstance(api.run_dir(), str), "run_dir must be str"
+    # When role_dir is empty, logs_dir and run_dir are empty
+    return False
+)");
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Api_SpinlockCount_WithoutSHM)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    assert api.spinlock_count() == 0, f"spinlock_count: {api.spinlock_count()}"
+    return False
+)");
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Api_Spinlock_WithoutSHM_IsError)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    try:
+        api.spinlock(0)
+        assert False, "spinlock(0) should raise without SHM"
+    except ValueError as e:
+        assert "SHM" in str(e), f"error should mention SHM: {e}"
+    return False
+)");
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "try/except should catch the error, not propagate";
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Api_Flexzone_WithoutSHM_ReturnsNone)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    result = api.flexzone()
+    assert result is None, f"flexzone should be None without SHM, got {result}"
+    return False
+)");
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
 } // anonymous namespace
