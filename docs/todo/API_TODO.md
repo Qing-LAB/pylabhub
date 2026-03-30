@@ -184,6 +184,11 @@
 - [ ] Rewrite `test_datahub_loop_policy.cpp`: timing measurement tests stay at L3 (DataBlock);
   policy execution tests (FixedRate sleep, compensation, overrun) move to role/RAII level
 - [x] Config strict validation framework: whitelist of allowed keys per role type. ✅ 2026-03-30
+- [ ] Inbox discovery gap: ROLE_INFO_REQ only finds producers. Consumer/processor inboxes
+  are created but never registered with broker (CONSUMER_REG_REQ lacks inbox fields).
+  api.open_inbox("CONS-...") returns None even when consumer has inbox configured.
+  Fix: add inbox fields to CONSUMER_REG_REQ and extend ROLE_INFO_REQ to search consumers.
+  Also add inbox_checksum_policy to both REG_REQ and CONSUMER_REG_REQ.
 - [ ] Config reference document: comprehensive JSON config guide covering:
   - Every allowed key, its type, default, and valid values
   - Which level each parameter belongs to (role / per-direction / transport-specific)

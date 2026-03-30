@@ -221,6 +221,7 @@ void ProducerRoleHost::worker_main_()
     ctx.producer    = out_producer_.has_value() ? &(*out_producer_) : nullptr;
     ctx.consumer    = nullptr;
     ctx.inbox_queue = inbox_queue_.get();
+    ctx.checksum_policy = config_.checksum().policy;
     ctx.core         = &core_;
     ctx.stop_on_script_error = sc.stop_on_script_error;
 
@@ -376,6 +377,8 @@ bool ProducerRoleHost::setup_infrastructure_()
             return false;
         }
 
+        inbox_queue_->set_checksum_policy(config_.checksum().policy);
+
         // Validate: engine type size must match queue decode buffer size.
         // A mismatch means the ctypes/FFI struct and the ZMQ wire decode buffer
         // have different layouts — data would be corrupted on inbox delivery.
@@ -394,6 +397,7 @@ bool ProducerRoleHost::setup_infrastructure_()
         opts.inbox_endpoint    = inbox_queue_->actual_endpoint();
         opts.inbox_schema_json = spec_json.dump();
         opts.inbox_packing     = inbox_packing;
+        opts.inbox_checksum    = config::checksum_policy_to_string(config_.checksum().policy);
     }
 
     // --- Queue abstraction: sizes + checksum + period for internal queue creation ---

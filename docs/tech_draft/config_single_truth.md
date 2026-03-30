@@ -112,19 +112,26 @@ When Manual: caller calls explicitly via script API. If caller doesn't call
   update_checksum(), checksum bytes are zero.
 When None: all checksum operations skipped. Checksum bytes are zero.
 
-**Zero-checksum convention (wire-level signal):**
-Both SHM and ZMQ use all-zero checksum bytes to signal "no checksum computed."
-- Writer with None or Manual (not explicitly computed): checksum field = zeros
-- Reader detects all-zero checksum: skips verification, no error
-- Reader detects non-zero checksum: verifies BLAKE2b, increments
-  checksum_error_count on mismatch
+**Checksum enforcement:**
+The receiver's policy is authoritative. If the receiver requires checksum
+(Enforced or Manual), verification is mandatory — zero checksum bytes from
+a sender that didn't compute will fail verification and the frame is dropped.
 
-This convention is already implemented in DataBlock (verify_checksum_slot_impl
-checks for all_zero before computing). ZMQ/Inbox recv path needs the same check.
+- Receiver None: skip all verification
+- Receiver Enforced/Manual: verify BLAKE2b unconditionally. Zero = fail.
+- Sender None: sends zero checksum bytes. Receiver with Enforced will reject.
+- Sender Enforced: sends valid checksum. Receiver with None will ignore.
 
-For ZMQ/Inbox: the consumer follows the producer's checksum policy automatically
-via the wire format. No separate configuration or broker coordination needed.
-The producer's intent is encoded in the existing checksum field.
+This means sender and receiver should use the same policy. For SHM, the
+producer writes the policy to SharedMemoryHeader and the consumer reads it.
+For ZMQ/Inbox, both sides should be configured with the same role-level policy.
+Mismatched policies (sender=None, receiver=Enforced) result in all frames
+being rejected — this is correct behavior (configuration error, not silent failure).
+
+Note: DataBlock SHM uses a separate zero-detection mechanism in
+verify_checksum_slot_impl (checks for all-zero hash before computing) because
+the SHM slot_cks_is_valid flag provides the authoritative validity signal.
+ZMQ/Inbox do not have this flag — they rely on BLAKE2b verification directly.
 
 ### 2.3 Per-role, not per-direction
 

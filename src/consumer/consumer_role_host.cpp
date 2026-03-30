@@ -219,6 +219,7 @@ void ConsumerRoleHost::worker_main_()
     ctx.producer    = nullptr;
     ctx.consumer    = in_consumer_.has_value() ? &(*in_consumer_) : nullptr;
     ctx.inbox_queue = inbox_queue_.get();
+    ctx.checksum_policy = config_.checksum().policy;
     ctx.core         = &core_;
     ctx.stop_on_script_error = sc.stop_on_script_error;
 
@@ -372,6 +373,8 @@ bool ConsumerRoleHost::setup_infrastructure_()
             inbox_queue_.reset();
             return false;
         }
+        inbox_queue_->set_checksum_policy(config_.checksum().policy);
+
         // Validate: engine type size must match queue decode buffer size.
         if (inbox_schema_slot_size > 0 &&
             inbox_queue_->item_size() != inbox_schema_slot_size)
@@ -385,6 +388,11 @@ bool ConsumerRoleHost::setup_infrastructure_()
             return false;
         }
         LOGGER_INFO("[cons] InboxQueue bound at '{}'", inbox_queue_->actual_endpoint());
+
+        opts.inbox_endpoint    = inbox_queue_->actual_endpoint();
+        opts.inbox_schema_json = spec_json.dump();
+        opts.inbox_packing     = inbox_packing;
+        opts.inbox_checksum    = config::checksum_policy_to_string(config_.checksum().policy);
     }
 
     // --- Broker connect ---

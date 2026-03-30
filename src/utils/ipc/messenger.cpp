@@ -815,7 +815,11 @@ Messenger::connect_channel(const std::string &channel_name,
                             const std::string &consumer_uid,
                             const std::string &consumer_name,
                             const std::string &expected_schema_id,
-                            const std::string &consumer_queue_type)
+                            const std::string &consumer_queue_type,
+                            const std::string &inbox_endpoint,
+                            const std::string &inbox_schema_json,
+                            const std::string &inbox_packing,
+                            const std::string &inbox_checksum)
 {
     if (!pImpl->m_is_connected.load(std::memory_order_acquire))
     {
@@ -833,7 +837,11 @@ Messenger::connect_channel(const std::string &channel_name,
     cmd.consumer_uid         = consumer_uid;
     cmd.consumer_name        = consumer_name;
     cmd.expected_schema_id   = expected_schema_id;
-    cmd.consumer_queue_type = consumer_queue_type;
+    cmd.consumer_queue_type  = consumer_queue_type;
+    cmd.inbox_endpoint       = inbox_endpoint;
+    cmd.inbox_schema_json    = inbox_schema_json;
+    cmd.inbox_packing        = inbox_packing;
+    cmd.inbox_checksum       = inbox_checksum;
     cmd.result               = std::move(cc_promise);
     pImpl->enqueue(std::move(cmd));
 

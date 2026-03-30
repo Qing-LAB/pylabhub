@@ -62,6 +62,8 @@ struct InboxQueueImpl
     // Current item (returned by recv_one; valid until next recv_one)
     InboxItem current_item_;
 
+    ChecksumPolicy checksum_policy_{ChecksumPolicy::Enforced};
+
     // Counters
     std::atomic<uint64_t> recv_frame_error_count_{0};
     std::atomic<uint64_t> ack_send_error_count_{0};
@@ -97,6 +99,7 @@ struct InboxClientImpl
     std::atomic<uint64_t> send_seq_{0};
 
     std::array<uint8_t, 8> schema_tag_{};  // first 8 bytes of BLAKE2b-256 of canonical schema string
+    ChecksumPolicy checksum_policy_{ChecksumPolicy::Enforced};
     int last_acktimeo{-2}; ///< Cached ZMQ_RCVTIMEO for ACK receives. -2 = not yet set.
 };
 
@@ -430,17 +433,21 @@ const InboxItem* InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
             }
         }
 
-        // [4] checksum: bin, 32 bytes — verify decoded data integrity.
+        // [4] checksum: bin, 32 bytes.
         if (elems[4].type != msgpack::type::BIN || elems[4].via.bin.size != 32)
         { ++pImpl->recv_frame_error_count_; return nullptr; }
-        if (!pylabhub::crypto::verify_blake2b(
-                reinterpret_cast<const uint8_t*>(elems[4].via.bin.ptr),
-                pImpl->decode_buf_.data(), pImpl->item_sz))
+        // Verify checksum if policy is not None.
+        if (pImpl->checksum_policy_ != ChecksumPolicy::None)
         {
-            pImpl->checksum_error_count_.fetch_add(1, std::memory_order_relaxed);
-            LOGGER_ERROR("[hub::InboxQueue] checksum error after decode from '{}'",
-                         sender_id);
-            return nullptr;
+            if (!pylabhub::crypto::verify_blake2b(
+                    reinterpret_cast<const uint8_t*>(elems[4].via.bin.ptr),
+                    pImpl->decode_buf_.data(), pImpl->item_sz))
+            {
+                pImpl->checksum_error_count_.fetch_add(1, std::memory_order_relaxed);
+                LOGGER_ERROR("[hub::InboxQueue] checksum error after decode from '{}'",
+                             sender_id);
+                return nullptr;
+            }
         }
     }
     catch (const std::exception& e)
@@ -499,6 +506,11 @@ uint64_t InboxQueue::recv_gap_count() const noexcept
 uint64_t InboxQueue::checksum_error_count() const noexcept
 {
     return pImpl ? pImpl->checksum_error_count_.load(std::memory_order_relaxed) : 0;
+}
+
+void InboxQueue::set_checksum_policy(ChecksumPolicy policy) noexcept
+{
+    if (pImpl) pImpl->checksum_policy_ = policy;
 }
 
 // ============================================================================
@@ -643,10 +655,13 @@ uint8_t InboxClient::send(std::chrono::milliseconds ack_timeout) noexcept
     pImpl->sbuf_.clear();
     msgpack::packer<msgpack::sbuffer> pk(pImpl->sbuf_);
 
-    // Compute BLAKE2b checksum of raw data before packing.
-    uint8_t checksum[32];
-    pylabhub::crypto::compute_blake2b(
-        checksum, pImpl->write_buf_.data(), pImpl->item_sz);
+    // Compute BLAKE2b checksum if policy is not None; else zeros.
+    uint8_t checksum[32]{};
+    if (pImpl->checksum_policy_ != ChecksumPolicy::None)
+    {
+        pylabhub::crypto::compute_blake2b(
+            checksum, pImpl->write_buf_.data(), pImpl->item_sz);
+    }
 
     pk.pack_array(5);
     pk.pack(wire_detail::kFrameMagic);
@@ -728,6 +743,11 @@ void InboxClient::abort() noexcept
     // Buffer not committed — simply re-zero for next use
     if (pImpl)
         std::fill(pImpl->write_buf_.begin(), pImpl->write_buf_.end(), std::byte{0});
+}
+
+void InboxClient::set_checksum_policy(ChecksumPolicy policy) noexcept
+{
+    if (pImpl) pImpl->checksum_policy_ = policy;
 }
 
 } // namespace pylabhub::hub
