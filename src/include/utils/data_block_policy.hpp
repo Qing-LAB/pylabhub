@@ -177,30 +177,6 @@ enum class ChecksumPolicy
 };
 
 // ============================================================================
-// Loop Timing Policy (HEP-CORE-0008)
-// ============================================================================
-
-/**
- * @enum LoopPolicy
- * @brief DEPRECATED — dead code. Retained for ABI compatibility only.
- *
- * Previously controlled DataBlock-level pacing via set_loop_policy().
- * After the timing unification (2026-03-29), loop timing is managed
- * at the queue and role level:
- *   - LoopTimingPolicy (loop_timing_policy.hpp): config enum used by main loop
- *   - LoopTimingParams: carries policy + period through Options
- *   - configured_period_us: set on ContextMetrics via queue set_configured_period()
- *
- * DataBlock no longer has set_loop_policy(). This enum has no readers.
- * Remove when ABI version is bumped.
- */
-enum class LoopPolicy : uint8_t
-{
-    MaxRate,      ///< No sleep — acquire slots as fast as possible (default)
-    FixedRate,    ///< Start-to-start period: sleep(max(0, configured_period_us − elapsed)); tracks overruns
-    MixTriggered, ///< Reserved — trigger-based mode, not yet implemented
-};
-
 } // namespace pylabhub::hub
 
 // ============================================================================
