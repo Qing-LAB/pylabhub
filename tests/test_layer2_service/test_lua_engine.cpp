@@ -1622,4 +1622,209 @@ TEST_F(LuaEngineTest, Metrics_HierarchicalTable_Consumer)
     engine.finalize();
 }
 
+// ============================================================================
+// New API closures — diagnostics, queue-state, custom metrics, environment
+// ============================================================================
+
+TEST_F(LuaEngineTest, Api_LoopOverrunCount_ReadsFromCore)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            local v = api.loop_overrun_count()
+            assert(v == 3, "expected 3, got " .. tostring(v))
+            return false
+        end
+    )");
+
+    RoleHostCore core;
+    core.inc_loop_overrun();
+    core.inc_loop_overrun();
+    core.inc_loop_overrun();
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine_with_core(engine, core));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Api_LastCycleWorkUs_ReadsFromCore)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            local v = api.last_cycle_work_us()
+            assert(v == 12345, "expected 12345, got " .. tostring(v))
+            return false
+        end
+    )");
+
+    RoleHostCore core;
+    core.set_last_cycle_work_us(12345);
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine_with_core(engine, core));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Api_CriticalError_DefaultIsFalse)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            assert(api.critical_error() == false,
+                   "critical_error should be false by default")
+            return false
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Api_EnvironmentStrings_LogsDirRunDir)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            assert(api.log_level == "error", "log_level expected 'error'")
+            assert(type(api.script_dir) == "string", "script_dir must be string")
+            assert(type(api.role_dir) == "string", "role_dir must be string")
+            assert(type(api.logs_dir) == "string", "logs_dir must be string")
+            assert(type(api.run_dir) == "string", "run_dir must be string")
+            return false
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Api_CustomMetrics_ReportAndReadInMetrics)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            api.report_metric("latency_ms", 42.5)
+            api.report_metric("throughput", 100)
+
+            local m = api.metrics()
+            assert(m.custom ~= nil, "custom metrics group must exist")
+            assert(m.custom.latency_ms == 42.5,
+                   "latency_ms expected 42.5, got " .. tostring(m.custom.latency_ms))
+            assert(m.custom.throughput == 100,
+                   "throughput expected 100, got " .. tostring(m.custom.throughput))
+            return false
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Api_CustomMetrics_ReportMetricsBatch)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            api.report_metrics({a = 1.0, b = 2.0, c = 3.0})
+
+            local m = api.metrics()
+            assert(m.custom.a == 1.0, "a expected 1.0")
+            assert(m.custom.b == 2.0, "b expected 2.0")
+            assert(m.custom.c == 3.0, "c expected 3.0")
+            return false
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Api_CustomMetrics_ClearRemovesAll)
+{
+    write_script(R"(
+        function on_produce(out_slot, fz, msgs, api)
+            api.report_metric("x", 99)
+            api.clear_custom_metrics()
+
+            local m = api.metrics()
+            assert(m.custom == nil, "custom group should be nil after clear")
+            return false
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Api_ConsumerQueueState_WithoutQueue)
+{
+    // Without a real consumer object, queue-state methods return safe defaults.
+    write_script(R"(
+        function on_consume(in_slot, fz, msgs, api)
+            assert(api.in_capacity() == 0, "in_capacity should be 0 without queue")
+            assert(api.in_policy() == "", "in_policy should be '' without queue")
+            assert(api.last_seq() == 0, "last_seq should be 0 without queue")
+            return
+        end
+    )");
+
+    RoleHostCore core;
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &core));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_consume"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+
+    RoleContext ctx{};
+    ctx.role_tag  = "cons";
+    ctx.uid       = "TEST-ENGINE-00000001";
+    ctx.name      = "TestEngine";
+    ctx.channel   = "test.channel";
+    ctx.log_level = "error";
+    ctx.core      = &core;
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    float buf = 1.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_consume(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
 } // anonymous namespace
