@@ -184,14 +184,20 @@
 - [ ] Rewrite `test_datahub_loop_policy.cpp`: timing measurement tests stay at L3 (DataBlock);
   policy execution tests (FixedRate sleep, compensation, overrun) move to role/RAII level
 - [x] Config strict validation framework: whitelist of allowed keys per role type. ✅ 2026-03-30
-- [ ] Role-level identity and inbox registration: processor piggybacks inbox on producer
-  REG_REQ (out_opts), not registered as a processor. Broker should have a proper
-  role registration concept (independent of channel create/subscribe) so all roles
-  are discoverable by UID with their inbox/identity/role_type. Currently:
-  - Producer: REG_REQ carries inbox → ChannelEntry stores it
-  - Consumer: CONSUMER_REG_REQ carries inbox → ConsumerEntry stores it
-  - Processor: uses producer REG_REQ for inbox → found via producer_role_uid search
-  All work, but the processor identity is split across producer + consumer entries.
+- [ ] Role identity separation from data channel registration:
+  Two concepts currently conflated in the protocol:
+  (a) Role identity: UID, name, role_type, inbox endpoint/schema/checksum.
+      This is who the role IS — independent of data streams.
+  (b) Data channel participation: producer creates channel (REG_REQ),
+      consumer subscribes (CONSUMER_REG_REQ), processor does both.
+      This is about data flow — input/output acting roles.
+  Current state: inbox piggybacks on data channel registration.
+  Processor's identity is split across producer + consumer entries.
+  Target: new ROLE_REG_REQ registers role identity + inbox with broker
+  FIRST, then channel participation is separate. Broker's global role
+  table (HEP-0019 Phase 2) is the natural home for role identity.
+  This also cleanly supports the processor which acts as both producer
+  and consumer on data channels but has a single processor identity.
 - [x] Inbox discovery gap: ROLE_INFO_REQ now searches both producer and consumer entries. ✅ 2026-03-30
   are created but never registered with broker (CONSUMER_REG_REQ lacks inbox fields).
   api.open_inbox("CONS-...") returns None even when consumer has inbox configured.
