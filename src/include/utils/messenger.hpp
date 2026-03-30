@@ -52,6 +52,7 @@ struct PYLABHUB_UTILS_EXPORT RoleInfoResult
     std::string    inbox_endpoint;  ///< ZMQ ROUTER bind endpoint (empty = no inbox)
     nlohmann::json inbox_schema;    ///< Array of {type,count,length} field defs (empty = no inbox)
     std::string    inbox_packing;   ///< "aligned" or "packed" (empty = no inbox)
+    std::string    inbox_checksum;  ///< "enforced", "manual", or "none" (empty = enforced)
 };
 
 /// Schema information returned by Messenger::query_channel_schema() (HEP-CORE-0016 Phase 3).
@@ -248,7 +249,11 @@ class PYLABHUB_UTILS_EXPORT Messenger
                     const std::string &consumer_uid          = {},
                     const std::string &consumer_name         = {},
                     const std::string &expected_schema_id    = {},
-                    const std::string &consumer_queue_type  = {});
+                    const std::string &consumer_queue_type   = {},
+                    const std::string &inbox_endpoint        = {},
+                    const std::string &inbox_schema_json     = {},
+                    const std::string &inbox_packing         = {},
+                    const std::string &inbox_checksum        = {});
 
     /**
      * @brief Query the broker for schema information about a registered channel.

@@ -249,17 +249,12 @@ struct ZmqQueueImpl
                 // [4] checksum: bin, 32 bytes.
                 if (elems[4].type != msgpack::type::BIN || elems[4].via.bin.size != 32)
                     { ++recv_frame_error_count_; continue; }
-                // Verify if policy is not None. Zero-checksum = producer skipped → skip verify.
+                // Verify checksum if policy is not None.
                 if (checksum_policy_ != ChecksumPolicy::None)
                 {
-                    const auto *cks = reinterpret_cast<const uint8_t*>(elems[4].via.bin.ptr);
-                    bool all_zero = true;
-                    for (size_t i = 0; i < 32 && all_zero; ++i)
-                    {
-                        if (cks[i] != 0) { all_zero = false; }
-                    }
-                    if (!all_zero && !pylabhub::crypto::verify_blake2b(
-                            cks, decode_tmp_.data(), item_sz))
+                    if (!pylabhub::crypto::verify_blake2b(
+                            reinterpret_cast<const uint8_t*>(elems[4].via.bin.ptr),
+                            decode_tmp_.data(), item_sz))
                     {
                         ctx_metrics_.inc_checksum_error();
                         LOGGER_ERROR("[hub::ZmqQueue] checksum error after decode on '{}'",

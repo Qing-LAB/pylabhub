@@ -75,6 +75,7 @@ ScriptEngine::open_inbox_client(const std::string &target_uid)
                             target_uid);
                 return std::nullopt;
             }
+            client_ptr->set_checksum_policy(ctx_.checksum_policy);
 
             result_spec = std::move(spec);
             result_packing = info->inbox_packing;

@@ -248,6 +248,7 @@ void ProcessorRoleHost::worker_main_()
     ctx.producer     = out_producer_.has_value() ? &(*out_producer_) : nullptr;
     ctx.consumer     = in_consumer_.has_value() ? &(*in_consumer_) : nullptr;
     ctx.inbox_queue  = inbox_queue_.get();
+    ctx.checksum_policy = config_.checksum().policy;
     ctx.core         = &core_;
     ctx.stop_on_script_error = config_.script().stop_on_script_error;
 
@@ -529,6 +530,8 @@ bool ProcessorRoleHost::setup_infrastructure_()
                 inbox_queue_.reset();
             return false;
         }
+        inbox_queue_->set_checksum_policy(config_.checksum().policy);
+
         // Validate: engine type size must match queue decode buffer size.
         if (inbox_schema_slot_size > 0 &&
             inbox_queue_->item_size() != inbox_schema_slot_size)
