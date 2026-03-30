@@ -155,6 +155,7 @@ struct PYLABHUB_UTILS_EXPORT ChannelRegistrationOptions
     std::string    inbox_endpoint;    ///< Role inbox ROUTER endpoint (Phase 3). Empty = no inbox.
     std::string    inbox_schema_json; ///< JSON-serialized ZmqSchemaField list (Phase 4). Empty = no inbox.
     std::string    inbox_packing;     ///< "aligned" or "packed" (Phase 4). Empty = no inbox.
+    std::string    inbox_checksum;    ///< "enforced", "manual", "none". Empty = enforced.
 };
 
 class PYLABHUB_UTILS_EXPORT Messenger
