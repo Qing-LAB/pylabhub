@@ -114,6 +114,37 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     /// Stop and remove all cached inbox clients.
     void clear_inbox_cache();
 
+    // ── Custom metrics (HEP-CORE-0019) ──────────────────────────────────
+
+    /// Store or overwrite a custom metric by key.
+    void report_metric(const std::string &key, double value)
+    {
+        std::lock_guard<std::mutex> lk(custom_metrics_mu_);
+        custom_metrics_[key] = value;
+    }
+
+    /// Store multiple custom metrics at once.
+    void report_metrics(const std::unordered_map<std::string, double> &kv)
+    {
+        std::lock_guard<std::mutex> lk(custom_metrics_mu_);
+        for (auto &[k, v] : kv)
+            custom_metrics_[k] = v;
+    }
+
+    /// Remove all custom metrics.
+    void clear_custom_metrics()
+    {
+        std::lock_guard<std::mutex> lk(custom_metrics_mu_);
+        custom_metrics_.clear();
+    }
+
+    /// Thread-safe snapshot of all custom metrics.
+    [[nodiscard]] std::unordered_map<std::string, double> custom_metrics_snapshot() const
+    {
+        std::lock_guard<std::mutex> lk(custom_metrics_mu_);
+        return custom_metrics_;
+    }
+
     // ── Shared script data (Lua: C++ map; Python: uses native dict) ────
 
     using StateValue = std::variant<int64_t, double, bool, std::string>;
@@ -309,6 +340,10 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     // ── Shared script data ──────────────────────────────────────────────
     std::unordered_map<std::string, StateValue> shared_data_;
     mutable std::shared_mutex shared_data_mu_;
+
+    // ── Custom metrics (HEP-CORE-0019) ──────────────────────────────────
+    std::unordered_map<std::string, double> custom_metrics_;
+    mutable std::mutex custom_metrics_mu_;
 };
 
 } // namespace pylabhub::scripting

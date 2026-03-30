@@ -1540,4 +1540,145 @@ def get_counter():
     engine.finalize();
 }
 
+// ============================================================================
+// API parity tests — diagnostics, custom metrics, environment, queue-state
+// ============================================================================
+
+TEST_F(PythonEngineTest, Api_LoopOverrunCount_ReadsFromCore)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    v = api.loop_overrun_count()
+    assert v == 3, f"expected 3, got {v}"
+    return False
+)");
+
+    RoleHostCore core;
+    core.inc_loop_overrun();
+    core.inc_loop_overrun();
+    core.inc_loop_overrun();
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine_with_core(engine, core));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Api_LastCycleWorkUs_ReadsFromCore)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    v = api.last_cycle_work_us()
+    assert v == 12345, f"expected 12345, got {v}"
+    return False
+)");
+
+    RoleHostCore core;
+    core.set_last_cycle_work_us(12345);
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine_with_core(engine, core));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Api_CriticalError_DefaultIsFalse)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    assert api.critical_error() == False, "critical_error should be False by default"
+    return False
+)");
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Api_IdentityAccessors_ReturnCorrectValues)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    assert api.uid() == "TEST-ENGINE-00000001", f"uid: {api.uid()}"
+    assert api.name() == "TestEngine", f"name: {api.name()}"
+    assert api.channel() == "test.channel", f"channel: {api.channel()}"
+    assert api.log_level() == "error", f"log_level: {api.log_level()}"
+    assert isinstance(api.script_dir(), str), "script_dir must be str"
+    assert isinstance(api.role_dir(), str), "role_dir must be str"
+    return False
+)");
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Api_CustomMetrics_ReportAndReadInMetrics)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    api.report_metric("latency_ms", 42.5)
+    api.report_metric("throughput", 100)
+
+    m = api.metrics()
+    assert "custom" in m, "custom metrics group must exist"
+    assert m["custom"]["latency_ms"] == 42.5, f"got {m['custom']['latency_ms']}"
+    assert m["custom"]["throughput"] == 100, f"got {m['custom']['throughput']}"
+    return False
+)");
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Api_CustomMetrics_BatchAndClear)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    api.report_metrics({"a": 1.0, "b": 2.0, "c": 3.0})
+    m = api.metrics()
+    assert m["custom"]["a"] == 1.0
+    assert m["custom"]["b"] == 2.0
+    assert m["custom"]["c"] == 3.0
+
+    api.clear_custom_metrics()
+    m2 = api.metrics()
+    assert "custom" not in m2, "custom should be gone after clear"
+    return False
+)");
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
 } // anonymous namespace

@@ -29,14 +29,15 @@
 ### ScriptEngine Post-Refactor Deferred Items (2026-03-21)
 
 - [ ] **SE-03 HIGH**: HEP-CORE-0011 fundamentally stale — rewrite §3.2, §3.3, §4.2, §8, §8.2 for composition model
-- [ ] **SE-04 MED**: Lua API parity — Lua role hosts currently lack most API bindings (open_inbox, wait_for_role, queue-state, metrics); needs design decision on scope
+- [ ] **SE-04 MED — NEXT**: Lua API parity — Lua role hosts currently lack most API bindings (open_inbox, wait_for_role, queue-state, metrics); needs design decision on scope. **Must be done before RoleAPIBase extraction**: Lua parity surfaces the true shared method set; extracting a base class before this would cause double work when Lua bindings reveal additional shared methods.
 - [ ] **SE-07 MED**: `--validate` stub in all 3 role hosts — design what validate should check, implement
 - [ ] **SE-08 MED**: HEP-0018/0015 partially stale — update class name refs and thread model
 
-### ScriptEngine Thread Model Implementation (2026-03-21)
+### ScriptEngine Thread Model Implementation (2026-03-21) — AFTER RoleAPIBase
 
 **Design**: `docs/tech_draft/engine_thread_model.md`
 **Motivation**: Enable cross-thread script execution (ctrl_thread_, inbox_thread_) + shared state + native C++ plugin engine.
+**Ordering**: Depends on RoleAPIBase extraction (which depends on SE-04 Lua parity). Sequence: SE-04 → RoleAPIBase → Engine thread model.
 
 - [ ] Phase 1: `invoke(name)` / `invoke(name, args)` / `eval(code)` on ScriptEngine interface
 - [ ] Phase 2: Engine infrastructure — owner thread detection, Lua thread-state cache
@@ -47,7 +48,7 @@
 
 ### ScriptEngine Cleanup (post-refactor)
 
-- [ ] RoleAPIBase extraction: eliminate 3× duplication across ProducerAPI/ConsumerAPI/ProcessorAPI; shared base holds uid, name, channel, log, metrics, inbox, shared_data
+- [ ] RoleAPIBase extraction — **AFTER SE-04**: eliminate 3× duplication across ProducerAPI/ConsumerAPI/ProcessorAPI; shared base holds uid, name, channel, log, metrics, inbox, shared_data. Blocked on SE-04 (Lua API parity) because Lua bindings will surface the correct shared method set and define the abstraction boundary.
 - [ ] RoleHostCore log_tag: add log_tag to RoleHostCore so role hosts and engines get it from one place (currently each manages its own copy, hardcoded "[prod]"/"[cons]"/"[proc]" in role hosts)
 - [ ] RoleHostCore encapsulation (CR-03): `g_shutdown`, `validate_only`, `fz_spec` → private with accessors
 - [ ] RoleContext: `const char*` members → `std::string` — PARTIALLY DONE (ScriptEngine interface changed 2026-03-24; RoleContext itself still uses std::string already)
@@ -171,7 +172,7 @@
   - Facilities already in place: `custom_metrics_` map, `metrics_spin_`, heartbeat JSON path,
     broker global role table with UID indexing
 - [ ] Tests for Python `api.metrics()` hierarchical dict and Lua `api.metrics()` table
-- [ ] Loop timing config hardening + single-path loop policy (in progress 2026-03-28):
+- [x] Loop timing config hardening + single-path loop policy ✅ 2026-03-30:
   - `loop_timing` required in config (no implicit default)
   - `max_rate` conflicts with target_period_ms/target_rate_hz → error
   - `fixed_rate` requires exactly one of period/rate → error if both/neither
@@ -179,7 +180,7 @@
   - Remove `set_loop_policy` from ShmQueue factories (layer violation)
   - Role hosts map `tc.loop_timing` → `opts.loop_policy` (not hardcode FixedRate)
   - Single path: config → Options → establish_channel → DataBlock/ZmqQueue
-- [ ] Move `configured_period_us` from QueueMetrics/ContextMetrics to loop level (LoopMetricsSnapshot).
+- [x] Move `configured_period_us` from QueueMetrics/ContextMetrics to loop level (LoopMetricsSnapshot) ✅ 2026-03-30.
   Queue has no timing role — period is loop config, not queue config.
 - [ ] Rewrite `test_datahub_loop_policy.cpp`: timing measurement tests stay at L3 (DataBlock);
   policy execution tests (FixedRate sleep, compensation, overrun) move to role/RAII level
@@ -470,6 +471,24 @@ RecoveryResult datablock_validate_integrity(...);
 ---
 
 ## Recent Completions
+
+### Metrics + Timing + Checksum Unification (2026-03-29/30) ✅
+- ContextMetrics: private fields, all-atomic accessors, renamed to `context_metrics.hpp`
+- ZmqQueue adopts ContextMetrics (replaces individual atomic counters)
+- LoopTimingParams: single config truth, strict validation, `loop_timing` required in all roles
+- DataBlock timing removal: `set_loop_policy` deleted, `LoopPolicy` enum deleted
+- `configured_period_us` moved from QueueMetrics to LoopMetricsSnapshot (loop level)
+- `queue_period_us` removed from Options (redundant)
+- Checksum policy unification: per-role config (`"checksum": enforced/manual/none`), unified queue API
+- InboxQueue/InboxClient checksum policy support
+- Consumer inbox registration: CONSUMER_REG_REQ carries inbox fields
+- ROLE_INFO_REQ: searches both producer and consumer entries
+- Config key whitelist: validates all JSON keys at parse time
+- RoleContext: typed pointers (void* removed), inbox_queue added, checksum_policy added
+- Lua `api.metrics()` implemented (full hierarchical table)
+- HEP-0008 full rewrite, HEP-0027 Inbox Messaging spec
+- Bug fix: flexzone checksum returns true when no flexzone
+- **1181/1181 tests**
 
 ### LoopTimingPolicy rename (2026-03-10) ✅
 Renamed `FixedPace`→`FixedRate`, `Compensating`→`FixedRateWithCompensation`; added `MaxRate` (explicit, enforces period=0).

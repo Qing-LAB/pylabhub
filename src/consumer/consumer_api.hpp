@@ -29,7 +29,6 @@
 #include "utils/hub_consumer.hpp"
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/hub_queue.hpp"
-#include "utils/in_process_spin_state.hpp"
 #include "utils/messenger.hpp"
 #include "script_host_helpers.hpp"
 #include "utils/shared_memory_spinlock.hpp"
@@ -196,8 +195,6 @@ class ConsumerAPI
     // Set by the constructor; always non-null.
     scripting::RoleHostCore *core_;
 
-    mutable hub::InProcessSpinState                  metrics_spin_;
-    std::unordered_map<std::string, double>          custom_metrics_;
     std::unordered_map<std::string, py::object>      inbox_cache_;
 public:
     py::object shared_data_{py::none()};  ///< Shared script state dict.
