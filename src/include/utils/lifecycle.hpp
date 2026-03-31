@@ -311,6 +311,21 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      */
     DynModuleState dynamic_module_state(std::string_view name);
 
+    // ── User data registry (for dynamic module callbacks) ────────────
+
+    /// Validation function signature for user data pointers.
+    using UserDataValidateFn = bool (*)(void *userdata, uint64_t key);
+
+    /// Register a user-data pointer with a validation function.
+    /// Returns a unique, monotonically increasing generation key.
+    /// The caller stores the key on the pointed-to object so the
+    /// validate function can confirm identity.
+    [[nodiscard]] uint64_t register_user_data(void *ptr, UserDataValidateFn validate);
+
+    /// Deregister user data by key. After this, callbacks using this
+    /// key will fail validation and be skipped.
+    void deregister_user_data(uint64_t key);
+
     /**
      * @brief Installs a log sink for lifecycle internal messages.
      *
@@ -485,6 +500,21 @@ inline void SetLifecycleLogSink(LifecycleLogSink sink)
 inline void ClearLifecycleLogSink() noexcept
 {
     LifecycleManager::instance().clear_lifecycle_log_sink();
+}
+
+/// @brief Register user data with a validation function. Returns generation key.
+/// @see LifecycleManager::register_user_data
+[[nodiscard]] inline uint64_t RegisterUserData(
+    void *ptr, LifecycleManager::UserDataValidateFn validate)
+{
+    return LifecycleManager::instance().register_user_data(ptr, validate);
+}
+
+/// @brief Deregister user data by generation key.
+/// @see LifecycleManager::deregister_user_data
+inline void DeregisterUserData(uint64_t key)
+{
+    LifecycleManager::instance().deregister_user_data(key);
 }
 
 class LifecycleGuard

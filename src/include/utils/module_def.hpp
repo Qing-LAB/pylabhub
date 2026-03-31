@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string_view>
 
@@ -38,6 +39,15 @@ class LifecycleManager; // Forward-declaration for the friend class
  * pointers cross `.so` / DLL boundaries and must use C-compatible signatures.
  */
 using LifecycleCallback = void (*)(const char *arg);
+
+/**
+ * @brief Callback type that receives a validated user-data pointer.
+ *
+ * Used by dynamic modules that register user data via
+ * LifecycleManager::register_user_data(). The pointer is resolved and
+ * validated by the lifecycle system before each invocation.
+ */
+using UserDataCallback = void (*)(void *userdata);
 
 /**
  * @class ModuleDef
@@ -153,6 +163,49 @@ class PYLABHUB_UTILS_EXPORT ModuleDef
      * @param persistent `true` (default) to mark as persistent.
      */
     void set_as_persistent(bool persistent = true);
+
+    // ── Dynamic module extensions (thread awareness + user data) ─────
+
+    /**
+     * @brief Associate this module with a registered user-data key.
+     *
+     * The key must have been obtained from LifecycleManager::register_user_data().
+     * At callback time, the lifecycle system resolves the pointer from its
+     * registry and validates it before passing to UserDataCallback functions.
+     *
+     * @param key  Generation key from register_user_data(). 0 = no user data.
+     */
+    void set_user_data_key(uint64_t key);
+
+    /**
+     * @brief Set whether finalize may run on a different thread than init.
+     *
+     * Default: true (any thread can finalize — backward compatible).
+     * Set to false for engines with thread affinity (e.g., Python GIL).
+     * When false and the shutdown thread differs from the init thread,
+     * the shutdown callback is skipped and the module is marked contaminated.
+     */
+    void set_thread_safe_finalize(bool allow);
+
+    /**
+     * @brief Sets a startup callback that receives validated user data.
+     *
+     * Mutually exclusive with set_startup(LifecycleCallback). The user-data
+     * pointer is resolved from the registry using the key set by set_user_data_key().
+     *
+     * @param fn  Called with the validated user-data pointer on module load.
+     */
+    void set_startup(UserDataCallback fn);
+
+    /**
+     * @brief Sets a shutdown callback that receives validated user data.
+     *
+     * Mutually exclusive with set_shutdown(LifecycleCallback, ...).
+     *
+     * @param fn       Called with the validated user-data pointer on module unload.
+     * @param timeout  Maximum time allowed for the callback to complete.
+     */
+    void set_shutdown(UserDataCallback fn, std::chrono::milliseconds timeout);
 
   private:
     // LifecycleManager is the sole consumer of the pImpl internals.
