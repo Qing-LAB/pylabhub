@@ -27,7 +27,7 @@ static const PlhPluginContext *g_ctx;
 PLH_EXPORT bool plugin_init(const PlhPluginContext *ctx)
 {
     g_ctx = ctx;
-    plh_log(ctx->core, "info", "plugin_init: hello from native producer");
+    ctx->log(ctx, PLH_LOG_INFO, "plugin_init: hello from native producer");
     return true;
 }
 
@@ -119,13 +119,14 @@ By convention `script.path` is `"."` (the role directory).
     "script": {
         "type": "native",
         "path": ".",
-        "library": "libmy_producer.so"
+        "checksum": "..."
     }
 }
 ```
 
-The key difference from Python/Lua is `"type": "native"` and the `"library"`
-field that names the shared object file.
+The key difference from Python/Lua is `"type": "native"`. The library filename
+is resolved from the `script.path` directory (`<path>/script/native/`), not a
+separate config field.
 
 ---
 
@@ -336,12 +337,12 @@ PLH_EXPORT const PlhAbiInfo *plugin_abi_info(void)
 
 PLH_EXPORT void on_init(void)
 {
-    plh_log(g_ctx->core, "info", "Native producer starting");
+    g_ctx->log(g_ctx, PLH_LOG_INFO, "Native producer starting");
 }
 
 PLH_EXPORT void on_stop(void)
 {
-    plh_log(g_ctx->core, "info", "Native producer stopping");
+    g_ctx->log(g_ctx, PLH_LOG_INFO, "Native producer stopping");
 }
 } /* extern "C" */
 
@@ -356,7 +357,7 @@ static bool my_produce(plh::SlotRef<SlotFrame> slot)
     slot->sequence  = g_seq++;
 
     if (g_seq % 1000 == 0)
-        plh_report_metric(g_ctx->core, "iterations", static_cast<double>(g_seq));
+        g_ctx->report_metric(g_ctx, "iterations", static_cast<double>(g_seq));
 
     return true;   /* commit */
 }
@@ -406,7 +407,7 @@ PLH_EXPORT void on_stop(void)
 {
     char buf[128];
     snprintf(buf, sizeof(buf), "Consumed %lu slots total", (unsigned long)g_count);
-    plh_log(g_ctx->core, "info", buf);
+    g_ctx->log(g_ctx, PLH_LOG_INFO, buf);
 }
 } /* extern "C" */
 
@@ -421,7 +422,7 @@ static void my_consume(plh::ConstSlotRef<SlotFrame> slot)
         char buf[128];
         snprintf(buf, sizeof(buf), "seq=%u value=%.4f",
                  slot->sequence, slot->value);
-        plh_log(g_ctx->core, "debug", buf);
+        g_ctx->log(g_ctx, PLH_LOG_DEBUG, buf);
     }
 }
 
@@ -521,44 +522,63 @@ These functions are provided by the host process. Call them from any callback.
 ### 7.1 Logging
 
 ```c
-plh_log(g_ctx->core, "info", "Sensor initialized");
-plh_log(g_ctx->core, "warn", "Buffer nearly full");
-plh_log(g_ctx->core, "error", "Hardware read failed");
-plh_log(g_ctx->core, "debug", "Slot written: seq=42");
+ctx->log(ctx, PLH_LOG_INFO,  "Sensor initialized");
+ctx->log(ctx, PLH_LOG_WARN,  "Buffer nearly full");
+ctx->log(ctx, PLH_LOG_ERROR, "Hardware read failed");
+ctx->log(ctx, PLH_LOG_DEBUG, "Slot written: seq=42");
 ```
 
-Log levels: `"debug"`, `"info"`, `"warn"`, `"error"`. Messages go through the
-async pylabHub logger, same as Python/Lua log output.
+Log levels: `PLH_LOG_DEBUG` (0), `PLH_LOG_INFO` (1), `PLH_LOG_WARN` (2),
+`PLH_LOG_ERROR` (3). Messages go through the async pylabHub logger, same as
+Python/Lua log output.
+
+C++ wrapper:
+
+```cpp
+ctx.log(plh::LogLevel::Info, "Sensor initialized");
+```
 
 ### 7.2 Metrics reporting
 
 ```c
-plh_report_metric(g_ctx->core, "temperature_max", 85.3);
-plh_report_metric(g_ctx->core, "dropped_samples", (double)drop_count);
+ctx->report_metric(ctx, "temperature_max", 85.3);
+ctx->report_metric(ctx, "dropped_samples", (double)drop_count);
+ctx->clear_custom_metrics(ctx);
 ```
 
 Reported metrics are collected by the broker's metrics plane and included in
 the role's metrics snapshot.
 
+C++ wrapper:
+
+```cpp
+ctx.report_metric("temperature_max", 85.3);
+ctx.clear_custom_metrics();
+```
+
 ### 7.3 Requesting stop
 
 ```c
 /* Graceful shutdown after current iteration */
-plh_request_stop(g_ctx->core);
+ctx->request_stop(ctx);
 ```
 
 Equivalent to `api.stop()` in Python. The main loop exits after the current
 iteration completes.
 
+C++ wrapper: `ctx.request_stop();`
+
 ### 7.4 Critical error
 
 ```c
 /* Signal unrecoverable error -- role exits immediately */
-plh_set_critical_error(g_ctx->core);
+ctx->set_critical_error(ctx);
 ```
 
 Use for hardware failures, memory corruption, or any state where continuing
 would produce incorrect data.
+
+C++ wrapper: `ctx.set_critical_error();`
 
 ---
 
@@ -595,13 +615,17 @@ skips ABI checks and you risk silent data corruption on architecture mismatch.
 
 ### 8.3 Checksum
 
-When `"checksum": "enforced"` is set in the role config, the framework
-automatically computes BLAKE2b checksums on `write_commit` and verifies on
-read. Native plugins do not need to compute checksums manually -- the
-framework handles it.
+The `script.checksum` field holds a BLAKE2b-256 hash of the `.so`/`.dll` file.
+At load time the framework computes the hash of the loaded library and compares
+it against this value. A mismatch prevents the plugin from loading, guarding
+against accidental deployment of the wrong binary.
 
-With `"checksum": "manual"`, your plugin is responsible for calling the
-appropriate checksum API. `"none"` disables checksums entirely.
+```json
+"script": {"type": "native", "path": ".", "checksum": "a1b2c3d4..."}
+```
+
+Data slot checksums are controlled separately by the top-level `"checksum"`
+field (`"enforced"`, `"manual"`, or `"none"`).
 
 ---
 
@@ -619,14 +643,14 @@ for these callbacks.
 PLH_EXPORT bool plugin_is_thread_safe(void) { return false; }
 ```
 
-`on_heartbeat()` is called from the **control thread**, not the data thread.
-If `plugin_is_thread_safe()` returns `false` (or is not implemented), the
-framework serializes `on_heartbeat()` with data callbacks.
+`on_heartbeat()` always runs from the **control thread** (`ctrl_thread_`),
+concurrently with data callbacks on the data thread. The framework does **not**
+serialize `on_heartbeat()` with data callbacks regardless of the
+`plugin_is_thread_safe()` return value.
 
-If it returns `true`, `on_heartbeat()` may execute concurrently with data
-callbacks. In that case, you must use appropriate synchronization (atomics,
-mutexes) for any shared state accessed by both `on_heartbeat()` and
-`on_produce`/`on_consume`/`on_process`.
+If your plugin accesses shared state from both `on_heartbeat()` and
+`on_produce`/`on_consume`/`on_process`, you **must** use appropriate
+synchronization (atomics, mutexes) to ensure thread safety.
 
 ### 9.3 on_inbox threading
 
@@ -689,7 +713,7 @@ PLH_EXPORT void on_inbox(const void *data, size_t sz, const char *sender_uid)
         char buf[128];
         snprintf(buf, sizeof(buf), "Gain updated to %.3f by %s",
                  msg->gain, sender_uid);
-        plh_log(g_ctx->core, "info", buf);
+        g_ctx->log(g_ctx, PLH_LOG_INFO, buf);
     }
 }
 
@@ -722,7 +746,7 @@ PLH_EXPORT bool on_produce(void *out, size_t out_sz,
     ++total;
     if (total % 10000 == 0)
     {
-        plh_report_metric(g_ctx->core, "total_produced", (double)total);
+        g_ctx->report_metric(g_ctx, "total_produced", (double)total);
     }
     return true;
 }
@@ -737,13 +761,13 @@ PLH_EXPORT bool on_produce(void *out, size_t out_sz,
     int err = read_hardware(out, out_sz);
     if (err == HW_FATAL)
     {
-        plh_log(g_ctx->core, "error", "Hardware fatal error, requesting stop");
-        plh_set_critical_error(g_ctx->core);
+        g_ctx->log(g_ctx, PLH_LOG_ERROR, "Hardware fatal error, requesting stop");
+        g_ctx->set_critical_error(g_ctx);
         return false;
     }
     if (err == HW_TRANSIENT)
     {
-        plh_log(g_ctx->core, "warn", "Transient read error, discarding slot");
+        g_ctx->log(g_ctx, PLH_LOG_WARN, "Transient read error, discarding slot");
         return false;   /* discard this iteration, loop continues */
     }
     return true;

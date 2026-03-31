@@ -668,7 +668,8 @@ bool NativeEngine::verify_file_checksum_() const
 std::string NativeEngine::compute_canonical_schema_(const SchemaSpec &spec) const
 {
     // Build canonical schema string: "name:type:count:length|name:type:count:length|..."
-    // Same format as compute_schema_hash() in script_host_helpers.hpp.
+    // Format: "name:type:count:length|name:type:count:length|..."
+    // Must match the string passed to PLH_DECLARE_SCHEMA in the plugin.
     std::ostringstream ss;
     for (size_t i = 0; i < spec.fields.size(); ++i)
     {
