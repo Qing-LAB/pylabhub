@@ -77,8 +77,20 @@ struct PlhPluginContext;
  * argument for context routing. The plugin just passes `ctx` through.
  * ========================================================================= */
 
-typedef struct PlhPluginContext
+/** Magic number for PlhPluginContext validation: 'P','L','H','C' = 0x504C4843 */
+#define PLH_CONTEXT_MAGIC 0x504C4843u
+
+/** Explicit 8-byte alignment for stable struct layout across compilers. */
+typedef struct
+#ifdef __cplusplus
+    alignas(8)
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+    _Alignas(8)
+#endif
+    PlhPluginContext
 {
+    uint32_t _magic;           /**< Must be PLH_CONTEXT_MAGIC. Validates pointer. */
+
     /* ── Identity (read-only, valid until plugin_finalize) ──────────── */
     const char *role_tag;      /**< "prod", "cons", or "proc" */
     const char *uid;           /**< Role UID */
@@ -124,6 +136,8 @@ typedef struct PlhPluginContext
     void *_core;               /**< Internal — RoleHostCore pointer for API implementations. */
     const char *_log_label;    /**< Internal — log prefix e.g. "[native libfoo.so]" */
 
+    uint32_t _magic_end;       /**< Must be PLH_CONTEXT_MAGIC. Trailing sentinel. */
+
 } PlhPluginContext;
 
 /* =========================================================================
@@ -154,13 +168,23 @@ typedef struct PlhAbiInfo
  * Role callback symbols (implement the ones your role needs)
  * ========================================================================= */
 
-/* void on_init(void); */
-/* void on_stop(void); */
+/* void on_init(const char *args_json); */
+/* void on_stop(const char *args_json); */
 /* bool on_produce(void *out_slot, size_t out_sz, void *flexzone, size_t fz_sz); */
 /* void on_consume(const void *in_slot, size_t in_sz, const void *flexzone, size_t fz_sz); */
 /* bool on_process(const void *in, size_t in_sz, void *out, size_t out_sz, void *fz, size_t fz_sz); */
 /* void on_inbox(const void *data, size_t sz, const char *sender_uid); */
-/* void on_heartbeat(void); */
+/**
+ * @brief Heartbeat / generic invoke callback convention.
+ *
+ * Functions called via invoke() receive args as a JSON string:
+ *   void my_func(const char *args_json);
+ *     - args_json is NULL when no arguments
+ *     - args_json is a JSON object string when arguments are provided
+ *     - the string is valid for the duration of the call (stack-owned by host)
+ *     - plugin must copy if needed beyond return
+ */
+/* void on_heartbeat(const char *args_json); */
 
 /* =========================================================================
  * Optional metadata symbols
@@ -207,6 +231,14 @@ typedef struct PlhAbiInfo
 #include <string>
 #include <type_traits>
 
+// Compile-time layout verification for cross-compiler interop.
+static_assert(std::is_standard_layout_v<PlhPluginContext>,
+              "PlhPluginContext must be standard-layout for C/C++ interop");
+static_assert(alignof(PlhPluginContext) == 8,
+              "PlhPluginContext must be 8-byte aligned");
+static_assert(offsetof(PlhPluginContext, _magic) == 0,
+              "PlhPluginContext: _magic must be at offset 0");
+
 namespace plh
 {
 
@@ -235,7 +267,20 @@ enum class LogLevel : int { Debug = 0, Info = 1, Warn = 2, Error = 3 };
 class Context
 {
   public:
-    explicit Context(const PlhPluginContext *c) noexcept : c_(c) {}
+    explicit Context(const PlhPluginContext *c) noexcept : c_(c)
+    {
+        // Validate both sentinels at construction time.
+        if (c && (c->_magic != PLH_CONTEXT_MAGIC || c->_magic_end != PLH_CONTEXT_MAGIC))
+            c_ = nullptr; // invalidate — all methods become safe no-ops
+    }
+
+    /// Check if the context is valid (both magic sentinels match).
+    bool valid() const noexcept
+    {
+        return c_ != nullptr
+            && c_->_magic     == PLH_CONTEXT_MAGIC
+            && c_->_magic_end == PLH_CONTEXT_MAGIC;
+    }
 
     // ── Identity ────────────────────────────────────────────────────
     const char *uid()         const noexcept { return c_->uid; }
