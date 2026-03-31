@@ -678,6 +678,52 @@ gtest_discover_tests(test_layer2_python_engine
         TIMEOUT 60
 )
 
+# ── NativeEngine test plugin (.so) ───────────────────────────────────────
+add_library(test_good_producer_plugin SHARED
+    test_plugins/good_producer_plugin.cpp
+)
+target_include_directories(test_good_producer_plugin PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/include
+)
+target_link_libraries(test_good_producer_plugin PRIVATE pylabhub::utils)
+target_compile_features(test_good_producer_plugin PRIVATE cxx_std_20)
+set_target_properties(test_good_producer_plugin PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${PYLABHUB_STAGING_DIR}/tests"
+)
+
+# ── NativeEngine test binary ─────────────────────────────────────────────
+add_executable(test_layer2_scriptengine_native_dylib
+    test_scriptengine_native_dylib.cpp
+)
+target_include_directories(test_layer2_scriptengine_native_dylib PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/scripting
+    ${CMAKE_SOURCE_DIR}/tests/test_framework
+)
+target_link_libraries(test_layer2_scriptengine_native_dylib PRIVATE
+    pylabhub::utils
+    pylabhub::scripting
+    GTest::gtest
+    GTest::gtest_main
+)
+target_compile_definitions(test_layer2_scriptengine_native_dylib PRIVATE
+    LOGGER_COMPILE_LEVEL=0
+    TEST_PLUGIN_DIR="${PYLABHUB_STAGING_DIR}/tests"
+)
+add_dependencies(test_layer2_scriptengine_native_dylib test_good_producer_plugin)
+# No -rdynamic needed: plugin API goes through PlhPluginContext function pointers,
+# not host-exported symbols.
+pylabhub_ensure_sanitizer_for_executable(test_layer2_scriptengine_native_dylib)
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_scriptengine_native_dylib
+    SUITE_NAME "Layer2_NativeEngine"
+)
+layer2_require_staged_utils(test_layer2_scriptengine_native_dylib)
+gtest_discover_tests(test_layer2_scriptengine_native_dylib
+    PROPERTIES
+        LABELS "layer2;service;scripting;native;engine"
+        TIMEOUT 60
+)
+
 message(STATUS "Layer 2 (Service) tests configured successfully")
 message(STATUS "  - test_layer2_framework_selftest (CRITICAL - framework self-verification)")
 message(STATUS "  - test_layer2_backoff_strategy   (pure API, no dispatcher)")
