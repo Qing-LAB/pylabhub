@@ -16,7 +16,6 @@
 #include <fmt/ranges.h>       // For fmt::join on vectors
 #include <map>                // For std::map
 #include <mutex>              // For std::mutex, std::unique_lock, std::lock_guard
-#include <optional>           // For std::optional
 #include "portable_atomic_shared_ptr.hpp"
 #include <queue>              // For std::queue
 #include <set>                // For std::set
@@ -70,12 +69,6 @@ struct InternalModuleDef
     std::function<void()> startup;
     InternalModuleShutdownDef shutdown;
     bool is_persistent = false;
-
-    // ── Dynamic module extensions ────────────────────────────────────
-    uint64_t user_data_key{0};                    ///< 0 = no user data
-    bool thread_safe_finalize{true};              ///< false = must finalize on init thread
-    pylabhub::utils::UserDataCallback userdata_startup{nullptr};
-    pylabhub::utils::UserDataCallback userdata_shutdown{nullptr};
 };
 } // namespace pylabhub::utils::lifecycle_internal
 
@@ -136,13 +129,6 @@ class LifecycleManagerImpl
         bool is_persistent = false;
         std::atomic<DynamicModuleStatus> dynamic_status = {DynamicModuleStatus::UNLOADED};
         std::atomic<int> ref_count = {0};
-
-        // ── Dynamic module extensions ────────────────────────────────
-        uint64_t user_data_key{0};
-        bool thread_safe_finalize{true};
-        pylabhub::utils::UserDataCallback userdata_startup{nullptr};
-        pylabhub::utils::UserDataCallback userdata_shutdown{nullptr};
-        std::thread::id init_thread_id{};
     };
 
     // --- Public API Methods ---
@@ -259,23 +245,6 @@ class LifecycleManagerImpl
     // Optional log sink injected by the logger module (or any module that provides logging).
     // null → fall back to PLH_DEBUG.
     pylabhub::utils::detail::PortableAtomicSharedPtr<LifecycleLogSink> m_lifecycle_log_sink;
-
-    // ── User data registry (for dynamic module callbacks) ────────────
-    // Lock ordering: always acquire m_graph_mutation_mutex before m_userdata_mutex.
-    using UserDataValidateFn = bool (*)(void *userdata, uint64_t key);
-    struct UserDataEntry
-    {
-        void *ptr{nullptr};
-        UserDataValidateFn validate{nullptr};
-    };
-    std::mutex m_userdata_mutex;
-    std::map<uint64_t, UserDataEntry> m_user_data_registry;
-    std::atomic<uint64_t> m_next_userdata_key{1};
-
-  public:
-    uint64_t registerUserData(void *ptr, UserDataValidateFn validate);
-    void deregisterUserData(uint64_t key);
-    std::optional<UserDataEntry> resolveUserData(uint64_t key);
 };
 
 } // namespace pylabhub::utils

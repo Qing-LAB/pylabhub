@@ -102,78 +102,6 @@ void ModuleDef::set_as_persistent(bool persistent)
     }
 }
 
-void ModuleDef::set_user_data_key(uint64_t key)
-{
-    if (pImpl)
-        pImpl->def.user_data_key = key;
-}
-
-void ModuleDef::set_thread_safe_finalize(bool allow)
-{
-    if (pImpl)
-        pImpl->def.thread_safe_finalize = allow;
-}
-
-void ModuleDef::set_startup(UserDataCallback fn)
-{
-    if (pImpl && fn)
-        pImpl->def.userdata_startup = fn;
-}
-
-void ModuleDef::set_shutdown(UserDataCallback fn, std::chrono::milliseconds timeout)
-{
-    if (pImpl && fn)
-    {
-        pImpl->def.userdata_shutdown = fn;
-        pImpl->def.shutdown.timeout = timeout;
-    }
-}
-
-// ============================================================================
-// LifecycleManagerImpl — user data registry
-// ============================================================================
-
-uint64_t LifecycleManagerImpl::registerUserData(void *ptr, UserDataValidateFn validate)
-{
-    std::lock_guard<std::mutex> lk(m_userdata_mutex);
-    uint64_t key;
-    do {
-        key = m_next_userdata_key.fetch_add(1, std::memory_order_relaxed);
-    } while (key == 0u);
-    m_user_data_registry[key] = {ptr, validate};
-    return key;
-}
-
-void LifecycleManagerImpl::deregisterUserData(uint64_t key)
-{
-    std::lock_guard<std::mutex> lk(m_userdata_mutex);
-    m_user_data_registry.erase(key);
-}
-
-std::optional<LifecycleManagerImpl::UserDataEntry>
-LifecycleManagerImpl::resolveUserData(uint64_t key)
-{
-    std::lock_guard<std::mutex> lk(m_userdata_mutex);
-    auto it = m_user_data_registry.find(key);
-    if (it == m_user_data_registry.end())
-        return std::nullopt;
-    return it->second;
-}
-
-// ============================================================================
-// LifecycleManager — user data delegation
-// ============================================================================
-
-uint64_t LifecycleManager::register_user_data(void *ptr, UserDataValidateFn validate)
-{
-    return pImpl->registerUserData(ptr, validate);
-}
-
-void LifecycleManager::deregister_user_data(uint64_t key)
-{
-    pImpl->deregisterUserData(key);
-}
-
 // ============================================================================
 // LifecycleManagerImpl destructor
 // ============================================================================
@@ -279,10 +207,6 @@ bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalMod
     node.dependencies = def.dependencies;
     node.is_dynamic = true;
     node.is_persistent = def.is_persistent;
-    node.user_data_key = def.user_data_key;
-    node.thread_safe_finalize = def.thread_safe_finalize;
-    node.userdata_startup = def.userdata_startup;
-    node.userdata_shutdown = def.userdata_shutdown;
 
     // `&node` is a pointer to the newly-inserted map value. std::map provides
     // reference/pointer stability: insertions do not invalidate references to
