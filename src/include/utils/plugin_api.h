@@ -5,29 +5,28 @@
  * Plugin authors include this header and implement the required symbols.
  * All exported symbols use C linkage for ABI stability across compilers.
  *
- * ## Minimal Producer Plugin
+ * The plugin receives a PlhPluginContext from the framework at init time.
+ * All framework services (logging, metrics, shutdown) are accessed through
+ * function pointers on the context — no host symbol resolution needed.
+ *
+ * ## Minimal Producer Plugin (C)
  *
  * ```c
  * #include <pylabhub/plugin_api.h>
  *
- * PLH_EXPORT bool plugin_init(const PlhPluginContext *ctx) { return true; }
- * PLH_EXPORT void plugin_finalize(void) {}
- * PLH_EXPORT void on_init(void) {}
- * PLH_EXPORT void on_stop(void) {}
+ * static const PlhPluginContext *g_ctx;
+ *
+ * PLH_EXPORT bool plugin_init(const PlhPluginContext *ctx) { g_ctx = ctx; return true; }
+ * PLH_EXPORT void plugin_finalize(void) { g_ctx = NULL; }
  *
  * PLH_EXPORT bool on_produce(void *out_slot, size_t out_sz,
- *                            void *flexzone, size_t fz_sz) {
+ *                            void *fz, size_t fz_sz) {
  *     float *slot = (float *)out_slot;
  *     slot[0] = 42.0f;
- *     return true;   // true = commit, false = discard
+ *     g_ctx->log(g_ctx, PLH_LOG_INFO, "produced a value");
+ *     return true;
  * }
  * ```
- *
- * ## Schema Validation
- *
- * Use PLH_DECLARE_SCHEMA to declare a slot type with compile-time schema
- * descriptors. The framework verifies the plugin's schema matches the
- * JSON config at load time.
  *
  * See HEP-CORE-0028 for the full specification.
  * See docs/README/README_NativePlugin.md for a developer guide.
@@ -49,44 +48,88 @@
 #   define PLH_EXPORT __attribute__((visibility("default")))
 #endif
 
+/* =========================================================================
+ * Log level constants
+ * ========================================================================= */
+
+#define PLH_LOG_DEBUG  0
+#define PLH_LOG_INFO   1
+#define PLH_LOG_WARN   2
+#define PLH_LOG_ERROR  3
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /* =========================================================================
+ * Forward declaration for self-referencing function pointers
+ * ========================================================================= */
+struct PlhPluginContext;
+
+/* =========================================================================
  * Plugin context — passed to plugin_init()
+ *
+ * Contains identity strings (read-only) AND framework API function pointers.
+ * The plugin calls framework services through these pointers — no host
+ * symbol resolution (dlsym) needed, no -rdynamic required.
+ *
+ * All function pointers take `const struct PlhPluginContext *ctx` as first
+ * argument for context routing. The plugin just passes `ctx` through.
  * ========================================================================= */
 
-/**
- * @brief Read-only context provided by the framework at plugin_init().
- *
- * Pointers are valid for the lifetime of the plugin (until plugin_finalize).
- * All strings are null-terminated UTF-8.
- */
 typedef struct PlhPluginContext
 {
+    /* ── Identity (read-only, valid until plugin_finalize) ──────────── */
     const char *role_tag;      /**< "prod", "cons", or "proc" */
-    const char *uid;           /**< Role UID (e.g. "PROD-MySensor-AABBCCDD") */
-    const char *name;          /**< Role name (e.g. "MySensor") */
+    const char *uid;           /**< Role UID */
+    const char *name;          /**< Role name */
     const char *channel;       /**< Primary channel (in_channel for processor) */
     const char *out_channel;   /**< Output channel (processor only; NULL otherwise) */
     const char *log_level;     /**< Configured log level string */
     const char *role_dir;      /**< Role directory path */
 
-    /** Opaque pointer to RoleHostCore. Pass to plh_log(), plh_report_metric(), etc. */
-    void *core;
+    /* ── Framework API (function pointers filled by host) ──────────── */
+
+    /** Log a message. @param level PLH_LOG_DEBUG/INFO/WARN/ERROR */
+    void (*log)(const struct PlhPluginContext *ctx, int level, const char *msg);
+
+    /** Report a custom metric (key-value pair). */
+    void (*report_metric)(const struct PlhPluginContext *ctx,
+                          const char *key, double value);
+
+    /** Clear all custom metrics. */
+    void (*clear_custom_metrics)(const struct PlhPluginContext *ctx);
+
+    /** Request graceful stop (signals main loop to exit after current iteration). */
+    void (*request_stop)(const struct PlhPluginContext *ctx);
+
+    /** Signal a critical error (sets critical flag + requests stop). */
+    void (*set_critical_error)(const struct PlhPluginContext *ctx);
+
+    /** Check if critical error has been flagged. Returns 1 or 0. */
+    int (*is_critical_error)(const struct PlhPluginContext *ctx);
+
+    /** Get stop reason string: "normal", "peer_dead", "hub_dead", "critical_error". */
+    const char *(*stop_reason)(const struct PlhPluginContext *ctx);
+
+    /** Query counters. */
+    uint64_t (*out_written)(const struct PlhPluginContext *ctx);
+    uint64_t (*in_received)(const struct PlhPluginContext *ctx);
+    uint64_t (*drops)(const struct PlhPluginContext *ctx);
+    uint64_t (*script_errors)(const struct PlhPluginContext *ctx);
+    uint64_t (*loop_overrun_count)(const struct PlhPluginContext *ctx);
+    uint64_t (*last_cycle_work_us)(const struct PlhPluginContext *ctx);
+
+    /* ── Opaque host data (do not dereference) ────────────────────── */
+    void *_core;               /**< Internal — RoleHostCore pointer for API implementations. */
+    const char *_log_label;    /**< Internal — log prefix e.g. "[native libfoo.so]" */
+
 } PlhPluginContext;
 
 /* =========================================================================
  * ABI compatibility info — exported by plugin
  * ========================================================================= */
 
-/**
- * @brief ABI descriptor exported by the plugin for compatibility checking.
- *
- * The framework compares these against host values at dlopen time.
- * Mismatch → plugin rejected (hard error).
- */
 typedef struct PlhAbiInfo
 {
     uint32_t struct_size;       /**< sizeof(PlhAbiInfo) — versioning guard */
@@ -100,27 +143,12 @@ typedef struct PlhAbiInfo
 #define PLH_PLUGIN_API_VERSION 1
 
 /* =========================================================================
- * Required plugin symbols
+ * Required plugin symbols (implement these)
  * ========================================================================= */
 
-/**
- * @brief Initialize the plugin. Called once after dlopen.
- * @param ctx  Plugin context (valid until plugin_finalize).
- * @return true on success, false to abort role startup.
- */
-/* bool plugin_init(const PlhPluginContext *ctx); */
-
-/**
- * @brief Finalize the plugin. Called once before dlclose.
- * Release all resources. Do not call any framework functions after this.
- */
-/* void plugin_finalize(void); */
-
-/**
- * @brief Return ABI compatibility info.
- * @return Pointer to static PlhAbiInfo. Must remain valid after return.
- */
-/* const PlhAbiInfo *plugin_abi_info(void); */
+/* bool plugin_init(const PlhPluginContext *ctx);  -- store ctx, return true */
+/* void plugin_finalize(void);                    -- release resources */
+/* const PlhAbiInfo *plugin_abi_info(void);        -- optional ABI check */
 
 /* =========================================================================
  * Role callback symbols (implement the ones your role needs)
@@ -128,111 +156,41 @@ typedef struct PlhAbiInfo
 
 /* void on_init(void); */
 /* void on_stop(void); */
-
-/**
- * @brief Producer callback. Write data to out_slot and return true to publish.
- * @param out_slot   Writable buffer (schema-typed). NULL if no slot acquired.
- * @param out_sz     Size of out_slot in bytes.
- * @param flexzone   Writable flexzone buffer (NULL if not configured).
- * @param fz_sz      Size of flexzone in bytes.
- * @return true = commit (publish), false = discard (skip this iteration).
- */
 /* bool on_produce(void *out_slot, size_t out_sz, void *flexzone, size_t fz_sz); */
-
-/**
- * @brief Consumer callback. Read data from in_slot.
- * @param in_slot    Read-only buffer (schema-typed). NULL if no data.
- * @param in_sz      Size of in_slot in bytes.
- * @param flexzone   Read-only flexzone buffer (NULL if not configured).
- * @param fz_sz      Size of flexzone in bytes.
- */
-/* void on_consume(const void *in_slot, size_t in_sz,
-                   const void *flexzone, size_t fz_sz); */
-
-/**
- * @brief Processor callback. Read in_slot, write out_slot.
- * @return true = commit output, false = discard.
- */
-/* bool on_process(const void *in_slot, size_t in_sz,
-                   void *out_slot, size_t out_sz,
-                   void *flexzone, size_t fz_sz); */
-
-/**
- * @brief Inbox callback. Receive a typed message from another role.
- * @param data       Read-only message payload (inbox schema-typed).
- * @param sz         Payload size in bytes.
- * @param sender_uid Null-terminated UID of the sender.
- */
+/* void on_consume(const void *in_slot, size_t in_sz, const void *flexzone, size_t fz_sz); */
+/* bool on_process(const void *in, size_t in_sz, void *out, size_t out_sz, void *fz, size_t fz_sz); */
 /* void on_inbox(const void *data, size_t sz, const char *sender_uid); */
-
-/**
- * @brief Heartbeat callback. Called periodically from the control thread.
- * Must be thread-safe (called concurrently with data callbacks).
- */
 /* void on_heartbeat(void); */
 
 /* =========================================================================
- * Optional plugin metadata symbols
+ * Optional metadata symbols
  * ========================================================================= */
 
-/* const char *plugin_name(void);    -- human-readable name for logging */
-/* const char *plugin_version(void); -- version string */
-/* bool plugin_is_thread_safe(void); -- true if all callbacks are reentrant */
+/* const char *plugin_name(void); */
+/* const char *plugin_version(void); */
+/* bool plugin_is_thread_safe(void); */
 
 /* =========================================================================
  * Schema validation macros
  * ========================================================================= */
 
 /**
- * @brief Declare a schema descriptor for a slot type.
+ * @brief Declare schema descriptor for a slot type.
+ * Generates plugin_schema_<Name>() and plugin_sizeof_<Name>() symbols.
+ * The framework verifies the plugin's schema matches the JSON config.
  *
- * Generates `plugin_schema_<Name>()` and `plugin_sizeof_<Name>()` symbols
- * that the framework uses to verify the plugin's compiled struct matches
- * the JSON config schema at load time.
- *
- * @param Name   Type name (must match register_slot_type type_name:
- *               SlotFrame, InSlotFrame, OutSlotFrame, FlexFrame, InboxFrame)
- * @param Schema Pipe-delimited canonical schema string:
- *               "field_name:type_str:count:length|..."
- *               Example: "ts:float64:1:0|value:float32:1:0"
- * @param Size   sizeof(YourStruct) — must match schema-computed size.
+ * Note: The macro body includes extern "C" for C++ so that the generated
+ * symbols have C linkage regardless of where the macro is expanded.
  */
+#ifdef __cplusplus
+#define PLH_DECLARE_SCHEMA(Name, Schema, Size)                                          \
+    extern "C" PLH_EXPORT const char *plugin_schema_##Name(void) { return (Schema); }   \
+    extern "C" PLH_EXPORT size_t plugin_sizeof_##Name(void) { return (Size); }
+#else
 #define PLH_DECLARE_SCHEMA(Name, Schema, Size)                              \
     PLH_EXPORT const char *plugin_schema_##Name(void) { return (Schema); }  \
     PLH_EXPORT size_t plugin_sizeof_##Name(void) { return (Size); }
-
-/* =========================================================================
- * Framework helper functions (implemented by the host, callable by plugin)
- * ========================================================================= */
-
-/**
- * @brief Log a message through the pylabHub logger.
- * @param core   The core pointer from PlhPluginContext.
- * @param level  "debug", "info", "warn", or "error".
- * @param msg    Null-terminated log message.
- */
-void plh_log(void *core, const char *level, const char *msg);
-
-/**
- * @brief Report a custom metric (key-value pair).
- * @param core   The core pointer from PlhPluginContext.
- * @param key    Null-terminated metric key.
- * @param value  Metric value.
- */
-void plh_report_metric(void *core, const char *key, double value);
-
-/**
- * @brief Request role stop (equivalent to api.stop() in Python/Lua).
- * Signals the main loop to exit gracefully after the current iteration.
- * @param core   The core pointer from PlhPluginContext.
- */
-void plh_request_stop(void *core);
-
-/**
- * @brief Signal a critical error (equivalent to api.set_critical_error()).
- * @param core   The core pointer from PlhPluginContext.
- */
-void plh_set_critical_error(void *core);
+#endif
 
 #ifdef __cplusplus
 } /* extern "C" */
@@ -246,16 +204,103 @@ void plh_set_critical_error(void *core);
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <type_traits>
 
 namespace plh
 {
 
+/** Log level enum for C++ usage. */
+enum class LogLevel : int { Debug = 0, Info = 1, Warn = 2, Error = 3 };
+
+/**
+ * @brief C++ wrapper around PlhPluginContext.
+ *
+ * All methods are inline and call through the context's function pointers.
+ * No host symbol resolution needed — everything crosses the C ABI via
+ * the function pointers the host filled at init time.
+ *
+ * Usage:
+ * ```cpp
+ * static plh::Context *g_ctx;
+ *
+ * extern "C" bool plugin_init(const PlhPluginContext *raw) {
+ *     static plh::Context ctx(raw);
+ *     g_ctx = &ctx;
+ *     ctx.log(plh::LogLevel::Info, "plugin initialized");
+ *     return true;
+ * }
+ * ```
+ */
+class Context
+{
+  public:
+    explicit Context(const PlhPluginContext *c) noexcept : c_(c) {}
+
+    // ── Identity ────────────────────────────────────────────────────
+    const char *uid()         const noexcept { return c_->uid; }
+    const char *name()        const noexcept { return c_->name; }
+    const char *channel()     const noexcept { return c_->channel; }
+    const char *out_channel() const noexcept { return c_->out_channel; }
+    const char *log_level_str() const noexcept { return c_->log_level; }
+    const char *role_dir()    const noexcept { return c_->role_dir; }
+    const char *role_tag()    const noexcept { return c_->role_tag; }
+
+    // ── Logging ─────────────────────────────────────────────────────
+    void log(LogLevel level, const char *msg) const
+    {
+        if (c_->log) c_->log(c_, static_cast<int>(level), msg);
+    }
+    void log(LogLevel level, const std::string &msg) const
+    {
+        log(level, msg.c_str());
+    }
+
+    // ── Custom metrics ──────────────────────────────────────────────
+    void report_metric(const char *key, double value) const
+    {
+        if (c_->report_metric) c_->report_metric(c_, key, value);
+    }
+    void clear_custom_metrics() const
+    {
+        if (c_->clear_custom_metrics) c_->clear_custom_metrics(c_);
+    }
+
+    // ── Lifecycle ───────────────────────────────────────────────────
+    void request_stop() const
+    {
+        if (c_->request_stop) c_->request_stop(c_);
+    }
+    void set_critical_error() const
+    {
+        if (c_->set_critical_error) c_->set_critical_error(c_);
+    }
+    bool is_critical_error() const
+    {
+        return c_->is_critical_error ? c_->is_critical_error(c_) != 0 : false;
+    }
+    const char *stop_reason() const
+    {
+        return c_->stop_reason ? c_->stop_reason(c_) : "normal";
+    }
+
+    // ── Counters ────────────────────────────────────────────────────
+    uint64_t out_written()       const { return c_->out_written ? c_->out_written(c_) : 0; }
+    uint64_t in_received()       const { return c_->in_received ? c_->in_received(c_) : 0; }
+    uint64_t drops()             const { return c_->drops ? c_->drops(c_) : 0; }
+    uint64_t script_errors()     const { return c_->script_errors ? c_->script_errors(c_) : 0; }
+    uint64_t loop_overrun_count() const { return c_->loop_overrun_count ? c_->loop_overrun_count(c_) : 0; }
+    uint64_t last_cycle_work_us() const { return c_->last_cycle_work_us ? c_->last_cycle_work_us(c_) : 0; }
+
+    /// Access the raw C context.
+    const PlhPluginContext *raw() const noexcept { return c_; }
+
+  private:
+    const PlhPluginContext *c_;
+};
+
 /**
  * @brief Typed slot reference — zero-cost wrapper around raw pointer.
- *
- * Provides type-safe access to slot data with compile-time standard-layout check.
- * Usage: `plh::SlotRef<MySlotFrame> slot(raw_ptr, raw_sz);`
  */
 template <typename T>
 class SlotRef
@@ -264,10 +309,7 @@ class SlotRef
                   "SlotRef<T>: T must be a standard-layout type");
   public:
     SlotRef(void *ptr, size_t sz) noexcept
-        : ptr_(static_cast<T *>(ptr)), valid_(ptr && sz >= sizeof(T))
-    {}
-    SlotRef(const void *ptr, size_t sz) noexcept
-        : ptr_(const_cast<T *>(static_cast<const T *>(ptr))), valid_(ptr && sz >= sizeof(T))
+        : ptr_(static_cast<T *>(ptr)), valid_(ptr != nullptr && sz >= sizeof(T))
     {}
 
     explicit operator bool() const noexcept { return valid_; }
@@ -276,7 +318,6 @@ class SlotRef
     T &operator*() noexcept { return *ptr_; }
     const T &operator*() const noexcept { return *ptr_; }
     T *get() noexcept { return ptr_; }
-    const T *get() const noexcept { return ptr_; }
 
   private:
     T   *ptr_;
@@ -291,7 +332,7 @@ class ConstSlotRef
                   "ConstSlotRef<T>: T must be a standard-layout type");
   public:
     ConstSlotRef(const void *ptr, size_t sz) noexcept
-        : ptr_(static_cast<const T *>(ptr)), valid_(ptr && sz >= sizeof(T))
+        : ptr_(static_cast<const T *>(ptr)), valid_(ptr != nullptr && sz >= sizeof(T))
     {}
 
     explicit operator bool() const noexcept { return valid_; }
@@ -306,67 +347,44 @@ class ConstSlotRef
 
 } // namespace plh
 
-/**
- * @brief Export a C++ producer function with typed slot access.
- *
- * Usage:
- * ```cpp
- * static bool my_produce(plh::SlotRef<SlotFrame> slot, plh::SlotRef<FlexFrame> fz) {
- *     slot->value = 42.0f;
- *     return true;
- * }
- * PLH_EXPORT_PRODUCE(SlotFrame, FlexFrame, my_produce)
- * ```
- */
+/* ── Export macros for C++ typed callbacks ──────────────────────────────── */
+
 #define PLH_EXPORT_PRODUCE(SlotType, FlexType, func)                        \
     extern "C" PLH_EXPORT bool on_produce(                                  \
         void *out, size_t out_sz, void *fz, size_t fz_sz)                   \
-    {                                                                       \
-        return func(plh::SlotRef<SlotType>(out, out_sz),                    \
-                    plh::SlotRef<FlexType>(fz, fz_sz));                     \
-    }
+    { return func(plh::SlotRef<SlotType>(out, out_sz),                      \
+                  plh::SlotRef<FlexType>(fz, fz_sz)); }
 
-/** Variant without flexzone. */
 #define PLH_EXPORT_PRODUCE_NOFZ(SlotType, func)                             \
     extern "C" PLH_EXPORT bool on_produce(                                  \
-        void *out, size_t out_sz, void * /*fz*/, size_t /*fz_sz*/)          \
-    {                                                                       \
-        return func(plh::SlotRef<SlotType>(out, out_sz));                   \
-    }
+        void *out, size_t out_sz, void *, size_t)                           \
+    { return func(plh::SlotRef<SlotType>(out, out_sz)); }
 
 #define PLH_EXPORT_CONSUME(SlotType, FlexType, func)                        \
     extern "C" PLH_EXPORT void on_consume(                                  \
         const void *in, size_t in_sz, const void *fz, size_t fz_sz)        \
-    {                                                                       \
-        func(plh::ConstSlotRef<SlotType>(in, in_sz),                        \
-             plh::ConstSlotRef<FlexType>(fz, fz_sz));                       \
-    }
+    { func(plh::ConstSlotRef<SlotType>(in, in_sz),                          \
+           plh::ConstSlotRef<FlexType>(fz, fz_sz)); }
 
 #define PLH_EXPORT_CONSUME_NOFZ(SlotType, func)                             \
     extern "C" PLH_EXPORT void on_consume(                                  \
-        const void *in, size_t in_sz, const void * /*fz*/, size_t /*fz_sz*/)\
-    {                                                                       \
-        func(plh::ConstSlotRef<SlotType>(in, in_sz));                       \
-    }
+        const void *in, size_t in_sz, const void *, size_t)                 \
+    { func(plh::ConstSlotRef<SlotType>(in, in_sz)); }
 
 #define PLH_EXPORT_PROCESS(InType, OutType, FlexType, func)                 \
     extern "C" PLH_EXPORT bool on_process(                                  \
         const void *in, size_t in_sz, void *out, size_t out_sz,             \
         void *fz, size_t fz_sz)                                             \
-    {                                                                       \
-        return func(plh::ConstSlotRef<InType>(in, in_sz),                   \
-                    plh::SlotRef<OutType>(out, out_sz),                      \
-                    plh::SlotRef<FlexType>(fz, fz_sz));                     \
-    }
+    { return func(plh::ConstSlotRef<InType>(in, in_sz),                     \
+                  plh::SlotRef<OutType>(out, out_sz),                       \
+                  plh::SlotRef<FlexType>(fz, fz_sz)); }
 
 #define PLH_EXPORT_PROCESS_NOFZ(InType, OutType, func)                      \
     extern "C" PLH_EXPORT bool on_process(                                  \
         const void *in, size_t in_sz, void *out, size_t out_sz,             \
-        void * /*fz*/, size_t /*fz_sz*/)                                    \
-    {                                                                       \
-        return func(plh::ConstSlotRef<InType>(in, in_sz),                   \
-                    plh::SlotRef<OutType>(out, out_sz));                     \
-    }
+        void *, size_t)                                                     \
+    { return func(plh::ConstSlotRef<InType>(in, in_sz),                     \
+                  plh::SlotRef<OutType>(out, out_sz)); }
 
 #endif /* __cplusplus */
 

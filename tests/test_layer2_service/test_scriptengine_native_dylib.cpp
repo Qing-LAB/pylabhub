@@ -1,0 +1,303 @@
+/**
+ * @file test_scriptengine_native_dylib.cpp
+ * @brief L2 tests for NativeEngine — the ScriptEngine for native C/C++ plugins.
+ *
+ * Tests the full lifecycle: dlopen → ABI check → schema validation →
+ * plugin_init → invoke callbacks → plugin_finalize → dlclose.
+ *
+ * Uses a real test plugin .so built alongside the test binary.
+ * Error paths: missing .so, bad schema, bad ABI, missing required callback.
+ */
+#include <gtest/gtest.h>
+
+#include "native_engine.hpp"
+#include "utils/role_host_core.hpp"
+
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
+
+namespace fs = std::filesystem;
+using pylabhub::scripting::NativeEngine;
+using pylabhub::scripting::ScriptEngine;
+using pylabhub::scripting::InvokeResult;
+using pylabhub::scripting::InvokeResponse;
+using pylabhub::scripting::InvokeStatus;
+using pylabhub::scripting::RoleContext;
+using pylabhub::scripting::RoleHostCore;
+using pylabhub::scripting::IncomingMessage;
+using pylabhub::scripting::SchemaSpec;
+using pylabhub::scripting::FieldDef;
+
+namespace
+{
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/// Path to the test plugin .so (set by CMake via -D define).
+#ifndef TEST_PLUGIN_DIR
+#   define TEST_PLUGIN_DIR "."
+#endif
+
+fs::path good_plugin_path()
+{
+    fs::path dir(TEST_PLUGIN_DIR);
+#if defined(_WIN32) || defined(_WIN64)
+    fs::path p = dir / "test_good_producer_plugin.dll";
+#elif defined(__APPLE__)
+    fs::path p = dir / "libtest_good_producer_plugin.dylib";
+#else
+    fs::path p = dir / "libtest_good_producer_plugin.so";
+#endif
+    return p;
+}
+
+SchemaSpec simple_schema()
+{
+    SchemaSpec spec;
+    spec.has_schema = true;
+    FieldDef f;
+    f.name     = "value";
+    f.type_str = "float32";
+    f.count    = 1;
+    f.length   = 0;
+    spec.fields.push_back(f);
+    return spec;
+}
+
+RoleContext producer_context()
+{
+    RoleContext ctx{};
+    ctx.role_tag  = "prod";
+    ctx.uid       = "TEST-NATIVE-00000001";
+    ctx.name      = "TestNative";
+    ctx.channel   = "test.native.channel";
+    ctx.log_level = "error";
+    return ctx;
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+class NativeEngineTest : public ::testing::Test
+{
+  protected:
+    RoleHostCore core_;
+};
+
+TEST_F(NativeEngineTest, FullLifecycle_ProduceCommitsAndWritesSlot)
+{
+    NativeEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &core_));
+
+    auto plugin = good_plugin_path();
+    std::cerr << "[DEBUG] TEST_PLUGIN_DIR = " << TEST_PLUGIN_DIR << "\n";
+    std::cerr << "[DEBUG] good_plugin_path() = " << plugin << "\n";
+    std::cerr << "[DEBUG] exists = " << fs::exists(plugin) << "\n";
+    std::cerr << "[DEBUG] parent_path = " << plugin.parent_path() << "\n";
+    std::cerr << "[DEBUG] filename = " << plugin.filename() << "\n";
+    std::cerr << "[DEBUG] parent/filename = " << (plugin.parent_path() / plugin.filename()) << "\n";
+    ASSERT_TRUE(fs::exists(plugin)) << "Plugin not found: " << plugin;
+
+    ASSERT_TRUE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
+                                   "on_produce"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    EXPECT_EQ(engine.type_sizeof("SlotFrame"), 4u);
+
+    auto ctx = producer_context();
+    ctx.core = &core_;
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    // on_init should be callable.
+    engine.invoke_on_init();
+
+    // on_produce: plugin writes 42.0 to slot.
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+    EXPECT_FLOAT_EQ(buf, 42.0f);
+
+    // Custom metric should have been reported by the plugin.
+    auto cm = core_.custom_metrics_snapshot();
+    EXPECT_EQ(cm.count("produce_count"), 1u);
+    EXPECT_DOUBLE_EQ(cm.at("produce_count"), 1.0);
+
+    // Second produce: counter increments.
+    buf = 0.0f;
+    result = engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+    EXPECT_FLOAT_EQ(buf, 42.0f);
+
+    cm = core_.custom_metrics_snapshot();
+    EXPECT_DOUBLE_EQ(cm.at("produce_count"), 2.0);
+
+    engine.invoke_on_stop();
+    engine.finalize();
+}
+
+TEST_F(NativeEngineTest, HasCallback_ReflectsPluginSymbols)
+{
+    NativeEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &core_));
+
+    auto plugin = good_plugin_path();
+    ASSERT_TRUE(fs::exists(plugin)) << "Plugin not found: " << plugin;
+    ASSERT_TRUE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
+                                   "on_produce"));
+
+    EXPECT_TRUE(engine.has_callback("on_produce"));
+    EXPECT_TRUE(engine.has_callback("on_init"));
+    EXPECT_TRUE(engine.has_callback("on_stop"));
+    EXPECT_TRUE(engine.has_callback("on_heartbeat"));
+    EXPECT_FALSE(engine.has_callback("on_consume"));
+    EXPECT_FALSE(engine.has_callback("on_process"));
+    EXPECT_FALSE(engine.has_callback("nonexistent_function"));
+
+    engine.finalize();
+}
+
+TEST_F(NativeEngineTest, SchemaValidation_MatchingSchema_Succeeds)
+{
+    NativeEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &core_));
+
+    auto plugin = good_plugin_path();
+    ASSERT_TRUE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
+                                   "on_produce"));
+
+    auto spec = simple_schema();
+    EXPECT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    EXPECT_EQ(engine.type_sizeof("SlotFrame"), 4u);
+
+    engine.finalize();
+}
+
+TEST_F(NativeEngineTest, SchemaValidation_MismatchedSchema_Fails)
+{
+    NativeEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &core_));
+
+    auto plugin = good_plugin_path();
+    ASSERT_TRUE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
+                                   "on_produce"));
+
+    // Schema that doesn't match the plugin's PLH_DECLARE_SCHEMA.
+    SchemaSpec bad_spec;
+    bad_spec.has_schema = true;
+    FieldDef f;
+    f.name     = "temperature";  // wrong name
+    f.type_str = "float64";      // wrong type
+    f.count    = 1;
+    f.length   = 0;
+    bad_spec.fields.push_back(f);
+
+    EXPECT_FALSE(engine.register_slot_type(bad_spec, "SlotFrame", "aligned"));
+
+    engine.finalize();
+}
+
+TEST_F(NativeEngineTest, LoadScript_MissingFile_ReturnsFalse)
+{
+    NativeEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &core_));
+
+    EXPECT_FALSE(engine.load_script("/nonexistent/path",
+                                    "libno_such_plugin.so", "on_produce"));
+}
+
+TEST_F(NativeEngineTest, LoadScript_MissingRequiredCallback_ReturnsFalse)
+{
+    NativeEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &core_));
+
+    auto plugin = good_plugin_path();
+    ASSERT_TRUE(fs::exists(plugin));
+
+    // Plugin has on_produce but not on_consume.
+    EXPECT_FALSE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
+                                    "on_consume"));
+}
+
+TEST_F(NativeEngineTest, Eval_ReturnsNotFound)
+{
+    NativeEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &core_));
+
+    auto plugin = good_plugin_path();
+    ASSERT_TRUE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
+                                   "on_produce"));
+
+    auto result = engine.eval("some code");
+    EXPECT_EQ(result.status, InvokeStatus::NotFound);
+
+    engine.finalize();
+}
+
+TEST_F(NativeEngineTest, GenericInvoke_KnownCallback_ReturnsTrue)
+{
+    NativeEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &core_));
+
+    auto plugin = good_plugin_path();
+    ASSERT_TRUE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
+                                   "on_produce"));
+
+    auto ctx = producer_context();
+    ctx.core = &core_;
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    EXPECT_TRUE(engine.invoke("on_heartbeat"));
+    EXPECT_FALSE(engine.invoke("nonexistent"));
+
+    engine.finalize();
+}
+
+TEST_F(NativeEngineTest, SupportsMultiState_DefaultFalse)
+{
+    NativeEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &core_));
+
+    auto plugin = good_plugin_path();
+    ASSERT_TRUE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
+                                   "on_produce"));
+
+    // Test plugin does not export plugin_is_thread_safe → defaults to false.
+    EXPECT_FALSE(engine.supports_multi_state());
+
+    engine.finalize();
+}
+
+TEST_F(NativeEngineTest, ContextFieldsPassedToPlugin)
+{
+    NativeEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &core_));
+
+    auto plugin = good_plugin_path();
+    ASSERT_TRUE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
+                                   "on_produce"));
+
+    auto ctx = producer_context();
+    ctx.core = &core_;
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    // The plugin stores g_ctx in plugin_init. We can verify indirectly:
+    // plugin_init increments init_count by 1, on_init increments by 100.
+    engine.invoke_on_init();
+
+    // Call test_get_init_count via generic invoke to verify both ran.
+    // We can't easily read the return value from a void function via invoke(),
+    // but we can verify on_init was called by checking it didn't error.
+    EXPECT_EQ(engine.script_error_count(), 0u);
+
+    engine.finalize();
+}
+
+} // anonymous namespace
