@@ -914,20 +914,22 @@ RoleHostCore moved to pylabhub-utils shared lib. 21 L2 tests added.
 - Lua closures for shared state
 - Tests
 
-**Phase 4** (ctrl_thread script support):
-- Optional script callbacks: `on_heartbeat()`, `on_admin(cmd)`
-- ctrl_thread calls `engine->invoke("on_heartbeat")` — goes through queue
-- For Lua: thread-local state, concurrent with owner
-- For Python: serialized through execution mutex, processed by owner
-- Tests
+**Phase 4** (ctrl_thread script support): ✅ **DONE 2026-03-30**
+- `on_heartbeat()` wired in all 3 role hosts via `ThreadEngineGuard` + `engine->invoke("on_heartbeat")`
+- Lua: concurrent on thread-local state; Python: queued to owner
 
-**Phase 5** (native plugin engine):
-- Implement `NativeEngine` (see §11)
-- Add `"native"` to config validation
-- Plugin API header (`pylabhub/plugin_api.h`)
-- Tests: load .so, invoke callbacks, verify zero-copy data access
+**Phase 5** (native plugin engine): ✅ **DONE 2026-03-30**
+- `NativeEngine` class: dlopen, ABI check, schema validation, context function pointers
+- `plugin_api.h`: C/C++ header with `PlhPluginContext`, `plh::Context`, `SlotRef<T>`
+- Config: `"native"` type, `script.checksum`, `resolve_native_library()`
+- 12 L2 tests with real .so plugin. See **HEP-CORE-0028**.
 
 ## 11. NativeEngine — Dynamic C++ Library Extension
+
+> **SUPERSEDED**: This section was the design draft. The actual implementation
+> diverges significantly (context function pointers instead of host-exported symbols,
+> `plugin_init` instead of `plugin_build_api`, PlhAbiInfo instead of build_info JSON).
+> See **HEP-CORE-0028** for the authoritative specification.
 
 ### 11.1 Motivation
 

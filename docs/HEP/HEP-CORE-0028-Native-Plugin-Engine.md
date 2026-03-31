@@ -78,7 +78,7 @@ in the same lifecycle as PythonEngine and LuaEngine: `initialize()` -> `load_scr
 | dlopen with RTLD_NOW \| RTLD_LOCAL | Eager symbol resolution; isolated namespace prevents symbol collision |
 | Function pointers resolved once at load | Zero per-call overhead; null check gates optional callbacks |
 | PlhPluginContext passed at init only | Plugin stores context; no per-callback context parameter overhead |
-| Framework helpers via C functions (plh_log, etc.) | Plugin can call back into the framework without C++ linkage |
+| Framework helpers via function pointers on PlhPluginContext | Plugin calls back into the framework through ctx->fn(ctx, ...) — no host symbol resolution or -rdynamic needed |
 | Optional C++ convenience layer | Zero-cost wrappers (SlotRef, PLH_EXPORT_PRODUCE) for C++ plugin authors |
 
 ### 2.3 Relationship to Other Components
@@ -151,6 +151,7 @@ unwind.
 ```c
 typedef struct PlhPluginContext
 {
+    /* ── Identity (read-only, valid until plugin_finalize) ──────────── */
     const char *role_tag;      /* "prod", "cons", or "proc" */
     const char *uid;           /* Role UID */
     const char *name;          /* Role name */
@@ -158,13 +159,34 @@ typedef struct PlhPluginContext
     const char *out_channel;   /* Output channel (processor only; NULL otherwise) */
     const char *log_level;     /* Configured log level string */
     const char *role_dir;      /* Role directory path */
-    void *core;                /* Opaque pointer — pass to plh_log(), etc. */
+
+    /* ── Framework API (function pointers filled by host) ──────────── */
+    void (*log)(const struct PlhPluginContext *ctx, int level, const char *msg);
+    void (*report_metric)(const struct PlhPluginContext *ctx,
+                          const char *key, double value);
+    void (*clear_custom_metrics)(const struct PlhPluginContext *ctx);
+    void (*request_stop)(const struct PlhPluginContext *ctx);
+    void (*set_critical_error)(const struct PlhPluginContext *ctx);
+    int  (*is_critical_error)(const struct PlhPluginContext *ctx);
+    const char *(*stop_reason)(const struct PlhPluginContext *ctx);
+    uint64_t (*out_written)(const struct PlhPluginContext *ctx);
+    uint64_t (*in_received)(const struct PlhPluginContext *ctx);
+    uint64_t (*drops)(const struct PlhPluginContext *ctx);
+    uint64_t (*script_errors)(const struct PlhPluginContext *ctx);
+    uint64_t (*loop_overrun_count)(const struct PlhPluginContext *ctx);
+    uint64_t (*last_cycle_work_us)(const struct PlhPluginContext *ctx);
+
+    /* ── Opaque host data (do not dereference) ────────────────────── */
+    void *_core;               /* Internal — RoleHostCore pointer for API implementations */
+    const char *_log_label;    /* Internal — log prefix e.g. "[native libfoo.so]" */
 } PlhPluginContext;
 ```
 
-All strings are null-terminated UTF-8. Pointers are valid from `plugin_init()` until
-`plugin_finalize()`. The `core` pointer is opaque — the plugin must not dereference it
-directly; it is passed as the first argument to framework helper functions.
+All strings are null-terminated UTF-8. String pointers are valid from `plugin_init()`
+until `plugin_finalize()`. Framework services are accessed through the function pointers
+on the context struct — the plugin passes `ctx` as the first argument to each call
+(e.g., `ctx->log(ctx, PLH_LOG_INFO, "message")`). The `_core` and `_log_label` fields
+are internal to the host and must not be accessed by plugin code.
 
 ### 4.2 Required Symbols
 
@@ -267,19 +289,39 @@ PLH_DECLARE_SCHEMA(SlotFrame,
 The framework computes the same canonical string from the JSON config's schema fields
 and compares them at load time. Mismatch is a hard error.
 
-### 4.7 Framework Helper Functions
+### 4.7 Framework API (Function Pointers on PlhPluginContext)
 
-These are implemented by the host (in native_engine.cpp) and callable by the plugin
-through C linkage. All require the `core` pointer from PlhPluginContext.
+Framework services are accessed through function pointers on the `PlhPluginContext`
+struct. The host fills these pointers before calling `plugin_init()`. Every function
+takes `const PlhPluginContext *ctx` as its first argument — the plugin simply passes
+its stored context pointer through.
 
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `plh_log` | `void plh_log(void *core, const char *level, const char *msg)` | Log through pylabHub logger. level: "debug", "info", "warn", "error". |
-| `plh_report_metric` | `void plh_report_metric(void *core, const char *key, double value)` | Report a custom key-value metric. |
-| `plh_request_stop` | `void plh_request_stop(void *core)` | Request graceful role shutdown. |
-| `plh_set_critical_error` | `void plh_set_critical_error(void *core)` | Signal a critical error (forces shutdown). |
+**Calling pattern:**
 
-All helpers are null-safe: passing NULL core or NULL string is a no-op.
+```c
+ctx->log(ctx, PLH_LOG_INFO, "starting acquisition");
+ctx->report_metric(ctx, "temperature", 23.5);
+ctx->request_stop(ctx);
+```
+
+| Function Pointer | Signature | Description |
+|------------------|-----------|-------------|
+| `ctx->log` | `void (*)(ctx, int level, const char *msg)` | Log through pylabHub logger. level: PLH_LOG_DEBUG/INFO/WARN/ERROR. |
+| `ctx->report_metric` | `void (*)(ctx, const char *key, double value)` | Report a custom key-value metric. |
+| `ctx->clear_custom_metrics` | `void (*)(ctx)` | Clear all previously reported custom metrics. |
+| `ctx->request_stop` | `void (*)(ctx)` | Request graceful role shutdown. |
+| `ctx->set_critical_error` | `void (*)(ctx)` | Signal a critical error (sets flag + requests stop). |
+| `ctx->is_critical_error` | `int (*)(ctx)` | Check if critical error has been flagged. Returns 1 or 0. |
+| `ctx->stop_reason` | `const char *(*)(ctx)` | Get stop reason: "normal", "peer_dead", "hub_dead", "critical_error". |
+| `ctx->out_written` | `uint64_t (*)(ctx)` | Slots written (producer/processor output). |
+| `ctx->in_received` | `uint64_t (*)(ctx)` | Slots received (consumer/processor input). |
+| `ctx->drops` | `uint64_t (*)(ctx)` | Dropped slot count. |
+| `ctx->script_errors` | `uint64_t (*)(ctx)` | Script error count. |
+| `ctx->loop_overrun_count` | `uint64_t (*)(ctx)` | Loop timing overrun count. |
+| `ctx->last_cycle_work_us` | `uint64_t (*)(ctx)` | Work duration of last iteration in microseconds. |
+
+All function pointers are null-safe on the host side. The plugin should check for NULL
+before calling if it needs to be defensive, though the host always fills all pointers.
 
 ---
 
@@ -351,7 +393,7 @@ static const PlhPluginContext *g_ctx = nullptr;
 
 PLH_EXPORT bool plugin_init(const PlhPluginContext *ctx) {
     g_ctx = ctx;
-    plh_log(ctx->core, "info", "MyProducer initialized");
+    ctx->log(ctx, PLH_LOG_INFO, "MyProducer initialized");
     return true;
 }
 
@@ -590,11 +632,11 @@ applicable to compiled plugins.
 
 Native plugin callbacks cannot "raise exceptions" in the script engine sense. If a
 callback crashes (segfault, abort), the entire process dies. The framework provides
-`plh_set_critical_error()` for the plugin to signal recoverable errors that should
+`ctx->set_critical_error(ctx)` for the plugin to signal recoverable errors that should
 trigger graceful shutdown.
 
 `script_error_count()` delegates to `RoleHostCore::script_errors()`, which the plugin
-can increment indirectly via `plh_set_critical_error()`.
+can increment indirectly via `ctx->set_critical_error(ctx)`.
 
 ---
 
@@ -606,7 +648,7 @@ can increment indirectly via `plh_set_critical_error()`.
 | C++ convenience | `src/include/utils/plugin_api.h` | SlotRef, ConstSlotRef, PLH_EXPORT_* macros (C++ section) |
 | NativeEngine header | `src/scripting/native_engine.hpp` | ScriptEngine subclass declaration |
 | NativeEngine impl | `src/scripting/native_engine.cpp` | dlopen, symbol resolution, verification, dispatch |
-| Framework helpers | `src/scripting/native_engine.cpp` | plh_log, plh_report_metric, plh_request_stop, plh_set_critical_error |
+| Framework helpers | `src/scripting/native_engine.cpp` | Implementations backing ctx->log, ctx->report_metric, ctx->request_stop, etc. |
 | ScriptConfig | `src/include/utils/config/script_config.hpp` | type/path/checksum parsing, resolve_native_library |
 | ScriptEngine base | `src/include/utils/script_engine.hpp` | Abstract interface, RoleContext, InvokeResult |
 | Crypto utils | `src/include/utils/crypto_utils.hpp` | compute_blake2b_array for file checksum |
@@ -624,4 +666,4 @@ can increment indirectly via `plh_set_critical_error()`.
 - **HEP-CORE-0015 SS4**: Processor binary (engine selection, dual-queue dispatch)
 - **HEP-CORE-0027**: Inbox messaging (on_inbox callback, InboxFrame schema validation)
 - **HEP-CORE-0016**: Named Schema Registry (schema field definitions used in PLH_DECLARE_SCHEMA)
-- **HEP-CORE-0019 SS5**: Metrics plane (plh_report_metric integration)
+- **HEP-CORE-0019 SS5**: Metrics plane (ctx->report_metric integration)
