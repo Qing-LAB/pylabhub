@@ -16,7 +16,6 @@
 #include "utils/plugin_api.h"
 #include "utils/role_host_core.hpp"
 
-#include <cstring>
 #include <fstream>
 #include <sstream>
 
@@ -39,6 +38,103 @@ namespace pylabhub::scripting
 {
 
 // ============================================================================
+// Context function pointer implementations (static, anonymous namespace)
+// ============================================================================
+
+namespace
+{
+
+void ctx_log(const PlhPluginContext *ctx, int level, const char *msg)
+{
+    if (!msg) return;
+    const char *label = (ctx && ctx->_log_label) ? ctx->_log_label : "[native]";
+    switch (level)
+    {
+        case PLH_LOG_DEBUG: LOGGER_DEBUG("{} {}", label, msg); break;
+        case PLH_LOG_WARN:  LOGGER_WARN("{} {}", label, msg); break;
+        case PLH_LOG_ERROR: LOGGER_ERROR("{} {}", label, msg); break;
+        case PLH_LOG_INFO:  // fallthrough
+        default:            LOGGER_INFO("{} {}", label, msg); break;
+    }
+}
+
+void ctx_report_metric(const PlhPluginContext *ctx, const char *key, double value)
+{
+    if (!ctx || !ctx->_core || !key) return;
+    static_cast<RoleHostCore *>(ctx->_core)->report_metric(key, value);
+}
+
+void ctx_clear_custom_metrics(const PlhPluginContext *ctx)
+{
+    if (!ctx || !ctx->_core) return;
+    static_cast<RoleHostCore *>(ctx->_core)->clear_custom_metrics();
+}
+
+void ctx_request_stop(const PlhPluginContext *ctx)
+{
+    if (!ctx || !ctx->_core) return;
+    static_cast<RoleHostCore *>(ctx->_core)->request_stop();
+}
+
+void ctx_set_critical_error(const PlhPluginContext *ctx)
+{
+    if (!ctx || !ctx->_core) return;
+    static_cast<RoleHostCore *>(ctx->_core)->set_critical_error();
+}
+
+int ctx_is_critical_error(const PlhPluginContext *ctx)
+{
+    if (!ctx || !ctx->_core) return 0;
+    return static_cast<RoleHostCore *>(ctx->_core)->is_critical_error() ? 1 : 0;
+}
+
+const char *ctx_stop_reason(const PlhPluginContext *ctx)
+{
+    if (!ctx || !ctx->_core) return "normal";
+    static thread_local std::string buf;
+    buf = static_cast<RoleHostCore *>(ctx->_core)->stop_reason_string();
+    return buf.c_str();
+}
+
+uint64_t ctx_out_written(const PlhPluginContext *ctx)
+{
+    if (!ctx || !ctx->_core) return 0;
+    return static_cast<RoleHostCore *>(ctx->_core)->out_written();
+}
+
+uint64_t ctx_in_received(const PlhPluginContext *ctx)
+{
+    if (!ctx || !ctx->_core) return 0;
+    return static_cast<RoleHostCore *>(ctx->_core)->in_received();
+}
+
+uint64_t ctx_drops(const PlhPluginContext *ctx)
+{
+    if (!ctx || !ctx->_core) return 0;
+    return static_cast<RoleHostCore *>(ctx->_core)->drops();
+}
+
+uint64_t ctx_script_errors(const PlhPluginContext *ctx)
+{
+    if (!ctx || !ctx->_core) return 0;
+    return static_cast<RoleHostCore *>(ctx->_core)->script_errors();
+}
+
+uint64_t ctx_loop_overrun_count(const PlhPluginContext *ctx)
+{
+    if (!ctx || !ctx->_core) return 0;
+    return static_cast<RoleHostCore *>(ctx->_core)->loop_overrun_count();
+}
+
+uint64_t ctx_last_cycle_work_us(const PlhPluginContext *ctx)
+{
+    if (!ctx || !ctx->_core) return 0;
+    return static_cast<RoleHostCore *>(ctx->_core)->last_cycle_work_us();
+}
+
+} // anonymous namespace
+
+// ============================================================================
 // PluginContextStorage — owns the C-linkage context strings
 // ============================================================================
 
@@ -54,9 +150,11 @@ struct NativeEngine::PluginContextStorage
     std::string out_channel;
     std::string log_level;
     std::string role_dir;
+    std::string log_label;  ///< e.g. "[native libfoo.so]"
 
     void wire(RoleHostCore *core)
     {
+        // Identity strings.
         ctx.role_tag    = role_tag.c_str();
         ctx.uid         = uid.c_str();
         ctx.name        = name.c_str();
@@ -64,54 +162,27 @@ struct NativeEngine::PluginContextStorage
         ctx.out_channel = out_channel.empty() ? nullptr : out_channel.c_str();
         ctx.log_level   = log_level.c_str();
         ctx.role_dir    = role_dir.c_str();
-        ctx.core        = core;
+
+        // Opaque host data (used by function pointer implementations).
+        ctx._core = core;
+        ctx._log_label = log_label.c_str();
+
+        // Framework API function pointers.
+        ctx.log                = ctx_log;
+        ctx.report_metric      = ctx_report_metric;
+        ctx.clear_custom_metrics = ctx_clear_custom_metrics;
+        ctx.request_stop       = ctx_request_stop;
+        ctx.set_critical_error = ctx_set_critical_error;
+        ctx.is_critical_error  = ctx_is_critical_error;
+        ctx.stop_reason        = ctx_stop_reason;
+        ctx.out_written        = ctx_out_written;
+        ctx.in_received        = ctx_in_received;
+        ctx.drops              = ctx_drops;
+        ctx.script_errors      = ctx_script_errors;
+        ctx.loop_overrun_count = ctx_loop_overrun_count;
+        ctx.last_cycle_work_us = ctx_last_cycle_work_us;
     }
 };
-
-// ============================================================================
-// Framework helper functions (callable by plugin via C linkage)
-// ============================================================================
-
-extern "C"
-{
-
-void plh_log(void *core, const char *level, const char *msg)
-{
-    if (!core || !msg) return;
-    auto *c = static_cast<RoleHostCore *>(core);
-    // Map string level to Logger call.
-    if (!level || std::strcmp(level, "info") == 0)
-        LOGGER_INFO("[native] {}", msg);
-    else if (std::strcmp(level, "debug") == 0)
-        LOGGER_DEBUG("[native] {}", msg);
-    else if (std::strcmp(level, "warn") == 0)
-        LOGGER_WARN("[native] {}", msg);
-    else if (std::strcmp(level, "error") == 0)
-        LOGGER_ERROR("[native] {}", msg);
-    else
-        LOGGER_INFO("[native] {}", msg);
-    (void)c; // core available for future extensions
-}
-
-void plh_report_metric(void *core, const char *key, double value)
-{
-    if (!core || !key) return;
-    static_cast<RoleHostCore *>(core)->report_metric(key, value);
-}
-
-void plh_request_stop(void *core)
-{
-    if (!core) return;
-    static_cast<RoleHostCore *>(core)->request_stop();
-}
-
-void plh_set_critical_error(void *core)
-{
-    if (!core) return;
-    static_cast<RoleHostCore *>(core)->set_critical_error();
-}
-
-} // extern "C"
 
 // ============================================================================
 // Constructor / Destructor (in .cpp for Pimpl completeness)
@@ -148,16 +219,17 @@ bool NativeEngine::load_script(const std::filesystem::path &script_dir,
                                 const std::string &entry_point,
                                 const std::string &required_callback)
 {
-    // For native engines, script_dir IS the .so path (not a directory).
-    // entry_point is the filename if script_dir is a directory.
+    // For native engines: try script_dir/entry_point first, then script_dir alone.
     lib_path_ = script_dir / entry_point;
+    LOGGER_DEBUG("[{}] native: trying path: {}", log_tag_, lib_path_.string());
     if (!std::filesystem::exists(lib_path_))
     {
-        // Try script_dir as the direct .so path.
         lib_path_ = script_dir;
+        LOGGER_DEBUG("[{}] native: fallback path: {}", log_tag_, lib_path_.string());
         if (!std::filesystem::exists(lib_path_))
         {
-            LOGGER_ERROR("[{}] native plugin not found: {}", log_tag_, lib_path_.string());
+            LOGGER_ERROR("[{}] native plugin not found: {} (also tried: {})",
+                         log_tag_, lib_path_.string(), (script_dir / entry_point).string());
             return false;
         }
     }
@@ -239,6 +311,7 @@ bool NativeEngine::build_api_(const RoleContext &ctx)
     plugin_ctx_->channel     = ctx.channel;
     plugin_ctx_->out_channel = ctx.out_channel;
     plugin_ctx_->log_level   = ctx.log_level;
+    plugin_ctx_->log_label   = "[native " + lib_path_.filename().string() + "]";
     plugin_ctx_->role_dir    = ctx.role_dir;
     plugin_ctx_->wire(ctx_.core);
 
