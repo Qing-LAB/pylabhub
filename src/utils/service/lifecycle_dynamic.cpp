@@ -16,7 +16,6 @@ namespace pylabhub::utils
 using lifecycle_internal::validate_module_name;
 using lifecycle_internal::timedShutdown;
 using lifecycle_internal::ShutdownOutcome;
-using pylabhub::utils::UserDataCallback;
 
 // ============================================================================
 // loadModule / loadModuleInternal
@@ -197,26 +196,10 @@ bool LifecycleManagerImpl::loadModuleInternal(InternalGraphNode &node)
               node.name);
     try
     {
-        // Dispatch startup: userdata callback (new) or legacy callback.
-        if (node.user_data_key != 0 && node.userdata_startup)
-        {
-            auto entry = resolveUserData(node.user_data_key);
-            if (!entry || !entry->validate ||
-                !entry->validate(entry->ptr, node.user_data_key))
-            {
-                node.dynamic_status.store(DynamicModuleStatus::FAILED,
-                                          std::memory_order_release);
-                lifecycleError("loadModuleInternal: '{}' user data validation failed",
-                               node.name);
-                return false;
-            }
-            node.userdata_startup(entry->ptr);
-        }
-        else if (node.startup)
+        if (node.startup)
         {
             node.startup();
         }
-        node.init_thread_id = std::this_thread::get_id();
         node.dynamic_status.store(DynamicModuleStatus::LOADED, std::memory_order_release);
         PLH_DEBUG("loadModuleInternal: successfully loaded and started '{}'", node.name);
         return true;
@@ -553,11 +536,6 @@ void LifecycleManagerImpl::processOneUnloadInThread(const std::string &node_name
     // Step 1: Read node info under m_graph_mutation_mutex (short hold, no I/O).
     std::function<void()> shutdown_func;
     std::chrono::milliseconds shutdown_timeout;
-    uint64_t ud_key{0};
-    UserDataCallback ud_shutdown{nullptr};
-    bool thread_safe{true};
-    std::thread::id init_tid{};
-    lifecycle_internal::ShutdownOutcome outcome;
     std::vector<std::string> deps_copy;
     {
         std::lock_guard<std::mutex> lock(m_graph_mutation_mutex);
@@ -577,57 +555,12 @@ void LifecycleManagerImpl::processOneUnloadInThread(const std::string &node_name
         shutdown_func = node.shutdown.func;
         shutdown_timeout = node.shutdown.timeout;
         deps_copy = node.dependencies;
-        // Copy dynamic module extension fields for thread/userdata checks.
-        ud_key = node.user_data_key;
-        ud_shutdown = node.userdata_shutdown;
-        thread_safe = node.thread_safe_finalize;
-        init_tid = node.init_thread_id;
-    }
-
-    // Step 1b: Thread awareness check.
-    if (!thread_safe && init_tid != std::thread::id{} &&
-        std::this_thread::get_id() != init_tid)
-    {
-        lifecycleWarn("processOneUnloadInThread: module '{}' requires finalize on "
-                      "init thread — skipping shutdown callback (marking contaminated)",
-                      node_name);
-        std::lock_guard<std::mutex> lock(m_graph_mutation_mutex);
-        m_contaminated_modules.insert(node_name);
-        // Fall through to Step 3 cleanup with FailedShutdown outcome.
-        auto module_iterator2 = m_module_graph.find(node_name);
-        if (module_iterator2 != m_module_graph.end())
-            module_iterator2->second.dynamic_status.store(
-                DynamicModuleStatus::FAILED_SHUTDOWN, std::memory_order_release);
-        // Still need to process deps and notify — jump to step 3.
-        goto step3_cleanup;
     }
 
     // Step 2: Run shutdown callback WITHOUT holding any mutex.
     PLH_DEBUG("processOneUnloadInThread: running shutdown for '{}'.", node_name);
-    if (ud_key != 0 && ud_shutdown)
-    {
-        // User data callback path — resolve and validate.
-        auto entry = resolveUserData(ud_key);
-        if (entry && entry->validate && entry->validate(entry->ptr, ud_key))
-        {
-            std::function<void()> ud_fn = [ud_shutdown, ptr = entry->ptr]() {
-                ud_shutdown(ptr);
-            };
-            outcome = timedShutdown(ud_fn, shutdown_timeout);
-        }
-        else
-        {
-            lifecycleWarn("processOneUnloadInThread: module '{}' user data validation "
-                          "failed — skipping shutdown callback", node_name);
-            outcome = {false, false, "user data validation failed"};
-        }
-    }
-    else
-    {
-        outcome = timedShutdown(shutdown_func, shutdown_timeout);
-    }
+    auto outcome = timedShutdown(shutdown_func, shutdown_timeout);
 
-step3_cleanup:
     // Step 3: Update the graph under m_graph_mutation_mutex based on the outcome.
     std::vector<std::string> deps_to_process;
     {
