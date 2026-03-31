@@ -41,6 +41,7 @@
 #include "consumer_role_host.hpp"
 #include "consumer_fields.hpp"
 #include "lua_engine.hpp"
+#include "native_engine.hpp"
 #include "python_engine.hpp"
 
 #include "plh_datahub.hpp"
@@ -290,7 +291,14 @@ int main(int argc, char *argv[])
     std::unique_ptr<pylabhub::scripting::ScriptEngine> engine;
     const auto &script_type = c.script().type;
 
-    if (script_type == "lua")
+    if (script_type == "native")
+    {
+        auto ne = std::make_unique<pylabhub::scripting::NativeEngine>();
+        if (!c.script().checksum.empty())
+            ne->set_expected_checksum(c.script().checksum);
+        engine = std::move(ne);
+    }
+    else if (script_type == "lua")
     {
         engine = std::make_unique<pylabhub::scripting::LuaEngine>();
     }
