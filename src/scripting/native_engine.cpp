@@ -437,13 +437,13 @@ size_t NativeEngine::type_sizeof(const std::string &type_name) const
 void NativeEngine::invoke_on_init()
 {
     if (fn_on_init_)
-        fn_on_init_();
+        fn_on_init_(nullptr);
 }
 
 void NativeEngine::invoke_on_stop()
 {
     if (fn_on_stop_)
-        fn_on_stop_();
+        fn_on_stop_(nullptr);
 }
 
 InvokeResult NativeEngine::invoke_produce(
@@ -494,23 +494,48 @@ bool NativeEngine::invoke(const std::string &name)
 {
     if (name == "on_heartbeat" && fn_on_heartbeat_)
     {
-        fn_on_heartbeat_();
+        fn_on_heartbeat_(nullptr);
         return true;
     }
-    // Try dlsym for arbitrary symbol.
     auto fn = reinterpret_cast<FnVoid>(resolve_sym_(name.c_str()));
     if (fn)
     {
-        fn();
+        fn(nullptr);
         return true;
     }
     return false;
 }
 
-bool NativeEngine::invoke(const std::string &name, const nlohmann::json & /*args*/)
+bool NativeEngine::invoke(const std::string &name, const nlohmann::json &args)
 {
-    // Native plugins don't support args for generic invoke (use callbacks instead).
-    return invoke(name);
+    if (name == "on_heartbeat" && fn_on_heartbeat_)
+    {
+        if (args.empty())
+        {
+            fn_on_heartbeat_(nullptr);
+        }
+        else
+        {
+            std::string json_str = args.dump();
+            fn_on_heartbeat_(json_str.c_str());
+        }
+        return true;
+    }
+    auto fn = reinterpret_cast<FnVoid>(resolve_sym_(name.c_str()));
+    if (fn)
+    {
+        if (args.empty())
+        {
+            fn(nullptr);
+        }
+        else
+        {
+            std::string json_str = args.dump();
+            fn(json_str.c_str());
+        }
+        return true;
+    }
+    return false;
 }
 
 InvokeResponse NativeEngine::eval(const std::string & /*code*/)

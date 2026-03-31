@@ -51,12 +51,12 @@ extern "C" PLH_EXPORT const char *plugin_version(void) { return "1.0.0"; }
 
 // ── Callbacks ───────────────────────────────────────────────────────────
 
-extern "C" PLH_EXPORT void on_init(void)
+extern "C" PLH_EXPORT void on_init(const char * /*args_json*/)
 {
     g_init_count += 100; // distinguishable from plugin_init
 }
 
-extern "C" PLH_EXPORT void on_stop(void)
+extern "C" PLH_EXPORT void on_stop(const char * /*args_json*/)
 {
     g_stop_count++;
 }
@@ -79,10 +79,9 @@ extern "C" PLH_EXPORT bool on_produce(void *out_slot, size_t out_sz,
     return true; // commit
 }
 
-extern "C" PLH_EXPORT void on_heartbeat(void)
+extern "C" PLH_EXPORT void on_heartbeat(const char * /*args_json*/)
 {
-    // Called from ctrl_thread_ — just increment a counter.
-    // (No shared state concern in test: single-threaded test.)
+    // Called from ctrl_thread_ — args_json is NULL or JSON string.
 }
 
 // ── Query symbols for test verification ─────────────────────────────────

@@ -102,7 +102,7 @@ class NativeEngine : public ScriptEngine
     // ── Resolved function pointers (C linkage) ──────────────────────────
     using FnPluginInit     = bool (*)(const void *ctx);
     using FnPluginFinalize = void (*)();
-    using FnVoid           = void (*)();
+    using FnVoid           = void (*)(const char *args_json);
     using FnOnProduce      = bool (*)(void *, size_t, void *, size_t);
     using FnOnConsume      = void (*)(const void *, size_t, const void *, size_t);
     using FnOnProcess      = bool (*)(const void *, size_t, void *, size_t, void *, size_t);
