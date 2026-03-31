@@ -96,12 +96,6 @@ TEST_F(NativeEngineTest, FullLifecycle_ProduceCommitsAndWritesSlot)
     ASSERT_TRUE(engine.initialize("test", &core_));
 
     auto plugin = good_plugin_path();
-    std::cerr << "[DEBUG] TEST_PLUGIN_DIR = " << TEST_PLUGIN_DIR << "\n";
-    std::cerr << "[DEBUG] good_plugin_path() = " << plugin << "\n";
-    std::cerr << "[DEBUG] exists = " << fs::exists(plugin) << "\n";
-    std::cerr << "[DEBUG] parent_path = " << plugin.parent_path() << "\n";
-    std::cerr << "[DEBUG] filename = " << plugin.filename() << "\n";
-    std::cerr << "[DEBUG] parent/filename = " << (plugin.parent_path() / plugin.filename()) << "\n";
     ASSERT_TRUE(fs::exists(plugin)) << "Plugin not found: " << plugin;
 
     ASSERT_TRUE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
@@ -297,6 +291,32 @@ TEST_F(NativeEngineTest, ContextFieldsPassedToPlugin)
     // but we can verify on_init was called by checking it didn't error.
     EXPECT_EQ(engine.script_error_count(), 0u);
 
+    engine.finalize();
+}
+
+TEST_F(NativeEngineTest, Checksum_WrongHash_RejectsPlugin)
+{
+    NativeEngine engine;
+    engine.set_expected_checksum("0000000000000000000000000000000000000000000000000000000000000000");
+    ASSERT_TRUE(engine.initialize("test", &core_));
+
+    auto plugin = good_plugin_path();
+    ASSERT_TRUE(fs::exists(plugin));
+
+    // Wrong checksum → load_script should fail.
+    EXPECT_FALSE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
+                                    "on_produce"));
+}
+
+TEST_F(NativeEngineTest, Checksum_EmptyHash_SkipsVerification)
+{
+    NativeEngine engine;
+    // No checksum set → verification skipped, load succeeds.
+    ASSERT_TRUE(engine.initialize("test", &core_));
+
+    auto plugin = good_plugin_path();
+    ASSERT_TRUE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
+                                   "on_produce"));
     engine.finalize();
 }
 
