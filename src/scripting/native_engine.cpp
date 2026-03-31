@@ -12,7 +12,9 @@
 
 #include "utils/crypto_utils.hpp"
 #include "utils/format_tools.hpp"
+#include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
+#include "utils/module_def.hpp"
 #include "utils/plugin_api.h"
 #include "utils/role_host_core.hpp"
 
@@ -20,12 +22,26 @@
 #include <sstream>
 
 // ── Platform dynamic loading ────────────────────────────────────────────
+// Supports: Linux, macOS, FreeBSD (POSIX dlopen) and Windows (LoadLibrary).
+// RTLD_NOW: resolve all symbols at load time (fail-fast on missing symbols).
+// RTLD_LOCAL: don't pollute global symbol table (plugin is self-contained).
 #if defined(_WIN32) || defined(_WIN64)
 #   include <windows.h>
 #   define DL_OPEN(path)      LoadLibraryA(path)
-#   define DL_SYM(handle, s)  GetProcAddress(static_cast<HMODULE>(handle), s)
+#   define DL_SYM(handle, s)  reinterpret_cast<void *>(GetProcAddress(static_cast<HMODULE>(handle), s))
 #   define DL_CLOSE(handle)   FreeLibrary(static_cast<HMODULE>(handle))
-#   define DL_ERROR()         "LoadLibrary failed"
+    static std::string dl_error_win32()
+    {
+        DWORD err = GetLastError();
+        if (err == 0) return "unknown error";
+        char *buf = nullptr;
+        FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
+                       nullptr, err, 0, reinterpret_cast<char *>(&buf), 0, nullptr);
+        std::string msg = buf ? buf : "unknown error";
+        LocalFree(buf);
+        return msg;
+    }
+#   define DL_ERROR()         dl_error_win32().c_str()
 #else
 #   include <dlfcn.h>
 #   define DL_OPEN(path)      dlopen(path, RTLD_NOW | RTLD_LOCAL)
@@ -323,6 +339,28 @@ bool NativeEngine::build_api_(const RoleContext &ctx)
         return false;
     }
 
+    // Register as a dynamic lifecycle module for timeout-guarded finalization.
+    // The NativeEngine + external lib are one atomic unit:
+    //   startup  = already done (dlopen + plugin_init above)
+    //   shutdown = plugin_finalize + dlclose (timeout-guarded by lifecycle)
+    lifecycle_module_name_ = "NativePlugin:" + lib_path_.filename().string();
+    {
+        pylabhub::utils::ModuleDef mod(lifecycle_module_name_.c_str());
+        mod.add_dependency("Logger");  // log output during finalize
+        mod.set_startup([](const char *) {}, ""); // no-op — init already complete
+        // Shutdown timeout covers both plugin_finalize and dlclose.
+        // If the plugin's finalize hangs, lifecycle marks it contaminated after 5s.
+        mod.set_shutdown(
+            [](const char * /*arg*/) {},
+            std::chrono::milliseconds{5000});
+        if (pylabhub::utils::RegisterDynamicModule(std::move(mod)))
+        {
+            pylabhub::utils::LoadModule(lifecycle_module_name_.c_str());
+            lifecycle_registered_ = true;
+            LOGGER_DEBUG("[{}] lifecycle module registered: {}", log_tag_, lifecycle_module_name_);
+        }
+    }
+
     return true;
 }
 
@@ -332,6 +370,7 @@ bool NativeEngine::build_api_(const RoleContext &ctx)
 
 void NativeEngine::finalize_engine_()
 {
+    // Call plugin's finalize before unloading.
     if (fn_finalize_)
         fn_finalize_();
     fn_finalize_ = nullptr;
@@ -344,7 +383,7 @@ void NativeEngine::finalize_engine_()
         dl_handle_ = nullptr;
     }
 
-    // Clear all function pointers.
+    // Clear all function pointers (all invalid after dlclose).
     fn_init_ = nullptr;
     fn_on_init_ = nullptr;
     fn_on_stop_ = nullptr;
@@ -354,6 +393,13 @@ void NativeEngine::finalize_engine_()
     fn_on_inbox_ = nullptr;
     fn_on_heartbeat_ = nullptr;
     fn_is_thread_safe_ = nullptr;
+
+    // Unregister from lifecycle (if registered).
+    if (lifecycle_registered_)
+    {
+        pylabhub::utils::UnloadModule(lifecycle_module_name_.c_str());
+        lifecycle_registered_ = false;
+    }
 }
 
 // ============================================================================
@@ -369,8 +415,10 @@ bool NativeEngine::has_callback(const std::string &name) const
     if (name == "on_process")    return fn_on_process_ != nullptr;
     if (name == "on_inbox")      return fn_on_inbox_ != nullptr;
     if (name == "on_heartbeat")  return fn_on_heartbeat_ != nullptr;
-    // For generic invoke, check via dlsym.
-    return dl_handle_ && resolve_sym_(name.c_str()) != nullptr;
+    // Only known callback names are recognized. Generic invoke() does
+    // its own dlsym at call time — has_callback is for the defined
+    // callback vocabulary, not arbitrary exported symbols.
+    return false;
 }
 
 // ============================================================================
