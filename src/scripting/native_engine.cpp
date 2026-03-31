@@ -163,7 +163,9 @@ struct NativeEngine::PluginContextStorage
         ctx.log_level   = log_level.c_str();
         ctx.role_dir    = role_dir.c_str();
 
-        // Opaque host data (used by function pointer implementations).
+        // Magic sentinels + opaque host data.
+        ctx._magic     = PLH_CONTEXT_MAGIC;
+        ctx._magic_end = PLH_CONTEXT_MAGIC;
         ctx._core = core;
         ctx._log_label = log_label.c_str();
 
