@@ -130,8 +130,12 @@ class NativeEngine : public ScriptEngine
     struct PluginContextStorage;
     std::unique_ptr<PluginContextStorage> plugin_ctx_;
 
-    // ── File integrity ──────────────────────────────────────────────────
+    // ── File integrity ──────────────────────────────────────────────────────
     std::string expected_checksum_;  ///< BLAKE2b-256 hex, empty = skip check
+
+    // ── Lifecycle ───────────────────────────────────────────────────────────
+    std::string lifecycle_module_name_;  ///< Unique name for lifecycle registration
+    bool lifecycle_registered_{false};   ///< True if module was registered
     std::filesystem::path lib_path_;
 
     // ── Internal helpers ────────────────────────────────────────────────
