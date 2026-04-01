@@ -2272,4 +2272,89 @@ def on_produce(out_slot, fz, msgs, api):
     engine.finalize();
 }
 
+TEST_F(PythonEngineTest, Api_AsNumpy_ArrayField)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    try:
+        import numpy as np
+    except ImportError as e:
+        raise RuntimeError(f"numpy not available: {e}") from e
+
+    arr = api.as_numpy(out_slot.values)
+    assert isinstance(arr, np.ndarray), f"expected ndarray, got {type(arr)}"
+    assert arr.dtype == np.float32, f"expected float32, got {arr.dtype}"
+    assert len(arr) == 4, f"expected 4 elements, got {len(arr)}"
+    arr[:] = [1.0, 2.0, 3.0, 4.0]
+    return True
+)");
+
+    // Schema: one scalar + one array field
+    SchemaSpec spec;
+    spec.has_schema = true;
+    FieldDef f1;
+    f1.name     = "header";
+    f1.type_str = "float32";
+    f1.count    = 1;
+    f1.length   = 0;
+    spec.fields.push_back(f1);
+
+    FieldDef f2;
+    f2.name     = "values";
+    f2.type_str = "float32";
+    f2.count    = 4;
+    f2.length   = 0;
+    spec.fields.push_back(f2);
+
+    PythonEngine engine;
+    engine.set_python_venv("");
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
+    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
+                                   "__init__.py", "on_produce"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+
+    auto ctx = producer_context();
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    // Buffer: 1 float (header) + 4 floats (values) = 20 bytes
+    // With aligned packing, no padding between float and float[4]
+    float buf[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_produce(buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "Script error — check numpy availability or as_numpy implementation";
+
+    // Verify the numpy write went through to the buffer
+    EXPECT_FLOAT_EQ(buf[1], 1.0f);
+    EXPECT_FLOAT_EQ(buf[2], 2.0f);
+    EXPECT_FLOAT_EQ(buf[3], 3.0f);
+    EXPECT_FLOAT_EQ(buf[4], 4.0f);
+
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Api_AsNumpy_NonArrayField_Throws)
+{
+    write_script(R"(
+def on_produce(out_slot, fz, msgs, api):
+    try:
+        api.as_numpy(out_slot.value)  # scalar, not array
+        assert False, "as_numpy on scalar should raise"
+    except TypeError as e:
+        assert "ctypes array" in str(e), f"wrong error: {e}"
+    return False
+)");
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u)
+        << "try/except should catch the TypeError";
+    engine.finalize();
+}
+
 } // anonymous namespace
