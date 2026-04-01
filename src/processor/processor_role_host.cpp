@@ -313,8 +313,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
     in_opts.consumer_name        = config_.identity().name;
     in_opts.item_size            = in_schema_slot_size_;
     in_opts.flexzone_size        = core_.schema_fz_size();
-    in_opts.zmq_schema           = scripting::schema_spec_to_zmq_fields(
-                                       in_slot_spec_, in_schema_slot_size_);
+    in_opts.zmq_schema           = scripting::schema_spec_to_zmq_fields(in_slot_spec_);
     in_opts.zmq_packing          = config_.in_transport().zmq_packing;
     in_opts.zmq_buffer_depth     = config_.in_transport().zmq_buffer_depth;
     // Per-role checksum policy — same value on both input and output (see config_single_truth.md).
@@ -442,8 +441,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
         out_opts.data_transport    = "zmq";
         out_opts.zmq_node_endpoint = config_.out_transport().zmq_endpoint;
         out_opts.zmq_bind          = config_.out_transport().zmq_bind;
-        out_opts.zmq_schema        = scripting::schema_spec_to_zmq_fields(
-                                         out_slot_spec_, out_schema_slot_size_);
+        out_opts.zmq_schema        = scripting::schema_spec_to_zmq_fields(out_slot_spec_);
         out_opts.zmq_packing       = config_.out_transport().zmq_packing;
         out_opts.zmq_buffer_depth  = config_.out_transport().zmq_buffer_depth;
         out_opts.zmq_overflow_policy =
@@ -500,7 +498,7 @@ bool ProcessorRoleHost::setup_infrastructure_()
 
         // Endpoint validated by parse_inbox_config(); default is tcp://127.0.0.1:0.
         const std::string &ep = config_.inbox().endpoint;
-        auto zmq_fields = scripting::schema_spec_to_zmq_fields(inbox_spec, inbox_schema_slot_size);
+        auto zmq_fields = scripting::schema_spec_to_zmq_fields(inbox_spec);
 
         // Serialize full SchemaSpec JSON for ROLE_INFO_REQ discovery.
         nlohmann::json spec_json;

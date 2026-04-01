@@ -7,6 +7,11 @@
  * and consumer script hosts.  Each per-component `*_schema.hpp` imports these
  * types via `using` declarations into its own namespace.
  *
+ * All schemas are field-based: a list of typed named fields with optional
+ * fixed-size arrays (count > 1). The engine presents array fields using the
+ * language's native array type: numpy.ndarray (Python), FFI array (Lua),
+ * std::span / raw pointer (C++).
+ *
  * Public header — required by role_host_core.hpp (SchemaSpec is a member of
  * RoleHostCore). No external dependencies beyond the standard library.
  */
@@ -19,22 +24,12 @@ namespace pylabhub::scripting
 {
 
 // ============================================================================
-// SlotExposure
-// ============================================================================
-
-enum class SlotExposure
-{
-    Ctypes,    ///< ctypes.LittleEndianStructure with typed named fields (default)
-    NumpyArray ///< numpy.ndarray(dtype, shape) — zero-copy frombuffer view of SHM slot
-};
-
-// ============================================================================
-// FieldDef — one typed field (ctypes mode)
+// FieldDef — one typed field
 // ============================================================================
 
 /**
  * @struct FieldDef
- * @brief One typed field in a slot or flexzone ctypes schema.
+ * @brief One typed field in a slot, flexzone, or inbox schema.
  *
  * @par Supported type_str values (13 total — identical to ZmqSchemaField::type_str)
  *
@@ -56,14 +51,10 @@ enum class SlotExposure
  *
  * Validation is enforced by parse_schema_json() (script_host_helpers.hpp).
  *
- * @par Named schema compatibility (SchemaFieldDef)
- * The BLDS named schema registry uses `"char"` (with count=N) where FieldDef
- * uses `"string"` (with length=N).  The conversion is performed by
- * schema_entry_to_spec() in script_host_helpers.hpp.  There is no direct BLDS
- * equivalent for `"bytes"` — use `uint8[N]` in the JSON schema as a workaround.
- *
- * @par Arrays vs blobs
- * For numeric types: `count > 1` → fixed-size array (e.g., `float64[4]`).
+ * @par Arrays
+ * For numeric types: `count > 1` creates a fixed-size array (e.g., `float64[4]`).
+ * Python exposes arrays as numpy.ndarray views automatically.
+ * Lua exposes them as FFI arrays. Native C++ uses std::span or raw pointers.
  * For "string"/"bytes": `count` must be 1; `length` holds the byte size.
  */
 struct FieldDef
@@ -75,21 +66,22 @@ struct FieldDef
 };
 
 // ============================================================================
-// SchemaSpec — parsed schema for one buffer (slot or flexzone)
+// SchemaSpec — parsed schema for one buffer (slot, flexzone, or inbox)
 // ============================================================================
 
+/**
+ * @struct SchemaSpec
+ * @brief Field-based schema definition.
+ *
+ * All data exchange in pylabHub uses field-based schemas. Each schema is a list
+ * of typed named fields. Array fields (count > 1) are supported for numeric
+ * types and are presented as language-native array views by each engine.
+ */
 struct SchemaSpec
 {
-    bool has_schema{false};
-
-    // Ctypes mode
-    SlotExposure          exposure{SlotExposure::Ctypes};
+    bool                  has_schema{false};
     std::vector<FieldDef> fields;
-    std::string           packing{"aligned"};
-
-    // NumpyArray mode
-    std::string          numpy_dtype{};
-    std::vector<int64_t> numpy_shape{};
+    std::string           packing{"aligned"}; ///< "aligned" or "packed"
 };
 
 } // namespace pylabhub::scripting

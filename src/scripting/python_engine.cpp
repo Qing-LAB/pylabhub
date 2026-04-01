@@ -1108,9 +1108,6 @@ void PythonEngine::invoke_on_inbox(
 py::object PythonEngine::build_ctypes_type_(const SchemaSpec &spec, const std::string &name,
                                              const std::string &packing)
 {
-    if (spec.exposure == SlotExposure::NumpyArray)
-        return build_numpy_dtype(spec);
-
     // Override spec packing with the explicitly requested one if provided.
     SchemaSpec effective_spec = spec;
     if (!packing.empty())
