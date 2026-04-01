@@ -6,6 +6,7 @@
 #include "consumer_api.hpp"
 
 #include "plh_version_registry.hpp"
+#include "script_host_helpers.hpp"
 #include "utils/logger.hpp"
 
 #include <chrono>
@@ -378,7 +379,9 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
         .def("ctrl_queue_dropped", &ConsumerAPI::ctrl_queue_dropped,
              "Number of ctrl-send messages dropped due to queue overflow.")
         .def_readwrite("shared_data",   &ConsumerAPI::shared_data_,
-             "Shared script data dictionary. Persists across callbacks.");
+             "Shared script data dictionary. Persists across callbacks.")
+        .def_static("as_numpy", &scripting::as_numpy_view, py::arg("ctypes_array"),
+             "Convert a ctypes array field to a numpy ndarray view (zero-copy).");
 
     m.def("version_info", []() -> py::str
     {
