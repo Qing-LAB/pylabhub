@@ -190,6 +190,44 @@ void ProducerRoleHost::worker_main_()
         core_.set_fz_spec(std::move(fz_spec_local), 0);
     }
 
+    // Resolve and register inbox schema (alongside slot/fz above).
+    scripting::SchemaSpec inbox_spec_local;
+    size_t inbox_schema_slot_size = 0;
+    if (config_.inbox().has_inbox())
+    {
+        std::vector<std::string> schema_dirs;
+        if (!hub.hub_dir.empty())
+            schema_dirs.push_back(
+                (std::filesystem::path(hub.hub_dir) / "schemas").string());
+
+        try
+        {
+            inbox_spec_local = scripting::resolve_schema(
+                config_.inbox().schema_json, false, "prod", schema_dirs);
+        }
+        catch (const std::exception &e)
+        {
+            LOGGER_ERROR("[prod] Inbox schema parse error: {}", e.what());
+            engine_->finalize();
+            ready_promise_.set_value(false);
+            return;
+        }
+
+        if (inbox_spec_local.has_schema)
+        {
+            const std::string inbox_packing =
+                tr.zmq_packing.empty() ? "aligned" : tr.zmq_packing;
+            if (!engine_->register_slot_type(inbox_spec_local, "InboxFrame", inbox_packing))
+            {
+                LOGGER_ERROR("[prod] Failed to register InboxFrame type");
+                engine_->finalize();
+                ready_promise_.set_value(false);
+                return;
+            }
+            inbox_schema_slot_size = engine_->type_sizeof("InboxFrame");
+        }
+    }
+
     // Validate-only mode: print layout and exit.
     if (core_.is_validate_only())
     {
@@ -200,8 +238,23 @@ void ProducerRoleHost::worker_main_()
     }
 
     // Step 4: setup_infrastructure_
-    if (!setup_infrastructure_())
+    if (!setup_infrastructure_(inbox_spec_local))
     {
+        engine_->finalize();
+        teardown_infrastructure_();
+        ready_promise_.set_value(false);
+        return;
+    }
+
+    // Validate inbox type size matches queue decode buffer size.
+    if (inbox_schema_slot_size > 0 && inbox_queue_ &&
+        inbox_queue_->item_size() != inbox_schema_slot_size)
+    {
+        LOGGER_ERROR("[prod] InboxFrame size mismatch: engine type_sizeof={} "
+                     "but InboxQueue item_size={} (packing='{}') — "
+                     "check schema/packing consistency",
+                     inbox_schema_slot_size, inbox_queue_->item_size(),
+                     tr.zmq_packing.empty() ? "aligned" : tr.zmq_packing);
         engine_->finalize();
         teardown_infrastructure_();
         ready_promise_.set_value(false);
@@ -274,7 +327,7 @@ void ProducerRoleHost::worker_main_()
 // setup_infrastructure_ — connect to broker, create producer, wire events
 // ============================================================================
 
-bool ProducerRoleHost::setup_infrastructure_()
+bool ProducerRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox_spec)
 {
     const auto &id    = config_.identity();
     const auto &hub   = config_.out_hub();
@@ -300,43 +353,10 @@ bool ProducerRoleHost::setup_infrastructure_()
     opts.peer_dead_timeout_ms = mon.peer_dead_timeout_ms;
 
     // --- Inbox setup (optional) ---
-    scripting::SchemaSpec inbox_spec;
-    size_t inbox_schema_slot_size = 0;
-
     if (inbox.has_inbox())
     {
-        std::vector<std::string> schema_dirs;
-        if (!hub.hub_dir.empty())
-            schema_dirs.push_back(
-                (std::filesystem::path(hub.hub_dir) / "schemas").string());
-
-        try
-        {
-            inbox_spec = scripting::resolve_schema(
-                inbox.schema_json, false, "prod", schema_dirs);
-        }
-        catch (const std::exception &e)
-        {
-            LOGGER_ERROR("[prod] Inbox schema parse error: {}", e.what());
-            return false;
-        }
-
         const std::string inbox_packing =
             tr.zmq_packing.empty() ? "aligned" : tr.zmq_packing;
-
-        // Register inbox type in the engine.
-        if (inbox_spec.has_schema)
-        {
-            if (!engine_->register_slot_type(inbox_spec, "InboxFrame", inbox_packing))
-            {
-                LOGGER_ERROR("[prod] Failed to register InboxFrame type");
-                return false;
-            }
-            // Engine type size: computed from the ctypes/FFI struct built by
-            // register_slot_type(). This is the size of the struct that scripts
-            // will receive in on_inbox(slot, sender, api).
-            inbox_schema_slot_size = engine_->type_sizeof("InboxFrame");
-        }
 
         // Endpoint validated by parse_inbox_config(); default is tcp://127.0.0.1:0.
         const std::string &ep = inbox.endpoint;
@@ -375,21 +395,6 @@ bool ProducerRoleHost::setup_infrastructure_()
         }
 
         inbox_queue_->set_checksum_policy(config_.checksum().policy);
-
-        // Validate: engine type size must match queue decode buffer size.
-        // A mismatch means the ctypes/FFI struct and the ZMQ wire decode buffer
-        // have different layouts — data would be corrupted on inbox delivery.
-        if (inbox_schema_slot_size > 0 &&
-            inbox_queue_->item_size() != inbox_schema_slot_size)
-        {
-            LOGGER_ERROR("[prod] InboxFrame size mismatch: engine type_sizeof={} "
-                         "but InboxQueue item_size={} (packing='{}') — "
-                         "check schema/packing consistency",
-                         inbox_schema_slot_size, inbox_queue_->item_size(),
-                         inbox_packing);
-            inbox_queue_.reset();
-            return false;
-        }
 
         opts.inbox_endpoint    = inbox_queue_->actual_endpoint();
         opts.inbox_schema_json = spec_json.dump();
