@@ -565,7 +565,7 @@ bool InteractiveSignalHandler::is_installed() const noexcept
 // so this pointer is written exactly once per process lifetime.
 static InteractiveSignalHandler *s_lifecycle_instance = nullptr;
 
-static void signal_handler_lifecycle_cleanup(const char * /*unused*/) noexcept
+static void signal_handler_lifecycle_cleanup(const char * /*unused*/, void * /*userdata*/) noexcept
 {
     if (s_lifecycle_instance != nullptr)
     {

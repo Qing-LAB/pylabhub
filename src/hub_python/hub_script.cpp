@@ -94,12 +94,12 @@ bool is_callable(const py::object& obj)
 // Static lifecycle callback functions — bridge to the singleton.
 // ---------------------------------------------------------------------------
 
-void do_hub_script_startup(const char* /*arg*/)
+void do_hub_script_startup(const char* /*arg*/, void* /*userdata*/)
 {
     pylabhub::HubScript::get_instance().startup_();
 }
 
-void do_hub_script_shutdown(const char* /*arg*/)
+void do_hub_script_shutdown(const char* /*arg*/, void* /*userdata*/)
 {
     pylabhub::HubScript::get_instance().shutdown_();
 }

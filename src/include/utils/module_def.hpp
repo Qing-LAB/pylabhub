@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string_view>
 
@@ -37,7 +38,22 @@ class LifecycleManager; // Forward-declaration for the friend class
  * **Do not change this to `std::string_view` or any other C++ type**: function
  * pointers cross `.so` / DLL boundaries and must use C-compatible signatures.
  */
-using LifecycleCallback = void (*)(const char *arg);
+/**
+ * @brief Validation function for user-data pointers.
+ * Called before every callback invocation when userdata is configured.
+ * @param userdata  The pointer stored at module construction.
+ * @param key       The generation key assigned at construction.
+ * @return true if the pointer is still valid.
+ */
+using UserDataValidateFn = bool (*)(void *userdata, uint64_t key);
+
+/**
+ * @brief Function pointer type for module startup and shutdown callbacks.
+ *
+ * @param arg       String argument (nullptr when none was given).
+ * @param userdata  User data pointer (nullptr when not configured).
+ */
+using LifecycleCallback = void (*)(const char *arg, void *userdata);
 
 /**
  * @class ModuleDef
@@ -81,6 +97,23 @@ class PYLABHUB_UTILS_EXPORT ModuleDef
      * @throws std::length_error     if `name.size() > MAX_MODULE_NAME_LEN`.
      */
     explicit ModuleDef(std::string_view name);
+
+    /**
+     * @brief Constructs a module definition with user data.
+     *
+     * The userdata pointer is passed to every callback as the second argument.
+     * The validate function is called before each callback invocation; if it
+     * returns false, the callback is skipped (prevents dangling pointer use).
+     * A generation key is assigned automatically via LifecycleManager::next_unique_key().
+     *
+     * @param name      Unique module name.
+     * @param userdata  Pointer passed to all callbacks. nullptr = no userdata.
+     * @param validate  Validation function. nullptr = skip validation.
+     */
+    ModuleDef(std::string_view name, void *userdata, UserDataValidateFn validate);
+
+    /// @brief Returns the generation key assigned at construction (0 if no userdata).
+    [[nodiscard]] uint64_t userdata_key() const noexcept;
 
     /// @brief Destructor. Defined in the .cpp file to satisfy the Pimpl idiom.
     ~ModuleDef();

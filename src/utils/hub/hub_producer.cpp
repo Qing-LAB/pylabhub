@@ -1268,7 +1268,7 @@ bool ManagedProducer::is_initialized() const noexcept
     return producer_.has_value();
 }
 
-void ManagedProducer::s_startup(const char *key)
+void ManagedProducer::s_startup(const char *key, void * /*userdata*/)
 {
     ManagedProducer *self = nullptr;
     {
@@ -1292,7 +1292,7 @@ void ManagedProducer::s_startup(const char *key)
     self->producer_ = std::move(p);
 }
 
-void ManagedProducer::s_shutdown(const char *key)
+void ManagedProducer::s_shutdown(const char *key, void * /*userdata*/)
 {
     ManagedProducer *self = nullptr;
     {

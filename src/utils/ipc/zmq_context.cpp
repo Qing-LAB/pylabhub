@@ -18,12 +18,12 @@ constexpr std::chrono::milliseconds kZMQContextShutdownTimeoutMs{2000};
 // ensured by external mechanisms.
 std::atomic<zmq::context_t *> g_context{nullptr};
 
-void do_zmq_context_startup(const char * /*arg*/)
+void do_zmq_context_startup(const char * /*arg*/, void * /*userdata*/)
 {
     zmq_context_startup();
 }
 
-void do_zmq_context_shutdown(const char * /*arg*/)
+void do_zmq_context_shutdown(const char * /*arg*/, void * /*userdata*/)
 {
     zmq_context_shutdown();
 }

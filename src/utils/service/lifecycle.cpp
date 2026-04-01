@@ -36,6 +36,26 @@ ModuleDef::ModuleDef(std::string_view name) : pImpl(std::make_unique<ModuleDefIm
     validate_module_name(name, "module name");
     pImpl->def.name = std::string(name);
 }
+ModuleDef::ModuleDef(std::string_view name, void *userdata, UserDataValidateFn validate)
+    : pImpl(std::make_unique<ModuleDefImpl>())
+{
+    validate_module_name(name, "module name");
+    pImpl->def.name = std::string(name);
+    pImpl->def.userdata = userdata;
+    pImpl->def.userdata_validate = validate;
+    if (userdata)
+    {
+        uint64_t key;
+        do {
+            key = LifecycleManager::next_unique_key();
+        } while (key == 0u);
+        pImpl->def.userdata_key = key;
+    }
+}
+uint64_t ModuleDef::userdata_key() const noexcept
+{
+    return pImpl ? pImpl->def.userdata_key : 0;
+}
 ModuleDef::~ModuleDef() = default;
 ModuleDef::ModuleDef(ModuleDef &&other) noexcept = default;
 ModuleDef &ModuleDef::operator=(ModuleDef &&other) noexcept = default;
@@ -54,7 +74,8 @@ void ModuleDef::set_startup(LifecycleCallback startup_func)
 {
     if (pImpl != nullptr && startup_func != nullptr)
     {
-        pImpl->def.startup = [startup_func]() { startup_func(nullptr); };
+        void *ud = pImpl->def.userdata;
+        pImpl->def.startup = [startup_func, ud]() { startup_func(nullptr, ud); };
     }
 }
 void ModuleDef::set_startup(LifecycleCallback startup_func, std::string_view arg)
@@ -65,16 +86,18 @@ void ModuleDef::set_startup(LifecycleCallback startup_func, std::string_view arg
         {
             throw std::length_error("Lifecycle: startup argument length exceeds MAX_CALLBACK_PARAM_STRLEN.");
         }
+        void *ud = pImpl->def.userdata;
         std::string arg_str(arg);
-        pImpl->def.startup = [startup_func, arg = std::move(arg_str)]()
-        { startup_func(arg.c_str()); };
+        pImpl->def.startup = [startup_func, arg = std::move(arg_str), ud]()
+        { startup_func(arg.c_str(), ud); };
     }
 }
 void ModuleDef::set_shutdown(LifecycleCallback shutdown_func, std::chrono::milliseconds timeout)
 {
     if (pImpl != nullptr && shutdown_func != nullptr)
     {
-        pImpl->def.shutdown.func = [shutdown_func]() { shutdown_func(nullptr); };
+        void *ud = pImpl->def.userdata;
+        pImpl->def.shutdown.func = [shutdown_func, ud]() { shutdown_func(nullptr, ud); };
         pImpl->def.shutdown.timeout = timeout;
     }
 }
@@ -87,9 +110,10 @@ void ModuleDef::set_shutdown(LifecycleCallback shutdown_func, std::chrono::milli
         {
             throw std::length_error("Lifecycle: shutdown argument length exceeds MAX_CALLBACK_PARAM_STRLEN.");
         }
+        void *ud = pImpl->def.userdata;
         std::string arg_str(arg);
-        pImpl->def.shutdown.func = [shutdown_func, arg_copy = std::move(arg_str)]()
-        { shutdown_func(arg_copy.c_str()); };
+        pImpl->def.shutdown.func = [shutdown_func, arg_copy = std::move(arg_str), ud]()
+        { shutdown_func(arg_copy.c_str(), ud); };
         pImpl->def.shutdown.timeout = timeout;
     }
 }
@@ -100,6 +124,15 @@ void ModuleDef::set_as_persistent(bool persistent)
     {
         pImpl->def.is_persistent = persistent;
     }
+}
+
+// ============================================================================
+// LifecycleManager::next_unique_key
+// ============================================================================
+
+uint64_t LifecycleManager::next_unique_key()
+{
+    return instance().pImpl->nextUserdataKey();
 }
 
 // ============================================================================
@@ -207,6 +240,9 @@ bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalMod
     node.dependencies = def.dependencies;
     node.is_dynamic = true;
     node.is_persistent = def.is_persistent;
+    node.userdata = def.userdata;
+    node.userdata_key = def.userdata_key;
+    node.userdata_validate = def.userdata_validate;
 
     // `&node` is a pointer to the newly-inserted map value. std::map provides
     // reference/pointer stability: insertions do not invalidate references to

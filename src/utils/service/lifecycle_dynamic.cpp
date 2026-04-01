@@ -196,6 +196,14 @@ bool LifecycleManagerImpl::loadModuleInternal(InternalGraphNode &node)
               node.name);
     try
     {
+        // Validate userdata before startup if configured.
+        if (node.userdata_key != 0 && node.userdata_validate &&
+            !node.userdata_validate(node.userdata, node.userdata_key))
+        {
+            node.dynamic_status.store(DynamicModuleStatus::FAILED, std::memory_order_release);
+            PLH_DEBUG("loadModuleInternal: '{}' userdata validation failed", node.name);
+            return false;
+        }
         if (node.startup)
         {
             node.startup();
@@ -536,6 +544,9 @@ void LifecycleManagerImpl::processOneUnloadInThread(const std::string &node_name
     // Step 1: Read node info under m_graph_mutation_mutex (short hold, no I/O).
     std::function<void()> shutdown_func;
     std::chrono::milliseconds shutdown_timeout;
+    uint64_t ud_key{0};
+    UserDataValidateFn ud_validate{nullptr};
+    void *ud_ptr{nullptr};
     std::vector<std::string> deps_copy;
     {
         std::lock_guard<std::mutex> lock(m_graph_mutation_mutex);
@@ -555,6 +566,25 @@ void LifecycleManagerImpl::processOneUnloadInThread(const std::string &node_name
         shutdown_func = node.shutdown.func;
         shutdown_timeout = node.shutdown.timeout;
         deps_copy = node.dependencies;
+        ud_key = node.userdata_key;
+        ud_validate = node.userdata_validate;
+        ud_ptr = node.userdata;
+    }
+
+    // Step 1b: Validate userdata before shutdown if configured.
+    if (ud_key != 0 && ud_validate && !ud_validate(ud_ptr, ud_key))
+    {
+        lifecycleWarn("processOneUnloadInThread: '{}' userdata validation failed — "
+                      "skipping shutdown callback", node_name);
+        // Mark contaminated — proceed to cleanup without running callback.
+        std::lock_guard<std::mutex> lock(m_graph_mutation_mutex);
+        m_contaminated_modules.insert(node_name);
+        auto it = m_module_graph.find(node_name);
+        if (it != m_module_graph.end())
+            it->second.dynamic_status.store(DynamicModuleStatus::FAILED_SHUTDOWN,
+                                            std::memory_order_release);
+        m_unload_complete_cv.notify_all();
+        return;
     }
 
     // Step 2: Run shutdown callback WITHOUT holding any mutex.
