@@ -306,12 +306,12 @@ void PythonInterpreter::release_namespace_() { pImpl->release_namespace(); }
 
 namespace
 {
-void do_python_startup(const char* /*arg*/)
+void do_python_startup(const char* /*arg*/, void* /*userdata*/)
 {
     PythonInterpreter::get_instance().startup_();
 }
 
-void do_python_shutdown(const char* /*arg*/)
+void do_python_shutdown(const char* /*arg*/, void* /*userdata*/)
 {
     PythonInterpreter::get_instance().shutdown_();
 }

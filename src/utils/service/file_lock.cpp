@@ -724,12 +724,12 @@ bool FileLock::lifecycle_initialized() noexcept
 
 namespace
 {
-void do_filelock_startup(const char *arg)
+void do_filelock_startup(const char *arg, void * /*userdata*/)
 {
     (void)arg;
     g_filelock_initialized.store(true, std::memory_order_release);
 }
-void do_filelock_shutdown(const char *arg)
+void do_filelock_shutdown(const char *arg, void * /*userdata*/)
 {
     (void)arg;
     g_filelock_initialized.store(false, std::memory_order_release);

@@ -1054,7 +1054,7 @@ bool Logger::write_sync(Level lvl, fmt::memory_buffer &&body) noexcept
 
 // C-style callbacks for the ABI-safe lifecycle API.
 // These functions are called by the LifecycleManager.
-void do_logger_startup(const char *arg)
+void do_logger_startup(const char *arg, void * /*userdata*/)
 {
     (void)arg; // Argument not used by logger startup.
     Logger::instance().pImpl->start_worker();
@@ -1079,7 +1079,7 @@ void do_logger_startup(const char *arg)
         });
 }
 
-void do_logger_shutdown(const char *arg)
+void do_logger_shutdown(const char *arg, void * /*userdata*/)
 {
     (void)arg; // Argument not used by logger shutdown.
     // Remove the lifecycle log sink before the logger tears down so no lifecycle
@@ -1148,7 +1148,7 @@ ModuleDef Logger::GetStartupLogFileSinkModule(
                                         std::to_string(rotating->max_file_size_bytes) + '|' +
                                         std::to_string(rotating->max_backup_files);
         sink_mod.set_startup(
-            [](const char *arg)
+            [](const char *arg, void * /*userdata*/)
             {
                 if (arg == nullptr || arg[0] == '\0')
                 {
@@ -1184,7 +1184,7 @@ ModuleDef Logger::GetStartupLogFileSinkModule(
     {
         // Plain append-mode log file.
         sink_mod.set_startup(
-            [](const char *path)
+            [](const char *path, void * /*userdata*/)
             {
                 if (path != nullptr && path[0] != '\0')
                 {
