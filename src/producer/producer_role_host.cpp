@@ -342,10 +342,7 @@ bool ProducerRoleHost::setup_infrastructure_()
         const std::string &ep = inbox.endpoint;
 
         // ZMQ wire field layout: computed from the SchemaSpec field definitions.
-        // schema_spec_to_zmq_fields uses the individual field types/counts to
-        // build the msgpack wire format. The slot_size param is only used as a
-        // fallback for NumpyArray/empty-fields schemas (not inbox).
-        auto zmq_fields = scripting::schema_spec_to_zmq_fields(inbox_spec, inbox_schema_slot_size);
+        auto zmq_fields = scripting::schema_spec_to_zmq_fields(inbox_spec);
 
         // Serialize full SchemaSpec JSON for ROLE_INFO_REQ discovery.
         nlohmann::json spec_json;
@@ -430,8 +427,7 @@ bool ProducerRoleHost::setup_infrastructure_()
         opts.data_transport    = "zmq";
         opts.zmq_node_endpoint = tr.zmq_endpoint;
         opts.zmq_bind          = tr.zmq_bind;
-        opts.zmq_schema        = scripting::schema_spec_to_zmq_fields(
-                                     slot_spec_, schema_slot_size_);
+        opts.zmq_schema        = scripting::schema_spec_to_zmq_fields(slot_spec_);
         opts.zmq_packing       = tr.zmq_packing;
         opts.zmq_buffer_depth  = tr.zmq_buffer_depth;
         opts.zmq_overflow_policy =

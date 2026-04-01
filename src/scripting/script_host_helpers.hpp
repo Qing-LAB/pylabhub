@@ -53,30 +53,9 @@ inline SchemaSpec parse_schema_json(const nlohmann::json &schema_obj)
     SchemaSpec spec;
     spec.has_schema = true;
 
-    const std::string expose_as = schema_obj.value("expose_as", "ctypes");
+    if (schema_obj.contains("expose_as"))
+        throw std::runtime_error("expose_as is no longer supported; use field-based schemas");
 
-    if (expose_as == "numpy_array")
-    {
-        spec.exposure = SlotExposure::NumpyArray;
-        if (!schema_obj.contains("dtype") || !schema_obj["dtype"].is_string())
-            throw std::runtime_error("Schema: 'numpy_array' mode requires a 'dtype' string");
-        spec.numpy_dtype = schema_obj["dtype"].get<std::string>();
-        if (schema_obj.contains("shape") && schema_obj["shape"].is_array())
-        {
-            for (const auto &dim : schema_obj["shape"])
-            {
-                if (!dim.is_number_integer())
-                    throw std::runtime_error("Schema: 'shape' entries must be integers");
-                spec.numpy_shape.push_back(dim.get<int64_t>());
-            }
-        }
-        return spec;
-    }
-
-    if (expose_as != "ctypes")
-        throw std::runtime_error("Schema: unknown 'expose_as' value '" + expose_as + "'");
-
-    spec.exposure = SlotExposure::Ctypes;
     spec.packing  = schema_obj.value("packing", "aligned");
     if (spec.packing != "aligned" && spec.packing != "packed")
         throw std::runtime_error("Schema: 'packing' must be 'aligned' or 'packed'");
@@ -131,7 +110,6 @@ inline SchemaSpec schema_entry_to_spec(const schema::SchemaLayoutDef &layout)
 {
     SchemaSpec spec;
     spec.has_schema = true;
-    spec.exposure   = SlotExposure::Ctypes;
     spec.packing    = "aligned";
 
     for (const auto &sf : layout.fields)
@@ -194,7 +172,7 @@ inline SchemaSpec resolve_schema(const nlohmann::json &schema_json, bool use_fle
 /// Build a zero-copy Python slot view from raw SHM memory.
 ///
 /// @param spec         SchemaSpec for this slot.
-/// @param type         The ctypes type or numpy dtype built at init time.
+/// @param type         The ctypes type built at init time.
 /// @param data         Pointer to raw slot data (may be const or writable).
 /// @param size         Size in bytes.
 /// @param is_read_side True for consumer/processor in_slot: no-schema path
@@ -216,36 +194,15 @@ inline py::object make_slot_view(const SchemaSpec &spec, const py::object &type,
         return py::bytearray(reinterpret_cast<const char *>(data), size);
     }
 
-    if (spec.exposure == SlotExposure::Ctypes)
-    {
-        // ctypes.from_buffer() requires a writable buffer regardless of logical intent.
-        // Write protection for the read side is enforced via __setattr__ on the type
-        // (see wrap_as_readonly_ctypes). Subobject mutation through array subscript
-        // is not blocked at the ctypes level — a known limitation of the approach.
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-        auto mv = py::memoryview::from_memory(const_cast<void *>(data),
-                                               static_cast<py::ssize_t>(size),
-                                               /*readonly=*/false);
-        return type.attr("from_buffer")(mv);
-    }
-
-    // NumpyArray path.
-    // For read-side, use a readonly memoryview: numpy respects the buffer readonly
-    // flag and sets ndarray.flags.writeable = False, raising ValueError on write.
+    // ctypes.from_buffer() requires a writable buffer regardless of logical intent.
+    // Write protection for the read side is enforced via __setattr__ on the type
+    // (see wrap_as_readonly_ctypes). Subobject mutation through array subscript
+    // is not blocked at the ctypes level — a known limitation of the approach.
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
     auto mv = py::memoryview::from_memory(const_cast<void *>(data),
                                            static_cast<py::ssize_t>(size),
-                                           /*readonly=*/is_read_side);
-    py::module_ np = py::module_::import("numpy");
-    if (!spec.numpy_shape.empty())
-    {
-        py::list shape;
-        for (auto d : spec.numpy_shape) shape.append(d);
-        return np.attr("ndarray")(shape, type, mv);
-    }
-    const size_t itemsize = type.attr("itemsize").cast<size_t>();
-    const size_t count    = (itemsize > 0) ? (size / itemsize) : 0;
-    return np.attr("ndarray")(py::make_tuple(static_cast<py::ssize_t>(count)), type, mv);
+                                           /*readonly=*/false);
+    return type.attr("from_buffer")(mv);
 }
 
 // ── Read-only ctypes wrapper ──────────────────────────────────────────────────
@@ -277,7 +234,7 @@ def _plh_readonly_setattr(self, name, value):
     return py::eval("type")(name.c_str(), py::make_tuple(base_type), kw);
 }
 
-// ── ctypes / numpy builders ──────────────────────────────────────────────────
+// ── ctypes builders ─────────────────────────────────────────────────────────
 
 inline py::object json_type_to_ctypes(py::module_ &ct, const FieldDef &fd)
 {
@@ -327,11 +284,6 @@ inline py::object build_ctypes_struct(const SchemaSpec &spec, const std::string 
     return py::eval("type")(name, py::make_tuple(ct.attr("LittleEndianStructure")), kw);
 }
 
-inline py::object build_numpy_dtype(const SchemaSpec &spec)
-{
-    return py::module_::import("numpy").attr("dtype")(spec.numpy_dtype);
-}
-
 inline size_t ctypes_sizeof(const py::object &type_)
 {
     return py::module_::import("ctypes").attr("sizeof")(type_).cast<size_t>();
@@ -343,24 +295,15 @@ inline void append_schema_canonical(std::string &out, const std::string &prefix,
                                     const SchemaSpec &spec)
 {
     out += prefix;
-    if (spec.exposure == SlotExposure::NumpyArray)
+    bool first = true;
+    for (const auto &f : spec.fields)
     {
-        out += "numpy_array:";
-        out += spec.numpy_dtype;
-        for (auto d : spec.numpy_shape) { out += ':'; out += std::to_string(d); }
-    }
-    else
-    {
-        bool first = true;
-        for (const auto &f : spec.fields)
-        {
-            if (!first) out += '|';
-            first = false;
-            out += f.name;    out += ':';
-            out += f.type_str; out += ':';
-            out += std::to_string(f.count);  out += ':';
-            out += std::to_string(f.length);
-        }
+        if (!first) out += '|';
+        first = false;
+        out += f.name;    out += ':';
+        out += f.type_str; out += ':';
+        out += std::to_string(f.count);  out += ':';
+        out += std::to_string(f.length);
     }
 }
 
@@ -451,33 +394,14 @@ inline void print_ctypes_layout(const py::object &type_, const char *label, size
               << " bytes  (ctypes.sizeof = " << ctypes_sizeof(type_) << ")\n";
 }
 
-inline void print_numpy_layout(const py::object &dtype, const SchemaSpec &spec, const char *label)
-{
-    size_t itemsize = dtype.attr("itemsize").cast<size_t>();
-    std::cout << "\n" << label << " (numpy.ndarray)\n";
-    std::cout << "  dtype: " << spec.numpy_dtype << "  itemsize=" << itemsize;
-    if (!spec.numpy_shape.empty())
-    {
-        std::cout << "  shape=(";
-        for (size_t i = 0; i < spec.numpy_shape.size(); ++i)
-        {
-            if (i > 0) std::cout << ", ";
-            std::cout << spec.numpy_shape[i];
-        }
-        std::cout << ")";
-    }
-    std::cout << "\n";
-}
-
 // ── ZMQ schema conversion ────────────────────────────────────────────────────
 
 /// Convert a SchemaSpec to a ZmqSchemaField list for ZmqQueue/InboxQueue.
-/// NumpyArray exposure or no fields → single-blob schema of slot_size bytes.
 inline std::vector<hub::ZmqSchemaField>
-schema_spec_to_zmq_fields(const SchemaSpec &spec, size_t slot_size)
+schema_spec_to_zmq_fields(const SchemaSpec &spec)
 {
-    if (spec.exposure == SlotExposure::NumpyArray || spec.fields.empty())
-        return {{"bytes", 1, static_cast<uint32_t>(slot_size)}};
+    if (spec.fields.empty())
+        throw std::runtime_error("fields must not be empty");
     std::vector<hub::ZmqSchemaField> out;
     out.reserve(spec.fields.size());
     for (const auto &f : spec.fields)

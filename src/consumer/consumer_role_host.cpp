@@ -302,7 +302,7 @@ bool ConsumerRoleHost::setup_infrastructure_()
 
     if (is_zmq)
     {
-        opts.zmq_schema       = scripting::schema_spec_to_zmq_fields(slot_spec_, schema_slot_size_);
+        opts.zmq_schema       = scripting::schema_spec_to_zmq_fields(slot_spec_);
         opts.zmq_packing      = tr.zmq_packing;
         opts.zmq_buffer_depth = tr.zmq_buffer_depth;
     }
@@ -347,7 +347,7 @@ bool ConsumerRoleHost::setup_infrastructure_()
 
         // Endpoint validated by parse_inbox_config(); default is tcp://127.0.0.1:0.
         const std::string &ep = inbox.endpoint;
-        auto zmq_fields = scripting::schema_spec_to_zmq_fields(inbox_spec, inbox_schema_slot_size);
+        auto zmq_fields = scripting::schema_spec_to_zmq_fields(inbox_spec);
 
         nlohmann::json spec_json;
         spec_json["fields"] = nlohmann::json::array();

@@ -59,7 +59,7 @@ ScriptEngine::open_inbox_client(const std::string &target_uid)
             for (const auto &f : spec.fields)
                 item_size += f.length;
 
-            auto zmq_fields = schema_spec_to_zmq_fields(spec, item_size);
+            auto zmq_fields = schema_spec_to_zmq_fields(spec);
 
             auto client_ptr = hub::InboxClient::connect_to(
                 info->inbox_endpoint, ctx_.uid,
