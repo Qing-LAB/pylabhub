@@ -75,7 +75,7 @@ class ConsumerRoleHost
 
     // ── Infrastructure setup/teardown (Layer 3) ──────────────────────────────
 
-    bool setup_infrastructure_();
+    bool setup_infrastructure_(const scripting::SchemaSpec &inbox_spec);
     void teardown_infrastructure_();
     void run_ctrl_thread_();
     nlohmann::json snapshot_metrics_json() const;
