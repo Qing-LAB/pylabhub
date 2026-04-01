@@ -289,6 +289,54 @@ inline size_t ctypes_sizeof(const py::object &type_)
     return py::module_::import("ctypes").attr("sizeof")(type_).cast<size_t>();
 }
 
+// ── Numpy view for ctypes array fields ──────────────────────────────────────
+
+/**
+ * @brief Convert a ctypes array field to a numpy ndarray view (zero-copy).
+ *
+ * The dtype is inferred from the ctypes array element type. The returned
+ * numpy array shares the same memory — no copy. Writes to the numpy array
+ * modify the underlying slot buffer directly.
+ *
+ * Usage from Python: `pixels = api.as_numpy(slot.pixels)`
+ *
+ * @param ctypes_array  A ctypes array object (e.g., c_float_Array_307200).
+ * @return numpy.ndarray view with inferred dtype.
+ * @throws py::type_error if the argument is not a ctypes array.
+ */
+inline py::object as_numpy_view(py::object ctypes_array)
+{
+    py::module_ np = py::module_::import("numpy");
+    py::module_ ct = py::module_::import("ctypes");
+
+    // Verify it's a ctypes array (has _type_ and _length_ attributes).
+    if (!py::hasattr(ctypes_array, "_type_") || !py::hasattr(ctypes_array, "_length_"))
+        throw py::type_error("as_numpy: argument must be a ctypes array field "
+                             "(e.g., slot.pixels for a field with count > 1)");
+
+    // Get the element ctype (e.g., ctypes.c_float).
+    py::object ctype = ctypes_array.attr("_type_");
+
+    // Map ctypes element type to numpy dtype string.
+    // Using ctypes sizeof for reliable mapping.
+    py::object dtype;
+    if (ctype.is(ct.attr("c_float")))       dtype = np.attr("float32");
+    else if (ctype.is(ct.attr("c_double"))) dtype = np.attr("float64");
+    else if (ctype.is(ct.attr("c_int8")))   dtype = np.attr("int8");
+    else if (ctype.is(ct.attr("c_uint8")))  dtype = np.attr("uint8");
+    else if (ctype.is(ct.attr("c_int16")))  dtype = np.attr("int16");
+    else if (ctype.is(ct.attr("c_uint16"))) dtype = np.attr("uint16");
+    else if (ctype.is(ct.attr("c_int32")))  dtype = np.attr("int32");
+    else if (ctype.is(ct.attr("c_uint32"))) dtype = np.attr("uint32");
+    else if (ctype.is(ct.attr("c_int64")))  dtype = np.attr("int64");
+    else if (ctype.is(ct.attr("c_uint64"))) dtype = np.attr("uint64");
+    else if (ctype.is(ct.attr("c_bool")))   dtype = np.attr("bool_");
+    else
+        throw py::type_error("as_numpy: unsupported ctypes element type for numpy conversion");
+
+    return np.attr("frombuffer")(ctypes_array, py::arg("dtype") = dtype);
+}
+
 // ── Schema hash ──────────────────────────────────────────────────────────────
 
 inline void append_schema_canonical(std::string &out, const std::string &prefix,
