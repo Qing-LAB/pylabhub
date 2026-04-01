@@ -347,11 +347,9 @@ bool NativeEngine::build_api_(const RoleContext &ctx)
     {
         pylabhub::utils::ModuleDef mod(lifecycle_module_name_.c_str());
         mod.add_dependency("Logger");  // log output during finalize
-        mod.set_startup([](const char *) {}, ""); // no-op — init already complete
-        // Shutdown timeout covers both plugin_finalize and dlclose.
-        // If the plugin's finalize hangs, lifecycle marks it contaminated after 5s.
+        mod.set_startup([](const char *, void *) {}, ""); // no-op
         mod.set_shutdown(
-            [](const char * /*arg*/) {},
+            [](const char *, void *) {},
             std::chrono::milliseconds{5000});
         if (pylabhub::utils::RegisterDynamicModule(std::move(mod)))
         {

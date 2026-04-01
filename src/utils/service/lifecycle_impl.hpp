@@ -69,6 +69,11 @@ struct InternalModuleDef
     std::function<void()> startup;
     InternalModuleShutdownDef shutdown;
     bool is_persistent = false;
+
+    // User data (set at ModuleDef construction, immutable).
+    void *userdata{nullptr};
+    uint64_t userdata_key{0};
+    pylabhub::utils::UserDataValidateFn userdata_validate{nullptr};
 };
 } // namespace pylabhub::utils::lifecycle_internal
 
@@ -129,6 +134,11 @@ class LifecycleManagerImpl
         bool is_persistent = false;
         std::atomic<DynamicModuleStatus> dynamic_status = {DynamicModuleStatus::UNLOADED};
         std::atomic<int> ref_count = {0};
+
+        // User data (copied from InternalModuleDef at registration).
+        void *userdata{nullptr};
+        uint64_t userdata_key{0};
+        pylabhub::utils::UserDataValidateFn userdata_validate{nullptr};
     };
 
     // --- Public API Methods ---
@@ -245,6 +255,11 @@ class LifecycleManagerImpl
     // Optional log sink injected by the logger module (or any module that provides logging).
     // null → fall back to PLH_DEBUG.
     pylabhub::utils::detail::PortableAtomicSharedPtr<LifecycleLogSink> m_lifecycle_log_sink;
+
+    // User-data generation key counter (monotonic, skip-zero).
+    std::atomic<uint64_t> m_next_userdata_key{1};
+  public:
+    uint64_t nextUserdataKey() { return m_next_userdata_key.fetch_add(1, std::memory_order_relaxed); }
 };
 
 } // namespace pylabhub::utils

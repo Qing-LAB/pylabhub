@@ -311,6 +311,9 @@ class PYLABHUB_UTILS_EXPORT LifecycleManager
      */
     DynModuleState dynamic_module_state(std::string_view name);
 
+    /// Generate a unique key for user-data validation. Thread-safe, monotonic.
+    [[nodiscard]] static uint64_t next_unique_key();
+
     /**
      * @brief Installs a log sink for lifecycle internal messages.
      *

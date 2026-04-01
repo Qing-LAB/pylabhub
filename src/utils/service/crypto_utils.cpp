@@ -201,7 +201,7 @@ namespace
  * @details Initializes libsodium at application startup.
  * @param arg Unused argument (required by LifecycleCallback signature).
  */
-void crypto_startup(const char *arg)
+void crypto_startup(const char *arg, void * /*userdata*/)
 {
     (void)arg; // Unused
 
@@ -222,7 +222,7 @@ void crypto_startup(const char *arg)
  * @details Libsodium does not require explicit cleanup, but we log shutdown for consistency.
  * @param arg Unused argument (required by LifecycleCallback signature).
  */
-void crypto_shutdown(const char *arg)
+void crypto_shutdown(const char *arg, void * /*userdata*/)
 {
     (void)arg; // Unused
 

@@ -1,217 +1,199 @@
 # Script Engine as Lifecycle Dynamic Module
 
-**Status**: Draft (2026-03-31)
+**Status**: Design revised (2026-03-31)
 **Scope**: All script engines managed as lifecycle dynamic modules
-**Depends on**: Lifecycle dynamic module system (done), ScriptEngine interface (done)
 
 ---
 
-## 1. Problem
+## 1. Separation of Concerns
 
-Script engine shutdown is not timeout-guarded. If `plugin_finalize()` (native),
-`Py_Finalize` (Python), or `lua_close` (Lua) hangs, the process hangs forever.
-All other subsystems use lifecycle modules for ordered, timeout-guarded shutdown.
-Script engines should too.
+**Role host's job:** setup_infrastructure + run data loop + teardown_infrastructure.
+
+**Engine's job:** initialize + load_script + register_slot_type + build_api + invoke + finalize.
+
+The only coupling: role host assembles a RoleContext (containing infrastructure pointers)
+and passes it to the engine's build_api. The engine does not create infrastructure.
 
 ---
 
-## 2. Design
-
-### 2.1 Engine = dynamic lifecycle module
-
-Each ScriptEngine subclass provides `make_lifecycle_module()` — same pattern as
-`InteractiveSignalHandler::make_lifecycle_module()`.
-
-The module's **startup** callback calls `engine->initialize(tag, core)`. This is
-the minimum needed to put the engine into INITIALIZED state.
-
-The module's **shutdown** callback calls `engine->finalize()`. This is timeout-guarded
-by the lifecycle system. `finalize()` is a state-machine walker — it cleans up
-exactly what was set up, regardless of how far initialization progressed.
-
-### 2.2 Module naming and instance policy
-
-Module naming encodes engine type + identity. The lifecycle system's duplicate
-name rejection enforces instance constraints naturally:
-
-| Engine | Module name pattern | Policy |
-|--------|-------------------|--------|
-| Python | `"ScriptEngine:python"` | **Process singleton.** Fixed name. Second registration fails. Matches CPython's one-interpreter-per-process constraint. |
-| Lua | `"ScriptEngine:lua:<role_uid>"` | **Per-role.** Multiple Lua engines coexist (independent lua_States). Each role gets its own module. |
-| Native | `"ScriptEngine:native:<lib_filename>:<role_uid>"` | **Per-role, library visible.** If two roles load the same .so, the shared library name is visible in both module names — the user can detect shared-state conflicts. |
-
-The lifecycle system rejects duplicate module names at `RegisterDynamicModule()`.
-No additional singleton logic needed in the engines.
-
-### 2.3 Engine state machine
+## 2. Two Independent Lifecycles
 
 ```
-UNLOADED ─→ INITIALIZED ─→ SCRIPT_LOADED ─→ API_BUILT ─→ RUNNING
-                                                              │
-finalize() walks back from current state:                     │
-  RUNNING    → invoke_on_stop, stop threads                   │
-  API_BUILT  → plugin_finalize / release context              │
-  SCRIPT_LOADED → dlclose / release interpreter state         │
-  INITIALIZED → release core ref                              │
-  UNLOADED   → no-op                                          ▼
-                                                          FINALIZED
+Role host:   setup_infrastructure()  ←→  teardown_infrastructure()
+Engine:      LoadModule (startup)    ←→  UnloadModule (shutdown)
 ```
 
-`finalize()` is idempotent. Calling it from any state is safe.
+Both managed by the lifecycle system. Infrastructure (DataExchangeHub, ZMQ, etc.)
+is already a static lifecycle module. Engine becomes a dynamic lifecycle module.
+The role host sequences them: infrastructure first, engine second, then run.
 
-### 2.4 Lifecycle integration point
+---
+
+## 3. EngineModuleParams
+
+A struct that bundles everything the engine needs. Created by the role host,
+passed as userdata to the lifecycle module.
 
 ```cpp
-// In main(), after LifecycleGuard and config are ready:
+struct EngineModuleParams {
+    // Engine instance
+    ScriptEngine *engine;
+    RoleHostCore *core;
 
-auto engine = create_engine(config.script().type);  // factory: returns unique_ptr
+    // Startup parameters (Group A: from config)
+    std::string tag;                    // "prod" / "cons" / "proc"
+    std::filesystem::path script_dir;
+    std::string entry_point;            // "init.lua" / "__init__.py"
+    std::string required_callback;      // "on_produce" / "on_consume" / "on_process"
+    SchemaSpec slot_spec;
+    SchemaSpec fz_spec;                 // empty if no flexzone
+    SchemaSpec inbox_spec;              // empty if no inbox
+    std::string packing;
 
-// Register as dynamic module — startup = initialize, shutdown = finalize (5s timeout)
-RegisterDynamicModule(engine->make_lifecycle_module(log_tag, &core));
-LoadModule(engine->lifecycle_module_name());
-// Engine is now INITIALIZED.
+    // Infrastructure context (Group C: filled after setup_infrastructure)
+    RoleContext role_ctx;
 
-// Create role host — it receives the engine and drives it forward:
-RoleHost host(config, engine.get());
-host.startup_();
-// worker_main_() calls: load_script → register_slot_type → build_api → run
-
-// On exit:
-host.shutdown_();
-// LifecycleGuard destructor → FinalizeApp() → UnloadModule → engine->finalize()
-// Timeout-guarded: if finalize hangs, lifecycle marks contaminated after 5s.
+    // Validation
+    uint64_t magic{0x454E4750};         // "ENGP"
+    uint64_t lifecycle_key{0};          // generation key from lifecycle
+};
 ```
 
-### 2.5 Role host changes
+---
 
-The role host currently calls `engine_->initialize()` inside `worker_main_()`.
-With lifecycle modules, `initialize()` is called by `LoadModule()` before the
-role host starts. The role host only calls:
+## 4. Flow
 
-- `load_script()` — advance to SCRIPT_LOADED
-- `register_slot_type()` — schema registration
-- `build_api(ctx)` — advance to API_BUILT (needs infrastructure, called after setup_infrastructure_)
-- `invoke_on_init()` / `invoke_produce()` / etc. — runtime
-- `invoke_on_stop()` — called by role host before shutdown
+```
+worker_main_() [on worker thread]:
 
-The role host does NOT call `initialize()` or `finalize()` — lifecycle manages those.
+    // 1. Role host: create infrastructure (no engine needed)
+    setup_infrastructure_();
 
-### 2.6 make_lifecycle_module() per engine
+    // 2. Role host: assemble params
+    auto params = make_engine_params();     // fills from config + infrastructure
 
-```cpp
-// ScriptEngine base class (or each subclass):
-ModuleDef make_lifecycle_module(const std::string &tag, RoleHostCore *core)
-{
-    ModuleDef mod(lifecycle_module_name());  // "ScriptEngine:native:PROD-xxx"
+    // 3. Register + Load engine as lifecycle module
+    ModuleDef mod("ScriptEngine:lua:PROD-A", params.get(), validate_fn);
+    params->lifecycle_key = mod.userdata_key();
     mod.add_dependency("Logger");
+    mod.set_startup(engine_startup);
+    mod.set_shutdown(engine_shutdown, 5000ms);
+    RegisterDynamicModule(std::move(mod));
+    LoadModule("ScriptEngine:lua:PROD-A");
+    // → engine_startup: initialize → load_script → register_slot_type → build_api
+    // Engine fully ready.
 
-    // Startup: initialize the engine (puts it in INITIALIZED state)
-    // The `this` pointer and args are captured via static storage
-    // (same pattern as InteractiveSignalHandler).
-    s_engine_instance_ = this;
-    s_init_tag_ = tag;
-    s_init_core_ = core;
-    mod.set_startup(engine_lifecycle_startup, "");
+    // 4. Run
+    engine_->invoke_on_init();
+    run_data_loop_();
+    engine_->invoke_on_stop();
 
-    // Shutdown: finalize the engine (walks back from whatever state)
-    mod.set_shutdown(engine_lifecycle_shutdown,
-                     std::chrono::milliseconds{5000});
+    // 5. Shutdown (on correct thread, before infrastructure teardown)
+    engine_->finalize();
+    UnloadModule("ScriptEngine:lua:PROD-A");    // shutdown callback is no-op
 
-    return mod;
+    // 6. Teardown infrastructure
+    teardown_infrastructure_();
+```
+
+---
+
+## 5. Startup Callback
+
+```cpp
+void engine_startup(const char * /*arg*/, void *userdata) {
+    auto *p = static_cast<EngineModuleParams*>(userdata);
+
+    if (!p->engine->initialize(p->tag, p->core))
+        throw std::runtime_error("engine initialize failed");
+
+    if (!p->engine->load_script(p->script_dir, p->entry_point, p->required_callback))
+        throw std::runtime_error("load_script failed");
+
+    if (p->slot_spec.has_schema)
+        if (!p->engine->register_slot_type(p->slot_spec, "SlotFrame", p->packing))
+            throw std::runtime_error("register SlotFrame failed");
+
+    if (p->fz_spec.has_schema)
+        if (!p->engine->register_slot_type(p->fz_spec, "FlexFrame", p->packing))
+            throw std::runtime_error("register FlexFrame failed");
+
+    if (p->inbox_spec.has_schema)
+        if (!p->engine->register_slot_type(p->inbox_spec, "InboxFrame", p->packing))
+            throw std::runtime_error("register InboxFrame failed");
+
+    if (!p->engine->build_api(p->role_ctx))
+        throw std::runtime_error("build_api failed");
 }
 ```
 
-### 2.7 NativeEngine specifics
-
-For NativeEngine, `finalize()` state-machine walk-back includes:
-- API_BUILT → `plugin_finalize()` + release PluginContextStorage
-- SCRIPT_LOADED → `DL_CLOSE(dl_handle_)`
-- INITIALIZED → clear log_tag
-
-If `plugin_finalize()` hangs, the 5s timeout fires, lifecycle marks the module
-contaminated, and the process continues shutdown. The `.so` may leak — but the
-process is exiting anyway.
-
-### 2.8 Test environment
-
-L2 tests don't use lifecycle. They create engines directly and call
-`initialize → load_script → build_api → invoke → finalize` manually.
-The `make_lifecycle_module()` is only used in production mains.
-Tests continue to work unchanged.
+Exceptions are caught by loadModuleInternal → module marked FAILED.
 
 ---
 
-## 3. Changes Required
+## 6. Shutdown Callback
 
-### 3.1 ScriptEngine base class
-- Add `lifecycle_module_name()` virtual method (returns unique string)
-- Add `make_lifecycle_module(tag, core)` method
-- Add engine state tracking enum (UNLOADED, INITIALIZED, SCRIPT_LOADED, API_BUILT, RUNNING, FINALIZED)
-- Make `finalize()` state-aware (clean up based on current state)
-
-### 3.2 Each engine subclass
-- Override `lifecycle_module_name()` with engine-specific name
-- Ensure `finalize()` handles partial initialization gracefully
-
-### 3.3 Role host worker_main_()
-- Remove `engine_->initialize()` call (lifecycle already did it)
-- Remove `engine_->finalize()` call (lifecycle will do it)
-- Keep: load_script, register_slot_type, build_api, invoke_*
-
-### 3.4 main()
-- Replace if/else engine creation with factory + lifecycle registration
-- Engine lifecycle module registered after LifecycleGuard, before role host
-
-### 3.5 NativeEngine
-- Remove the current inline lifecycle code (s_native_engine_instance etc.)
-- Use the base class make_lifecycle_module() pattern
-- finalize_engine_() handles: plugin_finalize → dlclose → clear fn pointers
-
----
-
-## 4. What Does NOT Change
-
-- ScriptEngine pure virtual interface (invoke_produce, etc.)
-- Engine implementations (load_script, build_api internals)
-- Role host data loop
-- L2 tests (use engines directly without lifecycle)
-- LifecycleGuard in main (already exists)
-- Lifecycle system itself (no changes needed)
-
----
-
-## 5. Dependency Chain (no chicken-and-egg)
-
-```
-LifecycleGuard → static modules start (Logger, ZMQ, Crypto, etc.)
-    ↓
-Config loaded from disk
-    ↓
-Engine created (factory based on config.script.type)
-    ↓
-RegisterDynamicModule + LoadModule
-    → startup callback: engine->initialize(tag, core)
-    → engine state: INITIALIZED
-    ↓
-RoleHost created with engine pointer
-    ↓
-worker_main_():
-    engine->load_script()           → state: SCRIPT_LOADED
-    engine->register_slot_type()
-    setup_infrastructure_()         → creates messenger, producer, inbox
-    engine->build_api(ctx)          → state: API_BUILT (ctx has infrastructure ptrs)
-    engine->invoke_on_init()
-    run_data_loop_()                → state: RUNNING
-    engine->invoke_on_stop()
-    ↓
-host.shutdown_()
-    ↓
-LifecycleGuard destructor → FinalizeApp()
-    → UnloadModule("ScriptEngine:...")
-    → shutdown callback: engine->finalize()  [timeout: 5s]
-    → state: FINALIZED
+```cpp
+void engine_shutdown(const char * /*arg*/, void *userdata) {
+    auto *p = static_cast<EngineModuleParams*>(userdata);
+    p->engine->finalize();  // idempotent
+}
 ```
 
-No circular dependency. `initialize()` only needs tag + core (available early).
-`build_api()` needs infrastructure (available after setup_infrastructure_).
-`finalize()` needs nothing — it just walks back the state machine.
+Normal path: engine already finalized by role host → no-op.
+Crash path: lifecycle calls this with timeout guard → finalize runs.
+
+---
+
+## 7. Module Naming
+
+| Engine | Name | Policy |
+|--------|------|--------|
+| Python | `"ScriptEngine:python"` | Process singleton |
+| Lua | `"ScriptEngine:lua:<role_uid>"` | Per-role |
+| Native | `"ScriptEngine:native:<lib>:<role_uid>"` | Per-role |
+
+---
+
+## 8. Engine State Machine
+
+```
+Unloaded → Initialized → ScriptLoaded → ApiBuilt → Finalized
+```
+
+finalize() is idempotent. It checks the state and cleans up whatever was set up.
+
+---
+
+## 9. Refactor: Move inbox register_slot_type out of setup_infrastructure
+
+Currently `setup_infrastructure_()` calls `engine_->register_slot_type(InboxFrame)`.
+This is engine work misplaced in infrastructure code. Move it to the engine
+startup callback. The inbox schema comes from config (Group A). The inbox
+queue buffer size validation should use the schema spec directly.
+
+---
+
+## 10. Params Lifetime
+
+- Created: by role host at start of worker_main_(), on worker thread
+- Filled: Group A from config, Group C after setup_infrastructure_()
+- Consumed: by LoadModule startup callback (synchronous, same thread)
+- Shutdown: by UnloadModule shutdown callback (idempotent finalize)
+- Destroyed: when role host is destroyed (unique_ptr member)
+
+Normal path: role host calls finalize() + UnloadModule before destruction → safe.
+Crash path: validate function checks magic + key → stale params → callback skipped.
+
+---
+
+## 11. Changes Required
+
+1. **LifecycleCallback signature** (DONE): `void(*)(const char*, void*)`
+2. **ModuleDef userdata constructor** (DONE): `ModuleDef(name, userdata, validate)`
+3. **EngineModuleParams struct**: new, in ScriptEngine header or separate header
+4. **engine_startup / engine_shutdown**: static functions, shared by all roles
+5. **Role host worker_main_()**: replace direct engine calls with LoadModule/UnloadModule
+6. **Move inbox register_slot_type**: from setup_infrastructure_() to startup callback
+7. **ScriptEngine**: add EngineState enum, make finalize() idempotent
+8. **NativeEngine**: remove internal lifecycle code (replaced by base mechanism)

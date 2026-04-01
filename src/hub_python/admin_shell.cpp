@@ -248,12 +248,12 @@ std::string AdminShell::actual_endpoint() const
 
 namespace
 {
-void do_admin_shell_startup(const char* /*arg*/)
+void do_admin_shell_startup(const char* /*arg*/, void* /*userdata*/)
 {
     AdminShell::get_instance().startup_();
 }
 
-void do_admin_shell_shutdown(const char* /*arg*/)
+void do_admin_shell_shutdown(const char* /*arg*/, void* /*userdata*/)
 {
     AdminShell::get_instance().shutdown_();
 }

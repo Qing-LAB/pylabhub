@@ -99,7 +99,7 @@ TEST(ModuleDefTest, AddDependency_TooLong_Throws)
 // set_startup
 // ============================================================================
 
-static void dummy_callback(const char *) {}
+static void dummy_callback(const char *, void * /*userdata*/) {}
 
 TEST(ModuleDefTest, SetStartup_NoArg)
 {

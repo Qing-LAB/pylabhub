@@ -575,7 +575,7 @@ std::filesystem::path HubConfig::hub_pubkey_path() const noexcept
 
 namespace
 {
-void do_hub_config_startup(const char* /*arg*/)
+void do_hub_config_startup(const char* /*arg*/, void* /*userdata*/)
 {
     g_hub_config_state.store(HubConfigState::Initializing, std::memory_order_release);
     fs::path override_path;
@@ -587,7 +587,7 @@ void do_hub_config_startup(const char* /*arg*/)
     g_hub_config_state.store(HubConfigState::Initialized, std::memory_order_release);
 }
 
-void do_hub_config_shutdown(const char* /*arg*/)
+void do_hub_config_shutdown(const char* /*arg*/, void* /*userdata*/)
 {
     g_hub_config_state.store(HubConfigState::ShuttingDown, std::memory_order_release);
     std::lock_guard lock(g_admin_token_mu);

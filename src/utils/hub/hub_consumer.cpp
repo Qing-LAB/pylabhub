@@ -1197,7 +1197,7 @@ bool ManagedConsumer::is_initialized() const noexcept
     return consumer_.has_value();
 }
 
-void ManagedConsumer::s_startup(const char *key)
+void ManagedConsumer::s_startup(const char *key, void * /*userdata*/)
 {
     ManagedConsumer *self = nullptr;
     {
@@ -1221,7 +1221,7 @@ void ManagedConsumer::s_startup(const char *key)
     self->consumer_ = std::move(c);
 }
 
-void ManagedConsumer::s_shutdown(const char *key)
+void ManagedConsumer::s_shutdown(const char *key, void * /*userdata*/)
 {
     ManagedConsumer *self = nullptr;
     {

@@ -1145,7 +1145,7 @@ Messenger &Messenger::get_instance()
 // ============================================================================
 namespace
 {
-void do_hub_startup(const char * /*arg*/)
+void do_hub_startup(const char * /*arg*/, void * /*userdata*/)
 {
     if (sodium_init() < 0)
     {
@@ -1158,7 +1158,7 @@ void do_hub_startup(const char * /*arg*/)
     LOGGER_INFO("Data Exchange Hub: Module initialized and ready.");
 }
 
-void do_hub_shutdown(const char * /*arg*/)
+void do_hub_shutdown(const char * /*arg*/, void * /*userdata*/)
 {
     g_hub_initialized.store(false, std::memory_order_release);
     delete g_messenger_instance.load(std::memory_order_acquire);

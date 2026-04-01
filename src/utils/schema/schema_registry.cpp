@@ -26,7 +26,7 @@ static std::atomic<bool> g_registry_initialized{false};
 
 // ── C-style lifecycle callbacks (ABI-safe) ──────────────────────────────────
 
-static void do_registry_startup(const char * /*arg*/)
+static void do_registry_startup(const char * /*arg*/, void * /*userdata*/)
 {
     auto &reg         = SchemaStore::instance();
     const size_t count = reg.reload();
@@ -34,7 +34,7 @@ static void do_registry_startup(const char * /*arg*/)
     LOGGER_INFO("[SchemaStore] Initialized — {} schema(s) loaded", count);
 }
 
-static void do_registry_shutdown(const char * /*arg*/)
+static void do_registry_shutdown(const char * /*arg*/, void * /*userdata*/)
 {
     g_registry_initialized.store(false, std::memory_order_release);
     LOGGER_INFO("[SchemaStore] Shutdown");

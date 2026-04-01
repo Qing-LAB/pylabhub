@@ -12,7 +12,7 @@ namespace
 {
 // --- Globals for static module tests ---
 std::atomic<int> g_startup_counter{0};
-void counter_startup_callback(const char *)
+void counter_startup_callback(const char *, void *)
 {
     g_startup_counter++;
 }
@@ -39,43 +39,43 @@ void reset_dynamic_counters()
     dyn_E_stop = 0;
 }
 
-void startup_A(const char *)
+void startup_A(const char *, void *)
 {
     dyn_A_start++;
 }
-void startup_B(const char *)
+void startup_B(const char *, void *)
 {
     dyn_B_start++;
 }
-void startup_C(const char *)
+void startup_C(const char *, void *)
 {
     dyn_C_start++;
 }
-void startup_D(const char *)
+void startup_D(const char *, void *)
 {
     dyn_D_start++;
 }
-void startup_E(const char *)
+void startup_E(const char *, void *)
 {
     dyn_E_start++;
 }
-void shutdown_A(const char *)
+void shutdown_A(const char *, void *)
 {
     dyn_A_stop++;
 }
-void shutdown_B(const char *)
+void shutdown_B(const char *, void *)
 {
     dyn_B_stop++;
 }
-void shutdown_C(const char *)
+void shutdown_C(const char *, void *)
 {
     dyn_C_stop++;
 }
-void shutdown_D(const char *)
+void shutdown_D(const char *, void *)
 {
     dyn_D_stop++;
 }
-void shutdown_E(const char *)
+void shutdown_E(const char *, void *)
 {
     dyn_E_stop++;
 }
@@ -529,7 +529,7 @@ int pylabhub::tests::worker::lifecycle::dynamic_reentrant_load_fail()
     return run_worker_bare([&]() {
         struct ReentrantCallbacks
         {
-            static void startup(const char *)
+            static void startup(const char *, void *)
             {
                 // The re-entrant LoadModule("DynB") must be rejected (return false).
                 // Either way, we throw to signal failure back to the outer LoadModule("DynA").
@@ -615,7 +615,7 @@ int pylabhub::tests::worker::lifecycle::dynamic_unload_timeout()
 
         ModuleDef mod("HangingModule");
         mod.set_shutdown(
-            [](const char *)
+            [](const char *, void *)
             {
                 PLH_DEBUG("HangingModule shutdown started, sleeping for 250ms...");
                 std::this_thread::sleep_for(std::chrono::milliseconds(250));
@@ -828,7 +828,7 @@ int pylabhub::tests::worker::lifecycle::finalize_sink_safe_during_async_failure(
 
             ModuleDef mod("SlowShutdown");
             mod.set_shutdown(
-                [](const char *)
+                [](const char *, void *)
                 {
                     // Hang longer than the timeout so timedShutdown detaches us.
                     std::this_thread::sleep_for(std::chrono::milliseconds(500));

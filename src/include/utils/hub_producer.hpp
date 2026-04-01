@@ -758,8 +758,8 @@ class PYLABHUB_UTILS_EXPORT ManagedProducer
     std::optional<Producer> producer_;
     std::string     module_key_;
 
-    static void s_startup(const char *key);
-    static void s_shutdown(const char *key);
+    static void s_startup(const char *key, void * /*userdata*/);
+    static void s_shutdown(const char *key, void * /*userdata*/);
 };
 
 } // namespace pylabhub::hub
