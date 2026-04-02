@@ -238,6 +238,128 @@ TEST_F(PythonEngineTest, RegisterSlotType_MultiField)
 }
 
 // ============================================================================
+// 2b. Alias tests — role-specific type aliases
+// ============================================================================
+
+TEST_F(PythonEngineTest, Alias_SlotFrame_Producer)
+{
+    write_script("def on_produce(tx, msgs, api):\n    return True\n");
+
+    PythonEngine engine;
+    engine.set_python_venv("");
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
+    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
+                                   "__init__.py", "on_produce"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+
+    auto ctx = producer_context();
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    // After build_api, "SlotFrame" alias should exist for producer.
+    EXPECT_EQ(engine.type_sizeof("SlotFrame"), engine.type_sizeof("OutSlotFrame"));
+    EXPECT_GT(engine.type_sizeof("SlotFrame"), 0u);
+
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Alias_SlotFrame_Consumer)
+{
+    write_script("def on_consume(rx, msgs, api):\n    return True\n");
+
+    PythonEngine engine;
+    engine.set_python_venv("");
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
+    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
+                                   "__init__.py", "on_consume"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
+
+    auto ctx = producer_context();
+    ctx.role_tag = "cons";
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    EXPECT_EQ(engine.type_sizeof("SlotFrame"), engine.type_sizeof("InSlotFrame"));
+    EXPECT_GT(engine.type_sizeof("SlotFrame"), 0u);
+
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Alias_NoAlias_Processor)
+{
+    write_script("def on_process(rx, tx, msgs, api):\n    return True\n");
+
+    PythonEngine engine;
+    engine.set_python_venv("");
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
+    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
+                                   "__init__.py", "on_process"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+
+    auto ctx = producer_context();
+    ctx.role_tag = "proc";
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    // Processor: no alias — SlotFrame should not resolve.
+    EXPECT_EQ(engine.type_sizeof("SlotFrame"), 0u);
+
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Alias_FlexFrame_Producer)
+{
+    write_script(
+        "def on_produce(tx, msgs, api):\n"
+        "    return True\n");
+
+    PythonEngine engine;
+    engine.set_python_venv("");
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
+    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
+                                   "__init__.py", "on_produce"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutFlexFrame", "aligned"));
+
+    auto ctx = producer_context();
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    EXPECT_EQ(engine.type_sizeof("FlexFrame"), engine.type_sizeof("OutFlexFrame"));
+    EXPECT_GT(engine.type_sizeof("FlexFrame"), 0u);
+
+    engine.finalize();
+}
+
+TEST_F(PythonEngineTest, Alias_ProducerNoFz_NoFlexFrameAlias)
+{
+    write_script("def on_produce(tx, msgs, api):\n    return True\n");
+
+    PythonEngine engine;
+    engine.set_python_venv("");
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
+    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
+                                   "__init__.py", "on_produce"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+    // No flexzone registered.
+
+    auto ctx = producer_context();
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    EXPECT_GT(engine.type_sizeof("SlotFrame"), 0u);
+    EXPECT_EQ(engine.type_sizeof("FlexFrame"), 0u);
+
+    engine.finalize();
+}
+
+// ============================================================================
 // 3. invoke_produce
 // ============================================================================
 

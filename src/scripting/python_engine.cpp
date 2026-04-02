@@ -893,6 +893,10 @@ size_t PythonEngine::type_sizeof(const std::string &type_name) const
         type = out_fz_type_;
     else if (type_name == "InboxFrame")
         type = inbox_type_ro_;
+    else if (type_name == "SlotFrame")
+        type = slot_alias_.is_none() ? slot_alias_ro_ : slot_alias_;
+    else if (type_name == "FlexFrame")
+        type = fz_alias_;
 
     if (type.is_none())
         return 0;
