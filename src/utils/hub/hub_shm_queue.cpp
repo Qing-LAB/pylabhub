@@ -136,6 +136,172 @@ ShmQueue::from_producer_ref(DataBlockProducer& dbp, size_t item_size,
 }
 
 // ============================================================================
+// create_writer — creates DataBlock internally from schema
+// ============================================================================
+
+std::unique_ptr<QueueWriter>
+ShmQueue::create_writer(const std::string &channel_name,
+                        const std::vector<SchemaFieldDesc> &slot_schema,
+                        const std::string &slot_packing,
+                        const std::vector<SchemaFieldDesc> &fz_schema,
+                        const std::string &fz_packing,
+                        uint32_t ring_buffer_capacity,
+                        DataBlockPageSize page_size,
+                        uint64_t shared_secret,
+                        DataBlockPolicy policy,
+                        ConsumerSyncPolicy sync_policy,
+                        ChecksumPolicy checksum_policy,
+                        bool checksum_slot,
+                        bool checksum_fz,
+                        bool always_clear_slot,
+                        const std::string &hub_uid,
+                        const std::string &hub_name,
+                        const schema::SchemaInfo *slot_schema_info,
+                        const schema::SchemaInfo *fz_schema_info)
+{
+    if (slot_schema.empty())
+    {
+        LOGGER_ERROR("[ShmQueue] create_writer: slot_schema is empty");
+        return nullptr;
+    }
+
+    // Compute slot size from schema (authoritative).
+    auto [slot_layout, item_size] = compute_field_layout(slot_schema, slot_packing);
+    if (item_size == 0)
+    {
+        LOGGER_ERROR("[ShmQueue] create_writer: computed slot size is 0");
+        return nullptr;
+    }
+
+    // Compute flexzone size from schema (0 if no flexzone).
+    size_t fz_size = 0;
+    if (!fz_schema.empty())
+    {
+        auto [fz_layout, raw_fz_size] = compute_field_layout(fz_schema, fz_packing);
+        // Round to 4KB page boundary.
+        fz_size = (raw_fz_size + 4095U) & ~size_t{4095U};
+    }
+
+    // Build DataBlockConfig.
+    DataBlockConfig config;
+    config.logical_unit_size    = item_size;
+    config.flex_zone_size       = fz_size;
+    config.ring_buffer_capacity = ring_buffer_capacity;
+    config.physical_page_size   = page_size;
+    config.shared_secret        = shared_secret;
+    config.policy               = policy;
+    config.consumer_sync_policy = sync_policy;
+    config.checksum_policy      = checksum_policy;
+    config.hub_uid              = hub_uid;
+    config.hub_name             = hub_name;
+
+    // Create DataBlock.
+    auto dbp = create_datablock_producer_impl(
+        channel_name, policy, config, fz_schema_info, slot_schema_info);
+    if (!dbp)
+    {
+        LOGGER_ERROR("[ShmQueue] create_writer: DataBlock creation failed for '{}'",
+                     channel_name);
+        return nullptr;
+    }
+
+    // Build ShmQueue wrapping the owned DataBlock.
+    auto impl               = std::make_unique<ShmQueueImpl>();
+    impl->dbp               = std::move(dbp);
+    impl->item_sz            = item_size;
+    impl->fz_sz              = fz_size;
+    impl->chan_name           = channel_name;
+    impl->checksum_slot      = checksum_slot;
+    impl->checksum_fz        = checksum_fz;
+    impl->always_clear_slot  = always_clear_slot;
+    return std::unique_ptr<QueueWriter>(new ShmQueue(std::move(impl)));
+}
+
+// ============================================================================
+// create_reader — attaches to existing DataBlock, validates schema
+// ============================================================================
+
+std::unique_ptr<QueueReader>
+ShmQueue::create_reader(const std::string &shm_name,
+                        uint64_t shared_secret,
+                        const std::vector<SchemaFieldDesc> &expected_slot_schema,
+                        const std::string &expected_packing,
+                        const std::string &channel_name,
+                        bool verify_slot,
+                        bool verify_fz,
+                        const std::string &consumer_uid,
+                        const std::string &consumer_name)
+{
+    // Attach to existing DataBlock.
+    const char *uid  = consumer_uid.empty()  ? nullptr : consumer_uid.c_str();
+    const char *cnam = consumer_name.empty() ? nullptr : consumer_name.c_str();
+    auto dbc = find_datablock_consumer_impl(shm_name, shared_secret,
+                                             nullptr, nullptr, nullptr, uid, cnam);
+    if (!dbc)
+    {
+        // Attachment failed — SHM not found or secret mismatch.
+        // This is not necessarily an error (ZMQ fallback may be available).
+        return nullptr;
+    }
+
+    // Read actual sizes from DataBlock header.
+    auto *header = dbc->header();
+    if (!header)
+    {
+        LOGGER_ERROR("[ShmQueue] create_reader: DataBlock header is null for '{}'",
+                     channel_name);
+        return nullptr;
+    }
+
+    const size_t header_slot_size = header->logical_unit_size;
+    const size_t header_fz_size   = header->flexible_zone_size;
+
+    // Validate slot size against expected schema.
+    if (!expected_slot_schema.empty())
+    {
+        auto [layout, expected_size] = compute_field_layout(expected_slot_schema, expected_packing);
+
+        // DataBlock rounds logical_unit_size to 64-byte cache lines.
+        constexpr size_t kCacheLineSize = 64;
+        const size_t expected_rounded =
+            (expected_size + kCacheLineSize - 1) & ~(kCacheLineSize - 1);
+
+        if (header_slot_size != expected_rounded)
+        {
+            LOGGER_ERROR("[ShmQueue] create_reader: slot size mismatch for '{}' — "
+                         "header={} bytes, expected={} bytes (schema {} bytes, rounded to {})",
+                         channel_name, header_slot_size, expected_rounded,
+                         expected_size, expected_rounded);
+            return nullptr;
+        }
+    }
+
+    // Build ShmQueue wrapping the owned DataBlock.
+    auto impl          = std::make_unique<ShmQueueImpl>();
+    impl->dbc          = std::move(dbc);
+    impl->item_sz      = header_slot_size;
+    impl->fz_sz        = header_fz_size;
+    impl->chan_name     = channel_name;
+    impl->verify_slot  = verify_slot;
+    impl->verify_fz    = verify_fz;
+    return std::unique_ptr<QueueReader>(new ShmQueue(std::move(impl)));
+}
+
+// ============================================================================
+// raw_producer / raw_consumer — internal accessors for template RAII path
+// ============================================================================
+
+DataBlockProducer *ShmQueue::raw_producer() noexcept
+{
+    return pImpl ? pImpl->producer() : nullptr;
+}
+
+DataBlockConsumer *ShmQueue::raw_consumer() noexcept
+{
+    return pImpl ? pImpl->consumer() : nullptr;
+}
+
+// ============================================================================
 // set_checksum_options  (ShmQueue-specific)
 // ============================================================================
 
