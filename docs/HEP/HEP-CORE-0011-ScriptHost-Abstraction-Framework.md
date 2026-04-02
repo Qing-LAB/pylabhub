@@ -75,7 +75,7 @@ them a documented, supported pattern.
 ```
 pylabhub-utils (shared lib — existing)
   include/utils/script_host.hpp              ← ScriptHost abstract base (PUBLIC header)
-  include/utils/script_host_helpers.hpp      ← Shared inline helpers (resolve_schema, etc.)
+  include/utils/schema_utils.hpp + python_helpers.hpp      ← Shared inline helpers (resolve_schema, etc.)
   include/utils/script_host_schema.hpp       ← SchemaSpec, FieldDef types
   src/utils/scripting/script_host.cpp        ← base implementation (thread_local, startup/shutdown)
   src/utils/scripting/lua_script_host.hpp/.cpp  ← LuaScriptHost concrete class
@@ -690,7 +690,7 @@ coordination without changing call sites.
 | 2 | `src/scripting/python_script_host.hpp/.cpp` — PythonScriptHost | Done | 2026-02-28 |
 | 3 | `hub_script.hpp/.cpp` — HubScript : PythonScriptHost | Done | 2026-02-28 |
 | 4 | Producer/Consumer/Processor ScriptHost subclasses | Done | 2026-03-01 |
-| 5 | `script_host_helpers.hpp` — 14 shared inline helpers | Done | 2026-03-02 |
+| 5 | `schema_utils.hpp + python_helpers.hpp` — 14 shared inline helpers | Done | 2026-03-02 |
 | 6 | `script_host_schema.hpp` — SchemaSpec, FieldDef types | Done | 2026-03-02 |
 | 7 | `role_host_core.hpp/.cpp` — engine-agnostic infrastructure | Done | 2026-03-03 |
 | 8 | `python_role_host_base.hpp/.cpp` — common Python layer | Done | 2026-03-03 |
@@ -830,7 +830,7 @@ See also HEP-CORE-0007 §12.3 for the shutdown pitfalls that motivated centralis
 | File | Layer | Description |
 |------|-------|-------------|
 | `src/include/utils/script_host.hpp` | L2 (public) | `ScriptHost` abstract base class |
-| `src/include/utils/script_host_helpers.hpp` | L2 (public) | 14 shared inline helpers (`resolve_schema`, etc.) |
+| `src/include/utils/schema_utils.hpp + python_helpers.hpp` | L2 (public) | 14 shared inline helpers (`resolve_schema`, etc.) |
 | `src/include/utils/script_host_schema.hpp` | L2 (public) | `SchemaSpec`, `FieldDef` types |
 | `src/scripting/role_host_core.hpp` | scripting | `RoleHostCore` — engine-agnostic infrastructure |
 | `src/scripting/role_host_core.cpp` | scripting | Message queue, shutdown flags, state |

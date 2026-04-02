@@ -18,7 +18,7 @@
 #include "utils/messenger.hpp"
 #include "utils/shared_memory_spinlock.hpp"
 #include "utils/logger.hpp"
-#include "script_host_helpers.hpp"
+#include "schema_utils.hpp"
 #include "plh_platform.hpp"
 
 #include <cassert>

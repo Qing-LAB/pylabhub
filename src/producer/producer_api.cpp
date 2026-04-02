@@ -6,7 +6,7 @@
 #include "producer_api.hpp"
 
 #include "plh_version_registry.hpp"
-#include "script_host_helpers.hpp"
+#include "python_helpers.hpp"
 #include "utils/format_tools.hpp"
 #include "utils/logger.hpp"
 
