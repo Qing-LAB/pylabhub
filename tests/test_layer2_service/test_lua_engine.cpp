@@ -198,6 +198,7 @@ TEST_F(LuaEngineTest, RegisterSlotType_MultiField)
     ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
 
     SchemaSpec spec;
+    spec.has_schema = true;
     FieldDef f1; f1.name = "x"; f1.type_str = "float32"; f1.count = 1; f1.length = 0;
     FieldDef f2; f2.name = "y"; f2.type_str = "float32"; f2.count = 1; f2.length = 0;
     FieldDef f3; f3.name = "z"; f3.type_str = "float32"; f3.count = 1; f3.length = 0;
