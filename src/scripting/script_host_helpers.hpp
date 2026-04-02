@@ -457,6 +457,33 @@ schema_spec_to_zmq_fields(const SchemaSpec &spec)
     return out;
 }
 
+// ── Direction objects — script-level rx/tx/msg wrappers ──────────────────────
+
+/// Receive direction object passed to on_consume(rx, ...) and on_process(rx, ...).
+/// rx.slot = typed slot view (read-only), rx.fz = flexzone view (mutable per HEP-0002).
+struct PyRxChannel
+{
+    py::object slot{py::none()};
+    py::object fz{py::none()};
+};
+
+/// Transmit direction object passed to on_produce(tx, ...) and on_process(..., tx, ...).
+/// tx.slot = typed slot view (writable), tx.fz = flexzone view (mutable).
+struct PyTxChannel
+{
+    py::object slot{py::none()};
+    py::object fz{py::none()};
+};
+
+/// Inbox message object passed to on_inbox(msg, api).
+/// msg.data = typed inbox payload (read-only copy), msg.sender_uid, msg.seq.
+struct PyInboxMsg
+{
+    py::object  data{py::none()};
+    std::string sender_uid;
+    uint64_t    seq{0};
+};
+
 // ── InboxHandle — Python-facing wrapper for hub::InboxClient ─────────────────
 
 /**

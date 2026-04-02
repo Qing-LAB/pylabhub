@@ -1447,7 +1447,7 @@ int queue_metrics_forwarding(int /*argc*/, char ** /*argv*/)
             popts.has_shm       = true;
             popts.shm_config    = make_shm_config();
             popts.item_size     = sizeof(uint64_t);
-            popts.timing = {LoopTimingPolicy::FixedRate, 1000, 0.1}; // 1ms
+            // Timing is role-level — not set on queue options.
             popts.timeout_ms    = 3000;
 
             auto producer = Producer::create(messenger, popts);
@@ -1504,7 +1504,7 @@ int zmq_forwarding_api(int /*argc*/, char ** /*argv*/)
             popts.zmq_node_endpoint = endpoint;
             popts.zmq_schema        = {{"bytes", 1, static_cast<uint32_t>(kItemSz)}};
             popts.item_size         = kItemSz;
-            popts.timing = {LoopTimingPolicy::FixedRate, 500, 0.1};
+            // Timing is role-level — not set on queue options.
             popts.timeout_ms        = 3000;
 
             fmt::print(stderr, "[T] creating producer...\n");
@@ -1541,7 +1541,7 @@ int zmq_forwarding_api(int /*argc*/, char ** /*argv*/)
             copts.consumer_uid  = "CONS-ZMQ-FWD-0001";
             copts.zmq_schema    = {{"bytes", 1, static_cast<uint32_t>(kItemSz)}};
             copts.item_size     = kItemSz;
-            copts.timing = {LoopTimingPolicy::FixedRate, 500, 0.1};
+            // Timing is role-level — not set on queue options.
             copts.timeout_ms    = 3000;
 
             auto consumer = Consumer::connect(cons_m, copts);

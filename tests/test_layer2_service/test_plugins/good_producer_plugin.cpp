@@ -4,7 +4,7 @@
  *
  * Used by test_scriptengine_native_dylib.cpp to exercise NativeEngine.
  */
-#include "utils/plugin_api.h"
+#include "utils/native_engine_api.h"
 
 #include <cstring>
 
@@ -13,26 +13,26 @@
 PLH_DECLARE_SCHEMA(SlotFrame, "value:float32:1:0", 4)
 
 // ── Plugin state ────────────────────────────────────────────────────────
-static const PlhPluginContext *g_ctx = nullptr;
+static const PlhNativeContext *g_ctx = nullptr;
 static int g_init_count = 0;
 static int g_produce_count = 0;
 static int g_stop_count = 0;
 
 // ── Required symbols ────────────────────────────────────────────────────
 
-extern "C" PLH_EXPORT const PlhAbiInfo *plugin_abi_info(void)
+extern "C" PLH_EXPORT const PlhAbiInfo *native_abi_info(void)
 {
     static const PlhAbiInfo info = {
         sizeof(PlhAbiInfo),
         static_cast<uint32_t>(sizeof(void *)),
         static_cast<uint32_t>(sizeof(size_t)),
         1, // little-endian
-        PLH_PLUGIN_API_VERSION
+        PLH_NATIVE_API_VERSION
     };
     return &info;
 }
 
-extern "C" PLH_EXPORT bool plugin_init(const PlhPluginContext *ctx)
+extern "C" PLH_EXPORT bool native_init(const PlhNativeContext *ctx)
 {
     g_ctx = ctx;
     g_init_count++;
@@ -41,19 +41,19 @@ extern "C" PLH_EXPORT bool plugin_init(const PlhPluginContext *ctx)
     return true;
 }
 
-extern "C" PLH_EXPORT void plugin_finalize(void)
+extern "C" PLH_EXPORT void native_finalize(void)
 {
     g_ctx = nullptr;
 }
 
-extern "C" PLH_EXPORT const char *plugin_name(void) { return "good_producer"; }
-extern "C" PLH_EXPORT const char *plugin_version(void) { return "1.0.0"; }
+extern "C" PLH_EXPORT const char *native_name(void) { return "good_producer"; }
+extern "C" PLH_EXPORT const char *native_version(void) { return "1.0.0"; }
 
 // ── Callbacks ───────────────────────────────────────────────────────────
 
 extern "C" PLH_EXPORT void on_init(const char * /*args_json*/)
 {
-    g_init_count += 100; // distinguishable from plugin_init
+    g_init_count += 100; // distinguishable from native_init
 }
 
 extern "C" PLH_EXPORT void on_stop(const char * /*args_json*/)
@@ -61,13 +61,12 @@ extern "C" PLH_EXPORT void on_stop(const char * /*args_json*/)
     g_stop_count++;
 }
 
-extern "C" PLH_EXPORT bool on_produce(void *out_slot, size_t out_sz,
-                                       void * /*fz*/, size_t /*fz_sz*/)
+extern "C" PLH_EXPORT bool on_produce(const plh_tx_t *tx)
 {
-    if (!out_slot || out_sz < sizeof(float))
+    if (!tx || !tx->slot || tx->slot_size < sizeof(float))
         return false;
 
-    auto *slot = static_cast<float *>(out_slot);
+    auto *slot = static_cast<float *>(tx->slot);
     *slot = 42.0f;
     g_produce_count++;
 

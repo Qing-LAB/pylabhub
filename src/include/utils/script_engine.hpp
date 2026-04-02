@@ -119,6 +119,40 @@ struct RoleContext
 };
 
 // ============================================================================
+// InvokeRx / InvokeTx — directional data for invoke calls
+// ============================================================================
+
+/// Read-only input direction — data received from upstream.
+/// Slot is const (system-managed via SlotRWState). Flexzone is mutable
+/// (user-managed coordination via SharedSpinLock / atomics per HEP-0002).
+/// Passed by value (32 bytes, fits in registers on x86-64).
+struct InvokeRx
+{
+    const void *slot{nullptr};    ///< Read-only input slot.
+    size_t      slot_size{0};
+    void       *fz{nullptr};      ///< Mutable flexzone (bidirectional by design).
+    size_t      fz_size{0};
+};
+
+/// Writable output direction — data going downstream.
+struct InvokeTx
+{
+    void  *slot{nullptr};         ///< Writable output slot.
+    size_t slot_size{0};
+    void  *fz{nullptr};           ///< Mutable flexzone.
+    size_t fz_size{0};
+};
+
+/// Inbox message — one-shot peer-to-peer delivery (no flexzone, no ring buffer).
+struct InvokeInbox
+{
+    const void *data{nullptr};    ///< Typed payload (valid until next recv_one()).
+    size_t      data_size{0};
+    std::string sender_uid;       ///< Sender's role UID.
+    uint64_t    seq{0};           ///< Sender's monotonic sequence number.
+};
+
+// ============================================================================
 // ScriptEngine — abstract interface
 // ============================================================================
 
@@ -126,6 +160,37 @@ class ScriptEngine
 {
   public:
     virtual ~ScriptEngine() = default;
+
+    // ── Engine state machine ──────────────────────────────────────────────
+
+    enum class EngineState : uint8_t
+    {
+        Unloaded,
+        Initialized,
+        ScriptLoaded,
+        ApiBuilt,
+        Finalized
+    };
+
+    [[nodiscard]] EngineState engine_state() const noexcept { return state_; }
+
+    // ── Lifecycle module support ────────────────────────────────────────
+
+    /// Magic number for lifecycle validation.
+    static constexpr uint64_t kLifecycleMagic = 0x534345'4E47494E45ULL; // "SCENGINE"
+
+    /// Lifecycle generation key — set by whoever registers this engine
+    /// as a lifecycle module. Used by validate function to detect stale pointers.
+    uint64_t lifecycle_key_{0};
+    uint64_t lifecycle_magic_{kLifecycleMagic};
+
+    /// Validation function for lifecycle userdata.
+    static bool lifecycle_validate(void *userdata, uint64_t key)
+    {
+        auto *eng = static_cast<ScriptEngine *>(userdata);
+        return eng && eng->lifecycle_magic_ == kLifecycleMagic
+                   && eng->lifecycle_key_ == key;
+    }
 
     // ── Lifecycle (called from working thread) ───────────────────────────
 
@@ -146,7 +211,10 @@ class ScriptEngine
         owner_thread_id_ = std::this_thread::get_id();
         ctx_.core = core;
         // accepting_ stays false until build_api() succeeds.
-        return init_engine_(log_tag, core);
+        if (!init_engine_(log_tag, core))
+            return false;
+        state_ = EngineState::Initialized;
+        return true;
     }
 
     /**
@@ -178,6 +246,7 @@ class ScriptEngine
             ctx_.core = saved_core;
         if (!build_api_(ctx))
             return false;
+        state_ = EngineState::ApiBuilt;
         accepting_.store(true, std::memory_order_release);
         return true;
     }
@@ -221,8 +290,11 @@ class ScriptEngine
      */
     void finalize()
     {
+        if (state_ == EngineState::Finalized)
+            return; // idempotent
         stop_accepting();
         finalize_engine_(); // Engine guards against double-finalize internally.
+        state_ = EngineState::Finalized;
     }
 
     // ── Queries ──────────────────────────────────────────────────────────
@@ -234,15 +306,17 @@ class ScriptEngine
     /**
      * @brief Register a slot type from SchemaSpec.
      *
-     * Known type_name values and their caching:
-     *   "SlotFrame"    — producer writable / consumer readonly
-     *   "InSlotFrame"  — processor input (readonly)
-     *   "OutSlotFrame" — processor output (writable)
-     *   "FlexFrame"    — flexzone (writable + readonly)
+     * Directional type names (registered by all roles):
+     *   "InSlotFrame"  — input slot (readonly)
+     *   "OutSlotFrame" — output slot (writable)
+     *   "InFlexFrame"  — input flexzone (mutable, HEP-0002)
+     *   "OutFlexFrame" — output flexzone (mutable)
      *   "InboxFrame"   — inbox (readonly; uses from_buffer_copy for Python)
      *
-     * All types MUST be cached by the engine for hot-path use. In particular,
-     * "InboxFrame" is registered at startup when inbox_schema is configured.
+     * Engines create "SlotFrame"/"FlexFrame" aliases for single-direction roles
+     * (producer/consumer). Processor has both directions, no aliases.
+     *
+     * All types MUST be cached by the engine for hot-path use.
      * invoke_on_inbox() requires the cached type — null cache is an error.
      *
      * @param spec The schema specification.
@@ -293,71 +367,60 @@ class ScriptEngine
     virtual void invoke_on_stop() = 0;
 
     /**
-     * @brief Invoke on_produce(out_slot, flexzone, messages, api).
-     * @param out_slot Writable slot buffer, or nullptr if acquire failed.
-     * @param out_sz   Slot size in bytes.
-     * @param flexzone Writable flexzone buffer, or nullptr if no flexzone.
-     * @param fz_sz    Flexzone size in bytes.
-     * @param fz_type  Flexzone type name, or nullptr.
-     * @param msgs     Incoming messages (drained from RoleHostCore).
+     * @brief Invoke on_produce(tx, msgs, api).
+     * @param tx   Output direction (writable slot + flexzone).
+     * @param msgs Incoming messages (drained from RoleHostCore).
      * @return Commit, Discard, or Error.
      */
     virtual InvokeResult invoke_produce(
-        void *out_slot, size_t out_sz,
-        void *flexzone, size_t fz_sz, const char *fz_type,
+        InvokeTx tx,
         std::vector<IncomingMessage> &msgs) = 0;
 
     /**
-     * @brief Invoke on_consume(in_slot, flexzone, messages, api).
-     *
-     * Returns void (not InvokeResult) because the consumer callback does not
-     * produce publishable output — there is no slot to commit/discard.
-     * Script errors are tracked via core->inc_script_errors().
+     * @brief Invoke on_consume(rx, msgs, api).
+     * @param rx   Input direction (read-only slot + flexzone).
+     * @param msgs Incoming messages (drained from RoleHostCore).
+     * @return Commit, Discard, or Error. Currently ignored by the consumer
+     *         data loop — reserved for future flow control.
      */
-    virtual void invoke_consume(
-        const void *in_slot, size_t in_sz,
-        const void *flexzone, size_t fz_sz, const char *fz_type,
+    virtual InvokeResult invoke_consume(
+        InvokeRx rx,
         std::vector<IncomingMessage> &msgs) = 0;
 
     /**
-     * @brief Invoke on_process(in_slot, out_slot, flexzone, messages, api).
+     * @brief Invoke on_process(rx, tx, msgs, api).
+     *
+     * Each direction pairs a slot with its flexzone. Either flexzone may
+     * be nullptr if not configured.
+     *
+     * @param rx   Input direction (read-only slot + flexzone from upstream).
+     * @param tx   Output direction (writable slot + flexzone to downstream).
+     * @param msgs Incoming messages (drained from RoleHostCore).
+     * @return Commit, Discard, or Error.
      */
     virtual InvokeResult invoke_process(
-        const void *in_slot, size_t in_sz,
-        void *out_slot, size_t out_sz,
-        void *flexzone, size_t fz_sz, const char *fz_type,
+        InvokeRx rx, InvokeTx tx,
         std::vector<IncomingMessage> &msgs) = 0;
 
     /**
-     * @brief Invoke on_inbox(slot_data, sender_uid, api).
+     * @brief Invoke on_inbox(msg, api).
      *
-     * Returns void — inbox delivery is fire-and-forget from the framework's
-     * perspective. Script errors are tracked via core->inc_script_errors().
+     * @param msg  Inbox message with typed payload, sender UID, and sequence.
+     * @return Commit, Discard, or Error. Currently ignored by the inbox loop.
      *
      * ## Invariants
      *
      * - Inbox only exists when inbox_schema is configured (no schemaless inbox).
-     * - "InboxFrame" type is registered via register_slot_type() at startup,
-     *   before any invoke_on_inbox() call.
-     * - The engine MUST use the cached inbox type to build a typed view.
-     *   If the cached type is null, that is a bug — log error and return.
+     * - "InboxFrame" type is registered via register_slot_type() at startup.
      * - Data lifetime: valid only until the next InboxQueue::recv_one() call.
      *   Python must use from_buffer_copy (not from_buffer). Lua ffi.cast is
      *   safe because the callback completes before the next recv_one().
-     *
-     * @param data     Inbox payload (InboxQueue-owned buffer).
-     * @param sz       Payload size in bytes (= item_size()).
-     * @param sender   Sender's pylabhub UID.
      */
-    virtual void invoke_on_inbox(
-        const void *data, size_t sz,
-        const std::string &sender) = 0;
+    virtual InvokeResult invoke_on_inbox(InvokeInbox msg) = 0;
 
     // ── Error state ──────────────────────────────────────────────────────
 
     [[nodiscard]] virtual uint64_t script_error_count() const noexcept = 0;
-
-    // ── Threading capability ─────────────────────────────────────────────
 
     // ── Threading capability ─────────────────────────────────────────────
 
@@ -429,7 +492,7 @@ class ScriptEngine
      * cleans up thread-specific state:
      *   - Lua: destroys the thread-local LuaState from the cache
      *   - Python: no-op (single-state, no per-thread resources)
-     *   - Native: no-op (plugin manages its own threads)
+     *   - Native: no-op (native engine manages its own threads)
      *
      * Safe to call from any thread. No-op if the thread has no state.
      */
@@ -488,6 +551,8 @@ class ScriptEngine
     /// Non-null for child engines (thread-local states). Points to the owner
     /// engine that owns the lifecycle. is_accepting() checks owner's flag.
     ScriptEngine *owner_engine_{nullptr};
+
+    EngineState state_{EngineState::Unloaded};
 };
 
 /**

@@ -3,7 +3,7 @@
  * @brief L2 tests for NativeEngine — the ScriptEngine for native C/C++ plugins.
  *
  * Tests the full lifecycle: dlopen → ABI check → schema validation →
- * plugin_init → invoke callbacks → plugin_finalize → dlclose.
+ * native_init → invoke callbacks → native_finalize → dlclose.
  *
  * Uses a real test plugin .so built alongside the test binary.
  * Error paths: missing .so, bad schema, bad ABI, missing required callback.
@@ -30,6 +30,7 @@ using pylabhub::scripting::RoleHostCore;
 using pylabhub::scripting::IncomingMessage;
 using pylabhub::scripting::SchemaSpec;
 using pylabhub::scripting::FieldDef;
+using pylabhub::scripting::InvokeTx;
 
 namespace
 {
@@ -115,7 +116,7 @@ TEST_F(NativeEngineTest, FullLifecycle_ProduceCommitsAndWritesSlot)
     // on_produce: plugin writes 42.0 to slot.
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(result, InvokeResult::Commit);
     EXPECT_FLOAT_EQ(buf, 42.0f);
 
@@ -126,7 +127,7 @@ TEST_F(NativeEngineTest, FullLifecycle_ProduceCommitsAndWritesSlot)
 
     // Second produce: counter increments.
     buf = 0.0f;
-    result = engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(result, InvokeResult::Commit);
     EXPECT_FLOAT_EQ(buf, 42.0f);
 
@@ -282,8 +283,8 @@ TEST_F(NativeEngineTest, ContextFieldsPassedToPlugin)
     ctx.core = &core_;
     ASSERT_TRUE(engine.build_api(ctx));
 
-    // The plugin stores g_ctx in plugin_init. We can verify indirectly:
-    // plugin_init increments init_count by 1, on_init increments by 100.
+    // The plugin stores g_ctx in native_init. We can verify indirectly:
+    // native_init increments init_count by 1, on_init increments by 100.
     engine.invoke_on_init();
 
     // Call test_get_init_count via generic invoke to verify both ran.

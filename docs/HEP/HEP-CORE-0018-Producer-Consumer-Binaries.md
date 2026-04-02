@@ -506,7 +506,7 @@ variables for state that persists across `on_produce()` calls.
 
 The slot objects passed to `on_produce` and `on_consume` are **zero-copy views** into shared memory.
 
-#### ctypes slots (default, `expose_as: ctypes`)
+#### ctypes slots (field-based schema)
 
 Fields map directly to the schema definition. Assignment is always in-place (no copy):
 
@@ -529,21 +529,19 @@ this is a ctypes limitation (`__setitem__` on the subarray object, not `__setatt
 #### Array fields (`"count": N > 1`)
 
 Fields with `"count": N` (e.g., `{"name": "samples", "type": "float32", "count": 100}`) become
-ctypes arrays (`c_float * 100`). Use `np.ctypeslib.as_array()` for a zero-copy numpy view:
+ctypes arrays (`c_float * 100`). Use `api.as_numpy()` for a zero-copy numpy view:
 
 ```python
-import numpy as np
-
 # Consumer — read-only numpy view (do not write back):
-arr = np.ctypeslib.as_array(in_slot.samples)    # shape=(100,), dtype=float32
+arr = api.as_numpy(in_slot.samples)    # shape=(100,), dtype=float32
 
 # Producer — writable numpy view:
-arr = np.ctypeslib.as_array(out_slot.samples)
-arr[:] = new_data                                # writes directly into SHM slot
+arr = api.as_numpy(out_slot.samples)
+arr[:] = new_data                      # writes directly into SHM slot
 ```
 
-Note: `expose_as` is slot-level, not per-field. All fields in a ctypes slot come as ctypes types;
-manual `np.ctypeslib.as_array()` is the correct approach for per-field numpy access.
+`api.as_numpy(field)` infers the dtype automatically from the ctypes array element type.
+It is available on all role APIs (producer, consumer, processor).
 
 #### Raw buffer access
 
@@ -555,11 +553,6 @@ view = memoryview(in_slot).cast('B') # zero-copy byte view
 ```
 
 This is equivalent to the C++ `buffer_span()` accessor.
-
-#### numpy slots (`expose_as: numpy`)
-
-When `expose_as: numpy` is configured, the slot is a `numpy.ndarray`. Consumer (`in_slot`)
-arrays have `writeable=False` set on the numpy array, so writes raise `ValueError`.
 
 ---
 

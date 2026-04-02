@@ -800,27 +800,39 @@ bool PythonEngine::register_slot_type(const SchemaSpec &spec,
         py::object type = build_ctypes_type_(spec, type_name, packing);
 
         
-        if (type_name == "SlotFrame")
-        {
-            slot_type_    = type;
-            slot_type_ro_ = wrap_readonly_(type);
-            slot_spec_    = spec;
-        }
-        else if (type_name == "InSlotFrame")
+        if (type_name == "InSlotFrame")
         {
             in_slot_type_ro_ = wrap_readonly_(type);
             in_slot_spec_    = spec;
+            // Alias for consumer (single-direction role).
+            slot_alias_ro_   = build_ctypes_type_(spec, "SlotFrame", packing);
+            slot_alias_ro_   = wrap_readonly_(slot_alias_ro_);
+            slot_alias_spec_ = spec;
         }
         else if (type_name == "OutSlotFrame")
         {
             out_slot_type_ = type;
             out_slot_spec_ = spec;
+            // Alias for producer (single-direction role).
+            slot_alias_      = build_ctypes_type_(spec, "SlotFrame", packing);
+            slot_alias_spec_ = spec;
         }
-        else if (type_name == "FlexFrame")
+        else if (type_name == "InFlexFrame")
         {
-            fz_type_    = type;
-            fz_type_ro_ = wrap_readonly_(type);
-            fz_spec_    = spec;
+            in_fz_type_ = type; // mutable — flexzone is bidirectional per HEP-0002
+            in_fz_spec_ = spec;
+            // Alias for consumer.
+            fz_alias_      = build_ctypes_type_(spec, "FlexFrame", packing);
+            fz_alias_spec_ = spec;
+        }
+        else if (type_name == "OutFlexFrame")
+        {
+            out_fz_type_ = type;
+            out_fz_spec_ = spec;
+            // Alias for producer. Overwrites consumer alias if both registered (processor),
+            // but processor never uses aliases — it uses directional members.
+            fz_alias_      = build_ctypes_type_(spec, "FlexFrame", packing);
+            fz_alias_spec_ = spec;
         }
         else if (type_name == "InboxFrame")
         {
@@ -853,14 +865,14 @@ size_t PythonEngine::type_sizeof(const std::string &type_name) const
 
     // Return size for the cached type (represents the actual struct size).
     py::object type = py::none();
-    if (type_name == "SlotFrame")
-        type = slot_type_;
-    else if (type_name == "InSlotFrame")
+    if (type_name == "InSlotFrame")
         type = in_slot_type_ro_;
     else if (type_name == "OutSlotFrame")
         type = out_slot_type_;
-    else if (type_name == "FlexFrame")
-        type = fz_type_;
+    else if (type_name == "InFlexFrame")
+        type = in_fz_type_;
+    else if (type_name == "OutFlexFrame")
+        type = out_fz_type_;
     else if (type_name == "InboxFrame")
         type = inbox_type_ro_;
 
@@ -923,12 +935,11 @@ void PythonEngine::invoke_on_stop()
 }
 
 // ============================================================================
-// invoke_produce — on_produce(out_slot, flexzone, messages, api) -> result
+// invoke_produce — on_produce(tx, msgs, api) -> bool
 // ============================================================================
 
 InvokeResult PythonEngine::invoke_produce(
-    void *out_slot, size_t out_sz,
-    void *flexzone, size_t fz_sz, const char * /*fz_type*/,
+    InvokeTx tx,
     std::vector<IncomingMessage> &msgs)
 {
     InvokeResult result = InvokeResult::Error;
@@ -937,16 +948,14 @@ InvokeResult PythonEngine::invoke_produce(
         py::gil_scoped_acquire g;
         try
         {
-            py::object slot_view = py::none();
-            if (out_slot != nullptr && !slot_type_.is_none())
-                slot_view = make_slot_view_(slot_spec_, slot_type_, out_slot, out_sz, false);
-
-            py::object fz_view = py::none();
-            if (flexzone != nullptr && fz_sz > 0 && !fz_type_.is_none())
-                fz_view = make_slot_view_(fz_spec_, fz_type_, flexzone, fz_sz, false);
+            PyTxChannel tx_ch;
+            if (tx.slot != nullptr && !out_slot_type_.is_none())
+                tx_ch.slot = make_slot_view_(out_slot_spec_, out_slot_type_, tx.slot, tx.slot_size, false);
+            if (tx.fz != nullptr && tx.fz_size > 0 && !out_fz_type_.is_none())
+                tx_ch.fz = make_slot_view_(out_fz_spec_, out_fz_type_, tx.fz, tx.fz_size, false);
 
             py::list msgs_list = build_messages_list_(msgs);
-            py::object ret = py_on_produce_(slot_view, fz_view, msgs_list, api_obj_);
+            py::object ret = py_on_produce_(py::cast(tx_ch), msgs_list, api_obj_);
             result = parse_return_value_(ret, "on_produce");
         }
         catch (py::error_already_set &e)
@@ -959,54 +968,53 @@ InvokeResult PythonEngine::invoke_produce(
 }
 
 // ============================================================================
-// invoke_consume — on_consume(in_slot, flexzone, messages, api)
+// invoke_consume — on_consume(rx, msgs, api) -> bool
 // ============================================================================
 
-void PythonEngine::invoke_consume(
-    const void *in_slot, size_t in_sz,
-    const void *flexzone, size_t fz_sz, const char * /*fz_type*/,
+InvokeResult PythonEngine::invoke_consume(
+    InvokeRx rx,
     std::vector<IncomingMessage> &msgs)
 {
+    InvokeResult result = InvokeResult::Commit;
     if (is_callable(py_on_consume_))
     {
         py::gil_scoped_acquire g;
         try
         {
-            py::object slot_view = py::none();
-            if (in_slot != nullptr && !slot_type_ro_.is_none())
+            PyRxChannel rx_ch;
+            if (rx.slot != nullptr && !in_slot_type_ro_.is_none())
             {
-                slot_view = make_slot_view_(
-                    slot_spec_, slot_type_ro_,
-                    const_cast<void *>(in_slot), in_sz, true);
+                rx_ch.slot = make_slot_view_(
+                    in_slot_spec_, in_slot_type_ro_,
+                    const_cast<void *>(rx.slot), rx.slot_size, true);
             }
-
-            py::object fz_view = py::none();
-            if (flexzone != nullptr && fz_sz > 0 && !fz_type_ro_.is_none())
+            if (rx.fz != nullptr && rx.fz_size > 0 && !in_fz_type_.is_none())
             {
-                fz_view = make_slot_view_(
-                    fz_spec_, fz_type_ro_,
-                    const_cast<void *>(flexzone), fz_sz, true);
+                // Flexzone is mutable on both sides (HEP-0002).
+                rx_ch.fz = make_slot_view_(
+                    in_fz_spec_, in_fz_type_,
+                    rx.fz, rx.fz_size, false);
             }
 
             py::list msgs_list = build_messages_list_bare_(msgs);
-            py_on_consume_(slot_view, fz_view, msgs_list, api_obj_);
+            py::object ret = py_on_consume_(py::cast(rx_ch), msgs_list, api_obj_);
+            result = parse_return_value_(ret, "on_consume");
         }
         catch (py::error_already_set &e)
         {
-            on_python_error_("on_consume", e);
+            result = on_python_error_("on_consume", e);
         }
     }
     process_pending_();
+    return result;
 }
 
 // ============================================================================
-// invoke_process — on_process(in_slot, out_slot, flexzone, messages, api) -> result
+// invoke_process — on_process(rx, tx, msgs, api) -> bool
 // ============================================================================
 
 InvokeResult PythonEngine::invoke_process(
-    const void *in_slot, size_t in_sz,
-    void *out_slot, size_t out_sz,
-    void *flexzone, size_t fz_sz, const char * /*fz_type*/,
+    InvokeRx rx, InvokeTx tx,
     std::vector<IncomingMessage> &msgs)
 {
     InvokeResult result = InvokeResult::Error;
@@ -1015,33 +1023,24 @@ InvokeResult PythonEngine::invoke_process(
         py::gil_scoped_acquire g;
         try
         {
-            py::object in_view = py::none();
-            if (in_slot != nullptr)
+            PyRxChannel rx_ch;
+            if (rx.slot != nullptr && !in_slot_type_ro_.is_none())
             {
-                const auto &type = in_slot_type_ro_.is_none() ? slot_type_ro_ : in_slot_type_ro_;
-                const auto &spec = in_slot_type_ro_.is_none() ? slot_spec_ : in_slot_spec_;
-                if (!type.is_none())
-                {
-                    in_view = make_slot_view_(
-                        spec, type, const_cast<void *>(in_slot), in_sz, true);
-                }
+                rx_ch.slot = make_slot_view_(
+                    in_slot_spec_, in_slot_type_ro_,
+                    const_cast<void *>(rx.slot), rx.slot_size, true);
             }
+            if (rx.fz != nullptr && rx.fz_size > 0 && !in_fz_type_.is_none())
+                rx_ch.fz = make_slot_view_(in_fz_spec_, in_fz_type_, rx.fz, rx.fz_size, false);
 
-            py::object out_view = py::none();
-            if (out_slot != nullptr)
-            {
-                const auto &type = out_slot_type_.is_none() ? slot_type_ : out_slot_type_;
-                const auto &spec = out_slot_type_.is_none() ? slot_spec_ : out_slot_spec_;
-                if (!type.is_none())
-                    out_view = make_slot_view_(spec, type, out_slot, out_sz, false);
-            }
-
-            py::object fz_view = py::none();
-            if (flexzone != nullptr && fz_sz > 0 && !fz_type_.is_none())
-                fz_view = make_slot_view_(fz_spec_, fz_type_, flexzone, fz_sz, false);
+            PyTxChannel tx_ch;
+            if (tx.slot != nullptr && !out_slot_type_.is_none())
+                tx_ch.slot = make_slot_view_(out_slot_spec_, out_slot_type_, tx.slot, tx.slot_size, false);
+            if (tx.fz != nullptr && tx.fz_size > 0 && !out_fz_type_.is_none())
+                tx_ch.fz = make_slot_view_(out_fz_spec_, out_fz_type_, tx.fz, tx.fz_size, false);
 
             py::list msgs_list = build_messages_list_(msgs);
-            py::object ret = py_on_process_(in_view, out_view, fz_view, msgs_list, api_obj_);
+            py::object ret = py_on_process_(py::cast(rx_ch), py::cast(tx_ch), msgs_list, api_obj_);
             result = parse_return_value_(ret, "on_process");
         }
         catch (py::error_already_set &e)
@@ -1054,21 +1053,20 @@ InvokeResult PythonEngine::invoke_process(
 }
 
 // ============================================================================
-// invoke_on_inbox — on_inbox(data, sender, api)
+// invoke_on_inbox — on_inbox(msg, api) -> bool
+// msg.data = typed payload, msg.sender_uid = sender UID, msg.seq = sequence
 // ============================================================================
 
-void PythonEngine::invoke_on_inbox(
-    const void *data, size_t sz,
-    const std::string &sender)
+InvokeResult PythonEngine::invoke_on_inbox(InvokeInbox msg)
 {
+    InvokeResult result = InvokeResult::Commit;
     if (!is_callable(py_on_inbox_))
     {
         process_pending_();
-        return;
+        return result;
     }
 
     // Inbox type must be cached at startup via register_slot_type("InboxFrame").
-    // Null cache means a bug in the startup sequence.
     if (inbox_type_ro_.is_none())
     {
         LOGGER_ERROR("[{}] invoke_on_inbox: InboxFrame type not registered — "
@@ -1076,29 +1074,31 @@ void PythonEngine::invoke_on_inbox(
                      log_tag_);
         ctx_.core->inc_script_errors();
         process_pending_();
-        return;
+        return InvokeResult::Error;
     }
 
     py::gil_scoped_acquire g;
     try
     {
-        py::object data_view = py::none();
-        if (data != nullptr && sz > 0)
+        PyInboxMsg msg_obj;
+        if (msg.data != nullptr && msg.data_size > 0)
         {
             // Use from_buffer_copy: inbox data is only valid until the next
             // recv_one() call, so we must copy into the ctypes struct.
-            auto buf = py::bytes(reinterpret_cast<const char *>(data), sz);
-            data_view = inbox_type_ro_.attr("from_buffer_copy")(buf);
+            auto buf = py::bytes(reinterpret_cast<const char *>(msg.data), msg.data_size);
+            msg_obj.data = inbox_type_ro_.attr("from_buffer_copy")(buf);
         }
+        msg_obj.sender_uid = msg.sender_uid;
+        msg_obj.seq        = msg.seq;
 
-        py::str sender_str(sender);
-        py_on_inbox_(data_view, sender_str, api_obj_);
+        py_on_inbox_(py::cast(msg_obj), api_obj_);
     }
     catch (py::error_already_set &e)
     {
-        on_python_error_("on_inbox", e);
+        result = on_python_error_("on_inbox", e);
     }
     process_pending_();
+    return result;
 }
 
 // ============================================================================
@@ -1241,13 +1241,14 @@ void PythonEngine::clear_pyobjects_()
     py_on_inbox_   = py::none();
     api_obj_       = py::none();
 
-    slot_type_       = py::none();
-    slot_type_ro_    = py::none();
     in_slot_type_ro_ = py::none();
     out_slot_type_   = py::none();
-    fz_type_         = py::none();
-    fz_type_ro_      = py::none();
+    in_fz_type_      = py::none();
+    out_fz_type_     = py::none();
     inbox_type_ro_   = py::none();
+    slot_alias_      = py::none();
+    slot_alias_ro_   = py::none();
+    fz_alias_        = py::none();
 }
 
 } // namespace pylabhub::scripting

@@ -36,26 +36,27 @@ passed as userdata to the lifecycle module.
 
 ```cpp
 struct EngineModuleParams {
-    // Engine instance
-    ScriptEngine *engine;
-    RoleHostCore *core;
+    ScriptEngine *engine{nullptr};
+    RoleHostCore *core{nullptr};
 
     // Startup parameters (Group A: from config)
-    std::string tag;                    // "prod" / "cons" / "proc"
+    std::string tag;                       // "prod" / "cons" / "proc"
     std::filesystem::path script_dir;
-    std::string entry_point;            // "init.lua" / "__init__.py"
-    std::string required_callback;      // "on_produce" / "on_consume" / "on_process"
-    SchemaSpec slot_spec;
-    SchemaSpec fz_spec;                 // empty if no flexzone
-    SchemaSpec inbox_spec;              // empty if no inbox
-    std::string packing;
+    std::string entry_point;               // "init.lua" / "__init__.py"
+    std::string required_callback;         // "on_produce" / "on_consume" / "on_process"
+
+    // Directional schemas — consistent across all roles.
+    SchemaSpec in_slot_spec;               // Consumer, Processor
+    SchemaSpec out_slot_spec;              // Producer, Processor
+    SchemaSpec in_fz_spec;                 // Consumer, Processor
+    SchemaSpec out_fz_spec;                // Producer, Processor
+    SchemaSpec inbox_spec;
+    std::string in_packing{"aligned"};
+    std::string out_packing{"aligned"};
 
     // Infrastructure context (Group C: filled after setup_infrastructure)
     RoleContext role_ctx;
-
-    // Validation
-    uint64_t magic{0x454E4750};         // "ENGP"
-    uint64_t lifecycle_key{0};          // generation key from lifecycle
+    std::string module_name;
 };
 ```
 
@@ -106,21 +107,20 @@ void engine_startup(const char * /*arg*/, void *userdata) {
 
     if (!p->engine->initialize(p->tag, p->core))
         throw std::runtime_error("engine initialize failed");
-
     if (!p->engine->load_script(p->script_dir, p->entry_point, p->required_callback))
         throw std::runtime_error("load_script failed");
 
-    if (p->slot_spec.has_schema)
-        if (!p->engine->register_slot_type(p->slot_spec, "SlotFrame", p->packing))
-            throw std::runtime_error("register SlotFrame failed");
-
-    if (p->fz_spec.has_schema)
-        if (!p->engine->register_slot_type(p->fz_spec, "FlexFrame", p->packing))
-            throw std::runtime_error("register FlexFrame failed");
-
+    // Directional slot + flexzone types — no role-specific branching.
+    if (p->in_slot_spec.has_schema)
+        p->engine->register_slot_type(p->in_slot_spec, "InSlotFrame", p->in_packing);
+    if (p->out_slot_spec.has_schema)
+        p->engine->register_slot_type(p->out_slot_spec, "OutSlotFrame", p->out_packing);
+    if (p->in_fz_spec.has_schema)
+        p->engine->register_slot_type(p->in_fz_spec, "InFlexFrame", p->in_packing);
+    if (p->out_fz_spec.has_schema)
+        p->engine->register_slot_type(p->out_fz_spec, "OutFlexFrame", p->out_packing);
     if (p->inbox_spec.has_schema)
-        if (!p->engine->register_slot_type(p->inbox_spec, "InboxFrame", p->packing))
-            throw std::runtime_error("register InboxFrame failed");
+        p->engine->register_slot_type(p->inbox_spec, "InboxFrame", p->in_packing);
 
     if (!p->engine->build_api(p->role_ctx))
         throw std::runtime_error("build_api failed");
@@ -165,19 +165,19 @@ finalize() is idempotent. It checks the state and cleans up whatever was set up.
 
 ---
 
-## 9. Refactor: Move inbox register_slot_type out of setup_infrastructure
+## 9. Infrastructure / Engine Decoupling (DONE)
 
-Currently `setup_infrastructure_()` calls `engine_->register_slot_type(InboxFrame)`.
-This is engine work misplaced in infrastructure code. Move it to the engine
-startup callback. The inbox schema comes from config (Group A). The inbox
-queue buffer size validation should use the schema spec directly.
+`setup_infrastructure_()` is now fully decoupled from the engine -- zero engine calls.
+All `register_slot_type()` calls (InSlotFrame, OutSlotFrame, InFlexFrame, OutFlexFrame, InboxFrame) are in the engine
+startup callback (section 5). The inbox schema comes from config (Group A). The inbox
+queue buffer size validation uses the schema spec directly.
 
 ---
 
 ## 10. Params Lifetime
 
 - Created: by role host at start of worker_main_(), on worker thread
-- Filled: Group A from config, Group C after setup_infrastructure_()
+- Filled: Group A from config, Group C after setup_infrastructure_() (zero engine calls)
 - Consumed: by LoadModule startup callback (synchronous, same thread)
 - Shutdown: by UnloadModule shutdown callback (idempotent finalize)
 - Destroyed: when role host is destroyed (unique_ptr member)
@@ -194,6 +194,6 @@ Crash path: validate function checks magic + key → stale params → callback s
 3. **EngineModuleParams struct**: new, in ScriptEngine header or separate header
 4. **engine_startup / engine_shutdown**: static functions, shared by all roles
 5. **Role host worker_main_()**: replace direct engine calls with LoadModule/UnloadModule
-6. **Move inbox register_slot_type**: from setup_infrastructure_() to startup callback
+6. **Move inbox register_slot_type**: from setup_infrastructure_() to startup callback (DONE)
 7. **ScriptEngine**: add EngineState enum, make finalize() idempotent
 8. **NativeEngine**: remove internal lifecycle code (replaced by base mechanism)

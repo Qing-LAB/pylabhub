@@ -641,26 +641,27 @@ bool LuaEngine::register_slot_type(const SchemaSpec &spec,
     if (type_name == "InSlotFrame")
     {
         safe_cache(ref_in_slot_readonly_, type_name, /*readonly=*/true);
+        // Alias "SlotFrame" for consumer convenience.
+        safe_cache(ref_slot_alias_readonly_, "SlotFrame", /*readonly=*/true);
     }
     else if (type_name == "OutSlotFrame")
     {
         safe_cache(ref_out_slot_writable_, type_name, /*readonly=*/false);
+        // Alias "SlotFrame" for producer convenience.
+        safe_cache(ref_slot_alias_writable_, "SlotFrame", /*readonly=*/false);
     }
-    else if (type_name == "SlotFrame")
+    else if (type_name == "InFlexFrame")
     {
-        safe_cache(ref_slot_writable_, type_name, /*readonly=*/false);
-        safe_cache(ref_slot_readonly_, type_name, /*readonly=*/true);
-        // Also set in/out refs for unified context (if not already set by
-        // an explicit InSlotFrame/OutSlotFrame registration).
-        if (ref_in_slot_readonly_ == LUA_NOREF)
-            ref_in_slot_readonly_ = state_.cache_ffi_typeof(type_name.c_str(), /*readonly=*/true);
-        if (ref_out_slot_writable_ == LUA_NOREF)
-            ref_out_slot_writable_ = state_.cache_ffi_typeof(type_name.c_str(), /*readonly=*/false);
+        // Flexzone is mutable on both sides (HEP-0002).
+        safe_cache(ref_in_fz_, type_name, /*readonly=*/false);
+        safe_cache(ref_fz_alias_, "FlexFrame", /*readonly=*/false);
     }
-    else if (type_name == "FlexFrame")
+    else if (type_name == "OutFlexFrame")
     {
-        safe_cache(ref_fz_writable_, type_name, /*readonly=*/false);
-        safe_cache(ref_fz_readonly_, type_name, /*readonly=*/true);
+        safe_cache(ref_out_fz_, type_name, /*readonly=*/false);
+        // Alias overwrites if both registered (processor), but processor
+        // never uses aliases — it uses directional refs.
+        safe_cache(ref_fz_alias_, "FlexFrame", /*readonly=*/false);
     }
     else if (type_name == "InboxFrame")
     {
@@ -714,12 +715,11 @@ void LuaEngine::invoke_on_stop()
 }
 
 // ============================================================================
-// invoke_produce — on_produce(out_slot, flexzone, messages, api) -> result
+// invoke_produce — on_produce(tx, msgs, api) -> bool
 // ============================================================================
 
 InvokeResult LuaEngine::invoke_produce(
-    void *out_slot, size_t out_sz,
-    void *flexzone, size_t fz_sz, const char *fz_type,
+    InvokeTx tx,
     std::vector<IncomingMessage> &msgs)
 {
     if (!state_.is_ref_callable(ref_on_produce_))
@@ -728,52 +728,27 @@ InvokeResult LuaEngine::invoke_produce(
     lua_State *L = state_.raw();
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_produce_);
 
-    // Arg 1: out_slot (writable cdata or nil).
-    if (out_slot != nullptr)
-    {
-        // Hot path: use cached ffi.typeof ref (no string ops).
-        if (!state_.push_slot_view_cached(out_slot, ref_slot_writable_))
-        {
-            lua_pop(L, 1); // pop function
-            return InvokeResult::Error;
-        }
-    }
+    // Arg 1: tx table {slot=cdata, fz=cdata|nil}.
+    lua_createtable(L, 0, 2);
+    if (tx.slot != nullptr && state_.push_slot_view_cached(tx.slot, ref_out_slot_writable_))
+        lua_setfield(L, -2, "slot");
     else
-    {
-        lua_pushnil(L);
-    }
+    { lua_pushnil(L); lua_setfield(L, -2, "slot"); }
 
-    // Arg 2: flexzone (writable cdata or nil). Uses cached ctype if available.
-    if (flexzone != nullptr && fz_sz > 0)
-    {
-        if (ref_fz_writable_ != LUA_NOREF)
-        {
-            if (!state_.push_slot_view_cached(flexzone, ref_fz_writable_))
-                lua_pushnil(L);
-        }
-        else if (fz_type != nullptr)
-        {
-            if (!state_.push_slot_view(flexzone, fz_sz, fz_type))
-                lua_pushnil(L);
-        }
-        else
-        {
-            lua_pushnil(L);
-        }
-    }
+    if (tx.fz != nullptr && tx.fz_size > 0 && ref_out_fz_ != LUA_NOREF
+        && state_.push_slot_view_cached(tx.fz, ref_out_fz_))
+        lua_setfield(L, -2, "fz");
     else
-    {
-        lua_pushnil(L);
-    }
+    { lua_pushnil(L); lua_setfield(L, -2, "fz"); }
 
-    // Arg 3: messages table.
+    // Arg 2: messages table.
     push_messages_table_(msgs);
 
-    // Arg 4: api ref.
+    // Arg 3: api ref.
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
 
-    // pcall(4 args, 1 result).
-    if (!state_.pcall(4, 1, "on_produce"))
+    // pcall(3 args, 1 result).
+    if (!state_.pcall(3, 1, "on_produce"))
         return on_pcall_error_("on_produce");
 
     // Return value contract:
@@ -806,81 +781,59 @@ InvokeResult LuaEngine::invoke_produce(
 }
 
 // ============================================================================
-// invoke_consume — on_consume(in_slot, flexzone, messages, api)
+// invoke_consume — on_consume(rx, msgs, api) -> bool
 // ============================================================================
 
-void LuaEngine::invoke_consume(
-    const void *in_slot, size_t in_sz,
-    const void *flexzone, size_t fz_sz, const char *fz_type,
+InvokeResult LuaEngine::invoke_consume(
+    InvokeRx rx,
     std::vector<IncomingMessage> &msgs)
 {
     if (!state_.is_ref_callable(ref_on_consume_))
-        return;
+        return InvokeResult::Error;
 
     lua_State *L = state_.raw();
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_consume_);
 
-    // Arg 1: in_slot (read-only cdata or nil).
-    if (in_slot != nullptr)
-    {
-        // Hot path: use cached ffi.typeof ref (no string ops).
-        // const_cast is safe: push_slot_view_cached uses the readonly ctype ref.
-        if (!state_.push_slot_view_cached(const_cast<void *>(in_slot), ref_slot_readonly_))
-        {
-            lua_pop(L, 1); // pop function
-            return;
-        }
-    }
+    // Arg 1: rx table {slot=cdata, fz=cdata|nil}.
+    lua_createtable(L, 0, 2);
+    if (rx.slot != nullptr
+        && state_.push_slot_view_cached(const_cast<void *>(rx.slot), ref_in_slot_readonly_))
+        lua_setfield(L, -2, "slot");
     else
-    {
-        lua_pushnil(L);
-    }
+    { lua_pushnil(L); lua_setfield(L, -2, "slot"); }
 
-    // Arg 2: flexzone (read-only cdata or nil). Uses cached ctype if available.
-    if (flexzone != nullptr && fz_sz > 0)
-    {
-        if (ref_fz_readonly_ != LUA_NOREF)
-        {
-            if (!state_.push_slot_view_cached(
-                    const_cast<void *>(flexzone), ref_fz_readonly_))
-                lua_pushnil(L);
-        }
-        else if (fz_type != nullptr)
-        {
-            if (!state_.push_slot_view_readonly(flexzone, fz_sz, fz_type))
-                lua_pushnil(L);
-        }
-        else
-        {
-            lua_pushnil(L);
-        }
-    }
+    if (rx.fz != nullptr && rx.fz_size > 0 && ref_in_fz_ != LUA_NOREF
+        && state_.push_slot_view_cached(rx.fz, ref_in_fz_))
+        lua_setfield(L, -2, "fz");
     else
-    {
-        lua_pushnil(L);
-    }
+    { lua_pushnil(L); lua_setfield(L, -2, "fz"); }
 
-    // Arg 3: messages table (bare variant for consumer).
+    // Arg 2: messages table (bare variant for consumer).
     push_messages_table_bare_(msgs);
 
-    // Arg 4: api ref.
+    // Arg 3: api ref.
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
 
-    // pcall(4 args, 0 results).
-    if (!state_.pcall(4, 0, "on_consume"))
-    {
-        on_pcall_error_("on_consume");
-    }
+    // pcall(3 args, 1 result).
+    if (!state_.pcall(3, 1, "on_consume"))
+        return on_pcall_error_("on_consume");
+
+    // Return value: True → Commit, False → Discard (currently ignored by loop).
+    InvokeResult result;
+    if (lua_isboolean(L, -1))
+        result = lua_toboolean(L, -1) ? InvokeResult::Commit : InvokeResult::Discard;
+    else
+        result = InvokeResult::Error;
+    lua_pop(L, 1);
+    return result;
 }
 
 // ============================================================================
-// invoke_process — on_process(in_slot, out_slot, flexzone, messages, api)
+// invoke_process — on_process(rx, tx, msgs, api) -> bool
 // ============================================================================
 
 InvokeResult LuaEngine::invoke_process(
-    const void *in_slot, size_t in_sz,
-    void *out_slot, size_t out_sz,
-    void *flexzone, size_t fz_sz, const char *fz_type,
+    InvokeRx rx, InvokeTx tx,
     std::vector<IncomingMessage> &msgs)
 {
     if (!state_.is_ref_callable(ref_on_process_))
@@ -889,66 +842,42 @@ InvokeResult LuaEngine::invoke_process(
     lua_State *L = state_.raw();
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_process_);
 
-    // Arg 1: in_slot (read-only cdata or nil).
-    if (in_slot != nullptr)
-    {
-        // Hot path: use cached ffi.typeof ref (no string ops).
-        if (!state_.push_slot_view_cached(const_cast<void *>(in_slot), ref_in_slot_readonly_))
-        {
-            lua_pop(L, 1); // pop function
-            return InvokeResult::Error;
-        }
-    }
+    // Arg 1: rx table {slot=cdata, fz=cdata|nil}.
+    lua_createtable(L, 0, 2);
+    if (rx.slot != nullptr
+        && state_.push_slot_view_cached(const_cast<void *>(rx.slot), ref_in_slot_readonly_))
+        lua_setfield(L, -2, "slot");
     else
-    {
-        lua_pushnil(L);
-    }
+    { lua_pushnil(L); lua_setfield(L, -2, "slot"); }
 
-    // Arg 2: out_slot (writable cdata or nil).
-    if (out_slot != nullptr)
-    {
-        if (!state_.push_slot_view_cached(out_slot, ref_out_slot_writable_))
-        {
-            lua_pop(L, 2); // pop function + in_slot
-            return InvokeResult::Error;
-        }
-    }
+    if (rx.fz != nullptr && rx.fz_size > 0 && ref_in_fz_ != LUA_NOREF
+        && state_.push_slot_view_cached(rx.fz, ref_in_fz_))
+        lua_setfield(L, -2, "fz");
     else
-    {
-        lua_pushnil(L);
-    }
+    { lua_pushnil(L); lua_setfield(L, -2, "fz"); }
 
-    // Arg 3: flexzone (writable cdata or nil). Uses cached ctype if available.
-    if (flexzone != nullptr && fz_sz > 0)
-    {
-        if (ref_fz_writable_ != LUA_NOREF)
-        {
-            if (!state_.push_slot_view_cached(flexzone, ref_fz_writable_))
-                lua_pushnil(L);
-        }
-        else if (fz_type != nullptr)
-        {
-            if (!state_.push_slot_view(flexzone, fz_sz, fz_type))
-                lua_pushnil(L);
-        }
-        else
-        {
-            lua_pushnil(L);
-        }
-    }
+    // Arg 2: tx table {slot=cdata, fz=cdata|nil}.
+    lua_createtable(L, 0, 2);
+    if (tx.slot != nullptr
+        && state_.push_slot_view_cached(tx.slot, ref_out_slot_writable_))
+        lua_setfield(L, -2, "slot");
     else
-    {
-        lua_pushnil(L);
-    }
+    { lua_pushnil(L); lua_setfield(L, -2, "slot"); }
 
-    // Arg 4: messages table.
+    if (tx.fz != nullptr && tx.fz_size > 0 && ref_out_fz_ != LUA_NOREF
+        && state_.push_slot_view_cached(tx.fz, ref_out_fz_))
+        lua_setfield(L, -2, "fz");
+    else
+    { lua_pushnil(L); lua_setfield(L, -2, "fz"); }
+
+    // Arg 3: messages table.
     push_messages_table_(msgs);
 
-    // Arg 5: api ref.
+    // Arg 4: api ref.
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
 
-    // pcall(5 args, 1 result).
-    if (!state_.pcall(5, 1, "on_process"))
+    // pcall(4 args, 1 result).
+    if (!state_.pcall(4, 1, "on_process"))
         return on_pcall_error_("on_process");
 
     // Return value contract (same as on_produce).
@@ -978,15 +907,14 @@ InvokeResult LuaEngine::invoke_process(
 }
 
 // ============================================================================
-// invoke_on_inbox — on_inbox(slot_data_or_bytes, sender, api)
+// invoke_on_inbox — on_inbox(msg, api) -> bool
+// msg = {data=cdata, sender_uid=string, seq=number}
 // ============================================================================
 
-void LuaEngine::invoke_on_inbox(
-    const void *data, size_t sz,
-    const std::string &sender)
+InvokeResult LuaEngine::invoke_on_inbox(InvokeInbox msg)
 {
     if (!state_.is_ref_callable(ref_on_inbox_))
-        return;
+        return InvokeResult::Error;
 
     lua_State *L = state_.raw();
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_inbox_);
@@ -999,35 +927,39 @@ void LuaEngine::invoke_on_inbox(
                      log_tag_);
         ctx_.core->inc_script_errors();
         lua_pop(L, 1); // pop function
-        return;
+        return InvokeResult::Error;
     }
 
-    // Arg 1: typed readonly slot view using cached ctype ref.
-    if (data != nullptr && sz > 0)
-    {
-        if (!state_.push_slot_view_cached(const_cast<void *>(data), ref_inbox_readonly_))
-        {
-            lua_pop(L, 1); // pop function
-            ctx_.core->inc_script_errors();
-            return;
-        }
-    }
+    // Arg 1: msg table {data=cdata, sender_uid=string, seq=number}.
+    lua_createtable(L, 0, 3);
+
+    if (msg.data != nullptr && msg.data_size > 0
+        && state_.push_slot_view_cached(const_cast<void *>(msg.data), ref_inbox_readonly_))
+        lua_setfield(L, -2, "data");
     else
-    {
-        lua_pushnil(L);
-    }
+    { lua_pushnil(L); lua_setfield(L, -2, "data"); }
 
-    // Arg 2: sender UID string.
-    lua_pushstring(L, sender.c_str());
+    lua_pushstring(L, msg.sender_uid.c_str());
+    lua_setfield(L, -2, "sender_uid");
 
-    // Arg 3: api ref.
+    lua_pushinteger(L, static_cast<lua_Integer>(msg.seq));
+    lua_setfield(L, -2, "seq");
+
+    // Arg 2: api ref.
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
 
-    // pcall(3 args, 0 results).
-    if (!state_.pcall(3, 0, "on_inbox"))
-    {
-        on_pcall_error_("on_inbox");
-    }
+    // pcall(2 args, 1 result).
+    if (!state_.pcall(2, 1, "on_inbox"))
+        return on_pcall_error_("on_inbox");
+
+    // Return value: True → Commit, False → Discard (currently ignored by loop).
+    InvokeResult result;
+    if (lua_isboolean(L, -1))
+        result = lua_toboolean(L, -1) ? InvokeResult::Commit : InvokeResult::Discard;
+    else
+        result = InvokeResult::Error;
+    lua_pop(L, 1);
+    return result;
 }
 
 // ============================================================================
@@ -1076,18 +1008,20 @@ void LuaEngine::clear_refs_()
     ref_api_ = LUA_NOREF;
 
     // Release cached ffi.typeof refs (created during register_slot_type).
-    state_.unref(ref_slot_writable_);
-    ref_slot_writable_ = LUA_NOREF;
-    state_.unref(ref_slot_readonly_);
-    ref_slot_readonly_ = LUA_NOREF;
     state_.unref(ref_in_slot_readonly_);
     ref_in_slot_readonly_ = LUA_NOREF;
     state_.unref(ref_out_slot_writable_);
     ref_out_slot_writable_ = LUA_NOREF;
-    state_.unref(ref_fz_writable_);
-    ref_fz_writable_ = LUA_NOREF;
-    state_.unref(ref_fz_readonly_);
-    ref_fz_readonly_ = LUA_NOREF;
+    state_.unref(ref_in_fz_);
+    ref_in_fz_ = LUA_NOREF;
+    state_.unref(ref_out_fz_);
+    ref_out_fz_ = LUA_NOREF;
+    state_.unref(ref_slot_alias_writable_);
+    ref_slot_alias_writable_ = LUA_NOREF;
+    state_.unref(ref_slot_alias_readonly_);
+    ref_slot_alias_readonly_ = LUA_NOREF;
+    state_.unref(ref_fz_alias_);
+    ref_fz_alias_ = LUA_NOREF;
     state_.unref(ref_inbox_readonly_);
     ref_inbox_readonly_ = LUA_NOREF;
 }
@@ -2103,9 +2037,9 @@ int LuaEngine::lua_api_flexzone(lua_State *L)
     }
 
     // Use cached FlexFrame ctype ref for type-safe FFI cast.
-    if (self->ref_fz_writable_ != LUA_NOREF)
+    if (self->ref_out_fz_ != LUA_NOREF)
     {
-        if (self->state_.push_slot_view_cached(fz_ptr, self->ref_fz_writable_))
+        if (self->state_.push_slot_view_cached(fz_ptr, self->ref_out_fz_))
             return 1;
     }
 
