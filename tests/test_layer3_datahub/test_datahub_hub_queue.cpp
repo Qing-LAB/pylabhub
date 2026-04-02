@@ -106,11 +106,10 @@ TEST_F(DatahubShmQueueTest, ShmQueueFlexzoneRoundTrip)
     ExpectWorkerOk(proc);
 }
 
-TEST_F(DatahubShmQueueTest, ShmQueueRefFactories)
+TEST_F(DatahubShmQueueTest, ShmQueueCreateFactories)
 {
-    // from_producer_ref / from_consumer_ref factories are non-owning: the underlying
-    // DataBlockProducer/Consumer remain valid after ShmQueue teardown.
-    auto proc = SpawnWorker("hub_queue.shm_queue_ref_factories", {});
+    // create_writer / create_reader owning factories: write a slot, read it back.
+    auto proc = SpawnWorker("hub_queue.shm_queue_create_factories", {});
     ExpectWorkerOk(proc);
 }
 
@@ -188,5 +187,28 @@ TEST_F(DatahubShmQueueTest, ShmQueueDiscardThenReacquire)
     // Regression: discard > capacity slots under Sequential policy, then
     // write_acquire + write_commit must still succeed (write_index restored).
     auto proc = SpawnWorker("hub_queue.shm_queue_discard_then_reacquire", {});
+    ExpectWorkerOk(proc);
+}
+
+// ── Error path tests ─────────────────────────────────────────────────────────
+
+TEST_F(DatahubShmQueueTest, CreateWriterEmptySchema)
+{
+    // create_writer with empty schema must return nullptr.
+    auto proc = SpawnWorker("hub_queue.shm_queue_create_writer_empty_schema", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubShmQueueTest, CreateReaderWrongSecret)
+{
+    // create_reader with wrong shared secret must return nullptr.
+    auto proc = SpawnWorker("hub_queue.shm_queue_create_reader_wrong_secret", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubShmQueueTest, CreateReaderNonexistent)
+{
+    // create_reader for nonexistent SHM segment must return nullptr.
+    auto proc = SpawnWorker("hub_queue.shm_queue_create_reader_nonexistent", {});
     ExpectWorkerOk(proc);
 }
