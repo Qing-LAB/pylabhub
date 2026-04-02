@@ -130,7 +130,7 @@ from REG_REQ and returns it via SCHEMA_REQ/ROLE_INFO_REQ.
 | SchemaSpec (L2) | ZmqSchemaField[] (L3) | `schema_spec_to_zmq_fields()` | `schema_utils.hpp` |
 | SchemaSpec (L2) | BLAKE2b hash | `compute_schema_hash()` | `schema_utils.hpp` |
 
-All schema conversion functions are in `schema_utils.hpp` (clean, no pybind11). Python-specific helpers are in `python_helpers.hpp`..
+All schema conversion functions are in `schema_utils.hpp` (clean, no pybind11). Python-specific helpers are in `python_helpers.hpp`.
 
 ## 4. Type Set Agreement
 
