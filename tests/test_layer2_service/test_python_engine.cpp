@@ -125,7 +125,7 @@ class PythonEngineTest : public ::testing::Test
             return false;
 
         auto spec = simple_schema();
-        if (!engine.register_slot_type(spec, "SlotFrame", "aligned"))
+        if (!engine.register_slot_type(spec, "OutSlotFrame", "aligned"))
             return false;
 
         auto ctx = producer_context();
@@ -144,7 +144,7 @@ class PythonEngineTest : public ::testing::Test
             return false;
 
         auto spec = simple_schema();
-        if (!engine.register_slot_type(spec, "SlotFrame", "aligned"))
+        if (!engine.register_slot_type(spec, "OutSlotFrame", "aligned"))
             return false;
 
         auto ctx = producer_context();
@@ -203,10 +203,10 @@ TEST_F(PythonEngineTest, RegisterSlotType_SizeofCorrect)
                                    "__init__.py", "on_produce"));
 
     auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
     // float32 = 4 bytes
-    EXPECT_EQ(engine.type_sizeof("SlotFrame"), 4u);
+    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 4u);
 
     engine.finalize();
 }
@@ -231,8 +231,8 @@ TEST_F(PythonEngineTest, RegisterSlotType_MultiField)
     f3.name = "z"; f3.type_str = "float32"; f3.count = 1; f3.length = 0;
     spec.fields = {f1, f2, f3};
 
-    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
-    EXPECT_EQ(engine.type_sizeof("SlotFrame"), 12u); // 3 * 4 bytes
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 12u); // 3 * 4 bytes
 
     engine.finalize();
 }
@@ -409,7 +409,7 @@ TEST_F(PythonEngineTest, InvokeConsume_ReceivesReadOnlySlot)
                                    "__init__.py", "on_consume"));
 
     auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
 
     auto ctx = producer_context();
     ctx.role_tag = "cons";
@@ -439,7 +439,7 @@ TEST_F(PythonEngineTest, InvokeConsume_NoneSlot)
                                    "__init__.py", "on_consume"));
 
     auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
 
     auto ctx = producer_context();
     ctx.role_tag = "cons";
@@ -465,7 +465,7 @@ TEST_F(PythonEngineTest, InvokeConsume_ScriptErrorDetected)
                                    "__init__.py", "on_consume"));
 
     auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
 
     auto ctx = producer_context();
     ctx.role_tag = "cons";
@@ -647,7 +647,7 @@ TEST_F(PythonEngineTest, InvokeConsume_BareDataMessages)
                                    "__init__.py", "on_consume"));
 
     auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
 
     auto ctx = producer_context();
     ctx.role_tag = "cons";
@@ -847,7 +847,7 @@ TEST_F(PythonEngineTest, MetricsClosures_ReadFromRoleHostCounters)
                                    "__init__.py", "on_produce"));
 
     auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
     auto ctx = producer_context();
     ctx.core = &core;
@@ -882,7 +882,7 @@ TEST_F(PythonEngineTest, MetricsClosures_InReceivedWorks)
                                    "__init__.py", "on_consume"));
 
     auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
 
     auto ctx = producer_context();
     ctx.role_tag = "cons";  // consumer role for in_slots_received
@@ -936,7 +936,7 @@ TEST_F(PythonEngineTest, StopOnScriptError_SetsShutdownOnError)
                                    "__init__.py", "on_produce"));
 
     auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
     auto ctx = producer_context();
     ctx.core = &core;
@@ -1110,8 +1110,8 @@ TEST_F(PythonEngineTest, InvokeProduce_WithFlexzone)
                                    "__init__.py", "on_produce"));
 
     auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "FlexFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutFlexFrame", "aligned"));
 
     auto ctx = producer_context();
     ASSERT_TRUE(engine.build_api(ctx));
@@ -1156,7 +1156,7 @@ TEST_F(PythonEngineTest, InvokeOnInbox_TypedData)
                                    "__init__.py", "on_produce"));
 
     auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
     ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
 
     auto ctx = producer_context();
@@ -1195,15 +1195,15 @@ TEST_F(PythonEngineTest, TypeSizeof_InboxFrame_ReturnsCorrectSize)
     spec.fields.push_back({"status", "int32",   1, 0});
     spec.fields.push_back({"label",  "string",  1, 5});
 
-    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
     ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
 
     auto ctx = producer_context();
     ASSERT_TRUE(engine.build_api(ctx));
 
-    size_t slot_sz  = engine.type_sizeof("SlotFrame");
+    size_t slot_sz  = engine.type_sizeof("OutSlotFrame");
     size_t inbox_sz = engine.type_sizeof("InboxFrame");
-    EXPECT_GT(slot_sz, 0u) << "SlotFrame size must be > 0";
+    EXPECT_GT(slot_sz, 0u) << "OutSlotFrame size must be > 0";
     EXPECT_GT(inbox_sz, 0u) << "InboxFrame size must be > 0";
     EXPECT_EQ(slot_sz, inbox_sz) << "Same schema → same size";
     // Aligned: 1 + 7pad + 8 + 2 + 2pad + 4 + 5 + 3pad = 32
@@ -1229,7 +1229,7 @@ TEST_F(PythonEngineTest, InvokeOnInbox_MissingType_ReportsError)
                                    "__init__.py", "on_produce"));
 
     auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
     // Deliberately NOT registering "InboxFrame".
 
     auto ctx = producer_context();
@@ -1751,7 +1751,7 @@ TEST_F(PythonEngineTest, InvokeOnInbox_ScriptError)
                                    "__init__.py", "on_produce"));
 
     auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
     ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
 
     auto ctx = producer_context();
@@ -2186,7 +2186,7 @@ def on_consume(rx, msgs, api):
                                    "__init__.py", "on_consume"));
 
     auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
     RoleContext ctx{};
     ctx.role_tag  = "cons";
@@ -2323,7 +2323,7 @@ def on_produce(tx, msgs, api):
     ASSERT_TRUE(engine.initialize("test", &default_core_));
     ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
                                    "__init__.py", "on_produce"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
     auto ctx = producer_context();
     ASSERT_TRUE(engine.build_api(ctx));
