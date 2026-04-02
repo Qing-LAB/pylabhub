@@ -1,282 +1,305 @@
 # DataBlock / Queue Ownership Redesign
 
 **Status**: Design (2026-04-02)
-**Scope**: ShmQueue owns DataBlock, strict schema validation, operation isolation
+**Scope**: ShmQueue owns DataBlock, symmetric with ZmqQueue, strict schema validation
 
 ---
 
-## 1. Goal
+## 1. Design Principle
 
-Make ShmQueue symmetric with ZmqQueue: the queue creates and owns its transport,
-receives schema as input, and computes sizes internally. Strict isolation — all
-data operations go through the queue abstraction. No DataBlock bypass from the
-role API layer.
+Each queue type is a **self-contained abstraction** that owns its transport:
+
+- **ZmqQueue**: creates and owns ZMQ sockets. Receives schema + packing +
+  transport params. Computes layout internally. Caller never sees ZMQ internals.
+- **ShmQueue**: creates and owns DataBlock. Receives schema + packing +
+  SHM params. Computes sizes internally. Caller never sees DataBlockConfig.
+
+Both queue types expose the same `QueueReader` / `QueueWriter` interface.
+The role API operates identically on both — no transport-specific code above
+the queue layer.
+
+**Layer isolation:**
+```
+Role API layer    →  schema + high-level params
+Queue layer       →  owns transport, computes layout, validates schema
+DataBlock layer   →  raw SHM allocation and access (untouched)
+ZMQ layer         →  raw socket management (untouched)
+```
 
 ---
 
-## 2. Current Problem
-
-```
-hub::Producer owns DataBlock (unique_ptr)
-hub::Producer owns ShmQueue (unique_ptr, non-owning ref to DataBlock)
-                 ↓
-DataBlock created externally → size passed in → ShmQueue wraps it passively
-```
-
-Issues:
-- ShmQueue doesn't compute sizes — trusts external input
-- hub::Producer bypasses ShmQueue for flexzone ops (direct DataBlock access)
-- External callers use `producer->shm()` to reach DataBlock for spinlocks
-- No schema validation at consumer side beyond hash comparison
-- Size computation scattered across role hosts
-
----
-
-## 3. Target Architecture
-
-```
-hub::Producer owns ShmQueue (unique_ptr)
-                 ↓
-ShmQueue owns DataBlock (created internally from schema)
-ShmQueue is the authority on sizes and schema validation
-```
-
-### 3.1 Producer side (SHM creator)
+## 2. ZmqQueue Pattern (reference)
 
 ```cpp
-// ShmQueue factory — creates DataBlock internally
-std::unique_ptr<QueueWriter> ShmQueue::create_writer(
-    const std::vector<SchemaFieldDesc> &slot_schema,
-    const std::string &packing,
-    const DataBlockConfig &shm_config,    // ring capacity, page size, secret, etc.
+// Writer factory — self-contained
+unique_ptr<QueueWriter> ZmqQueue::push_to(
+    endpoint,             // transport address
+    schema,               // field list (SchemaFieldDesc vector)
+    packing,              // "aligned" or "packed"
+    bind,                 // transport-specific
+    schema_tag,           // validation tag
+    sndhwm,               // transport-specific
+    send_buffer_depth,    // queue-level
+    overflow_policy);     // queue-level
+
+// Reader factory — self-contained
+unique_ptr<QueueReader> ZmqQueue::pull_from(
+    endpoint,             // transport address
+    schema,               // field list
+    packing,              // layout
+    bind,                 // transport-specific
+    max_buffer_depth,     // queue-level
+    schema_tag);          // validation tag
+```
+
+**Internally**: calls `compute_field_layout(schema, packing)` → gets `item_sz`,
+creates ZMQ socket, allocates buffers. Caller never provides pre-computed sizes.
+
+---
+
+## 3. ShmQueue Factory Design (new)
+
+### 3.1 Writer (producer — creates SHM)
+
+```cpp
+unique_ptr<QueueWriter> ShmQueue::create_writer(
     const std::string &channel_name,
-    const SchemaInfo *fz_schema_info,     // optional flexzone schema hash
-    const SchemaInfo *slot_schema_info);  // optional slot schema hash
-
-// Internal:
-//   1. compute_field_layout(slot_schema, packing) → item_size
-//   2. config.logical_unit_size = item_size
-//   3. create_datablock_producer_impl(channel_name, config, fz_info, slot_info)
-//   4. Store DataBlock, return QueueWriter
+    const std::vector<SchemaFieldDesc> &slot_schema,
+    const std::string &slot_packing,
+    const std::vector<SchemaFieldDesc> &fz_schema,    // empty = no flexzone
+    const std::string &fz_packing,
+    // SHM allocation params:
+    uint32_t ring_buffer_capacity,
+    DataBlockPageSize page_size,
+    uint64_t shared_secret,
+    DataBlockPolicy policy,
+    ConsumerSyncPolicy sync_policy,
+    ChecksumPolicy checksum_policy,
+    // Checksum behavior:
+    bool checksum_slot,
+    bool checksum_fz,
+    bool always_clear_slot,
+    // Identity (stored in SHM header):
+    const std::string &hub_uid = {},
+    const std::string &hub_name = {},
+    // Schema hashes (stored in SHM header for consumer validation):
+    const SchemaInfo *slot_schema_info = nullptr,
+    const SchemaInfo *fz_schema_info = nullptr);
 ```
 
-### 3.2 Consumer side (SHM attacher)
+**Internally:**
+1. `compute_field_layout(slot_schema, slot_packing)` → `item_size`
+2. `compute_field_layout(fz_schema, fz_packing)` → `fz_size`, round to 4KB
+3. Build `DataBlockConfig` with computed sizes + caller's SHM params
+4. `create_datablock_producer_impl(channel_name, config, fz_info, slot_info)`
+5. Own the `DataBlockProducer`
+6. Return `QueueWriter`
+
+### 3.2 Reader (consumer — attaches to existing SHM)
 
 ```cpp
-// ShmQueue factory — attaches to existing DataBlock, validates schema
-std::unique_ptr<QueueReader> ShmQueue::create_reader(
-    const std::string &shm_name,
+unique_ptr<QueueReader> ShmQueue::create_reader(
+    const std::string &shm_name,               // from broker discovery
     uint64_t shared_secret,
     const std::vector<SchemaFieldDesc> &expected_slot_schema,
     const std::string &expected_packing,
     const std::string &channel_name,
-    const DataBlockConfig *expected_config);  // optional validation
-
-// Internal:
-//   1. find_datablock_consumer_impl(shm_name, secret, expected_config, ...)
-//   2. Read logical_unit_size from DataBlock header
-//   3. compute_field_layout(expected_slot_schema, expected_packing) → expected_size
-//   4. VALIDATE: header logical_unit_size >= expected_size (after cache-line rounding)
-//   5. VALIDATE: header schema_hash matches expected schema hash
-//   6. Store DataBlock, return QueueReader
+    // Validation:
+    bool verify_slot_checksum,
+    bool verify_fz_checksum,
+    // Consumer identity:
+    const std::string &consumer_uid = {},
+    const std::string &consumer_name = {});
 ```
 
-### 3.3 Processor
-
-- Input (consumer side): `create_reader` attaches to upstream producer's SHM,
-  validates schema against processor's `in_slot_schema`
-- Output (producer side): `create_writer` creates new SHM with processor's
-  `out_slot_schema`
+**Internally:**
+1. `find_datablock_consumer_impl(shm_name, secret, nullptr, nullptr, nullptr, uid, name)`
+2. Read `logical_unit_size` from DataBlock header
+3. `compute_field_layout(expected_slot_schema, expected_packing)` → `expected_size`
+4. **VALIDATE**: `header.logical_unit_size` (after cache-line rounding of expected_size)
+   matches the DataBlock's `effective_logical_unit_size()`. Mismatch → error + return nullptr.
+5. **VALIDATE**: schema hash if available in header
+6. Own the `DataBlockConsumer`
+7. Return `QueueReader`
 
 ---
 
 ## 4. Schema Validation (Consumer Side)
 
-Current: consumer only checks `expected_schema_hash` — a BLAKE2b hash stored in
-the SHM header by the producer. This validates schema identity but not size.
+The consumer validates that the upstream producer's SHM matches its expectations:
 
-New: consumer validates THREE things:
-1. **Schema hash match** — `header.schema_hash == expected_schema_hash` (identity)
-2. **Size match** — `header.logical_unit_size >= compute_field_layout(schema, packing)`
-   (structural compatibility after cache-line rounding)
-3. **Field count/type match** (optional, if both sides store the schema field list)
+1. **Size match**: consumer computes expected slot size from its schema + packing.
+   Compares against `header.logical_unit_size` (producer's stored size).
+   Mismatch means schema or packing disagree — error.
 
-Validation 1 catches schema version mismatches.
-Validation 2 catches alignment/packing mismatches (e.g., producer used "aligned",
-consumer expects "packed" — sizes would differ).
+2. **Schema hash match**: if the DataBlock header has a schema hash (stored by
+   producer), compare against hash computed from consumer's expected schema.
+   Mismatch means the field layout differs — error.
+
+3. **Flexzone size match**: consumer reads `flexible_zone_size` from header.
+   If consumer has a fz schema, compute expected fz size and validate.
+
+Validation happens inside `create_reader()` — the caller gets nullptr on failure.
 
 ---
 
 ## 5. Operation Isolation
 
-### 5.1 Operations that go through ShmQueue (queue abstraction)
+### 5.1 Through QueueWriter / QueueReader (unified interface)
 
-All data and control operations:
+All data flow operations — identical for SHM and ZMQ:
 - Slot: `write_acquire`, `write_commit`, `write_discard`, `read_acquire`, `read_release`
 - Flexzone: `write_flexzone`, `read_flexzone`, `flexzone_size`, `sync_flexzone_checksum`
-- Checksum: `set_checksum_options`, `update_checksum`, `verify_checksum`
+- Checksum: `set_checksum_policy`, `update_checksum`, `verify_checksum`
 - Metrics: `metrics`, `reset_metrics`, `capacity`, `set_configured_period`
-- Policy: `policy_info`, `set_checksum_policy`
+- Query: `item_size`, `name`, `policy_info`
 
-### 5.2 Operations on hub::Producer/Consumer (NOT queue — role-level)
+### 5.2 On hub::Producer / hub::Consumer (role-level, not queue)
 
-Spinlock and identity are SHM metadata, not data flow. These should be on
-Producer/Consumer directly — NOT requiring `shm()` escape hatch:
-
+SHM-specific metadata that the role API exposes to scripts:
 ```cpp
-// New methods on hub::Producer / hub::Consumer:
-SharedSpinLock &spinlock(size_t index);
-size_t spinlock_count() const;
-
-// Identity (forwarded from DataBlock header):
-std::string hub_uid() const;
-std::string hub_name() const;
-std::string producer_uid() const;   // producer only
-std::string consumer_uid() const;   // consumer only
+SharedSpinLock &Producer::spinlock(size_t index);
+size_t Producer::spinlock_count() const;
+// Same for Consumer.
 ```
 
-These delegate internally to the DataBlock owned by ShmQueue. The caller never
-gets a raw `DataBlockProducer*` / `DataBlockConsumer*`.
+These delegate to ShmQueue's internal DataBlock. No public `shm()` accessor.
 
 ### 5.3 Template RAII path (C++ native API)
 
-`push<F,D>()`, `synced_write<F,D>()`, `pull<F,D>()`, `set_read_handler<F,D>()`
-call `DataBlockProducer::with_transaction<F,D>()` directly.
-
-These need a raw `DataBlockProducer*` / `DataBlockConsumer*`. ShmQueue provides:
-
+For `push<F,D>()`, `synced_write<F,D>()`, `pull<F,D>()`:
 ```cpp
-// Internal accessor — for template RAII path only, not for role hosts.
 DataBlockProducer *ShmQueue::raw_producer() noexcept;
 DataBlockConsumer *ShmQueue::raw_consumer() noexcept;
 ```
 
-The messaging facade `fn_get_shm` lambda sources from ShmQueue:
-```cpp
-impl->facade.fn_get_shm = [](void *ctx) -> DataBlockProducer * {
-    auto *sq = static_cast<ProducerImpl *>(ctx)->shm_queue_writer_.get();
-    return sq ? static_cast<ShmQueue *>(sq)->raw_producer() : nullptr;
-};
-```
+Internal accessor only — used by the messaging facade. Not part of the public
+queue interface.
 
-### 5.4 `Producer::shm()` / `Consumer::shm()` — DEPRECATED
+### 5.4 Deprecated: `Producer::shm()` / `Consumer::shm()` — REMOVED
 
-Remove the public `shm()` accessor. All callers migrate:
-- Spinlock → `producer->spinlock(idx)` / `consumer->spinlock(idx)`
+No public accessor to raw DataBlock. All callers migrate:
+- Spinlock → `producer->spinlock(idx)`
 - Identity → `producer->hub_uid()` etc.
-- Template RAII → facade (unchanged, but sources from ShmQueue internally)
-- Flexzone → already on Producer/Consumer (but now delegates to ShmQueue)
+- Flexzone → through queue (`producer->write_flexzone()` delegates to ShmQueue)
+- Template RAII → facade sources from `ShmQueue::raw_producer()`
 
 ---
 
-## 6. hub::Producer/Consumer Changes
+## 6. establish_channel() Changes
 
-### Current ProducerImpl:
+### Current (producer):
 ```cpp
-struct ProducerImpl {
-    unique_ptr<DataBlockProducer> shm;           // REMOVED
-    unique_ptr<QueueWriter>       shm_queue_writer_;  // ShmQueue (now owning DataBlock)
-    unique_ptr<QueueWriter>       zmq_queue_;
-    QueueWriter                  *queue_writer_;  // alias to active queue
-    ...
-};
-```
+// Step 1: create DataBlock externally
+shm_producer = create_datablock_producer_impl(name, policy, opts.shm_config, ...);
 
-### New ProducerImpl:
-```cpp
-struct ProducerImpl {
-    unique_ptr<QueueWriter>       shm_queue_writer_;  // ShmQueue (owns DataBlock)
-    unique_ptr<QueueWriter>       zmq_queue_;
-    QueueWriter                  *queue_writer_;  // alias to active queue
-    ...
-};
-```
-
-`establish_channel()` changes:
-```cpp
-// OLD:
-shm_producer = create_datablock_producer_impl(...);  // external creation
+// Step 2: pass to establish_channel
 establish_channel(messenger, channel, std::move(shm_producer), opts);
-// ... inside establish_channel:
-ShmQueue::from_producer_ref(*impl->shm, item_size, ...);
 
-// NEW:
-// DataBlock creation moves inside ShmQueue factory
-establish_channel(messenger, channel, opts);
-// ... inside establish_channel:
-impl->shm_queue_writer_ = ShmQueue::create_writer(
-    opts.zmq_schema, opts.zmq_packing, opts.shm_config, ...);
+// Inside establish_channel:
+impl->shm = std::move(shm_producer);
+impl->shm_queue_writer_ = ShmQueue::from_producer_ref(*impl->shm, opts.item_size, ...);
 ```
+
+### New (producer):
+```cpp
+// establish_channel — no external DataBlock creation
+establish_channel(messenger, channel, opts);
+
+// Inside establish_channel:
+if (opts.has_shm) {
+    impl->shm_queue_writer_ = ShmQueue::create_writer(
+        opts.channel_name, opts.zmq_schema, opts.zmq_packing,
+        opts.fz_schema, opts.fz_packing,
+        opts.shm_config.ring_buffer_capacity,
+        opts.shm_config.physical_page_size,
+        ...);
+}
+```
+
+Same pattern for consumer — `create_reader` instead of external DataBlock attachment.
 
 ---
 
 ## 7. Role Host Changes
 
-Role hosts no longer compute sizes:
+Role hosts pass schema through. No size computation:
 
 ```cpp
 // OLD:
-out_schema_slot_size_ = scripting::compute_schema_size(out_slot_spec_, packing);
+out_schema_slot_size_ = compute_schema_size(out_slot_spec_, packing);
 opts.item_size = out_schema_slot_size_;
 opts.shm_config.logical_unit_size = out_schema_slot_size_;
+opts.flexzone_size = core_.out_schema_fz_size();
+opts.shm_config.flex_zone_size = core_.out_schema_fz_size();
 
 // NEW:
-// Just pass schema through — ShmQueue computes sizes
-opts.zmq_schema = scripting::schema_spec_to_zmq_fields(out_slot_spec_);
+opts.zmq_schema = schema_spec_to_zmq_fields(out_slot_spec_);
 opts.zmq_packing = packing;
-// opts.shm_config.logical_unit_size NOT set — ShmQueue computes it
-// opts.item_size NOT needed — ShmQueue computes it
+opts.fz_schema = schema_spec_to_zmq_fields(out_fz_spec);
+opts.fz_packing = packing;
+// No size fields — queue computes them
 ```
 
-The `out_schema_slot_size_` / `in_schema_slot_size_` member variables on role
-hosts can be removed entirely. `schema_fz_size` on core_ computed by ShmQueue
-during creation and stored via a callback or return value.
+Member variables `out_schema_slot_size_` / `in_schema_slot_size_` removed from
+role hosts. `core_.set_out_fz_spec()` called after queue creation, reading size
+from `queue->flexzone_size()`.
 
 ---
 
-## 8. Flexzone Size Propagation
+## 8. ProducerOptions / ConsumerOptions Changes
 
-ShmQueue computes flexzone size during creation. But `core_.set_out_fz_spec()`
-needs the size for metrics and engine validation.
+Remove size fields that ShmQueue now computes:
 
-Two options:
-(a) ShmQueue exposes `flexzone_size()` — already exists. Role host calls it
-    after queue creation and stores on core_.
-(b) `establish_channel()` returns the computed sizes alongside the Producer.
+```cpp
+// REMOVE from ProducerOptions:
+size_t item_size;        // computed by ShmQueue from schema
+size_t flexzone_size;    // computed by ShmQueue from fz schema
 
-Option (a) is simpler — the role host calls `producer->flexzone_size()` after
-`establish_channel()` and sets core_.
+// ADD to ProducerOptions (if not already present):
+std::vector<SchemaFieldDesc> fz_schema;   // flexzone schema fields
+std::string fz_packing;                    // flexzone packing
+```
+
+`zmq_schema` and `zmq_packing` already exist on ProducerOptions — they serve
+double duty for both ZmqQueue and ShmQueue now. Consider renaming to just
+`schema` and `packing` since they're transport-agnostic.
 
 ---
 
 ## 9. Implementation Order
 
-1. **ShmQueue factory refactor**: `create_writer()` and `create_reader()` that
-   create/attach DataBlock internally. Keep `from_producer_ref` / `from_consumer_ref`
-   temporarily for backward compat.
+1. **ShmQueue::create_writer()** — new factory that creates DataBlock internally.
+   Compute sizes from schema. Keep `from_producer_ref` temporarily for tests.
 
-2. **Consumer schema validation**: `create_reader()` validates size + hash.
+2. **ShmQueue::create_reader()** — new factory that attaches + validates schema.
 
-3. **Add spinlock/identity methods** to hub::Producer and hub::Consumer.
-   Delegate to ShmQueue's internal DataBlock.
+3. **Update establish_channel()** in hub::Producer — use create_writer.
+   Remove external DataBlock creation from Producer::create().
 
-4. **Route flexzone ops through ShmQueue** in hub::Producer/Consumer
-   (eliminate `pImpl->shm->flexible_zone_span()` calls).
+4. **Update establish_channel()** in hub::Consumer — use create_reader.
 
-5. **Update establish_channel()**: use `ShmQueue::create_writer()` /
-   `create_reader()` instead of external DataBlock creation.
+5. **Add spinlock/identity methods** to hub::Producer and hub::Consumer.
+   Delegate to ShmQueue's internal DataBlock via `raw_producer()`/`raw_consumer()`.
 
-6. **Remove `pImpl->shm` from ProducerImpl/ConsumerImpl**. Remove
-   `Producer::shm()` / `Consumer::shm()` public accessors.
+6. **Route flexzone ops** in hub::Producer/Consumer through ShmQueue
+   (eliminate direct `pImpl->shm->` flexzone calls).
 
-7. **Update facade `fn_get_shm`** to source from ShmQueue.
+7. **Remove `pImpl->shm`** from ProducerImpl/ConsumerImpl.
+   Remove `Producer::shm()` / `Consumer::shm()` public accessors.
 
-8. **Migrate external callers** (API classes, Lua engine, tests) from
+8. **Update facade `fn_get_shm`** to source from `ShmQueue::raw_producer()`.
+
+9. **Migrate external callers** — API classes, Lua engine from
    `producer->shm()->spinlock()` to `producer->spinlock()`.
 
-9. **Remove `opts.item_size` / `opts.flexzone_size`** from ProducerOptions /
-   ConsumerOptions (now computed by ShmQueue).
+10. **Remove `opts.item_size` / `opts.flexzone_size`** from ProducerOptions/ConsumerOptions.
+    Add `fz_schema` / `fz_packing` if not present.
 
-10. **Role hosts**: remove size computation, pass schema through.
+11. **Role hosts** — remove size computation, pass schema through.
+    Remove `out_schema_slot_size_` / `in_schema_slot_size_` members.
 
-11. **Update tests**.
+12. **Remove old factories** — `from_producer_ref`, `from_consumer_ref`,
+    `from_producer`, `from_consumer`. Only `create_writer` / `create_reader` remain.
+
+13. **Update tests**.
