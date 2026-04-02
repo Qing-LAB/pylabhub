@@ -139,7 +139,7 @@ ShmQueue::from_producer_ref(DataBlockProducer& dbp, size_t item_size,
 // create_writer — creates DataBlock internally from schema
 // ============================================================================
 
-std::unique_ptr<QueueWriter>
+std::unique_ptr<ShmQueue>
 ShmQueue::create_writer(const std::string &channel_name,
                         const std::vector<SchemaFieldDesc> &slot_schema,
                         const std::string &slot_packing,
@@ -214,14 +214,14 @@ ShmQueue::create_writer(const std::string &channel_name,
     impl->checksum_slot      = checksum_slot;
     impl->checksum_fz        = checksum_fz;
     impl->always_clear_slot  = always_clear_slot;
-    return std::unique_ptr<QueueWriter>(new ShmQueue(std::move(impl)));
+    return std::unique_ptr<ShmQueue>(new ShmQueue(std::move(impl)));
 }
 
 // ============================================================================
 // create_reader — attaches to existing DataBlock, validates schema
 // ============================================================================
 
-std::unique_ptr<QueueReader>
+std::unique_ptr<ShmQueue>
 ShmQueue::create_reader(const std::string &shm_name,
                         uint64_t shared_secret,
                         const std::vector<SchemaFieldDesc> &expected_slot_schema,
@@ -284,7 +284,7 @@ ShmQueue::create_reader(const std::string &shm_name,
     impl->chan_name     = channel_name;
     impl->verify_slot  = verify_slot;
     impl->verify_fz    = verify_fz;
-    return std::unique_ptr<QueueReader>(new ShmQueue(std::move(impl)));
+    return std::unique_ptr<ShmQueue>(new ShmQueue(std::move(impl)));
 }
 
 // ============================================================================
