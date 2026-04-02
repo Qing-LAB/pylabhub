@@ -1,17 +1,18 @@
 #pragma once
 /**
  * @file native_engine.hpp
- * @brief NativeEngine — ScriptEngine implementation for native C/C++ plugins.
+ * @brief NativeEngine — ScriptEngine implementation for native C/C++ shared libraries.
  *
  * Loads a shared library (.so/.dll) via dlopen/LoadLibrary, resolves
  * callback symbols, and dispatches invoke calls as direct function pointer
  * calls with zero marshaling overhead.
  *
- * Plugin API: see src/include/utils/plugin_api.h
+ * Native engine API: see src/include/utils/native_engine_api.h
  * Specification: see HEP-CORE-0028
  */
 
 #include "utils/script_engine.hpp"
+#include "utils/native_invoke_types.h"
 
 #include <filesystem>
 #include <string>
@@ -55,24 +56,19 @@ class NativeEngine : public ScriptEngine
     void invoke_on_stop() override;
 
     InvokeResult invoke_produce(
-        void *out_slot, size_t out_sz,
-        void *flexzone, size_t fz_sz, const char *fz_type,
+        InvokeTx tx,
         std::vector<IncomingMessage> &msgs) override;
 
-    void invoke_consume(
-        const void *in_slot, size_t in_sz,
-        const void *flexzone, size_t fz_sz, const char *fz_type,
+    InvokeResult invoke_consume(
+        InvokeRx rx,
         std::vector<IncomingMessage> &msgs) override;
 
     InvokeResult invoke_process(
-        const void *in_slot, size_t in_sz,
-        void *out_slot, size_t out_sz,
-        void *flexzone, size_t fz_sz, const char *fz_type,
+        InvokeRx rx, InvokeTx tx,
         std::vector<IncomingMessage> &msgs) override;
 
-    void invoke_on_inbox(
-        const void *data, size_t sz,
-        const std::string &sender) override;
+    InvokeResult invoke_on_inbox(
+        InvokeInbox msg) override;
 
     // ── Generic invoke ───────────────────────────────────────────────────
 
@@ -89,7 +85,7 @@ class NativeEngine : public ScriptEngine
     [[nodiscard]] bool supports_multi_state() const noexcept override;
     void release_thread() override {}
 
-    /// Set the expected BLAKE2b-256 hex checksum for the plugin .so file.
+    /// Set the expected BLAKE2b-256 hex checksum for the native .so file.
     /// If set, load_script() verifies the file hash before dlopen.
     void set_expected_checksum(std::string hex_checksum);
 
@@ -100,20 +96,20 @@ class NativeEngine : public ScriptEngine
     void *dl_handle_{nullptr};
 
     // ── Resolved function pointers (C linkage) ──────────────────────────
-    using FnPluginInit     = bool (*)(const void *ctx);
-    using FnPluginFinalize = void (*)();
+    using FnNativeInit     = bool (*)(const void *ctx);
+    using FnNativeFinalize = void (*)();
     using FnVoid           = void (*)(const char *args_json);
-    using FnOnProduce      = bool (*)(void *, size_t, void *, size_t);
-    using FnOnConsume      = void (*)(const void *, size_t, const void *, size_t);
-    using FnOnProcess      = bool (*)(const void *, size_t, void *, size_t, void *, size_t);
-    using FnOnInbox        = void (*)(const void *, size_t, const char *);
+    using FnOnProduce      = bool (*)(const plh_tx_t *);
+    using FnOnConsume      = bool (*)(const plh_rx_t *);
+    using FnOnProcess      = bool (*)(const plh_rx_t *, const plh_tx_t *);
+    using FnOnInbox        = bool (*)(const plh_inbox_msg_t *);
     using FnSchemaDesc     = const char *(*)();
     using FnSizeof         = size_t (*)();
     using FnBool           = bool (*)();
     using FnCstr           = const char *(*)();
 
-    FnPluginInit     fn_init_{nullptr};
-    FnPluginFinalize fn_finalize_{nullptr};
+    FnNativeInit     fn_init_{nullptr};
+    FnNativeFinalize fn_finalize_{nullptr};
     FnVoid           fn_on_init_{nullptr};
     FnVoid           fn_on_stop_{nullptr};
     FnOnProduce      fn_on_produce_{nullptr};
@@ -126,9 +122,9 @@ class NativeEngine : public ScriptEngine
     // ── Schema tracking ─────────────────────────────────────────────────
     std::unordered_map<std::string, size_t> type_sizes_;
 
-    // ── Plugin context (kept alive for plugin lifetime) ─────────────────
-    struct PluginContextStorage;
-    std::unique_ptr<PluginContextStorage> plugin_ctx_;
+    // ── Native context (kept alive for engine lifetime) ─────────────────
+    struct NativeContextStorage;
+    std::unique_ptr<NativeContextStorage> native_ctx_;
 
     // ── File integrity ──────────────────────────────────────────────────────
     std::string expected_checksum_;  ///< BLAKE2b-256 hex, empty = skip check

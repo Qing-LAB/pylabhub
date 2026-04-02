@@ -637,9 +637,7 @@ Access array fields:
 ```python
 samples = in_slot.samples          # ctypes array
 values  = list(in_slot.samples)    # Python list (copy)
-import ctypes, numpy as np
-arr = np.frombuffer((ctypes.c_float * 1024).from_buffer_copy(in_slot.samples),
-                    dtype=np.float32)  # zero-copy numpy view of copy
+arr = api.as_numpy(in_slot.samples)  # zero-copy numpy view (dtype inferred)
 ```
 
 For the output slot, write directly:
@@ -647,8 +645,11 @@ For the output slot, write directly:
 ```python
 out_slot.samples[:] = [x * 2 for x in in_slot.samples]
 # or with numpy:
-np.frombuffer(out_slot.samples, dtype=np.float32)[:] = source_array
+api.as_numpy(out_slot.samples)[:] = source_array
 ```
+
+`api.as_numpy(field)` returns a zero-copy `numpy.ndarray` view of a ctypes array field,
+with dtype inferred automatically. Available on all role APIs.
 
 ### 8.3 API methods — all roles
 

@@ -33,6 +33,8 @@ namespace pylabhub::processor
 
 using scripting::IncomingMessage;
 using scripting::InvokeResult;
+using scripting::InvokeRx;
+using scripting::InvokeTx;
 using Clock = std::chrono::steady_clock;
 
 // ============================================================================
@@ -133,7 +135,8 @@ void ProcessorRoleHost::worker_main_()
     core_.set_script_load_ok(true);
 
     // Step 3: Resolve schemas and register slot types.
-    scripting::SchemaSpec fz_spec_local;
+    scripting::SchemaSpec out_fz_local;
+    scripting::SchemaSpec in_fz_local;
     {
         std::vector<std::string> schema_dirs;
         auto add_schema_dir = [&schema_dirs](const std::string &hub_dir) {
@@ -145,16 +148,18 @@ void ProcessorRoleHost::worker_main_()
         };
         add_schema_dir(config_.in_hub().hub_dir);
         add_schema_dir(config_.out_hub().hub_dir);
-        add_schema_dir(config_.out_hub().hub_dir);
 
+        const auto &pf = config_.role_data<ProcessorFields>();
         try
         {
-            in_slot_spec_  = scripting::resolve_schema(
-                config_.role_data<ProcessorFields>().in_slot_schema_json, false, "proc", schema_dirs);
-            out_slot_spec_ = scripting::resolve_schema(
-                config_.role_data<ProcessorFields>().out_slot_schema_json, false, "proc", schema_dirs);
-            fz_spec_local  = scripting::resolve_schema(
-                config_.role_data<ProcessorFields>().out_flexzone_schema_json, true, "proc", schema_dirs);
+            in_slot_spec_    = scripting::resolve_schema(
+                pf.in_slot_schema_json, false, "proc", schema_dirs);
+            out_slot_spec_   = scripting::resolve_schema(
+                pf.out_slot_schema_json, false, "proc", schema_dirs);
+            in_fz_local = scripting::resolve_schema(
+                pf.in_flexzone_schema_json, true, "proc", schema_dirs);
+            out_fz_local = scripting::resolve_schema(
+                pf.out_flexzone_schema_json, true, "proc", schema_dirs);
         }
         catch (const std::exception &e)
         {
@@ -163,6 +168,7 @@ void ProcessorRoleHost::worker_main_()
             ready_promise_.set_value(false);
             return;
         }
+        // in_fz_spec stored in core_ after registration (below).
     }
 
     // Determine packing: input and output may use different ZMQ packing.
@@ -197,23 +203,42 @@ void ProcessorRoleHost::worker_main_()
         out_schema_slot_size_ = engine_->type_sizeof("OutSlotFrame");
     }
 
-    // Register flexzone type (output side).
-    if (fz_spec_local.has_schema)
+    // Register output flexzone type.
+    if (out_fz_local.has_schema)
     {
-        if (!engine_->register_slot_type(fz_spec_local, "FlexFrame", out_packing))
+        if (!engine_->register_slot_type(out_fz_local, "OutFlexFrame", out_packing))
         {
-            LOGGER_ERROR("[proc] Failed to register FlexFrame type");
+            LOGGER_ERROR("[proc] Failed to register OutFlexFrame type");
             engine_->finalize();
             ready_promise_.set_value(false);
             return;
         }
-        size_t fz_size = engine_->type_sizeof("FlexFrame");
+        size_t fz_size = engine_->type_sizeof("OutFlexFrame");
         fz_size = (fz_size + 4095U) & ~size_t{4095U};
-        core_.set_fz_spec(std::move(fz_spec_local), fz_size);
+        core_.set_out_fz_spec(std::move(out_fz_local), fz_size);
     }
     else
     {
-        core_.set_fz_spec(std::move(fz_spec_local), 0);
+        core_.set_out_fz_spec(std::move(out_fz_local), 0);
+    }
+
+    // Register input flexzone type.
+    if (in_fz_local.has_schema)
+    {
+        if (!engine_->register_slot_type(in_fz_local, "InFlexFrame", in_packing))
+        {
+            LOGGER_ERROR("[proc] Failed to register InFlexFrame type");
+            engine_->finalize();
+            ready_promise_.set_value(false);
+            return;
+        }
+        size_t in_fz_size = engine_->type_sizeof("InFlexFrame");
+        in_fz_size = (in_fz_size + 4095U) & ~size_t{4095U};
+        core_.set_in_fz_spec(std::move(in_fz_local), in_fz_size);
+    }
+    else
+    {
+        core_.set_in_fz_spec(std::move(in_fz_local), 0);
     }
 
     // Resolve and register inbox schema (alongside slot/fz above).
@@ -331,7 +356,7 @@ void ProcessorRoleHost::worker_main_()
     engine_->invoke_on_init();
 
     // Sync flexzone checksum after on_init (user may have written to flexzone).
-    if (out_producer_.has_value() && core_.has_fz())
+    if (out_producer_.has_value() && core_.has_out_fz())
         out_producer_->sync_flexzone_checksum();
 
     // Step 7: Spawn ctrl_thread_ and signal ready.
@@ -374,17 +399,17 @@ bool ProcessorRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox
     in_opts.channel_name         = config_.in_channel();
     in_opts.shm_shared_secret    = config_.in_shm().enabled ? config_.in_shm().secret : 0u;
     in_opts.expected_schema_hash = scripting::compute_schema_hash(
-                                       in_slot_spec_, scripting::SchemaSpec{});
+                                       in_slot_spec_, core_.in_fz_spec());
     in_opts.consumer_uid         = config_.identity().uid;
     in_opts.consumer_name        = config_.identity().name;
     in_opts.item_size            = in_schema_slot_size_;
-    in_opts.flexzone_size        = core_.schema_fz_size();
+    in_opts.flexzone_size        = core_.in_schema_fz_size();
     in_opts.zmq_schema           = scripting::schema_spec_to_zmq_fields(in_slot_spec_);
     in_opts.zmq_packing          = config_.in_transport().zmq_packing;
     in_opts.zmq_buffer_depth     = config_.in_transport().zmq_buffer_depth;
     // Per-role checksum policy — same value on both input and output (see config_single_truth.md).
     in_opts.checksum_policy      = config_.checksum().policy;
-    in_opts.flexzone_checksum    = config_.checksum().flexzone && core_.has_fz();
+    in_opts.flexzone_checksum    = config_.checksum().flexzone && core_.has_in_fz();
     // queue_period_us removed: loop policy set by establish_channel().
     in_opts.ctrl_queue_max_depth = config_.monitoring().ctrl_queue_max_depth;
     in_opts.peer_dead_timeout_ms = config_.monitoring().peer_dead_timeout_ms;
@@ -473,15 +498,14 @@ bool ProcessorRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox
     out_opts.channel_name  = config_.out_channel();
     out_opts.pattern       = hub::ChannelPattern::PubSub;
     out_opts.has_shm       = config_.out_shm().enabled;
-    out_opts.schema_hash   = scripting::compute_schema_hash(out_slot_spec_, core_.fz_spec());
+    out_opts.schema_hash   = scripting::compute_schema_hash(out_slot_spec_, core_.out_fz_spec());
     out_opts.role_name     = config_.identity().name;
     out_opts.role_uid      = config_.identity().uid;
     out_opts.item_size          = out_schema_slot_size_;
-    out_opts.flexzone_size      = core_.schema_fz_size();
+    out_opts.flexzone_size      = core_.out_schema_fz_size();
     // Per-role checksum policy — same value on both input and output (see config_single_truth.md).
     out_opts.checksum_policy    = config_.checksum().policy;
-    out_opts.flexzone_checksum  = config_.checksum().flexzone && core_.has_fz();
-    out_opts.timing = config_.timing().timing_params();
+    out_opts.flexzone_checksum  = config_.checksum().flexzone && core_.has_out_fz();
     out_opts.ctrl_queue_max_depth = config_.monitoring().ctrl_queue_max_depth;
     out_opts.peer_dead_timeout_ms = config_.monitoring().peer_dead_timeout_ms;
 
@@ -493,7 +517,7 @@ bool ProcessorRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox
         out_opts.shm_config.policy               = hub::DataBlockPolicy::RingBuffer;
         out_opts.shm_config.consumer_sync_policy = config_.out_shm().sync_policy;
         out_opts.shm_config.checksum_policy      = config_.checksum().policy;
-        out_opts.shm_config.flex_zone_size       = core_.schema_fz_size();
+        out_opts.shm_config.flex_zone_size       = core_.out_schema_fz_size();
 
         out_opts.shm_config.physical_page_size = hub::system_page_size();
         out_opts.shm_config.logical_unit_size  =
@@ -792,10 +816,14 @@ void ProcessorRoleHost::run_data_loop_()
     const size_t in_sz  = in_consumer_->queue_item_size();
     const size_t out_sz = out_producer_->queue_item_size();
 
-    // Flexzone pointers — valid after queue start.
-    void       *fz_ptr  = core_.has_fz() ? out_producer_->write_flexzone() : nullptr;
-    const size_t fz_sz  = core_.has_fz() ? out_producer_->flexzone_size()  : 0;
-    const char *fz_type = core_.has_fz() ? "FlexFrame" : nullptr;
+    // Output flexzone pointers — valid after queue start.
+    void       *out_fz_ptr = core_.has_out_fz() ? out_producer_->write_flexzone() : nullptr;
+    const size_t out_fz_sz = core_.has_out_fz() ? out_producer_->flexzone_size()  : 0;
+
+    // Input flexzone — mutable per HEP-0002 TABLE 1 (user-managed coordination).
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+    void       *in_fz_ptr = core_.has_in_fz() ? const_cast<void *>(in_consumer_->read_flexzone()) : nullptr;
+    const size_t in_fz_sz = core_.has_in_fz() ? in_consumer_->flexzone_size() : 0;
 
     // First cycle: no deadline — fire immediately.
     auto deadline = Clock::time_point::max();
@@ -917,13 +945,17 @@ void ProcessorRoleHost::run_data_loop_()
         if (out_buf != nullptr)
             std::memset(out_buf, 0, out_sz);
 
-        // Re-read flexzone pointer each cycle (ShmQueue may move it).
-        if (core_.has_fz())
-            fz_ptr = out_producer_->write_flexzone();
+        // Re-read flexzone pointers each cycle (ShmQueue may move them).
+        if (core_.has_out_fz())
+            out_fz_ptr = out_producer_->write_flexzone();
+        if (core_.has_in_fz())
+            in_fz_ptr = const_cast<void *>(in_consumer_->read_flexzone());
 
         InvokeResult result =
-            engine_->invoke_process(held_input, in_sz, out_buf, out_sz,
-                                    fz_ptr, fz_sz, fz_type, msgs);
+            engine_->invoke_process(
+                InvokeRx{held_input, in_sz, in_fz_ptr, in_fz_sz},
+                InvokeTx{out_buf, out_sz, out_fz_ptr, out_fz_sz},
+                msgs);
 
         // --- Step F: Commit/discard OUTPUT, release/hold INPUT ---
         //

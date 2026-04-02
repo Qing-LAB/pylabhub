@@ -214,9 +214,6 @@ struct ProducerOptions
     std::string role_name{}; ///< Human-readable role name; empty = anonymous
     std::string role_uid{};  ///< Role UID (PROD-{NAME}-{8HEX}); empty = anonymous
 
-    // ── Loop timing (HEP-CORE-0008) ─────────────────────────────────────────
-    LoopTimingParams timing{};  ///< Policy + period + io_wait_ratio. Set from config.
-
     // ── Named schema validation (HEP-CORE-0016 Phase 2) ──────────────────────
     /// Optional named schema ID (e.g. `"lab.sensors.temperature.raw@1"`).
     /// When non-empty, `create<FlexZoneT, DataBlockT>()` validates sizeof and BLDS hash
@@ -259,7 +256,7 @@ struct ProducerOptions
     OverflowPolicy zmq_overflow_policy{OverflowPolicy::Drop};
 
     // ── Queue abstraction (Phase 2) ──────────────────────────────────────────
-    /// Slot data size in bytes (from engine type_sizeof("SlotFrame")). Required for ShmQueue wrapper.
+    /// Slot data size in bytes (from engine type_sizeof("OutSlotFrame")). Required for ShmQueue wrapper.
     size_t item_size{0};
     /// Flexzone size in bytes (page-aligned). 0 = no flexzone.
     size_t flexzone_size{0};

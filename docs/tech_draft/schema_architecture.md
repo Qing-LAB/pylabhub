@@ -74,10 +74,11 @@ JSON types: float32/64, int8/16/32/64, uint8/16/32/64, bool, char. Count for arr
 
 Types:
 - `FieldDef` — one typed field for ctypes struct building (name, type_str, count, byte_length)
-- `SlotExposure` — enum: Ctypes (named fields) or NumpyArray (dtype + shape)
-- `SchemaSpec` — complete schema for one buffer: fields[], packing, exposure, numpy info
+- `SchemaSpec` — complete schema for one buffer: fields[], packing
 
 Purpose: Runtime representation consumed by Python (ctypes.Structure) and Lua (FFI cdef).
+Only field-based schemas are supported. Array fields (`count > 1`) are accessed as ctypes
+arrays; Python scripts use `api.as_numpy(field)` for zero-copy numpy views.
 Built from JSON config via `parse_schema_json()` or from registry via `schema_entry_to_spec()`.
 Stored in `RoleHostCore::fz_spec_` for flexzone.
 
