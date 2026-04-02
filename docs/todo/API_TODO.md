@@ -26,6 +26,38 @@
 - [ ] **HIGH**: `script_host_helpers.hpp` is in public include tree (`src/include/utils/`) but is internal; includes `<pybind11/embed.h>` which contaminates all consumers. Move to `src/scripting/` (private header).
 - [ ] **MED**: `script_host_schema.hpp` is in public include tree but marked internal. Either move to `src/scripting/` or document as public API.
 
+### DataBlock/ShmQueue Ownership Refactor (2026-04-02)
+
+- [ ] **HIGH**: Template RAII factories (`push<F,D>`, `synced_write<F,D>`, `pull<F,D>`,
+  `set_write_handler<F,D>`, `set_read_handler<F,D>`) need reworking for the new
+  ShmQueue ownership model. These call `DataBlockProducer::with_transaction<F,D>()`
+  directly via the messaging facade `fn_get_shm`. Current workaround: facade sources
+  from `ShmQueue::raw_producer()`. But the template factories previously did compile-time
+  `sizeof(DataBlockT)` validation in `create_datablock_producer<F,D>()` which is now
+  bypassed since ShmQueue creates DataBlock from schema (no compile-time type info).
+  Options: (a) move sizeof check to `with_transaction` entry (runtime), (b) add
+  `register_type_size()` on ShmQueue for the template path to validate before use,
+  (c) accept that schema-mode DataBlock is always runtime-validated and template
+  validation is a separate code path.
+  See `docs/tech_draft/datablock_queue_ownership.md` §5.3 and `hub_producer.hpp` template factories.
+
+- [ ] **HIGH**: Removed old ShmQueue factories — need recovery path for RAII:
+  - `from_producer(unique_ptr<DataBlockProducer>, item_size, fz_size, ...)` — owning, writer
+  - `from_consumer(unique_ptr<DataBlockConsumer>, item_size, fz_size, ...)` — owning, reader
+  - `from_producer_ref(DataBlockProducer&, item_size, fz_size, ...)` — non-owning, writer
+  - `from_consumer_ref(DataBlockConsumer&, item_size, fz_size, ...)` — non-owning, reader
+  These took pre-created DataBlock + raw sizes. The RAII template factories
+  (`push<F,D>`, `pull<F,D>`) previously created DataBlock externally with
+  compile-time sizeof validation, then wrapped in ShmQueue via from_*_ref.
+  Recovery options: (a) add RAII-specific factory on ShmQueue that takes
+  DataBlockProducer directly (no schema, trusts caller's sizes), (b) make
+  RAII template path bypass ShmQueue and use DataBlock directly (as it
+  already does for with_transaction), (c) add compile-time size check to
+  create_writer via a template overload.
+  Also removed from ShmQueueImpl: `dbc_ref` / `dbp_ref` non-owning pointer
+  members and the owning-vs-ref resolution logic in consumer()/producer()
+  accessors. These become simple `.get()` on owned unique_ptr.
+
 ### ScriptEngine Post-Refactor Deferred Items (2026-03-21)
 
 - [ ] **SE-03 HIGH**: HEP-CORE-0011 fundamentally stale — rewrite §3.2, §3.3, §4.2, §8, §8.2 for composition model

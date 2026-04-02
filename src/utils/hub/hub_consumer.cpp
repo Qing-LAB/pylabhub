@@ -57,7 +57,6 @@ struct PendingCtrlSend
 struct ConsumerImpl
 {
     ChannelHandle                       handle;
-    std::unique_ptr<DataBlockConsumer>  shm;
     Messenger                          *messenger{nullptr};
     std::atomic<bool>                   closed{false};
 
@@ -107,11 +106,10 @@ struct ConsumerImpl
     // HEP-CORE-0021: ZMQ PULL socket (non-null only when data_transport=="zmq").
     std::unique_ptr<QueueReader> zmq_queue_;
 
-    // Queue abstraction Phase 2: unified QueueReader.
-    // SHM transport: ShmQueue wrapping `shm`. ZMQ transport: alias for zmq_queue_.
-    // Non-null when item_size > 0 (SHM) or data_transport=="zmq".
-    std::unique_ptr<QueueReader> shm_queue_reader_; ///< Owned ShmQueue (SHM only)
-    QueueReader *queue_reader_{nullptr};
+    // Queue abstraction: unified QueueReader.
+    // SHM transport: ShmQueue (owns DataBlock internally). ZMQ transport: ZmqQueue.
+    std::unique_ptr<ShmQueue>    shm_queue_;   ///< ShmQueue (owns DataBlock, SHM only)
+    QueueReader                 *queue_reader_{nullptr}; ///< Alias to active queue (SHM or ZMQ)
 
     void run_data_thread();
     void run_ctrl_thread();
@@ -366,7 +364,7 @@ void ConsumerImpl::run_ctrl_thread()
 
 void ConsumerImpl::run_shm_thread()
 {
-    if (!shm)
+    if (!shm_queue_)
     {
         return;
     }
@@ -432,22 +430,8 @@ Consumer::connect(Messenger &messenger, const ConsumerOptions &opts)
         return std::nullopt;
     }
 
-    std::unique_ptr<DataBlockConsumer> shm_consumer;
-    if (ch->has_shm() && opts.shm_shared_secret != 0)
-    {
-        // Attach to SHM without schema type validation (non-template path)
-        const DataBlockConfig *cfg_ptr =
-            opts.expected_shm_config.has_value() ? &(*opts.expected_shm_config) : nullptr;
-
-        const char *uid  = opts.consumer_uid.empty()  ? nullptr : opts.consumer_uid.c_str();
-        const char *cnam = opts.consumer_name.empty() ? nullptr : opts.consumer_name.c_str();
-        shm_consumer = find_datablock_consumer_impl(ch->shm_name(), opts.shm_shared_secret,
-                                                     cfg_ptr, nullptr, nullptr, uid, cnam);
-        // nullptr is acceptable — secret mismatch or SHM unavailable; ZMQ still works
-    }
-
-    return Consumer::establish_channel(messenger, std::move(*ch), std::move(shm_consumer),
-                                         opts);
+    // DataBlock creation/attachment moved into ShmQueue::create_reader().
+    return Consumer::establish_channel(messenger, std::move(*ch), opts);
 }
 
 // ============================================================================
@@ -456,12 +440,10 @@ Consumer::connect(Messenger &messenger, const ConsumerOptions &opts)
 
 std::optional<Consumer>
 Consumer::establish_channel(Messenger &messenger, ChannelHandle channel,
-                               std::unique_ptr<DataBlockConsumer> shm_consumer,
                                const ConsumerOptions &opts)
 {
     auto impl       = std::make_unique<ConsumerImpl>();
     impl->handle    = std::move(channel);
-    impl->shm       = std::move(shm_consumer);
     impl->messenger = &messenger;
     impl->closed    = false;
 
@@ -479,7 +461,8 @@ Consumer::establish_channel(Messenger &messenger, ChannelHandle channel,
     impl->facade.context = raw;
 
     impl->facade.fn_get_shm = [](void *ctx) -> DataBlockConsumer * {
-        return static_cast<ConsumerImpl *>(ctx)->shm.get();
+        auto *sq = static_cast<ConsumerImpl *>(ctx)->shm_queue_.get();
+        return sq ? sq->raw_consumer() : nullptr;
     };
     impl->facade.fn_send_ctrl = [](void *ctx, const char *type, const void *data,
                                     size_t size) -> bool {
@@ -590,14 +573,19 @@ Consumer::establish_channel(Messenger &messenger, ChannelHandle channel,
     }
     impl->peer_dead_timeout_ms_ = opts.peer_dead_timeout_ms;
 
-    // Queue abstraction Phase 2: create unified QueueReader.
-    // SHM: wrap DataBlockConsumer in ShmQueue. ZMQ: use existing zmq_queue_.
-    if (impl->shm && opts.item_size > 0)
+    // Queue abstraction: create unified QueueReader.
+    // SHM: ShmQueue creates+attaches DataBlock internally. ZMQ: use existing zmq_queue_.
+    if (impl->handle.has_shm() && opts.shm_shared_secret != 0 && !opts.zmq_schema.empty())
     {
-        impl->shm_queue_reader_ = ShmQueue::from_consumer_ref(
-            *impl->shm, opts.item_size, opts.flexzone_size, opts.channel_name,
-            false, false);  // checksum flags: set via set_checksum_policy() below
-        impl->queue_reader_ = impl->shm_queue_reader_.get();
+        impl->shm_queue_ = ShmQueue::create_reader(
+            impl->handle.shm_name(), opts.shm_shared_secret,
+            opts.zmq_schema, opts.zmq_packing,
+            opts.channel_name,
+            false, false,  // checksum flags: set via set_checksum_policy() below
+            opts.consumer_uid, opts.consumer_name);
+        // create_reader returns nullptr if attachment fails — ZMQ fallback below.
+        if (impl->shm_queue_)
+            impl->queue_reader_ = impl->shm_queue_.get();
     }
     else if (impl->zmq_queue_)
     {
@@ -693,7 +681,7 @@ bool Consumer::start()
     pImpl->ctrl_thread_handle = std::thread([impl_ptr] { impl_ptr->run_ctrl_thread(); });
 
     // shm_thread only when SHM is attached
-    if (pImpl->shm)
+    if (pImpl->shm_queue_)
     {
         pImpl->shm_thread_handle = std::thread([impl_ptr] { impl_ptr->run_shm_thread(); });
     }
@@ -898,7 +886,7 @@ uint64_t Consumer::ctrl_queue_dropped() const
 
 bool Consumer::_has_shm() const noexcept
 {
-    return pImpl && !pImpl->closed && pImpl->shm != nullptr;
+    return pImpl && !pImpl->closed && pImpl->shm_queue_ != nullptr;
 }
 
 ConsumerMessagingFacade &Consumer::_messaging_facade() const
@@ -957,12 +945,13 @@ ChannelPattern Consumer::pattern() const
 
 bool Consumer::has_shm() const
 {
-    return pImpl && pImpl->shm != nullptr;
+    return pImpl && pImpl->shm_queue_ != nullptr;
 }
 
 DataBlockConsumer *Consumer::shm() noexcept
 {
-    return pImpl ? pImpl->shm.get() : nullptr;
+    // DEPRECATED — callers should use spinlock()/identity methods instead.
+    return pImpl && pImpl->shm_queue_ ? pImpl->shm_queue_->raw_consumer() : nullptr;
 }
 
 ChannelHandle &Consumer::channel_handle()
@@ -1049,20 +1038,17 @@ void Consumer::stop_queue()
 
 const void *Consumer::read_flexzone() const noexcept
 {
-    if (!pImpl || !pImpl->shm) return nullptr;
-    auto fz = pImpl->shm->flexible_zone_span();
-    return fz.empty() ? nullptr : fz.data();
+    return (pImpl && pImpl->queue_reader_) ? pImpl->queue_reader_->read_flexzone() : nullptr;
 }
 
 size_t Consumer::flexzone_size() const noexcept
 {
-    if (!pImpl || !pImpl->shm) return 0;
-    return pImpl->shm->flexible_zone_span().size();
+    return (pImpl && pImpl->queue_reader_) ? pImpl->queue_reader_->flexzone_size() : 0;
 }
 
 void Consumer::set_verify_checksum(bool slot, bool fz) noexcept
 {
-    auto *sq = pImpl ? static_cast<ShmQueue *>(pImpl->shm_queue_reader_.get()) : nullptr;
+    auto *sq = pImpl ? static_cast<ShmQueue *>(pImpl->shm_queue_.get()) : nullptr;
     if (sq) sq->set_verify_checksum(slot, fz);
 }
 
@@ -1123,11 +1109,10 @@ void Consumer::close()
     }
 
     pImpl->handle.invalidate();
-    // Reset queue abstraction before shm — ShmQueue holds non-owning ref to DataBlock.
+    // Reset queue abstraction — ShmQueue owns DataBlock, destroyed with it.
     pImpl->queue_reader_ = nullptr;
-    pImpl->shm_queue_reader_.reset();
+    pImpl->shm_queue_.reset();   // destroys ShmQueue + DataBlock
     pImpl->zmq_queue_.reset();
-    pImpl->shm.reset();
     pImpl->closed = true;
 }
 

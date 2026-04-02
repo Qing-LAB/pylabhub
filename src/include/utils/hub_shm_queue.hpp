@@ -37,18 +37,15 @@ struct ShmQueueImpl;
  * Inherits both QueueReader and QueueWriter. Factories return the appropriate
  * abstract base pointer.
  *
- * @par Read mode (from_consumer / from_consumer_ref)
- * Wraps a DataBlockConsumer. read_acquire() acquires the next committed slot.
+ * @par Read mode (create_reader)
+ * Creates and owns a DataBlockConsumer. read_acquire() acquires the next committed slot.
  * read_release() releases the read lock on that slot.
- * Base interface: last_seq(), capacity(), policy_info().
- * SHM-specific: read_flexzone(), flexzone_size(), set_verify_checksum().
+ * Validates expected schema against the SHM header at creation.
  *
- * @par Write mode (from_producer / from_producer_ref)
- * Wraps a DataBlockProducer. write_acquire() acquires a free slot.
+ * @par Write mode (create_writer)
+ * Creates and owns a DataBlockProducer. write_acquire() acquires a free slot.
  * write_commit() commits it; write_discard() releases without committing.
- * Base interface: capacity(), policy_info().
- * SHM-specific: write_flexzone(), flexzone_size(), set_checksum_options(),
- * sync_flexzone_checksum().
+ * Computes slot/flexzone sizes from schema via compute_field_layout().
  */
 class PYLABHUB_UTILS_EXPORT ShmQueue final : public QueueReader, public QueueWriter
 {
@@ -207,11 +204,11 @@ public:
     void set_configured_period(uint64_t period_us) override;
 
     /** @brief Read-only pointer to the shared flexzone. nullptr if no flexzone. */
-    const void* read_flexzone() const noexcept;
+    const void* read_flexzone() const noexcept override;
     /** @brief Writable pointer to the shared flexzone. nullptr if no flexzone. */
-    void* write_flexzone() noexcept;
+    void* write_flexzone() noexcept override;
     /** @brief Size of the flexzone in bytes; 0 if not configured. */
-    size_t flexzone_size() const noexcept;
+    size_t flexzone_size() const noexcept override;
 
     /** @brief Configure BLAKE2b checksum verification on read_acquire(). */
     void set_verify_checksum(bool slot, bool fz) const noexcept;
@@ -228,7 +225,7 @@ public:
     /** @brief Enable/disable zero-fill of slot buffer on write_acquire(). */
     void set_always_clear_slot(bool enable) noexcept;
     /** @brief Stamp flexzone checksum after on_init() writes initial content. */
-    void sync_flexzone_checksum() noexcept;
+    void sync_flexzone_checksum() noexcept override;
 
 private:
     explicit ShmQueue(std::unique_ptr<ShmQueueImpl> impl);
