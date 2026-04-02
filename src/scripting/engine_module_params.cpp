@@ -43,21 +43,16 @@ void engine_lifecycle_startup(const char * /*arg*/, void *userdata)
     {
         if (!p->engine->register_slot_type(p->in_fz_spec, "InFlexFrame", p->in_packing))
             throw std::runtime_error("register InFlexFrame failed");
-
-        size_t in_fz_size = p->engine->type_sizeof("InFlexFrame");
-        in_fz_size = (in_fz_size + 4095U) & ~size_t{4095U};
-        p->core->set_in_fz_spec(SchemaSpec{p->in_fz_spec}, in_fz_size);
     }
 
     if (p->out_fz_spec.has_schema)
     {
         if (!p->engine->register_slot_type(p->out_fz_spec, "OutFlexFrame", p->out_packing))
             throw std::runtime_error("register OutFlexFrame failed");
-
-        size_t fz_size = p->engine->type_sizeof("OutFlexFrame");
-        fz_size = (fz_size + 4095U) & ~size_t{4095U}; // round to 4KB page
-        p->core->set_out_fz_spec(SchemaSpec{p->out_fz_spec}, fz_size);
     }
+
+    // Flexzone sizes are computed by the role host from schema (infrastructure-authoritative)
+    // and stored on core_ before this callback runs. No engine->type_sizeof needed here.
 
     if (p->inbox_spec.has_schema)
     {
