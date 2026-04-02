@@ -163,17 +163,18 @@ All roles use directional names at the C++ engine level:
 
 ### 3.3 Script-level aliases
 
-For producer/consumer convenience, the engine registers non-directional aliases
-at type-registration time by copying the type reference to the legacy member:
+For producer/consumer convenience, the engine creates non-directional aliases
+in `build_api_()` (after the role is known from `ctx.role_tag`):
 
-- Producer: `SlotFrame` → `OutSlotFrame`, `FlexFrame` → `OutFlexFrame`
-- Consumer: `SlotFrame` → `InSlotFrame`, `FlexFrame` → `InFlexFrame`
+- Producer: `SlotFrame` = `OutSlotFrame`, `FlexFrame` = `OutFlexFrame`
+- Consumer: `SlotFrame` = `InSlotFrame`, `FlexFrame` = `InFlexFrame`
 - Processor: no aliases — both directions are explicit
 
-Implementation: in `register_slot_type()`, when "OutSlotFrame" is registered for
-a producer engine, also set `slot_type_ = out_slot_type_` (Python) or
-`ref_slot_writable_ = ref_out_slot_writable_` (Lua). One line per alias.
-No fallback logic in invoke paths.
+Implementation: in `build_api_()`, after all types are registered and the role
+is known. Python builds a second ctypes class with the alias name. Lua registers
+an FFI typedef (e.g., `typedef OutSlotFrame SlotFrame;`). The alias is created
+only for single-direction roles. Aliases are NOT created in `register_slot_type()`
+because the engine doesn't know the role at registration time.
 
 ---
 

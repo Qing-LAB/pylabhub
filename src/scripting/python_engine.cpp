@@ -1006,7 +1006,7 @@ InvokeResult PythonEngine::invoke_consume(
     InvokeRx rx,
     std::vector<IncomingMessage> &msgs)
 {
-    InvokeResult result = InvokeResult::Commit;
+    InvokeResult result = InvokeResult::Error;
     if (is_callable(py_on_consume_))
     {
         py::gil_scoped_acquire g;
@@ -1090,7 +1090,7 @@ InvokeResult PythonEngine::invoke_process(
 
 InvokeResult PythonEngine::invoke_on_inbox(InvokeInbox msg)
 {
-    InvokeResult result = InvokeResult::Commit;
+    InvokeResult result = InvokeResult::Error;
     if (!is_callable(py_on_inbox_))
     {
         process_pending_();
@@ -1122,7 +1122,8 @@ InvokeResult PythonEngine::invoke_on_inbox(InvokeInbox msg)
         msg_obj.sender_uid = msg.sender_uid;
         msg_obj.seq        = msg.seq;
 
-        py_on_inbox_(py::cast(msg_obj), api_obj_);
+        py::object ret = py_on_inbox_(py::cast(msg_obj), api_obj_);
+        result = parse_return_value_(ret, "on_inbox");
     }
     catch (py::error_already_set &e)
     {

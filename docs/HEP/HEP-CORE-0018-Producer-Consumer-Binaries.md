@@ -113,7 +113,7 @@ Created by `pylabhub-producer --init <dir>`:
     producer.vault      ← encrypted CurveZMQ keypair (optional)
   script/
     python/
-      __init__.py       ← on_init / on_produce / on_stop
+      __init__.py       ← on_init / on_produce(tx, msgs, api) / on_stop
     lua/                ← only when script.type = "lua"
       main.lua
   logs/                 ← rotating log (producer.log, 10 MB × 3)
@@ -132,7 +132,7 @@ Created by `pylabhub-consumer --init <dir>`:
     consumer.vault      ← encrypted CurveZMQ keypair (optional)
   script/
     python/
-      __init__.py       ← on_init / on_consume / on_stop
+      __init__.py       ← on_init / on_consume(rx, msgs, api) / on_stop
     lua/                ← only when script.type = "lua"
       main.lua
   logs/                 ← rotating log (consumer.log, 10 MB × 3)
@@ -306,19 +306,20 @@ def on_init(api) -> None:
     """Called once before the write loop starts. Use for state initialization."""
     api.log(f"Producer {api.name()} starting on channel {api.channel()}")
 
-def on_produce(out_slot, flexzone, messages, api) -> bool:
+def on_produce(tx, msgs, api) -> bool:
     """
     Called once per write-loop iteration.
 
-    out_slot:  writable ctypes struct (slot_schema layout). Always non-None.
-    flexzone:  writable ctypes struct (flexzone_schema layout). None if not configured.
-               Always None when transport='zmq' (flexzone is SHM-only).
-    messages:  list of (sender: str, data: bytes) received via Messenger since last call.
-    api:       ProducerAPI — see §6.3.
+    tx:   transaction object with two attributes:
+          tx.slot — writable ctypes struct (slot_schema layout). Always non-None.
+          tx.fz   — writable ctypes struct (flexzone_schema layout). None if not configured.
+                    Always None when transport='zmq' (flexzone is SHM-only).
+    msgs: list of (sender: str, data: bytes) received via Messenger since last call.
+    api:  ProducerAPI — see §6.3.
 
-    Return value determines what the C++ framework does with out_slot:
-      True          → write_commit(): publishes out_slot to the ring/queue
-      False         → write_discard(): discards out_slot (loop continues normally)
+    Return value determines what the C++ framework does with the slot:
+      True          → write_commit(): publishes the slot to the ring/queue
+      False         → write_discard(): discards the slot (loop continues normally)
       None          → Error: increments script_errors, logs error.
                       If stop_on_script_error=true, requests shutdown.
                       Catches the common bug of omitting a return statement.
@@ -330,8 +331,8 @@ def on_produce(out_slot, flexzone, messages, api) -> bool:
     Return False when a prerequisite is not ready (e.g., dependent role not online).
     """
     import time
-    out_slot.ts    = time.monotonic()
-    out_slot.value = read_sensor()
+    tx.slot.ts    = time.monotonic()
+    tx.slot.value = read_sensor()
     return True
 
 def on_stop(api) -> None:
@@ -346,31 +347,36 @@ def on_init(api) -> None:
     """Called once before the read loop starts."""
     api.log(f"Consumer {api.name()} subscribing to channel {api.channel()}")
 
-def on_consume(in_slot, flexzone, messages, api) -> None:
+def on_consume(rx, msgs, api) -> bool:
     """
     Called for each slot received, or on timeout.
 
-    in_slot:   zero-copy read-only ctypes struct (slot_schema layout).
-               None on timeout (slot_acquire_timeout elapsed without a new slot).
-               Write-guarded via __setattr__: writing a field raises AttributeError.
-               The slot is valid only for the duration of this callback — do not store it.
-               See §6.4 for field access and numpy conversion.
+    rx:   transaction object with two attributes:
+          rx.slot — zero-copy read-only ctypes struct (slot_schema layout).
+                    None on timeout (slot_acquire_timeout elapsed without a new slot).
+                    Write-guarded via __setattr__: writing a field raises AttributeError.
+                    The slot is valid only for the duration of this callback — do not store it.
+                    See §6.4 for field access and numpy conversion.
+          rx.fz   — zero-copy writable ctypes struct (flexzone_schema layout). User-coordinated R/W.
+                    None if not configured or transport=zmq.
+                    Use api.spinlock(idx) for coordination with the producer.
+                    Persists across callbacks (lifetime = session).
 
-    flexzone:  zero-copy writable ctypes struct (flexzone_schema layout). User-coordinated R/W.
-               None if not configured or transport=zmq.
-               Use api.spinlock(idx) for coordination with the producer.
-               Persists across callbacks (lifetime = session).
+    msgs: list of (sender_uid: str, data: bytes) received via Messenger since last call.
 
-    messages:  list of (sender_uid: str, data: bytes) received via Messenger since last call.
+    api:  ConsumerAPI — see §6.3.
 
-    api:       ConsumerAPI — see §6.3.
+    Return value:
+      True          → normal completion (slot released)
+      False         → normal completion (slot released; semantically "skipped")
 
-    No return value — consumer has no output slot to commit or discard.
+    Both True and False release the slot and continue the loop.
     """
-    if in_slot is None:
+    if rx.slot is None:
         api.log("timeout — no slot received", level="warn")
-        return
-    api.log(f"seq={api.last_seq()} ts={in_slot.ts:.3f}  value={in_slot.value:.4f}")
+        return False
+    api.log(f"seq={api.last_seq()} ts={rx.slot.ts:.3f}  value={rx.slot.value:.4f}")
+    return True
 
 def on_stop(api) -> None:
     """Called once after the read loop exits cleanly."""
@@ -454,22 +460,24 @@ api.set_critical_error()     # Mark as failed and trigger shutdown (no argument)
 ```python
 _prev_seq = None
 
-def on_consume(in_slot, fz, msgs, api):
-    if in_slot is None: return
+def on_consume(rx, msgs, api):
+    if rx.slot is None: return True
     global _prev_seq
     seq = api.last_seq()
     if _prev_seq is not None and seq != _prev_seq + 1:
         api.log(f"gap: {_prev_seq} → {seq} ({seq - _prev_seq - 1} slots lost)", level="warn")
     _prev_seq = seq
+    return True
 ```
 
 **Consumer spinlock — SHM only:**
 ```python
 # SHM flexzone + spinlock: producer and consumer both access the same flexzone
 # Producer writes, consumer reads; spinlock arbitrates:
-def on_consume(in_slot, fz, msgs, api):
+def on_consume(rx, msgs, api):
     with api.spinlock(0):    # GIL released during lock wait
-        result = fz.accumulator   # read shared state
+        result = rx.fz.accumulator   # read shared state
+    return True
 # ZMQ consumer: api.spinlock_count() returns 0; api.spinlock(i) raises RuntimeError
 ```
 
@@ -490,10 +498,10 @@ def check_readiness(api):
     _inbox_handle = api.open_inbox(_target_uid)
     return _inbox_handle is not None
 
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     if not check_readiness(api):
         return False  # discard this slot; loop continues, tries again next cycle
-    # ... fill out_slot ...
+    # ... fill tx.slot ...
     return True
 ```
 
@@ -504,7 +512,7 @@ variables for state that persists across `on_produce()` calls.
 
 ### 6.4 Slot Types and Field Access
 
-The slot objects passed to `on_produce` and `on_consume` are **zero-copy views** into shared memory.
+The slot objects accessible via `tx.slot` and `rx.slot` are **zero-copy views** into shared memory.
 
 #### ctypes slots (field-based schema)
 
@@ -512,18 +520,18 @@ Fields map directly to the schema definition. Assignment is always in-place (no 
 
 ```python
 # Schema: {"name": "ts", "type": "float64"}, {"name": "value", "type": "int32"}
-out_slot.ts    = time.monotonic()   # float64 field — writes into SHM
-out_slot.value = sensor_reading     # int32 field
+tx.slot.ts    = time.monotonic()   # float64 field — writes into SHM
+tx.slot.value = sensor_reading     # int32 field
 ```
 
-Consumer `in_slot` has `__setattr__` overridden to raise `AttributeError` on writes:
+Consumer `rx.slot` has `__setattr__` overridden to raise `AttributeError` on writes:
 
 ```python
-in_slot.ts              # OK — read
-in_slot.value = 42      # raises AttributeError: read-only slot: field 'value' cannot be written
+rx.slot.ts              # OK — read
+rx.slot.value = 42      # raises AttributeError: read-only slot: field 'value' cannot be written
 ```
 
-*Known limitation:* Array sub-elements (`in_slot.arr[0] = x`) bypass the struct-level guard —
+*Known limitation:* Array sub-elements (`rx.slot.arr[0] = x`) bypass the struct-level guard —
 this is a ctypes limitation (`__setitem__` on the subarray object, not `__setattr__` on the struct).
 
 #### Array fields (`"count": N > 1`)
@@ -533,10 +541,10 @@ ctypes arrays (`c_float * 100`). Use `api.as_numpy()` for a zero-copy numpy view
 
 ```python
 # Consumer — read-only numpy view (do not write back):
-arr = api.as_numpy(in_slot.samples)    # shape=(100,), dtype=float32
+arr = api.as_numpy(rx.slot.samples)    # shape=(100,), dtype=float32
 
 # Producer — writable numpy view:
-arr = api.as_numpy(out_slot.samples)
+arr = api.as_numpy(tx.slot.samples)
 arr[:] = new_data                      # writes directly into SHM slot
 ```
 
@@ -548,8 +556,8 @@ It is available on all role APIs (producer, consumer, processor).
 The raw bytes of any slot are accessible via the Python buffer protocol:
 
 ```python
-data = bytes(in_slot)                # immutable copy of all bytes
-view = memoryview(in_slot).cast('B') # zero-copy byte view
+data = bytes(rx.slot)                # immutable copy of all bytes
+view = memoryview(rx.slot).cast('B') # zero-copy byte view
 ```
 
 This is equivalent to the C++ `buffer_span()` accessor.
@@ -584,11 +592,11 @@ loop_thread_:                                          ← updated 2026-03-13
     messages = drain incoming_queue_                    ← AFTER acquire (never lost on failure)
     if out_slot is None:
       if messages pending OR deadline due (FixedRate) OR MaxRate:
-        acquire GIL → on_produce(None, fz, messages, api) → release GIL
+        acquire GIL → on_produce(tx{slot=None,fz}, msgs, api) → release GIL
         advance deadline
       increment drops; continue
     acquire GIL
-    on_produce(out_slot, fz, messages, api)
+    on_produce(tx{slot,fz}, msgs, api)
     if True: commit slot; if False: discard slot
     release GIL
     sleep to deadline (FixedRate) / advance deadline
@@ -619,18 +627,18 @@ loop_thread_:   ← unified via hub::QueueReader* (2026-03-09); updated 2026-03-
     messages = drain incoming_queue_                    ← AFTER acquire (never lost on failure)
     if in_slot is None:
       if messages pending OR deadline due (FixedRate) OR MaxRate:
-        acquire GIL → on_consume(None, fz, messages, api) → release GIL
+        acquire GIL → on_consume(rx{slot=None,fz}, msgs, api) → release GIL
         advance deadline
       continue
     acquire GIL
-    on_consume(in_slot, fz, messages, api)
+    on_consume(rx{slot,fz}, msgs, api)
     release GIL
     reader_->read_release()
     sleep to deadline (FixedRate) / advance deadline
 
 inbox_thread_:  ← optional; active when inbox_schema is configured (2026-03-10)
   ZMQ ROUTER socket (binds inbox_endpoint)
-  Recv: msgpack frame → on_inbox(msg_slot, sender_uid, api) under GIL
+  Recv: msgpack frame → on_inbox(msg, api) under GIL   [msg.slot, msg.sender_uid]
   Send: ACK back to sender DEALER identity
 
 on_stop(api) → GIL re-acquired → Py_Finalize

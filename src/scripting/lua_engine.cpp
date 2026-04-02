@@ -851,9 +851,23 @@ InvokeResult LuaEngine::invoke_consume(
     // Return value: True → Commit, False → Discard (currently ignored by loop).
     InvokeResult result;
     if (lua_isboolean(L, -1))
+    {
         result = lua_toboolean(L, -1) ? InvokeResult::Commit : InvokeResult::Discard;
+    }
+    else if (lua_isnil(L, -1))
+    {
+        LOGGER_ERROR("[{}] on_consume returned nil — explicit 'return true' or "
+                     "'return false' is required. Treating as error.",
+                     log_tag_);
+        result = on_pcall_error_("on_consume [missing return value]");
+    }
     else
-        result = InvokeResult::Error;
+    {
+        LOGGER_ERROR("[{}] on_consume returned non-boolean type '{}' — "
+                     "expected 'return true' or 'return false'. Treating as error.",
+                     log_tag_, lua_typename(L, lua_type(L, -1)));
+        result = on_pcall_error_("on_consume [wrong return type]");
+    }
     lua_pop(L, 1);
     return result;
 }
@@ -985,9 +999,23 @@ InvokeResult LuaEngine::invoke_on_inbox(InvokeInbox msg)
     // Return value: True → Commit, False → Discard (currently ignored by loop).
     InvokeResult result;
     if (lua_isboolean(L, -1))
+    {
         result = lua_toboolean(L, -1) ? InvokeResult::Commit : InvokeResult::Discard;
+    }
+    else if (lua_isnil(L, -1))
+    {
+        LOGGER_ERROR("[{}] on_inbox returned nil — explicit 'return true' or "
+                     "'return false' is required. Treating as error.",
+                     log_tag_);
+        result = on_pcall_error_("on_inbox [missing return value]");
+    }
     else
-        result = InvokeResult::Error;
+    {
+        LOGGER_ERROR("[{}] on_inbox returned non-boolean type '{}' — "
+                     "expected 'return true' or 'return false'. Treating as error.",
+                     log_tag_, lua_typename(L, lua_type(L, -1)));
+        result = on_pcall_error_("on_inbox [wrong return type]");
+    }
     lua_pop(L, 1);
     return result;
 }
