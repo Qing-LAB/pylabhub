@@ -26,12 +26,12 @@ int shm_queue_no_flexzone();
 /** Round-trip: write-mode ShmQueue writes 3 slots; read-mode ShmQueue reads and verifies. */
 int shm_queue_round_trip();
 
-/** Two from_consumer_ref readers on the same DataBlock each see the written slot. */
+/** Two create_reader readers on the same DataBlock each see the written slot. */
 int shm_queue_multiple_consumers();
 /** Write data to flexzone and slot; consumer reads back both via read_flexzone(). */
 int shm_queue_flexzone_round_trip();
-/** from_producer_ref + from_consumer_ref: non-owning factories; underlying objects survive queue teardown. */
-int shm_queue_ref_factories();
+/** create_writer + create_reader: owning factories; write a slot, read it back. */
+int shm_queue_create_factories();
 /** Latest_only policy: write 3 slots without reading, then read once → last slot value. */
 int shm_queue_latest_only();
 /** Ring wrap: write capacity+1 items into a 2-slot ring; final read returns the latest value. */
@@ -54,5 +54,14 @@ int datablock_consumer_remap_stubs_throw();
 
 /** Discard > capacity slots under Sequential policy, then write_acquire+commit succeeds. */
 int shm_queue_discard_then_reacquire();
+
+// ── Error path tests ─────────────────────────────────────────────────────────
+
+/** create_writer with empty schema → returns nullptr. */
+int shm_queue_create_writer_empty_schema();
+/** create_reader with wrong shared secret → returns nullptr. */
+int shm_queue_create_reader_wrong_secret();
+/** create_reader for nonexistent SHM segment → returns nullptr. */
+int shm_queue_create_reader_nonexistent();
 
 } // namespace pylabhub::tests::worker::hub_queue
