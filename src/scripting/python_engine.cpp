@@ -423,6 +423,38 @@ bool PythonEngine::build_api_(const RoleContext &ctx)
     // ctx_ and core preservation handled by base class build_api().
     stop_on_script_error_ = ctx.stop_on_script_error;
 
+    // Create role-specific aliases (SlotFrame/FlexFrame) for single-direction roles.
+    // Producer: SlotFrame = OutSlotFrame, FlexFrame = OutFlexFrame.
+    // Consumer: SlotFrame = InSlotFrame, FlexFrame = InFlexFrame.
+    // Processor: no aliases — both directions are explicit.
+    if (ctx.role_tag == "prod")
+    {
+        if (!out_slot_type_.is_none())
+        {
+            slot_alias_      = build_ctypes_type_(out_slot_spec_, "SlotFrame", out_slot_spec_.packing);
+            slot_alias_spec_ = out_slot_spec_;
+        }
+        if (!out_fz_type_.is_none())
+        {
+            fz_alias_      = build_ctypes_type_(out_fz_spec_, "FlexFrame", out_fz_spec_.packing);
+            fz_alias_spec_ = out_fz_spec_;
+        }
+    }
+    else if (ctx.role_tag == "cons")
+    {
+        if (!in_slot_type_ro_.is_none())
+        {
+            slot_alias_ro_   = build_ctypes_type_(in_slot_spec_, "SlotFrame", in_slot_spec_.packing);
+            slot_alias_ro_   = wrap_readonly_(slot_alias_ro_);
+            slot_alias_spec_ = in_slot_spec_;
+        }
+        if (!in_fz_type_.is_none())
+        {
+            fz_alias_      = build_ctypes_type_(in_fz_spec_, "FlexFrame", in_fz_spec_.packing);
+            fz_alias_spec_ = in_fz_spec_;
+        }
+    }
+
     // Detect role from role_tag (authoritative). Validate expected pointers.
     if (ctx_.role_tag == "prod")
     {
@@ -804,35 +836,21 @@ bool PythonEngine::register_slot_type(const SchemaSpec &spec,
         {
             in_slot_type_ro_ = wrap_readonly_(type);
             in_slot_spec_    = spec;
-            // Alias for consumer (single-direction role).
-            slot_alias_ro_   = build_ctypes_type_(spec, "SlotFrame", packing);
-            slot_alias_ro_   = wrap_readonly_(slot_alias_ro_);
-            slot_alias_spec_ = spec;
         }
         else if (type_name == "OutSlotFrame")
         {
             out_slot_type_ = type;
             out_slot_spec_ = spec;
-            // Alias for producer (single-direction role).
-            slot_alias_      = build_ctypes_type_(spec, "SlotFrame", packing);
-            slot_alias_spec_ = spec;
         }
         else if (type_name == "InFlexFrame")
         {
             in_fz_type_ = type; // mutable — flexzone is bidirectional per HEP-0002
             in_fz_spec_ = spec;
-            // Alias for consumer.
-            fz_alias_      = build_ctypes_type_(spec, "FlexFrame", packing);
-            fz_alias_spec_ = spec;
         }
         else if (type_name == "OutFlexFrame")
         {
             out_fz_type_ = type;
             out_fz_spec_ = spec;
-            // Alias for producer. Overwrites consumer alias if both registered (processor),
-            // but processor never uses aliases — it uses directional members.
-            fz_alias_      = build_ctypes_type_(spec, "FlexFrame", packing);
-            fz_alias_spec_ = spec;
         }
         else if (type_name == "InboxFrame")
         {

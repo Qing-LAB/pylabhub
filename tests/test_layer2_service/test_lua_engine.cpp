@@ -182,7 +182,7 @@ TEST_F(LuaEngineTest, RegisterSlotType_SizeofCorrect)
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
     // float32 = 4 bytes
-    EXPECT_EQ(engine.type_sizeof("SlotFrame"), 4u);
+    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 4u);
 
     engine.finalize();
 }
@@ -202,7 +202,123 @@ TEST_F(LuaEngineTest, RegisterSlotType_MultiField)
     spec.fields = {f1, f2, f3};
 
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-    EXPECT_EQ(engine.type_sizeof("SlotFrame"), 12u); // 3 * 4 bytes
+    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 12u); // 3 * 4 bytes
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Alias_SlotFrame_Producer)
+{
+    write_script("function on_produce(tx, msgs, api) return true end");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+
+    auto ctx = producer_context();
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    // After build_api, "SlotFrame" alias should exist for producer.
+    EXPECT_EQ(engine.type_sizeof("SlotFrame"), engine.type_sizeof("OutSlotFrame"));
+    EXPECT_GT(engine.type_sizeof("SlotFrame"), 0u);
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Alias_SlotFrame_Consumer)
+{
+    write_script("function on_consume(rx, msgs, api) return true end");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_consume"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
+
+    auto ctx = producer_context();
+    ctx.role_tag = "cons";
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    // After build_api, "SlotFrame" alias should exist for consumer.
+    EXPECT_EQ(engine.type_sizeof("SlotFrame"), engine.type_sizeof("InSlotFrame"));
+    EXPECT_GT(engine.type_sizeof("SlotFrame"), 0u);
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Alias_NoAlias_Processor)
+{
+    write_script("function on_process(rx, tx, msgs, api) return true end");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_process"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+
+    auto ctx = producer_context();
+    ctx.role_tag = "proc";
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    // Processor: no alias — SlotFrame should not be defined.
+    EXPECT_EQ(engine.type_sizeof("SlotFrame"), 0u);
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Alias_FlexFrame_Producer)
+{
+    write_script(R"(
+        function on_produce(tx, msgs, api)
+            if tx.fz then
+                tx.fz.value = 99.0
+            end
+            return true
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutFlexFrame", "aligned"));
+
+    auto ctx = producer_context();
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    // FlexFrame alias should exist for producer.
+    EXPECT_EQ(engine.type_sizeof("FlexFrame"), engine.type_sizeof("OutFlexFrame"));
+    EXPECT_GT(engine.type_sizeof("FlexFrame"), 0u);
+
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Alias_ProducerNoFz_NoFlexFrameAlias)
+{
+    write_script("function on_produce(tx, msgs, api) return true end");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+    // No flexzone registered.
+
+    auto ctx = producer_context();
+    ASSERT_TRUE(engine.build_api(ctx));
+
+    // SlotFrame alias exists, but FlexFrame should not (no fz registered).
+    EXPECT_GT(engine.type_sizeof("SlotFrame"), 0u);
+    EXPECT_EQ(engine.type_sizeof("FlexFrame"), 0u);
 
     engine.finalize();
 }

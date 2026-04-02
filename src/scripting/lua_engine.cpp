@@ -251,6 +251,38 @@ bool LuaEngine::build_api_(const RoleContext &ctx)
     // ctx_ and core preservation handled by base class build_api().
     stop_on_script_error_ = ctx.stop_on_script_error;
 
+    // Create role-specific aliases (SlotFrame/FlexFrame) for single-direction roles.
+    // Producer: SlotFrame = OutSlotFrame, FlexFrame = OutFlexFrame.
+    // Consumer: SlotFrame = InSlotFrame, FlexFrame = InFlexFrame.
+    // Processor: no aliases — both directions are explicit.
+    // The alias is a FFI typedef so scripts can use either name.
+    if (ctx.role_tag == "prod")
+    {
+        if (ref_out_slot_writable_ != LUA_NOREF)
+        {
+            state_.register_ffi_type("typedef OutSlotFrame SlotFrame;", log_tag_.c_str());
+            ref_slot_alias_writable_ = state_.cache_ffi_typeof("SlotFrame", /*readonly=*/false);
+        }
+        if (ref_out_fz_ != LUA_NOREF)
+        {
+            state_.register_ffi_type("typedef OutFlexFrame FlexFrame;", log_tag_.c_str());
+            ref_fz_alias_ = state_.cache_ffi_typeof("FlexFrame", /*readonly=*/false);
+        }
+    }
+    else if (ctx.role_tag == "cons")
+    {
+        if (ref_in_slot_readonly_ != LUA_NOREF)
+        {
+            state_.register_ffi_type("typedef InSlotFrame SlotFrame;", log_tag_.c_str());
+            ref_slot_alias_readonly_ = state_.cache_ffi_typeof("SlotFrame", /*readonly=*/true);
+        }
+        if (ref_in_fz_ != LUA_NOREF)
+        {
+            state_.register_ffi_type("typedef InFlexFrame FlexFrame;", log_tag_.c_str());
+            ref_fz_alias_ = state_.cache_ffi_typeof("FlexFrame", /*readonly=*/false);
+        }
+    }
+
     lua_State *L = state_.raw();
 
     // Create the api table.
@@ -641,27 +673,18 @@ bool LuaEngine::register_slot_type(const SchemaSpec &spec,
     if (type_name == "InSlotFrame")
     {
         safe_cache(ref_in_slot_readonly_, type_name, /*readonly=*/true);
-        // Alias "SlotFrame" for consumer convenience.
-        safe_cache(ref_slot_alias_readonly_, "SlotFrame", /*readonly=*/true);
     }
     else if (type_name == "OutSlotFrame")
     {
         safe_cache(ref_out_slot_writable_, type_name, /*readonly=*/false);
-        // Alias "SlotFrame" for producer convenience.
-        safe_cache(ref_slot_alias_writable_, "SlotFrame", /*readonly=*/false);
     }
     else if (type_name == "InFlexFrame")
     {
-        // Flexzone is mutable on both sides (HEP-0002).
         safe_cache(ref_in_fz_, type_name, /*readonly=*/false);
-        safe_cache(ref_fz_alias_, "FlexFrame", /*readonly=*/false);
     }
     else if (type_name == "OutFlexFrame")
     {
         safe_cache(ref_out_fz_, type_name, /*readonly=*/false);
-        // Alias overwrites if both registered (processor), but processor
-        // never uses aliases — it uses directional refs.
-        safe_cache(ref_fz_alias_, "FlexFrame", /*readonly=*/false);
     }
     else if (type_name == "InboxFrame")
     {
