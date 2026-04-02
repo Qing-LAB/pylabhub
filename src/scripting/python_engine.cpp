@@ -825,7 +825,11 @@ bool PythonEngine::register_slot_type(const SchemaSpec &spec,
                                        const std::string &packing)
 {
     if (!spec.has_schema)
-        return true;
+    {
+        LOGGER_ERROR("[{}] register_slot_type('{}') called with has_schema=false",
+                     log_tag_, type_name);
+        return false;
+    }
 
     try
     {
@@ -893,6 +897,11 @@ size_t PythonEngine::type_sizeof(const std::string &type_name) const
         type = out_fz_type_;
     else if (type_name == "InboxFrame")
         type = inbox_type_ro_;
+    // Alias lookup: Python stores aliases as explicit py::object members
+    // because ctypes classes are not name-addressable at runtime. Each alias
+    // is a separate ctypes class created in build_api_().
+    // In contrast, Lua aliases are FFI typedefs (e.g., "typedef OutSlotFrame SlotFrame;")
+    // which are resolved automatically by ffi.sizeof() — no explicit dispatch needed.
     else if (type_name == "SlotFrame")
         type = slot_alias_.is_none() ? slot_alias_ro_ : slot_alias_;
     else if (type_name == "FlexFrame")
