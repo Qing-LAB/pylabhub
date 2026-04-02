@@ -503,7 +503,6 @@ class PYLABHUB_UTILS_EXPORT Consumer
 
     [[nodiscard]] static std::optional<Consumer>
     establish_channel(Messenger &messenger, ChannelHandle channel,
-                       std::unique_ptr<DataBlockConsumer> shm_consumer,
                        const ConsumerOptions &opts);
 
   private:
@@ -587,8 +586,10 @@ Consumer::connect(Messenger &messenger, const ConsumerOptions &opts)
         // ZMQ transport still works.
     }
 
-    return Consumer::establish_channel(messenger, std::move(*ch), std::move(shm_consumer),
-                                         opts);
+    // Template path: DataBlock attachment now inside ShmQueue::create_reader().
+    // TODO: Template type validation needs reworking (see API_TODO.md).
+    (void)shm_consumer; // suppress unused warning until template RAII refactor
+    return Consumer::establish_channel(messenger, std::move(*ch), opts);
 }
 
 // ============================================================================

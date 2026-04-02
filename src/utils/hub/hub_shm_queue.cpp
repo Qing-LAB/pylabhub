@@ -24,13 +24,9 @@ namespace pylabhub::hub
 
 struct ShmQueueImpl
 {
-    // Owning pointers (from from_consumer / from_producer):
+    // Owning pointers (created by create_writer / create_reader):
     std::unique_ptr<DataBlockConsumer> dbc;
     std::unique_ptr<DataBlockProducer> dbp;
-
-    // Non-owning pointers (from from_consumer_ref / from_producer_ref):
-    DataBlockConsumer* dbc_ref{nullptr};
-    DataBlockProducer* dbp_ref{nullptr};
 
     // Current acquired handles (valid between acquire and release/commit/discard):
     std::unique_ptr<SlotConsumeHandle> read_handle;
@@ -54,86 +50,13 @@ struct ShmQueueImpl
     // Last slot id from read_acquire() (monotonic slot id / commit_index).
     uint64_t last_seq{0};
 
-    // Accessors that resolve owning vs non-owning.
-    DataBlockConsumer* consumer() { return dbc ? dbc.get() : dbc_ref; }
-    DataBlockProducer* producer() { return dbp ? dbp.get() : dbp_ref; }
-    const DataBlockConsumer* consumer() const { return dbc ? dbc.get() : dbc_ref; }
-    const DataBlockProducer* producer() const { return dbp ? dbp.get() : dbp_ref; }
+    DataBlockConsumer* consumer() { return dbc.get(); }
+    DataBlockProducer* producer() { return dbp.get(); }
+    const DataBlockConsumer* consumer() const { return dbc.get(); }
+    const DataBlockProducer* producer() const { return dbp.get(); }
 };
 
-// ============================================================================
-// Factories
-// ============================================================================
-
-std::unique_ptr<QueueReader>
-ShmQueue::from_consumer(std::unique_ptr<DataBlockConsumer> dbc,
-                        size_t item_size, size_t flexzone_sz,
-                        std::string channel_name,
-                        bool verify_slot, bool verify_fz)
-{
-    assert(dbc != nullptr);
-    auto impl          = std::make_unique<ShmQueueImpl>();
-    impl->dbc          = std::move(dbc);
-    impl->item_sz      = item_size;
-    impl->fz_sz        = flexzone_sz;
-    impl->chan_name     = std::move(channel_name);
-    impl->verify_slot  = verify_slot;
-    impl->verify_fz    = verify_fz;
-    // Loop policy is set by hub::Consumer::establish_channel() on the DataBlock
-    // before ShmQueue creation. ShmQueue does not own loop policy.
-    return std::unique_ptr<QueueReader>(new ShmQueue(std::move(impl)));
-}
-
-std::unique_ptr<QueueWriter>
-ShmQueue::from_producer(std::unique_ptr<DataBlockProducer> dbp,
-                        size_t item_size, size_t flexzone_sz,
-                        std::string channel_name,
-                        bool checksum_slot, bool checksum_fz,
-                        bool always_clear_slot)
-{
-    assert(dbp != nullptr);
-    auto impl                = std::make_unique<ShmQueueImpl>();
-    impl->dbp                = std::move(dbp);
-    impl->item_sz            = item_size;
-    impl->fz_sz              = flexzone_sz;
-    impl->chan_name           = std::move(channel_name);
-    impl->checksum_slot      = checksum_slot;
-    impl->checksum_fz        = checksum_fz;
-    impl->always_clear_slot  = always_clear_slot;
-    return std::unique_ptr<QueueWriter>(new ShmQueue(std::move(impl)));
-}
-
-std::unique_ptr<QueueReader>
-ShmQueue::from_consumer_ref(DataBlockConsumer& dbc, size_t item_size,
-                             size_t flexzone_sz, std::string channel_name,
-                             bool verify_slot, bool verify_fz)
-{
-    auto impl          = std::make_unique<ShmQueueImpl>();
-    impl->dbc_ref      = &dbc;
-    impl->item_sz      = item_size;
-    impl->fz_sz        = flexzone_sz;
-    impl->chan_name     = std::move(channel_name);
-    impl->verify_slot  = verify_slot;
-    impl->verify_fz    = verify_fz;
-    return std::unique_ptr<QueueReader>(new ShmQueue(std::move(impl)));
-}
-
-std::unique_ptr<QueueWriter>
-ShmQueue::from_producer_ref(DataBlockProducer& dbp, size_t item_size,
-                             size_t flexzone_sz, std::string channel_name,
-                             bool checksum_slot, bool checksum_fz,
-                             bool always_clear_slot)
-{
-    auto impl                = std::make_unique<ShmQueueImpl>();
-    impl->dbp_ref            = &dbp;
-    impl->item_sz            = item_size;
-    impl->fz_sz              = flexzone_sz;
-    impl->chan_name           = std::move(channel_name);
-    impl->checksum_slot      = checksum_slot;
-    impl->checksum_fz        = checksum_fz;
-    impl->always_clear_slot  = always_clear_slot;
-    return std::unique_ptr<QueueWriter>(new ShmQueue(std::move(impl)));
-}
+// Old factories removed — use create_writer() / create_reader() instead.
 
 // ============================================================================
 // create_writer — creates DataBlock internally from schema
@@ -244,43 +167,23 @@ ShmQueue::create_reader(const std::string &shm_name,
         return nullptr;
     }
 
-    // Read actual sizes from DataBlock header.
-    auto *header = dbc->header();
-    if (!header)
-    {
-        LOGGER_ERROR("[ShmQueue] create_reader: DataBlock header is null for '{}'",
-                     channel_name);
-        return nullptr;
-    }
-
-    const size_t header_slot_size = header->logical_unit_size;
-    const size_t header_fz_size   = header->flexible_zone_size;
-
-    // Validate slot size against expected schema.
+    // Compute expected slot size from schema.
+    // Schema hash validation (done at broker level) ensures both sides agree on layout.
+    size_t item_size = 0;
     if (!expected_slot_schema.empty())
     {
-        auto [layout, expected_size] = compute_field_layout(expected_slot_schema, expected_packing);
-
-        // DataBlock rounds logical_unit_size to 64-byte cache lines.
-        constexpr size_t kCacheLineSize = 64;
-        const size_t expected_rounded =
-            (expected_size + kCacheLineSize - 1) & ~(kCacheLineSize - 1);
-
-        if (header_slot_size != expected_rounded)
-        {
-            LOGGER_ERROR("[ShmQueue] create_reader: slot size mismatch for '{}' — "
-                         "header={} bytes, expected={} bytes (schema {} bytes, rounded to {})",
-                         channel_name, header_slot_size, expected_rounded,
-                         expected_size, expected_rounded);
-            return nullptr;
-        }
+        auto [layout, sz] = compute_field_layout(expected_slot_schema, expected_packing);
+        item_size = sz;
     }
+
+    // Flexzone size from the DataBlock's actual flexible zone span.
+    const size_t fz_size = dbc->flexible_zone_span().size();
 
     // Build ShmQueue wrapping the owned DataBlock.
     auto impl          = std::make_unique<ShmQueueImpl>();
     impl->dbc          = std::move(dbc);
-    impl->item_sz      = header_slot_size;
-    impl->fz_sz        = header_fz_size;
+    impl->item_sz      = item_size;
+    impl->fz_sz        = fz_size;
     impl->chan_name     = channel_name;
     impl->verify_slot  = verify_slot;
     impl->verify_fz    = verify_fz;
