@@ -559,7 +559,6 @@ class PYLABHUB_UTILS_EXPORT Producer
      */
     [[nodiscard]] static std::optional<Producer>
     establish_channel(Messenger &messenger, ChannelHandle channel,
-                      std::unique_ptr<DataBlockProducer> shm_producer,
                       const ProducerOptions &opts);
 
   private:
@@ -638,19 +637,10 @@ Producer::create(Messenger &messenger, const ProducerOptions &opts)
         return std::nullopt;
     }
 
-    // Create typed DataBlock if requested
-    std::unique_ptr<DataBlockProducer> shm_producer;
-    if (opts.has_shm)
-    {
-        shm_producer = create_datablock_producer<FlexZoneT, DataBlockT>(
-            opts.channel_name, DataBlockPolicy::RingBuffer, opts.shm_config);
-        if (!shm_producer)
-        {
-            return std::nullopt;
-        }
-    }
-
-    return Producer::establish_channel(messenger, std::move(*ch), std::move(shm_producer), opts);
+    // Template path: DataBlock creation now inside ShmQueue::create_writer().
+    // TODO: Template type validation (sizeof check) needs reworking for the new
+    // factory pattern. For now, ShmQueue computes sizes from schema fields.
+    return Producer::establish_channel(messenger, std::move(*ch), opts);
 }
 
 // ============================================================================
