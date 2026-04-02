@@ -75,7 +75,8 @@ them a documented, supported pattern.
 ```
 pylabhub-utils (shared lib — existing)
   include/utils/script_host.hpp              ← ScriptHost abstract base (PUBLIC header)
-  include/utils/schema_utils.hpp + python_helpers.hpp      ← Shared inline helpers (resolve_schema, etc.)
+  src/scripting/schema_utils.hpp       ← Schema utilities (parse, resolve, hash, size — no pybind11)
+  src/scripting/python_helpers.hpp     ← Python-specific helpers (ctypes, slot views, InboxHandle)
   include/utils/script_host_schema.hpp       ← SchemaSpec, FieldDef types
   src/utils/scripting/script_host.cpp        ← base implementation (thread_local, startup/shutdown)
   src/utils/scripting/lua_script_host.hpp/.cpp  ← LuaScriptHost concrete class
@@ -830,7 +831,8 @@ See also HEP-CORE-0007 §12.3 for the shutdown pitfalls that motivated centralis
 | File | Layer | Description |
 |------|-------|-------------|
 | `src/include/utils/script_host.hpp` | L2 (public) | `ScriptHost` abstract base class |
-| `src/include/utils/schema_utils.hpp + python_helpers.hpp` | L2 (public) | 14 shared inline helpers (`resolve_schema`, etc.) |
+| `src/scripting/schema_utils.hpp` | scripting (private) | Schema utilities: parse, resolve, hash, size (no pybind11) |
+| `src/scripting/python_helpers.hpp` | scripting (private) | Python helpers: ctypes, slot views, direction objects, InboxHandle |
 | `src/include/utils/script_host_schema.hpp` | L2 (public) | `SchemaSpec`, `FieldDef` types |
 | `src/scripting/role_host_core.hpp` | scripting | `RoleHostCore` — engine-agnostic infrastructure |
 | `src/scripting/role_host_core.cpp` | scripting | Message queue, shutdown flags, state |
