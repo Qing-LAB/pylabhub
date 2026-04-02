@@ -159,7 +159,10 @@ void ProducerRoleHost::worker_main_()
     const std::string packing =
         tr.zmq_packing.empty() ? "aligned" : tr.zmq_packing;
 
-    // Register slot type.
+    // Compute slot size from schema (authoritative — infrastructure owns layout).
+    out_schema_slot_size_ = scripting::compute_schema_size(out_slot_spec_, packing);
+
+    // Register slot type with engine (engine validates its struct matches).
     if (out_slot_spec_.has_schema)
     {
         if (!engine_->register_slot_type(out_slot_spec_, "OutSlotFrame", packing))
@@ -169,10 +172,16 @@ void ProducerRoleHost::worker_main_()
             ready_promise_.set_value(false);
             return;
         }
-        out_schema_slot_size_ = engine_->type_sizeof("OutSlotFrame");
     }
 
-    // Register flexzone type.
+    // Compute flexzone size from schema (authoritative).
+    {
+        size_t fz_size = scripting::compute_schema_size(out_fz_local, packing);
+        fz_size = (fz_size + 4095U) & ~size_t{4095U}; // round to 4KB page
+        core_.set_out_fz_spec(scripting::SchemaSpec{out_fz_local}, fz_size);
+    }
+
+    // Register flexzone type with engine.
     if (out_fz_local.has_schema)
     {
         if (!engine_->register_slot_type(out_fz_local, "OutFlexFrame", packing))
@@ -182,13 +191,6 @@ void ProducerRoleHost::worker_main_()
             ready_promise_.set_value(false);
             return;
         }
-        size_t fz_size = engine_->type_sizeof("OutFlexFrame");
-        fz_size = (fz_size + 4095U) & ~size_t{4095U};
-        core_.set_out_fz_spec(std::move(out_fz_local), fz_size);
-    }
-    else
-    {
-        core_.set_out_fz_spec(std::move(out_fz_local), 0);
     }
 
     // Resolve and register inbox schema (alongside slot/fz above).

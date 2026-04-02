@@ -2608,6 +2608,11 @@ TEST_F(LuaEngineTest, FullStartup_Producer_SlotAndFlexzone)
     params.role_ctx.role_tag = "prod";
     params.role_ctx.core     = &core;
 
+    // Role host computes fz size from schema and sets on core before engine startup.
+    size_t fz_size = scripting::compute_schema_size(params.out_fz_spec, params.out_packing);
+    fz_size = (fz_size + 4095U) & ~size_t{4095U};
+    core.set_out_fz_spec(scripting::SchemaSpec{params.out_fz_spec}, fz_size);
+
     ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
 
     EXPECT_GT(engine.type_sizeof("OutSlotFrame"), 0u);

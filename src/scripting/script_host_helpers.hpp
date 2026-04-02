@@ -442,6 +442,23 @@ inline void print_ctypes_layout(const py::object &type_, const char *label, size
               << " bytes  (ctypes.sizeof = " << ctypes_sizeof(type_) << ")\n";
 }
 
+// ── Schema size computation ──────────────────────────────────────────────────
+
+/// Compute the C struct size for a schema spec + packing, without the engine.
+/// Uses the shared field layout algorithm (schema_field_layout.hpp).
+/// This is the authoritative size — the engine validates its struct matches.
+inline size_t compute_schema_size(const SchemaSpec &spec, const std::string &packing)
+{
+    if (!spec.has_schema || spec.fields.empty())
+        return 0;
+    std::vector<hub::SchemaFieldDesc> fields;
+    fields.reserve(spec.fields.size());
+    for (const auto &f : spec.fields)
+        fields.push_back({f.type_str, f.count, f.length});
+    auto [layout, size] = hub::compute_field_layout(fields, packing);
+    return size;
+}
+
 // ── ZMQ schema conversion ────────────────────────────────────────────────────
 
 /// Convert a SchemaSpec to a ZmqSchemaField list for ZmqQueue/InboxQueue.
