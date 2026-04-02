@@ -428,7 +428,11 @@ bool NativeEngine::register_slot_type(const SchemaSpec &spec,
                                        const std::string & /*packing*/)
 {
     if (!spec.has_schema)
-        return true; // no schema to validate
+    {
+        LOGGER_ERROR("[{}] register_slot_type('{}') called with has_schema=false",
+                     log_tag_, type_name);
+        return false;
+    }
 
     // Compute expected canonical schema from config.
     std::string expected_schema = compute_canonical_schema_(spec);
