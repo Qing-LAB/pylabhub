@@ -38,7 +38,7 @@ inline const char *native_lib_extension() noexcept
 #endif
 }
 
-/// Resolve a native plugin library path from the config-specified path.
+/// Resolve a native engine library path from the config-specified path.
 ///
 /// Follows the same convention as Python/Lua: script/<type>/<entry>.
 /// For native, this is: <script.path>/script/native/<filename>

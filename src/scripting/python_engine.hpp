@@ -91,24 +91,18 @@ class PythonEngine : public ScriptEngine
     void invoke_on_stop() override;
 
     InvokeResult invoke_produce(
-        void *out_slot, size_t out_sz,
-        void *flexzone, size_t fz_sz, const char *fz_type,
+        InvokeTx tx,
         std::vector<IncomingMessage> &msgs) override;
 
-    void invoke_consume(
-        const void *in_slot, size_t in_sz,
-        const void *flexzone, size_t fz_sz, const char *fz_type,
+    InvokeResult invoke_consume(
+        InvokeRx rx,
         std::vector<IncomingMessage> &msgs) override;
 
     InvokeResult invoke_process(
-        const void *in_slot, size_t in_sz,
-        void *out_slot, size_t out_sz,
-        void *flexzone, size_t fz_sz, const char *fz_type,
+        InvokeRx rx, InvokeTx tx,
         std::vector<IncomingMessage> &msgs) override;
 
-    void invoke_on_inbox(
-        const void *data, size_t sz,
-        const std::string &sender) override;
+    InvokeResult invoke_on_inbox(InvokeInbox msg) override;
 
     // ── Generic invoke (thread-safe) ─────────────────────────────────────
 
@@ -157,18 +151,27 @@ class PythonEngine : public ScriptEngine
     std::unique_ptr<processor::ProcessorAPI> processor_api_;
 
     // ── Cached type objects (init-time, for hot-path slot views) ───────────
-    py::object slot_type_{py::none()};       ///< ctypes.Structure subclass for primary slot
-    py::object slot_type_ro_{py::none()};    ///< Read-only wrapper for consumer input
-    py::object in_slot_type_ro_{py::none()}; ///< Processor input (read-only)
-    py::object out_slot_type_{py::none()};   ///< Processor output (writable)
-    py::object fz_type_{py::none()};         ///< Flexzone type (writable)
-    py::object fz_type_ro_{py::none()};      ///< Flexzone type (read-only, consumer)
-    py::object inbox_type_ro_{py::none()};   ///< Inbox type (read-only, from_buffer_copy)
+    // Directional — always set by directional type name registration.
+    py::object in_slot_type_ro_{py::none()};   ///< InSlotFrame readonly (consumer, processor)
+    py::object out_slot_type_{py::none()};     ///< OutSlotFrame writable (producer, processor)
+    py::object in_fz_type_{py::none()};        ///< InFlexFrame (mutable, consumer/processor)
+    py::object out_fz_type_{py::none()};       ///< OutFlexFrame (mutable, producer/processor)
+    py::object inbox_type_ro_{py::none()};     ///< InboxFrame (read-only, from_buffer_copy)
 
-    SchemaSpec slot_spec_;                    ///< For slot view creation mode
+    // Script-level aliases for producer/consumer convenience.
+    // Set when only one direction is registered (not processor).
+    // Producer: slot_alias_ = out_slot_type_, fz_alias_ = out_fz_type_
+    // Consumer: slot_alias_ro_ = in_slot_type_ro_, fz_alias_ = in_fz_type_
+    py::object slot_alias_{py::none()};        ///< "SlotFrame" writable (producer alias)
+    py::object slot_alias_ro_{py::none()};     ///< "SlotFrame" readonly (consumer alias)
+    py::object fz_alias_{py::none()};          ///< "FlexFrame" alias (either direction)
+
     SchemaSpec in_slot_spec_;
     SchemaSpec out_slot_spec_;
-    SchemaSpec fz_spec_;
+    SchemaSpec in_fz_spec_;
+    SchemaSpec out_fz_spec_;
+    SchemaSpec slot_alias_spec_;               ///< Alias spec (points to whichever direction)
+    SchemaSpec fz_alias_spec_;                 ///< Alias spec
     SchemaSpec inbox_spec_;
 
     // script_errors is in ctx_.core->script_errors_ (RoleHostCore).

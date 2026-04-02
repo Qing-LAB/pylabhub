@@ -61,24 +61,18 @@ class LuaEngine : public ScriptEngine
     void invoke_on_stop() override;
 
     InvokeResult invoke_produce(
-        void *out_slot, size_t out_sz,
-        void *flexzone, size_t fz_sz, const char *fz_type,
+        InvokeTx tx,
         std::vector<IncomingMessage> &msgs) override;
 
-    void invoke_consume(
-        const void *in_slot, size_t in_sz,
-        const void *flexzone, size_t fz_sz, const char *fz_type,
+    InvokeResult invoke_consume(
+        InvokeRx rx,
         std::vector<IncomingMessage> &msgs) override;
 
     InvokeResult invoke_process(
-        const void *in_slot, size_t in_sz,
-        void *out_slot, size_t out_sz,
-        void *flexzone, size_t fz_sz, const char *fz_type,
+        InvokeRx rx, InvokeTx tx,
         std::vector<IncomingMessage> &msgs) override;
 
-    void invoke_on_inbox(
-        const void *data, size_t sz,
-        const std::string &sender) override;
+    InvokeResult invoke_on_inbox(InvokeInbox msg) override;
 
     // ── Generic invoke (thread-safe) ───────────────────────────────────
 
@@ -123,13 +117,17 @@ class LuaEngine : public ScriptEngine
     // ── Cached FFI ctype refs (set during register_slot_type) ───────────
     // Created via ffi.typeof() at init time. Used by invoke_* for zero-string-op
     // slot view creation on the hot path.
-    int ref_slot_writable_{LUA_NOREF};   ///< ffi.typeof("SlotFrame*")
-    int ref_slot_readonly_{LUA_NOREF};   ///< ffi.typeof("SlotFrame const*")
-    int ref_in_slot_readonly_{LUA_NOREF};  ///< ffi.typeof("InSlotFrame const*") (processor)
-    int ref_out_slot_writable_{LUA_NOREF}; ///< ffi.typeof("OutSlotFrame*") (processor)
-    int ref_fz_writable_{LUA_NOREF};    ///< ffi.typeof("FlexFrame*") (producer/processor)
-    int ref_fz_readonly_{LUA_NOREF};    ///< ffi.typeof("FlexFrame const*") (consumer)
-    int ref_inbox_readonly_{LUA_NOREF}; ///< ffi.typeof("InboxFrame const*") (inbox)
+    // Directional FFI type refs.
+    int ref_in_slot_readonly_{LUA_NOREF};   ///< ffi.typeof("InSlotFrame const*")
+    int ref_out_slot_writable_{LUA_NOREF};  ///< ffi.typeof("OutSlotFrame*")
+    int ref_in_fz_{LUA_NOREF};              ///< ffi.typeof("InFlexFrame*") (mutable per HEP-0002)
+    int ref_out_fz_{LUA_NOREF};             ///< ffi.typeof("OutFlexFrame*")
+    int ref_inbox_readonly_{LUA_NOREF};     ///< ffi.typeof("InboxFrame const*")
+
+    // Script-level aliases for producer/consumer convenience.
+    int ref_slot_alias_writable_{LUA_NOREF};  ///< "SlotFrame*" alias (producer)
+    int ref_slot_alias_readonly_{LUA_NOREF};  ///< "SlotFrame const*" alias (consumer)
+    int ref_fz_alias_{LUA_NOREF};             ///< "FlexFrame*" alias
 
     // ctx_ is inherited from ScriptEngine (set by build_api).
     bool stop_on_script_error_{false};

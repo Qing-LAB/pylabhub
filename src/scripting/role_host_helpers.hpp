@@ -53,8 +53,9 @@ inline void drain_inbox_sync(hub::InboxQueue *inbox_queue,
         if (item == nullptr)
             break;
 
-        engine->invoke_on_inbox(item->data, inbox_queue->item_size(),
-                                item->sender_id);
+        engine->invoke_on_inbox(InvokeInbox{
+            item->data, inbox_queue->item_size(),
+            item->sender_id, item->seq});
 
         // Always ack success — don't drop inbox messages on script errors.
         inbox_queue->send_ack(0);

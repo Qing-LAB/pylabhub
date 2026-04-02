@@ -191,9 +191,6 @@ struct ConsumerOptions
 
     int timeout_ms{5000};
 
-    // ── Loop timing (HEP-CORE-0008) ─────────────────────────────────────────
-    LoopTimingParams timing{};  ///< Policy + period + io_wait_ratio. Set from config.
-
     // ── Named schema validation (HEP-CORE-0016 Phase 2) ──────────────────────
     /// Optional named schema ID (e.g. `"lab.sensors.temperature.raw@1"`).
     /// When non-empty, `connect<FlexZoneT, DataBlockT>()` validates sizeof and BLDS hash
@@ -219,7 +216,7 @@ struct ConsumerOptions
     std::string inbox_checksum{};       ///< "enforced", "manual", "none".
 
     // ── Queue abstraction (Phase 2) ──────────────────────────────────────────
-    /// Slot data size in bytes (from engine type_sizeof("SlotFrame")). Required for ShmQueue wrapper.
+    /// Slot data size in bytes (from engine type_sizeof("InSlotFrame")). Required for ShmQueue wrapper.
     size_t item_size{0};
     /// Flexzone size in bytes (page-aligned). 0 = no flexzone.
     size_t flexzone_size{0};

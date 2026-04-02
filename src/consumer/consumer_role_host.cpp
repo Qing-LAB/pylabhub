@@ -30,6 +30,7 @@ namespace pylabhub::consumer
 {
 
 using scripting::IncomingMessage;
+using scripting::InvokeRx;
 using Clock = std::chrono::steady_clock;
 
 // ============================================================================
@@ -129,7 +130,7 @@ void ConsumerRoleHost::worker_main_()
     core_.set_script_load_ok(true);
 
     // Step 3: Resolve schemas and register slot types (read-only access).
-    scripting::SchemaSpec fz_spec_local;
+    scripting::SchemaSpec in_fz_local;
     {
         std::vector<std::string> schema_dirs;
         if (!hub.hub_dir.empty())
@@ -139,9 +140,9 @@ void ConsumerRoleHost::worker_main_()
         try
         {
             const auto &cf = config_.role_data<consumer::ConsumerFields>();
-            slot_spec_ = scripting::resolve_schema(
+            in_slot_spec_ = scripting::resolve_schema(
                 cf.in_slot_schema_json, false, "cons", schema_dirs);
-            fz_spec_local = scripting::resolve_schema(
+            in_fz_local = scripting::resolve_schema(
                 cf.in_flexzone_schema_json, true, "cons", schema_dirs);
         }
         catch (const std::exception &e)
@@ -157,35 +158,35 @@ void ConsumerRoleHost::worker_main_()
         tr.zmq_packing.empty() ? "aligned" : tr.zmq_packing;
 
     // Register slot type (read-only).
-    if (slot_spec_.has_schema)
+    if (in_slot_spec_.has_schema)
     {
-        if (!engine_->register_slot_type(slot_spec_, "SlotFrame", packing))
+        if (!engine_->register_slot_type(in_slot_spec_, "InSlotFrame", packing))
         {
-            LOGGER_ERROR("[cons] Failed to register SlotFrame type");
+            LOGGER_ERROR("[cons] Failed to register InSlotFrame type");
             engine_->finalize();
             ready_promise_.set_value(false);
             return;
         }
-        schema_slot_size_ = engine_->type_sizeof("SlotFrame");
+        in_schema_slot_size_ = engine_->type_sizeof("InSlotFrame");
     }
 
     // Register flexzone type.
-    if (fz_spec_local.has_schema)
+    if (in_fz_local.has_schema)
     {
-        if (!engine_->register_slot_type(fz_spec_local, "FlexFrame", packing))
+        if (!engine_->register_slot_type(in_fz_local, "InFlexFrame", packing))
         {
-            LOGGER_ERROR("[cons] Failed to register FlexFrame type");
+            LOGGER_ERROR("[cons] Failed to register InFlexFrame type");
             engine_->finalize();
             ready_promise_.set_value(false);
             return;
         }
-        size_t fz_size = engine_->type_sizeof("FlexFrame");
+        size_t fz_size = engine_->type_sizeof("InFlexFrame");
         fz_size = (fz_size + 4095U) & ~size_t{4095U};
-        core_.set_fz_spec(std::move(fz_spec_local), fz_size);
+        core_.set_in_fz_spec(std::move(in_fz_local), fz_size);
     }
     else
     {
-        core_.set_fz_spec(std::move(fz_spec_local), 0);
+        core_.set_in_fz_spec(std::move(in_fz_local), 0);
     }
 
     // Resolve and register inbox schema (alongside slot/fz above).
@@ -337,17 +338,15 @@ bool ConsumerRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox_
     hub::ConsumerOptions opts;
     opts.channel_name         = ch;
     opts.shm_shared_secret    = shm.enabled ? shm.secret : 0u;
-    opts.expected_schema_hash = scripting::compute_schema_hash(slot_spec_, core_.fz_spec());
+    opts.expected_schema_hash = scripting::compute_schema_hash(in_slot_spec_, core_.in_fz_spec());
     opts.consumer_uid         = id.uid;
     opts.consumer_name        = id.name;
 
-    opts.timing = tc.timing_params();
-
     // Queue abstraction: sizes + checksum for internal queue creation.
-    opts.item_size          = schema_slot_size_;
-    opts.flexzone_size      = core_.schema_fz_size();
+    opts.item_size          = in_schema_slot_size_;
+    opts.flexzone_size      = core_.in_schema_fz_size();
     opts.checksum_policy    = config_.checksum().policy;
-    opts.flexzone_checksum  = config_.checksum().flexzone && core_.has_fz();
+    opts.flexzone_checksum  = config_.checksum().flexzone && core_.has_in_fz();
 
     // Transport declaration.
     const bool is_zmq = (tr.transport == config::Transport::Zmq);
@@ -355,7 +354,7 @@ bool ConsumerRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox_
 
     if (is_zmq)
     {
-        opts.zmq_schema       = scripting::schema_spec_to_zmq_fields(slot_spec_);
+        opts.zmq_schema       = scripting::schema_spec_to_zmq_fields(in_slot_spec_);
         opts.zmq_packing      = tr.zmq_packing;
         opts.zmq_buffer_depth = tr.zmq_buffer_depth;
     }
@@ -567,7 +566,7 @@ void ConsumerRoleHost::run_data_loop_()
         std::chrono::duration_cast<std::chrono::milliseconds>(short_timeout_us + std::chrono::microseconds{999});
     const size_t item_sz = in_consumer_->queue_item_size();
 
-    const char *fz_type = core_.has_fz() ? "FlexFrame" : nullptr;
+
 
     auto deadline = Clock::time_point::max();
 
@@ -635,12 +634,15 @@ void ConsumerRoleHost::run_data_loop_()
             core_.inc_in_received();
         }
 
-        const void *fz_ptr = core_.has_fz() ? in_consumer_->read_flexzone() : nullptr;
-        const size_t fz_sz = core_.has_fz() ? in_consumer_->flexzone_size() : 0;
+        // Flexzone is mutable by design (HEP-0002 TABLE 1, user-managed coordination).
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+        void *fz_ptr = core_.has_in_fz()
+            ? const_cast<void *>(in_consumer_->read_flexzone()) : nullptr;
+        const size_t fz_sz = core_.has_in_fz() ? in_consumer_->flexzone_size() : 0;
 
         const uint64_t errors_before = engine_->script_error_count();
 
-        engine_->invoke_consume(data, item_sz, fz_ptr, fz_sz, fz_type, msgs);
+        engine_->invoke_consume(InvokeRx{data, item_sz, fz_ptr, fz_sz}, msgs);
 
         // --- Step E: Release slot ---
         if (data != nullptr)

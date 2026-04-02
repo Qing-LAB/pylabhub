@@ -31,6 +31,7 @@ namespace pylabhub::producer
 
 using scripting::IncomingMessage;
 using scripting::InvokeResult;
+using scripting::InvokeTx;
 using Clock = std::chrono::steady_clock;
 
 // ============================================================================
@@ -132,7 +133,7 @@ void ProducerRoleHost::worker_main_()
     core_.set_script_load_ok(true);
 
     // Step 3: Resolve schemas and register slot types.
-    scripting::SchemaSpec fz_spec_local;
+    scripting::SchemaSpec out_fz_local;
     {
         std::vector<std::string> schema_dirs;
         if (!hub.hub_dir.empty())
@@ -141,9 +142,9 @@ void ProducerRoleHost::worker_main_()
 
         try
         {
-            slot_spec_ = scripting::resolve_schema(
+            out_slot_spec_ = scripting::resolve_schema(
                 pf.out_slot_schema_json, false, "prod", schema_dirs);
-            fz_spec_local = scripting::resolve_schema(
+            out_fz_local = scripting::resolve_schema(
                 pf.out_flexzone_schema_json, true, "prod", schema_dirs);
         }
         catch (const std::exception &e)
@@ -159,35 +160,35 @@ void ProducerRoleHost::worker_main_()
         tr.zmq_packing.empty() ? "aligned" : tr.zmq_packing;
 
     // Register slot type.
-    if (slot_spec_.has_schema)
+    if (out_slot_spec_.has_schema)
     {
-        if (!engine_->register_slot_type(slot_spec_, "SlotFrame", packing))
+        if (!engine_->register_slot_type(out_slot_spec_, "OutSlotFrame", packing))
         {
-            LOGGER_ERROR("[prod] Failed to register SlotFrame type");
+            LOGGER_ERROR("[prod] Failed to register OutSlotFrame type");
             engine_->finalize();
             ready_promise_.set_value(false);
             return;
         }
-        schema_slot_size_ = engine_->type_sizeof("SlotFrame");
+        out_schema_slot_size_ = engine_->type_sizeof("OutSlotFrame");
     }
 
     // Register flexzone type.
-    if (fz_spec_local.has_schema)
+    if (out_fz_local.has_schema)
     {
-        if (!engine_->register_slot_type(fz_spec_local, "FlexFrame", packing))
+        if (!engine_->register_slot_type(out_fz_local, "OutFlexFrame", packing))
         {
-            LOGGER_ERROR("[prod] Failed to register FlexFrame type");
+            LOGGER_ERROR("[prod] Failed to register OutFlexFrame type");
             engine_->finalize();
             ready_promise_.set_value(false);
             return;
         }
-        size_t fz_size = engine_->type_sizeof("FlexFrame");
+        size_t fz_size = engine_->type_sizeof("OutFlexFrame");
         fz_size = (fz_size + 4095U) & ~size_t{4095U};
-        core_.set_fz_spec(std::move(fz_spec_local), fz_size);
+        core_.set_out_fz_spec(std::move(out_fz_local), fz_size);
     }
     else
     {
-        core_.set_fz_spec(std::move(fz_spec_local), 0);
+        core_.set_out_fz_spec(std::move(out_fz_local), 0);
     }
 
     // Resolve and register inbox schema (alongside slot/fz above).
@@ -291,7 +292,7 @@ void ProducerRoleHost::worker_main_()
     engine_->invoke_on_init();
 
     // Sync flexzone checksum after on_init (user may have written to flexzone).
-    if (out_producer_.has_value() && core_.has_fz())
+    if (out_producer_.has_value() && core_.has_out_fz())
         out_producer_->sync_flexzone_checksum();
 
     // Step 7: Spawn ctrl_thread_ and signal ready.
@@ -344,11 +345,11 @@ bool ProducerRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox_
     opts.channel_name = ch;
     opts.pattern      = hub::ChannelPattern::PubSub;
     opts.has_shm      = shm.enabled;
-    opts.schema_hash  = scripting::compute_schema_hash(slot_spec_, core_.fz_spec());
+    opts.schema_hash  = scripting::compute_schema_hash(out_slot_spec_, core_.out_fz_spec());
     opts.role_name   = id.name;
     opts.role_uid    = id.uid;
 
-    opts.timing = tc.timing_params();
+
     opts.ctrl_queue_max_depth = mon.ctrl_queue_max_depth;
     opts.peer_dead_timeout_ms = mon.peer_dead_timeout_ms;
 
@@ -403,12 +404,11 @@ bool ProducerRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox_
     }
 
     // --- Queue abstraction: sizes + checksum + period for internal queue creation ---
-    opts.item_size         = schema_slot_size_;
-    opts.flexzone_size     = core_.schema_fz_size();
+    opts.item_size         = out_schema_slot_size_;
+    opts.flexzone_size     = core_.out_schema_fz_size();
     opts.checksum_policy    = config_.checksum().policy;
-    opts.flexzone_checksum  = config_.checksum().flexzone && core_.has_fz();
-    // queue_period_us removed: loop policy set by establish_channel() on DataBlock;
-    // ZmqQueue informational period set from configured_period_us in hub_producer.cpp.
+    opts.flexzone_checksum  = config_.checksum().flexzone && core_.has_out_fz();
+    // Timing is a role-level concern — core_.set_configured_period() handles it.
 
     // --- SHM config ---
     if (shm.enabled)
@@ -418,11 +418,11 @@ bool ProducerRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox_
         opts.shm_config.policy               = hub::DataBlockPolicy::RingBuffer;
         opts.shm_config.consumer_sync_policy = shm.sync_policy;
         opts.shm_config.checksum_policy      = config_.checksum().policy;
-        opts.shm_config.flex_zone_size       = core_.schema_fz_size();
+        opts.shm_config.flex_zone_size       = core_.out_schema_fz_size();
 
         opts.shm_config.physical_page_size = hub::system_page_size();
         opts.shm_config.logical_unit_size  =
-            (schema_slot_size_ == 0) ? 1 : schema_slot_size_;
+            (out_schema_slot_size_ == 0) ? 1 : out_schema_slot_size_;
     }
 
     // --- ZMQ transport (HEP-CORE-0021) ---
@@ -432,7 +432,7 @@ bool ProducerRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox_
         opts.data_transport    = "zmq";
         opts.zmq_node_endpoint = tr.zmq_endpoint;
         opts.zmq_bind          = tr.zmq_bind;
-        opts.zmq_schema        = scripting::schema_spec_to_zmq_fields(slot_spec_);
+        opts.zmq_schema        = scripting::schema_spec_to_zmq_fields(out_slot_spec_);
         opts.zmq_packing       = tr.zmq_packing;
         opts.zmq_buffer_depth  = tr.zmq_buffer_depth;
         opts.zmq_overflow_policy =
@@ -627,9 +627,9 @@ void ProducerRoleHost::run_data_loop_()
     const size_t buf_sz = out_producer_->queue_item_size();
 
     // Flexzone pointers — valid after queue start.
-    void       *fz_ptr  = core_.has_fz() ? out_producer_->write_flexzone() : nullptr;
-    const size_t fz_sz  = core_.has_fz() ? out_producer_->flexzone_size()  : 0;
-    const char *fz_type = core_.has_fz() ? "FlexFrame" : nullptr;
+    void       *fz_ptr  = core_.has_out_fz() ? out_producer_->write_flexzone() : nullptr;
+    const size_t fz_sz  = core_.has_out_fz() ? out_producer_->flexzone_size()  : 0;
+
 
     // First cycle: no deadline — fire immediately.
     auto deadline = Clock::time_point::max();
@@ -705,11 +705,11 @@ void ProducerRoleHost::run_data_loop_()
             std::memset(buf, 0, buf_sz);
 
         // Re-read flexzone pointer each cycle (ShmQueue may move it).
-        if (core_.has_fz())
+        if (core_.has_out_fz())
             fz_ptr = out_producer_->write_flexzone();
 
         InvokeResult result =
-            engine_->invoke_produce(buf, buf_sz, fz_ptr, fz_sz, fz_type, msgs);
+            engine_->invoke_produce(InvokeTx{buf, buf_sz, fz_ptr, fz_sz}, msgs);
 
         // --- Step E: Commit/discard ---
         if (buf != nullptr)

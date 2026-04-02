@@ -1,10 +1,10 @@
-# Tech Draft: ScriptEngine Execution Model — Threading, Cross-Thread Dispatch, and Native Plugins
+# Tech Draft: ScriptEngine Execution Model — Threading, Cross-Thread Dispatch, and Native Engines
 
 **Status**: Draft (2026-03-20)
 **Branch**: `feature/lua-role-support`
 **Relates to**: HEP-CORE-0011, `script_engine_refactor.md`
 **Addresses**: SE-15 (GIL strategy), SE-04 (Lua API parity), SE-06 (entry_point contract),
-future ctrl_thread script support, native plugin extension
+future ctrl_thread script support, native engine extension
 
 ## 1. Problem Statement
 
@@ -918,17 +918,17 @@ RoleHostCore moved to pylabhub-utils shared lib. 21 L2 tests added.
 - `on_heartbeat()` wired in all 3 role hosts via `ThreadEngineGuard` + `engine->invoke("on_heartbeat")`
 - Lua: concurrent on thread-local state; Python: queued to owner
 
-**Phase 5** (native plugin engine): ✅ **DONE 2026-03-30**
+**Phase 5** (native engine): ✅ **DONE 2026-03-30**
 - `NativeEngine` class: dlopen, ABI check, schema validation, context function pointers
-- `plugin_api.h`: C/C++ header with `PlhPluginContext`, `plh::Context`, `SlotRef<T>`
+- `native_engine_api.h`: C/C++ header with `PlhNativeContext`, `plh::Context`, `SlotRef<T>`
 - Config: `"native"` type, `script.checksum`, `resolve_native_library()`
-- 12 L2 tests with real .so plugin. See **HEP-CORE-0028**.
+- 12 L2 tests with real .so library. See **HEP-CORE-0028**.
 
 ## 11. NativeEngine — Dynamic C++ Library Extension
 
 > **SUPERSEDED**: This section was the design draft. The actual implementation
 > diverges significantly (context function pointers instead of host-exported symbols,
-> `plugin_init` instead of `plugin_build_api`, PlhAbiInfo instead of build_info JSON).
+> `native_init` instead of `native_build_api`, PlhAbiInfo instead of build_info JSON).
 > See **HEP-CORE-0028** for the authoritative specification.
 
 ### 11.1 Motivation
@@ -949,25 +949,25 @@ The existing ScriptEngine interface maps directly to `dlopen`/`dlsym`:
 
 | ScriptEngine method | NativeEngine implementation |
 |--------------------|-----------------------------|
-| `initialize(tag, core)` | `dlopen(path)` + `dlsym("plugin_init")` → call with core ptr |
+| `initialize(tag, core)` | `dlopen(path)` + `dlsym("native_init")` → call with core ptr |
 | `load_script(dir, entry)` | `dlsym` for all known symbols: `on_produce`, `on_consume`, etc. |
 | `register_slot_type(spec, name, packing)` | No-op or validation. Library knows its own struct layout. |
-| `build_api(ctx)` | `dlsym("plugin_build_api")` → call with `RoleContext*`. Library stores pointers it needs. |
+| `build_api(ctx)` | `dlsym("native_build_api")` → call with `RoleContext*`. Library stores pointers it needs. |
 | `has_callback(name)` | `dlsym(name) != nullptr` |
 | `invoke_produce(ptr, sz, ...)` | Direct function pointer call. No marshaling. |
 | `invoke("name")` | `dlsym(name)` → function pointer call |
 | `invoke("name", args)` | `dlsym(name)` → call with serialized args (JSON string or struct) |
 | `eval(code)` | Returns false. Not applicable to compiled code. |
-| `finalize()` | `dlsym("plugin_finalize")` → call + `dlclose()` |
+| `finalize()` | `dlsym("native_finalize")` → call + `dlclose()` |
 
-### 11.3 Plugin symbol convention
+### 11.3 Native engine symbol convention
 
-A native plugin is a standard shared library (`.so` / `.dll` / `.dylib`)
+A native engine library is a standard shared library (`.so` / `.dll` / `.dylib`)
 exporting C-linkage symbols with a known naming convention:
 
 ```cpp
 // my_fast_producer.cpp — compiled to libmy_fast_producer.so
-#include <pylabhub/plugin_api.h>
+#include <pylabhub/native_engine_api.h>
 
 // ── Required ────────────────────────────────────────────────────────
 extern "C"
@@ -975,10 +975,10 @@ extern "C"
 
 /// Called once at engine init. Store the context for later use.
 /// Return true on success, false to abort.
-bool plugin_init(const pylabhub::scripting::RoleContext* ctx);
+bool native_init(const pylabhub::scripting::RoleContext* ctx);
 
 /// Called once at shutdown. Release resources.
-void plugin_finalize();
+void native_finalize();
 
 // ── Role callbacks (provide whichever the role needs) ───────────────
 
@@ -1002,36 +1002,36 @@ void on_inbox(const void* data, size_t sz, const char* sender_uid);
 
 // ── Optional metadata ───────────────────────────────────────────────
 
-/// If true, any thread may call the plugin's functions concurrently.
+/// If true, any thread may call the native engine's functions concurrently.
 /// Default (symbol absent): false (single-thread, same as Python).
-bool plugin_is_thread_safe();
+bool native_is_thread_safe();
 
-/// Human-readable plugin name for logging.
-const char* plugin_name();
+/// Human-readable native engine name for logging.
+const char* native_name();
 
-/// Plugin version string.
-const char* plugin_version();
+/// Native engine version string.
+const char* native_version();
 
 }  // extern "C"
 ```
 
 ### 11.4 Thread model
 
-The plugin declares its own threading capability via `plugin_is_thread_safe()`:
+The native engine declares its own threading capability via `native_is_thread_safe()`:
 
-- **Thread-safe plugin** (`returns true`): `supports_multi_state()` = true.
-  Any thread may call the plugin's functions directly. The engine does not
+- **Thread-safe native engine** (`returns true`): `supports_multi_state()` = true.
+  Any thread may call the native engine's functions directly. The engine does not
   create separate states — there is one loaded library, and all threads
-  share it. The plugin is responsible for its own internal synchronization
+  share it. The native engine is responsible for its own internal synchronization
   if needed.
 
-- **Single-thread plugin** (`returns false` or symbol absent):
+- **Single-thread native engine** (`returns false` or symbol absent):
   `supports_multi_state()` = false. Same queue-for-owner pattern as Python.
-  Only the owner thread calls plugin functions. Cross-thread requests go
+  Only the owner thread calls native engine functions. Cross-thread requests go
   through `drain_pending_requests()`.
 
 Note: unlike Lua's `create_thread_state()` which creates independent
-interpreter states, a thread-safe native plugin is a single shared instance.
+interpreter states, a thread-safe native engine is a single shared instance.
 This is correct — compiled code doesn't need separate "states" for thread
 safety; it uses standard C++ synchronization (mutexes, atomics, TLS) as
 needed.
@@ -1060,13 +1060,13 @@ The critical advantage over interpreted engines:
 
 The native path is a static_cast at compile time — the compiler can inline
 the callback entirely. No runtime type construction, no string operations,
-no interpreter dispatch. The plugin operates on the same struct definition
+no interpreter dispatch. The native engine operates on the same struct definition
 it was compiled against.
 
 ### 11.6 Schema validation (optional safety layer)
 
-Even though the plugin knows its own struct layout, the engine can optionally
-validate that the DataBlock's schema matches the plugin's expectations:
+Even though the native engine knows its own struct layout, the engine can optionally
+validate that the DataBlock's schema matches the native engine's expectations:
 
 ```cpp
 bool NativeEngine::register_slot_type(const SchemaSpec& spec,
@@ -1076,25 +1076,25 @@ bool NativeEngine::register_slot_type(const SchemaSpec& spec,
     // Compute expected size from schema
     size_t schema_size = compute_struct_size(spec, packing);
 
-    // Ask plugin for its compiled struct size
-    auto fn = dlsym_typed<size_t()>("plugin_sizeof_" + std::string(type_name));
+    // Ask native engine for its compiled struct size
+    auto fn = dlsym_typed<size_t()>("native_sizeof_" + std::string(type_name));
     if (fn)
     {
-        size_t plugin_size = fn();
-        if (plugin_size != schema_size)
+        size_t native_size = fn();
+        if (native_size != schema_size)
         {
-            LOGGER_ERROR("Schema/plugin size mismatch for {}: schema={}, plugin={}",
-                         type_name, schema_size, plugin_size);
+            LOGGER_ERROR("Schema/native size mismatch for {}: schema={}, native={}",
+                         type_name, schema_size, native_size);
             return false;
         }
     }
-    return true;  // no validation symbol = trust the plugin
+    return true;  // no validation symbol = trust the native engine
 }
 ```
 
-This catches the case where the plugin was compiled against an old struct
+This catches the case where the native engine was compiled against an old struct
 definition but the DataBlock uses a newer schema — a common ABI drift bug
-in plugin systems.
+in native engine systems.
 
 ### 11.7 Configuration
 
@@ -1102,12 +1102,12 @@ in plugin systems.
 {
     "script": {
         "type": "native",
-        "path": "./plugins/libmy_fast_producer.so"
+        "path": "./native/libmy_fast_producer.so"
     }
 }
 ```
 
-For native plugins, `script.path` points directly to the shared library
+For native engines, `script.path` points directly to the shared library
 file (not a directory). The role host detects `type == "native"` and
 creates a `NativeEngine` instead of `LuaEngine` or `PythonEngine`.
 
@@ -1115,7 +1115,7 @@ creates a `NativeEngine` instead of `LuaEngine` or `PythonEngine`.
 
 | Operation | Lua | Python | Native |
 |-----------|-----|--------|--------|
-| Interpreter/library init | ~1ms (luaL_newstate) | ~50ms (Py_Initialize) | ~1ms (dlopen) |
+| Interpreter/library init | ~1ms (luaL_newstate) | ~50ms (Py_Initialize) | ~1ms (dlopen)   |
 | Script/library load | ~100us (luaL_dofile) | ~10ms (import) | ~10us (dlsym × N) |
 | Type registration | ~50us (ffi.cdef + typeof) | ~100us (ctypes struct) | ~0 (no-op or size check) |
 | Slot pointer cast | ~50-100ns (ffi.cast) | ~200-500ns (ctypes cast) | ~0 (static_cast, inlined) |
@@ -1124,17 +1124,17 @@ creates a `NativeEngine` instead of `LuaEngine` or `PythonEngine`.
 | Cross-thread (multi-state) | ~100ns (cached state) | ~drain latency (queue) | ~0 (direct, if thread-safe) |
 | Shared state get/set | ~200ns (JSON ↔ table) | ~200ns (JSON ↔ dict) | ~100ns (JSON parse/emit) |
 
-Native plugins eliminate ALL interpreter overhead. The callback invoke cost
+Native engines eliminate ALL interpreter overhead. The callback invoke cost
 drops from hundreds of nanoseconds to a single indirect function call (~5ns).
 For high-frequency data loops (>100kHz), this is the difference between
 the framework being the bottleneck and being invisible.
 
-### 11.9 Plugin API header
+### 11.9 Native Engine API header
 
-The framework provides a stable C API header that plugins include:
+The framework provides a stable C API header that native engines include:
 
 ```cpp
-// pylabhub/plugin_api.h — installed to include/pylabhub/
+// pylabhub/native_engine_api.h — installed to include/pylabhub/
 #pragma once
 
 #include <cstddef>
@@ -1145,7 +1145,7 @@ extern "C" {
 #endif
 
 /// Opaque handle to the role's core state.
-/// Plugins call these functions to interact with the framework.
+/// Native engines call these functions to interact with the framework.
 typedef struct plh_core plh_core_t;
 
 // ── Framework functions (provided by pylabhub-utils) ────────────────
@@ -1182,9 +1182,9 @@ const char* plh_core_channel(const plh_core_t* core);
 #endif
 ```
 
-This is a stable C ABI. Plugins compiled with any C/C++ compiler can link
+This is a stable C ABI. Native engines compiled with any C/C++ compiler can link
 against it. The `plh_core_t` opaque handle maps to `RoleHostCore*` inside
-the engine — the plugin never sees the C++ class, only the C function API.
+the engine — the native engine never sees the C++ class, only the C function API.
 
 ### 11.10 Comparison of engine types
 
@@ -1193,10 +1193,10 @@ the engine — the plugin never sees the C++ class, only the C function API.
 | Language | Lua 5.1 (LuaJIT) | Python 3.x (CPython) | C/C++ (any compiler) |
 | Runtime overhead | Low (~200ns/call) | Medium (~500ns/call) | Near-zero (~5ns/call) |
 | Slot data access | FFI cast (~100ns) | ctypes cast (~300ns) | Direct pointer (~0) |
-| Thread model | Multi-state (independent) | Single-state (GIL) | Plugin-declared |
+| Thread model | Multi-state (independent) | Single-state (GIL) | Engine-declared |
 | Hot-reload | Possible (new state) | Possible (re-import) | Requires dlclose+dlopen |
 | Debugging | print + LOGGER | Full Python debugger | GDB/LLDB native |
-| Rapid prototyping | Good (dynamic) | Excellent (ecosystem) | Poor (compile cycle) |
+| Rapid prototyping | Good (dynamic) | Excellent (ecosystem) | Poor (compile cycle)  |
 | Production perf | Good | Adequate | Optimal |
 | Dependency mgmt | Embedded (LuaJIT) | venv / system | System libraries |
 
@@ -1206,19 +1206,19 @@ the engine — the plugin never sees the C++ class, only the C function API.
 - **Native**: performance-critical inner loops, existing C/C++ algorithms,
   hardware interface code, latency-sensitive data paths
 
-### 11.11 C++ Plugin API — Type-Safe Tier
+### 11.11 C++ Native Engine API — Type-Safe Tier
 
 The C API (§11.9) provides maximum portability (any compiler, stable ABI).
-When the plugin is compiled with the same compiler and C++ standard library
+When the native engine is compiled with the same compiler and C++ standard library
 as the framework — which is the common case in controlled deployments — a
 C++ API tier provides full type safety with zero additional runtime cost.
 
 #### Type-safe slot access via template
 
 ```cpp
-// pylabhub/plugin_api.hpp — C++ tier, same-compiler ABI
+// pylabhub/native_engine_api.hpp — C++ tier, same-compiler ABI
 #pragma once
-#include <pylabhub/plugin_api.h>
+#include <pylabhub/native_engine_api.h>
 #include <cstddef>
 #include <type_traits>
 
@@ -1319,19 +1319,19 @@ public:
 
 /// Generate sizeof/alignof validation symbols for a slot struct.
 /// The engine checks these at load time against the DataBlock schema.
-/// Catches ABI drift between plugin compilation and runtime schema.
+/// Catches ABI drift between native engine compilation and runtime schema.
 #define PLH_REGISTER_SLOT_TYPE(T)                                     \
     static_assert(std::is_standard_layout_v<T>,                       \
                   #T " must be standard-layout for SHM");             \
-    extern "C" size_t  plugin_sizeof_##T()  { return sizeof(T); }     \
-    extern "C" size_t  plugin_alignof_##T() { return alignof(T); }
+    extern "C" size_t  native_sizeof_##T()  { return sizeof(T); }     \
+    extern "C" size_t  native_alignof_##T() { return alignof(T); }
 ```
 
-#### Example: type-safe producer plugin
+#### Example: type-safe producer native engine
 
 ```cpp
 // my_sensor_producer.cpp
-#include <pylabhub/plugin_api.hpp>
+#include <pylabhub/native_engine_api.hpp>
 
 struct SensorData
 {
@@ -1344,7 +1344,7 @@ PLH_REGISTER_SLOT_TYPE(SensorData)
 
 static pylabhub::RoleApi* g_api = nullptr;
 
-extern "C" bool plugin_init(const pylabhub::scripting::RoleContext* ctx)
+extern "C" bool native_init(const pylabhub::scripting::RoleContext* ctx)
 {
     // Framework provides a typed C++ wrapper around the core handle
     g_api = new pylabhub::RoleApi(reinterpret_cast<plh_core_t*>(ctx->core));
@@ -1373,20 +1373,20 @@ extern "C" void on_stop()
     g_api = nullptr;
 }
 
-extern "C" bool plugin_is_thread_safe() { return false; }
-extern "C" const char* plugin_name() { return "SensorProducer"; }
+extern "C" bool native_is_thread_safe() { return false; }
+extern "C" const char* native_name() { return "SensorProducer"; }
 ```
 
 #### ABI safety model (two tiers)
 
 | Tier | Header | ABI guarantee | Type safety | Use case |
 |------|--------|--------------|-------------|----------|
-| C | `plugin_api.h` | Stable across compilers | Opaque handle + C functions | Third-party plugins, cross-compiler |
-| C++ | `plugin_api.hpp` | Same compiler + stdlib required | `SlotRef<T>`, `RoleApi`, templates | In-house plugins, controlled builds |
+| C | `native_engine_api.h` | Stable across compilers | Opaque handle + C functions | Third-party native engines, cross-compiler |
+| C++ | `native_engine_api.hpp` | Same compiler + stdlib required | `SlotRef<T>`, `RoleApi`, templates | In-house native engines, controlled builds |
 
 The C++ tier builds on top of the C tier — `RoleApi` wraps `plh_core_t*`,
 `SlotRef<T>` wraps `void*`. If ABI compatibility breaks (compiler upgrade,
-stdlib change), the plugin falls back to the C tier without framework changes.
+stdlib change), the native engine falls back to the C tier without framework changes.
 
 The `std::is_standard_layout_v<T>` static_assert in `SlotRef` and
 `PLH_REGISTER_SLOT_TYPE` ensures the struct is SHM-safe: no vtable, no
@@ -1463,7 +1463,7 @@ target_include_directories(pylabhub-utils PUBLIC
     $<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/generated>
     $<INSTALL_INTERFACE:include>)
 
-# Install for plugin developers
+# Install for native engine developers
 install(FILES ${CMAKE_BINARY_DIR}/generated/pylabhub/build_info.hpp
         DESTINATION include/pylabhub)
 ```
@@ -1504,19 +1504,19 @@ inline const char* plh_build_info_json()
 }
 ```
 
-**Plugin-side verification:**
+**Native engine-side verification:**
 
-The plugin is compiled against the installed pylabhub headers, which include
-the generated `build_info.hpp`. The plugin exports the build info that was
+The native engine is compiled against the installed pylabhub headers, which include
+the generated `build_info.hpp`. The native engine exports the build info that was
 visible at its own compile time:
 
 ```cpp
-// In the plugin source
+// In the native engine source
 #include <pylabhub/build_info.hpp>
 
-extern "C" const char* plugin_build_info_json()
+extern "C" const char* native_abi_info()
 {
-    return PLH_BUILD_INFO_JSON;
+    return PLH_NATIVE_API_VERSION;
 }
 ```
 
@@ -1525,39 +1525,39 @@ At `dlopen` time, `NativeEngine` loads and compares:
 ```cpp
 bool NativeEngine::verify_abi_compatibility_()
 {
-    auto fn = dlsym_typed<const char*()>("plugin_build_info_json");
+    auto fn = dlsym_typed<const char*()>("native_abi_info");
     if (!fn)
     {
-        LOGGER_WARN("Plugin does not export build info — treating as C-tier");
+        LOGGER_WARN("Native engine does not export ABI info — treating as C-tier");
         cpp_tier_enabled_ = false;
         return true;  // still loadable via C API
     }
 
-    const char* plugin_info = fn();
-    auto plugin_json = nlohmann::json::parse(plugin_info);
+    const char* native_info = fn();
+    auto native_json = nlohmann::json::parse(native_info);
     auto framework_json = nlohmann::json::parse(plh_build_info_json());
 
     // Critical fields that must match for C++ ABI safety
     bool abi_safe =
-        plugin_json["compiler_id"]      == framework_json["compiler_id"] &&
-        plugin_json["compiler_version"] == framework_json["compiler_version"] &&
-        plugin_json["cxx_standard"]     == framework_json["cxx_standard"] &&
-        plugin_json["sanitizer"]        == framework_json["sanitizer"];
+        native_json["compiler_id"]      == framework_json["compiler_id"] &&
+        native_json["compiler_version"] == framework_json["compiler_version"] &&
+        native_json["cxx_standard"]     == framework_json["cxx_standard"] &&
+        native_json["sanitizer"]        == framework_json["sanitizer"];
 
     if (!abi_safe)
     {
-        LOGGER_WARN("Plugin ABI mismatch — restricting to C tier\n"
-                    "  framework: {}\n  plugin:    {}",
-                    plh_build_info_json(), plugin_info);
+        LOGGER_WARN("Native engine ABI mismatch — restricting to C tier\n"
+                    "  framework: {}\n  native:    {}",
+                    plh_build_info_json(), native_info);
         cpp_tier_enabled_ = false;
         return true;  // still loadable via C API
     }
 
-    // Non-critical: warn if build type differs (e.g. Debug plugin on Release framework)
-    if (plugin_json["build_type"] != framework_json["build_type"])
+    // Non-critical: warn if build type differs (e.g. Debug native engine on Release framework)
+    if (native_json["build_type"] != framework_json["build_type"])
     {
-        LOGGER_WARN("Plugin build type ({}) differs from framework ({})",
-                    plugin_json["build_type"].get<std::string>(),
+        LOGGER_WARN("Native engine build type ({}) differs from framework ({})",
+                    native_json["build_type"].get<std::string>(),
                     framework_json["build_type"].get<std::string>());
     }
 
@@ -1576,4 +1576,4 @@ bool NativeEngine::verify_abi_compatibility_()
 | `sanitizer` | YES | ASan adds redzones to allocations, changes struct padding and alignment — mixing ASan/non-ASan is UB |
 | `cxx_flags` | NO (warn) | Optimization level rarely affects ABI, but `-fpack-struct` or `-fno-exceptions` can |
 | `build_type` | NO (warn) | Debug vs Release may differ in assertions/checks but ABI is usually stable |
-| `system` | NO (info) | Cross-platform plugins are rare; mismatch would fail at dlopen anyway |
+| `system` | NO (info) | Cross-platform native engines are rare; mismatch would fail at dlopen anyway |

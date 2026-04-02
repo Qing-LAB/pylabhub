@@ -604,11 +604,8 @@ Consumer::establish_channel(Messenger &messenger, ChannelHandle channel,
         impl->queue_reader_ = impl->zmq_queue_.get();
     }
 
-    // Set timing on the queue (single path for both SHM and ZMQ).
-    if (impl->queue_reader_ && opts.timing.period_us > 0)
-    {
-        impl->queue_reader_->set_configured_period(opts.timing.period_us);
-    }
+    // Timing is a role-level concern — set by role host via core_.set_configured_period().
+    // SlotIterator reads from ContextMetrics directly if needed.
 
     // Set checksum policy on the queue (single path for both SHM and ZMQ).
     if (impl->queue_reader_)

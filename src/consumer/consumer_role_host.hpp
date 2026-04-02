@@ -103,9 +103,8 @@ class ConsumerRoleHost
     std::thread                            ctrl_thread_;
 
     // Schema info (resolved from config during setup).
-    // fz_spec is stored in core_.fz_spec() (shared with engine for flexzone exposure).
-    scripting::SchemaSpec                  slot_spec_;
-    size_t                                 schema_slot_size_{0};
+    scripting::SchemaSpec                  in_slot_spec_;
+    size_t                                 in_schema_slot_size_{0};
 
     // Metrics are in core_ (RoleHostCore) — single source of truth.
     // See core_.in_received_, core_.iteration_count_, core_.last_cycle_work_us_.

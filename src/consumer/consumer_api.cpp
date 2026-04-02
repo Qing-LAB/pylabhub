@@ -317,6 +317,19 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
 {
     using namespace pylabhub::consumer; // NOLINT
 
+    py::class_<scripting::PyRxChannel>(m, "RxChannel")
+        .def_readwrite("slot", &scripting::PyRxChannel::slot)
+        .def_readwrite("fz",   &scripting::PyRxChannel::fz);
+
+    py::class_<scripting::PyTxChannel>(m, "TxChannel")
+        .def_readwrite("slot", &scripting::PyTxChannel::slot)
+        .def_readwrite("fz",   &scripting::PyTxChannel::fz);
+
+    py::class_<scripting::PyInboxMsg>(m, "InboxMsg")
+        .def_readonly("data",       &scripting::PyInboxMsg::data)
+        .def_readonly("sender_uid", &scripting::PyInboxMsg::sender_uid)
+        .def_readonly("seq",        &scripting::PyInboxMsg::seq);
+
     py::class_<scripting::InboxHandle>(m, "InboxHandle")
         .def("acquire",  &scripting::InboxHandle::acquire)
         .def("send",     &scripting::InboxHandle::send,    py::arg("timeout_ms") = 5000)

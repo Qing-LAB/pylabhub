@@ -1,7 +1,7 @@
-# Native Plugin Developer Guide
+# Native Engine Developer Guide
 
-This guide walks through building a native (C/C++) plugin for pyLabHub. Native
-plugins are shared libraries (`.so` / `.dll`) that the role host loads at runtime
+This guide walks through building a native (C/C++) engine for pyLabHub. Native
+engines are shared libraries (`.so` / `.dll`) that the role host loads at runtime
 via `dlopen`. They implement the same callback contract as Python and Lua scripts
 but execute as compiled machine code.
 
@@ -14,58 +14,57 @@ but execute as compiled machine code.
 
 ---
 
-## 1. Quick Start -- Minimal Producer Plugin
+## 1. Quick Start -- Minimal Producer Native Engine
 
 ```c
-#include <pylabhub/plugin_api.h>
+#include <pylabhub/native_engine_api.h>
 #include <string.h>
 
 /* --- Lifecycle --------------------------------------------------------- */
 
-static const PlhPluginContext *g_ctx;
+static const PlhNativeContext *g_ctx;
 
-PLH_EXPORT bool plugin_init(const PlhPluginContext *ctx)
+PLH_EXPORT bool native_init(const PlhNativeContext *ctx)
 {
     g_ctx = ctx;
-    ctx->log(ctx, PLH_LOG_INFO, "plugin_init: hello from native producer");
+    ctx->log(ctx, PLH_LOG_INFO, "native_init: hello from native producer");
     return true;
 }
 
-PLH_EXPORT void plugin_finalize(void) {}
+PLH_EXPORT void native_finalize(void) {}
 PLH_EXPORT void on_init(void)         {}
 PLH_EXPORT void on_stop(void)         {}
 
 /* --- ABI --------------------------------------------------------------- */
 
-PLH_EXPORT const PlhAbiInfo *plugin_abi_info(void)
+PLH_EXPORT const PlhAbiInfo *native_abi_info(void)
 {
     static const PlhAbiInfo info = {
         .struct_size     = sizeof(PlhAbiInfo),
         .sizeof_void_ptr = sizeof(void *),
         .sizeof_size_t   = sizeof(size_t),
         .byte_order      = 1,  /* little-endian */
-        .api_version     = PLH_PLUGIN_API_VERSION,
+        .api_version     = PLH_NATIVE_API_VERSION,
     };
     return &info;
 }
 
 /* --- Data callback ----------------------------------------------------- */
 
-PLH_EXPORT bool on_produce(void *out_slot, size_t out_sz,
-                           void *flexzone, size_t fz_sz)
+PLH_EXPORT bool on_produce(const plh_tx_t *tx)
 {
-    (void)flexzone; (void)fz_sz;
-    if (!out_slot || out_sz < sizeof(float))
+    if (!tx || !tx->slot || tx->slot_size < sizeof(float))
         return false;
 
-    float *slot = (float *)out_slot;
+    float *slot = (float *)tx->slot;
     slot[0] = 42.0f;
     return true;   /* true = commit (publish), false = discard */
 }
 ```
 
-That is a complete, loadable producer plugin. The framework calls `plugin_init`
-once, then `on_produce` every iteration, and `plugin_finalize` at shutdown.
+That is a complete, loadable producer native engine. The framework calls
+`native_init` once, then `on_produce` every iteration, and `native_finalize`
+at shutdown.
 
 ---
 
@@ -76,7 +75,7 @@ my-producer/
   producer.json                  # Role configuration
   script/
     native/
-      libmy_producer.so          # Your compiled plugin (Linux)
+      libmy_producer.so          # Your compiled native engine (Linux)
       my_producer.dll            # (Windows equivalent)
 ```
 
@@ -130,18 +129,18 @@ separate config field.
 
 ---
 
-## 4. Building Your Plugin
+## 4. Building Your Native Engine
 
 ### 4.1 Compiler requirements
 
-- C11 for pure C plugins, C++17 for the C++ convenience layer
+- C11 for pure C native engines, C++17 for the C++ convenience layer
 - Same architecture and pointer width as the host binary (x86_64/aarch64)
 - Same byte order as the host (virtually always little-endian)
 
 ### 4.2 Visibility flags
 
 By default, all symbols in a shared library are exported on Linux. Best practice
-is to hide everything by default and export only the plugin entry points:
+is to hide everything by default and export only the native engine entry points:
 
 ```
 -fvisibility=hidden
@@ -155,11 +154,11 @@ on Windows. This keeps the symbol table clean.
 
 ```cmake
 cmake_minimum_required(VERSION 3.16)
-project(my_producer_plugin LANGUAGES C CXX)
+project(my_producer_native_engine LANGUAGES C CXX)
 
 # Find the pylabhub install prefix (or set manually)
 set(PYLABHUB_INCLUDE_DIR "/usr/local/include" CACHE PATH
-    "Path containing pylabhub/plugin_api.h")
+    "Path containing pylabhub/native_engine_api.h")
 
 add_library(my_producer MODULE
     my_producer.c      # or .cpp
@@ -180,12 +179,12 @@ set_target_properties(my_producer PROPERTIES
 If you prefer a plain Makefile or build script:
 
 ```bash
-# C plugin
+# C native engine
 gcc -std=c11 -shared -fPIC -fvisibility=hidden \
     -I/usr/local/include \
     -o libmy_producer.so my_producer.c
 
-# C++ plugin
+# C++ native engine
 g++ -std=c++17 -shared -fPIC -fvisibility=hidden \
     -I/usr/local/include \
     -o libmy_producer.so my_producer.cpp
@@ -193,7 +192,7 @@ g++ -std=c++17 -shared -fPIC -fvisibility=hidden \
 
 ### 4.4 Include path
 
-The only header you need is `<pylabhub/plugin_api.h>`. It has no transitive
+The only header you need is `<pylabhub/native_engine_api.h>`. It has no transitive
 dependencies -- it includes only `<stddef.h>` and `<stdint.h>` (plus
 `<type_traits>` in C++ mode). Point your include path at the directory
 containing the `pylabhub/` subdirectory.
@@ -206,13 +205,13 @@ containing the `pylabhub/` subdirectory.
 
 The framework verifies at load time that your compiled struct layout matches
 the JSON config schema. A mismatch (field order, type, padding) is a hard
-error -- the plugin will not load. This prevents subtle data corruption from
+error -- the native engine will not load. This prevents subtle data corruption from
 struct layout disagreements.
 
 ### 5.2 PLH_DECLARE_SCHEMA
 
 ```c
-#include <pylabhub/plugin_api.h>
+#include <pylabhub/native_engine_api.h>
 
 /* Your struct -- must be standard-layout (C-compatible). */
 #pragma pack(push, 1)  /* Use if packing="packed" in config */
@@ -225,8 +224,8 @@ typedef struct
 } SlotFrame;
 #pragma pack(pop)
 
-/* Declare the schema. The framework calls plugin_schema_SlotFrame()
-   and plugin_sizeof_SlotFrame() at load time. */
+/* Declare the schema. The framework calls native_schema_SlotFrame()
+   and native_sizeof_SlotFrame() at load time. */
 PLH_DECLARE_SCHEMA(SlotFrame,
     "timestamp:float64:1:0|ax:float32:1:0|ay:float32:1:0|az:float32:1:0",
     sizeof(SlotFrame))
@@ -273,7 +272,7 @@ natural C struct alignment (no pragma needed).
 
 ## 6. C++ Typed Access -- the Convenience Layer
 
-For C++ plugins, `plugin_api.h` provides zero-cost typed wrappers and export
+For C++ native engines, `native_engine_api.h` provides zero-cost typed wrappers and export
 macros that eliminate raw pointer casting.
 
 ### 6.1 plh::SlotRef and plh::ConstSlotRef
@@ -295,7 +294,7 @@ slot->timestamp = get_time();
 ### 6.2 Complete C++ producer example
 
 ```cpp
-#include <pylabhub/plugin_api.h>
+#include <pylabhub/native_engine_api.h>
 #include <cstdint>
 #include <cmath>
 
@@ -312,25 +311,25 @@ PLH_DECLARE_SCHEMA(SlotFrame,
     "timestamp:float64:1:0|value:float32:1:0|sequence:uint32:1:0",
     sizeof(SlotFrame))
 
-/* ----- Plugin state ---------------------------------------------------- */
+/* ----- Engine state ---------------------------------------------------- */
 
-static const PlhPluginContext *g_ctx = nullptr;
+static const PlhNativeContext *g_ctx = nullptr;
 static uint32_t g_seq = 0;
 
 extern "C" {
-PLH_EXPORT bool plugin_init(const PlhPluginContext *ctx)
+PLH_EXPORT bool native_init(const PlhNativeContext *ctx)
 {
     g_ctx = ctx;
     g_seq = 0;
     return true;
 }
-PLH_EXPORT void plugin_finalize(void) { g_ctx = nullptr; }
+PLH_EXPORT void native_finalize(void) { g_ctx = nullptr; }
 
-PLH_EXPORT const PlhAbiInfo *plugin_abi_info(void)
+PLH_EXPORT const PlhAbiInfo *native_abi_info(void)
 {
     static const PlhAbiInfo info = {
         sizeof(PlhAbiInfo), sizeof(void *), sizeof(size_t),
-        1, PLH_PLUGIN_API_VERSION
+        1, PLH_NATIVE_API_VERSION
     };
     return &info;
 }
@@ -368,7 +367,7 @@ PLH_EXPORT_PRODUCE_NOFZ(SlotFrame, my_produce)
 ### 6.3 Complete C++ consumer example
 
 ```cpp
-#include <pylabhub/plugin_api.h>
+#include <pylabhub/native_engine_api.h>
 #include <cstdio>
 
 struct SlotFrame
@@ -382,23 +381,23 @@ PLH_DECLARE_SCHEMA(SlotFrame,
     "timestamp:float64:1:0|value:float32:1:0|sequence:uint32:1:0",
     sizeof(SlotFrame))
 
-static const PlhPluginContext *g_ctx = nullptr;
+static const PlhNativeContext *g_ctx = nullptr;
 static uint64_t g_count = 0;
 
 extern "C" {
-PLH_EXPORT bool plugin_init(const PlhPluginContext *ctx)
+PLH_EXPORT bool native_init(const PlhNativeContext *ctx)
 {
     g_ctx = ctx;
     g_count = 0;
     return true;
 }
-PLH_EXPORT void plugin_finalize(void) {}
+PLH_EXPORT void native_finalize(void) {}
 
-PLH_EXPORT const PlhAbiInfo *plugin_abi_info(void)
+PLH_EXPORT const PlhAbiInfo *native_abi_info(void)
 {
     static const PlhAbiInfo info = {
         sizeof(PlhAbiInfo), sizeof(void *), sizeof(size_t),
-        1, PLH_PLUGIN_API_VERSION
+        1, PLH_NATIVE_API_VERSION
     };
     return &info;
 }
@@ -432,7 +431,7 @@ PLH_EXPORT_CONSUME_NOFZ(SlotFrame, my_consume)
 ### 6.4 Complete C++ processor example
 
 ```cpp
-#include <pylabhub/plugin_api.h>
+#include <pylabhub/native_engine_api.h>
 #include <cmath>
 
 /* ----- Input schema ---------------------------------------------------- */
@@ -460,26 +459,26 @@ PLH_DECLARE_SCHEMA(OutSlotFrame,
     "timestamp:float64:1:0|filtered_value:float32:1:0|gain:float32:1:0",
     sizeof(OutSlotFrame))
 
-/* ----- Plugin state ---------------------------------------------------- */
+/* ----- Engine state ---------------------------------------------------- */
 
-static const PlhPluginContext *g_ctx = nullptr;
+static const PlhNativeContext *g_ctx = nullptr;
 static float g_gain = 1.0f;
 
 extern "C" {
-PLH_EXPORT bool plugin_init(const PlhPluginContext *ctx)
+PLH_EXPORT bool native_init(const PlhNativeContext *ctx)
 {
     g_ctx = ctx;
     return true;
 }
-PLH_EXPORT void plugin_finalize(void) {}
+PLH_EXPORT void native_finalize(void) {}
 PLH_EXPORT void on_init(void) {}
 PLH_EXPORT void on_stop(void) {}
 
-PLH_EXPORT const PlhAbiInfo *plugin_abi_info(void)
+PLH_EXPORT const PlhAbiInfo *native_abi_info(void)
 {
     static const PlhAbiInfo info = {
         sizeof(PlhAbiInfo), sizeof(void *), sizeof(size_t),
-        1, PLH_PLUGIN_API_VERSION
+        1, PLH_NATIVE_API_VERSION
     };
     return &info;
 }
@@ -588,10 +587,10 @@ C++ wrapper: `ctx.set_critical_error();`
 
 At load time the framework:
 
-1. Calls `plugin_schema_SlotFrame()` (or the appropriate name for your role)
+1. Calls `native_schema_SlotFrame()` (or the appropriate name for your role)
 2. Parses the canonical schema string
 3. Compares field names, types, counts, and lengths against the JSON config
-4. Calls `plugin_sizeof_SlotFrame()` and compares against the computed size
+4. Calls `native_sizeof_SlotFrame()` and compares against the computed size
 
 Any mismatch is a hard error -- the role will not start. This catches:
 - Struct padding differences (aligned vs packed)
@@ -600,7 +599,7 @@ Any mismatch is a hard error -- the role will not start. This catches:
 
 ### 8.2 ABI verification
 
-`plugin_abi_info()` returns a `PlhAbiInfo` struct. The framework checks:
+`native_abi_info()` returns a `PlhAbiInfo` struct. The framework checks:
 
 | Field | Host expects |
 |-------|-------------|
@@ -608,16 +607,16 @@ Any mismatch is a hard error -- the role will not start. This catches:
 | `sizeof_void_ptr` | Same as host (4 or 8) -- catches 32/64-bit mismatch |
 | `sizeof_size_t` | Same as host |
 | `byte_order` | Same as host |
-| `api_version` | `PLH_PLUGIN_API_VERSION` -- catches stale headers |
+| `api_version` | `PLH_NATIVE_API_VERSION` -- catches stale headers |
 
-Implement `plugin_abi_info()` in every plugin. Without it, the framework
+Implement `native_abi_info()` in every native engine. Without it, the framework
 skips ABI checks and you risk silent data corruption on architecture mismatch.
 
 ### 8.3 Checksum
 
 The `script.checksum` field holds a BLAKE2b-256 hash of the `.so`/`.dll` file.
 At load time the framework computes the hash of the loaded library and compares
-it against this value. A mismatch prevents the plugin from loading, guarding
+it against this value. A mismatch prevents the native engine from loading, guarding
 against accidental deployment of the wrong binary.
 
 ```json
@@ -634,27 +633,27 @@ field (`"enforced"`, `"manual"`, or `"none"`).
 ### 9.1 Default: single-threaded callbacks
 
 By default, the framework calls data callbacks (`on_produce`, `on_consume`,
-`on_process`) from a single thread. No locking is needed in your plugin
+`on_process`) from a single thread. No locking is needed in your native engine
 for these callbacks.
 
-### 9.2 plugin_is_thread_safe()
+### 9.2 native_is_thread_safe()
 
 ```c
-PLH_EXPORT bool plugin_is_thread_safe(void) { return false; }
+PLH_EXPORT bool native_is_thread_safe(void) { return false; }
 ```
 
 `on_heartbeat()` always runs from the **control thread** (`ctrl_thread_`),
 concurrently with data callbacks on the data thread. The framework does **not**
 serialize `on_heartbeat()` with data callbacks regardless of the
-`plugin_is_thread_safe()` return value.
+`native_is_thread_safe()` return value.
 
-If your plugin accesses shared state from both `on_heartbeat()` and
+If your native engine accesses shared state from both `on_heartbeat()` and
 `on_produce`/`on_consume`/`on_process`, you **must** use appropriate
 synchronization (atomics, mutexes) to ensure thread safety.
 
 ### 9.3 on_inbox threading
 
-`on_inbox()` is called from the inbox thread. If your plugin accesses shared
+`on_inbox()` is called from the inbox thread. If your native engine accesses shared
 state from both `on_inbox` and data callbacks, you must synchronize access.
 
 ---
@@ -666,7 +665,7 @@ state from both `on_inbox` and data callbacks, you must synchronize access.
 A control role sends tuning parameters to a running producer:
 
 ```cpp
-#include <pylabhub/plugin_api.h>
+#include <pylabhub/native_engine_api.h>
 #include <atomic>
 #include <cstring>
 
@@ -678,41 +677,41 @@ PLH_DECLARE_SCHEMA(SlotFrame,
 PLH_DECLARE_SCHEMA(InboxFrame,
     "cmd:int32:1:0|gain:float32:1:0", sizeof(InboxFrame))
 
-static const PlhPluginContext *g_ctx = nullptr;
+static const PlhNativeContext *g_ctx = nullptr;
 static std::atomic<float> g_gain{1.0f};
 
 extern "C" {
 
-PLH_EXPORT bool plugin_init(const PlhPluginContext *ctx)
+PLH_EXPORT bool native_init(const PlhNativeContext *ctx)
 {
     g_ctx = ctx;
     return true;
 }
-PLH_EXPORT void plugin_finalize(void) {}
+PLH_EXPORT void native_finalize(void) {}
 PLH_EXPORT void on_init(void) {}
 PLH_EXPORT void on_stop(void) {}
 
-PLH_EXPORT const PlhAbiInfo *plugin_abi_info(void)
+PLH_EXPORT const PlhAbiInfo *native_abi_info(void)
 {
     static const PlhAbiInfo info = {
         sizeof(PlhAbiInfo), sizeof(void *), sizeof(size_t),
-        1, PLH_PLUGIN_API_VERSION
+        1, PLH_NATIVE_API_VERSION
     };
     return &info;
 }
 
-PLH_EXPORT void on_inbox(const void *data, size_t sz, const char *sender_uid)
+PLH_EXPORT void on_inbox(const plh_inbox_msg_t *msg)
 {
-    plh::ConstSlotRef<InboxFrame> msg(data, sz);
-    if (!msg) return;
+    plh::ConstSlotRef<InboxFrame> frame(msg->data, msg->data_size);
+    if (!frame) return;
 
-    if (msg->cmd == 1)   /* SET_GAIN */
+    if (frame->cmd == 1)   /* SET_GAIN */
     {
-        g_gain.store(msg->gain, std::memory_order_relaxed);
+        g_gain.store(frame->gain, std::memory_order_relaxed);
 
         char buf[128];
         snprintf(buf, sizeof(buf), "Gain updated to %.3f by %s",
-                 msg->gain, sender_uid);
+                 frame->gain, msg->sender_uid);
         g_ctx->log(g_ctx, PLH_LOG_INFO, buf);
     }
 }
@@ -737,8 +736,7 @@ thread. Use `std::atomic` for shared state.
 ### 10.2 Periodic metrics reporting
 
 ```c
-PLH_EXPORT bool on_produce(void *out, size_t out_sz,
-                           void *fz, size_t fz_sz)
+PLH_EXPORT bool on_produce(const plh_tx_t *tx)
 {
     static uint64_t total = 0;
     /* ... fill slot ... */
@@ -755,10 +753,9 @@ PLH_EXPORT bool on_produce(void *out, size_t out_sz,
 ### 10.3 Graceful shutdown on error
 
 ```c
-PLH_EXPORT bool on_produce(void *out, size_t out_sz,
-                           void *fz, size_t fz_sz)
+PLH_EXPORT bool on_produce(const plh_tx_t *tx)
 {
-    int err = read_hardware(out, out_sz);
+    int err = read_hardware(tx->slot, tx->slot_size);
     if (err == HW_FATAL)
     {
         g_ctx->log(g_ctx, PLH_LOG_ERROR, "Hardware fatal error, requesting stop");
@@ -776,20 +773,20 @@ PLH_EXPORT bool on_produce(void *out, size_t out_sz,
 
 ---
 
-## 11. Plugin Lifecycle Summary
+## 11. Native Engine Lifecycle Summary
 
 ```
 dlopen(library)
   |
   v
-plugin_abi_info()       -- ABI check (pointer size, endianness, API version)
+native_abi_info()       -- ABI check (pointer size, endianness, API version)
   |
   v
-plugin_schema_*()       -- Schema check (struct layout vs JSON config)
-plugin_sizeof_*()
+native_schema_*()       -- Schema check (struct layout vs JSON config)
+native_sizeof_*()
   |
   v
-plugin_init(ctx)        -- One-time initialization; return false to abort
+native_init(ctx)        -- One-time initialization; return false to abort
   |
   v
 on_init()               -- Role is registered with broker, data plane ready
@@ -803,7 +800,7 @@ on_init()               -- Role is registered with broker, data plane ready
 on_stop()               -- Role is shutting down, last chance to flush
   |
   v
-plugin_finalize()       -- Release all resources; no framework calls after this
+native_finalize()       -- Release all resources; no framework calls after this
   |
   v
 dlclose(library)
@@ -815,7 +812,7 @@ dlclose(library)
 
 | Topic | Document |
 |-------|----------|
-| Native plugin API specification | `HEP-CORE-0028` |
+| Native engine API specification | `HEP-CORE-0028` |
 | Getting started with pyLabHub | `README_GettingStarted.md` |
 | Full config field reference | `README_Deployment.md` |
 | Embedded C++ API (linking against pylabhub-utils) | `README_EmbeddedAPI.md` |

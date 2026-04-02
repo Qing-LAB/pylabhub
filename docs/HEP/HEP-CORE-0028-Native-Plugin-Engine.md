@@ -2,7 +2,7 @@
 
 **Status**: Implemented (documenting existing system)
 **Created**: 2026-03-30
-**Scope**: NativeEngine, plugin_api.h, C/C++ plugin lifecycle, ABI verification, schema validation
+**Scope**: NativeEngine, native_engine_api.h, C/C++ native engine lifecycle, ABI verification, schema validation
 
 ---
 
@@ -20,12 +20,12 @@ but they impose inherent costs:
   constrains throughput in multi-threaded scenarios.
 - **Existing C/C++ codebases**: Scientific instruments often ship vendor libraries with
   C APIs. Wrapping them in Python ctypes or Lua FFI adds complexity and a fragile
-  abstraction layer. A native plugin can call vendor APIs directly.
+  abstraction layer. A native engine can call vendor APIs directly.
 
 The Native Plugin Engine eliminates these costs by loading compiled shared libraries
-(.so/.dll/.dylib) and dispatching callbacks as direct function pointer calls. The plugin
-receives raw slot pointers — the same memory the framework uses internally — with zero
-copy, zero conversion, and deterministic call overhead (one indirect call per callback).
+(.so/.dll/.dylib) and dispatching callbacks as direct function pointer calls. The native
+engine receives raw slot pointers — the same memory the framework uses internally — with
+zero copy, zero conversion, and deterministic call overhead (one indirect call per callback).
 
 ---
 
@@ -40,7 +40,7 @@ copy, zero conversion, and deterministic call overhead (one indirect call per ca
 │  RoleHostCore                                          │
 │  ├─ NativeEngine (ScriptEngine subclass)               │
 │  │   ├─ dlopen(plugin.so)                              │
-│  │   ├─ resolve symbols: plugin_init, on_produce, ...  │
+│  │   ├─ resolve symbols: native_init, on_produce, ...  │
 │  │   ├─ verify ABI (PlhAbiInfo)                        │
 │  │   ├─ verify file checksum (BLAKE2b-256)             │
 │  │   ├─ verify schema (canonical string + sizeof)      │
@@ -54,32 +54,32 @@ copy, zero conversion, and deterministic call overhead (one indirect call per ca
          │ dlopen / LoadLibrary
          ▼
 ┌────────────────────────────────────────────────────────┐
-│  Plugin shared library (plugin.so / plugin.dll)        │
+│  Native engine shared library (plugin.so / plugin.dll) │
 │                                                        │
-│  PLH_EXPORT bool plugin_init(const PlhPluginContext*)  │
-│  PLH_EXPORT void plugin_finalize(void)                 │
+│  PLH_EXPORT bool native_init(const PlhNativeContext*)  │
+│  PLH_EXPORT void native_finalize(void)                 │
 │  PLH_EXPORT bool on_produce(void*, size_t, void*,      │
 │                             size_t)                    │
-│  PLH_EXPORT const PlhAbiInfo* plugin_abi_info(void)    │
+│  PLH_EXPORT const PlhAbiInfo* native_abi_info(void)    │
 │  PLH_DECLARE_SCHEMA(SlotFrame, "ts:float64:1:0|...",   │
 │                     sizeof(MySlot))                    │
 └────────────────────────────────────────────────────────┘
 ```
 
-NativeEngine is a concrete subclass of `ScriptEngine` (HEP-CORE-0011). It participates
-in the same lifecycle as PythonEngine and LuaEngine: `initialize()` -> `load_script()` ->
+NativeEngine is a concrete subclass of `ScriptEngine` (HEP-CORE-0011). It participates in
+the same lifecycle as PythonEngine and LuaEngine: `initialize()` -> `load_script()` ->
 `build_api()` -> `invoke_on_init()` -> data loop -> `invoke_on_stop()` -> `finalize()`.
 
 ### 2.2 Key Design Decisions
 
 | Decision | Rationale |
 |----------|-----------|
-| C linkage for all plugin symbols | ABI stability across compilers (GCC, Clang, MSVC) |
+| C linkage for all exported symbols | ABI stability across compilers (GCC, Clang, MSVC) |
 | dlopen with RTLD_NOW \| RTLD_LOCAL | Eager symbol resolution; isolated namespace prevents symbol collision |
 | Function pointers resolved once at load | Zero per-call overhead; null check gates optional callbacks |
-| PlhPluginContext passed at init only | Plugin stores context; no per-callback context parameter overhead |
-| Framework helpers via function pointers on PlhPluginContext | Plugin calls back into the framework through ctx->fn(ctx, ...) — no host symbol resolution or -rdynamic needed |
-| Optional C++ convenience layer | Zero-cost wrappers (SlotRef, PLH_EXPORT_PRODUCE) for C++ plugin authors |
+| PlhNativeContext passed at init only | Native engine stores context; no per-callback context parameter overhead |
+| Framework helpers via function pointers on PlhNativeContext | Native engine calls back into the framework through ctx->fn(ctx, ...) — no host symbol resolution or -rdynamic needed |
+| Optional C++ convenience layer | Zero-cost wrappers (SlotRef, PLH_EXPORT_PRODUCE) for C++ native engine authors |
 
 ### 2.3 Relationship to Other Components
 
@@ -87,13 +87,13 @@ in the same lifecycle as PythonEngine and LuaEngine: `initialize()` -> `load_scr
 |-----------|-------------|
 | ScriptEngine | NativeEngine implements the full ScriptEngine interface (HEP-CORE-0011) |
 | PythonEngine / LuaEngine | Peer implementations. Role host selects engine based on `script.type` |
-| RoleHostCore | Provides metrics counters, shutdown flags; passed as opaque `void* core` in PlhPluginContext |
-| plugin_api.h | The plugin-side contract. Installed as a public header (`pylabhub/plugin_api.h`) |
+| RoleHostCore | Provides metrics counters, shutdown flags; passed as opaque `void* core` in PlhNativeContext |
+| native_engine_api.h | The native engine contract. Installed as a public header (`pylabhub/native_engine_api.h`) |
 | ScriptConfig | Parses `script.type`, `script.path`, `script.checksum` |
 
 ---
 
-## 3. Plugin Lifecycle
+## 3. Native Engine Lifecycle
 
 ### 3.1 Load Sequence
 
@@ -105,20 +105,20 @@ in the same lifecycle as PythonEngine and LuaEngine: `initialize()` -> `load_scr
    a. Resolve library path (resolve_native_library search order)
    b. File integrity check (BLAKE2b-256 if checksum configured)
    c. dlopen(path, RTLD_NOW | RTLD_LOCAL)
-   d. ABI check (plugin_abi_info → PlhAbiInfo validation)
-   e. Resolve required symbols: plugin_init, plugin_finalize
+   d. ABI check (native_abi_info → PlhAbiInfo validation)
+   e. Resolve required symbols: native_init, native_finalize
    f. Resolve optional callback symbols: on_produce, on_consume, on_process,
       on_init, on_stop, on_inbox, on_heartbeat
-   g. Resolve metadata symbols: plugin_name, plugin_version, plugin_is_thread_safe
+   g. Resolve metadata symbols: native_name, native_version, native_is_thread_safe
    h. Verify required_callback is present (e.g., "on_produce" for producer)
 5. engine->register_slot_type(spec, type_name, packing):
    a. Compute canonical schema string from config
-   b. Resolve plugin_schema_<type_name> → compare canonical strings
-   c. Resolve plugin_sizeof_<type_name> → store for type_sizeof queries
+   b. Resolve native_schema_<type_name> → compare canonical strings
+   c. Resolve native_sizeof_<type_name> → store for type_sizeof queries
 6. engine->build_api(ctx):
-   a. Populate PluginContextStorage from RoleContext
-   b. Wire string pointers into PlhPluginContext struct
-   c. Call plugin_init(&ctx)
+   a. Populate NativeContextStorage from RoleContext
+   b. Wire string pointers into PlhNativeContext struct
+   c. Call native_init(&ctx)
    d. Set accepting_ = true on success
 7. engine->invoke_on_init()                    — call on_init() if exported
 8. [data loop: invoke_produce / invoke_consume / invoke_process]
@@ -130,28 +130,28 @@ in the same lifecycle as PythonEngine and LuaEngine: `initialize()` -> `load_scr
 1. engine->stop_accepting()                    — blocks non-owner invoke()
 2. engine->invoke_on_stop()                    — call on_stop() if exported
 3. engine->finalize():
-   a. Call plugin_finalize()
-   b. Reset PluginContextStorage
+   a. Call native_finalize()
+   b. Reset NativeContextStorage
    c. dlclose(handle)
    d. Clear all function pointers
 ```
 
 ### 3.3 Destructor Safety
 
-If `finalize()` was not called (abnormal path), the destructor calls `plugin_finalize()`
+If `finalize()` was not called (abnormal path), the destructor calls `native_finalize()`
 and `dlclose()` as a safety net. This ensures resources are released even on exception
 unwind.
 
 ---
 
-## 4. Plugin API (plugin_api.h)
+## 4. Native Engine API (native_engine_api.h)
 
-### 4.1 PlhPluginContext
+### 4.1 PlhNativeContext
 
 ```c
-typedef struct PlhPluginContext
+typedef struct PlhNativeContext
 {
-    /* ── Identity (read-only, valid until plugin_finalize) ──────────── */
+    /* ── Identity (read-only, valid until native_finalize) ──────────── */
     const char *role_tag;      /* "prod", "cons", or "proc" */
     const char *uid;           /* Role UID */
     const char *name;          /* Role name */
@@ -161,41 +161,41 @@ typedef struct PlhPluginContext
     const char *role_dir;      /* Role directory path */
 
     /* ── Framework API (function pointers filled by host) ──────────── */
-    void (*log)(const struct PlhPluginContext *ctx, int level, const char *msg);
-    void (*report_metric)(const struct PlhPluginContext *ctx,
+    void (*log)(const struct PlhNativeContext *ctx, int level, const char *msg);
+    void (*report_metric)(const struct PlhNativeContext *ctx,
                           const char *key, double value);
-    void (*clear_custom_metrics)(const struct PlhPluginContext *ctx);
-    void (*request_stop)(const struct PlhPluginContext *ctx);
-    void (*set_critical_error)(const struct PlhPluginContext *ctx);
-    int  (*is_critical_error)(const struct PlhPluginContext *ctx);
-    const char *(*stop_reason)(const struct PlhPluginContext *ctx);
-    uint64_t (*out_written)(const struct PlhPluginContext *ctx);
-    uint64_t (*in_received)(const struct PlhPluginContext *ctx);
-    uint64_t (*drops)(const struct PlhPluginContext *ctx);
-    uint64_t (*script_errors)(const struct PlhPluginContext *ctx);
-    uint64_t (*loop_overrun_count)(const struct PlhPluginContext *ctx);
-    uint64_t (*last_cycle_work_us)(const struct PlhPluginContext *ctx);
+    void (*clear_custom_metrics)(const struct PlhNativeContext *ctx);
+    void (*request_stop)(const struct PlhNativeContext *ctx);
+    void (*set_critical_error)(const struct PlhNativeContext *ctx);
+    int  (*is_critical_error)(const struct PlhNativeContext *ctx);
+    const char *(*stop_reason)(const struct PlhNativeContext *ctx);
+    uint64_t (*out_written)(const struct PlhNativeContext *ctx);
+    uint64_t (*in_received)(const struct PlhNativeContext *ctx);
+    uint64_t (*drops)(const struct PlhNativeContext *ctx);
+    uint64_t (*script_errors)(const struct PlhNativeContext *ctx);
+    uint64_t (*loop_overrun_count)(const struct PlhNativeContext *ctx);
+    uint64_t (*last_cycle_work_us)(const struct PlhNativeContext *ctx);
 
     /* ── Opaque host data (do not dereference) ────────────────────── */
     void *_core;               /* Internal — RoleHostCore pointer for API implementations */
     const char *_log_label;    /* Internal — log prefix e.g. "[native libfoo.so]" */
-} PlhPluginContext;
+} PlhNativeContext;
 ```
 
-All strings are null-terminated UTF-8. String pointers are valid from `plugin_init()`
-until `plugin_finalize()`. Framework services are accessed through the function pointers
-on the context struct — the plugin passes `ctx` as the first argument to each call
+All strings are null-terminated UTF-8. String pointers are valid from `native_init()`
+until `native_finalize()`. Framework services are accessed through the function pointers
+on the context struct — the native engine passes `ctx` as the first argument to each call
 (e.g., `ctx->log(ctx, PLH_LOG_INFO, "message")`). The `_core` and `_log_label` fields
-are internal to the host and must not be accessed by plugin code.
+are internal to the host and must not be accessed by native engine code.
 
 ### 4.2 Required Symbols
 
-Every plugin must export these two symbols:
+Every native engine must export these two symbols:
 
 | Symbol | Signature | Description |
 |--------|-----------|-------------|
-| `plugin_init` | `bool plugin_init(const PlhPluginContext *ctx)` | Initialize the plugin. Return false to abort role startup. |
-| `plugin_finalize` | `void plugin_finalize(void)` | Release all resources. No framework calls after this. |
+| `native_init` | `bool native_init(const PlhNativeContext *ctx)` | Initialize the native engine. Return false to abort role startup. |
+| `native_finalize` | `void native_finalize(void)` | Release all resources. No framework calls after this. |
 
 ### 4.3 ABI Compatibility: PlhAbiInfo
 
@@ -206,26 +206,26 @@ typedef struct PlhAbiInfo
     uint32_t sizeof_void_ptr;   /* sizeof(void*) — 4 or 8 */
     uint32_t sizeof_size_t;     /* sizeof(size_t) */
     uint32_t byte_order;        /* 1 = little-endian, 2 = big-endian */
-    uint32_t api_version;       /* PLH_PLUGIN_API_VERSION */
+    uint32_t api_version;       /* PLH_NATIVE_API_VERSION */
 } PlhAbiInfo;
 
-#define PLH_PLUGIN_API_VERSION 1
+#define PLH_NATIVE_API_VERSION 1
 ```
 
-The plugin exports `plugin_abi_info()` returning a pointer to a static `PlhAbiInfo`.
+The native engine exports `native_abi_info()` returning a pointer to a static `PlhAbiInfo`.
 The framework validates at load time:
 
 | Check | Failure Mode |
 |-------|-------------|
-| `struct_size >= sizeof(PlhAbiInfo)` | Plugin compiled with older header (missing fields) |
+| `struct_size >= sizeof(PlhAbiInfo)` | Native engine compiled with older header (missing fields) |
 | `sizeof_void_ptr == sizeof(void*)` | 32/64-bit mismatch |
 | `sizeof_size_t == sizeof(size_t)` | size_t width mismatch |
 | `byte_order == host_byte_order` | Endianness mismatch (or 0 = don't care) |
-| `api_version == PLH_PLUGIN_API_VERSION` | Breaking API change between plugin and host |
+| `api_version == PLH_NATIVE_API_VERSION` | Breaking API change between native engine and host |
 
-Any mismatch is a hard error: the plugin is rejected, dlclose is called, and role
-startup aborts. If `plugin_abi_info` is not exported, the check is skipped with a
-warning (permissive mode for legacy plugins).
+Any mismatch is a hard error: the native engine is rejected, dlclose is called, and role
+startup aborts. If `native_abi_info` is not exported, the check is skipped with a
+warning (permissive mode for legacy native engines).
 
 ### 4.4 Role Callback Symbols
 
@@ -253,9 +253,9 @@ If the function pointer is NULL (symbol not exported), the framework returns
 
 | Symbol | Signature | Description |
 |--------|-----------|-------------|
-| `plugin_name` | `const char *plugin_name(void)` | Human-readable name for logging |
-| `plugin_version` | `const char *plugin_version(void)` | Version string for logging |
-| `plugin_is_thread_safe` | `bool plugin_is_thread_safe(void)` | Controls multi-state behavior (see section 9) |
+| `native_name` | `const char *native_name(void)` | Human-readable name for logging |
+| `native_version` | `const char *native_version(void)` | Version string for logging |
+| `native_is_thread_safe` | `bool native_is_thread_safe(void)` | Controls multi-state behavior (see section 9) |
 
 ### 4.6 Schema Validation Macros
 
@@ -264,8 +264,8 @@ If the function pointer is NULL (symbol not exported), the framework returns
 ```
 
 Generates two symbols:
-- `plugin_schema_<Name>()` -> canonical schema string
-- `plugin_sizeof_<Name>()` -> sizeof the plugin's compiled struct
+- `native_schema_<Name>()` -> canonical schema string
+- `native_sizeof_<Name>()` -> sizeof the native engine's compiled struct
 
 **Name** must match one of the registered type names:
 
@@ -289,12 +289,12 @@ PLH_DECLARE_SCHEMA(SlotFrame,
 The framework computes the same canonical string from the JSON config's schema fields
 and compares them at load time. Mismatch is a hard error.
 
-### 4.7 Framework API (Function Pointers on PlhPluginContext)
+### 4.7 Framework API (Function Pointers on PlhNativeContext)
 
-Framework services are accessed through function pointers on the `PlhPluginContext`
-struct. The host fills these pointers before calling `plugin_init()`. Every function
-takes `const PlhPluginContext *ctx` as its first argument — the plugin simply passes
-its stored context pointer through.
+Framework services are accessed through function pointers on the `PlhNativeContext`
+struct. The host fills these pointers before calling `native_init()`. Every function
+takes `const PlhNativeContext *ctx` as its first argument — the native engine simply
+passes its stored context pointer through.
 
 **Calling pattern:**
 
@@ -320,14 +320,14 @@ ctx->request_stop(ctx);
 | `ctx->loop_overrun_count` | `uint64_t (*)(ctx)` | Loop timing overrun count. |
 | `ctx->last_cycle_work_us` | `uint64_t (*)(ctx)` | Work duration of last iteration in microseconds. |
 
-All function pointers are null-safe on the host side. The plugin should check for NULL
-before calling if it needs to be defensive, though the host always fills all pointers.
+All function pointers are null-safe on the host side. The native engine should check for
+NULL before calling if it needs to be defensive, though the host always fills all pointers.
 
 ---
 
 ## 5. C++ Convenience Layer
 
-The C++ convenience layer is available when `plugin_api.h` is included from a C++
+The C++ convenience layer is available when `native_engine_api.h` is included from a C++
 translation unit. It provides zero-cost abstractions over the raw C API.
 
 ### 5.1 SlotRef\<T\> and ConstSlotRef\<T\>
@@ -374,10 +374,10 @@ These wrap raw `void*` pointers with type-safe access and a validity check. The
 These macros generate the C-linkage `on_produce`/`on_consume`/`on_process` symbols and
 wrap the raw pointers in typed SlotRef/ConstSlotRef before calling the user's function.
 
-### 5.3 Example: C++ Producer Plugin
+### 5.3 Example: C++ Producer Native Engine
 
 ```cpp
-#include <pylabhub/plugin_api.h>
+#include <pylabhub/native_engine_api.h>
 
 struct MySlot {
     double   timestamp;
@@ -389,22 +389,22 @@ PLH_DECLARE_SCHEMA(SlotFrame,
     "timestamp:float64:1:0|temperature:float32:1:0|status:uint8:1:0",
     sizeof(MySlot))
 
-static const PlhPluginContext *g_ctx = nullptr;
+static const PlhNativeContext *g_ctx = nullptr;
 
-PLH_EXPORT bool plugin_init(const PlhPluginContext *ctx) {
+PLH_EXPORT bool native_init(const PlhNativeContext *ctx) {
     g_ctx = ctx;
     ctx->log(ctx, PLH_LOG_INFO, "MyProducer initialized");
     return true;
 }
 
-PLH_EXPORT void plugin_finalize(void) {
+PLH_EXPORT void native_finalize(void) {
     g_ctx = nullptr;
 }
 
-PLH_EXPORT const PlhAbiInfo *plugin_abi_info(void) {
+PLH_EXPORT const PlhAbiInfo *native_abi_info(void) {
     static PlhAbiInfo info = {
         sizeof(PlhAbiInfo), sizeof(void*), sizeof(size_t), 1,
-        PLH_PLUGIN_API_VERSION
+        PLH_NATIVE_API_VERSION
     };
     return &info;
 }
@@ -427,8 +427,8 @@ PLH_EXPORT void on_stop(void) {}
 
 ## 6. Three-Layer Verification
 
-NativeEngine applies three independent verification layers before the plugin's
-`plugin_init()` is called. All checks are performed during `load_script()`.
+NativeEngine applies three independent verification layers before the native engine's
+`native_init()` is called. All checks are performed during `load_script()`.
 
 ### 6.1 Layer 1: File Integrity (BLAKE2b-256)
 
@@ -439,41 +439,41 @@ When `script.checksum` is present in the JSON config, the framework:
 3. Converts to lowercase hex string (64 characters)
 4. Compares against the configured checksum
 
-Mismatch is a hard error: plugin is not loaded, role startup aborts.
+Mismatch is a hard error: native engine is not loaded, role startup aborts.
 
 If `script.checksum` is absent or empty, this check is skipped. This allows development
-workflows where the plugin is recompiled frequently. Production deployments should always
-set the checksum.
+workflows where the native engine is recompiled frequently. Production deployments should
+always set the checksum.
 
 ### 6.2 Layer 2: ABI Compatibility (PlhAbiInfo)
 
-After dlopen succeeds, the framework resolves `plugin_abi_info` and validates the
+After dlopen succeeds, the framework resolves `native_abi_info` and validates the
 returned `PlhAbiInfo` struct (see section 4.3). This catches:
 
-- 32/64-bit mismatches (e.g., loading a 32-bit plugin in a 64-bit host)
-- Endianness mismatches (cross-compiled plugins)
-- API version skew (plugin compiled against an older/newer plugin_api.h)
+- 32/64-bit mismatches (e.g., loading a 32-bit native engine in a 64-bit host)
+- Endianness mismatches (cross-compiled native engines)
+- API version skew (native engine compiled against an older/newer native_engine_api.h)
 - Struct layout drift (struct_size guard)
 
-If `plugin_abi_info` is not exported, the check is skipped with a warning. This
-provides backward compatibility for plugins compiled before ABI checks were added.
+If `native_abi_info` is not exported, the check is skipped with a warning. This
+provides backward compatibility for native engines compiled before ABI checks were added.
 
 ### 6.3 Layer 3: Schema Compatibility
 
-During `register_slot_type()`, the framework validates that the plugin's compiled
+During `register_slot_type()`, the framework validates that the native engine's compiled
 struct matches the JSON config's schema:
 
 1. **Canonical schema string**: The framework computes `"name:type:count:length|..."`
-   from the config's `SchemaSpec` fields. If the plugin exports `plugin_schema_<Name>()`,
-   the strings are compared. Mismatch is a hard error.
+   from the config's `SchemaSpec` fields. If the native engine exports
+   `native_schema_<Name>()`, the strings are compared. Mismatch is a hard error.
 
-2. **sizeof validation**: If the plugin exports `plugin_sizeof_<Name>()`, the value
-   is stored for `type_sizeof()` queries. This allows the framework to detect padding
-   differences between the plugin's compiler and the host.
+2. **sizeof validation**: If the native engine exports `native_sizeof_<Name>()`, the
+   value is stored for `type_sizeof()` queries. This allows the framework to detect
+   padding differences between the native engine's compiler and the host.
 
-If the plugin does not export schema symbols for a given type name, the check is skipped
-with a warning. The plugin will still receive raw pointers at the correct offsets, but
-the framework cannot verify struct layout agreement.
+If the native engine does not export schema symbols for a given type name, the check is
+skipped with a warning. The native engine will still receive raw pointers at the correct
+offsets, but the framework cannot verify struct layout agreement.
 
 ---
 
@@ -534,7 +534,7 @@ is verified during the load sequence.
 
 ## 8. Directory Convention
 
-Native plugins follow the same directory structure as Python and Lua scripts:
+Native engines follow the same directory structure as Python and Lua scripts:
 
 ```
 <role_dir>/
@@ -545,7 +545,7 @@ Native plugins follow the same directory structure as Python and Lua scripts:
     ├── lua/
     │   └── init.lua
     └── native/
-        └── libmy_plugin.so      ← native plugin
+        └── libmy_plugin.so      ← native engine library
 ```
 
 The `script/native/` directory is the canonical location. The library filename is
@@ -569,20 +569,20 @@ owner thread (the data loop thread). The threading contract matches Python and L
 
 ### 9.2 Thread-Safe Mode
 
-If the plugin exports `plugin_is_thread_safe()` returning true, `supports_multi_state()`
-returns true. This signals to the framework that:
+If the native engine exports `native_is_thread_safe()` returning true,
+`supports_multi_state()` returns true. This signals to the framework that:
 
-- The plugin's callbacks are fully reentrant
+- The native engine's callbacks are fully reentrant
 - Generic `invoke()` calls from any thread are permitted
-- The plugin is responsible for its own internal synchronization
+- The native engine is responsible for its own internal synchronization
 
 This is the opposite of the scripted engines: Python queues cross-thread requests to
 the GIL-holding owner thread; Lua creates per-thread lua_State copies. A thread-safe
-native plugin needs neither mechanism.
+native engine needs neither mechanism.
 
 ### 9.3 release_thread()
 
-`release_thread()` is a no-op for NativeEngine. Native plugins manage their own
+`release_thread()` is a no-op for NativeEngine. Native engines manage their own
 thread-local resources (if any). The `ThreadEngineGuard` RAII helper still works
 correctly — its destructor calls `release_thread()` which simply returns.
 
@@ -597,19 +597,19 @@ The generic `invoke(name)` dispatches in two stages:
 1. Check named function pointers: `"on_heartbeat"` -> `fn_on_heartbeat_`
 2. Fall back to `dlsym(handle, name)` for arbitrary exported `void(*)(void)` symbols
 
-This allows plugins to export custom command handlers accessible via the broker's
+This allows native engines to export custom command handlers accessible via the broker's
 `INVOKE_REQ` protocol.
 
 ### 10.2 invoke(name, args)
 
-JSON arguments are not supported for native plugins. The call degrades to `invoke(name)`
-(args are ignored). Structured data exchange with native plugins should use the inbox
+JSON arguments are not supported for native engines. The call degrades to `invoke(name)`
+(args are ignored). Structured data exchange with native engines should use the inbox
 mechanism (HEP-CORE-0027) or custom framework helpers.
 
 ### 10.3 eval(code)
 
 `eval()` always returns `{InvokeStatus::NotFound, {}}`. Code evaluation is not
-applicable to compiled plugins.
+applicable to compiled native engines.
 
 ---
 
@@ -619,24 +619,24 @@ applicable to compiled plugins.
 
 | Error | Severity | Behavior |
 |-------|----------|----------|
-| Plugin file not found | Fatal | Role startup aborts |
-| Checksum mismatch | Fatal | Plugin not loaded; role startup aborts |
+| Library file not found | Fatal | Role startup aborts |
+| Checksum mismatch | Fatal | Native engine not loaded; role startup aborts |
 | dlopen failure | Fatal | Error logged with dlerror(); role startup aborts |
 | ABI check failure | Fatal | dlclose called; role startup aborts |
-| Missing plugin_init or plugin_finalize | Fatal | dlclose called; role startup aborts |
+| Missing native_init or native_finalize | Fatal | dlclose called; role startup aborts |
 | Missing required callback | Fatal | dlclose called; role startup aborts |
 | Schema string mismatch | Fatal | register_slot_type returns false; role startup aborts |
-| plugin_init returns false | Fatal | build_api returns false; role startup aborts |
+| native_init returns false | Fatal | build_api returns false; role startup aborts |
 
 ### 11.2 Runtime Errors
 
-Native plugin callbacks cannot "raise exceptions" in the script engine sense. If a
+Native engine callbacks cannot "raise exceptions" in the script engine sense. If a
 callback crashes (segfault, abort), the entire process dies. The framework provides
-`ctx->set_critical_error(ctx)` for the plugin to signal recoverable errors that should
-trigger graceful shutdown.
+`ctx->set_critical_error(ctx)` for the native engine to signal recoverable errors that
+should trigger graceful shutdown.
 
-`script_error_count()` delegates to `RoleHostCore::script_errors()`, which the plugin
-can increment indirectly via `ctx->set_critical_error(ctx)`.
+`script_error_count()` delegates to `RoleHostCore::script_errors()`, which the native
+engine can increment indirectly via `ctx->set_critical_error(ctx)`.
 
 ---
 
@@ -644,11 +644,11 @@ can increment indirectly via `ctx->set_critical_error(ctx)`.
 
 | Component | File | Description |
 |-----------|------|-------------|
-| Plugin C API | `src/include/utils/plugin_api.h` | C-linkage contract, PlhPluginContext, PlhAbiInfo, macros |
-| C++ convenience | `src/include/utils/plugin_api.h` | SlotRef, ConstSlotRef, PLH_EXPORT_* macros (C++ section) |
+| Native Engine C API | `src/include/utils/native_engine_api.h` | C-linkage contract, PlhNativeContext, PlhAbiInfo, macros |
+| C++ convenience | `src/include/utils/native_engine_api.h` | SlotRef, ConstSlotRef, PLH_EXPORT_* macros (C++ section) |
 | NativeEngine header | `src/scripting/native_engine.hpp` | ScriptEngine subclass declaration |
 | NativeEngine impl | `src/scripting/native_engine.cpp` | dlopen, symbol resolution, verification, dispatch |
-| Framework helpers | `src/scripting/native_engine.cpp` | Implementations backing ctx->log, ctx->report_metric, ctx->request_stop, etc. |
+| Framework helpers | `src/scripting/native_engine.cpp` | Implementations backing ctx->log, ctx->report_metric, etc. |
 | ScriptConfig | `src/include/utils/config/script_config.hpp` | type/path/checksum parsing, resolve_native_library |
 | ScriptEngine base | `src/include/utils/script_engine.hpp` | Abstract interface, RoleContext, InvokeResult |
 | Crypto utils | `src/include/utils/crypto_utils.hpp` | compute_blake2b_array for file checksum |

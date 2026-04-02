@@ -1,12 +1,12 @@
 /**
  * @file native_engine.cpp
- * @brief NativeEngine — ScriptEngine implementation for native C/C++ plugins.
+ * @brief NativeEngine — ScriptEngine implementation for native C/C++ shared libraries.
  *
  * Loads shared libraries via dlopen (POSIX) or LoadLibrary (Windows).
  * Resolves callback symbols at load time. Dispatches invoke calls as
  * direct function pointer calls with zero marshaling.
  *
- * See plugin_api.h for the plugin-side API.
+ * See native_engine_api.h for the native engine-side API.
  */
 #include "native_engine.hpp"
 
@@ -15,7 +15,7 @@
 #include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
 #include "utils/module_def.hpp"
-#include "utils/plugin_api.h"
+#include "utils/native_engine_api.h"
 #include "utils/role_host_core.hpp"
 
 #include <fstream>
@@ -24,7 +24,7 @@
 // ── Platform dynamic loading ────────────────────────────────────────────
 // Supports: Linux, macOS, FreeBSD (POSIX dlopen) and Windows (LoadLibrary).
 // RTLD_NOW: resolve all symbols at load time (fail-fast on missing symbols).
-// RTLD_LOCAL: don't pollute global symbol table (plugin is self-contained).
+// RTLD_LOCAL: don't pollute global symbol table (native engine is self-contained).
 #if defined(_WIN32) || defined(_WIN64)
 #   include <windows.h>
 #   define DL_OPEN(path)      LoadLibraryA(path)
@@ -60,7 +60,7 @@ namespace pylabhub::scripting
 namespace
 {
 
-void ctx_log(const PlhPluginContext *ctx, int level, const char *msg)
+void ctx_log(const PlhNativeContext *ctx, int level, const char *msg)
 {
     if (!msg) return;
     const char *label = (ctx && ctx->_log_label) ? ctx->_log_label : "[native]";
@@ -74,37 +74,37 @@ void ctx_log(const PlhPluginContext *ctx, int level, const char *msg)
     }
 }
 
-void ctx_report_metric(const PlhPluginContext *ctx, const char *key, double value)
+void ctx_report_metric(const PlhNativeContext *ctx, const char *key, double value)
 {
     if (!ctx || !ctx->_core || !key) return;
     static_cast<RoleHostCore *>(ctx->_core)->report_metric(key, value);
 }
 
-void ctx_clear_custom_metrics(const PlhPluginContext *ctx)
+void ctx_clear_custom_metrics(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_core) return;
     static_cast<RoleHostCore *>(ctx->_core)->clear_custom_metrics();
 }
 
-void ctx_request_stop(const PlhPluginContext *ctx)
+void ctx_request_stop(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_core) return;
     static_cast<RoleHostCore *>(ctx->_core)->request_stop();
 }
 
-void ctx_set_critical_error(const PlhPluginContext *ctx)
+void ctx_set_critical_error(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_core) return;
     static_cast<RoleHostCore *>(ctx->_core)->set_critical_error();
 }
 
-int ctx_is_critical_error(const PlhPluginContext *ctx)
+int ctx_is_critical_error(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_core) return 0;
     return static_cast<RoleHostCore *>(ctx->_core)->is_critical_error() ? 1 : 0;
 }
 
-const char *ctx_stop_reason(const PlhPluginContext *ctx)
+const char *ctx_stop_reason(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_core) return "normal";
     static thread_local std::string buf;
@@ -112,37 +112,37 @@ const char *ctx_stop_reason(const PlhPluginContext *ctx)
     return buf.c_str();
 }
 
-uint64_t ctx_out_written(const PlhPluginContext *ctx)
+uint64_t ctx_out_written(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_core) return 0;
     return static_cast<RoleHostCore *>(ctx->_core)->out_written();
 }
 
-uint64_t ctx_in_received(const PlhPluginContext *ctx)
+uint64_t ctx_in_received(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_core) return 0;
     return static_cast<RoleHostCore *>(ctx->_core)->in_received();
 }
 
-uint64_t ctx_drops(const PlhPluginContext *ctx)
+uint64_t ctx_drops(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_core) return 0;
     return static_cast<RoleHostCore *>(ctx->_core)->drops();
 }
 
-uint64_t ctx_script_errors(const PlhPluginContext *ctx)
+uint64_t ctx_script_errors(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_core) return 0;
     return static_cast<RoleHostCore *>(ctx->_core)->script_errors();
 }
 
-uint64_t ctx_loop_overrun_count(const PlhPluginContext *ctx)
+uint64_t ctx_loop_overrun_count(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_core) return 0;
     return static_cast<RoleHostCore *>(ctx->_core)->loop_overrun_count();
 }
 
-uint64_t ctx_last_cycle_work_us(const PlhPluginContext *ctx)
+uint64_t ctx_last_cycle_work_us(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_core) return 0;
     return static_cast<RoleHostCore *>(ctx->_core)->last_cycle_work_us();
@@ -151,14 +151,14 @@ uint64_t ctx_last_cycle_work_us(const PlhPluginContext *ctx)
 } // anonymous namespace
 
 // ============================================================================
-// PluginContextStorage — owns the C-linkage context strings
+// NativeContextStorage — owns the C-linkage context strings
 // ============================================================================
 
-struct NativeEngine::PluginContextStorage
+struct NativeEngine::NativeContextStorage
 {
-    PlhPluginContext ctx{};
+    PlhNativeContext ctx{};
 
-    // Storage for strings (PlhPluginContext holds pointers into these).
+    // Storage for strings (PlhNativeContext holds pointers into these).
     std::string role_tag;
     std::string uid;
     std::string name;
@@ -246,7 +246,7 @@ bool NativeEngine::load_script(const std::filesystem::path &script_dir,
         LOGGER_DEBUG("[{}] native: fallback path: {}", log_tag_, lib_path_.string());
         if (!std::filesystem::exists(lib_path_))
         {
-            LOGGER_ERROR("[{}] native plugin not found: {} (also tried: {})",
+            LOGGER_ERROR("[{}] native engine not found: {} (also tried: {})",
                          log_tag_, lib_path_.string(), (script_dir / entry_point).string());
             return false;
         }
@@ -273,12 +273,12 @@ bool NativeEngine::load_script(const std::filesystem::path &script_dir,
     }
 
     // ── Resolve required symbols ───────────────────────────────────
-    fn_init_     = reinterpret_cast<FnPluginInit>(resolve_sym_("plugin_init"));
-    fn_finalize_ = reinterpret_cast<FnPluginFinalize>(resolve_sym_("plugin_finalize"));
+    fn_init_     = reinterpret_cast<FnNativeInit>(resolve_sym_("native_init"));
+    fn_finalize_ = reinterpret_cast<FnNativeFinalize>(resolve_sym_("native_finalize"));
 
     if (!fn_init_ || !fn_finalize_)
     {
-        LOGGER_ERROR("[{}] plugin missing required symbols: plugin_init and/or plugin_finalize",
+        LOGGER_ERROR("[{}] native engine missing required symbols: native_init and/or native_finalize",
                      log_tag_);
         DL_CLOSE(dl_handle_);
         dl_handle_ = nullptr;
@@ -293,21 +293,21 @@ bool NativeEngine::load_script(const std::filesystem::path &script_dir,
     fn_on_process_    = reinterpret_cast<FnOnProcess>(resolve_sym_("on_process"));
     fn_on_inbox_      = reinterpret_cast<FnOnInbox>(resolve_sym_("on_inbox"));
     fn_on_heartbeat_  = reinterpret_cast<FnVoid>(resolve_sym_("on_heartbeat"));
-    fn_is_thread_safe_ = reinterpret_cast<FnBool>(resolve_sym_("plugin_is_thread_safe"));
+    fn_is_thread_safe_ = reinterpret_cast<FnBool>(resolve_sym_("native_is_thread_safe"));
 
     // ── Check required callback ────────────────────────────────────
     if (!required_callback.empty() && !has_callback(required_callback))
     {
-        LOGGER_ERROR("[{}] plugin missing required callback: {}", log_tag_, required_callback);
+        LOGGER_ERROR("[{}] native engine missing required callback: {}", log_tag_, required_callback);
         DL_CLOSE(dl_handle_);
         dl_handle_ = nullptr;
         return false;
     }
 
-    // Log plugin info.
-    auto fn_name = reinterpret_cast<FnCstr>(resolve_sym_("plugin_name"));
-    auto fn_ver  = reinterpret_cast<FnCstr>(resolve_sym_("plugin_version"));
-    LOGGER_INFO("[{}] native plugin loaded: {} v{} from {}",
+    // Log native engine info.
+    auto fn_name = reinterpret_cast<FnCstr>(resolve_sym_("native_name"));
+    auto fn_ver  = reinterpret_cast<FnCstr>(resolve_sym_("native_version"));
+    LOGGER_INFO("[{}] native engine loaded: {} v{} from {}",
                 log_tag_,
                 fn_name ? fn_name() : "(unnamed)",
                 fn_ver  ? fn_ver()  : "?",
@@ -317,33 +317,33 @@ bool NativeEngine::load_script(const std::filesystem::path &script_dir,
 }
 
 // ============================================================================
-// build_api_ — populate plugin context and call plugin_init
+// build_api_ — populate native engine context and call native_init
 // ============================================================================
 
 bool NativeEngine::build_api_(const RoleContext &ctx)
 {
-    plugin_ctx_ = std::make_unique<PluginContextStorage>();
-    plugin_ctx_->role_tag    = ctx.role_tag;
-    plugin_ctx_->uid         = ctx.uid;
-    plugin_ctx_->name        = ctx.name;
-    plugin_ctx_->channel     = ctx.channel;
-    plugin_ctx_->out_channel = ctx.out_channel;
-    plugin_ctx_->log_level   = ctx.log_level;
-    plugin_ctx_->log_label   = "[native " + lib_path_.filename().string() + "]";
-    plugin_ctx_->role_dir    = ctx.role_dir;
-    plugin_ctx_->wire(ctx_.core);
+    native_ctx_ = std::make_unique<NativeContextStorage>();
+    native_ctx_->role_tag    = ctx.role_tag;
+    native_ctx_->uid         = ctx.uid;
+    native_ctx_->name        = ctx.name;
+    native_ctx_->channel     = ctx.channel;
+    native_ctx_->out_channel = ctx.out_channel;
+    native_ctx_->log_level   = ctx.log_level;
+    native_ctx_->log_label   = "[native " + lib_path_.filename().string() + "]";
+    native_ctx_->role_dir    = ctx.role_dir;
+    native_ctx_->wire(ctx_.core);
 
-    if (!fn_init_(&plugin_ctx_->ctx))
+    if (!fn_init_(&native_ctx_->ctx))
     {
-        LOGGER_ERROR("[{}] plugin_init returned false", log_tag_);
+        LOGGER_ERROR("[{}] native_init returned false", log_tag_);
         return false;
     }
 
     // Register as a dynamic lifecycle module for timeout-guarded finalization.
     // The NativeEngine + external lib are one atomic unit:
-    //   startup  = already done (dlopen + plugin_init above)
-    //   shutdown = plugin_finalize + dlclose (timeout-guarded by lifecycle)
-    lifecycle_module_name_ = "NativePlugin:" + lib_path_.filename().string();
+    //   startup  = already done (dlopen + native_init above)
+    //   shutdown = native_finalize + dlclose (timeout-guarded by lifecycle)
+    lifecycle_module_name_ = "NativeEngine:" + lib_path_.filename().string();
     {
         pylabhub::utils::ModuleDef mod(lifecycle_module_name_.c_str());
         mod.add_dependency("Logger");  // log output during finalize
@@ -368,12 +368,12 @@ bool NativeEngine::build_api_(const RoleContext &ctx)
 
 void NativeEngine::finalize_engine_()
 {
-    // Call plugin's finalize before unloading.
+    // Call native engine's finalize before unloading.
     if (fn_finalize_)
         fn_finalize_();
     fn_finalize_ = nullptr;
 
-    plugin_ctx_.reset();
+    native_ctx_.reset();
 
     if (dl_handle_)
     {
@@ -420,7 +420,7 @@ bool NativeEngine::has_callback(const std::string &name) const
 }
 
 // ============================================================================
-// register_slot_type — validate schema against plugin's compiled struct
+// register_slot_type — validate schema against native engine's compiled struct
 // ============================================================================
 
 bool NativeEngine::register_slot_type(const SchemaSpec &spec,
@@ -433,35 +433,35 @@ bool NativeEngine::register_slot_type(const SchemaSpec &spec,
     // Compute expected canonical schema from config.
     std::string expected_schema = compute_canonical_schema_(spec);
 
-    // Check plugin's schema descriptor (if exported).
-    std::string sym_schema = "plugin_schema_" + type_name;
+    // Check native engine's schema descriptor (if exported).
+    std::string sym_schema = "native_schema_" + type_name;
     auto fn_schema = reinterpret_cast<FnSchemaDesc>(resolve_sym_(sym_schema.c_str()));
 
     if (fn_schema)
     {
-        const char *plugin_schema = fn_schema();
-        if (plugin_schema && expected_schema != plugin_schema)
+        const char *native_schema = fn_schema();
+        if (native_schema && expected_schema != native_schema)
         {
-            LOGGER_ERROR("[{}] schema mismatch for {}: config='{}', plugin='{}'",
-                         log_tag_, type_name, expected_schema, plugin_schema);
+            LOGGER_ERROR("[{}] schema mismatch for {}: config='{}', native engine='{}'",
+                         log_tag_, type_name, expected_schema, native_schema);
             return false;
         }
     }
     else
     {
-        LOGGER_WARN("[{}] plugin does not export {} — skipping schema validation for {}",
+        LOGGER_WARN("[{}] native engine does not export {} — skipping schema validation for {}",
                     log_tag_, sym_schema, type_name);
     }
 
-    // Check plugin's sizeof (if exported).
-    std::string sym_sizeof = "plugin_sizeof_" + type_name;
+    // Check native engine's sizeof (if exported).
+    std::string sym_sizeof = "native_sizeof_" + type_name;
     auto fn_sz = reinterpret_cast<FnSizeof>(resolve_sym_(sym_sizeof.c_str()));
 
     if (fn_sz)
     {
-        size_t plugin_sz = fn_sz();
+        size_t native_sz = fn_sz();
         // Store for type_sizeof() queries.
-        type_sizes_[type_name] = plugin_sz;
+        type_sizes_[type_name] = native_sz;
     }
     else
     {
@@ -495,43 +495,43 @@ void NativeEngine::invoke_on_stop()
 }
 
 InvokeResult NativeEngine::invoke_produce(
-    void *out_slot, size_t out_sz,
-    void *flexzone, size_t fz_sz, const char * /*fz_type*/,
+    InvokeTx tx,
     std::vector<IncomingMessage> & /*msgs*/)
 {
     if (!fn_on_produce_)
         return InvokeResult::Discard;
-    bool commit = fn_on_produce_(out_slot, out_sz, flexzone, fz_sz);
-    return commit ? InvokeResult::Commit : InvokeResult::Discard;
+    plh_tx_t c_tx{tx.slot, tx.slot_size, tx.fz, tx.fz_size};
+    return fn_on_produce_(&c_tx) ? InvokeResult::Commit : InvokeResult::Discard;
 }
 
-void NativeEngine::invoke_consume(
-    const void *in_slot, size_t in_sz,
-    const void *flexzone, size_t fz_sz, const char * /*fz_type*/,
+InvokeResult NativeEngine::invoke_consume(
+    InvokeRx rx,
     std::vector<IncomingMessage> & /*msgs*/)
 {
-    if (fn_on_consume_)
-        fn_on_consume_(in_slot, in_sz, flexzone, fz_sz);
+    if (!fn_on_consume_)
+        return InvokeResult::Discard;
+    plh_rx_t c_rx{rx.slot, rx.slot_size, rx.fz, rx.fz_size};
+    return fn_on_consume_(&c_rx) ? InvokeResult::Commit : InvokeResult::Discard;
 }
 
 InvokeResult NativeEngine::invoke_process(
-    const void *in_slot, size_t in_sz,
-    void *out_slot, size_t out_sz,
-    void *flexzone, size_t fz_sz, const char * /*fz_type*/,
+    InvokeRx rx, InvokeTx tx,
     std::vector<IncomingMessage> & /*msgs*/)
 {
     if (!fn_on_process_)
         return InvokeResult::Discard;
-    bool commit = fn_on_process_(in_slot, in_sz, out_slot, out_sz, flexzone, fz_sz);
-    return commit ? InvokeResult::Commit : InvokeResult::Discard;
+    plh_rx_t c_rx{rx.slot, rx.slot_size, rx.fz, rx.fz_size};
+    plh_tx_t c_tx{tx.slot, tx.slot_size, tx.fz, tx.fz_size};
+    return fn_on_process_(&c_rx, &c_tx) ? InvokeResult::Commit : InvokeResult::Discard;
 }
 
-void NativeEngine::invoke_on_inbox(
-    const void *data, size_t sz,
-    const std::string &sender)
+InvokeResult NativeEngine::invoke_on_inbox(
+    InvokeInbox msg)
 {
-    if (fn_on_inbox_)
-        fn_on_inbox_(data, sz, sender.c_str());
+    if (!fn_on_inbox_)
+        return InvokeResult::Discard;
+    plh_inbox_msg_t c_msg{msg.data, msg.data_size, msg.sender_uid.c_str(), msg.seq};
+    return fn_on_inbox_(&c_msg) ? InvokeResult::Commit : InvokeResult::Discard;
 }
 
 // ============================================================================
@@ -588,7 +588,7 @@ bool NativeEngine::invoke(const std::string &name, const nlohmann::json &args)
 
 InvokeResponse NativeEngine::eval(const std::string & /*code*/)
 {
-    // eval() is not applicable to compiled plugins.
+    // eval() is not applicable to compiled native engines.
     return {InvokeStatus::NotFound, {}};
 }
 
@@ -625,26 +625,26 @@ void *NativeEngine::resolve_sym_(const char *name) const
 bool NativeEngine::verify_abi_() const
 {
     auto fn = reinterpret_cast<const PlhAbiInfo *(*)()>(
-        resolve_sym_("plugin_abi_info"));
+        resolve_sym_("native_abi_info"));
 
     if (!fn)
     {
-        LOGGER_WARN("[{}] plugin does not export plugin_abi_info — skipping ABI check", log_tag_);
+        LOGGER_WARN("[{}] native engine does not export native engine_abi_info — skipping ABI check", log_tag_);
         return true; // permissive: allow if not exported
     }
 
     const PlhAbiInfo *info = fn();
     if (!info)
     {
-        LOGGER_ERROR("[{}] plugin_abi_info returned null", log_tag_);
+        LOGGER_ERROR("[{}] native engine_abi_info returned null", log_tag_);
         return false;
     }
 
-    // Version guard: if plugin was compiled with a newer struct, it may have
+    // Version guard: if native engine was compiled with a newer struct, it may have
     // fields we don't know about — still safe if the fields we check match.
     if (info->struct_size < sizeof(PlhAbiInfo))
     {
-        LOGGER_ERROR("[{}] plugin ABI struct too small ({} < {})",
+        LOGGER_ERROR("[{}] native engine ABI struct too small ({} < {})",
                      log_tag_, info->struct_size, sizeof(PlhAbiInfo));
         return false;
     }
@@ -652,7 +652,7 @@ bool NativeEngine::verify_abi_() const
     // Pointer size mismatch = ABI incompatible (32/64-bit).
     if (info->sizeof_void_ptr != sizeof(void *))
     {
-        LOGGER_ERROR("[{}] pointer size mismatch: plugin={}, host={}",
+        LOGGER_ERROR("[{}] pointer size mismatch: native engine={}, host={}",
                      log_tag_, info->sizeof_void_ptr,
                      static_cast<uint32_t>(sizeof(void *)));
         return false;
@@ -660,7 +660,7 @@ bool NativeEngine::verify_abi_() const
 
     if (info->sizeof_size_t != sizeof(size_t))
     {
-        LOGGER_ERROR("[{}] size_t mismatch: plugin={}, host={}",
+        LOGGER_ERROR("[{}] size_t mismatch: native engine={}, host={}",
                      log_tag_, info->sizeof_size_t,
                      static_cast<uint32_t>(sizeof(size_t)));
         return false;
@@ -675,16 +675,16 @@ bool NativeEngine::verify_abi_() const
 #endif
     if (info->byte_order != 0 && info->byte_order != host_byte_order)
     {
-        LOGGER_ERROR("[{}] byte order mismatch: plugin={}, host={}",
+        LOGGER_ERROR("[{}] byte order mismatch: native engine={}, host={}",
                      log_tag_, info->byte_order, host_byte_order);
         return false;
     }
 
     // API version check.
-    if (info->api_version != PLH_PLUGIN_API_VERSION)
+    if (info->api_version != PLH_NATIVE_API_VERSION)
     {
-        LOGGER_ERROR("[{}] API version mismatch: plugin={}, host={}",
-                     log_tag_, info->api_version, PLH_PLUGIN_API_VERSION);
+        LOGGER_ERROR("[{}] API version mismatch: native engine={}, host={}",
+                     log_tag_, info->api_version, PLH_NATIVE_API_VERSION);
         return false;
     }
 
@@ -700,7 +700,7 @@ bool NativeEngine::verify_file_checksum_() const
     std::ifstream file(lib_path_, std::ios::binary | std::ios::ate);
     if (!file)
     {
-        LOGGER_ERROR("[{}] cannot open plugin file for checksum: {}",
+        LOGGER_ERROR("[{}] cannot open native engine file for checksum: {}",
                      log_tag_, lib_path_.string());
         return false;
     }
@@ -711,7 +711,7 @@ bool NativeEngine::verify_file_checksum_() const
     std::vector<char> buf(static_cast<size_t>(file_size));
     if (!file.read(buf.data(), file_size))
     {
-        LOGGER_ERROR("[{}] failed to read plugin file: {}", log_tag_, lib_path_.string());
+        LOGGER_ERROR("[{}] failed to read native engine file: {}", log_tag_, lib_path_.string());
         return false;
     }
 
@@ -729,12 +729,12 @@ bool NativeEngine::verify_file_checksum_() const
 
     if (hex != expected_checksum_)
     {
-        LOGGER_ERROR("[{}] plugin checksum mismatch: expected={}, actual={}",
+        LOGGER_ERROR("[{}] native engine checksum mismatch: expected={}, actual={}",
                      log_tag_, expected_checksum_, hex);
         return false;
     }
 
-    LOGGER_INFO("[{}] plugin checksum verified: {}", log_tag_, hex);
+    LOGGER_INFO("[{}] native engine checksum verified: {}", log_tag_, hex);
     return true;
 }
 
@@ -742,7 +742,7 @@ std::string NativeEngine::compute_canonical_schema_(const SchemaSpec &spec) cons
 {
     // Build canonical schema string: "name:type:count:length|name:type:count:length|..."
     // Format: "name:type:count:length|name:type:count:length|..."
-    // Must match the string passed to PLH_DECLARE_SCHEMA in the plugin.
+    // Must match the string passed to PLH_DECLARE_SCHEMA in the native engine.
     std::ostringstream ss;
     for (size_t i = 0; i < spec.fields.size(); ++i)
     {

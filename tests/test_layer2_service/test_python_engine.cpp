@@ -48,6 +48,9 @@ using pylabhub::scripting::RoleHostCore;
 using pylabhub::scripting::IncomingMessage;
 using pylabhub::scripting::SchemaSpec;
 using pylabhub::scripting::FieldDef;
+using pylabhub::scripting::InvokeRx;
+using pylabhub::scripting::InvokeTx;
+using pylabhub::scripting::InvokeInbox;
 
 namespace
 {
@@ -159,7 +162,7 @@ class PythonEngineTest : public ::testing::Test
 TEST_F(PythonEngineTest, FullLifecycle)
 {
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    return True\n"
         "\n"
         "def on_init(api):\n"
@@ -191,7 +194,7 @@ TEST_F(PythonEngineTest, InitializeFailsGracefully)
 
 TEST_F(PythonEngineTest, RegisterSlotType_SizeofCorrect)
 {
-    write_script("def on_produce(out_slot, fz, msgs, api):\n    return True\n");
+    write_script("def on_produce(tx, msgs, api):\n    return True\n");
 
     PythonEngine engine;
     engine.set_python_venv("");
@@ -210,7 +213,7 @@ TEST_F(PythonEngineTest, RegisterSlotType_SizeofCorrect)
 
 TEST_F(PythonEngineTest, RegisterSlotType_MultiField)
 {
-    write_script("def on_produce(out_slot, fz, msgs, api):\n    return True\n");
+    write_script("def on_produce(tx, msgs, api):\n    return True\n");
 
     PythonEngine engine;
     engine.set_python_venv("");
@@ -241,9 +244,9 @@ TEST_F(PythonEngineTest, RegisterSlotType_MultiField)
 TEST_F(PythonEngineTest, InvokeProduce_CommitOnTrue)
 {
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
-        "    if out_slot is not None:\n"
-        "        out_slot.value = 42.0\n"
+        "def on_produce(tx, msgs, api):\n"
+        "    if tx.slot is not None:\n"
+        "        tx.slot.value = 42.0\n"
         "    return True\n");
 
     PythonEngine engine;
@@ -253,7 +256,7 @@ TEST_F(PythonEngineTest, InvokeProduce_CommitOnTrue)
     std::vector<IncomingMessage> msgs;
 
     auto result =
-        engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+        engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(result, InvokeResult::Commit);
     EXPECT_FLOAT_EQ(buf, 42.0f);
 
@@ -263,7 +266,7 @@ TEST_F(PythonEngineTest, InvokeProduce_CommitOnTrue)
 TEST_F(PythonEngineTest, InvokeProduce_DiscardOnFalse)
 {
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    return False\n");
 
     PythonEngine engine;
@@ -273,7 +276,7 @@ TEST_F(PythonEngineTest, InvokeProduce_DiscardOnFalse)
     std::vector<IncomingMessage> msgs;
 
     auto result =
-        engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+        engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(result, InvokeResult::Discard);
 
     engine.finalize();
@@ -283,7 +286,7 @@ TEST_F(PythonEngineTest, InvokeProduce_NoneReturn_IsError)
 {
     // Missing return value (implicit None) is an error.
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    pass  # no explicit return -> None -> error\n");
 
     PythonEngine engine;
@@ -293,7 +296,7 @@ TEST_F(PythonEngineTest, InvokeProduce_NoneReturn_IsError)
     std::vector<IncomingMessage> msgs;
 
     auto result =
-        engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+        engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(result, InvokeResult::Error)
         << "Missing return should be Error, not Commit";
     EXPECT_EQ(engine.script_error_count(), 1u);
@@ -304,8 +307,8 @@ TEST_F(PythonEngineTest, InvokeProduce_NoneReturn_IsError)
 TEST_F(PythonEngineTest, InvokeProduce_NoneSlot)
 {
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
-        "    assert out_slot is None, 'expected None slot'\n"
+        "def on_produce(tx, msgs, api):\n"
+        "    assert tx.slot is None, 'expected None slot'\n"
         "    return False\n");
 
     PythonEngine engine;
@@ -314,7 +317,7 @@ TEST_F(PythonEngineTest, InvokeProduce_NoneSlot)
     std::vector<IncomingMessage> msgs;
 
     auto result =
-        engine.invoke_produce(nullptr, 0, nullptr, 0, nullptr, msgs);
+        engine.invoke_produce({nullptr, 0, nullptr, 0}, msgs);
     EXPECT_EQ(result, InvokeResult::Discard);
 
     engine.finalize();
@@ -323,7 +326,7 @@ TEST_F(PythonEngineTest, InvokeProduce_NoneSlot)
 TEST_F(PythonEngineTest, InvokeProduce_ScriptError)
 {
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    raise RuntimeError('intentional error')\n");
 
     PythonEngine engine;
@@ -334,7 +337,7 @@ TEST_F(PythonEngineTest, InvokeProduce_ScriptError)
 
     EXPECT_EQ(engine.script_error_count(), 0u);
     auto result =
-        engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+        engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(result, InvokeResult::Error);
     EXPECT_EQ(engine.script_error_count(), 1u);
 
@@ -345,7 +348,7 @@ TEST_F(PythonEngineTest, InvokeProduce_WrongReturnType_IsError)
 {
     // Returning a number instead of boolean should be an Error.
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    return 42\n");
 
     PythonEngine engine;
@@ -355,7 +358,7 @@ TEST_F(PythonEngineTest, InvokeProduce_WrongReturnType_IsError)
     std::vector<IncomingMessage> msgs;
 
     auto result =
-        engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+        engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(result, InvokeResult::Error)
         << "Returning a number should be Error, not Commit";
     EXPECT_EQ(engine.script_error_count(), 1u);
@@ -367,7 +370,7 @@ TEST_F(PythonEngineTest, InvokeProduce_WrongReturnString_IsError)
 {
     // Returning a string instead of boolean should be an Error.
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    return 'ok'\n");
 
     PythonEngine engine;
@@ -377,7 +380,7 @@ TEST_F(PythonEngineTest, InvokeProduce_WrongReturnString_IsError)
     std::vector<IncomingMessage> msgs;
 
     auto result =
-        engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+        engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(result, InvokeResult::Error)
         << "Returning a string should be Error, not Commit";
     EXPECT_EQ(engine.script_error_count(), 1u);
@@ -393,10 +396,11 @@ TEST_F(PythonEngineTest, InvokeConsume_ReceivesReadOnlySlot)
 {
     // Script asserts the value -- if wrong, AssertionError is raised.
     write_script(
-        "def on_consume(in_slot, fz, msgs, api):\n"
-        "    assert in_slot is not None, 'expected non-None slot'\n"
-        "    assert abs(in_slot.value - 99.5) < 0.01, (\n"
-        "        f'expected value ~99.5, got {in_slot.value}')\n");
+        "def on_consume(rx, msgs, api):\n"
+        "    assert rx.slot is not None, 'expected non-None slot'\n"
+        "    assert abs(rx.slot.value - 99.5) < 0.01, (\n"
+        "        f'expected value ~99.5, got {rx.slot.value}')\n"
+        "    return True\n");
 
     PythonEngine engine;
     engine.set_python_venv("");
@@ -414,7 +418,7 @@ TEST_F(PythonEngineTest, InvokeConsume_ReceivesReadOnlySlot)
     float data = 99.5f;
     std::vector<IncomingMessage> msgs;
 
-    engine.invoke_consume(&data, sizeof(data), nullptr, 0, nullptr, msgs);
+    engine.invoke_consume(InvokeRx{&data, sizeof(data), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed -- slot value incorrect";
 
@@ -424,8 +428,9 @@ TEST_F(PythonEngineTest, InvokeConsume_ReceivesReadOnlySlot)
 TEST_F(PythonEngineTest, InvokeConsume_NoneSlot)
 {
     write_script(
-        "def on_consume(in_slot, fz, msgs, api):\n"
-        "    assert in_slot is None, 'expected None'\n");
+        "def on_consume(rx, msgs, api):\n"
+        "    assert rx.slot is None, 'expected None'\n"
+        "    return True\n");
 
     PythonEngine engine;
     engine.set_python_venv("");
@@ -441,7 +446,7 @@ TEST_F(PythonEngineTest, InvokeConsume_NoneSlot)
     ASSERT_TRUE(engine.build_api(ctx));
 
     std::vector<IncomingMessage> msgs;
-    engine.invoke_consume(nullptr, 0, nullptr, 0, nullptr, msgs);
+    engine.invoke_consume(InvokeRx{nullptr, 0, nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u);
 
     engine.finalize();
@@ -450,7 +455,7 @@ TEST_F(PythonEngineTest, InvokeConsume_NoneSlot)
 TEST_F(PythonEngineTest, InvokeConsume_ScriptErrorDetected)
 {
     write_script(
-        "def on_consume(in_slot, fz, msgs, api):\n"
+        "def on_consume(rx, msgs, api):\n"
         "    raise RuntimeError('consume error')\n");
 
     PythonEngine engine;
@@ -468,7 +473,7 @@ TEST_F(PythonEngineTest, InvokeConsume_ScriptErrorDetected)
 
     float data = 1.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_consume(&data, sizeof(data), nullptr, 0, nullptr, msgs);
+    engine.invoke_consume(InvokeRx{&data, sizeof(data), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 1u);
 
     engine.finalize();
@@ -481,9 +486,9 @@ TEST_F(PythonEngineTest, InvokeConsume_ScriptErrorDetected)
 TEST_F(PythonEngineTest, InvokeProcess_DualSlots)
 {
     write_script(
-        "def on_process(in_slot, out_slot, fz, msgs, api):\n"
-        "    if in_slot is not None and out_slot is not None:\n"
-        "        out_slot.value = in_slot.value * 2.0\n"
+        "def on_process(rx, tx, msgs, api):\n"
+        "    if rx.slot is not None and tx.slot is not None:\n"
+        "        tx.slot.value = rx.slot.value * 2.0\n"
         "        return True\n"
         "    return False\n");
 
@@ -507,8 +512,8 @@ TEST_F(PythonEngineTest, InvokeProcess_DualSlots)
     std::vector<IncomingMessage> msgs;
 
     auto result = engine.invoke_process(
-        &in_data, sizeof(in_data), &out_data, sizeof(out_data),
-        nullptr, 0, nullptr, msgs);
+        InvokeRx{&in_data, sizeof(in_data), nullptr, 0},
+        InvokeTx{&out_data, sizeof(out_data), nullptr, 0}, msgs);
     EXPECT_EQ(result, InvokeResult::Commit);
     EXPECT_FLOAT_EQ(out_data, 42.0f);
 
@@ -518,9 +523,9 @@ TEST_F(PythonEngineTest, InvokeProcess_DualSlots)
 TEST_F(PythonEngineTest, InvokeProcess_NoneInput)
 {
     write_script(
-        "def on_process(in_slot, out_slot, fz, msgs, api):\n"
-        "    assert in_slot is None, 'expected None input'\n"
-        "    assert out_slot is None, 'expected None output'\n"
+        "def on_process(rx, tx, msgs, api):\n"
+        "    assert rx.slot is None, 'expected None input'\n"
+        "    assert tx.slot is None, 'expected None output'\n"
         "    return False\n");
 
     PythonEngine engine;
@@ -539,7 +544,8 @@ TEST_F(PythonEngineTest, InvokeProcess_NoneInput)
 
     std::vector<IncomingMessage> msgs;
     auto result = engine.invoke_process(
-        nullptr, 0, nullptr, 0, nullptr, 0, nullptr, msgs);
+        InvokeRx{nullptr, 0, nullptr, 0},
+        InvokeTx{nullptr, 0, nullptr, 0}, msgs);
     EXPECT_EQ(result, InvokeResult::Discard);
     EXPECT_EQ(engine.script_error_count(), 0u);
 
@@ -549,9 +555,9 @@ TEST_F(PythonEngineTest, InvokeProcess_NoneInput)
 TEST_F(PythonEngineTest, InvokeProcess_InputOnlyNoOutput)
 {
     write_script(
-        "def on_process(in_slot, out_slot, fz, msgs, api):\n"
-        "    assert in_slot is not None, 'expected input data'\n"
-        "    assert out_slot is None, 'expected None output'\n"
+        "def on_process(rx, tx, msgs, api):\n"
+        "    assert rx.slot is not None, 'expected input data'\n"
+        "    assert tx.slot is None, 'expected None output'\n"
         "    return False\n");
 
     PythonEngine engine;
@@ -571,7 +577,8 @@ TEST_F(PythonEngineTest, InvokeProcess_InputOnlyNoOutput)
     float in_data = 10.0f;
     std::vector<IncomingMessage> msgs;
     auto result = engine.invoke_process(
-        &in_data, sizeof(in_data), nullptr, 0, nullptr, 0, nullptr, msgs);
+        InvokeRx{&in_data, sizeof(in_data), nullptr, 0},
+        InvokeTx{nullptr, 0, nullptr, 0}, msgs);
     EXPECT_EQ(result, InvokeResult::Discard);
 
     engine.finalize();
@@ -585,7 +592,7 @@ TEST_F(PythonEngineTest, InvokeProduce_ReceivesMessages)
 {
     // Producer messages: events are dicts, data messages are (sender_hex, bytes) tuples.
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    event_count = sum(1 for m in msgs if isinstance(m, dict) and 'event' in m)\n"
         "    assert event_count == 2, (\n"
         "        f'expected 2 events, got {event_count}')\n"
@@ -610,7 +617,7 @@ TEST_F(PythonEngineTest, InvokeProduce_ReceivesMessages)
 
     float buf = 0.0f;
     auto result =
-        engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+        engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(result, InvokeResult::Discard);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed -- messages not received correctly";
@@ -622,7 +629,7 @@ TEST_F(PythonEngineTest, InvokeConsume_BareDataMessages)
 {
     // Consumer data messages are bare bytes (not tuples). Events are still dicts.
     write_script(
-        "def on_consume(in_slot, fz, msgs, api):\n"
+        "def on_consume(rx, msgs, api):\n"
         "    assert len(msgs) == 2, f'expected 2 messages, got {len(msgs)}'\n"
         "    # First msg: data message -> bare bytes\n"
         "    assert isinstance(msgs[0], bytes), (\n"
@@ -630,7 +637,8 @@ TEST_F(PythonEngineTest, InvokeConsume_BareDataMessages)
         "    # Second msg: event message -> dict with .event\n"
         "    assert isinstance(msgs[1], dict), (\n"
         "        f'event msg should be dict, got {type(msgs[1])}')\n"
-        "    assert msgs[1]['event'] == 'channel_closing'\n");
+        "    assert msgs[1]['event'] == 'channel_closing'\n"
+        "    return True\n");
 
     PythonEngine engine;
     engine.set_python_venv("");
@@ -657,7 +665,7 @@ TEST_F(PythonEngineTest, InvokeConsume_BareDataMessages)
     em.event = "channel_closing";
     msgs.push_back(std::move(em));
 
-    engine.invoke_consume(nullptr, 0, nullptr, 0, nullptr, msgs);
+    engine.invoke_consume(InvokeRx{nullptr, 0, nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed -- consumer message format incorrect";
 
@@ -675,7 +683,7 @@ TEST_F(PythonEngineTest, ApiVersionInfo)
     write_script(
         "import pylabhub_producer\n"
         "\n"
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    info = pylabhub_producer.version_info()\n"
         "    assert isinstance(info, str), 'version_info should return string'\n"
         "    assert len(info) > 10, f'version_info too short: {info}'\n"
@@ -688,7 +696,7 @@ TEST_F(PythonEngineTest, ApiVersionInfo)
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
     auto result =
-        engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+        engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(result, InvokeResult::Discard);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed -- version_info returned unexpected value";
@@ -701,7 +709,7 @@ TEST_F(PythonEngineTest, WrongRoleModuleImport_RaisesError)
     // After build_api, importing the wrong role module must raise an error,
     // not segfault. build_api removes inactive modules from sys.modules.
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    return False\n");
 
     PythonEngine engine;
@@ -720,7 +728,7 @@ TEST_F(PythonEngineTest, WrongRoleModuleImport_RaisesError)
 TEST_F(PythonEngineTest, ApiStop_SetsShutdownRequested)
 {
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    api.stop()\n"
         "    return False\n");
 
@@ -732,7 +740,7 @@ TEST_F(PythonEngineTest, ApiStop_SetsShutdownRequested)
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
 
     EXPECT_TRUE(core.is_shutdown_requested())
         << "api.stop() should set shutdown_requested";
@@ -744,7 +752,7 @@ TEST_F(PythonEngineTest, ApiSetCriticalError)
 {
     // Python API's set_critical_error() takes no arguments (unlike Lua).
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    api.set_critical_error()\n"
         "    return False\n");
 
@@ -757,7 +765,7 @@ TEST_F(PythonEngineTest, ApiSetCriticalError)
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
 
     EXPECT_TRUE(core.is_critical_error())
         << "api.set_critical_error() should set critical_error_";
@@ -770,7 +778,7 @@ TEST_F(PythonEngineTest, ApiSetCriticalError)
 TEST_F(PythonEngineTest, ApiStopReason_Default)
 {
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    reason = api.stop_reason()\n"
         "    assert reason == 'normal', (\n"
         "        f\"expected 'normal', got '{reason}'\")\n"
@@ -782,7 +790,7 @@ TEST_F(PythonEngineTest, ApiStopReason_Default)
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "stop_reason should be 'normal'";
 
@@ -792,7 +800,7 @@ TEST_F(PythonEngineTest, ApiStopReason_Default)
 TEST_F(PythonEngineTest, ApiStopReason_PeerDead)
 {
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    reason = api.stop_reason()\n"
         "    assert reason == 'peer_dead', (\n"
         "        f\"expected 'peer_dead', got '{reason}'\")\n"
@@ -806,7 +814,7 @@ TEST_F(PythonEngineTest, ApiStopReason_PeerDead)
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "stop_reason should be 'peer_dead'";
 
@@ -821,7 +829,7 @@ TEST_F(PythonEngineTest, MetricsClosures_ReadFromRoleHostCounters)
 {
     // Python API uses out_slots_written() / out_drop_count() (not out_written/drops).
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    ow = api.out_slots_written()\n"
         "    dr = api.out_drop_count()\n"
         "    assert ow == 42, f'expected out_slots_written=42, got {ow}'\n"
@@ -847,7 +855,7 @@ TEST_F(PythonEngineTest, MetricsClosures_ReadFromRoleHostCounters)
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed -- metrics values incorrect";
 
@@ -859,9 +867,10 @@ TEST_F(PythonEngineTest, MetricsClosures_InReceivedWorks)
     // Python API uses in_slots_received() (not in_received).
     // Consumer role: ctx.consumer must be non-null, ctx.producer null.
     write_script(
-        "def on_consume(in_slot, fz, msgs, api):\n"
+        "def on_consume(rx, msgs, api):\n"
         "    ir = api.in_slots_received()\n"
-        "    assert ir == 15, f'expected in_slots_received=15, got {ir}'\n");
+        "    assert ir == 15, f'expected in_slots_received=15, got {ir}'\n"
+        "    return True\n");
 
     RoleHostCore core;
     core.test_set_in_received(15);
@@ -881,7 +890,7 @@ TEST_F(PythonEngineTest, MetricsClosures_InReceivedWorks)
     ASSERT_TRUE(engine.build_api(ctx));
 
     std::vector<IncomingMessage> msgs;
-    engine.invoke_consume(nullptr, 0, nullptr, 0, nullptr, msgs);
+    engine.invoke_consume(InvokeRx{nullptr, 0, nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed -- in_received value incorrect";
 
@@ -891,7 +900,7 @@ TEST_F(PythonEngineTest, MetricsClosures_InReceivedWorks)
 TEST_F(PythonEngineTest, MultipleErrors_CountAccumulates)
 {
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    raise RuntimeError('oops')\n");
 
     PythonEngine engine;
@@ -902,7 +911,7 @@ TEST_F(PythonEngineTest, MultipleErrors_CountAccumulates)
 
     for (int i = 0; i < 5; ++i)
     {
-        engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+        engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     }
     EXPECT_EQ(engine.script_error_count(), 5u);
 
@@ -916,7 +925,7 @@ TEST_F(PythonEngineTest, MultipleErrors_CountAccumulates)
 TEST_F(PythonEngineTest, StopOnScriptError_SetsShutdownOnError)
 {
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    raise RuntimeError('intentional error')\n");
 
     RoleHostCore core;
@@ -939,7 +948,7 @@ TEST_F(PythonEngineTest, StopOnScriptError_SetsShutdownOnError)
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
     auto result =
-        engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+        engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
 
     EXPECT_EQ(result, InvokeResult::Error);
     EXPECT_TRUE(core.is_shutdown_requested())
@@ -976,7 +985,7 @@ TEST_F(PythonEngineTest, LoadScript_MissingRequiredCallback)
 
 TEST_F(PythonEngineTest, RegisterSlotType_BadFieldType)
 {
-    write_script("def on_produce(out_slot, fz, msgs, api):\n    return True\n");
+    write_script("def on_produce(tx, msgs, api):\n    return True\n");
 
     PythonEngine engine;
     engine.set_python_venv("");
@@ -1000,7 +1009,7 @@ TEST_F(PythonEngineTest, RegisterSlotType_BadFieldType)
 TEST_F(PythonEngineTest, LoadScript_SyntaxError)
 {
     // Write a script with a Python syntax error.
-    write_script("def on_produce(out_slot, fz, msgs, api)\n"  // missing colon
+    write_script("def on_produce(tx, msgs, api)\n"  // missing colon
                  "    return True\n");
 
     PythonEngine engine;
@@ -1018,7 +1027,7 @@ TEST_F(PythonEngineTest, LoadScript_SyntaxError)
 TEST_F(PythonEngineTest, HasCallback)
 {
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    return True\n"
         "\n"
         "def on_init(api):\n"
@@ -1049,11 +1058,11 @@ TEST_F(PythonEngineTest, StatePersistsAcrossCalls)
     write_script(
         "call_count = 0\n"
         "\n"
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    global call_count\n"
         "    call_count += 1\n"
-        "    if out_slot is not None:\n"
-        "        out_slot.value = float(call_count)\n"
+        "    if tx.slot is not None:\n"
+        "        tx.slot.value = float(call_count)\n"
         "    return True\n");
 
     PythonEngine engine;
@@ -1063,15 +1072,15 @@ TEST_F(PythonEngineTest, StatePersistsAcrossCalls)
 
     // Call 3 times -- counter should increment.
     float buf1 = 0.0f;
-    engine.invoke_produce(&buf1, sizeof(buf1), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce(InvokeTx{&buf1, sizeof(buf1), nullptr, 0}, msgs);
     EXPECT_FLOAT_EQ(buf1, 1.0f);
 
     float buf2 = 0.0f;
-    engine.invoke_produce(&buf2, sizeof(buf2), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce(InvokeTx{&buf2, sizeof(buf2), nullptr, 0}, msgs);
     EXPECT_FLOAT_EQ(buf2, 2.0f);
 
     float buf3 = 0.0f;
-    engine.invoke_produce(&buf3, sizeof(buf3), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce(InvokeTx{&buf3, sizeof(buf3), nullptr, 0}, msgs);
     EXPECT_FLOAT_EQ(buf3, 3.0f);
 
     EXPECT_EQ(engine.script_error_count(), 0u);
@@ -1087,11 +1096,11 @@ TEST_F(PythonEngineTest, InvokeProduce_WithFlexzone)
 {
     // Script writes to both slot and flexzone.
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
-        "    assert out_slot is not None, 'expected slot'\n"
-        "    assert fz is not None, 'expected flexzone'\n"
-        "    out_slot.value = 10.0\n"
-        "    fz.value = 20.0\n"
+        "def on_produce(tx, msgs, api):\n"
+        "    assert tx.slot is not None, 'expected slot'\n"
+        "    assert tx.fz is not None, 'expected flexzone'\n"
+        "    tx.slot.value = 10.0\n"
+        "    tx.fz.value = 20.0\n"
         "    return True\n");
 
     PythonEngine engine;
@@ -1112,7 +1121,7 @@ TEST_F(PythonEngineTest, InvokeProduce_WithFlexzone)
     std::vector<IncomingMessage> msgs;
 
     auto result = engine.invoke_produce(
-        &slot_buf, sizeof(slot_buf), &fz_buf, sizeof(fz_buf), "FlexFrame", msgs);
+        InvokeTx{&slot_buf, sizeof(slot_buf), &fz_buf, sizeof(fz_buf)}, msgs);
     EXPECT_EQ(result, InvokeResult::Commit);
     EXPECT_FLOAT_EQ(slot_buf, 10.0f);
     EXPECT_FLOAT_EQ(fz_buf, 20.0f);
@@ -1128,16 +1137,17 @@ TEST_F(PythonEngineTest, InvokeOnInbox_TypedData)
 {
     // Script receives a typed ctypes struct (from_buffer_copy) and sender UID.
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    return False\n"
         "\n"
-        "def on_inbox(data, sender, api):\n"
-        "    assert data is not None, 'expected inbox data'\n"
-        "    assert hasattr(data, 'value'), f'expected typed struct, got {type(data)}'\n"
-        "    assert abs(data.value - 77.0) < 0.01, (\n"
-        "        f'expected value ~77.0, got {data.value}')\n"
-        "    assert sender == 'PROD-SENDER-00000001', (\n"
-        "        f'expected sender UID, got {sender}')\n");
+        "def on_inbox(msg, api):\n"
+        "    assert msg.data is not None, 'expected inbox data'\n"
+        "    assert hasattr(msg.data, 'value'), f'expected typed struct, got {type(msg.data)}'\n"
+        "    assert abs(msg.data.value - 77.0) < 0.01, (\n"
+        "        f'expected value ~77.0, got {msg.data.value}')\n"
+        "    assert msg.sender_uid == 'PROD-SENDER-00000001', (\n"
+        "        f'expected sender UID, got {msg.sender_uid}')\n"
+        "    return True\n");
 
     PythonEngine engine;
     engine.set_python_venv("");
@@ -1153,7 +1163,7 @@ TEST_F(PythonEngineTest, InvokeOnInbox_TypedData)
     ASSERT_TRUE(engine.build_api(ctx));
 
     float inbox_data = 77.0f;
-    engine.invoke_on_inbox(&inbox_data, sizeof(inbox_data), "PROD-SENDER-00000001");
+    engine.invoke_on_inbox({&inbox_data, sizeof(inbox_data), "PROD-SENDER-00000001", 1});
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed -- inbox data or sender incorrect";
 
@@ -1168,7 +1178,7 @@ TEST_F(PythonEngineTest, TypeSizeof_InboxFrame_ReturnsCorrectSize)
     //   uint8 flag (1) + pad(3) + float64 value (8) + uint16 count (2) +
     //   pad(2) + int32 status (4) + char[5] label (5) + pad(3) = 28 bytes aligned
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    return False\n");
 
     PythonEngine engine;
@@ -1206,11 +1216,11 @@ TEST_F(PythonEngineTest, InvokeOnInbox_MissingType_ReportsError)
 {
     // If InboxFrame is not registered, invoke_on_inbox must report an error.
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    return False\n"
         "\n"
-        "def on_inbox(data, sender, api):\n"
-        "    pass\n");
+        "def on_inbox(msg, api):\n"
+        "    return True\n");
 
     PythonEngine engine;
     engine.set_python_venv("");
@@ -1226,7 +1236,7 @@ TEST_F(PythonEngineTest, InvokeOnInbox_MissingType_ReportsError)
     ASSERT_TRUE(engine.build_api(ctx));
 
     float raw = 1.0f;
-    engine.invoke_on_inbox(&raw, sizeof(raw), "CONS-SENDER-00000001");
+    engine.invoke_on_inbox({&raw, sizeof(raw), "CONS-SENDER-00000001", 1});
     EXPECT_GE(engine.script_error_count(), 1u)
         << "Missing InboxFrame type should increment error count";
 
@@ -1250,7 +1260,7 @@ TEST_F(PythonEngineTest, SupportsMultiState_ReturnsFalse)
 TEST_F(PythonEngineTest, Invoke_ExistingFunction_ReturnsTrue)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     return True
 
 def on_heartbeat():
@@ -1265,7 +1275,7 @@ def on_heartbeat():
 
 TEST_F(PythonEngineTest, Invoke_NonExistentFunction_ReturnsFalse)
 {
-    write_script("def on_produce(out_slot, fz, msgs, api):\n    return True\n");
+    write_script("def on_produce(tx, msgs, api):\n    return True\n");
     PythonEngine engine;
     ASSERT_TRUE(setup_engine(engine));
 
@@ -1275,7 +1285,7 @@ TEST_F(PythonEngineTest, Invoke_NonExistentFunction_ReturnsFalse)
 
 TEST_F(PythonEngineTest, Invoke_EmptyName_ReturnsFalse)
 {
-    write_script("def on_produce(out_slot, fz, msgs, api):\n    return True\n");
+    write_script("def on_produce(tx, msgs, api):\n    return True\n");
     PythonEngine engine;
     ASSERT_TRUE(setup_engine(engine));
 
@@ -1286,7 +1296,7 @@ TEST_F(PythonEngineTest, Invoke_EmptyName_ReturnsFalse)
 TEST_F(PythonEngineTest, Invoke_ScriptError_ReturnsFalseAndIncrementsErrors)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     return True
 
 def bad_func():
@@ -1304,7 +1314,7 @@ def bad_func():
 TEST_F(PythonEngineTest, Invoke_FromNonOwnerThread_Queued)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     return True
 
 def on_heartbeat():
@@ -1333,7 +1343,7 @@ def on_heartbeat():
         ASSERT_LT(std::chrono::steady_clock::now(), deadline)
             << "Timeout: non-owner invoke() was never processed by process_pending_()";
         std::vector<IncomingMessage> msgs;
-        engine.invoke_produce(nullptr, 0, nullptr, 0, nullptr, msgs);
+        engine.invoke_produce({nullptr, 0, nullptr, 0}, msgs);
         std::this_thread::yield();
     }
 
@@ -1345,7 +1355,7 @@ def on_heartbeat():
 TEST_F(PythonEngineTest, Invoke_FromNonOwnerThread_FinalizeUnblocks)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     return True
 
 def slow_func():
@@ -1379,7 +1389,7 @@ def slow_func():
 TEST_F(PythonEngineTest, Invoke_ConcurrentNonOwnerThreads)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     return True
 
 def on_heartbeat():
@@ -1413,7 +1423,7 @@ def on_heartbeat():
             << "Timeout: only " << success_count.load() << " of "
             << kThreads * kCallsPerThread << " invokes completed";
         std::vector<IncomingMessage> msgs;
-        engine.invoke_produce(nullptr, 0, nullptr, 0, nullptr, msgs);
+        engine.invoke_produce({nullptr, 0, nullptr, 0}, msgs);
         std::this_thread::yield();
     }
 
@@ -1427,7 +1437,7 @@ def on_heartbeat():
 TEST_F(PythonEngineTest, Invoke_AfterFinalize_ReturnsFalse)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     return True
 
 def on_heartbeat():
@@ -1448,7 +1458,7 @@ def on_heartbeat():
 TEST_F(PythonEngineTest, Invoke_WithArgs_CallsFunction)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     return True
 
 def greet(**kwargs):
@@ -1464,7 +1474,7 @@ def greet(**kwargs):
 
 TEST_F(PythonEngineTest, Eval_ReturnsScalarResult)
 {
-    write_script("def on_produce(out_slot, fz, msgs, api):\n    return True\n");
+    write_script("def on_produce(tx, msgs, api):\n    return True\n");
     PythonEngine engine;
     ASSERT_TRUE(setup_engine(engine));
 
@@ -1485,7 +1495,7 @@ TEST_F(PythonEngineTest, Eval_ReturnsScalarResult)
 
 TEST_F(PythonEngineTest, Eval_ErrorReturnsEmpty)
 {
-    write_script("def on_produce(out_slot, fz, msgs, api):\n    return True\n");
+    write_script("def on_produce(tx, msgs, api):\n    return True\n");
     PythonEngine engine;
     ASSERT_TRUE(setup_engine(engine));
 
@@ -1511,7 +1521,7 @@ def on_init(api):
     _api_ref = api
     api.shared_data["counter"] = 0
 
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     api.shared_data["counter"] += 1
     return True
 
@@ -1527,7 +1537,7 @@ def get_counter():
 
     std::vector<IncomingMessage> msgs;
     for (int i = 0; i < 5; ++i)
-        engine.invoke_produce(nullptr, 0, nullptr, 0, nullptr, msgs);
+        engine.invoke_produce({nullptr, 0, nullptr, 0}, msgs);
 
     ASSERT_EQ(engine.script_error_count(), 0u)
         << "on_produce failed";
@@ -1547,7 +1557,7 @@ def get_counter():
 TEST_F(PythonEngineTest, Api_LoopOverrunCount_ReadsFromCore)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     v = api.loop_overrun_count()
     assert v == 3, f"expected 3, got {v}"
     return False
@@ -1563,7 +1573,7 @@ def on_produce(out_slot, fz, msgs, api):
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u);
     engine.finalize();
 }
@@ -1571,7 +1581,7 @@ def on_produce(out_slot, fz, msgs, api):
 TEST_F(PythonEngineTest, Api_LastCycleWorkUs_ReadsFromCore)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     v = api.last_cycle_work_us()
     assert v == 12345, f"expected 12345, got {v}"
     return False
@@ -1585,7 +1595,7 @@ def on_produce(out_slot, fz, msgs, api):
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u);
     engine.finalize();
 }
@@ -1593,7 +1603,7 @@ def on_produce(out_slot, fz, msgs, api):
 TEST_F(PythonEngineTest, Api_CriticalError_DefaultIsFalse)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     assert api.critical_error() == False, "critical_error should be False by default"
     return False
 )");
@@ -1603,7 +1613,7 @@ def on_produce(out_slot, fz, msgs, api):
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u);
     engine.finalize();
 }
@@ -1611,7 +1621,7 @@ def on_produce(out_slot, fz, msgs, api):
 TEST_F(PythonEngineTest, Api_IdentityAccessors_ReturnCorrectValues)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     assert api.uid() == "TEST-ENGINE-00000001", f"uid: {api.uid()}"
     assert api.name() == "TestEngine", f"name: {api.name()}"
     assert api.channel() == "test.channel", f"channel: {api.channel()}"
@@ -1626,7 +1636,7 @@ def on_produce(out_slot, fz, msgs, api):
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u);
     engine.finalize();
 }
@@ -1634,7 +1644,7 @@ def on_produce(out_slot, fz, msgs, api):
 TEST_F(PythonEngineTest, Api_CustomMetrics_ReportAndReadInMetrics)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     api.report_metric("latency_ms", 42.5)
     api.report_metric("throughput", 100)
 
@@ -1650,7 +1660,7 @@ def on_produce(out_slot, fz, msgs, api):
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u);
     engine.finalize();
 }
@@ -1658,7 +1668,7 @@ def on_produce(out_slot, fz, msgs, api):
 TEST_F(PythonEngineTest, Api_CustomMetrics_BatchAndClear)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     api.report_metrics({"a": 1.0, "b": 2.0, "c": 3.0})
     m = api.metrics()
     assert m["custom"]["a"] == 1.0
@@ -1676,7 +1686,7 @@ def on_produce(out_slot, fz, msgs, api):
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u);
     engine.finalize();
 }
@@ -1688,7 +1698,7 @@ def on_produce(out_slot, fz, msgs, api):
 TEST_F(PythonEngineTest, InvokeOnInit_ScriptError)
 {
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    return True\n"
         "\n"
         "def on_init(api):\n"
@@ -1708,7 +1718,7 @@ TEST_F(PythonEngineTest, InvokeOnInit_ScriptError)
 TEST_F(PythonEngineTest, InvokeOnStop_ScriptError)
 {
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    return True\n"
         "\n"
         "def on_stop(api):\n"
@@ -1728,10 +1738,10 @@ TEST_F(PythonEngineTest, InvokeOnStop_ScriptError)
 TEST_F(PythonEngineTest, InvokeOnInbox_ScriptError)
 {
     write_script(
-        "def on_produce(out_slot, fz, msgs, api):\n"
+        "def on_produce(tx, msgs, api):\n"
         "    return False\n"
         "\n"
-        "def on_inbox(data, sender, api):\n"
+        "def on_inbox(msg, api):\n"
         "    raise RuntimeError('inbox exploded')\n");
 
     PythonEngine engine;
@@ -1749,7 +1759,7 @@ TEST_F(PythonEngineTest, InvokeOnInbox_ScriptError)
 
     EXPECT_EQ(engine.script_error_count(), 0u);
     float inbox_data = 1.0f;
-    engine.invoke_on_inbox(&inbox_data, sizeof(inbox_data), "SENDER-00000001");
+    engine.invoke_on_inbox({&inbox_data, sizeof(inbox_data), "SENDER-00000001", 1});
     EXPECT_GE(engine.script_error_count(), 1u)
         << "on_inbox raising RuntimeError should increment script_error_count";
 
@@ -1763,7 +1773,7 @@ TEST_F(PythonEngineTest, InvokeOnInbox_ScriptError)
 TEST_F(PythonEngineTest, Api_ProducerQueueState_WithoutQueue)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     cap = api.out_capacity()
     pol = api.out_policy()
     assert cap == 0, f"expected out_capacity==0, got {cap}"
@@ -1776,7 +1786,7 @@ def on_produce(out_slot, fz, msgs, api):
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed -- producer queue-state defaults incorrect";
 
@@ -1786,7 +1796,7 @@ def on_produce(out_slot, fz, msgs, api):
 TEST_F(PythonEngineTest, Api_ProcessorQueueState_DualDefaults)
 {
     write_script(R"(
-def on_process(in_slot, out_slot, fz, msgs, api):
+def on_process(rx, tx, msgs, api):
     assert api.in_capacity() == 0, f"in_capacity={api.in_capacity()}"
     assert api.in_policy() == "", f"in_policy='{api.in_policy()}'"
     assert api.out_capacity() == 0, f"out_capacity={api.out_capacity()}"
@@ -1819,7 +1829,8 @@ def on_process(in_slot, out_slot, fz, msgs, api):
 
     std::vector<IncomingMessage> msgs;
     auto result = engine.invoke_process(
-        nullptr, 0, nullptr, 0, nullptr, 0, nullptr, msgs);
+        InvokeRx{nullptr, 0, nullptr, 0},
+        InvokeTx{nullptr, 0, nullptr, 0}, msgs);
     EXPECT_EQ(result, InvokeResult::Discard);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed -- processor queue-state defaults incorrect";
@@ -1834,7 +1845,7 @@ def on_process(in_slot, out_slot, fz, msgs, api):
 TEST_F(PythonEngineTest, Api_CtrlQueueDropped_DefaultZero)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     v = api.ctrl_queue_dropped()
     assert v == 0, f"expected ctrl_queue_dropped==0, got {v}"
     return False
@@ -1845,7 +1856,7 @@ def on_produce(out_slot, fz, msgs, api):
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed -- ctrl_queue_dropped should be 0";
 
@@ -1859,7 +1870,7 @@ def on_produce(out_slot, fz, msgs, api):
 TEST_F(PythonEngineTest, Metrics_AllLoopFields_Present)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     m = api.metrics()
     assert "loop" in m, "loop group must exist in metrics"
     loop = m["loop"]
@@ -1889,7 +1900,7 @@ def on_produce(out_slot, fz, msgs, api):
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed -- loop metrics fields incorrect";
 
@@ -1903,7 +1914,7 @@ def on_produce(out_slot, fz, msgs, api):
 TEST_F(PythonEngineTest, Api_CustomMetrics_OverwriteSameKey)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     api.report_metric("x", 1)
     api.report_metric("x", 2)
     m = api.metrics()
@@ -1917,7 +1928,7 @@ def on_produce(out_slot, fz, msgs, api):
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed -- custom metric overwrite incorrect";
 
@@ -1927,7 +1938,7 @@ def on_produce(out_slot, fz, msgs, api):
 TEST_F(PythonEngineTest, Api_CustomMetrics_ZeroValue)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     api.report_metric("x", 0.0)
     m = api.metrics()
     assert "custom" in m, "custom group must exist even with zero value"
@@ -1941,7 +1952,7 @@ def on_produce(out_slot, fz, msgs, api):
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed -- zero-value custom metric incorrect";
 
@@ -1955,7 +1966,7 @@ def on_produce(out_slot, fz, msgs, api):
 TEST_F(PythonEngineTest, InvokeProduce_EmptyMessagesList)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     assert len(msgs) == 0, f"expected empty msgs, got {len(msgs)}"
     return False
 )");
@@ -1967,7 +1978,7 @@ def on_produce(out_slot, fz, msgs, api):
     std::vector<IncomingMessage> msgs; // empty
 
     auto result =
-        engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+        engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(result, InvokeResult::Discard);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed -- empty msgs list incorrect";
@@ -1982,7 +1993,7 @@ def on_produce(out_slot, fz, msgs, api):
 TEST_F(PythonEngineTest, Api_StopReason_AfterCriticalError)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     reason = api.stop_reason()
     assert reason == "critical_error", f"expected 'critical_error', got '{reason}'"
     return False
@@ -1996,7 +2007,7 @@ def on_produce(out_slot, fz, msgs, api):
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "stop_reason should be 'critical_error' after set_critical_error()";
 
@@ -2010,7 +2021,7 @@ def on_produce(out_slot, fz, msgs, api):
 TEST_F(PythonEngineTest, Api_ProcessorChannels_InOut)
 {
     write_script(R"(
-def on_process(in_slot, out_slot, fz, msgs, api):
+def on_process(rx, tx, msgs, api):
     ic = api.in_channel()
     oc = api.out_channel()
     assert ic == "sensor.input", f"in_channel mismatch: {ic}"
@@ -2043,9 +2054,9 @@ def on_process(in_slot, out_slot, fz, msgs, api):
     float in_data  = 1.0f;
     float out_data = 0.0f;
     std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_process(&in_data, sizeof(in_data),
-                                         &out_data, sizeof(out_data),
-                                         nullptr, 0, nullptr, msgs);
+    auto result = engine.invoke_process(
+        InvokeRx{&in_data, sizeof(in_data), nullptr, 0},
+        InvokeTx{&out_data, sizeof(out_data), nullptr, 0}, msgs);
     EXPECT_EQ(result, InvokeResult::Discard);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed -- processor channels do not match context";
@@ -2060,7 +2071,7 @@ def on_process(in_slot, out_slot, fz, msgs, api):
 TEST_F(PythonEngineTest, Api_OpenInbox_WithoutBroker)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     result = api.open_inbox("some-uid")
     assert result is None, f"expected None, got {result}"
     return False
@@ -2072,7 +2083,7 @@ def on_produce(out_slot, fz, msgs, api):
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
     auto result =
-        engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+        engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(result, InvokeResult::Discard);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "api.open_inbox() without broker should return None, not raise";
@@ -2087,7 +2098,7 @@ def on_produce(out_slot, fz, msgs, api):
 TEST_F(PythonEngineTest, Api_ReportMetrics_NonDictArg_IsError)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     api.report_metrics(42)  # wrong type
     return False
 )");
@@ -2097,7 +2108,7 @@ def on_produce(out_slot, fz, msgs, api):
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_GE(engine.script_error_count(), 1u)
         << "report_metrics(42) should produce a script error (type mismatch)";
 
@@ -2118,7 +2129,7 @@ def on_init(api):
     _api_ref = api
     api.shared_data['init_ran'] = True
 
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     return False
 
 def on_stop(api):
@@ -2160,10 +2171,11 @@ def get_stop_ran():
 TEST_F(PythonEngineTest, Api_ConsumerQueueState_WithoutQueue)
 {
     write_script(R"(
-def on_consume(in_slot, fz, msgs, api):
+def on_consume(rx, msgs, api):
     assert api.in_capacity() == 0, f"in_capacity: {api.in_capacity()}"
     assert api.in_policy() == "", f"in_policy: {api.in_policy()}"
     assert api.last_seq() == 0, f"last_seq: {api.last_seq()}"
+    return True
 )");
 
     RoleHostCore core;
@@ -2187,7 +2199,7 @@ def on_consume(in_slot, fz, msgs, api):
 
     float buf = 1.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_consume(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_consume(InvokeRx{&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u);
     engine.finalize();
 }
@@ -2195,7 +2207,7 @@ def on_consume(in_slot, fz, msgs, api):
 TEST_F(PythonEngineTest, Api_EnvironmentStrings_LogsDirRunDir)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     assert isinstance(api.logs_dir(), str), "logs_dir must be str"
     assert isinstance(api.run_dir(), str), "run_dir must be str"
     # When role_dir is empty, logs_dir and run_dir are empty
@@ -2207,7 +2219,7 @@ def on_produce(out_slot, fz, msgs, api):
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u);
     engine.finalize();
 }
@@ -2215,7 +2227,7 @@ def on_produce(out_slot, fz, msgs, api):
 TEST_F(PythonEngineTest, Api_SpinlockCount_WithoutSHM)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     assert api.spinlock_count() == 0, f"spinlock_count: {api.spinlock_count()}"
     return False
 )");
@@ -2225,7 +2237,7 @@ def on_produce(out_slot, fz, msgs, api):
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u);
     engine.finalize();
 }
@@ -2233,7 +2245,7 @@ def on_produce(out_slot, fz, msgs, api):
 TEST_F(PythonEngineTest, Api_Spinlock_WithoutSHM_IsError)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     try:
         api.spinlock(0)
         assert False, "spinlock(0) should raise without SHM"
@@ -2247,7 +2259,7 @@ def on_produce(out_slot, fz, msgs, api):
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "try/except should catch the error, not propagate";
     engine.finalize();
@@ -2256,7 +2268,7 @@ def on_produce(out_slot, fz, msgs, api):
 TEST_F(PythonEngineTest, Api_Flexzone_WithoutSHM_ReturnsNone)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     result = api.flexzone()
     assert result is None, f"flexzone should be None without SHM, got {result}"
     return False
@@ -2267,7 +2279,7 @@ def on_produce(out_slot, fz, msgs, api):
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u);
     engine.finalize();
 }
@@ -2275,13 +2287,13 @@ def on_produce(out_slot, fz, msgs, api):
 TEST_F(PythonEngineTest, Api_AsNumpy_ArrayField)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     try:
         import numpy as np
     except ImportError as e:
         raise RuntimeError(f"numpy not available: {e}") from e
 
-    arr = api.as_numpy(out_slot.values)
+    arr = api.as_numpy(tx.slot.values)
     assert isinstance(arr, np.ndarray), f"expected ndarray, got {type(arr)}"
     assert arr.dtype == np.float32, f"expected float32, got {arr.dtype}"
     assert len(arr) == 4, f"expected 4 elements, got {len(arr)}"
@@ -2320,7 +2332,7 @@ def on_produce(out_slot, fz, msgs, api):
     // With aligned packing, no padding between float and float[4]
     float buf[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
     std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_produce(buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    auto result = engine.invoke_produce({buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(result, InvokeResult::Commit);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script error — check numpy availability or as_numpy implementation";
@@ -2337,9 +2349,9 @@ def on_produce(out_slot, fz, msgs, api):
 TEST_F(PythonEngineTest, Api_AsNumpy_NonArrayField_Throws)
 {
     write_script(R"(
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     try:
-        api.as_numpy(out_slot.value)  # scalar, not array
+        api.as_numpy(tx.slot.value)  # scalar, not array
         assert False, "as_numpy on scalar should raise"
     except TypeError as e:
         assert "ctypes array" in str(e), f"wrong error: {e}"
@@ -2351,7 +2363,7 @@ def on_produce(out_slot, fz, msgs, api):
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(&buf, sizeof(buf), nullptr, 0, nullptr, msgs);
+    engine.invoke_produce({&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "try/except should catch the TypeError";
     engine.finalize();
