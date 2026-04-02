@@ -42,6 +42,17 @@ static auto hub_module() { return ::pylabhub::hub::GetLifecycleModule(); }
 namespace
 {
 
+/// Create a single-field schema for ShmQueue (required by establish_channel).
+std::vector<hub::SchemaFieldDesc> make_schema(const std::string &type_str,
+                                               uint32_t count = 1, uint32_t length = 0)
+{
+    hub::SchemaFieldDesc f;
+    f.type_str = type_str;
+    f.count    = count;
+    f.length   = length;
+    return {f};
+}
+
 struct BrokerHandle
 {
     std::unique_ptr<BrokerService> service;
@@ -1262,6 +1273,7 @@ int producer_consumer_forwarding_api(int /*argc*/, char ** /*argv*/)
             popts.has_shm      = true;
             popts.shm_config   = make_shm_config();
             popts.item_size    = sizeof(double);
+            popts.zmq_schema = make_schema("float64");
             popts.timeout_ms   = 3000;
 
             auto producer = Producer::create(messenger, popts);
@@ -1285,6 +1297,7 @@ int producer_consumer_forwarding_api(int /*argc*/, char ** /*argv*/)
             copts.channel_name      = popts.channel_name;
             copts.shm_shared_secret = kTestShmSecret;
             copts.item_size         = sizeof(double);
+            copts.zmq_schema = make_schema("float64");
             copts.timeout_ms        = 3000;
 
             auto consumer = Consumer::connect(messenger, copts);
@@ -1326,6 +1339,7 @@ int construction_time_checksum(int /*argc*/, char ** /*argv*/)
             popts.shm_config      = make_shm_config();
             popts.shm_config.checksum_policy = ChecksumPolicy::Manual;
             popts.item_size       = sizeof(uint64_t);
+            popts.zmq_schema = make_schema("uint64");
             popts.checksum_policy = ChecksumPolicy::Enforced;  // construction-time flag
             popts.timeout_ms      = 3000;
 
@@ -1344,6 +1358,7 @@ int construction_time_checksum(int /*argc*/, char ** /*argv*/)
             copts.channel_name      = popts.channel_name;
             copts.shm_shared_secret = kTestShmSecret;
             copts.item_size         = sizeof(uint64_t);
+            copts.zmq_schema = make_schema("uint64");
             copts.checksum_policy   = ChecksumPolicy::Enforced;  // construction-time flag
             copts.timeout_ms        = 3000;
 
@@ -1389,7 +1404,9 @@ int flexzone_through_service_layer(int /*argc*/, char ** /*argv*/)
             popts.has_shm      = true;
             popts.shm_config   = shm_cfg;
             popts.item_size    = sizeof(double);
+            popts.zmq_schema = make_schema("float64");
             popts.flexzone_size = kFzSize;
+            popts.fz_schema = make_schema("float64");
             popts.timeout_ms   = 3000;
 
             auto producer = Producer::create(messenger, popts);
@@ -1409,6 +1426,7 @@ int flexzone_through_service_layer(int /*argc*/, char ** /*argv*/)
             copts.channel_name      = popts.channel_name;
             copts.shm_shared_secret = kTestShmSecret;
             copts.item_size         = sizeof(double);
+            copts.zmq_schema = make_schema("float64");
             copts.flexzone_size     = kFzSize;
             copts.timeout_ms        = 3000;
 
@@ -1447,6 +1465,7 @@ int queue_metrics_forwarding(int /*argc*/, char ** /*argv*/)
             popts.has_shm       = true;
             popts.shm_config    = make_shm_config();
             popts.item_size     = sizeof(uint64_t);
+            popts.zmq_schema = make_schema("uint64");
             // Timing is role-level — not set on queue options.
             popts.timeout_ms    = 3000;
 
@@ -1667,6 +1686,8 @@ int runtime_verify_checksum_toggle(int /*argc*/, char ** /*argv*/)
             popts.shm_config.checksum_policy = ChecksumPolicy::Manual;
             popts.shm_config.logical_unit_size = sizeof(TestSlot);
             popts.item_size       = sizeof(TestSlot);
+            { hub::SchemaFieldDesc f1, f2; f1.type_str = "uint64"; f2.type_str = "uint64";
+              popts.zmq_schema = {f1, f2}; }
             popts.checksum_policy = ChecksumPolicy::None; // NO ShmQueue-level checksum
             popts.timeout_ms      = 3000;
 
@@ -1689,6 +1710,8 @@ int runtime_verify_checksum_toggle(int /*argc*/, char ** /*argv*/)
             copts.channel_name      = popts.channel_name;
             copts.shm_shared_secret = kTestShmSecret;
             copts.item_size         = sizeof(TestSlot);
+            { hub::SchemaFieldDesc f1, f2; f1.type_str = "uint64"; f2.type_str = "uint64";
+              copts.zmq_schema = {f1, f2}; }
             copts.checksum_policy   = ChecksumPolicy::None;
             copts.timeout_ms        = 3000;
 
@@ -1759,6 +1782,7 @@ int checksum_mismatch_through_forwarding(int /*argc*/, char ** /*argv*/)
             popts.shm_config      = make_shm_config();
             popts.shm_config.checksum_policy = ChecksumPolicy::Manual;
             popts.item_size       = sizeof(uint64_t);
+            popts.zmq_schema = make_schema("uint64");
             popts.checksum_policy = ChecksumPolicy::Enforced;
             popts.timeout_ms      = 3000;
 
@@ -1777,6 +1801,7 @@ int checksum_mismatch_through_forwarding(int /*argc*/, char ** /*argv*/)
             copts.channel_name      = popts.channel_name;
             copts.shm_shared_secret = kTestShmSecret;
             copts.item_size         = sizeof(uint64_t);
+            copts.zmq_schema = make_schema("uint64");
             copts.checksum_policy   = ChecksumPolicy::Enforced;
             copts.timeout_ms        = 3000;
 
