@@ -487,7 +487,7 @@ The `script.type` field is **required** when `script.path` is set. It selects wh
   vault/
   script/
     python/
-      __init__.py      ← on_init(api) / on_produce(out_slot, fz, msgs, api) -> bool / on_stop(api)
+      __init__.py      ← on_init(api) / on_produce(tx, msgs, api) -> bool / on_stop(api)
     lua/               ← present only when type = "lua"
       main.lua
   logs/
@@ -513,7 +513,7 @@ The `script.type` field is **required** when `script.path` is set. It selects wh
   vault/
   script/
     python/
-      __init__.py      ← on_init(api) / on_consume(in_slot, fz, msgs, api) / on_stop(api)
+      __init__.py      ← on_init(api) / on_consume(rx, msgs, api) -> bool / on_stop(api)
     lua/               ← present only when type = "lua"
       main.lua
   logs/
@@ -539,7 +539,7 @@ The `script.type` field is **required** when `script.path` is set. It selects wh
   vault/
   script/
     python/
-      __init__.py      ← on_init(api) / on_process(in_slot, out_slot, fz, msgs, api) -> bool / on_stop(api)
+      __init__.py      ← on_init(api) / on_process(rx, tx, msgs, api) -> bool / on_stop(api)
     lua/               ← present only when type = "lua"
       main.lua
   logs/

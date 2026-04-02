@@ -66,7 +66,7 @@ pylabhub-consumer   — Data sink. Reads slots from a named channel.
                       Runs user Python on_consume() callback per slot.
 
 pylabhub-processor  — Data transformer. Reads from one channel, writes to another.
-                      Runs user Python on_process(in_slot, out_slot) per input slot.
+                      Runs user Python on_process(rx, tx) per input slot.
 ```
 
 Data flow in a typical SHM pipeline:
@@ -367,14 +367,14 @@ Example `producer.json`:
 def on_init(api):
     api.log('info', f"Producer {api.uid()} starting on channel {api.channel()}")
 
-def on_produce(out_slot, fz, msgs, api) -> bool:
-    # out_slot  — ctypes struct, writable. Fill fields and return True to publish.
-    # fz        — flexzone ctypes struct (None if no flexzone configured)
+def on_produce(tx, msgs, api) -> bool:
+    # tx.slot   — ctypes struct, writable. Fill fields and return True to publish.
+    # tx.fz     — flexzone ctypes struct (None if no flexzone configured)
     # msgs      — list of (sender: str, data: bytes) from ZMQ messaging
     # api       — ProducerAPI proxy (see §8.3)
     import time
-    out_slot.ts    = time.time()
-    out_slot.value = 42.0
+    tx.slot.ts    = time.time()
+    tx.slot.value = 42.0
     return True    # True/None = commit (publish); False = discard (loop continues)
 
 def on_stop(api):
@@ -462,14 +462,15 @@ Example `consumer.json`:
 def on_init(api):
     api.log('info', f"Consumer {api.uid()} starting on channel {api.channel()}")
 
-def on_consume(in_slot, fz, msgs, api):
-    # in_slot  — ctypes struct (read-only view). None on timeout.
-    # fz       — flexzone ctypes struct (None if no flexzone configured or ZMQ transport)
+def on_consume(rx, msgs, api):
+    # rx.slot  — ctypes struct (read-only view). None on timeout.
+    # rx.fz    — flexzone ctypes struct (None if no flexzone configured or ZMQ transport)
     # msgs     — list of (sender: str, data: bytes)
     # api      — ConsumerAPI proxy
-    if in_slot is None:
-        return  # timeout
-    print(f"ts={in_slot.ts:.3f}  value={in_slot.value}")
+    if rx.slot is None:
+        return True  # timeout
+    print(f"ts={rx.slot.ts:.3f}  value={rx.slot.value}")
+    return True
 
 def on_stop(api):
     api.log('info', "Consumer stopping")
@@ -586,16 +587,16 @@ Example `processor.json`:
 def on_init(api):
     api.log('info', f"Processor {api.uid()} ready")
 
-def on_process(in_slot, out_slot, fz, msgs, api) -> bool:
-    # in_slot   — ctypes struct, read-only view of input slot (None on timeout)
-    # out_slot  — ctypes struct, writable view of output slot (None on timeout)
-    # fz        — output flexzone ctypes struct (None if not configured or ZMQ out)
+def on_process(rx, tx, msgs, api) -> bool:
+    # rx.slot   — ctypes struct, read-only view of input slot (None on timeout)
+    # tx.slot   — ctypes struct, writable view of output slot (None on timeout)
+    # tx.fz     — output flexzone ctypes struct (None if not configured or ZMQ out)
     # msgs      — list of (sender: str, data: bytes) inbox/ZMQ messages
     # api       — ProcessorAPI proxy
-    if in_slot is None:
+    if rx.slot is None:
         return False   # timeout — discard output slot
-    out_slot.ts         = in_slot.ts
-    out_slot.value_norm = in_slot.value / 100.0
+    tx.slot.ts         = rx.slot.ts
+    tx.slot.value_norm = rx.slot.value / 100.0
     return True        # True/None = commit; False = discard
 
 def on_stop(api):
@@ -635,17 +636,17 @@ Slot fields are mapped to Python `ctypes` types in `__init__.py`:
 Access array fields:
 
 ```python
-samples = in_slot.samples          # ctypes array
-values  = list(in_slot.samples)    # Python list (copy)
-arr = api.as_numpy(in_slot.samples)  # zero-copy numpy view (dtype inferred)
+samples = rx.slot.samples          # ctypes array
+values  = list(rx.slot.samples)    # Python list (copy)
+arr = api.as_numpy(rx.slot.samples)  # zero-copy numpy view (dtype inferred)
 ```
 
 For the output slot, write directly:
 
 ```python
-out_slot.samples[:] = [x * 2 for x in in_slot.samples]
+tx.slot.samples[:] = [x * 2 for x in rx.slot.samples]
 # or with numpy:
-api.as_numpy(out_slot.samples)[:] = source_array
+api.as_numpy(tx.slot.samples)[:] = source_array
 ```
 
 `api.as_numpy(field)` returns a zero-copy `numpy.ndarray` view of a ctypes array field,
@@ -750,12 +751,12 @@ def on_init(api):
     fz.offset = 0.0
     api.update_flexzone_checksum()
 
-def on_produce(out_slot, fz, msgs, api):
-    out_slot.value = raw * fz.scale + fz.offset
+def on_produce(tx, msgs, api):
+    tx.slot.value = raw * tx.fz.scale + tx.fz.offset
     return True
 ```
 
-Consumers see the flexzone as the `fz` callback argument (zero-copy read-only view).
+Consumers see the flexzone as `rx.fz` (zero-copy read-only view).
 
 ### 8.5 ZMQ messaging between roles
 
@@ -763,7 +764,7 @@ Producers and processors can send arbitrary bytes to connected consumers via the
 broker's P2C ZMQ ctrl socket (control plane relay):
 
 ```python
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     # Broadcast to all connected consumers
     api.broadcast(b"heartbeat")
 
@@ -801,15 +802,15 @@ def on_init(api):
 On the receiving side (`on_inbox` callback, optional):
 
 ```python
-def on_inbox(inbox_slot, sender, api):
-    api.log('info', f"Inbox from {sender}: cmd={inbox_slot.cmd}")
+def on_inbox(msg, api):
+    api.log('info', f"Inbox from {msg.sender_uid}: cmd={msg.data.cmd}")
 ```
 
 ### 8.7 Error handling patterns
 
 ```python
 # Graceful shutdown on unrecoverable error
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     try:
         result = do_measurement()
     except DeviceError as e:
@@ -818,20 +819,22 @@ def on_produce(out_slot, fz, msgs, api):
         return False
 
 # Timeout handling
-def on_consume(in_slot, fz, msgs, api):
-    if in_slot is None:
+def on_consume(rx, msgs, api):
+    if rx.slot is None:
         api.log('warn', "No data for 5 seconds")
-        return   # no-op on timeout
+        return True   # no-op on timeout
+    return True
 
 # Tracking gaps in sequence (consumer only)
 _prev_seq = None
-def on_consume(in_slot, fz, msgs, api):
+def on_consume(rx, msgs, api):
     global _prev_seq
-    if in_slot is None: return
+    if rx.slot is None: return True
     seq = api.last_seq()
     if _prev_seq is not None and seq != _prev_seq + 1:
         api.log('warn', f"Gap: expected {_prev_seq+1}, got {seq}")
     _prev_seq = seq
+    return True
 ```
 
 ---
@@ -987,7 +990,7 @@ for `CHANNEL_CLOSING_NOTIFY` to drain consumers, then exits.
 
 ```python
 # In any callback, inspect live metrics
-def on_produce(out_slot, fz, msgs, api):
+def on_produce(tx, msgs, api):
     m = api.metrics()
     if m.get('loop_overrun_count', 0) > 0:
         api.log('warn', f"Loop overruns: {m['loop_overrun_count']}")
