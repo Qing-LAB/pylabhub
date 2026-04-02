@@ -23,7 +23,7 @@
 
 ### Header Contamination (2026-03-23)
 
-- [ ] **HIGH**: `script_host_helpers.hpp` is in public include tree (`src/include/utils/`) but is internal; includes `<pybind11/embed.h>` which contaminates all consumers. Move to `src/scripting/` (private header).
+- [x] **DONE**: `script_host_helpers.hpp` split into `schema_utils.hpp` (clean, no pybind11) + `python_helpers.hpp` (pybind11-specific). Both in `src/scripting/` (private). Old file deleted. 2026-04-02.
 - [ ] **MED**: `script_host_schema.hpp` is in public include tree but marked internal. Either move to `src/scripting/` or document as public API.
 
 ### DataBlock/ShmQueue Ownership Refactor (2026-04-02)

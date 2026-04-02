@@ -49,7 +49,7 @@ namespace pylabhub::scripting
  * | "string"  | char[N]    | c_char * N    | N B  | requires length > 0          |
  * | "bytes"   | uint8_t[N] | c_uint8 * N   | N B  | requires length > 0          |
  *
- * Validation is enforced by parse_schema_json() (script_host_helpers.hpp).
+ * Validation is enforced by parse_schema_json() (schema_utils.hpp).
  *
  * @par Arrays
  * For numeric types: `count > 1` creates a fixed-size array (e.g., `float64[4]`).

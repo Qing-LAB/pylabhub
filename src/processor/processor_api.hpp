@@ -32,7 +32,7 @@
 #include "utils/hub_producer.hpp"
 #include "utils/hub_queue.hpp"
 #include "utils/messenger.hpp"
-#include "script_host_helpers.hpp"
+#include "python_helpers.hpp"
 #include "utils/shared_memory_spinlock.hpp"
 
 #include "utils/json_fwd.hpp"

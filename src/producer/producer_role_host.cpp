@@ -18,7 +18,7 @@
 
 #include "role_host_helpers.hpp"
 #include "zmq_poll_loop.hpp"
-#include "script_host_helpers.hpp" // resolve_schema, schema_spec_to_zmq_fields, compute_schema_hash
+#include "schema_utils.hpp"
 
 #include <chrono>
 #include <cstring>

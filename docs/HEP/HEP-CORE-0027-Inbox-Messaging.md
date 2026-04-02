@@ -379,7 +379,7 @@ elif ack == 255:
 | InboxClient | `src/include/utils/hub_inbox_queue.hpp` | DEALER sender API |
 | Implementation | `src/utils/hub/hub_inbox_queue.cpp` | ZMQ + msgpack + checksum |
 | Wire helpers | `src/utils/hub/zmq_wire_helpers.hpp` | Shared msgpack pack/unpack |
-| Script handle | `src/scripting/script_host_helpers.hpp` | `InboxHandle` wrapper |
+| Script handle | `src/scripting/python_helpers.hpp` | `InboxHandle` wrapper |
 | Drain helper | `src/scripting/role_host_helpers.hpp` | `drain_inbox_sync()` |
 | Discovery | `src/include/utils/messenger.hpp` | `query_role_info()` for ROLE_INFO_REQ |
 | Protocol | HEP-CORE-0007 §12.4 | ROLE_INFO_REQ/ACK message format |

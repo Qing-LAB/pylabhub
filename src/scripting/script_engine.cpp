@@ -8,7 +8,7 @@
  */
 #include "utils/script_engine.hpp"
 
-#include "script_host_helpers.hpp"
+#include "schema_utils.hpp"
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/config/checksum_config.hpp"
 #include "utils/logger.hpp"
