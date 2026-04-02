@@ -177,7 +177,21 @@ void ProcessorRoleHost::worker_main_()
     const std::string out_packing =
         config_.out_transport().zmq_packing.empty() ? "aligned" : config_.out_transport().zmq_packing;
 
-    // Register input slot type.
+    // Compute sizes from schema (authoritative — infrastructure owns layout).
+    in_schema_slot_size_  = scripting::compute_schema_size(in_slot_spec_, in_packing);
+    out_schema_slot_size_ = scripting::compute_schema_size(out_slot_spec_, out_packing);
+    {
+        size_t out_fz_size = scripting::compute_schema_size(out_fz_local, out_packing);
+        out_fz_size = (out_fz_size + 4095U) & ~size_t{4095U};
+        core_.set_out_fz_spec(scripting::SchemaSpec{out_fz_local}, out_fz_size);
+    }
+    {
+        size_t in_fz_size = scripting::compute_schema_size(in_fz_local, in_packing);
+        in_fz_size = (in_fz_size + 4095U) & ~size_t{4095U};
+        core_.set_in_fz_spec(scripting::SchemaSpec{in_fz_local}, in_fz_size);
+    }
+
+    // Register slot and flexzone types with engine (engine validates struct matches).
     if (in_slot_spec_.has_schema)
     {
         if (!engine_->register_slot_type(in_slot_spec_, "InSlotFrame", in_packing))
@@ -187,10 +201,7 @@ void ProcessorRoleHost::worker_main_()
             ready_promise_.set_value(false);
             return;
         }
-        in_schema_slot_size_ = engine_->type_sizeof("InSlotFrame");
     }
-
-    // Register output slot type.
     if (out_slot_spec_.has_schema)
     {
         if (!engine_->register_slot_type(out_slot_spec_, "OutSlotFrame", out_packing))
@@ -200,10 +211,7 @@ void ProcessorRoleHost::worker_main_()
             ready_promise_.set_value(false);
             return;
         }
-        out_schema_slot_size_ = engine_->type_sizeof("OutSlotFrame");
     }
-
-    // Register output flexzone type.
     if (out_fz_local.has_schema)
     {
         if (!engine_->register_slot_type(out_fz_local, "OutFlexFrame", out_packing))
@@ -213,16 +221,7 @@ void ProcessorRoleHost::worker_main_()
             ready_promise_.set_value(false);
             return;
         }
-        size_t fz_size = engine_->type_sizeof("OutFlexFrame");
-        fz_size = (fz_size + 4095U) & ~size_t{4095U};
-        core_.set_out_fz_spec(std::move(out_fz_local), fz_size);
     }
-    else
-    {
-        core_.set_out_fz_spec(std::move(out_fz_local), 0);
-    }
-
-    // Register input flexzone type.
     if (in_fz_local.has_schema)
     {
         if (!engine_->register_slot_type(in_fz_local, "InFlexFrame", in_packing))
@@ -232,13 +231,6 @@ void ProcessorRoleHost::worker_main_()
             ready_promise_.set_value(false);
             return;
         }
-        size_t in_fz_size = engine_->type_sizeof("InFlexFrame");
-        in_fz_size = (in_fz_size + 4095U) & ~size_t{4095U};
-        core_.set_in_fz_spec(std::move(in_fz_local), in_fz_size);
-    }
-    else
-    {
-        core_.set_in_fz_spec(std::move(in_fz_local), 0);
     }
 
     // Resolve and register inbox schema (alongside slot/fz above).

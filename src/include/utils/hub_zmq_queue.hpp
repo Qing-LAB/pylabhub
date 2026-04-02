@@ -66,6 +66,7 @@
  * stop() joins the recv_thread_ (read mode) and closes the ZMQ context.
  */
 #include "utils/hub_queue.hpp"
+#include "utils/schema_field_layout.hpp"
 
 #include <array>
 #include <cstdint>
@@ -85,22 +86,12 @@ struct ZmqQueueImpl;
 inline constexpr size_t kZmqDefaultBufferDepth = 64;
 
 /**
- * @struct ZmqSchemaField
- * @brief Describes one typed field for schema-mode ZmqQueue encode/decode.
+ * @typedef ZmqSchemaField
+ * @brief Alias for SchemaFieldDesc — backward-compatible name used by ZmqQueue/InboxQueue.
  *
- * Scalars (count == 1, not string/bytes) → native msgpack type on the wire.
- * Arrays (count > 1) and string/bytes    → msgpack bin (raw bytes, size-validated).
+ * The canonical type definition is in schema_field_layout.hpp.
  */
-struct ZmqSchemaField
-{
-    /// "bool","int8","uint8","int16","uint16","int32","uint32",
-    /// "int64","uint64","float32","float64","string","bytes"
-    std::string type_str;
-    /// Elements: 1 = scalar, >1 = array encoded as bin.
-    uint32_t    count{1};
-    /// For "string"/"bytes": total byte length.  Ignored for numeric types.
-    uint32_t    length{0};
-};
+using ZmqSchemaField = SchemaFieldDesc;
 
 /**
  * @class ZmqQueue

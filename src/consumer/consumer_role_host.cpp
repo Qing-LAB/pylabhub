@@ -157,7 +157,15 @@ void ConsumerRoleHost::worker_main_()
     const std::string packing =
         tr.zmq_packing.empty() ? "aligned" : tr.zmq_packing;
 
-    // Register slot type (read-only).
+    // Compute sizes from schema (authoritative — infrastructure owns layout).
+    in_schema_slot_size_ = scripting::compute_schema_size(in_slot_spec_, packing);
+    {
+        size_t fz_size = scripting::compute_schema_size(in_fz_local, packing);
+        fz_size = (fz_size + 4095U) & ~size_t{4095U};
+        core_.set_in_fz_spec(scripting::SchemaSpec{in_fz_local}, fz_size);
+    }
+
+    // Register slot type with engine (engine validates its struct matches).
     if (in_slot_spec_.has_schema)
     {
         if (!engine_->register_slot_type(in_slot_spec_, "InSlotFrame", packing))
@@ -167,10 +175,9 @@ void ConsumerRoleHost::worker_main_()
             ready_promise_.set_value(false);
             return;
         }
-        in_schema_slot_size_ = engine_->type_sizeof("InSlotFrame");
     }
 
-    // Register flexzone type.
+    // Register flexzone type with engine.
     if (in_fz_local.has_schema)
     {
         if (!engine_->register_slot_type(in_fz_local, "InFlexFrame", packing))
@@ -180,13 +187,6 @@ void ConsumerRoleHost::worker_main_()
             ready_promise_.set_value(false);
             return;
         }
-        size_t fz_size = engine_->type_sizeof("InFlexFrame");
-        fz_size = (fz_size + 4095U) & ~size_t{4095U};
-        core_.set_in_fz_spec(std::move(in_fz_local), fz_size);
-    }
-    else
-    {
-        core_.set_in_fz_spec(std::move(in_fz_local), 0);
     }
 
     // Resolve and register inbox schema (alongside slot/fz above).
