@@ -62,6 +62,12 @@ public:
      * slot size and flexzone size via compute_field_layout(). Symmetric with
      * ZmqQueue::push_to().
      *
+     * Returns unique_ptr<ShmQueue> (concrete type, not QueueWriter base) so
+     * the caller can store as ShmQueue for direct access to SHM-specific
+     * methods (raw_producer(), spinlock), or move into unique_ptr<QueueWriter>
+     * via implicit upcast when only the unified queue interface is needed.
+     * Use dynamic_cast for safe downcasting from QueueWriter* when needed.
+     *
      * @param channel_name       SHM segment name (from broker channel).
      * @param slot_schema        Slot field definitions.
      * @param slot_packing       "aligned" or "packed".
@@ -82,7 +88,7 @@ public:
      * @param fz_schema_info     Flexzone schema hash (stored in header).
      * @return QueueWriter, or nullptr on failure.
      */
-    [[nodiscard]] static std::unique_ptr<QueueWriter>
+    [[nodiscard]] static std::unique_ptr<ShmQueue>
     create_writer(const std::string &channel_name,
                   const std::vector<SchemaFieldDesc> &slot_schema,
                   const std::string &slot_packing,
@@ -119,7 +125,7 @@ public:
      * @param consumer_name      Consumer name.
      * @return QueueReader, or nullptr on failure or validation error.
      */
-    [[nodiscard]] static std::unique_ptr<QueueReader>
+    [[nodiscard]] static std::unique_ptr<ShmQueue>
     create_reader(const std::string &shm_name,
                   uint64_t shared_secret,
                   const std::vector<SchemaFieldDesc> &expected_slot_schema,

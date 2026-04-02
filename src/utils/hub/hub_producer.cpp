@@ -61,7 +61,6 @@ struct PendingCtrlSend
 struct ProducerImpl
 {
     ChannelHandle                      handle;
-    std::unique_ptr<DataBlockProducer> shm;
     Messenger                         *messenger{nullptr};
     std::atomic<bool>                  closed{false};
 
@@ -122,11 +121,10 @@ struct ProducerImpl
     // HEP-CORE-0021: ZMQ PUSH socket (non-null only when data_transport=="zmq").
     std::unique_ptr<QueueWriter> zmq_queue_;
 
-    // Queue abstraction Phase 2: unified QueueWriter.
-    // SHM transport: ShmQueue wrapping `shm`. ZMQ transport: alias for zmq_queue_.
-    // Non-null when item_size > 0 (SHM) or data_transport=="zmq".
-    std::unique_ptr<QueueWriter> shm_queue_writer_; ///< Owned ShmQueue (SHM only)
-    QueueWriter *queue_writer_{nullptr};
+    // Queue abstraction: unified QueueWriter.
+    // SHM transport: ShmQueue (owns DataBlock internally). ZMQ transport: ZmqQueue.
+    std::unique_ptr<ShmQueue>    shm_queue_;   ///< ShmQueue (owns DataBlock, SHM only)
+    QueueWriter                 *queue_writer_{nullptr}; ///< Alias to active queue (SHM or ZMQ)
 
     void run_peer_thread();
     void run_write_thread();
@@ -469,7 +467,8 @@ Producer::establish_channel(Messenger &messenger, ChannelHandle channel,
     impl->facade.context = raw;
 
     impl->facade.fn_get_shm = [](void *ctx) -> DataBlockProducer * {
-        return static_cast<ProducerImpl *>(ctx)->shm.get();
+        auto *sq = static_cast<ProducerImpl *>(ctx)->shm_queue_.get();
+        return sq ? sq->raw_producer() : nullptr;
     };
     impl->facade.fn_consumers = [](void *ctx) -> std::vector<std::string> {
         auto *p = static_cast<ProducerImpl *>(ctx);
@@ -617,7 +616,7 @@ Producer::establish_channel(Messenger &messenger, ChannelHandle channel,
     // SHM: ShmQueue creates DataBlock internally. ZMQ: use existing zmq_queue_.
     if (opts.has_shm && !opts.zmq_schema.empty())
     {
-        impl->shm_queue_writer_ = ShmQueue::create_writer(
+        impl->shm_queue_ = ShmQueue::create_writer(
             opts.channel_name,
             opts.zmq_schema, opts.zmq_packing,
             opts.fz_schema, opts.fz_packing,
@@ -631,12 +630,12 @@ Producer::establish_channel(Messenger &messenger, ChannelHandle channel,
             opts.always_clear_slot,
             opts.shm_config.hub_uid,
             opts.shm_config.hub_name);
-        if (!impl->shm_queue_writer_)
+        if (!impl->shm_queue_)
         {
             LOGGER_ERROR("[producer] ShmQueue creation failed for '{}'", opts.channel_name);
             return std::nullopt;
         }
-        impl->queue_writer_ = impl->shm_queue_writer_.get();
+        impl->queue_writer_ = impl->shm_queue_.get();
     }
     else if (impl->zmq_queue_)
     {
@@ -743,7 +742,7 @@ bool Producer::start()
     auto *impl_ptr = pImpl.get();
     pImpl->peer_thread_handle = std::thread([impl_ptr] { impl_ptr->run_peer_thread(); });
 
-    if (pImpl->shm)
+    if (pImpl->shm_queue_)
     {
         pImpl->write_thread_handle = std::thread([impl_ptr] { impl_ptr->run_write_thread(); });
     }
@@ -921,12 +920,12 @@ bool Producer::send_ctrl(const std::string &identity, std::string_view type,
 
 bool Producer::_has_shm() const noexcept
 {
-    return pImpl && !pImpl->closed && pImpl->shm != nullptr;
+    return pImpl && !pImpl->closed && pImpl->shm_queue_ != nullptr;
 }
 
 bool Producer::_is_started_and_has_shm() const noexcept
 {
-    return pImpl && !pImpl->closed && pImpl->shm != nullptr &&
+    return pImpl && !pImpl->closed && pImpl->shm_queue_ != nullptr &&
            pImpl->running.load(std::memory_order_relaxed);
 }
 
@@ -1007,12 +1006,14 @@ ChannelPattern Producer::pattern() const
 
 bool Producer::has_shm() const
 {
-    return pImpl && pImpl->shm != nullptr;
+    return pImpl && pImpl->shm_queue_ != nullptr;
 }
 
 DataBlockProducer *Producer::shm() noexcept
 {
-    return pImpl ? pImpl->shm.get() : nullptr;
+    // DEPRECATED — callers should use spinlock()/identity methods instead.
+    // Returns raw DataBlock pointer from ShmQueue for backward compatibility.
+    return pImpl && pImpl->shm_queue_ ? pImpl->shm_queue_->raw_producer() : nullptr;
 }
 
 ZmqQueue *Producer::queue() noexcept
@@ -1082,40 +1083,35 @@ void Producer::stop_queue()
 
 void *Producer::write_flexzone() noexcept
 {
-    if (!pImpl || !pImpl->shm) return nullptr;
-    auto fz = pImpl->shm->flexible_zone_span();
-    return fz.empty() ? nullptr : fz.data();
+    return (pImpl && pImpl->queue_writer_) ? pImpl->queue_writer_->write_flexzone() : nullptr;
 }
 
 const void *Producer::read_flexzone() const noexcept
 {
-    if (!pImpl || !pImpl->shm) return nullptr;
-    auto fz = pImpl->shm->flexible_zone_span();
-    return fz.empty() ? nullptr : fz.data();
+    return (pImpl && pImpl->queue_writer_) ? pImpl->queue_writer_->read_flexzone() : nullptr;
 }
 
 size_t Producer::flexzone_size() const noexcept
 {
-    if (!pImpl || !pImpl->shm) return 0;
-    return pImpl->shm->flexible_zone_span().size();
+    return (pImpl && pImpl->queue_writer_) ? pImpl->queue_writer_->flexzone_size() : 0;
 }
 
 void Producer::set_checksum_options(bool slot, bool fz) noexcept
 {
-    auto *sq = pImpl ? static_cast<ShmQueue *>(pImpl->shm_queue_writer_.get()) : nullptr;
+    auto *sq = pImpl ? static_cast<ShmQueue *>(pImpl->shm_queue_.get()) : nullptr;
     if (sq) sq->set_checksum_options(slot, fz);
 }
 
 void Producer::set_always_clear_slot(bool enable) noexcept
 {
-    auto *sq = pImpl ? static_cast<ShmQueue *>(pImpl->shm_queue_writer_.get()) : nullptr;
+    auto *sq = pImpl ? static_cast<ShmQueue *>(pImpl->shm_queue_.get()) : nullptr;
     if (sq) sq->set_always_clear_slot(enable);
 }
 
 void Producer::sync_flexzone_checksum() noexcept
 {
-    if (pImpl && pImpl->shm)
-        (void)pImpl->shm->update_checksum_flexible_zone();
+    if (pImpl && pImpl->queue_writer_)
+        pImpl->queue_writer_->sync_flexzone_checksum();
 }
 
 std::string Producer::queue_policy_info() const
@@ -1189,11 +1185,10 @@ void Producer::close()
     pImpl->on_peer_dead_cb        = nullptr;
 
     pImpl->handle.invalidate();
-    // Reset queue abstraction before shm — ShmQueue holds non-owning ref to DataBlock.
+    // Reset queue abstraction — ShmQueue owns DataBlock, destroyed with it.
     pImpl->queue_writer_ = nullptr;
-    pImpl->shm_queue_writer_.reset();
+    pImpl->shm_queue_.reset();   // destroys ShmQueue + DataBlock
     pImpl->zmq_queue_.reset();
-    pImpl->shm.reset();
     pImpl->closed = true;
 }
 

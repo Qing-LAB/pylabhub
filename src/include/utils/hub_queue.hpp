@@ -253,6 +253,13 @@ public:
     /** @brief Verify flexzone checksum. SHM-specific; ZMQ returns true. */
     virtual bool verify_flexzone_checksum() { return true; }
 
+    // ── Flexzone access (SHM provides data; ZMQ returns nullptr/0) ───────────
+
+    /** @brief Read-only flexzone pointer. nullptr if no flexzone or not SHM. */
+    virtual const void *read_flexzone() const noexcept { return nullptr; }
+    /** @brief Flexzone size in bytes. 0 if no flexzone or not SHM. */
+    virtual size_t flexzone_size() const noexcept { return 0; }
+
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     // Default implementations are no-ops (suitable for ShmQueue).
     // ZmqQueue overrides start()/stop() to manage its recv_thread_.
@@ -371,6 +378,17 @@ public:
     virtual void update_checksum() {}
     /** @brief Compute flexzone checksum. SHM-specific; ZMQ no-op. */
     virtual void update_flexzone_checksum() {}
+
+    // ── Flexzone access (SHM provides data; ZMQ returns nullptr/0) ───────────
+
+    /** @brief Writable flexzone pointer. nullptr if no flexzone or not SHM. */
+    virtual void *write_flexzone() noexcept { return nullptr; }
+    /** @brief Read-only flexzone pointer. nullptr if no flexzone or not SHM. */
+    virtual const void *read_flexzone() const noexcept { return nullptr; }
+    /** @brief Flexzone size in bytes. 0 if no flexzone or not SHM. */
+    virtual size_t flexzone_size() const noexcept { return 0; }
+    /** @brief Stamp flexzone checksum. Call after initial flexzone setup (e.g., on_init). */
+    virtual void sync_flexzone_checksum() noexcept {}
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     // Default implementations are no-ops (suitable for ShmQueue).
