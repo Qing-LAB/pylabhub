@@ -6,8 +6,9 @@
  * Wraps a DataBlockConsumer (read mode) or DataBlockProducer (write mode).
  * No ZMQ thread, no broker registration, no protocol.
  *
- * The caller is responsible for SHM setup (broker registration, DataBlock
- * creation/attachment) before constructing the ShmQueue.
+ * ShmQueue creates and owns its DataBlock internally. The factory receives
+ * schema + SHM parameters and computes sizes via compute_field_layout().
+ * Symmetric with ZmqQueue which creates and owns its ZMQ sockets.
  *
  * @par Thread safety
  * ShmQueue is NOT thread-safe; use from exactly one thread at a time.
@@ -17,9 +18,12 @@
  */
 #include "utils/hub_queue.hpp"
 #include "utils/data_block.hpp"
+#include "utils/schema_field_layout.hpp"
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace pylabhub::hub
 {
@@ -52,54 +56,85 @@ public:
     // ── Factories ─────────────────────────────────────────────────────────────
 
     /**
-     * @brief Create a read-mode ShmQueue from a DataBlockConsumer.
+     * @brief Create a write-mode ShmQueue (producer — creates SHM).
      *
-     * Takes ownership of the consumer. Returns a QueueReader*.
+     * Creates DataBlock internally from schema + SHM parameters. Computes
+     * slot size and flexzone size via compute_field_layout(). Symmetric with
+     * ZmqQueue::push_to().
      *
-     * @param dbc           DataBlockConsumer to wrap (must not be null).
-     * @param item_size     sizeof(DataT) — size of one slot in bytes.
-     * @param flexzone_sz   sizeof(FlexZoneT), or 0 if no flexzone.
-     * @param channel_name  Optional diagnostic name.
-     */
-    [[nodiscard]] static std::unique_ptr<QueueReader>
-    from_consumer(std::unique_ptr<DataBlockConsumer> dbc,
-                  size_t item_size, size_t flexzone_sz = 0,
-                  std::string channel_name = {},
-                  bool verify_slot = false, bool verify_fz = false);
-
-    /**
-     * @brief Create a write-mode ShmQueue from a DataBlockProducer.
-     *
-     * Takes ownership of the producer. Returns a QueueWriter*.
-     */
-    [[nodiscard]] static std::unique_ptr<QueueWriter>
-    from_producer(std::unique_ptr<DataBlockProducer> dbp,
-                  size_t item_size, size_t flexzone_sz = 0,
-                  std::string channel_name = {},
-                  bool checksum_slot = false, bool checksum_fz = false,
-                  bool zero_on_acquire = true);
-
-    /**
-     * @brief Create a read-mode ShmQueue wrapping an existing DataBlockConsumer.
-     *
-     * Non-owning: the caller retains ownership of @p dbc, which must remain
-     * valid for the lifetime of this ShmQueue. Returns a QueueReader*.
-     */
-    [[nodiscard]] static std::unique_ptr<QueueReader>
-    from_consumer_ref(DataBlockConsumer& dbc, size_t item_size,
-                      size_t flexzone_sz = 0, std::string channel_name = {},
-                      bool verify_slot = false, bool verify_fz = false);
-
-    /**
-     * @brief Create a write-mode ShmQueue wrapping an existing DataBlockProducer.
-     *
-     * Non-owning: the caller retains ownership of @p dbp. Returns a QueueWriter*.
+     * @param channel_name       SHM segment name (from broker channel).
+     * @param slot_schema        Slot field definitions.
+     * @param slot_packing       "aligned" or "packed".
+     * @param fz_schema          Flexzone field definitions (empty = no flexzone).
+     * @param fz_packing         Flexzone packing.
+     * @param ring_buffer_capacity Number of slots in the ring buffer.
+     * @param page_size          OS SHM page size.
+     * @param shared_secret      Access token for SHM discovery.
+     * @param policy             Buffer management strategy.
+     * @param sync_policy        Consumer synchronization contract.
+     * @param checksum_policy    Checksum enforcement level.
+     * @param checksum_slot      Enable slot checksum on write_commit().
+     * @param checksum_fz        Enable flexzone checksum on write_commit().
+     * @param always_clear_slot  Zero-fill slot buffer on write_acquire().
+     * @param hub_uid            Hub identity (stored in SHM header).
+     * @param hub_name           Hub name (stored in SHM header).
+     * @param slot_schema_info   Schema hash for consumer validation (stored in header).
+     * @param fz_schema_info     Flexzone schema hash (stored in header).
+     * @return QueueWriter, or nullptr on failure.
      */
     [[nodiscard]] static std::unique_ptr<QueueWriter>
-    from_producer_ref(DataBlockProducer& dbp, size_t item_size,
-                      size_t flexzone_sz = 0, std::string channel_name = {},
-                      bool checksum_slot = false, bool checksum_fz = false,
-                      bool always_clear_slot = true);
+    create_writer(const std::string &channel_name,
+                  const std::vector<SchemaFieldDesc> &slot_schema,
+                  const std::string &slot_packing,
+                  const std::vector<SchemaFieldDesc> &fz_schema,
+                  const std::string &fz_packing,
+                  uint32_t ring_buffer_capacity,
+                  DataBlockPageSize page_size,
+                  uint64_t shared_secret,
+                  DataBlockPolicy policy,
+                  ConsumerSyncPolicy sync_policy,
+                  ChecksumPolicy checksum_policy,
+                  bool checksum_slot = false,
+                  bool checksum_fz = false,
+                  bool always_clear_slot = true,
+                  const std::string &hub_uid = {},
+                  const std::string &hub_name = {},
+                  const schema::SchemaInfo *slot_schema_info = nullptr,
+                  const schema::SchemaInfo *fz_schema_info = nullptr);
+
+    /**
+     * @brief Create a read-mode ShmQueue (consumer — attaches to existing SHM).
+     *
+     * Attaches to an existing DataBlock, validates schema against the SHM
+     * header. Returns nullptr on attachment failure or schema mismatch.
+     *
+     * @param shm_name           SHM segment name (from broker discovery).
+     * @param shared_secret      Access token for SHM attachment.
+     * @param expected_slot_schema Expected slot field definitions (for validation).
+     * @param expected_packing   Expected packing (for size validation).
+     * @param channel_name       Diagnostic name.
+     * @param verify_slot        Enable slot checksum verification on read_acquire().
+     * @param verify_fz          Enable flexzone checksum verification on read_acquire().
+     * @param consumer_uid       Consumer identity (stored in SHM header).
+     * @param consumer_name      Consumer name.
+     * @return QueueReader, or nullptr on failure or validation error.
+     */
+    [[nodiscard]] static std::unique_ptr<QueueReader>
+    create_reader(const std::string &shm_name,
+                  uint64_t shared_secret,
+                  const std::vector<SchemaFieldDesc> &expected_slot_schema,
+                  const std::string &expected_packing,
+                  const std::string &channel_name,
+                  bool verify_slot = false,
+                  bool verify_fz = false,
+                  const std::string &consumer_uid = {},
+                  const std::string &consumer_name = {});
+
+    // ── Raw DataBlock accessor (for template RAII path only) ─────────────────
+
+    /** @brief Internal accessor for C++ RAII template path. NOT for role hosts. */
+    [[nodiscard]] DataBlockProducer *raw_producer() noexcept;
+    [[nodiscard]] DataBlockConsumer *raw_consumer() noexcept;
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
