@@ -655,6 +655,13 @@ bool LuaEngine::register_slot_type(const SchemaSpec &spec,
                                     const std::string &type_name,
                                     const std::string &packing)
 {
+    if (!spec.has_schema)
+    {
+        LOGGER_ERROR("[{}] register_slot_type('{}') called with has_schema=false",
+                     log_tag_, type_name);
+        return false;
+    }
+
     std::string cdef = build_ffi_cdef_(spec, type_name, packing);
     if (cdef.empty())
         return false;
