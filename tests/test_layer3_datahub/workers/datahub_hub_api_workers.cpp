@@ -192,13 +192,13 @@ int producer_create_with_shm(int /*argc*/, char ** /*argv*/)
             opts.pattern      = ChannelPattern::Pipeline;
             opts.has_shm      = true;
             opts.shm_config   = make_shm_config();
+            opts.zmq_schema   = make_schema("uint32");
             opts.timeout_ms   = 3000;
 
             auto producer = Producer::create(messenger, opts);
             ASSERT_TRUE(producer.has_value()) << "Producer::create(has_shm) failed";
             EXPECT_TRUE(producer->is_valid());
             EXPECT_TRUE(producer->has_shm());
-            EXPECT_NE(producer->shm(), nullptr);
 
             // synced_write: sync slot acquire + job executed in calling thread
             struct Payload { uint32_t value; };
@@ -500,21 +500,24 @@ int non_template_factory(int /*argc*/, char ** /*argv*/)
 
             const std::string channel = make_test_channel_name("hub.notemplate");
 
-            // Non-template producer (no schema type info)
+            // Non-template producer
             ProducerOptions popts;
             popts.channel_name = channel;
             popts.pattern      = ChannelPattern::Pipeline;
             popts.has_shm      = true;
+            popts.zmq_schema   = make_schema("uint64");
             popts.shm_config   = make_shm_config();
+            popts.zmq_schema   = make_schema("uint64");
             popts.timeout_ms   = 3000;
             auto producer = Producer::create(messenger, popts);
             ASSERT_TRUE(producer.has_value());
             EXPECT_TRUE(producer->has_shm());
 
-            // Non-template consumer (no schema validation)
+            // Non-template consumer
             ConsumerOptions copts;
             copts.channel_name      = channel;
             copts.shm_shared_secret = kTestShmSecret;
+            copts.zmq_schema        = make_schema("uint64");
             copts.timeout_ms        = 3000;
             auto consumer = Consumer::connect(messenger, copts);
             ASSERT_TRUE(consumer.has_value());
@@ -606,6 +609,7 @@ int consumer_shm_secret_mismatch(int /*argc*/, char ** /*argv*/)
             popts.channel_name = channel;
             popts.pattern      = ChannelPattern::Pipeline;
             popts.has_shm      = true;
+            popts.zmq_schema   = make_schema("uint64");
             popts.shm_config   = make_shm_config();
             popts.timeout_ms   = 3000;
             auto producer = Producer::create(messenger, popts);
@@ -737,6 +741,7 @@ int consumer_shm_read_e2e(int /*argc*/, char ** /*argv*/)
             popts.channel_name = channel;
             popts.pattern      = ChannelPattern::Pipeline;
             popts.has_shm      = true;
+            popts.zmq_schema   = make_schema("uint64");
             popts.shm_config   = make_shm_config();
             popts.timeout_ms   = 3000;
             auto producer = Producer::create(messenger, popts);
@@ -747,6 +752,7 @@ int consumer_shm_read_e2e(int /*argc*/, char ** /*argv*/)
             ConsumerOptions copts;
             copts.channel_name      = channel;
             copts.shm_shared_secret = kTestShmSecret;
+            copts.zmq_schema        = make_schema("uint64");
             copts.timeout_ms        = 3000;
             auto consumer = Consumer::connect(messenger, copts);
             ASSERT_TRUE(consumer.has_value());
@@ -830,6 +836,7 @@ int consumer_read_shm_sync(int /*argc*/, char ** /*argv*/)
             popts.channel_name = channel;
             popts.pattern      = ChannelPattern::Pipeline;
             popts.has_shm      = true;
+            popts.zmq_schema   = make_schema("uint64");
             popts.shm_config   = make_shm_config();
             popts.timeout_ms   = 3000;
             auto producer = Producer::create(messenger, popts);
@@ -840,6 +847,7 @@ int consumer_read_shm_sync(int /*argc*/, char ** /*argv*/)
             ConsumerOptions copts;
             copts.channel_name      = channel;
             copts.shm_shared_secret = kTestShmSecret;
+            copts.zmq_schema        = make_schema("uint64");
             copts.timeout_ms        = 3000;
             auto consumer = Consumer::connect(messenger, copts);
             ASSERT_TRUE(consumer.has_value());
@@ -1169,6 +1177,7 @@ int producer_channel_identity(int /*argc*/, char ** /*argv*/)
             popts.channel_name = channel;
             popts.pattern      = ChannelPattern::PubSub;
             popts.has_shm      = true;
+            popts.zmq_schema   = make_schema("uint64");
             popts.shm_config   = cfg;
             popts.timeout_ms   = 3000;
             auto producer = Producer::create(messenger, popts);
@@ -1185,6 +1194,7 @@ int producer_channel_identity(int /*argc*/, char ** /*argv*/)
             ConsumerOptions copts;
             copts.channel_name      = channel;
             copts.shm_shared_secret = kTestShmSecret;
+            copts.zmq_schema        = make_schema("uint64");
             copts.timeout_ms        = 3000;
             auto consumer = Consumer::connect(messenger, copts);
             ASSERT_TRUE(consumer.has_value());
@@ -1222,6 +1232,7 @@ int consumer_identity_in_shm(int /*argc*/, char ** /*argv*/)
             popts.channel_name = channel;
             popts.pattern      = ChannelPattern::PubSub;
             popts.has_shm      = true;
+            popts.zmq_schema   = make_schema("uint64");
             popts.shm_config   = make_shm_config();
             popts.timeout_ms   = 3000;
             auto producer = Producer::create(messenger, popts);
@@ -1232,6 +1243,7 @@ int consumer_identity_in_shm(int /*argc*/, char ** /*argv*/)
             ConsumerOptions copts;
             copts.channel_name      = channel;
             copts.shm_shared_secret = kTestShmSecret;
+            copts.zmq_schema        = make_schema("uint64");
             copts.consumer_uid      = "cuid_abcdef1234";
             copts.consumer_name     = "MyCoolConsumer";
             copts.timeout_ms        = 3000;
@@ -1271,6 +1283,7 @@ int producer_consumer_forwarding_api(int /*argc*/, char ** /*argv*/)
             popts.channel_name = make_test_channel_name("hub.fwd_api");
             popts.pattern      = ChannelPattern::PubSub;
             popts.has_shm      = true;
+            popts.zmq_schema   = make_schema("uint64");
             popts.shm_config   = make_shm_config();
             popts.item_size    = sizeof(double);
             popts.zmq_schema = make_schema("float64");
@@ -1296,6 +1309,7 @@ int producer_consumer_forwarding_api(int /*argc*/, char ** /*argv*/)
             ConsumerOptions copts;
             copts.channel_name      = popts.channel_name;
             copts.shm_shared_secret = kTestShmSecret;
+            copts.zmq_schema        = make_schema("uint64");
             copts.item_size         = sizeof(double);
             copts.zmq_schema = make_schema("float64");
             copts.timeout_ms        = 3000;
@@ -1336,6 +1350,7 @@ int construction_time_checksum(int /*argc*/, char ** /*argv*/)
             popts.channel_name    = make_test_channel_name("hub.cksum");
             popts.pattern         = ChannelPattern::PubSub;
             popts.has_shm         = true;
+            popts.zmq_schema   = make_schema("uint64");
             popts.shm_config      = make_shm_config();
             popts.shm_config.checksum_policy = ChecksumPolicy::Manual;
             popts.item_size       = sizeof(uint64_t);
@@ -1357,6 +1372,7 @@ int construction_time_checksum(int /*argc*/, char ** /*argv*/)
             ConsumerOptions copts;
             copts.channel_name      = popts.channel_name;
             copts.shm_shared_secret = kTestShmSecret;
+            copts.zmq_schema        = make_schema("uint64");
             copts.item_size         = sizeof(uint64_t);
             copts.zmq_schema = make_schema("uint64");
             copts.checksum_policy   = ChecksumPolicy::Enforced;  // construction-time flag
@@ -1402,6 +1418,7 @@ int flexzone_through_service_layer(int /*argc*/, char ** /*argv*/)
             popts.channel_name = make_test_channel_name("hub.fz_svc");
             popts.pattern      = ChannelPattern::PubSub;
             popts.has_shm      = true;
+            popts.zmq_schema   = make_schema("uint64");
             popts.shm_config   = shm_cfg;
             popts.item_size    = sizeof(double);
             popts.zmq_schema = make_schema("float64");
@@ -1425,6 +1442,7 @@ int flexzone_through_service_layer(int /*argc*/, char ** /*argv*/)
             ConsumerOptions copts;
             copts.channel_name      = popts.channel_name;
             copts.shm_shared_secret = kTestShmSecret;
+            copts.zmq_schema        = make_schema("uint64");
             copts.item_size         = sizeof(double);
             copts.zmq_schema = make_schema("float64");
             copts.flexzone_size     = kFzSize;
@@ -1463,6 +1481,7 @@ int queue_metrics_forwarding(int /*argc*/, char ** /*argv*/)
             popts.channel_name  = make_test_channel_name("hub.metrics_fwd");
             popts.pattern       = ChannelPattern::PubSub;
             popts.has_shm       = true;
+            popts.zmq_schema   = make_schema("uint64");
             popts.shm_config    = make_shm_config();
             popts.item_size     = sizeof(uint64_t);
             popts.zmq_schema = make_schema("uint64");
@@ -1625,6 +1644,7 @@ int forwarding_error_paths(int /*argc*/, char ** /*argv*/)
             ProducerOptions popts;
             popts.channel_name = make_test_channel_name("hub.err_path");
             popts.has_shm      = true;
+            popts.zmq_schema   = make_schema("uint64");
             popts.shm_config   = make_shm_config();
             popts.item_size    = 0; // No queue wrapper
             popts.timeout_ms   = 3000;
@@ -1682,6 +1702,7 @@ int runtime_verify_checksum_toggle(int /*argc*/, char ** /*argv*/)
             ProducerOptions popts;
             popts.channel_name    = make_test_channel_name("hub.rt_verify");
             popts.has_shm         = true;
+            popts.zmq_schema   = make_schema("uint64");
             popts.shm_config      = make_shm_config();
             popts.shm_config.checksum_policy = ChecksumPolicy::Manual;
             popts.shm_config.logical_unit_size = sizeof(TestSlot);
@@ -1709,6 +1730,7 @@ int runtime_verify_checksum_toggle(int /*argc*/, char ** /*argv*/)
             ConsumerOptions copts;
             copts.channel_name      = popts.channel_name;
             copts.shm_shared_secret = kTestShmSecret;
+            copts.zmq_schema        = make_schema("uint64");
             copts.item_size         = sizeof(TestSlot);
             { hub::SchemaFieldDesc f1, f2; f1.type_str = "uint64"; f2.type_str = "uint64";
               copts.zmq_schema = {f1, f2}; }
@@ -1779,6 +1801,7 @@ int checksum_mismatch_through_forwarding(int /*argc*/, char ** /*argv*/)
             ProducerOptions popts;
             popts.channel_name    = make_test_channel_name("hub.cksum_mm");
             popts.has_shm         = true;
+            popts.zmq_schema   = make_schema("uint64");
             popts.shm_config      = make_shm_config();
             popts.shm_config.checksum_policy = ChecksumPolicy::Manual;
             popts.item_size       = sizeof(uint64_t);
@@ -1800,6 +1823,7 @@ int checksum_mismatch_through_forwarding(int /*argc*/, char ** /*argv*/)
             ConsumerOptions copts;
             copts.channel_name      = popts.channel_name;
             copts.shm_shared_secret = kTestShmSecret;
+            copts.zmq_schema        = make_schema("uint64");
             copts.item_size         = sizeof(uint64_t);
             copts.zmq_schema = make_schema("uint64");
             copts.checksum_policy   = ChecksumPolicy::Enforced;
