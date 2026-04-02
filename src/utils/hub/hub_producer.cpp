@@ -437,20 +437,7 @@ Producer::create(Messenger &messenger, const ProducerOptions &opts)
         return std::nullopt;
     }
 
-    std::unique_ptr<DataBlockProducer> shm_producer;
-    if (opts.has_shm)
-    {
-        // Use impl without schema (no-template path has no compile-time type info).
-        shm_producer = create_datablock_producer_impl(opts.channel_name,
-                                                       DataBlockPolicy::RingBuffer,
-                                                       opts.shm_config, nullptr, nullptr);
-        if (!shm_producer)
-        {
-            return std::nullopt;
-        }
-    }
-
-    return Producer::establish_channel(messenger, std::move(*ch), std::move(shm_producer), opts);
+    return Producer::establish_channel(messenger, std::move(*ch), opts);
 }
 
 // ============================================================================
@@ -459,12 +446,10 @@ Producer::create(Messenger &messenger, const ProducerOptions &opts)
 
 std::optional<Producer>
 Producer::establish_channel(Messenger &messenger, ChannelHandle channel,
-                              std::unique_ptr<DataBlockProducer> shm_producer,
                               const ProducerOptions &opts)
 {
     auto impl       = std::make_unique<ProducerImpl>();
     impl->handle    = std::move(channel);
-    impl->shm       = std::move(shm_producer);
     impl->messenger = &messenger;
     impl->closed    = false;
 
@@ -628,14 +613,29 @@ Producer::establish_channel(Messenger &messenger, ChannelHandle channel,
     }
     impl->peer_dead_timeout_ms_ = opts.peer_dead_timeout_ms;
 
-    // Queue abstraction Phase 2: create unified QueueWriter.
-    // SHM: wrap DataBlockProducer in ShmQueue. ZMQ: use existing zmq_queue_.
-    if (impl->shm && opts.item_size > 0)
+    // Queue abstraction: create unified QueueWriter.
+    // SHM: ShmQueue creates DataBlock internally. ZMQ: use existing zmq_queue_.
+    if (opts.has_shm && !opts.zmq_schema.empty())
     {
-        impl->shm_queue_writer_ = ShmQueue::from_producer_ref(
-            *impl->shm, opts.item_size, opts.flexzone_size, opts.channel_name,
+        impl->shm_queue_writer_ = ShmQueue::create_writer(
+            opts.channel_name,
+            opts.zmq_schema, opts.zmq_packing,
+            opts.fz_schema, opts.fz_packing,
+            opts.shm_config.ring_buffer_capacity,
+            opts.shm_config.physical_page_size,
+            opts.shm_config.shared_secret,
+            opts.shm_config.policy,
+            opts.shm_config.consumer_sync_policy,
+            opts.shm_config.checksum_policy,
             false, false,  // checksum flags: set via set_checksum_policy() below
-            opts.always_clear_slot);
+            opts.always_clear_slot,
+            opts.shm_config.hub_uid,
+            opts.shm_config.hub_name);
+        if (!impl->shm_queue_writer_)
+        {
+            LOGGER_ERROR("[producer] ShmQueue creation failed for '{}'", opts.channel_name);
+            return std::nullopt;
+        }
         impl->queue_writer_ = impl->shm_queue_writer_.get();
     }
     else if (impl->zmq_queue_)
