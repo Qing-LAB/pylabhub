@@ -248,6 +248,10 @@ struct ProducerOptions
     /// "aligned" (ctypes.LittleEndianStructure default) or "packed" (no padding).
     /// Must match the receiver's packing.
     std::string zmq_packing{"aligned"};
+    /// Flexzone schema fields (empty = no flexzone). Used by ShmQueue to compute fz size.
+    std::vector<ZmqSchemaField> fz_schema{};
+    /// Flexzone packing (default "aligned"). Must match the receiver.
+    std::string fz_packing{"aligned"};
     /// Internal send-buffer depth for the ZmqQueue PUSH ring (write side).
     size_t zmq_buffer_depth{kZmqDefaultBufferDepth};
     /// Overflow policy for the ZmqQueue PUSH send ring.
