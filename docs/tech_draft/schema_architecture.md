@@ -125,12 +125,12 @@ from REG_REQ and returns it via SCHEMA_REQ/ROLE_INFO_REQ.
 
 | From | To | Function | Location |
 |------|----|----------|----------|
-| SchemaLayoutDef (L1) | SchemaSpec (L2) | `schema_entry_to_spec()` | `script_host_helpers.hpp` |
-| JSON object (L4) | SchemaSpec (L2) | `parse_schema_json()` | `script_host_helpers.hpp` |
-| SchemaSpec (L2) | ZmqSchemaField[] (L3) | `schema_spec_to_zmq_fields()` | `script_host_helpers.hpp` |
-| SchemaSpec (L2) | BLAKE2b hash | `compute_schema_hash()` | `script_host_helpers.hpp` |
+| SchemaLayoutDef (L1) | SchemaSpec (L2) | `schema_entry_to_spec()` | `schema_utils.hpp` |
+| JSON object (L4) | SchemaSpec (L2) | `parse_schema_json()` | `schema_utils.hpp` |
+| SchemaSpec (L2) | ZmqSchemaField[] (L3) | `schema_spec_to_zmq_fields()` | `schema_utils.hpp` |
+| SchemaSpec (L2) | BLAKE2b hash | `compute_schema_hash()` | `schema_utils.hpp` |
 
-All conversion functions are in `script_host_helpers.hpp` (private to scripting layer).
+All schema conversion functions are in `schema_utils.hpp` (clean, no pybind11). Python-specific helpers are in `python_helpers.hpp`..
 
 ## 4. Type Set Agreement
 
@@ -158,7 +158,7 @@ The compile-time layer (L0) uses BLDS codes (b, i8, f32, c, etc.) which map 1:1.
 
 1. **No duplication** — each type has one definition in one file
 2. **Layer isolation** — compile-time types don't depend on runtime; wire types don't depend on registry
-3. **Single conversion path** — registry->scripting->wire, all in `script_host_helpers.hpp`
+3. **Single conversion path** — registry->scripting->wire, all in `schema_utils.hpp`
 4. **Type parity** — FieldDef and ZmqSchemaField share the same 13-type vocabulary by design
 5. **Lazy evaluation** — config stores raw JSON; conversion happens only when needed
 

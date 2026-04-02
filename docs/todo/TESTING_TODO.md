@@ -319,7 +319,7 @@ LoopPolicy C++ metrics tests (HEP-CORE-0008) are fully covered in
 ### 2026-03-02 (Test Gap Closure + Script Host Deduplication)
 - ✅ **Script host deduplication** — Extracted 14 shared functions + 3 types from
   processor/producer/consumer `*_script_host.cpp` into `script_host_schema.hpp` (types)
-  and `script_host_helpers.hpp` (inline functions) in `pylabhub::scripting` namespace.
+  and `schema_utils.hpp` + `python_helpers.hpp` (inline functions) in `pylabhub::scripting` namespace.
   Per-component `*_schema.hpp` files reduced to thin `using` aliases.
 - ✅ **B1: Messenger hex codec tests** (8 tests) — new `test_datahub_messenger_protocol.cpp`;
   `hex_encode_schema_hash`/`hex_decode_schema_hash` roundtrip, empty, invalid chars,

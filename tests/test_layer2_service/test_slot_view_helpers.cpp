@@ -1,6 +1,6 @@
 /**
  * @file test_slot_view_helpers.cpp
- * @brief Unit tests for script_host_helpers.hpp slot-view utilities.
+ * @brief Unit tests for python_helpers.hpp slot-view utilities.
  *
  * Tests cover:
  *   - make_slot_view()          — unified read/write slot view builder
@@ -23,7 +23,7 @@
  *  14.  ReadSide_Numpy_DataReadable               — numpy read view returns correct values
  *  15.  WriteSide_PackedStruct_CanWrite           — _pack_=1 variant
  */
-#include "script_host_helpers.hpp"
+#include "python_helpers.hpp"
 #include "utils/script_host_schema.hpp"
 
 #include <pybind11/embed.h>
