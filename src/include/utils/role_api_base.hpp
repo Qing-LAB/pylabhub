@@ -63,6 +63,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     void set_consumer(hub::Consumer *c);
     void set_messenger(hub::Messenger *m);
     void set_inbox_queue(hub::InboxQueue *q);
+    void set_role_tag(std::string tag);
     void set_uid(std::string uid);
     void set_name(std::string name);
     void set_channel(std::string c);
@@ -73,6 +74,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
 
     // ── Identity ──────────────────────────────────────────────────────────────
 
+    [[nodiscard]] const std::string &role_tag() const;
     [[nodiscard]] const std::string &uid() const;
     [[nodiscard]] const std::string &name() const;
     [[nodiscard]] const std::string &channel() const;
