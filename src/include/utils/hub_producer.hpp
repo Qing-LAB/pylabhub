@@ -496,8 +496,6 @@ class PYLABHUB_UTILS_EXPORT Producer
     [[nodiscard]] std::string producer_uid() const noexcept;
     [[nodiscard]] std::string producer_name() const noexcept;
 
-    /// Raw DataBlock pointer — internal, for messaging facade template RAII path.
-    DataBlockProducer               *shm() noexcept;
     ChannelHandle                   &channel_handle();
 
     // ── HEP-CORE-0021: ZMQ Virtual Channel Node ───────────────────────────────

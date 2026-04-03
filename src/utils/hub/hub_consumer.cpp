@@ -948,12 +948,6 @@ bool Consumer::has_shm() const
     return pImpl && pImpl->shm_queue_ != nullptr;
 }
 
-DataBlockConsumer *Consumer::shm() noexcept
-{
-    // Internal — used by messaging facade for template RAII path.
-    return pImpl && pImpl->shm_queue_ ? pImpl->shm_queue_->raw_consumer() : nullptr;
-}
-
 uint32_t Consumer::spinlock_count() const noexcept
 {
     auto *dbc = pImpl && pImpl->shm_queue_ ? pImpl->shm_queue_->raw_consumer() : nullptr;
