@@ -50,7 +50,7 @@ class LuaEngine : public ScriptEngine
 
     // ── Schema / type building ───────────────────────────────────────────
 
-    bool register_slot_type(const SchemaSpec &spec,
+    bool register_slot_type(const hub::SchemaSpec &spec,
                             const std::string &type_name,
                             const std::string &packing) override;
     [[nodiscard]] size_t type_sizeof(const std::string &type_name) const override;
@@ -145,8 +145,8 @@ class LuaEngine : public ScriptEngine
 
     // ── Internal helpers ─────────────────────────────────────────────────
 
-    /// Build FFI cdef string from SchemaSpec. Returns empty string on error.
-    std::string build_ffi_cdef_(const SchemaSpec &spec,
+    /// Build FFI cdef string from hub::SchemaSpec. Returns empty string on error.
+    std::string build_ffi_cdef_(const hub::SchemaSpec &spec,
                                 const std::string &type_name,
                                 const std::string &packing);
 

@@ -324,7 +324,7 @@ class ScriptEngine
      * @param packing "aligned" or "packed".
      * @return true on success.
      */
-    virtual bool register_slot_type(const SchemaSpec &spec,
+    virtual bool register_slot_type(const hub::SchemaSpec &spec,
                                     const std::string &type_name,
                                     const std::string &packing) = 0;
 
@@ -505,7 +505,7 @@ class ScriptEngine
     struct InboxOpenResult
     {
         std::shared_ptr<hub::InboxClient> client;
-        SchemaSpec spec;        ///< Parsed schema (for FFI cdef / ctypes struct building).
+        hub::SchemaSpec spec;   ///< Parsed schema (for FFI cdef / ctypes struct building).
         std::string packing;    ///< "aligned" or "packed".
         size_t item_size{0};    ///< Size of one inbox slot in bytes.
     };

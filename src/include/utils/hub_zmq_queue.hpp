@@ -29,7 +29,7 @@
  * Factories return nullptr (with an error log) if the schema is empty or any
  * type_str is invalid.  Valid type_str values: "bool","int8","uint8","int16",
  * "uint16","int32","uint32","int64","uint64","float32","float64","string","bytes".
- * This is the same 13-type set as FieldDef::type_str (script_host_schema.hpp).
+ * This is the same 13-type set as FieldDef::type_str (schema_types.hpp).
  * Note: the BLDS named schema registry uses "char" instead of "string"/"bytes" —
  * see SchemaFieldDef (schema_def.hpp) for the BLDS→FieldDef conversion rules.
  *

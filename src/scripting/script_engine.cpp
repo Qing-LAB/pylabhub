@@ -8,7 +8,7 @@
  */
 #include "utils/script_engine.hpp"
 
-#include "schema_utils.hpp"
+#include "utils/schema_utils.hpp"
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/config/checksum_config.hpp"
 #include "utils/logger.hpp"
@@ -29,7 +29,7 @@ ScriptEngine::open_inbox_client(const std::string &target_uid)
     // the lock, then the result is stored. No race between concurrent
     // callers for the same target_uid.
 
-    SchemaSpec result_spec;
+    hub::SchemaSpec result_spec;
     std::string result_packing;
 
     auto entry = ctx_.core->open_inbox(target_uid,
@@ -43,10 +43,10 @@ ScriptEngine::open_inbox_client(const std::string &target_uid)
                 !info->inbox_schema.contains("fields"))
                 return std::nullopt;
 
-            SchemaSpec spec;
+            hub::SchemaSpec spec;
             try
             {
-                spec = parse_schema_json(info->inbox_schema);
+                spec = hub::parse_schema_json(info->inbox_schema);
             }
             catch (const std::exception &e)
             {
@@ -59,7 +59,7 @@ ScriptEngine::open_inbox_client(const std::string &target_uid)
             for (const auto &f : spec.fields)
                 item_size += f.length;
 
-            auto zmq_fields = schema_spec_to_zmq_fields(spec);
+            auto zmq_fields = hub::schema_spec_to_zmq_fields(spec);
 
             auto client_ptr = hub::InboxClient::connect_to(
                 info->inbox_endpoint, ctx_.uid,

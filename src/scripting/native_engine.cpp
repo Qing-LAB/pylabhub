@@ -16,6 +16,7 @@
 #include "utils/logger.hpp"
 #include "utils/module_def.hpp"
 #include "utils/native_engine_api.h"
+#include "utils/schema_field_layout.hpp"
 #include "utils/role_host_core.hpp"
 
 #include <fstream>
@@ -423,7 +424,7 @@ bool NativeEngine::has_callback(const std::string &name) const
 // register_slot_type — validate schema against native engine's compiled struct
 // ============================================================================
 
-bool NativeEngine::register_slot_type(const SchemaSpec &spec,
+bool NativeEngine::register_slot_type(const hub::SchemaSpec &spec,
                                        const std::string &type_name,
                                        const std::string &packing)
 {
@@ -750,7 +751,7 @@ bool NativeEngine::verify_file_checksum_() const
     return true;
 }
 
-std::string NativeEngine::compute_canonical_schema_(const SchemaSpec &spec) const
+std::string NativeEngine::compute_canonical_schema_(const hub::SchemaSpec &spec) const
 {
     // Build canonical schema string: "name:type:count:length|name:type:count:length|..."
     // Format: "name:type:count:length|name:type:count:length|..."
