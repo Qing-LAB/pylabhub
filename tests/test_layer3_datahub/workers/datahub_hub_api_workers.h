@@ -86,5 +86,11 @@ int checksum_enforced_roundtrip(int argc, char **argv);
 int checksum_manual_no_stamp_mismatch(int argc, char **argv);
 /** Checksum None: No checksum at all — round-trip succeeds without checksumming. */
 int checksum_none_roundtrip(int argc, char **argv);
+/** open_inbox_client: full broker path with numeric-only schema — verifies item_size. */
+int open_inbox_client_numeric_schema(int argc, char **argv);
+/** SHM multi-field schema: Producer writes float64+int32+uint8, Consumer reads all fields. */
+int shm_multifield_schema_roundtrip(int argc, char **argv);
+/** ZMQ multi-field schema: same as SHM but through ZMQ transport. */
+int zmq_multifield_schema_roundtrip(int argc, char **argv);
 
 } // namespace pylabhub::tests::worker::hub_api
