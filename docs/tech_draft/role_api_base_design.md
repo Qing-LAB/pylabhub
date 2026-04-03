@@ -349,6 +349,12 @@ struct RoleAPIBase::Impl
 
 ### 4.3 Metrics JSON — data-driven structure
 
+**Implementation note (2026-04-03):** Role counters (out_written, in_received,
+drops, script_errors) are always emitted regardless of which infrastructure
+pointers are set. These are core-level counters, always valid. Queue metrics
+("queue" / "in_queue" / "out_queue") are gated on pointers. ctrl_queue_dropped
+defaults to 0 when no infrastructure is connected.
+
 ```cpp
 nlohmann::json RoleAPIBase::snapshot_metrics_json() const
 {
@@ -591,88 +597,74 @@ set_out_channel).
 
 ## 8. Shared Script State
 
-Current: `shared_data_` is `py::object` (Python dict) or `get/set_shared_data` (Lua
-string map). Language-specific types leak into the API layer.
+**Implementation (2026-04-03):** RoleAPIBase delegates to RoleHostCore's existing
+`StateValue = std::variant<int64_t, double, bool, std::string>` shared data.
+No new storage — reuses the core's map with the core's mutex.
 
-New: RoleAPIBase stores `nlohmann::json` values (preserves nested structures, numeric
-types, arrays). Both Python and Lua can convert to/from JSON natively:
 ```cpp
-void set_shared_data(const std::string &key, const nlohmann::json &value);
-nlohmann::json get_shared_data(const std::string &key) const;
+using StateValue = RoleHostCore::StateValue;
+void set_shared_data(const std::string &key, StateValue value);
+std::optional<StateValue> get_shared_data(const std::string &key) const;
+void remove_shared_data(const std::string &key);
+void clear_shared_data();
 ```
 
-Python engine converts: `py::object ↔ nlohmann::json`.
-Lua engine converts: `lua_State stack ↔ nlohmann::json` (json_to_lua / lua_to_json
-already exist).
+Python `shared_data_` remains a `py::object` (dict) on each API wrapper class
+for backward compatibility with existing scripts that use `api.shared_data`.
+Phase 3 may migrate this to the base's StateValue map.
 
 ---
 
-## 9. What Gets Deleted
+## 9. What Gets Deleted (Phase 3+)
 
 | File | Status |
 |------|--------|
-| `src/producer/producer_api.hpp` | **DELETE** |
-| `src/producer/producer_api.cpp` | **DELETE** |
-| `src/consumer/consumer_api.hpp` | **DELETE** |
-| `src/consumer/consumer_api.cpp` | **DELETE** |
-| `src/processor/processor_api.hpp` | **DELETE** |
-| `src/processor/processor_api.cpp` | **DELETE** |
-| `ProducerSpinLockPy` class | **DELETE** (unified SpinLockPy in Python engine) |
-| `ConsumerSpinLockPy` class | **DELETE** |
-| `ProcessorSpinLockPy` class | **DELETE** |
-| 40+ `lua_api_*` reimplementations | **REPLACE** with RoleAPIBase delegation |
-| `ScriptEngine::open_inbox_client()` | **MOVE** to RoleAPIBase |
-| `ScriptEngine::InboxOpenResult` | **MOVE** to RoleAPIBase |
+| `src/producer/producer_api.hpp` | Phase 3: **DELETE** (thin wrapper, logic in RoleAPIBase) |
+| `src/producer/producer_api.cpp` | Phase 3: **DELETE** (pybind11 registration moves to engine) |
+| `src/consumer/consumer_api.hpp/.cpp` | Phase 3: **DELETE** |
+| `src/processor/processor_api.hpp/.cpp` | Phase 3: **DELETE** |
+| `ProducerSpinLockPy` / `ConsumerSpinLockPy` / `ProcessorSpinLockPy` | Phase 6: unify |
+| 40+ `lua_api_*` reimplementations | Phase 5: **REPLACE** with RoleAPIBase delegation |
+| `ScriptEngine::open_inbox_client()` | Phase 6: **DELETE** (duplicated in RoleAPIBase) |
 
 ---
 
-## 10. What Gets Created
+## 10. What Was Created
 
 | File | Description |
 |------|-------------|
 | `src/include/utils/role_api_base.hpp` | Public header — ABI-stable, Pimpl, exported |
-| `src/include/utils/role_api.hpp` | Header-only — type-safe C++ templates on top of base |
-| `src/utils/role_api_base.cpp` | Implementation — all method bodies |
+| `src/utils/service/role_api_base.cpp` | Implementation — all method bodies |
+| `src/include/utils/schema_types.hpp` | Schema types in hub:: namespace (from reorganization) |
+| `src/include/utils/schema_utils.hpp` | Schema utilities moved to utils layer |
+| `src/include/utils/role_api.hpp` | Planned — type-safe C++ templates (Group D) |
 
 ---
 
 ## 11. Execution Plan
 
-### Phase 1: Create RoleAPIBase (new code, no changes to existing)
+### Phase 1: Create RoleAPIBase — ✅ DONE (2026-04-03)
 
-**Step 1**: Write `role_api_base.hpp` header with full interface (§4.1).
-Add to `pylabhub-utils` CMakeLists.txt.
+- RoleAPIBase header (Pimpl, ABI-stable) + full implementation
+- open_inbox_client() implemented with compute_schema_size (bug fixed)
+- role_tag field added for consistent log format
+- Schema reorganization: schema_types.hpp + schema_utils.hpp in hub:: namespace
+- 1315 tests pass
 
-**Step 2**: Write `role_api_base.cpp` implementation. Port method bodies from
-ProducerAPI.cpp — convert from `py::*` types to C++ types. Every method is a
-thin delegation to core/messenger/producer/consumer.
+### Phase 2: Migrate Python API classes — ✅ DONE (2026-04-03)
 
-**Step 3**: Implement `snapshot_metrics_json()` with data-driven structure (§4.3).
+**Pattern used: composition (not inheritance).** Each API class holds a
+`RoleAPIBase*` (non-owning, engine owns the base). PythonEngine creates
+RoleAPIBase in `build_api_()` from RoleContext fields, then passes to the
+role-specific wrapper.
 
-**Step 4**: Move `open_inbox_client()` from ScriptEngine to RoleAPIBase.
-ScriptEngine retains a thin forwarding method (calls `ctx_.api->open_inbox_client()`)
-for backward compatibility during migration.
-
-**Step 5**: Build. Verify pylabhub-utils compiles with the new class. No tests
-change yet — RoleAPIBase is not wired to anything.
-
-**Step 6**: Write L2 tests for RoleAPIBase directly (no engine, no script).
-Verify identity getters, control methods, diagnostics, metrics JSON structure
-with mock/null Producer/Consumer pointers.
-
-### Phase 2: Migrate Python API classes (bridge pattern)
-
-**Step 7**: Modify ProducerAPI to inherit from RoleAPIBase. Replace duplicate
-method implementations with delegations to base. Keep pybind11 `.def()`
-registrations unchanged (they now call base methods through the subclass).
-Verify all producer L2/L3/L4 tests pass.
-
-**Step 8**: Same for ConsumerAPI. Verify consumer tests pass.
-
-**Step 9**: Same for ProcessorAPI. Verify processor tests pass.
-
-At this point: 3 API classes are thin wrappers around RoleAPIBase. All tests pass.
-The old code is still present but delegating.
+- ProducerAPI, ConsumerAPI, ProcessorAPI all delegate to RoleAPIBase
+- Python-specific wrapping (py::bytes, py::dict, InboxHandle, SpinLockPy) stays
+- metrics() uses base->snapshot_metrics_json() → json.loads() → py::dict
+- Role metrics always emit all core counters (data-driven, not role-gated)
+- Direction objects (PyTxChannel, PyRxChannel, PyInboxMsg) preserved in modules
+- Metrics API tests rewritten with TestContext helper
+- All 1315 tests pass
 
 ### Phase 3: Wire role hosts to RoleAPIBase
 
