@@ -1011,6 +1011,31 @@ int shm_queue_create_reader_nonexistent()
         logger_module(), crypto_module(), hub_module());
 }
 
+// ============================================================================
+// Error path: create_writer with zero-size schema (bytes length=0) → nullptr
+// ============================================================================
+
+int shm_queue_create_writer_zero_size_schema()
+{
+    return run_gtest_worker(
+        []()
+        {
+            DataBlockTestGuard g("ShmQueueCreateWriterZeroSize");
+            ShmParams p{70024};
+
+            // Bypass the parser: create a SchemaFieldDesc with bytes length=0.
+            // compute_field_layout produces item_size=0 → create_writer must reject.
+            std::vector<hub::SchemaFieldDesc> schema = {{"bytes", 1, 0}};
+
+            auto q = ShmQueue::create_writer(
+                g.channel_name(), schema, "aligned", {}, "",
+                p.capacity, p.page_size, p.secret, p.policy, p.sync, p.checksum);
+            EXPECT_EQ(q, nullptr) << "create_writer with zero-size schema must return nullptr";
+        },
+        "hub_queue.shm_queue_create_writer_zero_size_schema",
+        logger_module(), crypto_module(), hub_module());
+}
+
 } // namespace pylabhub::tests::worker::hub_queue
 
 // ============================================================================
@@ -1084,6 +1109,8 @@ struct HubQueueWorkerRegistrar
                     return shm_queue_create_reader_wrong_secret();
                 if (scenario == "shm_queue_create_reader_nonexistent")
                     return shm_queue_create_reader_nonexistent();
+                if (scenario == "shm_queue_create_writer_zero_size_schema")
+                    return shm_queue_create_writer_zero_size_schema();
                 fmt::print(stderr, "ERROR: Unknown hub_queue scenario '{}'\n", scenario);
                 return 1;
             });

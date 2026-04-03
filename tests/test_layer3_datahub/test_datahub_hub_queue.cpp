@@ -212,3 +212,10 @@ TEST_F(DatahubShmQueueTest, CreateReaderNonexistent)
     auto proc = SpawnWorker("hub_queue.shm_queue_create_reader_nonexistent", {});
     ExpectWorkerOk(proc, {}, {"attachment failed"});
 }
+
+TEST_F(DatahubShmQueueTest, CreateWriterZeroSizeSchema)
+{
+    // Bypass parser: SchemaFieldDesc with bytes length=0 → item_size=0 → nullptr.
+    auto proc = SpawnWorker("hub_queue.shm_queue_create_writer_zero_size_schema", {});
+    ExpectWorkerOk(proc, {}, {"computed slot size is 0"});
+}

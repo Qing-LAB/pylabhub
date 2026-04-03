@@ -175,6 +175,22 @@ TEST_F(NativeEngineTest, SchemaValidation_MatchingSchema_Succeeds)
     engine.finalize();
 }
 
+TEST_F(NativeEngineTest, SchemaValidation_HasSchemaFalse_ReturnsFalse)
+{
+    NativeEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &core_));
+
+    auto plugin = good_plugin_path();
+    ASSERT_TRUE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
+                                   "on_produce"));
+
+    SchemaSpec spec;
+    spec.has_schema = false;
+    EXPECT_FALSE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+
+    engine.finalize();
+}
+
 TEST_F(NativeEngineTest, SchemaValidation_MismatchedSchema_Fails)
 {
     NativeEngine engine;
