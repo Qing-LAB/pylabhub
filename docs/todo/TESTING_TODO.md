@@ -268,6 +268,15 @@ LoopPolicy C++ metrics tests (HEP-CORE-0008) are fully covered in
 - ✅ **LoopTimingPolicy rename tests** (+10): MaxRate/FixedRate/FixedRateWithCompensation cross-field validation → **1021/1021**
 - ✅ **FullStack2 config tests** (+15 A6): `verify_checksum` field (ConsumerConfig), `heartbeat_interval_ms` (both), `zmq_buffer_depth` (ConsumerConfig), `inbox_overflow_policy` (both) → **1011/1011**
 
+### 2026-04-03 (Schema validation coverage audit)
+- ✅ **L2 schema validation** (+22 tests): parse_schema_json good/error paths, compute_schema_size all 13 types, to_field_descs correctness → **1303/1303**
+- ✅ **Engine has_schema=false** (+2 tests): Python + Lua register_slot_type returns false
+- ✅ **Bug fix**: open_inbox_client item_size computed by summing f.length (wrong for numeric types). Fixed to use compute_schema_size(spec, packing). Same bug fixed in both RoleAPIBase and ScriptEngine.
+- [ ] **L3 NEEDED**: InboxQueue schema size mismatch rejection (sender schema size != receiver)
+- [ ] **L3 NEEDED**: NativeEngine register_slot_type has_schema=false
+- [ ] **L3/L4 NEEDED**: open_inbox_client full broker→parse→InboxClient path with numeric-only schema
+- [ ] **L3 NEEDED**: ShmQueue create_writer with schema producing item_size=0 (all string/bytes with length=0 — if that's even parseable)
+
 ### 2026-03-07 (Port formula audit — overflow + cross-binary collision fixes)
 - ✅ **Root cause found**: Two parallel test failures (`ZmqQueueTest.SchemaTag_Match_DeliversItem`
   port 49980 and `PipelineRoundtripTest.ProducerProcessorConsumer_E2E` "hub.pubkey not written")
