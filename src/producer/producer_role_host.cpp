@@ -159,9 +159,6 @@ void ProducerRoleHost::worker_main_()
     const std::string packing =
         tr.zmq_packing.empty() ? "aligned" : tr.zmq_packing;
 
-    // Compute slot size from schema (authoritative — infrastructure owns layout).
-    out_schema_slot_size_ = scripting::compute_schema_size(out_slot_spec_, packing);
-
     // Register slot type with engine (engine validates its struct matches).
     if (out_slot_spec_.has_schema)
     {
@@ -418,11 +415,7 @@ bool ProducerRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox_
         opts.shm_config.policy               = hub::DataBlockPolicy::RingBuffer;
         opts.shm_config.consumer_sync_policy = shm.sync_policy;
         opts.shm_config.checksum_policy      = config_.checksum().policy;
-        opts.shm_config.flex_zone_size       = core_.out_schema_fz_size();
-
         opts.shm_config.physical_page_size = hub::system_page_size();
-        opts.shm_config.logical_unit_size  =
-            (out_schema_slot_size_ == 0) ? 1 : out_schema_slot_size_;
     }
 
     // --- ZMQ transport (HEP-CORE-0021) ---

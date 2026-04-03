@@ -439,8 +439,6 @@ class PYLABHUB_UTILS_EXPORT Consumer
     [[nodiscard]] std::string consumer_uid() const noexcept;
     [[nodiscard]] std::string consumer_name() const noexcept;
 
-    /// Raw DataBlock pointer — internal, for messaging facade template RAII path.
-    DataBlockConsumer               *shm() noexcept;
     ChannelHandle                   &channel_handle();
 
     // ── HEP-CORE-0021: ZMQ Virtual Channel Node ───────────────────────────────

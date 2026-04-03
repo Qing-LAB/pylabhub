@@ -104,7 +104,6 @@ class ConsumerRoleHost
 
     // Schema info (resolved from config during setup).
     scripting::SchemaSpec                  in_slot_spec_;
-    size_t                                 in_schema_slot_size_{0};
 
     // Metrics are in core_ (RoleHostCore) — single source of truth.
     // See core_.in_received_, core_.iteration_count_, core_.last_cycle_work_us_.

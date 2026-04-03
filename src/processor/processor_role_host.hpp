@@ -111,8 +111,6 @@ class ProcessorRoleHost
     // Schema info (resolved from config during setup).
     scripting::SchemaSpec                    in_slot_spec_;
     scripting::SchemaSpec                    out_slot_spec_;
-    size_t                                   in_schema_slot_size_{0};
-    size_t                                   out_schema_slot_size_{0};
 };
 
 } // namespace pylabhub::processor
