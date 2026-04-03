@@ -327,6 +327,82 @@ TEST(InboxQueueTest, ItemSize_MatchesSchema)
 // Checksum policy tests — symmetric with ShmQueue + ZmqQueue
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Schema mismatch tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(InboxQueueTest, SchemaMismatch_DifferentType_DropsFrame)
+{
+    // Receiver expects uint32, sender sends with float64 schema → schema tag mismatch.
+    auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
+    ASSERT_NE(q, nullptr);
+    ASSERT_TRUE(q->start());
+
+    // Client uses a different schema (float64 instead of uint32).
+    std::vector<ZmqSchemaField> float64_schema = {{"float64", 1, 0}};
+    auto c = InboxClient::connect_to(q->actual_endpoint(), "MISMATCH-01", float64_schema);
+    ASSERT_NE(c, nullptr);
+    ASSERT_TRUE(c->start());
+
+    void *buf = c->acquire();
+    ASSERT_NE(buf, nullptr);
+    double val = 3.14;
+    std::memcpy(buf, &val, sizeof(val));
+
+    const InboxItem *item = nullptr;
+    auto fut = std::async(std::launch::async, [&] {
+        item = q->recv_one(ms{500});
+        return item != nullptr;
+    });
+    std::this_thread::sleep_for(ms{30});
+    c->send(ms{1500});
+
+    // Frame should be dropped due to schema tag mismatch.
+    EXPECT_FALSE(fut.get()) << "Schema mismatch: recv_one should reject";
+    EXPECT_GT(q->recv_frame_error_count(), 0u)
+        << "Schema mismatch should increment frame error count";
+
+    c->stop();
+    q->stop();
+}
+
+TEST(InboxQueueTest, SchemaMismatch_DifferentSize_DropsFrame)
+{
+    // Receiver expects uint32 (4 bytes), sender sends with uint64 (8 bytes) → size mismatch.
+    auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
+    ASSERT_NE(q, nullptr);
+    ASSERT_TRUE(q->start());
+
+    std::vector<ZmqSchemaField> uint64_schema = {{"uint64", 1, 0}};
+    auto c = InboxClient::connect_to(q->actual_endpoint(), "MISMATCH-02", uint64_schema);
+    ASSERT_NE(c, nullptr);
+    ASSERT_TRUE(c->start());
+
+    void *buf = c->acquire();
+    ASSERT_NE(buf, nullptr);
+    uint64_t val = 0xDEADBEEF;
+    std::memcpy(buf, &val, sizeof(val));
+
+    const InboxItem *item = nullptr;
+    auto fut = std::async(std::launch::async, [&] {
+        item = q->recv_one(ms{500});
+        return item != nullptr;
+    });
+    std::this_thread::sleep_for(ms{30});
+    c->send(ms{1500});
+
+    // Frame should be dropped — schema tag differs (uint32 vs uint64 produce different hashes).
+    EXPECT_FALSE(fut.get()) << "Size mismatch: recv_one should reject";
+    EXPECT_GT(q->recv_frame_error_count(), 0u);
+
+    c->stop();
+    q->stop();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Checksum policy tests — symmetric with ShmQueue + ZmqQueue
+// ─────────────────────────────────────────────────────────────────────────────
+
 TEST(InboxQueueTest, ChecksumEnforced_Roundtrip)
 {
     auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
