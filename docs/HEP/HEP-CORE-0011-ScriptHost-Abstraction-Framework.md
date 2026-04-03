@@ -75,9 +75,9 @@ them a documented, supported pattern.
 ```
 pylabhub-utils (shared lib — existing)
   include/utils/script_host.hpp              ← ScriptHost abstract base (PUBLIC header)
-  src/scripting/schema_utils.hpp       ← Schema utilities (parse, resolve, hash, size — no pybind11)
+  include/utils/schema_types.hpp       ← FieldDef, SchemaSpec types (pylabhub::hub)
+  include/utils/schema_utils.hpp       ← Schema utilities (parse, resolve, hash, size)
   src/scripting/python_helpers.hpp     ← Python-specific helpers (ctypes, slot views, InboxHandle)
-  include/utils/script_host_schema.hpp       ← SchemaSpec, FieldDef types
   src/utils/scripting/script_host.cpp        ← base implementation (thread_local, startup/shutdown)
   src/utils/scripting/lua_script_host.hpp/.cpp  ← LuaScriptHost concrete class
 
@@ -692,7 +692,7 @@ coordination without changing call sites.
 | 3 | `hub_script.hpp/.cpp` — HubScript : PythonScriptHost | Done | 2026-02-28 |
 | 4 | Producer/Consumer/Processor ScriptHost subclasses | Done | 2026-03-01 |
 | 5 | `schema_utils.hpp + python_helpers.hpp` — 14 shared inline helpers | Done | 2026-03-02 |
-| 6 | `script_host_schema.hpp` — SchemaSpec, FieldDef types | Done | 2026-03-02 |
+| 6 | `schema_types.hpp` — SchemaSpec, FieldDef types (hub:: namespace) | Done | 2026-03-02; reorganized 2026-04-03 |
 | 7 | `role_host_core.hpp/.cpp` — engine-agnostic infrastructure | Done | 2026-03-03 |
 | 8 | `python_role_host_base.hpp/.cpp` — common Python layer | Done | 2026-03-03 |
 | 9 | `lua_role_host_base.hpp/.cpp` — LuaRoleHostBase common layer | Done | 2026-03-16 |
@@ -831,9 +831,9 @@ See also HEP-CORE-0007 §12.3 for the shutdown pitfalls that motivated centralis
 | File | Layer | Description |
 |------|-------|-------------|
 | `src/include/utils/script_host.hpp` | L2 (public) | `ScriptHost` abstract base class |
-| `src/scripting/schema_utils.hpp` | scripting (private) | Schema utilities: parse, resolve, hash, size (no pybind11) |
+| `src/include/utils/schema_types.hpp` | L2 (public) | `FieldDef`, `SchemaSpec`, `SchemaFieldDesc`, `FieldLayout` types (`hub::`) |
+| `src/include/utils/schema_utils.hpp` | L2 (public) | Schema utilities: parse, resolve, hash, size |
 | `src/scripting/python_helpers.hpp` | scripting (private) | Python helpers: ctypes, slot views, direction objects, InboxHandle |
-| `src/include/utils/script_host_schema.hpp` | L2 (public) | `SchemaSpec`, `FieldDef` types |
 | `src/scripting/role_host_core.hpp` | scripting | `RoleHostCore` — engine-agnostic infrastructure |
 | `src/scripting/role_host_core.cpp` | scripting | Message queue, shutdown flags, state |
 | `src/scripting/zmq_poll_loop.hpp` | scripting | `ZmqPollLoop` + `HeartbeatTracker` — shared ZMQ event loop |

@@ -20,7 +20,7 @@
 | `src/utils/schema/schema_def.cpp` | impl | `SchemaDef` JSON parsing, BLDS computation, hash generation |
 | `src/utils/schema/schema_library.cpp` | impl | File search, ID↔path mapping, in-memory cache |
 | `src/utils/schema/schema_registry.cpp` | impl | `SchemaStore` lifecycle module, `reload()`, `query_from_broker()` |
-| `src/include/utils/script_host_schema.hpp` | L4 (scripting) | `resolve_named_schema()`, `schema_entry_to_spec()` |
+| `src/include/utils/schema_utils.hpp` | L2 (public) | `resolve_named_schema()`, `schema_entry_to_spec()` |
 | `tests/test_layer3_datahub/test_datahub_schema_library.cpp` | test | Library load, round-trip, hash stability |
 | `tests/test_layer3_datahub/test_datahub_schema_registry.cpp` | test | `SchemaStore` lifecycle, thread safety, search dirs |
 | `tests/test_layer3_datahub/test_datahub_broker_schema.cpp` | test | Broker schema protocol (REG_REQ Case A/B, SCHEMA_REQ/ACK) |
