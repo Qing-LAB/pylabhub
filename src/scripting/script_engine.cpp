@@ -55,9 +55,7 @@ ScriptEngine::open_inbox_client(const std::string &target_uid)
                 return std::nullopt;
             }
 
-            size_t item_size = 0;
-            for (const auto &f : spec.fields)
-                item_size += f.length;
+            size_t item_size = hub::compute_schema_size(spec, info->inbox_packing);
 
             auto zmq_fields = hub::schema_spec_to_zmq_fields(spec);
 

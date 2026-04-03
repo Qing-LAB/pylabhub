@@ -40,6 +40,7 @@ struct RoleAPIBase::Impl
     hub::Messenger  *messenger{nullptr};
     hub::InboxQueue *inbox_queue{nullptr};
 
+    std::string role_tag;   // "prod", "cons", "proc"
     std::string uid;
     std::string name;
     std::string channel;
@@ -71,6 +72,7 @@ RoleAPIBase &RoleAPIBase::operator=(RoleAPIBase &&) noexcept = default;
 // Host wiring
 // ============================================================================
 
+void RoleAPIBase::set_role_tag(std::string tag)       { pImpl->role_tag = std::move(tag); }
 void RoleAPIBase::set_producer(hub::Producer *p)      { pImpl->producer = p; }
 void RoleAPIBase::set_consumer(hub::Consumer *c)      { pImpl->consumer = c; }
 void RoleAPIBase::set_messenger(hub::Messenger *m)    { pImpl->messenger = m; }
@@ -87,6 +89,7 @@ void RoleAPIBase::set_role_dir(std::string d)         { pImpl->role_dir = std::m
 // Identity
 // ============================================================================
 
+const std::string &RoleAPIBase::role_tag() const   { return pImpl->role_tag; }
 const std::string &RoleAPIBase::uid() const        { return pImpl->uid; }
 const std::string &RoleAPIBase::name() const       { return pImpl->name; }
 const std::string &RoleAPIBase::channel() const    { return pImpl->channel; }
@@ -112,13 +115,13 @@ std::string RoleAPIBase::run_dir() const
 void RoleAPIBase::log(const std::string &level, const std::string &msg)
 {
     if (level == "debug" || level == "Debug")
-        LOGGER_DEBUG("[{}/{}] {}", pImpl->uid.substr(0, 4), pImpl->name, msg);
+        LOGGER_DEBUG("[{}/{}] {}", pImpl->role_tag, pImpl->uid, msg);
     else if (level == "warn" || level == "Warn" || level == "warning")
-        LOGGER_WARN("[{}/{}] {}", pImpl->uid.substr(0, 4), pImpl->name, msg);
+        LOGGER_WARN("[{}/{}] {}", pImpl->role_tag, pImpl->uid, msg);
     else if (level == "error" || level == "Error")
-        LOGGER_ERROR("[{}/{}] {}", pImpl->uid.substr(0, 4), pImpl->name, msg);
+        LOGGER_ERROR("[{}/{}] {}", pImpl->role_tag, pImpl->uid, msg);
     else
-        LOGGER_INFO("[{}/{}] {}", pImpl->uid.substr(0, 4), pImpl->name, msg);
+        LOGGER_INFO("[{}/{}] {}", pImpl->role_tag, pImpl->uid, msg);
 }
 
 void RoleAPIBase::stop()                        { pImpl->core->request_stop(); }
@@ -225,9 +228,7 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
                 return std::nullopt;
             }
 
-            size_t item_size = 0;
-            for (const auto &f : spec.fields)
-                item_size += f.length;
+            size_t item_size = hub::compute_schema_size(spec, info->inbox_packing);
 
             auto zmq_fields = hub::schema_spec_to_zmq_fields(spec);
 
