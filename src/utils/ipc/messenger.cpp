@@ -1072,11 +1072,11 @@ Messenger::query_channel_schema(const std::string &channel_name, int timeout_ms)
     return future.get();
 }
 
-std::string Messenger::query_shm_blocks(const std::string& channel, int timeout_ms)
+std::string Messenger::request_shm_info(const std::string& channel, int timeout_ms)
 {
     if (!pImpl->m_is_connected.load(std::memory_order_acquire))
     {
-        LOGGER_WARN("Messenger: query_shm_blocks('{}') — not connected.", channel);
+        LOGGER_WARN("Messenger: request_shm_info('{}') — not connected.", channel);
         return {};
     }
     std::promise<std::string> promise;

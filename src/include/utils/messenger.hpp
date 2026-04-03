@@ -462,8 +462,8 @@ class PYLABHUB_UTILS_EXPORT Messenger
      * @param timeout_ms  Max time to wait for broker response.
      * @return JSON string with block topology and metrics (empty on error/timeout).
      */
-    [[nodiscard]] std::string query_shm_blocks(const std::string& channel = {},
-                                               int timeout_ms = 5000);
+    [[nodiscard]] std::string request_shm_info(const std::string& channel = {},
+                                                     int timeout_ms = 5000);
 
     /**
      * @brief Report a Cat 2 slot checksum error to broker (fire-and-forget).

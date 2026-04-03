@@ -715,12 +715,12 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
         });
 
     // -----------------------------------------------------------------------
-    // Wire pylabhub.blocks() → BrokerService::query_shm_blocks_json_str().
+    // Wire pylabhub.blocks() → BrokerService::collect_shm_info_json().
     // -----------------------------------------------------------------------
     pylabhub::hub_python::set_blocks_callback(
         [&broker](const std::string& channel) -> std::string
         {
-            return broker.query_shm_blocks_json_str(channel);
+            return broker.collect_shm_info_json(channel);
         });
 
     // -----------------------------------------------------------------------

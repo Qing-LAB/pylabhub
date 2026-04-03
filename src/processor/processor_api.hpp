@@ -144,7 +144,7 @@ class ProcessorAPI
     py::list list_channels();
 
     /// Query the broker for SHM block topology and DataBlockMetrics.
-    py::object shm_blocks(const std::string& channel = {});
+    py::object shm_info(const std::string& channel = {});
 
     /// Open (or return cached) an InboxHandle to send typed messages to another role.
     /// Discovers inbox_endpoint + schema from the broker via ROLE_INFO_REQ.
