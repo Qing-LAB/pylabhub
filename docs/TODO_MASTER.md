@@ -22,6 +22,21 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
+### Priority 0 (2026-04-02): DataBlock Ownership + Schema Validation + Checksum Fix
+📍 **Status**: Steps 1-10,12-13 done; **1276/1276 tests**
+📋 **Branch**: `feature/lua-role-support`
+
+- [x] ShmQueue owns DataBlock internally (create_writer/create_reader) ✅
+- [x] Producer/Consumer: spinlock/identity delegating methods ✅
+- [x] All `->shm()` external callers migrated ✅
+- [x] `item_size`/`flexzone_size` removed from Options structs ✅
+- [x] Schema size cross-validation in all 3 engines (vs compute_field_layout) ✅
+- [x] Native engine: `native_sizeof_<T>` required export ✅
+- [x] Checksum policy fix: Manual no-stamp + always-verify (SHM+ZMQ+Inbox unified) ✅
+- [x] 5 new checksum policy tests (hub API + ZmqQueue) ✅
+- [ ] Step 11: Remove `schema_slot_size_` members from role hosts
+- [ ] `shm()` accessor visibility (needs template RAII discussion)
+
 ### Priority 0 (DONE — 2026-03-29/30): Metrics, Timing, Checksum & Config Unification
 📍 **Status**: All items complete; **1181/1181 tests**
 📋 **Branch**: `feature/lua-role-support`
