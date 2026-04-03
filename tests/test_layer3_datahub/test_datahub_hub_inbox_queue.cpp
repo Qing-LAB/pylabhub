@@ -322,3 +322,113 @@ TEST(InboxQueueTest, ItemSize_MatchesSchema)
     ASSERT_NE(c, nullptr);
     EXPECT_EQ(c->item_size(), sizeof(uint32_t));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Checksum policy tests — symmetric with ShmQueue + ZmqQueue
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(InboxQueueTest, ChecksumEnforced_Roundtrip)
+{
+    auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
+    ASSERT_NE(q, nullptr);
+    q->set_checksum_policy(ChecksumPolicy::Enforced);
+    ASSERT_TRUE(q->start());
+
+    auto c = InboxClient::connect_to(q->actual_endpoint(), "CKSUM-ENF", uint32_schema());
+    ASSERT_NE(c, nullptr);
+    c->set_checksum_policy(ChecksumPolicy::Enforced);
+    ASSERT_TRUE(c->start());
+
+    void *buf = c->acquire();
+    ASSERT_NE(buf, nullptr);
+    uint32_t val = 0xCAFE;
+    std::memcpy(buf, &val, sizeof(val));
+
+    const InboxItem *item = nullptr;
+    auto fut = std::async(std::launch::async, [&] {
+        item = q->recv_one(ms{2000});
+        if (item) q->send_ack(0);
+        return item != nullptr;
+    });
+    std::this_thread::sleep_for(ms{30});
+    c->send(ms{1500});
+
+    ASSERT_TRUE(fut.get()) << "Enforced: recv_one should succeed";
+    ASSERT_NE(item, nullptr);
+    uint32_t received = 0;
+    std::memcpy(&received, item->data, sizeof(received));
+    EXPECT_EQ(received, val);
+    EXPECT_EQ(q->checksum_error_count(), 0u);
+
+    c->stop();
+    q->stop();
+}
+
+TEST(InboxQueueTest, ChecksumManual_NoStamp_ReceiverRejects)
+{
+    auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
+    ASSERT_NE(q, nullptr);
+    q->set_checksum_policy(ChecksumPolicy::Enforced); // receiver verifies
+    ASSERT_TRUE(q->start());
+
+    auto c = InboxClient::connect_to(q->actual_endpoint(), "CKSUM-MAN", uint32_schema());
+    ASSERT_NE(c, nullptr);
+    c->set_checksum_policy(ChecksumPolicy::Manual); // sender does NOT auto-stamp
+    ASSERT_TRUE(c->start());
+
+    void *buf = c->acquire();
+    ASSERT_NE(buf, nullptr);
+    uint32_t val = 0xDEAD;
+    std::memcpy(buf, &val, sizeof(val));
+
+    const InboxItem *item = nullptr;
+    auto fut = std::async(std::launch::async, [&] {
+        item = q->recv_one(ms{500});
+        return item != nullptr;
+    });
+    std::this_thread::sleep_for(ms{30});
+    c->send(ms{1500});
+
+    EXPECT_FALSE(fut.get()) << "Manual no-stamp: recv_one should reject";
+    EXPECT_GT(q->checksum_error_count(), 0u);
+
+    c->stop();
+    q->stop();
+}
+
+TEST(InboxQueueTest, ChecksumNone_Roundtrip)
+{
+    auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
+    ASSERT_NE(q, nullptr);
+    q->set_checksum_policy(ChecksumPolicy::None);
+    ASSERT_TRUE(q->start());
+
+    auto c = InboxClient::connect_to(q->actual_endpoint(), "CKSUM-NONE", uint32_schema());
+    ASSERT_NE(c, nullptr);
+    c->set_checksum_policy(ChecksumPolicy::None);
+    ASSERT_TRUE(c->start());
+
+    void *buf = c->acquire();
+    ASSERT_NE(buf, nullptr);
+    uint32_t val = 0xF00D;
+    std::memcpy(buf, &val, sizeof(val));
+
+    const InboxItem *item = nullptr;
+    auto fut = std::async(std::launch::async, [&] {
+        item = q->recv_one(ms{2000});
+        if (item) q->send_ack(0);
+        return item != nullptr;
+    });
+    std::this_thread::sleep_for(ms{30});
+    c->send(ms{1500});
+
+    ASSERT_TRUE(fut.get()) << "None: recv_one should succeed";
+    ASSERT_NE(item, nullptr);
+    uint32_t received = 0;
+    std::memcpy(&received, item->data, sizeof(received));
+    EXPECT_EQ(received, val);
+    EXPECT_EQ(q->checksum_error_count(), 0u);
+
+    c->stop();
+    q->stop();
+}
