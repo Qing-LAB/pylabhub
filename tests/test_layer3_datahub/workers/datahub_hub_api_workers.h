@@ -93,4 +93,11 @@ int shm_multifield_schema_roundtrip(int argc, char **argv);
 /** ZMQ multi-field schema: same as SHM but through ZMQ transport. */
 int zmq_multifield_schema_roundtrip(int argc, char **argv);
 
+/** SHM packed: 6-field schema with packed packing — no alignment padding. */
+int shm_multifield_packed_roundtrip(int argc, char **argv);
+/** ZMQ packed: 6-field schema with packed packing through ZMQ wire. */
+int zmq_multifield_packed_roundtrip(int argc, char **argv);
+/** Checksum Enforced + complex 6-field schema: stamp + verify round-trip. */
+int checksum_enforced_complex_schema(int argc, char **argv);
+
 } // namespace pylabhub::tests::worker::hub_api
