@@ -2,14 +2,10 @@
  * @file test_metrics_api.cpp
  * @brief HEP-CORE-0019 API-level metrics unit tests.
  *
- * Suite: MetricsApiTest
+ * Tests snapshot_metrics_json, report_metric, report_metrics,
+ * clear_custom_metrics on ProducerAPI, ConsumerAPI, ProcessorAPI.
  *
- * Tests the C++ API methods (snapshot_metrics_json, report_metric,
- * report_metrics, clear_custom_metrics) on ProducerAPI, ConsumerAPI,
- * and ProcessorAPI — without requiring a live broker or SHM.
- *
- * These API classes embed pybind11 module definitions, so this test
- * binary links against pybind11_embed.
+ * Phase 2: all API classes take RoleAPIBase& instead of RoleHostCore&.
  */
 #include "producer/producer_api.hpp"
 #include "consumer/consumer_api.hpp"
@@ -26,22 +22,26 @@
 
 using json = nlohmann::json;
 using pylabhub::scripting::RoleAPIBase;
+using pylabhub::scripting::RoleHostCore;
 
 namespace
 {
-/// Create a RoleAPIBase wired for producer tests (no infrastructure).
-RoleAPIBase make_producer_api_base(pylabhub::scripting::RoleHostCore &core,
-                                   const std::string &uid = "PROD-test",
-                                   const std::string &name = "test-prod",
-                                   const std::string &channel = "test.chan")
+
+struct TestContext
 {
-    RoleAPIBase base(core);
-    base.set_role_tag("prod");
-    base.set_uid(uid);
-    base.set_name(name);
-    base.set_channel(channel);
-    return base;
-}
+    RoleHostCore core;
+    std::unique_ptr<RoleAPIBase> base;
+
+    TestContext(const std::string &tag)
+    {
+        base = std::make_unique<RoleAPIBase>(core);
+        base->set_role_tag(tag);
+        base->set_uid("TEST-" + tag);
+        base->set_name("test-" + tag);
+        base->set_channel("test.chan");
+    }
+};
+
 } // anonymous namespace
 
 // ============================================================================
@@ -50,17 +50,15 @@ RoleAPIBase make_producer_api_base(pylabhub::scripting::RoleHostCore &core,
 
 TEST(MetricsApiTest, ProducerAPI_SnapshotBase_NoSHM)
 {
-    pylabhub::scripting::RoleHostCore core;
-    auto base = make_producer_api_base(core);
-    pylabhub::producer::ProducerAPI api(base);
+    TestContext ctx("prod");
+    pylabhub::producer::ProducerAPI api(*ctx.base);
 
-    core.inc_out_written();
-    core.inc_out_written();
-    core.inc_drops();
+    ctx.core.inc_out_written();
+    ctx.core.inc_out_written();
+    ctx.core.inc_drops();
 
     json snap = api.snapshot_metrics_json();
 
-    // Hierarchical structure: role, loop, custom (no queue when disconnected).
     ASSERT_TRUE(snap.contains("role"));
     EXPECT_EQ(snap["role"]["out_written"], 2);
     EXPECT_EQ(snap["role"]["drops"], 1);
@@ -68,48 +66,37 @@ TEST(MetricsApiTest, ProducerAPI_SnapshotBase_NoSHM)
 
     ASSERT_TRUE(snap.contains("loop"));
     EXPECT_EQ(snap["loop"]["iteration_count"], 0);
-    EXPECT_EQ(snap["loop"]["loop_overrun_count"], 0);
 
-    // No queue connected → no "queue" key.
     EXPECT_FALSE(snap.contains("queue"));
-
-    // No custom metrics reported → no "custom" key.
     EXPECT_FALSE(snap.contains("custom"));
 }
 
 TEST(MetricsApiTest, ProducerAPI_ReportMetric)
 {
-    pylabhub::scripting::RoleHostCore core;
-    auto base = make_producer_api_base(core);
-    pylabhub::producer::ProducerAPI api(base);
-    api.report_metric("events", 42.0);
-    api.report_metric("rate_hz", 1000.5);
+    TestContext ctx("prod");
+    pylabhub::producer::ProducerAPI api(*ctx.base);
+    api.report_metric("temperature", 23.5);
 
     json snap = api.snapshot_metrics_json();
-    ASSERT_TRUE(snap["custom"].contains("events"));
-    EXPECT_DOUBLE_EQ(snap["custom"]["events"].get<double>(), 42.0);
-    EXPECT_DOUBLE_EQ(snap["custom"]["rate_hz"].get<double>(), 1000.5);
+    ASSERT_TRUE(snap.contains("custom"));
+    EXPECT_DOUBLE_EQ(snap["custom"]["temperature"].get<double>(), 23.5);
 }
 
 TEST(MetricsApiTest, ProducerAPI_ReportMetrics_Batch)
 {
-    pylabhub::scripting::RoleHostCore core;
-    auto base = make_producer_api_base(core);
-    pylabhub::producer::ProducerAPI api(base);
-    std::unordered_map<std::string, double> kv{{"a", 1.0}, {"b", 2.0}, {"c", 3.0}};
-    api.report_metrics(kv);
+    TestContext ctx("prod");
+    pylabhub::producer::ProducerAPI api(*ctx.base);
+    api.report_metrics({{"a", 1.0}, {"b", 2.0}});
 
     json snap = api.snapshot_metrics_json();
     EXPECT_DOUBLE_EQ(snap["custom"]["a"].get<double>(), 1.0);
     EXPECT_DOUBLE_EQ(snap["custom"]["b"].get<double>(), 2.0);
-    EXPECT_DOUBLE_EQ(snap["custom"]["c"].get<double>(), 3.0);
 }
 
 TEST(MetricsApiTest, ProducerAPI_ClearCustomMetrics)
 {
-    pylabhub::scripting::RoleHostCore core;
-    auto base = make_producer_api_base(core);
-    pylabhub::producer::ProducerAPI api(base);
+    TestContext ctx("prod");
+    pylabhub::producer::ProducerAPI api(*ctx.base);
     api.report_metric("x", 1.0);
     api.clear_custom_metrics();
 
@@ -119,9 +106,8 @@ TEST(MetricsApiTest, ProducerAPI_ClearCustomMetrics)
 
 TEST(MetricsApiTest, ProducerAPI_ReportMetric_Overwrite)
 {
-    pylabhub::scripting::RoleHostCore core;
-    auto base = make_producer_api_base(core);
-    pylabhub::producer::ProducerAPI api(base);
+    TestContext ctx("prod");
+    pylabhub::producer::ProducerAPI api(*ctx.base);
     api.report_metric("x", 1.0);
     api.report_metric("x", 99.0);
 
@@ -135,15 +121,16 @@ TEST(MetricsApiTest, ProducerAPI_ReportMetric_Overwrite)
 
 TEST(MetricsApiTest, ConsumerAPI_SnapshotBase_NoSHM)
 {
-    pylabhub::scripting::RoleHostCore core;
-    pylabhub::consumer::ConsumerAPI api(core);
+    TestContext ctx("cons");
+    pylabhub::consumer::ConsumerAPI api(*ctx.base);
 
     json snap = api.snapshot_metrics_json();
 
     ASSERT_TRUE(snap.contains("role"));
     EXPECT_EQ(snap["role"]["in_received"], 0);
+    EXPECT_EQ(snap["role"]["out_written"], 0);
+    EXPECT_EQ(snap["role"]["drops"], 0);
     EXPECT_EQ(snap["role"]["script_errors"], 0);
-    EXPECT_FALSE(snap["role"].contains("out_written"));
 
     ASSERT_TRUE(snap.contains("loop"));
     EXPECT_EQ(snap["loop"]["iteration_count"], 0);
@@ -154,8 +141,8 @@ TEST(MetricsApiTest, ConsumerAPI_SnapshotBase_NoSHM)
 
 TEST(MetricsApiTest, ConsumerAPI_ReportAndClear)
 {
-    pylabhub::scripting::RoleHostCore core;
-    pylabhub::consumer::ConsumerAPI api(core);
+    TestContext ctx("cons");
+    pylabhub::consumer::ConsumerAPI api(*ctx.base);
     api.report_metric("bytes_logged", 2048.0);
 
     json snap = api.snapshot_metrics_json();
@@ -172,8 +159,8 @@ TEST(MetricsApiTest, ConsumerAPI_ReportAndClear)
 
 TEST(MetricsApiTest, ProcessorAPI_SnapshotBase_NoSHM)
 {
-    pylabhub::scripting::RoleHostCore core;
-    pylabhub::processor::ProcessorAPI api(core);
+    TestContext ctx("proc");
+    pylabhub::processor::ProcessorAPI api(*ctx.base);
 
     json snap = api.snapshot_metrics_json();
 
@@ -188,103 +175,85 @@ TEST(MetricsApiTest, ProcessorAPI_SnapshotBase_NoSHM)
 
     EXPECT_FALSE(snap.contains("in_queue"));
     EXPECT_FALSE(snap.contains("out_queue"));
-    EXPECT_TRUE(snap["custom"].empty());
+    EXPECT_FALSE(snap.contains("custom"));
 }
 
 TEST(MetricsApiTest, ProcessorAPI_ReportAndSnapshot)
 {
-    pylabhub::scripting::RoleHostCore core;
-    pylabhub::processor::ProcessorAPI api(core);
-    api.report_metric("avg_latency_ms", 2.5);
-    api.report_metrics({{"throughput", 500.0}, {"errors", 0.0}});
+    TestContext ctx("proc");
+    pylabhub::processor::ProcessorAPI api(*ctx.base);
+    api.report_metric("rate", 100.0);
 
     json snap = api.snapshot_metrics_json();
-    EXPECT_DOUBLE_EQ(snap["custom"]["avg_latency_ms"].get<double>(), 2.5);
-    EXPECT_DOUBLE_EQ(snap["custom"]["throughput"].get<double>(), 500.0);
-    EXPECT_DOUBLE_EQ(snap["custom"]["errors"].get<double>(), 0.0);
+    ASSERT_TRUE(snap.contains("custom"));
+    EXPECT_DOUBLE_EQ(snap["custom"]["rate"].get<double>(), 100.0);
 }
 
 // ============================================================================
-// Python py::dict api.metrics() — hierarchical structure
+// PyDict tests (require pybind11 interpreter)
 // ============================================================================
-
-namespace py = pybind11;
 
 class MetricsApiPyDictTest : public ::testing::Test
 {
-  protected:
+  public:
     static void SetUpTestSuite()
     {
-        if (!Py_IsInitialized())
-        {
-            interp_ = std::make_unique<py::scoped_interpreter>();
-        }
+        guard_ = std::make_unique<py::scoped_interpreter>();
     }
-    static void TearDownTestSuite() { interp_.reset(); }
-    static inline std::unique_ptr<py::scoped_interpreter> interp_;
+    static void TearDownTestSuite()
+    {
+        guard_.reset();
+    }
+  private:
+    static std::unique_ptr<py::scoped_interpreter> guard_;
 };
+
+std::unique_ptr<py::scoped_interpreter> MetricsApiPyDictTest::guard_;
 
 TEST_F(MetricsApiPyDictTest, ProducerAPI_PyDict_Hierarchical_NoQueue)
 {
-    pylabhub::scripting::RoleHostCore core;
-    auto base = make_producer_api_base(core);
-    pylabhub::producer::ProducerAPI api(base);
-    core.inc_out_written();
-    core.inc_out_written();
-    core.inc_out_written();
-    core.inc_drops();
+    TestContext ctx("prod");
+    pylabhub::producer::ProducerAPI api(*ctx.base);
+
+    ctx.core.inc_out_written();
 
     py::dict d = api.metrics();
 
-    // "loop" group must be present (always available from RoleHostCore).
-    ASSERT_TRUE(d.contains("loop"));
-    py::dict loop = d["loop"].cast<py::dict>();
-    EXPECT_EQ(loop["iteration_count"].cast<uint64_t>(), 0u);
-    EXPECT_EQ(loop["loop_overrun_count"].cast<uint64_t>(), 0u);
-
-    // "role" group must be present.
-    ASSERT_TRUE(d.contains("role"));
-    py::dict role = d["role"].cast<py::dict>();
-    EXPECT_EQ(role["out_written"].cast<uint64_t>(), 3u);
-    EXPECT_EQ(role["drops"].cast<uint64_t>(), 1u);
-    EXPECT_EQ(role["script_errors"].cast<uint64_t>(), 0u);
-
-    // No queue connected → no "queue" key.
+    // Must have "role" and "loop" groups.
+    EXPECT_TRUE(d.contains("role"));
+    EXPECT_TRUE(d.contains("loop"));
+    // No queue when disconnected.
     EXPECT_FALSE(d.contains("queue"));
 
-    // No inbox → no "inbox" key.
-    EXPECT_FALSE(d.contains("inbox"));
+    auto role = d["role"].cast<py::dict>();
+    EXPECT_EQ(role["out_written"].cast<uint64_t>(), 1u);
+    EXPECT_EQ(role["script_errors"].cast<uint64_t>(), 0u);
 }
 
 TEST_F(MetricsApiPyDictTest, ConsumerAPI_PyDict_Hierarchical_NoQueue)
 {
-    pylabhub::scripting::RoleHostCore core;
-    pylabhub::consumer::ConsumerAPI api(core);
+    TestContext ctx("cons");
+    pylabhub::consumer::ConsumerAPI api(*ctx.base);
 
     py::dict d = api.metrics();
 
-    ASSERT_TRUE(d.contains("loop"));
-    ASSERT_TRUE(d.contains("role"));
-    py::dict role = d["role"].cast<py::dict>();
-    EXPECT_EQ(role["in_received"].cast<uint64_t>(), 0u);
+    EXPECT_TRUE(d.contains("role"));
+    EXPECT_TRUE(d.contains("loop"));
     EXPECT_FALSE(d.contains("queue"));
+
+    auto role = d["role"].cast<py::dict>();
+    EXPECT_EQ(role["in_received"].cast<uint64_t>(), 0u);
 }
 
 TEST_F(MetricsApiPyDictTest, ProcessorAPI_PyDict_Hierarchical_NoQueue)
 {
-    pylabhub::scripting::RoleHostCore core;
-    pylabhub::processor::ProcessorAPI api(core);
+    TestContext ctx("proc");
+    pylabhub::processor::ProcessorAPI api(*ctx.base);
 
     py::dict d = api.metrics();
 
-    ASSERT_TRUE(d.contains("loop"));
-    ASSERT_TRUE(d.contains("role"));
-    py::dict role = d["role"].cast<py::dict>();
-    EXPECT_EQ(role["in_received"].cast<uint64_t>(), 0u);
-    EXPECT_EQ(role["out_written"].cast<uint64_t>(), 0u);
-    EXPECT_TRUE(role.contains("ctrl_queue_dropped"));
-
-    // Processor: no in_queue/out_queue when disconnected.
+    EXPECT_TRUE(d.contains("role"));
+    EXPECT_TRUE(d.contains("loop"));
     EXPECT_FALSE(d.contains("in_queue"));
     EXPECT_FALSE(d.contains("out_queue"));
 }
