@@ -235,7 +235,29 @@ TEST_F(DatahubHubApiTest, ShmMultifieldSchemaRoundtrip)
 
 TEST_F(DatahubHubApiTest, ZmqMultifieldSchemaRoundtrip)
 {
-    // Multi-type schema (float64+int32+uint8) through ZMQ: write all fields, read all fields.
+    // Multi-type schema (float64+float32[3]+uint16+bytes[5]+string[16]+int64) through ZMQ.
     auto proc = SpawnWorker("hub_api.zmq_multifield_schema_roundtrip", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubHubApiTest, ShmMultifieldPackedRoundtrip)
+{
+    // Same 6-field schema with packed packing — no alignment padding.
+    // Verifies packed size < aligned size and data survives packed layout.
+    auto proc = SpawnWorker("hub_api.shm_multifield_packed_roundtrip", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubHubApiTest, ZmqMultifieldPackedRoundtrip)
+{
+    // Same 6-field schema with packed packing through ZMQ wire format.
+    auto proc = SpawnWorker("hub_api.zmq_multifield_packed_roundtrip", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubHubApiTest, ChecksumEnforcedComplexSchema)
+{
+    // Enforced checksum with 6-field complex schema — stamp + verify round-trip.
+    auto proc = SpawnWorker("hub_api.checksum_enforced_complex_schema", {});
     ExpectWorkerOk(proc);
 }

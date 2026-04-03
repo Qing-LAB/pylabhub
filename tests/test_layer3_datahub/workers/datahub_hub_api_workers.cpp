@@ -2345,6 +2345,245 @@ int zmq_multifield_schema_roundtrip(int /*argc*/, char ** /*argv*/)
         logger_module(), crypto_module(), hub_module());
 }
 
+// ============================================================================
+// Packed packing variants — same complex schema, packed layout (no padding)
+// ============================================================================
+
+namespace
+{
+// Shared complex schema for all multifield tests.
+std::vector<hub::SchemaFieldDesc> complex_schema()
+{
+    return {{"float64", 1, 0}, {"float32", 3, 0}, {"uint16", 1, 0},
+            {"bytes", 1, 5}, {"string", 1, 16}, {"int64", 1, 0}};
+}
+
+// Write test data into buffer at computed offsets.
+void write_complex_fields(uint8_t *p, const std::vector<hub::FieldLayout> &layout)
+{
+    double ts = 1.23456789;
+    float data_arr[3] = {1.0f, 2.5f, -3.75f};
+    uint16_t status = 0xBEEF;
+    uint8_t raw[5] = {0xDE, 0xAD, 0xBE, 0xEF, 0xCA};
+    char label[16] = "packed_test!";
+    int64_t seq = -999999LL;
+
+    std::memcpy(p + layout[0].offset, &ts, sizeof(ts));
+    std::memcpy(p + layout[1].offset, data_arr, sizeof(data_arr));
+    std::memcpy(p + layout[2].offset, &status, sizeof(status));
+    std::memcpy(p + layout[3].offset, raw, 5);
+    std::memcpy(p + layout[4].offset, label, 16);
+    std::memcpy(p + layout[5].offset, &seq, sizeof(seq));
+}
+
+// Verify test data read from buffer at computed offsets.
+void verify_complex_fields(const uint8_t *r, const std::vector<hub::FieldLayout> &layout)
+{
+    double read_ts = 0;
+    float read_data[3] = {};
+    uint16_t read_status = 0;
+    uint8_t read_raw[5] = {};
+    char read_label[16] = {};
+    int64_t read_seq = 0;
+
+    std::memcpy(&read_ts, r + layout[0].offset, sizeof(read_ts));
+    std::memcpy(read_data, r + layout[1].offset, sizeof(read_data));
+    std::memcpy(&read_status, r + layout[2].offset, sizeof(read_status));
+    std::memcpy(read_raw, r + layout[3].offset, 5);
+    std::memcpy(read_label, r + layout[4].offset, 16);
+    std::memcpy(&read_seq, r + layout[5].offset, sizeof(read_seq));
+
+    EXPECT_DOUBLE_EQ(read_ts, 1.23456789);
+    EXPECT_FLOAT_EQ(read_data[0], 1.0f);
+    EXPECT_FLOAT_EQ(read_data[1], 2.5f);
+    EXPECT_FLOAT_EQ(read_data[2], -3.75f);
+    EXPECT_EQ(read_status, 0xBEEFu);
+    EXPECT_EQ(read_raw[0], 0xDEu);
+    EXPECT_EQ(read_raw[4], 0xCAu);
+    EXPECT_STREQ(read_label, "packed_test!");
+    EXPECT_EQ(read_seq, -999999LL);
+}
+} // anonymous namespace
+
+int shm_multifield_packed_roundtrip(int /*argc*/, char ** /*argv*/)
+{
+    return run_gtest_worker(
+        []() {
+            auto broker = start_broker();
+            Messenger &messenger = Messenger::get_instance();
+            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
+
+            auto schema = complex_schema();
+            auto [layout, packed_size] = hub::compute_field_layout(schema, "packed");
+            auto [aligned_layout, aligned_size] = hub::compute_field_layout(schema, "aligned");
+            // Packed must be strictly smaller (bytes[5] + string[16] eliminate alignment padding).
+            EXPECT_LT(packed_size, aligned_size)
+                << "Packed size must be smaller than aligned for this schema";
+
+            ProducerOptions popts;
+            popts.channel_name = make_test_channel_name("hub.packed_shm");
+            popts.has_shm      = true;
+            popts.zmq_schema   = schema;
+            popts.zmq_packing  = "packed";
+            popts.shm_config   = make_shm_config();
+            popts.timeout_ms   = 3000;
+
+            auto producer = Producer::create(messenger, popts);
+            ASSERT_TRUE(producer.has_value());
+            EXPECT_TRUE(producer->start_queue());
+            EXPECT_EQ(producer->queue_item_size(), packed_size);
+
+            void *buf = producer->write_acquire(std::chrono::milliseconds{1000});
+            ASSERT_NE(buf, nullptr);
+            write_complex_fields(static_cast<uint8_t *>(buf), layout);
+            producer->write_commit();
+
+            ConsumerOptions copts;
+            copts.channel_name      = popts.channel_name;
+            copts.shm_shared_secret = kTestShmSecret;
+            copts.zmq_schema        = schema;
+            copts.zmq_packing       = "packed";
+            copts.timeout_ms        = 3000;
+
+            auto consumer = Consumer::connect(messenger, copts);
+            ASSERT_TRUE(consumer.has_value());
+            EXPECT_TRUE(consumer->start_queue());
+            EXPECT_EQ(consumer->queue_item_size(), packed_size);
+
+            const void *data = consumer->read_acquire(std::chrono::milliseconds{1000});
+            ASSERT_NE(data, nullptr);
+            verify_complex_fields(static_cast<const uint8_t *>(data), layout);
+            consumer->read_release();
+
+            consumer->close();
+            producer->close();
+            messenger.disconnect();
+            broker.stop_and_join();
+        },
+        "hub_api.shm_multifield_packed_roundtrip",
+        logger_module(), crypto_module(), hub_module());
+}
+
+int zmq_multifield_packed_roundtrip(int /*argc*/, char ** /*argv*/)
+{
+    return run_gtest_worker(
+        []() {
+            auto broker = start_broker();
+            Messenger prod_m, cons_m;
+            ASSERT_TRUE(prod_m.connect(broker.endpoint, broker.pubkey));
+            ASSERT_TRUE(cons_m.connect(broker.endpoint, broker.pubkey));
+
+            auto schema = complex_schema();
+            auto [layout, packed_size] = hub::compute_field_layout(schema, "packed");
+
+            ProducerOptions popts;
+            popts.channel_name      = make_test_channel_name("hub.packed_zmq");
+            popts.has_shm           = false;
+            popts.data_transport    = "zmq";
+            popts.zmq_node_endpoint = "tcp://127.0.0.1:0";
+            popts.zmq_bind          = true;
+            popts.zmq_schema        = schema;
+            popts.zmq_packing       = "packed";
+            popts.zmq_buffer_depth  = 16;
+            popts.timeout_ms        = 3000;
+
+            auto producer = Producer::create(prod_m, popts);
+            ASSERT_TRUE(producer.has_value());
+            EXPECT_EQ(producer->queue_item_size(), packed_size);
+
+            void *buf = producer->write_acquire(std::chrono::milliseconds{1000});
+            ASSERT_NE(buf, nullptr);
+            write_complex_fields(static_cast<uint8_t *>(buf), layout);
+            producer->write_commit();
+
+            ConsumerOptions copts;
+            copts.channel_name      = popts.channel_name;
+            copts.zmq_schema        = schema;
+            copts.zmq_packing       = "packed";
+            copts.zmq_buffer_depth  = 16;
+            copts.timeout_ms        = 3000;
+
+            auto consumer = Consumer::connect(cons_m, copts);
+            ASSERT_TRUE(consumer.has_value());
+            std::this_thread::sleep_for(std::chrono::milliseconds{100});
+
+            const void *data = consumer->read_acquire(std::chrono::milliseconds{2000});
+            ASSERT_NE(data, nullptr);
+            verify_complex_fields(static_cast<const uint8_t *>(data), layout);
+            consumer->read_release();
+
+            consumer->close();
+            producer->close();
+            broker.stop_and_join();
+            cons_m.disconnect();
+            prod_m.disconnect();
+        },
+        "hub_api.zmq_multifield_packed_roundtrip",
+        logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// Checksum with complex schema — Enforced policy + 6-field schema
+// ============================================================================
+
+int checksum_enforced_complex_schema(int /*argc*/, char ** /*argv*/)
+{
+    return run_gtest_worker(
+        []() {
+            auto broker = start_broker();
+            Messenger &messenger = Messenger::get_instance();
+            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
+
+            auto schema = complex_schema();
+            auto [layout, expected_size] = hub::compute_field_layout(schema, "aligned");
+
+            ProducerOptions popts;
+            popts.channel_name    = make_test_channel_name("hub.cksum_complex");
+            popts.has_shm         = true;
+            popts.zmq_schema      = schema;
+            popts.zmq_packing     = "aligned";
+            popts.shm_config      = make_shm_config();
+            popts.shm_config.checksum_policy = ChecksumPolicy::Manual;
+            popts.checksum_policy = ChecksumPolicy::Enforced;
+            popts.timeout_ms      = 3000;
+
+            auto producer = Producer::create(messenger, popts);
+            ASSERT_TRUE(producer.has_value());
+            EXPECT_TRUE(producer->start_queue());
+
+            void *buf = producer->write_acquire(std::chrono::milliseconds{1000});
+            ASSERT_NE(buf, nullptr);
+            write_complex_fields(static_cast<uint8_t *>(buf), layout);
+            producer->write_commit(); // checksum stamped by Enforced policy
+
+            ConsumerOptions copts;
+            copts.channel_name      = popts.channel_name;
+            copts.shm_shared_secret = kTestShmSecret;
+            copts.zmq_schema        = schema;
+            copts.zmq_packing       = "aligned";
+            copts.checksum_policy   = ChecksumPolicy::Enforced;
+            copts.timeout_ms        = 3000;
+
+            auto consumer = Consumer::connect(messenger, copts);
+            ASSERT_TRUE(consumer.has_value());
+            EXPECT_TRUE(consumer->start_queue());
+
+            const void *data = consumer->read_acquire(std::chrono::milliseconds{1000});
+            ASSERT_NE(data, nullptr) << "Enforced checksum with complex schema should pass";
+            verify_complex_fields(static_cast<const uint8_t *>(data), layout);
+            consumer->read_release();
+
+            EXPECT_EQ(consumer->queue_metrics().checksum_error_count, 0u);
+
+            consumer->close();
+            producer->close();
+            messenger.disconnect();
+            broker.stop_and_join();
+        },
+        "hub_api.checksum_enforced_complex_schema",
+        logger_module(), crypto_module(), hub_module());
+}
+
 } // namespace pylabhub::tests::worker::hub_api
 
 // ============================================================================
@@ -2432,6 +2671,12 @@ struct HubApiWorkerRegistrar
                     return shm_multifield_schema_roundtrip(argc, argv);
                 if (scenario == "zmq_multifield_schema_roundtrip")
                     return zmq_multifield_schema_roundtrip(argc, argv);
+                if (scenario == "shm_multifield_packed_roundtrip")
+                    return shm_multifield_packed_roundtrip(argc, argv);
+                if (scenario == "zmq_multifield_packed_roundtrip")
+                    return zmq_multifield_packed_roundtrip(argc, argv);
+                if (scenario == "checksum_enforced_complex_schema")
+                    return checksum_enforced_complex_schema(argc, argv);
                 fmt::print(stderr, "ERROR: Unknown hub_api scenario '{}'\n", scenario);
                 return 1;
             });

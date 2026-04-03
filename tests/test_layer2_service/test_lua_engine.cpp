@@ -211,6 +211,27 @@ TEST_F(LuaEngineTest, RegisterSlotType_MultiField)
     engine.finalize();
 }
 
+TEST_F(LuaEngineTest, RegisterSlotType_PackedPacking)
+{
+    write_script("function on_produce(tx, msgs, api) return true end");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
+
+    // bool + int32: aligned=8, packed=5.
+    SchemaSpec spec;
+    spec.has_schema = true;
+    FieldDef f1; f1.name = "flag"; f1.type_str = "bool"; f1.count = 1; f1.length = 0;
+    FieldDef f2; f2.name = "val";  f2.type_str = "int32"; f2.count = 1; f2.length = 0;
+    spec.fields = {f1, f2};
+
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "packed"));
+    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 5u) << "packed: bool(1)+int32(4)=5";
+
+    engine.finalize();
+}
+
 TEST_F(LuaEngineTest, RegisterSlotType_HasSchemaFalse_ReturnsFalse)
 {
     write_script("function on_produce(tx, msgs, api) return true end");
