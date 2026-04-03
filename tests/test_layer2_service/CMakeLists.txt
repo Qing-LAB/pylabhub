@@ -644,8 +644,6 @@ gtest_discover_tests(test_layer2_lua_engine
 )
 
 # --- PythonEngine unit tests ---
-# TEMPORARILY DISABLED — Phase 2 RoleAPIBase migration. Source preserved as spec.
-if(FALSE)
 add_executable(test_layer2_python_engine
     test_python_engine.cpp
 )
@@ -679,7 +677,6 @@ gtest_discover_tests(test_layer2_python_engine
         LABELS "layer2;service;scripting;python;engine"
         TIMEOUT 60
 )
-endif() # TEMPORARILY DISABLED — Phase 2
 
 # ── NativeEngine test plugin (.so) ───────────────────────────────────────
 add_library(test_good_producer_plugin SHARED
@@ -860,8 +857,6 @@ gtest_discover_tests(test_layer2_schema_validation
 # Test: MetricsAPI — hierarchical metrics serialization (JSON + py::dict)
 # ============================================================================
 
-# TEMPORARILY DISABLED — Phase 2 RoleAPIBase migration. Source preserved as spec.
-if(FALSE)
 add_executable(test_layer2_metrics_api
     test_metrics_api.cpp
 )
@@ -899,4 +894,3 @@ gtest_discover_tests(test_layer2_metrics_api
         TIMEOUT 60
     DISCOVERY_TIMEOUT 60
 )
-endif() # TEMPORARILY DISABLED — Phase 2
