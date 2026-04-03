@@ -458,70 +458,73 @@ bool PythonEngine::build_api_(const RoleContext &ctx)
     // Detect role from role_tag (authoritative). Validate expected pointers.
     if (ctx_.role_tag == "prod")
     {
-        // Producer role.
-        producer_api_ = std::make_unique<producer::ProducerAPI>(*ctx_.core);
-        auto &api = *producer_api_;
+        // Producer role — create RoleAPIBase, then wrap in ProducerAPI.
+        role_api_base_ = std::make_unique<RoleAPIBase>(*ctx_.core);
+        role_api_base_->set_role_tag("prod");
+        role_api_base_->set_producer(ctx_.producer);
+        role_api_base_->set_messenger(ctx_.messenger);
+        role_api_base_->set_inbox_queue(ctx_.inbox_queue);
+        role_api_base_->set_uid(ctx_.uid);
+        role_api_base_->set_name(ctx_.name);
+        role_api_base_->set_channel(ctx_.channel);
+        role_api_base_->set_log_level(ctx_.log_level);
+        role_api_base_->set_script_dir(ctx_.script_dir);
+        role_api_base_->set_role_dir(ctx_.role_dir);
 
-        api.set_producer(ctx_.producer);
-        api.set_messenger(ctx_.messenger);
-        api.set_inbox_queue(ctx_.inbox_queue);
-        api.set_engine(this);
-        api.set_uid(ctx_.uid);
-        api.set_name(ctx_.name);
-        api.set_channel(ctx_.channel);
-        api.set_log_level(ctx_.log_level);
-        api.set_script_dir(ctx_.script_dir);
-        api.set_role_dir(ctx_.role_dir);
-        api.shared_data_ = py::dict();
+        producer_api_ = std::make_unique<producer::ProducerAPI>(*role_api_base_);
+        producer_api_->set_engine(this);
+        producer_api_->shared_data_ = py::dict();
 
         py::module_ mod = py::module_::import("pylabhub_producer");
-        api_obj_ = py::cast(&api, py::return_value_policy::reference);
+        api_obj_ = py::cast(producer_api_.get(), py::return_value_policy::reference);
     }
     else if (ctx_.role_tag == "cons")
     {
-        // Consumer role.
-        consumer_api_ = std::make_unique<consumer::ConsumerAPI>(*ctx_.core);
-        auto &api = *consumer_api_;
+        // Consumer role — create RoleAPIBase, then wrap in ConsumerAPI.
+        role_api_base_ = std::make_unique<RoleAPIBase>(*ctx_.core);
+        role_api_base_->set_role_tag("cons");
+        role_api_base_->set_consumer(ctx_.consumer);
+        role_api_base_->set_messenger(ctx_.messenger);
+        role_api_base_->set_inbox_queue(ctx_.inbox_queue);
+        role_api_base_->set_uid(ctx_.uid);
+        role_api_base_->set_name(ctx_.name);
+        role_api_base_->set_channel(ctx_.channel);
+        role_api_base_->set_log_level(ctx_.log_level);
+        role_api_base_->set_script_dir(ctx_.script_dir);
+        role_api_base_->set_role_dir(ctx_.role_dir);
 
-        api.set_consumer(ctx_.consumer);
-        api.set_messenger(ctx_.messenger);
-        api.set_inbox_queue(ctx_.inbox_queue);
-        api.set_engine(this);
-        api.set_uid(ctx_.uid);
-        api.set_name(ctx_.name);
-        api.set_channel(ctx_.channel);
-        api.set_log_level(ctx_.log_level);
-        api.set_script_dir(ctx_.script_dir);
-        api.set_role_dir(ctx_.role_dir);
-        api.shared_data_ = py::dict();
+        consumer_api_ = std::make_unique<consumer::ConsumerAPI>(*role_api_base_);
+        consumer_api_->set_engine(this);
+        consumer_api_->shared_data_ = py::dict();
 
         py::module_ mod = py::module_::import("pylabhub_consumer");
-        api_obj_ = py::cast(&api, py::return_value_policy::reference);
+        api_obj_ = py::cast(consumer_api_.get(), py::return_value_policy::reference);
     }
     else if (ctx_.role_tag == "proc")
     {
-        // Processor role.
-        processor_api_ = std::make_unique<processor::ProcessorAPI>(*ctx_.core);
-        auto &api = *processor_api_;
-
+        // Processor role — create RoleAPIBase, then wrap in ProcessorAPI.
+        role_api_base_ = std::make_unique<RoleAPIBase>(*ctx_.core);
+        role_api_base_->set_role_tag("proc");
         if (ctx_.producer)
-            api.set_producer(ctx_.producer);
+            role_api_base_->set_producer(ctx_.producer);
         if (ctx_.consumer)
-            api.set_consumer(ctx_.consumer);
-        api.set_messenger(ctx_.messenger);
-        api.set_inbox_queue(ctx_.inbox_queue);
-        api.set_engine(this);
-        api.set_uid(ctx_.uid);
-        api.set_name(ctx_.name);
-        api.set_in_channel(ctx_.channel);
-        api.set_out_channel(ctx_.out_channel);
-        api.set_log_level(ctx_.log_level);
-        api.set_script_dir(ctx_.script_dir);
-        api.set_role_dir(ctx_.role_dir);
-        api.shared_data_ = py::dict();
+            role_api_base_->set_consumer(ctx_.consumer);
+        role_api_base_->set_messenger(ctx_.messenger);
+        role_api_base_->set_inbox_queue(ctx_.inbox_queue);
+        role_api_base_->set_uid(ctx_.uid);
+        role_api_base_->set_name(ctx_.name);
+        role_api_base_->set_channel(ctx_.channel);
+        role_api_base_->set_out_channel(ctx_.out_channel);
+        role_api_base_->set_log_level(ctx_.log_level);
+        role_api_base_->set_script_dir(ctx_.script_dir);
+        role_api_base_->set_role_dir(ctx_.role_dir);
+
+        processor_api_ = std::make_unique<processor::ProcessorAPI>(*role_api_base_);
+        processor_api_->set_engine(this);
+        processor_api_->shared_data_ = py::dict();
 
         py::module_ mod = py::module_::import("pylabhub_processor");
-        api_obj_ = py::cast(&api, py::return_value_policy::reference);
+        api_obj_ = py::cast(processor_api_.get(), py::return_value_policy::reference);
     }
     else
     {
@@ -575,23 +578,22 @@ void PythonEngine::finalize_engine_()
     if (producer_api_)
     {
         producer_api_->clear_inbox_cache();
-        producer_api_->set_producer(nullptr);
-        producer_api_->set_messenger(nullptr);
         producer_api_->set_engine(nullptr);
+    }
+    if (role_api_base_)
+    {
+        role_api_base_->set_producer(nullptr);
+        role_api_base_->set_messenger(nullptr);
+        role_api_base_->close_all_inbox_clients();
     }
     if (consumer_api_)
     {
         consumer_api_->clear_inbox_cache();
-        consumer_api_->set_consumer(nullptr);
-        consumer_api_->set_messenger(nullptr);
         consumer_api_->set_engine(nullptr);
     }
     if (processor_api_)
     {
         processor_api_->clear_inbox_cache();
-        processor_api_->set_producer(nullptr);
-        processor_api_->set_consumer(nullptr);
-        processor_api_->set_messenger(nullptr);
         processor_api_->set_engine(nullptr);
     }
 
