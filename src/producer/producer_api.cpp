@@ -157,6 +157,20 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
     namespace producer = pylabhub::producer;
     namespace scripting = pylabhub::scripting;
 
+    // Direction objects — required for invoke_produce(tx, msgs, api).
+    py::class_<scripting::PyTxChannel>(m, "TxChannel")
+        .def_readwrite("slot", &scripting::PyTxChannel::slot)
+        .def_readwrite("fz",   &scripting::PyTxChannel::fz);
+
+    py::class_<scripting::PyRxChannel>(m, "RxChannel")
+        .def_readwrite("slot", &scripting::PyRxChannel::slot)
+        .def_readwrite("fz",   &scripting::PyRxChannel::fz);
+
+    py::class_<scripting::PyInboxMsg>(m, "InboxMsg")
+        .def_readonly("data",       &scripting::PyInboxMsg::data)
+        .def_readonly("sender_uid", &scripting::PyInboxMsg::sender_uid)
+        .def_readonly("seq",        &scripting::PyInboxMsg::seq);
+
     m.def("version_info", []() -> py::str
     {
         return pylabhub::version::version_info_json();
