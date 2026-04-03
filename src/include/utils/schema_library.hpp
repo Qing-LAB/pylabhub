@@ -54,8 +54,8 @@ namespace pylabhub::schema
  *
  * auto entry = lib.get("lab.sensors.temperature.raw@1");
  * if (entry) {
- *     size_t item_size = entry->slot_info.struct_size;
- *     auto in_q = ShmQueue::from_consumer(std::move(dbc), item_size);
+ *     auto fields = entry->slot_layout.fields;  // SchemaFieldDef list
+ *     // Pass to ShmQueue::create_reader() which computes sizes internally
  * }
  *
  * // Reverse lookup: does this unnamed schema match a known named one?

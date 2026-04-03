@@ -18,14 +18,14 @@ class DatahubShmQueueTest : public IsolatedProcessTest
 
 TEST_F(DatahubShmQueueTest, ShmQueueFromConsumer)
 {
-    // from_consumer(): DataBlockConsumer → ShmQueue; name/item_size/flexzone_size OK.
+    // create_reader(): schema → ShmQueue read mode; name/item_size OK.
     auto proc = SpawnWorker("hub_queue.shm_queue_from_consumer", {});
     ExpectWorkerOk(proc);
 }
 
 TEST_F(DatahubShmQueueTest, ShmQueueFromProducer)
 {
-    // from_producer(): DataBlockProducer → ShmQueue; name/item_size/flexzone_size OK.
+    // create_writer(): schema → ShmQueue write mode; name/item_size OK.
     auto proc = SpawnWorker("hub_queue.shm_queue_from_producer", {});
     ExpectWorkerOk(proc);
 }

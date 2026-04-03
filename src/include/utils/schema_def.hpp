@@ -99,8 +99,8 @@ struct SchemaLayoutDef
  *   - `hash`  — BLAKE2b-256 of the BLDS string
  *   - `struct_size` — computed via natural alignment rules
  *
- * C++ producers can use `slot_info.struct_size` as the `item_size` argument to
- * `ShmQueue::from_producer()` / `ShmQueue::from_consumer()`.
+ * C++ producers pass the schema to `ShmQueue::create_writer()` /
+ * `ShmQueue::create_reader()` which compute sizes via `compute_field_layout()`.
  */
 struct SchemaEntry
 {

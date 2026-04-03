@@ -7,9 +7,9 @@
 namespace pylabhub::tests::worker::hub_queue
 {
 
-/** from_consumer(): creates a DataBlockConsumer, wraps in ShmQueue, checks name(). */
+/** create_reader(): creates ShmQueue in read mode, checks name(). */
 int shm_queue_from_consumer();
-/** from_producer(): creates a DataBlockProducer, wraps in ShmQueue, checks name(). */
+/** create_writer(): creates ShmQueue in write mode, checks name(). */
 int shm_queue_from_producer();
 /** read_acquire() with 50ms timeout on empty ring → nullptr. */
 int shm_queue_read_acquire_timeout();

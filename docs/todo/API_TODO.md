@@ -28,6 +28,16 @@
 
 ### DataBlock/ShmQueue Ownership Refactor (2026-04-02)
 
+**Recent Completions (2026-04-02):**
+- [x] Step 5: Spinlock/identity delegating methods on Producer/Consumer (spinlock_count, get_spinlock, hub_uid, hub_name, producer_uid, producer_name, consumer_uid, consumer_name)
+- [x] Step 9: All `->shm()` external callers migrated (10 production + 13 test sites → zero remaining)
+- [x] Step 10: `item_size`/`flexzone_size` removed from ProducerOptions/ConsumerOptions + role host setters
+- [x] Schema size cross-validation in all 3 engines (Python ctypes, Lua FFI, Native sizeof vs compute_field_layout)
+- [x] Checksum policy fix: Manual no longer auto-stamps (ShmQueue + ZmqQueue + InboxQueue unified)
+- [x] `to_field_descs()` utility extracted to script_host_schema.hpp (eliminates 4x duplication)
+
+**Remaining:**
+
 - [ ] **HIGH**: Template RAII factories (`push<F,D>`, `synced_write<F,D>`, `pull<F,D>`,
   `set_write_handler<F,D>`, `set_read_handler<F,D>`) need reworking for the new
   ShmQueue ownership model. These call `DataBlockProducer::with_transaction<F,D>()`
