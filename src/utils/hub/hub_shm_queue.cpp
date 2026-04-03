@@ -80,7 +80,9 @@ ShmQueue::create_writer(const std::string &channel_name,
                         const std::string &hub_uid,
                         const std::string &hub_name,
                         const schema::SchemaInfo *slot_schema_info,
-                        const schema::SchemaInfo *fz_schema_info)
+                        const schema::SchemaInfo *fz_schema_info,
+                        const std::string &producer_uid,
+                        const std::string &producer_name)
 {
     if (slot_schema.empty())
     {
@@ -117,6 +119,8 @@ ShmQueue::create_writer(const std::string &channel_name,
     config.checksum_policy      = checksum_policy;
     config.hub_uid              = hub_uid;
     config.hub_name             = hub_name;
+    config.producer_uid         = producer_uid;
+    config.producer_name        = producer_name;
 
     // Create DataBlock.
     auto dbp = create_datablock_producer_impl(
@@ -158,8 +162,18 @@ ShmQueue::create_reader(const std::string &shm_name,
     // Attach to existing DataBlock.
     const char *uid  = consumer_uid.empty()  ? nullptr : consumer_uid.c_str();
     const char *cnam = consumer_name.empty() ? nullptr : consumer_name.c_str();
-    auto dbc = find_datablock_consumer_impl(shm_name, shared_secret,
-                                             nullptr, nullptr, nullptr, uid, cnam);
+    std::unique_ptr<DataBlockConsumer> dbc;
+    try
+    {
+        dbc = find_datablock_consumer_impl(shm_name, shared_secret,
+                                           nullptr, nullptr, nullptr, uid, cnam);
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("[ShmQueue] create_reader: attachment failed for '{}': {}",
+                     shm_name, e.what());
+        return nullptr;
+    }
     if (!dbc)
     {
         // Attachment failed — SHM not found or secret mismatch.
@@ -249,11 +263,10 @@ void ShmQueue::set_verify_checksum(bool slot, bool fz) const noexcept
 void ShmQueue::set_checksum_policy(ChecksumPolicy policy)
 {
     if (!pImpl) return;
-    const bool enabled = (policy != ChecksumPolicy::None);
-    // Write side: compute checksum on commit.
-    pImpl->checksum_slot = enabled;
-    // Read side: verify checksum on acquire.
-    pImpl->verify_slot = enabled;
+    // Write side: auto-stamp only for Enforced. Manual = caller stamps explicitly.
+    pImpl->checksum_slot = (policy == ChecksumPolicy::Enforced);
+    // Read side: always verify for Manual and Enforced (catches missing stamps).
+    pImpl->verify_slot = (policy != ChecksumPolicy::None);
 }
 
 void ShmQueue::set_flexzone_checksum(bool enabled)

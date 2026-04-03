@@ -225,7 +225,8 @@ typedef struct
 #pragma pack(pop)
 
 /* Declare the schema. The framework calls native_schema_SlotFrame()
-   and native_sizeof_SlotFrame() at load time. */
+   and native_sizeof_SlotFrame() at register_slot_type time.
+   Both are REQUIRED — missing either is a hard error. */
 PLH_DECLARE_SCHEMA(SlotFrame,
     "timestamp:float64:1:0|ax:float32:1:0|ay:float32:1:0|az:float32:1:0",
     sizeof(SlotFrame))
@@ -585,17 +586,24 @@ C++ wrapper: `ctx.set_critical_error();`
 
 ### 8.1 Schema verification
 
-At load time the framework:
+At `register_slot_type()` time (during startup, before any data loop) the framework:
 
-1. Calls `native_schema_SlotFrame()` (or the appropriate name for your role)
-2. Parses the canonical schema string
-3. Compares field names, types, counts, and lengths against the JSON config
-4. Calls `native_sizeof_SlotFrame()` and compares against the computed size
+1. Computes the expected struct size from schema fields + packing via
+   `compute_field_layout()` — the same computation ShmQueue and ZmqQueue use
+2. Calls `native_schema_SlotFrame()` (or the appropriate name for your role)
+3. Parses the canonical schema string and compares against the JSON config
+4. Calls `native_sizeof_SlotFrame()` (**required** — hard error if missing)
+5. Compares the native sizeof against the schema-computed size from step 1
 
-Any mismatch is a hard error -- the role will not start. This catches:
+Any mismatch is a hard error — the role will not start. This catches:
 - Struct padding differences (aligned vs packed)
 - Field reordering
 - Type mismatches (e.g., `int32` in config but `int64` in code)
+- Missing schema/sizeof exports
+
+The same size cross-validation is performed for Python (ctypes.sizeof) and
+Lua (ffi.sizeof) engines — all three engines validate against the single
+infrastructure-authoritative size from `compute_field_layout()`.
 
 ### 8.2 ABI verification
 
@@ -783,7 +791,7 @@ native_abi_info()       -- ABI check (pointer size, endianness, API version)
   |
   v
 native_schema_*()       -- Schema check (struct layout vs JSON config)
-native_sizeof_*()
+native_sizeof_*()       -- Size check (REQUIRED — vs compute_field_layout)
   |
   v
 native_init(ctx)        -- One-time initialization; return false to abort

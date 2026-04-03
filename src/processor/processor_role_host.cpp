@@ -394,8 +394,6 @@ bool ProcessorRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox
                                        in_slot_spec_, core_.in_fz_spec());
     in_opts.consumer_uid         = config_.identity().uid;
     in_opts.consumer_name        = config_.identity().name;
-    in_opts.item_size            = in_schema_slot_size_;
-    in_opts.flexzone_size        = core_.in_schema_fz_size();
     in_opts.zmq_schema           = scripting::schema_spec_to_zmq_fields(in_slot_spec_);
     in_opts.zmq_packing          = config_.in_transport().zmq_packing;
     in_opts.zmq_buffer_depth     = config_.in_transport().zmq_buffer_depth;
@@ -493,8 +491,6 @@ bool ProcessorRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox
     out_opts.schema_hash   = scripting::compute_schema_hash(out_slot_spec_, core_.out_fz_spec());
     out_opts.role_name     = config_.identity().name;
     out_opts.role_uid      = config_.identity().uid;
-    out_opts.item_size          = out_schema_slot_size_;
-    out_opts.flexzone_size      = core_.out_schema_fz_size();
     // Per-role checksum policy — same value on both input and output (see config_single_truth.md).
     out_opts.checksum_policy    = config_.checksum().policy;
     out_opts.flexzone_checksum  = config_.checksum().flexzone && core_.has_out_fz();

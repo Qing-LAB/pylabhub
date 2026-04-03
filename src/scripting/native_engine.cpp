@@ -425,7 +425,7 @@ bool NativeEngine::has_callback(const std::string &name) const
 
 bool NativeEngine::register_slot_type(const SchemaSpec &spec,
                                        const std::string &type_name,
-                                       const std::string & /*packing*/)
+                                       const std::string &packing)
 {
     if (!spec.has_schema)
     {
@@ -433,6 +433,9 @@ bool NativeEngine::register_slot_type(const SchemaSpec &spec,
                      log_tag_, type_name);
         return false;
     }
+
+    // Compute expected size from schema (infrastructure-authoritative).
+    auto [layout, expected_size] = hub::compute_field_layout(to_field_descs(spec.fields), packing);
 
     // Compute expected canonical schema from config.
     std::string expected_schema = compute_canonical_schema_(spec);
@@ -461,17 +464,22 @@ bool NativeEngine::register_slot_type(const SchemaSpec &spec,
     std::string sym_sizeof = "native_sizeof_" + type_name;
     auto fn_sz = reinterpret_cast<FnSizeof>(resolve_sym_(sym_sizeof.c_str()));
 
-    if (fn_sz)
+    if (!fn_sz)
     {
-        size_t native_sz = fn_sz();
-        // Store for type_sizeof() queries.
-        type_sizes_[type_name] = native_sz;
+        LOGGER_ERROR("[{}] native engine must export '{}' for type '{}'",
+                     log_tag_, sym_sizeof, type_name);
+        return false;
     }
-    else
+
+    size_t native_sz = fn_sz();
+    if (native_sz != expected_size)
     {
-        // No sizeof exported — can't validate size. Store 0.
-        type_sizes_[type_name] = 0;
+        LOGGER_ERROR("[{}] register_slot_type('{}') size mismatch: "
+                     "native={}, schema={}",
+                     log_tag_, type_name, native_sz, expected_size);
+        return false;
     }
+    type_sizes_[type_name] = native_sz;
 
     return true;
 }

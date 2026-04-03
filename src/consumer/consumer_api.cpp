@@ -275,23 +275,16 @@ std::string ConsumerAPI::in_policy() const
 
 py::object ConsumerAPI::spinlock(std::size_t index)
 {
-    hub::DataBlockConsumer *shm = nullptr;
-    if (consumer_)
-        shm = consumer_->shm();
-
-    if (!shm)
+    if (!consumer_ || !consumer_->has_shm())
         throw py::value_error("spinlock: SHM input channel not connected");
 
-    return py::cast(ConsumerSpinLockPy{shm->get_spinlock(index)},
+    return py::cast(ConsumerSpinLockPy{consumer_->get_spinlock(index)},
                     py::return_value_policy::move);
 }
 
 uint32_t ConsumerAPI::spinlock_count() const noexcept
 {
-    if (!consumer_)
-        return 0u;
-    const auto *shm = consumer_->shm();
-    return shm ? shm->spinlock_count() : 0u;
+    return consumer_ ? consumer_->spinlock_count() : 0u;
 }
 
 void ConsumerAPI::clear_inbox_cache()

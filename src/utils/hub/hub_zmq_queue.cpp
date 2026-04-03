@@ -249,7 +249,7 @@ struct ZmqQueueImpl
                 // [4] checksum: bin, 32 bytes.
                 if (elems[4].type != msgpack::type::BIN || elems[4].via.bin.size != 32)
                     { ++recv_frame_error_count_; continue; }
-                // Verify checksum if policy is not None.
+                // Verify checksum: Manual and Enforced both verify (catches missing stamps).
                 if (checksum_policy_ != ChecksumPolicy::None)
                 {
                     if (!pylabhub::crypto::verify_blake2b(
@@ -316,9 +316,11 @@ struct ZmqQueueImpl
                 send_sbuf_.clear();
                 msgpack::packer<msgpack::sbuffer> pk(send_sbuf_);
 
-                // Compute BLAKE2b checksum if policy is not None; else zeros.
+                // Compute BLAKE2b checksum: Enforced = auto-stamp, Manual = caller stamps
+                // (zeros here; caller must have written checksum into the slot payload),
+                // None = zeros (no checksum).
                 uint8_t checksum[32]{};
-                if (checksum_policy_ != ChecksumPolicy::None)
+                if (checksum_policy_ == ChecksumPolicy::Enforced)
                 {
                     pylabhub::crypto::compute_blake2b(
                         checksum, send_local_buf_.data(), item_sz);

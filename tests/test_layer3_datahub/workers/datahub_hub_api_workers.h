@@ -80,7 +80,11 @@ int forwarding_error_paths(int argc, char **argv);
 /** Runtime set_verify_checksum toggle: disable→read OK, enable→checksum reject. */
 int runtime_verify_checksum_toggle(int argc, char **argv);
 
-/** Checksum end-to-end: Producer stamps checksum, Consumer verifies successfully. */
-int checksum_mismatch_through_forwarding(int argc, char **argv);
+/** Checksum Enforced: Producer stamps checksum, Consumer verifies — round-trip succeeds. */
+int checksum_enforced_roundtrip(int argc, char **argv);
+/** Checksum Manual no-stamp: Producer does not stamp, Consumer verifies — read_acquire returns nullptr. */
+int checksum_manual_no_stamp_mismatch(int argc, char **argv);
+/** Checksum None: No checksum at all — round-trip succeeds without checksumming. */
+int checksum_none_roundtrip(int argc, char **argv);
 
 } // namespace pylabhub::tests::worker::hub_api

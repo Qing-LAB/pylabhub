@@ -308,23 +308,16 @@ py::dict ProcessorAPI::metrics() const
 
 py::object ProcessorAPI::spinlock(std::size_t index)
 {
-    hub::DataBlockProducer *shm = nullptr;
-    if (producer_)
-        shm = producer_->shm();
-
-    if (!shm)
+    if (!producer_ || !producer_->has_shm())
         throw py::value_error("spinlock: SHM output channel not connected");
 
-    return py::cast(ProcessorSpinLockPy{shm->get_spinlock(index)},
+    return py::cast(ProcessorSpinLockPy{producer_->get_spinlock(index)},
                     py::return_value_policy::move);
 }
 
 uint32_t ProcessorAPI::spinlock_count() const noexcept
 {
-    if (!producer_)
-        return 0u;
-    const auto *shm = producer_->shm();
-    return shm ? shm->spinlock_count() : 0u;
+    return producer_ ? producer_->spinlock_count() : 0u;
 }
 
 // ============================================================================

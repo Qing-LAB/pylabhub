@@ -629,7 +629,10 @@ Producer::establish_channel(Messenger &messenger, ChannelHandle channel,
             false, false,  // checksum flags: set via set_checksum_policy() below
             opts.always_clear_slot,
             opts.shm_config.hub_uid,
-            opts.shm_config.hub_name);
+            opts.shm_config.hub_name,
+            nullptr, nullptr,
+            opts.shm_config.producer_uid,
+            opts.shm_config.producer_name);
         if (!impl->shm_queue_)
         {
             LOGGER_ERROR("[producer] ShmQueue creation failed for '{}'", opts.channel_name);
@@ -1011,9 +1014,46 @@ bool Producer::has_shm() const
 
 DataBlockProducer *Producer::shm() noexcept
 {
-    // DEPRECATED — callers should use spinlock()/identity methods instead.
-    // Returns raw DataBlock pointer from ShmQueue for backward compatibility.
+    // Internal — used by messaging facade fn_get_shm for template RAII path.
     return pImpl && pImpl->shm_queue_ ? pImpl->shm_queue_->raw_producer() : nullptr;
+}
+
+uint32_t Producer::spinlock_count() const noexcept
+{
+    auto *dbp = pImpl && pImpl->shm_queue_ ? pImpl->shm_queue_->raw_producer() : nullptr;
+    return dbp ? dbp->spinlock_count() : 0u;
+}
+
+SharedSpinLock Producer::get_spinlock(size_t index)
+{
+    auto *dbp = pImpl && pImpl->shm_queue_ ? pImpl->shm_queue_->raw_producer() : nullptr;
+    if (!dbp)
+        throw std::runtime_error("get_spinlock: SHM not connected");
+    return dbp->get_spinlock(index);
+}
+
+std::string Producer::hub_uid() const noexcept
+{
+    auto *dbp = pImpl && pImpl->shm_queue_ ? pImpl->shm_queue_->raw_producer() : nullptr;
+    return dbp ? dbp->hub_uid() : std::string{};
+}
+
+std::string Producer::hub_name() const noexcept
+{
+    auto *dbp = pImpl && pImpl->shm_queue_ ? pImpl->shm_queue_->raw_producer() : nullptr;
+    return dbp ? dbp->hub_name() : std::string{};
+}
+
+std::string Producer::producer_uid() const noexcept
+{
+    auto *dbp = pImpl && pImpl->shm_queue_ ? pImpl->shm_queue_->raw_producer() : nullptr;
+    return dbp ? dbp->producer_uid() : std::string{};
+}
+
+std::string Producer::producer_name() const noexcept
+{
+    auto *dbp = pImpl && pImpl->shm_queue_ ? pImpl->shm_queue_->raw_producer() : nullptr;
+    return dbp ? dbp->producer_name() : std::string{};
 }
 
 ZmqQueue *Producer::queue() noexcept

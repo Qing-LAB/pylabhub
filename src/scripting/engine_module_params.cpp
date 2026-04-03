@@ -51,8 +51,21 @@ void engine_lifecycle_startup(const char * /*arg*/, void *userdata)
             throw std::runtime_error("register OutFlexFrame failed");
     }
 
-    // Flexzone sizes are computed by the role host from schema (infrastructure-authoritative)
-    // and stored on core_ before this callback runs. No engine->type_sizeof needed here.
+    // Set flexzone specs on core. Size is computed from schema via compute_field_layout —
+    // infrastructure-authoritative, no engine involvement.
+    auto compute_fz_size = [](const SchemaSpec &spec, const std::string &packing) -> size_t {
+        auto [layout, sz] = hub::compute_field_layout(to_field_descs(spec.fields), packing);
+        return sz;
+    };
+
+    if (p->core != nullptr && p->in_fz_spec.has_schema && !p->core->has_in_fz())
+    {
+        p->core->set_in_fz_spec(p->in_fz_spec, compute_fz_size(p->in_fz_spec, p->in_packing));
+    }
+    if (p->core != nullptr && p->out_fz_spec.has_schema && !p->core->has_out_fz())
+    {
+        p->core->set_out_fz_spec(p->out_fz_spec, compute_fz_size(p->out_fz_spec, p->out_packing));
+    }
 
     if (p->inbox_spec.has_schema)
     {

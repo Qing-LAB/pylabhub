@@ -2568,6 +2568,10 @@ TEST_F(PythonEngineTest, FullStartup_Producer_SlotAndFlexzone)
     EXPECT_TRUE(core.has_out_fz());
     EXPECT_GT(core.out_schema_fz_size(), 0u);
 
+    // Cross-check: engine type size must match infrastructure-computed size.
+    EXPECT_EQ(engine.type_sizeof("OutFlexFrame"), core.out_schema_fz_size())
+        << "Engine-built type size must match compute_field_layout result";
+
     float slot_buf = 0.0f;
     float fz_buf   = 0.0f;
     std::vector<IncomingMessage> msgs;

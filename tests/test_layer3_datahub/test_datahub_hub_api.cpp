@@ -197,9 +197,23 @@ TEST_F(DatahubHubApiTest, ForwardingErrorPaths)
     ExpectWorkerOk(proc);
 }
 
-TEST_F(DatahubHubApiTest, ChecksumMismatchThroughForwarding)
+TEST_F(DatahubHubApiTest, ChecksumEnforcedRoundtrip)
 {
-    // End-to-end: Producer stamps checksum, Consumer verifies — two consecutive reads pass.
-    auto proc = SpawnWorker("hub_api.checksum_mismatch_through_forwarding", {});
+    // Enforced: Producer stamps checksum, Consumer verifies — round-trip succeeds.
+    auto proc = SpawnWorker("hub_api.checksum_enforced_roundtrip", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubHubApiTest, ChecksumManualNoStampMismatch)
+{
+    // Manual: Producer does not stamp, Consumer verifies — read_acquire returns nullptr.
+    auto proc = SpawnWorker("hub_api.checksum_manual_no_stamp_mismatch", {});
+    ExpectWorkerOk(proc, {}, {"slot checksum error"});
+}
+
+TEST_F(DatahubHubApiTest, ChecksumNoneRoundtrip)
+{
+    // None: no checksum at all — round-trip succeeds.
+    auto proc = SpawnWorker("hub_api.checksum_none_roundtrip", {});
     ExpectWorkerOk(proc);
 }

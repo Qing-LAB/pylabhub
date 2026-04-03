@@ -162,18 +162,38 @@ The compile-time layer (L0) uses BLDS codes (b, i8, f32, c, etc.) which map 1:1.
 4. **Type parity** — FieldDef and ZmqSchemaField share the same 13-type vocabulary by design
 5. **Lazy evaluation** — config stores raw JSON; conversion happens only when needed
 
-## 6. Engine Type Caching
+## 6. Engine Type Caching and Size Validation
 
 The ScriptEngine caches typed views at `register_slot_type()` time for hot-path use.
 All known type_name values MUST be cached — no deferred or lazy type building.
 
+**Directional naming** — all roles use In/Out prefixes. Producer and Consumer get
+`SlotFrame`/`FlexFrame` aliases created in `build_api()`.
+
 | type_name | Role | Cached as | View mode |
 |-----------|------|-----------|-----------|
-| `SlotFrame` | Producer/Consumer | writable + readonly | `from_buffer` (Python), `ffi.cast` (Lua) |
-| `InSlotFrame` | Processor input | readonly | `from_buffer` / `ffi.cast` |
-| `OutSlotFrame` | Processor output | writable | `from_buffer` / `ffi.cast` |
-| `FlexFrame` | All (optional) | writable + readonly | `from_buffer` / `ffi.cast` |
+| `InSlotFrame` | Consumer, Processor input | readonly | `from_buffer` (Python), `ffi.cast` (Lua) |
+| `OutSlotFrame` | Producer, Processor output | writable | `from_buffer` / `ffi.cast` |
+| `InFlexFrame` | Consumer, Processor input | mutable (HEP-0002) | `from_buffer` / `ffi.cast` |
+| `OutFlexFrame` | Producer, Processor output | mutable | `from_buffer` / `ffi.cast` |
 | `InboxFrame` | All (optional) | readonly | `from_buffer_copy` (Python), `ffi.cast` (Lua) |
+| `SlotFrame` | Producer (→OutSlotFrame), Consumer (→InSlotFrame) | alias | Created in `build_api()` |
+| `FlexFrame` | Producer (→OutFlexFrame), Consumer (→InFlexFrame) | alias | Created in `build_api()` |
+
+### Size cross-validation (mandatory)
+
+At `register_slot_type()` time, every engine validates that the type it built matches
+the infrastructure-authoritative size computed by `compute_field_layout(schema, packing)`:
+
+| Engine | Engine-built size | Validated against |
+|--------|-------------------|-------------------|
+| Python | `ctypes.sizeof(struct)` | `compute_field_layout()` |
+| Lua | `ffi.sizeof(struct)` | `compute_field_layout()` |
+| Native | `native_sizeof_<T>()` (required export) | `compute_field_layout()` |
+
+Mismatch is a hard error — `register_slot_type()` returns false, aborting role startup.
+This catches padding differences, field reordering, and type width disagreement between
+the engine's type system and the schema definition.
 
 ### Inbox type invariants
 

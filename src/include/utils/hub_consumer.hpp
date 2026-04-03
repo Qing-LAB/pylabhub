@@ -215,11 +215,7 @@ struct ConsumerOptions
     std::string inbox_packing{};        ///< "aligned" or "packed".
     std::string inbox_checksum{};       ///< "enforced", "manual", "none".
 
-    // ── Queue abstraction (Phase 2) ──────────────────────────────────────────
-    /// Slot data size in bytes (from engine type_sizeof("InSlotFrame")). Required for ShmQueue wrapper.
-    size_t item_size{0};
-    /// Flexzone size in bytes (page-aligned). 0 = no flexzone.
-    size_t flexzone_size{0};
+    // ── Queue abstraction ────────────────────────────────────────────────────
     /// Checksum policy for this channel. Applied to all queues via set_checksum_policy().
     ChecksumPolicy checksum_policy{ChecksumPolicy::Enforced};
     /// Verify flexzone checksum (SHM-specific). Applied via set_flexzone_checksum().
@@ -428,7 +424,23 @@ class PYLABHUB_UTILS_EXPORT Consumer
     [[nodiscard]] const std::string &channel_name() const;
     [[nodiscard]] ChannelPattern     pattern() const;
     [[nodiscard]] bool               has_shm() const;
-    DataBlockConsumer               *shm() noexcept; ///< nullptr if !has_shm
+
+    // ── SHM identity (delegated to internal DataBlock via ShmQueue) ───────────
+
+    /// Spinlock count in the SHM header. 0 if no SHM.
+    [[nodiscard]] uint32_t spinlock_count() const noexcept;
+    /// Spinlock at index. Throws if index out of range or no SHM.
+    [[nodiscard]] SharedSpinLock get_spinlock(size_t index);
+    /// Channel identity fields from SHM header. Empty string if no SHM.
+    [[nodiscard]] std::string hub_uid() const noexcept;
+    [[nodiscard]] std::string hub_name() const noexcept;
+    [[nodiscard]] std::string producer_uid() const noexcept;
+    [[nodiscard]] std::string producer_name() const noexcept;
+    [[nodiscard]] std::string consumer_uid() const noexcept;
+    [[nodiscard]] std::string consumer_name() const noexcept;
+
+    /// Raw DataBlock pointer — internal, for messaging facade template RAII path.
+    DataBlockConsumer               *shm() noexcept;
     ChannelHandle                   &channel_handle();
 
     // ── HEP-CORE-0021: ZMQ Virtual Channel Node ───────────────────────────────

@@ -1,7 +1,8 @@
-# HEP-CORE-0028: Native Plugin Engine
+# HEP-CORE-0028: Native Engine
 
 **Status**: Implemented (documenting existing system)
 **Created**: 2026-03-30
+**Updated**: 2026-04-02 (direction objects, required native_sizeof, size cross-validation)
 **Scope**: NativeEngine, native_engine_api.h, C/C++ native engine lifecycle, ABI verification, schema validation
 
 ---
@@ -44,7 +45,7 @@ zero copy, zero conversion, and deterministic call overhead (one indirect call p
 │  │   ├─ verify ABI (PlhAbiInfo)                        │
 │  │   ├─ verify file checksum (BLAKE2b-256)             │
 │  │   ├─ verify schema (canonical string + sizeof)      │
-│  │   └─ dispatch: fn_on_produce_(slot, sz, fz, fz_sz)  │
+│  │   └─ dispatch: fn_on_produce_(&tx)                   │
 │  │                                                     │
 │  └─ Data loop calls engine->invoke_produce() etc.      │
 │     → direct function pointer call, zero marshaling    │
@@ -58,8 +59,7 @@ zero copy, zero conversion, and deterministic call overhead (one indirect call p
 │                                                        │
 │  PLH_EXPORT bool native_init(const PlhNativeContext*)  │
 │  PLH_EXPORT void native_finalize(void)                 │
-│  PLH_EXPORT bool on_produce(void*, size_t, void*,      │
-│                             size_t)                    │
+│  PLH_EXPORT bool on_produce(const plh_tx_t *tx)        │
 │  PLH_EXPORT const PlhAbiInfo* native_abi_info(void)    │
 │  PLH_DECLARE_SCHEMA(SlotFrame, "ts:float64:1:0|...",   │
 │                     sizeof(MySlot))                    │
@@ -112,9 +112,11 @@ the same lifecycle as PythonEngine and LuaEngine: `initialize()` -> `load_script
    g. Resolve metadata symbols: native_name, native_version, native_is_thread_safe
    h. Verify required_callback is present (e.g., "on_produce" for producer)
 5. engine->register_slot_type(spec, type_name, packing):
-   a. Compute canonical schema string from config
-   b. Resolve native_schema_<type_name> → compare canonical strings
-   c. Resolve native_sizeof_<type_name> → store for type_sizeof queries
+   a. Compute expected size from schema via compute_field_layout(spec, packing)
+   b. Compute canonical schema string from config
+   c. Resolve native_schema_<type_name> → compare canonical strings (hard error on mismatch)
+   d. Resolve native_sizeof_<type_name> → **required** (hard error if missing)
+   e. Compare native sizeof against schema-computed size (hard error on mismatch)
 6. engine->build_api(ctx):
    a. Populate NativeContextStorage from RoleContext
    b. Wire string pointers into PlhNativeContext struct
@@ -236,13 +238,38 @@ and silently skipped.
 |--------|-----------|-------|-------------|
 | `on_init` | `void on_init(void)` | All | Called once after build_api, before data loop |
 | `on_stop` | `void on_stop(void)` | All | Called once after data loop exits |
-| `on_produce` | `bool on_produce(void *out, size_t out_sz, void *fz, size_t fz_sz)` | Producer | Write data to slot. true=commit, false=discard. |
-| `on_consume` | `void on_consume(const void *in, size_t in_sz, const void *fz, size_t fz_sz)` | Consumer | Read data from slot. |
-| `on_process` | `bool on_process(const void *in, size_t in_sz, void *out, size_t out_sz, void *fz, size_t fz_sz)` | Processor | Read input, write output. true=commit, false=discard. |
-| `on_inbox` | `void on_inbox(const void *data, size_t sz, const char *sender_uid)` | All | Receive a typed inbox message (HEP-CORE-0027). |
+| `on_produce` | `bool on_produce(const plh_tx_t *tx)` | Producer | Write data to output slot/flexzone. true=commit, false=discard. |
+| `on_consume` | `bool on_consume(const plh_rx_t *rx)` | Consumer | Read data from input slot/flexzone. true=commit, false=discard. |
+| `on_process` | `bool on_process(const plh_rx_t *rx, const plh_tx_t *tx)` | Processor | Read input, write output. true=commit, false=discard. |
+| `on_inbox` | `bool on_inbox(const plh_inbox_msg_t *msg)` | All | Receive a typed inbox message (HEP-CORE-0027). |
 | `on_heartbeat` | `void on_heartbeat(void)` | All | Called from control thread. Must be thread-safe. |
 
-**Return value contract for on_produce / on_process:**
+**Direction structs** (defined in `native_invoke_types.h`):
+
+```c
+typedef struct plh_rx_t {
+    const void *slot;       /* Input slot (read-only) */
+    size_t      slot_size;
+    void       *fz;         /* Flexzone (mutable — per HEP-0002) */
+    size_t      fz_size;
+} plh_rx_t;
+
+typedef struct plh_tx_t {
+    void       *slot;       /* Output slot (writable) */
+    size_t      slot_size;
+    void       *fz;         /* Flexzone (mutable) */
+    size_t      fz_size;
+} plh_tx_t;
+
+typedef struct plh_inbox_msg_t {
+    const void *data;       /* Typed inbox payload */
+    size_t      data_size;
+    const char *sender_uid; /* Sender's role UID */
+    uint64_t    seq;        /* Message sequence number */
+} plh_inbox_msg_t;
+```
+
+**Return value contract (all data callbacks):**
 - `true` -> `InvokeResult::Commit` (slot is published)
 - `false` -> `InvokeResult::Discard` (slot is dropped, loop continues)
 
@@ -257,25 +284,32 @@ If the function pointer is NULL (symbol not exported), the framework returns
 | `native_version` | `const char *native_version(void)` | Version string for logging |
 | `native_is_thread_safe` | `bool native_is_thread_safe(void)` | Controls multi-state behavior (see section 9) |
 
-### 4.6 Schema Validation Macros
+### 4.6 Schema Validation Macros (Required)
 
 ```c
 #define PLH_DECLARE_SCHEMA(Name, Schema, Size)
 ```
 
-Generates two symbols:
+Generates two **required** symbols:
 - `native_schema_<Name>()` -> canonical schema string
 - `native_sizeof_<Name>()` -> sizeof the native engine's compiled struct
+
+The framework validates both at `register_slot_type()` time. `native_sizeof_<Name>()` is
+compared against `compute_field_layout(schema, packing)` — the infrastructure-authoritative
+size. Missing either export is a hard error.
 
 **Name** must match one of the registered type names:
 
 | Name | Role | Description |
 |------|------|-------------|
-| `SlotFrame` | Producer/Consumer | Main data slot |
-| `InSlotFrame` | Processor | Input slot |
-| `OutSlotFrame` | Processor | Output slot |
-| `FlexFrame` | All (if configured) | Flexzone data |
+| `OutSlotFrame` | Producer, Processor output | Output data slot |
+| `InSlotFrame` | Consumer, Processor input | Input data slot |
+| `OutFlexFrame` | Producer, Processor output | Output flexzone |
+| `InFlexFrame` | Consumer, Processor input | Input flexzone |
 | `InboxFrame` | All (if configured) | Inbox message payload |
+
+Producer and Consumer scripts also get `SlotFrame`/`FlexFrame` aliases (created in
+`build_api()`), but native engines should use the directional names for clarity.
 
 **Schema** is a pipe-delimited canonical schema string with the format
 `"field_name:type_str:count:length|..."`. Example:
@@ -461,19 +495,35 @@ provides backward compatibility for native engines compiled before ABI checks we
 ### 6.3 Layer 3: Schema Compatibility
 
 During `register_slot_type()`, the framework validates that the native engine's compiled
-struct matches the JSON config's schema:
+struct matches the JSON config's schema. Both `native_schema_<Name>` and
+`native_sizeof_<Name>` are **required exports** — missing either is a hard error.
 
-1. **Canonical schema string**: The framework computes `"name:type:count:length|..."`
-   from the config's `SchemaSpec` fields. If the native engine exports
-   `native_schema_<Name>()`, the strings are compared. Mismatch is a hard error.
+1. **Infrastructure-authoritative size**: The framework computes the expected struct size
+   from the schema fields + packing via `compute_field_layout()`. This is the same
+   computation used by ShmQueue and ZmqQueue for buffer allocation.
 
-2. **sizeof validation**: If the native engine exports `native_sizeof_<Name>()`, the
-   value is stored for `type_sizeof()` queries. This allows the framework to detect
-   padding differences between the native engine's compiler and the host.
+2. **Canonical schema string**: The framework computes `"name:type:count:length|..."`
+   from the config's `SchemaSpec` fields. The native engine must export
+   `native_schema_<Name>()` returning the matching canonical string. Mismatch is a
+   hard error.
 
-If the native engine does not export schema symbols for a given type name, the check is
-skipped with a warning. The native engine will still receive raw pointers at the correct
-offsets, but the framework cannot verify struct layout agreement.
+3. **sizeof validation**: The native engine must export `native_sizeof_<Name>()` returning
+   `sizeof(NativeStruct)`. The framework compares this against the schema-computed size
+   from step 1. Mismatch is a hard error — it catches padding differences, field
+   reordering, or type width disagreement between the native engine's compiler and the
+   schema definition.
+
+The same size cross-validation applies to all three engine types:
+
+| Engine | Built type | Validated against |
+|--------|-----------|-------------------|
+| Python | ctypes.sizeof(struct) | compute_field_layout(schema, packing) |
+| Lua | ffi.sizeof(struct) | compute_field_layout(schema, packing) |
+| Native | native_sizeof_<T>() | compute_field_layout(schema, packing) |
+
+If the native engine does not export `native_schema_<Name>` for a given type name, the
+schema string check is skipped with a warning. But `native_sizeof_<Name>` is always
+required — without it, the framework cannot guarantee memory safety.
 
 ---
 

@@ -107,10 +107,20 @@ ShmQueue delegates to DataBlock SlotWriteHandle/SlotConsumeHandle.
 ZmqQueue/InboxQueue compute/verify BLAKE2b on raw payload data.
 Flexzone variants are no-ops on ZMQ/Inbox (no flexzone concept).
 
-When Enforced: queue calls update/verify automatically in commit/release.
-When Manual: caller calls explicitly via script API. If caller doesn't call
-  update_checksum(), checksum bytes are zero.
-When None: all checksum operations skipped. Checksum bytes are zero.
+**ShmQueue::set_checksum_policy() mapping:**
+
+| Policy   | `checksum_slot` (write_commit auto-stamp) | `verify_slot` (read_acquire auto-verify) |
+|----------|-------------------------------------------|------------------------------------------|
+| None     | false                                     | false                                    |
+| Manual   | **false** (caller stamps explicitly)      | **true** (always verify — catches missing stamps) |
+| Enforced | true (auto-stamp)                         | true (auto-verify)                       |
+
+When Enforced: write_commit() auto-stamps checksum; read_acquire() auto-verifies.
+When Manual: write_commit() does NOT stamp (caller calls update_checksum() explicitly).
+  read_acquire() still verifies — if the caller forgot to stamp, the reader rejects
+  the slot (nullptr return, checksum_error metric incremented). This is the safety
+  contract: the reader always catches missing stamps under Manual.
+When None: all checksum operations skipped. No stamp, no verify.
 
 **Checksum enforcement:**
 The receiver's policy is authoritative. If the receiver requires checksum
@@ -152,17 +162,28 @@ Replace per-direction checksum booleans with role-level:
 - Remove: `out_update_checksum`, `in_verify_checksum`
 - Add: `checksum: true/false`, `flexzone_checksum: true/false`
 
-### 3.2 DataBlock ChecksumPolicy derivation
+### 3.2 ChecksumPolicy propagation (DONE 2026-04-02)
 
-Currently hardcoded `Manual`. After:
-- `checksum: true` → `ChecksumPolicy::Enforced` (DataBlock auto)
-- `checksum: false` → `ChecksumPolicy::None`
-- `Manual`: not exposed in config; reserved for C API direct users
+**Two levels of checksum control:**
 
-If `Enforced`, ShmQueue does NOT need to call `update_checksum_slot()` /
-`verify_checksum_slot()` explicitly — DataBlock handles it in release.
-ShmQueue's `checksum_slot`/`verify_slot` flags become unnecessary for the
-`Enforced` path.
+1. **DataBlockConfig::checksum_policy** — stored in SHM header at creation time.
+   Controls DataBlock-layer auto-checksum in `release_write_slot()` / `release_consume_slot()`.
+   Set by ShmQueue::create_writer() from the `checksum_policy` param.
+
+2. **ShmQueue runtime flags** — `checksum_slot` / `verify_slot`, set by
+   `set_checksum_policy()`. Controls ShmQueue-layer explicit stamp/verify in
+   `write_commit()` / `read_acquire()`.
+
+**Correct layering:** The DataBlock header policy is always `Manual` (ShmQueue manages
+checksum explicitly). The ShmQueue-level flags implement the actual policy behavior.
+This avoids double-stamping (DataBlock auto + ShmQueue explicit) and gives the queue
+layer full control.
+
+**Config derivation:**
+- JSON `"checksum": "enforced"` → `ChecksumPolicy::Enforced` → ShmQueue auto-stamps + auto-verifies
+- JSON `"checksum": "manual"` → `ChecksumPolicy::Manual` → ShmQueue does not auto-stamp; script calls `api.update_checksum()` explicitly; reader always verifies
+- JSON `"checksum": "none"` → `ChecksumPolicy::None` → no stamp, no verify
+- `Manual` is not commonly used in config; reserved for C/C++ API users who want explicit control
 
 ### 3.3 Timing single path
 

@@ -831,11 +831,23 @@ bool PythonEngine::register_slot_type(const SchemaSpec &spec,
         return false;
     }
 
+    // Compute expected size from schema (infrastructure-authoritative).
+    auto [layout, expected_size] = hub::compute_field_layout(to_field_descs(spec.fields), packing);
+
     try
     {
         py::object type = build_ctypes_type_(spec, type_name, packing);
 
-        
+        // Validate: engine-built ctypes struct size must match schema-computed size.
+        size_t actual_size = ctypes_sizeof(type);
+        if (actual_size != expected_size)
+        {
+            LOGGER_ERROR("[{}] register_slot_type('{}') size mismatch: "
+                         "ctypes={}, schema={}",
+                         log_tag_, type_name, actual_size, expected_size);
+            return false;
+        }
+
         if (type_name == "InSlotFrame")
         {
             in_slot_type_ro_ = wrap_readonly_(type);
