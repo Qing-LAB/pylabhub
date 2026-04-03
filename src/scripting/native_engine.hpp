@@ -45,7 +45,7 @@ class NativeEngine : public ScriptEngine
 
     // ── Schema / type building ───────────────────────────────────────────
 
-    bool register_slot_type(const SchemaSpec &spec,
+    bool register_slot_type(const hub::SchemaSpec &spec,
                             const std::string &type_name,
                             const std::string &packing) override;
     [[nodiscard]] size_t type_sizeof(const std::string &type_name) const override;
@@ -138,7 +138,7 @@ class NativeEngine : public ScriptEngine
     void *resolve_sym_(const char *name) const;
     bool verify_abi_() const;
     bool verify_file_checksum_() const;
-    std::string compute_canonical_schema_(const SchemaSpec &spec) const;
+    std::string compute_canonical_schema_(const hub::SchemaSpec &spec) const;
 };
 
 } // namespace pylabhub::scripting

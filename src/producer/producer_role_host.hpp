@@ -75,7 +75,7 @@ class ProducerRoleHost
 
     // ── Infrastructure setup/teardown (Layer 3) ──────────────────────────────
 
-    bool setup_infrastructure_(const scripting::SchemaSpec &inbox_spec);
+    bool setup_infrastructure_(const hub::SchemaSpec &inbox_spec);
     void teardown_infrastructure_();
     void run_ctrl_thread_();
     nlohmann::json snapshot_metrics_json() const;
@@ -102,7 +102,7 @@ class ProducerRoleHost
     std::thread                            ctrl_thread_;
 
     // Schema info (resolved from config during setup).
-    scripting::SchemaSpec                  out_slot_spec_;
+    hub::SchemaSpec                  out_slot_spec_;
 
     // Metrics are in core_ (RoleHostCore) — single source of truth.
     // See core_.out_written_, core_.drops_, core_.iteration_count_, core_.last_cycle_work_us_.

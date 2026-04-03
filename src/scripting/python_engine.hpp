@@ -80,7 +80,7 @@ class PythonEngine : public ScriptEngine
 
     // ── Schema / type building ─────────────────────────────────────────────
 
-    bool register_slot_type(const SchemaSpec &spec,
+    bool register_slot_type(const hub::SchemaSpec &spec,
                             const std::string &type_name,
                             const std::string &packing) override;
     [[nodiscard]] size_t type_sizeof(const std::string &type_name) const override;
@@ -166,13 +166,13 @@ class PythonEngine : public ScriptEngine
     py::object slot_alias_ro_{py::none()};     ///< "SlotFrame" readonly (consumer alias)
     py::object fz_alias_{py::none()};          ///< "FlexFrame" alias (either direction)
 
-    SchemaSpec in_slot_spec_;
-    SchemaSpec out_slot_spec_;
-    SchemaSpec in_fz_spec_;
-    SchemaSpec out_fz_spec_;
-    SchemaSpec slot_alias_spec_;               ///< Alias spec (points to whichever direction)
-    SchemaSpec fz_alias_spec_;                 ///< Alias spec
-    SchemaSpec inbox_spec_;
+    hub::SchemaSpec in_slot_spec_;
+    hub::SchemaSpec out_slot_spec_;
+    hub::SchemaSpec in_fz_spec_;
+    hub::SchemaSpec out_fz_spec_;
+    hub::SchemaSpec slot_alias_spec_;               ///< Alias spec (points to whichever direction)
+    hub::SchemaSpec fz_alias_spec_;                 ///< Alias spec
+    hub::SchemaSpec inbox_spec_;
 
     // script_errors is in ctx_.core->script_errors_ (RoleHostCore).
 
@@ -202,15 +202,15 @@ class PythonEngine : public ScriptEngine
 
     // ── Internal helpers ───────────────────────────────────────────────────
 
-    /// Build a ctypes.Structure subclass from SchemaSpec.
-    py::object build_ctypes_type_(const SchemaSpec &spec, const std::string &name,
+    /// Build a ctypes.Structure subclass from hub::SchemaSpec.
+    py::object build_ctypes_type_(const hub::SchemaSpec &spec, const std::string &name,
                                    const std::string &packing);
 
     /// Wrap a type as read-only (adds __setattr__ override).
     py::object wrap_readonly_(const py::object &type);
 
     /// Create a slot view from raw pointer using pre-built type.
-    py::object make_slot_view_(const SchemaSpec &spec, const py::object &type,
+    py::object make_slot_view_(const hub::SchemaSpec &spec, const py::object &type,
                                 void *data, size_t size, bool readonly);
 
     /// Build the messages list (producer/processor format).

@@ -78,7 +78,7 @@ class ProcessorRoleHost
 
     // ── Infrastructure setup/teardown (Layer 3) ──────────────────────────────
 
-    bool setup_infrastructure_(const scripting::SchemaSpec &inbox_spec);
+    bool setup_infrastructure_(const hub::SchemaSpec &inbox_spec);
     void teardown_infrastructure_();
     void run_ctrl_thread_();
     nlohmann::json snapshot_metrics_json() const;
@@ -109,8 +109,8 @@ class ProcessorRoleHost
     std::thread                              ctrl_thread_;
 
     // Schema info (resolved from config during setup).
-    scripting::SchemaSpec                    in_slot_spec_;
-    scripting::SchemaSpec                    out_slot_spec_;
+    hub::SchemaSpec                    in_slot_spec_;
+    hub::SchemaSpec                    out_slot_spec_;
 };
 
 } // namespace pylabhub::processor

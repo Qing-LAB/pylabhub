@@ -18,7 +18,7 @@
 
 #include "role_host_helpers.hpp"
 #include "zmq_poll_loop.hpp"
-#include "schema_utils.hpp"
+#include "utils/schema_utils.hpp"
 
 #include <chrono>
 #include <cstring>
@@ -130,7 +130,7 @@ void ConsumerRoleHost::worker_main_()
     core_.set_script_load_ok(true);
 
     // Step 3: Resolve schemas and register slot types (read-only access).
-    scripting::SchemaSpec in_fz_local;
+    hub::SchemaSpec in_fz_local;
     {
         std::vector<std::string> schema_dirs;
         if (!hub.hub_dir.empty())
@@ -140,9 +140,9 @@ void ConsumerRoleHost::worker_main_()
         try
         {
             const auto &cf = config_.role_data<consumer::ConsumerFields>();
-            in_slot_spec_ = scripting::resolve_schema(
+            in_slot_spec_ = hub::resolve_schema(
                 cf.in_slot_schema_json, false, "cons", schema_dirs);
-            in_fz_local = scripting::resolve_schema(
+            in_fz_local = hub::resolve_schema(
                 cf.in_flexzone_schema_json, true, "cons", schema_dirs);
         }
         catch (const std::exception &e)
@@ -159,9 +159,9 @@ void ConsumerRoleHost::worker_main_()
 
     // Compute sizes from schema (authoritative — infrastructure owns layout).
     {
-        size_t fz_size = scripting::compute_schema_size(in_fz_local, packing);
+        size_t fz_size = hub::compute_schema_size(in_fz_local, packing);
         fz_size = (fz_size + 4095U) & ~size_t{4095U};
-        core_.set_in_fz_spec(scripting::SchemaSpec{in_fz_local}, fz_size);
+        core_.set_in_fz_spec(hub::SchemaSpec{in_fz_local}, fz_size);
     }
 
     // Register slot type with engine (engine validates its struct matches).
@@ -189,7 +189,7 @@ void ConsumerRoleHost::worker_main_()
     }
 
     // Resolve and register inbox schema (alongside slot/fz above).
-    scripting::SchemaSpec inbox_spec_local;
+    hub::SchemaSpec inbox_spec_local;
     size_t inbox_schema_slot_size = 0;
     if (config_.inbox().has_inbox())
     {
@@ -200,7 +200,7 @@ void ConsumerRoleHost::worker_main_()
 
         try
         {
-            inbox_spec_local = scripting::resolve_schema(
+            inbox_spec_local = hub::resolve_schema(
                 config_.inbox().schema_json, false, "cons", schema_dirs);
         }
         catch (const std::exception &e)
@@ -321,7 +321,7 @@ void ConsumerRoleHost::worker_main_()
 // setup_infrastructure_ — connect to broker, create consumer, wire events
 // ============================================================================
 
-bool ConsumerRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox_spec)
+bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
 {
     const auto &id    = config_.identity();
     const auto &hub   = config_.in_hub();
@@ -337,7 +337,7 @@ bool ConsumerRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox_
     hub::ConsumerOptions opts;
     opts.channel_name         = ch;
     opts.shm_shared_secret    = shm.enabled ? shm.secret : 0u;
-    opts.expected_schema_hash = scripting::compute_schema_hash(in_slot_spec_, core_.in_fz_spec());
+    opts.expected_schema_hash = hub::compute_schema_hash(in_slot_spec_, core_.in_fz_spec());
     opts.consumer_uid         = id.uid;
     opts.consumer_name        = id.name;
 
@@ -351,7 +351,7 @@ bool ConsumerRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox_
 
     if (is_zmq)
     {
-        opts.zmq_schema       = scripting::schema_spec_to_zmq_fields(in_slot_spec_);
+        opts.zmq_schema       = hub::schema_spec_to_zmq_fields(in_slot_spec_);
         opts.zmq_packing      = tr.zmq_packing;
         opts.zmq_buffer_depth = tr.zmq_buffer_depth;
     }
@@ -367,7 +367,7 @@ bool ConsumerRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox_
 
         // Endpoint validated by parse_inbox_config(); default is tcp://127.0.0.1:0.
         const std::string &ep = inbox.endpoint;
-        auto zmq_fields = scripting::schema_spec_to_zmq_fields(inbox_spec);
+        auto zmq_fields = hub::schema_spec_to_zmq_fields(inbox_spec);
 
         nlohmann::json spec_json;
         spec_json["fields"] = nlohmann::json::array();

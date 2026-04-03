@@ -15,7 +15,7 @@
  * and *_api.cpp. Not part of the public pylabhub-utils API.
  */
 
-#include "schema_utils.hpp"
+#include "utils/schema_utils.hpp"
 
 #include "utils/hub_inbox_queue.hpp"
 
@@ -47,7 +47,7 @@ inline bool is_callable(const py::object &obj)
 
 /// Build a zero-copy Python slot view from raw SHM memory.
 ///
-/// @param spec         SchemaSpec for this slot.
+/// @param spec         hub::SchemaSpec for this slot.
 /// @param type         The ctypes type built at init time.
 /// @param data         Pointer to raw slot data (may be const or writable).
 /// @param size         Size in bytes.
@@ -60,7 +60,7 @@ inline bool is_callable(const py::object &obj)
 /// The NOLINTNEXTLINE suppresses the const_cast warning — the slot is held alive
 /// for the duration of the callback, and writes are blocked at the Python level
 /// via the readonly wrapper (for read-side types) or are intentional (write side).
-inline py::object make_slot_view(const SchemaSpec &spec, const py::object &type,
+inline py::object make_slot_view(const hub::SchemaSpec &spec, const py::object &type,
                                   const void *data, size_t size, bool is_read_side)
 {
     if (!spec.has_schema)
@@ -112,7 +112,7 @@ def _plh_readonly_setattr(self, name, value):
 
 // ── ctypes builders ─────────────────────────────────────────────────────────
 
-inline py::object json_type_to_ctypes(py::module_ &ct, const FieldDef &fd)
+inline py::object json_type_to_ctypes(py::module_ &ct, const hub::FieldDef &fd)
 {
     py::object base;
     if      (fd.type_str == "bool")    base = ct.attr("c_bool");
@@ -147,7 +147,7 @@ inline py::object json_type_to_ctypes(py::module_ &ct, const FieldDef &fd)
     return base;
 }
 
-inline py::object build_ctypes_struct(const SchemaSpec &spec, const std::string &name)
+inline py::object build_ctypes_struct(const hub::SchemaSpec &spec, const std::string &name)
 {
     py::module_ ct = py::module_::import("ctypes");
     py::list    fields;
@@ -338,7 +338,7 @@ class InboxHandle
 {
   public:
     InboxHandle(std::shared_ptr<hub::InboxClient> client,
-                SchemaSpec                         spec,
+                hub::SchemaSpec                         spec,
                 py::object                         slot_type,
                 size_t                             item_size)
         : client_(std::move(client))
@@ -398,7 +398,7 @@ class InboxHandle
 
   private:
     std::shared_ptr<hub::InboxClient> client_;
-    SchemaSpec                         spec_;
+    hub::SchemaSpec                         spec_;
     py::object                         slot_type_{py::none()};
     size_t                             item_size_{0};
 };

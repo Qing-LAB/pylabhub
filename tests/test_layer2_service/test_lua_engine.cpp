@@ -20,7 +20,7 @@
 
 #include "lua_engine.hpp"
 #include "engine_module_params.hpp"
-#include "schema_utils.hpp"
+#include "utils/schema_utils.hpp"
 #include "utils/role_host_core.hpp"
 
 #include <cstring>
@@ -38,8 +38,8 @@ using pylabhub::scripting::InvokeResponse;
 using pylabhub::scripting::RoleContext;
 using pylabhub::scripting::RoleHostCore;
 using pylabhub::scripting::IncomingMessage;
-using pylabhub::scripting::SchemaSpec;
-using pylabhub::scripting::FieldDef;
+using pylabhub::hub::SchemaSpec;
+using pylabhub::hub::FieldDef;
 using pylabhub::scripting::InvokeRx;
 using pylabhub::scripting::InvokeTx;
 using pylabhub::scripting::InvokeInbox;
@@ -2611,7 +2611,7 @@ TEST_F(LuaEngineTest, FullStartup_Producer_SlotAndFlexzone)
 
     // Role host computes fz size from schema and sets on core before engine startup.
     // Role host computes fz size from schema before engine startup.
-    size_t fz_size = pylabhub::scripting::compute_schema_size(params.out_fz_spec, params.out_packing);
+    size_t fz_size = pylabhub::hub::compute_schema_size(params.out_fz_spec, params.out_packing);
     fz_size = (fz_size + 4095U) & ~size_t{4095U};
     core.set_out_fz_spec(SchemaSpec{params.out_fz_spec}, fz_size);
 

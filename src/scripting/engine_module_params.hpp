@@ -40,11 +40,11 @@ struct EngineModuleParams
     // Producer: out_slot_spec + out_fz_spec filled.
     // Consumer: in_slot_spec + in_fz_spec filled.
     // Processor: all four filled (in + out).
-    SchemaSpec in_slot_spec;               ///< Input slot schema (consumer, processor).
-    SchemaSpec out_slot_spec;              ///< Output slot schema (producer, processor).
-    SchemaSpec in_fz_spec;                 ///< Input flexzone schema (consumer, processor).
-    SchemaSpec out_fz_spec;                ///< Output flexzone schema (producer, processor).
-    SchemaSpec inbox_spec;                 ///< Inbox schema (empty if none).
+    hub::SchemaSpec in_slot_spec;               ///< Input slot schema (consumer, processor).
+    hub::SchemaSpec out_slot_spec;              ///< Output slot schema (producer, processor).
+    hub::SchemaSpec in_fz_spec;                 ///< Input flexzone schema (consumer, processor).
+    hub::SchemaSpec out_fz_spec;                ///< Output flexzone schema (producer, processor).
+    hub::SchemaSpec inbox_spec;                 ///< Inbox schema (empty if none).
     std::string in_packing{"aligned"};     ///< Input packing (consumer, processor).
     std::string out_packing{"aligned"};    ///< Output packing (producer, processor).
 

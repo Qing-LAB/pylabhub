@@ -18,7 +18,7 @@
 
 #include "role_host_helpers.hpp"
 #include "zmq_poll_loop.hpp"
-#include "schema_utils.hpp"
+#include "utils/schema_utils.hpp"
 
 #include <chrono>
 #include <cstring>
@@ -133,7 +133,7 @@ void ProducerRoleHost::worker_main_()
     core_.set_script_load_ok(true);
 
     // Step 3: Resolve schemas and register slot types.
-    scripting::SchemaSpec out_fz_local;
+    hub::SchemaSpec out_fz_local;
     {
         std::vector<std::string> schema_dirs;
         if (!hub.hub_dir.empty())
@@ -142,9 +142,9 @@ void ProducerRoleHost::worker_main_()
 
         try
         {
-            out_slot_spec_ = scripting::resolve_schema(
+            out_slot_spec_ = hub::resolve_schema(
                 pf.out_slot_schema_json, false, "prod", schema_dirs);
-            out_fz_local = scripting::resolve_schema(
+            out_fz_local = hub::resolve_schema(
                 pf.out_flexzone_schema_json, true, "prod", schema_dirs);
         }
         catch (const std::exception &e)
@@ -173,9 +173,9 @@ void ProducerRoleHost::worker_main_()
 
     // Compute flexzone size from schema (authoritative).
     {
-        size_t fz_size = scripting::compute_schema_size(out_fz_local, packing);
+        size_t fz_size = hub::compute_schema_size(out_fz_local, packing);
         fz_size = (fz_size + 4095U) & ~size_t{4095U}; // round to 4KB page
-        core_.set_out_fz_spec(scripting::SchemaSpec{out_fz_local}, fz_size);
+        core_.set_out_fz_spec(hub::SchemaSpec{out_fz_local}, fz_size);
     }
 
     // Register flexzone type with engine.
@@ -191,7 +191,7 @@ void ProducerRoleHost::worker_main_()
     }
 
     // Resolve and register inbox schema (alongside slot/fz above).
-    scripting::SchemaSpec inbox_spec_local;
+    hub::SchemaSpec inbox_spec_local;
     size_t inbox_schema_slot_size = 0;
     if (config_.inbox().has_inbox())
     {
@@ -202,7 +202,7 @@ void ProducerRoleHost::worker_main_()
 
         try
         {
-            inbox_spec_local = scripting::resolve_schema(
+            inbox_spec_local = hub::resolve_schema(
                 config_.inbox().schema_json, false, "prod", schema_dirs);
         }
         catch (const std::exception &e)
@@ -327,7 +327,7 @@ void ProducerRoleHost::worker_main_()
 // setup_infrastructure_ — connect to broker, create producer, wire events
 // ============================================================================
 
-bool ProducerRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox_spec)
+bool ProducerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
 {
     const auto &id    = config_.identity();
     const auto &hub   = config_.out_hub();
@@ -344,7 +344,7 @@ bool ProducerRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox_
     opts.channel_name = ch;
     opts.pattern      = hub::ChannelPattern::PubSub;
     opts.has_shm      = shm.enabled;
-    opts.schema_hash  = scripting::compute_schema_hash(out_slot_spec_, core_.out_fz_spec());
+    opts.schema_hash  = hub::compute_schema_hash(out_slot_spec_, core_.out_fz_spec());
     opts.role_name   = id.name;
     opts.role_uid    = id.uid;
 
@@ -362,7 +362,7 @@ bool ProducerRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox_
         const std::string &ep = inbox.endpoint;
 
         // ZMQ wire field layout: computed from the SchemaSpec field definitions.
-        auto zmq_fields = scripting::schema_spec_to_zmq_fields(inbox_spec);
+        auto zmq_fields = hub::schema_spec_to_zmq_fields(inbox_spec);
 
         // Serialize full SchemaSpec JSON for ROLE_INFO_REQ discovery.
         nlohmann::json spec_json;
@@ -425,7 +425,7 @@ bool ProducerRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox_
         opts.data_transport    = "zmq";
         opts.zmq_node_endpoint = tr.zmq_endpoint;
         opts.zmq_bind          = tr.zmq_bind;
-        opts.zmq_schema        = scripting::schema_spec_to_zmq_fields(out_slot_spec_);
+        opts.zmq_schema        = hub::schema_spec_to_zmq_fields(out_slot_spec_);
         opts.zmq_packing       = tr.zmq_packing;
         opts.zmq_buffer_depth  = tr.zmq_buffer_depth;
         opts.zmq_overflow_policy =

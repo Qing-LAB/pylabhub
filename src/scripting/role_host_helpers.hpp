@@ -118,13 +118,13 @@ inline bool wait_for_roles(hub::Messenger                   &messenger,
 // ============================================================================
 
 /**
- * @brief Serialize an inbox SchemaSpec into the JSON format expected by
+ * @brief Serialize an inbox hub::SchemaSpec into the JSON format expected by
  * ProducerOptions/ConsumerOptions for broker registration.
  *
  * @param spec  The resolved inbox schema spec.
  * @return JSON object with "fields" array matching the spec.
  */
-inline nlohmann::json serialize_inbox_spec_json(const SchemaSpec &spec)
+inline nlohmann::json serialize_inbox_spec_json(const hub::SchemaSpec &spec)
 {
     nlohmann::json result;
     nlohmann::json fields_arr = nlohmann::json::array();

@@ -28,8 +28,8 @@ using pylabhub::scripting::InvokeStatus;
 using pylabhub::scripting::RoleContext;
 using pylabhub::scripting::RoleHostCore;
 using pylabhub::scripting::IncomingMessage;
-using pylabhub::scripting::SchemaSpec;
-using pylabhub::scripting::FieldDef;
+using pylabhub::hub::SchemaSpec;
+using pylabhub::hub::FieldDef;
 using pylabhub::scripting::InvokeTx;
 
 namespace

@@ -18,7 +18,7 @@
 #include "utils/messenger.hpp"
 #include "utils/shared_memory_spinlock.hpp"
 #include "utils/logger.hpp"
-#include "schema_utils.hpp"
+#include "utils/schema_utils.hpp"
 #include "plh_platform.hpp"
 
 #include <cassert>
@@ -598,10 +598,10 @@ bool LuaEngine::has_callback(const std::string &name) const
 }
 
 // ============================================================================
-// build_ffi_cdef_ — shared SchemaSpec → FFI typedef string builder
+// build_ffi_cdef_ — shared hub::SchemaSpec → FFI typedef string builder
 // ============================================================================
 
-std::string LuaEngine::build_ffi_cdef_(const SchemaSpec &spec,
+std::string LuaEngine::build_ffi_cdef_(const hub::SchemaSpec &spec,
                                         const std::string &type_name,
                                         const std::string &packing)
 {
@@ -651,7 +651,7 @@ std::string LuaEngine::build_ffi_cdef_(const SchemaSpec &spec,
 // register_slot_type / type_sizeof
 // ============================================================================
 
-bool LuaEngine::register_slot_type(const SchemaSpec &spec,
+bool LuaEngine::register_slot_type(const hub::SchemaSpec &spec,
                                     const std::string &type_name,
                                     const std::string &packing)
 {
