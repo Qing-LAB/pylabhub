@@ -38,6 +38,12 @@
 
 **Remaining:**
 
+- [ ] **HIGH**: SlotIterator `configured_period_us` broken: role hosts set it on RoleHostCore
+  but NOT on the queue's ContextMetrics. SlotIterator::apply_loop_policy_sleep_() reads
+  from ContextMetrics → always sees 0 → FixedRate pacing is a no-op for the RAII path.
+  Fix during RAII rewrite: SlotIterator should read period from role-level config, not
+  ContextMetrics. After RAII rewrite, remove `configured_period_us` from ContextMetrics entirely.
+
 - [ ] **HIGH**: Template RAII factories (`push<F,D>`, `synced_write<F,D>`, `pull<F,D>`,
   `set_write_handler<F,D>`, `set_read_handler<F,D>`) need reworking for the new
   ShmQueue ownership model. These call `DataBlockProducer::with_transaction<F,D>()`
