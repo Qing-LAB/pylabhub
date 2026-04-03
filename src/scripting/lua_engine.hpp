@@ -213,6 +213,7 @@ class LuaEngine : public ScriptEngine
     static int lua_api_notify_channel(lua_State *L);
     static int lua_api_broadcast_channel(lua_State *L);
     static int lua_api_list_channels(lua_State *L);
+    static int lua_api_shm_info(lua_State *L);
 
     // ── Group F: spinlocks (SHM-only) ─────────────────────────────────
     static int lua_api_spinlock(lua_State *L);

@@ -200,7 +200,7 @@ public:
     void handle_metrics_report_req(const nlohmann::json &req);
     nlohmann::json handle_metrics_req(const nlohmann::json &req);
     nlohmann::json handle_shm_block_query(const nlohmann::json &req) const;
-    nlohmann::json query_shm_blocks(const std::string &channel) const;
+    nlohmann::json collect_shm_info(const std::string &channel) const;
 
     void run();
 
@@ -2088,10 +2088,10 @@ std::string BrokerService::query_metrics_json_str(const std::string& channel) co
 
 nlohmann::json BrokerServiceImpl::handle_shm_block_query(const nlohmann::json& req) const
 {
-    return query_shm_blocks(req.value("channel", ""));
+    return collect_shm_info(req.value("channel", ""));
 }
 
-nlohmann::json BrokerServiceImpl::query_shm_blocks(const std::string& channel) const
+nlohmann::json BrokerServiceImpl::collect_shm_info(const std::string& channel) const
 {
     // Snapshot registry data under the query mutex, then read SHM outside it.
     struct BlockInfo
@@ -2196,9 +2196,9 @@ nlohmann::json BrokerServiceImpl::query_shm_blocks(const std::string& channel) c
     return result;
 }
 
-std::string BrokerService::query_shm_blocks_json_str(const std::string& channel) const
+std::string BrokerService::collect_shm_info_json(const std::string& channel) const
 {
-    return pImpl->query_shm_blocks(channel).dump();
+    return pImpl->collect_shm_info(channel).dump();
 }
 
 void BrokerService::request_close_channel(const std::string& name)
@@ -2273,8 +2273,8 @@ nlohmann::json BrokerServiceImpl::handle_metrics_req(const nlohmann::json &req)
     nlohmann::json resp       = query_metrics(channel);
     // HEP-CORE-0019 §3.2: merge live SHM-derived block metrics into the response.
     // When a channel name is given we can look up the SHM block(s) directly.
-    // For the all-channels case the shm_blocks map is also populated.
-    resp["shm_blocks"] = query_shm_blocks(channel);
+    // For the all-channels case the shm_info map is also populated.
+    resp["shm_blocks"] = collect_shm_info(channel);
     return resp;
 }
 

@@ -1205,6 +1205,7 @@ void LuaEngine::push_common_api_closures_(lua_State *L)
     push_closure("notify_channel", lua_api_notify_channel);
     push_closure("broadcast_channel", lua_api_broadcast_channel);
     push_closure("list_channels", lua_api_list_channels);
+    push_closure("shm_info", lua_api_shm_info);
 
     // String fields as direct table entries.
     lua_pushstring(L, ctx_.log_level.c_str());
@@ -1839,6 +1840,35 @@ int LuaEngine::lua_api_list_channels(lua_State *L)
         lua_pushinteger(L, ch.value("consumer_count", 0));
         lua_setfield(L, -2, "consumer_count");
         lua_rawseti(L, -2, i + 1);
+    }
+    return 1;
+}
+
+int LuaEngine::lua_api_shm_info(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    auto *m = self->ctx_.messenger;
+    if (!m)
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+    const char *channel = luaL_optstring(L, 1, "");
+    std::string json_str = m->request_shm_info(channel);
+    if (json_str.empty())
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+    try
+    {
+        auto j = nlohmann::json::parse(json_str);
+        json_to_lua(L, j);
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("[{}] shm_info: JSON parse error: {}", self->log_tag_, e.what());
+        lua_pushnil(L);
     }
     return 1;
 }
