@@ -7,6 +7,9 @@
 #include "shared_test_helpers.h"
 
 #include "utils/broker_service.hpp"
+#include "utils/hub_inbox_queue.hpp"
+#include "utils/role_api_base.hpp"
+#include "utils/schema_utils.hpp"
 #include "plh_datahub.hpp"
 
 #include <gtest/gtest.h>
@@ -1952,6 +1955,396 @@ int checksum_none_roundtrip(int /*argc*/, char ** /*argv*/)
         logger_module(), crypto_module(), hub_module());
 }
 
+// ============================================================================
+// open_inbox_client — full broker path with numeric-only inbox schema
+// ============================================================================
+
+int open_inbox_client_numeric_schema(int /*argc*/, char ** /*argv*/)
+{
+    return run_gtest_worker(
+        []() {
+            auto broker = start_broker();
+            Messenger &messenger = Messenger::get_instance();
+            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
+
+            // Complex inbox schema: same field types as SHM/ZMQ tests.
+            // float64 + float32[3] + uint16 + bytes[5] + string[16] + int64
+            // Tests alignment, padding, array, bytes through the full
+            // broker→discover→parse→InboxClient→send→recv path.
+            nlohmann::json inbox_schema;
+            inbox_schema["fields"] = nlohmann::json::array({
+                {{"name", "ts"},     {"type", "float64"}},
+                {{"name", "data"},   {"type", "float32"}, {"count", 3}},
+                {{"name", "status"}, {"type", "uint16"}},
+                {{"name", "raw"},    {"type", "bytes"},   {"length", 5}},
+                {{"name", "label"},  {"type", "string"},  {"length", 16}},
+                {{"name", "seq"},    {"type", "int64"}}
+            });
+            inbox_schema["packing"] = "aligned";
+
+            std::vector<hub::ZmqSchemaField> inbox_fields = {
+                {"float64", 1, 0}, {"float32", 3, 0}, {"uint16", 1, 0},
+                {"bytes", 1, 5}, {"string", 1, 16}, {"int64", 1, 0}};
+
+            auto inbox_queue = hub::InboxQueue::bind_at(
+                "tcp://127.0.0.1:0", inbox_fields, "aligned");
+            ASSERT_NE(inbox_queue, nullptr);
+            ASSERT_TRUE(inbox_queue->start());
+            const std::string inbox_ep = inbox_queue->actual_endpoint();
+
+            ProducerOptions popts;
+            popts.channel_name      = make_test_channel_name("hub.inbox_complex");
+            popts.has_shm           = true;
+            popts.zmq_schema        = make_schema("uint64");
+            popts.shm_config        = make_shm_config();
+            popts.timeout_ms        = 3000;
+            popts.role_uid          = "PROD-INBOX-TEST-001";
+            popts.inbox_endpoint    = inbox_ep;
+            popts.inbox_schema_json = inbox_schema.dump();
+            popts.inbox_packing     = "aligned";
+
+            auto producer = Producer::create(messenger, popts);
+            ASSERT_TRUE(producer.has_value());
+
+            ASSERT_TRUE(messenger.query_role_presence("PROD-INBOX-TEST-001", 3000))
+                << "Broker should have the producer registered within 3s";
+
+            // Open inbox client via RoleAPIBase (full broker discovery path).
+            scripting::RoleHostCore core;
+            scripting::RoleAPIBase api(core);
+            api.set_messenger(&messenger);
+            api.set_uid("CONS-INBOX-TEST-001");
+
+            auto result = api.open_inbox_client("PROD-INBOX-TEST-001");
+            ASSERT_TRUE(result.has_value())
+                << "open_inbox_client should succeed for registered producer with inbox";
+
+            // Verify item_size matches compute_schema_size for the complex schema.
+            auto [layout, expected_size] = hub::compute_field_layout(
+                hub::to_field_descs(result->spec.fields), "aligned");
+            EXPECT_GT(expected_size, 0u);
+            EXPECT_EQ(result->item_size, expected_size)
+                << "item_size must match compute_schema_size";
+
+            // Verify all 6 fields were parsed.
+            ASSERT_EQ(result->spec.fields.size(), 6u);
+            EXPECT_EQ(result->spec.fields[0].type_str, "float64");
+            EXPECT_EQ(result->spec.fields[1].type_str, "float32");
+            EXPECT_EQ(result->spec.fields[1].count, 3u);
+            EXPECT_EQ(result->spec.fields[2].type_str, "uint16");
+            EXPECT_EQ(result->spec.fields[3].type_str, "bytes");
+            EXPECT_EQ(result->spec.fields[3].length, 5u);
+            EXPECT_EQ(result->spec.fields[4].type_str, "string");
+            EXPECT_EQ(result->spec.fields[4].length, 16u);
+            EXPECT_EQ(result->spec.fields[5].type_str, "int64");
+
+            // Send a message through the InboxClient and receive it on InboxQueue.
+            auto &client = *result->client;
+            void *buf = client.acquire();
+            ASSERT_NE(buf, nullptr);
+
+            auto *p = static_cast<uint8_t *>(buf);
+            double ts = 2.71828;
+            float data_arr[3] = {-1.0f, 0.0f, 1.0f};
+            uint16_t status = 0x1234;
+            uint8_t raw[5] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
+            char label[16] = "inbox_test!";
+            int64_t seq = -42LL;
+
+            std::memcpy(p + layout[0].offset, &ts, sizeof(ts));
+            std::memcpy(p + layout[1].offset, data_arr, sizeof(data_arr));
+            std::memcpy(p + layout[2].offset, &status, sizeof(status));
+            std::memcpy(p + layout[3].offset, raw, 5);
+            std::memcpy(p + layout[4].offset, label, 16);
+            std::memcpy(p + layout[5].offset, &seq, sizeof(seq));
+
+            // recv in background, send from main thread.
+            const hub::InboxItem *item = nullptr;
+            auto fut = std::async(std::launch::async, [&] {
+                item = inbox_queue->recv_one(std::chrono::milliseconds{2000});
+                if (item) inbox_queue->send_ack(0);
+                return item != nullptr;
+            });
+            std::this_thread::sleep_for(std::chrono::milliseconds{30});
+            uint8_t ack = client.send(std::chrono::milliseconds{1500});
+
+            ASSERT_TRUE(fut.get()) << "InboxQueue::recv_one should receive the message";
+            ASSERT_NE(item, nullptr);
+            ASSERT_NE(item->data, nullptr);
+            EXPECT_EQ(ack, 0u);
+
+            // Verify all fields from received message.
+            const auto *r = static_cast<const uint8_t *>(item->data);
+            double read_ts = 0;
+            float read_data[3] = {};
+            uint16_t read_status = 0;
+            uint8_t read_raw[5] = {};
+            char read_label[16] = {};
+            int64_t read_seq = 0;
+
+            std::memcpy(&read_ts, r + layout[0].offset, sizeof(read_ts));
+            std::memcpy(read_data, r + layout[1].offset, sizeof(read_data));
+            std::memcpy(&read_status, r + layout[2].offset, sizeof(read_status));
+            std::memcpy(read_raw, r + layout[3].offset, 5);
+            std::memcpy(read_label, r + layout[4].offset, 16);
+            std::memcpy(&read_seq, r + layout[5].offset, sizeof(read_seq));
+
+            EXPECT_DOUBLE_EQ(read_ts, 2.71828);
+            EXPECT_FLOAT_EQ(read_data[0], -1.0f);
+            EXPECT_FLOAT_EQ(read_data[1], 0.0f);
+            EXPECT_FLOAT_EQ(read_data[2], 1.0f);
+            EXPECT_EQ(read_status, 0x1234u);
+            EXPECT_EQ(read_raw[0], 0xAAu);
+            EXPECT_EQ(read_raw[4], 0xEEu);
+            EXPECT_STREQ(read_label, "inbox_test!");
+            EXPECT_EQ(read_seq, -42LL);
+
+            inbox_queue->stop();
+            producer->close();
+            messenger.disconnect();
+            broker.stop_and_join();
+        },
+        "hub_api.open_inbox_client_numeric_schema",
+        logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// shm_multifield_schema_roundtrip — multi-type schema via SHM forwarding API
+// ============================================================================
+
+int shm_multifield_schema_roundtrip(int /*argc*/, char ** /*argv*/)
+{
+    return run_gtest_worker(
+        []() {
+            auto broker = start_broker();
+            Messenger &messenger = Messenger::get_instance();
+            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
+
+            // Complex schema: scalar + array + string + bytes + mixed alignment.
+            // Tests padding/alignment: bytes[5] is byte-aligned (no padding before it),
+            // followed by int64 which needs 8-byte alignment → 3 bytes padding after bytes.
+            //
+            // Aligned layout:
+            //   [0]  float64 ts          offset=0  size=8
+            //   [1]  float32[3] data     offset=8  size=12
+            //   [2]  uint16 status       offset=20 size=2
+            //   [3]  bytes[5] raw        offset=22 size=5  (byte-aligned, no pad before)
+            //   [4]  string[16] label    offset=27 size=16 (byte-aligned, no pad before)
+            //        (pad 5 bytes to align int64 to 8)
+            //   [5]  int64 seq           offset=48 size=8
+            //   Total: 56 bytes (padded to 8-align)
+            auto schema = std::vector<hub::SchemaFieldDesc>{
+                {"float64", 1, 0},   // ts
+                {"float32", 3, 0},   // data[3]
+                {"uint16",  1, 0},   // status
+                {"bytes",   1, 5},   // raw (5 bytes — odd, forces alignment pad before next int64)
+                {"string",  1, 16},  // label (16 bytes)
+                {"int64",   1, 0}};  // seq
+
+            ProducerOptions popts;
+            popts.channel_name = make_test_channel_name("hub.multi_shm");
+            popts.has_shm      = true;
+            popts.zmq_schema   = schema;
+            popts.zmq_packing  = "aligned";
+            popts.shm_config   = make_shm_config();
+            popts.timeout_ms   = 3000;
+
+            auto producer = Producer::create(messenger, popts);
+            ASSERT_TRUE(producer.has_value());
+            EXPECT_TRUE(producer->start_queue());
+
+            auto [layout, expected_size] = hub::compute_field_layout(schema, "aligned");
+            EXPECT_GT(expected_size, 0u);
+            EXPECT_EQ(producer->queue_item_size(), expected_size)
+                << "Producer queue item_size must match compute_field_layout";
+
+            // Write all fields at correct offsets.
+            void *buf = producer->write_acquire(std::chrono::milliseconds{1000});
+            ASSERT_NE(buf, nullptr);
+            auto *p = static_cast<uint8_t *>(buf);
+
+            double ts = 1.23456789;
+            float data_arr[3] = {1.0f, 2.5f, -3.75f};
+            uint16_t status = 0xBEEF;
+            uint8_t raw[5] = {0xDE, 0xAD, 0xBE, 0xEF, 0xCA};
+            char label[16] = "hello_schema!";
+            int64_t seq = -999999LL;
+
+            std::memcpy(p + layout[0].offset, &ts, sizeof(ts));
+            std::memcpy(p + layout[1].offset, data_arr, sizeof(data_arr));
+            std::memcpy(p + layout[2].offset, &status, sizeof(status));
+            std::memcpy(p + layout[3].offset, raw, 5);
+            std::memcpy(p + layout[4].offset, label, 16);
+            std::memcpy(p + layout[5].offset, &seq, sizeof(seq));
+            producer->write_commit();
+
+            // Consumer connects with same schema.
+            ConsumerOptions copts;
+            copts.channel_name      = popts.channel_name;
+            copts.shm_shared_secret = kTestShmSecret;
+            copts.zmq_schema        = schema;
+            copts.zmq_packing       = "aligned";
+            copts.timeout_ms        = 3000;
+
+            auto consumer = Consumer::connect(messenger, copts);
+            ASSERT_TRUE(consumer.has_value());
+            EXPECT_TRUE(consumer->start_queue());
+            EXPECT_EQ(consumer->queue_item_size(), expected_size);
+
+            // Read and verify every field.
+            const void *data_ptr = consumer->read_acquire(std::chrono::milliseconds{1000});
+            ASSERT_NE(data_ptr, nullptr);
+            const auto *r = static_cast<const uint8_t *>(data_ptr);
+
+            double read_ts = 0;
+            float read_data[3] = {};
+            uint16_t read_status = 0;
+            uint8_t read_raw[5] = {};
+            char read_label[16] = {};
+            int64_t read_seq = 0;
+
+            std::memcpy(&read_ts, r + layout[0].offset, sizeof(read_ts));
+            std::memcpy(read_data, r + layout[1].offset, sizeof(read_data));
+            std::memcpy(&read_status, r + layout[2].offset, sizeof(read_status));
+            std::memcpy(read_raw, r + layout[3].offset, 5);
+            std::memcpy(read_label, r + layout[4].offset, 16);
+            std::memcpy(&read_seq, r + layout[5].offset, sizeof(read_seq));
+
+            EXPECT_DOUBLE_EQ(read_ts, 1.23456789);
+            EXPECT_FLOAT_EQ(read_data[0], 1.0f);
+            EXPECT_FLOAT_EQ(read_data[1], 2.5f);
+            EXPECT_FLOAT_EQ(read_data[2], -3.75f);
+            EXPECT_EQ(read_status, 0xBEEFu);
+            EXPECT_EQ(read_raw[0], 0xDEu);
+            EXPECT_EQ(read_raw[4], 0xCAu);
+            EXPECT_STREQ(read_label, "hello_schema!");
+            EXPECT_EQ(read_seq, -999999LL);
+            consumer->read_release();
+
+            consumer->close();
+            producer->close();
+            messenger.disconnect();
+            broker.stop_and_join();
+        },
+        "hub_api.shm_multifield_schema_roundtrip",
+        logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// zmq_multifield_schema_roundtrip — multi-type schema via ZMQ forwarding API
+// ============================================================================
+
+int zmq_multifield_schema_roundtrip(int /*argc*/, char ** /*argv*/)
+{
+    return run_gtest_worker(
+        []() {
+            auto broker = start_broker();
+
+            // ZMQ needs separate Messenger instances for producer and consumer.
+            Messenger prod_m, cons_m;
+            ASSERT_TRUE(prod_m.connect(broker.endpoint, broker.pubkey));
+            ASSERT_TRUE(cons_m.connect(broker.endpoint, broker.pubkey));
+
+            // Complex schema: same as SHM test — validates ZMQ wire format preserves
+            // scalars, arrays, strings, bytes through msgpack pack/unpack.
+            auto schema = std::vector<hub::SchemaFieldDesc>{
+                {"float64", 1, 0},
+                {"float32", 3, 0},
+                {"uint16",  1, 0},
+                {"bytes",   1, 5},
+                {"string",  1, 16},
+                {"int64",   1, 0}};
+
+            ProducerOptions popts;
+            popts.channel_name      = make_test_channel_name("hub.multi_zmq");
+            popts.has_shm           = false;
+            popts.data_transport    = "zmq";
+            popts.zmq_node_endpoint = "tcp://127.0.0.1:0";
+            popts.zmq_bind          = true;
+            popts.zmq_schema        = schema;
+            popts.zmq_packing       = "aligned";
+            popts.zmq_buffer_depth  = 16;
+            popts.timeout_ms        = 3000;
+
+            auto producer = Producer::create(prod_m, popts);
+            ASSERT_TRUE(producer.has_value());
+
+            auto [layout, expected_size] = hub::compute_field_layout(schema, "aligned");
+            EXPECT_EQ(producer->queue_item_size(), expected_size);
+
+            // Write all fields.
+            void *buf = producer->write_acquire(std::chrono::milliseconds{1000});
+            ASSERT_NE(buf, nullptr);
+            auto *p = static_cast<uint8_t *>(buf);
+
+            double ts = 3.14159;
+            float data_arr[3] = {10.0f, 20.0f, 30.0f};
+            uint16_t status = 0xCAFE;
+            uint8_t raw[5] = {0x01, 0x02, 0x03, 0x04, 0x05};
+            char label[16] = "zmq_schema_ok";
+            int64_t seq = 1234567890LL;
+
+            std::memcpy(p + layout[0].offset, &ts, sizeof(ts));
+            std::memcpy(p + layout[1].offset, data_arr, sizeof(data_arr));
+            std::memcpy(p + layout[2].offset, &status, sizeof(status));
+            std::memcpy(p + layout[3].offset, raw, 5);
+            std::memcpy(p + layout[4].offset, label, 16);
+            std::memcpy(p + layout[5].offset, &seq, sizeof(seq));
+            producer->write_commit();
+
+            // Consumer discovers ZMQ from broker.
+            ConsumerOptions copts;
+            copts.channel_name      = popts.channel_name;
+            copts.zmq_schema        = schema;
+            copts.zmq_packing       = "aligned";
+            copts.zmq_buffer_depth  = 16;
+            copts.timeout_ms        = 3000;
+
+            auto consumer = Consumer::connect(cons_m, copts);
+            ASSERT_TRUE(consumer.has_value());
+
+            std::this_thread::sleep_for(std::chrono::milliseconds{100});
+
+            // Read and verify every field.
+            const void *data_ptr = consumer->read_acquire(std::chrono::milliseconds{2000});
+            ASSERT_NE(data_ptr, nullptr) << "Consumer should receive the ZMQ frame";
+            const auto *r = static_cast<const uint8_t *>(data_ptr);
+
+            double read_ts = 0;
+            float read_data[3] = {};
+            uint16_t read_status = 0;
+            uint8_t read_raw[5] = {};
+            char read_label[16] = {};
+            int64_t read_seq = 0;
+
+            std::memcpy(&read_ts, r + layout[0].offset, sizeof(read_ts));
+            std::memcpy(read_data, r + layout[1].offset, sizeof(read_data));
+            std::memcpy(&read_status, r + layout[2].offset, sizeof(read_status));
+            std::memcpy(read_raw, r + layout[3].offset, 5);
+            std::memcpy(read_label, r + layout[4].offset, 16);
+            std::memcpy(&read_seq, r + layout[5].offset, sizeof(read_seq));
+
+            EXPECT_DOUBLE_EQ(read_ts, 3.14159);
+            EXPECT_FLOAT_EQ(read_data[0], 10.0f);
+            EXPECT_FLOAT_EQ(read_data[1], 20.0f);
+            EXPECT_FLOAT_EQ(read_data[2], 30.0f);
+            EXPECT_EQ(read_status, 0xCAFEu);
+            EXPECT_EQ(read_raw[0], 0x01u);
+            EXPECT_EQ(read_raw[4], 0x05u);
+            EXPECT_STREQ(read_label, "zmq_schema_ok");
+            EXPECT_EQ(read_seq, 1234567890LL);
+            consumer->read_release();
+
+            consumer->close();
+            producer->close();
+            broker.stop_and_join();
+            cons_m.disconnect();
+            prod_m.disconnect();
+        },
+        "hub_api.zmq_multifield_schema_roundtrip",
+        logger_module(), crypto_module(), hub_module());
+}
+
 } // namespace pylabhub::tests::worker::hub_api
 
 // ============================================================================
@@ -2033,6 +2426,12 @@ struct HubApiWorkerRegistrar
                     return checksum_manual_no_stamp_mismatch(argc, argv);
                 if (scenario == "checksum_none_roundtrip")
                     return checksum_none_roundtrip(argc, argv);
+                if (scenario == "open_inbox_client_numeric_schema")
+                    return open_inbox_client_numeric_schema(argc, argv);
+                if (scenario == "shm_multifield_schema_roundtrip")
+                    return shm_multifield_schema_roundtrip(argc, argv);
+                if (scenario == "zmq_multifield_schema_roundtrip")
+                    return zmq_multifield_schema_roundtrip(argc, argv);
                 fmt::print(stderr, "ERROR: Unknown hub_api scenario '{}'\n", scenario);
                 return 1;
             });
