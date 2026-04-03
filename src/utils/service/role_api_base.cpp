@@ -4,6 +4,7 @@
  */
 #include "utils/role_api_base.hpp"
 
+#include "utils/config/checksum_config.hpp"
 #include "utils/format_tools.hpp"
 #include "utils/hub_consumer.hpp"
 #include "utils/hub_inbox_queue.hpp"
@@ -12,6 +13,7 @@
 #include "utils/messenger.hpp"
 #include "utils/metrics_json.hpp"
 #include "utils/role_host_core.hpp"
+#include "utils/schema_utils.hpp"
 #include "utils/shared_memory_spinlock.hpp"
 
 #include <atomic>
@@ -192,14 +194,73 @@ std::vector<std::string> RoleAPIBase::connected_consumers()
 // ============================================================================
 
 std::optional<RoleAPIBase::InboxOpenResult>
-RoleAPIBase::open_inbox_client(const std::string & /*target_uid*/)
+RoleAPIBase::open_inbox_client(const std::string &target_uid)
 {
-    // TODO(Phase 3): Move implementation from ScriptEngine::open_inbox_client() here.
-    // Requires moving parse_schema_json() and schema_spec_to_zmq_fields() from
-    // src/scripting/schema_utils.hpp to the utils layer first.
-    // During Phases 1-2, the existing ScriptEngine::open_inbox_client() continues
-    // to be used by the Python/Lua engines directly.
-    return std::nullopt;
+    if (!pImpl->core || !pImpl->messenger)
+        return std::nullopt;
+
+    hub::SchemaSpec result_spec;
+    std::string result_packing;
+
+    auto entry = pImpl->core->open_inbox(target_uid,
+        [&]() -> std::optional<RoleHostCore::InboxCacheEntry>
+        {
+            auto info = pImpl->messenger->query_role_info(target_uid, 1000);
+            if (!info.has_value())
+                return std::nullopt;
+
+            if (!info->inbox_schema.is_object() ||
+                !info->inbox_schema.contains("fields"))
+                return std::nullopt;
+
+            hub::SchemaSpec spec;
+            try
+            {
+                spec = hub::parse_schema_json(info->inbox_schema);
+            }
+            catch (const std::exception &e)
+            {
+                LOGGER_WARN("[api] open_inbox('{}'): schema parse error: {}",
+                            target_uid, e.what());
+                return std::nullopt;
+            }
+
+            size_t item_size = 0;
+            for (const auto &f : spec.fields)
+                item_size += f.length;
+
+            auto zmq_fields = hub::schema_spec_to_zmq_fields(spec);
+
+            auto client_ptr = hub::InboxClient::connect_to(
+                info->inbox_endpoint, pImpl->uid,
+                std::move(zmq_fields), info->inbox_packing);
+            if (!client_ptr)
+            {
+                LOGGER_WARN("[api] open_inbox('{}'): connect failed", target_uid);
+                return std::nullopt;
+            }
+            if (!client_ptr->start())
+            {
+                LOGGER_WARN("[api] open_inbox('{}'): start failed", target_uid);
+                return std::nullopt;
+            }
+            client_ptr->set_checksum_policy(
+                config::string_to_checksum_policy(info->inbox_checksum));
+
+            result_spec = std::move(spec);
+            result_packing = info->inbox_packing;
+
+            return RoleHostCore::InboxCacheEntry{
+                std::shared_ptr<hub::InboxClient>(std::move(client_ptr)),
+                "InboxSlot", item_size};
+        });
+
+    if (!entry)
+        return std::nullopt;
+
+    return InboxOpenResult{
+        entry->client, std::move(result_spec),
+        std::move(result_packing), entry->item_size};
 }
 
 bool RoleAPIBase::wait_for_role(const std::string &uid, int timeout_ms)
