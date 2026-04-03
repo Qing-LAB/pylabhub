@@ -14,6 +14,7 @@
 #include "producer/producer_api.hpp"
 #include "consumer/consumer_api.hpp"
 #include "processor/processor_api.hpp"
+#include "utils/role_api_base.hpp"
 #include "utils/role_host_core.hpp"
 
 #include <gtest/gtest.h>
@@ -24,6 +25,24 @@
 #include <unordered_map>
 
 using json = nlohmann::json;
+using pylabhub::scripting::RoleAPIBase;
+
+namespace
+{
+/// Create a RoleAPIBase wired for producer tests (no infrastructure).
+RoleAPIBase make_producer_api_base(pylabhub::scripting::RoleHostCore &core,
+                                   const std::string &uid = "PROD-test",
+                                   const std::string &name = "test-prod",
+                                   const std::string &channel = "test.chan")
+{
+    RoleAPIBase base(core);
+    base.set_role_tag("prod");
+    base.set_uid(uid);
+    base.set_name(name);
+    base.set_channel(channel);
+    return base;
+}
+} // anonymous namespace
 
 // ============================================================================
 // ProducerAPI metrics
@@ -32,10 +51,8 @@ using json = nlohmann::json;
 TEST(MetricsApiTest, ProducerAPI_SnapshotBase_NoSHM)
 {
     pylabhub::scripting::RoleHostCore core;
-    pylabhub::producer::ProducerAPI api(core);
-    api.set_uid("PROD-test");
-    api.set_name("test-prod");
-    api.set_channel("test.chan");
+    auto base = make_producer_api_base(core);
+    pylabhub::producer::ProducerAPI api(base);
 
     core.inc_out_written();
     core.inc_out_written();
@@ -63,7 +80,8 @@ TEST(MetricsApiTest, ProducerAPI_SnapshotBase_NoSHM)
 TEST(MetricsApiTest, ProducerAPI_ReportMetric)
 {
     pylabhub::scripting::RoleHostCore core;
-    pylabhub::producer::ProducerAPI api(core);
+    auto base = make_producer_api_base(core);
+    pylabhub::producer::ProducerAPI api(base);
     api.report_metric("events", 42.0);
     api.report_metric("rate_hz", 1000.5);
 
@@ -76,7 +94,8 @@ TEST(MetricsApiTest, ProducerAPI_ReportMetric)
 TEST(MetricsApiTest, ProducerAPI_ReportMetrics_Batch)
 {
     pylabhub::scripting::RoleHostCore core;
-    pylabhub::producer::ProducerAPI api(core);
+    auto base = make_producer_api_base(core);
+    pylabhub::producer::ProducerAPI api(base);
     std::unordered_map<std::string, double> kv{{"a", 1.0}, {"b", 2.0}, {"c", 3.0}};
     api.report_metrics(kv);
 
@@ -89,7 +108,8 @@ TEST(MetricsApiTest, ProducerAPI_ReportMetrics_Batch)
 TEST(MetricsApiTest, ProducerAPI_ClearCustomMetrics)
 {
     pylabhub::scripting::RoleHostCore core;
-    pylabhub::producer::ProducerAPI api(core);
+    auto base = make_producer_api_base(core);
+    pylabhub::producer::ProducerAPI api(base);
     api.report_metric("x", 1.0);
     api.clear_custom_metrics();
 
@@ -100,7 +120,8 @@ TEST(MetricsApiTest, ProducerAPI_ClearCustomMetrics)
 TEST(MetricsApiTest, ProducerAPI_ReportMetric_Overwrite)
 {
     pylabhub::scripting::RoleHostCore core;
-    pylabhub::producer::ProducerAPI api(core);
+    auto base = make_producer_api_base(core);
+    pylabhub::producer::ProducerAPI api(base);
     api.report_metric("x", 1.0);
     api.report_metric("x", 99.0);
 
@@ -116,9 +137,6 @@ TEST(MetricsApiTest, ConsumerAPI_SnapshotBase_NoSHM)
 {
     pylabhub::scripting::RoleHostCore core;
     pylabhub::consumer::ConsumerAPI api(core);
-    api.set_uid("CONS-test");
-    api.set_name("test-cons");
-    api.set_channel("test.chan");
 
     json snap = api.snapshot_metrics_json();
 
@@ -156,8 +174,6 @@ TEST(MetricsApiTest, ProcessorAPI_SnapshotBase_NoSHM)
 {
     pylabhub::scripting::RoleHostCore core;
     pylabhub::processor::ProcessorAPI api(core);
-    api.set_uid("PROC-test");
-    api.set_name("test-proc");
 
     json snap = api.snapshot_metrics_json();
 
@@ -211,7 +227,8 @@ class MetricsApiPyDictTest : public ::testing::Test
 TEST_F(MetricsApiPyDictTest, ProducerAPI_PyDict_Hierarchical_NoQueue)
 {
     pylabhub::scripting::RoleHostCore core;
-    pylabhub::producer::ProducerAPI api(core);
+    auto base = make_producer_api_base(core);
+    pylabhub::producer::ProducerAPI api(base);
     core.inc_out_written();
     core.inc_out_written();
     core.inc_out_written();
