@@ -825,6 +825,35 @@ gtest_discover_tests(test_layer2_role_config
 )
 
 # ============================================================================
+# Test: SchemaValidation — parse_schema_json, compute_schema_size, to_field_descs
+# ============================================================================
+
+add_executable(test_layer2_schema_validation
+    test_schema_validation.cpp
+)
+
+target_link_libraries(test_layer2_schema_validation
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_schema_validation)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_schema_validation
+    SUITE_NAME "Layer2_SchemaValidation"
+)
+layer2_require_staged_utils(test_layer2_schema_validation)
+
+gtest_discover_tests(test_layer2_schema_validation
+    PROPERTIES
+        LABELS "layer2;service;schema"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: MetricsAPI — hierarchical metrics serialization (JSON + py::dict)
 # ============================================================================
 
