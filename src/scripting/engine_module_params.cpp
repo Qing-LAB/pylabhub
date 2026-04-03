@@ -6,6 +6,7 @@
 
 #include "utils/logger.hpp"
 #include "utils/role_host_core.hpp"
+#include "utils/schema_field_layout.hpp"
 
 #include <stdexcept>
 
@@ -53,8 +54,8 @@ void engine_lifecycle_startup(const char * /*arg*/, void *userdata)
 
     // Set flexzone specs on core. Size is computed from schema via compute_field_layout —
     // infrastructure-authoritative, no engine involvement.
-    auto compute_fz_size = [](const SchemaSpec &spec, const std::string &packing) -> size_t {
-        auto [layout, sz] = hub::compute_field_layout(to_field_descs(spec.fields), packing);
+    auto compute_fz_size = [](const hub::SchemaSpec &spec, const std::string &packing) -> size_t {
+        auto [layout, sz] = hub::compute_field_layout(hub::to_field_descs(spec.fields), packing);
         return sz;
     };
 

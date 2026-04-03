@@ -820,7 +820,7 @@ bool PythonEngine::has_callback(const std::string &name) const
 // register_slot_type — build ctypes/numpy type and cache it
 // ============================================================================
 
-bool PythonEngine::register_slot_type(const SchemaSpec &spec,
+bool PythonEngine::register_slot_type(const hub::SchemaSpec &spec,
                                        const std::string &type_name,
                                        const std::string &packing)
 {
@@ -1149,11 +1149,11 @@ InvokeResult PythonEngine::invoke_on_inbox(InvokeInbox msg)
 // Internal helpers
 // ============================================================================
 
-py::object PythonEngine::build_ctypes_type_(const SchemaSpec &spec, const std::string &name,
+py::object PythonEngine::build_ctypes_type_(const hub::SchemaSpec &spec, const std::string &name,
                                              const std::string &packing)
 {
     // Override spec packing with the explicitly requested one if provided.
-    SchemaSpec effective_spec = spec;
+    hub::SchemaSpec effective_spec = spec;
     if (!packing.empty())
         effective_spec.packing = packing;
 
@@ -1165,7 +1165,7 @@ py::object PythonEngine::wrap_readonly_(const py::object &type)
     return wrap_as_readonly_ctypes(type);
 }
 
-py::object PythonEngine::make_slot_view_(const SchemaSpec &spec, const py::object &type,
+py::object PythonEngine::make_slot_view_(const hub::SchemaSpec &spec, const py::object &type,
                                           void *data, size_t size, bool readonly)
 {
     return make_slot_view(spec, type, data, size, readonly);

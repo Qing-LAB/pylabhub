@@ -24,7 +24,7 @@
  *  15.  WriteSide_PackedStruct_CanWrite           — _pack_=1 variant
  */
 #include "python_helpers.hpp"
-#include "utils/script_host_schema.hpp"
+#include "utils/schema_types.hpp"
 
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
@@ -38,6 +38,8 @@
 
 namespace py = pybind11;
 using namespace pylabhub::scripting;
+using pylabhub::hub::SchemaSpec;
+using pylabhub::hub::FieldDef;
 
 // ============================================================================
 // Test fixture — one interpreter per process (pybind11 constraint)

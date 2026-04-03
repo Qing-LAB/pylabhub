@@ -304,7 +304,7 @@ TEST_F(RoleHostCoreTest, OutFzSpec_SetAndRead)
     EXPECT_FALSE(core_.has_out_fz());
     EXPECT_EQ(core_.out_schema_fz_size(), 0u);
 
-    pylabhub::scripting::SchemaSpec spec;
+    pylabhub::hub::SchemaSpec spec;
     spec.has_schema = true;
     spec.packing    = "aligned";
 
@@ -321,7 +321,7 @@ TEST_F(RoleHostCoreTest, InFzSpec_SetAndRead)
     EXPECT_FALSE(core_.has_in_fz());
     EXPECT_EQ(core_.in_schema_fz_size(), 0u);
 
-    pylabhub::scripting::SchemaSpec spec;
+    pylabhub::hub::SchemaSpec spec;
     spec.has_schema = true;
     spec.packing    = "packed";
 
@@ -335,14 +335,14 @@ TEST_F(RoleHostCoreTest, InFzSpec_SetAndRead)
 
 TEST_F(RoleHostCoreTest, FzSpec_NoSchema_HasFzFalse)
 {
-    pylabhub::scripting::SchemaSpec spec;
+    pylabhub::hub::SchemaSpec spec;
     spec.has_schema = false;
 
     core_.set_out_fz_spec(std::move(spec), 0);
     EXPECT_FALSE(core_.has_out_fz());
     EXPECT_EQ(core_.out_schema_fz_size(), 0u);
 
-    pylabhub::scripting::SchemaSpec spec2;
+    pylabhub::hub::SchemaSpec spec2;
     spec2.has_schema = false;
 
     core_.set_in_fz_spec(std::move(spec2), 0);

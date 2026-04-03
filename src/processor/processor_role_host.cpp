@@ -20,7 +20,7 @@
 
 #include "role_host_helpers.hpp"
 #include "zmq_poll_loop.hpp"
-#include "schema_utils.hpp"
+#include "utils/schema_utils.hpp"
 
 #include <chrono>
 #include <cstring>
@@ -135,8 +135,8 @@ void ProcessorRoleHost::worker_main_()
     core_.set_script_load_ok(true);
 
     // Step 3: Resolve schemas and register slot types.
-    scripting::SchemaSpec out_fz_local;
-    scripting::SchemaSpec in_fz_local;
+    hub::SchemaSpec out_fz_local;
+    hub::SchemaSpec in_fz_local;
     {
         std::vector<std::string> schema_dirs;
         auto add_schema_dir = [&schema_dirs](const std::string &hub_dir) {
@@ -152,13 +152,13 @@ void ProcessorRoleHost::worker_main_()
         const auto &pf = config_.role_data<ProcessorFields>();
         try
         {
-            in_slot_spec_    = scripting::resolve_schema(
+            in_slot_spec_    = hub::resolve_schema(
                 pf.in_slot_schema_json, false, "proc", schema_dirs);
-            out_slot_spec_   = scripting::resolve_schema(
+            out_slot_spec_   = hub::resolve_schema(
                 pf.out_slot_schema_json, false, "proc", schema_dirs);
-            in_fz_local = scripting::resolve_schema(
+            in_fz_local = hub::resolve_schema(
                 pf.in_flexzone_schema_json, true, "proc", schema_dirs);
-            out_fz_local = scripting::resolve_schema(
+            out_fz_local = hub::resolve_schema(
                 pf.out_flexzone_schema_json, true, "proc", schema_dirs);
         }
         catch (const std::exception &e)
@@ -178,14 +178,14 @@ void ProcessorRoleHost::worker_main_()
         config_.out_transport().zmq_packing.empty() ? "aligned" : config_.out_transport().zmq_packing;
 
     {
-        size_t out_fz_size = scripting::compute_schema_size(out_fz_local, out_packing);
+        size_t out_fz_size = hub::compute_schema_size(out_fz_local, out_packing);
         out_fz_size = (out_fz_size + 4095U) & ~size_t{4095U};
-        core_.set_out_fz_spec(scripting::SchemaSpec{out_fz_local}, out_fz_size);
+        core_.set_out_fz_spec(hub::SchemaSpec{out_fz_local}, out_fz_size);
     }
     {
-        size_t in_fz_size = scripting::compute_schema_size(in_fz_local, in_packing);
+        size_t in_fz_size = hub::compute_schema_size(in_fz_local, in_packing);
         in_fz_size = (in_fz_size + 4095U) & ~size_t{4095U};
-        core_.set_in_fz_spec(scripting::SchemaSpec{in_fz_local}, in_fz_size);
+        core_.set_in_fz_spec(hub::SchemaSpec{in_fz_local}, in_fz_size);
     }
 
     // Register slot and flexzone types with engine (engine validates struct matches).
@@ -231,7 +231,7 @@ void ProcessorRoleHost::worker_main_()
     }
 
     // Resolve and register inbox schema (alongside slot/fz above).
-    scripting::SchemaSpec inbox_spec_local;
+    hub::SchemaSpec inbox_spec_local;
     size_t inbox_schema_slot_size = 0;
     if (config_.inbox().has_inbox())
     {
@@ -248,7 +248,7 @@ void ProcessorRoleHost::worker_main_()
 
         try
         {
-            inbox_spec_local = scripting::resolve_schema(
+            inbox_spec_local = hub::resolve_schema(
                 config_.inbox().schema_json, false, "proc", schema_dirs);
         }
         catch (const std::exception &e)
@@ -381,17 +381,17 @@ void ProcessorRoleHost::worker_main_()
 // setup_infrastructure_ — dual broker connect, consumer + producer, wire events
 // ============================================================================
 
-bool ProcessorRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox_spec)
+bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
 {
     // ── Consumer side (in_channel) ──────────────────────────────────────────
     hub::ConsumerOptions in_opts;
     in_opts.channel_name         = config_.in_channel();
     in_opts.shm_shared_secret    = config_.in_shm().enabled ? config_.in_shm().secret : 0u;
-    in_opts.expected_schema_hash = scripting::compute_schema_hash(
+    in_opts.expected_schema_hash = hub::compute_schema_hash(
                                        in_slot_spec_, core_.in_fz_spec());
     in_opts.consumer_uid         = config_.identity().uid;
     in_opts.consumer_name        = config_.identity().name;
-    in_opts.zmq_schema           = scripting::schema_spec_to_zmq_fields(in_slot_spec_);
+    in_opts.zmq_schema           = hub::schema_spec_to_zmq_fields(in_slot_spec_);
     in_opts.zmq_packing          = config_.in_transport().zmq_packing;
     in_opts.zmq_buffer_depth     = config_.in_transport().zmq_buffer_depth;
     // Per-role checksum policy — same value on both input and output (see config_single_truth.md).
@@ -485,7 +485,7 @@ bool ProcessorRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox
     out_opts.channel_name  = config_.out_channel();
     out_opts.pattern       = hub::ChannelPattern::PubSub;
     out_opts.has_shm       = config_.out_shm().enabled;
-    out_opts.schema_hash   = scripting::compute_schema_hash(out_slot_spec_, core_.out_fz_spec());
+    out_opts.schema_hash   = hub::compute_schema_hash(out_slot_spec_, core_.out_fz_spec());
     out_opts.role_name     = config_.identity().name;
     out_opts.role_uid      = config_.identity().uid;
     // Per-role checksum policy — same value on both input and output (see config_single_truth.md).
@@ -512,7 +512,7 @@ bool ProcessorRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox
         out_opts.data_transport    = "zmq";
         out_opts.zmq_node_endpoint = config_.out_transport().zmq_endpoint;
         out_opts.zmq_bind          = config_.out_transport().zmq_bind;
-        out_opts.zmq_schema        = scripting::schema_spec_to_zmq_fields(out_slot_spec_);
+        out_opts.zmq_schema        = hub::schema_spec_to_zmq_fields(out_slot_spec_);
         out_opts.zmq_packing       = config_.out_transport().zmq_packing;
         out_opts.zmq_buffer_depth  = config_.out_transport().zmq_buffer_depth;
         out_opts.zmq_overflow_policy =
@@ -531,7 +531,7 @@ bool ProcessorRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox
 
         // Endpoint validated by parse_inbox_config(); default is tcp://127.0.0.1:0.
         const std::string &ep = config_.inbox().endpoint;
-        auto zmq_fields = scripting::schema_spec_to_zmq_fields(inbox_spec);
+        auto zmq_fields = hub::schema_spec_to_zmq_fields(inbox_spec);
 
         // Serialize full SchemaSpec JSON for ROLE_INFO_REQ discovery.
         nlohmann::json spec_json;

@@ -20,7 +20,7 @@
  */
 
 #include "pylabhub_utils_export.h"
-#include "utils/script_host_schema.hpp" // SchemaSpec, FieldDef
+#include "utils/schema_types.hpp"        // hub::SchemaSpec, hub::FieldDef
 #include "utils/json_fwd.hpp"           // nlohmann::json (project buffer header)
 
 #include <atomic>
@@ -82,18 +82,18 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
 
     // ── Directional flexzone schema (set once during init) ────────────────
 
-    void set_in_fz_spec(SchemaSpec spec, size_t fz_size) noexcept
+    void set_in_fz_spec(hub::SchemaSpec spec, size_t fz_size) noexcept
     {
         in_fz_spec_        = std::move(spec);
         in_schema_fz_size_ = fz_size;
     }
-    void set_out_fz_spec(SchemaSpec spec, size_t fz_size) noexcept
+    void set_out_fz_spec(hub::SchemaSpec spec, size_t fz_size) noexcept
     {
         out_fz_spec_        = std::move(spec);
         out_schema_fz_size_ = fz_size;
     }
-    [[nodiscard]] const SchemaSpec &in_fz_spec()        const noexcept { return in_fz_spec_; }
-    [[nodiscard]] const SchemaSpec &out_fz_spec()       const noexcept { return out_fz_spec_; }
+    [[nodiscard]] const hub::SchemaSpec &in_fz_spec()        const noexcept { return in_fz_spec_; }
+    [[nodiscard]] const hub::SchemaSpec &out_fz_spec()       const noexcept { return out_fz_spec_; }
     [[nodiscard]] size_t            in_schema_fz_size() const noexcept { return in_schema_fz_size_; }
     [[nodiscard]] size_t            out_schema_fz_size()const noexcept { return out_schema_fz_size_; }
     [[nodiscard]] bool              has_in_fz()         const noexcept { return in_fz_spec_.has_schema; }
@@ -336,8 +336,8 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     // ── Init-time state (set once, read during loop) ─────────────────────
     bool              validate_only_{false};
     std::atomic<bool> script_load_ok_{false};
-    SchemaSpec in_fz_spec_;
-    SchemaSpec out_fz_spec_;
+    hub::SchemaSpec in_fz_spec_;
+    hub::SchemaSpec out_fz_spec_;
     size_t     in_schema_fz_size_{0};
     size_t     out_schema_fz_size_{0};
 

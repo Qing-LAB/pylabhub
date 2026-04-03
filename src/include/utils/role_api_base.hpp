@@ -18,7 +18,8 @@
 
 #include "pylabhub_utils_export.h"
 #include "utils/json_fwd.hpp"
-#include "utils/role_host_core.hpp"        // RoleHostCore, StateValue, SchemaSpec
+#include "utils/role_host_core.hpp"        // RoleHostCore, StateValue
+#include "utils/schema_types.hpp"          // hub::SchemaSpec (for InboxOpenResult)
 
 #include <cstddef>
 #include <cstdint>
@@ -110,7 +111,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     struct InboxOpenResult
     {
         std::shared_ptr<hub::InboxClient> client;
-        SchemaSpec spec;
+        hub::SchemaSpec spec;
         std::string packing;
         size_t item_size{0};
     };
