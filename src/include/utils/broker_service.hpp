@@ -262,7 +262,7 @@ public:
      *         producer:{pid,uid,name}, consumers:[{pid,uid,name}],
      *         shm_metrics:{...} or null}, ...]}
      */
-    [[nodiscard]] std::string query_shm_blocks_json_str(const std::string& channel = {}) const;
+    [[nodiscard]] std::string collect_shm_info_json(const std::string& channel = {}) const;
 
     /**
      * @brief Send a hub-targeted message to a direct federation peer (HEP-CORE-0022).

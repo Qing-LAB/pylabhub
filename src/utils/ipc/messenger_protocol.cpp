@@ -795,7 +795,7 @@ void MessengerImpl::handle_command(QueryShmBlocksCmd &cmd,
 {
     if (!m_is_connected.load(std::memory_order_acquire) || !socket.has_value())
     {
-        LOGGER_WARN("Messenger: query_shm_blocks('{}') — not connected.", cmd.channel);
+        LOGGER_WARN("Messenger: request_shm_info('{}') — not connected.", cmd.channel);
         cmd.result.set_value({});
         return;
     }
@@ -811,7 +811,7 @@ void MessengerImpl::handle_command(QueryShmBlocksCmd &cmd,
                                                zmq::buffer(payload_str)};
         if (!zmq::send_multipart(*socket, msgs))
         {
-            LOGGER_ERROR("Messenger: query_shm_blocks('{}') send failed.", cmd.channel);
+            LOGGER_ERROR("Messenger: request_shm_info('{}') send failed.", cmd.channel);
             cmd.result.set_value({});
             return;
         }
@@ -825,7 +825,7 @@ void MessengerImpl::handle_command(QueryShmBlocksCmd &cmd,
                 deadline - std::chrono::steady_clock::now()).count();
             if (remaining <= 0)
             {
-                LOGGER_WARN("Messenger: query_shm_blocks('{}') timed out.", cmd.channel);
+                LOGGER_WARN("Messenger: request_shm_info('{}') timed out.", cmd.channel);
                 cmd.result.set_value({});
                 return;
             }
@@ -834,7 +834,7 @@ void MessengerImpl::handle_command(QueryShmBlocksCmd &cmd,
             zmq::poll(items, std::chrono::milliseconds(remaining));
             if ((items[0].revents & ZMQ_POLLIN) == 0)
             {
-                LOGGER_WARN("Messenger: query_shm_blocks('{}') timed out.", cmd.channel);
+                LOGGER_WARN("Messenger: request_shm_info('{}') timed out.", cmd.channel);
                 cmd.result.set_value({});
                 return;
             }
@@ -855,13 +855,13 @@ void MessengerImpl::handle_command(QueryShmBlocksCmd &cmd,
     }
     catch (const zmq::error_t &e)
     {
-        LOGGER_ERROR("Messenger: ZMQ error in query_shm_blocks('{}'): {}",
+        LOGGER_ERROR("Messenger: ZMQ error in request_shm_info('{}'): {}",
                      cmd.channel, e.what());
         cmd.result.set_value({});
     }
     catch (const nlohmann::json::exception &e)
     {
-        LOGGER_ERROR("Messenger: JSON error in query_shm_blocks('{}'): {}",
+        LOGGER_ERROR("Messenger: JSON error in request_shm_info('{}'): {}",
                      cmd.channel, e.what());
         cmd.result.set_value({});
     }

@@ -114,9 +114,9 @@ class ProducerAPI
     /// Query the broker for the list of registered channels.
     py::list list_channels();
 
-    /// Query the broker for SHM block topology and DataBlockMetrics.
-    /// Returns a Python dict parsed from the SHM_BLOCK_QUERY_ACK JSON.
-    py::object shm_blocks(const std::string& channel = {});
+    /// Query the broker for SHM block info (topology, sizes, consumer heartbeats).
+    /// Returns a Python dict parsed from the broker's JSON response.
+    py::object shm_info(const std::string& channel = {});
 
     /// Open (or return cached) an InboxHandle to send typed messages to another role.
     /// Discovers inbox_endpoint + schema from the broker via ROLE_INFO_REQ.
