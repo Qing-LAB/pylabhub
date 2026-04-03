@@ -23,8 +23,8 @@
 
 ### Header Contamination (2026-03-23)
 
-- [x] **DONE**: `script_host_helpers.hpp` split into `schema_utils.hpp` (clean, no pybind11) + `python_helpers.hpp` (pybind11-specific). Both in `src/scripting/` (private). Old file deleted. 2026-04-02.
-- [ ] **MED**: `script_host_schema.hpp` is in public include tree but marked internal. Either move to `src/scripting/` or document as public API.
+- [x] **DONE**: `script_host_helpers.hpp` split into `schema_utils.hpp` (clean, no pybind11) + `python_helpers.hpp` (pybind11-specific). Old file deleted. 2026-04-02.
+- [x] **DONE**: Schema file reorganization (2026-04-03): `script_host_schema.hpp` deleted. Types → `schema_types.hpp` (hub:: namespace). Utils → `schema_utils.hpp` moved to `src/include/utils/`. All schema types/functions now in `pylabhub::hub`.
 
 ### DataBlock/ShmQueue Ownership Refactor (2026-04-02)
 
@@ -34,7 +34,7 @@
 - [x] Step 10: `item_size`/`flexzone_size` removed from ProducerOptions/ConsumerOptions + role host setters
 - [x] Schema size cross-validation in all 3 engines (Python ctypes, Lua FFI, Native sizeof vs compute_field_layout)
 - [x] Checksum policy fix: Manual no longer auto-stamps (ShmQueue + ZmqQueue + InboxQueue unified)
-- [x] `to_field_descs()` utility extracted to script_host_schema.hpp (eliminates 4x duplication)
+- [x] `to_field_descs()` utility in schema_field_layout.hpp (eliminates 4x duplication)
 
 **Remaining:**
 

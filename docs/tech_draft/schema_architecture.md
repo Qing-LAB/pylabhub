@@ -67,18 +67,27 @@ SchemaInfo (BLDS + hash) for each section.
 
 JSON types: float32/64, int8/16/32/64, uint8/16/32/64, bool, char. Count for arrays.
 
-### L2: Scripting / Runtime
+### L2: Runtime Schema Types
 
-**File**: `src/include/utils/script_host_schema.hpp`
-**Namespace**: `pylabhub::scripting`
+**File**: `src/include/utils/schema_types.hpp`
+**Namespace**: `pylabhub::hub`
 
 Types:
-- `FieldDef` — one typed field for ctypes struct building (name, type_str, count, byte_length)
-- `SchemaSpec` — complete schema for one buffer: fields[], packing
+- `FieldDef` — one typed field (name, type_str, count, length)
+- `SchemaSpec` — complete schema for one buffer: fields[], packing, has_schema
+- `SchemaFieldDesc` — layout-level descriptor (no name, for size computation)
+- `FieldLayout` — computed byte-level layout for one field
 
-Purpose: Runtime representation consumed by Python (ctypes.Structure) and Lua (FFI cdef).
-Only field-based schemas are supported. Array fields (`count > 1`) are accessed as ctypes
-arrays; Python scripts use `api.as_numpy(field)` for zero-copy numpy views.
+**File**: `src/include/utils/schema_utils.hpp`
+**Namespace**: `pylabhub::hub`
+
+Functions:
+- `parse_schema_json()` — JSON → SchemaSpec
+- `schema_spec_to_zmq_fields()` — SchemaSpec → SchemaFieldDesc vector
+- `compute_schema_hash()`, `compute_schema_size()`, `resolve_schema()`
+
+Purpose: Runtime representation consumed by all layers — role hosts, engines (Python
+ctypes, Lua FFI, Native C), queues (ShmQueue, ZmqQueue), and RoleAPIBase.
 Built from JSON config via `parse_schema_json()` or from registry via `schema_entry_to_spec()`.
 Stored in `RoleHostCore::fz_spec_` for flexzone.
 
