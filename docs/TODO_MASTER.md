@@ -22,20 +22,22 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
-### Priority 0 (2026-04-02): DataBlock Ownership + Schema Validation + Checksum Fix
-📍 **Status**: Steps 1-10,12-13 done; **1276/1276 tests**
+### Priority 0 (DONE — 2026-04-02/03): DataBlock Ownership + Schema Validation + Checksum + SE-04
+📍 **Status**: All ownership steps done (except RAII rewrite); **1279/1279 tests**
 📋 **Branch**: `feature/lua-role-support`
 
+Ownership refactor (all steps except template RAII):
 - [x] ShmQueue owns DataBlock internally (create_writer/create_reader) ✅
 - [x] Producer/Consumer: spinlock/identity delegating methods ✅
-- [x] All `->shm()` external callers migrated ✅
-- [x] `item_size`/`flexzone_size` removed from Options structs ✅
+- [x] All `->shm()` external callers migrated + `shm()` public accessor removed ✅
+- [x] `item_size`/`flexzone_size` removed from Options + `schema_slot_size_` from role hosts ✅
 - [x] Schema size cross-validation in all 3 engines (vs compute_field_layout) ✅
 - [x] Native engine: `native_sizeof_<T>` required export ✅
 - [x] Checksum policy fix: Manual no-stamp + always-verify (SHM+ZMQ+Inbox unified) ✅
-- [x] 5 new checksum policy tests (hub API + ZmqQueue) ✅
-- [ ] Step 11: Remove `schema_slot_size_` members from role hosts
-- [ ] `shm()` accessor visibility (needs template RAII discussion)
+- [x] 8 new checksum policy tests (hub API + ZmqQueue + InboxQueue) ✅
+- [x] `to_field_descs()` utility, `shm_blocks` → `shm_info` rename ✅
+- [x] SE-04: Lua API parity complete (shm_info added, only as_numpy is Python-specific) ✅
+- [ ] Template RAII rewrite on QueueWriter/QueueReader (Group D — separate sprint)
 
 ### Priority 0 (DONE — 2026-03-29/30): Metrics, Timing, Checksum & Config Unification
 📍 **Status**: All items complete; **1181/1181 tests**
