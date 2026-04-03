@@ -158,7 +158,6 @@ void ConsumerRoleHost::worker_main_()
         tr.zmq_packing.empty() ? "aligned" : tr.zmq_packing;
 
     // Compute sizes from schema (authoritative — infrastructure owns layout).
-    in_schema_slot_size_ = scripting::compute_schema_size(in_slot_spec_, packing);
     {
         size_t fz_size = scripting::compute_schema_size(in_fz_local, packing);
         fz_size = (fz_size + 4095U) & ~size_t{4095U};

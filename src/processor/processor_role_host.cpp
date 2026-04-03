@@ -177,9 +177,6 @@ void ProcessorRoleHost::worker_main_()
     const std::string out_packing =
         config_.out_transport().zmq_packing.empty() ? "aligned" : config_.out_transport().zmq_packing;
 
-    // Compute sizes from schema (authoritative — infrastructure owns layout).
-    in_schema_slot_size_  = scripting::compute_schema_size(in_slot_spec_, in_packing);
-    out_schema_slot_size_ = scripting::compute_schema_size(out_slot_spec_, out_packing);
     {
         size_t out_fz_size = scripting::compute_schema_size(out_fz_local, out_packing);
         out_fz_size = (out_fz_size + 4095U) & ~size_t{4095U};
@@ -505,11 +502,7 @@ bool ProcessorRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox
         out_opts.shm_config.policy               = hub::DataBlockPolicy::RingBuffer;
         out_opts.shm_config.consumer_sync_policy = config_.out_shm().sync_policy;
         out_opts.shm_config.checksum_policy      = config_.checksum().policy;
-        out_opts.shm_config.flex_zone_size       = core_.out_schema_fz_size();
-
         out_opts.shm_config.physical_page_size = hub::system_page_size();
-        out_opts.shm_config.logical_unit_size  =
-            (out_schema_slot_size_ == 0) ? 1 : out_schema_slot_size_;
     }
 
     // HEP-CORE-0021: for ZMQ output, register as a ZMQ Virtual Channel Node.

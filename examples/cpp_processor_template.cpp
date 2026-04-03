@@ -176,22 +176,23 @@ int main()
     }
     std::cout << "Input consumer connected to 'raw.data'\n";
 
-    // 6. Create ShmQueues wrapping the Consumer/Producer DataBlocks
-    auto *in_shm  = in_consumer->shm();
-    auto *out_shm = out_producer->shm();
-
-    auto in_queue  = ShmQueue::from_consumer_ref(
-        *in_shm, sizeof(RawReading), 0, "raw.data");
-    auto out_queue = ShmQueue::from_producer_ref(
-        *out_shm, sizeof(ScaledResult), 0, "scaled.data");
-
-    // 7. Create hub::Processor
+    // 6. Create hub::Processor using the internal queues from Consumer/Producer.
+    // ShmQueue is owned internally — no need to create externally.
+    // NOTE: This example uses the template RAII path (create<F,D>/connect<F,D>)
+    // which needs reworking for the new ownership model (see API_TODO.md).
+    // For now, access the queue_reader/queue_writer from the internal queue.
     ProcessorOptions proc_opts;
     proc_opts.overflow_policy  = OverflowPolicy::Block;
     proc_opts.input_timeout    = 2s;
     proc_opts.zero_fill_output = true;
 
-    auto processor = Processor::create(*in_queue, *out_queue, proc_opts);
+    // TODO: Processor::create needs QueueReader& + QueueWriter&. The Producer/Consumer
+    // internal queues provide these, but the accessor API is not yet finalized.
+    // This example needs a full rewrite once the template RAII path is resolved.
+    auto processor = Processor::create(
+        *static_cast<QueueReader*>(nullptr),  // placeholder — see API_TODO
+        *static_cast<QueueWriter*>(nullptr),  // placeholder — see API_TODO
+        proc_opts);
     if (!processor)
     {
         std::cerr << "Failed to create processor\n";

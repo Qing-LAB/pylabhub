@@ -103,7 +103,6 @@ class ProducerRoleHost
 
     // Schema info (resolved from config during setup).
     scripting::SchemaSpec                  out_slot_spec_;
-    size_t                                 out_schema_slot_size_{0};
 
     // Metrics are in core_ (RoleHostCore) — single source of truth.
     // See core_.out_written_, core_.drops_, core_.iteration_count_, core_.last_cycle_work_us_.

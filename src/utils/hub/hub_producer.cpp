@@ -1012,12 +1012,6 @@ bool Producer::has_shm() const
     return pImpl && pImpl->shm_queue_ != nullptr;
 }
 
-DataBlockProducer *Producer::shm() noexcept
-{
-    // Internal — used by messaging facade fn_get_shm for template RAII path.
-    return pImpl && pImpl->shm_queue_ ? pImpl->shm_queue_->raw_producer() : nullptr;
-}
-
 uint32_t Producer::spinlock_count() const noexcept
 {
     auto *dbp = pImpl && pImpl->shm_queue_ ? pImpl->shm_queue_->raw_producer() : nullptr;
