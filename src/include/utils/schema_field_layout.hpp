@@ -11,12 +11,13 @@
  * struct layout (Lua FFI, Native). Packed mode (_pack_=1 / __attribute__((packed)))
  * disables all alignment.
  *
- * Public header — no dependencies beyond standard library.
+ * @see schema_types.hpp for SchemaFieldDesc, FieldLayout type definitions.
  */
+
+#include "utils/schema_types.hpp"
 
 #include <algorithm>
 #include <cstddef>
-#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -56,30 +57,8 @@ inline size_t field_align(const std::string &t) noexcept
 }
 
 // ============================================================================
-// FieldLayout — computed layout for one field
-// ============================================================================
-
-/// Computed byte-level layout for a single schema field.
-/// Produced by compute_field_layout(); consumed by wire pack/unpack and size queries.
-struct FieldLayout
-{
-    size_t      offset{0};     ///< Byte offset within the struct.
-    size_t      byte_size{0};  ///< Total bytes for this field (elem_size * count, or length for string/bytes).
-    std::string type_str;      ///< Original type string (for pack/unpack dispatch).
-    bool        is_bin{false}; ///< True for arrays (count>1), string, bytes — packed as binary blob.
-};
-
-// ============================================================================
 // Layout computation
 // ============================================================================
-
-/// Schema field descriptor — matches ZmqSchemaField but lives in the shared header.
-struct SchemaFieldDesc
-{
-    std::string type_str;
-    uint32_t    count{1};
-    uint32_t    length{0};
-};
 
 /// Compute per-field offsets using C struct alignment rules.
 /// "aligned" = natural alignment per field, tail padding to max alignment.
@@ -118,6 +97,21 @@ compute_field_layout(const std::vector<SchemaFieldDesc> &fields,
         offset = (offset + max_align - 1) & ~(max_align - 1);
 
     return {result, offset};
+}
+
+// ============================================================================
+// FieldDef → SchemaFieldDesc conversion
+// ============================================================================
+
+/// Convert schema fields to layout descriptors for compute_field_layout().
+/// Drops the field name — layout computation needs only type, count, and length.
+inline std::vector<SchemaFieldDesc> to_field_descs(const std::vector<FieldDef> &fields)
+{
+    std::vector<SchemaFieldDesc> descs;
+    descs.reserve(fields.size());
+    for (const auto &f : fields)
+        descs.push_back({f.type_str, f.count, f.length});
+    return descs;
 }
 
 } // namespace pylabhub::hub
