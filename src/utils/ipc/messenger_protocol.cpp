@@ -1207,7 +1207,7 @@ void MessengerImpl::handle_command(RoleInfoReqCmd &cmd,
 
         RoleInfoResult info;
         info.inbox_endpoint = response.value("inbox_endpoint", "");
-        if (response.contains("inbox_schema") && response["inbox_schema"].is_array())
+        if (response.contains("inbox_schema"))
             info.inbox_schema = response["inbox_schema"];
         info.inbox_packing  = response.value("inbox_packing", "");
         info.inbox_checksum = response.value("inbox_checksum", "");

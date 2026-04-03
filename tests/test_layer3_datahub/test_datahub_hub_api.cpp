@@ -217,3 +217,25 @@ TEST_F(DatahubHubApiTest, ChecksumNoneRoundtrip)
     auto proc = SpawnWorker("hub_api.checksum_none_roundtrip", {});
     ExpectWorkerOk(proc);
 }
+
+TEST_F(DatahubHubApiTest, OpenInboxClientNumericSchema)
+{
+    // Full broker path: register producer with numeric-only inbox schema,
+    // open_inbox_client connects and returns correct item_size.
+    auto proc = SpawnWorker("hub_api.open_inbox_client_numeric_schema", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubHubApiTest, ShmMultifieldSchemaRoundtrip)
+{
+    // Multi-type schema (float64+int32+uint8) through SHM: write all fields, read all fields.
+    auto proc = SpawnWorker("hub_api.shm_multifield_schema_roundtrip", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubHubApiTest, ZmqMultifieldSchemaRoundtrip)
+{
+    // Multi-type schema (float64+int32+uint8) through ZMQ: write all fields, read all fields.
+    auto proc = SpawnWorker("hub_api.zmq_multifield_schema_roundtrip", {});
+    ExpectWorkerOk(proc);
+}
