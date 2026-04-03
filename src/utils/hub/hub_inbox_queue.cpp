@@ -436,7 +436,7 @@ const InboxItem* InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
         // [4] checksum: bin, 32 bytes.
         if (elems[4].type != msgpack::type::BIN || elems[4].via.bin.size != 32)
         { ++pImpl->recv_frame_error_count_; return nullptr; }
-        // Verify checksum if policy is not None.
+        // Verify checksum: Manual and Enforced both verify (catches missing stamps).
         if (pImpl->checksum_policy_ != ChecksumPolicy::None)
         {
             if (!pylabhub::crypto::verify_blake2b(
@@ -655,9 +655,9 @@ uint8_t InboxClient::send(std::chrono::milliseconds ack_timeout) noexcept
     pImpl->sbuf_.clear();
     msgpack::packer<msgpack::sbuffer> pk(pImpl->sbuf_);
 
-    // Compute BLAKE2b checksum if policy is not None; else zeros.
+    // Compute BLAKE2b checksum: Enforced = auto-stamp, Manual/None = zeros.
     uint8_t checksum[32]{};
-    if (pImpl->checksum_policy_ != ChecksumPolicy::None)
+    if (pImpl->checksum_policy_ == ChecksumPolicy::Enforced)
     {
         pylabhub::crypto::compute_blake2b(
             checksum, pImpl->write_buf_.data(), pImpl->item_sz);

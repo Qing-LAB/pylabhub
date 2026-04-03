@@ -150,24 +150,30 @@ enum class ChecksumType
 
 /**
  * @enum ChecksumPolicy
- * @brief When DataBlock slot checksums are computed and verified.
+ * @brief When slot checksums are computed and verified.
  *
- * **Where set:** DataBlockConfig::checksum_policy (default: Enforced). Immutable
- *   after segment creation.
- * **Where checked:** release_write_slot() and release_consume_slot() evaluate this
- *   to decide whether to auto-call checksum functions.
+ * Used at two levels:
  *
- * | Value    | Write (release_write_slot)             | Read (release_consume_slot)               |
- * |----------|----------------------------------------|-------------------------------------------|
- * | None     | No checksum action                     | No verification                           |
- * | Manual   | No auto-action; caller (ShmQueue) calls update/verify at its own decision points |
- * | Enforced | Auto-compute checksum on commit        | Auto-verify on release (post-read audit)  |
+ * **DataBlock level** (DataBlockConfig::checksum_policy): Stored in SHM header.
+ * Controls auto-checksum in release_write_slot() / release_consume_slot().
+ * In practice, ShmQueue always sets this to Manual and manages checksum explicitly.
+ *
+ * **ShmQueue level** (set_checksum_policy()): Controls the queue's runtime behavior:
+ *
+ * | Value    | write_commit() (stamp)              | read_acquire() (verify)                  |
+ * |----------|-------------------------------------|------------------------------------------|
+ * | None     | No stamp                            | No verify                                |
+ * | Manual   | No auto-stamp (caller calls update_checksum() explicitly) | Always verify (catches missing stamps) |
+ * | Enforced | Auto-stamp                          | Auto-verify                              |
+ *
+ * **Safety contract:** The reader always verifies under Manual and Enforced.
+ * If the writer (Manual) forgot to stamp, the reader rejects the slot.
  *
  * **slot_valid flag:** Per-slot reader-side cache (0 = unverified, 1 = verified correct).
  * Set to 0 by checksum update (writer). Set to 1 only by successful verification (reader).
  * See HEP-CORE-0002 §11.2 for full semantics.
  *
- * **Design doc:** HEP-CORE-0002-DataHub-FINAL.md §11.2
+ * **Design doc:** HEP-CORE-0002-DataHub-FINAL.md §11.2, config_single_truth.md §2.2
  */
 enum class ChecksumPolicy
 {

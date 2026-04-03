@@ -259,11 +259,7 @@ struct ProducerOptions
     /// Block: write_acquire() waits up to the caller's timeout for a free slot.
     OverflowPolicy zmq_overflow_policy{OverflowPolicy::Drop};
 
-    // ── Queue abstraction (Phase 2) ──────────────────────────────────────────
-    /// Slot data size in bytes (from engine type_sizeof("OutSlotFrame")). Required for ShmQueue wrapper.
-    size_t item_size{0};
-    /// Flexzone size in bytes (page-aligned). 0 = no flexzone.
-    size_t flexzone_size{0};
+    // ── Queue abstraction ────────────────────────────────────────────────────
     /// Checksum policy for this channel. Applied to all queues via set_checksum_policy().
     ChecksumPolicy checksum_policy{ChecksumPolicy::Enforced};
     /// Checksum flexzone (SHM-specific). Applied via set_flexzone_checksum().
@@ -487,7 +483,21 @@ class PYLABHUB_UTILS_EXPORT Producer
     [[nodiscard]] const std::string &channel_name() const;
     [[nodiscard]] ChannelPattern     pattern() const;
     [[nodiscard]] bool               has_shm() const;
-    DataBlockProducer               *shm() noexcept; ///< nullptr if !has_shm
+
+    // ── SHM identity (delegated to internal DataBlock via ShmQueue) ───────────
+
+    /// Spinlock count in the SHM header. 0 if no SHM.
+    [[nodiscard]] uint32_t spinlock_count() const noexcept;
+    /// Spinlock at index. Throws if index out of range or no SHM.
+    [[nodiscard]] SharedSpinLock get_spinlock(size_t index);
+    /// Channel identity fields from SHM header. Empty string if no SHM.
+    [[nodiscard]] std::string hub_uid() const noexcept;
+    [[nodiscard]] std::string hub_name() const noexcept;
+    [[nodiscard]] std::string producer_uid() const noexcept;
+    [[nodiscard]] std::string producer_name() const noexcept;
+
+    /// Raw DataBlock pointer — internal, for messaging facade template RAII path.
+    DataBlockProducer               *shm() noexcept;
     ChannelHandle                   &channel_handle();
 
     // ── HEP-CORE-0021: ZMQ Virtual Channel Node ───────────────────────────────

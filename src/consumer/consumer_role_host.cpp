@@ -342,9 +342,7 @@ bool ConsumerRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox_
     opts.consumer_uid         = id.uid;
     opts.consumer_name        = id.name;
 
-    // Queue abstraction: sizes + checksum for internal queue creation.
-    opts.item_size          = in_schema_slot_size_;
-    opts.flexzone_size      = core_.in_schema_fz_size();
+    // Queue abstraction: checksum policy.
     opts.checksum_policy    = config_.checksum().policy;
     opts.flexzone_checksum  = config_.checksum().flexzone && core_.has_in_fz();
 
