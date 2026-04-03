@@ -452,15 +452,11 @@ nlohmann::json RoleAPIBase::snapshot_metrics_json() const
         result["loop"] = std::move(lm);
     }
 
-    // Role metrics (data-driven fields).
+    // Role metrics — core counters always present, queue-specific gated on pointers.
     nlohmann::json role;
-    if (has_out)
-    {
-        role["out_written"] = pImpl->core->out_written();
-        role["drops"]       = pImpl->core->drops();
-    }
-    if (has_in)
-        role["in_received"] = pImpl->core->in_received();
+    role["out_written"]   = pImpl->core->out_written();
+    role["in_received"]   = pImpl->core->in_received();
+    role["drops"]         = pImpl->core->drops();
     role["script_errors"] = pImpl->core->script_errors();
 
     if (has_in && has_out)
@@ -470,10 +466,13 @@ nlohmann::json RoleAPIBase::snapshot_metrics_json() const
             {"output", pImpl->producer->ctrl_queue_dropped()}
         };
     }
-    else if (has_out)
-        role["ctrl_queue_dropped"] = pImpl->producer->ctrl_queue_dropped();
-    else if (has_in)
-        role["ctrl_queue_dropped"] = pImpl->consumer->ctrl_queue_dropped();
+    else
+    {
+        uint64_t dropped = 0;
+        if (has_out) dropped += pImpl->producer->ctrl_queue_dropped();
+        if (has_in)  dropped += pImpl->consumer->ctrl_queue_dropped();
+        role["ctrl_queue_dropped"] = dropped;
+    }
     result["role"] = std::move(role);
 
     // Inbox metrics.
