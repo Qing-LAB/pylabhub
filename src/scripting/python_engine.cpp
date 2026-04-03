@@ -583,7 +583,9 @@ void PythonEngine::finalize_engine_()
     if (role_api_base_)
     {
         role_api_base_->set_producer(nullptr);
+        role_api_base_->set_consumer(nullptr);
         role_api_base_->set_messenger(nullptr);
+        role_api_base_->set_inbox_queue(nullptr);
         role_api_base_->close_all_inbox_clients();
     }
     if (consumer_api_)

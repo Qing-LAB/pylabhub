@@ -13,7 +13,6 @@
  */
 
 #include "utils/role_api_base.hpp"
-#include "utils/hub_inbox_queue.hpp"
 #include "utils/shared_memory_spinlock.hpp"
 #include "python_helpers.hpp"
 

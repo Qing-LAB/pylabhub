@@ -186,7 +186,7 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
 
     py::class_<scripting::InboxHandle>(m, "InboxHandle")
         .def("acquire",  &scripting::InboxHandle::acquire)
-        .def("send",     &scripting::InboxHandle::send, py::arg("timeout_ms") = -1)
+        .def("send",     &scripting::InboxHandle::send, py::arg("timeout_ms") = 5000)
         .def("discard",  &scripting::InboxHandle::discard)
         .def("is_ready", &scripting::InboxHandle::is_ready)
         .def("close",    &scripting::InboxHandle::close);
