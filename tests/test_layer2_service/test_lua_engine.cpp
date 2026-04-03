@@ -211,6 +211,21 @@ TEST_F(LuaEngineTest, RegisterSlotType_MultiField)
     engine.finalize();
 }
 
+TEST_F(LuaEngineTest, RegisterSlotType_HasSchemaFalse_ReturnsFalse)
+{
+    write_script("function on_produce(tx, msgs, api) return true end");
+
+    LuaEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
+    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
+
+    SchemaSpec spec;
+    spec.has_schema = false;
+    EXPECT_FALSE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+
+    engine.finalize();
+}
+
 TEST_F(LuaEngineTest, Alias_SlotFrame_Producer)
 {
     write_script("function on_produce(tx, msgs, api) return true end");

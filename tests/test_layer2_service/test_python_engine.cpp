@@ -238,6 +238,23 @@ TEST_F(PythonEngineTest, RegisterSlotType_MultiField)
     engine.finalize();
 }
 
+TEST_F(PythonEngineTest, RegisterSlotType_HasSchemaFalse_ReturnsFalse)
+{
+    write_script("def on_produce(tx, msgs, api):\n    return True\n");
+
+    PythonEngine engine;
+    engine.set_python_venv("");
+    ASSERT_TRUE(engine.initialize("test", &default_core_));
+    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
+                                   "__init__.py", "on_produce"));
+
+    SchemaSpec spec;
+    spec.has_schema = false;  // No schema — should fail
+    EXPECT_FALSE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+
+    engine.finalize();
+}
+
 // ============================================================================
 // 2b. Alias tests — role-specific type aliases
 // ============================================================================
