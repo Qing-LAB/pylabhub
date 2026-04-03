@@ -950,8 +950,58 @@ bool Consumer::has_shm() const
 
 DataBlockConsumer *Consumer::shm() noexcept
 {
-    // DEPRECATED — callers should use spinlock()/identity methods instead.
+    // Internal — used by messaging facade for template RAII path.
     return pImpl && pImpl->shm_queue_ ? pImpl->shm_queue_->raw_consumer() : nullptr;
+}
+
+uint32_t Consumer::spinlock_count() const noexcept
+{
+    auto *dbc = pImpl && pImpl->shm_queue_ ? pImpl->shm_queue_->raw_consumer() : nullptr;
+    return dbc ? dbc->spinlock_count() : 0u;
+}
+
+SharedSpinLock Consumer::get_spinlock(size_t index)
+{
+    auto *dbc = pImpl && pImpl->shm_queue_ ? pImpl->shm_queue_->raw_consumer() : nullptr;
+    if (!dbc)
+        throw std::runtime_error("get_spinlock: SHM not connected");
+    return dbc->get_spinlock(index);
+}
+
+std::string Consumer::hub_uid() const noexcept
+{
+    auto *dbc = pImpl && pImpl->shm_queue_ ? pImpl->shm_queue_->raw_consumer() : nullptr;
+    return dbc ? dbc->hub_uid() : std::string{};
+}
+
+std::string Consumer::hub_name() const noexcept
+{
+    auto *dbc = pImpl && pImpl->shm_queue_ ? pImpl->shm_queue_->raw_consumer() : nullptr;
+    return dbc ? dbc->hub_name() : std::string{};
+}
+
+std::string Consumer::producer_uid() const noexcept
+{
+    auto *dbc = pImpl && pImpl->shm_queue_ ? pImpl->shm_queue_->raw_consumer() : nullptr;
+    return dbc ? dbc->producer_uid() : std::string{};
+}
+
+std::string Consumer::producer_name() const noexcept
+{
+    auto *dbc = pImpl && pImpl->shm_queue_ ? pImpl->shm_queue_->raw_consumer() : nullptr;
+    return dbc ? dbc->producer_name() : std::string{};
+}
+
+std::string Consumer::consumer_uid() const noexcept
+{
+    auto *dbc = pImpl && pImpl->shm_queue_ ? pImpl->shm_queue_->raw_consumer() : nullptr;
+    return dbc ? dbc->consumer_uid() : std::string{};
+}
+
+std::string Consumer::consumer_name() const noexcept
+{
+    auto *dbc = pImpl && pImpl->shm_queue_ ? pImpl->shm_queue_->raw_consumer() : nullptr;
+    return dbc ? dbc->consumer_name() : std::string{};
 }
 
 ChannelHandle &Consumer::channel_handle()

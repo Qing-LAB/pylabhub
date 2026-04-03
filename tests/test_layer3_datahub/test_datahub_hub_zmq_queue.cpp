@@ -1804,3 +1804,101 @@ TEST_F(ZmqQueueTest, Packing_NaturalVsPacked_DifferentItemSize)
     EXPECT_NE(aligned->item_size(), packed->item_size())
         << "aligned and packed must produce different item sizes for bool+int32";
 }
+
+// ============================================================================
+// Checksum policy tests — symmetric with ShmQueue/hub API checksum tests
+// ============================================================================
+
+TEST_F(ZmqQueueTest, ChecksumEnforced_Roundtrip)
+{
+    // Enforced: sender auto-stamps BLAKE2b, receiver auto-verifies → passes.
+    auto pull = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
+    ASSERT_NE(pull, nullptr);
+    pull->set_checksum_policy(ChecksumPolicy::Enforced);
+    ASSERT_TRUE(pull->start());
+    const std::string ep = static_cast<ZmqQueue*>(pull.get())->actual_endpoint();
+
+    auto push = ZmqQueue::push_to(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
+    ASSERT_NE(push, nullptr);
+    push->set_checksum_policy(ChecksumPolicy::Enforced);
+    ASSERT_TRUE(push->start());
+    std::this_thread::sleep_for(50ms);
+
+    void *wbuf = push->write_acquire(1000ms);
+    ASSERT_NE(wbuf, nullptr);
+    std::memset(wbuf, 0xCC, kItemSize);
+    push->write_commit();
+
+    const void *rbuf = pull->read_acquire(2000ms);
+    ASSERT_NE(rbuf, nullptr) << "Enforced: checksum round-trip should succeed";
+    EXPECT_EQ(static_cast<const uint8_t *>(rbuf)[0], 0xCC);
+    pull->read_release();
+
+    EXPECT_EQ(pull->metrics().checksum_error_count, 0u);
+
+    push->stop();
+    pull->stop();
+}
+
+TEST_F(ZmqQueueTest, ChecksumManual_NoStamp_ReceiverRejects)
+{
+    // Manual: sender does NOT stamp (zeros), receiver verifies → frame dropped.
+    auto pull = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
+    ASSERT_NE(pull, nullptr);
+    pull->set_checksum_policy(ChecksumPolicy::Enforced); // receiver verifies
+    ASSERT_TRUE(pull->start());
+    const std::string ep = static_cast<ZmqQueue*>(pull.get())->actual_endpoint();
+
+    auto push = ZmqQueue::push_to(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
+    ASSERT_NE(push, nullptr);
+    push->set_checksum_policy(ChecksumPolicy::Manual); // sender does NOT auto-stamp
+    ASSERT_TRUE(push->start());
+    std::this_thread::sleep_for(50ms);
+
+    void *wbuf = push->write_acquire(1000ms);
+    ASSERT_NE(wbuf, nullptr);
+    std::memset(wbuf, 0xDD, kItemSize);
+    push->write_commit(); // no checksum stamped (Manual)
+
+    // Receiver should reject — checksum is zeros, verification fails.
+    const void *rbuf = pull->read_acquire(500ms);
+    EXPECT_EQ(rbuf, nullptr) << "Manual no-stamp: receiver should reject unchecksumed frame";
+
+    // Checksum error counter should have incremented.
+    EXPECT_GT(pull->metrics().checksum_error_count, 0u)
+        << "Manual no-stamp: checksum_error_count should increment";
+
+    push->stop();
+    pull->stop();
+}
+
+TEST_F(ZmqQueueTest, ChecksumNone_Roundtrip)
+{
+    // None: no checksum computed or verified → round-trip succeeds.
+    auto pull = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
+    ASSERT_NE(pull, nullptr);
+    pull->set_checksum_policy(ChecksumPolicy::None);
+    ASSERT_TRUE(pull->start());
+    const std::string ep = static_cast<ZmqQueue*>(pull.get())->actual_endpoint();
+
+    auto push = ZmqQueue::push_to(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
+    ASSERT_NE(push, nullptr);
+    push->set_checksum_policy(ChecksumPolicy::None);
+    ASSERT_TRUE(push->start());
+    std::this_thread::sleep_for(50ms);
+
+    void *wbuf = push->write_acquire(1000ms);
+    ASSERT_NE(wbuf, nullptr);
+    std::memset(wbuf, 0xEE, kItemSize);
+    push->write_commit();
+
+    const void *rbuf = pull->read_acquire(2000ms);
+    ASSERT_NE(rbuf, nullptr) << "None: round-trip should succeed without checksum";
+    EXPECT_EQ(static_cast<const uint8_t *>(rbuf)[0], 0xEE);
+    pull->read_release();
+
+    EXPECT_EQ(pull->metrics().checksum_error_count, 0u);
+
+    push->stop();
+    pull->stop();
+}

@@ -662,12 +662,25 @@ bool LuaEngine::register_slot_type(const SchemaSpec &spec,
         return false;
     }
 
+    // Compute expected size from schema (infrastructure-authoritative).
+    auto [layout, expected_size] = hub::compute_field_layout(to_field_descs(spec.fields), packing);
+
     std::string cdef = build_ffi_cdef_(spec, type_name, packing);
     if (cdef.empty())
         return false;
 
     if (!state_.register_ffi_type(cdef, log_tag_.c_str()))
         return false;
+
+    // Validate: FFI struct size must match schema-computed size.
+    size_t actual_size = state_.ffi_sizeof(type_name.c_str());
+    if (actual_size != expected_size)
+    {
+        LOGGER_ERROR("[{}] register_slot_type('{}') size mismatch: "
+                     "ffi={}, schema={}",
+                     log_tag_, type_name, actual_size, expected_size);
+        return false;
+    }
 
     // Cache ffi.typeof() for slot views — no string ops per invoke call.
     // All known type names must be cached (see script_engine.hpp §register_slot_type).
@@ -1956,15 +1969,9 @@ int LuaEngine::lua_api_spinlock_count(lua_State *L)
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     uint32_t count = 0;
     if (self->ctx_.producer)
-    {
-        auto *shm = self->ctx_.producer->shm();
-        if (shm) count = shm->spinlock_count();
-    }
+        count = self->ctx_.producer->spinlock_count();
     else if (self->ctx_.consumer)
-    {
-        auto *shm = self->ctx_.consumer->shm();
-        if (shm) count = shm->spinlock_count();
-    }
+        count = self->ctx_.consumer->spinlock_count();
     lua_pushinteger(L, static_cast<lua_Integer>(count));
     return 1;
 }
@@ -1974,28 +1981,24 @@ int LuaEngine::lua_api_spinlock(lua_State *L)
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     int idx = static_cast<int>(luaL_checkinteger(L, 1));
 
-    hub::DataBlockProducer *shm_prod = nullptr;
-    hub::DataBlockConsumer *shm_cons = nullptr;
-    if (self->ctx_.producer)
-        shm_prod = self->ctx_.producer->shm();
-    else if (self->ctx_.consumer)
-        shm_cons = self->ctx_.consumer->shm();
-
-    if (!shm_prod && !shm_cons)
+    // Determine which role has SHM.
+    hub::Producer *prod = self->ctx_.producer;
+    hub::Consumer *cons = self->ctx_.consumer;
+    bool has_shm = (prod && prod->has_shm()) || (cons && cons->has_shm());
+    if (!has_shm)
         return luaL_error(L, "spinlock: SHM not connected");
 
-    uint32_t count = shm_prod ? shm_prod->spinlock_count()
-                              : shm_cons->spinlock_count();
+    uint32_t count = prod ? prod->spinlock_count() : cons->spinlock_count();
     if (idx < 0 || static_cast<uint32_t>(idx) >= count)
         return luaL_error(L, "spinlock: index %d out of range [0, %d)",
                           idx, static_cast<int>(count));
 
     // Create userdata with placement-new SharedSpinLock.
     void *ud = lua_newuserdata(L, sizeof(hub::SharedSpinLock));
-    if (shm_prod)
-        new (ud) hub::SharedSpinLock(shm_prod->get_spinlock(static_cast<size_t>(idx)));
+    if (prod)
+        new (ud) hub::SharedSpinLock(prod->get_spinlock(static_cast<size_t>(idx)));
     else
-        new (ud) hub::SharedSpinLock(shm_cons->get_spinlock(static_cast<size_t>(idx)));
+        new (ud) hub::SharedSpinLock(cons->get_spinlock(static_cast<size_t>(idx)));
 
     luaL_setmetatable(L, kSpinlockMT);
     return 1;

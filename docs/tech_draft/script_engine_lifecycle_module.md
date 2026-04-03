@@ -111,6 +111,8 @@ void engine_startup(const char * /*arg*/, void *userdata) {
         throw std::runtime_error("load_script failed");
 
     // Directional slot + flexzone types — no role-specific branching.
+    // Each register_slot_type call validates the engine-built type size against
+    // compute_field_layout(schema, packing) — hard error on mismatch.
     if (p->in_slot_spec.has_schema)
         p->engine->register_slot_type(p->in_slot_spec, "InSlotFrame", p->in_packing);
     if (p->out_slot_spec.has_schema)
@@ -119,6 +121,14 @@ void engine_startup(const char * /*arg*/, void *userdata) {
         p->engine->register_slot_type(p->in_fz_spec, "InFlexFrame", p->in_packing);
     if (p->out_fz_spec.has_schema)
         p->engine->register_slot_type(p->out_fz_spec, "OutFlexFrame", p->out_packing);
+
+    // Compute flexzone sizes from schema (infrastructure-authoritative, no engine involvement).
+    // set on core as fallback when the role host hasn't already set them.
+    if (p->core && p->in_fz_spec.has_schema && !p->core->has_in_fz())
+        p->core->set_in_fz_spec(p->in_fz_spec, compute_fz_size(p->in_fz_spec));
+    if (p->core && p->out_fz_spec.has_schema && !p->core->has_out_fz())
+        p->core->set_out_fz_spec(p->out_fz_spec, compute_fz_size(p->out_fz_spec));
+
     if (p->inbox_spec.has_schema)
         p->engine->register_slot_type(p->inbox_spec, "InboxFrame", p->in_packing);
 
@@ -126,6 +136,9 @@ void engine_startup(const char * /*arg*/, void *userdata) {
         throw std::runtime_error("build_api failed");
 }
 ```
+
+`compute_fz_size()` converts `SchemaSpec` fields to `SchemaFieldDesc` and calls
+`compute_field_layout(descs, spec.packing)`. No `engine->type_sizeof()` call.
 
 Exceptions are caught by loadModuleInternal → module marked FAILED.
 
@@ -167,10 +180,20 @@ finalize() is idempotent. It checks the state and cleans up whatever was set up.
 
 ## 9. Infrastructure / Engine Decoupling (DONE)
 
-`setup_infrastructure_()` is now fully decoupled from the engine -- zero engine calls.
-All `register_slot_type()` calls (InSlotFrame, OutSlotFrame, InFlexFrame, OutFlexFrame, InboxFrame) are in the engine
-startup callback (section 5). The inbox schema comes from config (Group A). The inbox
-queue buffer size validation uses the schema spec directly.
+`setup_infrastructure_()` is now fully decoupled from the engine — zero engine calls.
+All `register_slot_type()` calls (InSlotFrame, OutSlotFrame, InFlexFrame, OutFlexFrame,
+InboxFrame) are in the engine startup callback (section 5). The inbox schema comes from
+config (Group A). The inbox queue buffer size validation uses the schema spec directly.
+
+**Size computation is infrastructure-authoritative.** All struct sizes are computed from
+schema via `compute_field_layout()` — the same function used by ShmQueue and ZmqQueue for
+buffer allocation. The engine never provides sizes to infrastructure; instead, at
+`register_slot_type()` time each engine validates its own type size against the
+schema-computed size. This is a mandatory cross-check — mismatch aborts startup.
+
+Flexzone sizes on `RoleHostCore` are set from `compute_field_layout()` output, not from
+`engine->type_sizeof()`. The startup callback sets them as a fallback when the role host
+hasn't already done so (e.g., in unit tests that bypass setup_infrastructure_).
 
 ---
 

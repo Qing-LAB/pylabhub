@@ -16,6 +16,8 @@
  * RoleHostCore). No external dependencies beyond the standard library.
  */
 
+#include "utils/schema_field_layout.hpp"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -83,5 +85,20 @@ struct SchemaSpec
     std::vector<FieldDef> fields;
     std::string           packing{"aligned"}; ///< "aligned" or "packed"
 };
+
+// ============================================================================
+// Conversion: FieldDef → SchemaFieldDesc (drops field name for layout computation)
+// ============================================================================
+
+/// Convert schema fields to layout descriptors for compute_field_layout().
+/// Drops the field name — layout computation needs only type, count, and length.
+inline std::vector<hub::SchemaFieldDesc> to_field_descs(const std::vector<FieldDef> &fields)
+{
+    std::vector<hub::SchemaFieldDesc> descs;
+    descs.reserve(fields.size());
+    for (const auto &f : fields)
+        descs.push_back({f.type_str, f.count, f.length});
+    return descs;
+}
 
 } // namespace pylabhub::scripting

@@ -103,7 +103,9 @@ public:
                   const std::string &hub_uid = {},
                   const std::string &hub_name = {},
                   const schema::SchemaInfo *slot_schema_info = nullptr,
-                  const schema::SchemaInfo *fz_schema_info = nullptr);
+                  const schema::SchemaInfo *fz_schema_info = nullptr,
+                  const std::string &producer_uid = {},
+                  const std::string &producer_name = {});
 
     /**
      * @brief Create a read-mode ShmQueue (consumer — attaches to existing SHM).

@@ -405,9 +405,7 @@ bool ProducerRoleHost::setup_infrastructure_(const scripting::SchemaSpec &inbox_
         opts.inbox_checksum    = config::checksum_policy_to_string(config_.checksum().policy);
     }
 
-    // --- Queue abstraction: sizes + checksum + period for internal queue creation ---
-    opts.item_size         = out_schema_slot_size_;
-    opts.flexzone_size     = core_.out_schema_fz_size();
+    // --- Queue abstraction: checksum policy ---
     opts.checksum_policy    = config_.checksum().policy;
     opts.flexzone_checksum  = config_.checksum().flexzone && core_.has_out_fz();
     // Timing is a role-level concern — core_.set_configured_period() handles it.

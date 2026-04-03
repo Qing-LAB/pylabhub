@@ -84,7 +84,10 @@ unique_ptr<QueueWriter> ShmQueue::create_writer(
     const std::string &hub_name = {},
     // Schema hashes (stored in SHM header for consumer validation):
     const SchemaInfo *slot_schema_info = nullptr,
-    const SchemaInfo *fz_schema_info = nullptr);
+    const SchemaInfo *fz_schema_info = nullptr,
+    // Producer identity (stored in SHM header):
+    const std::string &producer_uid = {},
+    const std::string &producer_name = {});
 ```
 
 **Internally:**
@@ -114,6 +117,7 @@ unique_ptr<QueueReader> ShmQueue::create_reader(
 
 **Internally:**
 1. `find_datablock_consumer_impl(shm_name, secret, nullptr, nullptr, nullptr, uid, name)`
+   — wrapped in try-catch (DataBlock constructor throws on nonexistent SHM; returns nullptr)
 2. Read `logical_unit_size` from DataBlock header
 3. `compute_field_layout(expected_slot_schema, expected_packing)` → `expected_size`
 4. **VALIDATE**: `header.logical_unit_size` (after cache-line rounding of expected_size)

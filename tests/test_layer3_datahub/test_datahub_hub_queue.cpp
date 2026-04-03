@@ -196,7 +196,7 @@ TEST_F(DatahubShmQueueTest, CreateWriterEmptySchema)
 {
     // create_writer with empty schema must return nullptr.
     auto proc = SpawnWorker("hub_queue.shm_queue_create_writer_empty_schema", {});
-    ExpectWorkerOk(proc);
+    ExpectWorkerOk(proc, {}, {"slot_schema is empty"});
 }
 
 TEST_F(DatahubShmQueueTest, CreateReaderWrongSecret)
@@ -210,5 +210,5 @@ TEST_F(DatahubShmQueueTest, CreateReaderNonexistent)
 {
     // create_reader for nonexistent SHM segment must return nullptr.
     auto proc = SpawnWorker("hub_queue.shm_queue_create_reader_nonexistent", {});
-    ExpectWorkerOk(proc);
+    ExpectWorkerOk(proc, {}, {"attachment failed"});
 }

@@ -163,7 +163,6 @@ int producer_create_pubsub(int /*argc*/, char ** /*argv*/)
             EXPECT_EQ(producer->channel_name(), opts.channel_name);
             EXPECT_EQ(producer->pattern(), ChannelPattern::PubSub);
             EXPECT_FALSE(producer->has_shm());
-            EXPECT_EQ(producer->shm(), nullptr);
 
             producer->close();
             EXPECT_FALSE(producer->is_valid());
@@ -625,8 +624,8 @@ int consumer_shm_secret_mismatch(int /*argc*/, char ** /*argv*/)
 
             // ZMQ should still work; SHM should be nullptr due to secret mismatch
             EXPECT_TRUE(consumer->is_valid());
-            EXPECT_EQ(consumer->shm(), nullptr)
-                << "SHM must be nullptr when shared_secret doesn't match";
+            EXPECT_FALSE(consumer->has_shm())
+                << "SHM must not be connected when shared_secret doesn't match";
 
             // ZMQ send/recv still works
             const uint32_t kVal = 0xABCDEF01U;
@@ -1185,10 +1184,10 @@ int producer_channel_identity(int /*argc*/, char ** /*argv*/)
             ASSERT_TRUE(producer->has_shm());
 
             // Verify channel identity accessors read back from SHM header.
-            EXPECT_EQ(producer->shm()->hub_uid(),      "hub_uid_test_42");
-            EXPECT_EQ(producer->shm()->hub_name(),     "TestHub");
-            EXPECT_EQ(producer->shm()->producer_uid(), "prod_uid_abc");
-            EXPECT_EQ(producer->shm()->producer_name(), "TestProducer");
+            EXPECT_EQ(producer->hub_uid(),      "hub_uid_test_42");
+            EXPECT_EQ(producer->hub_name(),     "TestHub");
+            EXPECT_EQ(producer->producer_uid(), "prod_uid_abc");
+            EXPECT_EQ(producer->producer_name(), "TestProducer");
 
             // Consumer also reads the same header — channel identity is shared.
             ConsumerOptions copts;
@@ -1200,10 +1199,10 @@ int producer_channel_identity(int /*argc*/, char ** /*argv*/)
             ASSERT_TRUE(consumer.has_value());
             ASSERT_TRUE(consumer->has_shm());
 
-            EXPECT_EQ(consumer->shm()->hub_uid(),      "hub_uid_test_42");
-            EXPECT_EQ(consumer->shm()->hub_name(),     "TestHub");
-            EXPECT_EQ(consumer->shm()->producer_uid(), "prod_uid_abc");
-            EXPECT_EQ(consumer->shm()->producer_name(), "TestProducer");
+            EXPECT_EQ(consumer->hub_uid(),      "hub_uid_test_42");
+            EXPECT_EQ(consumer->hub_name(),     "TestHub");
+            EXPECT_EQ(consumer->producer_uid(), "prod_uid_abc");
+            EXPECT_EQ(consumer->producer_name(), "TestProducer");
 
             consumer->close();
             producer->close();
@@ -1252,8 +1251,8 @@ int consumer_identity_in_shm(int /*argc*/, char ** /*argv*/)
             ASSERT_TRUE(consumer->has_shm());
 
             // Verify the consumer's own identity is stored and readable.
-            EXPECT_EQ(consumer->shm()->consumer_uid(),  "cuid_abcdef1234");
-            EXPECT_EQ(consumer->shm()->consumer_name(), "MyCoolConsumer");
+            EXPECT_EQ(consumer->consumer_uid(),  "cuid_abcdef1234");
+            EXPECT_EQ(consumer->consumer_name(), "MyCoolConsumer");
 
             // Graceful close: uid/name are cleared from the heartbeat slot.
             consumer->close();
@@ -1285,7 +1284,6 @@ int producer_consumer_forwarding_api(int /*argc*/, char ** /*argv*/)
             popts.has_shm      = true;
             popts.zmq_schema   = make_schema("uint64");
             popts.shm_config   = make_shm_config();
-            popts.item_size    = sizeof(double);
             popts.zmq_schema = make_schema("float64");
             popts.timeout_ms   = 3000;
 
@@ -1310,7 +1308,6 @@ int producer_consumer_forwarding_api(int /*argc*/, char ** /*argv*/)
             copts.channel_name      = popts.channel_name;
             copts.shm_shared_secret = kTestShmSecret;
             copts.zmq_schema        = make_schema("uint64");
-            copts.item_size         = sizeof(double);
             copts.zmq_schema = make_schema("float64");
             copts.timeout_ms        = 3000;
 
@@ -1353,7 +1350,6 @@ int construction_time_checksum(int /*argc*/, char ** /*argv*/)
             popts.zmq_schema   = make_schema("uint64");
             popts.shm_config      = make_shm_config();
             popts.shm_config.checksum_policy = ChecksumPolicy::Manual;
-            popts.item_size       = sizeof(uint64_t);
             popts.zmq_schema = make_schema("uint64");
             popts.checksum_policy = ChecksumPolicy::Enforced;  // construction-time flag
             popts.timeout_ms      = 3000;
@@ -1373,7 +1369,6 @@ int construction_time_checksum(int /*argc*/, char ** /*argv*/)
             copts.channel_name      = popts.channel_name;
             copts.shm_shared_secret = kTestShmSecret;
             copts.zmq_schema        = make_schema("uint64");
-            copts.item_size         = sizeof(uint64_t);
             copts.zmq_schema = make_schema("uint64");
             copts.checksum_policy   = ChecksumPolicy::Enforced;  // construction-time flag
             copts.timeout_ms        = 3000;
@@ -1420,9 +1415,7 @@ int flexzone_through_service_layer(int /*argc*/, char ** /*argv*/)
             popts.has_shm      = true;
             popts.zmq_schema   = make_schema("uint64");
             popts.shm_config   = shm_cfg;
-            popts.item_size    = sizeof(double);
             popts.zmq_schema = make_schema("float64");
-            popts.flexzone_size = kFzSize;
             popts.fz_schema = make_schema("float64");
             popts.timeout_ms   = 3000;
 
@@ -1443,9 +1436,7 @@ int flexzone_through_service_layer(int /*argc*/, char ** /*argv*/)
             copts.channel_name      = popts.channel_name;
             copts.shm_shared_secret = kTestShmSecret;
             copts.zmq_schema        = make_schema("uint64");
-            copts.item_size         = sizeof(double);
             copts.zmq_schema = make_schema("float64");
-            copts.flexzone_size     = kFzSize;
             copts.timeout_ms        = 3000;
 
             auto consumer = Consumer::connect(messenger, copts);
@@ -1483,7 +1474,6 @@ int queue_metrics_forwarding(int /*argc*/, char ** /*argv*/)
             popts.has_shm       = true;
             popts.zmq_schema   = make_schema("uint64");
             popts.shm_config    = make_shm_config();
-            popts.item_size     = sizeof(uint64_t);
             popts.zmq_schema = make_schema("uint64");
             // Timing is role-level — not set on queue options.
             popts.timeout_ms    = 3000;
@@ -1541,7 +1531,6 @@ int zmq_forwarding_api(int /*argc*/, char ** /*argv*/)
             popts.data_transport    = "zmq";
             popts.zmq_node_endpoint = endpoint;
             popts.zmq_schema        = {{"bytes", 1, static_cast<uint32_t>(kItemSz)}};
-            popts.item_size         = kItemSz;
             // Timing is role-level — not set on queue options.
             popts.timeout_ms        = 3000;
 
@@ -1578,7 +1567,6 @@ int zmq_forwarding_api(int /*argc*/, char ** /*argv*/)
             copts.channel_name  = popts.channel_name;
             copts.consumer_uid  = "CONS-ZMQ-FWD-0001";
             copts.zmq_schema    = {{"bytes", 1, static_cast<uint32_t>(kItemSz)}};
-            copts.item_size     = kItemSz;
             // Timing is role-level — not set on queue options.
             copts.timeout_ms    = 3000;
 
@@ -1640,13 +1628,11 @@ int forwarding_error_paths(int /*argc*/, char ** /*argv*/)
             Messenger &messenger = Messenger::get_instance();
             ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
 
-            // Producer with item_size=0 → no queue created internally.
+            // Producer with no schema → no queue created internally.
             ProducerOptions popts;
             popts.channel_name = make_test_channel_name("hub.err_path");
             popts.has_shm      = true;
-            popts.zmq_schema   = make_schema("uint64");
             popts.shm_config   = make_shm_config();
-            popts.item_size    = 0; // No queue wrapper
             popts.timeout_ms   = 3000;
 
             auto producer = Producer::create(messenger, popts);
@@ -1706,7 +1692,6 @@ int runtime_verify_checksum_toggle(int /*argc*/, char ** /*argv*/)
             popts.shm_config      = make_shm_config();
             popts.shm_config.checksum_policy = ChecksumPolicy::Manual;
             popts.shm_config.logical_unit_size = sizeof(TestSlot);
-            popts.item_size       = sizeof(TestSlot);
             { hub::SchemaFieldDesc f1, f2; f1.type_str = "uint64"; f2.type_str = "uint64";
               popts.zmq_schema = {f1, f2}; }
             popts.checksum_policy = ChecksumPolicy::None; // NO ShmQueue-level checksum
@@ -1731,7 +1716,6 @@ int runtime_verify_checksum_toggle(int /*argc*/, char ** /*argv*/)
             copts.channel_name      = popts.channel_name;
             copts.shm_shared_secret = kTestShmSecret;
             copts.zmq_schema        = make_schema("uint64");
-            copts.item_size         = sizeof(TestSlot);
             { hub::SchemaFieldDesc f1, f2; f1.type_str = "uint64"; f2.type_str = "uint64";
               copts.zmq_schema = {f1, f2}; }
             copts.checksum_policy   = ChecksumPolicy::None;
@@ -1786,10 +1770,10 @@ int runtime_verify_checksum_toggle(int /*argc*/, char ** /*argv*/)
 }
 
 // ============================================================================
-// checksum_mismatch_through_forwarding — verified end-to-end rejection
+// checksum_enforced_roundtrip — Enforced: stamp + verify, round-trip succeeds
 // ============================================================================
 
-int checksum_mismatch_through_forwarding(int /*argc*/, char ** /*argv*/)
+int checksum_enforced_roundtrip(int /*argc*/, char ** /*argv*/)
 {
     return run_gtest_worker(
         []() {
@@ -1797,15 +1781,12 @@ int checksum_mismatch_through_forwarding(int /*argc*/, char ** /*argv*/)
             Messenger &messenger = Messenger::get_instance();
             ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
 
-            // Producer WITH checksum.
             ProducerOptions popts;
-            popts.channel_name    = make_test_channel_name("hub.cksum_mm");
+            popts.channel_name    = make_test_channel_name("hub.cksum_enf");
             popts.has_shm         = true;
-            popts.zmq_schema   = make_schema("uint64");
+            popts.zmq_schema      = make_schema("uint64");
             popts.shm_config      = make_shm_config();
             popts.shm_config.checksum_policy = ChecksumPolicy::Manual;
-            popts.item_size       = sizeof(uint64_t);
-            popts.zmq_schema = make_schema("uint64");
             popts.checksum_policy = ChecksumPolicy::Enforced;
             popts.timeout_ms      = 3000;
 
@@ -1813,19 +1794,16 @@ int checksum_mismatch_through_forwarding(int /*argc*/, char ** /*argv*/)
             ASSERT_TRUE(producer.has_value());
             EXPECT_TRUE(producer->start_queue());
 
-            // Write a valid checksummed slot.
+            // Write a checksummed slot.
             void *buf = producer->write_acquire(std::chrono::milliseconds{1000});
             ASSERT_NE(buf, nullptr);
             *static_cast<uint64_t *>(buf) = 0xCAFE;
-            producer->write_commit(); // checksum stamped
+            producer->write_commit(); // checksum stamped by Enforced policy
 
-            // Consumer with verification enabled.
             ConsumerOptions copts;
             copts.channel_name      = popts.channel_name;
             copts.shm_shared_secret = kTestShmSecret;
             copts.zmq_schema        = make_schema("uint64");
-            copts.item_size         = sizeof(uint64_t);
-            copts.zmq_schema = make_schema("uint64");
             copts.checksum_policy   = ChecksumPolicy::Enforced;
             copts.timeout_ms        = 3000;
 
@@ -1833,23 +1811,20 @@ int checksum_mismatch_through_forwarding(int /*argc*/, char ** /*argv*/)
             ASSERT_TRUE(consumer.has_value());
             EXPECT_TRUE(consumer->start_queue());
 
-            // Read should succeed (valid checksum).
+            // Read succeeds — checksum stamped and verified.
             const void *data = consumer->read_acquire(std::chrono::milliseconds{1000});
-            ASSERT_NE(data, nullptr) << "Valid checksum should pass";
+            ASSERT_NE(data, nullptr) << "Enforced: valid checksum should pass";
             EXPECT_EQ(*static_cast<const uint64_t *>(data), 0xCAFEu);
             consumer->read_release();
 
-            // Now corrupt the data in SHM directly (bypass Producer).
-            auto *shm = producer->shm();
-            ASSERT_NE(shm, nullptr);
-            // Write another valid slot — verify second read also passes.
+            // Second write/read round-trip.
             buf = producer->write_acquire(std::chrono::milliseconds{1000});
             ASSERT_NE(buf, nullptr);
             *static_cast<uint64_t *>(buf) = 0xBEEF;
             producer->write_commit();
 
             data = consumer->read_acquire(std::chrono::milliseconds{1000});
-            ASSERT_NE(data, nullptr) << "Second valid checksum should pass";
+            ASSERT_NE(data, nullptr) << "Enforced: second read should pass";
             EXPECT_EQ(*static_cast<const uint64_t *>(data), 0xBEEFu);
             consumer->read_release();
 
@@ -1858,7 +1833,122 @@ int checksum_mismatch_through_forwarding(int /*argc*/, char ** /*argv*/)
             messenger.disconnect();
             broker.stop_and_join();
         },
-        "hub_api.checksum_mismatch_through_forwarding",
+        "hub_api.checksum_enforced_roundtrip",
+        logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// checksum_manual_no_stamp_mismatch — Manual: no stamp, verify rejects
+// ============================================================================
+
+int checksum_manual_no_stamp_mismatch(int /*argc*/, char ** /*argv*/)
+{
+    return run_gtest_worker(
+        []() {
+            auto broker = start_broker();
+            Messenger &messenger = Messenger::get_instance();
+            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
+
+            // Producer: Manual policy — write_commit does NOT stamp checksum.
+            ProducerOptions popts;
+            popts.channel_name    = make_test_channel_name("hub.cksum_man");
+            popts.has_shm         = true;
+            popts.zmq_schema      = make_schema("uint64");
+            popts.shm_config      = make_shm_config();
+            popts.shm_config.checksum_policy = ChecksumPolicy::Manual;
+            popts.checksum_policy = ChecksumPolicy::Manual; // no auto-stamp
+            popts.timeout_ms      = 3000;
+
+            auto producer = Producer::create(messenger, popts);
+            ASSERT_TRUE(producer.has_value());
+            EXPECT_TRUE(producer->start_queue());
+
+            // Write a slot WITHOUT checksum.
+            void *buf = producer->write_acquire(std::chrono::milliseconds{1000});
+            ASSERT_NE(buf, nullptr);
+            *static_cast<uint64_t *>(buf) = 0xDEAD;
+            producer->write_commit(); // no checksum stamp (Manual)
+
+            // Consumer: verify enabled — should reject the unchecksumed slot.
+            ConsumerOptions copts;
+            copts.channel_name      = popts.channel_name;
+            copts.shm_shared_secret = kTestShmSecret;
+            copts.zmq_schema        = make_schema("uint64");
+            copts.checksum_policy   = ChecksumPolicy::Enforced; // verify enabled
+            copts.timeout_ms        = 3000;
+
+            auto consumer = Consumer::connect(messenger, copts);
+            ASSERT_TRUE(consumer.has_value());
+            EXPECT_TRUE(consumer->start_queue());
+
+            // Read should fail — checksum not stamped by producer, consumer verifies.
+            const void *data = consumer->read_acquire(std::chrono::milliseconds{50});
+            EXPECT_EQ(data, nullptr)
+                << "Manual no-stamp: consumer verify should reject unchecksumed slot";
+
+            consumer->close();
+            producer->close();
+            messenger.disconnect();
+            broker.stop_and_join();
+        },
+        "hub_api.checksum_manual_no_stamp_mismatch",
+        logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
+// checksum_none_roundtrip — None: no checksum, round-trip succeeds
+// ============================================================================
+
+int checksum_none_roundtrip(int /*argc*/, char ** /*argv*/)
+{
+    return run_gtest_worker(
+        []() {
+            auto broker = start_broker();
+            Messenger &messenger = Messenger::get_instance();
+            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
+
+            // Both producer and consumer: None — no checksum at all.
+            ProducerOptions popts;
+            popts.channel_name    = make_test_channel_name("hub.cksum_none");
+            popts.has_shm         = true;
+            popts.zmq_schema      = make_schema("uint64");
+            popts.shm_config      = make_shm_config();
+            popts.shm_config.checksum_policy = ChecksumPolicy::None;
+            popts.checksum_policy = ChecksumPolicy::None;
+            popts.timeout_ms      = 3000;
+
+            auto producer = Producer::create(messenger, popts);
+            ASSERT_TRUE(producer.has_value());
+            EXPECT_TRUE(producer->start_queue());
+
+            void *buf = producer->write_acquire(std::chrono::milliseconds{1000});
+            ASSERT_NE(buf, nullptr);
+            *static_cast<uint64_t *>(buf) = 0xF00D;
+            producer->write_commit(); // no checksum (None policy)
+
+            ConsumerOptions copts;
+            copts.channel_name      = popts.channel_name;
+            copts.shm_shared_secret = kTestShmSecret;
+            copts.zmq_schema        = make_schema("uint64");
+            copts.checksum_policy   = ChecksumPolicy::None;
+            copts.timeout_ms        = 3000;
+
+            auto consumer = Consumer::connect(messenger, copts);
+            ASSERT_TRUE(consumer.has_value());
+            EXPECT_TRUE(consumer->start_queue());
+
+            // Read succeeds — no checksum involved.
+            const void *data = consumer->read_acquire(std::chrono::milliseconds{1000});
+            ASSERT_NE(data, nullptr) << "None: read should succeed without checksum";
+            EXPECT_EQ(*static_cast<const uint64_t *>(data), 0xF00Du);
+            consumer->read_release();
+
+            consumer->close();
+            producer->close();
+            messenger.disconnect();
+            broker.stop_and_join();
+        },
+        "hub_api.checksum_none_roundtrip",
         logger_module(), crypto_module(), hub_module());
 }
 
@@ -1937,8 +2027,12 @@ struct HubApiWorkerRegistrar
                     return forwarding_error_paths(argc, argv);
                 if (scenario == "runtime_verify_checksum_toggle")
                     return runtime_verify_checksum_toggle(argc, argv);
-                if (scenario == "checksum_mismatch_through_forwarding")
-                    return checksum_mismatch_through_forwarding(argc, argv);
+                if (scenario == "checksum_enforced_roundtrip")
+                    return checksum_enforced_roundtrip(argc, argv);
+                if (scenario == "checksum_manual_no_stamp_mismatch")
+                    return checksum_manual_no_stamp_mismatch(argc, argv);
+                if (scenario == "checksum_none_roundtrip")
+                    return checksum_none_roundtrip(argc, argv);
                 fmt::print(stderr, "ERROR: Unknown hub_api scenario '{}'\n", scenario);
                 return 1;
             });
