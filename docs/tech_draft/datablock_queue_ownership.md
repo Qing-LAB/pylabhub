@@ -190,38 +190,26 @@ No public accessor to raw DataBlock. All callers migrate:
 
 ---
 
-## 6. establish_channel() Changes
+## 6. establish_channel() (DONE)
 
-### Current (producer):
-```cpp
-// Step 1: create DataBlock externally
-shm_producer = create_datablock_producer_impl(name, policy, opts.shm_config, ...);
-
-// Step 2: pass to establish_channel
-establish_channel(messenger, channel, std::move(shm_producer), opts);
-
-// Inside establish_channel:
-impl->shm = std::move(shm_producer);
-impl->shm_queue_writer_ = ShmQueue::from_producer_ref(*impl->shm, opts.item_size, ...);
-```
-
-### New (producer):
 ```cpp
 // establish_channel — no external DataBlock creation
 establish_channel(messenger, channel, opts);
 
 // Inside establish_channel:
-if (opts.has_shm) {
-    impl->shm_queue_writer_ = ShmQueue::create_writer(
+if (opts.has_shm && !opts.zmq_schema.empty()) {
+    impl->shm_queue_ = ShmQueue::create_writer(
         opts.channel_name, opts.zmq_schema, opts.zmq_packing,
         opts.fz_schema, opts.fz_packing,
         opts.shm_config.ring_buffer_capacity,
         opts.shm_config.physical_page_size,
-        ...);
+        opts.shm_config.shared_secret, ...);
+    impl->queue_writer_ = impl->shm_queue_.get();
 }
 ```
 
-Same pattern for consumer — `create_reader` instead of external DataBlock attachment.
+Same pattern for consumer — `create_reader` instead of `create_writer`.
+No external DataBlock creation. No `pImpl->shm` member.
 
 ---
 
@@ -251,59 +239,32 @@ from `queue->flexzone_size()`.
 
 ---
 
-## 8. ProducerOptions / ConsumerOptions Changes
+## 8. ProducerOptions / ConsumerOptions Changes (DONE)
 
-Remove size fields that ShmQueue now computes:
+Size fields removed — ShmQueue computes from schema:
+- `item_size` — removed from ProducerOptions and ConsumerOptions
+- `flexzone_size` — removed from ProducerOptions and ConsumerOptions
+- Role host setter lines removed (4 in producer/consumer/processor role hosts)
 
-```cpp
-// REMOVE from ProducerOptions:
-size_t item_size;        // computed by ShmQueue from schema
-size_t flexzone_size;    // computed by ShmQueue from fz schema
-
-// ADD to ProducerOptions (if not already present):
-std::vector<SchemaFieldDesc> fz_schema;   // flexzone schema fields
-std::string fz_packing;                    // flexzone packing
-```
-
-`zmq_schema` and `zmq_packing` already exist on ProducerOptions — they serve
-double duty for both ZmqQueue and ShmQueue now. Consider renaming to just
-`schema` and `packing` since they're transport-agnostic.
+`fz_schema` / `fz_packing` already present on ProducerOptions.
+`zmq_schema` / `zmq_packing` serve double duty for both SHM and ZMQ.
 
 ---
 
 ## 9. Implementation Order
 
-1. **ShmQueue::create_writer()** — new factory that creates DataBlock internally.
-   Compute sizes from schema. Keep `from_producer_ref` temporarily for tests.
+1. ~~ShmQueue::create_writer()~~ — **DONE**
+2. ~~ShmQueue::create_reader()~~ — **DONE**
+3. ~~establish_channel() in Producer uses create_writer~~ — **DONE**
+4. ~~establish_channel() in Consumer uses create_reader~~ — **DONE**
+5. ~~Add spinlock/identity methods to Producer/Consumer~~ — **DONE** (2026-04-02)
+6. ~~Route flexzone ops through ShmQueue~~ — **DONE** (prior session)
+7. ~~Remove `pImpl->shm` from ProducerImpl/ConsumerImpl~~ — **DONE** (impl member removed; `shm()` accessor kept for template RAII facade)
+8. ~~Update facade `fn_get_shm` from ShmQueue::raw_producer()~~ — **DONE**
+9. ~~Migrate external callers from `->shm()->`~~ — **DONE** (2026-04-02, zero `->shm()` calls remain in src/ and tests/)
+10. ~~Remove `opts.item_size` / `opts.flexzone_size`~~ — **DONE** (2026-04-02)
+11. **PENDING**: Role hosts — remove `out_schema_slot_size_` / `in_schema_slot_size_` members
+12. ~~Remove old factories~~ — **DONE** (only `create_writer` / `create_reader` remain)
+13. ~~Update tests~~ — **DONE**
 
-2. **ShmQueue::create_reader()** — new factory that attaches + validates schema.
-
-3. **Update establish_channel()** in hub::Producer — use create_writer.
-   Remove external DataBlock creation from Producer::create().
-
-4. **Update establish_channel()** in hub::Consumer — use create_reader.
-
-5. **Add spinlock/identity methods** to hub::Producer and hub::Consumer.
-   Delegate to ShmQueue's internal DataBlock via `raw_producer()`/`raw_consumer()`.
-
-6. **Route flexzone ops** in hub::Producer/Consumer through ShmQueue
-   (eliminate direct `pImpl->shm->` flexzone calls).
-
-7. **Remove `pImpl->shm`** from ProducerImpl/ConsumerImpl.
-   Remove `Producer::shm()` / `Consumer::shm()` public accessors.
-
-8. **Update facade `fn_get_shm`** to source from `ShmQueue::raw_producer()`.
-
-9. **Migrate external callers** — API classes, Lua engine from
-   `producer->shm()->spinlock()` to `producer->spinlock()`.
-
-10. **Remove `opts.item_size` / `opts.flexzone_size`** from ProducerOptions/ConsumerOptions.
-    Add `fz_schema` / `fz_packing` if not present.
-
-11. **Role hosts** — remove size computation, pass schema through.
-    Remove `out_schema_slot_size_` / `in_schema_slot_size_` members.
-
-12. **Remove old factories** — `from_producer_ref`, `from_consumer_ref`,
-    `from_producer`, `from_consumer`. Only `create_writer` / `create_reader` remain.
-
-13. **Update tests**.
+**Remaining**: Step 11 (role host size members), `shm()` accessor visibility (needs template RAII discussion).
