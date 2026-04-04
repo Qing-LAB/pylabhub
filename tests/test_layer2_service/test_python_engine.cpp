@@ -991,16 +991,7 @@ TEST_F(PythonEngineTest, MetricsClosures_ReadFromRoleHostCounters)
     core.test_set_drops(7);
 
     PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_produce"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_);
-    ASSERT_TRUE(engine.build_api(*test_api));
+    ASSERT_TRUE(setup_engine_with_core(engine, core));
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
@@ -1026,14 +1017,14 @@ TEST_F(PythonEngineTest, MetricsClosures_InReceivedWorks)
 
     PythonEngine engine;
     engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
+    ASSERT_TRUE(engine.initialize("test", &core));
     ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
                                    "__init__.py", "on_consume"));
 
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
 
-    auto test_api = make_api(default_core_, "cons");  // consumer role for in_slots_received
+    auto test_api = make_api(core, "cons");
     ASSERT_TRUE(engine.build_api(*test_api));
 
     std::vector<IncomingMessage> msgs;
@@ -1078,14 +1069,14 @@ TEST_F(PythonEngineTest, StopOnScriptError_SetsShutdownOnError)
     RoleHostCore core;
     PythonEngine engine;
     engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
+    ASSERT_TRUE(engine.initialize("test", &core));
     ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
                                    "__init__.py", "on_produce"));
 
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
-    auto test_api = make_api(default_core_);
+    auto test_api = make_api(core);
     test_api->set_stop_on_script_error(true);
     ASSERT_TRUE(engine.build_api(*test_api));
 
