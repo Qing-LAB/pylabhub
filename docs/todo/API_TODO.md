@@ -74,34 +74,36 @@
   members and the owning-vs-ref resolution logic in consumer()/producer()
   accessors. These become simple `.get()` on owned unique_ptr.
 
-### ScriptEngine Post-Refactor Deferred Items (2026-03-21)
+### ScriptEngine Post-Refactor Items
 
-- [ ] **SE-03 HIGH**: HEP-CORE-0011 fundamentally stale — rewrite §3.2, §3.3, §4.2, §8, §8.2 for composition model
-- [ ] **SE-04 MED — NEXT**: Lua API parity — Lua role hosts currently lack most API bindings (open_inbox, wait_for_role, queue-state, metrics); needs design decision on scope. **Must be done before RoleAPIBase extraction**: Lua parity surfaces the true shared method set; extracting a base class before this would cause double work when Lua bindings reveal additional shared methods.
-- [ ] **SE-07 MED**: `--validate` stub in all 3 role hosts — design what validate should check, implement
-- [ ] **SE-08 MED**: HEP-0018/0015 partially stale — update class name refs and thread model
+- [ ] **SE-03 HIGH**: HEP-CORE-0011 fundamentally stale — rewrite for RoleAPIBase + composition model
+- [x] **SE-04**: Lua API parity — ✅ DONE 2026-04-02 (shm_info added, all methods complete)
+- [x] **SE-07**: --validate — ✅ DONE (all 3 mains implement validation + exit)
+- [x] **SE-08**: HEP-0018/0015 — ✅ confirmed current 2026-04-03
 
-### ScriptEngine Thread Model Implementation (2026-03-21) — AFTER RoleAPIBase
+### ScriptEngine Thread Model
 
-**Design**: `docs/tech_draft/engine_thread_model.md`
-**Motivation**: Enable cross-thread script execution (ctrl_thread_, inbox_thread_) + shared state + native C++ plugin engine.
-**Ordering**: SE-04 ✅ → RoleAPIBase (NEXT) → Engine Phases 5-6. Phases 1-4 done; 5-6 are independent features that use the model.
+- [x] Phases 1-4: invoke/eval, owner thread, cross-thread dispatch, shared state ✅
+- [ ] Phase 5: ctrl_thread_ script support (on_heartbeat/on_admin from control thread)
+- [ ] Phase 6: NativeEngine enhancements (build_info ABI, zero-copy)
 
-- [x] Phase 1: `invoke(name)` / `invoke(name, args)` / `eval(code)` on ScriptEngine interface ✅
-- [x] Phase 2: Engine infrastructure — owner thread detection, Lua thread-state cache ✅
-- [x] Phase 3: Cross-thread dispatch — Python request queue + drain at safe point; Lua multi-state ✅
-- [x] Phase 4: Shared state in RoleHostCore — Lua get/set_shared_data, Python api.shared_data dict ✅
-- [ ] Phase 5: ctrl_thread_ script support — on_heartbeat/on_admin callbacks from control thread (infrastructure ready from Phases 1-3; no role host wiring yet)
-- [ ] Phase 6: NativeEngine — `.so`/`.dll` plugin engine with `build_info` ABI verification, zero-copy data access
+### RoleAPIBase Refactor — ✅ COMPLETE (2026-04-03/04)
 
-### ScriptEngine Cleanup (post-refactor)
+- [x] RoleAPIBase: pure C++, Pimpl, ABI-stable, all role operations ✅
+- [x] ProducerAPI/ConsumerAPI/ProcessorAPI delegate to RoleAPIBase ✅
+- [x] RoleContext eliminated — engine uses api_ pointer directly ✅
+- [x] Lua engine: ctx_.messenger calls → api_->base methods ✅
+- [x] Native engine: ctx_ → api_-> ✅
+- [x] SpinLockPy unified (3 classes → 1) ✅
+- [x] ScriptEngine::open_inbox_client deleted (in RoleAPIBase) ✅
+- [x] Schema reorganization: schema_types.hpp + schema_utils.hpp in hub:: namespace ✅
+- [x] Role hosts create + own RoleAPIBase, pass to engine ✅
 
-- [ ] RoleAPIBase extraction — **NEXT** (SE-04 ✅): eliminate 3× duplication across ProducerAPI/ConsumerAPI/ProcessorAPI; shared base holds uid, name, channel, log, stop, critical_error, stop_reason, metrics, inbox, spinlock, broker ops, custom metrics (already on RoleHostCore). Lua parity confirmed the shared method set.
-- [ ] RoleHostCore log_tag: add log_tag to RoleHostCore so role hosts and engines get it from one place (currently each manages its own copy, hardcoded "[prod]"/"[cons]"/"[proc]" in role hosts)
+### Remaining Cleanup
+
 - [ ] RoleHostCore encapsulation (CR-03): `g_shutdown`, `validate_only`, `fz_spec` → private with accessors
-- [ ] RoleContext: `const char*` members → `std::string` — PARTIALLY DONE (ScriptEngine interface changed 2026-03-24; RoleContext itself still uses std::string already)
-- [ ] Hubshell migration to PythonEngine (currently uses raw pybind11 embed)
-- [ ] Remove `fz_type` param from invoke_produce/invoke_consume/invoke_process — dead code, engines use cached FlexFrame type (same pattern as InboxFrame removal)
+- [ ] Hubshell migration to PythonEngine (low priority)
+- [ ] **Lifecycle module integration**: role hosts use engine_lifecycle_startup instead of manual engine calls. Design doc: script_engine_lifecycle_module.md §4. All prerequisites met (RoleAPIBase, EngineModuleParams.api, schema resolution).
 
 ### Queue Abstraction Unification
 
