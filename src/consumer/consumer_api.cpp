@@ -62,7 +62,7 @@ py::object ConsumerAPI::spinlock(std::size_t index)
 {
     if (base_->spinlock_count() == 0)
         throw py::value_error("spinlock: SHM input channel not connected");
-    return py::cast(ConsumerSpinLockPy{base_->get_spinlock(index)},
+    return py::cast(scripting::SpinLockPy{base_->get_spinlock(index)},
                     py::return_value_policy::move);
 }
 
@@ -189,11 +189,11 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
         return pylabhub::version::version_info_json();
     });
 
-    py::class_<ConsumerSpinLockPy>(m, "ConsumerSpinLock")
-        .def("lock",   &ConsumerSpinLockPy::lock)
-        .def("unlock", &ConsumerSpinLockPy::unlock)
-        .def("try_lock_for", &ConsumerSpinLockPy::try_lock_for, py::arg("timeout_ms"))
-        .def("is_locked_by_current_process", &ConsumerSpinLockPy::is_locked_by_current_process)
-        .def("__enter__", &ConsumerSpinLockPy::enter, py::return_value_policy::reference)
-        .def("__exit__",  &ConsumerSpinLockPy::exit);
+    py::class_<scripting::SpinLockPy>(m, "ConsumerSpinLock")
+        .def("lock",   &scripting::SpinLockPy::lock)
+        .def("unlock", &scripting::SpinLockPy::unlock)
+        .def("try_lock_for", &scripting::SpinLockPy::try_lock_for, py::arg("timeout_ms"))
+        .def("is_locked_by_current_process", &scripting::SpinLockPy::is_locked_by_current_process)
+        .def("__enter__", &scripting::SpinLockPy::enter, py::return_value_policy::reference)
+        .def("__exit__",  &scripting::SpinLockPy::exit);
 }
