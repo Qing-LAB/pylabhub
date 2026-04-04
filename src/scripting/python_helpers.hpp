@@ -18,6 +18,7 @@
 #include "utils/schema_utils.hpp"
 
 #include "utils/hub_inbox_queue.hpp"
+#include "utils/shared_memory_spinlock.hpp"
 
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
@@ -401,6 +402,25 @@ class InboxHandle
     hub::SchemaSpec                         spec_;
     py::object                         slot_type_{py::none()};
     size_t                             item_size_{0};
+};
+
+// ============================================================================
+// SpinLockPy — unified Python context-manager for SHM spinlocks (all roles)
+// ============================================================================
+
+class SpinLockPy
+{
+  public:
+    explicit SpinLockPy(hub::SharedSpinLock lock) : lock_(std::move(lock)) {}
+    void lock()   { lock_.lock(); }
+    void unlock() { lock_.unlock(); }
+    bool try_lock_for(int timeout_ms) { return lock_.try_lock_for(timeout_ms); }
+    [[nodiscard]] bool is_locked_by_current_process() const
+        { return lock_.is_locked_by_current_process(); }
+    SpinLockPy &enter() { lock_.lock(); return *this; }
+    void exit(py::object, py::object, py::object) { lock_.unlock(); }
+  private:
+    hub::SharedSpinLock lock_;
 };
 
 } // namespace pylabhub::scripting
