@@ -25,7 +25,7 @@ using pylabhub::scripting::ScriptEngine;
 using pylabhub::scripting::InvokeResult;
 using pylabhub::scripting::InvokeResponse;
 using pylabhub::scripting::InvokeStatus;
-using pylabhub::scripting::RoleContext;
+using pylabhub::scripting::RoleAPIBase;
 using pylabhub::scripting::RoleHostCore;
 using pylabhub::scripting::IncomingMessage;
 using pylabhub::hub::SchemaSpec;
