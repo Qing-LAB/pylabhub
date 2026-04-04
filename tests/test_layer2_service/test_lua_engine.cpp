@@ -35,7 +35,7 @@ using pylabhub::scripting::ScriptEngine;
 using pylabhub::scripting::InvokeResult;
 using pylabhub::scripting::InvokeStatus;
 using pylabhub::scripting::InvokeResponse;
-using pylabhub::scripting::RoleContext;
+using pylabhub::scripting::RoleAPIBase;
 using pylabhub::scripting::RoleHostCore;
 using pylabhub::scripting::IncomingMessage;
 using pylabhub::hub::SchemaSpec;
@@ -86,39 +86,28 @@ class LuaEngineTest : public ::testing::Test
         return spec;
     }
 
-    /// Build a minimal RoleContext for producer.
-    RoleContext producer_context()
+    RoleHostCore default_core_;
+
+    std::unique_ptr<RoleAPIBase> make_api(RoleHostCore &core,
+                                          const std::string &tag = "prod")
     {
-        RoleContext ctx{};
-        ctx.role_tag  = "prod";
-        ctx.uid       = "TEST-ENGINE-00000001";
-        ctx.name      = "TestEngine";
-        ctx.channel   = "test.channel";
-        ctx.log_level = "error";
-        ctx.stop_on_script_error = false;
-        return ctx;
+        auto api = std::make_unique<RoleAPIBase>(core);
+        api->set_role_tag(tag);
+        api->set_uid("TEST-ENGINE-00000001");
+        api->set_name("TestEngine");
+        api->set_channel("test.channel");
+        api->set_log_level("error");
+        api->set_stop_on_script_error(false);
+        return api;
     }
 
-    RoleHostCore default_core_;  ///< Default core for tests that don't provide one.
+    std::unique_ptr<RoleAPIBase> test_api_;
 
-    /// Initialize engine, load script, register type, build API.
-    /// Returns true if all steps succeed.
     bool setup_engine(LuaEngine &engine, const std::string &required_cb = "on_produce")
     {
-        if (!engine.initialize("test", &default_core_))
-            return false;
-        if (!engine.load_script(tmp_, "init.lua", required_cb.c_str()))
-            return false;
-
-        auto spec = simple_schema();
-        if (!engine.register_slot_type(spec, "OutSlotFrame", "aligned"))
-            return false;
-
-        auto ctx = producer_context();
-        return engine.build_api(ctx);
+        return setup_engine_with_core(engine, default_core_, required_cb);
     }
 
-    /// Setup engine with a RoleHostCore wired into the context.
     bool setup_engine_with_core(LuaEngine &engine, RoleHostCore &core,
                                  const std::string &required_cb = "on_produce")
     {
@@ -131,9 +120,8 @@ class LuaEngineTest : public ::testing::Test
         if (!engine.register_slot_type(spec, "OutSlotFrame", "aligned"))
             return false;
 
-        auto ctx = producer_context();
-        ctx.core = &core;
-        return engine.build_api(ctx);
+        test_api_ = make_api(core);
+        return engine.build_api(*test_api_);
     }
 
     fs::path tmp_;
@@ -258,8 +246,8 @@ TEST_F(LuaEngineTest, Alias_SlotFrame_Producer)
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
-    auto ctx = producer_context();
-    ASSERT_TRUE(engine.build_api(ctx));
+    auto test_api = make_api(default_core_);
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     // After build_api, "SlotFrame" alias should exist for producer.
     EXPECT_EQ(engine.type_sizeof("SlotFrame"), engine.type_sizeof("OutSlotFrame"));
@@ -279,9 +267,9 @@ TEST_F(LuaEngineTest, Alias_SlotFrame_Consumer)
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
 
-    auto ctx = producer_context();
+    auto test_api = make_api(default_core_);
     ctx.role_tag = "cons";
-    ASSERT_TRUE(engine.build_api(ctx));
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     // After build_api, "SlotFrame" alias should exist for consumer.
     EXPECT_EQ(engine.type_sizeof("SlotFrame"), engine.type_sizeof("InSlotFrame"));
@@ -302,9 +290,9 @@ TEST_F(LuaEngineTest, Alias_NoAlias_Processor)
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
-    auto ctx = producer_context();
+    auto test_api = make_api(default_core_);
     ctx.role_tag = "proc";
-    ASSERT_TRUE(engine.build_api(ctx));
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     // Processor: no alias — SlotFrame should not be defined.
     EXPECT_EQ(engine.type_sizeof("SlotFrame"), 0u);
@@ -331,8 +319,8 @@ TEST_F(LuaEngineTest, Alias_FlexFrame_Producer)
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
     ASSERT_TRUE(engine.register_slot_type(spec, "OutFlexFrame", "aligned"));
 
-    auto ctx = producer_context();
-    ASSERT_TRUE(engine.build_api(ctx));
+    auto test_api = make_api(default_core_);
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     // FlexFrame alias should exist for producer.
     EXPECT_EQ(engine.type_sizeof("FlexFrame"), engine.type_sizeof("OutFlexFrame"));
@@ -353,8 +341,8 @@ TEST_F(LuaEngineTest, Alias_ProducerNoFz_NoFlexFrameAlias)
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
     // No flexzone registered.
 
-    auto ctx = producer_context();
-    ASSERT_TRUE(engine.build_api(ctx));
+    auto test_api = make_api(default_core_);
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     // SlotFrame alias exists, but FlexFrame should not (no fz registered).
     EXPECT_GT(engine.type_sizeof("SlotFrame"), 0u);
@@ -499,9 +487,9 @@ TEST_F(LuaEngineTest, InvokeConsume_ReceivesReadOnlySlot)
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
 
-    auto ctx = producer_context();
+    auto test_api = make_api(default_core_);
     ctx.role_tag = "cons";
-    ASSERT_TRUE(engine.build_api(ctx));
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     float data = 99.5f;
     std::vector<IncomingMessage> msgs;
@@ -528,9 +516,9 @@ TEST_F(LuaEngineTest, InvokeConsume_NilSlot)
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
 
-    auto ctx = producer_context();
+    auto test_api = make_api(default_core_);
     ctx.role_tag = "cons";
-    ASSERT_TRUE(engine.build_api(ctx));
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     std::vector<IncomingMessage> msgs;
     engine.invoke_consume(InvokeRx{nullptr, 0, nullptr, 0}, msgs);
@@ -554,9 +542,9 @@ TEST_F(LuaEngineTest, InvokeConsume_ScriptErrorDetected)
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
 
-    auto ctx = producer_context();
+    auto test_api = make_api(default_core_);
     ctx.role_tag = "cons";
-    ASSERT_TRUE(engine.build_api(ctx));
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     float data = 1.0f;
     std::vector<IncomingMessage> msgs;
@@ -591,9 +579,9 @@ TEST_F(LuaEngineTest, InvokeProcess_DualSlots)
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
-    auto ctx = producer_context();
+    auto test_api = make_api(default_core_);
     ctx.role_tag = "proc";
-    ASSERT_TRUE(engine.build_api(ctx));
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     float in_data  = 21.0f;
     float out_data = 0.0f;
@@ -626,9 +614,9 @@ TEST_F(LuaEngineTest, InvokeProcess_NilInput)
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
-    auto ctx = producer_context();
+    auto test_api = make_api(default_core_);
     ctx.role_tag = "proc";
-    ASSERT_TRUE(engine.build_api(ctx));
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     std::vector<IncomingMessage> msgs;
     auto result = engine.invoke_process(
@@ -658,9 +646,9 @@ TEST_F(LuaEngineTest, InvokeProcess_InputOnlyNoOutput)
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
-    auto ctx = producer_context();
+    auto test_api = make_api(default_core_);
     ctx.role_tag = "proc";
-    ASSERT_TRUE(engine.build_api(ctx));
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     float in_data = 10.0f;
     std::vector<IncomingMessage> msgs;
@@ -841,8 +829,8 @@ TEST_F(LuaEngineTest, InvokeProduce_WithFlexzone)
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
     ASSERT_TRUE(engine.register_slot_type(spec, "OutFlexFrame", "aligned"));
 
-    auto ctx = producer_context();
-    ASSERT_TRUE(engine.build_api(ctx));
+    auto test_api = make_api(default_core_);
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     float slot_buf = 0.0f;
     float fz_buf   = 0.0f;
@@ -884,8 +872,8 @@ TEST_F(LuaEngineTest, InvokeOnInbox_TypedData)
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
     ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
 
-    auto ctx = producer_context();
-    ASSERT_TRUE(engine.build_api(ctx));
+    auto test_api = make_api(default_core_);
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     float inbox_data = 77.0f;
     engine.invoke_on_inbox({&inbox_data, sizeof(inbox_data), "PROD-SENDER-00000001", 1});
@@ -919,8 +907,8 @@ TEST_F(LuaEngineTest, TypeSizeof_InboxFrame_ReturnsCorrectSize)
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
     ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
 
-    auto ctx = producer_context();
-    ASSERT_TRUE(engine.build_api(ctx));
+    auto test_api = make_api(default_core_);
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     size_t slot_sz  = engine.type_sizeof("SlotFrame");
     size_t inbox_sz = engine.type_sizeof("InboxFrame");
@@ -950,8 +938,8 @@ TEST_F(LuaEngineTest, InvokeOnInbox_MissingType_ReportsError)
     // Deliberately NOT registering "InboxFrame".
 
 
-    auto ctx = producer_context();
-    ASSERT_TRUE(engine.build_api(ctx));
+    auto test_api = make_api(default_core_);
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     float raw = 1.0f;
     engine.invoke_on_inbox({&raw, sizeof(raw), "CONS-SENDER-00000001", 1});
@@ -1029,9 +1017,9 @@ TEST_F(LuaEngineTest, InvokeConsume_BareDataMessages)
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
 
-    auto ctx = producer_context();
+    auto test_api = make_api(default_core_);
     ctx.role_tag = "cons";
-    ASSERT_TRUE(engine.build_api(ctx));
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     std::vector<IncomingMessage> msgs;
     // Data message (has sender + data, no event).
@@ -1192,9 +1180,9 @@ TEST_F(LuaEngineTest, MetricsClosures_ReadFromRoleHostCounters)
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
-    auto ctx = producer_context();
-    ctx.core = &core;
-    ASSERT_TRUE(engine.build_api(ctx));
+    auto test_api = make_api(default_core_);
+    // core passed to make_api
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
@@ -1275,10 +1263,10 @@ TEST_F(LuaEngineTest, StopOnScriptError_SetsShutdownOnError)
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
-    auto ctx = producer_context();
-    ctx.core = &core;
+    auto test_api = make_api(default_core_);
+    // core passed to make_api
     ctx.stop_on_script_error = true;  // enable
-    ASSERT_TRUE(engine.build_api(ctx));
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     EXPECT_FALSE(core.is_shutdown_requested());
 
@@ -1368,10 +1356,10 @@ TEST_F(LuaEngineTest, MetricsClosures_InReceivedWorks)
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
 
-    auto ctx = producer_context();
+    auto test_api = make_api(default_core_);
     ctx.role_tag = "cons";
-    ctx.core = &core;
-    ASSERT_TRUE(engine.build_api(ctx));
+    // core passed to make_api
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     std::vector<IncomingMessage> msgs;
     engine.invoke_consume(InvokeRx{nullptr, 0, nullptr, 0}, msgs);
@@ -1731,9 +1719,9 @@ TEST_F(LuaEngineTest, Metrics_HierarchicalTable_Producer)
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
-    auto ctx = producer_context();
-    ctx.core = &core;
-    ASSERT_TRUE(engine.build_api(ctx));
+    auto test_api = make_api(default_core_);
+    // core passed to make_api
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
@@ -1776,7 +1764,7 @@ TEST_F(LuaEngineTest, Metrics_HierarchicalTable_Consumer)
     ctx.channel  = "test.channel";
     ctx.log_level = "error";
     ctx.core     = &core;
-    ASSERT_TRUE(engine.build_api(ctx));
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     float buf = 1.0f;
     std::vector<IncomingMessage> msgs;
@@ -1983,7 +1971,7 @@ TEST_F(LuaEngineTest, Api_ConsumerQueueState_WithoutQueue)
     ctx.channel   = "test.channel";
     ctx.log_level = "error";
     ctx.core      = &core;
-    ASSERT_TRUE(engine.build_api(ctx));
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     float buf = 1.0f;
     std::vector<IncomingMessage> msgs;
@@ -2055,8 +2043,8 @@ TEST_F(LuaEngineTest, InvokeOnInbox_ScriptError)
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
     ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
 
-    auto ctx = producer_context();
-    ASSERT_TRUE(engine.build_api(ctx));
+    auto test_api = make_api(default_core_);
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     EXPECT_EQ(engine.script_error_count(), 0u);
 
@@ -2125,7 +2113,7 @@ TEST_F(LuaEngineTest, Api_ProcessorQueueState_DualDefaults)
     ctx.out_channel = "test.out_channel";
     ctx.log_level = "error";
     ctx.core      = &core;
-    ASSERT_TRUE(engine.build_api(ctx));
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     float in_data = 1.0f;
     float out_data = 0.0f;
@@ -2239,9 +2227,9 @@ TEST_F(LuaEngineTest, Metrics_AllLoopFields_Present)
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
-    auto ctx = producer_context();
-    ctx.core = &core;
-    ASSERT_TRUE(engine.build_api(ctx));
+    auto test_api = make_api(default_core_);
+    // core passed to make_api
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
@@ -2389,7 +2377,7 @@ TEST_F(LuaEngineTest, Api_ProcessorChannels_InOut)
     ctx.out_channel = "sensor.output";
     ctx.log_level   = "error";
     ctx.core        = &core;
-    ASSERT_TRUE(engine.build_api(ctx));
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     float in_data = 1.0f;
     float out_data = 0.0f;
