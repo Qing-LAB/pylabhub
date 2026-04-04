@@ -101,6 +101,9 @@ class ProducerRoleHost
     std::unique_ptr<hub::InboxQueue>       inbox_queue_;
     std::thread                            ctrl_thread_;
 
+    // Role API (created on worker thread, passed to engine).
+    std::unique_ptr<scripting::RoleAPIBase> api_;
+
     // Schema info (resolved from config during setup).
     hub::SchemaSpec                  out_slot_spec_;
 

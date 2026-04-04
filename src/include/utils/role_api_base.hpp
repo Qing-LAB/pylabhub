@@ -17,6 +17,7 @@
  */
 
 #include "pylabhub_utils_export.h"
+#include "utils/data_block_policy.hpp"     // hub::ChecksumPolicy
 #include "utils/json_fwd.hpp"
 #include "utils/role_host_core.hpp"        // RoleHostCore, StateValue
 #include "utils/schema_types.hpp"          // hub::SchemaSpec (for InboxOpenResult)
@@ -71,6 +72,8 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     void set_log_level(std::string l);
     void set_script_dir(std::string d);
     void set_role_dir(std::string d);
+    void set_checksum_policy(hub::ChecksumPolicy p);
+    void set_stop_on_script_error(bool v);
 
     // ── Identity ──────────────────────────────────────────────────────────────
 
@@ -84,6 +87,8 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] const std::string &role_dir() const;
     [[nodiscard]] std::string logs_dir() const;
     [[nodiscard]] std::string run_dir() const;
+    [[nodiscard]] hub::ChecksumPolicy checksum_policy() const;
+    [[nodiscard]] bool stop_on_script_error() const;
 
     // ── Control ───────────────────────────────────────────────────────────────
 
@@ -178,6 +183,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] RoleHostCore *core() const;
     [[nodiscard]] hub::Producer *producer() const;
     [[nodiscard]] hub::Consumer *consumer() const;
+    [[nodiscard]] hub::InboxQueue *inbox_queue() const;
 
   private:
     struct Impl;

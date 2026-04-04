@@ -25,7 +25,6 @@
  */
 
 #include "utils/script_engine.hpp"
-#include "utils/role_api_base.hpp"
 
 #include <pybind11/pybind11.h>
 #include <pybind11/embed.h>
@@ -72,7 +71,7 @@ class PythonEngine : public ScriptEngine
     bool load_script(const std::filesystem::path &script_dir,
                      const std::string &entry_point,
                      const std::string &required_callback) override;
-    bool build_api_(const RoleContext &ctx) override;
+    bool build_api_(RoleAPIBase &api) override;
     void finalize_engine_() override;
 
     // ── Queries ────────────────────────────────────────────────────────────
@@ -115,7 +114,7 @@ class PythonEngine : public ScriptEngine
 
     [[nodiscard]] uint64_t script_error_count() const noexcept override
     {
-        return ctx_.core->script_errors();
+        return api_ ? api_->core()->script_errors() : 0;
     }
 
     // ── Threading ──────────────────────────────────────────────────────────
@@ -144,9 +143,6 @@ class PythonEngine : public ScriptEngine
     // ── API object (one of these is active based on role) ──────────────────
     py::object api_obj_{py::none()};
 
-    /// RoleAPIBase — language-neutral base, created by engine from RoleContext.
-    /// Phase 2: owned by engine; Phase 3: owned by role host.
-    std::unique_ptr<RoleAPIBase> role_api_base_;
 
     /// Role-specific API impl. Exactly one is non-null after build_api().
     /// All 3 API classes are compiled into pylabhub-scripting (shared lib),
