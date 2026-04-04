@@ -70,15 +70,16 @@ SchemaSpec simple_schema()
     return spec;
 }
 
-RoleContext producer_context()
+std::unique_ptr<RoleAPIBase> make_native_api(RoleHostCore &core)
 {
-    RoleContext ctx{};
-    ctx.role_tag  = "prod";
-    ctx.uid       = "TEST-NATIVE-00000001";
-    ctx.name      = "TestNative";
-    ctx.channel   = "test.native.channel";
-    ctx.log_level = "error";
-    return ctx;
+    auto api = std::make_unique<RoleAPIBase>(core);
+    api->set_role_tag("prod");
+    api->set_uid("PROD-TestNative-00000001");
+    api->set_name("TestNative");
+    api->set_channel("test.native.channel");
+    api->set_log_level("error");
+    api->set_stop_on_script_error(false);
+    return api;
 }
 
 // ============================================================================
@@ -106,9 +107,8 @@ TEST_F(NativeEngineTest, FullLifecycle_ProduceCommitsAndWritesSlot)
     ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
     EXPECT_EQ(engine.type_sizeof("SlotFrame"), 4u);
 
-    auto ctx = producer_context();
-    ctx.core = &core_;
-    ASSERT_TRUE(engine.build_api(ctx));
+    auto test_api = make_native_api(core_);
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     // on_init should be callable.
     engine.invoke_on_init();
@@ -261,9 +261,8 @@ TEST_F(NativeEngineTest, GenericInvoke_KnownCallback_ReturnsTrue)
     ASSERT_TRUE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
                                    "on_produce"));
 
-    auto ctx = producer_context();
-    ctx.core = &core_;
-    ASSERT_TRUE(engine.build_api(ctx));
+    auto test_api = make_native_api(core_);
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     EXPECT_TRUE(engine.invoke("on_heartbeat"));
     EXPECT_FALSE(engine.invoke("nonexistent"));
@@ -295,9 +294,8 @@ TEST_F(NativeEngineTest, ContextFieldsPassedToPlugin)
     ASSERT_TRUE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
                                    "on_produce"));
 
-    auto ctx = producer_context();
-    ctx.core = &core_;
-    ASSERT_TRUE(engine.build_api(ctx));
+    auto test_api = make_native_api(core_);
+    ASSERT_TRUE(engine.build_api(*test_api));
 
     // The plugin stores g_ctx in native_init. We can verify indirectly:
     // native_init increments init_count by 1, on_init increments by 100.
