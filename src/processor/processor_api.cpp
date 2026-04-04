@@ -89,7 +89,7 @@ py::object ProcessorAPI::spinlock(std::size_t index)
 {
     if (base_->spinlock_count() == 0)
         throw py::value_error("spinlock: SHM output channel not connected");
-    return py::cast(ProcessorSpinLockPy{base_->get_spinlock(index)},
+    return py::cast(scripting::SpinLockPy{base_->get_spinlock(index)},
                     py::return_value_policy::move);
 }
 
@@ -226,11 +226,11 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
         return pylabhub::version::version_info_json();
     });
 
-    py::class_<ProcessorSpinLockPy>(m, "ProcessorSpinLock")
-        .def("lock",   &ProcessorSpinLockPy::lock)
-        .def("unlock", &ProcessorSpinLockPy::unlock)
-        .def("try_lock_for", &ProcessorSpinLockPy::try_lock_for, py::arg("timeout_ms"))
-        .def("is_locked_by_current_process", &ProcessorSpinLockPy::is_locked_by_current_process)
-        .def("__enter__", &ProcessorSpinLockPy::enter, py::return_value_policy::reference)
-        .def("__exit__",  &ProcessorSpinLockPy::exit);
+    py::class_<scripting::SpinLockPy>(m, "ProcessorSpinLock")
+        .def("lock",   &scripting::SpinLockPy::lock)
+        .def("unlock", &scripting::SpinLockPy::unlock)
+        .def("try_lock_for", &scripting::SpinLockPy::try_lock_for, py::arg("timeout_ms"))
+        .def("is_locked_by_current_process", &scripting::SpinLockPy::is_locked_by_current_process)
+        .def("__enter__", &scripting::SpinLockPy::enter, py::return_value_policy::reference)
+        .def("__exit__",  &scripting::SpinLockPy::exit);
 }

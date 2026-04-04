@@ -7,7 +7,6 @@
  */
 
 #include "utils/role_api_base.hpp"
-#include "utils/shared_memory_spinlock.hpp"
 #include "python_helpers.hpp"
 
 #include "utils/json_fwd.hpp"
@@ -113,19 +112,6 @@ public:
     py::object shared_data_{py::none()};
 };
 
-class ProcessorSpinLockPy
-{
-  public:
-    explicit ProcessorSpinLockPy(hub::SharedSpinLock lock) : lock_(std::move(lock)) {}
-    void lock()   { lock_.lock(); }
-    void unlock() { lock_.unlock(); }
-    bool try_lock_for(int timeout_ms) { return lock_.try_lock_for(timeout_ms); }
-    [[nodiscard]] bool is_locked_by_current_process() const
-        { return lock_.is_locked_by_current_process(); }
-    ProcessorSpinLockPy &enter() { lock_.lock(); return *this; }
-    void exit(py::object, py::object, py::object) { lock_.unlock(); }
-  private:
-    hub::SharedSpinLock lock_;
-};
+// SpinLockPy is in python_helpers.hpp (pylabhub::scripting::SpinLockPy).
 
 } // namespace pylabhub::processor
