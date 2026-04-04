@@ -517,7 +517,7 @@ gtest_discover_tests(test_layer2_interactive_signal_handler
         TIMEOUT 30
 )
 
-set(PYLABHUB_SKIP_ENGINE_TESTS TRUE)  # Phase 3/4/5: test migration in progress
+# set(PYLABHUB_SKIP_ENGINE_TESTS TRUE)  # Phase 3/4/5: test migration in progress
 
 # ============================================================================
 # Test: SlotView helpers (make_slot_view + wrap_as_readonly_ctypes)
