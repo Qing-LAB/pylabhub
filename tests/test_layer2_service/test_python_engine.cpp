@@ -100,13 +100,21 @@ class PythonEngineTest : public ::testing::Test
 
     RoleHostCore default_core_; ///< Default core for tests that don't provide one.
 
-    /// Build a minimal RoleAPIBase for producer.
+    /// Build a minimal RoleAPIBase with role-appropriate identity.
     std::unique_ptr<RoleAPIBase> make_api(RoleHostCore &core,
                                           const std::string &tag = "prod")
     {
         auto api = std::make_unique<RoleAPIBase>(core);
         api->set_role_tag(tag);
-        api->set_uid("TEST-ENGINE-00000001");
+        // Use role-appropriate UID format matching production conventions.
+        if (tag == "prod")
+            api->set_uid("PROD-TestEngine-00000001");
+        else if (tag == "cons")
+            api->set_uid("CONS-TestEngine-00000001");
+        else if (tag == "proc")
+            api->set_uid("PROC-TestEngine-00000001");
+        else
+            api->set_uid("TEST-" + tag + "-00000001");
         api->set_name("TestEngine");
         api->set_channel("test.channel");
         api->set_log_level("error");
@@ -306,8 +314,7 @@ TEST_F(PythonEngineTest, Alias_SlotFrame_Consumer)
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
 
-    auto test_api = make_api(default_core_);
-    ctx.role_tag = "cons";
+    auto test_api = make_api(default_core_, "cons");
     ASSERT_TRUE(engine.build_api(*test_api));
 
     EXPECT_EQ(engine.type_sizeof("SlotFrame"), engine.type_sizeof("InSlotFrame"));
@@ -330,8 +337,7 @@ TEST_F(PythonEngineTest, Alias_NoAlias_Processor)
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
-    auto test_api = make_api(default_core_);
-    ctx.role_tag = "proc";
+    auto test_api = make_api(default_core_, "proc");
     ASSERT_TRUE(engine.build_api(*test_api));
 
     // Processor: no alias — SlotFrame should not resolve.
@@ -562,8 +568,7 @@ TEST_F(PythonEngineTest, InvokeConsume_ReceivesReadOnlySlot)
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
 
-    auto test_api = make_api(default_core_);
-    ctx.role_tag = "cons";
+    auto test_api = make_api(default_core_, "cons");
     ASSERT_TRUE(engine.build_api(*test_api));
 
     float data = 99.5f;
@@ -592,8 +597,7 @@ TEST_F(PythonEngineTest, InvokeConsume_NoneSlot)
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
 
-    auto test_api = make_api(default_core_);
-    ctx.role_tag = "cons";
+    auto test_api = make_api(default_core_, "cons");
     ASSERT_TRUE(engine.build_api(*test_api));
 
     std::vector<IncomingMessage> msgs;
@@ -618,8 +622,7 @@ TEST_F(PythonEngineTest, InvokeConsume_ScriptErrorDetected)
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
 
-    auto test_api = make_api(default_core_);
-    ctx.role_tag = "cons";
+    auto test_api = make_api(default_core_, "cons");
     ASSERT_TRUE(engine.build_api(*test_api));
 
     float data = 1.0f;
@@ -654,8 +657,7 @@ TEST_F(PythonEngineTest, InvokeProcess_DualSlots)
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
-    auto test_api = make_api(default_core_);
-    ctx.role_tag = "proc";
+    auto test_api = make_api(default_core_, "proc");
     ASSERT_TRUE(engine.build_api(*test_api));
 
     float in_data  = 21.0f;
@@ -689,8 +691,7 @@ TEST_F(PythonEngineTest, InvokeProcess_NoneInput)
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
-    auto test_api = make_api(default_core_);
-    ctx.role_tag = "proc";
+    auto test_api = make_api(default_core_, "proc");
     ASSERT_TRUE(engine.build_api(*test_api));
 
     std::vector<IncomingMessage> msgs;
@@ -721,8 +722,7 @@ TEST_F(PythonEngineTest, InvokeProcess_InputOnlyNoOutput)
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
-    auto test_api = make_api(default_core_);
-    ctx.role_tag = "proc";
+    auto test_api = make_api(default_core_, "proc");
     ASSERT_TRUE(engine.build_api(*test_api));
 
     float in_data = 10.0f;
@@ -800,8 +800,7 @@ TEST_F(PythonEngineTest, InvokeConsume_BareDataMessages)
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
 
-    auto test_api = make_api(default_core_);
-    ctx.role_tag = "cons";
+    auto test_api = make_api(default_core_, "cons");
     ASSERT_TRUE(engine.build_api(*test_api));
 
     std::vector<IncomingMessage> msgs;
@@ -1034,8 +1033,7 @@ TEST_F(PythonEngineTest, MetricsClosures_InReceivedWorks)
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
 
-    auto test_api = make_api(default_core_);
-    ctx.role_tag = "cons";  // consumer role for in_slots_received
+    auto test_api = make_api(default_core_, "cons");  // consumer role for in_slots_received
     ASSERT_TRUE(engine.build_api(*test_api));
 
     std::vector<IncomingMessage> msgs;
@@ -1088,7 +1086,7 @@ TEST_F(PythonEngineTest, StopOnScriptError_SetsShutdownOnError)
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
     auto test_api = make_api(default_core_);
-    ctx.stop_on_script_error = true; // enable
+    test_api->set_stop_on_script_error(true);
     ASSERT_TRUE(engine.build_api(*test_api));
 
     EXPECT_FALSE(core.is_shutdown_requested());
@@ -1770,7 +1768,7 @@ TEST_F(PythonEngineTest, Api_IdentityAccessors_ReturnCorrectValues)
 {
     write_script(R"(
 def on_produce(tx, msgs, api):
-    assert api.uid() == "TEST-ENGINE-00000001", f"uid: {api.uid()}"
+    assert api.uid() == "PROD-TestEngine-00000001", f"uid: {api.uid()}"
     assert api.name() == "TestEngine", f"name: {api.name()}"
     assert api.channel() == "test.channel", f"channel: {api.channel()}"
     assert api.log_level() == "error", f"log_level: {api.log_level()}"
@@ -1964,15 +1962,9 @@ def on_process(rx, tx, msgs, api):
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
-    RoleContext ctx{};
-    ctx.role_tag    = "proc";
-    ctx.uid         = "TEST-ENGINE-00000001";
-    ctx.name        = "TestEngine";
-    ctx.channel     = "test.in.channel";
-    ctx.out_channel = "test.out.channel";
-    ctx.log_level   = "error";
-    ctx.core        = &core;
-    ctx.stop_on_script_error = false;
+    auto test_api = make_api(core, "proc");
+    test_api->set_channel("test.in.channel");
+    test_api->set_out_channel("test.out.channel");
     ASSERT_TRUE(engine.build_api(*test_api));
 
     std::vector<IncomingMessage> msgs;
@@ -2188,15 +2180,9 @@ def on_process(rx, tx, msgs, api):
     ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
-    RoleContext ctx{};
-    ctx.role_tag    = "proc";
-    ctx.uid         = "TEST-ENGINE-00000001";
-    ctx.name        = "TestEngine";
-    ctx.channel     = "sensor.input";
-    ctx.out_channel = "sensor.output";
-    ctx.log_level   = "error";
-    ctx.core        = &core;
-    ctx.stop_on_script_error = false;
+    auto test_api = make_api(core, "proc");
+    test_api->set_channel("sensor.input");
+    test_api->set_out_channel("sensor.output");
     ASSERT_TRUE(engine.build_api(*test_api));
 
     float in_data  = 1.0f;
@@ -2336,13 +2322,7 @@ def on_consume(rx, msgs, api):
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
-    RoleContext ctx{};
-    ctx.role_tag  = "cons";
-    ctx.uid       = "TEST-ENGINE-00000001";
-    ctx.name      = "TestEngine";
-    ctx.channel   = "test.channel";
-    ctx.log_level = "error";
-    ctx.core      = &core;
+    auto test_api = make_api(core, "cons");
     ASSERT_TRUE(engine.build_api(*test_api));
 
     float buf = 1.0f;
@@ -2531,17 +2511,17 @@ TEST_F(PythonEngineTest, FullStartup_Producer_SlotOnly)
     PythonEngine engine;
     RoleHostCore core;
 
+    auto api = make_api(core, "prod");
+
     pylabhub::scripting::EngineModuleParams params;
     params.engine            = &engine;
-    params.core              = &core;
+    params.api               = api.get();
     params.tag               = "prod";
     params.script_dir        = tmp_ / "script" / "python";
     params.entry_point       = "__init__.py";
     params.required_callback = "on_produce";
     params.out_slot_spec     = simple_schema();
     params.out_packing       = "aligned";
-    params.role_ctx.role_tag = "prod";
-    params.role_ctx.core     = &core;
 
     engine.set_python_venv("");
     ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
@@ -2571,9 +2551,11 @@ TEST_F(PythonEngineTest, FullStartup_Producer_SlotAndFlexzone)
     PythonEngine engine;
     RoleHostCore core;
 
+    auto api = make_api(core, "prod");
+
     pylabhub::scripting::EngineModuleParams params;
     params.engine            = &engine;
-    params.core              = &core;
+    params.api               = api.get();
     params.tag               = "prod";
     params.script_dir        = tmp_ / "script" / "python";
     params.entry_point       = "__init__.py";
@@ -2581,8 +2563,6 @@ TEST_F(PythonEngineTest, FullStartup_Producer_SlotAndFlexzone)
     params.out_slot_spec     = simple_schema();
     params.out_fz_spec       = simple_schema();
     params.out_packing       = "aligned";
-    params.role_ctx.role_tag = "prod";
-    params.role_ctx.core     = &core;
 
     engine.set_python_venv("");
     ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
@@ -2619,17 +2599,17 @@ TEST_F(PythonEngineTest, FullStartup_Consumer)
     PythonEngine engine;
     RoleHostCore core;
 
+    auto api = make_api(core, "cons");
+
     pylabhub::scripting::EngineModuleParams params;
     params.engine            = &engine;
-    params.core              = &core;
+    params.api               = api.get();
     params.tag               = "cons";
     params.script_dir        = tmp_ / "script" / "python";
     params.entry_point       = "__init__.py";
     params.required_callback = "on_consume";
     params.in_slot_spec      = simple_schema();
     params.in_packing        = "aligned";
-    params.role_ctx.role_tag = "cons";
-    params.role_ctx.core     = &core;
 
     engine.set_python_venv("");
     ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
@@ -2657,9 +2637,11 @@ TEST_F(PythonEngineTest, FullStartup_Processor)
     PythonEngine engine;
     RoleHostCore core;
 
+    auto api = make_api(core, "proc");
+
     pylabhub::scripting::EngineModuleParams params;
     params.engine            = &engine;
-    params.core              = &core;
+    params.api               = api.get();
     params.tag               = "proc";
     params.script_dir        = tmp_ / "script" / "python";
     params.entry_point       = "__init__.py";
@@ -2668,8 +2650,6 @@ TEST_F(PythonEngineTest, FullStartup_Processor)
     params.out_slot_spec     = simple_schema();
     params.in_packing        = "aligned";
     params.out_packing       = "aligned";
-    params.role_ctx.role_tag = "proc";
-    params.role_ctx.core     = &core;
 
     engine.set_python_venv("");
     ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
