@@ -41,7 +41,7 @@ class LuaEngine : public ScriptEngine
     bool load_script(const std::filesystem::path &script_dir,
                      const std::string &entry_point,
                      const std::string &required_callback) override;
-    bool build_api_(const RoleContext &ctx) override;
+    bool build_api_(RoleAPIBase &api) override;
     void finalize_engine_() override;
 
     // ── Queries ──────────────────────────────────────────────────────────
@@ -84,7 +84,7 @@ class LuaEngine : public ScriptEngine
 
     [[nodiscard]] uint64_t script_error_count() const noexcept override
     {
-        return ctx_.core->script_errors();
+        return api_ ? api_->core()->script_errors() : 0;
     }
 
     // ── Threading ────────────────────────────────────────────────────────

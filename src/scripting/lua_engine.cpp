@@ -165,7 +165,7 @@ LuaEngine::~LuaEngine()
 bool LuaEngine::init_engine_(const std::string &log_tag, RoleHostCore *core)
 {
     log_tag_ = log_tag.empty() ? "lua" : log_tag;
-    // owner_thread_id_, accepting_, ctx_.core set by base class initialize().
+    // owner_thread_id_, accepting_, api_->core() set by base class initialize().
 
     state_ = LuaState::create();
     if (!state_)
@@ -243,20 +243,19 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir,
 }
 
 // ============================================================================
-// build_api — save RoleContext, build Lua table with closures
+// build_api — build Lua table with closures using RoleAPIBase
 // ============================================================================
 
-bool LuaEngine::build_api_(const RoleContext &ctx)
+bool LuaEngine::build_api_(RoleAPIBase &api)
 {
-    // ctx_ and core preservation handled by base class build_api().
-    stop_on_script_error_ = ctx.stop_on_script_error;
+    stop_on_script_error_ = api.stop_on_script_error();
 
     // Create role-specific aliases (SlotFrame/FlexFrame) for single-direction roles.
     // Producer: SlotFrame = OutSlotFrame, FlexFrame = OutFlexFrame.
     // Consumer: SlotFrame = InSlotFrame, FlexFrame = InFlexFrame.
     // Processor: no aliases — both directions are explicit.
     // The alias is a FFI typedef so scripts can use either name.
-    if (ctx.role_tag == "prod")
+    if (api.role_tag() == "prod")
     {
         if (ref_out_slot_writable_ != LUA_NOREF)
         {
@@ -269,7 +268,7 @@ bool LuaEngine::build_api_(const RoleContext &ctx)
             ref_fz_alias_ = state_.cache_ffi_typeof("FlexFrame", /*readonly=*/false);
         }
     }
-    else if (ctx.role_tag == "cons")
+    else if (api.role_tag() == "cons")
     {
         if (ref_in_slot_readonly_ != LUA_NOREF)
         {
@@ -311,9 +310,9 @@ bool LuaEngine::build_api_(const RoleContext &ctx)
     push_closure("metrics", lua_api_metrics);
 
     // ── Role-specific closures based on role_tag ────────────────────────
-    if (ctx_.role_tag == "prod")
+    if (api_->role_tag() == "prod")
     {
-        if (ctx_.producer)
+        if (api_->producer())
         {
             push_closure("broadcast", lua_api_broadcast);
             push_closure("send", lua_api_send);
@@ -326,9 +325,9 @@ bool LuaEngine::build_api_(const RoleContext &ctx)
         push_closure("out_capacity", lua_api_out_capacity);
         push_closure("out_policy", lua_api_out_policy);
     }
-    else if (ctx_.role_tag == "cons")
+    else if (api_->role_tag() == "cons")
     {
-        if (ctx_.consumer)
+        if (api_->consumer())
             push_closure("set_verify_checksum", lua_api_set_verify_checksum);
         push_closure("spinlock", lua_api_spinlock);
         push_closure("spinlock_count", lua_api_spinlock_count);
@@ -336,11 +335,11 @@ bool LuaEngine::build_api_(const RoleContext &ctx)
         push_closure("in_policy", lua_api_in_policy);
         push_closure("last_seq", lua_api_last_seq);
     }
-    else if (ctx_.role_tag == "proc")
+    else if (api_->role_tag() == "proc")
     {
         push_closure("in_channel", lua_api_in_channel);
         push_closure("out_channel", lua_api_out_channel);
-        if (ctx_.producer)
+        if (api_->producer())
         {
             push_closure("broadcast", lua_api_broadcast);
             push_closure("send", lua_api_send);
@@ -352,7 +351,7 @@ bool LuaEngine::build_api_(const RoleContext &ctx)
         push_closure("spinlock_count", lua_api_spinlock_count);
         push_closure("out_capacity", lua_api_out_capacity);
         push_closure("out_policy", lua_api_out_policy);
-        if (ctx_.consumer)
+        if (api_->consumer())
             push_closure("set_verify_checksum", lua_api_set_verify_checksum);
         push_closure("in_capacity", lua_api_in_capacity);
         push_closure("in_policy", lua_api_in_policy);
@@ -361,7 +360,7 @@ bool LuaEngine::build_api_(const RoleContext &ctx)
     else
     {
         LOGGER_ERROR("[{}] build_api: unknown role_tag '{}' — must be 'prod', 'cons', or 'proc'",
-                     log_tag_, ctx_.role_tag);
+                     log_tag_, api_->role_tag());
         lua_pop(L, 1); // pop the api table
         return false;
     }
@@ -413,7 +412,7 @@ LuaEngine *LuaEngine::get_or_create_thread_state_()
     // Create fully initialized child state.
     auto child = std::make_unique<LuaEngine>();
     child->set_owner_engine(this); // child delegates is_accepting() to parent
-    if (!child->initialize(log_tag_, ctx_.core))
+    if (!child->initialize(log_tag_, api_->core()))
     {
         LOGGER_ERROR("[{}] Failed to create thread-local LuaEngine", log_tag_);
         return nullptr;
@@ -425,7 +424,7 @@ LuaEngine *LuaEngine::get_or_create_thread_state_()
         child->finalize();
         return nullptr;
     }
-    if (!child->build_api(ctx_))
+    if (!child->build_api(*api_))
     {
         LOGGER_ERROR("[{}] Thread-local LuaEngine: build_api failed", log_tag_);
         child->finalize();
@@ -734,7 +733,7 @@ void LuaEngine::invoke_on_init()
 
     if (!state_.pcall(1, 0, "on_init"))
     {
-        ctx_.core->inc_script_errors();
+        api_->core()->inc_script_errors();
     }
 }
 
@@ -753,7 +752,7 @@ void LuaEngine::invoke_on_stop()
 
     if (!state_.pcall(1, 0, "on_stop"))
     {
-        ctx_.core->inc_script_errors();
+        api_->core()->inc_script_errors();
     }
 }
 
@@ -982,7 +981,7 @@ InvokeResult LuaEngine::invoke_on_inbox(InvokeInbox msg)
         LOGGER_ERROR("[{}] invoke_on_inbox: InboxFrame type not registered — "
                      "inbox_schema must be configured and registered before use",
                      log_tag_);
-        ctx_.core->inc_script_errors();
+        api_->core()->inc_script_errors();
         lua_pop(L, 1); // pop function
         return InvokeResult::Error;
     }
@@ -1049,14 +1048,14 @@ int LuaEngine::extract_callback_ref_(const char *name)
 
 InvokeResult LuaEngine::on_pcall_error_(const std::string &callback_name)
 {
-    ctx_.core->inc_script_errors();
+    api_->core()->inc_script_errors();
     // Hot-path callers (invoke_produce etc.) use state_.pcall() which logs the error.
     // Generic invoke() callers log the error themselves before calling this.
     if (stop_on_script_error_)
     {
         LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} error",
                      log_tag_, callback_name);
-        ctx_.core->request_stop();
+        api_->core()->request_stop();
     }
     return InvokeResult::Error;
 }
@@ -1208,21 +1207,21 @@ void LuaEngine::push_common_api_closures_(lua_State *L)
     push_closure("shm_info", lua_api_shm_info);
 
     // String fields as direct table entries.
-    lua_pushstring(L, ctx_.log_level.c_str());
+    lua_pushstring(L, api_->log_level().c_str());
     lua_setfield(L, -2, "log_level");
 
-    lua_pushstring(L, ctx_.script_dir.c_str());
+    lua_pushstring(L, api_->script_dir().c_str());
     lua_setfield(L, -2, "script_dir");
 
-    lua_pushstring(L, ctx_.role_dir.c_str());
+    lua_pushstring(L, api_->role_dir().c_str());
     lua_setfield(L, -2, "role_dir");
 
     // Derived directory paths.
-    std::string logs = ctx_.role_dir.empty() ? "" : ctx_.role_dir + "/logs";
+    std::string logs = api_->role_dir().empty() ? "" : api_->role_dir() + "/logs";
     lua_pushstring(L, logs.c_str());
     lua_setfield(L, -2, "logs_dir");
 
-    std::string run = ctx_.role_dir.empty() ? "" : ctx_.role_dir + "/run";
+    std::string run = api_->role_dir().empty() ? "" : api_->role_dir() + "/run";
     lua_pushstring(L, run.c_str());
     lua_setfield(L, -2, "run_dir");
 }
@@ -1250,7 +1249,7 @@ void LuaEngine::register_inbox_metatable_()
 
         set_method("acquire", [](lua_State *Ls) -> int {
             auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
-            auto entry = ud->engine->ctx_.core->get_inbox_entry(ud->target_uid);
+            auto entry = ud->engine->api_->core()->get_inbox_entry(ud->target_uid);
             if (!entry || !entry->client || !entry->client->is_running())
             {
                 lua_pushnil(Ls);
@@ -1275,7 +1274,7 @@ void LuaEngine::register_inbox_metatable_()
 
         set_method("send", [](lua_State *Ls) -> int {
             auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
-            auto entry = ud->engine->ctx_.core->get_inbox_entry(ud->target_uid);
+            auto entry = ud->engine->api_->core()->get_inbox_entry(ud->target_uid);
             if (!entry || !entry->client || !entry->client->is_running())
             {
                 lua_pushinteger(Ls, 255);
@@ -1290,7 +1289,7 @@ void LuaEngine::register_inbox_metatable_()
 
         set_method("discard", [](lua_State *Ls) -> int {
             auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
-            auto entry = ud->engine->ctx_.core->get_inbox_entry(ud->target_uid);
+            auto entry = ud->engine->api_->core()->get_inbox_entry(ud->target_uid);
             if (entry && entry->client)
                 entry->client->abort();
             return 0;
@@ -1298,7 +1297,7 @@ void LuaEngine::register_inbox_metatable_()
 
         set_method("is_ready", [](lua_State *Ls) -> int {
             auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
-            auto entry = ud->engine->ctx_.core->get_inbox_entry(ud->target_uid);
+            auto entry = ud->engine->api_->core()->get_inbox_entry(ud->target_uid);
             lua_pushboolean(Ls,
                             (entry && entry->client && entry->client->is_running()) ? 1 : 0);
             return 1;
@@ -1306,7 +1305,7 @@ void LuaEngine::register_inbox_metatable_()
 
         set_method("close", [](lua_State *Ls) -> int {
             auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
-            auto entry = ud->engine->ctx_.core->get_inbox_entry(ud->target_uid);
+            auto entry = ud->engine->api_->core()->get_inbox_entry(ud->target_uid);
             if (entry && entry->client)
                 entry->client->stop();
             return 0;
@@ -1349,7 +1348,7 @@ int LuaEngine::lua_api_stop(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     LOGGER_INFO("[{}-lua] api.stop() called — requesting shutdown", self->log_tag_);
-    self->ctx_.core->request_stop();
+    self->api_->core()->request_stop();
     return 0;
 }
 
@@ -1358,14 +1357,14 @@ int LuaEngine::lua_api_set_critical_error(lua_State *L)
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     const char *msg = lua_tostring(L, 1);
     LOGGER_ERROR("[{}-lua] CRITICAL: {}", self->log_tag_, msg ? msg : "(no message)");
-    self->ctx_.core->set_critical_error();
+    self->api_->core()->set_critical_error();
     return 0;
 }
 
 int LuaEngine::lua_api_stop_reason(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    lua_pushstring(L, self->ctx_.core->stop_reason_string().c_str());
+    lua_pushstring(L, self->api_->core()->stop_reason_string().c_str());
     return 1;
 }
 
@@ -1378,7 +1377,7 @@ int LuaEngine::lua_api_version_info(lua_State *L)
 int LuaEngine::lua_api_script_errors(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    uint64_t val = self->ctx_.core->script_errors();
+    uint64_t val = self->api_->core()->script_errors();
     lua_pushinteger(L, static_cast<lua_Integer>(val));
     return 1;
 }
@@ -1391,7 +1390,7 @@ int LuaEngine::lua_api_get_shared_data(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     const char *key = luaL_checkstring(L, 1);
-    auto val = self->ctx_.core->get_shared_data(key);
+    auto val = self->api_->core()->get_shared_data(key);
     if (!val)
     {
         lua_pushnil(L);
@@ -1417,20 +1416,20 @@ int LuaEngine::lua_api_set_shared_data(lua_State *L)
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     const char *key = luaL_checkstring(L, 1);
     if (lua_isboolean(L, 2))
-        self->ctx_.core->set_shared_data(key, static_cast<bool>(lua_toboolean(L, 2)));
+        self->api_->core()->set_shared_data(key, static_cast<bool>(lua_toboolean(L, 2)));
     else if (lua_isnumber(L, 2))
     {
         // LuaJIT: all numbers are doubles. Store as int64 if whole number.
         double num = lua_tonumber(L, 2);
         if (num == static_cast<double>(static_cast<int64_t>(num)))
-            self->ctx_.core->set_shared_data(key, static_cast<int64_t>(num));
+            self->api_->core()->set_shared_data(key, static_cast<int64_t>(num));
         else
-            self->ctx_.core->set_shared_data(key, num);
+            self->api_->core()->set_shared_data(key, num);
     }
     else if (lua_isstring(L, 2))
-        self->ctx_.core->set_shared_data(key, std::string(lua_tostring(L, 2)));
+        self->api_->core()->set_shared_data(key, std::string(lua_tostring(L, 2)));
     else
-        self->ctx_.core->remove_shared_data(key); // nil → remove key
+        self->api_->core()->remove_shared_data(key); // nil → remove key
     return 0;
 }
 
@@ -1444,33 +1443,7 @@ int LuaEngine::lua_api_wait_for_role(lua_State *L)
     const char *uid = luaL_checkstring(L, 1);
     int timeout_ms = static_cast<int>(luaL_optinteger(L, 2, 5000));
 
-    auto *messenger = self->ctx_.messenger;
-    if (!messenger)
-    {
-        lua_pushboolean(L, 0);
-        return 1;
-    }
-
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds{timeout_ms};
-    static constexpr int kPollMs = 200;
-
-    while (std::chrono::steady_clock::now() < deadline)
-    {
-        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                   deadline - std::chrono::steady_clock::now())
-                                   .count();
-        if (remaining <= 0)
-            break;
-        const int poll_ms = static_cast<int>(std::min<long long>(kPollMs, remaining));
-        if (messenger->query_role_presence(uid, poll_ms))
-        {
-            lua_pushboolean(L, 1);
-            return 1;
-        }
-    }
-
-    lua_pushboolean(L, 0);
+    lua_pushboolean(L, self->api_->wait_for_role(uid, timeout_ms) ? 1 : 0);
     return 1;
 }
 
@@ -1485,7 +1458,7 @@ int LuaEngine::lua_api_open_inbox(lua_State *L)
 
     // Delegate to ScriptEngine base — handles broker query, client
     // creation, and core_ cache in one place.
-    auto result = self->open_inbox_client(target_uid);
+    auto result = self->api_->open_inbox_client(target_uid);
     if (!result)
     {
         lua_pushnil(L);
@@ -1523,35 +1496,35 @@ int LuaEngine::lua_api_open_inbox(lua_State *L)
 int LuaEngine::lua_api_uid(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    lua_pushstring(L, self->ctx_.uid.c_str());
+    lua_pushstring(L, self->api_->uid().c_str());
     return 1;
 }
 
 int LuaEngine::lua_api_name(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    lua_pushstring(L, self->ctx_.name.c_str());
+    lua_pushstring(L, self->api_->name().c_str());
     return 1;
 }
 
 int LuaEngine::lua_api_channel(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    lua_pushstring(L, self->ctx_.channel.c_str());
+    lua_pushstring(L, self->api_->channel().c_str());
     return 1;
 }
 
 int LuaEngine::lua_api_in_channel(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    lua_pushstring(L, self->ctx_.channel.c_str());
+    lua_pushstring(L, self->api_->channel().c_str());
     return 1;
 }
 
 int LuaEngine::lua_api_out_channel(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    lua_pushstring(L, self->ctx_.out_channel.c_str());
+    lua_pushstring(L, self->api_->out_channel().c_str());
     return 1;
 }
 
@@ -1561,7 +1534,7 @@ int LuaEngine::lua_api_broadcast(lua_State *L)
     size_t len = 0;
     const char *data = luaL_checklstring(L, 1, &len);
 
-    auto *producer = self->ctx_.producer;
+    auto *producer = self->api_->producer();
     if (!producer)
     {
         lua_pushboolean(L, 0);
@@ -1580,7 +1553,7 @@ int LuaEngine::lua_api_send(lua_State *L)
     size_t len = 0;
     const char *data = luaL_checklstring(L, 2, &len);
 
-    auto *producer = self->ctx_.producer;
+    auto *producer = self->api_->producer();
     if (!producer)
     {
         lua_pushboolean(L, 0);
@@ -1595,7 +1568,7 @@ int LuaEngine::lua_api_send(lua_State *L)
 int LuaEngine::lua_api_consumers(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto *producer = self->ctx_.producer;
+    auto *producer = self->api_->producer();
     if (!producer)
     {
         lua_newtable(L);
@@ -1615,7 +1588,7 @@ int LuaEngine::lua_api_consumers(lua_State *L)
 int LuaEngine::lua_api_update_flexzone_checksum(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto *p = self->ctx_.producer;
+    auto *p = self->api_->producer();
     if (p)
         p->sync_flexzone_checksum();
     lua_pushboolean(L, p ? 1 : 0);
@@ -1626,7 +1599,7 @@ int LuaEngine::lua_api_set_verify_checksum(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     bool enable = lua_toboolean(L, 1) != 0;
-    auto *c = self->ctx_.consumer;
+    auto *c = self->api_->consumer();
     if (c)
         c->set_verify_checksum(enable, false);
     return 0;
@@ -1635,7 +1608,7 @@ int LuaEngine::lua_api_set_verify_checksum(lua_State *L)
 int LuaEngine::lua_api_out_written(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    uint64_t val = self->ctx_.core->out_written();
+    uint64_t val = self->api_->core()->out_written();
     lua_pushinteger(L, static_cast<lua_Integer>(val));
     return 1;
 }
@@ -1643,7 +1616,7 @@ int LuaEngine::lua_api_out_written(lua_State *L)
 int LuaEngine::lua_api_in_received(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    uint64_t val = self->ctx_.core->in_received();
+    uint64_t val = self->api_->core()->in_received();
     lua_pushinteger(L, static_cast<lua_Integer>(val));
     return 1;
 }
@@ -1651,7 +1624,7 @@ int LuaEngine::lua_api_in_received(lua_State *L)
 int LuaEngine::lua_api_drops(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    uint64_t val = self->ctx_.core->drops();
+    uint64_t val = self->api_->core()->drops();
     lua_pushinteger(L, static_cast<lua_Integer>(val));
     return 1;
 }
@@ -1663,21 +1636,21 @@ int LuaEngine::lua_api_drops(lua_State *L)
 int LuaEngine::lua_api_loop_overrun_count(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    lua_pushinteger(L, static_cast<lua_Integer>(self->ctx_.core->loop_overrun_count()));
+    lua_pushinteger(L, static_cast<lua_Integer>(self->api_->core()->loop_overrun_count()));
     return 1;
 }
 
 int LuaEngine::lua_api_last_cycle_work_us(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    lua_pushinteger(L, static_cast<lua_Integer>(self->ctx_.core->last_cycle_work_us()));
+    lua_pushinteger(L, static_cast<lua_Integer>(self->api_->core()->last_cycle_work_us()));
     return 1;
 }
 
 int LuaEngine::lua_api_critical_error(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    lua_pushboolean(L, self->ctx_.core->is_critical_error() ? 1 : 0);
+    lua_pushboolean(L, self->api_->core()->is_critical_error() ? 1 : 0);
     return 1;
 }
 
@@ -1688,7 +1661,7 @@ int LuaEngine::lua_api_critical_error(lua_State *L)
 int LuaEngine::lua_api_out_capacity(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto *p = self->ctx_.producer;
+    auto *p = self->api_->producer();
     lua_pushinteger(L, p ? static_cast<lua_Integer>(p->queue_capacity()) : 0);
     return 1;
 }
@@ -1696,7 +1669,7 @@ int LuaEngine::lua_api_out_capacity(lua_State *L)
 int LuaEngine::lua_api_out_policy(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto *p = self->ctx_.producer;
+    auto *p = self->api_->producer();
     if (p)
         lua_pushstring(L, p->queue_policy_info().c_str());
     else
@@ -1707,7 +1680,7 @@ int LuaEngine::lua_api_out_policy(lua_State *L)
 int LuaEngine::lua_api_in_capacity(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto *c = self->ctx_.consumer;
+    auto *c = self->api_->consumer();
     lua_pushinteger(L, c ? static_cast<lua_Integer>(c->queue_capacity()) : 0);
     return 1;
 }
@@ -1715,7 +1688,7 @@ int LuaEngine::lua_api_in_capacity(lua_State *L)
 int LuaEngine::lua_api_in_policy(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto *c = self->ctx_.consumer;
+    auto *c = self->api_->consumer();
     if (c)
         lua_pushstring(L, c->queue_policy_info().c_str());
     else
@@ -1726,7 +1699,7 @@ int LuaEngine::lua_api_in_policy(lua_State *L)
 int LuaEngine::lua_api_last_seq(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto *c = self->ctx_.consumer;
+    auto *c = self->api_->consumer();
     lua_pushinteger(L, c ? static_cast<lua_Integer>(c->last_seq()) : 0);
     return 1;
 }
@@ -1735,8 +1708,8 @@ int LuaEngine::lua_api_ctrl_queue_dropped(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     uint64_t total = 0;
-    if (self->ctx_.producer) total += self->ctx_.producer->ctrl_queue_dropped();
-    if (self->ctx_.consumer) total += self->ctx_.consumer->ctrl_queue_dropped();
+    if (self->api_->producer()) total += self->api_->producer()->ctrl_queue_dropped();
+    if (self->api_->consumer()) total += self->api_->consumer()->ctrl_queue_dropped();
     lua_pushinteger(L, static_cast<lua_Integer>(total));
     return 1;
 }
@@ -1750,7 +1723,7 @@ int LuaEngine::lua_api_report_metric(lua_State *L)
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     const char *key = luaL_checkstring(L, 1);
     double value = luaL_checknumber(L, 2);
-    self->ctx_.core->report_metric(key, value);
+    self->api_->core()->report_metric(key, value);
     return 0;
 }
 
@@ -1765,7 +1738,7 @@ int LuaEngine::lua_api_report_metrics(lua_State *L)
         {
             const char *key = lua_tostring(L, -2);
             double val = lua_tonumber(L, -1);
-            self->ctx_.core->report_metric(key, val);
+            self->api_->core()->report_metric(key, val);
         }
         lua_pop(L, 1); // pop value, keep key for next iteration
     }
@@ -1775,7 +1748,7 @@ int LuaEngine::lua_api_report_metrics(lua_State *L)
 int LuaEngine::lua_api_clear_custom_metrics(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    self->ctx_.core->clear_custom_metrics();
+    self->api_->core()->clear_custom_metrics();
     return 0;
 }
 
@@ -1786,44 +1759,34 @@ int LuaEngine::lua_api_clear_custom_metrics(lua_State *L)
 int LuaEngine::lua_api_clear_inbox_cache(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    self->ctx_.core->clear_inbox_cache();
+    self->api_->core()->clear_inbox_cache();
     return 0;
 }
 
 int LuaEngine::lua_api_notify_channel(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto *m = self->ctx_.messenger;
-    if (!m) return 0;
     const char *target  = luaL_checkstring(L, 1);
     const char *event   = luaL_checkstring(L, 2);
     const char *data    = luaL_optstring(L, 3, "");
-    m->enqueue_channel_notify(target, self->ctx_.uid, event, data);
+    self->api_->notify_channel(target, event, data);
     return 0;
 }
 
 int LuaEngine::lua_api_broadcast_channel(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto *m = self->ctx_.messenger;
-    if (!m) return 0;
     const char *target  = luaL_checkstring(L, 1);
     const char *message = luaL_checkstring(L, 2);
     const char *data    = luaL_optstring(L, 3, "");
-    m->enqueue_channel_broadcast(target, self->ctx_.uid, message, data);
+    self->api_->broadcast_channel(target, message, data);
     return 0;
 }
 
 int LuaEngine::lua_api_list_channels(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto *m = self->ctx_.messenger;
-    if (!m)
-    {
-        lua_newtable(L);
-        return 1;
-    }
-    auto channels = m->list_channels();
+    auto channels = self->api_->list_channels();
     lua_newtable(L);
     for (int i = 0; i < static_cast<int>(channels.size()); ++i)
     {
@@ -1847,14 +1810,8 @@ int LuaEngine::lua_api_list_channels(lua_State *L)
 int LuaEngine::lua_api_shm_info(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto *m = self->ctx_.messenger;
-    if (!m)
-    {
-        lua_pushnil(L);
-        return 1;
-    }
     const char *channel = luaL_optstring(L, 1, "");
-    std::string json_str = m->request_shm_info(channel);
+    std::string json_str = self->api_->request_shm_info(channel);
     if (json_str.empty())
     {
         lua_pushnil(L);
@@ -1880,16 +1837,16 @@ int LuaEngine::lua_api_shm_info(lua_State *L)
 int LuaEngine::lua_api_metrics(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto *core = self->ctx_.core;
+    auto *core = self->api_->core();
 
     // Top-level metrics table.
     lua_newtable(L);
 
     // "queue" (or "in_queue"/"out_queue" for processor)
-    auto *producer = self->ctx_.producer;
-    auto *consumer = self->ctx_.consumer;
+    auto *producer = self->api_->producer();
+    auto *consumer = self->api_->consumer();
 
-    if (self->ctx_.role_tag == "proc")
+    if (self->api_->role_tag() == "proc")
     {
         if (consumer)
         {
@@ -1904,13 +1861,13 @@ int LuaEngine::lua_api_metrics(lua_State *L)
             lua_setfield(L, -2, "out_queue");
         }
     }
-    else if (self->ctx_.role_tag == "prod" && producer)
+    else if (self->api_->role_tag() == "prod" && producer)
     {
         lua_newtable(L);
         queue_metrics_to_lua(L, producer->queue_metrics());
         lua_setfield(L, -2, "queue");
     }
-    else if (self->ctx_.role_tag == "cons" && consumer)
+    else if (self->api_->role_tag() == "cons" && consumer)
     {
         lua_newtable(L);
         queue_metrics_to_lua(L, consumer->queue_metrics());
@@ -1937,7 +1894,7 @@ int LuaEngine::lua_api_metrics(lua_State *L)
         lua_setfield(L, -2, "script_errors");
 
         // ctrl_queue_dropped — processor gets {input, output} sub-table
-        if (self->ctx_.role_tag == "proc")
+        if (self->api_->role_tag() == "proc")
         {
             lua_newtable(L);
             lua_pushinteger(L, static_cast<lua_Integer>(
@@ -1963,10 +1920,10 @@ int LuaEngine::lua_api_metrics(lua_State *L)
     }
 
     // "inbox" (optional — only if inbox configured)
-    if (self->ctx_.inbox_queue)
+    if (self->api_->inbox_queue())
     {
         lua_newtable(L);
-        inbox_metrics_to_lua(L, self->ctx_.inbox_queue->inbox_metrics());
+        inbox_metrics_to_lua(L, self->api_->inbox_queue()->inbox_metrics());
         lua_setfield(L, -2, "inbox");
     }
 
@@ -1998,10 +1955,10 @@ int LuaEngine::lua_api_spinlock_count(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     uint32_t count = 0;
-    if (self->ctx_.producer)
-        count = self->ctx_.producer->spinlock_count();
-    else if (self->ctx_.consumer)
-        count = self->ctx_.consumer->spinlock_count();
+    if (self->api_->producer())
+        count = self->api_->producer()->spinlock_count();
+    else if (self->api_->consumer())
+        count = self->api_->consumer()->spinlock_count();
     lua_pushinteger(L, static_cast<lua_Integer>(count));
     return 1;
 }
@@ -2012,8 +1969,8 @@ int LuaEngine::lua_api_spinlock(lua_State *L)
     int idx = static_cast<int>(luaL_checkinteger(L, 1));
 
     // Determine which role has SHM.
-    hub::Producer *prod = self->ctx_.producer;
-    hub::Consumer *cons = self->ctx_.consumer;
+    hub::Producer *prod = self->api_->producer();
+    hub::Consumer *cons = self->api_->consumer();
     bool has_shm = (prod && prod->has_shm()) || (cons && cons->has_shm());
     if (!has_shm)
         return luaL_error(L, "spinlock: SHM not connected");
@@ -2112,7 +2069,7 @@ int LuaEngine::lua_api_flexzone(lua_State *L)
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
 
     // Only producer/processor have writable flexzone.
-    auto *producer = self->ctx_.producer;
+    auto *producer = self->api_->producer();
     if (!producer)
     {
         lua_pushnil(L);

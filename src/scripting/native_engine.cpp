@@ -321,18 +321,18 @@ bool NativeEngine::load_script(const std::filesystem::path &script_dir,
 // build_api_ — populate native engine context and call native_init
 // ============================================================================
 
-bool NativeEngine::build_api_(const RoleContext &ctx)
+bool NativeEngine::build_api_(RoleAPIBase &api)
 {
     native_ctx_ = std::make_unique<NativeContextStorage>();
-    native_ctx_->role_tag    = ctx.role_tag;
-    native_ctx_->uid         = ctx.uid;
-    native_ctx_->name        = ctx.name;
-    native_ctx_->channel     = ctx.channel;
-    native_ctx_->out_channel = ctx.out_channel;
-    native_ctx_->log_level   = ctx.log_level;
+    native_ctx_->role_tag    = api.role_tag();
+    native_ctx_->uid         = api.uid();
+    native_ctx_->name        = api.name();
+    native_ctx_->channel     = api.channel();
+    native_ctx_->out_channel = api.out_channel();
+    native_ctx_->log_level   = api.log_level();
     native_ctx_->log_label   = "[native " + lib_path_.filename().string() + "]";
-    native_ctx_->role_dir    = ctx.role_dir;
-    native_ctx_->wire(ctx_.core);
+    native_ctx_->role_dir    = api.role_dir();
+    native_ctx_->wire(api.core());
 
     if (!fn_init_(&native_ctx_->ctx))
     {
@@ -611,7 +611,7 @@ InvokeResponse NativeEngine::eval(const std::string & /*code*/)
 
 uint64_t NativeEngine::script_error_count() const noexcept
 {
-    return ctx_.core ? ctx_.core->script_errors() : 0;
+    return api_ ? api_->core()->script_errors() : 0;
 }
 
 bool NativeEngine::supports_multi_state() const noexcept

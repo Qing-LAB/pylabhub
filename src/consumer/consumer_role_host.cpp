@@ -259,24 +259,22 @@ void ConsumerRoleHost::worker_main_()
         return;
     }
 
-    // Step 5: Build RoleContext and engine API.
-    scripting::RoleContext ctx;
-    ctx.role_tag    = "cons";
-    ctx.uid         = id.uid;
-    ctx.name        = id.name;
-    ctx.channel     = config_.in_channel();
-    ctx.log_level   = id.log_level;
-    ctx.script_dir  = script_dir.string();
-    ctx.role_dir    = config_.base_dir().string();
-    ctx.messenger   = &in_messenger_;
-    ctx.producer    = nullptr;
-    ctx.consumer    = in_consumer_.has_value() ? &(*in_consumer_) : nullptr;
-    ctx.inbox_queue = inbox_queue_.get();
-    ctx.checksum_policy = config_.checksum().policy;
-    ctx.core         = &core_;
-    ctx.stop_on_script_error = sc.stop_on_script_error;
+    // Step 5: Create RoleAPIBase and build engine API.
+    api_ = std::make_unique<scripting::RoleAPIBase>(core_);
+    api_->set_role_tag("cons");
+    api_->set_uid(id.uid);
+    api_->set_name(id.name);
+    api_->set_channel(config_.in_channel());
+    api_->set_log_level(id.log_level);
+    api_->set_script_dir(script_dir.string());
+    api_->set_role_dir(config_.base_dir().string());
+    api_->set_messenger(&in_messenger_);
+    api_->set_consumer(in_consumer_.has_value() ? &(*in_consumer_) : nullptr);
+    api_->set_inbox_queue(inbox_queue_.get());
+    api_->set_checksum_policy(config_.checksum().policy);
+    api_->set_stop_on_script_error(sc.stop_on_script_error);
 
-    if (!engine_->build_api(ctx))
+    if (!engine_->build_api(*api_))
     {
         LOGGER_ERROR("[cons] build_api failed — aborting role start");
         engine_->finalize();

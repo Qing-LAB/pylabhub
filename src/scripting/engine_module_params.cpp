@@ -20,7 +20,7 @@ void engine_lifecycle_startup(const char * /*arg*/, void *userdata)
         throw std::runtime_error("engine_lifecycle_startup: null params or engine");
 
     // Step 1: Initialize engine.
-    if (!p->engine->initialize(p->tag, p->core))
+    if (!p->engine->initialize(p->tag, p->api ? p->api->core() : nullptr))
         throw std::runtime_error("engine initialize failed");
 
     // Step 2: Load script.
@@ -59,13 +59,13 @@ void engine_lifecycle_startup(const char * /*arg*/, void *userdata)
         return sz;
     };
 
-    if (p->core != nullptr && p->in_fz_spec.has_schema && !p->core->has_in_fz())
+    if (p->api->core() != nullptr && p->in_fz_spec.has_schema && !p->api->core()->has_in_fz())
     {
-        p->core->set_in_fz_spec(p->in_fz_spec, compute_fz_size(p->in_fz_spec, p->in_packing));
+        p->api->core()->set_in_fz_spec(p->in_fz_spec, compute_fz_size(p->in_fz_spec, p->in_packing));
     }
-    if (p->core != nullptr && p->out_fz_spec.has_schema && !p->core->has_out_fz())
+    if (p->api->core() != nullptr && p->out_fz_spec.has_schema && !p->api->core()->has_out_fz())
     {
-        p->core->set_out_fz_spec(p->out_fz_spec, compute_fz_size(p->out_fz_spec, p->out_packing));
+        p->api->core()->set_out_fz_spec(p->out_fz_spec, compute_fz_size(p->out_fz_spec, p->out_packing));
     }
 
     if (p->inbox_spec.has_schema)
@@ -75,7 +75,7 @@ void engine_lifecycle_startup(const char * /*arg*/, void *userdata)
     }
 
     // Step 4: Build API with infrastructure context.
-    if (!p->engine->build_api(p->role_ctx))
+    if (!p->engine->build_api(*p->api))
         throw std::runtime_error("build_api failed");
 
     LOGGER_INFO("[{}] engine lifecycle startup complete", p->tag);
