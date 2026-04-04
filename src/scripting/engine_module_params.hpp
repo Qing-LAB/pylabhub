@@ -28,7 +28,7 @@ struct EngineModuleParams
 {
     // Engine instance (not owned — role host owns via unique_ptr).
     ScriptEngine *engine{nullptr};
-    RoleHostCore *core{nullptr};
+    RoleAPIBase  *api{nullptr};          ///< Fully-wired role API (owned by role host).
 
     // Startup parameters (Group A: from config).
     std::string tag;                       ///< "prod" / "cons" / "proc"
@@ -47,9 +47,6 @@ struct EngineModuleParams
     hub::SchemaSpec inbox_spec;                 ///< Inbox schema (empty if none).
     std::string in_packing{"aligned"};     ///< Input packing (consumer, processor).
     std::string out_packing{"aligned"};    ///< Output packing (producer, processor).
-
-    // Infrastructure context (Group C: filled after setup_infrastructure_).
-    RoleContext role_ctx;
 
     // Module name for lifecycle registration.
     std::string module_name;

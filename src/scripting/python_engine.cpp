@@ -238,7 +238,7 @@ static fs::path resolve_venvs_dir_for_engine(const fs::path &exe_path)
 bool PythonEngine::init_engine_(const std::string &log_tag, RoleHostCore *core)
 {
     log_tag_ = log_tag.empty() ? "python" : log_tag;
-    // owner_thread_id_, accepting_, ctx_.core set by base class initialize().
+    // owner_thread_id_, accepting_, api_->core() set by base class initialize().
 
     try
     {
@@ -418,16 +418,13 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
 // build_api — create role-specific Python API object
 // ============================================================================
 
-bool PythonEngine::build_api_(const RoleContext &ctx)
+bool PythonEngine::build_api_(RoleAPIBase &api)
 {
-    // ctx_ and core preservation handled by base class build_api().
-    stop_on_script_error_ = ctx.stop_on_script_error;
+    stop_on_script_error_ = api.stop_on_script_error();
 
     // Create role-specific aliases (SlotFrame/FlexFrame) for single-direction roles.
-    // Producer: SlotFrame = OutSlotFrame, FlexFrame = OutFlexFrame.
-    // Consumer: SlotFrame = InSlotFrame, FlexFrame = InFlexFrame.
-    // Processor: no aliases — both directions are explicit.
-    if (ctx.role_tag == "prod")
+    const auto &tag = api.role_tag();
+    if (tag == "prod")
     {
         if (!out_slot_type_.is_none())
         {
@@ -440,7 +437,7 @@ bool PythonEngine::build_api_(const RoleContext &ctx)
             fz_alias_spec_ = out_fz_spec_;
         }
     }
-    else if (ctx.role_tag == "cons")
+    else if (tag == "cons")
     {
         if (!in_slot_type_ro_.is_none())
         {
@@ -455,71 +452,28 @@ bool PythonEngine::build_api_(const RoleContext &ctx)
         }
     }
 
-    // Detect role from role_tag (authoritative). Validate expected pointers.
-    if (ctx_.role_tag == "prod")
+    // Create role-specific Python wrapper around the RoleAPIBase.
+    if (tag == "prod")
     {
-        // Producer role — create RoleAPIBase, then wrap in ProducerAPI.
-        role_api_base_ = std::make_unique<RoleAPIBase>(*ctx_.core);
-        role_api_base_->set_role_tag("prod");
-        role_api_base_->set_producer(ctx_.producer);
-        role_api_base_->set_messenger(ctx_.messenger);
-        role_api_base_->set_inbox_queue(ctx_.inbox_queue);
-        role_api_base_->set_uid(ctx_.uid);
-        role_api_base_->set_name(ctx_.name);
-        role_api_base_->set_channel(ctx_.channel);
-        role_api_base_->set_log_level(ctx_.log_level);
-        role_api_base_->set_script_dir(ctx_.script_dir);
-        role_api_base_->set_role_dir(ctx_.role_dir);
-
-        producer_api_ = std::make_unique<producer::ProducerAPI>(*role_api_base_);
+        producer_api_ = std::make_unique<producer::ProducerAPI>(api);
         producer_api_->set_engine(this);
         producer_api_->shared_data_ = py::dict();
 
         py::module_ mod = py::module_::import("pylabhub_producer");
         api_obj_ = py::cast(producer_api_.get(), py::return_value_policy::reference);
     }
-    else if (ctx_.role_tag == "cons")
+    else if (tag == "cons")
     {
-        // Consumer role — create RoleAPIBase, then wrap in ConsumerAPI.
-        role_api_base_ = std::make_unique<RoleAPIBase>(*ctx_.core);
-        role_api_base_->set_role_tag("cons");
-        role_api_base_->set_consumer(ctx_.consumer);
-        role_api_base_->set_messenger(ctx_.messenger);
-        role_api_base_->set_inbox_queue(ctx_.inbox_queue);
-        role_api_base_->set_uid(ctx_.uid);
-        role_api_base_->set_name(ctx_.name);
-        role_api_base_->set_channel(ctx_.channel);
-        role_api_base_->set_log_level(ctx_.log_level);
-        role_api_base_->set_script_dir(ctx_.script_dir);
-        role_api_base_->set_role_dir(ctx_.role_dir);
-
-        consumer_api_ = std::make_unique<consumer::ConsumerAPI>(*role_api_base_);
+        consumer_api_ = std::make_unique<consumer::ConsumerAPI>(api);
         consumer_api_->set_engine(this);
         consumer_api_->shared_data_ = py::dict();
 
         py::module_ mod = py::module_::import("pylabhub_consumer");
         api_obj_ = py::cast(consumer_api_.get(), py::return_value_policy::reference);
     }
-    else if (ctx_.role_tag == "proc")
+    else if (tag == "proc")
     {
-        // Processor role — create RoleAPIBase, then wrap in ProcessorAPI.
-        role_api_base_ = std::make_unique<RoleAPIBase>(*ctx_.core);
-        role_api_base_->set_role_tag("proc");
-        if (ctx_.producer)
-            role_api_base_->set_producer(ctx_.producer);
-        if (ctx_.consumer)
-            role_api_base_->set_consumer(ctx_.consumer);
-        role_api_base_->set_messenger(ctx_.messenger);
-        role_api_base_->set_inbox_queue(ctx_.inbox_queue);
-        role_api_base_->set_uid(ctx_.uid);
-        role_api_base_->set_name(ctx_.name);
-        role_api_base_->set_channel(ctx_.channel);
-        role_api_base_->set_out_channel(ctx_.out_channel);
-        role_api_base_->set_log_level(ctx_.log_level);
-        role_api_base_->set_script_dir(ctx_.script_dir);
-        role_api_base_->set_role_dir(ctx_.role_dir);
-
-        processor_api_ = std::make_unique<processor::ProcessorAPI>(*role_api_base_);
+        processor_api_ = std::make_unique<processor::ProcessorAPI>(api);
         processor_api_->set_engine(this);
         processor_api_->shared_data_ = py::dict();
 
@@ -529,7 +483,7 @@ bool PythonEngine::build_api_(const RoleContext &ctx)
     else
     {
         LOGGER_ERROR("[{}] build_api: unknown role_tag '{}' — must be 'prod', 'cons', or 'proc'",
-                     log_tag_, ctx_.role_tag);
+                     log_tag_, api_->role_tag());
         return false;
     }
 
@@ -539,8 +493,8 @@ bool PythonEngine::build_api_(const RoleContext &ctx)
     {
         static const char *all_modules[] = {
             "pylabhub_producer", "pylabhub_consumer", "pylabhub_processor"};
-        const char *active = (ctx_.role_tag == "prod") ? "pylabhub_producer"
-                           : (ctx_.role_tag == "cons") ? "pylabhub_consumer"
+        const char *active = (api_->role_tag() == "prod") ? "pylabhub_producer"
+                           : (api_->role_tag() == "cons") ? "pylabhub_consumer"
                                                        : "pylabhub_processor";
         py::object sys_modules = py::module_::import("sys").attr("modules");
         for (const char *mod : all_modules)
@@ -580,13 +534,10 @@ void PythonEngine::finalize_engine_()
         producer_api_->clear_inbox_cache();
         producer_api_->set_engine(nullptr);
     }
-    if (role_api_base_)
+    if (producer_api_)
     {
-        role_api_base_->set_producer(nullptr);
-        role_api_base_->set_consumer(nullptr);
-        role_api_base_->set_messenger(nullptr);
-        role_api_base_->set_inbox_queue(nullptr);
-        role_api_base_->close_all_inbox_clients();
+        producer_api_->clear_inbox_cache();
+        producer_api_->set_engine(nullptr);
     }
     if (consumer_api_)
     {
@@ -602,6 +553,7 @@ void PythonEngine::finalize_engine_()
     producer_api_.reset();
     consumer_api_.reset();
     processor_api_.reset();
+    api_ = nullptr;  // non-owning — role host destroys the base
 
     // Destroy interpreter (calls Py_Finalize).
     interp_.reset();
@@ -689,8 +641,8 @@ InvokeResponse PythonEngine::execute_direct_(const std::string &name)
     {
         executing_.store(false, std::memory_order_release);
         LOGGER_ERROR("[{}] invoke('{}'): {}", log_tag_, name, e.what());
-        if (ctx_.core)
-            ctx_.core->inc_script_errors();
+        if (api_->core())
+            api_->core()->inc_script_errors();
         return {InvokeStatus::ScriptError, {}};
     }
 }
@@ -721,8 +673,8 @@ InvokeResponse PythonEngine::execute_direct_(const std::string &name,
     {
         executing_.store(false, std::memory_order_release);
         LOGGER_ERROR("[{}] invoke('{}', args): {}", log_tag_, name, e.what());
-        if (ctx_.core)
-            ctx_.core->inc_script_errors();
+        if (api_->core())
+            api_->core()->inc_script_errors();
         return {InvokeStatus::ScriptError, {}};
     }
 }
@@ -747,8 +699,8 @@ InvokeResponse PythonEngine::eval_direct_(const std::string &code)
     {
         executing_.store(false, std::memory_order_release);
         LOGGER_ERROR("[{}] eval(): {}", log_tag_, e.what());
-        if (ctx_.core)
-            ctx_.core->inc_script_errors();
+        if (api_->core())
+            api_->core()->inc_script_errors();
         return {InvokeStatus::ScriptError, {}};
     }
 }
@@ -1119,7 +1071,7 @@ InvokeResult PythonEngine::invoke_on_inbox(InvokeInbox msg)
         LOGGER_ERROR("[{}] invoke_on_inbox: InboxFrame type not registered — "
                      "inbox_schema must be configured and registered before use",
                      log_tag_);
-        ctx_.core->inc_script_errors();
+        api_->core()->inc_script_errors();
         process_pending_();
         return InvokeResult::Error;
     }
@@ -1238,12 +1190,12 @@ InvokeResult PythonEngine::parse_return_value_(const py::object &ret, const char
         LOGGER_WARN("[{}] {} returned None — explicit 'return True' or "
                     "'return False' is required. Treating as error.",
                     log_tag_, callback_name);
-        ctx_.core->inc_script_errors();
+        api_->core()->inc_script_errors();
         if (stop_on_script_error_)
         {
             LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} [missing return]",
                          log_tag_, callback_name);
-            ctx_.core->request_stop();
+            api_->core()->request_stop();
         }
         return InvokeResult::Error;
     }
@@ -1253,12 +1205,12 @@ InvokeResult PythonEngine::parse_return_value_(const py::object &ret, const char
                  "expected 'return True' or 'return False'. Treating as error.",
                  log_tag_, callback_name,
                  py::str(py::type::of(ret).attr("__name__")).cast<std::string>());
-    ctx_.core->inc_script_errors();
+    api_->core()->inc_script_errors();
     if (stop_on_script_error_)
     {
         LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} [wrong return type]",
                      log_tag_, callback_name);
-        ctx_.core->request_stop();
+        api_->core()->request_stop();
     }
     return InvokeResult::Error;
 }
@@ -1266,14 +1218,14 @@ InvokeResult PythonEngine::parse_return_value_(const py::object &ret, const char
 InvokeResult PythonEngine::on_python_error_(const char *callback_name,
                                              const py::error_already_set &e)
 {
-    ctx_.core->inc_script_errors();
+    api_->core()->inc_script_errors();
     LOGGER_ERROR("[{}] {} error: {}", log_tag_, callback_name, e.what());
 
     if (stop_on_script_error_)
     {
         LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} error",
                      log_tag_, callback_name);
-        ctx_.core->request_stop();
+        api_->core()->request_stop();
     }
     return InvokeResult::Error;
 }

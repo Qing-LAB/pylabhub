@@ -28,6 +28,7 @@
  */
 
 #include "role_host_core.hpp"
+#include "utils/role_api_base.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -37,9 +38,6 @@
 #include <string>
 #include <thread>
 #include <vector>
-
-namespace pylabhub::hub { class Messenger; class Producer; class Consumer; class InboxQueue; }
-#include "utils/data_block_policy.hpp" // ChecksumPolicy enum
 
 namespace pylabhub::scripting
 {
@@ -82,41 +80,8 @@ struct InvokeResponse
     nlohmann::json value;   ///< Populated only for eval(); empty for invoke().
 };
 
-// ============================================================================
-// RoleContext — engine-agnostic pointers the API object needs
-// ============================================================================
-
-/**
- * @brief Pointers to role infrastructure, passed to build_api().
- *
- * The engine uses these to construct its API object/table.  The engine does NOT
- * own any of these — they are managed by the RoleHost and valid for the
- * lifetime of the role.
- */
-struct RoleContext
-{
-    std::string role_tag;              ///< "prod", "cons", "proc"
-    std::string uid;
-    std::string name;
-    std::string channel;               ///< Primary channel (or in_channel for processor)
-    std::string out_channel;           ///< out_channel for processor (empty for producer/consumer)
-    std::string log_level;
-    std::string script_dir;
-    std::string role_dir;
-
-    hub::Messenger   *messenger{nullptr};     ///< For open_inbox, wait_for_role, broadcast, send
-
-    hub::Producer   *producer{nullptr};      ///< Output data queue ops.
-    hub::Consumer   *consumer{nullptr};      ///< Input data queue ops.
-    hub::InboxQueue *inbox_queue{nullptr};   ///< Incoming peer messages (ROUTER). nullptr if no inbox.
-    hub::ChecksumPolicy checksum_policy{hub::ChecksumPolicy::Enforced}; ///< Per-role checksum policy.
-
-    /// Pointer to RoleHostCore — single source of truth for shutdown flags
-    /// AND metrics (out_written, in_received, drops, script_errors, etc.).
-    RoleHostCore *core{nullptr};
-
-    bool stop_on_script_error{false};
-};
+// RoleContext is eliminated — RoleAPIBase is the single context structure.
+// See docs/tech_draft/role_context_simplification.md for the design.
 
 // ============================================================================
 // InvokeRx / InvokeTx — directional data for invoke calls
@@ -209,8 +174,6 @@ class ScriptEngine
     bool initialize(const std::string &log_tag, RoleHostCore *core)
     {
         owner_thread_id_ = std::this_thread::get_id();
-        ctx_.core = core;
-        // accepting_ stays false until build_api() succeeds.
         if (!init_engine_(log_tag, core))
             return false;
         state_ = EngineState::Initialized;
@@ -238,13 +201,10 @@ class ScriptEngine
      * accepting_=true on success. Returns false if build_api_() fails
      * (e.g. unknown role_tag) — engine remains non-accepting.
      */
-    [[nodiscard]] bool build_api(const RoleContext &ctx)
+    [[nodiscard]] bool build_api(RoleAPIBase &api)
     {
-        auto *saved_core = ctx_.core; // preserve core from initialize()
-        ctx_ = ctx;
-        if (ctx_.core == nullptr)
-            ctx_.core = saved_core;
-        if (!build_api_(ctx))
+        api_ = &api;
+        if (!build_api_(api))
             return false;
         state_ = EngineState::ApiBuilt;
         accepting_.store(true, std::memory_order_release);
@@ -498,30 +458,6 @@ class ScriptEngine
      */
     virtual void release_thread() {}
 
-    // ── Inbox client management (shared via RoleHostCore) ────────────────
-
-    /// Result from open_inbox_client() — everything an engine needs to build
-    /// its script-native inbox handle.
-    struct InboxOpenResult
-    {
-        std::shared_ptr<hub::InboxClient> client;
-        hub::SchemaSpec spec;   ///< Parsed schema (for FFI cdef / ctypes struct building).
-        std::string packing;    ///< "aligned" or "packed".
-        size_t item_size{0};    ///< Size of one inbox slot in bytes.
-    };
-
-    /**
-     * @brief Open (or reuse) an InboxClient connection to the given target.
-     *
-     * Handles broker discovery, schema parsing, InboxClient creation, and
-     * core_ cache management. Returns everything the engine needs to build
-     * its script-native handle (FFI type for Lua, ctypes struct for Python).
-     *
-     * @param target_uid  The target role's UID.
-     * @return InboxOpenResult, or nullopt on failure.
-     */
-    std::optional<InboxOpenResult> open_inbox_client(const std::string &target_uid);
-
   protected:
     // ── Engine-specific overrides (Template Method pattern) ──────────────
 
@@ -530,7 +466,7 @@ class ScriptEngine
 
     /// Build engine-specific API (Lua table / Python pybind11). Called by build_api().
     /// Returns true on success. If false, build_api() does NOT set accepting_=true.
-    virtual bool build_api_(const RoleContext &ctx) = 0;
+    virtual bool build_api_(RoleAPIBase &api) = 0;
 
     /// Release all script objects, close interpreter. Called by finalize().
     virtual void finalize_engine_() = 0;
@@ -539,9 +475,9 @@ class ScriptEngine
     /// invoke() is called from the owner (hot path) or another thread.
     std::thread::id owner_thread_id_;
 
-    /// Context captured at build_api() — provides core_, messenger, identity.
-    /// Used by open_inbox_client() for broker queries and cache access.
-    RoleContext ctx_{};
+    /// Role API — single source of truth for identity, infrastructure, and operations.
+    /// Non-owning pointer, set by build_api(). Owned by role host.
+    RoleAPIBase *api_{nullptr};
 
   private:
     /// Accepting flag — true only between successful build_api() and stop_accepting().

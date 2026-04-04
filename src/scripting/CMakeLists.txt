@@ -20,7 +20,6 @@
 cmake_minimum_required(VERSION 3.28)
 
 add_library(pylabhub-scripting STATIC
-    script_engine.cpp
     engine_module_params.cpp
     lua_state.cpp
     lua_engine.cpp

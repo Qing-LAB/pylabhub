@@ -41,6 +41,8 @@ struct RoleAPIBase::Impl
     hub::InboxQueue *inbox_queue{nullptr};
 
     std::string role_tag;   // "prod", "cons", "proc"
+    hub::ChecksumPolicy checksum_policy{hub::ChecksumPolicy::Enforced};
+    bool stop_on_script_error{false};
     std::string uid;
     std::string name;
     std::string channel;
@@ -84,6 +86,8 @@ void RoleAPIBase::set_out_channel(std::string c)      { pImpl->out_channel = std
 void RoleAPIBase::set_log_level(std::string l)        { pImpl->log_level = std::move(l); }
 void RoleAPIBase::set_script_dir(std::string d)       { pImpl->script_dir = std::move(d); }
 void RoleAPIBase::set_role_dir(std::string d)         { pImpl->role_dir = std::move(d); }
+void RoleAPIBase::set_checksum_policy(hub::ChecksumPolicy p) { pImpl->checksum_policy = p; }
+void RoleAPIBase::set_stop_on_script_error(bool v)    { pImpl->stop_on_script_error = v; }
 
 // ============================================================================
 // Identity
@@ -107,6 +111,9 @@ std::string RoleAPIBase::run_dir() const
 {
     return pImpl->role_dir.empty() ? std::string{} : pImpl->role_dir + "/run";
 }
+
+hub::ChecksumPolicy RoleAPIBase::checksum_policy() const { return pImpl->checksum_policy; }
+bool RoleAPIBase::stop_on_script_error() const { return pImpl->stop_on_script_error; }
 
 // ============================================================================
 // Control
@@ -524,5 +531,6 @@ void RoleAPIBase::clear_shared_data()
 RoleHostCore *RoleAPIBase::core() const     { return pImpl->core; }
 hub::Producer *RoleAPIBase::producer() const { return pImpl->producer; }
 hub::Consumer *RoleAPIBase::consumer() const { return pImpl->consumer; }
+hub::InboxQueue *RoleAPIBase::inbox_queue() const { return pImpl->inbox_queue; }
 
 } // namespace pylabhub::scripting
