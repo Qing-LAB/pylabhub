@@ -16,6 +16,7 @@
 #include "plh_datahub_client.hpp"
 #include "utils/metrics_json.hpp"
 
+#include "engine_module_params.hpp"
 #include "role_host_helpers.hpp"
 #include "zmq_poll_loop.hpp"
 #include "utils/schema_utils.hpp"
@@ -94,15 +95,6 @@ void ConsumerRoleHost::worker_main_()
     const auto &hub  = config_.in_hub();
     const auto &tr   = config_.in_transport();
 
-    // Step 1: Initialize the engine.
-    if (!engine_->initialize("cons", &core_))
-    {
-        LOGGER_ERROR("[cons] Engine initialize() failed");
-        engine_->finalize();
-        ready_promise_.set_value(false);
-        return;
-    }
-
     // Warn if script type was not explicitly set in config.
     if (!sc.type_explicit)
     {
@@ -111,26 +103,18 @@ void ConsumerRoleHost::worker_main_()
                     sc.type, sc.type);
     }
 
-    // Step 2: Load script and extract callbacks.
+    // ── Step 1: Resolve schemas from config ──────────────────────────────────
+
     const std::filesystem::path base_path =
         sc.path.empty() ? std::filesystem::current_path()
                         : std::filesystem::weakly_canonical(sc.path);
     const std::filesystem::path script_dir = base_path / "script" / sc.type;
-    const char *entry_point =
-        (sc.type == "lua") ? "init.lua" : "__init__.py";
 
-    if (!engine_->load_script(script_dir, entry_point, "on_consume"))
-    {
-        LOGGER_ERROR("[cons] Engine load_script() failed");
-        core_.set_script_load_ok(false);
-        engine_->finalize();
-        ready_promise_.set_value(false);
-        return;
-    }
-    core_.set_script_load_ok(true);
+    const std::string packing =
+        tr.zmq_packing.empty() ? "aligned" : tr.zmq_packing;
 
-    // Step 3: Resolve schemas and register slot types (read-only access).
     hub::SchemaSpec in_fz_local;
+    hub::SchemaSpec inbox_spec_local;
     {
         std::vector<std::string> schema_dirs;
         if (!hub.hub_dir.empty())
@@ -144,122 +128,43 @@ void ConsumerRoleHost::worker_main_()
                 cf.in_slot_schema_json, false, "cons", schema_dirs);
             in_fz_local = hub::resolve_schema(
                 cf.in_flexzone_schema_json, true, "cons", schema_dirs);
+            if (config_.inbox().has_inbox())
+                inbox_spec_local = hub::resolve_schema(
+                    config_.inbox().schema_json, false, "cons", schema_dirs);
         }
         catch (const std::exception &e)
         {
             LOGGER_ERROR("[cons] Schema parse error: {}", e.what());
-            engine_->finalize();
             ready_promise_.set_value(false);
             return;
         }
     }
 
-    const std::string packing =
-        tr.zmq_packing.empty() ? "aligned" : tr.zmq_packing;
-
-    // Compute sizes from schema (authoritative — infrastructure owns layout).
+    // Compute and store sizes (infrastructure-authoritative).
+    if (in_slot_spec_.has_schema)
+        core_.set_in_slot_spec(hub::SchemaSpec{in_slot_spec_},
+                               hub::compute_schema_size(in_slot_spec_, packing));
     {
-        size_t fz_size = hub::compute_schema_size(in_fz_local, packing);
-        fz_size = (fz_size + 4095U) & ~size_t{4095U};
+        size_t fz_size = hub::align_to_physical_page(
+            hub::compute_schema_size(in_fz_local, packing));
         core_.set_in_fz_spec(hub::SchemaSpec{in_fz_local}, fz_size);
     }
 
-    // Register slot type with engine (engine validates its struct matches).
-    if (in_slot_spec_.has_schema)
+    // ── Step 2: Setup infrastructure (no engine dependency) ──────────────────
+    // Skipped in validate-only mode (no broker/queue needed).
+
+    if (!core_.is_validate_only())
     {
-        if (!engine_->register_slot_type(in_slot_spec_, "InSlotFrame", packing))
+        if (!setup_infrastructure_(inbox_spec_local))
         {
-            LOGGER_ERROR("[cons] Failed to register InSlotFrame type");
-            engine_->finalize();
+            teardown_infrastructure_();
             ready_promise_.set_value(false);
             return;
         }
     }
 
-    // Register flexzone type with engine.
-    if (in_fz_local.has_schema)
-    {
-        if (!engine_->register_slot_type(in_fz_local, "InFlexFrame", packing))
-        {
-            LOGGER_ERROR("[cons] Failed to register InFlexFrame type");
-            engine_->finalize();
-            ready_promise_.set_value(false);
-            return;
-        }
-    }
+    // ── Step 3: Create RoleAPIBase and wire infrastructure ───────────────────
 
-    // Resolve and register inbox schema (alongside slot/fz above).
-    hub::SchemaSpec inbox_spec_local;
-    size_t inbox_schema_slot_size = 0;
-    if (config_.inbox().has_inbox())
-    {
-        std::vector<std::string> schema_dirs;
-        if (!hub.hub_dir.empty())
-            schema_dirs.push_back(
-                (std::filesystem::path(hub.hub_dir) / "schemas").string());
-
-        try
-        {
-            inbox_spec_local = hub::resolve_schema(
-                config_.inbox().schema_json, false, "cons", schema_dirs);
-        }
-        catch (const std::exception &e)
-        {
-            LOGGER_ERROR("[cons] Inbox schema parse error: {}", e.what());
-            engine_->finalize();
-            ready_promise_.set_value(false);
-            return;
-        }
-
-        if (inbox_spec_local.has_schema)
-        {
-            const std::string inbox_packing =
-                tr.zmq_packing.empty() ? "aligned" : tr.zmq_packing;
-            if (!engine_->register_slot_type(inbox_spec_local, "InboxFrame", inbox_packing))
-            {
-                LOGGER_ERROR("[cons] Failed to register InboxFrame type");
-                engine_->finalize();
-                ready_promise_.set_value(false);
-                return;
-            }
-            inbox_schema_slot_size = engine_->type_sizeof("InboxFrame");
-        }
-    }
-
-    // Validate-only mode: print layout and exit.
-    if (core_.is_validate_only())
-    {
-        // TODO: print layout via engine
-        engine_->finalize();
-        ready_promise_.set_value(true);
-        return;
-    }
-
-    // Step 4: setup_infrastructure_
-    if (!setup_infrastructure_(inbox_spec_local))
-    {
-        engine_->finalize();
-        teardown_infrastructure_();
-        ready_promise_.set_value(false);
-        return;
-    }
-
-    // Validate inbox type size matches queue decode buffer size.
-    if (inbox_schema_slot_size > 0 && inbox_queue_ &&
-        inbox_queue_->item_size() != inbox_schema_slot_size)
-    {
-        LOGGER_ERROR("[cons] InboxFrame size mismatch: engine type_sizeof={} "
-                     "but InboxQueue item_size={} (packing='{}') — "
-                     "check schema/packing consistency",
-                     inbox_schema_slot_size, inbox_queue_->item_size(),
-                     tr.zmq_packing.empty() ? "aligned" : tr.zmq_packing);
-        engine_->finalize();
-        teardown_infrastructure_();
-        ready_promise_.set_value(false);
-        return;
-    }
-
-    // Step 5: Create RoleAPIBase and build engine API.
     api_ = std::make_unique<scripting::RoleAPIBase>(core_);
     api_->set_role_tag("cons");
     api_->set_uid(id.uid);
@@ -268,50 +173,85 @@ void ConsumerRoleHost::worker_main_()
     api_->set_log_level(id.log_level);
     api_->set_script_dir(script_dir.string());
     api_->set_role_dir(config_.base_dir().string());
-    api_->set_messenger(&in_messenger_);
-    api_->set_consumer(in_consumer_.has_value() ? &(*in_consumer_) : nullptr);
-    api_->set_inbox_queue(inbox_queue_.get());
+    if (!core_.is_validate_only())
+    {
+        api_->set_messenger(&in_messenger_);
+        api_->set_consumer(in_consumer_.has_value() ? &(*in_consumer_) : nullptr);
+        api_->set_inbox_queue(inbox_queue_.get());
+    }
     api_->set_checksum_policy(config_.checksum().policy);
     api_->set_stop_on_script_error(sc.stop_on_script_error);
 
-    if (!engine_->build_api(*api_))
+    // ── Step 4: Load engine via lifecycle startup ────────────────────────────
+
+    engine_module_name_ = fmt::format("ScriptEngine:{}:{}", sc.type, id.uid);
+
+    scripting::EngineModuleParams params;
+    params.engine             = engine_.get();
+    params.api                = api_.get();
+    params.tag                = "cons";
+    params.script_dir         = script_dir;
+    params.entry_point        = (sc.type == "lua") ? "init.lua" : "__init__.py";
+    params.required_callback  = "on_consume";
+    params.in_slot_spec       = in_slot_spec_;
+    params.in_fz_spec         = in_fz_local;
+    params.inbox_spec         = inbox_spec_local;
+    params.in_packing         = packing;
+    params.module_name        = engine_module_name_;
+
+    try
     {
-        LOGGER_ERROR("[cons] build_api failed — aborting role start");
+        scripting::engine_lifecycle_startup(nullptr, &params);
+        core_.set_script_load_ok(true);
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("[cons] Engine startup failed: {}", e.what());
+        core_.set_script_load_ok(false);
         engine_->finalize();
-        teardown_infrastructure_();
+        if (!core_.is_validate_only())
+            teardown_infrastructure_();
         ready_promise_.set_value(false);
         return;
     }
 
-    // Step 6: invoke on_init.
+    // Validate-only mode: engine loaded successfully, exit.
+    if (core_.is_validate_only())
+    {
+        engine_->finalize();
+        ready_promise_.set_value(true);
+        return;
+    }
+
+    // ── Step 5: invoke on_init ───────────────────────────────────────────────
     engine_->invoke_on_init();
 
-    // Step 7: Spawn ctrl_thread_ and signal ready.
+    // Step 6: Spawn ctrl_thread_ and signal ready.
     core_.set_running(true);
     ctrl_thread_ = std::thread([this] { run_ctrl_thread_(); });
 
-    // Step 8: Signal ready.
+    // Step 7: Signal ready.
     ready_promise_.set_value(true);
 
-    // Step 9: Run the data loop.
+    // Step 8: Run the data loop.
     run_data_loop_();
 
-    // Step 10: stop accepting invoke from non-owner threads.
+    // Step 9: stop accepting invoke from non-owner threads.
     engine_->stop_accepting();
 
-    // Step 11: join ctrl_thread — ensure no non-owner thread is using the engine.
+    // Step 10: join ctrl_thread.
     core_.set_running(false);
     core_.notify_incoming();
     if (ctrl_thread_.joinable())
         ctrl_thread_.join();
 
-    // Step 12: last script callback.
+    // Step 11: last script callback.
     engine_->invoke_on_stop();
 
-    // Step 13: finalize engine.
+    // Step 12: finalize engine.
     engine_->finalize();
 
-    // Step 14: teardown infrastructure.
+    // Step 13: teardown infrastructure.
     teardown_infrastructure_();
 }
 
@@ -360,44 +300,15 @@ bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     // --- Inbox setup (optional) ---
     if (inbox.has_inbox())
     {
-        const std::string inbox_packing =
-            tr.zmq_packing.empty() ? "aligned" : tr.zmq_packing;
-
-        // Endpoint validated by parse_inbox_config(); default is tcp://127.0.0.1:0.
-        const std::string &ep = inbox.endpoint;
-        auto zmq_fields = hub::schema_spec_to_zmq_fields(inbox_spec);
-
-        nlohmann::json spec_json;
-        spec_json["fields"] = nlohmann::json::array();
-        for (const auto &f : inbox_spec.fields)
-        {
-            nlohmann::json fj = {{"name", f.name}, {"type", f.type_str}};
-            if (f.count > 1)  fj["count"]  = f.count;
-            if (f.length > 0) fj["length"] = f.length;
-            spec_json["fields"].push_back(fj);
-        }
-        if (inbox_spec.packing != "aligned")
-            spec_json["packing"] = inbox_spec.packing;
-
-        const int inbox_rcvhwm = (inbox.overflow_policy == "block")
-            ? 0
-            : static_cast<int>(inbox.buffer_depth);
-
-        inbox_queue_ = hub::InboxQueue::bind_at(
-            ep, std::move(zmq_fields), inbox_packing, inbox_rcvhwm);
-        if (!inbox_queue_ || !inbox_queue_->start())
-        {
-            LOGGER_ERROR("[cons] Failed to start InboxQueue at '{}'", ep);
-            inbox_queue_.reset();
+        auto inbox_result = scripting::setup_inbox_facility(
+            inbox_spec, inbox, config_.checksum().policy, "cons");
+        if (!inbox_result)
             return false;
-        }
-        inbox_queue_->set_checksum_policy(config_.checksum().policy);
-        LOGGER_INFO("[cons] InboxQueue bound at '{}'", inbox_queue_->actual_endpoint());
-
-        opts.inbox_endpoint    = inbox_queue_->actual_endpoint();
-        opts.inbox_schema_json = spec_json.dump();
-        opts.inbox_packing     = inbox_packing;
-        opts.inbox_checksum    = config::checksum_policy_to_string(config_.checksum().policy);
+        inbox_queue_           = std::move(inbox_result->queue);
+        opts.inbox_endpoint    = inbox_result->actual_endpoint;
+        opts.inbox_schema_json = inbox_result->schema_json;
+        opts.inbox_packing     = inbox_result->packing;
+        opts.inbox_checksum    = inbox_result->checksum;
     }
 
     // --- Broker connect ---
@@ -626,7 +537,7 @@ void ConsumerRoleHost::run_data_loop_()
         if (data != nullptr)
         {
             last_seq_.store(in_consumer_->last_seq(), std::memory_order_relaxed);
-            core_.inc_in_received();
+            core_.inc_in_slots_received();
         }
 
         // Flexzone is mutable by design (HEP-0002 TABLE 1, user-managed coordination).
@@ -740,8 +651,8 @@ nlohmann::json ConsumerRoleHost::snapshot_metrics_json() const
     }
 
     result["role"] = {
-        {"in_received",        core_.in_received()},
-        {"script_errors",      engine_ ? engine_->script_error_count() : 0},
+        {"in_slots_received",  core_.in_slots_received()},
+        {"script_error_count", engine_ ? engine_->script_error_count() : 0},
         {"ctrl_queue_dropped", in_consumer_.has_value() ? in_consumer_->ctrl_queue_dropped() : 0}
     };
 

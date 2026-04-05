@@ -456,7 +456,6 @@ bool PythonEngine::build_api_(RoleAPIBase &api)
     if (tag == "prod")
     {
         producer_api_ = std::make_unique<producer::ProducerAPI>(api);
-        producer_api_->set_engine(this);
         producer_api_->shared_data_ = py::dict();
 
         py::module_ mod = py::module_::import("pylabhub_producer");
@@ -465,7 +464,6 @@ bool PythonEngine::build_api_(RoleAPIBase &api)
     else if (tag == "cons")
     {
         consumer_api_ = std::make_unique<consumer::ConsumerAPI>(api);
-        consumer_api_->set_engine(this);
         consumer_api_->shared_data_ = py::dict();
 
         py::module_ mod = py::module_::import("pylabhub_consumer");
@@ -474,7 +472,6 @@ bool PythonEngine::build_api_(RoleAPIBase &api)
     else if (tag == "proc")
     {
         processor_api_ = std::make_unique<processor::ProcessorAPI>(api);
-        processor_api_->set_engine(this);
         processor_api_->shared_data_ = py::dict();
 
         py::module_ mod = py::module_::import("pylabhub_processor");
@@ -528,27 +525,13 @@ void PythonEngine::finalize_engine_()
     // Clear all Python objects before destroying the interpreter.
     clear_pyobjects_();
 
-    // Null out API pointers before role host tears down infrastructure.
+    // Clear inbox caches before role host tears down infrastructure.
     if (producer_api_)
-    {
         producer_api_->clear_inbox_cache();
-        producer_api_->set_engine(nullptr);
-    }
-    if (producer_api_)
-    {
-        producer_api_->clear_inbox_cache();
-        producer_api_->set_engine(nullptr);
-    }
     if (consumer_api_)
-    {
         consumer_api_->clear_inbox_cache();
-        consumer_api_->set_engine(nullptr);
-    }
     if (processor_api_)
-    {
         processor_api_->clear_inbox_cache();
-        processor_api_->set_engine(nullptr);
-    }
 
     producer_api_.reset();
     consumer_api_.reset();
@@ -642,7 +625,7 @@ InvokeResponse PythonEngine::execute_direct_(const std::string &name)
         executing_.store(false, std::memory_order_release);
         LOGGER_ERROR("[{}] invoke('{}'): {}", log_tag_, name, e.what());
         if (api_->core())
-            api_->core()->inc_script_errors();
+            api_->core()->inc_script_error_count();
         return {InvokeStatus::ScriptError, {}};
     }
 }
@@ -674,7 +657,7 @@ InvokeResponse PythonEngine::execute_direct_(const std::string &name,
         executing_.store(false, std::memory_order_release);
         LOGGER_ERROR("[{}] invoke('{}', args): {}", log_tag_, name, e.what());
         if (api_->core())
-            api_->core()->inc_script_errors();
+            api_->core()->inc_script_error_count();
         return {InvokeStatus::ScriptError, {}};
     }
 }
@@ -700,7 +683,7 @@ InvokeResponse PythonEngine::eval_direct_(const std::string &code)
         executing_.store(false, std::memory_order_release);
         LOGGER_ERROR("[{}] eval(): {}", log_tag_, e.what());
         if (api_->core())
-            api_->core()->inc_script_errors();
+            api_->core()->inc_script_error_count();
         return {InvokeStatus::ScriptError, {}};
     }
 }
@@ -1071,7 +1054,7 @@ InvokeResult PythonEngine::invoke_on_inbox(InvokeInbox msg)
         LOGGER_ERROR("[{}] invoke_on_inbox: InboxFrame type not registered — "
                      "inbox_schema must be configured and registered before use",
                      log_tag_);
-        api_->core()->inc_script_errors();
+        api_->core()->inc_script_error_count();
         process_pending_();
         return InvokeResult::Error;
     }
@@ -1190,7 +1173,7 @@ InvokeResult PythonEngine::parse_return_value_(const py::object &ret, const char
         LOGGER_WARN("[{}] {} returned None — explicit 'return True' or "
                     "'return False' is required. Treating as error.",
                     log_tag_, callback_name);
-        api_->core()->inc_script_errors();
+        api_->core()->inc_script_error_count();
         if (stop_on_script_error_)
         {
             LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} [missing return]",
@@ -1205,7 +1188,7 @@ InvokeResult PythonEngine::parse_return_value_(const py::object &ret, const char
                  "expected 'return True' or 'return False'. Treating as error.",
                  log_tag_, callback_name,
                  py::str(py::type::of(ret).attr("__name__")).cast<std::string>());
-    api_->core()->inc_script_errors();
+    api_->core()->inc_script_error_count();
     if (stop_on_script_error_)
     {
         LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} [wrong return type]",
@@ -1218,7 +1201,7 @@ InvokeResult PythonEngine::parse_return_value_(const py::object &ret, const char
 InvokeResult PythonEngine::on_python_error_(const char *callback_name,
                                              const py::error_already_set &e)
 {
-    api_->core()->inc_script_errors();
+    api_->core()->inc_script_error_count();
     LOGGER_ERROR("[{}] {} error: {}", log_tag_, callback_name, e.what());
 
     if (stop_on_script_error_)

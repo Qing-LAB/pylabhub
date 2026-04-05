@@ -162,8 +162,9 @@ class ScriptEngine
     /**
      * @brief Create the interpreter/state and apply sandbox.
      *
-     * Sets owner_thread_id_ and ctx_.core. On success, sets accepting_=true.
-     * On failure, accepting_ stays false. Calls init_engine_() for specifics.
+     * Sets owner_thread_id_. State transitions to Initialized on success,
+     * but accepting_ stays false until build_api() completes.
+     * On failure, state remains Unloaded. Calls init_engine_() for specifics.
      *
      * @param log_tag Tag for log messages (e.g., "prod").
      * @param core    Pointer to RoleHostCore — provides metrics counters

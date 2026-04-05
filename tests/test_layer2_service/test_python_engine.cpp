@@ -32,6 +32,8 @@
 #include "engine_module_params.hpp"
 #include "utils/role_host_core.hpp"
 
+#include "utils/schema_utils.hpp"
+
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -987,8 +989,8 @@ TEST_F(PythonEngineTest, MetricsClosures_ReadFromRoleHostCounters)
         "    return False\n");
 
     RoleHostCore core;
-    core.test_set_out_written(42);
-    core.test_set_drops(7);
+    core.test_set_out_slots_written(42);
+    core.test_set_out_drop_count(7);
 
     PythonEngine engine;
     ASSERT_TRUE(setup_engine_with_core(engine, core));
@@ -1013,7 +1015,7 @@ TEST_F(PythonEngineTest, MetricsClosures_InReceivedWorks)
         "    return True\n");
 
     RoleHostCore core;
-    core.test_set_in_received(15);
+    core.test_set_in_slots_received(15);
 
     PythonEngine engine;
     engine.set_python_venv("");
@@ -1444,7 +1446,7 @@ def bad_func():
     ASSERT_TRUE(setup_engine_with_core(engine, core));
 
     EXPECT_FALSE(engine.invoke("bad_func"));
-    EXPECT_EQ(core.script_errors(), 1u);
+    EXPECT_EQ(core.script_error_count(), 1u);
     engine.finalize();
 }
 
@@ -2555,6 +2557,11 @@ TEST_F(PythonEngineTest, FullStartup_Producer_SlotAndFlexzone)
     params.out_fz_spec       = simple_schema();
     params.out_packing       = "aligned";
 
+    // Role hosts set flexzone spec on core before engine startup (page-aligned).
+    core.set_out_fz_spec(params.out_fz_spec,
+                         pylabhub::hub::align_to_physical_page(
+                             pylabhub::hub::compute_schema_size(params.out_fz_spec, params.out_packing)));
+
     engine.set_python_venv("");
     ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
 
@@ -2564,9 +2571,11 @@ TEST_F(PythonEngineTest, FullStartup_Producer_SlotAndFlexzone)
     EXPECT_TRUE(core.has_out_fz());
     EXPECT_GT(core.out_schema_fz_size(), 0u);
 
-    // Cross-check: engine type size must match infrastructure-computed size.
-    EXPECT_EQ(engine.type_sizeof("OutFlexFrame"), core.out_schema_fz_size())
-        << "Engine-built type size must match compute_field_layout result";
+    // Cross-check: engine type size must match schema logical size.
+    // core.out_schema_fz_size() is page-aligned (physical); engine type is logical.
+    EXPECT_EQ(engine.type_sizeof("OutFlexFrame"),
+              pylabhub::hub::compute_schema_size(params.out_fz_spec, params.out_packing))
+        << "Engine-built type size must match schema logical size";
 
     float slot_buf = 0.0f;
     float fz_buf   = 0.0f;
@@ -2657,6 +2666,232 @@ TEST_F(PythonEngineTest, FullStartup_Processor)
         InvokeTx{&out_data, sizeof(out_data), nullptr, 0}, msgs);
     EXPECT_EQ(result, InvokeResult::Commit);
     EXPECT_FLOAT_EQ(out_data, 10.0f);
+
+    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+}
+
+// ============================================================================
+// Schema logical size — complex schemas, aligned vs packed, slot + flexzone
+// ============================================================================
+
+/// Complex slot schema: float64 + uint8 + int32 — padding-sensitive.
+SchemaSpec padding_schema()
+{
+    SchemaSpec spec;
+    spec.has_schema = true;
+    spec.fields.push_back({"ts",     "float64", 1, 0});
+    spec.fields.push_back({"flag",   "uint8",   1, 0});
+    spec.fields.push_back({"count",  "int32",   1, 0});
+    return spec;
+}
+
+/// Complex slot schema: mixed types, arrays, blobs — exercises all alignment paths.
+SchemaSpec complex_mixed_schema()
+{
+    SchemaSpec spec;
+    spec.has_schema = true;
+    spec.fields.push_back({"timestamp", "float64", 1, 0});
+    spec.fields.push_back({"data",      "float32", 3, 0});
+    spec.fields.push_back({"status",    "uint16",  1, 0});
+    spec.fields.push_back({"raw",       "bytes",   1, 5});
+    spec.fields.push_back({"label",     "string",  1, 16});
+    spec.fields.push_back({"seq",       "int64",   1, 0});
+    return spec;
+}
+
+/// Flexzone schema: uint32 + float64[2] — padding between scalar and array.
+SchemaSpec fz_array_schema()
+{
+    SchemaSpec spec;
+    spec.has_schema = true;
+    spec.fields.push_back({"version", "uint32",  1, 0});
+    spec.fields.push_back({"values",  "float64", 2, 0});
+    return spec;
+}
+
+TEST_F(PythonEngineTest, SlotLogicalSize_Aligned_PaddingSensitive)
+{
+    // Script reads api.slot_logical_size() and asserts against expected value.
+    write_script(
+        "def on_produce(tx, msgs, api):\n"
+        "    sz = api.slot_logical_size()\n"
+        "    assert sz == 16, f'expected 16, got {sz}'\n"
+        "    return False\n");
+
+    PythonEngine engine;
+    RoleHostCore core;
+    auto api = make_api(core, "prod");
+
+    auto slot_spec = padding_schema();
+    slot_spec.packing = "aligned";
+    core.set_out_slot_spec(SchemaSpec{slot_spec},
+                           pylabhub::hub::compute_schema_size(slot_spec, "aligned"));
+
+    pylabhub::scripting::EngineModuleParams params;
+    params.engine            = &engine;
+    params.api               = api.get();
+    params.tag               = "prod";
+    params.script_dir        = tmp_ / "script" / "python";
+    params.entry_point       = "__init__.py";
+    params.required_callback = "on_produce";
+    params.out_slot_spec     = slot_spec;
+    params.out_packing       = "aligned";
+
+    engine.set_python_venv("");
+    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+
+    // C++ side: verify compute_schema_size matches engine type_sizeof.
+    size_t logical = pylabhub::hub::compute_schema_size(slot_spec, "aligned");
+    EXPECT_EQ(logical, 16u);
+    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), logical);
+    EXPECT_EQ(core.out_slot_logical_size(), logical);
+
+    float buf[4] = {};
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(InvokeTx{buf, sizeof(buf), nullptr, 0}, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+
+    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+}
+
+TEST_F(PythonEngineTest, SlotLogicalSize_Packed_NoPadding)
+{
+    write_script(
+        "def on_produce(tx, msgs, api):\n"
+        "    sz = api.slot_logical_size()\n"
+        "    assert sz == 13, f'expected 13, got {sz}'\n"
+        "    return False\n");
+
+    PythonEngine engine;
+    RoleHostCore core;
+    auto api = make_api(core, "prod");
+
+    auto slot_spec = padding_schema();
+    slot_spec.packing = "packed";
+    core.set_out_slot_spec(SchemaSpec{slot_spec},
+                           pylabhub::hub::compute_schema_size(slot_spec, "packed"));
+
+    pylabhub::scripting::EngineModuleParams params;
+    params.engine            = &engine;
+    params.api               = api.get();
+    params.tag               = "prod";
+    params.script_dir        = tmp_ / "script" / "python";
+    params.entry_point       = "__init__.py";
+    params.required_callback = "on_produce";
+    params.out_slot_spec     = slot_spec;
+    params.out_packing       = "packed";
+
+    engine.set_python_venv("");
+    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+
+    size_t logical = pylabhub::hub::compute_schema_size(slot_spec, "packed");
+    EXPECT_EQ(logical, 13u);
+    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), logical);
+    EXPECT_EQ(core.out_slot_logical_size(), logical);
+
+    uint8_t buf[16] = {};
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(InvokeTx{buf, sizeof(buf), nullptr, 0}, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+
+    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+}
+
+TEST_F(PythonEngineTest, SlotLogicalSize_ComplexMixed_Aligned)
+{
+    write_script(
+        "def on_produce(tx, msgs, api):\n"
+        "    sz = api.slot_logical_size()\n"
+        "    assert sz == 56, f'expected 56, got {sz}'\n"
+        "    return False\n");
+
+    PythonEngine engine;
+    RoleHostCore core;
+    auto api = make_api(core, "prod");
+
+    auto slot_spec = complex_mixed_schema();
+    slot_spec.packing = "aligned";
+    core.set_out_slot_spec(SchemaSpec{slot_spec},
+                           pylabhub::hub::compute_schema_size(slot_spec, "aligned"));
+
+    pylabhub::scripting::EngineModuleParams params;
+    params.engine            = &engine;
+    params.api               = api.get();
+    params.tag               = "prod";
+    params.script_dir        = tmp_ / "script" / "python";
+    params.entry_point       = "__init__.py";
+    params.required_callback = "on_produce";
+    params.out_slot_spec     = slot_spec;
+    params.out_packing       = "aligned";
+
+    engine.set_python_venv("");
+    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+
+    size_t logical = pylabhub::hub::compute_schema_size(slot_spec, "aligned");
+    EXPECT_EQ(logical, 56u);
+    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), logical);
+
+    uint8_t buf[64] = {};
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(InvokeTx{buf, sizeof(buf), nullptr, 0}, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+
+    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+}
+
+TEST_F(PythonEngineTest, FlexzoneLogicalSize_ArrayFields)
+{
+    // Slot + flexzone with different schemas — both logical sizes accessible.
+    write_script(
+        "def on_produce(tx, msgs, api):\n"
+        "    slot_sz = api.slot_logical_size()\n"
+        "    fz_sz = api.flexzone_logical_size()\n"
+        "    assert slot_sz == 16, f'slot: expected 16, got {slot_sz}'\n"
+        "    assert fz_sz == 24, f'fz: expected 24, got {fz_sz}'\n"
+        "    return False\n");
+
+    PythonEngine engine;
+    RoleHostCore core;
+    auto api = make_api(core, "prod");
+
+    auto slot_spec = padding_schema();
+    slot_spec.packing = "aligned";
+    auto fz_spec = fz_array_schema();
+    fz_spec.packing = "aligned";
+
+    core.set_out_slot_spec(SchemaSpec{slot_spec},
+                           pylabhub::hub::compute_schema_size(slot_spec, "aligned"));
+    core.set_out_fz_spec(SchemaSpec{fz_spec},
+                         pylabhub::hub::align_to_physical_page(
+                             pylabhub::hub::compute_schema_size(fz_spec, "aligned")));
+
+    pylabhub::scripting::EngineModuleParams params;
+    params.engine            = &engine;
+    params.api               = api.get();
+    params.tag               = "prod";
+    params.script_dir        = tmp_ / "script" / "python";
+    params.entry_point       = "__init__.py";
+    params.required_callback = "on_produce";
+    params.out_slot_spec     = slot_spec;
+    params.out_fz_spec       = fz_spec;
+    params.out_packing       = "aligned";
+
+    engine.set_python_venv("");
+    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+
+    // C++ cross-checks.
+    EXPECT_EQ(pylabhub::hub::compute_schema_size(slot_spec, "aligned"), 16u);
+    EXPECT_EQ(pylabhub::hub::compute_schema_size(fz_spec, "aligned"), 24u);
+    EXPECT_EQ(core.out_slot_logical_size(), 16u);
+    EXPECT_EQ(core.out_schema_fz_size(), 4096u); // page-aligned physical
+    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 16u);
+    EXPECT_EQ(engine.type_sizeof("OutFlexFrame"), 24u);
+
+    uint8_t slot_buf[16] = {};
+    uint8_t fz_buf[24] = {};
+    std::vector<IncomingMessage> msgs;
+    engine.invoke_produce(InvokeTx{slot_buf, sizeof(slot_buf), fz_buf, sizeof(fz_buf)}, msgs);
+    EXPECT_EQ(engine.script_error_count(), 0u);
 
     pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
 }

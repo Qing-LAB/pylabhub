@@ -114,7 +114,7 @@ class PythonEngine : public ScriptEngine
 
     [[nodiscard]] uint64_t script_error_count() const noexcept override
     {
-        return api_ ? api_->core()->script_errors() : 0;
+        return api_ ? api_->core()->script_error_count() : 0;
     }
 
     // ── Threading ──────────────────────────────────────────────────────────
@@ -175,7 +175,7 @@ class PythonEngine : public ScriptEngine
     hub::SchemaSpec fz_alias_spec_;                 ///< Alias spec
     hub::SchemaSpec inbox_spec_;
 
-    // script_errors is in ctx_.core->script_errors_ (RoleHostCore).
+    // script_error_count is in api_->core()->script_error_count_ (RoleHostCore).
 
     // GIL stays held on the worker thread (py::scoped_interpreter holds it).
     // Each invoke_*() uses py::gil_scoped_acquire which is reentrant (no-op).

@@ -80,7 +80,26 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
         return script_load_ok_.load(std::memory_order_acquire);
     }
 
-    // ── Directional flexzone schema (set once during init) ────────────────
+    // ── Directional slot schema + logical size (set once during init) ──────
+
+    void set_in_slot_spec(hub::SchemaSpec spec, size_t logical_size) noexcept
+    {
+        in_slot_spec_         = std::move(spec);
+        in_slot_logical_size_ = logical_size;
+    }
+    void set_out_slot_spec(hub::SchemaSpec spec, size_t logical_size) noexcept
+    {
+        out_slot_spec_         = std::move(spec);
+        out_slot_logical_size_ = logical_size;
+    }
+    [[nodiscard]] const hub::SchemaSpec &in_slot_spec()         const noexcept { return in_slot_spec_; }
+    [[nodiscard]] const hub::SchemaSpec &out_slot_spec()        const noexcept { return out_slot_spec_; }
+    [[nodiscard]] size_t  in_slot_logical_size()  const noexcept { return in_slot_logical_size_; }
+    [[nodiscard]] size_t  out_slot_logical_size() const noexcept { return out_slot_logical_size_; }
+    [[nodiscard]] bool    has_in_slot()           const noexcept { return in_slot_spec_.has_schema; }
+    [[nodiscard]] bool    has_out_slot()          const noexcept { return out_slot_spec_.has_schema; }
+
+    // ── Directional flexzone schema + physical size (set once during init) ──
 
     void set_in_fz_spec(hub::SchemaSpec spec, size_t fz_size) noexcept
     {
@@ -94,10 +113,10 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     }
     [[nodiscard]] const hub::SchemaSpec &in_fz_spec()        const noexcept { return in_fz_spec_; }
     [[nodiscard]] const hub::SchemaSpec &out_fz_spec()       const noexcept { return out_fz_spec_; }
-    [[nodiscard]] size_t            in_schema_fz_size() const noexcept { return in_schema_fz_size_; }
-    [[nodiscard]] size_t            out_schema_fz_size()const noexcept { return out_schema_fz_size_; }
-    [[nodiscard]] bool              has_in_fz()         const noexcept { return in_fz_spec_.has_schema; }
-    [[nodiscard]] bool              has_out_fz()        const noexcept { return out_fz_spec_.has_schema; }
+    [[nodiscard]] size_t  in_schema_fz_size()  const noexcept { return in_schema_fz_size_; }
+    [[nodiscard]] size_t  out_schema_fz_size() const noexcept { return out_schema_fz_size_; }
+    [[nodiscard]] bool    has_in_fz()          const noexcept { return in_fz_spec_.has_schema; }
+    [[nodiscard]] bool    has_out_fz()         const noexcept { return out_fz_spec_.has_schema; }
 
     // ── Inbox cache (role-level, shared across engine states) ────────────
 
@@ -261,10 +280,14 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
 
     // ── Metric accessors (read) ──────────────────────────────────────────
 
-    [[nodiscard]] uint64_t out_written()       const noexcept { return out_written_.load(std::memory_order_relaxed); }
-    [[nodiscard]] uint64_t in_received()       const noexcept { return in_received_.load(std::memory_order_relaxed); }
-    [[nodiscard]] uint64_t drops()             const noexcept { return drops_.load(std::memory_order_relaxed); }
-    [[nodiscard]] uint64_t script_errors()     const noexcept { return script_errors_.load(std::memory_order_relaxed); }
+    /// Slots successfully committed to output queue (producer/processor only).
+    [[nodiscard]] uint64_t out_slots_written() const noexcept { return out_slots_written_.load(std::memory_order_relaxed); }
+    /// Slots successfully read from input queue (consumer/processor only).
+    [[nodiscard]] uint64_t in_slots_received() const noexcept { return in_slots_received_.load(std::memory_order_relaxed); }
+    /// Output slots discarded: on_produce returned False, or output acquire failed (producer/processor only).
+    [[nodiscard]] uint64_t out_drop_count()    const noexcept { return out_drop_count_.load(std::memory_order_relaxed); }
+    /// Script callback errors (all roles): exceptions, None returns, type mismatches.
+    [[nodiscard]] uint64_t script_error_count() const noexcept { return script_error_count_.load(std::memory_order_relaxed); }
     [[nodiscard]] uint64_t iteration_count()   const noexcept { return iteration_count_.load(std::memory_order_relaxed); }
     [[nodiscard]] uint64_t last_cycle_work_us()  const noexcept { return last_cycle_work_us_.load(std::memory_order_relaxed); }
     [[nodiscard]] uint64_t loop_overrun_count() const noexcept { return loop_overrun_count_.load(std::memory_order_relaxed); }
@@ -291,10 +314,10 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
 
     // ── Metric mutators (write) ──────────────────────────────────────────
 
-    void inc_out_written()       noexcept { out_written_.fetch_add(1, std::memory_order_relaxed); }
-    void inc_in_received()       noexcept { in_received_.fetch_add(1, std::memory_order_relaxed); }
-    void inc_drops()             noexcept { drops_.fetch_add(1, std::memory_order_relaxed); }
-    void inc_script_errors()     noexcept { script_errors_.fetch_add(1, std::memory_order_relaxed); }
+    void inc_out_slots_written() noexcept { out_slots_written_.fetch_add(1, std::memory_order_relaxed); }
+    void inc_in_slots_received() noexcept { in_slots_received_.fetch_add(1, std::memory_order_relaxed); }
+    void inc_out_drop_count()    noexcept { out_drop_count_.fetch_add(1, std::memory_order_relaxed); }
+    void inc_script_error_count() noexcept { script_error_count_.fetch_add(1, std::memory_order_relaxed); }
     void inc_iteration_count()   noexcept { iteration_count_.fetch_add(1, std::memory_order_relaxed); }
 
     void set_last_cycle_work_us(uint64_t v) noexcept { last_cycle_work_us_.store(v, std::memory_order_relaxed); }
@@ -303,9 +326,9 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
 #ifdef PYLABHUB_BUILD_TESTS
     /// Test-only: directly set counter values for test setup.
     /// Production code should use inc_*() only.
-    void test_set_out_written(uint64_t v) noexcept { out_written_.store(v, std::memory_order_relaxed); }
-    void test_set_in_received(uint64_t v) noexcept { in_received_.store(v, std::memory_order_relaxed); }
-    void test_set_drops(uint64_t v)       noexcept { drops_.store(v, std::memory_order_relaxed); }
+    void test_set_out_slots_written(uint64_t v) noexcept { out_slots_written_.store(v, std::memory_order_relaxed); }
+    void test_set_in_slots_received(uint64_t v) noexcept { in_slots_received_.store(v, std::memory_order_relaxed); }
+    void test_set_out_drop_count(uint64_t v)    noexcept { out_drop_count_.store(v, std::memory_order_relaxed); }
 #endif
 
   private:
@@ -316,10 +339,10 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     std::atomic<int>      stop_reason_{0};
 
     // ── Metrics ───────────────────────────────────────────────────────────
-    std::atomic<uint64_t> script_errors_{0};
-    std::atomic<uint64_t> out_written_{0};
-    std::atomic<uint64_t> in_received_{0};
-    std::atomic<uint64_t> drops_{0};
+    std::atomic<uint64_t> script_error_count_{0};  ///< Script callback errors (all roles).
+    std::atomic<uint64_t> out_slots_written_{0};  ///< Output slots committed (producer/processor).
+    std::atomic<uint64_t> in_slots_received_{0};  ///< Input slots consumed (consumer/processor).
+    std::atomic<uint64_t> out_drop_count_{0};     ///< Output slots discarded (producer/processor).
     std::atomic<uint64_t> iteration_count_{0};
     std::atomic<uint64_t> last_cycle_work_us_{0};
     std::atomic<uint64_t> loop_overrun_count_{0}; ///< Cycles where now > deadline (set by main loop).
@@ -336,6 +359,10 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     // ── Init-time state (set once, read during loop) ─────────────────────
     bool              validate_only_{false};
     std::atomic<bool> script_load_ok_{false};
+    hub::SchemaSpec in_slot_spec_;
+    hub::SchemaSpec out_slot_spec_;
+    size_t     in_slot_logical_size_{0};
+    size_t     out_slot_logical_size_{0};
     hub::SchemaSpec in_fz_spec_;
     hub::SchemaSpec out_fz_spec_;
     size_t     in_schema_fz_size_{0};
