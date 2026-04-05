@@ -113,25 +113,25 @@ const char *ctx_stop_reason(const PlhNativeContext *ctx)
     return buf.c_str();
 }
 
-uint64_t ctx_out_written(const PlhNativeContext *ctx)
+uint64_t ctx_out_slots_written(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_core) return 0;
     return static_cast<RoleHostCore *>(ctx->_core)->out_slots_written();
 }
 
-uint64_t ctx_in_received(const PlhNativeContext *ctx)
+uint64_t ctx_in_slots_received(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_core) return 0;
     return static_cast<RoleHostCore *>(ctx->_core)->in_slots_received();
 }
 
-uint64_t ctx_drops(const PlhNativeContext *ctx)
+uint64_t ctx_out_drop_count(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_core) return 0;
     return static_cast<RoleHostCore *>(ctx->_core)->out_drop_count();
 }
 
-uint64_t ctx_script_errors(const PlhNativeContext *ctx)
+uint64_t ctx_script_error_count(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_core) return 0;
     return static_cast<RoleHostCore *>(ctx->_core)->script_error_count();
@@ -147,6 +147,96 @@ uint64_t ctx_last_cycle_work_us(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_core) return 0;
     return static_cast<RoleHostCore *>(ctx->_core)->last_cycle_work_us();
+}
+
+// ── Spinlock functions ──────────────────────────────────────────────────────
+
+static std::optional<ChannelSide> side_from_int(int side)
+{
+    if (side == PLH_SIDE_AUTO) return std::nullopt;
+    return static_cast<ChannelSide>(side);
+}
+
+int ctx_spinlock_lock(const PlhNativeContext *ctx, int index, int side, int timeout_ms)
+{
+    if (!ctx || !ctx->_api) return 0;
+    auto *api = static_cast<RoleAPIBase *>(ctx->_api);
+    try
+    {
+        auto lock = api->get_spinlock(static_cast<size_t>(index), side_from_int(side));
+        return lock.try_lock_for(timeout_ms) ? 1 : 0;
+    }
+    catch (...) { return 0; }
+}
+
+void ctx_spinlock_unlock(const PlhNativeContext *ctx, int index, int side)
+{
+    if (!ctx || !ctx->_api) return;
+    auto *api = static_cast<RoleAPIBase *>(ctx->_api);
+    try
+    {
+        auto lock = api->get_spinlock(static_cast<size_t>(index), side_from_int(side));
+        lock.unlock();
+    }
+    catch (...) {}
+}
+
+uint32_t ctx_spinlock_count(const PlhNativeContext *ctx, int side)
+{
+    if (!ctx || !ctx->_api) return 0;
+    auto *api = static_cast<RoleAPIBase *>(ctx->_api);
+    try { return api->spinlock_count(side_from_int(side)); }
+    catch (...) { return 0; }
+}
+
+int ctx_spinlock_is_locked(const PlhNativeContext *ctx, int index, int side)
+{
+    if (!ctx || !ctx->_api) return 0;
+    auto *api = static_cast<RoleAPIBase *>(ctx->_api);
+    try
+    {
+        auto lock = api->get_spinlock(static_cast<size_t>(index), side_from_int(side));
+        return lock.is_locked_by_current_process() ? 1 : 0;
+    }
+    catch (...) { return 0; }
+}
+
+// ── Schema size functions ───────────────────────────────────────────────────
+
+size_t ctx_slot_logical_size(const PlhNativeContext *ctx, int side)
+{
+    if (!ctx || !ctx->_api) return 0;
+    auto *api = static_cast<RoleAPIBase *>(ctx->_api);
+    try { return api->slot_logical_size(side_from_int(side)); }
+    catch (...) { return 0; }
+}
+
+size_t ctx_flexzone_logical_size(const PlhNativeContext *ctx, int side)
+{
+    if (!ctx || !ctx->_api) return 0;
+    auto *api = static_cast<RoleAPIBase *>(ctx->_api);
+    try { return api->flexzone_logical_size(side_from_int(side)); }
+    catch (...) { return 0; }
+}
+
+// ── Channel messaging functions ─────────────────────────────────────────────
+
+int ctx_broadcast(const PlhNativeContext *ctx, const void *data, size_t size)
+{
+    if (!ctx || !ctx->_api) return 0;
+    return static_cast<RoleAPIBase *>(ctx->_api)->broadcast(data, size) ? 1 : 0;
+}
+
+int ctx_send(const PlhNativeContext *ctx, const char *identity_hex, const void *data, size_t size)
+{
+    if (!ctx || !ctx->_api || !identity_hex) return 0;
+    return static_cast<RoleAPIBase *>(ctx->_api)->send(identity_hex, data, size) ? 1 : 0;
+}
+
+int ctx_wait_for_role(const PlhNativeContext *ctx, const char *uid, int timeout_ms)
+{
+    if (!ctx || !ctx->_api || !uid) return 0;
+    return static_cast<RoleAPIBase *>(ctx->_api)->wait_for_role(uid, timeout_ms) ? 1 : 0;
 }
 
 } // anonymous namespace
@@ -169,7 +259,7 @@ struct NativeEngine::NativeContextStorage
     std::string role_dir;
     std::string log_label;  ///< e.g. "[native libfoo.so]"
 
-    void wire(RoleHostCore *core)
+    void wire(RoleHostCore *core, RoleAPIBase *api)
     {
         // Identity strings.
         ctx.role_tag    = role_tag.c_str();
@@ -184,6 +274,7 @@ struct NativeEngine::NativeContextStorage
         ctx._magic     = PLH_CONTEXT_MAGIC;
         ctx._magic_end = PLH_CONTEXT_MAGIC;
         ctx._core = core;
+        ctx._api  = api;
         ctx._log_label = log_label.c_str();
 
         // Framework API function pointers.
@@ -194,12 +285,27 @@ struct NativeEngine::NativeContextStorage
         ctx.set_critical_error = ctx_set_critical_error;
         ctx.is_critical_error  = ctx_is_critical_error;
         ctx.stop_reason        = ctx_stop_reason;
-        ctx.out_written        = ctx_out_written;
-        ctx.in_received        = ctx_in_received;
-        ctx.drops              = ctx_drops;
-        ctx.script_errors      = ctx_script_errors;
+        ctx.out_slots_written  = ctx_out_slots_written;
+        ctx.in_slots_received  = ctx_in_slots_received;
+        ctx.out_drop_count     = ctx_out_drop_count;
+        ctx.script_error_count = ctx_script_error_count;
         ctx.loop_overrun_count = ctx_loop_overrun_count;
         ctx.last_cycle_work_us = ctx_last_cycle_work_us;
+
+        // Spinlock
+        ctx.spinlock_lock      = ctx_spinlock_lock;
+        ctx.spinlock_unlock    = ctx_spinlock_unlock;
+        ctx.spinlock_count     = ctx_spinlock_count;
+        ctx.spinlock_is_locked = ctx_spinlock_is_locked;
+
+        // Schema sizes
+        ctx.slot_logical_size    = ctx_slot_logical_size;
+        ctx.flexzone_logical_size = ctx_flexzone_logical_size;
+
+        // Channel messaging
+        ctx.broadcast      = ctx_broadcast;
+        ctx.send           = ctx_send;
+        ctx.wait_for_role  = ctx_wait_for_role;
     }
 };
 
@@ -332,7 +438,7 @@ bool NativeEngine::build_api_(RoleAPIBase &api)
     native_ctx_->log_level   = api.log_level();
     native_ctx_->log_label   = "[native " + lib_path_.filename().string() + "]";
     native_ctx_->role_dir    = api.role_dir();
-    native_ctx_->wire(api.core());
+    native_ctx_->wire(api.core(), &api);
 
     if (!fn_init_(&native_ctx_->ctx))
     {
