@@ -12,13 +12,18 @@
 
 #include "engine_module_params.hpp"
 #include "native_engine.hpp"
+#include "utils/broker_service.hpp"
 #include "utils/role_host_core.hpp"
 #include "utils/schema_utils.hpp"
+#include "plh_datahub.hpp"
 
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -57,6 +62,16 @@ fs::path good_plugin_path()
     fs::path p = dir / "libtest_good_producer_plugin.so";
 #endif
     return p;
+}
+
+std::vector<pylabhub::hub::SchemaFieldDesc> make_zmq_schema(
+    const std::string &type_str, uint32_t count = 1, uint32_t length = 0)
+{
+    pylabhub::hub::SchemaFieldDesc f;
+    f.type_str = type_str;
+    f.count    = count;
+    f.length   = length;
+    return {f};
 }
 
 SchemaSpec simple_schema()
@@ -523,6 +538,132 @@ TEST_F(NativeEngineTest, FullStartup_Processor)
     EXPECT_FLOAT_EQ(out_data, 10.0f); // 5.0 * 2.0
 
     pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+}
+
+// ============================================================================
+// L3: Native engine with real infrastructure (broker + SHM + data round-trip)
+// ============================================================================
+
+TEST_F(NativeEngineTest, L3_ProduceToSHM_ConsumerReadsBack)
+{
+    // Initialize lifecycle modules (broker needs Logger, Crypto, Hub modules).
+    pylabhub::utils::LifecycleGuard guard(pylabhub::utils::MakeModDefList(
+        pylabhub::utils::Logger::GetLifecycleModule(),
+        pylabhub::crypto::GetLifecycleModule(),
+        pylabhub::hub::GetLifecycleModule()));
+
+    // Start broker.
+    using ReadyInfo = std::pair<std::string, std::string>;
+    auto promise = std::make_shared<std::promise<ReadyInfo>>();
+    auto future  = promise->get_future();
+    pylabhub::broker::BrokerService::Config broker_cfg;
+    broker_cfg.endpoint  = "tcp://127.0.0.1:0";
+    broker_cfg.use_curve = true;
+    broker_cfg.on_ready  = [promise](const std::string &ep, const std::string &pk) {
+        promise->set_value({ep, pk});
+    };
+    auto broker = std::make_unique<pylabhub::broker::BrokerService>(std::move(broker_cfg));
+    auto *broker_raw = broker.get();
+    std::thread broker_thread([broker_raw]() { broker_raw->run(); });
+    auto [broker_ep, broker_pk] = future.get();
+
+    // Connect messenger.
+    auto &messenger = pylabhub::hub::Messenger::get_instance();
+    ASSERT_TRUE(messenger.connect(broker_ep, broker_pk));
+
+    // Create producer with SHM.
+    auto schema = make_zmq_schema("float32");
+    std::string channel = "test.native.l3." +
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+
+    pylabhub::hub::ProducerOptions popts;
+    popts.channel_name   = channel;
+    popts.pattern        = pylabhub::hub::ChannelPattern::PubSub;
+    popts.has_shm        = true;
+    popts.zmq_schema     = schema;
+    popts.shm_config.physical_page_size   = pylabhub::hub::DataBlockPageSize::Size4K;
+    popts.shm_config.logical_unit_size    = 4096;
+    popts.shm_config.ring_buffer_capacity = 4;
+    popts.shm_config.policy               = pylabhub::hub::DataBlockPolicy::RingBuffer;
+    popts.shm_config.consumer_sync_policy = pylabhub::hub::ConsumerSyncPolicy::Latest_only;
+    popts.shm_config.shared_secret        = 0xDEADBEEFCAFEBABEULL;
+    popts.timeout_ms     = 3000;
+
+    auto producer = pylabhub::hub::Producer::create(messenger, popts);
+    ASSERT_TRUE(producer.has_value());
+    EXPECT_TRUE(producer->start_queue());
+
+    // Wire RoleAPIBase with real Producer.
+    RoleHostCore core;
+    auto spec = simple_schema();
+    core.set_out_slot_spec(SchemaSpec{spec},
+                           pylabhub::hub::compute_schema_size(spec, "aligned"));
+
+    auto api = std::make_unique<RoleAPIBase>(core);
+    api->set_role_tag("prod");
+    api->set_uid("PROD-NativeL3-001");
+    api->set_name("NativeL3");
+    api->set_channel(channel);
+    api->set_log_level("error");
+    api->set_producer(&*producer);
+
+    // Load native engine via lifecycle startup.
+    NativeEngine engine;
+
+    pylabhub::scripting::EngineModuleParams params;
+    params.engine            = &engine;
+    params.api               = api.get();
+    params.tag               = "prod";
+    params.script_dir        = good_plugin_path().parent_path();
+    params.entry_point       = good_plugin_path().filename().string();
+    params.required_callback = "on_produce";
+    params.out_slot_spec     = spec;
+    params.out_packing       = "aligned";
+
+    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+
+    // Produce a slot via native engine.
+    void *slot = producer->write_acquire(std::chrono::milliseconds{1000});
+    ASSERT_NE(slot, nullptr);
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_produce(InvokeTx{slot, 4096, nullptr, 0}, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+    producer->write_commit();
+
+    // Consumer reads back from SHM.
+    pylabhub::hub::ConsumerOptions copts;
+    copts.channel_name      = channel;
+    copts.shm_shared_secret = 0xDEADBEEFCAFEBABEULL;
+    copts.zmq_schema        = schema;
+    copts.timeout_ms        = 3000;
+
+    auto consumer = pylabhub::hub::Consumer::connect(messenger, copts);
+    ASSERT_TRUE(consumer.has_value());
+    EXPECT_TRUE(consumer->start_queue());
+
+    const void *data = consumer->read_acquire(std::chrono::milliseconds{2000});
+    ASSERT_NE(data, nullptr) << "Consumer should read the slot written by native engine";
+    EXPECT_FLOAT_EQ(*static_cast<const float *>(data), 42.0f)
+        << "Native module should have written 42.0 to slot";
+    consumer->read_release();
+
+    // Verify spinlock access through RoleAPIBase with real SHM.
+    using Side = pylabhub::scripting::ChannelSide;
+    EXPECT_EQ(api->spinlock_count(Side::Tx), 8u);
+    auto lock = api->get_spinlock(0, Side::Tx);
+    ASSERT_TRUE(lock.try_lock_for(0));
+    lock.unlock();
+
+    // Verify schema logical size matches.
+    EXPECT_EQ(api->slot_logical_size(Side::Tx), 4u);
+
+    // Cleanup.
+    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+    consumer->close();
+    producer->close();
+    messenger.disconnect();
+    broker->stop();
+    broker_thread.join();
 }
 
 } // anonymous namespace
