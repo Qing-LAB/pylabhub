@@ -126,16 +126,36 @@ typedef struct
     /** Get stop reason string: "normal", "peer_dead", "hub_dead", "critical_error". */
     const char *(*stop_reason)(const struct PlhNativeContext *ctx);
 
-    /** Query counters. */
-    uint64_t (*out_written)(const struct PlhNativeContext *ctx);
-    uint64_t (*in_received)(const struct PlhNativeContext *ctx);
-    uint64_t (*drops)(const struct PlhNativeContext *ctx);
-    uint64_t (*script_errors)(const struct PlhNativeContext *ctx);
+    /** Query counters (consistent names across all engines). */
+    uint64_t (*out_slots_written)(const struct PlhNativeContext *ctx);
+    uint64_t (*in_slots_received)(const struct PlhNativeContext *ctx);
+    uint64_t (*out_drop_count)(const struct PlhNativeContext *ctx);
+    uint64_t (*script_error_count)(const struct PlhNativeContext *ctx);
     uint64_t (*loop_overrun_count)(const struct PlhNativeContext *ctx);
     uint64_t (*last_cycle_work_us)(const struct PlhNativeContext *ctx);
 
+    /** Spinlock — side: PLH_SIDE_TX (0), PLH_SIDE_RX (1), or -1 for auto.
+     *  lock returns 1 on success, 0 on timeout. timeout_ms: -1=infinite, 0=try, >0=wait. */
+    int      (*spinlock_lock)(const struct PlhNativeContext *ctx, int index, int side, int timeout_ms);
+    void     (*spinlock_unlock)(const struct PlhNativeContext *ctx, int index, int side);
+    uint32_t (*spinlock_count)(const struct PlhNativeContext *ctx, int side);
+    /** Check if spinlock is held by this process. Returns 1 or 0. */
+    int      (*spinlock_is_locked)(const struct PlhNativeContext *ctx, int index, int side);
+
+    /** Schema sizes (logical = C struct size). side: PLH_SIDE_TX/RX or -1 for auto. */
+    size_t   (*slot_logical_size)(const struct PlhNativeContext *ctx, int side);
+    size_t   (*flexzone_logical_size)(const struct PlhNativeContext *ctx, int side);
+
+    /** Channel messaging. Returns 1 on success, 0 on failure. */
+    int      (*broadcast)(const struct PlhNativeContext *ctx, const void *data, size_t size);
+    int      (*send)(const struct PlhNativeContext *ctx, const char *identity_hex, const void *data, size_t size);
+
+    /** Role discovery. Returns 1 if found, 0 on timeout. */
+    int      (*wait_for_role)(const struct PlhNativeContext *ctx, const char *uid, int timeout_ms);
+
     /* ── Opaque host data (do not dereference) ────────────────────── */
     void *_core;               /**< Internal — RoleHostCore pointer for API implementations. */
+    void *_api;                /**< Internal — RoleAPIBase pointer for spinlock/messaging. */
     const char *_log_label;    /**< Internal — log prefix e.g. "[native libfoo.so]" */
 
     uint32_t _magic_end;       /**< Must be PLH_CONTEXT_MAGIC. Trailing sentinel. */
@@ -156,7 +176,15 @@ typedef struct PlhAbiInfo
 } PlhAbiInfo;
 
 /** Current native engine API version. Increment on breaking changes. */
-#define PLH_NATIVE_API_VERSION 1
+#define PLH_NATIVE_API_VERSION 2
+
+/* =========================================================================
+ * Channel side constants (for spinlock, schema size queries)
+ * ========================================================================= */
+
+#define PLH_SIDE_TX  0   /**< Output / producer / Tx side */
+#define PLH_SIDE_RX  1   /**< Input / consumer / Rx side */
+#define PLH_SIDE_AUTO (-1) /**< Auto-select (single-side roles only; errors for processor) */
 
 /* =========================================================================
  * Required symbols (implement these)
@@ -332,12 +360,108 @@ class Context
     }
 
     // ── Counters ────────────────────────────────────────────────────
-    uint64_t out_written()       const { return c_->out_written ? c_->out_written(c_) : 0; }
-    uint64_t in_received()       const { return c_->in_received ? c_->in_received(c_) : 0; }
-    uint64_t drops()             const { return c_->drops ? c_->drops(c_) : 0; }
-    uint64_t script_errors()     const { return c_->script_errors ? c_->script_errors(c_) : 0; }
+    uint64_t out_slots_written() const { return c_->out_slots_written ? c_->out_slots_written(c_) : 0; }
+    uint64_t in_slots_received() const { return c_->in_slots_received ? c_->in_slots_received(c_) : 0; }
+    uint64_t out_drop_count()    const { return c_->out_drop_count ? c_->out_drop_count(c_) : 0; }
+    uint64_t script_error_count() const { return c_->script_error_count ? c_->script_error_count(c_) : 0; }
     uint64_t loop_overrun_count() const { return c_->loop_overrun_count ? c_->loop_overrun_count(c_) : 0; }
     uint64_t last_cycle_work_us() const { return c_->last_cycle_work_us ? c_->last_cycle_work_us(c_) : 0; }
+
+    // ── Spinlock ───────────────────────────────────────────────────
+    bool spinlock_lock(int index, int side = PLH_SIDE_AUTO, int timeout_ms = -1) const
+    {
+        return c_->spinlock_lock ? c_->spinlock_lock(c_, index, side, timeout_ms) != 0 : false;
+    }
+    void spinlock_unlock(int index, int side = PLH_SIDE_AUTO) const
+    {
+        if (c_->spinlock_unlock) c_->spinlock_unlock(c_, index, side);
+    }
+    uint32_t spinlock_count(int side = PLH_SIDE_AUTO) const
+    {
+        return c_->spinlock_count ? c_->spinlock_count(c_, side) : 0;
+    }
+    bool spinlock_is_locked(int index, int side = PLH_SIDE_AUTO) const
+    {
+        return c_->spinlock_is_locked ? c_->spinlock_is_locked(c_, index, side) != 0 : false;
+    }
+
+    /// RAII spinlock guard — releases on scope exit.
+    class SpinLockGuard
+    {
+      public:
+        SpinLockGuard(const Context &api, int index, int side = PLH_SIDE_AUTO,
+                      int timeout_ms = -1)
+            : api_(&api), index_(index), side_(side)
+            , locked_(api.spinlock_lock(index, side, timeout_ms))
+        {}
+        ~SpinLockGuard() { if (locked_) api_->spinlock_unlock(index_, side_); }
+
+        SpinLockGuard(const SpinLockGuard &) = delete;
+        SpinLockGuard &operator=(const SpinLockGuard &) = delete;
+
+        bool owns_lock() const noexcept { return locked_; }
+        explicit operator bool() const noexcept { return locked_; }
+        int index() const noexcept { return index_; }
+        int side() const noexcept { return side_; }
+
+      private:
+        const Context *api_;
+        int index_;
+        int side_;
+        bool locked_;
+    };
+
+    /// Execute fn while holding spinlock acquired by index+side.
+    /// Returns false if lock acquisition fails.
+    /// Exception-safe: RAII guard releases the lock during stack unwinding
+    /// if fn throws — the exception propagates to the caller after release.
+    /// NOT noexcept — fn is free to throw.
+    template <typename Fn>
+    bool with_spinlock(int index, int side, int timeout_ms, Fn &&fn) const
+    {
+        SpinLockGuard guard(*this, index, side, timeout_ms);
+        if (!guard) return false;
+        fn();
+        return true;
+    }
+
+    /// Execute fn while holding an additional recursive lock on an existing guard.
+    /// Safe even if guard already holds the lock (recursive locking increments
+    /// the recursion counter; the inner guard's destructor decrements it).
+    /// Returns false if lock acquisition fails.
+    template <typename Fn>
+    bool with_spinlock(SpinLockGuard &existing, int timeout_ms, Fn &&fn) const
+    {
+        // Re-lock the same index+side — recursive, safe on same thread.
+        SpinLockGuard inner(*this, existing.index(), existing.side(), timeout_ms);
+        if (!inner) return false;
+        fn();
+        return true;
+    }
+
+    // ── Schema sizes ───────────────────────────────────────────────
+    size_t slot_logical_size(int side = PLH_SIDE_AUTO) const
+    {
+        return c_->slot_logical_size ? c_->slot_logical_size(c_, side) : 0;
+    }
+    size_t flexzone_logical_size(int side = PLH_SIDE_AUTO) const
+    {
+        return c_->flexzone_logical_size ? c_->flexzone_logical_size(c_, side) : 0;
+    }
+
+    // ── Channel messaging ──────────────────────────────────────────
+    bool broadcast(const void *data, size_t size) const
+    {
+        return c_->broadcast ? c_->broadcast(c_, data, size) != 0 : false;
+    }
+    bool send(const char *identity_hex, const void *data, size_t size) const
+    {
+        return c_->send ? c_->send(c_, identity_hex, data, size) != 0 : false;
+    }
+    bool wait_for_role(const char *uid, int timeout_ms = 5000) const
+    {
+        return c_->wait_for_role ? c_->wait_for_role(c_, uid, timeout_ms) != 0 : false;
+    }
 
     /// Access the raw C context.
     const PlhNativeContext *raw() const noexcept { return c_; }
