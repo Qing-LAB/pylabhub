@@ -338,51 +338,31 @@ TEST_F(NativeEngineTest, Checksum_EmptyHash_SkipsVerification)
 
 // ============================================================================
 // Native API v2 — counter renames, schema sizes, C++ wrapper
+//
+// The test native module calls v2 function pointers during on_produce and
+// reports results as custom metrics. The test reads these metrics back to
+// verify the C API and C++ wrapper (plh::Context) work correctly inside
+// the native module.
 // ============================================================================
 
-TEST_F(NativeEngineTest, Api_CounterNames_MatchRoleHostCore)
+TEST_F(NativeEngineTest, Api_V2_CountersAndSchemaSize_ThroughNativeModule)
 {
     NativeEngine engine;
     ASSERT_TRUE(engine.initialize("test", &core_));
 
-    auto plugin = good_plugin_path();
-    ASSERT_TRUE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
+    auto lib = good_plugin_path();
+    ASSERT_TRUE(engine.load_script(lib.parent_path(), lib.filename().string(),
                                    "on_produce"));
     auto spec = simple_schema();
     ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
 
-    // Set known counter values before build_api wires the context.
+    // Set known counter values before build_api.
     core_.inc_out_slots_written();
     core_.inc_out_slots_written();
     core_.inc_out_slots_written(); // 3
     core_.inc_in_slots_received(); // 1
     core_.inc_out_drop_count();    // 1
     core_.inc_script_error_count(); // 1
-
-    auto test_api = make_native_api(core_);
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    // Verify counters are accessible and return correct values.
-    // The plugin calls g_ctx->out_slots_written(g_ctx) etc.
-    EXPECT_EQ(core_.out_slots_written(), 3u);
-    EXPECT_EQ(core_.in_slots_received(), 1u);
-    EXPECT_EQ(core_.out_drop_count(), 1u);
-    EXPECT_EQ(core_.script_error_count(), 1u);
-
-    engine.finalize();
-}
-
-TEST_F(NativeEngineTest, Api_SlotLogicalSize_ReturnsSchemaSize)
-{
-    NativeEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &core_));
-
-    auto plugin = good_plugin_path();
-    ASSERT_TRUE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
-                                   "on_produce"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
 
     // Set slot spec on core (as role host would).
     core_.set_out_slot_spec(pylabhub::hub::SchemaSpec{spec},
@@ -391,29 +371,28 @@ TEST_F(NativeEngineTest, Api_SlotLogicalSize_ReturnsSchemaSize)
     auto test_api = make_native_api(core_);
     ASSERT_TRUE(engine.build_api(*test_api));
 
-    // Verify via RoleAPIBase (which the native context delegates to).
-    EXPECT_EQ(test_api->slot_logical_size(), 4u); // single float32
+    // Invoke on_produce — the native module reads v2 function pointers
+    // and reports results as custom metrics.
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf), nullptr, 0}, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+    EXPECT_FLOAT_EQ(buf, 42.0f);
 
-    engine.finalize();
-}
+    // Read custom metrics reported by the native module.
+    auto metrics = core_.custom_metrics_snapshot();
 
-TEST_F(NativeEngineTest, Api_SpinlockCount_NoSHM_ReturnsZero)
-{
-    NativeEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &core_));
+    // V2 C API: counter function pointers return correct values.
+    EXPECT_EQ(static_cast<uint64_t>(metrics["v2_out_slots_written"]), 3u)
+        << "Native module should read out_slots_written=3 via C API";
+    EXPECT_EQ(static_cast<size_t>(metrics["v2_slot_logical_size"]), 4u)
+        << "Native module should read slot_logical_size=4 (float32) via C API";
+    EXPECT_EQ(static_cast<uint32_t>(metrics["v2_spinlock_count"]), 0u)
+        << "Native module should read spinlock_count=0 (no SHM) via C API";
 
-    auto plugin = good_plugin_path();
-    ASSERT_TRUE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
-                                   "on_produce"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
-
-    auto test_api = make_native_api(core_);
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    // No SHM connected — spinlock_count should be 0 via RoleAPIBase.
-    EXPECT_EQ(test_api->spinlock_count(), 0u);
+    // V2 C++ wrapper: plh::Context constructed and all accessors matched.
+    EXPECT_EQ(static_cast<int>(metrics["v2_cpp_wrapper_ok"]), 1)
+        << "C++ plh::Context wrapper should validate all accessors match C API";
 
     engine.finalize();
 }
