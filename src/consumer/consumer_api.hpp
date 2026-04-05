@@ -19,7 +19,6 @@
 
 namespace py = pybind11;
 
-namespace pylabhub::scripting { class ScriptEngine; }
 namespace pylabhub::consumer
 {
 
@@ -29,8 +28,6 @@ class ConsumerAPI
     explicit ConsumerAPI(scripting::RoleAPIBase &base)
         : base_(&base)
     {}
-
-    void set_engine(scripting::ScriptEngine *e) noexcept { engine_ = e; }
 
     // Identity / environment — delegate to base
     [[nodiscard]] const std::string &uid()        const noexcept { return base_->uid(); }
@@ -73,8 +70,11 @@ class ConsumerAPI
     [[nodiscard]] py::dict metrics() const;
 
     // Spinlocks
-    py::object spinlock(std::size_t index);
-    [[nodiscard]] uint32_t spinlock_count() const noexcept { return base_->spinlock_count(); }
+    [[nodiscard]] uint64_t slot_logical_size(std::optional<int> side = std::nullopt) const;
+    [[nodiscard]] uint64_t flexzone_logical_size(std::optional<int> side = std::nullopt) const;
+
+    py::object spinlock(std::size_t index, std::optional<int> side = std::nullopt);
+    [[nodiscard]] uint32_t spinlock_count(std::optional<int> side = std::nullopt) const;
 
     // Custom metrics
     void report_metric(const std::string &key, double value) { base_->report_metric(key, value); }
@@ -90,7 +90,6 @@ class ConsumerAPI
 
   private:
     scripting::RoleAPIBase  *base_;
-    scripting::ScriptEngine *engine_{nullptr};
     std::unordered_map<std::string, py::object> inbox_cache_;
 public:
     py::object shared_data_{py::none()};

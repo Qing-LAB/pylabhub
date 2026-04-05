@@ -19,7 +19,6 @@
 
 namespace py = pybind11;
 
-namespace pylabhub::scripting { class ScriptEngine; }
 namespace pylabhub::processor
 {
 
@@ -29,8 +28,6 @@ class ProcessorAPI
     explicit ProcessorAPI(scripting::RoleAPIBase &base)
         : base_(&base)
     {}
-
-    void set_engine(scripting::ScriptEngine *e) noexcept { engine_ = e; }
 
     // Identity
     [[nodiscard]] const std::string &uid()         const noexcept { return base_->uid(); }
@@ -100,12 +97,14 @@ class ProcessorAPI
     [[nodiscard]] uint64_t ctrl_queue_dropped() const noexcept { return base_->ctrl_queue_dropped(); }
 
     // Spinlocks
-    py::object spinlock(std::size_t index);
-    [[nodiscard]] uint32_t spinlock_count() const noexcept { return base_->spinlock_count(); }
+    [[nodiscard]] uint64_t slot_logical_size(std::optional<int> side = std::nullopt) const;
+    [[nodiscard]] uint64_t flexzone_logical_size(std::optional<int> side = std::nullopt) const;
+
+    py::object spinlock(std::size_t index, std::optional<int> side = std::nullopt);
+    [[nodiscard]] uint32_t spinlock_count(std::optional<int> side = std::nullopt) const;
 
   private:
     scripting::RoleAPIBase  *base_;
-    scripting::ScriptEngine *engine_{nullptr};
     py::object              *flexzone_obj_{nullptr};
     std::unordered_map<std::string, py::object> inbox_cache_;
 public:

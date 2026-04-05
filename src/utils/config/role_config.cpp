@@ -86,7 +86,7 @@ static const std::unordered_set<std::string> kAllowedKeys = {
     "checksum", "flexzone_checksum",
     // Inbox
     "inbox_schema", "inbox_endpoint", "inbox_buffer_depth",
-    "inbox_overflow_policy", "inbox_zmq_packing",
+    "inbox_overflow_policy",
     // Startup
     "startup",
     // Monitoring

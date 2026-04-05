@@ -100,4 +100,9 @@ int zmq_multifield_packed_roundtrip(int argc, char **argv);
 /** Checksum Enforced + complex 6-field schema: stamp + verify round-trip. */
 int checksum_enforced_complex_schema(int argc, char **argv);
 
+/** Spinlock via RoleAPIBase — producer holds lock, signals ready, holds 500ms. */
+int spinlock_producer_hold(int argc, char **argv);
+/** Spinlock via RoleAPIBase — consumer contends, verifies cross-process blocking. */
+int spinlock_consumer_contend(int argc, char **argv);
+
 } // namespace pylabhub::tests::worker::hub_api

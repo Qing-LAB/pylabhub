@@ -18,6 +18,7 @@
 #include "plh_datahub_client.hpp"
 #include "utils/metrics_json.hpp"
 
+#include "engine_module_params.hpp"
 #include "role_host_helpers.hpp"
 #include "zmq_poll_loop.hpp"
 #include "utils/schema_utils.hpp"
@@ -99,44 +100,32 @@ void ProcessorRoleHost::shutdown_()
 
 void ProcessorRoleHost::worker_main_()
 {
-    // Step 1: Initialize the engine.
-    if (!engine_->initialize("proc", &core_))
-    {
-        LOGGER_ERROR("[proc] Engine initialize() failed");
-        engine_->finalize(); // Clean up any partial state (e.g. live interpreter).
-        ready_promise_.set_value(false);
-        return;
-    }
+    const auto &sc = config_.script();
 
     // Warn if script type was not explicitly set in config.
-    if (!config_.script().type_explicit)
+    if (!sc.type_explicit)
     {
         LOGGER_WARN("[proc] 'script.type' not set in config — defaulting to '{}'. "
                     "Set \"script\": {{\"type\": \"{}\"}} explicitly.",
-                    config_.script().type, config_.script().type);
+                    sc.type, sc.type);
     }
 
-    // Step 2: Load script and extract callbacks.
+    // ── Step 1: Resolve schemas from config ──────────────────────────────────
+
     const std::filesystem::path base_path =
-        config_.script().path.empty() ? std::filesystem::current_path()
-                                    : std::filesystem::weakly_canonical(config_.script().path);
-    const std::filesystem::path script_dir = base_path / "script" / config_.script().type;
-    const char *entry_point =
-        (config_.script().type == "lua") ? "init.lua" : "__init__.py";
+        sc.path.empty() ? std::filesystem::current_path()
+                        : std::filesystem::weakly_canonical(sc.path);
+    const std::filesystem::path script_dir = base_path / "script" / sc.type;
 
-    if (!engine_->load_script(script_dir, entry_point, "on_process"))
-    {
-        LOGGER_ERROR("[proc] Engine load_script() failed");
-        core_.set_script_load_ok(false);
-        engine_->finalize();
-        ready_promise_.set_value(false);
-        return;
-    }
-    core_.set_script_load_ok(true);
+    // Determine packing: input and output may use different ZMQ packing.
+    const std::string in_packing =
+        config_.in_transport().zmq_packing.empty() ? "aligned" : config_.in_transport().zmq_packing;
+    const std::string out_packing =
+        config_.out_transport().zmq_packing.empty() ? "aligned" : config_.out_transport().zmq_packing;
 
-    // Step 3: Resolve schemas and register slot types.
     hub::SchemaSpec out_fz_local;
     hub::SchemaSpec in_fz_local;
+    hub::SchemaSpec inbox_spec_local;
     {
         std::vector<std::string> schema_dirs;
         auto add_schema_dir = [&schema_dirs](const std::string &hub_dir) {
@@ -152,169 +141,59 @@ void ProcessorRoleHost::worker_main_()
         const auto &pf = config_.role_data<ProcessorFields>();
         try
         {
-            in_slot_spec_    = hub::resolve_schema(
+            in_slot_spec_  = hub::resolve_schema(
                 pf.in_slot_schema_json, false, "proc", schema_dirs);
-            out_slot_spec_   = hub::resolve_schema(
+            out_slot_spec_ = hub::resolve_schema(
                 pf.out_slot_schema_json, false, "proc", schema_dirs);
-            in_fz_local = hub::resolve_schema(
+            in_fz_local    = hub::resolve_schema(
                 pf.in_flexzone_schema_json, true, "proc", schema_dirs);
-            out_fz_local = hub::resolve_schema(
+            out_fz_local   = hub::resolve_schema(
                 pf.out_flexzone_schema_json, true, "proc", schema_dirs);
+            if (config_.inbox().has_inbox())
+                inbox_spec_local = hub::resolve_schema(
+                    config_.inbox().schema_json, false, "proc", schema_dirs);
         }
         catch (const std::exception &e)
         {
             LOGGER_ERROR("[proc] Schema parse error: {}", e.what());
-            engine_->finalize();
             ready_promise_.set_value(false);
             return;
         }
-        // in_fz_spec stored in core_ after registration (below).
     }
 
-    // Determine packing: input and output may use different ZMQ packing.
-    const std::string in_packing =
-        config_.in_transport().zmq_packing.empty() ? "aligned" : config_.in_transport().zmq_packing;
-    const std::string out_packing =
-        config_.out_transport().zmq_packing.empty() ? "aligned" : config_.out_transport().zmq_packing;
-
+    // Compute and store sizes (infrastructure-authoritative).
+    if (in_slot_spec_.has_schema)
+        core_.set_in_slot_spec(hub::SchemaSpec{in_slot_spec_},
+                               hub::compute_schema_size(in_slot_spec_, in_packing));
+    if (out_slot_spec_.has_schema)
+        core_.set_out_slot_spec(hub::SchemaSpec{out_slot_spec_},
+                                hub::compute_schema_size(out_slot_spec_, out_packing));
     {
-        size_t out_fz_size = hub::compute_schema_size(out_fz_local, out_packing);
-        out_fz_size = (out_fz_size + 4095U) & ~size_t{4095U};
+        size_t out_fz_size = hub::align_to_physical_page(
+            hub::compute_schema_size(out_fz_local, out_packing));
         core_.set_out_fz_spec(hub::SchemaSpec{out_fz_local}, out_fz_size);
     }
     {
-        size_t in_fz_size = hub::compute_schema_size(in_fz_local, in_packing);
-        in_fz_size = (in_fz_size + 4095U) & ~size_t{4095U};
+        size_t in_fz_size = hub::align_to_physical_page(
+            hub::compute_schema_size(in_fz_local, in_packing));
         core_.set_in_fz_spec(hub::SchemaSpec{in_fz_local}, in_fz_size);
     }
 
-    // Register slot and flexzone types with engine (engine validates struct matches).
-    if (in_slot_spec_.has_schema)
+    // ── Step 2: Setup infrastructure (no engine dependency) ──────────────────
+    // Skipped in validate-only mode (no broker/queue needed).
+
+    if (!core_.is_validate_only())
     {
-        if (!engine_->register_slot_type(in_slot_spec_, "InSlotFrame", in_packing))
+        if (!setup_infrastructure_(inbox_spec_local))
         {
-            LOGGER_ERROR("[proc] Failed to register InSlotFrame type");
-            engine_->finalize();
-            ready_promise_.set_value(false);
-            return;
-        }
-    }
-    if (out_slot_spec_.has_schema)
-    {
-        if (!engine_->register_slot_type(out_slot_spec_, "OutSlotFrame", out_packing))
-        {
-            LOGGER_ERROR("[proc] Failed to register OutSlotFrame type");
-            engine_->finalize();
-            ready_promise_.set_value(false);
-            return;
-        }
-    }
-    if (out_fz_local.has_schema)
-    {
-        if (!engine_->register_slot_type(out_fz_local, "OutFlexFrame", out_packing))
-        {
-            LOGGER_ERROR("[proc] Failed to register OutFlexFrame type");
-            engine_->finalize();
-            ready_promise_.set_value(false);
-            return;
-        }
-    }
-    if (in_fz_local.has_schema)
-    {
-        if (!engine_->register_slot_type(in_fz_local, "InFlexFrame", in_packing))
-        {
-            LOGGER_ERROR("[proc] Failed to register InFlexFrame type");
-            engine_->finalize();
+            teardown_infrastructure_();
             ready_promise_.set_value(false);
             return;
         }
     }
 
-    // Resolve and register inbox schema (alongside slot/fz above).
-    hub::SchemaSpec inbox_spec_local;
-    size_t inbox_schema_slot_size = 0;
-    if (config_.inbox().has_inbox())
-    {
-        std::vector<std::string> schema_dirs;
-        auto add_schema_dir = [&schema_dirs](const std::string &hub_dir) {
-            if (hub_dir.empty())
-                return;
-            const std::string d = (std::filesystem::path(hub_dir) / "schemas").string();
-            if (std::find(schema_dirs.begin(), schema_dirs.end(), d) == schema_dirs.end())
-                schema_dirs.push_back(d);
-        };
-        add_schema_dir(config_.in_hub().hub_dir);
-        add_schema_dir(config_.out_hub().hub_dir);
+    // ── Step 3: Create RoleAPIBase and wire infrastructure ───────────────────
 
-        try
-        {
-            inbox_spec_local = hub::resolve_schema(
-                config_.inbox().schema_json, false, "proc", schema_dirs);
-        }
-        catch (const std::exception &e)
-        {
-            LOGGER_ERROR("[proc] Inbox schema parse error: {}", e.what());
-            engine_->finalize();
-            ready_promise_.set_value(false);
-            return;
-        }
-
-        if (inbox_spec_local.has_schema)
-        {
-            const std::string inbox_packing =
-                inbox_spec_local.packing.empty()
-                    ? config_.in_transport().zmq_packing
-                    : inbox_spec_local.packing;
-            if (!engine_->register_slot_type(inbox_spec_local, "InboxFrame",
-                                              inbox_packing.empty() ? "aligned" : inbox_packing))
-            {
-                LOGGER_ERROR("[proc] Failed to register InboxFrame type");
-                engine_->finalize();
-                ready_promise_.set_value(false);
-                return;
-            }
-            inbox_schema_slot_size = engine_->type_sizeof("InboxFrame");
-        }
-    }
-
-    // Validate-only mode: print layout and exit.
-    if (core_.is_validate_only())
-    {
-        // TODO: print layout via engine
-        engine_->finalize();
-        ready_promise_.set_value(true);
-        return;
-    }
-
-    // Step 4: setup_infrastructure_
-    if (!setup_infrastructure_(inbox_spec_local))
-    {
-        engine_->finalize();
-        teardown_infrastructure_();
-        ready_promise_.set_value(false);
-        return;
-    }
-
-    // Validate inbox type size matches queue decode buffer size.
-    if (inbox_schema_slot_size > 0 && inbox_queue_ &&
-        inbox_queue_->item_size() != inbox_schema_slot_size)
-    {
-        const std::string inbox_packing =
-            inbox_spec_local.packing.empty()
-                ? config_.in_transport().zmq_packing
-                : inbox_spec_local.packing;
-        LOGGER_ERROR("[proc] InboxFrame size mismatch: engine type_sizeof={} "
-                     "but InboxQueue item_size={} (packing='{}') — "
-                     "check schema/packing consistency",
-                     inbox_schema_slot_size, inbox_queue_->item_size(),
-                     inbox_packing.empty() ? "aligned" : inbox_packing);
-        engine_->finalize();
-        teardown_infrastructure_();
-        ready_promise_.set_value(false);
-        return;
-    }
-
-    // Step 5: Create RoleAPIBase and build engine API.
     api_ = std::make_unique<scripting::RoleAPIBase>(core_);
     api_->set_role_tag("proc");
     api_->set_uid(config_.identity().uid);
@@ -324,55 +203,93 @@ void ProcessorRoleHost::worker_main_()
     api_->set_log_level(config_.identity().log_level);
     api_->set_script_dir(script_dir.string());
     api_->set_role_dir(config_.base_dir().string());
-    api_->set_messenger(&out_messenger_);
-    api_->set_producer(out_producer_.has_value() ? &(*out_producer_) : nullptr);
-    api_->set_consumer(in_consumer_.has_value() ? &(*in_consumer_) : nullptr);
-    api_->set_inbox_queue(inbox_queue_.get());
-    api_->set_checksum_policy(config_.checksum().policy);
-    api_->set_stop_on_script_error(config_.script().stop_on_script_error);
-
-    if (!engine_->build_api(*api_))
+    if (!core_.is_validate_only())
     {
-        LOGGER_ERROR("[proc] build_api failed — aborting role start");
+        api_->set_messenger(&out_messenger_);
+        api_->set_producer(out_producer_.has_value() ? &(*out_producer_) : nullptr);
+        api_->set_consumer(in_consumer_.has_value() ? &(*in_consumer_) : nullptr);
+        api_->set_inbox_queue(inbox_queue_.get());
+    }
+    api_->set_checksum_policy(config_.checksum().policy);
+    api_->set_stop_on_script_error(sc.stop_on_script_error);
+
+    // ── Step 4: Load engine via lifecycle startup ────────────────────────────
+
+    engine_module_name_ = fmt::format("ScriptEngine:{}:{}", sc.type, config_.identity().uid);
+
+    scripting::EngineModuleParams params;
+    params.engine             = engine_.get();
+    params.api                = api_.get();
+    params.tag                = "proc";
+    params.script_dir         = script_dir;
+    params.entry_point        = (sc.type == "lua") ? "init.lua" : "__init__.py";
+    params.required_callback  = "on_process";
+    params.in_slot_spec       = in_slot_spec_;
+    params.out_slot_spec      = out_slot_spec_;
+    params.in_fz_spec         = in_fz_local;
+    params.out_fz_spec        = out_fz_local;
+    params.inbox_spec         = inbox_spec_local;
+    params.in_packing         = in_packing;
+    params.out_packing        = out_packing;
+    params.module_name        = engine_module_name_;
+
+    try
+    {
+        scripting::engine_lifecycle_startup(nullptr, &params);
+        core_.set_script_load_ok(true);
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("[proc] Engine startup failed: {}", e.what());
+        core_.set_script_load_ok(false);
         engine_->finalize();
-        teardown_infrastructure_();
+        if (!core_.is_validate_only())
+            teardown_infrastructure_();
         ready_promise_.set_value(false);
         return;
     }
 
-    // Step 6: invoke on_init.
+    // Validate-only mode: engine loaded successfully, exit.
+    if (core_.is_validate_only())
+    {
+        engine_->finalize();
+        ready_promise_.set_value(true);
+        return;
+    }
+
+    // ── Step 5: invoke on_init ───────────────────────────────────────────────
     engine_->invoke_on_init();
 
     // Sync flexzone checksum after on_init (user may have written to flexzone).
     if (out_producer_.has_value() && core_.has_out_fz())
         out_producer_->sync_flexzone_checksum();
 
-    // Step 7: Spawn ctrl_thread_ and signal ready.
+    // Step 6: Spawn ctrl_thread_ and signal ready.
     core_.set_running(true);
     ctrl_thread_ = std::thread([this] { run_ctrl_thread_(); });
 
-    // Step 8: Signal ready.
+    // Step 7: Signal ready.
     ready_promise_.set_value(true);
 
-    // Step 9: Run the data loop.
+    // Step 8: Run the data loop.
     run_data_loop_();
 
-    // Step 10: stop accepting invoke from non-owner threads.
+    // Step 9: stop accepting invoke from non-owner threads.
     engine_->stop_accepting();
 
-    // Step 11: join ctrl_thread — ensure no non-owner thread is using the engine.
+    // Step 10: join ctrl_thread.
     core_.set_running(false);
     core_.notify_incoming();
     if (ctrl_thread_.joinable())
         ctrl_thread_.join();
 
-    // Step 12: last script callback.
+    // Step 11: last script callback.
     engine_->invoke_on_stop();
 
-    // Step 13: finalize engine.
+    // Step 12: finalize engine.
     engine_->finalize();
 
-    // Step 14: teardown infrastructure.
+    // Step 13: teardown infrastructure.
     teardown_infrastructure_();
 }
 
@@ -523,50 +440,15 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     // ── Inbox facility (optional) ───────────────────────────────────────────
     if (config_.inbox().has_inbox())
     {
-        const std::string inbox_packing =
-            inbox_spec.packing.empty()
-                ? config_.in_transport().zmq_packing
-                : inbox_spec.packing;
-
-        // Endpoint validated by parse_inbox_config(); default is tcp://127.0.0.1:0.
-        const std::string &ep = config_.inbox().endpoint;
-        auto zmq_fields = hub::schema_spec_to_zmq_fields(inbox_spec);
-
-        // Serialize full SchemaSpec JSON for ROLE_INFO_REQ discovery.
-        nlohmann::json spec_json;
-        spec_json["fields"] = nlohmann::json::array();
-        for (const auto &f : inbox_spec.fields)
-        {
-            nlohmann::json fj = {{"name", f.name}, {"type", f.type_str}};
-            if (f.count > 1)  fj["count"]  = f.count;
-            if (f.length > 0) fj["length"] = f.length;
-            spec_json["fields"].push_back(fj);
-        }
-        if (inbox_spec.packing != "aligned")
-            spec_json["packing"] = inbox_spec.packing;
-
-        const int inbox_rcvhwm = (config_.inbox().overflow_policy == "block")
-            ? 0
-            : static_cast<int>(config_.inbox().buffer_depth);
-
-        inbox_queue_ = hub::InboxQueue::bind_at(
-            ep, std::move(zmq_fields),
-            inbox_packing.empty() ? "aligned" : inbox_packing,
-            inbox_rcvhwm);
-        if (!inbox_queue_ || !inbox_queue_->start())
-        {
-            LOGGER_ERROR("[proc] Failed to start InboxQueue at '{}'", ep);
-            if (inbox_queue_)
-                inbox_queue_.reset();
+        auto inbox_result = scripting::setup_inbox_facility(
+            inbox_spec, config_.inbox(), config_.checksum().policy, "proc");
+        if (!inbox_result)
             return false;
-        }
-        inbox_queue_->set_checksum_policy(config_.checksum().policy);
-        LOGGER_INFO("[proc] InboxQueue bound at '{}'", inbox_queue_->actual_endpoint());
-
-        out_opts.inbox_endpoint    = inbox_queue_->actual_endpoint();
-        out_opts.inbox_schema_json = spec_json.dump();
-        out_opts.inbox_packing     = inbox_packing.empty() ? "aligned" : inbox_packing;
-        out_opts.inbox_checksum    = config::checksum_policy_to_string(config_.checksum().policy);
+        inbox_queue_               = std::move(inbox_result->queue);
+        out_opts.inbox_endpoint    = inbox_result->actual_endpoint;
+        out_opts.inbox_schema_json = inbox_result->schema_json;
+        out_opts.inbox_packing     = inbox_result->packing;
+        out_opts.inbox_checksum    = inbox_result->checksum;
     }
 
     // ── Output broker connect ───────────────────────────────────────────────
@@ -945,18 +827,18 @@ void ProcessorRoleHost::run_data_loop_()
             if (result == InvokeResult::Commit)
             {
                 out_producer_->write_commit();
-                core_.inc_out_written();
+                core_.inc_out_slots_written();
             }
             else
             {
                 out_producer_->write_discard();
-                core_.inc_drops();
+                core_.inc_out_drop_count();
             }
         }
         else if (held_input != nullptr)
         {
             // Had input but no output slot — count as drop.
-            core_.inc_drops();
+            core_.inc_out_drop_count();
         }
 
         // Input: release or hold depending on output success + policy.
@@ -967,7 +849,7 @@ void ProcessorRoleHost::run_data_loop_()
                 // Normal: data processed or dropped. Advance input.
                 in_consumer_->read_release();
                 held_input = nullptr;
-                core_.inc_in_received();
+                core_.inc_in_slots_received();
             }
             // else: Block mode + output failed → keep held_input for next cycle.
             // SHM: lock still held, pointer valid.
@@ -1086,10 +968,10 @@ nlohmann::json ProcessorRoleHost::snapshot_metrics_json() const
         uint64_t in_dropped  = in_consumer_.has_value()  ? in_consumer_->ctrl_queue_dropped()  : 0;
         uint64_t out_dropped = out_producer_.has_value() ? out_producer_->ctrl_queue_dropped() : 0;
         result["role"] = {
-            {"in_received",        core_.in_received()},
-            {"out_written",        core_.out_written()},
-            {"drops",              core_.drops()},
-            {"script_errors",      engine_ ? engine_->script_error_count() : 0},
+            {"in_slots_received",  core_.in_slots_received()},
+            {"out_slots_written",  core_.out_slots_written()},
+            {"out_drop_count",     core_.out_drop_count()},
+            {"script_error_count", engine_ ? engine_->script_error_count() : 0},
             {"ctrl_queue_dropped", {{"input", in_dropped}, {"output", out_dropped}}}
         };
     }

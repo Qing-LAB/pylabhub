@@ -318,8 +318,8 @@ bool RoleAPIBase::update_flexzone_checksum()
     return true;
 }
 
-uint64_t RoleAPIBase::out_slots_written() const { return pImpl->core->out_written(); }
-uint64_t RoleAPIBase::out_drop_count() const    { return pImpl->core->drops(); }
+uint64_t RoleAPIBase::out_slots_written() const { return pImpl->core->out_slots_written(); }
+uint64_t RoleAPIBase::out_drop_count() const    { return pImpl->core->out_drop_count(); }
 
 size_t RoleAPIBase::out_capacity() const
 {
@@ -335,7 +335,7 @@ std::string RoleAPIBase::out_policy() const
 // Input side
 // ============================================================================
 
-uint64_t RoleAPIBase::in_slots_received() const { return pImpl->core->in_received(); }
+uint64_t RoleAPIBase::in_slots_received() const { return pImpl->core->in_slots_received(); }
 
 uint64_t RoleAPIBase::last_seq() const
 {
@@ -367,7 +367,7 @@ void RoleAPIBase::set_verify_checksum(bool enable)
 // Diagnostics
 // ============================================================================
 
-uint64_t RoleAPIBase::script_error_count() const { return pImpl->core->script_errors(); }
+uint64_t RoleAPIBase::script_error_count() const { return pImpl->core->script_error_count(); }
 uint64_t RoleAPIBase::loop_overrun_count() const { return pImpl->core->loop_overrun_count(); }
 uint64_t RoleAPIBase::last_cycle_work_us() const { return pImpl->core->last_cycle_work_us(); }
 
@@ -380,23 +380,118 @@ uint64_t RoleAPIBase::ctrl_queue_dropped() const
 }
 
 // ============================================================================
+// Schema sizes
+// ============================================================================
+
+size_t RoleAPIBase::slot_logical_size(std::optional<ChannelSide> side) const
+{
+    const bool has_tx = pImpl->core->has_out_slot();
+    const bool has_rx = pImpl->core->has_in_slot();
+
+    if (side.has_value())
+        return (*side == ChannelSide::Tx)
+            ? (has_tx ? pImpl->core->out_slot_logical_size() : 0)
+            : (has_rx ? pImpl->core->in_slot_logical_size()  : 0);
+
+    if (has_tx && has_rx)
+        throw std::runtime_error("slot_logical_size: side parameter required for processor");
+    return has_tx ? pImpl->core->out_slot_logical_size()
+         : has_rx ? pImpl->core->in_slot_logical_size()
+         : 0;
+}
+
+size_t RoleAPIBase::flexzone_logical_size(std::optional<ChannelSide> side) const
+{
+    const bool has_tx = pImpl->core->has_out_fz();
+    const bool has_rx = pImpl->core->has_in_fz();
+
+    if (side.has_value())
+    {
+        size_t phys = (*side == ChannelSide::Tx)
+            ? (has_tx ? pImpl->core->out_schema_fz_size() : 0)
+            : (has_rx ? pImpl->core->in_schema_fz_size()  : 0);
+        // Stored size is page-aligned (physical). Logical = compute from spec.
+        // But we don't store logical separately for fz — recompute from spec+packing.
+        // For now return the spec field count * type sizes via the same compute path.
+        // Actually, use the stored physical size — it's what the user cares about for flexzone.
+        // The "logical" distinction is meaningful: logical = data occupies, physical = SHM allocates.
+        // We need the spec to recompute. Core has it.
+        const auto &spec = (*side == ChannelSide::Tx)
+            ? pImpl->core->out_fz_spec()
+            : pImpl->core->in_fz_spec();
+        if (!spec.has_schema) return 0;
+        auto [layout, sz] = hub::compute_field_layout(
+            hub::to_field_descs(spec.fields), spec.packing);
+        return sz;
+    }
+
+    if (has_tx && has_rx)
+        throw std::runtime_error("flexzone_logical_size: side parameter required for processor");
+
+    const auto &spec = has_tx ? pImpl->core->out_fz_spec()
+                     : has_rx ? pImpl->core->in_fz_spec()
+                     : pImpl->core->out_fz_spec(); // dummy, will return 0
+    if (!spec.has_schema) return 0;
+    auto [layout, sz] = hub::compute_field_layout(
+        hub::to_field_descs(spec.fields), spec.packing);
+    return sz;
+}
+
+// ============================================================================
 // Spinlocks
 // ============================================================================
 
-hub::SharedSpinLock RoleAPIBase::get_spinlock(size_t index)
+hub::SharedSpinLock RoleAPIBase::get_spinlock(size_t index, std::optional<ChannelSide> side)
 {
-    if (pImpl->producer && pImpl->producer->has_shm())
+    const bool has_tx = pImpl->producer && pImpl->producer->has_shm();
+    const bool has_rx = pImpl->consumer && pImpl->consumer->has_shm();
+
+    if (side.has_value())
+    {
+        if (*side == ChannelSide::Tx)
+        {
+            if (!has_tx)
+                throw std::runtime_error("get_spinlock(Tx): no SHM on output side");
+            return pImpl->producer->get_spinlock(index);
+        }
+        // Rx
+        if (!has_rx)
+            throw std::runtime_error("get_spinlock(Rx): no SHM on input side");
+        return pImpl->consumer->get_spinlock(index);
+    }
+
+    // No side specified — auto-select for single-side roles, error for dual.
+    if (has_tx && has_rx)
+        throw std::runtime_error(
+            "get_spinlock: side parameter required for processor "
+            "(use ChannelSide::Tx or ChannelSide::Rx)");
+    if (has_tx)
         return pImpl->producer->get_spinlock(index);
-    if (pImpl->consumer && pImpl->consumer->has_shm())
+    if (has_rx)
         return pImpl->consumer->get_spinlock(index);
     throw std::runtime_error("get_spinlock: SHM not connected");
 }
 
-uint32_t RoleAPIBase::spinlock_count() const
+uint32_t RoleAPIBase::spinlock_count(std::optional<ChannelSide> side) const
 {
-    if (pImpl->producer)
+    const bool has_tx = pImpl->producer != nullptr;
+    const bool has_rx = pImpl->consumer != nullptr;
+
+    if (side.has_value())
+    {
+        if (*side == ChannelSide::Tx)
+            return has_tx ? pImpl->producer->spinlock_count() : 0;
+        return has_rx ? pImpl->consumer->spinlock_count() : 0;
+    }
+
+    // No side specified — auto-select for single-side roles, error for dual.
+    if (has_tx && has_rx)
+        throw std::runtime_error(
+            "spinlock_count: side parameter required for processor "
+            "(use ChannelSide::Tx or ChannelSide::Rx)");
+    if (has_tx)
         return pImpl->producer->spinlock_count();
-    if (pImpl->consumer)
+    if (has_rx)
         return pImpl->consumer->spinlock_count();
     return 0;
 }
@@ -461,10 +556,10 @@ nlohmann::json RoleAPIBase::snapshot_metrics_json() const
 
     // Role metrics — core counters always present, queue-specific gated on pointers.
     nlohmann::json role;
-    role["out_written"]   = pImpl->core->out_written();
-    role["in_received"]   = pImpl->core->in_received();
-    role["drops"]         = pImpl->core->drops();
-    role["script_errors"] = pImpl->core->script_errors();
+    role["out_slots_written"]  = pImpl->core->out_slots_written();
+    role["in_slots_received"]  = pImpl->core->in_slots_received();
+    role["out_drop_count"]     = pImpl->core->out_drop_count();
+    role["script_error_count"] = pImpl->core->script_error_count();
 
     if (has_in && has_out)
     {

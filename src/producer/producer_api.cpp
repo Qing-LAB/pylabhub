@@ -10,10 +10,8 @@
 
 #include "plh_version_registry.hpp"
 #include "python_helpers.hpp"
-#include "utils/format_tools.hpp"
 #include "utils/logger.hpp"
 
-#include <chrono>
 #include "utils/json_fwd.hpp"
 #include "utils/metrics_json.hpp"
 #include "metrics_pydict.hpp"
@@ -89,12 +87,48 @@ py::dict ProducerAPI::metrics() const
     return py::module_::import("json").attr("loads")(json_str).cast<py::dict>();
 }
 
-py::object ProducerAPI::spinlock(std::size_t index)
+uint64_t ProducerAPI::slot_logical_size(std::optional<int> side) const
 {
-    if (base_->spinlock_count() == 0)
-        throw py::value_error("spinlock: SHM output channel not connected");
-    return py::cast(scripting::SpinLockPy{base_->get_spinlock(index)},
-                    py::return_value_policy::move);
+    return static_cast<uint64_t>(base_->slot_logical_size(
+        side.has_value() ? std::optional<scripting::ChannelSide>{static_cast<scripting::ChannelSide>(*side)} : std::nullopt));
+}
+
+uint64_t ProducerAPI::flexzone_logical_size(std::optional<int> side) const
+{
+    return static_cast<uint64_t>(base_->flexzone_logical_size(
+        side.has_value() ? std::optional<scripting::ChannelSide>{static_cast<scripting::ChannelSide>(*side)} : std::nullopt));
+}
+
+static std::optional<scripting::ChannelSide> to_channel_side(std::optional<int> side)
+{
+    if (!side.has_value())
+        return std::nullopt;
+    return static_cast<scripting::ChannelSide>(*side);
+}
+
+py::object ProducerAPI::spinlock(std::size_t index, std::optional<int> side)
+{
+    try
+    {
+        return py::cast(scripting::SpinLockPy{base_->get_spinlock(index, to_channel_side(side))},
+                        py::return_value_policy::move);
+    }
+    catch (const std::exception &e)
+    {
+        throw py::value_error(e.what());
+    }
+}
+
+uint32_t ProducerAPI::spinlock_count(std::optional<int> side) const
+{
+    try
+    {
+        return base_->spinlock_count(to_channel_side(side));
+    }
+    catch (const std::exception &e)
+    {
+        throw py::value_error(e.what());
+    }
 }
 
 // ============================================================================
@@ -229,8 +263,18 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
              "Microseconds of active work (acquire+script+commit) in the last iteration.")
         .def("metrics",            &producer::ProducerAPI::metrics,
              "Combined metrics dict: DataBlock ContextMetrics + loop_overruns + script_errors.")
-        .def("spinlock",     &producer::ProducerAPI::spinlock, py::arg("index"))
-        .def("spinlock_count", &producer::ProducerAPI::spinlock_count)
+        .def("slot_logical_size", &producer::ProducerAPI::slot_logical_size,
+             py::arg("side") = py::none(),
+             "Logical C struct size for the slot schema (bytes).")
+        .def("flexzone_logical_size", &producer::ProducerAPI::flexzone_logical_size,
+             py::arg("side") = py::none(),
+             "Logical C struct size for the flexzone schema (bytes).")
+        .def("spinlock",       &producer::ProducerAPI::spinlock,
+             py::arg("index"), py::arg("side") = py::none())
+        .def("spinlock_count", &producer::ProducerAPI::spinlock_count,
+             py::arg("side") = py::none())
+        .def_property_readonly_static("Tx", [](py::object) { return static_cast<int>(scripting::ChannelSide::Tx); })
+        .def_property_readonly_static("Rx", [](py::object) { return static_cast<int>(scripting::ChannelSide::Rx); })
         .def("report_metric", &producer::ProducerAPI::report_metric,
              py::arg("key"), py::arg("value"),
              "Report a custom metric (key-value pair) for broker aggregation.")
@@ -239,8 +283,9 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
              "Report multiple custom metrics at once.")
         .def("clear_custom_metrics", &producer::ProducerAPI::clear_custom_metrics,
              "Clear all custom metrics.")
-        .def("open_inbox",    &producer::ProducerAPI::open_inbox,    py::arg("target_uid"))
-        .def("wait_for_role", &producer::ProducerAPI::wait_for_role,
+        .def("open_inbox",         &producer::ProducerAPI::open_inbox, py::arg("target_uid"))
+        .def("clear_inbox_cache",  &producer::ProducerAPI::clear_inbox_cache)
+        .def("wait_for_role",      &producer::ProducerAPI::wait_for_role,
              py::arg("uid"), py::arg("timeout_ms") = 5000)
         .def("stop_reason",        &producer::ProducerAPI::stop_reason,
              "Why the role stopped: 'normal', 'peer_dead', 'hub_dead', or 'critical_error'.")
