@@ -12,6 +12,7 @@
 
 #include "native_engine.hpp"
 #include "utils/role_host_core.hpp"
+#include "utils/schema_utils.hpp"
 
 #include <cstring>
 #include <filesystem>
@@ -332,6 +333,88 @@ TEST_F(NativeEngineTest, Checksum_EmptyHash_SkipsVerification)
     auto plugin = good_plugin_path();
     ASSERT_TRUE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
                                    "on_produce"));
+    engine.finalize();
+}
+
+// ============================================================================
+// Native API v2 — counter renames, schema sizes, C++ wrapper
+// ============================================================================
+
+TEST_F(NativeEngineTest, Api_CounterNames_MatchRoleHostCore)
+{
+    NativeEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &core_));
+
+    auto plugin = good_plugin_path();
+    ASSERT_TRUE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
+                                   "on_produce"));
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+
+    // Set known counter values before build_api wires the context.
+    core_.inc_out_slots_written();
+    core_.inc_out_slots_written();
+    core_.inc_out_slots_written(); // 3
+    core_.inc_in_slots_received(); // 1
+    core_.inc_out_drop_count();    // 1
+    core_.inc_script_error_count(); // 1
+
+    auto test_api = make_native_api(core_);
+    ASSERT_TRUE(engine.build_api(*test_api));
+
+    // Verify counters are accessible and return correct values.
+    // The plugin calls g_ctx->out_slots_written(g_ctx) etc.
+    EXPECT_EQ(core_.out_slots_written(), 3u);
+    EXPECT_EQ(core_.in_slots_received(), 1u);
+    EXPECT_EQ(core_.out_drop_count(), 1u);
+    EXPECT_EQ(core_.script_error_count(), 1u);
+
+    engine.finalize();
+}
+
+TEST_F(NativeEngineTest, Api_SlotLogicalSize_ReturnsSchemaSize)
+{
+    NativeEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &core_));
+
+    auto plugin = good_plugin_path();
+    ASSERT_TRUE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
+                                   "on_produce"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+
+    // Set slot spec on core (as role host would).
+    core_.set_out_slot_spec(pylabhub::hub::SchemaSpec{spec},
+                            pylabhub::hub::compute_schema_size(spec, "aligned"));
+
+    auto test_api = make_native_api(core_);
+    ASSERT_TRUE(engine.build_api(*test_api));
+
+    // Verify via RoleAPIBase (which the native context delegates to).
+    EXPECT_EQ(test_api->slot_logical_size(), 4u); // single float32
+
+    engine.finalize();
+}
+
+TEST_F(NativeEngineTest, Api_SpinlockCount_NoSHM_ReturnsZero)
+{
+    NativeEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &core_));
+
+    auto plugin = good_plugin_path();
+    ASSERT_TRUE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
+                                   "on_produce"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+
+    auto test_api = make_native_api(core_);
+    ASSERT_TRUE(engine.build_api(*test_api));
+
+    // No SHM connected — spinlock_count should be 0 via RoleAPIBase.
+    EXPECT_EQ(test_api->spinlock_count(), 0u);
+
     engine.finalize();
 }
 
