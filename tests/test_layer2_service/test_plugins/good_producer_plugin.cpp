@@ -58,7 +58,7 @@ extern "C" PLH_EXPORT void native_finalize(void)
 }
 
 extern "C" PLH_EXPORT const char *native_name(void) { return "good_producer"; }
-extern "C" PLH_EXPORT const char *native_version(void) { return "2.0.0"; }
+extern "C" PLH_EXPORT const char *native_version(void) { return "1.0.0"; }
 
 // ── Callbacks ───────────────────────────────────────────────────────────
 
