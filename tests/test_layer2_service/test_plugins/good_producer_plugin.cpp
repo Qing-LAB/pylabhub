@@ -10,9 +10,11 @@
 
 #include <cstring>
 
-// ── Schema declaration (matches test config) ────────────────────────────
-// SlotFrame: one float32 field named "value"
-PLH_DECLARE_SCHEMA(SlotFrame, "value:float32:1:0", 4)
+// ── Schema declarations (matches test config) ───────────────────────────
+// All directional names + alias for the same schema: one float32 field "value".
+PLH_DECLARE_SCHEMA(SlotFrame,    "value:float32:1:0", 4)
+PLH_DECLARE_SCHEMA(OutSlotFrame, "value:float32:1:0", 4)
+PLH_DECLARE_SCHEMA(InSlotFrame,  "value:float32:1:0", 4)
 
 // ── Module state ────────────────────────────────────────────────────────
 static const PlhNativeContext *g_ctx = nullptr;
@@ -151,6 +153,28 @@ extern "C" PLH_EXPORT bool on_produce(const plh_tx_t *tx)
                              static_cast<double>(g_test_cpp_wrapper_ok));
     }
 
+    return true; // commit
+}
+
+extern "C" PLH_EXPORT bool on_consume(const plh_rx_t *rx)
+{
+    if (!rx || !rx->slot || rx->slot_size < sizeof(float))
+        return false;
+    // Read the value — just verify it's accessible.
+    auto val = *static_cast<const float *>(rx->slot);
+    (void)val;
+    return true; // release
+}
+
+extern "C" PLH_EXPORT bool on_process(const plh_rx_t *rx, const plh_tx_t *tx)
+{
+    if (!rx || !rx->slot || !tx || !tx->slot)
+        return false;
+    if (rx->slot_size < sizeof(float) || tx->slot_size < sizeof(float))
+        return false;
+    // Copy input * 2 to output.
+    auto in_val = *static_cast<const float *>(rx->slot);
+    *static_cast<float *>(tx->slot) = in_val * 2.0f;
     return true; // commit
 }
 
