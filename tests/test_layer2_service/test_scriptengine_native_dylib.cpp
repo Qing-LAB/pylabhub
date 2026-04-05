@@ -337,15 +337,15 @@ TEST_F(NativeEngineTest, Checksum_EmptyHash_SkipsVerification)
 }
 
 // ============================================================================
-// Native API v2 — counter renames, schema sizes, C++ wrapper
+// Native API — counter accessors, schema sizes, C++ wrapper
 //
-// The test native module calls v2 function pointers during on_produce and
+// The test native module calls function pointers during on_produce and
 // reports results as custom metrics. The test reads these metrics back to
 // verify the C API and C++ wrapper (plh::Context) work correctly inside
 // the native module.
 // ============================================================================
 
-TEST_F(NativeEngineTest, Api_V2_CountersAndSchemaSize_ThroughNativeModule)
+TEST_F(NativeEngineTest, Api_CountersAndSchemaSize_ThroughNativeModule)
 {
     NativeEngine engine;
     ASSERT_TRUE(engine.initialize("test", &core_));
@@ -371,7 +371,7 @@ TEST_F(NativeEngineTest, Api_V2_CountersAndSchemaSize_ThroughNativeModule)
     auto test_api = make_native_api(core_);
     ASSERT_TRUE(engine.build_api(*test_api));
 
-    // Invoke on_produce — the native module reads v2 function pointers
+    // Invoke on_produce — the native module reads function pointers
     // and reports results as custom metrics.
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
@@ -382,16 +382,16 @@ TEST_F(NativeEngineTest, Api_V2_CountersAndSchemaSize_ThroughNativeModule)
     // Read custom metrics reported by the native module.
     auto metrics = core_.custom_metrics_snapshot();
 
-    // V2 C API: counter function pointers return correct values.
-    EXPECT_EQ(static_cast<uint64_t>(metrics["v2_out_slots_written"]), 3u)
+    // C API: counter function pointers return correct values.
+    EXPECT_EQ(static_cast<uint64_t>(metrics["test_out_slots_written"]), 3u)
         << "Native module should read out_slots_written=3 via C API";
-    EXPECT_EQ(static_cast<size_t>(metrics["v2_slot_logical_size"]), 4u)
+    EXPECT_EQ(static_cast<size_t>(metrics["test_slot_logical_size"]), 4u)
         << "Native module should read slot_logical_size=4 (float32) via C API";
-    EXPECT_EQ(static_cast<uint32_t>(metrics["v2_spinlock_count"]), 0u)
+    EXPECT_EQ(static_cast<uint32_t>(metrics["test_spinlock_count"]), 0u)
         << "Native module should read spinlock_count=0 (no SHM) via C API";
 
-    // V2 C++ wrapper: plh::Context constructed and all accessors matched.
-    EXPECT_EQ(static_cast<int>(metrics["v2_cpp_wrapper_ok"]), 1)
+    // C++ wrapper: plh::Context constructed and all accessors matched.
+    EXPECT_EQ(static_cast<int>(metrics["test_cpp_wrapper_ok"]), 1)
         << "C++ plh::Context wrapper should validate all accessors match C API";
 
     engine.finalize();
