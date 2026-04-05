@@ -10,6 +10,7 @@
  */
 #include <gtest/gtest.h>
 
+#include "engine_module_params.hpp"
 #include "native_engine.hpp"
 #include "utils/role_host_core.hpp"
 #include "utils/schema_utils.hpp"
@@ -150,11 +151,11 @@ TEST_F(NativeEngineTest, HasCallback_ReflectsPluginSymbols)
                                    "on_produce"));
 
     EXPECT_TRUE(engine.has_callback("on_produce"));
+    EXPECT_TRUE(engine.has_callback("on_consume"));
+    EXPECT_TRUE(engine.has_callback("on_process"));
     EXPECT_TRUE(engine.has_callback("on_init"));
     EXPECT_TRUE(engine.has_callback("on_stop"));
     EXPECT_TRUE(engine.has_callback("on_heartbeat"));
-    EXPECT_FALSE(engine.has_callback("on_consume"));
-    EXPECT_FALSE(engine.has_callback("on_process"));
     EXPECT_FALSE(engine.has_callback("nonexistent_function"));
 
     engine.finalize();
@@ -233,9 +234,9 @@ TEST_F(NativeEngineTest, LoadScript_MissingRequiredCallback_ReturnsFalse)
     auto plugin = good_plugin_path();
     ASSERT_TRUE(fs::exists(plugin));
 
-    // Plugin has on_produce but not on_consume.
+    // Module exports on_produce/on_consume/on_process but not on_tick.
     EXPECT_FALSE(engine.load_script(plugin.parent_path(), plugin.filename().string(),
-                                    "on_consume"));
+                                    "on_tick"));
 }
 
 TEST_F(NativeEngineTest, Eval_ReturnsNotFound)
@@ -395,6 +396,133 @@ TEST_F(NativeEngineTest, Api_CountersAndSchemaSize_ThroughNativeModule)
         << "C++ plh::Context wrapper should validate all accessors match C API";
 
     engine.finalize();
+}
+
+// ============================================================================
+// FullStartup — engine_lifecycle_startup path (equivalent to Python/Lua tests)
+// ============================================================================
+
+TEST_F(NativeEngineTest, FullStartup_Producer_SlotOnly)
+{
+    NativeEngine engine;
+    RoleHostCore core;
+
+    auto api = make_native_api(core);
+    auto spec = simple_schema();
+    core.set_out_slot_spec(pylabhub::hub::SchemaSpec{spec},
+                           pylabhub::hub::compute_schema_size(spec, "aligned"));
+
+    pylabhub::scripting::EngineModuleParams params;
+    params.engine            = &engine;
+    params.api               = api.get();
+    params.tag               = "prod";
+    params.script_dir        = good_plugin_path().parent_path();
+    params.entry_point       = good_plugin_path().filename().string();
+    params.required_callback = "on_produce";
+    params.out_slot_spec     = spec;
+    params.out_packing       = "aligned";
+
+    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+
+    EXPECT_GT(engine.type_sizeof("OutSlotFrame"), 0u);
+    // Native engine does not create SlotFrame alias (no interpreter-level aliasing).
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf), nullptr, 0}, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+    EXPECT_FLOAT_EQ(buf, 42.0f);
+
+    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+}
+
+TEST_F(NativeEngineTest, FullStartup_Consumer)
+{
+    NativeEngine engine;
+    RoleHostCore core;
+
+    auto api = std::make_unique<RoleAPIBase>(core);
+    api->set_role_tag("cons");
+    api->set_uid("CONS-TestNative-00000001");
+    api->set_name("TestNativeConsumer");
+    api->set_channel("test.native.channel");
+    api->set_log_level("error");
+
+    auto spec = simple_schema();
+    core.set_in_slot_spec(pylabhub::hub::SchemaSpec{spec},
+                          pylabhub::hub::compute_schema_size(spec, "aligned"));
+
+    pylabhub::scripting::EngineModuleParams params;
+    params.engine            = &engine;
+    params.api               = api.get();
+    params.tag               = "cons";
+    params.script_dir        = good_plugin_path().parent_path();
+    params.entry_point       = good_plugin_path().filename().string();
+    params.required_callback = "on_consume";
+    params.in_slot_spec      = spec;
+    params.in_packing        = "aligned";
+
+    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+
+    EXPECT_GT(engine.type_sizeof("InSlotFrame"), 0u);
+
+    float data = 42.0f;
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_consume(
+        pylabhub::scripting::InvokeRx{&data, sizeof(data), nullptr, 0}, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+
+    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+}
+
+TEST_F(NativeEngineTest, FullStartup_Processor)
+{
+    NativeEngine engine;
+    RoleHostCore core;
+
+    auto api = std::make_unique<RoleAPIBase>(core);
+    api->set_role_tag("proc");
+    api->set_uid("PROC-TestNative-00000001");
+    api->set_name("TestNativeProcessor");
+    api->set_channel("test.native.in");
+    api->set_out_channel("test.native.out");
+    api->set_log_level("error");
+
+    auto spec = simple_schema();
+    core.set_in_slot_spec(pylabhub::hub::SchemaSpec{spec},
+                          pylabhub::hub::compute_schema_size(spec, "aligned"));
+    core.set_out_slot_spec(pylabhub::hub::SchemaSpec{spec},
+                           pylabhub::hub::compute_schema_size(spec, "aligned"));
+
+    pylabhub::scripting::EngineModuleParams params;
+    params.engine            = &engine;
+    params.api               = api.get();
+    params.tag               = "proc";
+    params.script_dir        = good_plugin_path().parent_path();
+    params.entry_point       = good_plugin_path().filename().string();
+    params.required_callback = "on_process";
+    params.in_slot_spec      = spec;
+    params.out_slot_spec     = spec;
+    params.in_packing        = "aligned";
+    params.out_packing       = "aligned";
+
+    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+
+    EXPECT_GT(engine.type_sizeof("InSlotFrame"), 0u);
+    EXPECT_GT(engine.type_sizeof("OutSlotFrame"), 0u);
+    EXPECT_EQ(engine.type_sizeof("SlotFrame"), 0u); // no alias for processor
+
+    float in_data = 5.0f;
+    float out_data = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_process(
+        pylabhub::scripting::InvokeRx{&in_data, sizeof(in_data), nullptr, 0},
+        InvokeTx{&out_data, sizeof(out_data), nullptr, 0}, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+    EXPECT_FLOAT_EQ(out_data, 10.0f); // 5.0 * 2.0
+
+    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
 }
 
 } // anonymous namespace
