@@ -22,21 +22,26 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
-### Priority 0 (DONE — 2026-04-03/04): RoleAPIBase Refactor + RoleContext Elimination
-📍 **Status**: All phases complete; **1315/1315 tests**
+### Priority 0 (DONE — 2026-04-04/05): RoleAPIBase Refactor + Lifecycle + API Consistency
+📍 **Status**: All phases complete; **1323/1323 tests**
 📋 **Branch**: `feature/lua-role-support`
 
 - [x] RoleAPIBase: pure C++ unified role API in pylabhub-utils ✅
 - [x] All 3 API classes delegate to RoleAPIBase via composition ✅
 - [x] RoleContext eliminated — engine uses api_ pointer directly ✅
 - [x] All 3 engines (Python/Lua/Native) migrated: ctx_ → api_-> ✅
-- [x] Lua messenger calls replaced with api_-> base methods ✅
-- [x] ScriptEngine::open_inbox_client deleted (in RoleAPIBase) ✅
-- [x] SpinLockPy unified (3 → 1) ✅
-- [x] Schema reorganization: schema_types.hpp in hub:: namespace ✅
-- [x] Role hosts create + own RoleAPIBase ✅
-- [ ] Lifecycle module integration (role hosts → engine_lifecycle_startup)
-- [ ] Delete ProducerAPI/ConsumerAPI/ProcessorAPI (pybind11 registration blocks)
+- [x] Lifecycle integration: engine_lifecycle_startup() replaces manual init ✅
+- [x] ChannelSide enum (Tx/Rx): spinlock + schema size with explicit side ✅
+- [x] Schema size API: slot_logical_size, flexzone_logical_size (all engines) ✅
+- [x] Inbox packing: schema.packing as sole source, shared setup_inbox_facility() ✅
+- [x] align_to_physical_page() utility + assert in lifecycle callback ✅
+- [x] Counter rename: C++ internals + JSON keys + Lua/Python/Native consistent ✅
+- [x] Native engine API v2: spinlock, schema sizes, messaging, C++ RAII ✅
+- [x] HEP-0011 complete rewrite ✅
+- [x] Multi-process spinlock test through RoleAPIBase ✅
+- [x] Schema size tests (4 complex schemas, aligned/packed) ✅
+- [x] Native engine v2 tests (counters, schema size, spinlock count) ✅
+- ProducerAPI/ConsumerAPI/ProcessorAPI kept as Python translation layer (by design)
 
 ### Priority 0 (DONE — 2026-04-02/03): DataBlock Ownership + Schema Validation + Checksum + SE-04
 📍 **Status**: All ownership steps done (except RAII rewrite); **1279/1279 tests**
