@@ -43,6 +43,10 @@ class SharedSpinLock;
 namespace pylabhub::scripting
 {
 
+/// Identifies which side of the data path (Tx = producer/output, Rx = consumer/input).
+/// Used by spinlock and potentially other side-specific accessors.
+enum class ChannelSide : uint8_t { Tx = 0, Rx = 1 };
+
 // ============================================================================
 // RoleAPIBase
 // ============================================================================
@@ -155,10 +159,16 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] uint64_t last_cycle_work_us() const;
     [[nodiscard]] uint64_t ctrl_queue_dropped() const;
 
+    // ── Schema sizes (logical = C struct, no page alignment) ──────────────────
+
+    [[nodiscard]] size_t slot_logical_size(std::optional<ChannelSide> side = std::nullopt) const;
+    [[nodiscard]] size_t flexzone_logical_size(std::optional<ChannelSide> side = std::nullopt) const;
+
     // ── Spinlocks (delegates to whichever side has SHM) ───────────────────────
 
-    [[nodiscard]] hub::SharedSpinLock get_spinlock(size_t index);
-    [[nodiscard]] uint32_t spinlock_count() const;
+    [[nodiscard]] hub::SharedSpinLock get_spinlock(size_t index,
+                                                   std::optional<ChannelSide> side = std::nullopt);
+    [[nodiscard]] uint32_t spinlock_count(std::optional<ChannelSide> side = std::nullopt) const;
 
     // ── Custom metrics ────────────────────────────────────────────────────────
 

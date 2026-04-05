@@ -116,25 +116,25 @@ const char *ctx_stop_reason(const PlhNativeContext *ctx)
 uint64_t ctx_out_written(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_core) return 0;
-    return static_cast<RoleHostCore *>(ctx->_core)->out_written();
+    return static_cast<RoleHostCore *>(ctx->_core)->out_slots_written();
 }
 
 uint64_t ctx_in_received(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_core) return 0;
-    return static_cast<RoleHostCore *>(ctx->_core)->in_received();
+    return static_cast<RoleHostCore *>(ctx->_core)->in_slots_received();
 }
 
 uint64_t ctx_drops(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_core) return 0;
-    return static_cast<RoleHostCore *>(ctx->_core)->drops();
+    return static_cast<RoleHostCore *>(ctx->_core)->out_drop_count();
 }
 
 uint64_t ctx_script_errors(const PlhNativeContext *ctx)
 {
     if (!ctx || !ctx->_core) return 0;
-    return static_cast<RoleHostCore *>(ctx->_core)->script_errors();
+    return static_cast<RoleHostCore *>(ctx->_core)->script_error_count();
 }
 
 uint64_t ctx_loop_overrun_count(const PlhNativeContext *ctx)
@@ -611,7 +611,7 @@ InvokeResponse NativeEngine::eval(const std::string & /*code*/)
 
 uint64_t NativeEngine::script_error_count() const noexcept
 {
-    return api_ ? api_->core()->script_errors() : 0;
+    return api_ ? api_->core()->script_error_count() : 0;
 }
 
 bool NativeEngine::supports_multi_state() const noexcept

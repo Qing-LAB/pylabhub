@@ -6,8 +6,9 @@
 
 #include "utils/logger.hpp"
 #include "utils/role_host_core.hpp"
-#include "utils/schema_field_layout.hpp"
+#include "utils/schema_utils.hpp"
 
+#include <cassert>
 #include <stdexcept>
 
 namespace pylabhub::scripting
@@ -52,31 +53,50 @@ void engine_lifecycle_startup(const char * /*arg*/, void *userdata)
             throw std::runtime_error("register OutFlexFrame failed");
     }
 
-    // Set flexzone specs on core. Size is computed from schema via compute_field_layout —
-    // infrastructure-authoritative, no engine involvement.
-    auto compute_fz_size = [](const hub::SchemaSpec &spec, const std::string &packing) -> size_t {
-        auto [layout, sz] = hub::compute_field_layout(hub::to_field_descs(spec.fields), packing);
-        return sz;
-    };
-
-    if (p->api->core() != nullptr && p->in_fz_spec.has_schema && !p->api->core()->has_in_fz())
-    {
-        p->api->core()->set_in_fz_spec(p->in_fz_spec, compute_fz_size(p->in_fz_spec, p->in_packing));
-    }
-    if (p->api->core() != nullptr && p->out_fz_spec.has_schema && !p->api->core()->has_out_fz())
-    {
-        p->api->core()->set_out_fz_spec(p->out_fz_spec, compute_fz_size(p->out_fz_spec, p->out_packing));
-    }
+    // Flexzone specs must be set by role host before engine startup.
+    assert(!p->in_fz_spec.has_schema ||
+           (p->api->core() && p->api->core()->has_in_fz() &&
+            p->api->core()->in_schema_fz_size() % 4096 == 0));
+    assert(!p->out_fz_spec.has_schema ||
+           (p->api->core() && p->api->core()->has_out_fz() &&
+            p->api->core()->out_schema_fz_size() % 4096 == 0));
 
     if (p->inbox_spec.has_schema)
     {
-        if (!p->engine->register_slot_type(p->inbox_spec, "InboxFrame", p->in_packing))
+        if (!p->engine->register_slot_type(p->inbox_spec, "InboxFrame", p->inbox_spec.packing))
             throw std::runtime_error("register InboxFrame failed");
     }
 
     // Step 4: Build API with infrastructure context.
     if (!p->engine->build_api(*p->api))
         throw std::runtime_error("build_api failed");
+
+    // Step 5: Cross-validate engine type sizes against schema logical sizes.
+    // The engine's ctypes/FFI struct must match compute_schema_size exactly.
+    auto *core = p->api->core();
+    if (core)
+    {
+        auto check = [&](const char *type_name, size_t expected) {
+            size_t actual = p->engine->type_sizeof(type_name);
+            if (actual > 0 && actual != expected)
+                throw std::runtime_error(
+                    fmt::format("{} size mismatch: engine={} schema={}", type_name, actual, expected));
+        };
+        if (core->has_in_slot())
+            check("InSlotFrame", core->in_slot_logical_size());
+        if (core->has_out_slot())
+            check("OutSlotFrame", core->out_slot_logical_size());
+        if (core->has_in_fz())
+        {
+            size_t fz_logical = hub::compute_schema_size(p->in_fz_spec, p->in_packing);
+            check("InFlexFrame", fz_logical);
+        }
+        if (core->has_out_fz())
+        {
+            size_t fz_logical = hub::compute_schema_size(p->out_fz_spec, p->out_packing);
+            check("OutFlexFrame", fz_logical);
+        }
+    }
 
     LOGGER_INFO("[{}] engine lifecycle startup complete", p->tag);
 }

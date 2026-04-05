@@ -84,7 +84,7 @@ class LuaEngine : public ScriptEngine
 
     [[nodiscard]] uint64_t script_error_count() const noexcept override
     {
-        return api_ ? api_->core()->script_errors() : 0;
+        return api_ ? api_->core()->script_error_count() : 0;
     }
 
     // ── Threading ────────────────────────────────────────────────────────
@@ -108,10 +108,10 @@ class LuaEngine : public ScriptEngine
     int ref_on_inbox_{LUA_NOREF};
     int ref_api_{LUA_NOREF};
 
-    // script_errors is in ctx_.core->script_errors_ (RoleHostCore).
-    // Only valid after build_api() sets ctx_. All pcall error paths
-    // guard with `if (ctx_.core)` — errors before build_api() are
-    // reported via return values (load_script, register_slot_type),
+    // script_errors is in api_->core()->script_errors_ (RoleHostCore).
+    // Only valid after build_api() sets api_. All pcall error paths
+    // guard with `if (api_ && api_->core())` — errors before build_api()
+    // are reported via return values (load_script, register_slot_type),
     // not via script_errors.
 
     // ── Cached FFI ctype refs (set during register_slot_type) ───────────
@@ -169,7 +169,7 @@ class LuaEngine : public ScriptEngine
     static int lua_api_stop(lua_State *L);
     static int lua_api_set_critical_error(lua_State *L);
     static int lua_api_stop_reason(lua_State *L);
-    static int lua_api_script_errors(lua_State *L);
+    static int lua_api_script_error_count(lua_State *L);
     static int lua_api_version_info(lua_State *L);
     static int lua_api_wait_for_role(lua_State *L);
     static int lua_api_open_inbox(lua_State *L);
@@ -183,9 +183,9 @@ class LuaEngine : public ScriptEngine
     static int lua_api_consumers(lua_State *L);
     static int lua_api_update_flexzone_checksum(lua_State *L);
     static int lua_api_set_verify_checksum(lua_State *L);
-    static int lua_api_out_written(lua_State *L);
-    static int lua_api_in_received(lua_State *L);
-    static int lua_api_drops(lua_State *L);
+    static int lua_api_out_slots_written(lua_State *L);
+    static int lua_api_in_slots_received(lua_State *L);
+    static int lua_api_out_drop_count(lua_State *L);
     static int lua_api_metrics(lua_State *L);
     static int lua_api_in_channel(lua_State *L);
     static int lua_api_out_channel(lua_State *L);
@@ -215,7 +215,9 @@ class LuaEngine : public ScriptEngine
     static int lua_api_list_channels(lua_State *L);
     static int lua_api_shm_info(lua_State *L);
 
-    // ── Group F: spinlocks (SHM-only) ─────────────────────────────────
+    // ── Group F: schema sizes + spinlocks (SHM-only) ──────────────────
+    static int lua_api_slot_logical_size(lua_State *L);
+    static int lua_api_flexzone_logical_size(lua_State *L);
     static int lua_api_spinlock(lua_State *L);
     static int lua_api_spinlock_count(lua_State *L);
     void register_spinlock_metatable_();

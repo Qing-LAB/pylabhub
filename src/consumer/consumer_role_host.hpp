@@ -108,8 +108,9 @@ class ConsumerRoleHost
     // Schema info (resolved from config during setup).
     hub::SchemaSpec                  in_slot_spec_;
 
-    // Metrics are in core_ (RoleHostCore) — single source of truth.
-    // See core_.in_received_, core_.iteration_count_, core_.last_cycle_work_us_.
+    // Lifecycle module name (for UnloadModule on shutdown).
+    std::string                      engine_module_name_;
+
     std::atomic<uint64_t>                  last_seq_{0}; // consumer-specific, not in core
 };
 

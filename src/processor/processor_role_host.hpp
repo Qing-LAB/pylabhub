@@ -114,6 +114,9 @@ class ProcessorRoleHost
     // Schema info (resolved from config during setup).
     hub::SchemaSpec                    in_slot_spec_;
     hub::SchemaSpec                    out_slot_spec_;
+
+    // Lifecycle module name (for UnloadModule on shutdown).
+    std::string                        engine_module_name_;
 };
 
 } // namespace pylabhub::processor

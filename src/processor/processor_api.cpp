@@ -11,7 +11,6 @@
 #include "python_helpers.hpp"
 #include "utils/logger.hpp"
 
-#include <chrono>
 #include "utils/json_fwd.hpp"
 #include "utils/metrics_json.hpp"
 #include "metrics_pydict.hpp"
@@ -85,12 +84,48 @@ py::dict ProcessorAPI::metrics() const
     return py::module_::import("json").attr("loads")(j.dump()).cast<py::dict>();
 }
 
-py::object ProcessorAPI::spinlock(std::size_t index)
+uint64_t ProcessorAPI::slot_logical_size(std::optional<int> side) const
 {
-    if (base_->spinlock_count() == 0)
-        throw py::value_error("spinlock: SHM output channel not connected");
-    return py::cast(scripting::SpinLockPy{base_->get_spinlock(index)},
-                    py::return_value_policy::move);
+    return static_cast<uint64_t>(base_->slot_logical_size(
+        side.has_value() ? std::optional<scripting::ChannelSide>{static_cast<scripting::ChannelSide>(*side)} : std::nullopt));
+}
+
+uint64_t ProcessorAPI::flexzone_logical_size(std::optional<int> side) const
+{
+    return static_cast<uint64_t>(base_->flexzone_logical_size(
+        side.has_value() ? std::optional<scripting::ChannelSide>{static_cast<scripting::ChannelSide>(*side)} : std::nullopt));
+}
+
+static std::optional<scripting::ChannelSide> to_channel_side(std::optional<int> side)
+{
+    if (!side.has_value())
+        return std::nullopt;
+    return static_cast<scripting::ChannelSide>(*side);
+}
+
+py::object ProcessorAPI::spinlock(std::size_t index, std::optional<int> side)
+{
+    try
+    {
+        return py::cast(scripting::SpinLockPy{base_->get_spinlock(index, to_channel_side(side))},
+                        py::return_value_policy::move);
+    }
+    catch (const std::exception &e)
+    {
+        throw py::value_error(e.what());
+    }
+}
+
+uint32_t ProcessorAPI::spinlock_count(std::optional<int> side) const
+{
+    try
+    {
+        return base_->spinlock_count(to_channel_side(side));
+    }
+    catch (const std::exception &e)
+    {
+        throw py::value_error(e.what());
+    }
 }
 
 // ============================================================================
@@ -202,13 +237,22 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
         .def("loop_overrun_count", &ProcessorAPI::loop_overrun_count)
         .def("last_cycle_work_us", &ProcessorAPI::last_cycle_work_us)
         .def("metrics",            &ProcessorAPI::metrics)
-        .def("spinlock",      &ProcessorAPI::spinlock, py::arg("index"))
-        .def("spinlock_count",&ProcessorAPI::spinlock_count)
+        .def("slot_logical_size", &ProcessorAPI::slot_logical_size,
+             py::arg("side") = py::none())
+        .def("flexzone_logical_size", &ProcessorAPI::flexzone_logical_size,
+             py::arg("side") = py::none())
+        .def("spinlock",       &ProcessorAPI::spinlock,
+             py::arg("index"), py::arg("side") = py::none())
+        .def("spinlock_count", &ProcessorAPI::spinlock_count,
+             py::arg("side") = py::none())
+        .def_property_readonly_static("Tx", [](py::object) { return static_cast<int>(scripting::ChannelSide::Tx); })
+        .def_property_readonly_static("Rx", [](py::object) { return static_cast<int>(scripting::ChannelSide::Rx); })
         .def("report_metric", &ProcessorAPI::report_metric, py::arg("key"), py::arg("value"))
         .def("report_metrics", &ProcessorAPI::report_metrics, py::arg("kv"))
         .def("clear_custom_metrics", &ProcessorAPI::clear_custom_metrics)
-        .def("open_inbox",    &ProcessorAPI::open_inbox, py::arg("target_uid"))
-        .def("wait_for_role", &ProcessorAPI::wait_for_role,
+        .def("open_inbox",         &ProcessorAPI::open_inbox, py::arg("target_uid"))
+        .def("clear_inbox_cache",  &ProcessorAPI::clear_inbox_cache)
+        .def("wait_for_role",      &ProcessorAPI::wait_for_role,
              py::arg("uid"), py::arg("timeout_ms") = 5000)
         .def("last_seq",      &ProcessorAPI::last_seq)
         .def("in_capacity",   &ProcessorAPI::in_capacity)
@@ -226,7 +270,7 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
         return pylabhub::version::version_info_json();
     });
 
-    py::class_<scripting::SpinLockPy>(m, "ProcessorSpinLock")
+    py::class_<scripting::SpinLockPy>(m, "SpinLock")
         .def("lock",   &scripting::SpinLockPy::lock)
         .def("unlock", &scripting::SpinLockPy::unlock)
         .def("try_lock_for", &scripting::SpinLockPy::try_lock_for, py::arg("timeout_ms"))

@@ -53,16 +53,16 @@ TEST(MetricsApiTest, ProducerAPI_SnapshotBase_NoSHM)
     TestContext ctx("prod");
     pylabhub::producer::ProducerAPI api(*ctx.base);
 
-    ctx.core.inc_out_written();
-    ctx.core.inc_out_written();
-    ctx.core.inc_drops();
+    ctx.core.inc_out_slots_written();
+    ctx.core.inc_out_slots_written();
+    ctx.core.inc_out_drop_count();
 
     json snap = api.snapshot_metrics_json();
 
     ASSERT_TRUE(snap.contains("role"));
-    EXPECT_EQ(snap["role"]["out_written"], 2);
-    EXPECT_EQ(snap["role"]["drops"], 1);
-    EXPECT_EQ(snap["role"]["script_errors"], 0);
+    EXPECT_EQ(snap["role"]["out_slots_written"], 2);
+    EXPECT_EQ(snap["role"]["out_drop_count"], 1);
+    EXPECT_EQ(snap["role"]["script_error_count"], 0);
 
     ASSERT_TRUE(snap.contains("loop"));
     EXPECT_EQ(snap["loop"]["iteration_count"], 0);
@@ -127,10 +127,10 @@ TEST(MetricsApiTest, ConsumerAPI_SnapshotBase_NoSHM)
     json snap = api.snapshot_metrics_json();
 
     ASSERT_TRUE(snap.contains("role"));
-    EXPECT_EQ(snap["role"]["in_received"], 0);
-    EXPECT_EQ(snap["role"]["out_written"], 0);
-    EXPECT_EQ(snap["role"]["drops"], 0);
-    EXPECT_EQ(snap["role"]["script_errors"], 0);
+    EXPECT_EQ(snap["role"]["in_slots_received"], 0);
+    EXPECT_EQ(snap["role"]["out_slots_written"], 0);
+    EXPECT_EQ(snap["role"]["out_drop_count"], 0);
+    EXPECT_EQ(snap["role"]["script_error_count"], 0);
 
     ASSERT_TRUE(snap.contains("loop"));
     EXPECT_EQ(snap["loop"]["iteration_count"], 0);
@@ -165,10 +165,10 @@ TEST(MetricsApiTest, ProcessorAPI_SnapshotBase_NoSHM)
     json snap = api.snapshot_metrics_json();
 
     ASSERT_TRUE(snap.contains("role"));
-    EXPECT_EQ(snap["role"]["in_received"], 0);
-    EXPECT_EQ(snap["role"]["out_written"], 0);
-    EXPECT_EQ(snap["role"]["drops"], 0);
-    EXPECT_EQ(snap["role"]["script_errors"], 0);
+    EXPECT_EQ(snap["role"]["in_slots_received"], 0);
+    EXPECT_EQ(snap["role"]["out_slots_written"], 0);
+    EXPECT_EQ(snap["role"]["out_drop_count"], 0);
+    EXPECT_EQ(snap["role"]["script_error_count"], 0);
 
     ASSERT_TRUE(snap.contains("loop"));
     EXPECT_EQ(snap["loop"]["iteration_count"], 0);
@@ -215,7 +215,7 @@ TEST_F(MetricsApiPyDictTest, ProducerAPI_PyDict_Hierarchical_NoQueue)
     TestContext ctx("prod");
     pylabhub::producer::ProducerAPI api(*ctx.base);
 
-    ctx.core.inc_out_written();
+    ctx.core.inc_out_slots_written();
 
     py::dict d = api.metrics();
 
@@ -226,8 +226,8 @@ TEST_F(MetricsApiPyDictTest, ProducerAPI_PyDict_Hierarchical_NoQueue)
     EXPECT_FALSE(d.contains("queue"));
 
     auto role = d["role"].cast<py::dict>();
-    EXPECT_EQ(role["out_written"].cast<uint64_t>(), 1u);
-    EXPECT_EQ(role["script_errors"].cast<uint64_t>(), 0u);
+    EXPECT_EQ(role["out_slots_written"].cast<uint64_t>(), 1u);
+    EXPECT_EQ(role["script_error_count"].cast<uint64_t>(), 0u);
 }
 
 TEST_F(MetricsApiPyDictTest, ConsumerAPI_PyDict_Hierarchical_NoQueue)
@@ -242,7 +242,7 @@ TEST_F(MetricsApiPyDictTest, ConsumerAPI_PyDict_Hierarchical_NoQueue)
     EXPECT_FALSE(d.contains("queue"));
 
     auto role = d["role"].cast<py::dict>();
-    EXPECT_EQ(role["in_received"].cast<uint64_t>(), 0u);
+    EXPECT_EQ(role["in_slots_received"].cast<uint64_t>(), 0u);
 }
 
 TEST_F(MetricsApiPyDictTest, ProcessorAPI_PyDict_Hierarchical_NoQueue)

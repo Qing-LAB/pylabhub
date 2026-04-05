@@ -2584,6 +2584,201 @@ int checksum_enforced_complex_schema(int /*argc*/, char ** /*argv*/)
         logger_module(), crypto_module(), hub_module());
 }
 
+// ============================================================================
+// Spinlock through RoleAPIBase - multi-process cross-role mutual exclusion
+//
+// Two separate worker processes share the same DataBlock SHM segment:
+//   - spinlock_producer_hold: starts broker, creates Producer (SHM), wires
+//     RoleAPIBase, acquires spinlock[0], polls spinlock[1] for consumer presence.
+//   - spinlock_consumer_contend: connects to same broker, creates Consumer
+//     (attaches SHM), wires RoleAPIBase, acquires spinlock[1] (coordination),
+//     then contends on spinlock[0] (blocks until producer releases).
+// Coordination: spinlock[1] signals consumer presence; no file/sleep dependencies.
+// Parent test: verifies event sequence and timing invariants.
+// ============================================================================
+
+int spinlock_producer_hold(int /*argc*/, char **argv)
+{
+    // argv[2] = channel_name
+    std::string channel_name(argv[2]);
+    return run_gtest_worker(
+        [&]() {
+            auto broker = start_broker();
+            Messenger &messenger = Messenger::get_instance();
+            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
+
+            // Print broker coordinates for the consumer process
+            fmt::print(stderr, "BROKER_EP={}\n", broker.endpoint);
+            fmt::print(stderr, "BROKER_PK={}\n", broker.pubkey);
+
+            auto schema = make_schema("uint64");
+
+            ProducerOptions popts;
+            popts.channel_name = channel_name;
+            popts.pattern      = ChannelPattern::PubSub;
+            popts.has_shm      = true;
+            popts.zmq_schema   = schema;
+            popts.shm_config   = make_shm_config();
+            popts.timeout_ms   = 3000;
+
+            auto producer = Producer::create(messenger, popts);
+            ASSERT_TRUE(producer.has_value());
+
+            // Wire RoleAPIBase for producer side
+            scripting::RoleHostCore core;
+            scripting::RoleAPIBase  api(core);
+            api.set_producer(&*producer);
+            api.set_uid("PROD-SPINLOCK-001");
+
+            // Verify spinlock access through RoleAPIBase with explicit Tx side
+            using Side = scripting::ChannelSide;
+            constexpr uint32_t kExpectedCount = 8; // MAX_SHARED_SPINLOCKS
+            ASSERT_EQ(api.spinlock_count(Side::Tx), kExpectedCount);
+
+            // No-side works for single-side (producer only has Tx)
+            ASSERT_EQ(api.spinlock_count(), kExpectedCount);
+
+            // Out-of-range throws
+            EXPECT_THROW(api.get_spinlock(kExpectedCount, Side::Tx), std::exception);
+
+            // Rx side not available for producer — returns 0 count
+            EXPECT_EQ(api.spinlock_count(Side::Rx), 0u);
+
+            // Spinlock 0 = contention target, spinlock 1 = coordination signal.
+            auto contention = api.get_spinlock(0, Side::Tx);
+            auto coord      = api.get_spinlock(1, Side::Tx);
+            ASSERT_TRUE(contention.try_lock_for(0));
+            fmt::print(stderr, "[PRODUCER] spinlock[0] ACQUIRED (contention target)\n");
+
+            // Signal parent: lock held, broker info printed
+            signal_test_ready();
+
+            // Poll spinlock 1: when consumer acquires it, try_lock_for(0) fails
+            fmt::print(stderr, "[PRODUCER] polling spinlock[1] for consumer presence...\n");
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+            while (coord.try_lock_for(0))
+            {
+                coord.unlock(); // was free, consumer not there yet
+                ASSERT_LT(std::chrono::steady_clock::now(), deadline)
+                    << "Timed out waiting for consumer to acquire coordination spinlock";
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            fmt::print(stderr, "[PRODUCER] spinlock[1] held by consumer -- consumer is ready\n");
+
+            // Consumer is about to call try_lock_for on spinlock 0.
+            // Small delay so consumer enters the spin loop.
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+            uint64_t release_ts = pylabhub::platform::monotonic_time_ns();
+            contention.unlock();
+            fmt::print(stderr, "[PRODUCER] spinlock[0] RELEASED\n");
+            fmt::print(stderr, "RELEASE_TS={}\n", release_ts);
+
+            // Wait for consumer to release spinlock 1 (done signal)
+            fmt::print(stderr, "[PRODUCER] waiting for consumer done (spinlock[1] release)...\n");
+            ASSERT_TRUE(coord.try_lock_for(15000))
+                << "Consumer did not release coordination spinlock within 15s";
+            coord.unlock();
+            fmt::print(stderr, "[PRODUCER] consumer done -- shutting down\n");
+
+            producer->close();
+            messenger.disconnect();
+            broker.stop_and_join();
+        },
+        "hub_api.spinlock_producer_hold",
+        logger_module(), crypto_module(), hub_module());
+}
+
+int spinlock_consumer_contend(int /*argc*/, char **argv)
+{
+    // argv[2] = channel_name, argv[3] = broker_endpoint, argv[4] = broker_pubkey
+    std::string channel_name(argv[2]);
+    std::string broker_ep(argv[3]);
+    std::string broker_pk(argv[4]);
+    return run_gtest_worker(
+        [&]() {
+            Messenger &messenger = Messenger::get_instance();
+            ASSERT_TRUE(messenger.connect(broker_ep, broker_pk));
+
+            auto schema = make_schema("uint64");
+
+            ConsumerOptions copts;
+            copts.channel_name      = channel_name;
+            copts.shm_shared_secret = kTestShmSecret;
+            copts.zmq_schema        = schema;
+            copts.timeout_ms        = 3000;
+
+            auto consumer = Consumer::connect(messenger, copts);
+            ASSERT_TRUE(consumer.has_value());
+
+            // Wire RoleAPIBase for consumer side
+            scripting::RoleHostCore core;
+            scripting::RoleAPIBase  api(core);
+            api.set_consumer(&*consumer);
+            api.set_uid("CONS-SPINLOCK-001");
+
+            // Verify spinlock access through RoleAPIBase with explicit Rx side
+            using Side = scripting::ChannelSide;
+            constexpr uint32_t kExpectedCount = 8;
+            ASSERT_EQ(api.spinlock_count(Side::Rx), kExpectedCount);
+
+            // No-side works for single-side (consumer only has Rx)
+            ASSERT_EQ(api.spinlock_count(), kExpectedCount);
+
+            // Out-of-range throws
+            EXPECT_THROW(api.get_spinlock(kExpectedCount, Side::Rx), std::exception);
+
+            // Tx side not available for consumer -- returns 0 count
+            EXPECT_EQ(api.spinlock_count(Side::Tx), 0u);
+
+            // No-SHM API throws
+            scripting::RoleHostCore bare_core;
+            scripting::RoleAPIBase  bare_api(bare_core);
+            EXPECT_EQ(bare_api.spinlock_count(), 0u);
+            EXPECT_THROW(bare_api.get_spinlock(0), std::runtime_error);
+
+            // Spinlock 0 = contention target (held by producer),
+            // spinlock 1 = coordination signal (consumer acquires to signal presence).
+            auto contention = api.get_spinlock(0, Side::Rx);
+            auto coord      = api.get_spinlock(1, Side::Rx);
+
+            // Acquire spinlock 1: signals producer that consumer is alive and ready
+            ASSERT_TRUE(coord.try_lock_for(0))
+                << "Coordination spinlock 1 should be free initially";
+            fmt::print(stderr, "[CONSUMER] spinlock[1] ACQUIRED (coordination signal)\n");
+
+            // Try contention spinlock 0 -- should block (producer process holds it)
+            fmt::print(stderr, "[CONSUMER] trying spinlock[0] (should block)...\n");
+            uint64_t try_ts = pylabhub::platform::monotonic_time_ns();
+            fmt::print(stderr, "TRY_TS={}\n", try_ts);
+
+            ASSERT_TRUE(contention.try_lock_for(15000))
+                << "Consumer spinlock must acquire within 15s after producer releases";
+
+            uint64_t acquired_ts = pylabhub::platform::monotonic_time_ns();
+            fmt::print(stderr, "ACQUIRED_TS={}\n", acquired_ts);
+            fmt::print(stderr, "[CONSUMER] spinlock[0] ACQUIRED (was blocked {}ms)\n",
+                       (acquired_ts - try_ts) / 1'000'000);
+            contention.unlock();
+            fmt::print(stderr, "[CONSUMER] spinlock[0] RELEASED\n");
+
+            // Verify spinlock 2 is independently acquirable (index independence)
+            auto lock2 = api.get_spinlock(2, Side::Rx);
+            ASSERT_TRUE(lock2.try_lock_for(0)) << "Index 2 must be independently acquirable";
+            fmt::print(stderr, "[CONSUMER] spinlock[2] independently acquirable -- OK\n");
+            lock2.unlock();
+
+            // Release coordination spinlock -- signals producer: done, safe to shut down
+            coord.unlock();
+            fmt::print(stderr, "[CONSUMER] spinlock[1] RELEASED (done signal)\n");
+
+            consumer->close();
+            messenger.disconnect();
+        },
+        "hub_api.spinlock_consumer_contend",
+        logger_module(), crypto_module(), hub_module());
+}
+
 } // namespace pylabhub::tests::worker::hub_api
 
 // ============================================================================
@@ -2677,6 +2872,10 @@ struct HubApiWorkerRegistrar
                     return zmq_multifield_packed_roundtrip(argc, argv);
                 if (scenario == "checksum_enforced_complex_schema")
                     return checksum_enforced_complex_schema(argc, argv);
+                if (scenario == "spinlock_producer_hold")
+                    return spinlock_producer_hold(argc, argv);
+                if (scenario == "spinlock_consumer_contend")
+                    return spinlock_consumer_contend(argc, argv);
                 fmt::print(stderr, "ERROR: Unknown hub_api scenario '{}'\n", scenario);
                 return 1;
             });

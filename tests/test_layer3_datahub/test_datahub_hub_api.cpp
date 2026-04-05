@@ -13,9 +13,13 @@
  */
 #include "test_patterns.h"
 #include "test_process_utils.h"
+#include "shared_test_helpers.h"
 #include <gtest/gtest.h>
 
+#include <cstdio>
+
 using namespace pylabhub::tests;
+using namespace pylabhub::tests::helper;
 
 class DatahubHubApiTest : public IsolatedProcessTest
 {
@@ -260,4 +264,98 @@ TEST_F(DatahubHubApiTest, ChecksumEnforcedComplexSchema)
     // Enforced checksum with 6-field complex schema — stamp + verify round-trip.
     auto proc = SpawnWorker("hub_api.checksum_enforced_complex_schema", {});
     ExpectWorkerOk(proc);
+}
+
+// Helper: extract a uint64_t value from stderr output matching "KEY=<value>"
+static uint64_t extract_ts(std::string_view stderr_out, const char *key)
+{
+    std::string prefix = std::string(key) + "=";
+    auto pos = stderr_out.find(prefix);
+    EXPECT_NE(pos, std::string_view::npos) << "Missing " << key << " in stderr output";
+    if (pos == std::string_view::npos) return 0;
+    auto val_start = pos + prefix.size();
+    auto val_end = stderr_out.find('\n', val_start);
+    return std::stoull(std::string(stderr_out.substr(val_start, val_end - val_start)));
+}
+
+// Helper: extract a string value from stderr output matching "KEY=<value>"
+static std::string extract_str(std::string_view stderr_out, const char *key)
+{
+    std::string prefix = std::string(key) + "=";
+    auto pos = stderr_out.find(prefix);
+    EXPECT_NE(pos, std::string_view::npos) << "Missing " << key << " in stderr output";
+    if (pos == std::string_view::npos) return {};
+    auto val_start = pos + prefix.size();
+    auto val_end = stderr_out.find('\n', val_start);
+    return std::string(stderr_out.substr(val_start, val_end - val_start));
+}
+
+TEST_F(DatahubHubApiTest, SpinlockThroughRoleApi)
+{
+    // Multi-process spinlock test through RoleAPIBase:
+    //   Process 1 (producer): starts broker, creates Producer (SHM), wires RoleAPIBase,
+    //     acquires spinlock 0, signals ready, waits for consumer rendezvous, releases.
+    //   Process 2 (consumer): connects to same broker, creates Consumer (SHM attachment),
+    //     wires RoleAPIBase, signals rendezvous, calls try_lock_for(-1), verifies blocking.
+
+    std::string channel = make_test_channel_name("hub.spinlock_api");
+
+    // Spawn producer with ready signal -- it holds spinlock 0 after signaling
+    auto producer = SpawnWorkerWithReadySignal(
+        "hub_api.spinlock_producer_hold", {channel});
+    producer.wait_for_ready();
+
+    // Parse broker coordinates from producer stderr
+    std::string broker_ep = extract_str(producer.get_stderr(), "BROKER_EP");
+    std::string broker_pk = extract_str(producer.get_stderr(), "BROKER_PK");
+    ASSERT_FALSE(broker_ep.empty()) << "Producer must print BROKER_EP";
+    ASSERT_FALSE(broker_pk.empty()) << "Producer must print BROKER_PK";
+
+    // Spawn consumer -- connects to same broker, contends on same spinlock
+    auto consumer = SpawnWorker(
+        "hub_api.spinlock_consumer_contend",
+        {channel, broker_ep, broker_pk});
+
+    consumer.wait_for_exit();
+    producer.wait_for_exit();
+
+    // Verify producer event sequence via required substrings
+    expect_worker_ok(producer, {
+        "[PRODUCER] spinlock[0] ACQUIRED",
+        "[PRODUCER] spinlock[1] held by consumer",
+        "[PRODUCER] spinlock[0] RELEASED",
+        "[PRODUCER] consumer done"
+    }, {
+        // Expected ERRORs: out-of-range spinlock index test generates one
+        "Initialized with a null SharedSpinLockState"
+    });
+
+    // Verify consumer event sequence via required substrings
+    expect_worker_ok(consumer, {
+        "[CONSUMER] spinlock[1] ACQUIRED",
+        "[CONSUMER] trying spinlock[0]",
+        "[CONSUMER] spinlock[0] ACQUIRED",
+        "[CONSUMER] spinlock[0] RELEASED",
+        "[CONSUMER] spinlock[2] independently acquirable",
+        "[CONSUMER] spinlock[1] RELEASED"
+    }, {
+        "Initialized with a null SharedSpinLockState"
+    });
+
+    // Parse timestamps and verify cross-process mutual exclusion
+    uint64_t t1_try      = extract_ts(consumer.get_stderr(), "TRY_TS");
+    uint64_t t2_release  = extract_ts(producer.get_stderr(), "RELEASE_TS");
+    uint64_t t3_acquired = extract_ts(consumer.get_stderr(), "ACQUIRED_TS");
+
+    EXPECT_LT(t1_try, t2_release)
+        << "Consumer must have started trying (T1) before producer released (T2)";
+    EXPECT_LE(t2_release, t3_acquired)
+        << "Consumer must have acquired (T3) after producer released (T2)";
+
+    // Consumer was blocked for a meaningful duration
+    uint64_t blocked_ns = t3_acquired - t1_try;
+    constexpr uint64_t kMinBlockedNs = 20'000'000; // 20ms minimum
+    EXPECT_GE(blocked_ns, kMinBlockedNs)
+        << "Consumer should have been blocked >= 20ms, but only blocked "
+        << (blocked_ns / 1'000'000) << "ms";
 }

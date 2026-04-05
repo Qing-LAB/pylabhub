@@ -200,6 +200,16 @@ inline size_t compute_schema_size(const SchemaSpec &spec, const std::string &pac
     return size;
 }
 
+/// Round a byte size up to the nearest 4KB physical page boundary.
+/// Used for SHM flexzone allocation where the OS allocates in page-sized chunks.
+inline size_t align_to_physical_page(size_t logical_size)
+{
+    constexpr size_t kPageSize = 4096;
+    if (logical_size == 0)
+        return 0;
+    return (logical_size + kPageSize - 1) & ~(kPageSize - 1);
+}
+
 // ── ZMQ/SHM schema field conversion ─────────────────────────────────────────
 
 /// Convert a SchemaSpec to a SchemaFieldDesc list for queue creation.

@@ -300,13 +300,19 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
         lua_setfield(L, -2, name);
     };
 
+    // ── ChannelSide constants (all roles) ────────────────────────────────
+    lua_pushinteger(L, static_cast<lua_Integer>(ChannelSide::Tx));
+    lua_setfield(L, -2, "Tx");
+    lua_pushinteger(L, static_cast<lua_Integer>(ChannelSide::Rx));
+    lua_setfield(L, -2, "Rx");
+
     // ── Common closures (all roles) ────────────────────────────────────
     push_closure("uid", lua_api_uid);
     push_closure("name", lua_api_name);
     push_closure("channel", lua_api_channel);
-    push_closure("out_written", lua_api_out_written);
-    push_closure("in_received", lua_api_in_received);
-    push_closure("drops", lua_api_drops);
+    push_closure("out_slots_written", lua_api_out_slots_written);
+    push_closure("in_slots_received", lua_api_in_slots_received);
+    push_closure("out_drop_count", lua_api_out_drop_count);
     push_closure("metrics", lua_api_metrics);
 
     // ── Role-specific closures based on role_tag ────────────────────────
@@ -320,6 +326,8 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
             push_closure("update_flexzone_checksum", lua_api_update_flexzone_checksum);
         }
         push_closure("flexzone", lua_api_flexzone);
+        push_closure("slot_logical_size", lua_api_slot_logical_size);
+        push_closure("flexzone_logical_size", lua_api_flexzone_logical_size);
         push_closure("spinlock", lua_api_spinlock);
         push_closure("spinlock_count", lua_api_spinlock_count);
         push_closure("out_capacity", lua_api_out_capacity);
@@ -329,6 +337,8 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
     {
         if (api_->consumer())
             push_closure("set_verify_checksum", lua_api_set_verify_checksum);
+        push_closure("slot_logical_size", lua_api_slot_logical_size);
+        push_closure("flexzone_logical_size", lua_api_flexzone_logical_size);
         push_closure("spinlock", lua_api_spinlock);
         push_closure("spinlock_count", lua_api_spinlock_count);
         push_closure("in_capacity", lua_api_in_capacity);
@@ -347,6 +357,8 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
             push_closure("update_flexzone_checksum", lua_api_update_flexzone_checksum);
         }
         push_closure("flexzone", lua_api_flexzone);
+        push_closure("slot_logical_size", lua_api_slot_logical_size);
+        push_closure("flexzone_logical_size", lua_api_flexzone_logical_size);
         push_closure("spinlock", lua_api_spinlock);
         push_closure("spinlock_count", lua_api_spinlock_count);
         push_closure("out_capacity", lua_api_out_capacity);
@@ -733,7 +745,7 @@ void LuaEngine::invoke_on_init()
 
     if (!state_.pcall(1, 0, "on_init"))
     {
-        api_->core()->inc_script_errors();
+        api_->core()->inc_script_error_count();
     }
 }
 
@@ -752,7 +764,7 @@ void LuaEngine::invoke_on_stop()
 
     if (!state_.pcall(1, 0, "on_stop"))
     {
-        api_->core()->inc_script_errors();
+        api_->core()->inc_script_error_count();
     }
 }
 
@@ -981,7 +993,7 @@ InvokeResult LuaEngine::invoke_on_inbox(InvokeInbox msg)
         LOGGER_ERROR("[{}] invoke_on_inbox: InboxFrame type not registered — "
                      "inbox_schema must be configured and registered before use",
                      log_tag_);
-        api_->core()->inc_script_errors();
+        api_->core()->inc_script_error_count();
         lua_pop(L, 1); // pop function
         return InvokeResult::Error;
     }
@@ -1048,7 +1060,7 @@ int LuaEngine::extract_callback_ref_(const char *name)
 
 InvokeResult LuaEngine::on_pcall_error_(const std::string &callback_name)
 {
-    api_->core()->inc_script_errors();
+    api_->core()->inc_script_error_count();
     // Hot-path callers (invoke_produce etc.) use state_.pcall() which logs the error.
     // Generic invoke() callers log the error themselves before calling this.
     if (stop_on_script_error_)
@@ -1182,7 +1194,7 @@ void LuaEngine::push_common_api_closures_(lua_State *L)
     push_closure("set_critical_error", lua_api_set_critical_error);
     push_closure("critical_error", lua_api_critical_error);
     push_closure("stop_reason", lua_api_stop_reason);
-    push_closure("script_errors", lua_api_script_errors);
+    push_closure("script_error_count", lua_api_script_error_count);
     push_closure("version_info", lua_api_version_info);
     push_closure("wait_for_role", lua_api_wait_for_role);
     push_closure("open_inbox", lua_api_open_inbox);
@@ -1374,10 +1386,10 @@ int LuaEngine::lua_api_version_info(lua_State *L)
     return 1;
 }
 
-int LuaEngine::lua_api_script_errors(lua_State *L)
+int LuaEngine::lua_api_script_error_count(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    uint64_t val = self->api_->core()->script_errors();
+    uint64_t val = self->api_->core()->script_error_count();
     lua_pushinteger(L, static_cast<lua_Integer>(val));
     return 1;
 }
@@ -1605,26 +1617,26 @@ int LuaEngine::lua_api_set_verify_checksum(lua_State *L)
     return 0;
 }
 
-int LuaEngine::lua_api_out_written(lua_State *L)
+int LuaEngine::lua_api_out_slots_written(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    uint64_t val = self->api_->core()->out_written();
+    uint64_t val = self->api_->core()->out_slots_written();
     lua_pushinteger(L, static_cast<lua_Integer>(val));
     return 1;
 }
 
-int LuaEngine::lua_api_in_received(lua_State *L)
+int LuaEngine::lua_api_in_slots_received(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    uint64_t val = self->api_->core()->in_received();
+    uint64_t val = self->api_->core()->in_slots_received();
     lua_pushinteger(L, static_cast<lua_Integer>(val));
     return 1;
 }
 
-int LuaEngine::lua_api_drops(lua_State *L)
+int LuaEngine::lua_api_out_drop_count(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    uint64_t val = self->api_->core()->drops();
+    uint64_t val = self->api_->core()->out_drop_count();
     lua_pushinteger(L, static_cast<lua_Integer>(val));
     return 1;
 }
@@ -1884,14 +1896,14 @@ int LuaEngine::lua_api_metrics(lua_State *L)
     // "role" (role-specific, built inline)
     {
         lua_newtable(L);
-        lua_pushinteger(L, static_cast<lua_Integer>(core->out_written()));
-        lua_setfield(L, -2, "out_written");
-        lua_pushinteger(L, static_cast<lua_Integer>(core->in_received()));
-        lua_setfield(L, -2, "in_received");
-        lua_pushinteger(L, static_cast<lua_Integer>(core->drops()));
-        lua_setfield(L, -2, "drops");
-        lua_pushinteger(L, static_cast<lua_Integer>(core->script_errors()));
-        lua_setfield(L, -2, "script_errors");
+        lua_pushinteger(L, static_cast<lua_Integer>(core->out_slots_written()));
+        lua_setfield(L, -2, "out_slots_written");
+        lua_pushinteger(L, static_cast<lua_Integer>(core->in_slots_received()));
+        lua_setfield(L, -2, "in_slots_received");
+        lua_pushinteger(L, static_cast<lua_Integer>(core->out_drop_count()));
+        lua_setfield(L, -2, "out_drop_count");
+        lua_pushinteger(L, static_cast<lua_Integer>(core->script_error_count()));
+        lua_setfield(L, -2, "script_error_count");
 
         // ctrl_queue_dropped — processor gets {input, output} sub-table
         if (self->api_->role_tag() == "proc")
@@ -1949,17 +1961,65 @@ int LuaEngine::lua_api_metrics(lua_State *L)
 // Group F: Spinlocks (SHM-only)
 // ============================================================================
 
+// ============================================================================
+// ChannelSide helpers + schema size + spinlocks
+// ============================================================================
+
 static const char *kSpinlockMT = "pylabhub.SharedSpinLock";
+
+// Parse optional ChannelSide from Lua argument (integer or nil).
+static std::optional<ChannelSide> lua_opt_channel_side(lua_State *L, int arg)
+{
+    if (lua_isnoneornil(L, arg))
+        return std::nullopt;
+    int v = static_cast<int>(luaL_checkinteger(L, arg));
+    if (v != 0 && v != 1)
+        luaL_error(L, "side must be api.Tx (0) or api.Rx (1), got %d", v);
+    return static_cast<ChannelSide>(v);
+}
+
+int LuaEngine::lua_api_slot_logical_size(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    auto side = lua_opt_channel_side(L, 1);
+    try
+    {
+        lua_pushinteger(L, static_cast<lua_Integer>(self->api_->slot_logical_size(side)));
+    }
+    catch (const std::exception &e)
+    {
+        return luaL_error(L, "%s", e.what());
+    }
+    return 1;
+}
+
+int LuaEngine::lua_api_flexzone_logical_size(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    auto side = lua_opt_channel_side(L, 1);
+    try
+    {
+        lua_pushinteger(L, static_cast<lua_Integer>(self->api_->flexzone_logical_size(side)));
+    }
+    catch (const std::exception &e)
+    {
+        return luaL_error(L, "%s", e.what());
+    }
+    return 1;
+}
 
 int LuaEngine::lua_api_spinlock_count(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    uint32_t count = 0;
-    if (self->api_->producer())
-        count = self->api_->producer()->spinlock_count();
-    else if (self->api_->consumer())
-        count = self->api_->consumer()->spinlock_count();
-    lua_pushinteger(L, static_cast<lua_Integer>(count));
+    auto side = lua_opt_channel_side(L, 1);
+    try
+    {
+        lua_pushinteger(L, static_cast<lua_Integer>(self->api_->spinlock_count(side)));
+    }
+    catch (const std::exception &e)
+    {
+        return luaL_error(L, "%s", e.what());
+    }
     return 1;
 }
 
@@ -1967,27 +2027,19 @@ int LuaEngine::lua_api_spinlock(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     int idx = static_cast<int>(luaL_checkinteger(L, 1));
+    auto side = lua_opt_channel_side(L, 2);
 
-    // Determine which role has SHM.
-    hub::Producer *prod = self->api_->producer();
-    hub::Consumer *cons = self->api_->consumer();
-    bool has_shm = (prod && prod->has_shm()) || (cons && cons->has_shm());
-    if (!has_shm)
-        return luaL_error(L, "spinlock: SHM not connected");
-
-    uint32_t count = prod ? prod->spinlock_count() : cons->spinlock_count();
-    if (idx < 0 || static_cast<uint32_t>(idx) >= count)
-        return luaL_error(L, "spinlock: index %d out of range [0, %d)",
-                          idx, static_cast<int>(count));
-
-    // Create userdata with placement-new SharedSpinLock.
-    void *ud = lua_newuserdata(L, sizeof(hub::SharedSpinLock));
-    if (prod)
-        new (ud) hub::SharedSpinLock(prod->get_spinlock(static_cast<size_t>(idx)));
-    else
-        new (ud) hub::SharedSpinLock(cons->get_spinlock(static_cast<size_t>(idx)));
-
-    luaL_setmetatable(L, kSpinlockMT);
+    try
+    {
+        void *ud = lua_newuserdata(L, sizeof(hub::SharedSpinLock));
+        new (ud) hub::SharedSpinLock(
+            self->api_->get_spinlock(static_cast<size_t>(idx), side));
+        luaL_setmetatable(L, kSpinlockMT);
+    }
+    catch (const std::exception &e)
+    {
+        return luaL_error(L, "%s", e.what());
+    }
     return 1;
 }
 

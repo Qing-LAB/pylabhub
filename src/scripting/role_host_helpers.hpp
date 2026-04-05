@@ -11,6 +11,10 @@
 
 #include "utils/role_host_core.hpp"
 #include "utils/script_engine.hpp"
+#include "utils/config/checksum_config.hpp"
+#include "utils/config/inbox_config.hpp"
+#include "utils/data_block_policy.hpp"
+#include "utils/schema_utils.hpp"
 #include "plh_datahub.hpp"
 #include "plh_datahub_client.hpp"
 #include "utils/hub_inbox_queue.hpp"
@@ -18,6 +22,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -139,6 +144,68 @@ inline nlohmann::json serialize_inbox_spec_json(const hub::SchemaSpec &spec)
         fields_arr.push_back(std::move(fj));
     }
     result["fields"] = std::move(fields_arr);
+    if (spec.packing != "aligned")
+        result["packing"] = spec.packing;
+    return result;
+}
+
+// ============================================================================
+// setup_inbox_facility — shared inbox queue setup for all role hosts
+// ============================================================================
+
+/**
+ * @brief Result of inbox queue setup — used to populate ProducerOptions/ConsumerOptions.
+ */
+struct InboxSetupResult
+{
+    std::unique_ptr<hub::InboxQueue> queue;
+    std::string actual_endpoint;   ///< OS-resolved endpoint (for broker registration).
+    std::string schema_json;       ///< Serialized spec (for ROLE_INFO_REQ discovery).
+    std::string packing;           ///< From inbox schema (sole source of truth).
+    std::string checksum;          ///< Checksum policy string.
+};
+
+/**
+ * @brief Create and start an InboxQueue from the inbox schema + config.
+ *
+ * Packing comes from inbox_spec.packing (always populated by parse_schema_json,
+ * defaults to "aligned"). No fallback to transport packing — inbox is an
+ * independent communication path with its own schema.
+ *
+ * @param inbox_spec       Resolved inbox schema (must have has_schema=true).
+ * @param inbox_cfg        Inbox config (endpoint, buffer_depth, overflow_policy).
+ * @param checksum_policy  Role-level checksum policy.
+ * @param tag              Log tag (e.g. "prod", "cons", "proc").
+ * @return InboxSetupResult on success, nullopt on failure.
+ */
+inline std::optional<InboxSetupResult>
+setup_inbox_facility(const hub::SchemaSpec    &inbox_spec,
+                     const config::InboxConfig &inbox_cfg,
+                     hub::ChecksumPolicy       checksum_policy,
+                     const char               *tag)
+{
+    auto zmq_fields = hub::schema_spec_to_zmq_fields(inbox_spec);
+
+    const int rcvhwm = (inbox_cfg.overflow_policy == "block")
+        ? 0
+        : static_cast<int>(inbox_cfg.buffer_depth);
+
+    auto queue = hub::InboxQueue::bind_at(
+        inbox_cfg.endpoint, std::move(zmq_fields), inbox_spec.packing, rcvhwm);
+    if (!queue || !queue->start())
+    {
+        LOGGER_ERROR("[{}] Failed to start InboxQueue at '{}'", tag, inbox_cfg.endpoint);
+        return std::nullopt;
+    }
+
+    queue->set_checksum_policy(checksum_policy);
+
+    InboxSetupResult result;
+    result.actual_endpoint = queue->actual_endpoint();
+    result.schema_json     = serialize_inbox_spec_json(inbox_spec).dump();
+    result.packing         = inbox_spec.packing;
+    result.checksum        = config::checksum_policy_to_string(checksum_policy);
+    result.queue           = std::move(queue);
     return result;
 }
 

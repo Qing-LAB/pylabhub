@@ -1145,15 +1145,15 @@ TEST_F(LuaEngineTest, ApiStopReason_ReflectsPeerDead)
 }
 
 // ============================================================================
-// 18. Metrics closures read from RoleContext counters
+// 18. Metrics closures read from RoleHostCore counters
 // ============================================================================
 
 TEST_F(LuaEngineTest, MetricsClosures_ReadFromRoleHostCounters)
 {
     write_script(R"(
         function on_produce(tx, msgs, api)
-            local ow = api.out_written()
-            local dr = api.drops()
+            local ow = api.out_slots_written()
+            local dr = api.out_drop_count()
             assert(ow == 42, "expected out_written=42, got " .. tostring(ow))
             assert(dr == 7,  "expected drops=7, got " .. tostring(dr))
             return false
@@ -1161,8 +1161,8 @@ TEST_F(LuaEngineTest, MetricsClosures_ReadFromRoleHostCounters)
     )");
 
     RoleHostCore core;
-    core.test_set_out_written(42);
-    core.test_set_drops(7);
+    core.test_set_out_slots_written(42);
+    core.test_set_out_drop_count(7);
 
     LuaEngine engine;
     ASSERT_TRUE(setup_engine_with_core(engine, core));
@@ -1322,14 +1322,14 @@ TEST_F(LuaEngineTest, MetricsClosures_InReceivedWorks)
 {
     write_script(R"(
         function on_consume(rx, msgs, api)
-            local ir = api.in_received()
+            local ir = api.in_slots_received()
             assert(ir == 15, "expected in_received=15, got " .. tostring(ir))
             return true
         end
     )");
 
     RoleHostCore core;
-    core.test_set_in_received(15);
+    core.test_set_in_slots_received(15);
 
     LuaEngine engine;
     ASSERT_TRUE(engine.initialize("test", &core));
@@ -1397,7 +1397,7 @@ function bad_func() error("intentional test error") end
     ASSERT_TRUE(setup_engine_with_core(engine, core));
 
     EXPECT_FALSE(engine.invoke("bad_func"));
-    EXPECT_EQ(core.script_errors(), 1u);
+    EXPECT_EQ(core.script_error_count(), 1u);
     engine.finalize();
 }
 
@@ -1608,7 +1608,7 @@ end
     std::vector<IncomingMessage> msgs;
     auto r = engine.invoke_produce(InvokeTx{nullptr, 0, nullptr, 0}, msgs);
     EXPECT_EQ(r, InvokeResult::Commit);
-    EXPECT_EQ(core.script_errors(), 0u);
+    EXPECT_EQ(core.script_error_count(), 0u);
     engine.finalize();
 }
 
@@ -1678,19 +1678,19 @@ TEST_F(LuaEngineTest, Metrics_HierarchicalTable_Producer)
                    "loop.last_cycle_work_us must be a number")
 
             -- Role fields
-            assert(m.role.out_written == 5,
-                   "role.out_written expected 5, got " .. tostring(m.role.out_written))
-            assert(m.role.drops == 2,
-                   "role.drops expected 2, got " .. tostring(m.role.drops))
-            assert(type(m.role.script_errors) == "number",
-                   "role.script_errors must be a number")
+            assert(m.role.out_slots_written == 5,
+                   "role.out_slots_written expected 5, got " .. tostring(m.role.out_slots_written))
+            assert(m.role.out_drop_count == 2,
+                   "role.out_drop_count expected 2, got " .. tostring(m.role.out_drop_count))
+            assert(type(m.role.script_error_count) == "number",
+                   "role.script_error_count must be a number")
             return false
         end
     )");
 
     RoleHostCore core;
-    core.test_set_out_written(5);
-    core.test_set_drops(2);
+    core.test_set_out_slots_written(5);
+    core.test_set_out_drop_count(2);
 
     LuaEngine engine;
     ASSERT_TRUE(setup_engine_with_core(engine, core));
@@ -1713,14 +1713,14 @@ TEST_F(LuaEngineTest, Metrics_HierarchicalTable_Consumer)
             assert(type(m.role) == "table", "role group must be a table")
             assert(m.queue == nil, "queue absent without connection")
 
-            assert(m.role.in_received == 10,
-                   "role.in_received expected 10, got " .. tostring(m.role.in_received))
+            assert(m.role.in_slots_received == 10,
+                   "role.in_slots_received expected 10, got " .. tostring(m.role.in_slots_received))
             return true
         end
     )");
 
     RoleHostCore core;
-    core.test_set_in_received(10);
+    core.test_set_in_slots_received(10);
 
     LuaEngine engine;
     ASSERT_TRUE(engine.initialize("test", &core));

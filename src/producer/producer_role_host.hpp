@@ -18,6 +18,8 @@
 #include "utils/script_engine.hpp"
 #include "plh_datahub.hpp"
 
+#include <string>
+
 #include <atomic>
 #include <memory>
 #include <future>
@@ -107,8 +109,8 @@ class ProducerRoleHost
     // Schema info (resolved from config during setup).
     hub::SchemaSpec                  out_slot_spec_;
 
-    // Metrics are in core_ (RoleHostCore) — single source of truth.
-    // See core_.out_written_, core_.drops_, core_.iteration_count_, core_.last_cycle_work_us_.
+    // Lifecycle module name (for UnloadModule on shutdown).
+    std::string                      engine_module_name_;
 };
 
 } // namespace pylabhub::producer

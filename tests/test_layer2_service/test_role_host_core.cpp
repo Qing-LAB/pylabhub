@@ -41,10 +41,10 @@ TEST_F(RoleHostCoreTest, DefaultState_AllZero)
     EXPECT_FALSE(core_.is_critical_error());
     EXPECT_EQ(core_.stop_reason_string(), "normal");
 
-    EXPECT_EQ(core_.out_written(),       0u);
-    EXPECT_EQ(core_.in_received(),       0u);
-    EXPECT_EQ(core_.drops(),             0u);
-    EXPECT_EQ(core_.script_errors(),     0u);
+    EXPECT_EQ(core_.out_slots_written(),       0u);
+    EXPECT_EQ(core_.in_slots_received(),       0u);
+    EXPECT_EQ(core_.out_drop_count(),             0u);
+    EXPECT_EQ(core_.script_error_count(),     0u);
     EXPECT_EQ(core_.iteration_count(),   0u);
     EXPECT_EQ(core_.last_cycle_work_us(), 0u);
 
@@ -164,20 +164,20 @@ TEST_F(RoleHostCoreTest, ProcessExitRequested_FlagSet_ReturnsTrue)
 
 TEST_F(RoleHostCoreTest, MetricCounters_IncrementAndRead)
 {
-    core_.inc_out_written();
-    core_.inc_out_written();
-    core_.inc_out_written();
-    EXPECT_EQ(core_.out_written(), 3u);
+    core_.inc_out_slots_written();
+    core_.inc_out_slots_written();
+    core_.inc_out_slots_written();
+    EXPECT_EQ(core_.out_slots_written(), 3u);
 
-    core_.inc_in_received();
-    EXPECT_EQ(core_.in_received(), 1u);
+    core_.inc_in_slots_received();
+    EXPECT_EQ(core_.in_slots_received(), 1u);
 
-    core_.inc_drops();
-    core_.inc_drops();
-    EXPECT_EQ(core_.drops(), 2u);
+    core_.inc_out_drop_count();
+    core_.inc_out_drop_count();
+    EXPECT_EQ(core_.out_drop_count(), 2u);
 
-    core_.inc_script_errors();
-    EXPECT_EQ(core_.script_errors(), 1u);
+    core_.inc_script_error_count();
+    EXPECT_EQ(core_.script_error_count(), 1u);
 
     for (int i = 0; i < 100; ++i)
         core_.inc_iteration_count();
@@ -200,7 +200,7 @@ TEST_F(RoleHostCoreTest, MetricCounters_CrossThread)
     auto writer = [&]
     {
         for (int i = 0; i < kPerThread; ++i)
-            core_.inc_out_written();
+            core_.inc_out_slots_written();
     };
 
     std::thread t1(writer);
@@ -208,7 +208,7 @@ TEST_F(RoleHostCoreTest, MetricCounters_CrossThread)
     t1.join();
     t2.join();
 
-    EXPECT_EQ(core_.out_written(), static_cast<uint64_t>(kPerThread * 2));
+    EXPECT_EQ(core_.out_slots_written(), static_cast<uint64_t>(kPerThread * 2));
 }
 
 // ============================================================================
