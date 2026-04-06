@@ -212,6 +212,16 @@ void ProcessorRoleHost::worker_main_()
     }
     api_->set_checksum_policy(config_.checksum().policy);
     api_->set_stop_on_script_error(sc.stop_on_script_error);
+    api_->wire_event_callbacks();
+
+    // Processor dual-messenger: wire hub-dead on in_messenger too.
+    // wire_event_callbacks() wires out_messenger_ (set via set_messenger).
+    // The in_messenger is separate and must be wired explicitly.
+    in_messenger_.on_hub_dead([this]() {
+        LOGGER_WARN("[proc] hub-dead: in_messenger broker connection lost; triggering shutdown");
+        core_.set_stop_reason(scripting::RoleHostCore::StopReason::HubDead);
+        core_.request_stop();
+    });
 
     // ── Step 4: Load engine via lifecycle startup ────────────────────────────
 
@@ -342,54 +352,6 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     }
     in_consumer_ = std::move(maybe_consumer);
 
-    // Graceful shutdown: queue channel_closing as a regular event message (input side).
-    in_consumer_->on_channel_closing([this]() {
-        LOGGER_INFO("[proc] CHANNEL_CLOSING_NOTIFY received (in_channel), queuing event");
-        IncomingMessage msg;
-        msg.event = "channel_closing";
-        msg.details["channel"] = config_.in_channel();
-        core_.enqueue_message(std::move(msg));
-    });
-
-    // Forced shutdown: broker grace period expired (input side).
-    in_consumer_->on_force_shutdown([this]() {
-        LOGGER_WARN("[proc] FORCE_SHUTDOWN received (in_channel), forcing immediate shutdown");
-        core_.request_stop();
-    });
-
-    // Route ZMQ data messages to the incoming queue.
-    in_consumer_->on_zmq_data(
-        [this](std::span<const std::byte> data)
-        {
-            LOGGER_DEBUG("[proc] zmq_data: in_channel data_message size={}", data.size());
-            IncomingMessage msg;
-            msg.data.assign(data.begin(), data.end());
-            core_.enqueue_message(std::move(msg));
-        });
-
-    // Wire consumer-side events.
-    in_consumer_->on_producer_message(
-        [this](std::string_view type, std::span<const std::byte> data)
-        {
-            IncomingMessage msg;
-            msg.event = "producer_message";
-            msg.details["type"] = std::string(type);
-            msg.details["data"] = format_tools::bytes_to_hex(
-                {reinterpret_cast<const char *>(data.data()), data.size()});
-            core_.enqueue_message(std::move(msg));
-        });
-
-    in_consumer_->on_channel_error(
-        [this](const std::string &event, const nlohmann::json &details)
-        {
-            IncomingMessage msg;
-            msg.event = "channel_event";
-            msg.details = details;
-            msg.details["detail"] = event;
-            msg.details["source"] = "in_channel";
-            core_.enqueue_message(std::move(msg));
-        });
-
     if (!in_consumer_->start_embedded())
     {
         LOGGER_ERROR("[proc] in_consumer->start_embedded() failed");
@@ -476,80 +438,11 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
 
     // Metrics reset moved to after queue creation (reset_metrics() on queue).
 
-    // Graceful shutdown: queue channel_closing event (output side).
-    out_producer_->on_channel_closing([this]() {
-        IncomingMessage msg;
-        msg.event = "channel_closing";
-        msg.details["channel"] = config_.out_channel();
-        core_.enqueue_message(std::move(msg));
-    });
-
-    // Forced shutdown: broker grace period expired (output side).
-    out_producer_->on_force_shutdown([this]() {
-        core_.request_stop();
-    });
-
-    auto hex_identity = [](const std::string &raw) -> std::string {
-        return format_tools::bytes_to_hex(raw);
-    };
-
-    out_producer_->on_consumer_joined(
-        [this, hex_identity](const std::string &identity) {
-            LOGGER_INFO("[proc] peer_event: consumer_joined identity={}",
-                        hex_identity(identity));
-            IncomingMessage msg;
-            msg.event = "consumer_joined";
-            msg.details["identity"] = hex_identity(identity);
-            core_.enqueue_message(std::move(msg));
-        });
-
-    out_producer_->on_consumer_left(
-        [this, hex_identity](const std::string &identity) {
-            LOGGER_INFO("[proc] peer_event: consumer_left identity={}",
-                        hex_identity(identity));
-            IncomingMessage msg;
-            msg.event = "consumer_left";
-            msg.details["identity"] = hex_identity(identity);
-            core_.enqueue_message(std::move(msg));
-        });
-
-    out_messenger_.on_consumer_died(config_.out_channel(),
-        [this](uint64_t pid, std::string reason) {
-            LOGGER_INFO("[proc] broker_notify: consumer_died pid={} reason={}",
-                        pid, reason);
-            IncomingMessage msg;
-            msg.event = "consumer_died";
-            msg.details["pid"] = pid;
-            msg.details["reason"] = std::move(reason);
-            core_.enqueue_message(std::move(msg));
-        });
-
-    out_messenger_.on_channel_error(config_.out_channel(),
-        [this](std::string event, nlohmann::json details) {
-            LOGGER_INFO("[proc] broker_notify: channel_event event='{}' details={}",
-                        event, details.dump());
-            IncomingMessage msg;
-            msg.event = "channel_event";
-            msg.details = std::move(details);
-            msg.details["detail"] = std::move(event);
-            msg.details["source"] = "out_channel";
-            core_.enqueue_message(std::move(msg));
-        });
-
     if (!config_.out_channel().empty())
     {
         out_messenger_.suppress_periodic_heartbeat(config_.out_channel());
         out_messenger_.enqueue_heartbeat(config_.out_channel());
     }
-
-    out_producer_->on_consumer_message(
-        [this](const std::string &identity, std::span<const std::byte> data) {
-            LOGGER_INFO("[proc] zmq_data: consumer_message size={}", data.size());
-            IncomingMessage msg;
-            msg.sender = identity;
-            msg.data.assign(data.begin(), data.end());
-            core_.enqueue_message(std::move(msg));
-        });
 
     if (!out_producer_->start_embedded())
     {
@@ -557,28 +450,10 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
         return false;
     }
 
-    // ── Wire peer-dead and hub-dead monitoring ─────────────────────────────────
-    in_consumer_->on_peer_dead([this]() {
-        LOGGER_WARN("[proc] peer-dead: upstream producer silent for {} ms; triggering shutdown",
-                    config_.monitoring().peer_dead_timeout_ms);
-        core_.set_stop_reason(scripting::RoleHostCore::StopReason::PeerDead);
-        core_.request_stop();
-    });
-
-    out_producer_->on_peer_dead([this]() {
-        LOGGER_WARN("[proc] peer-dead: downstream consumer silent for {} ms; triggering shutdown",
-                    config_.monitoring().peer_dead_timeout_ms);
-        core_.set_stop_reason(scripting::RoleHostCore::StopReason::PeerDead);
-        core_.request_stop();
-    });
-
-    auto hub_dead_cb = [this]() {
-        LOGGER_WARN("[proc] hub-dead: broker connection lost; triggering shutdown");
-        core_.set_stop_reason(scripting::RoleHostCore::StopReason::HubDead);
-        core_.request_stop();
-    };
-    in_messenger_.on_hub_dead(hub_dead_cb);
-    out_messenger_.on_hub_dead(hub_dead_cb);
+    // Event callbacks (on_channel_closing, on_force_shutdown, on_peer_dead,
+    // on_hub_dead, on_zmq_data, etc.) are wired by api_->wire_event_callbacks()
+    // after RoleAPIBase construction. Processor dual-messenger hub-dead wiring
+    // is handled below in worker_main_ after api_ setup.
 
     // ── Create data queues ─────────────────────────────────────────────────
 

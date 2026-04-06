@@ -90,6 +90,180 @@ void RoleAPIBase::set_checksum_policy(hub::ChecksumPolicy p) { pImpl->checksum_p
 void RoleAPIBase::set_stop_on_script_error(bool v)    { pImpl->stop_on_script_error = v; }
 
 // ============================================================================
+// Event callback wiring
+// ============================================================================
+
+void RoleAPIBase::wire_event_callbacks()
+{
+    auto *core = pImpl->core;
+    const std::string &tag = pImpl->role_tag;
+
+    // For processor, channel names distinguish input vs output in events.
+    const std::string &in_ch  = pImpl->channel;
+    const std::string &out_ch_name = pImpl->out_channel;
+    const bool is_dual = (pImpl->consumer != nullptr && pImpl->producer != nullptr);
+
+    // ── Consumer-side callbacks ──────────────────────────────────────────
+    if (auto *c = pImpl->consumer)
+    {
+        c->on_channel_closing([core, tag, in_ch, is_dual]() {
+            LOGGER_INFO("[{}] CHANNEL_CLOSING_NOTIFY received, queuing event", tag);
+            IncomingMessage msg;
+            msg.event = "channel_closing";
+            if (is_dual)
+                msg.details["channel"] = in_ch;
+            core->enqueue_message(std::move(msg));
+        });
+
+        c->on_force_shutdown([core, tag]() {
+            LOGGER_WARN("[{}] FORCE_SHUTDOWN received, forcing immediate shutdown", tag);
+            core->request_stop();
+        });
+
+        // Always register on_zmq_data — harmless if no data arrives on the
+        // socket (eliminates SHM-vs-ZMQ conditional; see tech draft §7.3).
+        c->on_zmq_data([core, tag](std::span<const std::byte> data) {
+            LOGGER_DEBUG("[{}] zmq_data: data_message size={}", tag, data.size());
+            IncomingMessage msg;
+            msg.data.assign(data.begin(), data.end());
+            core->enqueue_message(std::move(msg));
+        });
+
+        c->on_producer_message(
+            [core, tag](std::string_view type, std::span<const std::byte> data) {
+                LOGGER_INFO("[{}] ctrl_msg: producer_message type='{}' size={}",
+                            tag, type, data.size());
+                IncomingMessage msg;
+                msg.event = "producer_message";
+                msg.details["type"] = std::string(type);
+                msg.details["data"] = format_tools::bytes_to_hex(
+                    {reinterpret_cast<const char *>(data.data()), data.size()});
+                core->enqueue_message(std::move(msg));
+            });
+
+        c->on_channel_error(
+            [core, tag, is_dual](const std::string &event, const nlohmann::json &details) {
+                LOGGER_INFO("[{}] broker_notify: channel_event event='{}' details={}",
+                            tag, event, details.dump());
+                IncomingMessage msg;
+                msg.event = "channel_event";
+                msg.details = details;
+                msg.details["detail"] = event;
+                if (is_dual)
+                    msg.details["source"] = "in_channel";
+                core->enqueue_message(std::move(msg));
+            });
+
+        c->on_peer_dead([core, tag]() {
+            LOGGER_WARN("[{}] peer-dead: upstream producer silent; triggering shutdown", tag);
+            core->set_stop_reason(RoleHostCore::StopReason::PeerDead);
+            core->request_stop();
+        });
+    }
+
+    // ── Producer-side callbacks ──────────────────────────────────────────
+    if (auto *p = pImpl->producer)
+    {
+        p->on_channel_closing([core, tag, out_ch_name, is_dual]() {
+            IncomingMessage msg;
+            msg.event = "channel_closing";
+            if (is_dual)
+                msg.details["channel"] = out_ch_name;
+            core->enqueue_message(std::move(msg));
+        });
+
+        p->on_force_shutdown([core]() {
+            core->request_stop();
+        });
+
+        p->on_consumer_joined([core, tag](const std::string &identity) {
+            auto hex = format_tools::bytes_to_hex(identity);
+            LOGGER_INFO("[{}] peer_event: consumer_joined identity={}", tag, hex);
+            IncomingMessage msg;
+            msg.event = "consumer_joined";
+            msg.details["identity"] = std::move(hex);
+            core->enqueue_message(std::move(msg));
+        });
+
+        p->on_consumer_left([core, tag](const std::string &identity) {
+            auto hex = format_tools::bytes_to_hex(identity);
+            LOGGER_INFO("[{}] peer_event: consumer_left identity={}", tag, hex);
+            IncomingMessage msg;
+            msg.event = "consumer_left";
+            msg.details["identity"] = std::move(hex);
+            core->enqueue_message(std::move(msg));
+        });
+
+        p->on_consumer_message(
+            [core, tag](const std::string &identity, std::span<const std::byte> data) {
+                LOGGER_INFO("[{}] zmq_data: consumer_message size={}", tag, data.size());
+                IncomingMessage msg;
+                msg.sender = identity;
+                msg.data.assign(data.begin(), data.end());
+                core->enqueue_message(std::move(msg));
+            });
+
+        p->on_peer_dead([core, tag]() {
+            LOGGER_WARN("[{}] peer-dead: downstream consumer silent; triggering shutdown", tag);
+            core->set_stop_reason(RoleHostCore::StopReason::PeerDead);
+            core->request_stop();
+        });
+    }
+
+    // ── Messenger-level callbacks (per-channel) ─────────────────────────
+    if (auto *m = pImpl->messenger)
+    {
+        // on_consumer_died and on_channel_error are producer-side messenger
+        // events — only register when we have a producer (i.e., producer-only
+        // or processor roles). Consumer-only roles don't need these.
+        if (pImpl->producer)
+        {
+            std::string out_ch = pImpl->out_channel.empty()
+                                     ? pImpl->channel : pImpl->out_channel;
+
+            if (!out_ch.empty())
+            {
+                m->on_consumer_died(out_ch,
+                    [core, tag](uint64_t pid, std::string reason) {
+                        LOGGER_INFO("[{}] broker_notify: consumer_died pid={} reason={}",
+                                    tag, pid, reason);
+                        IncomingMessage msg;
+                        msg.event = "consumer_died";
+                        msg.details["pid"] = pid;
+                        msg.details["reason"] = std::move(reason);
+                        core->enqueue_message(std::move(msg));
+                    });
+
+                m->on_channel_error(out_ch,
+                    [core, tag, is_dual](std::string event, nlohmann::json details) {
+                        LOGGER_INFO("[{}] broker_notify: channel_event event='{}' details={}",
+                                    tag, event, details.dump());
+                        IncomingMessage msg;
+                        msg.event = "channel_event";
+                        msg.details = std::move(details);
+                        msg.details["detail"] = std::move(event);
+                        if (is_dual)
+                            msg.details["source"] = "out_channel";
+                        core->enqueue_message(std::move(msg));
+                    });
+            }
+        }
+
+        m->on_hub_dead([core, tag]() {
+            LOGGER_WARN("[{}] hub-dead: broker connection lost; triggering shutdown", tag);
+            core->set_stop_reason(RoleHostCore::StopReason::HubDead);
+            core->request_stop();
+        });
+    }
+
+    // ── Processor dual-messenger: hub-dead on both ──────────────────────
+    // For processor, the in_messenger and out_messenger may be different.
+    // The role host sets messenger to out_messenger. If the processor has
+    // a separate in_messenger, it must wire hub_dead on that one separately
+    // (the role host handles this since it owns both messenger instances).
+}
+
+// ============================================================================
 // Identity
 // ============================================================================
 
