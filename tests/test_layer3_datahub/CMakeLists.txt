@@ -167,11 +167,16 @@ add_executable(test_layer3_datahub
 
     # ── MonitoredQueue unit tests (ctrl-send queue with backpressure) ─────
     test_datahub_hub_monitored_queue.cpp
+
+    # ── Script engine integration tests (L3: engine + real infrastructure) ──
+    test_datahub_engine_roundtrip.cpp
+    workers/datahub_engine_workers.cpp
 )
 
 target_include_directories(test_layer3_datahub PRIVATE
     workers
     ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/scripting
     ${CMAKE_SOURCE_DIR}/src/utils
     ${CMAKE_SOURCE_DIR}/src/utils/ipc
 )
@@ -180,12 +185,17 @@ target_link_libraries(test_layer3_datahub
     PRIVATE
         pylabhub::test_framework
         pylabhub::utils
+        pylabhub::scripting
+        pylabhub::third_party::pybind11_embed
         GTest::gtest
         GTest::gmock
 )
 
 target_compile_features(test_layer3_datahub PRIVATE cxx_std_20)
-target_compile_definitions(test_layer3_datahub PRIVATE LOGGER_COMPILE_LEVEL=0)
+target_compile_definitions(test_layer3_datahub PRIVATE
+    LOGGER_COMPILE_LEVEL=0
+    TEST_PLUGIN_DIR="${PYLABHUB_STAGING_DIR}/tests"
+)
 # GCC false-positive: -Wmissing-field-initializers fires for C++20 designated
 # initializers even when omitted fields have in-class defaults.  Not applicable
 # to ChannelRegistrationOptions, which provides a default for every member.
@@ -198,6 +208,9 @@ pylabhub_ensure_sanitizer_for_executable(test_layer3_datahub)
 # test discovery tries to load it via RPATH ($ORIGIN/../lib).
 if(TARGET stage_pylabhub_utils)
     add_dependencies(test_layer3_datahub stage_pylabhub_utils)
+endif()
+if(TARGET test_native_multifield_module)
+    add_dependencies(test_layer3_datahub test_native_multifield_module)
 endif()
 
 pylabhub_register_test_for_staging(TARGET test_layer3_datahub)
