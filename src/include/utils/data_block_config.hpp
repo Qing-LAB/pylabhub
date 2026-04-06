@@ -134,7 +134,7 @@ struct DataBlockConfig
 
     /**
      * Single flexible zone size in bytes.
-     * Must be 0 (no flex zone) or a multiple of 4096.
+     * Must be 0 (no flex zone) or a multiple of PYLABHUB_PHYSICAL_PAGE_SIZE.
      */
     size_t flex_zone_size = 0;
 

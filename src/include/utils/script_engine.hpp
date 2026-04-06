@@ -81,7 +81,8 @@ struct InvokeResponse
 };
 
 // RoleContext is eliminated — RoleAPIBase is the single context structure.
-// See docs/tech_draft/role_context_simplification.md for the design.
+// Design: docs/tech_draft/role_context_simplification.md (implemented 2026-04-04).
+// Architecture: docs/HEP/HEP-CORE-0011-ScriptHost-Abstraction-Framework.md.
 
 // ============================================================================
 // InvokeRx / InvokeTx — directional data for invoke calls
