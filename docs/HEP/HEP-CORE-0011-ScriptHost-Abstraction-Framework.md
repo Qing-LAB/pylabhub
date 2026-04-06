@@ -431,7 +431,7 @@ Step 11: teardown_infrastructure()
 
 ### Script path resolution
 
-`<script.path>/<script.type>/__init__.py` (Python) or `<script.path>/<script.type>/init.lua` (Lua).
+`<script.path>/script/<script.type>/__init__.py` (Python) or `<script.path>/script/<script.type>/init.lua` (Lua).
 
 With `"path": "."` and `"type": "python"` --> `./script/python/__init__.py`.
 
@@ -575,7 +575,7 @@ use the native `py::dict` directly.
 | 1 | ScriptEngine abstract base | Done | 2026-03-16 |
 | 2 | PythonEngine | Done | 2026-03-16 |
 | 3 | LuaEngine | Done | 2026-03-16 |
-| 4 | NativeEngine | Done | 2026-03-20 |
+| 4 | NativeEngine | Done | 2026-03-30 |
 | 5 | RoleAPIBase (Pimpl, ABI-stable) | Done | 2026-04-03 |
 | 6 | RoleContext elimination | Done | 2026-04-03 |
 | 7 | ProducerAPI/ConsumerAPI/ProcessorAPI (Python wrappers) | Done | 2026-04-03 |
@@ -587,6 +587,20 @@ use the native `py::dict` directly.
 | 13 | Cross-validation: engine type_sizeof == schema logical size | Done | 2026-04-04 |
 | 14 | Schema size tests (complex schemas, aligned/packed/arrays) | Done | 2026-04-04 |
 | 15 | Multi-process spinlock test through RoleAPIBase | Done | 2026-04-04 |
+
+---
+
+## Design History
+
+This HEP consolidates the following tech drafts (archived 2026-04-05):
+
+| Document | Scope | Archive |
+|----------|-------|---------|
+| `role_api_base_design.md` | Unified RoleAPIBase, 6-phase plan | `docs/archive/transient-2026-04-05/` |
+| `role_context_simplification.md` | RoleContext elimination | `docs/archive/transient-2026-04-05/` |
+| `script_engine_lifecycle_module.md` | Engine lifecycle startup/shutdown | `docs/archive/transient-2026-04-05/` |
+| `lifecycle_dynamic_module_extensions.md` | ModuleDef userdata support | `docs/archive/transient-2026-04-05/` |
+| `script_engine_refactor.md` | Original ScriptEngine abstraction (superseded) | `docs/archive/transient-2026-04-05/` |
 
 ---
 

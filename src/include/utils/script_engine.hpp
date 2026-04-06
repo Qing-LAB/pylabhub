@@ -81,7 +81,7 @@ struct InvokeResponse
 };
 
 // RoleContext is eliminated — RoleAPIBase is the single context structure.
-// Design: docs/tech_draft/role_context_simplification.md (implemented 2026-04-04).
+// Design: docs/archive/transient-2026-04-05/role_context_simplification.md.
 // Architecture: docs/HEP/HEP-CORE-0011-ScriptHost-Abstraction-Framework.md.
 
 // ============================================================================

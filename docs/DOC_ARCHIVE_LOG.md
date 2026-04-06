@@ -6,6 +6,21 @@
 
 ## Archive batches
 
+### 2026-04-05 (RoleAPIBase refactoring + lifecycle integration complete)
+
+Five tech drafts archived — all fully implemented and verified against code.
+Lasting insights merged into HEP-CORE-0011 (rewritten 2026-04-04).
+
+| Archived | Reason |
+|---|---|
+| `role_context_simplification.md` | RoleContext eliminated; RoleAPIBase is sole context. Commit 480bfb1. |
+| `role_api_base_design.md` | All 6 phases complete; unified API, ChannelSide, schema sizes. |
+| `script_engine_lifecycle_module.md` | All 3 role hosts use engine_lifecycle_startup. |
+| `lifecycle_dynamic_module_extensions.md` | Userdata support in ModuleDef fully implemented. |
+| `script_engine_refactor.md` | Superseded by HEP-CORE-0011 (2026-04-04 rewrite). |
+
+---
+
 ### 2026-03-20 (ScriptEngine refactor review — cleanup)
 
 Two review files archived. All items resolved except PARITY-01 (Lua API parity), which carries forward into the new active review `REVIEW_ScriptEngine_2026-03-20.md`.

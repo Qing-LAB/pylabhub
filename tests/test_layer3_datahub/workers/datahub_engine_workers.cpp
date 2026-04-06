@@ -166,7 +166,7 @@ static int engine_roundtrip_impl(const char *tag, SetupEngine &&setup_engine)
 
             auto producer = Producer::create(messenger, popts);
             ASSERT_TRUE(producer.has_value());
-            EXPECT_TRUE(producer->start_queue());
+            ASSERT_TRUE(producer->start_queue());
 
             // Wire RoleAPIBase.
             RoleHostCore core;
@@ -192,7 +192,7 @@ static int engine_roundtrip_impl(const char *tag, SetupEngine &&setup_engine)
             std::vector<IncomingMessage> msgs;
             auto result = engine->invoke_produce(
                 InvokeTx{slot, sizeof(MultiFieldSlot), nullptr, 0}, msgs);
-            EXPECT_EQ(result, InvokeResult::Commit);
+            ASSERT_EQ(result, InvokeResult::Commit);
             producer->write_commit();
 
             // Consumer reads back from SHM.
@@ -204,7 +204,7 @@ static int engine_roundtrip_impl(const char *tag, SetupEngine &&setup_engine)
 
             auto consumer = Consumer::connect(messenger, copts);
             ASSERT_TRUE(consumer.has_value());
-            EXPECT_TRUE(consumer->start_queue());
+            ASSERT_TRUE(consumer->start_queue());
 
             const void *data = consumer->read_acquire(
                 std::chrono::milliseconds{2000});
