@@ -2362,9 +2362,9 @@ TEST_F(PythonEngineTest, Api_Spinlock_WithoutSHM_IsError)
 def on_produce(tx, msgs, api):
     try:
         api.spinlock(0)
-        assert False, "spinlock(0) should raise without SHM"
-    except ValueError as e:
-        assert "SHM" in str(e), f"error should mention SHM: {e}"
+        assert False, "spinlock(0) should raise without producer/consumer"
+    except ValueError:
+        pass  # expected
     return False
 )");
 

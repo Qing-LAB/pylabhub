@@ -200,11 +200,19 @@ inline size_t compute_schema_size(const SchemaSpec &spec, const std::string &pac
     return size;
 }
 
-/// Round a byte size up to the nearest 4KB physical page boundary.
+/// Physical page size for SHM flexzone alignment.
+/// Configurable via cmake PYLABHUB_PHYSICAL_PAGE_SIZE (default 4096).
+#ifndef PYLABHUB_PHYSICAL_PAGE_SIZE
+#define PYLABHUB_PHYSICAL_PAGE_SIZE 4096
+#endif
+
+/// Round a byte size up to the physical page boundary.
 /// Used for SHM flexzone allocation where the OS allocates in page-sized chunks.
 inline size_t align_to_physical_page(size_t logical_size)
 {
-    constexpr size_t kPageSize = 4096;
+    constexpr size_t kPageSize = PYLABHUB_PHYSICAL_PAGE_SIZE;
+    static_assert(kPageSize > 0 && (kPageSize & (kPageSize - 1)) == 0,
+                  "PYLABHUB_PHYSICAL_PAGE_SIZE must be a power of two");
     if (logical_size == 0)
         return 0;
     return (logical_size + kPageSize - 1) & ~(kPageSize - 1);

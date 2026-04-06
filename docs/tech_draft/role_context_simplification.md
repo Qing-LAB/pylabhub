@@ -1,6 +1,6 @@
 # RoleContext Simplification — Single Structure Design
 
-**Status**: Design (2026-04-03)
+**Status**: Implemented (2026-04-04) — archived, retained for reference
 **Depends on**: Phase 2 complete (RoleAPIBase + API class composition)
 
 ---

@@ -51,6 +51,11 @@ set(PYLABHUB_PYTHON_REQUIREMENTS_FILE
     "Path to requirements.txt used by prepare_python_env (default: project built-in)."
 )
 
+# Physical page size for SHM flexzone allocation alignment.
+# Default 4096 (4KB). Override for platforms with larger pages (e.g., ARM64 16KB).
+set(PYLABHUB_PHYSICAL_PAGE_SIZE 4096 CACHE STRING
+    "Physical page size in bytes for SHM flexzone alignment (default: 4096)")
+
 # Option to generate the final 'install' target.
 option(PYLABHUB_CREATE_INSTALL_TARGET "Enable the 'install' target to copy the staged directory" ON)
 

@@ -59,7 +59,11 @@ namespace detail
 /// - Data region start must be PAGE_ALIGNMENT-aligned
 /// - Flex zone size is rounded up to a PAGE_ALIGNMENT boundary
 /// - All major memory sections align on PAGE_ALIGNMENT boundaries
-inline constexpr size_t PAGE_ALIGNMENT = 4096;
+/// Configured via cmake PYLABHUB_PHYSICAL_PAGE_SIZE (default 4096).
+#ifndef PYLABHUB_PHYSICAL_PAGE_SIZE
+#define PYLABHUB_PHYSICAL_PAGE_SIZE 4096
+#endif
+inline constexpr size_t PAGE_ALIGNMENT = PYLABHUB_PHYSICAL_PAGE_SIZE;
 
 /// Producer heartbeat: at PRODUCER_HEARTBEAT_OFFSET, [0]=producer_id, [1]=producer_last_heartbeat_ns.
 inline std::atomic<uint64_t> *producer_heartbeat_id_ptr(SharedMemoryHeader *header)

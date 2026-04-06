@@ -402,39 +402,32 @@ size_t RoleAPIBase::slot_logical_size(std::optional<ChannelSide> side) const
 
 size_t RoleAPIBase::flexzone_logical_size(std::optional<ChannelSide> side) const
 {
+    // Returns the C struct size (logical) for the flexzone schema.
+    // Recomputed from the stored SchemaSpec — core stores the physical (page-aligned) size,
+    // not the logical size. The spec + packing are the source of truth.
+    auto compute = [](const hub::SchemaSpec &spec) -> size_t {
+        if (!spec.has_schema) return 0;
+        auto [layout, sz] = hub::compute_field_layout(
+            hub::to_field_descs(spec.fields), spec.packing);
+        return sz;
+    };
+
     const bool has_tx = pImpl->core->has_out_fz();
     const bool has_rx = pImpl->core->has_in_fz();
 
     if (side.has_value())
     {
-        size_t phys = (*side == ChannelSide::Tx)
-            ? (has_tx ? pImpl->core->out_schema_fz_size() : 0)
-            : (has_rx ? pImpl->core->in_schema_fz_size()  : 0);
-        // Stored size is page-aligned (physical). Logical = compute from spec.
-        // But we don't store logical separately for fz — recompute from spec+packing.
-        // For now return the spec field count * type sizes via the same compute path.
-        // Actually, use the stored physical size — it's what the user cares about for flexzone.
-        // The "logical" distinction is meaningful: logical = data occupies, physical = SHM allocates.
-        // We need the spec to recompute. Core has it.
-        const auto &spec = (*side == ChannelSide::Tx)
-            ? pImpl->core->out_fz_spec()
-            : pImpl->core->in_fz_spec();
-        if (!spec.has_schema) return 0;
-        auto [layout, sz] = hub::compute_field_layout(
-            hub::to_field_descs(spec.fields), spec.packing);
-        return sz;
+        return (*side == ChannelSide::Tx)
+            ? compute(pImpl->core->out_fz_spec())
+            : compute(pImpl->core->in_fz_spec());
     }
 
     if (has_tx && has_rx)
         throw std::runtime_error("flexzone_logical_size: side parameter required for processor");
 
-    const auto &spec = has_tx ? pImpl->core->out_fz_spec()
-                     : has_rx ? pImpl->core->in_fz_spec()
-                     : pImpl->core->out_fz_spec(); // dummy, will return 0
-    if (!spec.has_schema) return 0;
-    auto [layout, sz] = hub::compute_field_layout(
-        hub::to_field_descs(spec.fields), spec.packing);
-    return sz;
+    if (has_tx) return compute(pImpl->core->out_fz_spec());
+    if (has_rx) return compute(pImpl->core->in_fz_spec());
+    return 0;
 }
 
 // ============================================================================
@@ -443,20 +436,19 @@ size_t RoleAPIBase::flexzone_logical_size(std::optional<ChannelSide> side) const
 
 hub::SharedSpinLock RoleAPIBase::get_spinlock(size_t index, std::optional<ChannelSide> side)
 {
-    const bool has_tx = pImpl->producer && pImpl->producer->has_shm();
-    const bool has_rx = pImpl->consumer && pImpl->consumer->has_shm();
+    const bool has_tx = pImpl->producer != nullptr;
+    const bool has_rx = pImpl->consumer != nullptr;
 
     if (side.has_value())
     {
         if (*side == ChannelSide::Tx)
         {
             if (!has_tx)
-                throw std::runtime_error("get_spinlock(Tx): no SHM on output side");
+                throw std::runtime_error("get_spinlock(Tx): no producer connected");
             return pImpl->producer->get_spinlock(index);
         }
-        // Rx
         if (!has_rx)
-            throw std::runtime_error("get_spinlock(Rx): no SHM on input side");
+            throw std::runtime_error("get_spinlock(Rx): no consumer connected");
         return pImpl->consumer->get_spinlock(index);
     }
 
@@ -469,7 +461,7 @@ hub::SharedSpinLock RoleAPIBase::get_spinlock(size_t index, std::optional<Channe
         return pImpl->producer->get_spinlock(index);
     if (has_rx)
         return pImpl->consumer->get_spinlock(index);
-    throw std::runtime_error("get_spinlock: SHM not connected");
+    throw std::runtime_error("get_spinlock: no producer or consumer connected");
 }
 
 uint32_t RoleAPIBase::spinlock_count(std::optional<ChannelSide> side) const

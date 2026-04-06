@@ -10,6 +10,7 @@
  */
 #include "native_engine.hpp"
 
+#include <cassert>
 #include "utils/crypto_utils.hpp"
 #include "utils/format_tools.hpp"
 #include "utils/lifecycle.hpp"
@@ -261,6 +262,9 @@ struct NativeEngine::NativeContextStorage
 
     void wire(RoleHostCore *core, RoleAPIBase *api)
     {
+        assert(core != nullptr && "RoleHostCore must not be null");
+        assert(api != nullptr && "RoleAPIBase must not be null");
+
         // Identity strings.
         ctx.role_tag    = role_tag.c_str();
         ctx.uid         = uid.c_str();

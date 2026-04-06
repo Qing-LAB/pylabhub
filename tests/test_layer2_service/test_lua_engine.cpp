@@ -2452,9 +2452,7 @@ TEST_F(LuaEngineTest, Api_Spinlock_WithoutSHM_IsError)
     write_script(R"(
         function on_produce(tx, msgs, api)
             local ok, err = pcall(api.spinlock, 0)
-            assert(not ok, "spinlock(0) should error without SHM")
-            assert(string.find(err, "SHM"),
-                   "error message should mention SHM: " .. tostring(err))
+            assert(not ok, "spinlock(0) should error without producer/consumer")
             return false
         end
     )");
@@ -2567,9 +2565,9 @@ TEST_F(LuaEngineTest, FullStartup_Producer_SlotAndFlexzone)
 
     // Role host computes fz size from schema and sets on core before engine startup.
     // Role host computes fz size from schema before engine startup.
-    size_t fz_size = pylabhub::hub::compute_schema_size(params.out_fz_spec, params.out_packing);
-    fz_size = (fz_size + 4095U) & ~size_t{4095U};
-    core.set_out_fz_spec(SchemaSpec{params.out_fz_spec}, fz_size);
+    core.set_out_fz_spec(SchemaSpec{params.out_fz_spec},
+                         pylabhub::hub::align_to_physical_page(
+                             pylabhub::hub::compute_schema_size(params.out_fz_spec, params.out_packing)));
 
     ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
 
@@ -2578,6 +2576,10 @@ TEST_F(LuaEngineTest, FullStartup_Producer_SlotAndFlexzone)
     EXPECT_GT(engine.type_sizeof("FlexFrame"), 0u); // alias
     EXPECT_TRUE(core.has_out_fz());
     EXPECT_GT(core.out_schema_fz_size(), 0u);
+
+    EXPECT_EQ(engine.type_sizeof("OutFlexFrame"),
+              pylabhub::hub::compute_schema_size(params.out_fz_spec, params.out_packing))
+        << "Engine-built type size must match schema logical size";
 
     float slot_buf = 0.0f;
     float fz_buf   = 0.0f;

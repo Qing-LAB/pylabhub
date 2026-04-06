@@ -6,7 +6,7 @@
 
 #include "utils/logger.hpp"
 #include "utils/role_host_core.hpp"
-#include "utils/schema_utils.hpp"
+#include "utils/schema_utils.hpp" // PYLABHUB_PHYSICAL_PAGE_SIZE, compute_schema_size
 
 #include <cassert>
 #include <stdexcept>
@@ -17,8 +17,8 @@ namespace pylabhub::scripting
 void engine_lifecycle_startup(const char * /*arg*/, void *userdata)
 {
     auto *p = static_cast<EngineModuleParams *>(userdata);
-    if (!p || !p->engine)
-        throw std::runtime_error("engine_lifecycle_startup: null params or engine");
+    if (!p || !p->engine || !p->api)
+        throw std::runtime_error("engine_lifecycle_startup: null params, engine, or api");
 
     // Step 1: Initialize engine.
     if (!p->engine->initialize(p->tag, p->api ? p->api->core() : nullptr))
@@ -56,10 +56,10 @@ void engine_lifecycle_startup(const char * /*arg*/, void *userdata)
     // Flexzone specs must be set by role host before engine startup.
     assert(!p->in_fz_spec.has_schema ||
            (p->api->core() && p->api->core()->has_in_fz() &&
-            p->api->core()->in_schema_fz_size() % 4096 == 0));
+            p->api->core()->in_schema_fz_size() % PYLABHUB_PHYSICAL_PAGE_SIZE == 0));
     assert(!p->out_fz_spec.has_schema ||
            (p->api->core() && p->api->core()->has_out_fz() &&
-            p->api->core()->out_schema_fz_size() % 4096 == 0));
+            p->api->core()->out_schema_fz_size() % PYLABHUB_PHYSICAL_PAGE_SIZE == 0));
 
     if (p->inbox_spec.has_schema)
     {

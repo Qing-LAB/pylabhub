@@ -8,6 +8,7 @@
  */
 #include "utils/hub_shm_queue.hpp"
 #include "utils/logger.hpp"
+#include "utils/schema_utils.hpp" // align_to_physical_page
 
 #include <cassert>
 #include <cstddef>
@@ -103,8 +104,7 @@ ShmQueue::create_writer(const std::string &channel_name,
     if (!fz_schema.empty())
     {
         auto [fz_layout, raw_fz_size] = compute_field_layout(fz_schema, fz_packing);
-        // Round to 4KB page boundary.
-        fz_size = (raw_fz_size + 4095U) & ~size_t{4095U};
+        fz_size = align_to_physical_page(raw_fz_size);
     }
 
     // Build DataBlockConfig.

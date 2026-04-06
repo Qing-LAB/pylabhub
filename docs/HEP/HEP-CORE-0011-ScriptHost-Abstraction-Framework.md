@@ -530,10 +530,10 @@ end
     "configured_period_us": 1000
   },
   "role": {
-    "out_written": 5678,        // present when has_producer
-    "in_received": 5678,        // present when has_consumer
-    "drops": 0,
-    "script_errors": 0,
+    "out_slots_written": 5678,   // present when has_producer
+    "in_slots_received": 5678,   // present when has_consumer
+    "out_drop_count": 0,
+    "script_error_count": 0,
     "ctrl_queue_dropped": 0     // nested {input, output} for processor
   },
   "inbox": { ... },             // present when inbox configured
