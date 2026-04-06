@@ -457,7 +457,7 @@ bool NativeEngine::build_api_(RoleAPIBase &api)
     lifecycle_module_name_ = "NativeEngine:" + lib_path_.filename().string();
     {
         pylabhub::utils::ModuleDef mod(lifecycle_module_name_.c_str());
-        mod.add_dependency("Logger");  // log output during finalize
+        mod.add_dependency("pylabhub::utils::Logger");
         mod.set_startup([](const char *, void *) {}, ""); // no-op
         mod.set_shutdown(
             [](const char *, void *) {},
