@@ -181,6 +181,7 @@ void ConsumerRoleHost::worker_main_()
     }
     api_->set_checksum_policy(config_.checksum().policy);
     api_->set_stop_on_script_error(sc.stop_on_script_error);
+    api_->wire_event_callbacks();
 
     // ── Step 4: Load engine via lifecycle startup ────────────────────────────
 
@@ -333,76 +334,15 @@ bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
 
     // Metrics reset moved to after queue creation (reset_metrics() on queue).
 
-    // --- Wire event callbacks → IncomingMessage queue ---
-    in_consumer_->on_channel_closing([this]() {
-        LOGGER_INFO("[cons] CHANNEL_CLOSING_NOTIFY received, queuing event");
-        IncomingMessage msg;
-        msg.event = "channel_closing";
-        core_.enqueue_message(std::move(msg));
-    });
-
-    in_consumer_->on_force_shutdown([this]() {
-        LOGGER_WARN("[cons] FORCE_SHUTDOWN received, forcing immediate shutdown");
-        core_.request_stop();
-    });
-
-    // ZMQ data routing for SHM transport: ZMQ frames → message queue.
-    if (!is_zmq)
-    {
-        in_consumer_->on_zmq_data(
-            [this](std::span<const std::byte> data)
-            {
-                LOGGER_DEBUG("[cons] zmq_data: data_message size={}", data.size());
-                IncomingMessage msg;
-                msg.data.assign(data.begin(), data.end());
-                core_.enqueue_message(std::move(msg));
-            });
-    }
-
-    in_consumer_->on_producer_message(
-        [this](std::string_view type, std::span<const std::byte> data)
-        {
-            LOGGER_INFO("[cons] ctrl_msg: producer_message type='{}' size={}",
-                        type, data.size());
-            IncomingMessage msg;
-            msg.event = "producer_message";
-            msg.details["type"] = std::string(type);
-            msg.details["data"] = format_tools::bytes_to_hex(
-                {reinterpret_cast<const char *>(data.data()), data.size()});
-            core_.enqueue_message(std::move(msg));
-        });
-
-    in_consumer_->on_channel_error(
-        [this](const std::string &event, const nlohmann::json &details)
-        {
-            LOGGER_INFO("[cons] broker_notify: channel_event event='{}' details={}",
-                        event, details.dump());
-            IncomingMessage msg;
-            msg.event = "channel_event";
-            msg.details = details;
-            msg.details["detail"] = event;
-            core_.enqueue_message(std::move(msg));
-        });
-
     if (!in_consumer_->start_embedded())
     {
         LOGGER_ERROR("[cons] in_consumer->start_embedded() failed");
         return false;
     }
 
-    // --- Wire peer-dead and hub-dead monitoring ---
-    in_consumer_->on_peer_dead([this, &mon]() {
-        LOGGER_WARN("[cons] peer-dead: producer silent for {} ms; triggering shutdown",
-                    mon.peer_dead_timeout_ms);
-        core_.set_stop_reason(scripting::RoleHostCore::StopReason::PeerDead);
-        core_.request_stop();
-    });
-
-    in_messenger_.on_hub_dead([this]() {
-        LOGGER_WARN("[cons] hub-dead: broker connection lost; triggering shutdown");
-        core_.set_stop_reason(scripting::RoleHostCore::StopReason::HubDead);
-        core_.request_stop();
-    });
+    // Event callbacks (on_channel_closing, on_force_shutdown, on_peer_dead,
+    // on_hub_dead, on_zmq_data, on_producer_message, on_channel_error) are
+    // wired by api_->wire_event_callbacks() after RoleAPIBase construction.
 
     // --- Start and configure data queue ---
     if (!in_consumer_->start_queue())

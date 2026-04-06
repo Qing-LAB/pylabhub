@@ -184,6 +184,7 @@ void ProducerRoleHost::worker_main_()
     }
     api_->set_checksum_policy(config_.checksum().policy);
     api_->set_stop_on_script_error(sc.stop_on_script_error);
+    api_->wire_event_callbacks();
 
     // ── Step 4: Load engine via lifecycle module ─────────────────────────────
     // engine_lifecycle_startup does: initialize → load_script → register_slot_type
@@ -366,88 +367,15 @@ bool ProducerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
         out_messenger_.enqueue_heartbeat(ch);
     }
 
-    // --- Wire event callbacks → IncomingMessage queue ---
-    out_producer_->on_channel_closing([this]() {
-        IncomingMessage msg;
-        msg.event = "channel_closing";
-        core_.enqueue_message(std::move(msg));
-    });
-
-    out_producer_->on_force_shutdown([this]() {
-        core_.request_stop();
-    });
-
-    auto hex_identity = [](const std::string &raw) -> std::string {
-        return format_tools::bytes_to_hex(raw);
-    };
-
-    out_producer_->on_consumer_joined(
-        [this, hex_identity](const std::string &identity) {
-            LOGGER_INFO("[prod] peer_event: consumer_joined identity={}",
-                        hex_identity(identity));
-            IncomingMessage msg;
-            msg.event = "consumer_joined";
-            msg.details["identity"] = hex_identity(identity);
-            core_.enqueue_message(std::move(msg));
-        });
-
-    out_producer_->on_consumer_left(
-        [this, hex_identity](const std::string &identity) {
-            LOGGER_INFO("[prod] peer_event: consumer_left identity={}",
-                        hex_identity(identity));
-            IncomingMessage msg;
-            msg.event = "consumer_left";
-            msg.details["identity"] = hex_identity(identity);
-            core_.enqueue_message(std::move(msg));
-        });
-
-    out_messenger_.on_consumer_died(ch,
-        [this](uint64_t pid, std::string reason) {
-            LOGGER_INFO("[prod] broker_notify: consumer_died pid={} reason={}",
-                        pid, reason);
-            IncomingMessage msg;
-            msg.event = "consumer_died";
-            msg.details["pid"] = pid;
-            msg.details["reason"] = std::move(reason);
-            core_.enqueue_message(std::move(msg));
-        });
-
-    out_messenger_.on_channel_error(ch,
-        [this](std::string event, nlohmann::json details) {
-            LOGGER_INFO("[prod] broker_notify: channel_event event='{}' details={}",
-                        event, details.dump());
-            IncomingMessage msg;
-            msg.event = "channel_event";
-            msg.details = std::move(details);
-            msg.details["detail"] = std::move(event);
-            core_.enqueue_message(std::move(msg));
-        });
-
-    out_producer_->on_consumer_message(
-        [this](const std::string &identity, std::span<const std::byte> data) {
-            LOGGER_INFO("[prod] zmq_data: consumer_message size={}", data.size());
-            IncomingMessage msg;
-            msg.sender = identity;
-            msg.data.assign(data.begin(), data.end());
-            core_.enqueue_message(std::move(msg));
-        });
-
     if (!out_producer_->start_embedded())
     {
         LOGGER_ERROR("[prod] out_producer->start_embedded() failed");
         return false;
     }
 
-    // --- Wire peer-dead and hub-dead monitoring ---
-    out_producer_->on_peer_dead([this]() {
-        core_.set_stop_reason(scripting::RoleHostCore::StopReason::PeerDead);
-        core_.request_stop();
-    });
-
-    out_messenger_.on_hub_dead([this]() {
-        core_.set_stop_reason(scripting::RoleHostCore::StopReason::HubDead);
-        core_.request_stop();
-    });
+    // Event callbacks (on_channel_closing, on_force_shutdown, on_peer_dead,
+    // on_hub_dead, on_consumer_joined/left/message, etc.) are wired by
+    // api_->wire_event_callbacks() after RoleAPIBase construction in worker_main_.
 
     // --- Start and configure data queue ---
     if (!out_producer_->start_queue())
