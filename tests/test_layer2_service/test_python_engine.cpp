@@ -33,6 +33,7 @@
 #include "utils/role_host_core.hpp"
 
 #include "utils/schema_utils.hpp"
+#include "test_schema_helpers.h"
 
 #include <cstring>
 #include <filesystem>
@@ -54,6 +55,12 @@ using pylabhub::hub::FieldDef;
 using pylabhub::scripting::InvokeRx;
 using pylabhub::scripting::InvokeTx;
 using pylabhub::scripting::InvokeInbox;
+
+using pylabhub::tests::simple_schema;
+using pylabhub::tests::padding_schema;
+using pylabhub::tests::complex_mixed_schema;
+using pylabhub::tests::fz_array_schema;
+using pylabhub::tests::multifield_schema;
 
 namespace
 {
@@ -84,20 +91,6 @@ class PythonEngineTest : public ::testing::Test
     {
         std::ofstream f(tmp_ / "script" / "python" / "__init__.py");
         f << content;
-    }
-
-    /// Create a simple schema with one float32 field.
-    SchemaSpec simple_schema()
-    {
-        SchemaSpec spec;
-        spec.has_schema = true; // PythonEngine skips type building if false.
-        FieldDef f;
-        f.name     = "value";
-        f.type_str = "float32";
-        f.count    = 1;
-        f.length   = 0;
-        spec.fields.push_back(f);
-        return spec;
     }
 
     RoleHostCore default_core_; ///< Default core for tests that don't provide one.
@@ -2689,41 +2682,6 @@ TEST_F(PythonEngineTest, FullStartup_Processor)
 // Schema logical size — complex schemas, aligned vs packed, slot + flexzone
 // ============================================================================
 
-/// Complex slot schema: float64 + uint8 + int32 — padding-sensitive.
-SchemaSpec padding_schema()
-{
-    SchemaSpec spec;
-    spec.has_schema = true;
-    spec.fields.push_back({"ts",     "float64", 1, 0});
-    spec.fields.push_back({"flag",   "uint8",   1, 0});
-    spec.fields.push_back({"count",  "int32",   1, 0});
-    return spec;
-}
-
-/// Complex slot schema: mixed types, arrays, blobs — exercises all alignment paths.
-SchemaSpec complex_mixed_schema()
-{
-    SchemaSpec spec;
-    spec.has_schema = true;
-    spec.fields.push_back({"timestamp", "float64", 1, 0});
-    spec.fields.push_back({"data",      "float32", 3, 0});
-    spec.fields.push_back({"status",    "uint16",  1, 0});
-    spec.fields.push_back({"raw",       "bytes",   1, 5});
-    spec.fields.push_back({"label",     "string",  1, 16});
-    spec.fields.push_back({"seq",       "int64",   1, 0});
-    return spec;
-}
-
-/// Flexzone schema: uint32 + float64[2] — padding between scalar and array.
-SchemaSpec fz_array_schema()
-{
-    SchemaSpec spec;
-    spec.has_schema = true;
-    spec.fields.push_back({"version", "uint32",  1, 0});
-    spec.fields.push_back({"values",  "float64", 2, 0});
-    return spec;
-}
-
 TEST_F(PythonEngineTest, SlotLogicalSize_Aligned_PaddingSensitive)
 {
     // Script reads api.slot_logical_size() and asserts against expected value.
@@ -2907,6 +2865,152 @@ TEST_F(PythonEngineTest, FlexzoneLogicalSize_ArrayFields)
     std::vector<IncomingMessage> msgs;
     engine.invoke_produce(InvokeTx{slot_buf, sizeof(slot_buf), fz_buf, sizeof(fz_buf)}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u);
+
+    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+}
+
+// ============================================================================
+// FullStartup — multifield schema data round-trip (all three roles)
+// ============================================================================
+
+TEST_F(PythonEngineTest, FullStartup_Producer_Multifield)
+{
+    write_script(
+        "def on_produce(tx, msgs, api):\n"
+        "    tx.slot.ts = 1.23456789\n"
+        "    tx.slot.flag = 0xAB\n"
+        "    tx.slot.count = -42\n"
+        "    return True\n");
+
+    PythonEngine engine;
+    RoleHostCore core;
+    auto api = make_api(core, "prod");
+
+    auto spec = padding_schema();
+    spec.packing = "aligned";
+    core.set_out_slot_spec(SchemaSpec{spec},
+                           pylabhub::hub::compute_schema_size(spec, "aligned"));
+
+    pylabhub::scripting::EngineModuleParams params;
+    params.engine            = &engine;
+    params.api               = api.get();
+    params.tag               = "prod";
+    params.script_dir        = tmp_ / "script" / "python";
+    params.entry_point       = "__init__.py";
+    params.required_callback = "on_produce";
+    params.out_slot_spec     = spec;
+    params.out_packing       = "aligned";
+
+    engine.set_python_venv("");
+    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 16u);
+
+    // C struct matching the schema layout.
+    struct { double ts; uint8_t flag; uint8_t pad[3]; int32_t count; } buf{};
+    static_assert(sizeof(buf) == 16);
+
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf), nullptr, 0}, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+
+    EXPECT_DOUBLE_EQ(buf.ts, 1.23456789);
+    EXPECT_EQ(buf.flag, 0xAB);
+    EXPECT_EQ(buf.count, -42);
+
+    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+}
+
+TEST_F(PythonEngineTest, FullStartup_Consumer_Multifield)
+{
+    write_script(
+        "def on_consume(rx, msgs, api):\n"
+        "    assert abs(rx.slot.ts - 9.87) < 0.001, f'ts={rx.slot.ts}'\n"
+        "    assert rx.slot.flag == 0xCD, f'flag={rx.slot.flag}'\n"
+        "    assert rx.slot.count == 100, f'count={rx.slot.count}'\n"
+        "    return True\n");
+
+    PythonEngine engine;
+    RoleHostCore core;
+    auto api = make_api(core, "cons");
+
+    auto spec = padding_schema();
+    spec.packing = "aligned";
+    core.set_in_slot_spec(SchemaSpec{spec},
+                          pylabhub::hub::compute_schema_size(spec, "aligned"));
+
+    pylabhub::scripting::EngineModuleParams params;
+    params.engine            = &engine;
+    params.api               = api.get();
+    params.tag               = "cons";
+    params.script_dir        = tmp_ / "script" / "python";
+    params.entry_point       = "__init__.py";
+    params.required_callback = "on_consume";
+    params.in_slot_spec      = spec;
+    params.in_packing        = "aligned";
+
+    engine.set_python_venv("");
+    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+
+    struct { double ts; uint8_t flag; uint8_t pad[3]; int32_t count; } buf{};
+    buf.ts = 9.87; buf.flag = 0xCD; buf.count = 100;
+
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_consume(
+        pylabhub::scripting::InvokeRx{&buf, sizeof(buf), nullptr, 0}, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+
+    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+}
+
+TEST_F(PythonEngineTest, FullStartup_Processor_Multifield)
+{
+    write_script(
+        "def on_process(rx, tx, msgs, api):\n"
+        "    tx.slot.ts = rx.slot.ts\n"
+        "    tx.slot.flag = rx.slot.flag\n"
+        "    tx.slot.count = rx.slot.count * 2\n"
+        "    return True\n");
+
+    PythonEngine engine;
+    RoleHostCore core;
+    auto api = make_api(core, "proc");
+
+    auto spec = padding_schema();
+    spec.packing = "aligned";
+    size_t sz = pylabhub::hub::compute_schema_size(spec, "aligned");
+    core.set_in_slot_spec(SchemaSpec{spec}, sz);
+    core.set_out_slot_spec(SchemaSpec{spec}, sz);
+
+    pylabhub::scripting::EngineModuleParams params;
+    params.engine            = &engine;
+    params.api               = api.get();
+    params.tag               = "proc";
+    params.script_dir        = tmp_ / "script" / "python";
+    params.entry_point       = "__init__.py";
+    params.required_callback = "on_process";
+    params.in_slot_spec      = spec;
+    params.out_slot_spec     = spec;
+    params.in_packing        = "aligned";
+    params.out_packing       = "aligned";
+
+    engine.set_python_venv("");
+    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+
+    struct { double ts; uint8_t flag; uint8_t pad[3]; int32_t count; } in_buf{}, out_buf{};
+    in_buf.ts = 1.23456789; in_buf.flag = 0xAB; in_buf.count = -42;
+
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_process(
+        pylabhub::scripting::InvokeRx{&in_buf, sizeof(in_buf), nullptr, 0},
+        InvokeTx{&out_buf, sizeof(out_buf), nullptr, 0}, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+
+    EXPECT_DOUBLE_EQ(out_buf.ts, 1.23456789);
+    EXPECT_EQ(out_buf.flag, 0xAB);
+    EXPECT_EQ(out_buf.count, -84);
 
     pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
 }
