@@ -198,7 +198,10 @@ static_assert(alignof(SlotRWState) >= 64, "SlotRWState should be cache-line alig
  * Layout is ABI-sensitive (4KB alignment). See HEP-CORE-0002.
 
  */
-struct alignas(4096) SharedMemoryHeader
+#ifndef PYLABHUB_PHYSICAL_PAGE_SIZE
+#define PYLABHUB_PHYSICAL_PAGE_SIZE 4096
+#endif
+struct alignas(PYLABHUB_PHYSICAL_PAGE_SIZE) SharedMemoryHeader
 {
     // === Identification and Versioning ===
     std::atomic<uint32_t> magic_number; // 0x504C4842 ('PLHB')
@@ -310,17 +313,19 @@ struct alignas(4096) SharedMemoryHeader
         uint8_t padding[31];
     } flexible_zone_checksums[detail::MAX_FLEXIBLE_ZONE_CHECKSUMS];
 
-    // === Padding to 4096 bytes ===
-    // reserved_header size chosen so total header is exactly 4KB.
-    // Budget: ConsumerHeartbeats expanded 512→1024 (+512), channel identity added (+208),
-    // so reserved_header reduced from 2320 to 2320 - 512 - 208 = 1600.
-    uint8_t reserved_header[1600]; // 4096 - (offset up to here); exact size for 4KB total
+    // === Padding to physical page size ===
+    // reserved_header fills the gap so total header equals one physical page.
+    // The fixed content before this point occupies 2496 bytes.
+    // Changing PYLABHUB_PHYSICAL_PAGE_SIZE requires recalculating this layout.
+    static constexpr size_t kHeaderFixedContentSize = 2496;
+    uint8_t reserved_header[PYLABHUB_PHYSICAL_PAGE_SIZE - kHeaderFixedContentSize];
 };
 constexpr size_t raw_size_SharedMemoryHeader =
     offsetof(SharedMemoryHeader, reserved_header) + sizeof(SharedMemoryHeader::reserved_header);
-static_assert(raw_size_SharedMemoryHeader == 4096, "Header must be exactly 4KB");
-static_assert(alignof(SharedMemoryHeader) >= 4096,
-              "SharedMemoryHeader should be page-border aligned");
+static_assert(raw_size_SharedMemoryHeader == PYLABHUB_PHYSICAL_PAGE_SIZE,
+              "SharedMemoryHeader must be exactly one physical page");
+static_assert(alignof(SharedMemoryHeader) >= PYLABHUB_PHYSICAL_PAGE_SIZE,
+              "SharedMemoryHeader must be page-aligned");
 
 /**
  * Schema field list for SharedMemoryHeader — canonical order and types for schema hash.
