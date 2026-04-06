@@ -681,7 +681,7 @@ gtest_discover_tests(test_layer2_python_engine
         TIMEOUT 60
 )
 
-# ── NativeEngine test plugin (.so) ───────────────────────────────────────
+# ── NativeEngine test modules (.so) ──────────────────────────────────────
 add_library(test_good_producer_plugin SHARED
     test_plugins/good_producer_plugin.cpp
 )
@@ -691,6 +691,18 @@ target_include_directories(test_good_producer_plugin PRIVATE
 target_link_libraries(test_good_producer_plugin PRIVATE pylabhub::utils)
 target_compile_features(test_good_producer_plugin PRIVATE cxx_std_20)
 set_target_properties(test_good_producer_plugin PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${PYLABHUB_STAGING_DIR}/tests"
+)
+
+add_library(test_native_multifield_module SHARED
+    test_plugins/native_multifield_module.cpp
+)
+target_include_directories(test_native_multifield_module PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/include
+)
+target_link_libraries(test_native_multifield_module PRIVATE pylabhub::utils)
+target_compile_features(test_native_multifield_module PRIVATE cxx_std_20)
+set_target_properties(test_native_multifield_module PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${PYLABHUB_STAGING_DIR}/tests"
 )
 
@@ -712,7 +724,7 @@ target_compile_definitions(test_layer2_scriptengine_native_dylib PRIVATE
     LOGGER_COMPILE_LEVEL=0
     TEST_PLUGIN_DIR="${PYLABHUB_STAGING_DIR}/tests"
 )
-add_dependencies(test_layer2_scriptengine_native_dylib test_good_producer_plugin)
+add_dependencies(test_layer2_scriptengine_native_dylib test_good_producer_plugin test_native_multifield_module)
 # No -rdynamic needed: plugin API goes through PlhPluginContext function pointers,
 # not host-exported symbols.
 pylabhub_ensure_sanitizer_for_executable(test_layer2_scriptengine_native_dylib)

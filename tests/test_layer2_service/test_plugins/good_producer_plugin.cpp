@@ -11,10 +11,13 @@
 #include <cstring>
 
 // ── Schema declarations (matches test config) ───────────────────────────
-// All directional names + alias for the same schema: one float32 field "value".
-PLH_DECLARE_SCHEMA(SlotFrame,    "value:float32:1:0", 4)
-PLH_DECLARE_SCHEMA(OutSlotFrame, "value:float32:1:0", 4)
-PLH_DECLARE_SCHEMA(InSlotFrame,  "value:float32:1:0", 4)
+// All directional names + alias: one float32 field "value".
+PLH_DECLARE_SCHEMA(SlotFrame,     "value:float32:1:0", 4)
+PLH_DECLARE_SCHEMA(OutSlotFrame,  "value:float32:1:0", 4)
+PLH_DECLARE_SCHEMA(InSlotFrame,   "value:float32:1:0", 4)
+PLH_DECLARE_SCHEMA(OutFlexFrame,  "value:float32:1:0", 4)
+PLH_DECLARE_SCHEMA(FlexFrame,     "value:float32:1:0", 4)
+PLH_DECLARE_SCHEMA(InboxFrame,    "value:float32:1:0", 4)
 
 // ── Module state ────────────────────────────────────────────────────────
 static const PlhNativeContext *g_ctx = nullptr;
@@ -82,6 +85,10 @@ extern "C" PLH_EXPORT bool on_produce(const plh_tx_t *tx)
     auto *slot = static_cast<float *>(tx->slot);
     *slot = 42.0f;
     g_produce_count++;
+
+    // Write flexzone if present.
+    if (tx->fz && tx->fz_size >= sizeof(float))
+        *static_cast<float *>(tx->fz) = 99.0f;
 
     // ── V1 API: custom metric ───────────────────────────────────────
     if (g_ctx && g_ctx->report_metric)
@@ -176,6 +183,16 @@ extern "C" PLH_EXPORT bool on_process(const plh_rx_t *rx, const plh_tx_t *tx)
     auto in_val = *static_cast<const float *>(rx->slot);
     *static_cast<float *>(tx->slot) = in_val * 2.0f;
     return true; // commit
+}
+
+extern "C" PLH_EXPORT bool on_inbox(const plh_inbox_msg_t *msg)
+{
+    if (!msg || !msg->data || msg->data_size < sizeof(float))
+        return false;
+    (void)*static_cast<const float *>(msg->data);
+    (void)msg->sender_uid;
+    (void)msg->seq;
+    return true;
 }
 
 extern "C" PLH_EXPORT void on_heartbeat(const char * /*args_json*/)
