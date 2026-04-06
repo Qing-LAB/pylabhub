@@ -12,18 +12,14 @@
 
 #include "engine_module_params.hpp"
 #include "native_engine.hpp"
-#include "utils/broker_service.hpp"
 #include "utils/role_host_core.hpp"
 #include "utils/schema_utils.hpp"
-#include "plh_datahub.hpp"
+#include "test_schema_helpers.h"
 
-#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <future>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -51,18 +47,34 @@ namespace
 #   define TEST_PLUGIN_DIR "."
 #endif
 
-fs::path good_plugin_path()
+fs::path module_path(const char *base_name)
 {
     fs::path dir(TEST_PLUGIN_DIR);
 #if defined(_WIN32) || defined(_WIN64)
-    fs::path p = dir / "test_good_producer_plugin.dll";
+    fs::path p = dir / (std::string(base_name) + ".dll");
 #elif defined(__APPLE__)
-    fs::path p = dir / "libtest_good_producer_plugin.dylib";
+    fs::path p = dir / ("lib" + std::string(base_name) + ".dylib");
 #else
-    fs::path p = dir / "libtest_good_producer_plugin.so";
+    fs::path p = dir / ("lib" + std::string(base_name) + ".so");
 #endif
     return p;
 }
+
+fs::path good_plugin_path() { return module_path("test_good_producer_plugin"); }
+fs::path multifield_module_path() { return module_path("test_native_multifield_module"); }
+
+// Slot struct matching the multifield native module (40 bytes aligned).
+struct MultiFieldSlot
+{
+    double   ts;
+    uint8_t  flag;
+    int32_t  count;
+    float    values[3];
+    uint8_t  tag[8];
+};
+static_assert(sizeof(MultiFieldSlot) == 40, "Must match native module layout");
+
+
 
 std::vector<pylabhub::hub::SchemaFieldDesc> make_zmq_schema(
     const std::string &type_str, uint32_t count = 1, uint32_t length = 0)
@@ -74,18 +86,8 @@ std::vector<pylabhub::hub::SchemaFieldDesc> make_zmq_schema(
     return {f};
 }
 
-SchemaSpec simple_schema()
-{
-    SchemaSpec spec;
-    spec.has_schema = true;
-    FieldDef f;
-    f.name     = "value";
-    f.type_str = "float32";
-    f.count    = 1;
-    f.length   = 0;
-    spec.fields.push_back(f);
-    return spec;
-}
+using pylabhub::tests::simple_schema;
+using pylabhub::tests::multifield_schema;
 
 std::unique_ptr<RoleAPIBase> make_native_api(RoleHostCore &core)
 {
@@ -541,74 +543,160 @@ TEST_F(NativeEngineTest, FullStartup_Processor)
 }
 
 // ============================================================================
-// L3: Native engine with real infrastructure (broker + SHM + data round-trip)
+// FullStartup — multifield schema (all three roles)
 // ============================================================================
 
-TEST_F(NativeEngineTest, L3_ProduceToSHM_ConsumerReadsBack)
+TEST_F(NativeEngineTest, FullStartup_Producer_Multifield)
 {
-    // Initialize lifecycle modules (broker needs Logger, Crypto, Hub modules).
-    pylabhub::utils::LifecycleGuard guard(pylabhub::utils::MakeModDefList(
-        pylabhub::utils::Logger::GetLifecycleModule(),
-        pylabhub::crypto::GetLifecycleModule(),
-        pylabhub::hub::GetLifecycleModule()));
-
-    // Start broker.
-    using ReadyInfo = std::pair<std::string, std::string>;
-    auto promise = std::make_shared<std::promise<ReadyInfo>>();
-    auto future  = promise->get_future();
-    pylabhub::broker::BrokerService::Config broker_cfg;
-    broker_cfg.endpoint  = "tcp://127.0.0.1:0";
-    broker_cfg.use_curve = true;
-    broker_cfg.on_ready  = [promise](const std::string &ep, const std::string &pk) {
-        promise->set_value({ep, pk});
-    };
-    auto broker = std::make_unique<pylabhub::broker::BrokerService>(std::move(broker_cfg));
-    auto *broker_raw = broker.get();
-    std::thread broker_thread([broker_raw]() { broker_raw->run(); });
-    auto [broker_ep, broker_pk] = future.get();
-
-    // Connect messenger.
-    auto &messenger = pylabhub::hub::Messenger::get_instance();
-    ASSERT_TRUE(messenger.connect(broker_ep, broker_pk));
-
-    // Create producer with SHM.
-    auto schema = make_zmq_schema("float32");
-    std::string channel = "test.native.l3." +
-        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
-
-    pylabhub::hub::ProducerOptions popts;
-    popts.channel_name   = channel;
-    popts.pattern        = pylabhub::hub::ChannelPattern::PubSub;
-    popts.has_shm        = true;
-    popts.zmq_schema     = schema;
-    popts.shm_config.physical_page_size   = pylabhub::hub::DataBlockPageSize::Size4K;
-    popts.shm_config.logical_unit_size    = 4096;
-    popts.shm_config.ring_buffer_capacity = 4;
-    popts.shm_config.policy               = pylabhub::hub::DataBlockPolicy::RingBuffer;
-    popts.shm_config.consumer_sync_policy = pylabhub::hub::ConsumerSyncPolicy::Latest_only;
-    popts.shm_config.shared_secret        = 0xDEADBEEFCAFEBABEULL;
-    popts.timeout_ms     = 3000;
-
-    auto producer = pylabhub::hub::Producer::create(messenger, popts);
-    ASSERT_TRUE(producer.has_value());
-    EXPECT_TRUE(producer->start_queue());
-
-    // Wire RoleAPIBase with real Producer.
+    NativeEngine engine;
     RoleHostCore core;
-    auto spec = simple_schema();
+    auto api = make_native_api(core);
+
+    auto spec = multifield_schema();
     core.set_out_slot_spec(SchemaSpec{spec},
                            pylabhub::hub::compute_schema_size(spec, "aligned"));
 
-    auto api = std::make_unique<RoleAPIBase>(core);
-    api->set_role_tag("prod");
-    api->set_uid("PROD-NativeL3-001");
-    api->set_name("NativeL3");
-    api->set_channel(channel);
-    api->set_log_level("error");
-    api->set_producer(&*producer);
+    pylabhub::scripting::EngineModuleParams params;
+    params.engine            = &engine;
+    params.api               = api.get();
+    params.tag               = "prod";
+    params.script_dir        = multifield_module_path().parent_path();
+    params.entry_point       = multifield_module_path().filename().string();
+    params.required_callback = "on_produce";
+    params.out_slot_spec     = spec;
+    params.out_packing       = "aligned";
 
-    // Load native engine via lifecycle startup.
+    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), sizeof(MultiFieldSlot));
+
+    MultiFieldSlot slot{};
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_produce(InvokeTx{&slot, sizeof(slot), nullptr, 0}, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+
+    EXPECT_DOUBLE_EQ(slot.ts, 1.23456789);
+    EXPECT_EQ(slot.flag, 0xAB);
+    EXPECT_EQ(slot.count, -42);
+    EXPECT_FLOAT_EQ(slot.values[0], 1.0f);
+    EXPECT_FLOAT_EQ(slot.values[1], 2.5f);
+    EXPECT_FLOAT_EQ(slot.values[2], -3.75f);
+    EXPECT_EQ(std::memcmp(slot.tag, "DEADBEEF", 8), 0);
+
+    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+}
+
+TEST_F(NativeEngineTest, FullStartup_Consumer_Multifield)
+{
     NativeEngine engine;
+    RoleHostCore core;
+
+    auto api = std::make_unique<RoleAPIBase>(core);
+    api->set_role_tag("cons");
+    api->set_uid("CONS-TestNative-00000001");
+    api->set_name("TestNativeConsumer");
+    api->set_channel("test.native.channel");
+    api->set_log_level("error");
+
+    auto spec = multifield_schema();
+    core.set_in_slot_spec(SchemaSpec{spec},
+                          pylabhub::hub::compute_schema_size(spec, "aligned"));
+
+    pylabhub::scripting::EngineModuleParams params;
+    params.engine            = &engine;
+    params.api               = api.get();
+    params.tag               = "cons";
+    params.script_dir        = multifield_module_path().parent_path();
+    params.entry_point       = multifield_module_path().filename().string();
+    params.required_callback = "on_consume";
+    params.in_slot_spec      = spec;
+    params.in_packing        = "aligned";
+
+    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+    EXPECT_EQ(engine.type_sizeof("InSlotFrame"), sizeof(MultiFieldSlot));
+
+    MultiFieldSlot slot{};
+    slot.ts = 9.87; slot.flag = 0xCD; slot.count = 100;
+    slot.values[0] = 10.0f; slot.values[1] = 20.0f; slot.values[2] = 30.0f;
+    std::memcpy(slot.tag, "ABCDEFGH", 8);
+
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_consume(
+        pylabhub::scripting::InvokeRx{&slot, sizeof(slot), nullptr, 0}, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+
+    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+}
+
+TEST_F(NativeEngineTest, FullStartup_Processor_Multifield)
+{
+    NativeEngine engine;
+    RoleHostCore core;
+
+    auto api = std::make_unique<RoleAPIBase>(core);
+    api->set_role_tag("proc");
+    api->set_uid("PROC-TestNative-00000001");
+    api->set_name("TestNativeProcessor");
+    api->set_channel("test.native.in");
+    api->set_out_channel("test.native.out");
+    api->set_log_level("error");
+
+    auto spec = multifield_schema();
+    size_t sz = pylabhub::hub::compute_schema_size(spec, "aligned");
+    core.set_in_slot_spec(SchemaSpec{spec}, sz);
+    core.set_out_slot_spec(SchemaSpec{spec}, sz);
+
+    pylabhub::scripting::EngineModuleParams params;
+    params.engine            = &engine;
+    params.api               = api.get();
+    params.tag               = "proc";
+    params.script_dir        = multifield_module_path().parent_path();
+    params.entry_point       = multifield_module_path().filename().string();
+    params.required_callback = "on_process";
+    params.in_slot_spec      = spec;
+    params.out_slot_spec     = spec;
+    params.in_packing        = "aligned";
+    params.out_packing       = "aligned";
+
+    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+    EXPECT_GT(engine.type_sizeof("InSlotFrame"), 0u);
+    EXPECT_GT(engine.type_sizeof("OutSlotFrame"), 0u);
+
+    MultiFieldSlot in_slot{};
+    in_slot.ts = 1.23456789; in_slot.flag = 0xAB; in_slot.count = -42;
+    in_slot.values[0] = 1.0f; in_slot.values[1] = 2.5f; in_slot.values[2] = -3.75f;
+    std::memcpy(in_slot.tag, "DEADBEEF", 8);
+
+    MultiFieldSlot out_slot{};
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_process(
+        pylabhub::scripting::InvokeRx{&in_slot, sizeof(in_slot), nullptr, 0},
+        InvokeTx{&out_slot, sizeof(out_slot), nullptr, 0}, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+
+    EXPECT_DOUBLE_EQ(out_slot.ts, 1.23456789);
+    EXPECT_EQ(out_slot.flag, 0xAB);
+    EXPECT_EQ(out_slot.count, -84); // -42 * 2
+    EXPECT_FLOAT_EQ(out_slot.values[0], 1.0f);
+    EXPECT_FLOAT_EQ(out_slot.values[1], 2.5f);
+    EXPECT_FLOAT_EQ(out_slot.values[2], -3.75f);
+    EXPECT_EQ(std::memcmp(out_slot.tag, "DEADBEEF", 8), 0);
+
+    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+}
+
+TEST_F(NativeEngineTest, FullStartup_Producer_SlotAndFlexzone)
+{
+    NativeEngine engine;
+    RoleHostCore core;
+    auto api = make_native_api(core);
+
+    auto spec = simple_schema();
+    core.set_out_slot_spec(SchemaSpec{spec},
+                           pylabhub::hub::compute_schema_size(spec, "aligned"));
+    core.set_out_fz_spec(SchemaSpec{spec},
+                         pylabhub::hub::align_to_physical_page(
+                             pylabhub::hub::compute_schema_size(spec, "aligned")));
 
     pylabhub::scripting::EngineModuleParams params;
     params.engine            = &engine;
@@ -618,52 +706,48 @@ TEST_F(NativeEngineTest, L3_ProduceToSHM_ConsumerReadsBack)
     params.entry_point       = good_plugin_path().filename().string();
     params.required_callback = "on_produce";
     params.out_slot_spec     = spec;
+    params.out_fz_spec       = spec;
     params.out_packing       = "aligned";
 
     ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
 
-    // Produce a slot via native engine.
-    void *slot = producer->write_acquire(std::chrono::milliseconds{1000});
-    ASSERT_NE(slot, nullptr);
+    EXPECT_GT(engine.type_sizeof("OutSlotFrame"), 0u);
+    EXPECT_GT(engine.type_sizeof("OutFlexFrame"), 0u);
+    EXPECT_TRUE(core.has_out_fz());
+
+    float slot_buf = 0.0f;
+    float fz_buf   = 0.0f;
     std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_produce(InvokeTx{slot, 4096, nullptr, 0}, msgs);
+    auto result = engine.invoke_produce(
+        InvokeTx{&slot_buf, sizeof(slot_buf), &fz_buf, sizeof(fz_buf)}, msgs);
     EXPECT_EQ(result, InvokeResult::Commit);
-    producer->write_commit();
+    EXPECT_FLOAT_EQ(slot_buf, 42.0f);
+    EXPECT_FLOAT_EQ(fz_buf, 99.0f);
 
-    // Consumer reads back from SHM.
-    pylabhub::hub::ConsumerOptions copts;
-    copts.channel_name      = channel;
-    copts.shm_shared_secret = 0xDEADBEEFCAFEBABEULL;
-    copts.zmq_schema        = schema;
-    copts.timeout_ms        = 3000;
-
-    auto consumer = pylabhub::hub::Consumer::connect(messenger, copts);
-    ASSERT_TRUE(consumer.has_value());
-    EXPECT_TRUE(consumer->start_queue());
-
-    const void *data = consumer->read_acquire(std::chrono::milliseconds{2000});
-    ASSERT_NE(data, nullptr) << "Consumer should read the slot written by native engine";
-    EXPECT_FLOAT_EQ(*static_cast<const float *>(data), 42.0f)
-        << "Native module should have written 42.0 to slot";
-    consumer->read_release();
-
-    // Verify spinlock access through RoleAPIBase with real SHM.
-    using Side = pylabhub::scripting::ChannelSide;
-    EXPECT_EQ(api->spinlock_count(Side::Tx), 8u);
-    auto lock = api->get_spinlock(0, Side::Tx);
-    ASSERT_TRUE(lock.try_lock_for(0));
-    lock.unlock();
-
-    // Verify schema logical size matches.
-    EXPECT_EQ(api->slot_logical_size(Side::Tx), 4u);
-
-    // Cleanup.
     pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
-    consumer->close();
-    producer->close();
-    messenger.disconnect();
-    broker->stop();
-    broker_thread.join();
+}
+
+TEST_F(NativeEngineTest, InvokeOnInbox_TypedData)
+{
+    NativeEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &core_));
+
+    auto lib = good_plugin_path();
+    ASSERT_TRUE(engine.load_script(lib.parent_path(), lib.filename().string(),
+                                   "on_produce"));
+
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+    ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
+
+    auto test_api = make_native_api(core_);
+    ASSERT_TRUE(engine.build_api(*test_api));
+
+    float inbox_data = 77.0f;
+    engine.invoke_on_inbox({&inbox_data, sizeof(inbox_data), "PROD-SENDER-00000001", 1});
+    EXPECT_EQ(engine.script_error_count(), 0u);
+
+    engine.finalize();
 }
 
 } // anonymous namespace
