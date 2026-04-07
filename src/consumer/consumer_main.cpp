@@ -41,7 +41,7 @@
 #include "consumer_role_host.hpp"
 #include "consumer_fields.hpp"
 #include "lua_engine.hpp"
-#include "native_engine.hpp"
+#include "utils/native_engine.hpp"
 #include "python_engine.hpp"
 
 #include "plh_datahub.hpp"
@@ -52,7 +52,7 @@
 #include "utils/zmq_context.hpp"
 #include "utils/interactive_signal_handler.hpp"
 #include "utils/timeout_constants.hpp"
-#include "role_main_helpers.hpp"
+#include "utils/role_main_helpers.hpp"
 
 #include "utils/json_fwd.hpp"
 

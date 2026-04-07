@@ -2,7 +2,7 @@
  * @file engine_module_params.cpp
  * @brief Engine lifecycle startup/shutdown callbacks.
  */
-#include "engine_module_params.hpp"
+#include "utils/engine_module_params.hpp"
 
 #include "utils/logger.hpp"
 #include "utils/role_host_core.hpp"

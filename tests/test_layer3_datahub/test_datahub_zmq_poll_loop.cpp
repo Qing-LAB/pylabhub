@@ -6,7 +6,7 @@
  * ZmqPollLoop tests use ZMQ inproc sockets for deterministic control.
  */
 
-#include "scripting/zmq_poll_loop.hpp"
+#include "utils/zmq_poll_loop.hpp"
 
 #include <gtest/gtest.h>
 

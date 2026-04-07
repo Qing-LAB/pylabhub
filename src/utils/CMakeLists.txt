@@ -36,6 +36,8 @@ set(UTILS_SOURCES
   service/role_vault.cpp
   service/role_host_core.cpp
   service/role_api_base.cpp
+  service/engine_module_params.cpp
+  service/native_engine.cpp
 
   # --- logging: async logger + pluggable sinks ---
   logging/logger.cpp

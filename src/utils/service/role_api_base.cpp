@@ -3,6 +3,7 @@
  * @brief RoleAPIBase implementation — unified role API (pure C++).
  */
 #include "utils/role_api_base.hpp"
+#include "utils/script_engine.hpp"        // ScriptEngine, InvokeInbox
 
 #include "utils/config/checksum_config.hpp"
 #include "utils/format_tools.hpp"
@@ -39,6 +40,7 @@ struct RoleAPIBase::Impl
     hub::Consumer   *consumer{nullptr};
     hub::Messenger  *messenger{nullptr};
     hub::InboxQueue *inbox_queue{nullptr};
+    ScriptEngine    *engine{nullptr};
 
     std::string role_tag;   // "prod", "cons", "proc"
     hub::ChecksumPolicy checksum_policy{hub::ChecksumPolicy::Enforced};
@@ -86,7 +88,33 @@ void RoleAPIBase::set_log_level(std::string l)        { pImpl->log_level = std::
 void RoleAPIBase::set_script_dir(std::string d)       { pImpl->script_dir = std::move(d); }
 void RoleAPIBase::set_role_dir(std::string d)         { pImpl->role_dir = std::move(d); }
 void RoleAPIBase::set_checksum_policy(hub::ChecksumPolicy p) { pImpl->checksum_policy = p; }
+void RoleAPIBase::set_engine(ScriptEngine *e)          { pImpl->engine = e; }
 void RoleAPIBase::set_stop_on_script_error(bool v)    { pImpl->stop_on_script_error = v; }
+
+// ============================================================================
+// Inbox drain
+// ============================================================================
+
+void RoleAPIBase::drain_inbox_sync()
+{
+    auto *iq = pImpl->inbox_queue;
+    auto *eng = pImpl->engine;
+    if (!iq || !eng)
+        return;
+
+    while (true)
+    {
+        const auto *item = iq->recv_one(std::chrono::milliseconds{0});
+        if (!item)
+            break;
+
+        eng->invoke_on_inbox(InvokeInbox{
+            item->data, iq->item_size(),
+            item->sender_id, item->seq});
+
+        iq->send_ack(0);
+    }
+}
 
 // ============================================================================
 // Event callback wiring
@@ -358,10 +386,9 @@ void RoleAPIBase::run_data_loop(const LoopConfig &cfg, RoleCycleOps &ops)
             break;
         }
 
-        // ── Step C: Drain messages ──────────────────────────────────
-        // Note: drain_inbox_sync is called by each role's invoke_and_commit
-        // (requires engine pointer, which RoleAPIBase doesn't hold yet).
+        // ── Step C: Drain messages + inbox ──────────────────────────
         auto msgs = core.drain_messages();
+        drain_inbox_sync();
 
         // ── Step D+E: Role-specific invoke + commit ─────────────────
         if (!ops.invoke_and_commit(msgs))

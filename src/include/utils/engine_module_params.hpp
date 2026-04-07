@@ -10,6 +10,7 @@
  * See docs/tech_draft/script_engine_lifecycle_module.md for the full design.
  */
 
+#include "pylabhub_utils_export.h"
 #include "utils/script_engine.hpp"
 
 #include <filesystem>
@@ -54,10 +55,10 @@ struct EngineModuleParams
 
 /// Lifecycle startup callback — initializes the engine fully.
 /// Receives EngineModuleParams* as userdata.
-void engine_lifecycle_startup(const char *arg, void *userdata);
+PYLABHUB_UTILS_EXPORT void engine_lifecycle_startup(const char *arg, void *userdata);
 
 /// Lifecycle shutdown callback — finalizes the engine (idempotent).
 /// Receives EngineModuleParams* as userdata.
-void engine_lifecycle_shutdown(const char *arg, void *userdata);
+PYLABHUB_UTILS_EXPORT void engine_lifecycle_shutdown(const char *arg, void *userdata);
 
 } // namespace pylabhub::scripting

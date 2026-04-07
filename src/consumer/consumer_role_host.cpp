@@ -16,9 +16,9 @@
 #include "plh_datahub_client.hpp"
 #include "utils/metrics_json.hpp"
 
-#include "engine_module_params.hpp"
-#include "role_host_helpers.hpp"
-#include "zmq_poll_loop.hpp"
+#include "utils/engine_module_params.hpp"
+#include "utils/role_host_helpers.hpp"
+#include "utils/zmq_poll_loop.hpp"
 #include "utils/schema_utils.hpp"
 
 #include <chrono>
@@ -96,7 +96,6 @@ class ConsumerCycleOps final : public scripting::RoleCycleOps
     hub::Consumer           &consumer_;
     scripting::ScriptEngine &engine_;
     scripting::RoleHostCore &core_;
-    hub::InboxQueue         *inbox_queue_;
     bool                     stop_on_error_;
 
     size_t       item_sz_;
@@ -104,9 +103,8 @@ class ConsumerCycleOps final : public scripting::RoleCycleOps
 
   public:
     ConsumerCycleOps(hub::Consumer &c, scripting::ScriptEngine &e,
-                     scripting::RoleHostCore &core, hub::InboxQueue *iq,
-                     bool stop_on_error)
-        : consumer_(c), engine_(e), core_(core), inbox_queue_(iq),
+                     scripting::RoleHostCore &core, bool stop_on_error)
+        : consumer_(c), engine_(e), core_(core),
           stop_on_error_(stop_on_error),
           item_sz_(c.queue_item_size())
     {}
@@ -125,7 +123,6 @@ class ConsumerCycleOps final : public scripting::RoleCycleOps
 
     bool invoke_and_commit(std::vector<scripting::IncomingMessage> &msgs) override
     {
-        scripting::drain_inbox_sync(inbox_queue_, &engine_);
 
         if (data_)
             core_.inc_in_slots_received();
@@ -252,6 +249,7 @@ void ConsumerRoleHost::worker_main_()
     }
     api_->set_checksum_policy(config_.checksum().policy);
     api_->set_stop_on_script_error(sc.stop_on_script_error);
+    api_->set_engine(engine_.get());
     api_->wire_event_callbacks();
 
     // ── Step 4: Load engine via lifecycle startup ────────────────────────────
@@ -315,7 +313,7 @@ void ConsumerRoleHost::worker_main_()
     {
         const auto &tc_loop = config_.timing();
         ConsumerCycleOps ops(*in_consumer_, *engine_, core_,
-                             inbox_queue_.get(), sc.stop_on_script_error);
+                             sc.stop_on_script_error);
         scripting::LoopConfig lcfg;
         lcfg.period_us                   = tc_loop.period_us;
         lcfg.loop_timing                 = tc_loop.loop_timing;
