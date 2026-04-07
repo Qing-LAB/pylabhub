@@ -82,11 +82,6 @@ class ProducerRoleHost
     void run_ctrl_thread_();
     nlohmann::json snapshot_metrics_json() const;
 
-    // ── Data loop (Layer 2) ──────────────────────────────────────────────────
-
-    void run_data_loop_();
-    void drain_inbox_sync_();
-
     // ── Members ──────────────────────────────────────────────────────────────
 
     scripting::RoleHostCore                core_;

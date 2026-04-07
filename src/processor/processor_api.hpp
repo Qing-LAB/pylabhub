@@ -77,7 +77,6 @@ class ProcessorAPI
 
     // Queue state
     [[nodiscard]] uint64_t last_seq()       const noexcept { return base_->last_seq(); }
-    void update_last_seq(uint64_t seq) noexcept { base_->update_last_seq(seq); }
     [[nodiscard]] uint64_t in_capacity()    const noexcept { return static_cast<uint64_t>(base_->in_capacity()); }
     [[nodiscard]] std::string in_policy()   const { return base_->in_policy(); }
     [[nodiscard]] uint64_t out_capacity()   const noexcept { return static_cast<uint64_t>(base_->out_capacity()); }

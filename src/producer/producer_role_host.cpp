@@ -88,6 +88,98 @@ void ProducerRoleHost::shutdown_()
 }
 
 // ============================================================================
+// ProducerCycleOps — role-specific acquire/invoke/commit for the shared frame
+// ============================================================================
+
+namespace
+{
+
+class ProducerCycleOps final : public scripting::RoleCycleOps
+{
+    hub::Producer           &producer_;
+    scripting::ScriptEngine &engine_;
+    scripting::RoleHostCore &core_;
+    hub::InboxQueue         *inbox_queue_;
+    bool                     stop_on_error_;
+
+    // Cached at construction (stable after queue start).
+    size_t buf_sz_;
+    void  *fz_ptr_;
+    size_t fz_sz_;
+
+    // Per-cycle state.
+    void  *buf_{nullptr};
+
+  public:
+    ProducerCycleOps(hub::Producer &p, scripting::ScriptEngine &e,
+                     scripting::RoleHostCore &c, hub::InboxQueue *iq,
+                     bool stop_on_error)
+        : producer_(p), engine_(e), core_(c), inbox_queue_(iq),
+          stop_on_error_(stop_on_error),
+          buf_sz_(p.queue_item_size()),
+          fz_ptr_(c.has_out_fz() ? p.write_flexzone() : nullptr),
+          fz_sz_(c.has_out_fz() ? p.flexzone_size() : 0)
+    {}
+
+    bool acquire(const scripting::AcquireContext &ctx) override
+    {
+        buf_ = scripting::retry_acquire(ctx, core_,
+            [this](auto t) { return producer_.write_acquire(t); });
+        return buf_ != nullptr;
+    }
+
+    void cleanup_on_shutdown() override
+    {
+        if (buf_) { producer_.write_discard(); buf_ = nullptr; }
+    }
+
+    bool invoke_and_commit(std::vector<scripting::IncomingMessage> &msgs) override
+    {
+        // Drain inbox right before invoke (Step C continuation).
+        scripting::drain_inbox_sync(inbox_queue_, &engine_);
+
+        if (buf_) std::memset(buf_, 0, buf_sz_);
+
+        // Re-read flexzone pointer each cycle (ShmQueue may move it).
+        if (core_.has_out_fz())
+            fz_ptr_ = producer_.write_flexzone();
+
+        auto result = engine_.invoke_produce(
+            scripting::InvokeTx{buf_, buf_sz_, fz_ptr_, fz_sz_}, msgs);
+
+        if (buf_)
+        {
+            if (result == scripting::InvokeResult::Commit)
+            {
+                producer_.write_commit();
+                core_.inc_out_slots_written();
+            }
+            else
+            {
+                producer_.write_discard();
+                core_.inc_out_drop_count();
+            }
+        }
+        else
+        {
+            core_.inc_out_drop_count();
+        }
+        buf_ = nullptr;
+
+        if (result == scripting::InvokeResult::Error && stop_on_error_)
+        {
+            core_.request_stop();
+            return false;
+        }
+        return true;
+    }
+
+    void cleanup_on_exit() override {} // nothing held across cycles
+};
+
+} // anonymous namespace
+
+// ============================================================================
 // worker_main_ — the worker thread entry point
 // ============================================================================
 
@@ -243,8 +335,23 @@ void ProducerRoleHost::worker_main_()
     // Step 7: Signal ready.
     ready_promise_.set_value(true);
 
-    // Step 8: Run the data loop.
-    run_data_loop_();
+    // Step 8: Run the data loop via shared frame + ProducerCycleOps.
+    if (!out_producer_.has_value())
+    {
+        LOGGER_ERROR("[prod] run_data_loop: producer not initialized — aborting");
+        core_.set_running(false);
+    }
+    else
+    {
+        const auto &tc_loop = config_.timing();
+        ProducerCycleOps ops(*out_producer_, *engine_, core_,
+                             inbox_queue_.get(), sc.stop_on_script_error);
+        scripting::LoopConfig lcfg;
+        lcfg.period_us                   = tc_loop.period_us;
+        lcfg.loop_timing                 = tc_loop.loop_timing;
+        lcfg.queue_io_wait_timeout_ratio = tc_loop.queue_io_wait_timeout_ratio;
+        api_->run_data_loop(lcfg, ops);
+    }
 
     // Step 9: stop accepting invoke from non-owner threads.
     engine_->stop_accepting();
@@ -428,162 +535,6 @@ void ProducerRoleHost::teardown_infrastructure_()
 }
 
 // ============================================================================
-// run_data_loop_ — THE UNIFIED LOOP (tech draft §3)
-// ============================================================================
-
-void ProducerRoleHost::run_data_loop_()
-{
-    if (!out_producer_.has_value())
-    {
-        LOGGER_ERROR("[prod] run_data_loop_: producer not initialized — aborting");
-        core_.set_running(false);
-        return;
-    }
-
-    const auto &tc = config_.timing();
-    const auto &sc = config_.script();
-
-    // --- Setup ---
-    const double period_us = tc.period_us;
-    const bool is_max_rate = (tc.loop_timing == LoopTimingPolicy::MaxRate);
-    const auto short_timeout_us = compute_short_timeout(period_us, tc.queue_io_wait_timeout_ratio);
-    // write_acquire takes milliseconds; convert with rounding up to avoid 0ms.
-    const auto short_timeout =
-        std::chrono::duration_cast<std::chrono::milliseconds>(short_timeout_us + std::chrono::microseconds{999});
-    const size_t buf_sz = out_producer_->queue_item_size();
-
-    // Flexzone pointers — valid after queue start.
-    void       *fz_ptr  = core_.has_out_fz() ? out_producer_->write_flexzone() : nullptr;
-    const size_t fz_sz  = core_.has_out_fz() ? out_producer_->flexzone_size()  : 0;
-
-
-    // First cycle: no deadline — fire immediately.
-    auto deadline = Clock::time_point::max();
-
-    // --- Outer loop ---
-    while (core_.is_running() &&
-           !core_.is_shutdown_requested() &&
-           !core_.is_critical_error())
-    {
-        // Check external shutdown flag.
-        if (core_.is_process_exit_requested())
-            break;
-
-        const auto cycle_start = Clock::now();
-
-        // --- Step A: Acquire data with inner retry ---
-        void *buf = nullptr;
-        while (true)
-        {
-            buf = out_producer_->write_acquire(short_timeout);
-            if (buf != nullptr)
-                break; // got slot
-
-            if (is_max_rate)
-                break; // MaxRate: single attempt
-
-            // Check shutdown between retries.
-            if (!core_.is_running() ||
-                core_.is_shutdown_requested() ||
-                core_.is_critical_error())
-            {
-                break;
-            }
-            if (core_.is_process_exit_requested())
-                break;
-
-            // For first cycle (deadline=max), remaining is effectively infinite — always retry.
-            if (deadline != Clock::time_point::max())
-            {
-                const auto remaining =
-                    std::chrono::duration_cast<std::chrono::microseconds>(
-                        deadline - Clock::now());
-                if (remaining <= short_timeout_us)
-                    break; // not enough time to retry
-            }
-            // else: retry acquire
-        }
-
-        // --- Step B: Deadline wait (FixedRate with early data) ---
-        // Skip sleep when deadline is max() (first cycle) or MaxRate.
-        if (!is_max_rate && buf != nullptr &&
-            deadline != Clock::time_point::max() && Clock::now() < deadline)
-        {
-            std::this_thread::sleep_until(deadline);
-        }
-
-        // Safety check after potential sleep: shutdown may have been requested.
-        if (!core_.is_running() ||
-            core_.is_shutdown_requested() ||
-            core_.is_critical_error())
-        {
-            if (buf != nullptr)
-                out_producer_->write_discard();
-            break;
-        }
-
-        // --- Step C: Drain everything right before script call ---
-        auto msgs = core_.drain_messages();
-        drain_inbox_sync_();
-
-        // --- Step D: Prepare and invoke callback ---
-        if (buf != nullptr)
-            std::memset(buf, 0, buf_sz);
-
-        // Re-read flexzone pointer each cycle (ShmQueue may move it).
-        if (core_.has_out_fz())
-            fz_ptr = out_producer_->write_flexzone();
-
-        InvokeResult result =
-            engine_->invoke_produce(InvokeTx{buf, buf_sz, fz_ptr, fz_sz}, msgs);
-
-        // --- Step E: Commit/discard ---
-        if (buf != nullptr)
-        {
-            if (result == InvokeResult::Commit)
-            {
-                out_producer_->write_commit();
-                core_.inc_out_slots_written();
-            }
-            else
-            {
-                out_producer_->write_discard();
-                core_.inc_out_drop_count();
-            }
-        }
-        else
-        {
-            core_.inc_out_drop_count();
-        }
-
-        if (result == InvokeResult::Error)
-        {
-            // script_errors already incremented by engine.
-            if (sc.stop_on_script_error)
-                core_.request_stop();
-        }
-
-        // --- Step F: Metrics ---
-        const auto now     = Clock::now();
-        const auto work_us = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                now - cycle_start).count());
-        core_.set_last_cycle_work_us(work_us);
-        core_.inc_iteration_count();
-        if (deadline != Clock::time_point::max() && now > deadline)
-            core_.inc_loop_overrun();
-
-        // --- Step G: Compute next deadline ---
-        deadline = compute_next_deadline(tc.loop_timing, deadline, cycle_start, period_us);
-    }
-
-    LOGGER_INFO("[prod] run_data_loop_ exiting: running_threads={} shutdown_requested={} "
-                "critical_error={}",
-                core_.is_running(), core_.is_shutdown_requested(),
-                core_.is_critical_error());
-}
-
-// ============================================================================
 // run_ctrl_thread_ — polls producer peer socket, sends heartbeats
 // ============================================================================
 
@@ -613,15 +564,6 @@ void ProducerRoleHost::run_ctrl_thread_()
         },
         tc.heartbeat_interval_ms);
     loop.run();
-}
-
-// ============================================================================
-// drain_inbox_sync_ — drain all inbox messages non-blocking
-// ============================================================================
-
-void ProducerRoleHost::drain_inbox_sync_()
-{
-    scripting::drain_inbox_sync(inbox_queue_.get(), engine_.get());
 }
 
 // ============================================================================
