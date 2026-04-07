@@ -64,7 +64,6 @@ class ConsumerAPI
     void set_verify_checksum(bool enable) { base_->set_verify_checksum(enable); }
     [[nodiscard]] uint64_t last_cycle_work_us() const noexcept { return base_->last_cycle_work_us(); }
     [[nodiscard]] uint64_t last_seq()           const noexcept { return base_->last_seq(); }
-    void update_last_seq(uint64_t seq) noexcept { base_->update_last_seq(seq); }
     [[nodiscard]] size_t      in_capacity()     const noexcept { return base_->in_capacity(); }
     [[nodiscard]] std::string in_policy()       const { return base_->in_policy(); }
     [[nodiscard]] py::dict metrics() const;

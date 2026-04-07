@@ -80,11 +80,6 @@ class ConsumerRoleHost
     void run_ctrl_thread_();
     nlohmann::json snapshot_metrics_json() const;
 
-    // ── Data loop (Layer 2) ──────────────────────────────────────────────────
-
-    void run_data_loop_();
-    void drain_inbox_sync_();
-
     // ── Members ──────────────────────────────────────────────────────────────
 
     scripting::RoleHostCore                core_;
@@ -111,7 +106,7 @@ class ConsumerRoleHost
     // Lifecycle module name (for UnloadModule on shutdown).
     std::string                      engine_module_name_;
 
-    std::atomic<uint64_t>                  last_seq_{0}; // consumer-specific, not in core
+    // last_seq: read directly from Consumer::last_seq() → QueueReader (single source of truth).
 };
 
 } // namespace pylabhub::consumer

@@ -95,6 +95,142 @@ void ProcessorRoleHost::shutdown_()
 }
 
 // ============================================================================
+// ProcessorCycleOps — dual-queue acquire/invoke/commit for the shared frame
+// ============================================================================
+
+namespace
+{
+
+class ProcessorCycleOps final : public scripting::RoleCycleOps
+{
+    hub::Consumer           &input_;
+    hub::Producer           &output_;
+    scripting::ScriptEngine &engine_;
+    scripting::RoleHostCore &core_;
+    hub::InboxQueue         *inbox_queue_;
+    bool                     stop_on_error_;
+    bool                     drop_mode_;
+
+    size_t in_sz_, out_sz_;
+    void  *out_fz_ptr_;
+    size_t out_fz_sz_;
+    void  *in_fz_ptr_;
+    size_t in_fz_sz_;
+
+    const void *held_input_{nullptr};
+    void       *out_buf_{nullptr};
+
+  public:
+    ProcessorCycleOps(hub::Consumer &in, hub::Producer &out,
+                      scripting::ScriptEngine &e, scripting::RoleHostCore &c,
+                      hub::InboxQueue *iq, bool stop_on_error, bool drop_mode)
+        : input_(in), output_(out), engine_(e), core_(c),
+          inbox_queue_(iq), stop_on_error_(stop_on_error), drop_mode_(drop_mode),
+          in_sz_(in.queue_item_size()), out_sz_(out.queue_item_size()),
+          out_fz_ptr_(c.has_out_fz() ? out.write_flexzone() : nullptr),
+          out_fz_sz_(c.has_out_fz() ? out.flexzone_size() : 0),
+          in_fz_ptr_(c.has_in_fz() ? const_cast<void *>(in.read_flexzone()) : nullptr),
+          in_fz_sz_(c.has_in_fz() ? in.flexzone_size() : 0)
+    {}
+
+    /// Processor always returns true — maintains timing cadence on idle cycles.
+    bool acquire(const scripting::AcquireContext &ctx) override
+    {
+        // Primary: input with retry (skip if held from previous cycle).
+        if (!held_input_)
+        {
+            held_input_ = scripting::retry_acquire(ctx, core_,
+                [this](auto t) { return const_cast<void *>(input_.read_acquire(t)); });
+        }
+
+        // Secondary: output (only if input available, policy-dependent timeout).
+        out_buf_ = nullptr;
+        if (held_input_)
+        {
+            if (drop_mode_)
+            {
+                out_buf_ = output_.write_acquire(std::chrono::milliseconds{0});
+            }
+            else
+            {
+                auto output_timeout = ctx.short_timeout;
+                if (ctx.deadline != std::chrono::steady_clock::time_point::max())
+                {
+                    auto remaining = std::chrono::duration_cast<
+                        std::chrono::milliseconds>(
+                            ctx.deadline - std::chrono::steady_clock::now());
+                    if (remaining > ctx.short_timeout)
+                        output_timeout = remaining;
+                }
+                out_buf_ = output_.write_acquire(output_timeout);
+            }
+        }
+
+        return true;
+    }
+
+    void cleanup_on_shutdown() override
+    {
+        if (held_input_) { input_.read_release(); held_input_ = nullptr; }
+        if (out_buf_)    { output_.write_discard(); out_buf_ = nullptr; }
+    }
+
+    bool invoke_and_commit(std::vector<scripting::IncomingMessage> &msgs) override
+    {
+        scripting::drain_inbox_sync(inbox_queue_, &engine_);
+
+        if (out_buf_) std::memset(out_buf_, 0, out_sz_);
+
+        // Re-read flexzone pointers each cycle (ShmQueue may move them).
+        if (core_.has_out_fz()) out_fz_ptr_ = output_.write_flexzone();
+        if (core_.has_in_fz())
+            in_fz_ptr_ = const_cast<void *>(input_.read_flexzone());
+
+        auto result = engine_.invoke_process(
+            scripting::InvokeRx{held_input_, in_sz_, in_fz_ptr_, in_fz_sz_},
+            scripting::InvokeTx{out_buf_, out_sz_, out_fz_ptr_, out_fz_sz_},
+            msgs);
+
+        // Output commit/discard.
+        if (out_buf_)
+        {
+            if (result == scripting::InvokeResult::Commit)
+            { output_.write_commit(); core_.inc_out_slots_written(); }
+            else
+            { output_.write_discard(); core_.inc_out_drop_count(); }
+        }
+        else if (held_input_)
+        {
+            core_.inc_out_drop_count();
+        }
+
+        // Input release or hold.
+        if (held_input_)
+        {
+            if (out_buf_ || drop_mode_)
+            {
+                input_.read_release();
+                held_input_ = nullptr;
+                core_.inc_in_slots_received();
+            }
+            // else: Block mode + output failed → hold for next cycle.
+        }
+        out_buf_ = nullptr;
+
+        if (result == scripting::InvokeResult::Error && stop_on_error_)
+        { core_.request_stop(); return false; }
+        return true;
+    }
+
+    void cleanup_on_exit() override
+    {
+        if (held_input_) { input_.read_release(); held_input_ = nullptr; }
+    }
+};
+
+} // anonymous namespace
+
+// ============================================================================
 // worker_main_ — the worker thread entry point
 // ============================================================================
 
@@ -281,8 +417,26 @@ void ProcessorRoleHost::worker_main_()
     // Step 7: Signal ready.
     ready_promise_.set_value(true);
 
-    // Step 8: Run the data loop.
-    run_data_loop_();
+    // Step 8: Run the data loop via shared frame + ProcessorCycleOps.
+    if (!in_consumer_.has_value() || !out_producer_.has_value())
+    {
+        LOGGER_ERROR("[proc] run_data_loop: transport queues not initialized — aborting");
+        core_.set_running(false);
+    }
+    else
+    {
+        const auto &tc_loop = config_.timing();
+        const bool drop_mode =
+            (config_.out_transport().zmq_overflow_policy == "drop");
+        ProcessorCycleOps ops(*in_consumer_, *out_producer_, *engine_, core_,
+                              inbox_queue_.get(), sc.stop_on_script_error,
+                              drop_mode);
+        scripting::LoopConfig lcfg;
+        lcfg.period_us                   = tc_loop.period_us;
+        lcfg.loop_timing                 = tc_loop.loop_timing;
+        lcfg.queue_io_wait_timeout_ratio = tc_loop.queue_io_wait_timeout_ratio;
+        api_->run_data_loop(lcfg, ops);
+    }
 
     // Step 9: stop accepting invoke from non-owner threads.
     engine_->stop_accepting();
@@ -524,247 +678,6 @@ void ProcessorRoleHost::teardown_infrastructure_()
 }
 
 // ============================================================================
-// run_data_loop_ — THE UNIFIED PROCESSOR LOOP (tech draft §5)
-// ============================================================================
-
-void ProcessorRoleHost::run_data_loop_()
-{
-    if (!in_consumer_.has_value() || !out_producer_.has_value())
-    {
-        LOGGER_ERROR("[proc] run_data_loop_: transport queues not initialized — aborting");
-        core_.set_running(false);
-        return;
-    }
-
-    const auto &tc  = config_.timing();
-    const auto &sc  = config_.script();
-
-    // --- Setup ---
-    const double period_us = tc.period_us;
-    const bool is_max_rate = (tc.loop_timing == LoopTimingPolicy::MaxRate);
-    const auto short_timeout_us = compute_short_timeout(period_us, tc.queue_io_wait_timeout_ratio);
-    // Acquire takes milliseconds; convert with rounding up to avoid 0ms.
-    const auto short_timeout =
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            short_timeout_us + std::chrono::microseconds{999});
-
-    const bool drop_mode = (config_.out_transport().zmq_overflow_policy == "drop");
-
-    const size_t in_sz  = in_consumer_->queue_item_size();
-    const size_t out_sz = out_producer_->queue_item_size();
-
-    // Output flexzone pointers — valid after queue start.
-    void       *out_fz_ptr = core_.has_out_fz() ? out_producer_->write_flexzone() : nullptr;
-    const size_t out_fz_sz = core_.has_out_fz() ? out_producer_->flexzone_size()  : 0;
-
-    // Input flexzone — mutable per HEP-0002 TABLE 1 (user-managed coordination).
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-    void       *in_fz_ptr = core_.has_in_fz() ? const_cast<void *>(in_consumer_->read_flexzone()) : nullptr;
-    const size_t in_fz_sz = core_.has_in_fz() ? in_consumer_->flexzone_size() : 0;
-
-    // First cycle: no deadline — fire immediately.
-    auto deadline = Clock::time_point::max();
-
-    // Input-hold state for Block mode (§5.3 of loop_design_unified.md).
-    // When Block mode output fails, held_input retains the input pointer
-    // across cycles. SHM: lock held, pointer valid. ZMQ: current_read_buf_
-    // unchanged, pointer valid. See §5.1 for transport semantics.
-    const void *held_input = nullptr;
-
-    // --- Outer loop ---
-    while (core_.is_running() &&
-           !core_.is_shutdown_requested() &&
-           !core_.is_critical_error())
-    {
-        // Check external shutdown flag.
-        if (core_.is_process_exit_requested())
-            break;
-
-        const auto cycle_start = Clock::now();
-
-        // --- Step A: Acquire INPUT (skip if held from previous cycle) ---
-        //
-        // If held_input is set (Block mode, previous output failed),
-        // reuse the held data — don't re-acquire.
-        //
-        if (held_input == nullptr)
-        {
-            while (true)
-            {
-                held_input = in_consumer_->read_acquire(short_timeout);
-                if (held_input != nullptr)
-                    break; // got input
-
-                if (is_max_rate)
-                    break; // MaxRate: single attempt
-
-                // Check shutdown between retries.
-                if (!core_.is_running() ||
-                    core_.is_shutdown_requested() ||
-                    core_.is_critical_error())
-                {
-                    break;
-                }
-                if (core_.is_process_exit_requested())
-                    break;
-
-                // For first cycle (deadline=max), remaining is effectively infinite — always retry.
-                if (deadline != Clock::time_point::max())
-                {
-                    const auto remaining =
-                        std::chrono::duration_cast<std::chrono::microseconds>(
-                            deadline - Clock::now());
-                    if (remaining <= short_timeout_us)
-                        break; // not enough time to retry
-                }
-                // else: retry acquire
-            }
-        }
-
-        // --- Step B: Acquire OUTPUT (only if input available) ---
-        //
-        // No input → no output attempt. Script called with both nil.
-        // Input available → try output with policy-dependent timeout:
-        //   Drop: 0ms (non-blocking)
-        //   Block: max(remaining_until_deadline, short_timeout)
-        //
-        void *out_buf = nullptr;
-        if (held_input != nullptr)
-        {
-            if (drop_mode)
-            {
-                out_buf = out_producer_->write_acquire(std::chrono::milliseconds{0});
-            }
-            else
-            {
-                // Block mode: use remaining cycle budget, floor = short_timeout.
-                auto output_timeout = short_timeout;
-                if (deadline != Clock::time_point::max())
-                {
-                    const auto remaining =
-                        std::chrono::duration_cast<std::chrono::milliseconds>(
-                            deadline - Clock::now());
-                    if (remaining > short_timeout)
-                        output_timeout = remaining;
-                }
-                out_buf = out_producer_->write_acquire(output_timeout);
-            }
-        }
-
-        // --- Step C: Deadline wait (FixedRate) ---
-        // Skip sleep when deadline is max() (first cycle) or MaxRate.
-        if (!is_max_rate &&
-            deadline != Clock::time_point::max() && Clock::now() < deadline)
-        {
-            std::this_thread::sleep_until(deadline);
-        }
-
-        // Safety check after potential sleep: shutdown may have been requested.
-        if (!core_.is_running() ||
-            core_.is_shutdown_requested() ||
-            core_.is_critical_error())
-        {
-            if (held_input != nullptr)
-            {
-                in_consumer_->read_release();
-                held_input = nullptr;
-            }
-            if (out_buf != nullptr)
-                out_producer_->write_discard();
-            break;
-        }
-
-        // --- Step D: Drain everything right before script call ---
-        auto msgs = core_.drain_messages();
-        drain_inbox_sync_();
-
-        // --- Step E: Prepare and invoke callback ---
-        if (out_buf != nullptr)
-            std::memset(out_buf, 0, out_sz);
-
-        // Re-read flexzone pointers each cycle (ShmQueue may move them).
-        if (core_.has_out_fz())
-            out_fz_ptr = out_producer_->write_flexzone();
-        if (core_.has_in_fz())
-            in_fz_ptr = const_cast<void *>(in_consumer_->read_flexzone());
-
-        InvokeResult result =
-            engine_->invoke_process(
-                InvokeRx{held_input, in_sz, in_fz_ptr, in_fz_sz},
-                InvokeTx{out_buf, out_sz, out_fz_ptr, out_fz_sz},
-                msgs);
-
-        // --- Step F: Commit/discard OUTPUT, release/hold INPUT ---
-        //
-        // Output:
-        if (out_buf != nullptr)
-        {
-            if (result == InvokeResult::Commit)
-            {
-                out_producer_->write_commit();
-                core_.inc_out_slots_written();
-            }
-            else
-            {
-                out_producer_->write_discard();
-                core_.inc_out_drop_count();
-            }
-        }
-        else if (held_input != nullptr)
-        {
-            // Had input but no output slot — count as drop.
-            core_.inc_out_drop_count();
-        }
-
-        // Input: release or hold depending on output success + policy.
-        if (held_input != nullptr)
-        {
-            if (out_buf != nullptr || drop_mode)
-            {
-                // Normal: data processed or dropped. Advance input.
-                in_consumer_->read_release();
-                held_input = nullptr;
-                core_.inc_in_slots_received();
-            }
-            // else: Block mode + output failed → keep held_input for next cycle.
-            // SHM: lock still held, pointer valid.
-            // ZMQ: current_read_buf_ unchanged, pointer valid.
-        }
-
-        if (result == InvokeResult::Error)
-        {
-            // script_errors already incremented by engine.
-            if (sc.stop_on_script_error)
-                core_.request_stop();
-        }
-
-        // --- Step G: Metrics + next deadline ---
-        const auto now     = Clock::now();
-        const auto work_us = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                now - cycle_start).count());
-        core_.set_last_cycle_work_us(work_us);
-        core_.inc_iteration_count();
-        if (deadline != Clock::time_point::max() && now > deadline)
-            core_.inc_loop_overrun();
-
-        deadline = compute_next_deadline(tc.loop_timing, deadline, cycle_start, period_us);
-    }
-
-    // Clean up held input on loop exit.
-    if (held_input != nullptr)
-    {
-        in_consumer_->read_release();
-        held_input = nullptr;
-    }
-
-    LOGGER_INFO("[proc] run_data_loop_ exiting: running_threads={} shutdown_requested={} "
-                "critical_error={}",
-                core_.is_running(), core_.is_shutdown_requested(),
-                core_.is_critical_error());
-}
-
-// ============================================================================
 // run_ctrl_thread_ — polls both producer and consumer ZMQ sockets, sends heartbeats
 // ============================================================================
 
@@ -801,15 +714,6 @@ void ProcessorRoleHost::run_ctrl_thread_()
         },
         config_.timing().heartbeat_interval_ms);
     loop.run();
-}
-
-// ============================================================================
-// drain_inbox_sync_ — drain all inbox messages non-blocking
-// ============================================================================
-
-void ProcessorRoleHost::drain_inbox_sync_()
-{
-    scripting::drain_inbox_sync(inbox_queue_.get(), engine_.get());
 }
 
 // ============================================================================

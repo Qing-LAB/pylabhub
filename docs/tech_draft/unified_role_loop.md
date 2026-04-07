@@ -914,3 +914,99 @@ Combine steps 5-12 into `RoleAPIBase::run_role()`.
 - **Low risk**: Phase 3 (ctrl thread) is mechanical + well-understood.
 - **Low risk**: Phase 4 (lifecycle) wraps existing sequence.
 - **Mitigation**: Each phase is a separate commit against 1323 tests.
+
+---
+
+## 9. Design Decisions (2026-04-06 discussion)
+
+### 9.1 Thread Manager — lightweight registry (Option A)
+
+Instead of special-purpose `start_ctrl_thread()`/`join_ctrl_thread()` methods,
+RoleAPIBase will provide a general-purpose thread registry:
+
+```cpp
+void spawn_thread(const std::string &name, std::function<void()> body);
+void join_all_threads();   // reverse spawn order
+size_t thread_count() const;
+```
+
+Every spawned thread automatically gets:
+- `ThreadEngineGuard` (engine cross-thread registration)
+- Shutdown check via `core_.is_running()`
+- Named logging prefix
+
+The ctrl_thread is the first managed thread. Future worker threads (e.g.,
+script-requested background tasks) use the same interface. The data loop
+thread (owner) is NOT managed — it drives the framework, not the other way.
+
+**Thread inventory per role** (runtime):
+
+| Layer | Threads | Managed by |
+|-------|---------|-----------|
+| Messenger worker | 1 per messenger | Messenger (internal) |
+| ZmqQueue recv/send | 0-2 per role (ZMQ transport only) | ZmqQueue (internal) |
+| Data loop | 1 (worker_thread_) | Role host (owner thread) |
+| Ctrl thread | 1 | ThreadManager (spawned) |
+| Future workers | 0+ | ThreadManager (spawned) |
+
+**Shutdown sequence**:
+```
+run_data_loop() returns
+engine_->stop_accepting()       ← rejects cross-thread invokes
+core_.set_running(false)        ← signals all managed threads
+api_->join_all_threads()        ← joins ctrl + workers in reverse order
+engine_->invoke_on_stop()       ← safe: no other threads
+engine_->finalize()
+teardown_infrastructure_()      ← stops Messenger, Producer, Consumer
+```
+
+### 9.2 Metrics: last_seq — eliminate the copy
+
+`last_seq` had three copies: QueueReader (authoritative), RoleAPIBase::Impl
+(atomic copy), and consumer role host (another atomic copy). The copies
+existed because the old data loop stored `consumer.last_seq()` into a local
+atomic after each `read_acquire()`.
+
+**Decision**: Remove the copies. `RoleAPIBase::last_seq()` forwards directly
+to `consumer->last_seq()` → `queue_reader_->last_seq()`. This is already
+thread-safe:
+- ShmQueue: plain uint64 written only by the data loop thread, read by
+  metrics snapshot (relaxed read is safe — no torn read on aligned uint64)
+- ZmqQueue: `std::atomic<uint64_t>` with relaxed ordering
+
+**Cost**: ~3ns per call (2 Pimpl dereferences + 1 virtual dispatch + 1
+relaxed load). Called once per heartbeat interval (5s), not per data cycle.
+The old per-cycle atomic store was actually more expensive.
+
+Also remove `update_last_seq()` from RoleAPIBase — no longer needed. The
+CycleOps no longer calls it; the QueueReader is the single source of truth.
+
+### 9.3 CycleOps takes RoleAPIBase& (deferred)
+
+CycleOps currently takes raw `Producer&`/`Consumer&`/`ScriptEngine&`
+references directly. The alternative — taking `RoleAPIBase&` and calling
+pass-through methods — adds ~12 forwarding methods to RoleAPIBase for
+queue I/O operations (`write_acquire`, `read_acquire`, `write_commit`,
+`read_release`, `write_discard`, `queue_item_size` × 2 sides).
+
+**Decision**: Defer. Keep raw references for Phase 2. In Phase 3 (ctrl
+thread + thread manager), reassess which pointers truly need to be public
+on RoleAPIBase. The goal is to make `producer()`/`consumer()` private
+eventually, with all access going through typed RoleAPIBase methods.
+
+### 9.4 drain_inbox_sync placement
+
+The shared frame calls `core.drain_messages()` (Step C). The inbox drain
+(`drain_inbox_sync`) requires `ScriptEngine*` which the frame doesn't hold.
+
+**Decision**: Each CycleOps calls `drain_inbox_sync(inbox_queue, &engine)`
+as the first line of `invoke_and_commit()`. This preserves the "drain right
+before invoke" invariant without adding engine dependency to the shared frame.
+
+### 9.5 Phase 1 status
+
+**Completed**: `wire_event_callbacks()` implemented and deployed. All 3 role
+hosts use it. 1323/1323 tests pass. Processor dual-messenger hub-dead wired
+explicitly. Consumer on_zmq_data always registered (intentional
+simplification). Processor channel_closing/channel_error include
+`details["channel"]` and `details["source"]` for dual-role disambiguation.
