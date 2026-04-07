@@ -11,6 +11,7 @@
  * Specification: see HEP-CORE-0028
  */
 
+#include "pylabhub_utils_export.h"
 #include "utils/script_engine.hpp"
 #include "utils/native_invoke_types.h"
 
@@ -21,7 +22,7 @@
 namespace pylabhub::scripting
 {
 
-class NativeEngine : public ScriptEngine
+class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
 {
   public:
     NativeEngine();

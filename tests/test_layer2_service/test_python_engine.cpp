@@ -29,7 +29,7 @@
 #include <gtest/gtest.h>
 
 #include "python_engine.hpp"
-#include "engine_module_params.hpp"
+#include "utils/engine_module_params.hpp"
 #include "utils/role_host_core.hpp"
 
 #include "utils/schema_utils.hpp"

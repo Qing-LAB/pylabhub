@@ -20,11 +20,11 @@
 cmake_minimum_required(VERSION 3.28)
 
 add_library(pylabhub-scripting STATIC
-    engine_module_params.cpp
+    # engine_module_params.cpp → pylabhub-utils (service/engine_module_params.cpp)
+    # native_engine.cpp → pylabhub-utils (service/native_engine.cpp)
     lua_state.cpp
     lua_engine.cpp
     python_engine.cpp
-    native_engine.cpp
     # Role API classes — in the shared lib so PythonEngine and future
     # dynamic bindings can access all 3 without per-binary compilation.
     ${CMAKE_SOURCE_DIR}/src/producer/producer_api.cpp

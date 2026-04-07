@@ -10,7 +10,6 @@
  */
 
 #include "utils/role_host_core.hpp"
-#include "utils/script_engine.hpp"
 #include "utils/config/checksum_config.hpp"
 #include "utils/config/inbox_config.hpp"
 #include "utils/data_block_policy.hpp"
@@ -29,43 +28,8 @@
 namespace pylabhub::scripting
 {
 
-// ============================================================================
-// drain_inbox_sync — drain all inbox messages non-blocking
-// ============================================================================
-
-/**
- * @brief Drain all pending inbox messages and invoke the engine's on_inbox handler.
- *
- * Called from the data loop right before the main script callback (Step C).
- * All messages are processed in FIFO order — no dropping.
- *
- * The engine uses its cached InboxFrame type (registered at startup via
- * register_slot_type) to build typed views. No type name is passed per call.
- *
- * @param inbox_queue   The inbox queue (may be nullptr if no inbox configured).
- * @param engine        The script engine for invoking on_inbox.
- */
-inline void drain_inbox_sync(hub::InboxQueue *inbox_queue,
-                              ScriptEngine    *engine)
-{
-    if (inbox_queue == nullptr || engine == nullptr)
-        return;
-
-    while (true)
-    {
-        const auto *item =
-            inbox_queue->recv_one(std::chrono::milliseconds{0}); // non-blocking
-        if (item == nullptr)
-            break;
-
-        engine->invoke_on_inbox(InvokeInbox{
-            item->data, inbox_queue->item_size(),
-            item->sender_id, item->seq});
-
-        // Always ack success — don't drop inbox messages on script errors.
-        inbox_queue->send_ack(0);
-    }
-}
+// drain_inbox_sync: moved to RoleAPIBase::drain_inbox_sync() (role_api_base.cpp).
+// The shared data loop frame calls it in Step C.
 
 // ============================================================================
 // wait_for_roles — HEP-0023 startup coordination

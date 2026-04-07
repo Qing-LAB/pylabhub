@@ -10,8 +10,8 @@
  */
 #include <gtest/gtest.h>
 
-#include "engine_module_params.hpp"
-#include "native_engine.hpp"
+#include "utils/engine_module_params.hpp"
+#include "utils/native_engine.hpp"
 #include "utils/role_host_core.hpp"
 #include "utils/schema_utils.hpp"
 #include "test_schema_helpers.h"

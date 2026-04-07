@@ -16,9 +16,9 @@
 #include "plh_datahub_client.hpp"
 #include "utils/metrics_json.hpp"
 
-#include "engine_module_params.hpp"
-#include "role_host_helpers.hpp"
-#include "zmq_poll_loop.hpp"
+#include "utils/engine_module_params.hpp"
+#include "utils/role_host_helpers.hpp"
+#include "utils/zmq_poll_loop.hpp"
 #include "utils/schema_utils.hpp"
 #include "utils/lifecycle.hpp"
 
@@ -99,7 +99,6 @@ class ProducerCycleOps final : public scripting::RoleCycleOps
     hub::Producer           &producer_;
     scripting::ScriptEngine &engine_;
     scripting::RoleHostCore &core_;
-    hub::InboxQueue         *inbox_queue_;
     bool                     stop_on_error_;
 
     // Cached at construction (stable after queue start).
@@ -112,9 +111,8 @@ class ProducerCycleOps final : public scripting::RoleCycleOps
 
   public:
     ProducerCycleOps(hub::Producer &p, scripting::ScriptEngine &e,
-                     scripting::RoleHostCore &c, hub::InboxQueue *iq,
-                     bool stop_on_error)
-        : producer_(p), engine_(e), core_(c), inbox_queue_(iq),
+                     scripting::RoleHostCore &c, bool stop_on_error)
+        : producer_(p), engine_(e), core_(c),
           stop_on_error_(stop_on_error),
           buf_sz_(p.queue_item_size()),
           fz_ptr_(c.has_out_fz() ? p.write_flexzone() : nullptr),
@@ -136,7 +134,6 @@ class ProducerCycleOps final : public scripting::RoleCycleOps
     bool invoke_and_commit(std::vector<scripting::IncomingMessage> &msgs) override
     {
         // Drain inbox right before invoke (Step C continuation).
-        scripting::drain_inbox_sync(inbox_queue_, &engine_);
 
         if (buf_) std::memset(buf_, 0, buf_sz_);
 
@@ -276,6 +273,7 @@ void ProducerRoleHost::worker_main_()
     }
     api_->set_checksum_policy(config_.checksum().policy);
     api_->set_stop_on_script_error(sc.stop_on_script_error);
+    api_->set_engine(engine_.get());
     api_->wire_event_callbacks();
 
     // ── Step 4: Load engine via lifecycle module ─────────────────────────────
@@ -345,7 +343,7 @@ void ProducerRoleHost::worker_main_()
     {
         const auto &tc_loop = config_.timing();
         ProducerCycleOps ops(*out_producer_, *engine_, core_,
-                             inbox_queue_.get(), sc.stop_on_script_error);
+                             sc.stop_on_script_error);
         scripting::LoopConfig lcfg;
         lcfg.period_us                   = tc_loop.period_us;
         lcfg.loop_timing                 = tc_loop.loop_timing;
