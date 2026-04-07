@@ -54,8 +54,7 @@ struct RoleAPIBase::Impl
     // Inbox client cache (keyed by target_uid).
     // Uses RoleHostCore::open_inbox() for atomic check-and-create.
 
-    // Consumer sequence tracking.
-    std::atomic<uint64_t> last_seq{0};
+    // last_seq: no local copy — forwarded directly to consumer->last_seq().
 };
 
 // ============================================================================
@@ -261,6 +260,133 @@ void RoleAPIBase::wire_event_callbacks()
     // The role host sets messenger to out_messenger. If the processor has
     // a separate in_messenger, it must wire hub_dead on that one separately
     // (the role host handles this since it owns both messenger instances).
+}
+
+// ============================================================================
+// retry_acquire — shared inner retry logic
+// ============================================================================
+
+void *retry_acquire(
+    const AcquireContext &ctx,
+    RoleHostCore &core,
+    const std::function<void *(std::chrono::milliseconds)> &try_once)
+{
+    while (true)
+    {
+        void *ptr = try_once(ctx.short_timeout);
+        if (ptr != nullptr)
+            return ptr;
+
+        if (ctx.is_max_rate)
+            return nullptr; // MaxRate: single attempt
+
+        // Check shutdown between retries.
+        if (!core.is_running() ||
+            core.is_shutdown_requested() ||
+            core.is_critical_error())
+        {
+            return nullptr;
+        }
+        if (core.is_process_exit_requested())
+            return nullptr;
+
+        // First cycle (deadline == max): retry indefinitely until success or shutdown.
+        if (ctx.deadline != std::chrono::steady_clock::time_point::max())
+        {
+            const auto remaining =
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    ctx.deadline - std::chrono::steady_clock::now());
+            if (remaining <= ctx.short_timeout_us)
+                return nullptr; // not enough time to retry
+        }
+        // else: retry
+    }
+}
+
+// ============================================================================
+// run_data_loop — shared loop frame
+// ============================================================================
+
+void RoleAPIBase::run_data_loop(const LoopConfig &cfg, RoleCycleOps &ops)
+{
+    auto &core = *pImpl->core;
+    const std::string &tag = pImpl->role_tag;
+
+    // ── Timing setup ────────────────────────────────────────────────────
+    const auto policy     = cfg.loop_timing;
+    const double period_us = cfg.period_us;
+    const bool is_max_rate = (policy == LoopTimingPolicy::MaxRate);
+    const auto short_timeout_us = compute_short_timeout(period_us, cfg.queue_io_wait_timeout_ratio);
+    const auto short_timeout    = std::chrono::duration_cast<std::chrono::milliseconds>(
+        short_timeout_us + std::chrono::microseconds{999});
+
+    using Clock = std::chrono::steady_clock;
+    auto deadline = Clock::time_point::max();
+
+    // ── Outer loop ──────────────────────────────────────────────────────
+    while (core.is_running() &&
+           !core.is_shutdown_requested() &&
+           !core.is_critical_error())
+    {
+        if (core.is_process_exit_requested())
+            break;
+
+        const auto cycle_start = Clock::now();
+
+        // ── Step A: Role-specific acquire ────────────────────────────
+        AcquireContext ctx{short_timeout, short_timeout_us, deadline, is_max_rate};
+        bool has_data = ops.acquire(ctx);
+
+        // ── Step B: Deadline wait ────────────────────────────────────
+        if (!is_max_rate && has_data &&
+            deadline != Clock::time_point::max() && Clock::now() < deadline)
+        {
+            std::this_thread::sleep_until(deadline);
+        }
+
+        // ── Step B': Shutdown check after potential sleep ────────────
+        if (!core.is_running() ||
+            core.is_shutdown_requested() ||
+            core.is_critical_error())
+        {
+            ops.cleanup_on_shutdown();
+            break;
+        }
+        if (core.is_process_exit_requested())
+        {
+            ops.cleanup_on_shutdown();
+            break;
+        }
+
+        // ── Step C: Drain messages ──────────────────────────────────
+        // Note: drain_inbox_sync is called by each role's invoke_and_commit
+        // (requires engine pointer, which RoleAPIBase doesn't hold yet).
+        auto msgs = core.drain_messages();
+
+        // ── Step D+E: Role-specific invoke + commit ─────────────────
+        if (!ops.invoke_and_commit(msgs))
+            break;
+
+        // ── Step F: Metrics ─────────────────────────────────────────
+        const auto now     = Clock::now();
+        const auto work_us = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                now - cycle_start).count());
+        core.set_last_cycle_work_us(work_us);
+        core.inc_iteration_count();
+        if (deadline != Clock::time_point::max() && now > deadline)
+            core.inc_loop_overrun();
+
+        // ── Step G: Next deadline ───────────────────────────────────
+        deadline = compute_next_deadline(policy, deadline, cycle_start, period_us);
+    }
+
+    // ── Post-loop cleanup ───────────────────────────────────────────
+    ops.cleanup_on_exit();
+
+    LOGGER_INFO("[{}] run_data_loop exiting: running={} shutdown={} critical={}",
+                tag, core.is_running(), core.is_shutdown_requested(),
+                core.is_critical_error());
 }
 
 // ============================================================================
@@ -513,13 +639,12 @@ uint64_t RoleAPIBase::in_slots_received() const { return pImpl->core->in_slots_r
 
 uint64_t RoleAPIBase::last_seq() const
 {
-    return pImpl->last_seq.load(std::memory_order_relaxed);
+    // Forward directly to QueueReader — single source of truth.
+    // Thread-safe: ShmQueue uses plain uint64 (aligned, no torn read),
+    // ZmqQueue uses atomic<uint64_t> with relaxed ordering.
+    return pImpl->consumer ? pImpl->consumer->last_seq() : 0;
 }
 
-void RoleAPIBase::update_last_seq(uint64_t seq)
-{
-    pImpl->last_seq.store(seq, std::memory_order_relaxed);
-}
 
 size_t RoleAPIBase::in_capacity() const
 {

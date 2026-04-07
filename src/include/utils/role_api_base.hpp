@@ -19,11 +19,14 @@
 #include "pylabhub_utils_export.h"
 #include "utils/data_block_policy.hpp"     // hub::ChecksumPolicy
 #include "utils/json_fwd.hpp"
+#include "utils/loop_timing_policy.hpp"    // LoopTimingPolicy, compute_short_timeout, compute_next_deadline
 #include "utils/role_host_core.hpp"        // RoleHostCore, StateValue
 #include "utils/schema_types.hpp"          // hub::SchemaSpec (for InboxOpenResult)
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -46,6 +49,80 @@ namespace pylabhub::scripting
 /// Identifies which side of the data path (Tx = producer/output, Rx = consumer/input).
 /// Used by spinlock and potentially other side-specific accessors.
 enum class ChannelSide : uint8_t { Tx = 0, Rx = 1 };
+
+// ============================================================================
+// AcquireContext — timing state for one cycle, computed by the shared frame
+// ============================================================================
+
+/// Passed to RoleCycleOps::acquire() so role code never computes timeouts.
+struct AcquireContext
+{
+    std::chrono::milliseconds              short_timeout;
+    std::chrono::microseconds              short_timeout_us;
+    std::chrono::steady_clock::time_point  deadline;
+    bool                                   is_max_rate;
+};
+
+// ============================================================================
+// retry_acquire — shared inner retry utility
+// ============================================================================
+
+/// Inner retry loop used by RoleCycleOps::acquire() for the primary acquire.
+///
+/// Calls try_once(short_timeout) repeatedly until:
+///   - try_once returns non-null (success)
+///   - is_max_rate (single attempt only)
+///   - core signals shutdown or process exit
+///   - remaining time until deadline < short_timeout_us
+///
+/// First cycle (deadline == time_point::max()): retries indefinitely
+/// until success or shutdown (per loop_design_unified.md §3 Step A).
+PYLABHUB_UTILS_EXPORT void *retry_acquire(
+    const AcquireContext &ctx,
+    RoleHostCore &core,
+    const std::function<void *(std::chrono::milliseconds)> &try_once);
+
+// ============================================================================
+// RoleCycleOps — role-specific operations plugged into the shared loop frame
+// ============================================================================
+
+/// Each role (producer, consumer, processor) provides a concrete subclass
+/// that implements the acquire/invoke/commit slot. The shared loop frame
+/// handles: outer loop condition, inner retry, deadline wait, drain,
+/// metrics, next deadline.
+struct PYLABHUB_UTILS_EXPORT RoleCycleOps
+{
+    virtual ~RoleCycleOps() = default;
+
+    /// Step A: Acquire data for this cycle.
+    /// Use retry_acquire() for the primary acquire.
+    /// Returns true if the cycle has data that gates the deadline wait.
+    ///   Producer/Consumer: true when slot acquired.
+    ///   Processor: always true (maintains cadence on idle cycles).
+    virtual bool acquire(const AcquireContext &ctx) = 0;
+
+    /// Step B': Release/discard acquired resources on shutdown break.
+    virtual void cleanup_on_shutdown() = 0;
+
+    /// Step D+E: Invoke engine callback with drained messages, then
+    /// commit/discard/release. Returns false to request loop stop
+    /// (e.g., stop_on_script_error).
+    virtual bool invoke_and_commit(std::vector<IncomingMessage> &msgs) = 0;
+
+    /// Post-loop cleanup (e.g., release processor's held_input).
+    virtual void cleanup_on_exit() = 0;
+};
+
+// ============================================================================
+// LoopConfig — timing parameters for the shared data loop
+// ============================================================================
+
+struct LoopConfig
+{
+    double            period_us{0};
+    LoopTimingPolicy  loop_timing{LoopTimingPolicy::MaxRate};
+    double            queue_io_wait_timeout_ratio{0.1};
+};
 
 // ============================================================================
 // RoleAPIBase
@@ -159,7 +236,6 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
 
     [[nodiscard]] uint64_t in_slots_received() const;
     [[nodiscard]] uint64_t last_seq() const;
-    void update_last_seq(uint64_t seq);
     [[nodiscard]] size_t in_capacity() const;
     [[nodiscard]] std::string in_policy() const;
     void set_verify_checksum(bool enable);
@@ -199,6 +275,14 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] std::optional<StateValue> get_shared_data(const std::string &key) const;
     void remove_shared_data(const std::string &key);
     void clear_shared_data();
+
+    // ── Unified data loop ─────────────────────────────────────────────────
+    //
+    // Runs the shared loop frame: outer loop condition, inner retry,
+    // deadline wait, drain, metrics, next deadline. Role-specific
+    // acquire/invoke/commit is delegated to the RoleCycleOps.
+    // Blocks until shutdown.
+    void run_data_loop(const LoopConfig &cfg, RoleCycleOps &ops);
 
     // ── Infrastructure access (for engine binding layers) ─────────────────────
 

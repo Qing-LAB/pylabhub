@@ -85,6 +85,77 @@ void ConsumerRoleHost::shutdown_()
 }
 
 // ============================================================================
+// ConsumerCycleOps — role-specific acquire/invoke/commit for the shared frame
+// ============================================================================
+
+namespace
+{
+
+class ConsumerCycleOps final : public scripting::RoleCycleOps
+{
+    hub::Consumer           &consumer_;
+    scripting::ScriptEngine &engine_;
+    scripting::RoleHostCore &core_;
+    hub::InboxQueue         *inbox_queue_;
+    bool                     stop_on_error_;
+
+    size_t       item_sz_;
+    const void  *data_{nullptr};
+
+  public:
+    ConsumerCycleOps(hub::Consumer &c, scripting::ScriptEngine &e,
+                     scripting::RoleHostCore &core, hub::InboxQueue *iq,
+                     bool stop_on_error)
+        : consumer_(c), engine_(e), core_(core), inbox_queue_(iq),
+          stop_on_error_(stop_on_error),
+          item_sz_(c.queue_item_size())
+    {}
+
+    bool acquire(const scripting::AcquireContext &ctx) override
+    {
+        data_ = scripting::retry_acquire(ctx, core_,
+            [this](auto t) { return const_cast<void *>(consumer_.read_acquire(t)); });
+        return data_ != nullptr;
+    }
+
+    void cleanup_on_shutdown() override
+    {
+        if (data_) { consumer_.read_release(); data_ = nullptr; }
+    }
+
+    bool invoke_and_commit(std::vector<scripting::IncomingMessage> &msgs) override
+    {
+        scripting::drain_inbox_sync(inbox_queue_, &engine_);
+
+        if (data_)
+            core_.inc_in_slots_received();
+
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+        void *fz_ptr = core_.has_in_fz()
+            ? const_cast<void *>(consumer_.read_flexzone()) : nullptr;
+        const size_t fz_sz = core_.has_in_fz() ? consumer_.flexzone_size() : 0;
+
+        const uint64_t errors_before = engine_.script_error_count();
+
+        engine_.invoke_consume(
+            scripting::InvokeRx{data_, item_sz_, fz_ptr, fz_sz}, msgs);
+
+        if (data_) { consumer_.read_release(); data_ = nullptr; }
+
+        if (stop_on_error_ && engine_.script_error_count() > errors_before)
+        {
+            core_.request_stop();
+            return false;
+        }
+        return true;
+    }
+
+    void cleanup_on_exit() override {} // nothing held across cycles
+};
+
+} // anonymous namespace
+
+// ============================================================================
 // worker_main_ — the worker thread entry point
 // ============================================================================
 
@@ -234,8 +305,23 @@ void ConsumerRoleHost::worker_main_()
     // Step 7: Signal ready.
     ready_promise_.set_value(true);
 
-    // Step 8: Run the data loop.
-    run_data_loop_();
+    // Step 8: Run the data loop via shared frame + ConsumerCycleOps.
+    if (!in_consumer_.has_value())
+    {
+        LOGGER_ERROR("[cons] run_data_loop: consumer not initialized — aborting");
+        core_.set_running(false);
+    }
+    else
+    {
+        const auto &tc_loop = config_.timing();
+        ConsumerCycleOps ops(*in_consumer_, *engine_, core_,
+                             inbox_queue_.get(), sc.stop_on_script_error);
+        scripting::LoopConfig lcfg;
+        lcfg.period_us                   = tc_loop.period_us;
+        lcfg.loop_timing                 = tc_loop.loop_timing;
+        lcfg.queue_io_wait_timeout_ratio = tc_loop.queue_io_wait_timeout_ratio;
+        api_->run_data_loop(lcfg, ops);
+    }
 
     // Step 9: stop accepting invoke from non-owner threads.
     engine_->stop_accepting();
@@ -390,137 +476,6 @@ void ConsumerRoleHost::teardown_infrastructure_()
 }
 
 // ============================================================================
-// run_data_loop_ — THE UNIFIED LOOP (tech draft §4)
-// ============================================================================
-
-void ConsumerRoleHost::run_data_loop_()
-{
-    if (!in_consumer_.has_value())
-    {
-        LOGGER_ERROR("[cons] run_data_loop_: QueueReader not initialized — aborting");
-        core_.set_running(false);
-        return;
-    }
-
-    const auto &tc  = config_.timing();
-    const auto &sc  = config_.script();
-
-    const double period_us = tc.period_us;
-    const bool is_max_rate = (tc.loop_timing == LoopTimingPolicy::MaxRate);
-    const auto short_timeout_us = compute_short_timeout(period_us, tc.queue_io_wait_timeout_ratio);
-    const auto short_timeout =
-        std::chrono::duration_cast<std::chrono::milliseconds>(short_timeout_us + std::chrono::microseconds{999});
-    const size_t item_sz = in_consumer_->queue_item_size();
-
-
-
-    auto deadline = Clock::time_point::max();
-
-    while (core_.is_running() &&
-           !core_.is_shutdown_requested() &&
-           !core_.is_critical_error())
-    {
-        if (core_.is_process_exit_requested())
-            break;
-
-        const auto cycle_start = Clock::now();
-
-        // --- Step A: Acquire data with inner retry ---
-        const void *data = nullptr;
-        while (true)
-        {
-            data = in_consumer_->read_acquire(short_timeout);
-            if (data != nullptr)
-                break;
-
-            if (is_max_rate)
-                break;
-
-            if (!core_.is_running() ||
-                core_.is_shutdown_requested() ||
-                core_.is_critical_error())
-                break;
-            if (core_.is_process_exit_requested())
-                break;
-
-            if (deadline != Clock::time_point::max())
-            {
-                const auto remaining =
-                    std::chrono::duration_cast<std::chrono::microseconds>(
-                        deadline - Clock::now());
-                if (remaining <= short_timeout_us)
-                    break;
-            }
-        }
-
-        // --- Step B: Deadline wait ---
-        if (!is_max_rate && data != nullptr &&
-            deadline != Clock::time_point::max() && Clock::now() < deadline)
-        {
-            std::this_thread::sleep_until(deadline);
-        }
-
-        if (!core_.is_running() ||
-            core_.is_shutdown_requested() ||
-            core_.is_critical_error())
-        {
-            if (data != nullptr)
-                in_consumer_->read_release();
-            break;
-        }
-
-        // --- Step C: Drain ---
-        auto msgs = core_.drain_messages();
-        drain_inbox_sync_();
-
-        // --- Step D: Invoke callback ---
-        if (data != nullptr)
-        {
-            last_seq_.store(in_consumer_->last_seq(), std::memory_order_relaxed);
-            core_.inc_in_slots_received();
-        }
-
-        // Flexzone is mutable by design (HEP-0002 TABLE 1, user-managed coordination).
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-        void *fz_ptr = core_.has_in_fz()
-            ? const_cast<void *>(in_consumer_->read_flexzone()) : nullptr;
-        const size_t fz_sz = core_.has_in_fz() ? in_consumer_->flexzone_size() : 0;
-
-        const uint64_t errors_before = engine_->script_error_count();
-
-        engine_->invoke_consume(InvokeRx{data, item_sz, fz_ptr, fz_sz}, msgs);
-
-        // --- Step E: Release slot ---
-        if (data != nullptr)
-            in_consumer_->read_release();
-
-        if (sc.stop_on_script_error &&
-            engine_->script_error_count() > errors_before)
-        {
-            core_.request_stop();
-        }
-
-        // --- Step F: Metrics ---
-        const auto now     = Clock::now();
-        const auto work_us = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                now - cycle_start).count());
-        core_.set_last_cycle_work_us(work_us);
-        core_.inc_iteration_count();
-        if (deadline != Clock::time_point::max() && now > deadline)
-            core_.inc_loop_overrun();
-
-        // --- Step G: Compute next deadline ---
-        deadline = compute_next_deadline(tc.loop_timing, deadline, cycle_start, period_us);
-    }
-
-    LOGGER_INFO("[cons] run_data_loop_ exiting: running_threads={} shutdown_requested={} "
-                "critical_error={}",
-                core_.is_running(), core_.is_shutdown_requested(),
-                core_.is_critical_error());
-}
-
-// ============================================================================
 // run_ctrl_thread_
 // ============================================================================
 
@@ -558,15 +513,6 @@ void ConsumerRoleHost::run_ctrl_thread_()
         },
         tc.heartbeat_interval_ms);
     loop.run();
-}
-
-// ============================================================================
-// drain_inbox_sync_
-// ============================================================================
-
-void ConsumerRoleHost::drain_inbox_sync_()
-{
-    scripting::drain_inbox_sync(inbox_queue_.get(), engine_.get());
 }
 
 // ============================================================================
