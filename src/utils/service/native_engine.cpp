@@ -8,7 +8,7 @@
  *
  * See native_engine_api.h for the native engine-side API.
  */
-#include "native_engine.hpp"
+#include "utils/native_engine.hpp"
 
 #include <cassert>
 #include "utils/crypto_utils.hpp"

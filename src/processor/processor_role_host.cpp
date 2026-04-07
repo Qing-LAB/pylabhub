@@ -18,9 +18,9 @@
 #include "plh_datahub_client.hpp"
 #include "utils/metrics_json.hpp"
 
-#include "engine_module_params.hpp"
-#include "role_host_helpers.hpp"
-#include "zmq_poll_loop.hpp"
+#include "utils/engine_module_params.hpp"
+#include "utils/role_host_helpers.hpp"
+#include "utils/zmq_poll_loop.hpp"
 #include "utils/schema_utils.hpp"
 
 #include <chrono>
@@ -107,7 +107,6 @@ class ProcessorCycleOps final : public scripting::RoleCycleOps
     hub::Producer           &output_;
     scripting::ScriptEngine &engine_;
     scripting::RoleHostCore &core_;
-    hub::InboxQueue         *inbox_queue_;
     bool                     stop_on_error_;
     bool                     drop_mode_;
 
@@ -123,9 +122,9 @@ class ProcessorCycleOps final : public scripting::RoleCycleOps
   public:
     ProcessorCycleOps(hub::Consumer &in, hub::Producer &out,
                       scripting::ScriptEngine &e, scripting::RoleHostCore &c,
-                      hub::InboxQueue *iq, bool stop_on_error, bool drop_mode)
+                      bool stop_on_error, bool drop_mode)
         : input_(in), output_(out), engine_(e), core_(c),
-          inbox_queue_(iq), stop_on_error_(stop_on_error), drop_mode_(drop_mode),
+          stop_on_error_(stop_on_error), drop_mode_(drop_mode),
           in_sz_(in.queue_item_size()), out_sz_(out.queue_item_size()),
           out_fz_ptr_(c.has_out_fz() ? out.write_flexzone() : nullptr),
           out_fz_sz_(c.has_out_fz() ? out.flexzone_size() : 0),
@@ -177,7 +176,6 @@ class ProcessorCycleOps final : public scripting::RoleCycleOps
 
     bool invoke_and_commit(std::vector<scripting::IncomingMessage> &msgs) override
     {
-        scripting::drain_inbox_sync(inbox_queue_, &engine_);
 
         if (out_buf_) std::memset(out_buf_, 0, out_sz_);
 
@@ -348,6 +346,7 @@ void ProcessorRoleHost::worker_main_()
     }
     api_->set_checksum_policy(config_.checksum().policy);
     api_->set_stop_on_script_error(sc.stop_on_script_error);
+    api_->set_engine(engine_.get());
     api_->wire_event_callbacks();
 
     // Processor dual-messenger: wire hub-dead on in_messenger too.
@@ -429,7 +428,7 @@ void ProcessorRoleHost::worker_main_()
         const bool drop_mode =
             (config_.out_transport().zmq_overflow_policy == "drop");
         ProcessorCycleOps ops(*in_consumer_, *out_producer_, *engine_, core_,
-                              inbox_queue_.get(), sc.stop_on_script_error,
+                              sc.stop_on_script_error,
                               drop_mode);
         scripting::LoopConfig lcfg;
         lcfg.period_us                   = tc_loop.period_us;

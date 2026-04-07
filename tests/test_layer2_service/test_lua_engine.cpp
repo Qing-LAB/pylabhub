@@ -19,7 +19,7 @@
 #include <gtest/gtest.h>
 
 #include "lua_engine.hpp"
-#include "engine_module_params.hpp"
+#include "utils/engine_module_params.hpp"
 #include "utils/schema_utils.hpp"
 #include "utils/role_host_core.hpp"
 #include "test_schema_helpers.h"

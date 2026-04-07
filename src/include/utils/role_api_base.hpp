@@ -46,6 +46,8 @@ class SharedSpinLock;
 namespace pylabhub::scripting
 {
 
+class ScriptEngine;   // forward declaration (defined in script_engine.hpp)
+
 /// Identifies which side of the data path (Tx = producer/output, Rx = consumer/input).
 /// Used by spinlock and potentially other side-specific accessors.
 enum class ChannelSide : uint8_t { Tx = 0, Rx = 1 };
@@ -153,6 +155,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     void set_log_level(std::string l);
     void set_script_dir(std::string d);
     void set_role_dir(std::string d);
+    void set_engine(ScriptEngine *e);
     void set_checksum_policy(hub::ChecksumPolicy p);
     void set_stop_on_script_error(bool v);
 
@@ -275,6 +278,13 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] std::optional<StateValue> get_shared_data(const std::string &key) const;
     void remove_shared_data(const std::string &key);
     void clear_shared_data();
+
+    // ── Inbox drain (Step C of the data loop) ──────────────────────────────
+    //
+    // Drains all pending inbox messages and invokes engine->invoke_on_inbox()
+    // for each. Called by run_data_loop() right before the role's invoke.
+    // Requires set_engine() to have been called.
+    void drain_inbox_sync();
 
     // ── Unified data loop ─────────────────────────────────────────────────
     //

@@ -10,10 +10,10 @@
 #include "shared_test_helpers.h"
 #include "test_schema_helpers.h"
 
-#include "engine_module_params.hpp"
+#include "utils/engine_module_params.hpp"
 #include "python_engine.hpp"
 #include "lua_engine.hpp"
-#include "native_engine.hpp"
+#include "utils/native_engine.hpp"
 
 #include "utils/broker_service.hpp"
 #include "utils/role_api_base.hpp"
