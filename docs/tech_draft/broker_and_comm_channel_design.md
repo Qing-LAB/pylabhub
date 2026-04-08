@@ -682,7 +682,57 @@ Broker service:
 
 ---
 
-## 9. Resolved Questions
+## 9. ZMQ API Standard: cppzmq Everywhere
+
+### 9.1 Decision
+
+**cppzmq is the project standard for all ZMQ code.** No raw C API (`zmq.h`)
+in new code. Existing raw C code migrates as its module is touched.
+
+### 9.2 Rationale
+
+- **Type safety**: `zmq::socket_t`, `zmq::socket_ref` instead of `void*`
+- **RAII**: socket/context destruction automatic on scope exit
+- **Exception-based errors**: `zmq::error_t` instead of `zmq_errno()` checks
+- **Header-only**: zero build cost, already included
+- **Modern C++ syntax**: consistent with C++20 codebase
+- **Multipart helpers**: `zmq_addon.hpp` for send/recv_multipart
+
+### 9.3 API mapping
+
+| Operation | Standard (cppzmq) | Forbidden (raw C) |
+|-----------|-------------------|-------------------|
+| Socket creation | `zmq::socket_t(ctx, zmq::socket_type::X)` | `zmq_socket()` |
+| Socket options | `socket.set(zmq::sockopt::X, val)` | `zmq_setsockopt()` |
+| Send/recv | `socket.send(msg)` / `socket.recv(msg)` | `zmq_send()` / `zmq_recv()` |
+| Multipart | `zmq::send_multipart()` / `zmq::recv_multipart()` | manual frame loops |
+| Polling | `zmq::poll(items, timeout)` | `zmq_poll()` |
+| Context | `get_zmq_context()` (shared singleton) | `zmq_ctx_new()` |
+| Non-owning ref | `zmq::socket_ref(zmq::from_handle, h)` | raw `void*` |
+| Error handling | `try/catch zmq::error_t` | `zmq_errno()` checks |
+
+### 9.4 Current violations and migration plan
+
+| File | Violation | When to fix |
+|------|-----------|-------------|
+| `hub_zmq_queue.cpp` | Raw C throughout, local context | Separate task (data transport sprint) |
+| `hub_inbox_queue.cpp` | Raw C throughout, local context | Separate task (data transport sprint) |
+| `broker_service.cpp` | Local `zmq::context_t` | Phase D (Messenger removal) |
+| `zmq_poll_loop.hpp` | Was raw C, now cppzmq | This commit |
+| `hub_monitored_queue.hpp` | ZMQ-free (callback pattern) | No change needed |
+
+### 9.5 Socket lifetime management
+
+- **Process-level** (ZMQ context): Lifecycle module via `GetZMQContextModule()`
+- **Module-level** (channel sockets): `zmq::socket_t` RAII in owning class
+  (`BrokerRequestChannel`, `RoleCommunicationChannel`). Destructs when
+  module destructs. No Lifecycle needed.
+- **Reference passing** (poll loop): `zmq::socket_ref` (non-owning). The
+  owning module holds `zmq::socket_t`; the poll loop holds `zmq::socket_ref`.
+
+---
+
+## 10. Resolved Questions
 
 1. **Request-reply pattern**: Standard async command queue (MonitoredQueue)
    + callback dispatch from poll loop. Same pattern as Logger, existing
