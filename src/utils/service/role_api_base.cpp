@@ -3,7 +3,8 @@
  * @brief RoleAPIBase implementation — unified role API (pure C++).
  */
 #include "utils/role_api_base.hpp"
-#include "utils/script_engine.hpp"        // ScriptEngine, InvokeInbox
+#include "utils/script_engine.hpp"        // ScriptEngine, InvokeInbox, ThreadEngineGuard
+#include "utils/zmq_poll_loop.hpp"        // ZmqPollLoop, HeartbeatTracker
 
 #include "utils/config/checksum_config.hpp"
 #include "utils/format_tools.hpp"
@@ -57,6 +58,9 @@ struct RoleAPIBase::Impl
     // Uses RoleHostCore::open_inbox() for atomic check-and-create.
 
     // last_seq: no local copy — forwarded directly to consumer->last_seq().
+
+    // Thread manager.
+    std::vector<std::thread> managed_threads_;
 };
 
 // ============================================================================
@@ -90,6 +94,120 @@ void RoleAPIBase::set_role_dir(std::string d)         { pImpl->role_dir = std::m
 void RoleAPIBase::set_checksum_policy(hub::ChecksumPolicy p) { pImpl->checksum_policy = p; }
 void RoleAPIBase::set_engine(ScriptEngine *e)          { pImpl->engine = e; }
 void RoleAPIBase::set_stop_on_script_error(bool v)    { pImpl->stop_on_script_error = v; }
+
+// ============================================================================
+// Thread manager
+// ============================================================================
+
+void RoleAPIBase::spawn_thread(const std::string &name, std::function<void()> body)
+{
+    auto *eng = pImpl->engine;
+    const std::string &tag = pImpl->role_tag;
+
+    pImpl->managed_threads_.emplace_back(
+        [eng, tag, name, body = std::move(body)]()
+        {
+            // ThreadEngineGuard registers this thread with the engine for
+            // cross-thread dispatch (Lua: thread-local state; Python: queue).
+            ThreadEngineGuard guard(*eng);
+            LOGGER_INFO("[{}/{}] thread started", tag, name);
+            body();
+            LOGGER_INFO("[{}/{}] thread exiting", tag, name);
+        });
+}
+
+void RoleAPIBase::join_all_threads()
+{
+    // Join in reverse spawn order (last spawned = first joined).
+    for (auto it = pImpl->managed_threads_.rbegin();
+         it != pImpl->managed_threads_.rend(); ++it)
+    {
+        if (it->joinable())
+            it->join();
+    }
+    pImpl->managed_threads_.clear();
+}
+
+size_t RoleAPIBase::thread_count() const
+{
+    return pImpl->managed_threads_.size();
+}
+
+// ============================================================================
+// Ctrl thread (first managed thread)
+// ============================================================================
+
+void RoleAPIBase::start_ctrl_thread(const CtrlConfig &cfg)
+{
+    auto *core    = pImpl->core;
+    auto *prod    = pImpl->producer;
+    auto *cons    = pImpl->consumer;
+    auto *msger   = pImpl->messenger;
+    auto *eng     = pImpl->engine;
+    const auto &tag     = pImpl->role_tag;
+    const auto &uid     = pImpl->uid;
+    const auto &ch      = pImpl->channel;
+    const auto &out_ch  = pImpl->out_channel;
+
+    spawn_thread("ctrl", [=, this]()
+    {
+        const bool has_hb = eng->has_callback("on_heartbeat");
+
+        ZmqPollLoop loop{*core, tag + ":" + uid};
+
+        // Control-plane sockets only.
+        if (prod)
+        {
+            loop.sockets.push_back(
+                {prod->peer_ctrl_socket_handle(),
+                 [prod] { prod->handle_peer_events_nowait(); }});
+        }
+        if (cons)
+        {
+            loop.sockets.push_back(
+                {cons->ctrl_zmq_socket_handle(),
+                 [cons] { cons->handle_ctrl_events_nowait(); }});
+        }
+
+        // Data-plane relay socket (SHM mode: broadcast relay frames → message queue).
+        // Polled here because relay frames are low-frequency notifications, not
+        // the primary data path. If separation is needed, use spawn_thread("data_relay").
+        if (cons)
+        {
+            if (void *ds = cons->data_zmq_socket_handle())
+            {
+                loop.sockets.push_back(
+                    {ds, [cons] { cons->handle_data_events_nowait(); }});
+            }
+        }
+
+        loop.get_iteration = [core] { return core->iteration_count(); };
+
+        // Heartbeat: use out_channel if set (producer/processor), else channel (consumer).
+        std::string hb_channel = out_ch.empty() ? ch : out_ch;
+        loop.periodic_tasks.emplace_back(
+            [msger, eng, has_hb, hb_channel, this]
+            {
+                msger->enqueue_heartbeat(hb_channel, snapshot_metrics_json());
+                if (has_hb)
+                    eng->invoke("on_heartbeat");
+            },
+            cfg.heartbeat_interval_ms);
+
+        // Metrics report (consumer role sends this separately).
+        if (cfg.report_metrics && msger)
+        {
+            loop.periodic_tasks.emplace_back(
+                [msger, this, ch, uid]
+                {
+                    msger->enqueue_metrics_report(ch, uid, snapshot_metrics_json());
+                },
+                cfg.heartbeat_interval_ms);
+        }
+
+        loop.run();
+    });
+}
 
 // ============================================================================
 // Inbox drain

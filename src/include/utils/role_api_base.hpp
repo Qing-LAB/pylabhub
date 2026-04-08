@@ -279,6 +279,32 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     void remove_shared_data(const std::string &key);
     void clear_shared_data();
 
+    // ── Thread manager ────────────────────────────────────────────────────
+    //
+    // Lightweight thread registry. Every spawned thread gets ThreadEngineGuard
+    // and shutdown check via core_.is_running(). The ctrl thread is the first
+    // managed thread. Future worker threads use the same interface.
+
+    /// Spawn a named managed thread. The body runs inside a ThreadEngineGuard.
+    void spawn_thread(const std::string &name, std::function<void()> body);
+
+    /// Join all managed threads in reverse spawn order.
+    void join_all_threads();
+
+    /// Number of managed threads (for diagnostics).
+    [[nodiscard]] size_t thread_count() const;
+
+    // ── Ctrl thread (first managed thread) ───────────────────────────────
+
+    struct CtrlConfig
+    {
+        int  heartbeat_interval_ms{5000};
+        bool report_metrics{false};   ///< Send enqueue_metrics_report (consumer role).
+    };
+
+    /// Build ZmqPollLoop from available pointers and spawn as managed thread.
+    void start_ctrl_thread(const CtrlConfig &cfg);
+
     // ── Inbox drain (Step C of the data loop) ──────────────────────────────
     //
     // Drains all pending inbox messages and invokes engine->invoke_on_inbox()

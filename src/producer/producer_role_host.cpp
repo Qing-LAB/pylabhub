@@ -326,9 +326,10 @@ void ProducerRoleHost::worker_main_()
     if (out_producer_.has_value() && core_.has_out_fz())
         out_producer_->sync_flexzone_checksum();
 
-    // Step 6: Spawn ctrl_thread_ and signal ready.
+    // Step 6: Spawn ctrl thread via thread manager.
     core_.set_running(true);
-    ctrl_thread_ = std::thread([this] { run_ctrl_thread_(); });
+    api_->start_ctrl_thread(
+        scripting::RoleAPIBase::CtrlConfig{config_.timing().heartbeat_interval_ms, false});
 
     // Step 7: Signal ready.
     ready_promise_.set_value(true);
@@ -354,11 +355,10 @@ void ProducerRoleHost::worker_main_()
     // Step 9: stop accepting invoke from non-owner threads.
     engine_->stop_accepting();
 
-    // Step 10: join ctrl_thread — ensure no non-owner thread is using the engine.
+    // Step 10: join all managed threads (ctrl + future workers).
     core_.set_running(false);
     core_.notify_incoming();
-    if (ctrl_thread_.joinable())
-        ctrl_thread_.join();
+    api_->join_all_threads();
 
     // Step 11: last script callback (no other threads using engine).
     engine_->invoke_on_stop();
@@ -532,37 +532,6 @@ void ProducerRoleHost::teardown_infrastructure_()
     }
 }
 
-// ============================================================================
-// run_ctrl_thread_ — polls producer peer socket, sends heartbeats
-// ============================================================================
-
-void ProducerRoleHost::run_ctrl_thread_()
-{
-    scripting::ThreadEngineGuard engine_guard(*engine_);
-
-    const auto &id = config_.identity();
-    const auto &ch = config_.out_channel();
-    const auto &tc = config_.timing();
-
-    const bool has_heartbeat_cb = engine_->has_callback("on_heartbeat");
-
-    scripting::ZmqPollLoop loop{core_, "prod:" + id.uid};
-    loop.sockets = {
-        {out_producer_->peer_ctrl_socket_handle(),
-         [&] { out_producer_->handle_peer_events_nowait(); }},
-    };
-    loop.get_iteration = [&] {
-        return core_.iteration_count();
-    };
-    loop.periodic_tasks.emplace_back(
-        [&] {
-            out_messenger_.enqueue_heartbeat(ch, snapshot_metrics_json());
-            if (has_heartbeat_cb)
-                engine_->invoke("on_heartbeat");
-        },
-        tc.heartbeat_interval_ms);
-    loop.run();
-}
 
 // ============================================================================
 // snapshot_metrics_json — for heartbeat reporting

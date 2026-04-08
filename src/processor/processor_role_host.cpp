@@ -409,9 +409,10 @@ void ProcessorRoleHost::worker_main_()
     if (out_producer_.has_value() && core_.has_out_fz())
         out_producer_->sync_flexzone_checksum();
 
-    // Step 6: Spawn ctrl_thread_ and signal ready.
+    // Step 6: Spawn ctrl thread via thread manager.
     core_.set_running(true);
-    ctrl_thread_ = std::thread([this] { run_ctrl_thread_(); });
+    api_->start_ctrl_thread(
+        scripting::RoleAPIBase::CtrlConfig{config_.timing().heartbeat_interval_ms, false});
 
     // Step 7: Signal ready.
     ready_promise_.set_value(true);
@@ -440,11 +441,10 @@ void ProcessorRoleHost::worker_main_()
     // Step 9: stop accepting invoke from non-owner threads.
     engine_->stop_accepting();
 
-    // Step 10: join ctrl_thread.
+    // Step 10: join all managed threads.
     core_.set_running(false);
     core_.notify_incoming();
-    if (ctrl_thread_.joinable())
-        ctrl_thread_.join();
+    api_->join_all_threads();
 
     // Step 11: last script callback.
     engine_->invoke_on_stop();
@@ -676,44 +676,6 @@ void ProcessorRoleHost::teardown_infrastructure_()
     }
 }
 
-// ============================================================================
-// run_ctrl_thread_ — polls both producer and consumer ZMQ sockets, sends heartbeats
-// ============================================================================
-
-void ProcessorRoleHost::run_ctrl_thread_()
-{
-    scripting::ThreadEngineGuard engine_guard(*engine_);
-
-    const bool has_heartbeat_cb = engine_->has_callback("on_heartbeat");
-
-    scripting::ZmqPollLoop loop{core_, "proc:" + config_.identity().uid};
-    loop.sockets = {
-        {out_producer_->peer_ctrl_socket_handle(),
-         [&] { out_producer_->handle_peer_events_nowait(); }},
-        {in_consumer_->ctrl_zmq_socket_handle(),
-         [&] { in_consumer_->handle_ctrl_events_nowait(); }},
-    };
-    // Consumer data socket is only needed when data comes via ZMQ relay (SHM transport
-    // uses the DataBlock directly, not the data socket).
-    if (in_consumer_->data_transport() != "zmq")
-    {
-        loop.sockets.push_back(
-            {in_consumer_->data_zmq_socket_handle(),
-             [&] { in_consumer_->handle_data_events_nowait(); }});
-    }
-    loop.get_iteration = [&] {
-        return core_.iteration_count();
-    };
-    loop.periodic_tasks.emplace_back(
-        [&] {
-            out_messenger_.enqueue_heartbeat(config_.out_channel(),
-                                             snapshot_metrics_json());
-            if (has_heartbeat_cb)
-                engine_->invoke("on_heartbeat");
-        },
-        config_.timing().heartbeat_interval_ms);
-    loop.run();
-}
 
 // ============================================================================
 // snapshot_metrics_json — for heartbeat reporting

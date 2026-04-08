@@ -839,36 +839,35 @@ utility lives in the same header.
 
 ### Phase 3: set_engine() + start/join_ctrl_thread()
 
-Move ctrl_thread_ management into RoleAPIBase. Requires `set_engine()` for
-`ThreadEngineGuard` and `on_heartbeat`.
+Thread manager + ctrl thread centralization in RoleAPIBase.
 
-**Files changed:**
-- `role_api_base.hpp` — add `set_engine()`, `CtrlConfig`,
-  `start_ctrl_thread()`, `join_ctrl_thread()`
-- `role_api_base.cpp` — implement (ZmqPollLoop, heartbeat, on_heartbeat)
-- `zmq_poll_loop.hpp` — move to `src/include/utils/` (RoleAPIBase is in
-  pylabhub-utils and needs it at implementation level)
-- All 3 role hosts — remove `ctrl_thread_` member + `run_ctrl_thread_()`
+**Status**: Implemented (uncommitted, compiles, 1323/1323 pass).
 
-**Verification:** Build + full test suite. Ctrl thread behavior unchanged.
+- `spawn_thread()`, `join_all_threads()`, `thread_count()` on RoleAPIBase
+- `start_ctrl_thread(CtrlConfig)` — builds ZmqPollLoop from available
+  pointers, spawns as managed thread
+- All 3 role hosts use `api_->start_ctrl_thread()` / `api_->join_all_threads()`
+- Old `run_ctrl_thread_()` removed from all 3 role hosts
+
+**Next**: This `start_ctrl_thread()` will evolve into `broker_request_channel`
+as part of the Messenger replacement. See `broker_and_comm_channel_design.md`
+for the full plan covering:
+- Redesigned ZmqPollLoop (inproc wake-up, time-based periodic tasks)
+- `broker_request_channel` (broker protocol DEALER)
+- `role_communication_channel` (P2C sockets)
+- Messenger elimination
 
 ### Phase 4: run_role() lifecycle unification
 
-Combine steps 5-12 into `RoleAPIBase::run_role()`.
-
-**Files changed:**
-- `role_api_base.hpp` — add `run_role()`
-- `role_api_base.cpp` — implement lifecycle sequence
-- All 3 role hosts — replace steps 5-12 with `api_->run_role()`
-
-**Verification:** Build + full test suite. Identical lifecycle.
+Combine steps 5-12 into `RoleAPIBase::run_role()`. Deferred until
+broker_request_channel is in place (Phase 4 wraps the full lifecycle
+including the broker thread spawn).
 
 ### Phase 5: Cleanup + docs
 
-- Remove dead `run_data_loop_()`, `run_ctrl_thread_()` from role hosts
-- Adopt `should_continue_loop()` in the shared frame (it now has a user)
+- Adopt `should_continue_loop()` in the shared frame
 - Update HEP-0011 thread model section
-- Archive this tech draft
+- Archive this tech draft + broker_and_comm_channel_design.md
 
 ---
 
