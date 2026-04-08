@@ -153,37 +153,47 @@ void RoleAPIBase::start_ctrl_thread(const CtrlConfig &cfg)
     {
         const bool has_hb = eng->has_callback("on_heartbeat");
 
-        ZmqPollLoop loop{*core, tag + ":" + uid};
+        ZmqPollLoop loop{
+            [core] {
+                return core->is_running() && !core->is_shutdown_requested();
+            },
+            tag + ":" + uid};
 
-        // Control-plane sockets only.
+        // Control-plane sockets.
         if (prod)
         {
-            loop.sockets.push_back(
-                {prod->peer_ctrl_socket_handle(),
-                 [prod] { prod->handle_peer_events_nowait(); }});
-        }
-        if (cons)
-        {
-            loop.sockets.push_back(
-                {cons->ctrl_zmq_socket_handle(),
-                 [cons] { cons->handle_ctrl_events_nowait(); }});
-        }
-
-        // Data-plane relay socket (SHM mode: broadcast relay frames → message queue).
-        // Polled here because relay frames are low-frequency notifications, not
-        // the primary data path. If separation is needed, use spawn_thread("data_relay").
-        if (cons)
-        {
-            if (void *ds = cons->data_zmq_socket_handle())
+            auto *h = prod->peer_ctrl_socket_handle();
+            if (h)
             {
                 loop.sockets.push_back(
-                    {ds, [cons] { cons->handle_data_events_nowait(); }});
+                    {zmq::socket_ref(zmq::from_handle, h),
+                     [prod] { prod->handle_peer_events_nowait(); }});
+            }
+        }
+        if (cons)
+        {
+            auto *h = cons->ctrl_zmq_socket_handle();
+            if (h)
+            {
+                loop.sockets.push_back(
+                    {zmq::socket_ref(zmq::from_handle, h),
+                     [cons] { cons->handle_ctrl_events_nowait(); }});
             }
         }
 
-        loop.get_iteration = [core] { return core->iteration_count(); };
+        // Data-plane relay socket (SHM mode: broadcast relay frames → message queue).
+        if (cons)
+        {
+            auto *ds = cons->data_zmq_socket_handle();
+            if (ds)
+            {
+                loop.sockets.push_back(
+                    {zmq::socket_ref(zmq::from_handle, ds),
+                     [cons] { cons->handle_data_events_nowait(); }});
+            }
+        }
 
-        // Heartbeat: use out_channel if set (producer/processor), else channel (consumer).
+        // Heartbeat: iteration-gated (stops if script is stuck).
         std::string hb_channel = out_ch.empty() ? ch : out_ch;
         loop.periodic_tasks.emplace_back(
             [msger, eng, has_hb, hb_channel, this]
@@ -192,9 +202,10 @@ void RoleAPIBase::start_ctrl_thread(const CtrlConfig &cfg)
                 if (has_hb)
                     eng->invoke("on_heartbeat");
             },
-            cfg.heartbeat_interval_ms);
+            cfg.heartbeat_interval_ms,
+            [core] { return core->iteration_count(); });
 
-        // Metrics report (consumer role sends this separately).
+        // Metrics report: time-only (no iteration gate — report even when idle).
         if (cfg.report_metrics && msger)
         {
             loop.periodic_tasks.emplace_back(

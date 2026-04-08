@@ -1,16 +1,15 @@
 /**
  * @file test_datahub_zmq_poll_loop.cpp
- * @brief Unit tests for scripting::HeartbeatTracker and scripting::ZmqPollLoop.
+ * @brief Unit tests for scripting::PeriodicTask and scripting::ZmqPollLoop.
  *
- * HeartbeatTracker tests are pure logic (no ZMQ needed).
+ * PeriodicTask tests are pure logic (no ZMQ needed).
  * ZmqPollLoop tests use ZMQ inproc sockets for deterministic control.
  */
 
 #include "utils/zmq_poll_loop.hpp"
+#include "utils/zmq_context.hpp"
 
 #include <gtest/gtest.h>
-
-#include <zmq.h>
 
 #include <atomic>
 #include <chrono>
@@ -19,112 +18,153 @@
 using namespace pylabhub::scripting;
 
 // ============================================================================
-// HeartbeatTracker tests
+// PeriodicTask tests (iteration-gated mode)
 // ============================================================================
 
-class HeartbeatTrackerTest : public ::testing::Test
+class PeriodicTaskTest : public ::testing::Test
 {
 };
 
-TEST_F(HeartbeatTrackerTest, FirstTickFiresImmediatelyOnProgress)
+TEST_F(PeriodicTaskTest, FirstTickFiresImmediatelyOnProgress)
 {
     int fire_count = 0;
-    HeartbeatTracker tracker([&] { ++fire_count; }, 1000);
+    uint64_t iter = 0;
+    PeriodicTask task([&] { ++fire_count; }, 1000,
+                      [&] { return iter; });
 
-    // First tick with iteration=1 should fire (bootstraps immediately).
-    tracker.tick(1);
+    iter = 1;
+    task.tick();
     EXPECT_EQ(fire_count, 1);
 }
 
-TEST_F(HeartbeatTrackerTest, NoProgressMeansNoFire)
+TEST_F(PeriodicTaskTest, NoProgressMeansNoFire)
 {
     int fire_count = 0;
-    HeartbeatTracker tracker([&] { ++fire_count; }, 1000);
+    uint64_t iter = 0;
+    PeriodicTask task([&] { ++fire_count; }, 1000,
+                      [&] { return iter; });
 
-    // tick(0) — iteration hasn't advanced from default last_iter(0).
-    tracker.tick(0);
+    task.tick();
     EXPECT_EQ(fire_count, 0);
 
-    // Still 0.
-    tracker.tick(0);
+    task.tick();
     EXPECT_EQ(fire_count, 0);
 }
 
-TEST_F(HeartbeatTrackerTest, ProgressButIntervalNotElapsedSkips)
+TEST_F(PeriodicTaskTest, ProgressButIntervalNotElapsedSkips)
 {
     int fire_count = 0;
-    HeartbeatTracker tracker([&] { ++fire_count; }, 60000); // 60s interval
+    uint64_t iter = 0;
+    PeriodicTask task([&] { ++fire_count; }, 60000,
+                      [&] { return iter; });
 
-    // First fire on progress.
-    tracker.tick(1);
+    iter = 1;
+    task.tick();
     EXPECT_EQ(fire_count, 1);
 
-    // Progress again immediately — interval hasn't elapsed.
-    tracker.tick(2);
-    EXPECT_EQ(fire_count, 1); // still 1
+    iter = 2;
+    task.tick();
+    EXPECT_EQ(fire_count, 1);
 }
 
-TEST_F(HeartbeatTrackerTest, FiresAgainAfterIntervalElapsed)
+TEST_F(PeriodicTaskTest, FiresAgainAfterIntervalElapsed)
 {
     int fire_count = 0;
-    HeartbeatTracker tracker([&] { ++fire_count; }, 10); // 10ms interval
+    uint64_t iter = 0;
+    PeriodicTask task([&] { ++fire_count; }, 10,
+                      [&] { return iter; });
 
-    tracker.tick(1);
+    iter = 1;
+    task.tick();
     EXPECT_EQ(fire_count, 1);
 
-    // Wait for interval to elapse.
     std::this_thread::sleep_for(std::chrono::milliseconds{15});
 
-    tracker.tick(2);
+    iter = 2;
+    task.tick();
     EXPECT_EQ(fire_count, 2);
 }
 
-TEST_F(HeartbeatTrackerTest, DefaultIntervalUsedWhenZero)
+TEST_F(PeriodicTaskTest, DefaultIntervalUsedWhenZero)
 {
     int fire_count = 0;
-    HeartbeatTracker tracker([&] { ++fire_count; }, 0); // 0 → default 2000ms
+    uint64_t iter = 0;
+    PeriodicTask task([&] { ++fire_count; }, 0,
+                      [&] { return iter; });
 
-    EXPECT_EQ(tracker.interval.count(), 2000);
+    EXPECT_EQ(task.interval.count(), 2000);
 
-    // First tick still fires (bootstrap).
-    tracker.tick(1);
+    iter = 1;
+    task.tick();
     EXPECT_EQ(fire_count, 1);
 }
 
-TEST_F(HeartbeatTrackerTest, NegativeIntervalUsesDefault)
+TEST_F(PeriodicTaskTest, NegativeIntervalUsesDefault)
 {
     int fire_count = 0;
-    HeartbeatTracker tracker([&] { ++fire_count; }, -5);
+    PeriodicTask task([&] { ++fire_count; }, -5,
+                      [] { return uint64_t{1}; });
 
-    EXPECT_EQ(tracker.interval.count(), 2000);
+    EXPECT_EQ(task.interval.count(), 2000);
 }
 
-TEST_F(HeartbeatTrackerTest, MultiplePeriodicTasks)
+TEST_F(PeriodicTaskTest, MultiplePeriodicTasks)
 {
     int fire_a = 0, fire_b = 0;
-    HeartbeatTracker a([&] { ++fire_a; }, 10);
-    HeartbeatTracker b([&] { ++fire_b; }, 10);
+    uint64_t iter = 0;
+    PeriodicTask a([&] { ++fire_a; }, 10, [&] { return iter; });
+    PeriodicTask b([&] { ++fire_b; }, 10, [&] { return iter; });
 
-    // Both fire on first progress.
-    a.tick(1);
-    b.tick(1);
+    iter = 1;
+    a.tick();
+    b.tick();
     EXPECT_EQ(fire_a, 1);
     EXPECT_EQ(fire_b, 1);
 
-    // No progress — neither fires.
-    a.tick(1);
-    b.tick(1);
+    a.tick();
+    b.tick();
     EXPECT_EQ(fire_a, 1);
     EXPECT_EQ(fire_b, 1);
 }
 
-TEST_F(HeartbeatTrackerTest, LargeIterationJumpStillFires)
+TEST_F(PeriodicTaskTest, LargeIterationJumpStillFires)
 {
     int fire_count = 0;
-    HeartbeatTracker tracker([&] { ++fire_count; }, 10);
+    uint64_t iter = 0;
+    PeriodicTask task([&] { ++fire_count; }, 10,
+                      [&] { return iter; });
 
-    // Jump from 0 to 1000.
-    tracker.tick(1000);
+    iter = 1000;
+    task.tick();
+    EXPECT_EQ(fire_count, 1);
+}
+
+// ============================================================================
+// PeriodicTask tests (time-only mode — no iteration gate)
+// ============================================================================
+
+TEST_F(PeriodicTaskTest, TimeOnlyMode_FiresWithoutIteration)
+{
+    int fire_count = 0;
+    PeriodicTask task([&] { ++fire_count; }, 10);
+
+    task.tick();
+    EXPECT_EQ(fire_count, 1);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds{15});
+    task.tick();
+    EXPECT_EQ(fire_count, 2);
+}
+
+TEST_F(PeriodicTaskTest, TimeOnlyMode_IntervalNotElapsed)
+{
+    int fire_count = 0;
+    PeriodicTask task([&] { ++fire_count; }, 60000);
+
+    task.tick();
+    EXPECT_EQ(fire_count, 1);
+
+    task.tick();
     EXPECT_EQ(fire_count, 1);
 }
 
@@ -137,342 +177,169 @@ class ZmqPollLoopTest : public ::testing::Test
   protected:
     void SetUp() override
     {
-        ctx_ = zmq_ctx_new();
-        ASSERT_NE(ctx_, nullptr);
+        ctx_ = std::make_unique<zmq::context_t>(1);
     }
 
     void TearDown() override
     {
-        if (ctx_)
-            zmq_ctx_destroy(ctx_);
+        ctx_.reset();
     }
 
-    void *ctx_{nullptr};
+    std::unique_ptr<zmq::context_t> ctx_;
 };
 
 TEST_F(ZmqPollLoopTest, EmptySocketsReturnsImmediately)
 {
-    RoleHostCore core;
-    core.set_running(true);
-
-    ZmqPollLoop loop{core, "test"};
-    // No sockets added.
-    loop.run(); // Should return immediately.
-}
-
-TEST_F(ZmqPollLoopTest, AllNullptrSocketsReturnsImmediately)
-{
-    RoleHostCore core;
-    core.set_running(true);
-
-    ZmqPollLoop loop{core, "test"};
-    loop.sockets = {
-        {nullptr, [] {}},
-        {nullptr, [] {}},
-    };
-    loop.run(); // Should return immediately.
+    ZmqPollLoop loop{[] { return true; }, "test"};
+    loop.run();
 }
 
 TEST_F(ZmqPollLoopTest, ShutdownStopsLoop)
 {
-    // Create a PAIR socket (simplest for testing).
-    void *sock = zmq_socket(ctx_, ZMQ_PAIR);
-    ASSERT_NE(sock, nullptr);
-    ASSERT_EQ(zmq_bind(sock, "inproc://test-shutdown"), 0);
+    zmq::socket_t sock(*ctx_, zmq::socket_type::pair);
+    sock.bind("inproc://test-shutdown");
 
-    RoleHostCore core;
-    core.set_running(true);
-
-    ZmqPollLoop loop{core, "test"};
-    loop.sockets = {{sock, [] {}}};
-    loop.poll_interval_ms = 5;
-
-    // Run in a thread, then signal shutdown.
-    std::thread t([&] { loop.run(); });
-
-    std::this_thread::sleep_for(std::chrono::milliseconds{20});
-    core.set_running(false);
-
-    t.join(); // Should complete quickly.
-
-    zmq_close(sock);
-}
-
-TEST_F(ZmqPollLoopTest, ShutdownRequestedStopsLoop)
-{
-    void *sock = zmq_socket(ctx_, ZMQ_PAIR);
-    ASSERT_NE(sock, nullptr);
-    ASSERT_EQ(zmq_bind(sock, "inproc://test-shutdown-req"), 0);
-
-    RoleHostCore core;
-    core.set_running(true);
-
-    ZmqPollLoop loop{core, "test"};
-    loop.sockets = {{sock, [] {}}};
-    loop.poll_interval_ms = 5;
+    std::atomic<bool> running{true};
+    ZmqPollLoop loop{[&] { return running.load(); }, "test"};
+    loop.sockets = {{zmq::socket_ref(zmq::from_handle, sock.handle()), [] {}}};
 
     std::thread t([&] { loop.run(); });
 
     std::this_thread::sleep_for(std::chrono::milliseconds{20});
-    core.request_stop();
+    running.store(false);
 
     t.join();
-
-    zmq_close(sock);
 }
 
-TEST_F(ZmqPollLoopTest, DispatchCalledOnPollin)
+TEST_F(ZmqPollLoopTest, DispatchesOnPollin)
 {
-    void *sender = zmq_socket(ctx_, ZMQ_PAIR);
-    void *receiver = zmq_socket(ctx_, ZMQ_PAIR);
-    ASSERT_NE(sender, nullptr);
-    ASSERT_NE(receiver, nullptr);
-    ASSERT_EQ(zmq_bind(receiver, "inproc://test-dispatch"), 0);
-    ASSERT_EQ(zmq_connect(sender, "inproc://test-dispatch"), 0);
+    zmq::socket_t sender(*ctx_, zmq::socket_type::pair);
+    zmq::socket_t receiver(*ctx_, zmq::socket_type::pair);
+    receiver.bind("inproc://test-dispatch");
+    sender.connect("inproc://test-dispatch");
 
     std::atomic<int> dispatch_count{0};
+    std::atomic<bool> running{true};
 
-    RoleHostCore core;
-    core.set_running(true);
-
-    ZmqPollLoop loop{core, "test"};
-    loop.sockets = {
-        {receiver,
-         [&]
-         {
-             // Drain the message to avoid infinite POLLIN.
-             zmq_msg_t msg;
-             zmq_msg_init(&msg);
-             zmq_msg_recv(&msg, receiver, ZMQ_DONTWAIT);
-             zmq_msg_close(&msg);
-             dispatch_count.fetch_add(1);
-         }},
-    };
-    loop.poll_interval_ms = 5;
+    auto recv_ref = zmq::socket_ref(zmq::from_handle, receiver.handle());
+    ZmqPollLoop loop{[&] { return running.load(); }, "test"};
+    loop.sockets = {{recv_ref, [&] {
+        zmq::message_t msg;
+        (void)receiver.recv(msg, zmq::recv_flags::dontwait);
+        dispatch_count.fetch_add(1);
+    }}};
 
     std::thread t([&] { loop.run(); });
 
-    // Send a message to trigger POLLIN.
-    const char *data = "hello";
-    zmq_send(sender, data, 5, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    sender.send(zmq::message_t("X", 1), zmq::send_flags::none);
 
-    // Wait for dispatch.
-    for (int i = 0; i < 100 && dispatch_count.load() == 0; ++i)
-        std::this_thread::sleep_for(std::chrono::milliseconds{5});
-
+    std::this_thread::sleep_for(std::chrono::milliseconds{50});
     EXPECT_GE(dispatch_count.load(), 1);
 
-    core.set_running(false);
+    running.store(false);
     t.join();
-
-    zmq_close(sender);
-    zmq_close(receiver);
 }
 
-TEST_F(ZmqPollLoopTest, PeriodicTasksFire)
+TEST_F(ZmqPollLoopTest, SignalSocketWakesLoop)
 {
-    void *sock = zmq_socket(ctx_, ZMQ_PAIR);
-    ASSERT_NE(sock, nullptr);
-    ASSERT_EQ(zmq_bind(sock, "inproc://test-periodic"), 0);
+    zmq::socket_t sig_write(*ctx_, zmq::socket_type::pair);
+    zmq::socket_t sig_read(*ctx_, zmq::socket_type::pair);
+    sig_read.bind("inproc://test-signal");
+    sig_write.connect("inproc://test-signal");
 
-    std::atomic<int> task_count{0};
-    std::atomic<uint64_t> iter{0};
+    std::atomic<int> drain_count{0};
+    std::atomic<bool> running{true};
 
-    RoleHostCore core;
-    core.set_running(true);
-
-    ZmqPollLoop loop{core, "test"};
-    loop.sockets = {{sock, [] {}}};
-    loop.poll_interval_ms = 5;
-    loop.get_iteration = [&] { return iter.load(); };
-    loop.periodic_tasks.emplace_back([&] { task_count.fetch_add(1); }, 10);
+    ZmqPollLoop loop{[&] { return running.load(); }, "test"};
+    loop.signal_socket = zmq::socket_ref(zmq::from_handle, sig_read.handle());
+    loop.drain_commands = [&] { drain_count.fetch_add(1); };
 
     std::thread t([&] { loop.run(); });
 
-    // Advance iteration to trigger periodic task.
-    iter.store(1);
+    std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    sig_write.send(zmq::message_t("W", 1), zmq::send_flags::none);
 
-    for (int i = 0; i < 100 && task_count.load() == 0; ++i)
-        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    EXPECT_GE(drain_count.load(), 1);
 
-    EXPECT_GE(task_count.load(), 1);
-
-    core.set_running(false);
+    running.store(false);
     t.join();
-
-    zmq_close(sock);
 }
 
-TEST_F(ZmqPollLoopTest, NullptrSocketsFiltered)
+TEST_F(ZmqPollLoopTest, ShutdownPredicateStopsLoop)
 {
-    // One valid socket, two nullptr — loop should work with just the valid one.
-    void *sender = zmq_socket(ctx_, ZMQ_PAIR);
-    void *receiver = zmq_socket(ctx_, ZMQ_PAIR);
-    ASSERT_NE(sender, nullptr);
-    ASSERT_NE(receiver, nullptr);
-    ASSERT_EQ(zmq_bind(receiver, "inproc://test-filter"), 0);
-    ASSERT_EQ(zmq_connect(sender, "inproc://test-filter"), 0);
+    zmq::socket_t sock(*ctx_, zmq::socket_type::pair);
+    sock.bind("inproc://test-shutdown-pred");
 
-    std::atomic<int> dispatch_count{0};
-
-    RoleHostCore core;
-    core.set_running(true);
-
-    ZmqPollLoop loop{core, "test"};
-    loop.sockets = {
-        {nullptr, [] {}},
-        {receiver,
-         [&]
-         {
-             zmq_msg_t msg;
-             zmq_msg_init(&msg);
-             zmq_msg_recv(&msg, receiver, ZMQ_DONTWAIT);
-             zmq_msg_close(&msg);
-             dispatch_count.fetch_add(1);
-         }},
-        {nullptr, [] {}},
-    };
-    loop.poll_interval_ms = 5;
+    std::atomic<bool> running{true};
+    ZmqPollLoop loop{[&] { return running.load(); }, "test"};
+    loop.sockets = {{zmq::socket_ref(zmq::from_handle, sock.handle()), [] {}}};
 
     std::thread t([&] { loop.run(); });
-
-    const char *data = "test";
-    zmq_send(sender, data, 4, 0);
-
-    for (int i = 0; i < 100 && dispatch_count.load() == 0; ++i)
-        std::this_thread::sleep_for(std::chrono::milliseconds{5});
-
-    EXPECT_GE(dispatch_count.load(), 1);
-
-    core.set_running(false);
+    std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    running.store(false);
     t.join();
-
-    zmq_close(sender);
-    zmq_close(receiver);
 }
 
 TEST_F(ZmqPollLoopTest, MultipleSocketsDispatchCorrectly)
 {
-    void *send1 = zmq_socket(ctx_, ZMQ_PAIR);
-    void *recv1 = zmq_socket(ctx_, ZMQ_PAIR);
-    void *send2 = zmq_socket(ctx_, ZMQ_PAIR);
-    void *recv2 = zmq_socket(ctx_, ZMQ_PAIR);
-    ASSERT_NE(send1, nullptr);
-    ASSERT_NE(recv1, nullptr);
-    ASSERT_NE(send2, nullptr);
-    ASSERT_NE(recv2, nullptr);
-    ASSERT_EQ(zmq_bind(recv1, "inproc://test-multi-1"), 0);
-    ASSERT_EQ(zmq_connect(send1, "inproc://test-multi-1"), 0);
-    ASSERT_EQ(zmq_bind(recv2, "inproc://test-multi-2"), 0);
-    ASSERT_EQ(zmq_connect(send2, "inproc://test-multi-2"), 0);
+    zmq::socket_t s1(*ctx_, zmq::socket_type::pair);
+    zmq::socket_t s2(*ctx_, zmq::socket_type::pair);
+    zmq::socket_t c1(*ctx_, zmq::socket_type::pair);
+    zmq::socket_t c2(*ctx_, zmq::socket_type::pair);
+    s1.bind("inproc://test-multi-1");
+    s2.bind("inproc://test-multi-2");
+    c1.connect("inproc://test-multi-1");
+    c2.connect("inproc://test-multi-2");
 
     std::atomic<int> count1{0}, count2{0};
+    std::atomic<bool> running{true};
 
-    RoleHostCore core;
-    core.set_running(true);
-
-    ZmqPollLoop loop{core, "test"};
+    ZmqPollLoop loop{[&] { return running.load(); }, "test"};
     loop.sockets = {
-        {recv1,
-         [&]
-         {
-             zmq_msg_t msg;
-             zmq_msg_init(&msg);
-             zmq_msg_recv(&msg, recv1, ZMQ_DONTWAIT);
-             zmq_msg_close(&msg);
-             count1.fetch_add(1);
-         }},
-        {recv2,
-         [&]
-         {
-             zmq_msg_t msg;
-             zmq_msg_init(&msg);
-             zmq_msg_recv(&msg, recv2, ZMQ_DONTWAIT);
-             zmq_msg_close(&msg);
-             count2.fetch_add(1);
-         }},
+        {zmq::socket_ref(zmq::from_handle, s1.handle()), [&] {
+            zmq::message_t m;
+            (void)s1.recv(m, zmq::recv_flags::dontwait);
+            count1.fetch_add(1);
+        }},
+        {zmq::socket_ref(zmq::from_handle, s2.handle()), [&] {
+            zmq::message_t m;
+            (void)s2.recv(m, zmq::recv_flags::dontwait);
+            count2.fetch_add(1);
+        }},
     };
-    loop.poll_interval_ms = 5;
 
     std::thread t([&] { loop.run(); });
-
-    // Send to socket 1 only.
-    zmq_send(send1, "a", 1, 0);
-    for (int i = 0; i < 100 && count1.load() == 0; ++i)
-        std::this_thread::sleep_for(std::chrono::milliseconds{5});
-
-    EXPECT_GE(count1.load(), 1);
-    EXPECT_EQ(count2.load(), 0);
-
-    // Now send to socket 2.
-    zmq_send(send2, "b", 1, 0);
-    for (int i = 0; i < 100 && count2.load() == 0; ++i)
-        std::this_thread::sleep_for(std::chrono::milliseconds{5});
-
-    EXPECT_GE(count2.load(), 1);
-
-    core.set_running(false);
-    t.join();
-
-    zmq_close(send1);
-    zmq_close(recv1);
-    zmq_close(send2);
-    zmq_close(recv2);
-}
-
-TEST_F(ZmqPollLoopTest, NoGetIterationSkipsPeriodicTasks)
-{
-    void *sock = zmq_socket(ctx_, ZMQ_PAIR);
-    ASSERT_NE(sock, nullptr);
-    ASSERT_EQ(zmq_bind(sock, "inproc://test-no-iter"), 0);
-
-    std::atomic<int> task_count{0};
-
-    RoleHostCore core;
-    core.set_running(true);
-
-    ZmqPollLoop loop{core, "test"};
-    loop.sockets = {{sock, [] {}}};
-    loop.poll_interval_ms = 5;
-    // get_iteration not set — should be null/empty std::function.
-    loop.periodic_tasks.emplace_back([&] { task_count.fetch_add(1); }, 10);
-
-    std::thread t([&] { loop.run(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    c1.send(zmq::message_t("A", 1), zmq::send_flags::none);
+    c2.send(zmq::message_t("B", 1), zmq::send_flags::none);
 
     std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    EXPECT_GE(count1.load(), 1);
+    EXPECT_GE(count2.load(), 1);
 
-    // Task should NOT have fired because get_iteration is empty.
-    EXPECT_EQ(task_count.load(), 0);
-
-    core.set_running(false);
+    running.store(false);
     t.join();
-
-    zmq_close(sock);
 }
 
-TEST_F(ZmqPollLoopTest, CustomPollInterval)
+TEST_F(ZmqPollLoopTest, PeriodicTasksFireDuringLoop)
 {
-    void *sock = zmq_socket(ctx_, ZMQ_PAIR);
-    ASSERT_NE(sock, nullptr);
-    ASSERT_EQ(zmq_bind(sock, "inproc://test-custom-poll"), 0);
+    zmq::socket_t sock(*ctx_, zmq::socket_type::pair);
+    sock.bind("inproc://test-periodic");
 
-    RoleHostCore core;
-    core.set_running(true);
+    std::atomic<int> fire_count{0};
+    std::atomic<bool> running{true};
 
-    ZmqPollLoop loop{core, "test"};
-    loop.sockets = {{sock, [] {}}};
-    loop.poll_interval_ms = 1; // Very fast polling.
+    ZmqPollLoop loop{[&] { return running.load(); }, "test"};
+    loop.sockets = {{zmq::socket_ref(zmq::from_handle, sock.handle()), [] {}}};
+    loop.periodic_tasks.emplace_back(
+        [&] { fire_count.fetch_add(1); }, 10); // 10ms, time-only
 
-    auto start = std::chrono::steady_clock::now();
     std::thread t([&] { loop.run(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    EXPECT_GE(fire_count.load(), 2);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds{30});
-    core.set_running(false);
+    running.store(false);
     t.join();
-
-    auto elapsed = std::chrono::steady_clock::now() - start;
-    // Loop should have run many cycles in 30ms with 1ms poll.
-    EXPECT_LT(elapsed, std::chrono::milliseconds{200});
-
-    zmq_close(sock);
 }

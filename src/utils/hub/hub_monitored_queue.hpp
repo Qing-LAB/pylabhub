@@ -107,17 +107,31 @@ public:
     /// No effect when Config::fire_and_forget == true (ZMQ mode).
     void set_on_dead(DeadCallback cb)        { on_dead_    = std::move(cb); }
 
+    /// Set a wake-up callback invoked after each push().
+    /// Used by ZmqPollLoop: the callback sends 1 byte on an inproc PAIR
+    /// socket to wake the poll loop immediately.
+    void set_on_push_signal(std::function<void()> cb) noexcept
+    {
+        on_push_signal_ = std::move(cb);
+    }
+
     /// Push an item. If at max_depth, drops the OLDEST item first.
+    /// If a push signal is set, calls it after enqueue (outside lock).
     void push(T item)
     {
-        std::lock_guard lock(mu_);
-        if (cfg_.max_depth > 0 && queue_.size() >= cfg_.max_depth)
         {
-            queue_.pop();
-            ++total_dropped_;
+            std::lock_guard lock(mu_);
+            if (cfg_.max_depth > 0 && queue_.size() >= cfg_.max_depth)
+            {
+                queue_.pop();
+                ++total_dropped_;
+            }
+            queue_.push(std::move(item));
+            ++total_pushed_;
         }
-        queue_.push(std::move(item));
-        ++total_pushed_;
+        // Signal outside lock to avoid holding mutex during ZMQ send.
+        if (on_push_signal_)
+            on_push_signal_();
     }
 
     /// Drain all queued items via sender. sender(T&) called for each item.
@@ -151,6 +165,7 @@ private:
     mutable std::mutex mu_;
     std::queue<T>      queue_;
     Config             cfg_;
+    std::function<void()> on_push_signal_; ///< Wake-up callback (optional)
 
     std::atomic<uint64_t> total_dropped_{0};
     std::atomic<uint64_t> total_pushed_{0};
