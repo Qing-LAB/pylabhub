@@ -1,24 +1,27 @@
 #pragma once
 /**
  * @file zmq_poll_loop.hpp
- * @brief ZmqPollLoop — shared ZMQ event loop for role script hosts.
+ * @brief ZmqPollLoop — generic ZMQ event loop with inproc wake-up and periodic tasks.
  *
- * Extracts the common poll+dispatch+heartbeat logic from the three role
- * binaries (producer, consumer, processor) into a reusable internal API.
- * Each role's run_zmq_thread_() becomes ~10 lines of setup.
+ * Provides a reusable poll loop for any module that owns ZMQ sockets:
+ * - broker_request_channel (DEALER to broker)
+ * - role_communication_channel (ROUTER/XPUB or DEALER/SUB)
  *
- * Header-only: small (~90 lines), used only by 3 internal .cpp files.
+ * Features:
+ * - Inproc PAIR wake-up: MonitoredQueue push callback wakes the poll loop
+ *   immediately (zero latency vs fixed-interval polling)
+ * - Time-based periodic tasks with optional iteration gating
+ * - Generalized shutdown predicate
+ * - cppzmq throughout for RAII and type safety
  *
- * See HEP-CORE-0011 §13 (ZMQ Poll Loop Utility).
- * See HEP-CORE-0007 §12.3 (shutdown pitfalls — the bug that motivated this).
+ * See docs/tech_draft/broker_and_comm_channel_design.md §5.1.
  */
 
-#include "utils/role_host_core.hpp"
+#include "plh_service.hpp" // LOGGER_INFO, LOGGER_WARN
 
-#include "plh_service.hpp" // LOGGER_WARN
+#include "cppzmq/zmq.hpp"
 
-#include <zmq.h>
-
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -29,34 +32,64 @@ namespace pylabhub::scripting
 {
 
 // ============================================================================
-// HeartbeatTracker — periodic action driven by iteration progress
+// PeriodicTask — time-based periodic action with optional iteration gate
 // ============================================================================
 
-struct HeartbeatTracker
+/**
+ * @brief Periodic action that fires when its interval elapses.
+ *
+ * Two modes:
+ * - **Iteration-gated** (get_iteration != nullptr): fires only when
+ *   iteration_count has advanced AND interval has elapsed. Used for heartbeat:
+ *   a stuck script stops iteration → heartbeat stops → broker detects dead.
+ * - **Time-only** (get_iteration == nullptr): fires whenever interval elapses,
+ *   regardless of iteration progress. Used for metrics reports.
+ */
+struct PeriodicTask
 {
     std::function<void()>                  action;
     std::chrono::milliseconds              interval;
-    uint64_t                               last_iter{0};
-    std::chrono::steady_clock::time_point  last_sent;
+    std::chrono::steady_clock::time_point  last_fired;
 
-    HeartbeatTracker(std::function<void()> a, int interval_ms)
+    /// Optional iteration gate. When set, task only fires if iteration advanced.
+    std::function<uint64_t()>              get_iteration;
+    uint64_t                               last_iter{0};
+
+    PeriodicTask(std::function<void()> a, int interval_ms,
+                 std::function<uint64_t()> iter_fn = nullptr)
         : action{std::move(a)}
         , interval{interval_ms > 0 ? interval_ms : 2000}
-        , last_sent{std::chrono::steady_clock::now() - interval}
+        , last_fired{std::chrono::steady_clock::now() - interval} // fire on first tick
+        , get_iteration{std::move(iter_fn)}
     {}
 
-    /// Call once per poll cycle. Fires action if iteration advanced AND interval elapsed.
-    void tick(uint64_t current_iteration)
+    /// Check and fire. Returns time until next fire (for poll timeout calculation).
+    std::chrono::milliseconds tick()
     {
-        if (current_iteration == last_iter)
-            return;
-        last_iter = current_iteration;
-        const auto now = std::chrono::steady_clock::now();
-        if (now - last_sent >= interval)
+        if (get_iteration)
+        {
+            uint64_t iter = get_iteration();
+            if (iter == last_iter)
+            {
+                // No iteration progress — skip.
+                auto elapsed = std::chrono::steady_clock::now() - last_fired;
+                auto remaining = interval -
+                    std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
+                return std::max(remaining, std::chrono::milliseconds{0});
+            }
+            last_iter = iter;
+        }
+
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - last_fired);
+        if (elapsed >= interval)
         {
             action();
-            last_sent = now;
+            last_fired = now;
+            return interval;
         }
+        return interval - elapsed;
     }
 };
 
@@ -64,100 +97,164 @@ struct HeartbeatTracker
 // ZmqPollEntry — one socket + its dispatch handler
 // ============================================================================
 
+/**
+ * @brief A non-owning socket reference paired with its POLLIN dispatch callback.
+ *
+ * Uses zmq::socket_ref (cppzmq non-owning reference) for type safety.
+ * The owning module holds the zmq::socket_t; this entry references it.
+ */
 struct ZmqPollEntry
 {
-    void                  *socket{nullptr};
+    zmq::socket_ref        socket;
     std::function<void()>  dispatch;
 };
 
 // ============================================================================
-// ZmqPollLoop — configurable poll loop object
+// ZmqPollLoop — generic ZMQ event loop with wake-up and periodic tasks
 // ============================================================================
 
+/**
+ * @brief Configurable ZMQ poll loop.
+ *
+ * The caller constructs this, populates sockets/tasks, then calls run().
+ * run() blocks until should_run() returns false.
+ *
+ * Signal socket: when a MonitoredQueue push fires its on_push_signal callback,
+ * the callback sends 1 byte on the write end of an inproc PAIR. The read end
+ * is set as signal_socket here, waking the poll loop immediately to drain
+ * the command queue.
+ */
 struct ZmqPollLoop
 {
-    // --- Required (set by constructor) ---
-    RoleHostCore &core;
-    std::string   log_prefix;
+    // --- Shutdown predicate (required) ---
+    std::function<bool()> should_run;
+    std::string           log_prefix;
 
-    // --- Sockets to poll ---
+    // --- Sockets to poll for POLLIN ---
     std::vector<ZmqPollEntry> sockets;
 
-    // --- Periodic tasks (driven by iteration progress) ---
-    std::function<uint64_t()>    get_iteration;
-    std::vector<HeartbeatTracker> periodic_tasks;
+    // --- Inproc wake-up socket (optional, READ end of PAIR) ---
+    zmq::socket_ref signal_socket;
 
-    // --- Tuning ---
-    int poll_interval_ms{5};
+    // --- Command queue drain callback (optional) ---
+    // Called after signal_socket is readable. Should drain the MonitoredQueue
+    // and send messages on the owned socket(s).
+    std::function<void()> drain_commands;
 
-    ZmqPollLoop(RoleHostCore &c, std::string prefix)
-        : core{c}, log_prefix{std::move(prefix)}
+    // --- Periodic tasks ---
+    std::vector<PeriodicTask> periodic_tasks;
+
+    ZmqPollLoop(std::function<bool()> run_pred, std::string prefix)
+        : should_run{std::move(run_pred)}, log_prefix{std::move(prefix)}
     {}
 
-    /// Execute the poll loop (blocks until shutdown).
+    /// Execute the poll loop (blocks until should_run() returns false).
     void run()
     {
-        // Filter nullptr sockets, build pollitem array.
-        std::vector<zmq_pollitem_t> items;
+        // Build pollitem array: data sockets + optional signal socket.
+        std::vector<zmq::pollitem_t> items;
         std::vector<std::function<void()> *> dispatchers;
-        items.reserve(sockets.size());
-        dispatchers.reserve(sockets.size());
 
         for (auto &entry : sockets)
         {
-            if (entry.socket == nullptr)
+            if (!entry.socket)
+            {
                 continue;
-            zmq_pollitem_t pi{};
-            pi.socket = entry.socket;
+            }
+            zmq::pollitem_t pi{};
+            pi.socket = entry.socket.handle();
             pi.events = ZMQ_POLLIN;
             items.push_back(pi);
             dispatchers.push_back(&entry.dispatch);
         }
 
+        // Signal socket is always last in the array.
+        const int signal_idx = signal_socket
+            ? static_cast<int>(items.size())
+            : -1;
+        if (signal_socket)
+        {
+            zmq::pollitem_t pi{};
+            pi.socket = signal_socket.handle();
+            pi.events = ZMQ_POLLIN;
+            items.push_back(pi);
+        }
+
         if (items.empty())
         {
-            LOGGER_INFO("[{}/zmq_thread] no sockets to poll — skipping", log_prefix);
+            LOGGER_INFO("[{}] no sockets to poll — skipping", log_prefix);
             return;
         }
 
-        const int nfds = static_cast<int>(items.size());
+        const auto nfds = items.size();
+        const auto n_data = dispatchers.size();
 
-        LOGGER_INFO("[{}/zmq_thread] started (polling {} socket{}, {} periodic task{})",
+        LOGGER_INFO("[{}] started (polling {} socket{}, {} periodic task{})",
                     log_prefix, nfds, nfds == 1 ? "" : "s",
                     periodic_tasks.size(),
                     periodic_tasks.size() == 1 ? "" : "s");
 
-        while (core.is_running() &&
-               !core.is_shutdown_requested())
+        while (should_run())
         {
-            const int rc = zmq_poll(items.data(), nfds, poll_interval_ms);
-            if (rc < 0)
+            // Compute poll timeout from periodic tasks.
+            auto timeout = std::chrono::milliseconds{200}; // default cap
+            for (auto &task : periodic_tasks)
             {
-                if (errno == EINTR)
-                    continue;
-                LOGGER_WARN("[{}/zmq_thread] zmq_poll error: {}", log_prefix,
-                            zmq_strerror(errno));
-                break;
-            }
-
-            if (rc > 0)
-            {
-                for (int i = 0; i < nfds; ++i)
+                auto remaining = task.tick();
+                if (remaining < timeout)
                 {
-                    if (items[static_cast<size_t>(i)].revents & ZMQ_POLLIN)
-                        (*dispatchers[static_cast<size_t>(i)])();
+                    timeout = std::max(remaining,
+                                       std::chrono::milliseconds{1}); // floor 1ms
                 }
             }
 
-            if (get_iteration)
+            try
             {
-                const uint64_t iter = get_iteration();
-                for (auto &task : periodic_tasks)
-                    task.tick(iter);
+                zmq::poll(items, timeout);
+            }
+            catch (const zmq::error_t &e)
+            {
+                if (e.num() == EINTR)
+                {
+                    continue;
+                }
+                LOGGER_WARN("[{}] zmq::poll error: {}", log_prefix, e.what());
+                break;
+            }
+
+            // Dispatch data sockets.
+            for (size_t i = 0; i < n_data; ++i)
+            {
+                if (items[i].revents & ZMQ_POLLIN)
+                {
+                    (*dispatchers[i])();
+                }
+            }
+
+            // Signal socket: drain wake-up bytes, then drain command queue.
+            if (signal_idx >= 0 &&
+                (items[static_cast<size_t>(signal_idx)].revents & ZMQ_POLLIN))
+            {
+                // Consume all pending signal bytes.
+                zmq::message_t discard;
+                while (true)
+                {
+                    auto result = signal_socket.recv(discard,
+                                                     zmq::recv_flags::dontwait);
+                    if (!result.has_value())
+                    {
+                        break;
+                    }
+                }
+
+                if (drain_commands)
+                {
+                    drain_commands();
+                }
             }
         }
 
-        LOGGER_INFO("[{}/zmq_thread] exiting", log_prefix);
+        LOGGER_INFO("[{}] exiting", log_prefix);
     }
 };
 
