@@ -79,7 +79,6 @@ class ProducerRoleHost
 
     bool setup_infrastructure_(const hub::SchemaSpec &inbox_spec);
     void teardown_infrastructure_();
-    void run_ctrl_thread_();
     nlohmann::json snapshot_metrics_json() const;
 
     // ── Members ──────────────────────────────────────────────────────────────
@@ -96,7 +95,6 @@ class ProducerRoleHost
     hub::Messenger                         out_messenger_;
     std::optional<hub::Producer>           out_producer_;
     std::unique_ptr<hub::InboxQueue>       inbox_queue_;
-    std::thread                            ctrl_thread_;
 
     // Role API (created on worker thread, passed to engine).
     std::unique_ptr<scripting::RoleAPIBase> api_;
