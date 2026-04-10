@@ -3,8 +3,9 @@
  * @brief RoleAPIBase implementation — unified role API (pure C++).
  */
 #include "utils/role_api_base.hpp"
+#include "utils/broker_request_channel.hpp"
 #include "utils/script_engine.hpp"        // ScriptEngine, InvokeInbox, ThreadEngineGuard
-#include "utils/zmq_poll_loop.hpp"        // ZmqPollLoop, HeartbeatTracker
+#include "utils/zmq_poll_loop.hpp"        // ZmqPollLoop, PeriodicTask
 
 #include "utils/config/checksum_config.hpp"
 #include "utils/format_tools.hpp"
@@ -40,8 +41,9 @@ struct RoleAPIBase::Impl
     hub::Producer   *producer{nullptr};
     hub::Consumer   *consumer{nullptr};
     hub::Messenger  *messenger{nullptr};
-    hub::InboxQueue *inbox_queue{nullptr};
-    ScriptEngine    *engine{nullptr};
+    hub::InboxQueue          *inbox_queue{nullptr};
+    ScriptEngine             *engine{nullptr};
+    hub::BrokerRequestChannel *broker_channel{nullptr};
 
     std::string role_tag;   // "prod", "cons", "proc"
     hub::ChecksumPolicy checksum_policy{hub::ChecksumPolicy::Enforced};
@@ -134,32 +136,88 @@ size_t RoleAPIBase::thread_count() const
 }
 
 // ============================================================================
-// Ctrl thread (first managed thread)
+// set_broker_channel
 // ============================================================================
 
-void RoleAPIBase::start_ctrl_thread(const CtrlConfig &cfg)
+void RoleAPIBase::set_broker_channel(hub::BrokerRequestChannel *bc)
 {
-    auto *core    = pImpl->core;
-    auto *prod    = pImpl->producer;
-    auto *cons    = pImpl->consumer;
-    auto *msger   = pImpl->messenger;
-    auto *eng     = pImpl->engine;
-    const auto &tag     = pImpl->role_tag;
-    const auto &uid     = pImpl->uid;
-    const auto &ch      = pImpl->channel;
-    const auto &out_ch  = pImpl->out_channel;
+    pImpl->broker_channel = bc;
+}
 
-    spawn_thread("ctrl", [=, this]()
+// ============================================================================
+// Broker thread — runs BrokerRequestChannel poll loop + heartbeat
+// ============================================================================
+
+void RoleAPIBase::start_broker_thread(const BrokerThreadConfig &cfg)
+{
+    auto *core = pImpl->core;
+    auto *bc   = pImpl->broker_channel;
+    auto *eng  = pImpl->engine;
+    const auto &ch     = pImpl->channel;
+    const auto &out_ch = pImpl->out_channel;
+    const auto &uid    = pImpl->uid;
+
+    if (!bc)
+    {
+        LOGGER_ERROR("[{}] start_broker_thread: no BrokerRequestChannel set",
+                     pImpl->role_tag);
+        return;
+    }
+
+    spawn_thread("broker", [=, this]()
     {
         const bool has_hb = eng->has_callback("on_heartbeat");
+        std::string hb_channel = out_ch.empty() ? ch : out_ch;
 
+        // Heartbeat: iteration-gated (stops if script is stuck → broker detects dead).
+        bc->set_periodic_task(
+            [bc, eng, has_hb, hb_channel, this]
+            {
+                bc->send_heartbeat(hb_channel, snapshot_metrics_json());
+                if (has_hb)
+                    eng->invoke("on_heartbeat");
+            },
+            cfg.heartbeat_interval_ms,
+            [core] { return core->iteration_count(); });
+
+        // Metrics report: time-only (fires even when idle).
+        if (cfg.report_metrics)
+        {
+            bc->set_periodic_task(
+                [bc, this, ch, uid]
+                {
+                    bc->send_metrics_report(ch, uid, snapshot_metrics_json());
+                },
+                cfg.heartbeat_interval_ms,
+                nullptr);
+        }
+
+        bc->run_poll_loop([core] {
+            return core->is_running() && !core->is_shutdown_requested();
+        });
+    });
+}
+
+// ============================================================================
+// P2C comm thread — polls Producer/Consumer sockets
+// ============================================================================
+
+void RoleAPIBase::start_comm_thread()
+{
+    auto *core = pImpl->core;
+    auto *prod = pImpl->producer;
+    auto *cons = pImpl->consumer;
+    const auto &tag = pImpl->role_tag;
+    const auto &uid = pImpl->uid;
+
+    spawn_thread("comm", [=]()
+    {
         ZmqPollLoop loop{
             [core] {
                 return core->is_running() && !core->is_shutdown_requested();
             },
-            tag + ":" + uid};
+            tag + ":comm:" + uid};
 
-        // Control-plane sockets.
         if (prod)
         {
             auto *h = prod->peer_ctrl_socket_handle();
@@ -180,8 +238,6 @@ void RoleAPIBase::start_ctrl_thread(const CtrlConfig &cfg)
                      [cons] { cons->handle_ctrl_events_nowait(); }});
             }
         }
-
-        // Data-plane relay socket (SHM mode: broadcast relay frames → message queue).
         if (cons)
         {
             auto *ds = cons->data_zmq_socket_handle();
@@ -191,29 +247,6 @@ void RoleAPIBase::start_ctrl_thread(const CtrlConfig &cfg)
                     {zmq::socket_ref(zmq::from_handle, ds),
                      [cons] { cons->handle_data_events_nowait(); }});
             }
-        }
-
-        // Heartbeat: iteration-gated (stops if script is stuck).
-        std::string hb_channel = out_ch.empty() ? ch : out_ch;
-        loop.periodic_tasks.emplace_back(
-            [msger, eng, has_hb, hb_channel, this]
-            {
-                msger->enqueue_heartbeat(hb_channel, snapshot_metrics_json());
-                if (has_hb)
-                    eng->invoke("on_heartbeat");
-            },
-            cfg.heartbeat_interval_ms,
-            [core] { return core->iteration_count(); });
-
-        // Metrics report: time-only (no iteration gate — report even when idle).
-        if (cfg.report_metrics && msger)
-        {
-            loop.periodic_tasks.emplace_back(
-                [msger, this, ch, uid]
-                {
-                    msger->enqueue_metrics_report(ch, uid, snapshot_metrics_json());
-                },
-                cfg.heartbeat_interval_ms);
         }
 
         loop.run();

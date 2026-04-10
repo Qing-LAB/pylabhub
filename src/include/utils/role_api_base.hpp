@@ -41,6 +41,7 @@ class Messenger;
 class InboxQueue;
 class InboxClient;
 class SharedSpinLock;
+class BrokerRequestChannel;
 } // namespace pylabhub::hub
 
 namespace pylabhub::scripting
@@ -294,16 +295,26 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// Number of managed threads (for diagnostics).
     [[nodiscard]] size_t thread_count() const;
 
-    // ── Ctrl thread (first managed thread) ───────────────────────────────
+    // ── Broker thread ─────────────────────────────────────────────────────
 
-    struct CtrlConfig
+    /// Set the BrokerRequestChannel (owned externally by role host).
+    void set_broker_channel(hub::BrokerRequestChannel *bc);
+
+    struct BrokerThreadConfig
     {
         int  heartbeat_interval_ms{5000};
-        bool report_metrics{false};   ///< Send enqueue_metrics_report (consumer role).
+        bool report_metrics{false};
     };
 
-    /// Build ZmqPollLoop from available pointers and spawn as managed thread.
-    void start_ctrl_thread(const CtrlConfig &cfg);
+    /// Spawn the broker thread: runs BrokerRequestChannel poll loop with
+    /// iteration-gated heartbeat + optional metrics report + on_heartbeat.
+    void start_broker_thread(const BrokerThreadConfig &cfg);
+
+    // ── P2C comm thread (polls Producer/Consumer sockets) ────────────────
+
+    /// Spawn a thread that polls P2C sockets (peer join/leave/dead, ctrl msgs).
+    /// Temporary: will be replaced by RoleCommunicationChannel.
+    void start_comm_thread();
 
     // ── Inbox drain (Step C of the data loop) ──────────────────────────────
     //
