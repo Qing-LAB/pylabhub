@@ -305,3 +305,74 @@ TEST(MonitoredQueueTest, MoveAssignment_ResetsMonitoringState)
     EXPECT_EQ(dst_dead_count.load(), 0) << "stale dead_fired_ must not carry over via move";
     EXPECT_FALSE(dst.in_backpressure()) << "backpressure_ must reset after move";
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MonitoredQueueTest.OnPushSignal_FiresAfterPush
+//
+// set_on_push_signal() callback must fire after every push(), outside the lock.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST(MonitoredQueueTest, OnPushSignal_FiresAfterPush)
+{
+    MonitoredQueue<int> q;
+    std::atomic<int> signal_count{0};
+
+    q.set_on_push_signal([&] { signal_count.fetch_add(1); });
+
+    q.push(1);
+    q.push(2);
+    q.push(3);
+
+    EXPECT_EQ(signal_count.load(), 3);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MonitoredQueueTest.OnPushSignal_NotCalledWhenNull
+// ─────────────────────────────────────────────────────────────────────────────
+TEST(MonitoredQueueTest, OnPushSignal_NotCalledWhenNull)
+{
+    MonitoredQueue<int> q;
+    // No signal set — push should not crash.
+    q.push(1);
+    q.push(2);
+    EXPECT_EQ(q.total_pushed(), 2u);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MonitoredQueueTest.OnPushSignal_CalledOutsideLock
+//
+// Verify the signal callback does not deadlock with drain() on the same queue.
+// If the signal were called inside the lock, this would deadlock because
+// drain() also holds the lock.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST(MonitoredQueueTest, OnPushSignal_CalledOutsideLock)
+{
+    MonitoredQueue<int> q;
+    std::atomic<bool> drain_succeeded{false};
+
+    // The signal callback tries to call drain() on the same queue.
+    // If signal fires inside the lock, this deadlocks.
+    q.set_on_push_signal([&] {
+        q.drain([](int &) {});
+        drain_succeeded.store(true);
+    });
+
+    q.push(42);
+    EXPECT_TRUE(drain_succeeded.load()) << "signal callback should not deadlock with drain";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MonitoredQueueTest.OnPushSignal_ClearableBySettingNull
+// ─────────────────────────────────────────────────────────────────────────────
+TEST(MonitoredQueueTest, OnPushSignal_ClearableBySettingNull)
+{
+    MonitoredQueue<int> q;
+    std::atomic<int> signal_count{0};
+
+    q.set_on_push_signal([&] { signal_count.fetch_add(1); });
+    q.push(1);
+    EXPECT_EQ(signal_count.load(), 1);
+
+    q.set_on_push_signal(nullptr);
+    q.push(2);
+    EXPECT_EQ(signal_count.load(), 1); // no increment after clear
+}
