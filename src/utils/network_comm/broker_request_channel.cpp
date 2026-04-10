@@ -8,6 +8,7 @@
 
 #include "utils/broker_request_channel.hpp"
 
+#include "plh_platform.hpp"   // platform::get_pid()
 #include "utils/logger.hpp"
 #include "utils/zmq_context.hpp"
 #include "utils/zmq_poll_loop.hpp"
@@ -97,6 +98,7 @@ struct BrokerRequestChannel::Impl
 
     // Periodic tasks (added before run_poll_loop, consumed during run).
     std::vector<scripting::PeriodicTask> periodic_tasks;
+    std::atomic<bool> poll_loop_running{false};
 
     // State.
     std::atomic<bool> connected{false};
@@ -457,6 +459,11 @@ void BrokerRequestChannel::set_periodic_task(std::function<void()> action,
                                               int interval_ms,
                                               std::function<uint64_t()> get_iteration)
 {
+    if (pImpl->poll_loop_running.load(std::memory_order_acquire))
+    {
+        LOGGER_ERROR("BrokerRequestChannel: set_periodic_task called after run_poll_loop started");
+        return;
+    }
     pImpl->periodic_tasks.emplace_back(
         std::move(action), interval_ms, std::move(get_iteration));
 }
@@ -497,9 +504,12 @@ void BrokerRequestChannel::run_poll_loop(std::function<bool()> should_run)
     }
 
     // Move periodic tasks into the loop.
+    pImpl->poll_loop_running.store(true, std::memory_order_release);
     loop.periodic_tasks = std::move(pImpl->periodic_tasks);
 
     loop.run();
+
+    pImpl->poll_loop_running.store(false, std::memory_order_release);
 }
 
 void BrokerRequestChannel::stop() noexcept
@@ -527,6 +537,7 @@ void BrokerRequestChannel::send_heartbeat(const std::string &channel,
 {
     nlohmann::json payload;
     payload["channel_name"] = channel;
+    payload["producer_pid"] = pylabhub::platform::get_pid();
     if (!metrics.empty())
         payload["metrics"] = metrics;
     pImpl->cmd_queue.push(SendCmd{"HEARTBEAT_REQ", std::move(payload)});

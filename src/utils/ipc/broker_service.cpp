@@ -1165,6 +1165,13 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
     if (registry.update_heartbeat(channel_name))
     {
         LOGGER_DEBUG("Broker: heartbeat for channel '{}'", channel_name);
+
+        if (!req.contains("producer_pid") || req["producer_pid"].get<uint64_t>() == 0)
+        {
+            LOGGER_ERROR("Broker: HEARTBEAT_REQ for '{}' missing or zero producer_pid",
+                         channel_name);
+        }
+
         // HEP-CORE-0019: extract piggybacked metrics (if present).
         if (req.contains("metrics") && req["metrics"].is_object())
         {
