@@ -90,9 +90,11 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestChannel
                              const std::string &uid,
                              const nlohmann::json &metrics);
     void send_notify(const std::string &target,
+                     const std::string &sender_uid,
                      const std::string &event,
                      const std::string &data);
     void send_broadcast(const std::string &target,
+                        const std::string &sender_uid,
                         const std::string &msg,
                         const std::string &data);
     void send_checksum_error(const nlohmann::json &report);
