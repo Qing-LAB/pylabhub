@@ -476,6 +476,12 @@ void ConsumerRoleHost::teardown_infrastructure_()
         inbox_queue_.reset();
     }
 
+    if (broker_channel_)
+    {
+        broker_channel_->disconnect();
+        broker_channel_.reset();
+    }
+
     in_messenger_.on_hub_dead(nullptr);
 
     if (in_consumer_.has_value())
