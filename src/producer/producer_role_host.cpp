@@ -534,6 +534,14 @@ void ProducerRoleHost::teardown_infrastructure_()
         inbox_queue_.reset();
     }
 
+    // Disconnect broker channel (before Messenger — broker channel may have
+    // pending commands that reference Messenger state).
+    if (broker_channel_)
+    {
+        broker_channel_->disconnect();
+        broker_channel_.reset();
+    }
+
     // Deregister hub-dead callback.
     out_messenger_.on_hub_dead(nullptr);
 
