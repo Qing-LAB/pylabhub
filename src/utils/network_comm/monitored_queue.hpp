@@ -1,9 +1,9 @@
 /**
- * @file hub_monitored_queue.hpp
- * @brief MonitoredQueue<T> — bounded ctrl message queue with optional backpressure monitoring.
+ * @file monitored_queue.hpp
+ * @brief MonitoredQueue<T> — bounded thread-safe command queue with optional backpressure monitoring.
  *
  * push() is called by API/application threads.
- * drain() is called by the owning thread (peer_thread / ctrl_thread) on each loop iteration.
+ * drain() is called by the owning thread (poll loop) on each iteration.
  *
  * Two modes, selected by Config::fire_and_forget:
  *
