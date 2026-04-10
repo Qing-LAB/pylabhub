@@ -25,6 +25,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <variant>
 
 namespace pylabhub::hub
@@ -86,9 +87,9 @@ struct BrokerRequestChannel::Impl
     // Command queue.
     MonitoredQueue<BrokerCommand> cmd_queue;
 
-    // Pending request-reply: the broker thread fills this when it finds
-    // a reply matching expected_ack.
-    std::shared_ptr<RequestCmd> pending_request;
+    // Pending request-reply map: keyed by expected_ack msg_type.
+    // Supports concurrent requests with different expected reply types.
+    std::unordered_map<std::string, std::shared_ptr<RequestCmd>> pending_requests;
 
     // Callbacks.
     NotificationCallback on_notification_cb;
@@ -151,10 +152,11 @@ struct BrokerRequestChannel::Impl
             }
 
             // Check if this is a reply to a pending request.
-            if (pending_request && msg_type == pending_request->expected_ack)
+            auto it = pending_requests.find(msg_type);
+            if (it != pending_requests.end())
             {
-                auto req = pending_request;
-                pending_request.reset();
+                auto req = std::move(it->second);
+                pending_requests.erase(it);
                 {
                     std::lock_guard<std::mutex> lk(req->mu);
                     req->result = std::move(body);
@@ -164,11 +166,15 @@ struct BrokerRequestChannel::Impl
                 continue;
             }
 
-            // Also match ERROR replies to pending requests.
-            if (pending_request && msg_type == "ERROR")
+            // ERROR replies: try to match against any pending request.
+            // The broker sends ERROR when a request fails. We deliver it
+            // to the oldest pending request (FIFO order not guaranteed by
+            // unordered_map, but in practice only one request is outstanding).
+            if (msg_type == "ERROR" && !pending_requests.empty())
             {
-                auto req = pending_request;
-                pending_request.reset();
+                auto first = pending_requests.begin();
+                auto req = std::move(first->second);
+                pending_requests.erase(first);
                 {
                     std::lock_guard<std::mutex> lk(req->mu);
                     req->result = std::nullopt;
@@ -216,7 +222,7 @@ struct BrokerRequestChannel::Impl
             return;
         }
 
-        if (ev_msg.size() >= 2)
+        if (ev_msg.size() >= 6) // ZMQ monitor frame: uint16 event_id + uint32 value
         {
             const auto *data = static_cast<const uint8_t *>(ev_msg.data());
             const uint16_t event_id =
@@ -245,7 +251,7 @@ struct BrokerRequestChannel::Impl
 
     void handle_command(std::shared_ptr<RequestCmd> &cmd)
     {
-        pending_request = cmd;
+        pending_requests[cmd->expected_ack] = cmd;
         send_message(cmd->msg_type, cmd->payload);
     }
 
@@ -514,28 +520,32 @@ void BrokerRequestChannel::send_metrics_report(const std::string &channel,
 {
     nlohmann::json payload;
     payload["channel_name"] = channel;
-    payload["role_uid"] = uid;
+    payload["uid"] = uid;
     payload["metrics"] = metrics;
     pImpl->cmd_queue.push(SendCmd{"METRICS_REPORT_REQ", std::move(payload)});
 }
 
 void BrokerRequestChannel::send_notify(const std::string &target,
+                                        const std::string &sender_uid,
                                         const std::string &event,
                                         const std::string &data)
 {
     nlohmann::json payload;
     payload["target_channel"] = target;
+    payload["sender_uid"] = sender_uid;
     payload["event"] = event;
     payload["data"] = data;
     pImpl->cmd_queue.push(SendCmd{"CHANNEL_NOTIFY_REQ", std::move(payload)});
 }
 
 void BrokerRequestChannel::send_broadcast(const std::string &target,
+                                            const std::string &sender_uid,
                                             const std::string &msg,
                                             const std::string &data)
 {
     nlohmann::json payload;
     payload["target_channel"] = target;
+    payload["sender_uid"] = sender_uid;
     payload["message"] = msg;
     payload["data"] = data;
     pImpl->cmd_queue.push(SendCmd{"CHANNEL_BROADCAST_REQ", std::move(payload)});
@@ -552,7 +562,7 @@ void BrokerRequestChannel::send_endpoint_update(const std::string &channel,
 {
     nlohmann::json payload;
     payload["channel_name"] = channel;
-    payload["key"] = key;
+    payload["endpoint_type"] = key;
     payload["endpoint"] = endpoint;
     pImpl->cmd_queue.push(SendCmd{"ENDPOINT_UPDATE_REQ", std::move(payload)});
 }
@@ -604,7 +614,7 @@ bool BrokerRequestChannel::deregister_consumer(const std::string &channel, int t
 bool BrokerRequestChannel::query_role_presence(const std::string &uid, int timeout_ms)
 {
     nlohmann::json payload;
-    payload["role_uid"] = uid;
+    payload["uid"] = uid;
     auto result = pImpl->do_request("ROLE_PRESENCE_REQ", "ROLE_PRESENCE_ACK",
                              std::move(payload), timeout_ms);
     return result.has_value() && result->value("present", false);
@@ -614,7 +624,7 @@ std::optional<nlohmann::json>
 BrokerRequestChannel::query_role_info(const std::string &uid, int timeout_ms)
 {
     nlohmann::json payload;
-    payload["role_uid"] = uid;
+    payload["uid"] = uid;
     return pImpl->do_request( "ROLE_INFO_REQ", "ROLE_INFO_ACK",
                       std::move(payload), timeout_ms);
 }
@@ -636,7 +646,7 @@ std::optional<nlohmann::json>
 BrokerRequestChannel::query_shm_info(const std::string &channel, int timeout_ms)
 {
     nlohmann::json payload;
-    payload["channel_name"] = channel;
+    payload["channel"] = channel;
     return pImpl->do_request( "SHM_BLOCK_QUERY_REQ", "SHM_BLOCK_QUERY_ACK",
                       std::move(payload), timeout_ms);
 }
