@@ -909,4 +909,33 @@ gtest_discover_tests(test_layer2_metrics_api
         TIMEOUT 60
     DISCOVERY_TIMEOUT 60
 )
+
+# ============================================================================
+# Test: RoleDataLoop — retry_acquire, run_data_loop, thread manager
+# ============================================================================
+
+add_executable(test_layer2_role_data_loop
+    test_role_data_loop.cpp
+)
+
+target_link_libraries(test_layer2_role_data_loop
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_role_data_loop)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_role_data_loop
+    SUITE_NAME "Layer2_RoleDataLoop"
+)
+layer2_require_staged_utils(test_layer2_role_data_loop)
+
+gtest_discover_tests(test_layer2_role_data_loop
+    PROPERTIES
+        LABELS "layer2;service;dataloop"
+        TIMEOUT 30
+)
 endif() # PYLABHUB_SKIP_ENGINE_TESTS
