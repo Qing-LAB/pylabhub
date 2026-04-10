@@ -1022,6 +1022,13 @@ See HEP-CORE-0015 §8.2 for the processor's three-thread model (`loop_thread_`,
 
 ## 15. Channel Establishment and Communication Planes
 
+> **Note (2026-04-10):** The "Control plane" row in §15.1 and the P2C socket
+> establishment sequences in §15.3/15.4 are being revised. Channel messaging
+> is redesigned as a broker-hosted pub/sub system — see HEP-CORE-0030.
+> The Control plane is replaced by `BrokerRequestChannel` (broker DEALER protocol).
+> P2C sockets (ChannelHandle, ChannelPattern) are eliminated.
+> The Data plane (QueueReader/QueueWriter, SHM, ZMQ PUSH/PULL) is unchanged.
+
 This section is the canonical reference for how each role establishes its data and
 control connections. All roles follow the same layered pattern — the only variable is
 whether a role is the **channel creator** (Producer) or **channel joiner** (Consumer).
