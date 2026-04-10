@@ -12,7 +12,7 @@
  *  - fire_and_forget=true (default) skips all monitoring callbacks.
  *  - Move assignment resets monitoring state so stale backpressure is not carried over.
  */
-#include "hub/hub_monitored_queue.hpp"
+#include "network_comm/monitored_queue.hpp"
 
 #include <gtest/gtest.h>
 
