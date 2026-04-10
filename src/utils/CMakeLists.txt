@@ -66,8 +66,11 @@ set(UTILS_SOURCES
   shm/slot_recovery.cpp
   shm/integrity_validator.cpp
 
-  # --- ipc: ZMQ, Messenger, channel registry, broker ---
-  ipc/zmq_context.cpp
+  # --- network_comm: ZMQ context, broker request channel ---
+  network_comm/zmq_context.cpp
+  network_comm/broker_request_channel.cpp
+
+  # --- ipc: Messenger (legacy, to be removed), channel registry, broker ---
   ipc/messenger.cpp
   ipc/messenger_protocol.cpp
   ipc/heartbeat_manager.cpp

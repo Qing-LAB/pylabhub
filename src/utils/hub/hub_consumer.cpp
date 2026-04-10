@@ -4,7 +4,7 @@
 #include "utils/hub_zmq_queue.hpp"
 #include "channel_handle_internals.hpp"
 #include "utils/logger.hpp"
-#include "hub_monitored_queue.hpp"
+#include "../network_comm/monitored_queue.hpp"
 
 #include "cppzmq/zmq.hpp"
 #include "cppzmq/zmq_addon.hpp"
