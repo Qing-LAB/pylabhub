@@ -24,6 +24,14 @@
 #include <stdexcept>
 #include <string>
 
+#ifdef _WIN32
+#include <process.h>
+#define GET_PID() _getpid()
+#else
+#include <unistd.h>
+#define GET_PID() getpid()
+#endif
+
 namespace fs = std::filesystem;
 
 namespace
@@ -39,10 +47,12 @@ void write_file(const fs::path& path, const std::string& content)
     f << content;
 }
 
-// Generate a unique temp directory path for each fixture class.
+// Generate a unique temp directory path per fixture + PID (avoids collisions
+// when CI runs multiple instances or a previous run left stale directories).
 fs::path make_test_hub_dir(const std::string& fixture_name)
 {
-    return fs::temp_directory_path() / ("pylabhub_test_" + fixture_name);
+    return fs::temp_directory_path() /
+           ("pylabhub_test_" + fixture_name + "_" + std::to_string(GET_PID()));
 }
 
 } // namespace
@@ -65,6 +75,7 @@ class HubConfigScriptConfiguredTest : public ::testing::Test
     static void SetUpTestSuite()
     {
         s_hub_dir_ = make_test_hub_dir("HubConfigScriptConfigured");
+        fs::remove_all(s_hub_dir_);  // clean stale state from previous runs
         fs::create_directories(s_hub_dir_);
 
         const std::string hub_json = R"({
@@ -168,6 +179,7 @@ class HubConfigScriptDefaultsTest : public ::testing::Test
     static void SetUpTestSuite()
     {
         s_hub_dir_ = make_test_hub_dir("HubConfigScriptDefaults");
+        fs::remove_all(s_hub_dir_);
         fs::create_directories(s_hub_dir_);
 
         const std::string hub_json = R"({
