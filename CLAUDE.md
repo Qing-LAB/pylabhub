@@ -86,6 +86,21 @@ Include one header per abstraction level — they handle all transitive includes
 
 Uses GoogleTest. Multi-process IPC tests spawn child worker processes coordinated by parent.
 
+## Interaction Rules (MANDATORY — highest priority)
+
+- **User messages are highest priority.** When the user sends a message,
+  acknowledge and respond before continuing background work. If the message
+  is directly related to the ongoing task (e.g., a design question, a
+  correction, or feedback), address it immediately — it may change the task.
+  If the message is unrelated, acknowledge it and note it as a next TODO
+  item based on priority. Never ignore a user message or defer it silently.
+- **Never write code without explicit user approval.** Present findings →
+  discuss → get agreement → then implement. Proposing a fix does not equal
+  approval to code it. "Seems good" or "go ahead" is approval. Silence is not.
+- **Never re-run builds/tests just to grep a different pattern.** Capture
+  output once, then query from the saved file.
+- **Never run multiple cmake instances.** One at a time, wait for completion.
+
 ## Project Rules
 
 - **Do not modify** anything under `third_party/` unless explicitly instructed.
