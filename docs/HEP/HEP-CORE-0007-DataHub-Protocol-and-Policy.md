@@ -682,9 +682,15 @@ and `DatahubSlotDrainingTest.SyncReaderRingFullBlocksNotDraining`.
 
 ## 12. ZMQ Control Plane Protocol
 
+> **Note (2026-04-10):** The Peer-to-Peer message category, CHANNEL_NOTIFY_REQ,
+> CHANNEL_BROADCAST_REQ, CHANNEL_EVENT_NOTIFY, and CHANNEL_BROADCAST_NOTIFY
+> are **superseded** by HEP-CORE-0030 (Channel Pub/Sub Messaging Protocol).
+> The new protocol replaces asymmetric producer-owned channels with symmetric
+> broker-hosted pub/sub groups. See HEP-CORE-0030 for the replacement protocol.
+
 This section is the authoritative reference for the **ZMQ control plane** — all broker
-protocol messages, unsolicited notifications, peer-to-peer messages, and how they flow
-through the system to Python script callbacks.
+protocol messages, unsolicited notifications, and how they flow through the system
+to script callbacks.
 
 ### Data Packaging Agreement
 
