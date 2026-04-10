@@ -12,6 +12,7 @@
  * Layer 1 (engine): delegated to ScriptEngine via invoke_process / invoke_on_inbox.
  */
 #include "processor_role_host.hpp"
+#include "utils/broker_request_channel.hpp"
 #include "processor_fields.hpp"
 
 #include "plh_datahub.hpp"
@@ -343,6 +344,17 @@ void ProcessorRoleHost::worker_main_()
         api_->set_producer(out_producer_.has_value() ? &(*out_producer_) : nullptr);
         api_->set_consumer(in_consumer_.has_value() ? &(*in_consumer_) : nullptr);
         api_->set_inbox_queue(inbox_queue_.get());
+
+        // Broker channel connects to the output broker (where heartbeats go).
+        broker_channel_ = std::make_unique<hub::BrokerRequestChannel>();
+        hub::BrokerRequestChannel::Config bc_cfg;
+        bc_cfg.broker_endpoint = config_.out_hub().broker;
+        bc_cfg.broker_pubkey   = config_.out_hub().broker_pubkey;
+        bc_cfg.client_pubkey   = config_.auth().client_pubkey;
+        bc_cfg.client_seckey   = config_.auth().client_seckey;
+        if (!bc_cfg.broker_endpoint.empty())
+            broker_channel_->connect(bc_cfg);
+        api_->set_broker_channel(broker_channel_.get());
     }
     api_->set_checksum_policy(config_.checksum().policy);
     api_->set_stop_on_script_error(sc.stop_on_script_error);
@@ -409,10 +421,12 @@ void ProcessorRoleHost::worker_main_()
     if (out_producer_.has_value() && core_.has_out_fz())
         out_producer_->sync_flexzone_checksum();
 
-    // Step 6: Spawn ctrl thread via thread manager.
+    // Step 6: Spawn broker + comm threads via thread manager.
     core_.set_running(true);
-    api_->start_ctrl_thread(
-        scripting::RoleAPIBase::CtrlConfig{config_.timing().heartbeat_interval_ms, false});
+    api_->start_broker_thread(
+        scripting::RoleAPIBase::BrokerThreadConfig{
+            config_.timing().heartbeat_interval_ms, false});
+    api_->start_comm_thread();
 
     // Step 7: Signal ready.
     ready_promise_.set_value(true);

@@ -95,6 +95,9 @@ struct BrokerRequestChannel::Impl
     NotificationCallback on_notification_cb;
     std::function<void()> on_hub_dead_cb;
 
+    // Periodic tasks (added before run_poll_loop, consumed during run).
+    std::vector<scripting::PeriodicTask> periodic_tasks;
+
     // State.
     std::atomic<bool> connected{false};
     std::atomic<bool> stop_requested{false};
@@ -447,6 +450,18 @@ void BrokerRequestChannel::on_hub_dead(std::function<void()> cb)
 }
 
 // ============================================================================
+// Periodic tasks
+// ============================================================================
+
+void BrokerRequestChannel::set_periodic_task(std::function<void()> action,
+                                              int interval_ms,
+                                              std::function<uint64_t()> get_iteration)
+{
+    pImpl->periodic_tasks.emplace_back(
+        std::move(action), interval_ms, std::move(get_iteration));
+}
+
+// ============================================================================
 // Poll loop
 // ============================================================================
 
@@ -480,6 +495,9 @@ void BrokerRequestChannel::run_poll_loop(std::function<bool()> should_run)
             zmq::socket_ref(zmq::from_handle, pImpl->signal_read->handle());
         loop.drain_commands = [this] { pImpl->drain_command_queue(); };
     }
+
+    // Move periodic tasks into the loop.
+    loop.periodic_tasks = std::move(pImpl->periodic_tasks);
 
     loop.run();
 }

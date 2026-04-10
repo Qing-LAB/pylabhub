@@ -73,6 +73,17 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestChannel
     /// ZMQ_EVENT_DISCONNECTED on the socket monitor).
     void on_hub_dead(std::function<void()> cb);
 
+    // ── Periodic tasks (set before run_poll_loop) ──────────────────────────
+
+    /// Add a periodic task to the broker thread's poll loop.
+    /// Call before run_poll_loop(). Tasks fire during each poll cycle.
+    /// @param action    Callback to execute periodically.
+    /// @param interval_ms  Minimum interval between firings.
+    /// @param get_iteration  Optional iteration gate (nullptr = time-only).
+    void set_periodic_task(std::function<void()> action,
+                           int interval_ms,
+                           std::function<uint64_t()> get_iteration = nullptr);
+
     // ── Poll loop (runs on the broker thread) ────────────────────────────
 
     /// Blocking poll loop. Call from the thread manager's thread body.
