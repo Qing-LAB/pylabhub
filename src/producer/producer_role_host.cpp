@@ -521,7 +521,7 @@ bool ProducerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
 
 void ProducerRoleHost::teardown_infrastructure_()
 {
-    // ctrl_thread_ already joined before finalize (shutdown sequence).
+    // Broker and comm threads already joined via api_->join_all_threads().
     // set_running(false) also already called. Defensive re-set is safe.
 
     // Clean up shared resources (engine already finalized — no scripts running).

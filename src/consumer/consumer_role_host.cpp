@@ -466,7 +466,7 @@ bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
 
 void ConsumerRoleHost::teardown_infrastructure_()
 {
-    // ctrl_thread_ already joined before finalize (shutdown sequence).
+    // Broker and comm threads already joined via api_->join_all_threads().
 
     core_.clear_inbox_cache();
 
