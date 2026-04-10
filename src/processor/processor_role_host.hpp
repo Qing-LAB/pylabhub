@@ -31,6 +31,7 @@ namespace pylabhub::hub
 class Consumer;
 class Producer;
 class InboxQueue;
+class BrokerRequestChannel;
 } // namespace pylabhub::hub
 
 namespace pylabhub::processor
@@ -95,9 +96,9 @@ class ProcessorRoleHost
     // Infrastructure (created on worker thread in setup_infrastructure_).
     hub::Messenger                           in_messenger_;
     hub::Messenger                           out_messenger_;
+    std::unique_ptr<hub::BrokerRequestChannel> broker_channel_;
     std::optional<hub::Consumer>             in_consumer_;
     std::optional<hub::Producer>             out_producer_;
-
 
     std::unique_ptr<hub::InboxQueue>         inbox_queue_;
 
