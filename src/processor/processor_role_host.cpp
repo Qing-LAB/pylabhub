@@ -669,6 +669,12 @@ void ProcessorRoleHost::teardown_infrastructure_()
         inbox_queue_.reset();
     }
 
+    if (broker_channel_)
+    {
+        broker_channel_->disconnect();
+        broker_channel_.reset();
+    }
+
     // Deregister hub-dead callbacks on both messengers.
     in_messenger_.on_hub_dead(nullptr);
     out_messenger_.on_hub_dead(nullptr);
