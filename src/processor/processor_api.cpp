@@ -54,22 +54,6 @@ py::list ProcessorAPI::consumers()
     return lst;
 }
 
-py::list ProcessorAPI::list_channels()
-{
-    py::list result;
-    for (auto &ch : base_->list_channels())
-    {
-        py::dict d;
-        d["name"]           = ch.value("name", "");
-        d["status"]         = ch.value("status", "");
-        d["schema_id"]      = ch.value("schema_id", "");
-        d["producer_uid"]   = ch.value("producer_uid", "");
-        d["consumer_count"] = ch.value("consumer_count", 0);
-        result.append(std::move(d));
-    }
-    return result;
-}
-
 py::object ProcessorAPI::join_channel(const std::string &channel)
 {
     auto result = base_->join_channel(channel);
@@ -91,14 +75,6 @@ py::object ProcessorAPI::channel_members(const std::string &channel)
     if (!result.has_value())
         return py::none();
     return py::module_::import("json").attr("loads")(result->dump());
-}
-
-py::object ProcessorAPI::shm_info(const std::string &channel)
-{
-    const std::string json_str = base_->request_shm_info(channel);
-    if (json_str.empty())
-        return py::none();
-    return py::module_::import("json").attr("loads")(json_str);
 }
 
 py::dict ProcessorAPI::metrics() const
@@ -247,12 +223,6 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
         .def("send",          &ProcessorAPI::send, py::arg("identity"), py::arg("data"))
         .def("consumers",     &ProcessorAPI::consumers)
         .def("update_flexzone_checksum", &ProcessorAPI::update_flexzone_checksum)
-        .def("notify_channel",  &ProcessorAPI::notify_channel,
-             py::arg("target_channel"), py::arg("event"), py::arg("data") = "")
-        .def("broadcast_channel", &ProcessorAPI::broadcast_channel,
-             py::arg("target_channel"), py::arg("message"), py::arg("data") = "")
-        .def("list_channels",  &ProcessorAPI::list_channels)
-        .def("shm_info",     &ProcessorAPI::shm_info, py::arg("channel") = "")
         .def("join_channel",      &ProcessorAPI::join_channel, py::arg("channel"))
         .def("leave_channel",     &ProcessorAPI::leave_channel, py::arg("channel"))
         .def("send_channel_msg",  &ProcessorAPI::send_channel_msg,

@@ -44,20 +44,11 @@ class ConsumerAPI
     void set_critical_error() { base_->set_critical_error(); }
     [[nodiscard]] bool critical_error() const noexcept { return base_->critical_error(); }
 
-    // Broker queries
-    void notify_channel(const std::string &t, const std::string &e, const std::string &d)
-        { base_->notify_channel(t, e, d); }
-    void broadcast_channel(const std::string &t, const std::string &m, const std::string &d)
-        { base_->broadcast_channel(t, m, d); }
-
     // Channel pub/sub (HEP-CORE-0030)
     py::object join_channel(const std::string &channel);
     bool leave_channel(const std::string &channel) { return base_->leave_channel(channel); }
     void send_channel_msg(const std::string &channel, py::dict body);
     py::object channel_members(const std::string &channel);
-
-    py::list list_channels();
-    py::object shm_info(const std::string &channel = {});
 
     // Inbox
     py::object open_inbox(const std::string &target_uid);

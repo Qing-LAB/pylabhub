@@ -644,38 +644,6 @@ bool RoleAPIBase::critical_error() const        { return pImpl->core->is_critica
 std::string RoleAPIBase::stop_reason() const    { return pImpl->core->stop_reason_string(); }
 
 // ============================================================================
-// Broker queries
-// ============================================================================
-
-void RoleAPIBase::notify_channel(const std::string &target, const std::string &event,
-                                 const std::string &data)
-{
-    if (pImpl->messenger)
-        pImpl->messenger->enqueue_channel_notify(target, pImpl->uid, event, data);
-}
-
-void RoleAPIBase::broadcast_channel(const std::string &target, const std::string &msg,
-                                    const std::string &data)
-{
-    if (pImpl->messenger)
-        pImpl->messenger->enqueue_channel_broadcast(target, pImpl->uid, msg, data);
-}
-
-std::vector<nlohmann::json> RoleAPIBase::list_channels()
-{
-    if (!pImpl->messenger)
-        return {};
-    return pImpl->messenger->list_channels();
-}
-
-std::string RoleAPIBase::request_shm_info(const std::string &channel)
-{
-    if (!pImpl->messenger)
-        return {};
-    return pImpl->messenger->request_shm_info(channel);
-}
-
-// ============================================================================
 // Channel pub/sub (HEP-CORE-0030)
 // ============================================================================
 

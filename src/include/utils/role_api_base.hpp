@@ -195,15 +195,6 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] bool critical_error() const;
     [[nodiscard]] std::string stop_reason() const;
 
-    // ── Broker queries ────────────────────────────────────────────────────────
-
-    void notify_channel(const std::string &target, const std::string &event,
-                        const std::string &data);
-    void broadcast_channel(const std::string &target, const std::string &msg,
-                           const std::string &data);
-    [[nodiscard]] std::vector<nlohmann::json> list_channels();
-    [[nodiscard]] std::string request_shm_info(const std::string &channel = {});
-
     // ── Channel pub/sub messaging (HEP-CORE-0030) ─────────────────────────────
 
     /// Join a named channel. Auto-creates if it doesn't exist.
