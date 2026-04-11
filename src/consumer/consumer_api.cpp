@@ -27,22 +27,6 @@ namespace pylabhub::consumer
 // Python-wrapping methods
 // ============================================================================
 
-py::list ConsumerAPI::list_channels()
-{
-    py::list result;
-    for (auto &ch : base_->list_channels())
-    {
-        py::dict d;
-        d["name"]           = ch.value("name", "");
-        d["status"]         = ch.value("status", "");
-        d["schema_id"]      = ch.value("schema_id", "");
-        d["producer_uid"]   = ch.value("producer_uid", "");
-        d["consumer_count"] = ch.value("consumer_count", 0);
-        result.append(std::move(d));
-    }
-    return result;
-}
-
 py::object ConsumerAPI::join_channel(const std::string &channel)
 {
     auto result = base_->join_channel(channel);
@@ -64,14 +48,6 @@ py::object ConsumerAPI::channel_members(const std::string &channel)
     if (!result.has_value())
         return py::none();
     return py::module_::import("json").attr("loads")(result->dump());
-}
-
-py::object ConsumerAPI::shm_info(const std::string &channel)
-{
-    const std::string json_str = base_->request_shm_info(channel);
-    if (json_str.empty())
-        return py::none();
-    return py::module_::import("json").attr("loads")(json_str);
 }
 
 py::dict ConsumerAPI::metrics() const
@@ -214,12 +190,6 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
         .def("stop",         &ConsumerAPI::stop)
         .def("set_critical_error",    &ConsumerAPI::set_critical_error)
         .def("critical_error",        &ConsumerAPI::critical_error)
-        .def("notify_channel",  &ConsumerAPI::notify_channel,
-             py::arg("target_channel"), py::arg("event"), py::arg("data") = "")
-        .def("broadcast_channel", &ConsumerAPI::broadcast_channel,
-             py::arg("target_channel"), py::arg("message"), py::arg("data") = "")
-        .def("list_channels",  &ConsumerAPI::list_channels)
-        .def("shm_info",     &ConsumerAPI::shm_info, py::arg("channel") = "")
         .def("join_channel",      &ConsumerAPI::join_channel, py::arg("channel"))
         .def("leave_channel",     &ConsumerAPI::leave_channel, py::arg("channel"))
         .def("send_channel_msg",  &ConsumerAPI::send_channel_msg,

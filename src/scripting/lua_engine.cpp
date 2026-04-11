@@ -1212,17 +1212,11 @@ void LuaEngine::push_common_api_closures_(lua_State *L)
     push_closure("report_metrics", lua_api_report_metrics);
     push_closure("clear_custom_metrics", lua_api_clear_custom_metrics);
 
-    // Broker operations.
-    push_closure("notify_channel", lua_api_notify_channel);
-    push_closure("broadcast_channel", lua_api_broadcast_channel);
-    push_closure("list_channels", lua_api_list_channels);
-
     // Channel pub/sub (HEP-CORE-0030).
     push_closure("join_channel", lua_api_join_channel);
     push_closure("leave_channel", lua_api_leave_channel);
     push_closure("send_channel_msg", lua_api_send_channel_msg);
     push_closure("channel_members", lua_api_channel_members);
-    push_closure("shm_info", lua_api_shm_info);
 
     // String fields as direct table entries.
     lua_pushstring(L, api_->log_level().c_str());
@@ -1781,26 +1775,6 @@ int LuaEngine::lua_api_clear_inbox_cache(lua_State *L)
     return 0;
 }
 
-int LuaEngine::lua_api_notify_channel(lua_State *L)
-{
-    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    const char *target  = luaL_checkstring(L, 1);
-    const char *event   = luaL_checkstring(L, 2);
-    const char *data    = luaL_optstring(L, 3, "");
-    self->api_->notify_channel(target, event, data);
-    return 0;
-}
-
-int LuaEngine::lua_api_broadcast_channel(lua_State *L)
-{
-    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    const char *target  = luaL_checkstring(L, 1);
-    const char *message = luaL_checkstring(L, 2);
-    const char *data    = luaL_optstring(L, 3, "");
-    self->api_->broadcast_channel(target, message, data);
-    return 0;
-}
-
 // ── Channel pub/sub (HEP-CORE-0030) ──────────────────────────────────────────
 
 int LuaEngine::lua_api_join_channel(lua_State *L)
@@ -1847,53 +1821,6 @@ int LuaEngine::lua_api_channel_members(lua_State *L)
         return 1;
     }
     json_to_lua(L, *result);
-    return 1;
-}
-
-int LuaEngine::lua_api_list_channels(lua_State *L)
-{
-    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto channels = self->api_->list_channels();
-    lua_newtable(L);
-    for (int i = 0; i < static_cast<int>(channels.size()); ++i)
-    {
-        lua_newtable(L); // channel entry table
-        auto &ch = channels[i];
-        lua_pushstring(L, ch.value("name", "").c_str());
-        lua_setfield(L, -2, "name");
-        lua_pushstring(L, ch.value("status", "").c_str());
-        lua_setfield(L, -2, "status");
-        lua_pushstring(L, ch.value("schema_id", "").c_str());
-        lua_setfield(L, -2, "schema_id");
-        lua_pushstring(L, ch.value("producer_uid", "").c_str());
-        lua_setfield(L, -2, "producer_uid");
-        lua_pushinteger(L, ch.value("consumer_count", 0));
-        lua_setfield(L, -2, "consumer_count");
-        lua_rawseti(L, -2, i + 1);
-    }
-    return 1;
-}
-
-int LuaEngine::lua_api_shm_info(lua_State *L)
-{
-    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    const char *channel = luaL_optstring(L, 1, "");
-    std::string json_str = self->api_->request_shm_info(channel);
-    if (json_str.empty())
-    {
-        lua_pushnil(L);
-        return 1;
-    }
-    try
-    {
-        auto j = nlohmann::json::parse(json_str);
-        json_to_lua(L, j);
-    }
-    catch (const std::exception &e)
-    {
-        LOGGER_ERROR("[{}] shm_info: JSON parse error: {}", self->log_tag_, e.what());
-        lua_pushnil(L);
-    }
     return 1;
 }
 

@@ -210,10 +210,6 @@ class LuaEngine : public ScriptEngine
 
     // ── Group E: broker operations ────────────────────────────────────
     static int lua_api_clear_inbox_cache(lua_State *L);
-    static int lua_api_notify_channel(lua_State *L);
-    static int lua_api_broadcast_channel(lua_State *L);
-    static int lua_api_list_channels(lua_State *L);
-    static int lua_api_shm_info(lua_State *L);
 
     // ── Group G: channel pub/sub (HEP-CORE-0030) ────────────────────────
     static int lua_api_join_channel(lua_State *L);

@@ -68,22 +68,12 @@ class ProducerAPI
     py::list consumers();
     bool update_flexzone_checksum() { return base_->update_flexzone_checksum(); }
 
-    void notify_channel(const std::string &target, const std::string &event,
-                        const std::string &data)
-        { base_->notify_channel(target, event, data); }
-    void broadcast_channel(const std::string &target, const std::string &message,
-                           const std::string &data)
-        { base_->broadcast_channel(target, message, data); }
-
     // ── Channel pub/sub (HEP-CORE-0030) ─────────────────────────────────
 
     py::object join_channel(const std::string &channel);
     bool leave_channel(const std::string &channel) { return base_->leave_channel(channel); }
     void send_channel_msg(const std::string &channel, py::dict body);
     py::object channel_members(const std::string &channel);
-
-    py::list list_channels();
-    py::object shm_info(const std::string &channel = {});
 
     py::object open_inbox(const std::string &target_uid);
     bool wait_for_role(const std::string &uid, int timeout_ms = 5000);
