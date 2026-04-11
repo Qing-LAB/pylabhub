@@ -393,6 +393,178 @@ int roleapi_channel()
 }
 
 // ============================================================================
+// Worker: leave notification delivery
+// ============================================================================
+
+int channel_leave_notify()
+{
+    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module());
+    utils::LifecycleGuard guard(std::move(mods));
+
+    auto broker = start_broker();
+
+    std::atomic<int> leave_count{0};
+    std::string left_uid;
+    std::string left_reason;
+    std::mutex mu;
+
+    ChannelClient c1, c2;
+    c1.ch.on_notification([&](const std::string &type, const nlohmann::json &payload) {
+        if (type == "CHANNEL_LEAVE_NOTIFY")
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            left_uid = payload.value("role_uid", "");
+            left_reason = payload.value("reason", "");
+            leave_count.fetch_add(1);
+        }
+    });
+
+    c1.connect(broker.endpoint, broker.pubkey, "STAYER-001", "stayer");
+    c2.connect(broker.endpoint, broker.pubkey, "LEAVER-002", "leaver");
+
+    c1.ch.join_channel("#leave_ch", 5000);
+    c2.ch.join_channel("#leave_ch", 5000);
+    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+
+    // Leaver leaves.
+    c2.ch.leave_channel("#leave_ch", 5000);
+
+    bool got = pylabhub::tests::helper::poll_until(
+        [&] { return leave_count.load() > 0; },
+        std::chrono::seconds{3});
+    EXPECT_TRUE(got) << "CHANNEL_LEAVE_NOTIFY never received";
+    if (got)
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        EXPECT_EQ(left_uid, "LEAVER-002");
+        EXPECT_EQ(left_reason, "voluntary");
+    }
+
+    c1.stop();
+    c2.stop();
+    broker.stop_and_join();
+    return ::testing::Test::HasFailure() ? 1 : 0;
+}
+
+// ============================================================================
+// Worker: sender does not receive own message
+// ============================================================================
+
+int channel_self_excluded()
+{
+    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module());
+    utils::LifecycleGuard guard(std::move(mods));
+
+    auto broker = start_broker();
+
+    std::atomic<int> sender_msg_count{0};
+    std::atomic<int> receiver_msg_count{0};
+
+    ChannelClient c1, c2;
+    c1.ch.on_notification([&](const std::string &type, const nlohmann::json &) {
+        if (type == "CHANNEL_MSG_NOTIFY")
+            sender_msg_count.fetch_add(1);
+    });
+    c2.ch.on_notification([&](const std::string &type, const nlohmann::json &) {
+        if (type == "CHANNEL_MSG_NOTIFY")
+            receiver_msg_count.fetch_add(1);
+    });
+
+    c1.connect(broker.endpoint, broker.pubkey, "SENDER-001", "sender");
+    c2.connect(broker.endpoint, broker.pubkey, "RECVR-002", "receiver");
+
+    c1.ch.join_channel("#self_ch", 5000);
+    c2.ch.join_channel("#self_ch", 5000);
+    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+
+    // Sender sends a message.
+    c1.ch.send_channel_msg("#self_ch", {{"ping", true}});
+
+    // Wait for receiver to get it.
+    bool got = pylabhub::tests::helper::poll_until(
+        [&] { return receiver_msg_count.load() > 0; },
+        std::chrono::seconds{3});
+    EXPECT_TRUE(got) << "Receiver didn't get message";
+
+    // Give sender some time to potentially receive its own message.
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+
+    // Sender should NOT have received its own message.
+    EXPECT_EQ(sender_msg_count.load(), 0) << "Sender received its own message";
+
+    c1.stop();
+    c2.stop();
+    broker.stop_and_join();
+    return ::testing::Test::HasFailure() ? 1 : 0;
+}
+
+// ============================================================================
+// Worker: role joins multiple channels independently
+// ============================================================================
+
+int channel_multi_channel()
+{
+    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module());
+    utils::LifecycleGuard guard(std::move(mods));
+
+    auto broker = start_broker();
+
+    std::atomic<int> msg_on_ch1{0};
+    std::atomic<int> msg_on_ch2{0};
+
+    ChannelClient c1;
+    c1.ch.on_notification([&](const std::string &type, const nlohmann::json &payload) {
+        if (type == "CHANNEL_MSG_NOTIFY")
+        {
+            std::string ch = payload.value("channel", "");
+            if (ch == "#ch_alpha")
+                msg_on_ch1.fetch_add(1);
+            else if (ch == "#ch_beta")
+                msg_on_ch2.fetch_add(1);
+        }
+    });
+
+    ChannelClient c2;
+
+    c1.connect(broker.endpoint, broker.pubkey, "MULTI-001", "multi_role");
+    c2.connect(broker.endpoint, broker.pubkey, "OTHER-002", "other_role");
+
+    // Role 1 joins both channels.
+    c1.ch.join_channel("#ch_alpha", 5000);
+    c1.ch.join_channel("#ch_beta", 5000);
+
+    // Role 2 joins both channels.
+    c2.ch.join_channel("#ch_alpha", 5000);
+    c2.ch.join_channel("#ch_beta", 5000);
+    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+
+    // Role 2 sends to ch_alpha only.
+    c2.ch.send_channel_msg("#ch_alpha", {{"target", "alpha"}});
+
+    bool got1 = pylabhub::tests::helper::poll_until(
+        [&] { return msg_on_ch1.load() > 0; },
+        std::chrono::seconds{3});
+    EXPECT_TRUE(got1) << "Message on #ch_alpha not received";
+
+    // Verify ch_beta did NOT receive it.
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    EXPECT_EQ(msg_on_ch2.load(), 0) << "Message leaked to #ch_beta";
+
+    // Now send to ch_beta.
+    c2.ch.send_channel_msg("#ch_beta", {{"target", "beta"}});
+
+    bool got2 = pylabhub::tests::helper::poll_until(
+        [&] { return msg_on_ch2.load() > 0; },
+        std::chrono::seconds{3});
+    EXPECT_TRUE(got2) << "Message on #ch_beta not received";
+
+    c1.stop();
+    c2.stop();
+    broker.stop_and_join();
+    return ::testing::Test::HasFailure() ? 1 : 0;
+}
+
+// ============================================================================
 // Worker dispatcher
 // ============================================================================
 
@@ -419,6 +591,12 @@ struct ChannelGroupWorkerRegistrar
                     return channel_join_notify();
                 if (scenario == "roleapi_channel")
                     return roleapi_channel();
+                if (scenario == "leave_notify")
+                    return channel_leave_notify();
+                if (scenario == "self_excluded")
+                    return channel_self_excluded();
+                if (scenario == "multi_channel")
+                    return channel_multi_channel();
                 return -1;
             });
     }
