@@ -35,3 +35,21 @@ TEST_F(ChannelGroupTest, RoleAPIBaseChannelIntegration)
     auto proc = SpawnWorker("channel_group.roleapi_channel", {});
     ExpectWorkerOk(proc);
 }
+
+TEST_F(ChannelGroupTest, LeaveNotification)
+{
+    auto proc = SpawnWorker("channel_group.leave_notify", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(ChannelGroupTest, SenderExcludedFromOwnMessage)
+{
+    auto proc = SpawnWorker("channel_group.self_excluded", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(ChannelGroupTest, MultipleChannelsIndependent)
+{
+    auto proc = SpawnWorker("channel_group.multi_channel", {});
+    ExpectWorkerOk(proc);
+}
