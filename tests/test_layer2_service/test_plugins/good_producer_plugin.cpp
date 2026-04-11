@@ -8,6 +8,7 @@
  */
 #include "utils/native_engine_api.h"
 
+#include <cstdlib>
 #include <cstring>
 
 // ── Schema declarations (matches test config) ───────────────────────────
@@ -33,6 +34,13 @@ static uint64_t g_test_script_error_count = 0;
 static size_t   g_test_slot_logical_size = 0;
 static uint32_t g_test_spinlock_count = 0;
 static int      g_test_cpp_wrapper_ok = 0;
+
+// Channel API test results — without a broker, all 4 functions must return
+// gracefully (no crash, sensible null/zero results).
+static int g_test_channel_join_null    = 0;  // 1 if join_channel returned NULL
+static int g_test_channel_leave_zero   = 0;  // 1 if leave_channel returned 0
+static int g_test_channel_send_ok      = 0;  // 1 if send_channel_msg returned (no crash)
+static int g_test_channel_members_null = 0;  // 1 if channel_members returned NULL
 
 // ── Required symbols ────────────────────────────────────────────────────
 
@@ -116,6 +124,33 @@ extern "C" PLH_EXPORT bool on_produce(const plh_tx_t *tx)
             g_test_spinlock_count = g_ctx->spinlock_count(g_ctx, PLH_SIDE_AUTO);
     }
 
+    // ── Channel API: must return gracefully without a broker ───
+    if (g_ctx)
+    {
+        if (g_ctx->join_channel)
+        {
+            char *r = g_ctx->join_channel(g_ctx, "#l2_test");
+            g_test_channel_join_null = (r == nullptr) ? 1 : 0;
+            if (r) free(r);
+        }
+        if (g_ctx->leave_channel)
+        {
+            g_test_channel_leave_zero =
+                (g_ctx->leave_channel(g_ctx, "#l2_test") == 0) ? 1 : 0;
+        }
+        if (g_ctx->send_channel_msg)
+        {
+            g_ctx->send_channel_msg(g_ctx, "#l2_test", "{\"k\":1}");
+            g_test_channel_send_ok = 1; // reached next line = no crash
+        }
+        if (g_ctx->channel_members)
+        {
+            char *r = g_ctx->channel_members(g_ctx, "#l2_test");
+            g_test_channel_members_null = (r == nullptr) ? 1 : 0;
+            if (r) free(r);
+        }
+    }
+
     // ── C++ wrapper: verify plh::Context works ───────────────────
 #ifdef __cplusplus
     if (g_ctx)
@@ -158,6 +193,16 @@ extern "C" PLH_EXPORT bool on_produce(const plh_tx_t *tx)
                              static_cast<double>(g_test_spinlock_count));
         g_ctx->report_metric(g_ctx, "test_cpp_wrapper_ok",
                              static_cast<double>(g_test_cpp_wrapper_ok));
+
+        // Channel API (graceful behavior without broker).
+        g_ctx->report_metric(g_ctx, "test_channel_join_null",
+                             static_cast<double>(g_test_channel_join_null));
+        g_ctx->report_metric(g_ctx, "test_channel_leave_zero",
+                             static_cast<double>(g_test_channel_leave_zero));
+        g_ctx->report_metric(g_ctx, "test_channel_send_ok",
+                             static_cast<double>(g_test_channel_send_ok));
+        g_ctx->report_metric(g_ctx, "test_channel_members_null",
+                             static_cast<double>(g_test_channel_members_null));
     }
 
     return true; // commit
@@ -214,3 +259,9 @@ extern "C" PLH_EXPORT uint64_t test_get_script_error_count(void) { return g_test
 extern "C" PLH_EXPORT size_t   test_get_slot_logical_size(void) { return g_test_slot_logical_size; }
 extern "C" PLH_EXPORT uint32_t test_get_spinlock_count(void) { return g_test_spinlock_count; }
 extern "C" PLH_EXPORT int      test_get_cpp_wrapper_ok(void) { return g_test_cpp_wrapper_ok; }
+
+// Channel API query symbols (set during on_produce).
+extern "C" PLH_EXPORT int test_get_channel_join_null(void)    { return g_test_channel_join_null; }
+extern "C" PLH_EXPORT int test_get_channel_leave_zero(void)   { return g_test_channel_leave_zero; }
+extern "C" PLH_EXPORT int test_get_channel_send_ok(void)      { return g_test_channel_send_ok; }
+extern "C" PLH_EXPORT int test_get_channel_members_null(void) { return g_test_channel_members_null; }

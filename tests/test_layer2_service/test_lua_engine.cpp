@@ -3008,4 +3008,91 @@ TEST_F(LuaEngineTest, FlexzoneLogicalSize_ArrayFields)
     pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
 }
 
+// ============================================================================
+// Channel pub/sub API — L2 (no broker, methods return nil/false gracefully)
+// ============================================================================
+
+TEST_F(LuaEngineTest, Api_Channel_JoinReturnsNilWithoutBroker)
+{
+    write_script(R"(
+        function on_produce(tx, msgs, api)
+            local result = api.join_channel("#test_ch")
+            assert(result == nil, "Expected nil from join_channel without broker")
+            return true
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0;
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf), nullptr, 0}, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Api_Channel_LeaveReturnsFalseWithoutBroker)
+{
+    write_script(R"(
+        function on_produce(tx, msgs, api)
+            local result = api.leave_channel("#test_ch")
+            assert(result == false, "Expected false from leave_channel without broker")
+            return true
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0;
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf), nullptr, 0}, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Api_Channel_SendMsgNoErrorWithoutBroker)
+{
+    write_script(R"(
+        function on_produce(tx, msgs, api)
+            api.send_channel_msg("#test_ch", {hello = "world", value = 42})
+            return true
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0;
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf), nullptr, 0}, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
+TEST_F(LuaEngineTest, Api_Channel_MembersReturnsNilWithoutBroker)
+{
+    write_script(R"(
+        function on_produce(tx, msgs, api)
+            local result = api.channel_members("#test_ch")
+            assert(result == nil, "Expected nil from channel_members without broker")
+            return true
+        end
+    )");
+
+    LuaEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0;
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf), nullptr, 0}, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+    EXPECT_EQ(engine.script_error_count(), 0u);
+    engine.finalize();
+}
+
 } // anonymous namespace
