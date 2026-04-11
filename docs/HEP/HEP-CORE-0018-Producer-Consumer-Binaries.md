@@ -7,7 +7,7 @@
 | **Status**    | Implemented — Phase 1 + Layer 4 tests (2026-03-02)                       |
 | **Created**   | 2026-03-01                                                               |
 | **Area**      | Data Components (`src/producer/`, `src/consumer/`)                       |
-| **Depends on**| HEP-CORE-0002 (DataHub), HEP-CORE-0007 (Protocol), HEP-CORE-0008 (LoopPolicy), HEP-CORE-0011 (ScriptHost), HEP-CORE-0013 (Channel Identity), HEP-CORE-0016 (Named Schema Registry) |
+| **Depends on**| HEP-CORE-0002 (DataHub), HEP-CORE-0007 (Protocol), HEP-CORE-0008 (LoopPolicy), HEP-CORE-0011 (ScriptHost), HEP-CORE-0013 (Channel Identity), HEP-CORE-0016 (Named Schema Registry), HEP-CORE-0030 (Channel Pub/Sub) |
 | **Supersedes**| HEP-CORE-0010 (Actor Thread Model), HEP-CORE-0014 (Actor Framework Design) |
 
 ---
@@ -1036,18 +1036,20 @@ The Processor is both: a joiner on its input channel and a creator on its output
 
 ### 15.1 Communication Planes
 
-Each role operates on three independent communication planes:
+Each role operates on four independent communication planes:
 
 | Plane | Purpose | Transport | Ownership |
 |-------|---------|-----------|-----------|
-| **Data plane** | Streaming slot data (main loop) | SHM ring buffer or ZMQ PUSH/PULL | `hub::Producer` (write) / `hub::Consumer` (read) |
-| **Control plane** | Broker protocol: registration, heartbeat, channel events, shutdown | ZMQ DEALER/ROUTER (via `Messenger`) | `hub::Producer` / `hub::Consumer` ctrl socket, driven by `ctrl_thread_` |
+| **Data plane** | Streaming slot data (main loop) | SHM ring buffer or ZMQ PUSH/PULL | `QueueWriter` (write) / `QueueReader` (read) |
+| **Broker plane** | Broker protocol: registration, heartbeat, shutdown | ZMQ DEALER (`BrokerRequestChannel`) | `RoleAPIBase` thread manager ("broker" thread) |
+| **Channel plane** | Pub/sub messaging between roles (HEP-CORE-0030) | Broker-mediated fan-out via same DEALER | `BrokerRequestChannel` channel methods |
 | **Inbox plane** | Targeted point-to-point messaging between roles | ZMQ ROUTER/DEALER (`InboxQueue` / `InboxClient`) | Role host owns `InboxQueue`; clients connect via `api.open_inbox()` |
 
-These three planes are fully independent. The data plane carries slot data for the main
-processing loop. The control plane carries broker protocol messages (heartbeats, channel
-lifecycle events, shutdown). The inbox plane carries application-level messages between
-roles (commands, queries, coordination).
+These four planes are fully independent. The data plane carries slot data for the main
+processing loop. The broker plane carries registration, heartbeat, and lifecycle protocol.
+The channel plane carries application-level pub/sub messages between roles subscribed to
+the same named channel (see HEP-CORE-0030). The inbox plane carries targeted one-to-one
+messages between specific roles.
 
 ### 15.2 API Layering
 
@@ -1056,9 +1058,10 @@ The role host interacts with each plane through a specific API layer:
 ```
 Role Host (ProducerRoleHost / ConsumerRoleHost / ProcessorRoleHost)
     │
-    ├── Data plane:    queue_writer() / queue_reader()     ← QueueWriter / QueueReader abstract API
-    ├── Control plane: hub::Producer / hub::Consumer        ← callbacks + ctrl_thread_
-    └── Inbox plane:   InboxQueue (ROUTER bind)             ← role host owns directly
+    ├── Data plane:    queue_writer() / queue_reader()          ← QueueWriter / QueueReader
+    ├── Broker plane:  BrokerRequestChannel                     ← broker DEALER, managed thread
+    ├── Channel plane: api.join_channel / send_channel_msg      ← HEP-CORE-0030 pub/sub
+    └── Inbox plane:   InboxQueue (ROUTER bind)                 ← role host owns directly
 ```
 
 **Critical invariant**: The role host accesses the data plane **only** through the
