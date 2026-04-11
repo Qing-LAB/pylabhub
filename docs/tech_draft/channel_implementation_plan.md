@@ -422,7 +422,25 @@ Data loop thread (next cycle):
 - Remove P2C socket creation from Messenger
 - Remove Producer/Consumer P2C threads
 - Remove `handle_*_events_nowait()` methods
-- Update design docs, archive tech drafts
+
+### Step 8: Full HEP cleanup pass (MANDATORY)
+
+All HEP documents must contain ONLY current, accurate information. No
+"superseded" markers, no strikethrough, no "see other doc" redirects for
+removed content. The old content is deleted entirely.
+
+- HEP-CORE-0007: Remove all remaining CHANNEL_NOTIFY_REQ, CHANNEL_BROADCAST_REQ,
+  CHANNEL_EVENT_NOTIFY, CHANNEL_BROADCAST_NOTIFY references. Remove Peer-to-Peer
+  section. Remove P2C socket framing specs. Remove Messenger callback docs.
+  Replace with current BrokerRequestChannel + HEP-0030 channel protocol.
+- HEP-CORE-0018: Remove all P2C establishment sequences (§15.3/15.4 P2C parts).
+  Remove Messenger references. Remove ctrl_thread_ references. Update to
+  reflect BrokerRequestChannel + thread manager + channel pub/sub.
+- HEP-CORE-0011: Update script API section — remove old broadcast/send/consumers,
+  document new channel methods.
+- Archive tech drafts that are fully implemented.
+
+Each HEP must be a complete, self-consistent document after this pass.
 
 ---
 
