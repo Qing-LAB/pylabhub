@@ -215,6 +215,12 @@ class LuaEngine : public ScriptEngine
     static int lua_api_list_channels(lua_State *L);
     static int lua_api_shm_info(lua_State *L);
 
+    // ── Group G: channel pub/sub (HEP-CORE-0030) ────────────────────────
+    static int lua_api_join_channel(lua_State *L);
+    static int lua_api_leave_channel(lua_State *L);
+    static int lua_api_send_channel_msg(lua_State *L);
+    static int lua_api_channel_members(lua_State *L);
+
     // ── Group F: schema sizes + spinlocks (SHM-only) ──────────────────
     static int lua_api_slot_logical_size(lua_State *L);
     static int lua_api_flexzone_logical_size(lua_State *L);
