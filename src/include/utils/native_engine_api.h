@@ -153,6 +153,16 @@ typedef struct
     /** Role discovery. Returns 1 if found, 0 on timeout. */
     int      (*wait_for_role)(const struct PlhNativeContext *ctx, const char *uid, int timeout_ms);
 
+    /** Channel pub/sub (HEP-CORE-0030). JSON strings for body/result. */
+    /** join_channel: returns JSON string with member list, or NULL on failure. Caller must free(). */
+    char    *(*join_channel)(const struct PlhNativeContext *ctx, const char *channel);
+    /** leave_channel: returns 1 on success, 0 on failure. */
+    int      (*leave_channel)(const struct PlhNativeContext *ctx, const char *channel);
+    /** send_channel_msg: body_json is a JSON string. Fire-and-forget. */
+    void     (*send_channel_msg)(const struct PlhNativeContext *ctx, const char *channel, const char *body_json);
+    /** channel_members: returns JSON string with member list, or NULL. Caller must free(). */
+    char    *(*channel_members)(const struct PlhNativeContext *ctx, const char *channel);
+
     /* ── Opaque host data (do not dereference) ────────────────────── */
     void *_core;               /**< Internal — RoleHostCore pointer for API implementations. */
     void *_api;                /**< Internal — RoleAPIBase pointer for spinlock/messaging. */
@@ -461,6 +471,26 @@ class Context
     bool wait_for_role(const char *uid, int timeout_ms = 5000) const
     {
         return c_->wait_for_role ? c_->wait_for_role(c_, uid, timeout_ms) != 0 : false;
+    }
+
+    // ── Channel pub/sub (HEP-CORE-0030) ────────────────────────────
+    /** Returns JSON string with member list. Caller must free(). NULL on failure. */
+    char *join_channel(const char *channel) const
+    {
+        return c_->join_channel ? c_->join_channel(c_, channel) : nullptr;
+    }
+    bool leave_channel(const char *channel) const
+    {
+        return c_->leave_channel ? c_->leave_channel(c_, channel) != 0 : false;
+    }
+    void send_channel_msg(const char *channel, const char *body_json) const
+    {
+        if (c_->send_channel_msg) c_->send_channel_msg(c_, channel, body_json);
+    }
+    /** Returns JSON string with member list. Caller must free(). NULL on failure. */
+    char *channel_members(const char *channel) const
+    {
+        return c_->channel_members ? c_->channel_members(c_, channel) : nullptr;
     }
 
     /// Access the raw C context.

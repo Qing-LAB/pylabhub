@@ -1216,6 +1216,12 @@ void LuaEngine::push_common_api_closures_(lua_State *L)
     push_closure("notify_channel", lua_api_notify_channel);
     push_closure("broadcast_channel", lua_api_broadcast_channel);
     push_closure("list_channels", lua_api_list_channels);
+
+    // Channel pub/sub (HEP-CORE-0030).
+    push_closure("join_channel", lua_api_join_channel);
+    push_closure("leave_channel", lua_api_leave_channel);
+    push_closure("send_channel_msg", lua_api_send_channel_msg);
+    push_closure("channel_members", lua_api_channel_members);
     push_closure("shm_info", lua_api_shm_info);
 
     // String fields as direct table entries.
@@ -1793,6 +1799,55 @@ int LuaEngine::lua_api_broadcast_channel(lua_State *L)
     const char *data    = luaL_optstring(L, 3, "");
     self->api_->broadcast_channel(target, message, data);
     return 0;
+}
+
+// ── Channel pub/sub (HEP-CORE-0030) ──────────────────────────────────────────
+
+int LuaEngine::lua_api_join_channel(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *channel = luaL_checkstring(L, 1);
+    auto result = self->api_->join_channel(channel);
+    if (!result.has_value())
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+    json_to_lua(L, *result);
+    return 1;
+}
+
+int LuaEngine::lua_api_leave_channel(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *channel = luaL_checkstring(L, 1);
+    bool ok = self->api_->leave_channel(channel);
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+
+int LuaEngine::lua_api_send_channel_msg(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *channel = luaL_checkstring(L, 1);
+    luaL_checktype(L, 2, LUA_TTABLE);
+    nlohmann::json body = lua_to_json(L, 2);
+    self->api_->send_channel_msg(channel, body);
+    return 0;
+}
+
+int LuaEngine::lua_api_channel_members(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *channel = luaL_checkstring(L, 1);
+    auto result = self->api_->channel_members(channel);
+    if (!result.has_value())
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+    json_to_lua(L, *result);
+    return 1;
 }
 
 int LuaEngine::lua_api_list_channels(lua_State *L)
