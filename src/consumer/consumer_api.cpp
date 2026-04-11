@@ -43,6 +43,29 @@ py::list ConsumerAPI::list_channels()
     return result;
 }
 
+py::object ConsumerAPI::join_channel(const std::string &channel)
+{
+    auto result = base_->join_channel(channel);
+    if (!result.has_value())
+        return py::none();
+    return py::module_::import("json").attr("loads")(result->dump());
+}
+
+void ConsumerAPI::send_channel_msg(const std::string &channel, py::dict body)
+{
+    auto json_mod = py::module_::import("json");
+    std::string body_str = json_mod.attr("dumps")(body).cast<std::string>();
+    base_->send_channel_msg(channel, nlohmann::json::parse(body_str));
+}
+
+py::object ConsumerAPI::channel_members(const std::string &channel)
+{
+    auto result = base_->channel_members(channel);
+    if (!result.has_value())
+        return py::none();
+    return py::module_::import("json").attr("loads")(result->dump());
+}
+
 py::object ConsumerAPI::shm_info(const std::string &channel)
 {
     const std::string json_str = base_->request_shm_info(channel);
@@ -197,6 +220,11 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
              py::arg("target_channel"), py::arg("message"), py::arg("data") = "")
         .def("list_channels",  &ConsumerAPI::list_channels)
         .def("shm_info",     &ConsumerAPI::shm_info, py::arg("channel") = "")
+        .def("join_channel",      &ConsumerAPI::join_channel, py::arg("channel"))
+        .def("leave_channel",     &ConsumerAPI::leave_channel, py::arg("channel"))
+        .def("send_channel_msg",  &ConsumerAPI::send_channel_msg,
+             py::arg("channel"), py::arg("body"))
+        .def("channel_members",   &ConsumerAPI::channel_members, py::arg("channel"))
         .def("script_error_count", &ConsumerAPI::script_error_count)
         .def("in_slots_received",  &ConsumerAPI::in_slots_received)
         .def("loop_overrun_count", &ConsumerAPI::loop_overrun_count)

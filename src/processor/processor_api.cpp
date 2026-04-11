@@ -70,6 +70,29 @@ py::list ProcessorAPI::list_channels()
     return result;
 }
 
+py::object ProcessorAPI::join_channel(const std::string &channel)
+{
+    auto result = base_->join_channel(channel);
+    if (!result.has_value())
+        return py::none();
+    return py::module_::import("json").attr("loads")(result->dump());
+}
+
+void ProcessorAPI::send_channel_msg(const std::string &channel, py::dict body)
+{
+    auto json_mod = py::module_::import("json");
+    std::string body_str = json_mod.attr("dumps")(body).cast<std::string>();
+    base_->send_channel_msg(channel, nlohmann::json::parse(body_str));
+}
+
+py::object ProcessorAPI::channel_members(const std::string &channel)
+{
+    auto result = base_->channel_members(channel);
+    if (!result.has_value())
+        return py::none();
+    return py::module_::import("json").attr("loads")(result->dump());
+}
+
 py::object ProcessorAPI::shm_info(const std::string &channel)
 {
     const std::string json_str = base_->request_shm_info(channel);
@@ -230,6 +253,11 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
              py::arg("target_channel"), py::arg("message"), py::arg("data") = "")
         .def("list_channels",  &ProcessorAPI::list_channels)
         .def("shm_info",     &ProcessorAPI::shm_info, py::arg("channel") = "")
+        .def("join_channel",      &ProcessorAPI::join_channel, py::arg("channel"))
+        .def("leave_channel",     &ProcessorAPI::leave_channel, py::arg("channel"))
+        .def("send_channel_msg",  &ProcessorAPI::send_channel_msg,
+             py::arg("channel"), py::arg("body"))
+        .def("channel_members",   &ProcessorAPI::channel_members, py::arg("channel"))
         .def("script_error_count", &ProcessorAPI::script_error_count)
         .def("in_slots_received",  &ProcessorAPI::in_slots_received)
         .def("out_slots_written",  &ProcessorAPI::out_slots_written)

@@ -75,6 +75,13 @@ class ProducerAPI
                            const std::string &data)
         { base_->broadcast_channel(target, message, data); }
 
+    // ── Channel pub/sub (HEP-CORE-0030) ─────────────────────────────────
+
+    py::object join_channel(const std::string &channel);
+    bool leave_channel(const std::string &channel) { return base_->leave_channel(channel); }
+    void send_channel_msg(const std::string &channel, py::dict body);
+    py::object channel_members(const std::string &channel);
+
     py::list list_channels();
     py::object shm_info(const std::string &channel = {});
 
