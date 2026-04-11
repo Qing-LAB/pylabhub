@@ -55,22 +55,6 @@ py::list ProducerAPI::consumers()
     return lst;
 }
 
-py::list ProducerAPI::list_channels()
-{
-    py::list result;
-    for (auto &ch : base_->list_channels())
-    {
-        py::dict d;
-        d["name"]           = ch.value("name", "");
-        d["status"]         = ch.value("status", "");
-        d["schema_id"]      = ch.value("schema_id", "");
-        d["producer_uid"]   = ch.value("producer_uid", "");
-        d["consumer_count"] = ch.value("consumer_count", 0);
-        result.append(std::move(d));
-    }
-    return result;
-}
-
 // ── Channel pub/sub (HEP-CORE-0030) ──────────────────────────────────────────
 
 py::object ProducerAPI::join_channel(const std::string &channel)
@@ -94,16 +78,6 @@ py::object ProducerAPI::channel_members(const std::string &channel)
     if (!result.has_value())
         return py::none();
     return py::module_::import("json").attr("loads")(result->dump());
-}
-
-// ── Broker queries ───────────────────────────────────────────────────────────
-
-py::object ProducerAPI::shm_info(const std::string &channel)
-{
-    const std::string json_str = base_->request_shm_info(channel);
-    if (json_str.empty())
-        return py::none();
-    return py::module_::import("json").attr("loads")(json_str);
 }
 
 py::dict ProducerAPI::metrics() const
@@ -270,12 +244,6 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
              py::arg("identity"), py::arg("data"))
         .def("consumers",    &producer::ProducerAPI::consumers)
         .def("update_flexzone_checksum", &producer::ProducerAPI::update_flexzone_checksum)
-        .def("notify_channel",  &producer::ProducerAPI::notify_channel,
-             py::arg("target_channel"), py::arg("event"), py::arg("data") = "")
-        .def("broadcast_channel", &producer::ProducerAPI::broadcast_channel,
-             py::arg("target_channel"), py::arg("message"), py::arg("data") = "")
-        .def("list_channels",  &producer::ProducerAPI::list_channels)
-        .def("shm_info",      &producer::ProducerAPI::shm_info, py::arg("channel") = "")
         .def("join_channel",      &producer::ProducerAPI::join_channel, py::arg("channel"))
         .def("leave_channel",     &producer::ProducerAPI::leave_channel, py::arg("channel"))
         .def("send_channel_msg",  &producer::ProducerAPI::send_channel_msg,

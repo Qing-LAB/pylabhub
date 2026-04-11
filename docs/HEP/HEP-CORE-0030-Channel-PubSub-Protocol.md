@@ -265,7 +265,59 @@ def on_produce(slot, fz, msgs):
 
 ---
 
-## 8. Superseded Protocol Elements
+## 8. Message Body Conventions
+
+### 8.1 Intended Usage
+
+Channel traffic is **informational / coordination** — group-wide signals to
+coordinate actions and timing. It is expected to be **infrequent** relative
+to data-plane traffic. Examples: "calibration_done", "start_run",
+"pipeline_stage_ready".
+
+Schema-controlled, high-frequency, or point-to-point data exchange between
+roles **MUST NOT** use channels. Use the **inbox** (HEP-CORE-0027) for that:
+it provides schema enforcement, per-sender sequence numbers, and direct P2P
+delivery without broker fan-out.
+
+### 8.2 Target-Field Convention (client-side filtering)
+
+All channel messages are fan-out broadcasts — every member receives every
+message. There is no P2P channel send. When a sender wants to direct a
+message at a specific role, it includes a `target` (or `receiver`) field in
+the JSON body and **all members agree on a filter rule**:
+
+```json
+{
+  "target": "broadcast",         // or absent → all members act
+  "event": "start_run",
+  "params": {"duration_s": 60}
+}
+```
+
+```json
+{
+  "target": "PROD-Sensor-A1B2",  // specific role uid → only that role acts
+  "event": "recalibrate"
+}
+```
+
+**Filter rule (applied by each receiving script):**
+
+- `target` absent OR `target == "broadcast"` → every receiving member acts
+- `target == <my role_uid>` OR `target == <my role_name>` → only that role acts
+- Otherwise → ignore
+
+The broker **does not enforce or inspect** the target field. This is a
+purely client-side convention. The benefit: no separate P2P channel API
+is needed; coordination and targeted-coordination use the same primitive.
+
+`target` / `receiver` are both acceptable names — pick one per project and
+be consistent. The protocol reserves no other field names in the body;
+applications define their own schema.
+
+---
+
+## 9. Superseded Protocol Elements
 
 The following elements from HEP-CORE-0007 are superseded by this HEP:
 
@@ -282,7 +334,7 @@ The following elements from HEP-CORE-0007 are superseded by this HEP:
 
 ---
 
-## 9. Relationship to Other Systems
+## 10. Relationship to Other Systems
 
 | System | Relationship |
 |--------|-------------|
