@@ -3015,4 +3015,38 @@ TEST_F(PythonEngineTest, FullStartup_Processor_Multifield)
     pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
 }
 
+// ============================================================================
+// Channel pub/sub API — L2 (no broker; the 4 api methods must be callable
+// and return gracefully: None / False / no-op without any broker attached).
+// ============================================================================
+
+TEST_F(PythonEngineTest, Api_Channel_AllMethodsGraceful_NoBroker)
+{
+    write_script(
+        "results = {}\n"
+        "def on_produce(tx, msgs, api):\n"
+        "    results['join'] = api.join_channel('#l2_test')\n"
+        "    results['leave'] = api.leave_channel('#l2_test')\n"
+        "    api.send_channel_msg('#l2_test', {'hello': 'world'})\n"
+        "    results['send_ok'] = True\n"
+        "    results['members'] = api.channel_members('#l2_test')\n"
+        "    assert results['join'] is None, f\"join={results['join']}\"\n"
+        "    assert results['leave'] == False, f\"leave={results['leave']}\"\n"
+        "    assert results['members'] is None, f\"members={results['members']}\"\n"
+        "    return True\n");
+
+    PythonEngine engine;
+    ASSERT_TRUE(setup_engine(engine));
+
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_produce(
+        InvokeTx{&buf, sizeof(buf), nullptr, 0}, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit)
+        << "on_produce should commit: all 4 channel methods must return "
+           "gracefully (None/False/no-op) without a broker";
+
+    engine.finalize();
+}
+
 } // anonymous namespace

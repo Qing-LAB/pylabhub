@@ -750,4 +750,52 @@ TEST_F(NativeEngineTest, InvokeOnInbox_TypedData)
     engine.finalize();
 }
 
+// ============================================================================
+// Channel pub/sub API — L2 (no broker; the 4 function pointers must be
+// callable through the PlhNativeContext and return gracefully).
+//
+// The test plugin calls join_channel / leave_channel / send_channel_msg /
+// channel_members inside on_produce and reports results as custom metrics.
+// Without a broker wired to the RoleAPIBase, the expected behavior is:
+//   join_channel      → NULL  (nullopt from RoleAPIBase)
+//   leave_channel     → 0     (false)
+//   send_channel_msg  → no-op, returns cleanly
+//   channel_members   → NULL  (nullopt)
+// ============================================================================
+
+TEST_F(NativeEngineTest, Api_ChannelPubSub_NoBroker_GracefulReturn)
+{
+    NativeEngine engine;
+    ASSERT_TRUE(engine.initialize("test", &core_));
+
+    auto lib = good_plugin_path();
+    ASSERT_TRUE(engine.load_script(lib.parent_path(), lib.filename().string(),
+                                   "on_produce"));
+    auto spec = simple_schema();
+    ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+    core_.set_out_slot_spec(pylabhub::hub::SchemaSpec{spec},
+                            pylabhub::hub::compute_schema_size(spec, "aligned"));
+
+    auto test_api = make_native_api(core_);
+    ASSERT_TRUE(engine.build_api(*test_api));
+
+    // Invoke on_produce — plugin calls 4 channel functions and reports metrics.
+    float buf = 0.0f;
+    std::vector<IncomingMessage> msgs;
+    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf), nullptr, 0}, msgs);
+    EXPECT_EQ(result, InvokeResult::Commit);
+
+    auto metrics = core_.custom_metrics_snapshot();
+    EXPECT_EQ(static_cast<int>(metrics["test_channel_join_null"]), 1)
+        << "join_channel should return NULL without a broker";
+    EXPECT_EQ(static_cast<int>(metrics["test_channel_leave_zero"]), 1)
+        << "leave_channel should return 0 without a broker";
+    EXPECT_EQ(static_cast<int>(metrics["test_channel_send_ok"]), 1)
+        << "send_channel_msg must not crash without a broker";
+    EXPECT_EQ(static_cast<int>(metrics["test_channel_members_null"]), 1)
+        << "channel_members should return NULL without a broker";
+
+    engine.finalize();
+}
+
 } // anonymous namespace
