@@ -173,6 +173,8 @@ add_executable(test_layer3_datahub
     test_datahub_broker_request_channel.cpp
     workers/datahub_engine_workers.cpp
     workers/datahub_broker_request_channel_workers.cpp
+    test_datahub_channel_group.cpp
+    workers/datahub_channel_group_workers.cpp
 )
 
 target_include_directories(test_layer3_datahub PRIVATE

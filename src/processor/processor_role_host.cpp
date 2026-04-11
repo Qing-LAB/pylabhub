@@ -352,6 +352,8 @@ void ProcessorRoleHost::worker_main_()
         bc_cfg.broker_pubkey   = config_.out_hub().broker_pubkey;
         bc_cfg.client_pubkey   = config_.auth().client_pubkey;
         bc_cfg.client_seckey   = config_.auth().client_seckey;
+        bc_cfg.role_uid        = config_.identity().uid;
+        bc_cfg.role_name       = config_.identity().name;
         if (!bc_cfg.broker_endpoint.empty())
             broker_channel_->connect(bc_cfg);
         api_->set_broker_channel(broker_channel_.get());

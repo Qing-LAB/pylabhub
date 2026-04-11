@@ -96,6 +96,10 @@ struct BrokerRequestChannel::Impl
     NotificationCallback on_notification_cb;
     std::function<void()> on_hub_dead_cb;
 
+    // Identity (from Config, used by channel join/leave/msg).
+    std::string role_uid;
+    std::string role_name;
+
     // Periodic tasks (added before run_poll_loop, consumed during run).
     std::vector<scripting::PeriodicTask> periodic_tasks;
     std::atomic<bool> poll_loop_running{false};
@@ -394,6 +398,8 @@ bool BrokerRequestChannel::connect(const Config &cfg)
             }
         });
 
+        pImpl->role_uid = cfg.role_uid;
+        pImpl->role_name = cfg.role_name;
         pImpl->connected.store(true, std::memory_order_release);
         pImpl->stop_requested.store(false, std::memory_order_release);
 
@@ -678,6 +684,51 @@ BrokerRequestChannel::query_shm_info(const std::string &channel, int timeout_ms)
     payload["channel"] = channel;
     return pImpl->do_request( "SHM_BLOCK_QUERY_REQ", "SHM_BLOCK_QUERY_ACK",
                       std::move(payload), timeout_ms);
+}
+
+// ============================================================================
+// Channel pub/sub messaging (HEP-CORE-0030)
+// ============================================================================
+
+std::optional<nlohmann::json>
+BrokerRequestChannel::join_channel(const std::string &channel, int timeout_ms)
+{
+    nlohmann::json payload;
+    payload["channel"] = channel;
+    payload["role_uid"] = pImpl->role_uid;
+    payload["role_name"] = pImpl->role_name;
+    return pImpl->do_request("CHANNEL_JOIN_REQ", "CHANNEL_JOIN_ACK",
+                             std::move(payload), timeout_ms);
+}
+
+bool BrokerRequestChannel::leave_channel(const std::string &channel, int timeout_ms)
+{
+    nlohmann::json payload;
+    payload["channel"] = channel;
+    payload["role_uid"] = pImpl->role_uid;
+    auto result = pImpl->do_request("CHANNEL_LEAVE_REQ", "CHANNEL_LEAVE_ACK",
+                                    std::move(payload), timeout_ms);
+    return result.has_value() && result->value("status", "") == "success";
+}
+
+void BrokerRequestChannel::send_channel_msg(const std::string &channel,
+                                             const nlohmann::json &body)
+{
+    nlohmann::json payload;
+    payload["channel"] = channel;
+    payload["sender_uid"] = pImpl->role_uid;
+    payload["body"] = body;
+    pImpl->cmd_queue.push(SendCmd{"CHANNEL_MSG_REQ", std::move(payload)});
+}
+
+std::optional<nlohmann::json>
+BrokerRequestChannel::query_channel_members(const std::string &channel,
+                                             int timeout_ms)
+{
+    nlohmann::json payload;
+    payload["channel"] = channel;
+    return pImpl->do_request("CHANNEL_MEMBERS_REQ", "CHANNEL_MEMBERS_ACK",
+                             std::move(payload), timeout_ms);
 }
 
 } // namespace pylabhub::hub
