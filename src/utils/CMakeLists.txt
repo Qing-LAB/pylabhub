@@ -71,6 +71,7 @@ set(UTILS_SOURCES
   network_comm/broker_request_channel.cpp
 
   # --- ipc: Messenger (legacy, to be removed), channel registry, broker ---
+  ipc/channel_group_registry.cpp
   ipc/messenger.cpp
   ipc/messenger_protocol.cpp
   ipc/heartbeat_manager.cpp
