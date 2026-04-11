@@ -29,3 +29,9 @@ TEST_F(ChannelGroupTest, JoinNotification)
     auto proc = SpawnWorker("channel_group.join_notify", {});
     ExpectWorkerOk(proc);
 }
+
+TEST_F(ChannelGroupTest, RoleAPIBaseChannelIntegration)
+{
+    auto proc = SpawnWorker("channel_group.roleapi_channel", {});
+    ExpectWorkerOk(proc);
+}
