@@ -736,9 +736,9 @@ Messages are grouped into four categories based on their flow pattern:
 | Category | Pattern | Examples |
 |----------|---------|---------|
 | **Request/Response** | Client → Broker → Client | REG_REQ/ACK, DISC_REQ/ACK, CHANNEL_LIST_REQ/ACK, METRICS_REQ/ACK, ROLE_PRESENCE_REQ/ACK, ROLE_INFO_REQ/ACK |
-| **Fire-and-Forget** | Client → Broker (no reply) | HEARTBEAT_REQ, CHECKSUM_ERROR_REPORT, CHANNEL_NOTIFY_REQ, CHANNEL_BROADCAST_REQ, METRICS_REPORT_REQ |
-| **Unsolicited Push** | Broker → Client (async) | CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, CHANNEL_ERROR_NOTIFY, CHANNEL_EVENT_NOTIFY, CHANNEL_BROADCAST_NOTIFY, ROLE_REGISTERED_NOTIFY, ROLE_DEREGISTERED_NOTIFY |
-| **Peer-to-Peer** | Producer ↔ Consumer (direct ZMQ) | HELLO, BYE, application ctrl messages |
+| **Fire-and-Forget** | Client → Broker (no reply) | HEARTBEAT_REQ, CHECKSUM_ERROR_REPORT, CHANNEL_MSG_REQ, METRICS_REPORT_REQ |
+| **Unsolicited Push** | Broker → Client (async) | CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, CHANNEL_JOIN_NOTIFY, CHANNEL_LEAVE_NOTIFY, CHANNEL_MSG_NOTIFY, ROLE_REGISTERED_NOTIFY, ROLE_DEREGISTERED_NOTIFY |
+| **Channel Pub/Sub** | Role → Broker → Members (HEP-CORE-0030) | CHANNEL_JOIN_REQ/ACK, CHANNEL_LEAVE_REQ/ACK, CHANNEL_MSG_REQ, CHANNEL_MEMBERS_REQ/ACK |
 
 ### 12.3 Request/Response Messages
 
@@ -963,48 +963,15 @@ Payload:
   reporter_pid          uint64
 ```
 
-#### CHANNEL_NOTIFY_REQ — Application-Level Signal Relay (NEW)
+#### ~~CHANNEL_NOTIFY_REQ~~ — **REMOVED** (superseded by HEP-CORE-0030)
 
-```
-Direction:  Any role → Broker → Target channel's producer
-Trigger:    api.notify_channel(target_channel, event, data)
-Effect:     Broker looks up target channel, forwards as CHANNEL_EVENT_NOTIFY to producer
+Replaced by `CHANNEL_MSG_REQ` in the new channel pub/sub protocol.
+See HEP-CORE-0030 §5.2 for the replacement.
 
-Payload:
-  target_channel        string   Channel name to notify
-  sender_uid            string   UID of the sending role
-  event                 string   Application-defined event name (e.g. "consumer_ready")
-  data                  string   (opt) User data string (passthrough, may be empty)
+#### ~~CHANNEL_BROADCAST_REQ~~ — **REMOVED** (superseded by HEP-CORE-0030)
 
-Use cases:
-  - Consumer signals upstream producer: "pipeline_ready"
-  - Processor notifies downstream: "batch_complete"
-  - Cross-pipeline coordination signals
-```
-
-#### CHANNEL_BROADCAST_REQ — Application-Level Broadcast to All Members
-
-```
-Direction:  Any role / Admin shell → Broker → ALL channel members (producer + consumers)
-Trigger:    api.broadcast_channel(target_channel, message, data)
-            OR pylabhub.broadcast_channel(channel, message, data)  (admin shell)
-Effect:     Broker fans out as CHANNEL_BROADCAST_NOTIFY to every member of the channel
-
-Payload:
-  target_channel        string   Channel name to broadcast to
-  sender_uid            string   UID of the sending role (or "admin_shell")
-  message               string   Application-defined message tag (e.g. "start", "stop")
-  data                  string   (opt) User data string (per Data Packaging Agreement)
-
-Use cases:
-  - Admin shell triggers pipeline start/stop
-  - Any role broadcasts coordination signals to all channel members
-  - Hub-wide status notifications
-
-Difference from CHANNEL_NOTIFY_REQ:
-  - CHANNEL_NOTIFY_REQ → producer only (unicast)
-  - CHANNEL_BROADCAST_REQ → all members (fan-out: consumers + producer)
-```
+Replaced by `CHANNEL_MSG_REQ` in the new channel pub/sub protocol.
+See HEP-CORE-0030 §5.2 for the replacement.
 
 #### METRICS_REPORT_REQ — Consumer Metrics Report (HEP-CORE-0019)
 
@@ -1199,64 +1166,15 @@ Script host delivery: Event dict in msgs:
   {"event": "channel_error", "error": "<event_string>", ...details}
 ```
 
-#### CHANNEL_EVENT_NOTIFY — Category 2 Informational Event
+#### ~~CHANNEL_EVENT_NOTIFY~~ — **REMOVED** (superseded by HEP-CORE-0030)
 
-```
-Direction:  Broker → Channel participants
-Trigger:    Checksum error forwarding (NotifyOnly policy), CHANNEL_NOTIFY_REQ relay
-Effect:     Informational — no automatic shutdown
-Callback:   Messenger::on_channel_error(channel, cb)  ← SAME callback as CHANNEL_ERROR_NOTIFY
-            (both Cat 1 and Cat 2 share the same dispatch path)
+Replaced by `CHANNEL_MSG_NOTIFY` in the new channel pub/sub protocol.
+See HEP-CORE-0030 §5.3 for the replacement.
 
-Payload:
-  channel_name          string
-  event                 string   e.g. "checksum_error", "consumer_ready" (from relay)
-  sender_uid            string   (present when relayed from CHANNEL_NOTIFY_REQ)
-  ...                   json     Additional context
+#### ~~CHANNEL_BROADCAST_NOTIFY~~ — **REMOVED** (superseded by HEP-CORE-0030)
 
-Script host delivery: Event dict in msgs:
-  {"event": "<event_string>", "detail": "<event_string>", "sender_uid": "...", ...body_fields}
-
-Note: The body from the broker includes "event" in its JSON fields. When the script host
-converts IncomingMessage to a Python dict, the broker body fields are iterated and added
-to the dict. Since the broker body's "event" field (e.g. "consumer_ready") overwrites
-the script host's initial d["event"]="channel_event", the Python script sees:
-  m["event"] = the broker's event string (e.g. "consumer_ready", "checksum_error")
-  m["detail"] = same string (added by script host from the callback's event parameter)
-
-Distinguishing system vs application events:
-  - System events: sender_uid absent, event is a known system string
-  - Application events: sender_uid present (from CHANNEL_NOTIFY_REQ relay)
-```
-
-#### CHANNEL_BROADCAST_NOTIFY — Broadcast Delivery
-
-```
-Direction:  Broker → ALL channel members (producer + consumers)
-Trigger:    CHANNEL_BROADCAST_REQ received (from role or admin shell queue)
-Effect:     Each member receives the broadcast in its on_channel_error callback
-Callback:   Messenger::on_channel_error(channel, cb)  ← same dispatch path as
-            CHANNEL_ERROR_NOTIFY and CHANNEL_EVENT_NOTIFY
-
-Payload (wire format):
-  channel_name          string   Channel name
-  event                 string   "broadcast"
-  sender_uid            string   UID of the sender (or "admin_shell")
-  message               string   Application message tag
-  data                  string   (opt) User data string (per Data Packaging Agreement)
-
-Script host delivery: Event dict in msgs:
-  {"event": "broadcast", "detail": "broadcast", "sender_uid": "...",
-   "channel_name": "...", "message": "...", "data": "..."}
-
-Note: The "data" field is a plain string passed through transparently by the
-framework. If the sender passed data="world", the receiver gets "world". If the
-sender needs structured data, they encode it as JSON themselves.
-
-Symmetric delivery: Unlike CHANNEL_NOTIFY_REQ (producer-only), broadcast is
-delivered to ALL members — both producer and consumers. Both roles receive
-identical event dicts.
-```
+Replaced by `CHANNEL_MSG_NOTIFY` in the new channel pub/sub protocol.
+See HEP-CORE-0030 §5.3 for the replacement.
 
 #### ROLE_REGISTERED_NOTIFY — Role Registration Event (added 2026-03-10)
 
