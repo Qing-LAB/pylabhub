@@ -71,6 +71,33 @@ py::list ProducerAPI::list_channels()
     return result;
 }
 
+// ── Channel pub/sub (HEP-CORE-0030) ──────────────────────────────────────────
+
+py::object ProducerAPI::join_channel(const std::string &channel)
+{
+    auto result = base_->join_channel(channel);
+    if (!result.has_value())
+        return py::none();
+    return py::module_::import("json").attr("loads")(result->dump());
+}
+
+void ProducerAPI::send_channel_msg(const std::string &channel, py::dict body)
+{
+    auto json_mod = py::module_::import("json");
+    std::string body_str = json_mod.attr("dumps")(body).cast<std::string>();
+    base_->send_channel_msg(channel, nlohmann::json::parse(body_str));
+}
+
+py::object ProducerAPI::channel_members(const std::string &channel)
+{
+    auto result = base_->channel_members(channel);
+    if (!result.has_value())
+        return py::none();
+    return py::module_::import("json").attr("loads")(result->dump());
+}
+
+// ── Broker queries ───────────────────────────────────────────────────────────
+
 py::object ProducerAPI::shm_info(const std::string &channel)
 {
     const std::string json_str = base_->request_shm_info(channel);
@@ -249,6 +276,11 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
              py::arg("target_channel"), py::arg("message"), py::arg("data") = "")
         .def("list_channels",  &producer::ProducerAPI::list_channels)
         .def("shm_info",      &producer::ProducerAPI::shm_info, py::arg("channel") = "")
+        .def("join_channel",      &producer::ProducerAPI::join_channel, py::arg("channel"))
+        .def("leave_channel",     &producer::ProducerAPI::leave_channel, py::arg("channel"))
+        .def("send_channel_msg",  &producer::ProducerAPI::send_channel_msg,
+             py::arg("channel"), py::arg("body"))
+        .def("channel_members",   &producer::ProducerAPI::channel_members, py::arg("channel"))
         .def("script_error_count", &producer::ProducerAPI::script_error_count)
         .def("out_slots_written",  &producer::ProducerAPI::out_slots_written)
         .def("out_drop_count",     &producer::ProducerAPI::out_drop_count)
