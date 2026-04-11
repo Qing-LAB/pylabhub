@@ -9,6 +9,9 @@
 
 #include "utils/broker_request_channel.hpp"
 #include "utils/broker_service.hpp"
+#include "utils/role_api_base.hpp"
+#include "utils/role_host_core.hpp"
+#include "utils/script_engine.hpp"
 #include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
 #include "plh_datahub.hpp"
@@ -260,6 +263,136 @@ int channel_join_notify()
 }
 
 // ============================================================================
+// Worker: RoleAPIBase channel integration — full path test
+// ============================================================================
+
+int roleapi_channel()
+{
+    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module());
+    utils::LifecycleGuard guard(std::move(mods));
+
+    auto broker = start_broker();
+
+    // Set up two RoleAPIBases, each with its own BrokerRequestChannel.
+    scripting::RoleHostCore core1, core2;
+    core1.set_running(true);
+    core2.set_running(true);
+
+    auto api1 = std::make_unique<scripting::RoleAPIBase>(core1);
+    auto api2 = std::make_unique<scripting::RoleAPIBase>(core2);
+    api1->set_role_tag("role_a");
+    api1->set_uid("ROLE-A-100");
+    api2->set_role_tag("role_b");
+    api2->set_uid("ROLE-B-200");
+
+    auto bc1 = std::make_unique<BrokerRequestChannel>();
+    auto bc2 = std::make_unique<BrokerRequestChannel>();
+
+    BrokerRequestChannel::Config bc_cfg;
+    bc_cfg.broker_endpoint = broker.endpoint;
+    bc_cfg.broker_pubkey = broker.pubkey;
+
+    bc_cfg.role_uid = "ROLE-A-100";
+    bc_cfg.role_name = "role_a";
+    EXPECT_TRUE(bc1->connect(bc_cfg));
+
+    bc_cfg.role_uid = "ROLE-B-200";
+    bc_cfg.role_name = "role_b";
+    EXPECT_TRUE(bc2->connect(bc_cfg));
+
+    api1->set_broker_channel(bc1.get());
+    api2->set_broker_channel(bc2.get());
+
+    // Start broker threads (uses start_broker_thread which wires notifications).
+    // We need a minimal engine for ThreadEngineGuard — use NativeEngine stub.
+    // Actually, start_broker_thread needs engine for on_heartbeat.
+    // For this test, run poll loops directly in separate threads.
+
+    std::atomic<bool> running1{true}, running2{true};
+
+    // Wire notifications manually (start_broker_thread does this, but we
+    // can't call it without an engine — do it directly).
+    bc1->on_notification([&core1](const std::string &type, const nlohmann::json &body) {
+        scripting::IncomingMessage msg;
+        msg.event = type;
+        msg.details = body;
+        core1.enqueue_message(std::move(msg));
+    });
+    bc2->on_notification([&core2](const std::string &type, const nlohmann::json &body) {
+        scripting::IncomingMessage msg;
+        msg.event = type;
+        msg.details = body;
+        core2.enqueue_message(std::move(msg));
+    });
+
+    std::thread t1([&] { bc1->run_poll_loop([&] { return running1.load(); }); });
+    std::thread t2([&] { bc2->run_poll_loop([&] { return running2.load(); }); });
+
+    // Role A joins channel via RoleAPIBase.
+    auto join1 = api1->join_channel("#api_test_ch");
+    EXPECT_TRUE(join1.has_value()) << "join_channel failed";
+
+    // Role B joins — Role A should get CHANNEL_JOIN_NOTIFY.
+    auto join2 = api2->join_channel("#api_test_ch");
+    EXPECT_TRUE(join2.has_value());
+
+    // Wait for notification to arrive in core1's message queue.
+    bool got_notify = pylabhub::tests::helper::poll_until(
+        [&] {
+            auto msgs = core1.drain_messages();
+            for (const auto &m : msgs)
+            {
+                if (m.event == "CHANNEL_JOIN_NOTIFY")
+                    return true;
+            }
+            return false;
+        },
+        std::chrono::seconds{3});
+    EXPECT_TRUE(got_notify) << "CHANNEL_JOIN_NOTIFY not received in core1";
+
+    // Role A sends a channel message via RoleAPIBase.
+    api1->send_channel_msg("#api_test_ch", {{"action", "start"}, {"seq", 1}});
+
+    // Wait for Role B to receive CHANNEL_MSG_NOTIFY.
+    bool got_msg = pylabhub::tests::helper::poll_until(
+        [&] {
+            auto msgs = core2.drain_messages();
+            for (const auto &m : msgs)
+            {
+                if (m.event == "CHANNEL_MSG_NOTIFY")
+                    return true;
+            }
+            return false;
+        },
+        std::chrono::seconds{3});
+    EXPECT_TRUE(got_msg) << "CHANNEL_MSG_NOTIFY not received in core2";
+
+    // Query members via RoleAPIBase.
+    auto members = api1->channel_members("#api_test_ch");
+    EXPECT_TRUE(members.has_value());
+    if (members)
+    {
+        auto mlist = (*members)["members"];
+        EXPECT_EQ(mlist.size(), 2u);
+    }
+
+    // Leave via RoleAPIBase.
+    bool left = api1->leave_channel("#api_test_ch");
+    EXPECT_TRUE(left);
+
+    running1.store(false);
+    running2.store(false);
+    bc1->stop();
+    bc2->stop();
+    t1.join();
+    t2.join();
+    bc1->disconnect();
+    bc2->disconnect();
+    broker.stop_and_join();
+    return ::testing::Test::HasFailure() ? 1 : 0;
+}
+
+// ============================================================================
 // Worker dispatcher
 // ============================================================================
 
@@ -284,6 +417,8 @@ struct ChannelGroupWorkerRegistrar
                     return channel_msg_fanout();
                 if (scenario == "join_notify")
                     return channel_join_notify();
+                if (scenario == "roleapi_channel")
+                    return roleapi_channel();
                 return -1;
             });
     }

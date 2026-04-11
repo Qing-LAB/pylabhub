@@ -164,6 +164,24 @@ void RoleAPIBase::start_broker_thread(const BrokerThreadConfig &cfg)
         return;
     }
 
+    // Wire broker notification callback → core_.enqueue_message().
+    // Channel notifications (JOIN/LEAVE/MSG_NOTIFY) and broker lifecycle
+    // notifications all arrive here and become entries in the script's msgs.
+    bc->on_notification([core](const std::string &type, const nlohmann::json &body) {
+        IncomingMessage msg;
+        msg.event = type;
+        msg.details = body;
+        core->enqueue_message(std::move(msg));
+    });
+
+    // Wire hub-dead callback.
+    const auto &tag = pImpl->role_tag;
+    bc->on_hub_dead([core, tag]() {
+        LOGGER_WARN("[{}] hub-dead: BrokerRequestChannel connection lost", tag);
+        core->set_stop_reason(RoleHostCore::StopReason::HubDead);
+        core->request_stop();
+    });
+
     spawn_thread("broker", [=, this]()
     {
         const bool has_hb = eng->has_callback("on_heartbeat");
@@ -655,6 +673,38 @@ std::string RoleAPIBase::request_shm_info(const std::string &channel)
     if (!pImpl->messenger)
         return {};
     return pImpl->messenger->request_shm_info(channel);
+}
+
+// ============================================================================
+// Channel pub/sub (HEP-CORE-0030)
+// ============================================================================
+
+std::optional<nlohmann::json> RoleAPIBase::join_channel(const std::string &channel)
+{
+    if (!pImpl->broker_channel)
+        return std::nullopt;
+    return pImpl->broker_channel->join_channel(channel);
+}
+
+bool RoleAPIBase::leave_channel(const std::string &channel)
+{
+    if (!pImpl->broker_channel)
+        return false;
+    return pImpl->broker_channel->leave_channel(channel);
+}
+
+void RoleAPIBase::send_channel_msg(const std::string &channel,
+                                    const nlohmann::json &body)
+{
+    if (pImpl->broker_channel)
+        pImpl->broker_channel->send_channel_msg(channel, body);
+}
+
+std::optional<nlohmann::json> RoleAPIBase::channel_members(const std::string &channel)
+{
+    if (!pImpl->broker_channel)
+        return std::nullopt;
+    return pImpl->broker_channel->query_channel_members(channel);
 }
 
 // ============================================================================

@@ -204,6 +204,23 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] std::vector<nlohmann::json> list_channels();
     [[nodiscard]] std::string request_shm_info(const std::string &channel = {});
 
+    // ── Channel pub/sub messaging (HEP-CORE-0030) ─────────────────────────────
+
+    /// Join a named channel. Auto-creates if it doesn't exist.
+    [[nodiscard]] std::optional<nlohmann::json>
+    join_channel(const std::string &channel);
+
+    /// Leave a channel.
+    bool leave_channel(const std::string &channel);
+
+    /// Send JSON message to all channel members.
+    void send_channel_msg(const std::string &channel,
+                          const nlohmann::json &body);
+
+    /// Query channel member list.
+    [[nodiscard]] std::optional<nlohmann::json>
+    channel_members(const std::string &channel);
+
     // ── Messaging (any role → any role's inbox) ───────────────────────────────
 
     bool broadcast(const void *data, size_t size);
