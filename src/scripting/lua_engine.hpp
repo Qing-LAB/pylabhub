@@ -208,11 +208,11 @@ class LuaEngine : public ScriptEngine
     // ── Group E: broker operations ────────────────────────────────────
     static int lua_api_clear_inbox_cache(lua_State *L);
 
-    // ── Group G: channel pub/sub (HEP-CORE-0030) ────────────────────────
-    static int lua_api_join_channel(lua_State *L);
-    static int lua_api_leave_channel(lua_State *L);
-    static int lua_api_send_channel_msg(lua_State *L);
-    static int lua_api_channel_members(lua_State *L);
+    // ── Group G: band pub/sub (HEP-CORE-0030) ─────────────────────────
+    static int lua_api_band_join(lua_State *L);
+    static int lua_api_band_leave(lua_State *L);
+    static int lua_api_band_broadcast(lua_State *L);
+    static int lua_api_band_members(lua_State *L);
 
     // ── Group F: schema sizes + spinlocks (SHM-only) ──────────────────
     static int lua_api_slot_logical_size(lua_State *L);

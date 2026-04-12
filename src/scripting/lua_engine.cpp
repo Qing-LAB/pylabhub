@@ -1206,11 +1206,11 @@ void LuaEngine::push_common_api_closures_(lua_State *L)
     push_closure("report_metrics", lua_api_report_metrics);
     push_closure("clear_custom_metrics", lua_api_clear_custom_metrics);
 
-    // Channel pub/sub (HEP-CORE-0030).
-    push_closure("join_channel", lua_api_join_channel);
-    push_closure("leave_channel", lua_api_leave_channel);
-    push_closure("send_channel_msg", lua_api_send_channel_msg);
-    push_closure("channel_members", lua_api_channel_members);
+    // Band pub/sub (HEP-CORE-0030).
+    push_closure("band_join", lua_api_band_join);
+    push_closure("band_leave", lua_api_band_leave);
+    push_closure("band_broadcast", lua_api_band_broadcast);
+    push_closure("band_members", lua_api_band_members);
 
     // String fields as direct table entries.
     lua_pushstring(L, api_->log_level().c_str());
@@ -1712,13 +1712,13 @@ int LuaEngine::lua_api_clear_inbox_cache(lua_State *L)
     return 0;
 }
 
-// ── Channel pub/sub (HEP-CORE-0030) ──────────────────────────────────────────
+// ── Band pub/sub (HEP-CORE-0030) ─────────────────────────────────────────────
 
-int LuaEngine::lua_api_join_channel(lua_State *L)
+int LuaEngine::lua_api_band_join(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     const char *channel = luaL_checkstring(L, 1);
-    auto result = self->api_->join_channel(channel);
+    auto result = self->api_->band_join(channel);
     if (!result.has_value())
     {
         lua_pushnil(L);
@@ -1728,30 +1728,30 @@ int LuaEngine::lua_api_join_channel(lua_State *L)
     return 1;
 }
 
-int LuaEngine::lua_api_leave_channel(lua_State *L)
+int LuaEngine::lua_api_band_leave(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     const char *channel = luaL_checkstring(L, 1);
-    bool ok = self->api_->leave_channel(channel);
+    bool ok = self->api_->band_leave(channel);
     lua_pushboolean(L, ok ? 1 : 0);
     return 1;
 }
 
-int LuaEngine::lua_api_send_channel_msg(lua_State *L)
+int LuaEngine::lua_api_band_broadcast(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     const char *channel = luaL_checkstring(L, 1);
     luaL_checktype(L, 2, LUA_TTABLE);
     nlohmann::json body = lua_to_json(L, 2);
-    self->api_->send_channel_msg(channel, body);
+    self->api_->band_broadcast(channel, body);
     return 0;
 }
 
-int LuaEngine::lua_api_channel_members(lua_State *L)
+int LuaEngine::lua_api_band_members(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     const char *channel = luaL_checkstring(L, 1);
-    auto result = self->api_->channel_members(channel);
+    auto result = self->api_->band_members(channel);
     if (!result.has_value())
     {
         lua_pushnil(L);

@@ -7,7 +7,7 @@
 | **Status**    | Implemented — Phase 1 + Layer 4 tests (2026-03-02)                       |
 | **Created**   | 2026-03-01                                                               |
 | **Area**      | Data Components (`src/producer/`, `src/consumer/`)                       |
-| **Depends on**| HEP-CORE-0002 (DataHub), HEP-CORE-0007 (Protocol), HEP-CORE-0008 (LoopPolicy), HEP-CORE-0011 (ScriptHost), HEP-CORE-0013 (Channel Identity), HEP-CORE-0016 (Named Schema Registry), HEP-CORE-0030 (Channel Pub/Sub) |
+| **Depends on**| HEP-CORE-0002 (DataHub), HEP-CORE-0007 (Protocol), HEP-CORE-0008 (LoopPolicy), HEP-CORE-0011 (ScriptHost), HEP-CORE-0013 (Channel Identity), HEP-CORE-0016 (Named Schema Registry), HEP-CORE-0030 (Band Messaging) |
 | **Supersedes**| HEP-CORE-0010 (Actor Thread Model), HEP-CORE-0014 (Actor Framework Design) |
 
 ---
@@ -1060,7 +1060,7 @@ Role Host (ProducerRoleHost / ConsumerRoleHost / ProcessorRoleHost)
     │
     ├── Data plane:    queue_writer() / queue_reader()          ← QueueWriter / QueueReader
     ├── Broker plane:  BrokerRequestChannel                     ← broker DEALER, managed thread
-    ├── Channel plane: api.join_channel / send_channel_msg      ← HEP-CORE-0030 pub/sub
+    ├── Band plane:    api.band_join / band_broadcast            ← HEP-CORE-0030 pub/sub
     └── Inbox plane:   InboxQueue (ROUTER bind)                 ← role host owns directly
 ```
 

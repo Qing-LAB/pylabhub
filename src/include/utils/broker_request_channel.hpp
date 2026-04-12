@@ -149,22 +149,22 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestChannel
     [[nodiscard]] std::optional<nlohmann::json>
     query_shm_info(const std::string &channel, int timeout_ms = 5000);
 
-    // ── Channel pub/sub messaging (HEP-CORE-0030) ───────────────────────
+    // ── Band pub/sub messaging (HEP-CORE-0030) ────────────────────────
 
-    /// Join a channel (auto-creates if it doesn't exist). Returns member list.
+    /// Join a band (auto-creates if it doesn't exist). Returns member list.
     [[nodiscard]] std::optional<nlohmann::json>
-    join_channel(const std::string &channel, int timeout_ms = 5000);
+    band_join(const std::string &channel, int timeout_ms = 5000);
 
-    /// Leave a channel.
-    bool leave_channel(const std::string &channel, int timeout_ms = 5000);
+    /// Leave a band.
+    bool band_leave(const std::string &channel, int timeout_ms = 5000);
 
-    /// Send JSON message to all channel members (fire-and-forget).
-    void send_channel_msg(const std::string &channel,
-                          const nlohmann::json &body);
+    /// Broadcast JSON message to all band members (fire-and-forget).
+    void band_broadcast(const std::string &channel,
+                        const nlohmann::json &body);
 
-    /// Query current channel member list.
+    /// Query current band member list.
     [[nodiscard]] std::optional<nlohmann::json>
-    query_channel_members(const std::string &channel, int timeout_ms = 5000);
+    band_members(const std::string &channel, int timeout_ms = 5000);
 
   private:
     struct Impl;

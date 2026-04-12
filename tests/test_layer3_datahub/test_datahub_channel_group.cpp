@@ -1,6 +1,6 @@
 /**
  * @file test_datahub_channel_group.cpp
- * @brief L3 tests for channel pub/sub messaging (HEP-CORE-0030).
+ * @brief L3 tests for band pub/sub messaging (HEP-CORE-0030).
  */
 #include "test_patterns.h"
 #include "test_process_utils.h"

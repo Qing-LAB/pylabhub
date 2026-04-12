@@ -222,7 +222,7 @@ size_t ctx_flexzone_logical_size(const PlhNativeContext *ctx, int side)
     catch (...) { return 0; }
 }
 
-// ── Channel messaging functions ─────────────────────────────────────────────
+// ── Channel/role messaging functions ────────────────────────────────────────
 
 int ctx_wait_for_role(const PlhNativeContext *ctx, const char *uid, int timeout_ms)
 {
@@ -230,12 +230,12 @@ int ctx_wait_for_role(const PlhNativeContext *ctx, const char *uid, int timeout_
     return static_cast<RoleAPIBase *>(ctx->_api)->wait_for_role(uid, timeout_ms) ? 1 : 0;
 }
 
-// ── Channel pub/sub (HEP-CORE-0030) ──────────────────────────────────────────
+// ── Band pub/sub (HEP-CORE-0030) ─────────────────────────────────────────────
 
-char *ctx_join_channel(const PlhNativeContext *ctx, const char *channel)
+char *ctx_band_join(const PlhNativeContext *ctx, const char *channel)
 {
     if (!ctx || !ctx->_api || !channel) return nullptr;
-    auto result = static_cast<RoleAPIBase *>(ctx->_api)->join_channel(channel);
+    auto result = static_cast<RoleAPIBase *>(ctx->_api)->band_join(channel);
     if (!result.has_value()) return nullptr;
     auto s = result->dump();
     char *out = static_cast<char *>(malloc(s.size() + 1));
@@ -243,27 +243,27 @@ char *ctx_join_channel(const PlhNativeContext *ctx, const char *channel)
     return out;
 }
 
-int ctx_leave_channel(const PlhNativeContext *ctx, const char *channel)
+int ctx_band_leave(const PlhNativeContext *ctx, const char *channel)
 {
     if (!ctx || !ctx->_api || !channel) return 0;
-    return static_cast<RoleAPIBase *>(ctx->_api)->leave_channel(channel) ? 1 : 0;
+    return static_cast<RoleAPIBase *>(ctx->_api)->band_leave(channel) ? 1 : 0;
 }
 
-void ctx_send_channel_msg(const PlhNativeContext *ctx, const char *channel, const char *body_json)
+void ctx_band_broadcast(const PlhNativeContext *ctx, const char *channel, const char *body_json)
 {
     if (!ctx || !ctx->_api || !channel || !body_json) return;
     try
     {
         auto body = nlohmann::json::parse(body_json);
-        static_cast<RoleAPIBase *>(ctx->_api)->send_channel_msg(channel, body);
+        static_cast<RoleAPIBase *>(ctx->_api)->band_broadcast(channel, body);
     }
     catch (const nlohmann::json::exception &) {}
 }
 
-char *ctx_channel_members(const PlhNativeContext *ctx, const char *channel)
+char *ctx_band_members(const PlhNativeContext *ctx, const char *channel)
 {
     if (!ctx || !ctx->_api || !channel) return nullptr;
-    auto result = static_cast<RoleAPIBase *>(ctx->_api)->channel_members(channel);
+    auto result = static_cast<RoleAPIBase *>(ctx->_api)->band_members(channel);
     if (!result.has_value()) return nullptr;
     auto s = result->dump();
     char *out = static_cast<char *>(malloc(s.size() + 1));
@@ -339,11 +339,11 @@ struct NativeEngine::NativeContextStorage
 
         ctx.wait_for_role  = ctx_wait_for_role;
 
-        // Channel pub/sub (HEP-CORE-0030)
-        ctx.join_channel      = ctx_join_channel;
-        ctx.leave_channel     = ctx_leave_channel;
-        ctx.send_channel_msg  = ctx_send_channel_msg;
-        ctx.channel_members   = ctx_channel_members;
+        // Band pub/sub (HEP-CORE-0030)
+        ctx.band_join      = ctx_band_join;
+        ctx.band_leave     = ctx_band_leave;
+        ctx.band_broadcast = ctx_band_broadcast;
+        ctx.band_members   = ctx_band_members;
     }
 };
 

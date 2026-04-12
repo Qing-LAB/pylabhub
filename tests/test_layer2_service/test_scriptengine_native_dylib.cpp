@@ -751,19 +751,19 @@ TEST_F(NativeEngineTest, InvokeOnInbox_TypedData)
 }
 
 // ============================================================================
-// Channel pub/sub API — L2 (no broker; the 4 function pointers must be
+// Band pub/sub API — L2 (no broker; the 4 function pointers must be
 // callable through the PlhNativeContext and return gracefully).
 //
-// The test plugin calls join_channel / leave_channel / send_channel_msg /
-// channel_members inside on_produce and reports results as custom metrics.
+// The test plugin calls band_join / band_leave / band_broadcast /
+// band_members inside on_produce and reports results as custom metrics.
 // Without a broker wired to the RoleAPIBase, the expected behavior is:
-//   join_channel      → NULL  (nullopt from RoleAPIBase)
-//   leave_channel     → 0     (false)
-//   send_channel_msg  → no-op, returns cleanly
-//   channel_members   → NULL  (nullopt)
+//   band_join      → NULL  (nullopt from RoleAPIBase)
+//   band_leave     → 0     (false)
+//   band_broadcast → no-op, returns cleanly
+//   band_members   → NULL  (nullopt)
 // ============================================================================
 
-TEST_F(NativeEngineTest, Api_ChannelPubSub_NoBroker_GracefulReturn)
+TEST_F(NativeEngineTest, Api_BandPubSub_NoBroker_GracefulReturn)
 {
     NativeEngine engine;
     ASSERT_TRUE(engine.initialize("test", &core_));
@@ -786,14 +786,14 @@ TEST_F(NativeEngineTest, Api_ChannelPubSub_NoBroker_GracefulReturn)
     EXPECT_EQ(result, InvokeResult::Commit);
 
     auto metrics = core_.custom_metrics_snapshot();
-    EXPECT_EQ(static_cast<int>(metrics["test_channel_join_null"]), 1)
-        << "join_channel should return NULL without a broker";
-    EXPECT_EQ(static_cast<int>(metrics["test_channel_leave_zero"]), 1)
-        << "leave_channel should return 0 without a broker";
-    EXPECT_EQ(static_cast<int>(metrics["test_channel_send_ok"]), 1)
-        << "send_channel_msg must not crash without a broker";
-    EXPECT_EQ(static_cast<int>(metrics["test_channel_members_null"]), 1)
-        << "channel_members should return NULL without a broker";
+    EXPECT_EQ(static_cast<int>(metrics["test_band_join_null"]), 1)
+        << "band_join should return NULL without a broker";
+    EXPECT_EQ(static_cast<int>(metrics["test_band_leave_zero"]), 1)
+        << "band_leave should return 0 without a broker";
+    EXPECT_EQ(static_cast<int>(metrics["test_band_send_ok"]), 1)
+        << "band_broadcast must not crash without a broker";
+    EXPECT_EQ(static_cast<int>(metrics["test_band_members_null"]), 1)
+        << "band_members should return NULL without a broker";
 
     engine.finalize();
 }

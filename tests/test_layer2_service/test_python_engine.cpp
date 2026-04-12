@@ -3016,20 +3016,20 @@ TEST_F(PythonEngineTest, FullStartup_Processor_Multifield)
 }
 
 // ============================================================================
-// Channel pub/sub API — L2 (no broker; the 4 api methods must be callable
+// Band pub/sub API — L2 (no broker; the 4 api methods must be callable
 // and return gracefully: None / False / no-op without any broker attached).
 // ============================================================================
 
-TEST_F(PythonEngineTest, Api_Channel_AllMethodsGraceful_NoBroker)
+TEST_F(PythonEngineTest, Api_Band_AllMethodsGraceful_NoBroker)
 {
     write_script(
         "results = {}\n"
         "def on_produce(tx, msgs, api):\n"
-        "    results['join'] = api.join_channel('#l2_test')\n"
-        "    results['leave'] = api.leave_channel('#l2_test')\n"
-        "    api.send_channel_msg('#l2_test', {'hello': 'world'})\n"
+        "    results['join'] = api.band_join('#l2_test')\n"
+        "    results['leave'] = api.band_leave('#l2_test')\n"
+        "    api.band_broadcast('#l2_test', {'hello': 'world'})\n"
         "    results['send_ok'] = True\n"
-        "    results['members'] = api.channel_members('#l2_test')\n"
+        "    results['members'] = api.band_members('#l2_test')\n"
         "    assert results['join'] is None, f\"join={results['join']}\"\n"
         "    assert results['leave'] == False, f\"leave={results['leave']}\"\n"
         "    assert results['members'] is None, f\"members={results['members']}\"\n"
@@ -3043,7 +3043,7 @@ TEST_F(PythonEngineTest, Api_Channel_AllMethodsGraceful_NoBroker)
     auto result = engine.invoke_produce(
         InvokeTx{&buf, sizeof(buf), nullptr, 0}, msgs);
     EXPECT_EQ(result, InvokeResult::Commit)
-        << "on_produce should commit: all 4 channel methods must return "
+        << "on_produce should commit: all 4 band methods must return "
            "gracefully (None/False/no-op) without a broker";
 
     engine.finalize();
