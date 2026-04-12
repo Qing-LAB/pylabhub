@@ -3187,6 +3187,141 @@ Both facilities are equally fundamental. Higher-level components — role hosts
 (`PythonEngine`, `LuaEngine`, `NativeEngine`), inbox (`InboxQueue` / `InboxClient`),
 and the band pub/sub API — are built on top of these two layers.
 
+#### Module Dependency Diagram
+
+```mermaid
+%%{init: {'theme': 'dark'}}%%
+graph TD
+    subgraph L4["Layer 4 — Standalone Binaries"]
+        BIN_P["pylabhub-producer"]
+        BIN_C["pylabhub-consumer"]
+        BIN_R["pylabhub-processor"]
+    end
+
+    subgraph L3["Layer 3 — Role Hosts + Script Engines"]
+        RH["ProducerRoleHost<br/>ConsumerRoleHost<br/>ProcessorRoleHost"]
+        SE["ScriptEngine<br/>(PythonEngine · LuaEngine · NativeEngine)"]
+        API["RoleAPIBase<br/>(script-facing API surface)"]
+        CORE["RoleHostCore<br/>(lifecycle · metrics · msg queue)"]
+    end
+
+    subgraph DS["Facility: Data Streaming"]
+        QA["QueueWriter / QueueReader<br/>(abstract)"]
+        SQ["ShmQueue<br/>(DataBlock SHM)"]
+        ZQ["ZmqQueue<br/>(typed PUSH/PULL)"]
+        IQ["InboxQueue / InboxClient<br/>(schema P2P · ROUTER/DEALER)"]
+    end
+
+    subgraph BC["Facility: Broker Communication"]
+        BRC["BrokerRequestComm<br/>(DEALER protocol)"]
+        ZPL["ZmqPollLoop<br/>(poll + inproc wake-up)"]
+        MQ["MonitoredQueue&lt;T&gt;<br/>(thread-safe cmd queue)"]
+        PT["PeriodicTask<br/>(iteration-gated timer)"]
+        BR["BandRegistry<br/>(broker-side pub/sub)"]
+    end
+
+    subgraph BROKER["Broker"]
+        BS["BrokerService<br/>(ROUTER socket)"]
+        CR["ChannelRegistry<br/>(data-channel discovery)"]
+    end
+
+    BIN_P --> RH
+    BIN_C --> RH
+    BIN_R --> RH
+    RH --> SE
+    RH --> API
+    RH --> CORE
+    SE --> API
+    API --> QA
+    API --> BRC
+    API --> IQ
+    QA --> SQ
+    QA --> ZQ
+    BRC --> ZPL
+    BRC --> MQ
+    ZPL --> PT
+    BRC --> BS
+    BS --> CR
+    BS --> BR
+
+    style DS fill:#3a1a3a,stroke:#888
+    style BC fill:#1a3a3a,stroke:#888
+    style L3 fill:#2a2a1a,stroke:#888
+    style L4 fill:#1a1a2a,stroke:#888
+    style BROKER fill:#3a2a1a,stroke:#888
+```
+
+#### Role Host Thread Model
+
+Each role host runs multiple threads. The threads are independent and
+communicate through thread-safe queues and atomic flags — never through
+shared mutable state protected by mutexes on the hot path.
+
+```mermaid
+%%{init: {'theme': 'dark'}}%%
+graph LR
+    subgraph MAIN["Main Thread — Data Loop"]
+        direction TB
+        M1["acquire slot<br/>(QueueWriter)"]
+        M2["drain msgs<br/>(RoleHostCore)"]
+        M3["invoke script<br/>(on_produce / on_consume / on_process)"]
+        M4["commit / release"]
+        M5["check overrun<br/>(LoopTimingPolicy)"]
+        M1 --> M2 --> M3 --> M4 --> M5 --> M1
+    end
+
+    subgraph BT["Broker Thread"]
+        direction TB
+        B1["ZmqPollLoop<br/>(DEALER socket)"]
+        B2["drain MonitoredQueue<br/>(send requests)"]
+        B3["recv replies / notifications<br/>(dispatch to callbacks)"]
+        B4["PeriodicTask<br/>(heartbeat · metrics)"]
+        B1 --> B2 --> B3 --> B4 --> B1
+    end
+
+    subgraph IT["Inbox Thread"]
+        direction TB
+        I1["poll InboxQueue<br/>(ROUTER socket)"]
+        I2["recv_one()"]
+        I3["invoke on_inbox<br/>(ScriptEngine)"]
+        I1 --> I2 --> I3 --> I1
+    end
+
+    subgraph LT["Logger Thread"]
+        L1["dequeue log entries<br/>(lock-free)"]
+        L2["write to sinks<br/>(console · file · syslog)"]
+        L1 --> L2 --> L1
+    end
+
+    CORE_Q["RoleHostCore<br/>message queue<br/>(IncomingMessage)"]
+    METRICS["ContextMetrics<br/>(atomics)"]
+
+    BT -- "enqueue_message()" --> CORE_Q
+    IT -- "enqueue_message()" --> CORE_Q
+    CORE_Q -- "drain in M2" --> MAIN
+    MAIN -- "inc counters" --> METRICS
+    BT -- "read snapshot" --> METRICS
+
+    style MAIN fill:#4a2a4a,stroke:#aaa
+    style BT fill:#1a3a3a,stroke:#aaa
+    style IT fill:#2a4a2a,stroke:#aaa
+    style LT fill:#3a3a1a,stroke:#aaa
+```
+
+**Thread ownership rules:**
+
+| Thread | Owns | Reads (shared) | Writes (shared) |
+|--------|------|----------------|-----------------|
+| **Main (data loop)** | QueueWriter/Reader, ScriptEngine invocation | `core.message_queue` (drain) | `ContextMetrics` (atomic inc) |
+| **Broker** | BrokerRequestComm DEALER socket, ZmqPollLoop | `ContextMetrics` (atomic read for heartbeat) | `core.message_queue` (enqueue) |
+| **Inbox** | InboxQueue ROUTER socket | — | `core.message_queue` (enqueue) |
+| **Logger** | Sink I/O (files, console) | Log entry queue (lock-free dequeue) | — |
+
+No thread holds a mutex during a slot acquire or script invocation. The
+main thread's hot path is lock-free: slot acquire is atomic CAS
+(`SharedSpinLock`), message drain is a swap on `std::vector`, and script
+invocation is a direct function call.
+
 ### 17.2 Producer and Consumer Are Intentionally SHM-Specific
 
 `hub::Producer` and `hub::Consumer` expose the full richness of the SHM data plane
