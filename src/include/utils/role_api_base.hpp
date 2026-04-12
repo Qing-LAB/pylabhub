@@ -212,12 +212,6 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] std::optional<nlohmann::json>
     channel_members(const std::string &channel);
 
-    // ── Messaging (any role → any role's inbox) ───────────────────────────────
-
-    bool broadcast(const void *data, size_t size);
-    bool send(const std::string &identity_hex, const void *data, size_t size);
-    [[nodiscard]] std::vector<std::string> connected_consumers();
-
     // ── Inbox client management ───────────────────────────────────────────────
 
     struct InboxOpenResult

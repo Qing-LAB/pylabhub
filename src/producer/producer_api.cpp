@@ -35,26 +35,6 @@ py::object ProducerAPI::flexzone() const
     return *flexzone_obj_;
 }
 
-bool ProducerAPI::broadcast(py::bytes data)
-{
-    const auto s = data.cast<std::string>();
-    return base_->broadcast(s.data(), s.size());
-}
-
-bool ProducerAPI::send(const std::string &identity, py::bytes data)
-{
-    const auto s = data.cast<std::string>();
-    return base_->send(identity, s.data(), s.size());
-}
-
-py::list ProducerAPI::consumers()
-{
-    py::list lst;
-    for (const auto &hex : base_->connected_consumers())
-        lst.append(py::str(hex));
-    return lst;
-}
-
 // ── Channel pub/sub (HEP-CORE-0030) ──────────────────────────────────────────
 
 py::object ProducerAPI::join_channel(const std::string &channel)
@@ -239,10 +219,6 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
         .def("set_critical_error",    &producer::ProducerAPI::set_critical_error)
         .def("critical_error",        &producer::ProducerAPI::critical_error)
         .def("flexzone",     &producer::ProducerAPI::flexzone)
-        .def("broadcast",    &producer::ProducerAPI::broadcast)
-        .def("send",         &producer::ProducerAPI::send,
-             py::arg("identity"), py::arg("data"))
-        .def("consumers",    &producer::ProducerAPI::consumers)
         .def("update_flexzone_checksum", &producer::ProducerAPI::update_flexzone_checksum)
         .def("join_channel",      &producer::ProducerAPI::join_channel, py::arg("channel"))
         .def("leave_channel",     &producer::ProducerAPI::leave_channel, py::arg("channel"))

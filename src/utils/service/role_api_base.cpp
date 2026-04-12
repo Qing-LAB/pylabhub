@@ -676,37 +676,6 @@ std::optional<nlohmann::json> RoleAPIBase::channel_members(const std::string &ch
 }
 
 // ============================================================================
-// Messaging
-// ============================================================================
-
-bool RoleAPIBase::broadcast(const void *data, size_t size)
-{
-    if (!pImpl->producer)
-        return false;
-    pImpl->producer->send(data, size);
-    return true;
-}
-
-bool RoleAPIBase::send(const std::string &identity_hex, const void *data, size_t size)
-{
-    if (!pImpl->producer)
-        return false;
-    const auto raw = format_tools::bytes_from_hex(identity_hex);
-    pImpl->producer->send_to(raw, data, size);
-    return true;
-}
-
-std::vector<std::string> RoleAPIBase::connected_consumers()
-{
-    if (!pImpl->producer)
-        return {};
-    std::vector<std::string> result;
-    for (const auto &id : pImpl->producer->connected_consumers())
-        result.push_back(format_tools::bytes_to_hex(id));
-    return result;
-}
-
-// ============================================================================
 // Inbox client management
 // ============================================================================
 

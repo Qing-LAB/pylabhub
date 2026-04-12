@@ -80,13 +80,6 @@ struct PYLABHUB_UTILS_EXPORT ProducerMessagingFacade
 {
     /// Returns the DataBlockProducer* (nullptr if SHM not configured).
     DataBlockProducer *(*fn_get_shm)(void *ctx){nullptr};
-    /// Returns current consumer ZMQ identities.
-    std::vector<std::string> (*fn_consumers)(void *ctx){nullptr};
-    /// Broadcasts raw bytes to all consumers on the data socket.
-    bool (*fn_broadcast)(void *ctx, const void *data, size_t size){nullptr};
-    /// Sends raw bytes to a specific consumer via ROUTER identity (queued through peer_thread).
-    bool (*fn_send_to)(void *ctx, const std::string &identity, const void *data,
-                       size_t size){nullptr};
     /// Returns true when the producer's write_thread stop flag is set.
     bool (*fn_is_stopping)(void *ctx){nullptr};
     /// Returns the Messenger* used by this Producer.
@@ -113,7 +106,6 @@ using InternalWriteHandlerFn = std::function<void(ProducerMessagingFacade &)>;
  *   - `txn`      — WriteTransactionContext<FlexZoneT, DataBlockT> for slot + flexzone access.
  *   - `flexzone()` — convenience typed flexzone accessor (when FlexZoneT != void).
  *   - `is_stopping()` — shutdown signal (check at natural loop checkpoints).
- *   - Peer messaging: `broadcast`, `send_to`, `connected_consumers`.
  *   - Broker access: `messenger()`, `report_checksum_error`.
  *
  * FlexZone and DataBlock types are fixed at `Producer::create<FlexZoneT, DataBlockT>()`
@@ -152,26 +144,6 @@ struct WriteProcessorContext
     [[nodiscard]] bool is_stopping() const noexcept
     {
         return facade.fn_is_stopping(facade.context);
-    }
-
-    // ── Peer messaging ────────────────────────────────────────────────────────
-
-    /// Broadcast raw bytes to all connected consumers on the data socket.
-    bool broadcast(const void *data, size_t size)
-    {
-        return facade.fn_broadcast(facade.context, data, size);
-    }
-
-    /// Send raw bytes to a specific consumer via ZMQ ROUTER identity.
-    bool send_to(const std::string &identity, const void *data, size_t size)
-    {
-        return facade.fn_send_to(facade.context, identity, data, size);
-    }
-
-    /// Returns ZMQ identities of currently connected consumers.
-    [[nodiscard]] std::vector<std::string> connected_consumers() const
-    {
-        return facade.fn_consumers(facade.context);
     }
 
     // ── Broker channel ────────────────────────────────────────────────────────
@@ -409,13 +381,7 @@ class PYLABHUB_UTILS_EXPORT Producer
      */
     [[nodiscard]] bool is_stopping() const noexcept;
 
-    // ── ZMQ messaging ─────────────────────────────────────────────────────────
-
-    /// Broadcast raw data bytes to all consumers on the data socket.
-    bool send(const void *data, size_t size);
-
-    /// Send raw data bytes to a specific consumer via ROUTER (Bidir pattern).
-    bool send_to(const std::string &identity, const void *data, size_t size);
+    // ── ZMQ ctrl messaging ────────────────────────────────────────────────────
 
     /// Send a typed ctrl frame to a specific consumer (queued through peer_thread).
     bool send_ctrl(const std::string &identity, std::string_view type,
@@ -461,7 +427,6 @@ class PYLABHUB_UTILS_EXPORT Producer
      *   - `ctx.txn.slots(timeout)` — iterate to acquire write slots.
      *   - `ctx.txn.publish()` — commit the current slot.
      *   - `ctx.flexzone()` — typed FlexZone access (when FlexZoneT != void).
-     *   - Peer messaging via ctx.broadcast / ctx.send_to / ctx.connected_consumers.
      *
      * Handlers that block indefinitely will block stop(). Respect ctx.is_stopping().
      */
@@ -471,11 +436,6 @@ class PYLABHUB_UTILS_EXPORT Producer
 
     /// Returns true when a real-time write handler has been installed via set_write_handler().
     [[nodiscard]] bool has_realtime_handler() const noexcept;
-
-    // ── Consumer list (thread-safe) ────────────────────────────────────────────
-
-    /// Returns ZMQ identities of currently connected consumers (from HELLO/BYE tracking).
-    [[nodiscard]] std::vector<std::string> connected_consumers() const;
 
     // ── Introspection ─────────────────────────────────────────────────────────
 

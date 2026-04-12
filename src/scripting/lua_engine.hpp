@@ -178,9 +178,6 @@ class LuaEngine : public ScriptEngine
     static int lua_api_uid(lua_State *L);
     static int lua_api_name(lua_State *L);
     static int lua_api_channel(lua_State *L);
-    static int lua_api_broadcast(lua_State *L);
-    static int lua_api_send(lua_State *L);
-    static int lua_api_consumers(lua_State *L);
     static int lua_api_update_flexzone_checksum(lua_State *L);
     static int lua_api_set_verify_checksum(lua_State *L);
     static int lua_api_out_slots_written(lua_State *L);

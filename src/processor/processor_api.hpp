@@ -47,10 +47,6 @@ class ProcessorAPI
 
     [[nodiscard]] py::object flexzone() const;
 
-    // Messaging
-    bool broadcast(py::bytes data);
-    bool send(const std::string &identity, py::bytes data);
-    py::list consumers();
     bool update_flexzone_checksum() { return base_->update_flexzone_checksum(); }
 
     // Channel pub/sub (HEP-CORE-0030)

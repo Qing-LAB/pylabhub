@@ -457,8 +457,8 @@ Producer::establish_channel(Messenger &messenger, ChannelHandle channel,
     // heap-stable ProducerImpl*). The facade itself lives inside ProducerImpl, so
     // ABI guard: ProducerMessagingFacade is exported across the shared library boundary.
     // Field insertion would silently corrupt function pointer offsets in pre-compiled templates.
-    // 8 pointers × 8 bytes = 64 bytes on LP64/LLP64.
-    static_assert(sizeof(ProducerMessagingFacade) == 64,
+    // 5 pointers × 8 bytes = 40 bytes on LP64/LLP64.
+    static_assert(sizeof(ProducerMessagingFacade) == 40,
                   "ProducerMessagingFacade size changed — ABI break! "
                   "Append new fields at the end and bump SOVERSION.");
 
@@ -469,34 +469,6 @@ Producer::establish_channel(Messenger &messenger, ChannelHandle channel,
     impl->facade.fn_get_shm = [](void *ctx) -> DataBlockProducer * {
         auto *sq = static_cast<ProducerImpl *>(ctx)->shm_queue_.get();
         return sq ? sq->raw_producer() : nullptr;
-    };
-    impl->facade.fn_consumers = [](void *ctx) -> std::vector<std::string> {
-        auto *p = static_cast<ProducerImpl *>(ctx);
-        std::lock_guard<std::mutex> lock(p->consumer_list_mu);
-        return p->consumer_identities;
-    };
-    impl->facade.fn_broadcast = [](void *ctx, const void *data, size_t size) -> bool {
-        auto *p = static_cast<ProducerImpl *>(ctx);
-        if (!p->handle.is_valid() || p->closed)
-            return false;
-        std::lock_guard<std::mutex> lock(p->data_send_mu);
-        return p->handle.send(data, size);
-    };
-    impl->facade.fn_send_to = [](void *ctx, const std::string &identity, const void *data,
-                                  size_t size) -> bool {
-        auto *p = static_cast<ProducerImpl *>(ctx);
-        if (!p->handle.is_valid() || p->closed)
-            return false;
-        if (p->running.load(std::memory_order_relaxed))
-        {
-            std::vector<std::byte> buf(size);
-            if (data && size > 0)
-                std::memcpy(buf.data(), data, size);
-            p->ctrl_queue_.push(
-                PendingCtrlSend{identity, {}, std::move(buf), /*is_data=*/true});
-            return true;
-        }
-        return p->handle.send(data, size, identity);
     };
     impl->facade.fn_is_stopping = [](void *ctx) -> bool {
         return static_cast<ProducerImpl *>(ctx)->write_stop.load(std::memory_order_relaxed);
@@ -859,41 +831,8 @@ void Producer::handle_peer_events_nowait() noexcept
 }
 
 // ============================================================================
-// Producer — ZMQ messaging
+// Producer — ZMQ ctrl messaging
 // ============================================================================
-
-bool Producer::send(const void *data, size_t size)
-{
-    if (!pImpl || !pImpl->handle.is_valid() || pImpl->closed)
-    {
-        return false;
-    }
-    // data_socket is NOT owned by peer_thread, so a mutex suffices.
-    std::lock_guard<std::mutex> lock(pImpl->data_send_mu);
-    return pImpl->handle.send(data, size);
-}
-
-bool Producer::send_to(const std::string &identity, const void *data, size_t size)
-{
-    if (!pImpl || !pImpl->handle.is_valid() || pImpl->closed)
-    {
-        return false;
-    }
-    if (pImpl->running.load(std::memory_order_relaxed))
-    {
-        // ctrl_socket is owned by peer_thread — must queue
-        std::vector<std::byte> buf(size);
-        if (data && size > 0)
-        {
-            std::memcpy(buf.data(), data, size);
-        }
-        pImpl->ctrl_queue_.push(
-            PendingCtrlSend{identity, {}, std::move(buf), /*is_data=*/true});
-        return true;
-    }
-    // Not started — send directly (caller's thread owns the sockets)
-    return pImpl->handle.send(data, size, identity);
-}
 
 bool Producer::send_ctrl(const std::string &identity, std::string_view type,
                           const void *data, size_t size)
@@ -971,20 +910,6 @@ Messenger &Producer::messenger() const
 {
     assert(pImpl && pImpl->messenger);
     return *pImpl->messenger;
-}
-
-// ============================================================================
-// Producer — consumer list
-// ============================================================================
-
-std::vector<std::string> Producer::connected_consumers() const
-{
-    if (!pImpl)
-    {
-        return {};
-    }
-    std::lock_guard<std::mutex> lock(pImpl->consumer_list_mu);
-    return pImpl->consumer_identities;
 }
 
 // ============================================================================
