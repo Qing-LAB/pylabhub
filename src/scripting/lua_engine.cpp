@@ -320,9 +320,6 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
     {
         if (api_->producer())
         {
-            push_closure("broadcast", lua_api_broadcast);
-            push_closure("send", lua_api_send);
-            push_closure("consumers", lua_api_consumers);
             push_closure("update_flexzone_checksum", lua_api_update_flexzone_checksum);
         }
         push_closure("flexzone", lua_api_flexzone);
@@ -351,9 +348,6 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
         push_closure("out_channel", lua_api_out_channel);
         if (api_->producer())
         {
-            push_closure("broadcast", lua_api_broadcast);
-            push_closure("send", lua_api_send);
-            push_closure("consumers", lua_api_consumers);
             push_closure("update_flexzone_checksum", lua_api_update_flexzone_checksum);
         }
         push_closure("flexzone", lua_api_flexzone);
@@ -1537,63 +1531,6 @@ int LuaEngine::lua_api_out_channel(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     lua_pushstring(L, self->api_->out_channel().c_str());
-    return 1;
-}
-
-int LuaEngine::lua_api_broadcast(lua_State *L)
-{
-    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    size_t len = 0;
-    const char *data = luaL_checklstring(L, 1, &len);
-
-    auto *producer = self->api_->producer();
-    if (!producer)
-    {
-        lua_pushboolean(L, 0);
-        return 1;
-    }
-
-    producer->send(data, len);
-    lua_pushboolean(L, 1);
-    return 1;
-}
-
-int LuaEngine::lua_api_send(lua_State *L)
-{
-    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    const char *identity = luaL_checkstring(L, 1);
-    size_t len = 0;
-    const char *data = luaL_checklstring(L, 2, &len);
-
-    auto *producer = self->api_->producer();
-    if (!producer)
-    {
-        lua_pushboolean(L, 0);
-        return 1;
-    }
-
-    producer->send_to(identity, data, len);
-    lua_pushboolean(L, 1);
-    return 1;
-}
-
-int LuaEngine::lua_api_consumers(lua_State *L)
-{
-    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto *producer = self->api_->producer();
-    if (!producer)
-    {
-        lua_newtable(L);
-        return 1;
-    }
-
-    auto list = producer->connected_consumers();
-    lua_newtable(L);
-    for (int i = 0; i < static_cast<int>(list.size()); ++i)
-    {
-        lua_pushstring(L, format_tools::bytes_to_hex(list[static_cast<size_t>(i)]).c_str());
-        lua_rawseti(L, -2, i + 1);
-    }
     return 1;
 }
 

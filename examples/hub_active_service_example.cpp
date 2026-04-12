@@ -235,10 +235,6 @@ int main()
                     d.sequence         = static_cast<uint32_t>(i);
                     break;
                 }
-
-                // Also broadcast a lightweight ZMQ notification to all consumers.
-                const uint32_t seq = static_cast<uint32_t>(i);
-                ctx.broadcast(&seq, sizeof(seq));
             });
 
         std::cout << "[producer] Pushed frame " << i << "\n";
