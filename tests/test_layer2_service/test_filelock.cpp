@@ -295,14 +295,18 @@ TEST_F(FileLockTest, MultiProcessParentChildBlocking)
     auto parent_lock = std::make_unique<pylabhub::utils::FileLock>(resource_path);
     ASSERT_TRUE(parent_lock->valid());
 
-    // Spawn child process, which should block trying to acquire the same lock.
+    // Spawn child with ready-signal pipe. Child signals right before flock().
     WorkerProcess child_proc(g_self_exe_path, "filelock.parent_child_block",
-                             {resource_path.string()});
+                             {resource_path.string()}, /*redirect_stderr=*/false,
+                             /*with_ready_signal=*/true);
     ASSERT_TRUE(child_proc.valid());
 
-    // Give the child time to block.
-    std::this_thread::sleep_for(200ms);
-    // Release the parent lock, allowing the child to proceed.
+    // Wait until child is initialized and about to call flock().
+    child_proc.wait_for_ready();
+    // Hold lock for 300ms — child asserts dur >= 100ms, so 300ms absorbs
+    // any scheduling delay between the child's signal and its flock() entry.
+    std::this_thread::sleep_for(300ms);
+    // Release — child's flock() returns.
     parent_lock.reset();
 
     // The child should now be able to acquire the lock and exit successfully.
