@@ -3162,55 +3162,30 @@ control protocol, or embedding rate policy inside the transport).
 
 | Plane | What flows | Mechanism | Governed by |
 |-------|-----------|-----------|-------------|
-| **Data plane** | Slot payloads (SHM or ZMQ frames) | `DataBlockProducer`/`Consumer` or `hub::Queue` | Slot acquire / commit / release |
-| **Control plane** | HELLO / BYE / REG / DISC / HEARTBEAT | ZMQ ROUTER–DEALER ctrl sockets | Broker + ChannelHandle protocol (HEP-CORE-0007) |
-| **Message plane** | Arbitrary typed messages (bidirectional) | ZMQ via `Messenger` | `send()` / `broadcast()` / callbacks |
-| **Timing plane** | Loop pacing — fixed rate, max rate, compensating | `LoopPolicy` on `DataBlockProducer`/`Consumer` | HEP-CORE-0008 |
+| **Data plane** | Typed slot payloads (SHM or ZMQ frames) | `ShmQueue` / `ZmqQueue` via `QueueWriter`/`QueueReader` | Slot acquire / commit / release; schema-enforced |
+| **Control plane** | REG / DISC / HEARTBEAT / ROLE_INFO / SCHEMA | `BrokerRequestComm` (DEALER ↔ broker ROUTER) | Broker protocol (HEP-CORE-0007) |
+| **Band plane** | JSON coordination messages (pub/sub) | `BrokerRequestComm` → broker fan-out via `BandRegistry` | `band_join` / `band_broadcast` (HEP-CORE-0030) |
+| **Inbox plane** | Schema-enforced P2P messages | `InboxQueue` (ROUTER) + `InboxClient` (DEALER) | `open_inbox` / `send` (HEP-CORE-0027) |
+| **Timing plane** | Loop pacing — fixed rate, max rate, compensating | `LoopTimingPolicy` | HEP-CORE-0008 |
 | **Metrics plane** | Counter snapshots, custom KV pairs | Piggyback on HEARTBEAT + `METRICS_REPORT_REQ` → Broker `MetricsStore` | HEP-CORE-0019 |
 
-```mermaid
-%%{init: {'theme': 'dark'}}%%
-graph LR
-    subgraph "Data Plane"
-        DP_SHM["ShmQueue<br/>(SHM slots)"]
-        DP_ZMQ["ZmqQueue<br/>(ZMQ PUSH/PULL)"]
-    end
-
-    subgraph "Control Plane"
-        CP_BR["BrokerService<br/>REG / DISC / HEARTBEAT"]
-        CP_PEER["Producer ↔ Consumer<br/>HELLO / BYE"]
-    end
-
-    subgraph "Message Plane"
-        MP["Messenger<br/>broadcast() / send()"]
-    end
-
-    subgraph "Timing Plane"
-        TP["LoopPolicy<br/>FixedRate / MaxRate / Compensating"]
-    end
-
-    subgraph "Metrics Plane"
-        MET["MetricsStore<br/>report_metric() / METRICS_REQ"]
-    end
-
-    DP_SHM ~~~ CP_BR
-    CP_BR ~~~ MP
-    MP ~~~ TP
-    TP ~~~ MET
-
-    style DP_SHM fill:#4a2a4a
-    style DP_ZMQ fill:#4a2a4a
-    style CP_BR fill:#5a3a3a
-    style CP_PEER fill:#5a3a3a
-    style MP fill:#2a4a2a
-    style TP fill:#1e3a5f
-    style MET fill:#3a3a1e
-```
-
 The planes are **orthogonal**: modifying the data transport (SHM → ZMQ) has no
-effect on the control or message planes. Changing `LoopPolicy` has no effect on
-the data or control planes. The metrics plane reports counters passively without
-affecting any other plane.
+effect on the control, band, or inbox planes. Changing `LoopTimingPolicy` has
+no effect on any other plane.
+
+#### Foundational Facilities
+
+The planes above are built on two independent infrastructure layers:
+
+| Facility | Purpose | Components |
+|----------|---------|------------|
+| **Data streaming** | High-frequency typed binary data flow (producer → consumer) | `ShmQueue` (SharedMemory / DataBlock), `ZmqQueue` (typed ZMQ frames), `QueueWriter` / `QueueReader`, wire helpers (`zmq_wire_helpers.hpp`) |
+| **Broker communication** | Control-plane protocol + band pub/sub + role discovery | `BrokerRequestComm` (cppzmq DEALER + inproc wake-up), `ZmqPollLoop` (poll loop with inproc signal), `MonitoredQueue<T>` (thread-safe command queue with wake-up), `PeriodicTask` (iteration-gated timer), `BandRegistry` (broker-side member tracking) |
+
+Both facilities are equally fundamental. Higher-level components — role hosts
+(`ProducerRoleHost`, `ConsumerRoleHost`, `ProcessorRoleHost`), script engines
+(`PythonEngine`, `LuaEngine`, `NativeEngine`), inbox (`InboxQueue` / `InboxClient`),
+and the band pub/sub API — are built on top of these two layers.
 
 ### 17.2 Producer and Consumer Are Intentionally SHM-Specific
 
