@@ -340,7 +340,6 @@ void ProcessorRoleHost::worker_main_()
     api_->set_role_dir(config_.base_dir().string());
     if (!core_.is_validate_only())
     {
-        api_->set_messenger(&out_messenger_);
         api_->set_producer(out_producer_.has_value() ? &(*out_producer_) : nullptr);
         api_->set_consumer(in_consumer_.has_value() ? &(*in_consumer_) : nullptr);
         api_->set_inbox_queue(inbox_queue_.get());
@@ -364,8 +363,8 @@ void ProcessorRoleHost::worker_main_()
     api_->wire_event_callbacks();
 
     // Processor dual-messenger: wire hub-dead on in_messenger too.
-    // wire_event_callbacks() wires out_messenger_ (set via set_messenger).
-    // The in_messenger is separate and must be wired explicitly.
+    // BrokerRequestComm handles hub-dead for the output broker. The
+    // in_messenger is a separate connection and must be wired explicitly.
     in_messenger_.on_hub_dead([this]() {
         LOGGER_WARN("[proc] hub-dead: in_messenger broker connection lost; triggering shutdown");
         core_.set_stop_reason(scripting::RoleHostCore::StopReason::HubDead);

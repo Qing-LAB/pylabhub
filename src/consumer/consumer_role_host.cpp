@@ -244,7 +244,6 @@ void ConsumerRoleHost::worker_main_()
     api_->set_role_dir(config_.base_dir().string());
     if (!core_.is_validate_only())
     {
-        api_->set_messenger(&in_messenger_);
         api_->set_consumer(in_consumer_.has_value() ? &(*in_consumer_) : nullptr);
         api_->set_inbox_queue(inbox_queue_.get());
 

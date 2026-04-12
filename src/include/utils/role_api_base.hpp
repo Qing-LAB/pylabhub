@@ -37,7 +37,6 @@ namespace pylabhub::hub
 {
 class Producer;
 class Consumer;
-class Messenger;
 class InboxQueue;
 class InboxClient;
 class SharedSpinLock;
@@ -146,7 +145,6 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
 
     void set_producer(hub::Producer *p);
     void set_consumer(hub::Consumer *c);
-    void set_messenger(hub::Messenger *m);
     void set_inbox_queue(hub::InboxQueue *q);
     void set_role_tag(std::string tag);
     void set_uid(std::string uid);
@@ -162,10 +160,10 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
 
     // ── Event callback wiring ────────────────────────────────────────────
     //
-    // Wires all Consumer/Producer/Messenger event callbacks to
-    // core_.enqueue_message() or core_.request_stop(). Inspects which
-    // pointers are non-null and wires the appropriate callbacks.
-    // Call after set_producer/set_consumer/set_messenger/set_channel.
+    // Wires Producer/Consumer event callbacks to core_.enqueue_message()
+    // or core_.request_stop(). Broker notifications (band, hub-dead) are
+    // handled by BrokerRequestComm in start_broker_thread().
+    // Call after set_producer/set_consumer/set_channel.
     //
     // Replaces the per-role-host copy-paste of on_channel_closing,
     // on_force_shutdown, on_zmq_data, on_producer_message, on_channel_error,
