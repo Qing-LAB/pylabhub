@@ -10,6 +10,16 @@
 
 ## Current Focus
 
+### HEP-0002 Architecture Diagrams (2026-04-12)
+
+Diagrams 1 (module dependency) and 2 (thread model) added to HEP-0002 §17.
+Remaining diagrams to complete:
+
+- [ ] Protocol sequence diagrams: channel establishment (REG/DISC), band messaging (JOIN/BROADCAST fan-out), inbox P2P, heartbeat+metrics
+- [ ] Data loop / timing design: inner loop state machine, LoopTimingPolicy integration, overrun detection
+- [ ] Queue abstraction class diagram: QueueWriter/QueueReader → ShmQueue/ZmqQueue hierarchy, forwarding API on hub::Producer/Consumer
+- [ ] Metrics flow: ContextMetrics → snapshot → JSON → heartbeat piggyback → broker MetricsStore → script api.metrics()
+
 ### Config Module Redesign (2026-03-21)
 
 **Review**: `docs/code_review/REVIEW_ConfigAndEngine_2026-03-21.md`
