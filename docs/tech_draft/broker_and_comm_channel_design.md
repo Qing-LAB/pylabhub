@@ -1,4 +1,4 @@
-# Tech Draft: broker_request_channel + role_communication_channel
+# Tech Draft: broker_request_comm + role_communication_channel
 
 **Status**: Draft (2026-04-07)
 **Branch**: `feature/lua-role-support`
@@ -35,7 +35,7 @@ responsibility, a single socket system, and a single dedicated thread.
 
 ---
 
-## 2. Module 1: broker_request_channel
+## 2. Module 1: broker_request_comm
 
 ### 2.1 Purpose
 
@@ -123,7 +123,7 @@ no suppress/unsuppress dance.
 ### 2.6 API (thread-safe, callable from any thread)
 
 ```cpp
-class BrokerRequestChannel
+class BrokerRequestComm
 {
 public:
     struct Config
@@ -210,7 +210,7 @@ public:
 
 ### 2.7 Relationship to RoleAPIBase
 
-RoleAPIBase owns a `BrokerRequestChannel` instance (in Pimpl). It:
+RoleAPIBase owns a `BrokerRequestComm` instance (in Pimpl). It:
 
 - Calls `connect()` during infrastructure setup
 - Registers notification callback that routes to `core_.enqueue_message()`
@@ -221,7 +221,7 @@ RoleAPIBase owns a `BrokerRequestChannel` instance (in Pimpl). It:
 - On shutdown: `disconnect()` in teardown
 
 RoleAPIBase API methods (`notify_channel`, `broadcast_channel`, `list_channels`,
-`request_shm_info`, `wait_for_role`) forward directly to BrokerRequestChannel.
+`request_shm_info`, `wait_for_role`) forward directly to BrokerRequestComm.
 
 ---
 
@@ -372,7 +372,7 @@ Thread manager spawns dedicated threads:
 RoleAPIBase API methods (`broadcast`, `send`, `connected_consumers`) forward
 to the appropriate channel instance.
 
-### 3.7 Relationship to broker_request_channel
+### 3.7 Relationship to broker_request_comm
 
 The broker provides discovery:
 1. Producer calls `broker.register_channel(opts)` → gets confirmation
@@ -390,7 +390,7 @@ After connection, P2C communication is direct — no broker involvement.
 | Thread | Owner | Purpose |
 |--------|-------|---------|
 | Data loop | RoleAPIBase (owner thread) | `run_data_loop()` — acquire, invoke, commit |
-| Broker | Thread manager ("broker") | `BrokerRequestChannel::run_poll_loop()` — broker protocol + heartbeat + on_heartbeat |
+| Broker | Thread manager ("broker") | `BrokerRequestComm::run_poll_loop()` — broker protocol + heartbeat + on_heartbeat |
 | Comm (out) | Thread manager ("comm_out") | `RoleCommunicationChannel::run_poll_loop()` — producer P2C sockets |
 | Comm (in) | Thread manager ("comm_in") | `RoleCommunicationChannel::run_poll_loop()` — consumer P2C sockets |
 | Queue | QueueReader/QueueWriter internal | ZmqQueue recv/send thread (if ZMQ transport) |
@@ -414,7 +414,7 @@ Each thread has ONE purpose. No socket sharing across threads.
 
 ### Why one thread per module?
 
-Both `broker_request_channel` and `role_communication_channel` use ZMQ
+Both `broker_request_comm` and `role_communication_channel` use ZMQ
 sockets. ZMQ sockets are NOT thread-safe — a socket must be used from a
 single thread only. Each module owns its socket(s) and must poll them from
 its own dedicated thread. This is not a design choice — it's a ZMQ
@@ -540,7 +540,7 @@ The metrics report task uses time-only mode (`get_iteration = nullptr`).
 Already exists at `src/utils/hub/hub_monitored_queue.hpp`. Thread-safe
 bounded queue with drop-oldest overflow and metrics. Used by both modules:
 
-- `BrokerRequestChannel`: API threads push broker commands → broker thread
+- `BrokerRequestComm`: API threads push broker commands → broker thread
   drains and sends on DEALER
 - `RoleCommunicationChannel`: API threads push P2C messages → comm thread
   drains and sends on ROUTER/XPUB
@@ -629,9 +629,9 @@ Broker service:
 ### Next steps:
 1. Commit the uncommitted thread manager + ctrl thread centralization
 2. Redesign ZmqPollLoop (inproc wake-up, time-based PeriodicTask)
-3. Implement `broker_request_channel` using redesigned ZmqPollLoop +
+3. Implement `broker_request_comm` using redesigned ZmqPollLoop +
    MonitoredQueue
-4. Replace `start_ctrl_thread()` internals with `broker_request_channel`
+4. Replace `start_ctrl_thread()` internals with `broker_request_comm`
 5. Implement `role_communication_channel`
 6. Remove Messenger
 
@@ -647,16 +647,16 @@ Broker service:
 3. Extend `MonitoredQueue` with `set_signal_socket()` for wake-up
 4. Update tests
 
-### Phase B: broker_request_channel
+### Phase B: broker_request_comm
 
-1. Create `src/include/utils/broker_request_channel.hpp` +
-   `src/utils/ipc/broker_request_channel.cpp`
+1. Create `src/include/utils/broker_request_comm.hpp` +
+   `src/utils/ipc/broker_request_comm.cpp`
 2. DEALER socket + MonitoredQueue + redesigned ZmqPollLoop
 3. Implement all broker protocol messages (§2.4)
 4. Iteration-gated heartbeat (§6)
 5. Hub-dead detection via ZMQ socket monitor
 6. Wire into RoleAPIBase: replace `set_messenger()` and
-   `start_ctrl_thread()` with `BrokerRequestChannel`
+   `start_ctrl_thread()` with `BrokerRequestComm`
 7. Update role hosts
 
 ### Phase C: role_communication_channel
@@ -725,7 +725,7 @@ in new code. Existing raw C code migrates as its module is touched.
 
 - **Process-level** (ZMQ context): Lifecycle module via `GetZMQContextModule()`
 - **Module-level** (channel sockets): `zmq::socket_t` RAII in owning class
-  (`BrokerRequestChannel`, `RoleCommunicationChannel`). Destructs when
+  (`BrokerRequestComm`, `RoleCommunicationChannel`). Destructs when
   module destructs. No Lifecycle needed.
 - **Reference passing** (poll loop): `zmq::socket_ref` (non-owning). The
   owning module holds `zmq::socket_t`; the poll loop holds `zmq::socket_ref`.
@@ -738,7 +738,7 @@ in new code. Existing raw C code migrates as its module is touched.
    + callback dispatch from poll loop. Same pattern as Logger, existing
    Producer/Consumer ctrl queues. No promise/future needed.
 
-2. **Processor dual-broker**: Two `BrokerRequestChannel` instances, same
+2. **Processor dual-broker**: Two `BrokerRequestComm` instances, same
    as current two `Messenger` instances. Self-contained objects, no special
    design needed.
 

@@ -12,11 +12,11 @@ Implement the band as a broker-hosted pub/sub messaging group. This
 involves changes to three layers:
 
 1. **Broker (BrokerService)**: New registry, new message handlers, fan-out
-2. **Role client (BrokerRequestChannel)**: New API methods
+2. **Role client (BrokerRequestComm)**: New API methods
 3. **Role framework (RoleAPIBase)**: Script-visible API, notification routing
 
 No new ZMQ sockets. All band messages flow through the existing broker
-DEALER socket that `BrokerRequestChannel` already owns.
+DEALER socket that `BrokerRequestComm` already owns.
 
 ---
 
@@ -207,11 +207,11 @@ All messages use the existing 4-frame ROUTER format:
 
 ---
 
-## 3. Role Client Side (BrokerRequestChannel)
+## 3. Role Client Side (BrokerRequestComm)
 
 ### 3.1 New API methods
 
-File: `src/include/utils/broker_request_channel.hpp`
+File: `src/include/utils/broker_request_comm.hpp`
 
 ```cpp
 // ── Band pub/sub messaging ───────────────────────────────────────────
@@ -234,11 +234,11 @@ band_members(const std::string &band, int timeout_ms = 5000);
 
 ### 3.2 Implementation
 
-File: `src/utils/network_comm/broker_request_channel.cpp`
+File: `src/utils/network_comm/broker_request_comm.cpp`
 
 ```cpp
 std::optional<nlohmann::json>
-BrokerRequestChannel::band_join(const std::string &band, int timeout_ms)
+BrokerRequestComm::band_join(const std::string &band, int timeout_ms)
 {
     nlohmann::json payload;
     payload["band"] = band;
@@ -248,7 +248,7 @@ BrokerRequestChannel::band_join(const std::string &band, int timeout_ms)
                              std::move(payload), timeout_ms);
 }
 
-bool BrokerRequestChannel::band_leave(const std::string &band, int timeout_ms)
+bool BrokerRequestComm::band_leave(const std::string &band, int timeout_ms)
 {
     nlohmann::json payload;
     payload["band"] = band;
@@ -258,7 +258,7 @@ bool BrokerRequestChannel::band_leave(const std::string &band, int timeout_ms)
     return result.has_value() && result->value("status", "") == "success";
 }
 
-void BrokerRequestChannel::band_broadcast(const std::string &band,
+void BrokerRequestComm::band_broadcast(const std::string &band,
                                            const nlohmann::json &body)
 {
     nlohmann::json payload;
@@ -269,7 +269,7 @@ void BrokerRequestChannel::band_broadcast(const std::string &band,
 }
 
 std::optional<nlohmann::json>
-BrokerRequestChannel::band_members(const std::string &band,
+BrokerRequestComm::band_members(const std::string &band,
                                     int timeout_ms)
 {
     nlohmann::json payload;
@@ -279,11 +279,11 @@ BrokerRequestChannel::band_members(const std::string &band,
 }
 ```
 
-Note: `role_uid` and `role_name` need to be available to BrokerRequestChannel.
+Note: `role_uid` and `role_name` need to be available to BrokerRequestComm.
 Options:
-- (a) Store them in BrokerRequestChannel::Config (set during connect)
+- (a) Store them in BrokerRequestComm::Config (set during connect)
 - (b) Pass them as parameters to each method
-- (c) BrokerRequestChannel holds a reference to RoleAPIBase identity
+- (c) BrokerRequestComm holds a reference to RoleAPIBase identity
 
 Option (a) is cleanest — add `role_uid` and `role_name` to Config.
 
@@ -368,7 +368,7 @@ Data loop thread:
     → broker_channel_->band_broadcast()  (enqueues SendCmd)
     → MonitoredQueue push → signal socket wakes broker thread
 
-Broker thread (BrokerRequestChannel poll loop):
+Broker thread (BrokerRequestComm poll loop):
     drain command queue → send BAND_BROADCAST_REQ on DEALER
     poll DEALER → recv BAND_BROADCAST_NOTIFY from broker
     → on_notification_cb → core_.enqueue_message()
@@ -394,10 +394,10 @@ Data loop thread (next cycle):
 - Add heartbeat auto-leave in `check_heartbeat_timeouts()`
 - Test: L3 integration (role sends JOIN/LEAVE/BROADCAST, verify fan-out)
 
-### Step 3: BrokerRequestChannel API
+### Step 3: BrokerRequestComm API
 - Add 4 methods to header + implementation
 - Add `role_uid`/`role_name` to Config
-- Test: L3 (BrokerRequestChannel → BrokerService round-trip)
+- Test: L3 (BrokerRequestComm → BrokerService round-trip)
 
 ### Step 4: RoleAPIBase + notification wiring
 - Add band methods to RoleAPIBase
@@ -432,10 +432,10 @@ removed content. The old content is deleted entirely.
 - HEP-CORE-0007: Remove all remaining CHANNEL_NOTIFY_REQ, CHANNEL_BROADCAST_REQ,
   CHANNEL_EVENT_NOTIFY, CHANNEL_BROADCAST_NOTIFY references. Remove Peer-to-Peer
   section. Remove P2C socket framing specs. Remove Messenger callback docs.
-  Replace with current BrokerRequestChannel + HEP-0030 band protocol.
+  Replace with current BrokerRequestComm + HEP-0030 band protocol.
 - HEP-CORE-0018: Remove all P2C establishment sequences (§15.3/15.4 P2C parts).
   Remove Messenger references. Remove ctrl_thread_ references. Update to
-  reflect BrokerRequestChannel + thread manager + band pub/sub.
+  reflect BrokerRequestComm + thread manager + band pub/sub.
 - HEP-CORE-0011: Update script API section — remove old broadcast/send/consumers,
   document new band methods.
 - Archive tech drafts that are fully implemented.
@@ -455,8 +455,8 @@ Each HEP must be a complete, self-consistent document after this pass.
 ### Modified files
 - `src/utils/ipc/broker_service.cpp` — new dispatch + handlers
 - `src/utils/CMakeLists.txt` — add band_registry.cpp
-- `src/include/utils/broker_request_channel.hpp` — new band methods
-- `src/utils/network_comm/broker_request_channel.cpp` — implementations
+- `src/include/utils/broker_request_comm.hpp` — new band methods
+- `src/utils/network_comm/broker_request_comm.cpp` — implementations
 - `src/include/utils/role_api_base.hpp` — new band API
 - `src/utils/service/role_api_base.cpp` — implementations + notification wiring
 - `src/producer/producer_api.cpp` — Python bindings

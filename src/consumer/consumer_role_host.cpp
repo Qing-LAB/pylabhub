@@ -10,7 +10,7 @@
  * Layer 1 (engine): delegated to ScriptEngine via invoke_consume / invoke_on_inbox.
  */
 #include "consumer_role_host.hpp"
-#include "utils/broker_request_channel.hpp"
+#include "utils/broker_request_comm.hpp"
 #include "consumer_fields.hpp"
 
 #include "plh_datahub.hpp"
@@ -248,8 +248,8 @@ void ConsumerRoleHost::worker_main_()
         api_->set_consumer(in_consumer_.has_value() ? &(*in_consumer_) : nullptr);
         api_->set_inbox_queue(inbox_queue_.get());
 
-        broker_channel_ = std::make_unique<hub::BrokerRequestChannel>();
-        hub::BrokerRequestChannel::Config bc_cfg;
+        broker_channel_ = std::make_unique<hub::BrokerRequestComm>();
+        hub::BrokerRequestComm::Config bc_cfg;
         bc_cfg.broker_endpoint = config_.in_hub().broker;
         bc_cfg.broker_pubkey   = config_.in_hub().broker_pubkey;
         bc_cfg.client_pubkey   = config_.auth().client_pubkey;
@@ -456,7 +456,7 @@ bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
                 in_consumer_->has_shm());
 
     // --- Startup coordination (HEP-0023) ---
-    if (!scripting::wait_for_roles(in_messenger_, config_.startup().wait_for_roles, "[cons]"))
+    if (!scripting::wait_for_roles(*broker_channel_, config_.startup().wait_for_roles, "[cons]"))
         return false;
 
     return true;

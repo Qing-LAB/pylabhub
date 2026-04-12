@@ -1,7 +1,7 @@
 #pragma once
 /**
- * @file broker_request_channel.hpp
- * @brief BrokerRequestChannel — role-to-broker ZMQ DEALER protocol.
+ * @file broker_request_comm.hpp
+ * @brief BrokerRequestComm — role-to-broker ZMQ DEALER protocol.
  *
  * Clean replacement for the broker protocol portion of Messenger.
  * One DEALER socket connected to the broker's ROUTER. All messages are
@@ -30,16 +30,16 @@
 namespace pylabhub::hub
 {
 
-class PYLABHUB_UTILS_EXPORT BrokerRequestChannel
+class PYLABHUB_UTILS_EXPORT BrokerRequestComm
 {
   public:
-    BrokerRequestChannel();
-    ~BrokerRequestChannel();
+    BrokerRequestComm();
+    ~BrokerRequestComm();
 
-    BrokerRequestChannel(BrokerRequestChannel &&) noexcept;
-    BrokerRequestChannel &operator=(BrokerRequestChannel &&) noexcept;
-    BrokerRequestChannel(const BrokerRequestChannel &) = delete;
-    BrokerRequestChannel &operator=(const BrokerRequestChannel &) = delete;
+    BrokerRequestComm(BrokerRequestComm &&) noexcept;
+    BrokerRequestComm &operator=(BrokerRequestComm &&) noexcept;
+    BrokerRequestComm(const BrokerRequestComm &) = delete;
+    BrokerRequestComm &operator=(const BrokerRequestComm &) = delete;
 
     // ── Configuration ────────────────────────────────────────────────────
 

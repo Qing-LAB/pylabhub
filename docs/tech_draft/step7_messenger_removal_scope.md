@@ -73,7 +73,7 @@ to the same `hub::Messenger*` instance, passed in via constructor.
 
 ---
 
-## 3. BrokerRequestChannel gap analysis
+## 3. BrokerRequestComm gap analysis
 
 ### Already present in BRC (no work needed)
 
@@ -120,7 +120,7 @@ application-level dispatch in the application layer.
 Schema query path: `SchemaStore::query_from_broker()` calls
 `Messenger::query_channel_schema()`. Need to either:
 - **(a)** Add `query_channel_schema(channel, timeout)` to BRC
-- **(b)** Give `SchemaStore` a `BrokerRequestChannel*` and use the existing
+- **(b)** Give `SchemaStore` a `BrokerRequestComm*` and use the existing
   request machinery directly.
 
 ---
@@ -128,7 +128,7 @@ Schema query path: `SchemaStore::query_from_broker()` calls
 ## 4. Role host wiring today
 
 All three role hosts currently own **both** a Messenger (as a member, not
-pointer — `out_messenger_`) and a `BrokerRequestChannel` (as `unique_ptr`).
+pointer — `out_messenger_`) and a `BrokerRequestComm` (as `unique_ptr`).
 This is the transition state.
 
 | Host | Messenger member | BRC member |
@@ -273,7 +273,7 @@ demolition-only.
    reintroduction? Recommendation: **delete**. When hubshell returns, it can
    use `BAND_BROADCAST_REQ` directly (probably by joining admin bands as a
    pseudo-role with a dedicated BRC connection).
-3. **SchemaStore transport**: give it a `BrokerRequestChannel*` directly, or
+3. **SchemaStore transport**: give it a `BrokerRequestComm*` directly, or
    add `query_channel_schema` to BRC? Recommendation: **pass BRC pointer** —
    the schema query is a single-call use site, no need to pollute BRC API.
 4. **ChannelHandle fate**: Step 7 in parallel with Messenger, or defer?
