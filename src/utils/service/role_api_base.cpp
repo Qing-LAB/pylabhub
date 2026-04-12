@@ -3,7 +3,7 @@
  * @brief RoleAPIBase implementation — unified role API (pure C++).
  */
 #include "utils/role_api_base.hpp"
-#include "utils/broker_request_channel.hpp"
+#include "utils/broker_request_comm.hpp"
 #include "utils/script_engine.hpp"        // ScriptEngine, InvokeInbox, ThreadEngineGuard
 #include "utils/zmq_poll_loop.hpp"        // ZmqPollLoop, PeriodicTask
 
@@ -43,7 +43,7 @@ struct RoleAPIBase::Impl
     hub::Messenger  *messenger{nullptr};
     hub::InboxQueue          *inbox_queue{nullptr};
     ScriptEngine             *engine{nullptr};
-    hub::BrokerRequestChannel *broker_channel{nullptr};
+    hub::BrokerRequestComm *broker_channel{nullptr};
 
     std::string role_tag;   // "prod", "cons", "proc"
     hub::ChecksumPolicy checksum_policy{hub::ChecksumPolicy::Enforced};
@@ -139,13 +139,13 @@ size_t RoleAPIBase::thread_count() const
 // set_broker_channel
 // ============================================================================
 
-void RoleAPIBase::set_broker_channel(hub::BrokerRequestChannel *bc)
+void RoleAPIBase::set_broker_channel(hub::BrokerRequestComm *bc)
 {
     pImpl->broker_channel = bc;
 }
 
 // ============================================================================
-// Broker thread — runs BrokerRequestChannel poll loop + heartbeat
+// Broker thread — runs BrokerRequestComm poll loop + heartbeat
 // ============================================================================
 
 void RoleAPIBase::start_broker_thread(const BrokerThreadConfig &cfg)
@@ -159,7 +159,7 @@ void RoleAPIBase::start_broker_thread(const BrokerThreadConfig &cfg)
 
     if (!bc)
     {
-        LOGGER_ERROR("[{}] start_broker_thread: no BrokerRequestChannel set",
+        LOGGER_ERROR("[{}] start_broker_thread: no BrokerRequestComm set",
                      pImpl->role_tag);
         return;
     }
@@ -177,7 +177,7 @@ void RoleAPIBase::start_broker_thread(const BrokerThreadConfig &cfg)
     // Wire hub-dead callback.
     const auto &tag = pImpl->role_tag;
     bc->on_hub_dead([core, tag]() {
-        LOGGER_WARN("[{}] hub-dead: BrokerRequestChannel connection lost", tag);
+        LOGGER_WARN("[{}] hub-dead: BrokerRequestComm connection lost", tag);
         core->set_stop_reason(RoleHostCore::StopReason::HubDead);
         core->request_stop();
     });
@@ -682,7 +682,7 @@ std::optional<nlohmann::json> RoleAPIBase::band_members(const std::string &chann
 std::optional<RoleAPIBase::InboxOpenResult>
 RoleAPIBase::open_inbox_client(const std::string &target_uid)
 {
-    if (!pImpl->core || !pImpl->messenger)
+    if (!pImpl->core || !pImpl->broker_channel)
         return std::nullopt;
 
     hub::SchemaSpec result_spec;
@@ -691,18 +691,22 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
     auto entry = pImpl->core->open_inbox(target_uid,
         [&]() -> std::optional<RoleHostCore::InboxCacheEntry>
         {
-            auto info = pImpl->messenger->query_role_info(target_uid, 1000);
+            auto info = pImpl->broker_channel->query_role_info(target_uid, 1000);
             if (!info.has_value())
                 return std::nullopt;
 
-            if (!info->inbox_schema.is_object() ||
-                !info->inbox_schema.contains("fields"))
+            auto inbox_schema = info->value("inbox_schema", nlohmann::json{});
+            if (!inbox_schema.is_object() || !inbox_schema.contains("fields"))
                 return std::nullopt;
+
+            auto inbox_packing  = info->value("inbox_packing", std::string{});
+            auto inbox_endpoint = info->value("inbox_endpoint", std::string{});
+            auto inbox_checksum = info->value("inbox_checksum", std::string{});
 
             hub::SchemaSpec spec;
             try
             {
-                spec = hub::parse_schema_json(info->inbox_schema);
+                spec = hub::parse_schema_json(inbox_schema);
             }
             catch (const std::exception &e)
             {
@@ -711,13 +715,13 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
                 return std::nullopt;
             }
 
-            size_t item_size = hub::compute_schema_size(spec, info->inbox_packing);
+            size_t item_size = hub::compute_schema_size(spec, inbox_packing);
 
             auto zmq_fields = hub::schema_spec_to_zmq_fields(spec);
 
             auto client_ptr = hub::InboxClient::connect_to(
-                info->inbox_endpoint, pImpl->uid,
-                std::move(zmq_fields), info->inbox_packing);
+                inbox_endpoint, pImpl->uid,
+                std::move(zmq_fields), inbox_packing);
             if (!client_ptr)
             {
                 LOGGER_WARN("[api] open_inbox('{}'): connect failed", target_uid);
@@ -729,10 +733,10 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
                 return std::nullopt;
             }
             client_ptr->set_checksum_policy(
-                config::string_to_checksum_policy(info->inbox_checksum));
+                config::string_to_checksum_policy(inbox_checksum));
 
             result_spec = std::move(spec);
-            result_packing = info->inbox_packing;
+            result_packing = inbox_packing;
 
             return RoleHostCore::InboxCacheEntry{
                 std::shared_ptr<hub::InboxClient>(std::move(client_ptr)),
@@ -749,14 +753,14 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
 
 bool RoleAPIBase::wait_for_role(const std::string &uid, int timeout_ms)
 {
-    if (!pImpl->messenger)
+    if (!pImpl->broker_channel)
         return false;
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::milliseconds{timeout_ms};
     static constexpr int kPollMs = 200;
     while (std::chrono::steady_clock::now() < deadline)
     {
-        if (pImpl->messenger->query_role_presence(uid, kPollMs))
+        if (pImpl->broker_channel->query_role_presence(uid, kPollMs))
             return true;
     }
     return false;

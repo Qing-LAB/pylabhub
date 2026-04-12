@@ -170,9 +170,9 @@ add_executable(test_layer3_datahub
 
     # ── Script engine integration tests (L3: engine + real infrastructure) ──
     test_datahub_engine_roundtrip.cpp
-    test_datahub_broker_request_channel.cpp
+    test_datahub_broker_request_comm.cpp
     workers/datahub_engine_workers.cpp
-    workers/datahub_broker_request_channel_workers.cpp
+    workers/datahub_broker_request_comm_workers.cpp
     test_datahub_channel_group.cpp
     workers/datahub_channel_group_workers.cpp
 )

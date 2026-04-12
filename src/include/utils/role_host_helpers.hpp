@@ -9,6 +9,7 @@
  * InboxQueue, and Messenger without knowing the underlying script engine type.
  */
 
+#include "utils/broker_request_comm.hpp"
 #include "utils/role_host_core.hpp"
 #include "utils/config/checksum_config.hpp"
 #include "utils/config/inbox_config.hpp"
@@ -40,12 +41,12 @@ namespace pylabhub::scripting
  *
  * Blocks for up to timeout_ms per role. Logs progress.
  *
- * @param messenger     The messenger to query role presence.
+ * @param brc           The BrokerRequestComm to query role presence.
  * @param wait_list     List of roles to wait for (from config).
  * @param log_tag       Log prefix, e.g. "[prod]".
  * @return true if all roles found; false on timeout.
  */
-inline bool wait_for_roles(hub::Messenger                   &messenger,
+inline bool wait_for_roles(hub::BrokerRequestComm        &brc,
                             const std::vector<WaitForRole>   &wait_list,
                             const char                       *log_tag)
 {
@@ -65,7 +66,7 @@ inline bool wait_for_roles(hub::Messenger                   &messenger,
             if (remaining <= 0)
                 break;
             const int poll_ms = static_cast<int>(std::min<long long>(kPollMs, remaining));
-            if (messenger.query_role_presence(wr.uid, poll_ms))
+            if (brc.query_role_presence(wr.uid, poll_ms))
             {
                 found = true;
                 break;

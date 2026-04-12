@@ -1,16 +1,16 @@
 /**
- * @file datahub_broker_request_channel_workers.cpp
- * @brief L3 test workers for BrokerRequestChannel.
+ * @file datahub_broker_request_comm_workers.cpp
+ * @brief L3 test workers for BrokerRequestComm.
  *
  * Each worker runs in a subprocess (IsolatedProcessTest pattern).
- * Tests exercise the full BrokerRequestChannel against a real BrokerService.
+ * Tests exercise the full BrokerRequestComm against a real BrokerService.
  */
 
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "test_sync_utils.h"
 
-#include "utils/broker_request_channel.hpp"
+#include "utils/broker_request_comm.hpp"
 #include "utils/logger.hpp"
 #include "utils/broker_service.hpp"
 #include "utils/lifecycle.hpp"
@@ -86,8 +86,8 @@ int connect_and_heartbeat()
 
     auto broker = start_broker();
 
-    BrokerRequestChannel ch;
-    BrokerRequestChannel::Config cfg;
+    BrokerRequestComm ch;
+    BrokerRequestComm::Config cfg;
     cfg.broker_endpoint = broker.endpoint;
     cfg.broker_pubkey   = broker.pubkey;
     EXPECT_TRUE(ch.connect(cfg));
@@ -118,8 +118,8 @@ int register_and_discover()
 
     auto broker = start_broker();
 
-    BrokerRequestChannel ch;
-    BrokerRequestChannel::Config cfg;
+    BrokerRequestComm ch;
+    BrokerRequestComm::Config cfg;
     cfg.broker_endpoint = broker.endpoint;
     cfg.broker_pubkey   = broker.pubkey;
     EXPECT_TRUE(ch.connect(cfg));
@@ -179,8 +179,8 @@ int role_presence()
 
     auto broker = start_broker();
 
-    BrokerRequestChannel ch;
-    BrokerRequestChannel::Config cfg;
+    BrokerRequestComm ch;
+    BrokerRequestComm::Config cfg;
     cfg.broker_endpoint = broker.endpoint;
     cfg.broker_pubkey   = broker.pubkey;
     EXPECT_TRUE(ch.connect(cfg));
@@ -228,8 +228,8 @@ int notification_dispatch()
 
     auto broker = start_broker();
 
-    BrokerRequestChannel ch;
-    BrokerRequestChannel::Config cfg;
+    BrokerRequestComm ch;
+    BrokerRequestComm::Config cfg;
     cfg.broker_endpoint = broker.endpoint;
     cfg.broker_pubkey   = broker.pubkey;
     EXPECT_TRUE(ch.connect(cfg));

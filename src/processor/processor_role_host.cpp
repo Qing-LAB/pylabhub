@@ -12,7 +12,7 @@
  * Layer 1 (engine): delegated to ScriptEngine via invoke_process / invoke_on_inbox.
  */
 #include "processor_role_host.hpp"
-#include "utils/broker_request_channel.hpp"
+#include "utils/broker_request_comm.hpp"
 #include "processor_fields.hpp"
 
 #include "plh_datahub.hpp"
@@ -346,8 +346,8 @@ void ProcessorRoleHost::worker_main_()
         api_->set_inbox_queue(inbox_queue_.get());
 
         // Broker channel connects to the output broker (where heartbeats go).
-        broker_channel_ = std::make_unique<hub::BrokerRequestChannel>();
-        hub::BrokerRequestChannel::Config bc_cfg;
+        broker_channel_ = std::make_unique<hub::BrokerRequestComm>();
+        hub::BrokerRequestComm::Config bc_cfg;
         bc_cfg.broker_endpoint = config_.out_hub().broker;
         bc_cfg.broker_pubkey   = config_.out_hub().broker_pubkey;
         bc_cfg.client_pubkey   = config_.auth().client_pubkey;
@@ -648,7 +648,7 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
                 config_.in_channel(), config_.out_channel());
 
     // ── Startup coordination (HEP-0023) ─────────────────────────────────────
-    if (!scripting::wait_for_roles(out_messenger_, config_.startup().wait_for_roles, "[proc]"))
+    if (!scripting::wait_for_roles(*broker_channel_, config_.startup().wait_for_roles, "[proc]"))
         return false;
 
     return true;

@@ -7,7 +7,7 @@
 #include "shared_test_helpers.h"
 #include "test_sync_utils.h"
 
-#include "utils/broker_request_channel.hpp"
+#include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
 #include "utils/role_api_base.hpp"
 #include "utils/role_host_core.hpp"
@@ -63,14 +63,14 @@ BrokerHandle start_broker()
 
 struct ChannelClient
 {
-    BrokerRequestChannel ch;
+    BrokerRequestComm ch;
     std::atomic<bool> running{true};
     std::thread poll_thread;
 
     void connect(const std::string &ep, const std::string &pk,
                  const std::string &uid, const std::string &name)
     {
-        BrokerRequestChannel::Config cfg;
+        BrokerRequestComm::Config cfg;
         cfg.broker_endpoint = ep;
         cfg.broker_pubkey = pk;
         cfg.role_uid = uid;
@@ -273,7 +273,7 @@ int roleapi_channel()
 
     auto broker = start_broker();
 
-    // Set up two RoleAPIBases, each with its own BrokerRequestChannel.
+    // Set up two RoleAPIBases, each with its own BrokerRequestComm.
     scripting::RoleHostCore core1, core2;
     core1.set_running(true);
     core2.set_running(true);
@@ -285,10 +285,10 @@ int roleapi_channel()
     api2->set_role_tag("role_b");
     api2->set_uid("ROLE-B-200");
 
-    auto bc1 = std::make_unique<BrokerRequestChannel>();
-    auto bc2 = std::make_unique<BrokerRequestChannel>();
+    auto bc1 = std::make_unique<BrokerRequestComm>();
+    auto bc2 = std::make_unique<BrokerRequestComm>();
 
-    BrokerRequestChannel::Config bc_cfg;
+    BrokerRequestComm::Config bc_cfg;
     bc_cfg.broker_endpoint = broker.endpoint;
     bc_cfg.broker_pubkey = broker.pubkey;
 

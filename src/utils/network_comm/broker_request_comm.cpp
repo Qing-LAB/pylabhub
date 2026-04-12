@@ -1,12 +1,12 @@
 /**
- * @file broker_request_channel.cpp
- * @brief BrokerRequestChannel — role-to-broker ZMQ DEALER protocol.
+ * @file broker_request_comm.cpp
+ * @brief BrokerRequestComm — role-to-broker ZMQ DEALER protocol.
  *
  * Implements the broker protocol using a single DEALER socket, MonitoredQueue
  * command queue, and the redesigned ZmqPollLoop with inproc wake-up.
  */
 
-#include "utils/broker_request_channel.hpp"
+#include "utils/broker_request_comm.hpp"
 
 #include "plh_platform.hpp"   // platform::get_pid()
 #include "utils/logger.hpp"
@@ -74,7 +74,7 @@ using BrokerCommand = std::variant<SendCmd, std::shared_ptr<RequestCmd>>;
 // Impl
 // ============================================================================
 
-struct BrokerRequestChannel::Impl
+struct BrokerRequestComm::Impl
 {
     // DEALER socket + monitor.
     std::optional<zmq::socket_t> dealer;
@@ -125,7 +125,7 @@ struct BrokerRequestChannel::Impl
         }
         catch (const zmq::error_t &e)
         {
-            LOGGER_WARN("BrokerRequestChannel: send '{}' failed: {}",
+            LOGGER_WARN("BrokerRequestComm: send '{}' failed: {}",
                         msg_type, e.what());
         }
     }
@@ -156,7 +156,7 @@ struct BrokerRequestChannel::Impl
             }
             catch (const nlohmann::json::exception &)
             {
-                LOGGER_WARN("BrokerRequestChannel: bad JSON in '{}' reply", msg_type);
+                LOGGER_WARN("BrokerRequestComm: bad JSON in '{}' reply", msg_type);
                 continue;
             }
 
@@ -239,7 +239,7 @@ struct BrokerRequestChannel::Impl
                 (static_cast<uint16_t>(data[1]) << 8);
             if (event_id == ZMQ_EVENT_DISCONNECTED)
             {
-                LOGGER_WARN("BrokerRequestChannel: hub-dead (ZMQ_EVENT_DISCONNECTED)");
+                LOGGER_WARN("BrokerRequestComm: hub-dead (ZMQ_EVENT_DISCONNECTED)");
                 if (on_hub_dead_cb)
                     on_hub_dead_cb();
             }
@@ -282,7 +282,7 @@ struct BrokerRequestChannel::Impl
         if (!req->cv.wait_for(lk, std::chrono::milliseconds{timeout_ms},
                               [&] { return req->done; }))
         {
-            LOGGER_WARN("BrokerRequestChannel: {} timed out after {}ms",
+            LOGGER_WARN("BrokerRequestComm: {} timed out after {}ms",
                         msg_type, timeout_ms);
             return std::nullopt;
         }
@@ -294,26 +294,26 @@ struct BrokerRequestChannel::Impl
 // Lifecycle
 // ============================================================================
 
-BrokerRequestChannel::BrokerRequestChannel()
+BrokerRequestComm::BrokerRequestComm()
     : pImpl(std::make_unique<Impl>())
 {}
 
-BrokerRequestChannel::~BrokerRequestChannel()
+BrokerRequestComm::~BrokerRequestComm()
 {
     disconnect();
 }
 
-BrokerRequestChannel::BrokerRequestChannel(BrokerRequestChannel &&) noexcept = default;
-BrokerRequestChannel &BrokerRequestChannel::operator=(BrokerRequestChannel &&) noexcept = default;
+BrokerRequestComm::BrokerRequestComm(BrokerRequestComm &&) noexcept = default;
+BrokerRequestComm &BrokerRequestComm::operator=(BrokerRequestComm &&) noexcept = default;
 
-bool BrokerRequestChannel::connect(const Config &cfg)
+bool BrokerRequestComm::connect(const Config &cfg)
 {
     if (pImpl->connected.load(std::memory_order_acquire))
         return true;
 
     if (cfg.broker_endpoint.empty())
     {
-        LOGGER_ERROR("BrokerRequestChannel: broker_endpoint cannot be empty");
+        LOGGER_ERROR("BrokerRequestComm: broker_endpoint cannot be empty");
         return false;
     }
 
@@ -340,7 +340,7 @@ bool BrokerRequestChannel::connect(const Config &cfg)
                 char pub_z85[41]{}, sec_z85[41]{};
                 if (zmq_curve_keypair(pub_z85, sec_z85) != 0)
                 {
-                    LOGGER_ERROR("BrokerRequestChannel: zmq_curve_keypair failed");
+                    LOGGER_ERROR("BrokerRequestComm: zmq_curve_keypair failed");
                     pImpl->dealer.reset();
                     return false;
                 }
@@ -403,14 +403,14 @@ bool BrokerRequestChannel::connect(const Config &cfg)
         pImpl->connected.store(true, std::memory_order_release);
         pImpl->stop_requested.store(false, std::memory_order_release);
 
-        LOGGER_INFO("BrokerRequestChannel: connected to {} ({})",
+        LOGGER_INFO("BrokerRequestComm: connected to {} ({})",
                     cfg.broker_endpoint,
                     cfg.broker_pubkey.empty() ? "plain TCP" : "CurveZMQ");
         return true;
     }
     catch (const zmq::error_t &e)
     {
-        LOGGER_ERROR("BrokerRequestChannel: connect failed: {}", e.what());
+        LOGGER_ERROR("BrokerRequestComm: connect failed: {}", e.what());
         pImpl->monitor_sock.reset();
         pImpl->dealer.reset();
         pImpl->signal_read.reset();
@@ -419,7 +419,7 @@ bool BrokerRequestChannel::connect(const Config &cfg)
     }
 }
 
-void BrokerRequestChannel::disconnect()
+void BrokerRequestComm::disconnect()
 {
     pImpl->stop_requested.store(true, std::memory_order_release);
     pImpl->cmd_queue.set_on_push_signal(nullptr);
@@ -438,7 +438,7 @@ void BrokerRequestChannel::disconnect()
     pImpl->connected.store(false, std::memory_order_release);
 }
 
-bool BrokerRequestChannel::is_connected() const noexcept
+bool BrokerRequestComm::is_connected() const noexcept
 {
     return pImpl->connected.load(std::memory_order_acquire);
 }
@@ -447,12 +447,12 @@ bool BrokerRequestChannel::is_connected() const noexcept
 // Callbacks
 // ============================================================================
 
-void BrokerRequestChannel::on_notification(NotificationCallback cb)
+void BrokerRequestComm::on_notification(NotificationCallback cb)
 {
     pImpl->on_notification_cb = std::move(cb);
 }
 
-void BrokerRequestChannel::on_hub_dead(std::function<void()> cb)
+void BrokerRequestComm::on_hub_dead(std::function<void()> cb)
 {
     pImpl->on_hub_dead_cb = std::move(cb);
 }
@@ -461,13 +461,13 @@ void BrokerRequestChannel::on_hub_dead(std::function<void()> cb)
 // Periodic tasks
 // ============================================================================
 
-void BrokerRequestChannel::set_periodic_task(std::function<void()> action,
+void BrokerRequestComm::set_periodic_task(std::function<void()> action,
                                               int interval_ms,
                                               std::function<uint64_t()> get_iteration)
 {
     if (pImpl->poll_loop_running.load(std::memory_order_acquire))
     {
-        LOGGER_ERROR("BrokerRequestChannel: set_periodic_task called after run_poll_loop started");
+        LOGGER_ERROR("BrokerRequestComm: set_periodic_task called after run_poll_loop started");
         return;
     }
     pImpl->periodic_tasks.emplace_back(
@@ -478,11 +478,11 @@ void BrokerRequestChannel::set_periodic_task(std::function<void()> action,
 // Poll loop
 // ============================================================================
 
-void BrokerRequestChannel::run_poll_loop(std::function<bool()> should_run)
+void BrokerRequestComm::run_poll_loop(std::function<bool()> should_run)
 {
     if (!pImpl->dealer)
     {
-        LOGGER_ERROR("BrokerRequestChannel: run_poll_loop called without connect");
+        LOGGER_ERROR("BrokerRequestComm: run_poll_loop called without connect");
         return;
     }
 
@@ -518,7 +518,7 @@ void BrokerRequestChannel::run_poll_loop(std::function<bool()> should_run)
     pImpl->poll_loop_running.store(false, std::memory_order_release);
 }
 
-void BrokerRequestChannel::stop() noexcept
+void BrokerRequestComm::stop() noexcept
 {
     pImpl->stop_requested.store(true, std::memory_order_release);
 
@@ -538,7 +538,7 @@ void BrokerRequestChannel::stop() noexcept
 // Fire-and-forget messages
 // ============================================================================
 
-void BrokerRequestChannel::send_heartbeat(const std::string &channel,
+void BrokerRequestComm::send_heartbeat(const std::string &channel,
                                            const nlohmann::json &metrics)
 {
     nlohmann::json payload;
@@ -549,7 +549,7 @@ void BrokerRequestChannel::send_heartbeat(const std::string &channel,
     pImpl->cmd_queue.push(SendCmd{"HEARTBEAT_REQ", std::move(payload)});
 }
 
-void BrokerRequestChannel::send_metrics_report(const std::string &channel,
+void BrokerRequestComm::send_metrics_report(const std::string &channel,
                                                  const std::string &uid,
                                                  const nlohmann::json &metrics)
 {
@@ -560,7 +560,7 @@ void BrokerRequestChannel::send_metrics_report(const std::string &channel,
     pImpl->cmd_queue.push(SendCmd{"METRICS_REPORT_REQ", std::move(payload)});
 }
 
-void BrokerRequestChannel::send_notify(const std::string &target,
+void BrokerRequestComm::send_notify(const std::string &target,
                                         const std::string &sender_uid,
                                         const std::string &event,
                                         const std::string &data)
@@ -573,7 +573,7 @@ void BrokerRequestChannel::send_notify(const std::string &target,
     pImpl->cmd_queue.push(SendCmd{"CHANNEL_NOTIFY_REQ", std::move(payload)});
 }
 
-void BrokerRequestChannel::send_broadcast(const std::string &target,
+void BrokerRequestComm::send_broadcast(const std::string &target,
                                             const std::string &sender_uid,
                                             const std::string &msg,
                                             const std::string &data)
@@ -586,12 +586,12 @@ void BrokerRequestChannel::send_broadcast(const std::string &target,
     pImpl->cmd_queue.push(SendCmd{"CHANNEL_BROADCAST_REQ", std::move(payload)});
 }
 
-void BrokerRequestChannel::send_checksum_error(const nlohmann::json &report)
+void BrokerRequestComm::send_checksum_error(const nlohmann::json &report)
 {
     pImpl->cmd_queue.push(SendCmd{"CHECKSUM_ERROR_REPORT", report});
 }
 
-void BrokerRequestChannel::send_endpoint_update(const std::string &channel,
+void BrokerRequestComm::send_endpoint_update(const std::string &channel,
                                                   const std::string &key,
                                                   const std::string &endpoint)
 {
@@ -607,13 +607,13 @@ void BrokerRequestChannel::send_endpoint_update(const std::string &channel,
 // ============================================================================
 
 std::optional<nlohmann::json>
-BrokerRequestChannel::register_channel(const nlohmann::json &opts, int timeout_ms)
+BrokerRequestComm::register_channel(const nlohmann::json &opts, int timeout_ms)
 {
     return pImpl->do_request( "REG_REQ", "REG_ACK", opts, timeout_ms);
 }
 
 std::optional<nlohmann::json>
-BrokerRequestChannel::discover_channel(const std::string &channel,
+BrokerRequestComm::discover_channel(const std::string &channel,
                                         const nlohmann::json &opts,
                                         int timeout_ms)
 {
@@ -623,12 +623,12 @@ BrokerRequestChannel::discover_channel(const std::string &channel,
 }
 
 std::optional<nlohmann::json>
-BrokerRequestChannel::register_consumer(const nlohmann::json &opts, int timeout_ms)
+BrokerRequestComm::register_consumer(const nlohmann::json &opts, int timeout_ms)
 {
     return pImpl->do_request( "CONSUMER_REG_REQ", "CONSUMER_REG_ACK", opts, timeout_ms);
 }
 
-bool BrokerRequestChannel::deregister_channel(const std::string &channel, int timeout_ms)
+bool BrokerRequestComm::deregister_channel(const std::string &channel, int timeout_ms)
 {
     nlohmann::json payload;
     payload["channel_name"] = channel;
@@ -637,7 +637,7 @@ bool BrokerRequestChannel::deregister_channel(const std::string &channel, int ti
     return result.has_value() && result->value("status", "") == "success";
 }
 
-bool BrokerRequestChannel::deregister_consumer(const std::string &channel, int timeout_ms)
+bool BrokerRequestComm::deregister_consumer(const std::string &channel, int timeout_ms)
 {
     nlohmann::json payload;
     payload["channel_name"] = channel;
@@ -646,7 +646,7 @@ bool BrokerRequestChannel::deregister_consumer(const std::string &channel, int t
     return result.has_value() && result->value("status", "") == "success";
 }
 
-bool BrokerRequestChannel::query_role_presence(const std::string &uid, int timeout_ms)
+bool BrokerRequestComm::query_role_presence(const std::string &uid, int timeout_ms)
 {
     nlohmann::json payload;
     payload["uid"] = uid;
@@ -656,7 +656,7 @@ bool BrokerRequestChannel::query_role_presence(const std::string &uid, int timeo
 }
 
 std::optional<nlohmann::json>
-BrokerRequestChannel::query_role_info(const std::string &uid, int timeout_ms)
+BrokerRequestComm::query_role_info(const std::string &uid, int timeout_ms)
 {
     nlohmann::json payload;
     payload["uid"] = uid;
@@ -665,7 +665,7 @@ BrokerRequestChannel::query_role_info(const std::string &uid, int timeout_ms)
 }
 
 std::vector<nlohmann::json>
-BrokerRequestChannel::list_channels(int timeout_ms)
+BrokerRequestComm::list_channels(int timeout_ms)
 {
     auto result = pImpl->do_request("CHANNEL_LIST_REQ", "CHANNEL_LIST_ACK",
                              nlohmann::json::object(), timeout_ms);
@@ -678,7 +678,7 @@ BrokerRequestChannel::list_channels(int timeout_ms)
 }
 
 std::optional<nlohmann::json>
-BrokerRequestChannel::query_shm_info(const std::string &channel, int timeout_ms)
+BrokerRequestComm::query_shm_info(const std::string &channel, int timeout_ms)
 {
     nlohmann::json payload;
     payload["channel"] = channel;
@@ -691,7 +691,7 @@ BrokerRequestChannel::query_shm_info(const std::string &channel, int timeout_ms)
 // ============================================================================
 
 std::optional<nlohmann::json>
-BrokerRequestChannel::band_join(const std::string &channel, int timeout_ms)
+BrokerRequestComm::band_join(const std::string &channel, int timeout_ms)
 {
     nlohmann::json payload;
     payload["channel"] = channel;
@@ -701,7 +701,7 @@ BrokerRequestChannel::band_join(const std::string &channel, int timeout_ms)
                              std::move(payload), timeout_ms);
 }
 
-bool BrokerRequestChannel::band_leave(const std::string &channel, int timeout_ms)
+bool BrokerRequestComm::band_leave(const std::string &channel, int timeout_ms)
 {
     nlohmann::json payload;
     payload["channel"] = channel;
@@ -711,7 +711,7 @@ bool BrokerRequestChannel::band_leave(const std::string &channel, int timeout_ms
     return result.has_value() && result->value("status", "") == "success";
 }
 
-void BrokerRequestChannel::band_broadcast(const std::string &channel,
+void BrokerRequestComm::band_broadcast(const std::string &channel,
                                            const nlohmann::json &body)
 {
     nlohmann::json payload;
@@ -722,7 +722,7 @@ void BrokerRequestChannel::band_broadcast(const std::string &channel,
 }
 
 std::optional<nlohmann::json>
-BrokerRequestChannel::band_members(const std::string &channel,
+BrokerRequestComm::band_members(const std::string &channel,
                                     int timeout_ms)
 {
     nlohmann::json payload;

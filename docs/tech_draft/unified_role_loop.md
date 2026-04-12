@@ -849,18 +849,18 @@ Thread manager + ctrl thread centralization in RoleAPIBase.
 - All 3 role hosts use `api_->start_ctrl_thread()` / `api_->join_all_threads()`
 - Old `run_ctrl_thread_()` removed from all 3 role hosts
 
-**Next**: This `start_ctrl_thread()` will evolve into `broker_request_channel`
+**Next**: This `start_ctrl_thread()` will evolve into `broker_request_comm`
 as part of the Messenger replacement. See `broker_and_comm_channel_design.md`
 for the full plan covering:
 - Redesigned ZmqPollLoop (inproc wake-up, time-based periodic tasks)
-- `broker_request_channel` (broker protocol DEALER)
+- `broker_request_comm` (broker protocol DEALER)
 - `role_communication_channel` (P2C sockets)
 - Messenger elimination
 
 ### Phase 4: run_role() lifecycle unification
 
 Combine steps 5-12 into `RoleAPIBase::run_role()`. Deferred until
-broker_request_channel is in place (Phase 4 wraps the full lifecycle
+broker_request_comm is in place (Phase 4 wraps the full lifecycle
 including the broker thread spawn).
 
 ### Phase 5: Cleanup + docs

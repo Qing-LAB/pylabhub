@@ -1025,7 +1025,7 @@ See HEP-CORE-0015 §8.2 for the processor's three-thread model (`loop_thread_`,
 > **Note (2026-04-10):** The "Control plane" row in §15.1 and the P2C socket
 > establishment sequences in §15.3/15.4 are being revised. Channel messaging
 > is redesigned as a broker-hosted pub/sub system — see HEP-CORE-0030.
-> The Control plane is replaced by `BrokerRequestChannel` (broker DEALER protocol).
+> The Control plane is replaced by `BrokerRequestComm` (broker DEALER protocol).
 > P2C sockets (ChannelHandle, ChannelPattern) are eliminated.
 > The Data plane (QueueReader/QueueWriter, SHM, ZMQ PUSH/PULL) is unchanged.
 
@@ -1041,8 +1041,8 @@ Each role operates on four independent communication planes:
 | Plane | Purpose | Transport | Ownership |
 |-------|---------|-----------|-----------|
 | **Data plane** | Streaming slot data (main loop) | SHM ring buffer or ZMQ PUSH/PULL | `QueueWriter` (write) / `QueueReader` (read) |
-| **Broker plane** | Broker protocol: registration, heartbeat, shutdown | ZMQ DEALER (`BrokerRequestChannel`) | `RoleAPIBase` thread manager ("broker" thread) |
-| **Channel plane** | Pub/sub messaging between roles (HEP-CORE-0030) | Broker-mediated fan-out via same DEALER | `BrokerRequestChannel` channel methods |
+| **Broker plane** | Broker protocol: registration, heartbeat, shutdown | ZMQ DEALER (`BrokerRequestComm`) | `RoleAPIBase` thread manager ("broker" thread) |
+| **Channel plane** | Pub/sub messaging between roles (HEP-CORE-0030) | Broker-mediated fan-out via same DEALER | `BrokerRequestComm` channel methods |
 | **Inbox plane** | Targeted point-to-point messaging between roles | ZMQ ROUTER/DEALER (`InboxQueue` / `InboxClient`) | Role host owns `InboxQueue`; clients connect via `api.open_inbox()` |
 
 These four planes are fully independent. The data plane carries slot data for the main
@@ -1059,7 +1059,7 @@ The role host interacts with each plane through a specific API layer:
 Role Host (ProducerRoleHost / ConsumerRoleHost / ProcessorRoleHost)
     │
     ├── Data plane:    queue_writer() / queue_reader()          ← QueueWriter / QueueReader
-    ├── Broker plane:  BrokerRequestChannel                     ← broker DEALER, managed thread
+    ├── Broker plane:  BrokerRequestComm                     ← broker DEALER, managed thread
     ├── Band plane:    api.band_join / band_broadcast            ← HEP-CORE-0030 pub/sub
     └── Inbox plane:   InboxQueue (ROUTER bind)                 ← role host owns directly
 ```

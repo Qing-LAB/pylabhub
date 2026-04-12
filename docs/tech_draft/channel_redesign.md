@@ -150,7 +150,7 @@ remaining members.
 
 ## 4. Role-Side API
 
-No new module needed. `BrokerRequestChannel` gains band methods:
+No new module needed. `BrokerRequestComm` gains band methods:
 
 ```cpp
 // Join a band (auto-creates if not exists). Returns member list.
@@ -187,7 +187,7 @@ members = api.band_members("#sensor_sync")
 
 - **P2C sockets (ROUTER/DEALER + XPUB/SUB)**: No longer needed for
   band communication. All messages go through the broker DEALER.
-- **`role_communication_channel` module**: Not needed. `BrokerRequestChannel`
+- **`role_communication_channel` module**: Not needed. `BrokerRequestComm`
   handles everything.
 - **`start_comm_thread()`**: No longer needed. The broker thread handles
   band messages as part of its poll loop.
@@ -229,21 +229,21 @@ Benefits:
   heartbeat — these are about data plane setup, not band messaging.
 - **Inbox**: Point-to-point messaging (InboxQueue/InboxClient). For
   targeted one-to-one communication, not pub/sub.
-- **`BrokerRequestChannel`**: Gains band methods but its core
+- **`BrokerRequestComm`**: Gains band methods but its core
   function (broker protocol DEALER) is unchanged.
 
 ---
 
 ## 7. Migration Strategy
 
-### Phase 1: Add band protocol to broker + BrokerRequestChannel
+### Phase 1: Add band protocol to broker + BrokerRequestComm
 
 1. Add band registry to BrokerService (separate from existing
    channel registry which is about data plane registration)
 2. Implement BAND_JOIN/LEAVE/BROADCAST/MEMBERS request handlers
 3. Implement broker fan-out for BAND_BROADCAST_NOTIFY
 4. Implement heartbeat-based auto-leave
-5. Add band methods to BrokerRequestChannel
+5. Add band methods to BrokerRequestComm
 6. Wire notification dispatch to core_.enqueue_message()
 7. Add script API methods
 

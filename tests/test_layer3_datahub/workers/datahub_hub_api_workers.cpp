@@ -6,6 +6,7 @@
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 
+#include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/role_api_base.hpp"
@@ -1436,9 +1437,24 @@ int open_inbox_client_numeric_schema(int /*argc*/, char ** /*argv*/)
                 << "Broker should have the producer registered within 3s";
 
             // Open inbox client via RoleAPIBase (full broker discovery path).
+            // Uses BrokerRequestComm for role_info query (Phase 7.3 migration).
+            hub::BrokerRequestComm brc;
+            hub::BrokerRequestComm::Config bc_cfg;
+            bc_cfg.broker_endpoint = broker.endpoint;
+            bc_cfg.broker_pubkey   = broker.pubkey;
+            bc_cfg.role_uid        = "CONS-INBOX-TEST-001";
+            bc_cfg.role_name       = "inbox_test_consumer";
+            ASSERT_TRUE(brc.connect(bc_cfg));
+
+            // BRC needs its poll loop running to process request/reply.
+            std::atomic<bool> brc_running{true};
+            std::thread brc_thread([&] {
+                brc.run_poll_loop([&] { return brc_running.load(); });
+            });
+
             scripting::RoleHostCore core;
             scripting::RoleAPIBase api(core);
-            api.set_messenger(&messenger);
+            api.set_broker_channel(&brc);
             api.set_uid("CONS-INBOX-TEST-001");
 
             auto result = api.open_inbox_client("PROD-INBOX-TEST-001");
@@ -1527,6 +1543,9 @@ int open_inbox_client_numeric_schema(int /*argc*/, char ** /*argv*/)
 
             inbox_queue->stop();
             producer->close();
+            brc_running.store(false);
+            brc.disconnect();
+            if (brc_thread.joinable()) brc_thread.join();
             messenger.disconnect();
             broker.stop_and_join();
         },
