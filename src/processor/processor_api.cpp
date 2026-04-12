@@ -34,26 +34,6 @@ py::object ProcessorAPI::flexzone() const
     return *flexzone_obj_;
 }
 
-bool ProcessorAPI::broadcast(py::bytes data)
-{
-    const auto s = data.cast<std::string>();
-    return base_->broadcast(s.data(), s.size());
-}
-
-bool ProcessorAPI::send(const std::string &identity, py::bytes data)
-{
-    const auto s = data.cast<std::string>();
-    return base_->send(identity, s.data(), s.size());
-}
-
-py::list ProcessorAPI::consumers()
-{
-    py::list lst;
-    for (const auto &hex : base_->connected_consumers())
-        lst.append(py::str(hex));
-    return lst;
-}
-
 py::object ProcessorAPI::join_channel(const std::string &channel)
 {
     auto result = base_->join_channel(channel);
@@ -219,9 +199,6 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
         .def("set_critical_error",   &ProcessorAPI::set_critical_error)
         .def("critical_error",       &ProcessorAPI::critical_error)
         .def("flexzone",      &ProcessorAPI::flexzone)
-        .def("broadcast",     &ProcessorAPI::broadcast)
-        .def("send",          &ProcessorAPI::send, py::arg("identity"), py::arg("data"))
-        .def("consumers",     &ProcessorAPI::consumers)
         .def("update_flexzone_checksum", &ProcessorAPI::update_flexzone_checksum)
         .def("join_channel",      &ProcessorAPI::join_channel, py::arg("channel"))
         .def("leave_channel",     &ProcessorAPI::leave_channel, py::arg("channel"))

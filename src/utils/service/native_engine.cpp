@@ -224,18 +224,6 @@ size_t ctx_flexzone_logical_size(const PlhNativeContext *ctx, int side)
 
 // ── Channel messaging functions ─────────────────────────────────────────────
 
-int ctx_broadcast(const PlhNativeContext *ctx, const void *data, size_t size)
-{
-    if (!ctx || !ctx->_api) return 0;
-    return static_cast<RoleAPIBase *>(ctx->_api)->broadcast(data, size) ? 1 : 0;
-}
-
-int ctx_send(const PlhNativeContext *ctx, const char *identity_hex, const void *data, size_t size)
-{
-    if (!ctx || !ctx->_api || !identity_hex) return 0;
-    return static_cast<RoleAPIBase *>(ctx->_api)->send(identity_hex, data, size) ? 1 : 0;
-}
-
 int ctx_wait_for_role(const PlhNativeContext *ctx, const char *uid, int timeout_ms)
 {
     if (!ctx || !ctx->_api || !uid) return 0;
@@ -349,9 +337,6 @@ struct NativeEngine::NativeContextStorage
         ctx.slot_logical_size    = ctx_slot_logical_size;
         ctx.flexzone_logical_size = ctx_flexzone_logical_size;
 
-        // Channel messaging
-        ctx.broadcast      = ctx_broadcast;
-        ctx.send           = ctx_send;
         ctx.wait_for_role  = ctx_wait_for_role;
 
         // Channel pub/sub (HEP-CORE-0030)

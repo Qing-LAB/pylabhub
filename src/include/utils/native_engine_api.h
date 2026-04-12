@@ -146,10 +146,6 @@ typedef struct
     size_t   (*slot_logical_size)(const struct PlhNativeContext *ctx, int side);
     size_t   (*flexzone_logical_size)(const struct PlhNativeContext *ctx, int side);
 
-    /** Channel messaging. Returns 1 on success, 0 on failure. */
-    int      (*broadcast)(const struct PlhNativeContext *ctx, const void *data, size_t size);
-    int      (*send)(const struct PlhNativeContext *ctx, const char *identity_hex, const void *data, size_t size);
-
     /** Role discovery. Returns 1 if found, 0 on timeout. */
     int      (*wait_for_role)(const struct PlhNativeContext *ctx, const char *uid, int timeout_ms);
 
@@ -459,15 +455,6 @@ class Context
         return c_->flexzone_logical_size ? c_->flexzone_logical_size(c_, side) : 0;
     }
 
-    // ── Channel messaging ──────────────────────────────────────────
-    bool broadcast(const void *data, size_t size) const
-    {
-        return c_->broadcast ? c_->broadcast(c_, data, size) != 0 : false;
-    }
-    bool send(const char *identity_hex, const void *data, size_t size) const
-    {
-        return c_->send ? c_->send(c_, identity_hex, data, size) != 0 : false;
-    }
     bool wait_for_role(const char *uid, int timeout_ms = 5000) const
     {
         return c_->wait_for_role ? c_->wait_for_role(c_, uid, timeout_ms) != 0 : false;
