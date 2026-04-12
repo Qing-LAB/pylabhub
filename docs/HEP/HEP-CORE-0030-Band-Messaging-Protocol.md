@@ -223,7 +223,7 @@ mechanism needed.
 
 ## 7. Role-Side API
 
-### 7.1 BrokerRequestChannel Methods
+### 7.1 BrokerRequestComm Methods
 
 ```cpp
 std::optional<nlohmann::json> band_join(const std::string &band,
@@ -342,4 +342,4 @@ The following elements from HEP-CORE-0007 are superseded by this HEP:
 | **Broker registration** (REG_REQ, DISC_REQ) | Independent. Data plane registration uses different registry (ChannelRegistry). Band pub/sub uses BandRegistry. |
 | **Inbox** (InboxQueue/InboxClient) | Complementary. Inbox is point-to-point. Band is pub/sub. `api.send_to(uid, data)` uses inbox. |
 | **Heartbeat** (HEARTBEAT_REQ) | Reused. Broker heartbeat liveness drives auto-leave from bands. |
-| **BrokerRequestChannel** | Transport. Band API methods are added to BrokerRequestChannel. Messages flow through its DEALER socket. |
+| **BrokerRequestComm** | Transport. Band API methods are added to BrokerRequestComm. Messages flow through its DEALER socket. |

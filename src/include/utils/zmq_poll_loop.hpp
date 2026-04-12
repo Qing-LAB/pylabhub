@@ -4,7 +4,7 @@
  * @brief ZmqPollLoop — generic ZMQ event loop with inproc wake-up and periodic tasks.
  *
  * Provides a reusable poll loop for any module that owns ZMQ sockets:
- * - broker_request_channel (DEALER to broker)
+ * - broker_request_comm (DEALER to broker)
  * - role_communication_channel (ROUTER/XPUB or DEALER/SUB)
  *
  * Features:

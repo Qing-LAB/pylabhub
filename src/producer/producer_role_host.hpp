@@ -30,7 +30,7 @@ namespace pylabhub::hub
 {
 class Producer;
 class InboxQueue;
-class BrokerRequestChannel;
+class BrokerRequestComm;
 } // namespace pylabhub::hub
 
 namespace pylabhub::producer
@@ -94,7 +94,7 @@ class ProducerRoleHost
 
     // Infrastructure (created on worker thread in setup_infrastructure_).
     hub::Messenger                         out_messenger_;
-    std::unique_ptr<hub::BrokerRequestChannel> broker_channel_;
+    std::unique_ptr<hub::BrokerRequestComm> broker_channel_;
     std::optional<hub::Producer>           out_producer_;
     std::unique_ptr<hub::InboxQueue>       inbox_queue_;
 

@@ -41,7 +41,7 @@ class Messenger;
 class InboxQueue;
 class InboxClient;
 class SharedSpinLock;
-class BrokerRequestChannel;
+class BrokerRequestComm;
 } // namespace pylabhub::hub
 
 namespace pylabhub::scripting
@@ -299,8 +299,8 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
 
     // ── Broker thread ─────────────────────────────────────────────────────
 
-    /// Set the BrokerRequestChannel (owned externally by role host).
-    void set_broker_channel(hub::BrokerRequestChannel *bc);
+    /// Set the BrokerRequestComm (owned externally by role host).
+    void set_broker_channel(hub::BrokerRequestComm *bc);
 
     struct BrokerThreadConfig
     {
@@ -308,7 +308,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
         bool report_metrics{false};
     };
 
-    /// Spawn the broker thread: runs BrokerRequestChannel poll loop with
+    /// Spawn the broker thread: runs BrokerRequestComm poll loop with
     /// iteration-gated heartbeat + optional metrics report + on_heartbeat.
     void start_broker_thread(const BrokerThreadConfig &cfg);
 

@@ -10,7 +10,7 @@ NO backward compatibility. Clean cut.
 
 ## 1. Messenger Module — DELETE ENTIRELY
 
-The entire Messenger module is replaced by `BrokerRequestChannel`.
+The entire Messenger module is replaced by `BrokerRequestComm`.
 
 | File | Action |
 |------|--------|
@@ -19,7 +19,7 @@ The entire Messenger module is replaced by `BrokerRequestChannel`.
 | `src/utils/ipc/messenger_internal.hpp` | DELETE |
 | `src/include/utils/messenger.hpp` | DELETE |
 
-**Replacement**: `BrokerRequestChannel` (already implemented) handles all
+**Replacement**: `BrokerRequestComm` (already implemented) handles all
 broker protocol. Band messaging is new BAND_JOIN/LEAVE/BROADCAST protocol.
 
 ---
@@ -69,7 +69,7 @@ The handler code in `broker_service.cpp` for these old messages is deleted:
 
 | Old method | Action | Replacement |
 |------------|--------|-------------|
-| `set_messenger(Messenger *m)` | DELETE | Not needed — `BrokerRequestChannel` handles broker protocol |
+| `set_messenger(Messenger *m)` | DELETE | Not needed — `BrokerRequestComm` handles broker protocol |
 | `notify_channel(target, event, data)` | DELETE | `band_broadcast(band, body)` |
 | `broadcast_channel(target, msg, data)` | DELETE | `band_broadcast(band, body)` |
 | `broadcast(data, size)` | DELETE | `band_broadcast(band, body)` |
@@ -166,7 +166,7 @@ new band function pointers added.
 | What | Action |
 |------|--------|
 | `Messenger out_messenger_` / `in_messenger_` member | DELETE |
-| `messenger.connect(broker, pubkey, ...)` call | DELETE (BrokerRequestChannel handles this) |
+| `messenger.connect(broker, pubkey, ...)` call | DELETE (BrokerRequestComm handles this) |
 | `messenger.suppress_periodic_heartbeat()` call | DELETE |
 | `messenger.enqueue_heartbeat()` initial call | DELETE |
 | `messenger.on_hub_dead(nullptr)` in teardown | DELETE |
@@ -185,7 +185,7 @@ APIs need updating:
 | `test_datahub_broker_protocol.cpp` (channel_notify, broadcast tests) | REWRITE — use new CHANNEL_MSG |
 | `test_datahub_channel.cpp` | REWRITE or DELETE — tests old channel model |
 | `test_channel_broadcast.cpp` (L4) | REWRITE — use new channel API |
-| Workers that use Messenger directly | UPDATE — use BrokerRequestChannel |
+| Workers that use Messenger directly | UPDATE — use BrokerRequestComm |
 
 ---
 
@@ -200,7 +200,7 @@ APIs need updating:
 | HEP-CORE-0007 | §10 Wire protocol | Add BAND_JOIN/LEAVE/BROADCAST/MEMBERS message specs |
 | HEP-CORE-0007 | §10 Wire protocol | Mark CHANNEL_NOTIFY_REQ, CHANNEL_BROADCAST_REQ as DEPRECATED |
 | HEP-CORE-0007 | §12 Peer-to-Peer | Mark as DEPRECATED (replaced by broker fan-out) |
-| HEP-CORE-0018 | §15.1 Communication Planes | Rewrite: control plane = BrokerRequestChannel; band = pub/sub messaging |
+| HEP-CORE-0018 | §15.1 Communication Planes | Rewrite: control plane = BrokerRequestComm; band = pub/sub messaging |
 | HEP-CORE-0018 | §15 Channel Establishment | Rewrite: no P2C socket setup |
 | HEP-CORE-0011 | Script API | Update: new band methods, remove old broadcast/send/consumers |
 
@@ -208,7 +208,7 @@ APIs need updating:
 
 ## 10. Implementation Order
 
-1. **Add new** (band pub/sub): broker registry, protocol, BrokerRequestChannel methods, RoleAPIBase API, script bindings
+1. **Add new** (band pub/sub): broker registry, protocol, BrokerRequestComm methods, RoleAPIBase API, script bindings
 2. **Wire notifications**: on_notification callback routes band events to core_.enqueue_message()
 3. **Add tests**: L3 band tests against real broker
 4. **Migrate script API**: replace old methods with new in all 3 engines
