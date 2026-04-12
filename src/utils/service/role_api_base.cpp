@@ -40,7 +40,6 @@ struct RoleAPIBase::Impl
     RoleHostCore    *core;
     hub::Producer   *producer{nullptr};
     hub::Consumer   *consumer{nullptr};
-    hub::Messenger  *messenger{nullptr};
     hub::InboxQueue          *inbox_queue{nullptr};
     ScriptEngine             *engine{nullptr};
     hub::BrokerRequestComm *broker_channel{nullptr};
@@ -84,7 +83,6 @@ RoleAPIBase &RoleAPIBase::operator=(RoleAPIBase &&) noexcept = default;
 void RoleAPIBase::set_role_tag(std::string tag)       { pImpl->role_tag = std::move(tag); }
 void RoleAPIBase::set_producer(hub::Producer *p)      { pImpl->producer = p; }
 void RoleAPIBase::set_consumer(hub::Consumer *c)      { pImpl->consumer = c; }
-void RoleAPIBase::set_messenger(hub::Messenger *m)    { pImpl->messenger = m; }
 void RoleAPIBase::set_inbox_queue(hub::InboxQueue *q) { pImpl->inbox_queue = q; }
 void RoleAPIBase::set_uid(std::string uid)            { pImpl->uid = std::move(uid); }
 void RoleAPIBase::set_name(std::string name)          { pImpl->name = std::move(name); }
@@ -417,57 +415,10 @@ void RoleAPIBase::wire_event_callbacks()
         });
     }
 
-    // ── Messenger-level callbacks (per-channel) ─────────────────────────
-    if (auto *m = pImpl->messenger)
-    {
-        // on_consumer_died and on_channel_error are producer-side messenger
-        // events — only register when we have a producer (i.e., producer-only
-        // or processor roles). Consumer-only roles don't need these.
-        if (pImpl->producer)
-        {
-            std::string out_ch = pImpl->out_channel.empty()
-                                     ? pImpl->channel : pImpl->out_channel;
-
-            if (!out_ch.empty())
-            {
-                m->on_consumer_died(out_ch,
-                    [core, tag](uint64_t pid, std::string reason) {
-                        LOGGER_INFO("[{}] broker_notify: consumer_died pid={} reason={}",
-                                    tag, pid, reason);
-                        IncomingMessage msg;
-                        msg.event = "consumer_died";
-                        msg.details["pid"] = pid;
-                        msg.details["reason"] = std::move(reason);
-                        core->enqueue_message(std::move(msg));
-                    });
-
-                m->on_channel_error(out_ch,
-                    [core, tag, is_dual](std::string event, nlohmann::json details) {
-                        LOGGER_INFO("[{}] broker_notify: channel_event event='{}' details={}",
-                                    tag, event, details.dump());
-                        IncomingMessage msg;
-                        msg.event = "channel_event";
-                        msg.details = std::move(details);
-                        msg.details["detail"] = std::move(event);
-                        if (is_dual)
-                            msg.details["source"] = "out_channel";
-                        core->enqueue_message(std::move(msg));
-                    });
-            }
-        }
-
-        m->on_hub_dead([core, tag]() {
-            LOGGER_WARN("[{}] hub-dead: broker connection lost; triggering shutdown", tag);
-            core->set_stop_reason(RoleHostCore::StopReason::HubDead);
-            core->request_stop();
-        });
-    }
-
-    // ── Processor dual-messenger: hub-dead on both ──────────────────────
-    // For processor, the in_messenger and out_messenger may be different.
-    // The role host sets messenger to out_messenger. If the processor has
-    // a separate in_messenger, it must wire hub_dead on that one separately
-    // (the role host handles this since it owns both messenger instances).
+    // Note: broker notifications (CONSUMER_DIED_NOTIFY, CHANNEL_EVENT_NOTIFY,
+    // hub-dead) are all handled by BrokerRequestComm's on_notification() and
+    // on_hub_dead() callbacks wired in start_broker_thread(). No Messenger
+    // callback wiring is needed.
 }
 
 // ============================================================================
