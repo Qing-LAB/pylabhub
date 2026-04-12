@@ -65,12 +65,12 @@ class ProducerAPI
 
     bool update_flexzone_checksum() { return base_->update_flexzone_checksum(); }
 
-    // ── Channel pub/sub (HEP-CORE-0030) ─────────────────────────────────
+    // ── Band pub/sub (HEP-CORE-0030) ──────────────────────────────────
 
-    py::object join_channel(const std::string &channel);
-    bool leave_channel(const std::string &channel) { return base_->leave_channel(channel); }
-    void send_channel_msg(const std::string &channel, py::dict body);
-    py::object channel_members(const std::string &channel);
+    py::object band_join(const std::string &channel);
+    bool band_leave(const std::string &channel) { return base_->band_leave(channel); }
+    void band_broadcast(const std::string &channel, py::dict body);
+    py::object band_members(const std::string &channel);
 
     py::object open_inbox(const std::string &target_uid);
     bool wait_for_role(const std::string &uid, int timeout_ms = 5000);

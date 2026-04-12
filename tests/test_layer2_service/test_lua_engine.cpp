@@ -3009,15 +3009,15 @@ TEST_F(LuaEngineTest, FlexzoneLogicalSize_ArrayFields)
 }
 
 // ============================================================================
-// Channel pub/sub API — L2 (no broker, methods return nil/false gracefully)
+// Band pub/sub API — L2 (no broker, methods return nil/false gracefully)
 // ============================================================================
 
 TEST_F(LuaEngineTest, Api_Channel_JoinReturnsNilWithoutBroker)
 {
     write_script(R"(
         function on_produce(tx, msgs, api)
-            local result = api.join_channel("#test_ch")
-            assert(result == nil, "Expected nil from join_channel without broker")
+            local result = api.band_join("#test_ch")
+            assert(result == nil, "Expected nil from band_join without broker")
             return true
         end
     )");
@@ -3037,8 +3037,8 @@ TEST_F(LuaEngineTest, Api_Channel_LeaveReturnsFalseWithoutBroker)
 {
     write_script(R"(
         function on_produce(tx, msgs, api)
-            local result = api.leave_channel("#test_ch")
-            assert(result == false, "Expected false from leave_channel without broker")
+            local result = api.band_leave("#test_ch")
+            assert(result == false, "Expected false from band_leave without broker")
             return true
         end
     )");
@@ -3058,7 +3058,7 @@ TEST_F(LuaEngineTest, Api_Channel_SendMsgNoErrorWithoutBroker)
 {
     write_script(R"(
         function on_produce(tx, msgs, api)
-            api.send_channel_msg("#test_ch", {hello = "world", value = 42})
+            api.band_broadcast("#test_ch", {hello = "world", value = 42})
             return true
         end
     )");
@@ -3078,8 +3078,8 @@ TEST_F(LuaEngineTest, Api_Channel_MembersReturnsNilWithoutBroker)
 {
     write_script(R"(
         function on_produce(tx, msgs, api)
-            local result = api.channel_members("#test_ch")
-            assert(result == nil, "Expected nil from channel_members without broker")
+            local result = api.band_members("#test_ch")
+            assert(result == nil, "Expected nil from band_members without broker")
             return true
         end
     )");

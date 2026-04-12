@@ -35,26 +35,26 @@ py::object ProducerAPI::flexzone() const
     return *flexzone_obj_;
 }
 
-// ── Channel pub/sub (HEP-CORE-0030) ──────────────────────────────────────────
+// ── Band pub/sub (HEP-CORE-0030) ─────────────────────────────────────────────
 
-py::object ProducerAPI::join_channel(const std::string &channel)
+py::object ProducerAPI::band_join(const std::string &channel)
 {
-    auto result = base_->join_channel(channel);
+    auto result = base_->band_join(channel);
     if (!result.has_value())
         return py::none();
     return py::module_::import("json").attr("loads")(result->dump());
 }
 
-void ProducerAPI::send_channel_msg(const std::string &channel, py::dict body)
+void ProducerAPI::band_broadcast(const std::string &channel, py::dict body)
 {
     auto json_mod = py::module_::import("json");
     std::string body_str = json_mod.attr("dumps")(body).cast<std::string>();
-    base_->send_channel_msg(channel, nlohmann::json::parse(body_str));
+    base_->band_broadcast(channel, nlohmann::json::parse(body_str));
 }
 
-py::object ProducerAPI::channel_members(const std::string &channel)
+py::object ProducerAPI::band_members(const std::string &channel)
 {
-    auto result = base_->channel_members(channel);
+    auto result = base_->band_members(channel);
     if (!result.has_value())
         return py::none();
     return py::module_::import("json").attr("loads")(result->dump());
@@ -220,11 +220,11 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
         .def("critical_error",        &producer::ProducerAPI::critical_error)
         .def("flexzone",     &producer::ProducerAPI::flexzone)
         .def("update_flexzone_checksum", &producer::ProducerAPI::update_flexzone_checksum)
-        .def("join_channel",      &producer::ProducerAPI::join_channel, py::arg("channel"))
-        .def("leave_channel",     &producer::ProducerAPI::leave_channel, py::arg("channel"))
-        .def("send_channel_msg",  &producer::ProducerAPI::send_channel_msg,
+        .def("band_join",         &producer::ProducerAPI::band_join, py::arg("channel"))
+        .def("band_leave",        &producer::ProducerAPI::band_leave, py::arg("channel"))
+        .def("band_broadcast",    &producer::ProducerAPI::band_broadcast,
              py::arg("channel"), py::arg("body"))
-        .def("channel_members",   &producer::ProducerAPI::channel_members, py::arg("channel"))
+        .def("band_members",      &producer::ProducerAPI::band_members, py::arg("channel"))
         .def("script_error_count", &producer::ProducerAPI::script_error_count)
         .def("out_slots_written",  &producer::ProducerAPI::out_slots_written)
         .def("out_drop_count",     &producer::ProducerAPI::out_drop_count)

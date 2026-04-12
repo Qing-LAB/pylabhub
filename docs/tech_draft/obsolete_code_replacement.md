@@ -20,13 +20,13 @@ The entire Messenger module is replaced by `BrokerRequestChannel`.
 | `src/include/utils/messenger.hpp` | DELETE |
 
 **Replacement**: `BrokerRequestChannel` (already implemented) handles all
-broker protocol. Channel messaging is new CHANNEL_JOIN/LEAVE/MSG protocol.
+broker protocol. Band messaging is new BAND_JOIN/LEAVE/BROADCAST protocol.
 
 ---
 
 ## 2. P2C Socket Infrastructure — DELETE ENTIRELY
 
-Direct producer↔consumer ZMQ sockets are eliminated. Channel messaging
+Direct producer↔consumer ZMQ sockets are eliminated. Band messaging
 goes through the broker. Point-to-point goes through inbox.
 
 | File | Action |
@@ -37,13 +37,13 @@ goes through the broker. Point-to-point goes through inbox.
 | `src/include/utils/channel_pattern.hpp` | DELETE |
 | `src/utils/hub/channel_handle_internals.hpp` | DELETE |
 
-**Replacement**: No replacement. Channel messaging goes through broker.
+**Replacement**: No replacement. Band messaging goes through broker.
 The P2C sockets carried:
-- HELLO/BYE → replaced by CHANNEL_JOIN/LEAVE_NOTIFY
-- `api.broadcast(data)` → replaced by `api.send_channel_msg(channel, body)`
+- HELLO/BYE → replaced by BAND_JOIN/LEAVE_NOTIFY
+- `api.broadcast(data)` → replaced by `api.band_broadcast(band, body)`
 - `api.send(identity, data)` → replaced by inbox `api.send_to(role_uid, data)`
 - Peer-dead → replaced by broker heartbeat liveness
-- `api.consumers()` → replaced by `api.channel_members(channel)`
+- `api.consumers()` → replaced by `api.band_members(band)`
 
 ---
 
@@ -53,10 +53,10 @@ These broker message types are replaced by the new channel protocol:
 
 | Old message | Replacement |
 |-------------|-------------|
-| `CHANNEL_NOTIFY_REQ` | `CHANNEL_MSG_REQ` (send to all members) |
-| `CHANNEL_BROADCAST_REQ` | `CHANNEL_MSG_REQ` (same — all members receive) |
-| `CHANNEL_BROADCAST_NOTIFY` | `CHANNEL_MSG_NOTIFY` |
-| `CHANNEL_EVENT_NOTIFY` | `CHANNEL_MSG_NOTIFY` with event field in body |
+| `CHANNEL_NOTIFY_REQ` | `BAND_BROADCAST_REQ` (send to all members) |
+| `CHANNEL_BROADCAST_REQ` | `BAND_BROADCAST_REQ` (same — all members receive) |
+| `CHANNEL_BROADCAST_NOTIFY` | `BAND_BROADCAST_NOTIFY` |
+| `CHANNEL_EVENT_NOTIFY` | `BAND_BROADCAST_NOTIFY` with event field in body |
 
 The handler code in `broker_service.cpp` for these old messages is deleted:
 - `handle_channel_notify_req()` — DELETE
@@ -70,19 +70,19 @@ The handler code in `broker_service.cpp` for these old messages is deleted:
 | Old method | Action | Replacement |
 |------------|--------|-------------|
 | `set_messenger(Messenger *m)` | DELETE | Not needed — `BrokerRequestChannel` handles broker protocol |
-| `notify_channel(target, event, data)` | DELETE | `send_channel_msg(channel, body)` |
-| `broadcast_channel(target, msg, data)` | DELETE | `send_channel_msg(channel, body)` |
-| `broadcast(data, size)` | DELETE | `send_channel_msg(channel, body)` |
+| `notify_channel(target, event, data)` | DELETE | `band_broadcast(band, body)` |
+| `broadcast_channel(target, msg, data)` | DELETE | `band_broadcast(band, body)` |
+| `broadcast(data, size)` | DELETE | `band_broadcast(band, body)` |
 | `send(identity_hex, data, size)` | DELETE | `send_to(role_uid, data)` via inbox |
-| `connected_consumers()` | DELETE | `channel_members(channel)` |
+| `connected_consumers()` | DELETE | `band_members(band)` |
 | `start_comm_thread()` | DELETE | Not needed — no P2C sockets to poll |
 | `wire_event_callbacks()` | MODIFY | Remove Messenger/P2C callback wiring; keep broker notification wiring |
 
 New methods (already in plan):
-- `join_channel(channel)`
-- `leave_channel(channel)`
-- `send_channel_msg(channel, body)`
-- `channel_members(channel)`
+- `band_join(band)`
+- `band_leave(band)`
+- `band_broadcast(band, body)`
+- `band_members(band)`
 
 ---
 
@@ -92,28 +92,28 @@ New methods (already in plan):
 
 | Old | Action | New |
 |-----|--------|-----|
-| `api.broadcast(data)` | DELETE | `api.send_channel_msg("#ch", {"data": ...})` |
+| `api.broadcast(data)` | DELETE | `api.band_broadcast("#band", {"data": ...})` |
 | `api.send(identity, data)` | DELETE | `api.send_to(role_uid, data)` (via inbox) |
-| `api.consumers()` | DELETE | `api.channel_members("#ch")` |
-| `api.notify_channel(target, event, data)` | DELETE | `api.send_channel_msg("#ch", {"event": ..., "data": ...})` |
-| `api.broadcast_channel(target, msg, data)` | DELETE | `api.send_channel_msg("#ch", {"msg": ..., "data": ...})` |
+| `api.consumers()` | DELETE | `api.band_members("#band")` |
+| `api.notify_channel(target, event, data)` | DELETE | `api.band_broadcast("#band", {"event": ..., "data": ...})` |
+| `api.broadcast_channel(target, msg, data)` | DELETE | `api.band_broadcast("#band", {"msg": ..., "data": ...})` |
 
 New:
-- `api.join_channel("#ch")` — returns member list
-- `api.leave_channel("#ch")`
-- `api.send_channel_msg("#ch", body_dict)` — JSON to all members
-- `api.channel_members("#ch")` — list of {role_uid, role_name}
+- `api.band_join("#band")` — returns member list
+- `api.band_leave("#band")`
+- `api.band_broadcast("#band", body_dict)` — JSON to all members
+- `api.band_members("#band")` — list of {role_uid, role_name}
 
 ### Lua
 
 Same changes. Old `api.broadcast()`, `api.send()`, `api.consumers()`,
-`api.notify_channel()`, `api.broadcast_channel()` deleted. New channel
+`api.notify_channel()`, `api.broadcast_channel()` deleted. New band
 functions added.
 
 ### Native
 
 Same changes in `native_engine_api.h` — old function pointers removed,
-new channel function pointers added.
+new band function pointers added.
 
 ---
 
@@ -197,20 +197,20 @@ APIs need updating:
 
 | HEP | Section | Change |
 |-----|---------|--------|
-| HEP-CORE-0007 | §10 Wire protocol | Add CHANNEL_JOIN/LEAVE/MSG/MEMBERS message specs |
+| HEP-CORE-0007 | §10 Wire protocol | Add BAND_JOIN/LEAVE/BROADCAST/MEMBERS message specs |
 | HEP-CORE-0007 | §10 Wire protocol | Mark CHANNEL_NOTIFY_REQ, CHANNEL_BROADCAST_REQ as DEPRECATED |
 | HEP-CORE-0007 | §12 Peer-to-Peer | Mark as DEPRECATED (replaced by broker fan-out) |
-| HEP-CORE-0018 | §15.1 Communication Planes | Rewrite: control plane = BrokerRequestChannel; channel = pub/sub messaging |
+| HEP-CORE-0018 | §15.1 Communication Planes | Rewrite: control plane = BrokerRequestChannel; band = pub/sub messaging |
 | HEP-CORE-0018 | §15 Channel Establishment | Rewrite: no P2C socket setup |
-| HEP-CORE-0011 | Script API | Update: new channel methods, remove old broadcast/send/consumers |
+| HEP-CORE-0011 | Script API | Update: new band methods, remove old broadcast/send/consumers |
 
 ---
 
 ## 10. Implementation Order
 
-1. **Add new** (channel pub/sub): broker registry, protocol, BrokerRequestChannel methods, RoleAPIBase API, script bindings
-2. **Wire notifications**: on_notification callback routes channel events to core_.enqueue_message()
-3. **Add tests**: L3 channel tests against real broker
+1. **Add new** (band pub/sub): broker registry, protocol, BrokerRequestChannel methods, RoleAPIBase API, script bindings
+2. **Wire notifications**: on_notification callback routes band events to core_.enqueue_message()
+3. **Add tests**: L3 band tests against real broker
 4. **Migrate script API**: replace old methods with new in all 3 engines
 5. **Remove P2C**: delete ChannelHandle, P2C sockets, comm thread, old callbacks
 6. **Remove Messenger**: delete entire module

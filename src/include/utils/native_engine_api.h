@@ -149,15 +149,15 @@ typedef struct
     /** Role discovery. Returns 1 if found, 0 on timeout. */
     int      (*wait_for_role)(const struct PlhNativeContext *ctx, const char *uid, int timeout_ms);
 
-    /** Channel pub/sub (HEP-CORE-0030). JSON strings for body/result. */
-    /** join_channel: returns JSON string with member list, or NULL on failure. Caller must free(). */
-    char    *(*join_channel)(const struct PlhNativeContext *ctx, const char *channel);
-    /** leave_channel: returns 1 on success, 0 on failure. */
-    int      (*leave_channel)(const struct PlhNativeContext *ctx, const char *channel);
-    /** send_channel_msg: body_json is a JSON string. Fire-and-forget. */
-    void     (*send_channel_msg)(const struct PlhNativeContext *ctx, const char *channel, const char *body_json);
-    /** channel_members: returns JSON string with member list, or NULL. Caller must free(). */
-    char    *(*channel_members)(const struct PlhNativeContext *ctx, const char *channel);
+    /** Band pub/sub (HEP-CORE-0030). JSON strings for body/result. */
+    /** band_join: returns JSON string with member list, or NULL on failure. Caller must free(). */
+    char    *(*band_join)(const struct PlhNativeContext *ctx, const char *channel);
+    /** band_leave: returns 1 on success, 0 on failure. */
+    int      (*band_leave)(const struct PlhNativeContext *ctx, const char *channel);
+    /** band_broadcast: body_json is a JSON string. Fire-and-forget. */
+    void     (*band_broadcast)(const struct PlhNativeContext *ctx, const char *channel, const char *body_json);
+    /** band_members: returns JSON string with member list, or NULL. Caller must free(). */
+    char    *(*band_members)(const struct PlhNativeContext *ctx, const char *channel);
 
     /* ── Opaque host data (do not dereference) ────────────────────── */
     void *_core;               /**< Internal — RoleHostCore pointer for API implementations. */
@@ -460,24 +460,24 @@ class Context
         return c_->wait_for_role ? c_->wait_for_role(c_, uid, timeout_ms) != 0 : false;
     }
 
-    // ── Channel pub/sub (HEP-CORE-0030) ────────────────────────────
+    // ── Band pub/sub (HEP-CORE-0030) ─────────────────────────────
     /** Returns JSON string with member list. Caller must free(). NULL on failure. */
-    char *join_channel(const char *channel) const
+    char *band_join(const char *channel) const
     {
-        return c_->join_channel ? c_->join_channel(c_, channel) : nullptr;
+        return c_->band_join ? c_->band_join(c_, channel) : nullptr;
     }
-    bool leave_channel(const char *channel) const
+    bool band_leave(const char *channel) const
     {
-        return c_->leave_channel ? c_->leave_channel(c_, channel) != 0 : false;
+        return c_->band_leave ? c_->band_leave(c_, channel) != 0 : false;
     }
-    void send_channel_msg(const char *channel, const char *body_json) const
+    void band_broadcast(const char *channel, const char *body_json) const
     {
-        if (c_->send_channel_msg) c_->send_channel_msg(c_, channel, body_json);
+        if (c_->band_broadcast) c_->band_broadcast(c_, channel, body_json);
     }
     /** Returns JSON string with member list. Caller must free(). NULL on failure. */
-    char *channel_members(const char *channel) const
+    char *band_members(const char *channel) const
     {
-        return c_->channel_members ? c_->channel_members(c_, channel) : nullptr;
+        return c_->band_members ? c_->band_members(c_, channel) : nullptr;
     }
 
     /// Access the raw C context.

@@ -34,24 +34,24 @@ py::object ProcessorAPI::flexzone() const
     return *flexzone_obj_;
 }
 
-py::object ProcessorAPI::join_channel(const std::string &channel)
+py::object ProcessorAPI::band_join(const std::string &channel)
 {
-    auto result = base_->join_channel(channel);
+    auto result = base_->band_join(channel);
     if (!result.has_value())
         return py::none();
     return py::module_::import("json").attr("loads")(result->dump());
 }
 
-void ProcessorAPI::send_channel_msg(const std::string &channel, py::dict body)
+void ProcessorAPI::band_broadcast(const std::string &channel, py::dict body)
 {
     auto json_mod = py::module_::import("json");
     std::string body_str = json_mod.attr("dumps")(body).cast<std::string>();
-    base_->send_channel_msg(channel, nlohmann::json::parse(body_str));
+    base_->band_broadcast(channel, nlohmann::json::parse(body_str));
 }
 
-py::object ProcessorAPI::channel_members(const std::string &channel)
+py::object ProcessorAPI::band_members(const std::string &channel)
 {
-    auto result = base_->channel_members(channel);
+    auto result = base_->band_members(channel);
     if (!result.has_value())
         return py::none();
     return py::module_::import("json").attr("loads")(result->dump());
@@ -200,11 +200,11 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
         .def("critical_error",       &ProcessorAPI::critical_error)
         .def("flexzone",      &ProcessorAPI::flexzone)
         .def("update_flexzone_checksum", &ProcessorAPI::update_flexzone_checksum)
-        .def("join_channel",      &ProcessorAPI::join_channel, py::arg("channel"))
-        .def("leave_channel",     &ProcessorAPI::leave_channel, py::arg("channel"))
-        .def("send_channel_msg",  &ProcessorAPI::send_channel_msg,
+        .def("band_join",         &ProcessorAPI::band_join, py::arg("channel"))
+        .def("band_leave",        &ProcessorAPI::band_leave, py::arg("channel"))
+        .def("band_broadcast",    &ProcessorAPI::band_broadcast,
              py::arg("channel"), py::arg("body"))
-        .def("channel_members",   &ProcessorAPI::channel_members, py::arg("channel"))
+        .def("band_members",      &ProcessorAPI::band_members, py::arg("channel"))
         .def("script_error_count", &ProcessorAPI::script_error_count)
         .def("in_slots_received",  &ProcessorAPI::in_slots_received)
         .def("out_slots_written",  &ProcessorAPI::out_slots_written)

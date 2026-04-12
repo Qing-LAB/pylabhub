@@ -644,35 +644,35 @@ bool RoleAPIBase::critical_error() const        { return pImpl->core->is_critica
 std::string RoleAPIBase::stop_reason() const    { return pImpl->core->stop_reason_string(); }
 
 // ============================================================================
-// Channel pub/sub (HEP-CORE-0030)
+// Band pub/sub (HEP-CORE-0030)
 // ============================================================================
 
-std::optional<nlohmann::json> RoleAPIBase::join_channel(const std::string &channel)
+std::optional<nlohmann::json> RoleAPIBase::band_join(const std::string &channel)
 {
     if (!pImpl->broker_channel)
         return std::nullopt;
-    return pImpl->broker_channel->join_channel(channel);
+    return pImpl->broker_channel->band_join(channel);
 }
 
-bool RoleAPIBase::leave_channel(const std::string &channel)
+bool RoleAPIBase::band_leave(const std::string &channel)
 {
     if (!pImpl->broker_channel)
         return false;
-    return pImpl->broker_channel->leave_channel(channel);
+    return pImpl->broker_channel->band_leave(channel);
 }
 
-void RoleAPIBase::send_channel_msg(const std::string &channel,
-                                    const nlohmann::json &body)
+void RoleAPIBase::band_broadcast(const std::string &channel,
+                                  const nlohmann::json &body)
 {
     if (pImpl->broker_channel)
-        pImpl->broker_channel->send_channel_msg(channel, body);
+        pImpl->broker_channel->band_broadcast(channel, body);
 }
 
-std::optional<nlohmann::json> RoleAPIBase::channel_members(const std::string &channel)
+std::optional<nlohmann::json> RoleAPIBase::band_members(const std::string &channel)
 {
     if (!pImpl->broker_channel)
         return std::nullopt;
-    return pImpl->broker_channel->query_channel_members(channel);
+    return pImpl->broker_channel->band_members(channel);
 }
 
 // ============================================================================
