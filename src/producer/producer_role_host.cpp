@@ -268,7 +268,6 @@ void ProducerRoleHost::worker_main_()
     api_->set_role_dir(config_.base_dir().string());
     if (!core_.is_validate_only())
     {
-        api_->set_messenger(&out_messenger_);
         api_->set_producer(out_producer_.has_value() ? &(*out_producer_) : nullptr);
         api_->set_inbox_queue(inbox_queue_.get());
 
