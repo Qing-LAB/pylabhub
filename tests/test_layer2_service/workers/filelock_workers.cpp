@@ -341,7 +341,9 @@ int parent_child_block(const std::string &resource_path_str)
         [&]()
         {
             std::filesystem::path resource_path(resource_path_str);
-            // This worker is spawned by a parent process that holds the lock.
+            // Signal parent that we're initialized and about to call flock().
+            // Parent holds the lock and will release after receiving this signal.
+            signal_test_ready();
             // This blocking call should wait until the parent releases the lock.
             auto start = std::chrono::steady_clock::now();
             FileLock lock(resource_path, /*is_directory=*/false);
