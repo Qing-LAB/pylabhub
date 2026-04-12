@@ -687,47 +687,47 @@ BrokerRequestChannel::query_shm_info(const std::string &channel, int timeout_ms)
 }
 
 // ============================================================================
-// Channel pub/sub messaging (HEP-CORE-0030)
+// Band pub/sub messaging (HEP-CORE-0030)
 // ============================================================================
 
 std::optional<nlohmann::json>
-BrokerRequestChannel::join_channel(const std::string &channel, int timeout_ms)
+BrokerRequestChannel::band_join(const std::string &channel, int timeout_ms)
 {
     nlohmann::json payload;
     payload["channel"] = channel;
     payload["role_uid"] = pImpl->role_uid;
     payload["role_name"] = pImpl->role_name;
-    return pImpl->do_request("CHANNEL_JOIN_REQ", "CHANNEL_JOIN_ACK",
+    return pImpl->do_request("BAND_JOIN_REQ", "BAND_JOIN_ACK",
                              std::move(payload), timeout_ms);
 }
 
-bool BrokerRequestChannel::leave_channel(const std::string &channel, int timeout_ms)
+bool BrokerRequestChannel::band_leave(const std::string &channel, int timeout_ms)
 {
     nlohmann::json payload;
     payload["channel"] = channel;
     payload["role_uid"] = pImpl->role_uid;
-    auto result = pImpl->do_request("CHANNEL_LEAVE_REQ", "CHANNEL_LEAVE_ACK",
+    auto result = pImpl->do_request("BAND_LEAVE_REQ", "BAND_LEAVE_ACK",
                                     std::move(payload), timeout_ms);
     return result.has_value() && result->value("status", "") == "success";
 }
 
-void BrokerRequestChannel::send_channel_msg(const std::string &channel,
-                                             const nlohmann::json &body)
+void BrokerRequestChannel::band_broadcast(const std::string &channel,
+                                           const nlohmann::json &body)
 {
     nlohmann::json payload;
     payload["channel"] = channel;
     payload["sender_uid"] = pImpl->role_uid;
     payload["body"] = body;
-    pImpl->cmd_queue.push(SendCmd{"CHANNEL_MSG_REQ", std::move(payload)});
+    pImpl->cmd_queue.push(SendCmd{"BAND_BROADCAST_REQ", std::move(payload)});
 }
 
 std::optional<nlohmann::json>
-BrokerRequestChannel::query_channel_members(const std::string &channel,
-                                             int timeout_ms)
+BrokerRequestChannel::band_members(const std::string &channel,
+                                    int timeout_ms)
 {
     nlohmann::json payload;
     payload["channel"] = channel;
-    return pImpl->do_request("CHANNEL_MEMBERS_REQ", "CHANNEL_MEMBERS_ACK",
+    return pImpl->do_request("BAND_MEMBERS_REQ", "BAND_MEMBERS_ACK",
                              std::move(payload), timeout_ms);
 }
 

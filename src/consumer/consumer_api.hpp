@@ -44,11 +44,11 @@ class ConsumerAPI
     void set_critical_error() { base_->set_critical_error(); }
     [[nodiscard]] bool critical_error() const noexcept { return base_->critical_error(); }
 
-    // Channel pub/sub (HEP-CORE-0030)
-    py::object join_channel(const std::string &channel);
-    bool leave_channel(const std::string &channel) { return base_->leave_channel(channel); }
-    void send_channel_msg(const std::string &channel, py::dict body);
-    py::object channel_members(const std::string &channel);
+    // Band pub/sub (HEP-CORE-0030)
+    py::object band_join(const std::string &channel);
+    bool band_leave(const std::string &channel) { return base_->band_leave(channel); }
+    void band_broadcast(const std::string &channel, py::dict body);
+    py::object band_members(const std::string &channel);
 
     // Inbox
     py::object open_inbox(const std::string &target_uid);

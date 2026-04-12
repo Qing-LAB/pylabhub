@@ -1,8 +1,8 @@
 /**
- * @file channel_group_registry.cpp
- * @brief ChannelGroupRegistry implementation.
+ * @file band_registry.cpp
+ * @brief BandRegistry implementation.
  */
-#include "channel_group_registry.hpp"
+#include "band_registry.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -11,10 +11,10 @@
 namespace pylabhub::broker
 {
 
-bool ChannelGroupRegistry::join(const std::string &channel,
-                                 const std::string &role_uid,
-                                 const std::string &role_name,
-                                 const std::string &zmq_identity)
+bool BandRegistry::join(const std::string &channel,
+                         const std::string &role_uid,
+                         const std::string &role_name,
+                         const std::string &zmq_identity)
 {
     auto &group = groups_[channel]; // auto-creates if missing
     if (group.name.empty())
@@ -35,8 +35,8 @@ bool ChannelGroupRegistry::join(const std::string &channel,
     return true; // new member added
 }
 
-bool ChannelGroupRegistry::leave(const std::string &channel,
-                                  const std::string &role_uid)
+bool BandRegistry::leave(const std::string &channel,
+                          const std::string &role_uid)
 {
     auto it = groups_.find(channel);
     if (it == groups_.end())
@@ -44,14 +44,14 @@ bool ChannelGroupRegistry::leave(const std::string &channel,
 
     auto &members = it->second.members;
     auto mit = std::find_if(members.begin(), members.end(),
-        [&](const ChannelMember &m) { return m.role_uid == role_uid; });
+        [&](const BandMember &m) { return m.role_uid == role_uid; });
 
     if (mit == members.end())
         return false;
 
     members.erase(mit);
 
-    // Delete channel if empty.
+    // Delete band if empty.
     if (members.empty())
         groups_.erase(it);
 
@@ -59,7 +59,7 @@ bool ChannelGroupRegistry::leave(const std::string &channel,
 }
 
 std::vector<std::string>
-ChannelGroupRegistry::remove_from_all(const std::string &role_uid)
+BandRegistry::remove_from_all(const std::string &role_uid)
 {
     std::vector<std::string> affected_channels;
 
@@ -67,7 +67,7 @@ ChannelGroupRegistry::remove_from_all(const std::string &role_uid)
     {
         auto &members = it->second.members;
         auto mit = std::find_if(members.begin(), members.end(),
-            [&](const ChannelMember &m) { return m.role_uid == role_uid; });
+            [&](const BandMember &m) { return m.role_uid == role_uid; });
 
         if (mit != members.end())
         {
@@ -87,7 +87,7 @@ ChannelGroupRegistry::remove_from_all(const std::string &role_uid)
 }
 
 std::optional<nlohmann::json>
-ChannelGroupRegistry::members_json(const std::string &channel) const
+BandRegistry::members_json(const std::string &channel) const
 {
     auto it = groups_.find(channel);
     if (it == groups_.end())
@@ -105,8 +105,8 @@ ChannelGroupRegistry::members_json(const std::string &channel) const
 }
 
 std::vector<std::string>
-ChannelGroupRegistry::member_identities(const std::string &channel,
-                                         const std::string &exclude_uid) const
+BandRegistry::member_identities(const std::string &channel,
+                                 const std::string &exclude_uid) const
 {
     std::vector<std::string> ids;
     auto it = groups_.find(channel);
@@ -122,20 +122,20 @@ ChannelGroupRegistry::member_identities(const std::string &channel,
     return ids;
 }
 
-bool ChannelGroupRegistry::exists(const std::string &channel) const
+bool BandRegistry::exists(const std::string &channel) const
 {
     return groups_.count(channel) > 0;
 }
 
-bool ChannelGroupRegistry::is_member(const std::string &channel,
-                                      const std::string &role_uid) const
+bool BandRegistry::is_member(const std::string &channel,
+                              const std::string &role_uid) const
 {
     auto it = groups_.find(channel);
     if (it == groups_.end())
         return false;
 
     return std::any_of(it->second.members.begin(), it->second.members.end(),
-        [&](const ChannelMember &m) { return m.role_uid == role_uid; });
+        [&](const BandMember &m) { return m.role_uid == role_uid; });
 }
 
 } // namespace pylabhub::broker

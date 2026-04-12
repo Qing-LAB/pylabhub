@@ -3,7 +3,7 @@
 #include "utils/net_address.hpp"
 
 #include "channel_registry.hpp"
-#include "channel_group_registry.hpp"
+#include "band_registry.hpp"
 
 #include "utils/recovery_api.hpp"
 #include "utils/schema_library.hpp"
@@ -121,7 +121,7 @@ public:
     std::string           server_public_z85;
     std::string           server_secret_z85;
     ChannelRegistry       registry;
-    ChannelGroupRegistry  channel_groups;
+    BandRegistry  band_registry;
     std::atomic<bool>     stop_requested{false};
 
     /// Guards registry reads/writes from external threads (e.g., list_channels_json_str).
@@ -257,16 +257,16 @@ public:
 
     nlohmann::json handle_channel_list_req();
 
-    // ── Channel pub/sub (HEP-CORE-0030) ──────────────────────────────────
-    nlohmann::json handle_channel_join_req(const nlohmann::json& req,
-                                            const zmq::message_t& identity,
-                                            zmq::socket_t& socket);
-    nlohmann::json handle_channel_leave_req(const nlohmann::json& req,
-                                             zmq::socket_t& socket);
-    void handle_channel_msg_req(zmq::socket_t& socket,
-                                const nlohmann::json& req,
-                                const zmq::message_t& identity);
-    nlohmann::json handle_channel_members_req(const nlohmann::json& req);
+    // ── Band pub/sub (HEP-CORE-0030) ───────────────────────────────────
+    nlohmann::json handle_band_join_req(const nlohmann::json& req,
+                                        const zmq::message_t& identity,
+                                        zmq::socket_t& socket);
+    nlohmann::json handle_band_leave_req(const nlohmann::json& req,
+                                          zmq::socket_t& socket);
+    void handle_band_broadcast_req(zmq::socket_t& socket,
+                                   const nlohmann::json& req,
+                                   const zmq::message_t& identity);
+    nlohmann::json handle_band_members_req(const nlohmann::json& req);
 
     // Phase 4: role presence + info queries.
     nlohmann::json handle_role_presence_req(const nlohmann::json& req);
@@ -741,28 +741,28 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
             (resp.value("status", "") == "success") ? "ENDPOINT_UPDATE_ACK" : "ERROR";
         send_reply(socket, identity, ack, resp);
     }
-    // ── Channel pub/sub (HEP-CORE-0030) ──────────────────────────────────
-    else if (msg_type == "CHANNEL_JOIN_REQ")
+    // ── Band pub/sub (HEP-CORE-0030) ───────────────────────────────────
+    else if (msg_type == "BAND_JOIN_REQ")
     {
-        auto resp = handle_channel_join_req(payload, identity, socket);
+        auto resp = handle_band_join_req(payload, identity, socket);
         send_reply(socket, identity,
-            resp.value("status", "") == "success" ? "CHANNEL_JOIN_ACK" : "ERROR", resp);
+            resp.value("status", "") == "success" ? "BAND_JOIN_ACK" : "ERROR", resp);
     }
-    else if (msg_type == "CHANNEL_LEAVE_REQ")
+    else if (msg_type == "BAND_LEAVE_REQ")
     {
-        auto resp = handle_channel_leave_req(payload, socket);
+        auto resp = handle_band_leave_req(payload, socket);
         send_reply(socket, identity,
-            resp.value("status", "") == "success" ? "CHANNEL_LEAVE_ACK" : "ERROR", resp);
+            resp.value("status", "") == "success" ? "BAND_LEAVE_ACK" : "ERROR", resp);
     }
-    else if (msg_type == "CHANNEL_MSG_REQ")
+    else if (msg_type == "BAND_BROADCAST_REQ")
     {
-        handle_channel_msg_req(socket, payload, identity);
+        handle_band_broadcast_req(socket, payload, identity);
         // fire-and-forget — no reply
     }
-    else if (msg_type == "CHANNEL_MEMBERS_REQ")
+    else if (msg_type == "BAND_MEMBERS_REQ")
     {
-        auto resp = handle_channel_members_req(payload);
-        send_reply(socket, identity, "CHANNEL_MEMBERS_ACK", resp);
+        auto resp = handle_band_members_req(payload);
+        send_reply(socket, identity, "BAND_MEMBERS_ACK", resp);
     }
     else
     {
@@ -2623,10 +2623,10 @@ void BrokerServiceImpl::prune_relay_dedup()
 }
 
 // ============================================================================
-// Channel pub/sub handlers (HEP-CORE-0030)
+// Band pub/sub handlers (HEP-CORE-0030)
 // ============================================================================
 
-nlohmann::json BrokerServiceImpl::handle_channel_join_req(
+nlohmann::json BrokerServiceImpl::handle_band_join_req(
     const nlohmann::json& req,
     const zmq::message_t& identity,
     zmq::socket_t& socket)
@@ -2644,21 +2644,21 @@ nlohmann::json BrokerServiceImpl::handle_channel_join_req(
         static_cast<const char *>(identity.data()), identity.size());
 
     // Notify existing members before adding the new one.
-    auto existing_ids = channel_groups.member_identities(channel);
+    auto existing_ids = band_registry.member_identities(channel);
     nlohmann::json notify;
     notify["channel"] = channel;
     notify["role_uid"] = role_uid;
     notify["role_name"] = role_name;
     for (const auto &mid : existing_ids)
     {
-        send_to_identity(socket, mid, "CHANNEL_JOIN_NOTIFY", notify);
+        send_to_identity(socket, mid, "BAND_JOIN_NOTIFY", notify);
     }
 
-    bool is_new = channel_groups.join(channel, role_uid, role_name, id_str);
-    LOGGER_INFO("Broker: CHANNEL_JOIN '{}' role='{}' ({})",
+    bool is_new = band_registry.join(channel, role_uid, role_name, id_str);
+    LOGGER_INFO("Broker: BAND_JOIN '{}' role='{}' ({})",
                 channel, role_uid, is_new ? "new" : "rejoin");
 
-    auto members = channel_groups.members_json(channel);
+    auto members = band_registry.members_json(channel);
 
     nlohmann::json resp;
     resp["status"] = "success";
@@ -2667,7 +2667,7 @@ nlohmann::json BrokerServiceImpl::handle_channel_join_req(
     return resp;
 }
 
-nlohmann::json BrokerServiceImpl::handle_channel_leave_req(
+nlohmann::json BrokerServiceImpl::handle_band_leave_req(
     const nlohmann::json& req,
     zmq::socket_t& socket)
 {
@@ -2679,21 +2679,21 @@ nlohmann::json BrokerServiceImpl::handle_channel_leave_req(
         return make_error("", "INVALID_REQUEST", "Missing channel or role_uid");
     }
 
-    bool removed = channel_groups.leave(channel, role_uid);
+    bool removed = band_registry.leave(channel, role_uid);
 
     if (removed)
     {
-        LOGGER_INFO("Broker: CHANNEL_LEAVE '{}' role='{}'", channel, role_uid);
+        LOGGER_INFO("Broker: BAND_LEAVE '{}' role='{}'", channel, role_uid);
 
         // Notify remaining members.
-        auto remaining_ids = channel_groups.member_identities(channel);
+        auto remaining_ids = band_registry.member_identities(channel);
         nlohmann::json notify;
         notify["channel"] = channel;
         notify["role_uid"] = role_uid;
         notify["reason"] = "voluntary";
         for (const auto &mid : remaining_ids)
         {
-            send_to_identity(socket, mid, "CHANNEL_LEAVE_NOTIFY", notify);
+            send_to_identity(socket, mid, "BAND_LEAVE_NOTIFY", notify);
         }
     }
 
@@ -2702,7 +2702,7 @@ nlohmann::json BrokerServiceImpl::handle_channel_leave_req(
     return resp;
 }
 
-void BrokerServiceImpl::handle_channel_msg_req(
+void BrokerServiceImpl::handle_band_broadcast_req(
     zmq::socket_t& socket,
     const nlohmann::json& req,
     const zmq::message_t& /*identity*/)
@@ -2713,7 +2713,7 @@ void BrokerServiceImpl::handle_channel_msg_req(
     if (channel.empty())
         return;
 
-    auto target_ids = channel_groups.member_identities(channel, sender_uid);
+    auto target_ids = band_registry.member_identities(channel, sender_uid);
 
     nlohmann::json notify;
     notify["channel"] = channel;
@@ -2722,21 +2722,21 @@ void BrokerServiceImpl::handle_channel_msg_req(
 
     for (const auto &mid : target_ids)
     {
-        send_to_identity(socket, mid, "CHANNEL_MSG_NOTIFY", notify);
+        send_to_identity(socket, mid, "BAND_BROADCAST_NOTIFY", notify);
     }
 
-    LOGGER_DEBUG("Broker: CHANNEL_MSG '{}' from '{}' → {} recipients",
+    LOGGER_DEBUG("Broker: BAND_BROADCAST '{}' from '{}' → {} recipients",
                  channel, sender_uid, target_ids.size());
 }
 
-nlohmann::json BrokerServiceImpl::handle_channel_members_req(
+nlohmann::json BrokerServiceImpl::handle_band_members_req(
     const nlohmann::json& req)
 {
     const std::string channel = req.value("channel", "");
 
     nlohmann::json resp;
     resp["channel"] = channel;
-    resp["members"] = channel_groups.members_json(channel)
+    resp["members"] = band_registry.members_json(channel)
                           .value_or(nlohmann::json::array());
     return resp;
 }

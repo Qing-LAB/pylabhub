@@ -195,22 +195,22 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] bool critical_error() const;
     [[nodiscard]] std::string stop_reason() const;
 
-    // ── Channel pub/sub messaging (HEP-CORE-0030) ─────────────────────────────
+    // ── Band pub/sub messaging (HEP-CORE-0030) ────────────────────────────────
 
-    /// Join a named channel. Auto-creates if it doesn't exist.
+    /// Join a named band. Auto-creates if it doesn't exist.
     [[nodiscard]] std::optional<nlohmann::json>
-    join_channel(const std::string &channel);
+    band_join(const std::string &channel);
 
-    /// Leave a channel.
-    bool leave_channel(const std::string &channel);
+    /// Leave a band.
+    bool band_leave(const std::string &channel);
 
-    /// Send JSON message to all channel members.
-    void send_channel_msg(const std::string &channel,
-                          const nlohmann::json &body);
+    /// Send JSON message to all band members.
+    void band_broadcast(const std::string &channel,
+                        const nlohmann::json &body);
 
-    /// Query channel member list.
+    /// Query band member list.
     [[nodiscard]] std::optional<nlohmann::json>
-    channel_members(const std::string &channel);
+    band_members(const std::string &channel);
 
     // ── Inbox client management ───────────────────────────────────────────────
 

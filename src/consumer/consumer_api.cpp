@@ -27,24 +27,24 @@ namespace pylabhub::consumer
 // Python-wrapping methods
 // ============================================================================
 
-py::object ConsumerAPI::join_channel(const std::string &channel)
+py::object ConsumerAPI::band_join(const std::string &channel)
 {
-    auto result = base_->join_channel(channel);
+    auto result = base_->band_join(channel);
     if (!result.has_value())
         return py::none();
     return py::module_::import("json").attr("loads")(result->dump());
 }
 
-void ConsumerAPI::send_channel_msg(const std::string &channel, py::dict body)
+void ConsumerAPI::band_broadcast(const std::string &channel, py::dict body)
 {
     auto json_mod = py::module_::import("json");
     std::string body_str = json_mod.attr("dumps")(body).cast<std::string>();
-    base_->send_channel_msg(channel, nlohmann::json::parse(body_str));
+    base_->band_broadcast(channel, nlohmann::json::parse(body_str));
 }
 
-py::object ConsumerAPI::channel_members(const std::string &channel)
+py::object ConsumerAPI::band_members(const std::string &channel)
 {
-    auto result = base_->channel_members(channel);
+    auto result = base_->band_members(channel);
     if (!result.has_value())
         return py::none();
     return py::module_::import("json").attr("loads")(result->dump());
@@ -190,11 +190,11 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
         .def("stop",         &ConsumerAPI::stop)
         .def("set_critical_error",    &ConsumerAPI::set_critical_error)
         .def("critical_error",        &ConsumerAPI::critical_error)
-        .def("join_channel",      &ConsumerAPI::join_channel, py::arg("channel"))
-        .def("leave_channel",     &ConsumerAPI::leave_channel, py::arg("channel"))
-        .def("send_channel_msg",  &ConsumerAPI::send_channel_msg,
+        .def("band_join",         &ConsumerAPI::band_join, py::arg("channel"))
+        .def("band_leave",        &ConsumerAPI::band_leave, py::arg("channel"))
+        .def("band_broadcast",    &ConsumerAPI::band_broadcast,
              py::arg("channel"), py::arg("body"))
-        .def("channel_members",   &ConsumerAPI::channel_members, py::arg("channel"))
+        .def("band_members",      &ConsumerAPI::band_members, py::arg("channel"))
         .def("script_error_count", &ConsumerAPI::script_error_count)
         .def("in_slots_received",  &ConsumerAPI::in_slots_received)
         .def("loop_overrun_count", &ConsumerAPI::loop_overrun_count)

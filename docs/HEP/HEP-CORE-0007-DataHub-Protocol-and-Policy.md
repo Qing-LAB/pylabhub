@@ -684,9 +684,9 @@ and `DatahubSlotDrainingTest.SyncReaderRingFullBlocksNotDraining`.
 
 > **Note (2026-04-10):** The Peer-to-Peer message category, CHANNEL_NOTIFY_REQ,
 > CHANNEL_BROADCAST_REQ, CHANNEL_EVENT_NOTIFY, and CHANNEL_BROADCAST_NOTIFY
-> are **superseded** by HEP-CORE-0030 (Channel Pub/Sub Messaging Protocol).
+> are **superseded** by HEP-CORE-0030 (Band Messaging Protocol).
 > The new protocol replaces asymmetric producer-owned channels with symmetric
-> broker-hosted pub/sub groups. See HEP-CORE-0030 for the replacement protocol.
+> broker-hosted pub/sub groups (bands). See HEP-CORE-0030 for the replacement protocol.
 
 This section is the authoritative reference for the **ZMQ control plane** — all broker
 protocol messages, unsolicited notifications, and how they flow through the system
@@ -736,9 +736,9 @@ Messages are grouped into four categories based on their flow pattern:
 | Category | Pattern | Examples |
 |----------|---------|---------|
 | **Request/Response** | Client → Broker → Client | REG_REQ/ACK, DISC_REQ/ACK, CHANNEL_LIST_REQ/ACK, METRICS_REQ/ACK, ROLE_PRESENCE_REQ/ACK, ROLE_INFO_REQ/ACK |
-| **Fire-and-Forget** | Client → Broker (no reply) | HEARTBEAT_REQ, CHECKSUM_ERROR_REPORT, CHANNEL_MSG_REQ, METRICS_REPORT_REQ |
-| **Unsolicited Push** | Broker → Client (async) | CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, CHANNEL_JOIN_NOTIFY, CHANNEL_LEAVE_NOTIFY, CHANNEL_MSG_NOTIFY, ROLE_REGISTERED_NOTIFY, ROLE_DEREGISTERED_NOTIFY |
-| **Channel Pub/Sub** | Role → Broker → Members (HEP-CORE-0030) | CHANNEL_JOIN_REQ/ACK, CHANNEL_LEAVE_REQ/ACK, CHANNEL_MSG_REQ, CHANNEL_MEMBERS_REQ/ACK |
+| **Fire-and-Forget** | Client → Broker (no reply) | HEARTBEAT_REQ, CHECKSUM_ERROR_REPORT, BAND_BROADCAST_REQ, METRICS_REPORT_REQ |
+| **Unsolicited Push** | Broker → Client (async) | CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, BAND_JOIN_NOTIFY, BAND_LEAVE_NOTIFY, BAND_BROADCAST_NOTIFY, ROLE_REGISTERED_NOTIFY, ROLE_DEREGISTERED_NOTIFY |
+| **Band Pub/Sub** | Role → Broker → Members (HEP-CORE-0030) | BAND_JOIN_REQ/ACK, BAND_LEAVE_REQ/ACK, BAND_BROADCAST_REQ, BAND_MEMBERS_REQ/ACK |
 
 ### 12.3 Request/Response Messages
 
@@ -965,12 +965,12 @@ Payload:
 
 #### ~~CHANNEL_NOTIFY_REQ~~ — **REMOVED** (superseded by HEP-CORE-0030)
 
-Replaced by `CHANNEL_MSG_REQ` in the new channel pub/sub protocol.
+Replaced by `BAND_BROADCAST_REQ` in the new band pub/sub protocol.
 See HEP-CORE-0030 §5.2 for the replacement.
 
 #### ~~CHANNEL_BROADCAST_REQ~~ — **REMOVED** (superseded by HEP-CORE-0030)
 
-Replaced by `CHANNEL_MSG_REQ` in the new channel pub/sub protocol.
+Replaced by `BAND_BROADCAST_REQ` in the new band pub/sub protocol.
 See HEP-CORE-0030 §5.2 for the replacement.
 
 #### METRICS_REPORT_REQ — Consumer Metrics Report (HEP-CORE-0019)
@@ -1168,12 +1168,12 @@ Script host delivery: Event dict in msgs:
 
 #### ~~CHANNEL_EVENT_NOTIFY~~ — **REMOVED** (superseded by HEP-CORE-0030)
 
-Replaced by `CHANNEL_MSG_NOTIFY` in the new channel pub/sub protocol.
+Replaced by `BAND_BROADCAST_NOTIFY` in the new band pub/sub protocol.
 See HEP-CORE-0030 §5.3 for the replacement.
 
 #### ~~CHANNEL_BROADCAST_NOTIFY~~ — **REMOVED** (superseded by HEP-CORE-0030)
 
-Replaced by `CHANNEL_MSG_NOTIFY` in the new channel pub/sub protocol.
+Replaced by `BAND_BROADCAST_NOTIFY` in the new band pub/sub protocol.
 See HEP-CORE-0030 §5.3 for the replacement.
 
 #### ROLE_REGISTERED_NOTIFY — Role Registration Event (added 2026-03-10)
