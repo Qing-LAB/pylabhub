@@ -5,11 +5,11 @@
 | **HEP**            | `HEP-CORE-0011`                                         |
 | **Title**          | Script Engine Abstraction Framework                      |
 | **Author**         | pylabhub development team                               |
-| **Status**         | Implemented (revised 2026-04-04)                        |
+| **Status**         | Implemented (revised 2026-04-04; obsolete-term scrub 2026-04-14) |
 | **Created**        | 2026-02-28                                              |
-| **Updated**        | 2026-04-04 (RoleAPIBase unification, lifecycle integration, ChannelSide) |
+| **Updated**        | 2026-04-14 (Messenger -> BrokerRequestComm; ctrl thread is now in RoleAPIBase per HEP-CORE-0023 §2.5; full §"Threading Model" rewrite deferred until role-host unification lands) |
 | **Supersedes**     | `HEP-CORE-0005` (Script Interface Abstraction Framework)|
-| **Related**        | `HEP-CORE-0018` (Producer and Consumer Binaries)        |
+| **Related**        | `HEP-CORE-0018` (Producer and Consumer Binaries), `HEP-CORE-0023` (Startup Coordination & Role Liveness) |
 
 ---
 
@@ -41,7 +41,7 @@ RoleHost (ProducerRoleHost / ConsumerRoleHost / ProcessorRoleHost)
   |-- owns --> RoleHostCore (metrics, state, shutdown flags, schema specs)
   |-- owns --> RoleAPIBase (wired to infrastructure after setup)
   |-- owns --> ScriptEngine (PythonEngine / LuaEngine / NativeEngine)
-  |-- owns --> Infrastructure (Messenger, Producer/Consumer, InboxQueue)
+  |-- owns --> Infrastructure (BrokerRequestComm, hub::Producer/Consumer, InboxQueue)
   |
   |-- calls --> engine_lifecycle_startup(EngineModuleParams)
   |               |-- initialize()
@@ -67,8 +67,10 @@ RoleHostCore (engine-agnostic state -- in pylabhub-utils)
   -- metrics counters, shutdown flags, schema specs, inbox cache, shared data
 
 RoleAPIBase (unified role API -- in pylabhub-utils, Pimpl, ABI-stable)
-  -- wired to: RoleHostCore, Producer*, Consumer*, Messenger*, InboxQueue*
+  -- wired to: RoleHostCore, hub::Producer*, hub::Consumer*, BrokerRequestComm*, InboxQueue*
   -- direction-agnostic: role defined by which pointers are set
+  -- owns ctrl thread (start_ctrl_thread): heartbeat, broker notifications,
+     deregistration sequencing -- see HEP-CORE-0023 §2.5
 
 ProducerRoleHost / ConsumerRoleHost / ProcessorRoleHost
   -- engine-agnostic data loop + infrastructure setup/teardown
@@ -348,16 +350,15 @@ Step 1: Resolve schemas from config
     core.set_out_fz_spec(spec, align_to_physical_page(compute_schema_size(spec, packing)))
 
 Step 2: Setup infrastructure (no engine dependency)
-  - Connect messenger to broker
   - Create hub::Producer / hub::Consumer (SHM + ZMQ queues)
   - Setup inbox via setup_inbox_facility() (shared helper)
-  - Register channel with broker
 
 Step 3: Create RoleAPIBase and wire infrastructure
   - api_ = make_unique<RoleAPIBase>(core_)
   - api_->set_producer(out_producer_), set_consumer(in_consumer_)
-  - api_->set_messenger(&messenger_), set_inbox_queue(inbox_queue_)
+  - api_->set_broker_comm(&brc_), set_inbox_queue(inbox_queue_)
   - api_->set_uid(), set_name(), set_channel(), etc.
+  - (Broker REG_REQ + heartbeat are handled inside start_ctrl_thread; see Step 6.)
 
 Step 4: Load engine via engine_lifecycle_startup()
   - Assembles EngineModuleParams (schemas, packing, script_dir, entry_point)
@@ -370,9 +371,15 @@ Step 4: Load engine via engine_lifecycle_startup()
     6. Assert engine type sizes == schema logical sizes
 
 Step 5: invoke_on_init()
-Step 6: Spawn ctrl_thread_, signal ready
+Step 6: api_->start_ctrl_thread(CtrlThreadConfig)
+        — connects BrokerRequestComm to broker
+        — sends REG_REQ / CONSUMER_REG_REQ from the ctrl thread
+        — periodic heartbeat (default 500ms = 2 Hz, see HEP-CORE-0023 §2.5)
+        — dispatches unsolicited broker notifications (CHANNEL_CLOSING_NOTIFY,
+          FORCE_SHUTDOWN, CHANNEL_ERROR_NOTIFY) onto the message queue
+        — signal ready
 Step 7: Run data loop (invoke_produce / invoke_consume / invoke_process)
-Step 8: stop_accepting() + join ctrl_thread_
+Step 8: stop_accepting() + api_->deregister_from_broker() + api_->join_all_threads()
 Step 9: invoke_on_stop()
 Step 10: engine->finalize()
 Step 11: teardown_infrastructure()
@@ -510,7 +517,7 @@ end
 | Generic invoke/eval (admin shell) | Queued, processed on worker thread | Queued, processed on worker thread | Queued, processed on worker thread |
 | Non-owner thread guard | `accepting_` flag + queue | `accepting_` flag + queue | `accepting_` flag + queue |
 | Inbox drain | Before each data callback | Before each data callback | Before each data callback |
-| ZMQ ctrl events | Separate ctrl_thread_, GIL not held | Separate ctrl_thread_ | Separate ctrl_thread_ |
+| Broker control events | Ctrl thread owned by RoleAPIBase, GIL not held | Ctrl thread owned by RoleAPIBase | Ctrl thread owned by RoleAPIBase |
 
 ---
 
