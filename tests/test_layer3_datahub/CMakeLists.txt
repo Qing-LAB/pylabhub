@@ -109,6 +109,10 @@ add_executable(test_layer3_datahub
     test_datahub_broker_health.cpp
     workers/datahub_broker_health_workers.cpp
 
+    # ── Broker role-liveness state machine (HEP-CORE-0023 §2.5) ──────────────────
+    test_datahub_role_state_machine.cpp
+    workers/datahub_role_state_workers.cpp
+
     # ── RAII layer stress tests (multi-process, full-capacity, random delays) ─────
     test_datahub_stress_raii.cpp
     workers/datahub_stress_raii_workers.cpp

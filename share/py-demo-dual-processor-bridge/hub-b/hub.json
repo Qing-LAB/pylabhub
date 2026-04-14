@@ -12,6 +12,6 @@
     "enable_shell": false
   },
   "broker": {
-    "channel_shutdown_grace_s": 2
+    "grace_heartbeats": 4
   }
 }

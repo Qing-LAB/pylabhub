@@ -17,6 +17,7 @@
  */
 
 #include "pylabhub_utils_export.h"
+#include "utils/timeout_constants.hpp"
 #include "utils/broker_request_comm.hpp"   // hub::BrokerRequestComm (for Config in start_ctrl_thread)
 #include "utils/config/inbox_config.hpp"   // config::InboxConfig (for CtrlThreadConfig)
 #include "utils/data_block_policy.hpp"     // hub::ChecksumPolicy
@@ -305,7 +306,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// Configuration for the control thread (broker communication).
     struct CtrlThreadConfig
     {
-        int  heartbeat_interval_ms{5000};
+        int  heartbeat_interval_ms{::pylabhub::kDefaultHeartbeatIntervalMs};
         bool report_metrics{false};
 
         /// Registration payload (REG_REQ for producers, CONSUMER_REG_REQ for

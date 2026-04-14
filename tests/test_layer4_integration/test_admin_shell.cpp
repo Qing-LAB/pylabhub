@@ -76,9 +76,11 @@ static void write_hub_json(const fs::path& dir)
             {"admin_endpoint",  "tcp://127.0.0.1:0"}
         }},
         {"broker", {
-            {"channel_timeout_s",         10},
-            {"consumer_liveness_check_s",  5},
-            {"channel_shutdown_grace_s",   1}
+            {"heartbeat_interval_ms",     500},
+            {"ready_miss_heartbeats",      10},
+            {"pending_miss_heartbeats",    10},
+            {"grace_heartbeats",            2},
+            {"consumer_liveness_check_s",   5}
         }},
         {"script", {
             {"type",                   "python"},
@@ -461,12 +463,15 @@ TEST_F(AdminShellTest, Probe_Config)
     // Verify broker operational keys
     {
         auto resp = hub.exec("c = pylabhub.config()\n"
-                             "print(c['channel_timeout_s'], c['consumer_liveness_check_s'])");
+                             "print(c['heartbeat_interval_ms'], c['ready_miss_heartbeats'], "
+                             "c['consumer_liveness_check_s'])");
         ASSERT_TRUE(resp.has_value());
         EXPECT_TRUE(resp->at("success").get<bool>());
         auto out = resp->at("output").get<std::string>();
+        EXPECT_NE(out.find("500"), std::string::npos)
+            << "heartbeat_interval_ms should be 500, got: " << out;
         EXPECT_NE(out.find("10"), std::string::npos)
-            << "channel_timeout_s should be 10, got: " << out;
+            << "ready_miss_heartbeats should be 10, got: " << out;
         EXPECT_NE(out.find("5"), std::string::npos)
             << "consumer_liveness_check_s should be 5, got: " << out;
     }

@@ -97,7 +97,7 @@ struct BrokerHandle
 void demo_cat1_heartbeat_timeout()
 {
     std::cout << "\n=== Cat 1: Heartbeat Timeout ===\n";
-    std::cout << "(Broker channel_timeout = 1s; producer stops heartbeating)\n";
+    std::cout << "(Broker reclaim ~1s; producer stops heartbeating)\n";
 
     std::string ep, pk;
     std::mutex  mu;
@@ -106,7 +106,9 @@ void demo_cat1_heartbeat_timeout()
 
     pylabhub::broker::BrokerService::Config cfg;
     cfg.endpoint        = "tcp://127.0.0.1:0";
-    cfg.channel_timeout = 1s; // very short for demo
+    // Fast role reclaim for demo: ~1s total from last heartbeat to CLOSING_NOTIFY.
+    cfg.ready_timeout_override   = std::chrono::milliseconds(500);
+    cfg.pending_timeout_override = std::chrono::milliseconds(500);
     cfg.on_ready        = [&](const std::string& e, const std::string& p)
     {
         std::lock_guard lock(mu);
@@ -156,7 +158,7 @@ void demo_cat1_heartbeat_timeout()
                  // calls unregister_channel(). Here we just close() to trigger timeout demo.
     prod.close();
 
-    // Wait for broker to detect the missing heartbeats (channel_timeout = 1s).
+    // Wait for broker to detect the missing heartbeats (~1s total reclaim).
     for (int i = 0; i < 30 && !closing_fired.load(); ++i)
         std::this_thread::sleep_for(100ms);
 
@@ -180,7 +182,9 @@ void demo_cat2_dead_consumer()
 
     pylabhub::broker::BrokerService::Config cfg;
     cfg.endpoint                         = "tcp://127.0.0.1:0";
-    cfg.channel_timeout                  = 30s; // long; we're testing consumer liveness
+    // Long role timeouts — we're testing consumer-liveness, not role heartbeat timeouts.
+    cfg.ready_timeout_override           = std::chrono::seconds(30);
+    cfg.pending_timeout_override         = std::chrono::seconds(30);
     cfg.consumer_liveness_check_interval = 1s;
     cfg.on_ready = [&](const std::string& e, const std::string& p)
     {

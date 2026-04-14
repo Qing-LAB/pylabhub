@@ -91,7 +91,19 @@ struct ChannelEntry
     // ── heartbeat / lifecycle ──────────────────────────────────────────────────
     ChannelStatus status{ChannelStatus::PendingReady};
     /// Set to now() at registration; updated on every HEARTBEAT_REQ.
-    std::chrono::steady_clock::time_point last_heartbeat{std::chrono::steady_clock::now()};
+    std::chrono::steady_clock::time_point last_heartbeat;
+    /// Timestamp of the most recent status transition (HEP-CORE-0023 §2.5).
+    /// For PendingReady entries this is the registration time (or the moment
+    /// of Ready -> Pending demotion). Used to enforce pending_timeout.
+    std::chrono::steady_clock::time_point state_since;
+
+    /// Default ctor: both timestamps share a single now() sample so the
+    /// state-machine invariant `state_since <= last_heartbeat` holds at
+    /// construction (no µs-skew between two separate now() calls).
+    ChannelEntry()
+        : last_heartbeat(std::chrono::steady_clock::now())
+        , state_since(last_heartbeat)
+    {}
 
     // ── ZMQ P2C transport ──────────────────────────────────────────────────────
     bool           has_shared_memory{false};
@@ -189,12 +201,20 @@ public:
     bool update_heartbeat(const std::string& channel_name);
 
     /**
-     * @brief Returns names of channels whose last_heartbeat is older than timeout.
-     *        Only channels in Ready status are considered (PendingReady channels have
-     *        their registration time as the baseline, checked separately).
+     * @brief Ready roles whose last_heartbeat is older than `timeout`.
+     *        Caller should demote each to PendingReady (HEP-CORE-0023 §2.5).
      */
     [[nodiscard]] std::vector<std::string>
-        find_timed_out_channels(std::chrono::steady_clock::duration timeout) const;
+        find_timed_out_ready(std::chrono::steady_clock::duration timeout) const;
+
+    /**
+     * @brief PendingReady roles whose `state_since` is older than `timeout`.
+     *        Caller sends CHANNEL_CLOSING_NOTIFY and transitions the entry to
+     *        Closing with `closing_deadline`; the actual deregister happens
+     *        later in `check_closing_deadlines` once the grace window elapses.
+     */
+    [[nodiscard]] std::vector<std::string>
+        find_timed_out_pending(std::chrono::steady_clock::duration timeout) const;
 
     [[nodiscard]] std::vector<std::string> list_channels() const;
     [[nodiscard]] size_t size() const;

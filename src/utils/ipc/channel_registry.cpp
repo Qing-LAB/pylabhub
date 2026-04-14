@@ -115,25 +115,41 @@ bool ChannelRegistry::update_heartbeat(const std::string& channel_name)
     {
         return false;
     }
-    pos->second.last_heartbeat = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    pos->second.last_heartbeat = now;
     if (pos->second.status == ChannelStatus::PendingReady)
     {
-        pos->second.status = ChannelStatus::Ready;
+        pos->second.status      = ChannelStatus::Ready;
+        pos->second.state_since = now;
     }
     return true;
 }
 
-std::vector<std::string> ChannelRegistry::find_timed_out_channels(
+std::vector<std::string> ChannelRegistry::find_timed_out_ready(
     std::chrono::steady_clock::duration timeout) const
 {
     const auto now = std::chrono::steady_clock::now();
     std::vector<std::string> result;
     for (const auto& [name, entry] : m_channels)
     {
-        // Time out all channels (PendingReady or Ready) that have not sent a heartbeat
-        // within the timeout window. PendingReady channels use their registration time
-        // (stored in last_heartbeat) as the baseline, so they get the same grace period.
-        if (now - entry.last_heartbeat >= timeout)
+        if (entry.status == ChannelStatus::Ready &&
+            now - entry.last_heartbeat >= timeout)
+        {
+            result.push_back(name);
+        }
+    }
+    return result;
+}
+
+std::vector<std::string> ChannelRegistry::find_timed_out_pending(
+    std::chrono::steady_clock::duration timeout) const
+{
+    const auto now = std::chrono::steady_clock::now();
+    std::vector<std::string> result;
+    for (const auto& [name, entry] : m_channels)
+    {
+        if (entry.status == ChannelStatus::PendingReady &&
+            now - entry.state_since >= timeout)
         {
             result.push_back(name);
         }

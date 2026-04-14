@@ -37,36 +37,54 @@ Two complementary coordination mechanisms:
 
 ### 2.1 Role Lifecycle States
 
-Every registered role (producer/consumer/processor) has a well-defined status in
-the broker's registry. Transitions:
+Every registered role (producer/consumer/processor) has a well-defined status
+in the broker's registry. There are two terminal paths: a **heartbeat-death**
+path (presumed-dead role, no grace) and a **voluntary-close** path (live role,
+grace given to consumers to drain).
 
 ```mermaid
 stateDiagram-v2
     [*] --> Pending : REG_REQ accepted
     Pending --> Ready : first HEARTBEAT_REQ received
     Ready --> Ready : HEARTBEAT_REQ (refresh last_heartbeat)
-    Ready --> Pending : no heartbeat for role_ready_timeout
-    Pending --> [*] : no heartbeat for role_pending_timeout<br/>(deregister + CHANNEL_CLOSING_NOTIFY)
-    Ready --> [*] : DEREG_REQ accepted
-    Pending --> [*] : DEREG_REQ accepted
+    Ready --> Pending : ready_timeout (missed heartbeats)
+    Pending --> Ready : HEARTBEAT_REQ (recovery)
+
+    %% Heartbeat-death path: dead role -> immediate dereg, no grace.
+    Pending --> [*] : pending_timeout<br/>send CHANNEL_CLOSING_NOTIFY<br/>(reason="pending_timeout")<br/>then deregister
+
+    %% Voluntary close path: live role -> Closing, grace, then FORCE_SHUTDOWN.
+    Ready --> Closing : DEREG_REQ / admin_close / script_close<br/>send CHANNEL_CLOSING_NOTIFY
+    Pending --> Closing : DEREG_REQ accepted<br/>send CHANNEL_CLOSING_NOTIFY
+    Closing --> [*] : grace expires<br/>send FORCE_SHUTDOWN to lingering consumers<br/>then deregister
 ```
 
 Precise transitions:
-| Trigger                               | From       | To        |
-|---------------------------------------|------------|-----------|
-| `REG_REQ` accepted                    | —          | Pending   |
-| `HEARTBEAT_REQ` received              | Pending    | Ready     |
-| `HEARTBEAT_REQ` received              | Ready      | Ready (refresh last_heartbeat) |
-| No heartbeat for `role_timeout`       | Ready      | Pending   |
-| No heartbeat for `role_timeout * N`   | Pending    | deregistered + CHANNEL_CLOSING_NOTIFY |
-| `DEREG_REQ` accepted                  | any        | deregistered |
+| Trigger                                       | From          | To            | Side effect                                   |
+|-----------------------------------------------|---------------|---------------|-----------------------------------------------|
+| `REG_REQ` accepted                            | —             | Pending       | —                                             |
+| `HEARTBEAT_REQ` received                      | Pending       | Ready         | refresh `last_heartbeat`, set `state_since`   |
+| `HEARTBEAT_REQ` received                      | Ready         | Ready         | refresh `last_heartbeat`                      |
+| Missed heartbeats for `effective_ready_timeout`   | Ready     | Pending       | reset `state_since`                           |
+| Missed heartbeats for `effective_pending_timeout` | Pending   | deregistered  | send `CHANNEL_CLOSING_NOTIFY`; **no grace**   |
+| `DEREG_REQ` / admin / script close            | Ready/Pending | Closing       | send `CHANNEL_CLOSING_NOTIFY`, start grace    |
+| Grace expires                                 | Closing       | deregistered  | send `FORCE_SHUTDOWN` to stragglers           |
 
 **Rationale:**
-- `Ready → Pending` on timeout keeps the role alive (gives it a chance to recover
-  from transient pauses) while correctly advertising it as "not currently responsive"
-  to new consumers.
-- `Pending → deregistered` after extended absence is the cleanup path for genuinely
-  dead roles.
+
+- `Ready → Pending` on timeout keeps the role registered while advertising it
+  as "not currently responsive". A transient pause (GC, load spike) can recover
+  via the next heartbeat — `Pending → Ready` increments
+  `pending_to_ready_total` and zero data is lost.
+- **Heartbeat-death path skips the Closing/grace state**: the producer is
+  presumed dead, so the broker has no one to wait for. CHANNEL_CLOSING_NOTIFY
+  is best-effort to consumers (they may be transiently disconnected; if so,
+  they observe `CHANNEL_NOT_FOUND` on their next DISC_REQ and treat that
+  equivalently to a closing notification).
+- **Voluntary-close path keeps the Closing/grace state**: the producer is
+  alive and asked to leave cleanly. Grace gives **consumers** time to drain
+  in-flight work and deregister. After grace, FORCE_SHUTDOWN tells stragglers
+  to release.
 
 ### 2.2 Three-Response DISC_REQ
 
@@ -127,26 +145,99 @@ No special coordination is needed. Each hop converges independently via retry.
 
 The retry logic is entirely client-side. The broker holds no state for pending DISC requests.
 
-### 2.5 Broker Configuration
+### 2.5 Broker Configuration — Heartbeat-Multiplier Timeouts
+
+The broker's role-liveness timeouts are **derived from the heartbeat cadence**,
+not specified as absolute wall-clock durations. This makes the defaults
+self-scaling across deployments: a fast pipeline with 20 ms heartbeats reclaims
+dead roles in ~400 ms; a low-power role with 5 s heartbeats gets ~50 s grace,
+using the same multipliers.
 
 ```cpp
 struct BrokerService::Config {
-    /// A role whose last_heartbeat is older than this is demoted Ready → Pending.
-    std::chrono::milliseconds role_ready_timeout{10000};
+    /// Expected client heartbeat cadence (broker-wide). Default: 500 ms (2 Hz).
+    std::chrono::milliseconds heartbeat_interval{kDefaultHeartbeatIntervalMs};
 
-    /// A role in Pending state with no heartbeat for this duration is deregistered
-    /// (and CHANNEL_CLOSING_NOTIFY is sent). Measured from initial registration
-    /// or from demotion to Pending.
-    std::chrono::milliseconds role_pending_timeout{30000};
+    /// Ready -> Pending demotion after this many consecutive missed heartbeats.
+    uint32_t ready_miss_heartbeats  {10};
+
+    /// Pending -> deregistered (+ CHANNEL_CLOSING_NOTIFY) after this many
+    /// additional missed heartbeats, counted from entry into Pending.
+    uint32_t pending_miss_heartbeats{10};
+
+    /// CHANNEL_CLOSING_NOTIFY -> FORCE_SHUTDOWN grace window, in heartbeats.
+    uint32_t grace_heartbeats{4};
+
+    /// Optional explicit overrides. nullopt = derive from
+    /// `heartbeat_interval * <miss_heartbeats>`. Has_value = use verbatim.
+    /// `grace_override = 0 ms` is meaningful ("FORCE_SHUTDOWN immediately").
+    std::optional<std::chrono::milliseconds> ready_timeout_override;
+    std::optional<std::chrono::milliseconds> pending_timeout_override;
+    std::optional<std::chrono::milliseconds> grace_override;
+
+    std::chrono::milliseconds effective_ready_timeout()   const noexcept;
+    std::chrono::milliseconds effective_pending_timeout() const noexcept;
+    std::chrono::milliseconds effective_grace()           const noexcept;
 };
 ```
 
+JSON (all keys optional; defaults resolve via the multipliers above):
+
 ```json
 "broker": {
-  "role_ready_timeout_ms": 10000,
-  "role_pending_timeout_ms": 30000
+  "heartbeat_interval_ms":    500,
+  "ready_miss_heartbeats":     10,
+  "pending_miss_heartbeats":   10,
+  "grace_heartbeats":           4,
+
+  "ready_timeout_ms":   null,
+  "pending_timeout_ms": null,
+  "grace_ms":           null
 }
 ```
+
+**Named constants** live in `src/include/utils/timeout_constants.hpp`
+(`kDefaultHeartbeatIntervalMs`, `kDefaultReadyMissHeartbeats`,
+`kDefaultPendingMissHeartbeats`, `kDefaultGraceHeartbeats`) with
+CMake-time override macros following the `PYLABHUB_DEFAULT_*` convention.
+
+With the 2 Hz / 10×10×4 defaults, the effective wall-clock windows are:
+
+| Transition                      | Window               |
+|---------------------------------|----------------------|
+| Ready -> Pending                | 5 s (10 × 500 ms)    |
+| Pending -> deregistered         | +5 s                 |
+| CLOSING_NOTIFY -> FORCE_SHUTDOWN| 2 s (4 × 500 ms)     |
+| **Total reclaim**               | **~10 s** from last heartbeat to FORCE_SHUTDOWN |
+
+**Floor: timeouts are always enforced.** `effective_ready_timeout()` and
+`effective_pending_timeout()` are floored at `heartbeat_interval` so a
+misconfiguration (`override = 0 ms`, or `miss_heartbeats = 0`) cannot create
+a permanently-dangling Pending entry. A stuck role is always reclaimable
+within at most `2 * heartbeat_interval`. `effective_grace()` has no floor —
+zero is meaningful here ("FORCE_SHUTDOWN immediately on voluntary close").
+
+**Role-close cleanup API.** Every dereg site (heartbeat-death, voluntary
+close, script-requested close, dead-consumer detection) calls a central
+`on_channel_closed()` / `on_consumer_closed()` hook that fans out to per-module
+cleanup helpers (federation, band, future modules). This guarantees that
+when a role exits — for any reason — its band memberships are removed and
+any federation relay state referencing it is dropped, before the next
+broadcast or relay is processed. See `BrokerServiceImpl::on_channel_closed`
+in `src/utils/ipc/broker_service.cpp`.
+
+**State-machine metrics** (HEP-CORE-0019 integration). The broker exposes
+monotonic counters via `BrokerService::query_role_state_metrics()` returning
+a `RoleStateMetrics` snapshot:
+
+| Field                             | Meaning                                        |
+|-----------------------------------|------------------------------------------------|
+| `ready_to_pending_total`          | Ready -> Pending demotions                     |
+| `pending_to_deregistered_total`   | Pending -> deregistered (+ CLOSING_NOTIFY)     |
+| `pending_to_ready_total`          | Pending -> Ready (first heartbeat OR recovery) |
+
+These counters give tests a race-free way to assert state transitions occurred,
+without relying on wall-clock sleeps.
 
 ### 2.6 Data Structure
 
