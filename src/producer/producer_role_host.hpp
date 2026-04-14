@@ -93,10 +93,10 @@ class ProducerRoleHost
     std::promise<bool>                     ready_promise_;
 
     // Infrastructure (created on worker thread in setup_infrastructure_).
-    hub::Messenger                         out_messenger_;
-    std::unique_ptr<hub::BrokerRequestComm> broker_channel_;
+    std::unique_ptr<hub::BrokerRequestComm> broker_comm_;
     std::optional<hub::Producer>           out_producer_;
     std::unique_ptr<hub::InboxQueue>       inbox_queue_;
+    config::InboxConfig                    inbox_cfg_;  ///< Resolved copy (mutable).
 
     // Role API (created on worker thread, passed to engine).
     std::unique_ptr<scripting::RoleAPIBase> api_;

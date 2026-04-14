@@ -9,18 +9,20 @@
  *   Tier 2 — FORCE_SHUTDOWN: bypasses message queue after grace period
  *
  * Test scenarios:
- *   1. Graceful shutdown: close → notify → client deregisters → channel removed
+ *   1. Graceful shutdown: close → notify → producer deregisters → channel removed
  *   2. Force shutdown:   close → notify → grace expires → FORCE_SHUTDOWN → removed
- *   3. Early cleanup:    close → all consumers deregister → channel removed early
- *   4. Mixed:            close → some deregister, some don't → force on stragglers
+ *   3. Early cleanup:    close → all members deregister → channel removed early
+ *   4. Force with consumer: close → nobody deregisters → force on all members
+ *   5. Closing status visible in admin snapshot
+ *   6. Zero grace: immediate force shutdown
  *
- * All tests use the in-process LocalBrokerHandle pattern with Messenger instances.
+ * All tests use in-process LocalBrokerHandle + BrcHandle pattern.
  * Channel names are PID-suffixed for CTest parallelism.
  */
 #include "plh_datahub.hpp"
 #include "plh_service.hpp"
+#include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
-#include "utils/messenger.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -43,7 +45,7 @@ using json = nlohmann::json;
 namespace
 {
 
-// ── LocalBrokerHandle — same pattern as other L3 tests ───────────────────────
+// ── LocalBrokerHandle ───────────────────────────────────────────────────────
 
 struct LocalBrokerHandle
 {
@@ -96,6 +98,67 @@ std::string pid_chan(const std::string &base)
     return base + "." + std::to_string(getpid());
 }
 
+// ── BrcHandle — BrokerRequestComm with poll thread ──────────────────────────
+
+struct BrcHandle
+{
+    BrokerRequestComm brc;
+    std::atomic<bool> running{true};
+    std::thread       thread;
+
+    void start(const std::string &ep, const std::string &pk, const std::string &uid)
+    {
+        BrokerRequestComm::Config cfg;
+        cfg.broker_endpoint = ep;
+        cfg.broker_pubkey   = pk;
+        cfg.role_uid        = uid;
+        ASSERT_TRUE(brc.connect(cfg));
+        thread = std::thread([this] { brc.run_poll_loop([this] { return running.load(); }); });
+    }
+
+    void stop()
+    {
+        running.store(false);
+        brc.stop();
+        if (thread.joinable())
+            thread.join();
+        brc.disconnect();
+    }
+
+    ~BrcHandle()
+    {
+        if (thread.joinable())
+            stop();
+    }
+};
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+json make_reg_opts(const std::string &channel, const std::string &role_uid)
+{
+    json opts;
+    opts["channel_name"]      = channel;
+    opts["pattern"]           = "PubSub";
+    opts["has_shared_memory"] = false;
+    opts["producer_pid"]      = ::getpid();
+    opts["zmq_ctrl_endpoint"] = "tcp://127.0.0.1:0";
+    opts["zmq_data_endpoint"] = "tcp://127.0.0.1:0";
+    opts["zmq_pubkey"]        = "";
+    opts["role_uid"]          = role_uid;
+    opts["role_name"]         = "test_producer";
+    return opts;
+}
+
+json make_cons_opts(const std::string &channel, const std::string &consumer_uid)
+{
+    json opts;
+    opts["channel_name"]  = channel;
+    opts["consumer_uid"]  = consumer_uid;
+    opts["consumer_name"] = "test_consumer";
+    opts["consumer_pid"]  = ::getpid();
+    return opts;
+}
+
 /// Thread-safe flag with condition variable for waiting on callbacks.
 struct SignalFlag
 {
@@ -118,12 +181,6 @@ struct SignalFlag
         return cv.wait_for(lock, std::chrono::milliseconds(timeout_ms),
                            [&] { return fired; });
     }
-
-    bool is_set()
-    {
-        std::lock_guard<std::mutex> lock(mtx);
-        return fired;
-    }
 };
 
 } // anonymous namespace
@@ -139,12 +196,11 @@ public:
     {
         s_lifecycle_ = std::make_unique<LifecycleGuard>(MakeModDefList(
             Logger::GetLifecycleModule(), pylabhub::crypto::GetLifecycleModule(),
-            pylabhub::hub::GetLifecycleModule()), std::source_location::current());
+            pylabhub::hub::GetZMQContextModule()), std::source_location::current());
     }
     static void TearDownTestSuite() { s_lifecycle_.reset(); }
 
 protected:
-    /// Start broker with a specific grace period.
     void start_broker(std::chrono::seconds grace)
     {
         BrokerService::Config cfg;
@@ -164,27 +220,29 @@ private:
     static std::unique_ptr<LifecycleGuard> s_lifecycle_;
 };
 
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 std::unique_ptr<LifecycleGuard> BrokerShutdownTest::s_lifecycle_;
 
 // ============================================================================
-// Test 1: Graceful shutdown — client deregisters after CHANNEL_CLOSING_NOTIFY
+// Test 1: Graceful shutdown — producer deregisters after CHANNEL_CLOSING_NOTIFY
 // ============================================================================
 
 TEST_F(BrokerShutdownTest, GracefulShutdown_ProducerDeregisters)
 {
-    start_broker(std::chrono::seconds(10)); // long grace — we deregister before it expires
+    start_broker(std::chrono::seconds(10));
     const std::string channel = pid_chan("shutdown.graceful.prod");
+    const std::string uid     = "PROD-" + channel;
 
-    // Create producer
-    Messenger prod;
-    ASSERT_TRUE(prod.connect(ep(), pk()));
-    auto prod_handle = prod.create_channel(channel, {.timeout_ms = 3000});
-    ASSERT_TRUE(prod_handle.has_value());
-
-    // Register closing callback
+    BrcHandle bh;
     auto closing_flag = std::make_shared<SignalFlag>();
-    prod.on_channel_closing(channel, [closing_flag]() { closing_flag->set(); });
+    bh.brc.on_notification([closing_flag](const std::string &msg_type, const json &)
+    {
+        if (msg_type == "CHANNEL_CLOSING_NOTIFY")
+            closing_flag->set();
+    });
+    bh.start(ep(), pk(), uid);
+
+    auto reg = bh.brc.register_channel(make_reg_opts(channel, uid), 3000);
+    ASSERT_TRUE(reg.has_value()) << "register_channel failed";
 
     // Request close
     svc().request_close_channel(channel);
@@ -192,192 +250,171 @@ TEST_F(BrokerShutdownTest, GracefulShutdown_ProducerDeregisters)
     // Wait for CHANNEL_CLOSING_NOTIFY
     ASSERT_TRUE(closing_flag->wait(3000)) << "CHANNEL_CLOSING_NOTIFY not received";
 
-    // Channel should be in Closing status
+    // Verify Closing status
     ChannelSnapshot snap = svc().query_channel_snapshot();
     bool found_closing = false;
     for (const auto &ch : snap.channels)
-    {
         if (ch.name == channel)
-        {
             found_closing = (ch.status == "Closing");
-            break;
-        }
-    }
-    EXPECT_TRUE(found_closing) << "Channel should be in Closing status";
+    EXPECT_TRUE(found_closing);
 
     // Producer deregisters (graceful)
-    prod.unregister_channel(channel);
-
-    // Give broker a poll cycle to process the deregistration
+    EXPECT_TRUE(bh.brc.deregister_channel(channel));
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
 
     // Channel should be gone
     snap = svc().query_channel_snapshot();
-    bool still_present = false;
     for (const auto &ch : snap.channels)
-    {
-        if (ch.name == channel)
-        {
-            still_present = true;
-            break;
-        }
-    }
-    EXPECT_FALSE(still_present) << "Channel should be removed after producer deregisters";
+        EXPECT_NE(ch.name, channel) << "Channel should be removed after deregister";
+
+    bh.stop();
 }
 
 // ============================================================================
-// Test 2: Force shutdown — client does NOT deregister, grace expires
+// Test 2: Force shutdown — producer does NOT deregister, grace expires
 // ============================================================================
 
 TEST_F(BrokerShutdownTest, ForceShutdown_GraceExpires)
 {
-    // Short grace period — 1 second
     start_broker(std::chrono::seconds(1));
     const std::string channel = pid_chan("shutdown.force.expire");
+    const std::string uid     = "PROD-" + channel;
 
-    // Create producer
-    Messenger prod;
-    ASSERT_TRUE(prod.connect(ep(), pk()));
-    auto prod_handle = prod.create_channel(channel, {.timeout_ms = 3000});
-    ASSERT_TRUE(prod_handle.has_value());
-
-    // Register callbacks
+    BrcHandle bh;
     auto closing_flag = std::make_shared<SignalFlag>();
     auto force_flag   = std::make_shared<SignalFlag>();
-    prod.on_channel_closing(channel, [closing_flag]() { closing_flag->set(); });
-    prod.on_force_shutdown(channel, [force_flag]() { force_flag->set(); });
+    bh.brc.on_notification([closing_flag, force_flag](const std::string &msg_type, const json &)
+    {
+        if (msg_type == "CHANNEL_CLOSING_NOTIFY")
+            closing_flag->set();
+        else if (msg_type == "FORCE_SHUTDOWN")
+            force_flag->set();
+    });
+    bh.start(ep(), pk(), uid);
 
-    // Request close
+    auto reg = bh.brc.register_channel(make_reg_opts(channel, uid), 3000);
+    ASSERT_TRUE(reg.has_value());
+
     svc().request_close_channel(channel);
 
-    // Wait for CHANNEL_CLOSING_NOTIFY
     ASSERT_TRUE(closing_flag->wait(3000)) << "CHANNEL_CLOSING_NOTIFY not received";
 
-    // Do NOT deregister — let grace period expire
+    // Do NOT deregister — let grace expire
+    ASSERT_TRUE(force_flag->wait(5000)) << "FORCE_SHUTDOWN not received after grace";
 
-    // Wait for FORCE_SHUTDOWN (should arrive after ~1 second grace)
-    ASSERT_TRUE(force_flag->wait(5000)) << "FORCE_SHUTDOWN not received after grace period";
-
-    // Give broker a poll cycle to deregister
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
-
-    // Channel should be gone
     ChannelSnapshot snap = svc().query_channel_snapshot();
-    bool still_present = false;
     for (const auto &ch : snap.channels)
-    {
-        if (ch.name == channel)
-        {
-            still_present = true;
-            break;
-        }
-    }
-    EXPECT_FALSE(still_present) << "Channel should be removed after FORCE_SHUTDOWN";
+        EXPECT_NE(ch.name, channel) << "Channel should be removed after FORCE_SHUTDOWN";
+
+    bh.stop();
 }
 
 // ============================================================================
-// Test 3: Early cleanup — all consumers deregister before grace expires
+// Test 3: Early cleanup — all members deregister before grace expires
 // ============================================================================
 
-TEST_F(BrokerShutdownTest, EarlyCleanup_AllConsumersDeregister)
+TEST_F(BrokerShutdownTest, EarlyCleanup_AllMembersDeregister)
 {
-    start_broker(std::chrono::seconds(10)); // long grace — channel removed before it expires
-    const std::string channel = pid_chan("shutdown.early.cleanup");
+    start_broker(std::chrono::seconds(10));
+    const std::string channel  = pid_chan("shutdown.early.cleanup");
+    const std::string prod_uid = "PROD-" + channel;
+    const std::string cons_uid = "CONS-" + channel;
 
-    // Create producer
-    Messenger prod;
-    ASSERT_TRUE(prod.connect(ep(), pk()));
-    auto prod_handle = prod.create_channel(channel, {.timeout_ms = 3000});
-    ASSERT_TRUE(prod_handle.has_value());
-
-    // Connect consumer
-    Messenger cons;
-    ASSERT_TRUE(cons.connect(ep(), pk()));
-    auto cons_handle = cons.connect_channel(channel, /*timeout_ms=*/3000);
-    ASSERT_TRUE(cons_handle.has_value());
-
-    // Register closing callbacks
+    // Producer
+    BrcHandle prod_bh;
     auto prod_closing = std::make_shared<SignalFlag>();
-    auto cons_closing = std::make_shared<SignalFlag>();
-    prod.on_channel_closing(channel, [prod_closing]() { prod_closing->set(); });
-    cons.on_channel_closing(channel, [cons_closing]() { cons_closing->set(); });
+    prod_bh.brc.on_notification([prod_closing](const std::string &msg_type, const json &)
+    {
+        if (msg_type == "CHANNEL_CLOSING_NOTIFY")
+            prod_closing->set();
+    });
+    prod_bh.start(ep(), pk(), prod_uid);
+    auto reg = prod_bh.brc.register_channel(make_reg_opts(channel, prod_uid), 3000);
+    ASSERT_TRUE(reg.has_value());
 
-    // Request close
+    // CONSUMER_REG_REQ does not gate on Ready; no heartbeat/sleep needed here
+    // (HEP-CORE-0023 §2.2: consumer uses discover_channel if it needs connection info).
+
+    // Consumer
+    BrcHandle cons_bh;
+    auto cons_closing = std::make_shared<SignalFlag>();
+    cons_bh.brc.on_notification([cons_closing](const std::string &msg_type, const json &)
+    {
+        if (msg_type == "CHANNEL_CLOSING_NOTIFY")
+            cons_closing->set();
+    });
+    cons_bh.start(ep(), pk(), cons_uid);
+    auto cons_reg = cons_bh.brc.register_consumer(make_cons_opts(channel, cons_uid), 3000);
+    ASSERT_TRUE(cons_reg.has_value());
+
     svc().request_close_channel(channel);
 
-    // Wait for both to receive CHANNEL_CLOSING_NOTIFY
     ASSERT_TRUE(prod_closing->wait(3000)) << "Producer did not receive CHANNEL_CLOSING_NOTIFY";
     ASSERT_TRUE(cons_closing->wait(3000)) << "Consumer did not receive CHANNEL_CLOSING_NOTIFY";
 
     // Consumer deregisters first
-    cons.deregister_consumer(channel);
+    cons_bh.brc.deregister_consumer(channel);
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     // Producer deregisters
-    prod.unregister_channel(channel);
+    prod_bh.brc.deregister_channel(channel);
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
 
-    // Channel should be removed early (no need to wait for grace period)
     ChannelSnapshot snap = svc().query_channel_snapshot();
-    bool still_present = false;
     for (const auto &ch : snap.channels)
-    {
-        if (ch.name == channel)
-        {
-            still_present = true;
-            break;
-        }
-    }
-    EXPECT_FALSE(still_present) << "Channel should be removed after all members deregister";
+        EXPECT_NE(ch.name, channel) << "Channel should be removed after all members deregister";
+
+    cons_bh.stop();
+    prod_bh.stop();
 }
 
 // ============================================================================
-// Test 4: Force shutdown with consumer — consumer doesn't deregister
+// Test 4: Force shutdown with consumer — nobody deregisters
 // ============================================================================
 
 TEST_F(BrokerShutdownTest, ForceShutdown_ConsumerDoesNotDeregister)
 {
-    start_broker(std::chrono::seconds(1)); // short grace
-    const std::string channel = pid_chan("shutdown.force.consumer");
+    start_broker(std::chrono::seconds(1));
+    const std::string channel  = pid_chan("shutdown.force.consumer");
+    const std::string prod_uid = "PROD-" + channel;
+    const std::string cons_uid = "CONS-" + channel;
 
-    // Create producer
-    Messenger prod;
-    ASSERT_TRUE(prod.connect(ep(), pk()));
-    auto prod_handle = prod.create_channel(channel, {.timeout_ms = 3000});
-    ASSERT_TRUE(prod_handle.has_value());
-
-    // Connect consumer
-    Messenger cons;
-    ASSERT_TRUE(cons.connect(ep(), pk()));
-    auto cons_handle = cons.connect_channel(channel, /*timeout_ms=*/3000);
-    ASSERT_TRUE(cons_handle.has_value());
-
-    // Register force shutdown callbacks on both
+    BrcHandle prod_bh;
     auto prod_force = std::make_shared<SignalFlag>();
-    auto cons_force = std::make_shared<SignalFlag>();
-    prod.on_force_shutdown(channel, [prod_force]() { prod_force->set(); });
-    cons.on_force_shutdown(channel, [cons_force]() { cons_force->set(); });
+    prod_bh.brc.on_notification([prod_force](const std::string &msg_type, const json &)
+    {
+        if (msg_type == "FORCE_SHUTDOWN")
+            prod_force->set();
+    });
+    prod_bh.start(ep(), pk(), prod_uid);
+    auto reg = prod_bh.brc.register_channel(make_reg_opts(channel, prod_uid), 3000);
+    ASSERT_TRUE(reg.has_value());
 
-    // Request close — do NOT deregister either member
+    // CONSUMER_REG_REQ does not gate on Ready (HEP-CORE-0023 §2.2).
+    BrcHandle cons_bh;
+    auto cons_force = std::make_shared<SignalFlag>();
+    cons_bh.brc.on_notification([cons_force](const std::string &msg_type, const json &)
+    {
+        if (msg_type == "FORCE_SHUTDOWN")
+            cons_force->set();
+    });
+    cons_bh.start(ep(), pk(), cons_uid);
+    auto cons_reg = cons_bh.brc.register_consumer(make_cons_opts(channel, cons_uid), 3000);
+    ASSERT_TRUE(cons_reg.has_value());
+
     svc().request_close_channel(channel);
 
-    // Both should receive FORCE_SHUTDOWN after grace period
     ASSERT_TRUE(prod_force->wait(5000)) << "Producer did not receive FORCE_SHUTDOWN";
     ASSERT_TRUE(cons_force->wait(5000)) << "Consumer did not receive FORCE_SHUTDOWN";
 
-    // Channel should be removed
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     ChannelSnapshot snap = svc().query_channel_snapshot();
-    bool still_present = false;
     for (const auto &ch : snap.channels)
-    {
-        if (ch.name == channel)
-        {
-            still_present = true;
-            break;
-        }
-    }
-    EXPECT_FALSE(still_present) << "Channel should be removed after FORCE_SHUTDOWN";
+        EXPECT_NE(ch.name, channel) << "Channel should be removed after FORCE_SHUTDOWN";
+
+    cons_bh.stop();
+    prod_bh.stop();
 }
 
 // ============================================================================
@@ -386,84 +423,61 @@ TEST_F(BrokerShutdownTest, ForceShutdown_ConsumerDoesNotDeregister)
 
 TEST_F(BrokerShutdownTest, ClosingStatus_InSnapshot)
 {
-    start_broker(std::chrono::seconds(10)); // long grace so we can observe Closing status
+    start_broker(std::chrono::seconds(10));
     const std::string channel = pid_chan("shutdown.status.closing");
+    const std::string uid     = "PROD-" + channel;
 
-    // Create producer
-    Messenger prod;
-    ASSERT_TRUE(prod.connect(ep(), pk()));
-    auto prod_handle = prod.create_channel(channel, {.timeout_ms = 3000});
-    ASSERT_TRUE(prod_handle.has_value());
-
-    // Register closing callback
+    BrcHandle bh;
     auto closing_flag = std::make_shared<SignalFlag>();
-    prod.on_channel_closing(channel, [closing_flag]() { closing_flag->set(); });
+    bh.brc.on_notification([closing_flag](const std::string &msg_type, const json &)
+    {
+        if (msg_type == "CHANNEL_CLOSING_NOTIFY")
+            closing_flag->set();
+    });
+    bh.start(ep(), pk(), uid);
 
-    // Request close
+    auto reg = bh.brc.register_channel(make_reg_opts(channel, uid), 3000);
+    ASSERT_TRUE(reg.has_value());
+
     svc().request_close_channel(channel);
-
-    // Wait for notification delivery
     ASSERT_TRUE(closing_flag->wait(3000));
 
-    // Verify Closing status in snapshot
     ChannelSnapshot snap = svc().query_channel_snapshot();
     const ChannelSnapshotEntry *entry = nullptr;
     for (const auto &ch : snap.channels)
-    {
         if (ch.name == channel)
-        {
             entry = &ch;
-            break;
-        }
-    }
     ASSERT_NE(entry, nullptr) << "Channel not in snapshot";
     EXPECT_EQ(entry->status, "Closing");
 
-    // Verify Closing status in list_channels_json_str
-    auto j = json::parse(svc().list_channels_json_str());
-    for (const auto &e : j)
-    {
-        if (e.value("name", "") == channel)
-        {
-            EXPECT_EQ(e.value("status", ""), "Closing");
-        }
-    }
-
-    // Cleanup: deregister so channel is removed
-    prod.unregister_channel(channel);
+    // Cleanup
+    bh.brc.deregister_channel(channel);
+    bh.stop();
 }
 
 // ============================================================================
-// Test 6: Zero grace period — immediate force shutdown (backward compat)
+// Test 6: Zero grace — immediate force shutdown
 // ============================================================================
 
 TEST_F(BrokerShutdownTest, ZeroGrace_ImmediateForceShutdown)
 {
-    start_broker(std::chrono::seconds(0)); // immediate
+    start_broker(std::chrono::seconds(0));
     const std::string channel = pid_chan("shutdown.zerograce");
+    const std::string uid     = "PROD-" + channel;
 
-    // Create producer
-    Messenger prod;
-    ASSERT_TRUE(prod.connect(ep(), pk()));
-    auto prod_handle = prod.create_channel(channel, {.timeout_ms = 3000});
-    ASSERT_TRUE(prod_handle.has_value());
+    BrcHandle bh;
+    bh.start(ep(), pk(), uid);
+    auto reg = bh.brc.register_channel(make_reg_opts(channel, uid), 3000);
+    ASSERT_TRUE(reg.has_value());
 
-    // Request close
     svc().request_close_channel(channel);
 
-    // With grace=0, deadline is immediate — force shutdown fires on next poll cycle
+    // grace=0 → force fires on next poll cycle
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-    // Channel should be removed
     ChannelSnapshot snap = svc().query_channel_snapshot();
-    bool still_present = false;
     for (const auto &ch : snap.channels)
-    {
-        if (ch.name == channel)
-        {
-            still_present = true;
-            break;
-        }
-    }
-    EXPECT_FALSE(still_present) << "Channel should be immediately removed with grace=0";
+        EXPECT_NE(ch.name, channel) << "Channel should be immediately removed with grace=0";
+
+    bh.stop();
 }

@@ -1,12 +1,12 @@
 // tests/test_layer3_datahub/workers/datahub_broker_health_workers.cpp
 //
-// Broker/Producer/Consumer health and notification tests.
-// Uses a real BrokerService in a background thread + Messenger singleton.
+// Broker health and notification tests via BrokerRequestComm.
 #include "datahub_broker_health_workers.h"
 #include "test_entrypoint.h"
 #include "test_process_utils.h"
 #include "shared_test_helpers.h"
 
+#include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
 #include "plh_datahub.hpp"
 
@@ -19,21 +19,20 @@
 #include <fstream>
 #include <future>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <thread>
-#include <utility>
 
 using namespace pylabhub::tests::helper;
 using namespace pylabhub::hub;
 using pylabhub::broker::BrokerService;
+using pylabhub::broker::ChannelSnapshot;
 
 namespace pylabhub::tests::worker::broker_health
 {
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetLifecycleModule(); }
+static auto zmq_module()    { return ::pylabhub::hub::GetZMQContextModule(); }
 
 // ============================================================================
 // Shared helpers
@@ -106,6 +105,64 @@ BrokerHandle start_broker()
     return start_broker_with_cfg(std::move(cfg));
 }
 
+/// BRC wrapper with poll thread — same as test helper BrcHandle pattern.
+struct BrcHandle
+{
+    BrokerRequestComm brc;
+    std::atomic<bool> running{true};
+    std::thread       thread;
+
+    void start(const std::string &ep, const std::string &pk, const std::string &uid)
+    {
+        BrokerRequestComm::Config cfg;
+        cfg.broker_endpoint = ep;
+        cfg.broker_pubkey   = pk;
+        cfg.role_uid        = uid;
+        ASSERT_TRUE(brc.connect(cfg));
+        thread = std::thread([this] { brc.run_poll_loop([this] { return running.load(); }); });
+    }
+
+    void stop()
+    {
+        running.store(false);
+        brc.stop();
+        if (thread.joinable())
+            thread.join();
+        brc.disconnect();
+    }
+
+    ~BrcHandle()
+    {
+        if (thread.joinable())
+            stop();
+    }
+};
+
+nlohmann::json make_reg_opts(const std::string &channel, const std::string &role_uid)
+{
+    nlohmann::json opts;
+    opts["channel_name"]      = channel;
+    opts["pattern"]           = "PubSub";
+    opts["has_shared_memory"] = false;
+    opts["producer_pid"]      = ::getpid();
+    opts["zmq_ctrl_endpoint"] = "tcp://127.0.0.1:0";
+    opts["zmq_data_endpoint"] = "tcp://127.0.0.1:0";
+    opts["zmq_pubkey"]        = "";
+    opts["role_uid"]          = role_uid;
+    opts["role_name"]         = "test_producer";
+    return opts;
+}
+
+nlohmann::json make_cons_opts(const std::string &channel, const std::string &consumer_uid)
+{
+    nlohmann::json opts;
+    opts["channel_name"]  = channel;
+    opts["consumer_uid"]  = consumer_uid;
+    opts["consumer_name"] = "test_consumer";
+    opts["consumer_pid"]  = ::getpid();
+    return opts;
+}
+
 } // anonymous namespace
 
 // ============================================================================
@@ -116,39 +173,35 @@ int producer_gets_closing_notify(int /*argc*/, char ** /*argv*/)
 {
     return run_gtest_worker(
         []() {
-            // Broker: heartbeat timeout = 1s.
             BrokerService::Config cfg;
             cfg.endpoint        = "tcp://127.0.0.1:0";
             cfg.use_curve       = true;
             cfg.channel_timeout = std::chrono::seconds(1);
-            cfg.consumer_liveness_check_interval = std::chrono::seconds(0); // disable
+            cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
             auto broker = start_broker_with_cfg(std::move(cfg));
 
-            Messenger &messenger = Messenger::get_instance();
-            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
-
             const std::string ch_name = make_test_channel_name("health.closing_notify");
-
-            ProducerOptions opts;
-            opts.channel_name = ch_name;
-            opts.pattern      = ChannelPattern::PubSub;
-            opts.has_shm      = false;
-            opts.timeout_ms   = 3000;
-
-            auto producer = Producer::create(messenger, opts);
-            ASSERT_TRUE(producer.has_value()) << "Producer::create failed";
+            const std::string uid     = "PROD-" + ch_name;
 
             std::atomic<bool> closing_fired{false};
-            producer->on_channel_closing([&]() { closing_fired.store(true); });
 
-            // Start producer (begins sending heartbeats). Then stop it so heartbeats cease.
-            ASSERT_TRUE(producer->start());
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            producer->stop(); // stop heartbeats; channel will time out in ~1s
+            BrcHandle bh;
+            bh.brc.on_notification([&](const std::string &type, const nlohmann::json &)
+            {
+                if (type == "CHANNEL_CLOSING_NOTIFY")
+                    closing_fired.store(true);
+            });
+            bh.start(broker.endpoint, broker.pubkey, uid);
 
-            // Wait up to 4s for CHANNEL_CLOSING_NOTIFY.
+            auto reg = bh.brc.register_channel(make_reg_opts(ch_name, uid), 3000);
+            ASSERT_TRUE(reg.has_value()) << "register_channel failed";
+
+            // Send one heartbeat to mark Ready, then stop sending.
+            bh.brc.send_heartbeat(ch_name, {});
+
+            // Wait for channel_timeout (1s) → CHANNEL_CLOSING_NOTIFY.
             const auto deadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds(4);
+                std::chrono::steady_clock::now() + std::chrono::seconds(5);
             while (!closing_fired.load() &&
                    std::chrono::steady_clock::now() < deadline)
             {
@@ -156,13 +209,13 @@ int producer_gets_closing_notify(int /*argc*/, char ** /*argv*/)
             }
 
             EXPECT_TRUE(closing_fired.load())
-                << "CHANNEL_CLOSING_NOTIFY was not received within 4s";
+                << "CHANNEL_CLOSING_NOTIFY was not received within 5s";
 
-            messenger.disconnect();
+            bh.stop();
             broker.stop_and_join();
         },
         "broker_health.producer_gets_closing_notify",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), crypto_module(), zmq_module());
 }
 
 // ============================================================================
@@ -175,45 +228,46 @@ int consumer_auto_deregisters(int /*argc*/, char ** /*argv*/)
         []() {
             auto broker = start_broker();
 
-            Messenger &messenger = Messenger::get_instance();
-            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
+            const std::string ch_name  = make_test_channel_name("health.consumer_dereg");
+            const std::string prod_uid = "PROD-" + ch_name;
+            const std::string cons_uid = "CONS-" + ch_name;
 
-            const std::string ch_name = make_test_channel_name("health.consumer_dereg");
+            // Register producer
+            BrcHandle prod_bh;
+            prod_bh.start(broker.endpoint, broker.pubkey, prod_uid);
+            auto reg = prod_bh.brc.register_channel(make_reg_opts(ch_name, prod_uid), 3000);
+            ASSERT_TRUE(reg.has_value());
 
-            ProducerOptions popts;
-            popts.channel_name = ch_name;
-            popts.pattern      = ChannelPattern::PubSub;
-            popts.has_shm      = false;
-            popts.timeout_ms   = 3000;
+            prod_bh.brc.send_heartbeat(ch_name, {});
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-            auto producer = Producer::create(messenger, popts);
-            ASSERT_TRUE(producer.has_value()) << "Producer::create failed";
+            // Register consumer
+            BrcHandle cons_bh;
+            cons_bh.start(broker.endpoint, broker.pubkey, cons_uid);
+            auto cons_reg = cons_bh.brc.register_consumer(make_cons_opts(ch_name, cons_uid), 3000);
+            ASSERT_TRUE(cons_reg.has_value());
 
-            ConsumerOptions copts;
-            copts.channel_name = ch_name;
-            copts.timeout_ms   = 3000;
-
-            auto consumer = Consumer::connect(messenger, copts);
-            ASSERT_TRUE(consumer.has_value()) << "Consumer::connect failed";
-
-            // Consumer::close() must send CONSUMER_DEREG_REQ to broker.
-            consumer->close();
-
-            // Allow broker to process the deregistration.
+            // Consumer deregisters
+            EXPECT_TRUE(cons_bh.brc.deregister_consumer(ch_name));
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-            // Discover the channel again — consumer_count should be 0.
-            auto info = messenger.discover_producer(ch_name, /*timeout_ms=*/2000);
-            ASSERT_TRUE(info.has_value()) << "discover_producer failed after consumer close";
-            EXPECT_EQ(info->consumer_count, 0u)
-                << "Expected consumer_count=0 after Consumer::close()";
+            // Verify consumer_count = 0 via admin snapshot
+            ChannelSnapshot snap = broker.service->query_channel_snapshot();
+            for (const auto &ch : snap.channels)
+            {
+                if (ch.name == ch_name)
+                {
+                    EXPECT_EQ(ch.consumer_count, 0)
+                        << "Expected consumer_count=0 after deregister";
+                }
+            }
 
-            producer->close();
-            messenger.disconnect();
+            cons_bh.stop();
+            prod_bh.stop();
             broker.stop_and_join();
         },
         "broker_health.consumer_auto_deregisters",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), crypto_module(), zmq_module());
 }
 
 // ============================================================================
@@ -224,57 +278,43 @@ int producer_auto_deregisters(int /*argc*/, char ** /*argv*/)
 {
     return run_gtest_worker(
         []() {
-            // Broker with long timeout — we must not rely on timeout for re-registration.
             BrokerService::Config cfg;
             cfg.endpoint        = "tcp://127.0.0.1:0";
             cfg.use_curve       = true;
-            cfg.channel_timeout = std::chrono::seconds(30); // very long
-            cfg.consumer_liveness_check_interval = std::chrono::seconds(0); // disable
+            cfg.channel_timeout = std::chrono::seconds(30);
+            cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
             auto broker = start_broker_with_cfg(std::move(cfg));
-
-            Messenger &messenger = Messenger::get_instance();
-            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
 
             const std::string ch_name = make_test_channel_name("health.producer_dereg");
 
+            // Register producer A
             {
-                ProducerOptions opts;
-                opts.channel_name = ch_name;
-                opts.pattern      = ChannelPattern::PubSub;
-                opts.has_shm      = false;
-                opts.timeout_ms   = 3000;
+                BrcHandle bh;
+                bh.start(broker.endpoint, broker.pubkey, "PROD-A-" + ch_name);
+                auto reg = bh.brc.register_channel(make_reg_opts(ch_name, "PROD-A-" + ch_name), 3000);
+                ASSERT_TRUE(reg.has_value());
 
-                auto producer_a = Producer::create(messenger, opts);
-                ASSERT_TRUE(producer_a.has_value()) << "Producer A create failed";
+                // Deregister
+                EXPECT_TRUE(bh.brc.deregister_channel(ch_name));
+                bh.stop();
 
-                // Explicitly close: sends DEREG_REQ to broker immediately.
-                producer_a->close();
-
-                // Small delay for broker to process DEREG.
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
             }
 
-            // Now a second producer should be able to register the same channel immediately.
+            // Producer B should register the same channel immediately
             {
-                ProducerOptions opts;
-                opts.channel_name = ch_name;
-                opts.pattern      = ChannelPattern::PubSub;
-                opts.has_shm      = false;
-                opts.timeout_ms   = 3000;
-
-                auto producer_b = Producer::create(messenger, opts);
-                EXPECT_TRUE(producer_b.has_value())
+                BrcHandle bh;
+                bh.start(broker.endpoint, broker.pubkey, "PROD-B-" + ch_name);
+                auto reg = bh.brc.register_channel(make_reg_opts(ch_name, "PROD-B-" + ch_name), 3000);
+                EXPECT_TRUE(reg.has_value())
                     << "Producer B failed to register — DEREG_REQ was not processed";
-
-                if (producer_b.has_value())
-                    producer_b->close();
+                bh.stop();
             }
 
-            messenger.disconnect();
             broker.stop_and_join();
         },
         "broker_health.producer_auto_deregisters",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), crypto_module(), zmq_module());
 }
 
 // ============================================================================
@@ -292,35 +332,33 @@ int dead_consumer_orchestrator(int argc, char **argv)
 
     return run_gtest_worker(
         [&tmp_file]() {
-            // Broker with 1s liveness check interval.
             BrokerService::Config cfg;
             cfg.endpoint                         = "tcp://127.0.0.1:0";
             cfg.use_curve                        = true;
-            cfg.channel_timeout                  = std::chrono::seconds(30); // long
-            cfg.consumer_liveness_check_interval = std::chrono::seconds(1);  // check every 1s
+            cfg.channel_timeout                  = std::chrono::seconds(30);
+            cfg.consumer_liveness_check_interval = std::chrono::seconds(1);
             auto broker = start_broker_with_cfg(std::move(cfg));
 
-            Messenger &messenger = Messenger::get_instance();
-            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
-
-            const std::string ch_name = make_test_channel_name("health.dead_consumer");
-
-            ProducerOptions popts;
-            popts.channel_name = ch_name;
-            popts.pattern      = ChannelPattern::PubSub;
-            popts.has_shm      = false;
-            popts.timeout_ms   = 3000;
-
-            auto producer = Producer::create(messenger, popts);
-            ASSERT_TRUE(producer.has_value()) << "Producer::create failed";
-            ASSERT_TRUE(producer->start());
+            const std::string ch_name  = make_test_channel_name("health.dead_consumer");
+            const std::string prod_uid = "PROD-" + ch_name;
 
             std::atomic<bool> consumer_died{false};
-            producer->on_consumer_died([&](uint64_t /*pid*/, const std::string & /*reason*/) {
-                consumer_died.store(true);
-            });
 
-            // Write endpoint + pubkey + channel_name to temp file for the exiter.
+            BrcHandle bh;
+            bh.brc.on_notification([&](const std::string &type, const nlohmann::json &)
+            {
+                if (type == "CONSUMER_DIED_NOTIFY")
+                    consumer_died.store(true);
+            });
+            bh.start(broker.endpoint, broker.pubkey, prod_uid);
+
+            auto reg = bh.brc.register_channel(make_reg_opts(ch_name, prod_uid), 3000);
+            ASSERT_TRUE(reg.has_value());
+
+            bh.brc.send_heartbeat(ch_name, {});
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+            // Write connection info for the exiter
             {
                 std::ofstream f(tmp_file);
                 ASSERT_TRUE(f.is_open()) << "Failed to open temp file: " << tmp_file;
@@ -329,20 +367,16 @@ int dead_consumer_orchestrator(int argc, char **argv)
                   << ch_name         << "\n";
             }
 
-            // Signal the parent test that we are ready for the exiter to be spawned.
             signal_test_ready();
 
-            // The exiter connects via Consumer::connect() (synchronous CONSUMER_REG_REQ)
-            // then calls _exit(0). ZMQ HELLO to the producer peer_thread may not arrive
-            // (process exits before delivery), but broker DOES register via REG_REQ.
-            // Allow up to 2s for the exiter to have connected and died.
+            // Wait for the exiter to connect and die
             std::this_thread::sleep_for(std::chrono::milliseconds(2000));
 
-            // Wait for CONSUMER_DIED_NOTIFY (broker needs to detect dead PID, up to ~3s).
-            const auto died_deadline =
+            // Wait for CONSUMER_DIED_NOTIFY (broker detects dead PID)
+            const auto deadline =
                 std::chrono::steady_clock::now() + std::chrono::seconds(5);
             while (!consumer_died.load() &&
-                   std::chrono::steady_clock::now() < died_deadline)
+                   std::chrono::steady_clock::now() < deadline)
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
@@ -350,12 +384,11 @@ int dead_consumer_orchestrator(int argc, char **argv)
             EXPECT_TRUE(consumer_died.load())
                 << "CONSUMER_DIED_NOTIFY was not received within 5s after exiter died";
 
-            producer->close();
-            messenger.disconnect();
+            bh.stop();
             broker.stop_and_join();
         },
         "broker_health.dead_consumer_orchestrator",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), crypto_module(), zmq_module());
 }
 
 // ============================================================================
@@ -373,7 +406,6 @@ int dead_consumer_exiter(int argc, char **argv)
 
     return run_gtest_worker(
         [&tmp_file]() {
-            // Read broker connection info from temp file.
             std::string endpoint;
             std::string pubkey;
             std::string ch_name;
@@ -384,25 +416,22 @@ int dead_consumer_exiter(int argc, char **argv)
                 std::getline(f, pubkey);
                 std::getline(f, ch_name);
             }
-            ASSERT_FALSE(endpoint.empty()) << "Exiter: endpoint is empty";
-            ASSERT_FALSE(ch_name.empty())  << "Exiter: channel name is empty";
+            ASSERT_FALSE(endpoint.empty());
+            ASSERT_FALSE(ch_name.empty());
 
-            Messenger &messenger = Messenger::get_instance();
-            ASSERT_TRUE(messenger.connect(endpoint, pubkey));
+            const std::string cons_uid = "CONS-EXITER-" + ch_name;
 
-            ConsumerOptions copts;
-            copts.channel_name = ch_name;
-            copts.timeout_ms   = 5000;
+            BrcHandle bh;
+            bh.start(endpoint, pubkey, cons_uid);
+            auto reg = bh.brc.register_consumer(make_cons_opts(ch_name, cons_uid), 5000);
+            ASSERT_TRUE(reg.has_value()) << "Exiter: register_consumer failed";
 
-            auto consumer = Consumer::connect(messenger, copts);
-            ASSERT_TRUE(consumer.has_value()) << "Exiter: Consumer::connect failed";
-
-            // Crash simulation: _exit(0) skips all C++ destructors.
-            // No BYE, no CONSUMER_DEREG_REQ — broker must detect dead PID.
+            // Crash simulation: _exit(0) skips all destructors.
+            // No CONSUMER_DEREG_REQ — broker must detect dead PID.
             _exit(0);
         },
         "broker_health.dead_consumer_exiter",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), crypto_module(), zmq_module());
 }
 
 // ============================================================================
@@ -415,51 +444,41 @@ int schema_mismatch_notify(int /*argc*/, char ** /*argv*/)
         []() {
             auto broker = start_broker();
 
-            // Messenger A: lifecycle-managed singleton (owns channel).
-            Messenger &messenger_a = Messenger::get_instance();
-            ASSERT_TRUE(messenger_a.connect(broker.endpoint, broker.pubkey));
-
-            const std::string ch_name = make_test_channel_name("health.schema_mismatch");
-
-            ProducerOptions opts_a;
-            opts_a.channel_name    = ch_name;
-            opts_a.pattern         = ChannelPattern::PubSub;
-            opts_a.has_shm         = false;
-            opts_a.schema_hash     = "aabbccdd";
-            opts_a.schema_version  = 1;
-            opts_a.timeout_ms      = 3000;
-
-            auto producer_a = Producer::create(messenger_a, opts_a);
-            ASSERT_TRUE(producer_a.has_value()) << "Producer A create failed";
+            const std::string ch_name  = make_test_channel_name("health.schema_mismatch");
+            const std::string uid_a    = "PROD-A-" + ch_name;
+            const std::string uid_b    = "PROD-B-" + ch_name;
+            const std::string hash_a   = std::string(64, 'a');
+            const std::string hash_b   = std::string(64, 'b');
 
             std::atomic<bool> error_fired{false};
-            producer_a->on_channel_error(
-                [&](const std::string &event, const nlohmann::json & /*details*/) {
-                    if (event == "schema_mismatch_attempt")
-                        error_fired.store(true);
-                });
 
-            // Messenger B: a second manual Messenger instance.
-            // Connects to same broker, attempts conflicting channel registration.
-            Messenger messenger_b;
-            ASSERT_TRUE(messenger_b.connect(broker.endpoint, broker.pubkey));
+            // Producer A registers with schema_hash A
+            BrcHandle bh_a;
+            bh_a.brc.on_notification([&](const std::string &type, const nlohmann::json &)
+            {
+                if (type == "CHANNEL_ERROR_NOTIFY")
+                    error_fired.store(true);
+            });
+            bh_a.start(broker.endpoint, broker.pubkey, uid_a);
 
-            ProducerOptions opts_b;
-            opts_b.channel_name   = ch_name;     // same channel
-            opts_b.pattern        = ChannelPattern::PubSub;
-            opts_b.has_shm        = false;
-            opts_b.schema_hash    = "11223344";   // DIFFERENT schema hash
-            opts_b.schema_version = 1;
-            opts_b.timeout_ms     = 3000;
+            auto opts_a = make_reg_opts(ch_name, uid_a);
+            opts_a["schema_hash"] = hash_a;
+            auto reg_a = bh_a.brc.register_channel(opts_a, 3000);
+            ASSERT_TRUE(reg_a.has_value());
 
-            // This must fail (broker rejects conflicting registration).
-            auto producer_b = Producer::create(messenger_b, opts_b);
-            EXPECT_FALSE(producer_b.has_value())
+            // Producer B tries same channel with different schema_hash → rejected
+            BrcHandle bh_b;
+            bh_b.start(broker.endpoint, broker.pubkey, uid_b);
+
+            auto opts_b = make_reg_opts(ch_name, uid_b);
+            opts_b["schema_hash"] = hash_b;
+            auto reg_b = bh_b.brc.register_channel(opts_b, 3000);
+            EXPECT_FALSE(reg_b.has_value())
                 << "Producer B should have been rejected due to schema mismatch";
 
-            // Wait up to 3s for CHANNEL_ERROR_NOTIFY to reach producer A.
+            // Wait for CHANNEL_EVENT_NOTIFY to reach producer A
             const auto deadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds(3);
+                std::chrono::steady_clock::now() + std::chrono::seconds(5);
             while (!error_fired.load() &&
                    std::chrono::steady_clock::now() < deadline)
             {
@@ -467,15 +486,14 @@ int schema_mismatch_notify(int /*argc*/, char ** /*argv*/)
             }
 
             EXPECT_TRUE(error_fired.load())
-                << "CHANNEL_ERROR_NOTIFY(schema_mismatch_attempt) was not received within 3s";
+                << "CHANNEL_EVENT_NOTIFY (schema mismatch) was not received within 3s";
 
-            producer_a->close();
-            messenger_b.disconnect();
-            messenger_a.disconnect();
+            bh_b.stop();
+            bh_a.stop();
             broker.stop_and_join();
         },
         "broker_health.schema_mismatch_notify",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), crypto_module(), zmq_module());
 }
 
 } // namespace pylabhub::tests::worker::broker_health

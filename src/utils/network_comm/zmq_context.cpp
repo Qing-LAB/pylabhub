@@ -12,21 +12,7 @@ namespace pylabhub::hub
 namespace
 {
 constexpr std::chrono::milliseconds kZMQContextShutdownTimeoutMs{2000};
-// Use std::atomic for formal memory-model correctness: get_zmq_context() is callable
-// from any thread; startup/shutdown run under lifecycle ordering, but without atomics
-// the C++ memory model formally requires synchronization even when happens-before is
-// ensured by external mechanisms.
 std::atomic<zmq::context_t *> g_context{nullptr};
-
-void do_zmq_context_startup(const char * /*arg*/, void * /*userdata*/)
-{
-    zmq_context_startup();
-}
-
-void do_zmq_context_shutdown(const char * /*arg*/, void * /*userdata*/)
-{
-    zmq_context_shutdown();
-}
 } // namespace
 
 zmq::context_t &get_zmq_context()
@@ -94,8 +80,9 @@ pylabhub::utils::ModuleDef GetZMQContextModule()
 {
     pylabhub::utils::ModuleDef module("ZMQContext");
     module.add_dependency("pylabhub::utils::Logger");
-    module.set_startup(&do_zmq_context_startup);
-    module.set_shutdown(&do_zmq_context_shutdown, kZMQContextShutdownTimeoutMs);
+    module.set_startup([](const char *, void *) { zmq_context_startup(); });
+    module.set_shutdown([](const char *, void *) { zmq_context_shutdown(); },
+                        kZMQContextShutdownTimeoutMs);
     module.set_as_persistent(true);
     return module;
 }

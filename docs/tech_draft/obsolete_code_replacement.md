@@ -195,14 +195,21 @@ APIs need updating:
 
 ### HEP updates needed
 
-| HEP | Section | Change |
-|-----|---------|--------|
-| HEP-CORE-0007 | §10 Wire protocol | Add BAND_JOIN/LEAVE/BROADCAST/MEMBERS message specs |
-| HEP-CORE-0007 | §10 Wire protocol | Mark CHANNEL_NOTIFY_REQ, CHANNEL_BROADCAST_REQ as DEPRECATED |
-| HEP-CORE-0007 | §12 Peer-to-Peer | Mark as DEPRECATED (replaced by broker fan-out) |
-| HEP-CORE-0018 | §15.1 Communication Planes | Rewrite: control plane = BrokerRequestComm; band = pub/sub messaging |
-| HEP-CORE-0018 | §15 Channel Establishment | Rewrite: no P2C socket setup |
-| HEP-CORE-0011 | Script API | Update: new band methods, remove old broadcast/send/consumers |
+| HEP | Section | Change | Status |
+|-----|---------|--------|--------|
+| HEP-CORE-0007 | §12.6 Peer-to-Peer | Replaced with REMOVED note | **DONE** (2026-04-11) |
+| HEP-CORE-0007 | §12.7 Sequence diagram | HELLO (P2C) line removed | **DONE** (2026-04-11) |
+| HEP-CORE-0007 | §12.8 Event table | consumer_joined/left/producer_message marked REMOVED | **DONE** (2026-04-11) |
+| HEP-CORE-0007 | §12.9 Design notes | Rewritten for BrokerRequestComm dispatch | **DONE** (2026-04-11) |
+| HEP-CORE-0007 | REG_REQ/DISC_ACK payloads | P2C fields removed (channel_pattern, zmq_ctrl/data_endpoint, zmq_pubkey) | **DONE** (2026-04-11) |
+| HEP-CORE-0018 | §15.5 Control Plane | Rewritten: BrokerRequestComm, no P2C sockets | **DONE** (2026-04-11) |
+| HEP-CORE-0018 | §15.8 Service operations | send_ctrl/send_to/connected_consumers removed | **DONE** (2026-04-11) |
+| HEP-CORE-0018 | Thread diagrams | HELLO/BYE references removed | **DONE** (2026-04-11) |
+| HEP-CORE-0002 | §6.8 hub::Producer/Consumer | peer_thread/ctrl_thread/HELLO/BYE removed | **DONE** (2026-04-11) |
+| HEP-CORE-0002 | Peer messaging section | Replaced with REMOVED note | **DONE** (2026-04-11) |
+| HEP-CORE-0002 | Frame types, source refs | Messenger → BrokerRequestComm | **DONE** (2026-04-11) |
+| HEP-CORE-0007 | §10 Wire protocol | Add BAND_JOIN/LEAVE/BROADCAST/MEMBERS message specs | Pending |
+| HEP-CORE-0011 | Script API | Update: new band methods, remove old broadcast/send/consumers | **DONE** (2026-04-11)
 
 ---
 

@@ -17,6 +17,8 @@
  */
 
 #include "pylabhub_utils_export.h"
+#include "utils/broker_request_comm.hpp"   // hub::BrokerRequestComm (for Config in start_ctrl_thread)
+#include "utils/config/inbox_config.hpp"   // config::InboxConfig (for CtrlThreadConfig)
 #include "utils/data_block_policy.hpp"     // hub::ChecksumPolicy
 #include "utils/json_fwd.hpp"
 #include "utils/loop_timing_policy.hpp"    // LoopTimingPolicy, compute_short_timeout, compute_next_deadline
@@ -40,7 +42,7 @@ class Consumer;
 class InboxQueue;
 class InboxClient;
 class SharedSpinLock;
-class BrokerRequestComm;
+// BrokerRequestComm: full definition from broker_request_comm.hpp (needed for Config in start_ctrl_thread).
 } // namespace pylabhub::hub
 
 namespace pylabhub::scripting
@@ -162,7 +164,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     //
     // Wires Producer/Consumer event callbacks to core_.enqueue_message()
     // or core_.request_stop(). Broker notifications (band, hub-dead) are
-    // handled by BrokerRequestComm in start_broker_thread().
+    // handled by BrokerRequestComm in start_ctrl_thread().
     // Call after set_producer/set_consumer/set_channel.
     //
     // Replaces the per-role-host copy-paste of on_channel_closing,
@@ -295,26 +297,69 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// Number of managed threads (for diagnostics).
     [[nodiscard]] size_t thread_count() const;
 
-    // ── Broker thread ─────────────────────────────────────────────────────
+    // ── Broker communication (control plane) ────────────────────────────────
 
     /// Set the BrokerRequestComm (owned externally by role host).
-    void set_broker_channel(hub::BrokerRequestComm *bc);
+    void set_broker_comm(hub::BrokerRequestComm *bc);
 
-    struct BrokerThreadConfig
+    /// Configuration for the control thread (broker communication).
+    struct CtrlThreadConfig
     {
         int  heartbeat_interval_ms{5000};
         bool report_metrics{false};
+
+        /// Registration payload (REG_REQ for producers, CONSUMER_REG_REQ for
+        /// consumers). Empty = skip registration. Role host builds this JSON
+        /// from its config before calling start_ctrl_thread().
+        nlohmann::json producer_reg_opts{};   ///< Non-empty → send REG_REQ
+        nlohmann::json consumer_reg_opts{};   ///< Non-empty → send CONSUMER_REG_REQ
+
+        /// Inbox config (optional). If has_inbox(), start_ctrl_thread
+        /// appends inbox fields to the registration payload automatically.
+        /// actual_endpoint is queried from the InboxQueue set via set_inbox_queue().
+        std::optional<config::InboxConfig> inbox{};
     };
 
-    /// Spawn the broker thread: runs BrokerRequestComm poll loop with
-    /// iteration-gated heartbeat + optional metrics report + on_heartbeat.
-    void start_broker_thread(const BrokerThreadConfig &cfg);
+    /// Connect to broker, start the control thread (poll loop + heartbeat),
+    /// and register with the broker.
+    ///
+    /// Sequence:
+    ///   1. broker_comm_->connect(connect_cfg)
+    ///   2. Wire on_notification + on_hub_dead callbacks
+    ///   3. Spawn "ctrl" thread (periodic heartbeat + poll loop)
+    ///   4. Send REG_REQ / CONSUMER_REG_REQ (blocking, from main thread)
+    ///
+    /// @param connect_cfg  BRC connection config (endpoint, pubkey, etc.)
+    /// @param cfg          Heartbeat interval, metrics, registration payloads.
+    /// @return true if connection and registration succeeded.
+    bool start_ctrl_thread(const hub::BrokerRequestComm::Config &connect_cfg,
+                           const CtrlThreadConfig &cfg);
 
-    // ── P2C comm thread (polls Producer/Consumer sockets) ────────────────
+    /// Explicitly deregister from broker. Call BEFORE join_all_threads()
+    /// while the ctrl thread is still running to process the command.
+    /// Sends DEREG_REQ and/or CONSUMER_DEREG_REQ for whatever was registered
+    /// in start_ctrl_thread().
+    void deregister_from_broker();
 
-    /// Spawn a thread that polls P2C sockets (peer join/leave/dead, ctrl msgs).
-    /// Temporary: will be replaced by RoleCommunicationChannel.
-    void start_comm_thread();
+    // ── Broker protocol helpers (require ctrl thread running) ────────────
+
+    /// Register a producer channel (REG_REQ → REG_ACK).
+    [[nodiscard]] std::optional<nlohmann::json>
+    register_producer_channel(const nlohmann::json &opts, int timeout_ms = 5000);
+
+    /// Discover a channel (DISC_REQ → DISC_ACK).
+    [[nodiscard]] std::optional<nlohmann::json>
+    discover_channel(const std::string &channel, int timeout_ms = 10000);
+
+    /// Register as consumer (CONSUMER_REG_REQ → CONSUMER_REG_ACK).
+    [[nodiscard]] std::optional<nlohmann::json>
+    register_consumer(const nlohmann::json &opts, int timeout_ms = 5000);
+
+    /// Deregister a producer channel (DEREG_REQ).
+    bool deregister_producer_channel(const std::string &channel, int timeout_ms = 5000);
+
+    /// Deregister a consumer (CONSUMER_DEREG_REQ).
+    bool deregister_consumer(const std::string &channel, int timeout_ms = 5000);
 
     // ── Inbox drain (Step C of the data loop) ──────────────────────────────
     //
@@ -341,6 +386,12 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
   private:
     struct Impl;
     std::unique_ptr<Impl> pImpl;
+
+    // ── Ctrl thread private helpers (called from within the ctrl thread) ──
+    // Access pImpl members directly — no bare pointers cross thread boundary.
+
+    void on_heartbeat_tick_();
+    void on_metrics_report_tick_();
 };
 
 } // namespace pylabhub::scripting

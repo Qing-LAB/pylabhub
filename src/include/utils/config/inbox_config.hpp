@@ -37,10 +37,16 @@ inline constexpr const char *kDefaultInboxEndpoint = "tcp://127.0.0.1:0";
 
 struct InboxConfig
 {
+    // ── Parsed from config ──────────────────────────────────────────────
     nlohmann::json schema_json{};            ///< Schema (JSON object or named string ref). Null = no inbox.
     std::string    endpoint{kDefaultInboxEndpoint}; ///< ROUTER bind endpoint. See endpoint security model above.
     size_t         buffer_depth{hub::kZmqDefaultBufferDepth}; ///< ZMQ RCVHWM.
     std::string    overflow_policy{"drop"};  ///< "drop" or "block".
+
+    // ── Resolved from schema (populated at schema resolution time) ──────
+    std::string    schema_fields_json{};     ///< JSON-serialized ZmqSchemaField array.
+    std::string    packing{"aligned"};       ///< "aligned" or "packed" (from SchemaSpec).
+    std::string    checksum{"enforced"};     ///< Checksum policy string (from role config).
 
     /// True if inbox_schema is configured (non-null, non-empty).
     [[nodiscard]] bool has_inbox() const noexcept

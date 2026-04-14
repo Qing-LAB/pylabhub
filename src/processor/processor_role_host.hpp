@@ -4,7 +4,7 @@
  * @brief Unified processor role host — engine-agnostic.
  *
  * ProcessorRoleHost owns:
- * - Layer 3: Infrastructure (dual Messengers, Consumer + Producer, dual queues,
+ * - Layer 3: Infrastructure (BrokerRequestComm, Consumer + Producer, dual queues,
  *            ctrl_thread_, events)
  * - Layer 2: Data loop (dual-queue inner retry acquire, deadline wait, invoke,
  *            commit/release)
@@ -94,13 +94,12 @@ class ProcessorRoleHost
     std::promise<bool>                       ready_promise_;
 
     // Infrastructure (created on worker thread in setup_infrastructure_).
-    hub::Messenger                           in_messenger_;
-    hub::Messenger                           out_messenger_;
-    std::unique_ptr<hub::BrokerRequestComm> broker_channel_;
+    std::unique_ptr<hub::BrokerRequestComm> broker_comm_;
     std::optional<hub::Consumer>             in_consumer_;
     std::optional<hub::Producer>             out_producer_;
 
     std::unique_ptr<hub::InboxQueue>         inbox_queue_;
+    config::InboxConfig                      inbox_cfg_;
 
     // Role API (created on worker thread, passed to engine).
     std::unique_ptr<scripting::RoleAPIBase> api_;

@@ -30,7 +30,8 @@ using namespace pylabhub::broker;
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
-static auto hub_module()    { return ::pylabhub::hub::GetLifecycleModule(); }
+static auto hub_module()    { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto zmq_module()    { return ::pylabhub::hub::GetZMQContextModule(); }
 
 namespace
 {
@@ -97,7 +98,7 @@ struct ChannelClient
 
 int channel_join_leave()
 {
-    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module());
+    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     auto broker = start_broker();
@@ -159,7 +160,7 @@ int channel_join_leave()
 
 int channel_msg_fanout()
 {
-    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module());
+    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     auto broker = start_broker();
@@ -217,7 +218,7 @@ int channel_msg_fanout()
 
 int channel_join_notify()
 {
-    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module());
+    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     auto broker = start_broker();
@@ -268,7 +269,7 @@ int channel_join_notify()
 
 int roleapi_channel()
 {
-    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module());
+    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     auto broker = start_broker();
@@ -300,8 +301,8 @@ int roleapi_channel()
     bc_cfg.role_name = "role_b";
     EXPECT_TRUE(bc2->connect(bc_cfg));
 
-    api1->set_broker_channel(bc1.get());
-    api2->set_broker_channel(bc2.get());
+    api1->set_broker_comm(bc1.get());
+    api2->set_broker_comm(bc2.get());
 
     // Start broker threads (uses start_broker_thread which wires notifications).
     // We need a minimal engine for ThreadEngineGuard — use NativeEngine stub.
@@ -398,7 +399,7 @@ int roleapi_channel()
 
 int channel_leave_notify()
 {
-    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module());
+    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     auto broker = start_broker();
@@ -452,7 +453,7 @@ int channel_leave_notify()
 
 int channel_self_excluded()
 {
-    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module());
+    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     auto broker = start_broker();
@@ -504,7 +505,7 @@ int channel_self_excluded()
 
 int channel_multi_channel()
 {
-    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module());
+    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     auto broker = start_broker();

@@ -13,7 +13,6 @@
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/hub_producer.hpp"
 #include "utils/logger.hpp"
-#include "utils/messenger.hpp"
 #include "utils/metrics_json.hpp"
 #include "utils/role_host_core.hpp"
 #include "utils/schema_utils.hpp"
@@ -54,6 +53,10 @@ struct RoleAPIBase::Impl
     std::string log_level;
     std::string script_dir;
     std::string role_dir;
+
+    // Broker registration state (for explicit deregister on shutdown).
+    std::string registered_producer_channel;   ///< Non-empty if REG_REQ succeeded.
+    std::string registered_consumer_channel;   ///< Non-empty if CONSUMER_REG_REQ succeeded.
 
     // Inbox client cache (keyed by target_uid).
     // Uses RoleHostCore::open_inbox() for atomic check-and-create.
@@ -101,18 +104,18 @@ void RoleAPIBase::set_stop_on_script_error(bool v)    { pImpl->stop_on_script_er
 
 void RoleAPIBase::spawn_thread(const std::string &name, std::function<void()> body)
 {
-    auto *eng = pImpl->engine;
-    const std::string &tag = pImpl->role_tag;
-
+    // Capture `this` — engine and tag are accessed via pImpl at call time.
+    // RoleAPIBase outlives all managed threads (join_all_threads called before dtor).
     pImpl->managed_threads_.emplace_back(
-        [eng, tag, name, body = std::move(body)]()
+        [this, name, body = std::move(body)]()
         {
             // ThreadEngineGuard registers this thread with the engine for
             // cross-thread dispatch (Lua: thread-local state; Python: queue).
+            auto *eng = pImpl->engine;
             ThreadEngineGuard guard(*eng);
-            LOGGER_INFO("[{}/{}] thread started", tag, name);
+            LOGGER_INFO("[{}/{}] thread started", pImpl->role_tag, name);
             body();
-            LOGGER_INFO("[{}/{}] thread exiting", tag, name);
+            LOGGER_INFO("[{}/{}] thread exiting", pImpl->role_tag, name);
         });
 }
 
@@ -134,65 +137,206 @@ size_t RoleAPIBase::thread_count() const
 }
 
 // ============================================================================
-// set_broker_channel
+// set_broker_comm
 // ============================================================================
 
-void RoleAPIBase::set_broker_channel(hub::BrokerRequestComm *bc)
+void RoleAPIBase::set_broker_comm(hub::BrokerRequestComm *bc)
 {
     pImpl->broker_channel = bc;
 }
 
 // ============================================================================
-// Broker thread — runs BrokerRequestComm poll loop + heartbeat
+// Broker protocol helpers (require ctrl thread running)
 // ============================================================================
 
-void RoleAPIBase::start_broker_thread(const BrokerThreadConfig &cfg)
+std::optional<nlohmann::json>
+RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_ms)
 {
-    auto *core = pImpl->core;
+    auto *bc = pImpl->broker_channel;
+    if (!bc || !bc->is_connected())
+    {
+        LOGGER_ERROR("[{}] register_producer_channel: broker comm not connected", pImpl->role_tag);
+        return std::nullopt;
+    }
+    auto result = bc->register_channel(opts, timeout_ms);
+    if (!result.has_value())
+        LOGGER_ERROR("[{}] REG_REQ failed for channel '{}'",
+                     pImpl->role_tag, opts.value("channel_name", "?"));
+    else
+        LOGGER_INFO("[{}] Registered producer channel '{}' with broker",
+                    pImpl->role_tag, opts.value("channel_name", "?"));
+    return result;
+}
+
+std::optional<nlohmann::json>
+RoleAPIBase::discover_channel(const std::string &channel, int timeout_ms)
+{
+    auto *bc = pImpl->broker_channel;
+    if (!bc || !bc->is_connected())
+    {
+        LOGGER_ERROR("[{}] discover_channel: broker comm not connected", pImpl->role_tag);
+        return std::nullopt;
+    }
+    auto result = bc->discover_channel(channel, {}, timeout_ms);
+    if (!result.has_value())
+        LOGGER_ERROR("[{}] DISC_REQ failed for channel '{}'", pImpl->role_tag, channel);
+    else
+        LOGGER_INFO("[{}] Discovered channel '{}' from broker", pImpl->role_tag, channel);
+    return result;
+}
+
+std::optional<nlohmann::json>
+RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
+{
+    auto *bc = pImpl->broker_channel;
+    if (!bc || !bc->is_connected())
+    {
+        LOGGER_ERROR("[{}] register_consumer: broker comm not connected", pImpl->role_tag);
+        return std::nullopt;
+    }
+    auto result = bc->register_consumer(opts, timeout_ms);
+    if (!result.has_value())
+        LOGGER_ERROR("[{}] CONSUMER_REG_REQ failed for channel '{}'",
+                     pImpl->role_tag, opts.value("channel_name", "?"));
+    else
+        LOGGER_INFO("[{}] Registered consumer on channel '{}' with broker",
+                    pImpl->role_tag, opts.value("channel_name", "?"));
+    return result;
+}
+
+bool RoleAPIBase::deregister_producer_channel(const std::string &channel, int timeout_ms)
+{
+    auto *bc = pImpl->broker_channel;
+    if (!bc || !bc->is_connected())
+        return false;
+    return bc->deregister_channel(channel, timeout_ms);
+}
+
+bool RoleAPIBase::deregister_consumer(const std::string &channel, int timeout_ms)
+{
+    auto *bc = pImpl->broker_channel;
+    if (!bc || !bc->is_connected())
+        return false;
+    return bc->deregister_consumer(channel, timeout_ms);
+}
+
+// ============================================================================
+// Control thread — broker communication (heartbeat, notifications, requests)
+// ============================================================================
+//
+// Private helpers called from within the ctrl thread. Access pImpl members
+// directly — no bare pointers leaked into lambdas.
+
+void RoleAPIBase::deregister_from_broker()
+{
+    auto *bc = pImpl->broker_channel;
+    if (!bc || !bc->is_connected())
+        return;
+
+    if (!pImpl->registered_producer_channel.empty())
+    {
+        LOGGER_INFO("[{}] ctrl: deregistering producer channel '{}' from broker",
+                    pImpl->role_tag, pImpl->registered_producer_channel);
+        deregister_producer_channel(pImpl->registered_producer_channel);
+        pImpl->registered_producer_channel.clear();
+    }
+
+    if (!pImpl->registered_consumer_channel.empty())
+    {
+        LOGGER_INFO("[{}] ctrl: deregistering consumer from channel '{}' from broker",
+                    pImpl->role_tag, pImpl->registered_consumer_channel);
+        deregister_consumer(pImpl->registered_consumer_channel);
+        pImpl->registered_consumer_channel.clear();
+    }
+}
+
+void RoleAPIBase::on_heartbeat_tick_()
+{
+    auto *bc  = pImpl->broker_channel;
+    auto *eng = pImpl->engine;
+    if (!bc)
+        return;
+
+    std::string hb_channel = pImpl->out_channel.empty()
+                                 ? pImpl->channel
+                                 : pImpl->out_channel;
+
+    LOGGER_TRACE("[{}] ctrl: sending heartbeat for '{}'",
+                 pImpl->role_tag, hb_channel);
+    bc->send_heartbeat(hb_channel, snapshot_metrics_json());
+
+    if (eng && eng->has_callback("on_heartbeat"))
+        eng->invoke("on_heartbeat");
+}
+
+void RoleAPIBase::on_metrics_report_tick_()
+{
+    auto *bc = pImpl->broker_channel;
+    if (!bc)
+        return;
+
+    LOGGER_TRACE("[{}] ctrl: sending metrics report", pImpl->role_tag);
+    bc->send_metrics_report(pImpl->channel, pImpl->uid, snapshot_metrics_json());
+}
+
+bool RoleAPIBase::start_ctrl_thread(
+    const hub::BrokerRequestComm::Config &connect_cfg,
+    const CtrlThreadConfig &cfg)
+{
     auto *bc   = pImpl->broker_channel;
-    auto *eng  = pImpl->engine;
-    const auto &ch     = pImpl->channel;
-    const auto &out_ch = pImpl->out_channel;
-    const auto &uid    = pImpl->uid;
+    auto *core = pImpl->core;
 
     if (!bc)
     {
-        LOGGER_ERROR("[{}] start_broker_thread: no BrokerRequestComm set",
-                     pImpl->role_tag);
-        return;
+        LOGGER_ERROR("[{}] start_ctrl_thread: no BrokerRequestComm set", pImpl->role_tag);
+        return false;
     }
 
-    // Wire broker notification callback → core_.enqueue_message().
-    // Channel notifications (JOIN/LEAVE/MSG_NOTIFY) and broker lifecycle
-    // notifications all arrive here and become entries in the script's msgs.
-    bc->on_notification([core](const std::string &type, const nlohmann::json &body) {
+    // ── Step 1: Connect DEALER socket to broker ────────────────────────────
+    if (!connect_cfg.broker_endpoint.empty())
+    {
+        if (!bc->connect(connect_cfg))
+        {
+            LOGGER_ERROR("[{}] start_ctrl_thread: broker connect failed", pImpl->role_tag);
+            return false;
+        }
+    }
+    else
+    {
+        LOGGER_WARN("[{}] start_ctrl_thread: no broker endpoint configured — "
+                    "running without broker", pImpl->role_tag);
+    }
+
+    // ── Step 2: Wire notification + hub-dead callbacks ──────────────────────
+    LOGGER_TRACE("[{}] ctrl: wiring notification and hub-dead callbacks", pImpl->role_tag);
+
+    bc->on_notification([core, this](const std::string &type, const nlohmann::json &body) {
+        LOGGER_TRACE("[{}] ctrl: notification received: {}", pImpl->role_tag, type);
         IncomingMessage msg;
-        msg.event = type;
+        msg.event   = type;
         msg.details = body;
         core->enqueue_message(std::move(msg));
     });
 
-    // Wire hub-dead callback.
     const auto &tag = pImpl->role_tag;
     bc->on_hub_dead([core, tag]() {
-        LOGGER_WARN("[{}] hub-dead: BrokerRequestComm connection lost", tag);
+        LOGGER_WARN("[{}] hub-dead: broker connection lost", tag);
         core->set_stop_reason(RoleHostCore::StopReason::HubDead);
         core->request_stop();
     });
 
-    spawn_thread("broker", [=, this]()
-    {
-        const bool has_hb = eng->has_callback("on_heartbeat");
-        std::string hb_channel = out_ch.empty() ? ch : out_ch;
+    // ── Step 3: Spawn ctrl thread (heartbeat + poll loop) ──────────────────
+    LOGGER_INFO("[{}] ctrl: starting control thread (heartbeat={}ms)",
+                pImpl->role_tag, cfg.heartbeat_interval_ms);
 
-        // Heartbeat: iteration-gated (stops if script is stuck → broker detects dead).
+    spawn_thread("ctrl", [this, cfg]()
+    {
+        auto *bc   = pImpl->broker_channel;
+        auto *core = pImpl->core;
+
+        // Heartbeat: iteration-gated (stops if script stuck → broker detects dead).
         bc->set_periodic_task(
-            [bc, eng, has_hb, hb_channel, this]
-            {
-                bc->send_heartbeat(hb_channel, snapshot_metrics_json());
-                if (has_hb)
-                    eng->invoke("on_heartbeat");
-            },
+            [this] { on_heartbeat_tick_(); },
             cfg.heartbeat_interval_ms,
             [core] { return core->iteration_count(); });
 
@@ -200,73 +344,64 @@ void RoleAPIBase::start_broker_thread(const BrokerThreadConfig &cfg)
         if (cfg.report_metrics)
         {
             bc->set_periodic_task(
-                [bc, this, ch, uid]
-                {
-                    bc->send_metrics_report(ch, uid, snapshot_metrics_json());
-                },
+                [this] { on_metrics_report_tick_(); },
                 cfg.heartbeat_interval_ms,
                 nullptr);
         }
 
+        LOGGER_TRACE("[{}] ctrl: entering poll loop", pImpl->role_tag);
         bc->run_poll_loop([core] {
             return core->is_running() && !core->is_shutdown_requested();
         });
+        LOGGER_TRACE("[{}] ctrl: poll loop exited", pImpl->role_tag);
     });
-}
 
-// ============================================================================
-// P2C comm thread — polls Producer/Consumer sockets
-// ============================================================================
+    // ── Step 4: Register with broker (main thread, blocks) ─────────────────
+    // The ctrl thread is now running and can process commands.
 
-void RoleAPIBase::start_comm_thread()
-{
-    auto *core = pImpl->core;
-    auto *prod = pImpl->producer;
-    auto *cons = pImpl->consumer;
-    const auto &tag = pImpl->role_tag;
-    const auto &uid = pImpl->uid;
+    // Append inbox metadata to registration payload if inbox is configured.
+    auto append_inbox = [&](nlohmann::json &opts) {
+        if (cfg.inbox.has_value() && cfg.inbox->has_inbox())
+        {
+            if (pImpl->inbox_queue)
+                opts["inbox_endpoint"] = pImpl->inbox_queue->actual_endpoint();
+            opts["inbox_schema_json"] = cfg.inbox->schema_fields_json;
+            opts["inbox_packing"]     = cfg.inbox->packing;
+            opts["inbox_checksum"]    = cfg.inbox->checksum;
+        }
+    };
 
-    spawn_thread("comm", [=]()
+    if (!cfg.producer_reg_opts.empty())
     {
-        ZmqPollLoop loop{
-            [core] {
-                return core->is_running() && !core->is_shutdown_requested();
-            },
-            tag + ":comm:" + uid};
+        LOGGER_INFO("[{}] ctrl: registering producer channel with broker",
+                    pImpl->role_tag);
+        nlohmann::json reg = cfg.producer_reg_opts;
+        append_inbox(reg);
+        auto result = register_producer_channel(reg);
+        if (!result.has_value())
+        {
+            LOGGER_ERROR("[{}] Broker producer registration failed", pImpl->role_tag);
+            return false;
+        }
+        pImpl->registered_producer_channel = reg.value("channel_name", "");
+    }
 
-        if (prod)
+    if (!cfg.consumer_reg_opts.empty())
+    {
+        LOGGER_INFO("[{}] ctrl: registering consumer with broker", pImpl->role_tag);
+        nlohmann::json reg = cfg.consumer_reg_opts;
+        append_inbox(reg);
+        auto result = register_consumer(reg);
+        if (!result.has_value())
         {
-            auto *h = prod->peer_ctrl_socket_handle();
-            if (h)
-            {
-                loop.sockets.push_back(
-                    {zmq::socket_ref(zmq::from_handle, h),
-                     [prod] { prod->handle_peer_events_nowait(); }});
-            }
+            LOGGER_ERROR("[{}] Broker consumer registration failed", pImpl->role_tag);
+            return false;
         }
-        if (cons)
-        {
-            auto *h = cons->ctrl_zmq_socket_handle();
-            if (h)
-            {
-                loop.sockets.push_back(
-                    {zmq::socket_ref(zmq::from_handle, h),
-                     [cons] { cons->handle_ctrl_events_nowait(); }});
-            }
-        }
-        if (cons)
-        {
-            auto *ds = cons->data_zmq_socket_handle();
-            if (ds)
-            {
-                loop.sockets.push_back(
-                    {zmq::socket_ref(zmq::from_handle, ds),
-                     [cons] { cons->handle_data_events_nowait(); }});
-            }
-        }
+        pImpl->registered_consumer_channel = reg.value("channel_name", "");
+    }
 
-        loop.run();
-    });
+    LOGGER_INFO("[{}] ctrl: broker communication ready", pImpl->role_tag);
+    return true;
 }
 
 // ============================================================================
@@ -324,46 +459,6 @@ void RoleAPIBase::wire_event_callbacks()
             LOGGER_WARN("[{}] FORCE_SHUTDOWN received, forcing immediate shutdown", tag);
             core->request_stop();
         });
-
-        // Always register on_zmq_data — harmless if no data arrives on the
-        // socket (eliminates SHM-vs-ZMQ conditional; see tech draft §7.3).
-        c->on_zmq_data([core, tag](std::span<const std::byte> data) {
-            LOGGER_DEBUG("[{}] zmq_data: data_message size={}", tag, data.size());
-            IncomingMessage msg;
-            msg.data.assign(data.begin(), data.end());
-            core->enqueue_message(std::move(msg));
-        });
-
-        c->on_producer_message(
-            [core, tag](std::string_view type, std::span<const std::byte> data) {
-                LOGGER_INFO("[{}] ctrl_msg: producer_message type='{}' size={}",
-                            tag, type, data.size());
-                IncomingMessage msg;
-                msg.event = "producer_message";
-                msg.details["type"] = std::string(type);
-                msg.details["data"] = format_tools::bytes_to_hex(
-                    {reinterpret_cast<const char *>(data.data()), data.size()});
-                core->enqueue_message(std::move(msg));
-            });
-
-        c->on_channel_error(
-            [core, tag, is_dual](const std::string &event, const nlohmann::json &details) {
-                LOGGER_INFO("[{}] broker_notify: channel_event event='{}' details={}",
-                            tag, event, details.dump());
-                IncomingMessage msg;
-                msg.event = "channel_event";
-                msg.details = details;
-                msg.details["detail"] = event;
-                if (is_dual)
-                    msg.details["source"] = "in_channel";
-                core->enqueue_message(std::move(msg));
-            });
-
-        c->on_peer_dead([core, tag]() {
-            LOGGER_WARN("[{}] peer-dead: upstream producer silent; triggering shutdown", tag);
-            core->set_stop_reason(RoleHostCore::StopReason::PeerDead);
-            core->request_stop();
-        });
     }
 
     // ── Producer-side callbacks ──────────────────────────────────────────
@@ -380,44 +475,11 @@ void RoleAPIBase::wire_event_callbacks()
         p->on_force_shutdown([core]() {
             core->request_stop();
         });
-
-        p->on_consumer_joined([core, tag](const std::string &identity) {
-            auto hex = format_tools::bytes_to_hex(identity);
-            LOGGER_INFO("[{}] peer_event: consumer_joined identity={}", tag, hex);
-            IncomingMessage msg;
-            msg.event = "consumer_joined";
-            msg.details["identity"] = std::move(hex);
-            core->enqueue_message(std::move(msg));
-        });
-
-        p->on_consumer_left([core, tag](const std::string &identity) {
-            auto hex = format_tools::bytes_to_hex(identity);
-            LOGGER_INFO("[{}] peer_event: consumer_left identity={}", tag, hex);
-            IncomingMessage msg;
-            msg.event = "consumer_left";
-            msg.details["identity"] = std::move(hex);
-            core->enqueue_message(std::move(msg));
-        });
-
-        p->on_consumer_message(
-            [core, tag](const std::string &identity, std::span<const std::byte> data) {
-                LOGGER_INFO("[{}] zmq_data: consumer_message size={}", tag, data.size());
-                IncomingMessage msg;
-                msg.sender = identity;
-                msg.data.assign(data.begin(), data.end());
-                core->enqueue_message(std::move(msg));
-            });
-
-        p->on_peer_dead([core, tag]() {
-            LOGGER_WARN("[{}] peer-dead: downstream consumer silent; triggering shutdown", tag);
-            core->set_stop_reason(RoleHostCore::StopReason::PeerDead);
-            core->request_stop();
-        });
     }
 
     // Note: broker notifications (CONSUMER_DIED_NOTIFY, CHANNEL_EVENT_NOTIFY,
     // hub-dead) are all handled by BrokerRequestComm's on_notification() and
-    // on_hub_dead() callbacks wired in start_broker_thread(). No Messenger
+    // on_hub_dead() callbacks wired in start_ctrl_thread(). No Messenger
     // callback wiring is needed.
 }
 
@@ -803,10 +865,7 @@ uint64_t RoleAPIBase::last_cycle_work_us() const { return pImpl->core->last_cycl
 
 uint64_t RoleAPIBase::ctrl_queue_dropped() const
 {
-    uint64_t total = 0;
-    if (pImpl->producer) total += pImpl->producer->ctrl_queue_dropped();
-    if (pImpl->consumer) total += pImpl->consumer->ctrl_queue_dropped();
-    return total;
+    return 0; // P2C ctrl queue removed — no drops to track
 }
 
 // ============================================================================
@@ -983,20 +1042,7 @@ nlohmann::json RoleAPIBase::snapshot_metrics_json() const
     role["out_drop_count"]     = pImpl->core->out_drop_count();
     role["script_error_count"] = pImpl->core->script_error_count();
 
-    if (has_in && has_out)
-    {
-        role["ctrl_queue_dropped"] = {
-            {"input",  pImpl->consumer->ctrl_queue_dropped()},
-            {"output", pImpl->producer->ctrl_queue_dropped()}
-        };
-    }
-    else
-    {
-        uint64_t dropped = 0;
-        if (has_out) dropped += pImpl->producer->ctrl_queue_dropped();
-        if (has_in)  dropped += pImpl->consumer->ctrl_queue_dropped();
-        role["ctrl_queue_dropped"] = dropped;
-    }
+    role["ctrl_queue_dropped"] = 0; // P2C ctrl queue removed
     result["role"] = std::move(role);
 
     // Inbox metrics.

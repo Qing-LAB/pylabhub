@@ -47,7 +47,7 @@ Security fixes applied (session 1): SHM-C1, IPC-C3, SVC-C1/C2/C3, HDR-C1.
 Security fix applied (session 2): IPC-H2 — `~BrokerServiceImpl()` zeros `server_secret_z85` + `cfg.server_secret_key` via `sodium_memzero`.
 HEP-0022 Phase 5+6 confirmed fully implemented: `on_hub_connected/disconnected/message`, `api.notify_hub()` all wired.
 
-✅ **848 tests (2026-03-05/06).** HEP-CORE-0021 ZMQ Virtual Channel Node implemented.
+✅ **848 tests (2026-03-05/06).** HEP-CORE-0021 ZMQ Endpoint Registry implemented.
 Security fixes: SHM-C1 (heartbeat CAS), IPC-C3 (thread lambda), SVC-C1/C2/C3 (key zeroing), HDR-C1 (C-safety).
 
 ✅ **828 tests (2026-03-05).** HEP-CORE-0019 Metrics Plane fully implemented.

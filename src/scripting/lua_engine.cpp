@@ -15,7 +15,6 @@
 #include "utils/hub_producer.hpp"
 #include "utils/hub_consumer.hpp"
 #include "utils/hub_inbox_queue.hpp"
-#include "utils/messenger.hpp"
 #include "utils/shared_memory_spinlock.hpp"
 #include "utils/logger.hpp"
 #include "utils/schema_utils.hpp"
@@ -1655,11 +1654,8 @@ int LuaEngine::lua_api_last_seq(lua_State *L)
 
 int LuaEngine::lua_api_ctrl_queue_dropped(lua_State *L)
 {
-    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    uint64_t total = 0;
-    if (self->api_->producer()) total += self->api_->producer()->ctrl_queue_dropped();
-    if (self->api_->consumer()) total += self->api_->consumer()->ctrl_queue_dropped();
-    lua_pushinteger(L, static_cast<lua_Integer>(total));
+    // P2C ctrl queue removed — always 0.
+    lua_pushinteger(L, 0);
     return 1;
 }
 
@@ -1824,28 +1820,9 @@ int LuaEngine::lua_api_metrics(lua_State *L)
         lua_pushinteger(L, static_cast<lua_Integer>(core->script_error_count()));
         lua_setfield(L, -2, "script_error_count");
 
-        // ctrl_queue_dropped — processor gets {input, output} sub-table
-        if (self->api_->role_tag() == "proc")
-        {
-            lua_newtable(L);
-            lua_pushinteger(L, static_cast<lua_Integer>(
-                producer ? producer->ctrl_queue_dropped() : 0));
-            lua_setfield(L, -2, "output");
-            lua_pushinteger(L, static_cast<lua_Integer>(
-                consumer ? consumer->ctrl_queue_dropped() : 0));
-            lua_setfield(L, -2, "input");
-            lua_setfield(L, -2, "ctrl_queue_dropped");
-        }
-        else if (producer)
-        {
-            lua_pushinteger(L, static_cast<lua_Integer>(producer->ctrl_queue_dropped()));
-            lua_setfield(L, -2, "ctrl_queue_dropped");
-        }
-        else if (consumer)
-        {
-            lua_pushinteger(L, static_cast<lua_Integer>(consumer->ctrl_queue_dropped()));
-            lua_setfield(L, -2, "ctrl_queue_dropped");
-        }
+        // ctrl_queue_dropped — P2C ctrl queue removed; report 0 for backward compat.
+        lua_pushinteger(L, 0);
+        lua_setfield(L, -2, "ctrl_queue_dropped");
 
         lua_setfield(L, -2, "role");
     }

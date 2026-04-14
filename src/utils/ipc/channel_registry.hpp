@@ -48,7 +48,7 @@ enum class ChannelStatus
 };
 
 /// Import ChannelPattern from the canonical hub definition.
-/// Defined in utils/channel_pattern.hpp; shared between broker and Messenger API.
+/// Defined in utils/channel_pattern.hpp; shared between broker and client APIs.
 using ChannelPattern = pylabhub::hub::ChannelPattern;
 
 // channel_pattern_to_str() and channel_pattern_from_str() are defined in
@@ -100,11 +100,12 @@ struct ChannelEntry
     std::string    zmq_data_endpoint; ///< Producer XPUB/PUSH endpoint; empty for Bidir
     std::string    zmq_pubkey;        ///< Producer CurveZMQ public key (Z85, 40 chars)
 
-    // ── ZMQ Virtual Channel Node (HEP-CORE-0021) ──────────────────────────────
-    /// Data transport type: "shm" (default) or "zmq" (ZMQ Virtual Channel Node).
+    // ── ZMQ Endpoint Registry (HEP-CORE-0021) ─────────────────────────────────
+    /// Data transport type: "shm" (default) or "zmq" (peer-to-peer endpoint
+    /// registered with the broker for discovery; broker does not relay data).
     std::string    data_transport{"shm"};
     /// For data_transport="zmq": the bind endpoint registered by the producer's PUSH socket.
-    /// Empty when data_transport="shm". Returned verbatim in DISC_ACK for consumer discovery.
+    /// Empty when data_transport="shm". Returned verbatim in DISC_ACK for peer discovery.
     std::string    zmq_node_endpoint;
     /// Role inbox endpoint registered in REG_REQ (Phase 3). Empty if no inbox configured.
     std::string    inbox_endpoint;

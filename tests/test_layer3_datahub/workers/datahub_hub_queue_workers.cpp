@@ -27,7 +27,7 @@ namespace pylabhub::tests::worker::hub_queue
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
-static auto hub_module()    { return ::pylabhub::hub::GetLifecycleModule(); }
+static auto hub_module()    { return ::pylabhub::hub::GetDataBlockModule(); }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

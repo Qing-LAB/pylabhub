@@ -1,12 +1,13 @@
 // tests/test_layer3_datahub/workers/datahub_e2e_workers.cpp
 // End-to-end multi-process integration test.
 //
-// Pipeline: broker (in-thread) ← Messenger → producer subprocess ← shm → consumer subprocess
+// Pipeline: broker (in-thread) ← BRC → producer subprocess ← shm → consumer subprocess
 #include "datahub_e2e_workers.h"
 #include "test_entrypoint.h"
 #include "test_process_utils.h"
 #include "shared_test_helpers.h"
 
+#include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
 #include "plh_datahub.hpp"
 
@@ -30,7 +31,8 @@ namespace pylabhub::tests::worker::e2e
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetLifecycleModule(); }
+static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto zmq_module() { return ::pylabhub::hub::GetZMQContextModule(); }
 
 // ============================================================================
 // Shared constants
@@ -148,9 +150,16 @@ int e2e_producer(int argc, char** argv)
     return run_gtest_worker(
         [&endpoint, &pubkey, &channel]()
         {
-            Messenger& messenger = Messenger::get_instance();
-            ASSERT_TRUE(messenger.connect(endpoint, pubkey))
-                << "e2e_producer: Messenger::connect failed";
+            const std::string uid = "PROD-E2E-" + channel;
+
+            BrokerRequestComm brc;
+            BrokerRequestComm::Config brc_cfg;
+            brc_cfg.broker_endpoint = endpoint;
+            brc_cfg.broker_pubkey   = pubkey;
+            brc_cfg.role_uid        = uid;
+            ASSERT_TRUE(brc.connect(brc_cfg)) << "e2e_producer: BRC connect failed";
+            std::atomic<bool> brc_running{true};
+            std::thread brc_thread([&] { brc.run_poll_loop([&] { return brc_running.load(); }); });
 
             // Create the DataBlock (producer side)
             DataBlockConfig config{};
@@ -165,13 +174,21 @@ int e2e_producer(int argc, char** argv)
                                               nullptr, nullptr);
             ASSERT_NE(producer, nullptr) << "e2e_producer: create_datablock_producer_impl failed";
 
-            // Register with broker (fire-and-forget)
-            ProducerInfo pinfo{};
-            pinfo.shm_name = channel;
-            pinfo.producer_pid = pylabhub::platform::get_pid();
-            pinfo.schema_hash.assign(32, '\0');
-            pinfo.schema_version = 1;
-            messenger.register_producer(channel, pinfo);
+            // Register with broker via BRC
+            nlohmann::json reg_opts;
+            reg_opts["channel_name"]      = channel;
+            reg_opts["pattern"]           = "PubSub";
+            reg_opts["has_shared_memory"] = true;
+            reg_opts["producer_pid"]      = ::getpid();
+            reg_opts["shm_name"]          = channel;
+            reg_opts["schema_version"]    = 1;
+            reg_opts["zmq_ctrl_endpoint"] = "tcp://127.0.0.1:0";
+            reg_opts["zmq_data_endpoint"] = "tcp://127.0.0.1:0";
+            reg_opts["zmq_pubkey"]        = "";
+            reg_opts["role_uid"]          = uid;
+            auto reg = brc.register_channel(reg_opts, 3000);
+            ASSERT_TRUE(reg.has_value()) << "e2e_producer: register_channel failed";
+            brc.send_heartbeat(channel, {});
 
             // Write kNumSlots slots with incrementing uint32_t values
             for (uint32_t i = 0; i < kNumSlots; ++i)
@@ -189,12 +206,15 @@ int e2e_producer(int argc, char** argv)
             // Keep shm alive while the consumer reads (5s is generous)
             std::this_thread::sleep_for(std::chrono::seconds(5));
 
-            messenger.disconnect();
+            brc_running.store(false);
+            brc.stop();
+            if (brc_thread.joinable()) brc_thread.join();
+            brc.disconnect();
             producer.reset();
             cleanup_test_datablock(channel);
         },
         "e2e.e2e_producer",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), crypto_module(), hub_module(), zmq_module());
 }
 
 // ============================================================================
@@ -215,17 +235,30 @@ int e2e_consumer(int argc, char** argv)
     return run_gtest_worker(
         [&endpoint, &pubkey, &channel]()
         {
-            Messenger& messenger = Messenger::get_instance();
-            ASSERT_TRUE(messenger.connect(endpoint, pubkey))
-                << "e2e_consumer: Messenger::connect failed";
+            const std::string cons_uid = "CONS-E2E-" + channel;
+
+            BrokerRequestComm brc;
+            BrokerRequestComm::Config brc_cfg;
+            brc_cfg.broker_endpoint = endpoint;
+            brc_cfg.broker_pubkey   = pubkey;
+            brc_cfg.role_uid        = cons_uid;
+            ASSERT_TRUE(brc.connect(brc_cfg)) << "e2e_consumer: BRC connect failed";
+            std::atomic<bool> brc_running{true};
+            std::thread brc_thread([&] { brc.run_poll_loop([&] { return brc_running.load(); }); });
 
             // Discover the producer channel via broker
-            auto cinfo = messenger.discover_producer(channel, 5000);
+            auto cinfo = brc.discover_channel(channel, {}, 5000);
             ASSERT_TRUE(cinfo.has_value())
-                << "e2e_consumer: discover_producer returned nullopt — channel not registered?";
+                << "e2e_consumer: discover_channel returned nullopt — channel not registered?";
 
             // Register this process as a consumer with the broker
-            messenger.register_consumer(channel, *cinfo);
+            nlohmann::json cons_opts;
+            cons_opts["channel_name"]  = channel;
+            cons_opts["consumer_uid"]  = cons_uid;
+            cons_opts["consumer_name"] = "e2e_consumer";
+            cons_opts["consumer_pid"]  = ::getpid();
+            auto cons_reg = brc.register_consumer(cons_opts, 3000);
+            ASSERT_TRUE(cons_reg.has_value()) << "e2e_consumer: register_consumer failed";
 
             // Attach to the DataBlock
             DataBlockConfig config{};
@@ -235,10 +268,13 @@ int e2e_consumer(int argc, char** argv)
             config.ring_buffer_capacity = 4;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto consumer = find_datablock_consumer_impl(cinfo->shm_name, kE2ESecret, &config,
+            const std::string shm_name = cinfo->value("shm_name", "");
+            ASSERT_FALSE(shm_name.empty()) << "e2e_consumer: shm_name not in DISC_ACK";
+
+            auto consumer = find_datablock_consumer_impl(shm_name, kE2ESecret, &config,
                                                          nullptr, nullptr);
             ASSERT_NE(consumer, nullptr)
-                << "e2e_consumer: find_datablock_consumer_impl failed for shm '" << cinfo->shm_name
+                << "e2e_consumer: find_datablock_consumer_impl failed for shm '" << shm_name
                 << "'";
 
             // With Latest_only, acquire_consume_slot returns the most recently committed slot.
@@ -253,13 +289,16 @@ int e2e_consumer(int argc, char** argv)
             ch.reset();
 
             // Deregister consumer with broker
-            messenger.deregister_consumer(channel);
+            brc.deregister_consumer(channel);
 
-            messenger.disconnect();
+            brc_running.store(false);
+            brc.stop();
+            if (brc_thread.joinable()) brc_thread.join();
+            brc.disconnect();
             consumer.reset();
         },
         "e2e.e2e_consumer",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), crypto_module(), hub_module(), zmq_module());
 }
 
 } // namespace pylabhub::tests::worker::e2e

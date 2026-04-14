@@ -129,7 +129,7 @@ The **Data Exchange Hub** is a high-performance, zero-copy, cross-process commun
 
 **Completed (9/9 tasks):**
 - P1: Ring Buffer Policy (backpressure, queue full/empty detection)
-- P2: Messenger Thread Safety (async command queue; ZMQ socket single-threaded in worker)
+- P2: Broker Comm Thread Safety (async command queue; ZMQ socket single-threaded in worker)
 - P3: Checksum Policy (Manual vs Enforced)
 - P4: TOCTTOU Race Mitigation (SlotRWCoordinator)
 - P5: Memory Barriers (acquire/release ordering)
@@ -195,7 +195,7 @@ graph TB
 
     subgraph "Control Plane"
         BROKER[Broker Service<br/>Discovery Registry]
-        MH[Messenger<br/>ZeroMQ Client]
+        MH[BrokerRequestComm<br/>ZeroMQ Client]
     end
 
     APP1 --> L3
@@ -1767,19 +1767,17 @@ destroying the producer or consumer.
 For the typical case where the DataBlock is paired with a ZMQ control plane (broker
 registration, health notifications, heartbeat), the **active service wrappers**
 `hub::Producer` and `hub::Consumer` combine `DataBlockProducer`/`DataBlockConsumer`
-with `Messenger` in a unified lifecycle.
+with `BrokerRequestComm` in a unified lifecycle.
 
 **hub::Producer** manages:
 - DataBlock creation + broker registration (REG_REQ/REG_ACK)
-- `peer_thread`: ROUTER ctrl socket, HELLO/BYE protocol with consumers
-- Embedded-mode API: `Producer::start_embedded()` + `Producer::handle_peer_events_nowait()` for script host integration (HEP-CORE-0015, -0018)
+- Queue lifecycle: ShmQueue or ZmqQueue creation, start/stop
+- Forwarding API: write_acquire/commit/discard, flexzone, checksum operations
 
 **hub::Consumer** manages:
 - Broker discovery (DISC_REQ/DISC_ACK), DataBlock attach, consumer registration (CONSUMER_REG_REQ)
-- `data_thread`: slot notification via ZMQ
-- `ctrl_thread`: DEALER ctrl socket, HELLO/BYE protocol
-- `shm_thread`: slot acquisition and delivery
-- Embedded-mode API: `Consumer::start_embedded()` for script host integration (HEP-CORE-0015, -0018)
+- Queue lifecycle: ShmQueue or ZmqQueue creation, start/stop
+- Forwarding API: read_acquire/release, flexzone, checksum operations
 
 Configuration: `ProducerOptions` / `ConsumerOptions` carry identity fields (`producer_name`,
 `producer_uid`, `consumer_uid`, `consumer_name`) forwarded to the broker at registration.
@@ -1812,7 +1810,7 @@ consumer.set_read_handler([](ReadProcessorContext<MetaData, SensorData>& ctx) {
 ```
 
 `WriteProcessorContext<F,D>` and `ReadProcessorContext<F,D>` bundle: typed slot access +
-flexible zone access + Messenger handle + shutdown signal.
+flexible zone access + shutdown signal.
 
 > **Full specification: [HEP-CORE-0006](HEP-CORE-0006-SlotProcessor-API.md)**
 >
@@ -1944,12 +1942,12 @@ All ZMQ messages in pyLabHub use a multi-frame format. The first frame is a sing
 
 | Type byte | Char | Meaning | Used by |
 |-----------|------|---------|---------|
-| `0x43` | `'C'` | Control / protocol | Messenger ↔ Broker, Producer ↔ Consumer peer |
+| `0x43` | `'C'` | Control / protocol | BrokerRequestComm ↔ Broker |
 
 Currently only the control type is defined. Data payloads are carried over SHM (primary
 data path) or via ZmqQueue (raw fixed-size messages with no type prefix — see below).
 
-#### Control message framing (Messenger ↔ BrokerService)
+#### Control message framing (BrokerRequestComm ↔ BrokerService)
 
 ```
 Frame 0: type byte        = 'C'               (1 byte)
@@ -1989,20 +1987,11 @@ Frame 3: JSON payload
 | `CHANNEL_ERROR_NOTIFY` | Broker → Affected | `channel_name`, `event`, + context |
 | `CHANNEL_EVENT_NOTIFY` | Broker → Participants | `channel_name`, `event`, `sender_uid` (if relay) |
 
-#### Producer ↔ Consumer peer messaging
+#### Producer ↔ Consumer peer messaging (REMOVED)
 
-Direct ZMQ messages between producers and consumers (via the producer's ROUTER peer
-socket) also use control framing:
-
-```
-Frame 0: [consumer identity]   (ZMQ ROUTER envelope)
-Frame 1: type byte = 'C'
-Frame 2: message type = "BROADCAST" | "SEND_TO"
-Frame 3: raw payload bytes
-```
-
-Consumer → Producer messages arrive on the same socket; the producer dispatches them
-via `on_consumer_message(identity, data)`.
+The P2C direct ZMQ peer messaging protocol (HELLO/BYE handshake, ROUTER/DEALER
+ctrl sockets, BROADCAST/SEND_TO frames) has been removed. See HEP-CORE-0030 for
+the replacement (Bands for coordination, Inbox for P2P data exchange).
 
 #### ZmqQueue data framing (schema-mode msgpack transport)
 
@@ -2131,11 +2120,9 @@ public:
     TemperatureSensorProducer(const DataBlockConfig& config)
         : m_producer(config)
     {
-        // DataBlock creation is decoupled from Messenger.
+        // DataBlock creation is decoupled from broker registration.
         // Caller registers with broker after the producer is constructed.
-        // Example (in main / setup code):
-        //   ProducerInfo info{ .shm_name = config.name, .schema_hash = ... };
-        //   Messenger::get_instance().register_producer("sensors/temperature/lab1", info);
+        // In practice, hub::Producer handles this automatically via create().
     }
 
     void run() {
@@ -2189,7 +2176,8 @@ public:
     TemperatureSensorConsumer(const std::string& channel)
     {
         // Discover producer via broker (synchronous: blocks until reply or timeout)
-        auto info = Messenger::get_instance().discover_producer(channel, /*timeout_ms=*/5000);
+        // In practice, hub::Consumer handles this automatically via connect().
+        auto info = broker_comm.discover_producer(channel, /*timeout_ms=*/5000);
         if (!info) {
             throw std::runtime_error("No producer found for channel: " + channel);
         }
@@ -3187,7 +3175,78 @@ Both facilities are equally fundamental. Higher-level components — role hosts
 (`PythonEngine`, `LuaEngine`, `NativeEngine`), inbox (`InboxQueue` / `InboxClient`),
 and the band pub/sub API — are built on top of these two layers.
 
-#### Module Dependency Diagram
+#### Lifecycle Modules and Dependency Graph
+
+Each foundational component owns a **lifecycle module** — a named unit registered
+with `LifecycleGuard` that declares its dependencies and provides startup/shutdown
+hooks. The lifecycle system topologically sorts modules at startup and reverses
+the order at shutdown. This guarantees correct initialization ordering without
+manual sequencing.
+
+**Infrastructure modules** (third-party library initialization):
+
+| Module name | Factory function | What it initializes | Depends on |
+|---|---|---|---|
+| `pylabhub::utils::Logger` | `Logger::GetLifecycleModule()` | Async logger worker thread + sinks | *(none — root)* |
+| `CryptoUtils` | `pylabhub::crypto::GetLifecycleModule()` | `sodium_init()` (libsodium) | Logger |
+| `ZMQContext` | `GetZMQContextModule()` | `zmq::context_t` (libzmq I/O thread pool) | Logger |
+
+**Application modules** (pylabhub facilities):
+
+| Module name | Factory function | What it initializes | Depends on |
+|---|---|---|---|
+| `pylabhub::hub::DataBlock` | `GetDataBlockModule()` | DataBlock ready flag (SHM naming, page alignment) | Logger, CryptoUtils |
+| `pylabhub::utils::FileLock` | `FileLock::GetLifecycleModule()` | File lock cleanup | Logger |
+| `pylabhub::utils::JsonConfig` | `JsonConfig::GetLifecycleModule()` | Config file watching | Logger |
+
+**Design rules:**
+
+1. Each module declares **only its direct dependencies**. Transitive dependencies
+   are resolved automatically by the topological sort.
+2. A module **does not need to perform work** in its startup. An empty startup
+   that only sets a ready flag is valid — its purpose is to declare the
+   dependency edge.
+3. Infrastructure modules (Logger, CryptoUtils, ZMQContext) initialize
+   **third-party libraries**. Application modules initialize **pylabhub
+   facilities**. The distinction is conceptual, not enforced.
+4. `LifecycleGuard` in `main()` lists the **leaf modules** needed by that
+   binary. Dependencies are pulled in transitively:
+   - SHM-only binary: `DataBlockModule` → pulls CryptoUtils → pulls Logger
+   - ZMQ-only binary: `ZMQContextModule` → pulls Logger
+   - Full role binary: `DataBlockModule` + `ZMQContextModule` + `FileLock` + ...
+
+```mermaid
+%%{init: {'theme': 'dark'}}%%
+graph BT
+    LOG["Logger<br/>(root — no deps)"]
+    CRYPTO["CryptoUtils<br/>(sodium_init)"]
+    ZMQ["ZMQContext<br/>(zmq::context_t)"]
+    DB["DataBlock<br/>(SHM facility)"]
+    FL["FileLock"]
+    JC["JsonConfig"]
+
+    CRYPTO --> LOG
+    ZMQ --> LOG
+    DB --> LOG
+    DB --> CRYPTO
+    FL --> LOG
+    JC --> LOG
+
+    style LOG fill:#4a4a1a,stroke:#888
+    style CRYPTO fill:#3a1a3a,stroke:#888
+    style ZMQ fill:#1a3a3a,stroke:#888
+    style DB fill:#1a3a1a,stroke:#888
+    style FL fill:#2a2a2a,stroke:#888
+    style JC fill:#2a2a2a,stroke:#888
+```
+
+Note: DataBlock depends on CryptoUtils (for SHM name hashing) but **not** on
+ZMQContext. A pure-SHM process never initializes ZMQ. Similarly, ZMQContext
+does not depend on CryptoUtils — CurveZMQ key handling is done by individual
+facilities (BrokerRequestComm, BrokerService) at their own level, not by the
+context.
+
+#### Module Dependency Diagram (Full System)
 
 ```mermaid
 %%{init: {'theme': 'dark'}}%%
@@ -3355,8 +3414,8 @@ hub::Queue (abstract)
 
 **Queue does not carry**:
 
-- Control plane — no HELLO/BYE, no REG/DISC, no broker protocol
-- Message plane — no Messenger, no `send()` / `broadcast()`
+- Control plane — no REG/DISC, no broker protocol
+- Message plane — no band messaging, no inbox
 - Timing plane — loop timing is configured at the role level via `LoopTimingParams`;
   queues store `configured_period_us` in ContextMetrics for RAII SlotIterator use
 
@@ -3420,7 +3479,7 @@ selection rules that govern the bridge Processor.
 | `src/include/utils/hub_shm_queue.hpp` | `ShmQueue` — SHM Queue implementation |
 | `src/include/utils/hub_zmq_queue.hpp` | `ZmqQueue` — ZMQ Queue implementation |
 | `src/include/utils/hub_processor.hpp` | `hub::Processor` — type-erased handler loop |
-| `src/include/utils/messenger.hpp` | `Messenger` — ZMQ sockets, heartbeat, registration |
+| `src/include/utils/messenger.hpp` | `Messenger` — **OBSOLETE**, replaced by `BrokerRequestComm` |
 | `src/include/utils/broker_service.hpp` | `BrokerService` — channel registry, policy enforcement |
 | `src/include/utils/schema_blds.hpp` | BLDS generation, `SchemaRegistry<T>` traits |
 | `src/include/utils/schema_library.hpp` | `SchemaLibrary` — named schema file lookup |
@@ -3432,8 +3491,8 @@ selection rules that govern the bridge Processor.
 | `src/utils/shm/data_block.cpp` | SHM create/attach, slot acquire/release, DRAINING |
 | `src/utils/shm/data_block_mutex.cpp` | `DataBlockMutex` (OS-backed, control zone) |
 | `src/utils/shm/shared_memory_spinlock.cpp` | `SharedSpinLock` (atomic PID-based, data slots) |
-| `src/utils/ipc/messenger.cpp` | Messenger protocol, ZMQ socket management |
-| `src/utils/ipc/messenger_protocol.cpp` | Frame parsing, REG/DISC/HEARTBEAT |
+| `src/utils/ipc/messenger.cpp` | **OBSOLETE** — replaced by `BrokerRequestComm` |
+| `src/utils/ipc/messenger_protocol.cpp` | **OBSOLETE** — replaced by `BrokerRequestComm` |
 | `src/utils/ipc/broker_service.cpp` | Broker main loop, channel registry, policy |
 | `src/utils/hub/hub_processor.cpp` | Processor handler loop, hot-swap |
 | `src/utils/hub/hub_shm_queue.cpp` | ShmQueue DataBlock wrapper |

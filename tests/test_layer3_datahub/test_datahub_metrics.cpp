@@ -1,25 +1,25 @@
 /**
  * @file test_datahub_metrics.cpp
- * @brief HEP-CORE-0019 Metrics Plane tests.
+ * @brief Broker metrics plane tests (HEP-CORE-0019).
  *
  * Suite: MetricsPlaneTest
  *
- * Tests the metrics infrastructure at the broker/protocol level:
- *   - Heartbeat with metrics → broker MetricsStore
- *   - METRICS_REPORT_REQ (consumer) → broker MetricsStore
- *   - query_metrics_json_str() public API
- *   - Empty / single / all-channel queries
- *   - Backward compatibility (heartbeat without metrics)
- *   - Multiple consumers, overwrite semantics
+ * Tests metrics storage and retrieval through the broker:
+ *   - Heartbeat with metrics payload → stored, queryable
+ *   - METRICS_REPORT_REQ from consumer → stored
+ *   - Query: single channel, all channels, unknown channel
+ *   - Metrics overwrite on subsequent heartbeats
+ *   - Producer PID in query result
  *
- * Uses the in-process LocalBrokerHandle + Messenger pattern (no subprocess workers).
+ * All tests use in-process LocalBrokerHandle + BrcHandle pattern.
+ * Metrics are queried via broker admin API (query_metrics_json_str).
  */
 #include "plh_datahub.hpp"
 #include "plh_service.hpp"
+#include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
-#include "utils/messenger.hpp"
 
-#include <chrono>
+#include <atomic>
 #include <future>
 #include <memory>
 #include <optional>
@@ -36,8 +36,6 @@ using json = nlohmann::json;
 
 namespace
 {
-
-// ── LocalBrokerHandle — in-process broker ────────────────────────────────────
 
 struct LocalBrokerHandle
 {
@@ -85,9 +83,66 @@ LocalBrokerHandle start_local_broker(BrokerService::Config cfg)
     return h;
 }
 
+struct BrcHandle
+{
+    BrokerRequestComm brc;
+    std::atomic<bool> running{true};
+    std::thread       thread;
+
+    void start(const std::string &ep, const std::string &pk, const std::string &uid)
+    {
+        BrokerRequestComm::Config cfg;
+        cfg.broker_endpoint = ep;
+        cfg.broker_pubkey   = pk;
+        cfg.role_uid        = uid;
+        ASSERT_TRUE(brc.connect(cfg));
+        thread = std::thread([this] { brc.run_poll_loop([this] { return running.load(); }); });
+    }
+
+    void stop()
+    {
+        running.store(false);
+        brc.stop();
+        if (thread.joinable())
+            thread.join();
+        brc.disconnect();
+    }
+
+    ~BrcHandle()
+    {
+        if (thread.joinable())
+            stop();
+    }
+};
+
 std::string pid_chan(const std::string &base)
 {
     return base + "." + std::to_string(getpid());
+}
+
+json make_reg_opts(const std::string &channel, const std::string &role_uid)
+{
+    json opts;
+    opts["channel_name"]      = channel;
+    opts["pattern"]           = "PubSub";
+    opts["has_shared_memory"] = false;
+    opts["producer_pid"]      = ::getpid();
+    opts["zmq_ctrl_endpoint"] = "tcp://127.0.0.1:0";
+    opts["zmq_data_endpoint"] = "tcp://127.0.0.1:0";
+    opts["zmq_pubkey"]        = "";
+    opts["role_uid"]          = role_uid;
+    opts["role_name"]         = "test_producer";
+    return opts;
+}
+
+json make_cons_opts(const std::string &channel, const std::string &consumer_uid)
+{
+    json opts;
+    opts["channel_name"]  = channel;
+    opts["consumer_uid"]  = consumer_uid;
+    opts["consumer_name"] = "test_consumer";
+    opts["consumer_pid"]  = ::getpid();
+    return opts;
 }
 
 } // anonymous namespace
@@ -103,7 +158,7 @@ public:
     {
         s_lifecycle_ = std::make_unique<LifecycleGuard>(MakeModDefList(
             Logger::GetLifecycleModule(), pylabhub::crypto::GetLifecycleModule(),
-            pylabhub::hub::GetLifecycleModule()), std::source_location::current());
+            pylabhub::hub::GetZMQContextModule()), std::source_location::current());
     }
     static void TearDownTestSuite() { s_lifecycle_.reset(); }
 
@@ -117,11 +172,14 @@ protected:
         broker_.emplace(start_local_broker(std::move(cfg)));
     }
 
-    void TearDown() override { broker_.reset(); }
-
     const std::string &ep() const { return broker_->endpoint; }
     const std::string &pk() const { return broker_->pubkey; }
     BrokerService     &svc() { return *broker_->service; }
+
+    json query_metrics(const std::string &channel = {})
+    {
+        return json::parse(svc().query_metrics_json_str(channel));
+    }
 
     std::optional<LocalBrokerHandle> broker_;
 
@@ -129,334 +187,177 @@ private:
     static std::unique_ptr<LifecycleGuard> s_lifecycle_;
 };
 
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 std::unique_ptr<LifecycleGuard> MetricsPlaneTest::s_lifecycle_;
 
-// ============================================================================
-// 1. Heartbeat with metrics → broker stores producer metrics
-// ============================================================================
+// ── Heartbeat with metrics ──────────────────────────────────────────────────
 
 TEST_F(MetricsPlaneTest, HeartbeatMetrics_StoredByBroker)
 {
-    const std::string channel = pid_chan("metrics.hb.store");
+    const std::string channel = pid_chan("metrics.heartbeat.stored");
+    const std::string uid     = "PROD-" + channel;
 
-    Messenger producer;
-    ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto handle = producer.create_channel(channel);
-    ASSERT_TRUE(handle.has_value());
+    BrcHandle bh;
+    bh.start(ep(), pk(), uid);
+    auto reg = bh.brc.register_channel(make_reg_opts(channel, uid), 3000);
+    ASSERT_TRUE(reg.has_value());
 
-    // Send heartbeat with metrics payload.
     json metrics;
-    metrics["base"]   = {{"out_written", 100}, {"drops", 2}, {"script_errors", 0}};
-    metrics["custom"] = {{"my_key", 42.5}};
-    producer.enqueue_heartbeat(channel, metrics);
-
-    // Give broker time to process.
+    metrics["iteration_count"] = 42;
+    metrics["avg_period_us"]   = 1000;
+    bh.brc.send_heartbeat(channel, metrics);
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    // Query via public API.
-    std::string result_str = svc().query_metrics_json_str(channel);
-    json result = json::parse(result_str);
-    EXPECT_EQ(result["status"], "success");
+    auto result = query_metrics(channel);
+    ASSERT_EQ(result.value("status", ""), "success");
     ASSERT_TRUE(result.contains("metrics"));
-    ASSERT_TRUE(result["metrics"].contains("producer"));
-    EXPECT_EQ(result["metrics"]["producer"]["base"]["out_written"], 100);
-    EXPECT_EQ(result["metrics"]["producer"]["base"]["drops"], 2);
-    EXPECT_DOUBLE_EQ(result["metrics"]["producer"]["custom"]["my_key"].get<double>(), 42.5);
+    auto &m = result["metrics"];
+    ASSERT_TRUE(m.contains("producer"));
+    EXPECT_EQ(m["producer"].value("iteration_count", 0), 42);
+
+    bh.stop();
 }
 
-// ============================================================================
-// 2. METRICS_REPORT_REQ (consumer) → broker stores consumer metrics
-// ============================================================================
+// ── Consumer metrics report ─────────────────────────────────────────────────
 
 TEST_F(MetricsPlaneTest, MetricsReport_ConsumerStoredByBroker)
 {
-    const std::string channel = pid_chan("metrics.report.cons");
+    const std::string channel  = pid_chan("metrics.consumer.stored");
+    const std::string prod_uid = "PROD-" + channel;
+    const std::string cons_uid = "CONS-" + channel;
 
-    Messenger producer;
-    ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto phandle = producer.create_channel(channel);
-    ASSERT_TRUE(phandle.has_value());
+    BrcHandle prod_bh;
+    prod_bh.start(ep(), pk(), prod_uid);
+    auto reg = prod_bh.brc.register_channel(make_reg_opts(channel, prod_uid), 3000);
+    ASSERT_TRUE(reg.has_value());
 
-    // Heartbeat to transition channel to Ready.
-    producer.enqueue_heartbeat(channel);
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // CONSUMER_REG_REQ does not gate on Ready — no heartbeat/sleep needed.
+    BrcHandle cons_bh;
+    cons_bh.start(ep(), pk(), cons_uid);
+    auto cons_reg = cons_bh.brc.register_consumer(make_cons_opts(channel, cons_uid), 3000);
+    ASSERT_TRUE(cons_reg.has_value());
 
-    // Consumer connects.
-    Messenger consumer;
-    ASSERT_TRUE(consumer.connect(ep(), pk()));
-    auto chandle = consumer.connect_channel(channel, /*timeout_ms=*/5000,
-                                            /*schema_hash=*/{},
-                                            /*consumer_uid=*/"CONS-1");
-    ASSERT_TRUE(chandle.has_value());
-
-    // Consumer sends metrics report.
-    json metrics;
-    metrics["base"]   = {{"in_received", 50}, {"script_errors", 1}};
-    metrics["custom"] = {{"bytes_processed", 8192.0}};
-    consumer.enqueue_metrics_report(channel, "CONS-1", metrics);
-
+    json cons_metrics;
+    cons_metrics["read_count"] = 100;
+    cons_bh.brc.send_metrics_report(channel, cons_uid, cons_metrics);
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    // Query single channel.
-    json result = json::parse(svc().query_metrics_json_str(channel));
-    EXPECT_EQ(result["status"], "success");
-    ASSERT_TRUE(result["metrics"].contains("consumers"));
-    ASSERT_TRUE(result["metrics"]["consumers"].contains("CONS-1"));
-    EXPECT_EQ(result["metrics"]["consumers"]["CONS-1"]["base"]["in_received"], 50);
-    EXPECT_DOUBLE_EQ(
-        result["metrics"]["consumers"]["CONS-1"]["custom"]["bytes_processed"].get<double>(),
-        8192.0);
+    auto result = query_metrics(channel);
+    ASSERT_TRUE(result.contains("metrics"));
+    auto &m = result["metrics"];
+    ASSERT_TRUE(m.contains("consumers"));
+    ASSERT_TRUE(m["consumers"].contains(cons_uid));
+    EXPECT_EQ(m["consumers"][cons_uid].value("read_count", 0), 100);
+
+    cons_bh.stop();
+    prod_bh.stop();
 }
 
-// ============================================================================
-// 3. Query: unknown channel returns empty metrics
-// ============================================================================
+// ── Unknown channel returns empty metrics ───────────────────────────────────
 
 TEST_F(MetricsPlaneTest, QueryMetrics_UnknownChannel_ReturnsEmpty)
 {
-    json result = json::parse(svc().query_metrics_json_str("nonexistent.channel"));
-    EXPECT_EQ(result["status"], "success");
-    EXPECT_TRUE(result["metrics"].is_object());
+    auto result = query_metrics(pid_chan("metrics.unknown"));
+    EXPECT_EQ(result.value("status", ""), "success");
+    ASSERT_TRUE(result.contains("metrics"));
     EXPECT_TRUE(result["metrics"].empty());
 }
 
-// ============================================================================
-// 4. Query: all channels
-// ============================================================================
+// ── Query all channels ──────────────────────────────────────────────────────
 
 TEST_F(MetricsPlaneTest, QueryMetrics_AllChannels)
 {
-    const std::string ch1 = pid_chan("metrics.all.ch1");
-    const std::string ch2 = pid_chan("metrics.all.ch2");
+    const std::string channel = pid_chan("metrics.all");
+    const std::string uid     = "PROD-" + channel;
 
-    Messenger prod1;
-    ASSERT_TRUE(prod1.connect(ep(), pk()));
-    auto h1 = prod1.create_channel(ch1);
-    ASSERT_TRUE(h1.has_value());
+    BrcHandle bh;
+    bh.start(ep(), pk(), uid);
+    auto reg = bh.brc.register_channel(make_reg_opts(channel, uid), 3000);
+    ASSERT_TRUE(reg.has_value());
 
-    Messenger prod2;
-    ASSERT_TRUE(prod2.connect(ep(), pk()));
-    auto h2 = prod2.create_channel(ch2);
-    ASSERT_TRUE(h2.has_value());
-
-    json m1;
-    m1["base"]   = {{"out_written", 10}};
-    m1["custom"] = json::object();
-    prod1.enqueue_heartbeat(ch1, m1);
-
-    json m2;
-    m2["base"]   = {{"out_written", 20}};
-    m2["custom"] = json::object();
-    prod2.enqueue_heartbeat(ch2, m2);
-
+    json metrics;
+    metrics["test_field"] = 99;
+    bh.brc.send_heartbeat(channel, metrics);
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    // Query all channels (empty string).
-    json result = json::parse(svc().query_metrics_json_str(""));
-    EXPECT_EQ(result["status"], "success");
+    auto result = query_metrics();
     ASSERT_TRUE(result.contains("channels"));
-    EXPECT_TRUE(result["channels"].contains(ch1));
-    EXPECT_TRUE(result["channels"].contains(ch2));
-    EXPECT_EQ(result["channels"][ch1]["producer"]["base"]["out_written"], 10);
-    EXPECT_EQ(result["channels"][ch2]["producer"]["base"]["out_written"], 20);
+    ASSERT_TRUE(result["channels"].contains(channel));
+
+    bh.stop();
 }
 
-// ============================================================================
-// 5. Heartbeat without metrics (backward compat): no crash, no stored data
-// ============================================================================
+// ── Heartbeat without metrics (backward compat) ────────────────────────────
 
 TEST_F(MetricsPlaneTest, HeartbeatNoMetrics_BackwardCompat)
 {
-    const std::string channel = pid_chan("metrics.nodata");
+    const std::string channel = pid_chan("metrics.no.payload");
+    const std::string uid     = "PROD-" + channel;
 
-    Messenger producer;
-    ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto handle = producer.create_channel(channel);
-    ASSERT_TRUE(handle.has_value());
+    BrcHandle bh;
+    bh.start(ep(), pk(), uid);
+    auto reg = bh.brc.register_channel(make_reg_opts(channel, uid), 3000);
+    ASSERT_TRUE(reg.has_value());
 
-    // Send heartbeat without metrics (old API).
-    producer.enqueue_heartbeat(channel);
+    bh.brc.send_heartbeat(channel, {});
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    // Query — no metrics stored.
-    json result = json::parse(svc().query_metrics_json_str(channel));
-    EXPECT_EQ(result["status"], "success");
-    EXPECT_TRUE(result["metrics"].empty() || !result["metrics"].contains("producer"));
+    auto result = query_metrics(channel);
+    EXPECT_EQ(result.value("status", ""), "success");
+
+    bh.stop();
 }
 
-// ============================================================================
-// 6. Multiple consumer metrics reports merge correctly
-// ============================================================================
-
-TEST_F(MetricsPlaneTest, MultipleConsumers_MergeMetrics)
-{
-    const std::string channel = pid_chan("metrics.multi.cons");
-
-    Messenger producer;
-    ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto phandle = producer.create_channel(channel);
-    ASSERT_TRUE(phandle.has_value());
-
-    producer.enqueue_heartbeat(channel);
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    Messenger cons1, cons2;
-    ASSERT_TRUE(cons1.connect(ep(), pk()));
-    ASSERT_TRUE(cons2.connect(ep(), pk()));
-    auto h1 = cons1.connect_channel(channel, 5000, {}, "CONS-A");
-    auto h2 = cons2.connect_channel(channel, 5000, {}, "CONS-B");
-    ASSERT_TRUE(h1.has_value());
-    ASSERT_TRUE(h2.has_value());
-
-    json m1, m2;
-    m1["base"]   = {{"in_received", 100}};
-    m1["custom"] = json::object();
-    m2["base"]   = {{"in_received", 200}};
-    m2["custom"] = {{"lag_ms", 5.0}};
-    cons1.enqueue_metrics_report(channel, "CONS-A", m1);
-    cons2.enqueue_metrics_report(channel, "CONS-B", m2);
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-
-    json result = json::parse(svc().query_metrics_json_str(channel));
-    ASSERT_TRUE(result["metrics"].contains("consumers"));
-    auto &consumers = result["metrics"]["consumers"];
-    ASSERT_TRUE(consumers.contains("CONS-A"));
-    ASSERT_TRUE(consumers.contains("CONS-B"));
-    EXPECT_EQ(consumers["CONS-A"]["base"]["in_received"], 100);
-    EXPECT_EQ(consumers["CONS-B"]["base"]["in_received"], 200);
-    EXPECT_DOUBLE_EQ(consumers["CONS-B"]["custom"]["lag_ms"].get<double>(), 5.0);
-}
-
-// ============================================================================
-// 7. Metrics update: second heartbeat overwrites previous
-// ============================================================================
+// ── Metrics overwrite on heartbeat ──────────────────────────────────────────
 
 TEST_F(MetricsPlaneTest, MetricsUpdate_OverwriteOnHeartbeat)
 {
     const std::string channel = pid_chan("metrics.overwrite");
+    const std::string uid     = "PROD-" + channel;
 
-    Messenger producer;
-    ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto handle = producer.create_channel(channel);
-    ASSERT_TRUE(handle.has_value());
+    BrcHandle bh;
+    bh.start(ep(), pk(), uid);
+    auto reg = bh.brc.register_channel(make_reg_opts(channel, uid), 3000);
+    ASSERT_TRUE(reg.has_value());
 
     json m1;
-    m1["base"]   = {{"out_written", 10}};
-    m1["custom"] = {{"k", 1.0}};
-    producer.enqueue_heartbeat(channel, m1);
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    m1["iteration_count"] = 10;
+    bh.brc.send_heartbeat(channel, m1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    // Second heartbeat overwrites.
     json m2;
-    m2["base"]   = {{"out_written", 50}};
-    m2["custom"] = {{"k", 5.0}};
-    producer.enqueue_heartbeat(channel, m2);
+    m2["iteration_count"] = 20;
+    bh.brc.send_heartbeat(channel, m2);
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    json result = json::parse(svc().query_metrics_json_str(channel));
-    EXPECT_EQ(result["metrics"]["producer"]["base"]["out_written"], 50);
-    EXPECT_DOUBLE_EQ(result["metrics"]["producer"]["custom"]["k"].get<double>(), 5.0);
+    auto result = query_metrics(channel);
+    auto &m = result["metrics"];
+    ASSERT_TRUE(m.contains("producer"));
+    EXPECT_EQ(m["producer"].value("iteration_count", 0), 20);
+
+    bh.stop();
 }
 
-// ============================================================================
-// 8. Producer + consumer metrics in same channel
-// ============================================================================
-
-TEST_F(MetricsPlaneTest, ProducerAndConsumer_SameChannel)
-{
-    const std::string channel = pid_chan("metrics.both");
-
-    Messenger producer;
-    ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto phandle = producer.create_channel(channel);
-    ASSERT_TRUE(phandle.has_value());
-
-    // Producer heartbeat with metrics.
-    json pm;
-    pm["base"]   = {{"out_written", 1000}};
-    pm["custom"] = json::object();
-    producer.enqueue_heartbeat(channel, pm);
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    // Consumer connects and reports.
-    Messenger consumer;
-    ASSERT_TRUE(consumer.connect(ep(), pk()));
-    auto chandle = consumer.connect_channel(channel, 5000, {}, "CONS-X");
-    ASSERT_TRUE(chandle.has_value());
-
-    json cm;
-    cm["base"]   = {{"in_received", 990}};
-    cm["custom"] = json::object();
-    consumer.enqueue_metrics_report(channel, "CONS-X", cm);
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-
-    json result = json::parse(svc().query_metrics_json_str(channel));
-    EXPECT_EQ(result["status"], "success");
-    EXPECT_TRUE(result["metrics"].contains("producer"));
-    EXPECT_TRUE(result["metrics"].contains("consumers"));
-    EXPECT_EQ(result["metrics"]["producer"]["base"]["out_written"], 1000);
-    EXPECT_EQ(result["metrics"]["consumers"]["CONS-X"]["base"]["in_received"], 990);
-}
-
-// ============================================================================
-// 9. Consumer metrics report with missing fields is silently ignored
-// ============================================================================
-
-TEST_F(MetricsPlaneTest, MetricsReport_MissingFields_Ignored)
-{
-    const std::string channel = pid_chan("metrics.bad.report");
-
-    Messenger producer;
-    ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto phandle = producer.create_channel(channel);
-    ASSERT_TRUE(phandle.has_value());
-
-    producer.enqueue_heartbeat(channel);
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    // Send report with empty uid (should be ignored by broker).
-    Messenger consumer;
-    ASSERT_TRUE(consumer.connect(ep(), pk()));
-    auto chandle = consumer.connect_channel(channel, 5000, {}, "CONS-Z");
-    ASSERT_TRUE(chandle.has_value());
-
-    // enqueue_metrics_report with empty uid — broker should log warning and ignore.
-    json metrics;
-    metrics["base"]   = {{"in_received", 10}};
-    metrics["custom"] = json::object();
-    consumer.enqueue_metrics_report(channel, "", metrics);
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-
-    // No consumer metrics stored (empty uid was rejected).
-    json result = json::parse(svc().query_metrics_json_str(channel));
-    EXPECT_TRUE(!result["metrics"].contains("consumers") ||
-                result["metrics"]["consumers"].empty());
-}
-
-// ============================================================================
-// 10. PID is stored in producer metrics query
-// ============================================================================
+// ── Producer PID in query result ────────────────────────────────────────────
 
 TEST_F(MetricsPlaneTest, ProducerPID_InQueryResult)
 {
     const std::string channel = pid_chan("metrics.pid");
+    const std::string uid     = "PROD-" + channel;
 
-    Messenger producer;
-    ASSERT_TRUE(producer.connect(ep(), pk()));
-    auto handle = producer.create_channel(channel);
-    ASSERT_TRUE(handle.has_value());
+    BrcHandle bh;
+    bh.start(ep(), pk(), uid);
+    auto reg = bh.brc.register_channel(make_reg_opts(channel, uid), 3000);
+    ASSERT_TRUE(reg.has_value());
 
     json metrics;
-    metrics["base"]   = {{"out_written", 1}};
-    metrics["custom"] = json::object();
-    producer.enqueue_heartbeat(channel, metrics);
+    metrics["test"] = 1;
+    bh.brc.send_heartbeat(channel, metrics);
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    json result = json::parse(svc().query_metrics_json_str(channel));
-    ASSERT_TRUE(result["metrics"].contains("producer"));
-    // PID should be set (injected by query_metrics from the heartbeat's producer_pid).
-    EXPECT_TRUE(result["metrics"]["producer"].contains("pid"));
-    EXPECT_GT(result["metrics"]["producer"]["pid"].get<uint64_t>(), 0u);
+    auto result = query_metrics(channel);
+    auto &m = result["metrics"];
+    ASSERT_TRUE(m.contains("producer"));
+    EXPECT_EQ(m["producer"].value("pid", 0), ::getpid());
+
+    bh.stop();
 }

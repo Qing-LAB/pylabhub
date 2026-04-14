@@ -20,9 +20,7 @@ namespace pylabhub::hub
 
 /**
  * @brief Returns the global ZeroMQ context.
- * @pre Must be called only after the ZMQ context has been initialized, either via
- *      GetZMQContextModule() in a LifecycleGuard, or via GetLifecycleModule() (DataExchangeHub),
- *      which initializes the context as part of its own startup.
+ * @pre Must be called only after GetZMQContextModule() has been initialized via LifecycleGuard.
  */
 [[nodiscard]] PYLABHUB_UTILS_EXPORT zmq::context_t &get_zmq_context();
 
@@ -40,10 +38,9 @@ PYLABHUB_UTILS_EXPORT void zmq_context_startup();
 PYLABHUB_UTILS_EXPORT void zmq_context_shutdown();
 
 /**
- * @brief Factory function to get the ModuleDef for the ZMQ Context lifecycle module.
- * Optional: use this when you need ZMQ context management independent of DataExchangeHub.
- * DataExchangeHub (GetLifecycleModule) initializes the ZMQ context automatically.
- * @return A ModuleDef that can be registered with the LifecycleManager.
+ * @brief Lifecycle module for the ZMQ library (zmq::context_t).
+ * Must be included in LifecycleGuard for any code that creates ZMQ sockets.
+ * Depends on: Logger.
  */
 PYLABHUB_UTILS_EXPORT pylabhub::utils::ModuleDef GetZMQContextModule();
 

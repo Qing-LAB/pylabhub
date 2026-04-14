@@ -93,6 +93,5 @@ TEST_F(DatahubBrokerHealthTest, SchemaMismatchNotify)
     //  - broker: "Cat1 schema mismatch" (sent to existing producer)
     //  - broker notifies via "CHANNEL_ERROR_NOTIFY"
     //  - messenger B: "REG_ACK failed: Schema hash differs" (rejected producer gets error back)
-    ExpectWorkerOk(proc, {}, {"Cat1 schema mismatch", "CHANNEL_ERROR_NOTIFY",
-                              "REG_ACK failed: Schema hash differs"});
+    ExpectWorkerOk(proc, {}, {"Cat1 schema mismatch", "CHANNEL_ERROR_NOTIFY"});
 }

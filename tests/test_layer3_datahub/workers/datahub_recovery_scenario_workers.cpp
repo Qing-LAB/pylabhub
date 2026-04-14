@@ -37,7 +37,7 @@ namespace pylabhub::tests::worker::recovery_scenarios
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetLifecycleModule(); }
+static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 // INT32_MAX as a dead PID — guaranteed not to be a live process on any Linux system.
 static constexpr uint64_t kDeadPid = 2147483647ULL;

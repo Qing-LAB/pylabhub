@@ -3,11 +3,13 @@
 | Property      | Value                                                              |
 |---------------|--------------------------------------------------------------------|
 | **HEP**       | `HEP-CORE-0023`                                                    |
-| **Title**     | Startup Coordination — Deferred DISC_ACK and Role Presence Waiting |
-| **Status**    | Phase 1 implemented (2026-03-11) — Phase 2 (deferred DISC_ACK) pending |
+| **Title**     | Startup Coordination — Role State Machine and Presence Waiting     |
+| **Status**    | Phase 1 implemented (2026-03-11); Phase 2 redesigned (2026-04-14)  |
 | **Created**   | 2026-03-10                                                         |
+| **Revised**   | 2026-04-14: Phase 2 replaced "Deferred DISC_ACK" (broker-queued    |
+|               | replies) with a role state-machine + three-response DISC_REQ model |
 | **Area**      | Broker Protocol / Script Hosts / Config                            |
-| **Depends on**| HEP-CORE-0007 (Protocol), HEP-CORE-0015 (Processor)               |
+| **Depends on**| HEP-CORE-0007 (Protocol), HEP-CORE-0015 (Processor)                |
 
 ---
 
@@ -16,79 +18,231 @@
 When a pipeline starts, roles connect to the broker in arbitrary order. Without
 coordination, a consumer may discover a channel before the producer has registered it
 (CHANNEL_NOT_FOUND), or a processor may begin processing before its upstream producer
-is ready. Clients must either poll/retry or have the broker manage readiness.
+is ready.
 
-There are two complementary coordination mechanisms:
+Two complementary coordination mechanisms:
 
-1. **Deferred DISC_ACK** (broker-managed): The broker holds a consumer's DISC_REQ until
-   the upstream producer registers. No config needed; transparent to all clients.
+1. **Role state machine with three-response DISC_REQ** (broker-managed, §2):
+   The broker maintains per-role status (Pending / Ready). DISC_REQ always returns
+   the current state; clients retry on `DISC_PENDING`. No broker-side queuing of
+   pending requests.
 
-2. **wait_for_roles** (config-managed): A role explicitly declares which other roles it
-   must see registered before it begins its processing loop. Uses `ROLE_REGISTERED_NOTIFY`.
+2. **`wait_for_roles`** (config-managed, §3+): A role explicitly declares which other
+   roles it must see registered before it begins its processing loop. Uses
+   `ROLE_REGISTERED_NOTIFY`.
 
 ---
 
-## 2. Deferred DISC_ACK Protocol
+## 2. Role State Machine + Three-Response DISC_REQ
 
-### 2.1 Behavior
+### 2.1 Role Lifecycle States
 
-When a consumer sends `DISC_REQ` for a channel that does not yet exist (or exists in
-`PendingReady` state), the broker **defers** the reply instead of sending an immediate error:
+Every registered role (producer/consumer/processor) has a well-defined status in
+the broker's registry. Transitions:
 
-```
-Consumer                    Broker                      Producer
-    |                          |                             |
-    |── DISC_REQ ─────────────>|  (channel not found)        |
-    |                          |  [enqueue in pending_disc_] |
-    |                          |                             |
-    |                          |<── REG_REQ ─────────────────|
-    |                          |── REG_ACK ─────────────────>|
-    |                          |                             |
-    |                          |  [resolve pending_disc_]    |
-    |<── DISC_ACK ─────────────|                             |
-    |── CONSUMER_REG_REQ ─────>|                             |
-    |<── CONSUMER_REG_ACK ─────|                             |
-    |                          |                             |
+```mermaid
+stateDiagram-v2
+    [*] --> Pending : REG_REQ accepted
+    Pending --> Ready : first HEARTBEAT_REQ received
+    Ready --> Ready : HEARTBEAT_REQ (refresh last_heartbeat)
+    Ready --> Pending : no heartbeat for role_ready_timeout
+    Pending --> [*] : no heartbeat for role_pending_timeout<br/>(deregister + CHANNEL_CLOSING_NOTIFY)
+    Ready --> [*] : DEREG_REQ accepted
+    Pending --> [*] : DEREG_REQ accepted
 ```
 
-### 2.2 Deferral Timeout
+Precise transitions:
+| Trigger                               | From       | To        |
+|---------------------------------------|------------|-----------|
+| `REG_REQ` accepted                    | —          | Pending   |
+| `HEARTBEAT_REQ` received              | Pending    | Ready     |
+| `HEARTBEAT_REQ` received              | Ready      | Ready (refresh last_heartbeat) |
+| No heartbeat for `role_timeout`       | Ready      | Pending   |
+| No heartbeat for `role_timeout * N`   | Pending    | deregistered + CHANNEL_CLOSING_NOTIFY |
+| `DEREG_REQ` accepted                  | any        | deregistered |
 
-Pending DISC_REQ entries have a configurable timeout (default 30 s). If the producer does
-not register within the timeout, the broker sends an ERROR reply:
-```
-{"error": "CHANNEL_NOT_FOUND", "message": "channel not registered after 30000ms"}
+**Rationale:**
+- `Ready → Pending` on timeout keeps the role alive (gives it a chance to recover
+  from transient pauses) while correctly advertising it as "not currently responsive"
+  to new consumers.
+- `Pending → deregistered` after extended absence is the cleanup path for genuinely
+  dead roles.
+
+### 2.2 Three-Response DISC_REQ
+
+When a consumer sends `DISC_REQ`, the broker **always replies immediately** with
+one of three well-defined responses based on the current role state:
+
+```mermaid
+sequenceDiagram
+    participant C as Consumer
+    participant B as Broker
+    participant P as Producer
+
+    C->>B: DISC_REQ
+    B-->>C: DISC_PENDING<br/>(producer not registered)
+    Note over C: wait retry_interval_ms
+
+    P->>B: REG_REQ
+    B-->>P: REG_ACK
+    Note over B: producer → Pending
+
+    C->>B: DISC_REQ (retry)
+    B-->>C: DISC_PENDING<br/>(awaiting first heartbeat)
+    Note over C: wait retry_interval_ms
+
+    P->>B: HEARTBEAT_REQ
+    Note over B: producer → Ready
+
+    C->>B: DISC_REQ (retry)
+    B-->>C: DISC_ACK (connection info)
+
+    C->>B: CONSUMER_REG_REQ
+    B-->>C: CONSUMER_REG_ACK
 ```
 
-The client (`hub::Consumer` / `Messenger`) propagates this as an exception from
-`discover_producer()`. The host process logs the error and terminates.
+See HEP-CORE-0007 §DISC_REQ for the precise payload of each response variant.
 
 ### 2.3 Chain Resolution (Multi-hop)
 
-Deferred DISC_ACK resolves independently on each hub. For a chain
+Each hub independently runs the state machine. For a chain
 `Producer → Hub A → Processor-A → Hub B → Processor-B → Hub C → Consumer`:
 
-1. Processor-A sends DISC_REQ to Hub A. Hub A defers until Producer registers.
-2. Producer registers on Hub A → Hub A resolves Processor-A's DISC_ACK.
-3. Processor-A registers its output channel on Hub B (CONSUMER_REG_REQ on Hub A,
-   REG_REQ on Hub B). This is independent — no deadlock.
-4. Processor-B sends DISC_REQ to Hub B. Hub B defers until Processor-A registers.
-5. When Processor-A completes its Hub B REG_REQ → Hub B resolves Processor-B's DISC_ACK.
+1. Processor-A sends DISC_REQ to Hub A → `DISC_PENDING` until Producer registers and heartbeats.
+2. Producer registers on Hub A, sends first heartbeat → Processor-A's next retry succeeds.
+3. Processor-A registers output on Hub B (PENDING until its first heartbeat there).
+4. Processor-B sends DISC_REQ to Hub B → `DISC_PENDING` until Processor-A is Ready on Hub B.
+5. And so on down the chain.
 
-No `wait_for_roles` is needed for direct adjacency. Deferred DISC_ACK handles it.
+No special coordination is needed. Each hop converges independently via retry.
 
-### 2.4 Broker Configuration
+### 2.4 Client Retry Policy
+
+`BrokerRequestComm::discover_channel(channel, timeout_ms)` implements the retry loop:
+- On `DISC_PENDING`: wait `retry_interval_ms` (default 100ms), resend DISC_REQ, up to
+  `timeout_ms` total.
+- On `DISC_ACK`: return success immediately.
+- On `CHANNEL_NOT_FOUND`: retry (producer may register later) up to `timeout_ms`.
+- On overall `timeout_ms` expiry: return failure to caller.
+
+The retry logic is entirely client-side. The broker holds no state for pending DISC requests.
+
+### 2.5 Broker Configuration
 
 ```cpp
 struct BrokerService::Config {
-    std::chrono::milliseconds pending_disc_timeout{30000};  // deferral timeout
+    /// A role whose last_heartbeat is older than this is demoted Ready → Pending.
+    std::chrono::milliseconds role_ready_timeout{10000};
+
+    /// A role in Pending state with no heartbeat for this duration is deregistered
+    /// (and CHANNEL_CLOSING_NOTIFY is sent). Measured from initial registration
+    /// or from demotion to Pending.
+    std::chrono::milliseconds role_pending_timeout{30000};
 };
 ```
 
 ```json
 "broker": {
-  "pending_disc_timeout_ms": 30000
+  "role_ready_timeout_ms": 10000,
+  "role_pending_timeout_ms": 30000
 }
 ```
+
+### 2.6 Data Structure
+
+Single authoritative role map keyed by channel name, with a status field:
+
+```cpp
+struct RoleEntry {
+    // Identity
+    std::string channel_name;
+    std::string role_uid;
+    std::string role_name;
+    std::string role_type;           // "producer" | "consumer" | "processor"
+    uint64_t    pid;
+    std::string zmq_identity;        // ROUTER routing identity (for unsolicited sends)
+
+    // State
+    enum class Status { Pending, Ready };
+    Status                                status{Status::Pending};
+    std::chrono::steady_clock::time_point last_heartbeat;
+    std::chrono::steady_clock::time_point state_since;  // when current status began
+
+    // Connection metadata (data plane, filled at REG_REQ)
+    std::string data_transport;      // "shm" | "zmq"
+    std::string shm_name;
+    std::string zmq_node_endpoint;
+    std::string schema_hash;
+    // ... etc
+};
+
+/// Source of truth: one entry per registered role, keyed by channel (producer)
+/// or consumer_uid (consumer). Accessed only from the broker run() thread.
+std::unordered_map<std::string, RoleEntry> roles_;
+```
+
+**Rationale for a single map (vs. dual status-indexed maps):**
+- Single field update = atomic state transition. No risk of two maps diverging.
+- Heartbeat check iterates all roles once, evaluates status + last_heartbeat in place.
+- DISC_REQ handler does one lookup by channel name, reads status field, responds.
+- O(N) iteration on heartbeat check is bounded by role count, acceptable at typical scale
+  (tens to hundreds of roles per hub).
+
+**Future optimization — lazy status-indexed views** (deferred):
+
+At higher scale, the heartbeat check loop (O(N) every poll cycle) and repeated DISC_REQ
+traffic during startup can become hot. A lazy secondary index avoids full iteration
+for common queries:
+
+```cpp
+// Secondary indices — maintained alongside roles_ via a single helper.
+std::unordered_set<std::string> ready_uids_;    ///< Roles currently in Ready
+std::unordered_set<std::string> pending_uids_;  ///< Roles currently in Pending
+
+/// Single transition point — updates both the map entry and the indices atomically.
+/// All state changes MUST go through this helper.
+void transition_status(const std::string &uid, RoleEntry::Status new_status) {
+    auto it = roles_.find(uid);
+    if (it == roles_.end()) return;
+    if (it->second.status == new_status) return;
+    // Remove from old index
+    if (it->second.status == RoleEntry::Status::Ready)
+        ready_uids_.erase(uid);
+    else
+        pending_uids_.erase(uid);
+    // Update status + state_since
+    it->second.status      = new_status;
+    it->second.state_since = std::chrono::steady_clock::now();
+    // Insert into new index
+    if (new_status == RoleEntry::Status::Ready)
+        ready_uids_.insert(uid);
+    else
+        pending_uids_.insert(uid);
+}
+```
+
+**Invariants** (enforce via code review + unit tests):
+- Every entry in `roles_` must be in exactly one of `ready_uids_` / `pending_uids_`.
+- No entry may exist in an index without a matching entry in `roles_`.
+- All mutations must go through `transition_status()` — never assign `it->second.status`
+  directly.
+
+**When to add:** when profiling shows heartbeat-check iteration or status-filter queries
+dominate broker CPU time. Indicators: `heartbeat_check_us_avg > poll_interval / 4`, or
+N > 500 roles per hub. Until then, the simpler single-map design is preferred for
+robustness over speed.
+
+### 2.7 Migration from Prior Design (superseded 2026-04-14)
+
+The original Phase 2 design (Deferred DISC_ACK) had the broker queue unanswered DISC_REQs
+and reply later on role transition. Reasons for replacement:
+- **Unbounded broker memory** under request bursts (O(outstanding requests)).
+- **Hidden state**: "reply is queued" was not observable via any query.
+- **Broker-owned retry timeout** forced a single retry policy on all clients.
+- **Testing complexity**: race between queue drain and client timeout was flaky.
+
+The state-machine + three-response model addresses all four concerns. See Git history
+and archived design draft for the original rationale.
 
 ---
 

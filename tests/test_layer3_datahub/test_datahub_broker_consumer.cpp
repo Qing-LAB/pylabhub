@@ -3,7 +3,7 @@
  * @brief Consumer registration protocol integration tests.
  *
  * Tests the CONSUMER_REG_REQ / CONSUMER_DEREG_REQ broker protocol and the
- * consumer_count field in DISC_ACK, via both Messenger and raw ZMQ.
+ * consumer_count field in DISC_ACK, via both BrokerRequestComm and raw ZMQ.
  */
 #include "test_patterns.h"
 #include "test_process_utils.h"
@@ -32,7 +32,7 @@ TEST_F(DatahubBrokerConsumerTest, ConsumerRegChannelNotFound)
 
 TEST_F(DatahubBrokerConsumerTest, ConsumerRegHappyPath)
 {
-    // Messenger register_consumer → CONSUMER_REG_ACK; DISC_ACK shows consumer_count ≥ 1.
+    // BrokerRequestComm register_consumer -> CONSUMER_REG_ACK; DISC_ACK shows consumer_count >= 1.
     auto proc = SpawnWorker("broker_consumer.consumer_reg_happy_path", {});
     ExpectWorkerOk(proc);
 }

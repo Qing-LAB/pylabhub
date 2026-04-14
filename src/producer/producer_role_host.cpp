@@ -5,7 +5,7 @@
  * This is the canonical data loop for the producer role.  It follows
  * docs/tech_draft/loop_design_unified.md §3 exactly.
  *
- * Layer 3 (infrastructure): Messenger, Producer, queue, ctrl_thread_, events.
+ * Layer 3 (infrastructure): Producer, queue, BrokerRequestComm, events.
  * Layer 2 (data loop): inner retry acquire, deadline wait, drain, invoke, commit.
  * Layer 1 (engine): delegated to ScriptEngine via invoke_produce / invoke_on_inbox.
  */
@@ -271,18 +271,9 @@ void ProducerRoleHost::worker_main_()
         api_->set_producer(out_producer_.has_value() ? &(*out_producer_) : nullptr);
         api_->set_inbox_queue(inbox_queue_.get());
 
-        // Create and connect BrokerRequestComm (shares broker endpoint with Messenger).
-        broker_channel_ = std::make_unique<hub::BrokerRequestComm>();
-        hub::BrokerRequestComm::Config bc_cfg;
-        bc_cfg.broker_endpoint = config_.out_hub().broker;
-        bc_cfg.broker_pubkey   = config_.out_hub().broker_pubkey;
-        bc_cfg.client_pubkey   = config_.auth().client_pubkey;
-        bc_cfg.client_seckey   = config_.auth().client_seckey;
-        bc_cfg.role_uid        = config_.identity().uid;
-        bc_cfg.role_name       = config_.identity().name;
-        if (!bc_cfg.broker_endpoint.empty())
-            broker_channel_->connect(bc_cfg);
-        api_->set_broker_channel(broker_channel_.get());
+        // Create BrokerRequestComm (connection deferred to step 6).
+        broker_comm_ = std::make_unique<hub::BrokerRequestComm>();
+        api_->set_broker_comm(broker_comm_.get());
     }
     api_->set_checksum_policy(config_.checksum().policy);
     api_->set_stop_on_script_error(sc.stop_on_script_error);
@@ -339,12 +330,63 @@ void ProducerRoleHost::worker_main_()
     if (out_producer_.has_value() && core_.has_out_fz())
         out_producer_->sync_flexzone_checksum();
 
-    // Step 6: Spawn broker + comm threads via thread manager.
+    // ── Step 6: Connect to broker, start ctrl thread, register ────────────
     core_.set_running(true);
-    api_->start_broker_thread(
-        scripting::RoleAPIBase::BrokerThreadConfig{
-            config_.timing().heartbeat_interval_ms, false});
-    api_->start_comm_thread();
+    {
+        hub::BrokerRequestComm::Config bc_cfg;
+        bc_cfg.broker_endpoint = config_.out_hub().broker;
+        bc_cfg.broker_pubkey   = config_.out_hub().broker_pubkey;
+        bc_cfg.client_pubkey   = config_.auth().client_pubkey;
+        bc_cfg.client_seckey   = config_.auth().client_seckey;
+        bc_cfg.role_uid        = id.uid;
+        bc_cfg.role_name       = id.name;
+
+        scripting::RoleAPIBase::CtrlThreadConfig ctrl_cfg;
+        ctrl_cfg.heartbeat_interval_ms = config_.timing().heartbeat_interval_ms;
+        ctrl_cfg.report_metrics        = false;
+
+        // Build producer registration payload (REG_REQ).
+        const auto &ch  = config_.out_channel();
+        const auto &shm = config_.out_shm();
+        const auto &tr  = config_.out_transport();
+
+        ctrl_cfg.producer_reg_opts["channel_name"]      = ch;
+        ctrl_cfg.producer_reg_opts["pattern"]            = "PubSub";
+        ctrl_cfg.producer_reg_opts["has_shared_memory"]  = shm.enabled;
+        ctrl_cfg.producer_reg_opts["producer_pid"]       = pylabhub::platform::get_pid();
+        ctrl_cfg.producer_reg_opts["shm_name"]           = ch;
+        ctrl_cfg.producer_reg_opts["role_uid"]           = id.uid;
+        ctrl_cfg.producer_reg_opts["role_name"]          = id.name;
+        ctrl_cfg.producer_reg_opts["role_type"]          = "producer";
+        ctrl_cfg.producer_reg_opts["zmq_ctrl_endpoint"]  = "tcp://127.0.0.1:0";
+        ctrl_cfg.producer_reg_opts["zmq_data_endpoint"]  = "tcp://127.0.0.1:0";
+        ctrl_cfg.producer_reg_opts["zmq_pubkey"]         = "";
+
+        if (tr.transport == config::Transport::Zmq)
+        {
+            ctrl_cfg.producer_reg_opts["data_transport"]    = "zmq";
+            ctrl_cfg.producer_reg_opts["zmq_node_endpoint"] = tr.zmq_endpoint;
+        }
+        if (inbox_cfg_.has_inbox())
+            ctrl_cfg.inbox = inbox_cfg_;
+
+        if (!api_->start_ctrl_thread(bc_cfg, ctrl_cfg))
+        {
+            LOGGER_ERROR("[prod] Broker registration failed — consumers won't discover this producer");
+            // Non-fatal: producer can still operate locally without broker discovery.
+        }
+    }
+
+    // Step 6b: Startup coordination — wait for prerequisite roles (HEP-0023).
+    if (!config_.startup().wait_for_roles.empty())
+    {
+        if (!scripting::wait_for_roles(*broker_comm_, config_.startup().wait_for_roles, "[prod]"))
+        {
+            LOGGER_ERROR("[prod] Startup coordination failed — required roles not available");
+            ready_promise_.set_value(false);
+            return;
+        }
+    }
 
     // Step 7: Signal ready.
     ready_promise_.set_value(true);
@@ -369,6 +411,10 @@ void ProducerRoleHost::worker_main_()
 
     // Step 9: stop accepting invoke from non-owner threads.
     engine_->stop_accepting();
+
+    // Step 9a: Explicitly deregister from broker (ctrl thread still running).
+    if (api_)
+        api_->deregister_from_broker();
 
     // Step 10: join all managed threads (ctrl + future workers).
     core_.set_running(false);
@@ -396,7 +442,7 @@ bool ProducerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     const auto &tr    = config_.out_transport();
     const auto &shm   = config_.out_shm();
     const auto &tc    = config_.timing();
-    const auto &inbox = config_.inbox();
+    inbox_cfg_ = config_.inbox(); // mutable copy for resolved fields
     const auto &mon   = config_.monitoring();
     const auto &auth  = config_.auth();
     const auto &ch    = config_.out_channel();
@@ -411,21 +457,14 @@ bool ProducerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     opts.role_uid    = id.uid;
 
 
-    opts.ctrl_queue_max_depth = mon.ctrl_queue_max_depth;
-    opts.peer_dead_timeout_ms = mon.peer_dead_timeout_ms;
-
     // --- Inbox setup (optional) ---
-    if (inbox.has_inbox())
+    if (inbox_cfg_.has_inbox())
     {
         auto inbox_result = scripting::setup_inbox_facility(
-            inbox_spec, inbox, config_.checksum().policy, "prod");
+            inbox_spec, inbox_cfg_, config_.checksum().policy, "prod");
         if (!inbox_result)
             return false;
-        inbox_queue_           = std::move(inbox_result->queue);
-        opts.inbox_endpoint    = inbox_result->actual_endpoint;
-        opts.inbox_schema_json = inbox_result->schema_json;
-        opts.inbox_packing     = inbox_result->packing;
-        opts.inbox_checksum    = inbox_result->checksum;
+        inbox_queue_ = std::move(inbox_result->queue);
     }
 
     // --- Queue abstraction: checksum policy ---
@@ -459,19 +498,8 @@ bool ProducerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
                                                 : hub::OverflowPolicy::Drop;
     }
 
-    // --- Broker connect ---
-    if (!hub.broker.empty())
-    {
-        if (!out_messenger_.connect(hub.broker, hub.broker_pubkey,
-                                    auth.client_pubkey, auth.client_seckey))
-        {
-            LOGGER_ERROR("[prod] broker connect failed ({}); aborting", hub.broker);
-            return false;
-        }
-    }
-
     // --- Create producer ---
-    auto maybe_producer = hub::Producer::create(out_messenger_, opts);
+    auto maybe_producer = hub::Producer::create(opts);
     if (!maybe_producer.has_value())
     {
         LOGGER_ERROR("[prod] Failed to create producer for channel '{}'", ch);
@@ -481,21 +509,9 @@ bool ProducerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
 
     // Metrics reset moved to after queue creation (reset_metrics() on queue).
 
-    if (!ch.empty())
-    {
-        out_messenger_.suppress_periodic_heartbeat(ch);
-        out_messenger_.enqueue_heartbeat(ch);
-    }
-
-    if (!out_producer_->start_embedded())
-    {
-        LOGGER_ERROR("[prod] out_producer->start_embedded() failed");
-        return false;
-    }
-
-    // Event callbacks (on_channel_closing, on_force_shutdown, on_peer_dead,
-    // on_hub_dead, on_consumer_joined/left/message, etc.) are wired by
+    // Event callbacks (on_channel_closing, on_force_shutdown) are wired by
     // api_->wire_event_callbacks() after RoleAPIBase construction in worker_main_.
+    // Broker notifications (band, hub-dead) are handled by BrokerRequestComm.
 
     // --- Start and configure data queue ---
     if (!out_producer_->start_queue())
@@ -509,9 +525,8 @@ bool ProducerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     LOGGER_INFO("[prod] Producer started on channel '{}' (shm={})", ch,
                 out_producer_->has_shm());
 
-    // --- Startup coordination (HEP-0023) ---
-    if (!scripting::wait_for_roles(*broker_channel_, config_.startup().wait_for_roles, "[prod]"))
-        return false;
+    // Startup coordination (HEP-0023) moved to after start_ctrl_thread()
+    // where the BRC is connected and poll loop running.
 
     return true;
 }
@@ -535,16 +550,12 @@ void ProducerRoleHost::teardown_infrastructure_()
         inbox_queue_.reset();
     }
 
-    // Disconnect broker channel (before Messenger — broker channel may have
-    // pending commands that reference Messenger state).
-    if (broker_channel_)
+    // Ctrl thread already joined. Deregistration done in step 9a.
+    if (broker_comm_)
     {
-        broker_channel_->disconnect();
-        broker_channel_.reset();
+        broker_comm_->disconnect();
+        broker_comm_.reset();
     }
-
-    // Deregister hub-dead callback.
-    out_messenger_.on_hub_dead(nullptr);
 
     // Stop/close producer.
     if (out_producer_.has_value())
@@ -581,7 +592,7 @@ nlohmann::json ProducerRoleHost::snapshot_metrics_json() const
         {"out_slots_written",  core_.out_slots_written()},
         {"out_drop_count",     core_.out_drop_count()},
         {"script_error_count", engine_ ? engine_->script_error_count() : 0},
-        {"ctrl_queue_dropped", out_producer_.has_value() ? out_producer_->ctrl_queue_dropped() : 0}
+        {"ctrl_queue_dropped", 0}
     };
 
     if (inbox_queue_)

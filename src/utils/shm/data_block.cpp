@@ -1,4 +1,5 @@
 #include "data_block_internal.hpp"
+#include "utils/timeout_constants.hpp"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -2660,11 +2661,11 @@ create_datablock_producer_impl(const std::string &name, DataBlockPolicy policy,
                                const pylabhub::schema::SchemaInfo *flexzone_schema,
                                const pylabhub::schema::SchemaInfo *datablock_schema)
 {
-    if (!lifecycle_initialized())
+    if (!datablock_lifecycle_ready())
     {
         throw std::runtime_error(
             "DataBlock: Data Exchange Hub module not initialized. Create a LifecycleGuard in main() "
-            "with pylabhub::hub::GetLifecycleModule() (and typically Logger, CryptoUtils) before creating producers.");
+            "with pylabhub::hub::GetDataBlockModule() (and typically Logger, CryptoUtils) before creating producers.");
     }
     (void)policy; // Reserved for future policy-specific behavior
     auto impl = std::make_unique<DataBlockProducerImpl>();
@@ -2737,11 +2738,11 @@ find_datablock_consumer_impl(const std::string &name, uint64_t shared_secret,
                              const char *consumer_uid,
                              const char *consumer_name)
 {
-    if (!lifecycle_initialized())
+    if (!datablock_lifecycle_ready())
     {
         throw std::runtime_error(
             "DataBlock: Data Exchange Hub module not initialized. Create a LifecycleGuard in main() "
-            "with pylabhub::hub::GetLifecycleModule() (and typically Logger, CryptoUtils) before finding consumers.");
+            "with pylabhub::hub::GetDataBlockModule() (and typically Logger, CryptoUtils) before finding consumers.");
     }
     auto impl = std::make_unique<DataBlockConsumerImpl>();
     impl->name = name;
@@ -2916,11 +2917,11 @@ attach_datablock_as_writer_impl(const std::string &name,
                                 const pylabhub::schema::SchemaInfo *flexzone_schema,
                                 const pylabhub::schema::SchemaInfo *datablock_schema)
 {
-    if (!lifecycle_initialized())
+    if (!datablock_lifecycle_ready())
     {
         throw std::runtime_error(
             "DataBlock: Data Exchange Hub module not initialized. Create a LifecycleGuard in main() "
-            "with pylabhub::hub::GetLifecycleModule() (and typically Logger, CryptoUtils) before attaching as writer.");
+            "with pylabhub::hub::GetDataBlockModule() (and typically Logger, CryptoUtils) before attaching as writer.");
     }
 
     auto impl = std::make_unique<DataBlockProducerImpl>();
@@ -3029,5 +3030,41 @@ attach_datablock_as_writer_impl(const std::string &name,
 }
 
 // Non-template wrappers removed (see comment after create_datablock_producer_impl above).
+
+// ============================================================================
+// DataBlock lifecycle module
+// ============================================================================
+
+namespace
+{
+std::atomic<bool> g_datablock_ready{false};
+
+void do_datablock_startup(const char * /*arg*/, void * /*userdata*/)
+{
+    g_datablock_ready.store(true, std::memory_order_release);
+    LOGGER_INFO("DataBlock: Module initialized and ready.");
+}
+
+void do_datablock_shutdown(const char * /*arg*/, void * /*userdata*/)
+{
+    g_datablock_ready.store(false, std::memory_order_release);
+}
+} // anonymous namespace
+
+pylabhub::utils::ModuleDef GetDataBlockModule()
+{
+    pylabhub::utils::ModuleDef module("pylabhub::hub::DataBlock");
+    module.add_dependency("CryptoUtils");
+    module.add_dependency("pylabhub::utils::Logger");
+    module.set_startup(&do_datablock_startup);
+    module.set_shutdown(&do_datablock_shutdown,
+                        std::chrono::milliseconds{pylabhub::kShortTimeoutMs});
+    return module;
+}
+
+bool datablock_lifecycle_ready() noexcept
+{
+    return g_datablock_ready.load(std::memory_order_acquire);
+}
 
 } // namespace pylabhub::hub

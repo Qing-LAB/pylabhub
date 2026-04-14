@@ -4,6 +4,7 @@
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 
+#include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
 #include "channel_registry.hpp"
 #include "plh_datahub.hpp"
@@ -33,7 +34,8 @@ namespace pylabhub::tests::worker::broker_consumer
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetLifecycleModule(); }
+static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto zmq_module() { return ::pylabhub::hub::GetZMQContextModule(); }
 
 // ============================================================================
 // File-local helpers (mirrors datahub_broker_workers.cpp)
@@ -240,7 +242,7 @@ int consumer_reg_channel_not_found()
 }
 
 // ============================================================================
-// consumer_reg_happy_path — Messenger register_consumer → CONSUMER_REG_ACK
+// consumer_reg_happy_path — BRC register_consumer → CONSUMER_REG_ACK
 // ============================================================================
 
 int consumer_reg_happy_path()
@@ -253,30 +255,55 @@ int consumer_reg_happy_path()
             cfg.use_curve = true;
             auto broker = start_broker_in_thread(std::move(cfg));
 
-            Messenger& messenger = Messenger::get_instance();
-            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
-
             const std::string channel = "broker_consumer.reg_happy";
+            const std::string prod_uid = "PROD-" + channel;
+            const std::string cons_uid = "CONS-" + channel;
 
-            // Register producer so the channel exists in the broker
-            ProducerInfo pinfo;
-            pinfo.shm_name = channel + ".shm";
-            pinfo.producer_pid = pylabhub::platform::get_pid();
-            pinfo.schema_hash.assign(32, '\0');
-            pinfo.schema_version = 1;
-            messenger.register_producer(channel, pinfo);
+            // Register producer via BRC
+            BrokerRequestComm prod_brc;
+            BrokerRequestComm::Config brc_cfg;
+            brc_cfg.broker_endpoint = broker.endpoint;
+            brc_cfg.broker_pubkey   = broker.pubkey;
+            brc_cfg.role_uid        = prod_uid;
+            ASSERT_TRUE(prod_brc.connect(brc_cfg));
+            std::atomic<bool> prod_running{true};
+            std::thread prod_thread([&] { prod_brc.run_poll_loop([&] { return prod_running.load(); }); });
 
-            // discover_producer flushes the queue — channel is registered when it returns
-            auto cinfo = messenger.discover_producer(channel, 5000);
-            ASSERT_TRUE(cinfo.has_value()) << "Channel must be discoverable after registration";
+            nlohmann::json reg_opts;
+            reg_opts["channel_name"]      = channel;
+            reg_opts["pattern"]           = "PubSub";
+            reg_opts["has_shared_memory"] = false;
+            reg_opts["producer_pid"]      = ::getpid();
+            reg_opts["zmq_ctrl_endpoint"] = "tcp://127.0.0.1:0";
+            reg_opts["zmq_data_endpoint"] = "tcp://127.0.0.1:0";
+            reg_opts["zmq_pubkey"]        = "";
+            reg_opts["role_uid"]          = prod_uid;
+            auto reg = prod_brc.register_channel(reg_opts, 3000);
+            ASSERT_TRUE(reg.has_value()) << "register_channel failed";
 
-            // register_consumer (fire-and-forget), then discover again to flush the queue
-            messenger.register_consumer(channel, *cinfo);
-            auto after_reg = messenger.discover_producer(channel, 5000);
-            ASSERT_TRUE(after_reg.has_value()) << "Channel must still be discoverable";
+            // Heartbeat → Ready
+            prod_brc.send_heartbeat(channel, {});
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-            // Verify consumer_count via raw DISC_REQ (discover_producer returns ConsumerInfo
-            // which does not expose consumer_count, so we use a raw request)
+            // Register consumer via separate BRC
+            BrokerRequestComm cons_brc;
+            BrokerRequestComm::Config cons_cfg;
+            cons_cfg.broker_endpoint = broker.endpoint;
+            cons_cfg.broker_pubkey   = broker.pubkey;
+            cons_cfg.role_uid        = cons_uid;
+            ASSERT_TRUE(cons_brc.connect(cons_cfg));
+            std::atomic<bool> cons_running{true};
+            std::thread cons_thread([&] { cons_brc.run_poll_loop([&] { return cons_running.load(); }); });
+
+            nlohmann::json cons_opts;
+            cons_opts["channel_name"]  = channel;
+            cons_opts["consumer_uid"]  = cons_uid;
+            cons_opts["consumer_name"] = "test_consumer";
+            cons_opts["consumer_pid"]  = ::getpid();
+            auto cons_reg = cons_brc.register_consumer(cons_opts, 3000);
+            ASSERT_TRUE(cons_reg.has_value()) << "register_consumer failed";
+
+            // Verify consumer_count via raw DISC_REQ
             nlohmann::json disc_req;
             disc_req["channel_name"] = channel;
             nlohmann::json disc_resp =
@@ -284,14 +311,21 @@ int consumer_reg_happy_path()
             ASSERT_FALSE(disc_resp.is_null()) << "DISC_REQ timed out";
             EXPECT_EQ(disc_resp.value("status", std::string{}), "success");
             EXPECT_GE(disc_resp.value("consumer_count", uint32_t{0}), 1u)
-                << "DISC_ACK consumer_count must be ≥ 1 after register_consumer; got: "
+                << "DISC_ACK consumer_count must be >= 1 after register_consumer; got: "
                 << disc_resp.dump();
 
-            messenger.disconnect();
+            cons_running.store(false);
+            cons_brc.stop();
+            if (cons_thread.joinable()) cons_thread.join();
+            cons_brc.disconnect();
+            prod_running.store(false);
+            prod_brc.stop();
+            if (prod_thread.joinable()) prod_thread.join();
+            prod_brc.disconnect();
             broker.stop_and_join();
         },
         "broker_consumer.consumer_reg_happy_path",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), crypto_module(), hub_module(), zmq_module());
 }
 
 // ============================================================================
@@ -459,22 +493,34 @@ int disc_shows_consumer_count()
             cfg.use_curve = true;
             auto broker = start_broker_in_thread(std::move(cfg));
 
-            Messenger& messenger = Messenger::get_instance();
-            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
-
             const std::string channel = "broker_consumer.disc_count";
+            const std::string prod_uid = "PROD-" + channel;
+            const std::string cons_uid = "CONS-" + channel;
 
-            // Register producer
-            ProducerInfo pinfo;
-            pinfo.shm_name = channel + ".shm";
-            pinfo.producer_pid = pylabhub::platform::get_pid();
-            pinfo.schema_hash.assign(32, '\0');
-            pinfo.schema_version = 1;
-            messenger.register_producer(channel, pinfo);
+            // Register producer via BRC
+            BrokerRequestComm prod_brc;
+            BrokerRequestComm::Config brc_cfg;
+            brc_cfg.broker_endpoint = broker.endpoint;
+            brc_cfg.broker_pubkey   = broker.pubkey;
+            brc_cfg.role_uid        = prod_uid;
+            ASSERT_TRUE(prod_brc.connect(brc_cfg));
+            std::atomic<bool> prod_running{true};
+            std::thread prod_thread([&] { prod_brc.run_poll_loop([&] { return prod_running.load(); }); });
 
-            // Flush queue and verify channel is registered (consumer_count starts at 0)
-            auto cinfo = messenger.discover_producer(channel, 5000);
-            ASSERT_TRUE(cinfo.has_value());
+            nlohmann::json reg_opts;
+            reg_opts["channel_name"]      = channel;
+            reg_opts["pattern"]           = "PubSub";
+            reg_opts["has_shared_memory"] = false;
+            reg_opts["producer_pid"]      = ::getpid();
+            reg_opts["zmq_ctrl_endpoint"] = "tcp://127.0.0.1:0";
+            reg_opts["zmq_data_endpoint"] = "tcp://127.0.0.1:0";
+            reg_opts["zmq_pubkey"]        = "";
+            reg_opts["role_uid"]          = prod_uid;
+            auto reg = prod_brc.register_channel(reg_opts, 3000);
+            ASSERT_TRUE(reg.has_value());
+
+            prod_brc.send_heartbeat(channel, {});
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
             nlohmann::json disc_req;
             disc_req["channel_name"] = channel;
@@ -489,31 +535,50 @@ int disc_shows_consumer_count()
             EXPECT_EQ(d0.value("consumer_count", uint32_t{99}), 0u)
                 << "consumer_count must start at 0; got: " << d0.dump();
 
-            // Register consumer (fire-and-forget), flush via discover_producer
-            messenger.register_consumer(channel, *cinfo);
-            auto after_reg = messenger.discover_producer(channel, 5000);
-            ASSERT_TRUE(after_reg.has_value());
+            // Register consumer via BRC
+            BrokerRequestComm cons_brc;
+            BrokerRequestComm::Config cons_cfg;
+            cons_cfg.broker_endpoint = broker.endpoint;
+            cons_cfg.broker_pubkey   = broker.pubkey;
+            cons_cfg.role_uid        = cons_uid;
+            ASSERT_TRUE(cons_brc.connect(cons_cfg));
+            std::atomic<bool> cons_running{true};
+            std::thread cons_thread([&] { cons_brc.run_poll_loop([&] { return cons_running.load(); }); });
+
+            nlohmann::json cons_opts;
+            cons_opts["channel_name"]  = channel;
+            cons_opts["consumer_uid"]  = cons_uid;
+            cons_opts["consumer_name"] = "test_consumer";
+            cons_opts["consumer_pid"]  = ::getpid();
+            auto cons_reg = cons_brc.register_consumer(cons_opts, 3000);
+            ASSERT_TRUE(cons_reg.has_value());
 
             nlohmann::json d1 = disc();
             ASSERT_FALSE(d1.is_null());
             EXPECT_EQ(d1.value("consumer_count", uint32_t{0}), 1u)
                 << "consumer_count must be 1 after register_consumer; got: " << d1.dump();
 
-            // Deregister consumer (fire-and-forget), flush via discover_producer
-            messenger.deregister_consumer(channel);
-            auto after_dereg = messenger.discover_producer(channel, 5000);
-            ASSERT_TRUE(after_dereg.has_value());
+            // Deregister consumer
+            cons_brc.deregister_consumer(channel);
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
             nlohmann::json d2 = disc();
             ASSERT_FALSE(d2.is_null());
             EXPECT_EQ(d2.value("consumer_count", uint32_t{1}), 0u)
                 << "consumer_count must be 0 after deregister_consumer; got: " << d2.dump();
 
-            messenger.disconnect();
+            cons_running.store(false);
+            cons_brc.stop();
+            if (cons_thread.joinable()) cons_thread.join();
+            cons_brc.disconnect();
+            prod_running.store(false);
+            prod_brc.stop();
+            if (prod_thread.joinable()) prod_thread.join();
+            prod_brc.disconnect();
             broker.stop_and_join();
         },
         "broker_consumer.disc_shows_consumer_count",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), crypto_module(), hub_module(), zmq_module());
 }
 
 } // namespace pylabhub::tests::worker::broker_consumer
