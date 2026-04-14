@@ -10,6 +10,33 @@
 
 ## Current Focus
 
+### Recently Completed (2026-04-14)
+
+- [x] **HEP-CORE-0023 Phase 2** — heartbeat-multiplier role-liveness state machine,
+  three-response DISC_REQ, role-close cleanup hook (federation + band),
+  RoleStateMetrics. See `docs/todo/MESSAGEHUB_TODO.md` for details.
+  Commits: `cf53ed3`, `3201e08`, `6558b2c`. **1275/1275 tests.**
+- [x] **`const char*` audit** (#17) — only two safe non-ABI sites converted
+  (`hubshell.cpp`, `hub_config.cpp` lambda); ~341 remaining occurrences are
+  legitimate (C ABI, raw byte buffers, format-string literals, hot-path
+  function-name comparisons, platform-API forwarding to syslog/openlog/Win32).
+  Going-forward rule: new internal C++ string parameters use `const std::string&`.
+- [x] **DISC_REQ three-response state machine** (#18) — replaced broker-queued
+  deferred replies with state-driven DISC_ACK/DISC_PENDING/CHANNEL_NOT_FOUND;
+  client-side retry loop in BrokerRequestComm. Closes #18.
+- [x] **Broker registration in RoleAPIBase + role host restructure** (#14) —
+  start_ctrl_thread owns BRC connect+heartbeat+notification dispatch.
+
+### Open follow-ups (lower priority)
+
+- [ ] Dedup `BrokerHandle`/`BrcHandle` test helpers — currently duplicated between
+  `tests/test_layer3_datahub/workers/datahub_broker_health_workers.cpp` and
+  `datahub_role_state_workers.cpp`. Extract to a shared L3 test utility.
+- [ ] Test coverage gap (#13): explicit role-state-machine tests landed in
+  `test_datahub_role_state_machine.cpp` (4 cases). Remaining gaps: BRC
+  reconnect-on-broker-restart, ctrl-thread lifecycle (start/stop ordering),
+  heartbeat-failure self-healing scenarios.
+
 ### HEP-0002 Architecture Diagrams (2026-04-12)
 
 Diagrams 1 (module dependency) and 2 (thread model) added to HEP-0002 §17.
