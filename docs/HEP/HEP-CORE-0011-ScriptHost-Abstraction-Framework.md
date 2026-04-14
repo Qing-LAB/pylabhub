@@ -227,16 +227,18 @@ api.set_critical_error()     # Flag critical error
 api.critical_error()         # Check critical error flag
 api.stop_reason()            # Shutdown reason string
 
-# Messaging (any role can send to any inbox)
-api.broadcast(data)          # Broadcast bytes to all consumers
-api.send(identity_hex, data) # Send bytes to specific consumer
-api.consumers()              # List connected consumer identities
+# Band messaging (HEP-CORE-0030)
+api.band_join(band)          # Join a band, returns member list
+api.band_leave(band)         # Leave a band
+api.band_broadcast(band, body)  # Broadcast JSON body to all band members
+api.band_members(band)       # List band members ({role_uid, role_name})
+
+# Inbox (P2P messaging, HEP-CORE-0027)
 api.open_inbox(target_uid)   # Open InboxHandle to target role
+api.send_to(role_uid, data)  # Send data to specific role via inbox
 api.wait_for_role(uid, ms)   # Block until role appears in broker
 
 # Broker queries
-api.notify_channel(target, event, data)
-api.broadcast_channel(target, msg, data)
 api.list_channels()
 api.shm_info(channel="")
 

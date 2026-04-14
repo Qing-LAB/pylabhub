@@ -88,12 +88,12 @@ inline std::vector<pylabhub::utils::ModuleDef> role_lifecycle_modules(
     // When a log file is requested, these get an extra dependency on
     // "StartupLogFileSink" so the topo sort places them after the sink switch.
     auto zmq_mod = pylabhub::hub::GetZMQContextModule();
-    auto hub_mod = pylabhub::hub::GetLifecycleModule();
+    auto db_mod  = pylabhub::hub::GetDataBlockModule();
 
     if (!log_file.empty())
     {
         zmq_mod.add_dependency("StartupLogFileSink");
-        hub_mod.add_dependency("StartupLogFileSink");
+        db_mod.add_dependency("StartupLogFileSink");
     }
 
     auto mods = pylabhub::utils::MakeModDefList(
@@ -102,7 +102,7 @@ inline std::vector<pylabhub::utils::ModuleDef> role_lifecycle_modules(
         pylabhub::crypto::GetLifecycleModule(),
         pylabhub::utils::JsonConfig::GetLifecycleModule(),
         std::move(zmq_mod),
-        std::move(hub_mod)
+        std::move(db_mod)
     );
 
     if (!log_file.empty())

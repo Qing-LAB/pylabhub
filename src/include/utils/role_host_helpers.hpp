@@ -144,10 +144,10 @@ struct InboxSetupResult
  * @return InboxSetupResult on success, nullopt on failure.
  */
 inline std::optional<InboxSetupResult>
-setup_inbox_facility(const hub::SchemaSpec    &inbox_spec,
-                     const config::InboxConfig &inbox_cfg,
-                     hub::ChecksumPolicy       checksum_policy,
-                     const char               *tag)
+setup_inbox_facility(const hub::SchemaSpec &inbox_spec,
+                     config::InboxConfig   &inbox_cfg,
+                     hub::ChecksumPolicy    checksum_policy,
+                     const char            *tag)
 {
     auto zmq_fields = hub::schema_spec_to_zmq_fields(inbox_spec);
 
@@ -171,6 +171,12 @@ setup_inbox_facility(const hub::SchemaSpec    &inbox_spec,
     result.packing         = inbox_spec.packing;
     result.checksum        = config::checksum_policy_to_string(checksum_policy);
     result.queue           = std::move(queue);
+
+    // Populate resolved fields on InboxConfig (single source of truth).
+    inbox_cfg.schema_fields_json = result.schema_json;
+    inbox_cfg.packing            = result.packing;
+    inbox_cfg.checksum           = result.checksum;
+
     return result;
 }
 

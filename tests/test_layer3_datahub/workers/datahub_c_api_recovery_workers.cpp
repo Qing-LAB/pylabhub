@@ -24,7 +24,7 @@ namespace pylabhub::tests::worker::recovery
 
 static auto logger_module() { return pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto crypto_module() { return pylabhub::crypto::GetLifecycleModule(); }
-static auto hub_module() { return pylabhub::hub::GetLifecycleModule(); }
+static auto hub_module() { return pylabhub::hub::GetDataBlockModule(); }
 
 int datablock_is_process_alive_returns_true_for_self()
 {

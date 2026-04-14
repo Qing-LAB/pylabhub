@@ -50,7 +50,7 @@ namespace pylabhub::tests::worker::schema_validation
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetLifecycleModule(); }
+static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 // ============================================================================
 // Helper: build config for schema validation tests.

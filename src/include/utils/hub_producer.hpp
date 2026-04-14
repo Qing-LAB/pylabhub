@@ -1,11 +1,10 @@
 #pragma once
 /**
  * @file hub_producer.hpp
- * @brief Active producer service: owns both ZMQ transport (ChannelHandle) and
- *        shared memory (DataBlockProducer), with dedicated internal threads.
+ * @brief Active producer service: owns shared memory (DataBlockProducer) and/or ZMQ
+ *        transport, with dedicated internal threads for data writing.
  *
  * Producer is an active service object. It manages:
- *   - peer_thread: monitors the ROUTER ctrl socket for consumer HELLO/BYE/messages.
  *   - write_thread: drives SHM slot processing in either Queue or RealTime mode.
  *
  * ## SHM Processing Modes
@@ -22,21 +21,18 @@
  * to Queue mode. Queryable via `has_realtime_handler()`.
  *
  * Both modes receive a fully-typed `WriteProcessorContext<FlexZoneT, DataBlockT>` that
- * bundles: typed FlexZone access, the full WriteTransactionContext, peer messaging, and
- * a shutdown signal. Type safety is enforced at the call site via template parameters.
+ * bundles: typed FlexZone access, the full WriteTransactionContext, and a shutdown signal.
+ * Type safety is enforced at the call site via template parameters.
  *
- * One Producer instance per channel per process. Use with LifecycleGuard (ManagedProducer)
- * or manage lifetime manually.
+ * One Producer instance per channel per process.
  *
  * **Thread safety**: All public methods are thread-safe unless documented otherwise.
  */
 #include "pylabhub_utils_export.h"
-#include "utils/channel_handle.hpp"
 #include "utils/channel_pattern.hpp"
 #include "utils/data_block.hpp"
 #include "utils/loop_timing_policy.hpp"
 #include "utils/hub_zmq_queue.hpp"  // ZmqQueue — returned by queue() accessor (HEP-CORE-0021)
-#include "utils/messenger.hpp"
 #include "utils/module_def.hpp"
 #include "utils/schema_library.hpp" // validate_named_schema_from_env (Phase 2)
 
@@ -67,14 +63,6 @@ namespace pylabhub::hub
  *        Producer::establish_channel(); context points to the ProducerImpl on the heap.
  *
  * **Internal use only — do not use directly.**
- * This struct is exposed in the header solely so that the template WriteProcessorContext<F,D>
- * can reference it without knowing ProducerImpl. It is an implementation detail, not part
- * of the public API.
- *
- * **ABI note:** The function pointer fields and their signatures are **frozen** for the
- * lifetime of the pylabhub-utils shared library ABI. Any change to field order, types, or
- * count requires a SOVERSION bump. New fields must be appended at the end, never inserted.
- * Callers may rely on all fields being null-initialized (defaulted to nullptr) in the struct.
  */
 struct PYLABHUB_UTILS_EXPORT ProducerMessagingFacade
 {
@@ -82,8 +70,6 @@ struct PYLABHUB_UTILS_EXPORT ProducerMessagingFacade
     DataBlockProducer *(*fn_get_shm)(void *ctx){nullptr};
     /// Returns true when the producer's write_thread stop flag is set.
     bool (*fn_is_stopping)(void *ctx){nullptr};
-    /// Returns the Messenger* used by this Producer.
-    Messenger *(*fn_messenger)(void *ctx){nullptr};
     /// Returns the channel name string.
     const std::string &(*fn_channel_name)(void *ctx){nullptr};
     /// Opaque pointer to ProducerImpl.
@@ -106,15 +92,6 @@ using InternalWriteHandlerFn = std::function<void(ProducerMessagingFacade &)>;
  *   - `txn`      — WriteTransactionContext<FlexZoneT, DataBlockT> for slot + flexzone access.
  *   - `flexzone()` — convenience typed flexzone accessor (when FlexZoneT != void).
  *   - `is_stopping()` — shutdown signal (check at natural loop checkpoints).
- *   - Broker access: `messenger()`, `report_checksum_error`.
- *
- * FlexZone and DataBlock types are fixed at `Producer::create<FlexZoneT, DataBlockT>()`
- * time and validated against the channel schema at establishment. By the time any handler
- * or job executes, the types are guaranteed consistent across all channel participants.
- *
- * FlexZone synchronization is managed by the DataBlock framework. Consistency is
- * guaranteed when the producer updates FlexZone within slot transactions (the slot-commit
- * atomic transition acts as the happens-before barrier).
  */
 template <typename FlexZoneT, typename DataBlockT>
 struct WriteProcessorContext
@@ -144,18 +121,6 @@ struct WriteProcessorContext
     [[nodiscard]] bool is_stopping() const noexcept
     {
         return facade.fn_is_stopping(facade.context);
-    }
-
-    // ── Broker channel ────────────────────────────────────────────────────────
-
-    /// Full Messenger access for advanced use (additional registrations, broker reporting).
-    [[nodiscard]] Messenger &messenger() const { return *facade.fn_messenger(facade.context); }
-
-    /// Report a Cat 2 slot checksum error to the broker (fire-and-forget).
-    void report_checksum_error(int32_t slot_idx, std::string_view desc)
-    {
-        facade.fn_messenger(facade.context)
-            ->report_checksum_error(facade.fn_channel_name(facade.context), slot_idx, desc);
     }
 };
 
@@ -188,37 +153,18 @@ struct ProducerOptions
 
     // ── Named schema validation (HEP-CORE-0016 Phase 2) ──────────────────────
     /// Optional named schema ID (e.g. `"lab.sensors.temperature.raw@1"`).
-    /// When non-empty, `create<FlexZoneT, DataBlockT>()` validates sizeof and BLDS hash
-    /// against the schema loaded from PYLABHUB_SCHEMA_PATH (or default search dirs).
-    /// Throws SchemaValidationException on mismatch. No-op when empty.
     std::string schema_id{};
 
-    // ── HEP-CORE-0021: ZMQ Virtual Channel Node ───────────────────────────────
+    // ── HEP-CORE-0021: ZMQ Endpoint Registry ──────────────────────────────────
     /// Data transport type: "shm" (default) or "zmq".
-    /// When "zmq", the producer registers a ZMQ Virtual Channel Node with the broker,
-    /// advertising @p zmq_node_endpoint. Consumers discover this endpoint via DISC_ACK.
     std::string data_transport{"shm"};
     /// Bind address for the ZMQ PUSH socket (used only when data_transport=="zmq").
-    /// Example: "tcp://127.0.0.1:5580"
     std::string zmq_node_endpoint{};
     /// If true, PUSH socket binds to zmq_node_endpoint; otherwise connects (default: bind).
     bool zmq_bind{true};
-    /// Inbox endpoint registered with the broker. Empty = no inbox.
-    /// Set this to InboxQueue::actual_endpoint() before calling Producer::create().
-    std::string inbox_endpoint{};
-    /// JSON-serialized ZmqSchemaField list for the inbox (Phase 4). Empty = no inbox.
-    /// Stored by broker and returned by ROLE_INFO_REQ for InboxClient discovery.
-    std::string inbox_schema_json{};
-    /// Packing for inbox schema (Phase 4): "aligned" or "packed". Empty = no inbox.
-    std::string inbox_packing{};
-    /// Inbox checksum policy string for broker storage. Empty = default (enforced).
-    std::string inbox_checksum{};
     /// Schema for ZMQ PUSH frames (required when data_transport=="zmq").
-    /// Empty schema → LOGGER_ERROR + Producer::create returns nullopt.
-    /// Use {{"bytes",1,N}} as a single-blob schema for opaque N-byte payloads.
     std::vector<ZmqSchemaField> zmq_schema{};
     /// "aligned" (ctypes.LittleEndianStructure default) or "packed" (no padding).
-    /// Must match the receiver's packing.
     std::string zmq_packing{"aligned"};
     /// Flexzone schema fields (empty = no flexzone). Used by ShmQueue to compute fz size.
     std::vector<ZmqSchemaField> fz_schema{};
@@ -227,8 +173,6 @@ struct ProducerOptions
     /// Internal send-buffer depth for the ZmqQueue PUSH ring (write side).
     size_t zmq_buffer_depth{kZmqDefaultBufferDepth};
     /// Overflow policy for the ZmqQueue PUSH send ring.
-    /// Drop (default): write_acquire() returns nullptr immediately when ring is full.
-    /// Block: write_acquire() waits up to the caller's timeout for a free slot.
     OverflowPolicy zmq_overflow_policy{OverflowPolicy::Drop};
 
     // ── Queue abstraction ────────────────────────────────────────────────────
@@ -236,15 +180,8 @@ struct ProducerOptions
     ChecksumPolicy checksum_policy{ChecksumPolicy::Enforced};
     /// Checksum flexzone (SHM-specific). Applied via set_flexzone_checksum().
     bool flexzone_checksum{true};
-    /// Zero the slot buffer on write_acquire() (SHM only). Default true for safety
-    /// (prevents historical data leaks, ensures deterministic padding). Set false
-    /// for performance when the writer guarantees full field writes.
+    /// Zero the slot buffer on write_acquire() (SHM only). Default true for safety.
     bool always_clear_slot{true};
-
-    /// Max depth of P2P ctrl send queue before oldest items are dropped. 0 = unbounded.
-    size_t ctrl_queue_max_depth{256};
-    /// Peer silence timeout before on_peer_dead fires (ms). 0 = disabled.
-    int    peer_dead_timeout_ms{30000};
 };
 
 // ============================================================================
@@ -264,9 +201,8 @@ inline constexpr int kRealtimeWritePollMs        = 50;  ///< Slot poll interval 
  * @class Producer
  * @brief Active producer service managing a published channel.
  *
- * Created via Producer::create() or Producer::create<FlexZoneT, DataBlockT>().
- * Optional active mode: call start() to launch peer_thread (consumer tracking) and
- * write_thread (SHM slot processing).
+ * Created via Producer::create().
+ * Optional active mode: call start() to launch write_thread (SHM slot processing).
  */
 class PYLABHUB_UTILS_EXPORT Producer
 {
@@ -274,19 +210,11 @@ class PYLABHUB_UTILS_EXPORT Producer
     // ── Factories ──────────────────────────────────────────────────────────────
 
     /**
-     * @brief Non-template factory: no compile-time schema validation.
-     *        SHM created without schema type association.
+     * @brief Non-template factory: creates Producer with the given options.
+     *        Establishes local channel resources (queues, SHM).
      */
     [[nodiscard]] static std::optional<Producer>
-    create(Messenger &messenger, const ProducerOptions &opts);
-
-    /**
-     * @brief Template factory: derives schemas from FlexZoneT and DataBlockT.
-     *        Stores both schemas in the DataBlock header for consumer validation.
-     */
-    template <typename FlexZoneT, typename DataBlockT>
-    [[nodiscard]] static std::optional<Producer>
-    create(Messenger &messenger, const ProducerOptions &opts);
+    create(const ProducerOptions &opts);
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -298,23 +226,10 @@ class PYLABHUB_UTILS_EXPORT Producer
 
     // ── Callbacks — set BEFORE start() ────────────────────────────────────────
 
-    /// Called from peer_thread when a consumer connects (sends HELLO).
-    using ConsumerCallback = std::function<void(const std::string &identity)>;
-    void on_consumer_joined(ConsumerCallback cb);
-    void on_consumer_left(ConsumerCallback cb);
-
-    /// Called from peer_thread when a consumer sends a non-HELLO/BYE ctrl message.
-    using MessageCallback =
-        std::function<void(const std::string &identity, std::span<const std::byte> data)>;
-    void on_consumer_message(MessageCallback cb);
-
     /// Called from Messenger worker thread when broker sends CHANNEL_CLOSING_NOTIFY.
-    /// This is a graceful notification — the script should finish pending work then call
-    /// api.stop(). The broker will escalate to FORCE_SHUTDOWN after a grace period.
     void on_channel_closing(std::function<void()> cb);
 
     /// Called from Messenger worker thread when broker sends FORCE_SHUTDOWN.
-    /// Grace period expired — the handler should force immediate shutdown.
     void on_force_shutdown(std::function<void()> cb);
 
     /// Called from Messenger worker thread when broker sends CONSUMER_DIED_NOTIFY (Cat 2).
@@ -328,47 +243,16 @@ class PYLABHUB_UTILS_EXPORT Producer
         std::function<void(const std::string &event, const nlohmann::json &details)>;
     void on_channel_error(ChannelErrorCallback cb);
 
-    /// Callback fired when the peer (consumer) has been silent for peer_dead_timeout_ms.
-    /// Called from peer_thread — callback must be thread-safe.
-    void on_peer_dead(std::function<void()> cb);
-
     // ── Active mode ───────────────────────────────────────────────────────────
 
     /**
-     * @brief Start peer_thread (ctrl monitor) and write_thread (SHM).
+     * @brief Start write_thread (SHM).
      * @return true if started successfully; false if already running or not valid.
      */
     bool start();
 
     /**
-     * @brief Embedded mode: set running=true WITHOUT launching peer_thread/write_thread.
-     * Use when the caller (role ZMQ thread) drives all ZMQ polling itself via
-     * peer_ctrl_socket_handle() + handle_peer_events_nowait().
-     * @return true if successfully transitioned to running; false if already running or invalid.
-     */
-    [[nodiscard]] bool start_embedded() noexcept;
-
-    /**
-     * @brief Returns the raw ZMQ ROUTER ctrl socket handle for use in zmq_pollitem_t.
-     * MUST be called only in embedded mode (peer_thread not running).
-     * Returns nullptr if not valid or no ctrl socket.
-     */
-    [[nodiscard]] void *peer_ctrl_socket_handle() const noexcept;
-
-    /**
-     * @brief Non-blocking: drain ctrl send queue + process all pending POLLIN on ctrl socket.
-     *
-     * Fires on_consumer_joined / on_consumer_left / on_consumer_message callbacks synchronously.
-     * MUST be called from the socket-owning thread (embedded-mode ZMQ thread only).
-     * No-op if not valid.
-     *
-     * Internally limits recv dispatch to 100 messages per call to prevent infinite loops
-     * from unexpected ZMQ frame patterns (see HEP-CORE-0007 §12.3).
-     */
-    void handle_peer_events_nowait() noexcept;
-
-    /**
-     * @brief Graceful stop: joins peer_thread and write_thread. Idempotent.
+     * @brief Graceful stop: joins write_thread. Idempotent.
      *        Sets the is_stopping() flag before joining; handlers should poll it.
      */
     void stop();
@@ -377,59 +261,20 @@ class PYLABHUB_UTILS_EXPORT Producer
 
     /**
      * @brief True when stop() has been called (write_stop flag is set).
-     *        Primarily useful inside write handlers registered via set_write_handler().
      */
     [[nodiscard]] bool is_stopping() const noexcept;
 
-    // ── ZMQ ctrl messaging ────────────────────────────────────────────────────
-
-    /// Send a typed ctrl frame to a specific consumer (queued through peer_thread).
-    bool send_ctrl(const std::string &identity, std::string_view type,
-                   const void *data, size_t size);
-
     // ── DataBlock write (SHM) — Queue mode ────────────────────────────────────
 
-    /**
-     * @brief Async: enqueue a write job; write_thread acquires slot, calls job, commits.
-     *        Requires start() to have been called (write_thread must be running).
-     *        Non-blocking for caller. Returns false if not started or no SHM.
-     *
-     * @tparam FlexZoneT  Flex zone type (must match channel schema; use void if none).
-     * @tparam DataBlockT Slot data type (must match channel schema).
-     */
     template <typename FlexZoneT, typename DataBlockT>
     bool push(std::function<void(WriteProcessorContext<FlexZoneT, DataBlockT> &)> job);
 
-    /**
-     * @brief Sync: acquire slot and run job in the calling thread.
-     *        Does not require start(). Blocks caller until slot acquired and job done.
-     *        Returns false on no SHM or closed producer.
-     *
-     * @param timeout_ms  Slot-acquire timeout passed to the transaction context.
-     */
     template <typename FlexZoneT, typename DataBlockT>
     bool synced_write(std::function<void(WriteProcessorContext<FlexZoneT, DataBlockT> &)> job,
                       int timeout_ms = detail::kDefaultWriteSlotTimeoutMs);
 
     // ── DataBlock write (SHM) — Real-time mode ────────────────────────────────
 
-    /**
-     * @brief Install a persistent write handler; write_thread drives a continuous loop.
-     *        Pass nullptr to remove the handler and return to Queue mode.
-     *        Hot-swappable: the next write_thread iteration picks up the new handler.
-     *        Logs LOGGER_INFO on every install and removal.
-     *
-     * @tparam FlexZoneT  Flex zone type (must match channel schema; use void if none).
-     * @tparam DataBlockT Slot data type (must match channel schema).
-     *
-     * In the handler:
-     *   - `ctx.is_stopping()` — check at natural loop checkpoints; return when true.
-     *   - `ctx.txn.slots(timeout)` — iterate to acquire write slots.
-     *   - `ctx.txn.publish()` — commit the current slot.
-     *   - `ctx.flexzone()` — typed FlexZone access (when FlexZoneT != void).
-     *
-     * Handlers that block indefinitely will block stop(). Respect ctx.is_stopping().
-     */
     template <typename FlexZoneT, typename DataBlockT>
     void set_write_handler(
         std::function<void(WriteProcessorContext<FlexZoneT, DataBlockT> &)> fn);
@@ -446,95 +291,52 @@ class PYLABHUB_UTILS_EXPORT Producer
 
     // ── SHM identity (delegated to internal DataBlock via ShmQueue) ───────────
 
-    /// Spinlock count in the SHM header. 0 if no SHM.
     [[nodiscard]] uint32_t spinlock_count() const noexcept;
-    /// Spinlock at index. Throws if index out of range or no SHM.
     [[nodiscard]] SharedSpinLock get_spinlock(size_t index);
-    /// Channel identity fields from SHM header. Empty string if no SHM.
     [[nodiscard]] std::string hub_uid() const noexcept;
     [[nodiscard]] std::string hub_name() const noexcept;
     [[nodiscard]] std::string producer_uid() const noexcept;
     [[nodiscard]] std::string producer_name() const noexcept;
 
-    ChannelHandle                   &channel_handle();
+    // ── HEP-CORE-0021: ZMQ Endpoint Registry ──────────────────────────────────
 
-    // ── HEP-CORE-0021: ZMQ Virtual Channel Node ───────────────────────────────
-
-    /**
-     * @brief Returns the ZmqQueue PUSH socket owned by this Producer (HEP-CORE-0021).
-     * Non-null only when ProducerOptions::data_transport=="zmq" at create() time.
-     * Null when data_transport=="shm". Lifetime is tied to this Producer.
-     */
     [[nodiscard]] ZmqQueue *queue() noexcept;
-    /// Number of ctrl queue items dropped due to max_depth overflow.
-    [[nodiscard]] uint64_t ctrl_queue_dropped() const;
 
     // ── Queue data operations (delegated to internal QueueWriter) ──────────
 
-    /// Acquire a writable slot buffer. Returns nullptr on timeout or no queue.
     [[nodiscard]] void *write_acquire(std::chrono::milliseconds timeout) noexcept;
-    /// Publish the acquired slot (makes it visible to readers).
     void write_commit() noexcept;
-    /// Discard the acquired slot without publishing. Loop continues.
     void write_discard() noexcept;
-    /// Size of one data slot in bytes.
     [[nodiscard]] size_t queue_item_size() const noexcept;
-    /// Ring/send buffer capacity (slot count).
     [[nodiscard]] size_t queue_capacity() const noexcept;
-    /// Diagnostic counter snapshot. Thread-safe.
     [[nodiscard]] QueueMetrics queue_metrics() const noexcept;
-    /// Reset all queue metric counters.
     void reset_queue_metrics() noexcept;
 
     // ── Queue lifecycle ─────────────────────────────────────────────────────
 
-    /// Start the internal data queue. Idempotent.
     bool start_queue();
-    /// Stop the internal data queue. Idempotent.
     void stop_queue();
 
     // ── Channel data operations (flexzone, checksum — SHM-specific) ─────────
 
-    /// Writable pointer to the shared flexzone. nullptr if no flexzone or ZMQ transport.
     [[nodiscard]] void *write_flexzone() noexcept;
-    /// Read-only pointer to the shared flexzone. nullptr if no flexzone or ZMQ transport.
     [[nodiscard]] const void *read_flexzone() const noexcept;
-    /// Flexzone size in bytes. 0 if not configured or ZMQ transport.
     [[nodiscard]] size_t flexzone_size() const noexcept;
-    /// Runtime toggle: enable/disable BLAKE2b checksum on write_commit(). No-op for ZMQ.
     void set_checksum_options(bool slot, bool fz) noexcept;
-    /// Runtime toggle: enable/disable zero-fill of slot buffer on write_acquire() (SHM only).
     void set_always_clear_slot(bool enable) noexcept;
-    /// Stamp the flexzone checksum after on_init() writes initial content. No-op for ZMQ.
     void sync_flexzone_checksum() noexcept;
-    /// Overflow policy description for diagnostics (e.g. "shm_write", "zmq_push_drop").
     [[nodiscard]] std::string queue_policy_info() const;
 
-    /// Returns the Messenger used by this Producer.
-    [[nodiscard]] Messenger &messenger() const;
-
     /**
-     * @brief Deregisters from broker, closes sockets and SHM. Called by destructor.
-     * Idempotent.
+     * @brief Closes queues and SHM. Called by destructor. Idempotent.
      */
     void close();
-
-    // ── Internal: establish local channel resources (used by create<>) ─────────
-
-    /**
-     * @brief Establish local channel resources: wire callbacks, create queues,
-     *        resolve ephemeral endpoints (internal use by create() factories).
-     */
-    [[nodiscard]] static std::optional<Producer>
-    establish_channel(Messenger &messenger, ChannelHandle channel,
-                      const ProducerOptions &opts);
 
   private:
     explicit Producer(std::unique_ptr<ProducerImpl> impl);
     std::unique_ptr<ProducerImpl> pImpl;
 
     // ── Non-template helpers for template method implementations ──────────────
-    // Declared here, defined in .cpp; avoid exposing ProducerImpl details to header.
 
     [[nodiscard]] bool                   _has_shm() const noexcept;
     [[nodiscard]] bool                   _is_started_and_has_shm() const noexcept;
@@ -542,74 +344,6 @@ class PYLABHUB_UTILS_EXPORT Producer
     void _enqueue_write_job(std::function<void()> job);
     void _store_write_handler(std::shared_ptr<InternalWriteHandlerFn> h) noexcept;
 };
-
-// ============================================================================
-// Producer template factory implementation
-// ============================================================================
-
-template <typename FlexZoneT, typename DataBlockT>
-std::optional<Producer>
-Producer::create(Messenger &messenger, const ProducerOptions &opts)
-{
-    static_assert(std::is_void_v<FlexZoneT> || std::is_trivially_copyable_v<FlexZoneT>,
-                  "FlexZoneT must be trivially copyable for shared memory");
-    static_assert(std::is_trivially_copyable_v<DataBlockT>,
-                  "DataBlockT must be trivially copyable for shared memory");
-
-    // ── Named schema validation (HEP-CORE-0016 Phase 2) ──────────────────────
-    // Throws SchemaValidationException on size or BLDS hash mismatch; no-op if empty.
-    schema::validate_named_schema_from_env<DataBlockT, FlexZoneT>(opts.schema_id);
-
-    // Validate SHM sizes at compile time against the config
-    if (opts.has_shm)
-    {
-        if constexpr (!std::is_void_v<FlexZoneT>)
-        {
-            if (opts.shm_config.flex_zone_size < sizeof(FlexZoneT))
-            {
-                return std::nullopt;
-            }
-        }
-        size_t slot_size = opts.shm_config.effective_logical_unit_size();
-        if (slot_size < sizeof(DataBlockT))
-        {
-            return std::nullopt;
-        }
-    }
-
-    // ── Compute BLDS for schema annotation (HEP-CORE-0016 Phase 3) ───────────
-    std::string schema_blds_str;
-    if constexpr (schema::has_schema_registry_v<DataBlockT>)
-    {
-        schema_blds_str =
-            schema::generate_schema_info<DataBlockT>("", schema::SchemaVersion{}).blds;
-    }
-
-    // Create ZMQ channel
-    ChannelRegistrationOptions ch_opts;
-    ch_opts.pattern           = opts.pattern;
-    ch_opts.has_shared_memory = opts.has_shm;
-    ch_opts.schema_hash       = opts.schema_hash;
-    ch_opts.schema_version    = opts.schema_version;
-    ch_opts.timeout_ms        = opts.timeout_ms;
-    ch_opts.role_name        = opts.role_name;
-    ch_opts.role_uid         = opts.role_uid;
-    ch_opts.schema_id         = opts.schema_id;
-    ch_opts.schema_blds       = schema_blds_str;
-    ch_opts.data_transport    = opts.data_transport;
-    ch_opts.zmq_node_endpoint = opts.zmq_node_endpoint;
-    ch_opts.inbox_endpoint    = opts.inbox_endpoint;
-    auto ch = messenger.create_channel(opts.channel_name, ch_opts);
-    if (!ch.has_value())
-    {
-        return std::nullopt;
-    }
-
-    // Template path: DataBlock creation now inside ShmQueue::create_writer().
-    // TODO: Template type validation (sizeof check) needs reworking for the new
-    // factory pattern. For now, ShmQueue computes sizes from schema fields.
-    return Producer::establish_channel(messenger, std::move(*ch), opts);
-}
 
 // ============================================================================
 // Producer SHM template method implementations
@@ -677,48 +411,5 @@ void Producer::set_write_handler(
         });
     _store_write_handler(std::move(wrapped));
 }
-
-// ============================================================================
-// ManagedProducer — lifecycle-integrated wrapper
-// ============================================================================
-
-/**
- * @class ManagedProducer
- * @brief Wraps a Producer for registration with LifecycleGuard.
- *
- * get_module_def() returns a ModuleDef that, when the lifecycle system starts it,
- * creates the Producer (calling start()) and on shutdown calls stop() + close().
- */
-class PYLABHUB_UTILS_EXPORT ManagedProducer
-{
-  public:
-    explicit ManagedProducer(Messenger &messenger, ProducerOptions opts);
-    ~ManagedProducer();
-    ManagedProducer(ManagedProducer &&) noexcept;
-    ManagedProducer &operator=(ManagedProducer &&) noexcept;
-    ManagedProducer(const ManagedProducer &) = delete;
-    ManagedProducer &operator=(const ManagedProducer &) = delete;
-
-    /**
-     * @brief Returns a ModuleDef for this producer.
-     * MUST be called before LifecycleGuard construction.
-     * Adds dependency on "pylabhub::hub::DataExchangeHub" automatically.
-     */
-    [[nodiscard]] pylabhub::utils::ModuleDef get_module_def();
-
-    /// Returns the Producer after lifecycle startup has run.
-    Producer &get();
-
-    [[nodiscard]] bool is_initialized() const noexcept;
-
-  private:
-    Messenger      *messenger_;
-    ProducerOptions opts_;
-    std::optional<Producer> producer_;
-    std::string     module_key_;
-
-    static void s_startup(const char *key, void * /*userdata*/);
-    static void s_shutdown(const char *key, void * /*userdata*/);
-};
 
 } // namespace pylabhub::hub

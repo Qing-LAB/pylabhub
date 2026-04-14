@@ -705,12 +705,8 @@ All ZMQ control plane messages use JSON encoding. User-supplied data follows the
    the receiver decodes it — that's the application's responsibility, not the framework's
 
 This applies to:
-- `api.notify_channel(target, event, data)` → `"data": data` in CHANNEL_NOTIFY_REQ
-- `api.broadcast_channel(target, message, data)` → `"data": data` in CHANNEL_BROADCAST_REQ
-- `pylabhub.broadcast_channel(channel, message, data)` (admin shell) → same
-
-Peer-to-peer data messages (Category A) are **raw binary** on direct ZMQ sockets — no JSON,
-no wrapping. They arrive in Python as `bytes` objects.
+- `api.band_broadcast(band, body)` → `"data"` field in BAND_BROADCAST_REQ
+- Band messaging (HEP-CORE-0030) — all band messages use JSON bodies
 
 ### 12.1 Message Framing
 
@@ -751,11 +747,10 @@ until the broker sends the corresponding ACK or ERROR.
 Direction:  Producer → Broker → Producer
 Trigger:    Messenger::create_channel() or Messenger::register_producer()
 Sequence:
-  1. Producer binds P2C ROUTER + XPUB/PUSH sockets on ephemeral ports
-  2. Producer sends REG_REQ with socket endpoints, schema, identity
-  3. Broker validates connection policy, stores ChannelEntry
-  4. Broker sends REG_ACK (status="success") or ERROR
-  5. Producer registers heartbeat on success
+  1. Producer sends REG_REQ with channel identity, schema, and SHM info
+  2. Broker validates connection policy, stores ChannelEntry
+  3. Broker sends REG_ACK (status="success") or ERROR
+  4. Producer registers heartbeat on success
 
 Payload (REG_REQ):
   channel_name          string   Channel identifier (e.g. "lab.sensors.raw")
@@ -764,10 +759,6 @@ Payload (REG_REQ):
   schema_hash           string   64-char hex BLAKE2b-256 hash (or empty)
   schema_version        uint32   Schema version number
   has_shared_memory     bool     Whether SHM segment exists
-  channel_pattern       string   "PubSub" | "Pipeline" | "Bidir"
-  zmq_ctrl_endpoint     string   Producer ROUTER bind endpoint (e.g. "tcp://127.0.0.1:56789")
-  zmq_data_endpoint     string   Producer XPUB/PUSH bind endpoint (empty for Bidir)
-  zmq_pubkey            string   Producer CurveZMQ public key (Z85, 40 chars)
   role_name             string   (opt) Human-readable producer name
   role_uid              string   (opt) Producer UID (e.g. "PROD-MySensor-A1B2C3D4")
   schema_id             string   (opt) Named schema ID (e.g. "lab.sensors.temperature.raw@1")
@@ -782,43 +773,81 @@ role_type field (added 2026-03-10):
                                  Absent field treated as "producer" for backward compatibility.
 ```
 
-#### DISC_REQ / DISC_ACK — Discover Channel
+#### DISC_REQ — Discover Channel (three-response state-machine, HEP-CORE-0023 rev 2)
 
 ```
 Direction:  Consumer → Broker → Consumer
-Trigger:    Messenger::connect_channel() or Messenger::discover_producer()
-Sequence:
-  1. Consumer sends DISC_REQ with channel_name
-  2. Broker looks up channel in registry
-  3. If channel exists AND status == Ready: sends DISC_ACK with connection info
-  4. If channel exists but status == PendingReady: sends ERROR with "CHANNEL_NOT_READY"
-     (Messenger retries automatically within timeout)
-  5. If channel does not exist: sends ERROR with "CHANNEL_NOT_FOUND"
+Trigger:    BrokerRequestComm::discover_channel()
+Pattern:    Synchronous request/reply. Broker always replies immediately —
+            no queued/deferred responses. The reply encodes one of three
+            well-defined states; the client decides how to react.
 
 Payload (DISC_REQ):
   channel_name          string
 
-Deferred DISC_ACK (added 2026-03-10):
-  When channel_name is not yet registered (or status == PendingReady), the broker
-  queues the DISC_REQ and holds the reply until the producer registers (up to
-  pending_disc_timeout_ms, default 30 s). This eliminates the need for client-side
-  retry loops in most startup scenarios. See HEP-CORE-0023 for the full protocol.
-  Timeout: broker sends ERROR "CHANNEL_NOT_FOUND" after pending_disc_timeout_ms.
+Broker dispatch logic:
+  let role = registry.find_role(channel_name)   // single source of truth
+  if role == nullptr:
+      reply ERROR "CHANNEL_NOT_FOUND"
+  elif role.status == Ready:
+      reply DISC_ACK with connection info
+  elif role.status == Pending:
+      reply DISC_PENDING (no connection info — client MUST retry)
+```
 
-Payload (DISC_ACK):
+**Reply variant 1 — DISC_ACK (channel is Ready):**
+```
+Payload:
   status                string   "success"
   shm_name              string   SHM segment to attach
   schema_hash           string   64-char hex hash
   schema_version        uint32
   has_shared_memory     bool
-  channel_pattern       string
-  zmq_ctrl_endpoint     string   Producer's ROUTER endpoint for consumer to connect
-  zmq_data_endpoint     string   Producer's XPUB/PUSH endpoint
-  zmq_pubkey            string   Producer's CurveZMQ public key
   consumer_count        uint32   Current consumer count on this channel
   schema_id             string   (opt) Named schema ID
   blds                  string   (opt) BLDS string
+  data_transport        string   "shm" or "zmq"
+  zmq_node_endpoint     string   (if data_transport="zmq")
 ```
+
+**Reply variant 2 — DISC_PENDING (channel registered but not yet Ready):**
+```
+Payload:
+  status                string   "pending"
+  channel_name          string   Echo of the requested channel
+  reason                string   "awaiting_first_heartbeat"
+
+Meaning: the producer has sent REG_REQ but has not yet emitted its first
+HEARTBEAT_REQ. The broker has NOT queued this request; the client must retry
+DISC_REQ after a short delay. The retry cadence is a client policy (default
+100ms) and is bounded by the client's overall discover timeout.
+```
+
+**Reply variant 3 — ERROR CHANNEL_NOT_FOUND (channel not registered):**
+```
+Payload:
+  status                string   "error"
+  error                 string   "CHANNEL_NOT_FOUND"
+  message               string   Human-readable description
+
+Meaning: no producer has sent REG_REQ for this channel_name. Client should
+retry if it is within its own discover timeout (producer may register later);
+after the client timeout, the caller gives up.
+```
+
+**Design rationale (three-response state machine):**
+1. **Bounded broker memory.** The broker does NOT hold pending DISC_REQs.
+   State storage is O(registered roles), not O(outstanding requests).
+2. **Predictable semantics.** A DISC_REQ always returns the current state of
+   the role registry. No invisible "reply pending" state on the broker.
+3. **Client owns retry policy.** Different clients may tolerate different
+   delays; encoding a broker-side timeout forces one policy on everyone.
+4. **Observability.** Any query at any time reflects the role registry state.
+   No need to reason about "what's in the deferred queue."
+
+**Replaces:** HEP-CORE-0023 §2 "Deferred DISC_ACK" (broker-side queuing model),
+which had the broker hold replies until role transition. That design was
+superseded on 2026-04-14 by the three-response state machine.
 
 #### CONSUMER_REG_REQ / CONSUMER_REG_ACK — Register Consumer
 
@@ -954,7 +983,7 @@ loop is progressing — not just that the ZMQ connection is alive.
 Direction:  Producer/Consumer → Broker
 Trigger:    Messenger::report_checksum_error()
 Effect:     Broker logs and, if ChecksumRepairPolicy::NotifyOnly, forwards as
-            CHANNEL_EVENT_NOTIFY to all channel participants
+            CHANNEL_ERROR_NOTIFY to all channel participants
 
 Payload:
   channel_name          string
@@ -1216,63 +1245,18 @@ Script host delivery:
    "channel": "...", "reason": "graceful", "source_hub_uid": "..."}
 ```
 
-### 12.6 Peer-to-Peer Messages (Producer ↔ Consumer Direct)
+### 12.6 P2C Peer Protocol (REMOVED)
 
-These flow directly on the P2C ZMQ sockets (ROUTER ctrl + XPUB/PUSH data),
-**not through the broker**.
+The P2C peer-to-peer protocol (HELLO/BYE handshake, direct producer-to-consumer
+ZMQ sockets, ChannelHandle, ChannelPattern) has been removed from the
+architecture. See HEP-CORE-0030 for the supersession table.
 
-#### HELLO — Consumer Connect Handshake
-
-```
-Direction:  Consumer → Producer (P2C ctrl socket)
-Trigger:    Consumer::start_embedded() or Consumer::start()
-Callback:   Producer::on_consumer_joined(identity)
-
-Script host delivery: Event dict in msgs:
-  {"event": "consumer_joined", "identity": "<zmq_identity>"}
-```
-
-#### BYE — Consumer Disconnect
-
-```
-Direction:  Consumer → Producer (P2C ctrl socket)
-Trigger:    Consumer::stop() or Consumer::close()
-Callback:   Producer::on_consumer_left(identity)
-
-Script host delivery: Event dict in msgs:
-  {"event": "consumer_left", "identity": "<zmq_identity>"}
-```
-
-#### Application Data (Consumer → Producer)
-
-```
-Direction:  Consumer → Producer (P2C ctrl socket)
-Trigger:    Consumer::send_ctrl(type, data, size)
-Callback:   Producer::on_consumer_message(identity, data)
-
-Script host delivery: (sender, bytes) tuple in msgs (existing behavior)
-```
-
-#### Application Data (Producer → Consumer)
-
-```
-Direction:  Producer → Consumer (data socket: XPUB/PUSH)
-Trigger:    Producer::send(data, size) or Producer::send_to(identity, data, size)
-Callback:   Consumer::on_zmq_data(data)
-
-Script host delivery: bytes in msgs (consumer) or (sender, bytes) tuple (processor)
-```
-
-#### Producer Control Message (Producer → Consumer)
-
-```
-Direction:  Producer → specific Consumer (P2C ctrl socket via ROUTER)
-Trigger:    Producer::send_ctrl(identity, type, data, size)
-Callback:   Consumer::on_producer_message(type, data)
-
-Script host delivery: Event dict in msgs:
-  {"event": "producer_message", "type": "<type>", "data": <bytes>}
-```
+Replacement mechanisms:
+- Consumer registration: CONSUMER_REG_REQ / CONSUMER_DEREG_REQ (broker-mediated)
+- Consumer liveness: Broker heartbeat timeout + CONSUMER_DIED_NOTIFY
+- Data streaming: ShmQueue / ZmqQueue (typed frames, not raw P2C bytes)
+- Coordination messaging: Bands (HEP-CORE-0030)
+- P2P data exchange: Inbox (HEP-CORE-0027)
 
 ### 12.7 Complete Protocol Sequences
 
@@ -1294,8 +1278,7 @@ Script host delivery: Event dict in msgs:
      │                    │<── CONSUMER_REG ───│
      │                    │── CONSUMER_REG_ACK>│
      │                    │                    │
-     │<───────────── HELLO (P2C) ─────────────│
-     │   on_consumer_joined fires             │
+     │  (Consumer attaches SHM or connects ZmqQueue)
      │                    │                    │
 ```
 
@@ -1353,52 +1336,24 @@ If clients do NOT deregister before the grace period expires:
      │                    │                    │
 ```
 
-#### Sequence C: Application Signal via CHANNEL_NOTIFY_REQ (NEW)
+#### Sequence C: Band Broadcast (HEP-CORE-0030)
 
 ```
 ┌──────────┐          ┌────────┐          ┌──────────┐
-│ Consumer  │          │ Broker │          │ Producer  │
-│ (sender)  │          │        │          │ (target)  │
+│ Any Role  │          │ Broker │          │ Band      │
+│ (sender)  │          │        │          │ Members   │
 └────┬─────┘          └───┬────┘          └────┬─────┘
      │                    │                    │
-     │── CHANNEL_NOTIFY ─>│                    │
+     │── BAND_BROADCAST ─>│                    │
      │   REQ              │                    │
-     │   target="ch.raw"  │                    │
-     │   event="ready"    │                    │
+     │   band="#my-band"  │                    │
+     │   body={...}       │                    │
      │                    │                    │
-     │                    │── CHANNEL_EVENT ──>│
-     │                    │   NOTIFY            │
-     │                    │   event="ready"     │
-     │                    │   sender_uid="..."  │
-     │                    │                    │
-     │                    │  on_channel_error   │
-     │                    │  callback fires     │
-     │                    │  → enqueued to msgs │
-     │                    │                    │
-```
-
-#### Sequence D: Broadcast to All Channel Members
-
-```
-┌──────────┐          ┌────────┐          ┌──────────┐
-│ Admin /   │          │ Broker │          │ Channel   │
-│ Any Role  │          │        │          │ Members   │
-└────┬─────┘          └───┬────┘          └────┬─────┘
-     │                    │                    │
-     │── CHANNEL_BCAST ──>│                    │
-     │   REQ              │                    │
-     │   target="ch.raw"  │                    │
-     │   message="start"  │                    │
-     │                    │                    │
-     │                    │── CHANNEL_BCAST ──>│ (to each consumer)
-     │                    │   NOTIFY            │
-     │                    │── CHANNEL_BCAST ──>│ (to producer)
+     │                    │── BAND_BROADCAST ──>│ (to each member)
      │                    │   NOTIFY            │
      │                    │                    │
-     │                    │  on_channel_error   │
-     │                    │  callback fires     │
-     │                    │  → event dict in    │
-     │                    │    msgs for each    │
+     │                    │  enqueued to msgs   │
+     │                    │  as event dict      │
      │                    │                    │
 ```
 
@@ -1420,57 +1375,48 @@ If clients do NOT deregister before the grace period expires:
 
 ### 12.8 Script Host Event Delivery Model
 
-All events are delivered to the Python script via the `msgs` list parameter in the
-callback (`on_produce`, `on_consume`, `on_process`). The list contains mixed types:
+All events are delivered to the script via the `msgs` list parameter in the
+callback (`on_produce`, `on_consume`, `on_process`). The list contains event dicts:
 
 ```python
-def on_produce(out_slot, flexzone, msgs, api):
+def on_produce(tx, msgs, api):
     for m in msgs:
-        if isinstance(m, dict):
-            # Event message — has "event" key
-            if m["event"] == "consumer_joined":
-                api.log("info", f"Consumer joined: {m['identity']}")
-            elif m["event"] == "broadcast":
-                api.log("info", f"Broadcast: {m['message']} from {m.get('sender_uid')}")
-            elif m.get("sender_uid"):
-                # Application event relayed via CHANNEL_NOTIFY_REQ
-                api.log("info", f"Event '{m['event']}' from {m['sender_uid']}")
-        else:
-            # Data message — (sender_identity, data_bytes) tuple
-            sender, data = m
-            # sender is bytes (ZMQ identity — may contain non-UTF-8 binary)
-            api.log("info", f"Data from {sender!r}: {len(data)} bytes")
+        if m["event"] == "band_broadcast":
+            api.log("info", f"Band msg from {m['sender_uid']}: {m['body']}")
+        elif m["event"] == "consumer_died":
+            api.log("warn", f"Consumer died: PID {m['pid']}")
+        elif m["event"] == "channel_closing":
+            api.stop()
 ```
 
-#### Message formats by role
+#### Message format
 
-| Role | Data messages | Event messages |
-|------|--------------|----------------|
-| **Producer** | `(sender: bytes, data: bytes)` tuple — sender is ZMQ identity (binary) | `dict` with `"event"` key |
-| **Consumer** | `bytes` (no sender — data is from the producer) | `dict` with `"event"` key |
-| **Processor** | `(sender: bytes, data: bytes)` tuple (from output side) | `dict` with `"event"` key |
+All messages in `msgs` are event dicts with an `"event"` key. Data streaming is handled
+separately through QueueReader/QueueWriter (slot acquisition in the main loop), not
+through the `msgs` parameter.
+
+| Role | `msgs` contents |
+|------|----------------|
+| **All roles** | `list[dict]` — each dict has `"event"` key identifying the notification type |
 
 #### Event dictionary reference
 
 | Event name | Source | Recipient | Dict fields |
 |-----------|--------|-----------|-------------|
-| `consumer_joined` | P2P HELLO | Producer, Processor | `event`, `identity`, `source_hub_uid` |
-| `consumer_left` | P2P BYE | Producer, Processor | `event`, `identity`, `source_hub_uid` |
+| ~~`consumer_joined`~~ | ~~P2P HELLO~~ | — | **REMOVED** — P2C protocol eliminated. Use BAND_JOIN_NOTIFY (HEP-CORE-0030) |
+| ~~`consumer_left`~~ | ~~P2P BYE~~ | — | **REMOVED** — P2C protocol eliminated. Use BAND_LEAVE_NOTIFY (HEP-CORE-0030) |
 | `consumer_died` | Broker CONSUMER_DIED_NOTIFY | Producer, Processor | `event`, `pid`, `reason`, `source_hub_uid` |
 | `channel_closing` | Broker CHANNEL_CLOSING_NOTIFY | All roles | `event`, `channel_name`, `reason`, `source_hub_uid` |
 | `role_registered` | Broker ROLE_REGISTERED_NOTIFY | All roles | `event`, `role_uid`, `role_type`, `channel`, `source_hub_uid` |
 | `role_deregistered` | Broker ROLE_DEREGISTERED_NOTIFY | All roles | `event`, `role_uid`, `role_type`, `channel`, `reason`, `source_hub_uid` |
-| `broadcast` | Broker CHANNEL_BROADCAST_NOTIFY | All roles | `event`, `detail`, `channel_name`, `sender_uid`, `message`, `data` (opt), `source_hub_uid` |
-| _(app event)_ | Broker CHANNEL_EVENT_NOTIFY (relay) | Producer (target) | `event`=_app string_, `detail`=_same_, `channel_name`, `sender_uid`, `source_hub_uid` |
-| _(system event)_ | Broker CHANNEL_ERROR/EVENT_NOTIFY | Affected role | `event`=_error string_, `detail`=_same_, `channel_name`, + context, `source_hub_uid` |
-| `producer_message` | P2P ctrl frame | Consumer, Processor | `event`, `type`, `data`, `source_hub_uid` |
+| `band_broadcast` | Broker BAND_BROADCAST_NOTIFY | Band members | `event`, `band`, `sender_uid`, `body`, `source_hub_uid` |
+| `band_join` | Broker BAND_JOIN_NOTIFY | Band members | `event`, `band`, `role_uid`, `source_hub_uid` |
+| `band_leave` | Broker BAND_LEAVE_NOTIFY | Band members | `event`, `band`, `role_uid`, `source_hub_uid` |
+| _(system event)_ | Broker CHANNEL_ERROR_NOTIFY | Affected role | `event`=_error string_, `detail`=_same_, `channel_name`, + context, `source_hub_uid` |
 
-**Note on `event` field overwrite behavior**: The script host sets `msg.event = "channel_event"`,
-then copies all body fields from the broker JSON into `msg.details`. When `build_messages_list_()`
-constructs the Python dict, it first sets `d["event"] = msg.event` ("channel_event"), then iterates
-`msg.details` which includes the broker's `"event"` field — this **overwrites** `d["event"]` with
-the broker's original event string (e.g. `"broadcast"`, `"consumer_ready"`, `"checksum_error"`).
-This means Python scripts should dispatch on the **broker's event name**, not "channel_event".
+**Note on `event` field**: Each notification type has a well-defined `"event"` string value.
+Scripts should dispatch on this field (e.g. `"band_broadcast"`, `"consumer_died"`,
+`"channel_closing"`).
 
 #### Thread safety
 
@@ -1481,102 +1427,45 @@ the GIL held.
 
 | Callback | Thread |
 |----------|--------|
-| `on_consumer_joined` / `on_consumer_left` | `peer_thread` (Producer internal) |
-| `on_consumer_message` | `peer_thread` |
-| `on_consumer_died` | Messenger worker thread |
-| `on_channel_error` / `on_channel_event` | Messenger worker thread |
-| `on_producer_message` | `ctrl_thread` (Consumer internal) |
-| `on_zmq_data` | `data_thread` (Consumer internal) or `zmq_thread_` (embedded) |
+| `on_consumer_died` | BrokerRequestComm notification callback |
+| `on_channel_error` | BrokerRequestComm notification callback |
+| `on_band_broadcast` / `on_band_join` / `on_band_leave` | BrokerRequestComm notification callback |
 
 ### 12.9 Design Notes — No Interference
 
-**Why CHANNEL_ERROR_NOTIFY and CHANNEL_EVENT_NOTIFY share the same callback:**
+**Notification dispatch:**
 
-Both are handled by `Messenger::on_channel_error()` and dispatched to the same
-`on_channel_error` callback on `hub::Producer` / `hub::Consumer`. This is intentional:
+All broker notifications (CHANNEL_ERROR_NOTIFY, BAND_BROADCAST_NOTIFY, BAND_JOIN_NOTIFY,
+BAND_LEAVE_NOTIFY, CONSUMER_DIED_NOTIFY, ROLE_REGISTERED_NOTIFY, ROLE_DEREGISTERED_NOTIFY)
+are received by `BrokerRequestComm`'s notification callback and dispatched to
+`RoleHostCore::enqueue_message()`. The script handler on the loop thread drains the queue
+and converts messages to language-native objects.
 
-1. They share the same JSON framing and payload structure
-2. The `event` field in the JSON body distinguishes the specific event type
-3. In the script host, both are converted to event dicts — the Python script decides
-   what to do based on `m["event"]`
-4. CHANNEL_ERROR_NOTIFY events use known system event strings (e.g.
-   `schema_mismatch_attempt`); CHANNEL_EVENT_NOTIFY from CHANNEL_NOTIFY_REQ relay
-   includes `sender_uid` to identify user-originated signals
-
-**Why CHANNEL_NOTIFY_REQ targets producers only:**
-
-The broker's channel registry is producer-centric: each channel has exactly one producer
-ZMQ identity. Routing to "all consumers" would require iterating consumers[]. The current
-design targets the channel owner (producer) because the primary use case is downstream
-signaling upstream ("consumer_ready", "pipeline_ready"). For fan-out to all members, use
-CHANNEL_BROADCAST_REQ instead.
-
-**CHANNEL_NOTIFY_REQ vs CHANNEL_BROADCAST_REQ — design distinction:**
-
-| Aspect | `notify_channel()` | `broadcast_channel()` |
-|--------|-------------------|----------------------|
-| Wire message | CHANNEL_NOTIFY_REQ | CHANNEL_BROADCAST_REQ |
-| Delivery | CHANNEL_EVENT_NOTIFY to **producer only** | CHANNEL_BROADCAST_NOTIFY to **all members** |
-| Use case | Upstream signaling (consumer→producer) | Coordination (admin→pipeline, role→all) |
-| event field in Python | Application-defined (e.g. "ready") | Always `"broadcast"` |
-| Has `message` field | No | Yes |
-
-**Three notification dispatch paths share one callback:**
-
-CHANNEL_ERROR_NOTIFY, CHANNEL_EVENT_NOTIFY, and CHANNEL_BROADCAST_NOTIFY all dispatch
-through `Messenger::on_channel_error()`. This is intentional: they share wire framing and
-the script host converts all three to event dicts. The `event` field (from the broker body)
-distinguishes them. CHANNEL_BROADCAST_NOTIFY uses `event="broadcast"`; CHANNEL_EVENT_NOTIFY
-preserves the original event string.
+Each notification type produces a unique event dict format with a distinct `"event"` value.
+Scripts dispatch on `m["event"]` (Python) or `m.event` (Lua).
 
 **Message non-interference guarantee:**
 
 No two message types produce the same event dict format. Each event dict has a unique
-`"event"` value. Data messages are always tuples or bytes (never dicts). Scripts can
-unambiguously dispatch on `isinstance(m, dict)` and `m["event"]`.
+`"event"` value. Data messages are delivered through QueueReader/QueueWriter (slot
+acquisition), not through the event dict system. Scripts can unambiguously dispatch
+on event type.
 
-### 12.3. Shutdown Pitfalls — Embedded-Mode ZMQ Recv Loops
-
-**Problem discovered 2026-03-04:**
-
-The embedded-mode helpers `handle_peer_events_nowait()` (Producer) and
-`handle_data_events_nowait()` / `handle_ctrl_events_nowait()` (Consumer) use a drain loop:
-
-```cpp
-while (pImpl->recv_and_dispatch_ctrl_()) {}
-```
-
-`recv_and_dispatch_ctrl_()` uses `zmq::recv_multipart(*sock, ..., dontwait)`. Normally this
-throws `zmq::error_t(EAGAIN)` when no message is available, causing the function to return
-`false` and the drain loop to exit. However, under certain conditions (socket handshaking,
-partial multipart frames, peer disconnect notifications), `recv_multipart` can return
-successfully with zero useful frames, causing the "malformed message" path to return `true`.
-This creates an **infinite spin loop** that blocks the ZMQ thread and prevents graceful
-shutdown.
-
-**Three-layer defense (all required):**
-
-| Layer | What | Where |
-|-------|------|-------|
-| 1. **Result validation** | Check `!res.has_value() \|\| *res == 0` after `recv_multipart` — return `false` if no frames actually received | `recv_and_dispatch_ctrl_()`, `recv_and_dispatch_data_()` in `hub_producer.cpp`, `hub_consumer.cpp` |
-| 2. **Batch cap** | Limit drain loop to 100 messages per call: `while (fn() && ++n < 100) {}` | `handle_peer_events_nowait()`, `handle_data_events_nowait()`, `handle_ctrl_events_nowait()` |
-| 3. **Shutdown flags in loop conditions** | All worker thread `while` loops must check both `running_threads` AND `shutdown_requested` | All `run_loop_shm_()` and `run_zmq_thread_()` in producer/consumer/processor script hosts |
-
-**The batch cap does NOT cause message loss.** Unprocessed messages remain in the socket
-buffer and are drained on the next `zmq_poll` cycle (5ms later).
+### 12.10. Shutdown Flag Propagation
 
 **`api.stop()` flag propagation chain:**
 
 ```
-Python api.stop()
-  → ProducerAPI::stop() / ConsumerAPI::stop() / ProcessorAPI::stop()
+api.stop()  (Python / Lua / Native)
+  → RoleAPIBase::stop()
     → core_.g_shutdown->store(true)        // wakes main thread
-    → core_.shutdown_requested.store(true)  // wakes do_python_work + worker loops
-      → run_loop_shm_() checks shutdown_requested → exits
-      → run_zmq_thread_() checks shutdown_requested → exits
-      → do_python_work() wait loop exits → calls stop_role()
+    → core_.shutdown_requested.store(true)  // wakes worker loops
+      → data loop checks shutdown_requested → exits
+      → do_python_work() / worker wait loop exits → calls stop_role()
         → stop_role() sets running_threads=false, joins threads
 ```
+
+All worker thread `while` loops must check both `running_threads` AND `shutdown_requested`.
 
 ---
 

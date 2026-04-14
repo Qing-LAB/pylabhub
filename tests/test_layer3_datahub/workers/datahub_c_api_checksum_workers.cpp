@@ -33,7 +33,7 @@ namespace pylabhub::tests::worker::c_api_checksum
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetLifecycleModule(); }
+static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 static DataBlockConfig make_config(ChecksumPolicy cs_policy, uint64_t secret)
 {

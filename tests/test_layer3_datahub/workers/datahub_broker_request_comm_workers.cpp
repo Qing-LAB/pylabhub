@@ -31,7 +31,8 @@ using namespace pylabhub::broker;
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
-static auto hub_module()    { return ::pylabhub::hub::GetLifecycleModule(); }
+static auto hub_module()    { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto zmq_module()    { return ::pylabhub::hub::GetZMQContextModule(); }
 
 // ============================================================================
 // Broker helper
@@ -81,7 +82,7 @@ BrokerHandle start_broker()
 
 int connect_and_heartbeat()
 {
-    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module());
+    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     auto broker = start_broker();
@@ -113,7 +114,7 @@ int connect_and_heartbeat()
 
 int register_and_discover()
 {
-    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module());
+    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     auto broker = start_broker();
@@ -174,7 +175,7 @@ int register_and_discover()
 
 int role_presence()
 {
-    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module());
+    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     auto broker = start_broker();
@@ -223,7 +224,7 @@ int role_presence()
 
 int notification_dispatch()
 {
-    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module());
+    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     auto broker = start_broker();

@@ -580,10 +580,10 @@ interpreter thread (PythonScriptHost.thread_fn_):
   Py_Initialize → load script package → on_init(api)
   GIL released (main_thread_release_.emplace())
 
-zmq_thread_:
-  HELLO → REG_REQ → await REG_ACK (SHM name + broker config)
+broker_thread_:
+  REG_REQ → await REG_ACK (SHM name + broker config)
   heartbeat loop (sends HEARTBEAT_REQ when iteration_count_ advances)
-  handles BYE from consumers
+  handles broker notifications (CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY)
 
 loop_thread_:                                          ← updated 2026-03-13
   acquire_timeout = derived from target_period_ms (period/2, min 1; 50ms for MaxRate)
@@ -616,9 +616,9 @@ interpreter thread (PythonScriptHost.thread_fn_):
   GIL released (main_thread_release_.emplace())
 
 ctrl_thread_:   ← renamed from zmq_thread_ (2026-03-09)
-  HELLO → CONSUMER_REG_REQ → await DISC_ACK (SHM secret or ZMQ endpoint)
+  DISC_REQ → CONSUMER_REG_REQ → await DISC_ACK (SHM secret or ZMQ endpoint)
   attach SHM or connect ZmqQueue PULL (depending on queue_type)
-  heartbeat loop; handles producer BYE, CHANNEL_CLOSING_NOTIFY, FORCE_SHUTDOWN
+  heartbeat loop; handles CHANNEL_CLOSING_NOTIFY, FORCE_SHUTDOWN, CONSUMER_DIED_NOTIFY
 
 loop_thread_:   ← unified via hub::QueueReader* (2026-03-09); updated 2026-03-13
   acquire_timeout = derived from target_period_ms (period/2, min 1; 50ms for MaxRate)
@@ -874,7 +874,7 @@ See HEP-CORE-0016 for the full Named Schema Registry specification.
 | Topic | Authoritative document |
 |-------|----------------------|
 | SHM memory layout, ring buffer, slot state machine | HEP-CORE-0002 |
-| HELLO/BYE/REG/DISC/HEARTBEAT protocol | HEP-CORE-0007 |
+| REG/DISC/HEARTBEAT/CONSUMER_REG protocol | HEP-CORE-0007 |
 | LoopPolicy and iteration metrics | HEP-CORE-0008 |
 | Connection policy (ConsumerSyncPolicy, etc.) | HEP-CORE-0009 |
 | ScriptHost abstract base, PythonScriptHost | HEP-CORE-0011 |
@@ -1022,11 +1022,10 @@ See HEP-CORE-0015 §8.2 for the processor's three-thread model (`loop_thread_`,
 
 ## 15. Channel Establishment and Communication Planes
 
-> **Note (2026-04-10):** The "Control plane" row in §15.1 and the P2C socket
-> establishment sequences in §15.3/15.4 are being revised. Channel messaging
-> is redesigned as a broker-hosted pub/sub system — see HEP-CORE-0030.
-> The Control plane is replaced by `BrokerRequestComm` (broker DEALER protocol).
-> P2C sockets (ChannelHandle, ChannelPattern) are eliminated.
+> **Updated 2026-04-11:** The P2C socket infrastructure (ChannelHandle, ChannelPattern,
+> HELLO/BYE handshake, direct producer-to-consumer ZMQ sockets) has been removed.
+> The Control plane is now `BrokerRequestComm` (broker DEALER protocol).
+> Channel messaging uses Bands (HEP-CORE-0030). P2P messaging uses Inbox (HEP-CORE-0027).
 > The Data plane (QueueReader/QueueWriter, SHM, ZMQ PUSH/PULL) is unchanged.
 
 This section is the canonical reference for how each role establishes its data and
@@ -1141,11 +1140,11 @@ other's address. `ZmqQueue::start()` initiates the background send/recv thread.
 
 All roles use the same control plane architecture:
 
-1. `hub::Producer` / `hub::Consumer` owns a DEALER ctrl socket (part of `ChannelHandle`)
+1. `BrokerRequestComm` owns a DEALER socket connected to the broker
 2. The role host runs a `ctrl_thread_` that polls this socket via `zmq_pollitem_t`
 3. Control messages include: heartbeats (periodic, to broker), `CHANNEL_CLOSING_NOTIFY`,
-   `FORCE_SHUTDOWN`, `CHANNEL_ERROR_NOTIFY`, peer ctrl messages (producer↔consumer)
-4. The `ctrl_thread_` dispatches incoming messages to the role host's `IncomingMessage` queue
+   `FORCE_SHUTDOWN`, `CHANNEL_ERROR_NOTIFY`, `CONSUMER_DIED_NOTIFY`, band notifications
+4. The `ctrl_thread_` dispatches incoming messages to `RoleHostCore::enqueue_message()`
 5. The data loop drains this queue between iterations (via `drain_inbox_sync_()`)
 
 The control plane is transport-independent — it operates identically regardless of whether
@@ -1208,11 +1207,10 @@ Each class provides three categories of operations:
 - `set_checksum_options()`, `set_verify_checksum()`, `sync_flexzone_checksum()`
 - `set_queue_period()`
 
-**Service operations** (broker protocol, peer management, ctrl messaging):
+**Service operations** (broker protocol, lifecycle):
 - `create()` / `connect()`, `close()`, `start()`, `stop()`
-- Callbacks: `on_channel_closing()`, `on_force_shutdown()`, `on_peer_dead()`, etc.
-- Ctrl messaging: `send_ctrl()`, `send_to()`, `connected_consumers()`
-- Introspection: `channel_name()`, `has_shm()`, `data_transport()`, `messenger()`
+- Callbacks: `on_channel_closing()`, `on_force_shutdown()`, `on_consumer_died()`
+- Introspection: `channel_name()`, `has_shm()`, `data_transport()`
 
 This separation keeps queue internals fully encapsulated while providing the role host
 with a clean, transport-agnostic API for all data-plane operations.

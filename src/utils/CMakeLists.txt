@@ -70,12 +70,9 @@ set(UTILS_SOURCES
   network_comm/zmq_context.cpp
   network_comm/broker_request_comm.cpp
 
-  # --- ipc: Messenger (legacy, to be removed), channel/band registry, broker ---
+  # --- ipc: broker service, channel/band registries ---
   ipc/band_registry.cpp
-  ipc/messenger.cpp
-  ipc/messenger_protocol.cpp
   ipc/heartbeat_manager.cpp
-  ipc/channel_handle.cpp
   ipc/channel_registry.cpp
   ipc/broker_service.cpp
 

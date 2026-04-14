@@ -27,7 +27,7 @@ namespace pylabhub::tests::worker::config_validation
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetLifecycleModule(); }
+static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 // Returns a fully-valid baseline config. Tests override individual fields to trigger throws.
 static DataBlockConfig make_valid_config(uint64_t secret)

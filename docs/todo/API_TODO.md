@@ -20,6 +20,17 @@ Remaining diagrams to complete:
 - [ ] Queue abstraction class diagram: QueueWriter/QueueReader → ShmQueue/ZmqQueue hierarchy, forwarding API on hub::Producer/Consumer
 - [ ] Metrics flow: ContextMetrics → snapshot → JSON → heartbeat piggyback → broker MetricsStore → script api.metrics()
 
+### HEP-0011 Threading Model Update (2026-04-12)
+
+The "Thread Safety" section in HEP-CORE-0011 is stale. Needs rewrite to document:
+
+- [ ] Active threads per role host: main (data loop), broker (BrokerRequestComm poll), inbox (InboxQueue recv), logger (async I/O)
+- [ ] Per-engine cross-thread dispatch: Python (GIL acquire/release), Lua (thread-local child lua_State via get_or_create_thread_state_()), Native (plugin responsibility)
+- [ ] Which callbacks run on which thread: on_produce/consume/process (main), on_heartbeat (broker), on_inbox (inbox)
+- [ ] Remove obsolete ctrl_thread/data_thread/peer_thread references
+- [ ] Document broker thread's iteration-gated heartbeat and how it interacts with script invocation
+- [ ] Thread count for each binary: producer (4), consumer (4), processor (4), broker (1+N)
+
 ### Config Module Redesign (2026-03-21)
 
 **Review**: `docs/code_review/REVIEW_ConfigAndEngine_2026-03-21.md`
@@ -280,6 +291,18 @@ Remaining diagrams to complete:
   - Flexzone checksum: separate `flexzone_checksum: true/false` (SHM-specific)
   - Timing: main loop reads from RoleHostCore stored params (not config directly)
   - Processor: same timing + checksum policy for both input and output queues
+  - Inbox metadata: store schema_json/packing/checksum/endpoint in RoleHostCore as
+    single source of truth — consumed by both InboxQueue setup and broker REG_REQ.
+    Currently duplicated across ProducerOptions, setup_inbox_facility result, and
+    registration JSON. Part of unified role lifecycle (unified_role_loop.md).
+- [ ] Broker role-registry lazy status-indexed views (HEP-0023 §2.6):
+  - Add `ready_uids_` / `pending_uids_` sets alongside `roles_` map.
+  - Gate all state transitions through a single `transition_status()` helper that
+    updates both the map entry and the indices atomically.
+  - Add unit tests for invariants (entry in map ⇔ entry in exactly one index).
+  - Trigger: profile shows heartbeat_check iteration > 25% of poll interval, OR
+    N > 500 roles per hub. Before that, single-map design is preferred for
+    robustness over speed. See HEP-0023 §2.6 "Future optimization" section.
 - [ ] Blocking overrun test: L3 test with queue + deadline + barrier coordination (deterministic, no sleep)
 - [ ] `RoleContext` void* cleanup: done for producer/consumer; evaluate other void* patterns in scripting layer
 

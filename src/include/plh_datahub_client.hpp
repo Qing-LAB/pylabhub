@@ -15,10 +15,6 @@
  *   - HubConfig      — hub configuration singleton
  *   - schema_blds    — raw BLDS schema helpers (only needed by SHM creators)
  *
- * **Include cost**: nlohmann/json.hpp arrives transitively via messenger.hpp
- * (required by hub_producer.hpp and hub_consumer.hpp for channel options structs).
- * There is no way to avoid it without restructuring the Messenger public API.
- *
  * Use plh_datahub.hpp when you need BrokerService, JsonConfig, or HubConfig.
  */
 #include "plh_service.hpp"

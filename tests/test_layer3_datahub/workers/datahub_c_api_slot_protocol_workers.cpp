@@ -38,7 +38,7 @@ namespace pylabhub::tests::worker::c_api_slot_protocol
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetLifecycleModule(); }
+static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 static DataBlockConfig make_config(ConsumerSyncPolicy sync_policy, int capacity, uint64_t secret)
 {

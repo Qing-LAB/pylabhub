@@ -1,9 +1,9 @@
-# HEP-CORE-0021: ZMQ Virtual Channel Node
+# HEP-CORE-0021: ZMQ Endpoint Registry
 
 | Property       | Value                                                                      |
 |----------------|----------------------------------------------------------------------------|
 | **HEP**        | `HEP-CORE-0021`                                                            |
-| **Title**      | ZMQ Virtual Channel Node — Broker-Aware Peer-to-Peer ZMQ Endpoints        |
+| **Title**      | ZMQ Endpoint Registry — Broker-Aware Peer-to-Peer ZMQ Endpoints           |
 | **Status**     | Implemented — 2026-03-06                                                   |
 | **Created**    | 2026-03-05                                                                 |
 | **Area**       | Framework Architecture (`BrokerService`, `hub::Producer`, `hub::Consumer`) |
@@ -35,9 +35,9 @@ The second tier creates problems:
 - **Silent failure**: If the ZMQ endpoint changes (port reuse, redeployment), no
   error is surfaced at the broker level. The consumer simply hangs.
 
-**This HEP introduces the ZMQ Virtual Channel Node** — a lightweight channel
-registration type that makes ZMQ peer-to-peer endpoints broker-aware and
-discoverable, using the same REG_REQ / CONSUMER_REG_ACK protocol as SHM channels.
+**This HEP introduces the ZMQ Endpoint Registry** — a lightweight registration
+type that makes ZMQ peer-to-peer endpoints broker-aware and discoverable, using
+the same REG_REQ / CONSUMER_REG_ACK protocol as SHM channels.
 
 ---
 
@@ -75,7 +75,7 @@ discoverable, using the same REG_REQ / CONSUMER_REG_ACK protocol as SHM channels
 
 ---
 
-## 3. Architecture — ZMQ Virtual Node in the Framework
+## 3. Architecture — ZMQ Endpoint Registry in the Framework
 
 ### 3.1 Overall System View
 
@@ -121,7 +121,7 @@ graph TD
         P1 -- "mmap segment\n(OS-backed)" --> C1
     end
 
-    subgraph "ZMQ Virtual Channel"
+    subgraph "ZMQ Endpoint Registry"
         direction LR
         P2["hub::Producer"] -- "REG_REQ\ntransport=zmq\nzmq_endpoint=:5580" --> B2["Broker"]
         B2 -- "CONSUMER_REG_ACK\nzmq_endpoint=:5580" --> C2["hub::Consumer"]
@@ -215,7 +215,7 @@ Factories return `unique_ptr<QueueReader>` (consumer side) or `unique_ptr<QueueW
 - Producer and consumer are on different machines (cross-network)
 - You are bridging two hubs (processor-a on Hub A → processor-b on Hub B)
 - Data format is opaque bytes (no schema enforcement needed)
-- You need dynamic endpoint discovery (via ZMQ Virtual Channel Node)
+- You need dynamic endpoint discovery (via ZMQ Endpoint Registry)
 - Multiple consumers on different machines need the same stream
 
 ### 4.4 Internal Structure
@@ -461,7 +461,7 @@ Only the **output side** needs explicit configuration; input side discovers dyna
                   ┌─────────────────────────────────────────────────┐
                   │                 Channel Types                    │
                   ├─────────────────────┬───────────────────────────┤
-                  │    SHM (DataBlock)  │    ZMQ Virtual Node       │
+                  │    SHM (DataBlock)  │    ZMQ Endpoint Registry  │
                   ├─────────────────────┼───────────────────────────┤
                   │ Data structure      │ Connection point only      │
                   │ Slots + ring buffer │ No slots, no buffer        │
@@ -548,7 +548,7 @@ No `zmq_in_endpoint` in Processor-B — it is discovered from Hub A at runtime.
 | 4 | `ProcessorScriptHost` simplification: remove manual ZmqQueue creation; use `producer/consumer.queue()` | Done | `processor_script_host.hpp/cpp` |
 | 5 | `ProcessorConfig` cleanup: remove `in_transport`/`zmq_in_endpoint`; keep `out_transport`/`zmq_out_endpoint` | Done | `processor_config.hpp/cpp` |
 | 6 | Demo update: Processor-B uses `in_hub_dir` only, no hardcoded ZMQ endpoint | Done | `share/py-demo-dual-processor-bridge/` |
-| Tests | 12 L3 protocol tests (ZmqVirtualChannelTest) | Done | `test_datahub_zmq_virtual_channel.cpp` |
+| Tests | 12 L3 protocol tests (ZmqEndpointRegistryTest) | Done | `test_datahub_zmq_endpoint_registry.cpp` |
 | 7 | Ephemeral port resolution: `ENDPOINT_UPDATE_REQ`, broker readiness guard, `establish_channel` rename | Design | §16 (2026-03-26) |
 
 ---
@@ -602,7 +602,7 @@ Full ZmqQueue implementation detail was drafted in `docs/tech_draft/zmq_queue_de
 | Consumer ZMQ discovery | `src/utils/hub/hub_consumer.hpp/cpp` |
 | ProcessorScriptHost (simplified) | `src/processor/processor_script_host.cpp` |
 | ProcessorConfig (transport fields) | `src/processor/processor_config.hpp/cpp` |
-| L3 protocol tests | `tests/test_layer3_datahub/test_datahub_zmq_virtual_channel.cpp` |
+| L3 protocol tests | `tests/test_layer3_datahub/test_datahub_zmq_endpoint_registry.cpp` |
 | Demo bridge config | `share/py-demo-dual-processor-bridge/processor-{a,b}/processor.json` |
 
 ---
