@@ -28,6 +28,8 @@
  * @endcode
  */
 
+#include <cstdint>
+
 #ifndef PYLABHUB_SHORT_TIMEOUT_MS
 #  define PYLABHUB_SHORT_TIMEOUT_MS 1000   ///< 1 s
 #endif
@@ -36,6 +38,20 @@
 #endif
 #ifndef PYLABHUB_LONG_TIMEOUT_MS
 #  define PYLABHUB_LONG_TIMEOUT_MS  60000  ///< 60 s (reserved)
+#endif
+
+// ── Heartbeat / role liveness defaults (HEP-CORE-0023 §2.5) ─────────────────
+#ifndef PYLABHUB_DEFAULT_HEARTBEAT_INTERVAL_MS
+#  define PYLABHUB_DEFAULT_HEARTBEAT_INTERVAL_MS 500   ///< 2 Hz client cadence
+#endif
+#ifndef PYLABHUB_DEFAULT_READY_MISS_HEARTBEATS
+#  define PYLABHUB_DEFAULT_READY_MISS_HEARTBEATS 10    ///< Ready -> Pending after 10 missed
+#endif
+#ifndef PYLABHUB_DEFAULT_PENDING_MISS_HEARTBEATS
+#  define PYLABHUB_DEFAULT_PENDING_MISS_HEARTBEATS 10  ///< Pending -> deregistered after +10 missed
+#endif
+#ifndef PYLABHUB_DEFAULT_GRACE_HEARTBEATS
+#  define PYLABHUB_DEFAULT_GRACE_HEARTBEATS 4          ///< CLOSING_NOTIFY -> FORCE_SHUTDOWN window
 #endif
 
 namespace pylabhub {
@@ -57,8 +73,26 @@ inline constexpr int kZmqPollIntervalMs = 50;
 /// Fixed at 100 ms — coarser than ZMQ poll; latency here is not user-visible.
 inline constexpr int kAdminPollIntervalMs = 100;
 
-/// discover_producer() retry sleep slice.
-/// Fixed at 500 ms — aligns with broker channel_timeout_s granularity.
-inline constexpr int kRetrySliceMs = 500;
+/// Default client heartbeat cadence (2 Hz). Single source of truth for the
+/// broker's role-liveness math: both ready and pending timeouts are
+/// computed as heartbeat_interval * miss_heartbeats (HEP-CORE-0023 §2.5).
+inline constexpr int kDefaultHeartbeatIntervalMs = PYLABHUB_DEFAULT_HEARTBEAT_INTERVAL_MS;
+
+/// Default missed-heartbeat count before Ready -> Pending demotion.
+inline constexpr uint32_t kDefaultReadyMissHeartbeats =
+    PYLABHUB_DEFAULT_READY_MISS_HEARTBEATS;
+
+/// Default missed-heartbeat count before Pending -> deregistered + CHANNEL_CLOSING_NOTIFY.
+inline constexpr uint32_t kDefaultPendingMissHeartbeats =
+    PYLABHUB_DEFAULT_PENDING_MISS_HEARTBEATS;
+
+/// Default grace window (in heartbeats) between CHANNEL_CLOSING_NOTIFY and FORCE_SHUTDOWN.
+inline constexpr uint32_t kDefaultGraceHeartbeats =
+    PYLABHUB_DEFAULT_GRACE_HEARTBEATS;
+
+/// discover_producer() / DISC_REQ retry sleep slice.
+/// Defaults to kDefaultHeartbeatIntervalMs so the client retries roughly once
+/// per broker heartbeat window.
+inline constexpr int kRetrySliceMs = kDefaultHeartbeatIntervalMs;
 
 } // namespace pylabhub

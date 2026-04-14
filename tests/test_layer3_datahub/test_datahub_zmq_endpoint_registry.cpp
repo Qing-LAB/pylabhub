@@ -162,7 +162,7 @@ protected:
         BrokerService::Config cfg;
         cfg.endpoint               = "tcp://127.0.0.1:0";
         cfg.schema_search_dirs     = {};
-        cfg.channel_shutdown_grace = std::chrono::seconds(0);
+        cfg.grace_override         = std::chrono::milliseconds(0);
         broker_.emplace(start_local_broker(std::move(cfg)));
     }
 

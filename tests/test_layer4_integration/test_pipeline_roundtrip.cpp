@@ -133,9 +133,11 @@ static void write_hub_config(const fs::path& dir, const PipelinePorts& ports)
             {"admin_endpoint",  fmt::format("tcp://127.0.0.1:{}", ports.admin)}
         }},
         {"broker", {
-            {"channel_timeout_s",          10},
-            {"consumer_liveness_check_s",  5},
-            {"channel_shutdown_grace_s",   1}
+            {"heartbeat_interval_ms",     500},
+            {"ready_miss_heartbeats",      10},
+            {"pending_miss_heartbeats",    10},
+            {"grace_heartbeats",            2},
+            {"consumer_liveness_check_s",   5}
         }},
         {"script", {
             {"type",                   "python"},

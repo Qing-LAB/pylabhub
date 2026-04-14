@@ -190,7 +190,7 @@ TEST_F(BrokerFederationTest, HelloHandshake_FiresOnHubConnected)
     // Hub A — accepts inbound HELLO from Hub B.
     BrokerService::Config cfg_a;
     cfg_a.endpoint               = "tcp://127.0.0.1:0";
-    cfg_a.channel_shutdown_grace = std::chrono::seconds(0);
+    cfg_a.grace_override         = std::chrono::milliseconds(0);
     cfg_a.self_hub_uid           = "HUB-TEST-A";
     cfg_a.on_hub_connected       = [&](const std::string &uid)
     { hub_a_events.push_connected(uid); };
@@ -204,7 +204,7 @@ TEST_F(BrokerFederationTest, HelloHandshake_FiresOnHubConnected)
     // Hub B — outbound connection to Hub A.
     BrokerService::Config cfg_b;
     cfg_b.endpoint               = "tcp://127.0.0.1:0";
-    cfg_b.channel_shutdown_grace = std::chrono::seconds(0);
+    cfg_b.grace_override         = std::chrono::milliseconds(0);
     cfg_b.self_hub_uid           = "HUB-TEST-B";
 
     FederationPeer peer_a;
@@ -246,7 +246,7 @@ TEST_F(BrokerFederationTest, TargetedMessage_FiresOnHubMessage)
     // Hub B needs on_hub_message to receive it.
     BrokerService::Config cfg_a;
     cfg_a.endpoint               = "tcp://127.0.0.1:0";
-    cfg_a.channel_shutdown_grace = std::chrono::seconds(0);
+    cfg_a.grace_override         = std::chrono::milliseconds(0);
     cfg_a.self_hub_uid           = "HUB-TARGET-A";
     cfg_a.on_hub_connected       = [&](const std::string &uid)
     { hub_a_events.push_connected(uid); };
@@ -262,7 +262,7 @@ TEST_F(BrokerFederationTest, TargetedMessage_FiresOnHubMessage)
     // Hub B receives HUB_TARGETED_MSG from Hub A via on_hub_message.
     BrokerService::Config cfg_b;
     cfg_b.endpoint               = "tcp://127.0.0.1:0";
-    cfg_b.channel_shutdown_grace = std::chrono::seconds(0);
+    cfg_b.grace_override         = std::chrono::milliseconds(0);
     cfg_b.self_hub_uid           = "HUB-TARGET-B";
     cfg_b.on_hub_message = [&](const std::string &ch, const std::string &payload,
                                const std::string &src)
@@ -307,7 +307,7 @@ TEST_F(BrokerFederationTest, PeerBye_TriggersOnHubDisconnected)
     // Hub A
     BrokerService::Config cfg_a;
     cfg_a.endpoint               = "tcp://127.0.0.1:0";
-    cfg_a.channel_shutdown_grace = std::chrono::seconds(0);
+    cfg_a.grace_override         = std::chrono::milliseconds(0);
     cfg_a.self_hub_uid           = "HUB-BYE-A";
     cfg_a.on_hub_connected       = [&](const std::string &uid)
     { hub_a_events.push_connected(uid); };
@@ -323,7 +323,7 @@ TEST_F(BrokerFederationTest, PeerBye_TriggersOnHubDisconnected)
     // Hub B
     BrokerService::Config cfg_b;
     cfg_b.endpoint               = "tcp://127.0.0.1:0";
-    cfg_b.channel_shutdown_grace = std::chrono::seconds(0);
+    cfg_b.grace_override         = std::chrono::milliseconds(0);
     cfg_b.self_hub_uid           = "HUB-BYE-B";
 
     FederationPeer peer_a;

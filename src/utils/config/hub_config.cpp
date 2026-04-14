@@ -129,9 +129,15 @@ struct HubConfig::Impl
     std::string admin_endpoint {"tcp://127.0.0.1:5600"};
     std::string admin_token    {}; ///< From vault only; vault is sole source (never from hub.json).
 
-    std::chrono::seconds channel_timeout         {10};
-    std::chrono::seconds consumer_liveness_check {5};
-    std::chrono::seconds channel_shutdown_grace  {5};
+    // Role liveness (HEP-CORE-0023 §2.5).
+    std::chrono::milliseconds heartbeat_interval{::pylabhub::kDefaultHeartbeatIntervalMs};
+    uint32_t                  ready_miss_heartbeats   {::pylabhub::kDefaultReadyMissHeartbeats};
+    uint32_t                  pending_miss_heartbeats {::pylabhub::kDefaultPendingMissHeartbeats};
+    uint32_t                  grace_heartbeats        {::pylabhub::kDefaultGraceHeartbeats};
+    std::optional<std::chrono::milliseconds> ready_timeout_override;
+    std::optional<std::chrono::milliseconds> pending_timeout_override;
+    std::optional<std::chrono::milliseconds> grace_override;
+    std::chrono::seconds      consumer_liveness_check {5};
 
     fs::path root_dir;
     fs::path config_dir;
@@ -165,9 +171,14 @@ struct HubConfig::Impl
         broker_endpoint    = "tcp://0.0.0.0:5570";
         admin_endpoint     = "tcp://127.0.0.1:5600";
         admin_token        = {};
-        channel_timeout         = std::chrono::seconds{10};
-        consumer_liveness_check = std::chrono::seconds{5};
-        channel_shutdown_grace  = std::chrono::seconds{5};
+        heartbeat_interval       = std::chrono::milliseconds{::pylabhub::kDefaultHeartbeatIntervalMs};
+        ready_miss_heartbeats    = ::pylabhub::kDefaultReadyMissHeartbeats;
+        pending_miss_heartbeats  = ::pylabhub::kDefaultPendingMissHeartbeats;
+        grace_heartbeats         = ::pylabhub::kDefaultGraceHeartbeats;
+        ready_timeout_override.reset();
+        pending_timeout_override.reset();
+        grace_override.reset();
+        consumer_liveness_check  = std::chrono::seconds{5};
         root_dir.clear();
         config_dir.clear();
         scripts_python_dir.clear();
@@ -278,17 +289,44 @@ struct HubConfig::Impl
         if (j.contains("broker"))
         {
             const auto& b = j.at("broker");
-            if (b.contains("channel_timeout_s"))
-                channel_timeout = std::chrono::seconds(b.at("channel_timeout_s").get<int>());
+            // Obsolete keys — hard error so users see the rename.
+            if (b.contains("channel_timeout_s") ||
+                b.contains("channel_shutdown_grace_s"))
+            {
+                throw std::runtime_error(
+                    "hub.json: 'broker.channel_timeout_s' and "
+                    "'broker.channel_shutdown_grace_s' are obsolete. Use "
+                    "'heartbeat_interval_ms', 'ready_miss_heartbeats', "
+                    "'pending_miss_heartbeats', 'grace_heartbeats' (or the "
+                    "explicit *_timeout_ms / grace_ms overrides). See "
+                    "docs/HEP/HEP-CORE-0023.");
+            }
+            if (b.contains("heartbeat_interval_ms"))
+                heartbeat_interval = std::chrono::milliseconds(
+                    b.at("heartbeat_interval_ms").get<int>());
+            if (b.contains("ready_miss_heartbeats"))
+                ready_miss_heartbeats = b.at("ready_miss_heartbeats").get<uint32_t>();
+            if (b.contains("pending_miss_heartbeats"))
+                pending_miss_heartbeats = b.at("pending_miss_heartbeats").get<uint32_t>();
+            if (b.contains("grace_heartbeats"))
+                grace_heartbeats = b.at("grace_heartbeats").get<uint32_t>();
+            if (b.contains("ready_timeout_ms"))
+                ready_timeout_override = std::chrono::milliseconds(
+                    b.at("ready_timeout_ms").get<int>());
+            if (b.contains("pending_timeout_ms"))
+                pending_timeout_override = std::chrono::milliseconds(
+                    b.at("pending_timeout_ms").get<int>());
+            if (b.contains("grace_ms"))
+                grace_override = std::chrono::milliseconds(
+                    b.at("grace_ms").get<int>());
             if (b.contains("consumer_liveness_check_s"))
-                consumer_liveness_check = std::chrono::seconds(b.at("consumer_liveness_check_s").get<int>());
-            if (b.contains("channel_shutdown_grace_s"))
-                channel_shutdown_grace = std::chrono::seconds(b.at("channel_shutdown_grace_s").get<int>());
+                consumer_liveness_check = std::chrono::seconds(
+                    b.at("consumer_liveness_check_s").get<int>());
         }
         if (j.contains("paths") && !config_dir.empty())
         {
             const auto& p = j.at("paths");
-            auto get_str = [&](const char* key) -> std::string {
+            auto get_str = [&](const std::string& key) -> std::string {
                 return p.contains(key) ? p.at(key).get<std::string>() : std::string{};
             };
             auto python_path = get_str("scripts_python");
@@ -523,9 +561,14 @@ const std::string& HubConfig::broker_endpoint() const noexcept { return pImpl->b
 const std::string& HubConfig::admin_endpoint()  const noexcept { return pImpl->admin_endpoint; }
 const std::string& HubConfig::admin_token()     const noexcept { return pImpl->admin_token; }
 
-std::chrono::seconds HubConfig::channel_timeout()         const noexcept { return pImpl->channel_timeout; }
-std::chrono::seconds HubConfig::consumer_liveness_check() const noexcept { return pImpl->consumer_liveness_check; }
-std::chrono::seconds HubConfig::channel_shutdown_grace()  const noexcept { return pImpl->channel_shutdown_grace; }
+std::chrono::milliseconds HubConfig::heartbeat_interval()        const noexcept { return pImpl->heartbeat_interval; }
+uint32_t                  HubConfig::ready_miss_heartbeats()     const noexcept { return pImpl->ready_miss_heartbeats; }
+uint32_t                  HubConfig::pending_miss_heartbeats()   const noexcept { return pImpl->pending_miss_heartbeats; }
+uint32_t                  HubConfig::grace_heartbeats()          const noexcept { return pImpl->grace_heartbeats; }
+std::optional<std::chrono::milliseconds> HubConfig::ready_timeout_override()   const noexcept { return pImpl->ready_timeout_override; }
+std::optional<std::chrono::milliseconds> HubConfig::pending_timeout_override() const noexcept { return pImpl->pending_timeout_override; }
+std::optional<std::chrono::milliseconds> HubConfig::grace_override()           const noexcept { return pImpl->grace_override; }
+std::chrono::seconds      HubConfig::consumer_liveness_check()   const noexcept { return pImpl->consumer_liveness_check; }
 
 const fs::path& HubConfig::root_dir()           const noexcept { return pImpl->root_dir; }
 const fs::path& HubConfig::config_dir()         const noexcept { return pImpl->config_dir; }
