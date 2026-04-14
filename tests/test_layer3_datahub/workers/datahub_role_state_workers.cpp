@@ -279,6 +279,71 @@ int stuck_in_pending_reclaimed()
         logger_module(), crypto_module(), zmq_module());
 }
 
+// ============================================================================
+// band_membership_cleaned_on_role_close — on_channel_closed hook removes role
+// ============================================================================
+
+int band_membership_cleaned_on_role_close()
+{
+    return run_gtest_worker(
+        []() {
+            BrokerService::Config cfg;
+            cfg.endpoint                         = "tcp://127.0.0.1:0";
+            cfg.use_curve                        = true;
+            cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
+            auto broker = start_broker_with_cfg(std::move(cfg));
+
+            const std::string ch_a    = make_test_channel_name("role_state.band_a");
+            const std::string ch_b    = make_test_channel_name("role_state.band_b");
+            const std::string uid_a   = "PROD-band-A";
+            const std::string uid_b   = "PROD-band-B";
+            const std::string band    = make_test_channel_name("test.band");
+
+            BrcHandle a, b;
+            a.start(broker.endpoint, broker.pubkey, uid_a);
+            b.start(broker.endpoint, broker.pubkey, uid_b);
+
+            ASSERT_TRUE(a.brc.register_channel(make_reg_opts(ch_a, uid_a), 3000).has_value());
+            ASSERT_TRUE(b.brc.register_channel(make_reg_opts(ch_b, uid_b), 3000).has_value());
+            a.brc.send_heartbeat(ch_a, {});
+            b.brc.send_heartbeat(ch_b, {});
+
+            ASSERT_TRUE(a.brc.band_join(band, 3000).has_value());
+            ASSERT_TRUE(b.brc.band_join(band, 3000).has_value());
+
+            auto members1 = b.brc.band_members(band, 3000);
+            ASSERT_TRUE(members1.has_value());
+            ASSERT_TRUE(members1->contains("members"));
+            EXPECT_EQ((*members1)["members"].size(), 2u) << "Expected 2 members after join";
+
+            // Voluntarily deregister A's channel — on_channel_closed fires,
+            // cleanup hook removes A from the band.
+            EXPECT_TRUE(a.brc.deregister_channel(ch_a));
+
+            auto only_b_left = [&]() {
+                auto m = b.brc.band_members(band, 1000);
+                return m.has_value() && m->contains("members") &&
+                       (*m)["members"].size() == 1;
+            };
+            ASSERT_TRUE(poll_until(only_b_left, std::chrono::seconds(2)))
+                << "Band membership was not cleaned up after producer dereg";
+
+            auto members2 = b.brc.band_members(band, 3000);
+            ASSERT_TRUE(members2.has_value());
+            ASSERT_TRUE(members2->contains("members"));
+            bool has_b = false;
+            for (const auto& m : (*members2)["members"])
+                if (m.value("role_uid", "") == uid_b) has_b = true;
+            EXPECT_TRUE(has_b) << "Remaining member should be uid_b";
+
+            a.stop();
+            b.stop();
+            broker.stop_and_join();
+        },
+        "role_state.band_membership_cleaned_on_role_close",
+        logger_module(), crypto_module(), zmq_module());
+}
+
 } // namespace pylabhub::tests::worker::broker_role_state
 
 namespace
@@ -301,6 +366,8 @@ struct BrokerRoleStateWorkerRegistrar
                 if (scenario == "metrics_reclaim_cycle")       return metrics_reclaim_cycle();
                 if (scenario == "pending_recovers_to_ready")   return pending_recovers_to_ready();
                 if (scenario == "stuck_in_pending_reclaimed")  return stuck_in_pending_reclaimed();
+                if (scenario == "band_membership_cleaned_on_role_close")
+                    return band_membership_cleaned_on_role_close();
                 return 1;
             });
     }

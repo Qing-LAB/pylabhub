@@ -41,3 +41,11 @@ TEST_F(DatahubRoleStateMachineTest, StuckInPending_ReclaimedAfterPendingTimeout)
     auto proc = SpawnWorker("broker_role_state.stuck_in_pending_reclaimed", {});
     ExpectWorkerOk(proc);
 }
+
+TEST_F(DatahubRoleStateMachineTest, BandMembership_CleanedOnRoleClose)
+{
+    // Two roles join a band; one deregisters; on_channel_closed hook
+    // must remove it from the band so the other observes only itself.
+    auto proc = SpawnWorker("broker_role_state.band_membership_cleaned_on_role_close", {});
+    ExpectWorkerOk(proc);
+}
