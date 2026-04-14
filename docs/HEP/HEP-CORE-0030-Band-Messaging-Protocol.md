@@ -315,6 +315,34 @@ is needed; coordination and targeted-coordination use the same primitive.
 be consistent. The protocol reserves no other field names in the body;
 applications define their own schema.
 
+#### Best practice for targeted broadcasts (race semantics)
+
+A targeted broadcast is **fire-and-forget** — the broker fans the JSON out
+to every current member as of the moment the broadcast is processed, then
+moves on. The intended recipient may have left the band between when the
+sender last queried `BAND_MEMBERS_REQ` and when its broadcast arrives at
+the broker. In that case, no member with the matching `target` will act,
+and the sender receives no error or notification.
+
+Implications:
+
+- **Don't rely on band broadcast for delivery-guaranteed messages.** Use
+  the inbox (HEP-CORE-0027) when you need acked, sequenced, schema-typed
+  delivery to a known peer.
+- **Don't poll `BAND_MEMBERS_REQ` to "verify" a target before sending.**
+  The result is stale by the time it arrives. Just send and accept that
+  some targeted broadcasts are missed.
+- **The broker's role is to keep band membership correct, not to enforce
+  delivery.** Membership is updated atomically when a role exits — for any
+  reason (voluntary leave, heartbeat-death, deregister) — via the
+  `on_channel_closed` / `on_consumer_closed` cleanup hook described in
+  HEP-CORE-0023 §2.5. So if a targeted broadcast arrives at the broker
+  *after* the target's exit was processed, the target won't be in the
+  member set and the broker won't even attempt delivery to it.
+
+Use band broadcasts for: status updates, control signals where loss is
+tolerable, presence announcements, "anyone interested" notifications.
+
 ---
 
 ## 9. Superseded Protocol Elements
