@@ -1,24 +1,37 @@
 # Tech Draft: Unified Role Loop Framework
 
-**Status**: Draft (2026-04-06)
+**Status**: Refreshed 2026-04-14 (originally drafted 2026-04-06)
 **Branch**: `feature/lua-role-support`
-**Relates to**: HEP-CORE-0011, `loop_design_unified.md`, `engine_thread_model.md`
-**Baseline**: 1323/1323 tests
+**Relates to**: HEP-CORE-0011, HEP-CORE-0023 §2.5, `loop_design_unified.md`, `engine_thread_model.md`
+**Baseline**: 1275/1275 tests (was 1323; net change: Step 7 deleted obsolete tests, then HEP-0023 added new ones)
+
+---
+
+## 0. What Has Already Landed Since 2026-04-06
+
+The original 2026-04-06 draft assumed Messenger still existed and treated the
+ctrl thread as not-yet-unified. Both have changed; this section is the truth
+table for what's already done so the rest of the doc can be read as a plan
+for what *remains*.
+
+| Pillar from §1 | Status | Where it landed |
+|---|---|---|
+| **Callback wiring** (was §1.1) | ✅ DONE — `wire_event_callbacks()` per §9.5 | RoleAPIBase, Phase 1 |
+| **ctrl thread** (was §1.2) | ✅ DONE — `start_ctrl_thread()` owns BRC connect, heartbeat, notification dispatch | RoleAPIBase (commit `e2ecd8e` and HEP-0023 Phase 2) |
+| **Messenger removal** | ✅ DONE — replaced by `BrokerRequestComm` | Step 7 (`cf53ed3`) |
+| **Role-state machine** | ✅ DONE — heartbeat-multiplier liveness + role-close cleanup hook | HEP-CORE-0023 §2.5 (commits `3201e08`, `6558b2c`) |
+| **Data loop frame** (was §1.3) | ⚠️ NOT YET — still copy-pasted 3× | **This is the remaining work** |
+| **Lifecycle sequence** (was §1.4) | ⚠️ PARTIAL — ctrl-thread / dereg sub-sequences extracted; outer skeleton still per-role | **Folds into the loop-frame work** |
+
+Everywhere this doc says "Messenger" below, read "BrokerRequestComm". The
+`messenger->enqueue_heartbeat(...)` calls cited in §3.2 are now
+`BrokerRequestComm::send_heartbeat(...)` driven from `start_ctrl_thread()`.
 
 ---
 
 ## 1. Problem Statement
 
-The three role hosts (producer, consumer, processor) each implement:
-
-1. **Callback wiring** — 6-8 Consumer/Producer/Messenger callbacks routed to
-   `core_.enqueue_message()` or `core_.request_stop()`. Identical logic,
-   copy-pasted with only log tag differences.
-
-2. **ctrl_thread_** — `ZmqPollLoop` construction, heartbeat/metrics periodic
-   tasks, `ThreadEngineGuard`, `on_heartbeat` script callback. The socket list
-   varies by role but is fully derivable from which pointers (Producer*,
-   Consumer*) are non-null.
+The three role hosts (producer, consumer, processor) each still implement:
 
 3. **Data loop frame** — Timing setup, outer loop condition, inner retry
    acquire, deadline wait, drain, metrics, next_deadline computation. These
@@ -26,15 +39,18 @@ The three role hosts (producer, consumer, processor) each implement:
    *slot* within the frame differs: what to acquire, what to invoke, what to
    commit/release.
 
-4. **Lifecycle sequence** — Steps 5-12 of `worker_main_()` (invoke_on_init →
-   spawn ctrl_thread_ → data loop → stop_accepting → join → invoke_on_stop →
-   finalize) are identical.
+4. **Lifecycle sequence** — Outer skeleton of `worker_main_()` (invoke_on_init
+   → spawn ctrl_thread_ → data loop → stop_accepting → join → invoke_on_stop →
+   finalize) is identical.
+
+(Items 1 and 2 from the original draft — callback wiring and ctrl_thread
+construction — landed in earlier phases, see §0.)
 
 This duplication means every behavioral change must be applied 3 times. The
 unified loop design (tech draft `loop_design_unified.md`) was originally
 written as a correctness reference but was never promoted to a shared
-implementation. Now that RoleAPIBase centralizes infrastructure access, the
-loop frame can be unified.
+implementation. With RoleAPIBase already centralizing callback wiring and
+the ctrl thread, the loop frame is the last major piece left to unify.
 
 ---
 
@@ -839,35 +855,35 @@ utility lives in the same header.
 
 ### Phase 3: set_engine() + start/join_ctrl_thread()
 
-Thread manager + ctrl thread centralization in RoleAPIBase.
-
-**Status**: Implemented (uncommitted, compiles, 1323/1323 pass).
-
-- `spawn_thread()`, `join_all_threads()`, `thread_count()` on RoleAPIBase
-- `start_ctrl_thread(CtrlConfig)` — builds ZmqPollLoop from available
-  pointers, spawns as managed thread
-- All 3 role hosts use `api_->start_ctrl_thread()` / `api_->join_all_threads()`
-- Old `run_ctrl_thread_()` removed from all 3 role hosts
-
-**Next**: This `start_ctrl_thread()` will evolve into `broker_request_comm`
-as part of the Messenger replacement. See `broker_and_comm_channel_design.md`
-for the full plan covering:
-- Redesigned ZmqPollLoop (inproc wake-up, time-based periodic tasks)
-- `broker_request_comm` (broker protocol DEALER)
-- `role_communication_channel` (P2C sockets)
-- Messenger elimination
+✅ **DONE 2026-04-14.** Thread manager + ctrl thread centralization in RoleAPIBase.
+- `start_ctrl_thread(CtrlThreadConfig)` owns BrokerRequestComm connect,
+  heartbeat dispatch, notification poll, deregister sequencing.
+- All 3 role hosts use `api_->start_ctrl_thread()` and
+  `api_->join_all_threads()`.
+- Messenger removed entirely (commit `cf53ed3`); `broker_request_comm` is the
+  broker protocol DEALER. `broker_and_comm_channel_design.md` is now historical.
 
 ### Phase 4: run_role() lifecycle unification
 
-Combine steps 5-12 into `RoleAPIBase::run_role()`. Deferred until
-broker_request_comm is in place (Phase 4 wraps the full lifecycle
-including the broker thread spawn).
+⚠️ **NOT STARTED.** Combine steps 5-12 of `worker_main_()` into
+`RoleAPIBase::run_role()`. With BRC and the role-state machine landed,
+this is unblocked.
+
+Sub-tasks before coding:
+- Audit each role's `worker_main_()` for any role-specific lifecycle hook
+  that doesn't fit the §5.8 template.
+- Confirm `engine_->finalize()` ordering matches across the 3 hosts (audit
+  noted as outstanding in §0 pillar audit, 2026-04-14).
 
 ### Phase 5: Cleanup + docs
 
-- Adopt `should_continue_loop()` in the shared frame
-- Update HEP-0011 thread model section
-- Archive this tech draft + broker_and_comm_channel_design.md
+- Adopt `should_continue_loop()` in the shared frame.
+- Rewrite HEP-0011 §"Threading Model" against the now-unified surface.
+- Archive this tech draft + `broker_and_comm_channel_design.md` once
+  Phase 4 lands and is verified against the test suite.
+- Dedup `BrcHandle`/`BrokerHandle` test helpers (currently flagged in
+  API_TODO: present in both `datahub_broker_health_workers.cpp` and
+  `datahub_role_state_workers.cpp`).
 
 ---
 
