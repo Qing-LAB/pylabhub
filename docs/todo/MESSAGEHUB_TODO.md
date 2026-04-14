@@ -10,6 +10,36 @@
 
 ## Current Status
 
+✅ **1275/1275 tests (2026-04-14).** HEP-CORE-0023 Phase 2 complete:
+heartbeat-multiplier role-liveness state machine, three-response DISC_REQ,
+role-close cleanup hook (federation + band), `RoleStateMetrics` counters.
+See commits `cf53ed3`, `3201e08`, `6558b2c`.
+
+### Completed 2026-04-14: HEP-CORE-0023 Phase 2 — Role-Liveness State Machine
+
+- Two-pass `check_heartbeat_timeouts`: Ready→Pending (transient demotion,
+  recovers on heartbeat) → Pending→deregistered immediately (no Closing/grace
+  for heartbeat-death; producer presumed dead).
+- Voluntary close path unchanged: Ready→Closing+grace→FORCE_SHUTDOWN.
+- All effective timeouts derive from `heartbeat_interval` (default 500ms = 2 Hz)
+  × miss-count (default 10/10), with std::optional overrides. Floored at one
+  heartbeat — misconfiguration cannot create permanent dangling state.
+- `BrokerServiceImpl::on_channel_closed` / `on_consumer_closed` hooks called at
+  every dereg site. Fans out to `federation_on_channel_closed` (drops
+  `channel_to_peer_identities_`) + `band_on_role_closed`
+  (`band_registry.remove_from_all` + `BAND_LEAVE_NOTIFY` to remaining members).
+- `RoleStateMetrics` snapshot via `query_role_state_metrics()` exposes
+  `ready_to_pending_total`, `pending_to_deregistered_total`,
+  `pending_to_ready_total`. Tests assert state transitions counter-based,
+  no wall-clock sleeps.
+- Removed: `channel_timeout`, `channel_shutdown_grace`, JSON keys
+  `broker.channel_timeout_s`, `broker.channel_shutdown_grace_s` (HubConfig
+  THROWS on these obsolete keys).
+- HEP-CORE-0023 §2.1 (state diagram), §2.5 (config + metrics) rewritten.
+- HEP-CORE-0030 §8.2 — added "Best practice for targeted broadcasts" note
+  (fire-and-forget; broker keeps membership correct via cleanup hook;
+  use inbox for guaranteed delivery).
+
 ✅ **1084/1085 tests (2026-03-12).** Hub-dead ZMQ monitor path implemented; StopReason ordering restored. 1 pre-existing timing flake (`BackoffStrategyTest.ThreePhaseBackoff_Phase3_LinearSleep`) unrelated to messenger changes.
 
 ### Completed 2026-03-12: Hub-Dead ZMQ Socket Monitor
