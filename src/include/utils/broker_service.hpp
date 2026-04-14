@@ -173,7 +173,7 @@ public:
 
     /**
      * @brief Server public key (Z85-encoded, 40 chars).
-     * Logged at startup; clients pass this to Messenger::connect().
+     * Logged at startup; clients pass this to BrokerRequestComm for CURVE auth.
      */
     [[nodiscard]] const std::string& server_public_key() const;
 

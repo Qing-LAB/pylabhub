@@ -71,9 +71,7 @@ add_executable(test_layer3_datahub
     workers/datahub_handle_semantics_workers.cpp
     test_datahub_loop_policy.cpp
 
-    # ── Integration / Scenario ────────────────────────────────────────────────
-    test_datahub_messagehub.cpp
-    workers/datahub_messagehub_workers.cpp
+    # ── Integration / Scenario (deleted — Step 7 Messenger removal) ─
 
     # ── WriteAttach mode (broker-owned shared memory) ─────────────────────────
     test_datahub_write_attach.cpp
@@ -103,13 +101,9 @@ add_executable(test_layer3_datahub
     test_datahub_e2e.cpp
     workers/datahub_e2e_workers.cpp
 
-    # ── ChannelHandle integration tests (Phase 6) ────────────────────────────────
-    test_datahub_channel.cpp
-    workers/datahub_channel_workers.cpp
+    # ── ChannelHandle integration tests (deleted — Step 7 Messenger removal) ─
 
-    # ── Hub Producer/Consumer unified API tests ───────────────────────────────────
-    test_datahub_hub_api.cpp
-    workers/datahub_hub_api_workers.cpp
+    # ── Hub Producer/Consumer unified API tests (deleted — Step 7 Messenger removal) ─
 
     # ── Broker/Producer/Consumer health and notification tests ────────────────────
     test_datahub_broker_health.cpp
@@ -144,8 +138,7 @@ add_executable(test_layer3_datahub
     # ── Broker control-plane protocol tests (broadcast, notify, list_channels) ──
     test_datahub_broker_protocol.cpp
 
-    # ── Messenger hex codec tests (messenger_internal.hpp) ────────────────────
-    test_datahub_messenger_protocol.cpp
+    # ── Messenger hex codec tests (deleted — Step 7 Messenger removal) ─
 
     # ── ZmqPollLoop + HeartbeatTracker unit tests ────────────────────────────
     test_datahub_zmq_poll_loop.cpp
@@ -156,8 +149,8 @@ add_executable(test_layer3_datahub
     # ── HEP-CORE-0019 Metrics Plane tests ────────────────────────────────
     test_datahub_metrics.cpp
 
-    # ── HEP-CORE-0021 ZMQ Virtual Channel Node protocol tests ────────────
-    test_datahub_zmq_virtual_channel.cpp
+    # ── HEP-CORE-0021 ZMQ Endpoint Registry protocol tests ────────────
+    test_datahub_zmq_endpoint_registry.cpp
 
     # ── HEP-CORE-0022 Hub Federation Broadcast protocol tests ────────────
     test_datahub_hub_federation.cpp
@@ -168,10 +161,8 @@ add_executable(test_layer3_datahub
     # ── MonitoredQueue unit tests (ctrl-send queue with backpressure) ─────
     test_datahub_hub_monitored_queue.cpp
 
-    # ── Script engine integration tests (L3: engine + real infrastructure) ──
-    test_datahub_engine_roundtrip.cpp
+    # ── BrokerRequestComm integration tests ──
     test_datahub_broker_request_comm.cpp
-    workers/datahub_engine_workers.cpp
     workers/datahub_broker_request_comm_workers.cpp
     test_datahub_channel_group.cpp
     workers/datahub_channel_group_workers.cpp

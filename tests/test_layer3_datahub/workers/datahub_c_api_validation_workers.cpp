@@ -26,7 +26,7 @@ namespace pylabhub::tests::worker::c_api_validation
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetLifecycleModule(); }
+static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 // Returns a fully-valid baseline config.
 static DataBlockConfig make_valid_config(uint64_t secret, uint32_t capacity = 2)

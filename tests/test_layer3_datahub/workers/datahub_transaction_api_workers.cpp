@@ -90,7 +90,7 @@ namespace pylabhub::tests::worker::transaction_api
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetLifecycleModule(); }
+static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 // ============================================================================
 // Test: Basic with_transaction Success

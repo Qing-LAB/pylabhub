@@ -5,12 +5,10 @@
 // Phase 4 of HEP-CORE-0016 (Named Schema Registry).
 //
 // Lifecycle: depends on Logger only. Loads all schemas from search dirs at
-// startup. Provides thread-safe get/identify/list/reload and an explicit
-// broker query fallback (caller supplies Messenger&).
+// startup. Provides thread-safe get/identify/list/reload.
 
 #include "utils/schema_registry.hpp"
 #include "utils/logger.hpp"
-#include "utils/messenger.hpp"
 
 #include <atomic>
 #include <mutex>
@@ -136,34 +134,6 @@ void SchemaStore::set_search_dirs(std::vector<std::string> dirs)
 {
     std::lock_guard lock(mu_);
     search_dirs_ = std::move(dirs);
-}
-
-// ============================================================================
-// Broker query fallback
-// ============================================================================
-
-std::optional<SchemaEntry>
-SchemaStore::query_from_broker(const std::string &channel_name,
-                                  pylabhub::hub::Messenger &messenger,
-                                  int timeout_ms)
-{
-    // query_channel_schema is thread-safe on Messenger side — no lock needed for the call.
-    auto info = messenger.query_channel_schema(channel_name, timeout_ms);
-    if (!info)
-        return std::nullopt;
-    if (info->blds.empty())
-        return std::nullopt; // anonymous channel with no BLDS
-
-    // Build a SchemaEntry from the BLDS + schema_id returned by broker.
-    SchemaEntry entry;
-    entry.schema_id = info->schema_id;
-    entry.slot_info.blds = info->blds;
-    entry.slot_info.compute_hash();
-
-    std::lock_guard lock(mu_);
-    if (!info->schema_id.empty())
-        lib_->register_schema(entry);
-    return entry;
 }
 
 } // namespace pylabhub::schema

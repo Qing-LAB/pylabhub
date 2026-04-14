@@ -41,7 +41,7 @@ namespace pylabhub::tests::worker::c_api_draining
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetLifecycleModule(); }
+static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 // Helper: build a 1-slot Latest_only config (forces wraparound on second write)
 static DataBlockConfig make_one_slot_config(uint64_t secret)

@@ -85,7 +85,10 @@ public:
     static void SetUpTestSuite()
     {
         s_lifecycle_ = std::make_unique<pylabhub::utils::LifecycleGuard>(
-            pylabhub::utils::MakeModDefList(pylabhub::utils::Logger::GetLifecycleModule()), std::source_location::current());
+            pylabhub::utils::MakeModDefList(
+                pylabhub::utils::Logger::GetLifecycleModule(),
+                pylabhub::crypto::GetLifecycleModule(),
+                pylabhub::hub::GetZMQContextModule()), std::source_location::current());
     }
     static void TearDownTestSuite() { s_lifecycle_.reset(); }
 

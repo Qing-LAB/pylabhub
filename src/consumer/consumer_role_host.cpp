@@ -5,7 +5,7 @@
  * This is the canonical data loop for the consumer role.  It follows
  * docs/tech_draft/loop_design_unified.md §4 exactly.
  *
- * Layer 3 (infrastructure): Messenger, Consumer, queue, ctrl_thread_, events.
+ * Layer 3 (infrastructure): BrokerRequestComm, Consumer, queue, ctrl_thread_, events.
  * Layer 2 (data loop): inner retry acquire, read, invoke, release.
  * Layer 1 (engine): delegated to ScriptEngine via invoke_consume / invoke_on_inbox.
  */
@@ -247,17 +247,9 @@ void ConsumerRoleHost::worker_main_()
         api_->set_consumer(in_consumer_.has_value() ? &(*in_consumer_) : nullptr);
         api_->set_inbox_queue(inbox_queue_.get());
 
-        broker_channel_ = std::make_unique<hub::BrokerRequestComm>();
-        hub::BrokerRequestComm::Config bc_cfg;
-        bc_cfg.broker_endpoint = config_.in_hub().broker;
-        bc_cfg.broker_pubkey   = config_.in_hub().broker_pubkey;
-        bc_cfg.client_pubkey   = config_.auth().client_pubkey;
-        bc_cfg.client_seckey   = config_.auth().client_seckey;
-        bc_cfg.role_uid        = config_.identity().uid;
-        bc_cfg.role_name       = config_.identity().name;
-        if (!bc_cfg.broker_endpoint.empty())
-            broker_channel_->connect(bc_cfg);
-        api_->set_broker_channel(broker_channel_.get());
+        // Create BrokerRequestComm (connection deferred to step 6).
+        broker_comm_ = std::make_unique<hub::BrokerRequestComm>();
+        api_->set_broker_comm(broker_comm_.get());
     }
     api_->set_checksum_policy(config_.checksum().policy);
     api_->set_stop_on_script_error(sc.stop_on_script_error);
@@ -308,12 +300,48 @@ void ConsumerRoleHost::worker_main_()
     // ── Step 5: invoke on_init ───────────────────────────────────────────────
     engine_->invoke_on_init();
 
-    // Step 6: Spawn broker + comm threads via thread manager.
+    // ── Step 6: Connect to broker, start ctrl thread, register ────────────
     core_.set_running(true);
-    api_->start_broker_thread(
-        scripting::RoleAPIBase::BrokerThreadConfig{
-            config_.timing().heartbeat_interval_ms, true});
-    api_->start_comm_thread();
+    {
+        hub::BrokerRequestComm::Config bc_cfg;
+        bc_cfg.broker_endpoint = config_.in_hub().broker;
+        bc_cfg.broker_pubkey   = config_.in_hub().broker_pubkey;
+        bc_cfg.client_pubkey   = config_.auth().client_pubkey;
+        bc_cfg.client_seckey   = config_.auth().client_seckey;
+        bc_cfg.role_uid        = id.uid;
+        bc_cfg.role_name       = id.name;
+
+        scripting::RoleAPIBase::CtrlThreadConfig ctrl_cfg;
+        ctrl_cfg.heartbeat_interval_ms = config_.timing().heartbeat_interval_ms;
+        ctrl_cfg.report_metrics        = true;
+
+        // Build consumer registration payload (CONSUMER_REG_REQ).
+        const auto &ch = config_.in_channel();
+        ctrl_cfg.consumer_reg_opts["channel_name"]  = ch;
+        ctrl_cfg.consumer_reg_opts["consumer_uid"]  = id.uid;
+        ctrl_cfg.consumer_reg_opts["consumer_name"] = id.name;
+        ctrl_cfg.consumer_reg_opts["consumer_pid"]  = pylabhub::platform::get_pid();
+
+        if (inbox_cfg_.has_inbox())
+            ctrl_cfg.inbox = inbox_cfg_;
+
+        if (!api_->start_ctrl_thread(bc_cfg, ctrl_cfg))
+        {
+            LOGGER_ERROR("[cons] Broker consumer registration failed — "
+                         "broker won't track this consumer for liveness");
+        }
+    }
+
+    // Step 6b: Startup coordination — wait for prerequisite roles (HEP-0023).
+    if (!config_.startup().wait_for_roles.empty())
+    {
+        if (!scripting::wait_for_roles(*broker_comm_, config_.startup().wait_for_roles, "[cons]"))
+        {
+            LOGGER_ERROR("[cons] Startup coordination failed — required roles not available");
+            ready_promise_.set_value(false);
+            return;
+        }
+    }
 
     // Step 7: Signal ready.
     ready_promise_.set_value(true);
@@ -339,7 +367,11 @@ void ConsumerRoleHost::worker_main_()
     // Step 9: stop accepting invoke from non-owner threads.
     engine_->stop_accepting();
 
-    // Step 10: join all managed threads.
+    // Step 9a: Explicitly deregister from broker (ctrl thread still running).
+    if (api_)
+        api_->deregister_from_broker();
+
+    // Step 10: join all managed threads (ctrl + future workers).
     core_.set_running(false);
     core_.notify_incoming();
     api_->join_all_threads();
@@ -365,7 +397,7 @@ bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     const auto &tr    = config_.in_transport();
     const auto &shm   = config_.in_shm();
     const auto &tc    = config_.timing();
-    const auto &inbox = config_.inbox();
+    inbox_cfg_ = config_.inbox();
     const auto &mon   = config_.monitoring();
     const auto &auth  = config_.auth();
     const auto &ch    = config_.in_channel();
@@ -393,36 +425,18 @@ bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
         opts.zmq_buffer_depth = tr.zmq_buffer_depth;
     }
 
-    opts.ctrl_queue_max_depth = mon.ctrl_queue_max_depth;
-    opts.peer_dead_timeout_ms = mon.peer_dead_timeout_ms;
-
     // --- Inbox setup (optional) ---
-    if (inbox.has_inbox())
+    if (inbox_cfg_.has_inbox())
     {
         auto inbox_result = scripting::setup_inbox_facility(
-            inbox_spec, inbox, config_.checksum().policy, "cons");
+            inbox_spec, inbox_cfg_, config_.checksum().policy, "cons");
         if (!inbox_result)
             return false;
-        inbox_queue_           = std::move(inbox_result->queue);
-        opts.inbox_endpoint    = inbox_result->actual_endpoint;
-        opts.inbox_schema_json = inbox_result->schema_json;
-        opts.inbox_packing     = inbox_result->packing;
-        opts.inbox_checksum    = inbox_result->checksum;
-    }
-
-    // --- Broker connect ---
-    if (!hub.broker.empty())
-    {
-        if (!in_messenger_.connect(hub.broker, hub.broker_pubkey,
-                                    auth.client_pubkey, auth.client_seckey))
-        {
-            LOGGER_ERROR("[cons] broker connect failed ({}); aborting", hub.broker);
-            return false;
-        }
+        inbox_queue_ = std::move(inbox_result->queue);
     }
 
     // --- Create consumer ---
-    auto maybe_consumer = hub::Consumer::connect(in_messenger_, opts);
+    auto maybe_consumer = hub::Consumer::create(opts);
     if (!maybe_consumer.has_value())
     {
         LOGGER_ERROR("[cons] Failed to connect consumer to channel '{}'", ch);
@@ -431,12 +445,6 @@ bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     in_consumer_ = std::move(maybe_consumer);
 
     // Metrics reset moved to after queue creation (reset_metrics() on queue).
-
-    if (!in_consumer_->start_embedded())
-    {
-        LOGGER_ERROR("[cons] in_consumer->start_embedded() failed");
-        return false;
-    }
 
     // Event callbacks (on_channel_closing, on_force_shutdown, on_peer_dead,
     // on_hub_dead, on_zmq_data, on_producer_message, on_channel_error) are
@@ -454,10 +462,7 @@ bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     LOGGER_INFO("[cons] Consumer started on channel '{}' (shm={})", ch,
                 in_consumer_->has_shm());
 
-    // --- Startup coordination (HEP-0023) ---
-    if (!scripting::wait_for_roles(*broker_channel_, config_.startup().wait_for_roles, "[cons]"))
-        return false;
-
+    // Startup coordination (HEP-0023) moved to after start_ctrl_thread().
     return true;
 }
 
@@ -477,13 +482,13 @@ void ConsumerRoleHost::teardown_infrastructure_()
         inbox_queue_.reset();
     }
 
-    if (broker_channel_)
+    // Ctrl thread already joined by api_->join_all_threads().
+    // Broker detects role death via heartbeat timeout — no explicit deregister needed.
+    if (broker_comm_)
     {
-        broker_channel_->disconnect();
-        broker_channel_.reset();
+        broker_comm_->disconnect();
+        broker_comm_.reset();
     }
-
-    in_messenger_.on_hub_dead(nullptr);
 
     if (in_consumer_.has_value())
     {
@@ -518,7 +523,7 @@ nlohmann::json ConsumerRoleHost::snapshot_metrics_json() const
     result["role"] = {
         {"in_slots_received",  core_.in_slots_received()},
         {"script_error_count", engine_ ? engine_->script_error_count() : 0},
-        {"ctrl_queue_dropped", in_consumer_.has_value() ? in_consumer_->ctrl_queue_dropped() : 0}
+        {"ctrl_queue_dropped", 0}
     };
 
     if (inbox_queue_)

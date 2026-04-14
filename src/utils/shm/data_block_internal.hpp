@@ -23,7 +23,6 @@
 #include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
 #include "utils/data_block.hpp"
-#include "utils/messenger.hpp"
 #include "utils/deterministic_checksum.hpp"
 #include "utils/data_block_mutex.hpp"
 #include <atomic>

@@ -20,12 +20,14 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <variant>
 
@@ -55,9 +57,11 @@ struct SendCmd
 /// Request-reply: send 3 frames, wait for matching reply.
 struct RequestCmd
 {
-    std::string    msg_type;
-    std::string    expected_ack;     ///< Expected reply msg_type (e.g. "REG_ACK")
-    nlohmann::json payload;
+    std::string              msg_type;
+    /// Expected reply msg_types (e.g. ["REG_ACK"] or ["DISC_ACK", "DISC_PENDING"]).
+    /// Any reply matching one of these is accepted as a response for this request.
+    std::vector<std::string> expected_acks;
+    nlohmann::json           payload;
 
     // Signaling: broker thread sets result and notifies.
     std::mutex                        mu;
@@ -164,8 +168,8 @@ struct BrokerRequestComm::Impl
             auto it = pending_requests.find(msg_type);
             if (it != pending_requests.end())
             {
-                auto req = std::move(it->second);
-                pending_requests.erase(it);
+                auto req = it->second;
+                remove_from_pending(req); // erase all ack-key entries for this request
                 {
                     std::lock_guard<std::mutex> lk(req->mu);
                     req->result = std::move(body);
@@ -182,8 +186,8 @@ struct BrokerRequestComm::Impl
             if (msg_type == "ERROR" && !pending_requests.empty())
             {
                 auto first = pending_requests.begin();
-                auto req = std::move(first->second);
-                pending_requests.erase(first);
+                auto req = first->second;
+                remove_from_pending(req);
                 {
                     std::lock_guard<std::mutex> lk(req->mu);
                     req->result = std::nullopt;
@@ -260,21 +264,47 @@ struct BrokerRequestComm::Impl
 
     void handle_command(std::shared_ptr<RequestCmd> &cmd)
     {
-        pending_requests[cmd->expected_ack] = cmd;
+        // Register the same shared_ptr under each accepted ack type.
+        for (const auto &ack : cmd->expected_acks)
+            pending_requests[ack] = cmd;
         send_message(cmd->msg_type, cmd->payload);
     }
 
+    /// Remove a completed/cancelled request from all of its ack keys.
+    void remove_from_pending(const std::shared_ptr<RequestCmd> &cmd)
+    {
+        for (const auto &ack : cmd->expected_acks)
+        {
+            auto it = pending_requests.find(ack);
+            if (it != pending_requests.end() && it->second.get() == cmd.get())
+                pending_requests.erase(it);
+        }
+    }
+
     /// Submit a request-reply and block until reply or timeout.
+    /// Single expected ack — convenience wrapper.
     std::optional<nlohmann::json> do_request(
         const std::string &msg_type,
         const std::string &expected_ack,
         nlohmann::json payload,
         int timeout_ms)
     {
+        return do_request_multi(msg_type, {expected_ack},
+                                std::move(payload), timeout_ms);
+    }
+
+    /// Submit a request-reply accepting one of several reply types.
+    /// Used by DISC_REQ which may reply with DISC_ACK or DISC_PENDING.
+    std::optional<nlohmann::json> do_request_multi(
+        const std::string &msg_type,
+        std::vector<std::string> expected_acks,
+        nlohmann::json payload,
+        int timeout_ms)
+    {
         auto req = std::make_shared<RequestCmd>();
-        req->msg_type = msg_type;
-        req->expected_ack = expected_ack;
-        req->payload = std::move(payload);
+        req->msg_type      = msg_type;
+        req->expected_acks = std::move(expected_acks);
+        req->payload       = std::move(payload);
 
         cmd_queue.push(req);
 
@@ -617,9 +647,59 @@ BrokerRequestComm::discover_channel(const std::string &channel,
                                         const nlohmann::json &opts,
                                         int timeout_ms)
 {
-    nlohmann::json payload = opts;
-    payload["channel_name"] = channel;
-    return pImpl->do_request( "DISC_REQ", "DISC_ACK", std::move(payload), timeout_ms);
+    // HEP-CORE-0023 §2.2: DISC_REQ may reply with DISC_ACK (Ready),
+    // DISC_PENDING (retry), or ERROR (CHANNEL_NOT_FOUND). Loop on PENDING
+    // until Ready or overall timeout; ERROR/CHANNEL_NOT_FOUND: retry briefly
+    // (producer may register later) within our timeout budget.
+    constexpr int kRetryIntervalMs = 100;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeout_ms);
+
+    while (true)
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline)
+        {
+            LOGGER_WARN("BrokerRequestComm: discover_channel('{}') overall timeout ({}ms)",
+                        channel, timeout_ms);
+            return std::nullopt;
+        }
+        const int remaining_ms = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+        const int per_attempt_ms = std::min(remaining_ms, 2000);
+
+        nlohmann::json payload = opts;
+        payload["channel_name"] = channel;
+
+        auto result = pImpl->do_request_multi(
+            "DISC_REQ", {"DISC_ACK", "DISC_PENDING"},
+            std::move(payload), per_attempt_ms);
+
+        if (!result.has_value())
+        {
+            // ERROR (CHANNEL_NOT_FOUND) or per-attempt timeout.
+            // Retry: producer may register later.
+            std::this_thread::sleep_for(std::chrono::milliseconds(kRetryIntervalMs));
+            continue;
+        }
+
+        const std::string status = result->value("status", "");
+        if (status == "success")
+            return result;      // DISC_ACK — channel Ready
+
+        if (status == "pending")
+        {
+            // DISC_PENDING — producer registered but not yet Ready.
+            LOGGER_TRACE("BrokerRequestComm: DISC_PENDING for '{}', retrying", channel);
+            std::this_thread::sleep_for(std::chrono::milliseconds(kRetryIntervalMs));
+            continue;
+        }
+
+        // Unexpected status — treat as failure.
+        LOGGER_WARN("BrokerRequestComm: DISC_REQ unexpected status='{}' for '{}'",
+                    status, channel);
+        return std::nullopt;
+    }
 }
 
 std::optional<nlohmann::json>
@@ -632,6 +712,7 @@ bool BrokerRequestComm::deregister_channel(const std::string &channel, int timeo
 {
     nlohmann::json payload;
     payload["channel_name"] = channel;
+    payload["producer_pid"] = static_cast<uint64_t>(::getpid());
     auto result = pImpl->do_request("DEREG_REQ", "DEREG_ACK",
                              std::move(payload), timeout_ms);
     return result.has_value() && result->value("status", "") == "success";
@@ -641,6 +722,7 @@ bool BrokerRequestComm::deregister_consumer(const std::string &channel, int time
 {
     nlohmann::json payload;
     payload["channel_name"] = channel;
+    payload["consumer_pid"] = static_cast<uint64_t>(::getpid());
     auto result = pImpl->do_request("CONSUMER_DEREG_REQ", "CONSUMER_DEREG_ACK",
                              std::move(payload), timeout_ms);
     return result.has_value() && result->value("status", "") == "success";

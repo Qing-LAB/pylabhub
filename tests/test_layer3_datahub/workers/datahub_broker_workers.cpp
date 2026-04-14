@@ -4,6 +4,7 @@
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 
+#include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
 #include "channel_registry.hpp"
 #include "plh_datahub.hpp"
@@ -33,7 +34,8 @@ namespace pylabhub::tests::worker::broker
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetLifecycleModule(); }
+static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto zmq_module() { return ::pylabhub::hub::GetZMQContextModule(); }
 
 // ============================================================================
 // File-local helpers
@@ -248,7 +250,7 @@ int channel_registry_ops()
 }
 
 // ============================================================================
-// broker_reg_disc_happy_path — full REG/DISC round-trip via Messenger
+// broker_reg_disc_happy_path — full REG/DISC round-trip via BrokerRequestComm
 // ============================================================================
 
 int broker_reg_disc_happy_path()
@@ -261,29 +263,48 @@ int broker_reg_disc_happy_path()
             cfg.use_curve = true;
             auto broker = start_broker_in_thread(std::move(cfg));
 
-            Messenger& messenger = Messenger::get_instance();
-            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey))
-                << "Messenger::connect() to real BrokerService failed";
+            const std::string channel = "broker.ch1";
+            const std::string uid     = "PROD-broker-ch1";
 
-            ProducerInfo pinfo;
-            pinfo.shm_name = "broker_reg_disc.shm";
-            pinfo.producer_pid = pylabhub::platform::get_pid();
-            pinfo.schema_hash.assign(32, '\0');
-            pinfo.schema_version = 7;
-            messenger.register_producer("broker.ch1", pinfo);
+            BrokerRequestComm brc;
+            BrokerRequestComm::Config brc_cfg;
+            brc_cfg.broker_endpoint = broker.endpoint;
+            brc_cfg.broker_pubkey   = broker.pubkey;
+            brc_cfg.role_uid        = uid;
+            ASSERT_TRUE(brc.connect(brc_cfg));
+            std::atomic<bool> running{true};
+            std::thread t([&] { brc.run_poll_loop([&] { return running.load(); }); });
 
-            // discover_producer is queued after register_producer on the same worker thread,
-            // so DISC_REQ is sent only after REG_ACK is received — no sleep() needed.
-            auto info = messenger.discover_producer("broker.ch1", 5000);
-            ASSERT_TRUE(info.has_value()) << "discover_producer must find registered channel";
-            EXPECT_EQ(info->shm_name, "broker_reg_disc.shm");
-            EXPECT_EQ(info->schema_version, 7u);
+            nlohmann::json reg_opts;
+            reg_opts["channel_name"]      = channel;
+            reg_opts["pattern"]           = "PubSub";
+            reg_opts["has_shared_memory"] = false;
+            reg_opts["producer_pid"]      = ::getpid();
+            reg_opts["zmq_ctrl_endpoint"] = "tcp://127.0.0.1:0";
+            reg_opts["zmq_data_endpoint"] = "tcp://127.0.0.1:0";
+            reg_opts["zmq_pubkey"]        = "";
+            reg_opts["role_uid"]          = uid;
+            reg_opts["shm_name"]          = "broker_reg_disc.shm";
+            reg_opts["schema_version"]    = 7;
+            auto reg = brc.register_channel(reg_opts, 3000);
+            ASSERT_TRUE(reg.has_value()) << "register_channel must succeed";
 
-            messenger.disconnect();
+            brc.send_heartbeat(channel, {});
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+            auto disc = brc.discover_channel(channel, {}, 5000);
+            ASSERT_TRUE(disc.has_value()) << "discover_channel must find registered channel";
+            EXPECT_EQ(disc->value("shm_name", ""), "broker_reg_disc.shm");
+            EXPECT_EQ(disc->value("schema_version", 0), 7);
+
+            running.store(false);
+            brc.stop();
+            if (t.joinable()) t.join();
+            brc.disconnect();
             broker.stop_and_join();
         },
         "broker.broker_reg_disc_happy_path",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), crypto_module(), hub_module(), zmq_module());
 }
 
 // ============================================================================
@@ -334,7 +355,7 @@ int broker_schema_mismatch()
 }
 
 // ============================================================================
-// broker_channel_not_found — discover unknown channel → Messenger returns nullopt
+// broker_channel_not_found — discover unknown channel → BRC returns nullopt
 // ============================================================================
 
 int broker_channel_not_found()
@@ -347,19 +368,27 @@ int broker_channel_not_found()
             cfg.use_curve = true;
             auto broker = start_broker_in_thread(std::move(cfg));
 
-            Messenger& messenger = Messenger::get_instance();
-            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
+            BrokerRequestComm brc;
+            BrokerRequestComm::Config brc_cfg;
+            brc_cfg.broker_endpoint = broker.endpoint;
+            brc_cfg.broker_pubkey   = broker.pubkey;
+            brc_cfg.role_uid        = "QUERIER-notfound";
+            ASSERT_TRUE(brc.connect(brc_cfg));
+            std::atomic<bool> running{true};
+            std::thread t([&] { brc.run_poll_loop([&] { return running.load(); }); });
 
-            // Broker returns ERROR/CHANNEL_NOT_FOUND; Messenger maps that to nullopt.
-            auto info = messenger.discover_producer("no.such.channel", 2000);
+            auto info = brc.discover_channel("no.such.channel", {}, 2000);
             EXPECT_FALSE(info.has_value())
-                << "discover_producer for unknown channel must return nullopt";
+                << "discover_channel for unknown channel must return nullopt";
 
-            messenger.disconnect();
+            running.store(false);
+            brc.stop();
+            if (t.joinable()) t.join();
+            brc.disconnect();
             broker.stop_and_join();
         },
         "broker.broker_channel_not_found",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), crypto_module(), hub_module(), zmq_module());
 }
 
 // ============================================================================
@@ -376,43 +405,54 @@ int broker_dereg_happy_path()
             cfg.use_curve = true;
             auto broker = start_broker_in_thread(std::move(cfg));
 
-            Messenger& messenger = Messenger::get_instance();
-            ASSERT_TRUE(messenger.connect(broker.endpoint, broker.pubkey));
-
             const std::string channel = "broker.dereg.ch";
-            const uint64_t pid = pylabhub::platform::get_pid();
+            const std::string uid     = "PROD-dereg-ch";
 
-            ProducerInfo pinfo;
-            pinfo.shm_name = "broker_dereg.shm";
-            pinfo.producer_pid = pid;
-            pinfo.schema_hash.assign(32, '\0');
-            pinfo.schema_version = 3;
-            messenger.register_producer(channel, pinfo);
+            BrokerRequestComm brc;
+            BrokerRequestComm::Config brc_cfg;
+            brc_cfg.broker_endpoint = broker.endpoint;
+            brc_cfg.broker_pubkey   = broker.pubkey;
+            brc_cfg.role_uid        = uid;
+            ASSERT_TRUE(brc.connect(brc_cfg));
+            std::atomic<bool> running{true};
+            std::thread t([&] { brc.run_poll_loop([&] { return running.load(); }); });
 
-            // Verify channel is discoverable after registration.
-            auto found = messenger.discover_producer(channel, 5000);
-            ASSERT_TRUE(found.has_value()) << "Channel must be registered before deregister";
+            nlohmann::json reg_opts;
+            reg_opts["channel_name"]      = channel;
+            reg_opts["pattern"]           = "PubSub";
+            reg_opts["has_shared_memory"] = false;
+            reg_opts["producer_pid"]      = ::getpid();
+            reg_opts["zmq_ctrl_endpoint"] = "tcp://127.0.0.1:0";
+            reg_opts["zmq_data_endpoint"] = "tcp://127.0.0.1:0";
+            reg_opts["zmq_pubkey"]        = "";
+            reg_opts["role_uid"]          = uid;
+            auto reg = brc.register_channel(reg_opts, 3000);
+            ASSERT_TRUE(reg.has_value()) << "register_channel must succeed";
 
-            // Send DEREG_REQ with the correct producer_pid via raw ZMQ with curve.
-            nlohmann::json dereg_req;
-            dereg_req["channel_name"] = channel;
-            dereg_req["producer_pid"] = pid;
-            nlohmann::json dereg_resp = raw_req(broker.endpoint, "DEREG_REQ", dereg_req,
-                                                2000, broker.pubkey);
-            ASSERT_FALSE(dereg_resp.is_null()) << "raw_req for DEREG_REQ timed out";
-            EXPECT_EQ(dereg_resp.value("status", std::string("")), "success")
-                << "DEREG_REQ with correct pid must succeed; got: " << dereg_resp.dump();
+            brc.send_heartbeat(channel, {});
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-            // After deregistration, discover must return nullopt.
-            auto after_dereg = messenger.discover_producer(channel, 1000);
+            // Verify channel is discoverable
+            auto found = brc.discover_channel(channel, {}, 5000);
+            ASSERT_TRUE(found.has_value()) << "Channel must be discoverable before deregister";
+
+            // Deregister
+            EXPECT_TRUE(brc.deregister_channel(channel));
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+            // After deregistration, discover must return nullopt
+            auto after_dereg = brc.discover_channel(channel, {}, 1000);
             EXPECT_FALSE(after_dereg.has_value())
-                << "discover_producer must return nullopt after deregistration";
+                << "discover_channel must return nullopt after deregistration";
 
-            messenger.disconnect();
+            running.store(false);
+            brc.stop();
+            if (t.joinable()) t.join();
+            brc.disconnect();
             broker.stop_and_join();
         },
         "broker.broker_dereg_happy_path",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), crypto_module(), hub_module(), zmq_module());
 }
 
 // ============================================================================

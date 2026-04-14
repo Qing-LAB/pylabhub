@@ -46,18 +46,18 @@ constexpr std::chrono::milliseconds kPollTimeout{100};
 constexpr char kFrameTypeControl = 'C';
 
 // Bring shared pattern helpers into scope (defined in utils/channel_pattern.hpp,
-// included via channel_registry.hpp → utils/channel_pattern.hpp).
+// included via channel_registry.hpp ->utils/channel_pattern.hpp).
 using pylabhub::hub::channel_pattern_to_str;
 using pylabhub::hub::channel_pattern_from_str;
 
-/// Convert a 64-char hex-encoded schema hash string → std::array<uint8_t, 32>.
+/// Convert a 64-char hex-encoded schema hash string ->std::array<uint8_t, 32>.
 /// Returns a zero-filled array on format error (wrong length or invalid hex).
 std::array<uint8_t, 32> hex_to_hash_array(const std::string& hex) noexcept
 {
     std::array<uint8_t, 32> result{};
     if (hex.size() != 64) return result;
     const auto decoded = format_tools::bytes_from_hex(hex);
-    if (decoded.size() != 32) return result; // invalid chars → bytes_from_hex returned original
+    if (decoded.size() != 32) return result; // invalid chars ->bytes_from_hex returned original
     std::memcpy(result.data(), decoded.data(), 32);
     return result;
 }
@@ -147,10 +147,10 @@ public:
         std::string              zmq_identity;    ///< Raw routing identity for send_to_identity
         std::vector<std::string> relay_channels;  ///< Channels we relay TO this peer
     };
-    /// hub_uid → InboundPeer; only accessed from the run() thread (no mutex needed).
+    /// hub_uid ->InboundPeer; only accessed from the run() thread (no mutex needed).
     std::unordered_map<std::string, InboundPeer> inbound_peers_;
 
-    /// [BR5] Inverted index: channel_name → list of peer zmq_identities subscribed to it.
+    /// [BR5] Inverted index: channel_name ->list of peer zmq_identities subscribed to it.
     /// Updated on HELLO/BYE. Enables O(1) per-channel relay lookup instead of O(peers×channels).
     std::unordered_map<std::string, std::vector<std::string>> channel_to_peer_identities_;
 
@@ -189,7 +189,7 @@ public:
         ParticipantMetrics                                          producer;
         std::unordered_map<std::string, ParticipantMetrics>         consumers;
     };
-    /// channel_name → aggregated metrics.  Protected by m_query_mu.
+    /// channel_name ->aggregated metrics.  Protected by m_query_mu.
     std::unordered_map<std::string, ChannelMetrics> metrics_store_;
 
     void update_producer_metrics(const std::string &channel,
@@ -214,6 +214,9 @@ public:
     nlohmann::json handle_reg_req(const nlohmann::json& req,
                                    const zmq::message_t& identity,
                                    zmq::socket_t&        socket);
+    /// Always returns a response. The returned JSON's status field indicates
+    /// the DISC response variant: "success" (DISC_ACK), "pending" (DISC_PENDING),
+    /// or "error" (CHANNEL_NOT_FOUND). See HEP-CORE-0023 §2.2.
     nlohmann::json handle_disc_req(const nlohmann::json& req);
     nlohmann::json handle_dereg_req(const nlohmann::json& req, zmq::socket_t& socket);
     nlohmann::json handle_consumer_reg_req(const nlohmann::json& req,
@@ -492,7 +495,7 @@ void BrokerServiceImpl::run()
                 }
             }
 
-            // Check heartbeat timeouts and consumer liveness every poll cycle (≈100ms resolution).
+            // Check heartbeat timeouts and consumer liveness every poll cycle (~100ms resolution).
             check_heartbeat_timeouts(router);
             check_dead_consumers(router);
             check_closing_deadlines(router);
@@ -629,8 +632,16 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
     }
     else if (msg_type == "DISC_REQ")
     {
+        // Three-response dispatch (HEP-CORE-0023 §2.2):
+        //   "success" -> DISC_ACK (channel Ready)
+        //   "pending" -> DISC_PENDING (client retries)
+        //   otherwise -> ERROR (CHANNEL_NOT_FOUND)
         nlohmann::json resp = handle_disc_req(payload);
-        const std::string ack = (resp.value("status", "") == "success") ? "DISC_ACK" : "ERROR";
+        const std::string status = resp.value("status", "");
+        std::string ack;
+        if (status == "success")      ack = "DISC_ACK";
+        else if (status == "pending") ack = "DISC_PENDING";
+        else                          ack = "ERROR";
         send_reply(socket, identity, ack, resp);
     }
     else if (msg_type == "DEREG_REQ")
@@ -655,7 +666,8 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
     }
     else if (msg_type == "HEARTBEAT_REQ")
     {
-        // Fire-and-forget: update timestamp, no reply.
+        // Fire-and-forget from client. State transitions (PendingReady -> Ready)
+        // happen in registry.update_heartbeat() called from the handler.
         handle_heartbeat_req(payload);
     }
     else if (msg_type == "CHECKSUM_ERROR_REPORT")
@@ -730,7 +742,7 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
     }
     else if (msg_type == "HUB_TARGETED_MSG")
     {
-        // HEP-CORE-0022: hub-targeted message from a peer (via peer's DEALER → our ROUTER).
+        // HEP-CORE-0022: hub-targeted message from a peer (via peer's DEALER ->our ROUTER).
         handle_hub_targeted_msg(payload);
     }
     else if (msg_type == "ENDPOINT_UPDATE_REQ")
@@ -814,7 +826,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     entry.zmq_ctrl_endpoint     = req.value("zmq_ctrl_endpoint", "");
     entry.zmq_data_endpoint     = req.value("zmq_data_endpoint", "");
     entry.zmq_pubkey            = req.value("zmq_pubkey", "");
-    // HEP-CORE-0021: ZMQ Virtual Channel Node transport.
+    // HEP-CORE-0021: ZMQ endpoint registry (broker records peer endpoint for discovery).
     entry.data_transport        = req.value("data_transport", std::string{"shm"});
     entry.zmq_node_endpoint     = req.value("zmq_node_endpoint", "");
     entry.inbox_endpoint        = req.value("inbox_endpoint", "");
@@ -919,6 +931,10 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
             err["attempted_pid"]         = attempted_pid;
             send_to_identity(socket, existing_opt->producer_zmq_identity, "CHANNEL_ERROR_NOTIFY",
                              err);
+            LOGGER_ERROR("Broker: CHANNEL_ERROR_NOTIFY to producer of '{}': event={}, "
+                         "existing_hash={}, attempted_hash={}, attempted_pid={}",
+                         channel_name, "schema_mismatch_attempt",
+                         existing_schema, attempted_schema, attempted_pid);
         }
         return make_error(corr_id, "SCHEMA_MISMATCH",
                           "Schema hash differs from existing registration for channel '" +
@@ -947,21 +963,33 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
     }
 
     auto entry = registry.find_channel(channel_name);
+
+    // ── HEP-CORE-0023 §2.2: Three-response state-machine dispatch ──────
+    // Broker replies immediately based on current role state. No queuing.
     if (!entry.has_value())
     {
-        LOGGER_WARN("Broker: DISC_REQ channel '{}' not found", channel_name);
+        // No role registered for this channel.
+        LOGGER_DEBUG("Broker: DISC_REQ for '{}' -> CHANNEL_NOT_FOUND", channel_name);
         return make_error(corr_id, "CHANNEL_NOT_FOUND",
                           "Channel '" + channel_name + "' is not registered");
     }
 
-    // Gate consumer access on the producer having sent its first heartbeat.
     if (entry->status == ChannelStatus::PendingReady)
     {
-        LOGGER_INFO("Broker: DISC_REQ channel '{}' pending first heartbeat", channel_name);
-        return make_error(corr_id, "CHANNEL_NOT_READY",
-                          "Producer has not sent first heartbeat yet for channel '" +
-                              channel_name + "'");
+        // Role registered but not yet Ready (no heartbeat received).
+        // Client is responsible for retry.
+        LOGGER_DEBUG("Broker: DISC_REQ for '{}' -> DISC_PENDING (awaiting heartbeat)",
+                     channel_name);
+        nlohmann::json resp;
+        resp["status"]       = "pending";
+        resp["channel_name"] = channel_name;
+        resp["reason"]       = "awaiting_first_heartbeat";
+        if (!corr_id.empty())
+            resp["correlation_id"] = corr_id;
+        return resp;
     }
+
+    // entry->status == Ready — fall through to normal DISC_ACK payload.
 
     // HEP-0021 §16: reject if ZMQ endpoint has unresolved port 0.
     if (entry->data_transport == "zmq" && !entry->zmq_node_endpoint.empty())
@@ -991,7 +1019,7 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
     resp["zmq_ctrl_endpoint"]  = entry->zmq_ctrl_endpoint;
     resp["zmq_data_endpoint"]  = entry->zmq_data_endpoint;
     resp["zmq_pubkey"]         = entry->zmq_pubkey;
-    // HEP-CORE-0021: ZMQ Virtual Channel Node transport.
+    // HEP-CORE-0021: ZMQ endpoint registry (echo stored peer endpoint for discovery).
     resp["data_transport"]     = entry->data_transport;
     resp["zmq_node_endpoint"]  = entry->zmq_node_endpoint;
     if (!corr_id.empty())
@@ -1215,6 +1243,10 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
             const uint64_t pid = req.value("producer_pid", uint64_t{0});
             update_producer_metrics(channel_name, req["metrics"], pid);
         }
+
+        // HEP-CORE-0023 §2.1: registry.update_heartbeat() transitions
+        // PendingReady -> Ready internally. No additional action needed here;
+        // the next DISC_REQ will observe Ready and return DISC_ACK.
     }
     else
     {
@@ -1298,7 +1330,7 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
                               endpoint_type + "'");
     }
 
-    // Check current value: already non-zero → reject unless same value (idempotent).
+    // Check current value: already non-zero ->reject unless same value (idempotent).
     auto current = pylabhub::validate_tcp_endpoint(*target_field);
     if (current.ok() && current.port != 0)
     {
@@ -1516,6 +1548,9 @@ void BrokerServiceImpl::check_dead_consumers(zmq::socket_t& socket)
                 notify["reason"]            = "process_dead";
                 send_to_identity(socket, entry.producer_zmq_identity, "CONSUMER_DIED_NOTIFY",
                                  notify);
+                LOGGER_INFO("Broker: CONSUMER_DIED_NOTIFY to producer of '{}': "
+                            "consumer_pid={}, reason=process_dead",
+                            channel_name, dead_consumer.consumer_pid);
             }
             registry.deregister_consumer(channel_name, dead_consumer.consumer_pid);
         }
@@ -1541,7 +1576,7 @@ void BrokerServiceImpl::send_closing_notify(zmq::socket_t&     socket,
         try
         {
             send_to_identity(socket, consumer.zmq_identity, "CHANNEL_CLOSING_NOTIFY", body);
-            LOGGER_INFO("Broker: CHANNEL_CLOSING_NOTIFY for '{}' → consumer pid={}",
+            LOGGER_INFO("Broker: CHANNEL_CLOSING_NOTIFY for '{}' ->consumer pid={}",
                         channel_name, consumer.consumer_pid);
         }
         catch (const zmq::error_t& e)
@@ -1558,7 +1593,7 @@ void BrokerServiceImpl::send_closing_notify(zmq::socket_t&     socket,
         {
             send_to_identity(socket, entry.producer_zmq_identity, "CHANNEL_CLOSING_NOTIFY",
                              body);
-            LOGGER_INFO("Broker: CHANNEL_CLOSING_NOTIFY for '{}' → producer pid={}",
+            LOGGER_INFO("Broker: CHANNEL_CLOSING_NOTIFY for '{}' ->producer pid={}",
                         channel_name, entry.producer_pid);
         }
         catch (const zmq::error_t& e)
@@ -1625,7 +1660,7 @@ void BrokerServiceImpl::send_force_shutdown(zmq::socket_t&     socket,
         try
         {
             send_to_identity(socket, consumer.zmq_identity, "FORCE_SHUTDOWN", body);
-            LOGGER_INFO("Broker: FORCE_SHUTDOWN for '{}' → consumer pid={}",
+            LOGGER_INFO("Broker: FORCE_SHUTDOWN for '{}' ->consumer pid={}",
                         channel_name, consumer.consumer_pid);
         }
         catch (const zmq::error_t& e)
@@ -1640,7 +1675,7 @@ void BrokerServiceImpl::send_force_shutdown(zmq::socket_t&     socket,
         try
         {
             send_to_identity(socket, entry.producer_zmq_identity, "FORCE_SHUTDOWN", body);
-            LOGGER_INFO("Broker: FORCE_SHUTDOWN for '{}' → producer pid={}",
+            LOGGER_INFO("Broker: FORCE_SHUTDOWN for '{}' ->producer pid={}",
                         channel_name, entry.producer_pid);
         }
         catch (const zmq::error_t& e)
@@ -1681,6 +1716,9 @@ void BrokerServiceImpl::handle_checksum_error_report(zmq::socket_t&        socke
                 send_to_identity(socket, entry->producer_zmq_identity, "CHANNEL_EVENT_NOTIFY",
                                  fwd);
             }
+            LOGGER_INFO("Broker: CHANNEL_EVENT_NOTIFY ->all members of '{}': "
+                        "checksum_error slot={}, action=notify_only",
+                        channel, slot);
         }
     }
     // ChecksumRepairPolicy::Repair — deferred; requires WriteAttach slot repair path.
@@ -1798,7 +1836,7 @@ void BrokerServiceImpl::handle_channel_broadcast_req(zmq::socket_t&        socke
         }
     }
 
-    LOGGER_DEBUG("Broker: CHANNEL_BROADCAST_REQ '{}' msg='{}' → {} consumers + producer",
+    LOGGER_DEBUG("Broker: CHANNEL_BROADCAST_REQ '{}' msg='{}' ->{} consumers + producer",
                  target_channel, message, entry->consumers.size());
 
     // HEP-CORE-0022: relay to federation peers subscribed to this channel.
@@ -2439,7 +2477,7 @@ void BrokerServiceImpl::handle_hub_peer_hello(zmq::socket_t&        socket,
     // Register as inbound peer.
     inbound_peers_[peer_hub_uid] = {peer_hub_uid, identity_str, relay_channels};
 
-    // [BR5] Update inverted channel → peer-identities index.
+    // [BR5] Update inverted channel ->peer-identities index.
     for (const auto& ch : relay_channels)
         channel_to_peer_identities_[ch].push_back(identity_str);
 
@@ -2551,7 +2589,7 @@ void BrokerServiceImpl::handle_hub_relay_msg(zmq::socket_t&        socket,
         fwd["data"] = payload["payload"];
 
     send_to_identity(socket, entry->producer_zmq_identity, "CHANNEL_EVENT_NOTIFY", fwd);
-    LOGGER_DEBUG("Broker: HUB_RELAY_MSG '{}' event='{}' from hub '{}' → local producer",
+    LOGGER_DEBUG("Broker: HUB_RELAY_MSG '{}' event='{}' from hub '{}' ->local producer",
                  channel, event, originator);
 }
 
@@ -2725,7 +2763,7 @@ void BrokerServiceImpl::handle_band_broadcast_req(
         send_to_identity(socket, mid, "BAND_BROADCAST_NOTIFY", notify);
     }
 
-    LOGGER_DEBUG("Broker: BAND_BROADCAST '{}' from '{}' → {} recipients",
+    LOGGER_DEBUG("Broker: BAND_BROADCAST '{}' from '{}' ->{} recipients",
                  channel, sender_uid, target_ids.size());
 }
 

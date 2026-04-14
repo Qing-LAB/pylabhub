@@ -61,7 +61,7 @@ namespace pylabhub::tests::worker::write_attach
 
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetLifecycleModule(); }
+static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 // Helper: build a minimal RingBuffer config with Latest_only and no checksum enforcement.
 static DataBlockConfig make_write_attach_config(uint64_t secret)

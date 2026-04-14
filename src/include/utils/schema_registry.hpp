@@ -10,14 +10,13 @@
  *   - Thread-safe forward lookup:  schema ID → SchemaEntry
  *   - Thread-safe reverse lookup:  BLAKE2b-256 hash → schema ID
  *   - Manual `reload()` to re-scan directories
- *   - Explicit broker query fallback via `query_from_broker()`
  *
  * Named `SchemaStore` (not `SchemaRegistry`) to avoid collision with the
  * compile-time `template <typename T> struct SchemaRegistry` in schema_blds.hpp.
  *
  * ## Lifecycle
  * Depends on `pylabhub::utils::Logger` (for logging during init/shutdown).
- * Does NOT depend on Messenger/ZMQ — broker queries are caller-initiated.
+ * Does NOT depend on ZMQ.
  *
  * ## Thread safety
  * All public methods acquire an internal mutex.  Safe to call from any thread
@@ -40,11 +39,6 @@
 #include <optional>
 #include <string>
 #include <vector>
-
-namespace pylabhub::hub
-{
-class Messenger; // forward-declare to avoid pulling in messenger.hpp
-} // namespace pylabhub::hub
 
 namespace pylabhub::schema
 {
@@ -84,15 +78,6 @@ public:
 
     /// Register a schema in-memory (e.g. from broker query result).
     void register_schema(const SchemaEntry &entry);
-
-    // ── Broker query fallback ─────────────────────────────────────────────────
-
-    /// Query broker for channel schema; if found, register in-memory and return.
-    /// Caller provides Messenger reference (SchemaStore does NOT own one).
-    [[nodiscard]] std::optional<SchemaEntry>
-    query_from_broker(const std::string &channel_name,
-                      pylabhub::hub::Messenger &messenger,
-                      int timeout_ms = 5000);
 
     // ── Configuration ─────────────────────────────────────────────────────────
 
