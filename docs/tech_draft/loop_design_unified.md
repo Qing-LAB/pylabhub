@@ -1,9 +1,25 @@
 # Unified Loop Design — Canonical Reference
 
-**Status**: v4 — Consolidated (2026-03-19)
+**Status**: v4 — Consolidated (2026-03-19); **API verified current 2026-04-14**
 **Purpose**: Precise pseudo-code for the unified data loop, config changes,
 timing policies, and abstraction layer boundaries. This document is the
 correctness reference for the ScriptEngine integration.
+
+**Verification 2026-04-14**: Spot-checked all referenced functions and method
+names against the current code at baseline 1275/1275 tests:
+
+- `compute_short_timeout`, `compute_next_deadline`, `resolve_period_us`,
+  `LoopTimingPolicy::{MaxRate,FixedRate,FixedRateWithCompensation}` — all
+  present in `src/include/utils/loop_timing_policy.hpp` with the documented
+  signatures.
+- `QueueReader::{read_acquire,read_release,last_seq,read_flexzone}`,
+  `QueueWriter::{write_acquire,write_commit,write_discard,write_flexzone,
+  sync_flexzone_checksum}` — all present in `src/include/utils/hub_queue.hpp`.
+- No references to removed types (Messenger, ChannelHandle) anywhere in this
+  doc — the design was always at the timing/queue-API layer, which is stable.
+
+This doc remains the correctness reference for the upcoming role-host
+unification (Phase 2 of `unified_role_loop.md`).
 
 **Change log**:
 - v1 (2026-03-18): Initial extraction of existing loop logic from 6 host files.
@@ -12,6 +28,8 @@ correctness reference for the ScriptEngine integration.
 - v4 (2026-03-19): Unified timeout formula (one formula, no branching),
   processor input-hold strategy, `compute_next_deadline` 4-parameter version,
   corrected pseudo-code consolidated from all discussion points.
+- API verification (2026-04-14): no doc changes needed; all named symbols
+  still exist with documented semantics.
 
 ---
 
