@@ -17,10 +17,12 @@
  */
 #include "pylabhub_utils_export.h"
 #include "utils/channel_access_policy.hpp"
+#include "utils/timeout_constants.hpp"
 
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -64,6 +66,18 @@ struct ChannelSnapshot
     }
 };
 
+/// Broker role-state-machine metrics snapshot (HEP-CORE-0023 §2.5).
+///
+/// Monotonic counters reported by BrokerService::query_role_state_metrics().
+/// Useful for admin-shell introspection and tests that need to assert state
+/// transitions occurred without racing on wall-clock timing.
+struct RoleStateMetrics
+{
+    uint64_t ready_to_pending_total{0};       ///< Ready -> Pending demotions.
+    uint64_t pending_to_deregistered_total{0};///< Pending -> deregistered (+ CLOSING_NOTIFY).
+    uint64_t pending_to_ready_total{0};       ///< Pending -> Ready transitions (first heartbeat or recovery).
+};
+
 /// Configuration for one outbound federation peer (HEP-CORE-0022).
 /// Mirrors pylabhub::HubPeerConfig but lives in broker namespace to avoid pulling in hub_config.hpp.
 struct FederationPeer
@@ -82,9 +96,62 @@ public:
         std::string endpoint{"tcp://0.0.0.0:5570"};
         bool use_curve{true};
 
-        /// Timeout for dead channel detection. A channel that has not sent a
-        /// HEARTBEAT_REQ within this window is closed and consumers notified.
-        std::chrono::seconds channel_timeout{10};
+        // ── Role liveness (HEP-CORE-0023 §2.5) ───────────────────────────
+        // Single source of truth: effective timeouts are derived from the
+        // heartbeat cadence times the miss-heartbeat counts, unless an explicit
+        // override is set (useful for tests and relaxed-tolerance deployments).
+
+        /// Expected client heartbeat cadence. Defaults to ::pylabhub::kDefaultHeartbeatIntervalMs (2 Hz).
+        std::chrono::milliseconds heartbeat_interval{::pylabhub::kDefaultHeartbeatIntervalMs};
+
+        /// Ready -> Pending demotion after this many consecutive missed heartbeats.
+        uint32_t ready_miss_heartbeats{::pylabhub::kDefaultReadyMissHeartbeats};
+
+        /// Pending -> deregistered + CHANNEL_CLOSING_NOTIFY after this many additional missed heartbeats
+        /// (counted from the moment the role entered Pending).
+        uint32_t pending_miss_heartbeats{::pylabhub::kDefaultPendingMissHeartbeats};
+
+        /// CHANNEL_CLOSING_NOTIFY -> FORCE_SHUTDOWN grace window, in heartbeats.
+        uint32_t grace_heartbeats{::pylabhub::kDefaultGraceHeartbeats};
+
+        /// Optional explicit overrides. When set, the value is used verbatim
+        /// (including 0, which is meaningful for `grace_override` = "no grace,
+        /// FORCE_SHUTDOWN immediately"). When std::nullopt, the effective
+        /// timeout is derived as `heartbeat_interval * <miss_heartbeats>`.
+        ///
+        /// For `ready_timeout_override` / `pending_timeout_override`, a value
+        /// of 0 ms means the timeout check in `check_heartbeat_timeouts()` is
+        /// skipped (timeout effectively disabled). Tests that want very fast
+        /// reclaim should use a small positive value (e.g. 1 ms), not 0.
+        std::optional<std::chrono::milliseconds> ready_timeout_override  {};
+        std::optional<std::chrono::milliseconds> pending_timeout_override{};
+        std::optional<std::chrono::milliseconds> grace_override          {};
+
+        /// Derived effective timeouts used by the heartbeat check loop.
+        /// FLOORED at `heartbeat_interval`: a stuck role must always be
+        /// reclaimable — a timeout of zero (skip) would create a permanent
+        /// dangling state. Misconfiguration is clamped, not honored.
+        [[nodiscard]] std::chrono::milliseconds effective_ready_timeout() const noexcept
+        {
+            const auto v = ready_timeout_override.value_or(
+                heartbeat_interval * ready_miss_heartbeats);
+            return (v < heartbeat_interval) ? heartbeat_interval : v;
+        }
+        [[nodiscard]] std::chrono::milliseconds effective_pending_timeout() const noexcept
+        {
+            const auto v = pending_timeout_override.value_or(
+                heartbeat_interval * pending_miss_heartbeats);
+            return (v < heartbeat_interval) ? heartbeat_interval : v;
+        }
+        /// Grace between CHANNEL_CLOSING_NOTIFY and FORCE_SHUTDOWN on the
+        /// voluntary-close path. Zero is allowed here ("immediate FORCE_SHUTDOWN")
+        /// because voluntary close starts from a live role — consumers already
+        /// had the chance to hear the initial CLOSING_NOTIFY.
+        [[nodiscard]] std::chrono::milliseconds effective_grace() const noexcept
+        {
+            return grace_override.value_or(
+                heartbeat_interval * grace_heartbeats);
+        }
 
         /// How often broker checks whether registered consumer PIDs are still alive.
         /// Set to 0 to disable liveness checks entirely.
@@ -92,11 +159,6 @@ public:
 
         /// Cat 2 policy: what to do when producer/consumer reports a slot checksum error.
         ChecksumRepairPolicy checksum_repair_policy{ChecksumRepairPolicy::None};
-
-        /// Grace period for graceful channel shutdown (two-tier protocol).
-        /// After CHANNEL_CLOSING_NOTIFY is sent, the broker waits this long for
-        /// clients to deregister before escalating to FORCE_SHUTDOWN.
-        std::chrono::seconds channel_shutdown_grace{5};
 
         /// Optional: stable broker CurveZMQ keypair from HubVault.
         /// When both fields are non-empty, the broker uses these keys instead of
@@ -210,6 +272,12 @@ public:
      * (e.g. from HubScript tick thread).
      */
     [[nodiscard]] ChannelSnapshot query_channel_snapshot() const;
+
+    /**
+     * @brief Thread-safe snapshot of role state-machine counters.
+     *        Returns monotonic totals since broker startup.
+     */
+    [[nodiscard]] RoleStateMetrics query_role_state_metrics() const;
 
     /**
      * @brief Request that the broker close a channel by name.

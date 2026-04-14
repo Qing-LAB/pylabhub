@@ -147,8 +147,20 @@ Example::
         d["broker_address"] = c.broker_endpoint();
         d["shell_address"]  = c.admin_endpoint();
 
-        // Broker operational settings
-        d["channel_timeout_s"]         = static_cast<int>(c.channel_timeout().count());
+        // Broker operational settings (HEP-CORE-0023 §2.5)
+        d["heartbeat_interval_ms"]     = static_cast<int>(c.heartbeat_interval().count());
+        d["ready_miss_heartbeats"]     = static_cast<int>(c.ready_miss_heartbeats());
+        d["pending_miss_heartbeats"]   = static_cast<int>(c.pending_miss_heartbeats());
+        d["grace_heartbeats"]          = static_cast<int>(c.grace_heartbeats());
+        d["ready_timeout_ms"]          = c.ready_timeout_override()
+            ? py::object(py::int_(static_cast<int>(c.ready_timeout_override()->count())))
+            : py::object(py::none());
+        d["pending_timeout_ms"]        = c.pending_timeout_override()
+            ? py::object(py::int_(static_cast<int>(c.pending_timeout_override()->count())))
+            : py::object(py::none());
+        d["grace_ms"]                  = c.grace_override()
+            ? py::object(py::int_(static_cast<int>(c.grace_override()->count())))
+            : py::object(py::none());
         d["consumer_liveness_check_s"] = static_cast<int>(c.consumer_liveness_check().count());
 
         // Resolved filesystem paths
@@ -172,7 +184,9 @@ Example::
 Return the active hub configuration as a flat dict.
 
 Keys: name, uid, description, broker_address, shell_address,
-channel_timeout_s, consumer_liveness_check_s, root_dir, config_dir,
+heartbeat_interval_ms, ready_miss_heartbeats, pending_miss_heartbeats,
+grace_heartbeats, ready_timeout_ms, pending_timeout_ms, grace_ms,
+consumer_liveness_check_s, root_dir, config_dir,
 scripts_python, scripts_lua, data_dir, python_requirements,
 hub_script_dir, log_file.
 

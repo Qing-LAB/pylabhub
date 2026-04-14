@@ -100,7 +100,7 @@ static std::atomic<bool> g_shutdown_requested{false};
 
 /// Get master password: PYLABHUB_MASTER_PASSWORD env var → interactive prompt → error.
 /// Returns false (with error already printed) when non-interactive and env var not set.
-static bool get_password(const char* prompt, std::string& out)
+static bool get_password(const std::string& prompt, std::string& out)
 {
     if (const char* env = std::getenv("PYLABHUB_MASTER_PASSWORD"))
     {
@@ -114,7 +114,7 @@ static bool get_password(const char* prompt, std::string& out)
                      "for non-interactive use\n");
         return false;
     }
-    out = pylabhub::role_cli::read_password_interactive("hubshell",prompt);
+    out = pylabhub::role_cli::read_password_interactive("hubshell", prompt.c_str());
     return true;
 }
 
@@ -214,8 +214,11 @@ static int do_init(const fs::path& hub_dir, const std::string& cli_name = {})
                 {"admin_endpoint",  "tcp://127.0.0.1:5600"}
             }},
             {"broker", {
-                {"channel_timeout_s",         10},
-                {"consumer_liveness_check_s",  5}
+                {"heartbeat_interval_ms",      500},
+                {"ready_miss_heartbeats",       10},
+                {"pending_miss_heartbeats",     10},
+                {"grace_heartbeats",             4},
+                {"consumer_liveness_check_s",    5}
             }},
             // Language-neutral hub script configuration.
             // "type" selects the ScriptHost subclass; "path" is the base directory.
@@ -584,9 +587,14 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
     pylabhub::broker::BrokerService::Config broker_cfg;
     broker_cfg.endpoint                         = hub_cfg.broker_endpoint();
     broker_cfg.use_curve                        = (broker_cfg.endpoint.rfind("tcp://", 0) == 0);
-    broker_cfg.channel_timeout                  = hub_cfg.channel_timeout();
+    broker_cfg.heartbeat_interval               = hub_cfg.heartbeat_interval();
+    broker_cfg.ready_miss_heartbeats            = hub_cfg.ready_miss_heartbeats();
+    broker_cfg.pending_miss_heartbeats          = hub_cfg.pending_miss_heartbeats();
+    broker_cfg.grace_heartbeats                 = hub_cfg.grace_heartbeats();
+    broker_cfg.ready_timeout_override           = hub_cfg.ready_timeout_override();
+    broker_cfg.pending_timeout_override         = hub_cfg.pending_timeout_override();
+    broker_cfg.grace_override                   = hub_cfg.grace_override();
     broker_cfg.consumer_liveness_check_interval = hub_cfg.consumer_liveness_check();
-    broker_cfg.channel_shutdown_grace           = hub_cfg.channel_shutdown_grace();
     broker_cfg.server_secret_key                = broker_cfg.use_curve ? vault_broker_secret : std::string{};
     broker_cfg.server_public_key                = broker_cfg.use_curve ? vault_broker_public : std::string{};
     broker_cfg.connection_policy                = hub_cfg.connection_policy();

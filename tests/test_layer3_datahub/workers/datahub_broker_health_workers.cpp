@@ -176,7 +176,9 @@ int producer_gets_closing_notify(int /*argc*/, char ** /*argv*/)
             BrokerService::Config cfg;
             cfg.endpoint        = "tcp://127.0.0.1:0";
             cfg.use_curve       = true;
-            cfg.channel_timeout = std::chrono::seconds(1);
+            // Fast reclaim for test: total ~1s window.
+            cfg.ready_timeout_override   = std::chrono::milliseconds(500);
+            cfg.pending_timeout_override = std::chrono::milliseconds(500);
             cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
             auto broker = start_broker_with_cfg(std::move(cfg));
 
@@ -199,7 +201,7 @@ int producer_gets_closing_notify(int /*argc*/, char ** /*argv*/)
             // Send one heartbeat to mark Ready, then stop sending.
             bh.brc.send_heartbeat(ch_name, {});
 
-            // Wait for channel_timeout (1s) → CHANNEL_CLOSING_NOTIFY.
+            // Wait ~1s for state machine to demote Ready -> Pending -> deregister + CHANNEL_CLOSING_NOTIFY.
             const auto deadline =
                 std::chrono::steady_clock::now() + std::chrono::seconds(5);
             while (!closing_fired.load() &&
@@ -281,7 +283,8 @@ int producer_auto_deregisters(int /*argc*/, char ** /*argv*/)
             BrokerService::Config cfg;
             cfg.endpoint        = "tcp://127.0.0.1:0";
             cfg.use_curve       = true;
-            cfg.channel_timeout = std::chrono::seconds(30);
+            cfg.ready_timeout_override   = std::chrono::milliseconds(15000);
+            cfg.pending_timeout_override = std::chrono::milliseconds(15000);
             cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
             auto broker = start_broker_with_cfg(std::move(cfg));
 
@@ -335,7 +338,8 @@ int dead_consumer_orchestrator(int argc, char **argv)
             BrokerService::Config cfg;
             cfg.endpoint                         = "tcp://127.0.0.1:0";
             cfg.use_curve                        = true;
-            cfg.channel_timeout                  = std::chrono::seconds(30);
+            cfg.ready_timeout_override           = std::chrono::milliseconds(15000);
+            cfg.pending_timeout_override         = std::chrono::milliseconds(15000);
             cfg.consumer_liveness_check_interval = std::chrono::seconds(1);
             auto broker = start_broker_with_cfg(std::move(cfg));
 

@@ -221,7 +221,8 @@ public:
     nlohmann::json handle_dereg_req(const nlohmann::json& req, zmq::socket_t& socket);
     nlohmann::json handle_consumer_reg_req(const nlohmann::json& req,
                                            const zmq::message_t& identity);
-    nlohmann::json handle_consumer_dereg_req(const nlohmann::json& req);
+    nlohmann::json handle_consumer_dereg_req(zmq::socket_t& socket,
+                                              const nlohmann::json& req);
     void           handle_heartbeat_req(const nlohmann::json& req);
     nlohmann::json handle_endpoint_update_req(const nlohmann::json& req,
                                                const zmq::message_t& identity);
@@ -240,6 +241,28 @@ public:
     void check_heartbeat_timeouts(zmq::socket_t& socket);
     void check_dead_consumers(zmq::socket_t& socket);
     void check_closing_deadlines(zmq::socket_t& socket);
+
+    // ── Role-close cleanup API (HEP-CORE-0023 §2.5) ───────────────────────
+    // Central hooks called at every dereg site so federation/band/future
+    // modules can clean up per-role state consistently. Called under m_query_mu
+    // from the broker run() thread; `socket` is the broker's ROUTER for
+    // emitting implicit notifications (e.g. BAND_LEAVE_NOTIFY to remaining
+    // band members).
+    void on_channel_closed(zmq::socket_t& socket,
+                           const std::string& channel_name,
+                           const ChannelEntry& entry,
+                           const std::string& reason);
+    void on_consumer_closed(zmq::socket_t& socket,
+                            const std::string& channel_name,
+                            const ConsumerEntry& consumer,
+                            const std::string& reason);
+
+    // Per-module cleanup helpers (invoked by the hooks above).
+    void federation_on_channel_closed(const std::string& channel_name,
+                                       const ChannelEntry& entry,
+                                       const std::string& reason);
+    void band_on_role_closed(zmq::socket_t& socket,
+                             const std::string& role_uid);
 
     void send_closing_notify(zmq::socket_t&                    socket,
                              const std::string&                channel_name,
@@ -293,6 +316,12 @@ public:
 
     /// Timestamp of last consumer liveness check (for interval gating).
     std::chrono::steady_clock::time_point m_last_consumer_check{};
+
+    // ── Role state-machine metrics (HEP-CORE-0023 §2.5) ─────────────────
+    // Monotonic counters, accessed only from the broker run() thread.
+    uint64_t m_metric_ready_to_pending{0};
+    uint64_t m_metric_pending_to_deregistered{0};
+    uint64_t m_metric_pending_to_ready{0};
 
     // ── Hub federation handlers (HEP-CORE-0022) ───────────────────────────
     void handle_hub_peer_hello(zmq::socket_t&       socket,
@@ -441,7 +470,7 @@ void BrokerServiceImpl::run()
                     // Clients have until the deadline to process queued messages and deregister.
                     entry->status = ChannelStatus::Closing;
                     entry->closing_deadline =
-                        std::chrono::steady_clock::now() + cfg.channel_shutdown_grace;
+                        std::chrono::steady_clock::now() + cfg.effective_grace();
                 }
             }
 
@@ -659,7 +688,7 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
     }
     else if (msg_type == "CONSUMER_DEREG_REQ")
     {
-        nlohmann::json resp = handle_consumer_dereg_req(payload);
+        nlohmann::json resp = handle_consumer_dereg_req(socket, payload);
         const std::string ack =
             (resp.value("status", "") == "success") ? "CONSUMER_DEREG_ACK" : "ERROR";
         send_reply(socket, identity, ack, resp);
@@ -1046,6 +1075,7 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
     if (entry.has_value())
     {
         send_closing_notify(socket, channel_name, *entry, "producer_deregistered");
+        on_channel_closed(socket, channel_name, *entry, "producer_deregistered");
     }
 
     if (!registry.deregister_channel(channel_name, producer_pid))
@@ -1189,7 +1219,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     return resp;
 }
 
-nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(const nlohmann::json& req)
+nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socket,
+                                                             const nlohmann::json& req)
 {
     const std::string corr_id = req.value("correlation_id", "");
     const std::string channel_name = req.value("channel_name", "");
@@ -1199,6 +1230,26 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(const nlohmann::json
     }
 
     const uint64_t consumer_pid = req.value("consumer_pid", uint64_t{0});
+
+    // Fetch consumer entry BEFORE removal so the cleanup hook can read role_uid.
+    ConsumerEntry closing_entry{};
+    bool have_entry = false;
+    {
+        auto ch = registry.find_channel(channel_name);
+        if (ch.has_value())
+        {
+            for (const auto& c : ch->consumers)
+            {
+                if (c.consumer_pid == consumer_pid)
+                {
+                    closing_entry = c;
+                    have_entry = true;
+                    break;
+                }
+            }
+        }
+    }
+
     if (!registry.deregister_consumer(channel_name, consumer_pid))
     {
         LOGGER_WARN("Broker: CONSUMER_DEREG_REQ failed for channel '{}' (pid={})", channel_name,
@@ -1207,6 +1258,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(const nlohmann::json
                           "Consumer pid " + std::to_string(consumer_pid) +
                               " not registered for channel '" + channel_name + "'");
     }
+    if (have_entry)
+        on_consumer_closed(socket, channel_name, closing_entry, "voluntary_close");
 
     LOGGER_INFO("Broker: consumer deregistered from channel '{}'", channel_name);
     nlohmann::json resp;
@@ -1227,8 +1280,18 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
         LOGGER_WARN("Broker: HEARTBEAT_REQ missing channel_name");
         return;
     }
+    // Peek status before updating so we can log + count state transitions.
+    bool was_pending = false;
+    if (auto* pre = registry.find_channel_mutable(channel_name); pre != nullptr)
+        was_pending = (pre->status == ChannelStatus::PendingReady);
+
     if (registry.update_heartbeat(channel_name))
     {
+        if (was_pending)
+        {
+            ++m_metric_pending_to_ready;
+            LOGGER_INFO("Broker: role '{}' transitioned Pending -> Ready", channel_name);
+        }
         LOGGER_DEBUG("Broker: heartbeat for channel '{}'", channel_name);
 
         if (!req.contains("producer_pid") || req["producer_pid"].get<uint64_t>() == 0)
@@ -1488,25 +1551,54 @@ BrokerServiceImpl::check_connection_policy(const std::string& channel_name,
 
 void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
 {
-    if (cfg.channel_timeout.count() <= 0)
+    // Two-pass role liveness state machine (HEP-CORE-0023 §2.5).
+    // Pass 1: Ready -> Pending on heartbeat absence (producer presumed unresponsive).
+    // Pass 2: Pending -> deregistered immediately on extended absence
+    //         (no Closing/grace — producer is presumed dead, no one to wait for).
+    // Timeouts are ALWAYS enforced; effective_*_timeout() is floored at 1 heartbeat.
+    const auto ready_timeout   = cfg.effective_ready_timeout();
+    const auto pending_timeout = cfg.effective_pending_timeout();
+
+    // ── Pass 1: Ready -> Pending demotion ─────────────────────────────────
     {
-        return;
-    }
-    const auto timed_out = registry.find_timed_out_channels(cfg.channel_timeout);
-    for (const auto& channel_name : timed_out)
-    {
-        auto* entry = registry.find_channel_mutable(channel_name);
-        if (entry == nullptr || entry->status == ChannelStatus::Closing)
+        const auto demote = registry.find_timed_out_ready(ready_timeout);
+        const auto now = std::chrono::steady_clock::now();
+        for (const auto& channel_name : demote)
         {
-            continue;
+            auto* entry = registry.find_channel_mutable(channel_name);
+            if (entry == nullptr || entry->status != ChannelStatus::Ready)
+                continue;
+            LOGGER_WARN("Broker: role '{}' demoted Ready -> Pending "
+                        "(no heartbeat within {} ms)",
+                        channel_name, ready_timeout.count());
+            entry->status      = ChannelStatus::PendingReady;
+            entry->state_since = now;
+            ++m_metric_ready_to_pending;
         }
-        // Cat 1: heartbeat timeout — log + notify, then enter Closing with grace period.
-        LOGGER_WARN("Broker: Cat1 channel '{}' timed out (no heartbeat within {}s); closing",
-                    channel_name, cfg.channel_timeout.count());
-        send_closing_notify(socket, channel_name, *entry, "heartbeat_timeout");
-        entry->status = ChannelStatus::Closing;
-        entry->closing_deadline =
-            std::chrono::steady_clock::now() + cfg.channel_shutdown_grace;
+    }
+
+    // ── Pass 2: Pending -> deregistered (immediate, no Closing state) ─────
+    {
+        const auto reclaim = registry.find_timed_out_pending(pending_timeout);
+        for (const auto& channel_name : reclaim)
+        {
+            auto* entry = registry.find_channel_mutable(channel_name);
+            if (entry == nullptr || entry->status != ChannelStatus::PendingReady)
+                continue;
+            LOGGER_WARN("Broker: role '{}' reclaimed from Pending "
+                        "(no heartbeat within {} ms); sending CHANNEL_CLOSING_NOTIFY + dereg",
+                        channel_name, pending_timeout.count());
+            // Notify consumers (best-effort — a stuck/disconnected consumer
+            // may miss this; it will eventually observe CHANNEL_NOT_FOUND on
+            // its next DISC_REQ).
+            send_closing_notify(socket, channel_name, *entry, "pending_timeout");
+            // Invoke cleanup hook BEFORE erasing so federation/band can read
+            // entry fields (producer_role_uid, channel_name, ...).
+            on_channel_closed(socket, channel_name, *entry, "pending_timeout");
+            const uint64_t pid = entry->producer_pid;
+            registry.deregister_channel(channel_name, pid);
+            ++m_metric_pending_to_deregistered;
+        }
     }
 }
 
@@ -1553,6 +1645,7 @@ void BrokerServiceImpl::check_dead_consumers(zmq::socket_t& socket)
                             channel_name, dead_consumer.consumer_pid);
             }
             registry.deregister_consumer(channel_name, dead_consumer.consumer_pid);
+            on_consumer_closed(socket, channel_name, dead_consumer, "process_dead");
         }
     }
 }
@@ -1637,7 +1730,69 @@ void BrokerServiceImpl::check_closing_deadlines(zmq::socket_t& socket)
     {
         auto entry = registry.find_channel(name);
         if (entry.has_value())
+        {
+            on_channel_closed(socket, name, *entry, "grace_expired");
             registry.deregister_channel(name, entry->producer_pid);
+        }
+    }
+}
+
+// ============================================================================
+// Role-close cleanup API (HEP-CORE-0023 §2.5)
+// ============================================================================
+
+void BrokerServiceImpl::on_channel_closed(zmq::socket_t& socket,
+                                           const std::string& channel_name,
+                                           const ChannelEntry& entry,
+                                           const std::string& reason)
+{
+    // Keep this list small and explicit. When a new broker module needs to
+    // react to role death, add one line here and implement the helper below.
+    federation_on_channel_closed(channel_name, entry, reason);
+    band_on_role_closed(socket, entry.producer_role_uid);
+}
+
+void BrokerServiceImpl::on_consumer_closed(zmq::socket_t& socket,
+                                            const std::string& /*channel_name*/,
+                                            const ConsumerEntry& consumer,
+                                            const std::string& /*reason*/)
+{
+    // Consumer's role may have joined bands independently of its channel
+    // participation — remove from all band memberships.
+    band_on_role_closed(socket, consumer.role_uid);
+}
+
+void BrokerServiceImpl::federation_on_channel_closed(
+    const std::string& channel_name,
+    const ChannelEntry& /*entry*/,
+    const std::string& /*reason*/)
+{
+    // Drop this channel from the federation relay index so no further
+    // HUB_RELAY_MSG attempts reference a gone channel.
+    channel_to_peer_identities_.erase(channel_name);
+}
+
+void BrokerServiceImpl::band_on_role_closed(zmq::socket_t& socket,
+                                             const std::string& role_uid)
+{
+    if (role_uid.empty())
+        return;  // Anonymous role — never joined any band under a uid.
+    const auto affected_bands = band_registry.remove_from_all(role_uid);
+    for (const auto& band_name : affected_bands)
+    {
+        LOGGER_INFO("Broker: role '{}' removed from band '{}' (role closed)",
+                    role_uid, band_name);
+        // Notify remaining members so their local member cache stays fresh
+        // (HEP-CORE-0030: band fan-out correctness requires up-to-date membership).
+        auto remaining_ids = band_registry.member_identities(band_name);
+        if (remaining_ids.empty())
+            continue;
+        nlohmann::json notify;
+        notify["channel"]  = band_name;
+        notify["role_uid"] = role_uid;
+        notify["reason"]   = "role_closed";
+        for (const auto& mid : remaining_ids)
+            send_to_identity(socket, mid, "BAND_LEAVE_NOTIFY", notify);
     }
 }
 
@@ -2160,6 +2315,16 @@ ChannelSnapshot BrokerService::query_channel_snapshot() const
         snap.channels.push_back(std::move(e));
     }
     return snap;
+}
+
+RoleStateMetrics BrokerService::query_role_state_metrics() const
+{
+    std::lock_guard<std::mutex> lock(pImpl->m_query_mu);
+    return RoleStateMetrics{
+        pImpl->m_metric_ready_to_pending,
+        pImpl->m_metric_pending_to_deregistered,
+        pImpl->m_metric_pending_to_ready,
+    };
 }
 
 std::string BrokerService::query_metrics_json_str(const std::string& channel) const

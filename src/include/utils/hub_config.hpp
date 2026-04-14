@@ -39,9 +39,12 @@
 #include "utils/lifecycle.hpp"
 #include "utils/channel_access_policy.hpp"
 #include "utils/json_config.hpp"
+#include "utils/timeout_constants.hpp"
 
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -151,17 +154,32 @@ class PYLABHUB_UTILS_EXPORT HubConfig
     const std::string& admin_endpoint() const noexcept;
 
     // -----------------------------------------------------------------------
-    // Broker timing
+    // Broker liveness (HEP-CORE-0023 §2.5)
     // -----------------------------------------------------------------------
 
-    /** Channel heartbeat timeout — broker closes channel after this. */
-    std::chrono::seconds channel_timeout() const noexcept;
+    /** Expected client heartbeat cadence (single source of truth for timeouts). */
+    std::chrono::milliseconds heartbeat_interval() const noexcept;
+
+    /** Ready -> Pending demotion after this many missed heartbeats. */
+    uint32_t ready_miss_heartbeats() const noexcept;
+
+    /** Pending -> deregistered + CHANNEL_CLOSING_NOTIFY after this many additional missed heartbeats. */
+    uint32_t pending_miss_heartbeats() const noexcept;
+
+    /** CHANNEL_CLOSING_NOTIFY -> FORCE_SHUTDOWN grace window, in heartbeats. */
+    uint32_t grace_heartbeats() const noexcept;
+
+    /** Optional explicit ready-timeout override (nullopt = derived from heartbeat*miss). */
+    std::optional<std::chrono::milliseconds> ready_timeout_override() const noexcept;
+
+    /** Optional explicit pending-timeout override (nullopt = derived). */
+    std::optional<std::chrono::milliseconds> pending_timeout_override() const noexcept;
+
+    /** Optional explicit grace-period override (nullopt = derived). */
+    std::optional<std::chrono::milliseconds> grace_override() const noexcept;
 
     /** How often the broker checks consumer liveness (0 = disabled). */
     std::chrono::seconds consumer_liveness_check() const noexcept;
-
-    /** Grace period for graceful channel shutdown (CHANNEL_CLOSING_NOTIFY → FORCE_SHUTDOWN). */
-    std::chrono::seconds channel_shutdown_grace() const noexcept;
 
     // -----------------------------------------------------------------------
     // File-system paths (all absolute after startup)
