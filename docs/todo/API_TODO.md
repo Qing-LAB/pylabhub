@@ -49,6 +49,12 @@ Remaining diagrams to complete:
 
 ### HEP-0011 Threading Model Update (2026-04-12)
 
+**Status update 2026-04-14**: Defensive scrub committed in `66b785c` —
+removed obsolete Messenger references, marked ctrl thread as RoleAPIBase-owned
+per HEP-CORE-0023 §2.5, updated lifecycle steps. Full `Threading Model`
+section rewrite still pending; deferred until role-host unification lands so
+the doc can describe the actual unified surface (not aspirational).
+
 The "Thread Safety" section in HEP-CORE-0011 is stale. Needs rewrite to document:
 
 - [ ] Active threads per role host: main (data loop), broker (BrokerRequestComm poll), inbox (InboxQueue recv), logger (async I/O)

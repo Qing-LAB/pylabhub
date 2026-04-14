@@ -872,8 +872,17 @@ this is unblocked.
 Sub-tasks before coding:
 - Audit each role's `worker_main_()` for any role-specific lifecycle hook
   that doesn't fit the §5.8 template.
-- Confirm `engine_->finalize()` ordering matches across the 3 hosts (audit
-  noted as outstanding in §0 pillar audit, 2026-04-14).
+- ✅ **Finalize/teardown ordering verified 2026-04-14**: all three role hosts
+  already use the identical 5-step shutdown sequence:
+  ```
+  engine_->stop_accepting()
+  api_->deregister_from_broker()
+  api_->join_all_threads()
+  engine_->finalize()
+  teardown_infrastructure_()
+  ```
+  The §5.8 `RoleAPIBase::run_role()` template can lift this verbatim.
+  No standardization commit needed — the sequence is already canonical.
 
 ### Phase 5: Cleanup + docs
 
