@@ -277,6 +277,14 @@ class PYLABHUB_UTILS_EXPORT Consumer
     [[nodiscard]] const std::string &zmq_node_endpoint() const noexcept;
     [[nodiscard]] ZmqQueue *queue() noexcept;
 
+    // ── Direct accessor to the unified QueueReader handle (L3.γ bridge) ─────
+    //
+    // Transient accessor added so RoleAPIBase::Impl can hold a QueueReader *
+    // directly and forward data-plane calls without going through
+    // hub::Consumer. Deleted along with hub::Consumer itself in the final
+    // phase of L3.γ.
+    [[nodiscard]] QueueReader *queue_reader() noexcept;
+
     // ── Queue data operations (delegated to internal QueueReader) ──────────
 
     [[nodiscard]] const void *read_acquire(std::chrono::milliseconds timeout) noexcept;

@@ -474,6 +474,11 @@ ZmqQueue *Producer::queue() noexcept
 // Producer — Queue data operations (forwarded to internal QueueWriter)
 // ============================================================================
 
+QueueWriter *Producer::queue_writer() noexcept
+{
+    return pImpl ? pImpl->queue_writer_ : nullptr;
+}
+
 void *Producer::write_acquire(std::chrono::milliseconds timeout) noexcept
 {
     auto *q = pImpl ? pImpl->queue_writer_ : nullptr;
