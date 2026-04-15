@@ -400,9 +400,19 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     // ── Infrastructure access (for engine binding layers) ─────────────────────
 
     [[nodiscard]] RoleHostCore *core() const;
-    [[nodiscard]] hub::Producer *producer() const;
-    [[nodiscard]] hub::Consumer *consumer() const;
+    [[nodiscard]] hub::Producer *producer() const;   ///< @deprecated use has_tx_side() + flexzone(side). Deleted in L3.γ final phase.
+    [[nodiscard]] hub::Consumer *consumer() const;   ///< @deprecated use has_rx_side() + flexzone(side). Deleted in L3.γ final phase.
     [[nodiscard]] hub::InboxQueue *inbox_queue() const;
+
+    /// Side-presence checks for engines/callers that need to gate script-facing
+    /// method registration on which side is wired. Supersedes the producer()/
+    /// consumer() pointer accessors above.
+    [[nodiscard]] bool has_tx_side() const noexcept;   ///< True iff Tx queue wired.
+    [[nodiscard]] bool has_rx_side() const noexcept;   ///< True iff Rx queue wired.
+
+    /// Queue metrics for the given side. Empty QueueMetrics when the side
+    /// is not wired. Routes to QueueReader::metrics() / QueueWriter::metrics().
+    [[nodiscard]] hub::QueueMetrics queue_metrics(ChannelSide side) const noexcept;
 
   private:
     struct Impl;
