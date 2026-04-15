@@ -12,6 +12,7 @@
  * Layer 1 (engine): delegated to ScriptEngine via invoke_process / invoke_on_inbox.
  */
 #include "processor_role_host.hpp"
+#include "utils/cycle_ops.hpp"
 #include "utils/broker_request_comm.hpp"
 #include "processor_fields.hpp"
 
@@ -37,6 +38,7 @@ using scripting::IncomingMessage;
 using scripting::InvokeResult;
 using scripting::InvokeRx;
 using scripting::InvokeTx;
+using scripting::ProcessorCycleOps;
 using Clock = std::chrono::steady_clock;
 
 // ============================================================================
@@ -95,138 +97,8 @@ void ProcessorRoleHost::shutdown_()
         worker_thread_.join();
 }
 
-// ============================================================================
-// ProcessorCycleOps — dual-queue acquire/invoke/commit for the shared frame
-// ============================================================================
-
-namespace
-{
-
-class ProcessorCycleOps final : public scripting::RoleCycleOps
-{
-    scripting::RoleAPIBase  &api_;
-    scripting::ScriptEngine &engine_;
-    scripting::RoleHostCore &core_;
-    bool                     stop_on_error_;
-    bool                     drop_mode_;
-
-    size_t in_sz_, out_sz_;
-    void  *out_fz_ptr_;
-    size_t out_fz_sz_;
-    void  *in_fz_ptr_;
-    size_t in_fz_sz_;
-
-    const void *held_input_{nullptr};
-    void       *out_buf_{nullptr};
-
-  public:
-    ProcessorCycleOps(scripting::RoleAPIBase &api,
-                      scripting::ScriptEngine &e, scripting::RoleHostCore &c,
-                      bool stop_on_error, bool drop_mode)
-        : api_(api), engine_(e), core_(c),
-          stop_on_error_(stop_on_error), drop_mode_(drop_mode),
-          in_sz_(api.read_item_size()), out_sz_(api.write_item_size()),
-          out_fz_ptr_(c.has_out_fz() ? api.write_flexzone() : nullptr),
-          out_fz_sz_(c.has_out_fz() ? api.write_flexzone_size() : 0),
-          in_fz_ptr_(c.has_in_fz() ? const_cast<void *>(api.read_flexzone()) : nullptr),
-          in_fz_sz_(c.has_in_fz() ? api.read_flexzone_size() : 0)
-    {}
-
-    /// Processor always returns true — maintains timing cadence on idle cycles.
-    bool acquire(const scripting::AcquireContext &ctx) override
-    {
-        // Primary: input with retry (skip if held from previous cycle).
-        if (!held_input_)
-        {
-            held_input_ = scripting::retry_acquire(ctx, core_,
-                [this](auto t) { return const_cast<void *>(api_.read_acquire(t)); });
-        }
-
-        // Secondary: output (only if input available, policy-dependent timeout).
-        out_buf_ = nullptr;
-        if (held_input_)
-        {
-            if (drop_mode_)
-            {
-                out_buf_ = api_.write_acquire(std::chrono::milliseconds{0});
-            }
-            else
-            {
-                auto output_timeout = ctx.short_timeout;
-                if (ctx.deadline != std::chrono::steady_clock::time_point::max())
-                {
-                    auto remaining = std::chrono::duration_cast<
-                        std::chrono::milliseconds>(
-                            ctx.deadline - std::chrono::steady_clock::now());
-                    if (remaining > ctx.short_timeout)
-                        output_timeout = remaining;
-                }
-                out_buf_ = api_.write_acquire(output_timeout);
-            }
-        }
-
-        return true;
-    }
-
-    void cleanup_on_shutdown() override
-    {
-        if (held_input_) { api_.read_release(); held_input_ = nullptr; }
-        if (out_buf_)    { api_.write_discard(); out_buf_ = nullptr; }
-    }
-
-    bool invoke_and_commit(std::vector<scripting::IncomingMessage> &msgs) override
-    {
-
-        if (out_buf_) std::memset(out_buf_, 0, out_sz_);
-
-        // Re-read flexzone pointers each cycle (ShmQueue may move them).
-        if (core_.has_out_fz()) out_fz_ptr_ = api_.write_flexzone();
-        if (core_.has_in_fz())
-            in_fz_ptr_ = const_cast<void *>(api_.read_flexzone());
-
-        auto result = engine_.invoke_process(
-            scripting::InvokeRx{held_input_, in_sz_, in_fz_ptr_, in_fz_sz_},
-            scripting::InvokeTx{out_buf_, out_sz_, out_fz_ptr_, out_fz_sz_},
-            msgs);
-
-        // Output commit/discard.
-        if (out_buf_)
-        {
-            if (result == scripting::InvokeResult::Commit)
-            { api_.write_commit(); core_.inc_out_slots_written(); }
-            else
-            { api_.write_discard(); core_.inc_out_drop_count(); }
-        }
-        else if (held_input_)
-        {
-            core_.inc_out_drop_count();
-        }
-
-        // Input release or hold.
-        if (held_input_)
-        {
-            if (out_buf_ || drop_mode_)
-            {
-                api_.read_release();
-                held_input_ = nullptr;
-                core_.inc_in_slots_received();
-            }
-            // else: Block mode + output failed → hold for next cycle.
-        }
-        out_buf_ = nullptr;
-
-        if (result == scripting::InvokeResult::Error && stop_on_error_)
-        { core_.request_stop(); return false; }
-        return true;
-    }
-
-    void cleanup_on_exit() override
-    {
-        if (held_input_) { api_.read_release(); held_input_ = nullptr; }
-    }
-};
-
-} // anonymous namespace
+// ProcessorCycleOps has moved to src/include/utils/cycle_ops.hpp so the L3.β
+// baseline test suite can instantiate it directly. Behavior unchanged.
 
 // ============================================================================
 // worker_main_ — the worker thread entry point
