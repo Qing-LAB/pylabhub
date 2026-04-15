@@ -219,8 +219,9 @@ public:
     /** @brief Get the shared spinlock at the given index (SHM-specific). */
     SharedSpinLock get_spinlock(size_t index) override;
 
-    /** @brief Configure BLAKE2b checksum verification on read_acquire(). */
-    void set_verify_checksum(bool slot, bool fz) const noexcept;
+    /** @brief Configure BLAKE2b checksum verification on read_acquire().
+     *  Overrides QueueReader::set_verify_checksum. */
+    void set_verify_checksum(bool slot, bool fz) const noexcept override;
     /** @brief Enable BLAKE2b checksum updates on write_commit(). */
     void set_checksum_options(bool slot, bool fz) noexcept;
 
