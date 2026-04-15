@@ -348,9 +348,35 @@ timing behavior and must remain green through every phase:
 - Processor integration tests in `test_layer3_datahub` / `test_layer4_processor`
   that rely on input-hold behavior.
 
-Any test failure related to timing after a refactor commit is a
-**hard revert trigger** — do not "fix" the timing; revert the refactor
-commit and reconsider.
+**If a timing or behavior regression appears after a refactor commit**:
+**analyze the discrepancy source before deciding whether to fix or revert.**
+The refactor itself is almost certainly worth keeping — the issue is
+almost certainly a specific translation error inside the new code.
+See §4.6 for the diagnostic checklist.
+
+### 4.6 Discrepancy-source checklist (post-L3.β specifically; applies whenever
+loop behavior changes unexpectedly)
+
+When a test that passed pre-refactor fails post-refactor, work through this
+list in order. Each item is a known source of translation error during a
+CycleOps-style unification. Identify which one explains the failure, fix
+that specific issue, and re-verify — do NOT revert the refactor on first
+failure.
+
+| # | Possible discrepancy source | How to detect | How to fix |
+|---|---|---|---|
+| 1 | Branching order changed — unified CycleOps evaluates conditionals in a different order than the per-role originals. | Source-diff each conditional path in the new unified methods against the three originals. | Reorder branches to match original source order. |
+| 2 | Field caching differences — original cached `buf_sz_`/`fz_sz_` at construction; unified may re-read per cycle (or vice versa). | Check the constructor init list and the per-cycle accesses against the three originals. | Preserve the original caching decision verbatim. |
+| 3 | Flexzone re-read site shifted — `fz_ptr_` is re-read each cycle in original (SHM may move it); unified might cache it once, causing stale pointers. | Compare the per-cycle `api_.write_flexzone()` / `api_.read_flexzone()` call site in `invoke_and_commit`. | Restore the per-cycle re-read conditional. |
+| 4 | Processor input-hold logic altered — the conditional `if (out_buf_ \|\| drop_mode_) { release }` is subtle; collapsing it may break edge cases. | Hand-trace with a state-machine diagram: held input × Tx acquire success/failure × Drop/Block mode. | Restore the exact conditional structure. |
+| 5 | Metric increment site shifted — `inc_out_slots_written` / `inc_out_drop_count` / `inc_in_slots_received` must increment at exactly the same sites as before. | Source-diff every metric call against the three originals. | Restore original sites. |
+| 6 | Engine-callback dispatch path — after β and before ε, still calls `invoke_produce/consume/process` via role_tag; any branching error sends to the wrong callback. | Verify `invoke_X` chosen by branch matches role_tag. Unit-test with a role that should never invoke_produce and confirm it never does. | Fix the dispatch switch. |
+| 7 | Shutdown-cleanup asymmetry — `cleanup_on_shutdown` / `cleanup_on_exit` must release exactly what's held; unified logic might over-release or under-release. | Check the guards on each release against the original three. | Restore the original guard conditions. |
+| 8 | Timing constant / duration_cast narrowing — if types or cast directions changed, small-magnitude rounding could shift a deadline by one step. | Compare `std::chrono::duration_cast<milliseconds>` / microseconds call sites. | Restore the original cast direction. |
+
+**Revert only if**: none of (1)–(8) explains the failure AND the failure is
+reproducible AND we cannot identify any other translation error. Reverting
+without root cause leaves us blind to the actual bug.
 
 ### 4.5 Phase-specific timing risk
 
