@@ -17,6 +17,7 @@
 #include "utils/role_host_core.hpp"
 #include "utils/schema_utils.hpp"
 #include "utils/shared_memory_spinlock.hpp"
+#include "utils/thread_manager.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -72,8 +73,10 @@ struct RoleAPIBase::Impl
 
     // last_seq: no local copy — forwarded directly to consumer->last_seq().
 
-    // Thread manager.
-    std::vector<std::thread> managed_threads_;
+    // Thread manager — per-owner bounded-join + ERROR-log-on-timeout
+    // (utils::ThreadManager is a dynamic lifecycle module tagged with this
+    // role's identity via the role_tag captured in Impl ctor).
+    std::unique_ptr<pylabhub::utils::ThreadManager> thread_mgr_;
 };
 
 // ============================================================================
@@ -121,9 +124,21 @@ void RoleAPIBase::set_stop_on_script_error(bool v)    { pImpl->stop_on_script_er
 
 void RoleAPIBase::spawn_thread(const std::string &name, std::function<void()> body)
 {
+    // Lazy-construct the ThreadManager on first spawn so the owner_tag is
+    // stable (role_tag is set via set_role_tag() during host wiring, before
+    // any spawn_thread call).
+    if (!pImpl->thread_mgr_)
+    {
+        const std::string &tag =
+            pImpl->role_tag.empty() ? std::string{"role"} : pImpl->role_tag;
+        pImpl->thread_mgr_ =
+            std::make_unique<pylabhub::utils::ThreadManager>(tag);
+    }
+
     // Capture `this` — engine and tag are accessed via pImpl at call time.
-    // RoleAPIBase outlives all managed threads (join_all_threads called before dtor).
-    pImpl->managed_threads_.emplace_back(
+    // RoleAPIBase outlives the ThreadManager (which outlives the threads).
+    pImpl->thread_mgr_->spawn(
+        name,
         [this, name, body = std::move(body)]()
         {
             // ThreadEngineGuard registers this thread with the engine for
@@ -138,19 +153,15 @@ void RoleAPIBase::spawn_thread(const std::string &name, std::function<void()> bo
 
 void RoleAPIBase::join_all_threads()
 {
-    // Join in reverse spawn order (last spawned = first joined).
-    for (auto it = pImpl->managed_threads_.rbegin();
-         it != pImpl->managed_threads_.rend(); ++it)
-    {
-        if (it->joinable())
-            it->join();
-    }
-    pImpl->managed_threads_.clear();
+    // ThreadManager::join_all() is bounded + ERROR-logged + detaches on
+    // timeout. Idempotent; safe to call from dtor chains.
+    if (pImpl->thread_mgr_)
+        pImpl->thread_mgr_->join_all();
 }
 
 size_t RoleAPIBase::thread_count() const
 {
-    return pImpl->managed_threads_.size();
+    return pImpl->thread_mgr_ ? pImpl->thread_mgr_->active_count() : 0;
 }
 
 // ============================================================================

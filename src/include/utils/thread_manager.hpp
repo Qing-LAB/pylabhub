@@ -20,6 +20,7 @@
  */
 
 #include "pylabhub_utils_export.h"
+#include "utils/timeout_constants.hpp"     // kMidTimeoutMs (join/shutdown defaults)
 
 #include <chrono>
 #include <cstddef>
@@ -39,8 +40,12 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
     {
         /// Bounded-join deadline for this individual thread. After this
         /// elapses without the thread exiting, ThreadManager logs ERROR +
-        /// detaches. Default 5 seconds.
-        std::chrono::milliseconds join_timeout{5000};
+        /// detaches.  Defaults to `pylabhub::kMidTimeoutMs` (5 s) — the
+        /// canonical tier for heavyweight services (ZMQ pollers, Python
+        /// worker threads, inbox ROUTER). Use `pylabhub::kShortTimeoutMs`
+        /// for lightweight threads (plain CV-wait loops); use
+        /// `pylabhub::kLongTimeoutMs` only for genuine long-running cases.
+        std::chrono::milliseconds join_timeout{pylabhub::kMidTimeoutMs};
     };
 
     /// Diagnostic snapshot entry.
@@ -57,11 +62,15 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
     ///     "BRC:PROD-SENSOR-0001", "BrokerService:tcp://*:5555", "Logger".
     /// @param aggregate_shutdown_timeout  Lifecycle-layer ceiling on the
     ///     entire join_all() call. Should be >= the sum of per-thread
-    ///     SpawnOptions.join_timeout used via spawn(). Default 10s.
+    ///     SpawnOptions.join_timeout used via spawn(). Defaults to 2×
+    ///     `pylabhub::kMidTimeoutMs` (= 10 s) so a manager with a couple of
+    ///     heavyweight threads each taking up to kMidTimeoutMs to drain is
+    ///     fully covered before the lifecycle layer's timedShutdown safety
+    ///     net kicks in.
     explicit ThreadManager(
         std::string owner_tag,
         std::chrono::milliseconds aggregate_shutdown_timeout
-            = std::chrono::milliseconds{10000});
+            = std::chrono::milliseconds{2 * pylabhub::kMidTimeoutMs});
 
     /// Destructor calls join_all() (idempotent) and deregisters the dynamic
     /// lifecycle module. Safe to call from destructor chains; does not throw.
