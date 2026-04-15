@@ -70,7 +70,11 @@ struct ThreadManager::Impl
 
     mutable std::mutex                       mu;
     std::vector<ThreadSlot>                  slots;
-    std::atomic<bool>                        join_all_done{false};
+    /// Set at join_all() entry. Once true, spawn() refuses new threads so
+    /// the destructor's drain is the final one. Unlike the old join_all_done
+    /// gate, it does NOT short-circuit the drain itself — it only guards
+    /// against adding new slots after teardown has started.
+    std::atomic<bool>                        closing{false};
     std::atomic<bool>                        lifecycle_registered{false};
 
     /// Generation key captured at registration. Used by the
@@ -109,28 +113,29 @@ void tm_startup(const char * /*arg*/, void * /*userdata*/)
     // ThreadManager spawn() is the mutator; module-startup is idempotent.
 }
 
-/// LifecycleCallback shutdown: calls join_all() on the instance if still alive.
+/// LifecycleCallback shutdown: intentional no-op.
+///
+/// Teardown ownership is concentrated in the destructor (`~ThreadManager`),
+/// which runs `join_all()` directly on its own `pImpl`. The lifecycle-
+/// dispatched callback here has no access to the owner's intent and must NOT
+/// touch Impl state — any mutation (e.g. setting a "done" flag) risks racing
+/// the destructor path and abandoning joinable `std::thread` objects in the
+/// slots vector, which would trigger `std::terminate` at Impl destruction.
+///
+/// Two dispatch modes end up here:
+///   1. Normal teardown: `~ThreadManager` sets `impl_alive = false` BEFORE
+///      `UnloadModule`, so by the time the async lifecycle shutdown thread
+///      runs the validator, it returns false and this thunk is skipped.
+///   2. Late/stale dispatch (process finalization, out-of-order shutdown):
+///      the validator is the only guard. If it passes and we reach here,
+///      logging the call is useful but state mutation would be unsafe.
 void tm_shutdown(const char * /*arg*/, void *userdata)
 {
     auto *impl = static_cast<ThreadManager::Impl *>(userdata);
     if (!impl || !impl->impl_alive.load(std::memory_order_acquire))
         return;
-    // join_all_impl is an internal function that takes the Impl directly.
-    // It's defined in the ThreadManager class below as a free helper to
-    // avoid name-mangling issues with static functions referencing member
-    // functions — just inline the body here.
-    // (See ThreadManager::join_all below; this path is equivalent.)
-
-    // NOTE: calling back into the dying instance is safe because the
-    // destructor clears impl_alive BEFORE deregistering the module.
-
-    std::lock_guard<std::mutex> lock(impl->mu);
-    if (impl->join_all_done.load(std::memory_order_acquire))
-        return;
-    // Fall-through: join_all executes outside this static thunk via a
-    // shared private helper. For now we set the flag and the destructor
-    // will do the work. This keeps the lifecycle dispatch path simple.
-    impl->join_all_done.store(true, std::memory_order_release);
+    LOGGER_DEBUG("[ThreadManager:{}] lifecycle shutdown thunk — no-op "
+                 "(destructor owns teardown)", impl->composed_identity);
 }
 
 } // namespace
@@ -155,21 +160,12 @@ ThreadManager::ThreadManager(std::string owner_tag,
     pImpl->module_name                = "ThreadManager:" + pImpl->composed_identity;
     pImpl->aggregate_shutdown_timeout = aggregate_shutdown_timeout;
 
-    // Register as a dynamic lifecycle module. Shutdown function marks the
-    // instance so the destructor path will complete the actual join. We
-    // deliberately do the real join in the destructor (not in the lifecycle
-    // shutdown thunk) because:
-    //   - LifecycleManager's timedShutdown already detaches on timeout;
-    //     a second layer of detachment in the thunk would double-wrap the
-    //     already-detaching flow.
-    //   - The owner's destructor has complete knowledge of what threads it
-    //     expects; lifecycle's module ordering guarantees the module-level
-    //     shutdown fires before the owner's own destructor in a clean
-    //     process-exit, but during crash / early destructor chains the
-    //     owner's dtor is the only reliable ordering.
-    //   - Making join_all() the single source of truth (invoked by the
-    //     destructor always, and no-op if lifecycle already marked it
-    //     done via the flag) avoids double-join.
+    // Register as a dynamic lifecycle module. The module exists to participate
+    // in the lifecycle-graph teardown order (so owners that depend on this
+    // ThreadManager shut down before it); its `tm_shutdown` thunk is a safe
+    // no-op — `~ThreadManager` is the sole owner of the actual drain/join
+    // path. See tm_shutdown for why lifecycle-dispatched shutdown must not
+    // mutate state.
     try
     {
         ModuleDef mod(pImpl->module_name.c_str(), pImpl.get(), tm_impl_validate);
@@ -265,13 +261,6 @@ bool ThreadManager::spawn(const std::string &name,
                           SpawnOptions opts)
 {
     if (!pImpl) return false;
-    if (pImpl->join_all_done.load(std::memory_order_acquire))
-    {
-        LOGGER_WARN("[ThreadManager:{}] spawn('{}') called after join_all() — "
-                    "thread will not be tracked; body NOT executed",
-                    pImpl->composed_identity, name);
-        return false;
-    }
 
     auto done = std::make_shared<std::atomic<bool>>(false);
 
@@ -297,7 +286,19 @@ bool ThreadManager::spawn(const std::string &name,
         done->store(true, std::memory_order_release);
     };
 
+    // Re-check `closing` under the lock: combined with join_all()'s
+    // "set closing + move slots" done under the same lock, this guarantees
+    // either the new slot lands in pImpl->slots *before* the drain grabbed
+    // it (safe — we'll join it), or we observe closing=true here and reject.
+    // No interleaving can leave a joinable std::thread orphaned in slots.
     std::lock_guard<std::mutex> lock(pImpl->mu);
+    if (pImpl->closing.load(std::memory_order_acquire))
+    {
+        LOGGER_WARN("[ThreadManager:{}] spawn('{}') called after join_all() — "
+                    "thread will not be tracked; body NOT executed",
+                    pImpl->composed_identity, name);
+        return false;
+    }
     ThreadSlot slot;
     slot.name         = name;
     slot.join_timeout = opts.join_timeout;
@@ -315,27 +316,34 @@ std::size_t ThreadManager::join_all()
 {
     if (!pImpl) return 0;
 
-    // Idempotent: snapshot slots under lock, clear, then process outside lock.
+    // Set `closing` under the lock so a concurrent spawn() either:
+    //   (a) grabbed the lock first and its slot is already in pImpl->slots
+    //       — we'll pick it up in this drain, OR
+    //   (b) observes closing=true after we release the lock and rejects.
+    // Move slots out; process each outside the lock. Per-slot idempotency is
+    // natural: std::thread::joinable() returns false after join/detach.
     std::vector<ThreadSlot> to_join;
     {
         std::lock_guard<std::mutex> lock(pImpl->mu);
-        if (pImpl->join_all_done.load(std::memory_order_acquire))
-            return pImpl->detached_count_last_join.load(std::memory_order_acquire);
-        pImpl->join_all_done.store(true, std::memory_order_release);
+        pImpl->closing.store(true, std::memory_order_release);
         to_join = std::move(pImpl->slots);
         pImpl->slots.clear();
     }
 
     std::size_t detached = 0;
 
-    // Reverse spawn order (last spawned = first joined).
+    // Reverse spawn order: last spawned = first joined. This matches the
+    // LIFO teardown convention used by LifecycleGuard for static modules
+    // and gives deterministic join ordering when threads have ordering
+    // dependencies (e.g. a worker depends on a ctrl thread to be alive).
     for (auto it = to_join.rbegin(); it != to_join.rend(); ++it)
     {
         auto &slot = *it;
         if (!slot.thread.joinable())
-            continue;
+            continue;  // already joined/detached — idempotent no-op
 
-        // Poll the done flag until the per-thread deadline.
+        // Poll the done flag with a per-slot deadline. sleep_for(10ms) gives
+        // a bounded reaction time vs. tight spinning.
         const auto deadline = std::chrono::steady_clock::now() + slot.join_timeout;
         while (std::chrono::steady_clock::now() < deadline)
         {
@@ -346,17 +354,15 @@ std::size_t ThreadManager::join_all()
 
         if (slot.done->load(std::memory_order_acquire))
         {
-            // Thread body returned; std::thread::join() now completes fast.
-            slot.thread.join();
+            slot.thread.join();  // thread body returned; join completes fast
             LOGGER_DEBUG("[ThreadManager:{}] thread '{}' joined cleanly",
                          pImpl->composed_identity, slot.name);
         }
         else
         {
-            // Thread still running past deadline. Detach + ERROR log so the
-            // stuck thread is identified by owner+name. The shared_ptr<done>
-            // keeps its state alive so the runaway thread can still safely
-            // write to it when it eventually finishes.
+            // Thread still running past deadline. Detach + ERROR log. The
+            // shared_ptr<done> keeps the atomic alive so the runaway thread
+            // can still safely write to it when it eventually finishes.
             LOGGER_ERROR(
                 "[ThreadManager:{}] thread '{}' did NOT exit within {}ms — "
                 "detaching. Shutdown continuing; detached thread may still "
@@ -373,11 +379,6 @@ std::size_t ThreadManager::join_all()
 
     if (detached > 0)
     {
-        // Loud summary at ERROR so an operator scanning logs for "N threads
-        // leaked during shutdown of X" has the aggregate visible next to the
-        // per-thread ERROR entries. Process-exit policy (main() returning
-        // non-zero if any ThreadManager leaked) should query
-        // detached_count_last_join() to make this a non-zero exit code.
         LOGGER_ERROR(
             "[ThreadManager:{}] UNCLEAN SHUTDOWN — {} thread(s) detached "
             "on timeout. Process exit should NOT report success.",

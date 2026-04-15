@@ -123,12 +123,18 @@ public:
      * @param max_buffer_depth  Drop oldest item when internal buffer exceeds this depth.
      * @param schema_tag        Optional 8-byte identity guard (first 8 B of BLAKE2b-256
      *                          of BLDS).  Mismatched tags → recv_frame_error_count++.
+     * @param instance_id       Caller-provided stable identifier (e.g. role_tag+uid+":rx").
+     *                          Used as the ThreadManager owner_id for the recv thread;
+     *                          MUST be unique across every ZmqQueue live at the same
+     *                          time in this process. Empty → a per-pointer-address
+     *                          id is used as a safe fallback (unique but opaque).
      */
     [[nodiscard]] static std::unique_ptr<QueueReader>
     pull_from(const std::string& endpoint, std::vector<ZmqSchemaField> schema,
               std::string packing,
               bool bind = false, size_t max_buffer_depth = kZmqDefaultBufferDepth,
-              std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt);
+              std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt,
+              std::string instance_id = {});
 
     /**
      * @brief Create a write-mode ZmqQueue (ZMQ PUSH socket) with schema encoding.
@@ -155,6 +161,11 @@ public:
      * @param overflow_policy       Drop (default) or Block when send buffer is full.
      * @param send_retry_interval_ms Milliseconds between EAGAIN retries in send_thread_
      *                              (default 10).  Set to match the role's target_period_ms.
+     * @param instance_id           Caller-provided stable identifier (e.g. role_tag+uid+":tx").
+     *                              Used as the ThreadManager owner_id for the send thread;
+     *                              MUST be unique across every ZmqQueue live at the same
+     *                              time in this process. Empty → a per-pointer-address id
+     *                              is used as a safe fallback.
      */
     [[nodiscard]] static std::unique_ptr<QueueWriter>
     push_to(const std::string& endpoint, std::vector<ZmqSchemaField> schema,
@@ -164,7 +175,8 @@ public:
             int sndhwm = 0,
             size_t send_buffer_depth = kZmqDefaultBufferDepth,
             OverflowPolicy overflow_policy = OverflowPolicy::Drop,
-            int send_retry_interval_ms = 10);
+            int send_retry_interval_ms = 10,
+            std::string instance_id = {});
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 

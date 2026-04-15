@@ -170,10 +170,17 @@ bool RoleAPIBase::build_tx_queue(const hub::ProducerOptions &opts)
                          pImpl->role_tag);
             return false;
         }
+        // Compose a stable ThreadManager owner_id from role identity +
+        // direction. Uniqueness across the process is guaranteed by the
+        // role uid (which is a per-instance UID by construction).
+        std::string inst_id = opts.instance_id.empty()
+                                  ? (pImpl->role_tag + ":" + pImpl->uid + ":tx")
+                                  : opts.instance_id;
         writer = hub::ZmqQueue::push_to(
             opts.zmq_node_endpoint, opts.zmq_schema, opts.zmq_packing,
             opts.zmq_bind, make_schema_tag(opts.schema_hash),
-            /*sndhwm=*/0, opts.zmq_buffer_depth, opts.zmq_overflow_policy);
+            /*sndhwm=*/0, opts.zmq_buffer_depth, opts.zmq_overflow_policy,
+            /*send_retry_interval_ms=*/10, std::move(inst_id));
         if (!writer)
             return false;
         if (!writer->start())
@@ -219,10 +226,13 @@ bool RoleAPIBase::build_rx_queue(const hub::ConsumerOptions &opts)
                          pImpl->role_tag);
             return false;
         }
+        std::string inst_id = opts.instance_id.empty()
+                                  ? (pImpl->role_tag + ":" + pImpl->uid + ":rx")
+                                  : opts.instance_id;
         reader = hub::ZmqQueue::pull_from(
             opts.zmq_node_endpoint, opts.zmq_schema, opts.zmq_packing,
             /*bind=*/false, opts.zmq_buffer_depth,
-            make_schema_tag(opts.expected_schema_hash));
+            make_schema_tag(opts.expected_schema_hash), std::move(inst_id));
         if (!reader)
             return false;
         if (!reader->start())
