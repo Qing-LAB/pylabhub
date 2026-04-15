@@ -50,11 +50,6 @@ struct ShmQueueImpl
 
     // Last slot id from read_acquire() (monotonic slot id / commit_index).
     uint64_t last_seq{0};
-
-    DataBlockConsumer* consumer() { return dbc.get(); }
-    DataBlockProducer* producer() { return dbp.get(); }
-    const DataBlockConsumer* consumer() const { return dbc.get(); }
-    const DataBlockProducer* producer() const { return dbp.get(); }
 };
 
 // Old factories removed — use create_writer() / create_reader() instead.
@@ -210,12 +205,12 @@ ShmQueue::create_reader(const std::string &shm_name,
 
 DataBlockProducer *ShmQueue::raw_producer() noexcept
 {
-    return pImpl ? pImpl->producer() : nullptr;
+    return pImpl ? pImpl->dbp.get() : nullptr;
 }
 
 DataBlockConsumer *ShmQueue::raw_consumer() noexcept
 {
-    return pImpl ? pImpl->consumer() : nullptr;
+    return pImpl ? pImpl->dbc.get() : nullptr;
 }
 
 // ============================================================================
@@ -239,8 +234,8 @@ void ShmQueue::set_checksum_options(bool slot, bool fz) noexcept
 
 void ShmQueue::sync_flexzone_checksum() noexcept
 {
-    if (pImpl && pImpl->producer() && pImpl->fz_sz > 0)
-        (void)pImpl->producer()->update_checksum_flexible_zone();
+    if (pImpl && pImpl->dbp.get() && pImpl->fz_sz > 0)
+        (void)pImpl->dbp.get()->update_checksum_flexible_zone();
 }
 
 // ============================================================================
@@ -309,7 +304,7 @@ bool ShmQueue::is_running() const noexcept
     // Returns false on a moved-from (null-pImpl) instance.
     // A live ShmQueue always has a valid DataBlock; the "running" state is
     // implicit (no start() / stop() lifecycle, no background thread).
-    return pImpl && (pImpl->consumer() != nullptr || pImpl->producer() != nullptr);
+    return pImpl && (pImpl->dbc.get() != nullptr || pImpl->dbp.get() != nullptr);
 }
 
 ShmQueue::ShmQueue(std::unique_ptr<ShmQueueImpl> impl) : pImpl(std::move(impl)) {}
@@ -319,14 +314,14 @@ ShmQueue::~ShmQueue()
     // Release any outstanding handles before the DataBlock objects are destroyed.
     if (pImpl)
     {
-        if (pImpl->read_handle && pImpl->consumer())
+        if (pImpl->read_handle && pImpl->dbc.get())
         {
-            (void)pImpl->consumer()->release_consume_slot(*pImpl->read_handle);
+            (void)pImpl->dbc.get()->release_consume_slot(*pImpl->read_handle);
         }
-        if (pImpl->write_handle && pImpl->producer())
+        if (pImpl->write_handle && pImpl->dbp.get())
         {
             // Abort without committing — do not expose partial data.
-            (void)pImpl->producer()->release_write_slot(*pImpl->write_handle);
+            (void)pImpl->dbp.get()->release_write_slot(*pImpl->write_handle);
         }
     }
 }
@@ -340,10 +335,10 @@ ShmQueue& ShmQueue::operator=(ShmQueue&&) noexcept = default;
 
 const void* ShmQueue::read_acquire(std::chrono::milliseconds timeout) noexcept
 {
-    if (!pImpl || !pImpl->consumer())
+    if (!pImpl || !pImpl->dbc.get())
         return nullptr;
 
-    pImpl->read_handle = pImpl->consumer()->acquire_consume_slot(
+    pImpl->read_handle = pImpl->dbc.get()->acquire_consume_slot(
         static_cast<int>(timeout.count()));
 
     if (!pImpl->read_handle)
@@ -355,19 +350,19 @@ const void* ShmQueue::read_acquire(std::chrono::milliseconds timeout) noexcept
     // Optional checksum verification (pre-read gate, honors slot_cks_is_valid).
     if (pImpl->verify_slot && !pImpl->read_handle->verify_checksum_slot())
     {
-        pImpl->consumer()->mutable_metrics().inc_checksum_error();
+        pImpl->dbc.get()->mutable_metrics().inc_checksum_error();
         LOGGER_ERROR("[ShmQueue] slot checksum error on slot {} channel '{}'",
                      pImpl->last_seq, pImpl->chan_name);
-        (void)pImpl->consumer()->release_consume_slot(*pImpl->read_handle);
+        (void)pImpl->dbc.get()->release_consume_slot(*pImpl->read_handle);
         pImpl->read_handle.reset();
         return nullptr;
     }
     if (pImpl->verify_fz && !pImpl->read_handle->verify_checksum_flexible_zone())
     {
-        pImpl->consumer()->mutable_metrics().inc_checksum_error();
+        pImpl->dbc.get()->mutable_metrics().inc_checksum_error();
         LOGGER_ERROR("[ShmQueue] flexzone checksum error on slot {} channel '{}'",
                      pImpl->last_seq, pImpl->chan_name);
-        (void)pImpl->consumer()->release_consume_slot(*pImpl->read_handle);
+        (void)pImpl->dbc.get()->release_consume_slot(*pImpl->read_handle);
         pImpl->read_handle.reset();
         return nullptr;
     }
@@ -378,18 +373,45 @@ const void* ShmQueue::read_acquire(std::chrono::milliseconds timeout) noexcept
 
 void ShmQueue::read_release() noexcept
 {
-    if (!pImpl || !pImpl->consumer() || !pImpl->read_handle)
+    if (!pImpl || !pImpl->dbc.get() || !pImpl->read_handle)
         return;
-    (void)pImpl->consumer()->release_consume_slot(*pImpl->read_handle);
+    (void)pImpl->dbc.get()->release_consume_slot(*pImpl->read_handle);
     pImpl->read_handle.reset();
 }
 
 const void* ShmQueue::read_flexzone() const noexcept
 {
-    if (!pImpl || !pImpl->consumer() || pImpl->fz_sz == 0)
+    if (!pImpl || !pImpl->dbc.get() || pImpl->fz_sz == 0)
         return nullptr;
-    std::span<const std::byte> fz = pImpl->consumer()->flexible_zone_span();
+    std::span<const std::byte> fz = pImpl->dbc.get()->flexible_zone_span();
     return fz.empty() ? nullptr : fz.data();
+}
+
+void* ShmQueue::flexzone() noexcept
+{
+    // Single authoritative guard: fz_sz is the flexzone size stored at
+    // construction. Zero → no flexzone configured on this channel (this is
+    // also the state for ZmqQueue, which inherits the default nullptr/0
+    // implementation from the base class).
+    //
+    // Per HEP-CORE-0002 §2.2 the flexzone is a single shared region per
+    // channel, fully read+write on every endpoint. The underlying DataBlock
+    // RAII handle (dbp for writer-mode, dbc for reader-mode) yields the same
+    // physical bytes; we cast away the reader-side const because the
+    // HEP-0002 design guarantees writability on both ends.
+    if (!pImpl || pImpl->fz_sz == 0)
+        return nullptr;
+    if (pImpl->dbp)
+    {
+        std::span<std::byte> s = pImpl->dbp->flexible_zone_span();
+        return s.empty() ? nullptr : s.data();
+    }
+    if (pImpl->dbc)
+    {
+        std::span<const std::byte> s = pImpl->dbc->flexible_zone_span();
+        return s.empty() ? nullptr : const_cast<std::byte *>(s.data());
+    }
+    return nullptr;
 }
 
 uint64_t ShmQueue::last_seq() const noexcept
@@ -403,10 +425,10 @@ uint64_t ShmQueue::last_seq() const noexcept
 
 void* ShmQueue::write_acquire(std::chrono::milliseconds timeout) noexcept
 {
-    if (!pImpl || !pImpl->producer())
+    if (!pImpl || !pImpl->dbp.get())
         return nullptr;
 
-    pImpl->write_handle = pImpl->producer()->acquire_write_slot(
+    pImpl->write_handle = pImpl->dbp.get()->acquire_write_slot(
         static_cast<int>(timeout.count()));
 
     if (!pImpl->write_handle)
@@ -421,7 +443,7 @@ void* ShmQueue::write_acquire(std::chrono::milliseconds timeout) noexcept
 
 void ShmQueue::write_commit() noexcept
 {
-    if (!pImpl || !pImpl->producer() || !pImpl->write_handle)
+    if (!pImpl || !pImpl->dbp.get() || !pImpl->write_handle)
         return;
     // Compute or invalidate checksum BEFORE commit() marks the slot as written.
     // commit() sets the slot size header; a reader racing past release_write_slot()
@@ -433,24 +455,24 @@ void ShmQueue::write_commit() noexcept
     if (pImpl->checksum_fz)
         (void)pImpl->write_handle->update_checksum_flexible_zone();
     (void)pImpl->write_handle->commit(pImpl->item_sz);
-    (void)pImpl->producer()->release_write_slot(*pImpl->write_handle);
+    (void)pImpl->dbp.get()->release_write_slot(*pImpl->write_handle);
     pImpl->write_handle.reset();
 }
 
 void ShmQueue::write_discard() noexcept
 {
-    if (!pImpl || !pImpl->producer() || !pImpl->write_handle)
+    if (!pImpl || !pImpl->dbp.get() || !pImpl->write_handle)
         return;
     // Release without commit — slot is discarded and returned to the ring.
-    (void)pImpl->producer()->release_write_slot(*pImpl->write_handle);
+    (void)pImpl->dbp.get()->release_write_slot(*pImpl->write_handle);
     pImpl->write_handle.reset();
 }
 
 void* ShmQueue::write_flexzone() noexcept
 {
-    if (!pImpl || !pImpl->producer() || pImpl->fz_sz == 0)
+    if (!pImpl || !pImpl->dbp.get() || pImpl->fz_sz == 0)
         return nullptr;
-    std::span<std::byte> fz = pImpl->producer()->flexible_zone_span();
+    std::span<std::byte> fz = pImpl->dbp.get()->flexible_zone_span();
     return fz.empty() ? nullptr : fz.data();
 }
 
@@ -474,10 +496,10 @@ std::string ShmQueue::name() const
         return "(null)";
     if (!pImpl->chan_name.empty())
         return pImpl->chan_name;
-    if (pImpl->consumer())
-        return pImpl->consumer()->name();
-    if (pImpl->producer())
-        return pImpl->producer()->name();
+    if (pImpl->dbc.get())
+        return pImpl->dbc.get()->name();
+    if (pImpl->dbp.get())
+        return pImpl->dbp.get()->name();
     return "(unnamed)";
 }
 
@@ -486,12 +508,12 @@ size_t ShmQueue::capacity() const
     if (!pImpl)
         throw std::runtime_error("ShmQueue::capacity(): not connected");
     DataBlockMetrics m{};
-    if (const DataBlockConsumer* c = pImpl->consumer())
+    if (const DataBlockConsumer* c = pImpl->dbc.get())
     {
         if (c->get_metrics(m) == 0)
             return static_cast<size_t>(m.slot_count);
     }
-    else if (const DataBlockProducer* p = pImpl->producer())
+    else if (const DataBlockProducer* p = pImpl->dbp.get())
     {
         if (p->get_metrics(m) == 0)
             return static_cast<size_t>(m.slot_count);
@@ -503,9 +525,9 @@ std::string ShmQueue::policy_info() const
 {
     if (!pImpl)
         return "shm_unconnected";
-    if (pImpl->consumer())
+    if (pImpl->dbc.get())
         return "shm_read";
-    if (pImpl->producer())
+    if (pImpl->dbp.get())
         return "shm_write";
     return "shm_unconnected";
 }
@@ -525,7 +547,7 @@ QueueMetrics ShmQueue::metrics() const noexcept
 
     QueueMetrics m;
 
-    if (const DataBlockConsumer* c = pImpl->consumer())
+    if (const DataBlockConsumer* c = pImpl->dbc.get())
     {
         const auto &cm = c->metrics();
         m.last_slot_wait_us    = cm.last_slot_wait_us_val();
@@ -539,7 +561,7 @@ QueueMetrics ShmQueue::metrics() const noexcept
         return m;
     }
 
-    if (const DataBlockProducer* p = pImpl->producer())
+    if (const DataBlockProducer* p = pImpl->dbp.get())
     {
         const auto &cm = p->metrics();
         m.last_slot_wait_us    = cm.last_slot_wait_us_val();
@@ -558,9 +580,9 @@ void ShmQueue::reset_metrics()
 {
     if (!pImpl) return;
     // Reset both sides unconditionally — safe on null (returns immediately).
-    if (DataBlockConsumer* c = pImpl->consumer())
+    if (DataBlockConsumer* c = pImpl->dbc.get())
         c->clear_metrics();
-    if (DataBlockProducer* p = pImpl->producer())
+    if (DataBlockProducer* p = pImpl->dbp.get())
         p->clear_metrics();
 }
 
@@ -568,9 +590,9 @@ void ShmQueue::set_configured_period(uint64_t period_us)
 {
     if (!pImpl) return;
     // Write directly to ContextMetrics via DataBlock mutable_metrics() accessor.
-    if (DataBlockConsumer* c = pImpl->consumer())
+    if (DataBlockConsumer* c = pImpl->dbc.get())
         c->mutable_metrics().set_configured_period(period_us);
-    else if (DataBlockProducer* p = pImpl->producer())
+    else if (DataBlockProducer* p = pImpl->dbp.get())
         p->mutable_metrics().set_configured_period(period_us);
 }
 

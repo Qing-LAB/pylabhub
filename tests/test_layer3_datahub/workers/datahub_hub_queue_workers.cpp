@@ -483,6 +483,75 @@ int shm_queue_flexzone_round_trip()
 }
 
 // ============================================================================
+// shm_queue_flexzone_bidirectional
+//
+// Verifies QueueReader::flexzone() and QueueWriter::flexzone() match the
+// HEP-CORE-0002 §2.2 design: one shared region per channel, fully read+write
+// on every endpoint (user-managed bidirectional coordination).
+//
+// Concretely:
+//   (a) Writer-side and reader-side flexzone() pointers both resolve to
+//       non-null on a channel created with a flexzone schema, and point
+//       into the same physical shared-memory region.
+//   (b) Writer-side writes are observed via the reader-side pointer.
+//   (c) Reader-side writes are observed via the writer-side pointer —
+//       this is the bidirectional property that distinguishes the flexzone
+//       from the slot ring (where writer commits and reader releases).
+// ============================================================================
+
+int shm_queue_flexzone_bidirectional()
+{
+    return run_gtest_worker(
+        []()
+        {
+            DataBlockTestGuard g("ShmQueueFlexzoneBidirectional");
+            ShmParams p{70019};
+
+            auto q_write = ShmQueue::create_writer(
+                g.channel_name(), int_schema(), "aligned", fz_schema(), "aligned",
+                p.capacity, p.page_size, p.secret, p.policy, p.sync, p.checksum);
+            ASSERT_NE(q_write, nullptr);
+
+            auto q_read = ShmQueue::create_reader(
+                g.channel_name(), p.secret, int_schema(), "aligned",
+                g.channel_name());
+            ASSERT_NE(q_read, nullptr);
+
+            // (a) Both endpoints expose a mutable flexzone pointer.
+            void *wfz = q_write->flexzone();
+            void *rfz = q_read->flexzone();
+            ASSERT_NE(wfz, nullptr);
+            ASSERT_NE(rfz, nullptr);
+            ASSERT_GT(q_write->flexzone_size(), 0u);
+            ASSERT_EQ(q_write->flexzone_size(), q_read->flexzone_size());
+
+            // (b) Writer→reader visibility.
+            static const char kForward[] = "writer_to_reader";
+            std::memcpy(wfz, kForward, sizeof(kForward));
+
+            void *slot = q_write->write_acquire(std::chrono::milliseconds{200});
+            ASSERT_NE(slot, nullptr);
+            *static_cast<int*>(slot) = 1;
+            q_write->write_commit();
+
+            const void *in = q_read->read_acquire(std::chrono::milliseconds{200});
+            ASSERT_NE(in, nullptr);
+            q_read->read_release();
+
+            EXPECT_EQ(std::memcmp(rfz, kForward, sizeof(kForward)), 0);
+
+            // (c) Reader→writer visibility (bidirectional per HEP-CORE-0002 §2.2).
+            static const char kReply[] = "reader_to_writer";
+            std::memcpy(static_cast<char*>(rfz) + 64, kReply, sizeof(kReply));
+            EXPECT_EQ(std::memcmp(static_cast<char*>(wfz) + 64,
+                                  kReply, sizeof(kReply)),
+                      0);
+        },
+        "hub_queue.shm_queue_flexzone_bidirectional",
+        logger_module(), crypto_module(), hub_module());
+}
+
+// ============================================================================
 // shm_queue_create_factories
 // ============================================================================
 
@@ -1081,6 +1150,8 @@ struct HubQueueWorkerRegistrar
                     return shm_queue_multiple_consumers();
                 if (scenario == "shm_queue_flexzone_round_trip")
                     return shm_queue_flexzone_round_trip();
+                if (scenario == "shm_queue_flexzone_bidirectional")
+                    return shm_queue_flexzone_bidirectional();
                 if (scenario == "shm_queue_create_factories")
                     return shm_queue_create_factories();
                 if (scenario == "shm_queue_latest_only")
