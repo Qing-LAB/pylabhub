@@ -11,6 +11,7 @@
 #include "utils/context_metrics.hpp"
 #include "utils/crypto_utils.hpp"
 #include "utils/logger.hpp"
+#include "utils/thread_manager.hpp"
 #include "zmq_wire_helpers.hpp"
 
 #include <zmq.h>
@@ -66,7 +67,10 @@ struct ZmqQueueImpl
 
     // ── Read mode — pre-allocated ring buffer [ZQ9] ──────────────────────────
     std::atomic<bool>                recv_stop_{false};
-    std::thread                      recv_thread_;
+    // Threads live inside a ThreadManager owned by the queue. Recreated
+    // per start()/stop() cycle so each active window has its own dynamic
+    // lifecycle module "ThreadManager:ZmqQueue:<name>".
+    std::unique_ptr<pylabhub::utils::ThreadManager> thread_mgr_;
 
     std::vector<std::vector<std::byte>> recv_ring_;  ///< [max_depth] pre-allocated slots
     size_t                           ring_head_{0};  ///< index of oldest item
@@ -96,7 +100,8 @@ struct ZmqQueueImpl
     std::mutex                          send_mu_;
     std::condition_variable             send_cv_;
     std::atomic<bool>                   send_stop_{false};
-    std::thread                         send_thread_;
+    // send thread lives in thread_mgr_ (declared above in the Read-mode
+    // section); spawn() is called from ZmqQueue::start() based on mode.
     std::vector<std::byte>              send_local_buf_; ///< send_thread_-private staging (item_sz bytes)
     msgpack::sbuffer                    send_sbuf_;      ///< send_thread_-private msgpack buffer (reused)
     std::atomic<uint64_t>               send_seq_{0};
@@ -642,15 +647,23 @@ bool ZmqQueue::start()
     // [ZQ5] Capture pImpl raw pointer, not `this`, so move of ZmqQueue is safe.
     ZmqQueueImpl* impl_ptr = pImpl.get();
 
+    // Create a fresh ThreadManager for this start/stop cycle. Owner tag
+    // includes the queue's name so the lifecycle module is
+    // "ThreadManager:ZmqQueue:<name>" and identifiable in logs/diagnostics.
+    pImpl->thread_mgr_ =
+        std::make_unique<pylabhub::utils::ThreadManager>("ZmqQueue:" + pImpl->queue_name);
+
     if (pImpl->mode == ZmqQueueImpl::Mode::Read)
     {
         pImpl->recv_stop_.store(false, std::memory_order_release);
-        pImpl->recv_thread_ = std::thread([impl_ptr] { impl_ptr->run_recv_thread_(); });
+        pImpl->thread_mgr_->spawn("recv",
+            [impl_ptr] { impl_ptr->run_recv_thread_(); });
     }
     else // Write
     {
         pImpl->send_stop_.store(false, std::memory_order_release);
-        pImpl->send_thread_ = std::thread([impl_ptr] { impl_ptr->run_send_thread_(); });
+        pImpl->thread_mgr_->spawn("send",
+            [impl_ptr] { impl_ptr->run_send_thread_(); });
     }
 
     return true;
@@ -671,13 +684,12 @@ void ZmqQueue::stop()
     pImpl->recv_cv_.notify_all();
     pImpl->send_cv_.notify_all(); // wake send_thread_ to drain remaining items
 
-    if (pImpl->recv_thread_.joinable())
-        pImpl->recv_thread_.join();
-
-    // send_thread_ will drain remaining items (one attempt each, no retry after stop_)
-    // then exit.
-    if (pImpl->send_thread_.joinable())
-        pImpl->send_thread_.join();
+    // ThreadManager::~destroy() (via unique_ptr reset) bounded-joins both
+    // recv_thread_ and send_thread_ (whichever was spawned for this mode).
+    // The stop atomics above signal shutdown; the threads observe and exit;
+    // the manager joins them with per-thread kMidTimeoutMs deadline. On
+    // timeout: ERROR log + detach + increment process_detached_count.
+    pImpl->thread_mgr_.reset();
 
     if (pImpl->socket)  { zmq_close(pImpl->socket);     pImpl->socket   = nullptr; }
     if (pImpl->zmq_ctx) { zmq_ctx_term(pImpl->zmq_ctx); pImpl->zmq_ctx  = nullptr; }
