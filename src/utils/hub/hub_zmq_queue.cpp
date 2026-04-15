@@ -22,6 +22,7 @@
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -54,6 +55,12 @@ struct ZmqQueueImpl
     size_t      max_depth{64};
     std::string queue_name;
     int         sndhwm{0}; ///< ZMQ_SNDHWM for PUSH socket (0 = ZMQ default 1000)
+
+    /// Caller-supplied stable identifier — used as ThreadManager owner_id so the
+    /// lifecycle module name is unique across overlapping queue instances (e.g.
+    /// port-0 binds where queue_name collides). Empty → start() falls back to
+    /// a pointer-address-based id.
+    std::string instance_id;
 
     // ── Schema tag (optional — 8 bytes of BLAKE2b-256 of BLDS) ───────────────
     std::array<uint8_t, 8> schema_tag_{};
@@ -416,7 +423,8 @@ std::unique_ptr<QueueReader>
 ZmqQueue::pull_from(const std::string& endpoint, std::vector<ZmqSchemaField> schema,
                     std::string packing,
                     bool bind, size_t max_buffer_depth,
-                    std::optional<std::array<uint8_t, 8>> schema_tag)
+                    std::optional<std::array<uint8_t, 8>> schema_tag,
+                    std::string instance_id)
 {
     if (schema.empty())
     {
@@ -463,6 +471,7 @@ ZmqQueue::pull_from(const std::string& endpoint, std::vector<ZmqSchemaField> sch
     impl->item_sz           = item_sz;
     impl->max_depth         = max_buffer_depth;
     impl->queue_name        = endpoint;
+    impl->instance_id       = std::move(instance_id);
     impl->max_frame_sz_     = wire_detail::max_frame_size(layouts);
     impl->schema_defs_      = std::move(layouts);
     if (schema_tag) { impl->schema_tag_ = *schema_tag; impl->has_schema_tag_ = true; }
@@ -483,7 +492,8 @@ ZmqQueue::push_to(const std::string& endpoint, std::vector<ZmqSchemaField> schem
                   int sndhwm,
                   size_t send_buffer_depth,
                   OverflowPolicy overflow_policy,
-                  int send_retry_interval_ms)
+                  int send_retry_interval_ms,
+                  std::string instance_id)
 {
     if (schema.empty())
     {
@@ -529,6 +539,7 @@ ZmqQueue::push_to(const std::string& endpoint, std::vector<ZmqSchemaField> schem
     impl->bind_socket               = bind;
     impl->item_sz                   = item_sz;
     impl->queue_name                = endpoint;
+    impl->instance_id               = std::move(instance_id);
     impl->sndhwm                    = sndhwm; // [ZQ8]
     impl->send_depth_               = send_buffer_depth;
     impl->overflow_policy_          = overflow_policy;
@@ -639,12 +650,32 @@ bool ZmqQueue::start()
     // [ZQ5] Capture pImpl raw pointer, not `this`, so move of ZmqQueue is safe.
     ZmqQueueImpl* impl_ptr = pImpl.get();
 
-    // Create a fresh ThreadManager for this start/stop cycle. owner_tag =
-    // "ZmqQueue" classifies the manager; owner_id = queue_name identifies
-    // the specific queue instance. Lifecycle module name becomes
-    // "ThreadManager:ZmqQueue:{queue_name}".
+    // Create a fresh ThreadManager for this start/stop cycle.
+    //
+    // owner_id MUST be unique across every ZmqQueue live at the same time in
+    // this process (lifecycle module names must not collide — async-unload of
+    // a prior instance may overlap with re-register of a new one). We use:
+    //   1. the caller-supplied instance_id (role passes e.g. "prod:UID-...:tx")
+    //      — this is the canonical path for role hosts
+    //   2. or, when empty (unit tests constructing queues directly), fall back
+    //      to "{queue_name}@{pImpl-address}" — the address is unique per live
+    //      instance, so it prevents collisions even with identical endpoints
+    //      (port-0 binds) and overlapping teardown windows.
+    std::string owner_id;
+    if (!pImpl->instance_id.empty())
+    {
+        owner_id = pImpl->instance_id;
+    }
+    else
+    {
+        char addr_buf[32];
+        std::snprintf(addr_buf, sizeof(addr_buf), "@%p",
+                      static_cast<void *>(impl_ptr));
+        owner_id = pImpl->queue_name;
+        owner_id += addr_buf;
+    }
     pImpl->thread_mgr_ = std::make_unique<pylabhub::utils::ThreadManager>(
-        "ZmqQueue", pImpl->queue_name);
+        "ZmqQueue", owner_id);
 
     if (pImpl->mode == ZmqQueueImpl::Mode::Read)
     {

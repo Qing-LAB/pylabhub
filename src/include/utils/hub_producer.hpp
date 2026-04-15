@@ -56,6 +56,12 @@ struct ProducerOptions
     ChecksumPolicy checksum_policy{ChecksumPolicy::Enforced};
     bool flexzone_checksum{true};
     bool always_clear_slot{true};
+
+    /// Stable identifier for the queue's internal threads' lifecycle module.
+    /// Role hosts populate this (e.g. "prod:UID-...:tx") before calling
+    /// RoleAPIBase::build_tx_queue; empty means the queue will auto-generate
+    /// a pointer-address fallback (fine for one-off direct factory use).
+    std::string instance_id{};
 };
 
 } // namespace pylabhub::hub
