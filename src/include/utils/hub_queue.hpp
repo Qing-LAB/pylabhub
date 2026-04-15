@@ -249,6 +249,9 @@ public:
     virtual void set_checksum_policy(ChecksumPolicy /*policy*/) {}
     /** @brief Enable/disable flexzone checksum. SHM-specific; ZMQ no-op. */
     virtual void set_flexzone_checksum(bool /*enabled*/) {}
+    /** @brief Configure verification of slot + flexzone checksums on read_acquire().
+     *  SHM-specific; ZMQ no-op. */
+    virtual void set_verify_checksum(bool /*verify_slot*/, bool /*verify_fz*/) const noexcept {}
     /** @brief Verify slot checksum on current read buffer. Returns true if valid or no checksum. */
     virtual bool verify_checksum() { return true; }
     /** @brief Verify flexzone checksum. SHM-specific; ZMQ returns true. */
