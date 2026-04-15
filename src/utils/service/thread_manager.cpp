@@ -26,7 +26,7 @@ namespace pylabhub::utils
 // ============================================================================
 //
 // Any ThreadManager instance in this process that had to detach a stuck
-// thread during join_all() increments this counter. Production main() and
+// thread during drain() increments this counter. Production main() and
 // gtest event listeners query it via ThreadManager::process_detached_count()
 // to decide whether to treat exit as clean.
 
@@ -70,7 +70,7 @@ struct ThreadManager::Impl
 
     mutable std::mutex                       mu;
     std::vector<ThreadSlot>                  slots;
-    /// Set at join_all() entry. Once true, spawn() refuses new threads so
+    /// Set at drain() entry. Once true, spawn() refuses new threads so
     /// the destructor's drain is the final one. Unlike the old join_all_done
     /// gate, it does NOT short-circuit the drain itself — it only guards
     /// against adding new slots after teardown has started.
@@ -82,11 +82,11 @@ struct ThreadManager::Impl
     /// the ThreadManager is destroyed before lifecycle dispatches.
     std::atomic<bool>                        impl_alive{true};
 
-    /// Count of threads detached on the last join_all() call. 0 means clean.
-    /// Exposed via ThreadManager::detached_count_last_join() so callers
+    /// Count of threads detached on the last drain() call. 0 means clean.
+    /// Exposed via ThreadManager::detached_count_last_drain() so callers
     /// (tests, process-exit policy) cannot mistake a timeout-detach for
     /// normal teardown.
-    std::atomic<std::size_t>                 detached_count_last_join{0};
+    std::atomic<std::size_t>                 detached_count_last_drain{0};
 };
 
 // ============================================================================
@@ -116,7 +116,7 @@ void tm_startup(const char * /*arg*/, void * /*userdata*/)
 /// LifecycleCallback shutdown: intentional no-op.
 ///
 /// Teardown ownership is concentrated in the destructor (`~ThreadManager`),
-/// which runs `join_all()` directly on its own `pImpl`. The lifecycle-
+/// which runs `drain()` directly on its own `pImpl`. The lifecycle-
 /// dispatched callback here has no access to the owner's intent and must NOT
 /// touch Impl state — any mutation (e.g. setting a "done" flag) risks racing
 /// the destructor path and abandoning joinable `std::thread` objects in the
@@ -200,11 +200,11 @@ ThreadManager::~ThreadManager()
     std::size_t detached = 0;
     try
     {
-        detached = join_all();
+        detached = drain();
     }
     catch (const std::exception &e)
     {
-        LOGGER_ERROR("[ThreadManager:{}] destructor join_all() threw: {}",
+        LOGGER_ERROR("[ThreadManager:{}] destructor drain() threw: {}",
                      pImpl ? pImpl->composed_identity : std::string{"<moved-from>"}, e.what());
     }
 
@@ -213,12 +213,12 @@ ThreadManager::~ThreadManager()
         // Process-level unclean-shutdown flag. Any main() that wraps its
         // role/services in ThreadManager-owning objects should query this
         // at exit and propagate to a non-zero return code. A test harness
-        // can similarly assert detached_count_last_join() == 0 after the
+        // can similarly assert detached_count_last_drain() == 0 after the
         // fixture teardown to fail the test.
         //
         // We DO NOT throw from the dtor — that would std::terminate and
         // obscure the diagnostic ERROR logs already emitted. The
-        // detached_count_last_join() accessor is the machine-readable
+        // detached_count_last_drain() accessor is the machine-readable
         // signal; operators see the log immediately.
         LOGGER_ERROR("[ThreadManager:{}] dtor: {} thread(s) leaked. Caller "
                      "MUST NOT treat process/test return as success.",
@@ -247,7 +247,7 @@ ThreadManager::~ThreadManager()
 }
 
 // ============================================================================
-// spawn / join_all
+// spawn / drain
 // ============================================================================
 
 bool ThreadManager::spawn(const std::string &name,
@@ -286,7 +286,7 @@ bool ThreadManager::spawn(const std::string &name,
         done->store(true, std::memory_order_release);
     };
 
-    // Re-check `closing` under the lock: combined with join_all()'s
+    // Re-check `closing` under the lock: combined with drain()'s
     // "set closing + move slots" done under the same lock, this guarantees
     // either the new slot lands in pImpl->slots *before* the drain grabbed
     // it (safe — we'll join it), or we observe closing=true here and reject.
@@ -294,7 +294,7 @@ bool ThreadManager::spawn(const std::string &name,
     std::lock_guard<std::mutex> lock(pImpl->mu);
     if (pImpl->closing.load(std::memory_order_acquire))
     {
-        LOGGER_WARN("[ThreadManager:{}] spawn('{}') called after join_all() — "
+        LOGGER_WARN("[ThreadManager:{}] spawn('{}') called after drain() — "
                     "thread will not be tracked; body NOT executed",
                     pImpl->composed_identity, name);
         return false;
@@ -312,7 +312,7 @@ bool ThreadManager::spawn(const std::string &name,
     return true;
 }
 
-std::size_t ThreadManager::join_all()
+std::size_t ThreadManager::drain()
 {
     if (!pImpl) return 0;
 
@@ -375,7 +375,7 @@ std::size_t ThreadManager::join_all()
         }
     }
 
-    pImpl->detached_count_last_join.store(detached, std::memory_order_release);
+    pImpl->detached_count_last_drain.store(detached, std::memory_order_release);
 
     if (detached > 0)
     {
@@ -446,9 +446,9 @@ std::string ThreadManager::module_name() const
     return pImpl ? pImpl->module_name : std::string{};
 }
 
-std::size_t ThreadManager::detached_count_last_join() const
+std::size_t ThreadManager::detached_count_last_drain() const
 {
-    return pImpl ? pImpl->detached_count_last_join.load(std::memory_order_acquire)
+    return pImpl ? pImpl->detached_count_last_drain.load(std::memory_order_acquire)
                  : 0;
 }
 

@@ -11,8 +11,9 @@
  *     so process-global teardown goes through LifecycleGuard's existing
  *     topological-sort + timedShutdown safety net.
  *   - Tracks named threads with per-thread join timeouts.
- *   - On destruction (or on explicit join_all()), joins each thread with a
- *     bounded wait. On timeout: ERROR log + detach + continue.
+ *   - On destruction (or on explicit drain()), walks the tracked threads in
+ *     reverse spawn order (LIFO), joining each with its own bounded wait.
+ *     On per-slot timeout: ERROR log + detach + continue to the next slot.
  *
  * ThreadManager does NOT own the stop signal. The owner component keeps its
  * own stop atomic/cv and captures it into the thread body lambda passed to
@@ -64,7 +65,7 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
     ///     "PROD-SENSOR-00000001", queue channel name, broker endpoint).
     ///     Identifies the SPECIFIC instance within that tag. Must be non-empty.
     /// @param aggregate_shutdown_timeout  Lifecycle-layer ceiling on the
-    ///     entire join_all() call. Should be >= the sum of per-thread
+    ///     entire drain() call. Should be >= the sum of per-thread
     ///     SpawnOptions.join_timeout used via spawn(). Defaults to 2×
     ///     `pylabhub::kMidTimeoutMs` (= 10 s) so a manager with a couple of
     ///     heavyweight threads each taking up to kMidTimeoutMs to drain is
@@ -81,7 +82,7 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
                   std::chrono::milliseconds aggregate_shutdown_timeout
                       = std::chrono::milliseconds{2 * pylabhub::kMidTimeoutMs});
 
-    /// Destructor calls join_all() (idempotent) and deregisters the dynamic
+    /// Destructor calls drain() (idempotent) and deregisters the dynamic
     /// lifecycle module. Safe to call from destructor chains; does not throw.
     ~ThreadManager();
 
@@ -99,7 +100,8 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
     ///     single owner is recommended but not enforced.
     /// @param body  Thread entry point.
     /// @param opts  Per-thread options (join timeout).
-    /// @return true if spawned; false if join_all() has already run.
+    /// @return true if spawned; false if drain() has already run (the
+    ///   manager is in its closing phase and rejects new work).
     /// Spawn with explicit options.
     bool spawn(const std::string &    name,
                std::function<void()>  body,
@@ -109,32 +111,35 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
     bool spawn(const std::string &    name,
                std::function<void()>  body);
 
-    /// Bounded join of all managed threads in reverse spawn order. Each
-    /// thread that doesn't exit within its SpawnOptions.join_timeout is
-    /// detached with an ERROR log identifying the thread by owner_tag + name.
-    /// Idempotent; second and subsequent calls return 0.
-    /// @return number of threads that HAD to be detached (timed out).
-    ///   A non-zero return value means the shutdown was NOT clean and one
-    ///   or more threads are leaked (still running, detached from the
-    ///   process's std::thread ownership). Callers — especially tests —
-    ///   MUST check this value rather than treating a `void` return as
-    ///   evidence of clean teardown.
-    std::size_t join_all();
+    /// Drain all managed threads — per-slot bounded join in reverse spawn
+    /// order (LIFO). For each slot: poll the thread's own `done` flag with
+    /// 10 ms granularity up to SpawnOptions.join_timeout; on expiry, detach
+    /// with an ERROR log that identifies the thread by owner + name. Already-
+    /// joined or already-detached slots are no-ops, so the call is naturally
+    /// idempotent — repeat invocations walk an empty slot list and return 0.
+    /// After the first call, spawn() refuses new threads (the manager is in
+    /// its closing phase).
+    /// @return number of threads that HAD to be detached (timed out). A
+    ///   non-zero return value means the shutdown was NOT clean and one or
+    ///   more threads are leaked (still running, detached from std::thread
+    ///   ownership). Callers — especially tests — MUST check this rather
+    ///   than treating a `void` return as evidence of clean teardown.
+    std::size_t drain();
 
-    /// Count of threads that were detached during the most recent join_all()
-    /// call (0 if no join_all yet or last call was fully clean).
+    /// Count of threads that were detached during the most recent drain()
+    /// call (0 if no drain yet or last call was fully clean).
     /// Intended for test assertions and process-exit policy:
     ///
     ///     int main(int argc, char **argv) {
     ///         ... construct roles / services ...
     ///         LifecycleGuard guard(...);
-    ///         // guard dtor runs ThreadManager dtors (→ join_all).
+    ///         // guard dtor runs ThreadManager dtors (→ drain).
     ///         return /* aggregate */ leaked_threads > 0 ? 2 : 0;
     ///     }
-    [[nodiscard]] std::size_t detached_count_last_join() const;
+    [[nodiscard]] std::size_t detached_count_last_drain() const;
 
     /// Number of threads that have been spawned and not yet joined or
-    /// detached (i.e., still tracked as "owned"). Goes to 0 after join_all().
+    /// detached (i.e., still tracked as "owned"). Goes to 0 after drain().
     [[nodiscard]] std::size_t active_count() const;
 
     /// Diagnostic snapshot. Thread-safe. Used by admin-shell / health-check
@@ -169,7 +174,7 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
 
     /// Total threads detached by any ThreadManager in this process since
     /// startup (or last reset). 0 means every ThreadManager that has run
-    /// join_all() so far completed cleanly.
+    /// drain() so far completed cleanly.
     [[nodiscard]] static std::size_t process_detached_count() noexcept;
 
     /// Reset the process-wide detached counter to 0. Intended only for
