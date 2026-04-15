@@ -189,6 +189,9 @@ public:
     // after a move, pImpl is null and is_running() correctly returns false.
     bool is_running() const noexcept override;
 
+    /** @brief ShmQueue is SHM-backed (both reader and writer sides). */
+    bool is_shm_backed() const noexcept override { return true; }
+
     /**
      * @brief Unified metrics snapshot (implements QueueReader::metrics() and QueueWriter::metrics()).
      *

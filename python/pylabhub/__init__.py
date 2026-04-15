@@ -35,8 +35,7 @@ def abi_versions() -> dict:
     ``pylabhub_abi_info_json()`` which returns a stable ``const char*``.
 
     Returns a dict with keys: release, library, python_runtime, shm_major,
-    shm_minor, wire_major, wire_minor, script_api_major, script_api_minor,
-    facade_producer, facade_consumer.
+    shm_minor, wire_major, wire_minor, script_api_major, script_api_minor.
 
     Falls back to a minimal dict if the library is not available.
     """
