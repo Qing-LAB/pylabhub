@@ -104,8 +104,7 @@ namespace
 
 class ProcessorCycleOps final : public scripting::RoleCycleOps
 {
-    hub::Consumer           &input_;
-    hub::Producer           &output_;
+    scripting::RoleAPIBase  &api_;
     scripting::ScriptEngine &engine_;
     scripting::RoleHostCore &core_;
     bool                     stop_on_error_;
@@ -121,16 +120,16 @@ class ProcessorCycleOps final : public scripting::RoleCycleOps
     void       *out_buf_{nullptr};
 
   public:
-    ProcessorCycleOps(hub::Consumer &in, hub::Producer &out,
+    ProcessorCycleOps(scripting::RoleAPIBase &api,
                       scripting::ScriptEngine &e, scripting::RoleHostCore &c,
                       bool stop_on_error, bool drop_mode)
-        : input_(in), output_(out), engine_(e), core_(c),
+        : api_(api), engine_(e), core_(c),
           stop_on_error_(stop_on_error), drop_mode_(drop_mode),
-          in_sz_(in.queue_item_size()), out_sz_(out.queue_item_size()),
-          out_fz_ptr_(c.has_out_fz() ? out.write_flexzone() : nullptr),
-          out_fz_sz_(c.has_out_fz() ? out.flexzone_size() : 0),
-          in_fz_ptr_(c.has_in_fz() ? const_cast<void *>(in.read_flexzone()) : nullptr),
-          in_fz_sz_(c.has_in_fz() ? in.flexzone_size() : 0)
+          in_sz_(api.read_item_size()), out_sz_(api.write_item_size()),
+          out_fz_ptr_(c.has_out_fz() ? api.write_flexzone() : nullptr),
+          out_fz_sz_(c.has_out_fz() ? api.write_flexzone_size() : 0),
+          in_fz_ptr_(c.has_in_fz() ? const_cast<void *>(api.read_flexzone()) : nullptr),
+          in_fz_sz_(c.has_in_fz() ? api.read_flexzone_size() : 0)
     {}
 
     /// Processor always returns true — maintains timing cadence on idle cycles.
@@ -140,7 +139,7 @@ class ProcessorCycleOps final : public scripting::RoleCycleOps
         if (!held_input_)
         {
             held_input_ = scripting::retry_acquire(ctx, core_,
-                [this](auto t) { return const_cast<void *>(input_.read_acquire(t)); });
+                [this](auto t) { return const_cast<void *>(api_.read_acquire(t)); });
         }
 
         // Secondary: output (only if input available, policy-dependent timeout).
@@ -149,7 +148,7 @@ class ProcessorCycleOps final : public scripting::RoleCycleOps
         {
             if (drop_mode_)
             {
-                out_buf_ = output_.write_acquire(std::chrono::milliseconds{0});
+                out_buf_ = api_.write_acquire(std::chrono::milliseconds{0});
             }
             else
             {
@@ -162,7 +161,7 @@ class ProcessorCycleOps final : public scripting::RoleCycleOps
                     if (remaining > ctx.short_timeout)
                         output_timeout = remaining;
                 }
-                out_buf_ = output_.write_acquire(output_timeout);
+                out_buf_ = api_.write_acquire(output_timeout);
             }
         }
 
@@ -171,8 +170,8 @@ class ProcessorCycleOps final : public scripting::RoleCycleOps
 
     void cleanup_on_shutdown() override
     {
-        if (held_input_) { input_.read_release(); held_input_ = nullptr; }
-        if (out_buf_)    { output_.write_discard(); out_buf_ = nullptr; }
+        if (held_input_) { api_.read_release(); held_input_ = nullptr; }
+        if (out_buf_)    { api_.write_discard(); out_buf_ = nullptr; }
     }
 
     bool invoke_and_commit(std::vector<scripting::IncomingMessage> &msgs) override
@@ -181,9 +180,9 @@ class ProcessorCycleOps final : public scripting::RoleCycleOps
         if (out_buf_) std::memset(out_buf_, 0, out_sz_);
 
         // Re-read flexzone pointers each cycle (ShmQueue may move them).
-        if (core_.has_out_fz()) out_fz_ptr_ = output_.write_flexzone();
+        if (core_.has_out_fz()) out_fz_ptr_ = api_.write_flexzone();
         if (core_.has_in_fz())
-            in_fz_ptr_ = const_cast<void *>(input_.read_flexzone());
+            in_fz_ptr_ = const_cast<void *>(api_.read_flexzone());
 
         auto result = engine_.invoke_process(
             scripting::InvokeRx{held_input_, in_sz_, in_fz_ptr_, in_fz_sz_},
@@ -194,9 +193,9 @@ class ProcessorCycleOps final : public scripting::RoleCycleOps
         if (out_buf_)
         {
             if (result == scripting::InvokeResult::Commit)
-            { output_.write_commit(); core_.inc_out_slots_written(); }
+            { api_.write_commit(); core_.inc_out_slots_written(); }
             else
-            { output_.write_discard(); core_.inc_out_drop_count(); }
+            { api_.write_discard(); core_.inc_out_drop_count(); }
         }
         else if (held_input_)
         {
@@ -208,7 +207,7 @@ class ProcessorCycleOps final : public scripting::RoleCycleOps
         {
             if (out_buf_ || drop_mode_)
             {
-                input_.read_release();
+                api_.read_release();
                 held_input_ = nullptr;
                 core_.inc_in_slots_received();
             }
@@ -223,7 +222,7 @@ class ProcessorCycleOps final : public scripting::RoleCycleOps
 
     void cleanup_on_exit() override
     {
-        if (held_input_) { input_.read_release(); held_input_ = nullptr; }
+        if (held_input_) { api_.read_release(); held_input_ = nullptr; }
     }
 };
 
@@ -481,7 +480,7 @@ void ProcessorRoleHost::worker_main_()
         const auto &tc_loop = config_.timing();
         const bool drop_mode =
             (config_.out_transport().zmq_overflow_policy == "drop");
-        ProcessorCycleOps ops(*in_consumer_, *out_producer_, *engine_, core_,
+        ProcessorCycleOps ops(*api_, *engine_, core_,
                               sc.stop_on_script_error,
                               drop_mode);
         scripting::LoopConfig lcfg;
