@@ -484,9 +484,9 @@ void Consumer::stop_queue()
 // Consumer — Channel data operations (flexzone, checksum)
 // ============================================================================
 
-const void *Consumer::read_flexzone() const noexcept
+void *Consumer::flexzone() noexcept
 {
-    return (pImpl && pImpl->queue_reader_) ? pImpl->queue_reader_->read_flexzone() : nullptr;
+    return (pImpl && pImpl->queue_reader_) ? pImpl->queue_reader_->flexzone() : nullptr;
 }
 
 size_t Consumer::flexzone_size() const noexcept

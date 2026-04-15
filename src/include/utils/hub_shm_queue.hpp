@@ -214,11 +214,6 @@ public:
     /** @brief Size of the flexzone in bytes; 0 if not configured. */
     size_t flexzone_size() const noexcept override;
 
-    /** @deprecated Use flexzone(). */
-    const void* read_flexzone() const noexcept override;
-    /** @deprecated Use flexzone(). */
-    void* write_flexzone() noexcept override;
-
     /** @brief Configure BLAKE2b checksum verification on read_acquire(). */
     void set_verify_checksum(bool slot, bool fz) const noexcept;
     /** @brief Enable BLAKE2b checksum updates on write_commit(). */
