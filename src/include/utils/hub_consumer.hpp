@@ -294,7 +294,7 @@ class PYLABHUB_UTILS_EXPORT Consumer
 
     // ── Channel data operations (flexzone, checksum — SHM-specific) ─────────
 
-    [[nodiscard]] const void *read_flexzone() const noexcept;
+    [[nodiscard]] void *flexzone() noexcept;
     [[nodiscard]] size_t flexzone_size() const noexcept;
     void set_verify_checksum(bool slot, bool fz) noexcept;
     [[nodiscard]] std::string queue_policy_info() const;

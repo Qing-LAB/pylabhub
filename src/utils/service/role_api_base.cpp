@@ -815,19 +815,18 @@ bool RoleAPIBase::sync_flexzone_checksum()
     return true;
 }
 
-void *RoleAPIBase::write_flexzone()
+void *RoleAPIBase::flexzone(ChannelSide side)
 {
-    return pImpl->producer ? pImpl->producer->write_flexzone() : nullptr;
+    if (side == ChannelSide::Tx)
+        return pImpl->producer ? pImpl->producer->flexzone() : nullptr;
+    return pImpl->consumer ? pImpl->consumer->flexzone() : nullptr;
 }
 
-const void *RoleAPIBase::read_flexzone() const
+size_t RoleAPIBase::flexzone_size(ChannelSide side) const noexcept
 {
-    return pImpl->producer ? pImpl->producer->read_flexzone() : nullptr;
-}
-
-size_t RoleAPIBase::flexzone_size() const
-{
-    return pImpl->producer ? pImpl->producer->flexzone_size() : 0;
+    if (side == ChannelSide::Tx)
+        return pImpl->producer ? pImpl->producer->flexzone_size() : 0;
+    return pImpl->consumer ? pImpl->consumer->flexzone_size() : 0;
 }
 
 bool RoleAPIBase::update_flexzone_checksum()
@@ -836,16 +835,6 @@ bool RoleAPIBase::update_flexzone_checksum()
         return false;
     pImpl->producer->sync_flexzone_checksum();
     return true;
-}
-
-size_t RoleAPIBase::write_flexzone_size() const noexcept
-{
-    return pImpl->producer ? pImpl->producer->flexzone_size() : 0;
-}
-
-size_t RoleAPIBase::read_flexzone_size() const noexcept
-{
-    return pImpl->consumer ? pImpl->consumer->flexzone_size() : 0;
 }
 
 uint64_t RoleAPIBase::out_slots_written() const { return pImpl->core->out_slots_written(); }

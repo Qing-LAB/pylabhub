@@ -271,7 +271,7 @@ int shm_queue_read_flexzone()
             EXPECT_GT(reader->flexzone_size(), 0u);
 
             // flexzone exists → read_flexzone() must return non-null.
-            const void* fz = reader->read_flexzone();
+            const void* fz = reader->flexzone();
             EXPECT_NE(fz, nullptr);
         },
         "hub_queue.shm_queue_read_flexzone",
@@ -296,7 +296,7 @@ int shm_queue_write_flexzone()
             ASSERT_NE(q, nullptr);
             EXPECT_GT(q->flexzone_size(), 0u);
 
-            void* fz = q->write_flexzone();
+            void* fz = q->flexzone();
             EXPECT_NE(fz, nullptr);
         },
         "hub_queue.shm_queue_write_flexzone",
@@ -327,8 +327,8 @@ int shm_queue_no_flexzone()
 
             EXPECT_EQ(q_write->flexzone_size(), 0u);
             EXPECT_EQ(q_read->flexzone_size(), 0u);
-            EXPECT_EQ(q_write->write_flexzone(), nullptr);
-            EXPECT_EQ(q_read->read_flexzone(), nullptr);
+            EXPECT_EQ(q_write->flexzone(), nullptr);
+            EXPECT_EQ(q_read->flexzone(), nullptr);
         },
         "hub_queue.shm_queue_no_flexzone",
         logger_module(), crypto_module(), hub_module());
@@ -457,7 +457,7 @@ int shm_queue_flexzone_round_trip()
             ASSERT_NE(q_read, nullptr);
 
             // Write known pattern into the flexzone.
-            void* wfz = q_write->write_flexzone();
+            void* wfz = q_write->flexzone();
             ASSERT_NE(wfz, nullptr);
             static const char kPattern[] = "fz_test_payload";
             std::memcpy(wfz, kPattern, sizeof(kPattern));
@@ -474,7 +474,7 @@ int shm_queue_flexzone_round_trip()
             EXPECT_EQ(*static_cast<const int*>(in), 7);
             q_read->read_release();
 
-            const void* rfz = q_read->read_flexzone();
+            const void* rfz = q_read->flexzone();
             ASSERT_NE(rfz, nullptr);
             EXPECT_EQ(std::memcmp(rfz, kPattern, sizeof(kPattern)), 0);
         },
