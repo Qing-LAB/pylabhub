@@ -35,7 +35,9 @@ struct ThreadSlot
     /// destroyed, so a detached thread can finish writing 'true' without UAF.
     std::shared_ptr<std::atomic<bool>>       done;
     std::string                              name;
-    std::chrono::milliseconds                join_timeout{5000};
+    /// Default matches pylabhub::kMidTimeoutMs; the SpawnOptions default
+    /// on the caller side is what actually feeds this in normal flow.
+    std::chrono::milliseconds                join_timeout{pylabhub::kMidTimeoutMs};
     std::chrono::steady_clock::time_point    spawn_time;
 };
 } // namespace
