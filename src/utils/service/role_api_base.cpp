@@ -39,6 +39,15 @@ struct RoleAPIBase::Impl
     RoleHostCore    *core;
     hub::Producer   *producer{nullptr};
     hub::Consumer   *consumer{nullptr};
+
+    // Direct queue handles — the surviving abstraction post-L3.γ. While
+    // hub::Producer / hub::Consumer still exist, these are cached mirrors
+    // populated by set_producer() / set_consumer() and point at the same
+    // objects the producer/consumer wrap internally. All data-plane
+    // forwards (write_acquire/commit/discard, read_acquire/release,
+    // flexzone, etc.) go through these directly.
+    hub::QueueWriter *tx_queue{nullptr};
+    hub::QueueReader *rx_queue{nullptr};
     hub::InboxQueue          *inbox_queue{nullptr};
     ScriptEngine             *engine{nullptr};
     hub::BrokerRequestComm *broker_channel{nullptr};
@@ -84,8 +93,16 @@ RoleAPIBase &RoleAPIBase::operator=(RoleAPIBase &&) noexcept = default;
 // ============================================================================
 
 void RoleAPIBase::set_role_tag(std::string tag)       { pImpl->role_tag = std::move(tag); }
-void RoleAPIBase::set_producer(hub::Producer *p)      { pImpl->producer = p; }
-void RoleAPIBase::set_consumer(hub::Consumer *c)      { pImpl->consumer = c; }
+void RoleAPIBase::set_producer(hub::Producer *p)
+{
+    pImpl->producer = p;
+    pImpl->tx_queue = p ? p->queue_writer() : nullptr;
+}
+void RoleAPIBase::set_consumer(hub::Consumer *c)
+{
+    pImpl->consumer = c;
+    pImpl->rx_queue = c ? c->queue_reader() : nullptr;
+}
 void RoleAPIBase::set_inbox_queue(hub::InboxQueue *q) { pImpl->inbox_queue = q; }
 void RoleAPIBase::set_uid(std::string uid)            { pImpl->uid = std::move(uid); }
 void RoleAPIBase::set_name(std::string name)          { pImpl->name = std::move(name); }
@@ -790,50 +807,50 @@ void RoleAPIBase::close_all_inbox_clients()
 
 void *RoleAPIBase::write_acquire(std::chrono::milliseconds timeout) noexcept
 {
-    return pImpl->producer ? pImpl->producer->write_acquire(timeout) : nullptr;
+    return pImpl->tx_queue ? pImpl->tx_queue->write_acquire(timeout) : nullptr;
 }
 
 void RoleAPIBase::write_commit() noexcept
 {
-    if (pImpl->producer) pImpl->producer->write_commit();
+    if (pImpl->tx_queue) pImpl->tx_queue->write_commit();
 }
 
 void RoleAPIBase::write_discard() noexcept
 {
-    if (pImpl->producer) pImpl->producer->write_discard();
+    if (pImpl->tx_queue) pImpl->tx_queue->write_discard();
 }
 
 size_t RoleAPIBase::write_item_size() const noexcept
 {
-    return pImpl->producer ? pImpl->producer->queue_item_size() : 0;
+    return pImpl->tx_queue ? pImpl->tx_queue->item_size() : 0;
 }
 
 bool RoleAPIBase::sync_flexzone_checksum()
 {
-    if (!pImpl->producer) return false;
-    pImpl->producer->sync_flexzone_checksum();
+    if (!pImpl->tx_queue) return false;
+    pImpl->tx_queue->sync_flexzone_checksum();
     return true;
 }
 
 void *RoleAPIBase::flexzone(ChannelSide side)
 {
     if (side == ChannelSide::Tx)
-        return pImpl->producer ? pImpl->producer->flexzone() : nullptr;
-    return pImpl->consumer ? pImpl->consumer->flexzone() : nullptr;
+        return pImpl->tx_queue ? pImpl->tx_queue->flexzone() : nullptr;
+    return pImpl->rx_queue ? pImpl->rx_queue->flexzone() : nullptr;
 }
 
 size_t RoleAPIBase::flexzone_size(ChannelSide side) const noexcept
 {
     if (side == ChannelSide::Tx)
-        return pImpl->producer ? pImpl->producer->flexzone_size() : 0;
-    return pImpl->consumer ? pImpl->consumer->flexzone_size() : 0;
+        return pImpl->tx_queue ? pImpl->tx_queue->flexzone_size() : 0;
+    return pImpl->rx_queue ? pImpl->rx_queue->flexzone_size() : 0;
 }
 
 bool RoleAPIBase::update_flexzone_checksum()
 {
-    if (!pImpl->producer)
+    if (!pImpl->tx_queue)
         return false;
-    pImpl->producer->sync_flexzone_checksum();
+    pImpl->tx_queue->sync_flexzone_checksum();
     return true;
 }
 
@@ -842,12 +859,12 @@ uint64_t RoleAPIBase::out_drop_count() const    { return pImpl->core->out_drop_c
 
 size_t RoleAPIBase::out_capacity() const
 {
-    return pImpl->producer ? pImpl->producer->queue_capacity() : 0;
+    return pImpl->tx_queue ? pImpl->tx_queue->capacity() : 0;
 }
 
 std::string RoleAPIBase::out_policy() const
 {
-    return pImpl->producer ? pImpl->producer->queue_policy_info() : std::string{};
+    return pImpl->tx_queue ? pImpl->tx_queue->policy_info() : std::string{};
 }
 
 // ============================================================================
@@ -856,17 +873,17 @@ std::string RoleAPIBase::out_policy() const
 
 const void *RoleAPIBase::read_acquire(std::chrono::milliseconds timeout) noexcept
 {
-    return pImpl->consumer ? pImpl->consumer->read_acquire(timeout) : nullptr;
+    return pImpl->rx_queue ? pImpl->rx_queue->read_acquire(timeout) : nullptr;
 }
 
 void RoleAPIBase::read_release() noexcept
 {
-    if (pImpl->consumer) pImpl->consumer->read_release();
+    if (pImpl->rx_queue) pImpl->rx_queue->read_release();
 }
 
 size_t RoleAPIBase::read_item_size() const noexcept
 {
-    return pImpl->consumer ? pImpl->consumer->queue_item_size() : 0;
+    return pImpl->rx_queue ? pImpl->rx_queue->item_size() : 0;
 }
 
 uint64_t RoleAPIBase::in_slots_received() const { return pImpl->core->in_slots_received(); }
@@ -876,22 +893,25 @@ uint64_t RoleAPIBase::last_seq() const
     // Forward directly to QueueReader — single source of truth.
     // Thread-safe: ShmQueue uses plain uint64 (aligned, no torn read),
     // ZmqQueue uses atomic<uint64_t> with relaxed ordering.
-    return pImpl->consumer ? pImpl->consumer->last_seq() : 0;
+    return pImpl->rx_queue ? pImpl->rx_queue->last_seq() : 0;
 }
 
 
 size_t RoleAPIBase::in_capacity() const
 {
-    return pImpl->consumer ? pImpl->consumer->queue_capacity() : 0;
+    return pImpl->rx_queue ? pImpl->rx_queue->capacity() : 0;
 }
 
 std::string RoleAPIBase::in_policy() const
 {
-    return pImpl->consumer ? pImpl->consumer->queue_policy_info() : std::string{};
+    return pImpl->rx_queue ? pImpl->rx_queue->policy_info() : std::string{};
 }
 
 void RoleAPIBase::set_verify_checksum(bool enable)
 {
+    // set_verify_checksum(slot,fz) is not yet on the QueueReader base
+    // interface — still routes through hub::Consumer until L3.γ migrates
+    // the hub-layer API into QueueReader.
     if (pImpl->consumer)
         pImpl->consumer->set_verify_checksum(enable, false);
 }

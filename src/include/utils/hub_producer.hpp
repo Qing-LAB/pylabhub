@@ -302,6 +302,14 @@ class PYLABHUB_UTILS_EXPORT Producer
 
     [[nodiscard]] ZmqQueue *queue() noexcept;
 
+    // ── Direct accessor to the unified QueueWriter handle (L3.γ bridge) ─────
+    //
+    // Transient accessor added so RoleAPIBase::Impl can hold a QueueWriter *
+    // directly and forward data-plane calls without going through
+    // hub::Producer. Deleted along with hub::Producer itself in the final
+    // phase of L3.γ.
+    [[nodiscard]] QueueWriter *queue_writer() noexcept;
+
     // ── Queue data operations (delegated to internal QueueWriter) ──────────
 
     [[nodiscard]] void *write_acquire(std::chrono::milliseconds timeout) noexcept;

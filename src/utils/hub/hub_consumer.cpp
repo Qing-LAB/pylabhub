@@ -431,6 +431,11 @@ ZmqQueue *Consumer::queue() noexcept
 // Consumer — Queue data operations (forwarded to internal QueueReader)
 // ============================================================================
 
+QueueReader *Consumer::queue_reader() noexcept
+{
+    return pImpl ? pImpl->queue_reader_ : nullptr;
+}
+
 const void *Consumer::read_acquire(std::chrono::milliseconds timeout) noexcept
 {
     auto *q = pImpl ? pImpl->queue_reader_ : nullptr;
