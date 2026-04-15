@@ -379,6 +379,21 @@ void ShmQueue::read_release() noexcept
     pImpl->read_handle.reset();
 }
 
+uint32_t ShmQueue::spinlock_count() const noexcept
+{
+    // Spinlocks live in the DataBlock header; reachable via either side handle.
+    if (pImpl && pImpl->dbp) return pImpl->dbp->spinlock_count();
+    if (pImpl && pImpl->dbc) return pImpl->dbc->spinlock_count();
+    return 0;
+}
+
+SharedSpinLock ShmQueue::get_spinlock(size_t index)
+{
+    if (pImpl && pImpl->dbp) return pImpl->dbp->get_spinlock(index);
+    if (pImpl && pImpl->dbc) return pImpl->dbc->get_spinlock(index);
+    throw std::runtime_error("ShmQueue::get_spinlock: no DataBlock backing");
+}
+
 void* ShmQueue::flexzone() noexcept
 {
     // Single authoritative guard: fz_sz is the flexzone size stored at
