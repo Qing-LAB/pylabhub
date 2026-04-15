@@ -381,7 +381,14 @@ class ThreadManagerTest : public ::testing::Test
     {
         api = std::make_unique<RoleAPIBase>(core);
         api->set_role_tag("test");
+        // Each test uses a unique uid so its ThreadManager dynamic module
+        // ("ThreadManager:test:<uid>") doesn't clash with the next test's
+        // registration in the same process.
+        const auto *info =
+            ::testing::UnitTest::GetInstance()->current_test_info();
+        api->set_uid(std::string{info->test_suite_name()} + "." + info->name());
         api->set_engine(&engine);
+        api->init_thread_manager();
     }
 };
 

@@ -73,9 +73,11 @@ struct RoleAPIBase::Impl
 
     // last_seq: no local copy — forwarded directly to consumer->last_seq().
 
-    // Thread manager — per-owner bounded-join + ERROR-log-on-timeout
-    // (utils::ThreadManager is a dynamic lifecycle module tagged with this
-    // role's identity via the role_tag captured in Impl ctor).
+    // The role's sole thread manager. All role-scope threads
+    // (worker / ctrl / inbox / future) live under this one instance —
+    // same dynamic lifecycle module "ThreadManager:" + role_tag, same
+    // bounded join, same process-wide leak aggregator. Lazy-constructed
+    // on first thread_manager() access so set_role_tag() runs first.
     std::unique_ptr<pylabhub::utils::ThreadManager> thread_mgr_;
 };
 
@@ -122,29 +124,54 @@ void RoleAPIBase::set_stop_on_script_error(bool v)    { pImpl->stop_on_script_er
 // Thread manager
 // ============================================================================
 
-void RoleAPIBase::spawn_thread(const std::string &name, std::function<void()> body)
+void RoleAPIBase::init_thread_manager()
 {
-    // Lazy-construct the ThreadManager on first spawn so the owner_tag is
-    // stable (role_tag is set via set_role_tag() during host wiring, before
-    // any spawn_thread call).
+    if (pImpl->thread_mgr_)
+    {
+        throw std::logic_error(
+            "RoleAPIBase::init_thread_manager called more than once "
+            "(role_tag='" + pImpl->role_tag + "', uid='" + pImpl->uid + "')");
+    }
+    if (pImpl->role_tag.empty() || pImpl->uid.empty())
+    {
+        throw std::logic_error(
+            "RoleAPIBase::init_thread_manager requires role_tag + uid to "
+            "be set first (role_tag='" + pImpl->role_tag +
+            "', uid='" + pImpl->uid + "')");
+    }
+    // Tag: "{role_tag}:{uid}" — embedded into the ThreadManager's
+    // lifecycle module name as "ThreadManager:{role_tag}:{uid}".
+    // Operators grepping lifecycle logs for "ThreadManager:" see every
+    // manager; grepping for a specific role's uid identifies its threads
+    // uniquely across processes running the same role_tag.
+    pImpl->thread_mgr_ = std::make_unique<pylabhub::utils::ThreadManager>(
+        pImpl->role_tag + ":" + pImpl->uid);
+}
+
+pylabhub::utils::ThreadManager &RoleAPIBase::thread_manager()
+{
     if (!pImpl->thread_mgr_)
     {
-        const std::string &tag =
-            pImpl->role_tag.empty() ? std::string{"role"} : pImpl->role_tag;
-        pImpl->thread_mgr_ =
-            std::make_unique<pylabhub::utils::ThreadManager>(tag);
+        throw std::logic_error(
+            "RoleAPIBase::thread_manager() called before init_thread_manager()");
     }
+    return *pImpl->thread_mgr_;
+}
 
-    // Capture `this` — engine and tag are accessed via pImpl at call time.
-    // RoleAPIBase outlives the ThreadManager (which outlives the threads).
-    pImpl->thread_mgr_->spawn(
+// ── Deprecated shims ─────────────────────────────────────────────────────
+
+void RoleAPIBase::spawn_thread(const std::string &name, std::function<void()> body)
+{
+    // Wrap in ThreadEngineGuard for engine cross-thread dispatch, matching
+    // the pre-thread-manager contract. Call sites migrating off this shim
+    // should construct their own ThreadEngineGuard inside the body so the
+    // RoleAPIBase doesn't need to know about the engine.
+    thread_manager().spawn(
         name,
         [this, name, body = std::move(body)]()
         {
-            // ThreadEngineGuard registers this thread with the engine for
-            // cross-thread dispatch (Lua: thread-local state; Python: queue).
             auto *eng = pImpl->engine;
-            ThreadEngineGuard guard(*eng);
+            scripting::ThreadEngineGuard guard(*eng);
             LOGGER_INFO("[{}/{}] thread started", pImpl->role_tag, name);
             body();
             LOGGER_INFO("[{}/{}] thread exiting", pImpl->role_tag, name);
@@ -153,8 +180,6 @@ void RoleAPIBase::spawn_thread(const std::string &name, std::function<void()> bo
 
 void RoleAPIBase::join_all_threads()
 {
-    // ThreadManager::join_all() is bounded + ERROR-logged + detaches on
-    // timeout. Idempotent; safe to call from dtor chains.
     if (pImpl->thread_mgr_)
         pImpl->thread_mgr_->join_all();
 }
