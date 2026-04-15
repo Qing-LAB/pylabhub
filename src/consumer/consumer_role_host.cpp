@@ -10,6 +10,7 @@
  * Layer 1 (engine): delegated to ScriptEngine via invoke_consume / invoke_on_inbox.
  */
 #include "consumer_role_host.hpp"
+#include "utils/cycle_ops.hpp"
 #include "utils/broker_request_comm.hpp"
 #include "consumer_fields.hpp"
 
@@ -31,6 +32,7 @@
 namespace pylabhub::consumer
 {
 
+using scripting::ConsumerCycleOps;
 using scripting::IncomingMessage;
 using scripting::InvokeRx;
 using Clock = std::chrono::steady_clock;
@@ -85,73 +87,8 @@ void ConsumerRoleHost::shutdown_()
         worker_thread_.join();
 }
 
-// ============================================================================
-// ConsumerCycleOps — role-specific acquire/invoke/commit for the shared frame
-// ============================================================================
-
-namespace
-{
-
-class ConsumerCycleOps final : public scripting::RoleCycleOps
-{
-    scripting::RoleAPIBase  &api_;
-    scripting::ScriptEngine &engine_;
-    scripting::RoleHostCore &core_;
-    bool                     stop_on_error_;
-
-    size_t       item_sz_;
-    const void  *data_{nullptr};
-
-  public:
-    ConsumerCycleOps(scripting::RoleAPIBase &api, scripting::ScriptEngine &e,
-                     scripting::RoleHostCore &core, bool stop_on_error)
-        : api_(api), engine_(e), core_(core),
-          stop_on_error_(stop_on_error),
-          item_sz_(api.read_item_size())
-    {}
-
-    bool acquire(const scripting::AcquireContext &ctx) override
-    {
-        data_ = scripting::retry_acquire(ctx, core_,
-            [this](auto t) { return const_cast<void *>(api_.read_acquire(t)); });
-        return data_ != nullptr;
-    }
-
-    void cleanup_on_shutdown() override
-    {
-        if (data_) { api_.read_release(); data_ = nullptr; }
-    }
-
-    bool invoke_and_commit(std::vector<scripting::IncomingMessage> &msgs) override
-    {
-
-        if (data_)
-            core_.inc_in_slots_received();
-
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-        void *fz_ptr = core_.has_in_fz()
-            ? const_cast<void *>(api_.read_flexzone()) : nullptr;
-        const size_t fz_sz = core_.has_in_fz() ? api_.flexzone_size() : 0;
-
-        const uint64_t errors_before = engine_.script_error_count();
-
-        engine_.invoke_consume(
-            scripting::InvokeRx{data_, item_sz_, fz_ptr, fz_sz}, msgs);
-
-        if (data_) { api_.read_release(); data_ = nullptr; }
-
-        if (stop_on_error_ && engine_.script_error_count() > errors_before)
-        {
-            core_.request_stop();
-            return false;
-        }
-        return true;
-    }
-
-    void cleanup_on_exit() override {} // nothing held across cycles
-};
-
-} // anonymous namespace
+// ConsumerCycleOps has moved to src/include/utils/cycle_ops.hpp so the L3.β
+// baseline test suite can instantiate it directly. Behavior unchanged.
 
 // ============================================================================
 // worker_main_ — the worker thread entry point

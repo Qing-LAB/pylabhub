@@ -12,6 +12,7 @@
 #include "producer_role_host.hpp"
 #include "producer_fields.hpp"
 #include "utils/broker_request_comm.hpp"
+#include "utils/cycle_ops.hpp"
 
 #include "plh_datahub.hpp"
 #include "plh_datahub_client.hpp"
@@ -35,6 +36,7 @@ namespace pylabhub::producer
 using scripting::IncomingMessage;
 using scripting::InvokeResult;
 using scripting::InvokeTx;
+using scripting::ProducerCycleOps;
 using Clock = std::chrono::steady_clock;
 
 // ============================================================================
@@ -88,94 +90,8 @@ void ProducerRoleHost::shutdown_()
         worker_thread_.join();
 }
 
-// ============================================================================
-// ProducerCycleOps — role-specific acquire/invoke/commit for the shared frame
-// ============================================================================
-
-namespace
-{
-
-class ProducerCycleOps final : public scripting::RoleCycleOps
-{
-    scripting::RoleAPIBase  &api_;
-    scripting::ScriptEngine &engine_;
-    scripting::RoleHostCore &core_;
-    bool                     stop_on_error_;
-
-    // Cached at construction (stable after queue start).
-    size_t buf_sz_;
-    void  *fz_ptr_;
-    size_t fz_sz_;
-
-    // Per-cycle state.
-    void  *buf_{nullptr};
-
-  public:
-    ProducerCycleOps(scripting::RoleAPIBase &api, scripting::ScriptEngine &e,
-                     scripting::RoleHostCore &c, bool stop_on_error)
-        : api_(api), engine_(e), core_(c),
-          stop_on_error_(stop_on_error),
-          buf_sz_(api.write_item_size()),
-          fz_ptr_(c.has_out_fz() ? api.write_flexzone() : nullptr),
-          fz_sz_(c.has_out_fz() ? api.flexzone_size() : 0)
-    {}
-
-    bool acquire(const scripting::AcquireContext &ctx) override
-    {
-        buf_ = scripting::retry_acquire(ctx, core_,
-            [this](auto t) { return api_.write_acquire(t); });
-        return buf_ != nullptr;
-    }
-
-    void cleanup_on_shutdown() override
-    {
-        if (buf_) { api_.write_discard(); buf_ = nullptr; }
-    }
-
-    bool invoke_and_commit(std::vector<scripting::IncomingMessage> &msgs) override
-    {
-        // Drain inbox right before invoke (Step C continuation).
-
-        if (buf_) std::memset(buf_, 0, buf_sz_);
-
-        // Re-read flexzone pointer each cycle (ShmQueue may move it).
-        if (core_.has_out_fz())
-            fz_ptr_ = api_.write_flexzone();
-
-        auto result = engine_.invoke_produce(
-            scripting::InvokeTx{buf_, buf_sz_, fz_ptr_, fz_sz_}, msgs);
-
-        if (buf_)
-        {
-            if (result == scripting::InvokeResult::Commit)
-            {
-                api_.write_commit();
-                core_.inc_out_slots_written();
-            }
-            else
-            {
-                api_.write_discard();
-                core_.inc_out_drop_count();
-            }
-        }
-        else
-        {
-            core_.inc_out_drop_count();
-        }
-        buf_ = nullptr;
-
-        if (result == scripting::InvokeResult::Error && stop_on_error_)
-        {
-            core_.request_stop();
-            return false;
-        }
-        return true;
-    }
-
-    void cleanup_on_exit() override {} // nothing held across cycles
-};
-
-} // anonymous namespace
+// ProducerCycleOps has moved to src/include/utils/cycle_ops.hpp so the L3.β
+// baseline test suite can instantiate it directly. Behavior unchanged.
 
 // ============================================================================
 // worker_main_ — the worker thread entry point
