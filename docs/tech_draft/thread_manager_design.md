@@ -250,6 +250,31 @@ Each commit:
 - **Not a cross-component coordinator.** No inter-manager messaging. Inter-component shutdown ordering uses LifecycleGuard's existing ModuleDef dependency graph.
 - **Not a replacement for LifecycleGuard.** LifecycleGuard manages process-level module init/deinit topology. ThreadManager manages per-component threads within a module's lifetime. Each ThreadManager *is* a dynamic lifecycle module so the two systems compose.
 
+## 4a. Future enhancement — explicit intra-manager shutdown order
+
+**Current policy**: `join_all()` joins threads in **reverse spawn order** (last spawned = first joined). For simple producer/consumer pairs where the sender depends on the receiver (or vice-versa), spawning in dependency order and relying on LIFO is sufficient.
+
+**Limitation**: when an owner spawns a set of threads whose shutdown dependencies do **not** match spawn order — e.g., a heartbeat thread spawned first but that should drain last because other threads signal it via enqueue; a receiver thread that must drain before a worker thread that depends on its output — LIFO may join the wrong thread first and either:
+- Deadlock (thread A is joining and A depends on B's thread body that still references the owner).
+- Detach unnecessarily (thread B hits its timeout while waiting on A which A waits on B — neither signals stop to the other in the right order).
+
+**Proposed extension (not implemented)**: add an optional `shutdown_order` field to `SpawnOptions`, interpreted as a sort key:
+
+```cpp
+struct SpawnOptions {
+    std::chrono::milliseconds join_timeout{kMidTimeoutMs};
+    int shutdown_order{0};   // lower = joined earlier; ties broken by reverse spawn order
+};
+```
+
+`join_all()` would sort the slot list by `(shutdown_order ascending, spawn_index descending)` before joining. Default `0` preserves today's LIFO behavior; callers that need explicit ordering assign negative values to threads that should drain first (e.g., receivers before workers before heartbeats).
+
+**Alternatives considered**:
+- Explicit dependency graph per spawn — too heavy for the ~dozen threads any owner manages in practice.
+- Cross-manager dependency graph — already provided by LifecycleGuard's `ModuleDef::add_dependency()`; ThreadManager instances register as dynamic modules so inter-manager ordering is covered at a higher layer. This proposal is strictly for intra-manager ordering.
+
+**When to revisit**: if any migrated component (BrokerService, hub-python HubScript, processor role host) has shutdown dependencies that LIFO can't express. None encountered so far through A5g; shelving until a concrete case motivates it.
+
 ---
 
 ## 5. Test plan per migration
