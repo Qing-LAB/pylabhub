@@ -228,19 +228,35 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] bool wait_for_role(const std::string &uid, int timeout_ms = 5000);
     void close_all_inbox_clients();
 
-    // ── Output side (safe defaults when no Producer) ──────────────────────────
+    // ── Output side (safe defaults when no output wired) ──────────────────────
+    //
+    // Flat data-plane verbs. Return nullptr / no-op when the role has no
+    // output side. Callers who have configured an output side will never
+    // see nullptr except when the underlying queue genuinely has no slot
+    // available within the timeout. See loop_design_unified.md for timing.
 
+    [[nodiscard]] void *write_acquire(std::chrono::milliseconds timeout) noexcept;
+    void               write_commit() noexcept;
+    void               write_discard() noexcept;
     [[nodiscard]] void *write_flexzone();
     [[nodiscard]] const void *read_flexzone() const;
     [[nodiscard]] size_t flexzone_size() const;
     bool update_flexzone_checksum();
+    bool sync_flexzone_checksum();
+    [[nodiscard]] size_t write_item_size() const noexcept;
     [[nodiscard]] uint64_t out_slots_written() const;
     [[nodiscard]] uint64_t out_drop_count() const;
     [[nodiscard]] size_t out_capacity() const;
     [[nodiscard]] std::string out_policy() const;
 
-    // ── Input side (safe defaults when no Consumer) ───────────────────────────
+    // ── Input side (safe defaults when no input wired) ────────────────────────
+    //
+    // Flat data-plane verbs. Return nullptr / no-op when the role has no
+    // input side.
 
+    [[nodiscard]] const void *read_acquire(std::chrono::milliseconds timeout) noexcept;
+    void                      read_release() noexcept;
+    [[nodiscard]] size_t       read_item_size() const noexcept;
     [[nodiscard]] uint64_t in_slots_received() const;
     [[nodiscard]] uint64_t last_seq() const;
     [[nodiscard]] size_t in_capacity() const;
