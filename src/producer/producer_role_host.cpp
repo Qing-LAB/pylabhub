@@ -174,9 +174,8 @@ void ProducerRoleHost::worker_main_()
 
     // ── Step 3: Create RoleAPIBase and wire infrastructure ───────────────────
 
-    api_ = std::make_unique<scripting::RoleAPIBase>(core_);
-    api_->set_role_tag("prod");
-    api_->set_uid(id.uid);
+    // role_tag + uid required at ctor time (compile-time enforced).
+    api_ = std::make_unique<scripting::RoleAPIBase>(core_, "prod", id.uid);
     api_->set_name(id.name);
     api_->set_channel(config_.out_channel());
     api_->set_log_level(id.log_level);

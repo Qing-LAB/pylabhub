@@ -35,7 +35,13 @@ namespace pylabhub::scripting
 
 struct RoleAPIBase::Impl
 {
-    explicit Impl(RoleHostCore *c) : core(c) {}
+    Impl(RoleHostCore *c, std::string rt, std::string id)
+        : core(c),
+          role_tag(std::move(rt)),
+          uid(std::move(id)),
+          thread_mgr_(std::make_unique<pylabhub::utils::ThreadManager>(
+              role_tag, uid))
+    {}
 
     RoleHostCore    *core;
     hub::Producer   *producer{nullptr};
@@ -85,9 +91,15 @@ struct RoleAPIBase::Impl
 // Lifecycle
 // ============================================================================
 
-RoleAPIBase::RoleAPIBase(RoleHostCore &core)
-    : pImpl(std::make_unique<Impl>(&core))
-{}
+RoleAPIBase::RoleAPIBase(RoleHostCore &core,
+                         std::string   role_tag,
+                         std::string   uid)
+    : pImpl(std::make_unique<Impl>(&core, std::move(role_tag), std::move(uid)))
+{
+    // ThreadManager ctor throws std::invalid_argument if either identity
+    // string is empty — effectively propagating the compile-time-plus-
+    // runtime-checked invariant up to RoleAPIBase's caller.
+}
 
 RoleAPIBase::~RoleAPIBase() = default;
 RoleAPIBase::RoleAPIBase(RoleAPIBase &&) noexcept = default;
@@ -97,7 +109,7 @@ RoleAPIBase &RoleAPIBase::operator=(RoleAPIBase &&) noexcept = default;
 // Host wiring
 // ============================================================================
 
-void RoleAPIBase::set_role_tag(std::string tag)       { pImpl->role_tag = std::move(tag); }
+// set_role_tag and set_uid removed — identity is ctor-only.
 void RoleAPIBase::set_producer(hub::Producer *p)
 {
     pImpl->producer = p;
@@ -109,7 +121,7 @@ void RoleAPIBase::set_consumer(hub::Consumer *c)
     pImpl->rx_queue = c ? c->queue_reader() : nullptr;
 }
 void RoleAPIBase::set_inbox_queue(hub::InboxQueue *q) { pImpl->inbox_queue = q; }
-void RoleAPIBase::set_uid(std::string uid)            { pImpl->uid = std::move(uid); }
+// set_uid removed — see note above.
 void RoleAPIBase::set_name(std::string name)          { pImpl->name = std::move(name); }
 void RoleAPIBase::set_channel(std::string c)          { pImpl->channel = std::move(c); }
 void RoleAPIBase::set_out_channel(std::string c)      { pImpl->out_channel = std::move(c); }
@@ -124,37 +136,10 @@ void RoleAPIBase::set_stop_on_script_error(bool v)    { pImpl->stop_on_script_er
 // Thread manager
 // ============================================================================
 
-void RoleAPIBase::init_thread_manager()
-{
-    if (pImpl->thread_mgr_)
-    {
-        throw std::logic_error(
-            "RoleAPIBase::init_thread_manager called more than once "
-            "(role_tag='" + pImpl->role_tag + "', uid='" + pImpl->uid + "')");
-    }
-    if (pImpl->role_tag.empty() || pImpl->uid.empty())
-    {
-        throw std::logic_error(
-            "RoleAPIBase::init_thread_manager requires role_tag + uid to "
-            "be set first (role_tag='" + pImpl->role_tag +
-            "', uid='" + pImpl->uid + "')");
-    }
-    // Tag: "{role_tag}:{uid}" — embedded into the ThreadManager's
-    // lifecycle module name as "ThreadManager:{role_tag}:{uid}".
-    // Operators grepping lifecycle logs for "ThreadManager:" see every
-    // manager; grepping for a specific role's uid identifies its threads
-    // uniquely across processes running the same role_tag.
-    pImpl->thread_mgr_ = std::make_unique<pylabhub::utils::ThreadManager>(
-        pImpl->role_tag + ":" + pImpl->uid);
-}
-
 pylabhub::utils::ThreadManager &RoleAPIBase::thread_manager()
 {
-    if (!pImpl->thread_mgr_)
-    {
-        throw std::logic_error(
-            "RoleAPIBase::thread_manager() called before init_thread_manager()");
-    }
+    // Always valid — the Impl ctor constructs thread_mgr_ from the
+    // ctor-required role_tag + uid. No runtime "did you init?" check.
     return *pImpl->thread_mgr_;
 }
 

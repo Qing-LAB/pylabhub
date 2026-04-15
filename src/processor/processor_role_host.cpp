@@ -200,9 +200,9 @@ void ProcessorRoleHost::worker_main_()
 
     // ── Step 3: Create RoleAPIBase and wire infrastructure ───────────────────
 
-    api_ = std::make_unique<scripting::RoleAPIBase>(core_);
-    api_->set_role_tag("proc");
-    api_->set_uid(config_.identity().uid);
+    // role_tag + uid required at ctor time (compile-time enforced).
+    api_ = std::make_unique<scripting::RoleAPIBase>(
+        core_, "proc", config_.identity().uid);
     api_->set_name(config_.identity().name);
     api_->set_channel(config_.in_channel());
     api_->set_out_channel(config_.out_channel());

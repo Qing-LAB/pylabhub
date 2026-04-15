@@ -141,7 +141,19 @@ struct LoopConfig
 class PYLABHUB_UTILS_EXPORT RoleAPIBase
 {
   public:
-    explicit RoleAPIBase(RoleHostCore &core);
+    /// @param core      RoleHostCore owned by the role host (lifetime > api).
+    /// @param role_tag  Role type tag: "prod" / "cons" / "proc". Non-empty.
+    /// @param uid       Role instance uid (e.g. "PROD-SENSOR-00000001"). Non-empty.
+    ///
+    /// Identity (role_tag + uid) is required at construction time so the
+    /// role's ThreadManager is built immediately as a member — no
+    /// two-stage init, no runtime "did you forget to initialize" check.
+    /// The compile-time signature enforces that a caller cannot construct
+    /// a RoleAPIBase without providing both halves of role identity.
+    /// Throws std::invalid_argument if either string is empty.
+    RoleAPIBase(RoleHostCore &core,
+                std::string   role_tag,
+                std::string   uid);
     ~RoleAPIBase();
 
     RoleAPIBase(const RoleAPIBase &) = delete;
@@ -150,12 +162,14 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     RoleAPIBase &operator=(RoleAPIBase &&) noexcept;
 
     // ── Host wiring (called once by role host after setup_infrastructure_) ────
+    //
+    // Note: set_role_tag + set_uid are GONE. Both are now ctor args and
+    // immutable after construction. All remaining setters are for mutable
+    // wiring state (infrastructure pointers, script paths, policies).
 
     void set_producer(hub::Producer *p);
     void set_consumer(hub::Consumer *c);
     void set_inbox_queue(hub::InboxQueue *q);
-    void set_role_tag(std::string tag);
-    void set_uid(std::string uid);
     void set_name(std::string name);
     void set_channel(std::string c);
     void set_out_channel(std::string c);
@@ -314,28 +328,18 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     // and shutdown check via core_.is_running(). The ctrl thread is the first
     // managed thread. Future worker threads use the same interface.
 
-    /// Initialize the role-scope thread manager as a dynamic lifecycle
-    /// module. Must be called exactly once after set_role_tag() and
-    /// set_uid() — the module name embeds both so operators filtering
-    /// lifecycle logs can identify the instance uniquely:
-    ///
-    ///   module name = "ThreadManager:{role_tag}:{uid}"
-    ///
-    /// Example: "ThreadManager:prod:PROD-SENSOR-00000001".
-    ///
-    /// Throws std::logic_error if called before role_tag/uid are set, or
-    /// if called more than once.
-    void init_thread_manager();
-
-    /// Access the role's thread manager. All role-scope threads (worker /
-    /// ctrl / inbox drainer / future) live under this one manager — same
-    /// lifecycle module, same bounded-join, same process-wide leak
-    /// aggregator. Usage:
+    /// Access the role's thread manager. Always valid — constructed in
+    /// the RoleAPIBase ctor alongside role_tag/uid. All role-scope
+    /// threads (worker / ctrl / inbox drainer / future) live under this
+    /// one manager — same dynamic lifecycle module
+    /// "ThreadManager:{role_tag}:{uid}", same bounded-join, same
+    /// process-wide leak aggregator. Usage:
     ///
     ///   api_->thread_manager().spawn("worker",
     ///       [&] { scripting::ThreadEngineGuard g(*engine_); worker_main_(); });
     ///
-    /// Throws std::logic_error if called before init_thread_manager().
+    /// No throw path — invariant "manager is always ready" enforced by
+    /// the ctor signature (role_tag + uid are required positional args).
     [[nodiscard]] pylabhub::utils::ThreadManager &thread_manager();
 
     // ── Deprecated thin shims over thread_manager() ─────────────────────────
