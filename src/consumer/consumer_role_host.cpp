@@ -194,7 +194,6 @@ void ConsumerRoleHost::worker_main_()
     api_->set_role_dir(config_.base_dir().string());
     if (!core_.is_validate_only())
     {
-        api_->set_consumer(in_consumer_.has_value() ? &(*in_consumer_) : nullptr);
         api_->set_inbox_queue(inbox_queue_.get());
 
         // Create BrokerRequestComm (connection deferred to step 6).
@@ -296,7 +295,7 @@ void ConsumerRoleHost::worker_main_()
     ready_promise_.set_value(true);
 
     // Step 8: Run the data loop via shared frame + ConsumerCycleOps.
-    if (!in_consumer_.has_value())
+    if (!api_->has_rx_side())
     {
         LOGGER_ERROR("[cons] run_data_loop: consumer not initialized — aborting");
         core_.set_running(false);
@@ -384,30 +383,26 @@ bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
         inbox_queue_ = std::move(inbox_result->queue);
     }
 
-    // --- Create consumer ---
-    auto maybe_consumer = hub::Consumer::create(opts);
-    if (!maybe_consumer.has_value())
+    // --- Create consumer (RoleAPIBase owns the Rx queue) ---
+    if (!api_->build_rx_queue(opts))
     {
         LOGGER_ERROR("[cons] Failed to connect consumer to channel '{}'", ch);
         return false;
     }
-    in_consumer_ = std::move(maybe_consumer);
-
-    // Metrics reset moved to after queue creation (reset_metrics() on queue).
 
     // Broker notifications (band, hub-dead) are handled by BrokerRequestComm.
 
     // --- Start and configure data queue ---
-    if (!in_consumer_->start_queue())
+    if (!api_->start_rx_queue())
     {
         LOGGER_ERROR("[cons] start_queue() failed for channel '{}'", ch);
         return false;
     }
-    in_consumer_->reset_queue_metrics();
+    api_->reset_rx_queue_metrics();
     core_.set_configured_period(static_cast<uint64_t>(tc.period_us));
 
     LOGGER_INFO("[cons] Consumer started on channel '{}' (shm={})", ch,
-                in_consumer_->has_shm());
+                api_->rx_has_shm());
 
     // Startup coordination (HEP-0023) moved to after start_ctrl_thread().
     return true;
@@ -437,11 +432,7 @@ void ConsumerRoleHost::teardown_infrastructure_()
         broker_comm_.reset();
     }
 
-    if (in_consumer_.has_value())
-    {
-        in_consumer_->close();
-        in_consumer_.reset();
-    }
+    if (api_) api_->close_queues();
 }
 
 
@@ -453,10 +444,10 @@ nlohmann::json ConsumerRoleHost::snapshot_metrics_json() const
 {
     nlohmann::json result;
 
-    if (in_consumer_.has_value())
+    if (api_ && api_->has_rx_side())
     {
         nlohmann::json q;
-        hub::queue_metrics_to_json(q, in_consumer_->queue_metrics());
+        hub::queue_metrics_to_json(q, api_->queue_metrics(scripting::ChannelSide::Rx));
         result["queue"] = std::move(q);
     }
 

@@ -22,6 +22,7 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
@@ -44,15 +45,15 @@ struct RoleAPIBase::Impl
     {}
 
     RoleHostCore    *core;
-    hub::Producer   *producer{nullptr};
-    hub::Consumer   *consumer{nullptr};
 
-    // Direct queue handles — the surviving abstraction post-L3.γ. While
-    // hub::Producer / hub::Consumer still exist, these are cached mirrors
-    // populated by set_producer() / set_consumer() and point at the same
-    // objects the producer/consumer wrap internally. All data-plane
-    // forwards (write_acquire/commit/discard, read_acquire/release,
-    // flexzone, etc.) go through these directly.
+    // Queue owners: RoleAPIBase holds hub::Producer/Consumer by value (A6.2).
+    // The tx_queue/rx_queue pointers point into these owners. When A6.3 deletes
+    // the Producer/Consumer classes, the factory logic will be inlined into
+    // build_tx_queue()/build_rx_queue() and the owners will become direct
+    // unique_ptr<QueueWriter>/unique_ptr<QueueReader> fields.
+    std::optional<hub::Producer> tx_owner;
+    std::optional<hub::Consumer> rx_owner;
+
     hub::QueueWriter *tx_queue{nullptr};
     hub::QueueReader *rx_queue{nullptr};
     hub::InboxQueue          *inbox_queue{nullptr};
@@ -110,16 +111,84 @@ RoleAPIBase &RoleAPIBase::operator=(RoleAPIBase &&) noexcept = default;
 // ============================================================================
 
 // set_role_tag and set_uid removed — identity is ctor-only.
-void RoleAPIBase::set_producer(hub::Producer *p)
+
+bool RoleAPIBase::build_tx_queue(const hub::ProducerOptions &opts)
 {
-    pImpl->producer = p;
-    pImpl->tx_queue = p ? p->queue_writer() : nullptr;
+    auto maybe = hub::Producer::create(opts);
+    if (!maybe.has_value())
+    {
+        pImpl->tx_queue = nullptr;
+        return false;
+    }
+    pImpl->tx_owner = std::move(maybe);
+    pImpl->tx_queue = pImpl->tx_owner->queue_writer();
+    return true;
 }
-void RoleAPIBase::set_consumer(hub::Consumer *c)
+
+bool RoleAPIBase::build_rx_queue(const hub::ConsumerOptions &opts)
 {
-    pImpl->consumer = c;
-    pImpl->rx_queue = c ? c->queue_reader() : nullptr;
+    auto maybe = hub::Consumer::create(opts);
+    if (!maybe.has_value())
+    {
+        pImpl->rx_queue = nullptr;
+        return false;
+    }
+    pImpl->rx_owner = std::move(maybe);
+    pImpl->rx_queue = pImpl->rx_owner->queue_reader();
+    return true;
 }
+
+bool RoleAPIBase::start_tx_queue()
+{
+    return pImpl->tx_owner.has_value() && pImpl->tx_owner->start_queue();
+}
+
+bool RoleAPIBase::start_rx_queue()
+{
+    return pImpl->rx_owner.has_value() && pImpl->rx_owner->start_queue();
+}
+
+void RoleAPIBase::reset_tx_queue_metrics()
+{
+    if (pImpl->tx_owner.has_value()) pImpl->tx_owner->reset_queue_metrics();
+}
+
+void RoleAPIBase::reset_rx_queue_metrics()
+{
+    if (pImpl->rx_owner.has_value()) pImpl->rx_owner->reset_queue_metrics();
+}
+
+void RoleAPIBase::sync_tx_flexzone_checksum()
+{
+    if (pImpl->tx_owner.has_value()) pImpl->tx_owner->sync_flexzone_checksum();
+}
+
+bool RoleAPIBase::tx_has_shm() const noexcept
+{
+    return pImpl->tx_owner.has_value() && pImpl->tx_owner->has_shm();
+}
+
+bool RoleAPIBase::rx_has_shm() const noexcept
+{
+    return pImpl->rx_owner.has_value() && pImpl->rx_owner->has_shm();
+}
+
+void RoleAPIBase::close_queues()
+{
+    if (pImpl->tx_owner.has_value())
+    {
+        pImpl->tx_owner->close();
+        pImpl->tx_owner.reset();
+    }
+    if (pImpl->rx_owner.has_value())
+    {
+        pImpl->rx_owner->close();
+        pImpl->rx_owner.reset();
+    }
+    pImpl->tx_queue = nullptr;
+    pImpl->rx_queue = nullptr;
+}
+
 void RoleAPIBase::set_inbox_queue(hub::InboxQueue *q) { pImpl->inbox_queue = q; }
 // set_uid removed — see note above.
 void RoleAPIBase::set_name(std::string name)          { pImpl->name = std::move(name); }
@@ -1120,8 +1189,6 @@ void RoleAPIBase::clear_shared_data()
 // ============================================================================
 
 RoleHostCore *RoleAPIBase::core() const     { return pImpl->core; }
-hub::Producer *RoleAPIBase::producer() const { return pImpl->producer; }
-hub::Consumer *RoleAPIBase::consumer() const { return pImpl->consumer; }
 hub::InboxQueue *RoleAPIBase::inbox_queue() const { return pImpl->inbox_queue; }
 
 bool RoleAPIBase::has_tx_side() const noexcept { return pImpl->tx_queue != nullptr; }

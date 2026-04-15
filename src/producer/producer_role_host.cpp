@@ -189,7 +189,6 @@ void ProducerRoleHost::worker_main_()
     api_->set_role_dir(config_.base_dir().string());
     if (!core_.is_validate_only())
     {
-        api_->set_producer(out_producer_.has_value() ? &(*out_producer_) : nullptr);
         api_->set_inbox_queue(inbox_queue_.get());
 
         // Create BrokerRequestComm (connection deferred to step 6).
@@ -247,8 +246,8 @@ void ProducerRoleHost::worker_main_()
     engine_->invoke_on_init();
 
     // Sync flexzone checksum after on_init (user may have written to flexzone).
-    if (out_producer_.has_value() && core_.has_out_fz())
-        out_producer_->sync_flexzone_checksum();
+    if (api_->has_tx_side() && core_.has_out_fz())
+        api_->sync_tx_flexzone_checksum();
 
     // ── Step 6: Connect to broker, start ctrl thread, register ────────────
     core_.set_running(true);
@@ -312,7 +311,7 @@ void ProducerRoleHost::worker_main_()
     ready_promise_.set_value(true);
 
     // Step 8: Run the data loop via shared frame + ProducerCycleOps.
-    if (!out_producer_.has_value())
+    if (!api_->has_tx_side())
     {
         LOGGER_ERROR("[prod] run_data_loop: producer not initialized — aborting");
         core_.set_running(false);
@@ -418,30 +417,26 @@ bool ProducerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
                                                 : hub::OverflowPolicy::Drop;
     }
 
-    // --- Create producer ---
-    auto maybe_producer = hub::Producer::create(opts);
-    if (!maybe_producer.has_value())
+    // --- Create producer (RoleAPIBase owns the Tx queue) ---
+    if (!api_->build_tx_queue(opts))
     {
         LOGGER_ERROR("[prod] Failed to create producer for channel '{}'", ch);
         return false;
     }
-    out_producer_ = std::move(maybe_producer);
-
-    // Metrics reset moved to after queue creation (reset_metrics() on queue).
 
     // Broker notifications (band, hub-dead) are handled by BrokerRequestComm.
 
     // --- Start and configure data queue ---
-    if (!out_producer_->start_queue())
+    if (!api_->start_tx_queue())
     {
         LOGGER_ERROR("[prod] start_queue() failed for channel '{}'", ch);
         return false;
     }
-    out_producer_->reset_queue_metrics();
+    api_->reset_tx_queue_metrics();
     core_.set_configured_period(static_cast<uint64_t>(tc.period_us));
 
     LOGGER_INFO("[prod] Producer started on channel '{}' (shm={})", ch,
-                out_producer_->has_shm());
+                api_->tx_has_shm());
 
     // Startup coordination (HEP-0023) moved to after start_ctrl_thread()
     // where the BRC is connected and poll loop running.
@@ -475,12 +470,8 @@ void ProducerRoleHost::teardown_infrastructure_()
         broker_comm_.reset();
     }
 
-    // Close producer (data-plane queue teardown happens inside close()).
-    if (out_producer_.has_value())
-    {
-        out_producer_->close();
-        out_producer_.reset();
-    }
+    // Close producer (data-plane queue teardown happens inside RoleAPIBase).
+    if (api_) api_->close_queues();
 }
 
 
@@ -492,10 +483,10 @@ nlohmann::json ProducerRoleHost::snapshot_metrics_json() const
 {
     nlohmann::json result;
 
-    if (out_producer_.has_value())
+    if (api_ && api_->has_tx_side())
     {
         nlohmann::json q;
-        hub::queue_metrics_to_json(q, out_producer_->queue_metrics());
+        hub::queue_metrics_to_json(q, api_->queue_metrics(scripting::ChannelSide::Tx));
         result["queue"] = std::move(q);
     }
 

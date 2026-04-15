@@ -94,7 +94,6 @@ class ProducerRoleHost
 
     // Infrastructure (created on worker thread in setup_infrastructure_).
     std::unique_ptr<hub::BrokerRequestComm> broker_comm_;
-    std::optional<hub::Producer>           out_producer_;
     std::unique_ptr<hub::InboxQueue>       inbox_queue_;
     config::InboxConfig                    inbox_cfg_;  ///< Resolved copy (mutable).
 
