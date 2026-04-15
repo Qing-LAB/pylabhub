@@ -214,6 +214,11 @@ public:
     /** @brief Size of the flexzone in bytes; 0 if not configured. */
     size_t flexzone_size() const noexcept override;
 
+    /** @brief Number of shared spinlocks in the DataBlock header (SHM-specific). */
+    uint32_t spinlock_count() const noexcept override;
+    /** @brief Get the shared spinlock at the given index (SHM-specific). */
+    SharedSpinLock get_spinlock(size_t index) override;
+
     /** @brief Configure BLAKE2b checksum verification on read_acquire(). */
     void set_verify_checksum(bool slot, bool fz) const noexcept;
     /** @brief Enable BLAKE2b checksum updates on write_commit(). */

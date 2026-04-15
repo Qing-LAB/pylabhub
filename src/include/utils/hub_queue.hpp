@@ -18,6 +18,7 @@
  */
 #include "pylabhub_utils_export.h"
 #include "utils/data_block_policy.hpp"
+#include "utils/shared_memory_spinlock.hpp"   // SharedSpinLock (spinlock accessors on base)
 
 #include <chrono>
 #include <cstddef>
@@ -265,6 +266,21 @@ public:
     /** @brief Flexzone size in bytes. 0 if no flexzone or not SHM. */
     virtual size_t flexzone_size() const noexcept { return 0; }
 
+    // ── Spinlock access (SHM-specific; ZMQ returns empty/0) ──────────────────
+    //
+    // HEP-CORE-0002 §2.2 TABLE 1 coordination primitives. Shared spinlocks
+    // live in the DataBlock header and are reachable through every queue
+    // handle attached to that DataBlock.
+
+    /** @brief Number of shared spinlocks. 0 when no SHM backing. */
+    virtual uint32_t spinlock_count() const noexcept { return 0; }
+
+    /** @brief Get the shared spinlock at index. Throws if no SHM backing. */
+    virtual SharedSpinLock get_spinlock(size_t /*index*/)
+    {
+        throw std::runtime_error("get_spinlock: no SHM backing on this queue");
+    }
+
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     // Default implementations are no-ops (suitable for ShmQueue).
     // ZmqQueue overrides start()/stop() to manage its recv_thread_.
@@ -395,6 +411,16 @@ public:
     virtual size_t flexzone_size() const noexcept { return 0; }
     /** @brief Stamp flexzone checksum. Call after initial flexzone setup (e.g., on_init). */
     virtual void sync_flexzone_checksum() noexcept {}
+
+    // ── Spinlock access (SHM-specific; ZMQ returns empty/0) ──────────────────
+    //
+    // HEP-CORE-0002 §2.2 TABLE 1 coordination primitives.
+
+    virtual uint32_t spinlock_count() const noexcept { return 0; }
+    virtual SharedSpinLock get_spinlock(size_t /*index*/)
+    {
+        throw std::runtime_error("get_spinlock: no SHM backing on this queue");
+    }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     // Default implementations are no-ops (suitable for ShmQueue).
