@@ -1,6 +1,17 @@
 # Tech Draft: Unified Role Loop Framework
 
-**Status**: Refreshed 2026-04-14 (originally drafted 2026-04-06)
+**Status**: ⚠ **SUPERSEDED 2026-04-14** by `role_unification_design.md`.
+See that document for the current plan. Kept here for historical context —
+decisions reversed during the 2026-04-14 discussion include:
+(a) CycleOps taking raw `Producer&`/`Consumer&` vs `RoleAPIBase&` (both
+rejected — data-plane verbs are flat on RoleAPIBase),
+(b) `writer()`/`reader()` accessors (rejected — flat API),
+(c) keeping `hub::Producer`/`hub::Consumer` as internal types (rejected —
+delete them),
+(d) collapsing three RoleHost classes into one (rejected — keep as empty
+extension-point subclasses),
+(e) engine dispatching by `role_tag` (rejected — handle-based, engine
+framework-agnostic).
 **Branch**: `feature/lua-role-support`
 **Relates to**: HEP-CORE-0011, HEP-CORE-0023 §2.5, `loop_design_unified.md`, `engine_thread_model.md`
 **Baseline**: 1275/1275 tests (was 1323; net change: Step 7 deleted obsolete tests, then HEP-0023 added new ones)
