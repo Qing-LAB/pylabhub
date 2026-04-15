@@ -1064,28 +1064,28 @@ void RoleAPIBase::clear_custom_metrics()
 nlohmann::json RoleAPIBase::snapshot_metrics_json() const
 {
     nlohmann::json result;
-    const bool has_in  = (pImpl->consumer != nullptr);
-    const bool has_out = (pImpl->producer != nullptr);
+    const bool has_in  = (pImpl->rx_queue != nullptr);
+    const bool has_out = (pImpl->tx_queue != nullptr);
 
     // Queue metrics: key depends on which sides exist.
     if (has_in && has_out)
     {
         nlohmann::json iq, oq;
-        hub::queue_metrics_to_json(iq, pImpl->consumer->queue_metrics());
-        hub::queue_metrics_to_json(oq, pImpl->producer->queue_metrics());
+        hub::queue_metrics_to_json(iq, pImpl->rx_queue->metrics());
+        hub::queue_metrics_to_json(oq, pImpl->tx_queue->metrics());
         result["in_queue"] = std::move(iq);
         result["out_queue"] = std::move(oq);
     }
     else if (has_out)
     {
         nlohmann::json q;
-        hub::queue_metrics_to_json(q, pImpl->producer->queue_metrics());
+        hub::queue_metrics_to_json(q, pImpl->tx_queue->metrics());
         result["queue"] = std::move(q);
     }
     else if (has_in)
     {
         nlohmann::json q;
-        hub::queue_metrics_to_json(q, pImpl->consumer->queue_metrics());
+        hub::queue_metrics_to_json(q, pImpl->rx_queue->metrics());
         result["queue"] = std::move(q);
     }
 
