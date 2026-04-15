@@ -15,9 +15,11 @@
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/crypto_utils.hpp"
 #include "utils/logger.hpp"
+#include "utils/zmq_context.hpp"
 #include "zmq_wire_helpers.hpp"
 
-#include <zmq.h>
+#include "cppzmq/zmq.hpp"
+#include "cppzmq/zmq_addon.hpp"  // zmq::multipart_t
 
 #include <atomic>
 #include <cassert>
@@ -48,8 +50,10 @@ struct InboxQueueImpl
     std::array<uint8_t, 8> schema_tag_{};  // first 8 bytes of BLAKE2b-256 of canonical schema string
     std::vector<wire_detail::WireFieldDesc> schema_defs_;
 
-    void* zmq_ctx{nullptr};
-    void* socket{nullptr};
+    // Shared ZMQ context via get_zmq_context(). InboxQueue never creates
+    // or terminates it; the ZMQContext lifecycle module (persistent) owns
+    // the process-wide context.
+    zmq::socket_t socket;
 
     std::atomic<bool> running_{false};
 
@@ -88,8 +92,9 @@ struct InboxClientImpl
 
     std::vector<wire_detail::WireFieldDesc> schema_defs_;
 
-    void* zmq_ctx{nullptr};
-    void* socket{nullptr};
+    // Shared ZMQ context via get_zmq_context(). InboxClient never creates
+    // or terminates it.
+    zmq::socket_t socket;
 
     std::atomic<bool>    running_{false};
     std::vector<std::byte> write_buf_;  // zero-initialized
@@ -229,58 +234,22 @@ bool InboxQueue::start()
     if (pImpl->running_.exchange(true, std::memory_order_acq_rel))
         return true; // lost race
 
-    pImpl->zmq_ctx = zmq_ctx_new();
-    if (!pImpl->zmq_ctx)
+    try
     {
-        pImpl->running_.store(false);
-        LOGGER_ERROR("[hub::InboxQueue] zmq_ctx_new() failed for '{}'", pImpl->endpoint);
-        return false;
+        pImpl->socket =
+            zmq::socket_t(pylabhub::hub::get_zmq_context(), zmq::socket_type::router);
+        pImpl->socket.set(zmq::sockopt::linger, 0);
+        pImpl->socket.set(zmq::sockopt::rcvhwm, pImpl->rcvhwm);
+        pImpl->socket.bind(pImpl->endpoint);
+        pImpl->actual_ep = pImpl->socket.get(zmq::sockopt::last_endpoint);
     }
-    // ZMQ_BLOCKY=0 for clean shutdown
-    int blocky = 0;
-    zmq_ctx_set(pImpl->zmq_ctx, ZMQ_BLOCKY, blocky);
-
-    pImpl->socket = zmq_socket(pImpl->zmq_ctx, ZMQ_ROUTER);
-    if (!pImpl->socket)
+    catch (const zmq::error_t &e)
     {
-        zmq_ctx_term(pImpl->zmq_ctx);
-        pImpl->zmq_ctx = nullptr;
+        pImpl->socket.close();
         pImpl->running_.store(false);
-        LOGGER_ERROR("[hub::InboxQueue] zmq_socket(ROUTER) failed for '{}'", pImpl->endpoint);
+        LOGGER_ERROR("[hub::InboxQueue] socket setup failed for '{}': {}",
+                     pImpl->endpoint, e.what());
         return false;
-    }
-
-    int linger = 0;
-    zmq_setsockopt(pImpl->socket, ZMQ_LINGER, &linger, sizeof(linger));
-
-    // Apply receive high-water mark (queue depth before ZMQ starts dropping messages).
-    zmq_setsockopt(pImpl->socket, ZMQ_RCVHWM, &pImpl->rcvhwm, sizeof(pImpl->rcvhwm));
-
-    const int rc = zmq_bind(pImpl->socket, pImpl->endpoint.c_str());
-    if (rc != 0)
-    {
-        zmq_close(pImpl->socket);
-        pImpl->socket = nullptr;
-        zmq_ctx_term(pImpl->zmq_ctx);
-        pImpl->zmq_ctx = nullptr;
-        pImpl->running_.store(false);
-        LOGGER_ERROR("[hub::InboxQueue] zmq_bind('{}') failed: {}", pImpl->endpoint,
-                     zmq_strerror(zmq_errno()));
-        return false;
-    }
-
-    // Resolve actual bound endpoint (port-0 → OS-assigned port)
-    {
-        char buf[256]{};
-        size_t buf_len = sizeof(buf);
-        if (zmq_getsockopt(pImpl->socket, ZMQ_LAST_ENDPOINT, buf, &buf_len) == 0)
-            pImpl->actual_ep = buf;
-        else
-        {
-            LOGGER_WARN("[hub::InboxQueue] zmq_getsockopt(ZMQ_LAST_ENDPOINT) failed for '{}': {}",
-                        pImpl->endpoint, zmq_strerror(zmq_errno()));
-            pImpl->actual_ep = pImpl->endpoint;
-        }
     }
 
     return true;
@@ -292,8 +261,8 @@ void InboxQueue::stop()
     if (!pImpl->running_.exchange(false, std::memory_order_acq_rel))
         return;
 
-    if (pImpl->socket)  { zmq_close(pImpl->socket);     pImpl->socket   = nullptr; }
-    if (pImpl->zmq_ctx) { zmq_ctx_term(pImpl->zmq_ctx); pImpl->zmq_ctx  = nullptr; }
+    // Close the socket; shared context is owned by the ZMQContext lifecycle module.
+    pImpl->socket.close();
 }
 
 bool InboxQueue::is_running() const noexcept
@@ -320,65 +289,50 @@ const InboxItem* InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
 {
     if (!pImpl || !pImpl->socket) return nullptr;
 
-    // HR-03: only call zmq_setsockopt when timeout changes (avoids a syscall per iteration).
+    // HR-03: only apply RCVTIMEO when it changes (saves a syscall per call).
     const int timeout_ms = static_cast<int>(timeout.count());
     if (timeout_ms != pImpl->last_rcvtimeo)
     {
-        zmq_setsockopt(pImpl->socket, ZMQ_RCVTIMEO, &timeout_ms, sizeof(timeout_ms));
+        pImpl->socket.set(zmq::sockopt::rcvtimeo, timeout_ms);
         pImpl->last_rcvtimeo = timeout_ms;
     }
 
-    // Receive 3 frames: identity, empty delimiter, payload
-    // Use zmq_recv in a loop for each frame.
-
-    // Frame 0: identity
-    char id_buf[256]{};
-    int id_rc = zmq_recv(pImpl->socket, id_buf, sizeof(id_buf) - 1, 0);
-    if (id_rc < 0)
-    {
-        const int err = zmq_errno();
-        if (err != EAGAIN && err != EINTR && err != ETERM)
-            LOGGER_WARN("[hub::InboxQueue] recv identity failed: {}", zmq_strerror(err));
-        return nullptr;
-    }
-    // Check if more frames available
-    int more = 0;
-    size_t more_sz = sizeof(more);
-    zmq_getsockopt(pImpl->socket, ZMQ_RCVMORE, &more, &more_sz);
-    if (!more) { ++pImpl->recv_frame_error_count_; return nullptr; }
-
-    std::string sender_id(id_buf, static_cast<size_t>(id_rc));
-
-    // Frame 1: empty delimiter
-    char empty_buf[4]{};
-    int empty_rc = zmq_recv(pImpl->socket, empty_buf, sizeof(empty_buf), 0);
-    if (empty_rc < 0) { ++pImpl->recv_frame_error_count_; return nullptr; }
-    zmq_getsockopt(pImpl->socket, ZMQ_RCVMORE, &more, &more_sz);
-    if (!more) { ++pImpl->recv_frame_error_count_; return nullptr; }
-
-    // Frame 2: msgpack payload (reuse persistent buffer to avoid per-call heap allocation)
-    int payload_rc = zmq_recv(pImpl->socket, pImpl->frame_recv_buf_.data(),
-                              static_cast<int>(pImpl->max_frame_sz), 0);
-    if (payload_rc < 0)
-    {
-        const int err = zmq_errno();
-        if (err != EAGAIN && err != EINTR && err != ETERM)
-            LOGGER_WARN("[hub::InboxQueue] recv payload failed: {}", zmq_strerror(err));
-        ++pImpl->recv_frame_error_count_;
-        return nullptr;
-    }
-
-    if (payload_rc >= static_cast<int>(pImpl->max_frame_sz))
-    {
-        ++pImpl->recv_frame_error_count_;
-        return nullptr;
-    }
-
-    // Decode msgpack
+    // ROUTER delivers the three-frame envelope (identity, empty, payload) as a
+    // single multipart message. multipart_t::recv reads all frames atomically:
+    // either the whole message is available or the call returns false/throws.
+    zmq::multipart_t parts;
     try
     {
-        msgpack::object_handle oh = msgpack::unpack(pImpl->frame_recv_buf_.data(),
-                                                     static_cast<size_t>(payload_rc));
+        if (!parts.recv(pImpl->socket))
+            return nullptr;  // RCVTIMEO expired or EAGAIN
+    }
+    catch (const zmq::error_t &e)
+    {
+        if (e.num() != ETERM && e.num() != EINTR)
+            LOGGER_WARN("[hub::InboxQueue] recv failed: {}", e.what());
+        return nullptr;
+    }
+
+    if (parts.size() != 3)
+    {
+        ++pImpl->recv_frame_error_count_;
+        return nullptr;
+    }
+
+    std::string sender_id = parts[0].to_string();
+    // parts[1] is the empty delimiter (size==0, enforced implicitly by ROUTER/DEALER pattern).
+    zmq::message_t &payload = parts[2];
+
+    if (payload.size() >= pImpl->max_frame_sz)
+    {
+        ++pImpl->recv_frame_error_count_;
+        return nullptr;
+    }
+
+    try
+    {
+        msgpack::object_handle oh = msgpack::unpack(
+            static_cast<const char *>(payload.data()), payload.size());
         const msgpack::object& obj = oh.get();
 
         if (obj.type != msgpack::type::ARRAY || obj.via.array.size != 5)
@@ -471,17 +425,21 @@ void InboxQueue::send_ack(uint8_t code) noexcept
 {
     if (!pImpl || !pImpl->socket) return;
 
-    const std::string& id = pImpl->current_sender_id_;
+    const std::string &id = pImpl->current_sender_id_;
 
-    // Send [identity, empty, ack_code] using ZMQ_SNDMORE
-    int rc1 = zmq_send(pImpl->socket, id.data(), id.size(), ZMQ_SNDMORE);
-    if (rc1 < 0) { ++pImpl->ack_send_error_count_; return; }
-
-    int rc2 = zmq_send(pImpl->socket, "", 0, ZMQ_SNDMORE);
-    if (rc2 < 0) { ++pImpl->ack_send_error_count_; return; }
-
-    int rc3 = zmq_send(pImpl->socket, &code, 1, 0);
-    if (rc3 < 0) { ++pImpl->ack_send_error_count_; }
+    try
+    {
+        zmq::multipart_t ack;
+        ack.addstr(id);                      // routing identity
+        ack.addstr("");                      // empty delimiter
+        ack.addmem(&code, sizeof(code));     // 1-byte ack code
+        if (!ack.send(pImpl->socket))
+            ++pImpl->ack_send_error_count_;
+    }
+    catch (const zmq::error_t &)
+    {
+        ++pImpl->ack_send_error_count_;
+    }
 }
 
 // ============================================================================
@@ -572,43 +530,22 @@ bool InboxClient::start()
     if (pImpl->running_.exchange(true, std::memory_order_acq_rel))
         return true; // lost race
 
-    pImpl->zmq_ctx = zmq_ctx_new();
-    if (!pImpl->zmq_ctx)
+    try
     {
-        pImpl->running_.store(false);
-        LOGGER_ERROR("[hub::InboxClient] zmq_ctx_new() failed for '{}'", pImpl->endpoint);
-        return false;
+        pImpl->socket =
+            zmq::socket_t(pylabhub::hub::get_zmq_context(), zmq::socket_type::dealer);
+        pImpl->socket.set(zmq::sockopt::linger, 0);
+        // ZMQ_ROUTING_ID (modern name for ZMQ_IDENTITY): the peer's ROUTER will
+        // prepend this to every message it receives from us.
+        pImpl->socket.set(zmq::sockopt::routing_id, pImpl->sender_uid);
+        pImpl->socket.connect(pImpl->endpoint);
     }
-    int blocky = 0;
-    zmq_ctx_set(pImpl->zmq_ctx, ZMQ_BLOCKY, blocky);
-
-    pImpl->socket = zmq_socket(pImpl->zmq_ctx, ZMQ_DEALER);
-    if (!pImpl->socket)
+    catch (const zmq::error_t &e)
     {
-        zmq_ctx_term(pImpl->zmq_ctx);
-        pImpl->zmq_ctx = nullptr;
+        pImpl->socket.close();
         pImpl->running_.store(false);
-        LOGGER_ERROR("[hub::InboxClient] zmq_socket(DEALER) failed for '{}'", pImpl->endpoint);
-        return false;
-    }
-
-    int linger = 0;
-    zmq_setsockopt(pImpl->socket, ZMQ_LINGER, &linger, sizeof(linger));
-
-    // Set ZMQ_IDENTITY to sender_uid before connecting
-    const std::string& uid = pImpl->sender_uid;
-    zmq_setsockopt(pImpl->socket, ZMQ_IDENTITY, uid.c_str(), uid.size());
-
-    const int rc = zmq_connect(pImpl->socket, pImpl->endpoint.c_str());
-    if (rc != 0)
-    {
-        zmq_close(pImpl->socket);
-        pImpl->socket = nullptr;
-        zmq_ctx_term(pImpl->zmq_ctx);
-        pImpl->zmq_ctx = nullptr;
-        pImpl->running_.store(false);
-        LOGGER_ERROR("[hub::InboxClient] zmq_connect('{}') failed: {}", pImpl->endpoint,
-                     zmq_strerror(zmq_errno()));
+        LOGGER_ERROR("[hub::InboxClient] socket setup failed for '{}': {}",
+                     pImpl->endpoint, e.what());
         return false;
     }
 
@@ -621,8 +558,8 @@ void InboxClient::stop()
     if (!pImpl->running_.exchange(false, std::memory_order_acq_rel))
         return;
 
-    if (pImpl->socket)  { zmq_close(pImpl->socket);     pImpl->socket   = nullptr; }
-    if (pImpl->zmq_ctx) { zmq_ctx_term(pImpl->zmq_ctx); pImpl->zmq_ctx  = nullptr; }
+    // Close socket; shared context stays up — owned by ZMQContext module.
+    pImpl->socket.close();
 }
 
 bool InboxClient::is_running() const noexcept
@@ -675,67 +612,61 @@ uint8_t InboxClient::send(std::chrono::milliseconds ack_timeout) noexcept
     pk.pack_bin(32);
     pk.pack_bin_body(reinterpret_cast<const char*>(checksum), 32);
 
-    // DEALER sends: [empty_delimiter, payload]
-    // ROUTER receives: [identity, empty_delimiter, payload]
-    // The explicit empty frame ensures consistent 3-frame envelope on the ROUTER side.
-    const int delim_rc = zmq_send(pImpl->socket, "", 0, ZMQ_SNDMORE);
-    if (delim_rc < 0)
+    // DEALER sends [empty, payload]; ROUTER sees [identity, empty, payload].
+    // multipart_t::send is atomic — every frame goes out or none.
+    try
     {
-        LOGGER_WARN("[hub::InboxClient] zmq_send(delim) to '{}' failed: {}",
-                    pImpl->endpoint, zmq_strerror(zmq_errno()));
-        return 255;
+        zmq::multipart_t out;
+        out.addstr("");                                                 // empty delimiter
+        out.addmem(pImpl->sbuf_.data(), pImpl->sbuf_.size());            // payload
+        if (!out.send(pImpl->socket))
+        {
+            LOGGER_WARN("[hub::InboxClient] send to '{}' returned false (HWM?)",
+                        pImpl->endpoint);
+            return 255;
+        }
     }
-
-    const int send_rc = zmq_send(pImpl->socket,
-                                  pImpl->sbuf_.data(),
-                                  pImpl->sbuf_.size(),
-                                  0);
-    if (send_rc < 0)
+    catch (const zmq::error_t &e)
     {
-        LOGGER_WARN("[hub::InboxClient] zmq_send to '{}' failed: {}",
-                    pImpl->endpoint, zmq_strerror(zmq_errno()));
+        LOGGER_WARN("[hub::InboxClient] send to '{}' failed: {}",
+                    pImpl->endpoint, e.what());
         return 255;
     }
 
     // Fire-and-forget
     if (ack_timeout.count() <= 0) return 0;
 
-    // Wait for ACK: ROUTER reply is [identity, "", ack_byte]; DEALER receives ["", ack_byte].
-    // Drain the empty delimiter frame first, then read the ack byte.
+    // ROUTER reply: [identity, "", ack_byte]; DEALER strips the identity and
+    // sees ["", ack_byte]. Receive as one multipart — atomicity guaranteed.
     const int ack_ms = static_cast<int>(ack_timeout.count());
-    // HR-03: only set ZMQ_RCVTIMEO when the value changes.
     if (ack_ms != pImpl->last_acktimeo)
     {
-        zmq_setsockopt(pImpl->socket, ZMQ_RCVTIMEO, &ack_ms, sizeof(ack_ms));
+        pImpl->socket.set(zmq::sockopt::rcvtimeo, ack_ms);
         pImpl->last_acktimeo = ack_ms;
     }
 
-    // Frame 0: empty delimiter
-    char delim_recv[4]{};
-    const int delim_recv_rc = zmq_recv(pImpl->socket, delim_recv, sizeof(delim_recv), 0);
-    if (delim_recv_rc < 0)
+    try
     {
-        const int err = zmq_errno();
-        if (err == EAGAIN)
-            LOGGER_WARN("[hub::InboxClient] ACK delimiter timeout from '{}'", pImpl->endpoint);
-        else
-            LOGGER_WARN("[hub::InboxClient] ACK delimiter recv error from '{}': {}",
-                        pImpl->endpoint, zmq_strerror(err));
+        zmq::multipart_t reply;
+        if (!reply.recv(pImpl->socket))
+        {
+            LOGGER_WARN("[hub::InboxClient] ACK timeout from '{}'", pImpl->endpoint);
+            return 255;
+        }
+        if (reply.size() != 2 || reply[1].size() != 1)
+        {
+            LOGGER_WARN("[hub::InboxClient] malformed ACK from '{}' (frames={})",
+                        pImpl->endpoint, reply.size());
+            return 255;
+        }
+        return *static_cast<const uint8_t *>(reply[1].data());
+    }
+    catch (const zmq::error_t &e)
+    {
+        LOGGER_WARN("[hub::InboxClient] ACK recv error from '{}': {}",
+                    pImpl->endpoint, e.what());
         return 255;
     }
-
-    // Frame 1: ack byte — keep the same ack_ms timeout active (set at line above).
-    // ZMQ delivers multi-part messages atomically, so frame 1 is always immediately
-    // available after frame 0 is received; but keeping the timeout is safer.
-    uint8_t ack_code = 255;
-    const int ack_rc = zmq_recv(pImpl->socket, &ack_code, sizeof(ack_code), 0);
-    if (ack_rc < 0)
-    {
-        LOGGER_WARN("[hub::InboxClient] ACK byte recv error from '{}': {}",
-                    pImpl->endpoint, zmq_strerror(zmq_errno()));
-        return 255;
-    }
-    return ack_code;
 }
 
 void InboxClient::abort() noexcept
