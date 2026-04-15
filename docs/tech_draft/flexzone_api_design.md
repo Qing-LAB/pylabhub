@@ -126,24 +126,65 @@ No `const_cast`. No verb names.
 
 ### 2.6 Script layer
 
-Scripts already receive `rx` and `tx` objects (channel-side envelopes) as callback arguments. The flexzone is addressed through these receivers — the receiver object IS the side.
+**Decision** (updated 2026-04-15, supersedes prior "method on channel object" plan): `api.flexzone(side=…)` — a side-parameterized method on the `api` object, mirroring the existing `api.spinlock(index, side)` / `api.flexzone_logical_size(side)` / `api.slot_logical_size(side)` / `api.shared_spinlock(side)` side-parameterized family.
 
-**Decision**: method form on the channel object, `rx.flexzone()` / `tx.flexzone()`, returning a typed mutable wrapper. Attribute form `rx.fz` / `tx.fz` retained as a deprecated alias for one sprint to avoid breaking scripts, then removed. Symmetric with future `rx.flexzone_logical_size()` / `tx.flexzone_logical_size()` additions and with the C++ `flexzone(side)` accessor.
+**Rationale**:
+- Consistency with the rest of the `api.*(side)` family (single selector convention across spinlock / logical-size / etc.).
+- Init-stage-only cost for the typed-wrapper construction (see below). The per-cycle hot path loses one ctypes/ffi view construction per cycle on each flexzone-using role; Python/Lua scripts that call `api.flexzone(side)` get a cached object.
+- `rx.fz` / `tx.fz` and the `InvokeRx::fz` / `InvokeTx::fz` struct fields — the per-cycle wrapping path — are **deleted**, not deprecated, since scripts now reach the flexzone exclusively through `api.flexzone(side)`. The `InvokeRx` / `InvokeTx` structs carry only the slot pointer and size.
 
-No behavior change at the engine wrapping layer — it still receives `void *fz` from `InvokeRx`/`InvokeTx` and constructs the typed mutable wrapper as today (`python_engine.cpp:937, 973-978, 1015-1022` with `read_only=false`; Lua equivalent). The method `flexzone()` simply returns the already-constructed wrapper.
+**Signature**:
 
-**Deleted at script layer**:
-- `ProducerAPI::flexzone()` method (`producer_api.cpp:31`). Never worked — `flexzone_obj_` was declared but never assigned anywhere in the tree. Python scripts always saw `None`.
-- `ProcessorAPI::flexzone()` method (`processor_api.cpp:30`). Same dead state.
-- `flexzone_obj_` members in `ProducerAPI` / `ProcessorAPI` header.
-- pybind11 bindings `.def("flexzone", ...)` in both.
-- Lua `lua_api_flexzone` (`lua_engine.cpp:2015-2043`). Was the only working version but exposed a wrong mental model: comment `"Only producer/processor have writable flexzone"` is the exact HEP-0002 §2.2 violation we're fixing; the method bypassed `RoleAPIBase` and reached directly into `hub::Producer` (which is being deleted).
-- Registration of `"flexzone"` closure in `lua_engine.cpp:324, 352`.
-- `test_lua_engine.cpp:2479` test that exercises `api.flexzone()`.
+```cpp
+// Producer / Consumer / Processor APIs (Python + Lua)
+py::object api.flexzone(std::optional<int> side = std::nullopt);
+uint64_t   api.flexzone_logical_size(std::optional<int> side = std::nullopt);  // already exists
+uint32_t   api.flexzone_physical_size(std::optional<int> side = std::nullopt); // add for symmetry
+```
 
-`ConsumerAPI` never had `flexzone()` — don't add one.
+- `side` is `std::optional<int>` mapped to `ChannelSide::Tx=0` / `ChannelSide::Rx=1`.
+- Omitted for single-side roles (auto-selects the only wired side).
+- Required for processor — `api.flexzone()` without a `side` throws `"side parameter required for processor"`, same failure mode as `api.spinlock()` without a side.
+- Returns `None` / nil when the requested side has no flexzone configured (matches `api.flexzone_logical_size(side)` behavior).
 
-**Kept at script layer**: `api.flexzone_logical_size(std::optional<ChannelSide>)` is used for metadata queries; it stays (it already takes `ChannelSide`). `api.update_flexzone_checksum()` stays (genuinely directional op: writer stamps). `api.sync_flexzone_checksum()` stays.
+**Init-stage cache**:
+
+At `build_api()` time (after `RoleAPIBase` has its `tx_queue` / `rx_queue` wired), each API class pre-constructs the typed view once:
+
+```cpp
+// Python side (pybind11) — in ProducerAPI / ConsumerAPI / ProcessorAPI::build_*():
+if (base_->flexzone(ChannelSide::Tx) && base_->flexzone_size(ChannelSide::Tx) > 0
+    && !out_fz_type_.is_none())
+    tx_flexzone_obj_ = make_typed_view(out_fz_type_,
+                                       base_->flexzone(ChannelSide::Tx),
+                                       base_->flexzone_size(ChannelSide::Tx),
+                                       /*read_only=*/false);
+// ... same for Rx via in_fz_type_ / ChannelSide::Rx.
+```
+
+`tx_flexzone_obj_` / `rx_flexzone_obj_` are cached `py::object` (Python) / ffi cdata (Lua) members on the API class. `api.flexzone(side)` just returns the cached object for the requested side. Zero per-cycle allocations.
+
+Lua uses the same pattern with pre-built ffi typeof references and cached cdata.
+
+**Pointer stability caveat**:
+
+The init-only cache is valid while the underlying SHM flexzone pointer is stable. For the DataBlock lifecycle (one fixed mapping from queue start through queue stop), the pointer is constant — `flexible_zone_span().data()` returns the same offset-into-header every call. The per-cycle re-read in `cycle_ops.hpp:79-81, 156-158, 258-261` ("Re-read flexzone pointer each cycle — ShmQueue may move it") is a defensive comment from an earlier design; in steady state it reads the same pointer every time.
+
+The cache **must be invalidated** if:
+- SHM is remapped (recovery path). The role host must rebuild `RoleAPIBase` + the API instance on remap, so the cache is discarded with the old API object. Confirmed pattern: role hosts today already construct `RoleAPIBase` after SHM wiring and don't reattach to a new DataBlock in the middle of a role's lifetime. Recovery = full restart.
+- Queue is stopped and restarted with a fresh DataBlock. Again: new API instance, new cache.
+
+**Consequence — Commit C scope change**:
+
+- Delete `InvokeRx::fz` and `InvokeTx::fz` struct fields (and `fz_size`).
+- Engine stops populating `rx_ch.fz` / `tx_ch.fz`. `make_slot_view_(…, fz, …)` calls in `python_engine.cpp:937, 973-978, 1015-1022` removed. Lua equivalent removed.
+- `cycle_ops.hpp` stops passing flexzone pointer + size into `InvokeTx` / `InvokeRx`. The `tx_fz_ptr_` / `out_fz_ptr_` / `in_fz_ptr_` / `fz_ptr_` fields in `*CycleOps` all get deleted — CycleOps no longer needs to carry flexzone state at all. `api.flexzone(side)` is the sole script-facing path.
+- `ProducerAPI::flexzone()` and `ProcessorAPI::flexzone()` **are kept and implemented correctly** (currently return `None` because `flexzone_obj_` is never assigned — now assigned at `build_api()`). `ConsumerAPI::flexzone(side=...)` is added (doesn't exist today).
+- Lua `lua_api_flexzone` stays but re-implemented: takes optional side arg, returns the cached ffi cdata for that side. No more `producer->write_flexzone()` direct-access; everything routes through `api_->flexzone(side)`.
+- Old `api.flexzone()` test at `test_lua_engine.cpp:2479` (returns nil without SHM) becomes the **trivial edge-case assertion** — still valid, still passes; gets paired with new tests that assert `api.flexzone(side)` returns a typed object when SHM is wired.
+- Processor scripts that previously used `rx.fz` / `tx.fz` now use `api.flexzone(Rx)` / `api.flexzone(Tx)`. This is a breaking change for any existing script using `rx.fz` / `tx.fz` — update all in-tree scripts (producer / consumer / processor example scripts) in the same commit.
+
+**Kept at script layer** (unchanged): `api.flexzone_logical_size(std::optional<ChannelSide>)`, `api.slot_logical_size(side)`, `api.shared_spinlock(side)`, `api.spinlock(index, side)`, `api.spinlock_count(side)`, `api.update_flexzone_checksum()`, `api.sync_flexzone_checksum()`.
 
 ---
 
@@ -159,7 +200,7 @@ Scenario: single SHM channel, writer-side + reader-side ShmQueue handles. Writer
 ### T2 — Role-level producer→consumer flexzone round-trip
 
 File: `tests/test_layer3_datahub/` (new — `test_datahub_role_flexzone.cpp`).
-Spawn producer role-host + consumer role-host wired to the same SHM channel. `on_produce` writes sentinel via `tx.flexzone()`, commits slot. `on_consume` asserts `rx.flexzone()` is non-null and contents match sentinel.
+Spawn producer role-host + consumer role-host wired to the same SHM channel. `on_produce` writes sentinel via `api.flexzone()` (auto-selects Tx for producer), commits slot. `on_consume` asserts `api.flexzone()` (auto-selects Rx for consumer) is non-None and contents match sentinel.
 
 ### T3 — Role-level consumer-side write visibility
 
