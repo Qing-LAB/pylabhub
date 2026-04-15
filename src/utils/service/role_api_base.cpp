@@ -986,20 +986,20 @@ size_t RoleAPIBase::flexzone_logical_size(std::optional<ChannelSide> side) const
 
 hub::SharedSpinLock RoleAPIBase::get_spinlock(size_t index, std::optional<ChannelSide> side)
 {
-    const bool has_tx = pImpl->producer != nullptr;
-    const bool has_rx = pImpl->consumer != nullptr;
+    const bool has_tx = pImpl->tx_queue != nullptr;
+    const bool has_rx = pImpl->rx_queue != nullptr;
 
     if (side.has_value())
     {
         if (*side == ChannelSide::Tx)
         {
             if (!has_tx)
-                throw std::runtime_error("get_spinlock(Tx): no producer connected");
-            return pImpl->producer->get_spinlock(index);
+                throw std::runtime_error("get_spinlock(Tx): no Tx queue connected");
+            return pImpl->tx_queue->get_spinlock(index);
         }
         if (!has_rx)
-            throw std::runtime_error("get_spinlock(Rx): no consumer connected");
-        return pImpl->consumer->get_spinlock(index);
+            throw std::runtime_error("get_spinlock(Rx): no Rx queue connected");
+        return pImpl->rx_queue->get_spinlock(index);
     }
 
     // No side specified — auto-select for single-side roles, error for dual.
@@ -1008,22 +1008,22 @@ hub::SharedSpinLock RoleAPIBase::get_spinlock(size_t index, std::optional<Channe
             "get_spinlock: side parameter required for processor "
             "(use ChannelSide::Tx or ChannelSide::Rx)");
     if (has_tx)
-        return pImpl->producer->get_spinlock(index);
+        return pImpl->tx_queue->get_spinlock(index);
     if (has_rx)
-        return pImpl->consumer->get_spinlock(index);
-    throw std::runtime_error("get_spinlock: no producer or consumer connected");
+        return pImpl->rx_queue->get_spinlock(index);
+    throw std::runtime_error("get_spinlock: no Tx or Rx queue connected");
 }
 
 uint32_t RoleAPIBase::spinlock_count(std::optional<ChannelSide> side) const
 {
-    const bool has_tx = pImpl->producer != nullptr;
-    const bool has_rx = pImpl->consumer != nullptr;
+    const bool has_tx = pImpl->tx_queue != nullptr;
+    const bool has_rx = pImpl->rx_queue != nullptr;
 
     if (side.has_value())
     {
         if (*side == ChannelSide::Tx)
-            return has_tx ? pImpl->producer->spinlock_count() : 0;
-        return has_rx ? pImpl->consumer->spinlock_count() : 0;
+            return has_tx ? pImpl->tx_queue->spinlock_count() : 0;
+        return has_rx ? pImpl->rx_queue->spinlock_count() : 0;
     }
 
     // No side specified — auto-select for single-side roles, error for dual.
@@ -1032,9 +1032,9 @@ uint32_t RoleAPIBase::spinlock_count(std::optional<ChannelSide> side) const
             "spinlock_count: side parameter required for processor "
             "(use ChannelSide::Tx or ChannelSide::Rx)");
     if (has_tx)
-        return pImpl->producer->spinlock_count();
+        return pImpl->tx_queue->spinlock_count();
     if (has_rx)
-        return pImpl->consumer->spinlock_count();
+        return pImpl->rx_queue->spinlock_count();
     return 0;
 }
 
