@@ -192,7 +192,9 @@ Each step is one commit. Intermediate builds may be incomplete but each commit i
 - `RoleAPIBase` new method `flexzone(ChannelSide::Tx)` routes to `pImpl->tx_queue->flexzone()`.
 - `producer_role_host.cpp` constructs `RoleAPIBase` with the queue writer directly (no intermediate `hub::Producer`).
 - Delete `src/include/utils/hub_producer.hpp` + `src/utils/hub/hub_producer.cpp`.
-- Delete realtime-handler plumbing (`WriteProcessorContext`, `ProducerMessagingFacade`, `set_process_handler<>()`, HEP-CORE-0002 §6.9.1 ABI-frozen facade structs) — no production binary uses it; only `examples/cpp_processor_template.cpp` does. Delete that example along with the API it depends on. A replacement pure-C++ processor example, if wanted post-L3.γ, is a new file written against the surviving `RoleAPIBase` + `QueueWriter`/`QueueReader` surface, not a salvage of the old realtime-handler path.
+- Delete realtime-handler plumbing (`WriteProcessorContext`, `ProducerMessagingFacade`, `set_process_handler<>()`, HEP-CORE-0002 §6.9.1 ABI-frozen facade structs) — no production binary uses it; only `examples/cpp_processor_template.cpp` does. Delete that example along with the API it depends on.
+
+  **Replacement**: after the full refactor (Commits A–F) lands, rewrite `examples/cpp_processor_template.cpp` against the surviving C++ RAII framework — `with_transaction<F,D>()` + `SlotIterator` + the unified `ZoneRef<F>` + the surviving `RoleAPIBase` / `QueueWriter` / `QueueReader` surface. The rewrite is a new example file, not a salvage of the realtime-handler path, and belongs in the L3.ζ doc sprint (same phase as HEP-CORE-0011 rewrite and design-doc archival).
 - `ShmQueue::raw_producer()` public method removed (no more callers).
 
 **Commit 3 — Same for `hub::Consumer`.**
@@ -292,9 +294,13 @@ scheduling it after A/B so the hub/role layer cleanup is fully in place
 first — any surprise caller dependency between RAII and hub layers shows
 up as a clean compile failure in one direction only.
 
-**Commit 7 — Docs.**
+**Commit 7 — Docs + example rewrite (L3.ζ).**
 - Update `HEP-CORE-0011` (ScriptHost Abstraction) to reflect new API shape.
 - Update `HEP-CORE-0002` §6.3 and §6.5 per Commit F.
+- Rewrite `examples/cpp_processor_template.cpp` against the new C++ RAII
+  framework: `with_transaction<F,D>()` + `SlotIterator` + unified `ZoneRef<F>`
+  + surviving `RoleAPIBase` / `QueueWriter` / `QueueReader`. New file; not a
+  salvage of the old realtime-handler implementation.
 - Archive this design doc per `docs/DOC_STRUCTURE.md`.
 
 ---
