@@ -647,11 +647,12 @@ bool ZmqQueue::start()
     // [ZQ5] Capture pImpl raw pointer, not `this`, so move of ZmqQueue is safe.
     ZmqQueueImpl* impl_ptr = pImpl.get();
 
-    // Create a fresh ThreadManager for this start/stop cycle. Owner tag
-    // includes the queue's name so the lifecycle module is
-    // "ThreadManager:ZmqQueue:<name>" and identifiable in logs/diagnostics.
-    pImpl->thread_mgr_ =
-        std::make_unique<pylabhub::utils::ThreadManager>("ZmqQueue:" + pImpl->queue_name);
+    // Create a fresh ThreadManager for this start/stop cycle. owner_tag =
+    // "ZmqQueue" classifies the manager; owner_id = queue_name identifies
+    // the specific queue instance. Lifecycle module name becomes
+    // "ThreadManager:ZmqQueue:{queue_name}".
+    pImpl->thread_mgr_ = std::make_unique<pylabhub::utils::ThreadManager>(
+        "ZmqQueue", pImpl->queue_name);
 
     if (pImpl->mode == ZmqQueueImpl::Mode::Read)
     {

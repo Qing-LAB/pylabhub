@@ -83,9 +83,7 @@ class LuaEngineTest : public ::testing::Test
     std::unique_ptr<RoleAPIBase> make_api(RoleHostCore &core,
                                           const std::string &tag = "prod")
     {
-        auto api = std::make_unique<RoleAPIBase>(core);
-        api->set_role_tag(tag);
-        api->set_uid("TEST-ENGINE-00000001");
+        auto api = std::make_unique<RoleAPIBase>(core, tag, "TEST-ENGINE-00000001");
         api->set_name("TestEngine");
         api->set_channel("test.channel");
         api->set_log_level("error");
