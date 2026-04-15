@@ -214,8 +214,6 @@ void ProcessorRoleHost::worker_main_()
     api_->set_role_dir(config_.base_dir().string());
     if (!core_.is_validate_only())
     {
-        api_->set_producer(out_producer_.has_value() ? &(*out_producer_) : nullptr);
-        api_->set_consumer(in_consumer_.has_value() ? &(*in_consumer_) : nullptr);
         api_->set_inbox_queue(inbox_queue_.get());
 
         // Create BrokerRequestComm (connection deferred to step 6).
@@ -274,8 +272,8 @@ void ProcessorRoleHost::worker_main_()
     engine_->invoke_on_init();
 
     // Sync flexzone checksum after on_init (user may have written to flexzone).
-    if (out_producer_.has_value() && core_.has_out_fz())
-        out_producer_->sync_flexzone_checksum();
+    if (api_->has_tx_side() && core_.has_out_fz())
+        api_->sync_tx_flexzone_checksum();
 
     // ── Step 6: Connect to broker, start ctrl thread, register ────────────
     core_.set_running(true);
@@ -344,7 +342,7 @@ void ProcessorRoleHost::worker_main_()
     ready_promise_.set_value(true);
 
     // Step 8: Run the data loop via shared frame + ProcessorCycleOps.
-    if (!in_consumer_.has_value() || !out_producer_.has_value())
+    if (!api_->has_rx_side() || !api_->has_tx_side())
     {
         LOGGER_ERROR("[proc] run_data_loop: transport queues not initialized — aborting");
         core_.set_running(false);
@@ -410,14 +408,12 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     const bool in_is_zmq = (config_.in_transport().transport == config::Transport::Zmq);
     in_opts.queue_type = in_is_zmq ? "zmq" : "shm";
 
-    auto maybe_consumer = hub::Consumer::create(in_opts);
-    if (!maybe_consumer.has_value())
+    if (!api_->build_rx_queue(in_opts))
     {
         LOGGER_ERROR("[proc] Failed to connect consumer to in_channel '{}'",
                      config_.in_channel());
         return false;
     }
-    in_consumer_ = std::move(maybe_consumer);
 
     // ── Producer side (out_channel) ─────────────────────────────────────────
     hub::ProducerOptions out_opts;
@@ -468,38 +464,32 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
         inbox_queue_ = std::move(inbox_result->queue);
     }
 
-    // --- Create producer ---
-    auto maybe_producer = hub::Producer::create(out_opts);
-    if (!maybe_producer.has_value())
+    // --- Create producer (RoleAPIBase owns the Tx queue) ---
+    if (!api_->build_tx_queue(out_opts))
     {
         LOGGER_ERROR("[proc] Failed to create producer for out_channel '{}'",
                      config_.out_channel());
         return false;
     }
-    out_producer_ = std::move(maybe_producer);
-
-    // Metrics reset moved to after queue creation (reset_metrics() on queue).
 
     // Broker notifications (band, hub-dead) are handled by BrokerRequestComm.
 
-    // ── Create data queues ─────────────────────────────────────────────────
-
     // --- Start and configure data queues ---
-    if (!in_consumer_->start_queue())
+    if (!api_->start_rx_queue())
     {
         LOGGER_ERROR("[proc] Input start_queue() failed (in_channel='{}')",
                      config_.in_channel());
         return false;
     }
-    if (!out_producer_->start_queue())
+    if (!api_->start_tx_queue())
     {
         LOGGER_ERROR("[proc] Output start_queue() failed (out_channel='{}')",
                      config_.out_channel());
         return false;
     }
     // Reset metrics (checksum and period already configured via Options).
-    in_consumer_->reset_queue_metrics();
-    out_producer_->reset_queue_metrics();
+    api_->reset_rx_queue_metrics();
+    api_->reset_tx_queue_metrics();
     core_.set_configured_period(static_cast<uint64_t>(config_.timing().period_us));
 
     LOGGER_INFO("[proc] Processor started: '{}' -> '{}'",
@@ -533,19 +523,8 @@ void ProcessorRoleHost::teardown_infrastructure_()
         broker_comm_.reset();
     }
 
-    // Close producer (data-plane queue teardown happens inside close()).
-    if (out_producer_.has_value())
-    {
-        out_producer_->close();
-        out_producer_.reset();
-    }
-
-    // Close consumer.
-    if (in_consumer_.has_value())
-    {
-        in_consumer_->close();
-        in_consumer_.reset();
-    }
+    // Close Tx/Rx queues (data-plane teardown happens inside RoleAPIBase).
+    if (api_) api_->close_queues();
 }
 
 
@@ -557,16 +536,16 @@ nlohmann::json ProcessorRoleHost::snapshot_metrics_json() const
 {
     nlohmann::json result;
 
-    if (in_consumer_.has_value())
+    if (api_ && api_->has_rx_side())
     {
         nlohmann::json q;
-        hub::queue_metrics_to_json(q, in_consumer_->queue_metrics());
+        hub::queue_metrics_to_json(q, api_->queue_metrics(scripting::ChannelSide::Rx));
         result["in_queue"] = std::move(q);
     }
-    if (out_producer_.has_value())
+    if (api_ && api_->has_tx_side())
     {
         nlohmann::json q;
-        hub::queue_metrics_to_json(q, out_producer_->queue_metrics());
+        hub::queue_metrics_to_json(q, api_->queue_metrics(scripting::ChannelSide::Tx));
         result["out_queue"] = std::move(q);
     }
 
