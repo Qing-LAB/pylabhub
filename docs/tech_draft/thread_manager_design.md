@@ -226,7 +226,39 @@ Order of migration (low-coupling first):
 | **A5d** | `BrokerService::Impl` | `"BrokerService:" + endpoint` | accept + worker threads |
 | **A5e** | `ZmqQueue::Impl` | `"ZmqQueue:" + name` | send/recv thread |
 | **A5f** | `InboxQueue::Impl` + `InboxClient::Impl` | `"InboxQueue:" + name`, `"InboxClient:" + target_uid` | router/dealer threads |
-| **A5g** | `Logger::Impl` | `"Logger"` | async log writer thread |
+| **A5g** | `Logger::Impl` | `"Logger"` | async log writer thread **— SKIPPED, see below** |
+
+### 3a. Why Logger is NOT migrated
+
+Logger is the one layer-2 service that stays with its current ad-hoc
+`std::thread` + unbounded `.join()` pattern. Rationale:
+
+1. **Dependency loop**. `ThreadManager`'s ERROR-on-timeout diagnostic
+   is emitted through `LOGGER_ERROR()`. If Logger itself owned a
+   `ThreadManager`, and Logger's own `worker_thread_` hung, the
+   `ThreadManager` for Logger would try to emit ERROR via Logger —
+   which is the hung component. Diagnostic lost; deadlock possible
+   in the ERROR-formatting path.
+2. **ModuleDef dependency**. Every `ThreadManager` instance declares
+   `add_dependency("pylabhub::utils::Logger")` so Logger is up during
+   teardown diagnostics. Logger's own `ThreadManager` would have to
+   *not* add that dependency, creating a special-cased constructor
+   branch inconsistent with the uniform "every ThreadManager behaves
+   the same" design principle.
+3. **Low risk**. Logger's worker drains a simple command queue to
+   pluggable sinks. The sink types (console, stderr, rotating file,
+   syslog, Windows event log) are bounded-cost operations. A sink
+   hang is a known hazard but an uncommon one; the current
+   `worker_.join()` is acceptable for Logger specifically.
+
+If a future Logger-thread hang becomes a real problem, the fix is to
+give Logger its own bounded-join helper (inline in `logger.cpp`) that
+duplicates ThreadManager's pattern but emits the ERROR diagnostic via
+direct `fprintf(stderr, ...)` rather than `LOGGER_ERROR()` — breaking
+the dependency loop at the diagnostic layer.
+
+**A5g does not land as a commit**; the migration table entry remains
+here as explicit documentation of the "everything EXCEPT Logger" scope.
 
 Each commit:
 1. Replace ad-hoc `std::thread` + stop atomic in the component's Impl with `utils::ThreadManager threads{tag}`.
