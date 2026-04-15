@@ -21,6 +21,8 @@
 #include "utils/broker_request_comm.hpp"   // hub::BrokerRequestComm (for Config in start_ctrl_thread)
 #include "utils/config/inbox_config.hpp"   // config::InboxConfig (for CtrlThreadConfig)
 #include "utils/data_block_policy.hpp"     // hub::ChecksumPolicy
+#include "utils/hub_producer.hpp"          // hub::ProducerOptions (for build_tx_queue)
+#include "utils/hub_consumer.hpp"          // hub::ConsumerOptions (for build_rx_queue)
 #include "utils/json_fwd.hpp"
 #include "utils/loop_timing_policy.hpp"    // LoopTimingPolicy, compute_short_timeout, compute_next_deadline
 #include "utils/role_host_core.hpp"        // RoleHostCore, StateValue
@@ -167,8 +169,34 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     // immutable after construction. All remaining setters are for mutable
     // wiring state (infrastructure pointers, script paths, policies).
 
-    void set_producer(hub::Producer *p);
-    void set_consumer(hub::Consumer *c);
+    /// Build the output-side queue (Tx). Creates and owns a hub::Producer
+    /// internally; the unified QueueWriter handle is cached on Impl.
+    /// @return true on success. On failure, no queue is wired.
+    [[nodiscard]] bool build_tx_queue(const hub::ProducerOptions &opts);
+
+    /// Build the input-side queue (Rx). Creates and owns a hub::Consumer
+    /// internally; the unified QueueReader handle is cached on Impl.
+    [[nodiscard]] bool build_rx_queue(const hub::ConsumerOptions &opts);
+
+    /// Start the Tx/Rx queues. Returns false if the side is not wired or
+    /// the queue start() failed.
+    [[nodiscard]] bool start_tx_queue();
+    [[nodiscard]] bool start_rx_queue();
+
+    /// Reset metrics counters on the Tx/Rx queues. No-op if not wired.
+    void reset_tx_queue_metrics();
+    void reset_rx_queue_metrics();
+
+    /// Sync flexzone checksum on the Tx side (SHM only). No-op otherwise.
+    void sync_tx_flexzone_checksum();
+
+    /// True iff the side is wired AND backed by SHM (not ZMQ).
+    [[nodiscard]] bool tx_has_shm() const noexcept;
+    [[nodiscard]] bool rx_has_shm() const noexcept;
+
+    /// Close/teardown both sides. Idempotent.
+    void close_queues();
+
     void set_inbox_queue(hub::InboxQueue *q);
     void set_name(std::string name);
     void set_channel(std::string c);
@@ -425,8 +453,6 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     // ── Infrastructure access (for engine binding layers) ─────────────────────
 
     [[nodiscard]] RoleHostCore *core() const;
-    [[nodiscard]] hub::Producer *producer() const;   ///< @deprecated use has_tx_side() + flexzone(side). Deleted in L3.γ final phase.
-    [[nodiscard]] hub::Consumer *consumer() const;   ///< @deprecated use has_rx_side() + flexzone(side). Deleted in L3.γ final phase.
     [[nodiscard]] hub::InboxQueue *inbox_queue() const;
 
     /// Side-presence checks for engines/callers that need to gate script-facing
