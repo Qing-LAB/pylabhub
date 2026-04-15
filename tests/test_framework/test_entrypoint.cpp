@@ -26,6 +26,10 @@
  */
 #include "test_entrypoint.h"
 #include "plh_base.hpp"
+#include "utils/thread_manager.hpp"
+
+#include <gtest/gtest.h>
+
 #include <vector>
 
 // Define the global for the executable path, used by worker-spawning tests
@@ -80,5 +84,52 @@ int main(int argc, char **argv)
     // Test runner mode: no lifecycle, pure API tests only.
     // Tests that need lifecycle modules spawn subprocesses via IsolatedProcessTest.
     ::testing::InitGoogleTest(&argc, argv);
+
+    // ── ThreadManager detach-leak listener ──────────────────────────────
+    //
+    // If any ThreadManager instance inside the test process had to detach a
+    // stuck thread during a test, fail that test explicitly. Without this,
+    // tests that hit the bounded-join timeout path would appear to pass
+    // (the detach doesn't throw; it just logs + returns), masking a real
+    // shutdown-path regression.
+    //
+    // The listener takes a baseline snapshot at each test start and checks
+    // for an increment at each test end. Tests that DELIBERATELY exercise
+    // the timeout-detach path (e.g., the bounded-join unit test itself)
+    // should call ThreadManager::reset_process_detached_count_for_testing()
+    // in their TearDown() to clear the counter after their scoped exercise.
+    class ThreadLeakListener : public ::testing::EmptyTestEventListener
+    {
+      public:
+        void OnTestStart(const ::testing::TestInfo & /*info*/) override
+        {
+            baseline_ = pylabhub::utils::ThreadManager::process_detached_count();
+        }
+        void OnTestEnd(const ::testing::TestInfo &info) override
+        {
+            const auto current =
+                pylabhub::utils::ThreadManager::process_detached_count();
+            if (current > baseline_)
+            {
+                const auto leaked = current - baseline_;
+                ADD_FAILURE_AT(info.file() ? info.file() : "<unknown>",
+                               info.line())
+                    << "ThreadManager detached " << leaked
+                    << " thread(s) during test '" << info.test_suite_name()
+                    << "." << info.name()
+                    << "'. See ERROR log entries tagged [ThreadManager:*]"
+                       " for the owner+name of each leaked thread. A test"
+                       " that deliberately exercises the timeout path must"
+                       " call ThreadManager::"
+                       "reset_process_detached_count_for_testing() in its"
+                       " TearDown().";
+            }
+        }
+
+      private:
+        std::size_t baseline_{0};
+    };
+
+    ::testing::UnitTest::GetInstance()->listeners().Append(new ThreadLeakListener);
     return RUN_ALL_TESTS();
 }
