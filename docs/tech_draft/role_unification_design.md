@@ -378,7 +378,285 @@ failure.
 reproducible AND we cannot identify any other translation error. Reverting
 without root cause leaves us blind to the actual bug.
 
-### 4.5a Baseline test suite — test-evaluation principles
+### 4.5 Baseline test suite — BRANCH-COVERAGE REQUIREMENT
+
+**Correctness of the L3.β refactor is evaluated by exhaustive branch
+coverage comparison**: every logical branch in the three original
+`*CycleOps` classes must be mapped to a location in the unified `CycleOps`,
+exercised by a baseline test on pre-β code, and re-verified on post-β code
+to produce identical built-in-metric values and identical slot outcomes.
+
+The branches and their slot/decision outcomes are enumerated below. Each
+branch has a stable ID used in baseline-test comments to identify which
+branch a test exercises.
+
+### 4.5a Branch inventory — original CycleOps classes
+
+#### ProducerCycleOps (10 branches)
+
+```
+acquire():
+  P-A-1   buf_ != nullptr  → has_data=true
+  P-A-2   buf_ == nullptr  → has_data=false (no deadline wait)
+
+cleanup_on_shutdown():
+  P-S-1   buf_ != nullptr  → write_discard() + null buf_
+  P-S-2   buf_ == nullptr  → no-op
+
+invoke_and_commit():
+  P-I-M   buf_ != nullptr                      → memset(buf_, 0, buf_sz_)
+  P-I-FZ  core.has_out_fz()                    → re-read fz_ptr_
+  slot decision (after engine.invoke_produce):
+    P-I-C     buf_ && result==Commit           → write_commit + inc_out_slots_written
+    P-I-D     buf_ && result==Discard          → write_discard + inc_out_drop_count
+    P-I-E     buf_ && result==Error            → write_discard + inc_out_drop_count
+    P-I-N     !buf_                            → no slot op + inc_out_drop_count
+  stop decision:
+    P-I-STOP  result==Error && stop_on_error   → request_stop + return false
+
+cleanup_on_exit():
+  P-X     no-op (nothing held across cycles)
+```
+
+Slot outcomes in producer path: **commit**, **discard**, **no-slot-drop**.
+
+#### ConsumerCycleOps (8 branches; error detection via count delta)
+
+```
+acquire():
+  C-A-1   data_ != nullptr  → has_data=true
+  C-A-2   data_ == nullptr  → has_data=false
+
+cleanup_on_shutdown():
+  C-S-1   data_ != nullptr  → read_release + null data_
+  C-S-2   data_ == nullptr  → no-op
+
+invoke_and_commit():
+  C-I-INC  data_ != nullptr                     → inc_in_slots_received
+  C-I-FZ   core.has_in_fz()                     → read_flexzone() as fz_ptr, else null
+  errors_before = script_error_count()
+  // (engine.invoke_consume returns void)
+  slot decision:
+    C-I-R    data_ != nullptr                    → read_release + null data_
+    C-I-N    data_ == nullptr                    → no slot op
+  stop decision (NOTE: uses error-count delta, not return value):
+    C-I-STOP stop_on_error && script_error_count() > errors_before  → request_stop + return false
+
+cleanup_on_exit():
+  C-X     no-op
+```
+
+Slot outcomes in consumer path: **release**, **no-slot-drop**.
+
+#### ProcessorCycleOps (17 branches — most complex; covers input-hold)
+
+```
+acquire():
+  PR-A-ACQ   !held_input_                        → retry_acquire(read) → held_input_
+  PR-A-TX-D  held_input_ && drop_mode_           → write_acquire(0ms)   → out_buf_
+  PR-A-TX-B  held_input_ && !drop_mode_          → write_acquire(deadline-aware)
+  PR-A-NOTX  !held_input_                        → out_buf_ stays null
+  // always returns true (processor maintains cadence on idle cycles)
+
+cleanup_on_shutdown():
+  PR-S-R   held_input_ != null                   → read_release
+  PR-S-D   out_buf_     != null                  → write_discard
+
+invoke_and_commit():
+  PR-I-M     out_buf_ != null                     → memset(out_buf_, 0, out_sz_)
+  PR-I-FZ-o  core.has_out_fz()                    → re-read out_fz_ptr_
+  PR-I-FZ-i  core.has_in_fz()                     → re-read in_fz_ptr_
+  result = engine.invoke_process(rx, tx, msgs)
+
+  OUTPUT slot decision:
+    PR-I-C       out_buf_ && result==Commit      → write_commit + inc_out_slots_written
+    PR-I-Do      out_buf_ && result==Discard     → write_discard + inc_out_drop_count
+    PR-I-Eo      out_buf_ && result==Error       → write_discard + inc_out_drop_count
+    PR-I-TXFAIL  !out_buf_ && held_input_        → inc_out_drop_count (tx acquire failed)
+    PR-I-IDLE    !out_buf_ && !held_input_       → no action (idle cycle)
+
+  INPUT slot decision (the processor-specific hold logic):
+    PR-I-REL     held_input_ && (out_buf_ || drop_mode_)     → read_release + inc_in_slots_received
+    PR-I-HOLD    held_input_ && !out_buf_ && !drop_mode_     → hold across cycles (key!)
+    PR-I-NOHELD  !held_input_                                 → no input action
+
+  stop decision:
+    PR-I-STOP    result==Error && stop_on_error              → request_stop + return false
+
+cleanup_on_exit():
+  PR-X-R   held_input_ != null                  → read_release (released one cycle late)
+  PR-X-N   held_input_ == null                  → no-op
+```
+
+Slot outcomes in processor path: **commit**, **discard**, **tx-fail-drop**,
+**idle-cycle**, **release**, **hold-across-cycles**.
+
+### 4.5b Post-β mapping requirement — IDENTICAL EFFECT
+
+Every branch ID above must be addressable in the unified `CycleOps` code,
+and **produce identical observable effect** as the pre-β version. Not
+similar, not functionally equivalent, not "close enough" — **bit-identical
+in observable state**.
+
+Observable state means:
+
+1. **Identical slot action** at the same branch condition.
+   E.g., if pre-β at P-I-E calls `write_discard()` and increments
+   `out_drop_count`, post-β at the corresponding branch must call
+   `write_discard()` and increment `out_drop_count`. Same method, same
+   order.
+2. **Identical metric increment site** within the cycle.
+   E.g., `out_slots_written++` is called *after* `write_commit()`, not
+   before. `inc_in_slots_received()` fires at the exact same point
+   (at release time for processor, at acquire time for consumer —
+   whatever the pre-β code did). Ordering between slot action and
+   metric increment is observable via metric-snapshot timing and must
+   not shift.
+3. **Identical metric final values** at cycle-loop completion.
+   After running N cycles of a scenario, all metric counters equal the
+   pre-β values *exactly*. Not bounds; not "within tolerance"; exact
+   equality.
+4. **Identical queue contents** from the harness side.
+   - Producer: queue contains exactly `[0..N-1]` in that order.
+   - Consumer: received exactly the producer-emitted N slots in that order.
+   - Processor Block: input sequence 1:1-mapped to output sequence.
+   - Processor Drop: received output is a monotone subset of input with
+     exactly `out_drop_count` gaps; the *set of dropped input indices*
+     must be consistent between pre-β and post-β for the same scenario.
+5. **Identical RecordingEngine call log.**
+   Same number of `invoke_*` calls, in the same order, with same argument
+   snapshots (slot pointer is position-equivalent; slot contents bit-exact),
+   and same return values recorded.
+
+**Review artifact required at L3.β submission**: a table of all 35 branch
+IDs with their post-β line numbers and a one-line outcome statement.
+Any branch that cannot be mapped, or whose effect differs, is a blocker.
+
+### 4.5c Commit/abandon/hold decision tables
+
+Slot disposition is the most regression-prone aspect of L3.β. The
+baseline suite must verify each of these decision tables by observation —
+both via built-in metrics AND via harness-side queue inspection.
+
+**Producer — commit/abandon decision** (result of `invoke_produce`):
+
+| Slot acquired? | result        | Action on slot  | out_slots_written++ | out_drop_count++ |
+|----------------|---------------|-----------------|---------------------|------------------|
+| Yes            | Commit        | write_commit    | ✅                  | —                |
+| Yes            | Discard       | write_discard   | —                   | ✅               |
+| Yes            | Error         | write_discard   | —                   | ✅               |
+| No             | (any)         | (none)          | —                   | ✅               |
+
+**Consumer — release decision** (no commit concept):
+
+| Slot acquired? | Action on slot | in_slots_received++ |
+|----------------|----------------|---------------------|
+| Yes            | read_release   | ✅                  |
+| No             | (none)         | —                   |
+
+**Processor output — commit/abandon decision** (result of `invoke_process`):
+
+| out_buf_? | held_input_? | result  | Output action  | out_slots_written++ | out_drop_count++ |
+|-----------|--------------|---------|----------------|---------------------|------------------|
+| Yes       | Yes          | Commit  | write_commit   | ✅                  | —                |
+| Yes       | Yes          | Discard | write_discard  | —                   | ✅               |
+| Yes       | Yes          | Error   | write_discard  | —                   | ✅               |
+| No        | Yes          | (any)   | (none)         | —                   | ✅               |
+| No        | No           | (any)   | (none)         | —                   | —                |
+
+**Processor input — release/hold decision** (independent of invoke result):
+
+| held_input_? | out_buf_?  | drop_mode_ | Input action   | in_slots_received++ |
+|--------------|------------|------------|----------------|---------------------|
+| Yes          | Yes        | —          | read_release   | ✅                  |
+| Yes          | No         | Yes        | read_release   | ✅                  |
+| Yes          | No         | No         | **hold**       | —                   |
+| No           | —          | —          | (none)         | —                   |
+
+**Why these tables matter**: these are the answers the tests must observe.
+If post-β behavior differs at any row, a metric or contents assertion
+will fire. The decision logic has never been extracted into a test
+oracle before — this is the gap the baseline suite fills.
+
+### 4.5d Test mapping — which test covers which branches
+
+Each of the 6 baseline tests exercises a subset of the 35 branches. The
+coverage must be complete: every ID from §4.5a appears in at least one
+test's coverage tag. Suggested coverage (reviewer must verify no gap):
+
+| Test # | Scenario | Branches exercised (IDs) |
+|---|---|---|
+| 1 | Producer happy path, N=100 all-Commit | P-A-1, P-I-M, P-I-FZ (if fz), P-I-C, P-X |
+| 1b| Producer with mix of Commit/Discard/Error | adds P-I-D, P-I-E, P-I-STOP |
+| 1c| Producer with Tx-full (buf_ null) | adds P-A-2, P-I-N |
+| 1d| Producer shutdown with held buf_ | adds P-S-1, P-S-2 |
+| 2 | Consumer happy path, N=100 reads | C-A-1, C-I-INC, C-I-FZ, C-I-R, C-X |
+| 2b| Consumer with script errors | adds C-I-STOP |
+| 2c| Consumer with empty queue (no data) | adds C-A-2, C-I-N |
+| 2d| Consumer shutdown with held slot | adds C-S-1, C-S-2 |
+| 3 | Processor Block + Tx-capacity=4 + throttled consumer, 100 inputs | PR-A-ACQ, PR-A-TX-B, PR-I-M, PR-I-FZ-o/i, PR-I-C, PR-I-REL, PR-I-TXFAIL (forces input-hold), PR-I-HOLD, PR-X-N |
+| 4 | Processor Drop + same setup | adds PR-A-TX-D, PR-I-Do, PR-I-Eo (with simulated errors) |
+| 4b| Processor idle cycles (no input available) | adds PR-A-NOTX, PR-I-IDLE, PR-I-NOHELD |
+| 4c| Processor shutdown mid-hold | adds PR-S-R, PR-S-D, PR-X-R |
+| 5 | FixedRate 100Hz × N cycles timing | revisits P-* with timing assertions |
+| 6 | Deliberate handler overrun | P-* + loop_overrun_count assertions |
+
+Test count revised from 6 to ~13 (the ".b/.c/.d" variants are small
+extensions of the main 6, not net-new scaffolding). Baseline suite total:
+~600 LOC.
+
+### 4.5e1 Exact-equality assertion language (NOT bounded)
+
+Every baseline-test assertion is **exact equality** between a scenario-derived
+predicted value and an observed value. Bounded or inequality assertions
+(`EXPECT_GE`, `EXPECT_LT`) tolerate regressions and are therefore forbidden
+except for wall-clock timing tolerance, where cycle-jitter makes exact
+equality impossible.
+
+The predicted values are derived by **walking the branch decision trees
+in §4.5a and the decision tables in §4.5c** against the test scenario
+parameters (N cycles, script return pattern, queue capacity, throttle
+rate). They are NOT recorded from the pre-β run as magic numbers to be
+matched — they are symbolic predictions that both pre-β and post-β code
+must satisfy.
+
+Correct pattern:
+```cpp
+// Scenario: producer, N=100, script returns Commit for all cycles, queue
+// capacity = 16 (never full), no shutdown. From §4.5a tree: every cycle
+// enters P-A-1 → P-I-M → P-I-FZ(if fz) → P-I-C → return true.
+constexpr uint64_t kExpectedWritten = 100;
+constexpr uint64_t kExpectedDropped = 0;
+constexpr uint64_t kExpectedIter    = 100;
+
+// Metric assertions — exact equality.
+EXPECT_EQ(core.iteration_count(),    kExpectedIter);
+EXPECT_EQ(core.out_slots_written(),  kExpectedWritten);
+EXPECT_EQ(core.out_drop_count(),     kExpectedDropped);
+
+// Harness assertion — exact contents.
+auto slots = drain_producer_queue_to_vec();
+ASSERT_EQ(slots.size(), kExpectedWritten);
+for (uint64_t i = 0; i < kExpectedWritten; ++i) {
+    EXPECT_EQ(slots[i].seq, i);   // exact
+}
+
+// Cross-check — counter and contents agree.
+EXPECT_EQ(core.out_slots_written(), slots.size());
+```
+
+Forbidden pattern:
+```cpp
+EXPECT_GE(core.out_slots_written(), 95u);  // tolerates up to 5 slot loss
+EXPECT_GT(slots.size(), 0u);               // "some slots arrived"
+```
+
+The exception: `last_cycle_work_us` and wall-clock timing assertions
+use tolerance bands because cycle-jitter is unavoidable at sub-ms
+scale. But cycle-count and slot-count assertions always use exact
+equality — those quantities have no jitter source.
+
+### 4.5e Test-evaluation principles
 
 These principles govern every test in the baseline suite (to be implemented
 before L3.β as a separate work item).
@@ -449,10 +727,11 @@ before a discard path. The counter and the actual queue contents would
 diverge. The cross-check catches exactly this. Counter-only or
 contents-only assertions do not.
 
-### 4.5b Baseline test suite — the six tests
+### 4.5f Baseline test suite — the six core tests
 
-All six tests adhere to §4.5a. Every assertion comes from (a) built-in
+All six tests adhere to §4.5e. Every assertion comes from (a) built-in
 metrics OR (b) test-harness measurements, and cross-checked where possible.
+See §4.5d for the branch-coverage expansion to ~13 tests total.
 
 | # | Scenario | Built-in-metric assertions | Harness-measurement assertions |
 |---|---|---|---|
