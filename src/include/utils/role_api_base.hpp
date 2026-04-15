@@ -46,6 +46,11 @@ class SharedSpinLock;
 // BrokerRequestComm: full definition from broker_request_comm.hpp (needed for Config in start_ctrl_thread).
 } // namespace pylabhub::hub
 
+namespace pylabhub::utils
+{
+class ThreadManager;   // fwd decl; full in utils/thread_manager.hpp
+} // namespace pylabhub::utils
+
 namespace pylabhub::scripting
 {
 
@@ -309,13 +314,41 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     // and shutdown check via core_.is_running(). The ctrl thread is the first
     // managed thread. Future worker threads use the same interface.
 
-    /// Spawn a named managed thread. The body runs inside a ThreadEngineGuard.
+    /// Initialize the role-scope thread manager as a dynamic lifecycle
+    /// module. Must be called exactly once after set_role_tag() and
+    /// set_uid() — the module name embeds both so operators filtering
+    /// lifecycle logs can identify the instance uniquely:
+    ///
+    ///   module name = "ThreadManager:{role_tag}:{uid}"
+    ///
+    /// Example: "ThreadManager:prod:PROD-SENSOR-00000001".
+    ///
+    /// Throws std::logic_error if called before role_tag/uid are set, or
+    /// if called more than once.
+    void init_thread_manager();
+
+    /// Access the role's thread manager. All role-scope threads (worker /
+    /// ctrl / inbox drainer / future) live under this one manager — same
+    /// lifecycle module, same bounded-join, same process-wide leak
+    /// aggregator. Usage:
+    ///
+    ///   api_->thread_manager().spawn("worker",
+    ///       [&] { scripting::ThreadEngineGuard g(*engine_); worker_main_(); });
+    ///
+    /// Throws std::logic_error if called before init_thread_manager().
+    [[nodiscard]] pylabhub::utils::ThreadManager &thread_manager();
+
+    // ── Deprecated thin shims over thread_manager() ─────────────────────────
+    // Retained for callers not yet migrated to api_->thread_manager().spawn(...).
+    // Scheduled for removal once role hosts + in-tree tests all go through
+    // the thread_manager() accessor directly. Each shim requires
+    // init_thread_manager() to have been called.
+
+    /// @deprecated Prefer api_->thread_manager().spawn(name, body).
     void spawn_thread(const std::string &name, std::function<void()> body);
-
-    /// Join all managed threads in reverse spawn order.
+    /// @deprecated Prefer destruction-time join via ThreadManager dtor.
     void join_all_threads();
-
-    /// Number of managed threads (for diagnostics).
+    /// @deprecated Prefer api_->thread_manager().active_count().
     [[nodiscard]] size_t thread_count() const;
 
     // ── Broker communication (control plane) ────────────────────────────────
