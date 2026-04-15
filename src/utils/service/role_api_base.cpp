@@ -909,11 +909,11 @@ std::string RoleAPIBase::in_policy() const
 
 void RoleAPIBase::set_verify_checksum(bool enable)
 {
-    // set_verify_checksum(slot,fz) is not yet on the QueueReader base
-    // interface — still routes through hub::Consumer until L3.γ migrates
-    // the hub-layer API into QueueReader.
-    if (pImpl->consumer)
-        pImpl->consumer->set_verify_checksum(enable, false);
+    // Routes to QueueReader::set_verify_checksum(slot, fz); slot-only as per
+    // the pre-L3.γ contract (the old Consumer::set_verify_checksum also
+    // passed false for fz).
+    if (pImpl->rx_queue)
+        pImpl->rx_queue->set_verify_checksum(enable, false);
 }
 
 // ============================================================================
