@@ -317,7 +317,7 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
     // ── Role-specific closures based on role_tag ────────────────────────
     if (api_->role_tag() == "prod")
     {
-        if (api_->producer())
+        if (api_->has_tx_side())
         {
             push_closure("update_flexzone_checksum", lua_api_update_flexzone_checksum);
         }
@@ -331,7 +331,7 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
     }
     else if (api_->role_tag() == "cons")
     {
-        if (api_->consumer())
+        if (api_->has_rx_side())
             push_closure("set_verify_checksum", lua_api_set_verify_checksum);
         push_closure("slot_logical_size", lua_api_slot_logical_size);
         push_closure("flexzone_logical_size", lua_api_flexzone_logical_size);
@@ -345,7 +345,7 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
     {
         push_closure("in_channel", lua_api_in_channel);
         push_closure("out_channel", lua_api_out_channel);
-        if (api_->producer())
+        if (api_->has_tx_side())
         {
             push_closure("update_flexzone_checksum", lua_api_update_flexzone_checksum);
         }
@@ -356,7 +356,7 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
         push_closure("spinlock_count", lua_api_spinlock_count);
         push_closure("out_capacity", lua_api_out_capacity);
         push_closure("out_policy", lua_api_out_policy);
-        if (api_->consumer())
+        if (api_->has_rx_side())
             push_closure("set_verify_checksum", lua_api_set_verify_checksum);
         push_closure("in_capacity", lua_api_in_capacity);
         push_closure("in_policy", lua_api_in_policy);
@@ -1536,10 +1536,8 @@ int LuaEngine::lua_api_out_channel(lua_State *L)
 int LuaEngine::lua_api_update_flexzone_checksum(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto *p = self->api_->producer();
-    if (p)
-        p->sync_flexzone_checksum();
-    lua_pushboolean(L, p ? 1 : 0);
+    const bool ok = self->api_->sync_flexzone_checksum();
+    lua_pushboolean(L, ok ? 1 : 0);
     return 1;
 }
 
@@ -1547,9 +1545,7 @@ int LuaEngine::lua_api_set_verify_checksum(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     bool enable = lua_toboolean(L, 1) != 0;
-    auto *c = self->api_->consumer();
-    if (c)
-        c->set_verify_checksum(enable, false);
+    self->api_->set_verify_checksum(enable);
     return 0;
 }
 
@@ -1609,46 +1605,35 @@ int LuaEngine::lua_api_critical_error(lua_State *L)
 int LuaEngine::lua_api_out_capacity(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto *p = self->api_->producer();
-    lua_pushinteger(L, p ? static_cast<lua_Integer>(p->queue_capacity()) : 0);
+    lua_pushinteger(L, static_cast<lua_Integer>(self->api_->out_capacity()));
     return 1;
 }
 
 int LuaEngine::lua_api_out_policy(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto *p = self->api_->producer();
-    if (p)
-        lua_pushstring(L, p->queue_policy_info().c_str());
-    else
-        lua_pushstring(L, "");
+    lua_pushstring(L, self->api_->out_policy().c_str());
     return 1;
 }
 
 int LuaEngine::lua_api_in_capacity(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto *c = self->api_->consumer();
-    lua_pushinteger(L, c ? static_cast<lua_Integer>(c->queue_capacity()) : 0);
+    lua_pushinteger(L, static_cast<lua_Integer>(self->api_->in_capacity()));
     return 1;
 }
 
 int LuaEngine::lua_api_in_policy(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto *c = self->api_->consumer();
-    if (c)
-        lua_pushstring(L, c->queue_policy_info().c_str());
-    else
-        lua_pushstring(L, "");
+    lua_pushstring(L, self->api_->in_policy().c_str());
     return 1;
 }
 
 int LuaEngine::lua_api_last_seq(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    auto *c = self->api_->consumer();
-    lua_pushinteger(L, c ? static_cast<lua_Integer>(c->last_seq()) : 0);
+    lua_pushinteger(L, static_cast<lua_Integer>(self->api_->last_seq()));
     return 1;
 }
 
@@ -1770,34 +1755,34 @@ int LuaEngine::lua_api_metrics(lua_State *L)
     lua_newtable(L);
 
     // "queue" (or "in_queue"/"out_queue" for processor)
-    auto *producer = self->api_->producer();
-    auto *consumer = self->api_->consumer();
+    const bool has_tx = self->api_->has_tx_side();
+    const bool has_rx = self->api_->has_rx_side();
 
     if (self->api_->role_tag() == "proc")
     {
-        if (consumer)
+        if (has_rx)
         {
             lua_newtable(L);
-            queue_metrics_to_lua(L, consumer->queue_metrics());
+            queue_metrics_to_lua(L, self->api_->queue_metrics(scripting::ChannelSide::Rx));
             lua_setfield(L, -2, "in_queue");
         }
-        if (producer)
+        if (has_tx)
         {
             lua_newtable(L);
-            queue_metrics_to_lua(L, producer->queue_metrics());
+            queue_metrics_to_lua(L, self->api_->queue_metrics(scripting::ChannelSide::Tx));
             lua_setfield(L, -2, "out_queue");
         }
     }
-    else if (self->api_->role_tag() == "prod" && producer)
+    else if (self->api_->role_tag() == "prod" && has_tx)
     {
         lua_newtable(L);
-        queue_metrics_to_lua(L, producer->queue_metrics());
+        queue_metrics_to_lua(L, self->api_->queue_metrics(scripting::ChannelSide::Tx));
         lua_setfield(L, -2, "queue");
     }
-    else if (self->api_->role_tag() == "cons" && consumer)
+    else if (self->api_->role_tag() == "cons" && has_rx)
     {
         lua_newtable(L);
-        queue_metrics_to_lua(L, consumer->queue_metrics());
+        queue_metrics_to_lua(L, self->api_->queue_metrics(scripting::ChannelSide::Rx));
         lua_setfield(L, -2, "queue");
     }
 
@@ -2016,16 +2001,15 @@ int LuaEngine::lua_api_flexzone(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
 
-    // Only producer/processor have writable flexzone.
-    auto *producer = self->api_->producer();
-    if (!producer)
-    {
-        lua_pushnil(L);
-        return 1;
-    }
-
-    void *fz_ptr = producer->flexzone();
-    size_t fz_sz = producer->flexzone_size();
+    // Flexzone is bidirectional per HEP-CORE-0002 §2.2; expose whichever
+    // side has a wired queue with a flexzone region. For the processor's
+    // dual-side case this Lua surface is planned to take an explicit side
+    // argument in a follow-up commit (Commit C); current callers only use
+    // it from producer/consumer scripts.
+    auto side = self->api_->has_tx_side() ? scripting::ChannelSide::Tx
+                                          : scripting::ChannelSide::Rx;
+    void *fz_ptr = self->api_->flexzone(side);
+    size_t fz_sz = self->api_->flexzone_size(side);
     if (!fz_ptr || fz_sz == 0)
     {
         lua_pushnil(L);

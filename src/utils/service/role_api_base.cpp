@@ -1157,4 +1157,14 @@ hub::Producer *RoleAPIBase::producer() const { return pImpl->producer; }
 hub::Consumer *RoleAPIBase::consumer() const { return pImpl->consumer; }
 hub::InboxQueue *RoleAPIBase::inbox_queue() const { return pImpl->inbox_queue; }
 
+bool RoleAPIBase::has_tx_side() const noexcept { return pImpl->tx_queue != nullptr; }
+bool RoleAPIBase::has_rx_side() const noexcept { return pImpl->rx_queue != nullptr; }
+
+hub::QueueMetrics RoleAPIBase::queue_metrics(ChannelSide side) const noexcept
+{
+    if (side == ChannelSide::Tx)
+        return pImpl->tx_queue ? pImpl->tx_queue->metrics() : hub::QueueMetrics{};
+    return pImpl->rx_queue ? pImpl->rx_queue->metrics() : hub::QueueMetrics{};
+}
+
 } // namespace pylabhub::scripting
