@@ -53,6 +53,7 @@
 #include "utils/broker_service.hpp"
 #include "utils/channel_access_policy.hpp"
 #include "utils/interactive_signal_handler.hpp"
+#include "utils/thread_manager.hpp"
 #include "utils/uid_utils.hpp"
 #include "utils/uuid_utils.hpp"
 #include "utils/hub_vault.hpp"
@@ -656,7 +657,11 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
 
     pylabhub::broker::BrokerService broker(broker_cfg);
 
-    std::thread broker_thread([&broker]() { broker.run(); });
+    // Broker thread runs under a ThreadManager so its shutdown is bounded
+    // with ERROR-on-timeout diagnostics (owner tag "hubshell"). Replaces
+    // the raw std::thread + unbounded .join() pattern.
+    pylabhub::utils::ThreadManager hubshell_threads("hubshell");
+    hubshell_threads.spawn("broker", [&broker]() { broker.run(); });
 
     // -----------------------------------------------------------------------
     // Wire pylabhub.channels() → BrokerService::list_channels_json_str().
@@ -748,7 +753,7 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
     {
         LOGGER_ERROR("HubShell: failed to register HubScript dynamic module");
         broker.stop();
-        broker_thread.join();
+        /* bounded join via hubshell_threads dtor */
         return 1;
     }
 
@@ -756,7 +761,7 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
     {
         LOGGER_ERROR("HubShell: Python environment initialization failed");
         broker.stop();
-        broker_thread.join();
+        /* bounded join via hubshell_threads dtor */
         return 1;
     }
 
@@ -833,7 +838,7 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
     //         finishing up its on_stop callback.
     LOGGER_INFO("HubShell: stopping broker...");
     broker.stop();
-    broker_thread.join();
+    /* bounded join via hubshell_threads dtor */
     LOGGER_INFO("HubShell: broker stopped.");
 
     // Step 4: Wait for hub_thread_ to finish (on_stop + Py_Finalize).
@@ -848,6 +853,21 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
     std::fprintf(stderr,
                  "[DBG] Termination requested by user, shutdown initiated"
                  " — this may take a few seconds.\n");
+
+    // hubshell_threads destructor runs here (end of function scope), bounded-
+    // joining the broker thread. Before returning, propagate any detached-
+    // thread leak as a non-zero exit code so L4 integration tests spawning
+    // pylabhub-hubshell cannot mistake a silent leak for success.
+    const auto leaked =
+        pylabhub::utils::ThreadManager::process_detached_count();
+    if (leaked > 0)
+    {
+        std::fprintf(stderr,
+                     "[HubShell] UNCLEAN SHUTDOWN — %zu thread(s) leaked. "
+                     "See ERROR log entries tagged [ThreadManager:*].\n",
+                     leaked);
+        return 2;
+    }
     return 0;
 }
 
