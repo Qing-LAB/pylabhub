@@ -280,26 +280,88 @@ private:
 
 ---
 
-## 4. Loop semantics (reference only)
+## 4. Loop semantics — INVARIANT through L3
 
-The data loop structure — inner retry acquire, deadline wait, drain, invoke,
-commit/release, metrics, next_deadline — is already implemented in
-`RoleAPIBase::run_data_loop()` per `loop_design_unified.md` v4. That document
-remains canonical for the timing and policy details; this draft does not
-revise them.
+**Critical constraint**: the refactor must preserve the main data loop's
+timing behavior exactly. No observable timing change. No reordering of
+steps. No change to when the deadline wait runs, when the inner retry
+exits, when metrics are computed, or when the next deadline is advanced.
 
-What changes in the loop implementation for this refactor:
+### 4.1 Authoritative reference
+
+`docs/tech_draft/loop_design_unified.md` v4 is the canonical specification
+for loop timing. It covers: unified inner retry-acquire formula,
+`compute_short_timeout` / `compute_next_deadline`, MaxRate / FixedRate /
+FixedRateWithCompensation policies, processor input-hold strategy, and the
+7-step per-cycle skeleton (Setup / A / B / B' / C / D+E / F / G).
+
+`docs/tech_draft/unified_role_loop.md` §4 recorded an exhaustive
+code-vs-doc parity check at the 1323-test baseline that confirmed every
+step matches `loop_design_unified.md` exactly. The loop logic migrated
+into `RoleAPIBase::run_data_loop()` verbatim — no semantic change since.
+This draft does not revise any timing behavior.
+
+### 4.2 What L3 changes in the loop implementation
+
+Three things, none of which alter timing:
 
 - CycleOps stops holding `hub::Producer&` / `hub::Consumer&` / `ScriptEngine&`
   as raw fields; it holds `RoleAPIBase&` and calls `api_.write_*` /
-  `api_.read_*` directly.
+  `api_.read_*` directly. **Same method calls, same order, same timeouts.**
 - The three subclasses collapse into one concrete `CycleOps`. Processor
-  input-hold behavior is derived from `api_.writer() && api_.reader() &&
-  overflow_policy == Block`.
+  input-hold behavior is derived from side presence + overflow policy.
+  **Same branching, same transitions, same held-input preservation.**
 - Script invocation goes through `engine_->invoke_cycle(cycle_handle_,
   make_rx(), make_tx(), msgs)`. The engine does not know which callback
   name is behind `cycle_handle_` — it was resolved at setup by
   `pylabhub::role::callback_name_for(config_.role_tag)`.
+  **Same callback executes, same arguments, same dispatch cost
+  (one cached handle lookup replaces one role-tag branch).**
+
+### 4.3 Timing-parity verification checklist
+
+After each phase that modifies loop code, run this checklist BEFORE
+committing:
+
+| Check | How to verify |
+|---|---|
+| Inner retry short_timeout unchanged | Grep `compute_short_timeout(` in CycleOps — formula and call shape must be identical to pre-refactor. |
+| Deadline wait gate unchanged | Compare the 4-condition guard `!is_max_rate && has_data && deadline != max && Clock::now() < deadline` against `loop_design_unified.md` §3 Step B. |
+| Drain order unchanged | `core.drain_messages()` then `drain_inbox_sync()` — Step C. No reordering. |
+| Invoke occurs after drain, before commit | Step D+E sequence. Inspect flow in `CycleOps::invoke_and_commit`. |
+| Commit/discard policy unchanged | Producer: Commit→commit / Error→discard / Discard→discard. Consumer: always release. Processor: commit/discard on output, release-or-hold on input. |
+| Metrics computation unchanged | `work_us` = `now - cycle_start`. `loop_overrun` increment condition unchanged. |
+| `compute_next_deadline` call unchanged | 4-param call with `(policy, deadline, cycle_start, period_us)`. |
+| Processor held_input preserved across cycles | In Block + Tx-fail case, input stays held; next cycle sees `held_rx_ != nullptr` and skips Rx acquire. |
+| `cleanup_on_shutdown` releases what `acquire` grabbed | Shutdown path releases any held Tx/Rx slot. |
+| `cleanup_on_exit` releases held_input (processor) | Loop-exit path releases any held-over input slot. |
+
+### 4.4 Regression protection
+
+In addition to the checklist above, the following existing tests exercise
+timing behavior and must remain green through every phase:
+
+- `test_datahub_loop_policy.cpp` — exercises MaxRate / FixedRate /
+  FixedRateWithCompensation via Producer, Consumer, Processor.
+- `test_datahub_role_state_machine.cpp` — exercises metrics counters
+  that would change if cycle-overrun timing changed.
+- Processor integration tests in `test_layer3_datahub` / `test_layer4_processor`
+  that rely on input-hold behavior.
+
+Any test failure related to timing after a refactor commit is a
+**hard revert trigger** — do not "fix" the timing; revert the refactor
+commit and reconsider.
+
+### 4.5 Phase-specific timing risk
+
+| Phase | Timing risk | Mitigation |
+|---|---|---|
+| L3.α | **Zero** — pure API-surface rename. The verbs being added to `RoleAPIBase` forward to the same internal queue pointers as before. | Verify test suite. No code-body changes in the loop. |
+| L3.β | **Medium** — CycleOps collapse. Branch structure changes. | Run the §4.3 checklist item-by-item before commit. Inspect the collapsed CycleOps against each original CycleOps subclass line-by-line. |
+| L3.γ | **Low** — `hub::Producer`/`Consumer` deletion. Their methods were already pure forwarders to the queue. | Verify test suite. Timing code was never in Producer/Consumer themselves. |
+| L3.δ | **Zero** — `RoleHost` restructure is lifecycle, not loop. | Verify test suite. |
+| L3.ε | **Low** — engine dispatch goes from `invoke_produce/consume/process` to `invoke_cycle(handle, ...)`. One pointer deref vs one method-name-based dispatch — cost is the same order of magnitude. | Measure cycle work_us in a tight-loop test at MaxRate. If mean work_us changes by more than ±1 µs, investigate. |
+| L3.ζ | **Zero** — docs only. | — |
 
 ---
 
