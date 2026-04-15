@@ -30,13 +30,6 @@ static constexpr uint8_t kWireMinor = 0;
 static constexpr uint8_t kScriptApiMajor = 1;
 static constexpr uint8_t kScriptApiMinor = 0;
 
-// Facade sizes — ABI canaries.
-// These are determined by the struct layouts in hub_producer.hpp / hub_consumer.hpp.
-// If a facade struct changes, the static_assert in the .cpp file catches it first;
-// these values should then be updated to match.
-static constexpr uint16_t kFacadeProducerSize = 64;
-static constexpr uint16_t kFacadeConsumerSize = 48;
-
 namespace pylabhub::version
 {
 
@@ -52,8 +45,6 @@ ComponentVersions current() noexcept
         kWireMinor,
         kScriptApiMajor,
         kScriptApiMinor,
-        kFacadeProducerSize,
-        kFacadeConsumerSize,
     };
 }
 
@@ -71,13 +62,12 @@ std::string version_info_string()
 {
     const auto v = current();
     return fmt::format(
-        "pylabhub {} (lib={}.{}.{}, shm={}.{}, wire={}.{}, script={}.{}, facade={}/{}, python_rt={})",
+        "pylabhub {} (lib={}.{}.{}, shm={}.{}, wire={}.{}, script={}.{}, python_rt={})",
         PYLABHUB_RELEASE_VERSION,
         v.library_major, v.library_minor, v.library_rolling,
         v.shm_major, v.shm_minor,
         v.wire_major, v.wire_minor,
         v.script_api_major, v.script_api_minor,
-        v.facade_producer_size, v.facade_consumer_size,
         PYLABHUB_PYTHON_RUNTIME_VERSION);
 }
 
@@ -85,14 +75,13 @@ std::string version_info_json()
 {
     const auto v = current();
     return fmt::format(
-        R"({{"release":"{}","library":"{}.{}.{}","python_runtime":"{}","shm_major":{},"shm_minor":{},"wire_major":{},"wire_minor":{},"script_api_major":{},"script_api_minor":{},"facade_producer":{},"facade_consumer":{}}})",
+        R"({{"release":"{}","library":"{}.{}.{}","python_runtime":"{}","shm_major":{},"shm_minor":{},"wire_major":{},"wire_minor":{},"script_api_major":{},"script_api_minor":{}}})",
         PYLABHUB_RELEASE_VERSION,
         v.library_major, v.library_minor, v.library_rolling,
         PYLABHUB_PYTHON_RUNTIME_VERSION,
         v.shm_major, v.shm_minor,
         v.wire_major, v.wire_minor,
-        v.script_api_major, v.script_api_minor,
-        v.facade_producer_size, v.facade_consumer_size);
+        v.script_api_major, v.script_api_minor);
 }
 
 } // namespace pylabhub::version

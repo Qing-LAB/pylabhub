@@ -77,9 +77,9 @@ set(UTILS_SOURCES
   ipc/channel_registry.cpp
   ipc/broker_service.cpp
 
-  # --- hub: high-level Producer/Consumer API + transport-agnostic Queue + Processor ---
-  hub/hub_producer.cpp
-  hub/hub_consumer.cpp
+  # --- hub: transport-agnostic Queue + Processor + Inbox ---
+  #     Tx/Rx queue ownership and factory logic moved into RoleAPIBase
+  #     (L3.γ A6.3). The old hub_producer.cpp / hub_consumer.cpp are gone.
   hub/hub_shm_queue.cpp
   hub/hub_zmq_queue.cpp
   hub/hub_inbox_queue.cpp

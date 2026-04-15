@@ -304,6 +304,18 @@ public:
 
     /** @brief Returns true if running (after start(), before stop()). */
     virtual bool is_running() const noexcept { return true; }
+
+    /**
+     * @brief True iff this reader is backed by shared memory (vs ZMQ).
+     *
+     * Single transport-discriminator exposed on the abstract interface, so
+     * callers holding only a QueueReader* can still emit a transport-aware
+     * diagnostic / take the SHM-only code path (e.g., sync flexzone checksum)
+     * without needing to know the concrete implementation class.
+     *
+     * Default: false (safe for any non-SHM transport). Override in ShmQueue.
+     */
+    virtual bool is_shm_backed() const noexcept { return false; }
 };
 
 /**
@@ -445,6 +457,13 @@ public:
 
     /** @brief Returns true if running (after start(), before stop()). */
     virtual bool is_running() const noexcept { return true; }
+
+    /**
+     * @brief True iff this writer is backed by shared memory (vs ZMQ).
+     *
+     * Default: false. Override in ShmQueue. See QueueReader::is_shm_backed.
+     */
+    virtual bool is_shm_backed() const noexcept { return false; }
 };
 
 } // namespace pylabhub::hub

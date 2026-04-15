@@ -364,9 +364,6 @@ TEST(VersionRegistryTest, CurrentReturnsConsistentValues)
     EXPECT_GT(v.wire_major, 0);
     EXPECT_GT(v.script_api_major, 0);
 
-    // Facade sizes must be non-zero (ABI canary).
-    EXPECT_GT(v.facade_producer_size, 0);
-    EXPECT_GT(v.facade_consumer_size, 0);
 }
 
 TEST(VersionRegistryTest, ReleaseVersionNotEmpty)
@@ -416,8 +413,6 @@ TEST(VersionRegistryTest, VersionInfoJsonParsesCorrectly)
     EXPECT_TRUE(j.contains("shm_major"));
     EXPECT_TRUE(j.contains("wire_major"));
     EXPECT_TRUE(j.contains("script_api_major"));
-    EXPECT_TRUE(j.contains("facade_producer"));
-    EXPECT_TRUE(j.contains("facade_consumer"));
 
     // Release field matches the C API.
     EXPECT_EQ(j["release"].get<std::string>(), pylabhub::version::release_version());

@@ -12,6 +12,8 @@
 #include "utils/hub_consumer.hpp"
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/hub_producer.hpp"
+#include "utils/hub_shm_queue.hpp"
+#include "utils/hub_zmq_queue.hpp"
 #include "utils/logger.hpp"
 #include "utils/metrics_json.hpp"
 #include "utils/role_host_core.hpp"
@@ -19,8 +21,10 @@
 #include "utils/shared_memory_spinlock.hpp"
 #include "utils/thread_manager.hpp"
 
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -46,16 +50,12 @@ struct RoleAPIBase::Impl
 
     RoleHostCore    *core;
 
-    // Queue owners: RoleAPIBase holds hub::Producer/Consumer by value (A6.2).
-    // The tx_queue/rx_queue pointers point into these owners. When A6.3 deletes
-    // the Producer/Consumer classes, the factory logic will be inlined into
-    // build_tx_queue()/build_rx_queue() and the owners will become direct
-    // unique_ptr<QueueWriter>/unique_ptr<QueueReader> fields.
-    std::optional<hub::Producer> tx_owner;
-    std::optional<hub::Consumer> rx_owner;
-
-    hub::QueueWriter *tx_queue{nullptr};
-    hub::QueueReader *rx_queue{nullptr};
+    // Abstract queue ownership — RoleAPIBase sees the unified interface only.
+    // Factories (ShmQueue::create_*, ZmqQueue::push_to / pull_from) return
+    // concrete types; build_tx_queue/build_rx_queue upcast into these handles
+    // so that every path downstream goes through QueueWriter/QueueReader.
+    std::unique_ptr<hub::QueueWriter> tx_queue;
+    std::unique_ptr<hub::QueueReader> rx_queue;
     hub::InboxQueue          *inbox_queue{nullptr};
     ScriptEngine             *engine{nullptr};
     hub::BrokerRequestComm *broker_channel{nullptr};
@@ -112,81 +112,178 @@ RoleAPIBase &RoleAPIBase::operator=(RoleAPIBase &&) noexcept = default;
 
 // set_role_tag and set_uid removed — identity is ctor-only.
 
+namespace
+{
+// Compute 8-byte schema tag from first 8 bytes of hash (empty → nullopt).
+std::optional<std::array<uint8_t, 8>>
+make_schema_tag(const std::string &hash)
+{
+    if (hash.size() < 8) return std::nullopt;
+    std::array<uint8_t, 8> tag{};
+    std::memcpy(tag.data(), hash.data(), 8);
+    return tag;
+}
+} // namespace
+
 bool RoleAPIBase::build_tx_queue(const hub::ProducerOptions &opts)
 {
-    auto maybe = hub::Producer::create(opts);
-    if (!maybe.has_value())
+    pImpl->tx_queue.reset();
+
+    // Prefer SHM when configured and a slot schema is available; fall back to
+    // ZMQ when data_transport == "zmq". The factories return concrete types,
+    // which upcast into the abstract unique_ptr<QueueWriter> at the storage
+    // boundary. After this function, nothing below RoleAPIBase sees concrete
+    // ShmQueue / ZmqQueue.
+    std::unique_ptr<hub::QueueWriter> writer;
+    if (opts.has_shm && !opts.zmq_schema.empty())
     {
-        pImpl->tx_queue = nullptr;
+        auto shm = hub::ShmQueue::create_writer(
+            opts.channel_name,
+            opts.zmq_schema, opts.zmq_packing,
+            opts.fz_schema, opts.fz_packing,
+            opts.shm_config.ring_buffer_capacity,
+            opts.shm_config.physical_page_size,
+            opts.shm_config.shared_secret,
+            opts.shm_config.policy,
+            opts.shm_config.consumer_sync_policy,
+            opts.shm_config.checksum_policy,
+            /*checksum_slot=*/false, /*checksum_fz=*/false,
+            opts.always_clear_slot,
+            opts.shm_config.hub_uid,
+            opts.shm_config.hub_name,
+            nullptr, nullptr,
+            opts.shm_config.producer_uid,
+            opts.shm_config.producer_name);
+        if (!shm)
+        {
+            LOGGER_ERROR("[{}] ShmQueue create_writer failed for '{}'",
+                         pImpl->role_tag, opts.channel_name);
+            return false;
+        }
+        writer.reset(shm.release()); // upcast: ShmQueue* → QueueWriter*
+    }
+    else if (opts.data_transport == "zmq")
+    {
+        if (opts.zmq_node_endpoint.empty())
+        {
+            LOGGER_ERROR("[{}] data_transport='zmq' but zmq_node_endpoint is empty",
+                         pImpl->role_tag);
+            return false;
+        }
+        writer = hub::ZmqQueue::push_to(
+            opts.zmq_node_endpoint, opts.zmq_schema, opts.zmq_packing,
+            opts.zmq_bind, make_schema_tag(opts.schema_hash),
+            /*sndhwm=*/0, opts.zmq_buffer_depth, opts.zmq_overflow_policy);
+        if (!writer)
+            return false;
+        if (!writer->start())
+        {
+            LOGGER_ERROR("[{}] ZMQ PUSH start() failed for '{}'",
+                         pImpl->role_tag, opts.zmq_node_endpoint);
+            return false;
+        }
+    }
+    else
+    {
         return false;
     }
-    pImpl->tx_owner = std::move(maybe);
-    pImpl->tx_queue = pImpl->tx_owner->queue_writer();
+
+    writer->set_checksum_policy(opts.checksum_policy);
+    writer->set_flexzone_checksum(opts.flexzone_checksum);
+    pImpl->tx_queue = std::move(writer);
     return true;
 }
 
 bool RoleAPIBase::build_rx_queue(const hub::ConsumerOptions &opts)
 {
-    auto maybe = hub::Consumer::create(opts);
-    if (!maybe.has_value())
+    pImpl->rx_queue.reset();
+
+    std::unique_ptr<hub::QueueReader> reader;
+    if (!opts.shm_name.empty() && opts.shm_shared_secret != 0 && !opts.zmq_schema.empty())
     {
-        pImpl->rx_queue = nullptr;
+        auto shm = hub::ShmQueue::create_reader(
+            opts.shm_name, opts.shm_shared_secret,
+            opts.zmq_schema, opts.zmq_packing,
+            opts.channel_name,
+            /*verify_slot=*/false, /*verify_fz=*/false,
+            opts.consumer_uid, opts.consumer_name);
+        if (!shm)
+            return false;
+        reader.reset(shm.release());
+    }
+    else if (opts.data_transport == "zmq")
+    {
+        if (opts.zmq_node_endpoint.empty())
+        {
+            LOGGER_ERROR("[{}] data_transport='zmq' but zmq_node_endpoint is empty",
+                         pImpl->role_tag);
+            return false;
+        }
+        reader = hub::ZmqQueue::pull_from(
+            opts.zmq_node_endpoint, opts.zmq_schema, opts.zmq_packing,
+            /*bind=*/false, opts.zmq_buffer_depth,
+            make_schema_tag(opts.expected_schema_hash));
+        if (!reader)
+            return false;
+        if (!reader->start())
+        {
+            LOGGER_ERROR("[{}] ZMQ PULL start() failed for '{}'",
+                         pImpl->role_tag, opts.zmq_node_endpoint);
+            return false;
+        }
+    }
+    else
+    {
         return false;
     }
-    pImpl->rx_owner = std::move(maybe);
-    pImpl->rx_queue = pImpl->rx_owner->queue_reader();
+
+    reader->set_checksum_policy(opts.checksum_policy);
+    reader->set_flexzone_checksum(opts.flexzone_checksum);
+    pImpl->rx_queue = std::move(reader);
     return true;
 }
 
 bool RoleAPIBase::start_tx_queue()
 {
-    return pImpl->tx_owner.has_value() && pImpl->tx_owner->start_queue();
+    return pImpl->tx_queue && pImpl->tx_queue->start();
 }
 
 bool RoleAPIBase::start_rx_queue()
 {
-    return pImpl->rx_owner.has_value() && pImpl->rx_owner->start_queue();
+    return pImpl->rx_queue && pImpl->rx_queue->start();
 }
 
 void RoleAPIBase::reset_tx_queue_metrics()
 {
-    if (pImpl->tx_owner.has_value()) pImpl->tx_owner->reset_queue_metrics();
+    if (pImpl->tx_queue) pImpl->tx_queue->init_metrics();
 }
 
 void RoleAPIBase::reset_rx_queue_metrics()
 {
-    if (pImpl->rx_owner.has_value()) pImpl->rx_owner->reset_queue_metrics();
+    if (pImpl->rx_queue) pImpl->rx_queue->init_metrics();
 }
 
 void RoleAPIBase::sync_tx_flexzone_checksum()
 {
-    if (pImpl->tx_owner.has_value()) pImpl->tx_owner->sync_flexzone_checksum();
+    if (pImpl->tx_queue) pImpl->tx_queue->sync_flexzone_checksum();
 }
 
 bool RoleAPIBase::tx_has_shm() const noexcept
 {
-    return pImpl->tx_owner.has_value() && pImpl->tx_owner->has_shm();
+    return pImpl->tx_queue && pImpl->tx_queue->is_shm_backed();
 }
 
 bool RoleAPIBase::rx_has_shm() const noexcept
 {
-    return pImpl->rx_owner.has_value() && pImpl->rx_owner->has_shm();
+    return pImpl->rx_queue && pImpl->rx_queue->is_shm_backed();
 }
 
 void RoleAPIBase::close_queues()
 {
-    if (pImpl->tx_owner.has_value())
-    {
-        pImpl->tx_owner->close();
-        pImpl->tx_owner.reset();
-    }
-    if (pImpl->rx_owner.has_value())
-    {
-        pImpl->rx_owner->close();
-        pImpl->rx_owner.reset();
-    }
-    pImpl->tx_queue = nullptr;
-    pImpl->rx_queue = nullptr;
+    if (pImpl->tx_queue) pImpl->tx_queue->stop();
+    if (pImpl->rx_queue) pImpl->rx_queue->stop();
+    pImpl->tx_queue.reset();
+    pImpl->rx_queue.reset();
 }
 
 void RoleAPIBase::set_inbox_queue(hub::InboxQueue *q) { pImpl->inbox_queue = q; }

@@ -120,7 +120,7 @@ Example::
 Return a JSON string with all component version information.
 
 Keys: library, shm_major, shm_minor, wire_major, wire_minor,
-script_api_major, script_api_minor, facade_producer, facade_consumer.
+script_api_major, script_api_minor.
 
 Example::
 

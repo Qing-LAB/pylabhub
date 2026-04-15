@@ -37,8 +37,6 @@ namespace pylabhub::version
  * - Major: breaking change (incompatible layout/protocol/API)
  * - Minor: additive change (new field/method, backward-compatible)
  *
- * Facade sizes are ABI canaries — caught at compile time by static_assert,
- * not negotiated at runtime.
  */
 struct ComponentVersions
 {
@@ -58,10 +56,6 @@ struct ComponentVersions
     // --- Python/Lua API surface version ---
     uint8_t script_api_major;
     uint8_t script_api_minor;
-
-    // --- Messaging facade sizeof — ABI canary (no major/minor needed) ---
-    uint16_t facade_producer_size;
-    uint16_t facade_consumer_size;
 };
 
 // ============================================================================
@@ -86,7 +80,7 @@ PYLABHUB_UTILS_EXPORT const char *python_runtime_version() noexcept;
 /**
  * @brief Human-readable one-liner for logging.
  *
- * Example: "pylabhub 0.1.42 (shm=1.0, wire=1.0, script=1.0, facade=64/48)"
+ * Example: "pylabhub 0.1.42 (shm=1.0, wire=1.0, script=1.0)"
  */
 PYLABHUB_UTILS_EXPORT std::string version_info_string();
 
