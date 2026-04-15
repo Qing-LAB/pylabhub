@@ -204,7 +204,6 @@ void ConsumerRoleHost::worker_main_()
     api_->set_checksum_policy(config_.checksum().policy);
     api_->set_stop_on_script_error(sc.stop_on_script_error);
     api_->set_engine(engine_.get());
-    api_->wire_event_callbacks();
 
     // ── Step 4: Load engine via lifecycle startup ────────────────────────────
 
@@ -396,9 +395,7 @@ bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
 
     // Metrics reset moved to after queue creation (reset_metrics() on queue).
 
-    // Event callbacks (on_channel_closing, on_force_shutdown, on_peer_dead,
-    // on_hub_dead, on_zmq_data, on_producer_message, on_channel_error) are
-    // wired by api_->wire_event_callbacks() after RoleAPIBase construction.
+    // Broker notifications (band, hub-dead) are handled by BrokerRequestComm.
 
     // --- Start and configure data queue ---
     if (!in_consumer_->start_queue())
@@ -442,7 +439,6 @@ void ConsumerRoleHost::teardown_infrastructure_()
 
     if (in_consumer_.has_value())
     {
-        in_consumer_->stop();
         in_consumer_->close();
         in_consumer_.reset();
     }
