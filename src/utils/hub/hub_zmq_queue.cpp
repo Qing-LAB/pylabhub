@@ -12,9 +12,10 @@
 #include "utils/crypto_utils.hpp"
 #include "utils/logger.hpp"
 #include "utils/thread_manager.hpp"
+#include "utils/zmq_context.hpp"
 #include "zmq_wire_helpers.hpp"
 
-#include <zmq.h>
+#include "cppzmq/zmq.hpp"
 
 #include <atomic>
 #include <cassert>
@@ -62,8 +63,14 @@ struct ZmqQueueImpl
     std::vector<wire_detail::WireFieldDesc> schema_defs_;
     size_t                 max_frame_sz_{0}; ///< recv frame buffer size
 
-    void* zmq_ctx{nullptr};
-    void* socket{nullptr};
+    // Context is the shared process-wide zmq::context_t owned by the
+    // ZMQContext lifecycle module (see utils/zmq_context.hpp). The
+    // top-level LifecycleGuard must include GetZMQContextModule(); the
+    // persistent flag guarantees the context outlives every ZmqQueue
+    // instance. No per-queue context — prevents the racing zmq_ctx_term()
+    // vs still-running send/recv threads that caused SIGABRT under
+    // parallel test load.
+    zmq::socket_t socket;  ///< default-constructed empty; assigned in start()
 
     // ── Read mode — pre-allocated ring buffer [ZQ9] ──────────────────────────
     std::atomic<bool>                recv_stop_{false};
@@ -139,37 +146,37 @@ struct ZmqQueueImpl
     std::atomic<bool> running_{false};
 
     // ────────────────────────────────────────────────────────────────────────
-    // recv thread body — all decoding uses pre-allocated buffers (no per-frame heap alloc).
+    // recv thread body — cppzmq message_t reused across iterations (no per-frame
+    // heap alloc beyond what libzmq internally does).
     void run_recv_thread_()
     {
-        static constexpr int kRecvTimeoutMs = 100;
-        if (socket)
-            zmq_setsockopt(socket, ZMQ_RCVTIMEO, &kRecvTimeoutMs, sizeof(kRecvTimeoutMs));
+        socket.set(zmq::sockopt::rcvtimeo, 100);  // 100ms poll tick for stop-flag checks
 
-        std::vector<char> frame_buf(max_frame_sz_);
+        zmq::message_t msg;
 
         while (!recv_stop_.load(std::memory_order_relaxed))
         {
             if (!socket) break;
 
-            int rc = zmq_recv(socket, frame_buf.data(),
-                              static_cast<int>(max_frame_sz_), 0);
-
-            if (rc < 0)
+            zmq::recv_result_t rr;
+            try
             {
-                const int err = zmq_errno();
-                if (err == EAGAIN || err == EINTR)
-                    continue;
-                if (err != ETERM)
-                    LOGGER_WARN("[hub::ZmqQueue] recv error on '{}': {}",
-                                queue_name, zmq_strerror(err));
+                rr = socket.recv(msg, zmq::recv_flags::none);
+            }
+            catch (const zmq::error_t &e)
+            {
+                // ETERM on context shutdown → clean exit; EINTR on signal → retry.
+                if (e.num() == ETERM) break;
+                if (e.num() == EINTR) continue;
+                LOGGER_WARN("[hub::ZmqQueue] recv error on '{}': {}",
+                            queue_name, e.what());
                 break;
             }
+            if (!rr.has_value()) continue;  // RCVTIMEO expired; re-check stop flag
 
-            // zmq_recv() returns actual message size (bytes in the message, not bytes
-            // copied).  max_frame_sz_ has a 4-byte slack above any valid schema frame,
-            // so rc >= max_frame_sz_ indicates a malformed or oversized frame. [ZQ4]
-            if (rc >= static_cast<int>(max_frame_sz_))
+            // max_frame_sz_ has a 4-byte slack above any valid schema frame, so
+            // size >= max_frame_sz_ indicates a malformed or oversized frame. [ZQ4]
+            if (msg.size() >= max_frame_sz_)
             {
                 ++recv_frame_error_count_;
                 continue;
@@ -178,7 +185,7 @@ struct ZmqQueueImpl
             try
             {
                 msgpack::object_handle oh = msgpack::unpack(
-                    frame_buf.data(), static_cast<size_t>(rc));
+                    static_cast<const char *>(msg.data()), msg.size());
                 const msgpack::object& obj = oh.get();
 
                 // Outer frame: array of 5 [magic, tag, seq, payload, checksum]
@@ -347,32 +354,32 @@ struct ZmqQueueImpl
             // ── Send with retry on EAGAIN ─────────────────────────────────
             while (socket)
             {
-                const int rc = zmq_send(socket,
-                                        send_sbuf_.data(),
-                                        send_sbuf_.size(),
-                                        ZMQ_DONTWAIT);
-                if (rc >= 0) { break; }
-
-                const int err = zmq_errno();
-                if (err == EAGAIN)
+                try
                 {
+                    auto sr = socket.send(
+                        zmq::const_buffer(send_sbuf_.data(), send_sbuf_.size()),
+                        zmq::send_flags::dontwait);
+                    if (sr.has_value()) break;  // sent
+
+                    // EAGAIN — send ring full
                     if (send_stop_.load(std::memory_order_relaxed))
                     {
-                        // On stop drain: single attempt only — drop without counting a retry.
                         ++send_drop_count_;
                         break;
                     }
-                    ++send_retry_count_; // genuine retry (normal operation)
+                    ++send_retry_count_;
                     std::this_thread::sleep_for(
                         std::chrono::milliseconds(send_retry_interval_ms_));
                     continue;
                 }
-                // Non-retriable error
-                if (err != ETERM)
-                    LOGGER_WARN("[hub::ZmqQueue] send error on '{}': {}",
-                                queue_name, zmq_strerror(err));
-                ++send_drop_count_;
-                break;
+                catch (const zmq::error_t &e)
+                {
+                    if (e.num() != ETERM)
+                        LOGGER_WARN("[hub::ZmqQueue] send error on '{}': {}",
+                                    queue_name, e.what());
+                    ++send_drop_count_;
+                    break;
+                }
             }
             // ── Advance ring head ─────────────────────────────────────────
             {
@@ -581,61 +588,46 @@ bool ZmqQueue::start()
     if (pImpl->running_.exchange(true, std::memory_order_acq_rel))
         return true; // lost race — another thread started it
 
-    pImpl->zmq_ctx = zmq_ctx_new();
-    if (!pImpl->zmq_ctx)
+    try
     {
-        pImpl->running_.store(false, std::memory_order_release);
-        LOGGER_ERROR("[hub::ZmqQueue] zmq_ctx_new() failed for '{}'", pImpl->queue_name);
-        return false;
+        const zmq::socket_type stype = (pImpl->mode == ZmqQueueImpl::Mode::Read)
+                                           ? zmq::socket_type::pull
+                                           : zmq::socket_type::push;
+        pImpl->socket = zmq::socket_t(pylabhub::hub::get_zmq_context(), stype);
+        pImpl->socket.set(zmq::sockopt::linger, 0);
+
+        // [ZQ8] Apply SNDHWM on PUSH sockets when caller requested a specific value.
+        if (pImpl->mode == ZmqQueueImpl::Mode::Write && pImpl->sndhwm > 0)
+            pImpl->socket.set(zmq::sockopt::sndhwm, pImpl->sndhwm);
+
+        if (pImpl->bind_socket)
+            pImpl->socket.bind(pImpl->endpoint);
+        else
+            pImpl->socket.connect(pImpl->endpoint);
     }
-    zmq_ctx_set(pImpl->zmq_ctx, ZMQ_BLOCKY, 0);
-
-    const int socket_type = (pImpl->mode == ZmqQueueImpl::Mode::Read) ? ZMQ_PULL : ZMQ_PUSH;
-    pImpl->socket = zmq_socket(pImpl->zmq_ctx, socket_type);
-    if (!pImpl->socket)
+    catch (const zmq::error_t &e)
     {
-        zmq_ctx_term(pImpl->zmq_ctx);
-        pImpl->zmq_ctx = nullptr;
+        pImpl->socket.close();
         pImpl->running_.store(false, std::memory_order_release);
-        LOGGER_ERROR("[hub::ZmqQueue] zmq_socket() failed for '{}'", pImpl->queue_name);
-        return false;
-    }
-
-    int linger = 0;
-    zmq_setsockopt(pImpl->socket, ZMQ_LINGER, &linger, sizeof(linger));
-
-    // [ZQ8] Apply SNDHWM on PUSH sockets when caller requested a specific value.
-    if (pImpl->mode == ZmqQueueImpl::Mode::Write && pImpl->sndhwm > 0)
-        zmq_setsockopt(pImpl->socket, ZMQ_SNDHWM, &pImpl->sndhwm, sizeof(pImpl->sndhwm));
-
-    const int rc = pImpl->bind_socket
-                       ? zmq_bind(pImpl->socket, pImpl->endpoint.c_str())
-                       : zmq_connect(pImpl->socket, pImpl->endpoint.c_str());
-    if (rc != 0)
-    {
-        zmq_close(pImpl->socket);
-        pImpl->socket = nullptr;
-        zmq_ctx_term(pImpl->zmq_ctx);
-        pImpl->zmq_ctx = nullptr;
-        pImpl->running_.store(false, std::memory_order_release);
-        LOGGER_ERROR("[hub::ZmqQueue] {} failed for '{}': {}",
-                     pImpl->bind_socket ? "zmq_bind" : "zmq_connect",
-                     pImpl->endpoint, zmq_strerror(zmq_errno()));
+        LOGGER_ERROR("[hub::ZmqQueue] socket setup ({}) failed for '{}': {}",
+                     pImpl->bind_socket ? "bind" : "connect",
+                     pImpl->endpoint, e.what());
         return false;
     }
 
     // Resolve actual bound endpoint (captures OS-assigned port when endpoint uses ":0").
     if (pImpl->bind_socket)
     {
-        char buf[256]{};
-        size_t buf_len = sizeof(buf);
-        if (zmq_getsockopt(pImpl->socket, ZMQ_LAST_ENDPOINT, buf, &buf_len) == 0)
-            pImpl->actual_endpoint = buf;
-        else
+        try
         {
-            LOGGER_WARN("[hub::ZmqQueue] zmq_getsockopt(ZMQ_LAST_ENDPOINT) failed for '{}': {}; "
+            pImpl->actual_endpoint =
+                pImpl->socket.get(zmq::sockopt::last_endpoint);
+        }
+        catch (const zmq::error_t &e)
+        {
+            LOGGER_WARN("[hub::ZmqQueue] last_endpoint query failed for '{}': {}; "
                         "actual_endpoint() may be inaccurate",
-                        pImpl->queue_name, zmq_strerror(zmq_errno()));
+                        pImpl->queue_name, e.what());
             pImpl->actual_endpoint = pImpl->endpoint;
         }
     }
@@ -692,8 +684,10 @@ void ZmqQueue::stop()
     // timeout: ERROR log + detach + increment process_detached_count.
     pImpl->thread_mgr_.reset();
 
-    if (pImpl->socket)  { zmq_close(pImpl->socket);     pImpl->socket   = nullptr; }
-    if (pImpl->zmq_ctx) { zmq_ctx_term(pImpl->zmq_ctx); pImpl->zmq_ctx  = nullptr; }
+    // Close the socket AFTER threads have exited (threads were the only user).
+    // The shared ZMQ context is owned by the ZMQContext lifecycle module —
+    // ZmqQueue never terminates it.
+    pImpl->socket.close();
 }
 
 bool ZmqQueue::is_running() const noexcept

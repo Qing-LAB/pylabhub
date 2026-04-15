@@ -10,6 +10,10 @@
  *   - InboxClient: single acquire() / send() caller thread
  */
 #include "utils/hub_inbox_queue.hpp"
+#include "utils/crypto_utils.hpp"
+#include "utils/lifecycle.hpp"
+#include "utils/logger.hpp"
+#include "utils/zmq_context.hpp"
 
 #include <gtest/gtest.h>
 #include <zmq.h>
@@ -18,12 +22,40 @@
 #include <chrono>
 #include <cstring>
 #include <future>
+#include <memory>
+#include <source_location>
 #include <string>
 #include <thread>
 #include <vector>
 
 using namespace pylabhub::hub;
 using ms = std::chrono::milliseconds;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test fixture: owns the process-wide LifecycleGuard for the suite so that
+// InboxQueue/InboxClient can call pylabhub::hub::get_zmq_context(). Mirrors
+// ZmqQueueTest::SetUpTestSuite.
+// ─────────────────────────────────────────────────────────────────────────────
+class InboxQueueTest : public ::testing::Test
+{
+  public:
+    static void SetUpTestSuite()
+    {
+        s_lifecycle_ = std::make_unique<pylabhub::utils::LifecycleGuard>(
+            pylabhub::utils::MakeModDefList(
+                pylabhub::utils::Logger::GetLifecycleModule(),
+                pylabhub::crypto::GetLifecycleModule(),
+                pylabhub::hub::GetZMQContextModule()),
+            std::source_location::current());
+    }
+    static void TearDownTestSuite() { s_lifecycle_.reset(); }
+
+  private:
+    static std::unique_ptr<pylabhub::utils::LifecycleGuard> s_lifecycle_;
+};
+
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+std::unique_ptr<pylabhub::utils::LifecycleGuard> InboxQueueTest::s_lifecycle_;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper: minimal schema with one uint32 field
@@ -36,7 +68,7 @@ static std::vector<ZmqSchemaField> uint32_schema()
 // ─────────────────────────────────────────────────────────────────────────────
 // InboxQueueTest.BindAndConnect_Basic
 // ─────────────────────────────────────────────────────────────────────────────
-TEST(InboxQueueTest, BindAndConnect_Basic)
+TEST_F(InboxQueueTest, BindAndConnect_Basic)
 {
     auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
     ASSERT_NE(q, nullptr);
@@ -83,7 +115,7 @@ TEST(InboxQueueTest, BindAndConnect_Basic)
 // ─────────────────────────────────────────────────────────────────────────────
 // InboxQueueTest.RecvOne_Timeout_ReturnsNull
 // ─────────────────────────────────────────────────────────────────────────────
-TEST(InboxQueueTest, RecvOne_Timeout_ReturnsNull)
+TEST_F(InboxQueueTest, RecvOne_Timeout_ReturnsNull)
 {
     auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
     ASSERT_NE(q, nullptr);
@@ -98,7 +130,7 @@ TEST(InboxQueueTest, RecvOne_Timeout_ReturnsNull)
 // ─────────────────────────────────────────────────────────────────────────────
 // InboxQueueTest.MultipleMessages
 // ─────────────────────────────────────────────────────────────────────────────
-TEST(InboxQueueTest, MultipleMessages)
+TEST_F(InboxQueueTest, MultipleMessages)
 {
     auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
     ASSERT_NE(q, nullptr);
@@ -146,7 +178,7 @@ TEST(InboxQueueTest, MultipleMessages)
 // ─────────────────────────────────────────────────────────────────────────────
 // InboxQueueTest.DoubleStop_NoThrow
 // ─────────────────────────────────────────────────────────────────────────────
-TEST(InboxQueueTest, DoubleStop_NoThrow)
+TEST_F(InboxQueueTest, DoubleStop_NoThrow)
 {
     auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
     ASSERT_NE(q, nullptr);
@@ -166,7 +198,7 @@ TEST(InboxQueueTest, DoubleStop_NoThrow)
 // ─────────────────────────────────────────────────────────────────────────────
 // InboxQueueTest.SenderUid_IsPreserved
 // ─────────────────────────────────────────────────────────────────────────────
-TEST(InboxQueueTest, SenderUid_IsPreserved)
+TEST_F(InboxQueueTest, SenderUid_IsPreserved)
 {
     const std::string kSenderId = "PROD-TEST-12345678";
 
@@ -207,7 +239,7 @@ TEST(InboxQueueTest, SenderUid_IsPreserved)
 // ─────────────────────────────────────────────────────────────────────────────
 // InboxQueueTest.BadMagic_Drops
 // ─────────────────────────────────────────────────────────────────────────────
-TEST(InboxQueueTest, BadMagic_Drops)
+TEST_F(InboxQueueTest, BadMagic_Drops)
 {
     auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
     ASSERT_NE(q, nullptr);
@@ -247,7 +279,7 @@ TEST(InboxQueueTest, BadMagic_Drops)
 // ─────────────────────────────────────────────────────────────────────────────
 // InboxQueueTest.AckCode3_HandlerError
 // ─────────────────────────────────────────────────────────────────────────────
-TEST(InboxQueueTest, AckCode3_HandlerError)
+TEST_F(InboxQueueTest, AckCode3_HandlerError)
 {
     auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
     ASSERT_NE(q, nullptr);
@@ -285,7 +317,7 @@ TEST(InboxQueueTest, AckCode3_HandlerError)
 // ─────────────────────────────────────────────────────────────────────────────
 // InboxQueueTest.NotStarted_RecvReturnsNull
 // ─────────────────────────────────────────────────────────────────────────────
-TEST(InboxQueueTest, NotStarted_RecvReturnsNull)
+TEST_F(InboxQueueTest, NotStarted_RecvReturnsNull)
 {
     auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
     ASSERT_NE(q, nullptr);
@@ -297,13 +329,13 @@ TEST(InboxQueueTest, NotStarted_RecvReturnsNull)
 // ─────────────────────────────────────────────────────────────────────────────
 // InboxQueueTest.EmptySchema_FactoryFails
 // ─────────────────────────────────────────────────────────────────────────────
-TEST(InboxQueueTest, EmptySchema_FactoryFails)
+TEST_F(InboxQueueTest, EmptySchema_FactoryFails)
 {
     auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", {}); // empty schema
     EXPECT_EQ(q, nullptr);
 }
 
-TEST(InboxQueueTest, EmptySchema_ClientFactoryFails)
+TEST_F(InboxQueueTest, EmptySchema_ClientFactoryFails)
 {
     auto c = InboxClient::connect_to("tcp://127.0.0.1:5599", "TEST-UID", {}); // empty schema
     EXPECT_EQ(c, nullptr);
@@ -312,7 +344,7 @@ TEST(InboxQueueTest, EmptySchema_ClientFactoryFails)
 // ─────────────────────────────────────────────────────────────────────────────
 // InboxQueueTest.ItemSize_MatchesSchema
 // ─────────────────────────────────────────────────────────────────────────────
-TEST(InboxQueueTest, ItemSize_MatchesSchema)
+TEST_F(InboxQueueTest, ItemSize_MatchesSchema)
 {
     auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
     ASSERT_NE(q, nullptr);
@@ -331,7 +363,7 @@ TEST(InboxQueueTest, ItemSize_MatchesSchema)
 // Schema mismatch tests
 // ─────────────────────────────────────────────────────────────────────────────
 
-TEST(InboxQueueTest, SchemaMismatch_DifferentType_DropsFrame)
+TEST_F(InboxQueueTest, SchemaMismatch_DifferentType_DropsFrame)
 {
     // Receiver expects uint32, sender sends with float64 schema → schema tag mismatch.
     auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
@@ -366,7 +398,7 @@ TEST(InboxQueueTest, SchemaMismatch_DifferentType_DropsFrame)
     q->stop();
 }
 
-TEST(InboxQueueTest, SchemaMismatch_DifferentSize_DropsFrame)
+TEST_F(InboxQueueTest, SchemaMismatch_DifferentSize_DropsFrame)
 {
     // Receiver expects uint32 (4 bytes), sender sends with uint64 (8 bytes) → size mismatch.
     auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
@@ -403,7 +435,7 @@ TEST(InboxQueueTest, SchemaMismatch_DifferentSize_DropsFrame)
 // Checksum policy tests — symmetric with ShmQueue + ZmqQueue
 // ─────────────────────────────────────────────────────────────────────────────
 
-TEST(InboxQueueTest, ChecksumEnforced_Roundtrip)
+TEST_F(InboxQueueTest, ChecksumEnforced_Roundtrip)
 {
     auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
     ASSERT_NE(q, nullptr);
@@ -440,7 +472,7 @@ TEST(InboxQueueTest, ChecksumEnforced_Roundtrip)
     q->stop();
 }
 
-TEST(InboxQueueTest, ChecksumManual_NoStamp_ReceiverRejects)
+TEST_F(InboxQueueTest, ChecksumManual_NoStamp_ReceiverRejects)
 {
     auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
     ASSERT_NE(q, nullptr);
@@ -472,7 +504,7 @@ TEST(InboxQueueTest, ChecksumManual_NoStamp_ReceiverRejects)
     q->stop();
 }
 
-TEST(InboxQueueTest, ChecksumNone_Roundtrip)
+TEST_F(InboxQueueTest, ChecksumNone_Roundtrip)
 {
     auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
     ASSERT_NE(q, nullptr);
