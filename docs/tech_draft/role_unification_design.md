@@ -378,6 +378,109 @@ failure.
 reproducible AND we cannot identify any other translation error. Reverting
 without root cause leaves us blind to the actual bug.
 
+### 4.5a Baseline test suite — test-evaluation principles
+
+These principles govern every test in the baseline suite (to be implemented
+before L3.β as a separate work item).
+
+**Tests evaluate runtime state, not return values.** Calling the function
+under test and asserting it returned cleanly is **not** evidence of
+correctness. A regression can hide behind a clean return. The only valid
+evidence is what the system reports about itself during and after the
+scenario.
+
+**Two sources of truth — cross-checked, never singular:**
+
+**(a) Built-in metrics — the framework's self-reports**
+
+These are counters and gauges the framework produces during normal
+operation, always on, in production:
+
+- `RoleHostCore` counters: `iteration_count`, `out_slots_written`,
+  `out_drop_count`, `in_slots_received`, `last_cycle_work_us`,
+  `loop_overrun_count`
+- `engine.script_error_count()`
+- `ContextMetrics` queue/loop/inbox counters (the X-macro-defined fields
+  surfaced through `snapshot_metrics_json()`)
+- Broker-side `RoleStateMetrics` (ready_to_pending, pending_to_deregistered,
+  pending_to_ready)
+
+Reading these in a test reads what a production system would also report.
+Assertions on these prove behaviors that hold in production, not behaviors
+that only exist under test harness.
+
+**(b) Test-specific measurements — harness-side instruments**
+
+These are observable quantities the test harness computes independently
+of the framework's self-reports, to cross-check them:
+
+- Wall-clock duration of a scenario (for timing-fidelity tests)
+- Data contents captured at the receiving queue — bit-exact byte comparison
+  against what was produced
+- Sequence integrity (monotonicity, gaps, duplicates) computed from
+  captured contents
+- Callback call counts + argument snapshots from a RecordingEngine stub
+- Queue-state snapshots at critical moments (e.g., "Tx queue was full here")
+
+Each independently measures what happened.
+
+**The cross-check pattern (applies to every test):**
+
+1. (a) Built-in metric equals expected scenario outcome.
+2. (b) Test-side measurement independently confirms.
+3. (a) ↔ (b) agree — e.g., `out_slots_written == queue_contents.size()`.
+
+Tests asserting only (a) prove internal-consistency of counters but not
+correctness. Tests asserting only (b) miss counter-accuracy regressions.
+Both-and catches both.
+
+**Forbidden:**
+
+- Using a function's return value (e.g., `run_data_loop` returning) as
+  primary evidence of success. Necessary but never sufficient.
+- Asserting on test-only synthetic state that doesn't exist in production.
+- Using wall-clock `sleep(N)` as a proxy for cycle-count claims. Cycle
+  counts come from `iteration_count` (a) or direct event-counts in the
+  harness (b), never from "we slept long enough".
+
+**Why this matters for L3.β specifically:** L3.β moves metric-increment
+sites between CycleOps branches. A regression might land a `out_slots_written++`
+before a discard path. The counter and the actual queue contents would
+diverge. The cross-check catches exactly this. Counter-only or
+contents-only assertions do not.
+
+### 4.5b Baseline test suite — the six tests
+
+All six tests adhere to §4.5a. Every assertion comes from (a) built-in
+metrics OR (b) test-harness measurements, and cross-checked where possible.
+
+| # | Scenario | Built-in-metric assertions | Harness-measurement assertions |
+|---|---|---|---|
+| 1 | Producer, MaxRate, N=100 cycles, all-Commit | `iteration == N`; `out_slots_written == N`; `out_drop_count == 0`; `loop_overrun == 0` | queue contains N slots with contents `[0..N-1]`; RecordingEngine logs N produce calls |
+| 2 | Consumer drains N producer slots | `in_slots_received == N`; `last_seq == N-1` | received contents match producer's exactly; RecordingEngine logs N consume calls with expected rx data |
+| 3 | Processor Block + Tx-capacity=4 + throttled consumer + 100 inputs | `in_slots_received == 100`; `out_slots_written == 100`; `out_drop_count == 0` | consumer-received contents == producer-emitted `[0..99]` in order; RecordingEngine logs 100 process calls |
+| 4 | Processor Drop + same setup | `in_slots_received == 100`; `out_slots_written + out_drop_count == 100`; `out_drop_count > 0` | received contents are monotonic subset of `[0..99]` (gaps OK); RecordingEngine logs 100 process calls |
+| 5 | FixedRate 100Hz × N=50 cycles | `iteration == N`; `loop_overrun == 0` | wall-clock elapsed ∈ [N × 10ms × 0.9, N × 10ms × 1.5] (tolerance band) |
+| 6 | Deliberate handler overrun (handler sleeps > period) | `iteration == N`; `loop_overrun == N - first_cycle` (first cycle has no deadline) | wall-clock elapsed reflects handler slowness, not target period |
+
+**Implementation components required before tests can be written:**
+
+1. **RecordingEngine stub** — subclass of `ScriptEngine` that records every
+   invoke call (args + return value) and returns test-configurable results.
+2. **Public accessibility of `*CycleOps`** — the current anonymous-namespace
+   classes must be moved to a header (e.g., `cycle_ops.hpp`) so tests can
+   instantiate them directly. Post-L3.β the unified `CycleOps` is already public.
+3. **Test-harness queue pair** — in-process SHM queue creation helper so
+   tests can wire real queues without broker/ZMQ/full lifecycle.
+4. **Metric snapshot helper** — tests read `snapshot_metrics_json()` at scenario
+   end and parse the fields they assert on.
+
+**Ordering guarantee**: The baseline suite is written FIRST — against
+pre-β code (L3.α state) — and must pass green there. Only then is L3.β
+implemented. Post-β, the same suite runs again with the same assertions;
+any changed counter value is a translation-error signal pointing at the
+§4.6 checklist.
+
 ### 4.5 Phase-specific timing risk
 
 | Phase | Timing risk | Mitigation |
