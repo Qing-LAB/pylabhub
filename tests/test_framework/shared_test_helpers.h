@@ -33,6 +33,7 @@ typedef int ssize_t;
 
 // Required for run_gtest_worker: LifecycleGuard, PLH_DEBUG, print_stack_trace (Layer 2 umbrella)
 #include "plh_service.hpp"
+#include "utils/thread_manager.hpp"
 
 // Required for ThreadRacer
 #include <algorithm>
@@ -276,6 +277,29 @@ int run_gtest_worker(Fn test_logic, const char *test_name, Mods &&...mods)
       // ZMQ context, crypto, etc.) are shut down cleanly via reverse-order
       // teardown.  At this point only library-global static destructors remain.
 
+    // Check for any ThreadManager-leaked threads during the LifecycleGuard
+    // teardown above. If any ThreadManager in this subprocess had to detach
+    // a stuck thread, bump the exit code so the parent IsolatedProcessTest
+    // (via ExpectWorkerOk / wait_for_exit) sees a non-zero return and fails
+    // the parent test. Reserved exit code: 4 = unclean-shutdown leak.
+    // Only overwrites exit_code if the worker body itself succeeded — a
+    // real test failure (1/2/3) takes precedence over a leak.
+    if (exit_code == 0)
+    {
+        const auto leaked =
+            pylabhub::utils::ThreadManager::process_detached_count();
+        if (leaked > 0)
+        {
+            fmt::print(stderr,
+                       "[WORKER UNCLEAN SHUTDOWN] {}: {} thread(s) leaked "
+                       "during LifecycleGuard teardown (ThreadManager "
+                       "detach-on-timeout). See ERROR log entries tagged "
+                       "[ThreadManager:*] above for owner+name of each.\n",
+                       test_name, leaked);
+            exit_code = 4;
+        }
+    }
+
     // WHY _exit() instead of return:
     //
     // run_gtest_worker() always executes inside a *subprocess* spawned by
@@ -338,6 +362,21 @@ template <typename Fn> int run_worker_bare(Fn test_logic, const char *test_name)
         fmt::print(stderr, "[WORKER BARE FAILURE] {} threw an unknown exception.\n", test_name);
         pylabhub::debug::print_stack_trace();
         return 3;
+    }
+
+    // Same unclean-shutdown check as run_gtest_worker: any ThreadManager
+    // detach-on-timeout during the body produces exit code 4 so the parent
+    // IsolatedProcessTest fails rather than treating the worker as clean.
+    const auto leaked =
+        pylabhub::utils::ThreadManager::process_detached_count();
+    if (leaked > 0)
+    {
+        fmt::print(stderr,
+                   "[WORKER BARE UNCLEAN SHUTDOWN] {}: {} thread(s) leaked "
+                   "during ThreadManager::join_all(). See ERROR log entries "
+                   "tagged [ThreadManager:*] above.\n",
+                   test_name, leaked);
+        return 4;
     }
     return 0;
 }
