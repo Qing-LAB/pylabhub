@@ -342,7 +342,7 @@ void RoleAPIBase::spawn_thread(const std::string &name, std::function<void()> bo
 void RoleAPIBase::join_all_threads()
 {
     if (pImpl->thread_mgr_)
-        pImpl->thread_mgr_->join_all();
+        pImpl->thread_mgr_->drain();
 }
 
 size_t RoleAPIBase::thread_count() const
