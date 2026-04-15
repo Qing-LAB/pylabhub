@@ -335,6 +335,22 @@ scheduling it after A/B so the hub/role layer cleanup is fully in place
 first — any surprise caller dependency between RAII and hub layers shows
 up as a clean compile failure in one direction only.
 
+**A5b–A5g — introduce `utils::ThreadManager`**
+See `docs/tech_draft/thread_manager_design.md` for the full spec. Summary:
+per-owner value-composed utility class that provides bounded-join + detach-on-timeout
++ ERROR-log diagnostic. Each instance auto-registers as a dynamic lifecycle module
+`"ThreadManager:" + owner_tag` so it integrates with the existing `LifecycleGuard`
+shutdown ordering + reuses the `timedShutdown` safety net.
+
+Migration order: A5b RoleAPIBase → A5c BrokerRequestComm → A5d BrokerService
+→ A5e ZmqQueue → A5f InboxQueue/InboxClient → A5g Logger. Each a separate commit,
+each with at least one new test verifying the bounded-shutdown contract.
+
+After A5g, every background thread in the tree runs under a ThreadManager. The
+pre-existing 60s silent-hang pattern (observed today in `BrokerSchemaTest.*`,
+`ConsumerCliTest.Validate_ExitZero`, `NativeEngineTest.FullStartup_*`) becomes a
+5s logged event that identifies the stuck thread by owner tag.
+
 **Commit 7 — Docs + example rewrite (L3.ζ).**
 - Update `HEP-CORE-0011` (ScriptHost Abstraction) to reflect new API shape.
 - Update `HEP-CORE-0002` §6.3 and §6.5 per Commit F.
