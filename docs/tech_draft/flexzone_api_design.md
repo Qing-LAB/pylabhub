@@ -192,7 +192,7 @@ Each step is one commit. Intermediate builds may be incomplete but each commit i
 - `RoleAPIBase` new method `flexzone(ChannelSide::Tx)` routes to `pImpl->tx_queue->flexzone()`.
 - `producer_role_host.cpp` constructs `RoleAPIBase` with the queue writer directly (no intermediate `hub::Producer`).
 - Delete `src/include/utils/hub_producer.hpp` + `src/utils/hub/hub_producer.cpp`.
-- Delete realtime-handler plumbing (`WriteProcessorContext`, `ProducerMessagingFacade`, etc.) — move `cpp_processor_template.cpp` example or remove it if unused.
+- Delete realtime-handler plumbing (`WriteProcessorContext`, `ProducerMessagingFacade`, `set_process_handler<>()`, HEP-CORE-0002 §6.9.1 ABI-frozen facade structs) — no production binary uses it; only `examples/cpp_processor_template.cpp` does. Delete that example along with the API it depends on. A replacement pure-C++ processor example, if wanted post-L3.γ, is a new file written against the surviving `RoleAPIBase` + `QueueWriter`/`QueueReader` surface, not a salvage of the old realtime-handler path.
 - `ShmQueue::raw_producer()` public method removed (no more callers).
 
 **Commit 3 — Same for `hub::Consumer`.**
@@ -221,8 +221,80 @@ Each step is one commit. Intermediate builds may be incomplete but each commit i
 - New test file `test_datahub_role_flexzone.cpp` with three role-level scenarios.
 - Workers use the `IsolatedProcessTest` pattern (L3 style).
 
+**Commit F — RAII template layer (`zone_ref.hpp` + `transaction_context.hpp`).**
+
+The RAII layer at `src/include/utils/zone_ref.hpp` has the same
+HEP-CORE-0002 §2.2 violation as the hub/role layers did pre-cleanup:
+`ZoneRef<FlexZoneT, IsMutable>` with `WriteZoneRef<T> = ZoneRef<T,true>`
+(producer, mutable) and `ReadZoneRef<T> = ZoneRef<T,false>` (consumer,
+const). `get()` returns `const FlexZoneT &` on the reader side; `raw_access()`
+returns `std::span<const std::byte>`. Consumer-side coordination writes
+(e.g., shared counters for frame-ID matching per §2.2) cannot compile
+through this API without a `const_cast` — the same permission fiction we
+removed from the hub and role layers.
+
+`TransactionContext<F, D, IsWrite>::flexzone()` picks the ZoneRef
+specialization via `std::conditional_t<IsWrite, WriteZoneRef<F>, ReadZoneRef<F>>`
+(`transaction_context.hpp:93`). Same fiction, same source.
+
+HEP-CORE-0002 §6.3 documents the existing table:
+
+    | ctx.flexzone() | WriteZoneRef<F> (mutable) | ReadZoneRef<F> (const) |
+
+That row is the bug, not a spec.
+
+**Fix**:
+
+- Drop `IsMutable` parameter from `ZoneRef`. Single class `ZoneRef<FlexZoneT>`.
+- Both constructors allowed: `explicit ZoneRef(DataBlockProducer *)` AND
+  `explicit ZoneRef(DataBlockConsumer *)`. The impl stores a
+  `std::span<std::byte>` obtained from whichever handle was passed in;
+  the consumer-side span comes via `const_cast<std::byte *>` at the
+  boundary (justified by HEP-0002 §2.2 bidirectional design).
+- `get()` returns `FlexZoneT &` (mutable). The separate
+  `get() const requires(!std::is_void_v<FlexZoneT>)` overload returning
+  `const FlexZoneT &` is kept for callers who hold a const ZoneRef (it's
+  not about permission, it's about the handle's constness).
+- `raw_access()` returns `std::span<std::byte>` regardless of side.
+- `WriteZoneRef<T>` and `ReadZoneRef<T>` aliases both become
+  `using WriteZoneRef<T> = ZoneRef<T>;` / `using ReadZoneRef<T> = ZoneRef<T>;`
+  for one sprint (existing user code compiles), then deprecated and
+  removed in the L3.ζ doc sprint.
+- `TransactionContext::flexzone()` returns `ZoneRef<F>` unconditionally;
+  remove the `std::conditional_t` dispatch and the
+  `flexzone() const requires(!IsWrite)` overload (no longer needed).
+
+**Callers to audit**:
+
+- `tests/test_layer3_datahub/workers/datahub_transaction_api_workers.cpp`
+  (extensive `with_transaction` + flexzone tests).
+- `tests/test_layer3_datahub/workers/datahub_stress_raii_workers.cpp`.
+- `examples/` — any C++ example using `with_transaction`.
+
+**New test for Commit F**: add a `TransactionContext`-layer bidirectional
+test at the RAII layer (parallel to `ShmQueueFlexzoneBidirectional` added
+in `b616d7b` at the hub layer). Consumer `with_transaction<F,D>(read)`
+writes a counter into `ctx.flexzone().get()`; producer
+`with_transaction<F,D>(write)` reads the counter back from its own
+`ctx.flexzone().get()`; `EXPECT_EQ` on the value. Proves the RAII layer
+is HEP-0002 §2.2 compliant end-to-end.
+
+**HEP doc update**:
+
+- HEP-CORE-0002 §6.3 table row for `ctx.flexzone()` becomes:
+  `| ctx.flexzone() | ZoneRef<F> (mutable) | ZoneRef<F> (mutable) |`
+- HEP-CORE-0002 §6.5 `ReadZoneRef` / `WriteZoneRef` section collapses to
+  a single `ZoneRef<F>` paragraph; the const claim is deleted.
+
+**Ordering**: Commit F is independent of hub::Producer/Consumer deletion
+(Commits A/B). Can land before, alongside, or after them. Recommend
+scheduling it after A/B so the hub/role layer cleanup is fully in place
+first — any surprise caller dependency between RAII and hub layers shows
+up as a clean compile failure in one direction only.
+
 **Commit 7 — Docs.**
 - Update `HEP-CORE-0011` (ScriptHost Abstraction) to reflect new API shape.
+- Update `HEP-CORE-0002` §6.3 and §6.5 per Commit F.
 - Archive this design doc per `docs/DOC_STRUCTURE.md`.
 
 ---
