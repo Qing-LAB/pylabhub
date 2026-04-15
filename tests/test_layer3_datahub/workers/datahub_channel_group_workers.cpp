@@ -279,12 +279,8 @@ int roleapi_channel()
     core1.set_running(true);
     core2.set_running(true);
 
-    auto api1 = std::make_unique<scripting::RoleAPIBase>(core1);
-    auto api2 = std::make_unique<scripting::RoleAPIBase>(core2);
-    api1->set_role_tag("role_a");
-    api1->set_uid("ROLE-A-100");
-    api2->set_role_tag("role_b");
-    api2->set_uid("ROLE-B-200");
+    auto api1 = std::make_unique<scripting::RoleAPIBase>(core1, "role_a", "ROLE-A-100");
+    auto api2 = std::make_unique<scripting::RoleAPIBase>(core2, "role_b", "ROLE-B-200");
 
     auto bc1 = std::make_unique<BrokerRequestComm>();
     auto bc2 = std::make_unique<BrokerRequestComm>();

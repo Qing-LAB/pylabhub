@@ -10,6 +10,7 @@
  * Layer 1 (engine): delegated to ScriptEngine via invoke_consume / invoke_on_inbox.
  */
 #include "consumer_role_host.hpp"
+#include "utils/thread_manager.hpp"
 #include "utils/cycle_ops.hpp"
 #include "utils/broker_request_comm.hpp"
 #include "consumer_fields.hpp"
@@ -64,27 +65,37 @@ void ConsumerRoleHost::startup_()
     ready_promise_ = std::promise<bool>{};
     auto ready_future = ready_promise_.get_future();
 
-    worker_thread_ = std::thread([this] { worker_main_(); });
+    // Construct api_ here (not inside worker_main_) so the role's
+    // ThreadManager exists BEFORE we spawn the worker thread — the
+    // worker then lives under api_->thread_manager() alongside ctrl
+    // and any future role-scope threads. role_tag + uid are compile-
+    // time required by RoleAPIBase's ctor.
+    api_ = std::make_unique<scripting::RoleAPIBase>(
+        core_, "cons", config_.identity().uid);
+
+    api_->thread_manager().spawn("worker", [this] { worker_main_(); });
 
     const bool ok = ready_future.get();
     if (!ok)
     {
-        if (worker_thread_.joinable())
-            worker_thread_.join();
+        // Worker signaled setup failure. Drop api_ → its ThreadManager
+        // dtor bounded-joins the worker (which should already be
+        // exiting) with ERROR + detach if it got stuck.
+        api_.reset();
     }
 }
 
 // ============================================================================
-// shutdown_ — signal shutdown, join worker thread
+// shutdown_ — signal shutdown; ThreadManager dtor bounded-joins worker
 // ============================================================================
 
 void ConsumerRoleHost::shutdown_()
 {
     core_.request_stop();
     core_.notify_incoming();
-
-    if (worker_thread_.joinable())
-        worker_thread_.join();
+    // api_.reset() → RoleAPIBase dtor → ThreadManager dtor →
+    // bounded join("worker") with ERROR-on-timeout + detach.
+    api_.reset();
 }
 
 // ConsumerCycleOps has moved to src/include/utils/cycle_ops.hpp so the L3.β
@@ -169,11 +180,13 @@ void ConsumerRoleHost::worker_main_()
         }
     }
 
-    // ── Step 3: Create RoleAPIBase and wire infrastructure ───────────────────
+    // ── Step 3: Wire infrastructure on the already-created api_ ──────────────
+    //
+    // api_ itself was constructed in startup_() so its ThreadManager was
+    // available to spawn this worker thread. Here we populate the
+    // mutable post-ctor wiring: name, channels, log level, script/role
+    // dirs, queue pointers, engine, checksum policy, event callbacks.
 
-    // role_tag + uid required at ctor time (compile-time enforced).
-    // Identity is immutable after construction.
-    api_ = std::make_unique<scripting::RoleAPIBase>(core_, "cons", id.uid);
     api_->set_name(id.name);
     api_->set_channel(config_.in_channel());
     api_->set_log_level(id.log_level);

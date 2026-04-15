@@ -89,8 +89,8 @@ class ProcessorRoleHost
     config::RoleConfig                       config_;
     std::unique_ptr<scripting::ScriptEngine> engine_;
 
-    // Worker thread.
-    std::thread                              worker_thread_;
+    // Worker thread — spawned via api_->thread_manager().spawn("worker", ...)
+    // for bounded-join + ERROR-on-timeout + detach on shutdown.
     std::promise<bool>                       ready_promise_;
 
     // Infrastructure (created on worker thread in setup_infrastructure_).
