@@ -106,6 +106,16 @@ TEST_F(DatahubShmQueueTest, ShmQueueFlexzoneRoundTrip)
     ExpectWorkerOk(proc);
 }
 
+TEST_F(DatahubShmQueueTest, ShmQueueFlexzoneBidirectional)
+{
+    // Per HEP-CORE-0002 §2.2 the flexzone is a single shared region per
+    // channel, fully read+write on every endpoint. Writer→reader AND
+    // reader→writer visibility both exercised through the unified
+    // QueueReader/QueueWriter::flexzone() accessor.
+    auto proc = SpawnWorker("hub_queue.shm_queue_flexzone_bidirectional", {});
+    ExpectWorkerOk(proc);
+}
+
 TEST_F(DatahubShmQueueTest, ShmQueueCreateFactories)
 {
     // create_writer / create_reader owning factories: write a slot, read it back.

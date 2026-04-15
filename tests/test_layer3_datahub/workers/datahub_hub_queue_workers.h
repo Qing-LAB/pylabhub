@@ -30,6 +30,9 @@ int shm_queue_round_trip();
 int shm_queue_multiple_consumers();
 /** Write data to flexzone and slot; consumer reads back both via read_flexzone(). */
 int shm_queue_flexzone_round_trip();
+/** QueueReader::flexzone() / QueueWriter::flexzone() — bidirectional coordination
+ *  per HEP-CORE-0002 §2.2: both endpoints read and write the same shared region. */
+int shm_queue_flexzone_bidirectional();
 /** create_writer + create_reader: owning factories; write a slot, read it back. */
 int shm_queue_create_factories();
 /** Latest_only policy: write 3 slots without reading, then read once → last slot value. */

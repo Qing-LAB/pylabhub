@@ -205,12 +205,19 @@ public:
     /** @brief Set target period. Writes to DataBlock ContextMetrics directly. */
     void set_configured_period(uint64_t period_us) override;
 
-    /** @brief Read-only pointer to the shared flexzone. nullptr if no flexzone. */
-    const void* read_flexzone() const noexcept override;
-    /** @brief Writable pointer to the shared flexzone. nullptr if no flexzone. */
-    void* write_flexzone() noexcept override;
+    /** @brief Pointer to the shared flexzone (mutable). nullptr if no flexzone.
+     *
+     *  Overrides both QueueReader::flexzone() and QueueWriter::flexzone() since
+     *  ShmQueue inherits from both. The flexzone is a single shared region per
+     *  channel, fully read+write on every endpoint (HEP-CORE-0002 §2.2). */
+    void* flexzone() noexcept override;
     /** @brief Size of the flexzone in bytes; 0 if not configured. */
     size_t flexzone_size() const noexcept override;
+
+    /** @deprecated Use flexzone(). */
+    const void* read_flexzone() const noexcept override;
+    /** @deprecated Use flexzone(). */
+    void* write_flexzone() noexcept override;
 
     /** @brief Configure BLAKE2b checksum verification on read_acquire(). */
     void set_verify_checksum(bool slot, bool fz) const noexcept;

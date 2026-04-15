@@ -254,11 +254,20 @@ public:
     virtual bool verify_flexzone_checksum() { return true; }
 
     // ── Flexzone access (SHM provides data; ZMQ returns nullptr/0) ───────────
+    //
+    // Single shared region per channel, fully read+write on every endpoint
+    // (HEP-CORE-0002 §2.2: user-managed bidirectional coordination).
+    // The accessor returns a mutable pointer; there is no permission
+    // distinction between the writer-side and reader-side handles.
 
-    /** @brief Read-only flexzone pointer. nullptr if no flexzone or not SHM. */
-    virtual const void *read_flexzone() const noexcept { return nullptr; }
+    /** @brief Flexzone pointer (mutable). nullptr if no flexzone or not SHM. */
+    virtual void *flexzone() noexcept { return nullptr; }
     /** @brief Flexzone size in bytes. 0 if no flexzone or not SHM. */
     virtual size_t flexzone_size() const noexcept { return 0; }
+
+    /** @deprecated Use flexzone(). Kept only for transition; delete after
+     *  hub::Producer / hub::Consumer removal (L3.γ). */
+    virtual const void *read_flexzone() const noexcept { return nullptr; }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     // Default implementations are no-ops (suitable for ShmQueue).
@@ -380,15 +389,22 @@ public:
     virtual void update_flexzone_checksum() {}
 
     // ── Flexzone access (SHM provides data; ZMQ returns nullptr/0) ───────────
+    //
+    // Single shared region per channel, fully read+write on every endpoint
+    // (HEP-CORE-0002 §2.2: user-managed bidirectional coordination).
 
-    /** @brief Writable flexzone pointer. nullptr if no flexzone or not SHM. */
-    virtual void *write_flexzone() noexcept { return nullptr; }
-    /** @brief Read-only flexzone pointer. nullptr if no flexzone or not SHM. */
-    virtual const void *read_flexzone() const noexcept { return nullptr; }
+    /** @brief Flexzone pointer (mutable). nullptr if no flexzone or not SHM. */
+    virtual void *flexzone() noexcept { return nullptr; }
     /** @brief Flexzone size in bytes. 0 if no flexzone or not SHM. */
     virtual size_t flexzone_size() const noexcept { return 0; }
     /** @brief Stamp flexzone checksum. Call after initial flexzone setup (e.g., on_init). */
     virtual void sync_flexzone_checksum() noexcept {}
+
+    /** @deprecated Use flexzone(). Kept only for transition; delete after
+     *  hub::Producer / hub::Consumer removal (L3.γ). */
+    virtual void *write_flexzone() noexcept { return flexzone(); }
+    /** @deprecated Use flexzone(). */
+    virtual const void *read_flexzone() const noexcept { return nullptr; }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     // Default implementations are no-ops (suitable for ShmQueue).
