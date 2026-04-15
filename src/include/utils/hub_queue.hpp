@@ -4,8 +4,8 @@
  * @brief Abstract QueueReader and QueueWriter interfaces for the hub pipeline.
  *
  * Defines two transport-agnostic contracts:
- *   - QueueReader  — read (input) side: read_acquire / read_release / read_flexzone
- *   - QueueWriter  — write (output) side: write_acquire / write_commit / write_discard / write_flexzone
+ *   - QueueReader  — read (input) side: read_acquire / read_release / flexzone
+ *   - QueueWriter  — write (output) side: write_acquire / write_commit / write_discard / flexzone
  *
  * No ZMQ protocol, no HELLO/BYE, no broker registration.
  *
@@ -265,10 +265,6 @@ public:
     /** @brief Flexzone size in bytes. 0 if no flexzone or not SHM. */
     virtual size_t flexzone_size() const noexcept { return 0; }
 
-    /** @deprecated Use flexzone(). Kept only for transition; delete after
-     *  hub::Producer / hub::Consumer removal (L3.γ). */
-    virtual const void *read_flexzone() const noexcept { return nullptr; }
-
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     // Default implementations are no-ops (suitable for ShmQueue).
     // ZmqQueue overrides start()/stop() to manage its recv_thread_.
@@ -399,12 +395,6 @@ public:
     virtual size_t flexzone_size() const noexcept { return 0; }
     /** @brief Stamp flexzone checksum. Call after initial flexzone setup (e.g., on_init). */
     virtual void sync_flexzone_checksum() noexcept {}
-
-    /** @deprecated Use flexzone(). Kept only for transition; delete after
-     *  hub::Producer / hub::Consumer removal (L3.γ). */
-    virtual void *write_flexzone() noexcept { return flexzone(); }
-    /** @deprecated Use flexzone(). */
-    virtual const void *read_flexzone() const noexcept { return nullptr; }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     // Default implementations are no-ops (suitable for ShmQueue).

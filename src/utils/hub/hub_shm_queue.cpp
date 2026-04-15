@@ -379,14 +379,6 @@ void ShmQueue::read_release() noexcept
     pImpl->read_handle.reset();
 }
 
-const void* ShmQueue::read_flexzone() const noexcept
-{
-    if (!pImpl || !pImpl->dbc.get() || pImpl->fz_sz == 0)
-        return nullptr;
-    std::span<const std::byte> fz = pImpl->dbc.get()->flexible_zone_span();
-    return fz.empty() ? nullptr : fz.data();
-}
-
 void* ShmQueue::flexzone() noexcept
 {
     // Single authoritative guard: fz_sz is the flexzone size stored at
@@ -466,14 +458,6 @@ void ShmQueue::write_discard() noexcept
     // Release without commit — slot is discarded and returned to the ring.
     (void)pImpl->dbp.get()->release_write_slot(*pImpl->write_handle);
     pImpl->write_handle.reset();
-}
-
-void* ShmQueue::write_flexzone() noexcept
-{
-    if (!pImpl || !pImpl->dbp.get() || pImpl->fz_sz == 0)
-        return nullptr;
-    std::span<std::byte> fz = pImpl->dbp.get()->flexible_zone_span();
-    return fz.empty() ? nullptr : fz.data();
 }
 
 // ============================================================================

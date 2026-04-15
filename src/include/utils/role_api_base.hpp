@@ -238,13 +238,13 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] void *write_acquire(std::chrono::milliseconds timeout) noexcept;
     void               write_commit() noexcept;
     void               write_discard() noexcept;
-    [[nodiscard]] void *write_flexzone();
-    [[nodiscard]] const void *read_flexzone() const;
-    [[nodiscard]] size_t flexzone_size() const;
-    /// Explicit per-side flexzone runtime size. Use these when the role has
-    /// both sides (processor) — the legacy flexzone_size() is ambiguous there.
-    [[nodiscard]] size_t write_flexzone_size() const noexcept;
-    [[nodiscard]] size_t read_flexzone_size() const noexcept;
+    /// Flexzone pointer for the given side (Tx or Rx). Single region per
+    /// channel, fully read+write on both endpoints per HEP-CORE-0002 §2.2.
+    /// Returns nullptr when the side is not wired or the channel has no
+    /// flexzone configured.
+    [[nodiscard]] void  *flexzone(ChannelSide side);
+    /// Physical flexzone size in bytes for the given side. 0 when not wired.
+    [[nodiscard]] size_t flexzone_size(ChannelSide side) const noexcept;
     bool update_flexzone_checksum();
     bool sync_flexzone_checksum();
     [[nodiscard]] size_t write_item_size() const noexcept;

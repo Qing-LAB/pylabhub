@@ -319,8 +319,7 @@ class PYLABHUB_UTILS_EXPORT Producer
 
     // ── Channel data operations (flexzone, checksum — SHM-specific) ─────────
 
-    [[nodiscard]] void *write_flexzone() noexcept;
-    [[nodiscard]] const void *read_flexzone() const noexcept;
+    [[nodiscard]] void *flexzone() noexcept;
     [[nodiscard]] size_t flexzone_size() const noexcept;
     void set_checksum_options(bool slot, bool fz) noexcept;
     void set_always_clear_slot(bool enable) noexcept;

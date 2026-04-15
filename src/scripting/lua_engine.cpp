@@ -2024,7 +2024,7 @@ int LuaEngine::lua_api_flexzone(lua_State *L)
         return 1;
     }
 
-    void *fz_ptr = producer->write_flexzone();
+    void *fz_ptr = producer->flexzone();
     size_t fz_sz = producer->flexzone_size();
     if (!fz_ptr || fz_sz == 0)
     {

@@ -528,14 +528,9 @@ void Producer::stop_queue()
 // Producer — Channel data operations (flexzone, checksum)
 // ============================================================================
 
-void *Producer::write_flexzone() noexcept
+void *Producer::flexzone() noexcept
 {
-    return (pImpl && pImpl->queue_writer_) ? pImpl->queue_writer_->write_flexzone() : nullptr;
-}
-
-const void *Producer::read_flexzone() const noexcept
-{
-    return (pImpl && pImpl->queue_writer_) ? pImpl->queue_writer_->read_flexzone() : nullptr;
+    return (pImpl && pImpl->queue_writer_) ? pImpl->queue_writer_->flexzone() : nullptr;
 }
 
 size_t Producer::flexzone_size() const noexcept

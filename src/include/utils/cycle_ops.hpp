@@ -56,8 +56,8 @@ class ProducerCycleOps final : public RoleCycleOps
         : api_(api), engine_(e), core_(c),
           stop_on_error_(stop_on_error),
           buf_sz_(api.write_item_size()),
-          fz_ptr_(c.has_out_fz() ? api.write_flexzone() : nullptr),
-          fz_sz_(c.has_out_fz() ? api.flexzone_size() : 0)
+          fz_ptr_(c.has_out_fz() ? api.flexzone(ChannelSide::Tx) : nullptr),
+          fz_sz_(c.has_out_fz() ? api.flexzone_size(ChannelSide::Tx) : 0)
     {}
 
     bool acquire(const AcquireContext &ctx) override
@@ -78,7 +78,7 @@ class ProducerCycleOps final : public RoleCycleOps
 
         // Re-read flexzone pointer each cycle (ShmQueue may move it).
         if (core_.has_out_fz())
-            fz_ptr_ = api_.write_flexzone();
+            fz_ptr_ = api_.flexzone(ChannelSide::Tx);
 
         auto result = engine_.invoke_produce(
             InvokeTx{buf_, buf_sz_, fz_ptr_, fz_sz_}, msgs);
@@ -154,8 +154,8 @@ class ConsumerCycleOps final : public RoleCycleOps
 
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
         void *fz_ptr = core_.has_in_fz()
-            ? const_cast<void *>(api_.read_flexzone()) : nullptr;
-        const size_t fz_sz = core_.has_in_fz() ? api_.flexzone_size() : 0;
+            ? api_.flexzone(ChannelSide::Rx) : nullptr;
+        const size_t fz_sz = core_.has_in_fz() ? api_.flexzone_size(ChannelSide::Rx) : 0;
 
         const uint64_t errors_before = engine_.script_error_count();
 
@@ -203,10 +203,10 @@ class ProcessorCycleOps final : public RoleCycleOps
         : api_(api), engine_(e), core_(c),
           stop_on_error_(stop_on_error), drop_mode_(drop_mode),
           in_sz_(api.read_item_size()), out_sz_(api.write_item_size()),
-          out_fz_ptr_(c.has_out_fz() ? api.write_flexzone() : nullptr),
-          out_fz_sz_(c.has_out_fz() ? api.write_flexzone_size() : 0),
-          in_fz_ptr_(c.has_in_fz() ? const_cast<void *>(api.read_flexzone()) : nullptr),
-          in_fz_sz_(c.has_in_fz() ? api.read_flexzone_size() : 0)
+          out_fz_ptr_(c.has_out_fz() ? api.flexzone(ChannelSide::Tx) : nullptr),
+          out_fz_sz_(c.has_out_fz() ? api.flexzone_size(ChannelSide::Tx) : 0),
+          in_fz_ptr_(c.has_in_fz() ? api.flexzone(ChannelSide::Rx) : nullptr),
+          in_fz_sz_(c.has_in_fz() ? api.flexzone_size(ChannelSide::Rx) : 0)
     {}
 
     /// Processor always returns true — maintains timing cadence on idle cycles.
@@ -256,9 +256,9 @@ class ProcessorCycleOps final : public RoleCycleOps
         if (out_buf_) std::memset(out_buf_, 0, out_sz_);
 
         // Re-read flexzone pointers each cycle (ShmQueue may move them).
-        if (core_.has_out_fz()) out_fz_ptr_ = api_.write_flexzone();
+        if (core_.has_out_fz()) out_fz_ptr_ = api_.flexzone(ChannelSide::Tx);
         if (core_.has_in_fz())
-            in_fz_ptr_ = const_cast<void *>(api_.read_flexzone());
+            in_fz_ptr_ = api_.flexzone(ChannelSide::Rx);
 
         auto result = engine_.invoke_process(
             InvokeRx{held_input_, in_sz_, in_fz_ptr_, in_fz_sz_},
