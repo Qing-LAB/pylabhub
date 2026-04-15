@@ -373,7 +373,7 @@ template <typename Fn> int run_worker_bare(Fn test_logic, const char *test_name)
     {
         fmt::print(stderr,
                    "[WORKER BARE UNCLEAN SHUTDOWN] {}: {} thread(s) leaked "
-                   "during ThreadManager::join_all(). See ERROR log entries "
+                   "during ThreadManager::drain(). See ERROR log entries "
                    "tagged [ThreadManager:*] above.\n",
                    test_name, leaked);
         return 4;
