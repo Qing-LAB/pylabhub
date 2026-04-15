@@ -94,7 +94,7 @@ namespace
 
 class ConsumerCycleOps final : public scripting::RoleCycleOps
 {
-    hub::Consumer           &consumer_;
+    scripting::RoleAPIBase  &api_;
     scripting::ScriptEngine &engine_;
     scripting::RoleHostCore &core_;
     bool                     stop_on_error_;
@@ -103,23 +103,23 @@ class ConsumerCycleOps final : public scripting::RoleCycleOps
     const void  *data_{nullptr};
 
   public:
-    ConsumerCycleOps(hub::Consumer &c, scripting::ScriptEngine &e,
+    ConsumerCycleOps(scripting::RoleAPIBase &api, scripting::ScriptEngine &e,
                      scripting::RoleHostCore &core, bool stop_on_error)
-        : consumer_(c), engine_(e), core_(core),
+        : api_(api), engine_(e), core_(core),
           stop_on_error_(stop_on_error),
-          item_sz_(c.queue_item_size())
+          item_sz_(api.read_item_size())
     {}
 
     bool acquire(const scripting::AcquireContext &ctx) override
     {
         data_ = scripting::retry_acquire(ctx, core_,
-            [this](auto t) { return const_cast<void *>(consumer_.read_acquire(t)); });
+            [this](auto t) { return const_cast<void *>(api_.read_acquire(t)); });
         return data_ != nullptr;
     }
 
     void cleanup_on_shutdown() override
     {
-        if (data_) { consumer_.read_release(); data_ = nullptr; }
+        if (data_) { api_.read_release(); data_ = nullptr; }
     }
 
     bool invoke_and_commit(std::vector<scripting::IncomingMessage> &msgs) override
@@ -130,15 +130,15 @@ class ConsumerCycleOps final : public scripting::RoleCycleOps
 
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
         void *fz_ptr = core_.has_in_fz()
-            ? const_cast<void *>(consumer_.read_flexzone()) : nullptr;
-        const size_t fz_sz = core_.has_in_fz() ? consumer_.flexzone_size() : 0;
+            ? const_cast<void *>(api_.read_flexzone()) : nullptr;
+        const size_t fz_sz = core_.has_in_fz() ? api_.flexzone_size() : 0;
 
         const uint64_t errors_before = engine_.script_error_count();
 
         engine_.invoke_consume(
             scripting::InvokeRx{data_, item_sz_, fz_ptr, fz_sz}, msgs);
 
-        if (data_) { consumer_.read_release(); data_ = nullptr; }
+        if (data_) { api_.read_release(); data_ = nullptr; }
 
         if (stop_on_error_ && engine_.script_error_count() > errors_before)
         {
@@ -355,7 +355,7 @@ void ConsumerRoleHost::worker_main_()
     else
     {
         const auto &tc_loop = config_.timing();
-        ConsumerCycleOps ops(*in_consumer_, *engine_, core_,
+        ConsumerCycleOps ops(*api_, *engine_, core_,
                              sc.stop_on_script_error);
         scripting::LoopConfig lcfg;
         lcfg.period_us                   = tc_loop.period_us;

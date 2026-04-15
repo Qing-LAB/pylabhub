@@ -97,7 +97,7 @@ namespace
 
 class ProducerCycleOps final : public scripting::RoleCycleOps
 {
-    hub::Producer           &producer_;
+    scripting::RoleAPIBase  &api_;
     scripting::ScriptEngine &engine_;
     scripting::RoleHostCore &core_;
     bool                     stop_on_error_;
@@ -111,25 +111,25 @@ class ProducerCycleOps final : public scripting::RoleCycleOps
     void  *buf_{nullptr};
 
   public:
-    ProducerCycleOps(hub::Producer &p, scripting::ScriptEngine &e,
+    ProducerCycleOps(scripting::RoleAPIBase &api, scripting::ScriptEngine &e,
                      scripting::RoleHostCore &c, bool stop_on_error)
-        : producer_(p), engine_(e), core_(c),
+        : api_(api), engine_(e), core_(c),
           stop_on_error_(stop_on_error),
-          buf_sz_(p.queue_item_size()),
-          fz_ptr_(c.has_out_fz() ? p.write_flexzone() : nullptr),
-          fz_sz_(c.has_out_fz() ? p.flexzone_size() : 0)
+          buf_sz_(api.write_item_size()),
+          fz_ptr_(c.has_out_fz() ? api.write_flexzone() : nullptr),
+          fz_sz_(c.has_out_fz() ? api.flexzone_size() : 0)
     {}
 
     bool acquire(const scripting::AcquireContext &ctx) override
     {
         buf_ = scripting::retry_acquire(ctx, core_,
-            [this](auto t) { return producer_.write_acquire(t); });
+            [this](auto t) { return api_.write_acquire(t); });
         return buf_ != nullptr;
     }
 
     void cleanup_on_shutdown() override
     {
-        if (buf_) { producer_.write_discard(); buf_ = nullptr; }
+        if (buf_) { api_.write_discard(); buf_ = nullptr; }
     }
 
     bool invoke_and_commit(std::vector<scripting::IncomingMessage> &msgs) override
@@ -140,7 +140,7 @@ class ProducerCycleOps final : public scripting::RoleCycleOps
 
         // Re-read flexzone pointer each cycle (ShmQueue may move it).
         if (core_.has_out_fz())
-            fz_ptr_ = producer_.write_flexzone();
+            fz_ptr_ = api_.write_flexzone();
 
         auto result = engine_.invoke_produce(
             scripting::InvokeTx{buf_, buf_sz_, fz_ptr_, fz_sz_}, msgs);
@@ -149,12 +149,12 @@ class ProducerCycleOps final : public scripting::RoleCycleOps
         {
             if (result == scripting::InvokeResult::Commit)
             {
-                producer_.write_commit();
+                api_.write_commit();
                 core_.inc_out_slots_written();
             }
             else
             {
-                producer_.write_discard();
+                api_.write_discard();
                 core_.inc_out_drop_count();
             }
         }
@@ -400,7 +400,7 @@ void ProducerRoleHost::worker_main_()
     else
     {
         const auto &tc_loop = config_.timing();
-        ProducerCycleOps ops(*out_producer_, *engine_, core_,
+        ProducerCycleOps ops(*api_, *engine_, core_,
                              sc.stop_on_script_error);
         scripting::LoopConfig lcfg;
         lcfg.period_us                   = tc_loop.period_us;

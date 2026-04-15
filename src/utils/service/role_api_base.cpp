@@ -785,8 +785,35 @@ void RoleAPIBase::close_all_inbox_clients()
 }
 
 // ============================================================================
-// Output side
+// Output side — flat data-plane verbs
 // ============================================================================
+
+void *RoleAPIBase::write_acquire(std::chrono::milliseconds timeout) noexcept
+{
+    return pImpl->producer ? pImpl->producer->write_acquire(timeout) : nullptr;
+}
+
+void RoleAPIBase::write_commit() noexcept
+{
+    if (pImpl->producer) pImpl->producer->write_commit();
+}
+
+void RoleAPIBase::write_discard() noexcept
+{
+    if (pImpl->producer) pImpl->producer->write_discard();
+}
+
+size_t RoleAPIBase::write_item_size() const noexcept
+{
+    return pImpl->producer ? pImpl->producer->queue_item_size() : 0;
+}
+
+bool RoleAPIBase::sync_flexzone_checksum()
+{
+    if (!pImpl->producer) return false;
+    pImpl->producer->sync_flexzone_checksum();
+    return true;
+}
 
 void *RoleAPIBase::write_flexzone()
 {
@@ -811,6 +838,16 @@ bool RoleAPIBase::update_flexzone_checksum()
     return true;
 }
 
+size_t RoleAPIBase::write_flexzone_size() const noexcept
+{
+    return pImpl->producer ? pImpl->producer->flexzone_size() : 0;
+}
+
+size_t RoleAPIBase::read_flexzone_size() const noexcept
+{
+    return pImpl->consumer ? pImpl->consumer->flexzone_size() : 0;
+}
+
 uint64_t RoleAPIBase::out_slots_written() const { return pImpl->core->out_slots_written(); }
 uint64_t RoleAPIBase::out_drop_count() const    { return pImpl->core->out_drop_count(); }
 
@@ -825,8 +862,23 @@ std::string RoleAPIBase::out_policy() const
 }
 
 // ============================================================================
-// Input side
+// Input side — flat data-plane verbs
 // ============================================================================
+
+const void *RoleAPIBase::read_acquire(std::chrono::milliseconds timeout) noexcept
+{
+    return pImpl->consumer ? pImpl->consumer->read_acquire(timeout) : nullptr;
+}
+
+void RoleAPIBase::read_release() noexcept
+{
+    if (pImpl->consumer) pImpl->consumer->read_release();
+}
+
+size_t RoleAPIBase::read_item_size() const noexcept
+{
+    return pImpl->consumer ? pImpl->consumer->queue_item_size() : 0;
+}
 
 uint64_t RoleAPIBase::in_slots_received() const { return pImpl->core->in_slots_received(); }
 

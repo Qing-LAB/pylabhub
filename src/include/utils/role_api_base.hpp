@@ -241,6 +241,10 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] void *write_flexzone();
     [[nodiscard]] const void *read_flexzone() const;
     [[nodiscard]] size_t flexzone_size() const;
+    /// Explicit per-side flexzone runtime size. Use these when the role has
+    /// both sides (processor) — the legacy flexzone_size() is ambiguous there.
+    [[nodiscard]] size_t write_flexzone_size() const noexcept;
+    [[nodiscard]] size_t read_flexzone_size() const noexcept;
     bool update_flexzone_checksum();
     bool sync_flexzone_checksum();
     [[nodiscard]] size_t write_item_size() const noexcept;
