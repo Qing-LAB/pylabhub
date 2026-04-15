@@ -76,8 +76,31 @@ updated plan. `git stash list` to find it.
 
 ### Step 2 — baseline test suite (BEFORE L3.β)
 
-Per `role_unification_design.md` §4.5a/b. This is a standalone,
-dedicated work item — estimated 2-3 hours of focused engineering.
+Per `role_unification_design.md` §4.5 through §4.5f. This is a standalone,
+dedicated work item — estimated 3-4 hours of focused engineering (revised
+upward from 2-3 hours after branch-inventory was specified).
+
+**Critical reference sections (read in full before writing tests):**
+
+- §4.5a — **35 branches** enumerated across the 3 original CycleOps
+  classes with stable IDs (P-*, C-*, PR-*). Every branch must be covered.
+- §4.5b — **Identical-effect requirement**. Post-β must produce
+  bit-identical observable state per branch. Not "similar". Not "close
+  enough". Review artifact required at L3.β submission: a 35-row mapping
+  table.
+- §4.5c — **Commit/abandon/hold/release decision tables** for
+  producer/consumer/processor. These are the decisions the tests observe.
+- §4.5d — **Test → branch-ID mapping** ensuring full branch coverage;
+  suggested ~13 tests total (not 6 — revised after branch enumeration).
+- §4.5e — **Test-evaluation principles**: built-in metrics + harness
+  measurements + cross-check. No return-value assertions. No test-only
+  synthetic state.
+- §4.5e1 — **Exact-equality assertion language**. `EXPECT_EQ` always;
+  `EXPECT_GE`/`EXPECT_LT` forbidden except for wall-clock jitter
+  tolerance. Expected values are symbolic predictions walked from the
+  decision trees, NOT magic numbers recorded from pre-β runs.
+- §4.6 — **Discrepancy-source checklist** (8 items). Any post-β metric
+  divergence is diagnosed, not reverted.
 
 **Components to build (in dependency order):**
 
@@ -116,13 +139,17 @@ Per `role_unification_design.md` §5:
 - Create unified `scripting::CycleOps` in header (or adapt from the stash).
   Policy: `drop_mode` parameter; input-hold derived at runtime from side
   presence + overflow; branching on `has_tx_` / `has_rx_` mirroring the
-  three original classes exactly.
+  three original classes' branch structure **exactly** (§4.5a).
 - Migrate all three role hosts to construct `scripting::CycleOps` instead
   of `ProducerCycleOps` / `ConsumerCycleOps` / `ProcessorCycleOps`.
 - Delete the three original classes.
-- **Run the baseline suite.** Counter values must match pre-β
-  byte-for-byte. If any divergence: apply §4.6 discrepancy-source
-  checklist to identify the translation error. Fix. Re-run.
+- **Produce the 35-row branch-mapping table** (§4.5b) in the commit
+  message or a separate review doc. Reviewer verifies every pre-β branch
+  is addressable in the unified code and produces identical effect.
+- **Run the baseline suite.** Counter values and queue contents must
+  match the scenario-derived predictions exactly. If any divergence:
+  apply §4.6 discrepancy-source checklist to identify the translation
+  error. Fix. Re-run.
 - Run full test suite (`ctest -j2`). Expect 1275+/N passing.
 - Commit.
 
