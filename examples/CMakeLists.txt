@@ -10,12 +10,11 @@
 set(EXAMPLE_LINK_LIBS pylabhub::utils)
 
 # ── Existing examples ──────────────────────────────────────────────────────────
-
-add_executable(example_hub_active_service hub_active_service_example.cpp)
-target_link_libraries(example_hub_active_service PRIVATE ${EXAMPLE_LINK_LIBS})
-
-add_executable(example_hub_health hub_health_example.cpp)
-target_link_libraries(example_hub_health PRIVATE ${EXAMPLE_LINK_LIBS})
+#
+# Note: hub_active_service_example, hub_health_example, and cpp_processor_template
+# were removed in L3.γ A6.1 (deleted along with hub::Producer active-mode API).
+# cpp_processor_template will be rewritten in L3.ζ against the new api.flexzone()
+# / QueueWriter surface.
 
 add_executable(example_datahub_producer datahub_producer_example.cpp)
 target_link_libraries(example_datahub_producer PRIVATE ${EXAMPLE_LINK_LIBS})
@@ -28,8 +27,3 @@ target_link_libraries(example_raii_layer PRIVATE ${EXAMPLE_LINK_LIBS})
 
 add_executable(example_schema schema_example.cpp)
 target_link_libraries(example_schema PRIVATE ${EXAMPLE_LINK_LIBS})
-
-# ── New template: Processor pipeline ───────────────────────────────────────────
-
-add_executable(example_processor_pipeline cpp_processor_template.cpp)
-target_link_libraries(example_processor_pipeline PRIVATE ${EXAMPLE_LINK_LIBS})

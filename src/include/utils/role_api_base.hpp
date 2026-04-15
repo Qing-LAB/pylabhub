@@ -180,18 +180,6 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     void set_checksum_policy(hub::ChecksumPolicy p);
     void set_stop_on_script_error(bool v);
 
-    // ── Event callback wiring ────────────────────────────────────────────
-    //
-    // Wires Producer/Consumer event callbacks to core_.enqueue_message()
-    // or core_.request_stop(). Broker notifications (band, hub-dead) are
-    // handled by BrokerRequestComm in start_ctrl_thread().
-    // Call after set_producer/set_consumer/set_channel.
-    //
-    // Replaces the per-role-host copy-paste of on_channel_closing,
-    // on_force_shutdown, on_zmq_data, on_producer_message, on_channel_error,
-    // on_consumer_joined/left/message, on_peer_dead, on_hub_dead, etc.
-    void wire_event_callbacks();
-
     // ── Identity ──────────────────────────────────────────────────────────────
 
     [[nodiscard]] const std::string &role_tag() const;

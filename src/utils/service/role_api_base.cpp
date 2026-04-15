@@ -468,60 +468,6 @@ void RoleAPIBase::drain_inbox_sync()
 }
 
 // ============================================================================
-// Event callback wiring
-// ============================================================================
-
-void RoleAPIBase::wire_event_callbacks()
-{
-    auto *core = pImpl->core;
-    const std::string &tag = pImpl->role_tag;
-
-    // For processor, channel names distinguish input vs output in events.
-    const std::string &in_ch  = pImpl->channel;
-    const std::string &out_ch_name = pImpl->out_channel;
-    const bool is_dual = (pImpl->consumer != nullptr && pImpl->producer != nullptr);
-
-    // ── Consumer-side callbacks ──────────────────────────────────────────
-    if (auto *c = pImpl->consumer)
-    {
-        c->on_channel_closing([core, tag, in_ch, is_dual]() {
-            LOGGER_INFO("[{}] CHANNEL_CLOSING_NOTIFY received, queuing event", tag);
-            IncomingMessage msg;
-            msg.event = "channel_closing";
-            if (is_dual)
-                msg.details["channel"] = in_ch;
-            core->enqueue_message(std::move(msg));
-        });
-
-        c->on_force_shutdown([core, tag]() {
-            LOGGER_WARN("[{}] FORCE_SHUTDOWN received, forcing immediate shutdown", tag);
-            core->request_stop();
-        });
-    }
-
-    // ── Producer-side callbacks ──────────────────────────────────────────
-    if (auto *p = pImpl->producer)
-    {
-        p->on_channel_closing([core, tag, out_ch_name, is_dual]() {
-            IncomingMessage msg;
-            msg.event = "channel_closing";
-            if (is_dual)
-                msg.details["channel"] = out_ch_name;
-            core->enqueue_message(std::move(msg));
-        });
-
-        p->on_force_shutdown([core]() {
-            core->request_stop();
-        });
-    }
-
-    // Note: broker notifications (CONSUMER_DIED_NOTIFY, CHANNEL_EVENT_NOTIFY,
-    // hub-dead) are all handled by BrokerRequestComm's on_notification() and
-    // on_hub_dead() callbacks wired in start_ctrl_thread(). No Messenger
-    // callback wiring is needed.
-}
-
-// ============================================================================
 // retry_acquire — shared inner retry logic
 // ============================================================================
 

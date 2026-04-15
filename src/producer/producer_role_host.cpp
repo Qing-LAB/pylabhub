@@ -199,7 +199,6 @@ void ProducerRoleHost::worker_main_()
     api_->set_checksum_policy(config_.checksum().policy);
     api_->set_stop_on_script_error(sc.stop_on_script_error);
     api_->set_engine(engine_.get());
-    api_->wire_event_callbacks();
 
     // ── Step 4: Load engine via lifecycle module ─────────────────────────────
     // engine_lifecycle_startup does: initialize → load_script → register_slot_type
@@ -430,8 +429,6 @@ bool ProducerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
 
     // Metrics reset moved to after queue creation (reset_metrics() on queue).
 
-    // Event callbacks (on_channel_closing, on_force_shutdown) are wired by
-    // api_->wire_event_callbacks() after RoleAPIBase construction in worker_main_.
     // Broker notifications (band, hub-dead) are handled by BrokerRequestComm.
 
     // --- Start and configure data queue ---
@@ -478,10 +475,9 @@ void ProducerRoleHost::teardown_infrastructure_()
         broker_comm_.reset();
     }
 
-    // Stop/close producer.
+    // Close producer (data-plane queue teardown happens inside close()).
     if (out_producer_.has_value())
     {
-        out_producer_->stop();
         out_producer_->close();
         out_producer_.reset();
     }
