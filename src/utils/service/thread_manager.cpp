@@ -22,6 +22,20 @@ namespace pylabhub::utils
 {
 
 // ============================================================================
+// Process-wide unclean-shutdown counter
+// ============================================================================
+//
+// Any ThreadManager instance in this process that had to detach a stuck
+// thread during join_all() increments this counter. Production main() and
+// gtest event listeners query it via ThreadManager::process_detached_count()
+// to decide whether to treat exit as clean.
+
+namespace
+{
+std::atomic<std::size_t> g_process_detached_count{0};
+}
+
+// ============================================================================
 // ThreadSlot — single tracked thread
 // ============================================================================
 
@@ -61,6 +75,12 @@ struct ThreadManager::Impl
     /// ModuleDef userdata-validate path to reject stale callbacks if
     /// the ThreadManager is destroyed before lifecycle dispatches.
     std::atomic<bool>                        impl_alive{true};
+
+    /// Count of threads detached on the last join_all() call. 0 means clean.
+    /// Exposed via ThreadManager::detached_count_last_join() so callers
+    /// (tests, process-exit policy) cannot mistake a timeout-detach for
+    /// normal teardown.
+    std::atomic<std::size_t>                 detached_count_last_join{0};
 };
 
 // ============================================================================
@@ -174,14 +194,32 @@ ThreadManager::ThreadManager(std::string owner_tag,
 ThreadManager::~ThreadManager()
 {
     // Run the bounded join first — this is the real teardown.
+    std::size_t detached = 0;
     try
     {
-        join_all();
+        detached = join_all();
     }
     catch (const std::exception &e)
     {
         LOGGER_ERROR("[ThreadManager:{}] destructor join_all() threw: {}",
                      pImpl ? pImpl->owner_tag : "<moved-from>", e.what());
+    }
+
+    if (detached > 0 && pImpl)
+    {
+        // Process-level unclean-shutdown flag. Any main() that wraps its
+        // role/services in ThreadManager-owning objects should query this
+        // at exit and propagate to a non-zero return code. A test harness
+        // can similarly assert detached_count_last_join() == 0 after the
+        // fixture teardown to fail the test.
+        //
+        // We DO NOT throw from the dtor — that would std::terminate and
+        // obscure the diagnostic ERROR logs already emitted. The
+        // detached_count_last_join() accessor is the machine-readable
+        // signal; operators see the log immediately.
+        LOGGER_ERROR("[ThreadManager:{}] dtor: {} thread(s) leaked. Caller "
+                     "MUST NOT treat process/test return as success.",
+                     pImpl->owner_tag, detached);
     }
 
     // Mark Impl as no-longer-alive BEFORE deregistering so any concurrent
@@ -266,20 +304,22 @@ bool ThreadManager::spawn(const std::string &name,
     return true;
 }
 
-void ThreadManager::join_all()
+std::size_t ThreadManager::join_all()
 {
-    if (!pImpl) return;
+    if (!pImpl) return 0;
 
     // Idempotent: snapshot slots under lock, clear, then process outside lock.
     std::vector<ThreadSlot> to_join;
     {
         std::lock_guard<std::mutex> lock(pImpl->mu);
         if (pImpl->join_all_done.load(std::memory_order_acquire))
-            return;
+            return pImpl->detached_count_last_join.load(std::memory_order_acquire);
         pImpl->join_all_done.store(true, std::memory_order_release);
         to_join = std::move(pImpl->slots);
         pImpl->slots.clear();
     }
+
+    std::size_t detached = 0;
 
     // Reverse spawn order (last spawned = first joined).
     for (auto it = to_join.rbegin(); it != to_join.rend(); ++it)
@@ -317,8 +357,27 @@ void ThreadManager::join_all()
                 "for shutdown-signal observation.",
                 pImpl->owner_tag, slot.name, slot.join_timeout.count());
             slot.thread.detach();
+            ++detached;
+            g_process_detached_count.fetch_add(1, std::memory_order_acq_rel);
         }
     }
+
+    pImpl->detached_count_last_join.store(detached, std::memory_order_release);
+
+    if (detached > 0)
+    {
+        // Loud summary at ERROR so an operator scanning logs for "N threads
+        // leaked during shutdown of X" has the aggregate visible next to the
+        // per-thread ERROR entries. Process-exit policy (main() returning
+        // non-zero if any ThreadManager leaked) should query
+        // detached_count_last_join() to make this a non-zero exit code.
+        LOGGER_ERROR(
+            "[ThreadManager:{}] UNCLEAN SHUTDOWN — {} thread(s) detached "
+            "on timeout. Process exit should NOT report success.",
+            pImpl->owner_tag, detached);
+    }
+
+    return detached;
 }
 
 // ============================================================================
@@ -365,6 +424,26 @@ const std::string &ThreadManager::owner_tag() const noexcept
 std::string ThreadManager::module_name() const
 {
     return pImpl ? pImpl->module_name : std::string{};
+}
+
+std::size_t ThreadManager::detached_count_last_join() const
+{
+    return pImpl ? pImpl->detached_count_last_join.load(std::memory_order_acquire)
+                 : 0;
+}
+
+// ============================================================================
+// Process-wide accessors
+// ============================================================================
+
+std::size_t ThreadManager::process_detached_count() noexcept
+{
+    return g_process_detached_count.load(std::memory_order_acquire);
+}
+
+void ThreadManager::reset_process_detached_count_for_testing() noexcept
+{
+    g_process_detached_count.store(0, std::memory_order_release);
 }
 
 } // namespace pylabhub::utils

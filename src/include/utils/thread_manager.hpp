@@ -103,8 +103,26 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
     /// Bounded join of all managed threads in reverse spawn order. Each
     /// thread that doesn't exit within its SpawnOptions.join_timeout is
     /// detached with an ERROR log identifying the thread by owner_tag + name.
-    /// Idempotent; second and subsequent calls are no-ops.
-    void join_all();
+    /// Idempotent; second and subsequent calls return 0.
+    /// @return number of threads that HAD to be detached (timed out).
+    ///   A non-zero return value means the shutdown was NOT clean and one
+    ///   or more threads are leaked (still running, detached from the
+    ///   process's std::thread ownership). Callers — especially tests —
+    ///   MUST check this value rather than treating a `void` return as
+    ///   evidence of clean teardown.
+    std::size_t join_all();
+
+    /// Count of threads that were detached during the most recent join_all()
+    /// call (0 if no join_all yet or last call was fully clean).
+    /// Intended for test assertions and process-exit policy:
+    ///
+    ///     int main(int argc, char **argv) {
+    ///         ... construct roles / services ...
+    ///         LifecycleGuard guard(...);
+    ///         // guard dtor runs ThreadManager dtors (→ join_all).
+    ///         return /* aggregate */ leaked_threads > 0 ? 2 : 0;
+    ///     }
+    [[nodiscard]] std::size_t detached_count_last_join() const;
 
     /// Number of threads that have been spawned and not yet joined or
     /// detached (i.e., still tracked as "owned"). Goes to 0 after join_all().
@@ -120,6 +138,28 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
 
     /// Lifecycle module name: "ThreadManager:" + owner_tag.
     [[nodiscard]] std::string module_name() const;
+
+    // ── Process-wide unclean-shutdown counter ────────────────────────────
+    //
+    // Every ThreadManager instance in this process contributes to a single
+    // thread-safe counter on detach-timeout. Callers that need to decide
+    // "can I report success?" (production main(), gtest event listeners,
+    // admin health endpoints) query this.
+    //
+    // The counter is monotonic and resets via
+    // reset_process_detached_count_for_testing() — test fixtures that
+    // deliberately exercise the timeout path (e.g., the bounded-join unit
+    // test) use this to scope the expected-leak window.
+
+    /// Total threads detached by any ThreadManager in this process since
+    /// startup (or last reset). 0 means every ThreadManager that has run
+    /// join_all() so far completed cleanly.
+    [[nodiscard]] static std::size_t process_detached_count() noexcept;
+
+    /// Reset the process-wide detached counter to 0. Intended only for
+    /// unit tests that exercise the timeout-detach path deliberately and
+    /// then need a clean slate before subsequent tests measure it.
+    static void reset_process_detached_count_for_testing() noexcept;
 
     /// Implementation state. Declared public so the free-function lifecycle
     /// thunks (in thread_manager.cpp) can dispatch against it. Still opaque
