@@ -53,6 +53,9 @@ struct ConsumerOptions
     std::string shm_name{};
     std::string data_transport{"shm"};
     std::string zmq_node_endpoint{};
+
+    /// See ProducerOptions::instance_id. Role hosts set e.g. "cons:UID-...:rx".
+    std::string instance_id{};
 };
 
 } // namespace pylabhub::hub
