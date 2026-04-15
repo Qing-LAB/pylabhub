@@ -199,8 +199,11 @@ class RunDataLoopTest : public ::testing::Test
 
     void SetUp() override
     {
-        api = std::make_unique<RoleAPIBase>(core);
-        api->set_role_tag("test");
+        const auto *info =
+            ::testing::UnitTest::GetInstance()->current_test_info();
+        api = std::make_unique<RoleAPIBase>(
+            core, "test",
+            std::string{info->test_suite_name()} + "." + info->name());
     }
 };
 
@@ -379,16 +382,15 @@ class ThreadManagerTest : public ::testing::Test
 
     void SetUp() override
     {
-        api = std::make_unique<RoleAPIBase>(core);
-        api->set_role_tag("test");
-        // Each test uses a unique uid so its ThreadManager dynamic module
-        // ("ThreadManager:test:<uid>") doesn't clash with the next test's
-        // registration in the same process.
+        // role_tag + uid at ctor. Each test's uid is unique per-name so
+        // its dynamic lifecycle module "ThreadManager:test:{uid}" doesn't
+        // clash with other tests in the same binary.
         const auto *info =
             ::testing::UnitTest::GetInstance()->current_test_info();
-        api->set_uid(std::string{info->test_suite_name()} + "." + info->name());
+        api = std::make_unique<RoleAPIBase>(
+            core, "test",
+            std::string{info->test_suite_name()} + "." + info->name());
         api->set_engine(&engine);
-        api->init_thread_manager();
     }
 };
 

@@ -660,7 +660,7 @@ static int do_run(const fs::path& hub_dir, bool dev_mode)
     // Broker thread runs under a ThreadManager so its shutdown is bounded
     // with ERROR-on-timeout diagnostics (owner tag "hubshell"). Replaces
     // the raw std::thread + unbounded .join() pattern.
-    pylabhub::utils::ThreadManager hubshell_threads("hubshell");
+    pylabhub::utils::ThreadManager hubshell_threads("hubshell", hub_cfg.hub_uid());
     hubshell_threads.spawn("broker", [&broker]() { broker.run(); });
 
     // -----------------------------------------------------------------------

@@ -62,8 +62,10 @@ struct ThreadSlot
 
 struct ThreadManager::Impl
 {
-    std::string                              owner_tag;
-    std::string                              module_name;   // "ThreadManager:" + owner_tag
+    std::string                              owner_tag;      // class/category
+    std::string                              owner_id;       // instance id
+    std::string                              composed_identity; // "{owner_tag}:{owner_id}"
+    std::string                              module_name;    // "ThreadManager:" + composed_identity
     std::chrono::milliseconds                aggregate_shutdown_timeout;
 
     mutable std::mutex                       mu;
@@ -138,14 +140,19 @@ void tm_shutdown(const char * /*arg*/, void *userdata)
 // ============================================================================
 
 ThreadManager::ThreadManager(std::string owner_tag,
+                             std::string owner_id,
                              std::chrono::milliseconds aggregate_shutdown_timeout)
     : pImpl(std::make_unique<Impl>())
 {
     if (owner_tag.empty())
         throw std::invalid_argument("ThreadManager: owner_tag must be non-empty");
+    if (owner_id.empty())
+        throw std::invalid_argument("ThreadManager: owner_id must be non-empty");
 
     pImpl->owner_tag                  = std::move(owner_tag);
-    pImpl->module_name                = "ThreadManager:" + pImpl->owner_tag;
+    pImpl->owner_id                   = std::move(owner_id);
+    pImpl->composed_identity          = pImpl->owner_tag + ":" + pImpl->owner_id;
+    pImpl->module_name                = "ThreadManager:" + pImpl->composed_identity;
     pImpl->aggregate_shutdown_timeout = aggregate_shutdown_timeout;
 
     // Register as a dynamic lifecycle module. Shutdown function marks the
@@ -178,7 +185,7 @@ ThreadManager::ThreadManager(std::string owner_tag,
         {
             LOGGER_WARN("[ThreadManager:{}] lifecycle module registration "
                         "returned false — continuing without lifecycle integration",
-                        pImpl->owner_tag);
+                        pImpl->composed_identity);
         }
     }
     catch (const std::exception &e)
@@ -187,7 +194,7 @@ ThreadManager::ThreadManager(std::string owner_tag,
         // integration. Log and continue.
         LOGGER_WARN("[ThreadManager:{}] lifecycle registration threw: {} — "
                     "continuing without lifecycle integration",
-                    pImpl->owner_tag, e.what());
+                    pImpl->composed_identity, e.what());
     }
 }
 
@@ -202,7 +209,7 @@ ThreadManager::~ThreadManager()
     catch (const std::exception &e)
     {
         LOGGER_ERROR("[ThreadManager:{}] destructor join_all() threw: {}",
-                     pImpl ? pImpl->owner_tag : "<moved-from>", e.what());
+                     pImpl ? pImpl->composed_identity : std::string{"<moved-from>"}, e.what());
     }
 
     if (detached > 0 && pImpl)
@@ -219,7 +226,7 @@ ThreadManager::~ThreadManager()
         // signal; operators see the log immediately.
         LOGGER_ERROR("[ThreadManager:{}] dtor: {} thread(s) leaked. Caller "
                      "MUST NOT treat process/test return as success.",
-                     pImpl->owner_tag, detached);
+                     pImpl->composed_identity, detached);
     }
 
     // Mark Impl as no-longer-alive BEFORE deregistering so any concurrent
@@ -237,7 +244,7 @@ ThreadManager::~ThreadManager()
             catch (const std::exception &e)
             {
                 LOGGER_WARN("[ThreadManager:{}] lifecycle unload_module threw: {}",
-                            pImpl->owner_tag, e.what());
+                            pImpl->composed_identity, e.what());
             }
         }
     }
@@ -262,7 +269,7 @@ bool ThreadManager::spawn(const std::string &name,
     {
         LOGGER_WARN("[ThreadManager:{}] spawn('{}') called after join_all() — "
                     "thread will not be tracked; body NOT executed",
-                    pImpl->owner_tag, name);
+                    pImpl->composed_identity, name);
         return false;
     }
 
@@ -271,7 +278,7 @@ bool ThreadManager::spawn(const std::string &name,
     // Wrap the body so completion sets the done flag. shared_ptr capture
     // keeps the atomic alive for detached threads.
     auto wrapped = [body = std::move(body), done, name,
-                    owner = pImpl->owner_tag]() mutable
+                    owner = pImpl->composed_identity]() mutable
     {
         try
         {
@@ -300,7 +307,7 @@ bool ThreadManager::spawn(const std::string &name,
     pImpl->slots.emplace_back(std::move(slot));
 
     LOGGER_INFO("[ThreadManager:{}] spawned thread '{}' (join_timeout={}ms)",
-                pImpl->owner_tag, name, opts.join_timeout.count());
+                pImpl->composed_identity, name, opts.join_timeout.count());
     return true;
 }
 
@@ -342,7 +349,7 @@ std::size_t ThreadManager::join_all()
             // Thread body returned; std::thread::join() now completes fast.
             slot.thread.join();
             LOGGER_DEBUG("[ThreadManager:{}] thread '{}' joined cleanly",
-                         pImpl->owner_tag, slot.name);
+                         pImpl->composed_identity, slot.name);
         }
         else
         {
@@ -355,7 +362,7 @@ std::size_t ThreadManager::join_all()
                 "detaching. Shutdown continuing; detached thread may still "
                 "hold resources (sockets, SHM, etc.). Investigate body logic "
                 "for shutdown-signal observation.",
-                pImpl->owner_tag, slot.name, slot.join_timeout.count());
+                pImpl->composed_identity, slot.name, slot.join_timeout.count());
             slot.thread.detach();
             ++detached;
             g_process_detached_count.fetch_add(1, std::memory_order_acq_rel);
@@ -374,7 +381,7 @@ std::size_t ThreadManager::join_all()
         LOGGER_ERROR(
             "[ThreadManager:{}] UNCLEAN SHUTDOWN — {} thread(s) detached "
             "on timeout. Process exit should NOT report success.",
-            pImpl->owner_tag, detached);
+            pImpl->composed_identity, detached);
     }
 
     return detached;
@@ -418,7 +425,19 @@ std::vector<ThreadManager::ThreadInfo> ThreadManager::snapshot() const
 const std::string &ThreadManager::owner_tag() const noexcept
 {
     static const std::string empty;
-    return pImpl ? pImpl->owner_tag : empty;
+    return pImpl ? pImpl->composed_identity : empty;
+}
+
+const std::string &ThreadManager::owner_id() const noexcept
+{
+    static const std::string empty;
+    return pImpl ? pImpl->owner_id : empty;
+}
+
+const std::string &ThreadManager::composed_identity() const noexcept
+{
+    static const std::string empty;
+    return pImpl ? pImpl->composed_identity : empty;
 }
 
 std::string ThreadManager::module_name() const

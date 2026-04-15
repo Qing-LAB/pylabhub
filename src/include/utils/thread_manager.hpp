@@ -57,9 +57,12 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
         std::chrono::milliseconds            join_timeout;
     };
 
-    /// @param owner_tag  Identifier for this owner. Becomes the dynamic-module
-    ///     name via "ThreadManager:" + owner_tag. Examples: "prod",
-    ///     "BRC:PROD-SENSOR-0001", "BrokerService:tcp://*:5555", "Logger".
+    /// @param owner_tag  Owner tag / category (e.g., "prod", "cons", "proc",
+    ///     "ZmqQueue", "BrokerService", "hubshell"). Identifies the owner's
+    ///     CLASS/ROLE. Must be non-empty.
+    /// @param owner_id   Owner instance identifier (e.g., role uid
+    ///     "PROD-SENSOR-00000001", queue channel name, broker endpoint).
+    ///     Identifies the SPECIFIC instance within that tag. Must be non-empty.
     /// @param aggregate_shutdown_timeout  Lifecycle-layer ceiling on the
     ///     entire join_all() call. Should be >= the sum of per-thread
     ///     SpawnOptions.join_timeout used via spawn(). Defaults to 2×
@@ -67,10 +70,16 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
     ///     heavyweight threads each taking up to kMidTimeoutMs to drain is
     ///     fully covered before the lifecycle layer's timedShutdown safety
     ///     net kicks in.
-    explicit ThreadManager(
-        std::string owner_tag,
-        std::chrono::milliseconds aggregate_shutdown_timeout
-            = std::chrono::milliseconds{2 * pylabhub::kMidTimeoutMs});
+    ///
+    /// Composed identity: `owner_tag + ":" + owner_id`.
+    /// Lifecycle module name: `"ThreadManager:" + owner_tag + ":" + owner_id`.
+    ///
+    /// Throws std::invalid_argument if either string is empty — forgetting
+    /// to provide identity is caught at construction, not runtime access.
+    ThreadManager(std::string owner_tag,
+                  std::string owner_id,
+                  std::chrono::milliseconds aggregate_shutdown_timeout
+                      = std::chrono::milliseconds{2 * pylabhub::kMidTimeoutMs});
 
     /// Destructor calls join_all() (idempotent) and deregisters the dynamic
     /// lifecycle module. Safe to call from destructor chains; does not throw.
@@ -133,10 +142,17 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
     /// owner and elapsed-since-spawn.
     [[nodiscard]] std::vector<ThreadInfo> snapshot() const;
 
-    /// Owner tag passed at construction.
+    /// Owner tag (class/category) passed at construction.
     [[nodiscard]] const std::string &owner_tag() const noexcept;
 
-    /// Lifecycle module name: "ThreadManager:" + owner_tag.
+    /// Owner instance id passed at construction.
+    [[nodiscard]] const std::string &owner_id() const noexcept;
+
+    /// Composed identity: `owner_tag + ":" + owner_id`. Used for log
+    /// prefixes; matches the second half of module_name().
+    [[nodiscard]] const std::string &composed_identity() const noexcept;
+
+    /// Lifecycle module name: `"ThreadManager:" + owner_tag + ":" + owner_id`.
     [[nodiscard]] std::string module_name() const;
 
     // ── Process-wide unclean-shutdown counter ────────────────────────────
