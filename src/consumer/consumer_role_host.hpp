@@ -86,8 +86,10 @@ class ConsumerRoleHost
     config::RoleConfig                     config_;
     std::unique_ptr<scripting::ScriptEngine> engine_;
 
-    // Worker thread.
-    std::thread                            worker_thread_;
+    // Worker thread — spawned through api_->thread_manager().spawn("worker", ...)
+    // so teardown is bounded + ERROR-logged + detaches-on-timeout like every
+    // other role-scope thread. The old raw std::thread + unbounded .join()
+    // pattern is gone.
     std::promise<bool>                     ready_promise_;
 
     // Infrastructure (created on worker thread in setup_infrastructure_).

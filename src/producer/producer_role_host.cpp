@@ -10,6 +10,7 @@
  * Layer 1 (engine): delegated to ScriptEngine via invoke_produce / invoke_on_inbox.
  */
 #include "producer_role_host.hpp"
+#include "utils/thread_manager.hpp"
 #include "producer_fields.hpp"
 #include "utils/broker_request_comm.hpp"
 #include "utils/cycle_ops.hpp"
@@ -66,28 +67,32 @@ void ProducerRoleHost::startup_()
     ready_promise_ = std::promise<bool>{};
     auto ready_future = ready_promise_.get_future();
 
-    worker_thread_ = std::thread([this] { worker_main_(); });
+    // Construct api_ here so the role's ThreadManager is available
+    // before the worker thread is spawned. role_tag + uid are
+    // compile-time required by RoleAPIBase's ctor.
+    api_ = std::make_unique<scripting::RoleAPIBase>(
+        core_, "prod", config_.identity().uid);
+
+    api_->thread_manager().spawn("worker", [this] { worker_main_(); });
 
     const bool ok = ready_future.get();
     if (!ok)
     {
-        // Worker failed during setup — join immediately.
-        if (worker_thread_.joinable())
-            worker_thread_.join();
+        // Worker failed during setup — dropping api_ triggers
+        // ThreadManager::~ThreadManager which bounded-joins the worker.
+        api_.reset();
     }
 }
 
 // ============================================================================
-// shutdown_ — signal shutdown, join worker thread
+// shutdown_ — signal shutdown; ThreadManager dtor bounded-joins worker
 // ============================================================================
 
 void ProducerRoleHost::shutdown_()
 {
     core_.request_stop();
     core_.notify_incoming();
-
-    if (worker_thread_.joinable())
-        worker_thread_.join();
+    api_.reset();
 }
 
 // ProducerCycleOps has moved to src/include/utils/cycle_ops.hpp so the L3.β
@@ -174,8 +179,9 @@ void ProducerRoleHost::worker_main_()
 
     // ── Step 3: Create RoleAPIBase and wire infrastructure ───────────────────
 
-    // role_tag + uid required at ctor time (compile-time enforced).
-    api_ = std::make_unique<scripting::RoleAPIBase>(core_, "prod", id.uid);
+    // api_ was constructed in startup_() before the worker was spawned
+    // so its ThreadManager could spawn this thread under bounded join.
+    // Here we populate mutable post-ctor wiring state.
     api_->set_name(id.name);
     api_->set_channel(config_.out_channel());
     api_->set_log_level(id.log_level);

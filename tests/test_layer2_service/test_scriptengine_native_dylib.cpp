@@ -91,9 +91,7 @@ using pylabhub::tests::multifield_schema;
 
 std::unique_ptr<RoleAPIBase> make_native_api(RoleHostCore &core)
 {
-    auto api = std::make_unique<RoleAPIBase>(core);
-    api->set_role_tag("prod");
-    api->set_uid("PROD-TestNative-00000001");
+    auto api = std::make_unique<RoleAPIBase>(core, "prod", "PROD-TestNative-00000001");
     api->set_name("TestNative");
     api->set_channel("test.native.channel");
     api->set_log_level("error");
@@ -458,9 +456,7 @@ TEST_F(NativeEngineTest, FullStartup_Consumer)
     NativeEngine engine;
     RoleHostCore core;
 
-    auto api = std::make_unique<RoleAPIBase>(core);
-    api->set_role_tag("cons");
-    api->set_uid("CONS-TestNative-00000001");
+    auto api = std::make_unique<RoleAPIBase>(core, "cons", "CONS-TestNative-00000001");
     api->set_name("TestNativeConsumer");
     api->set_channel("test.native.channel");
     api->set_log_level("error");
@@ -498,9 +494,7 @@ TEST_F(NativeEngineTest, FullStartup_Processor)
     NativeEngine engine;
     RoleHostCore core;
 
-    auto api = std::make_unique<RoleAPIBase>(core);
-    api->set_role_tag("proc");
-    api->set_uid("PROC-TestNative-00000001");
+    auto api = std::make_unique<RoleAPIBase>(core, "proc", "PROC-TestNative-00000001");
     api->set_name("TestNativeProcessor");
     api->set_channel("test.native.in");
     api->set_out_channel("test.native.out");
@@ -590,9 +584,7 @@ TEST_F(NativeEngineTest, FullStartup_Consumer_Multifield)
     NativeEngine engine;
     RoleHostCore core;
 
-    auto api = std::make_unique<RoleAPIBase>(core);
-    api->set_role_tag("cons");
-    api->set_uid("CONS-TestNative-00000001");
+    auto api = std::make_unique<RoleAPIBase>(core, "cons", "CONS-TestNative-00000001");
     api->set_name("TestNativeConsumer");
     api->set_channel("test.native.channel");
     api->set_log_level("error");
@@ -633,9 +625,7 @@ TEST_F(NativeEngineTest, FullStartup_Processor_Multifield)
     NativeEngine engine;
     RoleHostCore core;
 
-    auto api = std::make_unique<RoleAPIBase>(core);
-    api->set_role_tag("proc");
-    api->set_uid("PROC-TestNative-00000001");
+    auto api = std::make_unique<RoleAPIBase>(core, "proc", "PROC-TestNative-00000001");
     api->set_name("TestNativeProcessor");
     api->set_channel("test.native.in");
     api->set_out_channel("test.native.out");

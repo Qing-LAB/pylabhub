@@ -34,9 +34,7 @@ struct TestContext
 
     TestContext(const std::string &tag)
     {
-        base = std::make_unique<RoleAPIBase>(core);
-        base->set_role_tag(tag);
-        base->set_uid("TEST-" + tag);
+        base = std::make_unique<RoleAPIBase>(core, tag, "TEST-" + tag);
         base->set_name("test-" + tag);
         base->set_channel("test.chan");
     }
