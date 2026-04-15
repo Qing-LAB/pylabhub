@@ -225,7 +225,6 @@ void ProcessorRoleHost::worker_main_()
     api_->set_checksum_policy(config_.checksum().policy);
     api_->set_stop_on_script_error(sc.stop_on_script_error);
     api_->set_engine(engine_.get());
-    api_->wire_event_callbacks();
 
     // ── Step 4: Load engine via lifecycle startup ────────────────────────────
 
@@ -481,9 +480,7 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
 
     // Metrics reset moved to after queue creation (reset_metrics() on queue).
 
-    // Event callbacks (on_channel_closing, on_force_shutdown, on_peer_dead,
-    // on_hub_dead, on_zmq_data, etc.) are wired by api_->wire_event_callbacks()
-    // after RoleAPIBase construction.
+    // Broker notifications (band, hub-dead) are handled by BrokerRequestComm.
 
     // ── Create data queues ─────────────────────────────────────────────────
 
@@ -536,18 +533,16 @@ void ProcessorRoleHost::teardown_infrastructure_()
         broker_comm_.reset();
     }
 
-    // Stop/close producer.
+    // Close producer (data-plane queue teardown happens inside close()).
     if (out_producer_.has_value())
     {
-        out_producer_->stop();
         out_producer_->close();
         out_producer_.reset();
     }
 
-    // Stop/close consumer.
+    // Close consumer.
     if (in_consumer_.has_value())
     {
-        in_consumer_->stop();
         in_consumer_->close();
         in_consumer_.reset();
     }
