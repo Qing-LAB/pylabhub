@@ -188,7 +188,18 @@ bool RoleDirectory::has_standard_layout() const
            fs::is_directory(base_ / "script" / "python");
 }
 
-// ── Role registration + init_directory (HEP-0024 §10) ────────────────────────
+// ── Role registration — internal storage (HEP-0024 §10) ─────────────────────
+
+/// Internal representation of registered role init content.
+/// Stored inside the shared library — never crosses ABI boundary.
+struct RoleInitEntry
+{
+    std::string config_filename;
+    std::string uid_prefix;
+    std::string role_label;
+    std::function<nlohmann::json(const std::string &, const std::string &)> config_template;
+    std::function<void(const RoleDirectory &, const std::string &)> on_init;
+};
 
 namespace
 {
@@ -199,19 +210,95 @@ std::mutex &registry_mutex()
     return mu;
 }
 
-std::unordered_map<std::string, RoleDirectory::RoleInitInfo> &registry()
+std::unordered_map<std::string, RoleInitEntry> &registry()
 {
-    static std::unordered_map<std::string, RoleDirectory::RoleInitInfo> reg;
+    static std::unordered_map<std::string, RoleInitEntry> reg;
     return reg;
 }
 
 } // namespace
 
-void RoleDirectory::register_role(const std::string &role_tag, RoleInitInfo info)
+// ── RoleRegistrationBuilder — pimpl implementation ───────────────────────────
+
+struct RoleDirectory::RoleRegistrationBuilder::Impl
 {
-    std::lock_guard lk(registry_mutex());
-    registry()[role_tag] = std::move(info);
+    std::string  role_tag;
+    RoleInitEntry entry;
+    bool committed{false};
+};
+
+RoleDirectory::RoleRegistrationBuilder::RoleRegistrationBuilder(std::string role_tag)
+    : impl_(std::make_unique<Impl>())
+{
+    impl_->role_tag = std::move(role_tag);
 }
+
+RoleDirectory::RoleRegistrationBuilder::~RoleRegistrationBuilder()
+{
+    if (impl_ && !impl_->committed)
+        commit();
+}
+
+RoleDirectory::RoleRegistrationBuilder::RoleRegistrationBuilder(RoleRegistrationBuilder &&) noexcept = default;
+RoleDirectory::RoleRegistrationBuilder &
+RoleDirectory::RoleRegistrationBuilder::operator=(RoleRegistrationBuilder &&) noexcept = default;
+
+RoleDirectory::RoleRegistrationBuilder &
+RoleDirectory::RoleRegistrationBuilder::config_filename(std::string filename)
+{
+    impl_->entry.config_filename = std::move(filename);
+    return *this;
+}
+
+RoleDirectory::RoleRegistrationBuilder &
+RoleDirectory::RoleRegistrationBuilder::uid_prefix(std::string prefix)
+{
+    impl_->entry.uid_prefix = std::move(prefix);
+    return *this;
+}
+
+RoleDirectory::RoleRegistrationBuilder &
+RoleDirectory::RoleRegistrationBuilder::role_label(std::string label)
+{
+    impl_->entry.role_label = std::move(label);
+    return *this;
+}
+
+RoleDirectory::RoleRegistrationBuilder &
+RoleDirectory::RoleRegistrationBuilder::config_template(
+    std::function<nlohmann::json(const std::string &, const std::string &)> fn)
+{
+    impl_->entry.config_template = std::move(fn);
+    return *this;
+}
+
+RoleDirectory::RoleRegistrationBuilder &
+RoleDirectory::RoleRegistrationBuilder::on_init(
+    std::function<void(const RoleDirectory &, const std::string &)> fn)
+{
+    impl_->entry.on_init = std::move(fn);
+    return *this;
+}
+
+void RoleDirectory::RoleRegistrationBuilder::commit()
+{
+    if (!impl_ || impl_->committed)
+        return;
+    impl_->committed = true;
+
+    std::lock_guard lk(registry_mutex());
+    registry()[impl_->role_tag] = std::move(impl_->entry);
+}
+
+// ── register_role — returns builder ──────────────────────────────────────────
+
+RoleDirectory::RoleRegistrationBuilder
+RoleDirectory::register_role(const std::string &role_tag)
+{
+    return RoleRegistrationBuilder(role_tag);
+}
+
+// ── init_directory ───────────────────────────────────────────────────────────
 
 int RoleDirectory::init_directory(const std::filesystem::path &dir,
                                    const std::string &role_tag,
@@ -219,8 +306,8 @@ int RoleDirectory::init_directory(const std::filesystem::path &dir,
 {
     namespace fs = std::filesystem;
 
-    // Look up registered role.
-    const RoleInitInfo *info = nullptr;
+    // Copy registered entry under lock — no dangling pointer risk (H1 fix).
+    RoleInitEntry info;
     {
         std::lock_guard lk(registry_mutex());
         auto it = registry().find(role_tag);
@@ -230,15 +317,25 @@ int RoleDirectory::init_directory(const std::filesystem::path &dir,
                        "RoleDirectory::register_role()\n", role_tag);
             return 1;
         }
-        info = &it->second;
+        info = it->second;
     }
 
-    // 1. Create directory structure.
-    RoleDirectory role_dir = RoleDirectory::open(dir);
+    // 1. Pre-check: config file must not already exist (H2 fix — check before create).
+    const fs::path target_dir = dir.empty() ? fs::current_path() : dir;
+    const fs::path json_path = target_dir / info.config_filename;
+    if (fs::exists(json_path))
+    {
+        fmt::print(stderr, "Error: {} already exists at '{}'. "
+                   "Remove it first or choose a different directory.\n",
+                   info.config_filename, json_path.string());
+        return 1;
+    }
+
+    // 2. Create directory structure.
+    RoleDirectory role_dir = RoleDirectory::open(target_dir);
     try
     {
-        role_dir = RoleDirectory::create(
-            dir.empty() ? fs::current_path() : dir);
+        role_dir = RoleDirectory::create(target_dir);
     }
     catch (const std::exception &e)
     {
@@ -246,30 +343,19 @@ int RoleDirectory::init_directory(const std::filesystem::path &dir,
         return 1;
     }
 
-    // 2. Check config file doesn't already exist.
-    const fs::path json_path = role_dir.config_file(info->config_filename);
-    if (fs::exists(json_path))
-    {
-        fmt::print(stderr, "Error: {} already exists at '{}'. "
-                   "Remove it first or choose a different directory.\n",
-                   info->config_filename, json_path.string());
-        return 1;
-    }
-
     // 3. Resolve name (interactive prompt if empty).
-    const std::string prompt =
-        info->role_label + " name (human-readable): ";
+    const std::string prompt = info.role_label + " name (human-readable): ";
     const auto resolved_name = pylabhub::role_cli::resolve_init_name(name, prompt.c_str());
     if (!resolved_name)
         return 1;
 
     // 4. Generate UID.
-    const std::string uid = pylabhub::uid::generate_uid(info->uid_prefix, *resolved_name);
+    const std::string uid = pylabhub::uid::generate_uid(info.uid_prefix, *resolved_name);
 
     // 5. Write config template.
-    if (info->config_template)
+    if (info.config_template)
     {
-        const nlohmann::json j = info->config_template(uid, *resolved_name);
+        const nlohmann::json j = info.config_template(uid, *resolved_name);
         std::ofstream out(json_path);
         if (!out)
         {
@@ -277,18 +363,34 @@ int RoleDirectory::init_directory(const std::filesystem::path &dir,
             return 1;
         }
         out << j.dump(2) << "\n";
+        out.close();
+        if (!out)
+        {
+            fmt::print(stderr, "Error: write failed for '{}'\n", json_path.string());
+            return 1;
+        }
     }
 
-    // 6. Role-specific post-init callback.
-    if (info->on_init)
-        info->on_init(role_dir, *resolved_name);
+    // 6. Role-specific post-init callback (M2 fix — catch exceptions).
+    if (info.on_init)
+    {
+        try
+        {
+            info.on_init(role_dir, *resolved_name);
+        }
+        catch (const std::exception &e)
+        {
+            fmt::print(stderr, "Error in post-init callback: {}\n", e.what());
+            return 1;
+        }
+    }
 
     // 7. Print summary.
     fmt::print("\n{} directory initialised: {}\n"
                "  uid    : {}\n"
                "  name   : {}\n"
                "  config : {}\n",
-               info->role_label, role_dir.base().string(),
+               info.role_label, role_dir.base().string(),
                uid, *resolved_name, json_path.string());
 
     return 0;
