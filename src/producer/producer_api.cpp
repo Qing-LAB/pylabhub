@@ -28,11 +28,12 @@ namespace pylabhub::producer
 // Python-wrapping methods (delegate to RoleAPIBase with type conversion)
 // ============================================================================
 
-py::object ProducerAPI::flexzone() const
+py::object ProducerAPI::flexzone(std::optional<int> /*side*/) const
 {
-    if (flexzone_obj_ == nullptr)
+    // Producer has only Tx side; side arg is ignored (accepted for API consistency).
+    if (!tx_flexzone_obj_.has_value())
         return py::none();
-    return *flexzone_obj_;
+    return *tx_flexzone_obj_;
 }
 
 // ── Band pub/sub (HEP-CORE-0030) ─────────────────────────────────────────────
@@ -218,7 +219,9 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
         .def("stop",         &producer::ProducerAPI::stop)
         .def("set_critical_error",    &producer::ProducerAPI::set_critical_error)
         .def("critical_error",        &producer::ProducerAPI::critical_error)
-        .def("flexzone",     &producer::ProducerAPI::flexzone)
+        .def("flexzone",     &producer::ProducerAPI::flexzone,
+             py::arg("side") = py::none(),
+             "Flexzone typed view. Returns None if no flexzone configured.")
         .def("update_flexzone_checksum", &producer::ProducerAPI::update_flexzone_checksum)
         .def("band_join",         &producer::ProducerAPI::band_join, py::arg("channel"))
         .def("band_leave",        &producer::ProducerAPI::band_leave, py::arg("channel"))
