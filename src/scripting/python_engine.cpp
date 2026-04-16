@@ -624,8 +624,8 @@ InvokeResponse PythonEngine::execute_direct_(const std::string &name)
     {
         executing_.store(false, std::memory_order_release);
         LOGGER_ERROR("[{}] invoke('{}'): {}", log_tag_, name, e.what());
-        if (api_->core())
-            api_->core()->inc_script_error_count();
+        assert(api_->core() && "api core must be set before invoke");
+        api_->core()->inc_script_error_count();
         return {InvokeStatus::ScriptError, {}};
     }
 }
@@ -656,8 +656,8 @@ InvokeResponse PythonEngine::execute_direct_(const std::string &name,
     {
         executing_.store(false, std::memory_order_release);
         LOGGER_ERROR("[{}] invoke('{}', args): {}", log_tag_, name, e.what());
-        if (api_->core())
-            api_->core()->inc_script_error_count();
+        assert(api_->core() && "api core must be set before invoke");
+        api_->core()->inc_script_error_count();
         return {InvokeStatus::ScriptError, {}};
     }
 }
@@ -682,8 +682,8 @@ InvokeResponse PythonEngine::eval_direct_(const std::string &code)
     {
         executing_.store(false, std::memory_order_release);
         LOGGER_ERROR("[{}] eval(): {}", log_tag_, e.what());
-        if (api_->core())
-            api_->core()->inc_script_error_count();
+        assert(api_->core() && "api core must be set before invoke");
+        api_->core()->inc_script_error_count();
         return {InvokeStatus::ScriptError, {}};
     }
 }

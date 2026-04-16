@@ -773,6 +773,7 @@ InvokeResult LuaEngine::invoke_produce(
         return InvokeResult::Error;
 
     lua_State *L = state_.raw();
+    assert(L && "invoke_produce called without initialized Lua state");
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_produce_);
 
     // Arg 1: tx table {slot=cdata}.
@@ -833,6 +834,7 @@ InvokeResult LuaEngine::invoke_consume(
         return InvokeResult::Error;
 
     lua_State *L = state_.raw();
+    assert(L && "invoke_consume called without initialized Lua state");
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_consume_);
 
     // Arg 1: rx table {slot=cdata}.
@@ -889,6 +891,7 @@ InvokeResult LuaEngine::invoke_process(
         return InvokeResult::Error;
 
     lua_State *L = state_.raw();
+    assert(L && "invoke_process called without initialized Lua state");
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_process_);
 
     // Arg 1: rx table {slot=cdata}.
@@ -1977,13 +1980,23 @@ int LuaEngine::lua_api_flexzone(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
 
-    // Flexzone is bidirectional per HEP-CORE-0002 §2.2; expose whichever
-    // side has a wired queue with a flexzone region. For the processor's
-    // dual-side case this Lua surface is planned to take an explicit side
-    // argument in a follow-up commit (Commit C); current callers only use
-    // it from producer/consumer scripts.
-    auto side = self->api_->has_tx_side() ? scripting::ChannelSide::Tx
-                                          : scripting::ChannelSide::Rx;
+    // Optional side arg: api.flexzone() or api.flexzone(api.Tx) / api.flexzone(api.Rx).
+    // Single-side roles (producer/consumer) auto-select; processor requires explicit side.
+    auto side_opt = lua_opt_channel_side(L, 1);
+    ChannelSide side;
+    if (side_opt.has_value())
+    {
+        side = *side_opt;
+    }
+    else
+    {
+        // Auto-select: only valid for single-side roles.
+        if (self->api_->has_tx_side() && self->api_->has_rx_side())
+            return luaL_error(L, "api.flexzone(): side parameter required for processor "
+                                 "(use api.Tx or api.Rx)");
+        side = self->api_->has_tx_side() ? ChannelSide::Tx : ChannelSide::Rx;
+    }
+
     void *fz_ptr = self->api_->flexzone(side);
     size_t fz_sz = self->api_->flexzone_size(side);
     if (!fz_ptr || fz_sz == 0)
@@ -1992,10 +2005,11 @@ int LuaEngine::lua_api_flexzone(lua_State *L)
         return 1;
     }
 
-    // Use cached FlexFrame ctype ref for type-safe FFI cast.
-    if (self->ref_out_fz_ != LUA_NOREF)
+    // Use the side-appropriate cached FlexFrame ctype ref for type-safe FFI cast.
+    int ref = (side == ChannelSide::Tx) ? self->ref_out_fz_ : self->ref_in_fz_;
+    if (ref != LUA_NOREF)
     {
-        if (self->state_.push_slot_view_cached(fz_ptr, self->ref_out_fz_))
+        if (self->state_.push_slot_view_cached(fz_ptr, ref))
             return 1;
     }
 
