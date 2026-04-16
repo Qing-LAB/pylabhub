@@ -1,7 +1,13 @@
 # DataBlock / Queue Ownership Redesign
 
-**Status**: Design (2026-04-02)
+**Status**: Partially implemented (updated 2026-04-16)
 **Scope**: ShmQueue owns DataBlock, symmetric with ZmqQueue, strict schema validation
+
+> **2026-04-16 update**: hub::Producer/Consumer deleted (L3.γ A6.3).
+> RoleAPIBase now owns queues via build_tx_queue/build_rx_queue.
+> Spinlocks/flexzone go through QueueWriter/QueueReader base virtuals.
+> §5.2 below is STALE — kept for historical context. RAII path (§5.3)
+> remains open (template factories need rework).
 
 ---
 
