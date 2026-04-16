@@ -529,3 +529,9 @@ See **`docs/archive/transient-2026-02-12/README.md`** for the list of archived f
 | DataHub/MessageHub test plan and MessageHub review (original) | `docs/archive/transient-2026-02-14/DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md` (merged into README_testing + IMPLEMENTATION_GUIDANCE; docs/testing/ removed) |
 
 For current documentation layout and where to put or find active content, use **`docs/DOC_STRUCTURE.md`**.
+
+## 2026-04-16: L3.γ/ζ refactor doc cleanup
+
+| Document | Destination | Reason |
+|----------|-------------|--------|
+| `step7_messenger_removal_scope.md` | `archive/transient-2026-04-16/` | Messenger class fully deleted; investigation complete; no HEP content to merge |
