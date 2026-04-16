@@ -242,50 +242,44 @@ public:
 
     // ── Registration-based directory initialization (HEP-0024 §10) ────────
 
-    /**
-     * @brief Role-specific content for init_directory().
-     *        Registered once per role tag via register_role().
-     */
-    struct RoleInitInfo
-    {
-        std::string config_filename;   ///< "producer.json", "consumer.json", etc.
-        std::string uid_prefix;        ///< "PROD", "CONS", "PROC" — for UID generation
-        std::string role_label;        ///< "Producer" — prompts and summary output
-
-        /// Build the default JSON config template for this role.
-        /// uid and name are already resolved by init_directory().
-        std::function<nlohmann::json(const std::string &uid,
-                                      const std::string &name)> config_template;
-
-        /// Optional post-init callback for role-specific customization.
-        /// Called after directory structure and config file are written.
-        /// Use role_dir path APIs (script_entry, subdir, etc.) to locate paths.
-        /// nullptr = no post-init action.
-        std::function<void(const RoleDirectory &role_dir,
-                            const std::string &name)> on_init;
-    };
+    class RoleRegistrationBuilder;   // forward declaration
 
     /**
-     * @brief Register role-specific init content for a role tag.
+     * @brief Begin registering a role for init_directory() scaffolding.
      *
-     * Called once per role at startup (before init_directory). Overwrites any
-     * previous registration for the same tag.
+     * Returns a builder (pimpl) for chaining role-specific content.
+     * The registration is committed when the builder is destroyed or
+     * commit() is called. Overwrites any previous registration for the
+     * same role tag.
      *
-     * @param role_tag  "producer", "consumer", "processor", or custom tag.
-     * @param info      Role-specific init content.
+     * All std::function objects are constructed inside the shared library
+     * (ABI safe — no std::function crosses the library boundary).
+     *
+     * Usage:
+     * @code
+     *   RoleDirectory::register_role("producer")
+     *       .config_filename("producer.json")
+     *       .uid_prefix("PROD")
+     *       .role_label("Producer")
+     *       .config_template([](const std::string &uid, const std::string &name) { ... })
+     *       .on_init([](const RoleDirectory &dir, const std::string &name) { ... });
+     * @endcode
+     *
+     * @param role_tag  "producer", "consumer", "processor", or any custom tag.
      */
-    static void register_role(const std::string &role_tag, RoleInitInfo info);
+    static RoleRegistrationBuilder register_role(const std::string &role_tag);
 
     /**
      * @brief Scaffolding init for a registered role.
      *
      * Sequence:
-     *   1. create(dir) — directory structure
-     *   2. Resolve name (interactive prompt if empty, using role_label)
-     *   3. Generate UID via uid_prefix
-     *   4. Write config_template() to config_filename in dir
-     *   5. Call on_init(role_dir, name) if registered
-     *   6. Print summary (directory, UID, config path)
+     *   1. Validate preconditions (role registered, config file doesn't exist)
+     *   2. create(dir) — directory structure
+     *   3. Resolve name (interactive prompt if empty, using role_label)
+     *   4. Generate UID via uid_prefix
+     *   5. Write config_template() to config_filename in dir
+     *   6. Call on_init(role_dir, name) if registered
+     *   7. Print summary (directory, UID, config path)
      *
      * @param dir       Directory to initialize.
      * @param role_tag  Registered role tag.
@@ -300,6 +294,53 @@ private:
     explicit RoleDirectory(std::filesystem::path base) noexcept;
 
     std::filesystem::path base_;
+};
+
+/**
+ * @brief Builder for role registration (pimpl — ABI stable).
+ *
+ * Constructed by RoleDirectory::register_role(). Each setter returns
+ * *this for chaining. The registration is committed on destruction or
+ * explicit commit(). All std::function construction happens inside the
+ * shared library implementation.
+ */
+class PYLABHUB_UTILS_EXPORT RoleDirectory::RoleRegistrationBuilder
+{
+public:
+    ~RoleRegistrationBuilder();
+    RoleRegistrationBuilder(RoleRegistrationBuilder &&) noexcept;
+    RoleRegistrationBuilder &operator=(RoleRegistrationBuilder &&) noexcept;
+    RoleRegistrationBuilder(const RoleRegistrationBuilder &) = delete;
+    RoleRegistrationBuilder &operator=(const RoleRegistrationBuilder &) = delete;
+
+    /// Config file name (e.g. "producer.json").
+    RoleRegistrationBuilder &config_filename(std::string filename);
+
+    /// UID prefix for generate_uid() (e.g. "PROD").
+    RoleRegistrationBuilder &uid_prefix(std::string prefix);
+
+    /// Human-readable role label for prompts and summary (e.g. "Producer").
+    RoleRegistrationBuilder &role_label(std::string label);
+
+    /// Default JSON config template function. Called with (uid, name).
+    RoleRegistrationBuilder &config_template(
+        std::function<nlohmann::json(const std::string &, const std::string &)> fn);
+
+    /// Optional post-init callback for role-specific customization.
+    /// Called after directory + config are created. Use RoleDirectory path APIs.
+    RoleRegistrationBuilder &on_init(
+        std::function<void(const RoleDirectory &, const std::string &)> fn);
+
+    /// Explicitly commit the registration. Called automatically by destructor
+    /// if not called manually. Safe to call multiple times (no-op after first).
+    void commit();
+
+private:
+    friend class RoleDirectory;
+    explicit RoleRegistrationBuilder(std::string role_tag);
+
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 } // namespace pylabhub::utils

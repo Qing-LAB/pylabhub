@@ -399,11 +399,11 @@ TEST(RoleDirectoryTest, InitDirectory_CreatesDirectoryAndConfig)
 {
     const auto tmp = unique_temp_dir("init_basic");
 
-    RoleDirectory::register_role("test_role_basic", {
-        .config_filename = "test_role.json",
-        .uid_prefix      = "TEST",
-        .role_label      = "TestRole",
-        .config_template = [](const std::string &uid, const std::string &name)
+    RoleDirectory::register_role("test_role_basic")
+        .config_filename("test_role.json")
+        .uid_prefix("TEST")
+        .role_label("TestRole")
+        .config_template([](const std::string &uid, const std::string &name)
             -> nlohmann::json
         {
             nlohmann::json j;
@@ -411,9 +411,7 @@ TEST(RoleDirectoryTest, InitDirectory_CreatesDirectoryAndConfig)
             j["test"]["name"] = name;
             j["value"]        = 42;
             return j;
-        },
-        .on_init = nullptr,
-    });
+        });
 
     EXPECT_EQ(RoleDirectory::init_directory(tmp, "test_role_basic", "MyTestRole"), 0);
 
@@ -439,14 +437,12 @@ TEST(RoleDirectoryTest, InitDirectory_ExistingConfig_ReturnsError)
 {
     const auto tmp = unique_temp_dir("init_exists");
 
-    RoleDirectory::register_role("test_role_exists", {
-        .config_filename = "existing.json",
-        .uid_prefix      = "TEST",
-        .role_label      = "TestRole",
-        .config_template = [](const std::string &, const std::string &)
-        { return nlohmann::json{{"x", 1}}; },
-        .on_init = nullptr,
-    });
+    RoleDirectory::register_role("test_role_exists")
+        .config_filename("existing.json")
+        .uid_prefix("TEST")
+        .role_label("TestRole")
+        .config_template([](const std::string &, const std::string &)
+        { return nlohmann::json{{"x", 1}}; });
 
     // Create directory and config file first.
     fs::create_directories(tmp);
@@ -464,15 +460,15 @@ TEST(RoleDirectoryTest, InitDirectory_OnInitCallbackInvoked)
     bool callback_invoked = false;
     std::string callback_name;
 
-    RoleDirectory::register_role("test_role_cb", {
-        .config_filename = "cb_role.json",
-        .uid_prefix      = "CB",
-        .role_label      = "CallbackRole",
-        .config_template = [](const std::string &uid, const std::string &name)
+    RoleDirectory::register_role("test_role_cb")
+        .config_filename("cb_role.json")
+        .uid_prefix("CB")
+        .role_label("CallbackRole")
+        .config_template([](const std::string &uid, const std::string &name)
         {
             return nlohmann::json{{"uid", uid}, {"name", name}};
-        },
-        .on_init = [&](const RoleDirectory &rd, const std::string &name)
+        })
+        .on_init([&](const RoleDirectory &rd, const std::string &name)
         {
             callback_invoked = true;
             callback_name = name;
@@ -480,8 +476,7 @@ TEST(RoleDirectoryTest, InitDirectory_OnInitCallbackInvoked)
             const auto custom_file = rd.subdir("data") / "readme.txt";
             fs::create_directories(custom_file.parent_path());
             std::ofstream(custom_file) << "Created by on_init\n";
-        },
-    });
+        });
 
     EXPECT_EQ(RoleDirectory::init_directory(tmp, "test_role_cb", "MyCallback"), 0);
 
@@ -496,13 +491,10 @@ TEST(RoleDirectoryTest, InitDirectory_NullConfigTemplate_NoConfigWritten)
 {
     const auto tmp = unique_temp_dir("init_nocfg");
 
-    RoleDirectory::register_role("test_role_nocfg", {
-        .config_filename = "nocfg.json",
-        .uid_prefix      = "NC",
-        .role_label      = "NoConfig",
-        .config_template = nullptr,
-        .on_init         = nullptr,
-    });
+    RoleDirectory::register_role("test_role_nocfg")
+        .config_filename("nocfg.json")
+        .uid_prefix("NC")
+        .role_label("NoConfig");
 
     EXPECT_EQ(RoleDirectory::init_directory(tmp, "test_role_nocfg", "Test"), 0);
 
