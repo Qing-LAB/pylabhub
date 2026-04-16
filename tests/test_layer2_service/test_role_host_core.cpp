@@ -50,8 +50,8 @@ TEST_F(RoleHostCoreTest, DefaultState_AllZero)
 
     EXPECT_FALSE(core_.is_validate_only());
     EXPECT_FALSE(core_.is_script_load_ok());
-    EXPECT_FALSE(core_.has_in_fz());
-    EXPECT_FALSE(core_.has_out_fz());
+    EXPECT_FALSE(core_.has_rx_fz());
+    EXPECT_FALSE(core_.has_tx_fz());
     EXPECT_EQ(core_.in_schema_fz_size(), 0u);
     EXPECT_EQ(core_.out_schema_fz_size(), 0u);
     EXPECT_FALSE(core_.is_process_exit_requested());
@@ -301,7 +301,7 @@ TEST_F(RoleHostCoreTest, ScriptLoadOk_CrossThread)
 
 TEST_F(RoleHostCoreTest, OutFzSpec_SetAndRead)
 {
-    EXPECT_FALSE(core_.has_out_fz());
+    EXPECT_FALSE(core_.has_tx_fz());
     EXPECT_EQ(core_.out_schema_fz_size(), 0u);
 
     pylabhub::hub::SchemaSpec spec;
@@ -310,7 +310,7 @@ TEST_F(RoleHostCoreTest, OutFzSpec_SetAndRead)
 
     core_.set_out_fz_spec(std::move(spec), 8192);
 
-    EXPECT_TRUE(core_.has_out_fz());
+    EXPECT_TRUE(core_.has_tx_fz());
     EXPECT_EQ(core_.out_schema_fz_size(), 8192u);
     EXPECT_TRUE(core_.out_fz_spec().has_schema);
     EXPECT_EQ(core_.out_fz_spec().packing, "aligned");
@@ -318,7 +318,7 @@ TEST_F(RoleHostCoreTest, OutFzSpec_SetAndRead)
 
 TEST_F(RoleHostCoreTest, InFzSpec_SetAndRead)
 {
-    EXPECT_FALSE(core_.has_in_fz());
+    EXPECT_FALSE(core_.has_rx_fz());
     EXPECT_EQ(core_.in_schema_fz_size(), 0u);
 
     pylabhub::hub::SchemaSpec spec;
@@ -327,7 +327,7 @@ TEST_F(RoleHostCoreTest, InFzSpec_SetAndRead)
 
     core_.set_in_fz_spec(std::move(spec), 4096);
 
-    EXPECT_TRUE(core_.has_in_fz());
+    EXPECT_TRUE(core_.has_rx_fz());
     EXPECT_EQ(core_.in_schema_fz_size(), 4096u);
     EXPECT_TRUE(core_.in_fz_spec().has_schema);
     EXPECT_EQ(core_.in_fz_spec().packing, "packed");
@@ -339,14 +339,14 @@ TEST_F(RoleHostCoreTest, FzSpec_NoSchema_HasFzFalse)
     spec.has_schema = false;
 
     core_.set_out_fz_spec(std::move(spec), 0);
-    EXPECT_FALSE(core_.has_out_fz());
+    EXPECT_FALSE(core_.has_tx_fz());
     EXPECT_EQ(core_.out_schema_fz_size(), 0u);
 
     pylabhub::hub::SchemaSpec spec2;
     spec2.has_schema = false;
 
     core_.set_in_fz_spec(std::move(spec2), 0);
-    EXPECT_FALSE(core_.has_in_fz());
+    EXPECT_FALSE(core_.has_rx_fz());
     EXPECT_EQ(core_.in_schema_fz_size(), 0u);
 }
 

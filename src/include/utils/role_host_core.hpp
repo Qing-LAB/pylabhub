@@ -115,8 +115,8 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     [[nodiscard]] const hub::SchemaSpec &out_fz_spec()       const noexcept { return out_fz_spec_; }
     [[nodiscard]] size_t  in_schema_fz_size()  const noexcept { return in_schema_fz_size_; }
     [[nodiscard]] size_t  out_schema_fz_size() const noexcept { return out_schema_fz_size_; }
-    [[nodiscard]] bool    has_in_fz()          const noexcept { return in_fz_spec_.has_schema; }
-    [[nodiscard]] bool    has_out_fz()         const noexcept { return out_fz_spec_.has_schema; }
+    [[nodiscard]] bool    has_rx_fz()          const noexcept { return in_fz_spec_.has_schema; }
+    [[nodiscard]] bool    has_tx_fz()         const noexcept { return out_fz_spec_.has_schema; }
 
     // ── Inbox cache (role-level, shared across engine states) ────────────
 

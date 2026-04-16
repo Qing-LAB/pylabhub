@@ -246,7 +246,7 @@ void ProducerRoleHost::worker_main_()
     engine_->invoke_on_init();
 
     // Sync flexzone checksum after on_init (user may have written to flexzone).
-    if (api_->has_tx_side() && core_.has_out_fz())
+    if (api_->has_tx_side() && core_.has_tx_fz())
         api_->sync_tx_flexzone_checksum();
 
     // ── Step 6: Connect to broker, start ctrl thread, register ────────────
@@ -394,7 +394,7 @@ bool ProducerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
 
     // --- Queue abstraction: checksum policy ---
     opts.checksum_policy    = config_.checksum().policy;
-    opts.flexzone_checksum  = config_.checksum().flexzone && core_.has_out_fz();
+    opts.flexzone_checksum  = config_.checksum().flexzone && core_.has_tx_fz();
     // Timing is a role-level concern — core_.set_configured_period() handles it.
 
     // --- SHM config ---
