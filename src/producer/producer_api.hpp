@@ -59,7 +59,7 @@ class ProducerAPI
     [[nodiscard]] bool critical_error() const noexcept { return base_->critical_error(); }
 
     /// Return the persistent output flexzone Python object, or None.
-    [[nodiscard]] py::object flexzone() const;
+    [[nodiscard]] py::object flexzone(std::optional<int> side = std::nullopt) const;
 
     // ── Python-accessible — messaging ────────────────────────────────────────
 
@@ -110,9 +110,11 @@ class ProducerAPI
     py::object spinlock(std::size_t index, std::optional<int> side = std::nullopt);
     [[nodiscard]] uint32_t spinlock_count(std::optional<int> side = std::nullopt) const;
 
+    void set_tx_flexzone(std::optional<py::object> obj) { tx_flexzone_obj_ = std::move(obj); }
+
   private:
     scripting::RoleAPIBase  *base_;
-    py::object              *flexzone_obj_{nullptr};
+    std::optional<py::object> tx_flexzone_obj_;
 
     std::unordered_map<std::string, py::object> inbox_cache_;
 public:

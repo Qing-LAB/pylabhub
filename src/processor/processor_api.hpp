@@ -45,7 +45,7 @@ class ProcessorAPI
     void set_critical_error() { base_->set_critical_error(); }
     [[nodiscard]] bool critical_error() const noexcept { return base_->critical_error(); }
 
-    [[nodiscard]] py::object flexzone() const;
+    [[nodiscard]] py::object flexzone(std::optional<int> side = std::nullopt) const;
 
     bool update_flexzone_checksum() { return base_->update_flexzone_checksum(); }
 
@@ -96,9 +96,13 @@ class ProcessorAPI
     py::object spinlock(std::size_t index, std::optional<int> side = std::nullopt);
     [[nodiscard]] uint32_t spinlock_count(std::optional<int> side = std::nullopt) const;
 
+    void set_tx_flexzone(std::optional<py::object> obj) { tx_flexzone_obj_ = std::move(obj); }
+    void set_rx_flexzone(std::optional<py::object> obj) { rx_flexzone_obj_ = std::move(obj); }
+
   private:
     scripting::RoleAPIBase  *base_;
-    py::object              *flexzone_obj_{nullptr};
+    std::optional<py::object> tx_flexzone_obj_;
+    std::optional<py::object> rx_flexzone_obj_;
     std::unordered_map<std::string, py::object> inbox_cache_;
 public:
     py::object shared_data_{py::none()};

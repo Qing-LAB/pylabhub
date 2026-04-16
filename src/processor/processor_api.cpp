@@ -27,11 +27,13 @@ namespace pylabhub::processor
 // Python-wrapping methods
 // ============================================================================
 
-py::object ProcessorAPI::flexzone() const
+py::object ProcessorAPI::flexzone(std::optional<int> side) const
 {
-    if (flexzone_obj_ == nullptr)
-        return py::none();
-    return *flexzone_obj_;
+    if (!side.has_value())
+        throw std::runtime_error("api.flexzone(): side parameter required for processor "
+                                 "(use api.Tx or api.Rx)");
+    if (*side == 0) return tx_flexzone_obj_.has_value() ? *tx_flexzone_obj_ : py::none();
+    return rx_flexzone_obj_.has_value() ? *rx_flexzone_obj_ : py::none();
 }
 
 py::object ProcessorAPI::band_join(const std::string &channel)
@@ -198,7 +200,9 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
         .def("stop",          &ProcessorAPI::stop)
         .def("set_critical_error",   &ProcessorAPI::set_critical_error)
         .def("critical_error",       &ProcessorAPI::critical_error)
-        .def("flexzone",      &ProcessorAPI::flexzone)
+        .def("flexzone",      &ProcessorAPI::flexzone,
+             py::arg("side") = py::none(),
+             "Flexzone typed view. Processor requires explicit side (api.Tx or api.Rx).")
         .def("update_flexzone_checksum", &ProcessorAPI::update_flexzone_checksum)
         .def("band_join",         &ProcessorAPI::band_join, py::arg("channel"))
         .def("band_leave",        &ProcessorAPI::band_leave, py::arg("channel"))

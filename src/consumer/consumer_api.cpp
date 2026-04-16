@@ -27,6 +27,14 @@ namespace pylabhub::consumer
 // Python-wrapping methods
 // ============================================================================
 
+py::object ConsumerAPI::flexzone(std::optional<int> /*side*/) const
+{
+    // Consumer has only Rx side; side arg is ignored.
+    if (!rx_flexzone_obj_.has_value())
+        return py::none();
+    return *rx_flexzone_obj_;
+}
+
 py::object ConsumerAPI::band_join(const std::string &channel)
 {
     auto result = base_->band_join(channel);
@@ -202,6 +210,9 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
         .def("last_seq",       &ConsumerAPI::last_seq)
         .def("in_capacity",    &ConsumerAPI::in_capacity)
         .def("in_policy",      &ConsumerAPI::in_policy)
+        .def("flexzone",     &ConsumerAPI::flexzone,
+             py::arg("side") = py::none(),
+             "Flexzone typed view. Returns None if no flexzone configured.")
         .def("set_verify_checksum", &ConsumerAPI::set_verify_checksum, py::arg("enable"))
         .def("slot_logical_size", &ConsumerAPI::slot_logical_size,
              py::arg("side") = py::none())

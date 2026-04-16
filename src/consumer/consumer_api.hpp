@@ -55,6 +55,9 @@ class ConsumerAPI
     bool wait_for_role(const std::string &uid, int timeout_ms = 5000);
     void clear_inbox_cache();
 
+    // Flexzone
+    [[nodiscard]] py::object flexzone(std::optional<int> side = std::nullopt) const;
+
     // Consumer diagnostics
     [[nodiscard]] uint64_t script_error_count() const noexcept { return base_->script_error_count(); }
     [[nodiscard]] uint64_t in_slots_received()  const noexcept { return base_->in_slots_received(); }
@@ -85,8 +88,11 @@ class ConsumerAPI
     [[nodiscard]] std::string stop_reason() const noexcept { return base_->stop_reason(); }
     [[nodiscard]] uint64_t ctrl_queue_dropped() const noexcept { return base_->ctrl_queue_dropped(); }
 
+    void set_rx_flexzone(std::optional<py::object> obj) { rx_flexzone_obj_ = std::move(obj); }
+
   private:
     scripting::RoleAPIBase  *base_;
+    std::optional<py::object> rx_flexzone_obj_;
     std::unordered_map<std::string, py::object> inbox_cache_;
 public:
     py::object shared_data_{py::none()};
