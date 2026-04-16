@@ -319,37 +319,6 @@ pylabhub::utils::ThreadManager &RoleAPIBase::thread_manager()
     return *pImpl->thread_mgr_;
 }
 
-// ── Deprecated shims ─────────────────────────────────────────────────────
-
-void RoleAPIBase::spawn_thread(const std::string &name, std::function<void()> body)
-{
-    // Wrap in ThreadEngineGuard for engine cross-thread dispatch, matching
-    // the pre-thread-manager contract. Call sites migrating off this shim
-    // should construct their own ThreadEngineGuard inside the body so the
-    // RoleAPIBase doesn't need to know about the engine.
-    thread_manager().spawn(
-        name,
-        [this, name, body = std::move(body)]()
-        {
-            auto *eng = pImpl->engine;
-            scripting::ThreadEngineGuard guard(*eng);
-            LOGGER_INFO("[{}/{}] thread started", pImpl->role_tag, name);
-            body();
-            LOGGER_INFO("[{}/{}] thread exiting", pImpl->role_tag, name);
-        });
-}
-
-void RoleAPIBase::join_all_threads()
-{
-    if (pImpl->thread_mgr_)
-        pImpl->thread_mgr_->drain();
-}
-
-size_t RoleAPIBase::thread_count() const
-{
-    return pImpl->thread_mgr_ ? pImpl->thread_mgr_->active_count() : 0;
-}
-
 // ============================================================================
 // set_broker_comm
 // ============================================================================
@@ -543,8 +512,14 @@ bool RoleAPIBase::start_ctrl_thread(
     LOGGER_INFO("[{}] ctrl: starting control thread (heartbeat={}ms)",
                 pImpl->role_tag, cfg.heartbeat_interval_ms);
 
-    spawn_thread("ctrl", [this, cfg]()
+    thread_manager().spawn("ctrl", [this, cfg]()
     {
+        // Engine cross-thread dispatch guard + entry/exit logging — the
+        // wrapper that used to live inside spawn_thread() shim.
+        auto *eng = pImpl->engine;
+        scripting::ThreadEngineGuard guard(*eng);
+        LOGGER_INFO("[{}/ctrl] thread started", pImpl->role_tag);
+
         auto *bc   = pImpl->broker_channel;
         auto *core = pImpl->core;
 
@@ -568,6 +543,7 @@ bool RoleAPIBase::start_ctrl_thread(
             return core->is_running() && !core->is_shutdown_requested();
         });
         LOGGER_TRACE("[{}] ctrl: poll loop exited", pImpl->role_tag);
+        LOGGER_INFO("[{}/ctrl] thread exiting", pImpl->role_tag);
     });
 
     // ── Step 4: Register with broker (main thread, blocks) ─────────────────

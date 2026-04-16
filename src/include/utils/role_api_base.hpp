@@ -358,19 +358,6 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// the ctor signature (role_tag + uid are required positional args).
     [[nodiscard]] pylabhub::utils::ThreadManager &thread_manager();
 
-    // ── Deprecated thin shims over thread_manager() ─────────────────────────
-    // Retained for callers not yet migrated to api_->thread_manager().spawn(...).
-    // Scheduled for removal once role hosts + in-tree tests all go through
-    // the thread_manager() accessor directly. Each shim requires
-    // init_thread_manager() to have been called.
-
-    /// @deprecated Prefer api_->thread_manager().spawn(name, body).
-    void spawn_thread(const std::string &name, std::function<void()> body);
-    /// @deprecated Prefer destruction-time join via ThreadManager dtor.
-    void join_all_threads();
-    /// @deprecated Prefer api_->thread_manager().active_count().
-    [[nodiscard]] size_t thread_count() const;
-
     // ── Broker communication (control plane) ────────────────────────────────
 
     /// Set the BrokerRequestComm (owned externally by role host).
