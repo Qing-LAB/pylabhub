@@ -455,6 +455,12 @@ class Context
         return c_->flexzone_logical_size ? c_->flexzone_logical_size(c_, side) : 0;
     }
 
+    // Flexzone: C/C++ plugins access fz directly via plh_tx_t.fz / plh_rx_t.fz
+    // in the invoke callback — zero-cost, no function pointer dispatch needed.
+    // No separate flexzone() accessor on Context; the invoke struct IS the access
+    // path for C/C++. Python/Lua use api.flexzone(side) because reconstructing
+    // typed views per invoke is expensive in those languages.
+
     bool wait_for_role(const char *uid, int timeout_ms = 5000) const
     {
         return c_->wait_for_role ? c_->wait_for_role(c_, uid, timeout_ms) != 0 : false;

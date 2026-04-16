@@ -291,6 +291,14 @@ struct NativeEngine::NativeContextStorage
     std::string role_dir;
     std::string log_label;  ///< e.g. "[native libfoo.so]"
 
+    // Flexzone — cached once at wire(), stable for SHM lifetime. C/C++
+    // plugins access fz via plh_tx_t.fz / plh_rx_t.fz (populated from
+    // here by the bridge per invoke — zero-cost stack copy).
+    void  *tx_fz{nullptr};
+    size_t tx_fz_sz{0};
+    void  *rx_fz{nullptr};
+    size_t rx_fz_sz{0};
+
     void wire(RoleHostCore *core, RoleAPIBase *api)
     {
         assert(core != nullptr && "RoleHostCore must not be null");
@@ -336,6 +344,12 @@ struct NativeEngine::NativeContextStorage
         // Schema sizes
         ctx.slot_logical_size    = ctx_slot_logical_size;
         ctx.flexzone_logical_size = ctx_flexzone_logical_size;
+
+        // Flexzone — cached on storage, populated once from api.
+        tx_fz    = api->flexzone(ChannelSide::Tx);
+        tx_fz_sz = api->flexzone_size(ChannelSide::Tx);
+        rx_fz    = api->flexzone(ChannelSide::Rx);
+        rx_fz_sz = api->flexzone_size(ChannelSide::Rx);
 
         ctx.wait_for_role  = ctx_wait_for_role;
 
@@ -657,10 +671,11 @@ InvokeResult NativeEngine::invoke_produce(
 {
     if (!fn_on_produce_)
         return InvokeResult::Discard;
-    // Flexzone not carried on InvokeTx anymore — scripts access it via
-    // api.flexzone(side). plh_tx_t keeps the fz fields for C ABI compat
-    // but they're nullptr until a dedicated C API flexzone accessor is added.
-    plh_tx_t c_tx{tx.slot, tx.slot_size, nullptr, 0};
+    // Flexzone from the init-time cache — set once at build_api(), stable
+    // for the SHM mapping lifetime. Same pattern as Python/Lua engines.
+    plh_tx_t c_tx{tx.slot, tx.slot_size,
+                  native_ctx_ ? native_ctx_->tx_fz : nullptr,
+                  native_ctx_ ? native_ctx_->tx_fz_sz : 0};
     return fn_on_produce_(&c_tx) ? InvokeResult::Commit : InvokeResult::Discard;
 }
 
@@ -670,7 +685,9 @@ InvokeResult NativeEngine::invoke_consume(
 {
     if (!fn_on_consume_)
         return InvokeResult::Discard;
-    plh_rx_t c_rx{rx.slot, rx.slot_size, nullptr, 0};
+    plh_rx_t c_rx{rx.slot, rx.slot_size,
+                  native_ctx_ ? native_ctx_->rx_fz : nullptr,
+                  native_ctx_ ? native_ctx_->rx_fz_sz : 0};
     return fn_on_consume_(&c_rx) ? InvokeResult::Commit : InvokeResult::Discard;
 }
 
@@ -680,8 +697,12 @@ InvokeResult NativeEngine::invoke_process(
 {
     if (!fn_on_process_)
         return InvokeResult::Discard;
-    plh_rx_t c_rx{rx.slot, rx.slot_size, nullptr, 0};
-    plh_tx_t c_tx{tx.slot, tx.slot_size, nullptr, 0};
+    plh_rx_t c_rx{rx.slot, rx.slot_size,
+                  native_ctx_ ? native_ctx_->rx_fz : nullptr,
+                  native_ctx_ ? native_ctx_->rx_fz_sz : 0};
+    plh_tx_t c_tx{tx.slot, tx.slot_size,
+                  native_ctx_ ? native_ctx_->tx_fz : nullptr,
+                  native_ctx_ ? native_ctx_->tx_fz_sz : 0};
     return fn_on_process_(&c_rx, &c_tx) ? InvokeResult::Commit : InvokeResult::Discard;
 }
 
