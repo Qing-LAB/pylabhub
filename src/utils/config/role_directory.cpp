@@ -3,13 +3,18 @@
  * @brief RoleDirectory — canonical role directory layout (HEP-CORE-0024).
  */
 #include "utils/role_directory.hpp"
+#include "utils/role_cli.hpp"
+#include "utils/uid_utils.hpp"
 
 #include "plh_platform.hpp" // PYLABHUB_IS_POSIX
 
+#include <fmt/core.h>
 #include <fstream>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <system_error>
+#include <unordered_map>
 
 #if defined(PYLABHUB_IS_POSIX)
 #include <sys/stat.h>
@@ -181,6 +186,112 @@ bool RoleDirectory::has_standard_layout() const
            fs::is_directory(base_ / "run") &&
            fs::is_directory(base_ / "vault") &&
            fs::is_directory(base_ / "script" / "python");
+}
+
+// ── Role registration + init_directory (HEP-0024 §10) ────────────────────────
+
+namespace
+{
+
+std::mutex &registry_mutex()
+{
+    static std::mutex mu;
+    return mu;
+}
+
+std::unordered_map<std::string, RoleDirectory::RoleInitInfo> &registry()
+{
+    static std::unordered_map<std::string, RoleDirectory::RoleInitInfo> reg;
+    return reg;
+}
+
+} // namespace
+
+void RoleDirectory::register_role(const std::string &role_tag, RoleInitInfo info)
+{
+    std::lock_guard lk(registry_mutex());
+    registry()[role_tag] = std::move(info);
+}
+
+int RoleDirectory::init_directory(const std::filesystem::path &dir,
+                                   const std::string &role_tag,
+                                   const std::string &name)
+{
+    namespace fs = std::filesystem;
+
+    // Look up registered role.
+    const RoleInitInfo *info = nullptr;
+    {
+        std::lock_guard lk(registry_mutex());
+        auto it = registry().find(role_tag);
+        if (it == registry().end())
+        {
+            fmt::print(stderr, "Error: unknown role '{}' — not registered via "
+                       "RoleDirectory::register_role()\n", role_tag);
+            return 1;
+        }
+        info = &it->second;
+    }
+
+    // 1. Create directory structure.
+    RoleDirectory role_dir = RoleDirectory::open(dir);
+    try
+    {
+        role_dir = RoleDirectory::create(
+            dir.empty() ? fs::current_path() : dir);
+    }
+    catch (const std::exception &e)
+    {
+        fmt::print(stderr, "Error: {}\n", e.what());
+        return 1;
+    }
+
+    // 2. Check config file doesn't already exist.
+    const fs::path json_path = role_dir.config_file(info->config_filename);
+    if (fs::exists(json_path))
+    {
+        fmt::print(stderr, "Error: {} already exists at '{}'. "
+                   "Remove it first or choose a different directory.\n",
+                   info->config_filename, json_path.string());
+        return 1;
+    }
+
+    // 3. Resolve name (interactive prompt if empty).
+    const std::string prompt =
+        info->role_label + " name (human-readable): ";
+    const auto resolved_name = pylabhub::role_cli::resolve_init_name(name, prompt.c_str());
+    if (!resolved_name)
+        return 1;
+
+    // 4. Generate UID.
+    const std::string uid = pylabhub::uid::generate_uid(info->uid_prefix, *resolved_name);
+
+    // 5. Write config template.
+    if (info->config_template)
+    {
+        const nlohmann::json j = info->config_template(uid, *resolved_name);
+        std::ofstream out(json_path);
+        if (!out)
+        {
+            fmt::print(stderr, "Error: cannot write '{}'\n", json_path.string());
+            return 1;
+        }
+        out << j.dump(2) << "\n";
+    }
+
+    // 6. Role-specific post-init callback.
+    if (info->on_init)
+        info->on_init(role_dir, *resolved_name);
+
+    // 7. Print summary.
+    fmt::print("\n{} directory initialised: {}\n"
+               "  uid    : {}\n"
+               "  name   : {}\n"
+               "  config : {}\n",
+               info->role_label, role_dir.base().string(),
+               uid, *resolved_name, json_path.string());
+
+    return 0;
 }
 
 } // namespace pylabhub::utils
