@@ -475,13 +475,13 @@ api.metrics() -> dict:
         "loop_overrun_count":    int,      # cycles where now > deadline
         "last_cycle_work_us":    int,      # us of active work in last cycle
         "configured_period_us":  int,      # target loop period (0 = MaxRate). Config input.
+        "acquire_retry_count":   int,      # cumulative queue acquire retries (0 = no contention)
     },
     "role": {                              # role-specific counters
-        "out_written":         int,        # (producer) committed slots
-        "drops":               int,        # (producer) discarded slots
-        "in_received":         int,        # (consumer) consumed slots
-        "script_errors":       int,        # unhandled callback exceptions
-        "ctrl_queue_dropped":  int,        # ctrl send queue overflow
+        "out_slots_written":   int,        # committed output slots (producer/processor)
+        "out_drop_count":      int,        # discarded output slots (producer/processor)
+        "in_slots_received":   int,        # consumed input slots (consumer/processor)
+        "script_error_count":  int,        # unhandled callback exceptions
     },
     "inbox": {                             # from InboxQueue (PYLABHUB_INBOX_METRICS_FIELDS)
         "recv_frame_error_count": int,     # if inbox configured; absent otherwise
@@ -506,13 +506,13 @@ api.metrics() -> dict:
         "loop_overrun_count":    int,
         "last_cycle_work_us":    int,
         "configured_period_us":  int,
+        "acquire_retry_count":   int,
     },
     "role": {
-        "in_received":         int,
-        "out_written":         int,
-        "drops":               int,
-        "script_errors":       int,
-        "ctrl_queue_dropped":  {"input": int, "output": int},
+        "in_slots_received":   int,
+        "out_slots_written":   int,
+        "out_drop_count":      int,
+        "script_error_count":  int,
     },
     "inbox": { ... },                            # if inbox configured
     "custom": { ... }
@@ -545,8 +545,7 @@ acquire count. Every loop iteration increments it, even if acquire returned null
 These methods return individual fields (same values as the dict):
 - `api.loop_overrun_count()` -> `core_->loop_overrun_count()`
 - `api.last_cycle_work_us()` -> `core_->last_cycle_work_us()`
-- `api.script_error_count()` -> `core_->script_errors()`
-- `api.ctrl_queue_dropped()` -> sum of both sides (processor) or single value (producer/consumer)
+- `api.script_error_count()` -> `core_->script_error_count()`
 
 #### Metrics serialization -- X-macro pattern
 
@@ -555,7 +554,7 @@ Each metrics group defines a canonical field list via an X-macro, co-located wit
 | Macro | Header | Fields |
 |-------|--------|--------|
 | `PYLABHUB_QUEUE_METRICS_FIELDS` | `hub_queue.hpp` | 13 QueueMetrics fields |
-| `PYLABHUB_LOOP_METRICS_FIELDS` | `role_host_core.hpp` | 3 LoopMetricsSnapshot fields |
+| `PYLABHUB_LOOP_METRICS_FIELDS` | `role_host_core.hpp` | 5 LoopMetricsSnapshot fields |
 | `PYLABHUB_INBOX_METRICS_FIELDS` | `hub_inbox_queue.hpp` | 3 InboxMetricsSnapshot fields |
 
 Each output format provides adapter functions that expand the macros:
@@ -937,7 +936,7 @@ These remain DataBlock-specific, not surfaced through QueueMetrics:
 ### 11.1 Timing — single derived path
 
 All three role hosts derive timing from `config_.timing()` through a
-single `LoopConfig` struct passed to `api_->run_data_loop()`:
+single `LoopConfig` struct passed to `run_data_loop(api, core, cfg, ops)`:
 
 ```mermaid
 graph LR
