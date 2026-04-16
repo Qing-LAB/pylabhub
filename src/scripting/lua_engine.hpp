@@ -198,7 +198,6 @@ class LuaEngine : public ScriptEngine
     static int lua_api_in_capacity(lua_State *L);
     static int lua_api_in_policy(lua_State *L);
     static int lua_api_last_seq(lua_State *L);
-    static int lua_api_ctrl_queue_dropped(lua_State *L);
 
     // ── Group C: custom metrics ───────────────────────────────────────
     static int lua_api_report_metric(lua_State *L);

@@ -86,7 +86,6 @@ class ConsumerAPI
 
     // Shutdown
     [[nodiscard]] std::string stop_reason() const noexcept { return base_->stop_reason(); }
-    [[nodiscard]] uint64_t ctrl_queue_dropped() const noexcept { return base_->ctrl_queue_dropped(); }
 
     void set_rx_flexzone(std::optional<py::object> obj) { rx_flexzone_obj_ = std::move(obj); }
 

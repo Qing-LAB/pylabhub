@@ -1957,31 +1957,6 @@ def on_process(rx, tx, msgs, api):
 }
 
 // ============================================================================
-// 17. ctrl_queue_dropped default
-// ============================================================================
-
-TEST_F(PythonEngineTest, Api_CtrlQueueDropped_DefaultZero)
-{
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    v = api.ctrl_queue_dropped()
-    assert v == 0, f"expected ctrl_queue_dropped==0, got {v}"
-    return False
-)");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed -- ctrl_queue_dropped should be 0";
-
-    engine.finalize();
-}
-
-// ============================================================================
 // 18. Metrics loop group completeness
 // ============================================================================
 

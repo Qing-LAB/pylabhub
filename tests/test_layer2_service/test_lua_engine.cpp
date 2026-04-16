@@ -2094,30 +2094,6 @@ TEST_F(LuaEngineTest, Api_IdentityFields_MatchContext)
 }
 
 // ============================================================================
-// 25. ctrl_queue_dropped default
-// ============================================================================
-
-TEST_F(LuaEngineTest, Api_CtrlQueueDropped_DefaultZero)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            local v = api.ctrl_queue_dropped()
-            assert(v == 0, "ctrl_queue_dropped should be 0 without queue, got " .. tostring(v))
-            return false
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
-}
-
-// ============================================================================
 // 26. Metrics — all loop fields present with non-zero verification
 // ============================================================================
 

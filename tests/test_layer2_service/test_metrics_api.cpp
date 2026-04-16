@@ -64,6 +64,7 @@ TEST(MetricsApiTest, ProducerAPI_SnapshotBase_NoSHM)
 
     ASSERT_TRUE(snap.contains("loop"));
     EXPECT_EQ(snap["loop"]["iteration_count"], 0);
+    EXPECT_EQ(snap["loop"]["acquire_retry_count"], 0);
 
     EXPECT_FALSE(snap.contains("queue"));
     EXPECT_FALSE(snap.contains("custom"));
@@ -132,6 +133,7 @@ TEST(MetricsApiTest, ConsumerAPI_SnapshotBase_NoSHM)
 
     ASSERT_TRUE(snap.contains("loop"));
     EXPECT_EQ(snap["loop"]["iteration_count"], 0);
+    EXPECT_EQ(snap["loop"]["acquire_retry_count"], 0);
 
     EXPECT_FALSE(snap.contains("queue"));
     EXPECT_FALSE(snap.contains("custom"));
@@ -170,6 +172,7 @@ TEST(MetricsApiTest, ProcessorAPI_SnapshotBase_NoSHM)
 
     ASSERT_TRUE(snap.contains("loop"));
     EXPECT_EQ(snap["loop"]["iteration_count"], 0);
+    EXPECT_EQ(snap["loop"]["acquire_retry_count"], 0);
 
     EXPECT_FALSE(snap.contains("in_queue"));
     EXPECT_FALSE(snap.contains("out_queue"));

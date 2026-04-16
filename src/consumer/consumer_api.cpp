@@ -231,7 +231,6 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
         .def("wait_for_role",      &ConsumerAPI::wait_for_role,
              py::arg("uid"), py::arg("timeout_ms") = 5000)
         .def("stop_reason",        &ConsumerAPI::stop_reason)
-        .def("ctrl_queue_dropped", &ConsumerAPI::ctrl_queue_dropped)
         .def_readwrite("shared_data", &ConsumerAPI::shared_data_)
         .def_static("as_numpy", &scripting::as_numpy_view, py::arg("ctypes_array"));
 

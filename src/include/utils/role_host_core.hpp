@@ -291,6 +291,8 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     [[nodiscard]] uint64_t iteration_count()   const noexcept { return iteration_count_.load(std::memory_order_relaxed); }
     [[nodiscard]] uint64_t last_cycle_work_us()  const noexcept { return last_cycle_work_us_.load(std::memory_order_relaxed); }
     [[nodiscard]] uint64_t loop_overrun_count() const noexcept { return loop_overrun_count_.load(std::memory_order_relaxed); }
+    /// Total queue acquire attempts across all retry_acquire calls (all roles).
+    [[nodiscard]] uint64_t acquire_retry_count() const noexcept { return acquire_retry_count_.load(std::memory_order_relaxed); }
 
     /// Snapshot loop metrics into a caller-provided struct.
     struct LoopMetricsSnapshot
@@ -299,11 +301,13 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
         uint64_t loop_overrun_count{0};
         uint64_t last_cycle_work_us{0};
         uint64_t configured_period_us{0};
+        uint64_t acquire_retry_count{0};
     };
     [[nodiscard]] LoopMetricsSnapshot loop_metrics() const noexcept
     {
         return {iteration_count(), loop_overrun_count(), last_cycle_work_us(),
-                configured_period_us_.load(std::memory_order_relaxed)};
+                configured_period_us_.load(std::memory_order_relaxed),
+                acquire_retry_count()};
     }
 
     /// Set loop target period (informational — reported in loop metrics).
@@ -322,6 +326,7 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
 
     void set_last_cycle_work_us(uint64_t v) noexcept { last_cycle_work_us_.store(v, std::memory_order_relaxed); }
     void inc_loop_overrun()    noexcept { loop_overrun_count_.fetch_add(1, std::memory_order_relaxed); }
+    void inc_acquire_retry() noexcept { acquire_retry_count_.fetch_add(1, std::memory_order_relaxed); }
 
 #ifdef PYLABHUB_BUILD_TESTS
     /// Test-only: directly set counter values for test setup.
@@ -346,6 +351,7 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     std::atomic<uint64_t> iteration_count_{0};
     std::atomic<uint64_t> last_cycle_work_us_{0};
     std::atomic<uint64_t> loop_overrun_count_{0}; ///< Cycles where now > deadline (set by main loop).
+    std::atomic<uint64_t> acquire_retry_count_{0}; ///< Total queue acquire attempts (all retry_acquire calls).
     std::atomic<uint64_t> configured_period_us_{0}; ///< Target loop period (µs). Set at startup from config.
 
     // ── Message queue ─────────────────────────────────────────────────────
@@ -392,5 +398,6 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     X(iteration_count)                  \
     X(loop_overrun_count)               \
     X(last_cycle_work_us)               \
-    X(configured_period_us)
+    X(configured_period_us)             \
+    X(acquire_retry_count)
 // NOLINTEND(cppcoreguidelines-macro-usage)

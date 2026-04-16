@@ -13,7 +13,8 @@
 #include "utils/thread_manager.hpp"
 #include "producer_fields.hpp"
 #include "utils/broker_request_comm.hpp"
-#include "utils/cycle_ops.hpp"
+#include "service/cycle_ops.hpp"
+#include "service/data_loop.hpp"
 
 #include "plh_datahub.hpp"
 #include "plh_datahub_client.hpp"
@@ -34,9 +35,6 @@
 namespace pylabhub::producer
 {
 
-using scripting::IncomingMessage;
-using scripting::InvokeResult;
-using scripting::InvokeTx;
 using scripting::ProducerCycleOps;
 using Clock = std::chrono::steady_clock;
 
@@ -94,9 +92,6 @@ void ProducerRoleHost::shutdown_()
     core_.notify_incoming();
     api_.reset();
 }
-
-// ProducerCycleOps has moved to src/include/utils/cycle_ops.hpp so the L3.β
-// baseline test suite can instantiate it directly. Behavior unchanged.
 
 // ============================================================================
 // worker_main_ — the worker thread entry point
@@ -267,7 +262,6 @@ void ProducerRoleHost::worker_main_()
         // Build producer registration payload (REG_REQ).
         const auto &ch  = config_.out_channel();
         const auto &shm = config_.out_shm();
-        const auto &tr  = config_.out_transport();
 
         ctrl_cfg.producer_reg_opts["channel_name"]      = ch;
         ctrl_cfg.producer_reg_opts["pattern"]            = "PubSub";
@@ -325,7 +319,7 @@ void ProducerRoleHost::worker_main_()
         lcfg.period_us                   = tc_loop.period_us;
         lcfg.loop_timing                 = tc_loop.loop_timing;
         lcfg.queue_io_wait_timeout_ratio = tc_loop.queue_io_wait_timeout_ratio;
-        api_->run_data_loop(lcfg, ops);
+        scripting::run_data_loop(*api_, core_, lcfg, ops);
     }
 
     // Step 9: stop accepting invoke from non-owner threads.
@@ -363,13 +357,10 @@ void ProducerRoleHost::worker_main_()
 bool ProducerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
 {
     const auto &id    = config_.identity();
-    const auto &hub   = config_.out_hub();
     const auto &tr    = config_.out_transport();
     const auto &shm   = config_.out_shm();
     const auto &tc    = config_.timing();
     inbox_cfg_ = config_.inbox(); // mutable copy for resolved fields
-    const auto &mon   = config_.monitoring();
-    const auto &auth  = config_.auth();
     const auto &ch    = config_.out_channel();
 
     // --- Producer options ---
@@ -480,43 +471,5 @@ void ProducerRoleHost::teardown_infrastructure_()
     if (api_) api_->close_queues();
 }
 
-
-// ============================================================================
-// snapshot_metrics_json — for heartbeat reporting
-// ============================================================================
-
-nlohmann::json ProducerRoleHost::snapshot_metrics_json() const
-{
-    nlohmann::json result;
-
-    if (api_ && api_->has_tx_side())
-    {
-        nlohmann::json q;
-        hub::queue_metrics_to_json(q, api_->queue_metrics(scripting::ChannelSide::Tx));
-        result["queue"] = std::move(q);
-    }
-
-    {
-        nlohmann::json lm;
-        hub::loop_metrics_to_json(lm, core_.loop_metrics());
-        result["loop"] = std::move(lm);
-    }
-
-    result["role"] = {
-        {"out_slots_written",  core_.out_slots_written()},
-        {"out_drop_count",     core_.out_drop_count()},
-        {"script_error_count", engine_ ? engine_->script_error_count() : 0},
-        {"ctrl_queue_dropped", 0}
-    };
-
-    if (inbox_queue_)
-    {
-        nlohmann::json ib;
-        hub::inbox_metrics_to_json(ib, inbox_queue_->inbox_metrics());
-        result["inbox"] = std::move(ib);
-    }
-
-    return result;
-}
 
 } // namespace pylabhub::producer

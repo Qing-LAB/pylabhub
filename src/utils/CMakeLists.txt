@@ -36,9 +36,15 @@ set(UTILS_SOURCES
   service/role_vault.cpp
   service/role_host_core.cpp
   service/role_api_base.cpp
+  service/data_loop.cpp
   service/thread_manager.cpp
   service/engine_module_params.cpp
   service/native_engine.cpp
+
+  # --- role hosts: lifecycle + data loop for each role ---
+  ${CMAKE_SOURCE_DIR}/src/producer/producer_role_host.cpp
+  ${CMAKE_SOURCE_DIR}/src/consumer/consumer_role_host.cpp
+  ${CMAKE_SOURCE_DIR}/src/processor/processor_role_host.cpp
 
   # --- logging: async logger + pluggable sinks ---
   logging/logger.cpp
@@ -143,6 +149,10 @@ target_include_directories(pylabhub-utils
     $<INSTALL_INTERFACE:include>
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/src/producer
+    ${CMAKE_SOURCE_DIR}/src/consumer
+    ${CMAKE_SOURCE_DIR}/src/processor
+    ${CMAKE_SOURCE_DIR}/src/scripting
 )
 
 # Generate version header for C++ access (pylabhub::platform::get_version_*).

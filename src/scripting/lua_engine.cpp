@@ -1177,7 +1177,6 @@ void LuaEngine::push_common_api_closures_(lua_State *L)
     // Diagnostics — common to all roles.
     push_closure("loop_overrun_count", lua_api_loop_overrun_count);
     push_closure("last_cycle_work_us", lua_api_last_cycle_work_us);
-    push_closure("ctrl_queue_dropped", lua_api_ctrl_queue_dropped);
 
     // Custom metrics (HEP-CORE-0019).
     push_closure("report_metric", lua_api_report_metric);
@@ -1616,13 +1615,6 @@ int LuaEngine::lua_api_last_seq(lua_State *L)
     return 1;
 }
 
-int LuaEngine::lua_api_ctrl_queue_dropped(lua_State *L)
-{
-    // P2C ctrl queue removed — always 0.
-    lua_pushinteger(L, 0);
-    return 1;
-}
-
 // ============================================================================
 // Group C: custom metrics (HEP-CORE-0019)
 // ============================================================================
@@ -1783,10 +1775,6 @@ int LuaEngine::lua_api_metrics(lua_State *L)
         lua_setfield(L, -2, "out_drop_count");
         lua_pushinteger(L, static_cast<lua_Integer>(core->script_error_count()));
         lua_setfield(L, -2, "script_error_count");
-
-        // ctrl_queue_dropped — P2C ctrl queue removed; report 0 for backward compat.
-        lua_pushinteger(L, 0);
-        lua_setfield(L, -2, "ctrl_queue_dropped");
 
         lua_setfield(L, -2, "role");
     }

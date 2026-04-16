@@ -266,8 +266,6 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
              py::arg("uid"), py::arg("timeout_ms") = 5000)
         .def("stop_reason",        &producer::ProducerAPI::stop_reason,
              "Why the role stopped: 'normal', 'peer_dead', 'hub_dead', or 'critical_error'.")
-        .def("ctrl_queue_dropped", &producer::ProducerAPI::ctrl_queue_dropped,
-             "Number of ctrl-send messages dropped due to queue overflow.")
         .def_readwrite("shared_data",   &producer::ProducerAPI::shared_data_,
              "Shared script data dictionary. Persists across callbacks.")
         .def_static("as_numpy", &scripting::as_numpy_view, py::arg("ctypes_array"),

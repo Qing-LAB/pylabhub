@@ -536,68 +536,89 @@ Role hosts access it via `api_->thread_manager()`. All role-scope threads
 
 ## Unified Data Loop Architecture
 
-> Merged from `docs/tech_draft/unified_role_loop.md` §3–5 (2026-04-16).
-> All entities verified against `cycle_ops.hpp`, `role_api_base.hpp/cpp`.
+> Rewritten 2026-04-16 to reflect template-based CycleOps design.
+> All entities verified against `service/cycle_ops.hpp`, `service/data_loop.hpp`,
+> `role_api_base.hpp`.
 
-### RoleCycleOps Abstract Interface
+### Design Rationale
 
-All three role hosts share one data loop frame (`RoleAPIBase::run_data_loop`).
-Role-specific behavior is injected via the `RoleCycleOps` abstract class
-(`cycle_ops.hpp`):
+The data loop uses **templates instead of virtual dispatch** for the
+role-specific operations. Three concrete `CycleOps` classes (Producer,
+Consumer, Processor) are duck-typed into the `run_data_loop<Ops>` template.
+The compiler inlines all CycleOps calls into the loop body, eliminating
+vtable indirection and enabling cross-boundary optimization.
 
-```cpp
-class RoleCycleOps {
-public:
-    virtual ~RoleCycleOps() = default;
-    virtual bool acquire(const AcquireContext &ctx) = 0;     // inner retry acquire
-    virtual void cleanup_on_shutdown() = 0;                  // release held slots on stop
-    virtual bool invoke_and_commit(std::vector<IncomingMessage> &msgs) = 0;  // engine callback + commit/release
-    virtual void cleanup_on_exit() = 0;                      // end-of-loop cleanup (processor hold release)
-};
+Why keep three separate CycleOps instead of unifying into one:
+- Each role's acquire/commit logic is structurally distinct (not just
+  parameterized — processor has input-hold state machine)
+- Separate classes are easier to reason about and extend independently
+- Future roles can add their own CycleOps without touching existing ones
+- The template approach gets full inlining benefit regardless
+
+All loop internals are **internal to the library** — not exposed in
+the public `role_api_base.hpp` header. The public API is the role-facing
+surface (identity, data-plane verbs, messaging, diagnostics). Tests include
+internal headers directly as internal consumers.
+
+### File Layout
+
+| File | Scope | Contents |
+|------|-------|----------|
+| `src/utils/service/data_loop.hpp` | Internal | `AcquireContext`, `retry_acquire` decl, `LoopConfig`, `run_data_loop<Ops>` template definition |
+| `src/utils/service/data_loop.cpp` | Internal | `retry_acquire` implementation (compiled once) |
+| `src/utils/service/cycle_ops.hpp` | Internal | `ProducerCycleOps`, `ConsumerCycleOps`, `ProcessorCycleOps` — plain concrete classes, no virtual base |
+| `src/include/utils/role_api_base.hpp` | Public | `RoleAPIBase` — no loop internals exposed |
+
+### CycleOps Duck-Typed Interface
+
+Each CycleOps class provides these four methods (no virtual base — the
+`run_data_loop` template uses duck typing):
+
+```
+acquire(AcquireContext) → bool       // Step A: acquire queue slot(s)
+cleanup_on_shutdown()                // Step B': release on shutdown break
+invoke_and_commit(msgs) → bool      // Step D+E: engine callback + commit/release
+cleanup_on_exit()                    // post-loop: release held state
 ```
 
 Three concrete implementations:
 
-```mermaid
-classDiagram
-    class RoleCycleOps {
-        <<abstract>>
-        +acquire(AcquireContext) bool
-        +cleanup_on_shutdown()
-        +invoke_and_commit(msgs) bool
-        +cleanup_on_exit()
-    }
-    class ProducerCycleOps {
-        write_acquire → invoke_produce → write_commit/discard
-    }
-    class ConsumerCycleOps {
-        read_acquire → invoke_consume → read_release
-    }
-    class ProcessorCycleOps {
-        read_acquire + write_acquire → invoke_process → commit/release
-        supports input hold-across-cycles
-    }
-    RoleCycleOps <|-- ProducerCycleOps
-    RoleCycleOps <|-- ConsumerCycleOps
-    RoleCycleOps <|-- ProcessorCycleOps
-```
+| Class | Sides | Key behavior |
+|-------|-------|-------------|
+| `ProducerCycleOps` | Tx only | write_acquire → memset → invoke_produce → commit/discard |
+| `ConsumerCycleOps` | Rx only | read_acquire → invoke_consume → read_release; error detection via count delta |
+| `ProcessorCycleOps` | Rx + Tx | Input hold-across-cycles in Block mode; two-phase acquire with policy-dependent timeout |
 
-### AcquireContext and retry_acquire
+### AcquireContext
 
-`AcquireContext` (`role_api_base.hpp`) bundles timing state for the inner
-retry loop:
+Bundles timing state for one cycle, computed by the loop frame and
+passed to `CycleOps::acquire()`:
 
 ```cpp
 struct AcquireContext {
-    std::chrono::milliseconds short_timeout;  // per-attempt timeout
-    std::chrono::steady_clock::time_point deadline;  // outer deadline
-    bool is_max_rate;  // skip deadline wait on MaxRate policy
+    std::chrono::milliseconds              short_timeout;     // per-attempt queue I/O budget
+    std::chrono::microseconds              short_timeout_us;  // same, for deadline comparison
+    std::chrono::steady_clock::time_point  deadline;          // this cycle's target completion
+    bool                                   is_max_rate;       // single attempt, no retry
 };
 ```
 
-`retry_acquire(ctx, core, try_once)` — shared utility that loops
-`try_once(short_timeout)` until success or deadline, checking
-`core.is_running()` on each iteration. Used by all three CycleOps.
+### retry_acquire
+
+Shared inner retry utility (`data_loop.cpp`). Calls `try_once(short_timeout)`
+in a loop until:
+- `try_once` returns non-null (success)
+- `is_max_rate` (single attempt only)
+- `core` signals shutdown or process exit
+- Remaining time until deadline < `short_timeout_us`
+
+First cycle (`deadline == time_point::max()`): retries indefinitely until
+success or shutdown.
+
+Not a template — the retry logic is identical for all queue operations.
+The `std::function` lambda captures the specific queue verb. This function
+does not benefit from inlining (the queue acquire inside the lambda is
+the bottleneck, not the retry decision).
 
 ### LoopConfig
 
@@ -609,26 +630,199 @@ struct LoopConfig {
 };
 ```
 
-Passed by the role host to `api->run_data_loop(cfg, ops)`. Timing
-parameters derive from `config_.timing()` — single-truth path
+Constructed by the role host from `config_.timing()` — single-truth path
 (see HEP-0008 §11.1).
 
-### run_data_loop Frame
+### run_data_loop Flow Diagram
 
-`RoleAPIBase::run_data_loop()` (`role_api_base.cpp`) implements the
-shared outer loop:
+```mermaid
+flowchart TD
+    subgraph RoleHost["Role Host (worker_main_)"]
+        SETUP["Steps 1-7: setup infra, broker, engine, queues"]
+        BUILD_OPS["Build CycleOps + LoopConfig"]
+        CALL["run_data_loop&lt;Ops&gt;(api, core, cfg, ops)"]
+        SHUTDOWN["Steps 9-14: shutdown sequence"]
+        SETUP --> BUILD_OPS --> CALL --> SHUTDOWN
+    end
+
+    subgraph Loop["run_data_loop&lt;Ops&gt; (template, data_loop.hpp)"]
+        direction TB
+        TIMING["Timing setup: policy, short_timeout, deadline=max"]
+        CHECK["while core.is_running && !shutdown"]
+        A["Step A: ops.acquire(ctx) — inlined CycleOps"]
+        B["Step B: Deadline wait (FixedRate only)"]
+        Bp["Step B': Shutdown check → ops.cleanup_on_shutdown()"]
+        C["Step C: core.drain_messages() + api.drain_inbox_sync()"]
+        DE["Step D+E: ops.invoke_and_commit(msgs) — inlined CycleOps"]
+        F["Step F: Metrics (work_us, iteration_count, overrun)"]
+        G["Step G: compute_next_deadline()"]
+        EXIT["ops.cleanup_on_exit()"]
+
+        TIMING --> CHECK --> A --> B --> Bp --> C --> DE --> F --> G --> CHECK
+        Bp -- shutdown --> EXIT
+        DE -- "return false" --> EXIT
+        CHECK -- "!running" --> EXIT
+    end
+
+    subgraph CycleOps["CycleOps (per-role, cycle_ops.hpp)"]
+        direction LR
+        PROD["ProducerCycleOps\nTx only"]
+        CONS["ConsumerCycleOps\nRx only"]
+        PROC["ProcessorCycleOps\nRx + Tx + hold"]
+    end
+
+    subgraph Shared["Shared Utilities"]
+        RETRY["retry_acquire(ctx, core, lambda)\n(data_loop.cpp, compiled once)"]
+        API["RoleAPIBase\nwrite_acquire/commit/discard\nread_acquire/release\ndrain_inbox_sync"]
+        CORE["RoleHostCore\nshutdown flags, counters\nmessage drain"]
+    end
+
+    CALL --> TIMING
+    A --> CycleOps
+    DE --> CycleOps
+    CycleOps --> RETRY
+    CycleOps --> API
+    Loop --> CORE
+```
+
+### run_data_loop Pseudocode Reference
 
 ```
-while (core.is_running && !shutdown_requested):
-    A. compute deadline from LoopConfig
-    B. ops.acquire(AcquireContext)       ← role-specific
-    C. if shutdown → ops.cleanup_on_shutdown(); break
-    D. drain_inbox_sync()                ← inbox messages before callback
-    E. ops.invoke_and_commit(msgs)       ← engine callback + data commit
-    F. update loop metrics (overrun, timing)
-    G. deadline wait (FixedRate / FixedRateWithCompensation)
-ops.cleanup_on_exit()
+═══════════════════════════════════════════════════════════════
+ROLE HOST (producer_role_host.cpp / consumer / processor)
+═══════════════════════════════════════════════════════════════
+
+worker_main_():
+    // Steps 1-7: setup infrastructure, broker, engine, queues...
+    // ... (see §14-Step Lifecycle below)
+
+    // Step 8: build CycleOps + LoopConfig, enter data loop
+    ProducerCycleOps ops(*api_, *engine_, core_, stop_on_error)
+    LoopConfig lcfg { .period_us, .loop_timing, .queue_io_wait_timeout_ratio }
+
+    run_data_loop(*api_, core_, lcfg, ops)   ← template free function
+    //            ^^^^   ^^^^   ^^^^  ^^^
+    //            │      │      │     └─ duck-typed CycleOps (inlined)
+    //            │      │      └─ timing config (value struct)
+    //            │      └─ metrics, shutdown flags, message drain
+    //            └─ queue verbs, inbox drain, identity
+
+    // Steps 9+: shutdown sequence...
+
+
+═══════════════════════════════════════════════════════════════
+run_data_loop<Ops>(api, core, cfg, ops)     [data_loop.hpp]
+═══════════════════════════════════════════════════════════════
+
+    // Timing setup (once)
+    policy        = cfg.loop_timing        // MaxRate | FixedRate | FixedRateWithCompensation
+    period_us     = cfg.period_us
+    is_max_rate   = (policy == MaxRate)
+    short_timeout = compute_short_timeout(period_us, ratio)
+    deadline      = time_point::max()      // first cycle: no deadline
+
+    // ── OUTER LOOP ─────────────────────────────────────────
+    while (core.is_running() && !shutdown && !critical_error):
+
+        cycle_start = now()
+
+        // Step A: ACQUIRE (role-specific, inlined)
+        ctx = AcquireContext { short_timeout, deadline, is_max_rate }
+        has_data = ops.acquire(ctx)
+        //         └──── dispatches to one of:
+        //   Producer:  buf_  = retry_acquire(... write_acquire ...)
+        //   Consumer:  data_ = retry_acquire(... read_acquire ...)
+        //   Processor: held_input_ = retry_acquire(... read_acquire ...)
+        //              out_buf_    = write_acquire(policy-dependent timeout)
+
+        // Step B: DEADLINE WAIT
+        if (!is_max_rate && has_data && past_first_cycle && now() < deadline):
+            sleep_until(deadline)
+
+        // Step B': SHUTDOWN CHECK after potential sleep
+        if (shutdown):
+            ops.cleanup_on_shutdown()   // release/discard any held slots
+            break
+
+        // Step C: DRAIN MESSAGES + INBOX
+        msgs = core.drain_messages()    // ctrl-thread notifications
+        api.drain_inbox_sync()          // recv_one → invoke_on_inbox, repeat
+
+        // Step D+E: INVOKE + COMMIT (role-specific, inlined)
+        if (!ops.invoke_and_commit(msgs)):
+            break   // stop_on_script_error fired
+        //
+        //   Producer:
+        //       memset(buf_); result = engine.invoke_produce(InvokeTx{...})
+        //       Commit → write_commit + inc_out_slots_written
+        //       else   → write_discard + inc_out_drop_count
+        //
+        //   Consumer:
+        //       inc_in_slots_received; engine.invoke_consume(InvokeRx{...})
+        //       read_release; check error count delta for stop
+        //
+        //   Processor:
+        //       memset(out_buf_); result = engine.invoke_process(rx, tx)
+        //       OUTPUT: commit/discard/drop (same as producer)
+        //       INPUT:  held && (out_buf_ || drop_mode) → release
+        //               held && block_mode && !out_buf_ → HOLD across cycles
+        //               !held → no action
+
+        // Step F: METRICS
+        work_us = now() - cycle_start
+        core.set_last_cycle_work_us(work_us)
+        core.inc_iteration_count()
+        if (past_first_cycle && now() > deadline): core.inc_loop_overrun()
+
+        // Step G: NEXT DEADLINE
+        deadline = compute_next_deadline(policy, deadline, cycle_start, period_us)
+
+    // ── POST-LOOP ──────────────────────────────────────────
+    ops.cleanup_on_exit()
+    //   Producer/Consumer: no-op
+    //   Processor: if (held_input_) read_release   // release late-held input
+
+
+═══════════════════════════════════════════════════════════════
+KEY DATA STRUCTURES
+═══════════════════════════════════════════════════════════════
+
+AcquireContext          per-cycle timing state, computed by loop frame
+LoopConfig              from role config, immutable for loop lifetime
+InvokeTx                { void *slot, size_t slot_size }  — output to engine
+InvokeRx                { const void *slot, size_t slot_size } — input to engine
+RoleAPIBase             queue verbs, inbox drain, identity, metrics snapshot
+RoleHostCore            shutdown flags, metric counters, message queue
+ScriptEngine            invoke_produce/consume/process — calls user script
+                        (runtime-polymorphic: Python/Lua/Native)
+retry_acquire           inner retry loop — compiled once, not inlined
 ```
+
+### Processor Input-Hold State Machine
+
+The processor's input-hold behavior is the most subtle part of the loop.
+In Block overflow mode, when the output queue is full, the input slot is
+preserved across cycles until the output queue has space.
+
+```mermaid
+stateDiagram-v2
+    [*] --> IDLE
+    IDLE --> ACQUIRED : read_acquire succeeds
+    IDLE --> IDLE : read_acquire returns null (no input)
+
+    ACQUIRED --> INVOKE : write_acquire succeeds (out_buf valid)
+    ACQUIRED --> HELD_OVER : write_acquire fails (queue full, Block mode)
+    ACQUIRED --> RELEASE_DROP : write_acquire fails (Drop mode)
+
+    INVOKE --> IDLE : commit/discard output + release input + inc_in_slots_received
+
+    HELD_OVER --> ACQUIRED : next cycle (skip read_acquire, retry write_acquire)
+
+    RELEASE_DROP --> IDLE : release input + inc_out_drop_count
+```
+
+In Drop mode, `write_acquire(0ms)` never blocks — if output is full, the
+input is released immediately with `inc_out_drop_count`.
 
 ### 14-Step Lifecycle Sequence (verified 2026-04-16)
 
@@ -641,7 +835,7 @@ Step 5:  invoke_on_init()
 Step 6:  Connect broker, start ctrl thread, register
 Step 6b: Startup coordination (wait_for_roles)
 Step 7:  Signal ready
-Step 8:  Run data loop (run_data_loop + CycleOps)
+Step 8:  Run data loop (run_data_loop<CycleOps> + LoopConfig)
 Step 9:  stop_accepting()
 Step 9a: deregister_from_broker()
 Step 10: invoke_on_stop()        ← ctrl thread alive for final I/O

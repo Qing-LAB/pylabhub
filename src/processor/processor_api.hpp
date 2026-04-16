@@ -87,7 +87,6 @@ class ProcessorAPI
 
     // Shutdown
     [[nodiscard]] std::string stop_reason() const noexcept { return base_->stop_reason(); }
-    [[nodiscard]] uint64_t ctrl_queue_dropped() const noexcept { return base_->ctrl_queue_dropped(); }
 
     // Spinlocks
     [[nodiscard]] uint64_t slot_logical_size(std::optional<int> side = std::nullopt) const;

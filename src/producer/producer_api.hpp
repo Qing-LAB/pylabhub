@@ -100,7 +100,6 @@ class ProducerAPI
     // ── Python-accessible — shutdown diagnostics ─────────────────────────────
 
     [[nodiscard]] std::string stop_reason() const noexcept { return base_->stop_reason(); }
-    [[nodiscard]] uint64_t ctrl_queue_dropped() const noexcept { return base_->ctrl_queue_dropped(); }
 
     // ── Python-accessible — spinlocks ────────────────────────────────────────
 

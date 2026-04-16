@@ -22,6 +22,12 @@
 - [ ] **ZMQ checksum policy execution tests** — ZmqQueue now supports `set_checksum_policy()` with compute + verify paths, but no L3 tests exercise the ZMQ-specific checksum compute/verify logic (only SHM checksum paths have coverage). Need: write with enforced checksum → read with verify → confirm match; write corrupted → read with verify → confirm `checksum_error_count` increments.
 - [ ] **Config key whitelist edge case tests** — Config parser now rejects unknown JSON keys, but edge cases need coverage: empty object `{}`, keys with Unicode, keys that are prefixes of valid keys (e.g. `"script_"` vs `"script"`), nested unknown keys inside known objects.
 
+### Schema/Packing Round-Trip Coverage Gap (2026-04-16)
+
+- [ ] **L3 gap: No aligned-packing round-trip with padding-sensitive schema** — Existing ZmqQueue tests use packed packing for mixed-type round-trip (`Schema_MixedArrayFields_MultipleTypes_Roundtrip`) and aligned for simple schemas. No test verifies data correctness through padding gaps (e.g., `{bool, int32, float64}` aligned: padding after bool and after int32 must not corrupt adjacent field data). Need: write complex schema with aligned packing → read back → verify every field bit-exact across padding boundaries.
+- [ ] **L3 gap: No SHM round-trip with complex schema** — SHM tests use blob schemas only. Need SHM round-trip with multi-field schema (both aligned and packed) to verify `compute_field_layout` → DataBlock → read-back integrity.
+- [ ] **L3 gap: No aligned-vs-packed same-data comparison** — Write identical logical data through both packing modes, verify both produce correct field values despite different physical layouts.
+
 ### BrokerProtocolTest Timing Audit (2026-03-23)
 - [ ] BrokerProtocolTest suite passes but execution times cluster near typical timeout values (~2s). Risk: tests could be masking timing-dependent failures by passing on timeout rather than on correct event sequence. Audit should verify each test validates actual event logs and message ordering, not just return codes or "didn't hang" outcomes.
 
