@@ -575,7 +575,7 @@ Rename to `RoleVault` as part of this migration:
 ## 12. Future Direction: Unified Role Binary
 
 Since RoleConfig is now the single config class for all roles and most role
-infrastructure (ScriptEngine, RoleHostCore, hub::Producer/Consumer, Messenger)
+infrastructure (ScriptEngine, RoleHostCore, RoleAPIBase, BrokerRequestComm)
 lives in `pylabhub-utils`, the three separate binaries (pylabhub-producer,
 pylabhub-consumer, pylabhub-processor) could be unified into a single binary
 that determines its role from config. The role_tag in RoleConfig already
