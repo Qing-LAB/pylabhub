@@ -235,6 +235,31 @@ The timing policy and period are set exclusively through the queue abstraction.
 DataBlock has no timing knowledge. ShmQueue delegates to `mutable_metrics().set_configured_period()`.
 ZmqQueue stores the period in its own `ContextMetrics`.
 
+### 2.2 Queue I/O Timeout (merged from loop_design_unified.md §1.2)
+
+> Verified: `compute_short_timeout()` in `loop_timing_policy.hpp`.
+
+The per-attempt timeout for the inner retry-acquire loop:
+
+```
+short_timeout_us = max(period_us * queue_io_wait_timeout_ratio, kMinQueueIoTimeoutUs)
+```
+
+Where `kMinQueueIoTimeoutUs = 10` (10 μs floor). Default ratio = 0.1.
+
+| Policy | period_us | ratio | short_timeout |
+|--------|-----------|-------|---------------|
+| MaxRate | 0 | 0.1 | 10 μs (floor) |
+| FixedRate 1 kHz | 1000 | 0.1 | 100 μs |
+| FixedRate 100 Hz | 10000 | 0.1 | 1 ms |
+
+**Processor output timeout** (different concern — pipeline backpressure):
+
+| Overflow Policy | Output timeout | Behavior |
+|-----------------|---------------|----------|
+| Drop (default) | 0 ms (non-blocking) | Immediate fail; drops counted |
+| Block | remaining cycle budget | Wait up to deadline; fall back to short_timeout on overrun |
+
 ---
 
 ## 3. ContextMetrics Struct
