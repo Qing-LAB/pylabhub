@@ -11,6 +11,7 @@
 #include "utils/role_api_base.hpp"
 #include "utils/role_host_core.hpp"
 #include "utils/script_engine.hpp"
+#include "utils/thread_manager.hpp"
 
 #include <gtest/gtest.h>
 
@@ -399,18 +400,18 @@ TEST_F(ThreadManagerTest, SpawnAndJoin)
     core.set_running(true);
     std::atomic<int> counter{0};
 
-    api->spawn_thread("worker", [&] {
+    api->thread_manager().spawn("worker", [&] {
         counter.fetch_add(1);
     });
 
-    EXPECT_EQ(api->thread_count(), 1u);
+    EXPECT_EQ(api->thread_manager().active_count(), 1u);
 
     // Thread runs immediately; give it a moment.
     std::this_thread::sleep_for(std::chrono::milliseconds{20});
 
-    api->join_all_threads();
+    api->thread_manager().drain();
     EXPECT_EQ(counter.load(), 1);
-    EXPECT_EQ(api->thread_count(), 0u);
+    EXPECT_EQ(api->thread_manager().active_count(), 0u);
 }
 
 TEST_F(ThreadManagerTest, MultipleThreads)
@@ -418,17 +419,17 @@ TEST_F(ThreadManagerTest, MultipleThreads)
     core.set_running(true);
     std::atomic<int> counter{0};
 
-    api->spawn_thread("a", [&] { counter.fetch_add(1); });
-    api->spawn_thread("b", [&] { counter.fetch_add(10); });
-    api->spawn_thread("c", [&] { counter.fetch_add(100); });
+    api->thread_manager().spawn("a", [&] { counter.fetch_add(1); });
+    api->thread_manager().spawn("b", [&] { counter.fetch_add(10); });
+    api->thread_manager().spawn("c", [&] { counter.fetch_add(100); });
 
-    EXPECT_EQ(api->thread_count(), 3u);
+    EXPECT_EQ(api->thread_manager().active_count(), 3u);
 
     std::this_thread::sleep_for(std::chrono::milliseconds{20});
-    api->join_all_threads();
+    api->thread_manager().drain();
 
     EXPECT_EQ(counter.load(), 111);
-    EXPECT_EQ(api->thread_count(), 0u);
+    EXPECT_EQ(api->thread_manager().active_count(), 0u);
 }
 
 TEST_F(ThreadManagerTest, JoinInReverseOrder)
@@ -437,18 +438,18 @@ TEST_F(ThreadManagerTest, JoinInReverseOrder)
     std::vector<int> order;
     std::mutex mu;
 
-    api->spawn_thread("first", [&] {
+    api->thread_manager().spawn("first", [&] {
         std::this_thread::sleep_for(std::chrono::milliseconds{5});
         std::lock_guard<std::mutex> lk(mu);
         order.push_back(1);
     });
-    api->spawn_thread("second", [&] {
+    api->thread_manager().spawn("second", [&] {
         std::lock_guard<std::mutex> lk(mu);
         order.push_back(2);
     });
 
     std::this_thread::sleep_for(std::chrono::milliseconds{20});
-    api->join_all_threads();
+    api->thread_manager().drain();
 
     // Both should have run. Exact order depends on scheduling,
     // but both must complete.

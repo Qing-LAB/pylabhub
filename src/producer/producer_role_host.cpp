@@ -335,10 +335,10 @@ void ProducerRoleHost::worker_main_()
     if (api_)
         api_->deregister_from_broker();
 
-    // Step 10: join all managed threads (ctrl + future workers).
+    // Step 10: drain all managed threads (ctrl + future workers).
     core_.set_running(false);
     core_.notify_incoming();
-    api_->join_all_threads();
+    api_->thread_manager().drain();
 
     // Step 11: last script callback (no other threads using engine).
     engine_->invoke_on_stop();
@@ -450,7 +450,7 @@ bool ProducerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
 
 void ProducerRoleHost::teardown_infrastructure_()
 {
-    // Broker and comm threads already joined via api_->join_all_threads().
+    // Broker and comm threads already joined via api_->thread_manager().drain().
     // set_running(false) also already called. Defensive re-set is safe.
 
     // Clean up shared resources (engine already finalized — no scripts running).

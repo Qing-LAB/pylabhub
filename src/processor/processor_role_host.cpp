@@ -372,7 +372,7 @@ void ProcessorRoleHost::worker_main_()
     // Step 10: join all managed threads (ctrl + future workers).
     core_.set_running(false);
     core_.notify_incoming();
-    api_->join_all_threads();
+    api_->thread_manager().drain();
 
     // Step 11: last script callback.
     engine_->invoke_on_stop();
@@ -505,7 +505,7 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
 
 void ProcessorRoleHost::teardown_infrastructure_()
 {
-    // Broker and comm threads already joined via api_->join_all_threads().
+    // Broker and comm threads already joined via api_->thread_manager().drain().
 
     core_.clear_inbox_cache();
 
