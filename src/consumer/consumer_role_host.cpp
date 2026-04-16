@@ -319,19 +319,22 @@ void ConsumerRoleHost::worker_main_()
     if (api_)
         api_->deregister_from_broker();
 
-    // Step 10: join all managed threads (ctrl + future workers).
-    core_.set_running(false);
-    core_.notify_incoming();
-    api_->thread_manager().drain();
-
-    // Step 11: last script callback.
+    // Step 10: last script callback (ctrl still alive for final I/O).
     engine_->invoke_on_stop();
 
-    // Step 12: finalize engine.
+    // Step 11: finalize engine.
     engine_->finalize();
+
+    // Step 12: signal ctrl to exit (non-destructive stop, no socket close).
+    if (broker_comm_) broker_comm_->stop();
+    core_.set_running(false);
+    core_.notify_incoming();
 
     // Step 13: teardown infrastructure.
     teardown_infrastructure_();
+
+    // Step 14: drain all managed threads — last.
+    api_->thread_manager().drain();
 }
 
 // ============================================================================

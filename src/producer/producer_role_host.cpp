@@ -335,19 +335,25 @@ void ProducerRoleHost::worker_main_()
     if (api_)
         api_->deregister_from_broker();
 
-    // Step 10: drain all managed threads (ctrl + future workers).
-    core_.set_running(false);
-    core_.notify_incoming();
-    api_->thread_manager().drain();
-
-    // Step 11: last script callback (no other threads using engine).
+    // Step 10: last script callback — ctrl thread is still alive so the
+    // script can perform final I/O (flush metrics, send summary, etc.).
     engine_->invoke_on_stop();
 
-    // Step 12: finalize engine.
+    // Step 11: finalize engine (free script resources).
     engine_->finalize();
 
-    // Step 13: teardown infrastructure.
+    // Step 12: signal ctrl thread's poll loop to exit (non-destructive —
+    // sets stop flag + wakes poll, does NOT close sockets).
+    if (broker_comm_) broker_comm_->stop();
+    core_.set_running(false);
+    core_.notify_incoming();
+
+    // Step 13: teardown infrastructure (disconnect broker, close inbox/queues).
     teardown_infrastructure_();
+
+    // Step 14: drain all managed threads — last. Ctrl thread has already
+    // exited its poll loop (signaled in step 12), so join is immediate.
+    api_->thread_manager().drain();
 }
 
 // ============================================================================

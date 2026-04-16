@@ -193,27 +193,16 @@ struct ZmqQueueImpl
             {
                 msgpack::object_handle oh = msgpack::unpack(
                     static_cast<const char *>(msg.data()), msg.size());
-                const msgpack::object& obj = oh.get();
 
-                // Outer frame: array of 5 [magic, tag, seq, payload, checksum]
-                if (obj.type != msgpack::type::ARRAY || obj.via.array.size != 5)
-                    { ++recv_frame_error_count_; continue; }
-                const auto* elems = obj.via.array.ptr;
-
-                // [0] magic
-                uint32_t magic = 0;
-                elems[0].convert(magic);
-                if (magic != wire_detail::kFrameMagic)
+                auto env = wire_detail::unpack_envelope(oh.get());
+                if (!env.valid || env.payload_size != schema_defs_.size())
                     { ++recv_frame_error_count_; continue; }
 
-                // [1] schema_tag (bin, 8 bytes)
-                if (elems[1].type != msgpack::type::BIN || elems[1].via.bin.size != 8)
-                    { ++recv_frame_error_count_; continue; }
+                // Schema-tag mismatch (rate-limited warning). [ZQ6]
                 if (has_schema_tag_ &&
-                    std::memcmp(elems[1].via.bin.ptr, schema_tag_.data(), 8) != 0)
+                    std::memcmp(env.recv_tag, schema_tag_.data(), 8) != 0)
                 {
                     ++recv_frame_error_count_;
-                    // Rate-limited warning: at most once per kMismatchWarnInterval. [ZQ6]
                     const auto now = std::chrono::steady_clock::now();
                     if (now - last_mismatch_warn_ >= kMismatchWarnInterval)
                     {
@@ -225,55 +214,27 @@ struct ZmqQueueImpl
                     continue;
                 }
 
-                // [2] seq — track gaps. [ZQ10]
+                // Sequence gap tracking. [ZQ10]
                 {
-                    uint64_t seq = 0;
-                    elems[2].convert(seq);
-                    if (seq_initialized_)
-                    {
-                        // Guard against unsigned underflow: only count forward gaps.
-                        // seq < expected_seq_ can occur on sender restart; silently ignore.
-                        if (seq > expected_seq_)
-                            recv_gap_count_.fetch_add(seq - expected_seq_,
-                                                      std::memory_order_relaxed);
-                    }
-                    expected_seq_    = seq + 1;
+                    if (seq_initialized_ && env.seq > expected_seq_)
+                        recv_gap_count_.fetch_add(env.seq - expected_seq_,
+                                                  std::memory_order_relaxed);
+                    expected_seq_    = env.seq + 1;
                     seq_initialized_ = true;
-                    last_seq_.store(seq, std::memory_order_relaxed);
+                    last_seq_.store(env.seq, std::memory_order_relaxed);
                 }
 
-                // [3] payload: msgpack array of N typed field values
-                const auto& arr = elems[3];
-                if (arr.type != msgpack::type::ARRAY ||
-                    arr.via.array.size != schema_defs_.size())
-                {
-                    ++recv_frame_error_count_;
-                    continue;
-                }
-
-                // Decode into decode_tmp_ (pre-allocated; recv-thread-private). [ZQ9]
+                // Decode payload fields into decode_tmp_. [ZQ9]
                 std::fill(decode_tmp_.begin(), decode_tmp_.end(), std::byte{0});
-                bool ok = true;
-                char* dst = reinterpret_cast<char*>(decode_tmp_.data());
-                for (size_t i = 0; i < schema_defs_.size() && ok; ++i)
-                {
-                    if (!wire_detail::unpack_field(arr.via.array.ptr[i], schema_defs_[i], dst))
-                    {
-                        ++recv_frame_error_count_;
-                        ok = false;
-                    }
-                }
-                if (!ok) continue;
-
-                // [4] checksum: bin, 32 bytes.
-                if (elems[4].type != msgpack::type::BIN || elems[4].via.bin.size != 32)
+                if (!wire_detail::unpack_payload(*env.payload, schema_defs_,
+                                                  decode_tmp_.data()))
                     { ++recv_frame_error_count_; continue; }
-                // Verify checksum: Manual and Enforced both verify (catches missing stamps).
+
+                // Checksum verification.
                 if (checksum_policy_ != ChecksumPolicy::None)
                 {
                     if (!pylabhub::crypto::verify_blake2b(
-                            reinterpret_cast<const uint8_t*>(elems[4].via.bin.ptr),
-                            decode_tmp_.data(), item_sz))
+                            env.checksum, decode_tmp_.data(), item_sz))
                     {
                         ctx_metrics_.inc_checksum_error();
                         LOGGER_ERROR("[hub::ZmqQueue] checksum error after decode on '{}'",
@@ -345,17 +306,9 @@ struct ZmqQueueImpl
                         checksum, send_local_buf_.data(), item_sz);
                 }
 
-                pk.pack_array(5);
-                pk.pack(wire_detail::kFrameMagic);
-                pk.pack_bin(8);
-                pk.pack_bin_body(reinterpret_cast<const char*>(schema_tag_.data()), 8);
-                pk.pack(send_seq_.fetch_add(1, std::memory_order_relaxed));
-                pk.pack_array(static_cast<uint32_t>(schema_defs_.size()));
-                const char* src = reinterpret_cast<const char*>(send_local_buf_.data());
-                for (const auto& fd : schema_defs_)
-                    wire_detail::pack_field(pk, fd, src);
-                pk.pack_bin(32);
-                pk.pack_bin_body(reinterpret_cast<const char*>(checksum), 32);
+                wire_detail::pack_frame(pk, schema_tag_,
+                    send_seq_.fetch_add(1, std::memory_order_relaxed),
+                    schema_defs_, send_local_buf_.data(), checksum);
             }
 
             // ── Send with retry on EAGAIN ─────────────────────────────────

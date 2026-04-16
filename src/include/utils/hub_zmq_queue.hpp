@@ -53,17 +53,27 @@
  * OverflowPolicy::Block: blocks up to @p timeout waiting for space; data_drop_count()
  * increments on timeout.
  * write_commit() enqueues the buffer to an internal send ring; a dedicated
- * send_thread_ drains the ring, encodes msgpack frames, and calls zmq_send with
- * EAGAIN retry (send_retry_count()) until success or stop().
- * On stop() drain, pending items are sent once; EAGAIN causes send_drop_count()++.
- * write_discard() discards without enqueuing.
+ * send_thread_ drains the ring, encodes msgpack frames, and sends via cppzmq
+ * (zmq::send_flags::dontwait) with EAGAIN retry (send_retry_count()) until
+ * success or stop(). On stop() drain, pending items are sent once; EAGAIN
+ * causes send_drop_count()++. write_discard() discards without enqueuing.
+ *
  * @par Thread safety
  * ZmqQueue is NOT thread-safe for its public API.  Internally, the recv_thread_
  * uses a mutex to protect the ring buffer.  Use from one caller thread only.
  *
+ * @par ZMQ context
+ * Sockets are created from the shared process-wide zmq::context_t owned by the
+ * `ZMQContext` lifecycle module (utils/zmq_context.hpp). ZmqQueue never creates
+ * or terminates the context — the top-level LifecycleGuard must include
+ * `pylabhub::hub::GetZMQContextModule()`, which is persistent and outlives
+ * every ZmqQueue instance.
+ *
  * @par Lifecycle
- * Call start() before first acquire; call stop() before destruction.
- * stop() joins the recv_thread_ (read mode) and closes the ZMQ context.
+ * Call start() before first acquire; call stop() before destruction. stop()
+ * signals the background threads, joins them with per-thread bounded timeout
+ * via ThreadManager (detaches on timeout with ERROR log), and then closes the
+ * socket. The shared ZMQ context is NOT closed here.
  */
 #include "utils/hub_queue.hpp"
 #include "utils/schema_field_layout.hpp"

@@ -3,7 +3,7 @@
  * @file zmq_wire_helpers.hpp
  * @brief Internal wire-format helpers shared by ZmqQueue and InboxQueue.
  *
- * Wire format: msgpack fixarray[4] = [magic:uint32, schema_tag:bin8, seq:uint64, payload:array(N)]
+ * Wire format: msgpack fixarray[5] = [magic:uint32, schema_tag:bin8, seq:uint64, payload:array(N), checksum:bin32]
  *   payload element i: scalar → native msgpack type; array/string/bytes → bin(byte_size)
  *
  * Field layout computation is in schema_field_layout.hpp (shared by all queue types).
@@ -17,6 +17,7 @@
 
 #include <msgpack.hpp>
 
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -134,6 +135,96 @@ inline bool unpack_field(const msgpack::object &obj,
         else return false;
     }
     catch (...) { return false; }
+    return true;
+}
+
+// ============================================================================
+// Frame envelope helpers (5-tuple: magic, tag, seq, payload, checksum)
+// ============================================================================
+
+/// Pack a complete 5-tuple frame into an sbuffer.
+///
+/// Caller computes the checksum and passes it in — Enforced vs Manual vs None
+/// is the caller's concern; this helper just serializes the envelope.
+inline void pack_frame(msgpack::packer<msgpack::sbuffer> &pk,
+                       const std::array<uint8_t, 8> &schema_tag,
+                       uint64_t seq,
+                       const std::vector<WireFieldDesc> &defs,
+                       const void *slot_data,
+                       const uint8_t (&checksum)[32])
+{
+    pk.pack_array(5);
+    pk.pack(kFrameMagic);
+    pk.pack_bin(8);
+    pk.pack_bin_body(reinterpret_cast<const char *>(schema_tag.data()), 8);
+    pk.pack(seq);
+    pk.pack_array(static_cast<uint32_t>(defs.size()));
+    const char *src = static_cast<const char *>(slot_data);
+    for (const auto &fd : defs)
+        pack_field(pk, fd, src);
+    pk.pack_bin(32);
+    pk.pack_bin_body(reinterpret_cast<const char *>(checksum), 32);
+}
+
+/// Parsed frame envelope returned by unpack_envelope().
+struct FrameEnvelope
+{
+    bool                    valid{false};
+    const uint8_t          *recv_tag{nullptr};       ///< 8 bytes; points into msgpack buffer
+    uint64_t                seq{0};
+    const msgpack::object  *payload{nullptr};        ///< [3] — inner payload array
+    uint32_t                payload_size{0};         ///< payload->via.array.size
+    const uint8_t          *checksum{nullptr};       ///< 32 bytes; points into msgpack buffer
+};
+
+/// Validate and destructure a 5-tuple frame. Returns {valid=false} on any
+/// structural error (wrong array size, bad magic, missing/mistyped fields).
+/// Does NOT check schema-tag match or checksum correctness — callers handle
+/// those with their own error-counting and rate-limiting policies.
+inline FrameEnvelope unpack_envelope(const msgpack::object &obj) noexcept
+{
+    FrameEnvelope r;
+    if (obj.type != msgpack::type::ARRAY || obj.via.array.size != 5)
+        return r;
+    const auto *e = obj.via.array.ptr;
+
+    // [0] magic
+    uint32_t magic = 0;
+    try { e[0].convert(magic); } catch (...) { return r; }
+    if (magic != kFrameMagic) return r;
+
+    // [1] schema_tag (bin, 8 bytes)
+    if (e[1].type != msgpack::type::BIN || e[1].via.bin.size != 8) return r;
+    r.recv_tag = reinterpret_cast<const uint8_t *>(e[1].via.bin.ptr);
+
+    // [2] seq
+    try { e[2].convert(r.seq); } catch (...) { return r; }
+
+    // [3] payload array
+    if (e[3].type != msgpack::type::ARRAY) return r;
+    r.payload      = &e[3];
+    r.payload_size = e[3].via.array.size;
+
+    // [4] checksum (bin, 32 bytes)
+    if (e[4].type != msgpack::type::BIN || e[4].via.bin.size != 32) return r;
+    r.checksum = reinterpret_cast<const uint8_t *>(e[4].via.bin.ptr);
+
+    r.valid = true;
+    return r;
+}
+
+/// Decode all payload fields into a pre-zeroed destination buffer.
+/// Returns false on the first field that fails to unpack (caller increments
+/// error counter). dst must be at least as large as the slot item_size.
+inline bool unpack_payload(const msgpack::object &payload_array,
+                           const std::vector<WireFieldDesc> &defs,
+                           void *dst) noexcept
+{
+    if (payload_array.via.array.size != defs.size()) return false;
+    char *d = static_cast<char *>(dst);
+    for (size_t i = 0; i < defs.size(); ++i)
+        if (!unpack_field(payload_array.via.array.ptr[i], defs[i], d))
+            return false;
     return true;
 }
 
