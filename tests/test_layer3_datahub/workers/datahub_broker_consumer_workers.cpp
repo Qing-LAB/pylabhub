@@ -238,7 +238,7 @@ int consumer_reg_channel_not_found()
             broker.stop_and_join();
         },
         "broker_consumer.consumer_reg_channel_not_found",
-        logger_module());
+        logger_module(), zmq_module());
 }
 
 // ============================================================================
@@ -404,7 +404,7 @@ int consumer_dereg_happy_path()
             broker.stop_and_join();
         },
         "broker_consumer.consumer_dereg_happy_path",
-        logger_module());
+        logger_module(), zmq_module());
 }
 
 // ============================================================================
@@ -476,7 +476,7 @@ int consumer_dereg_pid_mismatch()
             broker.stop_and_join();
         },
         "broker_consumer.consumer_dereg_pid_mismatch",
-        logger_module());
+        logger_module(), zmq_module());
 }
 
 // ============================================================================
