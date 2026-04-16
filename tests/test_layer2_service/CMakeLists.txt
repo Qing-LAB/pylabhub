@@ -918,6 +918,10 @@ add_executable(test_layer2_role_data_loop
     test_role_data_loop.cpp
 )
 
+target_include_directories(test_layer2_role_data_loop PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/utils   # internal headers (service/data_loop.hpp, service/cycle_ops.hpp)
+)
+
 target_link_libraries(test_layer2_role_data_loop
     PRIVATE
         pylabhub::utils

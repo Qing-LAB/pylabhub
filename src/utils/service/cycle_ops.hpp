@@ -1,24 +1,20 @@
 #pragma once
 /**
  * @file cycle_ops.hpp
- * @brief Concrete RoleCycleOps subclasses for producer, consumer, processor.
+ * @brief Concrete CycleOps classes for producer, consumer, processor.
  *
- * These three classes implement the role-specific acquire / invoke-and-commit
- * slot of the shared data-loop frame (`RoleAPIBase::run_data_loop`). Behavior is
- * specified by `docs/tech_draft/loop_design_unified.md` §3 (7-step skeleton)
- * and `docs/tech_draft/role_unification_design.md` §4.5a (35 branch IDs with
- * stable per-class tags: P-*, C-*, PR-*).
+ * Internal header — not part of the public pylabhub-utils API.
  *
- * Published as a public header (previously anonymous-namespace classes inside
- * the per-role hosts) so the L3.β baseline test suite can instantiate them
- * directly against in-process queue pairs + a RecordingEngine stub. No behavior
- * change vs. the inline anonymous-namespace definitions; this is a mechanical
- * relocation only.
+ * Each class implements the role-specific acquire / invoke-and-commit slot
+ * of the shared data-loop frame (run_data_loop template in data_loop.hpp).
+ * Behavior is specified by docs/tech_draft/role_unification_design.md S4.5a
+ * (35 branch IDs with stable per-class tags: P-*, C-*, PR-*).
  *
- * Post-L3.β these three classes collapse into a single unified
- * `scripting::CycleOps`; this header is the oracle the unified version must
- * match branch-for-branch and metric-site-for-metric-site.
+ * These are plain concrete classes — no virtual base. The run_data_loop
+ * template uses duck typing, and the compiler inlines all ops calls.
  */
+
+#include "service/data_loop.hpp"
 
 #include "utils/role_api_base.hpp"
 #include "utils/script_engine.hpp"
@@ -35,7 +31,7 @@ namespace pylabhub::scripting
 // ProducerCycleOps — single-side output. Branch IDs: P-A-*, P-S-*, P-I-*, P-X
 // ============================================================================
 
-class ProducerCycleOps final : public RoleCycleOps
+class ProducerCycleOps final
 {
     RoleAPIBase  &api_;
     ScriptEngine &engine_;
@@ -56,19 +52,19 @@ class ProducerCycleOps final : public RoleCycleOps
           buf_sz_(api.write_item_size())
     {}
 
-    bool acquire(const AcquireContext &ctx) override
+    bool acquire(const AcquireContext &ctx)
     {
         buf_ = retry_acquire(ctx, core_,
             [this](auto t) { return api_.write_acquire(t); });
         return buf_ != nullptr;
     }
 
-    void cleanup_on_shutdown() override
+    void cleanup_on_shutdown()
     {
         if (buf_) { api_.write_discard(); buf_ = nullptr; }
     }
 
-    bool invoke_and_commit(std::vector<IncomingMessage> &msgs) override
+    bool invoke_and_commit(std::vector<IncomingMessage> &msgs)
     {
         if (buf_) std::memset(buf_, 0, buf_sz_);
 
@@ -102,14 +98,14 @@ class ProducerCycleOps final : public RoleCycleOps
         return true;
     }
 
-    void cleanup_on_exit() override {} // nothing held across cycles
+    void cleanup_on_exit() {} // nothing held across cycles
 };
 
 // ============================================================================
 // ConsumerCycleOps — single-side input. Branch IDs: C-A-*, C-S-*, C-I-*, C-X
 // ============================================================================
 
-class ConsumerCycleOps final : public RoleCycleOps
+class ConsumerCycleOps final
 {
     RoleAPIBase  &api_;
     ScriptEngine &engine_;
@@ -127,19 +123,25 @@ class ConsumerCycleOps final : public RoleCycleOps
           item_sz_(api.read_item_size())
     {}
 
-    bool acquire(const AcquireContext &ctx) override
+    bool acquire(const AcquireContext &ctx)
     {
+        // const_cast required: retry_acquire returns void* but read_acquire
+        // returns const void* (input slot is read-only). The cast is safe here
+        // because the pointer is immediately stored in const void* data_ and
+        // never written through. DO NOT add write operations on the pointer
+        // inside retry_acquire or this lambda — it would silently corrupt
+        // shared memory owned by the producer.
         data_ = retry_acquire(ctx, core_,
             [this](auto t) { return const_cast<void *>(api_.read_acquire(t)); });
         return data_ != nullptr;
     }
 
-    void cleanup_on_shutdown() override
+    void cleanup_on_shutdown()
     {
         if (data_) { api_.read_release(); data_ = nullptr; }
     }
 
-    bool invoke_and_commit(std::vector<IncomingMessage> &msgs) override
+    bool invoke_and_commit(std::vector<IncomingMessage> &msgs)
     {
         if (data_)
             core_.inc_in_slots_received();
@@ -159,7 +161,7 @@ class ConsumerCycleOps final : public RoleCycleOps
         return true;
     }
 
-    void cleanup_on_exit() override {} // nothing held across cycles
+    void cleanup_on_exit() {} // nothing held across cycles
 };
 
 // ============================================================================
@@ -167,7 +169,7 @@ class ConsumerCycleOps final : public RoleCycleOps
 // PR-I-*, PR-X-*
 // ============================================================================
 
-class ProcessorCycleOps final : public RoleCycleOps
+class ProcessorCycleOps final
 {
     RoleAPIBase  &api_;
     ScriptEngine &engine_;
@@ -189,9 +191,12 @@ class ProcessorCycleOps final : public RoleCycleOps
     {}
 
     /// Processor always returns true — maintains timing cadence on idle cycles.
-    bool acquire(const AcquireContext &ctx) override
+    bool acquire(const AcquireContext &ctx)
     {
         // Primary: input with retry (skip if held from previous cycle).
+        // const_cast: same rationale as ConsumerCycleOps::acquire() — the
+        // pointer is stored in const void* held_input_ and never written
+        // through. See comment there for the full safety explanation.
         if (!held_input_)
         {
             held_input_ = retry_acquire(ctx, core_,
@@ -224,13 +229,13 @@ class ProcessorCycleOps final : public RoleCycleOps
         return true;
     }
 
-    void cleanup_on_shutdown() override
+    void cleanup_on_shutdown()
     {
         if (held_input_) { api_.read_release();  held_input_ = nullptr; }
         if (out_buf_)    { api_.write_discard(); out_buf_    = nullptr; }
     }
 
-    bool invoke_and_commit(std::vector<IncomingMessage> &msgs) override
+    bool invoke_and_commit(std::vector<IncomingMessage> &msgs)
     {
         if (out_buf_) std::memset(out_buf_, 0, out_sz_);
 
@@ -261,7 +266,7 @@ class ProcessorCycleOps final : public RoleCycleOps
                 held_input_ = nullptr;
                 core_.inc_in_slots_received();
             }
-            // else: Block mode + output failed → hold for next cycle.
+            // else: Block mode + output failed -> hold for next cycle.
         }
         out_buf_ = nullptr;
 
@@ -270,7 +275,7 @@ class ProcessorCycleOps final : public RoleCycleOps
         return true;
     }
 
-    void cleanup_on_exit() override
+    void cleanup_on_exit()
     {
         if (held_input_) { api_.read_release(); held_input_ = nullptr; }
     }

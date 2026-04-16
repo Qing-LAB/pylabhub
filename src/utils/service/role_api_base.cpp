@@ -83,9 +83,12 @@ struct RoleAPIBase::Impl
     // The role's sole thread manager. All role-scope threads
     // (worker / ctrl / inbox / future) live under this one instance —
     // same dynamic lifecycle module "ThreadManager:" + role_tag, same
-    // bounded join, same process-wide leak aggregator. Lazy-constructed
-    // on first thread_manager() access so set_role_tag() runs first.
+    // bounded join, same process-wide leak aggregator. Constructed
+    // eagerly in the Impl ctor from role_tag + uid.
     std::unique_ptr<pylabhub::utils::ThreadManager> thread_mgr_;
+
+    // Optional hook for role-specific metrics injection.
+    std::function<void(nlohmann::json &)> metrics_hook;
 };
 
 // ============================================================================
@@ -307,6 +310,10 @@ void RoleAPIBase::set_role_dir(std::string d)         { pImpl->role_dir = std::m
 void RoleAPIBase::set_checksum_policy(hub::ChecksumPolicy p) { pImpl->checksum_policy = p; }
 void RoleAPIBase::set_engine(ScriptEngine *e)          { pImpl->engine = e; }
 void RoleAPIBase::set_stop_on_script_error(bool v)    { pImpl->stop_on_script_error = v; }
+void RoleAPIBase::set_metrics_hook(std::function<void(nlohmann::json &)> hook)
+{
+    pImpl->metrics_hook = std::move(hook);
+}
 
 // ============================================================================
 // Thread manager
@@ -620,132 +627,6 @@ void RoleAPIBase::drain_inbox_sync()
 }
 
 // ============================================================================
-// retry_acquire — shared inner retry logic
-// ============================================================================
-
-void *retry_acquire(
-    const AcquireContext &ctx,
-    RoleHostCore &core,
-    const std::function<void *(std::chrono::milliseconds)> &try_once)
-{
-    while (true)
-    {
-        void *ptr = try_once(ctx.short_timeout);
-        if (ptr != nullptr)
-            return ptr;
-
-        if (ctx.is_max_rate)
-            return nullptr; // MaxRate: single attempt
-
-        // Check shutdown between retries.
-        if (!core.is_running() ||
-            core.is_shutdown_requested() ||
-            core.is_critical_error())
-        {
-            return nullptr;
-        }
-        if (core.is_process_exit_requested())
-            return nullptr;
-
-        // First cycle (deadline == max): retry indefinitely until success or shutdown.
-        if (ctx.deadline != std::chrono::steady_clock::time_point::max())
-        {
-            const auto remaining =
-                std::chrono::duration_cast<std::chrono::microseconds>(
-                    ctx.deadline - std::chrono::steady_clock::now());
-            if (remaining <= ctx.short_timeout_us)
-                return nullptr; // not enough time to retry
-        }
-        // else: retry
-    }
-}
-
-// ============================================================================
-// run_data_loop — shared loop frame
-// ============================================================================
-
-void RoleAPIBase::run_data_loop(const LoopConfig &cfg, RoleCycleOps &ops)
-{
-    auto &core = *pImpl->core;
-    const std::string &tag = pImpl->role_tag;
-
-    // ── Timing setup ────────────────────────────────────────────────────
-    const auto policy     = cfg.loop_timing;
-    const double period_us = cfg.period_us;
-    const bool is_max_rate = (policy == LoopTimingPolicy::MaxRate);
-    const auto short_timeout_us = compute_short_timeout(period_us, cfg.queue_io_wait_timeout_ratio);
-    const auto short_timeout    = std::chrono::duration_cast<std::chrono::milliseconds>(
-        short_timeout_us + std::chrono::microseconds{999});
-
-    using Clock = std::chrono::steady_clock;
-    auto deadline = Clock::time_point::max();
-
-    // ── Outer loop ──────────────────────────────────────────────────────
-    while (core.is_running() &&
-           !core.is_shutdown_requested() &&
-           !core.is_critical_error())
-    {
-        if (core.is_process_exit_requested())
-            break;
-
-        const auto cycle_start = Clock::now();
-
-        // ── Step A: Role-specific acquire ────────────────────────────
-        AcquireContext ctx{short_timeout, short_timeout_us, deadline, is_max_rate};
-        bool has_data = ops.acquire(ctx);
-
-        // ── Step B: Deadline wait ────────────────────────────────────
-        if (!is_max_rate && has_data &&
-            deadline != Clock::time_point::max() && Clock::now() < deadline)
-        {
-            std::this_thread::sleep_until(deadline);
-        }
-
-        // ── Step B': Shutdown check after potential sleep ────────────
-        if (!core.is_running() ||
-            core.is_shutdown_requested() ||
-            core.is_critical_error())
-        {
-            ops.cleanup_on_shutdown();
-            break;
-        }
-        if (core.is_process_exit_requested())
-        {
-            ops.cleanup_on_shutdown();
-            break;
-        }
-
-        // ── Step C: Drain messages + inbox ──────────────────────────
-        auto msgs = core.drain_messages();
-        drain_inbox_sync();
-
-        // ── Step D+E: Role-specific invoke + commit ─────────────────
-        if (!ops.invoke_and_commit(msgs))
-            break;
-
-        // ── Step F: Metrics ─────────────────────────────────────────
-        const auto now     = Clock::now();
-        const auto work_us = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                now - cycle_start).count());
-        core.set_last_cycle_work_us(work_us);
-        core.inc_iteration_count();
-        if (deadline != Clock::time_point::max() && now > deadline)
-            core.inc_loop_overrun();
-
-        // ── Step G: Next deadline ───────────────────────────────────
-        deadline = compute_next_deadline(policy, deadline, cycle_start, period_us);
-    }
-
-    // ── Post-loop cleanup ───────────────────────────────────────────
-    ops.cleanup_on_exit();
-
-    LOGGER_INFO("[{}] run_data_loop exiting: running={} shutdown={} critical={}",
-                tag, core.is_running(), core.is_shutdown_requested(),
-                core.is_critical_error());
-}
-
-// ============================================================================
 // Identity
 // ============================================================================
 
@@ -1043,11 +924,6 @@ uint64_t RoleAPIBase::script_error_count() const { return pImpl->core->script_er
 uint64_t RoleAPIBase::loop_overrun_count() const { return pImpl->core->loop_overrun_count(); }
 uint64_t RoleAPIBase::last_cycle_work_us() const { return pImpl->core->last_cycle_work_us(); }
 
-uint64_t RoleAPIBase::ctrl_queue_dropped() const
-{
-    return 0; // P2C ctrl queue removed — no drops to track
-}
-
 // ============================================================================
 // Schema sizes
 // ============================================================================
@@ -1222,7 +1098,6 @@ nlohmann::json RoleAPIBase::snapshot_metrics_json() const
     role["out_drop_count"]     = pImpl->core->out_drop_count();
     role["script_error_count"] = pImpl->core->script_error_count();
 
-    role["ctrl_queue_dropped"] = 0; // P2C ctrl queue removed
     result["role"] = std::move(role);
 
     // Inbox metrics.
@@ -1239,6 +1114,10 @@ nlohmann::json RoleAPIBase::snapshot_metrics_json() const
         if (!cm.empty())
             result["custom"] = nlohmann::json(cm);
     }
+
+    // Role-specific metrics hook.
+    if (pImpl->metrics_hook)
+        pImpl->metrics_hook(result);
 
     return result;
 }

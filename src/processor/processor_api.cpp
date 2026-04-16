@@ -238,7 +238,6 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
         .def("out_policy",    &ProcessorAPI::out_policy)
         .def("set_verify_checksum", &ProcessorAPI::set_verify_checksum, py::arg("enable"))
         .def("stop_reason",        &ProcessorAPI::stop_reason)
-        .def("ctrl_queue_dropped", &ProcessorAPI::ctrl_queue_dropped)
         .def_readwrite("shared_data", &ProcessorAPI::shared_data_)
         .def_static("as_numpy", &scripting::as_numpy_view, py::arg("ctypes_array"));
 

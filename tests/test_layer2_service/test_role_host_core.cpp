@@ -47,6 +47,7 @@ TEST_F(RoleHostCoreTest, DefaultState_AllZero)
     EXPECT_EQ(core_.script_error_count(),     0u);
     EXPECT_EQ(core_.iteration_count(),   0u);
     EXPECT_EQ(core_.last_cycle_work_us(), 0u);
+    EXPECT_EQ(core_.acquire_retry_count(), 0u);
 
     EXPECT_FALSE(core_.is_validate_only());
     EXPECT_FALSE(core_.is_script_load_ok());
@@ -182,6 +183,10 @@ TEST_F(RoleHostCoreTest, MetricCounters_IncrementAndRead)
     for (int i = 0; i < 100; ++i)
         core_.inc_iteration_count();
     EXPECT_EQ(core_.iteration_count(), 100u);
+
+    for (int i = 0; i < 7; ++i)
+        core_.inc_acquire_retry();
+    EXPECT_EQ(core_.acquire_retry_count(), 7u);
 }
 
 TEST_F(RoleHostCoreTest, LastCycleWorkUs_SetAndRead)
