@@ -1081,8 +1081,8 @@ size_t RoleAPIBase::flexzone_logical_size(std::optional<ChannelSide> side) const
         return sz;
     };
 
-    const bool has_tx = pImpl->core->has_out_fz();
-    const bool has_rx = pImpl->core->has_in_fz();
+    const bool has_tx = pImpl->core->has_tx_fz();
+    const bool has_rx = pImpl->core->has_rx_fz();
 
     if (side.has_value())
     {

@@ -272,7 +272,7 @@ void ProcessorRoleHost::worker_main_()
     engine_->invoke_on_init();
 
     // Sync flexzone checksum after on_init (user may have written to flexzone).
-    if (api_->has_tx_side() && core_.has_out_fz())
+    if (api_->has_tx_side() && core_.has_tx_fz())
         api_->sync_tx_flexzone_checksum();
 
     // ── Step 6: Connect to broker, start ctrl thread, register ────────────
@@ -406,7 +406,7 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     in_opts.zmq_buffer_depth     = config_.in_transport().zmq_buffer_depth;
     // Per-role checksum policy — same value on both input and output (see config_single_truth.md).
     in_opts.checksum_policy      = config_.checksum().policy;
-    in_opts.flexzone_checksum    = config_.checksum().flexzone && core_.has_in_fz();
+    in_opts.flexzone_checksum    = config_.checksum().flexzone && core_.has_rx_fz();
     // Transport declaration — broker validates mismatch.
     const bool in_is_zmq = (config_.in_transport().transport == config::Transport::Zmq);
     in_opts.queue_type = in_is_zmq ? "zmq" : "shm";
@@ -428,7 +428,7 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     out_opts.role_uid      = config_.identity().uid;
     // Per-role checksum policy — same value on both input and output (see config_single_truth.md).
     out_opts.checksum_policy    = config_.checksum().policy;
-    out_opts.flexzone_checksum  = config_.checksum().flexzone && core_.has_out_fz();
+    out_opts.flexzone_checksum  = config_.checksum().flexzone && core_.has_tx_fz();
     // SHM config (output side).
     if (config_.out_shm().enabled)
     {

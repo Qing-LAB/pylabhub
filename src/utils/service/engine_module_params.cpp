@@ -55,10 +55,10 @@ void engine_lifecycle_startup(const char * /*arg*/, void *userdata)
 
     // Flexzone specs must be set by role host before engine startup.
     assert(!p->in_fz_spec.has_schema ||
-           (p->api->core() && p->api->core()->has_in_fz() &&
+           (p->api->core() && p->api->core()->has_rx_fz() &&
             p->api->core()->in_schema_fz_size() % PYLABHUB_PHYSICAL_PAGE_SIZE == 0));
     assert(!p->out_fz_spec.has_schema ||
-           (p->api->core() && p->api->core()->has_out_fz() &&
+           (p->api->core() && p->api->core()->has_tx_fz() &&
             p->api->core()->out_schema_fz_size() % PYLABHUB_PHYSICAL_PAGE_SIZE == 0));
 
     if (p->inbox_spec.has_schema)
@@ -86,12 +86,12 @@ void engine_lifecycle_startup(const char * /*arg*/, void *userdata)
             check("InSlotFrame", core->in_slot_logical_size());
         if (core->has_out_slot())
             check("OutSlotFrame", core->out_slot_logical_size());
-        if (core->has_in_fz())
+        if (core->has_rx_fz())
         {
             size_t fz_logical = hub::compute_schema_size(p->in_fz_spec, p->in_packing);
             check("InFlexFrame", fz_logical);
         }
-        if (core->has_out_fz())
+        if (core->has_tx_fz())
         {
             size_t fz_logical = hub::compute_schema_size(p->out_fz_spec, p->out_packing);
             check("OutFlexFrame", fz_logical);

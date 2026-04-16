@@ -703,7 +703,7 @@ TEST_F(NativeEngineTest, FullStartup_Producer_SlotAndFlexzone)
 
     EXPECT_GT(engine.type_sizeof("OutSlotFrame"), 0u);
     EXPECT_GT(engine.type_sizeof("OutFlexFrame"), 0u);
-    EXPECT_TRUE(core.has_out_fz());
+    EXPECT_TRUE(core.has_tx_fz());
 
     float slot_buf = 0.0f;
     float fz_buf   = 0.0f;
