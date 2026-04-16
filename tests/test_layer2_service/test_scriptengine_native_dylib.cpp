@@ -706,13 +706,20 @@ TEST_F(NativeEngineTest, FullStartup_Producer_SlotAndFlexzone)
     EXPECT_TRUE(core.has_out_fz());
 
     float slot_buf = 0.0f;
+    float fz_buf   = 0.0f;
+    // Wire the api's flexzone to point at our local fz_buf. In production
+    // this comes from SHM; in this L2 test we simulate it by setting the
+    // api's Tx queue to a mock that returns &fz_buf as its flexzone().
+    // Since the test has no real queue, we instead let the native engine
+    // bridge read from the cached fz pointer — which was set to nullptr
+    // at wire() time (no queue wired). The fz assertion is skipped for
+    // now; covered by L3 test T2 with real SHM. Slot remains verified.
     std::vector<IncomingMessage> msgs;
     auto result = engine.invoke_produce(
         InvokeTx{&slot_buf, sizeof(slot_buf)}, msgs);
     EXPECT_EQ(result, InvokeResult::Commit);
     EXPECT_FLOAT_EQ(slot_buf, 42.0f);
-    // fz_buf assertion removed: flexzone is now accessed via api.flexzone(side),
-    // not via InvokeTx.fz. Native plugin's fz write goes to nullptr (no-op).
+    // TODO(L3.ζ-T2): fz_buf verification moves to L3 round-trip test with real SHM.
 
     pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
 }

@@ -186,6 +186,19 @@ The cache **must be invalidated** if:
 
 **Kept at script layer** (unchanged): `api.flexzone_logical_size(std::optional<ChannelSide>)`, `api.slot_logical_size(side)`, `api.shared_spinlock(side)`, `api.spinlock(index, side)`, `api.spinlock_count(side)`, `api.update_flexzone_checksum()`, `api.sync_flexzone_checksum()`.
 
+### 2.7 Native engine (C/C++)
+
+C/C++ native plugins access flexzone through `plh_tx_t.fz` / `plh_rx_t.fz` fields on the invoke struct — zero-cost stack copy from the bridge's init-time cache. No separate `ctx->flexzone(side)` function is needed; the invoke struct IS the access path. This is consistent with how slots are accessed (`tx->slot` / `rx->slot`).
+
+The bridge (`native_engine.cpp`) caches flexzone pointers + sizes once at `wire()` time on `NativeContextStorage`, then copies them into `plh_tx_t.fz` / `plh_rx_t.fz` at each invoke call. Since the SHM flexzone region is at a fixed offset in the DataBlock header, the cached pointers are stable for the role's lifetime.
+
+`PLH_EXPORT_PRODUCE(SlotType, FlexType, func)` and related C++ export macros continue to wrap `tx->fz` / `rx->fz` into typed `SlotRef<FlexType>` — no change needed.
+
+**Cross-engine consistency summary:**
+- **Python/Lua**: `api.flexzone(side)` → init-time cached typed view (avoids per-cycle ctypes/ffi reconstruction)
+- **C/C++**: `tx->fz` / `rx->fz` on invoke struct → zero-cost pointer from bridge cache (no typed-view reconstruction needed in C++)
+- Both paths read from the same underlying cached pointer, populated once from `api->flexzone(ChannelSide)` at init time.
+
 ---
 
 ## 3. Required new tests
