@@ -3381,30 +3381,64 @@ main thread's hot path is lock-free: slot acquire is atomic CAS
 (`SharedSpinLock`), message drain is a swap on `std::vector`, and script
 invocation is a direct function call.
 
-### 17.2 Producer and Consumer Are Intentionally SHM-Specific
+### 17.2 Queue Abstraction — Transport-Agnostic Data Plane (updated 2026-04-16)
 
-`hub::Producer` and `hub::Consumer` expose the full richness of the SHM data plane
-to their callers:
+> **Note**: `hub::Producer` and `hub::Consumer` classes were **deleted** in L3.γ
+> A6.3 (2026-04-15). Their state migrated into `RoleAPIBase::Impl`. All roles
+> now access the data plane through the abstract `QueueWriter` / `QueueReader`
+> interfaces. `ProducerOptions` and `ConsumerOptions` data structs remain as
+> factory inputs to `RoleAPIBase::build_tx_queue()` / `build_rx_queue()`.
 
-- **Spinlocks** (`api.spinlock(i)`) — shared-memory spinlocks on flexzone pages
-- **Metrics** (`acquire_timing`, `loop_overrun_count`, `last_slot_wait_us`) — derived from SHM acquire timing; meaningless for ZMQ transport
-- **WriteProcessorContext / ReadProcessorContext** — typed TransactionContext with full SHM slot API
+```mermaid
+classDiagram
+    class QueueWriter {
+        <<abstract>>
+        +write_acquire(timeout) void*
+        +write_commit()
+        +write_discard()
+        +flexzone() void*
+        +is_shm_backed() bool
+    }
+    class QueueReader {
+        <<abstract>>
+        +read_acquire(timeout) const void*
+        +read_release()
+        +flexzone() void*
+        +is_shm_backed() bool
+    }
+    class ShmQueue {
+        owns DataBlockProducer/Consumer
+        +raw_producer() : for RAII template path
+    }
+    class ZmqQueue {
+        owns zmq::socket_t (from shared ZMQContext)
+    }
+    QueueWriter <|-- ShmQueue
+    QueueReader <|-- ShmQueue
+    QueueWriter <|-- ZmqQueue
+    QueueReader <|-- ZmqQueue
+```
 
-This is a **feature, not a limitation**. Callers choose `hub::Producer` /
-`hub::Consumer` precisely because they want these SHM-specific capabilities.
-The `hub::Queue` abstraction (§17.3) must **not** be inserted between
-`hub::Producer`/`Consumer` and their underlying `DataBlockProducer`/`Consumer` —
-doing so would require escape-hatch downcasts, conditional behaviour on ZMQ paths,
-and would dilute the API contract these classes provide.
+SHM-specific features (spinlocks, flexzone, metrics timing) are exposed
+via virtual methods on the base classes with safe no-op defaults for ZMQ.
+`is_shm_backed()` discriminates transport when needed for diagnostics.
 
-**Rule**: `hub::Producer` and `hub::Consumer` are permanently bound to SHM transport.
-Cross-machine data flow is handled by `hub::Processor` acting as a bridge (§17.4),
-not by making Producer/Consumer transport-agnostic.
+### 17.2.1 Flexzone Access (L3.ζ, 2026-04-16)
 
-### 17.3 hub::Queue — Data Plane Abstraction for Processor
+Flexzone is the TABLE 1 user-managed coordination region (§2.2). Access
+pattern varies by engine:
 
-`hub::Queue` (introduced alongside `hub::Processor`, 2026-03-01) provides a
-transport-agnostic data plane interface used exclusively by the Processor layer:
+| Engine | Access path | Init cost | Per-cycle cost |
+|--------|-------------|-----------|----------------|
+| **Python** | `api.flexzone(side)` → cached ctypes typed view | Once at `build_api()` | Zero (returns cached `py::object`) |
+| **Lua** | `api.flexzone(side)` → cached FFI cdata | Once at `build_api()` | Zero (returns cached ref) |
+| **C/C++ native** | `tx->fz` / `rx->fz` on invoke struct | Bridge copies from cache | Stack copy (zero allocation) |
+
+All paths read from the same underlying pointer, cached once from
+`RoleAPIBase::flexzone(ChannelSide)` at init time. The SHM flexzone
+is at a fixed offset in the DataBlock header — stable for the role lifetime.
+
+### 17.3 Processor as Cross-Machine Bridge
 
 ```
 hub::Queue (abstract)
