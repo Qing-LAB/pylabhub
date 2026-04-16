@@ -671,11 +671,8 @@ InvokeResult NativeEngine::invoke_produce(
 {
     if (!fn_on_produce_)
         return InvokeResult::Discard;
-    // Flexzone from the init-time cache — set once at build_api(), stable
-    // for the SHM mapping lifetime. Same pattern as Python/Lua engines.
-    plh_tx_t c_tx{tx.slot, tx.slot_size,
-                  native_ctx_ ? native_ctx_->tx_fz : nullptr,
-                  native_ctx_ ? native_ctx_->tx_fz_sz : 0};
+    assert(native_ctx_ && "invoke_produce called without build_api");
+    plh_tx_t c_tx{tx.slot, tx.slot_size, native_ctx_->tx_fz, native_ctx_->tx_fz_sz};
     return fn_on_produce_(&c_tx) ? InvokeResult::Commit : InvokeResult::Discard;
 }
 
@@ -685,9 +682,8 @@ InvokeResult NativeEngine::invoke_consume(
 {
     if (!fn_on_consume_)
         return InvokeResult::Discard;
-    plh_rx_t c_rx{rx.slot, rx.slot_size,
-                  native_ctx_ ? native_ctx_->rx_fz : nullptr,
-                  native_ctx_ ? native_ctx_->rx_fz_sz : 0};
+    assert(native_ctx_ && "invoke_consume called without build_api");
+    plh_rx_t c_rx{rx.slot, rx.slot_size, native_ctx_->rx_fz, native_ctx_->rx_fz_sz};
     return fn_on_consume_(&c_rx) ? InvokeResult::Commit : InvokeResult::Discard;
 }
 
@@ -697,12 +693,9 @@ InvokeResult NativeEngine::invoke_process(
 {
     if (!fn_on_process_)
         return InvokeResult::Discard;
-    plh_rx_t c_rx{rx.slot, rx.slot_size,
-                  native_ctx_ ? native_ctx_->rx_fz : nullptr,
-                  native_ctx_ ? native_ctx_->rx_fz_sz : 0};
-    plh_tx_t c_tx{tx.slot, tx.slot_size,
-                  native_ctx_ ? native_ctx_->tx_fz : nullptr,
-                  native_ctx_ ? native_ctx_->tx_fz_sz : 0};
+    assert(native_ctx_ && "invoke_process called without build_api");
+    plh_rx_t c_rx{rx.slot, rx.slot_size, native_ctx_->rx_fz, native_ctx_->rx_fz_sz};
+    plh_tx_t c_tx{tx.slot, tx.slot_size, native_ctx_->tx_fz, native_ctx_->tx_fz_sz};
     return fn_on_process_(&c_rx, &c_tx) ? InvokeResult::Commit : InvokeResult::Discard;
 }
 
