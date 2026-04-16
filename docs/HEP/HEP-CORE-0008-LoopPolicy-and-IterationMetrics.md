@@ -905,7 +905,56 @@ These remain DataBlock-specific, not surfaced through QueueMetrics:
 
 ---
 
-## 11. Related Documents
+## 11. Config Single-Truth Propagation (2026-04-16)
+
+> Merged from `docs/tech_draft/config_single_truth.md` (implemented 2026-03-30).
+
+### 11.1 Timing — single derived path
+
+All three role hosts derive timing from `config_.timing()` through a
+single `LoopConfig` struct passed to `api_->run_data_loop()`:
+
+```mermaid
+graph LR
+    CF["config_.timing()"] --> LC["LoopConfig{period_us, loop_timing, io_wait_ratio}"]
+    CF --> CP["core_.set_configured_period(period_us)"]
+    LC --> DL["run_data_loop(lcfg, ops)"]
+    DL --> DD["compute_next_deadline / compute_short_timeout"]
+```
+
+- `LoopTimingParams` struct (`loop_timing_policy.hpp`): `{LoopTimingPolicy, period_us, io_wait_ratio}`
+- `TimingConfig::timing_params()` → constructs `LoopTimingParams` from parsed config
+- Role hosts call `core_.set_configured_period()` once; loop reads from `LoopConfig`
+- No direct `config_` reads inside the data loop
+
+### 11.2 Checksum — single policy from config
+
+```mermaid
+graph LR
+    CK["config_.checksum().policy"] --> PO["ProducerOptions.checksum_policy"]
+    CK --> CO["ConsumerOptions.checksum_policy"]
+    PO --> QW["QueueWriter::set_checksum_policy()"]
+    CO --> QR["QueueReader::set_checksum_policy()"]
+    QW --> SHM_W["ShmQueue: checksum_slot=on/off, verify=on/off"]
+    QR --> SHM_R["ShmQueue: verify_slot=on/off"]
+```
+
+`ChecksumPolicy` enum → ShmQueue mapping:
+| Policy | `checksum_slot` (write) | `verify_slot` (read) |
+|--------|-------------------------|----------------------|
+| `Enforced` | true | true |
+| `Manual` | false | true (catches missing stamps) |
+| `None` | false | false |
+
+### 11.3 Config key whitelist
+
+`validate_known_keys()` in `role_config.cpp` rejects unknown JSON keys at
+parse time. Whitelist covers all valid fields across identity, script, timing,
+transport, SHM, checksum, inbox, monitoring, startup, and auth sections.
+
+---
+
+## 12. Related Documents
 
 - HEP-CORE-0002: DataHub FINAL -- SHM layout and slot state machine
 - HEP-CORE-0011: ScriptHost Abstraction Framework -- Python callback model
