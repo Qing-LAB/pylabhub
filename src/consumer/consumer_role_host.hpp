@@ -13,6 +13,7 @@
  * See docs/tech_draft/loop_design_unified.md §4 for the full design.
  */
 
+#include "pylabhub_utils_export.h"
 #include "utils/config/role_config.hpp"
 #include "utils/role_host_core.hpp"
 #include "utils/script_engine.hpp"
@@ -33,7 +34,7 @@ class BrokerRequestComm;
 namespace pylabhub::consumer
 {
 
-class ConsumerRoleHost
+class PYLABHUB_UTILS_EXPORT ConsumerRoleHost
 {
   public:
     explicit ConsumerRoleHost(config::RoleConfig config,
@@ -77,7 +78,6 @@ class ConsumerRoleHost
 
     bool setup_infrastructure_(const hub::SchemaSpec &inbox_spec);
     void teardown_infrastructure_();
-    nlohmann::json snapshot_metrics_json() const;
 
     // ── Members ──────────────────────────────────────────────────────────────
 

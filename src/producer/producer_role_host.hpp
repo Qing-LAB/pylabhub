@@ -13,6 +13,7 @@
  * See docs/tech_draft/loop_design_unified.md for the full design.
  */
 
+#include "pylabhub_utils_export.h"
 #include "utils/config/role_config.hpp"
 #include "utils/role_host_core.hpp"
 #include "utils/script_engine.hpp"
@@ -35,7 +36,7 @@ class BrokerRequestComm;
 namespace pylabhub::producer
 {
 
-class ProducerRoleHost
+class PYLABHUB_UTILS_EXPORT ProducerRoleHost
 {
   public:
     explicit ProducerRoleHost(config::RoleConfig config,
@@ -79,7 +80,6 @@ class ProducerRoleHost
 
     bool setup_infrastructure_(const hub::SchemaSpec &inbox_spec);
     void teardown_infrastructure_();
-    nlohmann::json snapshot_metrics_json() const;
 
     // ── Members ──────────────────────────────────────────────────────────────
 
