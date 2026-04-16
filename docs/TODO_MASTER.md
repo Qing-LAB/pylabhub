@@ -22,6 +22,25 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
+### Priority 0 (DONE — 2026-04-15): L3.γ Role Unification + ZMQ/Thread Hardening
+📍 **Status**: Complete; **1276/1276 tests** (1289 after inbox test fixture fix)
+📋 **Branch**: `feature/lua-role-support`
+
+- [x] A5i: role host worker_thread_ under ThreadManager ✅
+- [x] A6.1: strip active-mode dead code from hub::Producer/Consumer ✅
+- [x] A6.2: hoist queue ownership into RoleAPIBase::Impl ✅
+- [x] A6.3: delete hub::Producer/Consumer classes; abstract-only queue ownership ✅
+- [x] ZmqQueue + InboxQueue/InboxClient: cppzmq migration + shared ZMQContext module ✅
+- [x] BrokerService::run() migrated to shared ZMQContext ✅
+- [x] Role-owned queue instance_id (ProducerOptions/ConsumerOptions) ✅
+- [x] ThreadManager: drain() replaces join_all(); no-op lifecycle thunk; per-slot bounded join ✅
+- [x] Deprecated thread shims removed (spawn_thread / join_all_threads / thread_count) ✅
+- [x] Shutdown order fix: invoke_on_stop → finalize → broker_comm->stop() → teardown → drain ✅
+- [x] Wire-format dedup: pack_frame + unpack_envelope + unpack_payload in zmq_wire_helpers ✅
+- [x] Code review cleanup: dead forward decls, stale docs, HEP updates ✅
+- [ ] Extract `create_zmq_socket()` factory (linger-0 pattern across 7 files) — deferred
+- [ ] SequenceTracker utility — deferred
+
 ### Priority 0 (DONE — 2026-04-04/05): RoleAPIBase Refactor + Lifecycle + API Consistency
 📍 **Status**: All phases complete; **1323/1323 tests**
 📋 **Branch**: `feature/lua-role-support`
