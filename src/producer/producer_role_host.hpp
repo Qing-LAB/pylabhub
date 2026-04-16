@@ -28,7 +28,6 @@
 
 namespace pylabhub::hub
 {
-class Producer;
 class InboxQueue;
 class BrokerRequestComm;
 } // namespace pylabhub::hub
