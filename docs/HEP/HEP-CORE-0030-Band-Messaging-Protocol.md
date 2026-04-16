@@ -371,3 +371,49 @@ The following elements from HEP-CORE-0007 are superseded by this HEP:
 | **Inbox** (InboxQueue/InboxClient) | Complementary. Inbox is point-to-point. Band is pub/sub. `api.send_to(uid, data)` uses inbox. |
 | **Heartbeat** (HEARTBEAT_REQ) | Reused. Broker heartbeat liveness drives auto-leave from bands. |
 | **BrokerRequestComm** | Transport. Band API methods are added to BrokerRequestComm. Messages flow through its DEALER socket. |
+
+---
+
+## Appendix: Design Rationale (merged from tech drafts 2026-04-16)
+
+> Merged from `broker_and_comm_channel_design.md`, `channel_redesign.md`,
+> `channel_implementation_plan.md`. All entities verified deleted/implemented.
+
+### Why Messenger Was Split
+
+The old `hub::Messenger` entangled two concerns:
+1. **Role ↔ Broker protocol** (registration, heartbeat, discovery) — single DEALER socket
+2. **Producer ↔ Consumer direct communication** (P2C) — separate ROUTER/DEALER + XPUB/SUB per channel
+
+Splitting into `BrokerRequestComm` (concern 1) and eliminating P2C sockets
+(concern 2, replaced by bands + inbox) removed ~2000 LOC of socket lifecycle
+code, HELLO/BYE handshake protocol, and peer-dead detection via socket monitors.
+
+### Why Bands Replace Asymmetric Channels
+
+The old model had producer-owned channels with asymmetric join semantics:
+- Producer creates channel → owns ROUTER socket
+- Consumer connects → DEALER client of producer's ROUTER
+- Producer death kills the channel (single point of failure)
+
+Bands are symmetric:
+- Any role can join/leave at any time
+- Broker holds the member list + does fan-out
+- No single point of failure (broker handles liveness)
+- JSON body — flexible, no schema needed for coordination messages
+
+```mermaid
+graph TD
+    subgraph Old["Old: P2C Channels"]
+        P["Producer (ROUTER owner)"] --> C1["Consumer 1 (DEALER)"]
+        P --> C2["Consumer 2 (DEALER)"]
+    end
+    subgraph New["New: Bands"]
+        R1["Role A"] --> B["Broker (BandRegistry)"]
+        R2["Role B"] --> B
+        R3["Role C"] --> B
+        B --> R1
+        B --> R2
+        B --> R3
+    end
+```
