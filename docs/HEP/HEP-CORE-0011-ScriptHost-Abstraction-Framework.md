@@ -523,83 +523,14 @@ end
 
 ---
 
-## ThreadManager — Per-Owner Bounded-Join Utility
+## ThreadManager
 
-> Merged from `docs/tech_draft/thread_manager_design.md` (2026-04-16).
-> All entities verified against `thread_manager.hpp` + `thread_manager.cpp`.
+> See **HEP-CORE-0031** for the full specification. ThreadManager is a Layer 2
+> service utility — role hosts use it but it's not specific to the script
+> framework.
 
-### Purpose
-
-`ThreadManager` is a value-composed utility owned by any component that spawns
-background threads. Each instance registers as a dynamic lifecycle module so
-process-global teardown participates in LifecycleGuard's topological-sort +
-timedShutdown safety net.
-
-### API (verified 2026-04-16)
-
-```cpp
-class ThreadManager {
-public:
-    struct SpawnOptions {
-        std::chrono::milliseconds join_timeout{kMidTimeoutMs};  // 5s default
-    };
-
-    ThreadManager(std::string owner_tag,      // class/role: "prod", "ZmqQueue"
-                  std::string owner_id,       // instance: uid, queue endpoint
-                  std::chrono::milliseconds aggregate_shutdown_timeout = 10s);
-    ~ThreadManager();  // calls drain()
-
-    bool spawn(const std::string &name, std::function<void()> body, SpawnOptions opts);
-    bool spawn(const std::string &name, std::function<void()> body);  // default opts
-
-    std::size_t drain();  // per-slot bounded join in reverse-spawn order (LIFO)
-    std::size_t detached_count_last_drain() const;
-    std::size_t active_count() const;
-    std::vector<ThreadInfo> snapshot() const;
-
-    static std::size_t process_detached_count() noexcept;
-};
-```
-
-### Identity and Lifecycle Module
-
-```mermaid
-graph LR
-    TM["ThreadManager('prod', 'PROD-SENSOR-001')"]
-    CI["composed_identity = 'prod:PROD-SENSOR-001'"]
-    MN["module_name = 'ThreadManager:prod:PROD-SENSOR-001'"]
-    TM --> CI --> MN
-    MN --> LM["Dynamic lifecycle module<br/>depends on Logger"]
-```
-
-### drain() — Per-Slot Bounded Join
-
-```
-for each slot in reverse-spawn-order:
-    if not joinable → skip (idempotent)
-    poll slot.done flag every 10ms up to slot.join_timeout
-    if done → join (instant)
-    else → ERROR log + detach + inc process_detached_count
-```
-
-- **`closing` flag** set under lock at drain() entry → `spawn()` rejects new threads
-- **No cross-cycle gate** — `join_all_done` flag was removed; drain is naturally
-  idempotent via `joinable()` check per slot
-- **`tm_shutdown` lifecycle thunk is a no-op** — destructor owns the drain path;
-  the thunk must NOT mutate state (prevents the early-return-skip-drain bug)
-
-### Logger NOT Migrated (§3a rationale)
-
-Logger uses its own `std::thread` + `.join()` in its `Impl::shutdown_()`.
-Adding a ThreadManager dependency on Logger would create a circular dependency
-(ThreadManager's lifecycle module depends on Logger). Accepted as-is.
-
-### Adoption
-
-| Component | owner_tag | owner_id | Thread names |
-|-----------|-----------|----------|--------------|
-| Role hosts (producer/consumer/processor) | `"prod"`/`"cons"`/`"proc"` | role uid | `"worker"`, `"ctrl"` |
-| ZmqQueue | `"ZmqQueue"` | `instance_id` or `endpoint@ptr` | `"send"` or `"recv"` |
+Role hosts access it via `api_->thread_manager()`. All role-scope threads
+(worker, ctrl, future) live under one ThreadManager instance per role.
 
 ---
 
