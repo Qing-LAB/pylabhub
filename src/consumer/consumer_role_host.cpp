@@ -363,7 +363,7 @@ bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
 
     // Queue abstraction: checksum policy.
     opts.checksum_policy    = config_.checksum().policy;
-    opts.flexzone_checksum  = config_.checksum().flexzone && core_.has_in_fz();
+    opts.flexzone_checksum  = config_.checksum().flexzone && core_.has_rx_fz();
 
     // Transport declaration.
     const bool is_zmq = (tr.transport == config::Transport::Zmq);

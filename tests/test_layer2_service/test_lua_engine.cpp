@@ -2562,7 +2562,7 @@ TEST_F(LuaEngineTest, FullStartup_Producer_SlotAndFlexzone)
     EXPECT_GT(engine.type_sizeof("OutSlotFrame"), 0u);
     EXPECT_GT(engine.type_sizeof("OutFlexFrame"), 0u);
     EXPECT_GT(engine.type_sizeof("FlexFrame"), 0u); // alias
-    EXPECT_TRUE(core.has_out_fz());
+    EXPECT_TRUE(core.has_tx_fz());
     EXPECT_GT(core.out_schema_fz_size(), 0u);
 
     EXPECT_EQ(engine.type_sizeof("OutFlexFrame"),
