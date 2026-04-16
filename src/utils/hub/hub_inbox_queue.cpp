@@ -333,69 +333,43 @@ const InboxItem* InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
     {
         msgpack::object_handle oh = msgpack::unpack(
             static_cast<const char *>(payload.data()), payload.size());
-        const msgpack::object& obj = oh.get();
 
-        if (obj.type != msgpack::type::ARRAY || obj.via.array.size != 5)
-        { ++pImpl->recv_frame_error_count_; return nullptr; }
-        const auto* elems = obj.via.array.ptr;
-
-        // [0] magic
-        uint32_t magic = 0;
-        elems[0].convert(magic);
-        if (magic != wire_detail::kFrameMagic) { ++pImpl->recv_frame_error_count_; return nullptr; }
-
-        // [1] schema_tag (bin, 8 bytes) — validate against our computed tag
-        if (elems[1].type != msgpack::type::BIN || elems[1].via.bin.size != 8)
-        { ++pImpl->recv_frame_error_count_; return nullptr; }
-        if (std::memcmp(elems[1].via.bin.ptr, pImpl->schema_tag_.data(), 8) != 0)
+        auto env = wire_detail::unpack_envelope(oh.get());
+        if (!env.valid || env.payload_size != pImpl->schema_defs_.size())
         { ++pImpl->recv_frame_error_count_; return nullptr; }
 
-        // [2] seq — track gaps per sender
+        // Schema-tag mismatch.
+        if (std::memcmp(env.recv_tag, pImpl->schema_tag_.data(), 8) != 0)
+        { ++pImpl->recv_frame_error_count_; return nullptr; }
+
+        // Per-sender sequence gap tracking.
         {
-            uint64_t seq = 0;
-            elems[2].convert(seq);
             auto it = pImpl->sender_expected_seq_.find(sender_id);
             if (it != pImpl->sender_expected_seq_.end())
             {
-                if (seq > it->second)
-                    pImpl->recv_gap_count_.fetch_add(seq - it->second,
+                if (env.seq > it->second)
+                    pImpl->recv_gap_count_.fetch_add(env.seq - it->second,
                                                       std::memory_order_relaxed);
-                it->second = seq + 1;
+                it->second = env.seq + 1;
             }
             else
             {
-                pImpl->sender_expected_seq_.emplace(sender_id, seq + 1);
+                pImpl->sender_expected_seq_.emplace(sender_id, env.seq + 1);
             }
-            pImpl->current_item_.seq = seq;
+            pImpl->current_item_.seq = env.seq;
         }
 
-        // [3] payload array
-        const auto& arr = elems[3];
-        if (arr.type != msgpack::type::ARRAY ||
-            arr.via.array.size != pImpl->schema_defs_.size())
-        { ++pImpl->recv_frame_error_count_; return nullptr; }
-
-        // Decode into decode_buf_
+        // Decode payload fields.
         std::fill(pImpl->decode_buf_.begin(), pImpl->decode_buf_.end(), std::byte{0});
-        char* dst = reinterpret_cast<char*>(pImpl->decode_buf_.data());
-        for (size_t i = 0; i < pImpl->schema_defs_.size(); ++i)
-        {
-            if (!wire_detail::unpack_field(arr.via.array.ptr[i], pImpl->schema_defs_[i], dst))
-            {
-                ++pImpl->recv_frame_error_count_;
-                return nullptr;
-            }
-        }
-
-        // [4] checksum: bin, 32 bytes.
-        if (elems[4].type != msgpack::type::BIN || elems[4].via.bin.size != 32)
+        if (!wire_detail::unpack_payload(*env.payload, pImpl->schema_defs_,
+                                          pImpl->decode_buf_.data()))
         { ++pImpl->recv_frame_error_count_; return nullptr; }
-        // Verify checksum: Manual and Enforced both verify (catches missing stamps).
+
+        // Checksum verification.
         if (pImpl->checksum_policy_ != ChecksumPolicy::None)
         {
             if (!pylabhub::crypto::verify_blake2b(
-                    reinterpret_cast<const uint8_t*>(elems[4].via.bin.ptr),
-                    pImpl->decode_buf_.data(), pImpl->item_sz))
+                    env.checksum, pImpl->decode_buf_.data(), pImpl->item_sz))
             {
                 pImpl->checksum_error_count_.fetch_add(1, std::memory_order_relaxed);
                 LOGGER_ERROR("[hub::InboxQueue] checksum error after decode from '{}'",
@@ -600,17 +574,9 @@ uint8_t InboxClient::send(std::chrono::milliseconds ack_timeout) noexcept
             checksum, pImpl->write_buf_.data(), pImpl->item_sz);
     }
 
-    pk.pack_array(5);
-    pk.pack(wire_detail::kFrameMagic);
-    pk.pack_bin(8);
-    pk.pack_bin_body(reinterpret_cast<const char*>(pImpl->schema_tag_.data()), 8);
-    pk.pack(pImpl->send_seq_.fetch_add(1, std::memory_order_relaxed));
-    pk.pack_array(static_cast<uint32_t>(pImpl->schema_defs_.size()));
-    const char* src = reinterpret_cast<const char*>(pImpl->write_buf_.data());
-    for (const auto& fd : pImpl->schema_defs_)
-        wire_detail::pack_field(pk, fd, src);
-    pk.pack_bin(32);
-    pk.pack_bin_body(reinterpret_cast<const char*>(checksum), 32);
+    wire_detail::pack_frame(pk, pImpl->schema_tag_,
+        pImpl->send_seq_.fetch_add(1, std::memory_order_relaxed),
+        pImpl->schema_defs_, pImpl->write_buf_.data(), checksum);
 
     // DEALER sends [empty, payload]; ROUTER sees [identity, empty, payload].
     // multipart_t::send is atomic — every frame goes out or none.

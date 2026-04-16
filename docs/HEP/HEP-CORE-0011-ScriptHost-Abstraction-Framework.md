@@ -379,10 +379,12 @@ Step 6: api_->start_ctrl_thread(CtrlThreadConfig)
           FORCE_SHUTDOWN, CHANNEL_ERROR_NOTIFY) onto the message queue
         — signal ready
 Step 7: Run data loop (invoke_produce / invoke_consume / invoke_process)
-Step 8: stop_accepting() + api_->deregister_from_broker() + api_->join_all_threads()
-Step 9: invoke_on_stop()
+Step 8: stop_accepting() + deregister_from_broker()
+Step 9: invoke_on_stop()           (ctrl thread still alive for final I/O)
 Step 10: engine->finalize()
-Step 11: teardown_infrastructure()
+Step 11: broker_comm->stop() + set_running(false)   (signal ctrl to exit — non-destructive)
+Step 12: teardown_infrastructure()   (disconnect broker, close queues/inbox)
+Step 13: thread_manager().drain()    (last — join ctrl + all threads; immediate since signaled)
 ```
 
 ---

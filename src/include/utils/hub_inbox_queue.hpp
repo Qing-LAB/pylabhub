@@ -26,9 +26,16 @@
  * send_ack() calls must come from the same thread (the ROUTER socket is not thread-safe).
  * InboxClient is also single-threaded: acquire()/send()/abort() from one caller thread.
  *
+ * ## ZMQ context
+ * Sockets are created from the shared process-wide zmq::context_t owned by the
+ * `ZMQContext` lifecycle module (utils/zmq_context.hpp). Neither InboxQueue nor
+ * InboxClient creates or terminates the context — the top-level LifecycleGuard
+ * must include `pylabhub::hub::GetZMQContextModule()`.
+ *
  * ## Lifecycle
  * Call start() before recv_one()/acquire(); call stop() before destruction.
- * stop() drains any pending recv/ack and closes the ZMQ context.
+ * stop() closes the socket (RAII via cppzmq). The shared ZMQ context is NOT
+ * closed here — it outlives every InboxQueue/InboxClient in the process.
  */
 #include "utils/hub_zmq_queue.hpp"   // ZmqSchemaField
 

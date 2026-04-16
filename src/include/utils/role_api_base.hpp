@@ -40,8 +40,6 @@
 
 namespace pylabhub::hub
 {
-class Producer;
-class Consumer;
 class InboxQueue;
 class InboxClient;
 class SharedSpinLock;
@@ -169,13 +167,15 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     // immutable after construction. All remaining setters are for mutable
     // wiring state (infrastructure pointers, script paths, policies).
 
-    /// Build the output-side queue (Tx). Creates and owns a hub::Producer
-    /// internally; the unified QueueWriter handle is cached on Impl.
+    /// Build the output-side queue (Tx). Constructs the appropriate queue
+    /// implementation (ShmQueue::create_writer or ZmqQueue::push_to) from
+    /// the options and stores it as a unique_ptr<QueueWriter> on Impl.
     /// @return true on success. On failure, no queue is wired.
     [[nodiscard]] bool build_tx_queue(const hub::ProducerOptions &opts);
 
-    /// Build the input-side queue (Rx). Creates and owns a hub::Consumer
-    /// internally; the unified QueueReader handle is cached on Impl.
+    /// Build the input-side queue (Rx). Constructs the appropriate queue
+    /// implementation (ShmQueue::create_reader or ZmqQueue::pull_from) from
+    /// the options and stores it as a unique_ptr<QueueReader> on Impl.
     [[nodiscard]] bool build_rx_queue(const hub::ConsumerOptions &opts);
 
     /// Start the Tx/Rx queues. Returns false if the side is not wired or
@@ -396,8 +396,9 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     bool start_ctrl_thread(const hub::BrokerRequestComm::Config &connect_cfg,
                            const CtrlThreadConfig &cfg);
 
-    /// Explicitly deregister from broker. Call BEFORE join_all_threads()
-    /// while the ctrl thread is still running to process the command.
+    /// Explicitly deregister from broker while the ctrl thread is still
+    /// running to process the command — call BEFORE the RoleAPIBase is
+    /// destroyed (the destructor's ThreadManager drain() will join ctrl).
     /// Sends DEREG_REQ and/or CONSUMER_DEREG_REQ for whatever was registered
     /// in start_ctrl_thread().
     void deregister_from_broker();

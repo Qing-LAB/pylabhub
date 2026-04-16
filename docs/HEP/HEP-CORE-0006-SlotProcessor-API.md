@@ -16,18 +16,19 @@
 > **Implementation note (updated 2026-03-03)**: The Slot-Processor API is implemented by
 > `hub::Processor` (`src/utils/hub/hub_processor.cpp`) which provides a type-erased,
 > hot-swappable handler loop. The standalone binaries (`pylabhub-producer`,
-> `pylabhub-consumer`, `pylabhub-processor`) use `hub::Producer`/`hub::Consumer` with
-> script-driven callbacks that embody the `WriteProcessorContext` and
-> `ReadProcessorContext` concepts. The Python layer (`ProducerAPI`, `ConsumerAPI`,
-> `ProcessorAPI`) provides the scripting surface via pybind11 embedded modules.
-> See HEP-CORE-0015 (Processor Binary) and HEP-CORE-0018 (Producer/Consumer Binaries).
+> `pylabhub-consumer`, `pylabhub-processor`) use `RoleAPIBase::build_tx_queue()` /
+> `build_rx_queue()` with `ProducerOptions` / `ConsumerOptions` to construct the
+> transport queues (QueueWriter/QueueReader). The Python layer (`ProducerAPI`,
+> `ConsumerAPI`, `ProcessorAPI`) provides the scripting surface via pybind11
+> embedded modules. See HEP-CORE-0015 (Processor Binary) and HEP-CORE-0018
+> (Producer/Consumer Binaries).
 
 ### Source file reference
 
 | File | Layer | Description |
 |------|-------|-------------|
-| `src/include/utils/hub_producer.hpp` | L3 (public) | `hub::Producer`, `ProducerOptions`, `WriteProcessorContext` |
-| `src/include/utils/hub_consumer.hpp` | L3 (public) | `hub::Consumer`, `ConsumerOptions`, `ReadProcessorContext` |
+| `src/include/utils/hub_producer.hpp` | L3 (public) | `ProducerOptions` (queue config for Tx side) |
+| `src/include/utils/hub_consumer.hpp` | L3 (public) | `ConsumerOptions` (queue config for Rx side) |
 | `src/include/utils/hub_processor.hpp` | L3 (public) | `hub::Processor`, `ProcessorContext`, type-erased `ProcessorHandlerFn` |
 | `src/include/utils/hub_queue.hpp` | L3 (public) | `hub::Queue` abstract base, `OverflowPolicy` enum |
 | `src/include/utils/hub_shm_queue.hpp` | L3 (public) | `ShmQueue` — SHM-backed Queue implementation |
