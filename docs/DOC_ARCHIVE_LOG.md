@@ -538,3 +538,4 @@ For current documentation layout and where to put or find active content, use **
 | `step7_continuation_guide.md` | `archive/transient-2026-04-16/` | Session handoff doc; §1.1 facilities table superseded by HEP-0018 §15; §1.2 deleted-entities table is historical; §1.3 Producer/Consumer factory now also deleted (L3.γ A6.3) |
 | `obsolete_code_replacement.md` | `archive/transient-2026-04-16/` | All listed deletions verified executed; replacement mapping covered by HEP-0018 §15 + HEP-0007 |
 | `config_single_truth.md` | `archive/transient-2026-04-16/` | Implemented 2026-03-30; timing single-truth in HEP-0008 Pass 4; checksum in HEP-0009; config validation in RoleConfig. Cross-cutting principles need merge into HEP-0008 §timing + HEP-0009 §checksum |
+| `unified_role_loop.md` | `archive/transient-2026-04-16/` | Self-declared SUPERSEDED 2026-04-14 by role_unification_design.md; historical decisions preserved in archive |
