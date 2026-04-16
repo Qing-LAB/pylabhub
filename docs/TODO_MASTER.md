@@ -22,24 +22,40 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
-### Priority 0 (DONE — 2026-04-15): L3.γ Role Unification + ZMQ/Thread Hardening
-📍 **Status**: Complete; **1276/1276 tests** (1289 after inbox test fixture fix)
+### Priority 0 (DONE — 2026-04-15/16): L3.γ/ζ Role Unification + ZMQ + Flexzone + Docs
+📍 **Status**: Complete; **1278/1278 tests**
 📋 **Branch**: `feature/lua-role-support`
 
+L3.γ — Role unification:
 - [x] A5i: role host worker_thread_ under ThreadManager ✅
-- [x] A6.1: strip active-mode dead code from hub::Producer/Consumer ✅
-- [x] A6.2: hoist queue ownership into RoleAPIBase::Impl ✅
-- [x] A6.3: delete hub::Producer/Consumer classes; abstract-only queue ownership ✅
-- [x] ZmqQueue + InboxQueue/InboxClient: cppzmq migration + shared ZMQContext module ✅
+- [x] A6.1–A6.3: delete hub::Producer/Consumer; abstract-only queue ownership ✅
+- [x] ZMQ: cppzmq migration + shared ZMQContext module (all consumers) ✅
 - [x] BrokerService::run() migrated to shared ZMQContext ✅
-- [x] Role-owned queue instance_id (ProducerOptions/ConsumerOptions) ✅
-- [x] ThreadManager: drain() replaces join_all(); no-op lifecycle thunk; per-slot bounded join ✅
-- [x] Deprecated thread shims removed (spawn_thread / join_all_threads / thread_count) ✅
-- [x] Shutdown order fix: invoke_on_stop → finalize → broker_comm->stop() → teardown → drain ✅
-- [x] Wire-format dedup: pack_frame + unpack_envelope + unpack_payload in zmq_wire_helpers ✅
-- [x] Code review cleanup: dead forward decls, stale docs, HEP updates ✅
-- [ ] Extract `create_zmq_socket()` factory (linger-0 pattern across 7 files) — deferred
-- [ ] SequenceTracker utility — deferred
+- [x] ThreadManager: drain(), no-op lifecycle thunk, instance_id, HEP-0031 ✅
+- [x] Deprecated shims removed; shutdown order fixed ✅
+
+L3.ζ — Flexzone:
+- [x] InvokeTx/InvokeRx stripped to slot-only; .fz removed from PyTxChannel/PyRxChannel ✅
+- [x] Python api.flexzone(side) init-time cache (all 3 API classes) ✅
+- [x] Lua api.flexzone(side) with side arg + correct Rx ref selection ✅
+- [x] Native engine: cached context, bridge-populated plh_tx_t.fz ✅
+- [x] L3 tests T2/T3 (role-level SHM flexzone round-trip) ✅
+- [x] has_out_fz/has_in_fz → has_tx_fz/has_rx_fz rename ✅
+- [x] Demo scripts updated to 3-arg signature ✅
+
+Documentation cleanup (2026-04-16):
+- [x] 12 tech drafts archived with verified merges into HEPs ✅
+- [x] HEP-0002 §17.2 rewritten (queue abstraction + flexzone access) ✅
+- [x] HEP-0008 §2.2 + §11 (timeout formula + config single-truth) ✅
+- [x] HEP-0011 (unified data loop: CycleOps, 14-step lifecycle) ✅
+- [x] HEP-0016 §11.0 (schema layer Mermaid diagram) ✅
+- [x] HEP-0030 appendix (band design rationale) ✅
+- [x] HEP-0031 created (ThreadManager — Layer 2 utility) ✅
+
+Deferred:
+- [ ] L3 test T4: processor dual-flexzone distinctness
+- [ ] Extract `create_zmq_socket()` factory (7 files, 1-line pattern)
+- [ ] SequenceTracker utility (20 LOC duplication)
 
 ### Priority 0 (DONE — 2026-04-04/05): RoleAPIBase Refactor + Lifecycle + API Consistency
 📍 **Status**: All phases complete; **1323/1323 tests**
