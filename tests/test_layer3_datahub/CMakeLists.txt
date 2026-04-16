@@ -124,6 +124,9 @@ add_executable(test_layer3_datahub
     test_datahub_hub_queue.cpp
     workers/datahub_hub_queue_workers.cpp
 
+    # ── Role-level flexzone round-trip (L3.ζ T2/T3) ──────────────────────────
+    test_datahub_role_flexzone.cpp
+
     # ── Hub ZmqQueue unit tests ──────────────────────────────────────────────
     test_datahub_hub_zmq_queue.cpp
 
