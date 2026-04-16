@@ -464,7 +464,31 @@ schema.to_ctypes_struct("RawTempSlot")
 
 ---
 
-## 11. SchemaLibrary and SchemaRegistry
+## 11. Schema Layer Architecture
+
+### 11.0 Layered Type System
+
+pyLabHub has a layered schema system — no type duplication, clear conversion
+points between layers:
+
+```mermaid
+graph TD
+    JSON["JSON schema file (.json)"] --> SL["SchemaLibrary (L1: Named Registry)"]
+    SL --> SE["SchemaEntry {SchemaInfo, SchemaLayoutDef}"]
+    SE --> SI["SchemaInfo (L0: C++ compile-time)<br/>PYLABHUB_SCHEMA macros"]
+    SE --> SS["SchemaSpec (L2: runtime)<br/>schema_entry_to_spec()"]
+    SS --> ZF["ZmqSchemaField[] (L3: wire)<br/>schema_spec_to_zmq_fields()"]
+    SS --> FL["FieldLayout[] + item_size<br/>compute_field_layout(schema, packing)"]
+    JSON --> IC["InboxConfig.schema_json (L4: Config)"]
+    SL --> CSI["ChannelSchemaInfo (L5: Broker Protocol)"]
+```
+
+Key conversion functions:
+- `schema_entry_to_spec()` — L1 → L2 (named → runtime)
+- `schema_spec_to_zmq_fields()` — L2 → L3 (runtime → wire)
+- `compute_field_layout()` — L3 → binary layout (alignment, offsets, sizes)
+- `compute_schema_size()` — L3 → total item size in bytes
+- `compute_schema_hash()` — L2 → BLAKE2b identity (used for SHM + broker)
 
 ### 11.1 SchemaLibrary (no lifecycle)
 
