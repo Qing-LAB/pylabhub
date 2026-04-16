@@ -32,7 +32,7 @@ def on_init(api: prod.ProducerAPI) -> None:
     )
 
 
-def on_produce(out_slot, flexzone, messages, api: prod.ProducerAPI) -> bool:
+def on_produce(tx, messages, api: prod.ProducerAPI) -> bool:
     global _count
 
     for msg in messages:
@@ -40,19 +40,19 @@ def on_produce(out_slot, flexzone, messages, api: prod.ProducerAPI) -> bool:
             sender, data = msg
             api.log("debug", f"BridgeProducer: ctrl from {sender!r}: {data!r}")
 
-    if out_slot is None:
+    if tx.slot is None:
         return False
 
     _count += 1
-    out_slot.count = _count
-    out_slot.ts = time.time()
+    tx.slot.count = _count
+    tx.slot.ts = time.time()
 
     if np is not None:
-        arr = np.ctypeslib.as_array(out_slot.samples)
+        arr = np.ctypeslib.as_array(tx.slot.samples)
         arr[:] = _base + np.float32(_count)
     else:
         for i in range(BLOCK_SIZE):
-            out_slot.samples[i] = float(_count + i)
+            tx.slot.samples[i] = float(_count + i)
 
     return True
 

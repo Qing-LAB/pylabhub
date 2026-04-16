@@ -175,12 +175,10 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
 
     // Direction objects — required for invoke_produce(tx, msgs, api).
     py::class_<scripting::PyTxChannel>(m, "TxChannel")
-        .def_readwrite("slot", &scripting::PyTxChannel::slot)
-        .def_readwrite("fz",   &scripting::PyTxChannel::fz);
+        .def_readwrite("slot", &scripting::PyTxChannel::slot);
 
     py::class_<scripting::PyRxChannel>(m, "RxChannel")
-        .def_readwrite("slot", &scripting::PyRxChannel::slot)
-        .def_readwrite("fz",   &scripting::PyRxChannel::fz);
+        .def_readwrite("slot", &scripting::PyRxChannel::slot);
 
     py::class_<scripting::PyInboxMsg>(m, "InboxMsg")
         .def_readonly("data",       &scripting::PyInboxMsg::data)

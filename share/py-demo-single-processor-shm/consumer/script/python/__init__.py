@@ -61,7 +61,7 @@ def on_init(api: cons.ConsumerAPI) -> None:
     api.log("info", f"DemoConsumer: started uid={api.uid()} throughput window=1s max_slots={limit_str}")
 
 
-def on_consume(in_slot, flexzone, messages, api: cons.ConsumerAPI) -> None:
+def on_consume(rx, messages, api: cons.ConsumerAPI) -> None:
     global _received, _window_slots, _window_bytes, _window_wait_us, _window_work_us
     global _window_start, _slot_bytes
     global _last_count, _sample0, _sample_last, _scale
@@ -75,11 +75,11 @@ def on_consume(in_slot, flexzone, messages, api: cons.ConsumerAPI) -> None:
             api.stop()
             return
 
-    if in_slot is None:
+    if rx.slot is None:
         return
 
     if _slot_bytes == 0:
-        _slot_bytes = ctypes.sizeof(type(in_slot))
+        _slot_bytes = ctypes.sizeof(type(rx.slot))
         api.log(
             "info",
             f"DemoConsumer: slot_bytes={_slot_bytes} payload={BLOCK_SIZE}xfloat32 + scale:float32",
@@ -99,8 +99,8 @@ def on_consume(in_slot, flexzone, messages, api: cons.ConsumerAPI) -> None:
     _window_wait_us += int(m.get("last_slot_wait_us", 0))
     _window_work_us += int(m.get("last_slot_work_us", 0))
 
-    _last_count = int(in_slot.count)
-    _scale = float(in_slot.scale)
+    _last_count = int(rx.slot.count)
+    _scale = float(rx.slot.scale)
     if abs(_scale - EXPECTED_SCALE) > 1e-5:
         _bad_scale += 1
 
@@ -114,12 +114,12 @@ def on_consume(in_slot, flexzone, messages, api: cons.ConsumerAPI) -> None:
     _prev_count = _last_count
 
     if np is not None:
-        arr = np.ctypeslib.as_array(in_slot.samples)
+        arr = np.ctypeslib.as_array(rx.slot.samples)
         _sample0 = float(arr[0])
         _sample_last = float(arr[-1])
     else:
-        _sample0 = float(in_slot.samples[0])
-        _sample_last = float(in_slot.samples[BLOCK_SIZE - 1])
+        _sample0 = float(rx.slot.samples[0])
+        _sample_last = float(rx.slot.samples[BLOCK_SIZE - 1])
 
     now = time.time()
     dt = now - _window_start
