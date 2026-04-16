@@ -523,6 +523,125 @@ end
 
 ---
 
+## Unified Data Loop Architecture
+
+> Merged from `docs/tech_draft/unified_role_loop.md` §3–5 (2026-04-16).
+> All entities verified against `cycle_ops.hpp`, `role_api_base.hpp/cpp`.
+
+### RoleCycleOps Abstract Interface
+
+All three role hosts share one data loop frame (`RoleAPIBase::run_data_loop`).
+Role-specific behavior is injected via the `RoleCycleOps` abstract class
+(`cycle_ops.hpp`):
+
+```cpp
+class RoleCycleOps {
+public:
+    virtual ~RoleCycleOps() = default;
+    virtual bool acquire(const AcquireContext &ctx) = 0;     // inner retry acquire
+    virtual void cleanup_on_shutdown() = 0;                  // release held slots on stop
+    virtual bool invoke_and_commit(std::vector<IncomingMessage> &msgs) = 0;  // engine callback + commit/release
+    virtual void cleanup_on_exit() = 0;                      // end-of-loop cleanup (processor hold release)
+};
+```
+
+Three concrete implementations:
+
+```mermaid
+classDiagram
+    class RoleCycleOps {
+        <<abstract>>
+        +acquire(AcquireContext) bool
+        +cleanup_on_shutdown()
+        +invoke_and_commit(msgs) bool
+        +cleanup_on_exit()
+    }
+    class ProducerCycleOps {
+        write_acquire → invoke_produce → write_commit/discard
+    }
+    class ConsumerCycleOps {
+        read_acquire → invoke_consume → read_release
+    }
+    class ProcessorCycleOps {
+        read_acquire + write_acquire → invoke_process → commit/release
+        supports input hold-across-cycles
+    }
+    RoleCycleOps <|-- ProducerCycleOps
+    RoleCycleOps <|-- ConsumerCycleOps
+    RoleCycleOps <|-- ProcessorCycleOps
+```
+
+### AcquireContext and retry_acquire
+
+`AcquireContext` (`role_api_base.hpp`) bundles timing state for the inner
+retry loop:
+
+```cpp
+struct AcquireContext {
+    std::chrono::milliseconds short_timeout;  // per-attempt timeout
+    std::chrono::steady_clock::time_point deadline;  // outer deadline
+    bool is_max_rate;  // skip deadline wait on MaxRate policy
+};
+```
+
+`retry_acquire(ctx, core, try_once)` — shared utility that loops
+`try_once(short_timeout)` until success or deadline, checking
+`core.is_running()` on each iteration. Used by all three CycleOps.
+
+### LoopConfig
+
+```cpp
+struct LoopConfig {
+    double           period_us{0};
+    LoopTimingPolicy loop_timing{LoopTimingPolicy::MaxRate};
+    double           queue_io_wait_timeout_ratio{0.1};
+};
+```
+
+Passed by the role host to `api->run_data_loop(cfg, ops)`. Timing
+parameters derive from `config_.timing()` — single-truth path
+(see HEP-0008 §11.1).
+
+### run_data_loop Frame
+
+`RoleAPIBase::run_data_loop()` (`role_api_base.cpp`) implements the
+shared outer loop:
+
+```
+while (core.is_running && !shutdown_requested):
+    A. compute deadline from LoopConfig
+    B. ops.acquire(AcquireContext)       ← role-specific
+    C. if shutdown → ops.cleanup_on_shutdown(); break
+    D. drain_inbox_sync()                ← inbox messages before callback
+    E. ops.invoke_and_commit(msgs)       ← engine callback + data commit
+    F. update loop metrics (overrun, timing)
+    G. deadline wait (FixedRate / FixedRateWithCompensation)
+ops.cleanup_on_exit()
+```
+
+### 14-Step Lifecycle Sequence (verified 2026-04-16)
+
+```
+Step 1:  Resolve schemas from config
+Step 2:  Setup infrastructure (queues, inbox, broker comm)
+Step 3:  Wire RoleAPIBase (name, channels, engine, queues)
+Step 4:  Engine lifecycle startup (init → load → schema → build_api)
+Step 5:  invoke_on_init()
+Step 6:  Connect broker, start ctrl thread, register
+Step 6b: Startup coordination (wait_for_roles)
+Step 7:  Signal ready
+Step 8:  Run data loop (run_data_loop + CycleOps)
+Step 9:  stop_accepting()
+Step 9a: deregister_from_broker()
+Step 10: invoke_on_stop()        ← ctrl thread alive for final I/O
+Step 11: engine->finalize()
+Step 12: broker_comm->stop() + set_running(false)
+Step 13: teardown_infrastructure()
+Step 14: thread_manager().drain() ← last; all threads exit
+```
+
+---
+
 ## Metrics Model
 
 `api.metrics()` returns a hierarchical dict/table:
