@@ -1,7 +1,14 @@
 # Invoke Convention Redesign: Directional Grouping + Consistent Returns
 
-**Status**: Proposal revised (2026-04-01)
-**Scope**: All script callback signatures, invoke interface, flexzone naming
+**Status**: Partially implemented (updated 2026-04-16)
+**Scope**: Script callback signatures, invoke interface
+
+> **2026-04-16 update**: The flexzone naming problem (§2) is RESOLVED —
+> `InvokeTx.fz` / `InvokeRx.fz` fields removed; flexzone accessed via
+> `api.flexzone(side)`. The callback signature is now 3-arg:
+> `on_produce(tx, msgs, api)`, `on_consume(rx, msgs, api)`,
+> `on_process(rx, tx, msgs, api)`. Remaining open work: L3.ε
+> (invoke_cycle handle-based dispatch) in role_unification_design.md.
 
 ---
 
