@@ -536,3 +536,4 @@ For current documentation layout and where to put or find active content, use **
 |----------|-------------|--------|
 | `step7_messenger_removal_scope.md` | `archive/transient-2026-04-16/` | Messenger class fully deleted; investigation complete; no HEP content to merge |
 | `step7_continuation_guide.md` | `archive/transient-2026-04-16/` | Session handoff doc; §1.1 facilities table superseded by HEP-0018 §15; §1.2 deleted-entities table is historical; §1.3 Producer/Consumer factory now also deleted (L3.γ A6.3) |
+| `obsolete_code_replacement.md` | `archive/transient-2026-04-16/` | All listed deletions verified executed; replacement mapping covered by HEP-0018 §15 + HEP-0007 |
