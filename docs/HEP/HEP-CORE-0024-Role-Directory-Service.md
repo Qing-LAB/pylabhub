@@ -4,7 +4,7 @@
 |----------------|--------------------------------------------------------------------------------|
 | **HEP**        | `HEP-CORE-0024`                                                                |
 | **Title**      | Role Directory Service — Canonical Layout, Path Resolution, and CLI Helpers    |
-| **Status**     | Implemented (Phases 1–3, 5, 6, 8) — 2026-03-12; Phases 4, 7 deferred         |
+| **Status**     | Phases 1–3, 5, 6, 8, 13 implemented; Phases 9–12, 14 in progress (2026-04-16) |
 | **Created**    | 2026-03-12                                                                     |
 | **Area**       | Public API (`pylabhub::utils`), All Role Binaries, Custom Role Development     |
 | **Depends on** | HEP-CORE-0018 (Producer/Consumer Binaries), HEP-CORE-0015 (Processor Binary)  |
@@ -579,22 +579,348 @@ places the vault file in `vault/<uid>.key` — the security-correct location —
 
 ---
 
-## 10. Implementation Plan
+## 10. Registration-Based Directory Initialization
 
-| Phase | Scope | Files | Status |
-|-------|-------|-------|--------|
-| 1 | `RoleDirectory` class — layout, path resolution, hub resolution, `warn_if_keyfile_in_role_dir` | `src/include/utils/role_directory.hpp`, `src/utils/config/role_directory.cpp` | ✅ 2026-03-12 |
-| 2 | `role_cli.hpp` — `RoleArgs`, `parse_role_args`, `resolve_init_name`, password helpers | `src/include/utils/role_cli.hpp` (header-only) | ✅ 2026-03-12 |
-| 3 | Migrate `Config::from_directory()` in all 3 role configs + `warn_if_keyfile_in_role_dir` call | `producer_config.cpp`, `consumer_config.cpp`, `processor_config.cpp` | ✅ 2026-03-12 |
-| 4 | Migrate script-path resolution in all 3 script hosts | `producer_script_host.cpp`, `consumer_script_host.cpp`, `processor_script_host.cpp` | ⚪ deferred |
-| 5 | Migrate `do_init()` and `main()` in all 3 binaries to use `RoleDirectory` + `role_cli` | `producer_main.cpp`, `consumer_main.cpp`, `processor_main.cpp` | ✅ 2026-03-12 |
-| 6 | Move password helpers from `role_main_helpers.hpp` to `role_cli.hpp`; remove duplicates | `src/scripting/role_main_helpers.hpp` | ✅ 2026-03-12 |
-| 7 | Update `README_EmbeddedAPI.md` + `README_Deployment.md` with new public API | `docs/README/` | ⚪ deferred |
-| 8 | Tests: `RoleDirectoryTest` (22 L2 tests) + `RoleCliTest` (8 L2 tests) | `tests/test_layer2_service/test_role_directory.cpp` | ✅ 2026-03-12 |
+> Added 2026-04-16. Extends §4 with `init_directory()` and role registration.
+
+### 10.1 Problem
+
+The `do_init()` function is duplicated in each binary's `main.cpp` (~120 lines each).
+The common scaffolding (directory creation, name prompting, UID generation, file writing,
+summary printing) is identical; only the config JSON template and optional post-init
+actions differ per role. Adding a new role requires copying and editing an entire
+`do_init()` function.
+
+### 10.2 Design: Registration + Generic Init
+
+`RoleDirectory` provides a generic `init_directory()` method. Role-specific content
+is injected via a registration API — each role registers a `RoleInitInfo` struct once.
+`RoleDirectory` stays generic and role-agnostic.
+
+```cpp
+/// Role-specific content for init_directory(). Registered once per role tag.
+struct RoleInitInfo
+{
+    std::string config_filename;   ///< "producer.json", "consumer.json", etc.
+    std::string uid_prefix;        ///< "PROD", "CONS", "PROC" — passed to generate_uid()
+    std::string role_label;        ///< "Producer" — used in prompts and summary output
+
+    /// Build the default JSON config template for this role.
+    /// uid and name are already resolved by init_directory().
+    std::function<nlohmann::json(const std::string &uid,
+                                  const std::string &name)> config_template;
+
+    /// Optional post-init callback for role-specific customization.
+    /// Called after directory structure and config file are written.
+    /// Use role_dir path APIs (script_entry, subdir, etc.) to locate paths.
+    /// nullptr = no post-init action.
+    std::function<void(const RoleDirectory &role_dir,
+                        const std::string &name)> on_init;
+};
+```
+
+### 10.3 Registration API
+
+```cpp
+class RoleDirectory
+{
+public:
+    // ... existing API (§4) ...
+
+    /// Register role-specific init content. Called once per role at startup.
+    /// role_tag: "producer", "consumer", "processor", or any custom role tag.
+    /// Overwrites any previous registration for the same tag.
+    static void register_role(const std::string &role_tag, RoleInitInfo info);
+
+    /// Scaffolding init for a registered role.
+    ///
+    /// 1. Calls create(dir) for directory structure
+    /// 2. Resolves name (interactive prompt if empty, using role_label from registration)
+    /// 3. Generates UID via uid_prefix from registration
+    /// 4. Writes config_template() to config_filename in dir
+    /// 5. Calls on_init(role_dir, name) if registered (role-specific customization)
+    /// 6. Prints summary (directory, UID, name, config path, next steps)
+    ///
+    /// Returns 0 on success, non-zero on error (matches main() convention).
+    static int init_directory(const std::filesystem::path &dir,
+                              const std::string &role_tag,
+                              const std::string &name = {});
+};
+```
+
+### 10.4 Role Registration Example
+
+Each role registers in its own source file. The registration happens at static
+init time or early in `main()` — before `init_directory()` is called.
+
+```cpp
+// In producer_fields.cpp (compiled into pylabhub-utils)
+
+void pylabhub::producer::register_producer_init()
+{
+    RoleDirectory::register_role("producer", {
+        .config_filename = "producer.json",
+        .uid_prefix      = "PROD",
+        .role_label      = "Producer",
+        .config_template = [](const std::string &uid, const std::string &name)
+            -> nlohmann::json
+        {
+            nlohmann::json j;
+            j["producer"]["uid"]       = uid;
+            j["producer"]["name"]      = name;
+            j["producer"]["log_level"] = "info";
+            // ... role-specific default fields ...
+            return j;
+        },
+        .on_init = [](const RoleDirectory &rd, const std::string &name)
+        {
+            // Write starter Python script at the standard script entry point
+            const auto script_path = rd.script_entry(".", "python");
+            std::ofstream out(script_path);
+            out << "# Producer: " << name << "\n"
+                << "def on_produce(tx, msgs, api):\n"
+                << "    return True\n";
+        },
+    });
+}
+```
+
+### 10.5 Binary Migration
+
+The binary's `do_init()` reduces to a single dispatch:
+
+```cpp
+// Before: ~120 lines of duplicated scaffolding per binary
+static int do_init(const std::string &dir, const std::string &name)
+{
+    // ... 120 lines of directory creation, JSON template, Python template ...
+}
+
+// After: one line
+static int do_init(const std::string &dir, const std::string &name)
+{
+    return pylabhub::RoleDirectory::init_directory(dir, "producer", name);
+}
+```
+
+### 10.6 `on_init` Callback and RoleDirectory Path APIs
+
+The `on_init` callback receives a `const RoleDirectory &` which provides path
+APIs for locating standard directories without hardcoding paths:
+
+| Method | Returns | Example |
+|--------|---------|---------|
+| `base()` | Role directory root | `/home/user/my_producer/` |
+| `logs()` | `<base>/logs/` | Log file directory |
+| `run()` | `<base>/run/` | PID file, lock file directory |
+| `vault()` | `<base>/vault/` | Vault files (0700) |
+| `config_file(name)` | `<base>/<name>` | `<base>/producer.json` |
+| `script_entry(path, type)` | Resolved script entry point | `<base>/script/python/__init__.py` |
+| `subdir(name)` | `<base>/<name>/` | Custom subdirectory |
+
+The callback uses these APIs to write role-specific files in the correct
+locations. `RoleDirectory` does not know about scripts, templates, or any
+role-specific content — it only provides the path framework.
+
+### 10.7 Custom Role Registration
+
+A custom role binary registers its own init content using the same API:
+
+```cpp
+int main(int argc, char *argv[])
+{
+    // Register before parsing args
+    RoleDirectory::register_role("sensor", {
+        .config_filename = "sensor.json",
+        .uid_prefix      = "SENS",
+        .role_label      = "Sensor",
+        .config_template = &my_sensor_config_template,
+        .on_init         = &my_sensor_post_init,
+    });
+
+    const auto args = role_cli::parse_role_args(argc, argv, "sensor");
+    if (args.init_only)
+        return RoleDirectory::init_directory(args.role_dir, "sensor", args.init_name);
+    // ...
+}
+```
+
+No subclassing. No changes to `RoleDirectory`. The registration API is the
+extension point.
 
 ---
 
-## 11. Source File Reference
+## 11. Unified Role Binary
+
+> Added 2026-04-16. Replaces three separate binaries with one.
+
+### 11.1 Motivation
+
+The three role binaries (`pylabhub-producer`, `pylabhub-consumer`,
+`pylabhub-processor`) share ~80% of their `main()` code. The differences are:
+
+1. Role tag string and field parser function (config loading)
+2. Role host class constructor
+3. Binary name in signal handler / status display
+4. `do_init()` content (migrating to `init_directory()` registration, §10)
+
+With role hosts now compiled into `pylabhub-utils` (shared lib), the binaries
+are thin wrappers. A single binary eliminates the duplication entirely.
+
+### 11.2 CLI Design
+
+```
+pylabhub-role --role <tag> <dir>                    # Run role from directory
+pylabhub-role --role <tag> --config <path>           # Run role from config file
+pylabhub-role --role <tag> --init [<dir>]             # Init directory for role
+pylabhub-role --role <tag> --config <path> --validate # Validate config
+pylabhub-role --role <tag> --config <path> --keygen   # Generate keypair
+```
+
+The `--role` flag is required. Valid values: `producer`, `consumer`, `processor`,
+or any registered custom role tag.
+
+### 11.3 Role Tag Inference (optional convenience)
+
+When `--role` is omitted, the binary attempts to infer the role:
+
+1. **From binary name**: if invoked as `pylabhub-producer` (symlink or renamed),
+   infer `--role producer`.
+2. **From config file name**: if `--config producer.json`, infer `--role producer`.
+3. **From directory contents**: if `<dir>/producer.json` exists, infer `--role producer`.
+
+If inference fails, print error and exit.
+
+### 11.4 Runtime Registration
+
+Each role registers its runtime components alongside its init content:
+
+```cpp
+struct RoleRuntimeInfo
+{
+    /// Config field parser (role-specific JSON fields).
+    std::function<void(const nlohmann::json &, pylabhub::config::RoleConfig &)> field_parser;
+
+    /// Construct and return the role host. Takes ownership of config and engine.
+    std::function<std::unique_ptr<RoleHostBase>(
+        pylabhub::config::RoleConfig config,
+        std::unique_ptr<pylabhub::scripting::ScriptEngine> engine,
+        std::atomic<bool> *shutdown_flag)> create_host;
+
+    /// Status line for signal handler display.
+    std::function<std::string(const pylabhub::config::RoleConfig &,
+                               std::chrono::seconds uptime)> status_line;
+};
+
+// Registration:
+static void register_role_runtime(const std::string &role_tag, RoleRuntimeInfo info);
+```
+
+### 11.5 Unified `main()` Flow
+
+```
+main(argc, argv):
+    1. Install signal handler
+    2. Parse args (role_tag from --role or inference)
+    3. if --init: return init_directory(dir, role_tag, name)
+    4. Lifecycle init
+    5. Load config via registered field_parser for role_tag
+    6. if --keygen: keygen flow (generic, parameterized by role_tag)
+    7. Auth (generic)
+    8. Create engine (generic — same for all roles)
+    9. Create host via registered create_host for role_tag
+    10. startup, validate, run loop, shutdown (generic)
+```
+
+Steps 3, 5, 9 dispatch to registered role-specific functions.
+Everything else is role-agnostic.
+
+### 11.6 Legacy Binary Compatibility
+
+The three original binary names are preserved as symlinks to the unified binary:
+
+```
+pylabhub-producer  →  pylabhub-role    (infers --role producer from binary name)
+pylabhub-consumer  →  pylabhub-role    (infers --role consumer)
+pylabhub-processor →  pylabhub-role    (infers --role processor)
+```
+
+Existing scripts and deployment configurations continue to work unchanged.
+The symlinks can be created by CMake at install/staging time.
+
+### 11.7 Architecture Diagram
+
+```mermaid
+flowchart TD
+    subgraph Binary["pylabhub-role (unified binary)"]
+        CLI["CLI: parse --role / infer from binary name"]
+        REG["Role Registry\n(RoleInitInfo + RoleRuntimeInfo)"]
+        INIT["init_directory()\ndispatch to registered role"]
+        LOAD["Load config\nvia registered field_parser"]
+        ENGINE["Create engine\n(Python/Lua/Native)"]
+        HOST["Create host\nvia registered create_host"]
+        RUN["startup → run_data_loop → shutdown"]
+    end
+
+    subgraph Lib["pylabhub-utils (shared lib)"]
+        RD["RoleDirectory\ncreate / init_directory / path APIs"]
+        RAB["RoleAPIBase\nqueue verbs, metrics, broker"]
+        DL["run_data_loop&lt;Ops&gt;\ntemplate data loop"]
+        CO["CycleOps\nProducer/Consumer/Processor"]
+        RH["RoleHosts\nProducer/Consumer/ProcessorRoleHost"]
+    end
+
+    subgraph Roles["Role-specific (registered)"]
+        P["Producer\nfields, config template, on_init, host"]
+        C["Consumer\nfields, config template, on_init, host"]
+        PR["Processor\nfields, config template, on_init, host"]
+    end
+
+    CLI --> REG
+    REG --> INIT
+    REG --> LOAD
+    LOAD --> ENGINE --> HOST --> RUN
+    INIT --> RD
+    HOST --> RH
+    RUN --> DL
+    DL --> CO
+    CO --> RAB
+    P --> REG
+    C --> REG
+    PR --> REG
+```
+
+---
+
+## 12. Updated Implementation Plan
+
+### Original phases (2026-03-12)
+
+| Phase | Scope | Status |
+|-------|-------|--------|
+| 1 | `RoleDirectory` class — layout, path resolution, hub resolution | ✅ 2026-03-12 |
+| 2 | `role_cli.hpp` — `RoleArgs`, `parse_role_args`, password helpers | ✅ 2026-03-12 |
+| 3 | Migrate `Config::from_directory()` in all 3 role configs | ✅ 2026-03-12 |
+| 4 | Migrate script-path resolution in all 3 script hosts | ⚪ deferred |
+| 5 | Migrate `do_init()` and `main()` to use `RoleDirectory` + `role_cli` | ✅ 2026-03-12 |
+| 6 | Move password helpers to `role_cli.hpp` | ✅ 2026-03-12 |
+| 7 | Update README docs with new public API | ⚪ deferred |
+| 8 | Tests: `RoleDirectoryTest` + `RoleCliTest` | ✅ 2026-03-12 |
+
+### New phases (2026-04-16)
+
+| Phase | Scope | Status |
+|-------|-------|--------|
+| 9 | `RoleInitInfo` struct + `register_role()` + `init_directory()` on `RoleDirectory` | ⚪ |
+| 10 | Register producer/consumer/processor init content; migrate `do_init()` to one-line dispatch | ⚪ |
+| 11 | `RoleRuntimeInfo` struct + `register_role_runtime()` | ⚪ |
+| 12 | Unified `pylabhub-role` binary + symlinks for legacy names | ⚪ |
+| 13 | Role hosts moved into `pylabhub-utils` shared lib | ✅ 2026-04-16 |
+| 14 | Tests: `init_directory` L2 tests, unified binary L4 tests | ⚪ |
+
+---
+
+## 13. Source File Reference
 
 | Component | File |
 |-----------|------|
