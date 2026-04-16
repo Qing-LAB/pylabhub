@@ -16,21 +16,24 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/** Input direction — data received from upstream. */
+/** Input direction — data received from upstream.
+ *  fz/fz_size are populated by the native engine bridge at invoke time
+ *  from the init-time cache — callers must NOT set these manually. */
 typedef struct
 {
     const void *slot;       /**< Read-only input slot. */
     size_t      slot_size;
-    void       *fz;         /**< Mutable flexzone (bidirectional per HEP-0002). */
+    void       *fz;         /**< Mutable flexzone — bridge-populated from cached api pointer. */
     size_t      fz_size;
 } plh_rx_t;
 
-/** Output direction — data going downstream. */
+/** Output direction — data going downstream.
+ *  fz/fz_size are populated by the native engine bridge at invoke time. */
 typedef struct
 {
     void  *slot;            /**< Writable output slot. */
     size_t slot_size;
-    void  *fz;              /**< Mutable flexzone. */
+    void  *fz;              /**< Mutable flexzone — bridge-populated from cached api pointer. */
     size_t fz_size;
 } plh_tx_t;
 
