@@ -291,19 +291,17 @@ inline void print_ctypes_layout(const py::object &type_, const char *label, size
 // ── Direction objects — script-level rx/tx/msg wrappers ──────────────────────
 
 /// Receive direction object passed to on_consume(rx, ...) and on_process(rx, ...).
-/// rx.slot = typed slot view (read-only), rx.fz = flexzone view (mutable per HEP-0002).
+/// rx.slot = typed slot view (read-only). Flexzone: via api.flexzone(side).
 struct PyRxChannel
 {
     py::object slot{py::none()};
-    py::object fz{py::none()};
 };
 
 /// Transmit direction object passed to on_produce(tx, ...) and on_process(..., tx, ...).
-/// tx.slot = typed slot view (writable), tx.fz = flexzone view (mutable).
+/// tx.slot = typed slot view (writable). Flexzone: via api.flexzone(side).
 struct PyTxChannel
 {
     py::object slot{py::none()};
-    py::object fz{py::none()};
 };
 
 /// Inbox message object passed to on_inbox(msg, api).

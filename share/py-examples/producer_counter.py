@@ -27,7 +27,7 @@ Usage
 Notes
 -----
 - Module-level variables are the natural way to hold state across callbacks.
-- Do NOT store the `out_slot` object beyond the on_produce() call — it is a
+- Do NOT store the `tx.slot` object beyond the on_produce() call — it is a
   ctypes.from_buffer view into SHM memory, valid only during that call.
 - `flexzone` is persistent and safe to store between calls.
 """
@@ -60,21 +60,21 @@ def on_init(api: prod.ProducerAPI) -> None:
     api.log('info', f"CounterProducer: started  uid={api.uid()}  pid={os.getpid()}")
 
 
-def on_produce(out_slot, flexzone, messages, api: prod.ProducerAPI) -> bool:
+def on_produce(tx, messages, api: prod.ProducerAPI) -> bool:
     """
     Called each write-loop iteration (interval_ms=0 → as fast as SHM allows).
 
-    out_slot: ctypes.LittleEndianStructure — writable view into the current SHM slot.
+    tx.slot: ctypes.LittleEndianStructure — writable view into the current SHM slot.
     Returns True (or None) to commit; False to discard (no ZMQ broadcast).
-    Do NOT store `out_slot` beyond this call.
+    Do NOT store `tx.slot` beyond this call.
     """
     global count
-    if out_slot is None:
+    if tx.slot is None:
         return False  # SHM slot unavailable — backpressure
 
     count += 1
-    out_slot.count = count
-    out_slot.ts    = time.time()
+    tx.slot.count = count
+    tx.slot.ts    = time.time()
 
     for sender, data in messages:
         api.log('debug', f"CounterProducer: ctrl from {sender}: {len(data)} bytes")

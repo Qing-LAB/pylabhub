@@ -23,10 +23,10 @@ Usage
 
 Notes
 -----
-- `in_slot` is a ctypes copy of the SHM slot — valid only during on_consume().
-  Writing to slot fields raises AttributeError. Do not store `in_slot`.
+- `rx.slot` is a ctypes copy of the SHM slot — valid only during on_consume().
+  Writing to slot fields raises AttributeError. Do not store `rx.slot`.
 - `flexzone` is a read-only ctypes copy of the producer's flexzone.
-- `in_slot=None` means the slot-acquire timed out (timeout_ms elapsed).
+- `rx.slot=None` means the slot-acquire timed out (timeout_ms elapsed).
 """
 
 import time
@@ -52,24 +52,24 @@ def on_init(api: cons.ConsumerAPI) -> None:
     api.log('info', f"CounterLogger: started  uid={api.uid()}")
 
 
-def on_consume(in_slot, flexzone, messages, api: cons.ConsumerAPI) -> None:
+def on_consume(rx, messages, api: cons.ConsumerAPI) -> None:
     """
-    Called for each SHM slot (or on timeout when in_slot is None).
+    Called for each SHM slot (or on timeout when rx.slot is None).
 
-    in_slot:  read-only ctypes struct copy (None on timeout)
+    rx.slot:  read-only ctypes struct copy (None on timeout)
     flexzone: read-only flexzone copy (may be None if not configured)
     messages: list of bytes from ZMQ data channel
     api:      ConsumerAPI — log, stop, in_slots_received(), etc.
     """
     global last_count, slots_read
 
-    if in_slot is None:
+    if rx.slot is None:
         api.log('debug', "CounterLogger: timeout — no slot in 5 s")
         return
 
     slots_read += 1
-    count = in_slot.count
-    ts    = in_slot.ts
+    count = rx.slot.count
+    ts    = rx.slot.ts
 
     skipped = count - last_count - 1
     last_count = count

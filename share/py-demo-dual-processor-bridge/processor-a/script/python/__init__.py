@@ -31,7 +31,7 @@ def on_init(api: proc.ProcessorAPI) -> None:
     )
 
 
-def on_process(in_slot, out_slot, flexzone, messages, api: proc.ProcessorAPI) -> bool:
+def on_process(rx, tx, messages, api: proc.ProcessorAPI) -> bool:
     global _processed
 
     for msg in messages:
@@ -40,19 +40,19 @@ def on_process(in_slot, out_slot, flexzone, messages, api: proc.ProcessorAPI) ->
             api.stop()
             return False
 
-    if in_slot is None:
+    if rx.slot is None:
         return False
 
-    out_slot.count = in_slot.count
-    out_slot.ts = in_slot.ts
+    tx.slot.count = rx.slot.count
+    tx.slot.ts = rx.slot.ts
 
     if np is not None:
-        arr_in = np.ctypeslib.as_array(in_slot.samples)
-        arr_out = np.ctypeslib.as_array(out_slot.samples)
+        arr_in = np.ctypeslib.as_array(rx.slot.samples)
+        arr_out = np.ctypeslib.as_array(tx.slot.samples)
         arr_out[:] = arr_in
     else:
         for i in range(BLOCK_SIZE):
-            out_slot.samples[i] = in_slot.samples[i]
+            tx.slot.samples[i] = rx.slot.samples[i]
 
     _processed += 1
     return True

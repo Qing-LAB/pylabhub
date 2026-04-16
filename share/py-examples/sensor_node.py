@@ -29,7 +29,7 @@ Notes
   architecture, the producer and consumer roles are separate processes:
     - sensor_node.json / sensor_node.py  → standalone pylabhub-producer
     - consumer_logger.json / consumer_logger.py → standalone pylabhub-consumer
-- `out_slot` is valid ONLY during on_produce(). Do not store it.
+- `tx.slot` is valid ONLY during on_produce(). Do not store it.
 - `flexzone` is persistent and safe to store between calls.
 """
 
@@ -64,7 +64,7 @@ def on_init(api: prod.ProducerAPI) -> None:
             f"  device_id=0x{_device_id:04X}  pid={os.getpid()}")
 
 
-def on_produce(out_slot, flexzone, messages, api: prod.ProducerAPI) -> bool:
+def on_produce(tx, messages, api: prod.ProducerAPI) -> bool:
     """
     Called every 100 ms to produce one temperature measurement.
 
@@ -72,21 +72,21 @@ def on_produce(out_slot, flexzone, messages, api: prod.ProducerAPI) -> bool:
     Populates samples[] with 8 Gaussian-noise ADC readings around the value.
     """
     global _count
-    if out_slot is None:
+    if tx.slot is None:
         return False  # SHM backpressure
 
     _count += 1
     t    = time.time()
     temp = 20.0 + math.sin(t * 0.5) * 5.0   # °C, slow sinusoidal variation
 
-    out_slot.ts    = t
-    out_slot.value = temp
-    out_slot.flags = 0  # nominal
+    tx.slot.ts    = t
+    tx.slot.value = temp
+    tx.slot.flags = 0  # nominal
 
     # Simulate 8 ADC samples around the temperature value
     import random
     for i in range(8):
-        out_slot.samples[i] = temp + random.gauss(0.0, 0.05)
+        tx.slot.samples[i] = temp + random.gauss(0.0, 0.05)
 
     for sender, data in messages:
         api.log('debug', f"TemperatureSensor: ctrl from {sender}: {data!r}")
