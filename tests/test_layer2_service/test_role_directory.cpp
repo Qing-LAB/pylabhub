@@ -385,3 +385,130 @@ TEST(RoleDirectoryTest, WarnIfKeyfileInRoleDir_RelativePath_Resolved)
         RoleDirectory::warn_if_keyfile_in_role_dir(rd.base(), "vault/PROD-TEST.vault"));
     fs::remove_all(tmp);
 }
+
+// ── Phase 9: register_role + init_directory (HEP-0024 §10) ──────────────────
+
+TEST(RoleDirectoryTest, InitDirectory_UnregisteredRole_ReturnsError)
+{
+    const auto tmp = unique_temp_dir("init_unreg");
+    EXPECT_NE(RoleDirectory::init_directory(tmp, "nonexistent_role_xyz", "Test"), 0);
+    fs::remove_all(tmp);
+}
+
+TEST(RoleDirectoryTest, InitDirectory_CreatesDirectoryAndConfig)
+{
+    const auto tmp = unique_temp_dir("init_basic");
+
+    RoleDirectory::register_role("test_role_basic", {
+        .config_filename = "test_role.json",
+        .uid_prefix      = "TEST",
+        .role_label      = "TestRole",
+        .config_template = [](const std::string &uid, const std::string &name)
+            -> nlohmann::json
+        {
+            nlohmann::json j;
+            j["test"]["uid"]  = uid;
+            j["test"]["name"] = name;
+            j["value"]        = 42;
+            return j;
+        },
+        .on_init = nullptr,
+    });
+
+    EXPECT_EQ(RoleDirectory::init_directory(tmp, "test_role_basic", "MyTestRole"), 0);
+
+    // Directory structure created.
+    EXPECT_TRUE(fs::is_directory(tmp / "logs"));
+    EXPECT_TRUE(fs::is_directory(tmp / "run"));
+    EXPECT_TRUE(fs::is_directory(tmp / "vault"));
+
+    // Config file written with correct content.
+    const auto config_path = tmp / "test_role.json";
+    ASSERT_TRUE(fs::exists(config_path));
+
+    std::ifstream f(config_path);
+    const auto j = nlohmann::json::parse(f);
+    EXPECT_EQ(j["test"]["name"], "MyTestRole");
+    EXPECT_EQ(j["value"], 42);
+    EXPECT_TRUE(j["test"]["uid"].get<std::string>().find("TEST-") == 0);
+
+    fs::remove_all(tmp);
+}
+
+TEST(RoleDirectoryTest, InitDirectory_ExistingConfig_ReturnsError)
+{
+    const auto tmp = unique_temp_dir("init_exists");
+
+    RoleDirectory::register_role("test_role_exists", {
+        .config_filename = "existing.json",
+        .uid_prefix      = "TEST",
+        .role_label      = "TestRole",
+        .config_template = [](const std::string &, const std::string &)
+        { return nlohmann::json{{"x", 1}}; },
+        .on_init = nullptr,
+    });
+
+    // Create directory and config file first.
+    fs::create_directories(tmp);
+    std::ofstream(tmp / "existing.json") << "{}";
+
+    // init_directory should fail because config already exists.
+    EXPECT_NE(RoleDirectory::init_directory(tmp, "test_role_exists", "Test"), 0);
+
+    fs::remove_all(tmp);
+}
+
+TEST(RoleDirectoryTest, InitDirectory_OnInitCallbackInvoked)
+{
+    const auto tmp = unique_temp_dir("init_cb");
+    bool callback_invoked = false;
+    std::string callback_name;
+
+    RoleDirectory::register_role("test_role_cb", {
+        .config_filename = "cb_role.json",
+        .uid_prefix      = "CB",
+        .role_label      = "CallbackRole",
+        .config_template = [](const std::string &uid, const std::string &name)
+        {
+            return nlohmann::json{{"uid", uid}, {"name", name}};
+        },
+        .on_init = [&](const RoleDirectory &rd, const std::string &name)
+        {
+            callback_invoked = true;
+            callback_name = name;
+            // Write a custom file using RoleDirectory path API.
+            const auto custom_file = rd.subdir("data") / "readme.txt";
+            fs::create_directories(custom_file.parent_path());
+            std::ofstream(custom_file) << "Created by on_init\n";
+        },
+    });
+
+    EXPECT_EQ(RoleDirectory::init_directory(tmp, "test_role_cb", "MyCallback"), 0);
+
+    EXPECT_TRUE(callback_invoked);
+    EXPECT_EQ(callback_name, "MyCallback");
+    EXPECT_TRUE(fs::exists(tmp / "data" / "readme.txt"));
+
+    fs::remove_all(tmp);
+}
+
+TEST(RoleDirectoryTest, InitDirectory_NullConfigTemplate_NoConfigWritten)
+{
+    const auto tmp = unique_temp_dir("init_nocfg");
+
+    RoleDirectory::register_role("test_role_nocfg", {
+        .config_filename = "nocfg.json",
+        .uid_prefix      = "NC",
+        .role_label      = "NoConfig",
+        .config_template = nullptr,
+        .on_init         = nullptr,
+    });
+
+    EXPECT_EQ(RoleDirectory::init_directory(tmp, "test_role_nocfg", "Test"), 0);
+
+    // Directory created but no config file.
+    EXPECT_TRUE(fs::is_directory(tmp / "logs"));
+    EXPECT_FALSE(fs::exists(tmp / "nocfg.json"));
+
+    fs::remove_all(tmp);
+}
