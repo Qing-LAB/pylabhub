@@ -89,24 +89,22 @@ struct InvokeResponse
 // ============================================================================
 
 /// Read-only input direction — data received from upstream.
-/// Slot is const (system-managed via SlotRWState). Flexzone is mutable
-/// (user-managed coordination via SharedSpinLock / atomics per HEP-0002).
-/// Passed by value (32 bytes, fits in registers on x86-64).
+/// Slot is const (system-managed via SlotRWState). Flexzone is NOT carried
+/// here — scripts access it via api.flexzone(ChannelSide::Rx), which returns
+/// a cached typed view built once at build_api() time.
+/// Passed by value (16 bytes, fits in registers on x86-64).
 struct InvokeRx
 {
     const void *slot{nullptr};    ///< Read-only input slot.
     size_t      slot_size{0};
-    void       *fz{nullptr};      ///< Mutable flexzone (bidirectional by design).
-    size_t      fz_size{0};
 };
 
 /// Writable output direction — data going downstream.
+/// Flexzone: see InvokeRx note — accessed via api.flexzone(ChannelSide::Tx).
 struct InvokeTx
 {
     void  *slot{nullptr};         ///< Writable output slot.
     size_t slot_size{0};
-    void  *fz{nullptr};           ///< Mutable flexzone.
-    size_t fz_size{0};
 };
 
 /// Inbox message — one-shot peer-to-peer delivery (no flexzone, no ring buffer).

@@ -775,18 +775,12 @@ InvokeResult LuaEngine::invoke_produce(
     lua_State *L = state_.raw();
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_produce_);
 
-    // Arg 1: tx table {slot=cdata, fz=cdata|nil}.
-    lua_createtable(L, 0, 2);
+    // Arg 1: tx table {slot=cdata}.
+    lua_createtable(L, 0, 1);
     if (tx.slot != nullptr && state_.push_slot_view_cached(tx.slot, ref_out_slot_writable_))
         lua_setfield(L, -2, "slot");
     else
     { lua_pushnil(L); lua_setfield(L, -2, "slot"); }
-
-    if (tx.fz != nullptr && tx.fz_size > 0 && ref_out_fz_ != LUA_NOREF
-        && state_.push_slot_view_cached(tx.fz, ref_out_fz_))
-        lua_setfield(L, -2, "fz");
-    else
-    { lua_pushnil(L); lua_setfield(L, -2, "fz"); }
 
     // Arg 2: messages table.
     push_messages_table_(msgs);
@@ -841,19 +835,13 @@ InvokeResult LuaEngine::invoke_consume(
     lua_State *L = state_.raw();
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_consume_);
 
-    // Arg 1: rx table {slot=cdata, fz=cdata|nil}.
-    lua_createtable(L, 0, 2);
+    // Arg 1: rx table {slot=cdata}.
+    lua_createtable(L, 0, 1);
     if (rx.slot != nullptr
         && state_.push_slot_view_cached(const_cast<void *>(rx.slot), ref_in_slot_readonly_))
         lua_setfield(L, -2, "slot");
     else
     { lua_pushnil(L); lua_setfield(L, -2, "slot"); }
-
-    if (rx.fz != nullptr && rx.fz_size > 0 && ref_in_fz_ != LUA_NOREF
-        && state_.push_slot_view_cached(rx.fz, ref_in_fz_))
-        lua_setfield(L, -2, "fz");
-    else
-    { lua_pushnil(L); lua_setfield(L, -2, "fz"); }
 
     // Arg 2: messages table (bare variant for consumer).
     push_messages_table_bare_(msgs);
@@ -903,33 +891,21 @@ InvokeResult LuaEngine::invoke_process(
     lua_State *L = state_.raw();
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_process_);
 
-    // Arg 1: rx table {slot=cdata, fz=cdata|nil}.
-    lua_createtable(L, 0, 2);
+    // Arg 1: rx table {slot=cdata}.
+    lua_createtable(L, 0, 1);
     if (rx.slot != nullptr
         && state_.push_slot_view_cached(const_cast<void *>(rx.slot), ref_in_slot_readonly_))
         lua_setfield(L, -2, "slot");
     else
     { lua_pushnil(L); lua_setfield(L, -2, "slot"); }
 
-    if (rx.fz != nullptr && rx.fz_size > 0 && ref_in_fz_ != LUA_NOREF
-        && state_.push_slot_view_cached(rx.fz, ref_in_fz_))
-        lua_setfield(L, -2, "fz");
-    else
-    { lua_pushnil(L); lua_setfield(L, -2, "fz"); }
-
-    // Arg 2: tx table {slot=cdata, fz=cdata|nil}.
-    lua_createtable(L, 0, 2);
+    // Arg 2: tx table {slot=cdata}.
+    lua_createtable(L, 0, 1);
     if (tx.slot != nullptr
         && state_.push_slot_view_cached(tx.slot, ref_out_slot_writable_))
         lua_setfield(L, -2, "slot");
     else
     { lua_pushnil(L); lua_setfield(L, -2, "slot"); }
-
-    if (tx.fz != nullptr && tx.fz_size > 0 && ref_out_fz_ != LUA_NOREF
-        && state_.push_slot_view_cached(tx.fz, ref_out_fz_))
-        lua_setfield(L, -2, "fz");
-    else
-    { lua_pushnil(L); lua_setfield(L, -2, "fz"); }
 
     // Arg 3: messages table.
     push_messages_table_(msgs);

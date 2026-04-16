@@ -933,9 +933,6 @@ InvokeResult PythonEngine::invoke_produce(
             PyTxChannel tx_ch;
             if (tx.slot != nullptr && !out_slot_type_.is_none())
                 tx_ch.slot = make_slot_view_(out_slot_spec_, out_slot_type_, tx.slot, tx.slot_size, false);
-            if (tx.fz != nullptr && tx.fz_size > 0 && !out_fz_type_.is_none())
-                tx_ch.fz = make_slot_view_(out_fz_spec_, out_fz_type_, tx.fz, tx.fz_size, false);
-
             py::list msgs_list = build_messages_list_(msgs);
             py::object ret = py_on_produce_(py::cast(tx_ch), msgs_list, api_obj_);
             result = parse_return_value_(ret, "on_produce");
@@ -970,14 +967,6 @@ InvokeResult PythonEngine::invoke_consume(
                     in_slot_spec_, in_slot_type_ro_,
                     const_cast<void *>(rx.slot), rx.slot_size, true);
             }
-            if (rx.fz != nullptr && rx.fz_size > 0 && !in_fz_type_.is_none())
-            {
-                // Flexzone is mutable on both sides (HEP-0002).
-                rx_ch.fz = make_slot_view_(
-                    in_fz_spec_, in_fz_type_,
-                    rx.fz, rx.fz_size, false);
-            }
-
             py::list msgs_list = build_messages_list_bare_(msgs);
             py::object ret = py_on_consume_(py::cast(rx_ch), msgs_list, api_obj_);
             result = parse_return_value_(ret, "on_consume");
@@ -1012,15 +1001,9 @@ InvokeResult PythonEngine::invoke_process(
                     in_slot_spec_, in_slot_type_ro_,
                     const_cast<void *>(rx.slot), rx.slot_size, true);
             }
-            if (rx.fz != nullptr && rx.fz_size > 0 && !in_fz_type_.is_none())
-                rx_ch.fz = make_slot_view_(in_fz_spec_, in_fz_type_, rx.fz, rx.fz_size, false);
-
             PyTxChannel tx_ch;
             if (tx.slot != nullptr && !out_slot_type_.is_none())
                 tx_ch.slot = make_slot_view_(out_slot_spec_, out_slot_type_, tx.slot, tx.slot_size, false);
-            if (tx.fz != nullptr && tx.fz_size > 0 && !out_fz_type_.is_none())
-                tx_ch.fz = make_slot_view_(out_fz_spec_, out_fz_type_, tx.fz, tx.fz_size, false);
-
             py::list msgs_list = build_messages_list_(msgs);
             py::object ret = py_on_process_(py::cast(rx_ch), py::cast(tx_ch), msgs_list, api_obj_);
             result = parse_return_value_(ret, "on_process");
