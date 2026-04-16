@@ -452,11 +452,24 @@ bool PythonEngine::build_api_(RoleAPIBase &api)
         }
     }
 
+    // Helper: build a cached flexzone typed view for a given side + type.
+    // Returns nullopt if the side has no flexzone or no type registered.
+    auto cache_fz = [&](scripting::ChannelSide side, const py::object &type,
+                        const hub::SchemaSpec &spec) -> std::optional<py::object>
+    {
+        void *ptr = api.flexzone(side);
+        size_t sz = api.flexzone_size(side);
+        if (!ptr || sz == 0 || type.is_none()) return std::nullopt;
+        return make_slot_view_(spec, type, ptr, sz, /*readonly=*/false);
+    };
+
     // Create role-specific Python wrapper around the RoleAPIBase.
     if (tag == "prod")
     {
         producer_api_ = std::make_unique<producer::ProducerAPI>(api);
         producer_api_->shared_data_ = py::dict();
+        producer_api_->set_tx_flexzone(cache_fz(
+            scripting::ChannelSide::Tx, out_fz_type_, out_fz_spec_));
 
         py::module_ mod = py::module_::import("pylabhub_producer");
         api_obj_ = py::cast(producer_api_.get(), py::return_value_policy::reference);
@@ -465,6 +478,8 @@ bool PythonEngine::build_api_(RoleAPIBase &api)
     {
         consumer_api_ = std::make_unique<consumer::ConsumerAPI>(api);
         consumer_api_->shared_data_ = py::dict();
+        consumer_api_->set_rx_flexzone(cache_fz(
+            scripting::ChannelSide::Rx, in_fz_type_, in_fz_spec_));
 
         py::module_ mod = py::module_::import("pylabhub_consumer");
         api_obj_ = py::cast(consumer_api_.get(), py::return_value_policy::reference);
@@ -473,6 +488,10 @@ bool PythonEngine::build_api_(RoleAPIBase &api)
     {
         processor_api_ = std::make_unique<processor::ProcessorAPI>(api);
         processor_api_->shared_data_ = py::dict();
+        processor_api_->set_tx_flexzone(cache_fz(
+            scripting::ChannelSide::Tx, out_fz_type_, out_fz_spec_));
+        processor_api_->set_rx_flexzone(cache_fz(
+            scripting::ChannelSide::Rx, in_fz_type_, in_fz_spec_));
 
         py::module_ mod = py::module_::import("pylabhub_processor");
         api_obj_ = py::cast(processor_api_.get(), py::return_value_policy::reference);
