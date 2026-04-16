@@ -351,7 +351,7 @@ int broker_schema_mismatch()
             broker.stop_and_join();
         },
         "broker.broker_schema_mismatch",
-        logger_module());
+        logger_module(), zmq_module());
 }
 
 // ============================================================================
@@ -517,7 +517,7 @@ int broker_dereg_pid_mismatch()
             broker.stop_and_join();
         },
         "broker.broker_dereg_pid_mismatch",
-        logger_module());
+        logger_module(), zmq_module());
 }
 
 } // namespace pylabhub::tests::worker::broker

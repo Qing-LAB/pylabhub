@@ -14,6 +14,7 @@
 #include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
 #include "utils/timeout_constants.hpp"
+#include "utils/zmq_context.hpp"
 
 #include "cppzmq/zmq.hpp"
 #include "cppzmq/zmq_addon.hpp"
@@ -364,7 +365,12 @@ public:
 
 void BrokerServiceImpl::run()
 {
-    zmq::context_t ctx(1);
+    // Use the shared process-wide zmq::context_t owned by the ZMQContext
+    // lifecycle module. The broker binary (hubshell) already includes
+    // GetZMQContextModule() in its LifecycleGuard; so do all BrokerService
+    // tests. No per-instance context — matches the pattern used by
+    // ZmqQueue, InboxQueue, BrokerRequestComm, AdminShell, and Messenger.
+    zmq::context_t &ctx = pylabhub::hub::get_zmq_context();
     zmq::socket_t router(ctx, zmq::socket_type::router);
     router.set(zmq::sockopt::linger, 0); // policy: always LINGER=0; see §ZMQ socket policy
 

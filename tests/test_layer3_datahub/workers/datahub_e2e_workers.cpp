@@ -129,7 +129,7 @@ int orchestrator(int /*argc*/, char** /*argv*/)
             broker.stop_and_join();
         },
         "e2e.orchestrator",
-        logger_module(), crypto_module(), hub_module());
+        logger_module(), crypto_module(), hub_module(), zmq_module());
 }
 
 // ============================================================================
