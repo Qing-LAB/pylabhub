@@ -133,7 +133,7 @@ TEST_F(NativeEngineTest, FullLifecycle_ProduceCommitsAndWritesSlot)
     // on_produce: plugin writes 42.0 to slot.
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf), nullptr, 0}, msgs);
+    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
     EXPECT_EQ(result, InvokeResult::Commit);
     EXPECT_FLOAT_EQ(buf, 42.0f);
 
@@ -144,7 +144,7 @@ TEST_F(NativeEngineTest, FullLifecycle_ProduceCommitsAndWritesSlot)
 
     // Second produce: counter increments.
     buf = 0.0f;
-    result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf), nullptr, 0}, msgs);
+    result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
     EXPECT_EQ(result, InvokeResult::Commit);
     EXPECT_FLOAT_EQ(buf, 42.0f);
 
@@ -391,7 +391,7 @@ TEST_F(NativeEngineTest, Api_CountersAndSchemaSize_ThroughNativeModule)
     // and reports results as custom metrics.
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf), nullptr, 0}, msgs);
+    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
     EXPECT_EQ(result, InvokeResult::Commit);
     EXPECT_FLOAT_EQ(buf, 42.0f);
 
@@ -444,7 +444,7 @@ TEST_F(NativeEngineTest, FullStartup_Producer_SlotOnly)
 
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf), nullptr, 0}, msgs);
+    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
     EXPECT_EQ(result, InvokeResult::Commit);
     EXPECT_FLOAT_EQ(buf, 42.0f);
 
@@ -482,7 +482,7 @@ TEST_F(NativeEngineTest, FullStartup_Consumer)
     float data = 42.0f;
     std::vector<IncomingMessage> msgs;
     auto result = engine.invoke_consume(
-        pylabhub::scripting::InvokeRx{&data, sizeof(data), nullptr, 0}, msgs);
+        pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
     EXPECT_EQ(result, InvokeResult::Commit);
     EXPECT_EQ(engine.script_error_count(), 0u);
 
@@ -528,8 +528,8 @@ TEST_F(NativeEngineTest, FullStartup_Processor)
     float out_data = 0.0f;
     std::vector<IncomingMessage> msgs;
     auto result = engine.invoke_process(
-        pylabhub::scripting::InvokeRx{&in_data, sizeof(in_data), nullptr, 0},
-        InvokeTx{&out_data, sizeof(out_data), nullptr, 0}, msgs);
+        pylabhub::scripting::InvokeRx{&in_data, sizeof(in_data)},
+        InvokeTx{&out_data, sizeof(out_data)}, msgs);
     EXPECT_EQ(result, InvokeResult::Commit);
     EXPECT_FLOAT_EQ(out_data, 10.0f); // 5.0 * 2.0
 
@@ -565,7 +565,7 @@ TEST_F(NativeEngineTest, FullStartup_Producer_Multifield)
 
     MultiFieldSlot slot{};
     std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_produce(InvokeTx{&slot, sizeof(slot), nullptr, 0}, msgs);
+    auto result = engine.invoke_produce(InvokeTx{&slot, sizeof(slot)}, msgs);
     EXPECT_EQ(result, InvokeResult::Commit);
 
     EXPECT_DOUBLE_EQ(slot.ts, 1.23456789);
@@ -613,7 +613,7 @@ TEST_F(NativeEngineTest, FullStartup_Consumer_Multifield)
 
     std::vector<IncomingMessage> msgs;
     auto result = engine.invoke_consume(
-        pylabhub::scripting::InvokeRx{&slot, sizeof(slot), nullptr, 0}, msgs);
+        pylabhub::scripting::InvokeRx{&slot, sizeof(slot)}, msgs);
     EXPECT_EQ(result, InvokeResult::Commit);
     EXPECT_EQ(engine.script_error_count(), 0u);
 
@@ -660,8 +660,8 @@ TEST_F(NativeEngineTest, FullStartup_Processor_Multifield)
     MultiFieldSlot out_slot{};
     std::vector<IncomingMessage> msgs;
     auto result = engine.invoke_process(
-        pylabhub::scripting::InvokeRx{&in_slot, sizeof(in_slot), nullptr, 0},
-        InvokeTx{&out_slot, sizeof(out_slot), nullptr, 0}, msgs);
+        pylabhub::scripting::InvokeRx{&in_slot, sizeof(in_slot)},
+        InvokeTx{&out_slot, sizeof(out_slot)}, msgs);
     EXPECT_EQ(result, InvokeResult::Commit);
 
     EXPECT_DOUBLE_EQ(out_slot.ts, 1.23456789);
@@ -706,13 +706,13 @@ TEST_F(NativeEngineTest, FullStartup_Producer_SlotAndFlexzone)
     EXPECT_TRUE(core.has_out_fz());
 
     float slot_buf = 0.0f;
-    float fz_buf   = 0.0f;
     std::vector<IncomingMessage> msgs;
     auto result = engine.invoke_produce(
-        InvokeTx{&slot_buf, sizeof(slot_buf), &fz_buf, sizeof(fz_buf)}, msgs);
+        InvokeTx{&slot_buf, sizeof(slot_buf)}, msgs);
     EXPECT_EQ(result, InvokeResult::Commit);
     EXPECT_FLOAT_EQ(slot_buf, 42.0f);
-    EXPECT_FLOAT_EQ(fz_buf, 99.0f);
+    // fz_buf assertion removed: flexzone is now accessed via api.flexzone(side),
+    // not via InvokeTx.fz. Native plugin's fz write goes to nullptr (no-op).
 
     pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
 }
@@ -772,7 +772,7 @@ TEST_F(NativeEngineTest, Api_BandPubSub_NoBroker_GracefulReturn)
     // Invoke on_produce — plugin calls 4 channel functions and reports metrics.
     float buf = 0.0f;
     std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf), nullptr, 0}, msgs);
+    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
     EXPECT_EQ(result, InvokeResult::Commit);
 
     auto metrics = core_.custom_metrics_snapshot();
