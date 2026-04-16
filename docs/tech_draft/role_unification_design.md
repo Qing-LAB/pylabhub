@@ -1,12 +1,27 @@
 # Tech Draft: Role Unification Design (L3)
 
-**Status**: Design (2026-04-14)
+**Status**: Active design (updated 2026-04-16)
 **Branch**: `feature/lua-role-support`
-**Supersedes**: `unified_role_loop.md` (kept for historical context; this doc is
-the current plan). `loop_design_unified.md` remains canonical for loop timing
-semantics and is referenced from §4 below.
-**Baseline**: 1275/1275 tests.
-**Promotes to**: HEP-CORE-0011 rewrite (post-implementation).
+**Supersedes**: `unified_role_loop.md` (archived 2026-04-16 → HEP-0011).
+`loop_design_unified.md` (archived 2026-04-16 → HEP-0008 §2.2).
+**Baseline**: 1278/1278 tests (2026-04-16).
+
+### Implementation Status
+
+| Phase | Status | Commit/Date |
+|-------|--------|-------------|
+| L3.α — flatten data-plane verbs | ✅ DONE | RoleAPIBase owns write_acquire/read_acquire etc. |
+| L3.β — collapse 3 CycleOps → 1 | ❌ NOT STARTED | Still 3 classes in cycle_ops.hpp |
+| L3.γ — delete hub::Producer/Consumer | ✅ DONE | A6.1-A6.3 (2026-04-15) |
+| L3.δ — generic RoleHost base | ❌ NOT STARTED | Still 3 separate RoleHost classes |
+| L3.ε — ScriptEngine framework-agnostic | ❌ NOT STARTED | Still has invoke_produce/consume/process |
+| L3.ζ — documentation update | 🔄 IN PROGRESS | Tech draft cleanup + HEP merges (2026-04-16) |
+
+Additional completed work not in original phases:
+- ZMQ cppzmq migration + shared ZMQContext module
+- ThreadManager → HEP-CORE-0031
+- Flexzone api.flexzone(side) init-time cache (all 3 engines)
+- Shutdown order fix (on_stop → finalize → stop → teardown → drain)
 
 ---
 
