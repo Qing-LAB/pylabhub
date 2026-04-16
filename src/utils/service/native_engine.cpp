@@ -657,7 +657,10 @@ InvokeResult NativeEngine::invoke_produce(
 {
     if (!fn_on_produce_)
         return InvokeResult::Discard;
-    plh_tx_t c_tx{tx.slot, tx.slot_size, tx.fz, tx.fz_size};
+    // Flexzone not carried on InvokeTx anymore — scripts access it via
+    // api.flexzone(side). plh_tx_t keeps the fz fields for C ABI compat
+    // but they're nullptr until a dedicated C API flexzone accessor is added.
+    plh_tx_t c_tx{tx.slot, tx.slot_size, nullptr, 0};
     return fn_on_produce_(&c_tx) ? InvokeResult::Commit : InvokeResult::Discard;
 }
 
@@ -667,7 +670,7 @@ InvokeResult NativeEngine::invoke_consume(
 {
     if (!fn_on_consume_)
         return InvokeResult::Discard;
-    plh_rx_t c_rx{rx.slot, rx.slot_size, rx.fz, rx.fz_size};
+    plh_rx_t c_rx{rx.slot, rx.slot_size, nullptr, 0};
     return fn_on_consume_(&c_rx) ? InvokeResult::Commit : InvokeResult::Discard;
 }
 
@@ -677,8 +680,8 @@ InvokeResult NativeEngine::invoke_process(
 {
     if (!fn_on_process_)
         return InvokeResult::Discard;
-    plh_rx_t c_rx{rx.slot, rx.slot_size, rx.fz, rx.fz_size};
-    plh_tx_t c_tx{tx.slot, tx.slot_size, tx.fz, tx.fz_size};
+    plh_rx_t c_rx{rx.slot, rx.slot_size, nullptr, 0};
+    plh_tx_t c_tx{tx.slot, tx.slot_size, nullptr, 0};
     return fn_on_process_(&c_rx, &c_tx) ? InvokeResult::Commit : InvokeResult::Discard;
 }
 
