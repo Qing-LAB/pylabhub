@@ -43,8 +43,11 @@ set(UTILS_SOURCES
 
   # --- role hosts: lifecycle + data loop for each role ---
   ${CMAKE_SOURCE_DIR}/src/producer/producer_role_host.cpp
+  ${CMAKE_SOURCE_DIR}/src/producer/producer_init.cpp
   ${CMAKE_SOURCE_DIR}/src/consumer/consumer_role_host.cpp
+  ${CMAKE_SOURCE_DIR}/src/consumer/consumer_init.cpp
   ${CMAKE_SOURCE_DIR}/src/processor/processor_role_host.cpp
+  ${CMAKE_SOURCE_DIR}/src/processor/processor_init.cpp
 
   # --- logging: async logger + pluggable sinks ---
   logging/logger.cpp
