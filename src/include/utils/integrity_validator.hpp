@@ -19,7 +19,7 @@ namespace pylabhub::hub
  * allowing for easy validation and optional repair of a DataBlock's
  * control structures and checksums.
  */
-class PYLABHUB_UTILS_EXPORT IntegrityValidator
+class PYLABHUB_UTILS_TEST_EXPORT IntegrityValidator
 {
   public:
     /**

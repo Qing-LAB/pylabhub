@@ -18,7 +18,7 @@ namespace pylabhub::hub
  * This class wraps the C-style recovery functions for a single DataBlock slot,
  * allowing for easier and safer execution of recovery operations.
  */
-class PYLABHUB_UTILS_EXPORT SlotRecovery
+class PYLABHUB_UTILS_TEST_EXPORT SlotRecovery
 {
   public:
     /**
