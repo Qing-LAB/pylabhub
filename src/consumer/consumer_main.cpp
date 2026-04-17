@@ -38,6 +38,7 @@
  *         api.log('info', "Consumer stopping")
  */
 
+#include "consumer_init.hpp"
 #include "consumer_role_host.hpp"
 #include "consumer_fields.hpp"
 #include "lua_engine.hpp"
@@ -75,6 +76,7 @@ namespace role_cli   = pylabhub::role_cli;
 // do_init — create consumer directory with consumer.json template
 // ---------------------------------------------------------------------------
 
+// do_init: binary-side CLI wrapper around RoleDirectory::init_directory().
 static int do_init(const std::string &cons_dir_str, const std::string &cli_name)
 {
     namespace fs = std::filesystem;
@@ -83,126 +85,12 @@ static int do_init(const std::string &cons_dir_str, const std::string &cli_name)
                               ? fs::current_path()
                               : fs::path(cons_dir_str);
 
-    try
-    {
-        RoleDirectory::create(cons_dir);
-    }
-    catch (const std::exception &e)
-    {
-        std::cerr << "Error: " << e.what() << "\n";
-        return 1;
-    }
-
-    const fs::path json_path = cons_dir / "consumer.json";
-    if (fs::exists(json_path))
-    {
-        std::cerr << "Error: consumer.json already exists at '" << json_path.string()
-                  << "'. Remove it first or choose a different directory.\n";
-        return 1;
-    }
-
     const auto name_opt = role_cli::resolve_init_name(
         cli_name, "Consumer name (human-readable, e.g. 'Logger'): ");
     if (!name_opt)
         return 1;
-    const std::string cons_name = *name_opt;
 
-    const std::string cons_uid = pylabhub::uid::generate_consumer_uid(cons_name);
-
-    nlohmann::json j;
-
-    j["consumer"]["uid"]       = cons_uid;
-    j["consumer"]["name"]      = cons_name;
-    j["consumer"]["log_level"] = "info";
-    j["consumer"]["auth"]["keyfile"] = "";
-
-    j["loop_timing"]         = "max_rate";
-    j["in_hub_dir"]          = "<replace with hub directory path, e.g. /var/pylabhub/my_hub>";
-    j["in_channel"]          = "lab.my.channel";
-    j["in_transport"]        = "shm";
-    j["in_shm_enabled"]      = true;
-    j["checksum"]            = "enforced";
-
-    j["stop_on_script_error"] = false;
-
-    j["script"]["path"] = ".";
-    j["script"]["type"] = "python";
-
-    std::ofstream out(json_path);
-    if (!out)
-    {
-        std::cerr << "Error: cannot write '" << json_path.string() << "'\n";
-        return 1;
-    }
-    out << j.dump(2) << "\n";
-    out.close();
-
-    const fs::path init_py = cons_dir / "script" / "python" / "__init__.py";
-    std::ofstream py_out(init_py);
-    if (!py_out)
-    {
-        std::cerr << "Error: cannot write '" << init_py.string() << "'\n";
-        return 1;
-    }
-    py_out <<
-        "\"\"\"Consumer: " << cons_name << "\n"
-        "\n"
-        "Script callbacks for the pylabhub-consumer host.\n"
-        "Edit this file to implement your data-consumption logic.\n"
-        "\n"
-        "Directory layout:\n"
-        "  script/python/         <- this Python package\n"
-        "    __init__.py          <- entry point (this file)\n"
-        "\n"
-        "Import siblings with relative imports:\n"
-        "  from . import helpers  <- loads ./helpers.py\n"
-        "\"\"\"\n"
-        "import pylabhub_consumer as cons\n"
-        "\n"
-        "\n"
-        "def on_init(api: cons.ConsumerAPI) -> None:\n"
-        "    \"\"\"Called once before the consumption loop starts.\"\"\"\n"
-        "    api.log('info', f\"on_init: uid={api.uid()}\")\n"
-        "\n"
-        "\n"
-        "def on_consume(in_slot, flexzone, messages, api: cons.ConsumerAPI) -> None:\n"
-        "    \"\"\"\n"
-        "    Called on each incoming slot (or None on timeout).\n"
-        "\n"
-        "    in_slot:  ctypes/numpy read-only copy of the input SHM slot,\n"
-        "              or None on timeout.\n"
-        "    flexzone: read-only ctypes/numpy view of the input flexzone, or None.\n"
-        "    messages: list of bytes from ZMQ data channel.\n"
-        "    api:      ConsumerAPI — log, stop, etc.\n"
-        "    \"\"\"\n"
-        "    if in_slot is None:\n"
-        "        return  # timeout — no new data\n"
-        "\n"
-        "    for data in messages:\n"
-        "        api.log('debug', f\"zmq data: {data!r}\")\n"
-        "\n"
-        "    # TODO: replace with real data-consumption logic\n"
-        "    api.log('debug', f\"received slot #{api.in_slots_received()}\")\n"
-        "\n"
-        "\n"
-        "def on_stop(api: cons.ConsumerAPI) -> None:\n"
-        "    \"\"\"Called once after the consumption loop exits.\"\"\"\n"
-        "    api.log('info', f\"on_stop: uid={api.uid()}\")\n";
-    py_out.close();
-
-    std::cout << "\nConsumer directory initialised: " << cons_dir.string() << "\n"
-              << "  cons_uid  : " << cons_uid << "\n"
-              << "  cons_name : " << cons_name << "\n"
-              << "  consumer.json : " << json_path.string() << "\n"
-              << "  script    : " << init_py.string() << "\n\n"
-              << "Next steps:\n"
-              << "  1. Edit consumer.json — set 'hub_dir' to your hub directory path\n"
-              << "  2. Edit consumer.json — set 'channel'\n"
-              << "  3. (Optional) Set 'consumer.auth.keyfile', then generate keypair:\n"
-              << "       pylabhub-consumer --config " << json_path.string() << " --keygen\n"
-              << "  4. Edit script/python/__init__.py — implement on_consume\n"
-              << "  5. Run: pylabhub-consumer " << cons_dir.string() << "\n";
-    return 0;
+    return RoleDirectory::init_directory(cons_dir, "consumer", *name_opt);
 }
 
 // ---------------------------------------------------------------------------
@@ -212,6 +100,9 @@ static int do_init(const std::string &cons_dir_str, const std::string &cli_name)
 int main(int argc, char *argv[])
 {
     std::atomic<bool> g_shutdown{false};
+
+    // Register role-specific init content before parsing args.
+    pylabhub::consumer::register_consumer_init();
 
     pylabhub::InteractiveSignalHandler signal_handler(
         {.binary_name = "pylabhub-consumer"}, &g_shutdown);
