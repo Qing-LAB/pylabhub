@@ -524,3 +524,113 @@ TEST_F(RoleConfigTest, UnknownKey_Throws)
     auto path = write_json("producer.json", j);
     EXPECT_THROW(RoleConfig::load(path.string(), "producer"), std::runtime_error);
 }
+
+// ── Logging config ──────────────────────────────────────────────────────────
+
+TEST_F(RoleConfigTest, LoggingDefault_AllDefaults)
+{
+    // No "logging" key → defaults: empty path, 10 MiB, 5 backups, timestamped=true.
+    auto path = write_json("producer.json", minimal_producer_json());
+    auto cfg = RoleConfig::load(path.string(), "producer");
+    EXPECT_EQ(cfg.logging().file_path, "");
+    EXPECT_EQ(cfg.logging().max_size_bytes, 10ULL * 1024 * 1024);
+    EXPECT_EQ(cfg.logging().max_backup_files, 5u);
+    EXPECT_TRUE(cfg.logging().timestamped);
+}
+
+TEST_F(RoleConfigTest, LoggingExplicit_AllFields)
+{
+    auto j = minimal_producer_json();
+    j["logging"] = {
+        {"file_path",   "logs/custom.log"},
+        {"max_size_mb", 50},
+        {"backups",     10},
+        {"timestamped", false},
+    };
+    auto path = write_json("producer.json", j);
+    auto cfg = RoleConfig::load(path.string(), "producer");
+    EXPECT_EQ(cfg.logging().file_path, "logs/custom.log");
+    EXPECT_EQ(cfg.logging().max_size_bytes, 50ULL * 1024 * 1024);
+    EXPECT_EQ(cfg.logging().max_backup_files, 10u);
+    EXPECT_FALSE(cfg.logging().timestamped);
+}
+
+TEST_F(RoleConfigTest, LoggingPartial_MixesDefaultsAndExplicit)
+{
+    auto j = minimal_producer_json();
+    j["logging"] = {
+        {"max_size_mb", 25},
+        // file_path, backups, timestamped left default
+    };
+    auto path = write_json("producer.json", j);
+    auto cfg = RoleConfig::load(path.string(), "producer");
+    EXPECT_EQ(cfg.logging().file_path, "");
+    EXPECT_EQ(cfg.logging().max_size_bytes, 25ULL * 1024 * 1024);
+    EXPECT_EQ(cfg.logging().max_backup_files, 5u);
+    EXPECT_TRUE(cfg.logging().timestamped);
+}
+
+TEST_F(RoleConfigTest, LoggingZeroBackups_Allowed)
+{
+    // 0 backups = only active file, no retention — valid (no-limit sentinel).
+    auto j = minimal_producer_json();
+    j["logging"] = {{"backups", 0}};
+    auto path = write_json("producer.json", j);
+    auto cfg = RoleConfig::load(path.string(), "producer");
+    EXPECT_EQ(cfg.logging().max_backup_files, 0u);
+}
+
+TEST_F(RoleConfigTest, LoggingNegativeBackups_Throws)
+{
+    auto j = minimal_producer_json();
+    j["logging"] = {{"backups", -1}};
+    auto path = write_json("producer.json", j);
+    EXPECT_THROW(RoleConfig::load(path.string(), "producer"), std::runtime_error);
+}
+
+TEST_F(RoleConfigTest, LoggingZeroMaxSize_Throws)
+{
+    auto j = minimal_producer_json();
+    j["logging"] = {{"max_size_mb", 0}};
+    auto path = write_json("producer.json", j);
+    EXPECT_THROW(RoleConfig::load(path.string(), "producer"), std::runtime_error);
+}
+
+TEST_F(RoleConfigTest, LoggingNegativeMaxSize_Throws)
+{
+    auto j = minimal_producer_json();
+    j["logging"] = {{"max_size_mb", -5}};
+    auto path = write_json("producer.json", j);
+    EXPECT_THROW(RoleConfig::load(path.string(), "producer"), std::runtime_error);
+}
+
+TEST_F(RoleConfigTest, LoggingUnknownSubKey_Throws)
+{
+    // Unknown keys inside "logging" must be rejected.
+    auto j = minimal_producer_json();
+    j["logging"] = {
+        {"max_size_mb", 10},
+        {"bogus_field", "xyz"},
+    };
+    auto path = write_json("producer.json", j);
+    EXPECT_THROW(RoleConfig::load(path.string(), "producer"), std::runtime_error);
+}
+
+TEST_F(RoleConfigTest, LoggingNotObject_Throws)
+{
+    // "logging" must be an object; string/number/null should fail.
+    auto j = minimal_producer_json();
+    j["logging"] = "not an object";
+    auto path = write_json("producer.json", j);
+    EXPECT_THROW(RoleConfig::load(path.string(), "producer"), std::runtime_error);
+}
+
+TEST_F(RoleConfigTest, LoggingFractionalMaxSize_Accepted)
+{
+    // Fractional MB allowed: 0.5 MB = 512 KiB.
+    auto j = minimal_producer_json();
+    j["logging"] = {{"max_size_mb", 0.5}};
+    auto path = write_json("producer.json", j);
+    auto cfg = RoleConfig::load(path.string(), "producer");
+    EXPECT_EQ(cfg.logging().max_size_bytes, 512ULL * 1024);
+}
