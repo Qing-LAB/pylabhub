@@ -38,6 +38,7 @@ struct RoleConfig::Impl
     ScriptConfig     script;
     TimingConfig     timing;
     ChecksumConfig   checksum;
+    LoggingConfig    logging;
     InboxConfig      inbox;
     StartupConfig    startup;
     MonitoringConfig monitoring;
@@ -84,6 +85,8 @@ static const std::unordered_set<std::string> kAllowedKeys = {
     "queue_io_wait_timeout_ratio", "heartbeat_interval_ms",
     // Checksum
     "checksum", "flexzone_checksum",
+    // Logging
+    "logging",
     // Inbox
     "inbox_schema", "inbox_endpoint", "inbox_buffer_depth",
     "inbox_overflow_policy",
@@ -138,6 +141,7 @@ void RoleConfig::Impl::load_common(const nlohmann::json &j)
     script     = parse_script_config(j, base_dir, tag);
     timing     = parse_timing_config(j, tag);
     checksum   = parse_checksum_config(j, tag);
+    logging    = parse_logging_config(j, tag);
     inbox      = parse_inbox_config(j, tag);
     startup    = parse_startup_config(j, tag);
     monitoring = parse_monitoring_config(j);
@@ -224,6 +228,7 @@ const InboxConfig      &RoleConfig::inbox()      const { assert(impl_); return i
 const StartupConfig    &RoleConfig::startup()    const { assert(impl_); return impl_->startup; }
 const MonitoringConfig &RoleConfig::monitoring() const { assert(impl_); return impl_->monitoring; }
 const ChecksumConfig   &RoleConfig::checksum()   const { assert(impl_); return impl_->checksum; }
+const LoggingConfig    &RoleConfig::logging()    const { assert(impl_); return impl_->logging; }
 
 // ============================================================================
 // Directional accessors

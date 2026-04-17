@@ -35,6 +35,7 @@
 
 #include "utils/config/auth_config.hpp"
 #include "utils/config/checksum_config.hpp"
+#include "utils/config/logging_config.hpp"
 #include "utils/config/hub_config.hpp"
 #include "utils/config/identity_config.hpp"
 #include "utils/config/inbox_config.hpp"
@@ -94,6 +95,7 @@ class PYLABHUB_UTILS_EXPORT RoleConfig
     const StartupConfig    &startup()    const;
     const MonitoringConfig &monitoring() const;
     const ChecksumConfig   &checksum()   const;
+    const LoggingConfig    &logging()    const;
 
     // ── Directional accessors (two slots each) ───────────────────────
 
