@@ -1,14 +1,14 @@
-# pylabhub-pyenv.ps1 — Manage the pyLabHub bundled Python environment (Windows).
+# plh_pyenv.ps1 — Manage the pyLabHub bundled Python environment (Windows).
 #
 # This wrapper locates the bundled standalone Python interpreter and
-# invokes pylabhub-pyenv.py with it.  It works in both the source tree
+# invokes plh_pyenv.py with it.  It works in both the source tree
 # (tools/) and the staged/installed layout (bin/).
 #
 # Usage:
-#   .\pylabhub-pyenv.ps1 install [-r requirements.txt] [--wheels-dir DIR]
-#   .\pylabhub-pyenv.ps1 verify  [-r requirements.txt]
-#   .\pylabhub-pyenv.ps1 info
-#   .\pylabhub-pyenv.ps1 freeze
+#   .\plh_pyenv.ps1 install [-r requirements.txt] [--wheels-dir DIR]
+#   .\plh_pyenv.ps1 verify  [-r requirements.txt]
+#   .\plh_pyenv.ps1 info
+#   .\plh_pyenv.ps1 freeze
 #
 # Environment variables:
 #   PYLABHUB_PYTHON  — Override path to the Python interpreter.
@@ -23,7 +23,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$PyenvScript = Join-Path $ScriptDir "pylabhub-pyenv.py"
+$PyenvScript = Join-Path $ScriptDir "plh_pyenv.py"
 
 # --- Locate the Python interpreter ---
 if ($env:PYLABHUB_PYTHON -and (Test-Path $env:PYLABHUB_PYTHON)) {
@@ -47,7 +47,7 @@ $Python = (Resolve-Path $Python).Path
 
 # --- Locate the .py script ---
 if (-not (Test-Path $PyenvScript)) {
-    Write-Error "ERROR: Cannot find pylabhub-pyenv.py at: $PyenvScript"
+    Write-Error "ERROR: Cannot find plh_pyenv.py at: $PyenvScript"
     exit 1
 }
 

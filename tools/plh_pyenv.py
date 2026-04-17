@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""pylabhub-pyenv — Manage the pyLabHub bundled Python environment.
+"""plh_pyenv — Manage the pyLabHub bundled Python environment.
 
 This tool manages the standalone Python distribution bundled with pyLabHub.
 It controls package installation, verification, environment inspection, and
 virtual environment management.
 
 Usage (via wrapper scripts):
-    pylabhub-pyenv install    [-r REQUIREMENTS] [--wheels-dir DIR] [--venv NAME]
-    pylabhub-pyenv verify     [-r REQUIREMENTS] [--venv NAME]
-    pylabhub-pyenv info       [--venv NAME]
-    pylabhub-pyenv freeze     [--venv NAME]
-    pylabhub-pyenv create-venv NAME
-    pylabhub-pyenv list-venvs
-    pylabhub-pyenv remove-venv NAME
+    plh_pyenv install    [-r REQUIREMENTS] [--wheels-dir DIR] [--venv NAME]
+    plh_pyenv verify     [-r REQUIREMENTS] [--venv NAME]
+    plh_pyenv info       [--venv NAME]
+    plh_pyenv freeze     [--venv NAME]
+    plh_pyenv create-venv NAME
+    plh_pyenv list-venvs
+    plh_pyenv remove-venv NAME
 
-The wrapper scripts (pylabhub-pyenv / pylabhub-pyenv.ps1) locate the bundled
+The wrapper scripts (plh_pyenv / plh_pyenv.ps1) locate the bundled
 Python interpreter automatically and invoke this script with it.  This script
 must NOT be run with a system Python — it operates on the interpreter that
 executes it (i.e., the bundled standalone Python).
@@ -45,8 +45,8 @@ from pathlib import Path
 def _prefix() -> Path:
     """Return the pyLabHub installation prefix.
 
-    This script lives in ``<prefix>/bin/pylabhub-pyenv.py`` (staged) or
-    ``<prefix>/tools/pylabhub-pyenv.py`` (source).  The prefix is one
+    This script lives in ``<prefix>/bin/plh_pyenv.py`` (staged) or
+    ``<prefix>/tools/plh_pyenv.py`` (source).  The prefix is one
     level up from the script's directory.
     """
     return Path(__file__).resolve().parent.parent
@@ -161,11 +161,11 @@ def cmd_install(args: argparse.Namespace) -> int:
     venv_dir = _resolve_venv(args.venv)
     if venv_dir and not venv_dir.is_dir():
         print(f"ERROR: venv '{args.venv}' does not exist. "
-              f"Create it first: pylabhub-pyenv create-venv {args.venv}",
+              f"Create it first: plh_pyenv create-venv {args.venv}",
               file=sys.stderr)
         return 1
 
-    print(f"=== pylabhub-pyenv install ({_env_label(args.venv)}) ===")
+    print(f"=== plh_pyenv install ({_env_label(args.venv)}) ===")
     print(f"  Python:       {sys.executable}")
     print(f"  Version:      {platform.python_version()}")
     print(f"  Python home:  {_python_home()}")
@@ -219,7 +219,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         print(f"ERROR: venv '{args.venv}' does not exist.", file=sys.stderr)
         return 1
 
-    print(f"=== pylabhub-pyenv verify ({_env_label(args.venv)}) ===")
+    print(f"=== plh_pyenv verify ({_env_label(args.venv)}) ===")
     if venv_dir:
         print(f"  Venv:         {venv_dir}")
     print(f"  Requirements: {req_path}")
@@ -271,7 +271,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         print(f"=== All {len(required)} packages verified ===")
         return 0
     else:
-        print("=== VERIFICATION FAILED — run 'pylabhub-pyenv install' ===",
+        print("=== VERIFICATION FAILED — run 'plh_pyenv install' ===",
               file=sys.stderr)
         return 1
 
@@ -285,7 +285,7 @@ def cmd_info(args: argparse.Namespace) -> int:
         print(f"ERROR: venv '{args.venv}' does not exist.", file=sys.stderr)
         return 1
 
-    print(f"=== pylabhub-pyenv info ({_env_label(args.venv)}) ===")
+    print(f"=== plh_pyenv info ({_env_label(args.venv)}) ===")
     print(f"  Base interpreter: {sys.executable}")
     print(f"  Version:          {platform.python_version()}")
     print(f"  Platform:         {platform.platform()}")
@@ -306,7 +306,7 @@ def cmd_info(args: argparse.Namespace) -> int:
     if stamp.is_file():
         print(f"  Env stamp:        {stamp} (exists)")
     else:
-        print(f"  Env stamp:        {stamp} (MISSING — run 'pylabhub-pyenv install')")
+        print(f"  Env stamp:        {stamp} (MISSING — run 'plh_pyenv install')")
 
     if not venv_dir:
         count = sum(1 for _ in importlib.metadata.distributions())
@@ -338,10 +338,10 @@ def cmd_create_venv(args: argparse.Namespace) -> int:
 
     if venv_dir.exists():
         print(f"ERROR: venv '{name}' already exists at {venv_dir}", file=sys.stderr)
-        print("Use 'pylabhub-pyenv remove-venv' first to recreate.", file=sys.stderr)
+        print("Use 'plh_pyenv remove-venv' first to recreate.", file=sys.stderr)
         return 1
 
-    print(f"=== pylabhub-pyenv create-venv ===")
+    print(f"=== plh_pyenv create-venv ===")
     print(f"  Name:         {name}")
     print(f"  Location:     {venv_dir}")
     print(f"  Base Python:  {sys.executable} ({platform.python_version()})")
@@ -370,7 +370,7 @@ def cmd_create_venv(args: argparse.Namespace) -> int:
     print(f"=== venv '{name}' created ===")
     print()
     print("To install packages into this venv:")
-    print(f"  pylabhub-pyenv install --venv {name} -r requirements.txt")
+    print(f"  plh_pyenv install --venv {name} -r requirements.txt")
     print()
     print("To use this venv in a role config (JSON):")
     print(f'  "python_venv": "{name}"')
@@ -381,7 +381,7 @@ def cmd_list_venvs(args: argparse.Namespace) -> int:
     """List all virtual environments."""
     venvs_root = _venvs_dir()
 
-    print(f"=== pylabhub-pyenv list-venvs ===")
+    print(f"=== plh_pyenv list-venvs ===")
     print(f"  Venvs dir: {venvs_root}")
     print()
 
@@ -415,7 +415,7 @@ def cmd_remove_venv(args: argparse.Namespace) -> int:
         print(f"ERROR: venv '{name}' does not exist.", file=sys.stderr)
         return 1
 
-    print(f"=== pylabhub-pyenv remove-venv ===")
+    print(f"=== plh_pyenv remove-venv ===")
     print(f"  Removing: {venv_dir}")
 
     shutil.rmtree(venv_dir)
@@ -431,7 +431,7 @@ def cmd_remove_venv(args: argparse.Namespace) -> int:
 def _default_requirements() -> str:
     """Return the default requirements.txt path relative to the installation.
 
-    Layout: <prefix>/bin/pylabhub-pyenv  (or <prefix>/tools/pylabhub-pyenv.py)
+    Layout: <prefix>/bin/plh_pyenv  (or <prefix>/tools/plh_pyenv.py)
             <prefix>/share/scripts/python/requirements.txt
     """
     script_dir = Path(__file__).resolve().parent
@@ -457,7 +457,7 @@ def _add_requirements_arg(parser: argparse.ArgumentParser) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        prog="pylabhub-pyenv",
+        prog="plh_pyenv",
         description="Manage the pyLabHub bundled Python environment.",
     )
     sub = parser.add_subparsers(dest="command", required=True)

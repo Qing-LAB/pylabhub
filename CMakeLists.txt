@@ -233,30 +233,30 @@ add_custom_target(stage_share
 add_dependencies(stage_share create_staging_dirs)
 
 # --- Stage Python Environment Tools ---
-# pylabhub-pyenv: cross-platform tool for managing the bundled Python environment
+# plh_pyenv: cross-platform tool for managing the bundled Python environment
 # (package installation, verification, environment inspection).
 # Staged to bin/ alongside the main executables so it's on PATH.
 if(PLATFORM_WIN64)
   add_custom_target(stage_pyenv_tools
       COMMAND ${CMAKE_COMMAND} -E copy
-              "${CMAKE_SOURCE_DIR}/tools/pylabhub-pyenv.py"
-              "${PYLABHUB_STAGING_DIR}/bin/pylabhub-pyenv.py"
+              "${CMAKE_SOURCE_DIR}/tools/plh_pyenv.py"
+              "${PYLABHUB_STAGING_DIR}/bin/plh_pyenv.py"
       COMMAND ${CMAKE_COMMAND} -E copy
-              "${CMAKE_SOURCE_DIR}/tools/pylabhub-pyenv.ps1"
-              "${PYLABHUB_STAGING_DIR}/bin/pylabhub-pyenv.ps1"
-      COMMENT "Staging pylabhub-pyenv tools to bin/ (Windows)"
+              "${CMAKE_SOURCE_DIR}/tools/plh_pyenv.ps1"
+              "${PYLABHUB_STAGING_DIR}/bin/plh_pyenv.ps1"
+      COMMENT "Staging plh_pyenv tools to bin/ (Windows)"
       VERBATIM
   )
 else()
   add_custom_target(stage_pyenv_tools
       COMMAND ${CMAKE_COMMAND} -E copy
-              "${CMAKE_SOURCE_DIR}/tools/pylabhub-pyenv.py"
-              "${PYLABHUB_STAGING_DIR}/bin/pylabhub-pyenv.py"
+              "${CMAKE_SOURCE_DIR}/tools/plh_pyenv.py"
+              "${PYLABHUB_STAGING_DIR}/bin/plh_pyenv.py"
       COMMAND ${CMAKE_COMMAND} -E copy
-              "${CMAKE_SOURCE_DIR}/tools/pylabhub-pyenv"
-              "${PYLABHUB_STAGING_DIR}/bin/pylabhub-pyenv"
-      COMMAND chmod +x "${PYLABHUB_STAGING_DIR}/bin/pylabhub-pyenv"
-      COMMENT "Staging pylabhub-pyenv tools to bin/ (Unix)"
+              "${CMAKE_SOURCE_DIR}/tools/plh_pyenv"
+              "${PYLABHUB_STAGING_DIR}/bin/plh_pyenv"
+      COMMAND chmod +x "${PYLABHUB_STAGING_DIR}/bin/plh_pyenv"
+      COMMENT "Staging plh_pyenv tools to bin/ (Unix)"
       VERBATIM
   )
 endif()

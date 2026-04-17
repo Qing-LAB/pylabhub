@@ -7,7 +7,7 @@ Top-level command:
 
 Binary wrappers:
     pylabhub-hubshell, pylabhub-producer, pylabhub-consumer,
-    pylabhub-processor, pylabhub-pyenv
+    pylabhub-processor, plh_pyenv
 
 Each binary wrapper replaces the current process with the corresponding
 C++ executable using os.execvp (no subprocess overhead, proper signal
@@ -76,7 +76,7 @@ def processor() -> None:
 
 
 def pyenv() -> None:
-    _exec_binary("pylabhub-pyenv")
+    _exec_binary("plh_pyenv")
 
 
 # ---------------------------------------------------------------------------

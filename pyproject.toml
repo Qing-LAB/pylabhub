@@ -75,7 +75,7 @@ pylabhub-hubshell  = "pylabhub._cli:hubshell"
 pylabhub-producer  = "pylabhub._cli:producer"
 pylabhub-consumer  = "pylabhub._cli:consumer"
 pylabhub-processor = "pylabhub._cli:processor"
-pylabhub-pyenv     = "pylabhub._cli:pyenv"
+plh_pyenv          = "pylabhub._cli:pyenv"
 
 # ---------------------------------------------------------------------------
 # scikit-build-core configuration

@@ -38,8 +38,8 @@ The root is `${CMAKE_INSTALL_PREFIX}` (install) or `${PYLABHUB_STAGING_DIR}` (st
     pylabhub-producer          ← producer role binary
     pylabhub-consumer          ← consumer role binary
     pylabhub-processor         ← processor role binary
-    pylabhub-pyenv             ← Python environment manager (bash wrapper)
-    pylabhub-pyenv.ps1         ← Python environment manager (PowerShell, Windows)
+    plh_pyenv             ← Python environment manager (bash wrapper)
+    plh_pyenv.ps1         ← Python environment manager (PowerShell, Windows)
   lib/
     libpylabhub-utils-stable.so.M.m.p   ← shared library (POSIX versioned)
     libpylabhub-utils-stable.so.M       ← soname symlink
