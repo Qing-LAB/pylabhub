@@ -27,7 +27,8 @@ std::string formatted_time(std::chrono::system_clock::time_point timestamp,
                              bool use_dash_spacer)
 {
     // Human form: "YYYY-MM-DD HH:MM:SS.uuuuuu"
-    // Dash  form: "YYYY-MM-DD-HH-MM-SS-uuuuuu"  (filesystem-safe)
+    // Dash  form: "YYYY-MM-DD-HH-MM-SS.uuuuuu"  (filesystem-safe, '.' kept
+    //                                            for fractional → lex-chrono)
     //
     // Each fmt::format call below uses a compile-time string literal —
     // satisfying fmt's consteval check. The if/else selects between the
@@ -38,19 +39,12 @@ std::string formatted_time(std::chrono::system_clock::time_point timestamp,
 #if defined(FMT_CHRONO_FMT_STYLE) && (FMT_CHRONO_FMT_STYLE == 1)
     // fmt supports %f
     if (use_dash_spacer)
-        return fmt::format("{:%Y-%m-%d-%H-%M-%S-%f}", tp_us);
+        return fmt::format("{:%Y-%m-%d-%H-%M-%S.%f}", tp_us);
     return fmt::format("{:%Y-%m-%d %H:%M:%S.%f}", tp_us);
 #elif defined(FMT_CHRONO_FMT_STYLE) && (FMT_CHRONO_FMT_STYLE == 2)
-    // fmt auto-appends the fraction when cast type is microseconds.
-    // The fraction separator defaults to '.'; for dash mode we render
-    // seconds explicitly and append the fractional component with '-'.
+    // fmt auto-appends the fraction (with '.') when cast type is microseconds.
     if (use_dash_spacer)
-    {
-        auto secs = std::chrono::time_point_cast<std::chrono::seconds>(tp_us);
-        int fractional_us = static_cast<int>((tp_us - secs).count());
-        auto sec_part = fmt::format("{:%Y-%m-%d-%H-%M-%S}", secs);
-        return fmt::format("{}-{:06d}", sec_part, fractional_us);
-    }
+        return fmt::format("{:%Y-%m-%d-%H-%M-%S}", tp_us);
     return fmt::format("{:%Y-%m-%d %H:%M:%S}", tp_us);
 #else
     // defensive fallback — manual two-step
@@ -60,7 +54,7 @@ std::string formatted_time(std::chrono::system_clock::time_point timestamp,
         if (use_dash_spacer)
         {
             auto sec_part = fmt::format("{:%Y-%m-%d-%H-%M-%S}", secs);
-            return fmt::format("{}-{:06d}", sec_part, fractional_us);
+            return fmt::format("{}.{:06d}", sec_part, fractional_us);
         }
         auto sec_part = fmt::format("{:%Y-%m-%d %H:%M:%S}", secs);
         return fmt::format("{}.{:06d}", sec_part, fractional_us);
@@ -78,7 +72,7 @@ std::string formatted_time(std::chrono::system_clock::time_point timestamp,
     if (use_dash_spacer)
     {
         auto sec_part = fmt::format("{:%Y-%m-%d-%H-%M-%S}", secs);
-        return fmt::format("{}-{:06d}", sec_part, fractional_us);
+        return fmt::format("{}.{:06d}", sec_part, fractional_us);
     }
     auto sec_part = fmt::format("{:%Y-%m-%d %H:%M:%S}", secs);
     return fmt::format("{}.{:06d}", sec_part, fractional_us);

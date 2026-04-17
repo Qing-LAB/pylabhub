@@ -20,11 +20,15 @@ namespace pylabhub::format_tools
  * @brief Formats a system_clock time_point into a string with microsecond precision.
  *
  * @param timestamp         The time_point to format.
- * @param use_dash_spacer   If true, produces a filesystem-safe form using
- *                          only dashes: "YYYY-MM-DD-HH-MM-SS-us".
+ * @param use_dash_spacer   If true, replaces the date-time space and the
+ *                          time-field ':' separators with '-', producing
+ *                          "YYYY-MM-DD-HH-MM-SS.us" (filesystem-safe).
+ *                          The fractional-second '.' is preserved so the
+ *                          string sorts lexicographically in chronological
+ *                          order against other timestamped filenames.
  *                          If false (default), uses the human-readable form:
  *                          "YYYY-MM-DD HH:MM:SS.us".
- * @return The formatted timestamp string.
+ * @return The formatted timestamp string (26 characters).
  */
 PYLABHUB_UTILS_EXPORT std::string formatted_time(std::chrono::system_clock::time_point timestamp,
                                                    bool use_dash_spacer = false);

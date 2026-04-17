@@ -577,19 +577,9 @@ int test_timestamped_rotating_file_sink(const std::string &base_path_str,
                 << "(max_size=" << max_file_size_bytes << " may be too large, "
                 << "or messages too short).";
 
-            // (d) Read all files in chronological order. Sort by mtime because
-            //     the 19-char (plain-second) and 26-char (sub-second fallback)
-            //     filename forms do not sort by name correctly — '-' (0x2D)
-            //     before us suffix sorts before '.log' in the plain form.
-            std::sort(log_files.begin(), log_files.end(),
-                      [](const fs::path &a, const fs::path &b)
-                      {
-                          std::error_code ea, eb;
-                          auto ta = fs::last_write_time(a, ea);
-                          auto tb = fs::last_write_time(b, eb);
-                          if (ea || eb) return a.filename() < b.filename();
-                          return ta < tb;
-                      });
+            // (d) Read all files in chronological order. Filenames always
+            //     include microseconds so lex order = chronological order.
+            std::sort(log_files.begin(), log_files.end());
             std::string full_log_contents;
             std::string content_buffer;
             for (const auto &p : log_files)
@@ -628,8 +618,8 @@ int test_timestamped_rotating_file_sink(const std::string &base_path_str,
             const size_t expected_message_count = total_messages - first_found_idx;
             ASSERT_EQ(count_lines(full_log_contents, "TSROT-MSG-"), expected_message_count);
 
-            // (i) Filename format: <stem>-YYYY-MM-DD-HH-MM-SS(-MMM)?.log
-            //     (optional -MMM millisecond suffix on sub-second rotation)
+            // (i) Filename format: <stem>-YYYY-MM-DD-HH-MM-SS.uuuuuu.log
+            //     (always microsecond precision — one uniform shape).
             for (const auto &p : log_files)
             {
                 const std::string name = p.filename().string();
@@ -641,32 +631,22 @@ int test_timestamped_rotating_file_sink(const std::string &base_path_str,
                 const std::string middle = name.substr(prefix.size(),
                                                         name.size() - prefix.size() - 4);
 
-                // Must start with 19-char YYYY-MM-DD-HH-MM-SS.
-                ASSERT_GE(middle.size(), 19u)
-                    << "timestamp too short in: " << name;
+                // Timestamp is exactly 26 chars: YYYY-MM-DD-HH-MM-SS.uuuuuu
+                ASSERT_EQ(middle.size(), 26u)
+                    << "timestamp not 26 chars in: " << name;
                 for (size_t i : {4u, 7u, 10u, 13u, 16u})
-                    EXPECT_EQ(middle[i], '-') << "bad separator position " << i
+                    EXPECT_EQ(middle[i], '-') << "bad dash separator at " << i
                                                 << " in: " << name;
+                EXPECT_EQ(middle[19], '.')
+                    << "expected '.' fractional separator at position 19 in: " << name;
 
-                // Digits at the year/month/day/hour/minute/second positions.
-                for (size_t i : {0u, 1u, 2u, 3u, 5u, 6u, 8u, 9u, 11u, 12u, 14u, 15u, 17u, 18u})
+                // Digits at all non-separator positions.
+                for (size_t i : {0u, 1u, 2u, 3u, 5u, 6u, 8u, 9u,
+                                 11u, 12u, 14u, 15u, 17u, 18u,
+                                 20u, 21u, 22u, 23u, 24u, 25u})
                 {
                     EXPECT_TRUE(std::isdigit(static_cast<unsigned char>(middle[i])))
                         << "non-digit at position " << i << " in: " << name;
-                }
-
-                // If longer, must be "-uuuuuu" (6-digit microsecond suffix
-                // used for sub-second collision fallback). No other shapes.
-                if (middle.size() > 19u)
-                {
-                    ASSERT_EQ(middle.size(), 26u)
-                        << "unexpected timestamp extension length in: " << name;
-                    EXPECT_EQ(middle[19], '-') << "expected us-suffix separator in: " << name;
-                    for (size_t i = 20; i < 26; ++i)
-                    {
-                        EXPECT_TRUE(std::isdigit(static_cast<unsigned char>(middle[i])))
-                            << "non-digit in us suffix at " << i << " in: " << name;
-                    }
                 }
             }
 
