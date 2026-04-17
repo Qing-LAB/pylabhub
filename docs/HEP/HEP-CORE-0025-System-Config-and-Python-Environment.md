@@ -109,9 +109,9 @@ Relative paths in tiers 1 and 2 are resolved relative to `<prefix>`.
           lib/python3.14/
             site-packages/     ← venv-specific packages
   bin/
-    pylabhub-pyenv             ← environment management tool (Unix)
-    pylabhub-pyenv.py          ← core logic (cross-platform)
-    pylabhub-pyenv.ps1         ← environment management tool (Windows)
+    plh_pyenv             ← environment management tool (Unix)
+    plh_pyenv.py          ← core logic (cross-platform)
+    plh_pyenv.ps1         ← environment management tool (Windows)
   config/
     pylabhub.json              ← system config (optional)
   share/
@@ -128,8 +128,8 @@ Relative paths in tiers 1 and 2 are resolved relative to `<prefix>`.
 - All roles get these packages by default with zero configuration.
 
 **Virtual environments** (`opt/python/venvs/<name>/`):
-- Created post-installation via `pylabhub-pyenv create-venv <name>`.
-- Packages installed via `pylabhub-pyenv install --venv <name> -r custom.txt`.
+- Created post-installation via `plh_pyenv create-venv <name>`.
+- Packages installed via `plh_pyenv install --venv <name> -r custom.txt`.
 - Activated per-role via `"python_venv": "<name>"` in the role JSON config.
 - Venv packages **overlay** base packages — if a venv provides numpy 2.1 and the
   base has numpy 2.0, the venv version wins.
@@ -147,25 +147,25 @@ CMake options controlling the build-time pip install:
 
 ### 4.4 Post-Installation Package Management
 
-The `pylabhub-pyenv` tool manages the Python environment after installation:
+The `plh_pyenv` tool manages the Python environment after installation:
 
 ```bash
 # Base environment
-pylabhub-pyenv install              # Install from default requirements.txt
-pylabhub-pyenv install -r custom.txt  # Install from custom requirements
-pylabhub-pyenv verify               # Check all required packages present
-pylabhub-pyenv info                 # Show Python version, paths, package count
-pylabhub-pyenv freeze               # pip freeze output
+plh_pyenv install              # Install from default requirements.txt
+plh_pyenv install -r custom.txt  # Install from custom requirements
+plh_pyenv verify               # Check all required packages present
+plh_pyenv info                 # Show Python version, paths, package count
+plh_pyenv freeze               # pip freeze output
 
 # Virtual environments
-pylabhub-pyenv create-venv my-env
-pylabhub-pyenv install --venv my-env -r custom.txt
-pylabhub-pyenv verify --venv my-env -r custom.txt
-pylabhub-pyenv list-venvs
-pylabhub-pyenv remove-venv my-env
+plh_pyenv create-venv my-env
+plh_pyenv install --venv my-env -r custom.txt
+plh_pyenv verify --venv my-env -r custom.txt
+plh_pyenv list-venvs
+plh_pyenv remove-venv my-env
 
 # Offline install (air-gapped deployments)
-pylabhub-pyenv install --wheels-dir /path/to/wheels -r requirements.txt
+plh_pyenv install --wheels-dir /path/to/wheels -r requirements.txt
 ```
 
 ### 4.5 Role Configuration: `python_venv`
@@ -237,15 +237,15 @@ For system Python deployments:
   system Python prefix.
 - RPATH may need manual configuration (system lib directory).
 
-## 7. pylabhub-pyenv Tool
+## 7. plh_pyenv Tool
 
 ### 7.1 Files
 
 | File | Purpose |
 |------|---------|
-| `tools/pylabhub-pyenv.py` | Core logic (Python, cross-platform) |
-| `tools/pylabhub-pyenv` | Bash wrapper (Linux/macOS) |
-| `tools/pylabhub-pyenv.ps1` | PowerShell wrapper (Windows) |
+| `tools/plh_pyenv.py` | Core logic (Python, cross-platform) |
+| `tools/plh_pyenv` | Bash wrapper (Linux/macOS) |
+| `tools/plh_pyenv.ps1` | PowerShell wrapper (Windows) |
 
 All three are staged to `<prefix>/bin/` alongside the main executables.
 

@@ -182,7 +182,7 @@ Key fixes: DataBlockMutex try_lock_for(-1) on both platforms, SharedSpinLock gen
 📍 **Status**: ✅ CLOSED — HEP written, config/venv support implemented; **1166/1166 tests**
 
 Completed 2026-03-14:
-- [x] `tools/pylabhub-pyenv.py` + bash/PowerShell wrappers; CMake `stage_pyenv_tools` target ✅
+- [x] `tools/plh_pyenv.py` + bash/PowerShell wrappers; CMake `stage_pyenv_tools` target ✅ (renamed from `pylabhub-pyenv` on 2026-04-17)
 - [x] `python_venv` config field in ProducerConfig/ConsumerConfig/ProcessorConfig + 6 tests ✅
 - [x] `PythonScriptHost`: 3-tier `resolve_python_home()`, venv activation via `site.addsitedir()` ✅
 - [x] `config/pylabhub.json` system config (python_home key) ✅

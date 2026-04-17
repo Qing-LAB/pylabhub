@@ -24,7 +24,7 @@ The framework is built on a **C++ core** (C++20, CMake 3.29+) with **Python scri
 pip install pylabhub
 ```
 
-This installs prebuilt binaries, the shared library, and public headers. After installation the four executables (`pylabhub-hubshell`, `-producer`, `-consumer`, `-processor`) and the `pylabhub-pyenv` tool are available on PATH.
+This installs prebuilt binaries, the shared library, and public headers. After installation the four executables (`pylabhub-hubshell`, `-producer`, `-consumer`, `-processor`) and the `plh_pyenv` tool are available on PATH.
 
 **Download the Python 3.14 runtime** (required, not included in the wheel to keep it under PyPI size limits):
 
@@ -36,8 +36,8 @@ pylabhub prepare-runtime --from archive.tar.gz  # offline/air-gapped install
 **Install Python packages for scripting** (optional):
 
 ```bash
-pylabhub-pyenv install                          # default requirements.txt
-pylabhub-pyenv install -r my-requirements.txt   # custom set
+plh_pyenv install                          # default requirements.txt
+plh_pyenv install -r my-requirements.txt   # custom set
 ```
 
 **Python path accessors** (for programmatic use):
@@ -68,14 +68,14 @@ Build outputs go to `build/stage-debug/` (or `stage-release/`) with `bin/`, `lib
 
 ### Python environment management
 
-After `pylabhub prepare-runtime`, the Python 3.14 runtime has the interpreter and stdlib but **no third-party packages**. Use `pylabhub-pyenv` to manage packages:
+After `pylabhub prepare-runtime`, the Python 3.14 runtime has the interpreter and stdlib but **no third-party packages**. Use `plh_pyenv` to manage packages:
 
 ```bash
-pylabhub-pyenv install                          # install default packages (numpy, zarr, h5py, ...)
-pylabhub-pyenv create-venv daq-env              # create an isolated venv
-pylabhub-pyenv install --venv daq-env -r req.txt  # install packages into venv
-pylabhub-pyenv info                             # show environment details
-pylabhub-pyenv verify                           # check all required packages present
+plh_pyenv install                          # install default packages (numpy, zarr, h5py, ...)
+plh_pyenv create-venv daq-env              # create an isolated venv
+plh_pyenv install --venv daq-env -r req.txt  # install packages into venv
+plh_pyenv info                             # show environment details
+plh_pyenv verify                           # check all required packages present
 ```
 
 Role configs can target a specific venv: `"python_venv": "daq-env"`. See `docs/README/README_Deployment.md` §12 for details.
@@ -249,7 +249,7 @@ pylabhub/
     tech_draft/           # Active design drafts
     todo/                 # Open work items by area
   third_party/            # Bundled dependencies (git submodules + ExternalProject)
-  tools/                  # pylabhub-pyenv, format.sh
+  tools/                  # plh_pyenv, format.sh
   cmake/                  # CMake helpers (staging, platform, third-party)
   pyproject.toml          # scikit-build-core config (pip install → wheel)
   CMakeLists.txt          # Top-level CMake build
