@@ -7,7 +7,7 @@
 | **Status**     | Draft (2026-04-16)                                             |
 | **Created**    | 2026-04-16                                                     |
 | **Area**       | Public API (`pylabhub-utils`), All Consumers                   |
-| **Depends on** | HEP-CORE-0024 (Role Directory Service)                         |
+| **Depends on** | None — cross-cutting policy                                    |
 
 ---
 

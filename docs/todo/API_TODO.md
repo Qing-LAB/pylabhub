@@ -27,6 +27,15 @@
 - [x] **Broker registration in RoleAPIBase + role host restructure** (#14) —
   start_ctrl_thread owns BRC connect+heartbeat+notification dispatch.
 
+### ABI Compatibility (HEP-CORE-0032)
+
+- [ ] **Phase 2**: Apply `PYLABHUB_UTILS_TEST_EXPORT` to internal-only classes (`RoleHostCore`, `NativeEngine`, `SchemaLibrary`, `SchemaStore`, `ContextMetrics`, `SlotWriteHandle`, `SlotConsumeHandle`, `SlotRecovery`, `SlotDiagnostics`, `IntegrityValidator`, `HeartbeatManager`)
+- [ ] **Phase 3**: Fix `std::function` in external-facing signatures — `RoleRegistrationBuilder::config_template/on_init`, `RoleAPIBase::set_metrics_hook` → use function pointers
+- [ ] **Phase 4**: Fix `std::optional<ChannelSide>` in `RoleAPIBase` (4 methods) → default enum value
+- [ ] **Phase 5**: After binary unification — move `ProducerRoleHost/ConsumerRoleHost/ProcessorRoleHost` to `TEST_EXPORT`
+- [ ] **Phase 6**: C API helper functions for Tier 1 binding surface (`plh_role_init`, `plh_role_run`, etc.)
+- [ ] **Phase 7**: `std::filesystem::path` → `const char*` in C API layer (10 classes, 31 signatures)
+
 ### Open follow-ups (lower priority)
 
 - [ ] Dedup `BrokerHandle`/`BrcHandle` test helpers — currently duplicated between
