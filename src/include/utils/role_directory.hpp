@@ -272,23 +272,27 @@ public:
     /**
      * @brief Scaffolding init for a registered role.
      *
+     * The library performs NO user interaction. Callers (binary main()) must
+     * resolve the name before calling — e.g., via role_cli::resolve_init_name()
+     * for CLI/interactive flow. This keeps the lib scriptable and testable.
+     *
      * Sequence:
-     *   1. Validate preconditions (role registered, config file doesn't exist)
+     *   1. Validate preconditions (role registered, name non-empty,
+     *      config file doesn't exist)
      *   2. create(dir) — directory structure
-     *   3. Resolve name (interactive prompt if empty, using role_label)
-     *   4. Generate UID via uid_prefix
-     *   5. Write config_template() to config_filename in dir
-     *   6. Call on_init(role_dir, name) if registered
-     *   7. Print summary (directory, UID, config path)
+     *   3. Generate UID via uid_prefix
+     *   4. Write config_template() to config_filename in dir
+     *   5. Call on_init(role_dir, name) if registered
+     *   6. Print summary (directory, UID, config path)
      *
      * @param dir       Directory to initialize.
      * @param role_tag  Registered role tag.
-     * @param name      Role instance name. Empty = interactive prompt.
+     * @param name      Role instance name. Must be non-empty.
      * @return 0 on success, non-zero on error.
      */
     static int init_directory(const std::filesystem::path &dir,
                               const std::string &role_tag,
-                              const std::string &name = {});
+                              const std::string &name);
 
 private:
     explicit RoleDirectory(std::filesystem::path base) noexcept;

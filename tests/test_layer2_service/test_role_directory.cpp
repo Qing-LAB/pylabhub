@@ -395,6 +395,20 @@ TEST(RoleDirectoryTest, InitDirectory_UnregisteredRole_ReturnsError)
     fs::remove_all(tmp);
 }
 
+TEST(RoleDirectoryTest, InitDirectory_EmptyName_ReturnsError)
+{
+    // Lib must not prompt — caller resolves name before calling.
+    const auto tmp = unique_temp_dir("init_empty_name");
+
+    RoleDirectory::register_role("test_role_empty_name")
+        .config_filename("x.json")
+        .uid_prefix("X")
+        .role_label("X");
+
+    EXPECT_NE(RoleDirectory::init_directory(tmp, "test_role_empty_name", ""), 0);
+    fs::remove_all(tmp);
+}
+
 TEST(RoleDirectoryTest, InitDirectory_CreatesDirectoryAndConfig)
 {
     const auto tmp = unique_temp_dir("init_basic");

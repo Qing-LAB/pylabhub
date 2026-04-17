@@ -3,7 +3,6 @@
  * @brief RoleDirectory — canonical role directory layout (HEP-CORE-0024).
  */
 #include "utils/role_directory.hpp"
-#include "utils/role_cli.hpp"
 #include "utils/uid_utils.hpp"
 
 #include "plh_platform.hpp" // PYLABHUB_IS_POSIX
@@ -343,19 +342,21 @@ int RoleDirectory::init_directory(const std::filesystem::path &dir,
         return 1;
     }
 
-    // 3. Resolve name (interactive prompt if empty).
-    const std::string prompt = info.role_label + " name (human-readable): ";
-    const auto resolved_name = pylabhub::role_cli::resolve_init_name(name, prompt.c_str());
-    if (!resolved_name)
+    // 3. Validate name (caller must provide — no prompts from the lib).
+    if (name.empty())
+    {
+        fmt::print(stderr, "Error: role name is required — caller must resolve "
+                   "name before calling init_directory()\n");
         return 1;
+    }
 
     // 4. Generate UID.
-    const std::string uid = pylabhub::uid::generate_uid(info.uid_prefix, *resolved_name);
+    const std::string uid = pylabhub::uid::generate_uid(info.uid_prefix, name);
 
     // 5. Write config template.
     if (info.config_template)
     {
-        const nlohmann::json j = info.config_template(uid, *resolved_name);
+        const nlohmann::json j = info.config_template(uid, name);
         std::ofstream out(json_path);
         if (!out)
         {
@@ -371,12 +372,12 @@ int RoleDirectory::init_directory(const std::filesystem::path &dir,
         }
     }
 
-    // 6. Role-specific post-init callback (M2 fix — catch exceptions).
+    // 6. Role-specific post-init callback (catch exceptions).
     if (info.on_init)
     {
         try
         {
-            info.on_init(role_dir, *resolved_name);
+            info.on_init(role_dir, name);
         }
         catch (const std::exception &e)
         {
@@ -391,7 +392,7 @@ int RoleDirectory::init_directory(const std::filesystem::path &dir,
                "  name   : {}\n"
                "  config : {}\n",
                info.role_label, role_dir.base().string(),
-               uid, *resolved_name, json_path.string());
+               uid, name, json_path.string());
 
     return 0;
 }
