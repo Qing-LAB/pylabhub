@@ -111,6 +111,15 @@ class PYLABHUB_UTILS_EXPORT Logger
     {
         size_t max_file_size_bytes = 10ULL * 1024 * 1024; ///< 10 MiB default
         size_t max_backup_files   = 3;
+
+        /// Rotation naming strategy.
+        /// false (default): numeric — base → base.1 → base.2 on rotation.
+        /// true: timestamped — each file is base-YYYY-MM-DD-HH-MM-SS.log;
+        ///                     oldest files past max_backup_files are deleted.
+        bool   timestamped_names  = false;
+
+        /// Inter-process locking on POSIX (no effect on Windows).
+        bool   use_flock          = true;
     };
 
     /**
@@ -183,24 +192,19 @@ class PYLABHUB_UTILS_EXPORT Logger
 
     /**
      * @brief Asynchronously switches the logging output to a rotating file.
-     * @param base_filepath The base path for the log files.
-     * @param max_file_size_bytes The maximum size a log file can reach before it's rotated.
-     * @param max_backup_files The maximum number of backup log files to keep.
-     * @param ec Output parameter for synchronous errors (e.g., invalid path, permissions).
-     * @return `true` on success (command enqueued), `false` on synchronous error.
+     *
+     * Single unified signature — all rotation options live in RotatingLogConfig.
+     *
+     * @param base_filepath The base path for the log files. In Numeric mode
+     *                      this is the active log file; in Timestamped mode
+     *                      the active file is "<base>-<timestamp>.log".
+     * @param cfg           Rotation parameters (size, backups, mode, flock).
+     * @param err_code      Output for synchronous errors (invalid path, etc.).
+     * @return `true` on success (command enqueued), `false` on sync error.
      */
     [[nodiscard]] bool set_rotating_logfile(const std::filesystem::path &base_filepath,
-                                            size_t max_file_size_bytes, size_t max_backup_files,
+                                            const RotatingLogConfig &cfg,
                                             std::error_code &err_code) noexcept;
-
-    /**
-     * @brief Overload for set_rotating_logfile with explicit flocking behavior.
-     * @param use_flock If true, uses an advisory file lock on POSIX systems
-     *                  to serialize writes from multiple processes. No effect on Windows.
-     */
-    [[nodiscard]] bool set_rotating_logfile(const std::filesystem::path &base_filepath,
-                                            size_t max_file_size_bytes, size_t max_backup_files,
-                                            bool use_flock, std::error_code &err_code) noexcept;
 
     /**
      * @brief Asynchronously switches logging to syslog (POSIX only). This is a no-op on Windows.

@@ -433,8 +433,8 @@ int test_rotating_file_sink(const std::string &base_log_path_str, size_t max_fil
                        "max_backups={}\n",
                        base_log_path.string(), max_file_size_bytes, max_backup_files);
             std::error_code ec;
-            bool success = L.set_rotating_logfile(base_log_path, max_file_size_bytes,
-                                                  max_backup_files, false, ec);
+            Logger::RotatingLogConfig cfg{max_file_size_bytes, max_backup_files, false, false};
+            bool success = L.set_rotating_logfile(base_log_path, cfg, ec);
             fmt::print("Rotating file sink setup success={}, ec={}\n", success, ec.message());
 
             ASSERT_TRUE(success);
@@ -501,6 +501,188 @@ int test_rotating_file_sink(const std::string &base_log_path_str, size_t max_fil
             SUCCEED() << "Rotating file sink test completed successfully.";
         },
         "logger::test_rotating_file_sink", Logger::GetLifecycleModule());
+}
+
+// Worker to test the RotatingFileSink timestamped rotation mode.
+//
+// Mirrors the rigor of test_rotating_file_sink:
+//   1. Forces multiple rotations by using a small max_size and many messages.
+//   2. Verifies the "rotated" system message appears in the logs.
+//   3. Verifies message continuity across all retained files (no gaps).
+//   4. Verifies the count bound is enforced (max_backups + 1 active).
+//   5. Verifies the exact filename format.
+//   6. Verifies no numeric-style backup files (`base.1`, `base.2`) exist
+//      — this is the behavior the Numeric mode would produce.
+int test_timestamped_rotating_file_sink(const std::string &base_path_str,
+                                        size_t max_file_size_bytes,
+                                        size_t max_backup_files)
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            fs::path base_path(base_path_str);
+
+            Logger &L = Logger::instance();
+            Logger::RotatingLogConfig cfg;
+            cfg.max_file_size_bytes = max_file_size_bytes;
+            cfg.max_backup_files    = max_backup_files;
+            cfg.timestamped_names   = true;
+            cfg.use_flock           = false;
+
+            fmt::print("Setting up timestamped rotating sink: base='{}' max_size={} max_backups={}\n",
+                       base_path.string(), max_file_size_bytes, max_backup_files);
+
+            std::error_code ec;
+            bool success = L.set_rotating_logfile(base_path, cfg, ec);
+            ASSERT_TRUE(success);
+            ASSERT_FALSE(ec);
+
+            const int total_messages = 20;
+            for (int i = 0; i < total_messages; ++i)
+            {
+                // Each message ~100 bytes; with max_size=256 we expect
+                // rotation every ~2-3 messages.
+                LOGGER_INFO("TSROT-MSG-{:03} {}", i, std::string(50, 'Y'));
+            }
+            L.flush();
+
+            // --- Verification ------------------------------------------------
+
+            // Derive prefix the same way the sink does: strip extension.
+            const fs::path dir = base_path.parent_path();
+            std::string stem = base_path.stem().string();
+            if (stem.empty()) stem = base_path.filename().string();
+            const std::string prefix = stem + "-";
+
+            // (a) Count all <stem>-*.log files.
+            std::vector<fs::path> log_files;
+            for (const auto &entry : fs::directory_iterator(dir))
+            {
+                const std::string name = entry.path().filename().string();
+                if (name.rfind(prefix, 0) == 0 && name.size() >= prefix.size() + 4 &&
+                    name.substr(name.size() - 4) == ".log")
+                {
+                    log_files.push_back(entry.path());
+                }
+            }
+
+            // (b) Count must not exceed max_backup_files + 1 (active file).
+            ASSERT_LE(log_files.size(), max_backup_files + 1)
+                << "Pruning did not enforce the max_backup_files limit. Found "
+                << log_files.size() << " files.";
+
+            // (c) At least one rotation must have occurred (test scenario check).
+            ASSERT_GE(log_files.size(), 2u)
+                << "No rotation occurred — test scenario is invalid "
+                << "(max_size=" << max_file_size_bytes << " may be too large, "
+                << "or messages too short).";
+
+            // (d) Read all files in chronological order. Sort by mtime because
+            //     the 19-char (plain-second) and 26-char (sub-second fallback)
+            //     filename forms do not sort by name correctly — '-' (0x2D)
+            //     before us suffix sorts before '.log' in the plain form.
+            std::sort(log_files.begin(), log_files.end(),
+                      [](const fs::path &a, const fs::path &b)
+                      {
+                          std::error_code ea, eb;
+                          auto ta = fs::last_write_time(a, ea);
+                          auto tb = fs::last_write_time(b, eb);
+                          if (ea || eb) return a.filename() < b.filename();
+                          return ta < tb;
+                      });
+            std::string full_log_contents;
+            std::string content_buffer;
+            for (const auto &p : log_files)
+            {
+                if (read_file_contents(p.string(), content_buffer))
+                    full_log_contents += content_buffer;
+            }
+
+            // (e) Rotation system message must appear at least once.
+            ASSERT_GT(count_lines(full_log_contents, "--- Log rotated (timestamped) ---"), 0)
+                << "Log rotation system message was not found in any file.";
+
+            // (f) Find the first retained message (earliest not purged).
+            int first_found_idx = -1;
+            for (int i = 0; i < total_messages; ++i)
+            {
+                if (full_log_contents.find(fmt::format("TSROT-MSG-{:03}", i)) != std::string::npos)
+                {
+                    first_found_idx = i;
+                    break;
+                }
+            }
+            ASSERT_NE(first_found_idx, -1) << "No test messages found in any log files.";
+
+            // (g) From first_found_idx onward, every message must be present —
+            //     no gaps in the retained sequence.
+            for (int i = first_found_idx; i < total_messages; ++i)
+            {
+                EXPECT_NE(full_log_contents.find(fmt::format("TSROT-MSG-{:03}", i)),
+                          std::string::npos)
+                    << "Missing message " << i << " in retained files. "
+                    << "A gap was detected — rotation lost data.";
+            }
+
+            // (h) Count of retained messages must equal the expected amount.
+            const size_t expected_message_count = total_messages - first_found_idx;
+            ASSERT_EQ(count_lines(full_log_contents, "TSROT-MSG-"), expected_message_count);
+
+            // (i) Filename format: <stem>-YYYY-MM-DD-HH-MM-SS(-MMM)?.log
+            //     (optional -MMM millisecond suffix on sub-second rotation)
+            for (const auto &p : log_files)
+            {
+                const std::string name = p.filename().string();
+                ASSERT_EQ(name.rfind(prefix, 0), 0u)
+                    << "filename missing prefix: " << name;
+                ASSERT_EQ(name.substr(name.size() - 4), ".log")
+                    << "filename missing .log extension: " << name;
+
+                const std::string middle = name.substr(prefix.size(),
+                                                        name.size() - prefix.size() - 4);
+
+                // Must start with 19-char YYYY-MM-DD-HH-MM-SS.
+                ASSERT_GE(middle.size(), 19u)
+                    << "timestamp too short in: " << name;
+                for (size_t i : {4u, 7u, 10u, 13u, 16u})
+                    EXPECT_EQ(middle[i], '-') << "bad separator position " << i
+                                                << " in: " << name;
+
+                // Digits at the year/month/day/hour/minute/second positions.
+                for (size_t i : {0u, 1u, 2u, 3u, 5u, 6u, 8u, 9u, 11u, 12u, 14u, 15u, 17u, 18u})
+                {
+                    EXPECT_TRUE(std::isdigit(static_cast<unsigned char>(middle[i])))
+                        << "non-digit at position " << i << " in: " << name;
+                }
+
+                // If longer, must be "-uuuuuu" (6-digit microsecond suffix
+                // used for sub-second collision fallback). No other shapes.
+                if (middle.size() > 19u)
+                {
+                    ASSERT_EQ(middle.size(), 26u)
+                        << "unexpected timestamp extension length in: " << name;
+                    EXPECT_EQ(middle[19], '-') << "expected us-suffix separator in: " << name;
+                    for (size_t i = 20; i < 26; ++i)
+                    {
+                        EXPECT_TRUE(std::isdigit(static_cast<unsigned char>(middle[i])))
+                            << "non-digit in us suffix at " << i << " in: " << name;
+                    }
+                }
+            }
+
+            // (j) Verify numeric-style backups DO NOT exist — would indicate
+            //     Numeric mode leaked through.
+            for (size_t i = 1; i <= max_backup_files; ++i)
+            {
+                fs::path numeric_backup = fs::path(base_path.string() + "." + std::to_string(i));
+                EXPECT_FALSE(fs::exists(numeric_backup))
+                    << "Numeric-style backup found (should not exist in timestamped mode): "
+                    << numeric_backup.string();
+            }
+
+            SUCCEED() << "Timestamped rotating file sink test completed successfully.";
+        },
+        "logger::test_timestamped_rotating_file_sink", Logger::GetLifecycleModule());
 }
 
 // Worker to test the logger's message dropping behavior when the queue is full.
@@ -697,6 +879,11 @@ struct LoggerWorkerRegistrar
                     return test_rotating_file_sink(argv[2],
                                                    static_cast<size_t>(std::stoul(argv[3])),
                                                    static_cast<size_t>(std::stoul(argv[4])));
+                if (scenario == "test_timestamped_rotating_file_sink" && argc > 4)
+                    return test_timestamped_rotating_file_sink(
+                        argv[2],
+                        static_cast<size_t>(std::stoul(argv[3])),
+                        static_cast<size_t>(std::stoul(argv[4])));
                 if (scenario == "test_queue_full_and_message_dropping" && argc > 2)
                     return test_queue_full_and_message_dropping(argv[2]);
                 if (scenario == "test_startup_log_file_sink_plain" && argc > 2)

@@ -23,32 +23,63 @@ namespace pylabhub::format_tools
 //    use single-step fmt formatting on a microsecond-truncated time_point.
 //  - Otherwise, fall back to computing the fractional microsecond part and append it
 //    manually using a two-step format.
-std::string formatted_time(std::chrono::system_clock::time_point timestamp)
+std::string formatted_time(std::chrono::system_clock::time_point timestamp,
+                             bool use_dash_spacer)
 {
+    // Human form: "YYYY-MM-DD HH:MM:SS.uuuuuu"
+    // Dash  form: "YYYY-MM-DD-HH-MM-SS-uuuuuu"  (filesystem-safe)
+    //
+    // Each fmt::format call below uses a compile-time string literal —
+    // satisfying fmt's consteval check. The if/else selects between the
+    // two literals at the call site.
+
 #if defined(HAVE_FMT_CHRONO_SUBSECONDS) && HAVE_FMT_CHRONO_SUBSECONDS
     auto tp_us = std::chrono::time_point_cast<std::chrono::microseconds>(timestamp);
 #if defined(FMT_CHRONO_FMT_STYLE) && (FMT_CHRONO_FMT_STYLE == 1)
-    // use %fonon
+    // fmt supports %f
+    if (use_dash_spacer)
+        return fmt::format("{:%Y-%m-%d-%H-%M-%S-%f}", tp_us);
     return fmt::format("{:%Y-%m-%d %H:%M:%S.%f}", tp_us);
 #elif defined(FMT_CHRONO_FMT_STYLE) && (FMT_CHRONO_FMT_STYLE == 2)
-    // fmt prints fraction without %f
+    // fmt auto-appends the fraction when cast type is microseconds.
+    // The fraction separator defaults to '.'; for dash mode we render
+    // seconds explicitly and append the fractional component with '-'.
+    if (use_dash_spacer)
+    {
+        auto secs = std::chrono::time_point_cast<std::chrono::seconds>(tp_us);
+        int fractional_us = static_cast<int>((tp_us - secs).count());
+        auto sec_part = fmt::format("{:%Y-%m-%d-%H-%M-%S}", secs);
+        return fmt::format("{}-{:06d}", sec_part, fractional_us);
+    }
     return fmt::format("{:%Y-%m-%d %H:%M:%S}", tp_us);
 #else
-    // defensive fallback to manual two-step
-    auto secs = std::chrono::time_point_cast<std::chrono::seconds>(tp_us);
-    int fractional_us = static_cast<int>((tp_us - secs).count());
-    auto sec_part = fmt::format("{:%Y-%m-%d %H:%M:%S}", secs);
-    return fmt::format("{}.{:06d}", sec_part, fractional_us);
+    // defensive fallback — manual two-step
+    {
+        auto secs = std::chrono::time_point_cast<std::chrono::seconds>(tp_us);
+        int fractional_us = static_cast<int>((tp_us - secs).count());
+        if (use_dash_spacer)
+        {
+            auto sec_part = fmt::format("{:%Y-%m-%d-%H-%M-%S}", secs);
+            return fmt::format("{}-{:06d}", sec_part, fractional_us);
+        }
+        auto sec_part = fmt::format("{:%Y-%m-%d %H:%M:%S}", secs);
+        return fmt::format("{}.{:06d}", sec_part, fractional_us);
+    }
 #endif
 #else
-    // no runtime support detected — fallback to manual two-step method
+    // no runtime support — manual two-step
     auto tp_us = std::chrono::time_point_cast<std::chrono::microseconds>(timestamp);
     auto secs = std::chrono::time_point_cast<std::chrono::seconds>(tp_us);
     auto us = std::chrono::duration_cast<std::chrono::microseconds>(tp_us - secs).count();
-    // normalize to 0..999999 even for negative timestamps
     int fractional_us = static_cast<int>(us % 1000000);
     if (fractional_us < 0)
         fractional_us += 1000000;
+
+    if (use_dash_spacer)
+    {
+        auto sec_part = fmt::format("{:%Y-%m-%d-%H-%M-%S}", secs);
+        return fmt::format("{}-{:06d}", sec_part, fractional_us);
+    }
     auto sec_part = fmt::format("{:%Y-%m-%d %H:%M:%S}", secs);
     return fmt::format("{}.{:06d}", sec_part, fractional_us);
 #endif

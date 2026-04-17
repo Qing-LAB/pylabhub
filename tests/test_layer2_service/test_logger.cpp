@@ -290,6 +290,23 @@ TEST_F(LoggerTest, RotatingFileSink)
     expect_worker_ok(proc);
 }
 
+/// Tests the RotatingFileSink timestamped mode.
+TEST_F(LoggerTest, TimestampedRotatingFileSink)
+{
+    auto base_path = GetUniqueLogPath("tsrot_base");
+    // Parent directory for the test; base_path itself is used as a prefix
+    // (no extension) — timestamped sink composes <prefix>-<timestamp>.log.
+    const size_t max_file_size_bytes = 256;
+    const size_t max_backup_files    = 2;
+
+    WorkerProcess proc(g_self_exe_path, "logger.test_timestamped_rotating_file_sink",
+                       {base_path.string(), std::to_string(max_file_size_bytes),
+                        std::to_string(max_backup_files)});
+    ASSERT_TRUE(proc.valid());
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
+}
+
 /// Tests the failure case for setting a rotating log file in a non-writable directory.
 TEST_F(LoggerTest, SetRotatingLogfileFailure)
 {
@@ -306,8 +323,9 @@ TEST_F(LoggerTest, SetRotatingLogfileFailure)
 
     std::error_code ec;
     // This should fail because of the pre-flight check in set_rotating_logfile
+    pylabhub::utils::Logger::RotatingLogConfig cfg{1024, 5, false, true};
     ASSERT_FALSE(
-        pylabhub::utils::Logger::instance().set_rotating_logfile(log_path, 1024, 5, true, ec));
+        pylabhub::utils::Logger::instance().set_rotating_logfile(log_path, cfg, ec));
 
     // The error code should indicate permission denied.
     ASSERT_EQ(ec, std::errc::permission_denied);
@@ -319,8 +337,8 @@ TEST_F(LoggerTest, SetRotatingLogfileFailure)
     // The pre-flight check for create_directories should fail.
     auto invalid_log_path = "C:\\*\\invalid:path.log"; // Invalid characters in path
     std::error_code ec;
-    ASSERT_FALSE(pylabhub::utils::Logger::instance().set_rotating_logfile(invalid_log_path, 1024, 5,
-                                                                          true, ec));
+    pylabhub::utils::Logger::RotatingLogConfig cfg{1024, 5, false, true};
+    ASSERT_FALSE(pylabhub::utils::Logger::instance().set_rotating_logfile(invalid_log_path, cfg, ec));
     ASSERT_TRUE(ec); // Should have an error. The specific error code might vary depending on OS
                      // version and exact invalid path.
 #endif

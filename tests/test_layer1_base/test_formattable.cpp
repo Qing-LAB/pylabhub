@@ -95,6 +95,71 @@ TEST_F(FormatToolsTest, FormattedTime)
     EXPECT_TRUE(is_all_digits(20, 6)); // Microseconds
 }
 
+TEST_F(FormatToolsTest, FormattedTime_DashSpacer)
+{
+    // Filesystem-safe form: all separators replaced with '-'.
+    // Expected format: YYYY-MM-DD-HH-MM-SS-ffffff   (26 chars)
+    auto now = std::chrono::system_clock::now();
+    std::string formatted = formatted_time(now, /*use_dash_spacer=*/true);
+
+    ASSERT_EQ(formatted.length(), 26u);
+
+    // Every separator position must be '-' (positions 4, 7, 10, 13, 16, 19).
+    EXPECT_EQ(formatted[4],  '-'); // year-month
+    EXPECT_EQ(formatted[7],  '-'); // month-day
+    EXPECT_EQ(formatted[10], '-'); // date-time (was ' ' in human form)
+    EXPECT_EQ(formatted[13], '-'); // hour-minute (was ':')
+    EXPECT_EQ(formatted[16], '-'); // minute-second (was ':')
+    EXPECT_EQ(formatted[19], '-'); // second-microsecond (was '.')
+
+    // No space, colon, or dot anywhere — filesystem-safe guarantee.
+    EXPECT_EQ(formatted.find(' '), std::string::npos);
+    EXPECT_EQ(formatted.find(':'), std::string::npos);
+    EXPECT_EQ(formatted.find('.'), std::string::npos);
+
+    auto is_all_digits = [&](size_t start, size_t len)
+    {
+        for (size_t i = 0; i < len; ++i)
+        {
+            if (!std::isdigit(static_cast<unsigned char>(formatted[start + i])))
+                return false;
+        }
+        return true;
+    };
+
+    EXPECT_TRUE(is_all_digits(0, 4));  // Year
+    EXPECT_TRUE(is_all_digits(5, 2));  // Month
+    EXPECT_TRUE(is_all_digits(8, 2));  // Day
+    EXPECT_TRUE(is_all_digits(11, 2)); // Hour
+    EXPECT_TRUE(is_all_digits(14, 2)); // Minute
+    EXPECT_TRUE(is_all_digits(17, 2)); // Second
+    EXPECT_TRUE(is_all_digits(20, 6)); // Microseconds
+}
+
+TEST_F(FormatToolsTest, FormattedTime_DashAndHumanSameTimestamp)
+{
+    // Both forms must represent the same instant: the digit content at
+    // each numeric position must be identical; only separators differ.
+    auto now = std::chrono::system_clock::now();
+    std::string human = formatted_time(now, /*use_dash_spacer=*/false);
+    std::string dash  = formatted_time(now, /*use_dash_spacer=*/true);
+
+    ASSERT_EQ(human.length(), 26u);
+    ASSERT_EQ(dash.length(),  26u);
+
+    // Digits at every non-separator position must match.
+    for (size_t i : {0u, 1u, 2u, 3u,       // YYYY
+                     5u, 6u,               // MM
+                     8u, 9u,               // DD
+                     11u, 12u,             // HH
+                     14u, 15u,             // mm
+                     17u, 18u,             // SS
+                     20u, 21u, 22u, 23u, 24u, 25u})  // uuuuuu
+    {
+        EXPECT_EQ(human[i], dash[i]) << "mismatch at digit position " << i;
+    }
+}
+
 // ============================================================================
 // make_buffer / make_buffer_rt
 // ============================================================================
