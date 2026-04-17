@@ -122,9 +122,9 @@ bin/
   pylabhub-producer     ← producer role binary
   pylabhub-consumer     ← consumer role binary
   pylabhub-processor    ← processor role binary
-  pylabhub-pyenv        ← Python environment manager (Unix)
-  pylabhub-pyenv.py     ← Python environment manager (core)
-  pylabhub-pyenv.ps1    ← Python environment manager (Windows)
+  plh_pyenv        ← Python environment manager (Unix)
+  plh_pyenv.py     ← Python environment manager (core)
+  plh_pyenv.ps1    ← Python environment manager (Windows)
 
 lib/
   libpylabhub-utils.so  ← shared runtime library
@@ -1092,16 +1092,16 @@ log defaults, license paths, or other system-wide settings.
 ```bash
 pip install pylabhub
 pylabhub prepare-runtime                        # downloads Python 3.14 runtime
-pylabhub-pyenv install                          # install base packages
-pylabhub-pyenv verify                           # check Python + pip + installed packages
+plh_pyenv install                          # install base packages
+plh_pyenv verify                           # check Python + pip + installed packages
 ```
 
 **Developer build** — the runtime is staged automatically:
 
 ```bash
 cmake --build build --target stage_all
-pylabhub-pyenv install --requirements share/scripts/python/requirements.txt
-pylabhub-pyenv verify
+plh_pyenv install --requirements share/scripts/python/requirements.txt
+plh_pyenv verify
 ```
 
 The base environment lives in `opt/python/` and provides packages available to all roles.
@@ -1115,9 +1115,9 @@ packages take precedence.
 **Create a venv:**
 
 ```bash
-pylabhub-pyenv create-venv myenv
-pylabhub-pyenv install --venv myenv -r my-requirements.txt
-pylabhub-pyenv verify --venv myenv
+plh_pyenv create-venv myenv
+plh_pyenv install --venv myenv -r my-requirements.txt
+plh_pyenv verify --venv myenv
 ```
 
 **Activate in a role config** (producer, consumer, or processor JSON):
@@ -1136,25 +1136,25 @@ venv's `site-packages` to `sys.path`. `PYTHONHOME` stays pointing at the base in
 **Venv storage:** All venvs live under `<prefix>/opt/python/venvs/<name>/`. This path
 is not configurable — user customization is via `requirements.txt`, not directory layout.
 
-### 12.5 `pylabhub-pyenv` tool reference
+### 12.5 `plh_pyenv` tool reference
 
-The `pylabhub-pyenv` tool manages the bundled Python environment. It runs under the
+The `plh_pyenv` tool manages the bundled Python environment. It runs under the
 bundled interpreter itself (or a system Python specified via `$PYLABHUB_PYTHON`).
 
 | Command | Description |
 |---------|-------------|
-| `pylabhub-pyenv install [-r FILE]` | Install packages into base env |
-| `pylabhub-pyenv install --venv NAME [-r FILE]` | Install packages into a venv |
-| `pylabhub-pyenv verify [--venv NAME]` | Verify Python + pip + packages |
-| `pylabhub-pyenv info [--venv NAME]` | Show Python version, paths, packages |
-| `pylabhub-pyenv freeze [--venv NAME]` | Print `pip freeze` output |
-| `pylabhub-pyenv create-venv NAME` | Create a new virtual environment |
-| `pylabhub-pyenv list-venvs` | List all virtual environments |
-| `pylabhub-pyenv remove-venv NAME` | Delete a virtual environment |
+| `plh_pyenv install [-r FILE]` | Install packages into base env |
+| `plh_pyenv install --venv NAME [-r FILE]` | Install packages into a venv |
+| `plh_pyenv verify [--venv NAME]` | Verify Python + pip + packages |
+| `plh_pyenv info [--venv NAME]` | Show Python version, paths, packages |
+| `plh_pyenv freeze [--venv NAME]` | Print `pip freeze` output |
+| `plh_pyenv create-venv NAME` | Create a new virtual environment |
+| `plh_pyenv list-venvs` | List all virtual environments |
+| `plh_pyenv remove-venv NAME` | Delete a virtual environment |
 
 **Platform wrappers:**
-- Linux/macOS: `bin/pylabhub-pyenv` (bash)
-- Windows: `bin/pylabhub-pyenv.ps1` (PowerShell)
+- Linux/macOS: `bin/plh_pyenv` (bash)
+- Windows: `bin/plh_pyenv.ps1` (PowerShell)
 
 ### 12.6 Cross-platform support
 
@@ -1166,4 +1166,4 @@ bundled interpreter itself (or a system Python specified via `$PYLABHUB_PYTHON`)
 | FreeBSD / other | System package manager | Set in `config/pylabhub.json` |
 
 When using system Python, ensure the version matches the build-time pybind11 expectations
-(currently Python 3.10+). The `pylabhub-pyenv verify` command checks version compatibility.
+(currently Python 3.10+). The `plh_pyenv verify` command checks version compatibility.
