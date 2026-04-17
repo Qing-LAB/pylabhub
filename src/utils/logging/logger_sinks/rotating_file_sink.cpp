@@ -49,31 +49,22 @@ RotatingFileSink::RotatingFileSink(const std::filesystem::path &base_filepath,
 
 std::filesystem::path RotatingFileSink::compose_timestamped_path_() const
 {
-    // Filename format: <stem>-YYYY-MM-DD-HH-MM-SS.log
-    // If base_filepath has an extension (e.g. "base.log"), strip it so the
-    // timestamp is inserted cleanly: "base-2026-04-17-11-05-51.log".
-    // If rotation fires faster than 1 second (same timestamp as previous),
-    // fall back to the full microsecond form for uniqueness.
+    // Filename format: <stem>-YYYY-MM-DD-HH-MM-SS.uuuuuu.log
+    //
+    // Always include microseconds so filenames sort lexicographically in
+    // chronological order — no mtime dependency (which other file ops can
+    // contaminate), no collision-fallback branching. The fractional part
+    // uses '.' as the separator which preserves lex ordering against the
+    // trailing ".log" extension (digits < 'l' by ASCII).
     std::string stem = m_base_filepath.stem().string();
     if (stem.empty())
         stem = m_base_filepath.filename().string();
 
-    const std::string full_ts = pylabhub::format_tools::formatted_time(
+    const std::string ts = pylabhub::format_tools::formatted_time(
         std::chrono::system_clock::now(), /*use_dash_spacer=*/true);
-    // full_ts shape: "YYYY-MM-DD-HH-MM-SS-uuuuuu" (26 chars). The first 19
-    // chars are second-precision.
-    const std::string second_ts = full_ts.size() >= 19 ? full_ts.substr(0, 19) : full_ts;
+    // ts shape: "YYYY-MM-DD-HH-MM-SS.uuuuuu" (26 chars).
 
-    auto compose = [&](const std::string &ts) {
-        return m_base_filepath.parent_path() / (stem + "-" + ts + ".log");
-    };
-
-    std::filesystem::path p = compose(second_ts);
-    if (!std::filesystem::exists(p))
-        return p;
-
-    // Collision: sub-second rotation. Use the full microsecond timestamp.
-    return compose(full_ts);
+    return m_base_filepath.parent_path() / (stem + "-" + ts + ".log");
 }
 
 void RotatingFileSink::prune_timestamped_backups_()
@@ -108,22 +99,10 @@ void RotatingFileSink::prune_timestamped_backups_()
         }
     }
 
-    // Sort by file modification time (oldest first). File names alone are
-    // not a reliable sort key: when sub-second rotation fallback is used,
-    // the microsecond-suffixed form (26 chars) and the plain-second form
-    // (19 chars) do NOT sort chronologically by name — the '-' before the
-    // us suffix (0x2D) sorts BEFORE '.' (0x2E) before ".log" in the plain
-    // form. mtime reflects actual creation order.
-    std::sort(candidates.begin(), candidates.end(),
-              [](const fs::path &a, const fs::path &b)
-              {
-                  std::error_code ea, eb;
-                  auto ta = fs::last_write_time(a, ea);
-                  auto tb = fs::last_write_time(b, eb);
-                  if (ea || eb)
-                      return a.filename() < b.filename();  // fallback
-                  return ta < tb;
-              });
+    // Sort by filename — names always include microseconds, so lex order
+    // equals chronological order. Filename is the authoritative creation
+    // record; mtime could be contaminated by unrelated file operations.
+    std::sort(candidates.begin(), candidates.end());
 
     // Keep newest max_backup_files + 1 (the +1 accounts for the currently
     // active file, which is in `candidates` too). Delete the rest.

@@ -97,25 +97,29 @@ TEST_F(FormatToolsTest, FormattedTime)
 
 TEST_F(FormatToolsTest, FormattedTime_DashSpacer)
 {
-    // Filesystem-safe form: all separators replaced with '-'.
-    // Expected format: YYYY-MM-DD-HH-MM-SS-ffffff   (26 chars)
+    // Filesystem-safe form: date-time space and time-field colons replaced
+    // with '-'. The fractional '.' is preserved so that filenames
+    // containing this timestamp sort lexicographically in chronological
+    // order (digits < 'l' in the trailing ".log" extension).
+    // Expected format: YYYY-MM-DD-HH-MM-SS.ffffff   (26 chars)
     auto now = std::chrono::system_clock::now();
     std::string formatted = formatted_time(now, /*use_dash_spacer=*/true);
 
     ASSERT_EQ(formatted.length(), 26u);
 
-    // Every separator position must be '-' (positions 4, 7, 10, 13, 16, 19).
+    // Date-time separators are '-'.
     EXPECT_EQ(formatted[4],  '-'); // year-month
     EXPECT_EQ(formatted[7],  '-'); // month-day
     EXPECT_EQ(formatted[10], '-'); // date-time (was ' ' in human form)
     EXPECT_EQ(formatted[13], '-'); // hour-minute (was ':')
     EXPECT_EQ(formatted[16], '-'); // minute-second (was ':')
-    EXPECT_EQ(formatted[19], '-'); // second-microsecond (was '.')
 
-    // No space, colon, or dot anywhere — filesystem-safe guarantee.
+    // Fractional separator stays '.' (lex-chrono-sortable in filenames).
+    EXPECT_EQ(formatted[19], '.');
+
+    // No space or colon — filesystem-safe guarantee.
     EXPECT_EQ(formatted.find(' '), std::string::npos);
     EXPECT_EQ(formatted.find(':'), std::string::npos);
-    EXPECT_EQ(formatted.find('.'), std::string::npos);
 
     auto is_all_digits = [&](size_t start, size_t len)
     {
