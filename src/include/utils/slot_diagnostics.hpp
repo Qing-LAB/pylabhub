@@ -19,7 +19,7 @@ namespace pylabhub::hub
  * offering a convenient way to retrieve and query the state of a single
  * DataBlock slot.
  */
-class PYLABHUB_UTILS_EXPORT SlotDiagnostics
+class PYLABHUB_UTILS_TEST_EXPORT SlotDiagnostics
 {
   public:
     /**

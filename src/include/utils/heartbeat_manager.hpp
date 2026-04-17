@@ -22,7 +22,7 @@ class DataBlockConsumer; // Forward declaration
  * destruction. This allows recovery tools to identify and clean up dead
  * consumers.
  */
-class PYLABHUB_UTILS_EXPORT HeartbeatManager
+class PYLABHUB_UTILS_TEST_EXPORT HeartbeatManager
 {
   public:
     /**

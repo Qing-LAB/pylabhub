@@ -5,7 +5,13 @@
 # This module is included by the top-level CMakeLists.txt.
 
 # Option to build the test suite.
+# When ON, PYLABHUB_BUILD_TESTS is defined project-wide so that
+# PYLABHUB_UTILS_TEST_EXPORT expands to PYLABHUB_UTILS_EXPORT,
+# making test-only symbols visible in the shared library.
 option(BUILD_TESTS "Build the pyLabHub test suite" ON)
+if(BUILD_TESTS)
+    add_compile_definitions(PYLABHUB_BUILD_TESTS)
+endif()
 
 # Option to build the IgorXOP module.
 option(BUILD_XOP "Build the Igor Pro XOP module" ON)

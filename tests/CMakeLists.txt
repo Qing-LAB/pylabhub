@@ -18,9 +18,9 @@ if(BUILD_TESTS)
   include(GoogleTest)
   include(StageHelpers)
 
-  # Make PYLABHUB_BUILD_TESTS visible as a preprocessor define for test-only
-  # code paths (e.g. RoleHostCore::test_set_* methods guarded by #ifdef).
-  add_compile_definitions(PYLABHUB_BUILD_TESTS)
+  # PYLABHUB_BUILD_TESTS is now defined project-wide in ToplevelOptions.cmake
+  # when BUILD_TESTS=ON. This makes PYLABHUB_UTILS_TEST_EXPORT symbols visible
+  # in the shared library AND in test binaries.
 
   # Use PRE_TEST discovery mode on multi-config generators (Visual Studio).
   # The default POST_BUILD mode runs the test executable at build time to
