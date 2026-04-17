@@ -41,6 +41,7 @@
  *         api.log('info', "Producer stopping")
  */
 
+#include "producer_init.hpp"
 #include "producer_role_host.hpp"
 #include "producer_fields.hpp"
 #include "lua_engine.hpp"
@@ -78,6 +79,9 @@ namespace role_cli   = pylabhub::role_cli;
 // do_init — create producer directory with producer.json template
 // ---------------------------------------------------------------------------
 
+// do_init: binary-side CLI wrapper around RoleDirectory::init_directory().
+// - Binary handles user interaction (name prompt via role_cli).
+// - Library (init_directory) does the pure work: create dir + write templates.
 static int do_init(const std::string &prod_dir_str, const std::string &cli_name)
 {
     namespace fs = std::filesystem;
@@ -86,137 +90,12 @@ static int do_init(const std::string &prod_dir_str, const std::string &cli_name)
                               ? fs::current_path()
                               : fs::path(prod_dir_str);
 
-    try
-    {
-        RoleDirectory::create(prod_dir);
-    }
-    catch (const std::exception &e)
-    {
-        std::cerr << "Error: " << e.what() << "\n";
-        return 1;
-    }
-
-    const fs::path json_path = prod_dir / "producer.json";
-    if (fs::exists(json_path))
-    {
-        std::cerr << "Error: producer.json already exists at '" << json_path.string()
-                  << "'. Remove it first or choose a different directory.\n";
-        return 1;
-    }
-
     const auto name_opt = role_cli::resolve_init_name(
         cli_name, "Producer name (human-readable, e.g. 'TempSensor'): ");
     if (!name_opt)
         return 1;
-    const std::string prod_name = *name_opt;
 
-    const std::string prod_uid = pylabhub::uid::generate_producer_uid(prod_name);
-
-    nlohmann::json j;
-
-    j["producer"]["uid"]       = prod_uid;
-    j["producer"]["name"]      = prod_name;
-    j["producer"]["log_level"] = "info";
-    j["producer"]["auth"]["keyfile"] = "";
-
-    j["out_hub_dir"]          = "<replace with hub directory path, e.g. /var/pylabhub/my_hub>";
-    j["out_channel"]          = "lab.my.channel";
-    j["loop_timing"]          = "fixed_rate";
-    j["target_period_ms"]     = 100;
-
-    j["out_transport"]        = "shm";
-    j["out_shm_enabled"]      = true;
-    j["out_shm_secret"]       = 0;
-    j["out_shm_slot_count"]   = 8;
-
-    j["out_slot_schema"]["fields"] = nlohmann::json::array({
-        nlohmann::json{{"name", "value"}, {"type", "float32"}}
-    });
-    j["out_flexzone_schema"]  = nullptr;
-
-    j["checksum"]                 = "enforced";
-    j["flexzone_checksum"]        = true;
-    j["stop_on_script_error"]     = false;
-
-    j["script"]["path"] = ".";
-    j["script"]["type"] = "python";
-
-    std::ofstream out(json_path);
-    if (!out)
-    {
-        std::cerr << "Error: cannot write '" << json_path.string() << "'\n";
-        return 1;
-    }
-    out << j.dump(2) << "\n";
-    out.close();
-
-    const fs::path init_py = prod_dir / "script" / "python" / "__init__.py";
-    std::ofstream py_out(init_py);
-    if (!py_out)
-    {
-        std::cerr << "Error: cannot write '" << init_py.string() << "'\n";
-        return 1;
-    }
-    py_out <<
-        "\"\"\"Producer: " << prod_name << "\n"
-        "\n"
-        "Script callbacks for the pylabhub-producer host.\n"
-        "Edit this file to implement your data-production logic.\n"
-        "\n"
-        "Directory layout:\n"
-        "  script/python/         <- this Python package\n"
-        "    __init__.py          <- entry point (this file)\n"
-        "\n"
-        "Import siblings with relative imports:\n"
-        "  from . import helpers  <- loads ./helpers.py\n"
-        "\"\"\"\n"
-        "import pylabhub_producer as prod\n"
-        "\n"
-        "\n"
-        "def on_init(api: prod.ProducerAPI) -> None:\n"
-        "    \"\"\"Called once before the production loop starts.\"\"\"\n"
-        "    api.log('info', f\"on_init: uid={api.uid()}\")\n"
-        "\n"
-        "\n"
-        "def on_produce(out_slot, flexzone, messages, api: prod.ProducerAPI) -> bool:\n"
-        "    \"\"\"\n"
-        "    Called on each production interval.\n"
-        "\n"
-        "    out_slot: ctypes/numpy writable view of the output SHM slot.\n"
-        "    flexzone: persistent ctypes struct for the output flexzone, or None.\n"
-        "    messages: list of (sender: str, data: bytes) from ZMQ consumers.\n"
-        "    api:      ProducerAPI — log, broadcast, stop, etc.\n"
-        "\n"
-        "    Return True to commit the slot and publish it.\n"
-        "    Return False to discard without publishing.\n"
-        "    Return None (or omit return) is treated as an error.\n"
-        "    \"\"\"\n"
-        "    for sender, data in messages:\n"
-        "        api.log('debug', f\"msg from {sender}: {data!r}\")\n"
-        "\n"
-        "    # TODO: replace with real data production\n"
-        "    out_slot.value = 0.0\n"
-        "    return True\n"
-        "\n"
-        "\n"
-        "def on_stop(api: prod.ProducerAPI) -> None:\n"
-        "    \"\"\"Called once after the production loop exits.\"\"\"\n"
-        "    api.log('info', f\"on_stop: uid={api.uid()}\")\n";
-    py_out.close();
-
-    std::cout << "\nProducer directory initialised: " << prod_dir.string() << "\n"
-              << "  prod_uid  : " << prod_uid << "\n"
-              << "  prod_name : " << prod_name << "\n"
-              << "  producer.json : " << json_path.string() << "\n"
-              << "  script    : " << init_py.string() << "\n\n"
-              << "Next steps:\n"
-              << "  1. Edit producer.json — set 'hub_dir' to your hub directory path\n"
-              << "  2. Edit producer.json — set 'channel'\n"
-              << "  3. (Optional) Set 'producer.auth.keyfile', then generate keypair:\n"
-              << "       pylabhub-producer --config " << json_path.string() << " --keygen\n"
-              << "  4. Edit script/python/__init__.py — implement on_produce\n"
-              << "  5. Run: pylabhub-producer " << prod_dir.string() << "\n";
-    return 0;
+    return RoleDirectory::init_directory(prod_dir, "producer", *name_opt);
 }
 
 // ---------------------------------------------------------------------------
@@ -226,6 +105,9 @@ static int do_init(const std::string &prod_dir_str, const std::string &cli_name)
 int main(int argc, char *argv[])
 {
     std::atomic<bool> g_shutdown{false};
+
+    // Register role-specific init content before parsing args.
+    pylabhub::producer::register_producer_init();
 
     pylabhub::InteractiveSignalHandler signal_handler(
         {.binary_name = "pylabhub-producer"}, &g_shutdown);

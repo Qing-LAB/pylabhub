@@ -53,6 +53,7 @@
  *         api.log('info', "Processor stopping")
  */
 
+#include "processor_init.hpp"
 #include "processor_role_host.hpp"
 #include "processor_fields.hpp"
 #include "lua_engine.hpp"
@@ -90,6 +91,7 @@ namespace role_cli   = pylabhub::role_cli;
 // do_init — create processor directory with processor.json template
 // ---------------------------------------------------------------------------
 
+// do_init: binary-side CLI wrapper around RoleDirectory::init_directory().
 static int do_init(const std::string &proc_dir_str, const std::string &cli_name)
 {
     namespace fs = std::filesystem;
@@ -98,152 +100,12 @@ static int do_init(const std::string &proc_dir_str, const std::string &cli_name)
                               ? fs::current_path()
                               : fs::path(proc_dir_str);
 
-    try
-    {
-        RoleDirectory::create(proc_dir);
-    }
-    catch (const std::exception &e)
-    {
-        std::cerr << "Error: " << e.what() << "\n";
-        return 1;
-    }
-
-    const fs::path json_path = proc_dir / "processor.json";
-    if (fs::exists(json_path))
-    {
-        std::cerr << "Error: processor.json already exists at '" << json_path.string()
-                  << "'. Remove it first or choose a different directory.\n";
-        return 1;
-    }
-
-    // ── Resolve processor name ────────────────────────────────────────────────
     const auto name_opt = role_cli::resolve_init_name(
         cli_name, "Processor name (human-readable, e.g. 'Doubler'): ");
     if (!name_opt)
         return 1;
-    const std::string proc_name = *name_opt;
 
-    const std::string proc_uid = pylabhub::uid::generate_processor_uid(proc_name);
-
-    // ── Build processor.json template ─────────────────────────────────────────
-    nlohmann::json j;
-
-    j["processor"]["uid"]       = proc_uid;
-    j["processor"]["name"]      = proc_name;
-    j["processor"]["log_level"] = "info";
-    j["processor"]["auth"]["keyfile"] = "";
-
-    j["loop_timing"]  = "max_rate";
-    j["in_hub_dir"]   = "<replace with input hub directory path>";
-    j["out_hub_dir"]  = "<replace with output hub directory path>";
-    j["in_channel"]   = "lab.source.channel";
-    j["out_channel"]  = "lab.output.channel";
-
-    j["in_transport"]       = "shm";
-    j["out_transport"]      = "shm";
-    j["in_shm_enabled"]     = true;
-    j["out_shm_enabled"]    = true;
-    j["out_shm_slot_count"] = 4;
-
-    j["in_slot_schema"]["fields"] = nlohmann::json::array({
-        nlohmann::json{{"name", "value"}, {"type", "float32"}}
-    });
-    j["out_slot_schema"]["fields"] = nlohmann::json::array({
-        nlohmann::json{{"name", "value"}, {"type", "float32"}}
-    });
-    j["out_flexzone_schema"] = nullptr;
-
-    j["checksum"]             = "enforced";
-    j["flexzone_checksum"]    = true;
-    j["stop_on_script_error"] = false;
-
-    j["script"]["path"] = ".";
-    j["script"]["type"] = "python";
-
-    // ── Write processor.json ──────────────────────────────────────────────────
-    std::ofstream out(json_path);
-    if (!out)
-    {
-        std::cerr << "Error: cannot write '" << json_path.string() << "'\n";
-        return 1;
-    }
-    out << j.dump(2) << "\n";
-    out.close();
-
-    // ── Write script/python/__init__.py template ──────────────────────────────
-    const fs::path init_py = proc_dir / "script" / "python" / "__init__.py";
-    std::ofstream py_out(init_py);
-    if (!py_out)
-    {
-        std::cerr << "Error: cannot write '" << init_py.string() << "'\n";
-        return 1;
-    }
-    py_out <<
-        "\"\"\"Processor: " << proc_name << "\n"
-        "\n"
-        "Script callbacks for the pylabhub-processor host.\n"
-        "Edit this file to implement your data-transformation logic.\n"
-        "\n"
-        "Directory layout:\n"
-        "  script/python/            <- this Python package\n"
-        "    __init__.py             <- entry point (this file)\n"
-        "\n"
-        "Import siblings with relative imports:\n"
-        "  from . import helpers     <- loads ./helpers.py\n"
-        "\"\"\"\n"
-        "import pylabhub_processor as proc\n"
-        "\n"
-        "\n"
-        "def on_init(api: proc.ProcessorAPI) -> None:\n"
-        "    \"\"\"Called once before the processing loop starts.\"\"\"\n"
-        "    api.log('info', f\"on_init: uid={api.uid()}\")\n"
-        "\n"
-        "\n"
-        "def on_process(in_slot, out_slot, flexzone, messages, api: proc.ProcessorAPI) -> bool:\n"
-        "    \"\"\"\n"
-        "    Called for each input slot.\n"
-        "\n"
-        "    in_slot:  ctypes/numpy read-only view of the input SHM slot, or None on timeout.\n"
-        "    out_slot: ctypes/numpy writable view of the output SHM slot, or None on timeout.\n"
-        "    flexzone: persistent ctypes struct for the output flexzone, or None.\n"
-        "    messages: list of (sender: str, data: bytes) from the ZMQ peer channel.\n"
-        "    api:      ProcessorAPI — log, broadcast, stop, etc.\n"
-        "\n"
-        "    Return True to commit the output slot.\n"
-        "    Return False to discard without publishing.\n"
-        "    Return None (or omit return) is treated as an error.\n"
-        "    \"\"\"\n"
-        "    if in_slot is None:\n"
-        "        return False\n"
-        "\n"
-        "    for sender, data in messages:\n"
-        "        api.log('debug', f\"msg from {sender}: {data!r}\")\n"
-        "\n"
-        "    # TODO: replace with real transformation\n"
-        "    out_slot.value = in_slot.value\n"
-        "    return True\n"
-        "\n"
-        "\n"
-        "def on_stop(api: proc.ProcessorAPI) -> None:\n"
-        "    \"\"\"Called once after the processing loop exits.\"\"\"\n"
-        "    api.log('info', f\"on_stop: uid={api.uid()}\")\n";
-    py_out.close();
-
-    // ── Summary ───────────────────────────────────────────────────────────────
-    std::cout << "\nProcessor directory initialised: " << proc_dir.string() << "\n"
-              << "  proc_uid  : " << proc_uid << "\n"
-              << "  proc_name : " << proc_name << "\n"
-              << "  processor.json : " << json_path.string() << "\n"
-              << "  script    : " << init_py.string() << "\n\n"
-              << "Next steps:\n"
-              << "  1. Edit processor.json — set 'hub_dir' to your hub directory path\n"
-              << "  2. Edit processor.json — set 'in_channel' and 'out_channel'\n"
-              << "  3. Edit processor.json — set 'processor.auth.keyfile' to a path,\n"
-              << "     then generate the keypair:\n"
-              << "       pylabhub-processor --config " << json_path.string() << " --keygen\n"
-              << "  4. Edit script/python/__init__.py — implement on_process\n"
-              << "  5. Run: pylabhub-processor " << proc_dir.string() << "\n";
-    return 0;
+    return RoleDirectory::init_directory(proc_dir, "processor", *name_opt);
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +115,9 @@ static int do_init(const std::string &proc_dir_str, const std::string &cli_name)
 int main(int argc, char *argv[])
 {
     std::atomic<bool> g_shutdown{false};
+
+    // Register role-specific init content before parsing args.
+    pylabhub::processor::register_processor_init();
 
     pylabhub::InteractiveSignalHandler signal_handler(
         {.binary_name = "pylabhub-processor"}, &g_shutdown);
