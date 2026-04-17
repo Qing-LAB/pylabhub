@@ -729,19 +729,10 @@ bool Logger::set_logfile(const std::string &utf8_path, bool use_flock)
     return false;
 }
 
-bool Logger::set_rotating_logfile(const std::filesystem::path &base_filepath,
-                                  size_t max_file_size_bytes, size_t max_backup_files,
-                                  std::error_code &err_code) noexcept
-{
-    // Call the full overload with flocking enabled by default.
-    return set_rotating_logfile(base_filepath, max_file_size_bytes, max_backup_files, true,
-                               err_code);
-}
-
 // NOLINTNEXTLINE(bugprone-exception-escape) -- noexcept for API; internal throws reported via err_code
 bool Logger::set_rotating_logfile(const std::filesystem::path &base_filepath,
-                                  size_t max_file_size_bytes, size_t max_backup_files,
-                                  bool use_flock, std::error_code &err_code) noexcept
+                                  const RotatingLogConfig &cfg,
+                                  std::error_code &err_code) noexcept
 {
     if (!logger_is_loggable("Logger::set_rotating_logfile"))
     {
@@ -773,12 +764,17 @@ bool Logger::set_rotating_logfile(const std::filesystem::path &base_filepath,
                 return false;
             }
         }
+        const auto mode = cfg.timestamped_names
+            ? RotatingFileSink::Mode::Timestamped
+            : RotatingFileSink::Mode::Numeric;
+
         auto promise = std::make_shared<std::promise<bool>>();
         auto future = promise->get_future();
         // 4. Pre-flight checks passed, enqueue the command with the normalized path.
         pImpl->enqueue_command(
-            SetSinkCommand{std::make_unique<RotatingFileSink>(normalized_path, max_file_size_bytes,
-                                                              max_backup_files, use_flock),
+            SetSinkCommand{std::make_unique<RotatingFileSink>(
+                               normalized_path, cfg.max_file_size_bytes,
+                               cfg.max_backup_files, cfg.use_flock, mode),
                            promise});
         return future.get();
     }
@@ -1142,11 +1138,12 @@ ModuleDef Logger::GetStartupLogFileSinkModule(
     if (rotating)
     {
         // Encode rotation parameters into the callback arg string as
-        // "path|max_size|max_backups" since LifecycleCallback only accepts
-        // a single const char* argument.
+        // "path|max_size|max_backups|timestamped" since LifecycleCallback
+        // only accepts a single const char* argument.
         const std::string encoded_arg = log_file_path + '|' +
                                         std::to_string(rotating->max_file_size_bytes) + '|' +
-                                        std::to_string(rotating->max_backup_files);
+                                        std::to_string(rotating->max_backup_files) + '|' +
+                                        (rotating->timestamped_names ? "t" : "n");
         sink_mod.set_startup(
             [](const char *arg, void * /*userdata*/)
             {
@@ -1155,7 +1152,9 @@ ModuleDef Logger::GetStartupLogFileSinkModule(
                     return;
                 }
 
-                // Parse "path|max_size|max_backups".
+                // Parse "path|max_size|max_backups|timestamped".
+                // (3rd separator is optional for backwards-compat with
+                // existing callers that still produce the 3-field form.)
                 const std::string encoded(arg);
                 const auto sep1 = encoded.find('|');
                 const auto sep2 = encoded.find('|', sep1 + 1);
@@ -1165,14 +1164,21 @@ ModuleDef Logger::GetStartupLogFileSinkModule(
                                  "logfile arg '%s'\n", arg);
                     return;
                 }
+                const auto sep3 = encoded.find('|', sep2 + 1);
 
-                const std::string path        = encoded.substr(0, sep1);
-                const size_t      max_size    = std::stoull(
+                const std::string path     = encoded.substr(0, sep1);
+                Logger::RotatingLogConfig cfg;
+                cfg.max_file_size_bytes = std::stoull(
                     encoded.substr(sep1 + 1, sep2 - sep1 - 1));
-                const size_t      max_backups = std::stoull(encoded.substr(sep2 + 1));
+                cfg.max_backup_files    = std::stoull(
+                    sep3 == std::string::npos
+                        ? encoded.substr(sep2 + 1)
+                        : encoded.substr(sep2 + 1, sep3 - sep2 - 1));
+                if (sep3 != std::string::npos)
+                    cfg.timestamped_names = (encoded.substr(sep3 + 1) == "t");
 
                 std::error_code ec;
-                if (!Logger::instance().set_rotating_logfile(path, max_size, max_backups, ec))
+                if (!Logger::instance().set_rotating_logfile(path, cfg, ec))
                 {
                     std::fprintf(stderr, "WARNING: failed to open rotating log file '%s': %s, "
                                  "falling back to console\n", path.c_str(), ec.message().c_str());

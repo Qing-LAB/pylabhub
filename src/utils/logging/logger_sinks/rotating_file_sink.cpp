@@ -1,8 +1,12 @@
 // File: rotating_file_sink.cpp
 #include "utils/logger_sinks/rotating_file_sink.hpp"
 
+#include "utils/format_tools.hpp"
+
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include <vector>
 
 namespace pylabhub::utils
 {
@@ -10,18 +14,132 @@ namespace pylabhub::utils
 RotatingFileSink::RotatingFileSink(const std::filesystem::path &base_filepath,
                                    size_t max_file_size_bytes, size_t max_backup_files,  // NOLINT(bugprone-easily-swappable-parameters) order: size then count
                                    bool use_flock)
-    : m_max_file_size_bytes(max_file_size_bytes > 0 ? max_file_size_bytes : 1),
-      m_max_backup_files(max_backup_files), m_current_size_bytes(0)
+    : RotatingFileSink(base_filepath, max_file_size_bytes, max_backup_files,
+                       use_flock, Mode::Numeric)
 {
+}
+
+RotatingFileSink::RotatingFileSink(const std::filesystem::path &base_filepath,
+                                   size_t max_file_size_bytes, size_t max_backup_files,  // NOLINT(bugprone-easily-swappable-parameters)
+                                   bool use_flock, Mode mode)
+    : m_base_filepath(base_filepath),
+      m_max_file_size_bytes(max_file_size_bytes > 0 ? max_file_size_bytes : 1),
+      m_max_backup_files(max_backup_files), m_current_size_bytes(0),
+      m_mode(mode)
+{
+    const std::filesystem::path initial_path =
+        (m_mode == Mode::Timestamped) ? compose_timestamped_path_() : base_filepath;
+
     try
     {
-        open(base_filepath, use_flock);
+        open(initial_path, use_flock);
         m_current_size_bytes = size();
+
+        // In Timestamped mode, also prune pre-existing log files in the
+        // directory so the backup count is enforced at startup too.
+        if (m_mode == Mode::Timestamped)
+            prune_timestamped_backups_();
     }
     catch (const std::system_error &e)
     {
         throw std::runtime_error(fmt::format("Failed to open rotating log file '{}': {}",
-                                             base_filepath.string(), e.what()));
+                                             initial_path.string(), e.what()));
+    }
+}
+
+std::filesystem::path RotatingFileSink::compose_timestamped_path_() const
+{
+    // Filename format: <stem>-YYYY-MM-DD-HH-MM-SS.log
+    // If base_filepath has an extension (e.g. "base.log"), strip it so the
+    // timestamp is inserted cleanly: "base-2026-04-17-11-05-51.log".
+    // If rotation fires faster than 1 second (same timestamp as previous),
+    // fall back to the full microsecond form for uniqueness.
+    std::string stem = m_base_filepath.stem().string();
+    if (stem.empty())
+        stem = m_base_filepath.filename().string();
+
+    const std::string full_ts = pylabhub::format_tools::formatted_time(
+        std::chrono::system_clock::now(), /*use_dash_spacer=*/true);
+    // full_ts shape: "YYYY-MM-DD-HH-MM-SS-uuuuuu" (26 chars). The first 19
+    // chars are second-precision.
+    const std::string second_ts = full_ts.size() >= 19 ? full_ts.substr(0, 19) : full_ts;
+
+    auto compose = [&](const std::string &ts) {
+        return m_base_filepath.parent_path() / (stem + "-" + ts + ".log");
+    };
+
+    std::filesystem::path p = compose(second_ts);
+    if (!std::filesystem::exists(p))
+        return p;
+
+    // Collision: sub-second rotation. Use the full microsecond timestamp.
+    return compose(full_ts);
+}
+
+void RotatingFileSink::prune_timestamped_backups_()
+{
+    namespace fs = std::filesystem;
+
+    if (m_max_backup_files == 0)
+        return;  // no limit → keep all files
+
+    const fs::path dir = m_base_filepath.parent_path();
+    std::string stem = m_base_filepath.stem().string();
+    if (stem.empty())
+        stem = m_base_filepath.filename().string();
+    const std::string prefix = stem + "-";
+
+    std::error_code ec;
+    if (!fs::is_directory(dir, ec))
+        return;
+
+    // Collect all <stem>-*.log files in the directory.
+    std::vector<fs::path> candidates;
+    for (const auto &entry : fs::directory_iterator(dir, ec))
+    {
+        if (!entry.is_regular_file())
+            continue;
+        const std::string name = entry.path().filename().string();
+        if (name.rfind(prefix, 0) == 0 &&                     // starts with <stem>-
+            name.size() > prefix.size() + 4 &&                 // has room for timestamp + ".log"
+            name.substr(name.size() - 4) == ".log")            // ends with .log
+        {
+            candidates.push_back(entry.path());
+        }
+    }
+
+    // Sort by file modification time (oldest first). File names alone are
+    // not a reliable sort key: when sub-second rotation fallback is used,
+    // the microsecond-suffixed form (26 chars) and the plain-second form
+    // (19 chars) do NOT sort chronologically by name — the '-' before the
+    // us suffix (0x2D) sorts BEFORE '.' (0x2E) before ".log" in the plain
+    // form. mtime reflects actual creation order.
+    std::sort(candidates.begin(), candidates.end(),
+              [](const fs::path &a, const fs::path &b)
+              {
+                  std::error_code ea, eb;
+                  auto ta = fs::last_write_time(a, ea);
+                  auto tb = fs::last_write_time(b, eb);
+                  if (ea || eb)
+                      return a.filename() < b.filename();  // fallback
+                  return ta < tb;
+              });
+
+    // Keep newest max_backup_files + 1 (the +1 accounts for the currently
+    // active file, which is in `candidates` too). Delete the rest.
+    const size_t keep = m_max_backup_files + 1;
+    if (candidates.size() <= keep)
+        return;
+
+    const size_t to_delete = candidates.size() - keep;
+    for (size_t i = 0; i < to_delete; ++i)
+    {
+        fs::remove(candidates[i], ec);
+        if (ec)
+        {
+            PLH_DEBUG("Logger Error: Failed to delete old timestamped log '{}': {}",
+                      candidates[i].string(), ec.message());
+        }
     }
 }
 
@@ -55,12 +173,61 @@ void RotatingFileSink::flush()
 
 std::string RotatingFileSink::description() const
 {
-    return fmt::format("RotatingFile: path='{}', max_size={}, max_files={}", path().string(),
-                       m_max_file_size_bytes, m_max_backup_files);
+    const char *mode_str = (m_mode == Mode::Timestamped) ? "timestamped" : "numeric";
+    return fmt::format("RotatingFile: base='{}' active='{}' max_size={} max_files={} mode={}",
+                       m_base_filepath.string(), path().string(),
+                       m_max_file_size_bytes, m_max_backup_files, mode_str);
+}
+
+void RotatingFileSink::rotate()
+{
+    if (m_mode == Mode::Timestamped)
+        rotate_timestamped_();
+    else
+        rotate_numeric_();
+}
+
+void RotatingFileSink::rotate_timestamped_()
+{
+    close();
+
+    // Open a fresh file with a new timestamp. The old file keeps its own
+    // timestamped name (no rename needed).
+    const std::filesystem::path new_path = compose_timestamped_path_();
+
+    try
+    {
+        open(new_path, m_use_flock);
+        m_current_size_bytes = 0;
+
+        constexpr int kSystemLevel = 5; // L_SYSTEM
+        auto formatted_message = pylabhub::utils::Sink::format_logmsg(
+            LogMessage{
+                .timestamp  = std::chrono::system_clock::now(),
+                .process_id = pylabhub::platform::get_pid(),
+                .thread_id  = pylabhub::platform::get_native_thread_id(),
+                .level      = kSystemLevel,
+                .body       = pylabhub::format_tools::make_buffer(
+                    "--- Log rotated (timestamped) ---"),
+            },
+            /*sync_flag=*/false);
+        BaseFileSink::fwrite(formatted_message);
+        BaseFileSink::fflush();
+        m_current_size_bytes += formatted_message.length();
+
+        // Prune old timestamped files to enforce max_backup_files.
+        prune_timestamped_backups_();
+    }
+    catch (const std::system_error &e)
+    {
+        PLH_DEBUG("Logger Error: Failed to open new timestamped log '{}': {}",
+                  new_path.string(), e.what());
+        m_current_size_bytes = 0;
+    }
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity) -- rotation steps and recovery branches
-void RotatingFileSink::rotate()
+void RotatingFileSink::rotate_numeric_()
 {
     auto base_path = path();
     close();
