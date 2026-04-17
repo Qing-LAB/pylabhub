@@ -134,10 +134,27 @@ include(GenerateExportHeader)
 # Use a consistent filename (underscores) and macro name.
 # This will generate: <binary-dir>/pylabhub_utils_export.h
 # Use an absolute path for EXPORT_FILE_NAME to avoid ambiguity.
+#
+# CUSTOM_CONTENT_FROM_VARIABLE appends test-only export macros to the
+# generated header. PYLABHUB_UTILS_TEST_EXPORT is visible (exported)
+# when PYLABHUB_BUILD_TESTS is defined, hidden otherwise. Use it for
+# internal classes/functions that must be linkable from test binaries
+# but should not be part of the production export surface.
+set(PYLABHUB_EXPORT_CUSTOM_CONTENT "
+/* Test-only export: visible when PYLABHUB_BUILD_TESTS is defined, hidden otherwise.
+   Use for internal classes/functions that tests need to link against directly. */
+#ifdef PYLABHUB_BUILD_TESTS
+#   define PYLABHUB_UTILS_TEST_EXPORT PYLABHUB_UTILS_EXPORT
+#else
+#   define PYLABHUB_UTILS_TEST_EXPORT
+#endif
+")
+
 generate_export_header(pylabhub-utils
   BASE_NAME         "pylabhub_utils"                 # used for internal checks
   EXPORT_MACRO_NAME "PYLABHUB_UTILS_EXPORT"         # macro used by sources
   EXPORT_FILE_NAME  "${CMAKE_CURRENT_BINARY_DIR}/pylabhub_utils_export.h"  # absolute path
+  CUSTOM_CONTENT_FROM_VARIABLE PYLABHUB_EXPORT_CUSTOM_CONTENT
 )
 
 # Make sure the generated header directory is on the public include path.
