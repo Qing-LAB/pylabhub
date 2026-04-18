@@ -631,6 +631,62 @@ gtest_discover_tests(test_layer2_engine_factory
     PROPERTIES LABELS "layer2;service;engine_factory" TIMEOUT 30)
 
 # ============================================================================
+# Test: RoleDirectory::init_directory with LogInitOverrides across 3 roles
+# ============================================================================
+
+add_executable(test_layer2_role_init_directory test_role_init_directory.cpp)
+target_include_directories(test_layer2_role_init_directory PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/producer
+    ${CMAKE_SOURCE_DIR}/src/consumer
+    ${CMAKE_SOURCE_DIR}/src/processor)
+target_link_libraries(test_layer2_role_init_directory PRIVATE
+    pylabhub::utils GTest::gtest GTest::gtest_main)
+pylabhub_ensure_sanitizer_for_executable(test_layer2_role_init_directory)
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_role_init_directory
+    SUITE_NAME "Layer2_RoleInitDirectory")
+layer2_require_staged_utils(test_layer2_role_init_directory)
+gtest_discover_tests(test_layer2_role_init_directory
+    PROPERTIES LABELS "layer2;service;role_init_directory" TIMEOUT 60)
+
+# ============================================================================
+# Test: CLI log flags → JSON → LoggingConfig round-trip (all 3 roles)
+# ============================================================================
+
+add_executable(test_layer2_role_logging_roundtrip
+    test_role_logging_roundtrip.cpp)
+target_include_directories(test_layer2_role_logging_roundtrip PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/producer
+    ${CMAKE_SOURCE_DIR}/src/consumer
+    ${CMAKE_SOURCE_DIR}/src/processor)
+target_link_libraries(test_layer2_role_logging_roundtrip PRIVATE
+    pylabhub::utils GTest::gtest GTest::gtest_main)
+pylabhub_ensure_sanitizer_for_executable(test_layer2_role_logging_roundtrip)
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_role_logging_roundtrip
+    SUITE_NAME "Layer2_RoleLoggingRoundtrip")
+layer2_require_staged_utils(test_layer2_role_logging_roundtrip)
+gtest_discover_tests(test_layer2_role_logging_roundtrip
+    PROPERTIES LABELS "layer2;service;role_logging_roundtrip" TIMEOUT 60)
+
+# ============================================================================
+# Test: configure_logger_from_config — auto-path, rotation params, errors
+# ============================================================================
+
+add_executable(test_layer2_configure_logger test_configure_logger.cpp)
+target_include_directories(test_layer2_configure_logger PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/producer)
+target_link_libraries(test_layer2_configure_logger PRIVATE
+    pylabhub::utils GTest::gtest GTest::gtest_main)
+pylabhub_ensure_sanitizer_for_executable(test_layer2_configure_logger)
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_configure_logger
+    SUITE_NAME "Layer2_ConfigureLogger")
+layer2_require_staged_utils(test_layer2_configure_logger)
+gtest_discover_tests(test_layer2_configure_logger
+    PROPERTIES LABELS "layer2;service;configure_logger" TIMEOUT 60)
+
+# ============================================================================
 # Test: LoopTimingPolicy (pure header-only API)
 # ============================================================================
 
