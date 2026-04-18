@@ -312,8 +312,9 @@ int RoleDirectory::init_directory(const std::filesystem::path &dir,
         auto it = registry().find(role_tag);
         if (it == registry().end())
         {
-            fmt::print(stderr, "Error: unknown role '{}' — not registered via "
-                       "RoleDirectory::register_role()\n", role_tag);
+            fmt::print(stderr, "init_directory: error: unknown role '{}' — "
+                       "not registered via RoleDirectory::register_role()\n",
+                       role_tag);
             return 1;
         }
         info = it->second;
@@ -324,7 +325,7 @@ int RoleDirectory::init_directory(const std::filesystem::path &dir,
     const fs::path json_path = target_dir / info.config_filename;
     if (fs::exists(json_path))
     {
-        fmt::print(stderr, "Error: {} already exists at '{}'. "
+        fmt::print(stderr, "init_directory: error: {} already exists at '{}'. "
                    "Remove it first or choose a different directory.\n",
                    info.config_filename, json_path.string());
         return 1;
@@ -338,15 +339,15 @@ int RoleDirectory::init_directory(const std::filesystem::path &dir,
     }
     catch (const std::exception &e)
     {
-        fmt::print(stderr, "Error: {}\n", e.what());
+        fmt::print(stderr, "init_directory: error: {}\n", e.what());
         return 1;
     }
 
     // 3. Validate name (caller must provide — no prompts from the lib).
     if (name.empty())
     {
-        fmt::print(stderr, "Error: role name is required — caller must resolve "
-                   "name before calling init_directory()\n");
+        fmt::print(stderr, "init_directory: error: role name is required — "
+                   "caller must resolve name before calling init_directory()\n");
         return 1;
     }
 
@@ -360,14 +361,16 @@ int RoleDirectory::init_directory(const std::filesystem::path &dir,
         std::ofstream out(json_path);
         if (!out)
         {
-            fmt::print(stderr, "Error: cannot write '{}'\n", json_path.string());
+            fmt::print(stderr, "init_directory: error: cannot write '{}'\n",
+                       json_path.string());
             return 1;
         }
         out << j.dump(2) << "\n";
         out.close();
         if (!out)
         {
-            fmt::print(stderr, "Error: write failed for '{}'\n", json_path.string());
+            fmt::print(stderr, "init_directory: error: write failed for '{}'\n",
+                       json_path.string());
             return 1;
         }
     }
@@ -381,7 +384,8 @@ int RoleDirectory::init_directory(const std::filesystem::path &dir,
         }
         catch (const std::exception &e)
         {
-            fmt::print(stderr, "Error in post-init callback: {}\n", e.what());
+            fmt::print(stderr, "init_directory: error in post-init callback: {}\n",
+                       e.what());
             return 1;
         }
     }

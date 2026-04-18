@@ -1152,30 +1152,30 @@ ModuleDef Logger::GetStartupLogFileSinkModule(
                     return;
                 }
 
-                // Parse "path|max_size|max_backups|timestamped".
-                // (3rd separator is optional for backwards-compat with
-                // existing callers that still produce the 3-field form.)
+                // Parse "path|max_size|max_backups|timestamped" — the
+                // 4-field form is the only producer (GetStartupLogFileSinkModule
+                // itself). Any other shape is a bug in the producer.
                 const std::string encoded(arg);
                 const auto sep1 = encoded.find('|');
-                const auto sep2 = encoded.find('|', sep1 + 1);
-                if (sep1 == std::string::npos || sep2 == std::string::npos)
+                const auto sep2 = (sep1 == std::string::npos)
+                                      ? std::string::npos : encoded.find('|', sep1 + 1);
+                const auto sep3 = (sep2 == std::string::npos)
+                                      ? std::string::npos : encoded.find('|', sep2 + 1);
+                if (sep1 == std::string::npos || sep2 == std::string::npos ||
+                    sep3 == std::string::npos)
                 {
                     std::fprintf(stderr, "WARNING: StartupLogFileSink: malformed rotating "
                                  "logfile arg '%s'\n", arg);
                     return;
                 }
-                const auto sep3 = encoded.find('|', sep2 + 1);
 
-                const std::string path     = encoded.substr(0, sep1);
+                const std::string path  = encoded.substr(0, sep1);
                 Logger::RotatingLogConfig cfg;
-                cfg.max_file_size_bytes = std::stoull(
+                cfg.max_file_size_bytes  = std::stoull(
                     encoded.substr(sep1 + 1, sep2 - sep1 - 1));
-                cfg.max_backup_files    = std::stoull(
-                    sep3 == std::string::npos
-                        ? encoded.substr(sep2 + 1)
-                        : encoded.substr(sep2 + 1, sep3 - sep2 - 1));
-                if (sep3 != std::string::npos)
-                    cfg.timestamped_names = (encoded.substr(sep3 + 1) == "t");
+                cfg.max_backup_files     = std::stoull(
+                    encoded.substr(sep2 + 1, sep3 - sep2 - 1));
+                cfg.timestamped_names    = (encoded.substr(sep3 + 1) == "t");
 
                 std::error_code ec;
                 if (!Logger::instance().set_rotating_logfile(path, cfg, ec))
