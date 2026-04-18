@@ -136,23 +136,13 @@ std::unique_ptr<scripting::RoleHostBase> make_consumer_host(
         std::move(config), std::move(engine), shutdown_flag);
 }
 
-constexpr const char *kConsumerCallbacks[] = {
-    "on_init",
-    "on_consume",
-    "on_stop",
-    "on_inbox",   // optional, present iff inbox is configured
-    nullptr,
-};
-
 } // namespace
 
 void register_consumer_runtime()
 {
-    utils::RoleRegistry::register_runtime("cons")
+    utils::RoleRegistry::register_runtime("consumer")
         .role_label("Consumer")
         .host_factory(&make_consumer_host)
-        .engine_callbacks(kConsumerCallbacks)
-        .config_role_name("consumer")
         .config_parser(&parse_consumer_fields)
         .commit();
 }
