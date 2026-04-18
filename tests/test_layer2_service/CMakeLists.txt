@@ -584,6 +584,53 @@ gtest_discover_tests(test_layer2_role_directory
 )
 
 # ============================================================================
+# Test: role_cli::parse_role_args + ParseResult (in-process, no std::exit)
+# ============================================================================
+
+add_executable(test_layer2_role_cli test_role_cli.cpp)
+target_link_libraries(test_layer2_role_cli PRIVATE
+    pylabhub::utils GTest::gtest GTest::gtest_main)
+pylabhub_ensure_sanitizer_for_executable(test_layer2_role_cli)
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_role_cli SUITE_NAME "Layer2_RoleCli")
+layer2_require_staged_utils(test_layer2_role_cli)
+gtest_discover_tests(test_layer2_role_cli
+    PROPERTIES LABELS "layer2;service;role_cli" TIMEOUT 30)
+
+# ============================================================================
+# Test: RoleRegistry + RuntimeBuilder
+# ============================================================================
+
+add_executable(test_layer2_role_registry test_role_registry.cpp)
+target_link_libraries(test_layer2_role_registry PRIVATE
+    pylabhub::utils GTest::gtest GTest::gtest_main)
+pylabhub_ensure_sanitizer_for_executable(test_layer2_role_registry)
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_role_registry SUITE_NAME "Layer2_RoleRegistry")
+layer2_require_staged_utils(test_layer2_role_registry)
+gtest_discover_tests(test_layer2_role_registry
+    PROPERTIES LABELS "layer2;service;role_registry" TIMEOUT 30)
+
+# ============================================================================
+# Test: make_engine_from_script_config (scripting layer helper)
+# ============================================================================
+
+add_executable(test_layer2_engine_factory test_engine_factory.cpp)
+target_include_directories(test_layer2_engine_factory PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/scripting)
+target_link_libraries(test_layer2_engine_factory PRIVATE
+    pylabhub::utils
+    pylabhub::scripting
+    pylabhub::third_party::pybind11_embed
+    GTest::gtest GTest::gtest_main)
+pylabhub_ensure_sanitizer_for_executable(test_layer2_engine_factory)
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_engine_factory SUITE_NAME "Layer2_EngineFactory")
+layer2_require_staged_utils(test_layer2_engine_factory)
+gtest_discover_tests(test_layer2_engine_factory
+    PROPERTIES LABELS "layer2;service;engine_factory" TIMEOUT 30)
+
+# ============================================================================
 # Test: LoopTimingPolicy (pure header-only API)
 # ============================================================================
 
