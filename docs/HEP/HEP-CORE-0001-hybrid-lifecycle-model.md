@@ -469,6 +469,79 @@ int main() {
 
 ---
 
+## Testing implications
+
+Lifecycle modules (`Logger`, `FileLock`, `JsonConfig`, `CryptoUtils`, `ZMQContext`,
+`HubConfig`, `SchemaStore`, hub `DataBlock`) are process-global singletons owned
+by a single `LifecycleManager`. The design choices in this HEP constrain how
+tests can exercise any code that touches a lifecycle-backed module.
+
+### The contract
+
+**Any test whose body transitively requires a lifecycle module must run inside
+a spawned worker subprocess.** The worker owns its own `LifecycleGuard`; the
+test-runner process owns none.
+
+This contract is not stylistic — it is load-bearing:
+
+- **Singleton ownership.** `LifecycleGuard` is designed to construct once per
+  process and finalize once on scope exit. A test that re-constructs the guard
+  per-`TEST_F` (e.g. from a fixture `SetUp/TearDown`) breaks the
+  initialize-exactly-once invariant that `ModuleDef::startup` callbacks assume.
+  Modules that register dynamic dependencies at startup (e.g. `ThreadManager`)
+  observe a half-registered state on the second `initialize()` call.
+- **Terminal teardown.** `LifecycleGuard`'s reverse-order shutdown is the *final*
+  action expected to touch pylabhub state in any process. After it returns, the
+  process is expected to exit. Library-global statics for `libzmq`, `luajit`,
+  and `libsodium` run destructors outside our control and can hang indefinitely
+  at program exit. The test framework calls `_exit()` inside the worker to skip
+  these — a path only available if the lifecycle itself owns the process.
+- **Crash isolation.** A panic, `abort()`, or even a clean `finalize()` inside
+  one test must not corrupt the singleton state observed by the next test.
+  Per-test processes are the only mechanism that enforces this.
+
+### Consequences for test authors
+
+| Intent                                                                | Pattern                                                                |
+|-----------------------------------------------------------------------|------------------------------------------------------------------------|
+| Pure function / struct / algorithm, no `LOGGER_*`, no `FileLock`      | In-process gtest `TEST` / `TEST_F` — no guard, no worker               |
+| Thread-racing only, no module calls                                   | In-process `TEST_F` with `ThreadRacer` — still no guard                |
+| Any call path that reaches a lifecycle module (direct or transitive)  | Spawn a worker subprocess that owns the guard                          |
+
+The test framework exposes two entry points for worker bodies:
+
+- `run_gtest_worker(fn, name, mods...)` — standard path: installs the guard
+  over `mods`, runs `fn`, catches gtest assertions, checks for
+  `ThreadManager` leaks, then `_exit()`s with the appropriate code.
+- `run_worker_bare(fn, name)` — bare path: no implicit guard; used when the
+  test body *itself* exercises staged or partial initialization.
+
+Both APIs live in `tests/test_framework/shared_test_helpers.h`. The comment
+block at lines 303–322 of that file explains *why* workers `_exit()` instead of
+returning, and is the authoritative reference for the library-global
+teardown-hang issue.
+
+### What this rules out
+
+- In-process `LifecycleGuard` in test fixtures (per-`TEST_F` or
+  `SetUpTestSuite`-owned). The fact that such a test passes in isolation says
+  nothing — the second test in the suite, or a teardown-order change, reveals
+  the issue.
+- Fabricating a class that owns a `ThreadManager`, `Messenger`, or
+  `RoleHostBase` without a guard. Those types transitively require
+  `Logger`/`JsonConfig` and will either silently half-register or abort.
+- `EXPECT_DEATH` for aborts in lifecycle-backed code. Death tests fork mid-test
+  and inherit a partially-initialized state; the expected behaviour is instead
+  to spawn a dedicated worker that deliberately aborts, and have the parent
+  assert on the subprocess's exit code and stderr.
+
+For the end-to-end mechanics (worker-file layout, dispatcher registration,
+CMake wiring, how `IsolatedProcessTest::SpawnWorker` + `ExpectWorkerOk` work)
+see **`docs/README/README_testing.md` §4 "Choosing a test pattern"** and the
+code-level reference at `tests/test_framework/test_patterns.h`.
+
+---
+
 ## Risk analysis and mitigations
 
 | Risk | Mitigation |
