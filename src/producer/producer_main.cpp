@@ -108,6 +108,10 @@ int main(int argc, char *argv[])
 
     // Register role-specific init content before parsing args.
     pylabhub::producer::register_producer_init();
+    // Register runtime content (host factory + callbacks) for the
+    // unified plh_role dispatch path. Harmless for the standalone
+    // producer binary — plh_role is what consumes RoleRegistry.
+    pylabhub::producer::register_producer_runtime();
 
     pylabhub::InteractiveSignalHandler signal_handler(
         {.binary_name = "pylabhub-producer"}, &g_shutdown);

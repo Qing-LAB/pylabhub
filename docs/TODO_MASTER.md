@@ -22,6 +22,26 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
+### Priority 0 (DONE — 2026-04-17): HEP-0024 Phases 13-14 — Logging
+📍 **Status**: Complete; **1290/1290 tests**
+📋 **Branch**: `feature/lua-role-support`
+
+- [x] `RotatingFileSink::Mode::{Numeric,Timestamped}` two-mode extension
+- [x] `RotatingLogConfig::timestamped_names` flag (default false → Numeric)
+- [x] Timestamped filename: `<base>-YYYY-MM-DD-HH-MM-SS.uuuuuu.log` (lex-sort = chron-sort)
+- [x] `format_tools::formatted_time(tp, use_dash_spacer=true)` dash-spacer variant
+- [x] `LoggingConfig` category in `RoleConfig` + strict key whitelist
+- [x] `max_backup_files` semantics: `>=1` explicit, `-1` → `kKeepAllBackups` sentinel, `0` invalid
+- [x] `RotatingLogConfig` default aligned to 5 (matches `LoggingConfig`)
+- [x] Producer `out_shm_secret=0` boilerplate removed from init template
+- [x] `init_directory` stderr messages prefixed `init_directory: error:`
+- [x] 10 new L2 LoggingConfig tests; 2 L1 `formatted_time` dash-spacer tests
+- [x] HEP-0024 §12 (CLI↔Config boundary), §13 phase table updated
+
+Next (HEP-0024 Phases 15-22): `RoleHostBase` abstract class, `RoleRuntimeInfo` +
+`register_runtime()`, role CLI `--role`/`--log-*` flags, `plh_role` unified
+binary, per-role binary deletion, L4 test migration, docs.
+
 ### Priority 0 (DONE — 2026-04-15/16): L3.γ/ζ Role Unification + ZMQ + Flexzone + Docs
 📍 **Status**: Complete; **1278/1278 tests**
 📋 **Branch**: `feature/lua-role-support`

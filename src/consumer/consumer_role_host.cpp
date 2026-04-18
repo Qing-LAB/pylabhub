@@ -8,6 +8,11 @@
  * Layer 3 (infrastructure): BrokerRequestComm, Consumer, queue, ctrl_thread_, events.
  * Layer 2 (data loop): inner retry acquire, read, invoke, release.
  * Layer 1 (engine): delegated to ScriptEngine via invoke_consume / invoke_on_inbox.
+ *
+ * Shared lifecycle scaffolding (ctor, startup_(), shutdown_(), ready-promise,
+ * RoleAPIBase ownership, ThreadManager-owned worker) lives in RoleHostBase.
+ * This file implements only the consumer-specific worker_main_() hook and
+ * its setup_infrastructure_() / teardown_infrastructure_() helpers.
  */
 #include "consumer_role_host.hpp"
 #include "utils/thread_manager.hpp"
@@ -38,71 +43,43 @@ using scripting::ConsumerCycleOps;
 using Clock = std::chrono::steady_clock;
 
 // ============================================================================
-// Constructor
+// Constructor / Destructor
 // ============================================================================
 
 ConsumerRoleHost::ConsumerRoleHost(config::RoleConfig config,
                                      std::unique_ptr<scripting::ScriptEngine> engine,
                                      std::atomic<bool> *shutdown_flag)
-    : config_(std::move(config))
-    , engine_(std::move(engine))
+    : scripting::RoleHostBase("cons", std::move(config), std::move(engine),
+                              shutdown_flag)
 {
-    core_.set_shutdown_flag(shutdown_flag);
 }
 
 ConsumerRoleHost::~ConsumerRoleHost()
 {
+    // Join worker BEFORE consumer-specific members (broker_comm_,
+    // inbox_queue_) begin destruction — the worker's teardown path
+    // reads them. shutdown_() is idempotent; base dtor's flag check
+    // therefore passes when it runs later.
     shutdown_();
 }
 
 // ============================================================================
-// startup_ — spawn worker thread, block until ready or failure
+// worker_main_ — the worker thread entry point (RoleHostBase hook)
 // ============================================================================
-
-void ConsumerRoleHost::startup_()
-{
-    ready_promise_ = std::promise<bool>{};
-    auto ready_future = ready_promise_.get_future();
-
-    // Construct api_ here (not inside worker_main_) so the role's
-    // ThreadManager exists BEFORE we spawn the worker thread — the
-    // worker then lives under api_->thread_manager() alongside ctrl
-    // and any future role-scope threads. role_tag + uid are compile-
-    // time required by RoleAPIBase's ctor.
-    api_ = std::make_unique<scripting::RoleAPIBase>(
-        core_, "cons", config_.identity().uid);
-
-    api_->thread_manager().spawn("worker", [this] { worker_main_(); });
-
-    const bool ok = ready_future.get();
-    if (!ok)
-    {
-        // Worker signaled setup failure. Drop api_ → its ThreadManager
-        // dtor bounded-joins the worker (which should already be
-        // exiting) with ERROR + detach if it got stuck.
-        api_.reset();
-    }
-}
-
-// ============================================================================
-// shutdown_ — signal shutdown; ThreadManager dtor bounded-joins worker
-// ============================================================================
-
-void ConsumerRoleHost::shutdown_()
-{
-    core_.request_stop();
-    core_.notify_incoming();
-    // api_.reset() → RoleAPIBase dtor → ThreadManager dtor →
-    // bounded join("worker") with ERROR-on-timeout + detach.
-    api_.reset();
-}
-
-// ============================================================================
-// worker_main_ — the worker thread entry point
-// ============================================================================
+//
+// Sequence identical to the pre-migration standalone implementation; only
+// the state it reads (config_, core_, engine_, api_, ready_promise_) is
+// now accessed via protected RoleHostBase accessors instead of direct
+// member references.
 
 void ConsumerRoleHost::worker_main_()
 {
+    auto       &core_        = core();
+    const auto &config_      = config();
+    auto       &engine_ref   = engine();
+    auto       &api_ref      = api();
+    auto       &promise_ref  = ready_promise();
+
     const auto &id   = config_.identity();
     const auto &sc   = config_.script();
     const auto &hub  = config_.in_hub();
@@ -148,7 +125,7 @@ void ConsumerRoleHost::worker_main_()
         catch (const std::exception &e)
         {
             LOGGER_ERROR("[cons] Schema parse error: {}", e.what());
-            ready_promise_.set_value(false);
+            promise_ref.set_value(false);
             return;
         }
     }
@@ -171,42 +148,43 @@ void ConsumerRoleHost::worker_main_()
         if (!setup_infrastructure_(inbox_spec_local))
         {
             teardown_infrastructure_();
-            ready_promise_.set_value(false);
+            promise_ref.set_value(false);
             return;
         }
     }
 
     // ── Step 3: Wire infrastructure on the already-created api_ ──────────────
     //
-    // api_ itself was constructed in startup_() so its ThreadManager was
-    // available to spawn this worker thread. Here we populate the
-    // mutable post-ctor wiring: name, channels, log level, script/role
-    // dirs, queue pointers, engine, checksum policy, event callbacks.
+    // api_ was constructed in RoleHostBase::startup_() before the worker
+    // was spawned so its ThreadManager could spawn this thread under
+    // bounded join.  Here we populate the mutable post-ctor wiring:
+    // name, channels, log level, script/role dirs, queue pointers,
+    // engine, checksum policy, event callbacks.
 
-    api_->set_name(id.name);
-    api_->set_channel(config_.in_channel());
-    api_->set_log_level(id.log_level);
-    api_->set_script_dir(script_dir.string());
-    api_->set_role_dir(config_.base_dir().string());
+    api_ref.set_name(id.name);
+    api_ref.set_channel(config_.in_channel());
+    api_ref.set_log_level(id.log_level);
+    api_ref.set_script_dir(script_dir.string());
+    api_ref.set_role_dir(config_.base_dir().string());
     if (!core_.is_validate_only())
     {
-        api_->set_inbox_queue(inbox_queue_.get());
+        api_ref.set_inbox_queue(inbox_queue_.get());
 
         // Create BrokerRequestComm (connection deferred to step 6).
         broker_comm_ = std::make_unique<hub::BrokerRequestComm>();
-        api_->set_broker_comm(broker_comm_.get());
+        api_ref.set_broker_comm(broker_comm_.get());
     }
-    api_->set_checksum_policy(config_.checksum().policy);
-    api_->set_stop_on_script_error(sc.stop_on_script_error);
-    api_->set_engine(engine_.get());
+    api_ref.set_checksum_policy(config_.checksum().policy);
+    api_ref.set_stop_on_script_error(sc.stop_on_script_error);
+    api_ref.set_engine(&engine_ref);
 
     // ── Step 4: Load engine via lifecycle startup ────────────────────────────
 
     engine_module_name_ = fmt::format("ScriptEngine:{}:{}", sc.type, id.uid);
 
     scripting::EngineModuleParams params;
-    params.engine             = engine_.get();
-    params.api                = api_.get();
+    params.engine             = &engine_ref;
+    params.api                = &api_ref;
     params.tag                = "cons";
     params.script_dir         = script_dir;
     params.entry_point        = (sc.type == "lua") ? "init.lua" : "__init__.py";
@@ -226,23 +204,23 @@ void ConsumerRoleHost::worker_main_()
     {
         LOGGER_ERROR("[cons] Engine startup failed: {}", e.what());
         core_.set_script_load_ok(false);
-        engine_->finalize();
+        engine_ref.finalize();
         if (!core_.is_validate_only())
             teardown_infrastructure_();
-        ready_promise_.set_value(false);
+        promise_ref.set_value(false);
         return;
     }
 
     // Validate-only mode: engine loaded successfully, exit.
     if (core_.is_validate_only())
     {
-        engine_->finalize();
-        ready_promise_.set_value(true);
+        engine_ref.finalize();
+        promise_ref.set_value(true);
         return;
     }
 
     // ── Step 5: invoke on_init ───────────────────────────────────────────────
-    engine_->invoke_on_init();
+    engine_ref.invoke_on_init();
 
     // ── Step 6: Connect to broker, start ctrl thread, register ────────────
     core_.set_running(true);
@@ -269,7 +247,7 @@ void ConsumerRoleHost::worker_main_()
         if (inbox_cfg_.has_inbox())
             ctrl_cfg.inbox = inbox_cfg_;
 
-        if (!api_->start_ctrl_thread(bc_cfg, ctrl_cfg))
+        if (!api_ref.start_ctrl_thread(bc_cfg, ctrl_cfg))
         {
             LOGGER_ERROR("[cons] Broker consumer registration failed — "
                          "broker won't track this consumer for liveness");
@@ -282,16 +260,16 @@ void ConsumerRoleHost::worker_main_()
         if (!scripting::wait_for_roles(*broker_comm_, config_.startup().wait_for_roles, "[cons]"))
         {
             LOGGER_ERROR("[cons] Startup coordination failed — required roles not available");
-            ready_promise_.set_value(false);
+            promise_ref.set_value(false);
             return;
         }
     }
 
     // Step 7: Signal ready.
-    ready_promise_.set_value(true);
+    promise_ref.set_value(true);
 
     // Step 8: Run the data loop via shared frame + ConsumerCycleOps.
-    if (!api_->has_rx_side())
+    if (!api_ref.has_rx_side())
     {
         LOGGER_ERROR("[cons] run_data_loop: consumer not initialized — aborting");
         core_.set_running(false);
@@ -299,27 +277,27 @@ void ConsumerRoleHost::worker_main_()
     else
     {
         const auto &tc_loop = config_.timing();
-        ConsumerCycleOps ops(*api_, *engine_, core_,
+        ConsumerCycleOps ops(api_ref, engine_ref, core_,
                              sc.stop_on_script_error);
         scripting::LoopConfig lcfg;
         lcfg.period_us                   = tc_loop.period_us;
         lcfg.loop_timing                 = tc_loop.loop_timing;
         lcfg.queue_io_wait_timeout_ratio = tc_loop.queue_io_wait_timeout_ratio;
-        scripting::run_data_loop(*api_, core_, lcfg, ops);
+        scripting::run_data_loop(api_ref, core_, lcfg, ops);
     }
 
     // Step 9: stop accepting invoke from non-owner threads.
-    engine_->stop_accepting();
+    engine_ref.stop_accepting();
 
     // Step 9a: Explicitly deregister from broker (ctrl thread still running).
-    if (api_)
-        api_->deregister_from_broker();
+    if (has_api())
+        api_ref.deregister_from_broker();
 
     // Step 10: last script callback (ctrl still alive for final I/O).
-    engine_->invoke_on_stop();
+    engine_ref.invoke_on_stop();
 
     // Step 11: finalize engine.
-    engine_->finalize();
+    engine_ref.finalize();
 
     // Step 12: signal ctrl to exit (non-destructive stop, no socket close).
     if (broker_comm_) broker_comm_->stop();
@@ -330,7 +308,7 @@ void ConsumerRoleHost::worker_main_()
     teardown_infrastructure_();
 
     // Step 14: drain all managed threads — last.
-    api_->thread_manager().drain();
+    api_ref.thread_manager().drain();
 }
 
 // ============================================================================
@@ -339,6 +317,10 @@ void ConsumerRoleHost::worker_main_()
 
 bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
 {
+    auto       &core_   = core();
+    const auto &config_ = config();
+    auto       &api_ref = api();
+
     const auto &id    = config_.identity();
     const auto &tr    = config_.in_transport();
     const auto &shm   = config_.in_shm();
@@ -380,7 +362,7 @@ bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     }
 
     // --- Create consumer (RoleAPIBase owns the Rx queue) ---
-    if (!api_->build_rx_queue(opts))
+    if (!api_ref.build_rx_queue(opts))
     {
         LOGGER_ERROR("[cons] Failed to connect consumer to channel '{}'", ch);
         return false;
@@ -389,16 +371,16 @@ bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     // Broker notifications (band, hub-dead) are handled by BrokerRequestComm.
 
     // --- Start and configure data queue ---
-    if (!api_->start_rx_queue())
+    if (!api_ref.start_rx_queue())
     {
         LOGGER_ERROR("[cons] start_queue() failed for channel '{}'", ch);
         return false;
     }
-    api_->reset_rx_queue_metrics();
+    api_ref.reset_rx_queue_metrics();
     core_.set_configured_period(static_cast<uint64_t>(tc.period_us));
 
     LOGGER_INFO("[cons] Consumer started on channel '{}' (shm={})", ch,
-                api_->rx_has_shm());
+                api_ref.rx_has_shm());
 
     // Startup coordination (HEP-0023) moved to after start_ctrl_thread().
     return true;
@@ -412,7 +394,7 @@ void ConsumerRoleHost::teardown_infrastructure_()
 {
     // Broker and comm threads already joined via api_->thread_manager().drain().
 
-    core_.clear_inbox_cache();
+    core().clear_inbox_cache();
 
     if (inbox_queue_)
     {
@@ -428,7 +410,8 @@ void ConsumerRoleHost::teardown_infrastructure_()
         broker_comm_.reset();
     }
 
-    if (api_) api_->close_queues();
+    if (has_api())
+        api().close_queues();
 }
 
 

@@ -4,7 +4,7 @@
 |----------------|--------------------------------------------------------------------------------|
 | **HEP**        | `HEP-CORE-0024`                                                                |
 | **Title**      | Role Directory Service — Canonical Layout, Path Resolution, and CLI Helpers    |
-| **Status**     | Phases 1-11, 12 done (2026-04-16/17); Phases 13-22 in progress (binary unification) |
+| **Status**     | Phases 1-12 done (2026-03-12..2026-04-17); Phases 13-14 done (2026-04-17); Phases 15-22 in progress (binary unification) |
 | **Created**    | 2026-03-12                                                                     |
 | **Area**       | Public API (`pylabhub::utils`), All Role Binaries, Custom Role Development     |
 | **Depends on** | HEP-CORE-0018 (Producer/Consumer Binaries), HEP-CORE-0015 (Processor Binary)  |
@@ -1020,8 +1020,8 @@ backwards compat; `plh_role` sets it true).
 | 10 | Register producer/consumer/processor init content; migrate `do_init()` to one-line dispatch | ✅ 2026-04-16 |
 | 11 | Role hosts moved into `pylabhub-utils` shared lib | ✅ 2026-04-16 |
 | 12 | Rename `pylabhub-pyenv` → `plh_pyenv` | ✅ 2026-04-17 |
-| 13 | `RotatingFileSink::Mode::Timestamped` extension; `RotatingLogConfig::timestamped_names` | ⚪ |
-| 14 | `LoggingConfig` category in `RoleConfig` with parser + whitelist | ⚪ |
+| 13 | `RotatingFileSink::Mode::Timestamped` extension; `RotatingLogConfig::timestamped_names` | ✅ 2026-04-17 |
+| 14 | `LoggingConfig` category in `RoleConfig` with parser + whitelist | ✅ 2026-04-17 |
 | 15 | `RoleHostBase` abstract class (lib-internal) + three role hosts inherit | ⚪ |
 | 16 | `RoleRuntimeInfo` struct + `register_runtime()` builder + `get_runtime()` accessor | ⚪ |
 | 17 | Register producer/consumer/processor runtime info + `bootstrap_<role>()` per role | ⚪ |

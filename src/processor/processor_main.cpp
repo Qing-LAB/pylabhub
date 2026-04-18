@@ -118,6 +118,10 @@ int main(int argc, char *argv[])
 
     // Register role-specific init content before parsing args.
     pylabhub::processor::register_processor_init();
+    // Register runtime content (host factory + callbacks) for the
+    // unified plh_role dispatch path. Harmless for the standalone
+    // processor binary — plh_role is what consumes RoleRegistry.
+    pylabhub::processor::register_processor_runtime();
 
     pylabhub::InteractiveSignalHandler signal_handler(
         {.binary_name = "pylabhub-processor"}, &g_shutdown);

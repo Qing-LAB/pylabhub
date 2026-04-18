@@ -103,6 +103,10 @@ int main(int argc, char *argv[])
 
     // Register role-specific init content before parsing args.
     pylabhub::consumer::register_consumer_init();
+    // Register runtime content (host factory + callbacks) for the
+    // unified plh_role dispatch path. Harmless for the standalone
+    // consumer binary — plh_role is what consumes RoleRegistry.
+    pylabhub::consumer::register_consumer_runtime();
 
     pylabhub::InteractiveSignalHandler signal_handler(
         {.binary_name = "pylabhub-consumer"}, &g_shutdown);
