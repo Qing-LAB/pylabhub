@@ -273,4 +273,20 @@ Two structural considerations for the correction pass (not designed here — rai
 
 2. **Pre-existing V1 fixes**: 14/22 V1 violations are pre-existing (5 of the 8 L2 + all 14 L3). The established template was `test_role_config.cpp` (which I copied in my 21.2/21.3 work). Correcting all of them is consistent but broad; correcting only my new ones leaves the pre-existing pattern in place as a confusion source. Contract argues for full sweep.
 
+---
+
+## 7. Correction status
+
+| File | Violation | Status | Fixed in |
+|---|---|---|---|
+| `test_role_logging_roundtrip.cpp` | V1 (my 21.2) | ✅ **Fixed** 2026-04-18 | commit `5d3683c` — Pattern 3 via `workers/role_logging_workers.cpp` |
+| `test_configure_logger.cpp`       | V1 (my 21.2) | ✅ **Fixed** 2026-04-18 | commit `5d3683c` — shares the same worker file |
+| `test_role_host_base.cpp`         | V1 (my 21.3) | ✅ **Fixed** 2026-04-18 | commit `5d3683c` — Pattern 3 via `workers/role_host_base_workers.cpp`; the two PLH_PANIC death tests became abort-in-worker + exit-code parent assertions |
+
+Remaining L2 V1 violations (not yet corrected):
+
+- `test_filelock.cpp`, `test_filelock_singleprocess.cpp`, `test_interactive_signal_handler.cpp`, `test_jsonconfig.cpp`, `test_role_config.cpp`, `test_zmq_context.cpp`
+
+All L3 V1 violations and all L2 V2 violations are still open. The framework doc strengthening (README_testing.md §4 + HEP-CORE-0001 "Testing implications") is in place as of the same sprint so any new test authored from this point must follow Pattern 3 for lifecycle-backed code — the remaining files are legacy cleanup, not ongoing risk.
+
 End of audit.
