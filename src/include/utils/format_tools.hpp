@@ -17,18 +17,22 @@ namespace pylabhub::format_tools
 {
 
 /**
- * @brief Formats a system_clock time_point into a string with microsecond precision.
+ * @brief Formats a system_clock time_point with microsecond precision.
  *
- * @param timestamp         The time_point to format.
- * @param use_dash_spacer   If true, replaces the date-time space and the
- *                          time-field ':' separators with '-', producing
- *                          "YYYY-MM-DD-HH-MM-SS.us" (filesystem-safe).
- *                          The fractional-second '.' is preserved so the
- *                          string sorts lexicographically in chronological
- *                          order against other timestamped filenames.
- *                          If false (default), uses the human-readable form:
- *                          "YYYY-MM-DD HH:MM:SS.us".
- * @return The formatted timestamp string (26 characters).
+ * Both outputs are fixed-width — always 26 characters (4+1+2+1+2+sep+2+1+2+1+2+1+6).
+ *
+ * @param timestamp        The time_point to format (truncated to microseconds).
+ * @param use_dash_spacer  Selects output form:
+ *                         - `false` (default, human-readable):
+ *                           `"YYYY-MM-DD HH:MM:SS.uuuuuu"` — space between date
+ *                           and time, ':' between time fields.
+ *                         - `true` (filename-safe, lex-sortable):
+ *                           `"YYYY-MM-DD-HH-MM-SS.uuuuuu"` — date/time space and
+ *                           time-field ':' replaced with '-'. The fractional-
+ *                           second '.' is preserved so lexicographic filename
+ *                           ordering matches chronological order. Used for
+ *                           timestamped log rotation.
+ * @return The formatted timestamp string (always 26 characters).
  */
 PYLABHUB_UTILS_EXPORT std::string formatted_time(std::chrono::system_clock::time_point timestamp,
                                                    bool use_dash_spacer = false);

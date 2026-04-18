@@ -23,6 +23,8 @@
 
 #include "utils/json_fwd.hpp"
 
+#include <cstddef>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -31,14 +33,20 @@ namespace pylabhub::config
 
 struct LoggingConfig
 {
+    /// Sentinel meaning "no deletion on rotation — retain all files".
+    /// JSON config expresses this as `"backups": -1`.
+    static constexpr size_t kKeepAllBackups = std::numeric_limits<size_t>::max();
+
     /// Log file path (absolute, or relative to <role_dir>).
     /// Empty → caller resolves default as "<role_dir>/logs/<uid>.log".
     std::string file_path;
 
-    /// Max bytes per file before rotation. Default 10 MiB.
+    /// Max bytes per file before rotation. Default 10 MiB. Must be > 0.
     size_t max_size_bytes = 10ULL * 1024 * 1024;
 
     /// Number of backup files retained after rotation. Default 5.
+    /// JSON: positive integer for that count, `-1` to keep all files
+    /// (stored internally as kKeepAllBackups). `0` is invalid.
     size_t max_backup_files = 5;
 
     /// If true, active file is "<file_path>-<timestamp>.log" and rotation
@@ -92,12 +100,21 @@ inline LoggingConfig parse_logging_config(const nlohmann::json &j, const char *t
     if (config_has(lj, "backups"))
     {
         const auto n = lj["backups"].get<int64_t>();
-        if (n < 0)
+        if (n == -1)
+        {
+            // Sentinel: keep all files, never delete.
+            lc.max_backup_files = LoggingConfig::kKeepAllBackups;
+        }
+        else if (n >= 1)
+        {
+            lc.max_backup_files = static_cast<size_t>(n);
+        }
+        else
         {
             throw std::runtime_error(
-                std::string(tag) + ": 'logging.backups' must be >= 0");
+                std::string(tag) + ": 'logging.backups' must be >= 1 "
+                "(or -1 to keep all files); '0' is invalid");
         }
-        lc.max_backup_files = static_cast<size_t>(n);
     }
 
     if (config_has(lj, "timestamped"))

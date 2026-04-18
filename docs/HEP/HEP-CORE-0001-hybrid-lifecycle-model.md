@@ -212,10 +212,19 @@ static ModuleDef GetStartupLogFileSinkModule(
 
 // Rotating log file:
 mods.push_back(Logger::GetStartupLogFileSinkModule(
-    "/var/log/hub.log", Logger::RotatingLogConfig{10*1024*1024, 3}));
+    "/var/log/hub.log", Logger::RotatingLogConfig{10*1024*1024, 5}));
 ```
 
-**RotatingLogConfig** fields: `max_file_size_bytes` (default 10 MiB), `max_backup_files` (default 3).
+**RotatingLogConfig** fields: `max_file_size_bytes` (default 10 MiB),
+`max_backup_files` (default 5 — matches `config::LoggingConfig`'s user-facing
+default so JSON-driven and direct C++ users see the same retention),
+`timestamped_names` (default `false`, numeric `base.1/base.2/...` rotation),
+`use_flock` (default `true`).
+
+The `-1` sentinel in JSON config (`"logging.backups": -1`) maps to
+`LoggingConfig::kKeepAllBackups` (`SIZE_MAX`), meaning "never delete rotated
+files". JSON value `0` is rejected by the parser. Direct C++ users may still
+pass `0` to the sink, which is interpreted defensively as "no backup".
 
 **Usage in role binaries** (`role_main_helpers.hpp`):
 

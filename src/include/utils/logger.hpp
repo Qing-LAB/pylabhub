@@ -110,11 +110,25 @@ class PYLABHUB_UTILS_EXPORT Logger
     struct RotatingLogConfig
     {
         size_t max_file_size_bytes = 10ULL * 1024 * 1024; ///< 10 MiB default
-        size_t max_backup_files   = 3;
+
+        /// Number of backup files kept after rotation.
+        /// - Any positive count: keep that many past the active file;
+        ///   oldest files past the count are deleted on rotation.
+        /// - SIZE_MAX (numeric_limits<size_t>::max()): keep all files,
+        ///   never delete (the "no deletion" sentinel; config JSON uses
+        ///   `"backups": -1` which parsers map to this value).
+        /// - 0: Numeric mode deletes the active file on rotation with
+        ///   no backup. Timestamped mode never consumes 0 (config parser
+        ///   rejects it); the sink treats 0 defensively as "no backup".
+        ///
+        /// Default 5 — matches @ref pylabhub::config::LoggingConfig
+        /// (the user-facing JSON default), so direct C++ users and
+        /// JSON-driven users see the same retention behaviour.
+        size_t max_backup_files   = 5;
 
         /// Rotation naming strategy.
         /// false (default): numeric — base → base.1 → base.2 on rotation.
-        /// true: timestamped — each file is base-YYYY-MM-DD-HH-MM-SS.log;
+        /// true: timestamped — each file is base-YYYY-MM-DD-HH-MM-SS.uuuuuu.log;
         ///                     oldest files past max_backup_files are deleted.
         bool   timestamped_names  = false;
 
@@ -145,9 +159,14 @@ class PYLABHUB_UTILS_EXPORT Logger
      *   auto mods = MakeModDefList(Logger::GetLifecycleModule(), std::move(zmq_mod));
      *   mods.push_back(Logger::GetStartupLogFileSinkModule("/tmp/my.log"));
      *
-     *   // Rotating log file (hub):
-     *   mods.push_back(Logger::GetStartupLogFileSinkModule(
-     *       "/var/log/hub.log", Logger::RotatingLogConfig{10*1024*1024, 3}));
+     *   // Rotating log file (all fields explicit):
+     *   Logger::RotatingLogConfig cfg{
+     *       .max_file_size_bytes = 10 * 1024 * 1024,
+     *       .max_backup_files    = 3,
+     *       .timestamped_names   = true,  // use timestamped filenames
+     *       .use_flock           = true,
+     *   };
+     *   mods.push_back(Logger::GetStartupLogFileSinkModule("/var/log/hub.log", cfg));
      * @endcode
      */
     static ModuleDef GetStartupLogFileSinkModule(
