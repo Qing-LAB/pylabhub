@@ -2,11 +2,22 @@
  * @file test_interactive_signal_handler.cpp
  * @brief Unit tests for InteractiveSignalHandler lifecycle (no signal injection).
  *
- * All tests use force_daemon=true to avoid stdin reads.
- * Single handler per test (global signal state).
+ * Pattern split:
+ *   - 8 plain TEST() cases exercise InteractiveSignalHandler directly. Its
+ *     install/uninstall path does not touch any lifecycle module (LOGGER_*
+ *     calls live inside signal handlers, which these tests never trigger).
+ *     They run in-process under the framework's no-lifecycle main().
+ *   - The single LifecycleModuleUninstallsOnFinalize test exercises the
+ *     handler ↔ LifecycleManager integration: register_dynamic_module,
+ *     load_module, then a LifecycleGuard tear-down. That body is
+ *     lifecycle-dependent and runs inside a worker subprocess (Pattern 3)
+ *     to honour the test framework contract.
+ *
+ * All tests use force_daemon=true to avoid stdin reads. Single handler per
+ * test (global signal state).
  */
+#include "test_patterns.h"
 #include "utils/interactive_signal_handler.hpp"
-#include "plh_service.hpp"
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -14,6 +25,7 @@
 
 using pylabhub::InteractiveSignalHandler;
 using pylabhub::SignalHandlerConfig;
+using pylabhub::tests::IsolatedProcessTest;
 
 // ── Constructor / initial state ─────────────────────────────────────────────
 
@@ -133,33 +145,15 @@ TEST(InteractiveSignalHandlerTest, MakeLifecycleModuleReturnsValid)
     handler.uninstall();
 }
 
-// ── Lifecycle module uninstalls on finalize ──────────────────────────────────
+// ── Lifecycle module uninstalls on finalize (Pattern 3 — worker) ─────────────
 
-TEST(InteractiveSignalHandlerTest, LifecycleModuleUninstallsOnFinalize)
+class InteractiveSignalHandlerLifecycleTest : public IsolatedProcessTest
 {
-    using pylabhub::utils::LifecycleGuard;
-    using pylabhub::utils::MakeModDefList;
-    using pylabhub::utils::Logger;
-    using pylabhub::utils::LifecycleManager;
+};
 
-    std::atomic<bool> shutdown{false};
-    SignalHandlerConfig cfg{"test-binary", 5, false, true};
-    InteractiveSignalHandler handler(cfg, &shutdown);
-    handler.install();
-    ASSERT_TRUE(handler.is_installed());
-
-    {
-        LifecycleGuard guard(MakeModDefList(Logger::GetLifecycleModule()));
-
-        // Register and load the signal handler as a dynamic persistent module.
-        auto mod = handler.make_lifecycle_module();
-        ASSERT_TRUE(LifecycleManager::instance().register_dynamic_module(std::move(mod)));
-        ASSERT_TRUE(LifecycleManager::instance().load_module(
-            "SignalHandler", std::source_location::current()));
-
-        EXPECT_TRUE(handler.is_installed());
-    } // guard destructor: finalize() → SignalHandler cleanup cb → handler.uninstall()
-
-    // After lifecycle teardown, the handler must be automatically uninstalled.
-    EXPECT_FALSE(handler.is_installed());
+TEST_F(InteractiveSignalHandlerLifecycleTest, LifecycleModuleUninstallsOnFinalize)
+{
+    auto w = SpawnWorker(
+        "signal_handler.lifecycle_module_uninstalls_on_finalize", {});
+    ExpectWorkerOk(w);
 }
