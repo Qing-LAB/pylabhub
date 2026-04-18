@@ -4,12 +4,16 @@
  */
 
 #include "consumer_init.hpp"
+#include "consumer_fields.hpp"
+#include "consumer_role_host.hpp"
 
 #include "utils/role_directory.hpp"
+#include "utils/role_registry.hpp"
 
 #include <fmt/core.h>
 #include <fmt/ostream.h>
 #include <fstream>
+#include <memory>
 #include <nlohmann/json.hpp>
 
 namespace pylabhub::consumer
@@ -116,6 +120,41 @@ void register_consumer_init()
         .role_label("Consumer")
         .config_template(&consumer_config_template)
         .on_init(&consumer_on_init);
+}
+
+// ── Runtime registration (Phase 16 — plh_role dispatch target) ──────────────
+
+namespace
+{
+
+std::unique_ptr<scripting::RoleHostBase> make_consumer_host(
+    config::RoleConfig config,
+    std::unique_ptr<scripting::ScriptEngine> engine,
+    std::atomic<bool> *shutdown_flag)
+{
+    return std::make_unique<ConsumerRoleHost>(
+        std::move(config), std::move(engine), shutdown_flag);
+}
+
+constexpr const char *kConsumerCallbacks[] = {
+    "on_init",
+    "on_consume",
+    "on_stop",
+    "on_inbox",   // optional, present iff inbox is configured
+    nullptr,
+};
+
+} // namespace
+
+void register_consumer_runtime()
+{
+    utils::RoleRegistry::register_runtime("cons")
+        .role_label("Consumer")
+        .host_factory(&make_consumer_host)
+        .engine_callbacks(kConsumerCallbacks)
+        .config_role_name("consumer")
+        .config_parser(&parse_consumer_fields)
+        .commit();
 }
 
 } // namespace pylabhub::consumer

@@ -16,4 +16,9 @@ namespace pylabhub::producer
 /// Safe to call multiple times — second call overwrites the first.
 PYLABHUB_UTILS_EXPORT void register_producer_init();
 
+/// Register "prod" runtime content (host factory + callbacks) with
+/// RoleRegistry. Called once from main() so plh_role can dispatch on
+/// role tag. Throws std::runtime_error if already registered.
+PYLABHUB_UTILS_EXPORT void register_producer_runtime();
+
 } // namespace pylabhub::producer

@@ -10,6 +10,19 @@
 
 ## Current Focus
 
+### Recently Completed (2026-04-17)
+
+- [x] **HEP-0024 Phases 13-14** (logging) — `RotatingFileSink::Mode::Timestamped`
+  extension with `<base>-YYYY-MM-DD-HH-MM-SS.uuuuuu.log` filename-sortable
+  format; `RotatingLogConfig::timestamped_names` flag; `LoggingConfig` category
+  in `RoleConfig` with strict JSON key whitelist + parser validation.
+  `max_backup_files` semantics: `>=1` explicit count, `-1` → `kKeepAllBackups`
+  sentinel (SIZE_MAX, "no deletion"), `0` invalid; `RotatingLogConfig` default
+  realigned to 5 to match `LoggingConfig`. Producer `out_shm_secret` removed
+  from init template (default 0 is sensible, advanced field). `init_directory`
+  stderr messages now prefixed `init_directory: error:` for greppability.
+  **1290/1290 tests.**
+
 ### Recently Completed (2026-04-14)
 
 - [x] **HEP-CORE-0023 Phase 2** — heartbeat-multiplier role-liveness state machine,
@@ -38,6 +51,13 @@
 
 ### Open follow-ups (lower priority)
 
+- [ ] **ThreadManager introspection API** — add read-only accessors for
+  listing currently registered threads (name, state, thread id, spawn time),
+  and aggregate queries (count, names). Useful for diagnostics, hang
+  investigation, and metrics export. Scope: `src/include/utils/thread_manager.hpp`.
+  Suggested surface: `std::vector<ThreadInfo> list_threads() const`,
+  `size_t thread_count() const`, maybe a `for_each_thread(callable)` visitor.
+  Ensure read-side is snapshot-safe (no dangling refs after drain).
 - [ ] Dedup `BrokerHandle`/`BrcHandle` test helpers — currently duplicated between
   `tests/test_layer3_datahub/workers/datahub_broker_health_workers.cpp` and
   `datahub_role_state_workers.cpp`. Extract to a shared L3 test utility.

@@ -3,29 +3,29 @@
  * @file producer_role_host.hpp
  * @brief Unified producer role host — engine-agnostic.
  *
- * ProducerRoleHost owns:
- * - Layer 3: Infrastructure (Messenger, Producer, queue, ctrl_thread_, events)
- * - Layer 2: Data loop (inner retry acquire, deadline wait, invoke, commit)
+ * ProducerRoleHost inherits from RoleHostBase, which owns the shared
+ * state (role_tag, config, engine, RoleHostCore, RoleAPIBase,
+ * ready-promise) and the public lifecycle surface (startup_(), shutdown_(),
+ * is_running(), wait_for_wakeup(), script_load_ok()).
  *
- * The script engine (Layer 1) is injected as a ScriptEngine pointer.
- * All script operations happen on the worker thread.
+ * This class owns only producer-specific state:
+ * - Layer 3: Infrastructure (BrokerRequestComm, InboxQueue, producer-side
+ *            queue via RoleAPIBase, ctrl_thread_ via start_ctrl_thread).
+ * - Layer 2: Data loop (inner retry acquire, deadline wait, invoke, commit).
+ *
+ * The script engine (Layer 1) is injected via RoleHostBase.
  *
  * See docs/tech_draft/loop_design_unified.md for the full design.
  */
 
 #include "pylabhub_utils_export.h"
 #include "utils/config/role_config.hpp"
-#include "utils/role_host_core.hpp"
-#include "utils/script_engine.hpp"
+#include "utils/role_host_base.hpp"
 #include "plh_datahub.hpp"
-
-#include <string>
 
 #include <atomic>
 #include <memory>
-#include <future>
-#include <optional>
-#include <thread>
+#include <string>
 
 namespace pylabhub::hub
 {
@@ -36,74 +36,38 @@ class BrokerRequestComm;
 namespace pylabhub::producer
 {
 
-class PYLABHUB_UTILS_EXPORT ProducerRoleHost
+class PYLABHUB_UTILS_EXPORT ProducerRoleHost final : public scripting::RoleHostBase
 {
   public:
     explicit ProducerRoleHost(config::RoleConfig config,
                               std::unique_ptr<scripting::ScriptEngine> engine,
                               std::atomic<bool> *shutdown_flag = nullptr);
-    ~ProducerRoleHost();
+    ~ProducerRoleHost() override;
 
-    // Non-copyable, non-movable (owns threads).
-    ProducerRoleHost(const ProducerRoleHost &) = delete;
-    ProducerRoleHost &operator=(const ProducerRoleHost &) = delete;
-    ProducerRoleHost(ProducerRoleHost &&) = delete;
-    ProducerRoleHost &operator=(ProducerRoleHost &&) = delete;
-
-    // ── Configuration ────────────────────────────────────────────────────────
-
-    void set_validate_only(bool v) { core_.set_validate_only(v); }
-
-    // ── Lifecycle ────────────────────────────────────────────────────────────
-
-    /// Spawn worker thread, block until ready (or failure).
-    void startup_();
-
-    /// Signal shutdown, join worker thread.
-    void shutdown_();
-
-    // ── Queries (called from main thread) ────────────────────────────────────
-
-    [[nodiscard]] bool is_running() const { return core_.is_running(); }
-    [[nodiscard]] bool script_load_ok() const { return core_.is_script_load_ok(); }
-    [[nodiscard]] const config::RoleConfig &config() const { return config_; }
-
-    /// Block until wakeup (shutdown, incoming message, or timeout).
-    void wait_for_wakeup(int timeout_ms) { core_.wait_for_incoming(timeout_ms); }
+    // Copy/move deleted by RoleHostBase.
 
   private:
-    // ── Worker thread entry point ────────────────────────────────────────────
-
-    void worker_main_();
+    // ── Worker thread entry point (RoleHostBase hook) ────────────────────────
+    void worker_main_() override;
 
     // ── Infrastructure setup/teardown (Layer 3) ──────────────────────────────
-
     bool setup_infrastructure_(const hub::SchemaSpec &inbox_spec);
     void teardown_infrastructure_();
 
-    // ── Members ──────────────────────────────────────────────────────────────
-
-    scripting::RoleHostCore                core_;
-    config::RoleConfig                     config_;
-    std::unique_ptr<scripting::ScriptEngine> engine_;
-
-    // Worker thread — spawned via api_->thread_manager().spawn("worker", ...)
-    // for bounded-join + ERROR-on-timeout + detach on shutdown.
-    std::promise<bool>                     ready_promise_;
+    // ── Producer-specific members ────────────────────────────────────────────
+    // (Shared state — core_, config_, engine_, api_, ready_promise_ — lives
+    //  in RoleHostBase and is reached via protected accessors.)
 
     // Infrastructure (created on worker thread in setup_infrastructure_).
     std::unique_ptr<hub::BrokerRequestComm> broker_comm_;
-    std::unique_ptr<hub::InboxQueue>       inbox_queue_;
-    config::InboxConfig                    inbox_cfg_;  ///< Resolved copy (mutable).
-
-    // Role API (created on worker thread, passed to engine).
-    std::unique_ptr<scripting::RoleAPIBase> api_;
+    std::unique_ptr<hub::InboxQueue>        inbox_queue_;
+    config::InboxConfig                     inbox_cfg_;  ///< Resolved copy.
 
     // Schema info (resolved from config during setup).
-    hub::SchemaSpec                  out_slot_spec_;
+    hub::SchemaSpec                         out_slot_spec_;
 
     // Lifecycle module name (for UnloadModule on shutdown).
-    std::string                      engine_module_name_;
+    std::string                             engine_module_name_;
 };
 
 } // namespace pylabhub::producer

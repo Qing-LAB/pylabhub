@@ -3,29 +3,30 @@
  * @file processor_role_host.hpp
  * @brief Unified processor role host — engine-agnostic.
  *
- * ProcessorRoleHost owns:
- * - Layer 3: Infrastructure (BrokerRequestComm, Consumer + Producer, dual queues,
- *            ctrl_thread_, events)
- * - Layer 2: Data loop (dual-queue inner retry acquire, deadline wait, invoke,
- *            commit/release)
+ * ProcessorRoleHost inherits from RoleHostBase, which owns the shared
+ * state (role_tag, config, engine, RoleHostCore, RoleAPIBase,
+ * ready-promise) and the public lifecycle surface (startup_(), shutdown_(),
+ * is_running(), wait_for_wakeup(), script_load_ok()).
  *
- * The script engine (Layer 1) is injected as a ScriptEngine pointer.
- * All script operations happen on the worker thread.
+ * This class owns only processor-specific state:
+ * - Layer 3: Infrastructure (BrokerRequestComm, InboxQueue, dual Rx+Tx queues
+ *            via RoleAPIBase, ctrl_thread via start_ctrl_thread).
+ * - Layer 2: Data loop (dual-queue inner retry acquire, deadline wait,
+ *            invoke, commit/release).
+ *
+ * The script engine (Layer 1) is injected via RoleHostBase.
  *
  * See docs/tech_draft/loop_design_unified.md §5 for the full design.
  */
 
 #include "pylabhub_utils_export.h"
 #include "utils/config/role_config.hpp"
-#include "utils/role_host_core.hpp"
-#include "utils/script_engine.hpp"
+#include "utils/role_host_base.hpp"
 #include "plh_datahub.hpp"
 
 #include <atomic>
 #include <memory>
-#include <future>
-#include <optional>
-#include <thread>
+#include <string>
 
 namespace pylabhub::hub
 {
@@ -36,75 +37,39 @@ class BrokerRequestComm;
 namespace pylabhub::processor
 {
 
-class PYLABHUB_UTILS_EXPORT ProcessorRoleHost
+class PYLABHUB_UTILS_EXPORT ProcessorRoleHost final : public scripting::RoleHostBase
 {
   public:
     explicit ProcessorRoleHost(config::RoleConfig config,
                                std::unique_ptr<scripting::ScriptEngine> engine,
                                std::atomic<bool> *shutdown_flag = nullptr);
-    ~ProcessorRoleHost();
+    ~ProcessorRoleHost() override;
 
-    // Non-copyable, non-movable (owns threads).
-    ProcessorRoleHost(const ProcessorRoleHost &) = delete;
-    ProcessorRoleHost &operator=(const ProcessorRoleHost &) = delete;
-    ProcessorRoleHost(ProcessorRoleHost &&) = delete;
-    ProcessorRoleHost &operator=(ProcessorRoleHost &&) = delete;
-
-    // ── Configuration ────────────────────────────────────────────────────────
-
-    void set_validate_only(bool v) { core_.set_validate_only(v); }
-
-    // ── Lifecycle ────────────────────────────────────────────────────────────
-
-    /// Spawn worker thread, block until ready (or failure).
-    void startup_();
-
-    /// Signal shutdown, join worker thread.
-    void shutdown_();
-
-    // ── Queries (called from main thread) ────────────────────────────────────
-
-    [[nodiscard]] bool is_running() const { return core_.is_running(); }
-    [[nodiscard]] bool script_load_ok() const { return core_.is_script_load_ok(); }
-    [[nodiscard]] const config::RoleConfig &config() const { return config_; }
-
-    /// Block until wakeup (shutdown, incoming message, or timeout).
-    void wait_for_wakeup(int timeout_ms) { core_.wait_for_incoming(timeout_ms); }
+    // Copy/move deleted by RoleHostBase.
 
   private:
-    // ── Worker thread entry point ────────────────────────────────────────────
-
-    void worker_main_();
+    // ── Worker thread entry point (RoleHostBase hook) ────────────────────────
+    void worker_main_() override;
 
     // ── Infrastructure setup/teardown (Layer 3) ──────────────────────────────
-
     bool setup_infrastructure_(const hub::SchemaSpec &inbox_spec);
     void teardown_infrastructure_();
 
-    // ── Members ──────────────────────────────────────────────────────────────
-
-    scripting::RoleHostCore                  core_;
-    config::RoleConfig                       config_;
-    std::unique_ptr<scripting::ScriptEngine> engine_;
-
-    // Worker thread — spawned via api_->thread_manager().spawn("worker", ...)
-    // for bounded-join + ERROR-on-timeout + detach on shutdown.
-    std::promise<bool>                       ready_promise_;
+    // ── Processor-specific members ───────────────────────────────────────────
+    // (Shared state — core_, config_, engine_, api_, ready_promise_ — lives
+    //  in RoleHostBase and is reached via protected accessors.)
 
     // Infrastructure (created on worker thread in setup_infrastructure_).
     std::unique_ptr<hub::BrokerRequestComm> broker_comm_;
-    std::unique_ptr<hub::InboxQueue>         inbox_queue_;
-    config::InboxConfig                      inbox_cfg_;
-
-    // Role API (created on worker thread, passed to engine).
-    std::unique_ptr<scripting::RoleAPIBase> api_;
+    std::unique_ptr<hub::InboxQueue>        inbox_queue_;
+    config::InboxConfig                     inbox_cfg_;
 
     // Schema info (resolved from config during setup).
-    hub::SchemaSpec                    in_slot_spec_;
-    hub::SchemaSpec                    out_slot_spec_;
+    hub::SchemaSpec                         in_slot_spec_;
+    hub::SchemaSpec                         out_slot_spec_;
 
     // Lifecycle module name (for UnloadModule on shutdown).
-    std::string                        engine_module_name_;
+    std::string                             engine_module_name_;
 };
 
 } // namespace pylabhub::processor

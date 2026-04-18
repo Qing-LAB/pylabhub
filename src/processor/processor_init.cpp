@@ -4,12 +4,16 @@
  */
 
 #include "processor_init.hpp"
+#include "processor_fields.hpp"
+#include "processor_role_host.hpp"
 
 #include "utils/role_directory.hpp"
+#include "utils/role_registry.hpp"
 
 #include <fmt/core.h>
 #include <fmt/ostream.h>
 #include <fstream>
+#include <memory>
 #include <nlohmann/json.hpp>
 
 namespace pylabhub::processor
@@ -133,6 +137,41 @@ void register_processor_init()
         .role_label("Processor")
         .config_template(&processor_config_template)
         .on_init(&processor_on_init);
+}
+
+// ── Runtime registration (Phase 16 — plh_role dispatch target) ──────────────
+
+namespace
+{
+
+std::unique_ptr<scripting::RoleHostBase> make_processor_host(
+    config::RoleConfig config,
+    std::unique_ptr<scripting::ScriptEngine> engine,
+    std::atomic<bool> *shutdown_flag)
+{
+    return std::make_unique<ProcessorRoleHost>(
+        std::move(config), std::move(engine), shutdown_flag);
+}
+
+constexpr const char *kProcessorCallbacks[] = {
+    "on_init",
+    "on_process",
+    "on_stop",
+    "on_inbox",   // optional, present iff inbox is configured
+    nullptr,
+};
+
+} // namespace
+
+void register_processor_runtime()
+{
+    utils::RoleRegistry::register_runtime("proc")
+        .role_label("Processor")
+        .host_factory(&make_processor_host)
+        .engine_callbacks(kProcessorCallbacks)
+        .config_role_name("processor")
+        .config_parser(&parse_processor_fields)
+        .commit();
 }
 
 } // namespace pylabhub::processor
