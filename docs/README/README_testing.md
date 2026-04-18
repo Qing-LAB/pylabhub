@@ -314,6 +314,31 @@ Root-cause reasoning is documented in **`docs/HEP/HEP-CORE-0001-hybrid-lifecycle
   `LifecycleGuard` teardown to skip these — a path only available if the
   subprocess owns the lifecycle. See the comment block at
   `tests/test_framework/shared_test_helpers.h:303-322`.
+
+  **Important: `_exit()` does NOT bypass our `LifecycleGuard` finalize.**
+  The execution order in `run_gtest_worker` is:
+
+  1. Test body runs (constructs/uses lifecycle-backed objects).
+  2. `LifecycleGuard` destructor runs `LifecycleManager::finalize()`, which
+     invokes every registered module's `shutdown` callback in reverse
+     topological order — `ZMQContext::shutdown` → `zmq_ctx_term`,
+     `Logger::shutdown` → flush + worker-thread join, `FileLock::shutdown`
+     → release pending locks, etc. **This is the contract any module test
+     under Pattern 3 actually verifies.**
+  3. `ThreadManager` leak check (any detached threads → exit code 4).
+  4. `_exit(N)` — skips only library-global static destructors that are
+     *outside* our lifecycle graph (libzmq's own cleanup hooks, libsodium's
+     `__attribute__((destructor))`, luajit GC finalizers). Those are owned
+     by the third-party libraries; they are not part of any contract a
+     pylabhub module registered with `LifecycleManager`.
+
+  So a worker that exercises `hub::ZMQContext` does validate that our
+  init/finalize correctly drives `zmq_ctx_term`. What it does not validate
+  is whether libzmq's *own* destructors run cleanly afterwards — and that
+  is intentional, since those are not our contract. If a future test needs
+  to verify clean process exit including third-party static destructors,
+  use `run_worker_bare` (no implicit `_exit`) and assert the subprocess
+  returns within a tight ctest TIMEOUT.
 - A panic/`abort()`/clean-`finalize()` inside one test must not corrupt the
   singleton state observed by the next test. Per-test subprocesses are the
   only enforcement mechanism.
