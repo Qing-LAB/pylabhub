@@ -285,83 +285,207 @@ TEST_F(DatabaseTest, InsertAndQuery) {
 }
 ```
 
-### Example 3: Multi-Process Test
-
-For testing components that require multiple processes (like file locks):
-
-```cpp
-// tests/test_layer2_service/test_mylock.cpp
-#include <gtest/gtest.h>
-#include "test_framework/test_process_utils.h"
-#include "utils/MyLock.hpp"
-
-using namespace pylabhub::utils;
-using namespace pylabhub::test;
-
-TEST(MyLockTest, MultiProcessExclusion) {
-    const std::string lock_path = "/tmp/test.lock";
-    
-    // Parent acquires lock
-    MyLock parent_lock(lock_path);
-    ASSERT_TRUE(parent_lock.try_acquire());
-    
-    // Spawn worker process that tries to acquire same lock
-    WorkerProcess proc("mylock.try_acquire", {lock_path});
-    proc.spawn();
-    
-    // Wait for worker to finish
-    int exit_code = proc.wait_for_exit(std::chrono::seconds(5));
-    
-    // Worker should fail to acquire (returns exit code 1)
-    EXPECT_EQ(exit_code, 1);
-    
-    // Release parent lock
-    parent_lock.release();
-}
-```
-
-Then create the worker function in `tests/test_layer2_service/mylock_workers.cpp`:
-```cpp
-#include "mylock_workers.h"
-#include "utils/MyLock.hpp"
-
-namespace pylabhub::test::worker::mylock {
-
-int try_acquire(const std::vector<std::string>& args) {
-    if (args.empty()) return 2;  // Error: no lock path
-    
-    MyLock lock(args[0]);
-    if (lock.try_acquire()) {
-        lock.release();
-        return 0;  // Success
-    }
-    return 1;  // Failed to acquire
-}
-
-}  // namespace
-```
-
-And register it in `worker_dispatcher.cpp`:
-```cpp
-#include "mylock_workers.h"
-
-// In dispatch_worker function:
-if (worker_name == "mylock.try_acquire") {
-    return worker::mylock::try_acquire(args);
-}
-```
-
 ### Choosing a test pattern
 
-Use one of three patterns so tests are isolated and repeatable:
+Every new test must be one of three sanctioned patterns, defined in
+`tests/test_framework/test_patterns.h`. There is no fourth pattern, and no
+hybrids.
 
-| Pattern | When to use | Process model |
-|--------|----------------|----------------|
-| **PureApiTest** | Pure functions, no lifecycle/I/O | Single process, no shared state |
-| **LifecycleManagedTest** | Logger, FileLock, JsonConfig, in-process concurrency | Single process, shared lifecycle |
-| **WorkerProcess** | Multi-process (IPC, file locks between processes, or tests that finalize lifecycle) | Parent spawns worker; worker runs in separate process |
+| Pattern | Base class | When to use | Process model |
+|---------|-----------|-------------|----------------|
+| **Pattern 1 — `PureApiTest`** | `pylabhub::tests::PureApiTest` (or plain `::testing::Test`) | Pure functions, data structures, algorithms, compile-time traits — **no `LOGGER_*`, no `FileLock`, no `JsonConfig`, no module ctor that hits a lifecycle check** | In-process; runs in the main gtest runner |
+| **Pattern 2 — in-process thread-racer** | plain `::testing::Test` with `ThreadRacer` | Concurrency tests that touch **no** lifecycle module | In-process; still no guard |
+| **Pattern 3 — `IsolatedProcessTest`** | `pylabhub::tests::IsolatedProcessTest` | **Any** test whose body transitively reaches a lifecycle module (`Logger`, `FileLock`, `JsonConfig`, `CryptoUtils`, `ZMQContext`, `HubConfig`, `SchemaStore`, hub `DataBlock`); crash/abort tests; finalize/shutdown tests; IPC tests | Parent spawns a subprocess per `TEST_F`; worker owns its own `LifecycleGuard` |
 
-For **FileLock** and **DataBlock** multi-process tests, use **WorkerProcess** and register workers in the test executable’s dispatcher. **CTest** runs each test in a separate process; running the test binary directly runs all tests in one process—prefer CTest or WorkerProcess when tests change global state. See **`docs/IMPLEMENTATION_GUIDANCE.md`** § Testing for CTest vs direct execution.
+#### The framework contract (absolute)
+
+> **Any test whose body transitively requires a lifecycle module MUST run
+> inside a spawned worker subprocess.** The test-runner process owns no
+> lifecycle. No exceptions.
+
+Root-cause reasoning is documented in **`docs/HEP/HEP-CORE-0001-hybrid-lifecycle-model.md` § "Testing implications"**. In short:
+
+- `LifecycleManager` is a process-global singleton; reconstructing the guard
+  per-`TEST_F` breaks the initialize-exactly-once invariant relied on by
+  `ModuleDef::startup` callbacks (most visibly `ThreadManager`, which registers
+  a dynamic module on first init).
+- Library-global destructors for `libzmq`, `luajit`, and `libsodium` can hang
+  indefinitely on program exit. Worker subprocesses call `_exit()` after their
+  `LifecycleGuard` teardown to skip these — a path only available if the
+  subprocess owns the lifecycle. See the comment block at
+  `tests/test_framework/shared_test_helpers.h:303-322`.
+- A panic/`abort()`/clean-`finalize()` inside one test must not corrupt the
+  singleton state observed by the next test. Per-test subprocesses are the
+  only enforcement mechanism.
+
+#### Decision checklist
+
+Before writing a new test, answer these in order. If you get to "yes" before
+"no", you are on Pattern 3:
+
+1. Does my test call any `LOGGER_*` macro? (Logger is lifecycle-backed.)
+2. Does my test construct any class that lists `GetLifecycleModule()` in its
+   public API, or any class that takes a `FileLock`/`JsonConfig` in its ctor?
+3. Does my test call `RoleConfig::load_from_directory`, `JsonConfig::load`,
+   `FileLock(...)`, or anything in `src/scripting/`?
+4. Does my test construct a `Messenger`, `BrokerService`, `hub::Producer`,
+   `hub::Consumer`, `hub::Processor`, `ShmQueue`, `ZmqQueue`, `ThreadManager`,
+   `RoleHostBase`, or a script engine?
+
+If any of the above is **yes**, the test body goes into a worker subprocess.
+If **all are no**, Pattern 1 or 2 is allowed.
+
+#### Antipatterns (forbidden)
+
+| Antipattern | Why it breaks | Correct approach |
+|-------------|---------------|-------------------|
+| `std::unique_ptr<LifecycleGuard> guard_` owned by a test fixture and (re)constructed in `SetUp()` | Re-runs `initialize()` per test; half-registers dynamic modules; may look fine in isolation but corrupts state across tests | Move the test body into a worker function that wraps in `run_gtest_worker` |
+| `SetUpTestSuite() { static LifecycleGuard g(...); }` as a "compromise" | Still in-process; still runs pylabhub static-dtor order at program exit; hides the 60s hang behind "it passed on my machine" | Same — spawn a worker per `TEST_F` |
+| `EXPECT_DEATH(...)` inside a lifecycle-backed body | Death-test fork inherits half-initialized state; flakes under load | Spawn a worker that deliberately aborts; parent asserts `exit_code != 0` + panic text |
+| Linking the test binary against both `pylabhub::test_framework` and `GTest::gtest_main` | Two `main()` definitions → link error | Link `pylabhub::test_framework` only — it provides `main()` via `test_entrypoint.cpp` |
+| Worker body returning normally (falling off the end) | Runs pylabhub-utils + libzmq + luajit static dtors → potential 60s hang on CI | Call `run_gtest_worker(...)` and let it `_exit()` |
+
+---
+
+### Example 3: Lifecycle-backed test (Pattern 3)
+
+For any test that reaches a lifecycle module (here: a fictional `FileCache`
+that requires `Logger` + `FileLock`), the test body runs in a worker subprocess.
+
+**Parent** — `tests/test_layer2_service/test_file_cache.cpp`:
+
+```cpp
+#include "test_patterns.h"
+#include <gtest/gtest.h>
+#include <filesystem>
+#include <string>
+
+using pylabhub::tests::IsolatedProcessTest;
+namespace fs = std::filesystem;
+
+class FileCacheTest : public IsolatedProcessTest
+{
+  protected:
+    void TearDown() override
+    {
+        for (const auto &p : paths_to_clean_) {
+            std::error_code ec;
+            fs::remove_all(p, ec);
+        }
+    }
+
+    std::string unique_dir(const char *label)
+    {
+        auto p = fs::temp_directory_path() /
+                 ("plh_l2_fc_" + std::string(label));
+        paths_to_clean_.push_back(p);
+        return p.string();
+    }
+
+    std::vector<fs::path> paths_to_clean_;
+};
+
+TEST_F(FileCacheTest, Roundtrip)
+{
+    auto dir = unique_dir("roundtrip");
+    auto w = SpawnWorker("file_cache.roundtrip", {dir, "the-key", "the-value"});
+    ExpectWorkerOk(w);
+}
+```
+
+**Worker** — `tests/test_layer2_service/workers/file_cache_workers.cpp`:
+
+```cpp
+#include "file_cache_workers.h"
+#include "shared_test_helpers.h"
+#include "test_entrypoint.h"
+#include "plh_service.hpp"
+#include "utils/file_cache.hpp"
+#include <gtest/gtest.h>
+
+using pylabhub::tests::helper::run_gtest_worker;
+using pylabhub::utils::FileLock;
+using pylabhub::utils::Logger;
+using pylabhub::utils::FileCache;
+
+namespace pylabhub::tests::worker
+{
+namespace file_cache
+{
+
+int roundtrip(const std::string &dir, const std::string &key,
+              const std::string &value)
+{
+    return run_gtest_worker(
+        [&]() {
+            FileCache cache(dir);              // ctor may need Logger/FileLock
+            ASSERT_TRUE(cache.put(key, value));
+            EXPECT_EQ(cache.get(key), value);
+        },
+        "file_cache::roundtrip",
+        Logger::GetLifecycleModule(),           // modules the body needs
+        FileLock::GetLifecycleModule());
+}
+
+} // namespace file_cache
+} // namespace pylabhub::tests::worker
+
+// Self-registering dispatcher — required so test_entrypoint main() can route.
+namespace {
+struct FileCacheRegistrar {
+    FileCacheRegistrar() {
+        register_worker_dispatcher([](int argc, char **argv) -> int {
+            if (argc < 2) return -1;
+            std::string_view mode = argv[1];
+            auto dot = mode.find('.');
+            if (dot == std::string_view::npos ||
+                mode.substr(0, dot) != "file_cache")
+                return -1;
+            std::string sc(mode.substr(dot + 1));
+            using namespace pylabhub::tests::worker::file_cache;
+            if (sc == "roundtrip" && argc >= 5)
+                return roundtrip(argv[2], argv[3], argv[4]);
+            return 1;
+        });
+    }
+};
+static FileCacheRegistrar g_registrar;
+}
+```
+
+**CMake** — `tests/test_layer2_service/CMakeLists.txt`:
+
+```cmake
+add_executable(test_layer2_file_cache
+    test_file_cache.cpp
+    workers/file_cache_workers.cpp)
+target_include_directories(test_layer2_file_cache PRIVATE workers)
+target_link_libraries(test_layer2_file_cache PRIVATE
+    pylabhub::utils
+    pylabhub::test_framework         # provides main() + IsolatedProcessTest
+    GTest::gtest                     # NOT GTest::gtest_main
+    GTest::gmock)                    # optional, for HasSubstr etc.
+layer2_require_staged_utils(test_layer2_file_cache)
+gtest_discover_tests(test_layer2_file_cache
+    PROPERTIES LABELS "layer2;service;file_cache" TIMEOUT 60)
+```
+
+**Live references** (read these alongside the example above):
+
+- `tests/test_layer2_service/test_role_logging_roundtrip.cpp` — parent
+- `tests/test_layer2_service/workers/role_logging_workers.cpp` — worker
+- `tests/test_layer2_service/test_role_host_base.cpp` — parent with abort tests
+- `tests/test_layer2_service/workers/role_host_base_workers.cpp` — worker with
+  both `run_gtest_worker` paths and manual-guard abort paths
+- `tests/test_layer2_service/test_logger.cpp` / `workers/logger_workers.cpp`
+  — long-established reference implementation
+
+For the design-level *why* behind the contract, see
+**`docs/HEP/HEP-CORE-0001-hybrid-lifecycle-model.md` § "Testing implications"**.
+For an inventory of compliance violations currently being swept, see
+**`docs/tech_draft/test_compliance_audit.md`**.
+
+---
 
 ### Key Testing Patterns
 
