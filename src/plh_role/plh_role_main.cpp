@@ -172,8 +172,10 @@ int main(int argc, char *argv[])
 
     // Parse args. The role_name passed to parse_role_args is only used
     // in the usage text ("<role_dir>"); the real selector is args.role.
-    const role_cli::RoleArgs args =
-        role_cli::parse_role_args(argc, argv, "role");
+    auto parsed = role_cli::parse_role_args(argc, argv, "role");
+    if (parsed.exit_code >= 0)
+        return parsed.exit_code;
+    const role_cli::RoleArgs &args = parsed.args;
 
     const RoleRuntimeInfo *info = register_and_lookup(args);
     if (!info)
