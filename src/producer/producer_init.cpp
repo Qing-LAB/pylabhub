@@ -4,12 +4,16 @@
  */
 
 #include "producer_init.hpp"
+#include "producer_fields.hpp"
+#include "producer_role_host.hpp"
 
 #include "utils/role_directory.hpp"
+#include "utils/role_registry.hpp"
 
 #include <fmt/core.h>
 #include <fmt/ostream.h>
 #include <fstream>
+#include <memory>
 #include <nlohmann/json.hpp>
 
 namespace pylabhub::producer
@@ -35,8 +39,11 @@ nlohmann::json producer_config_template(const std::string &uid,
 
     j["out_transport"]        = "shm";
     j["out_shm_enabled"]      = true;
-    j["out_shm_secret"]       = 0;
     j["out_shm_slot_count"]   = 8;
+    // out_shm_secret omitted — 0 is the default ("no secret"); users who need
+    // per-channel authentication add it explicitly. Consumer and processor
+    // templates follow the same convention (shm_secret is advanced, not
+    // boilerplate).
 
     j["out_slot_schema"]["fields"] = nlohmann::json::array({
         nlohmann::json{{"name", "value"}, {"type", "float32"}}
@@ -127,6 +134,47 @@ void register_producer_init()
         .role_label("Producer")
         .config_template(&producer_config_template)
         .on_init(&producer_on_init);
+}
+
+// ── Runtime registration (Phase 16 — plh_role dispatch target) ──────────────
+
+namespace
+{
+
+// Free factory: constructs a ProducerRoleHost and upcasts to the abstract
+// base for uniform plh_role dispatch. Function-pointer (not std::function)
+// to satisfy RoleRegistry's ABI-stable signature.
+std::unique_ptr<scripting::RoleHostBase> make_producer_host(
+    config::RoleConfig config,
+    std::unique_ptr<scripting::ScriptEngine> engine,
+    std::atomic<bool> *shutdown_flag)
+{
+    return std::make_unique<ProducerRoleHost>(
+        std::move(config), std::move(engine), shutdown_flag);
+}
+
+// NUL-terminated list of script callback names. Engine introspection
+// (and future --validate output) reads this to check the script file
+// exposes all expected hooks.
+constexpr const char *kProducerCallbacks[] = {
+    "on_init",
+    "on_produce",
+    "on_stop",
+    "on_inbox",   // optional, present iff inbox is configured
+    nullptr,
+};
+
+} // namespace
+
+void register_producer_runtime()
+{
+    utils::RoleRegistry::register_runtime("prod")
+        .role_label("Producer")
+        .host_factory(&make_producer_host)
+        .engine_callbacks(kProducerCallbacks)
+        .config_role_name("producer")
+        .config_parser(&parse_producer_fields)
+        .commit();
 }
 
 } // namespace pylabhub::producer

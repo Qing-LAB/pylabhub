@@ -10,6 +10,11 @@
  * Layer 2 (data loop): dual-queue inner retry acquire, deadline wait, drain,
  *   invoke, commit/release.
  * Layer 1 (engine): delegated to ScriptEngine via invoke_process / invoke_on_inbox.
+ *
+ * Shared lifecycle scaffolding (ctor, startup_(), shutdown_(), ready-promise,
+ * RoleAPIBase ownership, ThreadManager-owned worker) lives in RoleHostBase.
+ * This file implements only the processor-specific worker_main_() hook and
+ * its setup_infrastructure_() / teardown_infrastructure_() helpers.
  */
 #include "processor_role_host.hpp"
 #include "utils/thread_manager.hpp"
@@ -27,6 +32,7 @@
 #include "utils/zmq_poll_loop.hpp"
 #include "utils/schema_utils.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -40,68 +46,43 @@ using scripting::ProcessorCycleOps;
 using Clock = std::chrono::steady_clock;
 
 // ============================================================================
-// Destructor
-// ============================================================================
-
-ProcessorRoleHost::~ProcessorRoleHost()
-{
-    shutdown_();
-}
-
-// ============================================================================
-// Constructor
+// Constructor / Destructor
 // ============================================================================
 
 ProcessorRoleHost::ProcessorRoleHost(config::RoleConfig config,
                                        std::unique_ptr<scripting::ScriptEngine> engine,
                                        std::atomic<bool> *shutdown_flag)
-    : config_(std::move(config))
-    , engine_(std::move(engine))
+    : scripting::RoleHostBase("proc", std::move(config), std::move(engine),
+                              shutdown_flag)
 {
-    core_.set_shutdown_flag(shutdown_flag);
 }
 
-
-// ============================================================================
-// startup_ — spawn worker thread, block until ready or failure
-// ============================================================================
-
-void ProcessorRoleHost::startup_()
+ProcessorRoleHost::~ProcessorRoleHost()
 {
-    ready_promise_ = std::promise<bool>{};
-    auto ready_future = ready_promise_.get_future();
-
-    // Construct api_ here so the role's ThreadManager is available
-    // before the worker thread is spawned.
-    api_ = std::make_unique<scripting::RoleAPIBase>(
-        core_, "proc", config_.identity().uid);
-
-    api_->thread_manager().spawn("worker", [this] { worker_main_(); });
-
-    const bool ok = ready_future.get();
-    if (!ok)
-    {
-        api_.reset();
-    }
+    // Join worker BEFORE processor-specific members (broker_comm_,
+    // inbox_queue_) begin destruction — the worker's teardown path
+    // reads them. shutdown_() is idempotent; base dtor's flag check
+    // therefore passes when it runs later.
+    shutdown_();
 }
 
 // ============================================================================
-// shutdown_ — signal shutdown; ThreadManager dtor bounded-joins worker
+// worker_main_ — the worker thread entry point (RoleHostBase hook)
 // ============================================================================
-
-void ProcessorRoleHost::shutdown_()
-{
-    core_.request_stop();
-    core_.notify_incoming();
-    api_.reset();
-}
-
-// ============================================================================
-// worker_main_ — the worker thread entry point
-// ============================================================================
+//
+// Sequence identical to the pre-migration standalone implementation; only
+// the state it reads (config_, core_, engine_, api_, ready_promise_) is
+// now accessed via protected RoleHostBase accessors instead of direct
+// member references.
 
 void ProcessorRoleHost::worker_main_()
 {
+    auto       &core_        = core();
+    const auto &config_      = config();
+    auto       &engine_ref   = engine();
+    auto       &api_ref      = api();
+    auto       &promise_ref  = ready_promise();
+
     const auto &sc = config_.script();
 
     // Warn if script type was not explicitly set in config.
@@ -158,7 +139,7 @@ void ProcessorRoleHost::worker_main_()
         catch (const std::exception &e)
         {
             LOGGER_ERROR("[proc] Schema parse error: {}", e.what());
-            ready_promise_.set_value(false);
+            promise_ref.set_value(false);
             return;
         }
     }
@@ -189,42 +170,42 @@ void ProcessorRoleHost::worker_main_()
         if (!setup_infrastructure_(inbox_spec_local))
         {
             teardown_infrastructure_();
-            ready_promise_.set_value(false);
+            promise_ref.set_value(false);
             return;
         }
     }
 
     // ── Step 3: Populate mutable wiring on the already-created api_ ──────────
     //
-    // api_ was constructed in startup_() before the worker was spawned
-    // so its ThreadManager could own this worker thread (bounded join on
-    // teardown). Populate post-ctor state here.
+    // api_ was constructed in RoleHostBase::startup_() before the worker
+    // was spawned so its ThreadManager could own this worker thread
+    // (bounded join on teardown). Populate post-ctor state here.
 
-    api_->set_name(config_.identity().name);
-    api_->set_channel(config_.in_channel());
-    api_->set_out_channel(config_.out_channel());
-    api_->set_log_level(config_.identity().log_level);
-    api_->set_script_dir(script_dir.string());
-    api_->set_role_dir(config_.base_dir().string());
+    api_ref.set_name(config_.identity().name);
+    api_ref.set_channel(config_.in_channel());
+    api_ref.set_out_channel(config_.out_channel());
+    api_ref.set_log_level(config_.identity().log_level);
+    api_ref.set_script_dir(script_dir.string());
+    api_ref.set_role_dir(config_.base_dir().string());
     if (!core_.is_validate_only())
     {
-        api_->set_inbox_queue(inbox_queue_.get());
+        api_ref.set_inbox_queue(inbox_queue_.get());
 
         // Create BrokerRequestComm (connection deferred to step 6).
         broker_comm_ = std::make_unique<hub::BrokerRequestComm>();
-        api_->set_broker_comm(broker_comm_.get());
+        api_ref.set_broker_comm(broker_comm_.get());
     }
-    api_->set_checksum_policy(config_.checksum().policy);
-    api_->set_stop_on_script_error(sc.stop_on_script_error);
-    api_->set_engine(engine_.get());
+    api_ref.set_checksum_policy(config_.checksum().policy);
+    api_ref.set_stop_on_script_error(sc.stop_on_script_error);
+    api_ref.set_engine(&engine_ref);
 
     // ── Step 4: Load engine via lifecycle startup ────────────────────────────
 
     engine_module_name_ = fmt::format("ScriptEngine:{}:{}", sc.type, config_.identity().uid);
 
     scripting::EngineModuleParams params;
-    params.engine             = engine_.get();
-    params.api                = api_.get();
+    params.engine             = &engine_ref;
+    params.api                = &api_ref;
     params.tag                = "proc";
     params.script_dir         = script_dir;
     params.entry_point        = (sc.type == "lua") ? "init.lua" : "__init__.py";
@@ -247,27 +228,27 @@ void ProcessorRoleHost::worker_main_()
     {
         LOGGER_ERROR("[proc] Engine startup failed: {}", e.what());
         core_.set_script_load_ok(false);
-        engine_->finalize();
+        engine_ref.finalize();
         if (!core_.is_validate_only())
             teardown_infrastructure_();
-        ready_promise_.set_value(false);
+        promise_ref.set_value(false);
         return;
     }
 
     // Validate-only mode: engine loaded successfully, exit.
     if (core_.is_validate_only())
     {
-        engine_->finalize();
-        ready_promise_.set_value(true);
+        engine_ref.finalize();
+        promise_ref.set_value(true);
         return;
     }
 
     // ── Step 5: invoke on_init ───────────────────────────────────────────────
-    engine_->invoke_on_init();
+    engine_ref.invoke_on_init();
 
     // Sync flexzone checksum after on_init (user may have written to flexzone).
-    if (api_->has_tx_side() && core_.has_tx_fz())
-        api_->sync_tx_flexzone_checksum();
+    if (api_ref.has_tx_side() && core_.has_tx_fz())
+        api_ref.sync_tx_flexzone_checksum();
 
     // ── Step 6: Connect to broker, start ctrl thread, register ────────────
     core_.set_running(true);
@@ -315,7 +296,7 @@ void ProcessorRoleHost::worker_main_()
         ctrl_cfg.consumer_reg_opts["consumer_name"] = id.name;
         ctrl_cfg.consumer_reg_opts["consumer_pid"]  = pylabhub::platform::get_pid();
 
-        if (!api_->start_ctrl_thread(bc_cfg, ctrl_cfg))
+        if (!api_ref.start_ctrl_thread(bc_cfg, ctrl_cfg))
         {
             LOGGER_ERROR("[proc] Broker registration failed");
         }
@@ -327,16 +308,16 @@ void ProcessorRoleHost::worker_main_()
         if (!scripting::wait_for_roles(*broker_comm_, config_.startup().wait_for_roles, "[proc]"))
         {
             LOGGER_ERROR("[proc] Startup coordination failed — required roles not available");
-            ready_promise_.set_value(false);
+            promise_ref.set_value(false);
             return;
         }
     }
 
     // Step 7: Signal ready.
-    ready_promise_.set_value(true);
+    promise_ref.set_value(true);
 
     // Step 8: Run the data loop via shared frame + ProcessorCycleOps.
-    if (!api_->has_rx_side() || !api_->has_tx_side())
+    if (!api_ref.has_rx_side() || !api_ref.has_tx_side())
     {
         LOGGER_ERROR("[proc] run_data_loop: transport queues not initialized — aborting");
         core_.set_running(false);
@@ -346,28 +327,28 @@ void ProcessorRoleHost::worker_main_()
         const auto &tc_loop = config_.timing();
         const bool drop_mode =
             (config_.out_transport().zmq_overflow_policy == "drop");
-        ProcessorCycleOps ops(*api_, *engine_, core_,
+        ProcessorCycleOps ops(api_ref, engine_ref, core_,
                               sc.stop_on_script_error,
                               drop_mode);
         scripting::LoopConfig lcfg;
         lcfg.period_us                   = tc_loop.period_us;
         lcfg.loop_timing                 = tc_loop.loop_timing;
         lcfg.queue_io_wait_timeout_ratio = tc_loop.queue_io_wait_timeout_ratio;
-        scripting::run_data_loop(*api_, core_, lcfg, ops);
+        scripting::run_data_loop(api_ref, core_, lcfg, ops);
     }
 
     // Step 9: stop accepting invoke from non-owner threads.
-    engine_->stop_accepting();
+    engine_ref.stop_accepting();
 
     // Step 9a: Explicitly deregister from broker (ctrl thread still running).
-    if (api_)
-        api_->deregister_from_broker();
+    if (has_api())
+        api_ref.deregister_from_broker();
 
     // Step 10: last script callback (ctrl still alive for final I/O).
-    engine_->invoke_on_stop();
+    engine_ref.invoke_on_stop();
 
     // Step 11: finalize engine.
-    engine_->finalize();
+    engine_ref.finalize();
 
     // Step 12: signal ctrl to exit (non-destructive stop).
     if (broker_comm_) broker_comm_->stop();
@@ -378,7 +359,7 @@ void ProcessorRoleHost::worker_main_()
     teardown_infrastructure_();
 
     // Step 14: drain all managed threads — last.
-    api_->thread_manager().drain();
+    api_ref.thread_manager().drain();
 }
 
 // ============================================================================
@@ -387,6 +368,10 @@ void ProcessorRoleHost::worker_main_()
 
 bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
 {
+    auto       &core_   = core();
+    const auto &config_ = config();
+    auto       &api_ref = api();
+
     // ── Consumer side (in_channel) ──────────────────────────────────────────
     hub::ConsumerOptions in_opts;
     in_opts.channel_name         = config_.in_channel();
@@ -405,7 +390,7 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     const bool in_is_zmq = (config_.in_transport().transport == config::Transport::Zmq);
     in_opts.queue_type = in_is_zmq ? "zmq" : "shm";
 
-    if (!api_->build_rx_queue(in_opts))
+    if (!api_ref.build_rx_queue(in_opts))
     {
         LOGGER_ERROR("[proc] Failed to connect consumer to in_channel '{}'",
                      config_.in_channel());
@@ -462,7 +447,7 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     }
 
     // --- Create producer (RoleAPIBase owns the Tx queue) ---
-    if (!api_->build_tx_queue(out_opts))
+    if (!api_ref.build_tx_queue(out_opts))
     {
         LOGGER_ERROR("[proc] Failed to create producer for out_channel '{}'",
                      config_.out_channel());
@@ -472,21 +457,21 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     // Broker notifications (band, hub-dead) are handled by BrokerRequestComm.
 
     // --- Start and configure data queues ---
-    if (!api_->start_rx_queue())
+    if (!api_ref.start_rx_queue())
     {
         LOGGER_ERROR("[proc] Input start_queue() failed (in_channel='{}')",
                      config_.in_channel());
         return false;
     }
-    if (!api_->start_tx_queue())
+    if (!api_ref.start_tx_queue())
     {
         LOGGER_ERROR("[proc] Output start_queue() failed (out_channel='{}')",
                      config_.out_channel());
         return false;
     }
     // Reset metrics (checksum and period already configured via Options).
-    api_->reset_rx_queue_metrics();
-    api_->reset_tx_queue_metrics();
+    api_ref.reset_rx_queue_metrics();
+    api_ref.reset_tx_queue_metrics();
     core_.set_configured_period(static_cast<uint64_t>(config_.timing().period_us));
 
     LOGGER_INFO("[proc] Processor started: '{}' -> '{}'",
@@ -504,7 +489,7 @@ void ProcessorRoleHost::teardown_infrastructure_()
 {
     // Broker and comm threads already joined via api_->thread_manager().drain().
 
-    core_.clear_inbox_cache();
+    core().clear_inbox_cache();
 
     // Stop inbox_queue_ (if exists).
     if (inbox_queue_)
@@ -521,7 +506,8 @@ void ProcessorRoleHost::teardown_infrastructure_()
     }
 
     // Close Tx/Rx queues (data-plane teardown happens inside RoleAPIBase).
-    if (api_) api_->close_queues();
+    if (has_api())
+        api().close_queues();
 }
 
 
