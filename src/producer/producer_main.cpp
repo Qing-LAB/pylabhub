@@ -80,20 +80,25 @@ namespace role_cli   = pylabhub::role_cli;
 // do_init: binary-side CLI wrapper around RoleDirectory::init_directory().
 // - Binary handles user interaction (name prompt via role_cli).
 // - Library (init_directory) does the pure work: create dir + write templates.
-static int do_init(const std::string &prod_dir_str, const std::string &cli_name)
+static int do_init(const role_cli::RoleArgs &args)
 {
     namespace fs = std::filesystem;
 
-    const fs::path prod_dir = prod_dir_str.empty()
+    const fs::path prod_dir = args.role_dir.empty()
                               ? fs::current_path()
-                              : fs::path(prod_dir_str);
+                              : fs::path(args.role_dir);
 
     const auto name_opt = role_cli::resolve_init_name(
-        cli_name, "Producer name (human-readable, e.g. 'TempSensor'): ");
+        args.init_name, "Producer name (human-readable, e.g. 'TempSensor'): ");
     if (!name_opt)
         return 1;
 
-    return RoleDirectory::init_directory(prod_dir, "producer", *name_opt);
+    RoleDirectory::LogInitOverrides log_overrides;
+    log_overrides.max_size_mb = args.log_max_size_mb;
+    log_overrides.backups     = args.log_backups;
+
+    return RoleDirectory::init_directory(
+        prod_dir, "producer", *name_opt, log_overrides);
 }
 
 // ---------------------------------------------------------------------------
@@ -118,10 +123,10 @@ int main(int argc, char *argv[])
     const role_cli::RoleArgs args = role_cli::parse_role_args(argc, argv, "producer");
 
     if (args.init_only)
-        return do_init(args.role_dir, args.init_name);
+        return do_init(args);
 
     // ── Lifecycle init (required before JsonConfig/RoleConfig) ────────────────
-    LifecycleGuard runner_lifecycle(scripting::role_lifecycle_modules(args.log_file));
+    LifecycleGuard runner_lifecycle(scripting::role_lifecycle_modules());
     scripting::register_signal_handler_lifecycle(signal_handler, "[prod-main]");
     scripting::log_version_info("[prod-main]");
 
@@ -144,6 +149,14 @@ int main(int argc, char *argv[])
     auto &c = *config;
 
     const std::string config_dir = c.base_dir().string();
+
+    // ── Attach rotating log sink (path auto-composed from config) ─────────────
+    {
+        std::error_code ec;
+        scripting::configure_logger_from_config(c, ec, "[prod-main]");
+        // Non-fatal on failure — logger continues on stderr; message
+        // already surfaced by configure_logger_from_config().
+    }
 
     // ── Keygen mode ──────────────────────────────────────────────────────────
     if (args.keygen_only)

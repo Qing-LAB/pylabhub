@@ -16,6 +16,7 @@
 
 #include "plh_datahub.hpp"
 #include "plh_version_registry.hpp"
+#include "utils/config/role_config.hpp"
 #include "utils/interactive_signal_handler.hpp"
 #include "utils/role_cli.hpp"      // public TTY + password helpers (HEP-CORE-0024)
 #include "utils/timeout_constants.hpp"
@@ -23,9 +24,11 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <optional>
 #include <source_location>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -69,9 +72,12 @@ inline std::optional<std::string> get_role_password(const char *role_name, const
  *   utils::LifecycleGuard lifecycle(scripting::role_lifecycle_modules());
  * @endcode
  *
- * When @p log_file is non-empty, a lightweight "StartupLogFileSink" module is injected
- * that depends on "Logger" and switches the log sink to the specified file
- * before any other module initialises — eliminating early console log spew.
+ * The logger is started with the default (stderr) sink. After the role
+ * config has been loaded, call @ref configure_logger_from_config to
+ * attach the rotating file sink at the canonical path
+ * `<role_dir>/logs/<uid>-<timestamp>.log` with rotation parameters taken
+ * from the config's @c LoggingConfig section (HEP-0024 §12 CLI↔Config
+ * separation: no CLI flag redirects runtime log output).
  *
  * All six modules (Logger, FileLock, Crypto, JsonConfig, ZMQ, DataExchangeHub) are
  * required by every role binary. A binary needing extra modules can append them:
@@ -81,37 +87,82 @@ inline std::optional<std::string> get_role_password(const char *role_name, const
  *   utils::LifecycleGuard lifecycle(std::move(mods));
  * @endcode
  */
-inline std::vector<pylabhub::utils::ModuleDef> role_lifecycle_modules(
-    const std::string &log_file = {})
+inline std::vector<pylabhub::utils::ModuleDef> role_lifecycle_modules()
 {
-    // Hub/role-related modules that emit LOGGER_INFO during startup.
-    // When a log file is requested, these get an extra dependency on
-    // "StartupLogFileSink" so the topo sort places them after the sink switch.
-    auto zmq_mod = pylabhub::hub::GetZMQContextModule();
-    auto db_mod  = pylabhub::hub::GetDataBlockModule();
-
-    if (!log_file.empty())
-    {
-        zmq_mod.add_dependency("StartupLogFileSink");
-        db_mod.add_dependency("StartupLogFileSink");
-    }
-
-    auto mods = pylabhub::utils::MakeModDefList(
+    return pylabhub::utils::MakeModDefList(
         pylabhub::utils::Logger::GetLifecycleModule(),
         pylabhub::utils::FileLock::GetLifecycleModule(),
         pylabhub::crypto::GetLifecycleModule(),
         pylabhub::utils::JsonConfig::GetLifecycleModule(),
-        std::move(zmq_mod),
-        std::move(db_mod)
+        pylabhub::hub::GetZMQContextModule(),
+        pylabhub::hub::GetDataBlockModule()
     );
+}
 
-    if (!log_file.empty())
+/**
+ * @brief Attach a rotating file sink to the logger using config-driven
+ *        rotation parameters and a convention-composed path.
+ *
+ * Path: @p cfg.logging().file_path if non-empty (treated as an absolute
+ * or role-dir-relative path), otherwise auto-composed as
+ * `<cfg.base_dir()>/logs/<cfg.identity().uid>.log` — the rotating sink's
+ * timestamped mode (when @c LoggingConfig::timestamped is true) expands
+ * this into `<...>/<uid>-YYYY-MM-DD-HH-MM-SS.uuuuuu.log` at open time.
+ *
+ * Rotation: @c max_size_bytes / @c max_backup_files / @c timestamped all
+ * come from @p cfg.logging() — which is populated from the JSON's
+ * @c logging section (optionally pre-seeded by the `--log-maxsize` /
+ * `--log-backups` init-time CLI flags).
+ *
+ * Call once, right after RoleConfig has been successfully loaded. The
+ * command is enqueued asynchronously on the logger worker; returns
+ * synchronously once enqueue succeeds.
+ *
+ * @return true on successful enqueue; false on pre-flight error (e.g.
+ *         unwritable directory). On failure the logger continues to use
+ *         its existing sink (stderr) and the error reason is in @p ec.
+ */
+inline bool configure_logger_from_config(const config::RoleConfig &cfg,
+                                           std::error_code &ec,
+                                           const char *log_tag)
+{
+    namespace fs = std::filesystem;
+    const auto &lc = cfg.logging();
+
+    fs::path base = lc.file_path.empty()
+                        ? (cfg.base_dir() / "logs" / (cfg.identity().uid + ".log"))
+                        : fs::path(lc.file_path);
+    if (base.is_relative())
+        base = cfg.base_dir() / base;
+
+    // Ensure the parent directory exists; logger pre-flight does this too,
+    // but failing early here gives a cleaner diagnostic.
+    std::error_code mk_ec;
+    fs::create_directories(base.parent_path(), mk_ec);
+    // (mk_ec swallowed — pre-flight inside set_rotating_logfile will catch)
+
+    pylabhub::utils::Logger::RotatingLogConfig rcfg{};
+    rcfg.max_file_size_bytes = lc.max_size_bytes;
+    rcfg.max_backup_files    = lc.max_backup_files;
+    rcfg.timestamped_names   = lc.timestamped;
+    rcfg.use_flock           = true;
+
+    if (!pylabhub::utils::Logger::instance()
+             .set_rotating_logfile(base, rcfg, ec))
     {
-        mods.push_back(
-            pylabhub::utils::Logger::GetStartupLogFileSinkModule(log_file));
+        LOGGER_ERROR("{} Failed to attach rotating log sink at '{}': {}",
+                     log_tag, base.string(), ec.message());
+        return false;
     }
-
-    return mods;
+    LOGGER_INFO("{} Log sink: {} (max_size={} MiB, backups={}, timestamped={})",
+                log_tag, base.string(),
+                lc.max_size_bytes / (1024.0 * 1024.0),
+                (lc.max_backup_files ==
+                 pylabhub::config::LoggingConfig::kKeepAllBackups)
+                    ? std::string("all")
+                    : std::to_string(lc.max_backup_files),
+                lc.timestamped);
+    return true;
 }
 
 /**

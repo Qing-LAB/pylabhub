@@ -301,7 +301,8 @@ RoleDirectory::register_role(const std::string &role_tag)
 
 int RoleDirectory::init_directory(const std::filesystem::path &dir,
                                    const std::string &role_tag,
-                                   const std::string &name)
+                                   const std::string &name,
+                                   const LogInitOverrides &log)
 {
     namespace fs = std::filesystem;
 
@@ -357,7 +358,18 @@ int RoleDirectory::init_directory(const std::filesystem::path &dir,
     // 5. Write config template.
     if (info.config_template)
     {
-        const nlohmann::json j = info.config_template(uid, name);
+        nlohmann::json j = info.config_template(uid, name);
+
+        // Merge CLI log overrides into the generated JSON's logging section.
+        // Keys follow config::LoggingConfig's JSON schema (see
+        // logging_config.hpp). Unset overrides leave the template's value
+        // (or absence) in place — LoggingConfig::parse_logging_config
+        // applies its own defaults when keys are missing.
+        if (log.max_size_mb.has_value())
+            j["logging"]["max_size_mb"] = *log.max_size_mb;
+        if (log.backups.has_value())
+            j["logging"]["backups"] = *log.backups;
+
         std::ofstream out(json_path);
         if (!out)
         {
