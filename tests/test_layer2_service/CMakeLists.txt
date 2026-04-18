@@ -687,6 +687,23 @@ gtest_discover_tests(test_layer2_configure_logger
     PROPERTIES LABELS "layer2;service;configure_logger" TIMEOUT 60)
 
 # ============================================================================
+# Test: RoleHostBase lifecycle (minimal TestRoleHost subclass + death tests)
+# ============================================================================
+
+add_executable(test_layer2_role_host_base test_role_host_base.cpp)
+target_include_directories(test_layer2_role_host_base PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/producer)
+target_link_libraries(test_layer2_role_host_base PRIVATE
+    pylabhub::utils GTest::gtest GTest::gtest_main)
+pylabhub_ensure_sanitizer_for_executable(test_layer2_role_host_base)
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_role_host_base
+    SUITE_NAME "Layer2_RoleHostBase")
+layer2_require_staged_utils(test_layer2_role_host_base)
+gtest_discover_tests(test_layer2_role_host_base
+    PROPERTIES LABELS "layer2;service;role_host_base" TIMEOUT 60)
+
+# ============================================================================
 # Test: LoopTimingPolicy (pure header-only API)
 # ============================================================================
 
