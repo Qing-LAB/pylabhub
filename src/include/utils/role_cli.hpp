@@ -199,10 +199,23 @@ struct RoleArgs
     std::string config_path;    ///< --config <path>
     std::string role_dir;       ///< positional <role_dir> or --init [dir]
     std::string init_name;      ///< --name <name>  (for --init)
-    std::string log_file;       ///< --log-file <path>  (redirect logger to file)
-    bool        validate_only{false};
-    bool        keygen_only{false};
-    bool        init_only{false};
+
+    /// --role <tag>. Long-form role name ("producer"/"consumer"/"processor").
+    /// Required by @c plh_role's map-based dispatch; ignored by the legacy
+    /// per-role binaries (or validated to match their preset name).
+    std::string role;
+
+    /// --log-maxsize <MB>. **Init-only.** Writes @c logging.max_size_mb
+    /// into the generated JSON. Empty → use LoggingConfig default (10).
+    std::optional<double> log_max_size_mb;
+
+    /// --log-backups <N>. **Init-only.** Writes @c logging.backups into
+    /// the generated JSON. @c -1 = keep all files. Empty → default (5).
+    std::optional<int> log_backups;
+
+    bool validate_only{false};  ///< --validate
+    bool keygen_only{false};    ///< --keygen
+    bool init_only{false};      ///< --init
 };
 
 namespace detail
@@ -212,22 +225,28 @@ inline void print_role_usage(const char *prog, const char *role_name)
 {
     std::cout
         << "Usage:\n"
-        << "  " << prog << " --init [<" << role_name << "_dir>]"
-                                        "            # Create role directory\n"
-        << "  " << prog << " <" << role_name << "_dir>"
-                                        "                     # Run from directory\n"
-        << "  " << prog << " --config <path.json>"
-                                        " [--validate | --keygen | --run]\n\n"
-        << "Options:\n"
-        << "  --init [dir]    Create role directory with config template; exit 0\n"
-        << "  --name <name>   Role name for --init (skips interactive prompt)\n"
-        << "  <role_dir>      Role directory containing <role>.json\n"
-        << "  --config <path> Path to role JSON config file\n"
-        << "  --validate      Validate config + script; exit 0 on success\n"
-        << "  --keygen        Generate NaCl keypair at auth.keyfile path; exit 0\n"
-        << "  --log-file <p>  Redirect log output to file instead of stderr\n"
-        << "  --run           Explicit run mode (default when no other mode given)\n"
-        << "  --help          Show this message\n";
+        << "  " << prog << " --init [<" << role_name << "_dir>]  # Create role directory\n"
+        << "  " << prog << " <" << role_name << "_dir>             # Run from directory\n"
+        << "  " << prog << " --config <path.json> [--validate | --keygen]\n\n"
+        << "Modes (at most one; default is run):\n"
+        << "  --init [dir]       Create role directory with config template; exit 0\n"
+        << "  --validate         Validate config + script; exit 0 on success\n"
+        << "  --keygen           Generate NaCl keypair at auth.keyfile path; exit 0\n"
+        << "\n"
+        << "Common options:\n"
+        << "  <role_dir>         Role directory containing <role>.json\n"
+        << "  --config <path>    Path to role JSON config file\n"
+        << "  --role <tag>       Role type (required by plh_role; otherwise preset)\n"
+        << "  --name <name>      Role name for --init (skips interactive prompt)\n"
+        << "\n"
+        << "Init-only options (write into generated logging config):\n"
+        << "  --log-maxsize <MB> Rotate when a log file reaches this size (default 10)\n"
+        << "  --log-backups <N>  Keep N rotated files (default 5; -1 = keep all)\n"
+        << "\n"
+        << "  --help             Show this message\n"
+        << "\n"
+        << "Log destination at run time is always <role_dir>/logs/<uid>-<ts>.log\n"
+        << "(composed from config; not configurable via CLI).\n";
 }
 
 } // namespace detail
@@ -267,9 +286,27 @@ inline RoleArgs parse_role_args(int argc, char *argv[], const char *role_name)
         {
             args.init_name = argv[++i];
         }
-        else if (arg == "--log-file" && i + 1 < argc)
+        else if (arg == "--role" && i + 1 < argc)
         {
-            args.log_file = argv[++i];
+            args.role = argv[++i];
+        }
+        else if (arg == "--log-maxsize" && i + 1 < argc)
+        {
+            try { args.log_max_size_mb = std::stod(argv[++i]); }
+            catch (const std::exception &)
+            {
+                std::cerr << "Error: --log-maxsize expects a number (MB)\n";
+                std::exit(1);
+            }
+        }
+        else if (arg == "--log-backups" && i + 1 < argc)
+        {
+            try { args.log_backups = std::stoi(argv[++i]); }
+            catch (const std::exception &)
+            {
+                std::cerr << "Error: --log-backups expects an integer (-1 = keep all)\n";
+                std::exit(1);
+            }
         }
         else if (arg == "--validate")
         {
@@ -278,10 +315,6 @@ inline RoleArgs parse_role_args(int argc, char *argv[], const char *role_name)
         else if (arg == "--keygen")
         {
             args.keygen_only = true;
-        }
-        else if (arg == "--run")
-        {
-            // explicit run mode — no-op
         }
         else if (arg[0] != '-')
         {
@@ -301,12 +334,37 @@ inline RoleArgs parse_role_args(int argc, char *argv[], const char *role_name)
         }
     }
 
+    // ── Mode exclusion: at most one of --init / --validate / --keygen ──
+    const int mode_count = static_cast<int>(args.init_only) +
+                           static_cast<int>(args.validate_only) +
+                           static_cast<int>(args.keygen_only);
+    if (mode_count > 1)
+    {
+        std::cerr << "Error: --init, --validate, and --keygen are mutually "
+                     "exclusive (at most one mode).\n\n";
+        detail::print_role_usage(argv[0], role_name);
+        std::exit(1);
+    }
+
+    // ── Init-only flags must not appear outside --init ─────────────────
+    if (!args.init_only &&
+        (args.log_max_size_mb.has_value() || args.log_backups.has_value() ||
+         !args.init_name.empty()))
+    {
+        std::cerr << "Error: --name, --log-maxsize, and --log-backups are "
+                     "only valid with --init.\n\n";
+        detail::print_role_usage(argv[0], role_name);
+        std::exit(1);
+    }
+
+    // ── Required positional for non-init modes ─────────────────────────
     if (!args.init_only && args.config_path.empty() && args.role_dir.empty())
     {
         std::cerr << "Error: specify a role directory, --init, or --config <path>\n\n";
         detail::print_role_usage(argv[0], role_name);
         std::exit(1);
     }
+
     return args;
 }
 

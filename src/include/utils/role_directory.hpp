@@ -288,11 +288,24 @@ public:
      * @param dir       Directory to initialize.
      * @param role_tag  Registered role tag.
      * @param name      Role instance name. Must be non-empty.
+     * @param log       Optional CLI overrides for the generated
+     *                  @c logging section. Any set field is written
+     *                  into the JSON before dump; unset fields leave
+     *                  the role's template default in place.
      * @return 0 on success, non-zero on error.
      */
+    struct LogInitOverrides
+    {
+        /// Written to @c logging.max_size_mb if set.
+        std::optional<double> max_size_mb;
+        /// Written to @c logging.backups if set (@c -1 = keep all).
+        std::optional<int>    backups;
+    };
+
     static int init_directory(const std::filesystem::path &dir,
                               const std::string &role_tag,
-                              const std::string &name);
+                              const std::string &name,
+                              const LogInitOverrides &log = {});
 
 private:
     explicit RoleDirectory(std::filesystem::path base) noexcept;
