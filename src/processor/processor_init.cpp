@@ -153,23 +153,13 @@ std::unique_ptr<scripting::RoleHostBase> make_processor_host(
         std::move(config), std::move(engine), shutdown_flag);
 }
 
-constexpr const char *kProcessorCallbacks[] = {
-    "on_init",
-    "on_process",
-    "on_stop",
-    "on_inbox",   // optional, present iff inbox is configured
-    nullptr,
-};
-
 } // namespace
 
 void register_processor_runtime()
 {
-    utils::RoleRegistry::register_runtime("proc")
+    utils::RoleRegistry::register_runtime("processor")
         .role_label("Processor")
         .host_factory(&make_processor_host)
-        .engine_callbacks(kProcessorCallbacks)
-        .config_role_name("processor")
         .config_parser(&parse_processor_fields)
         .commit();
 }

@@ -153,26 +153,13 @@ std::unique_ptr<scripting::RoleHostBase> make_producer_host(
         std::move(config), std::move(engine), shutdown_flag);
 }
 
-// NUL-terminated list of script callback names. Engine introspection
-// (and future --validate output) reads this to check the script file
-// exposes all expected hooks.
-constexpr const char *kProducerCallbacks[] = {
-    "on_init",
-    "on_produce",
-    "on_stop",
-    "on_inbox",   // optional, present iff inbox is configured
-    nullptr,
-};
-
 } // namespace
 
 void register_producer_runtime()
 {
-    utils::RoleRegistry::register_runtime("prod")
+    utils::RoleRegistry::register_runtime("producer")
         .role_label("Producer")
         .host_factory(&make_producer_host)
-        .engine_callbacks(kProducerCallbacks)
-        .config_role_name("producer")
         .config_parser(&parse_producer_fields)
         .commit();
 }

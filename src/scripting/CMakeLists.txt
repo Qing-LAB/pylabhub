@@ -25,7 +25,6 @@ add_library(pylabhub-scripting STATIC
     lua_state.cpp
     lua_engine.cpp
     python_engine.cpp
-    role_bootstrap.cpp
     # Role API classes — in the shared lib so PythonEngine and future
     # dynamic bindings can access all 3 without per-binary compilation.
     ${CMAKE_SOURCE_DIR}/src/producer/producer_api.cpp
