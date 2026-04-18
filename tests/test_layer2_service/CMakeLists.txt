@@ -651,16 +651,26 @@ gtest_discover_tests(test_layer2_role_init_directory
 
 # ============================================================================
 # Test: CLI log flags → JSON → LoggingConfig round-trip (all 3 roles)
+#
+# Pattern 3 (IsolatedProcessTest): parent spawns workers; each worker owns
+# its own LifecycleGuard via run_gtest_worker. No in-process lifecycle.
+# See workers/role_logging_workers.{h,cpp} and
+# docs/tech_draft/test_compliance_audit.md.
 # ============================================================================
 
 add_executable(test_layer2_role_logging_roundtrip
-    test_role_logging_roundtrip.cpp)
+    test_role_logging_roundtrip.cpp
+    workers/role_logging_workers.cpp)
 target_include_directories(test_layer2_role_logging_roundtrip PRIVATE
+    workers
     ${CMAKE_SOURCE_DIR}/src/producer
     ${CMAKE_SOURCE_DIR}/src/consumer
     ${CMAKE_SOURCE_DIR}/src/processor)
 target_link_libraries(test_layer2_role_logging_roundtrip PRIVATE
-    pylabhub::utils GTest::gtest GTest::gtest_main)
+    pylabhub::utils
+    pylabhub::test_framework
+    GTest::gtest
+    GTest::gmock)
 pylabhub_ensure_sanitizer_for_executable(test_layer2_role_logging_roundtrip)
 pylabhub_register_test_for_staging(
     TARGET test_layer2_role_logging_roundtrip
@@ -671,13 +681,23 @@ gtest_discover_tests(test_layer2_role_logging_roundtrip
 
 # ============================================================================
 # Test: configure_logger_from_config — auto-path, rotation params, errors
+#
+# Shares the role_logging_workers.cpp worker file with the round-trip test.
 # ============================================================================
 
-add_executable(test_layer2_configure_logger test_configure_logger.cpp)
+add_executable(test_layer2_configure_logger
+    test_configure_logger.cpp
+    workers/role_logging_workers.cpp)
 target_include_directories(test_layer2_configure_logger PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/producer)
+    workers
+    ${CMAKE_SOURCE_DIR}/src/producer
+    ${CMAKE_SOURCE_DIR}/src/consumer
+    ${CMAKE_SOURCE_DIR}/src/processor)
 target_link_libraries(test_layer2_configure_logger PRIVATE
-    pylabhub::utils GTest::gtest GTest::gtest_main)
+    pylabhub::utils
+    pylabhub::test_framework
+    GTest::gtest
+    GTest::gmock)
 pylabhub_ensure_sanitizer_for_executable(test_layer2_configure_logger)
 pylabhub_register_test_for_staging(
     TARGET test_layer2_configure_logger
@@ -687,14 +707,24 @@ gtest_discover_tests(test_layer2_configure_logger
     PROPERTIES LABELS "layer2;service;configure_logger" TIMEOUT 60)
 
 # ============================================================================
-# Test: RoleHostBase lifecycle (minimal TestRoleHost subclass + death tests)
+# Test: RoleHostBase lifecycle (Pattern 3 — spawned workers + panic/abort)
+#
+# Non-abort workers use run_gtest_worker; the two abort workers install a
+# manual LifecycleGuard and rely on PLH_PANIC → std::abort() to terminate
+# the subprocess. The parent asserts exit_code != 0 + panic message.
 # ============================================================================
 
-add_executable(test_layer2_role_host_base test_role_host_base.cpp)
+add_executable(test_layer2_role_host_base
+    test_role_host_base.cpp
+    workers/role_host_base_workers.cpp)
 target_include_directories(test_layer2_role_host_base PRIVATE
+    workers
     ${CMAKE_SOURCE_DIR}/src/producer)
 target_link_libraries(test_layer2_role_host_base PRIVATE
-    pylabhub::utils GTest::gtest GTest::gtest_main)
+    pylabhub::utils
+    pylabhub::test_framework
+    GTest::gtest
+    GTest::gmock)
 pylabhub_ensure_sanitizer_for_executable(test_layer2_role_host_base)
 pylabhub_register_test_for_staging(
     TARGET test_layer2_role_host_base
