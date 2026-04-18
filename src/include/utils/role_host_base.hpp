@@ -45,11 +45,6 @@
 #include <string>
 #include <string_view>
 
-namespace pylabhub::utils
-{
-class ThreadManager;
-} // namespace pylabhub::utils
-
 namespace pylabhub::scripting
 {
 
@@ -161,12 +156,10 @@ class PYLABHUB_UTILS_EXPORT RoleHostBase
     /// Valid only while @ref startup_ is in progress or the worker is
     /// active. Derived classes set the result from the worker thread
     /// before exiting the startup path (success or failure).
+    ///
+    /// For custom worker threads, call @c api().thread_manager().spawn(...)
+    /// directly — no short-form accessor is provided.
     std::promise<bool>   &ready_promise() noexcept { return ready_promise_; }
-
-    /// Convenience: the ThreadManager owned by @ref api. Valid only after
-    /// @ref startup_ has created api_ (i.e., inside @ref worker_main_ or
-    /// any thread it spawns).
-    utils::ThreadManager &thread_mgr() noexcept;
 
     // ── Virtual hook (derived must implement) ────────────────────────────
 

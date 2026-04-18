@@ -41,9 +41,7 @@
 #include "consumer_init.hpp"
 #include "consumer_role_host.hpp"
 #include "consumer_fields.hpp"
-#include "lua_engine.hpp"
-#include "utils/native_engine.hpp"
-#include "python_engine.hpp"
+#include "engine_factory.hpp"
 
 #include "plh_datahub.hpp"
 #include "utils/config/role_config.hpp"
@@ -183,27 +181,7 @@ int main(int argc, char *argv[])
     }
 
     // ── Create engine based on script type ───────────────────────────────────
-    std::unique_ptr<pylabhub::scripting::ScriptEngine> engine;
-    const auto &script_type = c.script().type;
-
-    if (script_type == "native")
-    {
-        auto ne = std::make_unique<pylabhub::scripting::NativeEngine>();
-        if (!c.script().checksum.empty())
-            ne->set_expected_checksum(c.script().checksum);
-        engine = std::move(ne);
-    }
-    else if (script_type == "lua")
-    {
-        engine = std::make_unique<pylabhub::scripting::LuaEngine>();
-    }
-    else
-    {
-        auto py = std::make_unique<pylabhub::scripting::PythonEngine>();
-        if (!c.script().python_venv.empty())
-            py->set_python_venv(c.script().python_venv);
-        engine = std::move(py);
-    }
+    auto engine = scripting::make_engine_from_script_config(c.script());
 
     // ── Run role host ────────────────────────────────────────────────────────
     pylabhub::consumer::ConsumerRoleHost host(

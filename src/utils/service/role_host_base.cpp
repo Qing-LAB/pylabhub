@@ -9,7 +9,8 @@
  */
 #include "utils/role_host_base.hpp"
 #include "utils/debug_info.hpp"   // PLH_PANIC
-#include "utils/thread_manager.hpp"
+#include "utils/role_api_base.hpp"
+#include "utils/thread_manager.hpp"  // api_->thread_manager() inside startup_
 
 #include <utility>
 
@@ -103,11 +104,6 @@ void RoleHostBase::shutdown_() noexcept
     // api_.reset() → RoleAPIBase dtor → ThreadManager dtor →
     // bounded join of every role-scope thread (worker, ctrl, custom).
     api_.reset();
-}
-
-utils::ThreadManager &RoleHostBase::thread_mgr() noexcept
-{
-    return api_->thread_manager();
 }
 
 } // namespace pylabhub::scripting
