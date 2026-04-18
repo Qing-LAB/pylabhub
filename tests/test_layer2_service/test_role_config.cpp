@@ -570,20 +570,33 @@ TEST_F(RoleConfigTest, LoggingPartial_MixesDefaultsAndExplicit)
     EXPECT_TRUE(cfg.logging().timestamped);
 }
 
-TEST_F(RoleConfigTest, LoggingZeroBackups_Allowed)
+TEST_F(RoleConfigTest, LoggingZeroBackups_Throws)
 {
-    // 0 backups = only active file, no retention — valid (no-limit sentinel).
+    // 0 backups is invalid — the active file always exists, so a positive
+    // retention count (>=1) or the -1 sentinel ("keep all") is required.
     auto j = minimal_producer_json();
     j["logging"] = {{"backups", 0}};
     auto path = write_json("producer.json", j);
-    auto cfg = RoleConfig::load(path.string(), "producer");
-    EXPECT_EQ(cfg.logging().max_backup_files, 0u);
+    EXPECT_THROW(RoleConfig::load(path.string(), "producer"), std::runtime_error);
 }
 
-TEST_F(RoleConfigTest, LoggingNegativeBackups_Throws)
+TEST_F(RoleConfigTest, LoggingBackupsNegativeOne_KeepsAllFiles)
 {
+    // -1 in JSON is the sentinel "never delete rotated files"; it maps to
+    // LoggingConfig::kKeepAllBackups (SIZE_MAX) internally.
     auto j = minimal_producer_json();
     j["logging"] = {{"backups", -1}};
+    auto path = write_json("producer.json", j);
+    auto cfg = RoleConfig::load(path.string(), "producer");
+    EXPECT_EQ(cfg.logging().max_backup_files,
+              pylabhub::config::LoggingConfig::kKeepAllBackups);
+}
+
+TEST_F(RoleConfigTest, LoggingNegativeBackupsOther_Throws)
+{
+    // Only -1 is a valid negative; -2, -100, etc. must be rejected.
+    auto j = minimal_producer_json();
+    j["logging"] = {{"backups", -2}};
     auto path = write_json("producer.json", j);
     EXPECT_THROW(RoleConfig::load(path.string(), "producer"), std::runtime_error);
 }

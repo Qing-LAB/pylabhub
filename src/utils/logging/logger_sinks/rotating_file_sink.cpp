@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include <limits>
 #include <vector>
 
 namespace pylabhub::utils
@@ -56,9 +57,10 @@ std::filesystem::path RotatingFileSink::compose_timestamped_path_() const
     // contaminate), no collision-fallback branching. The fractional part
     // uses '.' as the separator which preserves lex ordering against the
     // trailing ".log" extension (digits < 'l' by ASCII).
-    std::string stem = m_base_filepath.stem().string();
-    if (stem.empty())
-        stem = m_base_filepath.filename().string();
+    // Precondition: base_filepath has a non-empty filename. If stem() is
+    // empty, filename() is empty too, which would produce nonsensical log
+    // filenames — the ctor's initial open() would fail visibly.
+    const std::string stem = m_base_filepath.stem().string();
 
     const std::string ts = pylabhub::format_tools::formatted_time(
         std::chrono::system_clock::now(), /*use_dash_spacer=*/true);
@@ -71,18 +73,27 @@ void RotatingFileSink::prune_timestamped_backups_()
 {
     namespace fs = std::filesystem;
 
-    if (m_max_backup_files == 0)
-        return;  // no limit → keep all files
+    // SIZE_MAX is the "keep all files" sentinel (from RotatingLogConfig,
+    // populated by JSON `"backups": -1`). Skip pruning entirely in that case.
+    if (m_max_backup_files == std::numeric_limits<size_t>::max())
+        return;
 
     const fs::path dir = m_base_filepath.parent_path();
-    std::string stem = m_base_filepath.stem().string();
-    if (stem.empty())
-        stem = m_base_filepath.filename().string();
+    const std::string stem = m_base_filepath.stem().string();
     const std::string prefix = stem + "-";
+
+    // The full timestamp portion is 26 chars ("YYYY-MM-DD-HH-MM-SS.uuuuuu")
+    // followed by ".log" (4 chars). Tighten the candidate filter so
+    // unrelated short files with a similar prefix cannot be mistakenly
+    // matched and pruned.
+    constexpr size_t kTimestampLen = 26;
+    constexpr size_t kExtLen       = 4;      // ".log"
+    const size_t expected_suffix_len = kTimestampLen + kExtLen;
 
     std::error_code ec;
     if (!fs::is_directory(dir, ec))
         return;
+    ec.clear();  // Don't carry state from is_directory into the iterator.
 
     // Collect all <stem>-*.log files in the directory.
     std::vector<fs::path> candidates;
@@ -91,9 +102,9 @@ void RotatingFileSink::prune_timestamped_backups_()
         if (!entry.is_regular_file())
             continue;
         const std::string name = entry.path().filename().string();
-        if (name.rfind(prefix, 0) == 0 &&                     // starts with <stem>-
-            name.size() > prefix.size() + 4 &&                 // has room for timestamp + ".log"
-            name.substr(name.size() - 4) == ".log")            // ends with .log
+        if (name.rfind(prefix, 0) == 0 &&
+            name.size() == prefix.size() + expected_suffix_len &&
+            name.substr(name.size() - kExtLen) == ".log")
         {
             candidates.push_back(entry.path());
         }
