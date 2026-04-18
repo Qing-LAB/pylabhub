@@ -131,7 +131,10 @@ int main(int argc, char *argv[])
     signal_handler.install();
 
     // ── Parse arguments ───────────────────────────────────────────────────────
-    const role_cli::RoleArgs args = role_cli::parse_role_args(argc, argv, "processor");
+    auto parsed = role_cli::parse_role_args(argc, argv, "processor");
+    if (parsed.exit_code >= 0)
+        return parsed.exit_code;
+    const role_cli::RoleArgs &args = parsed.args;
 
     // ── Init mode: create processor directory and exit ────────────────────────
     if (args.init_only)

@@ -221,10 +221,10 @@ struct RoleArgs
 namespace detail
 {
 
-inline void print_role_usage(const char *prog, const char *role_name)
+inline void print_role_usage(const char *prog, const char *role_name,
+                              std::ostream &os = std::cout)
 {
-    std::cout
-        << "Usage:\n"
+    os  << "Usage:\n"
         << "  " << prog << " --init [<" << role_name << "_dir>]  # Create role directory\n"
         << "  " << prog << " <" << role_name << "_dir>             # Run from directory\n"
         << "  " << prog << " --config <path.json> [--validate | --keygen]\n\n"
@@ -252,25 +252,65 @@ inline void print_role_usage(const char *prog, const char *role_name)
 } // namespace detail
 
 /**
- * @brief Parse command-line arguments for a role binary.
+ * @brief Outcome of @ref parse_role_args — callers do not exit from the parser.
  *
- * On --help or parse error, prints usage and calls std::exit(0/1).
+ * @c exit_code == -1 means "continue running": @c args is valid and populated.
+ * @c exit_code ==  0 means "clean exit (e.g. --help printed usage)": caller
+ *                     should return that code.
+ * @c exit_code ==  1 means "argument error": an explanatory message was
+ *                     written to @c err_stream; caller should return 1.
  *
- * @param argc       Argument count from main().
- * @param argv       Argument vector from main().
- * @param role_name  Short role name, e.g. "producer" (used in usage text).
+ * Tests supply in-memory ostreams (ostringstream) to capture output without
+ * spawning a subprocess — no @c std::exit from the parser.
  */
-inline RoleArgs parse_role_args(int argc, char *argv[], const char *role_name)
+struct ParseResult
 {
     RoleArgs args;
+    int      exit_code = -1;
+};
+
+/**
+ * @brief Parse command-line arguments for a role binary.
+ *
+ * Does NOT call @c std::exit. Returns @ref ParseResult whose @c exit_code
+ * tells the caller whether to proceed, exit cleanly (e.g. `--help`), or
+ * exit with an error. Captures usage/error text via the @p out_stream /
+ * @p err_stream parameters so tests can use in-memory streams without
+ * spawning a subprocess.
+ *
+ * @param argc        Argument count from main().
+ * @param argv        Argument vector from main().
+ * @param role_name   Short role name, e.g. "producer" (used in usage text).
+ * @param out_stream  Where `--help` usage is written. Defaults to std::cout.
+ * @param err_stream  Where parse-error messages are written. Defaults to std::cerr.
+ * @return ParseResult — on success @c exit_code==-1 and @c args is populated;
+ *         on --help @c exit_code==0 (usage already printed);
+ *         on error  @c exit_code==1 (message already printed).
+ */
+inline ParseResult parse_role_args(int argc, char *argv[],
+                                     const char *role_name,
+                                     std::ostream &out_stream = std::cout,
+                                     std::ostream &err_stream = std::cerr)
+{
+    ParseResult result;
+    RoleArgs   &args = result.args;
+
+    auto fail_with_usage = [&](std::string_view prefix) -> ParseResult & {
+        err_stream << prefix;
+        detail::print_role_usage(argv[0], role_name, err_stream);
+        result.exit_code = 1;
+        return result;
+    };
+
     for (int i = 1; i < argc; ++i)
     {
         std::string_view arg(argv[i]);
 
         if (arg == "--help" || arg == "-h")
         {
-            detail::print_role_usage(argv[0], role_name);
-            std::exit(0);
+            detail::print_role_usage(argv[0], role_name, out_stream);
+            result.exit_code = 0;
+            return result;
         }
         if (arg == "--config" && i + 1 < argc)
         {
@@ -295,8 +335,9 @@ inline RoleArgs parse_role_args(int argc, char *argv[], const char *role_name)
             try { args.log_max_size_mb = std::stod(argv[++i]); }
             catch (const std::exception &)
             {
-                std::cerr << "Error: --log-maxsize expects a number (MB)\n";
-                std::exit(1);
+                err_stream << "Error: --log-maxsize expects a number (MB)\n";
+                result.exit_code = 1;
+                return result;
             }
         }
         else if (arg == "--log-backups" && i + 1 < argc)
@@ -304,8 +345,10 @@ inline RoleArgs parse_role_args(int argc, char *argv[], const char *role_name)
             try { args.log_backups = std::stoi(argv[++i]); }
             catch (const std::exception &)
             {
-                std::cerr << "Error: --log-backups expects an integer (-1 = keep all)\n";
-                std::exit(1);
+                err_stream << "Error: --log-backups expects an integer "
+                              "(-1 = keep all)\n";
+                result.exit_code = 1;
+                return result;
             }
         }
         else if (arg == "--validate")
@@ -319,18 +362,16 @@ inline RoleArgs parse_role_args(int argc, char *argv[], const char *role_name)
         else if (arg[0] != '-')
         {
             if (!args.role_dir.empty())
-            {
-                std::cerr << "Error: multiple positional arguments not supported\n\n";
-                detail::print_role_usage(argv[0], role_name);
-                std::exit(1);
-            }
+                return fail_with_usage(
+                    "Error: multiple positional arguments not supported\n\n");
             args.role_dir = std::string(arg);
         }
         else
         {
-            std::cerr << "Unknown argument: " << arg << "\n";
-            detail::print_role_usage(argv[0], role_name);
-            std::exit(1);
+            err_stream << "Unknown argument: " << arg << "\n";
+            detail::print_role_usage(argv[0], role_name, err_stream);
+            result.exit_code = 1;
+            return result;
         }
     }
 
@@ -339,33 +380,24 @@ inline RoleArgs parse_role_args(int argc, char *argv[], const char *role_name)
                            static_cast<int>(args.validate_only) +
                            static_cast<int>(args.keygen_only);
     if (mode_count > 1)
-    {
-        std::cerr << "Error: --init, --validate, and --keygen are mutually "
-                     "exclusive (at most one mode).\n\n";
-        detail::print_role_usage(argv[0], role_name);
-        std::exit(1);
-    }
+        return fail_with_usage(
+            "Error: --init, --validate, and --keygen are mutually "
+            "exclusive (at most one mode).\n\n");
 
     // ── Init-only flags must not appear outside --init ─────────────────
     if (!args.init_only &&
         (args.log_max_size_mb.has_value() || args.log_backups.has_value() ||
          !args.init_name.empty()))
-    {
-        std::cerr << "Error: --name, --log-maxsize, and --log-backups are "
-                     "only valid with --init.\n\n";
-        detail::print_role_usage(argv[0], role_name);
-        std::exit(1);
-    }
+        return fail_with_usage(
+            "Error: --name, --log-maxsize, and --log-backups are "
+            "only valid with --init.\n\n");
 
     // ── Required positional for non-init modes ─────────────────────────
     if (!args.init_only && args.config_path.empty() && args.role_dir.empty())
-    {
-        std::cerr << "Error: specify a role directory, --init, or --config <path>\n\n";
-        detail::print_role_usage(argv[0], role_name);
-        std::exit(1);
-    }
+        return fail_with_usage(
+            "Error: specify a role directory, --init, or --config <path>\n\n");
 
-    return args;
+    return result;  // exit_code stays -1 → caller proceeds
 }
 
 /**

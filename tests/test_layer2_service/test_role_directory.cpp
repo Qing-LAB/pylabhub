@@ -284,8 +284,9 @@ TEST(RoleCliTest, ParseRoleArgs_InitOnly)
 {
     const char *argv[] = {"prog", "--init", "/tmp/roletest", "--name", "Test", nullptr};
     int         argc   = 5;
-    const auto  args   = pylabhub::role_cli::parse_role_args(
-        argc, const_cast<char **>(argv), "producer");
+    const auto parsed = pylabhub::role_cli::parse_role_args(argc, const_cast<char **>(argv), "producer");
+    ASSERT_EQ(parsed.exit_code, -1) << "unexpected exit_code";
+    const auto &args = parsed.args;
 
     EXPECT_TRUE(args.init_only);
     EXPECT_EQ(args.role_dir, "/tmp/roletest");
@@ -296,8 +297,9 @@ TEST(RoleCliTest, ParseRoleArgs_ConfigPath)
 {
     const char *argv[] = {"prog", "--config", "/tmp/foo.json", nullptr};
     int         argc   = 3;
-    const auto  args   = pylabhub::role_cli::parse_role_args(
-        argc, const_cast<char **>(argv), "producer");
+    const auto parsed = pylabhub::role_cli::parse_role_args(argc, const_cast<char **>(argv), "producer");
+    ASSERT_EQ(parsed.exit_code, -1) << "unexpected exit_code";
+    const auto &args = parsed.args;
 
     EXPECT_EQ(args.config_path, "/tmp/foo.json");
     EXPECT_FALSE(args.init_only);
@@ -307,8 +309,9 @@ TEST(RoleCliTest, ParseRoleArgs_ValidateFlag)
 {
     const char *argv[] = {"prog", "--config", "/tmp/foo.json", "--validate", nullptr};
     int         argc   = 4;
-    const auto  args   = pylabhub::role_cli::parse_role_args(
-        argc, const_cast<char **>(argv), "producer");
+    const auto parsed = pylabhub::role_cli::parse_role_args(argc, const_cast<char **>(argv), "producer");
+    ASSERT_EQ(parsed.exit_code, -1) << "unexpected exit_code";
+    const auto &args = parsed.args;
 
     EXPECT_TRUE(args.validate_only);
 }
@@ -317,8 +320,9 @@ TEST(RoleCliTest, ParseRoleArgs_KeygenFlag)
 {
     const char *argv[] = {"prog", "--config", "/tmp/foo.json", "--keygen", nullptr};
     int         argc   = 4;
-    const auto  args   = pylabhub::role_cli::parse_role_args(
-        argc, const_cast<char **>(argv), "producer");
+    const auto parsed = pylabhub::role_cli::parse_role_args(argc, const_cast<char **>(argv), "producer");
+    ASSERT_EQ(parsed.exit_code, -1) << "unexpected exit_code";
+    const auto &args = parsed.args;
 
     EXPECT_TRUE(args.keygen_only);
 }
@@ -327,8 +331,9 @@ TEST(RoleCliTest, ParseRoleArgs_PositionalDir)
 {
     const char *argv[] = {"prog", "/tmp/myrole", nullptr};
     int         argc   = 2;
-    const auto  args   = pylabhub::role_cli::parse_role_args(
-        argc, const_cast<char **>(argv), "producer");
+    const auto parsed = pylabhub::role_cli::parse_role_args(argc, const_cast<char **>(argv), "producer");
+    ASSERT_EQ(parsed.exit_code, -1) << "unexpected exit_code";
+    const auto &args = parsed.args;
 
     EXPECT_EQ(args.role_dir, "/tmp/myrole");
 }

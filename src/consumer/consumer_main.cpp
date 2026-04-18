@@ -115,7 +115,10 @@ int main(int argc, char *argv[])
         {.binary_name = "pylabhub-consumer"}, &g_shutdown);
     signal_handler.install();
 
-    const role_cli::RoleArgs args = role_cli::parse_role_args(argc, argv, "consumer");
+    auto parsed = role_cli::parse_role_args(argc, argv, "consumer");
+    if (parsed.exit_code >= 0)
+        return parsed.exit_code;
+    const role_cli::RoleArgs &args = parsed.args;
 
     if (args.init_only)
         return do_init(args);

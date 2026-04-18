@@ -120,7 +120,10 @@ int main(int argc, char *argv[])
         {.binary_name = "pylabhub-producer"}, &g_shutdown);
     signal_handler.install();
 
-    const role_cli::RoleArgs args = role_cli::parse_role_args(argc, argv, "producer");
+    auto parsed = role_cli::parse_role_args(argc, argv, "producer");
+    if (parsed.exit_code >= 0)
+        return parsed.exit_code;
+    const role_cli::RoleArgs &args = parsed.args;
 
     if (args.init_only)
         return do_init(args);
