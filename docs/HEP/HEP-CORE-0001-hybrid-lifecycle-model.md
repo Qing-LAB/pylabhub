@@ -496,6 +496,21 @@ This contract is not stylistic — it is load-bearing:
   and `libsodium` run destructors outside our control and can hang indefinitely
   at program exit. The test framework calls `_exit()` inside the worker to skip
   these — a path only available if the lifecycle itself owns the process.
+
+  **`_exit()` does NOT bypass our `LifecycleGuard` finalize.** The order in
+  `run_gtest_worker` is: test body runs → `LifecycleGuard` destructor invokes
+  every registered module's `shutdown` callback in reverse topological order
+  (this is the contract under test for any module — `ZMQContext::shutdown`
+  calls `zmq_ctx_term`, `Logger::shutdown` flushes + joins the worker thread,
+  `FileLock::shutdown` releases pending locks) → `ThreadManager` leak check →
+  `_exit(N)`. Only library-global static destructors *outside* our lifecycle
+  graph (`libzmq.so`'s own globals, `__attribute__((destructor))` in
+  `libsodium`, luajit GC finalizers) are skipped — those are owned by the
+  third-party libraries themselves and are not part of the contract any
+  pylabhub module has registered with `LifecycleManager`. So a worker that
+  exercises `hub::ZMQContext` *does* validate that our init/finalize correctly
+  drives `zmq_ctx_term`; what it does not validate is whether libzmq's own
+  cleanup hooks run cleanly afterwards (separate concern, not our contract).
 - **Crash isolation.** A panic, `abort()`, or even a clean `finalize()` inside
   one test must not corrupt the singleton state observed by the next test.
   Per-test processes are the only mechanism that enforces this.

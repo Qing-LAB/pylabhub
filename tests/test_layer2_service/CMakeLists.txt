@@ -281,7 +281,10 @@ gtest_discover_tests(test_layer2_filelock
 
 add_executable(test_layer2_filelock_singleprocess
     test_filelock_singleprocess.cpp
+    workers/filelock_singleprocess_workers.cpp
 )
+
+target_include_directories(test_layer2_filelock_singleprocess PRIVATE workers)
 
 target_link_libraries(test_layer2_filelock_singleprocess
     PRIVATE
@@ -429,18 +432,21 @@ gtest_discover_tests(test_layer2_role_vault
 )
 
 # ============================================================================
-# Test: ZmqContext lifecycle (uses LifecycleGuard)
+# Test: ZmqContext lifecycle (Pattern 3 — workers own LifecycleGuard)
 # ============================================================================
 
 add_executable(test_layer2_zmq_context
     test_zmq_context.cpp
+    workers/zmq_context_workers.cpp
 )
+
+target_include_directories(test_layer2_zmq_context PRIVATE workers)
 
 target_link_libraries(test_layer2_zmq_context
     PRIVATE
         pylabhub::utils
+        pylabhub::test_framework
         GTest::gtest
-        GTest::gtest_main
 )
 
 target_compile_definitions(test_layer2_zmq_context PRIVATE LOGGER_COMPILE_LEVEL=0)
@@ -494,13 +500,16 @@ gtest_discover_tests(test_layer2_uid_utils
 
 add_executable(test_layer2_interactive_signal_handler
     test_interactive_signal_handler.cpp
+    workers/signal_handler_workers.cpp
 )
+
+target_include_directories(test_layer2_interactive_signal_handler PRIVATE workers)
 
 target_link_libraries(test_layer2_interactive_signal_handler
     PRIVATE
         pylabhub::utils
+        pylabhub::test_framework
         GTest::gtest
-        GTest::gtest_main
 )
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_interactive_signal_handler)
