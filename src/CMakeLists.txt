@@ -47,6 +47,11 @@ add_subdirectory(consumer)
 # Standalone data-processor host (embeds CPython + pybind11).
 add_subdirectory(processor)
 
+# Unified role binary (HEP-0024 Phase 19). Dispatches on --role tag via
+# a static registration map. Replaces the three per-role binaries above
+# once Phase 20 (legacy deletion) lands.
+add_subdirectory(plh_role)
+
 # Define the main application executable (hubshell).
 # DISABLED: hubshell still uses legacy ScriptHost/PythonScriptHost stack
 # which predates the ScriptEngine abstraction (LuaEngine/PythonEngine).
