@@ -420,24 +420,23 @@ TEST_F(LuaEngineChunk1Test, InvokeConsume_ScriptErrorDetected)
                    /*expected_error_substrings=*/{"consume error"});
 }
 
-// NEW: concretely verifies the "read-only slot" part of the consumer
-// contract that was named but not tested by the pre-conversion
-// ReceivesReadOnlySlot test.
+// Design-enforcement test — pins that the library's rx read-only
+// contract is implemented as a LOUD FAILURE:
+//   - LuaJIT raises on the `const*` cdata write
+//   - engine pcall path returns InvokeResult::Error
+//   - script_error_count increments by 1
+//   - ERROR log entry "[on_consume] Lua error: ..." is emitted
+// Silent no-op would be a design regression (a buggy script would
+// appear healthy while silently producing incorrect data downstream).
+// See the worker body's doc block for the source-traced mechanism
+// (lua_engine.cpp:697-699 + lua_state.cpp:285,291 + :843).
 TEST_F(LuaEngineChunk1Test, InvokeConsume_RxSlot_IsReadOnly)
 {
     auto w = SpawnWorker("lua_engine.invoke_consume_rx_slot_is_read_only",
                          {unique_dir("consume_read_only")});
-    // Verified against the actual log format in
-    // src/scripting/lua_state.cpp:379 → "[{tag}] Lua error: {err}" with
-    // tag = "on_consume" for this callback path.  The substring
-    // "[on_consume] Lua error" is narrow enough that a reworded
-    // diagnostic (e.g. dropping the callback tag) would be caught.
-    //
-    // The engine raises a Lua error on the attempted write to the
-    // const-qualified ffi pointer — confirmed observationally.  The
-    // body's EXPECT_FLOAT_EQ(data, 99.5f) is the load-bearing invariant
-    // either way; the log assertion strengthens the test by also
-    // confirming the error was the expected kind, not some other.
+    // The ERROR log tag comes from src/scripting/lua_state.cpp:379
+    // ("[{tag}] Lua error: ..."). Pinning the exact callback tag
+    // catches a reworded diagnostic.
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
                    {"[on_consume] Lua error"});
@@ -489,16 +488,18 @@ TEST_F(LuaEngineChunk1Test, InvokeProcess_RxPresent_TxNil)
     ExpectWorkerOk(w);
 }
 
-// NEW: rx read-only contract in the processor's dual-slot code path
-// (invoke_process is a separate engine entry from invoke_consume, so
-// the consumer-path chunk 3 test does not cover this code).
+// Design-enforcement test (processor dual-slot variant). Same loud-
+// failure contract as the consumer-path test above — the processor's
+// invoke_process entry reuses the same ref_in_slot_readonly_ cached
+// `const*` ctype (lua_engine.cpp:899-900). The Lua error on the rx
+// write aborts the callback before the subsequent tx write, so
+// out_data stays at its caller-initialised value.
 TEST_F(LuaEngineChunk1Test, InvokeProcess_RxSlot_IsReadOnly)
 {
     auto w = SpawnWorker("lua_engine.invoke_process_rx_slot_is_read_only",
                          {unique_dir("process_rx_ro")});
-    // Same rationale as the consumer-path variant: the engine may
-    // either raise a Lua error on the const-write attempt or LuaJIT
-    // may silently no-op it. The callback log tag here is "on_process".
+    // Callback tag "on_process" in the ERROR log. Same rationale as the
+    // consumer-path pin.
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
                    {"[on_process] Lua error"});

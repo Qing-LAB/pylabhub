@@ -902,43 +902,41 @@ int invoke_consume_script_error_detected(const std::string &dir)
 
 int invoke_consume_rx_slot_is_read_only(const std::string &dir)
 {
-    // NEW test — pins the "read-only" part of the consumer contract
-    // (see src/include/utils/script_engine.hpp:341:
-    //   "Input direction (read-only slot + flexzone)").
+    // Design enforcement test — verifies that the library implements rx
+    // read-only as a LOUD failure, not a silent no-op. Source-confirmed:
     //
-    // The pre-conversion InvokeConsume_ReceivesReadOnlySlot test name
-    // promised this coverage but the body never attempted a write to
-    // rx.slot — so whether the "read-only" claim holds at the ffi
-    // boundary was unverified.
+    //   src/scripting/lua_engine.cpp:697-699
+    //     register_slot_type("InSlotFrame", ...) →
+    //     safe_cache(ref_in_slot_readonly_, "InSlotFrame", readonly=true)
     //
-    // This worker pre-fills the underlying C buffer with a sentinel
-    // (99.5), attempts a Lua-side write of a different value (777.0)
-    // to rx.slot.value, and asserts the underlying buffer is still 99.5
-    // after invoke_consume. Either of these outcomes is a valid
-    // "read-only" implementation:
+    //   src/scripting/lua_state.cpp:285,291
+    //     cache_ffi_typeof(name, readonly=true) →
+    //     ffi.typeof("InSlotFrame const*")
     //
-    //   A) Engine's ffi cast produces a `const T*`; Lua write raises a
-    //      runtime error → script_error_count increments and result ==
-    //      InvokeResult::Error.
-    //   B) LuaJIT's ffi silently no-ops const writes (accepted per
-    //      LuaJIT docs); Lua returns normally → result == Commit.
+    //   src/scripting/lua_engine.cpp:843
+    //     push_slot_view_cached(rx.slot, ref_in_slot_readonly_)
     //
-    // What is NOT valid is the C buffer getting the value 777.0.  The
-    // test pins: (buf == 99.5) AND result != Discard — both A and B
-    // satisfy it; a buffer-overwrite bug fails it.
+    // LuaJIT's ffi raises a runtime Lua error when Lua code tries to
+    // write through a `const*` cdata.  The engine's pcall path catches
+    // it, increments script_error_count, and returns InvokeResult::Error.
     //
-    // The body does not assert which of A or B actually happens so
-    // this test does not over-fit to the current implementation — if
-    // LuaJIT const-write semantics change, the test still passes as
-    // long as the read-only invariant is upheld.
+    // Design rationale for LOUD failure (why silent no-op would be
+    // wrong): a user whose buggy script does `rx.slot.value = X` wants
+    // to know immediately — silent no-op would let the broken script
+    // run, appear healthy, and corrupt downstream logic that depended
+    // on the "modified" value.  The library is correct to reject the
+    // write explicitly; this test enforces that design choice so a
+    // regression (engine stops using `const*` cast, or ffi stops
+    // raising, or catch path suppresses the error) fails the test.
     return consume_worker_with_script(
         dir, "lua_engine::invoke_consume_rx_slot_is_read_only",
         R"(
             function on_consume(rx, msgs, api)
-                -- Attempt to mutate rx.slot. Per the engine contract this
-                -- must not propagate to the underlying C buffer.
+                -- Attempt to mutate rx.slot. The library's contract is
+                -- that this MUST raise a Lua error, which propagates to
+                -- InvokeResult::Error via the engine's pcall path.
                 rx.slot.value = 777.0
-                return true
+                return true  -- unreachable if the write raises
             end
         )",
         [](pylabhub::scripting::LuaEngine &engine,
@@ -948,20 +946,30 @@ int invoke_consume_rx_slot_is_read_only(const std::string &dir)
             auto result = engine.invoke_consume(
                 pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
 
-            // Core invariant: the buffer is owned by the caller and is
-            // read-only from Lua's perspective. Lua's write attempt
-            // must not propagate.
+            // Four coupled assertions that together pin the design:
+            //
+            //  (a) buf unchanged — the read-only invariant
             EXPECT_FLOAT_EQ(data, 99.5f)
-                << "rx.slot is documented read-only; Lua's `rx.slot.value = "
-                   "777.0` must NOT propagate to the underlying C buffer. "
-                   "If data == 777.0 here, that's a real contract violation "
-                   "(Lua has write access to the caller's input buffer).";
+                << "rx.slot write must NOT propagate to the underlying "
+                   "C buffer. data==777.0 here would indicate the engine "
+                   "dropped the `const*` cast in register_slot_type.";
 
-            // Either valid outcome:
-            //   - Discard should NOT happen (the Lua code did not return
-            //     false anywhere); anything else means the contract holds.
-            EXPECT_NE(result, pylabhub::scripting::InvokeResult::Discard)
-                << "unexpected Discard — Lua explicitly `return true`";
+            //  (b) the library signals Error — loud, observable result
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Error)
+                << "rx write must surface as InvokeResult::Error, not "
+                   "Discard or Commit. A silent no-op (Commit here) "
+                   "would let broken scripts appear healthy while silently "
+                   "producing incorrect data downstream.";
+
+            //  (c) the script-error counter tracks the raise — so
+            //      production metrics can observe the bug rate
+            EXPECT_EQ(engine.script_error_count(), 1u)
+                << "the raised Lua error must be counted so role hosts' "
+                   "metrics reflect buggy scripts.";
+
+            //  (d) the ERROR log is the third observable channel; the
+            //      parent's expected_error_substrings enforces its
+            //      substring, so no C++-side assertion is needed here.
         });
 }
 
@@ -1362,29 +1370,25 @@ int invoke_process_rx_present_tx_nil(const std::string &dir)
 
 int invoke_process_rx_slot_is_read_only(const std::string &dir)
 {
-    // NEW test — the processor's dual-slot code path goes through
-    // invoke_process (a separate engine entry from invoke_consume), so
-    // the "rx.slot is read-only" contract needs its own coverage here.
-    // Without this test the read-only invariant is unverified in the
-    // processor path.
+    // Design enforcement test — the processor's dual-slot code path
+    // must enforce the same loud-failure rx read-only contract as the
+    // consumer path (see invoke_consume_rx_slot_is_read_only doc block
+    // for full source-trace rationale).  invoke_process is a separate
+    // engine entry (lua_engine.cpp:899-900 pushes rx via the same
+    // ref_in_slot_readonly_ cached ctype as the consumer path uses),
+    // so the contract should hold the same way.
     //
-    // Lua attempts `rx.slot.value = 777.0` then writes tx (which should
-    // succeed).  C++ pre-fills the rx buffer with 99.5 and asserts it's
-    // STILL 99.5 after invoke_process.  The tx-write succeeds normally
-    // (tx is writable), so out_data ends up reflecting what Lua wrote
-    // to tx — not whatever the rx-write would have produced.
-    //
-    // Either read-only outcome is accepted (see the consumer variant's
-    // doc block for the full rationale):
-    //   - Engine raises a Lua error on rx-write → Error result
-    //   - LuaJIT silently no-ops → Commit result (Lua also wrote tx)
+    // Because the Lua error is raised on the rx-write line, the body
+    // never reaches the subsequent tx-write — so out_data stays at its
+    // caller-initialised 0.0f. We assert that explicitly to pin the
+    // "raise aborts the callback" sequencing.
     return process_worker_with_script(
         dir, "lua_engine::invoke_process_rx_slot_is_read_only",
         R"(
             function on_process(rx, tx, msgs, api)
-                rx.slot.value = 777.0   -- must NOT propagate
-                tx.slot.value = 3.25    -- must propagate normally
-                return true
+                rx.slot.value = 777.0   -- raises; aborts the callback
+                tx.slot.value = 3.25    -- unreachable
+                return true             -- unreachable
             end
         )",
         [](pylabhub::scripting::LuaEngine &engine,
@@ -1396,21 +1400,23 @@ int invoke_process_rx_slot_is_read_only(const std::string &dir)
                 pylabhub::scripting::InvokeRx{&in_data, sizeof(in_data)},
                 pylabhub::scripting::InvokeTx{&out_data, sizeof(out_data)},
                 msgs);
+
+            // Four coupled assertions pinning the design contract:
             EXPECT_FLOAT_EQ(in_data, 99.5f)
-                << "rx.slot is read-only in invoke_process too; Lua's write "
-                   "to rx.slot.value must NOT reach the caller's input buffer";
-            // tx write should propagate regardless of the rx-write outcome,
-            // EXCEPT if Lua raised an error on the rx-write before reaching
-            // the tx-write line — in that case Lua aborted early and
-            // out_data stays 0.0f.  Accept either "out_data = 3.25 (silent
-            // no-op, Lua continued to tx write)" or "out_data = 0.0 (Lua
-            // raised on rx write, never reached tx write)".
-            EXPECT_TRUE(out_data == 3.25f || out_data == 0.0f)
-                << "tx wrote iff Lua didn't raise; got out_data="
-                << out_data;
-            // Whichever path was taken, result must not be Discard — Lua
-            // explicitly `return true`.
-            EXPECT_NE(result, pylabhub::scripting::InvokeResult::Discard);
+                << "rx.slot write must NOT propagate to the underlying "
+                   "rx buffer.";
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Error)
+                << "rx write in invoke_process must surface as "
+                   "InvokeResult::Error, same loud contract as "
+                   "invoke_consume.";
+            EXPECT_EQ(engine.script_error_count(), 1u);
+            // tx never written because the Lua error aborted the
+            // callback on the preceding line. This pins the
+            // raise-aborts-callback sequencing.
+            EXPECT_FLOAT_EQ(out_data, 0.0f)
+                << "the Lua error on the rx write must abort the rest of "
+                   "on_process — the tx write on the next line was "
+                   "unreachable, so out_data stays at its initial 0.0f.";
         });
 }
 
