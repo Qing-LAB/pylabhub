@@ -339,6 +339,36 @@ Root-cause reasoning is documented in **`docs/HEP/HEP-CORE-0001-hybrid-lifecycle
   to verify clean process exit including third-party static destructors,
   use `run_worker_bare` (no implicit `_exit`) and assert the subprocess
   returns within a tight ctest TIMEOUT.
+
+#### Worker completion milestones (silent-shortcircuit catch)
+
+`run_gtest_worker` and `run_worker_bare` automatically emit three
+markers to stderr around the test body:
+
+| Marker | When emitted | What it proves if present |
+|---|---|---|
+| `[WORKER_BEGIN] <test_name>` | Before `LifecycleGuard` is constructed | The dispatcher routed correctly and the worker function entered |
+| `[WORKER_END_OK] <test_name>` | After `test_logic()` returns without throwing | The body ran end-to-end (no failed `EXPECT_*`/`ASSERT_*`, no escaped exception) |
+| `[WORKER_FINALIZED] <test_name>` | After `LifecycleGuard`'s destructor returns | Module finalize completed without hanging or aborting |
+
+`expect_worker_ok` (and `IsolatedProcessTest::ExpectWorkerOk`) require
+all three by default. This closes the failure mode where a body
+short-circuits before reaching its asserts (early return, GTEST_SKIP,
+unreachable lambda) but the worker still exits 0 — exit-code-only
+checking would mark that as passing.
+
+When a test legitimately bypasses `run_gtest_worker` (process-shared
+mutex / FileLock workers that *must* die holding a resource), the
+parent uses `ExpectLegacyWorkerOk` (or passes
+`require_completion_markers=false` to `helper::expect_worker_ok`).
+This opt-out should be reserved for genuine multi-process IPC tests;
+new tests must always go through `run_gtest_worker` so the catch
+applies.
+
+The "abort" workers (e.g. `RoleHostBase` dtor-contract tests that
+deliberately trigger `PLH_PANIC` → `std::abort`) do not call
+`ExpectWorkerOk` at all — they have a dedicated checker that asserts
+`exit_code != 0` plus the panic substring in stderr.
 - A panic/`abort()`/clean-`finalize()` inside one test must not corrupt the
   singleton state observed by the next test. Per-test subprocesses are the
   only enforcement mechanism.

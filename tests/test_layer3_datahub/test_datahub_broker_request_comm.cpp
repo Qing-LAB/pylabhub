@@ -18,23 +18,31 @@ class BrokerRequestCommTest : public IsolatedProcessTest
 TEST_F(BrokerRequestCommTest, ConnectAndHeartbeat)
 {
     auto proc = SpawnWorker("broker_req.connect_and_heartbeat", {});
-    ExpectWorkerOk(proc);
+    // Legacy worker bypass run_gtest_worker — opt out of [WORKER_*]
+    // milestone check. Convert to Pattern 3 in the L3 sweep.
+    ExpectLegacyWorkerOk(proc);
 }
 
 TEST_F(BrokerRequestCommTest, RegisterAndDiscover)
 {
     auto proc = SpawnWorker("broker_req.register_and_discover", {});
-    ExpectWorkerOk(proc);
+    // Legacy worker bypass run_gtest_worker — opt out of [WORKER_*]
+    // milestone check. Convert to Pattern 3 in the L3 sweep.
+    ExpectLegacyWorkerOk(proc);
 }
 
 TEST_F(BrokerRequestCommTest, RolePresence)
 {
     auto proc = SpawnWorker("broker_req.role_presence", {});
-    ExpectWorkerOk(proc);
+    // Legacy worker bypass run_gtest_worker — opt out of [WORKER_*]
+    // milestone check. Convert to Pattern 3 in the L3 sweep.
+    ExpectLegacyWorkerOk(proc);
 }
 
 TEST_F(BrokerRequestCommTest, NotificationDispatch)
 {
     auto proc = SpawnWorker("broker_req.notification_dispatch", {});
-    ExpectWorkerOk(proc);
+    // Legacy worker bypass run_gtest_worker — opt out of [WORKER_*]
+    // milestone check. Convert to Pattern 3 in the L3 sweep.
+    ExpectLegacyWorkerOk(proc);
 }
