@@ -86,6 +86,21 @@ int invoke_produce_receives_messages_data_message(const std::string &dir);
 /// NEW: consumer bare-format data message (plain byte string).
 int invoke_consume_receives_messages_data_bare_format(const std::string &dir);
 
+// ── API closures: introspection + control (chunk 6a) ──────────────────────
+//
+// These tests cover the api.* closures that don't require queue,
+// broker, or inbox infrastructure — i.e., the closures that fit
+// cleanly at L2. Closures deferred to L3 (because they need real
+// queues/brokers): in_capacity, out_capacity, last_seq,
+// slot_logical_size, flexzone_logical_size, spinlock_*, in_policy,
+// out_policy, band_*, open_inbox, wait_for_role, clear_inbox_cache,
+// set_verify_checksum, update_flexzone_checksum.
+int api_version_info_returns_json_string(const std::string &dir);
+int api_identity_uid_name_channel(const std::string &dir);
+int api_log_dispatches_levels(const std::string &dir);
+int api_stop_sets_shutdown_requested(const std::string &dir);
+int api_critical_error_set_and_read_and_stop_reason(const std::string &dir);
+
 // ── invoke_process (chunk 4) ────────────────────────────────────────────────
 //
 // Processor design note: a processor ALWAYS has an input channel (if a

@@ -1375,6 +1375,253 @@ int invoke_process_rx_slot_is_read_only(const std::string &dir)
         });
 }
 
+// ── API closures: introspection + control (chunk 6a) ──────────────────────
+//
+// L2-scoped api.* closures. Queue-state, band pub/sub, and inbox
+// closures are deferred to L3 (see chunk-6a header in the .h file).
+//
+// Each body runs as a producer worker (script_worker with
+// RoleKind::Producer) because the closures under test are role-agnostic
+// — uid/name/channel values come from make_api which is producer-tagged
+// by default; version_info is role-independent; log/stop/critical_error
+// operate on the core shared by all roles.
+
+int api_version_info_returns_json_string(const std::string &dir)
+{
+    // Strengthened over the pre-conversion test. Original asserted:
+    //   type(info) == "string", #info > 10, info contains "{"
+    // The last assertion is weak ("{" appears in any JSON including
+    // "{{")—it doesn't guarantee the string is valid, complete, or
+    // contains useful fields.
+    //
+    // Strengthened body additionally asserts the string contains
+    // closing bracket AND three real key substrings this version of
+    // the library definitely emits (verified against
+    // src/utils/core/version_registry.cpp:77-84 at the time of
+    // writing):
+    //
+    //   "release"     — the release tag (e.g. "0.1.0a0")
+    //   "library"     — library version triple
+    //   "script_api_major" — ABI indicator scripts depend on
+    //
+    // If the library removes any of these keys, the test fails —
+    // which is what we want, since scripts using version_info() in
+    // the wild key off these exact names.
+    return script_worker(
+        dir, "lua_engine::api_version_info_returns_json_string",
+        RoleKind::Producer,
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                local info = api.version_info()
+                assert(type(info) == "string",
+                       "version_info should return string, got " .. type(info))
+                assert(#info > 10,
+                       "version_info unexpectedly short: " .. info)
+                assert(info:find("{") ~= nil,
+                       "version_info missing '{': " .. info)
+                assert(info:find("}") ~= nil,
+                       "version_info missing '}': " .. info)
+                assert(info:find("release") ~= nil,
+                       "version_info missing 'release' key: " .. info)
+                assert(info:find("library") ~= nil,
+                       "version_info missing 'library' key: " .. info)
+                assert(info:find("script_api_major") ~= nil,
+                       "version_info missing 'script_api_major' key: " .. info)
+                return false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int api_identity_uid_name_channel(const std::string &dir)
+{
+    // NEW test. Pins that api.uid(), api.name(), api.channel() read
+    // straight through to the RoleAPIBase getters — a simple
+    // mis-wiring (e.g. uid() returning name) would silently break
+    // role scripts that use these for logging, registration, or
+    // channel-scoped work. Values are the ones make_api installs
+    // (see setup_role_engine → make_api in this file).
+    return script_worker(
+        dir, "lua_engine::api_identity_uid_name_channel",
+        RoleKind::Producer,
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                assert(api.uid() == "TEST-ENGINE-00000001",
+                       "uid: " .. tostring(api.uid()))
+                assert(api.name() == "TestEngine",
+                       "name: " .. tostring(api.name()))
+                assert(api.channel() == "test.channel",
+                       "channel: " .. tostring(api.channel()))
+                return false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int api_log_dispatches_levels(const std::string &dir)
+{
+    // NEW test. Pins the level dispatch in lua_api_log
+    // (lua_engine.cpp:1311-1328): "error" → LOGGER_ERROR,
+    // "warn"/"warning" → LOGGER_WARN, "debug" → LOGGER_DEBUG,
+    // anything else → LOGGER_INFO. The log tag format is
+    // "[<log_tag>-lua]"; for this suite log_tag == "test".
+    //
+    // C++ verifies the three distinct log lines land in stderr with
+    // the right levels. "debug" is omitted here because
+    // LOGGER_COMPILE_LEVEL=0 in the cmake sets all levels compiled
+    // in but runtime may still filter DEBUG; testing the compiled
+    // presence is a separate concern from level-dispatch routing.
+    return script_worker(
+        dir, "lua_engine::api_log_dispatches_levels",
+        RoleKind::Producer,
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                api.log("error",   "lua_error_msg")
+                api.log("warn",    "lua_warn_msg")
+                api.log("warning", "lua_warning_msg")
+                api.log("info",    "lua_info_msg")
+                api.log("unknown", "lua_unknown_msg")
+                return false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+            // The worker doesn't EXPECT on stderr directly — the parent
+            // test's expected_error_substrings pins the one ERROR line
+            // the engine must emit. Absence of other ERRORs is also
+            // verified there by the framework's "every ERROR must be
+            // accounted for" clause.
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int api_stop_sets_shutdown_requested(const std::string &dir)
+{
+    // NEW test. api.stop() → core->request_stop() → sets
+    // shutdown_requested_ (role_host_core.hpp:206-209). The script
+    // host's main loop polls is_shutdown_requested() to exit
+    // cleanly; this test pins that the Lua API path correctly
+    // reaches the same flag.
+    return script_worker(
+        dir, "lua_engine::api_stop_sets_shutdown_requested",
+        RoleKind::Producer,
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                api.stop()
+                return false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore &core) {
+            // Pre-condition: nothing has set the flag yet.
+            EXPECT_FALSE(core.is_shutdown_requested());
+            EXPECT_FALSE(core.is_critical_error())
+                << "stop() alone must NOT flag a critical error — that's "
+                   "only set by set_critical_error()";
+
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+
+            // Post-condition: Lua api.stop() must have reached the core.
+            EXPECT_TRUE(core.is_shutdown_requested());
+            // And must NOT have touched the critical-error path.
+            EXPECT_FALSE(core.is_critical_error());
+            EXPECT_EQ(core.stop_reason_string(), std::string("normal"))
+                << "stop_reason stays 'normal' after a plain api.stop() — "
+                   "a non-normal reason indicates the wrong path was taken.";
+            EXPECT_EQ(engine.script_error_count(), 0u);
+
+            // Engine also logs one INFO line documenting the api.stop()
+            // call (lua_engine.cpp:1333). Not asserted here — INFO lines
+            // are not in the framework's expected-error channel.
+        });
+}
+
+int api_critical_error_set_and_read_and_stop_reason(const std::string &dir)
+{
+    // NEW test. Probes three related closures in one scenario,
+    // because their contracts only make sense together:
+    //
+    //   api.critical_error()      — reads the flag (bool)
+    //   api.set_critical_error()  — sets the flag + logs ERROR +
+    //                               sets stop_reason=CriticalError +
+    //                               sets shutdown_requested=true
+    //   api.stop_reason()         — reads stop_reason as string
+    //
+    // The Lua body does READ-before, SET, READ-after, read-stop-reason,
+    // returning true only if the transitions were correct. A regression
+    // in any of the three closures (or the core's set_critical_error
+    // side-effects) fails this test.
+    return script_worker(
+        dir, "lua_engine::api_critical_error_set_and_read_and_stop_reason",
+        RoleKind::Producer,
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                -- Initial state: flag is false
+                assert(api.critical_error() == false,
+                       "initial critical_error should be false")
+                assert(api.stop_reason() == "normal",
+                       "initial stop_reason should be 'normal', got " ..
+                       tostring(api.stop_reason()))
+
+                -- Set via Lua API
+                api.set_critical_error("deliberate test error")
+
+                -- Read-after: all three post-conditions
+                assert(api.critical_error() == true,
+                       "after set_critical_error, flag should be true")
+                assert(api.stop_reason() == "critical_error",
+                       "after set_critical_error, stop_reason should be "
+                       .. "'critical_error', got " ..
+                       tostring(api.stop_reason()))
+                return false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore &core) {
+            // Pre-condition: clean state
+            EXPECT_FALSE(core.is_critical_error());
+            EXPECT_FALSE(core.is_shutdown_requested());
+
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "Lua asserts must have all passed; a non-zero count "
+                   "here means one of the post-set reads was wrong";
+
+            // set_critical_error's documented three side effects
+            // (role_host_core.hpp:216-222):
+            EXPECT_TRUE(core.is_critical_error());
+            EXPECT_TRUE(core.is_shutdown_requested())
+                << "set_critical_error must ALSO set shutdown_requested "
+                   "so the main loop exits — see role_host_core.hpp:221.";
+            EXPECT_EQ(core.stop_reason_string(),
+                      std::string("critical_error"));
+        });
+}
+
 } // namespace lua_engine
 } // namespace pylabhub::tests::worker
 
@@ -1475,6 +1722,18 @@ struct LuaEngineWorkerRegistrar
                     return invoke_produce_receives_messages_data_message(dir);
                 if (sc == "invoke_consume_receives_messages_data_bare_format")
                     return invoke_consume_receives_messages_data_bare_format(dir);
+
+                // Chunk 6a: api.* closures (introspection + control)
+                if (sc == "api_version_info_returns_json_string")
+                    return api_version_info_returns_json_string(dir);
+                if (sc == "api_identity_uid_name_channel")
+                    return api_identity_uid_name_channel(dir);
+                if (sc == "api_log_dispatches_levels")
+                    return api_log_dispatches_levels(dir);
+                if (sc == "api_stop_sets_shutdown_requested")
+                    return api_stop_sets_shutdown_requested(dir);
+                if (sc == "api_critical_error_set_and_read_and_stop_reason")
+                    return api_critical_error_set_and_read_and_stop_reason(dir);
 
                 fmt::print(stderr,
                            "[lua_engine] ERROR: unknown scenario '{}'\n", sc);
