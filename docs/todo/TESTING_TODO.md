@@ -9,6 +9,94 @@
 
 ## Current Focus
 
+### Open: Review-deferred items from the test-framework sweep
+
+Items surfaced by the static review before Lua chunk 4 (see commit
+`e7f0296` message body for the full review diagnosis). Deferred so
+each chunk commit stays a focused refactor+review-and-augment pass
+with no structural-cleanup mixed in.
+
+**Deferred until end of Lua sweep** (all ~104 Lua tests converted):
+
+- [ ] Rename `LuaEngineChunk1Test` fixture → chunk-agnostic name
+  (e.g. `LuaEngineIsolatedTest` or `LuaEngineP3Test`). The name was
+  accurate for chunk 1 only; chunks 2-4 reuse the same fixture
+  because behaviour is identical, but the `Chunk1` label now
+  mislabels 80%+ of its tests. Do NOT rename mid-sweep — cross-
+  commit grep-ability matters more than the label accuracy until
+  the Lua conversion is complete. File: `test_lua_engine.cpp`.
+
+- [ ] Delete the V2 `LuaEngineTest` fixture when the last V2 test
+  is converted. The `#include <atomic>`, `<unistd.h>`,
+  `test_patterns.h` at the top of the file may then be trimmable
+  if the V2 fixture's helpers (`setup_engine`, `make_api`,
+  `write_script`, fixture members) are no longer referenced in-file.
+
+**Deferred until both Lua + Python engine conversions complete**:
+
+- [ ] Unify the worker-side `produce_worker_with_script` /
+  `consume_worker_with_script` / `process_worker_with_script`
+  helper templates. They share ~70% logic today (different required
+  callback + different slot-type name + different role tag). A
+  single `script_worker(scenario_name, required_cb, tag, slot_regs,
+  lua_src, body)` helper would fold all three. Wait until after
+  Python (which has an analogous trio) so the helper can be shared
+  across both engine test files if that proves sensible. Files:
+  `workers/lua_engine_workers.cpp`, `workers/python_engine_workers.cpp`.
+
+**Coverage gaps from the review** (add in whichever chunk touches
+the same area, or a dedicated "error-paths" chunk after the
+callback chunks):
+
+- [ ] **Test: `invoke_consume` returning Discard** (Lua `return false`).
+  Chunks 3 covers Commit (return true) and Error (error() call), but
+  not the Discard path. invoke_consume's return-value dispatch for
+  false → Discard is currently unverified. Drop into a later chunk
+  or add to chunk 3's scope (probably not worth reopening chunk 3).
+
+- [ ] **Tests: `engine.load_script` error paths.** The native-engine
+  tests (phase 2d) cover: missing file, missing required callback,
+  wrong checksum. The Lua engine tests do not cover any load_script
+  failure mode. Add dedicated tests: script file doesn't exist;
+  script exists but has syntax errors; script loads but required
+  callback is missing. Same coverage gap will exist for Python.
+
+- [ ] **Test: `engine.finalize()` idempotence.** Chunk 1's
+  `InitializeAndFinalize_Succeeds` calls finalize once. The header
+  doesn't explicitly promise double-finalize is safe, but the role
+  host's shutdown path can reach finalize through multiple routes;
+  confirming double-finalize is a no-op rules out a real class of
+  production bugs.
+
+**Cross-cutting cleanup deferred to end of entire L2 sweep**:
+
+- [ ] Trim redundant `GTest::gmock` link additions from L2 CMake
+  targets where the parent file doesn't reference `::testing::`.
+  Added defensively in several sweep commits; harmless but
+  inconsistent. One focused commit at sweep-end to grep parents and
+  trim deps that aren't used.
+
+- [ ] Grep for stale test-name references across the repo (CI
+  scripts, dashboards, docs) in case a sweep commit renamed a test
+  that is filtered for by name in some external script. Candidates
+  known to be renamed so far:
+  - `LuaEngineTest.InitializeFailsGracefully` →
+    `LuaEngineChunk1Test.InitializeAndFinalize_Succeeds`
+  - `LuaEngineTest.RegisterSlotType_PackedPacking` →
+    `LuaEngineChunk1Test.RegisterSlotType_Packed_vs_Aligned`
+  - `LuaEngineTest.InvokeConsume_ReceivesReadOnlySlot` →
+    `LuaEngineChunk1Test.InvokeConsume_ReceivesSlot`
+  - `LuaEngineTest.InvokeProcess_NilInput` →
+    `LuaEngineChunk1Test.InvokeProcess_BothSlotsNil`
+  - `LuaEngineTest.InvokeProcess_InputOnlyNoOutput` →
+    `LuaEngineChunk1Test.InvokeProcess_RxPresent_TxNil`
+
+- [ ] Final audit re-grep: after all L2+L3 conversions land, re-run
+  the original grep from `docs/tech_draft/test_compliance_audit.md`
+  across every `tests/test_layer*/test_*.cpp` to confirm no stale
+  V1/V2 patterns remain and no new ones were introduced during the
+  sweep timeframe.
+
 ### Open: Stress-level calibration across converted Pattern-3 tests
 
 The test framework already exposes `STRESS_TEST_LEVEL` (via
