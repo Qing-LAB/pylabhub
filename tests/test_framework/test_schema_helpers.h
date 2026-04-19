@@ -81,10 +81,18 @@ inline SchemaSpec multifield_schema()
 /// src/scripting/python_helpers.hpp:119-127 for the dispatcher tables
 /// this schema exists to cover.
 ///
-/// Fields are ordered in descending alignment so the natural (aligned)
-/// layout has no internal padding — any alignment mismatch between the
-/// engine's ffi/ctypes type and the raw buffer shows up as a value read
-/// from the wrong offset.
+/// Fields are ordered in descending alignment so no *internal* padding
+/// between fields is needed under the aligned packing rules — any
+/// alignment mismatch between the engine's ffi/ctypes type and the raw
+/// buffer shows up as a value read from the wrong offset.
+///
+/// The struct's overall alignment is 8 bytes (the float64/int64/uint64
+/// requirement), so the aligned layout does include 1 byte of trailing
+/// padding: 8+8+8+4+4+4+2+2+1+1+1+4+8 = 55 bytes of field data, rounded
+/// up to 56 (next multiple of 8). Packed drops that trailing byte → 55.
+/// This difference is what lets a paired aligned-vs-packed test verify
+/// the packing argument is actually honoured (see e.g.
+/// register_slot_type_all_supported_types in lua_engine_workers.cpp).
 ///
 /// Types covered:
 ///   bool, int8/16/32/64, uint8/16/32/64, float32, float64, bytes, string
@@ -92,12 +100,10 @@ inline SchemaSpec multifield_schema()
 /// the prior helpers and is the least likely to get accidental coverage
 /// from the float/int32 paths.
 ///
-/// The `bytes[4]` and `string[8]` fields intentionally use small non-
-/// power-of-two-aligned lengths so the trailing padding (if any) to the
-/// struct alignment boundary is exercised. Use `compute_schema_size`
-/// from `schema_utils.hpp` to get the actual size rather than relying on
-/// a hardcoded constant — the aligned layout depends on platform rules
-/// the helper already encodes correctly.
+/// Always use `compute_schema_size` from `schema_utils.hpp` to get the
+/// actual size rather than relying on a hardcoded constant — the
+/// aligned layout depends on platform rules the helper already encodes
+/// correctly.
 inline SchemaSpec all_types_schema()
 {
     SchemaSpec spec;

@@ -277,16 +277,69 @@ Two structural considerations for the correction pass (not designed here — rai
 
 ## 7. Correction status
 
+Refreshed 2026-04-19 (mid-sweep snapshot). Earlier per-file rows from
+the 2026-04-18 pass are kept; L2 state below is the cumulative result
+through commit `89b0e9e` (Lua chunk 3).
+
+### L2 — all V1 and V2 violations from the audit are converted
+
 | File | Violation | Status | Fixed in |
 |---|---|---|---|
-| `test_role_logging_roundtrip.cpp` | V1 (my 21.2) | ✅ **Fixed** 2026-04-18 | commit `5d3683c` — Pattern 3 via `workers/role_logging_workers.cpp` |
-| `test_configure_logger.cpp`       | V1 (my 21.2) | ✅ **Fixed** 2026-04-18 | commit `5d3683c` — shares the same worker file |
-| `test_role_host_base.cpp`         | V1 (my 21.3) | ✅ **Fixed** 2026-04-18 | commit `5d3683c` — Pattern 3 via `workers/role_host_base_workers.cpp`; the two PLH_PANIC death tests became abort-in-worker + exit-code parent assertions |
+| `test_role_logging_roundtrip.cpp` | V1 | ✅ Fixed 2026-04-18 | `5d3683c` |
+| `test_configure_logger.cpp` | V1 | ✅ Fixed 2026-04-18 | `5d3683c` |
+| `test_role_host_base.cpp` | V1 | ✅ Fixed 2026-04-18 | `5d3683c` |
+| `test_zmq_context.cpp` | V1 (suite-scope) | ✅ Fixed 2026-04-18 | `4b3fc44` (Phase 1) |
+| `test_interactive_signal_handler.cpp` | V1 (1-of-9 inline) | ✅ Fixed 2026-04-18 | `4b3fc44` (Phase 1) |
+| `test_filelock_singleprocess.cpp` | V1 (per-test) | ✅ Fixed 2026-04-18 | `4b3fc44` (Phase 1) |
+| `test_metrics_api.cpp` | V2 (RoleAPIBase fab) | ✅ Fixed 2026-04-18 | `bc98e23` (Phase 2a) |
+| `test_role_data_loop.cpp` | V2 (RoleAPIBase fab) | ✅ Fixed 2026-04-18 | `bc98e23` (Phase 2a) |
+| `test_jsonconfig.cpp` | V1 (SetUpTestSuite) | ✅ Fixed 2026-04-19 | `5c1da4f` (Phase 2b) |
+| `test_role_config.cpp` | V1 (SetUpTestSuite) | ✅ Fixed 2026-04-19 | `2af8d02` (Phase 2c) |
+| `test_scriptengine_native_dylib.cpp` | V2 (RoleAPIBase fab) | ✅ Fixed 2026-04-19 | `124eba1` (Phase 2d) |
+| `test_filelock.cpp` | V1 (suite-scope + parent-side FileLock) | ✅ Fixed 2026-04-19 | `3846de2` (Phase 2e; two-worker holder/contender pattern) |
+| `test_lua_engine.cpp` | V2 (RoleAPIBase fab) | 🟡 **In progress** — 22/~104 tests converted (chunks 1-3) | `cdaafa6` `712b770` `89b0e9e` |
+| `test_python_engine.cpp` | V2 (RoleAPIBase fab) | ⏸ Not started — planned after Lua sweep | — |
 
-Remaining L2 V1 violations (not yet corrected):
+### Framework strengthening (cross-cutting, not per-file)
 
-- `test_filelock.cpp`, `test_filelock_singleprocess.cpp`, `test_interactive_signal_handler.cpp`, `test_jsonconfig.cpp`, `test_role_config.cpp`, `test_zmq_context.cpp`
+| Item | Status | Commit |
+|---|---|---|
+| Worker completion milestones (`[WORKER_BEGIN]`/`[WORKER_END_OK]`/`[WORKER_FINALIZED]`) | ✅ Active in all Pattern-3 workers | `2212a22` |
+| `ExpectLegacyWorkerOk` opt-out for legacy multi-process IPC workers | ✅ Landed; 3 L3 files updated | `2212a22` |
+| `all_types_schema()` helper covering bool/int8/int16/uint64 | ✅ Landed | `8dc76c3` |
+| `test_patterns.h` + `shared_test_helpers.h` + `test_process_utils.*` documentation | ✅ Updated | `2212a22`, `a63cb79` |
+| HEP-CORE-0001 § "Testing implications" | ✅ Authored | `a63cb79` |
+| README_testing.md §4 "Choosing a test pattern" + antipatterns + milestones | ✅ Authored | `a63cb79` |
 
-All L3 V1 violations and all L2 V2 violations are still open. The framework doc strengthening (README_testing.md §4 + HEP-CORE-0001 "Testing implications") is in place as of the same sprint so any new test authored from this point must follow Pattern 3 for lifecycle-backed code — the remaining files are legacy cleanup, not ongoing risk.
+### L3 — open (14 V1 + 1 borderline)
+
+All 14 L3 V1 files and the borderline `test_datahub_zmq_poll_loop.cpp`
+remain untouched. Three L3 parents (`test_datahub_mutex.cpp`,
+`test_datahub_broker_request_comm.cpp`,
+`test_datahub_channel_group.cpp`) were updated to opt out of the new
+milestone check via `ExpectLegacyWorkerOk` since their workers
+legitimately bypass `run_gtest_worker` — those remain on the "convert
+properly" list.
+
+### New gap-fill tests added during the sweep (not fixes to violations)
+
+These are tests that did not exist before the sweep, added because the
+review-and-augment pass found real coverage holes:
+
+| Test | Commit | Fills |
+|---|---|---|
+| `LuaEngineChunk1Test.RegisterSlotType_AllSupportedTypes_Succeeds` | `cdaafa6` | `bool`/`int8`/`int16`/`uint64` type dispatch |
+| `LuaEngineChunk1Test.RegisterSlotType_Packed_vs_Aligned` | `cdaafa6` | Verifies packing arg is honoured, not ignored |
+| `LuaEngineChunk1Test.InvokeProduce_DiscardOnFalse_ButLuaWroteSlot` | `712b770` | Discard does NOT roll back Lua-side writes |
+| `LuaEngineChunk1Test.InvokeConsume_RxSlot_IsReadOnly` | `89b0e9e` | Consumer rx.slot read-only contract (was named but not tested) |
+
+### Next
+
+- Continue Lua chunks (invoke_process → messages → api → error →
+  multi-state → remaining), each with review-and-augment gap analysis.
+- After Lua: convert `test_python_engine.cpp` (~98 tests).
+- After both engines: the L3 V1 sweep (14 files).
+- Before closing the audit: re-grep every `tests/test_layer*/` for
+  stale V1/V2 patterns in case a new file was introduced mid-sweep.
 
 End of audit.
