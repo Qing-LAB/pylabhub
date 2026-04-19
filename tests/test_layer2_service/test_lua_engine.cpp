@@ -278,113 +278,80 @@ TEST_F(LuaEngineChunk1Test, Alias_ProducerNoFz_NoFlexFrameAlias)
 // 3. invoke_produce
 // ============================================================================
 
-TEST_F(LuaEngineTest, InvokeProduce_CommitOnTrue)
+// ============================================================================
+// Chunk 2 — invoke_produce (Pattern 3)
+//
+// Converted and strengthened. Bodies live in workers/lua_engine_workers.cpp.
+// See the header comment on each TEST_F for what was strengthened over
+// the pre-conversion test and why.
+// ============================================================================
+
+TEST_F(LuaEngineChunk1Test, InvokeProduce_CommitOnTrue)
 {
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            if tx.slot then
-                tx.slot.value = 42.0
-            end
-            return true
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-
-    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_FLOAT_EQ(buf, 42.0f);
-
-    engine.finalize();
+    // Strengthened: additionally asserts script_error_count == 0 (a Commit
+    // path that silently logged a script error would slip through the
+    // original body's check).
+    auto w = SpawnWorker("lua_engine.invoke_produce_commit_on_true",
+                         {unique_dir("produce_commit")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineTest, InvokeProduce_DiscardOnFalse)
+TEST_F(LuaEngineChunk1Test, InvokeProduce_DiscardOnFalse)
 {
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            return false
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-
-    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Discard);
-
-    engine.finalize();
+    // Strengthened: buf is initialized to the sentinel value 777.0f; the
+    // test asserts the engine did NOT overwrite it on the Discard path
+    // (the original test initialized buf = 0.0f and couldn't tell the
+    // difference between "engine left it alone" and "engine wrote 0.0").
+    auto w = SpawnWorker("lua_engine.invoke_produce_discard_on_false",
+                         {unique_dir("produce_discard")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineTest, InvokeProduce_NilReturn_IsError)
+TEST_F(LuaEngineChunk1Test, InvokeProduce_NilReturn_IsError)
 {
-    // Missing return value is an error — explicit return true/false required.
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            -- no explicit return → nil → error (must be explicit)
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-
-    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Error)
-        << "Missing return should be Error, not Commit";
-    EXPECT_EQ(engine.script_error_count(), 1u);
-
-    engine.finalize();
+    auto w = SpawnWorker("lua_engine.invoke_produce_nil_return_is_error",
+                         {unique_dir("produce_nil_return")});
+    // Engine logs: "on_produce returned nil — explicit 'return true' or
+    // 'return false' is required. Treating as error." — declare the
+    // exact text fragment so a reworded diagnostic (which would still
+    // return Error from invoke_produce, keeping the body green) is
+    // caught at the parent level.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"on_produce returned nil"});
 }
 
-TEST_F(LuaEngineTest, InvokeProduce_NilSlot)
+TEST_F(LuaEngineChunk1Test, InvokeProduce_NilSlot)
 {
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            assert(tx.slot == nil, "expected nil slot")
-            return false
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    std::vector<IncomingMessage> msgs;
-
-    auto result = engine.invoke_produce(InvokeTx{nullptr, 0}, msgs);
-    EXPECT_EQ(result, InvokeResult::Discard);
-
-    engine.finalize();
+    // Strengthened: additionally asserts script_error_count == 0 to
+    // confirm the Lua-side assert(tx.slot == nil, ...) actually passed.
+    // A failing Lua assert would bump the count but still return Discard
+    // from the engine — the original test couldn't distinguish the two.
+    auto w = SpawnWorker("lua_engine.invoke_produce_nil_slot",
+                         {unique_dir("produce_nil_slot")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineTest, InvokeProduce_ScriptError)
+TEST_F(LuaEngineChunk1Test, InvokeProduce_ScriptError)
 {
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            error("intentional error")
-        end
-    )");
+    auto w = SpawnWorker("lua_engine.invoke_produce_script_error",
+                         {unique_dir("produce_script_error")});
+    // The engine logs the Lua error() message at ERROR level.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/{"intentional error"});
+}
 
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Error);
-    EXPECT_EQ(engine.script_error_count(), 1u);
-
-    engine.finalize();
+// NEW: pins the production contract that Discard does NOT roll back
+// Lua-side writes to tx.slot. The Lua script writes tx.slot.value = 42.0
+// then returns false; the worker verifies result == Discard AND
+// buf == 42.0. Worth having explicitly because users may expect the
+// engine to clear the buffer on Discard (it doesn't).
+TEST_F(LuaEngineChunk1Test, InvokeProduce_DiscardOnFalse_ButLuaWroteSlot)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_produce_discard_on_false_but_lua_wrote_slot",
+        {unique_dir("produce_discard_wrote")});
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
