@@ -16,18 +16,27 @@ Items surfaced by the static review before Lua chunk 4 (see commit
 each chunk commit stays a focused refactor+review-and-augment pass
 with no structural-cleanup mixed in.
 
-**Deferred until end of Lua sweep** (all ~104 Lua tests converted):
+**Policy — delete V2 duplicates in the same commit that lands their P3
+replacement** (not at sweep-end).  Rationale: test-registry names
+`LuaEngineTest.X` and `LuaEngineIsolatedTest.X` coexist without GTest
+complaining, so deferred deletion silently runs duplicate coverage
+and confuses later coverage/triage reviews.  **Established
+2026-04-19 during chunk-6a cleanup.**
 
 - [x] ~~Rename `LuaEngineIsolatedTest` fixture~~ — **done 2026-04-19** in
   the pre-chunk-6 rename commit. Renamed to `LuaEngineIsolatedTest`;
   all 30 tests across chunks 1-5 and the two in-file doc-banner
   references updated.
 
-- [ ] Delete the V2 `LuaEngineTest` fixture when the last V2 test
-  is converted. The `#include <atomic>`, `<unistd.h>`,
-  `test_patterns.h` at the top of the file may then be trimmable
-  if the V2 fixture's helpers (`setup_engine`, `make_api`,
-  `write_script`, fixture members) are no longer referenced in-file.
+- [ ] Delete the V2 `LuaEngineTest` fixture WRAPPER (class body,
+  helpers `setup_engine`, `make_api`, `write_script`, and now-unused
+  includes `<atomic>`, `<unistd.h>`, `test_patterns.h`) when the
+  LAST V2 test inside it is converted. Chunk 6a cleanup
+  **2026-04-19** deleted 7 duplicate V2 tests (ApiStop, ApiSetCrit,
+  ApiStopReason_Default, Api_CriticalError_Default,
+  ApiStopReason_ReflectsPeerDead, ApiStopReason_AfterCriticalError,
+  Api_IdentityFields_MatchContext) — the fixture still holds the
+  remaining ~65 unconverted V2 tests and stays for later chunks.
 
 **Deferred until both Lua + Python engine conversions complete**:
 

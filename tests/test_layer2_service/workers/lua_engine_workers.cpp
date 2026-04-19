@@ -1622,6 +1622,74 @@ int api_critical_error_set_and_read_and_stop_reason(const std::string &dir)
         });
 }
 
+int api_stop_reason_reflects_all_enum_values(const std::string &dir)
+{
+    // NEW test — closes a real coverage gap and subsumes two V2 tests.
+    //
+    // Chunk 6a's ApiCriticalError_SetAndReadAndStopReason covers only the
+    // Lua-set-Lua-read path for Normal + CriticalError.  Two V2 tests
+    // covered PeerDead and CriticalError injected from C++ (via
+    // core.set_stop_reason(...)) but HubDead was never tested at all.
+    // This worker runs one engine and loops over all four StopReason
+    // enum values, verifying the string mapping that
+    // stop_reason_string() implements (role_host_core.hpp:270-279):
+    //
+    //   Normal        → "normal"
+    //   PeerDead      → "peer_dead"
+    //   HubDead       → "hub_dead"
+    //   CriticalError → "critical_error"
+    //
+    // Communication Lua→C++ is via set_shared_data: the Lua script
+    // writes api.stop_reason() into core.shared_data under a well-known
+    // key, the C++ driver reads it back and compares. That avoids
+    // needing 4 separate Lua scripts or a Lua-side table of expected
+    // strings.
+    return script_worker(
+        dir, "lua_engine::api_stop_reason_reflects_all_enum_values",
+        RoleKind::Producer,
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                api.set_shared_data("observed_reason", api.stop_reason())
+                return false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore &core) {
+            struct Case { RoleHostCore::StopReason r; const char *expected; };
+            const Case cases[] = {
+                {RoleHostCore::StopReason::Normal,        "normal"},
+                {RoleHostCore::StopReason::PeerDead,      "peer_dead"},
+                {RoleHostCore::StopReason::HubDead,       "hub_dead"},
+                {RoleHostCore::StopReason::CriticalError, "critical_error"},
+            };
+
+            for (const auto &c : cases)
+            {
+                core.set_stop_reason(c.r);
+                float buf = 0.0f;
+                std::vector<pylabhub::scripting::IncomingMessage> msgs;
+                auto result = engine.invoke_produce(
+                    pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+                EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+                EXPECT_EQ(engine.script_error_count(), 0u)
+                    << "iter expected=" << c.expected;
+
+                auto v = core.get_shared_data("observed_reason");
+                ASSERT_TRUE(v.has_value())
+                    << "Lua must have written the key; missing value means "
+                       "set_shared_data did not reach the core";
+                ASSERT_TRUE(std::holds_alternative<std::string>(*v))
+                    << "Lua must have written a string (the return of "
+                       "api.stop_reason()); wrong variant means the closure "
+                       "returned a non-string type";
+                EXPECT_EQ(std::get<std::string>(*v), std::string(c.expected))
+                    << "api.stop_reason() must reflect set_stop_reason("
+                    << static_cast<int>(c.r)
+                    << ") — wrong string means stop_reason_string()'s switch "
+                       "lost a case or Lua closure read a stale cached value";
+            }
+        });
+}
+
 } // namespace lua_engine
 } // namespace pylabhub::tests::worker
 
@@ -1734,6 +1802,8 @@ struct LuaEngineWorkerRegistrar
                     return api_stop_sets_shutdown_requested(dir);
                 if (sc == "api_critical_error_set_and_read_and_stop_reason")
                     return api_critical_error_set_and_read_and_stop_reason(dir);
+                if (sc == "api_stop_reason_reflects_all_enum_values")
+                    return api_stop_reason_reflects_all_enum_values(dir);
 
                 fmt::print(stderr,
                            "[lua_engine] ERROR: unknown scenario '{}'\n", sc);
