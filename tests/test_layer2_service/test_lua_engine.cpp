@@ -15,6 +15,30 @@
  *   7. API closures: log, stop, version_info
  *   8. Error handling: script_error_count, stop_on_script_error
  *   9. create_thread_state: independent engine
+ *
+ * ============================================================================
+ * HYBRID STATE DURING THE TEST-FRAMEWORK SWEEP (tracked in docs/tech_draft/
+ * test_compliance_audit.md § "Correction status"). This file currently
+ * contains two fixtures that are intentionally both live:
+ *
+ *   - LuaEngineChunk1Test  (IsolatedProcessTest — Pattern 3)
+ *     Tests already converted by chunks 1-3 of the Lua sweep. Each
+ *     spawns a worker subprocess; bodies live in
+ *     workers/lua_engine_workers.cpp.
+ *
+ *   - LuaEngineTest        (plain ::testing::Test — V2 antipattern)
+ *     Tests NOT YET converted. Will be migrated chunk-by-chunk by
+ *     subsequent commits (one chunk per thematic group in the numbered
+ *     list above). The V2 fixture will be deleted in the final commit
+ *     of the Lua sweep, at which point this file contains Pattern 3
+ *     only.
+ *
+ * The hybrid is temporary and deliberately visible in-file so a reader
+ * landing on this source is not misled into thinking "both patterns
+ * coexist forever" is the intended design. The audit doc tracks
+ * progress; the chunk-local header comments below explain the
+ * strengthenings and gap-fills applied to each converted group.
+ * ============================================================================
  */
 #include <gtest/gtest.h>
 
@@ -403,14 +427,20 @@ TEST_F(LuaEngineChunk1Test, InvokeConsume_RxSlot_IsReadOnly)
 {
     auto w = SpawnWorker("lua_engine.invoke_consume_rx_slot_is_read_only",
                          {unique_dir("consume_read_only")});
-    // If the engine chooses to raise a Lua error on the const-write
-    // attempt (LuaJIT permits either outcome), that error reaches the
-    // log. Declare the substring so both silent-no-op and raise-error
-    // implementations are accepted at the framework level. The worker
-    // body's EXPECT_FLOAT_EQ(data, 99.5f) is what actually validates
-    // the read-only contract.
+    // Verified against the actual log format in
+    // src/scripting/lua_state.cpp:379 → "[{tag}] Lua error: {err}" with
+    // tag = "on_consume" for this callback path.  The substring
+    // "[on_consume] Lua error" is narrow enough that a reworded
+    // diagnostic (e.g. dropping the callback tag) would be caught.
+    //
+    // The engine raises a Lua error on the attempted write to the
+    // const-qualified ffi pointer — confirmed observationally.  The
+    // body's EXPECT_FLOAT_EQ(data, 99.5f) is the load-bearing invariant
+    // either way; the log assertion strengthens the test by also
+    // confirming the error was the expected kind, not some other.
     ExpectWorkerOk(w, /*required=*/{},
-                   /*expected_error_substrings=*/{"Lua"});
+                   /*expected_error_substrings=*/
+                   {"[on_consume] Lua error"});
 }
 
 // ============================================================================
