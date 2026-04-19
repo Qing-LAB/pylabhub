@@ -551,6 +551,67 @@ For an inventory of compliance violations currently being swept, see
 5. **Test edge cases:** Empty inputs, null pointers, boundary values
 6. **Clean up resources:** Use fixtures for proper setup/teardown
 
+### Naming conventions (MANDATORY)
+
+Future enhancement and revision of tests depends on grep-ability and
+a stable mapping between file names, fixture classes, and test names.
+These conventions are enforced across all L1-L4 test code; violations
+from prior sprints are tracked in `docs/todo/TESTING_TODO.md` and
+should be corrected, not propagated.
+
+1. **Source file**: `tests/test_layer<N>_<area>/test_<subject>.cpp`
+   where `<subject>` matches the class or subsystem under test. One
+   file per subject. Examples: `test_role_config.cpp` (class
+   `RoleConfig`), `test_filelock.cpp` (class `FileLock`),
+   `test_role_data_loop.cpp` (function `run_data_loop`).
+
+2. **Fixture class name**: `<Subject>Test` — matches the file name's
+   `<subject>` in CamelCase. Example: `test_zmq_context.cpp` →
+   `ZmqContextTest`. For Pattern-3 tests the fixture inherits
+   `pylabhub::tests::IsolatedProcessTest`; Pattern-1 uses
+   `pylabhub::tests::PureApiTest` or plain `::testing::Test`.
+
+3. **Multiple fixtures in one file**: allowed when the file covers
+   legitimately separate topics. Each fixture's name includes a
+   qualifier identifying its sub-topic. Examples:
+     - `test_metrics_api.cpp` → `MetricsApiTest` + `MetricsApiPyDictTest`
+       (the PyDict tests need a `py::scoped_interpreter`)
+     - `test_role_data_loop.cpp` → `RunDataLoopTest` + `ThreadManagerTest`
+       (two function-scoped topics in one file)
+     - `test_interactive_signal_handler.cpp` →
+       `InteractiveSignalHandlerLifecycleTest` (the lifecycle-integration
+       subtree; the pure-API subtree uses bare `TEST()`)
+
+4. **Do NOT let transient labels leak into fixture names**. Chunks,
+   sprints, phases, ticket IDs, and sweep iterations are temporary
+   context; they become misleading the moment their scope moves on.
+   If a grouping aid is genuinely useful while tests are being
+   written in batches, use source-level comments or gtest's
+   `SCOPED_TRACE`, not fixture names. The sweep that produced this
+   README rule had to rename `LuaEngineChunk1Test` →
+   `LuaEngineIsolatedTest` once chunks 2-5 accumulated under the
+   misnamed fixture; the rename propagated to three documentation
+   files and touched 30+ lines for what should have been a 0-line
+   commit.
+
+5. **Test name inside `TEST_F(...)`**: `Subject_Qualifier_Behavior`
+   form, CamelCase parts separated by underscores. The underscores
+   act as grep boundaries so `grep '^TEST_F.*LoadProducer'` finds
+   every producer-loading test across every fixture. Avoid pure
+   CamelCase (`FullLifecycleBehavior`) and pure snake_case.
+   Examples: `LoadProducer_Identity`, `ChecksumInvalid_Throws`,
+   `RegisterSlotType_Packed_vs_Aligned`.
+
+6. **Renames require**: a single focused rename commit; before
+   editing, run `git grep '<OldFixtureOrTestName>'` to find external
+   script filters (CI, dashboards, release notes) that may break
+   silently when the name changes.
+
+Conventions are minimum requirements — richer names are fine as long
+as they're grep-compatible. If a future test author needs an
+exception (e.g. a fixture that legitimately cuts across multiple
+subjects), document the reason in a file-level comment.
+
 ## 5. Test Staging and Dependencies
 
 Understanding how test executables are staged and how they find their dependencies is crucial for debugging build issues.

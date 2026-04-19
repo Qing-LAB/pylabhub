@@ -328,10 +328,10 @@ review-and-augment pass found real coverage holes:
 
 | Test | Commit | Fills |
 |---|---|---|
-| `LuaEngineChunk1Test.RegisterSlotType_AllSupportedTypes_Succeeds` | `cdaafa6` | `bool`/`int8`/`int16`/`uint64` type dispatch |
-| `LuaEngineChunk1Test.RegisterSlotType_Packed_vs_Aligned` | `cdaafa6` | Verifies packing arg is honoured, not ignored |
-| `LuaEngineChunk1Test.InvokeProduce_DiscardOnFalse_ButLuaWroteSlot` | `712b770` | Discard does NOT roll back Lua-side writes |
-| `LuaEngineChunk1Test.InvokeConsume_RxSlot_IsReadOnly` | `89b0e9e` | Consumer rx.slot read-only contract (was named but not tested) |
+| `LuaEngineIsolatedTest.RegisterSlotType_AllSupportedTypes_Succeeds` | `cdaafa6` | `bool`/`int8`/`int16`/`uint64` type dispatch |
+| `LuaEngineIsolatedTest.RegisterSlotType_Packed_vs_Aligned` | `cdaafa6` | Verifies packing arg is honoured, not ignored |
+| `LuaEngineIsolatedTest.InvokeProduce_DiscardOnFalse_ButLuaWroteSlot` | `712b770` | Discard does NOT roll back Lua-side writes |
+| `LuaEngineIsolatedTest.InvokeConsume_RxSlot_IsReadOnly` | `89b0e9e` | Consumer rx.slot read-only contract (was named but not tested) |
 
 ### Next
 

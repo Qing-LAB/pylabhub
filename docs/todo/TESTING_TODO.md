@@ -18,13 +18,10 @@ with no structural-cleanup mixed in.
 
 **Deferred until end of Lua sweep** (all ~104 Lua tests converted):
 
-- [ ] Rename `LuaEngineChunk1Test` fixture → chunk-agnostic name
-  (e.g. `LuaEngineIsolatedTest` or `LuaEngineP3Test`). The name was
-  accurate for chunk 1 only; chunks 2-4 reuse the same fixture
-  because behaviour is identical, but the `Chunk1` label now
-  mislabels 80%+ of its tests. Do NOT rename mid-sweep — cross-
-  commit grep-ability matters more than the label accuracy until
-  the Lua conversion is complete. File: `test_lua_engine.cpp`.
+- [x] ~~Rename `LuaEngineIsolatedTest` fixture~~ — **done 2026-04-19** in
+  the pre-chunk-6 rename commit. Renamed to `LuaEngineIsolatedTest`;
+  all 30 tests across chunks 1-5 and the two in-file doc-banner
+  references updated.
 
 - [ ] Delete the V2 `LuaEngineTest` fixture when the last V2 test
   is converted. The `#include <atomic>`, `<unistd.h>`,
@@ -103,15 +100,15 @@ callback chunks):
   that is filtered for by name in some external script. Candidates
   known to be renamed so far:
   - `LuaEngineTest.InitializeFailsGracefully` →
-    `LuaEngineChunk1Test.InitializeAndFinalize_Succeeds`
+    `LuaEngineIsolatedTest.InitializeAndFinalize_Succeeds`
   - `LuaEngineTest.RegisterSlotType_PackedPacking` →
-    `LuaEngineChunk1Test.RegisterSlotType_Packed_vs_Aligned`
+    `LuaEngineIsolatedTest.RegisterSlotType_Packed_vs_Aligned`
   - `LuaEngineTest.InvokeConsume_ReceivesReadOnlySlot` →
-    `LuaEngineChunk1Test.InvokeConsume_ReceivesSlot`
+    `LuaEngineIsolatedTest.InvokeConsume_ReceivesSlot`
   - `LuaEngineTest.InvokeProcess_NilInput` →
-    `LuaEngineChunk1Test.InvokeProcess_BothSlotsNil`
+    `LuaEngineIsolatedTest.InvokeProcess_BothSlotsNil`
   - `LuaEngineTest.InvokeProcess_InputOnlyNoOutput` →
-    `LuaEngineChunk1Test.InvokeProcess_RxPresent_TxNil`
+    `LuaEngineIsolatedTest.InvokeProcess_RxPresent_TxNil`
 
 - [ ] Final audit re-grep: after all L2+L3 conversions land, re-run
   the original grep from `docs/tech_draft/test_compliance_audit.md`
