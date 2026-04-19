@@ -1033,9 +1033,11 @@ gtest_discover_tests(test_layer2_schema_validation
 
 add_executable(test_layer2_metrics_api
     test_metrics_api.cpp
+    workers/metrics_api_workers.cpp
 )
 
 target_include_directories(test_layer2_metrics_api PRIVATE
+    workers
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/producer
     ${CMAKE_SOURCE_DIR}/src/consumer
@@ -1047,8 +1049,10 @@ target_link_libraries(test_layer2_metrics_api
     PRIVATE
         pylabhub::utils
         pylabhub::scripting
+        pylabhub::test_framework
         pylabhub::third_party::pybind11_embed
-        GTest::gtest_main
+        GTest::gtest
+        GTest::gmock
 )
 
 target_compile_features(test_layer2_metrics_api PRIVATE cxx_std_20)
@@ -1075,17 +1079,19 @@ gtest_discover_tests(test_layer2_metrics_api
 
 add_executable(test_layer2_role_data_loop
     test_role_data_loop.cpp
+    workers/role_data_loop_workers.cpp
 )
 
 target_include_directories(test_layer2_role_data_loop PRIVATE
+    workers
     ${CMAKE_SOURCE_DIR}/src/utils   # internal headers (service/data_loop.hpp, service/cycle_ops.hpp)
 )
 
 target_link_libraries(test_layer2_role_data_loop
     PRIVATE
         pylabhub::utils
+        pylabhub::test_framework
         GTest::gtest
-        GTest::gtest_main
 )
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_role_data_loop)
