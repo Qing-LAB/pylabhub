@@ -508,49 +508,64 @@ TEST_F(LuaEngineChunk1Test, InvokeProcess_RxSlot_IsReadOnly)
 // 6. Messages
 // ============================================================================
 
-TEST_F(LuaEngineTest, InvokeProduce_ReceivesMessages)
+// ============================================================================
+// Chunk 5 — Messages (Pattern 3)
+//
+// The Lua engine has two distinct message-table projection functions:
+// push_messages_table_ (producer/processor) and push_messages_table_bare_
+// (consumer). The bodies diverge only on DATA messages (empty event
+// field). Event messages use the same flattened-details projection in
+// both.  See the chunk-5 header comment in
+// workers/lua_engine_workers.cpp for the full shape documentation.
+//
+// The pre-conversion suite had one test here that covered event
+// messages only, and only checked the event field name — not the
+// details map promotion. Three new tests fill the data-message,
+// empty-vector, and consumer-bare-format coverage holes.
+// ============================================================================
+
+TEST_F(LuaEngineChunk1Test, InvokeProduce_ReceivesMessages_EventWithDetails)
 {
-    // Script counts event messages and asserts the expected count.
-    // If messages are not received, the assertion fails → pcall error.
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            local event_count = 0
-            for _, m in ipairs(msgs) do
-                if m.event then
-                    event_count = event_count + 1
-                end
-            end
-            assert(event_count == 2,
-                   "expected 2 events, got " .. tostring(event_count))
-            -- Verify specific event names.
-            assert(msgs[1].event == "consumer_joined",
-                   "expected consumer_joined, got " .. tostring(msgs[1].event))
-            assert(msgs[2].event == "channel_closing",
-                   "expected channel_closing, got " .. tostring(msgs[2].event))
-            return false
-        end
-    )");
+    // Strengthened from pre-conversion InvokeProduce_ReceivesMessages.
+    // Now verifies the details-map-flattening contract — previously the
+    // test set m1.details["identity"] = "abc123" but never checked Lua
+    // saw it.
+    auto w = SpawnWorker(
+        "lua_engine.invoke_produce_receives_messages_event_with_details",
+        {unique_dir("msgs_event")});
+    ExpectWorkerOk(w);
+}
 
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
+// NEW: empty msgs vector — simplest edge case, not covered pre-sweep.
+TEST_F(LuaEngineChunk1Test, InvokeProduce_ReceivesMessages_EmptyVector)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_produce_receives_messages_empty_vector",
+        {unique_dir("msgs_empty")});
+    ExpectWorkerOk(w);
+}
 
-    std::vector<IncomingMessage> msgs;
-    IncomingMessage m1;
-    m1.event = "consumer_joined";
-    m1.details["identity"] = "abc123";
-    msgs.push_back(std::move(m1));
+// NEW: data-message shape on the producer path. Verifies the
+// sender-to-hex projection and the data-to-byte-string projection
+// (previously untested).
+TEST_F(LuaEngineChunk1Test, InvokeProduce_ReceivesMessages_DataMessage)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_produce_receives_messages_data_message",
+        {unique_dir("msgs_data_producer")});
+    ExpectWorkerOk(w);
+}
 
-    IncomingMessage m2;
-    m2.event = "channel_closing";
-    msgs.push_back(std::move(m2));
-
-    float buf = 0.0f;
-    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Discard);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed — messages not received correctly";
-
-    engine.finalize();
+// NEW: data-message shape on the CONSUMER path — a fundamentally
+// different projection (bare byte string at msgs[i], not a table).
+// This is the push_messages_table_bare_ code path which was entirely
+// untested at L2 before this test.
+TEST_F(LuaEngineChunk1Test, InvokeConsume_ReceivesMessages_DataBareFormat)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_consume_receives_messages_data_bare_format",
+        {unique_dir("msgs_data_consumer")});
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
