@@ -977,13 +977,17 @@ gtest_discover_tests(test_layer2_role_host_core
 
 add_executable(test_layer2_role_config
     test_role_config.cpp
+    workers/role_config_workers.cpp
 )
+
+target_include_directories(test_layer2_role_config PRIVATE workers)
 
 target_link_libraries(test_layer2_role_config
     PRIVATE
         pylabhub::utils
+        pylabhub::test_framework
         GTest::gtest
-        GTest::gtest_main
+        GTest::gmock
 )
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_role_config)

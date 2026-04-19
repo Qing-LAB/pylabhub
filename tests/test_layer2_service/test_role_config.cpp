@@ -1,649 +1,407 @@
 /**
  * @file test_role_config.cpp
- * @brief L2 unit tests for config::RoleConfig — unified config class.
+ * @brief Pattern 3 driver: RoleConfig unit-test suite.
  *
- * Tests the factory methods, common/directional accessors, role-specific
- * data, JsonConfig backend integration, and validation.
+ * Original V1: SetUpTestSuite installed a process-wide LifecycleGuard so
+ * each TEST_F could call RoleConfig::load directly. Per HEP-CORE-0001
+ * § "Testing implications" the process-wide guard is forbidden — every
+ * lifecycle-dependent test runs in its own subprocess.
+ *
+ * Each TEST_F here spawns one worker (workers/role_config_workers.cpp).
+ * The worker writes a minimal JSON config inside a parent-provided unique
+ * scratch dir, calls RoleConfig::load*, and asserts on the parsed fields.
+ * The parent removes the dir after wait_for_exit.
+ *
+ * No body-wrapping macros — each TEST_F is written out plainly so gtest
+ * failure messages report the correct line and the structure stays
+ * grep-able.
  */
-
-#include "utils/config/role_config.hpp"
-#include "plh_datahub.hpp"
+#include "test_patterns.h"
 
 #include <gtest/gtest.h>
-#include <nlohmann/json.hpp>
 
-#include <any>
+#include <atomic>
 #include <filesystem>
-#include <fstream>
 #include <string>
+#include <unistd.h>
 
 namespace fs = std::filesystem;
-using pylabhub::config::RoleConfig;
-using namespace pylabhub::utils;
+using pylabhub::tests::IsolatedProcessTest;
 
-// ============================================================================
-// Test fixtures
-// ============================================================================
+namespace
+{
 
-class RoleConfigTest : public ::testing::Test
+class RoleConfigTest : public IsolatedProcessTest
 {
   protected:
-    static std::unique_ptr<LifecycleGuard> s_lifecycle;
-
-    static void SetUpTestSuite()
-    {
-        s_lifecycle = std::make_unique<LifecycleGuard>(
-            MakeModDefList(JsonConfig::GetLifecycleModule(),
-                           FileLock::GetLifecycleModule(),
-                           Logger::GetLifecycleModule()),
-            std::source_location::current());
-    }
-
-    static void TearDownTestSuite()
-    {
-        s_lifecycle.reset();
-    }
-
-    fs::path tmp_dir_;
-
-    void SetUp() override
-    {
-        // Use unique dir per test to avoid parallel test races.
-        tmp_dir_ = fs::temp_directory_path() /
-                   ("pylabhub_rcfg_" + std::to_string(::getpid()));
-        fs::create_directories(tmp_dir_);
-    }
-
     void TearDown() override
     {
-        std::error_code ec;
-        fs::remove_all(tmp_dir_, ec);
+        for (const auto &p : paths_to_clean_)
+        {
+            std::error_code ec;
+            fs::remove_all(p, ec);
+        }
+        paths_to_clean_.clear();
     }
 
-    /// Write a JSON file and return its path.
-    fs::path write_json(const std::string &filename, const nlohmann::json &j)
+    /// Returns a unique scratch dir; auto-cleaned after the test.
+    std::string unique_dir(const char *test_name)
     {
-        const auto path = tmp_dir_ / filename;
-        std::ofstream ofs(path);
-        ofs << j.dump(2);
-        return path;
+        static std::atomic<int> ctr{0};
+        fs::path p = fs::temp_directory_path() /
+                     ("plh_l2_rcfg_" + std::string(test_name) + "_" +
+                      std::to_string(::getpid()) + "_" +
+                      std::to_string(ctr.fetch_add(1)));
+        fs::create_directories(p);
+        paths_to_clean_.push_back(p);
+        return p.string();
     }
 
-    /// Minimal producer JSON with new in_/out_ naming.
-    nlohmann::json minimal_producer_json()
-    {
-        return {
-            {"producer", {{"uid", "PROD-TEST-00000001"}, {"name", "TestProd"}}},
-            {"out_hub_dir", ""},
-            {"out_channel", "test.channel"},
-            {"out_transport", "shm"},
-            {"out_shm_enabled", true},
-            {"out_shm_slot_count", 8},
-            {"checksum", "enforced"},
-            {"out_slot_schema", {{"fields", {{{"name", "value"}, {"type", "float32"}}}}}},
-            {"loop_timing", "fixed_rate"},
-            {"target_period_ms", 50.0},
-            {"script", {{"type", "python"}, {"path", "."}}},
-        };
-    }
-
-    /// Minimal consumer JSON.
-    nlohmann::json minimal_consumer_json()
-    {
-        return {
-            {"consumer", {{"uid", "CONS-TEST-00000002"}, {"name", "TestCons"}}},
-            {"in_hub_dir", ""},
-            {"in_channel", "test.channel"},
-            {"in_transport", "shm"},
-            {"checksum", "enforced"},
-            {"loop_timing", "max_rate"},
-            {"script", {{"type", "lua"}, {"path", "."}}},
-        };
-    }
-
-    /// Minimal processor JSON (dual-hub).
-    nlohmann::json minimal_processor_json()
-    {
-        return {
-            {"processor", {{"uid", "PROC-TEST-00000003"}, {"name", "TestProc"}}},
-            {"in_hub_dir", ""},
-            {"out_hub_dir", ""},
-            {"in_channel", "raw.data"},
-            {"out_channel", "processed.data"},
-            {"in_transport", "shm"},
-            {"out_transport", "zmq"},
-            {"out_zmq_endpoint", "tcp://0.0.0.0:5599"},
-            {"out_zmq_bind", true},
-            {"out_slot_schema", {{"fields", {{{"name", "result"}, {"type", "float64"}}}}}},
-            {"checksum", "enforced"},
-            {"checksum", "enforced"},
-            {"loop_timing", "max_rate"},
-            {"script", {{"type", "python"}, {"path", "."}}},
-        };
-    }
+    std::vector<fs::path> paths_to_clean_;
 };
 
-std::unique_ptr<LifecycleGuard> RoleConfigTest::s_lifecycle;
+} // namespace
 
-// ============================================================================
-// Producer role-specific fields
-// ============================================================================
-
-struct TestProducerFields
-{
-    nlohmann::json out_slot_schema;
-};
-
-static std::any parse_test_producer(const nlohmann::json &j,
-                                     const RoleConfig & /*cfg*/)
-{
-    TestProducerFields pf;
-    pf.out_slot_schema = j.value("out_slot_schema", nlohmann::json{});
-    return pf;
-}
-
-// ============================================================================
-// Tests: Factory + common accessors
-// ============================================================================
+// ── Producer ────────────────────────────────────────────────────────────────
 
 TEST_F(RoleConfigTest, LoadProducer_Identity)
 {
-    auto path = write_json("producer.json", minimal_producer_json());
-    auto cfg = RoleConfig::load(path.string(), "producer");
-
-    EXPECT_EQ(cfg.identity().uid, "PROD-TEST-00000001");
-    EXPECT_EQ(cfg.identity().name, "TestProd");
-    EXPECT_EQ(cfg.identity().log_level, "info");
+    auto w = SpawnWorker("role_config.load_producer_identity",
+                         {unique_dir("load_producer_identity")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, LoadProducer_Timing)
 {
-    auto path = write_json("producer.json", minimal_producer_json());
-    auto cfg = RoleConfig::load(path.string(), "producer");
-
-    // 50ms = 50000us
-    EXPECT_DOUBLE_EQ(cfg.timing().period_us, 50000.0);
+    auto w = SpawnWorker("role_config.load_producer_timing",
+                         {unique_dir("load_producer_timing")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, LoadProducer_Script)
 {
-    auto path = write_json("producer.json", minimal_producer_json());
-    auto cfg = RoleConfig::load(path.string(), "producer");
-
-    EXPECT_EQ(cfg.script().type, "python");
-    EXPECT_TRUE(cfg.script().type_explicit);
+    auto w = SpawnWorker("role_config.load_producer_script",
+                         {unique_dir("load_producer_script")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, LoadProducer_OutChannel)
 {
-    auto path = write_json("producer.json", minimal_producer_json());
-    auto cfg = RoleConfig::load(path.string(), "producer");
-
-    EXPECT_EQ(cfg.out_channel(), "test.channel");
-    EXPECT_TRUE(cfg.in_channel().empty()); // producer has no input
+    auto w = SpawnWorker("role_config.load_producer_out_channel",
+                         {unique_dir("load_producer_out_channel")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, LoadProducer_OutTransport)
 {
-    auto path = write_json("producer.json", minimal_producer_json());
-    auto cfg = RoleConfig::load(path.string(), "producer");
-
-    EXPECT_EQ(cfg.out_transport().transport, pylabhub::config::Transport::Shm);
-    EXPECT_EQ(cfg.out_shm().slot_count, 8u);
-    EXPECT_TRUE(cfg.out_shm().enabled);
+    auto w = SpawnWorker("role_config.load_producer_out_transport",
+                         {unique_dir("load_producer_out_transport")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, LoadProducer_OutValidation)
 {
-    auto path = write_json("producer.json", minimal_producer_json());
-    auto cfg = RoleConfig::load(path.string(), "producer");
-
-    EXPECT_EQ(cfg.checksum().policy, pylabhub::hub::ChecksumPolicy::Enforced);
+    auto w = SpawnWorker("role_config.load_producer_out_validation",
+                         {unique_dir("load_producer_out_validation")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, LoadProducer_Validation_StopOnScriptError)
 {
-    auto j = minimal_producer_json();
-    j["stop_on_script_error"] = true;
-    auto path = write_json("producer.json", j);
-    auto cfg = RoleConfig::load(path.string(), "producer");
-
-    EXPECT_TRUE(cfg.script().stop_on_script_error);
+    auto w = SpawnWorker("role_config.load_producer_validation_stop_on_script_error",
+                         {unique_dir("stop_on_script_error")});
+    ExpectWorkerOk(w);
 }
 
-// ============================================================================
-// Tests: Consumer
-// ============================================================================
+// ── Consumer ────────────────────────────────────────────────────────────────
 
 TEST_F(RoleConfigTest, LoadConsumer_Identity)
 {
-    auto path = write_json("consumer.json", minimal_consumer_json());
-    auto cfg = RoleConfig::load(path.string(), "consumer");
-
-    EXPECT_EQ(cfg.identity().uid, "CONS-TEST-00000002");
-    EXPECT_EQ(cfg.script().type, "lua");
+    auto w = SpawnWorker("role_config.load_consumer_identity",
+                         {unique_dir("load_consumer_identity")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, LoadConsumer_InChannel)
 {
-    auto path = write_json("consumer.json", minimal_consumer_json());
-    auto cfg = RoleConfig::load(path.string(), "consumer");
-
-    EXPECT_EQ(cfg.in_channel(), "test.channel");
-    EXPECT_TRUE(cfg.out_channel().empty()); // consumer has no output
+    auto w = SpawnWorker("role_config.load_consumer_in_channel",
+                         {unique_dir("load_consumer_in_channel")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, LoadConsumer_InValidation)
 {
-    auto path = write_json("consumer.json", minimal_consumer_json());
-    auto cfg = RoleConfig::load(path.string(), "consumer");
-
-    EXPECT_EQ(cfg.checksum().policy, pylabhub::hub::ChecksumPolicy::Enforced);
+    auto w = SpawnWorker("role_config.load_consumer_in_validation",
+                         {unique_dir("load_consumer_in_validation")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, LoadConsumer_DefaultTiming)
 {
-    auto path = write_json("consumer.json", minimal_consumer_json());
-    auto cfg = RoleConfig::load(path.string(), "consumer");
-
-    // Consumer default: period=0 (demand-driven), MaxRate
-    EXPECT_DOUBLE_EQ(cfg.timing().period_us, 0.0);
-    EXPECT_EQ(cfg.timing().loop_timing, pylabhub::LoopTimingPolicy::MaxRate);
+    auto w = SpawnWorker("role_config.load_consumer_default_timing",
+                         {unique_dir("load_consumer_default_timing")});
+    ExpectWorkerOk(w);
 }
 
-// ============================================================================
-// Tests: Processor (dual-hub, dual-transport)
-// ============================================================================
+// ── Processor ───────────────────────────────────────────────────────────────
 
 TEST_F(RoleConfigTest, LoadProcessor_DualChannels)
 {
-    auto path = write_json("processor.json", minimal_processor_json());
-    auto cfg = RoleConfig::load(path.string(), "processor");
-
-    EXPECT_EQ(cfg.in_channel(), "raw.data");
-    EXPECT_EQ(cfg.out_channel(), "processed.data");
+    auto w = SpawnWorker("role_config.load_processor_dual_channels",
+                         {unique_dir("load_processor_dual_channels")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, LoadProcessor_DualTransport)
 {
-    auto path = write_json("processor.json", minimal_processor_json());
-    auto cfg = RoleConfig::load(path.string(), "processor");
-
-    EXPECT_EQ(cfg.in_transport().transport, pylabhub::config::Transport::Shm);
-    EXPECT_EQ(cfg.out_transport().transport, pylabhub::config::Transport::Zmq);
-    EXPECT_EQ(cfg.out_transport().zmq_endpoint, "tcp://0.0.0.0:5599");
-    EXPECT_TRUE(cfg.out_transport().zmq_bind);
+    auto w = SpawnWorker("role_config.load_processor_dual_transport",
+                         {unique_dir("load_processor_dual_transport")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, LoadProcessor_DualValidation)
 {
-    auto path = write_json("processor.json", minimal_processor_json());
-    auto cfg = RoleConfig::load(path.string(), "processor");
-
-    EXPECT_EQ(cfg.checksum().policy, pylabhub::hub::ChecksumPolicy::Enforced);
-    // checksum policy is per-role, verified above.
+    auto w = SpawnWorker("role_config.load_processor_dual_validation",
+                         {unique_dir("load_processor_dual_validation")});
+    ExpectWorkerOk(w);
 }
 
-// ============================================================================
-// Tests: Role-specific data (std::any)
-// ============================================================================
+// ── Role-specific data ──────────────────────────────────────────────────────
 
 TEST_F(RoleConfigTest, RoleData_ProducerFields)
 {
-    auto path = write_json("producer.json", minimal_producer_json());
-    auto cfg = RoleConfig::load(path.string(), "producer", parse_test_producer);
-
-    EXPECT_TRUE(cfg.has_role_data());
-    const auto &pf = cfg.role_data<TestProducerFields>();
-    EXPECT_FALSE(pf.out_slot_schema.empty());
-    EXPECT_TRUE(pf.out_slot_schema.contains("fields"));
+    auto w = SpawnWorker("role_config.role_data_producer_fields",
+                         {unique_dir("role_data_producer_fields")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, RoleData_NoParser)
 {
-    auto path = write_json("producer.json", minimal_producer_json());
-    auto cfg = RoleConfig::load(path.string(), "producer");
-
-    EXPECT_FALSE(cfg.has_role_data());
+    auto w = SpawnWorker("role_config.role_data_no_parser",
+                         {unique_dir("role_data_no_parser")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, RoleData_WrongTypeCast_Throws)
 {
-    auto path = write_json("producer.json", minimal_producer_json());
-    auto cfg = RoleConfig::load(path.string(), "producer", parse_test_producer);
-
-    // Casting to wrong type should throw std::bad_any_cast.
-    struct WrongType {};
-    EXPECT_THROW(cfg.role_data<WrongType>(), std::bad_any_cast);
+    auto w = SpawnWorker("role_config.role_data_wrong_type_cast_throws",
+                         {unique_dir("role_data_wrong_type_cast_throws")});
+    ExpectWorkerOk(w);
 }
 
-// ============================================================================
-// Tests: Mutable auth
-// ============================================================================
+// ── Auth ────────────────────────────────────────────────────────────────────
 
 TEST_F(RoleConfigTest, Auth_DefaultEmpty)
 {
-    auto path = write_json("producer.json", minimal_producer_json());
-    auto cfg = RoleConfig::load(path.string(), "producer");
-
-    EXPECT_TRUE(cfg.auth().keyfile.empty());
-    EXPECT_TRUE(cfg.auth().client_pubkey.empty());
-    EXPECT_TRUE(cfg.auth().client_seckey.empty());
+    auto w = SpawnWorker("role_config.auth_default_empty",
+                         {unique_dir("auth_default_empty")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, LoadKeypair_NoKeyfile_ReturnsFalse)
 {
-    auto path = write_json("producer.json", minimal_producer_json());
-    auto cfg = RoleConfig::load(path.string(), "producer");
-
-    EXPECT_FALSE(cfg.load_keypair("dummy-password"));
+    auto w = SpawnWorker("role_config.load_keypair_no_keyfile_returns_false",
+                         {unique_dir("load_keypair_no_keyfile")});
+    ExpectWorkerOk(w);
 }
 
-// ============================================================================
-// Tests: Raw JSON
-// ============================================================================
+// ── Raw JSON / metadata ─────────────────────────────────────────────────────
 
 TEST_F(RoleConfigTest, RawJson)
 {
-    auto j = minimal_producer_json();
-    auto path = write_json("producer.json", j);
-    auto cfg = RoleConfig::load(path.string(), "producer");
-
-    EXPECT_TRUE(cfg.raw().contains("producer"));
-    EXPECT_TRUE(cfg.raw().contains("out_channel"));
-    EXPECT_EQ(cfg.raw()["out_channel"], "test.channel");
+    auto w = SpawnWorker("role_config.raw_json", {unique_dir("raw_json")});
+    ExpectWorkerOk(w);
 }
-
-// ============================================================================
-// Tests: Metadata
-// ============================================================================
 
 TEST_F(RoleConfigTest, RoleTag)
 {
-    auto path = write_json("producer.json", minimal_producer_json());
-    auto cfg = RoleConfig::load(path.string(), "producer");
-
-    EXPECT_EQ(cfg.role_tag(), "producer");
+    auto w = SpawnWorker("role_config.role_tag", {unique_dir("role_tag")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, BaseDir)
 {
-    auto path = write_json("producer.json", minimal_producer_json());
-    auto cfg = RoleConfig::load(path.string(), "producer");
-
-    EXPECT_EQ(cfg.base_dir(), tmp_dir_);
+    auto w = SpawnWorker("role_config.base_dir", {unique_dir("base_dir")});
+    ExpectWorkerOk(w);
 }
-
-// ============================================================================
-// Tests: load_from_directory
-// ============================================================================
 
 TEST_F(RoleConfigTest, LoadFromDirectory)
 {
-    write_json("producer.json", minimal_producer_json());
-    auto cfg = RoleConfig::load_from_directory(tmp_dir_.string(), "producer");
-
-    EXPECT_EQ(cfg.identity().uid, "PROD-TEST-00000001");
-    EXPECT_EQ(cfg.out_channel(), "test.channel");
+    auto w = SpawnWorker("role_config.load_from_directory",
+                         {unique_dir("load_from_directory")});
+    ExpectWorkerOk(w);
 }
 
-// ============================================================================
-// Tests: Validation errors
-// ============================================================================
+// ── Validation errors ───────────────────────────────────────────────────────
 
+// Validation-error tests (file_not_found, invalid_script_type,
+// zmq_missing_endpoint, checksum_invalid, unknown_key, logging_*):
+// The workers catch the throw with a try/catch and assert on the
+// exception's what() text — that verifies the contract of what message
+// the user sees, without relying on log-line substring matching. The
+// parent here only needs to confirm the worker exited cleanly.
 TEST_F(RoleConfigTest, FileNotFound_Throws)
 {
-    EXPECT_THROW(
-        RoleConfig::load("/nonexistent/path.json", "producer"),
-        std::runtime_error);
+    auto w = SpawnWorker("role_config.file_not_found_throws", {});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, InvalidScriptType_Throws)
 {
-    auto j = minimal_producer_json();
-    j["script"]["type"] = "ruby";
-    auto path = write_json("producer.json", j);
-
-    EXPECT_THROW(
-        RoleConfig::load(path.string(), "producer"),
-        std::exception);
+    auto w = SpawnWorker("role_config.invalid_script_type_throws",
+                         {unique_dir("invalid_script_type_throws")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, ZmqTransport_MissingEndpoint_Throws)
 {
-    auto j = minimal_producer_json();
-    j["out_transport"] = "zmq";
-    // No out_zmq_endpoint provided.
-    auto path = write_json("producer.json", j);
-
-    EXPECT_THROW(
-        RoleConfig::load(path.string(), "producer"),
-        std::exception);
+    auto w = SpawnWorker("role_config.zmq_transport_missing_endpoint_throws",
+                         {unique_dir("zmq_missing_endpoint")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, ZmqTransport_Valid)
 {
-    auto j = minimal_producer_json();
-    j["out_transport"] = "zmq";
-    j["out_zmq_endpoint"] = "tcp://0.0.0.0:5580";
-    j["out_zmq_bind"] = true;
-    j["out_zmq_buffer_depth"] = 128;
-    j["out_zmq_packing"] = "packed";
-    auto path = write_json("producer.json", j);
-
-    auto cfg = RoleConfig::load(path.string(), "producer");
-    EXPECT_EQ(cfg.out_transport().transport, pylabhub::config::Transport::Zmq);
-    EXPECT_EQ(cfg.out_transport().zmq_endpoint, "tcp://0.0.0.0:5580");
-    EXPECT_TRUE(cfg.out_transport().zmq_bind);
-    EXPECT_EQ(cfg.out_transport().zmq_buffer_depth, 128u);
-    EXPECT_EQ(cfg.out_transport().zmq_packing, "packed");
+    auto w = SpawnWorker("role_config.zmq_transport_valid",
+                         {unique_dir("zmq_transport_valid")});
+    ExpectWorkerOk(w);
 }
 
-// ============================================================================
-// Tests: Move semantics
-// ============================================================================
+// ── Move semantics ──────────────────────────────────────────────────────────
 
 TEST_F(RoleConfigTest, MoveConstruct)
 {
-    auto path = write_json("producer.json", minimal_producer_json());
-    auto cfg = RoleConfig::load(path.string(), "producer");
-
-    RoleConfig moved(std::move(cfg));
-    EXPECT_EQ(moved.identity().uid, "PROD-TEST-00000001");
+    auto w = SpawnWorker("role_config.move_construct",
+                         {unique_dir("move_construct")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, MoveAssign)
 {
-    auto path = write_json("producer.json", minimal_producer_json());
-    auto cfg1 = RoleConfig::load(path.string(), "producer");
-
-    auto j2 = minimal_consumer_json();
-    auto path2 = write_json("consumer.json", j2);
-    auto cfg2 = RoleConfig::load(path2.string(), "consumer");
-
-    cfg2 = std::move(cfg1);
-    EXPECT_EQ(cfg2.identity().uid, "PROD-TEST-00000001");
-    EXPECT_EQ(cfg2.role_tag(), "producer");
+    auto w = SpawnWorker("role_config.move_assign", {unique_dir("move_assign")});
+    ExpectWorkerOk(w);
 }
 
-// ============================================================================
-// Tests: Checksum config
-// ============================================================================
+// ── Checksum ────────────────────────────────────────────────────────────────
 
 TEST_F(RoleConfigTest, ChecksumDefault_Enforced)
 {
-    // No "checksum" key → default Enforced
-    auto path = write_json("producer.json", minimal_producer_json());
-    auto cfg = RoleConfig::load(path.string(), "producer");
-    EXPECT_EQ(cfg.checksum().policy, pylabhub::hub::ChecksumPolicy::Enforced);
-    EXPECT_TRUE(cfg.checksum().flexzone);
+    auto w = SpawnWorker("role_config.checksum_default_enforced",
+                         {unique_dir("checksum_default_enforced")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, ChecksumExplicit_Manual)
 {
-    auto j = minimal_producer_json();
-    j["checksum"] = "manual";
-    j["flexzone_checksum"] = false;
-    auto path = write_json("producer.json", j);
-    auto cfg = RoleConfig::load(path.string(), "producer");
-    EXPECT_EQ(cfg.checksum().policy, pylabhub::hub::ChecksumPolicy::Manual);
-    EXPECT_FALSE(cfg.checksum().flexzone);
+    auto w = SpawnWorker("role_config.checksum_explicit_manual",
+                         {unique_dir("checksum_explicit_manual")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, ChecksumExplicit_None)
 {
-    auto j = minimal_consumer_json();
-    j["checksum"] = "none";
-    auto path = write_json("consumer.json", j);
-    auto cfg = RoleConfig::load(path.string(), "consumer");
-    EXPECT_EQ(cfg.checksum().policy, pylabhub::hub::ChecksumPolicy::None);
+    auto w = SpawnWorker("role_config.checksum_explicit_none",
+                         {unique_dir("checksum_explicit_none")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, ChecksumInvalid_Throws)
 {
-    auto j = minimal_producer_json();
-    j["checksum"] = "turbo";
-    auto path = write_json("producer.json", j);
-    EXPECT_THROW(RoleConfig::load(path.string(), "producer"), std::runtime_error);
+    auto w = SpawnWorker("role_config.checksum_invalid_throws",
+                         {unique_dir("checksum_invalid_throws")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, ChecksumNull_DefaultEnforced)
 {
-    // null value treated as absent → default Enforced
-    auto j = minimal_producer_json();
-    j["checksum"] = nullptr;
-    auto path = write_json("producer.json", j);
-    auto cfg = RoleConfig::load(path.string(), "producer");
-    EXPECT_EQ(cfg.checksum().policy, pylabhub::hub::ChecksumPolicy::Enforced);
+    auto w = SpawnWorker("role_config.checksum_null_default_enforced",
+                         {unique_dir("checksum_null_default_enforced")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, UnknownKey_Throws)
 {
-    auto j = minimal_producer_json();
-    j["unknown_bogus_key"] = 42;
-    auto path = write_json("producer.json", j);
-    EXPECT_THROW(RoleConfig::load(path.string(), "producer"), std::runtime_error);
+    auto w = SpawnWorker("role_config.unknown_key_throws",
+                         {unique_dir("unknown_key_throws")});
+    ExpectWorkerOk(w);
 }
 
-// ── Logging config ──────────────────────────────────────────────────────────
+// ── Logging ─────────────────────────────────────────────────────────────────
 
 TEST_F(RoleConfigTest, LoggingDefault_AllDefaults)
 {
-    // No "logging" key → defaults: empty path, 10 MiB, 5 backups, timestamped=true.
-    auto path = write_json("producer.json", minimal_producer_json());
-    auto cfg = RoleConfig::load(path.string(), "producer");
-    EXPECT_EQ(cfg.logging().file_path, "");
-    EXPECT_EQ(cfg.logging().max_size_bytes, 10ULL * 1024 * 1024);
-    EXPECT_EQ(cfg.logging().max_backup_files, 5u);
-    EXPECT_TRUE(cfg.logging().timestamped);
+    auto w = SpawnWorker("role_config.logging_default_all_defaults",
+                         {unique_dir("logging_default_all_defaults")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, LoggingExplicit_AllFields)
 {
-    auto j = minimal_producer_json();
-    j["logging"] = {
-        {"file_path",   "logs/custom.log"},
-        {"max_size_mb", 50},
-        {"backups",     10},
-        {"timestamped", false},
-    };
-    auto path = write_json("producer.json", j);
-    auto cfg = RoleConfig::load(path.string(), "producer");
-    EXPECT_EQ(cfg.logging().file_path, "logs/custom.log");
-    EXPECT_EQ(cfg.logging().max_size_bytes, 50ULL * 1024 * 1024);
-    EXPECT_EQ(cfg.logging().max_backup_files, 10u);
-    EXPECT_FALSE(cfg.logging().timestamped);
+    auto w = SpawnWorker("role_config.logging_explicit_all_fields",
+                         {unique_dir("logging_explicit_all_fields")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, LoggingPartial_MixesDefaultsAndExplicit)
 {
-    auto j = minimal_producer_json();
-    j["logging"] = {
-        {"max_size_mb", 25},
-        // file_path, backups, timestamped left default
-    };
-    auto path = write_json("producer.json", j);
-    auto cfg = RoleConfig::load(path.string(), "producer");
-    EXPECT_EQ(cfg.logging().file_path, "");
-    EXPECT_EQ(cfg.logging().max_size_bytes, 25ULL * 1024 * 1024);
-    EXPECT_EQ(cfg.logging().max_backup_files, 5u);
-    EXPECT_TRUE(cfg.logging().timestamped);
+    auto w = SpawnWorker(
+        "role_config.logging_partial_mixes_defaults_and_explicit",
+        {unique_dir("logging_partial_mixes")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, LoggingZeroBackups_Throws)
 {
-    // 0 backups is invalid — the active file always exists, so a positive
-    // retention count (>=1) or the -1 sentinel ("keep all") is required.
-    auto j = minimal_producer_json();
-    j["logging"] = {{"backups", 0}};
-    auto path = write_json("producer.json", j);
-    EXPECT_THROW(RoleConfig::load(path.string(), "producer"), std::runtime_error);
+    auto w = SpawnWorker("role_config.logging_zero_backups_throws",
+                         {unique_dir("logging_zero_backups_throws")});
+    ExpectWorkerOk(w);  // see NOTE above re: missing LOGGER_ERROR_RT
 }
 
 TEST_F(RoleConfigTest, LoggingBackupsNegativeOne_KeepsAllFiles)
 {
-    // -1 in JSON is the sentinel "never delete rotated files"; it maps to
-    // LoggingConfig::kKeepAllBackups (SIZE_MAX) internally.
-    auto j = minimal_producer_json();
-    j["logging"] = {{"backups", -1}};
-    auto path = write_json("producer.json", j);
-    auto cfg = RoleConfig::load(path.string(), "producer");
-    EXPECT_EQ(cfg.logging().max_backup_files,
-              pylabhub::config::LoggingConfig::kKeepAllBackups);
+    auto w = SpawnWorker("role_config.logging_backups_negative_one_keeps_all_files",
+                         {unique_dir("logging_backups_negative_one")});
+    ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, LoggingNegativeBackupsOther_Throws)
 {
-    // Only -1 is a valid negative; -2, -100, etc. must be rejected.
-    auto j = minimal_producer_json();
-    j["logging"] = {{"backups", -2}};
-    auto path = write_json("producer.json", j);
-    EXPECT_THROW(RoleConfig::load(path.string(), "producer"), std::runtime_error);
+    auto w = SpawnWorker("role_config.logging_negative_backups_other_throws",
+                         {unique_dir("logging_negative_backups_other")});
+    ExpectWorkerOk(w);  // see NOTE above re: missing LOGGER_ERROR_RT
 }
 
 TEST_F(RoleConfigTest, LoggingZeroMaxSize_Throws)
 {
-    auto j = minimal_producer_json();
-    j["logging"] = {{"max_size_mb", 0}};
-    auto path = write_json("producer.json", j);
-    EXPECT_THROW(RoleConfig::load(path.string(), "producer"), std::runtime_error);
+    auto w = SpawnWorker("role_config.logging_zero_max_size_throws",
+                         {unique_dir("logging_zero_max_size_throws")});
+    ExpectWorkerOk(w);  // see NOTE above re: missing LOGGER_ERROR_RT
 }
 
 TEST_F(RoleConfigTest, LoggingNegativeMaxSize_Throws)
 {
-    auto j = minimal_producer_json();
-    j["logging"] = {{"max_size_mb", -5}};
-    auto path = write_json("producer.json", j);
-    EXPECT_THROW(RoleConfig::load(path.string(), "producer"), std::runtime_error);
+    auto w = SpawnWorker("role_config.logging_negative_max_size_throws",
+                         {unique_dir("logging_negative_max_size_throws")});
+    ExpectWorkerOk(w);  // see NOTE above re: missing LOGGER_ERROR_RT
 }
 
 TEST_F(RoleConfigTest, LoggingUnknownSubKey_Throws)
 {
-    // Unknown keys inside "logging" must be rejected.
-    auto j = minimal_producer_json();
-    j["logging"] = {
-        {"max_size_mb", 10},
-        {"bogus_field", "xyz"},
-    };
-    auto path = write_json("producer.json", j);
-    EXPECT_THROW(RoleConfig::load(path.string(), "producer"), std::runtime_error);
+    auto w = SpawnWorker("role_config.logging_unknown_sub_key_throws",
+                         {unique_dir("logging_unknown_sub_key_throws")});
+    ExpectWorkerOk(w);  // see NOTE above re: missing LOGGER_ERROR_RT
 }
 
 TEST_F(RoleConfigTest, LoggingNotObject_Throws)
 {
-    // "logging" must be an object; string/number/null should fail.
-    auto j = minimal_producer_json();
-    j["logging"] = "not an object";
-    auto path = write_json("producer.json", j);
-    EXPECT_THROW(RoleConfig::load(path.string(), "producer"), std::runtime_error);
+    auto w = SpawnWorker("role_config.logging_not_object_throws",
+                         {unique_dir("logging_not_object_throws")});
+    ExpectWorkerOk(w);  // see NOTE above re: missing LOGGER_ERROR_RT
 }
 
 TEST_F(RoleConfigTest, LoggingFractionalMaxSize_Accepted)
 {
-    // Fractional MB allowed: 0.5 MB = 512 KiB.
-    auto j = minimal_producer_json();
-    j["logging"] = {{"max_size_mb", 0.5}};
-    auto path = write_json("producer.json", j);
-    auto cfg = RoleConfig::load(path.string(), "producer");
-    EXPECT_EQ(cfg.logging().max_size_bytes, 512ULL * 1024);
+    auto w = SpawnWorker("role_config.logging_fractional_max_size_accepted",
+                         {unique_dir("logging_fractional_max_size")});
+    ExpectWorkerOk(w);
 }
