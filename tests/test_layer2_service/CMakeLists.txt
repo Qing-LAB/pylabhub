@@ -776,9 +776,11 @@ gtest_discover_tests(test_layer2_loop_timing_policy
 # --- LuaEngine unit tests ---
 add_executable(test_layer2_lua_engine
     test_lua_engine.cpp
+    workers/lua_engine_workers.cpp
 )
 
 target_include_directories(test_layer2_lua_engine PRIVATE
+    workers
     ${CMAKE_SOURCE_DIR}/src/scripting
     ${CMAKE_SOURCE_DIR}/tests/test_framework
 )
@@ -787,8 +789,9 @@ target_link_libraries(test_layer2_lua_engine
     PRIVATE
         pylabhub::utils
         pylabhub::scripting
+        pylabhub::test_framework
         GTest::gtest
-        GTest::gtest_main
+        GTest::gmock
 )
 
 target_compile_definitions(test_layer2_lua_engine PRIVATE LOGGER_COMPILE_LEVEL=0)

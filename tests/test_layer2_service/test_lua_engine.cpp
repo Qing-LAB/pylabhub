@@ -22,12 +22,15 @@
 #include "utils/engine_module_params.hpp"
 #include "utils/schema_utils.hpp"
 #include "utils/role_host_core.hpp"
+#include "test_patterns.h"    // Pattern 3 (IsolatedProcessTest) for chunk 1
 #include "test_schema_helpers.h"
 
+#include <atomic>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -121,219 +124,154 @@ class LuaEngineTest : public ::testing::Test
 // 1. Lifecycle
 // ============================================================================
 
-TEST_F(LuaEngineTest, FullLifecycle)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            return true
-        end
-        function on_init(api) end
-        function on_stop(api) end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    engine.invoke_on_init();
-    engine.invoke_on_stop();
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, InitializeFailsGracefully)
-{
-    // Double initialize should not crash (engine manages state).
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    engine.finalize();
-}
-
 // ============================================================================
-// 2. Type Registration
+// Chunk 1 — Lifecycle, Type registration, Alias creation (Pattern 3)
+//
+// These tests used to live under the V2 LuaEngineTest fixture above; they
+// were the first group converted to Pattern 3 by the test-framework sweep.
+// Each spawns a subprocess where the engine is constructed and driven;
+// bodies live in workers/lua_engine_workers.cpp.
+//
+// Remaining tests in this file still use the V2 fixture and will be
+// converted chunk-by-chunk in subsequent commits (one chunk per thematic
+// group: produce / consume / process / messages / api / error / multi-state).
 // ============================================================================
 
-TEST_F(LuaEngineTest, RegisterSlotType_SizeofCorrect)
+namespace
 {
-    write_script("function on_produce(tx, msgs, api) return true end");
 
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
+class LuaEngineChunk1Test : public pylabhub::tests::IsolatedProcessTest
+{
+  protected:
+    void TearDown() override
+    {
+        for (const auto &p : paths_to_clean_)
+        {
+            std::error_code ec;
+            fs::remove_all(p, ec);
+        }
+        paths_to_clean_.clear();
+    }
 
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+    std::string unique_dir(const char *label)
+    {
+        static std::atomic<int> ctr{0};
+        fs::path p = fs::temp_directory_path() /
+                     ("plh_l2_lua_" + std::string(label) + "_" +
+                      std::to_string(::getpid()) + "_" +
+                      std::to_string(ctr.fetch_add(1)));
+        fs::create_directories(p);
+        paths_to_clean_.push_back(p);
+        return p.string();
+    }
 
-    // float32 = 4 bytes
-    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 4u);
+    std::vector<fs::path> paths_to_clean_;
+};
 
-    engine.finalize();
+} // namespace
+
+TEST_F(LuaEngineChunk1Test, FullLifecycle)
+{
+    // Strengthened: the worker verifies on_init and on_stop actually
+    // dispatched into the Lua runtime by checking report_metric side
+    // effects on RoleHostCore.custom_metrics_snapshot(). See
+    // workers/lua_engine_workers.cpp::full_lifecycle for the full body.
+    auto w = SpawnWorker("lua_engine.full_lifecycle",
+                         {unique_dir("full_lifecycle")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineTest, RegisterSlotType_MultiField)
+TEST_F(LuaEngineChunk1Test, InitializeAndFinalize_Succeeds)
 {
-    write_script("function on_produce(tx, msgs, api) return true end");
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
-
-    SchemaSpec spec;
-    spec.has_schema = true;
-    FieldDef f1; f1.name = "x"; f1.type_str = "float32"; f1.count = 1; f1.length = 0;
-    FieldDef f2; f2.name = "y"; f2.type_str = "float32"; f2.count = 1; f2.length = 0;
-    FieldDef f3; f3.name = "z"; f3.type_str = "float32"; f3.count = 1; f3.length = 0;
-    spec.fields = {f1, f2, f3};
-
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 12u); // 3 * 4 bytes
-
-    engine.finalize();
+    // Renamed from InitializeFailsGracefully — body never matched that
+    // name. A real initialize-fails-gracefully test needs a failure-
+    // injection hook (e.g. simulate luaL_newstate() returning nullptr);
+    // adding that hook is queued as a follow-up.
+    auto w = SpawnWorker("lua_engine.initialize_and_finalize_succeeds",
+                         {unique_dir("init_finalize")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineTest, RegisterSlotType_PackedPacking)
+TEST_F(LuaEngineChunk1Test, RegisterSlotType_SizeofCorrect)
 {
-    write_script("function on_produce(tx, msgs, api) return true end");
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
-
-    // bool + int32: aligned=8, packed=5.
-    SchemaSpec spec;
-    spec.has_schema = true;
-    FieldDef f1; f1.name = "flag"; f1.type_str = "bool"; f1.count = 1; f1.length = 0;
-    FieldDef f2; f2.name = "val";  f2.type_str = "int32"; f2.count = 1; f2.length = 0;
-    spec.fields = {f1, f2};
-
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "packed"));
-    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 5u) << "packed: bool(1)+int32(4)=5";
-
-    engine.finalize();
+    auto w = SpawnWorker("lua_engine.register_slot_type_sizeof_correct",
+                         {unique_dir("sizeof")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineTest, RegisterSlotType_HasSchemaFalse_ReturnsFalse)
+TEST_F(LuaEngineChunk1Test, RegisterSlotType_MultiField)
 {
-    write_script("function on_produce(tx, msgs, api) return true end");
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
-
-    SchemaSpec spec;
-    spec.has_schema = false;
-    EXPECT_FALSE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    engine.finalize();
+    auto w = SpawnWorker("lua_engine.register_slot_type_multi_field",
+                         {unique_dir("multifield")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineTest, Alias_SlotFrame_Producer)
+TEST_F(LuaEngineChunk1Test, RegisterSlotType_Packed_vs_Aligned)
 {
-    write_script("function on_produce(tx, msgs, api) return true end");
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_);
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    // After build_api, "SlotFrame" alias should exist for producer.
-    EXPECT_EQ(engine.type_sizeof("SlotFrame"), engine.type_sizeof("OutSlotFrame"));
-    EXPECT_GT(engine.type_sizeof("SlotFrame"), 0u);
-
-    engine.finalize();
+    // Strengthened from RegisterSlotType_PackedPacking: verifies BOTH
+    // aligned (8 bytes) and packed (5 bytes) for the same schema, and
+    // explicitly asserts the sizes differ so a silent packing-arg-ignored
+    // regression cannot slip by.
+    auto w = SpawnWorker("lua_engine.register_slot_type_packed_vs_aligned",
+                         {unique_dir("packed_vs_aligned")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineTest, Alias_SlotFrame_Consumer)
+TEST_F(LuaEngineChunk1Test, RegisterSlotType_HasSchemaFalse_ReturnsFalse)
 {
-    write_script("function on_consume(rx, msgs, api) return true end");
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_consume"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_, "cons");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    // After build_api, "SlotFrame" alias should exist for consumer.
-    EXPECT_EQ(engine.type_sizeof("SlotFrame"), engine.type_sizeof("InSlotFrame"));
-    EXPECT_GT(engine.type_sizeof("SlotFrame"), 0u);
-
-    engine.finalize();
+    auto w = SpawnWorker(
+        "lua_engine.register_slot_type_has_schema_false_returns_false",
+        {unique_dir("has_schema_false")});
+    // Engine logs "has_schema=false" rejection at ERROR level; declare
+    // it so the framework's broad "no ERROR" check doesn't fire.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/{"has_schema"});
 }
 
-TEST_F(LuaEngineTest, Alias_NoAlias_Processor)
+// NEW: coverage fill for types previously not exercised at L2
+// (bool, int8, int16, uint64).  See all_types_schema in
+// tests/test_framework/test_schema_helpers.h for the full list and the
+// dispatcher-source citations that justify the coverage.
+TEST_F(LuaEngineChunk1Test, RegisterSlotType_AllSupportedTypes_Succeeds)
 {
-    write_script("function on_process(rx, tx, msgs, api) return true end");
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_process"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_, "proc");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    // Processor: no alias — SlotFrame should not be defined.
-    EXPECT_EQ(engine.type_sizeof("SlotFrame"), 0u);
-
-    engine.finalize();
+    auto w = SpawnWorker("lua_engine.register_slot_type_all_supported_types",
+                         {unique_dir("all_types")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineTest, Alias_FlexFrame_Producer)
+TEST_F(LuaEngineChunk1Test, Alias_SlotFrame_Producer)
 {
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            return true
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutFlexFrame", "aligned"));
-
-    auto test_api = make_api(default_core_);
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    // FlexFrame alias should exist for producer.
-    EXPECT_EQ(engine.type_sizeof("FlexFrame"), engine.type_sizeof("OutFlexFrame"));
-    EXPECT_GT(engine.type_sizeof("FlexFrame"), 0u);
-
-    engine.finalize();
+    auto w = SpawnWorker("lua_engine.alias_slot_frame_producer",
+                         {unique_dir("alias_prod")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineTest, Alias_ProducerNoFz_NoFlexFrameAlias)
+TEST_F(LuaEngineChunk1Test, Alias_SlotFrame_Consumer)
 {
-    write_script("function on_produce(tx, msgs, api) return true end");
+    auto w = SpawnWorker("lua_engine.alias_slot_frame_consumer",
+                         {unique_dir("alias_cons")});
+    ExpectWorkerOk(w);
+}
 
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
+TEST_F(LuaEngineChunk1Test, Alias_NoAlias_Processor)
+{
+    auto w = SpawnWorker("lua_engine.alias_no_alias_processor",
+                         {unique_dir("alias_proc")});
+    ExpectWorkerOk(w);
+}
 
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-    // No flexzone registered.
+TEST_F(LuaEngineChunk1Test, Alias_FlexFrame_Producer)
+{
+    auto w = SpawnWorker("lua_engine.alias_flex_frame_producer",
+                         {unique_dir("alias_flex")});
+    ExpectWorkerOk(w);
+}
 
-    auto test_api = make_api(default_core_);
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    // SlotFrame alias exists, but FlexFrame should not (no fz registered).
-    EXPECT_GT(engine.type_sizeof("SlotFrame"), 0u);
-    EXPECT_EQ(engine.type_sizeof("FlexFrame"), 0u);
-
-    engine.finalize();
+TEST_F(LuaEngineChunk1Test, Alias_ProducerNoFz_NoFlexFrameAlias)
+{
+    auto w = SpawnWorker("lua_engine.alias_producer_no_fz_no_flex_frame_alias",
+                         {unique_dir("alias_no_fz")});
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
