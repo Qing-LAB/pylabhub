@@ -48,5 +48,30 @@ int uninitialized_behavior();
  */
 int not_consuming_proxy();
 
+// ── Pattern 3 conversions of the previously in-process JsonConfigTest ──
+// Each takes a parent-provided unique temp directory; the parent removes
+// it after wait_for_exit. Workers own their LifecycleGuard via
+// run_gtest_worker (Logger + FileLock + JsonConfig).
+
+int init_and_create(const std::string &dir);
+int init_with_empty_path_fails();
+int init_with_non_existent_file(const std::string &dir);
+int basic_accessors(const std::string &dir);
+int reload_on_disk_change(const std::string &dir);
+int simplified_api_overloads(const std::string &dir);
+int recursion_guard(const std::string &dir);
+int write_transaction_rolls_back_on_exception(const std::string &dir);
+int load_malformed_file(const std::string &dir);
+int multi_thread_file_contention(const std::string &dir);
+int symlink_attack_prevention_posix(const std::string &dir);
+int symlink_attack_prevention_windows(const std::string &dir);
+int multi_thread_shared_object_contention(const std::string &dir);
+int manual_locking_api(const std::string &dir);
+int move_semantics(const std::string &dir);
+int overwrite_method(const std::string &dir);
+int dirty_flag_logic(const std::string &dir);
+int write_veto_commit(const std::string &dir);
+int write_produces_invalid_json(const std::string &dir);
+
 } // namespace jsonconfig
 } // namespace pylabhub::tests::worker
