@@ -21,9 +21,13 @@ class DatahubMutexTest : public IsolatedProcessTest
 
 TEST_F(DatahubMutexTest, CreatorAcquiresAndReleases)
 {
+    // Legacy multi-process worker: bypasses run_gtest_worker so the body
+    // can hold a process-shared mutex across the wait_for_exit boundary.
+    // Opt out of the [WORKER_*] milestone check; rely on exit code +
+    // operational-string assertions instead.
     std::string shm_name = make_test_channel_name("DBMutexCreator");
     auto proc = SpawnWorker("datablock_mutex.acquire_and_release_creator", {shm_name});
-    ExpectWorkerOk(proc, {"Mutex acquired", "Mutex released"});
+    ExpectLegacyWorkerOk(proc, {"Mutex acquired", "Mutex released"});
 }
 
 TEST_F(DatahubMutexTest, AttacherAcquiresAfterCreator)
@@ -38,8 +42,11 @@ TEST_F(DatahubMutexTest, AttacherAcquiresAfterCreator)
     auto attacher = SpawnWorker("datablock_mutex.acquire_and_release_attacher", {shm_name});
     creator.wait_for_exit();
     attacher.wait_for_exit();
-    pylabhub::tests::helper::expect_worker_ok(creator, {"Mutex acquired", "Mutex released"});
-    pylabhub::tests::helper::expect_worker_ok(attacher, {"Mutex acquired", "Mutex released"});
+    // Legacy bypass-workers: opt out of milestone check (4th arg false).
+    pylabhub::tests::helper::expect_worker_ok(creator, {"Mutex acquired", "Mutex released"}, {},
+                                              /*require_completion_markers=*/false);
+    pylabhub::tests::helper::expect_worker_ok(attacher, {"Mutex acquired", "Mutex released"}, {},
+                                              /*require_completion_markers=*/false);
 }
 
 TEST_F(DatahubMutexTest, ZombieOwnerRecovery)
@@ -56,7 +63,8 @@ TEST_F(DatahubMutexTest, ZombieOwnerRecovery)
     EXPECT_EQ(zombie.exit_code(), 0) << "Zombie worker should exit 0 (clean _exit)";
 
     auto recoverer = SpawnWorker("datablock_mutex.zombie_attacher_recovers", {shm_name});
-    ExpectWorkerOk(recoverer, {"Mutex acquired", "Mutex released"});
+    // Legacy bypass-worker: opt out of milestone check.
+    ExpectLegacyWorkerOk(recoverer, {"Mutex acquired", "Mutex released"});
 #endif
 }
 

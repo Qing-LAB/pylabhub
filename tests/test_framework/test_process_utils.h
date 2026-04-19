@@ -90,6 +90,18 @@ class WorkerProcess
     int exit_code() const { return exit_code_; }
 
     /**
+     * @brief Returns the worker scenario mode (the "module.scenario" string
+     *        that selects the dispatcher inside the worker subprocess).
+     *
+     * Used by expect_worker_ok to auto-derive the [WORKER_BEGIN] /
+     * [WORKER_END_OK] / [WORKER_FINALIZED] markers it requires in stderr.
+     * Those markers are emitted by run_gtest_worker / run_worker_bare and
+     * close the "test passed because the body silently short-circuited"
+     * loophole.
+     */
+    const std::string &mode() const { return mode_; }
+
+    /**
      * @brief Checks if the worker process was successfully spawned.
      * @return True if the process handle is valid, false otherwise.
      */
@@ -115,6 +127,7 @@ class WorkerProcess
                                 bool redirect_stderr_to_console);
     ProcessHandle handle_ = NULL_PROC_HANDLE;
     int exit_code_ = -1;
+    std::string mode_;     ///< worker scenario string ("module.scenario")
     fs::path stdout_path_;
     fs::path stderr_path_;
     mutable std::string stdout_content_;
@@ -135,6 +148,18 @@ class WorkerProcess
  * This function checks that the worker's exit code is 0 and that its
  * stderr stream does not contain unexpected error markers.
  *
+ * **Worker completion milestones** (silent-shortcircuit catch).  When
+ * @p require_completion_markers is true (default), this function also
+ * requires three markers in the worker's stderr that
+ * run_gtest_worker / run_worker_bare emit automatically:
+ *   [WORKER_BEGIN]      — proves the dispatcher routed correctly
+ *   [WORKER_END_OK]     — proves the body returned without throwing
+ *   [WORKER_FINALIZED]  — proves LifecycleGuard finalize completed
+ * A worker whose body short-circuited (early return, GTEST_SKIP, or an
+ * unreachable-after-helper-failure scenario) still exits 0 but does not
+ * emit [WORKER_END_OK], so this catches the failure mode that pure
+ * exit-code checking misses.
+ *
  * @param proc The WorkerProcess instance to check.
  * @param required_substrings Informational/operational strings that MUST appear in stderr.
  *        Pure positive assertions — do NOT suppress the "no ERROR" check.
@@ -146,9 +171,16 @@ class WorkerProcess
  *        are not silently ignored.  Name the specific expected ERROR message, not
  *        just the generic string "ERROR".
  *        FATAL, PANIC, and [WORKER FAILURE] are always forbidden regardless.
+ * @param require_completion_markers When true (default), require all three
+ *        [WORKER_*] markers in stderr.  Set to false ONLY for legacy
+ *        multi-process workers that bypass run_gtest_worker /
+ *        run_worker_bare — typically process-shared mutex / FileLock
+ *        tests where the worker's whole point is to die holding a
+ *        resource.  New tests should never opt out.
  */
 void expect_worker_ok(const WorkerProcess &proc,
                       const std::vector<std::string> &required_substrings = {},
-                      const std::vector<std::string> &expected_error_substrings = {});
+                      const std::vector<std::string> &expected_error_substrings = {},
+                      bool require_completion_markers = true);
 
 } // namespace pylabhub::tests::helper

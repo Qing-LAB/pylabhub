@@ -245,6 +245,15 @@ int run_gtest_worker(Fn test_logic, const char *test_name, Mods &&...mods)
     // AssertionException) when throw_on_failure is set.
     GTEST_FLAG_SET(throw_on_failure, true);
 
+    // ── Worker completion milestone: BEGIN ──────────────────────────────────
+    //
+    // Emitted *before* the LifecycleGuard, so it lands even if guard ctor
+    // throws. The parent's expect_worker_ok requires this string in stderr
+    // to confirm the dispatcher actually routed to this worker function
+    // (catches a silent dispatcher mismatch).
+    fmt::print(stderr, "[WORKER_BEGIN] {}\n", test_name);
+    std::fflush(stderr);
+
     int exit_code = 0;
     {
         pylabhub::utils::LifecycleGuard guard(
@@ -253,6 +262,15 @@ int run_gtest_worker(Fn test_logic, const char *test_name, Mods &&...mods)
         try
         {
             test_logic();
+            // ── Worker completion milestone: END_OK ──────────────────────────
+            //
+            // Reached only if test_logic returned without throwing. With
+            // throw_on_failure enabled above, any failed ASSERT_/EXPECT_
+            // throws and skips this. The parent's expect_worker_ok requires
+            // this string to confirm the body ran end-to-end — closes the
+            // "test passed because the body short-circuited silently" loophole.
+            fmt::print(stderr, "[WORKER_END_OK] {}\n", test_name);
+            std::fflush(stderr);
         }
         catch (const ::testing::internal::GoogleTestFailureException &e)
         {
@@ -276,6 +294,20 @@ int run_gtest_worker(Fn test_logic, const char *test_name, Mods &&...mods)
     } // LifecycleGuard destructor runs here — all pylabhub modules (Logger,
       // ZMQ context, crypto, etc.) are shut down cleanly via reverse-order
       // teardown.  At this point only library-global static destructors remain.
+
+    // ── Worker completion milestone: FINALIZED ──────────────────────────────
+    //
+    // Reached only if LifecycleGuard's destructor returned (no shutdown
+    // callback hung or aborted). Always emitted so the parent can confirm
+    // clean finalize even when the body itself failed an assertion (the
+    // exit code surfaces the body failure; the FINALIZED marker tells the
+    // parent that finalize at least did not hang on top of it). The
+    // _FINALIZED_FAILED variant is reserved for future shutdown-failure
+    // signalling — at present LifecycleGuard's dtor is noexcept, so a
+    // missing _FINALIZED marker means the process died (signal/abort)
+    // before reaching this point.
+    fmt::print(stderr, "[WORKER_FINALIZED] {}\n", test_name);
+    std::fflush(stderr);
 
     // Check for any ThreadManager-leaked threads during the LifecycleGuard
     // teardown above. If any ThreadManager in this subprocess had to detach
@@ -339,9 +371,18 @@ template <typename Fn> int run_worker_bare(Fn test_logic, const char *test_name)
     // Same throw_on_failure fix as run_gtest_worker: makes ASSERT_*/EXPECT_* throw.
     GTEST_FLAG_SET(throw_on_failure, true);
 
+    // Worker completion milestones — see run_gtest_worker for the reasoning.
+    // Bare workers do not own a LifecycleGuard themselves, but the parent's
+    // expect_worker_ok still requires all three markers so that an early
+    // return / silent skip cannot pass as "exit code 0 = OK".
+    fmt::print(stderr, "[WORKER_BEGIN] {}\n", test_name);
+    std::fflush(stderr);
+
     try
     {
         test_logic();
+        fmt::print(stderr, "[WORKER_END_OK] {}\n", test_name);
+        std::fflush(stderr);
     }
     catch (const ::testing::internal::GoogleTestFailureException &e)
     {
@@ -363,6 +404,13 @@ template <typename Fn> int run_worker_bare(Fn test_logic, const char *test_name)
         pylabhub::debug::print_stack_trace();
         return 3;
     }
+
+    // For bare workers there is no implicit LifecycleGuard, so [WORKER_FINALIZED]
+    // is emitted at the same point a guarded worker would: after the body and
+    // any test-internal lifecycle teardown. If the body installed its own
+    // LifecycleGuard, that guard's dtor has already run by here.
+    fmt::print(stderr, "[WORKER_FINALIZED] {}\n", test_name);
+    std::fflush(stderr);
 
     // Same unclean-shutdown check as run_gtest_worker: any ThreadManager
     // detach-on-timeout during the body produces exit code 4 so the parent
