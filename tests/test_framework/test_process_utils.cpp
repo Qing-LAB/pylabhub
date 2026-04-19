@@ -400,7 +400,8 @@ static int wait_for_worker_and_get_exit_code(ProcessHandle handle, int timeout_s
 WorkerProcess::WorkerProcess(const std::string &exe_path, const std::string &mode,
                              const std::vector<std::string> &args, bool redirect_stderr_to_console,
                              bool with_ready_signal)
-    : redirect_stderr_to_console_(redirect_stderr_to_console),
+    : mode_(mode),
+      redirect_stderr_to_console_(redirect_stderr_to_console),
       with_ready_signal_(with_ready_signal)
 {
     auto base_name = fs::path(exe_path).filename().string() + "_" + fs::path(mode).filename().string();
@@ -543,7 +544,8 @@ const std::string &WorkerProcess::get_stderr() const
 
 void expect_worker_ok(const WorkerProcess &proc,
                       const std::vector<std::string> &required_substrings,
-                      const std::vector<std::string> &expected_error_substrings)
+                      const std::vector<std::string> &expected_error_substrings,
+                      bool require_completion_markers)
 {
     using ::testing::HasSubstr;
     using ::testing::Not;
@@ -566,6 +568,47 @@ void expect_worker_ok(const WorkerProcess &proc,
     }
 
     const auto &stderr_out = proc.get_stderr();
+
+    // ── Worker completion milestones (silent-shortcircuit catch) ────────────
+    //
+    // run_gtest_worker / run_worker_bare emit three stderr markers, in
+    // order, around the test body:
+    //
+    //   [WORKER_BEGIN] <test_name>      — dispatcher routed correctly and the
+    //                                     worker function entered run_*_worker
+    //   [WORKER_END_OK] <test_name>     — test body returned WITHOUT throwing
+    //                                     (no failed EXPECT_/ASSERT_; no
+    //                                     std::exception escape)
+    //   [WORKER_FINALIZED] <test_name>  — LifecycleGuard finalize completed
+    //                                     cleanly (no module shutdown hang)
+    //
+    // We require all three *prefixes* (not the full test_name) so the check
+    // works uniformly across legacy workers (which use "module::scenario"
+    // naming) and new workers (which use "module.scenario"). What matters
+    // for safety is that all three milestones appeared in order — that means
+    // the body began, completed without throwing, and the lifecycle
+    // finalized cleanly.
+    //
+    // Closes the "test passed because the body silently skipped its asserts"
+    // loophole: an early return or unreachable lambda yields exit_code == 0
+    // but no [WORKER_END_OK] → this check fails the parent test.
+    //
+    // Tests that intentionally exit non-zero (the PLH_PANIC abort tests) do
+    // not call ExpectWorkerOk; they use a dedicated abort-checker that
+    // asserts exit_code != 0 + panic text in stderr.
+    if (require_completion_markers)
+    {
+        EXPECT_THAT(stderr_out, HasSubstr("[WORKER_BEGIN]"))
+            << "worker did not emit [WORKER_BEGIN] — dispatcher may not have "
+               "matched scenario '"
+            << proc.mode() << "'.";
+        EXPECT_THAT(stderr_out, HasSubstr("[WORKER_END_OK]"))
+            << "worker did not reach end-of-body for '" << proc.mode()
+            << "' — body short-circuited (early return, skip, or unreachable code).";
+        EXPECT_THAT(stderr_out, HasSubstr("[WORKER_FINALIZED]"))
+            << "worker did not complete LifecycleGuard finalize for '"
+            << proc.mode() << "' — module shutdown hung or aborted.";
+    }
 
     // When expected_error_substrings is empty: no ERROR-level logs are permitted.
     // When non-empty: each named string must appear, AND every [ERROR ] line in stderr

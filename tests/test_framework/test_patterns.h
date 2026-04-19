@@ -203,6 +203,28 @@ class IsolatedProcessTest : public ::testing::Test
             helper::expect_worker_ok(w);
         }
     }
+
+    /**
+     * @brief Waits for a worker and asserts success WITHOUT requiring the
+     *        [WORKER_BEGIN]/[WORKER_END_OK]/[WORKER_FINALIZED] milestones.
+     *
+     * Use this ONLY for legacy multi-process workers that bypass
+     * run_gtest_worker / run_worker_bare — typically process-shared
+     * mutex / FileLock IPC tests where the worker's purpose is to die
+     * holding a resource.  New tests must NEVER use this; they should
+     * route through run_gtest_worker so the silent-shortcircuit catch
+     * applies.
+     */
+    static void ExpectLegacyWorkerOk(
+        helper::WorkerProcess &proc,
+        const std::vector<std::string> &required_substrings = {},
+        const std::vector<std::string> &expected_error_substrings = {})
+    {
+        proc.wait_for_exit();
+        helper::expect_worker_ok(proc, required_substrings,
+                                 expected_error_substrings,
+                                 /*require_completion_markers=*/false);
+    }
 };
 
 // ============================================================================

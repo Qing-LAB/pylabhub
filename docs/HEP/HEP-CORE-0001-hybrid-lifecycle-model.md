@@ -511,6 +511,20 @@ This contract is not stylistic — it is load-bearing:
   exercises `hub::ZMQContext` *does* validate that our init/finalize correctly
   drives `zmq_ctx_term`; what it does not validate is whether libzmq's own
   cleanup hooks run cleanly afterwards (separate concern, not our contract).
+
+  **Silent-shortcircuit catch.** Inside `run_gtest_worker`, three stderr
+  markers are emitted in order: `[WORKER_BEGIN] <name>` (before guard
+  ctor), `[WORKER_END_OK] <name>` (after `test_logic()` returns without
+  throwing), and `[WORKER_FINALIZED] <name>` (after `LifecycleGuard` dtor
+  returns). The parent's `expect_worker_ok` requires all three — so a
+  body that early-returned, called `GTEST_SKIP`, or ended on an
+  unreachable line still exits 0 but does not produce `[WORKER_END_OK]`,
+  and the parent test fails. This means correctness is asserted by *facts*
+  (markers + log content), not just by exit code. Legacy multi-process
+  IPC workers that bypass `run_gtest_worker` (e.g. process-shared mutex
+  tests where the worker holds a resource and dies) opt out via
+  `ExpectLegacyWorkerOk` / `require_completion_markers=false`; new tests
+  must always route through `run_gtest_worker` so the catch applies.
 - **Crash isolation.** A panic, `abort()`, or even a clean `finalize()` inside
   one test must not corrupt the singleton state observed by the next test.
   Per-test processes are the only mechanism that enforces this.
