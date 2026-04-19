@@ -68,6 +68,28 @@ callback chunks):
   confirming double-finalize is a no-op rules out a real class of
   production bugs.
 
+- [ ] **Test: `RegisterSlotType_CustomName_NotReadOnlyByDefault`**
+  (from the post-chunk-5 review, assumption A1 in the read-only
+  mechanism investigation). `register_slot_type` in
+  `src/scripting/lua_engine.cpp:697-717` dispatches by EXACT name:
+  only "InSlotFrame" and "InboxFrame" get `readonly=true` in the
+  cached ffi ctype; "OutSlotFrame" / "InFlexFrame" / "OutFlexFrame"
+  get `readonly=false`; any other name falls through without caching
+  into either ref.  A test that registers under a custom name and
+  attempts a Lua write should verify either:
+    - the write succeeds (no `const*` protection by default), OR
+    - the engine logs a clear diagnostic about the unknown type.
+  Pin whichever behaviour is the current implementation so a
+  regression that accidentally grants/denies const protection to
+  custom names would fail the test.
+
+- [ ] **Test: rx-write-in-invoke_on_inbox (same mechanism, separate
+  code path)**. Chunk 3 covers invoke_consume, chunk 4 covers
+  invoke_process. `invoke_on_inbox` (lua_engine.cpp:992) also pushes
+  a read-only frame (`ref_inbox_readonly_`, :715). Same loud-failure
+  contract should apply; test needs to be added when inbox coverage
+  lands (chunk 7 or later).
+
 **Cross-cutting cleanup deferred to end of entire L2 sweep**:
 
 - [ ] Trim redundant `GTest::gmock` link additions from L2 CMake
