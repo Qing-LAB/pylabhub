@@ -447,103 +447,61 @@ TEST_F(LuaEngineChunk1Test, InvokeConsume_RxSlot_IsReadOnly)
 // 5. invoke_process
 // ============================================================================
 
-TEST_F(LuaEngineTest, InvokeProcess_DualSlots)
+// ============================================================================
+// Chunk 4 — invoke_process (Pattern 3)
+//
+// Processor design note carried over from the worker doc block: a
+// processor ALWAYS has an input channel. Nil rx.slot inside on_process
+// means the input queue timed out (or upstream has no data this
+// iteration), not "no input channel". Nil tx.slot means the output queue
+// is backpressured / no slot currently available, not "no output
+// channel". The renamed tests (BothSlotsNil, RxPresent_TxNil) describe
+// the state, not a role interpretation, so the name stays accurate
+// whichever runtime condition produced that state.
+// ============================================================================
+
+TEST_F(LuaEngineChunk1Test, InvokeProcess_DualSlots)
 {
-    write_script(R"(
-        function on_process(rx, tx, msgs, api)
-            if rx.slot and tx.slot then
-                tx.slot.value = rx.slot.value * 2.0
-                return true
-            end
-            return false
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_process"));
-
-    auto spec = simple_schema();
-    // Processor: separate in/out types.
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_, "proc");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    float in_data  = 21.0f;
-    float out_data = 0.0f;
-    std::vector<IncomingMessage> msgs;
-
-    auto result = engine.invoke_process(
-        InvokeRx{&in_data, sizeof(in_data)},
-        InvokeTx{&out_data, sizeof(out_data)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_FLOAT_EQ(out_data, 42.0f);
-
-    engine.finalize();
+    // Strengthened: also asserts rx input buffer unchanged (read-only in
+    // the dual-slot path) and script_error_count == 0.
+    auto w = SpawnWorker("lua_engine.invoke_process_dual_slots",
+                         {unique_dir("process_dual")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineTest, InvokeProcess_NilInput)
+TEST_F(LuaEngineChunk1Test, InvokeProcess_BothSlotsNil)
 {
-    write_script(R"(
-        function on_process(rx, tx, msgs, api)
-            assert(rx.slot == nil, "expected nil input")
-            assert(tx.slot == nil, "expected nil output")
-            return false
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_process"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_, "proc");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_process(
-        InvokeRx{nullptr, 0},
-        InvokeTx{nullptr, 0}, msgs);
-    EXPECT_EQ(result, InvokeResult::Discard);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    engine.finalize();
+    // Renamed from InvokeProcess_NilInput to describe the slot-state
+    // rather than a misreadable role-semantic. Both rx and tx arrive
+    // nil; Lua asserts nil for both and returns Discard.
+    auto w = SpawnWorker("lua_engine.invoke_process_both_slots_nil",
+                         {unique_dir("process_both_nil")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineTest, InvokeProcess_InputOnlyNoOutput)
+TEST_F(LuaEngineChunk1Test, InvokeProcess_RxPresent_TxNil)
 {
-    write_script(R"(
-        function on_process(rx, tx, msgs, api)
-            assert(rx.slot ~= nil, "expected input data")
-            assert(tx.slot == nil, "expected nil output")
-            return false
-        end
-    )");
+    // Renamed from InvokeProcess_InputOnlyNoOutput. Represents tx
+    // backpressure while input data is available. Lua drops the
+    // iteration (return false → Discard).
+    auto w = SpawnWorker("lua_engine.invoke_process_rx_present_tx_nil",
+                         {unique_dir("process_rx_tx_nil")});
+    ExpectWorkerOk(w);
+}
 
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_process"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_, "proc");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    float in_data = 10.0f;
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_process(
-        InvokeRx{&in_data, sizeof(in_data)},
-        InvokeTx{nullptr, 0}, msgs);
-    EXPECT_EQ(result, InvokeResult::Discard);
-
-    engine.finalize();
+// NEW: rx read-only contract in the processor's dual-slot code path
+// (invoke_process is a separate engine entry from invoke_consume, so
+// the consumer-path chunk 3 test does not cover this code).
+TEST_F(LuaEngineChunk1Test, InvokeProcess_RxSlot_IsReadOnly)
+{
+    auto w = SpawnWorker("lua_engine.invoke_process_rx_slot_is_read_only",
+                         {unique_dir("process_rx_ro")});
+    // Same rationale as the consumer-path variant: the engine may
+    // either raise a Lua error on the const-write attempt or LuaJIT
+    // may silently no-op it. The callback log tag here is "on_process".
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"[on_process] Lua error"});
 }
 
 // ============================================================================
