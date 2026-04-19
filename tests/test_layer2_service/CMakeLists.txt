@@ -870,16 +870,18 @@ set_target_properties(test_native_multifield_module PROPERTIES
 # ── NativeEngine test binary ─────────────────────────────────────────────
 add_executable(test_layer2_scriptengine_native_dylib
     test_scriptengine_native_dylib.cpp
+    workers/scriptengine_native_dylib_workers.cpp
 )
 target_include_directories(test_layer2_scriptengine_native_dylib PRIVATE
+    workers
     ${CMAKE_SOURCE_DIR}/src/scripting
     ${CMAKE_SOURCE_DIR}/tests/test_framework
 )
 target_link_libraries(test_layer2_scriptengine_native_dylib PRIVATE
     pylabhub::utils
     pylabhub::scripting
+    pylabhub::test_framework
     GTest::gtest
-    GTest::gtest_main
 )
 target_compile_definitions(test_layer2_scriptengine_native_dylib PRIVATE
     LOGGER_COMPILE_LEVEL=0
