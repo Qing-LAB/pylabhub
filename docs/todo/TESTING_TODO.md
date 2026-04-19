@@ -9,6 +9,33 @@
 
 ## Current Focus
 
+### Open: Stress-level calibration across converted Pattern-3 tests
+
+The test framework already exposes `STRESS_TEST_LEVEL` (via
+`shared_test_helpers.h`: `get_stress_num_threads()`,
+`get_stress_num_writers()`, `get_stress_num_readers()`,
+`get_stress_duration_sec()`, `get_stress_iterations(high, low)`).
+Several race-hunting tests converted in the test-framework sweep
+kept the originals' hardcoded thread/iter counts instead of
+adopting the helpers, so CI defaults run hotter than Low-stress
+values and developers running `-DSTRESS_TEST_LEVEL=High` don't get
+the amplification the helpers would provide.
+
+Deferred here (not in the converting-sweep commits) so each
+sweep commit stays a pure refactor with no semantic change.
+
+Affected tests that should adopt the helpers:
+
+| File | Test | Current | Should be |
+|---|---|---|---|
+| `workers/filelock_singleprocess_workers.cpp` | `multi_threaded_contention` | `kThreads = 10` | `get_stress_num_threads()` |
+| `workers/role_config_workers.cpp` | `multi_thread_file_contention` | 16 threads × 25 iters | `get_stress_num_threads()`, `get_stress_iterations(25, 8)` |
+| `workers/role_config_workers.cpp` | `multi_thread_shared_object_contention` | 4 writers + 8 readers × 1s duration | `get_stress_num_writers()`, `get_stress_num_readers()`, duration scaled from `get_stress_duration_sec()` (divide by a constant to keep sub-second at Low) |
+| `test_filelock.cpp` | `MultiProcessBlockingContention` | 8 procs × 100 iters | `get_stress_num_threads()` capped at a hard max (process count has real IPC overhead), `get_stress_iterations(100, 25)` |
+
+When done: run `ctest -j2 --repeat until-pass:3 -L layer2` at
+each stress level (Low / Medium / High) to confirm no new flakes.
+
 ### Phase C: Integration Tests
 **Status**: ✅ Complete (424/424 as of 2026-02-19; suite grown to **1181/1181** by 2026-03-30)
 
