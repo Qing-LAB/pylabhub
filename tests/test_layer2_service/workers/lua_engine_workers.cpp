@@ -965,6 +965,242 @@ int invoke_consume_rx_slot_is_read_only(const std::string &dir)
         });
 }
 
+// ── invoke_process (chunk 4) ────────────────────────────────────────────────
+//
+// Processor role: always has an input channel by definition (a role
+// without an input channel is a consumer, not a processor).  Nil rx.slot
+// inside on_process represents a runtime condition (input queue timed
+// out / no data) not a missing channel; nil tx.slot similarly represents
+// "output queue has no slot right now" (backpressure).
+//
+// The scenarios below are named by slot-state combination to keep the
+// contract under test explicit: DualSlots = rx+tx present, BothSlotsNil
+// = both timed out, RxPresent_TxNil = input available but output
+// backpressured.  All three cases are real production states the
+// processor's main loop feeds to on_process.
+
+namespace
+{
+
+/// Processor variant of setup_engine.  Registers both InSlotFrame and
+/// OutSlotFrame (processor uses separate in/out types; no SlotFrame
+/// alias — see alias_no_alias_processor in chunk 1), builds API with
+/// tag "proc".
+bool setup_processor_engine(LuaEngine &engine, RoleHostCore &core,
+                            const fs::path &dir,
+                            std::unique_ptr<RoleAPIBase> &api_out)
+{
+    if (!engine.initialize("test", &core))
+        return false;
+    if (!engine.load_script(dir, "init.lua", "on_process"))
+        return false;
+    auto spec = simple_schema();
+    if (!engine.register_slot_type(spec, "InSlotFrame", "aligned"))
+        return false;
+    if (!engine.register_slot_type(spec, "OutSlotFrame", "aligned"))
+        return false;
+    api_out = make_api(core, "proc");
+    return engine.build_api(*api_out);
+}
+
+/// Processor-side equivalent of produce/consume_worker_with_script.
+template <typename F>
+int process_worker_with_script(const std::string &dir,
+                               const char *scenario_name,
+                               const std::string &lua_source,
+                               F &&body)
+{
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, lua_source);
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            std::unique_ptr<RoleAPIBase> api;
+            ASSERT_TRUE(setup_processor_engine(engine, core, script_dir, api));
+
+            body(engine, core);
+
+            engine.finalize();
+        },
+        scenario_name, Logger::GetLifecycleModule());
+}
+
+} // namespace
+
+int invoke_process_dual_slots(const std::string &dir)
+{
+    // Strengthened over the pre-conversion test:
+    //
+    //   a) Asserts script_error_count == 0 (catches a regression where
+    //      the engine silently logged a script error alongside returning
+    //      Commit).
+    //
+    //   b) Asserts the rx input buffer was NOT mutated even though Lua
+    //      read rx.slot.value.  rx is documented read-only
+    //      (script_engine.hpp:356) and the processor dual-slot code
+    //      path must preserve that contract the same way the consumer
+    //      path does.  The pre-conversion test only checked out_data,
+    //      leaving a regression where the engine wrote back to rx.slot
+    //      (aliasing bug, say) undetectable.
+    return process_worker_with_script(
+        dir, "lua_engine::invoke_process_dual_slots",
+        R"(
+            function on_process(rx, tx, msgs, api)
+                if rx.slot and tx.slot then
+                    tx.slot.value = rx.slot.value * 2.0
+                    return true
+                end
+                return false
+            end
+        )",
+        [](pylabhub::scripting::LuaEngine &engine,
+           pylabhub::scripting::RoleHostCore & /*core*/) {
+            float in_data  = 21.0f;
+            float out_data = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_process(
+                pylabhub::scripting::InvokeRx{&in_data, sizeof(in_data)},
+                pylabhub::scripting::InvokeTx{&out_data, sizeof(out_data)},
+                msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Commit);
+            EXPECT_FLOAT_EQ(out_data, 42.0f)
+                << "Lua computed tx.slot.value = rx.slot.value * 2.0 = 42.0";
+            EXPECT_FLOAT_EQ(in_data, 21.0f)
+                << "rx.slot is read-only — input buffer must not be mutated "
+                   "by the engine's dual-slot dispatch path";
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int invoke_process_both_slots_nil(const std::string &dir)
+{
+    // Renamed from InvokeProcess_NilInput.  The original name could be
+    // misread as "processor with no input channel", which is semantically
+    // wrong (such a role is a consumer).  The actual scenario is runtime
+    // state: both rx and tx paths produced nil — input queue timed out
+    // AND output queue has no slot.  Processor-shaped code paths must
+    // still pass rx/tx to Lua as nil and not attempt to dereference the
+    // null pointer buffers.
+    return process_worker_with_script(
+        dir, "lua_engine::invoke_process_both_slots_nil",
+        // NOTE: custom raw-string delimiter R"LUA( ... )LUA" is REQUIRED
+        // whenever the Lua source contains parenthesised-substring-then-
+        // quote sequences like `"... (...)"` — the default R"( ... )"
+        // delimiter terminates at the first `)"`, which inside a Lua
+        // string literal closes the raw string prematurely.
+        R"LUA(
+            function on_process(rx, tx, msgs, api)
+                assert(rx.slot == nil, "expected nil input (timeout / no data)")
+                assert(tx.slot == nil, "expected nil output (backpressure)")
+                return false
+            end
+        )LUA",
+        [](pylabhub::scripting::LuaEngine &engine,
+           pylabhub::scripting::RoleHostCore & /*core*/) {
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_process(
+                pylabhub::scripting::InvokeRx{nullptr, 0},
+                pylabhub::scripting::InvokeTx{nullptr, 0}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "Lua-side assert(both nil) must have passed; failure means "
+                   "the engine dispatched a non-nil slot for a null/zero-size "
+                   "InvokeRx or InvokeTx";
+        });
+}
+
+int invoke_process_rx_present_tx_nil(const std::string &dir)
+{
+    // Renamed from InvokeProcess_InputOnlyNoOutput.  Original name could
+    // be misread as "processor without output channel"; actual scenario
+    // is "input has data, but the output queue is backpressured / no
+    // slot available for this iteration".  Lua's typical response is
+    // to drop (return false) or queue work internally; this test only
+    // exercises the drop path.
+    //
+    // Strengthened: asserts script_error_count == 0 (the original left
+    // this unchecked, so a Lua-side assert failure would bump the count
+    // while the engine still returned Discard for other reasons).
+    return process_worker_with_script(
+        dir, "lua_engine::invoke_process_rx_present_tx_nil",
+        // Custom delimiter — see process_both_slots_nil note above.
+        R"LUA(
+            function on_process(rx, tx, msgs, api)
+                assert(rx.slot ~= nil, "expected input data")
+                assert(tx.slot == nil, "expected nil output (backpressure)")
+                return false
+            end
+        )LUA",
+        [](pylabhub::scripting::LuaEngine &engine,
+           pylabhub::scripting::RoleHostCore & /*core*/) {
+            float in_data = 10.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_process(
+                pylabhub::scripting::InvokeRx{&in_data, sizeof(in_data)},
+                pylabhub::scripting::InvokeTx{nullptr, 0}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_FLOAT_EQ(in_data, 10.0f)
+                << "rx is still read-only in the rx-only-no-tx path";
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int invoke_process_rx_slot_is_read_only(const std::string &dir)
+{
+    // NEW test — the processor's dual-slot code path goes through
+    // invoke_process (a separate engine entry from invoke_consume), so
+    // the "rx.slot is read-only" contract needs its own coverage here.
+    // Without this test the read-only invariant is unverified in the
+    // processor path.
+    //
+    // Lua attempts `rx.slot.value = 777.0` then writes tx (which should
+    // succeed).  C++ pre-fills the rx buffer with 99.5 and asserts it's
+    // STILL 99.5 after invoke_process.  The tx-write succeeds normally
+    // (tx is writable), so out_data ends up reflecting what Lua wrote
+    // to tx — not whatever the rx-write would have produced.
+    //
+    // Either read-only outcome is accepted (see the consumer variant's
+    // doc block for the full rationale):
+    //   - Engine raises a Lua error on rx-write → Error result
+    //   - LuaJIT silently no-ops → Commit result (Lua also wrote tx)
+    return process_worker_with_script(
+        dir, "lua_engine::invoke_process_rx_slot_is_read_only",
+        R"(
+            function on_process(rx, tx, msgs, api)
+                rx.slot.value = 777.0   -- must NOT propagate
+                tx.slot.value = 3.25    -- must propagate normally
+                return true
+            end
+        )",
+        [](pylabhub::scripting::LuaEngine &engine,
+           pylabhub::scripting::RoleHostCore & /*core*/) {
+            float in_data  = 99.5f;
+            float out_data = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_process(
+                pylabhub::scripting::InvokeRx{&in_data, sizeof(in_data)},
+                pylabhub::scripting::InvokeTx{&out_data, sizeof(out_data)},
+                msgs);
+            EXPECT_FLOAT_EQ(in_data, 99.5f)
+                << "rx.slot is read-only in invoke_process too; Lua's write "
+                   "to rx.slot.value must NOT reach the caller's input buffer";
+            // tx write should propagate regardless of the rx-write outcome,
+            // EXCEPT if Lua raised an error on the rx-write before reaching
+            // the tx-write line — in that case Lua aborted early and
+            // out_data stays 0.0f.  Accept either "out_data = 3.25 (silent
+            // no-op, Lua continued to tx write)" or "out_data = 0.0 (Lua
+            // raised on rx write, never reached tx write)".
+            EXPECT_TRUE(out_data == 3.25f || out_data == 0.0f)
+                << "tx wrote iff Lua didn't raise; got out_data="
+                << out_data;
+            // Whichever path was taken, result must not be Discard — Lua
+            // explicitly `return true`.
+            EXPECT_NE(result, pylabhub::scripting::InvokeResult::Discard);
+        });
+}
+
 } // namespace lua_engine
 } // namespace pylabhub::tests::worker
 
@@ -1045,6 +1281,16 @@ struct LuaEngineWorkerRegistrar
                     return invoke_consume_script_error_detected(dir);
                 if (sc == "invoke_consume_rx_slot_is_read_only")
                     return invoke_consume_rx_slot_is_read_only(dir);
+
+                // Chunk 4: invoke_process
+                if (sc == "invoke_process_dual_slots")
+                    return invoke_process_dual_slots(dir);
+                if (sc == "invoke_process_both_slots_nil")
+                    return invoke_process_both_slots_nil(dir);
+                if (sc == "invoke_process_rx_present_tx_nil")
+                    return invoke_process_rx_present_tx_nil(dir);
+                if (sc == "invoke_process_rx_slot_is_read_only")
+                    return invoke_process_rx_slot_is_read_only(dir);
 
                 fmt::print(stderr,
                            "[lua_engine] ERROR: unknown scenario '{}'\n", sc);

@@ -60,5 +60,23 @@ int invoke_consume_script_error_detected(const std::string &dir);
 /// NEW: verifies rx.slot is read-only — Lua cannot mutate the source buffer.
 int invoke_consume_rx_slot_is_read_only(const std::string &dir);
 
+// ── invoke_process (chunk 4) ────────────────────────────────────────────────
+//
+// Processor design note: a processor ALWAYS has an input channel (if a
+// role has no input channel it is a consumer, not a processor). Therefore
+// nil rx.slot inside on_process represents a runtime condition — the input
+// queue timed out, or the upstream has no data this iteration — not a
+// missing channel.  Nil tx.slot similarly represents "the output queue has
+// no slot to write into right now" (backpressure), not "no output channel".
+//
+// The worker scenario names below describe the slot-state combination
+// (BothSlotsNil, RxPresent_TxNil, RxPresent_TxPresent aka DualSlots) so
+// the tests are unambiguous about what they actually exercise.
+int invoke_process_dual_slots(const std::string &dir);
+int invoke_process_both_slots_nil(const std::string &dir);
+int invoke_process_rx_present_tx_nil(const std::string &dir);
+/// NEW: rx read-only contract in the processor dual-slot code path.
+int invoke_process_rx_slot_is_read_only(const std::string &dir);
+
 } // namespace lua_engine
 } // namespace pylabhub::tests::worker
