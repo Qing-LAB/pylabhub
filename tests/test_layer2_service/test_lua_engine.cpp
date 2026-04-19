@@ -573,30 +573,75 @@ TEST_F(LuaEngineIsolatedTest, InvokeConsume_ReceivesMessages_DataBareFormat)
 // 7. API closures
 // ============================================================================
 
-TEST_F(LuaEngineTest, ApiVersionInfo_ReturnsNonEmptyString)
+// ============================================================================
+// Chunk 6a — api.* closures: introspection + control (Pattern 3)
+//
+// L2-scoped api.* closures only: version_info, uid, name, channel, log,
+// stop, critical_error/set_critical_error/stop_reason. Queue-state, band
+// pub/sub, and inbox closures are deferred to L3 — they need real
+// ShmQueue/ZmqQueue/BrokerService infrastructure that belongs in
+// tests/test_layer3_datahub/, not the engine-unit suite here.
+//
+// Chunk 6b will cover the remaining L2-eligible api.* closures: the
+// metrics trio (report_metric/report_metrics/clear_custom_metrics) and
+// the shared-data pair (get_shared_data/set_shared_data).
+// ============================================================================
+
+TEST_F(LuaEngineIsolatedTest, ApiVersionInfo_ReturnsJsonString)
 {
-    // Script asserts that version_info returns a non-empty string containing '{'.
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            local info = api.version_info()
-            assert(type(info) == "string", "version_info should return string")
-            assert(#info > 10, "version_info too short: " .. info)
-            assert(info:find("{") ~= nil, "version_info should be JSON: " .. info)
-            return false
-        end
-    )");
+    // Strengthened from ApiVersionInfo_ReturnsNonEmptyString. The
+    // original only asserted type==string + length>10 + contains "{";
+    // this pins that the string ALSO contains "}" (bracket balance) and
+    // a "version" substring so a reworded/truncated output is caught.
+    auto w = SpawnWorker("lua_engine.api_version_info_returns_json_string",
+                         {unique_dir("api_version_info")});
+    ExpectWorkerOk(w);
+}
 
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
+// NEW: identity getters round-trip from RoleAPIBase through Lua.
+TEST_F(LuaEngineIsolatedTest, ApiIdentity_UidNameChannel)
+{
+    auto w = SpawnWorker("lua_engine.api_identity_uid_name_channel",
+                         {unique_dir("api_identity")});
+    ExpectWorkerOk(w);
+}
 
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Discard);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed — version_info returned unexpected value";
+// NEW: api.log(level, msg) level dispatch. The Lua body emits one
+// ERROR + one WARN + one WARNING (WARN) + one INFO + one "unknown"
+// (INFO fallback). Parent declares the one ERROR line so the
+// framework's "no ERROR" check doesn't reject the test.
+TEST_F(LuaEngineIsolatedTest, ApiLog_DispatchesLevels)
+{
+    auto w = SpawnWorker("lua_engine.api_log_dispatches_levels",
+                         {unique_dir("api_log")});
+    // Pins the exact tag format "[<log_tag>-lua] <msg>" from
+    // lua_engine.cpp:1317-1325.  If the engine reworded the tag
+    // template this substring would stop matching — intentional.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"[test-lua] lua_error_msg"});
+}
 
-    engine.finalize();
+// NEW: api.stop() → core->request_stop() propagation.
+TEST_F(LuaEngineIsolatedTest, ApiStop_SetsShutdownRequested)
+{
+    auto w = SpawnWorker("lua_engine.api_stop_sets_shutdown_requested",
+                         {unique_dir("api_stop")});
+    ExpectWorkerOk(w);
+}
+
+// NEW: api.critical_error (read) + api.set_critical_error (write with
+// three side-effects) + api.stop_reason (read) round-trip.
+TEST_F(LuaEngineIsolatedTest, ApiCriticalError_SetAndReadAndStopReason)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_critical_error_set_and_read_and_stop_reason",
+        {unique_dir("api_crit")});
+    // set_critical_error logs the user-supplied message at ERROR level
+    // (lua_engine.cpp:1342) — pin the exact format prefix.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"[test-lua] CRITICAL:"});
 }
 
 // ============================================================================
