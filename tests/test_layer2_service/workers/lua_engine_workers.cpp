@@ -73,28 +73,115 @@ std::unique_ptr<RoleAPIBase> make_api(RoleHostCore &core,
     return api;
 }
 
-/// Composes initialize + load_script + register_slot_type(simple) +
-/// build_api. Returns the owning api so the caller can keep it alive
-/// past return (RoleAPIBase must outlive the engine's invoke paths).
+/// Which role the LuaEngine is being set up for. Encodes the per-role
+/// defaults for required callback, API tag, and default slot
+/// registrations — see setup_role_engine below.
+enum class RoleKind
+{
+    Producer,   ///< on_produce, tag "prod", register OutSlotFrame
+    Consumer,   ///< on_consume, tag "cons", register InSlotFrame
+    Processor,  ///< on_process, tag "proc", register InSlotFrame + OutSlotFrame
+};
+
+/// Composes initialize + load_script + per-role register_slot_type +
+/// build_api. Owning api pointer returned via api_out so the caller
+/// keeps it alive past this function (RoleAPIBase must outlive the
+/// engine's invoke paths).
 ///
 /// This is a utility, not a macro, so line numbers in failed asserts
-/// inside it point here — callers then see `setup_engine returned false`
-/// as a separate ASSERT line.
-bool setup_engine(LuaEngine &engine, RoleHostCore &core,
-                  const fs::path &dir,
-                  std::unique_ptr<RoleAPIBase> &test_api_out,
-                  const std::string &required_cb = "on_produce",
-                  const std::string &tag         = "prod")
+/// inside it point here — callers then see `setup_role_engine returned
+/// false` as a separate ASSERT line.
+///
+/// Tests that need custom slot registrations (e.g. chunk 1's alias
+/// tests that register OutFlexFrame, or the all_types_schema test)
+/// drive initialize/load_script/register_slot_type/build_api inline
+/// themselves and skip this helper.
+bool setup_role_engine(LuaEngine &engine, RoleHostCore &core,
+                       const fs::path &dir,
+                       std::unique_ptr<RoleAPIBase> &api_out,
+                       RoleKind kind)
 {
+    const char *required_cb  = nullptr;
+    const char *tag          = nullptr;
+    bool        register_in  = false;
+    bool        register_out = false;
+    switch (kind)
+    {
+        case RoleKind::Producer:
+            required_cb = "on_produce"; tag = "prod";
+            register_out = true;                       break;
+        case RoleKind::Consumer:
+            required_cb = "on_consume"; tag = "cons";
+            register_in = true;                        break;
+        case RoleKind::Processor:
+            required_cb = "on_process"; tag = "proc";
+            register_in = true;  register_out = true;  break;
+    }
+
     if (!engine.initialize("test", &core))
         return false;
-    if (!engine.load_script(dir, "init.lua", required_cb.c_str()))
+    if (!engine.load_script(dir, "init.lua", required_cb))
         return false;
     auto spec = simple_schema();
-    if (!engine.register_slot_type(spec, "OutSlotFrame", "aligned"))
+    if (register_in && !engine.register_slot_type(spec, "InSlotFrame", "aligned"))
         return false;
-    test_api_out = make_api(core, tag);
-    return engine.build_api(*test_api_out);
+    if (register_out && !engine.register_slot_type(spec, "OutSlotFrame", "aligned"))
+        return false;
+    api_out = make_api(core, tag);
+    return engine.build_api(*api_out);
+}
+
+/// Unified script-worker template: writes `init.lua` with `lua_source`,
+/// sets up a LuaEngine for the given role, calls `body(engine, core)`,
+/// finalizes. Replaces the earlier chunk-specific produce/consume/
+/// process_worker_with_script trio whose logic was identical modulo
+/// the RoleKind.
+template <typename F>
+int script_worker(const std::string &dir, const char *scenario_name,
+                  RoleKind kind, const std::string &lua_source, F &&body)
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            const fs::path script_dir(dir);
+            write_script(script_dir, lua_source);
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            std::unique_ptr<RoleAPIBase> api;
+            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api, kind));
+
+            body(engine, core);
+
+            engine.finalize();
+        },
+        scenario_name, Logger::GetLifecycleModule());
+}
+
+// Thin per-role delegates — no logic, just fill in the RoleKind so the
+// 14 existing call sites in chunks 2-5 remain unchanged through this
+// refactor.  All three wrappers forward identically; the per-role
+// behaviour lives in setup_role_engine above.
+template <typename F>
+int produce_worker_with_script(const std::string &dir, const char *name,
+                               const std::string &lua_source, F &&body)
+{
+    return script_worker(dir, name, RoleKind::Producer,
+                         lua_source, std::forward<F>(body));
+}
+template <typename F>
+int consume_worker_with_script(const std::string &dir, const char *name,
+                               const std::string &lua_source, F &&body)
+{
+    return script_worker(dir, name, RoleKind::Consumer,
+                         lua_source, std::forward<F>(body));
+}
+template <typename F>
+int process_worker_with_script(const std::string &dir, const char *name,
+                               const std::string &lua_source, F &&body)
+{
+    return script_worker(dir, name, RoleKind::Processor,
+                         lua_source, std::forward<F>(body));
 }
 
 } // namespace
@@ -127,7 +214,8 @@ int full_lifecycle(const std::string &dir)
             RoleHostCore core;
             LuaEngine    engine;
             std::unique_ptr<RoleAPIBase> api;
-            ASSERT_TRUE(setup_engine(engine, core, script_dir, api));
+            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api,
+                                          RoleKind::Producer));
 
             // Before invoking anything: metrics should not contain the keys.
             auto before = core.custom_metrics_snapshot();
@@ -542,41 +630,6 @@ int alias_producer_no_fz_no_flex_frame_alias(const std::string &dir)
 // publish it. The DiscardOnFalse_ButLuaWroteSlot test pins this
 // contract explicitly.
 
-namespace
-{
-
-/// Standard boilerplate: write the given Lua source, set up an engine
-/// with a simple schema registered, run run_gtest_worker. Inner body
-/// is passed as a functor that receives the live engine + a buffer
-/// pointer + an empty IncomingMessage vector.
-///
-/// Kept as a helper function (not a macro) so compile errors report
-/// accurate source lines.
-template <typename F>
-int produce_worker_with_script(const std::string &dir,
-                               const char *scenario_name,
-                               const std::string &lua_source,
-                               F &&body)
-{
-    return run_gtest_worker(
-        [&]() {
-            const fs::path script_dir(dir);
-            write_script(script_dir, lua_source);
-
-            RoleHostCore core;
-            LuaEngine    engine;
-            std::unique_ptr<RoleAPIBase> api;
-            ASSERT_TRUE(setup_engine(engine, core, script_dir, api));
-
-            body(engine, core);
-
-            engine.finalize();
-        },
-        scenario_name, Logger::GetLifecycleModule());
-}
-
-} // namespace
-
 int invoke_produce_commit_on_true(const std::string &dir)
 {
     // Strengthened over the pre-conversion test by also asserting
@@ -765,54 +818,6 @@ int invoke_produce_discard_on_false_but_lua_wrote_slot(const std::string &dir)
 // ("Currently ignored by the consumer data loop — reserved for future
 // flow control"), but the engine still computes it and the tests assert
 // on it so a regression in the dispatch path does not silently pass.
-
-namespace
-{
-
-/// Consumer variant of setup_engine: loads a script with `on_consume`
-/// as the required callback, registers InSlotFrame (not OutSlotFrame),
-/// builds the API with tag "cons" so the SlotFrame alias points at
-/// InSlotFrame.
-bool setup_consumer_engine(LuaEngine &engine, RoleHostCore &core,
-                           const fs::path &dir,
-                           std::unique_ptr<RoleAPIBase> &api_out)
-{
-    if (!engine.initialize("test", &core))
-        return false;
-    if (!engine.load_script(dir, "init.lua", "on_consume"))
-        return false;
-    auto spec = simple_schema();
-    if (!engine.register_slot_type(spec, "InSlotFrame", "aligned"))
-        return false;
-    api_out = make_api(core, "cons");
-    return engine.build_api(*api_out);
-}
-
-/// Consumer-side equivalent of produce_worker_with_script.
-template <typename F>
-int consume_worker_with_script(const std::string &dir,
-                               const char *scenario_name,
-                               const std::string &lua_source,
-                               F &&body)
-{
-    return run_gtest_worker(
-        [&]() {
-            const fs::path script_dir(dir);
-            write_script(script_dir, lua_source);
-
-            RoleHostCore core;
-            LuaEngine    engine;
-            std::unique_ptr<RoleAPIBase> api;
-            ASSERT_TRUE(setup_consumer_engine(engine, core, script_dir, api));
-
-            body(engine, core);
-
-            engine.finalize();
-        },
-        scenario_name, Logger::GetLifecycleModule());
-}
-
-} // namespace
 
 int invoke_consume_receives_slot(const std::string &dir)
 {
@@ -1199,56 +1204,6 @@ int invoke_consume_receives_messages_data_bare_format(const std::string &dir)
 // = both timed out, RxPresent_TxNil = input available but output
 // backpressured.  All three cases are real production states the
 // processor's main loop feeds to on_process.
-
-namespace
-{
-
-/// Processor variant of setup_engine.  Registers both InSlotFrame and
-/// OutSlotFrame (processor uses separate in/out types; no SlotFrame
-/// alias — see alias_no_alias_processor in chunk 1), builds API with
-/// tag "proc".
-bool setup_processor_engine(LuaEngine &engine, RoleHostCore &core,
-                            const fs::path &dir,
-                            std::unique_ptr<RoleAPIBase> &api_out)
-{
-    if (!engine.initialize("test", &core))
-        return false;
-    if (!engine.load_script(dir, "init.lua", "on_process"))
-        return false;
-    auto spec = simple_schema();
-    if (!engine.register_slot_type(spec, "InSlotFrame", "aligned"))
-        return false;
-    if (!engine.register_slot_type(spec, "OutSlotFrame", "aligned"))
-        return false;
-    api_out = make_api(core, "proc");
-    return engine.build_api(*api_out);
-}
-
-/// Processor-side equivalent of produce/consume_worker_with_script.
-template <typename F>
-int process_worker_with_script(const std::string &dir,
-                               const char *scenario_name,
-                               const std::string &lua_source,
-                               F &&body)
-{
-    return run_gtest_worker(
-        [&]() {
-            const fs::path script_dir(dir);
-            write_script(script_dir, lua_source);
-
-            RoleHostCore core;
-            LuaEngine    engine;
-            std::unique_ptr<RoleAPIBase> api;
-            ASSERT_TRUE(setup_processor_engine(engine, core, script_dir, api));
-
-            body(engine, core);
-
-            engine.finalize();
-        },
-        scenario_name, Logger::GetLifecycleModule());
-}
-
-} // namespace
 
 int invoke_process_dual_slots(const std::string &dir)
 {
