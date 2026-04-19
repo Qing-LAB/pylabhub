@@ -382,6 +382,110 @@ int use_without_lifecycle_aborts()
     return 1;  // Should not reach here
 }
 
+/// Holds a blocking FileLock for hold_ms milliseconds. Signals "ready" to
+/// the parent right after acquiring, so the parent can deterministically
+/// spawn a contender that will race the lock. Used by:
+///   - MultiProcessNonBlocking      (contender: try-lock-nonblocking fails)
+///   - MultiProcessTryLock          (contender: static try_lock fails)
+///   - MultiProcessParentChildBlocking (contender: blocks until holder releases)
+///
+/// Replaces the prior "parent-test-runner holds the lock" pattern, which
+/// required a process-wide LifecycleGuard in the test runner — the V1
+/// antipattern forbidden by HEP-CORE-0001 § "Testing implications".
+int lock_holder(const std::string &resource_path_str, int hold_ms)
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            std::filesystem::path resource_path(resource_path_str);
+            FileLock lock(resource_path);
+            ASSERT_TRUE(lock.valid())
+                << "lock_holder: failed to acquire lock: "
+                << lock.error_code().message();
+
+            // Parent spawns the contender only after we signal; the
+            // contender then races the still-held lock.
+            signal_test_ready();
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(hold_ms));
+            // Lock released by RAII at scope exit.
+        },
+        "filelock::lock_holder",
+        FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
+}
+
+/// All-in-one worker for the TryLockPattern body (originally in-process).
+/// Exercises static FileLock::try_lock success + two failure scenarios.
+/// Each scenario's main_lock is held by THIS subprocess (not a second
+/// subprocess) because the original test verified *single-process*
+/// try_lock behavior — the scope-based `{ FileLock main_lock; try_lock; }`
+/// structure is preserved verbatim.
+int try_lock_pattern(const std::string &resource_path_str)
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            const std::filesystem::path resource_path(resource_path_str);
+
+            // 1. Success: non-blocking lock on an available resource.
+            {
+                auto lock_opt =
+                    FileLock::try_lock(resource_path, /*is_directory=*/false,
+                                       /*blocking=*/false);
+                ASSERT_TRUE(lock_opt.has_value());
+                EXPECT_TRUE(lock_opt->valid());
+            } // released here
+
+            // 2. Failure: non-blocking attempt on a held resource.
+            {
+                FileLock main_lock(resource_path);
+                ASSERT_TRUE(main_lock.valid());
+                auto lock_opt =
+                    FileLock::try_lock(resource_path, /*is_directory=*/false,
+                                       /*blocking=*/false);
+                EXPECT_FALSE(lock_opt.has_value());
+            }
+
+            // 3. Failure: timed attempt on a held resource.
+            {
+                FileLock main_lock(resource_path);
+                ASSERT_TRUE(main_lock.valid());
+                auto lock_opt =
+                    FileLock::try_lock(resource_path, /*is_directory=*/false,
+                                       std::chrono::milliseconds(50));
+                EXPECT_FALSE(lock_opt.has_value());
+            }
+        },
+        "filelock::try_lock_pattern",
+        FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
+}
+
+/// Verifies that constructing a FileLock with a path containing a null
+/// byte returns an invalid lock with error_code == invalid_argument, and
+/// that the static try_lock returns nullopt for the same path.
+int invalid_resource_path()
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            const char invalid_p[] = "invalid\0path.txt";
+            std::filesystem::path invalid_path(
+                std::string_view(invalid_p, sizeof(invalid_p) - 1));
+
+            FileLock lock(invalid_path, /*is_directory=*/false,
+                          /*blocking=*/false);
+            ASSERT_FALSE(lock.valid());
+            ASSERT_EQ(lock.error_code(), std::errc::invalid_argument);
+
+            auto lock_opt =
+                FileLock::try_lock(invalid_path, /*is_directory=*/false,
+                                   /*blocking=*/false);
+            ASSERT_FALSE(lock_opt.has_value());
+        },
+        "filelock::invalid_resource_path",
+        FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
+}
+
 } // namespace filelock
 } // namespace pylabhub::tests::worker
 
@@ -427,6 +531,12 @@ struct FileLockWorkerRegistrar
                     return try_lock_nonblocking(argv[2]);
                 if (scenario == "use_without_lifecycle_aborts")
                     return use_without_lifecycle_aborts();
+                if (scenario == "lock_holder" && argc > 3)
+                    return lock_holder(argv[2], std::stoi(argv[3]));
+                if (scenario == "try_lock_pattern" && argc > 2)
+                    return try_lock_pattern(argv[2]);
+                if (scenario == "invalid_resource_path")
+                    return invalid_resource_path();
                 fmt::print(stderr, "ERROR: Unknown filelock scenario '{}'\n", scenario);
                 return 1;
             });

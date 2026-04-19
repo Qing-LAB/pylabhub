@@ -94,6 +94,38 @@ int try_lock_nonblocking(const std::string &resource_path_str);
  */
 int use_without_lifecycle_aborts();
 
+// ── Pattern 3 conversions that replace parent-side FileLock holders ────────
+//
+// The original suite kept a process-wide LifecycleGuard alive so several
+// tests could do `FileLock main_lock(...)` in the gtest runner, then
+// spawn a contender worker. Per HEP-CORE-0001 § "Testing implications",
+// the parent must not own the lifecycle. The parent now spawns TWO
+// workers: lock_holder acquires + signals ready + holds for hold_ms,
+// and the existing contender worker (nonblocking_acquire, try_lock_-
+// nonblocking, parent_child_block) races the still-held lock.
+
+/**
+ * @brief Holder worker: acquires a blocking lock, signals ready, holds
+ *        it for @p hold_ms milliseconds, then releases on scope exit.
+ *
+ * Must be spawned via SpawnWorkerWithReadySignal so the parent can
+ * deterministically spawn the contender only after the lock is held.
+ */
+int lock_holder(const std::string &resource_path_str, int hold_ms);
+
+/**
+ * @brief Single-process TryLockPattern body: success + non-blocking
+ *        failure + timed failure, all in this subprocess.
+ */
+int try_lock_pattern(const std::string &resource_path_str);
+
+/**
+ * @brief Verifies FileLock rejects paths containing a null byte (returns
+ *        invalid lock with error_code == invalid_argument), and the
+ *        static try_lock returns nullopt for the same path.
+ */
+int invalid_resource_path();
+
 } // namespace filelock
 
 } // namespace pylabhub::tests::worker
