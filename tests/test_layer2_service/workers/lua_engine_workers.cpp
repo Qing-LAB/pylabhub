@@ -528,6 +528,231 @@ int alias_producer_no_fz_no_flex_frame_alias(const std::string &dir)
         Logger::GetLifecycleModule());
 }
 
+// ── invoke_produce (chunk 2) ────────────────────────────────────────────────
+//
+// These bodies exercise the callback-return-value contract:
+//   true   → InvokeResult::Commit (caller publishes the slot)
+//   false  → InvokeResult::Discard (caller drops the slot)
+//   nil    → InvokeResult::Error (missing explicit return is an error)
+//   error() → InvokeResult::Error + script_error_count++
+//
+// The engine does NOT roll back Lua-side writes to tx.slot on Discard —
+// the slot buffer is owned by the caller (the role host / test
+// harness), and the return value only tells the caller whether to
+// publish it. The DiscardOnFalse_ButLuaWroteSlot test pins this
+// contract explicitly.
+
+namespace
+{
+
+/// Standard boilerplate: write the given Lua source, set up an engine
+/// with a simple schema registered, run run_gtest_worker. Inner body
+/// is passed as a functor that receives the live engine + a buffer
+/// pointer + an empty IncomingMessage vector.
+///
+/// Kept as a helper function (not a macro) so compile errors report
+/// accurate source lines.
+template <typename F>
+int produce_worker_with_script(const std::string &dir,
+                               const char *scenario_name,
+                               const std::string &lua_source,
+                               F &&body)
+{
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, lua_source);
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            std::unique_ptr<RoleAPIBase> api;
+            ASSERT_TRUE(setup_engine(engine, core, script_dir, api));
+
+            body(engine, core);
+
+            engine.finalize();
+        },
+        scenario_name, Logger::GetLifecycleModule());
+}
+
+} // namespace
+
+int invoke_produce_commit_on_true(const std::string &dir)
+{
+    // Strengthened over the pre-conversion test by also asserting
+    // script_error_count == 0 post-invoke (catches a regression where
+    // the engine reports Commit but silently logged a script error).
+    return produce_worker_with_script(
+        dir, "lua_engine::invoke_produce_commit_on_true",
+        R"(
+            function on_produce(tx, msgs, api)
+                if tx.slot then
+                    tx.slot.value = 42.0
+                end
+                return true
+            end
+        )",
+        [](pylabhub::scripting::LuaEngine &engine,
+           pylabhub::scripting::RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Commit);
+            EXPECT_FLOAT_EQ(buf, 42.0f);
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "commit path must not emit script errors";
+        });
+}
+
+int invoke_produce_discard_on_false(const std::string &dir)
+{
+    // Strengthened over the pre-conversion test. The original declared
+    // `float buf = 0.0f` and only asserted `result == Discard` — if
+    // the engine secretly wrote 0.0 to buf on the Discard path, the
+    // test would still pass (buf == 0.0 is indistinguishable from
+    // uninitialized sentinel of 0.0).
+    //
+    // This body inits buf to a non-default sentinel (777.0f) that the
+    // Lua script does NOT write, then asserts buf is STILL 777.0f
+    // post-invoke. That catches any engine-internal write on the
+    // Discard path.
+    return produce_worker_with_script(
+        dir, "lua_engine::invoke_produce_discard_on_false",
+        R"(
+            function on_produce(tx, msgs, api)
+                -- deliberately do NOT touch tx.slot; return false
+                return false
+            end
+        )",
+        [](pylabhub::scripting::LuaEngine &engine,
+           pylabhub::scripting::RoleHostCore & /*core*/) {
+            float buf = 777.0f;  // sentinel — Lua script doesn't write
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_FLOAT_EQ(buf, 777.0f)
+                << "engine must not write buf on Discard when Lua didn't write";
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int invoke_produce_nil_return_is_error(const std::string &dir)
+{
+    return produce_worker_with_script(
+        dir, "lua_engine::invoke_produce_nil_return_is_error",
+        R"(
+            function on_produce(tx, msgs, api)
+                -- no explicit return → nil → error (must be explicit)
+            end
+        )",
+        [](pylabhub::scripting::LuaEngine &engine,
+           pylabhub::scripting::RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Error)
+                << "missing return is an error — must be explicit true/false";
+            EXPECT_EQ(engine.script_error_count(), 1u);
+        });
+}
+
+int invoke_produce_nil_slot(const std::string &dir)
+{
+    // Strengthened over the pre-conversion test. The original relied on
+    // a `assert(tx.slot == nil, ...)` inside the Lua body but never
+    // verified that assertion held from the C++ side — if the engine
+    // silently dispatched a non-nil slot, the Lua assert would fail,
+    // bump script_error_count, and the test would still see result=
+    // Discard (because assert() aborts, Lua returns nil...error... but
+    // the test asserts Discard).  Added an explicit
+    // EXPECT_EQ(script_error_count, 0) to confirm the Lua assert passed,
+    // i.e. the engine really did pass nil for InvokeTx{nullptr, 0}.
+    return produce_worker_with_script(
+        dir, "lua_engine::invoke_produce_nil_slot",
+        R"(
+            function on_produce(tx, msgs, api)
+                assert(tx.slot == nil, "expected nil slot")
+                return false
+            end
+        )",
+        [](pylabhub::scripting::LuaEngine &engine,
+           pylabhub::scripting::RoleHostCore & /*core*/) {
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{nullptr, 0}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "the Lua assert(tx.slot == nil) must have passed; "
+                   "a non-zero count means the engine dispatched a non-nil "
+                   "slot when given InvokeTx{nullptr, 0}";
+        });
+}
+
+int invoke_produce_script_error(const std::string &dir)
+{
+    return produce_worker_with_script(
+        dir, "lua_engine::invoke_produce_script_error",
+        R"(
+            function on_produce(tx, msgs, api)
+                error("intentional error")
+            end
+        )",
+        [](pylabhub::scripting::LuaEngine &engine,
+           pylabhub::scripting::RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            EXPECT_EQ(engine.script_error_count(), 0u);
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Error);
+            EXPECT_EQ(engine.script_error_count(), 1u);
+        });
+}
+
+int invoke_produce_discard_on_false_but_lua_wrote_slot(const std::string &dir)
+{
+    // NEW test — pins the production contract that the engine does NOT
+    // roll back Lua-side writes to tx.slot when the callback returns
+    // false.  The slot buffer is caller-owned; the return value only
+    // tells the caller whether to publish the slot downstream.  A user
+    // who writes `tx.slot.value = 42 then return false` gets:
+    //   result == Discard (caller drops the slot)
+    //   buf    == 42.0     (caller's buffer was mutated in place)
+    //
+    // This subtlety matters because a role host implementing
+    // "conditionally publish" may reuse the same buffer for the next
+    // iteration; if they expected the engine to clear it on Discard
+    // they'd get stale data.
+    return produce_worker_with_script(
+        dir,
+        "lua_engine::invoke_produce_discard_on_false_but_lua_wrote_slot",
+        R"(
+            function on_produce(tx, msgs, api)
+                if tx.slot then
+                    tx.slot.value = 42.0
+                end
+                return false
+            end
+        )",
+        [](pylabhub::scripting::LuaEngine &engine,
+           pylabhub::scripting::RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard)
+                << "explicit `return false` must yield Discard";
+            EXPECT_FLOAT_EQ(buf, 42.0f)
+                << "Lua write to tx.slot.value must propagate to the caller's "
+                   "buffer regardless of return value — the engine does NOT "
+                   "roll back on Discard.";
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
 } // namespace lua_engine
 } // namespace pylabhub::tests::worker
 
@@ -584,6 +809,20 @@ struct LuaEngineWorkerRegistrar
                     return alias_flex_frame_producer(dir);
                 if (sc == "alias_producer_no_fz_no_flex_frame_alias")
                     return alias_producer_no_fz_no_flex_frame_alias(dir);
+
+                // Chunk 2: invoke_produce
+                if (sc == "invoke_produce_commit_on_true")
+                    return invoke_produce_commit_on_true(dir);
+                if (sc == "invoke_produce_discard_on_false")
+                    return invoke_produce_discard_on_false(dir);
+                if (sc == "invoke_produce_nil_return_is_error")
+                    return invoke_produce_nil_return_is_error(dir);
+                if (sc == "invoke_produce_nil_slot")
+                    return invoke_produce_nil_slot(dir);
+                if (sc == "invoke_produce_script_error")
+                    return invoke_produce_script_error(dir);
+                if (sc == "invoke_produce_discard_on_false_but_lua_wrote_slot")
+                    return invoke_produce_discard_on_false_but_lua_wrote_slot(dir);
 
                 fmt::print(stderr,
                            "[lua_engine] ERROR: unknown scenario '{}'\n", sc);

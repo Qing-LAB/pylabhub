@@ -44,5 +44,14 @@ int alias_no_alias_processor(const std::string &dir);
 int alias_flex_frame_producer(const std::string &dir);
 int alias_producer_no_fz_no_flex_frame_alias(const std::string &dir);
 
+// ── invoke_produce (chunk 2) ────────────────────────────────────────────────
+int invoke_produce_commit_on_true(const std::string &dir);
+int invoke_produce_discard_on_false(const std::string &dir);
+int invoke_produce_nil_return_is_error(const std::string &dir);
+int invoke_produce_nil_slot(const std::string &dir);
+int invoke_produce_script_error(const std::string &dir);
+/// NEW: documents that Discard does NOT roll back Lua-side writes to tx.slot.
+int invoke_produce_discard_on_false_but_lua_wrote_slot(const std::string &dir);
+
 } // namespace lua_engine
 } // namespace pylabhub::tests::worker
