@@ -60,6 +60,32 @@ int invoke_consume_script_error_detected(const std::string &dir);
 /// NEW: verifies rx.slot is read-only — Lua cannot mutate the source buffer.
 int invoke_consume_rx_slot_is_read_only(const std::string &dir);
 
+// ── Messages (chunk 5) ──────────────────────────────────────────────────────
+//
+// The Lua engine projects std::vector<IncomingMessage> into a Lua table
+// with two different shapes depending on whether the message is an
+// "event" (m.event non-empty) or "data" (m.event empty):
+//
+//   Event message (any role):
+//     msgs[i] = { event = "...", <details_key> = <details_value>, ... }
+//     (details map keys are promoted to table fields, NOT nested)
+//
+//   Data message:
+//     Producer / Processor (push_messages_table_):
+//       msgs[i] = { sender = "<hex string>", data = "<raw bytes>" }
+//     Consumer (push_messages_table_bare_):
+//       msgs[i] = "<raw bytes>"           -- no sender, bare byte string
+//
+// The tests below cover every shape, including the empty-msgs edge case
+// and the consumer/non-consumer divergence for data messages.
+int invoke_produce_receives_messages_event_with_details(const std::string &dir);
+/// NEW: empty msgs vector round-trip.
+int invoke_produce_receives_messages_empty_vector(const std::string &dir);
+/// NEW: data message (empty event, with sender + bytes payload).
+int invoke_produce_receives_messages_data_message(const std::string &dir);
+/// NEW: consumer bare-format data message (plain byte string).
+int invoke_consume_receives_messages_data_bare_format(const std::string &dir);
+
 // ── invoke_process (chunk 4) ────────────────────────────────────────────────
 //
 // Processor design note: a processor ALWAYS has an input channel (if a

@@ -965,6 +965,219 @@ int invoke_consume_rx_slot_is_read_only(const std::string &dir)
         });
 }
 
+// ── Messages (chunk 5) ──────────────────────────────────────────────────────
+//
+// Note on the two projection paths (see src/scripting/lua_engine.cpp:1084
+// and :1124 for canonical reference):
+//   - push_messages_table_       — used by invoke_produce + invoke_process
+//                                   data messages keep sender + data fields
+//   - push_messages_table_bare_  — used by invoke_consume
+//                                   data messages become plain byte strings
+//
+// Event messages use the same format in both paths (event + flattened
+// details fields).
+
+int invoke_produce_receives_messages_event_with_details(const std::string &dir)
+{
+    // Strengthened over the pre-conversion test.  The original set
+    // `m1.details["identity"] = "abc123"` in C++ but the Lua body never
+    // verified the details map reached Lua.  That left a gap: the
+    // engine could be silently dropping the details map (or inserting
+    // it under a different shape) and the test would pass.
+    //
+    // The strengthened body asserts the details key is PROMOTED to a
+    // sibling field on the message table — `msgs[1].identity == "abc123"`
+    // — which is the documented projection (see push_messages_table_
+    // at lua_engine.cpp:1101).  This pins the "promoted, not nested"
+    // contract explicitly.
+    //
+    // Also adds a multi-key details check on msgs[2] to cover the loop
+    // over details.items() in the engine (not just the single-key
+    // case).
+    return produce_worker_with_script(
+        dir, "lua_engine::invoke_produce_receives_messages_event_with_details",
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                -- Event count and names (covered by original test).
+                assert(#msgs == 2, "expected 2 messages, got " .. tostring(#msgs))
+                assert(msgs[1].event == "consumer_joined",
+                       "msgs[1].event: " .. tostring(msgs[1].event))
+                assert(msgs[2].event == "channel_closing",
+                       "msgs[2].event: " .. tostring(msgs[2].event))
+
+                -- NEW: verify details map promotion (m1).
+                assert(msgs[1].identity == "abc123",
+                       "msgs[1].identity expected 'abc123', got " ..
+                       tostring(msgs[1].identity))
+
+                -- NEW: verify details map promotion (m2) with multiple keys.
+                assert(msgs[2].reason == "voluntary",
+                       "msgs[2].reason: " .. tostring(msgs[2].reason))
+                assert(msgs[2].code == 0,
+                       "msgs[2].code: " .. tostring(msgs[2].code))
+                return false
+            end
+        )LUA",
+        [](pylabhub::scripting::LuaEngine &engine,
+           pylabhub::scripting::RoleHostCore & /*core*/) {
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+
+            pylabhub::scripting::IncomingMessage m1;
+            m1.event = "consumer_joined";
+            m1.details["identity"] = "abc123";
+            msgs.push_back(std::move(m1));
+
+            pylabhub::scripting::IncomingMessage m2;
+            m2.event = "channel_closing";
+            m2.details["reason"] = "voluntary";
+            m2.details["code"]   = 0;
+            msgs.push_back(std::move(m2));
+
+            float buf = 0.0f;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "Lua asserts must have passed — a non-zero count means "
+                   "either #msgs was wrong, the event fields didn't match, "
+                   "or details-map promotion is broken";
+        });
+}
+
+int invoke_produce_receives_messages_empty_vector(const std::string &dir)
+{
+    // NEW test — edge case not covered by the pre-conversion suite.
+    // When C++ passes an empty msgs vector, Lua should see an empty
+    // table (not nil, and not a table with stale contents).  This is
+    // the trivial zero-length path through push_messages_table_; worth
+    // a dedicated test because it's the simplest break-point for a
+    // range-iteration bug.
+    return produce_worker_with_script(
+        dir, "lua_engine::invoke_produce_receives_messages_empty_vector",
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                assert(type(msgs) == "table",
+                       "msgs should be a table, got " .. type(msgs))
+                assert(#msgs == 0,
+                       "msgs should be empty, got #msgs=" .. tostring(#msgs))
+                -- Also verify msgs is iterable without error (ipairs on
+                -- empty table is valid but has produced NPE-style bugs
+                -- in past ffi-table implementations).
+                local any = false
+                for _, _m in ipairs(msgs) do any = true end
+                assert(any == false, "empty msgs should have no entries")
+                return false
+            end
+        )LUA",
+        [](pylabhub::scripting::LuaEngine &engine,
+           pylabhub::scripting::RoleHostCore & /*core*/) {
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;  // empty
+            float buf = 0.0f;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int invoke_produce_receives_messages_data_message(const std::string &dir)
+{
+    // NEW test — data-message shape for the producer/processor path
+    // (push_messages_table_).  A data message has empty event and
+    // populated data/sender fields; Lua receives {sender="<hex>",
+    // data="<bytes>"}.  The pre-conversion test never exercised this
+    // shape at all, leaving the sender-hex-formatting and
+    // data-bytes-lua_pushlstring code paths untested.
+    return produce_worker_with_script(
+        dir, "lua_engine::invoke_produce_receives_messages_data_message",
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                assert(#msgs == 1, "expected 1 message")
+                local m = msgs[1]
+                -- Data message: event field must be absent/nil, sender
+                -- present as hex, data present as byte string.
+                assert(m.event == nil,
+                       "data message should have no event, got " ..
+                       tostring(m.event))
+                assert(type(m.sender) == "string",
+                       "sender should be string, got " .. type(m.sender))
+                -- The two sender bytes 0xCA 0xFE project to "cafe" (hex).
+                assert(m.sender == "cafe",
+                       "sender hex expected 'cafe', got " .. tostring(m.sender))
+                -- Data payload is the 4 ASCII bytes "pong".
+                assert(type(m.data) == "string",
+                       "data should be string, got " .. type(m.data))
+                assert(m.data == "pong",
+                       "data expected 'pong', got " .. tostring(m.data))
+                return false
+            end
+        )LUA",
+        [](pylabhub::scripting::LuaEngine &engine,
+           pylabhub::scripting::RoleHostCore & /*core*/) {
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            pylabhub::scripting::IncomingMessage m;
+            m.event = "";  // data message — empty event triggers bare projection
+            // IncomingMessage::sender is std::string (per role_host_core.hpp
+            // :48) — treated as an arbitrary byte sequence and rendered to
+            // Lua via format_tools::bytes_to_hex. Two bytes 0xCA 0xFE
+            // project to hex "cafe".
+            m.sender = std::string("\xCA\xFE", 2);
+            for (char c : std::string{"pong"})
+                m.data.push_back(static_cast<std::byte>(c));
+            msgs.push_back(std::move(m));
+
+            float buf = 0.0f;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "a failing assert here indicates the data-message "
+                   "projection differs from the documented shape";
+        });
+}
+
+int invoke_consume_receives_messages_data_bare_format(const std::string &dir)
+{
+    // NEW test — consumer-side data-message shape
+    // (push_messages_table_bare_). The consumer variant drops the
+    // sender field and exposes data as a plain byte string directly at
+    // msgs[i] (not a nested table).  That divergence from the producer
+    // path is a real production contract documented only in the
+    // in-source comment at lua_engine.cpp:1146; this test pins it
+    // explicitly.
+    return consume_worker_with_script(
+        dir, "lua_engine::invoke_consume_receives_messages_data_bare_format",
+        R"LUA(
+            function on_consume(rx, msgs, api)
+                assert(#msgs == 1, "expected 1 message")
+                -- Consumer bare format: msgs[1] is the raw byte string,
+                -- NOT a table.  This is the key divergence from the
+                -- producer/processor path.
+                assert(type(msgs[1]) == "string",
+                       "consumer data msg should be bare string, got " ..
+                       type(msgs[1]))
+                assert(msgs[1] == "hello",
+                       "data expected 'hello', got " .. tostring(msgs[1]))
+                return true
+            end
+        )LUA",
+        [](pylabhub::scripting::LuaEngine &engine,
+           pylabhub::scripting::RoleHostCore & /*core*/) {
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            pylabhub::scripting::IncomingMessage m;
+            m.event = "";
+            for (char c : std::string{"hello"})
+                m.data.push_back(static_cast<std::byte>(c));
+            msgs.push_back(std::move(m));
+
+            float data = 0.0f;
+            auto result = engine.invoke_consume(
+                pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Commit);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
 // ── invoke_process (chunk 4) ────────────────────────────────────────────────
 //
 // Processor role: always has an input channel by definition (a role
@@ -1291,6 +1504,16 @@ struct LuaEngineWorkerRegistrar
                     return invoke_process_rx_present_tx_nil(dir);
                 if (sc == "invoke_process_rx_slot_is_read_only")
                     return invoke_process_rx_slot_is_read_only(dir);
+
+                // Chunk 5: Messages
+                if (sc == "invoke_produce_receives_messages_event_with_details")
+                    return invoke_produce_receives_messages_event_with_details(dir);
+                if (sc == "invoke_produce_receives_messages_empty_vector")
+                    return invoke_produce_receives_messages_empty_vector(dir);
+                if (sc == "invoke_produce_receives_messages_data_message")
+                    return invoke_produce_receives_messages_data_message(dir);
+                if (sc == "invoke_consume_receives_messages_data_bare_format")
+                    return invoke_consume_receives_messages_data_bare_format(dir);
 
                 fmt::print(stderr,
                            "[lua_engine] ERROR: unknown scenario '{}'\n", sc);
