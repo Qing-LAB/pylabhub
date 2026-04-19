@@ -76,4 +76,50 @@ inline SchemaSpec multifield_schema()
     return spec;
 }
 
+/// Exercises every scalar type the ScriptEngine implementations support
+/// (Lua, Python, Native) — see src/scripting/lua_engine.cpp:623-635 and
+/// src/scripting/python_helpers.hpp:119-127 for the dispatcher tables
+/// this schema exists to cover.
+///
+/// Fields are ordered in descending alignment so the natural (aligned)
+/// layout has no internal padding — any alignment mismatch between the
+/// engine's ffi/ctypes type and the raw buffer shows up as a value read
+/// from the wrong offset.
+///
+/// Types covered:
+///   bool, int8/16/32/64, uint8/16/32/64, float32, float64, bytes, string
+/// (13 types, one field each). uint64 is the type that was missing from
+/// the prior helpers and is the least likely to get accidental coverage
+/// from the float/int32 paths.
+///
+/// The `bytes[4]` and `string[8]` fields intentionally use small non-
+/// power-of-two-aligned lengths so the trailing padding (if any) to the
+/// struct alignment boundary is exercised. Use `compute_schema_size`
+/// from `schema_utils.hpp` to get the actual size rather than relying on
+/// a hardcoded constant — the aligned layout depends on platform rules
+/// the helper already encodes correctly.
+inline SchemaSpec all_types_schema()
+{
+    SchemaSpec spec;
+    spec.has_schema = true;
+    // 8-byte-aligned first (no padding needed at start)
+    spec.fields.push_back({"f64",    "float64", 1, 0});
+    spec.fields.push_back({"i64",    "int64",   1, 0});
+    spec.fields.push_back({"u64",    "uint64",  1, 0});
+    // 4-byte-aligned
+    spec.fields.push_back({"f32",    "float32", 1, 0});
+    spec.fields.push_back({"i32",    "int32",   1, 0});
+    spec.fields.push_back({"u32",    "uint32",  1, 0});
+    // 2-byte-aligned
+    spec.fields.push_back({"i16",    "int16",   1, 0});
+    spec.fields.push_back({"u16",    "uint16",  1, 0});
+    // 1-byte-aligned
+    spec.fields.push_back({"b",      "bool",    1, 0});
+    spec.fields.push_back({"i8",     "int8",    1, 0});
+    spec.fields.push_back({"u8",     "uint8",   1, 0});
+    spec.fields.push_back({"bytes4", "bytes",   1, 4});
+    spec.fields.push_back({"str8",   "string",  1, 8});
+    return spec;
+}
+
 } // namespace pylabhub::tests
