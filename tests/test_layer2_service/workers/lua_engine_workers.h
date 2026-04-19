@@ -100,6 +100,13 @@ int api_identity_uid_name_channel(const std::string &dir);
 int api_log_dispatches_levels(const std::string &dir);
 int api_stop_sets_shutdown_requested(const std::string &dir);
 int api_critical_error_set_and_read_and_stop_reason(const std::string &dir);
+/// NEW: exhaustive read of `api.stop_reason()` for every StopReason
+/// enum value injected from C++ (Normal, PeerDead, HubDead,
+/// CriticalError).  Closes the coverage gap left by chunk 6a's
+/// Lua-set-Lua-read path (which only exercises Normal + CriticalError)
+/// and subsumes two V2 tests that covered PeerDead / CriticalError
+/// via separate scripts.  HubDead was never tested before this.
+int api_stop_reason_reflects_all_enum_values(const std::string &dir);
 
 // ── invoke_process (chunk 4) ────────────────────────────────────────────────
 //
