@@ -347,6 +347,8 @@ add_executable(test_layer2_jsonconfig
     workers/jsonconfig_workers.cpp
 )
 
+target_include_directories(test_layer2_jsonconfig PRIVATE workers)
+
 target_link_libraries(test_layer2_jsonconfig
     PRIVATE
         pylabhub::utils
