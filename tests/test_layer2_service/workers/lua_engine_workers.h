@@ -53,5 +53,12 @@ int invoke_produce_script_error(const std::string &dir);
 /// NEW: documents that Discard does NOT roll back Lua-side writes to tx.slot.
 int invoke_produce_discard_on_false_but_lua_wrote_slot(const std::string &dir);
 
+// ── invoke_consume (chunk 3) ────────────────────────────────────────────────
+int invoke_consume_receives_slot(const std::string &dir);
+int invoke_consume_nil_slot(const std::string &dir);
+int invoke_consume_script_error_detected(const std::string &dir);
+/// NEW: verifies rx.slot is read-only — Lua cannot mutate the source buffer.
+int invoke_consume_rx_slot_is_read_only(const std::string &dir);
+
 } // namespace lua_engine
 } // namespace pylabhub::tests::worker

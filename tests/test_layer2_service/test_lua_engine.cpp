@@ -358,87 +358,59 @@ TEST_F(LuaEngineChunk1Test, InvokeProduce_DiscardOnFalse_ButLuaWroteSlot)
 // 4. invoke_consume
 // ============================================================================
 
-TEST_F(LuaEngineTest, InvokeConsume_ReceivesReadOnlySlot)
+// ============================================================================
+// Chunk 3 — invoke_consume (Pattern 3)
+//
+// Strengthened bodies in workers/lua_engine_workers.cpp.  Highlights:
+//
+//   - InvokeConsume_ReceivesSlot: renamed from ReceivesReadOnlySlot (the
+//     original body never actually attempted a write to verify the
+//     read-only claim).  Now asserts the return value too, not only
+//     the script_error_count side-effect.
+//
+//   - InvokeConsume_RxSlot_IsReadOnly (NEW): actually pins the
+//     "read-only slot" contract by attempting a Lua write to rx.slot
+//     and verifying the underlying C buffer is unchanged afterwards.
+// ============================================================================
+
+TEST_F(LuaEngineChunk1Test, InvokeConsume_ReceivesSlot)
 {
-    // Script asserts the value — if wrong type or nil, assert fails → pcall error.
-    write_script(R"(
-        function on_consume(rx, msgs, api)
-            assert(rx.slot ~= nil, "expected non-nil slot")
-            assert(math.abs(rx.slot.value - 99.5) < 0.01,
-                   "expected value ~99.5, got " .. tostring(rx.slot.value))
-            return true
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_consume"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_, "cons");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    float data = 99.5f;
-    std::vector<IncomingMessage> msgs;
-
-    engine.invoke_consume(InvokeRx{&data, sizeof(data)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u) << "Script assertion failed — slot value incorrect";
-
-    engine.finalize();
+    auto w = SpawnWorker("lua_engine.invoke_consume_receives_slot",
+                         {unique_dir("consume_receives")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineTest, InvokeConsume_NilSlot)
+TEST_F(LuaEngineChunk1Test, InvokeConsume_NilSlot)
 {
-    write_script(R"(
-        function on_consume(rx, msgs, api)
-            assert(rx.slot == nil, "expected nil")
-            return true
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_consume"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_, "cons");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_consume(InvokeRx{nullptr, 0}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    engine.finalize();
+    auto w = SpawnWorker("lua_engine.invoke_consume_nil_slot",
+                         {unique_dir("consume_nil_slot")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineTest, InvokeConsume_ScriptErrorDetected)
+TEST_F(LuaEngineChunk1Test, InvokeConsume_ScriptErrorDetected)
 {
-    write_script(R"(
-        function on_consume(rx, msgs, api)
-            error("consume error")
-        end
-    )");
+    auto w = SpawnWorker("lua_engine.invoke_consume_script_error_detected",
+                         {unique_dir("consume_script_error")});
+    // Engine logs the Lua `error("consume error")` at ERROR level.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/{"consume error"});
+}
 
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_consume"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_, "cons");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    float data = 1.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_consume(InvokeRx{&data, sizeof(data)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 1u);
-
-    engine.finalize();
+// NEW: concretely verifies the "read-only slot" part of the consumer
+// contract that was named but not tested by the pre-conversion
+// ReceivesReadOnlySlot test.
+TEST_F(LuaEngineChunk1Test, InvokeConsume_RxSlot_IsReadOnly)
+{
+    auto w = SpawnWorker("lua_engine.invoke_consume_rx_slot_is_read_only",
+                         {unique_dir("consume_read_only")});
+    // If the engine chooses to raise a Lua error on the const-write
+    // attempt (LuaJIT permits either outcome), that error reaches the
+    // log. Declare the substring so both silent-no-op and raise-error
+    // implementations are accepted at the framework level. The worker
+    // body's EXPECT_FLOAT_EQ(data, 99.5f) is what actually validates
+    // the read-only contract.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/{"Lua"});
 }
 
 // ============================================================================

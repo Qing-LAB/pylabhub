@@ -753,6 +753,218 @@ int invoke_produce_discard_on_false_but_lua_wrote_slot(const std::string &dir)
         });
 }
 
+// ── invoke_consume (chunk 3) ────────────────────────────────────────────────
+//
+// These bodies exercise the consumer-side callback contract. `rx` is
+// documented as "Input direction (read-only slot + flexzone)" — the
+// RxSlot_IsReadOnly test pins the "read-only" part, which the original
+// ReceivesReadOnlySlot test named but did not actually verify.
+//
+// invoke_consume returns InvokeResult (Commit/Discard/Error); per the
+// header comment the consumer data loop currently ignores it
+// ("Currently ignored by the consumer data loop — reserved for future
+// flow control"), but the engine still computes it and the tests assert
+// on it so a regression in the dispatch path does not silently pass.
+
+namespace
+{
+
+/// Consumer variant of setup_engine: loads a script with `on_consume`
+/// as the required callback, registers InSlotFrame (not OutSlotFrame),
+/// builds the API with tag "cons" so the SlotFrame alias points at
+/// InSlotFrame.
+bool setup_consumer_engine(LuaEngine &engine, RoleHostCore &core,
+                           const fs::path &dir,
+                           std::unique_ptr<RoleAPIBase> &api_out)
+{
+    if (!engine.initialize("test", &core))
+        return false;
+    if (!engine.load_script(dir, "init.lua", "on_consume"))
+        return false;
+    auto spec = simple_schema();
+    if (!engine.register_slot_type(spec, "InSlotFrame", "aligned"))
+        return false;
+    api_out = make_api(core, "cons");
+    return engine.build_api(*api_out);
+}
+
+/// Consumer-side equivalent of produce_worker_with_script.
+template <typename F>
+int consume_worker_with_script(const std::string &dir,
+                               const char *scenario_name,
+                               const std::string &lua_source,
+                               F &&body)
+{
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, lua_source);
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            std::unique_ptr<RoleAPIBase> api;
+            ASSERT_TRUE(setup_consumer_engine(engine, core, script_dir, api));
+
+            body(engine, core);
+
+            engine.finalize();
+        },
+        scenario_name, Logger::GetLifecycleModule());
+}
+
+} // namespace
+
+int invoke_consume_receives_slot(const std::string &dir)
+{
+    // Strengthened over the pre-conversion test (which was called
+    // InvokeConsume_ReceivesReadOnlySlot but did not actually exercise
+    // the "read-only" part — see the dedicated rx_slot_is_read_only
+    // worker below for that coverage).  The original body only checked
+    // script_error_count == 0 (i.e. the Lua-side `assert(rx.slot.value
+    // ~= nil)` passed).  This body additionally asserts result ==
+    // Commit, so a regression in the invoke_consume return-value
+    // dispatch is caught even though the production consumer loop
+    // currently ignores the return value.
+    return consume_worker_with_script(
+        dir, "lua_engine::invoke_consume_receives_slot",
+        R"(
+            function on_consume(rx, msgs, api)
+                assert(rx.slot ~= nil, "expected non-nil slot")
+                assert(math.abs(rx.slot.value - 99.5) < 0.01,
+                       "expected value ~99.5, got " .. tostring(rx.slot.value))
+                return true
+            end
+        )",
+        [](pylabhub::scripting::LuaEngine &engine,
+           pylabhub::scripting::RoleHostCore & /*core*/) {
+            float data = 99.5f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_consume(
+                pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Commit)
+                << "on_consume returning true must map to Commit even though "
+                   "the data loop currently ignores the return value";
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "Lua-side assert must have passed — if this fails, the "
+                   "engine passed the wrong value in rx.slot";
+        });
+}
+
+int invoke_consume_nil_slot(const std::string &dir)
+{
+    // Strengthened: also asserts result == Commit (Lua returns true).
+    // The pre-conversion test only checked script_error_count == 0,
+    // which confirms the Lua-side `assert(rx.slot == nil)` passed but
+    // does not catch a dispatch regression that e.g. maps "true" to
+    // Discard.
+    return consume_worker_with_script(
+        dir, "lua_engine::invoke_consume_nil_slot",
+        R"(
+            function on_consume(rx, msgs, api)
+                assert(rx.slot == nil, "expected nil")
+                return true
+            end
+        )",
+        [](pylabhub::scripting::LuaEngine &engine,
+           pylabhub::scripting::RoleHostCore & /*core*/) {
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_consume(
+                pylabhub::scripting::InvokeRx{nullptr, 0}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Commit);
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "Lua assert(rx.slot == nil) must have passed";
+        });
+}
+
+int invoke_consume_script_error_detected(const std::string &dir)
+{
+    // Strengthened: additionally asserts result == Error.  The
+    // pre-conversion test only checked script_error_count == 1, which
+    // confirms the engine recognised the error — but not that it
+    // translated it to the Error result code.
+    return consume_worker_with_script(
+        dir, "lua_engine::invoke_consume_script_error_detected",
+        R"(
+            function on_consume(rx, msgs, api)
+                error("consume error")
+            end
+        )",
+        [](pylabhub::scripting::LuaEngine &engine,
+           pylabhub::scripting::RoleHostCore & /*core*/) {
+            float data = 1.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_consume(
+                pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Error);
+            EXPECT_EQ(engine.script_error_count(), 1u);
+        });
+}
+
+int invoke_consume_rx_slot_is_read_only(const std::string &dir)
+{
+    // NEW test — pins the "read-only" part of the consumer contract
+    // (see src/include/utils/script_engine.hpp:341:
+    //   "Input direction (read-only slot + flexzone)").
+    //
+    // The pre-conversion InvokeConsume_ReceivesReadOnlySlot test name
+    // promised this coverage but the body never attempted a write to
+    // rx.slot — so whether the "read-only" claim holds at the ffi
+    // boundary was unverified.
+    //
+    // This worker pre-fills the underlying C buffer with a sentinel
+    // (99.5), attempts a Lua-side write of a different value (777.0)
+    // to rx.slot.value, and asserts the underlying buffer is still 99.5
+    // after invoke_consume. Either of these outcomes is a valid
+    // "read-only" implementation:
+    //
+    //   A) Engine's ffi cast produces a `const T*`; Lua write raises a
+    //      runtime error → script_error_count increments and result ==
+    //      InvokeResult::Error.
+    //   B) LuaJIT's ffi silently no-ops const writes (accepted per
+    //      LuaJIT docs); Lua returns normally → result == Commit.
+    //
+    // What is NOT valid is the C buffer getting the value 777.0.  The
+    // test pins: (buf == 99.5) AND result != Discard — both A and B
+    // satisfy it; a buffer-overwrite bug fails it.
+    //
+    // The body does not assert which of A or B actually happens so
+    // this test does not over-fit to the current implementation — if
+    // LuaJIT const-write semantics change, the test still passes as
+    // long as the read-only invariant is upheld.
+    return consume_worker_with_script(
+        dir, "lua_engine::invoke_consume_rx_slot_is_read_only",
+        R"(
+            function on_consume(rx, msgs, api)
+                -- Attempt to mutate rx.slot. Per the engine contract this
+                -- must not propagate to the underlying C buffer.
+                rx.slot.value = 777.0
+                return true
+            end
+        )",
+        [](pylabhub::scripting::LuaEngine &engine,
+           pylabhub::scripting::RoleHostCore & /*core*/) {
+            float data = 99.5f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_consume(
+                pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
+
+            // Core invariant: the buffer is owned by the caller and is
+            // read-only from Lua's perspective. Lua's write attempt
+            // must not propagate.
+            EXPECT_FLOAT_EQ(data, 99.5f)
+                << "rx.slot is documented read-only; Lua's `rx.slot.value = "
+                   "777.0` must NOT propagate to the underlying C buffer. "
+                   "If data == 777.0 here, that's a real contract violation "
+                   "(Lua has write access to the caller's input buffer).";
+
+            // Either valid outcome:
+            //   - Discard should NOT happen (the Lua code did not return
+            //     false anywhere); anything else means the contract holds.
+            EXPECT_NE(result, pylabhub::scripting::InvokeResult::Discard)
+                << "unexpected Discard — Lua explicitly `return true`";
+        });
+}
+
 } // namespace lua_engine
 } // namespace pylabhub::tests::worker
 
@@ -823,6 +1035,16 @@ struct LuaEngineWorkerRegistrar
                     return invoke_produce_script_error(dir);
                 if (sc == "invoke_produce_discard_on_false_but_lua_wrote_slot")
                     return invoke_produce_discard_on_false_but_lua_wrote_slot(dir);
+
+                // Chunk 3: invoke_consume
+                if (sc == "invoke_consume_receives_slot")
+                    return invoke_consume_receives_slot(dir);
+                if (sc == "invoke_consume_nil_slot")
+                    return invoke_consume_nil_slot(dir);
+                if (sc == "invoke_consume_script_error_detected")
+                    return invoke_consume_script_error_detected(dir);
+                if (sc == "invoke_consume_rx_slot_is_read_only")
+                    return invoke_consume_rx_slot_is_read_only(dir);
 
                 fmt::print(stderr,
                            "[lua_engine] ERROR: unknown scenario '{}'\n", sc);
