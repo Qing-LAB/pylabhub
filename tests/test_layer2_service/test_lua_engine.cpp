@@ -21,7 +21,7 @@
  * test_compliance_audit.md § "Correction status"). This file currently
  * contains two fixtures that are intentionally both live:
  *
- *   - LuaEngineChunk1Test  (IsolatedProcessTest — Pattern 3)
+ *   - LuaEngineIsolatedTest  (IsolatedProcessTest — Pattern 3)
  *     Tests already converted by chunks 1-3 of the Lua sweep. Each
  *     spawns a worker subprocess; bodies live in
  *     workers/lua_engine_workers.cpp.
@@ -164,7 +164,7 @@ class LuaEngineTest : public ::testing::Test
 namespace
 {
 
-class LuaEngineChunk1Test : public pylabhub::tests::IsolatedProcessTest
+class LuaEngineIsolatedTest : public pylabhub::tests::IsolatedProcessTest
 {
   protected:
     void TearDown() override
@@ -194,7 +194,7 @@ class LuaEngineChunk1Test : public pylabhub::tests::IsolatedProcessTest
 
 } // namespace
 
-TEST_F(LuaEngineChunk1Test, FullLifecycle)
+TEST_F(LuaEngineIsolatedTest, FullLifecycle)
 {
     // Strengthened: the worker verifies on_init and on_stop actually
     // dispatched into the Lua runtime by checking report_metric side
@@ -205,7 +205,7 @@ TEST_F(LuaEngineChunk1Test, FullLifecycle)
     ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineChunk1Test, InitializeAndFinalize_Succeeds)
+TEST_F(LuaEngineIsolatedTest, InitializeAndFinalize_Succeeds)
 {
     // Renamed from InitializeFailsGracefully — body never matched that
     // name. A real initialize-fails-gracefully test needs a failure-
@@ -216,21 +216,21 @@ TEST_F(LuaEngineChunk1Test, InitializeAndFinalize_Succeeds)
     ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineChunk1Test, RegisterSlotType_SizeofCorrect)
+TEST_F(LuaEngineIsolatedTest, RegisterSlotType_SizeofCorrect)
 {
     auto w = SpawnWorker("lua_engine.register_slot_type_sizeof_correct",
                          {unique_dir("sizeof")});
     ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineChunk1Test, RegisterSlotType_MultiField)
+TEST_F(LuaEngineIsolatedTest, RegisterSlotType_MultiField)
 {
     auto w = SpawnWorker("lua_engine.register_slot_type_multi_field",
                          {unique_dir("multifield")});
     ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineChunk1Test, RegisterSlotType_Packed_vs_Aligned)
+TEST_F(LuaEngineIsolatedTest, RegisterSlotType_Packed_vs_Aligned)
 {
     // Strengthened from RegisterSlotType_PackedPacking: verifies BOTH
     // aligned (8 bytes) and packed (5 bytes) for the same schema, and
@@ -241,7 +241,7 @@ TEST_F(LuaEngineChunk1Test, RegisterSlotType_Packed_vs_Aligned)
     ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineChunk1Test, RegisterSlotType_HasSchemaFalse_ReturnsFalse)
+TEST_F(LuaEngineIsolatedTest, RegisterSlotType_HasSchemaFalse_ReturnsFalse)
 {
     auto w = SpawnWorker(
         "lua_engine.register_slot_type_has_schema_false_returns_false",
@@ -256,42 +256,42 @@ TEST_F(LuaEngineChunk1Test, RegisterSlotType_HasSchemaFalse_ReturnsFalse)
 // (bool, int8, int16, uint64).  See all_types_schema in
 // tests/test_framework/test_schema_helpers.h for the full list and the
 // dispatcher-source citations that justify the coverage.
-TEST_F(LuaEngineChunk1Test, RegisterSlotType_AllSupportedTypes_Succeeds)
+TEST_F(LuaEngineIsolatedTest, RegisterSlotType_AllSupportedTypes_Succeeds)
 {
     auto w = SpawnWorker("lua_engine.register_slot_type_all_supported_types",
                          {unique_dir("all_types")});
     ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineChunk1Test, Alias_SlotFrame_Producer)
+TEST_F(LuaEngineIsolatedTest, Alias_SlotFrame_Producer)
 {
     auto w = SpawnWorker("lua_engine.alias_slot_frame_producer",
                          {unique_dir("alias_prod")});
     ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineChunk1Test, Alias_SlotFrame_Consumer)
+TEST_F(LuaEngineIsolatedTest, Alias_SlotFrame_Consumer)
 {
     auto w = SpawnWorker("lua_engine.alias_slot_frame_consumer",
                          {unique_dir("alias_cons")});
     ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineChunk1Test, Alias_NoAlias_Processor)
+TEST_F(LuaEngineIsolatedTest, Alias_NoAlias_Processor)
 {
     auto w = SpawnWorker("lua_engine.alias_no_alias_processor",
                          {unique_dir("alias_proc")});
     ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineChunk1Test, Alias_FlexFrame_Producer)
+TEST_F(LuaEngineIsolatedTest, Alias_FlexFrame_Producer)
 {
     auto w = SpawnWorker("lua_engine.alias_flex_frame_producer",
                          {unique_dir("alias_flex")});
     ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineChunk1Test, Alias_ProducerNoFz_NoFlexFrameAlias)
+TEST_F(LuaEngineIsolatedTest, Alias_ProducerNoFz_NoFlexFrameAlias)
 {
     auto w = SpawnWorker("lua_engine.alias_producer_no_fz_no_flex_frame_alias",
                          {unique_dir("alias_no_fz")});
@@ -310,7 +310,7 @@ TEST_F(LuaEngineChunk1Test, Alias_ProducerNoFz_NoFlexFrameAlias)
 // the pre-conversion test and why.
 // ============================================================================
 
-TEST_F(LuaEngineChunk1Test, InvokeProduce_CommitOnTrue)
+TEST_F(LuaEngineIsolatedTest, InvokeProduce_CommitOnTrue)
 {
     // Strengthened: additionally asserts script_error_count == 0 (a Commit
     // path that silently logged a script error would slip through the
@@ -320,7 +320,7 @@ TEST_F(LuaEngineChunk1Test, InvokeProduce_CommitOnTrue)
     ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineChunk1Test, InvokeProduce_DiscardOnFalse)
+TEST_F(LuaEngineIsolatedTest, InvokeProduce_DiscardOnFalse)
 {
     // Strengthened: buf is initialized to the sentinel value 777.0f; the
     // test asserts the engine did NOT overwrite it on the Discard path
@@ -331,7 +331,7 @@ TEST_F(LuaEngineChunk1Test, InvokeProduce_DiscardOnFalse)
     ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineChunk1Test, InvokeProduce_NilReturn_IsError)
+TEST_F(LuaEngineIsolatedTest, InvokeProduce_NilReturn_IsError)
 {
     auto w = SpawnWorker("lua_engine.invoke_produce_nil_return_is_error",
                          {unique_dir("produce_nil_return")});
@@ -345,7 +345,7 @@ TEST_F(LuaEngineChunk1Test, InvokeProduce_NilReturn_IsError)
                    {"on_produce returned nil"});
 }
 
-TEST_F(LuaEngineChunk1Test, InvokeProduce_NilSlot)
+TEST_F(LuaEngineIsolatedTest, InvokeProduce_NilSlot)
 {
     // Strengthened: additionally asserts script_error_count == 0 to
     // confirm the Lua-side assert(tx.slot == nil, ...) actually passed.
@@ -356,7 +356,7 @@ TEST_F(LuaEngineChunk1Test, InvokeProduce_NilSlot)
     ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineChunk1Test, InvokeProduce_ScriptError)
+TEST_F(LuaEngineIsolatedTest, InvokeProduce_ScriptError)
 {
     auto w = SpawnWorker("lua_engine.invoke_produce_script_error",
                          {unique_dir("produce_script_error")});
@@ -370,7 +370,7 @@ TEST_F(LuaEngineChunk1Test, InvokeProduce_ScriptError)
 // then returns false; the worker verifies result == Discard AND
 // buf == 42.0. Worth having explicitly because users may expect the
 // engine to clear the buffer on Discard (it doesn't).
-TEST_F(LuaEngineChunk1Test, InvokeProduce_DiscardOnFalse_ButLuaWroteSlot)
+TEST_F(LuaEngineIsolatedTest, InvokeProduce_DiscardOnFalse_ButLuaWroteSlot)
 {
     auto w = SpawnWorker(
         "lua_engine.invoke_produce_discard_on_false_but_lua_wrote_slot",
@@ -397,21 +397,21 @@ TEST_F(LuaEngineChunk1Test, InvokeProduce_DiscardOnFalse_ButLuaWroteSlot)
 //     and verifying the underlying C buffer is unchanged afterwards.
 // ============================================================================
 
-TEST_F(LuaEngineChunk1Test, InvokeConsume_ReceivesSlot)
+TEST_F(LuaEngineIsolatedTest, InvokeConsume_ReceivesSlot)
 {
     auto w = SpawnWorker("lua_engine.invoke_consume_receives_slot",
                          {unique_dir("consume_receives")});
     ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineChunk1Test, InvokeConsume_NilSlot)
+TEST_F(LuaEngineIsolatedTest, InvokeConsume_NilSlot)
 {
     auto w = SpawnWorker("lua_engine.invoke_consume_nil_slot",
                          {unique_dir("consume_nil_slot")});
     ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineChunk1Test, InvokeConsume_ScriptErrorDetected)
+TEST_F(LuaEngineIsolatedTest, InvokeConsume_ScriptErrorDetected)
 {
     auto w = SpawnWorker("lua_engine.invoke_consume_script_error_detected",
                          {unique_dir("consume_script_error")});
@@ -430,7 +430,7 @@ TEST_F(LuaEngineChunk1Test, InvokeConsume_ScriptErrorDetected)
 // appear healthy while silently producing incorrect data downstream).
 // See the worker body's doc block for the source-traced mechanism
 // (lua_engine.cpp:697-699 + lua_state.cpp:285,291 + :843).
-TEST_F(LuaEngineChunk1Test, InvokeConsume_RxSlot_IsReadOnly)
+TEST_F(LuaEngineIsolatedTest, InvokeConsume_RxSlot_IsReadOnly)
 {
     auto w = SpawnWorker("lua_engine.invoke_consume_rx_slot_is_read_only",
                          {unique_dir("consume_read_only")});
@@ -459,7 +459,7 @@ TEST_F(LuaEngineChunk1Test, InvokeConsume_RxSlot_IsReadOnly)
 // whichever runtime condition produced that state.
 // ============================================================================
 
-TEST_F(LuaEngineChunk1Test, InvokeProcess_DualSlots)
+TEST_F(LuaEngineIsolatedTest, InvokeProcess_DualSlots)
 {
     // Strengthened: also asserts rx input buffer unchanged (read-only in
     // the dual-slot path) and script_error_count == 0.
@@ -468,7 +468,7 @@ TEST_F(LuaEngineChunk1Test, InvokeProcess_DualSlots)
     ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineChunk1Test, InvokeProcess_BothSlotsNil)
+TEST_F(LuaEngineIsolatedTest, InvokeProcess_BothSlotsNil)
 {
     // Renamed from InvokeProcess_NilInput to describe the slot-state
     // rather than a misreadable role-semantic. Both rx and tx arrive
@@ -478,7 +478,7 @@ TEST_F(LuaEngineChunk1Test, InvokeProcess_BothSlotsNil)
     ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineChunk1Test, InvokeProcess_RxPresent_TxNil)
+TEST_F(LuaEngineIsolatedTest, InvokeProcess_RxPresent_TxNil)
 {
     // Renamed from InvokeProcess_InputOnlyNoOutput. Represents tx
     // backpressure while input data is available. Lua drops the
@@ -494,7 +494,7 @@ TEST_F(LuaEngineChunk1Test, InvokeProcess_RxPresent_TxNil)
 // `const*` ctype (lua_engine.cpp:899-900). The Lua error on the rx
 // write aborts the callback before the subsequent tx write, so
 // out_data stays at its caller-initialised value.
-TEST_F(LuaEngineChunk1Test, InvokeProcess_RxSlot_IsReadOnly)
+TEST_F(LuaEngineIsolatedTest, InvokeProcess_RxSlot_IsReadOnly)
 {
     auto w = SpawnWorker("lua_engine.invoke_process_rx_slot_is_read_only",
                          {unique_dir("process_rx_ro")});
@@ -525,7 +525,7 @@ TEST_F(LuaEngineChunk1Test, InvokeProcess_RxSlot_IsReadOnly)
 // empty-vector, and consumer-bare-format coverage holes.
 // ============================================================================
 
-TEST_F(LuaEngineChunk1Test, InvokeProduce_ReceivesMessages_EventWithDetails)
+TEST_F(LuaEngineIsolatedTest, InvokeProduce_ReceivesMessages_EventWithDetails)
 {
     // Strengthened from pre-conversion InvokeProduce_ReceivesMessages.
     // Now verifies the details-map-flattening contract — previously the
@@ -538,7 +538,7 @@ TEST_F(LuaEngineChunk1Test, InvokeProduce_ReceivesMessages_EventWithDetails)
 }
 
 // NEW: empty msgs vector — simplest edge case, not covered pre-sweep.
-TEST_F(LuaEngineChunk1Test, InvokeProduce_ReceivesMessages_EmptyVector)
+TEST_F(LuaEngineIsolatedTest, InvokeProduce_ReceivesMessages_EmptyVector)
 {
     auto w = SpawnWorker(
         "lua_engine.invoke_produce_receives_messages_empty_vector",
@@ -549,7 +549,7 @@ TEST_F(LuaEngineChunk1Test, InvokeProduce_ReceivesMessages_EmptyVector)
 // NEW: data-message shape on the producer path. Verifies the
 // sender-to-hex projection and the data-to-byte-string projection
 // (previously untested).
-TEST_F(LuaEngineChunk1Test, InvokeProduce_ReceivesMessages_DataMessage)
+TEST_F(LuaEngineIsolatedTest, InvokeProduce_ReceivesMessages_DataMessage)
 {
     auto w = SpawnWorker(
         "lua_engine.invoke_produce_receives_messages_data_message",
@@ -561,7 +561,7 @@ TEST_F(LuaEngineChunk1Test, InvokeProduce_ReceivesMessages_DataMessage)
 // different projection (bare byte string at msgs[i], not a table).
 // This is the push_messages_table_bare_ code path which was entirely
 // untested at L2 before this test.
-TEST_F(LuaEngineChunk1Test, InvokeConsume_ReceivesMessages_DataBareFormat)
+TEST_F(LuaEngineIsolatedTest, InvokeConsume_ReceivesMessages_DataBareFormat)
 {
     auto w = SpawnWorker(
         "lua_engine.invoke_consume_receives_messages_data_bare_format",
