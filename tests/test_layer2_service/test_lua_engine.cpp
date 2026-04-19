@@ -22,16 +22,18 @@
  * contains two fixtures that are intentionally both live:
  *
  *   - LuaEngineIsolatedTest  (IsolatedProcessTest — Pattern 3)
- *     Tests already converted by chunks 1-3 of the Lua sweep. Each
- *     spawns a worker subprocess; bodies live in
+ *     Tests already converted by chunks 1-5 + 6a of the Lua sweep.
+ *     Each spawns a worker subprocess; bodies live in
  *     workers/lua_engine_workers.cpp.
  *
  *   - LuaEngineTest        (plain ::testing::Test — V2 antipattern)
  *     Tests NOT YET converted. Will be migrated chunk-by-chunk by
  *     subsequent commits (one chunk per thematic group in the numbered
- *     list above). The V2 fixture will be deleted in the final commit
- *     of the Lua sweep, at which point this file contains Pattern 3
- *     only.
+ *     list above). **Policy (established 2026-04-19 during chunk-6a
+ *     cleanup):** V2 tests whose P3 replacement strictly dominates
+ *     them are deleted IN THE SAME COMMIT as the P3 conversion — not
+ *     at sweep-end. The V2 fixture wrapper itself stays until its
+ *     last test is converted, then goes in the sweep-end commit.
  *
  * The hybrid is temporary and deliberately visible in-file so a reader
  * landing on this source is not misled into thinking "both patterns
@@ -644,6 +646,19 @@ TEST_F(LuaEngineIsolatedTest, ApiCriticalError_SetAndReadAndStopReason)
                    {"[test-lua] CRITICAL:"});
 }
 
+// NEW: exhaustive api.stop_reason() → StopReason enum mapping. Injects
+// each enum value from C++ and verifies the Lua closure returns the
+// right string. Subsumes the V2 ApiStopReason_ReflectsPeerDead and
+// ApiStopReason_AfterCriticalError tests AND adds HubDead coverage
+// which was never tested before this.
+TEST_F(LuaEngineIsolatedTest, ApiStopReason_ReflectsAllEnumValues)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_stop_reason_reflects_all_enum_values",
+        {unique_dir("api_stop_reason_all")});
+    ExpectWorkerOk(w);
+}
+
 // ============================================================================
 // 8. Error handling
 // ============================================================================
@@ -936,119 +951,6 @@ TEST_F(LuaEngineTest, InvokeConsume_BareDataMessages)
     engine.invoke_consume(InvokeRx{nullptr, 0}, msgs);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed — consumer message format incorrect";
-
-    engine.finalize();
-}
-
-// ============================================================================
-// 15. api.stop() triggers shutdown
-// ============================================================================
-
-TEST_F(LuaEngineTest, ApiStop_SetsShutdownRequested)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            api.stop()
-            return false
-        end
-    )");
-
-    RoleHostCore core;
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    EXPECT_FALSE(core.is_shutdown_requested());
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-
-    EXPECT_TRUE(core.is_shutdown_requested())
-        << "api.stop() should set shutdown_requested";
-
-    engine.finalize();
-}
-
-// ============================================================================
-// 16. api.set_critical_error() triggers critical shutdown
-// ============================================================================
-
-TEST_F(LuaEngineTest, ApiSetCriticalError_SetsCriticalFlag)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            api.set_critical_error("test critical error")
-            return false
-        end
-    )");
-
-    RoleHostCore core;
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    EXPECT_FALSE(core.is_critical_error());
-    EXPECT_FALSE(core.is_shutdown_requested());
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-
-    EXPECT_TRUE(core.is_critical_error())
-        << "api.set_critical_error() should set critical_error_";
-    EXPECT_TRUE(core.is_shutdown_requested())
-        << "api.set_critical_error() should also set shutdown_requested";
-
-    engine.finalize();
-}
-
-// ============================================================================
-// 17. api.stop_reason() returns correct values
-// ============================================================================
-
-TEST_F(LuaEngineTest, ApiStopReason_DefaultIsNormal)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            local reason = api.stop_reason()
-            assert(reason == "normal",
-                   "expected 'normal', got '" .. tostring(reason) .. "'")
-            return false
-        end
-    )");
-
-    RoleHostCore core;
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u) << "stop_reason should be 'normal'";
-
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, ApiStopReason_ReflectsPeerDead)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            local reason = api.stop_reason()
-            assert(reason == "peer_dead",
-                   "expected 'peer_dead', got '" .. tostring(reason) .. "'")
-            return false
-        end
-    )");
-
-    RoleHostCore core;
-    core.set_stop_reason(RoleHostCore::StopReason::PeerDead); // PeerDead
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u) << "stop_reason should be 'peer_dead'";
 
     engine.finalize();
 }
@@ -1702,26 +1604,6 @@ TEST_F(LuaEngineTest, Api_LastCycleWorkUs_ReadsFromCore)
     engine.finalize();
 }
 
-TEST_F(LuaEngineTest, Api_CriticalError_DefaultIsFalse)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            assert(api.critical_error() == false,
-                   "critical_error should be false by default")
-            return false
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
-}
-
 TEST_F(LuaEngineTest, Api_EnvironmentStrings_LogsDirRunDir)
 {
     write_script(R"(
@@ -1991,35 +1873,6 @@ TEST_F(LuaEngineTest, Api_ProcessorQueueState_DualDefaults)
 }
 
 // ============================================================================
-// 24. Identity fields match context
-// ============================================================================
-
-TEST_F(LuaEngineTest, Api_IdentityFields_MatchContext)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            assert(api.uid() == "TEST-ENGINE-00000001",
-                   "uid mismatch: " .. tostring(api.uid()))
-            assert(api.name() == "TestEngine",
-                   "name mismatch: " .. tostring(api.name()))
-            assert(api.channel() == "test.channel",
-                   "channel mismatch: " .. tostring(api.channel()))
-            return false
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed — identity fields do not match context";
-    engine.finalize();
-}
-
-// ============================================================================
 // 26. Metrics — all loop fields present with non-zero verification
 // ============================================================================
 
@@ -2229,35 +2082,6 @@ TEST_F(LuaEngineTest, Eval_SyntaxError_ReturnsScriptError)
     ASSERT_TRUE(setup_engine(engine));
     auto result = engine.eval("invalid syntax {{{");
     EXPECT_EQ(result.status, InvokeStatus::ScriptError);
-    engine.finalize();
-}
-
-// ============================================================================
-// 33. api.stop_reason() reflects CriticalError
-// ============================================================================
-
-TEST_F(LuaEngineTest, ApiStopReason_AfterCriticalError)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            local reason = api.stop_reason()
-            assert(reason == "critical_error",
-                   "expected 'critical_error', got '" .. tostring(reason) .. "'")
-            return false
-        end
-    )");
-
-    RoleHostCore core;
-    core.set_stop_reason(RoleHostCore::StopReason::CriticalError);
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u) << "stop_reason should be 'critical_error'";
-
     engine.finalize();
 }
 
