@@ -2478,6 +2478,231 @@ int eval_syntax_error_returns_script_error(const std::string &dir)
         });
 }
 
+// ── Error handling: setup-phase error paths (chunk 7b) ─────────────────────
+
+int load_script_missing_file_returns_false(const std::string &dir)
+{
+    // Strengthened over V2.  V2 only asserted false return.  This
+    // body additionally pins:
+    //   (a) script_error_count stays 0 — setup errors must NOT
+    //       increment the runtime script-error counter, which is
+    //       reserved for invoke-time Lua errors (HEP-CORE-0019).
+    //   (b) engine stays usable — a subsequent load_script with a
+    //       valid file succeeds.  A regression that leaves the
+    //       engine's ref table in a broken state after a missed
+    //       file would fail the retry.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            RoleHostCore core;
+            LuaEngine    engine;
+            ASSERT_TRUE(engine.initialize("test", &core));
+
+            EXPECT_FALSE(engine.load_script(script_dir, "nonexistent.lua",
+                                             "on_produce"))
+                << "load_script must return false when file is missing";
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "missing-file error is a setup failure, NOT a script "
+                   "error — script_error_count must stay 0";
+
+            // Now write a valid script and retry — must succeed.
+            write_script(script_dir,
+                         "function on_produce(tx, msgs, api) return false end");
+            EXPECT_TRUE(engine.load_script(script_dir, "init.lua",
+                                            "on_produce"))
+                << "engine must be re-usable after a load_script failure";
+
+            engine.finalize();
+        },
+        "lua_engine::load_script_missing_file_returns_false",
+        Logger::GetLifecycleModule());
+}
+
+int load_script_missing_required_callback_returns_false(const std::string &dir)
+{
+    // Strengthened: verifies has_callback("on_produce") is false
+    // after the failed load (pins that the extracted-ref table is
+    // clean, not holding a stale ref from a partial load), and
+    // that a retry with a script containing on_produce succeeds.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            RoleHostCore core;
+            LuaEngine    engine;
+            ASSERT_TRUE(engine.initialize("test", &core));
+
+            // Script defines on_init but NOT on_produce.
+            write_script(script_dir, R"LUA(
+                function on_init(api) end
+                -- on_produce intentionally absent
+            )LUA");
+            EXPECT_FALSE(engine.load_script(script_dir, "init.lua",
+                                             "on_produce"))
+                << "load_script must return false when required callback "
+                   "is missing";
+            EXPECT_EQ(engine.script_error_count(), 0u);
+
+            // Retry with a script that HAS on_produce — must succeed.
+            write_script(script_dir, R"LUA(
+                function on_produce(tx, msgs, api) return false end
+            )LUA");
+            EXPECT_TRUE(engine.load_script(script_dir, "init.lua",
+                                            "on_produce"));
+            EXPECT_TRUE(engine.has_callback("on_produce"));
+
+            engine.finalize();
+        },
+        "lua_engine::load_script_missing_required_callback_returns_false",
+        Logger::GetLifecycleModule());
+}
+
+int load_script_syntax_error_returns_false(const std::string &dir)
+{
+    // Strengthened: verifies retry with valid syntax succeeds.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            RoleHostCore core;
+            LuaEngine    engine;
+            ASSERT_TRUE(engine.initialize("test", &core));
+
+            // Syntactically invalid Lua.
+            write_script(script_dir,
+                         "function on_produce(tx, msgs, api)  -- unterminated");
+            EXPECT_FALSE(engine.load_script(script_dir, "init.lua",
+                                             "on_produce"))
+                << "load_script must return false on syntax error";
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "syntax error is a load-time failure, NOT a runtime "
+                   "script error";
+
+            // Overwrite with valid syntax and retry.
+            write_script(script_dir,
+                         "function on_produce(tx, msgs, api) return false end");
+            EXPECT_TRUE(engine.load_script(script_dir, "init.lua",
+                                            "on_produce"));
+
+            engine.finalize();
+        },
+        "lua_engine::load_script_syntax_error_returns_false",
+        Logger::GetLifecycleModule());
+}
+
+int register_slot_type_bad_field_type_returns_false(const std::string &dir)
+{
+    // Strengthened over V2.  V2 only asserted false on ONE bad
+    // type (complex128).  This body additionally pins:
+    //   (a) type_sizeof("BadFrame") returns 0 — the failed
+    //       registration did NOT leak a partial type into the ffi
+    //       table.
+    //   (b) registering a DIFFERENT good schema under the same name
+    //       subsequently succeeds — the failure doesn't poison the
+    //       name slot.
+    //   (c) a second unsupported type name also fails — pins the
+    //       rejection isn't specific to one value.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir,
+                         "function on_produce(tx, msgs, api) return true end");
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            ASSERT_TRUE(engine.initialize("test", &core));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
+                                            "on_produce"));
+
+            // complex128 is unsupported.
+            SchemaSpec bad;
+            bad.has_schema = true;
+            bad.fields.push_back({"x", "complex128", 1, 0});
+            EXPECT_FALSE(engine.register_slot_type(bad, "BadFrame",
+                                                    "aligned"))
+                << "unsupported type 'complex128' must fail registration";
+
+            EXPECT_EQ(engine.type_sizeof("BadFrame"), 0u)
+                << "failed registration must NOT leak a partial type — "
+                   "type_sizeof for an unregistered name is 0";
+
+            // A different bogus type name should also fail.
+            SchemaSpec bad2;
+            bad2.has_schema = true;
+            bad2.fields.push_back({"y", "not_a_type", 1, 0});
+            EXPECT_FALSE(engine.register_slot_type(bad2, "BadFrame2",
+                                                     "aligned"));
+
+            // After both failures, registering a VALID schema under
+            // the previously-failed name must succeed.
+            auto good = simple_schema();
+            EXPECT_TRUE(engine.register_slot_type(good, "BadFrame",
+                                                    "aligned"))
+                << "failed registration must not poison the name slot — "
+                   "a subsequent valid schema under the same name must "
+                   "register successfully";
+            EXPECT_GT(engine.type_sizeof("BadFrame"), 0u);
+
+            engine.finalize();
+        },
+        "lua_engine::register_slot_type_bad_field_type_returns_false",
+        Logger::GetLifecycleModule());
+}
+
+int finalize_double_call_is_safe(const std::string &dir)
+{
+    // NEW gap-fill (from docs/todo/TESTING_TODO.md "finalize()
+    // idempotence").  The engine's header does not promise
+    // double-finalize is safe, but the role host's shutdown path
+    // can reach finalize through multiple routes (normal stop,
+    // critical error, signal handler) — confirming double-finalize
+    // is a no-op rules out a real class of production bugs.
+    //
+    // Test sequence:
+    //   1. Init, load_script, register_slot_type, build_api.
+    //   2. First finalize() — primary cleanup.
+    //   3. Second finalize() — must NOT crash, must NOT throw.
+    //   4. After double-finalize, is_accepting() must be false
+    //      (engine clearly rejects new work).
+    //   5. A post-finalize invoke_produce must return Error (not
+    //      crash) — demonstrates the engine's "dead state" is
+    //      observable and not fatal.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir,
+                         "function on_produce(tx, msgs, api) return true end");
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            std::unique_ptr<RoleAPIBase> api;
+            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api,
+                                           RoleKind::Producer));
+
+            // First finalize — primary cleanup.
+            engine.finalize();
+
+            // Second finalize — must be a safe no-op.
+            engine.finalize();
+            // (Reaching this line without SIGSEGV or exception is
+            // itself the test — no EXPECT needed for "did not crash".)
+
+            // Post-finalize state observability.
+            EXPECT_FALSE(engine.is_accepting())
+                << "post-finalize is_accepting must return false — "
+                   "engine is in dead state, must not pretend otherwise";
+
+            // Post-finalize invocations must fail gracefully, not crash.
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto r = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Error)
+                << "invoke_produce after finalize must surface as Error, "
+                   "not attempt to run against torn-down Lua state";
+        },
+        "lua_engine::finalize_double_call_is_safe",
+        Logger::GetLifecycleModule());
+}
+
 } // namespace lua_engine
 } // namespace pylabhub::tests::worker
 
@@ -2634,6 +2859,18 @@ struct LuaEngineWorkerRegistrar
                     return invoke_on_inbox_script_error_increments_count(dir);
                 if (sc == "eval_syntax_error_returns_script_error")
                     return eval_syntax_error_returns_script_error(dir);
+
+                // Chunk 7b: setup-phase error paths
+                if (sc == "load_script_missing_file_returns_false")
+                    return load_script_missing_file_returns_false(dir);
+                if (sc == "load_script_missing_required_callback_returns_false")
+                    return load_script_missing_required_callback_returns_false(dir);
+                if (sc == "load_script_syntax_error_returns_false")
+                    return load_script_syntax_error_returns_false(dir);
+                if (sc == "register_slot_type_bad_field_type_returns_false")
+                    return register_slot_type_bad_field_type_returns_false(dir);
+                if (sc == "finalize_double_call_is_safe")
+                    return finalize_double_call_is_safe(dir);
 
                 fmt::print(stderr,
                            "[lua_engine] ERROR: unknown scenario '{}'\n", sc);
