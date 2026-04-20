@@ -122,6 +122,19 @@ int api_report_metrics_batch_accepts_table(const std::string &dir);
 int api_report_metrics_non_table_arg_is_error(const std::string &dir);
 int api_clear_custom_metrics_empties_and_allows_rewrite(const std::string &dir);
 
+// ── API closures: shared data (chunk 6c) ───────────────────────────────────
+//
+// `api.get_shared_data(key)` / `api.set_shared_data(key, value)` backed
+// by RoleHostCore::shared_data_ (std::variant<int64_t, double, bool,
+// std::string>).  L2-scoped: no threading, no broker.  The
+// cross-thread variant is deferred to a later chunk that covers
+// multi-state / thread-state plumbing.
+int api_shared_data_round_trip_all_variant_types(const std::string &dir);
+int api_shared_data_get_missing_key_returns_nil(const std::string &dir);
+int api_shared_data_nil_removes_key(const std::string &dir);
+int api_shared_data_overwrite_changes_type(const std::string &dir);
+int api_shared_data_overwrite_changes_value_same_type(const std::string &dir);
+
 // ── invoke_process (chunk 4) ────────────────────────────────────────────────
 //
 // Processor design note: a processor ALWAYS has an input channel (if a
