@@ -913,6 +913,189 @@ def on_produce(tx, msgs, api):
         });
 }
 
+// ── invoke_consume (chunk 3) ───────────────────────────────────────────────
+//
+// Consumer callback contract: `rx` is documented as "Input direction
+// (read-only slot)".  The V2 ReceivesReadOnlySlot test asserted the
+// name but never attempted a write — so the "read-only" half was
+// untested.  Here it is split into:
+//
+//   - invoke_consume_receives_slot: happy-path + return-value dispatch
+//   - invoke_consume_rx_slot_is_read_only (NEW gap-fill): actually
+//     exercises the write → AttributeError path pinned on all four
+//     observable channels (buf unchanged, InvokeResult::Error,
+//     script_error_count++, and — at the parent level — the
+//     "read-only slot" ERROR log substring).
+//
+// Python vs Lua: the read-only guard is a ctypes subclass with a
+// __setattr__ override that raises AttributeError (python_helpers.hpp:
+// 96-112).  Lua uses LuaJIT's `ffi.typeof("<Name> const*")` which
+// raises a Lua error on write (lua_state.cpp:285-291).  Different
+// runtime mechanics, same design contract: loud failure, never
+// silent.  Python has one known limitation documented in
+// python_helpers.hpp:77 — mutation through array subscript
+// (rx.slot.array[0] = X) is not blocked.  Tests here use
+// simple_schema() (single scalar `value`) where the guard fires.
+//
+// invoke_consume returns InvokeResult but the production consumer
+// data loop currently ignores it ("Currently ignored … reserved for
+// future flow control"); tests still assert on it so a regression in
+// the dispatch path is caught.
+
+int invoke_consume_receives_slot(const std::string &dir)
+{
+    // Renamed from V2 InvokeConsume_ReceivesReadOnlySlot.  V2 only
+    // checked script_error_count == 0 (the Python asserts passed).
+    // Strengthened here to also assert result == Commit — catches
+    // a regression in invoke_consume's return-value dispatch that
+    // would be silent in the current consumer loop but surface the
+    // moment flow-control uses the return value.
+    return consume_worker_with_script(
+        dir, "python_engine::invoke_consume_receives_slot",
+        R"PY(
+def on_consume(rx, msgs, api):
+    assert rx.slot is not None, "expected non-None slot"
+    assert abs(rx.slot.value - 99.5) < 0.01, \
+        f"expected value ~99.5, got {rx.slot.value}"
+    return True
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            float data = 99.5f;
+            std::vector<IncomingMessage> msgs;
+            auto result = engine.invoke_consume(InvokeRx{&data, sizeof(data)},
+                                                 msgs);
+            EXPECT_EQ(result, InvokeResult::Commit)
+                << "on_consume returning True must map to Commit even though "
+                   "the data loop currently ignores the return value";
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "the Python assertions must have passed — a non-zero "
+                   "count means the engine passed the wrong value in rx.slot";
+        });
+}
+
+int invoke_consume_none_slot(const std::string &dir)
+{
+    // Strengthened vs V2 InvokeConsume_NoneSlot (which only checked
+    // script_error_count == 0).  Also asserts result == Commit.
+    return consume_worker_with_script(
+        dir, "python_engine::invoke_consume_none_slot",
+        R"PY(
+def on_consume(rx, msgs, api):
+    assert rx.slot is None, "expected None"
+    return True
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            std::vector<IncomingMessage> msgs;
+            auto result = engine.invoke_consume(InvokeRx{nullptr, 0}, msgs);
+            EXPECT_EQ(result, InvokeResult::Commit);
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "the Python `assert rx.slot is None` must have passed";
+        });
+}
+
+int invoke_consume_script_error_detected(const std::string &dir)
+{
+    // Strengthened vs V2 InvokeConsume_ScriptErrorDetected (which only
+    // checked script_error_count == 1).  Also asserts result == Error,
+    // i.e. the engine translated the raised exception to Error, not
+    // just bumped the counter and left the result indeterminate.
+    return consume_worker_with_script(
+        dir, "python_engine::invoke_consume_script_error_detected",
+        R"PY(
+def on_consume(rx, msgs, api):
+    raise RuntimeError("consume error")
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            float data = 1.0f;
+            std::vector<IncomingMessage> msgs;
+            auto result = engine.invoke_consume(InvokeRx{&data, sizeof(data)},
+                                                 msgs);
+            EXPECT_EQ(result, InvokeResult::Error);
+            EXPECT_EQ(engine.script_error_count(), 1u);
+        });
+}
+
+int invoke_consume_rx_slot_is_read_only(const std::string &dir)
+{
+    // NEW gap-fill — verifies that the library implements rx
+    // read-only as a LOUD failure, not a silent no-op.
+    // Source-confirmed:
+    //
+    //   src/scripting/python_engine.cpp:831
+    //     register_slot_type("InSlotFrame") →
+    //     in_slot_type_ro_ = wrap_readonly_(type)
+    //
+    //   src/scripting/python_helpers.hpp:96-112 (wrap_as_readonly_ctypes)
+    //     Creates a subclass with __setattr__ that raises
+    //     AttributeError("read-only slot: field '<name>' cannot be
+    //     written (in_slot is a zero-copy SHM view -- use out_slot
+    //     to write)").
+    //
+    //   src/scripting/python_engine.cpp:1000-1002 (invoke_consume path)
+    //     rx_ch.slot = make_slot_view_(..., in_slot_type_ro_, …,
+    //                                   readonly=true);
+    //
+    //   src/scripting/python_engine.cpp:1008-1011 (catch)
+    //     py::error_already_set → on_python_error_ → ERROR log +
+    //     inc_script_error_count + return InvokeResult::Error.
+    //
+    // Design rationale: a user whose buggy script does
+    // `rx.slot.value = X` wants to know immediately — silent no-op
+    // would let the broken script run, appear healthy, and corrupt
+    // downstream logic that depended on the "modified" value.  The
+    // library is correct to reject the write explicitly; this test
+    // enforces the choice.
+    //
+    // Python-specific note: the read-only guard is override-of-
+    // __setattr__ on the subclass.  It fires on field assignment
+    // (rx.slot.value = X).  A known limitation documented at
+    // python_helpers.hpp:77 is that array-subscript mutation
+    // (rx.slot.array[0] = X) is not blocked by this mechanism;
+    // our simple_schema() has a single scalar field `value`, so
+    // the __setattr__ guard applies fully here.
+    return consume_worker_with_script(
+        dir, "python_engine::invoke_consume_rx_slot_is_read_only",
+        R"PY(
+def on_consume(rx, msgs, api):
+    # Attempt to mutate rx.slot.  The library's contract is that
+    # this MUST raise AttributeError, which propagates to
+    # InvokeResult::Error via the engine's catch path.
+    rx.slot.value = 777.0
+    return True  # unreachable if the write raises
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            float data = 99.5f;
+            std::vector<IncomingMessage> msgs;
+            auto result = engine.invoke_consume(InvokeRx{&data, sizeof(data)},
+                                                 msgs);
+
+            // Four coupled assertions that together pin the design:
+            //
+            //  (a) buf unchanged — the read-only invariant.
+            EXPECT_FLOAT_EQ(data, 99.5f)
+                << "rx.slot write must NOT propagate to the underlying "
+                   "C buffer.  data==777.0 here would indicate the "
+                   "__setattr__ override was bypassed.";
+
+            //  (b) the library signals Error — loud, observable result.
+            EXPECT_EQ(result, InvokeResult::Error)
+                << "rx write must surface as InvokeResult::Error, not "
+                   "Discard or Commit.  A silent no-op (Commit here) "
+                   "would let broken scripts appear healthy while "
+                   "silently producing incorrect data downstream.";
+
+            //  (c) script-error counter tracks the raise — for metrics.
+            EXPECT_EQ(engine.script_error_count(), 1u)
+                << "the raised AttributeError must be counted so role "
+                   "hosts' metrics reflect buggy scripts.";
+
+            //  (d) the ERROR log is the fourth observable channel;
+            //      parent's expected_error_substrings enforces the
+            //      "read-only slot" fragment, so no C++-side
+            //      assertion is needed here.
+        });
+}
+
 int invoke_produce_discard_on_false_but_python_wrote_slot(const std::string &dir)
 {
     // NEW test — pins the production contract that the engine does NOT
@@ -1028,6 +1211,15 @@ struct PythonEngineWorkerRegistrar
                     return invoke_produce_wrong_return_string_is_error(dir);
                 if (sc == "invoke_produce_discard_on_false_but_python_wrote_slot")
                     return invoke_produce_discard_on_false_but_python_wrote_slot(dir);
+
+                if (sc == "invoke_consume_receives_slot")
+                    return invoke_consume_receives_slot(dir);
+                if (sc == "invoke_consume_none_slot")
+                    return invoke_consume_none_slot(dir);
+                if (sc == "invoke_consume_script_error_detected")
+                    return invoke_consume_script_error_detected(dir);
+                if (sc == "invoke_consume_rx_slot_is_read_only")
+                    return invoke_consume_rx_slot_is_read_only(dir);
 
                 fmt::print(stderr,
                            "[python_engine] ERROR: unknown scenario '{}'\n",
