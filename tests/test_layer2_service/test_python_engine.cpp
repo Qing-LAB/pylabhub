@@ -562,152 +562,62 @@ TEST_F(PythonEngineIsolatedTest, InvokeConsume_ReceivesMessages_DataBareFormat)
 }
 
 // ============================================================================
-// 7. API closures
+// Chunk 6 — API closures (Pattern 3)
+//
+// 5 P3 tests replace 6 V2 tests (the two stop_reason variants are
+// merged into one exhaustive enum coverage that also adds HubDead
+// — a real gap in V2).  See worker docblocks for strengthening
+// rationale and cross-engine parity notes.
 // ============================================================================
 
-TEST_F(PythonEngineTest, ApiVersionInfo)
+TEST_F(PythonEngineIsolatedTest, ApiVersionInfo_ReturnsJsonString)
 {
-    // version_info() is a module-level function in the pybind11 module,
-    // not a method on the API object. Import it from the role's module.
-    write_script(
-        "import pylabhub_producer\n"
-        "\n"
-        "def on_produce(tx, msgs, api):\n"
-        "    info = pylabhub_producer.version_info()\n"
-        "    assert isinstance(info, str), 'version_info should return string'\n"
-        "    assert len(info) > 10, f'version_info too short: {info}'\n"
-        "    assert '{' in info, f'version_info should be JSON: {info}'\n"
-        "    return False\n");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    auto result =
-        engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Discard);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed -- version_info returned unexpected value";
-
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.api_version_info_returns_json_string",
+                         {unique_dir("api_version_info")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, WrongRoleModuleImport_RaisesError)
+TEST_F(PythonEngineIsolatedTest, WrongRoleModuleImport_RaisesError)
 {
-    // After build_api, importing the wrong role module must raise an error,
-    // not segfault. build_api removes inactive modules from sys.modules.
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    return False\n");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    // Engine is set up as producer. Importing consumer/processor should fail.
-    auto result = engine.eval("__import__('pylabhub_consumer')");
-    EXPECT_EQ(result.status, InvokeStatus::ScriptError)
-        << "Expected ScriptError from wrong module import";
-    EXPECT_GE(engine.script_error_count(), 1u)
-        << "Wrong module import should increment error count";
-
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.wrong_role_module_import_raises_error",
+                         {unique_dir("wrong_role_import")});
+    // Two eval() calls produce two ERROR lines via on_python_error_
+    // (python_engine.cpp:1198).  The harness pairs substrings to
+    // ERROR lines 1-to-1 in stderr order (test_process_utils.cpp:
+    // 659-678), so the list must have exactly one entry per ERROR
+    // line, each unique enough to identify that line.  Using the
+    // blocked role-name strings gives us unambiguous per-line
+    // identification.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"pylabhub_consumer", "pylabhub_processor"});
 }
 
-TEST_F(PythonEngineTest, ApiStop_SetsShutdownRequested)
+TEST_F(PythonEngineIsolatedTest, ApiStop_SetsShutdownRequested)
 {
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    api.stop()\n"
-        "    return False\n");
-
-    RoleHostCore core;
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    EXPECT_FALSE(core.is_shutdown_requested());
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-
-    EXPECT_TRUE(core.is_shutdown_requested())
-        << "api.stop() should set shutdown_requested";
-
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.api_stop_sets_shutdown_requested",
+                         {unique_dir("api_stop")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, ApiSetCriticalError)
+TEST_F(PythonEngineIsolatedTest, ApiCriticalError_SetAndReadAndStopReason)
 {
-    // Python API's set_critical_error() takes no arguments (unlike Lua).
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    api.set_critical_error()\n"
-        "    return False\n");
-
-    RoleHostCore core;
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    EXPECT_FALSE(core.is_critical_error());
-    EXPECT_FALSE(core.is_shutdown_requested());
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-
-    EXPECT_TRUE(core.is_critical_error())
-        << "api.set_critical_error() should set critical_error_";
-    EXPECT_TRUE(core.is_shutdown_requested())
-        << "api.set_critical_error() should also set shutdown_requested";
-
-    engine.finalize();
+    auto w = SpawnWorker(
+        "python_engine.api_critical_error_set_and_read_and_stop_reason",
+        {unique_dir("api_crit")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, ApiStopReason_Default)
+// Strengthened: exhaustive coverage of all 4 StopReason enum values
+// (Normal, PeerDead, HubDead, CriticalError).  HubDead was never
+// tested in V2 — clear gap.  Mirrors Lua chunk 6's same
+// strengthening.
+TEST_F(PythonEngineIsolatedTest, ApiStopReason_ReflectsAllEnumValues)
 {
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    reason = api.stop_reason()\n"
-        "    assert reason == 'normal', (\n"
-        "        f\"expected 'normal', got '{reason}'\")\n"
-        "    return False\n");
-
-    RoleHostCore core;
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "stop_reason should be 'normal'";
-
-    engine.finalize();
-}
-
-TEST_F(PythonEngineTest, ApiStopReason_PeerDead)
-{
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    reason = api.stop_reason()\n"
-        "    assert reason == 'peer_dead', (\n"
-        "        f\"expected 'peer_dead', got '{reason}'\")\n"
-        "    return False\n");
-
-    RoleHostCore core;
-    core.set_stop_reason(RoleHostCore::StopReason::PeerDead); // PeerDead
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "stop_reason should be 'peer_dead'";
-
-    engine.finalize();
+    auto w = SpawnWorker(
+        "python_engine.api_stop_reason_reflects_all_enum_values",
+        {unique_dir("api_stop_reason_all")});
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
@@ -1116,14 +1026,10 @@ TEST_F(PythonEngineTest, InvokeOnInbox_MissingType_ReportsError)
 }
 
 // ============================================================================
-// 14. supports_multi_state
+// (V2 SupportsMultiState_ReturnsFalse stray duplicate removed — the P3
+// replacement landed in chunk 1 but the V2 body was not deleted at the
+// time.  Cleanup 2026-04-20.)
 // ============================================================================
-
-TEST_F(PythonEngineTest, SupportsMultiState_ReturnsFalse)
-{
-    PythonEngine engine;
-    EXPECT_FALSE(engine.supports_multi_state());
-}
 
 // ============================================================================
 // Generic invoke() tests
