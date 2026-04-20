@@ -1932,6 +1932,256 @@ int api_clear_custom_metrics_empties_and_allows_rewrite(const std::string &dir)
         });
 }
 
+// ── API closures: shared data (chunk 6c) ───────────────────────────────────
+//
+// set_shared_data dispatch (source-confirmed at
+// src/scripting/lua_engine.cpp:1397-1417):
+//   bool Lua value     → bool variant
+//   whole number       → int64_t variant
+//   fractional number  → double variant
+//   string             → std::string variant
+//   nil or other type  → remove_shared_data(key)  (NOT an error)
+//
+// get_shared_data returns the value under the variant's native Lua
+// type, or nil if the key is missing.
+
+int api_shared_data_round_trip_all_variant_types(const std::string &dir)
+{
+    // Strengthened over V2 SharedData_SetAndGetFromScript.  V2 set
+    // four values from Lua and read them back via C++
+    // core.get_shared_data only.  This body ALSO reads each value
+    // back via Lua api.get_shared_data in the same callback — so
+    // the Lua→C++ set path AND the C++→Lua get path for all four
+    // variant types are both exercised in one round-trip.  A
+    // regression on either direction (e.g. get_shared_data variant
+    // visitor drops a branch) fails here.
+    return script_worker(
+        dir, "lua_engine::api_shared_data_round_trip_all_variant_types",
+        RoleKind::Producer,
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                api.set_shared_data("counter", 42)      -- int64 branch
+                api.set_shared_data("label",   "hello") -- string branch
+                api.set_shared_data("flag",    true)    -- bool branch
+                api.set_shared_data("ratio",   3.14)    -- double branch
+
+                -- NEW: read back via Lua api.get_shared_data on the
+                -- SAME invocation — pins the Lua read path, not just
+                -- the C++-side check V2 relied on.
+                local c = api.get_shared_data("counter")
+                assert(c == 42,
+                       "counter roundtrip: expected 42, got "
+                       .. tostring(c) .. " (type=" .. type(c) .. ")")
+                assert(type(c) == "number",
+                       "counter should be number, got " .. type(c))
+
+                local l = api.get_shared_data("label")
+                assert(l == "hello",
+                       "label: expected 'hello', got " .. tostring(l))
+                assert(type(l) == "string",
+                       "label should be string, got " .. type(l))
+
+                local f = api.get_shared_data("flag")
+                assert(f == true,
+                       "flag: expected true, got " .. tostring(f))
+                assert(type(f) == "boolean",
+                       "flag should be boolean, got " .. type(f))
+
+                local r = api.get_shared_data("ratio")
+                assert(math.abs(r - 3.14) < 1e-9,
+                       "ratio: expected 3.14, got " .. tostring(r))
+                assert(type(r) == "number",
+                       "ratio should be number, got " .. type(r))
+
+                return false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore &core) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+
+            // Additionally verify the underlying core variant types
+            // are what the Lua→C++ set path promised
+            // (lua_engine.cpp:1401-1413):
+            //   whole number → int64_t
+            //   string       → std::string
+            //   bool         → bool
+            //   fractional   → double
+            auto c = core.get_shared_data("counter");
+            ASSERT_TRUE(c.has_value());
+            EXPECT_TRUE(std::holds_alternative<int64_t>(*c))
+                << "42 must be stored as int64 (whole-number branch)";
+            EXPECT_EQ(std::get<int64_t>(*c), 42);
+
+            auto l = core.get_shared_data("label");
+            ASSERT_TRUE(l.has_value());
+            EXPECT_TRUE(std::holds_alternative<std::string>(*l));
+            EXPECT_EQ(std::get<std::string>(*l), "hello");
+
+            auto f = core.get_shared_data("flag");
+            ASSERT_TRUE(f.has_value());
+            EXPECT_TRUE(std::holds_alternative<bool>(*f));
+            EXPECT_TRUE(std::get<bool>(*f));
+
+            auto r = core.get_shared_data("ratio");
+            ASSERT_TRUE(r.has_value());
+            EXPECT_TRUE(std::holds_alternative<double>(*r))
+                << "3.14 must be stored as double (fractional branch)";
+            EXPECT_DOUBLE_EQ(std::get<double>(*r), 3.14);
+        });
+}
+
+int api_shared_data_get_missing_key_returns_nil(const std::string &dir)
+{
+    return script_worker(
+        dir, "lua_engine::api_shared_data_get_missing_key_returns_nil",
+        RoleKind::Producer,
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                local v = api.get_shared_data("nonexistent")
+                assert(v == nil,
+                       "missing key must return nil, got " .. tostring(v))
+                return false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int api_shared_data_nil_removes_key(const std::string &dir)
+{
+    // Strengthened: reads back via Lua api.get_shared_data after
+    // removal (V2 only checked via C++ core).  Also adds a pre-set
+    // assertion so the test distinguishes "removal worked" from
+    // "key was never there".
+    return script_worker(
+        dir, "lua_engine::api_shared_data_nil_removes_key",
+        RoleKind::Producer,
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                api.set_shared_data("temp", 99)
+                -- pre-condition: set worked
+                assert(api.get_shared_data("temp") == 99,
+                       "pre-condition: temp must be 99 after set")
+
+                api.set_shared_data("temp", nil)
+                -- post-condition: key removed (Lua side)
+                assert(api.get_shared_data("temp") == nil,
+                       "post: temp must be nil after set nil; got "
+                       .. tostring(api.get_shared_data("temp")))
+                return false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore &core) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+            // C++-side: key truly removed, not just set to a "nil
+            // sentinel".  has_value()==false is the contract.
+            EXPECT_FALSE(core.get_shared_data("temp").has_value())
+                << "set_shared_data(key, nil) must remove the key "
+                   "(calls core.remove_shared_data at "
+                   "lua_engine.cpp:1415) — not store a nil/sentinel";
+        });
+}
+
+int api_shared_data_overwrite_changes_type(const std::string &dir)
+{
+    // NEW gap-fill.  V2 covered type-preserving overwrite (bool to
+    // bool, string to string, etc.) implicitly via the round-trip
+    // test but never CROSS-type overwrite.  This body sets an int64,
+    // then sets the same key to a string, and asserts the stored
+    // variant flipped to the new type (a regression where the engine
+    // refused to change type or silently coerced would fail here).
+    return script_worker(
+        dir, "lua_engine::api_shared_data_overwrite_changes_type",
+        RoleKind::Producer,
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                api.set_shared_data("k", 42)           -- int64
+                assert(api.get_shared_data("k") == 42,
+                       "pre: k must be 42")
+
+                api.set_shared_data("k", "now a string")  -- string
+                local v = api.get_shared_data("k")
+                assert(v == "now a string",
+                       "post: k must be 'now a string', got "
+                       .. tostring(v))
+                assert(type(v) == "string",
+                       "post: type must be string, got " .. type(v))
+                return false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore &core) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+
+            // The underlying variant must now hold std::string —
+            // not still int64_t.
+            auto v = core.get_shared_data("k");
+            ASSERT_TRUE(v.has_value());
+            EXPECT_TRUE(std::holds_alternative<std::string>(*v))
+                << "cross-type overwrite must update the variant "
+                   "alternative; still holding int64_t means the "
+                   "engine refused the overwrite or kept the old type";
+            EXPECT_EQ(std::get<std::string>(*v), "now a string");
+        });
+}
+
+int api_shared_data_overwrite_changes_value_same_type(const std::string &dir)
+{
+    // NEW gap-fill.  V2 tested set-then-get (one value) and
+    // set-then-nil (remove).  It never tested in-place overwrite
+    // with the same type — a bug class where the second set is
+    // silently a no-op (e.g. "key already exists" guard).
+    return script_worker(
+        dir,
+        "lua_engine::api_shared_data_overwrite_changes_value_same_type",
+        RoleKind::Producer,
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                api.set_shared_data("n", 1)
+                api.set_shared_data("n", 2)
+                assert(api.get_shared_data("n") == 2,
+                       "same-type overwrite: expected 2, got "
+                       .. tostring(api.get_shared_data("n")))
+                return false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore &core) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+
+            auto v = core.get_shared_data("n");
+            ASSERT_TRUE(v.has_value());
+            EXPECT_TRUE(std::holds_alternative<int64_t>(*v));
+            EXPECT_EQ(std::get<int64_t>(*v), 2)
+                << "second set must overwrite the first — 1 still "
+                   "present means set became a no-op";
+        });
+}
+
 } // namespace lua_engine
 } // namespace pylabhub::tests::worker
 
@@ -2060,6 +2310,18 @@ struct LuaEngineWorkerRegistrar
                     return api_report_metrics_non_table_arg_is_error(dir);
                 if (sc == "api_clear_custom_metrics_empties_and_allows_rewrite")
                     return api_clear_custom_metrics_empties_and_allows_rewrite(dir);
+
+                // Chunk 6c: api.* shared-data closures
+                if (sc == "api_shared_data_round_trip_all_variant_types")
+                    return api_shared_data_round_trip_all_variant_types(dir);
+                if (sc == "api_shared_data_get_missing_key_returns_nil")
+                    return api_shared_data_get_missing_key_returns_nil(dir);
+                if (sc == "api_shared_data_nil_removes_key")
+                    return api_shared_data_nil_removes_key(dir);
+                if (sc == "api_shared_data_overwrite_changes_type")
+                    return api_shared_data_overwrite_changes_type(dir);
+                if (sc == "api_shared_data_overwrite_changes_value_same_type")
+                    return api_shared_data_overwrite_changes_value_same_type(dir);
 
                 fmt::print(stderr,
                            "[lua_engine] ERROR: unknown scenario '{}'\n", sc);

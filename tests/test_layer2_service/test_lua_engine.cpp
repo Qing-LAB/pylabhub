@@ -723,6 +723,56 @@ TEST_F(LuaEngineIsolatedTest, ApiClearCustomMetrics_EmptiesAndAllowsRewrite)
 }
 
 // ============================================================================
+// Chunk 6c — api.* closures: shared data (Pattern 3)
+//
+// Covers: api.get_shared_data / api.set_shared_data across all four
+// variant types (int64/string/bool/double), missing-key,
+// nil-removes-key, cross-type and same-type overwrite.
+// Cross-thread visibility deferred to a later chunk covering
+// multi-state / thread-state plumbing.
+// ============================================================================
+
+TEST_F(LuaEngineIsolatedTest, ApiSharedData_RoundTripAllVariantTypes)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_shared_data_round_trip_all_variant_types",
+        {unique_dir("api_sd_roundtrip")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, ApiSharedData_GetMissingKeyReturnsNil)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_shared_data_get_missing_key_returns_nil",
+        {unique_dir("api_sd_missing")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, ApiSharedData_NilRemovesKey)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_shared_data_nil_removes_key",
+        {unique_dir("api_sd_nil_remove")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, ApiSharedData_OverwriteChangesType)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_shared_data_overwrite_changes_type",
+        {unique_dir("api_sd_xtype")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, ApiSharedData_OverwriteChangesValueSameType)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_shared_data_overwrite_changes_value_same_type",
+        {unique_dir("api_sd_samevtype")});
+    ExpectWorkerOk(w);
+}
+
+// ============================================================================
 // 8. Error handling
 // ============================================================================
 
@@ -1427,84 +1477,6 @@ function on_heartbeat() end
 // ============================================================================
 // Shared data tests (api.get_shared_data / api.set_shared_data)
 // ============================================================================
-
-TEST_F(LuaEngineTest, SharedData_SetAndGetFromScript)
-{
-    write_script(R"(
-function on_produce(tx, msgs, api)
-    api.set_shared_data("counter", 42)
-    api.set_shared_data("label", "hello")
-    api.set_shared_data("flag", true)
-    api.set_shared_data("ratio", 3.14)
-    return true
-end
-)");
-    RoleHostCore core;
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{nullptr, 0}, msgs);
-
-    // Verify values stored in core_ shared data.
-    auto v1 = core.get_shared_data("counter");
-    ASSERT_TRUE(v1.has_value());
-    EXPECT_EQ(std::get<int64_t>(*v1), 42);
-
-    auto v2 = core.get_shared_data("label");
-    ASSERT_TRUE(v2.has_value());
-    EXPECT_EQ(std::get<std::string>(*v2), "hello");
-
-    auto v3 = core.get_shared_data("flag");
-    ASSERT_TRUE(v3.has_value());
-    EXPECT_TRUE(std::get<bool>(*v3));
-
-    auto v4 = core.get_shared_data("ratio");
-    ASSERT_TRUE(v4.has_value());
-    EXPECT_DOUBLE_EQ(std::get<double>(*v4), 3.14);
-
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, SharedData_GetReturnsNilForMissingKey)
-{
-    write_script(R"(
-function on_produce(tx, msgs, api)
-    local val = api.get_shared_data("nonexistent")
-    if val ~= nil then error("expected nil") end
-    return true
-end
-)");
-    RoleHostCore core;
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    std::vector<IncomingMessage> msgs;
-    auto r = engine.invoke_produce(InvokeTx{nullptr, 0}, msgs);
-    EXPECT_EQ(r, InvokeResult::Commit);
-    EXPECT_EQ(core.script_error_count(), 0u);
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, SharedData_NilRemovesKey)
-{
-    write_script(R"(
-function on_produce(tx, msgs, api)
-    api.set_shared_data("temp", 99)
-    api.set_shared_data("temp", nil)
-    return true
-end
-)");
-    RoleHostCore core;
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{nullptr, 0}, msgs);
-
-    EXPECT_FALSE(core.get_shared_data("temp").has_value());
-    engine.finalize();
-}
 
 TEST_F(LuaEngineTest, SharedData_CrossThread_Visible)
 {
