@@ -267,6 +267,13 @@ int metrics_last_cycle_work_us_overwrite_semantics(const std::string &dir);
 int metrics_all_loop_fields_anchored_values(const std::string &dir);
 int metrics_role_script_error_count_reflects_raised_error(const std::string &dir);
 
+// ── Queue-state defaults + env strings + processor channels (chunk 12) ────
+int queue_state_consumer_without_queue_returns_defaults(const std::string &dir);
+int queue_state_producer_without_queue_returns_defaults(const std::string &dir);
+int queue_state_processor_dual_without_queues_returns_defaults(const std::string &dir);
+int api_environment_strings_reflect_setters(const std::string &dir);
+int api_processor_channels_reflect_setters(const std::string &dir);
+
 // ── invoke_process (chunk 4) ────────────────────────────────────────────────
 //
 // Processor design note: a processor ALWAYS has an input channel (if a
