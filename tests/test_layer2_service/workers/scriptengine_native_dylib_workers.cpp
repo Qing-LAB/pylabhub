@@ -124,8 +124,8 @@ int full_lifecycle_produce_commits_and_writes_slot(const std::string &plugin_dir
                                            "on_produce"));
 
             auto spec = pylabhub::tests::simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
-            EXPECT_EQ(engine.type_sizeof("SlotFrame"), 4u);
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+            EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 4u);
 
             auto test_api = make_native_api(core);
             ASSERT_TRUE(engine.build_api(*test_api));
@@ -196,8 +196,8 @@ int schema_validation_matching_schema_succeeds(const std::string &plugin_dir)
                                            plugin.filename().string(),
                                            "on_produce"));
             auto spec = pylabhub::tests::simple_schema();
-            EXPECT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
-            EXPECT_EQ(engine.type_sizeof("SlotFrame"), 4u);
+            EXPECT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+            EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 4u);
             engine.finalize();
         },
         "native_engine::schema_validation_matching_schema_succeeds");
@@ -217,7 +217,7 @@ int schema_validation_has_schema_false_returns_false(const std::string &plugin_d
                                            "on_produce"));
             SchemaSpec spec;
             spec.has_schema = false;
-            EXPECT_FALSE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+            EXPECT_FALSE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
             engine.finalize();
         },
         "native_engine::schema_validation_has_schema_false_returns_false");
@@ -244,7 +244,7 @@ int schema_validation_mismatched_schema_fails(const std::string &plugin_dir)
             f.count    = 1;
             f.length   = 0;
             bad_spec.fields.push_back(f);
-            EXPECT_FALSE(engine.register_slot_type(bad_spec, "SlotFrame", "aligned"));
+            EXPECT_FALSE(engine.register_slot_type(bad_spec, "OutSlotFrame", "aligned"));
             engine.finalize();
         },
         "native_engine::schema_validation_mismatched_schema_fails");
@@ -414,7 +414,7 @@ int api_counters_and_schema_size_through_native_module(const std::string &plugin
                                            lib.filename().string(),
                                            "on_produce"));
             auto spec = pylabhub::tests::simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
             core.inc_out_slots_written();
             core.inc_out_slots_written();
@@ -560,6 +560,9 @@ int full_startup_processor(const std::string &plugin_dir)
             ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
             EXPECT_GT(engine.type_sizeof("InSlotFrame"), 0u);
             EXPECT_GT(engine.type_sizeof("OutSlotFrame"), 0u);
+            // Native does NOT auto-create role aliases (SlotFrame /
+            // FlexFrame) at build_api — that's a Lua/Python feature.
+            // type_sizeof returns 0 for the alias name on native.
             EXPECT_EQ(engine.type_sizeof("SlotFrame"), 0u);
 
             float in_data = 5.0f, out_data = 0.0f;
@@ -810,7 +813,7 @@ int api_band_pub_sub_no_broker_graceful_return(const std::string &plugin_dir)
                                            lib.filename().string(),
                                            "on_produce"));
             auto spec = pylabhub::tests::simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "SlotFrame", "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
             core.set_out_slot_spec(SchemaSpec{spec},
                                    pylabhub::hub::compute_schema_size(spec, "aligned"));
 

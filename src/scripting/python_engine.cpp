@@ -846,11 +846,8 @@ bool PythonEngine::register_slot_type(const hub::SchemaSpec &spec,
             out_fz_type_ = type;
             out_fz_spec_ = spec;
         }
-        else  // type_name == "InboxFrame" — only remaining branch
+        else  // type_name == "InboxFrame" — guaranteed by upfront name check
         {
-            // Upfront name validation at the top of the function
-            // guarantees type_name is one of the five canonical
-            // names; no fallthrough/else-branch needed here.
             inbox_type_ro_ = wrap_readonly_(type);
             inbox_spec_    = spec;
         }

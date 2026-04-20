@@ -380,22 +380,45 @@ API (hypothetically injecting a type through a private path).
 
 ### Engine-specific `type_sizeof` storage
 
-Both engines return sizes only for the five canonical names (+ the
-two aliases).  Storage layout differs per language:
+All three engines enforce the same canonical-name contract at the
+API surface; internal storage layouts differ and reflect what each
+engine actually needs to track:
 
 - **Lua** (LuaJIT FFI): types live in LuaJIT's global FFI cdef
   registry, keyed by name.  `ffi.sizeof(name)` reads the registry.
-  Re-registering the same cdef name with a different layout fails
-  (LuaJIT cdefs are immutable per name); use a different canonical
-  name to test both packings for the same schema.
+  In addition, the engine caches typed `ffi.typeof()` handles in
+  role-specific ref slots (`ref_in_slot_readonly_`,
+  `ref_out_slot_writable_`, `ref_in_fz_`, `ref_out_fz_`,
+  `ref_inbox_readonly_`) because the hot path (slot-view
+  construction) needs the exact ctype including its readonly
+  flavor.  Re-registering the same cdef name with a different
+  layout fails (LuaJIT cdefs are immutable per name); use a
+  different canonical name to test both packings for the same
+  schema.
+
 - **Python** (ctypes): types are stored in explicit `py::object`
   fields of `PythonEngine` (`in_slot_type_ro_`, `out_slot_type_`,
-  etc.).  Re-registration is a simple field overwrite (old type
-  garbage-collected).  `type_sizeof` dispatches on the canonical
-  name to the matching field.
+  `in_fz_type_`, `out_fz_type_`, `inbox_type_ro_`).  The inbound
+  and inbox variants are wrapped by `wrap_as_readonly_ctypes` —
+  the stored object carries the readonly flavor.  Re-registration
+  under the same canonical name is a simple field overwrite (old
+  type garbage-collected).  `type_sizeof` dispatches on the
+  canonical name to the matching field.
 
-These differences are implementation-level only; both engines honor
-the same canonical-name contract at the API surface.
+- **Native** (C/C++ plugins): the engine stores only **sizes** in a
+  single `std::unordered_map<std::string, size_t> type_sizes_`.
+  This is the natural shape for native — the actual C/C++ struct
+  definitions live in the plugin itself (resolved via
+  `native_sizeof_<NAME>` / `native_schema_<NAME>` dynamic-library
+  exports), so the engine doesn't need to cache typed handles.
+  `type_sizeof` is a single map lookup.  The map also leaves
+  headroom for future protocol extensions that might introduce
+  additional canonical names — adding one is a one-line change to
+  the canonical-name validator, no storage refactor.
+
+The per-engine storage is implementation choice matching each
+engine's semantic needs; it is NOT a difference in the API contract.
+All three engines reject non-canonical names identically.
 
 ### Packing
 

@@ -586,6 +586,35 @@ bool NativeEngine::register_slot_type(const hub::SchemaSpec &spec,
                                        const std::string &type_name,
                                        const std::string &packing)
 {
+    // Canonical-name contract (see script_engine.hpp and HEP-0011
+    // § "Canonical type names").  NativeEngine historically accepted
+    // any name that resolved a `native_sizeof_<NAME>` export, but no
+    // production path ever used non-canonical names — the role host
+    // only ever calls register_slot_type with the five canonical
+    // frame names.  Enforcing the contract here keeps the three
+    // engines behaviorally identical at the API surface.
+    //
+    // Storage design note: type_sizes_ (std::unordered_map<std::string,
+    // size_t>) is kept as-is.  Native stores only sizes (plugins own
+    // the actual C/C++ struct definitions), so a map is the natural
+    // storage shape — simpler than Lua/Python's role-specific
+    // readonly-vs-writable py::object / ref slots.  The map also
+    // leaves room for future protocol extensions that might introduce
+    // new canonical names; adding one is a one-line edit to the
+    // validator below.
+    if (type_name != "InSlotFrame"
+        && type_name != "OutSlotFrame"
+        && type_name != "InFlexFrame"
+        && type_name != "OutFlexFrame"
+        && type_name != "InboxFrame")
+    {
+        LOGGER_ERROR("[{}] register_slot_type: unknown canonical type_name "
+                     "'{}' — must be one of InSlotFrame, OutSlotFrame, "
+                     "InFlexFrame, OutFlexFrame, InboxFrame",
+                     log_tag_, type_name);
+        return false;
+    }
+
     if (!spec.has_schema)
     {
         LOGGER_ERROR("[{}] register_slot_type('{}') called with has_schema=false",
