@@ -246,6 +246,27 @@ int api_spinlock_count_without_shm_returns_zero(const std::string &dir);
 int api_spinlock_acquire_without_shm_is_pcall_error(const std::string &dir);
 int api_flexzone_accessor_without_shm_returns_nil(const std::string &dir);
 
+// ── Metrics: individual accessors + hierarchical table (chunk 11) ──────────
+//
+// L2 metrics surface comprises:
+//   - Individual closure accessors: api.out_slots_written(),
+//     api.in_slots_received(), api.out_drop_count(),
+//     api.loop_overrun_count(), api.last_cycle_work_us()
+//   - Hierarchical table: api.metrics() → { loop = {...}, role = {...},
+//     queue? = ..., inbox? = ..., custom? = ... }
+//
+// All these read live RoleHostCore state — every call resamples (no
+// snapshot caching).  These tests pin both the read freshness and
+// the table shape exhaustively, with anchored hand-verified values.
+int metrics_individual_accessors_read_core_counters_live(const std::string &dir);
+int metrics_in_slots_received_works_consumer(const std::string &dir);
+int metrics_hierarchical_table_producer_full_shape(const std::string &dir);
+int metrics_hierarchical_table_consumer_full_shape(const std::string &dir);
+int metrics_loop_overrun_count_live_increments(const std::string &dir);
+int metrics_last_cycle_work_us_overwrite_semantics(const std::string &dir);
+int metrics_all_loop_fields_anchored_values(const std::string &dir);
+int metrics_role_script_error_count_reflects_raised_error(const std::string &dir);
+
 // ── invoke_process (chunk 4) ────────────────────────────────────────────────
 //
 // Processor design note: a processor ALWAYS has an input channel (if a

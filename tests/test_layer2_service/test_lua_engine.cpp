@@ -1254,6 +1254,85 @@ TEST_F(LuaEngineIsolatedTest, Api_FlexzoneAccessor_WithoutSHM_ReturnsNil)
 }
 
 // ============================================================================
+// Chunk 11 — metrics tests (Pattern 3)
+//
+// Live read semantics, hierarchical table shape, anchored values for
+// every loop field (including acquire_retry_count V2 missed),
+// inventory check on m.loop keys, script_error_count transition pin.
+// ============================================================================
+
+TEST_F(LuaEngineIsolatedTest, Metrics_IndividualAccessors_ReadCoreCounters_Live)
+{
+    auto w = SpawnWorker(
+        "lua_engine.metrics_individual_accessors_read_core_counters_live",
+        {unique_dir("metrics_indiv_live")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Metrics_InSlotsReceived_Works_Consumer)
+{
+    auto w = SpawnWorker(
+        "lua_engine.metrics_in_slots_received_works_consumer",
+        {unique_dir("metrics_inrx_consumer")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Metrics_HierarchicalTable_Producer_FullShape)
+{
+    auto w = SpawnWorker(
+        "lua_engine.metrics_hierarchical_table_producer_full_shape",
+        {unique_dir("metrics_ht_prod_full")});
+    // Phase 0 deliberately raises a Lua error to seed
+    // script_error_count == 1 — that error message must be expected.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"seed for script_error_count"});
+}
+
+TEST_F(LuaEngineIsolatedTest, Metrics_HierarchicalTable_Consumer_FullShape)
+{
+    auto w = SpawnWorker(
+        "lua_engine.metrics_hierarchical_table_consumer_full_shape",
+        {unique_dir("metrics_ht_cons_full")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Metrics_LoopOverrunCount_LiveIncrements)
+{
+    auto w = SpawnWorker(
+        "lua_engine.metrics_loop_overrun_count_live_increments",
+        {unique_dir("metrics_overrun_live")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Metrics_LastCycleWorkUs_OverwriteSemantics)
+{
+    auto w = SpawnWorker(
+        "lua_engine.metrics_last_cycle_work_us_overwrite_semantics",
+        {unique_dir("metrics_lcwu_overwrite")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Metrics_AllLoopFields_AnchoredValues)
+{
+    auto w = SpawnWorker(
+        "lua_engine.metrics_all_loop_fields_anchored_values",
+        {unique_dir("metrics_all_loop_anchored")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Metrics_RoleScriptErrorCount_ReflectsRaisedError)
+{
+    auto w = SpawnWorker(
+        "lua_engine.metrics_role_script_error_count_reflects_raised_error",
+        {unique_dir("metrics_serc_reflects")});
+    // 2 raised "seed phase N" errors expected.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"seed phase 1", "seed phase 2"});
+}
+
+// ============================================================================
 // 8. Error handling
 // ============================================================================
 
@@ -1266,69 +1345,6 @@ TEST_F(LuaEngineIsolatedTest, Api_FlexzoneAccessor_WithoutSHM_ReturnsNil)
 // 18. Metrics closures read from RoleHostCore counters
 // ============================================================================
 
-TEST_F(LuaEngineTest, MetricsClosures_ReadFromRoleHostCounters)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            local ow = api.out_slots_written()
-            local dr = api.out_drop_count()
-            assert(ow == 42, "expected out_written=42, got " .. tostring(ow))
-            assert(dr == 7,  "expected drops=7, got " .. tostring(dr))
-            return false
-        end
-    )");
-
-    RoleHostCore core;
-    core.test_set_out_slots_written(42);
-    core.test_set_out_drop_count(7);
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed — metrics values incorrect";
-
-    engine.finalize();
-}
-
-// ============================================================================
-// 19. Wrong return type detection
-// ============================================================================
-
-TEST_F(LuaEngineTest, MetricsClosures_InReceivedWorks)
-{
-    write_script(R"(
-        function on_consume(rx, msgs, api)
-            local ir = api.in_slots_received()
-            assert(ir == 15, "expected in_received=15, got " .. tostring(ir))
-            return true
-        end
-    )");
-
-    RoleHostCore core;
-    core.test_set_in_slots_received(15);
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &core));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_consume"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-
-    auto test_api = make_api(core, "cons");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_consume(InvokeRx{nullptr, 0}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed — in_received value incorrect";
-
-    engine.finalize();
-}
-
 // ============================================================================
 // Generic invoke() tests
 // ============================================================================
@@ -1337,141 +1353,9 @@ TEST_F(LuaEngineTest, MetricsClosures_InReceivedWorks)
 // Lua api.metrics() — hierarchical table structure
 // ============================================================================
 
-TEST_F(LuaEngineTest, Metrics_HierarchicalTable_Producer)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            local m = api.metrics()
-            -- Top-level must have "loop" and "role" (no "queue" — no queue connected)
-            assert(type(m) == "table", "metrics() must return a table")
-            assert(type(m.loop) == "table", "loop group must be a table")
-            assert(type(m.role) == "table", "role group must be a table")
-            assert(m.queue == nil, "queue must be absent when no queue connected")
-            assert(m.inbox == nil, "inbox must be absent when no inbox connected")
-
-            -- Loop fields
-            assert(type(m.loop.iteration_count) == "number",
-                   "loop.iteration_count must be a number")
-            assert(type(m.loop.loop_overrun_count) == "number",
-                   "loop.loop_overrun_count must be a number")
-            assert(type(m.loop.last_cycle_work_us) == "number",
-                   "loop.last_cycle_work_us must be a number")
-
-            -- Role fields
-            assert(m.role.out_slots_written == 5,
-                   "role.out_slots_written expected 5, got " .. tostring(m.role.out_slots_written))
-            assert(m.role.out_drop_count == 2,
-                   "role.out_drop_count expected 2, got " .. tostring(m.role.out_drop_count))
-            assert(type(m.role.script_error_count) == "number",
-                   "role.script_error_count must be a number")
-            return false
-        end
-    )");
-
-    RoleHostCore core;
-    core.test_set_out_slots_written(5);
-    core.test_set_out_drop_count(2);
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Lua assertion failed — hierarchical metrics structure incorrect";
-
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, Metrics_HierarchicalTable_Consumer)
-{
-    write_script(R"(
-        function on_consume(rx, msgs, api)
-            local m = api.metrics()
-            assert(type(m.loop) == "table", "loop group must be a table")
-            assert(type(m.role) == "table", "role group must be a table")
-            assert(m.queue == nil, "queue absent without connection")
-
-            assert(m.role.in_slots_received == 10,
-                   "role.in_slots_received expected 10, got " .. tostring(m.role.in_slots_received))
-            return true
-        end
-    )");
-
-    RoleHostCore core;
-    core.test_set_in_slots_received(10);
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &core));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_consume"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    auto test_api = make_api(core, "cons");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    float buf = 1.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_consume(InvokeRx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Lua assertion failed — consumer hierarchical metrics incorrect";
-
-    engine.finalize();
-}
-
 // ============================================================================
 // New API closures — diagnostics, queue-state, custom metrics, environment
 // ============================================================================
-
-TEST_F(LuaEngineTest, Api_LoopOverrunCount_ReadsFromCore)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            local v = api.loop_overrun_count()
-            assert(v == 3, "expected 3, got " .. tostring(v))
-            return false
-        end
-    )");
-
-    RoleHostCore core;
-    core.inc_loop_overrun();
-    core.inc_loop_overrun();
-    core.inc_loop_overrun();
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, Api_LastCycleWorkUs_ReadsFromCore)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            local v = api.last_cycle_work_us()
-            assert(v == 12345, "expected 12345, got " .. tostring(v))
-            return false
-        end
-    )");
-
-    RoleHostCore core;
-    core.set_last_cycle_work_us(12345);
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
-}
 
 TEST_F(LuaEngineTest, Api_EnvironmentStrings_LogsDirRunDir)
 {
@@ -1594,54 +1478,6 @@ TEST_F(LuaEngineTest, Api_ProcessorQueueState_DualDefaults)
 // ============================================================================
 // 26. Metrics — all loop fields present with non-zero verification
 // ============================================================================
-
-TEST_F(LuaEngineTest, Metrics_AllLoopFields_Present)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            local m = api.metrics()
-            assert(type(m.loop) == "table", "loop group must be a table")
-
-            assert(type(m.loop.iteration_count) == "number",
-                   "iteration_count must be a number")
-            assert(m.loop.iteration_count == 10,
-                   "iteration_count expected 10, got " .. tostring(m.loop.iteration_count))
-
-            assert(type(m.loop.loop_overrun_count) == "number",
-                   "loop_overrun_count must be a number")
-            assert(m.loop.loop_overrun_count == 3,
-                   "loop_overrun_count expected 3, got " .. tostring(m.loop.loop_overrun_count))
-
-            assert(type(m.loop.last_cycle_work_us) == "number",
-                   "last_cycle_work_us must be a number")
-            assert(m.loop.last_cycle_work_us == 500,
-                   "last_cycle_work_us expected 500, got " .. tostring(m.loop.last_cycle_work_us))
-
-            assert(type(m.loop.configured_period_us) == "number",
-                   "configured_period_us must be a number")
-            assert(m.loop.configured_period_us == 1000,
-                   "configured_period_us expected 1000, got " .. tostring(m.loop.configured_period_us))
-
-            return false
-        end
-    )");
-
-    RoleHostCore core;
-    for (int i = 0; i < 10; ++i) core.inc_iteration_count();
-    for (int i = 0; i < 3; ++i) core.inc_loop_overrun();
-    core.set_last_cycle_work_us(500);
-    core.set_configured_period(1000);
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Lua assertion failed — loop metrics fields incorrect";
-    engine.finalize();
-}
 
 // ============================================================================
 // 30. open_inbox without broker returns nil
