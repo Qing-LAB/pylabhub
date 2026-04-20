@@ -203,6 +203,19 @@ int shared_data_cross_thread_visible(const std::string &dir);
 int has_callback_detects_presence_absence(const std::string &dir);
 int invoke_consume_messages_data_and_event_mixed(const std::string &dir);
 
+// ── Inbox + slot-only invoke (chunk 9a) ────────────────────────────────────
+//
+// Inbox path is a separate engine entry point (invoke_on_inbox) with
+// its own typed slot view (InboxFrame).  These tests pin:
+//   - InvokeTx no longer carries flexzone (slot-only invoke contract)
+//   - typed inbox data + sender_uid + seq projection
+//   - inbox-frame size matches the registered schema's compute_size
+//   - missing InboxFrame registration is a loud error, not silent skip
+int invoke_produce_slot_only_no_flexzone_on_invoke(const std::string &dir);
+int invoke_on_inbox_typed_data(const std::string &dir);
+int type_sizeof_inbox_frame_returns_correct_size(const std::string &dir);
+int invoke_on_inbox_missing_type_reports_error(const std::string &dir);
+
 // ── invoke_process (chunk 4) ────────────────────────────────────────────────
 //
 // Processor design note: a processor ALWAYS has an input channel (if a
