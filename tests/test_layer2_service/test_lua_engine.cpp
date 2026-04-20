@@ -1137,6 +1137,48 @@ TEST_F(LuaEngineIsolatedTest, InvokeOnInbox_MissingType_ReportsError)
 }
 
 // ============================================================================
+// Chunk 9b — logical-size accessors via engine_lifecycle_startup (Pattern 3)
+//
+// api.slot_logical_size() / api.flexzone_logical_size() Lua closures
+// read schema-derived sizes from RoleHostCore. Tests use the
+// production setup pathway (engine_lifecycle_startup, same one role
+// hosts use) and pass expected sizes through shared_data so the Lua
+// assertion uses authoritative compute_schema_size, not literals.
+// ============================================================================
+
+TEST_F(LuaEngineIsolatedTest, SlotLogicalSize_Aligned_PaddingSensitive)
+{
+    auto w = SpawnWorker(
+        "lua_engine.slot_logical_size_aligned_padding_sensitive",
+        {unique_dir("slot_aligned")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, SlotLogicalSize_Packed_NoPadding)
+{
+    auto w = SpawnWorker(
+        "lua_engine.slot_logical_size_packed_no_padding",
+        {unique_dir("slot_packed")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, SlotLogicalSize_ComplexMixed_Aligned)
+{
+    auto w = SpawnWorker(
+        "lua_engine.slot_logical_size_complex_mixed_aligned",
+        {unique_dir("slot_complex")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, FlexzoneLogicalSize_ArrayFields)
+{
+    auto w = SpawnWorker(
+        "lua_engine.flexzone_logical_size_array_fields",
+        {unique_dir("fz_array")});
+    ExpectWorkerOk(w);
+}
+
+// ============================================================================
 // 8. Error handling
 // ============================================================================
 
@@ -1984,191 +2026,6 @@ TEST_F(LuaEngineTest, FullStartup_Processor_Multifield)
     EXPECT_DOUBLE_EQ(out_buf.ts, 1.23456789);
     EXPECT_EQ(out_buf.flag, 0xAB);
     EXPECT_EQ(out_buf.count, -84);
-
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
-}
-
-// ============================================================================
-// Schema logical size — matching Python engine test coverage
-// ============================================================================
-
-TEST_F(LuaEngineTest, SlotLogicalSize_Aligned_PaddingSensitive)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            local sz = api.slot_logical_size()
-            assert(sz == 16, "expected 16, got " .. tostring(sz))
-            return false
-        end
-    )");
-
-    LuaEngine engine;
-    RoleHostCore core;
-    auto api = make_api(core, "prod");
-
-    auto slot_spec = padding_schema();
-    slot_spec.packing = "aligned";
-    core.set_out_slot_spec(SchemaSpec{slot_spec},
-                           pylabhub::hub::compute_schema_size(slot_spec, "aligned"));
-
-    pylabhub::scripting::EngineModuleParams params;
-    params.engine            = &engine;
-    params.api               = api.get();
-    params.tag               = "prod";
-    params.script_dir        = tmp_;
-    params.entry_point       = "init.lua";
-    params.required_callback = "on_produce";
-    params.out_slot_spec     = slot_spec;
-    params.out_packing       = "aligned";
-
-    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
-
-    size_t logical = pylabhub::hub::compute_schema_size(slot_spec, "aligned");
-    EXPECT_EQ(logical, 16u);
-    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), logical);
-
-    float buf[4] = {};
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
-}
-
-TEST_F(LuaEngineTest, SlotLogicalSize_Packed_NoPadding)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            local sz = api.slot_logical_size()
-            assert(sz == 13, "expected 13, got " .. tostring(sz))
-            return false
-        end
-    )");
-
-    LuaEngine engine;
-    RoleHostCore core;
-    auto api = make_api(core, "prod");
-
-    auto slot_spec = padding_schema();
-    slot_spec.packing = "packed";
-    core.set_out_slot_spec(SchemaSpec{slot_spec},
-                           pylabhub::hub::compute_schema_size(slot_spec, "packed"));
-
-    pylabhub::scripting::EngineModuleParams params;
-    params.engine            = &engine;
-    params.api               = api.get();
-    params.tag               = "prod";
-    params.script_dir        = tmp_;
-    params.entry_point       = "init.lua";
-    params.required_callback = "on_produce";
-    params.out_slot_spec     = slot_spec;
-    params.out_packing       = "packed";
-
-    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
-
-    EXPECT_EQ(pylabhub::hub::compute_schema_size(slot_spec, "packed"), 13u);
-    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 13u);
-
-    uint8_t buf[16] = {};
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
-}
-
-TEST_F(LuaEngineTest, SlotLogicalSize_ComplexMixed_Aligned)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            local sz = api.slot_logical_size()
-            assert(sz == 56, "expected 56, got " .. tostring(sz))
-            return false
-        end
-    )");
-
-    LuaEngine engine;
-    RoleHostCore core;
-    auto api = make_api(core, "prod");
-
-    auto slot_spec = complex_mixed_schema();
-    slot_spec.packing = "aligned";
-    core.set_out_slot_spec(SchemaSpec{slot_spec},
-                           pylabhub::hub::compute_schema_size(slot_spec, "aligned"));
-
-    pylabhub::scripting::EngineModuleParams params;
-    params.engine            = &engine;
-    params.api               = api.get();
-    params.tag               = "prod";
-    params.script_dir        = tmp_;
-    params.entry_point       = "init.lua";
-    params.required_callback = "on_produce";
-    params.out_slot_spec     = slot_spec;
-    params.out_packing       = "aligned";
-
-    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
-
-    EXPECT_EQ(pylabhub::hub::compute_schema_size(slot_spec, "aligned"), 56u);
-    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 56u);
-
-    uint8_t buf[64] = {};
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
-}
-
-TEST_F(LuaEngineTest, FlexzoneLogicalSize_ArrayFields)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            local slot_sz = api.slot_logical_size()
-            local fz_sz = api.flexzone_logical_size()
-            assert(slot_sz == 16, "slot: expected 16, got " .. tostring(slot_sz))
-            assert(fz_sz == 24, "fz: expected 24, got " .. tostring(fz_sz))
-            return false
-        end
-    )");
-
-    LuaEngine engine;
-    RoleHostCore core;
-    auto api = make_api(core, "prod");
-
-    auto slot_spec = padding_schema();
-    slot_spec.packing = "aligned";
-    auto fz_spec = fz_array_schema();
-    fz_spec.packing = "aligned";
-
-    core.set_out_slot_spec(SchemaSpec{slot_spec},
-                           pylabhub::hub::compute_schema_size(slot_spec, "aligned"));
-    core.set_out_fz_spec(SchemaSpec{fz_spec},
-                         pylabhub::hub::align_to_physical_page(
-                             pylabhub::hub::compute_schema_size(fz_spec, "aligned")));
-
-    pylabhub::scripting::EngineModuleParams params;
-    params.engine            = &engine;
-    params.api               = api.get();
-    params.tag               = "prod";
-    params.script_dir        = tmp_;
-    params.entry_point       = "init.lua";
-    params.required_callback = "on_produce";
-    params.out_slot_spec     = slot_spec;
-    params.out_fz_spec       = fz_spec;
-    params.out_packing       = "aligned";
-
-    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
-
-    EXPECT_EQ(pylabhub::hub::compute_schema_size(slot_spec, "aligned"), 16u);
-    EXPECT_EQ(pylabhub::hub::compute_schema_size(fz_spec, "aligned"), 24u);
-    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 16u);
-    EXPECT_EQ(engine.type_sizeof("OutFlexFrame"), 24u);
-
-    uint8_t slot_buf[16] = {};
-    uint8_t fz_buf[24] = {};
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{slot_buf, sizeof(slot_buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
 
     pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
 }

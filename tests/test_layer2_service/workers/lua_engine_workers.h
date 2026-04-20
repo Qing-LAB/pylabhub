@@ -216,6 +216,19 @@ int invoke_on_inbox_typed_data(const std::string &dir);
 int type_sizeof_inbox_frame_returns_correct_size(const std::string &dir);
 int invoke_on_inbox_missing_type_reports_error(const std::string &dir);
 
+// ── Logical-size accessors via engine_lifecycle_startup (chunk 9b) ─────────
+//
+// The Lua closures api.slot_logical_size() / api.flexzone_logical_size()
+// read schema-derived sizes from RoleHostCore, set by the role host
+// before engine startup.  These tests use the production setup
+// pathway (engine_lifecycle_startup) — same one the role hosts use —
+// to verify the accessors return values consistent with
+// hub::compute_schema_size.
+int slot_logical_size_aligned_padding_sensitive(const std::string &dir);
+int slot_logical_size_packed_no_padding(const std::string &dir);
+int slot_logical_size_complex_mixed_aligned(const std::string &dir);
+int flexzone_logical_size_array_fields(const std::string &dir);
+
 // ── invoke_process (chunk 4) ────────────────────────────────────────────────
 //
 // Processor design note: a processor ALWAYS has an input channel (if a
