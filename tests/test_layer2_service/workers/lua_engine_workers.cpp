@@ -3590,8 +3590,17 @@ struct LogicalSizeCase
     SchemaSpec   slot_spec;
     SchemaSpec   fz_spec;        // .has_schema=false → no flexzone
     const char  *out_packing;
-    size_t       expected_slot;
-    size_t       expected_fz;    // ignored when fz_spec.has_schema=false
+    size_t       expected_slot;       // = compute_schema_size(slot_spec, packing)
+    size_t       expected_fz;         // = compute_schema_size(fz_spec, packing)
+    // ANCHOR LITERALS: hard-coded sizes the test author KNOWS to be
+    // correct for these specific schemas.  Without anchors, every
+    // assertion in the test would route through compute_schema_size,
+    // turning the slot-size check into a tautology
+    // (compute_schema_size == compute_schema_size).  Anchors catch a
+    // silent regression in compute_schema_size itself for these
+    // schemas (e.g. the layout helper drops a padding byte).
+    size_t       anchor_slot;         // hard-coded expected slot size
+    size_t       anchor_fz;           // hard-coded expected fz size (0 if none)
 };
 
 int run_logical_size_case(const std::string &dir,
@@ -3664,25 +3673,33 @@ int run_logical_size_case(const std::string &dir,
                 pylabhub::scripting::engine_lifecycle_startup(
                     nullptr, &params));
 
-            // C++-side cross-checks: compute_schema_size, engine
-            // type_sizeof, and the expected literal must all agree.
+            // ANCHOR check (NOT a tautology): compute_schema_size for
+            // this specific schema must equal the hard-coded number
+            // the test author verified by hand.  A silent regression
+            // in the layout helper for this schema fails here.
             EXPECT_EQ(pylabhub::hub::compute_schema_size(
                           c.slot_spec, c.out_packing),
-                      c.expected_slot)
-                << "compute_schema_size disagrees with the test's "
-                   "expected_slot — schema math may have drifted";
+                      c.anchor_slot)
+                << "compute_schema_size DRIFTED for this slot schema — "
+                   "the layout helper now returns a different size for "
+                   "the same input. This is a real regression in the "
+                   "schema math, not in the engine.";
+
+            // Engine cdef vs schema-helper consistency.
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"),
-                      c.expected_slot)
-                << "engine type_sizeof disagrees with compute_schema_size "
-                   "— ffi cdef the engine builds doesn't match what "
-                   "the role host uses to size buffers";
+                      c.anchor_slot)
+                << "engine type_sizeof disagrees with the anchor — ffi "
+                   "cdef the engine builds doesn't match the canonical "
+                   "size used by the role host to allocate buffers";
+
             if (has_fz)
             {
                 EXPECT_EQ(pylabhub::hub::compute_schema_size(
                               c.fz_spec, c.out_packing),
-                          c.expected_fz);
+                          c.anchor_fz)
+                    << "compute_schema_size DRIFTED for this fz schema";
                 EXPECT_EQ(engine.type_sizeof("OutFlexFrame"),
-                          c.expected_fz);
+                          c.anchor_fz);
             }
 
             // Drive on_produce — the Lua-side asserts run here.
@@ -3706,11 +3723,13 @@ int slot_logical_size_aligned_padding_sensitive(const std::string &dir)
     auto spec = padding_schema();
     spec.packing = "aligned";
     LogicalSizeCase c{
-        /*slot_spec*/  spec,
-        /*fz_spec*/    SchemaSpec{},  // no flexzone
-        /*out_packing*/"aligned",
-        /*exp_slot*/   pylabhub::hub::compute_schema_size(spec, "aligned"),
-        /*exp_fz*/     0,
+        /*slot_spec*/   spec,
+        /*fz_spec*/     SchemaSpec{},  // no flexzone
+        /*out_packing*/ "aligned",
+        /*exp_slot*/    pylabhub::hub::compute_schema_size(spec, "aligned"),
+        /*exp_fz*/      0,
+        /*anchor_slot*/ 16,            // hand-verified for padding_schema aligned
+        /*anchor_fz*/   0,
     };
     return run_logical_size_case(
         dir, "lua_engine::slot_logical_size_aligned_padding_sensitive", c);
@@ -3722,8 +3741,9 @@ int slot_logical_size_packed_no_padding(const std::string &dir)
     spec.packing = "packed";
     LogicalSizeCase c{
         spec, SchemaSpec{}, "packed",
-        pylabhub::hub::compute_schema_size(spec, "packed"),
-        0,
+        pylabhub::hub::compute_schema_size(spec, "packed"), 0,
+        /*anchor_slot*/ 13,            // hand-verified for padding_schema packed
+        /*anchor_fz*/   0,
     };
     return run_logical_size_case(
         dir, "lua_engine::slot_logical_size_packed_no_padding", c);
@@ -3735,8 +3755,9 @@ int slot_logical_size_complex_mixed_aligned(const std::string &dir)
     spec.packing = "aligned";
     LogicalSizeCase c{
         spec, SchemaSpec{}, "aligned",
-        pylabhub::hub::compute_schema_size(spec, "aligned"),
-        0,
+        pylabhub::hub::compute_schema_size(spec, "aligned"), 0,
+        /*anchor_slot*/ 56,            // hand-verified for complex_mixed_schema aligned
+        /*anchor_fz*/   0,
     };
     return run_logical_size_case(
         dir, "lua_engine::slot_logical_size_complex_mixed_aligned", c);
@@ -3750,6 +3771,8 @@ int flexzone_logical_size_array_fields(const std::string &dir)
         slot, fz, "aligned",
         pylabhub::hub::compute_schema_size(slot, "aligned"),
         pylabhub::hub::compute_schema_size(fz,   "aligned"),
+        /*anchor_slot*/ 16,            // hand-verified for padding_schema aligned
+        /*anchor_fz*/   24,            // hand-verified for fz_array_schema aligned
     };
     return run_logical_size_case(
         dir, "lua_engine::flexzone_logical_size_array_fields", c);
