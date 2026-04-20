@@ -199,7 +199,7 @@ class ScriptEngine
     /**
      * @brief Build the API object/table using role-specific context.
      *
-     * Called after load_script() and before invoke_on_init().  Sets ctx_
+     * Called after load_script() and before invoke_on_init().  Sets api_
      * on the base class, calls engine-specific build_api_(), then sets
      * accepting_=true on success. Returns false if build_api_() fails
      * (e.g. unknown role_tag) — engine remains non-accepting.
