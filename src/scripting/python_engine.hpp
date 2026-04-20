@@ -3,7 +3,8 @@
  * @file python_engine.hpp
  * @brief PythonEngine — ScriptEngine implementation for CPython via pybind11.
  *
- * Key design differences from LuaEngine (see script_engine_refactor.md §5.4):
+ * Key design differences from LuaEngine (see HEP-CORE-0011 and
+ * docs/tech_draft/engine_thread_model.md):
  *   - Uses existing pybind11 ProducerAPI/ConsumerAPI/ProcessorAPI classes
  *     (compile-time type safety at the C++ boundary)
  *   - GIL held for engine lifetime on worker thread; per-invoke acquire is
@@ -29,7 +30,6 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/embed.h>
 
-#include <atomic>
 #include <deque>
 #include <filesystem>
 #include <future>
@@ -127,7 +127,6 @@ class PythonEngine : public ScriptEngine
 
     // ── Script ─────────────────────────────────────────────────────────────
     std::string log_tag_;
-    std::string script_dir_str_;
     std::string entry_point_;
     std::string required_callback_;
     std::string python_venv_;     ///< Optional venv name.
@@ -180,7 +179,7 @@ class PythonEngine : public ScriptEngine
     // GIL stays held on the worker thread (py::scoped_interpreter holds it).
     // Each invoke_*() uses py::gil_scoped_acquire which is reentrant (no-op).
 
-    // ctx_ is inherited from ScriptEngine (set by build_api).
+    // api_ is inherited from ScriptEngine (set by build_api).
     bool stop_on_script_error_{false};
 
     // ── Generic invoke queue (§4/§6 of engine_thread_model.md) ────────────
@@ -194,7 +193,6 @@ class PythonEngine : public ScriptEngine
     std::deque<PendingRequest>  request_queue_;
     std::mutex                  queue_mu_;
     // accepting_ is inherited from ScriptEngine base class.
-    std::atomic<bool>           executing_{false};
 
     InvokeResponse execute_direct_(const std::string &name);
     InvokeResponse execute_direct_(const std::string &name, const nlohmann::json &args);
