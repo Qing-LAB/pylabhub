@@ -3924,6 +3924,578 @@ int api_flexzone_accessor_without_shm_returns_nil(const std::string &dir)
         )LUA");
 }
 
+// ── Metrics: individual accessors + hierarchical table (chunk 11) ──────────
+
+int metrics_individual_accessors_read_core_counters_live(const std::string &dir)
+{
+    // Strengthened over V2 MetricsClosures_ReadFromRoleHostCounters.
+    // V2 set core counters once and read once. This body pins LIVE
+    // read semantics by:
+    //   1. Reading BEFORE any C++ set (must see 0).
+    //   2. Setting via core.test_set_*, reading via Lua (must see set
+    //      values).
+    //   3. INCREMENTING further from C++ between two consecutive Lua
+    //      reads (must see updated values, NOT cached snapshot).
+    //
+    // The C++→Lua bridge is via shared_data: C++ writes the
+    // expected values into shared_data per phase, Lua reads both the
+    // accessor result AND the expected value, and asserts agreement.
+    // This catches a regression where the api closure caches the
+    // first read and returns stale values on subsequent calls.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, R"LUA(
+                function on_produce(tx, msgs, api)
+                    local phase = api.get_shared_data("phase")
+                    local exp_ow = api.get_shared_data("exp_ow")
+                    local exp_dr = api.get_shared_data("exp_dr")
+
+                    local ow = api.out_slots_written()
+                    local dr = api.out_drop_count()
+
+                    assert(ow == exp_ow,
+                           "phase " .. phase .. ": out_slots_written "
+                           .. "expected " .. tostring(exp_ow)
+                           .. ", got " .. tostring(ow))
+                    assert(dr == exp_dr,
+                           "phase " .. phase .. ": out_drop_count "
+                           .. "expected " .. tostring(exp_dr)
+                           .. ", got " .. tostring(dr))
+                    return false
+                end
+            )LUA");
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            std::unique_ptr<RoleAPIBase> api;
+            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api,
+                                           RoleKind::Producer));
+
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+
+            auto invoke_phase = [&](int phase, int64_t exp_ow,
+                                    int64_t exp_dr) {
+                core.set_shared_data("phase", static_cast<int64_t>(phase));
+                core.set_shared_data("exp_ow", exp_ow);
+                core.set_shared_data("exp_dr", exp_dr);
+                auto r = engine.invoke_produce(
+                    pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+                EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard)
+                    << "phase " << phase;
+                EXPECT_EQ(engine.script_error_count(), 0u)
+                    << "phase " << phase;
+            };
+
+            // Phase 0: pristine — both counters start at 0.
+            invoke_phase(0, 0, 0);
+
+            // Phase 1: set non-zero values.
+            core.test_set_out_slots_written(42);
+            core.test_set_out_drop_count(7);
+            invoke_phase(1, 42, 7);
+
+            // Phase 2: increment further between invocations — pins
+            // LIVE read (cached snapshot would still report 42/7).
+            core.test_set_out_slots_written(100);
+            core.test_set_out_drop_count(15);
+            invoke_phase(2, 100, 15);
+
+            engine.finalize();
+        },
+        "lua_engine::metrics_individual_accessors_read_core_counters_live",
+        Logger::GetLifecycleModule());
+}
+
+int metrics_in_slots_received_works_consumer(const std::string &dir)
+{
+    // Strengthened over V2 MetricsClosures_InReceivedWorks. V2 set
+    // in_slots_received=15 and read once. This body additionally:
+    //   1. Pins out_slots_written stays 0 (consumer doesn't write).
+    //   2. Pins out_drop_count stays 0 same reason.
+    //   3. Reads in_slots_received across TWO invocations with a
+    //      C++ increment between → pins live read on consumer side.
+    //
+    // The "consumer reading producer counters returns 0" behavior
+    // is the API contract that L2 doesn't enforce per role tag at
+    // closure level — the closures exist on all roles (lua_engine.cpp
+    // :312-314). What IS enforced is that the underlying core
+    // counters default to 0 unless explicitly set.
+    return consume_worker_with_script(
+        dir, "lua_engine::metrics_in_slots_received_works_consumer",
+        R"LUA(
+            function on_consume(rx, msgs, api)
+                local ir = api.in_slots_received()
+                local exp_ir = api.get_shared_data("exp_ir")
+                assert(ir == exp_ir,
+                       "in_slots_received expected " .. tostring(exp_ir)
+                       .. ", got " .. tostring(ir))
+                -- Producer-side counters must stay 0 on consumer.
+                assert(api.out_slots_written() == 0,
+                       "consumer out_slots_written must be 0, got "
+                       .. tostring(api.out_slots_written()))
+                assert(api.out_drop_count() == 0,
+                       "consumer out_drop_count must be 0, got "
+                       .. tostring(api.out_drop_count()))
+                return true
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore &core) {
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            float data = 1.0f;
+
+            // Phase 1: in=15.
+            core.test_set_in_slots_received(15);
+            core.set_shared_data("exp_ir", static_cast<int64_t>(15));
+            auto r1 = engine.invoke_consume(
+                pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
+            EXPECT_EQ(r1, pylabhub::scripting::InvokeResult::Commit);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+
+            // Phase 2: bump in=42 between invokes — pins live read.
+            core.test_set_in_slots_received(42);
+            core.set_shared_data("exp_ir", static_cast<int64_t>(42));
+            auto r2 = engine.invoke_consume(
+                pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
+            EXPECT_EQ(r2, pylabhub::scripting::InvokeResult::Commit);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int metrics_hierarchical_table_producer_full_shape(const std::string &dir)
+{
+    // Strengthened over V2 Metrics_HierarchicalTable_Producer.  V2:
+    //   - Type-checks m.loop fields (3 fields, type-only)
+    //   - Asserts m.role.{out_slots_written, out_drop_count} VALUES
+    //   - Asserts script_error_count is a number (no value check)
+    //   - Asserts m.queue == nil, m.inbox == nil
+    //
+    // P3 additions:
+    //   - Anchored values for ALL 5 m.loop fields including
+    //     acquire_retry_count (V2 missed this one).
+    //   - Anchored values for all 4 m.role fields.
+    //   - script_error_count: pinned via raised-error pre-pass.
+    //   - m.role MUST also have in_slots_received key (the L2 design
+    //     exposes all 4 keys regardless of role; V2 didn't pin this).
+    //   - No "custom" group (we don't call report_metric).
+    //
+    // Inline setup because we need to:
+    //   1. Pre-set ALL loop counters via core.set_*.
+    //   2. Trigger one script error via a separate pre-invoke before
+    //      the real metrics-reading invoke.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, R"LUA(
+                function on_produce(tx, msgs, api)
+                    -- The first invocation deliberately raises so
+                    -- script_error_count becomes 1.  Subsequent
+                    -- invocations skip that branch.
+                    if api.get_shared_data("phase") == 0 then
+                        error("seed for script_error_count")
+                    end
+
+                    local m = api.metrics()
+                    assert(type(m) == "table", "metrics must be a table")
+
+                    -- Top-level shape — no queue (no real queue
+                    -- connected), no inbox, no custom.
+                    assert(m.queue == nil,
+                           "queue must be absent when no queue connected")
+                    assert(m.inbox == nil,
+                           "inbox must be absent when no inbox connected")
+                    assert(m.custom == nil,
+                           "custom must be absent (no report_metric called)")
+
+                    -- m.loop: 5 anchored fields (V2 missed
+                    -- acquire_retry_count).
+                    assert(type(m.loop) == "table",
+                           "m.loop must be a table")
+                    assert(m.loop.iteration_count == 7,
+                           "iteration_count expected 7, got "
+                           .. tostring(m.loop.iteration_count))
+                    assert(m.loop.loop_overrun_count == 2,
+                           "loop_overrun_count expected 2, got "
+                           .. tostring(m.loop.loop_overrun_count))
+                    assert(m.loop.last_cycle_work_us == 555,
+                           "last_cycle_work_us expected 555, got "
+                           .. tostring(m.loop.last_cycle_work_us))
+                    assert(m.loop.configured_period_us == 999,
+                           "configured_period_us expected 999, got "
+                           .. tostring(m.loop.configured_period_us))
+                    assert(type(m.loop.acquire_retry_count) == "number",
+                           "acquire_retry_count must be a number — V2 "
+                           .. "missed this loop field")
+
+                    -- m.role: all 4 keys present (lua_engine.cpp:1770-1777
+                    -- emits all four regardless of role).  Anchored
+                    -- values for the producer-relevant ones.
+                    assert(type(m.role) == "table", "m.role must be table")
+                    assert(m.role.out_slots_written == 5,
+                           "role.out_slots_written expected 5")
+                    assert(m.role.out_drop_count == 2,
+                           "role.out_drop_count expected 2")
+                    assert(m.role.in_slots_received == 0,
+                           "role.in_slots_received must be 0 for producer "
+                           .. "with no input")
+                    -- script_error_count: bumped to 1 by the seed
+                    -- branch above on the first invocation.
+                    assert(m.role.script_error_count == 1,
+                           "role.script_error_count expected 1 (one "
+                           .. "raised error on phase 0), got "
+                           .. tostring(m.role.script_error_count))
+                    return false
+                end
+            )LUA");
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            std::unique_ptr<RoleAPIBase> api;
+            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api,
+                                           RoleKind::Producer));
+
+            // Pre-set anchored loop counters.
+            for (int i = 0; i < 7; ++i) core.inc_iteration_count();
+            for (int i = 0; i < 2; ++i) core.inc_loop_overrun();
+            core.set_last_cycle_work_us(555);
+            core.set_configured_period(999);
+            // Pre-set anchored role counters.
+            core.test_set_out_slots_written(5);
+            core.test_set_out_drop_count(2);
+
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+
+            // Phase 0: seed an error to bump script_error_count.
+            core.set_shared_data("phase", static_cast<int64_t>(0));
+            auto r0 = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(r0, pylabhub::scripting::InvokeResult::Error);
+            EXPECT_EQ(engine.script_error_count(), 1u);
+
+            // Phase 1: real metrics read.
+            core.set_shared_data("phase", static_cast<int64_t>(1));
+            auto r1 = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(r1, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 1u)
+                << "phase 1 metric-read must not bump error count";
+
+            engine.finalize();
+        },
+        "lua_engine::metrics_hierarchical_table_producer_full_shape",
+        Logger::GetLifecycleModule());
+}
+
+int metrics_hierarchical_table_consumer_full_shape(const std::string &dir)
+{
+    // Strengthened: V2 only checked m.role.in_slots_received. This
+    // body audits the FULL m.role shape for consumer (all 4 keys
+    // present) and the consumer m.loop shape (same 5 fields as
+    // producer — the loop metrics are role-agnostic).  Pins that
+    // consumer m.role.out_* counters stay at 0 (no role-tagged
+    // filtering of the role table — all 4 keys always present).
+    return consume_worker_with_script(
+        dir, "lua_engine::metrics_hierarchical_table_consumer_full_shape",
+        R"LUA(
+            function on_consume(rx, msgs, api)
+                local m = api.metrics()
+                assert(type(m.loop) == "table")
+                assert(type(m.role) == "table")
+                assert(m.queue == nil, "no queue connected")
+                assert(m.inbox == nil, "no inbox connected")
+
+                -- m.loop fields: 5 fields, all type-checked.
+                local loop_fields = {
+                    "iteration_count", "loop_overrun_count",
+                    "last_cycle_work_us", "configured_period_us",
+                    "acquire_retry_count"
+                }
+                for _, f in ipairs(loop_fields) do
+                    assert(type(m.loop[f]) == "number",
+                           "m.loop." .. f .. " must be a number, got "
+                           .. type(m.loop[f]))
+                end
+
+                -- m.role: anchored value for in_slots_received,
+                -- producer-only counters stay 0.
+                assert(m.role.in_slots_received == 10,
+                       "in_slots_received expected 10, got "
+                       .. tostring(m.role.in_slots_received))
+                assert(m.role.out_slots_written == 0,
+                       "consumer's out_slots_written must be 0")
+                assert(m.role.out_drop_count == 0,
+                       "consumer's out_drop_count must be 0")
+                assert(type(m.role.script_error_count) == "number",
+                       "script_error_count must be a number")
+                return true
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore &core) {
+            core.test_set_in_slots_received(10);
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            float data = 1.0f;
+            auto r = engine.invoke_consume(
+                pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
+            EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Commit);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int metrics_loop_overrun_count_live_increments(const std::string &dir)
+{
+    // Strengthened over V2 Api_LoopOverrunCount_ReadsFromCore.  V2
+    // incremented 3× before invoke and read once.  This body pins
+    // LIVE updates across multiple invocations:
+    //   - Phase 0: 0 increments → expect 0
+    //   - Phase 1: bump to 3 (between invokes) → expect 3
+    //   - Phase 2: bump to 5 → expect 5
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, R"LUA(
+                function on_produce(tx, msgs, api)
+                    local v = api.loop_overrun_count()
+                    local exp = api.get_shared_data("exp")
+                    assert(v == exp,
+                           "expected " .. tostring(exp) .. ", got "
+                           .. tostring(v))
+                    return false
+                end
+            )LUA");
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            std::unique_ptr<RoleAPIBase> api;
+            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api,
+                                           RoleKind::Producer));
+
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+
+            auto invoke_with_exp = [&](int64_t exp) {
+                core.set_shared_data("exp", exp);
+                auto r = engine.invoke_produce(
+                    pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+                EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard);
+                EXPECT_EQ(engine.script_error_count(), 0u);
+            };
+
+            invoke_with_exp(0);              // pristine
+            for (int i = 0; i < 3; ++i) core.inc_loop_overrun();
+            invoke_with_exp(3);              // bumped to 3
+            for (int i = 0; i < 2; ++i) core.inc_loop_overrun();
+            invoke_with_exp(5);              // bumped further to 5
+
+            engine.finalize();
+        },
+        "lua_engine::metrics_loop_overrun_count_live_increments",
+        Logger::GetLifecycleModule());
+}
+
+int metrics_last_cycle_work_us_overwrite_semantics(const std::string &dir)
+{
+    // Strengthened over V2 Api_LastCycleWorkUs_ReadsFromCore.  V2:
+    // set 12345 once, read once.  This body pins:
+    //   - Initial read returns 0 (default).
+    //   - set→read cycle returns set value.
+    //   - SECOND set OVERWRITES (not accumulates) the first.
+    //   - Overflowing into uint64 max-ish values reads correctly
+    //     (catches truncation on Lua int64 boundary).
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, R"LUA(
+                function on_produce(tx, msgs, api)
+                    local v = api.last_cycle_work_us()
+                    local exp = api.get_shared_data("exp")
+                    assert(v == exp,
+                           "expected " .. tostring(exp) .. ", got "
+                           .. tostring(v))
+                    return false
+                end
+            )LUA");
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            std::unique_ptr<RoleAPIBase> api;
+            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api,
+                                           RoleKind::Producer));
+
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto invoke_with_exp = [&](int64_t exp) {
+                core.set_shared_data("exp", exp);
+                auto r = engine.invoke_produce(
+                    pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+                EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard);
+                EXPECT_EQ(engine.script_error_count(), 0u);
+            };
+
+            invoke_with_exp(0);                // default
+            core.set_last_cycle_work_us(12345);
+            invoke_with_exp(12345);            // first set
+            core.set_last_cycle_work_us(99999);
+            invoke_with_exp(99999);            // overwrite (not accumulate)
+            // Large value near int32 boundary — pin no truncation.
+            core.set_last_cycle_work_us(2'500'000'000ULL);
+            invoke_with_exp(2'500'000'000LL);  // > INT32_MAX
+
+            engine.finalize();
+        },
+        "lua_engine::metrics_last_cycle_work_us_overwrite_semantics",
+        Logger::GetLifecycleModule());
+}
+
+int metrics_all_loop_fields_anchored_values(const std::string &dir)
+{
+    // Strengthened over V2 Metrics_AllLoopFields_Present.  V2 anchored
+    // 4 fields (10, 3, 500, 1000).  This body anchors all 5 fields
+    // including acquire_retry_count, AND pins that NO EXTRA loop
+    // fields appear (key inventory check).  A regression that adds a
+    // loop field without a corresponding test update would fail the
+    // inventory assertion — forcing the test author to acknowledge
+    // the new field deliberately.
+    return produce_worker_with_script(
+        dir, "lua_engine::metrics_all_loop_fields_anchored_values",
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                local m = api.metrics()
+                assert(type(m.loop) == "table")
+
+                -- Anchored values for the 4 settable fields.
+                assert(m.loop.iteration_count == 10,
+                       "iteration_count expected 10")
+                assert(m.loop.loop_overrun_count == 3,
+                       "loop_overrun_count expected 3")
+                assert(m.loop.last_cycle_work_us == 500,
+                       "last_cycle_work_us expected 500")
+                assert(m.loop.configured_period_us == 1000,
+                       "configured_period_us expected 1000")
+                -- acquire_retry_count: type-only (no setter exposed
+                -- in this test scope; defaults to 0).
+                assert(type(m.loop.acquire_retry_count) == "number",
+                       "acquire_retry_count must be a number")
+                assert(m.loop.acquire_retry_count == 0,
+                       "acquire_retry_count default expected 0, got "
+                       .. tostring(m.loop.acquire_retry_count))
+
+                -- Inventory check: m.loop must have EXACTLY these 5
+                -- keys.  Catches regressions where a new loop field
+                -- is added to the engine but NOT to the test (the
+                -- test would otherwise silently miss new coverage).
+                local count = 0
+                local expected = {
+                    iteration_count=true, loop_overrun_count=true,
+                    last_cycle_work_us=true, configured_period_us=true,
+                    acquire_retry_count=true
+                }
+                for k, _ in pairs(m.loop) do
+                    assert(expected[k] ~= nil,
+                           "unexpected loop key '" .. k .. "' — engine "
+                           .. "added a field, update this test")
+                    count = count + 1
+                end
+                assert(count == 5,
+                       "expected 5 loop keys, got " .. count
+                       .. " (engine removed a field?)")
+                return false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore &core) {
+            for (int i = 0; i < 10; ++i) core.inc_iteration_count();
+            for (int i = 0; i < 3; ++i) core.inc_loop_overrun();
+            core.set_last_cycle_work_us(500);
+            core.set_configured_period(1000);
+
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto r = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int metrics_role_script_error_count_reflects_raised_error(const std::string &dir)
+{
+    // NEW gap-fill.  V2 only type-checked m.role.script_error_count
+    // — never verified the value transitions.  This body pins:
+    //   - Phase 0: m.role.script_error_count == 0 (clean start).
+    //   - Phase 1: raise an error → script_error_count becomes 1.
+    //   - Phase 2: raise again → becomes 2.
+    //   - Both Lua-side (m.role.script_error_count) AND C++-side
+    //     (engine.script_error_count()) must agree at each phase.
+    //
+    // The script switches behavior based on a "phase" shared_data
+    // hint: phase 0 reads metrics, phase 1+ raises an error.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, R"LUA(
+                function on_produce(tx, msgs, api)
+                    local phase = api.get_shared_data("phase")
+                    if phase == 1 or phase == 2 then
+                        error("seed phase " .. tostring(phase))
+                    end
+                    -- phase 0 or 3 (verify): read m.role.script_error_count
+                    local m = api.metrics()
+                    local exp = api.get_shared_data("exp_count")
+                    assert(m.role.script_error_count == exp,
+                           "phase " .. tostring(phase)
+                           .. ": script_error_count expected "
+                           .. tostring(exp) .. ", got "
+                           .. tostring(m.role.script_error_count))
+                    return false
+                end
+            )LUA");
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            std::unique_ptr<RoleAPIBase> api;
+            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api,
+                                           RoleKind::Producer));
+
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+
+            auto invoke_phase = [&](int phase, int64_t exp_count,
+                                    pylabhub::scripting::InvokeResult exp_r) {
+                core.set_shared_data("phase", static_cast<int64_t>(phase));
+                core.set_shared_data("exp_count", exp_count);
+                auto r = engine.invoke_produce(
+                    pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+                EXPECT_EQ(r, exp_r) << "phase " << phase;
+            };
+
+            // Phase 0: pristine read — count == 0.
+            invoke_phase(0, 0, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+
+            // Phase 1: raise.  Engine bumps script_error_count to 1.
+            invoke_phase(1, /*unused*/0, pylabhub::scripting::InvokeResult::Error);
+            EXPECT_EQ(engine.script_error_count(), 1u);
+
+            // Phase 3 verification: read — m.role.script_error_count == 1.
+            invoke_phase(3, 1, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 1u);
+
+            // Phase 2: raise again.  Count becomes 2.
+            invoke_phase(2, /*unused*/0, pylabhub::scripting::InvokeResult::Error);
+            EXPECT_EQ(engine.script_error_count(), 2u);
+
+            // Final verify: read — count == 2.  Both Lua-table and
+            // engine.script_error_count() must agree.
+            invoke_phase(3, 2, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 2u);
+
+            engine.finalize();
+        },
+        "lua_engine::metrics_role_script_error_count_reflects_raised_error",
+        Logger::GetLifecycleModule());
+}
+
 } // namespace lua_engine
 } // namespace pylabhub::tests::worker
 
@@ -4166,6 +4738,24 @@ struct LuaEngineWorkerRegistrar
                     return api_spinlock_acquire_without_shm_is_pcall_error(dir);
                 if (sc == "api_flexzone_accessor_without_shm_returns_nil")
                     return api_flexzone_accessor_without_shm_returns_nil(dir);
+
+                // Chunk 11: metrics tests
+                if (sc == "metrics_individual_accessors_read_core_counters_live")
+                    return metrics_individual_accessors_read_core_counters_live(dir);
+                if (sc == "metrics_in_slots_received_works_consumer")
+                    return metrics_in_slots_received_works_consumer(dir);
+                if (sc == "metrics_hierarchical_table_producer_full_shape")
+                    return metrics_hierarchical_table_producer_full_shape(dir);
+                if (sc == "metrics_hierarchical_table_consumer_full_shape")
+                    return metrics_hierarchical_table_consumer_full_shape(dir);
+                if (sc == "metrics_loop_overrun_count_live_increments")
+                    return metrics_loop_overrun_count_live_increments(dir);
+                if (sc == "metrics_last_cycle_work_us_overwrite_semantics")
+                    return metrics_last_cycle_work_us_overwrite_semantics(dir);
+                if (sc == "metrics_all_loop_fields_anchored_values")
+                    return metrics_all_loop_fields_anchored_values(dir);
+                if (sc == "metrics_role_script_error_count_reflects_raised_error")
+                    return metrics_role_script_error_count_reflects_raised_error(dir);
 
                 fmt::print(stderr,
                            "[lua_engine] ERROR: unknown scenario '{}'\n", sc);
