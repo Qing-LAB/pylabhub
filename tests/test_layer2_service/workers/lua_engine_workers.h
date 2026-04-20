@@ -199,6 +199,10 @@ int invoke_non_owner_thread_uses_independent_state(const std::string &dir);
 int invoke_concurrent_owner_and_non_owner(const std::string &dir);
 int shared_data_cross_thread_visible(const std::string &dir);
 
+// ── Misc V2 leftovers (chunk 8c) ───────────────────────────────────────────
+int has_callback_detects_presence_absence(const std::string &dir);
+int invoke_consume_messages_data_and_event_mixed(const std::string &dir);
+
 // ── invoke_process (chunk 4) ────────────────────────────────────────────────
 //
 // Processor design note: a processor ALWAYS has an input channel (if a
