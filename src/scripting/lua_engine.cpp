@@ -749,7 +749,7 @@ void LuaEngine::invoke_on_init()
 
     if (!state_.pcall(1, 0, "on_init"))
     {
-        api_->core()->inc_script_error_count();
+        on_pcall_error_("on_init");
     }
 }
 
@@ -768,7 +768,7 @@ void LuaEngine::invoke_on_stop()
 
     if (!state_.pcall(1, 0, "on_stop"))
     {
-        api_->core()->inc_script_error_count();
+        on_pcall_error_("on_stop");
     }
 }
 

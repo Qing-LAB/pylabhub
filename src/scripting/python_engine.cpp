@@ -638,9 +638,10 @@ InvokeResponse PythonEngine::execute_direct_(const std::string &name)
     }
     catch (const py::error_already_set &e)
     {
-        LOGGER_ERROR("[{}] invoke('{}'): {}", log_tag_, name, e.what());
-        assert(api_->core() && "api core must be set before invoke");
-        api_->core()->inc_script_error_count();
+        // Route through on_python_error_ so admin-facing invoke() honors
+        // stop_on_script_error_ consistently with the hot-path callbacks.
+        const std::string tag = "invoke('" + name + "')";
+        on_python_error_(tag.c_str(), e);
         return {InvokeStatus::ScriptError, {}};
     }
 }
@@ -667,9 +668,8 @@ InvokeResponse PythonEngine::execute_direct_(const std::string &name,
     }
     catch (const py::error_already_set &e)
     {
-        LOGGER_ERROR("[{}] invoke('{}', args): {}", log_tag_, name, e.what());
-        assert(api_->core() && "api core must be set before invoke");
-        api_->core()->inc_script_error_count();
+        const std::string tag = "invoke('" + name + "', args)";
+        on_python_error_(tag.c_str(), e);
         return {InvokeStatus::ScriptError, {}};
     }
 }
@@ -690,9 +690,7 @@ InvokeResponse PythonEngine::eval_direct_(const std::string &code)
     }
     catch (const py::error_already_set &e)
     {
-        LOGGER_ERROR("[{}] eval(): {}", log_tag_, e.what());
-        assert(api_->core() && "api core must be set before invoke");
-        api_->core()->inc_script_error_count();
+        on_python_error_("eval()", e);
         return {InvokeStatus::ScriptError, {}};
     }
 }
