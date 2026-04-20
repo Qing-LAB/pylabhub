@@ -832,14 +832,14 @@ bool NativeEngine::verify_abi_() const
 
     if (!fn)
     {
-        LOGGER_WARN("[{}] native engine does not export native engine_abi_info — skipping ABI check", log_tag_);
+        LOGGER_WARN("[{}] native engine does not export native_abi_info — skipping ABI check", log_tag_);
         return true; // permissive: allow if not exported
     }
 
     const PlhAbiInfo *info = fn();
     if (!info)
     {
-        LOGGER_ERROR("[{}] native engine_abi_info returned null", log_tag_);
+        LOGGER_ERROR("[{}] native_abi_info returned null", log_tag_);
         return false;
     }
 

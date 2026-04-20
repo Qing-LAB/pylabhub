@@ -17,7 +17,6 @@
 
 #include <lua.hpp>
 
-#include <atomic>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -129,7 +128,7 @@ class LuaEngine : public ScriptEngine
     int ref_slot_alias_readonly_{LUA_NOREF};  ///< "SlotFrame const*" alias (consumer)
     int ref_fz_alias_{LUA_NOREF};             ///< "FlexFrame*" alias
 
-    // ctx_ is inherited from ScriptEngine (set by build_api).
+    // api_ is inherited from ScriptEngine (set by build_api).
     bool stop_on_script_error_{false};
 
     // Inbox cache is shared in core_ (RoleHostCore::inbox_cache_).
@@ -139,7 +138,6 @@ class LuaEngine : public ScriptEngine
                        std::unique_ptr<LuaEngine>> thread_states_;
     std::mutex thread_states_mu_;
     // accepting_ is inherited from ScriptEngine base class.
-    std::atomic<bool> executing_{false};
 
     LuaEngine *get_or_create_thread_state_();
 

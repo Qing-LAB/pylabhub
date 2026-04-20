@@ -394,11 +394,11 @@ void LuaEngine::finalize_engine_()
         thread_states_.clear();
     }
 
-    // 3. Clear Lua refs. Shared resources (inbox cache, shared data) are
-    //    owned by RoleHostCore — cleaned up by the role host, not the engine.
+    // Clear Lua refs. Shared resources (inbox cache, shared data) are
+    // owned by RoleHostCore — cleaned up by the role host, not the engine.
     clear_refs_();
 
-    // 4. Destroy primary state.
+    // Destroy primary state.
     state_ = LuaState{}; // lua_close via RAII
 }
 
@@ -475,13 +475,11 @@ bool LuaEngine::invoke(const std::string &name)
     }
 
     // Owner thread: direct pcall.
-    executing_.store(true, std::memory_order_release);
     auto *L = state_.raw();
     lua_getglobal(L, name.c_str());
     if (!lua_isfunction(L, -1))
     {
         lua_pop(L, 1);
-        executing_.store(false, std::memory_order_release);
         return false;
     }
     bool ok = (lua_pcall(L, 0, 0, 0) == 0);
@@ -492,7 +490,6 @@ bool LuaEngine::invoke(const std::string &name)
         lua_pop(L, 1);
         on_pcall_error_(name);
     }
-    executing_.store(false, std::memory_order_release);
     return ok;
 }
 
@@ -511,13 +508,11 @@ bool LuaEngine::invoke(const std::string &name, const nlohmann::json &args)
     }
 
     // Owner thread: push args as Lua table, call.
-    executing_.store(true, std::memory_order_release);
     auto *L = state_.raw();
     lua_getglobal(L, name.c_str());
     if (!lua_isfunction(L, -1))
     {
         lua_pop(L, 1);
-        executing_.store(false, std::memory_order_release);
         return false;
     }
 
@@ -532,7 +527,6 @@ bool LuaEngine::invoke(const std::string &name, const nlohmann::json &args)
         lua_pop(L, 1);
         on_pcall_error_(name);
     }
-    executing_.store(false, std::memory_order_release);
     return ok;
 }
 
@@ -551,12 +545,10 @@ InvokeResponse LuaEngine::eval(const std::string &code)
         return child->eval(code);
     }
 
-    executing_.store(true, std::memory_order_release);
     auto *L = state_.raw();
     if (luaL_dostring(L, code.c_str()) != 0)
     {
         on_pcall_error_("eval");
-        executing_.store(false, std::memory_order_release);
         return {InvokeStatus::ScriptError, {}};
     }
 
@@ -567,7 +559,6 @@ InvokeResponse LuaEngine::eval(const std::string &code)
         val = lua_to_json(L, lua_gettop(L));
         lua_settop(L, 0);
     }
-    executing_.store(false, std::memory_order_release);
     return {InvokeStatus::Ok, std::move(val)};
 }
 
