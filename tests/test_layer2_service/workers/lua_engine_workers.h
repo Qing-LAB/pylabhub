@@ -274,6 +274,21 @@ int queue_state_processor_dual_without_queues_returns_defaults(const std::string
 int api_environment_strings_reflect_setters(const std::string &dir);
 int api_processor_channels_reflect_setters(const std::string &dir);
 
+// ── FullStartup composite tests (chunk 13 — final V2 group) ────────────────
+//
+// End-to-end smoke tests through the production setup pathway
+// (engine_lifecycle_startup + engine_lifecycle_shutdown).  Each test
+// fixes a role + schema config, verifies type registration and alias
+// exposure, runs at least one callback invocation, and pins
+// idempotent shutdown + post-shutdown engine-is-dead semantics.
+int full_startup_producer_slot_only(const std::string &dir);
+int full_startup_producer_slot_and_flexzone(const std::string &dir);
+int full_startup_consumer(const std::string &dir);
+int full_startup_processor(const std::string &dir);
+int full_startup_producer_multifield(const std::string &dir);
+int full_startup_consumer_multifield(const std::string &dir);
+int full_startup_processor_multifield(const std::string &dir);
+
 // ── invoke_process (chunk 4) ────────────────────────────────────────────────
 //
 // Processor design note: a processor ALWAYS has an input channel (if a
