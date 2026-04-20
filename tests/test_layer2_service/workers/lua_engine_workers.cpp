@@ -4876,6 +4876,14 @@ namespace
 {
 
 // Shared post-shutdown verification — call after engine_lifecycle_shutdown.
+//
+// Tests are role-agnostic: all three invoke paths must return Error
+// cleanly post-shutdown (all callable refs cleared by finalize). Using
+// only one invoke method was buggy for consumer/processor workers —
+// pre-shutdown invoke_produce already returns Error on them because
+// on_produce is not in the script (ref_on_produce_ == LUA_NOREF from
+// load_script time), so the post-shutdown assertion was vacuous. This
+// version exercises ALL THREE invoke methods uniformly.
 void expect_post_shutdown_is_dead(LuaEngine &engine)
 {
     EXPECT_FALSE(engine.is_accepting())
@@ -4883,11 +4891,20 @@ void expect_post_shutdown_is_dead(LuaEngine &engine)
 
     float buf = 0.0f;
     std::vector<pylabhub::scripting::IncomingMessage> msgs;
-    auto r = engine.invoke_produce(
-        pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Error)
-        << "post-shutdown invoke_produce must cleanly surface Error, "
-           "not crash on torn-down Lua state";
+
+    EXPECT_EQ(engine.invoke_produce(
+                  pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs),
+              pylabhub::scripting::InvokeResult::Error)
+        << "post-shutdown invoke_produce must surface Error, not crash";
+    EXPECT_EQ(engine.invoke_consume(
+                  pylabhub::scripting::InvokeRx{&buf, sizeof(buf)}, msgs),
+              pylabhub::scripting::InvokeResult::Error)
+        << "post-shutdown invoke_consume must surface Error, not crash";
+    EXPECT_EQ(engine.invoke_process(
+                  pylabhub::scripting::InvokeRx{&buf, sizeof(buf)},
+                  pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs),
+              pylabhub::scripting::InvokeResult::Error)
+        << "post-shutdown invoke_process must surface Error, not crash";
 }
 
 } // anonymous
@@ -5057,11 +5074,7 @@ int full_startup_consumer(const std::string &dir)
 
             pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
             pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
-            EXPECT_FALSE(engine.is_accepting());
-            // Post-shutdown invoke_consume path (mirror of producer's).
-            auto r2 = engine.invoke_consume(
-                pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
-            EXPECT_EQ(r2, pylabhub::scripting::InvokeResult::Error);
+            expect_post_shutdown_is_dead(engine);
         },
         "lua_engine::full_startup_consumer",
         Logger::GetLifecycleModule());
@@ -5256,10 +5269,7 @@ int full_startup_consumer_multifield(const std::string &dir)
 
             pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
             pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
-            EXPECT_FALSE(engine.is_accepting());
-            auto r2 = engine.invoke_consume(
-                pylabhub::scripting::InvokeRx{&buf, sizeof(buf)}, msgs);
-            EXPECT_EQ(r2, pylabhub::scripting::InvokeResult::Error);
+            expect_post_shutdown_is_dead(engine);
         },
         "lua_engine::full_startup_consumer_multifield",
         Logger::GetLifecycleModule());
