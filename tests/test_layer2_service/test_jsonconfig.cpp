@@ -136,10 +136,13 @@ TEST_F(JsonConfigTest, LoadMalformedFile)
 {
     auto w = SpawnWorker("jsonconfig.load_malformed_file", {unique_dir("mf")});
     // The worker attempts to load malformed JSON twice; each emits an
-    // [ERROR ] log entry from the JsonConfig parse path.
+    // [ERROR ] log entry from the JsonConfig parse path. Under multiset
+    // semantics, list the substring twice — one entry per expected
+    // ERROR line.
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
-                   {"JsonConfig::private_load_from_disk_unsafe"});
+                   {"JsonConfig::private_load_from_disk_unsafe",
+                    "JsonConfig::private_load_from_disk_unsafe"});
 }
 
 TEST_F(JsonConfigTest, MultiThreadFileContention)
@@ -155,10 +158,12 @@ TEST_F(JsonConfigTest, SymlinkAttackPreventionPosix)
     auto w = SpawnWorker("jsonconfig.symlink_attack_prevention_posix",
                          {unique_dir("sp")});
     // The worker triggers an "operation_not_permitted" log when init
-    // refuses the symlinked path.
+    // refuses the symlinked path. Both anchors live on the SAME ERROR
+    // line; under multiset semantics we must pick a single unique
+    // substring per line (each list entry consumes exactly one).
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
-                   {"JsonConfig::init: target", "is a symbolic link"});
+                   {"is a symbolic link"});
 }
 #endif
 

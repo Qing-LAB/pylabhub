@@ -4,6 +4,7 @@
  * @brief Implements platform-abstracted utilities for spawning and managing child processes.
  */
 
+#include <algorithm>
 #include <chrono>
 #include <list>
 #include <csignal>
@@ -610,44 +611,80 @@ void expect_worker_ok(const WorkerProcess &proc,
             << proc.mode() << "' — module shutdown hung or aborted.";
     }
 
-    // When expected_error_substrings is empty: no ERROR-level logs are permitted.
-    // When non-empty: each named string must appear, AND every [ERROR ] line in stderr
-    // must be accounted for by at least one of those named strings.
-    // This means additional unexpected ERRORs are NOT silently ignored.
+    // expected_error_substrings has MULTISET semantics (established
+    // 2026-04-20). Each entry in the list consumes EXACTLY ONE matching
+    // [ERROR ] line in stderr:
+    //
+    //   - List `{"foo"}`   → exactly 1 ERROR line containing "foo"
+    //   - List `{"foo", "foo"}` → exactly 2 ERROR lines containing "foo"
+    //   - List `{"foo", "bar"}` → exactly 1 line with "foo" AND 1 line with "bar"
+    //
+    // Matching is greedy in stderr order: each error line consumes the
+    // first remaining substring that matches it. Failures are:
+    //   - an ERROR line with no remaining substring matching   (unexpected)
+    //   - a substring with no ERROR line matching              (missing)
+    //
+    // When expected_error_substrings is empty: no [ERROR ]-level log
+    // lines permitted.  Check line-by-line (NOT a loose
+    // HasSubstr("ERROR")) — debug prints and raw stderr text may
+    // legitimately contain the word "ERROR" (e.g. "ERROR: failed to
+    // load" from a PLH_DEBUG line) without being a logger-ERROR event.
     if (expected_error_substrings.empty())
     {
-        EXPECT_THAT(stderr_out, Not(HasSubstr("ERROR")));
+        std::istringstream lines(stderr_out);
+        std::string        line;
+        while (std::getline(lines, line))
+        {
+            if (line.find("[ERROR ]") != std::string::npos)
+                ADD_FAILURE()
+                    << "Unexpected ERROR-level log in worker stderr "
+                       "(expected_error_substrings was empty):\n  " << line;
+        }
     }
     else
     {
-        // 1. Positive check: each expected error string must appear.
-        for (const auto &substr : expected_error_substrings)
-        {
-            EXPECT_THAT(stderr_out, HasSubstr(substr));
-        }
-        // 2. Exhaustive check: every [ERROR ] line must match at least one expected string.
-        std::istringstream lines(stderr_out);
-        std::string line;
+        // Collect all [ERROR ] lines in stderr order.
+        std::vector<std::string> error_lines;
+        std::istringstream       lines(stderr_out);
+        std::string              line;
         while (std::getline(lines, line))
         {
-            if (line.find("[ERROR ]") == std::string::npos)
+            if (line.find("[ERROR ]") != std::string::npos)
+                error_lines.push_back(line);
+        }
+
+        // Multiset pairing: each error line consumes one remaining
+        // substring entry. Walk error lines in stderr order and remove
+        // the first matching substring from the work list.
+        std::vector<std::string> remaining = expected_error_substrings;
+        for (const auto &err_line : error_lines)
+        {
+            auto it = std::find_if(remaining.begin(), remaining.end(),
+                [&](const std::string &sub) {
+                    return err_line.find(sub) != std::string::npos;
+                });
+            if (it != remaining.end())
             {
-                continue;
+                remaining.erase(it);
             }
-            bool matched = false;
-            for (const auto &sub : expected_error_substrings)
+            else
             {
-                if (line.find(sub) != std::string::npos)
-                {
-                    matched = true;
-                    break;
-                }
+                ADD_FAILURE()
+                    << "Unexpected ERROR in worker stderr — no remaining "
+                       "expected substring matches this line (either the "
+                       "error is genuinely unexpected, or the substring "
+                       "list undercounts — each entry consumes exactly "
+                       "one line):\n  " << err_line;
             }
-            if (!matched)
-            {
-                ADD_FAILURE() << "Unexpected ERROR in worker stderr (not in expected_error_substrings):\n"
-                              << "  " << line;
-            }
+        }
+
+        // Leftover substrings = expected errors that never appeared.
+        for (const auto &unmatched : remaining)
+        {
+            ADD_FAILURE()
+                << "Expected error substring not found in worker stderr (or "
+                   "not as many occurrences as entries in the list): \""
+                << unmatched << "\"";
         }
     }
     // Always forbid FATAL, PANIC, and worker assertion failure.
