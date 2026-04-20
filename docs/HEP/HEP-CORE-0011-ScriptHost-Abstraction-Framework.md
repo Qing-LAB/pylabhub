@@ -302,6 +302,48 @@ lock = api.spinlock(0)                # ERROR: side required
 
 ## Schema and Size Model
 
+### Canonical type names (closed set)
+
+The engine exposes **five canonical frame names** to scripts and role
+hosts — the complete list of type-registration slots.  There is no
+user-extensible type namespace; these correspond to the library's
+fixed role-frame contract.
+
+| Name           | Direction | Writability | Registered by |
+|----------------|-----------|-------------|---------------|
+| `InSlotFrame`  | input slot       | read-only    | Consumer, Processor |
+| `OutSlotFrame` | output slot      | writable     | Producer, Processor |
+| `InFlexFrame`  | input flexzone   | mutable      | Consumer, Processor (when fz configured) |
+| `OutFlexFrame` | output flexzone  | mutable      | Producer, Processor (when fz configured) |
+| `InboxFrame`   | inbox payload    | read-only    | Producer, Consumer, Processor (when inbox configured) |
+
+Producer/Consumer also get auto-generated aliases at `build_api()`:
+- Producer: `SlotFrame` → alias of `OutSlotFrame`; `FlexFrame` →
+  alias of `OutFlexFrame` (when present).
+- Consumer: `SlotFrame` → alias of `InSlotFrame`; `FlexFrame` →
+  alias of `InFlexFrame` (when present).
+- Processor: **no** bare aliases (both directions are explicit —
+  `SlotFrame` would be ambiguous).
+
+**`register_slot_type()` contract (enforced by both engines)**:
+- `type_name` MUST be one of the five canonical names above.
+- Any other name is rejected: return `false` + `LOGGER_ERROR`,
+  listing the five valid names.  No silent acceptance, no silent
+  "type built but not cached" fallthrough.
+- Re-registration under the SAME canonical name is allowed — it
+  overwrites the previously cached type.  Primarily a test-side
+  convenience (verifying different packings on the same slot);
+  production role hosts register each canonical name at most once.
+
+This closed-set design is intentional: frames are role-contract
+identities, not a user-extension point.  Adding a new frame
+category is coordinated library work touching
+role host + schema + engine dispatchers.  The canonical-name
+rejection at `register_slot_type` ensures a typo or schema-config
+misuse fails immediately at the registration site rather than
+surfacing later as a `type_sizeof(name) == 0` silent corruption
+(e.g., role host allocating wrong-sized buffers).
+
 ### Two size concepts
 
 | Concept | What it means | How computed | Where stored |
@@ -313,9 +355,17 @@ lock = api.spinlock(0)                # ERROR: side required
 - Flexzone: logical size != physical size (page alignment for SHM allocation)
 - ZMQ/Inbox: logical size = wire buffer size (no extra alignment)
 
-### Cross-validation
+### Cross-validation (defense in depth)
 
-At `engine_lifecycle_startup()`, after all `register_slot_type()` calls:
+`register_slot_type()` **internally** validates the engine's
+language-native struct size against `compute_schema_size(spec,
+packing)` before caching the type.  A silent packing-ignore bug
+(e.g., the engine always building aligned regardless of the
+`packing` argument) is caught there: the built size mismatches
+the schema-computed size, and `register_slot_type` returns false.
+
+On top of this, `engine_lifecycle_startup()` re-validates after all
+`register_slot_type()` calls have completed (defense in depth):
 
 ```
 assert engine.type_sizeof("OutSlotFrame") == core.out_slot_logical_size()
@@ -324,7 +374,28 @@ assert engine.type_sizeof("OutFlexFrame") == compute_schema_size(out_fz_spec, pa
 assert engine.type_sizeof("InFlexFrame")  == compute_schema_size(in_fz_spec, packing)
 ```
 
-This ensures the engine's ctypes/FFI struct matches the infrastructure's buffer layout.
+Engine-internal validation is the primary guard.  The lifecycle-level
+assert is a backup that fires if someone bypassed the registration
+API (hypothetically injecting a type through a private path).
+
+### Engine-specific `type_sizeof` storage
+
+Both engines return sizes only for the five canonical names (+ the
+two aliases).  Storage layout differs per language:
+
+- **Lua** (LuaJIT FFI): types live in LuaJIT's global FFI cdef
+  registry, keyed by name.  `ffi.sizeof(name)` reads the registry.
+  Re-registering the same cdef name with a different layout fails
+  (LuaJIT cdefs are immutable per name); use a different canonical
+  name to test both packings for the same schema.
+- **Python** (ctypes): types are stored in explicit `py::object`
+  fields of `PythonEngine` (`in_slot_type_ro_`, `out_slot_type_`,
+  etc.).  Re-registration is a simple field overwrite (old type
+  garbage-collected).  `type_sizeof` dispatches on the canonical
+  name to the matching field.
+
+These differences are implementation-level only; both engines honor
+the same canonical-name contract at the API surface.
 
 ### Packing
 
