@@ -2182,6 +2182,302 @@ int api_shared_data_overwrite_changes_value_same_type(const std::string &dir)
         });
 }
 
+// ── Error handling: runtime error surfacing (chunk 7a) ─────────────────────
+
+int invoke_multiple_errors_count_accumulates(const std::string &dir)
+{
+    // Strengthened over V2 MultipleErrors_CountAccumulates.  V2 only
+    // asserted the final count after 5 invocations.  This body
+    // additionally asserts each invoke_produce returns Error (not
+    // Commit / Discard), and asserts the count increments
+    // MONOTONICALLY across the loop (catches a regression where
+    // script_error_count is only updated at finalize, or increments
+    // by more than one per error).
+    return produce_worker_with_script(
+        dir, "lua_engine::invoke_multiple_errors_count_accumulates",
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                error("oops")
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            EXPECT_EQ(engine.script_error_count(), 0u);
+
+            for (size_t i = 0; i < 5; ++i)
+            {
+                auto r = engine.invoke_produce(
+                    pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+                EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Error)
+                    << "iteration " << i
+                    << ": raised error must surface as Error, not Discard";
+                EXPECT_EQ(engine.script_error_count(), i + 1)
+                    << "iteration " << i << ": count must increment by 1 "
+                    << "per invocation, monotonically";
+            }
+        });
+}
+
+int invoke_produce_wrong_return_type_is_error(const std::string &dir)
+{
+    // Strengthened over V2.  V2 asserted result==Error + count==1.
+    // This body additionally invokes a SECOND time to prove the
+    // engine doesn't enter a broken state after the first error —
+    // the 2nd invocation should surface Error the same way (not
+    // crash, not hang, not silently succeed).  This pins the "one
+    // bad script iteration does not brick the engine" contract.
+    // Note: we cannot use eval() to redefine on_produce because the
+    // engine caches the Lua ref at load_script time
+    // (lua_engine.cpp: ref_on_produce_) — a subsequent eval defines
+    // a new global but the cached ref still points at the original.
+    return produce_worker_with_script(
+        dir, "lua_engine::invoke_produce_wrong_return_type_is_error",
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                return 42  -- number instead of true/false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto r1 = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(r1, pylabhub::scripting::InvokeResult::Error)
+                << "returning a number must surface as Error";
+            EXPECT_EQ(engine.script_error_count(), 1u);
+
+            auto r2 = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(r2, pylabhub::scripting::InvokeResult::Error)
+                << "second invocation must also cleanly surface Error — "
+                   "engine not entering a broken state after the first";
+            EXPECT_EQ(engine.script_error_count(), 2u);
+        });
+}
+
+int invoke_produce_wrong_return_string_is_error(const std::string &dir)
+{
+    // Same strengthening as wrong_return_type.  Covers the string
+    // branch of the return-value type dispatch which is handled
+    // separately from the number branch in the engine (different
+    // lua_type case).
+    return produce_worker_with_script(
+        dir, "lua_engine::invoke_produce_wrong_return_string_is_error",
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                return "ok"  -- string instead of true/false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto r1 = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(r1, pylabhub::scripting::InvokeResult::Error);
+            EXPECT_EQ(engine.script_error_count(), 1u);
+
+            auto r2 = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(r2, pylabhub::scripting::InvokeResult::Error)
+                << "second invocation must also surface Error cleanly";
+            EXPECT_EQ(engine.script_error_count(), 2u);
+        });
+}
+
+int invoke_produce_stop_on_script_error_sets_shutdown(const std::string &dir)
+{
+    // Strengthened over V2 StopOnScriptError_SetsShutdownOnError.
+    // V2 asserted post-error is_shutdown_requested()==true.  This
+    // body additionally pins:
+    //   (a) is_critical_error() stays FALSE — stop_on_script_error is
+    //       a controlled shutdown, NOT a critical error.  Distinct
+    //       semantics: critical implies restart, controlled does not.
+    //   (b) stop_reason stays "normal" (not "critical_error").
+    //   (c) result is Error (V2 already pinned this).
+    //
+    // Custom setup inline (doesn't use setup_role_engine) because
+    // make_api sets set_stop_on_script_error(false) by default and
+    // we need true for this test.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, R"LUA(
+                function on_produce(tx, msgs, api)
+                    error("intentional error")
+                end
+            )LUA");
+
+            RoleHostCore core;
+            LuaEngine engine;
+            ASSERT_TRUE(engine.initialize("test", &core));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
+
+            auto spec = simple_schema();
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
+                                                   "aligned"));
+
+            auto api = make_api(core);
+            api->set_stop_on_script_error(true);  // ← key difference from default
+            ASSERT_TRUE(engine.build_api(*api));
+
+            EXPECT_FALSE(core.is_shutdown_requested());
+            EXPECT_FALSE(core.is_critical_error());
+            EXPECT_EQ(core.stop_reason_string(), "normal");
+
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto r = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+
+            EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Error);
+            EXPECT_TRUE(core.is_shutdown_requested())
+                << "stop_on_script_error=true must flip shutdown_requested";
+            EXPECT_FALSE(core.is_critical_error())
+                << "stop_on_script_error is a controlled stop, NOT critical "
+                   "— critical_error must remain false so the parent role "
+                   "host doesn't treat this as a restart-worthy failure";
+            EXPECT_EQ(core.stop_reason_string(), "normal")
+                << "stop_reason stays 'normal' — the shutdown path here is "
+                   "explicit user policy, not the StopReason::CriticalError "
+                   "enum value";
+
+            engine.finalize();
+        },
+        "lua_engine::invoke_produce_stop_on_script_error_sets_shutdown",
+        Logger::GetLifecycleModule());
+}
+
+int invoke_on_init_or_stop_script_error_accumulates(const std::string &dir)
+{
+    // MERGED from V2 InvokeOnInit_ScriptError + InvokeOnStop_ScriptError.
+    // The two V2 tests were nearly identical structurally — same
+    // mechanism exercised via two different engine entry points.
+    // Merged body additionally asserts the count accumulates across
+    // BOTH lifecycle stages (0 → 1 after on_init error → 2 after
+    // on_stop error), pinning the "script_error_count is engine-wide,
+    // not per-callback" contract that neither V2 test covered.
+    return produce_worker_with_script(
+        dir, "lua_engine::invoke_on_init_or_stop_script_error_accumulates",
+        R"LUA(
+            function on_produce(tx, msgs, api) return false end
+            function on_init(api)
+                error("init failed")
+            end
+            function on_stop(api)
+                error("stop failed")
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            EXPECT_EQ(engine.script_error_count(), 0u);
+            engine.invoke_on_init();
+            EXPECT_EQ(engine.script_error_count(), 1u)
+                << "on_init error must bump count";
+            engine.invoke_on_stop();
+            EXPECT_EQ(engine.script_error_count(), 2u)
+                << "on_stop error must bump count again — script_error_count "
+                   "is engine-wide, not per-callback";
+        });
+}
+
+int invoke_on_inbox_script_error_increments_count(const std::string &dir)
+{
+    // Strengthened over V2.  V2 asserted count >= 1 (loose); this
+    // body pins count == 1 and also pins that the inbox typed data
+    // REACHED Lua before the error was raised — by having the
+    // callback briefly touch msg.slot before raising, then observing
+    // a side effect via custom_metrics.
+    //
+    // Inline setup because InboxFrame must be registered in addition
+    // to OutSlotFrame and setup_role_engine doesn't handle inbox.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, R"LUA(
+                function on_produce(tx, msgs, api) return false end
+                function on_inbox(msg, api)
+                    -- Pin that msg.{data,sender_uid,seq} reached Lua
+                    -- by reporting a metric before raising.  msg
+                    -- fields per lua_engine.cpp:974-986: data (cdata
+                    -- or nil), sender_uid (string), seq (integer).
+                    if msg.data ~= nil
+                       and msg.sender_uid == "SENDER-00000001"
+                       and msg.seq == 1 then
+                        api.report_metric("inbox_reached", 1)
+                    end
+                    error("inbox failed")
+                end
+            )LUA");
+
+            RoleHostCore core;
+            LuaEngine engine;
+            ASSERT_TRUE(engine.initialize("test", &core));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
+                                           "on_produce"));
+
+            auto spec = simple_schema();
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
+                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame",
+                                                   "aligned"));
+
+            auto api = make_api(core);
+            ASSERT_TRUE(engine.build_api(*api));
+
+            EXPECT_EQ(engine.script_error_count(), 0u);
+
+            float inbox_data = 1.0f;
+            engine.invoke_on_inbox({&inbox_data, sizeof(inbox_data),
+                                    "SENDER-00000001", 1});
+
+            EXPECT_EQ(engine.script_error_count(), 1u)
+                << "on_inbox error must increment count by exactly 1";
+
+            auto cm = core.custom_metrics_snapshot();
+            ASSERT_EQ(cm.count("inbox_reached"), 1u)
+                << "msg.slot must have reached Lua before the error — "
+                   "missing metric means the inbox frame projection "
+                   "raised before reaching user code";
+            EXPECT_DOUBLE_EQ(cm["inbox_reached"], 1.0);
+
+            engine.finalize();
+        },
+        "lua_engine::invoke_on_inbox_script_error_increments_count",
+        Logger::GetLifecycleModule());
+}
+
+int eval_syntax_error_returns_script_error(const std::string &dir)
+{
+    // Strengthened over V2 Eval_SyntaxError_ReturnsScriptError.
+    // V2 asserted only status == ScriptError.  This body also
+    // asserts (a) script_error_count increments, (b) engine is
+    // still usable after (can eval a valid expression).  The eval
+    // error path is a distinct code path from invoke errors —
+    // different LuaJIT entry — so pinning both is useful.
+    return produce_worker_with_script(
+        dir, "lua_engine::eval_syntax_error_returns_script_error",
+        R"LUA(
+            function on_produce(tx, msgs, api) return false end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            EXPECT_EQ(engine.script_error_count(), 0u);
+
+            auto bad = engine.eval("invalid syntax {{{");
+            EXPECT_EQ(bad.status,
+                      pylabhub::scripting::InvokeStatus::ScriptError);
+            EXPECT_EQ(engine.script_error_count(), 1u)
+                << "eval syntax error must increment script_error_count "
+                   "the same way invoke errors do";
+
+            // Engine still usable: eval a valid scalar expression.
+            auto good = engine.eval("return 7 * 6");
+            EXPECT_EQ(good.status, pylabhub::scripting::InvokeStatus::Ok)
+                << "engine must be usable after an eval syntax error";
+            // NB: don't pin good.value here — that belongs in eval's
+            // own test (Eval_ReturnsScalarResult, V2 line ~1428).
+        });
+}
+
 } // namespace lua_engine
 } // namespace pylabhub::tests::worker
 
@@ -2322,6 +2618,22 @@ struct LuaEngineWorkerRegistrar
                     return api_shared_data_overwrite_changes_type(dir);
                 if (sc == "api_shared_data_overwrite_changes_value_same_type")
                     return api_shared_data_overwrite_changes_value_same_type(dir);
+
+                // Chunk 7a: runtime error surfacing
+                if (sc == "invoke_multiple_errors_count_accumulates")
+                    return invoke_multiple_errors_count_accumulates(dir);
+                if (sc == "invoke_produce_wrong_return_type_is_error")
+                    return invoke_produce_wrong_return_type_is_error(dir);
+                if (sc == "invoke_produce_wrong_return_string_is_error")
+                    return invoke_produce_wrong_return_string_is_error(dir);
+                if (sc == "invoke_produce_stop_on_script_error_sets_shutdown")
+                    return invoke_produce_stop_on_script_error_sets_shutdown(dir);
+                if (sc == "invoke_on_init_or_stop_script_error_accumulates")
+                    return invoke_on_init_or_stop_script_error_accumulates(dir);
+                if (sc == "invoke_on_inbox_script_error_increments_count")
+                    return invoke_on_inbox_script_error_increments_count(dir);
+                if (sc == "eval_syntax_error_returns_script_error")
+                    return eval_syntax_error_returns_script_error(dir);
 
                 fmt::print(stderr,
                            "[lua_engine] ERROR: unknown scenario '{}'\n", sc);

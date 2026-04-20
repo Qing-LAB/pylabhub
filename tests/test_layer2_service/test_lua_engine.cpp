@@ -773,31 +773,100 @@ TEST_F(LuaEngineIsolatedTest, ApiSharedData_OverwriteChangesValueSameType)
 }
 
 // ============================================================================
-// 8. Error handling
+// Chunk 7a — error handling: runtime error surfacing (Pattern 3)
+//
+// Covers: script error counting, wrong return type, stop_on_script_error,
+// on_init/on_stop/on_inbox errors, engine.eval syntax errors.
+// Every test pins InvokeResult / InvokeStatus where V2 checked only
+// script_error_count, plus post-error engine usability where applicable.
 // ============================================================================
 
-TEST_F(LuaEngineTest, MultipleErrors_CountAccumulates)
+TEST_F(LuaEngineIsolatedTest, Invoke_MultipleErrors_CountAccumulates)
 {
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            error("oops")
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-
-    for (int i = 0; i < 5; ++i)
-    {
-        engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    }
-    EXPECT_EQ(engine.script_error_count(), 5u);
-
-    engine.finalize();
+    auto w = SpawnWorker(
+        "lua_engine.invoke_multiple_errors_count_accumulates",
+        {unique_dir("err_accumulate")});
+    // 5 raised Lua errors → 5 ERROR log lines from the engine's
+    // pcall path.  Framework needs to know all of them are expected.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"oops", "oops", "oops", "oops", "oops"});
 }
+
+TEST_F(LuaEngineIsolatedTest, InvokeProduce_WrongReturnType_IsError)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_produce_wrong_return_type_is_error",
+        {unique_dir("err_wrong_ret_type")});
+    // Exact engine log at lua_engine.cpp:814:
+    // "[{log_tag}] on_produce returned non-boolean type '...'"
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"on_produce returned non-boolean type"});
+}
+
+TEST_F(LuaEngineIsolatedTest, InvokeProduce_WrongReturnString_IsError)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_produce_wrong_return_string_is_error",
+        {unique_dir("err_wrong_ret_string")});
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"on_produce returned non-boolean type"});
+}
+
+TEST_F(LuaEngineIsolatedTest, InvokeProduce_StopOnScriptError_SetsShutdown)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_produce_stop_on_script_error_sets_shutdown",
+        {unique_dir("err_stop_on_error")});
+    // stop_on_script_error path emits TWO ERROR log lines:
+    //   1. "[test] Lua error: ... intentional error"  (pcall path)
+    //   2. "[test] stop_on_script_error: requesting shutdown ..."
+    //      (on_pcall_error_ path, lua_engine.cpp:1040)
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"intentional error",
+                    "stop_on_script_error: requesting shutdown"});
+}
+
+TEST_F(LuaEngineIsolatedTest, InvokeOnInitOrStop_ScriptError_Accumulates)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_on_init_or_stop_script_error_accumulates",
+        {unique_dir("err_init_stop")});
+    // Two raised errors (on_init, on_stop) → two ERROR log lines.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"init failed", "stop failed"});
+}
+
+TEST_F(LuaEngineIsolatedTest, InvokeOnInbox_ScriptError_IncrementsCount)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_on_inbox_script_error_increments_count",
+        {unique_dir("err_inbox")});
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"inbox failed"});
+}
+
+TEST_F(LuaEngineIsolatedTest, Eval_SyntaxError_ReturnsScriptError)
+{
+    auto w = SpawnWorker(
+        "lua_engine.eval_syntax_error_returns_script_error",
+        {unique_dir("err_eval_syntax")});
+    // eval() uses luaL_dostring, not state_.pcall — the engine's
+    // on_pcall_error_ (lua_engine.cpp:1033-1045) does NOT log the
+    // error message, only the stop_on_script_error notice if enabled.
+    // So an eval syntax error bumps script_error_count but emits no
+    // ERROR log line. No expected_error_substrings needed.
+    ExpectWorkerOk(w);
+}
+
+// ============================================================================
+// 8. Error handling
+// ============================================================================
 
 // ============================================================================
 // 9. supports_multi_state
@@ -1103,89 +1172,6 @@ TEST_F(LuaEngineTest, MetricsClosures_ReadFromRoleHostCounters)
 // ============================================================================
 // 19. Wrong return type detection
 // ============================================================================
-
-TEST_F(LuaEngineTest, InvokeProduce_WrongReturnType_IsError)
-{
-    // Returning a number instead of boolean should be an Error.
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            return 42
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-
-    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Error)
-        << "Returning a number should be Error, not Commit";
-    EXPECT_EQ(engine.script_error_count(), 1u);
-
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, InvokeProduce_WrongReturnString_IsError)
-{
-    // Returning a string instead of boolean should be an Error.
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            return "ok"
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-
-    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Error)
-        << "Returning a string should be Error, not Commit";
-    EXPECT_EQ(engine.script_error_count(), 1u);
-
-    engine.finalize();
-}
-
-// ============================================================================
-// 20. stop_on_script_error at engine level
-// ============================================================================
-
-TEST_F(LuaEngineTest, StopOnScriptError_SetsShutdownOnError)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            error("intentional error")
-        end
-    )");
-
-    RoleHostCore core;
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &core));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    auto test_api = make_api(core);
-    test_api->set_stop_on_script_error(true);
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    EXPECT_FALSE(core.is_shutdown_requested());
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-
-    EXPECT_EQ(result, InvokeResult::Error);
-    EXPECT_TRUE(core.is_shutdown_requested())
-        << "stop_on_script_error should set shutdown_requested on error";
-
-    engine.finalize();
-}
 
 // ============================================================================
 // 21. Negative paths: load_script failures
@@ -1693,82 +1679,6 @@ TEST_F(LuaEngineTest, Api_ConsumerQueueState_WithoutQueue)
 }
 
 // ============================================================================
-// 22. on_init / on_stop / on_inbox script error detection
-// ============================================================================
-
-TEST_F(LuaEngineTest, InvokeOnInit_ScriptError)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api) return true end
-        function on_init(api)
-            error("init failed")
-        end
-    )");
-
-    RoleHostCore core;
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core, "on_produce"));
-
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.invoke_on_init();
-    EXPECT_GE(engine.script_error_count(), 1u)
-        << "on_init error should increment script_error_count";
-
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, InvokeOnStop_ScriptError)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api) return true end
-        function on_stop(api)
-            error("stop failed")
-        end
-    )");
-
-    RoleHostCore core;
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core, "on_produce"));
-
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.invoke_on_stop();
-    EXPECT_GE(engine.script_error_count(), 1u)
-        << "on_stop error should increment script_error_count";
-
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, InvokeOnInbox_ScriptError)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api) return false end
-        function on_inbox(msg, api)
-            error("inbox failed")
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
-
-    auto test_api = make_api(default_core_);
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    float inbox_data = 1.0f;
-    engine.invoke_on_inbox({&inbox_data, sizeof(inbox_data), "SENDER-00000001", 1});
-    EXPECT_GE(engine.script_error_count(), 1u)
-        << "on_inbox error should increment script_error_count";
-
-    engine.finalize();
-}
-
-// ============================================================================
 // 23. Queue-state defaults for producer and processor
 // ============================================================================
 
@@ -1980,16 +1890,6 @@ TEST_F(LuaEngineTest, Api_ProcessorChannels_InOut)
 // ============================================================================
 // 32. Eval syntax error returns ScriptError
 // ============================================================================
-
-TEST_F(LuaEngineTest, Eval_SyntaxError_ReturnsScriptError)
-{
-    write_script(R"(function on_produce(tx, msgs, api) return false end)");
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-    auto result = engine.eval("invalid syntax {{{");
-    EXPECT_EQ(result.status, InvokeStatus::ScriptError);
-    engine.finalize();
-}
 
 // ============================================================================
 // 35. Full lifecycle verifies callback execution via shared_data
