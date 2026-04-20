@@ -709,95 +709,72 @@ TEST_F(PythonEngineIsolatedTest, Metrics_RoleScriptErrorCount_ReflectsRaisedErro
                    {"seed phase 1", "seed phase 2"});
 }
 
-TEST_F(PythonEngineTest, LoadScript_MissingFile)
-{
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    // Point to a nonexistent directory.
-    EXPECT_FALSE(
-        engine.load_script(tmp_ / "nonexistent" / "path", "__init__.py", "on_produce"));
-    engine.finalize();
-}
-
-TEST_F(PythonEngineTest, LoadScript_MissingRequiredCallback)
-{
-    write_script(
-        "def on_init(api):\n"
-        "    pass\n"
-        "# on_produce intentionally absent\n");
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    EXPECT_FALSE(engine.load_script(tmp_ / "script" / "python",
-                                    "__init__.py", "on_produce"));
-    engine.finalize();
-}
-
-TEST_F(PythonEngineTest, RegisterSlotType_BadFieldType)
-{
-    write_script("def on_produce(tx, msgs, api):\n    return True\n");
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_produce"));
-
-    SchemaSpec bad_spec;
-    bad_spec.has_schema = true;
-    FieldDef f;
-    f.name     = "x";
-    f.type_str = "complex128"; // unsupported type
-    f.count    = 1;
-    f.length   = 0;
-    bad_spec.fields.push_back(f);
-
-    EXPECT_FALSE(engine.register_slot_type(bad_spec, "BadFrame", "aligned"));
-    engine.finalize();
-}
-
-TEST_F(PythonEngineTest, LoadScript_SyntaxError)
-{
-    // Write a script with a Python syntax error.
-    write_script("def on_produce(tx, msgs, api)\n"  // missing colon
-                 "    return True\n");
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    EXPECT_FALSE(engine.load_script(tmp_ / "script" / "python",
-                                    "__init__.py", "on_produce"));
-    engine.finalize();
-}
-
 // ============================================================================
-// 10. has_callback
+// Chunk 8 — Load script + script errors (Pattern 3)
+//
+// 8 P3 tests convert 8 V2 tests + fix a silently-broken V2 test
+// (RegisterSlotType_BadFieldType was passing via the wrong branch
+// after the canonical-name tightening).  Strengthening:
+//   - parent-level ERROR-log pinning for load_script paths
+//   - EXPECT_EQ (not GE) on script_error_count for callback errors
+//   - has_callback: pin non-canonical name behaviour (Python's
+//     probe-arbitrary-attributes contract, resolved no-action
+//     2026-04-20 per TESTING_TODO Finding #14)
 // ============================================================================
 
-TEST_F(PythonEngineTest, HasCallback)
+TEST_F(PythonEngineIsolatedTest, LoadScript_MissingFile)
 {
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    return True\n"
-        "\n"
-        "def on_init(api):\n"
-        "    pass\n"
-        "# on_stop intentionally absent\n");
+    auto w = SpawnWorker("python_engine.load_script_missing_file",
+                         {unique_dir("load_missing")});
+    // Python's load_script catch path logs ERROR "Failed to load
+    // script from '<dir>': <exc>" at python_engine.cpp:408.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"Failed to load script"});
+}
 
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_produce"));
+TEST_F(PythonEngineIsolatedTest, LoadScript_MissingRequiredCallback)
+{
+    auto w = SpawnWorker(
+        "python_engine.load_script_missing_required_callback",
+        {unique_dir("load_missing_cb")});
+    // python_engine.cpp:402: "Script has no 'on_produce' function".
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"Script has no 'on_produce' function"});
+}
 
-    EXPECT_TRUE(engine.has_callback("on_produce"));
-    EXPECT_TRUE(engine.has_callback("on_init"));
-    EXPECT_FALSE(engine.has_callback("on_stop"));
-    EXPECT_FALSE(engine.has_callback("on_consume"));
+// IMPORTANT: V2's RegisterSlotType_BadFieldType used "BadFrame" (non-
+// canonical) and silently short-circuited on the canonical-name
+// check after the 2026-04-20 tightening — passing via the WRONG
+// branch.  This body uses "OutSlotFrame" (canonical) with a bad
+// field type to actually exercise the build_ctypes_type_ exception
+// path at python_engine.cpp:843-848.
+TEST_F(PythonEngineIsolatedTest, RegisterSlotType_BadFieldType)
+{
+    auto w = SpawnWorker("python_engine.register_slot_type_bad_field_type",
+                         {unique_dir("reg_bad_field")});
+    // ERROR "register_slot_type('OutSlotFrame') failed: <exc>".
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"register_slot_type('OutSlotFrame') failed"});
+}
 
-    engine.finalize();
+TEST_F(PythonEngineIsolatedTest, LoadScript_SyntaxError)
+{
+    auto w = SpawnWorker("python_engine.load_script_syntax_error",
+                         {unique_dir("load_syntax")});
+    // SyntaxError surfaces in the "Failed to load script" ERROR.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"SyntaxError"});
+}
+
+TEST_F(PythonEngineIsolatedTest, HasCallback)
+{
+    auto w = SpawnWorker("python_engine.has_callback",
+                         {unique_dir("has_cb")});
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
@@ -1436,78 +1413,35 @@ def on_produce(tx, msgs, api):
 }
 
 // ============================================================================
-// 15. Error paths for on_init / on_stop / on_inbox
+// Chunk 8 — on_init / on_stop / on_inbox script-error paths (Pattern 3)
+//
+// All three strengthened from V2's EXPECT_GE(count, 1u) → EXPECT_EQ
+// (count, 1u).  Also pin the parent-level ERROR text for the
+// raised RuntimeError so a reworded diagnostic is caught.
 // ============================================================================
 
-TEST_F(PythonEngineTest, InvokeOnInit_ScriptError)
+TEST_F(PythonEngineIsolatedTest, InvokeOnInit_ScriptError)
 {
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    return True\n"
-        "\n"
-        "def on_init(api):\n"
-        "    raise RuntimeError('init exploded')\n");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.invoke_on_init();
-    EXPECT_GE(engine.script_error_count(), 1u)
-        << "on_init raising RuntimeError should increment script_error_count";
-
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.invoke_on_init_script_error",
+                         {unique_dir("on_init_err")});
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/{"init exploded"});
 }
 
-TEST_F(PythonEngineTest, InvokeOnStop_ScriptError)
+TEST_F(PythonEngineIsolatedTest, InvokeOnStop_ScriptError)
 {
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    return True\n"
-        "\n"
-        "def on_stop(api):\n"
-        "    raise RuntimeError('stop exploded')\n");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.invoke_on_stop();
-    EXPECT_GE(engine.script_error_count(), 1u)
-        << "on_stop raising RuntimeError should increment script_error_count";
-
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.invoke_on_stop_script_error",
+                         {unique_dir("on_stop_err")});
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/{"stop exploded"});
 }
 
-TEST_F(PythonEngineTest, InvokeOnInbox_ScriptError)
+TEST_F(PythonEngineIsolatedTest, InvokeOnInbox_ScriptError)
 {
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    return False\n"
-        "\n"
-        "def on_inbox(msg, api):\n"
-        "    raise RuntimeError('inbox exploded')\n");
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_produce"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
-
-    auto test_api = make_api(default_core_);
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    float inbox_data = 1.0f;
-    engine.invoke_on_inbox({&inbox_data, sizeof(inbox_data), "SENDER-00000001", 1});
-    EXPECT_GE(engine.script_error_count(), 1u)
-        << "on_inbox raising RuntimeError should increment script_error_count";
-
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.invoke_on_inbox_script_error",
+                         {unique_dir("on_inbox_err")});
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/{"inbox exploded"});
 }
 
 // ============================================================================

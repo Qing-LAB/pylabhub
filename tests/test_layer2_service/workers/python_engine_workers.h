@@ -125,6 +125,22 @@ int metrics_all_loop_fields_anchored_values(const std::string &dir);
 int metrics_hierarchical_table_producer_full_shape(const std::string &dir);
 int metrics_role_script_error_count_reflects_raised_error(const std::string &dir);
 
+// ── Load script + script errors (chunk 8) ─────────────────────────────────
+//
+// Covers load_script failure paths, register_slot_type bad-field
+// (fixed from V2 which used a non-canonical name and silently
+// short-circuited on the name check), has_callback contract
+// including non-canonical names, and on_init/on_stop/on_inbox
+// exception accounting (EXPECT_EQ instead of V2's EXPECT_GE).
+int load_script_missing_file(const std::string &dir);
+int load_script_missing_required_callback(const std::string &dir);
+int register_slot_type_bad_field_type(const std::string &dir);
+int load_script_syntax_error(const std::string &dir);
+int has_callback(const std::string &dir);
+int invoke_on_init_script_error(const std::string &dir);
+int invoke_on_stop_script_error(const std::string &dir);
+int invoke_on_inbox_script_error(const std::string &dir);
+
 // ── Engine-internal dispatcher contract (chunk 1 gap-fill) ─────────────────
 //
 // Pins PythonEngine's supports_multi_state() returns false.
