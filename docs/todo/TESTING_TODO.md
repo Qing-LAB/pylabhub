@@ -290,40 +290,36 @@ layer per se."  Only possible LOW-priority DRY nit: extract a
 shared pybind11 open_inbox helper across the three Python API
 classes (~40 identical lines × 3).  Not a design defect.
 
-### Open: Missing-callback error-count wiring across engines (2026-04-20)
+### Open: Missing-callback script_error_count wiring (2026-04-20, updated post-F11)
 
-Static-review follow-up deferred from the scripting-engine Tier A
-pass (commit on branch `feature/lua-role-support` that unified
-`stop_on_script_error_` handling).  All three engines now return
-`InvokeResult::Error` when an invoke hits a hot-path callback that
-is not registered (structurally unreachable; load_script's
-required_callback guard would have failed earlier).  **However none
-of the three calls `inc_script_error_count()` on that path**, so
-the "loud observable bug signal" is only half-wired:
+Post-F11 state (commit adding LOGGER_ERROR on is_accepting()):
 
-| Engine | Missing-callback return | `script_error_count++`? |
-|---|---|---|
-| Lua | `Error` | ❌ no |
-| Python | `Error` | ❌ no |
-| Native | `Error` | ❌ no |
+| Engine | Missing-callback return | ERROR log | `script_error_count++`? |
+|---|---|---|---|
+| Lua | `Error` | ✅ if is_accepting() | ❌ no |
+| Python | `Error` | ✅ if is_accepting() | ❌ no |
+| Native | `Error` | ✅ if is_accepting() | ❌ no |
+
+The log + Error return cover 2 of 3 observable channels.  The
+counter increment is the remaining gap — script_error_count still
+stays 0 after a dispatch-bug invoke, so metrics collectors won't
+see the anomaly.
 
 Options when we pick this up:
 
-1. **Add the counter increment** uniformly — one-line change in each
-   engine.  Pairs naturally with stop_on_script_error routing via a
-   shared base-class `handle_dispatch_error_(callback_name)` helper.
+1. **Add the counter increment** uniformly (preferred — ships with
+   the native error-accounting design).  Pairs naturally with
+   stop_on_script_error: the dispatch-bug path should also honor
+   the shutdown policy since it's a programmer bug, not a script
+   contract violation.
 2. **Use `assert`** instead, treating the path as an invariant
-   violation (fastest to diagnose in debug; silent in release).
-3. **Do nothing** — keep the return-value signal only, on the basis
-   that load_script already guards the precondition and the
-   hot-path branch exists purely as defensive plumbing.
+   violation (silent in release — weaker than option 1).
+3. **Do nothing** — keep log + Error as the signal (current state).
 
 Decision deferred per user direction 2026-04-20 ("error counts can
-be added later"): keep the uniform `Error` return for now, revisit
-when broader native error-accounting (Finding #3 of the scripting
-review) is designed.  Related: HEP-CORE-0011 "Error-policy
-consistency" subsection should document the chosen policy when the
-decision lands.
+be added later"): revisit when native error-accounting (review
+Finding #3) is designed.  HEP-CORE-0011 § "Error Handling & Log
+Conventions" (added 2026-04-20) documents the current state.
 
 ### Phase C: Integration Tests
 **Status**: ✅ Complete (424/424 as of 2026-02-19; suite grown to **1181/1181** by 2026-03-30)
