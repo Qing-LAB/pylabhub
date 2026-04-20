@@ -4654,45 +4654,62 @@ int queue_state_processor_dual_without_queues_returns_defaults(const std::string
 int api_environment_strings_reflect_setters(const std::string &dir)
 {
     // Strengthened over V2 Api_EnvironmentStrings_LogsDirRunDir.
-    // V2 only type-checked the strings (log_level="error" was the
-    // only value-anchored assertion; script_dir/role_dir/logs_dir/
-    // run_dir were type-checked only).  This body:
-    //   - Anchors script_dir and role_dir to values set via
-    //     api->set_script_dir / api->set_role_dir before
-    //     build_api (round-trip through the api object).
-    //   - Anchors log_level via api->set_log_level (round-trip).
-    //   - logs_dir and run_dir have no setter exposed at this
-    //     layer (set by env config); retains V2's type-only check
-    //     plus asserts the string is NON-EMPTY (a regression where
-    //     the getter returns "" by default should be caught —
-    //     though in pure L2 with no config, they may legitimately
-    //     be empty, so we soften to "string with type string").
+    // V2 only type-checked the strings and anchored log_level="error".
     //
-    // Inline setup so we can call set_script_dir / set_role_dir on
-    // the api BEFORE build_api (which wires the closures).
+    // This body pins two properties:
+    //   1. ANCHORED READ: set script_dir/role_dir/log_level via
+    //      api->set_* BEFORE build_api → Lua side reads those values.
+    //   2. FROZEN-AT-BUILD-API: these strings are pushed as DIRECT
+    //      string fields at lua_engine.cpp:1192-1200 (NOT closures).
+    //      That means:
+    //        - After build_api, api.log_level etc. are snapshots.
+    //        - A subsequent api->set_log_level("...") must NOT
+    //          propagate to Lua — the Lua side keeps the snapshot.
+    //      This frozen-at-startup semantics is what role scripts
+    //      rely on (they assume env never changes mid-loop).  A
+    //      regression that turned these into closures (live-read)
+    //      would silently break that assumption.
+    //
+    // Phase 0: verify values from the pre-build_api setup land in Lua.
+    // Phase 1: after build_api, mutate the api → Lua must NOT see it.
     return run_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_produce(tx, msgs, api)
-                    -- Values anchored to what C++ set before build_api.
-                    assert(api.log_level == "warn",
-                           "log_level anchor: expected 'warn' (set by C++), "
-                           .. "got '" .. tostring(api.log_level) .. "'")
-                    assert(api.script_dir == "/tmp/fake-script",
-                           "script_dir anchor mismatch, got '"
-                           .. tostring(api.script_dir) .. "'")
-                    assert(api.role_dir == "/tmp/fake-role",
-                           "role_dir anchor mismatch, got '"
-                           .. tostring(api.role_dir) .. "'")
+                    local phase = api.get_shared_data("phase")
 
-                    -- logs_dir / run_dir: no setter at this layer; just
-                    -- pin they're strings (possibly empty — env-provided
-                    -- at runtime in production, not here).
-                    assert(type(api.logs_dir) == "string",
-                           "logs_dir must be string, got " .. type(api.logs_dir))
-                    assert(type(api.run_dir) == "string",
-                           "run_dir must be string, got " .. type(api.run_dir))
+                    if phase == 0 then
+                        -- Initial values (set via api->set_* before build_api).
+                        assert(api.log_level == "warn",
+                               "phase 0 log_level: expected 'warn', got '"
+                               .. tostring(api.log_level) .. "'")
+                        assert(api.script_dir == "/tmp/fake-script",
+                               "phase 0 script_dir mismatch: '"
+                               .. tostring(api.script_dir) .. "'")
+                        assert(api.role_dir == "/tmp/fake-role",
+                               "phase 0 role_dir mismatch: '"
+                               .. tostring(api.role_dir) .. "'")
+                        assert(type(api.logs_dir) == "string",
+                               "logs_dir must be string")
+                        assert(type(api.run_dir) == "string",
+                               "run_dir must be string")
+                    else
+                        -- After C++ mutates api post-build_api, Lua MUST
+                        -- still see the snapshot values. Frozen semantics.
+                        assert(api.log_level == "warn",
+                               "phase 1 log_level changed! (expected "
+                               .. "snapshot 'warn', got '"
+                               .. tostring(api.log_level)
+                               .. "') — env strings are frozen at "
+                               .. "build_api time per lua_engine.cpp:"
+                               .. "1192-1200. A regression to closure-"
+                               .. "based live-read would break this.")
+                        assert(api.script_dir == "/tmp/fake-script",
+                               "phase 1 script_dir changed! — frozen")
+                        assert(api.role_dir == "/tmp/fake-role",
+                               "phase 1 role_dir changed! — frozen")
+                    end
                     return false
                 end
             )LUA");
@@ -4702,14 +4719,12 @@ int api_environment_strings_reflect_setters(const std::string &dir)
             ASSERT_TRUE(engine.initialize("test", &core));
             ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
                                             "on_produce"));
-
             auto spec = simple_schema();
             ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
                                                    "aligned"));
 
             auto api = make_api(core);
-            // Override the defaults from make_api with anchored values
-            // before build_api so the closures see these.
+            // Pre-build_api: anchor values that Lua will see.
             api->set_log_level("warn");
             api->set_script_dir("/tmp/fake-script");
             api->set_role_dir("/tmp/fake-role");
@@ -4717,10 +4732,28 @@ int api_environment_strings_reflect_setters(const std::string &dir)
 
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto r = engine.invoke_produce(
+
+            // Phase 0: fresh read after build_api.
+            core.set_shared_data("phase", static_cast<int64_t>(0));
+            auto r0 = engine.invoke_produce(
                 pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
-            EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(r0, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
+
+            // Post-build_api mutation: Lua side MUST NOT see these.
+            api->set_log_level("error");
+            api->set_script_dir("/tmp/CHANGED-script");
+            api->set_role_dir("/tmp/CHANGED-role");
+
+            // Phase 1: Lua still reads the snapshots from phase 0.
+            core.set_shared_data("phase", static_cast<int64_t>(1));
+            auto r1 = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(r1, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "phase 1 asserts failing means env strings are "
+                   "NOT frozen at build_api — a regression toward "
+                   "live closure-read semantics";
 
             engine.finalize();
         },
