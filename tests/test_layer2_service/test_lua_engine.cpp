@@ -1,167 +1,46 @@
 /**
  * @file test_lua_engine.cpp
- * @brief Unit tests for LuaEngine — the ScriptEngine implementation for Lua.
+ * @brief Pattern 3 driver: LuaEngine L2 unit tests.
  *
- * Tests the engine in isolation: no broker, no queues, no role host.
- * Uses raw memory buffers and temporary Lua script files.
+ * All tests run the engine + RoleHostCore + RoleAPIBase in an isolated
+ * worker subprocess. The TEST_F bodies here are thin dispatchers that
+ * spawn workers and validate completion via [WORKER_BEGIN]/
+ * [WORKER_END_OK]/[WORKER_FINALIZED] sentinels. The real test logic
+ * (Lua scripts, engine method calls, assertions) lives in
+ * workers/lua_engine_workers.cpp.
  *
- * Covers:
- *   1. Lifecycle: initialize → load → register → build_api → invoke → finalize
- *   2. Type registration: ffi.typeof caching, sizeof validation
- *   3. invoke_produce: commit, discard, nil slot, error paths
- *   4. invoke_consume: read-only slot, return value, error detection
- *   5. invoke_process: dual slots, nil combinations
- *   6. Messages: table format for producer/consumer
- *   7. API closures: log, stop, version_info
- *   8. Error handling: script_error_count, stop_on_script_error
- *   9. create_thread_state: independent engine
+ * This file previously hosted a hybrid V2 + P3 fixture during the
+ * 2026-04-17 → 2026-04-20 test-framework sweep.  The V2 fixture
+ * (LuaEngineTest) was removed in chunk 13 (sweep completion) once
+ * every V2 test had been converted to P3.
  *
- * ============================================================================
- * HYBRID STATE DURING THE TEST-FRAMEWORK SWEEP (tracked in docs/tech_draft/
- * test_compliance_audit.md § "Correction status"). This file currently
- * contains two fixtures that are intentionally both live:
- *
- *   - LuaEngineIsolatedTest  (IsolatedProcessTest — Pattern 3)
- *     Tests already converted by chunks 1-5 + 6a of the Lua sweep.
- *     Each spawns a worker subprocess; bodies live in
- *     workers/lua_engine_workers.cpp.
- *
- *   - LuaEngineTest        (plain ::testing::Test — V2 antipattern)
- *     Tests NOT YET converted. Will be migrated chunk-by-chunk by
- *     subsequent commits (one chunk per thematic group in the numbered
- *     list above). **Policy (established 2026-04-19 during chunk-6a
- *     cleanup):** V2 tests whose P3 replacement strictly dominates
- *     them are deleted IN THE SAME COMMIT as the P3 conversion — not
- *     at sweep-end. The V2 fixture wrapper itself stays until its
- *     last test is converted, then goes in the sweep-end commit.
- *
- * The hybrid is temporary and deliberately visible in-file so a reader
- * landing on this source is not misled into thinking "both patterns
- * coexist forever" is the intended design. The audit doc tracks
- * progress; the chunk-local header comments below explain the
- * strengthenings and gap-fills applied to each converted group.
- * ============================================================================
+ * Coverage areas (all Pattern 3):
+ *   1. Lifecycle / type registration / alias creation
+ *   2. invoke_produce / invoke_consume / invoke_process
+ *   3. Messages projection (data vs event, producer vs consumer shape)
+ *   4. API closures (log, stop, metrics, shared_data, version_info, ...)
+ *   5. Error handling (runtime + setup-phase paths)
+ *   6. Generic invoke / eval + multi-state / thread-state
+ *   7. Inbox typed-frame round-trip + slot/flexzone sizing
+ *   8. Graceful degradation (no broker / no SHM)
+ *   9. Metrics hierarchy (loop / role / custom)
+ *  10. Queue-state defaults + env strings + processor channels
+ *  11. FullStartup composites via engine_lifecycle_startup
  */
 #include <gtest/gtest.h>
 
-#include "lua_engine.hpp"
-#include "utils/engine_module_params.hpp"
-#include "utils/schema_utils.hpp"
-#include "utils/role_host_core.hpp"
-#include "test_patterns.h"    // Pattern 3 (IsolatedProcessTest) for chunk 1
-#include "test_schema_helpers.h"
+#include "test_patterns.h"    // IsolatedProcessTest (Pattern 3 base)
 
 #include <atomic>
-#include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <string>
 #include <unistd.h>
 #include <vector>
 
 namespace fs = std::filesystem;
-using pylabhub::scripting::LuaEngine;
-using pylabhub::scripting::ScriptEngine;
-using pylabhub::scripting::InvokeResult;
-using pylabhub::scripting::InvokeStatus;
-using pylabhub::scripting::InvokeResponse;
-using pylabhub::scripting::RoleAPIBase;
-using pylabhub::scripting::RoleHostCore;
-using pylabhub::scripting::IncomingMessage;
-using pylabhub::hub::SchemaSpec;
-using pylabhub::hub::FieldDef;
-using pylabhub::scripting::InvokeRx;
-using pylabhub::scripting::InvokeTx;
-using pylabhub::scripting::InvokeInbox;
-using pylabhub::tests::simple_schema;
-using pylabhub::tests::padding_schema;
-using pylabhub::tests::complex_mixed_schema;
-using pylabhub::tests::fz_array_schema;
 
 namespace
 {
-
-// ============================================================================
-// Test fixture
-// ============================================================================
-
-class LuaEngineTest : public ::testing::Test
-{
-  protected:
-    void SetUp() override
-    {
-        tmp_ = fs::temp_directory_path() / ("lua_engine_test_" +
-               std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-        fs::create_directories(tmp_);
-    }
-
-    void TearDown() override
-    {
-        fs::remove_all(tmp_);
-    }
-
-    void write_script(const std::string &content)
-    {
-        std::ofstream f(tmp_ / "init.lua");
-        f << content;
-    }
-
-    /// Create a simple schema with one float32 field.
-    RoleHostCore default_core_;
-
-    std::unique_ptr<RoleAPIBase> make_api(RoleHostCore &core,
-                                          const std::string &tag = "prod")
-    {
-        auto api = std::make_unique<RoleAPIBase>(core, tag, "TEST-ENGINE-00000001");
-        api->set_name("TestEngine");
-        api->set_channel("test.channel");
-        api->set_log_level("error");
-        api->set_stop_on_script_error(false);
-        return api;
-    }
-
-    std::unique_ptr<RoleAPIBase> test_api_;
-
-    bool setup_engine(LuaEngine &engine, const std::string &required_cb = "on_produce")
-    {
-        return setup_engine_with_core(engine, default_core_, required_cb);
-    }
-
-    bool setup_engine_with_core(LuaEngine &engine, RoleHostCore &core,
-                                 const std::string &required_cb = "on_produce")
-    {
-        if (!engine.initialize("test", &core))
-            return false;
-        if (!engine.load_script(tmp_, "init.lua", required_cb.c_str()))
-            return false;
-
-        auto spec = simple_schema();
-        if (!engine.register_slot_type(spec, "OutSlotFrame", "aligned"))
-            return false;
-
-        test_api_ = make_api(core);
-        return engine.build_api(*test_api_);
-    }
-
-    fs::path tmp_;
-};
-
-// ============================================================================
-// 1. Lifecycle
-// ============================================================================
-
-// ============================================================================
-// Chunk 1 — Lifecycle, Type registration, Alias creation (Pattern 3)
-//
-// These tests used to live under the V2 LuaEngineTest fixture above; they
-// were the first group converted to Pattern 3 by the test-framework sweep.
-// Each spawns a subprocess where the engine is constructed and driven;
-// bodies live in workers/lua_engine_workers.cpp.
-//
-// Remaining tests in this file still use the V2 fixture and will be
-// converted chunk-by-chunk in subsequent commits (one chunk per thematic
-// group: produce / consume / process / messages / api / error / multi-state).
-// ============================================================================
 
 namespace
 {
@@ -1382,6 +1261,74 @@ TEST_F(LuaEngineIsolatedTest, Api_ProcessorChannels_ReflectSetters)
 }
 
 // ============================================================================
+// Chunk 13 — FullStartup composite tests (Pattern 3, final V2 group)
+//
+// End-to-end smoke tests through engine_lifecycle_startup +
+// engine_lifecycle_shutdown. Each test exercises a specific role +
+// schema config, then pins: type_sizeof = compute_schema_size,
+// alias size = primary type size, idempotent shutdown ×2, post-
+// shutdown engine is dead (is_accepting == false + post-shutdown
+// invoke returns Error). Producer-with-flexzone also pins
+// has_tx_fz + out_schema_fz_size > 0.
+// ============================================================================
+
+TEST_F(LuaEngineIsolatedTest, FullStartup_Producer_SlotOnly)
+{
+    auto w = SpawnWorker(
+        "lua_engine.full_startup_producer_slot_only",
+        {unique_dir("fs_prod_slotonly")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, FullStartup_Producer_SlotAndFlexzone)
+{
+    auto w = SpawnWorker(
+        "lua_engine.full_startup_producer_slot_and_flexzone",
+        {unique_dir("fs_prod_slotfz")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, FullStartup_Consumer)
+{
+    auto w = SpawnWorker(
+        "lua_engine.full_startup_consumer",
+        {unique_dir("fs_consumer")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, FullStartup_Processor)
+{
+    auto w = SpawnWorker(
+        "lua_engine.full_startup_processor",
+        {unique_dir("fs_processor")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, FullStartup_Producer_Multifield)
+{
+    auto w = SpawnWorker(
+        "lua_engine.full_startup_producer_multifield",
+        {unique_dir("fs_prod_multi")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, FullStartup_Consumer_Multifield)
+{
+    auto w = SpawnWorker(
+        "lua_engine.full_startup_consumer_multifield",
+        {unique_dir("fs_cons_multi")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, FullStartup_Processor_Multifield)
+{
+    auto w = SpawnWorker(
+        "lua_engine.full_startup_processor_multifield",
+        {unique_dir("fs_proc_multi")});
+    ExpectWorkerOk(w);
+}
+
+// ============================================================================
 // 8. Error handling
 // ============================================================================
 
@@ -1406,330 +1353,6 @@ TEST_F(LuaEngineIsolatedTest, Api_ProcessorChannels_ReflectSetters)
 // New API closures — diagnostics, queue-state, custom metrics, environment
 // ============================================================================
 
-// ============================================================================
-// Full engine startup — tests the EngineModuleParams startup/shutdown path
-// ============================================================================
-
-TEST_F(LuaEngineTest, FullStartup_Producer_SlotOnly)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            tx.slot.value = 77.0
-            return true
-        end
-    )");
-
-    LuaEngine engine;
-    RoleHostCore core;
-
-    pylabhub::scripting::EngineModuleParams params;
-    params.engine           = &engine;
-    params.tag              = "prod";
-    auto api = make_api(core, "prod");
-    params.api              = api.get();
-    params.script_dir       = tmp_;
-    params.entry_point      = "init.lua";
-    params.required_callback = "on_produce";
-    params.out_slot_spec    = simple_schema();
-    params.out_packing      = "aligned";
-
-    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
-
-    // Engine should be fully ready — types registered, API built.
-    EXPECT_GT(engine.type_sizeof("OutSlotFrame"), 0u);
-    EXPECT_GT(engine.type_sizeof("SlotFrame"), 0u); // alias
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_FLOAT_EQ(buf, 77.0f);
-
-    // Shutdown should be idempotent.
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params); // second call is no-op
-}
-
-TEST_F(LuaEngineTest, FullStartup_Producer_SlotAndFlexzone)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            tx.slot.value = 10.0
-            return true
-        end
-    )");
-
-    LuaEngine engine;
-    RoleHostCore core;
-
-    pylabhub::scripting::EngineModuleParams params;
-    params.engine           = &engine;
-    params.tag              = "prod";
-    auto api = make_api(core, "prod");
-    params.api              = api.get();
-    params.script_dir       = tmp_;
-    params.entry_point      = "init.lua";
-    params.required_callback = "on_produce";
-    params.out_slot_spec    = simple_schema();
-    params.out_fz_spec      = simple_schema();
-    params.out_packing      = "aligned";
-
-    // Role host computes fz size from schema and sets on core before engine startup.
-    // Role host computes fz size from schema before engine startup.
-    core.set_out_fz_spec(SchemaSpec{params.out_fz_spec},
-                         pylabhub::hub::align_to_physical_page(
-                             pylabhub::hub::compute_schema_size(params.out_fz_spec, params.out_packing)));
-
-    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
-
-    EXPECT_GT(engine.type_sizeof("OutSlotFrame"), 0u);
-    EXPECT_GT(engine.type_sizeof("OutFlexFrame"), 0u);
-    EXPECT_GT(engine.type_sizeof("FlexFrame"), 0u); // alias
-    EXPECT_TRUE(core.has_tx_fz());
-    EXPECT_GT(core.out_schema_fz_size(), 0u);
-
-    EXPECT_EQ(engine.type_sizeof("OutFlexFrame"),
-              pylabhub::hub::compute_schema_size(params.out_fz_spec, params.out_packing))
-        << "Engine-built type size must match schema logical size";
-
-    float slot_buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_produce(
-        InvokeTx{&slot_buf, sizeof(slot_buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_FLOAT_EQ(slot_buf, 10.0f);
-
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
-}
-
-TEST_F(LuaEngineTest, FullStartup_Consumer)
-{
-    write_script(R"(
-        function on_consume(rx, msgs, api)
-            assert(rx.slot ~= nil, "expected slot")
-            return true
-        end
-    )");
-
-    LuaEngine engine;
-    RoleHostCore core;
-
-    pylabhub::scripting::EngineModuleParams params;
-    params.engine           = &engine;
-    params.tag              = "cons";
-    auto api = make_api(core, "cons");
-    params.api              = api.get();
-    params.script_dir       = tmp_;
-    params.entry_point      = "init.lua";
-    params.required_callback = "on_consume";
-    params.in_slot_spec     = simple_schema();
-    params.in_packing       = "aligned";
-
-    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
-
-    EXPECT_GT(engine.type_sizeof("InSlotFrame"), 0u);
-    EXPECT_GT(engine.type_sizeof("SlotFrame"), 0u); // alias
-
-    float data = 42.0f;
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_consume(InvokeRx{&data, sizeof(data)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
-}
-
-TEST_F(LuaEngineTest, FullStartup_Processor)
-{
-    write_script(R"(
-        function on_process(rx, tx, msgs, api)
-            if rx.slot and tx.slot then
-                tx.slot.value = rx.slot.value * 2.0
-            end
-            return true
-        end
-    )");
-
-    LuaEngine engine;
-    RoleHostCore core;
-
-    pylabhub::scripting::EngineModuleParams params;
-    params.engine           = &engine;
-    params.tag              = "proc";
-    auto api = make_api(core, "proc");
-    params.api              = api.get();
-    params.script_dir       = tmp_;
-    params.entry_point      = "init.lua";
-    params.required_callback = "on_process";
-    params.in_slot_spec     = simple_schema();
-    params.out_slot_spec    = simple_schema();
-    params.in_packing       = "aligned";
-    params.out_packing      = "aligned";
-
-    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
-
-    EXPECT_GT(engine.type_sizeof("InSlotFrame"), 0u);
-    EXPECT_GT(engine.type_sizeof("OutSlotFrame"), 0u);
-    // Processor: no aliases.
-    EXPECT_EQ(engine.type_sizeof("SlotFrame"), 0u);
-
-    float in_data = 5.0f;
-    float out_data = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_process(
-        InvokeRx{&in_data, sizeof(in_data)},
-        InvokeTx{&out_data, sizeof(out_data)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_FLOAT_EQ(out_data, 10.0f);
-
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
-}
-
-// ============================================================================
-// FullStartup — multifield schema data round-trip (all three roles)
-// ============================================================================
-
-TEST_F(LuaEngineTest, FullStartup_Producer_Multifield)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            tx.slot.ts = 1.23456789
-            tx.slot.flag = 0xAB
-            tx.slot.count = -42
-            return true
-        end
-    )");
-
-    LuaEngine engine;
-    RoleHostCore core;
-    auto api = make_api(core, "prod");
-
-    auto spec = padding_schema();
-    spec.packing = "aligned";
-    core.set_out_slot_spec(SchemaSpec{spec},
-                           pylabhub::hub::compute_schema_size(spec, "aligned"));
-
-    pylabhub::scripting::EngineModuleParams params;
-    params.engine            = &engine;
-    params.api               = api.get();
-    params.tag               = "prod";
-    params.script_dir        = tmp_;
-    params.entry_point       = "init.lua";
-    params.required_callback = "on_produce";
-    params.out_slot_spec     = spec;
-    params.out_packing       = "aligned";
-
-    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
-    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 16u);
-
-    struct { double ts; uint8_t flag; uint8_t pad[3]; int32_t count; } buf{};
-
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    EXPECT_DOUBLE_EQ(buf.ts, 1.23456789);
-    EXPECT_EQ(buf.flag, 0xAB);
-    EXPECT_EQ(buf.count, -42);
-
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
-}
-
-TEST_F(LuaEngineTest, FullStartup_Consumer_Multifield)
-{
-    write_script(R"(
-        function on_consume(rx, msgs, api)
-            assert(math.abs(rx.slot.ts - 9.87) < 0.001, "ts=" .. tostring(rx.slot.ts))
-            assert(rx.slot.flag == 0xCD, "flag=" .. tostring(rx.slot.flag))
-            assert(rx.slot.count == 100, "count=" .. tostring(rx.slot.count))
-            return true
-        end
-    )");
-
-    LuaEngine engine;
-    RoleHostCore core;
-    auto api = make_api(core, "cons");
-
-    auto spec = padding_schema();
-    spec.packing = "aligned";
-    core.set_in_slot_spec(SchemaSpec{spec},
-                          pylabhub::hub::compute_schema_size(spec, "aligned"));
-
-    pylabhub::scripting::EngineModuleParams params;
-    params.engine            = &engine;
-    params.api               = api.get();
-    params.tag               = "cons";
-    params.script_dir        = tmp_;
-    params.entry_point       = "init.lua";
-    params.required_callback = "on_consume";
-    params.in_slot_spec      = spec;
-    params.in_packing        = "aligned";
-
-    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
-
-    struct { double ts; uint8_t flag; uint8_t pad[3]; int32_t count; } buf{};
-    buf.ts = 9.87; buf.flag = 0xCD; buf.count = 100;
-
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_consume(
-        pylabhub::scripting::InvokeRx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
-}
-
-TEST_F(LuaEngineTest, FullStartup_Processor_Multifield)
-{
-    write_script(R"(
-        function on_process(rx, tx, msgs, api)
-            tx.slot.ts = rx.slot.ts
-            tx.slot.flag = rx.slot.flag
-            tx.slot.count = rx.slot.count * 2
-            return true
-        end
-    )");
-
-    LuaEngine engine;
-    RoleHostCore core;
-    auto api = make_api(core, "proc");
-
-    auto spec = padding_schema();
-    spec.packing = "aligned";
-    size_t sz = pylabhub::hub::compute_schema_size(spec, "aligned");
-    core.set_in_slot_spec(SchemaSpec{spec}, sz);
-    core.set_out_slot_spec(SchemaSpec{spec}, sz);
-
-    pylabhub::scripting::EngineModuleParams params;
-    params.engine            = &engine;
-    params.api               = api.get();
-    params.tag               = "proc";
-    params.script_dir        = tmp_;
-    params.entry_point       = "init.lua";
-    params.required_callback = "on_process";
-    params.in_slot_spec      = spec;
-    params.out_slot_spec     = spec;
-    params.in_packing        = "aligned";
-    params.out_packing       = "aligned";
-
-    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
-
-    struct { double ts; uint8_t flag; uint8_t pad[3]; int32_t count; } in_buf{}, out_buf{};
-    in_buf.ts = 1.23456789; in_buf.flag = 0xAB; in_buf.count = -42;
-
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_process(
-        pylabhub::scripting::InvokeRx{&in_buf, sizeof(in_buf)},
-        InvokeTx{&out_buf, sizeof(out_buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    EXPECT_DOUBLE_EQ(out_buf.ts, 1.23456789);
-    EXPECT_EQ(out_buf.flag, 0xAB);
-    EXPECT_EQ(out_buf.count, -84);
-
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
-}
+// (FullStartup V2 tests removed — converted to Pattern 3 in chunk 13.)
 
 } // anonymous namespace
