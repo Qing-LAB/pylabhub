@@ -621,126 +621,92 @@ TEST_F(PythonEngineIsolatedTest, ApiStopReason_ReflectsAllEnumValues)
 }
 
 // ============================================================================
-// 8. Metrics closures read from RoleHostCore counters
+// Chunk 7 — Metrics + error accumulation (Pattern 3)
+//
+// 7 P3 tests replace 4 V2 tests (5 after moving Metrics_AllLoopFields
+// from its separate section).  Strengthening includes:
+//   - before/after transition coverage on individual accessors
+//   - cross-link between api.metrics() and engine.script_error_count()
+//   - full-shape inventory of the metrics dict at L2 scope
+//   - the 5th loop field acquire_retry_count that V2 missed
+//   - pinning stop_on_script_error is distinct from critical_error
 // ============================================================================
 
-TEST_F(PythonEngineTest, MetricsClosures_ReadFromRoleHostCounters)
+TEST_F(PythonEngineIsolatedTest, Metrics_IndividualAccessors_ReadCoreCounters_Live)
 {
-    // Python API uses out_slots_written() / out_drop_count() (not out_written/drops).
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    ow = api.out_slots_written()\n"
-        "    dr = api.out_drop_count()\n"
-        "    assert ow == 42, f'expected out_slots_written=42, got {ow}'\n"
-        "    assert dr == 7, f'expected out_drop_count=7, got {dr}'\n"
-        "    return False\n");
-
-    RoleHostCore core;
-    core.test_set_out_slots_written(42);
-    core.test_set_out_drop_count(7);
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed -- metrics values incorrect";
-
-    engine.finalize();
+    auto w = SpawnWorker(
+        "python_engine.metrics_individual_accessors_read_core_counters_live",
+        {unique_dir("metrics_indiv_live")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, MetricsClosures_InReceivedWorks)
+TEST_F(PythonEngineIsolatedTest, Metrics_InSlotsReceived_Works_Consumer)
 {
-    // Python API uses in_slots_received() (not in_received).
-    // Consumer role: ctx.consumer must be non-null, ctx.producer null.
-    write_script(
-        "def on_consume(rx, msgs, api):\n"
-        "    ir = api.in_slots_received()\n"
-        "    assert ir == 15, f'expected in_slots_received=15, got {ir}'\n"
-        "    return True\n");
-
-    RoleHostCore core;
-    core.test_set_in_slots_received(15);
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &core));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_consume"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-
-    auto test_api = make_api(core, "cons");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_consume(InvokeRx{nullptr, 0}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed -- in_received value incorrect";
-
-    engine.finalize();
+    auto w = SpawnWorker(
+        "python_engine.metrics_in_slots_received_works_consumer",
+        {unique_dir("metrics_inrx_consumer")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, MultipleErrors_CountAccumulates)
+TEST_F(PythonEngineIsolatedTest, MultipleErrors_CountAccumulates)
 {
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    raise RuntimeError('oops')\n");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-
-    for (int i = 0; i < 5; ++i)
-    {
-        engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    }
-    EXPECT_EQ(engine.script_error_count(), 5u);
-
-    engine.finalize();
+    auto w = SpawnWorker(
+        "python_engine.multiple_errors_count_accumulates",
+        {unique_dir("multi_errors_accum")});
+    // 5 raised RuntimeErrors via on_python_error_ → 5 ERROR lines.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"oops", "oops", "oops", "oops", "oops"});
 }
 
-// ============================================================================
-// 9. Error handling
-// ============================================================================
-
-TEST_F(PythonEngineTest, StopOnScriptError_SetsShutdownOnError)
+TEST_F(PythonEngineIsolatedTest, StopOnScriptError_SetsShutdownOnError)
 {
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    raise RuntimeError('intentional error')\n");
+    auto w = SpawnWorker(
+        "python_engine.stop_on_script_error_sets_shutdown_on_error",
+        {unique_dir("stop_on_script_err")});
+    // Raised RuntimeError routed through on_python_error_ →
+    // one "intentional error" ERROR line.  Followed by an additional
+    // "stop_on_script_error: requesting shutdown after on_produce
+    // error" ERROR line when the stop_on_script_error_ flag is on
+    // (python_engine.cpp on_python_error_ branch).
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"intentional error",
+                    "stop_on_script_error: requesting shutdown"});
+}
 
-    RoleHostCore core;
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &core));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_produce"));
+TEST_F(PythonEngineIsolatedTest, Metrics_AllLoopFields_AnchoredValues)
+{
+    auto w = SpawnWorker(
+        "python_engine.metrics_all_loop_fields_anchored_values",
+        {unique_dir("metrics_all_loop_anchored")});
+    ExpectWorkerOk(w);
+}
 
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+// NEW gap-fill — L2 metrics top-level group inventory.  V2 never
+// pinned the shape; a regression adding a phantom group or
+// reshuffling the role sub-dict would slip through all V2 tests.
+TEST_F(PythonEngineIsolatedTest, Metrics_HierarchicalTable_Producer_FullShape)
+{
+    auto w = SpawnWorker(
+        "python_engine.metrics_hierarchical_table_producer_full_shape",
+        {unique_dir("metrics_ht_prod_full")});
+    ExpectWorkerOk(w);
+}
 
-    auto test_api = make_api(core);
-    test_api->set_stop_on_script_error(true);
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    EXPECT_FALSE(core.is_shutdown_requested());
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    auto result =
-        engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-
-    EXPECT_EQ(result, InvokeResult::Error);
-    EXPECT_TRUE(core.is_shutdown_requested())
-        << "stop_on_script_error should set shutdown_requested on error";
-
-    engine.finalize();
+// NEW gap-fill — cross-link the engine.script_error_count() and
+// api.metrics()["role"]["script_error_count"] surfaces.  A regression
+// where one surface reads a different (e.g. stale) counter would
+// slip through individual-accessor tests.
+TEST_F(PythonEngineIsolatedTest, Metrics_RoleScriptErrorCount_ReflectsRaisedError)
+{
+    auto w = SpawnWorker(
+        "python_engine.metrics_role_script_error_count_reflects_raised_error",
+        {unique_dir("metrics_serc_reflects")});
+    // 2 seed phases raise "seed phase N".
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"seed phase 1", "seed phase 2"});
 }
 
 TEST_F(PythonEngineTest, LoadScript_MissingFile)
@@ -1611,48 +1577,10 @@ def on_process(rx, tx, msgs, api):
 }
 
 // ============================================================================
-// 18. Metrics loop group completeness
+// (V2 Metrics_AllLoopFields_Present removed — superseded by chunk 7's
+// Metrics_AllLoopFields_AnchoredValues, which adds the 5th loop field
+// acquire_retry_count that V2 missed.)
 // ============================================================================
-
-TEST_F(PythonEngineTest, Metrics_AllLoopFields_Present)
-{
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    m = api.metrics()
-    assert "loop" in m, "loop group must exist in metrics"
-    loop = m["loop"]
-    assert isinstance(loop["iteration_count"], int), "iteration_count must be int"
-    assert isinstance(loop["loop_overrun_count"], int), "loop_overrun_count must be int"
-    assert isinstance(loop["last_cycle_work_us"], int), "last_cycle_work_us must be int"
-    assert isinstance(loop["configured_period_us"], int), "configured_period_us must be int"
-
-    # Verify non-zero values from core
-    assert loop["iteration_count"] == 5, f"iteration_count={loop['iteration_count']}"
-    assert loop["loop_overrun_count"] == 2, f"loop_overrun_count={loop['loop_overrun_count']}"
-    assert loop["last_cycle_work_us"] == 999, f"last_cycle_work_us={loop['last_cycle_work_us']}"
-    assert loop["configured_period_us"] == 10000, f"configured_period_us={loop['configured_period_us']}"
-    return False
-)");
-
-    RoleHostCore core;
-    for (int i = 0; i < 5; ++i)
-        core.inc_iteration_count();
-    core.inc_loop_overrun();
-    core.inc_loop_overrun();
-    core.set_last_cycle_work_us(999);
-    core.set_configured_period(10000);
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed -- loop metrics fields incorrect";
-
-    engine.finalize();
-}
 
 // ============================================================================
 // 19. Custom metrics edge cases

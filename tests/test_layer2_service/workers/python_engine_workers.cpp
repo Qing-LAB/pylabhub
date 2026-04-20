@@ -1699,6 +1699,390 @@ def on_produce(tx, msgs, api):
         });
 }
 
+// ── Metrics + error accumulation (chunk 7) ────────────────────────────────
+//
+// Python exposes two metric surfaces via pybind11:
+//   - Individual accessors on the api object
+//     (out_slots_written / in_slots_received / out_drop_count /
+//     loop_overrun_count / script_error_count / last_cycle_work_us)
+//   - api.metrics() → py::dict assembled from snapshot_metrics_json
+//     (role_api_base.cpp:1059) with top-level groups: queue /
+//     in_queue+out_queue / loop / role / inbox / custom.
+//
+// The `loop` group's canonical field list is defined in
+// role_host_core.hpp:397 via PYLABHUB_LOOP_METRICS_FIELDS and has
+// FIVE fields: iteration_count, loop_overrun_count,
+// last_cycle_work_us, configured_period_us, acquire_retry_count.
+// V2's Metrics_AllLoopFields_Present only checked 4 of 5 — the
+// all_loop_fields_anchored_values body closes that gap.
+
+int metrics_individual_accessors_read_core_counters_live(const std::string &dir)
+{
+    // Strengthened vs V2 MetricsClosures_ReadFromRoleHostCounters.
+    // V2 set counters once before build_api and read once from the
+    // callback.  This body additionally:
+    //   - reads BEFORE the set to confirm initial zeros
+    //   - mutates via core.test_set_* and asserts propagation
+    //   - covers loop_overrun_count (V2 missed it entirely on the
+    //     individual-accessor path)
+    return produce_worker_with_script(
+        dir, "python_engine::metrics_individual_accessors_read_core_counters_live",
+        R"PY(
+_phase = 0
+
+def _next_phase():
+    global _phase
+    _phase += 1
+
+def on_produce(tx, msgs, api):
+    if _phase == 1:
+        # Pre-set state: all counters zero.
+        assert api.out_slots_written() == 0, api.out_slots_written()
+        assert api.out_drop_count()    == 0, api.out_drop_count()
+        assert api.loop_overrun_count() == 0, api.loop_overrun_count()
+    elif _phase == 2:
+        # Post-set state: values seeded from C++.
+        assert api.out_slots_written() == 42, api.out_slots_written()
+        assert api.out_drop_count()    == 7,  api.out_drop_count()
+        assert api.loop_overrun_count() == 3, api.loop_overrun_count()
+    return False
+)PY",
+        [](PythonEngine &engine, RoleHostCore &core) {
+            float buf = 0.0f;
+            std::vector<IncomingMessage> msgs;
+
+            // Phase 1: all zero.
+            engine.eval("_next_phase()");
+            auto r1 = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
+                                             msgs);
+            EXPECT_EQ(r1, InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+
+            // Mutate core counters.
+            core.test_set_out_slots_written(42);
+            core.test_set_out_drop_count(7);
+            core.inc_loop_overrun();
+            core.inc_loop_overrun();
+            core.inc_loop_overrun();
+
+            // Phase 2: read-back from callback.
+            engine.eval("_next_phase()");
+            auto r2 = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
+                                             msgs);
+            EXPECT_EQ(r2, InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int metrics_in_slots_received_works_consumer(const std::string &dir)
+{
+    // Strengthened: before/after transition (V2 set once, read once).
+    return consume_worker_with_script(
+        dir, "python_engine::metrics_in_slots_received_works_consumer",
+        R"PY(
+_phase = 0
+
+def _next_phase():
+    global _phase
+    _phase += 1
+
+def on_consume(rx, msgs, api):
+    if _phase == 1:
+        assert api.in_slots_received() == 0, api.in_slots_received()
+    elif _phase == 2:
+        assert api.in_slots_received() == 15, api.in_slots_received()
+    return True
+)PY",
+        [](PythonEngine &engine, RoleHostCore &core) {
+            std::vector<IncomingMessage> msgs;
+
+            engine.eval("_next_phase()");
+            auto r1 = engine.invoke_consume(InvokeRx{nullptr, 0}, msgs);
+            EXPECT_EQ(r1, InvokeResult::Commit);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+
+            core.test_set_in_slots_received(15);
+
+            engine.eval("_next_phase()");
+            auto r2 = engine.invoke_consume(InvokeRx{nullptr, 0}, msgs);
+            EXPECT_EQ(r2, InvokeResult::Commit);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int multiple_errors_count_accumulates(const std::string &dir)
+{
+    // Strengthened vs V2 MultipleErrors_CountAccumulates.  V2 only
+    // asserted the engine-side accessor `engine.script_error_count()
+    // == 5`.  This body additionally cross-links to api.metrics()
+    // ["role"]["script_error_count"] to pin that both surfaces
+    // observe the same counter — catches a regression where they
+    // diverge (e.g. one path bumps a different counter).
+    return produce_worker_with_script(
+        dir, "python_engine::multiple_errors_count_accumulates",
+        R"PY(
+_in_check_mode = False
+
+def on_produce(tx, msgs, api):
+    global _in_check_mode
+    if _in_check_mode:
+        m = api.metrics()
+        sec = m["role"]["script_error_count"]
+        assert sec == 5, f"api.metrics role.script_error_count == {sec}, expected 5"
+        return False
+    raise RuntimeError("oops")
+
+def _flip_to_check():
+    global _in_check_mode
+    _in_check_mode = True
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<IncomingMessage> msgs;
+
+            // 5 raising invocations → script_error_count becomes 5.
+            for (int i = 0; i < 5; ++i)
+                engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
+
+            EXPECT_EQ(engine.script_error_count(), 5u)
+                << "engine accessor must reflect 5 accumulated raises";
+
+            // Flip the script into check mode and run one more invoke
+            // that reads the same counter via api.metrics().  That
+            // invocation is itself a successful (non-raising) Discard,
+            // so the counter stays at 5.
+            engine.eval("_flip_to_check()");
+            auto r = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
+                                            msgs);
+            EXPECT_EQ(r, InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 5u)
+                << "successful check invocation must NOT bump counter";
+        });
+}
+
+int stop_on_script_error_sets_shutdown_on_error(const std::string &dir)
+{
+    // Strengthened vs V2.  V2 asserted result == Error and
+    // shutdown_requested == true.  This body additionally pins:
+    //   - critical_error stays FALSE (stop_on_script_error is a
+    //     controlled shutdown, not a critical-error path)
+    //   - stop_reason stays "normal" (distinct from the enum value
+    //     StopReason::CriticalError which requires api.
+    //     set_critical_error or an explicit set_stop_reason call)
+    //   - script_error_count increments to 1
+    //
+    // Custom setup inline (doesn't use setup_role_engine) because the
+    // helper's make_api sets stop_on_script_error(false) by default;
+    // we need true for this test.  Mirrors the Lua equivalent at
+    // lua_engine_workers.cpp:2293-2354.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, R"PY(
+def on_produce(tx, msgs, api):
+    raise RuntimeError("intentional error")
+)PY");
+
+            RoleHostCore core;
+            PythonEngine engine;
+            engine.set_python_venv("");
+            ASSERT_TRUE(engine.initialize("test", &core));
+            ASSERT_TRUE(engine.load_script(script_dir / "script" / "python",
+                                            "__init__.py", "on_produce"));
+
+            auto spec = simple_schema();
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
+                                                   "aligned"));
+
+            auto api = make_api(core);
+            api->set_stop_on_script_error(true);  // ← key difference
+            ASSERT_TRUE(engine.build_api(*api));
+
+            EXPECT_FALSE(core.is_shutdown_requested());
+            EXPECT_FALSE(core.is_critical_error());
+            EXPECT_EQ(core.stop_reason_string(), "normal");
+
+            float buf = 0.0f;
+            std::vector<IncomingMessage> msgs;
+            auto r = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
+
+            EXPECT_EQ(r, InvokeResult::Error);
+            EXPECT_EQ(engine.script_error_count(), 1u);
+            EXPECT_TRUE(core.is_shutdown_requested())
+                << "stop_on_script_error=true must flip shutdown_requested";
+            EXPECT_FALSE(core.is_critical_error())
+                << "stop_on_script_error is a controlled stop, NOT critical "
+                   "— critical_error must remain false so the parent role "
+                   "host doesn't treat this as a restart-worthy failure";
+            EXPECT_EQ(core.stop_reason_string(), "normal")
+                << "stop_reason stays 'normal' — the shutdown path here is "
+                   "explicit user policy, not the StopReason::CriticalError "
+                   "enum value";
+
+            engine.finalize();
+        },
+        "python_engine::stop_on_script_error_sets_shutdown_on_error",
+        Logger::GetLifecycleModule());
+}
+
+int metrics_all_loop_fields_anchored_values(const std::string &dir)
+{
+    // Strengthened vs V2 Metrics_AllLoopFields_Present.  V2 only
+    // covered 4 of the 5 canonical loop fields defined in
+    // role_host_core.hpp:397 PYLABHUB_LOOP_METRICS_FIELDS:
+    //   iteration_count, loop_overrun_count, last_cycle_work_us,
+    //   configured_period_us, acquire_retry_count  ← V2 missed this
+    //
+    // A regression adding/removing/renaming a loop field must be
+    // loud.  Type-checks all 5 as int + anchors each to a specific
+    // non-default value from C++.
+    return produce_worker_with_script(
+        dir, "python_engine::metrics_all_loop_fields_anchored_values",
+        R"PY(
+def on_produce(tx, msgs, api):
+    m = api.metrics()
+    assert "loop" in m, f"'loop' group missing from metrics: {list(m.keys())}"
+    loop = m["loop"]
+
+    # All 5 canonical fields per PYLABHUB_LOOP_METRICS_FIELDS must be
+    # present, typed as int, and reflect the values seeded from C++.
+    expected = {
+        "iteration_count":      5,
+        "loop_overrun_count":   2,
+        "last_cycle_work_us":   999,
+        "configured_period_us": 10000,
+        "acquire_retry_count":  17,   # NEW vs V2
+    }
+    for key, val in expected.items():
+        assert key in loop, f"'{key}' missing from loop group: {list(loop.keys())}"
+        assert isinstance(loop[key], int), (
+            f"{key} must be int, got {type(loop[key]).__name__}")
+        assert loop[key] == val, (
+            f"{key} expected {val}, got {loop[key]}")
+
+    # No extras: the field inventory is closed.  If a new field is
+    # added to PYLABHUB_LOOP_METRICS_FIELDS this assertion catches it
+    # so the test is updated in the same commit.
+    unexpected = set(loop.keys()) - set(expected.keys())
+    assert not unexpected, (
+        f"unexpected loop fields (update test): {sorted(unexpected)}")
+    return False
+)PY",
+        [](PythonEngine &engine, RoleHostCore &core) {
+            // Seed all 5 loop fields from C++ before the invoke.
+            for (int i = 0; i < 5; ++i) core.inc_iteration_count();
+            core.inc_loop_overrun();
+            core.inc_loop_overrun();
+            core.set_last_cycle_work_us(999);
+            core.set_configured_period(10000);
+            for (int i = 0; i < 17; ++i) core.inc_acquire_retry();
+
+            float buf = 0.0f;
+            std::vector<IncomingMessage> msgs;
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
+                                                 msgs);
+            EXPECT_EQ(result, InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int metrics_hierarchical_table_producer_full_shape(const std::string &dir)
+{
+    // NEW gap-fill — pins the full top-level group inventory returned
+    // by api.metrics() on a producer with no queue wiring (L2 scope).
+    // Without a queue, the inventory is: {loop, role}.  Adding
+    // infrastructure at L3/L4 tests the other groups.  This test
+    // ensures the L2 shape stays stable; a regression adding a
+    // phantom group (e.g. half-initialized queue exposing partial
+    // metrics) surfaces here.
+    return produce_worker_with_script(
+        dir, "python_engine::metrics_hierarchical_table_producer_full_shape",
+        R"PY(
+def on_produce(tx, msgs, api):
+    m = api.metrics()
+    assert isinstance(m, dict), f"metrics must be dict, got {type(m)}"
+
+    # L2 producer with no queue wiring: expect exactly {loop, role}.
+    # - 'queue' / 'in_queue' / 'out_queue' require pImpl->tx_queue
+    #   or rx_queue non-null (role_api_base.cpp:1066-1085)
+    # - 'inbox' requires pImpl->inbox_queue (L3)
+    # - 'custom' only appears if non-empty
+    expected_keys = {"loop", "role"}
+    got_keys = set(m.keys())
+    assert got_keys == expected_keys, (
+        f"L2 producer metrics groups mismatch — expected {sorted(expected_keys)}, "
+        f"got {sorted(got_keys)}")
+
+    # role group: 4 fields (out_slots_written, in_slots_received,
+    # out_drop_count, script_error_count) per role_api_base.cpp:1096-1099.
+    role_expected = {"out_slots_written", "in_slots_received",
+                     "out_drop_count", "script_error_count"}
+    role_got = set(m["role"].keys())
+    assert role_got == role_expected, (
+        f"role fields mismatch — expected {sorted(role_expected)}, "
+        f"got {sorted(role_got)}")
+    return False
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<IncomingMessage> msgs;
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
+                                                 msgs);
+            EXPECT_EQ(result, InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int metrics_role_script_error_count_reflects_raised_error(const std::string &dir)
+{
+    // NEW gap-fill — pins that api.metrics()["role"]["script_error_count"]
+    // and the engine's internal counter observe the same source.
+    // A regression where the metrics path reads a different counter
+    // (e.g. a stale snapshot) would slip through the individual-
+    // accessor tests above but fail here.
+    //
+    // Sequence: seed two raises then check api.metrics readback
+    // == 2 from within a third (non-raising) invocation.
+    return produce_worker_with_script(
+        dir, "python_engine::metrics_role_script_error_count_reflects_raised_error",
+        R"PY(
+_phase = 0
+
+def _next_phase():
+    global _phase
+    _phase += 1
+
+def on_produce(tx, msgs, api):
+    if _phase in (1, 2):
+        raise RuntimeError(f"seed phase {_phase}")
+    # _phase == 3: non-raising readback.
+    m = api.metrics()
+    sec = m["role"]["script_error_count"]
+    assert sec == 2, f"script_error_count expected 2, got {sec}"
+    return False
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<IncomingMessage> msgs;
+
+            // Phase 1 + 2: raise twice.
+            engine.eval("_next_phase()");
+            engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
+            engine.eval("_next_phase()");
+            engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(engine.script_error_count(), 2u);
+
+            // Phase 3: read back via api.metrics().
+            engine.eval("_next_phase()");
+            auto r = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
+                                            msgs);
+            EXPECT_EQ(r, InvokeResult::Discard)
+                << "the readback invocation must succeed";
+            EXPECT_EQ(engine.script_error_count(), 2u)
+                << "readback invocation did not raise — counter stays at 2";
+        });
+}
+
 int invoke_produce_discard_on_false_but_python_wrote_slot(const std::string &dir)
 {
     // NEW test — pins the production contract that the engine does NOT
@@ -1852,6 +2236,21 @@ struct PythonEngineWorkerRegistrar
                     return api_critical_error_set_and_read_and_stop_reason(dir);
                 if (sc == "api_stop_reason_reflects_all_enum_values")
                     return api_stop_reason_reflects_all_enum_values(dir);
+
+                if (sc == "metrics_individual_accessors_read_core_counters_live")
+                    return metrics_individual_accessors_read_core_counters_live(dir);
+                if (sc == "metrics_in_slots_received_works_consumer")
+                    return metrics_in_slots_received_works_consumer(dir);
+                if (sc == "multiple_errors_count_accumulates")
+                    return multiple_errors_count_accumulates(dir);
+                if (sc == "stop_on_script_error_sets_shutdown_on_error")
+                    return stop_on_script_error_sets_shutdown_on_error(dir);
+                if (sc == "metrics_all_loop_fields_anchored_values")
+                    return metrics_all_loop_fields_anchored_values(dir);
+                if (sc == "metrics_hierarchical_table_producer_full_shape")
+                    return metrics_hierarchical_table_producer_full_shape(dir);
+                if (sc == "metrics_role_script_error_count_reflects_raised_error")
+                    return metrics_role_script_error_count_reflects_raised_error(dir);
 
                 fmt::print(stderr,
                            "[python_engine] ERROR: unknown scenario '{}'\n",
