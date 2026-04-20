@@ -3320,6 +3320,241 @@ int invoke_consume_messages_data_and_event_mixed(const std::string &dir)
         });
 }
 
+// ── Inbox + slot-only invoke (chunk 9a) ────────────────────────────────────
+
+int invoke_produce_slot_only_no_flexzone_on_invoke(const std::string &dir)
+{
+    // Direct conversion of V2 InvokeProduce_SlotOnly_NoFlexzoneOnInvoke.
+    // The contract being pinned: InvokeTx carries ONLY a slot pointer/size,
+    // not a flexzone — flexzone is accessed via api.flexzone(...) closure
+    // built once at build_api time.  The script can write to tx.slot
+    // even when an OutFlexFrame is registered (the registration is a
+    // separate concern from invoke-time data).
+    //
+    // Inline setup because we register both OutSlotFrame AND
+    // OutFlexFrame, which the setup_role_engine helper does not do
+    // by default (it only registers one slot per role).
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, R"LUA(
+                function on_produce(tx, msgs, api)
+                    assert(tx.slot ~= nil, "expected slot")
+                    tx.slot.value = 10.0
+                    return true
+                end
+            )LUA");
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            ASSERT_TRUE(engine.initialize("test", &core));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
+                                            "on_produce"));
+
+            auto spec = simple_schema();
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
+                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutFlexFrame",
+                                                   "aligned"));
+
+            auto api = make_api(core);
+            ASSERT_TRUE(engine.build_api(*api));
+
+            float slot_buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto r = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&slot_buf, sizeof(slot_buf)},
+                msgs);
+            EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Commit);
+            EXPECT_FLOAT_EQ(slot_buf, 10.0f);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+
+            engine.finalize();
+        },
+        "lua_engine::invoke_produce_slot_only_no_flexzone_on_invoke",
+        Logger::GetLifecycleModule());
+}
+
+int invoke_on_inbox_typed_data(const std::string &dir)
+{
+    // Strengthened over V2.  V2 asserted msg.data.value (typed via
+    // InboxFrame ffi cast) and msg.sender_uid.  This body adds:
+    //   - msg.seq must equal the seq passed in (3rd arg of InvokeInbox)
+    //   - C++-side asserts result == Commit (V2 only checked
+    //     script_error_count, missing the dispatch return value)
+    //
+    // Inline setup because InboxFrame must be registered alongside
+    // OutSlotFrame.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, R"LUA(
+                function on_produce(tx, msgs, api) return false end
+                function on_inbox(msg, api)
+                    assert(msg.data ~= nil, "expected inbox data")
+                    assert(math.abs(msg.data.value - 77.0) < 0.01,
+                           "expected ~77.0, got " .. tostring(msg.data.value))
+                    assert(msg.sender_uid == "PROD-SENDER-00000001",
+                           "sender_uid expected, got " ..
+                           tostring(msg.sender_uid))
+                    -- NEW: pin seq projection (lua_engine.cpp:985-986).
+                    assert(msg.seq == 7,
+                           "seq expected 7, got " .. tostring(msg.seq))
+                    return true
+                end
+            )LUA");
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            ASSERT_TRUE(engine.initialize("test", &core));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
+                                            "on_produce"));
+
+            auto spec = simple_schema();
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
+                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame",
+                                                   "aligned"));
+
+            auto api = make_api(core);
+            ASSERT_TRUE(engine.build_api(*api));
+
+            float inbox_data = 77.0f;
+            auto r = engine.invoke_on_inbox(
+                {&inbox_data, sizeof(inbox_data),
+                 "PROD-SENDER-00000001", 7});
+
+            EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Commit)
+                << "on_inbox returned true → must map to Commit";
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "Lua-side asserts must have all passed";
+
+            engine.finalize();
+        },
+        "lua_engine::invoke_on_inbox_typed_data",
+        Logger::GetLifecycleModule());
+}
+
+int type_sizeof_inbox_frame_returns_correct_size(const std::string &dir)
+{
+    // Corrected and strengthened from V2 TypeSizeof_InboxFrame_*.
+    // V2 had a bug in its docstring: comment said "28 bytes aligned"
+    // but the assertion correctly required 32. This body documents
+    // the actual layout precisely:
+    //
+    //   uint8 flag    @  0 (1)
+    //   pad           @  1 (7)  ← align float64 to 8
+    //   float64 value @  8 (8)
+    //   uint16 count  @ 16 (2)
+    //   pad           @ 18 (2)  ← align int32 to 4
+    //   int32 status  @ 20 (4)
+    //   char[5] label @ 24 (5)
+    //   pad           @ 29 (3)  ← struct alignment = 8 (max field alignof)
+    //   total         = 32
+    //
+    // Strengthened: also asserts BOTH OutSlotFrame and InboxFrame
+    // sizes equal compute_schema_size() (engine sizeof must match
+    // the role host's sizing helper — V2 asserted equality between
+    // SlotFrame alias and InboxFrame but didn't tie either to the
+    // canonical compute_schema_size).
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir,
+                         "function on_produce(tx, msgs, api) return true end");
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            ASSERT_TRUE(engine.initialize("test", &core));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
+                                            "on_produce"));
+
+            SchemaSpec spec;
+            spec.has_schema = true;
+            spec.fields.push_back({"flag",   "uint8",   1, 0});
+            spec.fields.push_back({"value",  "float64", 1, 0});
+            spec.fields.push_back({"count",  "uint16",  1, 0});
+            spec.fields.push_back({"status", "int32",   1, 0});
+            spec.fields.push_back({"label",  "string",  1, 5});
+
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
+                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame",
+                                                   "aligned"));
+
+            auto api = make_api(core);
+            ASSERT_TRUE(engine.build_api(*api));
+
+            const size_t expected =
+                pylabhub::hub::compute_schema_size(spec, "aligned");
+            EXPECT_EQ(expected, 32u)
+                << "schema layout: 1 + 7pad + 8 + 2 + 2pad + 4 + 5 + "
+                   "3pad = 32 — if compute_schema_size returns "
+                   "anything else the layout helper is wrong";
+
+            EXPECT_EQ(engine.type_sizeof("SlotFrame"), expected)
+                << "engine sizeof(SlotFrame alias) must equal "
+                   "compute_schema_size — divergence means the ffi "
+                   "cdef the engine builds doesn't match what the role "
+                   "host uses to size buffers";
+            EXPECT_EQ(engine.type_sizeof("InboxFrame"), expected);
+
+            engine.finalize();
+        },
+        "lua_engine::type_sizeof_inbox_frame_returns_correct_size",
+        Logger::GetLifecycleModule());
+}
+
+int invoke_on_inbox_missing_type_reports_error(const std::string &dir)
+{
+    // Strengthened over V2.  V2 asserted script_error_count >= 1
+    // (loose).  This body asserts:
+    //   - result == InvokeResult::Error (V2 didn't capture this)
+    //   - script_error_count == 1 EXACTLY (loud single error, not
+    //     a cascade of multiple errors masking each other)
+    //   - the engine logs the documented error message at
+    //     lua_engine.cpp:965-967 ("InboxFrame type not registered")
+    //     — pinned via the parent test's expected_error_substrings.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, R"LUA(
+                function on_produce(tx, msgs, api) return false end
+                function on_inbox(msg, api) return true end
+            )LUA");
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            ASSERT_TRUE(engine.initialize("test", &core));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
+                                            "on_produce"));
+
+            auto spec = simple_schema();
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
+                                                   "aligned"));
+            // Deliberately NO InboxFrame registration.
+
+            auto api = make_api(core);
+            ASSERT_TRUE(engine.build_api(*api));
+
+            float raw = 1.0f;
+            auto r = engine.invoke_on_inbox(
+                {&raw, sizeof(raw), "CONS-SENDER-00000001", 1});
+
+            EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Error)
+                << "missing InboxFrame must surface as Error result";
+            EXPECT_EQ(engine.script_error_count(), 1u)
+                << "must increment script_error_count by EXACTLY 1 — "
+                   "more would mean the engine emitted multiple errors "
+                   "(e.g. tried to call on_inbox after the missing-type "
+                   "guard fired)";
+
+            engine.finalize();
+        },
+        "lua_engine::invoke_on_inbox_missing_type_reports_error",
+        Logger::GetLifecycleModule());
+}
+
 } // namespace lua_engine
 } // namespace pylabhub::tests::worker
 
@@ -3524,6 +3759,16 @@ struct LuaEngineWorkerRegistrar
                     return has_callback_detects_presence_absence(dir);
                 if (sc == "invoke_consume_messages_data_and_event_mixed")
                     return invoke_consume_messages_data_and_event_mixed(dir);
+
+                // Chunk 9a: inbox + slot-only invoke
+                if (sc == "invoke_produce_slot_only_no_flexzone_on_invoke")
+                    return invoke_produce_slot_only_no_flexzone_on_invoke(dir);
+                if (sc == "invoke_on_inbox_typed_data")
+                    return invoke_on_inbox_typed_data(dir);
+                if (sc == "type_sizeof_inbox_frame_returns_correct_size")
+                    return type_sizeof_inbox_frame_returns_correct_size(dir);
+                if (sc == "invoke_on_inbox_missing_type_reports_error")
+                    return invoke_on_inbox_missing_type_reports_error(dir);
 
                 fmt::print(stderr,
                            "[lua_engine] ERROR: unknown scenario '{}'\n", sc);
