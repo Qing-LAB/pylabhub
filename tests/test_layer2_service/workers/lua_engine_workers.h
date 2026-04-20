@@ -135,6 +135,25 @@ int api_shared_data_nil_removes_key(const std::string &dir);
 int api_shared_data_overwrite_changes_type(const std::string &dir);
 int api_shared_data_overwrite_changes_value_same_type(const std::string &dir);
 
+// ── Error handling: runtime error surfacing (chunk 7a) ─────────────────────
+//
+// These bodies pin the engine's contract for how script-side errors
+// are reflected to the C++ caller:
+//   - script_error_count increments per error
+//   - InvokeResult::Error (or InvokeStatus::ScriptError for eval)
+//   - stop_on_script_error=true additionally flips shutdown_requested
+//   - on_init / on_stop / on_inbox errors are observed the same way
+//     as on_produce / on_consume / on_process errors
+//   - the engine stays usable after an error (can invoke again
+//     successfully with a good callback)
+int invoke_multiple_errors_count_accumulates(const std::string &dir);
+int invoke_produce_wrong_return_type_is_error(const std::string &dir);
+int invoke_produce_wrong_return_string_is_error(const std::string &dir);
+int invoke_produce_stop_on_script_error_sets_shutdown(const std::string &dir);
+int invoke_on_init_or_stop_script_error_accumulates(const std::string &dir);
+int invoke_on_inbox_script_error_increments_count(const std::string &dir);
+int eval_syntax_error_returns_script_error(const std::string &dir);
+
 // ── invoke_process (chunk 4) ────────────────────────────────────────────────
 //
 // Processor design note: a processor ALWAYS has an input channel (if a
