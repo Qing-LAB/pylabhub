@@ -184,6 +184,21 @@ int invoke_with_args_returns_true(const std::string &dir);
 int invoke_after_finalize_returns_false(const std::string &dir);
 int eval_returns_scalar_result(const std::string &dir);
 
+// ── Multi-state / thread-state (chunk 8b) ──────────────────────────────────
+//
+// LuaEngine's owner thread holds the primary lua_State. A non-owner
+// thread that calls invoke()/eval() gets a thread-local child engine
+// (see lua_engine.cpp:409 get_or_create_thread_state_).  Lua globals
+// are PER-STATE — they do NOT leak between threads.  RoleHostCore's
+// shared_data IS thread-shared (single C++ map).  These tests pin
+// both sides of that contract.
+int supports_multi_state_returns_true(const std::string &dir);
+int state_persists_across_calls(const std::string &dir);
+int invoke_from_non_owner_thread_works(const std::string &dir);
+int invoke_non_owner_thread_uses_independent_state(const std::string &dir);
+int invoke_concurrent_owner_and_non_owner(const std::string &dir);
+int shared_data_cross_thread_visible(const std::string &dir);
+
 // ── invoke_process (chunk 4) ────────────────────────────────────────────────
 //
 // Processor design note: a processor ALWAYS has an input channel (if a
