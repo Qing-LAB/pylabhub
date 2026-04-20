@@ -154,6 +154,20 @@ int invoke_on_init_or_stop_script_error_accumulates(const std::string &dir);
 int invoke_on_inbox_script_error_increments_count(const std::string &dir);
 int eval_syntax_error_returns_script_error(const std::string &dir);
 
+// ── Error handling: setup-phase error paths (chunk 7b) ─────────────────────
+//
+// Setup-phase failures (load_script / register_slot_type bugs) must
+// return false and leave the engine usable — the role host may retry
+// with corrected inputs.  None of these failures should increment
+// script_error_count (that counter is reserved for runtime/script
+// errors per HEP-CORE-0019 semantics).  Finalize_DoubleCallIsSafe
+// is a gap-fill for engine.finalize() idempotence.
+int load_script_missing_file_returns_false(const std::string &dir);
+int load_script_missing_required_callback_returns_false(const std::string &dir);
+int load_script_syntax_error_returns_false(const std::string &dir);
+int register_slot_type_bad_field_type_returns_false(const std::string &dir);
+int finalize_double_call_is_safe(const std::string &dir);
+
 // ── invoke_process (chunk 4) ────────────────────────────────────────────────
 //
 // Processor design note: a processor ALWAYS has an input channel (if a

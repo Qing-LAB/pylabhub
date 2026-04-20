@@ -60,19 +60,17 @@ callback chunks):
   false → Discard is currently unverified. Drop into a later chunk
   or add to chunk 3's scope (probably not worth reopening chunk 3).
 
-- [ ] **Tests: `engine.load_script` error paths.** The native-engine
-  tests (phase 2d) cover: missing file, missing required callback,
-  wrong checksum. The Lua engine tests do not cover any load_script
-  failure mode. Add dedicated tests: script file doesn't exist;
-  script exists but has syntax errors; script loads but required
-  callback is missing. Same coverage gap will exist for Python.
+- [x] ~~Tests: `engine.load_script` error paths~~ — **done 2026-04-20**
+  in chunk 7b.  Three P3 tests landed (missing file, missing required
+  callback, syntax error).  Each strengthened with "engine is
+  reusable after failure" retry.  Same gap still open for Python;
+  convert alongside Python chunk 7b.
 
-- [ ] **Test: `engine.finalize()` idempotence.** Chunk 1's
-  `InitializeAndFinalize_Succeeds` calls finalize once. The header
-  doesn't explicitly promise double-finalize is safe, but the role
-  host's shutdown path can reach finalize through multiple routes;
-  confirming double-finalize is a no-op rules out a real class of
-  production bugs.
+- [x] ~~Test: `engine.finalize()` idempotence~~ — **done 2026-04-20**
+  in chunk 7b.  P3 test `Finalize_DoubleCallIsSafe` pins:
+  double-finalize is a no-op (no crash, no throw), post-finalize
+  `is_accepting()` returns false, and post-finalize invoke returns
+  `InvokeResult::Error` (not a crash).
 
 - [ ] **Test: `RegisterSlotType_CustomName_NotReadOnlyByDefault`**
   (from the post-chunk-5 review, assumption A1 in the read-only
