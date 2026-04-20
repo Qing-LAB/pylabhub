@@ -33,12 +33,15 @@
 #include "utils/role_host_core.hpp"
 
 #include "utils/schema_utils.hpp"
+#include "test_patterns.h"     // Pattern 3 (IsolatedProcessTest) base
 #include "test_schema_helpers.h"
 
+#include <atomic>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -144,246 +147,154 @@ class PythonEngineTest : public ::testing::Test
 };
 
 // ============================================================================
-// 1. Lifecycle
+// Chunk 1 — Lifecycle / Type registration / Alias creation (Pattern 3)
+//
+// These tests used to live under the V2 PythonEngineTest fixture above;
+// they are being migrated to Pattern 3 chunk-by-chunk to mirror the
+// completed Lua sweep.  Each spawns a subprocess where the engine is
+// constructed and driven; bodies live in workers/python_engine_workers.cpp.
+//
+// The V2 fixture wrapper stays until its last test is converted; the
+// final commit of the sweep removes it along with unused includes.
 // ============================================================================
 
-TEST_F(PythonEngineTest, FullLifecycle)
+namespace
 {
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    return True\n"
-        "\n"
-        "def on_init(api):\n"
-        "    pass\n"
-        "\n"
-        "def on_stop(api):\n"
-        "    pass\n");
 
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
+class PythonEngineIsolatedTest : public pylabhub::tests::IsolatedProcessTest
+{
+  protected:
+    void TearDown() override
+    {
+        for (const auto &p : paths_to_clean_)
+        {
+            std::error_code ec;
+            fs::remove_all(p, ec);
+        }
+        paths_to_clean_.clear();
+    }
 
-    engine.invoke_on_init();
-    engine.invoke_on_stop();
-    engine.finalize();
+    std::string unique_dir(const char *label)
+    {
+        static std::atomic<int> ctr{0};
+        fs::path p = fs::temp_directory_path() /
+                     ("plh_l2_py_" + std::string(label) + "_" +
+                      std::to_string(::getpid()) + "_" +
+                      std::to_string(ctr.fetch_add(1)));
+        fs::create_directories(p);
+        paths_to_clean_.push_back(p);
+        return p.string();
+    }
+
+    std::vector<fs::path> paths_to_clean_;
+};
+
+} // namespace
+
+TEST_F(PythonEngineIsolatedTest, FullLifecycle)
+{
+    auto w = SpawnWorker("python_engine.full_lifecycle",
+                         {unique_dir("full_lifecycle")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, InitializeFailsGracefully)
+TEST_F(PythonEngineIsolatedTest, InitializeAndFinalize_Succeeds)
 {
-    // Double initialize should not crash (engine manages state).
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.initialize_and_finalize_succeeds",
+                         {unique_dir("init_finalize")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(PythonEngineIsolatedTest, RegisterSlotType_SizeofCorrect)
+{
+    auto w = SpawnWorker("python_engine.register_slot_type_sizeof_correct",
+                         {unique_dir("reg_sizeof")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(PythonEngineIsolatedTest, RegisterSlotType_MultiField)
+{
+    auto w = SpawnWorker("python_engine.register_slot_type_multi_field",
+                         {unique_dir("reg_multi")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(PythonEngineIsolatedTest, RegisterSlotType_Packed_vs_Aligned)
+{
+    auto w = SpawnWorker("python_engine.register_slot_type_packed_vs_aligned",
+                         {unique_dir("reg_packed_vs_aligned")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(PythonEngineIsolatedTest, RegisterSlotType_HasSchemaFalse_ReturnsFalse)
+{
+    auto w = SpawnWorker(
+        "python_engine.register_slot_type_has_schema_false_returns_false",
+        {unique_dir("reg_no_schema")});
+    // register_slot_type logs an ERROR when called with has_schema=false
+    // (python_engine.cpp:787-789). That log is expected.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"called with has_schema=false"});
+}
+
+TEST_F(PythonEngineIsolatedTest, RegisterSlotType_AllSupportedTypes_Succeeds)
+{
+    auto w = SpawnWorker(
+        "python_engine.register_slot_type_all_supported_types",
+        {unique_dir("reg_all_types")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(PythonEngineIsolatedTest, Alias_SlotFrame_Producer)
+{
+    auto w = SpawnWorker("python_engine.alias_slot_frame_producer",
+                         {unique_dir("alias_slot_prod")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(PythonEngineIsolatedTest, Alias_SlotFrame_Consumer)
+{
+    auto w = SpawnWorker("python_engine.alias_slot_frame_consumer",
+                         {unique_dir("alias_slot_cons")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(PythonEngineIsolatedTest, Alias_NoAlias_Processor)
+{
+    auto w = SpawnWorker("python_engine.alias_no_alias_processor",
+                         {unique_dir("alias_noalias_proc")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(PythonEngineIsolatedTest, Alias_FlexFrame_Producer)
+{
+    auto w = SpawnWorker("python_engine.alias_flex_frame_producer",
+                         {unique_dir("alias_flex_prod")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(PythonEngineIsolatedTest, Alias_ProducerNoFz_NoFlexFrameAlias)
+{
+    auto w = SpawnWorker(
+        "python_engine.alias_producer_no_fz_no_flex_frame_alias",
+        {unique_dir("alias_nofz")});
+    ExpectWorkerOk(w);
+}
+
+// NEW gap-fill: pin PythonEngine's supports_multi_state() returns false.
+// Script-invisible engine-to-caller C++ contract (per script_engine.hpp:
+// 388-394).  Checking it as a structural property both pre- and post-
+// build_api so a regression flipping it based on state surfaces.
+TEST_F(PythonEngineIsolatedTest, SupportsMultiState_ReturnsFalse)
+{
+    auto w = SpawnWorker("python_engine.supports_multi_state_returns_false",
+                         {unique_dir("multi_state")});
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
-// 2. Type Registration
-// ============================================================================
-
-TEST_F(PythonEngineTest, RegisterSlotType_SizeofCorrect)
-{
-    write_script("def on_produce(tx, msgs, api):\n    return True\n");
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_produce"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    // float32 = 4 bytes
-    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 4u);
-
-    engine.finalize();
-}
-
-TEST_F(PythonEngineTest, RegisterSlotType_MultiField)
-{
-    write_script("def on_produce(tx, msgs, api):\n    return True\n");
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_produce"));
-
-    SchemaSpec spec;
-    spec.has_schema = true;
-    FieldDef f1;
-    f1.name = "x"; f1.type_str = "float32"; f1.count = 1; f1.length = 0;
-    FieldDef f2;
-    f2.name = "y"; f2.type_str = "float32"; f2.count = 1; f2.length = 0;
-    FieldDef f3;
-    f3.name = "z"; f3.type_str = "float32"; f3.count = 1; f3.length = 0;
-    spec.fields = {f1, f2, f3};
-
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 12u); // 3 * 4 bytes
-
-    engine.finalize();
-}
-
-TEST_F(PythonEngineTest, RegisterSlotType_PackedPacking)
-{
-    write_script("def on_produce(tx, msgs, api):\n    return True\n");
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_produce"));
-
-    // bool + int32: aligned=8, packed=5.
-    SchemaSpec spec;
-    spec.has_schema = true;
-    FieldDef f1; f1.name = "flag"; f1.type_str = "bool"; f1.count = 1; f1.length = 0;
-    FieldDef f2; f2.name = "val";  f2.type_str = "int32"; f2.count = 1; f2.length = 0;
-    spec.fields = {f1, f2};
-
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "packed"));
-    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 5u) << "packed: bool(1)+int32(4)=5";
-
-    engine.finalize();
-}
-
-TEST_F(PythonEngineTest, RegisterSlotType_HasSchemaFalse_ReturnsFalse)
-{
-    write_script("def on_produce(tx, msgs, api):\n    return True\n");
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_produce"));
-
-    SchemaSpec spec;
-    spec.has_schema = false;  // No schema — should fail
-    EXPECT_FALSE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    engine.finalize();
-}
-
-// ============================================================================
-// 2b. Alias tests — role-specific type aliases
-// ============================================================================
-
-TEST_F(PythonEngineTest, Alias_SlotFrame_Producer)
-{
-    write_script("def on_produce(tx, msgs, api):\n    return True\n");
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_produce"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_);
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    // After build_api, "SlotFrame" alias should exist for producer.
-    EXPECT_EQ(engine.type_sizeof("SlotFrame"), engine.type_sizeof("OutSlotFrame"));
-    EXPECT_GT(engine.type_sizeof("SlotFrame"), 0u);
-
-    engine.finalize();
-}
-
-TEST_F(PythonEngineTest, Alias_SlotFrame_Consumer)
-{
-    write_script("def on_consume(rx, msgs, api):\n    return True\n");
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_consume"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_, "cons");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    EXPECT_EQ(engine.type_sizeof("SlotFrame"), engine.type_sizeof("InSlotFrame"));
-    EXPECT_GT(engine.type_sizeof("SlotFrame"), 0u);
-
-    engine.finalize();
-}
-
-TEST_F(PythonEngineTest, Alias_NoAlias_Processor)
-{
-    write_script("def on_process(rx, tx, msgs, api):\n    return True\n");
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_process"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_, "proc");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    // Processor: no alias — SlotFrame should not resolve.
-    EXPECT_EQ(engine.type_sizeof("SlotFrame"), 0u);
-
-    engine.finalize();
-}
-
-TEST_F(PythonEngineTest, Alias_FlexFrame_Producer)
-{
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    return True\n");
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_produce"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutFlexFrame", "aligned"));
-
-    auto test_api = make_api(default_core_);
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    EXPECT_EQ(engine.type_sizeof("FlexFrame"), engine.type_sizeof("OutFlexFrame"));
-    EXPECT_GT(engine.type_sizeof("FlexFrame"), 0u);
-
-    engine.finalize();
-}
-
-TEST_F(PythonEngineTest, Alias_ProducerNoFz_NoFlexFrameAlias)
-{
-    write_script("def on_produce(tx, msgs, api):\n    return True\n");
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_produce"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-    // No flexzone registered.
-
-    auto test_api = make_api(default_core_);
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    EXPECT_GT(engine.type_sizeof("SlotFrame"), 0u);
-    EXPECT_EQ(engine.type_sizeof("FlexFrame"), 0u);
-
-    engine.finalize();
-}
+// (V2 chunk-1 tests removed — converted to Pattern 3 at top of file.)
 
 // ============================================================================
 // 3. invoke_produce
