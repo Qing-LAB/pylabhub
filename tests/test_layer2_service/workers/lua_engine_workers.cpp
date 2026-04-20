@@ -65,13 +65,19 @@ void write_script(const fs::path &dir, const std::string &content)
     f << content;
 }
 
-/// Produces a fresh RoleAPIBase wired to the given core. Mirrors the
-/// original test fixture's helper so test bodies stay 1:1 with the
-/// pre-conversion reading.
+/// Produces a fresh RoleAPIBase wired to the given core.  UID is
+/// role-tagged (PROD-/CONS-/PROC-) for cross-engine parity with
+/// python_engine_workers::make_api; a shared convention makes any
+/// future cross-engine grep for UID strings work uniformly.
 std::unique_ptr<RoleAPIBase> make_api(RoleHostCore &core,
                                      const std::string &tag = "prod")
 {
-    auto api = std::make_unique<RoleAPIBase>(core, tag, "TEST-ENGINE-00000001");
+    std::string uid;
+    if      (tag == "prod") uid = "PROD-TestEngine-00000001";
+    else if (tag == "cons") uid = "CONS-TestEngine-00000001";
+    else if (tag == "proc") uid = "PROC-TestEngine-00000001";
+    else                    uid = "TEST-" + tag + "-00000001";
+    auto api = std::make_unique<RoleAPIBase>(core, tag, uid);
     api->set_name("TestEngine");
     api->set_channel("test.channel");
     api->set_log_level("error");
@@ -1458,7 +1464,7 @@ int api_identity_uid_name_channel(const std::string &dir)
         RoleKind::Producer,
         R"LUA(
             function on_produce(tx, msgs, api)
-                assert(api.uid() == "TEST-ENGINE-00000001",
+                assert(api.uid() == "PROD-TestEngine-00000001",
                        "uid: " .. tostring(api.uid()))
                 assert(api.name() == "TestEngine",
                        "name: " .. tostring(api.name()))

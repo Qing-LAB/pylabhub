@@ -612,15 +612,26 @@ void RoleAPIBase::drain_inbox_sync()
     if (!iq || !eng)
         return;
 
+    // on_inbox is an OPTIONAL callback per HEP-CORE-0011: a role with
+    // an inbox queue configured is not required to handle inbox
+    // messages in script.  Skip the dispatch (and drain the queue by
+    // ack'ing) when the script/plugin doesn't export on_inbox.
+    // Without this guard, Lua/Python/Native's missing-callback→Error
+    // path would fire on every legitimate delivery.
+    const bool has_handler = eng->has_callback("on_inbox");
+
     while (true)
     {
         const auto *item = iq->recv_one(std::chrono::milliseconds{0});
         if (!item)
             break;
 
-        eng->invoke_on_inbox(InvokeInbox{
-            item->data, iq->item_size(),
-            item->sender_id, item->seq});
+        if (has_handler)
+        {
+            eng->invoke_on_inbox(InvokeInbox{
+                item->data, iq->item_size(),
+                item->sender_id, item->seq});
+        }
 
         iq->send_ack(0);
     }
