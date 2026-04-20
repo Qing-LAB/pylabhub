@@ -3193,12 +3193,17 @@ int shared_data_cross_thread_visible(const std::string &dir)
 int has_callback_detects_presence_absence(const std::string &dir)
 {
     // Strengthened over V2.  V2 only checked 4 names (one absent).
-    // This body covers all 6 callback names that the engine extracts
-    // refs for at load_script time (lua_engine.cpp:227-232):
-    //   on_init, on_stop, on_produce, on_consume, on_process, on_inbox
-    // — splitting them into "defined" and "not defined" sets so a
-    // regression that confuses presence/absence direction would fail
-    // for at least one entry on each side.
+    // This body exhaustively covers has_callback's three code paths
+    // (lua_engine.cpp:578-602):
+    //
+    //   1. The 6 hard-coded callback slots that load_script extracts
+    //      refs for (on_init, on_stop, on_produce, on_consume,
+    //      on_process, on_inbox).  Split into "defined" and "absent"
+    //      sets so a regression that confuses presence/absence
+    //      direction fails for at least one entry on each side.
+    //   2. Unknown name fallback → lua_getglobal → returns true if
+    //      a global function with that name exists.
+    //   3. Unknown name with no matching global → returns false.
     //
     // Inline setup (no setup_role_engine) because we need to drive
     // load_script ourselves with a script that defines a deliberate
@@ -3206,12 +3211,16 @@ int has_callback_detects_presence_absence(const std::string &dir)
     return run_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
-            // Defined: on_produce, on_init, on_inbox.
-            // Absent:  on_stop, on_consume, on_process.
+            // Defined: on_produce, on_init, on_inbox + one ad-hoc
+            //          global function (not a role-callback name) so
+            //          we can exercise the lua_getglobal fallback.
+            // Absent:  on_stop, on_consume, on_process,
+            //          totally_made_up_name.
             write_script(script_dir, R"LUA(
                 function on_produce(tx, msgs, api) return true end
                 function on_init(api) end
                 function on_inbox(msg, api) return true end
+                function ad_hoc_helper() end
             )LUA");
 
             RoleHostCore core;
@@ -3220,20 +3229,27 @@ int has_callback_detects_presence_absence(const std::string &dir)
             ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
                                             "on_produce"));
 
-            // Present.
+            // Path 1 — present role callbacks (hard-coded ref slot).
             EXPECT_TRUE(engine.has_callback("on_produce"));
             EXPECT_TRUE(engine.has_callback("on_init"));
             EXPECT_TRUE(engine.has_callback("on_inbox"));
 
-            // Absent.
+            // Path 1 — absent role callbacks.
             EXPECT_FALSE(engine.has_callback("on_stop"));
             EXPECT_FALSE(engine.has_callback("on_consume"));
             EXPECT_FALSE(engine.has_callback("on_process"));
 
-            // Wholly unknown name (not even one of the role-callback
-            // names) — must still report false.  Pins that
-            // has_callback isn't accidentally always-true for unknown.
-            EXPECT_FALSE(engine.has_callback("totally_made_up_name"));
+            // Path 2 — unknown name WITH a matching global function:
+            // must hit the lua_getglobal fallback and return true.
+            EXPECT_TRUE(engine.has_callback("ad_hoc_helper"))
+                << "has_callback unknown-name fallback must look up "
+                   "the global table — a regression that always "
+                   "returns false for unknown names would fail here";
+
+            // Path 3 — unknown name WITH NO matching global → false.
+            EXPECT_FALSE(engine.has_callback("totally_made_up_name"))
+                << "has_callback must NOT be accidentally always-true "
+                   "for unknown names";
 
             engine.finalize();
         },
