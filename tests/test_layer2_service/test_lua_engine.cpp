@@ -1011,22 +1011,66 @@ TEST_F(LuaEngineIsolatedTest, Eval_ReturnsScalarResult)
 }
 
 // ============================================================================
+// Chunk 8b — multi-state / thread-state (Pattern 3)
+//
+// LuaEngine is multi-state: each non-owner thread that calls
+// invoke()/eval() gets its own thread-local child engine. Lua globals
+// are PER-STATE (do NOT leak between threads). RoleHostCore's
+// shared_data IS thread-shared. These tests pin both invariants in
+// both directions.
+// ============================================================================
+
+TEST_F(LuaEngineIsolatedTest, SupportsMultiState_ReturnsTrue)
+{
+    auto w = SpawnWorker(
+        "lua_engine.supports_multi_state_returns_true",
+        {unique_dir("multi_state")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, State_PersistsAcrossCalls)
+{
+    auto w = SpawnWorker(
+        "lua_engine.state_persists_across_calls",
+        {unique_dir("state_persist")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Invoke_FromNonOwnerThread_Works)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_from_non_owner_thread_works",
+        {unique_dir("invoke_nonowner")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Invoke_NonOwnerThread_UsesIndependentState)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_non_owner_thread_uses_independent_state",
+        {unique_dir("indep_state")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Invoke_ConcurrentOwnerAndNonOwner)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_concurrent_owner_and_non_owner",
+        {unique_dir("concurrent")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, SharedData_CrossThread_Visible)
+{
+    auto w = SpawnWorker(
+        "lua_engine.shared_data_cross_thread_visible",
+        {unique_dir("sd_xthread")});
+    ExpectWorkerOk(w);
+}
+
+// ============================================================================
 // 8. Error handling
 // ============================================================================
-
-// ============================================================================
-// 9. supports_multi_state
-// ============================================================================
-
-TEST_F(LuaEngineTest, SupportsMultiState_ReturnsTrue)
-{
-    write_script("function on_produce(tx, msgs, api) return true end");
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    EXPECT_TRUE(engine.supports_multi_state());
-    engine.finalize();
-}
 
 // ============================================================================
 // 10. has_callback
@@ -1193,46 +1237,6 @@ TEST_F(LuaEngineTest, InvokeOnInbox_MissingType_ReportsError)
     engine.finalize();
 }
 
-// ============================================================================
-// 13. State persistence across calls
-// ============================================================================
-
-TEST_F(LuaEngineTest, StatePersistsAcrossCalls)
-{
-    // Script maintains a counter across multiple invoke calls.
-    write_script(R"(
-        call_count = 0
-        function on_produce(tx, msgs, api)
-            call_count = call_count + 1
-            if tx.slot then
-                tx.slot.value = call_count
-            end
-            return true
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    std::vector<IncomingMessage> msgs;
-
-    // Call 3 times — counter should increment.
-    float buf1 = 0.0f;
-    engine.invoke_produce(InvokeTx{&buf1, sizeof(buf1)}, msgs);
-    EXPECT_FLOAT_EQ(buf1, 1.0f);
-
-    float buf2 = 0.0f;
-    engine.invoke_produce(InvokeTx{&buf2, sizeof(buf2)}, msgs);
-    EXPECT_FLOAT_EQ(buf2, 2.0f);
-
-    float buf3 = 0.0f;
-    engine.invoke_produce(InvokeTx{&buf3, sizeof(buf3)}, msgs);
-    EXPECT_FLOAT_EQ(buf3, 3.0f);
-
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    engine.finalize();
-}
 
 // ============================================================================
 // 14. Consumer bare messages format
@@ -1353,132 +1357,6 @@ TEST_F(LuaEngineTest, MetricsClosures_InReceivedWorks)
 // ============================================================================
 // Generic invoke() tests
 // ============================================================================
-
-TEST_F(LuaEngineTest, Invoke_FromNonOwnerThread_Works)
-{
-    write_script(R"(
-function on_produce(tx, msgs, api) return true end
-function on_heartbeat() end
-)");
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    bool result = false;
-    std::thread t([&] { result = engine.invoke("on_heartbeat"); });
-    t.join();
-
-    EXPECT_TRUE(result);
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, Invoke_NonOwnerThread_UsesIndependentState)
-{
-    // Verify that a non-owner thread gets its own lua_State:
-    // setting a global on the non-owner thread should NOT be visible
-    // on the owner's state.
-    write_script(R"(
-function on_produce(tx, msgs, api) return true end
-function set_marker() marker_set = true end
-)");
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    // Non-owner thread sets a global variable.
-    std::thread t([&] { engine.invoke("set_marker"); });
-    t.join();
-
-    // Owner thread: marker should NOT be visible (different state).
-    auto result = engine.eval("return marker_set");
-    // marker_set is nil in owner's state → eval returns null JSON.
-    EXPECT_EQ(result.status, InvokeStatus::Ok);
-    EXPECT_TRUE(result.value.is_null()) << "Non-owner global leaked to owner state";
-
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, Invoke_ConcurrentOwnerAndNonOwner)
-{
-    // Verify: owner and non-owner invoke concurrently, both complete
-    // their work, shared_data reflects both threads' contributions.
-    write_script(R"(
-function on_produce(tx, msgs, api) return true end
-function inc_owner()
-    local v = api.get_shared_data("owner_count") or 0
-    api.set_shared_data("owner_count", v + 1)
-end
-function inc_child()
-    local v = api.get_shared_data("child_count") or 0
-    api.set_shared_data("child_count", v + 1)
-end
-)");
-    RoleHostCore core;
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    constexpr int kCalls = 20;
-    std::atomic<bool> barrier{false};
-    std::atomic<int> child_ok{0};
-
-    std::thread t([&]
-    {
-        // Wait for barrier so both threads start together.
-        while (!barrier.load(std::memory_order_acquire)) {}
-        for (int i = 0; i < kCalls; ++i)
-        {
-            if (engine.invoke("inc_child"))
-                child_ok.fetch_add(1, std::memory_order_relaxed);
-        }
-    });
-
-    int owner_ok = 0;
-    barrier.store(true, std::memory_order_release); // release both
-    for (int i = 0; i < kCalls; ++i)
-    {
-        if (engine.invoke("inc_owner"))
-            ++owner_ok;
-    }
-
-    t.join();
-
-    // Both threads completed their calls.
-    EXPECT_EQ(owner_ok, kCalls);
-    EXPECT_EQ(child_ok.load(), kCalls);
-
-    // shared_data has evidence from both threads.
-    auto ov = core.get_shared_data("owner_count");
-    auto cv = core.get_shared_data("child_count");
-    ASSERT_TRUE(ov.has_value());
-    ASSERT_TRUE(cv.has_value());
-    EXPECT_EQ(std::get<int64_t>(*ov), kCalls);
-    EXPECT_EQ(std::get<int64_t>(*cv), kCalls);
-
-    engine.finalize();
-}
-
-// ============================================================================
-// Shared data tests (api.get_shared_data / api.set_shared_data)
-// ============================================================================
-
-TEST_F(LuaEngineTest, SharedData_CrossThread_Visible)
-{
-    write_script(R"(
-function on_produce(tx, msgs, api) return true end
-function set_marker() api.set_shared_data("from_thread", 123) end
-)");
-    RoleHostCore core;
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    // Non-owner thread sets shared data via its own Lua state.
-    std::thread t([&] { engine.invoke("set_marker"); });
-    t.join();
-
-    // Verify from C++ (shared map in core_).
-    auto val = core.get_shared_data("from_thread");
-    ASSERT_TRUE(val.has_value());
-    EXPECT_EQ(std::get<int64_t>(*val), 123);
-    engine.finalize();
-}
 
 // ============================================================================
 // Lua api.metrics() — hierarchical table structure

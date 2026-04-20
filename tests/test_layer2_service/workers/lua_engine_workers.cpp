@@ -29,10 +29,12 @@
 #include <fmt/core.h>
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
 
 namespace fs = std::filesystem;
 using pylabhub::hub::FieldDef;
@@ -2917,6 +2919,275 @@ int eval_returns_scalar_result(const std::string &dir)
         });
 }
 
+// ── Multi-state / thread-state (chunk 8b) ──────────────────────────────────
+
+int supports_multi_state_returns_true(const std::string &dir)
+{
+    // Strengthened over V2 SupportsMultiState_ReturnsTrue.  V2
+    // checked the property AFTER setup_engine — at which point a
+    // primary state exists but no thread states have been created.
+    // This body checks the property TWICE: immediately after
+    // initialize() (no Lua state created yet) AND after build_api
+    // (primary state initialized).  supports_multi_state is a
+    // structural engine property; it must hold in both lifecycle
+    // phases.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir,
+                         "function on_produce(tx, msgs, api) return true end");
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            ASSERT_TRUE(engine.initialize("test", &core));
+            // Right after initialize — no script loaded, no thread
+            // states. Property must already be true.
+            EXPECT_TRUE(engine.supports_multi_state())
+                << "supports_multi_state must hold immediately after "
+                   "initialize() — it is structural, not state-dependent";
+
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
+                                            "on_produce"));
+            auto spec = simple_schema();
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
+                                                   "aligned"));
+            auto api = make_api(core);
+            ASSERT_TRUE(engine.build_api(*api));
+
+            // After build_api too.
+            EXPECT_TRUE(engine.supports_multi_state());
+
+            engine.finalize();
+        },
+        "lua_engine::supports_multi_state_returns_true",
+        Logger::GetLifecycleModule());
+}
+
+int state_persists_across_calls(const std::string &dir)
+{
+    // Strengthened over V2.  V2 invokes 3 times and checks the
+    // counter increments to 3.  This body adds a 4th call after
+    // a no-op sleep equivalent (no sleep — just an extra invoke
+    // to confirm continued increment) AND verifies the counter
+    // persists in the OWNER state only (a non-owner thread reading
+    // it would see 0, but that's the territory of the next test).
+    return produce_worker_with_script(
+        dir, "lua_engine::state_persists_across_calls",
+        R"LUA(
+            call_count = 0
+            function on_produce(tx, msgs, api)
+                call_count = call_count + 1
+                if tx.slot then
+                    tx.slot.value = call_count
+                end
+                return true
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+
+            for (size_t i = 1; i <= 4; ++i)
+            {
+                float buf = 0.0f;
+                auto r = engine.invoke_produce(
+                    pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+                EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Commit);
+                EXPECT_FLOAT_EQ(buf, static_cast<float>(i))
+                    << "call_count must be " << i << " on iteration "
+                    << i << " — Lua global state must persist across "
+                    << "invocations on the owner thread";
+            }
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int invoke_from_non_owner_thread_works(const std::string &dir)
+{
+    // Strengthened over V2.  V2 only checked invoke() returned true
+    // from the spawned thread.  This body additionally pins that the
+    // function actually executed by observing a side-effect via
+    // shared_data (which IS thread-shared — see the dedicated
+    // shared_data_cross_thread_visible test for the contrast with
+    // Lua globals).
+    return produce_worker_with_script(
+        dir, "lua_engine::invoke_from_non_owner_thread_works",
+        R"LUA(
+            function on_produce(tx, msgs, api) return true end
+            function on_heartbeat()
+                api.set_shared_data("hb_thread_ran", true)
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore &core) {
+            bool result = false;
+            std::thread t([&] { result = engine.invoke("on_heartbeat"); });
+            t.join();
+
+            EXPECT_TRUE(result)
+                << "invoke from non-owner thread must succeed";
+
+            // Side-effect must have landed in shared core.
+            auto v = core.get_shared_data("hb_thread_ran");
+            ASSERT_TRUE(v.has_value())
+                << "non-owner thread invoke succeeded but the callback "
+                   "did not actually run";
+            EXPECT_TRUE(std::get<bool>(*v));
+        });
+}
+
+int invoke_non_owner_thread_uses_independent_state(const std::string &dir)
+{
+    // Strengthened over V2.  V2 verified the FORWARD direction
+    // (non-owner sets a global, owner can't see it).  This body
+    // ALSO verifies the REVERSE direction (owner sets a global,
+    // non-owner can't see it).  Both directions of isolation must
+    // hold for thread-state independence to be a real property,
+    // not a one-way fluke.
+    return produce_worker_with_script(
+        dir, "lua_engine::invoke_non_owner_thread_uses_independent_state",
+        R"LUA(
+            function on_produce(tx, msgs, api) return true end
+            function set_in_child() child_marker = true end
+            function set_in_owner() owner_marker = true end
+            function read_child_marker_in_owner()
+                api.set_shared_data("child_marker_seen_in_owner",
+                                    child_marker == true)
+            end
+            function read_owner_marker_in_child()
+                api.set_shared_data("owner_marker_seen_in_child",
+                                    owner_marker == true)
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore &core) {
+            // Forward: child sets, owner reads → must be invisible.
+            std::thread t1([&] { engine.invoke("set_in_child"); });
+            t1.join();
+            engine.invoke("read_child_marker_in_owner");
+            auto v1 = core.get_shared_data("child_marker_seen_in_owner");
+            ASSERT_TRUE(v1.has_value());
+            EXPECT_FALSE(std::get<bool>(*v1))
+                << "child_marker set in non-owner thread leaked into "
+                   "owner state — Lua globals must be per-state";
+
+            // Reverse: owner sets, child reads → must be invisible.
+            engine.invoke("set_in_owner");
+            std::thread t2([&] {
+                engine.invoke("read_owner_marker_in_child");
+            });
+            t2.join();
+            auto v2 = core.get_shared_data("owner_marker_seen_in_child");
+            ASSERT_TRUE(v2.has_value());
+            EXPECT_FALSE(std::get<bool>(*v2))
+                << "owner_marker set in owner thread leaked into "
+                   "non-owner state — isolation must be bidirectional";
+
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int invoke_concurrent_owner_and_non_owner(const std::string &dir)
+{
+    // Straight conversion — V2 already strong (barrier sync, kCalls
+    // iterations on each side, both shared_data counts verified).
+    // The kCalls magic number stays at 20 to match V2 behavior; if
+    // STRESS_TEST_LEVEL gets adopted this is one of the candidates
+    // for amplification (already noted in TESTING_TODO).
+    return produce_worker_with_script(
+        dir, "lua_engine::invoke_concurrent_owner_and_non_owner",
+        R"LUA(
+            function on_produce(tx, msgs, api) return true end
+            function inc_owner()
+                local v = api.get_shared_data("owner_count") or 0
+                api.set_shared_data("owner_count", v + 1)
+            end
+            function inc_child()
+                local v = api.get_shared_data("child_count") or 0
+                api.set_shared_data("child_count", v + 1)
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore &core) {
+            constexpr int kCalls = 20;
+            std::atomic<bool> barrier{false};
+            std::atomic<int>  child_ok{0};
+
+            std::thread t([&] {
+                while (!barrier.load(std::memory_order_acquire)) {}
+                for (int i = 0; i < kCalls; ++i)
+                    if (engine.invoke("inc_child"))
+                        child_ok.fetch_add(1, std::memory_order_relaxed);
+            });
+
+            int owner_ok = 0;
+            barrier.store(true, std::memory_order_release);
+            for (int i = 0; i < kCalls; ++i)
+                if (engine.invoke("inc_owner"))
+                    ++owner_ok;
+            t.join();
+
+            EXPECT_EQ(owner_ok, kCalls);
+            EXPECT_EQ(child_ok.load(), kCalls);
+
+            auto ov = core.get_shared_data("owner_count");
+            auto cv = core.get_shared_data("child_count");
+            ASSERT_TRUE(ov.has_value());
+            ASSERT_TRUE(cv.has_value());
+            EXPECT_EQ(std::get<int64_t>(*ov), kCalls);
+            EXPECT_EQ(std::get<int64_t>(*cv), kCalls);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int shared_data_cross_thread_visible(const std::string &dir)
+{
+    // Strengthened over V2.  V2 verified the FORWARD direction
+    // (non-owner thread writes via Lua, owner reads via C++).  This
+    // body also verifies the REVERSE (owner writes via C++ /
+    // set_shared_data, non-owner thread reads via Lua and reports
+    // back).  Cross-thread visibility must be bidirectional —
+    // RoleHostCore::shared_data_ is one map shared across threads,
+    // not per-thread storage.
+    return produce_worker_with_script(
+        dir, "lua_engine::shared_data_cross_thread_visible",
+        R"LUA(
+            function on_produce(tx, msgs, api) return true end
+            function set_marker_in_child()
+                api.set_shared_data("from_thread", 123)
+            end
+            function read_owner_value_in_child()
+                local v = api.get_shared_data("from_owner") or -1
+                api.set_shared_data("read_back_in_child", v)
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore &core) {
+            // Forward: child writes via Lua, owner reads via C++.
+            std::thread t1([&] {
+                engine.invoke("set_marker_in_child");
+            });
+            t1.join();
+
+            auto v1 = core.get_shared_data("from_thread");
+            ASSERT_TRUE(v1.has_value());
+            EXPECT_EQ(std::get<int64_t>(*v1), 123)
+                << "non-owner Lua write must be visible to C++ owner";
+
+            // Reverse: C++ writes (simulating an owner write or
+            // an external producer) → non-owner Lua reads it back.
+            core.set_shared_data("from_owner", int64_t{456});
+            std::thread t2([&] {
+                engine.invoke("read_owner_value_in_child");
+            });
+            t2.join();
+
+            auto v2 = core.get_shared_data("read_back_in_child");
+            ASSERT_TRUE(v2.has_value());
+            EXPECT_EQ(std::get<int64_t>(*v2), 456)
+                << "C++-side write must be visible to non-owner Lua "
+                   "thread — RoleHostCore::shared_data_ is one map "
+                   "shared across all threads, not per-thread";
+
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
 } // namespace lua_engine
 } // namespace pylabhub::tests::worker
 
@@ -3101,6 +3372,20 @@ struct LuaEngineWorkerRegistrar
                     return invoke_after_finalize_returns_false(dir);
                 if (sc == "eval_returns_scalar_result")
                     return eval_returns_scalar_result(dir);
+
+                // Chunk 8b: multi-state / thread-state
+                if (sc == "supports_multi_state_returns_true")
+                    return supports_multi_state_returns_true(dir);
+                if (sc == "state_persists_across_calls")
+                    return state_persists_across_calls(dir);
+                if (sc == "invoke_from_non_owner_thread_works")
+                    return invoke_from_non_owner_thread_works(dir);
+                if (sc == "invoke_non_owner_thread_uses_independent_state")
+                    return invoke_non_owner_thread_uses_independent_state(dir);
+                if (sc == "invoke_concurrent_owner_and_non_owner")
+                    return invoke_concurrent_owner_and_non_owner(dir);
+                if (sc == "shared_data_cross_thread_visible")
+                    return shared_data_cross_thread_visible(dir);
 
                 fmt::print(stderr,
                            "[lua_engine] ERROR: unknown scenario '{}'\n", sc);
