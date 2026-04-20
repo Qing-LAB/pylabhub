@@ -208,6 +208,41 @@ Affected tests that should adopt the helpers:
 When done: run `ctest -j2 --repeat until-pass:3 -L layer2` at
 each stress level (Low / Medium / High) to confirm no new flakes.
 
+### Open: Missing-callback error-count wiring across engines (2026-04-20)
+
+Static-review follow-up deferred from the scripting-engine Tier A
+pass (commit on branch `feature/lua-role-support` that unified
+`stop_on_script_error_` handling).  All three engines now return
+`InvokeResult::Error` when an invoke hits a hot-path callback that
+is not registered (structurally unreachable; load_script's
+required_callback guard would have failed earlier).  **However none
+of the three calls `inc_script_error_count()` on that path**, so
+the "loud observable bug signal" is only half-wired:
+
+| Engine | Missing-callback return | `script_error_count++`? |
+|---|---|---|
+| Lua | `Error` | ❌ no |
+| Python | `Error` | ❌ no |
+| Native | `Error` | ❌ no |
+
+Options when we pick this up:
+
+1. **Add the counter increment** uniformly — one-line change in each
+   engine.  Pairs naturally with stop_on_script_error routing via a
+   shared base-class `handle_dispatch_error_(callback_name)` helper.
+2. **Use `assert`** instead, treating the path as an invariant
+   violation (fastest to diagnose in debug; silent in release).
+3. **Do nothing** — keep the return-value signal only, on the basis
+   that load_script already guards the precondition and the
+   hot-path branch exists purely as defensive plumbing.
+
+Decision deferred per user direction 2026-04-20 ("error counts can
+be added later"): keep the uniform `Error` return for now, revisit
+when broader native error-accounting (Finding #3 of the scripting
+review) is designed.  Related: HEP-CORE-0011 "Error-policy
+consistency" subsection should document the chosen policy when the
+decision lands.
+
 ### Phase C: Integration Tests
 **Status**: ✅ Complete (424/424 as of 2026-02-19; suite grown to **1181/1181** by 2026-03-30)
 

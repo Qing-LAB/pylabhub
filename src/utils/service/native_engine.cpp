@@ -698,8 +698,12 @@ InvokeResult NativeEngine::invoke_produce(
     InvokeTx tx,
     std::vector<IncomingMessage> & /*msgs*/)
 {
+    // Missing callback — structurally unreachable: load_script's
+    // required_callback enforcement would have failed earlier.  If
+    // reached, it's a dispatch bug: return Error to surface it loudly.
+    // Matches Lua/Python behaviour.
     if (!fn_on_produce_)
-        return InvokeResult::Discard;
+        return InvokeResult::Error;
     assert(native_ctx_ && "invoke_produce called without build_api");
     plh_tx_t c_tx{tx.slot, tx.slot_size, native_ctx_->tx_fz, native_ctx_->tx_fz_sz};
     return fn_on_produce_(&c_tx) ? InvokeResult::Commit : InvokeResult::Discard;
@@ -710,7 +714,7 @@ InvokeResult NativeEngine::invoke_consume(
     std::vector<IncomingMessage> & /*msgs*/)
 {
     if (!fn_on_consume_)
-        return InvokeResult::Discard;
+        return InvokeResult::Error;
     assert(native_ctx_ && "invoke_consume called without build_api");
     plh_rx_t c_rx{rx.slot, rx.slot_size, native_ctx_->rx_fz, native_ctx_->rx_fz_sz};
     return fn_on_consume_(&c_rx) ? InvokeResult::Commit : InvokeResult::Discard;
@@ -721,7 +725,7 @@ InvokeResult NativeEngine::invoke_process(
     std::vector<IncomingMessage> & /*msgs*/)
 {
     if (!fn_on_process_)
-        return InvokeResult::Discard;
+        return InvokeResult::Error;
     assert(native_ctx_ && "invoke_process called without build_api");
     plh_rx_t c_rx{rx.slot, rx.slot_size, native_ctx_->rx_fz, native_ctx_->rx_fz_sz};
     plh_tx_t c_tx{tx.slot, tx.slot_size, native_ctx_->tx_fz, native_ctx_->tx_fz_sz};
@@ -732,7 +736,7 @@ InvokeResult NativeEngine::invoke_on_inbox(
     InvokeInbox msg)
 {
     if (!fn_on_inbox_)
-        return InvokeResult::Discard;
+        return InvokeResult::Error;
     plh_inbox_msg_t c_msg{msg.data, msg.data_size, msg.sender_uid.c_str(), msg.seq};
     return fn_on_inbox_(&c_msg) ? InvokeResult::Commit : InvokeResult::Discard;
 }
