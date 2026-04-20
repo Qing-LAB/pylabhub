@@ -941,6 +941,76 @@ TEST_F(LuaEngineIsolatedTest, Finalize_DoubleCallIsSafe)
 }
 
 // ============================================================================
+// Chunk 8a — generic engine.invoke() / engine.eval() (Pattern 3)
+//
+// The role callbacks (invoke_produce/consume/process) are NOT the only
+// engine entry points — scripts can expose arbitrary callable functions
+// (e.g. on_heartbeat, band handlers) that role hosts dispatch via the
+// generic invoke(name[, args]) API.  eval() runs ad-hoc Lua code and
+// captures the result as JSON. Both have distinct contracts covered here.
+// ============================================================================
+
+TEST_F(LuaEngineIsolatedTest, Invoke_ExistingFunction_ReturnsTrue)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_existing_function_returns_true",
+        {unique_dir("invoke_exist")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Invoke_NonExistentFunction_ReturnsFalse)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_non_existent_function_returns_false",
+        {unique_dir("invoke_nx")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Invoke_EmptyName_ReturnsFalse)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_empty_name_returns_false",
+        {unique_dir("invoke_empty")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Invoke_ScriptError_ReturnsFalseAndIncrementsErrors)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_script_error_returns_false_and_increments_errors",
+        {unique_dir("invoke_script_err")});
+    // lua_state.cpp:379 logs "[<tag>] Lua error: <file>:<line>: <msg>"
+    // when pcall fails. generic invoke uses the pcall path too.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"intentional test error"});
+}
+
+TEST_F(LuaEngineIsolatedTest, Invoke_WithArgs_ReturnsTrue)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_with_args_returns_true",
+        {unique_dir("invoke_args")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Invoke_AfterFinalize_ReturnsFalse)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_after_finalize_returns_false",
+        {unique_dir("invoke_finalized")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Eval_ReturnsScalarResult)
+{
+    auto w = SpawnWorker(
+        "lua_engine.eval_returns_scalar_result",
+        {unique_dir("eval_scalar")});
+    ExpectWorkerOk(w);
+}
+
+// ============================================================================
 // 8. Error handling
 // ============================================================================
 
@@ -1284,54 +1354,6 @@ TEST_F(LuaEngineTest, MetricsClosures_InReceivedWorks)
 // Generic invoke() tests
 // ============================================================================
 
-TEST_F(LuaEngineTest, Invoke_ExistingFunction_ReturnsTrue)
-{
-    write_script(R"(
-function on_produce(tx, msgs, api) return true end
-function on_heartbeat() end
-)");
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    EXPECT_TRUE(engine.invoke("on_heartbeat"));
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, Invoke_NonExistentFunction_ReturnsFalse)
-{
-    write_script("function on_produce(tx, msgs, api) return true end");
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    EXPECT_FALSE(engine.invoke("no_such_function"));
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, Invoke_EmptyName_ReturnsFalse)
-{
-    write_script("function on_produce(tx, msgs, api) return true end");
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    EXPECT_FALSE(engine.invoke(""));
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, Invoke_ScriptError_ReturnsFalseAndIncrementsErrors)
-{
-    write_script(R"(
-function on_produce(tx, msgs, api) return true end
-function bad_func() error("intentional test error") end
-)");
-    RoleHostCore core;
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    EXPECT_FALSE(engine.invoke("bad_func"));
-    EXPECT_EQ(core.script_error_count(), 1u);
-    engine.finalize();
-}
-
 TEST_F(LuaEngineTest, Invoke_FromNonOwnerThread_Works)
 {
     write_script(R"(
@@ -1346,20 +1368,6 @@ function on_heartbeat() end
     t.join();
 
     EXPECT_TRUE(result);
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, Invoke_WithArgs_ReturnsTrue)
-{
-    write_script(R"(
-function on_produce(tx, msgs, api) return true end
-function greet() end
-)");
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    nlohmann::json args = {{"name", "test"}};
-    EXPECT_TRUE(engine.invoke("greet", args));
     engine.finalize();
 }
 
@@ -1445,40 +1453,6 @@ end
     EXPECT_EQ(std::get<int64_t>(*cv), kCalls);
 
     engine.finalize();
-}
-
-TEST_F(LuaEngineTest, Eval_ReturnsScalarResult)
-{
-    write_script("function on_produce(tx, msgs, api) return true end");
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    auto r1 = engine.eval("return 42");
-    EXPECT_EQ(r1.status, InvokeStatus::Ok);
-    EXPECT_EQ(r1.value, 42);
-
-    auto r2 = engine.eval("return 'hello'");
-    EXPECT_EQ(r2.status, InvokeStatus::Ok);
-    EXPECT_EQ(r2.value, "hello");
-
-    auto r3 = engine.eval("return true");
-    EXPECT_EQ(r3.status, InvokeStatus::Ok);
-    EXPECT_EQ(r3.value, true);
-
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, Invoke_AfterFinalize_ReturnsFalse)
-{
-    write_script(R"(
-function on_produce(tx, msgs, api) return true end
-function on_heartbeat() end
-)");
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-    engine.finalize();
-
-    EXPECT_FALSE(engine.invoke("on_heartbeat"));
 }
 
 // ============================================================================

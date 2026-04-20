@@ -2703,6 +2703,220 @@ int finalize_double_call_is_safe(const std::string &dir)
         Logger::GetLifecycleModule());
 }
 
+// ── Generic engine.invoke() / engine.eval() (chunk 8a) ─────────────────────
+
+int invoke_existing_function_returns_true(const std::string &dir)
+{
+    // Strengthened over V2 Invoke_ExistingFunction_ReturnsTrue.  V2
+    // only asserted invoke() return value; this body additionally
+    // verifies the function ACTUALLY executed (via set_shared_data
+    // side-effect) so a bug where invoke returns true without
+    // executing the callback would fail.
+    return produce_worker_with_script(
+        dir, "lua_engine::invoke_existing_function_returns_true",
+        R"LUA(
+            function on_produce(tx, msgs, api) return true end
+            function on_heartbeat()
+                api.set_shared_data("heartbeat_ran", true)
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore &core) {
+            EXPECT_TRUE(engine.invoke("on_heartbeat"));
+            // Body must have executed.
+            auto v = core.get_shared_data("heartbeat_ran");
+            ASSERT_TRUE(v.has_value())
+                << "invoke returned true but the callback did not run";
+            EXPECT_TRUE(std::holds_alternative<bool>(*v));
+            EXPECT_TRUE(std::get<bool>(*v));
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int invoke_non_existent_function_returns_false(const std::string &dir)
+{
+    // Strengthened: pins that missing-function is NOT counted as a
+    // script error (lookup miss is a return-false, not an error) —
+    // V2 did not check script_error_count.
+    return produce_worker_with_script(
+        dir, "lua_engine::invoke_non_existent_function_returns_false",
+        R"LUA(
+            function on_produce(tx, msgs, api) return true end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            EXPECT_FALSE(engine.invoke("no_such_function"));
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "name lookup miss must NOT count as a script error";
+        });
+}
+
+int invoke_empty_name_returns_false(const std::string &dir)
+{
+    // Strengthened: same non-error check as above; additionally pins
+    // that an empty name skips the whole function-lookup path
+    // (source: lua_engine.cpp:465 / :501 short-circuit before
+    // any lua_getglobal call).
+    return produce_worker_with_script(
+        dir, "lua_engine::invoke_empty_name_returns_false",
+        R"LUA(
+            function on_produce(tx, msgs, api) return true end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            EXPECT_FALSE(engine.invoke(""));
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "empty-name short-circuit must NOT count as a script error";
+        });
+}
+
+int invoke_script_error_returns_false_and_increments_errors(const std::string &dir)
+{
+    // V2 already asserts return false + count == 1.  No additional
+    // strengthening needed — the conversion alone is the value here.
+    return produce_worker_with_script(
+        dir,
+        "lua_engine::invoke_script_error_returns_false_and_increments_errors",
+        R"LUA(
+            function on_produce(tx, msgs, api) return true end
+            function bad_func() error("intentional test error") end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            EXPECT_FALSE(engine.invoke("bad_func"));
+            EXPECT_EQ(engine.script_error_count(), 1u);
+        });
+}
+
+int invoke_with_args_returns_true(const std::string &dir)
+{
+    // Strengthened over V2 Invoke_WithArgs_ReturnsTrue.  V2 only
+    // asserted true return — did NOT verify the args actually
+    // reached Lua.  The engine pushes args as a Lua table
+    // (lua_engine.cpp:525).  This body stores the received arg via
+    // set_shared_data so C++ can verify the table reached the
+    // callback with the expected keys/values.
+    return produce_worker_with_script(
+        dir, "lua_engine::invoke_with_args_returns_true",
+        R"LUA(
+            function on_produce(tx, msgs, api) return true end
+            function greet(args)
+                -- args is the table passed by engine.invoke(name, json)
+                api.set_shared_data("got_name", args.name)
+                api.set_shared_data("got_age", args.age)
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore &core) {
+            nlohmann::json args = {{"name", "alice"}, {"age", 30}};
+            EXPECT_TRUE(engine.invoke("greet", args));
+            EXPECT_EQ(engine.script_error_count(), 0u);
+
+            // Args must have propagated to Lua.
+            auto n = core.get_shared_data("got_name");
+            ASSERT_TRUE(n.has_value());
+            EXPECT_EQ(std::get<std::string>(*n), "alice");
+
+            auto a = core.get_shared_data("got_age");
+            ASSERT_TRUE(a.has_value());
+            EXPECT_EQ(std::get<int64_t>(*a), 30);
+        });
+}
+
+int invoke_after_finalize_returns_false(const std::string &dir)
+{
+    // Strengthened over V2.  V2 only asserted invoke returns false
+    // after finalize.  This body additionally:
+    //   (a) asserts eval() returns InvokeStatus::EngineShutdown
+    //       (distinct from ScriptError / NotFound) — source at
+    //       lua_engine.cpp:543-544.
+    //   (b) asserts script_error_count does NOT increment on the
+    //       post-finalize reject path — finalization-gate rejection
+    //       is NOT a script error.
+    //
+    // Complements chunk-7b Finalize_DoubleCallIsSafe which pins the
+    // same property for invoke_produce; this one covers the generic
+    // invoke() and eval() entry points.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, R"LUA(
+                function on_produce(tx, msgs, api) return true end
+                function on_heartbeat() end
+            )LUA");
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            std::unique_ptr<RoleAPIBase> api;
+            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api,
+                                           RoleKind::Producer));
+
+            engine.finalize();
+            EXPECT_EQ(engine.script_error_count(), 0u);
+
+            EXPECT_FALSE(engine.invoke("on_heartbeat"))
+                << "post-finalize invoke must return false";
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "post-finalize reject must NOT increment error count";
+
+            auto r = engine.eval("return 42");
+            EXPECT_EQ(r.status,
+                      pylabhub::scripting::InvokeStatus::EngineShutdown)
+                << "post-finalize eval must return EngineShutdown, not "
+                   "ScriptError — distinct status for 'engine is dead' "
+                   "vs 'script had an error'";
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        },
+        "lua_engine::invoke_after_finalize_returns_false",
+        Logger::GetLifecycleModule());
+}
+
+int eval_returns_scalar_result(const std::string &dir)
+{
+    // Strengthened over V2.  V2 tested 3 scalar types (int, string,
+    // bool).  This body also tests:
+    //   (d) nil return → JSON null (lua_to_json at the unconventional
+    //       boundary)
+    //   (e) fractional number → JSON double
+    //   (f) negative number → sign preserved through the JSON bridge
+    // And pins script_error_count stays 0 across all evals.
+    return produce_worker_with_script(
+        dir, "lua_engine::eval_returns_scalar_result",
+        R"LUA(
+            function on_produce(tx, msgs, api) return true end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            // Integer.
+            auto r1 = engine.eval("return 42");
+            EXPECT_EQ(r1.status, pylabhub::scripting::InvokeStatus::Ok);
+            EXPECT_EQ(r1.value, 42);
+
+            // String.
+            auto r2 = engine.eval("return 'hello'");
+            EXPECT_EQ(r2.status, pylabhub::scripting::InvokeStatus::Ok);
+            EXPECT_EQ(r2.value, "hello");
+
+            // Boolean.
+            auto r3 = engine.eval("return true");
+            EXPECT_EQ(r3.status, pylabhub::scripting::InvokeStatus::Ok);
+            EXPECT_EQ(r3.value, true);
+
+            // NEW: nil return → JSON null.
+            auto r4 = engine.eval("return nil");
+            EXPECT_EQ(r4.status, pylabhub::scripting::InvokeStatus::Ok);
+            EXPECT_TRUE(r4.value.is_null())
+                << "nil return must project to JSON null";
+
+            // NEW: fractional number.
+            auto r5 = engine.eval("return 3.5");
+            EXPECT_EQ(r5.status, pylabhub::scripting::InvokeStatus::Ok);
+            EXPECT_DOUBLE_EQ(r5.value.get<double>(), 3.5);
+
+            // NEW: negative number.
+            auto r6 = engine.eval("return -7");
+            EXPECT_EQ(r6.status, pylabhub::scripting::InvokeStatus::Ok);
+            EXPECT_EQ(r6.value, -7);
+
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "successful evals must NOT bump error count";
+        });
+}
+
 } // namespace lua_engine
 } // namespace pylabhub::tests::worker
 
@@ -2871,6 +3085,22 @@ struct LuaEngineWorkerRegistrar
                     return register_slot_type_bad_field_type_returns_false(dir);
                 if (sc == "finalize_double_call_is_safe")
                     return finalize_double_call_is_safe(dir);
+
+                // Chunk 8a: generic invoke / eval
+                if (sc == "invoke_existing_function_returns_true")
+                    return invoke_existing_function_returns_true(dir);
+                if (sc == "invoke_non_existent_function_returns_false")
+                    return invoke_non_existent_function_returns_false(dir);
+                if (sc == "invoke_empty_name_returns_false")
+                    return invoke_empty_name_returns_false(dir);
+                if (sc == "invoke_script_error_returns_false_and_increments_errors")
+                    return invoke_script_error_returns_false_and_increments_errors(dir);
+                if (sc == "invoke_with_args_returns_true")
+                    return invoke_with_args_returns_true(dir);
+                if (sc == "invoke_after_finalize_returns_false")
+                    return invoke_after_finalize_returns_false(dir);
+                if (sc == "eval_returns_scalar_result")
+                    return eval_returns_scalar_result(dir);
 
                 fmt::print(stderr,
                            "[lua_engine] ERROR: unknown scenario '{}'\n", sc);
