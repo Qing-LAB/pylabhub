@@ -225,6 +225,12 @@ class PythonEngine : public ScriptEngine
     /// Handle a Python exception from pcall.
     InvokeResult on_python_error_(const char *callback_name, const py::error_already_set &e);
 
+    /// Central error-dispatch for non-exception script errors (wrong
+    /// return value, config error, etc.).  Bumps script_error_count
+    /// and honors stop_on_script_error_ consistently with
+    /// on_python_error_.  Caller logs the ERROR diagnostic first.
+    InvokeResult handle_script_error_(const char *callback_tag);
+
     /// Clear all py::object members (must be called with GIL held, before Py_Finalize).
     void clear_pyobjects_();
 };

@@ -976,9 +976,11 @@ InvokeResult LuaEngine::invoke_on_inbox(InvokeInbox msg)
         LOGGER_ERROR("[{}] invoke_on_inbox: InboxFrame type not registered — "
                      "inbox_schema must be configured and registered before use",
                      log_tag_);
-        api_->core()->inc_script_error_count();
         lua_pop(L, 1); // pop function
-        return InvokeResult::Error;
+        // Route through on_pcall_error_ so stop_on_script_error_ is
+        // honored consistently with the other inbox error paths
+        // (pcall failure, wrong return type, nil return).
+        return on_pcall_error_("on_inbox [InboxFrame not registered]");
     }
 
     // Arg 1: msg table {data=cdata, sender_uid=string, seq=number}.

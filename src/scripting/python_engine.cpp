@@ -1059,9 +1059,9 @@ InvokeResult PythonEngine::invoke_on_inbox(InvokeInbox msg)
         LOGGER_ERROR("[{}] invoke_on_inbox: InboxFrame type not registered — "
                      "inbox_schema must be configured and registered before use",
                      log_tag_);
-        api_->core()->inc_script_error_count();
+        auto r = handle_script_error_("on_inbox [InboxFrame not registered]");
         process_pending_();
-        return InvokeResult::Error;
+        return r;
     }
 
     py::gil_scoped_acquire g;
@@ -1178,14 +1178,8 @@ InvokeResult PythonEngine::parse_return_value_(const py::object &ret, const char
         LOGGER_ERROR("[{}] {} returned None — explicit 'return True' or "
                      "'return False' is required. Treating as error.",
                      log_tag_, callback_name);
-        api_->core()->inc_script_error_count();
-        if (stop_on_script_error_)
-        {
-            LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} [missing return]",
-                         log_tag_, callback_name);
-            api_->core()->request_stop();
-        }
-        return InvokeResult::Error;
+        const std::string tag = std::string(callback_name) + " [missing return]";
+        return handle_script_error_(tag.c_str());
     }
 
     // Wrong type.
@@ -1193,26 +1187,25 @@ InvokeResult PythonEngine::parse_return_value_(const py::object &ret, const char
                  "expected 'return True' or 'return False'. Treating as error.",
                  log_tag_, callback_name,
                  py::str(py::type::of(ret).attr("__name__")).cast<std::string>());
-    api_->core()->inc_script_error_count();
-    if (stop_on_script_error_)
-    {
-        LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} [wrong return type]",
-                     log_tag_, callback_name);
-        api_->core()->request_stop();
-    }
-    return InvokeResult::Error;
+    const std::string tag = std::string(callback_name) + " [wrong return type]";
+    return handle_script_error_(tag.c_str());
 }
 
 InvokeResult PythonEngine::on_python_error_(const char *callback_name,
                                              const py::error_already_set &e)
 {
-    api_->core()->inc_script_error_count();
     LOGGER_ERROR("[{}] {} error: {}", log_tag_, callback_name, e.what());
+    return handle_script_error_(callback_name);
+}
+
+InvokeResult PythonEngine::handle_script_error_(const char *callback_tag)
+{
+    api_->core()->inc_script_error_count();
 
     if (stop_on_script_error_)
     {
         LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} error",
-                     log_tag_, callback_name);
+                     log_tag_, callback_tag);
         api_->core()->request_stop();
     }
     return InvokeResult::Error;
