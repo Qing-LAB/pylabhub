@@ -2083,6 +2083,291 @@ def on_produce(tx, msgs, api):
         });
 }
 
+// ── Load script + script errors (chunk 8) ─────────────────────────────────
+//
+// load_script + register_slot_type + callback-error paths.  Covers:
+//   - nonexistent script path
+//   - script present but required_callback absent
+//   - register_slot_type with bad field type (post canonical-name
+//     tightening, must use a valid name or the test short-circuits
+//     on the name check — this was a V2 bug)
+//   - Python syntax error in script
+//   - has_callback presence/absence + non-canonical names
+//   - on_init / on_stop / on_inbox raising Python exceptions
+
+int load_script_missing_file(const std::string &dir)
+{
+    // Strengthened vs V2.  V2 only checked return value.  The catch
+    // path at python_engine.cpp:408-410 logs ERROR "Failed to load
+    // script from '<dir>': <exc>".  Pin that ERROR fragment at
+    // parent level.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            RoleHostCore core;
+            PythonEngine engine;
+            engine.set_python_venv("");
+            ASSERT_TRUE(engine.initialize("test", &core));
+            EXPECT_FALSE(engine.load_script(
+                script_dir / "nonexistent" / "path",
+                "__init__.py", "on_produce"));
+            engine.finalize();
+        },
+        "python_engine::load_script_missing_file",
+        Logger::GetLifecycleModule());
+}
+
+int load_script_missing_required_callback(const std::string &dir)
+{
+    // Strengthened vs V2.  V2 only checked return value.  Python
+    // logs ERROR "Script has no 'on_produce' function"
+    // (python_engine.cpp:402) when required_callback is absent.
+    // Pin the exact fragment at parent level.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, R"PY(
+def on_init(api):
+    pass
+# on_produce intentionally absent
+)PY");
+            RoleHostCore core;
+            PythonEngine engine;
+            engine.set_python_venv("");
+            ASSERT_TRUE(engine.initialize("test", &core));
+            EXPECT_FALSE(engine.load_script(
+                script_dir / "script" / "python",
+                "__init__.py", "on_produce"));
+            engine.finalize();
+        },
+        "python_engine::load_script_missing_required_callback",
+        Logger::GetLifecycleModule());
+}
+
+int register_slot_type_bad_field_type(const std::string &dir)
+{
+    // IMPORTANT: FIXED vs V2.  V2 used type_name="BadFrame" (non-
+    // canonical) with an unsupported field type "complex128".  After
+    // the canonical-name tightening (python_engine.cpp:780-791),
+    // register_slot_type now rejects "BadFrame" UP FRONT before
+    // reaching the field-type dispatcher.  V2 therefore passed via
+    // the wrong branch — it tested canonical-name rejection, not
+    // bad-field-type.
+    //
+    // This body uses "OutSlotFrame" (canonical) with a bad field
+    // type so we actually exercise the build_ctypes_type_ exception
+    // path at python_engine.cpp:843-848.  The canonical-name
+    // rejection has its own test (register_slot_type_has_schema_
+    // false_returns_false in chunk 1 covers a related invariant).
+    //
+    // Log fragment: "register_slot_type('OutSlotFrame') failed:
+    // <exc>" from python_engine.cpp:845.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir,
+                         "def on_produce(tx, msgs, api):\n"
+                         "    return True\n");
+            RoleHostCore core;
+            PythonEngine engine;
+            engine.set_python_venv("");
+            ASSERT_TRUE(engine.initialize("test", &core));
+            ASSERT_TRUE(engine.load_script(
+                script_dir / "script" / "python",
+                "__init__.py", "on_produce"));
+
+            hub::SchemaSpec bad_spec;
+            bad_spec.has_schema = true;
+            hub::FieldDef f;
+            f.name     = "x";
+            f.type_str = "complex128";  // unsupported type
+            f.count    = 1;
+            f.length   = 0;
+            bad_spec.fields.push_back(f);
+
+            EXPECT_FALSE(engine.register_slot_type(bad_spec,
+                                                    "OutSlotFrame",
+                                                    "aligned"))
+                << "bad field type must fail via the build_ctypes_type_ "
+                   "exception path, not the canonical-name check";
+            engine.finalize();
+        },
+        "python_engine::register_slot_type_bad_field_type",
+        Logger::GetLifecycleModule());
+}
+
+int load_script_syntax_error(const std::string &dir)
+{
+    // Strengthened vs V2.  V2 only checked return value.  A Python
+    // SyntaxError during import surfaces via the catch at
+    // python_engine.cpp:406-410 as "Failed to load script from
+    // '<dir>': <exc>" where <exc> includes "SyntaxError".  Pin the
+    // "SyntaxError" fragment.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            // Missing colon after signature → SyntaxError.
+            write_script(script_dir,
+                         "def on_produce(tx, msgs, api)\n"
+                         "    return True\n");
+            RoleHostCore core;
+            PythonEngine engine;
+            engine.set_python_venv("");
+            ASSERT_TRUE(engine.initialize("test", &core));
+            EXPECT_FALSE(engine.load_script(
+                script_dir / "script" / "python",
+                "__init__.py", "on_produce"));
+            engine.finalize();
+        },
+        "python_engine::load_script_syntax_error",
+        Logger::GetLifecycleModule());
+}
+
+int has_callback(const std::string &dir)
+{
+    // Strengthened vs V2.  V2 tested 4 names (3 defined + 1 absent
+    // canonical).  This body additionally exercises NON-canonical
+    // names to pin the documented behaviour: Python's has_callback
+    // uses py::getattr which will return true for ANY attribute
+    // present on the module (including user-defined helpers).  Per
+    // the 2026-04-20 design review (Finding #14, resolved no-action):
+    // Python's current contract is "returns true for any resolvable
+    // symbol" — a canonical-names-only restriction is native-only.
+    //
+    // This test pins that contract so a regression restricting
+    // Python to canonical-only would surface.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, R"PY(
+def on_produce(tx, msgs, api):
+    return True
+
+def on_init(api):
+    pass
+
+def user_helper():
+    return 42
+# on_stop intentionally absent
+)PY");
+            RoleHostCore core;
+            PythonEngine engine;
+            engine.set_python_venv("");
+            ASSERT_TRUE(engine.initialize("test", &core));
+            ASSERT_TRUE(engine.load_script(
+                script_dir / "script" / "python",
+                "__init__.py", "on_produce"));
+
+            // Canonical callbacks — presence reflects what the script
+            // actually defines.
+            EXPECT_TRUE(engine.has_callback("on_produce"));
+            EXPECT_TRUE(engine.has_callback("on_init"));
+            EXPECT_FALSE(engine.has_callback("on_stop"));
+            EXPECT_FALSE(engine.has_callback("on_consume"));
+
+            // NEW: non-canonical user function — Python returns true.
+            EXPECT_TRUE(engine.has_callback("user_helper"))
+                << "Python has_callback probes arbitrary attributes "
+                   "(see TESTING_TODO 'has_callback for non-canonical "
+                   "names' — resolved no-action 2026-04-20).  A "
+                   "regression restricting to canonical-only would "
+                   "break here.";
+
+            // NEW: non-existent non-canonical name — returns false.
+            EXPECT_FALSE(engine.has_callback("nonexistent_fn"));
+
+            engine.finalize();
+        },
+        "python_engine::has_callback",
+        Logger::GetLifecycleModule());
+}
+
+int invoke_on_init_script_error(const std::string &dir)
+{
+    // Strengthened vs V2 (EXPECT_GE → EXPECT_EQ == 1u, + ERROR text).
+    return produce_worker_with_script(
+        dir, "python_engine::invoke_on_init_script_error",
+        R"PY(
+def on_produce(tx, msgs, api):
+    return True
+
+def on_init(api):
+    raise RuntimeError("init exploded")
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            EXPECT_EQ(engine.script_error_count(), 0u);
+            engine.invoke_on_init();
+            EXPECT_EQ(engine.script_error_count(), 1u)
+                << "on_init raising exactly once must set count to 1";
+        });
+}
+
+int invoke_on_stop_script_error(const std::string &dir)
+{
+    // Strengthened vs V2 (EXPECT_GE → EXPECT_EQ == 1u, + ERROR text).
+    return produce_worker_with_script(
+        dir, "python_engine::invoke_on_stop_script_error",
+        R"PY(
+def on_produce(tx, msgs, api):
+    return True
+
+def on_stop(api):
+    raise RuntimeError("stop exploded")
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            EXPECT_EQ(engine.script_error_count(), 0u);
+            engine.invoke_on_stop();
+            EXPECT_EQ(engine.script_error_count(), 1u)
+                << "on_stop raising exactly once must set count to 1";
+        });
+}
+
+int invoke_on_inbox_script_error(const std::string &dir)
+{
+    // Strengthened vs V2 (EXPECT_GE → EXPECT_EQ == 1u, + ERROR text).
+    // Inline setup because the producer helper doesn't register
+    // InboxFrame — needed here for the inbox dispatch to reach the
+    // Python callback.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, R"PY(
+def on_produce(tx, msgs, api):
+    return False
+
+def on_inbox(msg, api):
+    raise RuntimeError("inbox exploded")
+)PY");
+            RoleHostCore core;
+            PythonEngine engine;
+            engine.set_python_venv("");
+            ASSERT_TRUE(engine.initialize("test", &core));
+            ASSERT_TRUE(engine.load_script(
+                script_dir / "script" / "python",
+                "__init__.py", "on_produce"));
+
+            auto spec = simple_schema();
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
+                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame",
+                                                   "aligned"));
+
+            auto api = make_api(core);
+            ASSERT_TRUE(engine.build_api(*api));
+
+            EXPECT_EQ(engine.script_error_count(), 0u);
+            float inbox_data = 1.0f;
+            engine.invoke_on_inbox({&inbox_data, sizeof(inbox_data),
+                                     "SENDER-00000001", 1});
+            EXPECT_EQ(engine.script_error_count(), 1u)
+                << "on_inbox raising exactly once must set count to 1";
+
+            engine.finalize();
+        },
+        "python_engine::invoke_on_inbox_script_error",
+        Logger::GetLifecycleModule());
+}
+
 int invoke_produce_discard_on_false_but_python_wrote_slot(const std::string &dir)
 {
     // NEW test — pins the production contract that the engine does NOT
@@ -2251,6 +2536,23 @@ struct PythonEngineWorkerRegistrar
                     return metrics_hierarchical_table_producer_full_shape(dir);
                 if (sc == "metrics_role_script_error_count_reflects_raised_error")
                     return metrics_role_script_error_count_reflects_raised_error(dir);
+
+                if (sc == "load_script_missing_file")
+                    return load_script_missing_file(dir);
+                if (sc == "load_script_missing_required_callback")
+                    return load_script_missing_required_callback(dir);
+                if (sc == "register_slot_type_bad_field_type")
+                    return register_slot_type_bad_field_type(dir);
+                if (sc == "load_script_syntax_error")
+                    return load_script_syntax_error(dir);
+                if (sc == "has_callback")
+                    return has_callback(dir);
+                if (sc == "invoke_on_init_script_error")
+                    return invoke_on_init_script_error(dir);
+                if (sc == "invoke_on_stop_script_error")
+                    return invoke_on_stop_script_error(dir);
+                if (sc == "invoke_on_inbox_script_error")
+                    return invoke_on_inbox_script_error(dir);
 
                 fmt::print(stderr,
                            "[python_engine] ERROR: unknown scenario '{}'\n",
