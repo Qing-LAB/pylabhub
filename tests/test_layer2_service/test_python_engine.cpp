@@ -219,10 +219,13 @@ TEST_F(PythonEngineIsolatedTest, RegisterSlotType_MultiField)
     ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineIsolatedTest, RegisterSlotType_Packed_vs_Aligned)
+TEST_F(PythonEngineIsolatedTest, RegisterSlotType_PackedPacking)
 {
-    auto w = SpawnWorker("python_engine.register_slot_type_packed_vs_aligned",
-                         {unique_dir("reg_packed_vs_aligned")});
+    // Pins the packed-packing size anchor. The engine's internal
+    // cross-validation (python_engine.cpp:800-807) catches any
+    // silent packing-ignore regression — see worker's docblock.
+    auto w = SpawnWorker("python_engine.register_slot_type_packed_packing",
+                         {unique_dir("reg_packed_packing")});
     ExpectWorkerOk(w);
 }
 
