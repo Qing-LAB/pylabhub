@@ -946,8 +946,19 @@ InvokeResult PythonEngine::invoke_produce(
     InvokeTx tx,
     std::vector<IncomingMessage> &msgs)
 {
+    if (!is_callable(py_on_produce_))
+    {
+        if (is_accepting())
+        {
+            LOGGER_ERROR("[{}] invoke_produce called but on_produce is not "
+                         "registered — this is a dispatch bug; load_script's "
+                         "required_callback check should have rejected it",
+                         log_tag_);
+        }
+        process_pending_();
+        return InvokeResult::Error;
+    }
     InvokeResult result = InvokeResult::Error;
-    if (is_callable(py_on_produce_))
     {
         py::gil_scoped_acquire g;
         try
@@ -976,8 +987,18 @@ InvokeResult PythonEngine::invoke_consume(
     InvokeRx rx,
     std::vector<IncomingMessage> &msgs)
 {
+    if (!is_callable(py_on_consume_))
+    {
+        if (is_accepting())
+        {
+            LOGGER_ERROR("[{}] invoke_consume called but on_consume is not "
+                         "registered — dispatch bug",
+                         log_tag_);
+        }
+        process_pending_();
+        return InvokeResult::Error;
+    }
     InvokeResult result = InvokeResult::Error;
-    if (is_callable(py_on_consume_))
     {
         py::gil_scoped_acquire g;
         try
@@ -1010,8 +1031,18 @@ InvokeResult PythonEngine::invoke_process(
     InvokeRx rx, InvokeTx tx,
     std::vector<IncomingMessage> &msgs)
 {
+    if (!is_callable(py_on_process_))
+    {
+        if (is_accepting())
+        {
+            LOGGER_ERROR("[{}] invoke_process called but on_process is not "
+                         "registered — dispatch bug",
+                         log_tag_);
+        }
+        process_pending_();
+        return InvokeResult::Error;
+    }
     InvokeResult result = InvokeResult::Error;
-    if (is_callable(py_on_process_))
     {
         py::gil_scoped_acquire g;
         try
@@ -1049,6 +1080,12 @@ InvokeResult PythonEngine::invoke_on_inbox(InvokeInbox msg)
     InvokeResult result = InvokeResult::Error;
     if (!is_callable(py_on_inbox_))
     {
+        if (is_accepting())
+        {
+            LOGGER_ERROR("[{}] invoke_on_inbox called but on_inbox is not "
+                         "registered — caller should gate on has_callback",
+                         log_tag_);
+        }
         process_pending_();
         return result;
     }

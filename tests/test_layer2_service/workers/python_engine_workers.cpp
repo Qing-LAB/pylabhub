@@ -193,15 +193,15 @@ int full_lifecycle(const std::string &dir)
     // on_init/on_stop — a no-op engine implementation would pass.
     //
     // This body reports a metric from each callback via
-    // api.report_metric (pybind11-bound at producer_api.cpp:255),
+    // api.report_metric (pybind11-bound at producer_api.cpp),
     // then asserts core.custom_metrics_snapshot() contains both
     // keys post-invoke.  Source-traced:
-    //   - invoke_on_init  (python_engine.cpp:897-913): acquires
+    //   - invoke_on_init  (python_engine.cpp): acquires
     //     GIL, calls py_on_init_(api_obj_); catches py::error_already_set.
-    //   - invoke_on_stop  (python_engine.cpp:919-935): same shape.
+    //   - invoke_on_stop  (python_engine.cpp): same shape.
     // Both dispatch to the user's Python function only if
     // is_callable(py_on_init_/py_on_stop_).  api_obj_ is set at
-    // build_api time (python_engine.cpp:475,485,497) as the
+    // build_api time (python_engine.cpp) as the
     // role-specific C++ wrapper (ProducerAPI/ConsumerAPI/ProcessorAPI)
     // that exposes report_metric as a pybind11 method.
     return run_gtest_worker(
@@ -257,7 +257,7 @@ int initialize_and_finalize_succeeds(const std::string &dir)
     // methods).  The new name reflects what the body actually tests.
     // set_python_venv("") pins empty-venv → embedded interpreter
     // (no venv activation), per PythonEngine's set_python_venv
-    // inline at python_engine.hpp:68.
+    // inline at python_engine.hpp.
     return run_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
@@ -297,6 +297,12 @@ int register_slot_type_sizeof_correct(const std::string &dir)
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 4u)
                 << "simple_schema is a single float32 field";
 
+            // Exercise the full lifecycle (F10, 2026-04-20): uniform
+            // make_api + build_api so every chunk-1 test reaches the
+            // fully-built state before finalize.  Catches build_api
+            // regressions that'd slip through register-only tests.
+            auto api = make_api(core);
+            ASSERT_TRUE(engine.build_api(*api));
             engine.finalize();
         },
         "python_engine::register_slot_type_sizeof_correct",
@@ -329,6 +335,8 @@ int register_slot_type_multi_field(const std::string &dir)
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 12u)
                 << "3 x float32 = 12 bytes";
 
+            auto api = make_api(core);
+            ASSERT_TRUE(engine.build_api(*api));  // F10 uniform lifecycle
             engine.finalize();
         },
         "python_engine::register_slot_type_multi_field",
@@ -342,7 +350,7 @@ int register_slot_type_packed_packing(const std::string &dir)
     // layout (bool(1) + int32(4), no padding).
     //
     // Why this is enough (no separate "aligned" side-check):
-    // register_slot_type (python_engine.cpp:800-807) internally
+    // register_slot_type (python_engine.cpp) internally
     // cross-validates ctypes_sizeof(type) against
     // compute_schema_size(spec, packing).  If a regression silently
     // ignored the packing arg and always built aligned (size 8 for
@@ -380,6 +388,8 @@ int register_slot_type_packed_packing(const std::string &dir)
                 << "packed: bool(1) + int32(4) = 5 — hand-verified "
                    "anchor for this schema";
 
+            auto api = make_api(core);
+            ASSERT_TRUE(engine.build_api(*api));  // F10 uniform lifecycle
             engine.finalize();
         },
         "python_engine::register_slot_type_packed_packing",
@@ -407,6 +417,11 @@ int register_slot_type_has_schema_false_returns_false(const std::string &dir)
             EXPECT_FALSE(engine.register_slot_type(spec, "OutSlotFrame",
                                                     "aligned"));
 
+            // F10 uniform lifecycle — build_api must succeed even when
+            // no types are registered (alias creation gated on
+            // .is_none() checks in build_api_).
+            auto api = make_api(core);
+            ASSERT_TRUE(engine.build_api(*api));
             engine.finalize();
         },
         "python_engine::register_slot_type_has_schema_false_returns_false",
@@ -422,7 +437,7 @@ int register_slot_type_all_supported_types(const std::string &dir)
     //
     // Unique coverage vs the engine's internal check:
     // register_slot_type internally cross-validates ctypes_sizeof vs
-    // compute_schema_size (python_engine.cpp:800-807), so a size-
+    // compute_schema_size (python_engine.cpp), so a size-
     // mismatch bug WOULD be caught by the engine itself.  But a
     // DIFFERENT bug class — missing or wrong ctypes-type-dispatcher
     // entry for a specific scalar (e.g. int8 case accidentally
@@ -458,6 +473,8 @@ int register_slot_type_all_supported_types(const std::string &dir)
                 << "engine ctypes_sizeof must match the canonical "
                    "compute_schema_size for every scalar type";
 
+            auto api = make_api(core);
+            ASSERT_TRUE(engine.build_api(*api));  // F10 uniform lifecycle
             engine.finalize();
         },
         "python_engine::register_slot_type_all_supported_types",
@@ -652,13 +669,13 @@ int alias_producer_no_fz_no_flex_frame_alias(const std::string &dir)
 int supports_multi_state_returns_false(const std::string &dir)
 {
     // Pins PythonEngine's supports_multi_state() contract.  Per
-    // script_engine.hpp:388-394, this flag tells the engine's own
+    // script_engine.hpp this flag tells the engine's own
     // threading-dispatch path whether to route non-owner-thread
     // invoke() calls directly (true, Lua) or queue them to the
     // owner thread (false, Python).  It is NOT exposed to scripts —
     // the engine handles threading transparently.
     //
-    // Python returns false (python_engine.hpp:122): single
+    // Python returns false (python_engine.hpp): single
     // interpreter, non-owner requests queued to owner thread.  A
     // regression flipping this to true (e.g., a subinterpreter
     // refactor) without updating the dispatcher would silently
@@ -715,8 +732,8 @@ int supports_multi_state_returns_false(const std::string &dir)
 // ── invoke_produce (chunk 2) ───────────────────────────────────────────────
 //
 // Exercises the on_produce(tx, msgs, api) return-value contract.
-// Source-traced against python_engine.cpp:957-981 (invoke_produce) and
-// python_engine.cpp:1179-1216 (parse_return_value_).  Python-specific
+// Source-traced against python_engine.cpp (invoke_produce) and
+// python_engine.cpp (parse_return_value_).  Python-specific
 // vs Lua:
 //
 //   - parse_return_value_ checks py::isinstance<py::bool_> first
@@ -930,10 +947,10 @@ def on_produce(tx, msgs, api):
 // Python vs Lua: the read-only guard is a ctypes subclass with a
 // __setattr__ override that raises AttributeError (python_helpers.hpp:
 // 96-112).  Lua uses LuaJIT's `ffi.typeof("<Name> const*")` which
-// raises a Lua error on write (lua_state.cpp:285-291).  Different
+// raises a Lua error on write (lua_state.cpp).  Different
 // runtime mechanics, same design contract: loud failure, never
 // silent.  Python has one known limitation documented in
-// python_helpers.hpp:77 — mutation through array subscript
+// python_helpers.hpp — mutation through array subscript
 // (rx.slot.array[0] = X) is not blocked.  Tests here use
 // simple_schema() (single scalar `value`) where the guard fires.
 //
@@ -1021,21 +1038,21 @@ int invoke_consume_rx_slot_is_read_only(const std::string &dir)
     // read-only as a LOUD failure, not a silent no-op.
     // Source-confirmed:
     //
-    //   src/scripting/python_engine.cpp:831
+    //   src/scripting/python_engine.cpp
     //     register_slot_type("InSlotFrame") →
     //     in_slot_type_ro_ = wrap_readonly_(type)
     //
-    //   src/scripting/python_helpers.hpp:96-112 (wrap_as_readonly_ctypes)
+    //   src/scripting/python_helpers.hpp (wrap_as_readonly_ctypes)
     //     Creates a subclass with __setattr__ that raises
     //     AttributeError("read-only slot: field '<name>' cannot be
     //     written (in_slot is a zero-copy SHM view -- use out_slot
     //     to write)").
     //
-    //   src/scripting/python_engine.cpp:1000-1002 (invoke_consume path)
+    //   src/scripting/python_engine.cpp (invoke_consume path)
     //     rx_ch.slot = make_slot_view_(..., in_slot_type_ro_, …,
     //                                   readonly=true);
     //
-    //   src/scripting/python_engine.cpp:1008-1011 (catch)
+    //   src/scripting/python_engine.cpp (catch)
     //     py::error_already_set → on_python_error_ → ERROR log +
     //     inc_script_error_count + return InvokeResult::Error.
     //
@@ -1049,7 +1066,7 @@ int invoke_consume_rx_slot_is_read_only(const std::string &dir)
     // Python-specific note: the read-only guard is override-of-
     // __setattr__ on the subclass.  It fires on field assignment
     // (rx.slot.value = X).  A known limitation documented at
-    // python_helpers.hpp:77 is that array-subscript mutation
+    // python_helpers.hpp is that array-subscript mutation
     // (rx.slot.array[0] = X) is not blocked by this mechanism;
     // our simple_schema() has a single scalar field `value`, so
     // the __setattr__ guard applies fully here.
@@ -1099,7 +1116,7 @@ def on_consume(rx, msgs, api):
 // ── invoke_process (chunk 4) ───────────────────────────────────────────────
 //
 // Processor dual-slot callback.  The Python path
-// (python_engine.cpp:1009-1040) builds BOTH an rx and a tx channel
+// (python_engine.cpp) builds BOTH an rx and a tx channel
 // per iteration: rx via in_slot_type_ro_ (readonly subclass with
 // __setattr__ override), tx via out_slot_type_ (writable).
 //
@@ -1213,7 +1230,7 @@ int invoke_process_rx_slot_is_read_only(const std::string &dir)
     // the same loud-failure rx-read-only contract as the consumer
     // path (see invoke_consume_rx_slot_is_read_only doc block for the
     // full source-trace).  invoke_process is a separate engine entry
-    // (python_engine.cpp:1019-1024 builds rx_ch via in_slot_type_ro_
+    // (python_engine.cpp builds rx_ch via in_slot_type_ro_
     // — the same readonly subclass the consumer path uses), so the
     // contract should hold the same way.
     //
@@ -1259,7 +1276,7 @@ def on_process(rx, tx, msgs, api):
 // ── Messages (chunk 5) ─────────────────────────────────────────────────────
 //
 // Two projection paths, canonical reference at
-// src/scripting/python_engine.cpp:1118 and :1143:
+// src/scripting/python_engine.cpp and :1143:
 //
 //   - build_messages_list_        — producer + processor
 //                                   event → dict with flattened details
@@ -1283,7 +1300,7 @@ int invoke_produce_receives_messages_event_with_details(const std::string &dir)
     // set `m1.details["identity"] = "abc123"` in C++ but Python never
     // verified the details map reached the script — the engine could
     // be silently dropping or re-shaping details and the test would
-    // pass.  The Python contract per python_engine.cpp:1128 is that
+    // pass.  The Python contract per python_engine.cpp is that
     // details keys are PROMOTED to sibling fields on the event dict:
     //     msg["event"] = "consumer_joined"
     //     msg["identity"] = "abc123"   # NOT msg["details"]["identity"]
@@ -1409,7 +1426,7 @@ def on_produce(tx, msgs, api):
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "a failing Python assert here indicates the "
                    "(sender_hex, bytes) tuple projection differs from "
-                   "the documented shape at python_engine.cpp:1135";
+                   "the documented shape at python_engine.cpp";
         });
 }
 
@@ -1424,7 +1441,7 @@ int invoke_consume_receives_messages_data_bare_format(const std::string &dir)
     // Pins the producer-vs-consumer divergence explicitly: the
     // consumer projection DROPS the sender and exposes data as bare
     // bytes directly at msgs[i] (not a tuple).  Python contract at
-    // python_engine.cpp:1161.
+    // python_engine.cpp.
     return consume_worker_with_script(
         dir, "python_engine::invoke_consume_receives_messages_data_bare_format",
         R"PY(
@@ -1459,7 +1476,7 @@ def on_consume(rx, msgs, api):
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "a failing Python assert here indicates the consumer "
                    "bare-bytes projection differs from the documented "
-                   "shape at python_engine.cpp:1161";
+                   "shape at python_engine.cpp";
         });
 }
 
@@ -1471,9 +1488,9 @@ def on_consume(rx, msgs, api):
 //   - version_info: pylabhub_producer.version_info() at module level
 //     (not api.*); returns a JSON string.
 //   - api.stop(): RoleAPIBase::stop() → core->request_stop()
-//     (role_api_base.cpp:671)
+//     (role_api_base.cpp)
 //   - api.set_critical_error(): three side effects
-//     (role_api_base.cpp:672 → core->set_critical_error):
+//     (role_api_base.cpp → core->set_critical_error):
 //     (a) critical_error_ = true → api.critical_error() returns True
 //     (b) shutdown_requested_ = true
 //     (c) stop_reason_ = CriticalError(3) → api.stop_reason()
@@ -1481,7 +1498,7 @@ def on_consume(rx, msgs, api):
 //   - api.stop_reason(): RoleAPIBase::stop_reason() → core->
 //     stop_reason_string() → "normal"/"peer_dead"/"hub_dead"/
 //     "critical_error" per StopReason enum
-//     (role_host_core.hpp:270-279).
+//     (role_host_core.hpp).
 //
 // Wrong-module-import: build_api removes the two inactive roles'
 // pybind11 modules from sys.modules so a producer script can't
@@ -1589,7 +1606,7 @@ int api_critical_error_set_and_read_and_stop_reason(const std::string &dir)
 {
     // Renamed from V2 ApiSetCriticalError.  V2 only verified 2 of
     // the 3 side-effects of api.set_critical_error().  This body
-    // pins all three (role_api_base.cpp:672 → core->
+    // pins all three (role_api_base.cpp → core->
     // set_critical_error()):
     //   (a) critical_error_ = true    → api.critical_error() == True
     //   (b) shutdown_requested_ = true → core.is_shutdown_requested()
@@ -1706,11 +1723,11 @@ def on_produce(tx, msgs, api):
 //     (out_slots_written / in_slots_received / out_drop_count /
 //     loop_overrun_count / script_error_count / last_cycle_work_us)
 //   - api.metrics() → py::dict assembled from snapshot_metrics_json
-//     (role_api_base.cpp:1059) with top-level groups: queue /
+//     (role_api_base.cpp) with top-level groups: queue /
 //     in_queue+out_queue / loop / role / inbox / custom.
 //
 // The `loop` group's canonical field list is defined in
-// role_host_core.hpp:397 via PYLABHUB_LOOP_METRICS_FIELDS and has
+// role_host_core.hpp via PYLABHUB_LOOP_METRICS_FIELDS and has
 // FIVE fields: iteration_count, loop_overrun_count,
 // last_cycle_work_us, configured_period_us, acquire_retry_count.
 // V2's Metrics_AllLoopFields_Present only checked 4 of 5 — the
@@ -1874,7 +1891,7 @@ int stop_on_script_error_sets_shutdown_on_error(const std::string &dir)
     // Custom setup inline (doesn't use setup_role_engine) because the
     // helper's make_api sets stop_on_script_error(false) by default;
     // we need true for this test.  Mirrors the Lua equivalent at
-    // lua_engine_workers.cpp:2293-2354.
+    // lua_engine_workers.cpp.
     return run_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
@@ -1929,7 +1946,7 @@ int metrics_all_loop_fields_anchored_values(const std::string &dir)
 {
     // Strengthened vs V2 Metrics_AllLoopFields_Present.  V2 only
     // covered 4 of the 5 canonical loop fields defined in
-    // role_host_core.hpp:397 PYLABHUB_LOOP_METRICS_FIELDS:
+    // role_host_core.hpp PYLABHUB_LOOP_METRICS_FIELDS:
     //   iteration_count, loop_overrun_count, last_cycle_work_us,
     //   configured_period_us, acquire_retry_count  ← V2 missed this
     //
@@ -2004,7 +2021,7 @@ def on_produce(tx, msgs, api):
 
     # L2 producer with no queue wiring: expect exactly {loop, role}.
     # - 'queue' / 'in_queue' / 'out_queue' require pImpl->tx_queue
-    #   or rx_queue non-null (role_api_base.cpp:1066-1085)
+    #   or rx_queue non-null (role_api_base.cpp)
     # - 'inbox' requires pImpl->inbox_queue (L3)
     # - 'custom' only appears if non-empty
     expected_keys = {"loop", "role"}
@@ -2014,7 +2031,7 @@ def on_produce(tx, msgs, api):
         f"got {sorted(got_keys)}")
 
     # role group: 4 fields (out_slots_written, in_slots_received,
-    # out_drop_count, script_error_count) per role_api_base.cpp:1096-1099.
+    # out_drop_count, script_error_count) per role_api_base.cpp.
     role_expected = {"out_slots_written", "in_slots_received",
                      "out_drop_count", "script_error_count"}
     role_got = set(m["role"].keys())
@@ -2098,7 +2115,7 @@ def on_produce(tx, msgs, api):
 int load_script_missing_file(const std::string &dir)
 {
     // Strengthened vs V2.  V2 only checked return value.  The catch
-    // path at python_engine.cpp:408-410 logs ERROR "Failed to load
+    // path at python_engine.cpp logs ERROR "Failed to load
     // script from '<dir>': <exc>".  Pin that ERROR fragment at
     // parent level.
     return run_gtest_worker(
@@ -2121,7 +2138,7 @@ int load_script_missing_required_callback(const std::string &dir)
 {
     // Strengthened vs V2.  V2 only checked return value.  Python
     // logs ERROR "Script has no 'on_produce' function"
-    // (python_engine.cpp:402) when required_callback is absent.
+    // (python_engine.cpp) when required_callback is absent.
     // Pin the exact fragment at parent level.
     return run_gtest_worker(
         [&]() {
@@ -2148,7 +2165,7 @@ int register_slot_type_bad_field_type(const std::string &dir)
 {
     // IMPORTANT: FIXED vs V2.  V2 used type_name="BadFrame" (non-
     // canonical) with an unsupported field type "complex128".  After
-    // the canonical-name tightening (python_engine.cpp:780-791),
+    // the canonical-name tightening (python_engine.cpp),
     // register_slot_type now rejects "BadFrame" UP FRONT before
     // reaching the field-type dispatcher.  V2 therefore passed via
     // the wrong branch — it tested canonical-name rejection, not
@@ -2156,12 +2173,12 @@ int register_slot_type_bad_field_type(const std::string &dir)
     //
     // This body uses "OutSlotFrame" (canonical) with a bad field
     // type so we actually exercise the build_ctypes_type_ exception
-    // path at python_engine.cpp:843-848.  The canonical-name
+    // path at python_engine.cpp.  The canonical-name
     // rejection has its own test (register_slot_type_has_schema_
     // false_returns_false in chunk 1 covers a related invariant).
     //
     // Log fragment: "register_slot_type('OutSlotFrame') failed:
-    // <exc>" from python_engine.cpp:845.
+    // <exc>" from python_engine.cpp.
     return run_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
@@ -2200,7 +2217,7 @@ int load_script_syntax_error(const std::string &dir)
 {
     // Strengthened vs V2.  V2 only checked return value.  A Python
     // SyntaxError during import surfaces via the catch at
-    // python_engine.cpp:406-410 as "Failed to load script from
+    // python_engine.cpp as "Failed to load script from
     // '<dir>': <exc>" where <exc> includes "SyntaxError".  Pin the
     // "SyntaxError" fragment.
     return run_gtest_worker(
@@ -2325,9 +2342,28 @@ def on_stop(api):
 int invoke_on_inbox_script_error(const std::string &dir)
 {
     // Strengthened vs V2 (EXPECT_GE → EXPECT_EQ == 1u, + ERROR text).
-    // Inline setup because the producer helper doesn't register
-    // InboxFrame — needed here for the inbox dispatch to reach the
-    // Python callback.
+    // ALSO strengthened vs the previous P3 body (review finding F9,
+    // 2026-04-20): the previous body only counted the exception; it
+    // never verified the msg payload reached the script BEFORE the
+    // raise.  A regression in from_buffer_copy dropping the typed
+    // data would pass silently.  Two belt-and-suspenders:
+    //
+    //   (1) api.report_metric("inbox_reached", 1) — proves the
+    //       callback actually ran (pins dispatch).  Read back via
+    //       core.custom_metrics_snapshot() after the invoke.
+    //
+    //   (2) Three in-script asserts on msg.data / msg.sender_uid /
+    //       msg.seq — pins the payload projection:
+    //         - data must not be None (catches from_buffer_copy
+    //           skipped, or inbox_type_ro_ unregistered)
+    //         - sender_uid / seq must match the C++ side (catches
+    //           raw copy vs string-convert regressions)
+    //       These asserts run BEFORE the raise, so they must pass
+    //       for the body to reach the exception.  If any fails, the
+    //       AssertionError (not RuntimeError) would be counted —
+    //       caught by the script_error_count still == 1 but the
+    //       "inbox exploded" ERROR substring pinning at the parent
+    //       level would miss.
     return run_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
@@ -2336,6 +2372,16 @@ def on_produce(tx, msgs, api):
     return False
 
 def on_inbox(msg, api):
+    # Payload projection sanity (catches from_buffer_copy regression).
+    assert msg.data is not None, "msg.data must be a typed ctypes object"
+    assert msg.sender_uid == "SENDER-00000001", (
+        f"sender_uid expected 'SENDER-00000001', got {msg.sender_uid!r}")
+    assert msg.seq == 42, f"seq expected 42, got {msg.seq}"
+
+    # Side-effect proving the callback actually ran (pins dispatch).
+    api.report_metric("inbox_reached", 1)
+
+    # Now raise — this is what the test is really about.
     raise RuntimeError("inbox exploded")
 )PY");
             RoleHostCore core;
@@ -2358,9 +2404,18 @@ def on_inbox(msg, api):
             EXPECT_EQ(engine.script_error_count(), 0u);
             float inbox_data = 1.0f;
             engine.invoke_on_inbox({&inbox_data, sizeof(inbox_data),
-                                     "SENDER-00000001", 1});
+                                     "SENDER-00000001", 42});
             EXPECT_EQ(engine.script_error_count(), 1u)
                 << "on_inbox raising exactly once must set count to 1";
+
+            // Side-effect verification: report_metric must have fired
+            // BEFORE the raise, so 'inbox_reached' is in custom_metrics.
+            auto cm = core.custom_metrics_snapshot();
+            EXPECT_EQ(cm.count("inbox_reached"), 1u)
+                << "on_inbox must have reached report_metric before the "
+                   "raise — a non-1 count means either the callback never "
+                   "ran (dispatch regression) or one of the in-script "
+                   "msg.* assertions failed (payload projection bug)";
 
             engine.finalize();
         },
