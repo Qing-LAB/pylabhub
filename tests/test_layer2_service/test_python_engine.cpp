@@ -413,91 +413,57 @@ TEST_F(PythonEngineIsolatedTest,
 }
 
 // ============================================================================
-// 4. invoke_consume
+// Chunk 3 — invoke_consume (Pattern 3)
+//
+// V2 had 3 consume tests (ReceivesReadOnlySlot, NoneSlot,
+// ScriptErrorDetected).  Renames ReceivesReadOnlySlot to ReceivesSlot
+// because V2's body never actually attempted a write — the
+// "read-only" claim was untested.  Adds a dedicated RxSlot_IsReadOnly
+// (gap-fill, mirrors Lua) that does attempt the write and pins the
+// four observable channels (buf unchanged, result==Error,
+// script_error_count==1, parent-level ERROR log fragment).
 // ============================================================================
 
-TEST_F(PythonEngineTest, InvokeConsume_ReceivesReadOnlySlot)
+TEST_F(PythonEngineIsolatedTest, InvokeConsume_ReceivesSlot)
 {
-    // Script asserts the value -- if wrong, AssertionError is raised.
-    write_script(
-        "def on_consume(rx, msgs, api):\n"
-        "    assert rx.slot is not None, 'expected non-None slot'\n"
-        "    assert abs(rx.slot.value - 99.5) < 0.01, (\n"
-        "        f'expected value ~99.5, got {rx.slot.value}')\n"
-        "    return True\n");
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_consume"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_, "cons");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    float data = 99.5f;
-    std::vector<IncomingMessage> msgs;
-
-    engine.invoke_consume(InvokeRx{&data, sizeof(data)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed -- slot value incorrect";
-
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.invoke_consume_receives_slot",
+                         {unique_dir("consume_receives")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, InvokeConsume_NoneSlot)
+TEST_F(PythonEngineIsolatedTest, InvokeConsume_NoneSlot)
 {
-    write_script(
-        "def on_consume(rx, msgs, api):\n"
-        "    assert rx.slot is None, 'expected None'\n"
-        "    return True\n");
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_consume"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_, "cons");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_consume(InvokeRx{nullptr, 0}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.invoke_consume_none_slot",
+                         {unique_dir("consume_none_slot")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, InvokeConsume_ScriptErrorDetected)
+TEST_F(PythonEngineIsolatedTest, InvokeConsume_ScriptErrorDetected)
 {
-    write_script(
-        "def on_consume(rx, msgs, api):\n"
-        "    raise RuntimeError('consume error')\n");
+    auto w = SpawnWorker("python_engine.invoke_consume_script_error_detected",
+                         {unique_dir("consume_script_error")});
+    // on_python_error_ logs ERROR "<tag> on_consume error: <exc msg>"
+    // (python_engine.cpp:1222).  Pin the RuntimeError text.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/{"consume error"});
+}
 
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_consume"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_, "cons");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    float data = 1.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_consume(InvokeRx{&data, sizeof(data)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 1u);
-
-    engine.finalize();
+// NEW gap-fill — pins the rx-read-only contract.  Mirrors Lua's
+// InvokeConsume_RxSlot_IsReadOnly.  See worker docblock for the
+// source-traced flow (register_slot_type → wrap_as_readonly_ctypes →
+// __setattr__ override → AttributeError → on_python_error_).
+TEST_F(PythonEngineIsolatedTest, InvokeConsume_RxSlot_IsReadOnly)
+{
+    auto w = SpawnWorker("python_engine.invoke_consume_rx_slot_is_read_only",
+                         {unique_dir("consume_readonly")});
+    // The AttributeError message from wrap_as_readonly_ctypes
+    // (python_helpers.hpp:101-104) is "read-only slot: field
+    // '<name>' cannot be written (in_slot is a zero-copy SHM view
+    // -- use out_slot to write)".  The engine's catch path logs
+    // this via on_python_error_.  Pin a stable substring so a
+    // reworded error message is caught at the parent level.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/{"read-only slot"});
 }
 
 // ============================================================================
