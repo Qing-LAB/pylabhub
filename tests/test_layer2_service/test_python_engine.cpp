@@ -467,105 +467,50 @@ TEST_F(PythonEngineIsolatedTest, InvokeConsume_RxSlot_IsReadOnly)
 }
 
 // ============================================================================
-// 5. invoke_process
+// Chunk 4 — invoke_process (Pattern 3)
+//
+// Processor dual-slot callback.  Renamed V2 tests to the semantic
+// names used by Lua chunk 4 (None vs Nil; both_slots vs NilInput;
+// rx_present_tx_none vs InputOnlyNoOutput) so the cross-engine
+// contract is explicit.  Adds the rx-read-only gap-fill in the
+// processor dual-slot path.  See worker docblocks for
+// strengthening rationale.
 // ============================================================================
 
-TEST_F(PythonEngineTest, InvokeProcess_DualSlots)
+TEST_F(PythonEngineIsolatedTest, InvokeProcess_DualSlots)
 {
-    write_script(
-        "def on_process(rx, tx, msgs, api):\n"
-        "    if rx.slot is not None and tx.slot is not None:\n"
-        "        tx.slot.value = rx.slot.value * 2.0\n"
-        "        return True\n"
-        "    return False\n");
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_process"));
-
-    auto spec = simple_schema();
-    // Processor: separate in/out types.
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_, "proc");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    float in_data  = 21.0f;
-    float out_data = 0.0f;
-    std::vector<IncomingMessage> msgs;
-
-    auto result = engine.invoke_process(
-        InvokeRx{&in_data, sizeof(in_data)},
-        InvokeTx{&out_data, sizeof(out_data)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_FLOAT_EQ(out_data, 42.0f);
-
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.invoke_process_dual_slots",
+                         {unique_dir("process_dual")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, InvokeProcess_NoneInput)
+TEST_F(PythonEngineIsolatedTest, InvokeProcess_BothSlotsNone)
 {
-    write_script(
-        "def on_process(rx, tx, msgs, api):\n"
-        "    assert rx.slot is None, 'expected None input'\n"
-        "    assert tx.slot is None, 'expected None output'\n"
-        "    return False\n");
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_process"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_, "proc");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_process(
-        InvokeRx{nullptr, 0},
-        InvokeTx{nullptr, 0}, msgs);
-    EXPECT_EQ(result, InvokeResult::Discard);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.invoke_process_both_slots_none",
+                         {unique_dir("process_both_none")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, InvokeProcess_InputOnlyNoOutput)
+TEST_F(PythonEngineIsolatedTest, InvokeProcess_RxPresent_TxNone)
 {
-    write_script(
-        "def on_process(rx, tx, msgs, api):\n"
-        "    assert rx.slot is not None, 'expected input data'\n"
-        "    assert tx.slot is None, 'expected None output'\n"
-        "    return False\n");
+    auto w = SpawnWorker("python_engine.invoke_process_rx_present_tx_none",
+                         {unique_dir("process_rx_only")});
+    ExpectWorkerOk(w);
+}
 
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_process"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_, "proc");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    float in_data = 10.0f;
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_process(
-        InvokeRx{&in_data, sizeof(in_data)},
-        InvokeTx{nullptr, 0}, msgs);
-    EXPECT_EQ(result, InvokeResult::Discard);
-
-    engine.finalize();
+// NEW gap-fill — rx-read-only contract in the processor dual-slot
+// path.  Mirrors Lua's InvokeProcess_RxSlot_IsReadOnly and the
+// Python consumer-path InvokeConsume_RxSlot_IsReadOnly added in
+// chunk 3.
+TEST_F(PythonEngineIsolatedTest, InvokeProcess_RxSlot_IsReadOnly)
+{
+    auto w = SpawnWorker("python_engine.invoke_process_rx_slot_is_read_only",
+                         {unique_dir("process_readonly")});
+    // Same AttributeError message as the consumer path — see
+    // python_helpers.hpp:101-104 for wording.  Pin the "read-only
+    // slot" fragment at parent level.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/{"read-only slot"});
 }
 
 // ============================================================================
