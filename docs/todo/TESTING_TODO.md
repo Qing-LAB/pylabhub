@@ -50,6 +50,64 @@ and confuses later coverage/triage reviews.  **Established
   across both engine test files if that proves sensible. Files:
   `workers/lua_engine_workers.cpp`, `workers/python_engine_workers.cpp`.
 
+**Cross-engine design — Script API live-vs-frozen contract**
+
+Discovered during chunk-12 review (2026-04-20). The api.* surface
+exposed to role scripts currently has an **implicit** and
+**inconsistent** "live vs frozen" behavior per field, decided
+independently per engine at its binding layer.  Example:
+`api.log_level` is SNAPSHOTTED at build_api time in all three
+engines (Lua field, Python pybind11 member, Native C-struct
+`const char*`) — so `api->set_log_level(...)` after build_api does
+NOT propagate to running scripts.
+
+**Desired design (Quan, 2026-04-20):**
+  - `log_level` → LIVE (scripts can observe `api.log_level`
+    changing mid-session when C++ mutates it; intentional for
+    runtime verbosity control).
+  - `script_dir`, `role_dir`, `logs_dir`, `run_dir` → FROZEN (role
+    identity / config; must not change mid-session).
+  - Other accessors (`uid`, `name`, `channel`, `stop_reason`,
+    `critical_error`, `metrics`, etc.) remain as they are
+    (closures = live; all already correct).
+
+**Implementation sketch (scope: cross-engine, ~3 days):**
+  1. Spec: add a new section to `docs/HEP/HEP-CORE-0011-*.md` (or
+     `docs/README/README_scripting.md`) — a table of every api.*
+     field with its mode (FROZEN / LIVE) and rationale.  This is
+     the SINGLE AUTHORITATIVE source the 3 engines honor.
+  2. Lua engine (`src/scripting/lua_engine.cpp:1192-1212`): promote
+     `log_level` from `lua_setfield(..., "log_level")` to
+     `push_closure("log_level", ...)` with a closure body reading
+     `self->api_->log_level()` live. Keep `script_dir`, `role_dir`,
+     `logs_dir`, `run_dir` as fields (frozen).
+  3. Python engine: check `pylabhub_producer` / `_consumer` /
+     `_processor` embedded-module pybind11 bindings (the role-API
+     classes). Expose `log_level` as a method or `@property`
+     reading live; keep directories as frozen members.
+  4. Native engine (`src/utils/service/native_engine.cpp:302-313`):
+     `wire()` caches `log_level` string once then pointer-copies
+     `.c_str()` into `ctx.log_level`.  For live semantics, either
+     (a) re-populate `ctx.log_level` at every invoke (simplest), or
+     (b) change the C-API struct from `const char *log_level` to
+     `const char *(*log_level_cb)(void *core)` (callback — ABI
+     change).  Option (a) preferred unless ABI versioning already
+     supports (b).
+  5. Tests: update Lua scripts that read `api.log_level` as a
+     field — change to `api.log_level()`.  Chunk-12 test
+     `Api_EnvironmentStrings_ReflectSetters` deliberately avoided
+     pinning log_level's frozen/live direction; once the design
+     lands, strengthen that test to pin LIVE for log_level and
+     FROZEN for directories (both directions).
+  6. Script migration note: any user scripts reading
+     `api.log_level` as a field break at this point.  Document in
+     release notes.
+
+**Why this is deferred:**  Making this change mid-test-framework-
+sweep would destabilize the 773 L2 tests we just stabilized, and
+requires a coordinated spec-first design pass.  Proper workstream
+after sweep completes.
+
 **Coverage gaps from the review** (add in whichever chunk touches
 the same area, or a dedicated "error-paths" chunk after the
 callback chunks):
