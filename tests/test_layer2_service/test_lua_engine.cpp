@@ -1069,32 +1069,31 @@ TEST_F(LuaEngineIsolatedTest, SharedData_CrossThread_Visible)
 }
 
 // ============================================================================
+// Chunk 8c — misc V2 leftovers (Pattern 3)
+//
+// Two more conversions; one straight V2 deletion (no P3 needed because
+// already covered by chunk-1 FullLifecycle + chunk-6c shared_data tests).
+// ============================================================================
+
+TEST_F(LuaEngineIsolatedTest, HasCallback_DetectsPresenceAbsence)
+{
+    auto w = SpawnWorker(
+        "lua_engine.has_callback_detects_presence_absence",
+        {unique_dir("has_callback")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, InvokeConsume_Messages_DataAndEventMixed)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_consume_messages_data_and_event_mixed",
+        {unique_dir("consume_mixed")});
+    ExpectWorkerOk(w);
+}
+
+// ============================================================================
 // 8. Error handling
 // ============================================================================
-
-// ============================================================================
-// 10. has_callback
-// ============================================================================
-
-TEST_F(LuaEngineTest, HasCallback_DetectsPresenceAbsence)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api) return true end
-        function on_init(api) end
-        -- on_stop intentionally absent
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
-
-    EXPECT_TRUE(engine.has_callback("on_produce"));
-    EXPECT_TRUE(engine.has_callback("on_init"));
-    EXPECT_FALSE(engine.has_callback("on_stop"));
-    EXPECT_FALSE(engine.has_callback("on_consume"));
-
-    engine.finalize();
-}
 
 // ============================================================================
 // 11. Flexzone
@@ -1237,55 +1236,6 @@ TEST_F(LuaEngineTest, InvokeOnInbox_MissingType_ReportsError)
     engine.finalize();
 }
 
-
-// ============================================================================
-// 14. Consumer bare messages format
-// ============================================================================
-
-TEST_F(LuaEngineTest, InvokeConsume_BareDataMessages)
-{
-    // Consumer data messages are bare byte strings (not {sender, data} tables).
-    // Event messages are still tables.
-    write_script(R"(
-        function on_consume(rx, msgs, api)
-            assert(#msgs == 2, "expected 2 messages, got " .. #msgs)
-            -- First msg: data message → bare bytes string
-            assert(type(msgs[1]) == "string", "data msg should be string, got " .. type(msgs[1]))
-            -- Second msg: event message → table with .event
-            assert(type(msgs[2]) == "table", "event msg should be table")
-            assert(msgs[2].event == "channel_closing")
-            return true
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_consume"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_, "cons");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    std::vector<IncomingMessage> msgs;
-    // Data message (has sender + data, no event).
-    IncomingMessage dm;
-    dm.sender = "sender-id";
-    dm.data   = {std::byte{0x41}, std::byte{0x42}};
-    msgs.push_back(std::move(dm));
-
-    // Event message.
-    IncomingMessage em;
-    em.event = "channel_closing";
-    msgs.push_back(std::move(em));
-
-    engine.invoke_consume(InvokeRx{nullptr, 0}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed — consumer message format incorrect";
-
-    engine.finalize();
-}
 
 // ============================================================================
 // 18. Metrics closures read from RoleHostCore counters
@@ -1732,44 +1682,6 @@ TEST_F(LuaEngineTest, Api_ProcessorChannels_InOut)
     EXPECT_EQ(result, InvokeResult::Discard);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed — processor channels do not match context";
-    engine.finalize();
-}
-
-// ============================================================================
-// 32. Eval syntax error returns ScriptError
-// ============================================================================
-
-// ============================================================================
-// 35. Full lifecycle verifies callback execution via shared_data
-// ============================================================================
-
-TEST_F(LuaEngineTest, FullLifecycle_VerifiesCallbackExecution)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api) return false end
-        function on_init(api)
-            api.set_shared_data("init_ran", true)
-        end
-        function on_stop(api)
-            api.set_shared_data("stop_ran", true)
-        end
-    )");
-    RoleHostCore core;
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    EXPECT_FALSE(core.get_shared_data("init_ran").has_value());
-    engine.invoke_on_init();
-    auto init_val = core.get_shared_data("init_ran");
-    ASSERT_TRUE(init_val.has_value());
-    EXPECT_TRUE(std::get<bool>(*init_val));
-
-    EXPECT_FALSE(core.get_shared_data("stop_ran").has_value());
-    engine.invoke_on_stop();
-    auto stop_val = core.get_shared_data("stop_ran");
-    ASSERT_TRUE(stop_val.has_value());
-    EXPECT_TRUE(std::get<bool>(*stop_val));
-
     engine.finalize();
 }
 

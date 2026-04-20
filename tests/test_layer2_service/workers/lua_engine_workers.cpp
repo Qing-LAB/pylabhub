@@ -3188,6 +3188,122 @@ int shared_data_cross_thread_visible(const std::string &dir)
         });
 }
 
+// ── Misc V2 leftovers (chunk 8c) ───────────────────────────────────────────
+
+int has_callback_detects_presence_absence(const std::string &dir)
+{
+    // Strengthened over V2.  V2 only checked 4 names (one absent).
+    // This body covers all 6 callback names that the engine extracts
+    // refs for at load_script time (lua_engine.cpp:227-232):
+    //   on_init, on_stop, on_produce, on_consume, on_process, on_inbox
+    // — splitting them into "defined" and "not defined" sets so a
+    // regression that confuses presence/absence direction would fail
+    // for at least one entry on each side.
+    //
+    // Inline setup (no setup_role_engine) because we need to drive
+    // load_script ourselves with a script that defines a deliberate
+    // subset of callbacks.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            // Defined: on_produce, on_init, on_inbox.
+            // Absent:  on_stop, on_consume, on_process.
+            write_script(script_dir, R"LUA(
+                function on_produce(tx, msgs, api) return true end
+                function on_init(api) end
+                function on_inbox(msg, api) return true end
+            )LUA");
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            ASSERT_TRUE(engine.initialize("test", &core));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
+                                            "on_produce"));
+
+            // Present.
+            EXPECT_TRUE(engine.has_callback("on_produce"));
+            EXPECT_TRUE(engine.has_callback("on_init"));
+            EXPECT_TRUE(engine.has_callback("on_inbox"));
+
+            // Absent.
+            EXPECT_FALSE(engine.has_callback("on_stop"));
+            EXPECT_FALSE(engine.has_callback("on_consume"));
+            EXPECT_FALSE(engine.has_callback("on_process"));
+
+            // Wholly unknown name (not even one of the role-callback
+            // names) — must still report false.  Pins that
+            // has_callback isn't accidentally always-true for unknown.
+            EXPECT_FALSE(engine.has_callback("totally_made_up_name"));
+
+            engine.finalize();
+        },
+        "lua_engine::has_callback_detects_presence_absence",
+        Logger::GetLifecycleModule());
+}
+
+int invoke_consume_messages_data_and_event_mixed(const std::string &dir)
+{
+    // Strengthened P3 conversion of V2 InvokeConsume_BareDataMessages.
+    // V2 verified shape (msgs[1] is bare string, msgs[2] is event
+    // table) but did NOT pin the exact data bytes or event field.
+    // This body adds: the data string equals "AB" (the two raw bytes
+    // 0x41 0x42 the C++ side passed), and the event field equals the
+    // exact channel_closing literal.  Catches a regression where the
+    // bare-string projection truncates or re-encodes data.
+    //
+    // Distinct from chunk 5's data-bare-only test — that one used
+    // 1 data message ("hello") with no events. THIS test pins that
+    // BOTH projection paths (push_messages_table_bare_ for data,
+    // table-with-event-key for events) coexist correctly in the
+    // SAME consumer-side msgs vector.
+    return consume_worker_with_script(
+        dir, "lua_engine::invoke_consume_messages_data_and_event_mixed",
+        R"LUA(
+            function on_consume(rx, msgs, api)
+                assert(#msgs == 2,
+                       "expected 2 messages, got " .. #msgs)
+
+                -- msgs[1]: data message → bare bytes string "AB"
+                assert(type(msgs[1]) == "string",
+                       "data msg must be bare string, got " .. type(msgs[1]))
+                assert(msgs[1] == "AB",
+                       "data bytes must round-trip exactly; expected "
+                       .. "'AB' (0x41 0x42), got '" .. msgs[1] .. "'")
+
+                -- msgs[2]: event message → table with .event field
+                assert(type(msgs[2]) == "table",
+                       "event msg must be table, got " .. type(msgs[2]))
+                assert(msgs[2].event == "channel_closing",
+                       "event field expected 'channel_closing', got "
+                       .. tostring(msgs[2].event))
+                return true
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+
+            // Data message (no event, has sender + data bytes).
+            pylabhub::scripting::IncomingMessage dm;
+            dm.sender = "sender-id";
+            dm.data   = {std::byte{0x41}, std::byte{0x42}};
+            msgs.push_back(std::move(dm));
+
+            // Event message (event populated, no data).
+            pylabhub::scripting::IncomingMessage em;
+            em.event = "channel_closing";
+            msgs.push_back(std::move(em));
+
+            float buf = 0.0f;
+            auto r = engine.invoke_consume(
+                pylabhub::scripting::InvokeRx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Commit);
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "Lua-side asserts must have passed — failure means "
+                   "the consumer's mixed data+event projection path "
+                   "lost shape or content";
+        });
+}
+
 } // namespace lua_engine
 } // namespace pylabhub::tests::worker
 
@@ -3386,6 +3502,12 @@ struct LuaEngineWorkerRegistrar
                     return invoke_concurrent_owner_and_non_owner(dir);
                 if (sc == "shared_data_cross_thread_visible")
                     return shared_data_cross_thread_visible(dir);
+
+                // Chunk 8c: misc V2 leftovers
+                if (sc == "has_callback_detects_presence_absence")
+                    return has_callback_detects_presence_absence(dir);
+                if (sc == "invoke_consume_messages_data_and_event_mixed")
+                    return invoke_consume_messages_data_and_event_mixed(dir);
 
                 fmt::print(stderr,
                            "[lua_engine] ERROR: unknown scenario '{}'\n", sc);
