@@ -865,6 +865,77 @@ TEST_F(LuaEngineIsolatedTest, Eval_SyntaxError_ReturnsScriptError)
 }
 
 // ============================================================================
+// Chunk 7b — error handling: setup-phase error paths (Pattern 3)
+//
+// Covers load_script / register_slot_type error paths and a NEW
+// finalize() idempotence gap-fill. Every setup-error test
+// additionally asserts the engine is REUSABLE after the failure
+// (pins "one bad setup input does not brick the engine").
+// ============================================================================
+
+TEST_F(LuaEngineIsolatedTest, LoadScript_MissingFile_ReturnsFalse)
+{
+    auto w = SpawnWorker(
+        "lua_engine.load_script_missing_file_returns_false",
+        {unique_dir("loadscript_missing_file")});
+    // Engine logs "Script not found: <path>" at ERROR level
+    // (lua_engine.cpp:217).
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"Script not found"});
+}
+
+TEST_F(LuaEngineIsolatedTest, LoadScript_MissingRequiredCallback_ReturnsFalse)
+{
+    auto w = SpawnWorker(
+        "lua_engine.load_script_missing_required_callback_returns_false",
+        {unique_dir("loadscript_missing_cb")});
+    // Engine logs "Script has no 'on_produce' function"
+    // (lua_engine.cpp:237).
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"Script has no 'on_produce' function"});
+}
+
+TEST_F(LuaEngineIsolatedTest, LoadScript_SyntaxError_ReturnsFalse)
+{
+    auto w = SpawnWorker(
+        "lua_engine.load_script_syntax_error_returns_false",
+        {unique_dir("loadscript_syntax")});
+    // LuaJIT syntax error gets logged via state_.load_script
+    // (see lua_state.cpp).  Substring varies by LuaJIT version;
+    // "syntax" or "<eof>" are robust.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"<eof>"});
+}
+
+TEST_F(LuaEngineIsolatedTest, RegisterSlotType_BadFieldType_ReturnsFalse)
+{
+    auto w = SpawnWorker(
+        "lua_engine.register_slot_type_bad_field_type_returns_false",
+        {unique_dir("reg_bad_type")});
+    // build_ffi_cdef_ emits "Unsupported field type '<name>' in schema"
+    // at ERROR level for each unsupported type. Two bad registrations
+    // → two ERROR log lines, one per type name.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"Unsupported field type 'complex128' in schema",
+                    "Unsupported field type 'not_a_type' in schema"});
+}
+
+TEST_F(LuaEngineIsolatedTest, Finalize_DoubleCallIsSafe)
+{
+    auto w = SpawnWorker(
+        "lua_engine.finalize_double_call_is_safe",
+        {unique_dir("finalize_double")});
+    // Post-finalize invoke_produce may log an error — acceptable if
+    // it does, not pinning a specific substring (engine is in a dead
+    // state, exact logging behavior is implementation-defined).
+    ExpectWorkerOk(w);
+}
+
+// ============================================================================
 // 8. Error handling
 // ============================================================================
 
@@ -1172,61 +1243,6 @@ TEST_F(LuaEngineTest, MetricsClosures_ReadFromRoleHostCounters)
 // ============================================================================
 // 19. Wrong return type detection
 // ============================================================================
-
-// ============================================================================
-// 21. Negative paths: load_script failures
-// ============================================================================
-
-TEST_F(LuaEngineTest, LoadScript_MissingFile_ReturnsFalse)
-{
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    EXPECT_FALSE(engine.load_script(tmp_, "nonexistent.lua", "on_produce"));
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, LoadScript_MissingRequiredCallback_ReturnsFalse)
-{
-    write_script(R"(
-        function on_init(api) end
-        -- on_produce intentionally absent
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    EXPECT_FALSE(engine.load_script(tmp_, "init.lua", "on_produce"));
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, RegisterSlotType_BadFieldType_ReturnsFalse)
-{
-    write_script("function on_produce(tx, msgs, api) return true end");
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
-
-    SchemaSpec bad_spec;
-    FieldDef f;
-    f.name = "x";
-    f.type_str = "complex128";  // unsupported type
-    f.count = 1;
-    f.length = 0;
-    bad_spec.fields.push_back(f);
-
-    EXPECT_FALSE(engine.register_slot_type(bad_spec, "BadFrame", "aligned"));
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, LoadScript_SyntaxError_ReturnsFalse)
-{
-    write_script("function on_produce(tx, msgs, api)  -- unterminated");
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    EXPECT_FALSE(engine.load_script(tmp_, "init.lua", "on_produce"));
-    engine.finalize();
-}
 
 TEST_F(LuaEngineTest, MetricsClosures_InReceivedWorks)
 {
