@@ -71,6 +71,19 @@ int invoke_consume_none_slot(const std::string &dir);
 int invoke_consume_script_error_detected(const std::string &dir);
 int invoke_consume_rx_slot_is_read_only(const std::string &dir);
 
+// ── invoke_process (chunk 4) ────────────────────────────────────────────────
+//
+// Processor dual-slot callback.  Three V2 tests renamed to match
+// the Lua chunk 4 naming (None vs Nil; both_slots vs NilInput;
+// rx_present_tx_none vs InputOnlyNoOutput) so the contract is
+// explicit and cross-engine parity easy to audit.  Plus one NEW
+// gap-fill: the processor's dual-slot path must enforce the same
+// rx-read-only contract as the consumer path.
+int invoke_process_dual_slots(const std::string &dir);
+int invoke_process_both_slots_none(const std::string &dir);
+int invoke_process_rx_present_tx_none(const std::string &dir);
+int invoke_process_rx_slot_is_read_only(const std::string &dir);
+
 // ── Engine-internal dispatcher contract (chunk 1 gap-fill) ─────────────────
 //
 // Pins PythonEngine's supports_multi_state() returns false.

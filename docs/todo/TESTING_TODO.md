@@ -208,6 +208,88 @@ Affected tests that should adopt the helpers:
 When done: run `ctest -j2 --repeat until-pass:3 -L layer2` at
 each stress level (Low / Medium / High) to confirm no new flakes.
 
+### Open: Native engine — user-settable `supports_multi_state()` (2026-04-20)
+
+Static-review Finding #7 flagged `NativeEngine::invoke()`/`eval()`
+as missing an `is_accepting()` gate for cross-thread admin calls.
+User decision 2026-04-20: **native is not single-state by default**
+— the user fully manages its own threading in the plugin.
+`supports_multi_state()` should become a user-settable flag on
+NativeEngine (default `false`, can be overridden via a plugin
+export, e.g. `native_supports_multi_state`).  Native's missing
+`is_accepting()` gate on generic invoke stays open until the
+user-settable threading policy is wired — they're the same work
+item.
+
+Design rationale (per user): native is designed to fully exploit
+C/C++ capacity and the user owns the threading-model decision.
+Simplification/restriction is the user's call, not the framework's.
+
+Implementation sketch:
+  1. Add optional symbol `native_supports_multi_state()` → bool,
+     resolved during load_script (like `native_is_thread_safe`).
+  2. `NativeEngine::supports_multi_state()` returns the resolved
+     value (default false if symbol not exported).
+  3. `invoke()`/`eval()` gate on `is_accepting()` and — if
+     `!supports_multi_state()` — reject non-owner-thread calls
+     (match Lua/Python's queued-dispatch model on Python side,
+     or match Lua's thread-local state model — user choice).
+  4. HEP-CORE-0028 updates: document the optional symbol and
+     its semantics.
+
+### Resolved (no action) — type_sizeof aliases on Native (2026-04-20)
+
+Static-review Finding #15 flagged inconsistency: `type_sizeof(
+"SlotFrame")` returns a valid size on Lua/Python but 0 on Native.
+User decision 2026-04-20: **no action**.  Native focuses on
+compile-time type binding (templates, direct struct definitions)
+rather than runtime name-table lookup.  Alias handling is a
+scripting-engine convenience (dynamic name resolution) that doesn't
+map onto native's design point.
+
+HEP-CORE-0028 already lists the 5 canonical names as the native
+registration targets.  No doc change needed.
+
+### Resolved (no action) — has_callback for non-canonical names on Native (2026-04-20)
+
+Static-review Finding #14 flagged inconsistency: Lua/Python's
+`has_callback("custom_hook")` probes for arbitrary names via
+`lua_getglobal`/`py::getattr`; Native returns false because
+`type_sizes_` only holds canonical entries.  User decision
+2026-04-20: **no action — restrict to canonical names at the core
+API level**.
+
+The native engine's plugin is free to `dlsym` arbitrary internal
+functions via C/C++; the framework just doesn't expose non-
+canonical symbols through the core API.  This matches the
+full-type / dynamic-lib loading check model.
+
+HEP-CORE-0011's `has_callback` contract should be documented to
+say "canonical names only" when the HEP gets a refresh (deferred).
+
+### Resolved (no action) — inbox_cache_ "duplication" claim (2026-04-20)
+
+Static-review Finding #20 claimed the per-Python-API `inbox_cache_`
+members duplicate `RoleHostCore::inbox_cache_` and should be
+consolidated.  **Incorrect reading** — confirmed 2026-04-20.  These
+are two layered caches holding different things:
+
+  - **Core (`RoleHostCore::inbox_cache_`)** — engine-agnostic
+    discovery: `{uid → shared_ptr<InboxClient> + SchemaSpec +
+    item_size}`.  Reused by all engines via the core API path.
+  - **Python API (`ProducerAPI/ConsumerAPI/ProcessorAPI::inbox_cache_`)**
+    — pybind11-specific: `{uid → py::object wrapping InboxHandle
+    with ctypes Structure type}`.  Caches the expensive-to-build
+    Python ctypes type.  Cannot be shared with Lua (which uses FFI
+    cdef refs in LuaJIT's global FFI registry) or Native (which
+    uses compile-time types).
+
+User decision (Quan) 2026-04-20: no consolidation.  Native
+correctly has no inbox_cache_ — "native is directly called, no api
+layer per se."  Only possible LOW-priority DRY nit: extract a
+shared pybind11 open_inbox helper across the three Python API
+classes (~40 identical lines × 3).  Not a design defect.
+
 ### Open: Missing-callback error-count wiring across engines (2026-04-20)
 
 Static-review follow-up deferred from the scripting-engine Tier A

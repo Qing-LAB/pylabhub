@@ -1096,6 +1096,166 @@ def on_consume(rx, msgs, api):
         });
 }
 
+// ── invoke_process (chunk 4) ───────────────────────────────────────────────
+//
+// Processor dual-slot callback.  The Python path
+// (python_engine.cpp:1009-1040) builds BOTH an rx and a tx channel
+// per iteration: rx via in_slot_type_ro_ (readonly subclass with
+// __setattr__ override), tx via out_slot_type_ (writable).
+//
+// Processor role: always has an input channel by definition (a role
+// without an input channel is a consumer, not a processor).  None
+// rx.slot inside on_process represents runtime state (input queue
+// timeout / no data); None tx.slot similarly represents "output
+// queue has no slot right now" (backpressure).  Test names match
+// the Lua sweep to keep the cross-engine contract explicit.
+
+int invoke_process_dual_slots(const std::string &dir)
+{
+    // Strengthened vs V2 InvokeProcess_DualSlots:
+    //
+    //   a) Asserts script_error_count == 0 (catches a regression
+    //      where the engine silently logs a script error alongside
+    //      returning Commit).
+    //
+    //   b) Asserts the rx buffer was NOT mutated even though Python
+    //      read rx.slot.value.  rx is read-only per the processor
+    //      contract; the pre-conversion test only checked out_data,
+    //      leaving an aliasing-bug regression undetectable.
+    return process_worker_with_script(
+        dir, "python_engine::invoke_process_dual_slots",
+        R"PY(
+def on_process(rx, tx, msgs, api):
+    if rx.slot is not None and tx.slot is not None:
+        tx.slot.value = rx.slot.value * 2.0
+        return True
+    return False
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            float in_data  = 21.0f;
+            float out_data = 0.0f;
+            std::vector<IncomingMessage> msgs;
+            auto result = engine.invoke_process(
+                InvokeRx{&in_data, sizeof(in_data)},
+                InvokeTx{&out_data, sizeof(out_data)}, msgs);
+            EXPECT_EQ(result, InvokeResult::Commit);
+            EXPECT_FLOAT_EQ(out_data, 42.0f)
+                << "Python computed tx.slot.value = rx.slot.value * 2.0";
+            EXPECT_FLOAT_EQ(in_data, 21.0f)
+                << "rx.slot is read-only — input buffer must not be "
+                   "mutated by the dual-slot dispatch path";
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int invoke_process_both_slots_none(const std::string &dir)
+{
+    // Renamed vs V2 InvokeProcess_NoneInput.  The V2 name suggested
+    // "processor with no input channel", which is semantically wrong
+    // (such a role is a consumer).  The actual scenario: both rx and
+    // tx paths produced None — input queue timed out AND output queue
+    // has no slot.  Matches the Lua chunk 4 naming.
+    return process_worker_with_script(
+        dir, "python_engine::invoke_process_both_slots_none",
+        R"PY(
+def on_process(rx, tx, msgs, api):
+    assert rx.slot is None, "expected None input (timeout / no data)"
+    assert tx.slot is None, "expected None output (backpressure)"
+    return False
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            std::vector<IncomingMessage> msgs;
+            auto result = engine.invoke_process(
+                InvokeRx{nullptr, 0},
+                InvokeTx{nullptr, 0}, msgs);
+            EXPECT_EQ(result, InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "Python `assert both None` must have passed; failure "
+                   "means the engine dispatched a non-None slot for a "
+                   "null/zero-size InvokeRx or InvokeTx";
+        });
+}
+
+int invoke_process_rx_present_tx_none(const std::string &dir)
+{
+    // Renamed vs V2 InvokeProcess_InputOnlyNoOutput.  The V2 name
+    // could be misread as "processor without output channel"; actual
+    // scenario is "input has data, but the output queue is
+    // backpressured / no slot available this iteration."  Matches
+    // Lua chunk 4 naming.
+    //
+    // Strengthened: asserts script_error_count == 0 and in_data
+    // unchanged.
+    return process_worker_with_script(
+        dir, "python_engine::invoke_process_rx_present_tx_none",
+        R"PY(
+def on_process(rx, tx, msgs, api):
+    assert rx.slot is not None, "expected input data"
+    assert tx.slot is None, "expected None output (backpressure)"
+    return False
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            float in_data = 10.0f;
+            std::vector<IncomingMessage> msgs;
+            auto result = engine.invoke_process(
+                InvokeRx{&in_data, sizeof(in_data)},
+                InvokeTx{nullptr, 0}, msgs);
+            EXPECT_EQ(result, InvokeResult::Discard);
+            EXPECT_FLOAT_EQ(in_data, 10.0f)
+                << "rx is still read-only in the rx-only-no-tx path";
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int invoke_process_rx_slot_is_read_only(const std::string &dir)
+{
+    // NEW gap-fill — the processor's dual-slot code path must enforce
+    // the same loud-failure rx-read-only contract as the consumer
+    // path (see invoke_consume_rx_slot_is_read_only doc block for the
+    // full source-trace).  invoke_process is a separate engine entry
+    // (python_engine.cpp:1019-1024 builds rx_ch via in_slot_type_ro_
+    // — the same readonly subclass the consumer path uses), so the
+    // contract should hold the same way.
+    //
+    // Because the __setattr__ override raises AttributeError on the
+    // rx-write line, the body never reaches the subsequent tx-write
+    // — so out_data stays at its caller-initialised 0.0f.  We assert
+    // that explicitly to pin the "raise aborts the callback"
+    // sequencing, identical to Lua's processor gap-fill.
+    return process_worker_with_script(
+        dir, "python_engine::invoke_process_rx_slot_is_read_only",
+        R"PY(
+def on_process(rx, tx, msgs, api):
+    rx.slot.value = 777.0   # raises AttributeError; aborts callback
+    tx.slot.value = 3.25    # unreachable
+    return True             # unreachable
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            float in_data  = 99.5f;
+            float out_data = 0.0f;
+            std::vector<IncomingMessage> msgs;
+            auto result = engine.invoke_process(
+                InvokeRx{&in_data, sizeof(in_data)},
+                InvokeTx{&out_data, sizeof(out_data)}, msgs);
+
+            // Four coupled assertions pinning the design contract:
+            EXPECT_FLOAT_EQ(in_data, 99.5f)
+                << "rx.slot write must NOT propagate to the underlying "
+                   "rx buffer.";
+            EXPECT_EQ(result, InvokeResult::Error)
+                << "rx write in invoke_process must surface as "
+                   "InvokeResult::Error, same loud contract as "
+                   "invoke_consume.";
+            EXPECT_EQ(engine.script_error_count(), 1u);
+            // tx never written because the AttributeError aborted the
+            // callback on the preceding line.
+            EXPECT_FLOAT_EQ(out_data, 0.0f)
+                << "the AttributeError on the rx write must abort "
+                   "on_process — the tx write on the next line was "
+                   "unreachable, so out_data stays at its initial 0.0f.";
+        });
+}
+
 int invoke_produce_discard_on_false_but_python_wrote_slot(const std::string &dir)
 {
     // NEW test — pins the production contract that the engine does NOT
@@ -1220,6 +1380,15 @@ struct PythonEngineWorkerRegistrar
                     return invoke_consume_script_error_detected(dir);
                 if (sc == "invoke_consume_rx_slot_is_read_only")
                     return invoke_consume_rx_slot_is_read_only(dir);
+
+                if (sc == "invoke_process_dual_slots")
+                    return invoke_process_dual_slots(dir);
+                if (sc == "invoke_process_both_slots_none")
+                    return invoke_process_both_slots_none(dir);
+                if (sc == "invoke_process_rx_present_tx_none")
+                    return invoke_process_rx_present_tx_none(dir);
+                if (sc == "invoke_process_rx_slot_is_read_only")
+                    return invoke_process_rx_slot_is_read_only(dir);
 
                 fmt::print(stderr,
                            "[python_engine] ERROR: unknown scenario '{}'\n",
