@@ -97,6 +97,18 @@ int invoke_produce_receives_messages_empty_list(const std::string &dir);
 int invoke_produce_receives_messages_data_message(const std::string &dir);
 int invoke_consume_receives_messages_data_bare_format(const std::string &dir);
 
+// ── API closures (chunk 6) ─────────────────────────────────────────────────
+//
+// pybind11-bound api.* methods + the module-level version_info().
+// V2 had 6 tests; P3 collapses to 5 by merging the two stop_reason
+// variants (Default + PeerDead) into one exhaustive enum-values
+// coverage that also adds HubDead (never tested in V2).
+int api_version_info_returns_json_string(const std::string &dir);
+int wrong_role_module_import_raises_error(const std::string &dir);
+int api_stop_sets_shutdown_requested(const std::string &dir);
+int api_critical_error_set_and_read_and_stop_reason(const std::string &dir);
+int api_stop_reason_reflects_all_enum_values(const std::string &dir);
+
 // ── Engine-internal dispatcher contract (chunk 1 gap-fill) ─────────────────
 //
 // Pins PythonEngine's supports_multi_state() returns false.
