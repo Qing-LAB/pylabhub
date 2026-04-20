@@ -514,90 +514,51 @@ TEST_F(PythonEngineIsolatedTest, InvokeProcess_RxSlot_IsReadOnly)
 }
 
 // ============================================================================
-// 6. Messages
+// Chunk 5 — Messages (Pattern 3)
+//
+// Two projection paths: build_messages_list_ (producer/processor)
+// and build_messages_list_bare_ (consumer).  See worker docblocks
+// for the full contract and Python-vs-Lua shape divergence notes.
+//
+// V2 had 2 basic-shape tests; strengthened here + 2 new tests to
+// cover the details-map promotion and the producer tuple-shape
+// paths V2 left untested.  (InvokeProduce_EmptyMessagesList at V2
+// line 1846 is also folded in.)
 // ============================================================================
 
-TEST_F(PythonEngineTest, InvokeProduce_ReceivesMessages)
+TEST_F(PythonEngineIsolatedTest, InvokeProduce_ReceivesMessages_EventWithDetails)
 {
-    // Producer messages: events are dicts, data messages are (sender_hex, bytes) tuples.
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    event_count = sum(1 for m in msgs if isinstance(m, dict) and 'event' in m)\n"
-        "    assert event_count == 2, (\n"
-        "        f'expected 2 events, got {event_count}')\n"
-        "    assert msgs[0]['event'] == 'consumer_joined', (\n"
-        "        f'expected consumer_joined, got {msgs[0][\"event\"]}')\n"
-        "    assert msgs[1]['event'] == 'channel_closing', (\n"
-        "        f'expected channel_closing, got {msgs[1][\"event\"]}')\n"
-        "    return False\n");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    std::vector<IncomingMessage> msgs;
-    IncomingMessage m1;
-    m1.event = "consumer_joined";
-    m1.details["identity"] = "abc123";
-    msgs.push_back(std::move(m1));
-
-    IncomingMessage m2;
-    m2.event = "channel_closing";
-    msgs.push_back(std::move(m2));
-
-    float buf = 0.0f;
-    auto result =
-        engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Discard);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed -- messages not received correctly";
-
-    engine.finalize();
+    auto w = SpawnWorker(
+        "python_engine.invoke_produce_receives_messages_event_with_details",
+        {unique_dir("msg_event_details")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, InvokeConsume_BareDataMessages)
+TEST_F(PythonEngineIsolatedTest, InvokeProduce_ReceivesMessages_EmptyList)
 {
-    // Consumer data messages are bare bytes (not tuples). Events are still dicts.
-    write_script(
-        "def on_consume(rx, msgs, api):\n"
-        "    assert len(msgs) == 2, f'expected 2 messages, got {len(msgs)}'\n"
-        "    # First msg: data message -> bare bytes\n"
-        "    assert isinstance(msgs[0], bytes), (\n"
-        "        f'data msg should be bytes, got {type(msgs[0])}')\n"
-        "    # Second msg: event message -> dict with .event\n"
-        "    assert isinstance(msgs[1], dict), (\n"
-        "        f'event msg should be dict, got {type(msgs[1])}')\n"
-        "    assert msgs[1]['event'] == 'channel_closing'\n"
-        "    return True\n");
+    auto w = SpawnWorker(
+        "python_engine.invoke_produce_receives_messages_empty_list",
+        {unique_dir("msg_empty")});
+    ExpectWorkerOk(w);
+}
 
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_consume"));
+// NEW gap-fill — pins Python's producer data-message 2-tuple shape
+// (sender_hex_str, bytes).  V2 never tested this path, leaving the
+// sender-hex formatting and bytes construction code untested.
+TEST_F(PythonEngineIsolatedTest, InvokeProduce_ReceivesMessages_DataMessage)
+{
+    auto w = SpawnWorker(
+        "python_engine.invoke_produce_receives_messages_data_message",
+        {unique_dir("msg_data_tuple")});
+    ExpectWorkerOk(w);
+}
 
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_, "cons");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    std::vector<IncomingMessage> msgs;
-    // Data message (has sender + data, no event).
-    IncomingMessage dm;
-    dm.sender = "sender-id";
-    dm.data   = {std::byte{0x41}, std::byte{0x42}};
-    msgs.push_back(std::move(dm));
-
-    // Event message.
-    IncomingMessage em;
-    em.event = "channel_closing";
-    msgs.push_back(std::move(em));
-
-    engine.invoke_consume(InvokeRx{nullptr, 0}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed -- consumer message format incorrect";
-
-    engine.finalize();
+TEST_F(PythonEngineIsolatedTest, InvokeConsume_ReceivesMessages_DataBareFormat)
+{
+    auto w = SpawnWorker(
+        "python_engine.invoke_consume_receives_messages_data_bare_format",
+        {unique_dir("msg_consumer_bare")});
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
@@ -1840,31 +1801,9 @@ def on_produce(tx, msgs, api):
 }
 
 // ============================================================================
-// 20. invoke_produce with empty messages list
+// (V2 InvokeProduce_EmptyMessagesList removed — superseded by
+// chunk 5's InvokeProduce_ReceivesMessages_EmptyList.)
 // ============================================================================
-
-TEST_F(PythonEngineTest, InvokeProduce_EmptyMessagesList)
-{
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    assert len(msgs) == 0, f"expected empty msgs, got {len(msgs)}"
-    return False
-)");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs; // empty
-
-    auto result =
-        engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Discard);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed -- empty msgs list incorrect";
-
-    engine.finalize();
-}
 
 // ============================================================================
 // 21. stop_reason after critical error
