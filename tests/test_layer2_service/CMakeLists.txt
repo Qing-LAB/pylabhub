@@ -813,9 +813,11 @@ gtest_discover_tests(test_layer2_lua_engine
 # --- PythonEngine unit tests ---
 add_executable(test_layer2_python_engine
     test_python_engine.cpp
+    workers/python_engine_workers.cpp
 )
 
 target_include_directories(test_layer2_python_engine PRIVATE
+    workers
     ${CMAKE_SOURCE_DIR}/src/scripting
     ${CMAKE_SOURCE_DIR}/tests/test_framework
 )
@@ -824,9 +826,10 @@ target_link_libraries(test_layer2_python_engine
     PRIVATE
         pylabhub::utils
         pylabhub::scripting
+        pylabhub::test_framework
         pylabhub::third_party::pybind11_embed
         GTest::gtest
-        GTest::gtest_main
+        GTest::gmock
 )
 
 target_compile_definitions(test_layer2_python_engine PRIVATE LOGGER_COMPILE_LEVEL=0)
