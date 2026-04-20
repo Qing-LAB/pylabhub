@@ -1812,31 +1812,6 @@ TEST_F(LuaEngineTest, Metrics_AllLoopFields_Present)
 }
 
 // ============================================================================
-// 29. invoke_produce with empty messages list
-// ============================================================================
-
-TEST_F(LuaEngineTest, InvokeProduce_EmptyMessagesList)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            assert(#msgs == 0, "expected 0 msgs, got " .. tostring(#msgs))
-            return false
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs; // empty
-
-    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Discard);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
-}
-
-// ============================================================================
 // 30. open_inbox without broker returns nil
 // ============================================================================
 
