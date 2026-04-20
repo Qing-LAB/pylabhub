@@ -60,6 +60,17 @@ int invoke_produce_wrong_return_type_is_error(const std::string &dir);
 int invoke_produce_wrong_return_string_is_error(const std::string &dir);
 int invoke_produce_discard_on_false_but_python_wrote_slot(const std::string &dir);
 
+// ── invoke_consume (chunk 3) ────────────────────────────────────────────────
+//
+// Consumer callback contract.  Splits V2's single
+// ReceivesReadOnlySlot test into two: a happy-path receives test, and
+// a dedicated read-only enforcement test that actually attempts a
+// write.  Plus strengthened None-slot and script-error tests.
+int invoke_consume_receives_slot(const std::string &dir);
+int invoke_consume_none_slot(const std::string &dir);
+int invoke_consume_script_error_detected(const std::string &dir);
+int invoke_consume_rx_slot_is_read_only(const std::string &dir);
+
 // ── Engine-internal dispatcher contract (chunk 1 gap-fill) ─────────────────
 //
 // Pins PythonEngine's supports_multi_state() returns false.
