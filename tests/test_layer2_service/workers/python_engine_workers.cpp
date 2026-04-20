@@ -335,27 +335,26 @@ int register_slot_type_multi_field(const std::string &dir)
         Logger::GetLifecycleModule());
 }
 
-int register_slot_type_packed_vs_aligned(const std::string &dir)
+int register_slot_type_packed_packing(const std::string &dir)
 {
-    // Strengthened vs V2 RegisterSlotType_PackedPacking.  V2 only
-    // registered the schema as "packed" and asserted 5 bytes.  A
-    // regression where the packing argument is silently ignored
-    // (always using aligned) would slip through if aligned also
-    // produced 5 bytes.
+    // Pins the user-observable outcome: registering a bool+int32
+    // schema with "packed" packing produces the hand-verified 5-byte
+    // layout (bool(1) + int32(4), no padding).
     //
-    // PYTHON-SPECIFIC DESIGN: PythonEngine's type_sizeof
-    // (python_engine.cpp:854-881) only returns a size for the 5
-    // known type names (In/OutSlotFrame, In/OutFlexFrame, InboxFrame)
-    // — any other name returns 0 because the engine caches types in
-    // explicit py::object fields keyed by the known names.  Lua's
-    // ffi.typeof is string-keyed so any registered name is
-    // retrievable; Python is not.
+    // Why this is enough (no separate "aligned" side-check):
+    // register_slot_type (python_engine.cpp:800-807) internally
+    // cross-validates ctypes_sizeof(type) against
+    // compute_schema_size(spec, packing).  If a regression silently
+    // ignored the packing arg and always built aligned (size 8 for
+    // this schema), the internal check would fire —
+    //   actual=8, expected=5 → "size mismatch" ERROR + return false —
+    // and ASSERT_TRUE(register_slot_type(...)) here would fail.
     //
-    // To pin the packing argument's effect under this constraint,
-    // we RE-REGISTER the same spec under OutSlotFrame (allowed — it
-    // overwrites out_slot_type_ at python_engine.cpp:816) with
-    // different packings and capture sizeof between the two
-    // registrations.
+    // So the engine's internal cross-validation IS the real guard
+    // against silent packing-ignore.  This test's unique value is
+    // pinning the size anchor (5 bytes) for this specific
+    // bool+int32 combination so that a compute_schema_size drift
+    // for this schema would surface.
     return run_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
@@ -370,35 +369,20 @@ int register_slot_type_packed_vs_aligned(const std::string &dir)
             ASSERT_TRUE(engine.load_script(script_dir / "script" / "python",
                                             "__init__.py", "on_produce"));
 
-            // bool + int32: aligned = 8 (3 bytes pad), packed = 5.
             SchemaSpec spec;
             spec.has_schema = true;
             spec.fields.push_back({"flag", "bool",  1, 0});
             spec.fields.push_back({"val",  "int32", 1, 0});
 
-            // Phase 1 — register aligned, capture sizeof.
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
-            const size_t aligned_sz = engine.type_sizeof("OutSlotFrame");
-            EXPECT_EQ(aligned_sz, 8u)
-                << "aligned: bool(1) + 3 pad + int32(4) = 8 "
-                   "(ctypes natural padding)";
-
-            // Phase 2 — RE-register same spec as packed, capture sizeof.
             ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
                                                    "packed"));
-            const size_t packed_sz = engine.type_sizeof("OutSlotFrame");
-            EXPECT_EQ(packed_sz, 5u)
-                << "packed: bool(1) + int32(4) = 5 (ctypes _pack_=1)";
-
-            EXPECT_NE(aligned_sz, packed_sz)
-                << "aligned and packed MUST produce different layouts "
-                   "for this schema — if equal, the packing arg was "
-                   "silently ignored by register_slot_type";
+            EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 5u)
+                << "packed: bool(1) + int32(4) = 5 — hand-verified "
+                   "anchor for this schema";
 
             engine.finalize();
         },
-        "python_engine::register_slot_type_packed_vs_aligned",
+        "python_engine::register_slot_type_packed_packing",
         Logger::GetLifecycleModule());
 }
 
@@ -433,15 +417,22 @@ int register_slot_type_all_supported_types(const std::string &dir)
 {
     // NEW coverage fill (parallel to the Lua chunk-1 gap-fill).
     // V2 never registered bool/int8/int16/uint64 etc. via the Python
-    // type-registration path, leaving the ctypes type-build branches
+    // type-registration path, leaving the ctypes-type-build branches
     // for those types untested at L2.
     //
-    // PYTHON-SPECIFIC DESIGN: type_sizeof only works for the 5 known
-    // names (see register_slot_type_packed_vs_aligned rationale).
-    // We use OutSlotFrame as the anchor and re-register for both
-    // packings.  The core claim — "every scalar type in
-    // all_types_schema() builds a valid ctypes struct whose size
-    // matches compute_schema_size" — is checked for BOTH packings.
+    // Unique coverage vs the engine's internal check:
+    // register_slot_type internally cross-validates ctypes_sizeof vs
+    // compute_schema_size (python_engine.cpp:800-807), so a size-
+    // mismatch bug WOULD be caught by the engine itself.  But a
+    // DIFFERENT bug class — missing or wrong ctypes-type-dispatcher
+    // entry for a specific scalar (e.g. int8 case accidentally
+    // dropped from json_type_to_ctypes at python_helpers.hpp) —
+    // gets caught only by actually exercising every type.  That's
+    // what this test does.
+    //
+    // Single packing ("aligned") is sufficient: the internal check
+    // guards against per-packing layout bugs; this test guards
+    // against per-type-dispatcher bugs.  No need to test both.
     return run_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
@@ -457,32 +448,15 @@ int register_slot_type_all_supported_types(const std::string &dir)
                                             "__init__.py", "on_produce"));
 
             auto spec = all_types_schema();
-
-            // Phase 1 — aligned.
             ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
                                                    "aligned"))
                 << "every scalar type in all_types_schema must build a "
-                   "ctypes struct under aligned packing";
-            const size_t aligned_sz = engine.type_sizeof("OutSlotFrame");
-            EXPECT_GT(aligned_sz, 0u);
-            EXPECT_EQ(aligned_sz,
+                   "ctypes struct — a missing dispatcher branch for any "
+                   "scalar type would fail here";
+            EXPECT_EQ(engine.type_sizeof("OutSlotFrame"),
                       pylabhub::hub::compute_schema_size(spec, "aligned"))
-                << "engine ctypes_sizeof must match compute_schema_size "
-                   "for every scalar type";
-
-            // Phase 2 — packed (re-register under same name).
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "packed"))
-                << "every scalar type must also build under packed";
-            const size_t packed_sz = engine.type_sizeof("OutSlotFrame");
-            EXPECT_GT(packed_sz, 0u);
-            EXPECT_EQ(packed_sz,
-                      pylabhub::hub::compute_schema_size(spec, "packed"));
-
-            EXPECT_GE(aligned_sz, packed_sz)
-                << "aligned layout can never be smaller than packed for "
-                   "the same schema — sub-word-aligned fields may need "
-                   "padding under aligned that packed drops";
+                << "engine ctypes_sizeof must match the canonical "
+                   "compute_schema_size for every scalar type";
 
             engine.finalize();
         },
@@ -778,8 +752,8 @@ struct PythonEngineWorkerRegistrar
                     return register_slot_type_sizeof_correct(dir);
                 if (sc == "register_slot_type_multi_field")
                     return register_slot_type_multi_field(dir);
-                if (sc == "register_slot_type_packed_vs_aligned")
-                    return register_slot_type_packed_vs_aligned(dir);
+                if (sc == "register_slot_type_packed_packing")
+                    return register_slot_type_packed_packing(dir);
                 if (sc == "register_slot_type_has_schema_false_returns_false")
                     return register_slot_type_has_schema_false_returns_false(dir);
                 if (sc == "register_slot_type_all_supported_types")

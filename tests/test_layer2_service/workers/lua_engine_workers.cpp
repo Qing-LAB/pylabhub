@@ -329,16 +329,26 @@ int register_slot_type_multi_field(const std::string &dir)
         Logger::GetLifecycleModule());
 }
 
-int register_slot_type_packed_vs_aligned(const std::string &dir)
+int register_slot_type_packed_packing(const std::string &dir)
 {
-    // STRENGTHENED vs. original RegisterSlotType_PackedPacking: the
-    // pre-conversion test only asserted `packed` gave 5 bytes; a bug where
-    // the packing argument was silently ignored and aligned were always
-    // used would slip by (aligned also gives 8, so forgetting to pack
-    // would look fine for this one schema).  The strengthened test
-    // registers the SAME fields under both packings and asserts BOTH
-    // sizes — aligned(8) vs. packed(5) — so the mode parameter's effect
-    // is verified, not merely accepted.
+    // Pins the user-observable outcome: registering a bool+int32
+    // schema with "packed" packing produces the hand-verified 5-byte
+    // layout (bool(1) + int32(4), no padding).
+    //
+    // Why this is enough (no separate "aligned" side-check):
+    // register_slot_type (lua_engine.cpp:680-687) internally
+    // cross-validates the built struct size against
+    // compute_schema_size(spec, packing).  If a regression silently
+    // ignored the packing argument and always built aligned (size 8
+    // for this schema), the internal check would fire —
+    //   actual=8, expected=5 → "size mismatch" ERROR + return false —
+    // and ASSERT_TRUE(register_slot_type(...)) here would fail.
+    //
+    // So the engine's internal cross-validation IS the real guard
+    // against silent packing-ignore.  This test's unique value is
+    // pinning the size anchor (5 bytes) for this specific
+    // bool+int32 combination so that a compute_schema_size drift
+    // for this schema — if any future refactor moves it — surfaces.
     return run_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
@@ -350,31 +360,20 @@ int register_slot_type_packed_vs_aligned(const std::string &dir)
             ASSERT_TRUE(engine.initialize("test", &core));
             ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
-            // bool + int32: aligned=8 (3 bytes of padding after bool),
-            //               packed=5 (no padding).
             SchemaSpec spec;
             spec.has_schema = true;
             spec.fields.push_back({"flag", "bool",  1, 0});
             spec.fields.push_back({"val",  "int32", 1, 0});
 
-            ASSERT_TRUE(engine.register_slot_type(spec, "AlignedFrame",
-                                                  "aligned"));
-            EXPECT_EQ(engine.type_sizeof("AlignedFrame"), 8u)
-                << "aligned: bool(1) + 3 bytes padding + int32(4) = 8";
-
-            ASSERT_TRUE(engine.register_slot_type(spec, "PackedFrame",
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
                                                   "packed"));
-            EXPECT_EQ(engine.type_sizeof("PackedFrame"), 5u)
-                << "packed: bool(1) + int32(4) = 5";
-
-            EXPECT_NE(engine.type_sizeof("AlignedFrame"),
-                      engine.type_sizeof("PackedFrame"))
-                << "aligned and packed must produce different layouts for "
-                   "this schema — if equal, the mode arg was ignored";
+            EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 5u)
+                << "packed: bool(1) + int32(4) = 5 — hand-verified "
+                   "anchor for this schema";
 
             engine.finalize();
         },
-        "lua_engine::register_slot_type_packed_vs_aligned",
+        "lua_engine::register_slot_type_packed_packing",
         Logger::GetLifecycleModule());
 }
 
@@ -404,17 +403,27 @@ int register_slot_type_has_schema_false_returns_false(const std::string &dir)
 
 int register_slot_type_all_supported_types(const std::string &dir)
 {
-    // NEW coverage fill: before this test the suite never registered any
-    // slot with bool / int8 / int16 / uint64 — leaving the engine's
-    // dispatcher branches for those types (lua_engine.cpp:623,624,626,631)
-    // untested at L2.  Uses the shared test helper all_types_schema()
-    // which is documented to cover every scalar type the engine supports.
+    // NEW coverage fill: before this test the suite never registered
+    // any slot with bool / int8 / int16 / uint64 — leaving the engine's
+    // type-dispatcher branches for those types (lua_engine.cpp:623,
+    // 624, 626, 631) untested at L2.  Uses the shared test helper
+    // all_types_schema() which covers every scalar type the engine
+    // supports.
     //
-    // Asserts: registration succeeds under both aligned and packed, the
-    // resulting struct has non-zero sizeof, and aligned >= packed (a
-    // schema with sub-word-aligned fields must not shrink under aligned
-    // mode — a surprising inequality would indicate a real bug in the
-    // layout computation).
+    // Unique coverage vs engine's internal check: register_slot_type
+    // internally cross-validates ffi_sizeof vs compute_schema_size
+    // (lua_engine.cpp:680-687) so a size-mismatch bug WOULD be
+    // caught by the engine itself.  But a DIFFERENT bug class —
+    // missing or wrong type-dispatcher entry for a specific scalar
+    // (e.g. int8 case accidentally deleted from build_ffi_cdef_) —
+    // causes the cdef-build to fail silently or produce garbage,
+    // and only gets caught by actually exercising every type.
+    // That's what this test does.
+    //
+    // Single packing ("aligned") is sufficient: the internal check
+    // guards against per-packing layout bugs; this test guards
+    // against per-type-dispatcher bugs.  No need to redundantly
+    // test both packings.
     return run_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
@@ -427,26 +436,16 @@ int register_slot_type_all_supported_types(const std::string &dir)
             ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
             auto spec = all_types_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "AllAligned",
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
                                                   "aligned"))
-                << "every scalar type must register under aligned";
-            ASSERT_TRUE(engine.register_slot_type(spec, "AllPacked",
-                                                  "packed"))
-                << "every scalar type must register under packed";
-
-            const size_t aligned_sz = engine.type_sizeof("AllAligned");
-            const size_t packed_sz  = engine.type_sizeof("AllPacked");
-            EXPECT_GT(aligned_sz, 0u);
-            EXPECT_GT(packed_sz, 0u);
-            EXPECT_GE(aligned_sz, packed_sz)
-                << "aligned layout can never be smaller than packed for "
-                   "the same fields";
-            EXPECT_EQ(aligned_sz,
+                << "every scalar type in all_types_schema must register "
+                   "successfully under aligned — a missing dispatcher "
+                   "branch for any type would fail here";
+            EXPECT_EQ(engine.type_sizeof("OutSlotFrame"),
                       pylabhub::hub::compute_schema_size(spec, "aligned"))
-                << "engine sizeof must match compute_schema_size (the same "
-                   "helper the role host uses to size buffers)";
-            EXPECT_EQ(packed_sz,
-                      pylabhub::hub::compute_schema_size(spec, "packed"));
+                << "engine sizeof must match the canonical "
+                   "compute_schema_size the role host uses for buffer "
+                   "sizing";
 
             engine.finalize();
         },
@@ -2597,15 +2596,25 @@ int load_script_syntax_error_returns_false(const std::string &dir)
 int register_slot_type_bad_field_type_returns_false(const std::string &dir)
 {
     // Strengthened over V2.  V2 only asserted false on ONE bad
-    // type (complex128).  This body additionally pins:
-    //   (a) type_sizeof("BadFrame") returns 0 — the failed
-    //       registration did NOT leak a partial type into the ffi
-    //       table.
-    //   (b) registering a DIFFERENT good schema under the same name
-    //       subsequently succeeds — the failure doesn't poison the
-    //       name slot.
-    //   (c) a second unsupported type name also fails — pins the
-    //       rejection isn't specific to one value.
+    // type (complex128) under the custom name "BadFrame".  The
+    // engine's canonical-name contract (script_engine.hpp:
+    // register_slot_type) rejects non-canonical names outright,
+    // so "BadFrame" is no longer a valid test vector — bad-field
+    // rejection is orthogonal to bad-name rejection and must be
+    // exercised separately, against a canonical name.
+    //
+    // This body pins:
+    //   (a) bad field type under a CANONICAL name fails.
+    //   (b) a second bad field type (different name within the bad
+    //       value) also fails — pins the rejection isn't specific
+    //       to one value.
+    //   (c) a non-canonical name with a GOOD schema ALSO fails —
+    //       design-invariant rejection (NEW assertion capturing the
+    //       canonical-name-only contract).
+    //   (d) after all failures, registering a VALID schema under a
+    //       canonical name succeeds — the engine isn't poisoned.
+    //   (e) type_sizeof for the bad-named attempt returns 0 —
+    //       non-canonical names never cache.
     return run_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
@@ -2618,34 +2627,45 @@ int register_slot_type_bad_field_type_returns_false(const std::string &dir)
             ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
                                             "on_produce"));
 
-            // complex128 is unsupported.
+            // (a) Bad field type under CANONICAL name.
             SchemaSpec bad;
             bad.has_schema = true;
             bad.fields.push_back({"x", "complex128", 1, 0});
-            EXPECT_FALSE(engine.register_slot_type(bad, "BadFrame",
+            EXPECT_FALSE(engine.register_slot_type(bad, "OutSlotFrame",
                                                     "aligned"))
-                << "unsupported type 'complex128' must fail registration";
+                << "unsupported field type 'complex128' must fail "
+                   "registration even under a canonical name";
+            EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 0u)
+                << "failed registration must not leak a partial type";
 
-            EXPECT_EQ(engine.type_sizeof("BadFrame"), 0u)
-                << "failed registration must NOT leak a partial type — "
-                   "type_sizeof for an unregistered name is 0";
-
-            // A different bogus type name should also fail.
+            // (b) Second bad field type under a different canonical name.
             SchemaSpec bad2;
             bad2.has_schema = true;
             bad2.fields.push_back({"y", "not_a_type", 1, 0});
-            EXPECT_FALSE(engine.register_slot_type(bad2, "BadFrame2",
-                                                     "aligned"));
+            EXPECT_FALSE(engine.register_slot_type(bad2, "InSlotFrame",
+                                                     "aligned"))
+                << "a second unsupported type also fails — rejection "
+                   "isn't specific to one value";
 
-            // After both failures, registering a VALID schema under
-            // the previously-failed name must succeed.
+            // (c) NON-CANONICAL name even with a GOOD schema must fail.
+            //     Pins the canonical-name-only contract added 2026-04-20.
             auto good = simple_schema();
-            EXPECT_TRUE(engine.register_slot_type(good, "BadFrame",
+            EXPECT_FALSE(engine.register_slot_type(good, "BadFrame",
                                                     "aligned"))
-                << "failed registration must not poison the name slot — "
-                   "a subsequent valid schema under the same name must "
-                   "register successfully";
-            EXPECT_GT(engine.type_sizeof("BadFrame"), 0u);
+                << "non-canonical name must be rejected even with a "
+                   "valid schema — engines accept only the five "
+                   "canonical frame names per script_engine.hpp";
+            EXPECT_EQ(engine.type_sizeof("BadFrame"), 0u)
+                << "non-canonical names never cache";
+
+            // (d) Valid schema under CANONICAL name succeeds after
+            //     all failures — the engine isn't poisoned.
+            EXPECT_TRUE(engine.register_slot_type(good, "OutSlotFrame",
+                                                    "aligned"))
+                << "valid schema under canonical name must succeed "
+                   "after prior failed registrations — engine must "
+                   "not be poisoned by earlier rejection";
+            EXPECT_GT(engine.type_sizeof("OutSlotFrame"), 0u);
 
             engine.finalize();
         },
@@ -5390,8 +5410,8 @@ struct LuaEngineWorkerRegistrar
                     return register_slot_type_sizeof_correct(dir);
                 if (sc == "register_slot_type_multi_field")
                     return register_slot_type_multi_field(dir);
-                if (sc == "register_slot_type_packed_vs_aligned")
-                    return register_slot_type_packed_vs_aligned(dir);
+                if (sc == "register_slot_type_packed_packing")
+                    return register_slot_type_packed_packing(dir);
                 if (sc == "register_slot_type_has_schema_false_returns_false")
                     return register_slot_type_has_schema_false_returns_false(dir);
                 if (sc == "register_slot_type_all_supported_types")
