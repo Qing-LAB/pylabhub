@@ -300,154 +300,116 @@ TEST_F(PythonEngineIsolatedTest, SupportsMultiState_ReturnsFalse)
 // (V2 chunk-1 tests removed — converted to Pattern 3 at top of file.)
 
 // ============================================================================
-// 3. invoke_produce
+// Chunk 2 — invoke_produce (Pattern 3)
+//
+// The on_produce(tx, msgs, api) return-value contract.  Bodies live in
+// workers/python_engine_workers.cpp.  Python-specific vs Lua (beyond
+// dict-vs-table surface):
+//
+//   - `return None` logs ERROR (unified with Lua's nil-return severity
+//     in this session — python_engine.cpp:1190; was previously WARN
+//     which silently mismatched Lua).
+//   - Non-boolean-non-None (int, str, …) logs ERROR with the Python
+//     type name; isinstance(True, int) == True, so bool must be
+//     checked BEFORE any int/numeric check (currently there is no int
+//     check — falls through to generic non-boolean path).
+//
+// Strengthening highlights in the worker bodies:
+//   - CommitOnTrue: asserts script_error_count == 0 post-invoke.
+//   - DiscardOnFalse: sentinel buf = 777.0f (detects engine-internal
+//     writes the V2 body missed with buf = 0.0f).
+//   - NoneReturn: pins the ERROR log text via expected_error_substrings.
+//   - NoneSlot: asserts script_error_count == 0 to confirm the Python
+//     `assert tx.slot is None` actually held (V2 couldn't distinguish
+//     assert-passed from assert-failed since both returned Discard).
+//   - DiscardOnFalse_ButPythonWroteSlot (NEW): pins the "engine does
+//     NOT roll back Python writes to tx.slot on Discard" contract —
+//     mirrors Lua's gap-fill.
 // ============================================================================
 
-TEST_F(PythonEngineTest, InvokeProduce_CommitOnTrue)
+TEST_F(PythonEngineIsolatedTest, InvokeProduce_CommitOnTrue)
 {
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    if tx.slot is not None:\n"
-        "        tx.slot.value = 42.0\n"
-        "    return True\n");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-
-    auto result =
-        engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_FLOAT_EQ(buf, 42.0f);
-
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.invoke_produce_commit_on_true",
+                         {unique_dir("produce_commit")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, InvokeProduce_DiscardOnFalse)
+TEST_F(PythonEngineIsolatedTest, InvokeProduce_DiscardOnFalse)
 {
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    return False\n");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-
-    auto result =
-        engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Discard);
-
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.invoke_produce_discard_on_false",
+                         {unique_dir("produce_discard")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, InvokeProduce_NoneReturn_IsError)
+TEST_F(PythonEngineIsolatedTest, InvokeProduce_NoneReturn_IsError)
 {
-    // Missing return value (implicit None) is an error.
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    pass  # no explicit return -> None -> error\n");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-
-    auto result =
-        engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Error)
-        << "Missing return should be Error, not Commit";
-    EXPECT_EQ(engine.script_error_count(), 1u);
-
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.invoke_produce_none_return_is_error",
+                         {unique_dir("produce_none_return")});
+    // Engine logs ERROR "on_produce returned None — explicit 'return
+    // True' or 'return False' is required. Treating as error."
+    // (python_engine.cpp:1190-1192).  A reworded diagnostic that
+    // still returned Error would keep the worker body green — this
+    // parent-level check catches text regressions.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"on_produce returned None"});
 }
 
-TEST_F(PythonEngineTest, InvokeProduce_NoneSlot)
+TEST_F(PythonEngineIsolatedTest, InvokeProduce_NoneSlot)
 {
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    assert tx.slot is None, 'expected None slot'\n"
-        "    return False\n");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    std::vector<IncomingMessage> msgs;
-
-    auto result =
-        engine.invoke_produce({nullptr, 0}, msgs);
-    EXPECT_EQ(result, InvokeResult::Discard);
-
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.invoke_produce_none_slot",
+                         {unique_dir("produce_none_slot")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, InvokeProduce_ScriptError)
+TEST_F(PythonEngineIsolatedTest, InvokeProduce_ScriptError)
 {
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    raise RuntimeError('intentional error')\n");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    auto result =
-        engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Error);
-    EXPECT_EQ(engine.script_error_count(), 1u);
-
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.invoke_produce_script_error",
+                         {unique_dir("produce_script_error")});
+    // on_python_error_ logs ERROR "<tag> on_produce error: <exc msg>"
+    // (python_engine.cpp:1222).  Pin the RuntimeError text.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/{"intentional error"});
 }
 
-TEST_F(PythonEngineTest, InvokeProduce_WrongReturnType_IsError)
+TEST_F(PythonEngineIsolatedTest, InvokeProduce_WrongReturnType_IsError)
 {
-    // Returning a number instead of boolean should be an Error.
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    return 42\n");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-
-    auto result =
-        engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Error)
-        << "Returning a number should be Error, not Commit";
-    EXPECT_EQ(engine.script_error_count(), 1u);
-
-    engine.finalize();
+    auto w = SpawnWorker(
+        "python_engine.invoke_produce_wrong_return_type_is_error",
+        {unique_dir("produce_wrong_type")});
+    // Engine logs ERROR "<cb> returned non-boolean type '<typename>' —
+    // expected 'return True' or 'return False'." (python_engine.cpp:
+    // 1204-1207).  Pin both the diagnostic and the `'int'` type name
+    // so a regression dropping the type name (or coercing int to bool
+    // via isinstance(True, int)==True) would be caught.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"returned non-boolean type 'int'"});
 }
 
-TEST_F(PythonEngineTest, InvokeProduce_WrongReturnString_IsError)
+TEST_F(PythonEngineIsolatedTest, InvokeProduce_WrongReturnString_IsError)
 {
-    // Returning a string instead of boolean should be an Error.
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    return 'ok'\n");
+    auto w = SpawnWorker(
+        "python_engine.invoke_produce_wrong_return_string_is_error",
+        {unique_dir("produce_wrong_str")});
+    // Same diagnostic as WrongReturnType but with 'str'.  Covers the
+    // truthy-string-but-not-bool case — a truthiness-based check would
+    // incorrectly yield Commit.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"returned non-boolean type 'str'"});
+}
 
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-
-    auto result =
-        engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Error)
-        << "Returning a string should be Error, not Commit";
-    EXPECT_EQ(engine.script_error_count(), 1u);
-
-    engine.finalize();
+// NEW gap-fill — pins the "engine does NOT roll back Python writes to
+// tx.slot on Discard" contract.  Mirrors Lua's
+// InvokeProduce_DiscardOnFalse_ButLuaWroteSlot.
+TEST_F(PythonEngineIsolatedTest,
+       InvokeProduce_DiscardOnFalse_ButPythonWroteSlot)
+{
+    auto w = SpawnWorker(
+        "python_engine.invoke_produce_discard_on_false_but_python_wrote_slot",
+        {unique_dir("produce_discard_wrote")});
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
