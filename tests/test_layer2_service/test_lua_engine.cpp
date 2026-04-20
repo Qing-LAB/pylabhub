@@ -1179,6 +1179,81 @@ TEST_F(LuaEngineIsolatedTest, FlexzoneLogicalSize_ArrayFields)
 }
 
 // ============================================================================
+// Chunk 10 — graceful degradation: api.* closures without infrastructure
+//
+// L2 engine usable without broker / SHM / real queues. The closures
+// that need those resources must degrade gracefully (return nil /
+// false / 0) or raise a pcall-catchable error — never crash, never
+// emit ERROR-level logs.  Each test invokes its closure twice in
+// the Lua body (idempotence pin, V2 only invoked once).
+// ============================================================================
+
+TEST_F(LuaEngineIsolatedTest, Api_OpenInbox_WithoutBroker_ReturnsNil)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_open_inbox_without_broker_returns_nil",
+        {unique_dir("open_inbox_no_broker")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Api_BandJoin_WithoutBroker_ReturnsNil)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_band_join_without_broker_returns_nil",
+        {unique_dir("band_join_no_broker")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Api_BandLeave_WithoutBroker_ReturnsFalse)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_band_leave_without_broker_returns_false",
+        {unique_dir("band_leave_no_broker")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Api_BandBroadcast_WithoutBroker_NoError)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_band_broadcast_without_broker_no_error",
+        {unique_dir("band_bcast_no_broker")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Api_BandMembers_WithoutBroker_ReturnsNil)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_band_members_without_broker_returns_nil",
+        {unique_dir("band_members_no_broker")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Api_SpinlockCount_WithoutSHM_ReturnsZero)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_spinlock_count_without_shm_returns_zero",
+        {unique_dir("spinlock_count_no_shm")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Api_SpinlockAcquire_WithoutSHM_IsPcallError)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_spinlock_acquire_without_shm_is_pcall_error",
+        {unique_dir("spinlock_acq_no_shm")});
+    // pcall-caught error must NOT propagate as a [LOGGER ERROR ] line.
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Api_FlexzoneAccessor_WithoutSHM_ReturnsNil)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_flexzone_accessor_without_shm_returns_nil",
+        {unique_dir("flexzone_acc_no_shm")});
+    ExpectWorkerOk(w);
+}
+
+// ============================================================================
 // 8. Error handling
 // ============================================================================
 
@@ -1572,27 +1647,6 @@ TEST_F(LuaEngineTest, Metrics_AllLoopFields_Present)
 // 30. open_inbox without broker returns nil
 // ============================================================================
 
-TEST_F(LuaEngineTest, Api_OpenInbox_WithoutBroker)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            local handle = api.open_inbox("some-uid")
-            assert(handle == nil,
-                   "open_inbox without broker should return nil")
-            return false
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
-}
-
 // ============================================================================
 // 31. Processor in_channel / out_channel match context
 // ============================================================================
@@ -1632,75 +1686,6 @@ TEST_F(LuaEngineTest, Api_ProcessorChannels_InOut)
     EXPECT_EQ(result, InvokeResult::Discard);
     EXPECT_EQ(engine.script_error_count(), 0u)
         << "Script assertion failed — processor channels do not match context";
-    engine.finalize();
-}
-
-// ============================================================================
-// Group F: Spinlocks — L2 tests (no SHM, safe defaults)
-// ============================================================================
-
-TEST_F(LuaEngineTest, Api_SpinlockCount_WithoutSHM)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            assert(api.spinlock_count() == 0,
-                   "spinlock_count should be 0 without SHM")
-            return false
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, Api_Spinlock_WithoutSHM_IsError)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            local ok, err = pcall(api.spinlock, 0)
-            assert(not ok, "spinlock(0) should error without producer/consumer")
-            return false
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "pcall should catch the error, not propagate";
-    engine.finalize();
-}
-
-// ============================================================================
-// Group G: Flexzone — L2 tests (no SHM, safe defaults)
-// ============================================================================
-
-TEST_F(LuaEngineTest, Api_Flexzone_WithoutSHM_ReturnsNil)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            local fz_obj = api.flexzone()
-            assert(fz_obj == nil, "flexzone should be nil without SHM")
-            return false
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
     engine.finalize();
 }
 
@@ -2028,93 +2013,6 @@ TEST_F(LuaEngineTest, FullStartup_Processor_Multifield)
     EXPECT_EQ(out_buf.count, -84);
 
     pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
-}
-
-// ============================================================================
-// Band pub/sub API — L2 (no broker, methods return nil/false gracefully)
-// ============================================================================
-
-TEST_F(LuaEngineTest, Api_Channel_JoinReturnsNilWithoutBroker)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            local result = api.band_join("#test_ch")
-            assert(result == nil, "Expected nil from band_join without broker")
-            return true
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0;
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, Api_Channel_LeaveReturnsFalseWithoutBroker)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            local result = api.band_leave("#test_ch")
-            assert(result == false, "Expected false from band_leave without broker")
-            return true
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0;
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, Api_Channel_SendMsgNoErrorWithoutBroker)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            api.band_broadcast("#test_ch", {hello = "world", value = 42})
-            return true
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0;
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, Api_Channel_MembersReturnsNilWithoutBroker)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            local result = api.band_members("#test_ch")
-            assert(result == nil, "Expected nil from band_members without broker")
-            return true
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0;
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
 }
 
 } // anonymous namespace

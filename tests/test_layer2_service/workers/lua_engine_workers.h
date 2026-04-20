@@ -229,6 +229,23 @@ int slot_logical_size_packed_no_padding(const std::string &dir);
 int slot_logical_size_complex_mixed_aligned(const std::string &dir);
 int flexzone_logical_size_array_fields(const std::string &dir);
 
+// ── Graceful degradation: api.* closures without infrastructure (chunk 10) ─
+//
+// The L2 engine is intended to be usable without a broker, SHM, or
+// real queues — the API closures that need those resources must
+// degrade gracefully (return nil / false / 0, or a pcall-catchable
+// error) instead of crashing or asserting.  Each test invokes its
+// closure TWICE to pin idempotence (no first-call-cached-bad-state
+// regression).
+int api_open_inbox_without_broker_returns_nil(const std::string &dir);
+int api_band_join_without_broker_returns_nil(const std::string &dir);
+int api_band_leave_without_broker_returns_false(const std::string &dir);
+int api_band_broadcast_without_broker_no_error(const std::string &dir);
+int api_band_members_without_broker_returns_nil(const std::string &dir);
+int api_spinlock_count_without_shm_returns_zero(const std::string &dir);
+int api_spinlock_acquire_without_shm_is_pcall_error(const std::string &dir);
+int api_flexzone_accessor_without_shm_returns_nil(const std::string &dir);
+
 // ── invoke_process (chunk 4) ────────────────────────────────────────────────
 //
 // Processor design note: a processor ALWAYS has an input channel (if a

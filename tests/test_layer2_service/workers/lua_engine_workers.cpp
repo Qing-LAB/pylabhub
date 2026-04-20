@@ -3755,6 +3755,152 @@ int flexzone_logical_size_array_fields(const std::string &dir)
         dir, "lua_engine::flexzone_logical_size_array_fields", c);
 }
 
+// ── Graceful degradation: api.* closures without infrastructure (chunk 10) ─
+//
+// Each worker calls the closure twice in the Lua body — pinning that
+// the graceful-degradation path is idempotent (no first-call cached
+// bad state), which V2 did not exercise (single call only).
+//
+// Naming convention: producer worker, since the closures under test
+// are all role-agnostic — same return shape regardless of role tag.
+namespace
+{
+
+int run_graceful_degrade_case(const std::string &dir,
+                              const char        *scenario_name,
+                              const char        *lua_call_with_assert)
+{
+    // Builds a script of the form:
+    //   function on_produce(tx, msgs, api)
+    //     <lua_call_with_assert>   -- run twice to pin idempotence
+    //     <lua_call_with_assert>
+    //     return false
+    //   end
+    std::string lua = "function on_produce(tx, msgs, api)\n";
+    lua += lua_call_with_assert;
+    lua += "\n";
+    lua += lua_call_with_assert;
+    lua += "\nreturn false\nend\n";
+
+    return produce_worker_with_script(
+        dir, scenario_name, lua,
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto r = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "Lua-side asserts must have all passed";
+        });
+}
+
+} // anonymous
+
+int api_open_inbox_without_broker_returns_nil(const std::string &dir)
+{
+    return run_graceful_degrade_case(
+        dir, "lua_engine::api_open_inbox_without_broker_returns_nil",
+        R"LUA(
+            local h = api.open_inbox("some-uid")
+            assert(h == nil,
+                   "open_inbox without broker must return nil, got "
+                   .. tostring(h))
+        )LUA");
+}
+
+int api_band_join_without_broker_returns_nil(const std::string &dir)
+{
+    return run_graceful_degrade_case(
+        dir, "lua_engine::api_band_join_without_broker_returns_nil",
+        R"LUA(
+            local r = api.band_join("#test_ch")
+            assert(r == nil,
+                   "band_join without broker must return nil, got "
+                   .. tostring(r))
+        )LUA");
+}
+
+int api_band_leave_without_broker_returns_false(const std::string &dir)
+{
+    return run_graceful_degrade_case(
+        dir, "lua_engine::api_band_leave_without_broker_returns_false",
+        R"LUA(
+            local r = api.band_leave("#test_ch")
+            assert(r == false,
+                   "band_leave without broker must return false (NOT nil), "
+                   .. "got " .. tostring(r))
+        )LUA");
+}
+
+int api_band_broadcast_without_broker_no_error(const std::string &dir)
+{
+    // band_broadcast has no return value to verify.  Contract: must
+    // not raise, must not log an error.  Idempotence pinned by the
+    // double-call in the helper.
+    return run_graceful_degrade_case(
+        dir, "lua_engine::api_band_broadcast_without_broker_no_error",
+        R"LUA(
+            api.band_broadcast("#test_ch", {hello = "world", value = 42})
+        )LUA");
+}
+
+int api_band_members_without_broker_returns_nil(const std::string &dir)
+{
+    return run_graceful_degrade_case(
+        dir, "lua_engine::api_band_members_without_broker_returns_nil",
+        R"LUA(
+            local r = api.band_members("#test_ch")
+            assert(r == nil,
+                   "band_members without broker must return nil, got "
+                   .. tostring(r))
+        )LUA");
+}
+
+int api_spinlock_count_without_shm_returns_zero(const std::string &dir)
+{
+    return run_graceful_degrade_case(
+        dir, "lua_engine::api_spinlock_count_without_shm_returns_zero",
+        R"LUA(
+            local n = api.spinlock_count()
+            assert(n == 0,
+                   "spinlock_count without SHM must return 0, got "
+                   .. tostring(n))
+        )LUA");
+}
+
+int api_spinlock_acquire_without_shm_is_pcall_error(const std::string &dir)
+{
+    // Strengthened over V2.  V2 only checked `not ok`; this body also
+    // checks the err message is non-empty (a regression where the error
+    // is raised with no message would slip past the V2 check).  Note
+    // pcall catches the Lua error so it does NOT bump
+    // script_error_count — that's the explicit "pcall makes this
+    // recoverable" contract.
+    return run_graceful_degrade_case(
+        dir,
+        "lua_engine::api_spinlock_acquire_without_shm_is_pcall_error",
+        R"LUA(
+            local ok, err = pcall(api.spinlock, 0)
+            assert(not ok,
+                   "spinlock(0) without SHM must raise (pcall returns false)")
+            assert(type(err) == "string" and #err > 0,
+                   "raised error must carry a message, got " .. tostring(err))
+        )LUA");
+}
+
+int api_flexzone_accessor_without_shm_returns_nil(const std::string &dir)
+{
+    return run_graceful_degrade_case(
+        dir, "lua_engine::api_flexzone_accessor_without_shm_returns_nil",
+        R"LUA(
+            local fz = api.flexzone()
+            assert(fz == nil,
+                   "flexzone() without SHM must return nil, got "
+                   .. tostring(fz))
+        )LUA");
+}
+
 } // namespace lua_engine
 } // namespace pylabhub::tests::worker
 
@@ -3979,6 +4125,24 @@ struct LuaEngineWorkerRegistrar
                     return slot_logical_size_complex_mixed_aligned(dir);
                 if (sc == "flexzone_logical_size_array_fields")
                     return flexzone_logical_size_array_fields(dir);
+
+                // Chunk 10: graceful degradation api.* without infrastructure
+                if (sc == "api_open_inbox_without_broker_returns_nil")
+                    return api_open_inbox_without_broker_returns_nil(dir);
+                if (sc == "api_band_join_without_broker_returns_nil")
+                    return api_band_join_without_broker_returns_nil(dir);
+                if (sc == "api_band_leave_without_broker_returns_false")
+                    return api_band_leave_without_broker_returns_false(dir);
+                if (sc == "api_band_broadcast_without_broker_no_error")
+                    return api_band_broadcast_without_broker_no_error(dir);
+                if (sc == "api_band_members_without_broker_returns_nil")
+                    return api_band_members_without_broker_returns_nil(dir);
+                if (sc == "api_spinlock_count_without_shm_returns_zero")
+                    return api_spinlock_count_without_shm_returns_zero(dir);
+                if (sc == "api_spinlock_acquire_without_shm_is_pcall_error")
+                    return api_spinlock_acquire_without_shm_is_pcall_error(dir);
+                if (sc == "api_flexzone_accessor_without_shm_returns_nil")
+                    return api_flexzone_accessor_without_shm_returns_nil(dir);
 
                 fmt::print(stderr,
                            "[lua_engine] ERROR: unknown scenario '{}'\n", sc);
