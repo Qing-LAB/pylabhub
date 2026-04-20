@@ -266,23 +266,39 @@ class ScriptEngine
     /**
      * @brief Register a slot type from SchemaSpec.
      *
-     * Directional type names (registered by all roles):
+     * `type_name` MUST be one of the five canonical frame names:
      *   "InSlotFrame"  — input slot (readonly)
      *   "OutSlotFrame" — output slot (writable)
      *   "InFlexFrame"  — input flexzone (mutable, HEP-0002)
      *   "OutFlexFrame" — output flexzone (mutable)
      *   "InboxFrame"   — inbox (readonly; uses from_buffer_copy for Python)
      *
-     * Engines create "SlotFrame"/"FlexFrame" aliases for single-direction roles
-     * (producer/consumer). Processor has both directions, no aliases.
+     * These correspond to the library's fixed role-frame contract with
+     * the role host.  Any other `type_name` is a programming error and
+     * MUST be rejected by implementations (return false + LOGGER_ERROR).
+     * There is no user-extensible type namespace — scripts and role
+     * hosts work only with these canonical frames.
      *
-     * All types MUST be cached by the engine for hot-path use.
-     * invoke_on_inbox() requires the cached type — null cache is an error.
+     * Re-registration under the SAME canonical name is allowed — it
+     * overwrites the previous cached type with a new schema/packing.
+     * This is primarily a test-side convenience (e.g. verifying that
+     * the packing argument affects layout by re-registering with
+     * different packings); production role hosts call
+     * register_slot_type once per canonical name at startup.
      *
-     * @param spec The schema specification.
-     * @param type_name Name for the type.
-     * @param packing "aligned" or "packed".
-     * @return true on success.
+     * Engines create "SlotFrame"/"FlexFrame" aliases for single-
+     * direction roles (producer/consumer) at build_api() time.
+     * Processor has both directions, so no bare aliases.
+     *
+     * All registered types MUST be cached by the engine for hot-path
+     * use.  invoke_on_inbox() requires the cached InboxFrame — null
+     * cache is an error.
+     *
+     * @param spec      The schema specification.
+     * @param type_name MUST be one of the five canonical names above.
+     * @param packing   "aligned" or "packed".
+     * @return true on success; false on validation / build failure
+     *         or unknown type_name.
      */
     virtual bool register_slot_type(const hub::SchemaSpec &spec,
                                     const std::string &type_name,

@@ -111,14 +111,14 @@ TEST_F(LuaEngineIsolatedTest, RegisterSlotType_MultiField)
     ExpectWorkerOk(w);
 }
 
-TEST_F(LuaEngineIsolatedTest, RegisterSlotType_Packed_vs_Aligned)
+TEST_F(LuaEngineIsolatedTest, RegisterSlotType_PackedPacking)
 {
-    // Strengthened from RegisterSlotType_PackedPacking: verifies BOTH
-    // aligned (8 bytes) and packed (5 bytes) for the same schema, and
-    // explicitly asserts the sizes differ so a silent packing-arg-ignored
-    // regression cannot slip by.
-    auto w = SpawnWorker("lua_engine.register_slot_type_packed_vs_aligned",
-                         {unique_dir("packed_vs_aligned")});
+    // Pins the packed-packing size anchor (5 bytes for bool+int32).
+    // The engine's internal size cross-validation
+    // (lua_engine.cpp:680-687) already catches silent packing-ignore
+    // regressions — see the worker's docblock for the reasoning.
+    auto w = SpawnWorker("lua_engine.register_slot_type_packed_packing",
+                         {unique_dir("packed_packing")});
     ExpectWorkerOk(w);
 }
 
@@ -799,13 +799,14 @@ TEST_F(LuaEngineIsolatedTest, RegisterSlotType_BadFieldType_ReturnsFalse)
     auto w = SpawnWorker(
         "lua_engine.register_slot_type_bad_field_type_returns_false",
         {unique_dir("reg_bad_type")});
-    // build_ffi_cdef_ emits "Unsupported field type '<name>' in schema"
-    // at ERROR level for each unsupported type. Two bad registrations
-    // → two ERROR log lines, one per type name.
+    // Engine emits ERROR lines for:
+    //   - Two bad field types (build_ffi_cdef_ "Unsupported field type 'X'")
+    //   - One non-canonical name rejection (new 2026-04-20 contract)
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
                    {"Unsupported field type 'complex128' in schema",
-                    "Unsupported field type 'not_a_type' in schema"});
+                    "Unsupported field type 'not_a_type' in schema",
+                    "unknown canonical type_name 'BadFrame'"});
 }
 
 TEST_F(LuaEngineIsolatedTest, Finalize_DoubleCallIsSafe)

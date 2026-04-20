@@ -782,6 +782,26 @@ bool PythonEngine::register_slot_type(const hub::SchemaSpec &spec,
                                        const std::string &type_name,
                                        const std::string &packing)
 {
+    // Validate canonical name UP FRONT — before any side effects.
+    // Rejecting unknown names here (rather than silently falling
+    // through to LOGGER_WARN + garbage-collected py::object) pins
+    // the design invariant documented in
+    // script_engine.hpp::register_slot_type: only the five canonical
+    // frame names are valid.  A typo in a role host / schema config
+    // must fail loudly at this point.
+    if (type_name != "InSlotFrame"
+        && type_name != "OutSlotFrame"
+        && type_name != "InFlexFrame"
+        && type_name != "OutFlexFrame"
+        && type_name != "InboxFrame")
+    {
+        LOGGER_ERROR("[{}] register_slot_type: unknown canonical type_name "
+                     "'{}' — must be one of InSlotFrame, OutSlotFrame, "
+                     "InFlexFrame, OutFlexFrame, InboxFrame",
+                     log_tag_, type_name);
+        return false;
+    }
+
     if (!spec.has_schema)
     {
         LOGGER_ERROR("[{}] register_slot_type('{}') called with has_schema=false",
@@ -826,15 +846,13 @@ bool PythonEngine::register_slot_type(const hub::SchemaSpec &spec,
             out_fz_type_ = type;
             out_fz_spec_ = spec;
         }
-        else if (type_name == "InboxFrame")
+        else  // type_name == "InboxFrame" — only remaining branch
         {
+            // Upfront name validation at the top of the function
+            // guarantees type_name is one of the five canonical
+            // names; no fallthrough/else-branch needed here.
             inbox_type_ro_ = wrap_readonly_(type);
             inbox_spec_    = spec;
-        }
-        else
-        {
-            LOGGER_WARN("[{}] PythonEngine: unknown type_name '{}' — type built but not cached",
-                        log_tag_, type_name);
         }
     }
     catch (const std::exception &e)

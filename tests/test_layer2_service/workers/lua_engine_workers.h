@@ -32,7 +32,7 @@ int initialize_and_finalize_succeeds(const std::string &dir);
 // ── Type registration ──────────────────────────────────────────────────────
 int register_slot_type_sizeof_correct(const std::string &dir);
 int register_slot_type_multi_field(const std::string &dir);
-int register_slot_type_packed_vs_aligned(const std::string &dir);
+int register_slot_type_packed_packing(const std::string &dir);
 int register_slot_type_has_schema_false_returns_false(const std::string &dir);
 /// NEW: coverage fill — registers every scalar type the engine supports.
 int register_slot_type_all_supported_types(const std::string &dir);

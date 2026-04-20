@@ -659,6 +659,26 @@ bool LuaEngine::register_slot_type(const hub::SchemaSpec &spec,
                                     const std::string &type_name,
                                     const std::string &packing)
 {
+    // Validate canonical name UP FRONT — before any side effects.
+    // Rejecting unknown names here (rather than silently falling
+    // through to LOGGER_WARN) pins the design invariant documented
+    // in script_engine.hpp::register_slot_type: only the five
+    // canonical frame names are valid.  A typo in a role host /
+    // schema config must fail loudly at this point, not corrupt
+    // LuaJIT's global FFI type registry with a stray cdef.
+    if (type_name != "InSlotFrame"
+        && type_name != "OutSlotFrame"
+        && type_name != "InFlexFrame"
+        && type_name != "OutFlexFrame"
+        && type_name != "InboxFrame")
+    {
+        LOGGER_ERROR("[{}] register_slot_type: unknown canonical type_name "
+                     "'{}' — must be one of InSlotFrame, OutSlotFrame, "
+                     "InFlexFrame, OutFlexFrame, InboxFrame",
+                     log_tag_, type_name);
+        return false;
+    }
+
     if (!spec.has_schema)
     {
         LOGGER_ERROR("[{}] register_slot_type('{}') called with has_schema=false",
