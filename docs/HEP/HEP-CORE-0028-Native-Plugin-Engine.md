@@ -112,6 +112,9 @@ the same lifecycle as PythonEngine and LuaEngine: `initialize()` -> `load_script
    g. Resolve metadata symbols: native_name, native_version, native_is_thread_safe
    h. Verify required_callback is present (e.g., "on_produce" for producer)
 5. engine->register_slot_type(spec, type_name, packing):
+   a0. Reject non-canonical type_name — must be one of the 5 canonical names
+       (InSlotFrame, OutSlotFrame, InFlexFrame, OutFlexFrame, InboxFrame).
+       See HEP-CORE-0011 §Canonical type names (closed set).
    a. Compute expected size from schema via compute_field_layout(spec, packing)
    b. Compute canonical schema string from config
    c. Resolve native_schema_<type_name> → compare canonical strings (hard error on mismatch)
