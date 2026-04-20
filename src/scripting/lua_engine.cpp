@@ -781,7 +781,16 @@ InvokeResult LuaEngine::invoke_produce(
     std::vector<IncomingMessage> &msgs)
 {
     if (!state_.is_ref_callable(ref_on_produce_))
+    {
+        if (is_accepting())
+        {
+            LOGGER_ERROR("[{}] invoke_produce called but on_produce is not "
+                         "registered — dispatch bug (load_script's "
+                         "required_callback check should have rejected it)",
+                         log_tag_);
+        }
         return InvokeResult::Error;
+    }
 
     lua_State *L = state_.raw();
     assert(L && "invoke_produce called without initialized Lua state");
@@ -842,7 +851,15 @@ InvokeResult LuaEngine::invoke_consume(
     std::vector<IncomingMessage> &msgs)
 {
     if (!state_.is_ref_callable(ref_on_consume_))
+    {
+        if (is_accepting())
+        {
+            LOGGER_ERROR("[{}] invoke_consume called but on_consume is not "
+                         "registered — dispatch bug",
+                         log_tag_);
+        }
         return InvokeResult::Error;
+    }
 
     lua_State *L = state_.raw();
     assert(L && "invoke_consume called without initialized Lua state");
@@ -899,7 +916,15 @@ InvokeResult LuaEngine::invoke_process(
     std::vector<IncomingMessage> &msgs)
 {
     if (!state_.is_ref_callable(ref_on_process_))
+    {
+        if (is_accepting())
+        {
+            LOGGER_ERROR("[{}] invoke_process called but on_process is not "
+                         "registered — dispatch bug",
+                         log_tag_);
+        }
         return InvokeResult::Error;
+    }
 
     lua_State *L = state_.raw();
     assert(L && "invoke_process called without initialized Lua state");
@@ -965,7 +990,15 @@ InvokeResult LuaEngine::invoke_process(
 InvokeResult LuaEngine::invoke_on_inbox(InvokeInbox msg)
 {
     if (!state_.is_ref_callable(ref_on_inbox_))
+    {
+        if (is_accepting())
+        {
+            LOGGER_ERROR("[{}] invoke_on_inbox called but on_inbox is not "
+                         "registered — caller should gate on has_callback",
+                         log_tag_);
+        }
         return InvokeResult::Error;
+    }
 
     lua_State *L = state_.raw();
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_inbox_);

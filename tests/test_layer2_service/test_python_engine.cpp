@@ -99,6 +99,11 @@ class PythonEngineTest : public ::testing::Test
     RoleHostCore default_core_; ///< Default core for tests that don't provide one.
 
     /// Build a minimal RoleAPIBase with role-appropriate identity.
+    /// KEEP IN SYNC with workers/python_engine_workers.cpp::make_api.
+    /// The duplication is time-limited — this fixture is scheduled
+    /// for removal once the V2→P3 chunk migration completes.  Until
+    /// then, any semantic change (default value, extra set_* call)
+    /// must be mirrored in both.
     std::unique_ptr<RoleAPIBase> make_api(RoleHostCore &core,
                                           const std::string &tag = "prod")
     {
@@ -222,7 +227,7 @@ TEST_F(PythonEngineIsolatedTest, RegisterSlotType_MultiField)
 TEST_F(PythonEngineIsolatedTest, RegisterSlotType_PackedPacking)
 {
     // Pins the packed-packing size anchor. The engine's internal
-    // cross-validation (python_engine.cpp:800-807) catches any
+    // cross-validation (python_engine.cpp) catches any
     // silent packing-ignore regression — see worker's docblock.
     auto w = SpawnWorker("python_engine.register_slot_type_packed_packing",
                          {unique_dir("reg_packed_packing")});
@@ -235,7 +240,7 @@ TEST_F(PythonEngineIsolatedTest, RegisterSlotType_HasSchemaFalse_ReturnsFalse)
         "python_engine.register_slot_type_has_schema_false_returns_false",
         {unique_dir("reg_no_schema")});
     // register_slot_type logs an ERROR when called with has_schema=false
-    // (python_engine.cpp:787-789). That log is expected.
+    // (python_engine.cpp). That log is expected.
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
                    {"called with has_schema=false"});
@@ -307,7 +312,7 @@ TEST_F(PythonEngineIsolatedTest, SupportsMultiState_ReturnsFalse)
 // dict-vs-table surface):
 //
 //   - `return None` logs ERROR (unified with Lua's nil-return severity
-//     in this session — python_engine.cpp:1190; was previously WARN
+//     in this session — python_engine.cpp; was previously WARN
 //     which silently mismatched Lua).
 //   - Non-boolean-non-None (int, str, …) logs ERROR with the Python
 //     type name; isinstance(True, int) == True, so bool must be
@@ -347,7 +352,7 @@ TEST_F(PythonEngineIsolatedTest, InvokeProduce_NoneReturn_IsError)
                          {unique_dir("produce_none_return")});
     // Engine logs ERROR "on_produce returned None — explicit 'return
     // True' or 'return False' is required. Treating as error."
-    // (python_engine.cpp:1190-1192).  A reworded diagnostic that
+    // (python_engine.cpp).  A reworded diagnostic that
     // still returned Error would keep the worker body green — this
     // parent-level check catches text regressions.
     ExpectWorkerOk(w, /*required=*/{},
@@ -367,7 +372,7 @@ TEST_F(PythonEngineIsolatedTest, InvokeProduce_ScriptError)
     auto w = SpawnWorker("python_engine.invoke_produce_script_error",
                          {unique_dir("produce_script_error")});
     // on_python_error_ logs ERROR "<tag> on_produce error: <exc msg>"
-    // (python_engine.cpp:1222).  Pin the RuntimeError text.
+    // (python_engine.cpp).  Pin the RuntimeError text.
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/{"intentional error"});
 }
@@ -443,7 +448,7 @@ TEST_F(PythonEngineIsolatedTest, InvokeConsume_ScriptErrorDetected)
     auto w = SpawnWorker("python_engine.invoke_consume_script_error_detected",
                          {unique_dir("consume_script_error")});
     // on_python_error_ logs ERROR "<tag> on_consume error: <exc msg>"
-    // (python_engine.cpp:1222).  Pin the RuntimeError text.
+    // (python_engine.cpp).  Pin the RuntimeError text.
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/{"consume error"});
 }
@@ -457,7 +462,7 @@ TEST_F(PythonEngineIsolatedTest, InvokeConsume_RxSlot_IsReadOnly)
     auto w = SpawnWorker("python_engine.invoke_consume_rx_slot_is_read_only",
                          {unique_dir("consume_readonly")});
     // The AttributeError message from wrap_as_readonly_ctypes
-    // (python_helpers.hpp:101-104) is "read-only slot: field
+    // (python_helpers.hpp) is "read-only slot: field
     // '<name>' cannot be written (in_slot is a zero-copy SHM view
     // -- use out_slot to write)".  The engine's catch path logs
     // this via on_python_error_.  Pin a stable substring so a
@@ -507,7 +512,7 @@ TEST_F(PythonEngineIsolatedTest, InvokeProcess_RxSlot_IsReadOnly)
     auto w = SpawnWorker("python_engine.invoke_process_rx_slot_is_read_only",
                          {unique_dir("process_readonly")});
     // Same AttributeError message as the consumer path — see
-    // python_helpers.hpp:101-104 for wording.  Pin the "read-only
+    // python_helpers.hpp for wording.  Pin the "read-only
     // slot" fragment at parent level.
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/{"read-only slot"});
@@ -582,7 +587,7 @@ TEST_F(PythonEngineIsolatedTest, WrongRoleModuleImport_RaisesError)
     auto w = SpawnWorker("python_engine.wrong_role_module_import_raises_error",
                          {unique_dir("wrong_role_import")});
     // Two eval() calls produce two ERROR lines via on_python_error_
-    // (python_engine.cpp:1198).  The harness pairs substrings to
+    // (python_engine.cpp).  The harness pairs substrings to
     // ERROR lines 1-to-1 in stderr order (test_process_utils.cpp:
     // 659-678), so the list must have exactly one entry per ERROR
     // line, each unique enough to identify that line.  Using the
@@ -727,7 +732,7 @@ TEST_F(PythonEngineIsolatedTest, LoadScript_MissingFile)
     auto w = SpawnWorker("python_engine.load_script_missing_file",
                          {unique_dir("load_missing")});
     // Python's load_script catch path logs ERROR "Failed to load
-    // script from '<dir>': <exc>" at python_engine.cpp:408.
+    // script from '<dir>': <exc>" at python_engine.cpp.
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
                    {"Failed to load script"});
@@ -738,7 +743,7 @@ TEST_F(PythonEngineIsolatedTest, LoadScript_MissingRequiredCallback)
     auto w = SpawnWorker(
         "python_engine.load_script_missing_required_callback",
         {unique_dir("load_missing_cb")});
-    // python_engine.cpp:402: "Script has no 'on_produce' function".
+    // python_engine.cpp: "Script has no 'on_produce' function".
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
                    {"Script has no 'on_produce' function"});
@@ -749,7 +754,7 @@ TEST_F(PythonEngineIsolatedTest, LoadScript_MissingRequiredCallback)
 // check after the 2026-04-20 tightening — passing via the WRONG
 // branch.  This body uses "OutSlotFrame" (canonical) with a bad
 // field type to actually exercise the build_ctypes_type_ exception
-// path at python_engine.cpp:843-848.
+// path at python_engine.cpp.
 TEST_F(PythonEngineIsolatedTest, RegisterSlotType_BadFieldType)
 {
     auto w = SpawnWorker("python_engine.register_slot_type_bad_field_type",

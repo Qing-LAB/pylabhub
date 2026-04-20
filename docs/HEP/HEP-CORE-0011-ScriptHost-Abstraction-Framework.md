@@ -941,6 +941,52 @@ Step 14: thread_manager().drain() ← last; all threads exit
 
 ---
 
+## Error Handling & Log Conventions
+
+All three engines (Lua, Python, Native) route script errors through
+centralized helpers so `stop_on_script_error_` is honored uniformly
+and the log format stays consistent.
+
+**Canonical error log format** (emitted from the engine-specific
+helper — `on_pcall_error_` for Lua, `on_python_error_` +
+`handle_script_error_` for Python, future equivalent for Native):
+
+```
+[<log_tag>] <callback_name> error: <detail>
+```
+
+**Missing-callback path** (hot-path `invoke_{produce,consume,process,
+on_inbox}` called when the callback is not registered):
+
+- If `is_accepting()` is **true** (engine alive, callback genuinely
+  missing): emit LOGGER_ERROR `"invoke_X called but on_X is not
+  registered — dispatch bug"` and return `InvokeResult::Error`.
+  Should be structurally unreachable for required callbacks
+  (load_script's `required_callback` check rejects them earlier)
+  and for optional callbacks the CALLER should gate on
+  `has_callback()` (see `RoleAPIBase::drain_inbox_sync`).
+- If `is_accepting()` is **false** (engine shut down): silently
+  return `InvokeResult::Error` — test helpers intentionally call
+  the invoke paths post-shutdown to verify they refuse cleanly.
+  Script error counter is NOT incremented on this path (deferred
+  — see TESTING_TODO "Missing-callback error-count wiring").
+
+**stop_on_script_error behaviour**: when a script raises an
+exception / returns an invalid value / fails an engine-internal
+check, after the primary ERROR log, the helper emits a second
+`"stop_on_script_error: requesting shutdown after <tag> error"`
+ERROR and calls `core->request_stop()`.  Distinct from
+`api.set_critical_error()` (which sets the `CriticalError` stop
+reason); `stop_on_script_error` keeps stop_reason == "normal".
+
+**Admin-facing invoke/eval paths** (ScriptEngine::invoke(name),
+ScriptEngine::eval(code)) use the same format: Python's admin
+paths tag as `"invoke('<name>')"` / `"eval()"`, producing lines
+like `"[{tag}] invoke('foo') error: <exc>"` — same primary ERROR
+line shape as hot-path callbacks.
+
+---
+
 ## Metrics Model
 
 `api.metrics()` returns a hierarchical dict/table:
