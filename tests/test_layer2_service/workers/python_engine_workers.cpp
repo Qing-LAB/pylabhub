@@ -297,12 +297,6 @@ int register_slot_type_sizeof_correct(const std::string &dir)
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 4u)
                 << "simple_schema is a single float32 field";
 
-            // Exercise the full lifecycle (F10, 2026-04-20): uniform
-            // make_api + build_api so every chunk-1 test reaches the
-            // fully-built state before finalize.  Catches build_api
-            // regressions that'd slip through register-only tests.
-            auto api = make_api(core);
-            ASSERT_TRUE(engine.build_api(*api));
             engine.finalize();
         },
         "python_engine::register_slot_type_sizeof_correct",
@@ -335,8 +329,6 @@ int register_slot_type_multi_field(const std::string &dir)
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 12u)
                 << "3 x float32 = 12 bytes";
 
-            auto api = make_api(core);
-            ASSERT_TRUE(engine.build_api(*api));  // F10 uniform lifecycle
             engine.finalize();
         },
         "python_engine::register_slot_type_multi_field",
@@ -388,8 +380,6 @@ int register_slot_type_packed_packing(const std::string &dir)
                 << "packed: bool(1) + int32(4) = 5 — hand-verified "
                    "anchor for this schema";
 
-            auto api = make_api(core);
-            ASSERT_TRUE(engine.build_api(*api));  // F10 uniform lifecycle
             engine.finalize();
         },
         "python_engine::register_slot_type_packed_packing",
@@ -417,11 +407,19 @@ int register_slot_type_has_schema_false_returns_false(const std::string &dir)
             EXPECT_FALSE(engine.register_slot_type(spec, "OutSlotFrame",
                                                     "aligned"));
 
-            // F10 uniform lifecycle — build_api must succeed even when
-            // no types are registered (alias creation gated on
-            // .is_none() checks in build_api_).
+            // Additional invariant: a failed registration must not
+            // leave the engine wedged.  build_api still succeeds
+            // (alias creation in build_api_ is gated on `.is_none()`
+            // which holds when register_slot_type bailed early) and
+            // type_sizeof("OutSlotFrame") must stay 0 (no type was
+            // successfully cached).  This pins that an engine which
+            // rejected a bad register call is still useable for a
+            // correct subsequent flow.
             auto api = make_api(core);
-            ASSERT_TRUE(engine.build_api(*api));
+            ASSERT_TRUE(engine.build_api(*api))
+                << "build_api must not wedge after a register failure";
+            EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 0u)
+                << "failed register must not cache a partial type";
             engine.finalize();
         },
         "python_engine::register_slot_type_has_schema_false_returns_false",
@@ -473,8 +471,6 @@ int register_slot_type_all_supported_types(const std::string &dir)
                 << "engine ctypes_sizeof must match the canonical "
                    "compute_schema_size for every scalar type";
 
-            auto api = make_api(core);
-            ASSERT_TRUE(engine.build_api(*api));  // F10 uniform lifecycle
             engine.finalize();
         },
         "python_engine::register_slot_type_all_supported_types",
@@ -2372,8 +2368,15 @@ def on_produce(tx, msgs, api):
     return False
 
 def on_inbox(msg, api):
-    # Payload projection sanity (catches from_buffer_copy regression).
+    # Payload projection sanity:
+    #   - msg.data not None   → from_buffer_copy produced a typed struct
+    #   - msg.data.value ==   → from_buffer_copy bound to the correct bytes
+    #                           (catches a regression where the buffer
+    #                           is typed but wrong / stale memory)
+    #   - sender_uid / seq    → non-typed fields still propagate
     assert msg.data is not None, "msg.data must be a typed ctypes object"
+    assert abs(msg.data.value - 3.25) < 1e-6, (
+        f"data.value expected 3.25 (sent from C++), got {msg.data.value}")
     assert msg.sender_uid == "SENDER-00000001", (
         f"sender_uid expected 'SENDER-00000001', got {msg.sender_uid!r}")
     assert msg.seq == 42, f"seq expected 42, got {msg.seq}"
@@ -2402,7 +2405,12 @@ def on_inbox(msg, api):
             ASSERT_TRUE(engine.build_api(*api));
 
             EXPECT_EQ(engine.script_error_count(), 0u);
-            float inbox_data = 1.0f;
+            // Distinctive non-default value so the Python in-script
+            // assert on msg.data.value has real discriminating power.
+            // If from_buffer_copy bound to the wrong bytes (e.g. a
+            // zero page), data.value would be 0.0 and the assert
+            // would fire.
+            float inbox_data = 3.25f;
             engine.invoke_on_inbox({&inbox_data, sizeof(inbox_data),
                                      "SENDER-00000001", 42});
             EXPECT_EQ(engine.script_error_count(), 1u)
