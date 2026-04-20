@@ -168,6 +168,22 @@ int load_script_syntax_error_returns_false(const std::string &dir);
 int register_slot_type_bad_field_type_returns_false(const std::string &dir);
 int finalize_double_call_is_safe(const std::string &dir);
 
+// ── Generic engine.invoke() / engine.eval() (chunk 8a) ─────────────────────
+//
+// Separate from the role callbacks (invoke_produce / invoke_consume /
+// invoke_process).  engine.invoke(name[, args]) dispatches to any named
+// Lua function; engine.eval(code) runs an arbitrary Lua chunk and
+// captures the top-of-stack result as JSON.  Both have their own
+// contracts — lookup semantics, error counting, post-finalize behavior
+// — that the per-role callbacks do not exercise.
+int invoke_existing_function_returns_true(const std::string &dir);
+int invoke_non_existent_function_returns_false(const std::string &dir);
+int invoke_empty_name_returns_false(const std::string &dir);
+int invoke_script_error_returns_false_and_increments_errors(const std::string &dir);
+int invoke_with_args_returns_true(const std::string &dir);
+int invoke_after_finalize_returns_false(const std::string &dir);
+int eval_returns_scalar_result(const std::string &dir);
+
 // ── invoke_process (chunk 4) ────────────────────────────────────────────────
 //
 // Processor design note: a processor ALWAYS has an input channel (if a
