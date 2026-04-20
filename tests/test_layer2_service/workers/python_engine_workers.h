@@ -109,6 +109,22 @@ int api_stop_sets_shutdown_requested(const std::string &dir);
 int api_critical_error_set_and_read_and_stop_reason(const std::string &dir);
 int api_stop_reason_reflects_all_enum_values(const std::string &dir);
 
+// ── Metrics + error accumulation (chunk 7) ────────────────────────────────
+//
+// Individual accessors on api (out_slots_written etc.) and the
+// hierarchical api.metrics() dict.  Covers the canonical 5-field
+// loop group per PYLABHUB_LOOP_METRICS_FIELDS (role_host_core.hpp:
+// 397) — V2 missed acquire_retry_count.  Plus stop_on_script_error
+// error-path semantics and cross-link coverage between the two
+// metrics surfaces.
+int metrics_individual_accessors_read_core_counters_live(const std::string &dir);
+int metrics_in_slots_received_works_consumer(const std::string &dir);
+int multiple_errors_count_accumulates(const std::string &dir);
+int stop_on_script_error_sets_shutdown_on_error(const std::string &dir);
+int metrics_all_loop_fields_anchored_values(const std::string &dir);
+int metrics_hierarchical_table_producer_full_shape(const std::string &dir);
+int metrics_role_script_error_count_reflects_raised_error(const std::string &dir);
+
 // ── Engine-internal dispatcher contract (chunk 1 gap-fill) ─────────────────
 //
 // Pins PythonEngine's supports_multi_state() returns false.
