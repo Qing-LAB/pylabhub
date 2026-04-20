@@ -1463,6 +1463,242 @@ def on_consume(rx, msgs, api):
         });
 }
 
+// ── API closures (chunk 6) ─────────────────────────────────────────────────
+//
+// pybind11 bindings on ProducerAPI/ConsumerAPI/ProcessorAPI exposed
+// as methods on the `api` parameter to callbacks.  Source-traced:
+//
+//   - version_info: pylabhub_producer.version_info() at module level
+//     (not api.*); returns a JSON string.
+//   - api.stop(): RoleAPIBase::stop() → core->request_stop()
+//     (role_api_base.cpp:671)
+//   - api.set_critical_error(): three side effects
+//     (role_api_base.cpp:672 → core->set_critical_error):
+//     (a) critical_error_ = true → api.critical_error() returns True
+//     (b) shutdown_requested_ = true
+//     (c) stop_reason_ = CriticalError(3) → api.stop_reason()
+//         returns "critical_error"
+//   - api.stop_reason(): RoleAPIBase::stop_reason() → core->
+//     stop_reason_string() → "normal"/"peer_dead"/"hub_dead"/
+//     "critical_error" per StopReason enum
+//     (role_host_core.hpp:270-279).
+//
+// Wrong-module-import: build_api removes the two inactive roles'
+// pybind11 modules from sys.modules so a producer script can't
+// accidentally import consumer or processor APIs.  Covered via
+// eval() to trigger the importation directly.
+
+int api_version_info_returns_json_string(const std::string &dir)
+{
+    // Strengthened vs V2 ApiVersionInfo.  V2 only asserted
+    // isinstance(str) + len > 10 + contains '{'.  This body pins:
+    //   - matching '}' (bracket balance — catches truncation)
+    //   - "version" substring (pins the schema key, not just "some
+    //     JSON")
+    //   - result == Discard (return-value dispatch)
+    return produce_worker_with_script(
+        dir, "python_engine::api_version_info_returns_json_string",
+        R"PY(
+import pylabhub_producer
+
+def on_produce(tx, msgs, api):
+    info = pylabhub_producer.version_info()
+    assert isinstance(info, str), f"version_info should return str, got {type(info)}"
+    assert len(info) > 10, f"version_info too short: {info!r}"
+    assert "{" in info, f"version_info should contain '{{': {info!r}"
+    assert "}" in info, f"version_info should contain '}}' (truncation check): {info!r}"
+    # Pins the presence of a canonical schema key ("script_api_major"
+    # is part of the ABI handshake) — a reworded version-info output
+    # that dropped this key would be caught.
+    assert "script_api_major" in info, (
+        f"version_info should contain 'script_api_major' key: {info!r}")
+    return False
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<IncomingMessage> msgs;
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
+                                                 msgs);
+            EXPECT_EQ(result, InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int wrong_role_module_import_raises_error(const std::string &dir)
+{
+    // Strengthened vs V2.  V2 only tested that importing
+    // pylabhub_consumer from a producer engine fails.  This body
+    // covers BOTH other-role modules (consumer AND processor) to
+    // ensure build_api removes ALL inactive role modules from
+    // sys.modules — a regression that left one role accessible
+    // would slip through the V2 coverage.
+    //
+    // Each eval() returns InvokeStatus::ScriptError and increments
+    // the engine's error counter (via execute_direct_ →
+    // on_python_error_ → inc_script_error_count).
+    return produce_worker_with_script(
+        dir, "python_engine::wrong_role_module_import_raises_error",
+        R"PY(
+def on_produce(tx, msgs, api):
+    return False
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            // Engine set up as producer.  Consumer + processor must fail.
+            auto r1 = engine.eval("__import__('pylabhub_consumer')");
+            EXPECT_EQ(r1.status,
+                      pylabhub::scripting::InvokeStatus::ScriptError)
+                << "importing pylabhub_consumer from producer must fail";
+
+            auto r2 = engine.eval("__import__('pylabhub_processor')");
+            EXPECT_EQ(r2.status,
+                      pylabhub::scripting::InvokeStatus::ScriptError)
+                << "importing pylabhub_processor from producer must fail";
+
+            // Both failures should have bumped the counter.
+            EXPECT_GE(engine.script_error_count(), 2u)
+                << "each blocked import must increment script_error_count";
+        });
+}
+
+int api_stop_sets_shutdown_requested(const std::string &dir)
+{
+    // Strengthened: also asserts result == Discard (V2 didn't check
+    // the dispatch return value).
+    return produce_worker_with_script(
+        dir, "python_engine::api_stop_sets_shutdown_requested",
+        R"PY(
+def on_produce(tx, msgs, api):
+    api.stop()
+    return False
+)PY",
+        [](PythonEngine &engine, RoleHostCore &core) {
+            EXPECT_FALSE(core.is_shutdown_requested());
+
+            float buf = 0.0f;
+            std::vector<IncomingMessage> msgs;
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
+                                                 msgs);
+            EXPECT_EQ(result, InvokeResult::Discard);
+            EXPECT_TRUE(core.is_shutdown_requested())
+                << "api.stop() must set shutdown_requested";
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int api_critical_error_set_and_read_and_stop_reason(const std::string &dir)
+{
+    // Renamed from V2 ApiSetCriticalError.  V2 only verified 2 of
+    // the 3 side-effects of api.set_critical_error().  This body
+    // pins all three (role_api_base.cpp:672 → core->
+    // set_critical_error()):
+    //   (a) critical_error_ = true    → api.critical_error() == True
+    //   (b) shutdown_requested_ = true → core.is_shutdown_requested()
+    //   (c) stop_reason_ = CriticalError → api.stop_reason() ==
+    //       "critical_error"   ← V2 missed this third side-effect
+    //
+    // Also reads api.critical_error() BEFORE and AFTER the write to
+    // confirm the read closure tracks state (V2 didn't exercise the
+    // reader at all).
+    return produce_worker_with_script(
+        dir, "python_engine::api_critical_error_set_and_read_and_stop_reason",
+        R"PY(
+def on_produce(tx, msgs, api):
+    # Pre-state: critical_error read returns False, stop_reason "normal".
+    assert api.critical_error() is False, (
+        f"pre-state: critical_error must be False, got {api.critical_error()!r}")
+    assert api.stop_reason() == "normal", (
+        f"pre-state: stop_reason must be 'normal', got {api.stop_reason()!r}")
+
+    api.set_critical_error()
+
+    # Post-state: all three side-effects must be observable.
+    assert api.critical_error() is True, (
+        f"post-state: critical_error must be True, got {api.critical_error()!r}")
+    assert api.stop_reason() == "critical_error", (
+        f"post-state: stop_reason must be 'critical_error', got {api.stop_reason()!r}")
+    return False
+)PY",
+        [](PythonEngine &engine, RoleHostCore &core) {
+            EXPECT_FALSE(core.is_critical_error());
+            EXPECT_FALSE(core.is_shutdown_requested());
+
+            float buf = 0.0f;
+            std::vector<IncomingMessage> msgs;
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
+                                                 msgs);
+            EXPECT_EQ(result, InvokeResult::Discard);
+            EXPECT_TRUE(core.is_critical_error())
+                << "api.set_critical_error() must set critical_error_";
+            EXPECT_TRUE(core.is_shutdown_requested())
+                << "api.set_critical_error() must also set "
+                   "shutdown_requested_";
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "the in-script assertions must have all passed";
+        });
+}
+
+int api_stop_reason_reflects_all_enum_values(const std::string &dir)
+{
+    // Strengthened vs V2 (which had two separate tests: StopReason_
+    // Default covering "normal" and StopReason_PeerDead covering
+    // PeerDead).  HubDead was NEVER tested in V2 — clear gap,
+    // matches Lua's chunk 6 strengthening.
+    //
+    // Each iteration injects a different enum value from C++ and
+    // verifies the Python closure returns the right string.  Covers:
+    //   StopReason::Normal         (0) → "normal"
+    //   StopReason::PeerDead       (1) → "peer_dead"
+    //   StopReason::HubDead        (2) → "hub_dead"    ← NEW coverage
+    //   StopReason::CriticalError  (3) → "critical_error"
+    return produce_worker_with_script(
+        dir, "python_engine::api_stop_reason_reflects_all_enum_values",
+        R"PY(
+_expected = None
+
+def _set_expected(v):
+    global _expected
+    _expected = v
+
+def on_produce(tx, msgs, api):
+    got = api.stop_reason()
+    assert got == _expected, (
+        f"stop_reason mismatch: expected {_expected!r}, got {got!r}")
+    return False
+)PY",
+        [](PythonEngine &engine, RoleHostCore &core) {
+            // Execute once per enum value.  Set _expected via eval()
+            // before each invoke; eval+invoke share the same
+            // interpreter state so the global persists.
+            struct Case
+            {
+                RoleHostCore::StopReason reason;
+                const char *expected;
+            };
+            const Case cases[] = {
+                {RoleHostCore::StopReason::Normal,        "normal"},
+                {RoleHostCore::StopReason::PeerDead,      "peer_dead"},
+                {RoleHostCore::StopReason::HubDead,       "hub_dead"},
+                {RoleHostCore::StopReason::CriticalError, "critical_error"},
+            };
+            for (const auto &c : cases)
+            {
+                core.set_stop_reason(c.reason);
+                // Set _expected via eval in the script module.
+                engine.eval(std::string("_set_expected('") + c.expected
+                            + "')");
+
+                float buf = 0.0f;
+                std::vector<IncomingMessage> msgs;
+                auto result = engine.invoke_produce(
+                    InvokeTx{&buf, sizeof(buf)}, msgs);
+                EXPECT_EQ(result, InvokeResult::Discard);
+                EXPECT_EQ(engine.script_error_count(), 0u)
+                    << "stop_reason mismatch for enum value → "
+                    << c.expected;
+            }
+        });
+}
+
 int invoke_produce_discard_on_false_but_python_wrote_slot(const std::string &dir)
 {
     // NEW test — pins the production contract that the engine does NOT
@@ -1605,6 +1841,17 @@ struct PythonEngineWorkerRegistrar
                     return invoke_produce_receives_messages_data_message(dir);
                 if (sc == "invoke_consume_receives_messages_data_bare_format")
                     return invoke_consume_receives_messages_data_bare_format(dir);
+
+                if (sc == "api_version_info_returns_json_string")
+                    return api_version_info_returns_json_string(dir);
+                if (sc == "wrong_role_module_import_raises_error")
+                    return wrong_role_module_import_raises_error(dir);
+                if (sc == "api_stop_sets_shutdown_requested")
+                    return api_stop_sets_shutdown_requested(dir);
+                if (sc == "api_critical_error_set_and_read_and_stop_reason")
+                    return api_critical_error_set_and_read_and_stop_reason(dir);
+                if (sc == "api_stop_reason_reflects_all_enum_values")
+                    return api_stop_reason_reflects_all_enum_values(dir);
 
                 fmt::print(stderr,
                            "[python_engine] ERROR: unknown scenario '{}'\n",
