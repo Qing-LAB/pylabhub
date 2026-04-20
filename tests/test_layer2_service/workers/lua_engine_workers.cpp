@@ -17,6 +17,7 @@
 #include "lua_engine_workers.h"
 
 #include "lua_engine.hpp"
+#include "utils/engine_module_params.hpp"
 #include "utils/role_api_base.hpp"
 #include "utils/role_host_core.hpp"
 #include "utils/schema_utils.hpp"
@@ -43,7 +44,10 @@ using pylabhub::scripting::LuaEngine;
 using pylabhub::scripting::RoleAPIBase;
 using pylabhub::scripting::RoleHostCore;
 using pylabhub::tests::all_types_schema;
+using pylabhub::tests::complex_mixed_schema;
+using pylabhub::tests::fz_array_schema;
 using pylabhub::tests::helper::run_gtest_worker;
+using pylabhub::tests::padding_schema;
 using pylabhub::tests::simple_schema;
 using pylabhub::utils::Logger;
 
@@ -3555,6 +3559,202 @@ int invoke_on_inbox_missing_type_reports_error(const std::string &dir)
         Logger::GetLifecycleModule());
 }
 
+// ── Logical-size accessors via engine_lifecycle_startup (chunk 9b) ─────────
+//
+// Helper for the four near-identical SlotLogicalSize/FlexzoneLogicalSize
+// tests.  Each test follows the same pattern:
+//   1. Build a SchemaSpec with the chosen packing.
+//   2. Pre-populate RoleHostCore with the slot (and optional flexzone)
+//      spec — emulating what the role host does at schema-resolve time.
+//   3. Wire EngineModuleParams and call engine_lifecycle_startup
+//      (the production setup pathway used by all role hosts).
+//   4. Inside on_produce, the Lua script reads api.slot_logical_size()
+//      [and api.flexzone_logical_size() if applicable] and asserts
+//      against the expected number.
+//   5. C++ also verifies engine.type_sizeof(...) and
+//      hub::compute_schema_size(...) all agree on the same number.
+//   6. engine_lifecycle_shutdown for clean teardown.
+//
+// Strengthening over V2: V2 asserted hard-coded numbers and (for slot)
+// engine.type_sizeof("OutSlotFrame") == compute_schema_size, but did
+// NOT pin that the Lua-side api.slot_logical_size() returns the SAME
+// number as compute_schema_size.  This worker structure passes the
+// expected size into Lua as shared_data so Lua's assertion uses the
+// authoritative compute_schema_size value (not a hard-coded literal).
+
+namespace
+{
+
+struct LogicalSizeCase
+{
+    SchemaSpec   slot_spec;
+    SchemaSpec   fz_spec;        // .has_schema=false → no flexzone
+    const char  *out_packing;
+    size_t       expected_slot;
+    size_t       expected_fz;    // ignored when fz_spec.has_schema=false
+};
+
+int run_logical_size_case(const std::string &dir,
+                          const char        *scenario_name,
+                          const LogicalSizeCase &c)
+{
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+
+            // The Lua script reads the expected sizes from shared_data
+            // (set by C++ pre-startup) so the assertion uses the
+            // authoritative compute_schema_size, not a literal — pins
+            // a roundtrip from C++ schema math through Lua closures.
+            const bool has_fz = c.fz_spec.has_schema;
+            std::string lua_src =
+                "function on_produce(tx, msgs, api)\n"
+                "    local slot_sz = api.slot_logical_size()\n"
+                "    local exp_slot = api.get_shared_data('exp_slot')\n"
+                "    assert(slot_sz == exp_slot,\n"
+                "           'slot_logical_size mismatch: expected '\n"
+                "           .. tostring(exp_slot) .. ', got '\n"
+                "           .. tostring(slot_sz))\n";
+            if (has_fz)
+            {
+                lua_src +=
+                    "    local fz_sz = api.flexzone_logical_size()\n"
+                    "    local exp_fz = api.get_shared_data('exp_fz')\n"
+                    "    assert(fz_sz == exp_fz,\n"
+                    "           'flexzone_logical_size mismatch: expected '\n"
+                    "           .. tostring(exp_fz) .. ', got '\n"
+                    "           .. tostring(fz_sz))\n";
+            }
+            lua_src += "    return false\nend\n";
+            write_script(script_dir, lua_src);
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            auto         api = make_api(core, "prod");
+
+            // Pre-set core specs (role-host-equivalent step).
+            core.set_out_slot_spec(SchemaSpec{c.slot_spec},
+                                   c.expected_slot);
+            if (has_fz)
+                core.set_out_fz_spec(SchemaSpec{c.fz_spec},
+                                     pylabhub::hub::align_to_physical_page(
+                                         c.expected_fz));
+
+            // Pre-populate shared_data with expected sizes so the Lua
+            // side uses authoritative numbers, not hard-coded literals.
+            core.set_shared_data("exp_slot",
+                                 static_cast<int64_t>(c.expected_slot));
+            if (has_fz)
+                core.set_shared_data("exp_fz",
+                                     static_cast<int64_t>(c.expected_fz));
+
+            pylabhub::scripting::EngineModuleParams params;
+            params.engine            = &engine;
+            params.api               = api.get();
+            params.tag               = "prod";
+            params.script_dir        = script_dir;
+            params.entry_point       = "init.lua";
+            params.required_callback = "on_produce";
+            params.out_slot_spec     = c.slot_spec;
+            params.out_packing       = c.out_packing;
+            if (has_fz)
+                params.out_fz_spec   = c.fz_spec;
+
+            ASSERT_NO_THROW(
+                pylabhub::scripting::engine_lifecycle_startup(
+                    nullptr, &params));
+
+            // C++-side cross-checks: compute_schema_size, engine
+            // type_sizeof, and the expected literal must all agree.
+            EXPECT_EQ(pylabhub::hub::compute_schema_size(
+                          c.slot_spec, c.out_packing),
+                      c.expected_slot)
+                << "compute_schema_size disagrees with the test's "
+                   "expected_slot — schema math may have drifted";
+            EXPECT_EQ(engine.type_sizeof("OutSlotFrame"),
+                      c.expected_slot)
+                << "engine type_sizeof disagrees with compute_schema_size "
+                   "— ffi cdef the engine builds doesn't match what "
+                   "the role host uses to size buffers";
+            if (has_fz)
+            {
+                EXPECT_EQ(pylabhub::hub::compute_schema_size(
+                              c.fz_spec, c.out_packing),
+                          c.expected_fz);
+                EXPECT_EQ(engine.type_sizeof("OutFlexFrame"),
+                          c.expected_fz);
+            }
+
+            // Drive on_produce — the Lua-side asserts run here.
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            std::vector<uint8_t> buf(c.expected_slot, 0);
+            auto r = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{buf.data(), buf.size()}, msgs);
+            EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "Lua-side slot/fz size asserts must have passed";
+
+            pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+        },
+        scenario_name, Logger::GetLifecycleModule());
+}
+
+} // anonymous
+
+int slot_logical_size_aligned_padding_sensitive(const std::string &dir)
+{
+    auto spec = padding_schema();
+    spec.packing = "aligned";
+    LogicalSizeCase c{
+        /*slot_spec*/  spec,
+        /*fz_spec*/    SchemaSpec{},  // no flexzone
+        /*out_packing*/"aligned",
+        /*exp_slot*/   pylabhub::hub::compute_schema_size(spec, "aligned"),
+        /*exp_fz*/     0,
+    };
+    return run_logical_size_case(
+        dir, "lua_engine::slot_logical_size_aligned_padding_sensitive", c);
+}
+
+int slot_logical_size_packed_no_padding(const std::string &dir)
+{
+    auto spec = padding_schema();
+    spec.packing = "packed";
+    LogicalSizeCase c{
+        spec, SchemaSpec{}, "packed",
+        pylabhub::hub::compute_schema_size(spec, "packed"),
+        0,
+    };
+    return run_logical_size_case(
+        dir, "lua_engine::slot_logical_size_packed_no_padding", c);
+}
+
+int slot_logical_size_complex_mixed_aligned(const std::string &dir)
+{
+    auto spec = complex_mixed_schema();
+    spec.packing = "aligned";
+    LogicalSizeCase c{
+        spec, SchemaSpec{}, "aligned",
+        pylabhub::hub::compute_schema_size(spec, "aligned"),
+        0,
+    };
+    return run_logical_size_case(
+        dir, "lua_engine::slot_logical_size_complex_mixed_aligned", c);
+}
+
+int flexzone_logical_size_array_fields(const std::string &dir)
+{
+    auto slot = padding_schema();   slot.packing = "aligned";
+    auto fz   = fz_array_schema();  fz.packing   = "aligned";
+    LogicalSizeCase c{
+        slot, fz, "aligned",
+        pylabhub::hub::compute_schema_size(slot, "aligned"),
+        pylabhub::hub::compute_schema_size(fz,   "aligned"),
+    };
+    return run_logical_size_case(
+        dir, "lua_engine::flexzone_logical_size_array_fields", c);
+}
+
 } // namespace lua_engine
 } // namespace pylabhub::tests::worker
 
@@ -3769,6 +3969,16 @@ struct LuaEngineWorkerRegistrar
                     return type_sizeof_inbox_frame_returns_correct_size(dir);
                 if (sc == "invoke_on_inbox_missing_type_reports_error")
                     return invoke_on_inbox_missing_type_reports_error(dir);
+
+                // Chunk 9b: logical-size accessors
+                if (sc == "slot_logical_size_aligned_padding_sensitive")
+                    return slot_logical_size_aligned_padding_sensitive(dir);
+                if (sc == "slot_logical_size_packed_no_padding")
+                    return slot_logical_size_packed_no_padding(dir);
+                if (sc == "slot_logical_size_complex_mixed_aligned")
+                    return slot_logical_size_complex_mixed_aligned(dir);
+                if (sc == "flexzone_logical_size_array_fields")
+                    return flexzone_logical_size_array_fields(dir);
 
                 fmt::print(stderr,
                            "[lua_engine] ERROR: unknown scenario '{}'\n", sc);
