@@ -1187,9 +1187,9 @@ InvokeResult PythonEngine::parse_return_value_(const py::object &ret, const char
 
     if (ret.is_none())
     {
-        LOGGER_WARN("[{}] {} returned None — explicit 'return True' or "
-                    "'return False' is required. Treating as error.",
-                    log_tag_, callback_name);
+        LOGGER_ERROR("[{}] {} returned None — explicit 'return True' or "
+                     "'return False' is required. Treating as error.",
+                     log_tag_, callback_name);
         api_->core()->inc_script_error_count();
         if (stop_on_script_error_)
         {

@@ -712,6 +712,247 @@ int supports_multi_state_returns_false(const std::string &dir)
         Logger::GetLifecycleModule());
 }
 
+// ── invoke_produce (chunk 2) ───────────────────────────────────────────────
+//
+// Exercises the on_produce(tx, msgs, api) return-value contract.
+// Source-traced against python_engine.cpp:957-981 (invoke_produce) and
+// python_engine.cpp:1179-1216 (parse_return_value_).  Python-specific
+// vs Lua:
+//
+//   - parse_return_value_ checks py::isinstance<py::bool_> first
+//     (IMPORTANT: isinstance(True, int) is True in Python, so bool must
+//     be checked before int; though the current implementation also
+//     does not check int at all — it falls through to the generic
+//     non-boolean ERROR path).
+//   - None return → ERROR log (unified with Lua's nil-return severity).
+//   - Non-boolean-non-None → ERROR log with the Python type name
+//     (e.g. "int", "str").  Both paths: inc_script_error_count, return
+//     InvokeResult::Error, and (if stop_on_script_error) request_stop.
+//
+// Harness note: ExpectWorkerOk's expected_error_substrings matches
+// against captured ERROR logs from the worker subprocess.  Worth
+// pinning the diagnostic text for all three error paths (None, int,
+// str) so a reworded log that still preserves the InvokeResult would
+// be caught.
+
+int invoke_produce_commit_on_true(const std::string &dir)
+{
+    // Strengthened vs V2 InvokeProduce_CommitOnTrue by asserting
+    // script_error_count == 0 post-invoke.  The V2 body only checked
+    // result == Commit and buf == 42.0 — a regression where the engine
+    // silently logged a script error on the Commit path would slip
+    // through.  Pinning the counter at 0 closes that gap.
+    return produce_worker_with_script(
+        dir, "python_engine::invoke_produce_commit_on_true",
+        R"PY(
+def on_produce(tx, msgs, api):
+    if tx.slot is not None:
+        tx.slot.value = 42.0
+    return True
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<IncomingMessage> msgs;
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
+                                                 msgs);
+            EXPECT_EQ(result, InvokeResult::Commit);
+            EXPECT_FLOAT_EQ(buf, 42.0f);
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "commit path must not emit script errors";
+        });
+}
+
+int invoke_produce_discard_on_false(const std::string &dir)
+{
+    // Strengthened vs V2 InvokeProduce_DiscardOnFalse.  V2 inited
+    // buf = 0.0f — if the engine secretly zeroed buf on Discard, the
+    // test would still pass (0.0 == 0.0 is indistinguishable from
+    // "uninitialized sentinel").
+    //
+    // This body inits buf to a non-default sentinel (777.0f) that the
+    // Python script does NOT write, then asserts buf is STILL 777.0f
+    // post-invoke.  Catches any engine-internal write on the Discard
+    // path.
+    return produce_worker_with_script(
+        dir, "python_engine::invoke_produce_discard_on_false",
+        R"PY(
+def on_produce(tx, msgs, api):
+    # deliberately do NOT touch tx.slot; return False
+    return False
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 777.0f;  // sentinel — Python script doesn't write
+            std::vector<IncomingMessage> msgs;
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
+                                                 msgs);
+            EXPECT_EQ(result, InvokeResult::Discard);
+            EXPECT_FLOAT_EQ(buf, 777.0f)
+                << "engine must not write buf on Discard when Python didn't";
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int invoke_produce_none_return_is_error(const std::string &dir)
+{
+    // Pins the None-return diagnostic.  parse_return_value_ logs
+    // ERROR "<cb> returned None — explicit 'return True' or 'return
+    // False' is required. Treating as error." then increments the
+    // error counter and returns InvokeResult::Error.  A worded rewrite
+    // that preserved the InvokeResult (keeping this test green) would
+    // be caught by the expected_error_substrings check at the parent.
+    return produce_worker_with_script(
+        dir, "python_engine::invoke_produce_none_return_is_error",
+        R"PY(
+def on_produce(tx, msgs, api):
+    pass  # no explicit return -> None -> error
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<IncomingMessage> msgs;
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
+                                                 msgs);
+            EXPECT_EQ(result, InvokeResult::Error)
+                << "missing return is an error — must be explicit True/False";
+            EXPECT_EQ(engine.script_error_count(), 1u);
+        });
+}
+
+int invoke_produce_none_slot(const std::string &dir)
+{
+    // Strengthened vs V2 InvokeProduce_NoneSlot.  V2 relied on a Python
+    // `assert tx.slot is None` inside on_produce but never verified
+    // from the C++ side whether that assert passed.  A failed assert
+    // would raise AssertionError, route through on_python_error_,
+    // and return InvokeResult::Error — but the V2 test asserted
+    // Discard, which would fail in the wrong way (AssertionError has
+    // nothing to do with the slot contract).
+    //
+    // This body pins script_error_count == 0 to confirm the Python
+    // assert passed, i.e. the engine really did pass None for
+    // InvokeTx{nullptr, 0}.
+    return produce_worker_with_script(
+        dir, "python_engine::invoke_produce_none_slot",
+        R"PY(
+def on_produce(tx, msgs, api):
+    assert tx.slot is None, "expected None slot"
+    return False
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            std::vector<IncomingMessage> msgs;
+            auto result = engine.invoke_produce(InvokeTx{nullptr, 0}, msgs);
+            EXPECT_EQ(result, InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "the Python `assert tx.slot is None` must have passed; "
+                   "a non-zero count means the engine dispatched a non-None "
+                   "slot when given InvokeTx{nullptr, 0}";
+        });
+}
+
+int invoke_produce_script_error(const std::string &dir)
+{
+    return produce_worker_with_script(
+        dir, "python_engine::invoke_produce_script_error",
+        R"PY(
+def on_produce(tx, msgs, api):
+    raise RuntimeError("intentional error")
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<IncomingMessage> msgs;
+            EXPECT_EQ(engine.script_error_count(), 0u);
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
+                                                 msgs);
+            EXPECT_EQ(result, InvokeResult::Error);
+            EXPECT_EQ(engine.script_error_count(), 1u);
+        });
+}
+
+int invoke_produce_wrong_return_type_is_error(const std::string &dir)
+{
+    // Returning an int (not bool) must be rejected.  IMPORTANT:
+    // isinstance(True, int) is True in Python — if a future
+    // parse_return_value_ refactor replaced the bool check with an
+    // int check, `return 42` would silently be treated as
+    // Commit-on-truthy.  Pinning this behaviour explicitly guards
+    // against that regression.
+    return produce_worker_with_script(
+        dir, "python_engine::invoke_produce_wrong_return_type_is_error",
+        R"PY(
+def on_produce(tx, msgs, api):
+    return 42
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<IncomingMessage> msgs;
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
+                                                 msgs);
+            EXPECT_EQ(result, InvokeResult::Error)
+                << "returning an int must be Error, not Commit";
+            EXPECT_EQ(engine.script_error_count(), 1u);
+        });
+}
+
+int invoke_produce_wrong_return_string_is_error(const std::string &dir)
+{
+    // Returning a non-empty str (which is truthy in Python) must be
+    // rejected.  Guards against a truthiness-based check slipping in.
+    return produce_worker_with_script(
+        dir, "python_engine::invoke_produce_wrong_return_string_is_error",
+        R"PY(
+def on_produce(tx, msgs, api):
+    return "ok"
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<IncomingMessage> msgs;
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
+                                                 msgs);
+            EXPECT_EQ(result, InvokeResult::Error)
+                << "returning a str must be Error, not Commit";
+            EXPECT_EQ(engine.script_error_count(), 1u);
+        });
+}
+
+int invoke_produce_discard_on_false_but_python_wrote_slot(const std::string &dir)
+{
+    // NEW test — pins the production contract that the engine does NOT
+    // roll back Python-side writes to tx.slot when the callback
+    // returns False.  The slot buffer is caller-owned; the return
+    // value only tells the caller whether to publish the slot
+    // downstream.  A user who writes `tx.slot.value = 42; return
+    // False` gets:
+    //   result == Discard  (caller drops the slot)
+    //   buf    == 42.0     (caller's buffer was mutated in place)
+    //
+    // This subtlety matters because a role host implementing
+    // "conditionally publish" may reuse the same buffer for the next
+    // iteration; if they expected the engine to clear it on Discard
+    // they'd get stale data.  Mirrors the Lua gap-fill
+    // invoke_produce_discard_on_false_but_lua_wrote_slot.
+    return produce_worker_with_script(
+        dir,
+        "python_engine::invoke_produce_discard_on_false_but_python_wrote_slot",
+        R"PY(
+def on_produce(tx, msgs, api):
+    if tx.slot is not None:
+        tx.slot.value = 42.0
+    return False
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<IncomingMessage> msgs;
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
+                                                 msgs);
+            EXPECT_EQ(result, InvokeResult::Discard)
+                << "explicit `return False` must yield Discard";
+            EXPECT_FLOAT_EQ(buf, 42.0f)
+                << "Python write to tx.slot.value must propagate to the "
+                   "caller's buffer regardless of return value — the engine "
+                   "does NOT roll back on Discard.";
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
 } // namespace python_engine
 } // namespace pylabhub::tests::worker
 
@@ -770,6 +1011,23 @@ struct PythonEngineWorkerRegistrar
                     return alias_producer_no_fz_no_flex_frame_alias(dir);
                 if (sc == "supports_multi_state_returns_false")
                     return supports_multi_state_returns_false(dir);
+
+                if (sc == "invoke_produce_commit_on_true")
+                    return invoke_produce_commit_on_true(dir);
+                if (sc == "invoke_produce_discard_on_false")
+                    return invoke_produce_discard_on_false(dir);
+                if (sc == "invoke_produce_none_return_is_error")
+                    return invoke_produce_none_return_is_error(dir);
+                if (sc == "invoke_produce_none_slot")
+                    return invoke_produce_none_slot(dir);
+                if (sc == "invoke_produce_script_error")
+                    return invoke_produce_script_error(dir);
+                if (sc == "invoke_produce_wrong_return_type_is_error")
+                    return invoke_produce_wrong_return_type_is_error(dir);
+                if (sc == "invoke_produce_wrong_return_string_is_error")
+                    return invoke_produce_wrong_return_string_is_error(dir);
+                if (sc == "invoke_produce_discard_on_false_but_python_wrote_slot")
+                    return invoke_produce_discard_on_false_but_python_wrote_slot(dir);
 
                 fmt::print(stderr,
                            "[python_engine] ERROR: unknown scenario '{}'\n",
