@@ -1333,6 +1333,55 @@ TEST_F(LuaEngineIsolatedTest, Metrics_RoleScriptErrorCount_ReflectsRaisedError)
 }
 
 // ============================================================================
+// Chunk 12 — queue-state defaults + env strings + processor channels (P3)
+//
+// Closures that need infrastructure report safe defaults when
+// infrastructure is absent. Env strings and processor channels must
+// reflect their setters. Each test also pins role-specific closure
+// exposure (producer/consumer/processor expose different subsets).
+// ============================================================================
+
+TEST_F(LuaEngineIsolatedTest, QueueState_Consumer_WithoutQueue_ReturnsDefaults)
+{
+    auto w = SpawnWorker(
+        "lua_engine.queue_state_consumer_without_queue_returns_defaults",
+        {unique_dir("qs_consumer_defaults")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, QueueState_Producer_WithoutQueue_ReturnsDefaults)
+{
+    auto w = SpawnWorker(
+        "lua_engine.queue_state_producer_without_queue_returns_defaults",
+        {unique_dir("qs_producer_defaults")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, QueueState_Processor_DualWithoutQueues_ReturnsDefaults)
+{
+    auto w = SpawnWorker(
+        "lua_engine.queue_state_processor_dual_without_queues_returns_defaults",
+        {unique_dir("qs_processor_dual")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Api_EnvironmentStrings_ReflectSetters)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_environment_strings_reflect_setters",
+        {unique_dir("env_strings")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, Api_ProcessorChannels_ReflectSetters)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_processor_channels_reflect_setters",
+        {unique_dir("proc_channels")});
+    ExpectWorkerOk(w);
+}
+
+// ============================================================================
 // 8. Error handling
 // ============================================================================
 
@@ -1356,174 +1405,6 @@ TEST_F(LuaEngineIsolatedTest, Metrics_RoleScriptErrorCount_ReflectsRaisedError)
 // ============================================================================
 // New API closures — diagnostics, queue-state, custom metrics, environment
 // ============================================================================
-
-TEST_F(LuaEngineTest, Api_EnvironmentStrings_LogsDirRunDir)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            assert(api.log_level == "error", "log_level expected 'error'")
-            assert(type(api.script_dir) == "string", "script_dir must be string")
-            assert(type(api.role_dir) == "string", "role_dir must be string")
-            assert(type(api.logs_dir) == "string", "logs_dir must be string")
-            assert(type(api.run_dir) == "string", "run_dir must be string")
-            return false
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, Api_ConsumerQueueState_WithoutQueue)
-{
-    // Without a real consumer object, queue-state methods return safe defaults.
-    write_script(R"(
-        function on_consume(rx, msgs, api)
-            assert(api.in_capacity() == 0, "in_capacity should be 0 without queue")
-            assert(api.in_policy() == "", "in_policy should be '' without queue")
-            assert(api.last_seq() == 0, "last_seq should be 0 without queue")
-            return true
-        end
-    )");
-
-    RoleHostCore core;
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &core));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_consume"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    auto test_api = make_api(core, "cons");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    float buf = 1.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_consume(InvokeRx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
-}
-
-// ============================================================================
-// 23. Queue-state defaults for producer and processor
-// ============================================================================
-
-TEST_F(LuaEngineTest, Api_ProducerQueueState_WithoutQueue)
-{
-    // Without a real producer object, queue-state methods return safe defaults.
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            assert(api.out_capacity() == 0, "out_capacity should be 0 without queue")
-            assert(api.out_policy() == "", "out_policy should be '' without queue")
-            return false
-        end
-    )");
-
-    RoleHostCore core;
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, Api_ProcessorQueueState_DualDefaults)
-{
-    // Processor context with no real queues — all queue-state accessors return defaults.
-    write_script(R"(
-        function on_process(rx, tx, msgs, api)
-            assert(api.in_capacity() == 0, "in_capacity should be 0")
-            assert(api.out_capacity() == 0, "out_capacity should be 0")
-            assert(api.in_policy() == "", "in_policy should be ''")
-            assert(api.out_policy() == "", "out_policy should be ''")
-            assert(api.last_seq() == 0, "last_seq should be 0")
-            return false
-        end
-    )");
-
-    RoleHostCore core;
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &core));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_process"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    auto test_api = make_api(core, "proc");
-    test_api->set_channel("test.in_channel");
-    test_api->set_out_channel("test.out_channel");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    float in_data = 1.0f;
-    float out_data = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_process(
-        InvokeRx{&in_data, sizeof(in_data)},
-        InvokeTx{&out_data, sizeof(out_data)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Discard);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
-}
-
-// ============================================================================
-// 26. Metrics — all loop fields present with non-zero verification
-// ============================================================================
-
-// ============================================================================
-// 30. open_inbox without broker returns nil
-// ============================================================================
-
-// ============================================================================
-// 31. Processor in_channel / out_channel match context
-// ============================================================================
-
-TEST_F(LuaEngineTest, Api_ProcessorChannels_InOut)
-{
-    write_script(R"(
-        function on_process(rx, tx, msgs, api)
-            assert(api.in_channel() == "sensor.input",
-                   "in_channel mismatch: " .. tostring(api.in_channel()))
-            assert(api.out_channel() == "sensor.output",
-                   "out_channel mismatch: " .. tostring(api.out_channel()))
-            return false
-        end
-    )");
-
-    RoleHostCore core;
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &core));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_process"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    auto test_api = make_api(core, "proc");
-    test_api->set_channel("sensor.input");
-    test_api->set_out_channel("sensor.output");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    float in_data = 1.0f;
-    float out_data = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_process(
-        InvokeRx{&in_data, sizeof(in_data)},
-        InvokeTx{&out_data, sizeof(out_data)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Discard);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed — processor channels do not match context";
-    engine.finalize();
-}
 
 // ============================================================================
 // Full engine startup — tests the EngineModuleParams startup/shutdown path

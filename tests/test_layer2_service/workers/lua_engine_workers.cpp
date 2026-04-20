@@ -4496,6 +4496,325 @@ int metrics_role_script_error_count_reflects_raised_error(const std::string &dir
         Logger::GetLifecycleModule());
 }
 
+// ── Queue-state defaults + env strings + processor channels (chunk 12) ────
+
+int queue_state_consumer_without_queue_returns_defaults(const std::string &dir)
+{
+    // Strengthened over V2 Api_ConsumerQueueState_WithoutQueue. V2
+    // asserted in_capacity==0, in_policy=="", last_seq==0 ONCE.
+    // This body additionally:
+    //   - Asserts in_policy returns an EMPTY string (not nil).
+    //     Closures return empty-string-not-nil is a real contract
+    //     per lua_engine.cpp; a regression that returns nil would
+    //     break downstream code that does `#api.in_policy()` etc.
+    //   - Repeats the queries TWICE in the same callback to pin
+    //     idempotence (no cached bad state).
+    //   - Pins that the out_* closures are ABSENT for consumer
+    //     (role-specific closure exposure — lua_engine.cpp:339-343
+    //     shows consumer only gets in_* closures, not out_*).
+    return consume_worker_with_script(
+        dir,
+        "lua_engine::queue_state_consumer_without_queue_returns_defaults",
+        R"LUA(
+            function on_consume(rx, msgs, api)
+                -- Call 1 — baseline.
+                assert(api.in_capacity() == 0,
+                       "1st in_capacity expected 0, got "
+                       .. tostring(api.in_capacity()))
+                local pol = api.in_policy()
+                assert(type(pol) == "string",
+                       "in_policy must be a string (NOT nil), got "
+                       .. type(pol))
+                assert(pol == "",
+                       "in_policy expected empty string, got '" .. pol .. "'")
+                assert(api.last_seq() == 0, "1st last_seq expected 0")
+
+                -- Call 2 — idempotence.
+                assert(api.in_capacity() == 0, "2nd in_capacity drift")
+                assert(api.in_policy() == "", "2nd in_policy drift")
+                assert(api.last_seq() == 0, "2nd last_seq drift")
+
+                -- Closures that should NOT exist on consumer
+                -- (lua_engine.cpp:339-343 only pushes in_* closures;
+                -- out_capacity / out_policy are producer-only).
+                assert(api.out_capacity == nil,
+                       "consumer must not have api.out_capacity closure")
+                assert(api.out_policy == nil,
+                       "consumer must not have api.out_policy closure")
+                return true
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 1.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto r = engine.invoke_consume(
+                pylabhub::scripting::InvokeRx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Commit);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int queue_state_producer_without_queue_returns_defaults(const std::string &dir)
+{
+    // Strengthened over V2 Api_ProducerQueueState_WithoutQueue. V2:
+    // out_capacity==0, out_policy=="". This body also:
+    //   - Calls twice (idempotence).
+    //   - Pins in_* closures ABSENT on producer (role-specific).
+    //   - Pins last_seq closure also ABSENT on producer (it's
+    //     consumer/processor only per lua_engine.cpp:342, :363).
+    return produce_worker_with_script(
+        dir, "lua_engine::queue_state_producer_without_queue_returns_defaults",
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                assert(api.out_capacity() == 0,
+                       "1st out_capacity expected 0")
+                local pol = api.out_policy()
+                assert(type(pol) == "string" and pol == "",
+                       "1st out_policy expected empty string")
+
+                assert(api.out_capacity() == 0, "2nd out_capacity drift")
+                assert(api.out_policy() == "", "2nd out_policy drift")
+
+                -- Role-specific closure exposure check:
+                -- producer does NOT get in_* or last_seq closures
+                -- (lua_engine.cpp:322-334 only pushes out_* for prod).
+                assert(api.in_capacity == nil,
+                       "producer must not have api.in_capacity closure")
+                assert(api.in_policy == nil,
+                       "producer must not have api.in_policy closure")
+                assert(api.last_seq == nil,
+                       "producer must not have api.last_seq closure")
+                return false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto r = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int queue_state_processor_dual_without_queues_returns_defaults(const std::string &dir)
+{
+    // Strengthened over V2 Api_ProcessorQueueState_DualDefaults. V2
+    // checked all 5 closures once. This body also:
+    //   - Calls twice (idempotence).
+    //   - Pins processor has BOTH sets of closures (the whole point
+    //     of the "dual" in the test name — processor is the only
+    //     role that exposes both in_* and out_*).
+    //   - Pins in_policy and out_policy both return empty strings
+    //     (not nil — type enforcement).
+    return process_worker_with_script(
+        dir,
+        "lua_engine::queue_state_processor_dual_without_queues_returns_defaults",
+        R"LUA(
+            function on_process(rx, tx, msgs, api)
+                -- Processor exposes BOTH in_* and out_* closures
+                -- (lua_engine.cpp:357-363).
+                assert(api.in_capacity ~= nil,
+                       "processor must have in_capacity closure")
+                assert(api.out_capacity ~= nil,
+                       "processor must have out_capacity closure")
+                assert(api.last_seq ~= nil,
+                       "processor must have last_seq closure")
+
+                -- Dual queue-state — values (call 1).
+                assert(api.in_capacity() == 0, "1st in_cap")
+                assert(api.out_capacity() == 0, "1st out_cap")
+                assert(api.in_policy() == "", "1st in_pol")
+                assert(api.out_policy() == "", "1st out_pol")
+                assert(api.last_seq() == 0, "1st last_seq")
+
+                -- Call 2 — idempotence.
+                assert(api.in_capacity() == 0, "2nd in_cap drift")
+                assert(api.out_capacity() == 0, "2nd out_cap drift")
+                assert(api.in_policy() == "", "2nd in_pol drift")
+                assert(api.out_policy() == "", "2nd out_pol drift")
+                assert(api.last_seq() == 0, "2nd last_seq drift")
+
+                return false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            float in_data  = 1.0f;
+            float out_data = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto r = engine.invoke_process(
+                pylabhub::scripting::InvokeRx{&in_data, sizeof(in_data)},
+                pylabhub::scripting::InvokeTx{&out_data, sizeof(out_data)},
+                msgs);
+            EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int api_environment_strings_reflect_setters(const std::string &dir)
+{
+    // Strengthened over V2 Api_EnvironmentStrings_LogsDirRunDir.
+    // V2 only type-checked the strings (log_level="error" was the
+    // only value-anchored assertion; script_dir/role_dir/logs_dir/
+    // run_dir were type-checked only).  This body:
+    //   - Anchors script_dir and role_dir to values set via
+    //     api->set_script_dir / api->set_role_dir before
+    //     build_api (round-trip through the api object).
+    //   - Anchors log_level via api->set_log_level (round-trip).
+    //   - logs_dir and run_dir have no setter exposed at this
+    //     layer (set by env config); retains V2's type-only check
+    //     plus asserts the string is NON-EMPTY (a regression where
+    //     the getter returns "" by default should be caught —
+    //     though in pure L2 with no config, they may legitimately
+    //     be empty, so we soften to "string with type string").
+    //
+    // Inline setup so we can call set_script_dir / set_role_dir on
+    // the api BEFORE build_api (which wires the closures).
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, R"LUA(
+                function on_produce(tx, msgs, api)
+                    -- Values anchored to what C++ set before build_api.
+                    assert(api.log_level == "warn",
+                           "log_level anchor: expected 'warn' (set by C++), "
+                           .. "got '" .. tostring(api.log_level) .. "'")
+                    assert(api.script_dir == "/tmp/fake-script",
+                           "script_dir anchor mismatch, got '"
+                           .. tostring(api.script_dir) .. "'")
+                    assert(api.role_dir == "/tmp/fake-role",
+                           "role_dir anchor mismatch, got '"
+                           .. tostring(api.role_dir) .. "'")
+
+                    -- logs_dir / run_dir: no setter at this layer; just
+                    -- pin they're strings (possibly empty — env-provided
+                    -- at runtime in production, not here).
+                    assert(type(api.logs_dir) == "string",
+                           "logs_dir must be string, got " .. type(api.logs_dir))
+                    assert(type(api.run_dir) == "string",
+                           "run_dir must be string, got " .. type(api.run_dir))
+                    return false
+                end
+            )LUA");
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            ASSERT_TRUE(engine.initialize("test", &core));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
+                                            "on_produce"));
+
+            auto spec = simple_schema();
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
+                                                   "aligned"));
+
+            auto api = make_api(core);
+            // Override the defaults from make_api with anchored values
+            // before build_api so the closures see these.
+            api->set_log_level("warn");
+            api->set_script_dir("/tmp/fake-script");
+            api->set_role_dir("/tmp/fake-role");
+            ASSERT_TRUE(engine.build_api(*api));
+
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto r = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+
+            engine.finalize();
+        },
+        "lua_engine::api_environment_strings_reflect_setters",
+        Logger::GetLifecycleModule());
+}
+
+int api_processor_channels_reflect_setters(const std::string &dir)
+{
+    // Strengthened over V2 Api_ProcessorChannels_InOut. V2 asserted
+    // in_channel == "sensor.input" / out_channel == "sensor.output"
+    // ONCE. This body:
+    //   - Pins in_channel / out_channel are closures (callable),
+    //     not string fields.
+    //   - Calls the closures TWICE (idempotence).
+    //   - Pins that api.channel() returns the same as
+    //     api.in_channel() for processor (the input side is the
+    //     canonical "channel" attribute).
+    //
+    // Inline setup: make_api / set_channel / set_out_channel must
+    // happen BEFORE build_api so the closures see the anchored
+    // values.  setup_role_engine helper doesn't expose the api
+    // unique_ptr to the body, so we set up manually.
+    //
+    // Note: processor is the only role with in_channel/out_channel
+    // closures (lua_engine.cpp:346-347). Producer/Consumer have
+    // api.channel() only — pinned in chunk 6a ApiIdentity.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, R"LUA(
+                function on_process(rx, tx, msgs, api)
+                    assert(type(api.in_channel) == "function",
+                           "in_channel must be a closure, got " ..
+                           type(api.in_channel))
+                    assert(type(api.out_channel) == "function",
+                           "out_channel must be a closure")
+
+                    assert(api.in_channel() == "sensor.input",
+                           "1st in_channel: expected 'sensor.input', got "
+                           .. tostring(api.in_channel()))
+                    assert(api.out_channel() == "sensor.output",
+                           "1st out_channel: expected 'sensor.output', got "
+                           .. tostring(api.out_channel()))
+
+                    -- idempotence
+                    assert(api.in_channel() == "sensor.input",
+                           "2nd in_channel drift")
+                    assert(api.out_channel() == "sensor.output",
+                           "2nd out_channel drift")
+
+                    -- api.channel() canonical: must match in_channel()
+                    -- on processor (input side is the identifying one).
+                    assert(api.channel() == "sensor.input",
+                           "api.channel() must match api.in_channel() on "
+                           .. "processor, got '" .. tostring(api.channel())
+                           .. "' vs '" .. tostring(api.in_channel()) .. "'")
+                    return false
+                end
+            )LUA");
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            ASSERT_TRUE(engine.initialize("test", &core));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
+                                            "on_process"));
+
+            auto spec = simple_schema();
+            ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame",
+                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
+                                                   "aligned"));
+
+            auto api = make_api(core, "proc");
+            api->set_channel("sensor.input");
+            api->set_out_channel("sensor.output");
+            ASSERT_TRUE(engine.build_api(*api));
+
+            float in_data  = 1.0f;
+            float out_data = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto r = engine.invoke_process(
+                pylabhub::scripting::InvokeRx{&in_data, sizeof(in_data)},
+                pylabhub::scripting::InvokeTx{&out_data, sizeof(out_data)},
+                msgs);
+            EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+
+            engine.finalize();
+        },
+        "lua_engine::api_processor_channels_reflect_setters",
+        Logger::GetLifecycleModule());
+}
+
 } // namespace lua_engine
 } // namespace pylabhub::tests::worker
 
@@ -4756,6 +5075,18 @@ struct LuaEngineWorkerRegistrar
                     return metrics_all_loop_fields_anchored_values(dir);
                 if (sc == "metrics_role_script_error_count_reflects_raised_error")
                     return metrics_role_script_error_count_reflects_raised_error(dir);
+
+                // Chunk 12: queue-state + env + channels
+                if (sc == "queue_state_consumer_without_queue_returns_defaults")
+                    return queue_state_consumer_without_queue_returns_defaults(dir);
+                if (sc == "queue_state_producer_without_queue_returns_defaults")
+                    return queue_state_producer_without_queue_returns_defaults(dir);
+                if (sc == "queue_state_processor_dual_without_queues_returns_defaults")
+                    return queue_state_processor_dual_without_queues_returns_defaults(dir);
+                if (sc == "api_environment_strings_reflect_setters")
+                    return api_environment_strings_reflect_setters(dir);
+                if (sc == "api_processor_channels_reflect_setters")
+                    return api_processor_channels_reflect_setters(dir);
 
                 fmt::print(stderr,
                            "[lua_engine] ERROR: unknown scenario '{}'\n", sc);
