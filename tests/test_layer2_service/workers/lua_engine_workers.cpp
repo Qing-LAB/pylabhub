@@ -1690,6 +1690,248 @@ int api_stop_reason_reflects_all_enum_values(const std::string &dir)
         });
 }
 
+// ── API closures: custom metrics (chunk 6b) ────────────────────────────────
+//
+// All bodies below run as Producer workers. custom metrics route
+// through RoleHostCore's custom_metrics_ map independent of role.
+// Each worker uses the `script_worker(RoleKind::Producer, ...)`
+// helper and asserts from inside the Lua callback (via
+// api.metrics()) — so the tests pin the full report→read round-trip
+// through the Lua closure surface.
+
+int api_report_metric_appears_under_custom(const std::string &dir)
+{
+    // Strengthened over the V2 test.  V2 asserted m.custom.k ==
+    // expected; this version additionally pins that the key lands
+    // ONLY under m.custom (not at the top level of m and not under
+    // any other sub-group).  A regression where report_metric
+    // accidentally promoted keys to the top of m (shadowing the
+    // loop/role sub-groups) would slip past the weaker V2 check.
+    return script_worker(
+        dir, "lua_engine::api_report_metric_appears_under_custom",
+        RoleKind::Producer,
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                api.report_metric("latency_ms", 42.5)
+                api.report_metric("throughput", 100)
+
+                local m = api.metrics()
+                assert(type(m.custom) == "table",
+                       "custom group must exist after report_metric")
+                assert(m.custom.latency_ms == 42.5,
+                       "m.custom.latency_ms expected 42.5, got "
+                       .. tostring(m.custom.latency_ms))
+                assert(m.custom.throughput == 100,
+                       "m.custom.throughput expected 100, got "
+                       .. tostring(m.custom.throughput))
+
+                -- NEW: strengthening — key must NOT appear at top level.
+                assert(m.latency_ms == nil,
+                       "report_metric must NOT promote keys to top "
+                       .. "level of m; got m.latency_ms="
+                       .. tostring(m.latency_ms))
+                assert(m.throughput == nil,
+                       "report_metric must NOT promote keys to top "
+                       .. "level of m; got m.throughput="
+                       .. tostring(m.throughput))
+                return false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int api_report_metric_overwrite_same_key(const std::string &dir)
+{
+    return script_worker(
+        dir, "lua_engine::api_report_metric_overwrite_same_key",
+        RoleKind::Producer,
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                api.report_metric("x", 1)
+                api.report_metric("x", 2)
+                local m = api.metrics()
+                assert(type(m.custom) == "table",
+                       "custom group must exist")
+                assert(m.custom.x == 2,
+                       "second report_metric must overwrite; "
+                       .. "expected 2, got " .. tostring(m.custom.x))
+                return false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int api_report_metric_zero_value_preserved(const std::string &dir)
+{
+    // 0.0 is the default value of a missing table lookup in some
+    // implementations; this test pins that a reported 0 is visibly
+    // PRESENT (not nil-confused) in m.custom.
+    return script_worker(
+        dir, "lua_engine::api_report_metric_zero_value_preserved",
+        RoleKind::Producer,
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                api.report_metric("x", 0.0)
+                local m = api.metrics()
+                assert(type(m.custom) == "table",
+                       "custom group must exist even for 0.0")
+                assert(m.custom.x ~= nil,
+                       "0.0 must be present, not nil-confused; "
+                       .. "m.custom.x was nil")
+                assert(m.custom.x == 0,
+                       "expected 0, got " .. tostring(m.custom.x))
+                return false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int api_report_metrics_batch_accepts_table(const std::string &dir)
+{
+    // Strengthened over V2.  V2 used all-positive integer-like values
+    // (a=1.0, b=2.0, c=3.0).  This body mixes small int, negative
+    // int, and fractional double to exercise the luaL_checknumber
+    // coercion path and pin that sign is preserved.
+    return script_worker(
+        dir, "lua_engine::api_report_metrics_batch_accepts_table",
+        RoleKind::Producer,
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                api.report_metrics({a = 1, b = -7, c = 3.5})
+
+                local m = api.metrics()
+                assert(type(m.custom) == "table", "custom must exist")
+                assert(m.custom.a == 1,
+                       "a expected 1, got " .. tostring(m.custom.a))
+                assert(m.custom.b == -7,
+                       "b expected -7 (negative preserved), got "
+                       .. tostring(m.custom.b))
+                assert(m.custom.c == 3.5,
+                       "c expected 3.5, got " .. tostring(m.custom.c))
+                return false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int api_report_metrics_non_table_arg_is_error(const std::string &dir)
+{
+    // Strengthened: V2 only asserted script_error_count >= 1.
+    // Source-confirmed: lua_api_report_metrics
+    // (src/scripting/lua_engine.cpp:1634) calls
+    // luaL_checktype(L, 1, LUA_TTABLE) which raises a Lua error on
+    // wrong type; the engine's pcall path translates that to
+    // InvokeResult::Error and increments script_error_count.  This
+    // body pins BOTH observable effects (result == Error AND
+    // script_error_count == 1) so a regression where the engine
+    // silently accepts a non-table (e.g. luaL_checktype replaced by
+    // a permissive cast) would fail the result-code assertion.
+    return script_worker(
+        dir, "lua_engine::api_report_metrics_non_table_arg_is_error",
+        RoleKind::Producer,
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                api.report_metrics(42)  -- wrong type, must raise
+                return false            -- unreachable if raise fires
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Error)
+                << "non-table arg must surface as InvokeResult::Error, "
+                   "not Discard/Commit — loud-failure contract";
+            EXPECT_EQ(engine.script_error_count(), 1u);
+        });
+}
+
+int api_clear_custom_metrics_empties_and_allows_rewrite(const std::string &dir)
+{
+    // Strengthened over V2.  V2 only verified that clear empties
+    // m.custom.  This body additionally verifies that AFTER clear,
+    // a subsequent report_metric re-populates the custom table from
+    // scratch — closing a real regression class where clear might
+    // leave the table in an unusable state (e.g. null pointer, or
+    // stale "cleared" flag blocking future reports).
+    return script_worker(
+        dir, "lua_engine::api_clear_custom_metrics_empties_and_allows_rewrite",
+        RoleKind::Producer,
+        R"LUA(
+            function on_produce(tx, msgs, api)
+                api.report_metric("a", 1)
+                api.report_metric("b", 2)
+                local before = api.metrics()
+                assert(before.custom.a == 1, "pre-clear a==1")
+                assert(before.custom.b == 2, "pre-clear b==2")
+
+                api.clear_custom_metrics()
+                local cleared = api.metrics()
+                -- Source-confirmed (lua_engine.cpp:1790-1803): the
+                -- engine only emits "custom" when cm.empty() is
+                -- false.  After clear the snapshot is empty → the
+                -- custom FIELD is absent (not an empty table).  Pin
+                -- that exact shape — a regression that emits an
+                -- empty custom table instead is a legitimate
+                -- behaviour change worth catching.
+                assert(cleared.custom == nil,
+                       "post-clear: m.custom must be absent (nil), "
+                       .. "NOT an empty table.  got "
+                       .. type(cleared.custom))
+
+                -- NEW strengthening: subsequent report must work.
+                api.report_metric("c", 99)
+                local after = api.metrics()
+                assert(type(after.custom) == "table",
+                       "custom must be re-creatable post-clear")
+                assert(after.custom.c == 99,
+                       "post-clear report_metric must work; "
+                       .. "c expected 99, got "
+                       .. tostring(after.custom.c))
+                assert(after.custom.a == nil,
+                       "cleared key 'a' must not reappear")
+                return false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+            float buf = 0.0f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            auto result = engine.invoke_produce(
+                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
 } // namespace lua_engine
 } // namespace pylabhub::tests::worker
 
@@ -1804,6 +2046,20 @@ struct LuaEngineWorkerRegistrar
                     return api_critical_error_set_and_read_and_stop_reason(dir);
                 if (sc == "api_stop_reason_reflects_all_enum_values")
                     return api_stop_reason_reflects_all_enum_values(dir);
+
+                // Chunk 6b: api.* custom-metrics closures
+                if (sc == "api_report_metric_appears_under_custom")
+                    return api_report_metric_appears_under_custom(dir);
+                if (sc == "api_report_metric_overwrite_same_key")
+                    return api_report_metric_overwrite_same_key(dir);
+                if (sc == "api_report_metric_zero_value_preserved")
+                    return api_report_metric_zero_value_preserved(dir);
+                if (sc == "api_report_metrics_batch_accepts_table")
+                    return api_report_metrics_batch_accepts_table(dir);
+                if (sc == "api_report_metrics_non_table_arg_is_error")
+                    return api_report_metrics_non_table_arg_is_error(dir);
+                if (sc == "api_clear_custom_metrics_empties_and_allows_rewrite")
+                    return api_clear_custom_metrics_empties_and_allows_rewrite(dir);
 
                 fmt::print(stderr,
                            "[lua_engine] ERROR: unknown scenario '{}'\n", sc);
