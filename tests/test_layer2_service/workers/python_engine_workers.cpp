@@ -1256,6 +1256,213 @@ def on_process(rx, tx, msgs, api):
         });
 }
 
+// ── Messages (chunk 5) ─────────────────────────────────────────────────────
+//
+// Two projection paths, canonical reference at
+// src/scripting/python_engine.cpp:1118 and :1143:
+//
+//   - build_messages_list_        — producer + processor
+//                                   event → dict with flattened details
+//                                   data  → (sender_hex_str, bytes) TUPLE
+//
+//   - build_messages_list_bare_   — consumer
+//                                   event → dict (same shape)
+//                                   data  → bare `bytes` (no sender)
+//
+// Python-vs-Lua divergence on the producer data-message shape:
+//   - Python:  (sender_hex_str, bytes)  — 2-tuple
+//   - Lua:     {sender="<hex>", data="<bytes>"}  — table
+// Both engines converge on the consumer bare-bytes shape.
+//
+// sender_hex is rendered via format_tools::bytes_to_hex (lowercase,
+// no separator).  Two bytes 0xCA 0xFE project to "cafe".
+
+int invoke_produce_receives_messages_event_with_details(const std::string &dir)
+{
+    // Strengthened vs V2 InvokeProduce_ReceivesMessages.  The V2 body
+    // set `m1.details["identity"] = "abc123"` in C++ but Python never
+    // verified the details map reached the script — the engine could
+    // be silently dropping or re-shaping details and the test would
+    // pass.  The Python contract per python_engine.cpp:1128 is that
+    // details keys are PROMOTED to sibling fields on the event dict:
+    //     msg["event"] = "consumer_joined"
+    //     msg["identity"] = "abc123"   # NOT msg["details"]["identity"]
+    //
+    // This body pins the promoted (not nested) contract and covers a
+    // multi-key details path on the second message.
+    return produce_worker_with_script(
+        dir, "python_engine::invoke_produce_receives_messages_event_with_details",
+        R"PY(
+def on_produce(tx, msgs, api):
+    assert len(msgs) == 2, f"expected 2 messages, got {len(msgs)}"
+    # Event shape: dict with 'event' key plus flattened detail fields.
+    assert isinstance(msgs[0], dict), f"msgs[0] should be dict, got {type(msgs[0])}"
+    assert msgs[0]["event"] == "consumer_joined", msgs[0]["event"]
+    # NEW: verify details-map promotion on m1.
+    assert msgs[0].get("identity") == "abc123", (
+        f"msgs[0].identity expected 'abc123', got {msgs[0].get('identity')}")
+
+    assert isinstance(msgs[1], dict), f"msgs[1] should be dict, got {type(msgs[1])}"
+    assert msgs[1]["event"] == "channel_closing", msgs[1]["event"]
+    # NEW: verify multi-key details promotion on m2.
+    assert msgs[1].get("reason") == "voluntary", msgs[1].get("reason")
+    assert msgs[1].get("code") == 0, msgs[1].get("code")
+    return False
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            std::vector<IncomingMessage> msgs;
+
+            IncomingMessage m1;
+            m1.event = "consumer_joined";
+            m1.details["identity"] = "abc123";
+            msgs.push_back(std::move(m1));
+
+            IncomingMessage m2;
+            m2.event = "channel_closing";
+            m2.details["reason"] = "voluntary";
+            m2.details["code"]   = 0;
+            msgs.push_back(std::move(m2));
+
+            float buf = 0.0f;
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
+                                                 msgs);
+            EXPECT_EQ(result, InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "a failing Python assert here indicates either #msgs "
+                   "was wrong, the event fields didn't match, or "
+                   "details-map promotion is broken";
+        });
+}
+
+int invoke_produce_receives_messages_empty_list(const std::string &dir)
+{
+    // Strengthened vs V2 InvokeProduce_EmptyMessagesList.  V2 only
+    // checked len(msgs) == 0.  This body also pins:
+    //   - msgs is a list (not None, not some iterable proxy)
+    //   - iteration over empty msgs produces no entries (range-
+    //     iteration bug protection, same motivation as Lua's
+    //     empty-vector test)
+    return produce_worker_with_script(
+        dir, "python_engine::invoke_produce_receives_messages_empty_list",
+        R"PY(
+def on_produce(tx, msgs, api):
+    assert isinstance(msgs, list), f"msgs should be list, got {type(msgs)}"
+    assert len(msgs) == 0, f"msgs should be empty, got len={len(msgs)}"
+    # Iteration over empty list must produce no entries.
+    any_seen = False
+    for _m in msgs:
+        any_seen = True
+    assert any_seen is False, "empty msgs should yield no entries"
+    return False
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            std::vector<IncomingMessage> msgs;  // empty
+            float buf = 0.0f;
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
+                                                 msgs);
+            EXPECT_EQ(result, InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
+int invoke_produce_receives_messages_data_message(const std::string &dir)
+{
+    // NEW gap-fill — data-message shape for producer/processor
+    // (build_messages_list_).  A data message has empty event and
+    // populated data+sender fields; Python receives a TUPLE
+    // (sender_hex_str, data_bytes).  V2 never tested this shape at
+    // all, leaving the sender-hex formatting and bytes conversion
+    // paths untested.
+    //
+    // Mirrors the Lua gap-fill but asserts the tuple shape instead
+    // of the Lua table shape.
+    return produce_worker_with_script(
+        dir, "python_engine::invoke_produce_receives_messages_data_message",
+        R"PY(
+def on_produce(tx, msgs, api):
+    assert len(msgs) == 1, "expected 1 message"
+    m = msgs[0]
+    # Python producer data-message shape: 2-tuple (sender_hex, bytes).
+    assert isinstance(m, tuple), f"data msg should be tuple, got {type(m)}"
+    assert len(m) == 2, f"data msg tuple should have 2 elements, got {len(m)}"
+    sender, data = m
+    assert isinstance(sender, str), f"sender should be str, got {type(sender)}"
+    # Two bytes 0xCA 0xFE project to lowercase hex "cafe".
+    assert sender == "cafe", f"sender hex expected 'cafe', got {sender!r}"
+    assert isinstance(data, bytes), f"data should be bytes, got {type(data)}"
+    assert data == b"pong", f"data expected b'pong', got {data!r}"
+    return False
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            std::vector<IncomingMessage> msgs;
+            IncomingMessage m;
+            m.event = "";  // data message — empty event triggers bare/tuple projection
+            m.sender = std::string("\xCA\xFE", 2);
+            for (char c : std::string{"pong"})
+                m.data.push_back(static_cast<std::byte>(c));
+            msgs.push_back(std::move(m));
+
+            float buf = 0.0f;
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
+                                                 msgs);
+            EXPECT_EQ(result, InvokeResult::Discard);
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "a failing Python assert here indicates the "
+                   "(sender_hex, bytes) tuple projection differs from "
+                   "the documented shape at python_engine.cpp:1135";
+        });
+}
+
+int invoke_consume_receives_messages_data_bare_format(const std::string &dir)
+{
+    // Strengthened vs V2 InvokeConsume_BareDataMessages.  V2 only
+    // checked isinstance(msgs[0], bytes) and the event-message dict
+    // on msgs[1].  This body additionally asserts:
+    //   - exact data bytes (catches a wrong-memcpy-size regression)
+    //   - result == Commit (V2 didn't check the return dispatch)
+    //
+    // Pins the producer-vs-consumer divergence explicitly: the
+    // consumer projection DROPS the sender and exposes data as bare
+    // bytes directly at msgs[i] (not a tuple).  Python contract at
+    // python_engine.cpp:1161.
+    return consume_worker_with_script(
+        dir, "python_engine::invoke_consume_receives_messages_data_bare_format",
+        R"PY(
+def on_consume(rx, msgs, api):
+    assert len(msgs) == 2, f"expected 2 messages, got {len(msgs)}"
+    # Consumer bare format: msgs[0] is raw bytes, NOT a tuple.  This
+    # is the key divergence from the producer/processor path.
+    assert isinstance(msgs[0], bytes), (
+        f"consumer data msg should be bare bytes, got {type(msgs[0])}")
+    assert msgs[0] == b"AB", f"data expected b'AB', got {msgs[0]!r}"
+    # Event message: dict (same shape as producer path).
+    assert isinstance(msgs[1], dict), (
+        f"event msg should be dict, got {type(msgs[1])}")
+    assert msgs[1]["event"] == "channel_closing"
+    return True
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+            std::vector<IncomingMessage> msgs;
+            // Data message.
+            IncomingMessage dm;
+            dm.sender = "sender-id";  // consumer drops sender in projection
+            dm.data   = {std::byte{0x41}, std::byte{0x42}};  // "AB"
+            msgs.push_back(std::move(dm));
+            // Event message.
+            IncomingMessage em;
+            em.event = "channel_closing";
+            msgs.push_back(std::move(em));
+
+            auto result = engine.invoke_consume(InvokeRx{nullptr, 0}, msgs);
+            EXPECT_EQ(result, InvokeResult::Commit)
+                << "on_consume returning True must map to Commit";
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "a failing Python assert here indicates the consumer "
+                   "bare-bytes projection differs from the documented "
+                   "shape at python_engine.cpp:1161";
+        });
+}
+
 int invoke_produce_discard_on_false_but_python_wrote_slot(const std::string &dir)
 {
     // NEW test — pins the production contract that the engine does NOT
@@ -1389,6 +1596,15 @@ struct PythonEngineWorkerRegistrar
                     return invoke_process_rx_present_tx_none(dir);
                 if (sc == "invoke_process_rx_slot_is_read_only")
                     return invoke_process_rx_slot_is_read_only(dir);
+
+                if (sc == "invoke_produce_receives_messages_event_with_details")
+                    return invoke_produce_receives_messages_event_with_details(dir);
+                if (sc == "invoke_produce_receives_messages_empty_list")
+                    return invoke_produce_receives_messages_empty_list(dir);
+                if (sc == "invoke_produce_receives_messages_data_message")
+                    return invoke_produce_receives_messages_data_message(dir);
+                if (sc == "invoke_consume_receives_messages_data_bare_format")
+                    return invoke_consume_receives_messages_data_bare_format(dir);
 
                 fmt::print(stderr,
                            "[python_engine] ERROR: unknown scenario '{}'\n",

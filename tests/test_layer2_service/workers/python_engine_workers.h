@@ -84,6 +84,19 @@ int invoke_process_both_slots_none(const std::string &dir);
 int invoke_process_rx_present_tx_none(const std::string &dir);
 int invoke_process_rx_slot_is_read_only(const std::string &dir);
 
+// ── Messages (chunk 5) ─────────────────────────────────────────────────────
+//
+// Two projection paths (build_messages_list_ vs
+// build_messages_list_bare_).  Tests pin (a) event-message
+// details-map promotion, (b) empty-vector edge case, (c) producer
+// data-message (sender_hex, bytes) tuple shape, (d) consumer bare-
+// bytes divergence.  Mirrors Lua chunk 5 with Python-specific shape
+// assertions.
+int invoke_produce_receives_messages_event_with_details(const std::string &dir);
+int invoke_produce_receives_messages_empty_list(const std::string &dir);
+int invoke_produce_receives_messages_data_message(const std::string &dir);
+int invoke_consume_receives_messages_data_bare_format(const std::string &dir);
+
 // ── Engine-internal dispatcher contract (chunk 1 gap-fill) ─────────────────
 //
 // Pins PythonEngine's supports_multi_state() returns false.
