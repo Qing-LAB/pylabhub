@@ -1092,149 +1092,57 @@ TEST_F(LuaEngineIsolatedTest, InvokeConsume_Messages_DataAndEventMixed)
 }
 
 // ============================================================================
+// Chunk 9a — inbox + slot-only invoke (Pattern 3)
+//
+// Inbox is a separate engine entry point (invoke_on_inbox) with its
+// own typed slot view (InboxFrame). Also covers the contract that
+// InvokeTx carries a slot only (flexzone is closure-bound at
+// build_api time, not invoke time).
+// ============================================================================
+
+TEST_F(LuaEngineIsolatedTest, InvokeProduce_SlotOnly_NoFlexzoneOnInvoke)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_produce_slot_only_no_flexzone_on_invoke",
+        {unique_dir("slot_only_no_fz")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, InvokeOnInbox_TypedData)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_on_inbox_typed_data",
+        {unique_dir("inbox_typed")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, TypeSizeof_InboxFrame_ReturnsCorrectSize)
+{
+    auto w = SpawnWorker(
+        "lua_engine.type_sizeof_inbox_frame_returns_correct_size",
+        {unique_dir("sizeof_inbox")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, InvokeOnInbox_MissingType_ReportsError)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_on_inbox_missing_type_reports_error",
+        {unique_dir("inbox_missing_type")});
+    // Engine logs at lua_engine.cpp:965-967:
+    //   "[<tag>] invoke_on_inbox: InboxFrame type not registered ..."
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"InboxFrame type not registered"});
+}
+
+// ============================================================================
 // 8. Error handling
 // ============================================================================
 
 // ============================================================================
 // 11. Flexzone
 // ============================================================================
-
-TEST_F(LuaEngineTest, InvokeProduce_SlotOnly_NoFlexzoneOnInvoke)
-{
-    // Script writes to slot only — InvokeTx no longer carries flexzone.
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            assert(tx.slot ~= nil, "expected slot")
-            tx.slot.value = 10.0
-            return true
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutFlexFrame", "aligned"));
-
-    auto test_api = make_api(default_core_);
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    float slot_buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-
-    auto result = engine.invoke_produce(
-        InvokeTx{&slot_buf, sizeof(slot_buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_FLOAT_EQ(slot_buf, 10.0f);
-
-    engine.finalize();
-}
-
-// ============================================================================
-// 12. invoke_on_inbox
-// ============================================================================
-
-TEST_F(LuaEngineTest, InvokeOnInbox_TypedData)
-{
-    // Script asserts the inbox data value and sender string.
-    write_script(R"(
-        function on_produce(tx, msgs, api) return false end
-        function on_inbox(msg, api)
-            assert(msg.data ~= nil, "expected inbox data")
-            assert(math.abs(msg.data.value - 77.0) < 0.01,
-                   "expected ~77.0, got " .. tostring(msg.data.value))
-            assert(msg.sender_uid == "PROD-SENDER-00000001",
-                   "expected sender UID, got " .. tostring(msg.sender_uid))
-            return true
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
-
-    auto test_api = make_api(default_core_);
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    float inbox_data = 77.0f;
-    engine.invoke_on_inbox({&inbox_data, sizeof(inbox_data), "PROD-SENDER-00000001", 1});
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed — inbox data or sender incorrect";
-
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, TypeSizeof_InboxFrame_ReturnsCorrectSize)
-{
-    // Multi-type schema with alignment padding:
-    //   uint8 flag (1) + pad(3) + float64 value (8) + uint16 count (2) +
-    //   pad(2) + int32 status (4) + char[5] label (5) + pad(3) = 28 bytes aligned
-    write_script(R"(
-        function on_produce(tx, msgs, api) return true end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
-
-    SchemaSpec spec;
-    spec.has_schema = true;
-    spec.fields.push_back({"flag",   "uint8",   1, 0});
-    spec.fields.push_back({"value",  "float64", 1, 0});
-    spec.fields.push_back({"count",  "uint16",  1, 0});
-    spec.fields.push_back({"status", "int32",   1, 0});
-    spec.fields.push_back({"label",  "string",  1, 5});
-
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
-
-    auto test_api = make_api(default_core_);
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    size_t slot_sz  = engine.type_sizeof("SlotFrame");
-    size_t inbox_sz = engine.type_sizeof("InboxFrame");
-    EXPECT_GT(slot_sz, 0u) << "SlotFrame size must be > 0";
-    EXPECT_GT(inbox_sz, 0u) << "InboxFrame size must be > 0";
-    EXPECT_EQ(slot_sz, inbox_sz) << "Same schema → same size";
-    // Aligned: 1 + 7pad + 8 + 2 + 2pad + 4 + 5 + 3pad = 32
-    EXPECT_EQ(inbox_sz, 32u) << "Expected 28 bytes with alignment padding";
-
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, InvokeOnInbox_MissingType_ReportsError)
-{
-    // If InboxFrame is not registered, invoke_on_inbox must report an error.
-    write_script(R"(
-        function on_produce(tx, msgs, api) return false end
-        function on_inbox(msg, api) return true end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_, "init.lua", "on_produce"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-    // Deliberately NOT registering "InboxFrame".
-
-
-    auto test_api = make_api(default_core_);
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    float raw = 1.0f;
-    engine.invoke_on_inbox({&raw, sizeof(raw), "CONS-SENDER-00000001", 1});
-    EXPECT_GE(engine.script_error_count(), 1u)
-        << "Missing InboxFrame type should increment error count";
-
-    engine.finalize();
-}
 
 
 // ============================================================================
