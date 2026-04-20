@@ -347,7 +347,6 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
                                 const std::string &entry_point,
                                 const std::string &required_callback)
 {
-    script_dir_str_     = script_dir.string();
     entry_point_        = entry_point.empty() ? "__init__.py" : entry_point;
     required_callback_  = required_callback;
 
@@ -632,16 +631,13 @@ InvokeResponse PythonEngine::execute_direct_(const std::string &name)
     if (fn.is_none())
         return {InvokeStatus::NotFound, {}};
 
-    executing_.store(true, std::memory_order_release);
     try
     {
         fn();
-        executing_.store(false, std::memory_order_release);
         return {InvokeStatus::Ok, {}};
     }
     catch (const py::error_already_set &e)
     {
-        executing_.store(false, std::memory_order_release);
         LOGGER_ERROR("[{}] invoke('{}'): {}", log_tag_, name, e.what());
         assert(api_->core() && "api core must be set before invoke");
         api_->core()->inc_script_error_count();
@@ -660,7 +656,6 @@ InvokeResponse PythonEngine::execute_direct_(const std::string &name,
     if (fn.is_none())
         return {InvokeStatus::NotFound, {}};
 
-    executing_.store(true, std::memory_order_release);
     try
     {
         // Unpack JSON args as keyword arguments (recursive for nested types).
@@ -668,12 +663,10 @@ InvokeResponse PythonEngine::execute_direct_(const std::string &name,
         for (auto it = args.begin(); it != args.end(); ++it)
             kwargs[py::str(it.key())] = json_to_py(it.value());
         fn(**kwargs);
-        executing_.store(false, std::memory_order_release);
         return {InvokeStatus::Ok, {}};
     }
     catch (const py::error_already_set &e)
     {
-        executing_.store(false, std::memory_order_release);
         LOGGER_ERROR("[{}] invoke('{}', args): {}", log_tag_, name, e.what());
         assert(api_->core() && "api core must be set before invoke");
         api_->core()->inc_script_error_count();
@@ -687,19 +680,16 @@ InvokeResponse PythonEngine::eval_direct_(const std::string &code)
         return {InvokeStatus::NotFound, {}};
 
     py::gil_scoped_acquire gil;
-    executing_.store(true, std::memory_order_release);
     try
     {
         // Evaluate in the script module's namespace so module-level
         // functions and variables are accessible.
         py::object result = py::eval(code, module_.attr("__dict__"));
-        executing_.store(false, std::memory_order_release);
 
         return {InvokeStatus::Ok, py_to_json(result)};
     }
     catch (const py::error_already_set &e)
     {
-        executing_.store(false, std::memory_order_release);
         LOGGER_ERROR("[{}] eval(): {}", log_tag_, e.what());
         assert(api_->core() && "api core must be set before invoke");
         api_->core()->inc_script_error_count();

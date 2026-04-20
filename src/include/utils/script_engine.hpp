@@ -22,9 +22,12 @@
  * ## Engine implementations
  *
  *   - LuaEngine:    wraps LuaState (direct pcall, no GIL)
- *   - PythonEngine:  wraps py::scoped_interpreter (GIL held for lifetime; per-invoke acquire is no-op)
+ *   - PythonEngine: wraps py::scoped_interpreter (GIL held for lifetime;
+ *                   per-invoke acquire is no-op)
+ *   - NativeEngine: wraps dlopen'd plugin (see HEP-CORE-0028)
  *
- * See docs/tech_draft/script_engine_refactor.md for the full design.
+ * See HEP-CORE-0011 for the abstraction framework and
+ * docs/tech_draft/engine_thread_model.md for the threading model.
  */
 
 #include "role_host_core.hpp"
