@@ -73,9 +73,14 @@ TEST_F(LifecycleDynamicTest, RegisterBeforeInitFails)
     ASSERT_TRUE(proc.valid());
     // Worker returns 0 if the registration correctly fails as expected.
     proc.wait_for_exit();
-    // Error text is emitted via PLH_DEBUG — only visible in debug builds.
+    // Error text is emitted via PLH_DEBUG raw-stderr print — NOT a
+    // [LOGGER] [ERROR ] line, so use required_substrings (appears
+    // anywhere in stderr), not expected_error_substrings (matches
+    // ERROR-level log lines one-to-one).
 #if defined(PYLABHUB_ENABLE_DEBUG_MESSAGES)
-    expect_worker_ok(proc, {}, {"ERROR: register_dynamic_module called before initialization."});
+    expect_worker_ok(proc,
+                     {"ERROR: register_dynamic_module called before initialization."},
+                     {});
 #else
     expect_worker_ok(proc);
 #endif
@@ -86,10 +91,12 @@ TEST_F(LifecycleDynamicTest, LoadFailsWithUnmetStaticDependency)
     WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.static_dependency_fail", {});
     ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
-    // Error text is emitted via PLH_DEBUG — only visible in debug builds.
+    // PLH_DEBUG raw-stderr print → required_substrings, not
+    // expected_error_substrings.
 #if defined(PYLABHUB_ENABLE_DEBUG_MESSAGES)
-    expect_worker_ok(proc, {},
-                     {"ERROR: Dependency 'NonExistentStaticMod' for module 'DynA' not found."});
+    expect_worker_ok(proc,
+                     {"ERROR: Dependency 'NonExistentStaticMod' for module 'DynA' not found."},
+                     {});
 #else
     expect_worker_ok(proc);
 #endif
@@ -101,9 +108,11 @@ TEST_F(LifecycleDynamicTest, RegistrationFailsWithUnresolvedDependency)
                        {});
     ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
-    // Error text is emitted via PLH_DEBUG — only visible in debug builds.
+    // PLH_DEBUG raw-stderr print → required_substrings.
 #if defined(PYLABHUB_ENABLE_DEBUG_MESSAGES)
-    expect_worker_ok(proc, {}, {"ERROR: Dependency 'DynB' for module 'DynA' not found."});
+    expect_worker_ok(proc,
+                     {"ERROR: Dependency 'DynB' for module 'DynA' not found."},
+                     {});
 #else
     expect_worker_ok(proc);
 #endif
@@ -116,11 +125,13 @@ TEST_F(LifecycleDynamicTest, ReentrantLoadFails)
     proc.wait_for_exit();
     // Worker returns 0 only if LoadModule("DynA") returned false (re-entrant call
     // correctly rejected); returns 3 if it unexpectedly returned true.
-    // PLH_DEBUG messages are only visible in debug builds.
+    // PLH_DEBUG raw-stderr prints → required_substrings.
 #if defined(PYLABHUB_ENABLE_DEBUG_MESSAGES)
-    expect_worker_ok(proc, {},
+    expect_worker_ok(proc,
                      {"Re-entrant call to load_module('DynB') detected",
-                      "module 'DynA' threw on startup", "re-entrant call and failed as expected"});
+                      "module 'DynA' threw on startup",
+                      "re-entrant call and failed as expected"},
+                     {});
 #else
     expect_worker_ok(proc);
 #endif

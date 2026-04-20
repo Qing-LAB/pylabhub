@@ -800,9 +800,12 @@ TEST_F(LuaEngineIsolatedTest, InvokeProduce_WrongReturnType_IsError)
         {unique_dir("err_wrong_ret_type")});
     // Exact engine log at lua_engine.cpp:814:
     // "[{log_tag}] on_produce returned non-boolean type '...'"
+    // Worker invokes TWICE → 2 ERROR lines, so list substring twice
+    // under multiset semantics.
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
-                   {"on_produce returned non-boolean type"});
+                   {"on_produce returned non-boolean type",
+                    "on_produce returned non-boolean type"});
 }
 
 TEST_F(LuaEngineIsolatedTest, InvokeProduce_WrongReturnString_IsError)
@@ -810,9 +813,11 @@ TEST_F(LuaEngineIsolatedTest, InvokeProduce_WrongReturnString_IsError)
     auto w = SpawnWorker(
         "lua_engine.invoke_produce_wrong_return_string_is_error",
         {unique_dir("err_wrong_ret_string")});
+    // Worker invokes TWICE → 2 ERROR lines, list substring twice.
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
-                   {"on_produce returned non-boolean type"});
+                   {"on_produce returned non-boolean type",
+                    "on_produce returned non-boolean type"});
 }
 
 TEST_F(LuaEngineIsolatedTest, InvokeProduce_StopOnScriptError_SetsShutdown)
