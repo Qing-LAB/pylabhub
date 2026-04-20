@@ -660,6 +660,69 @@ TEST_F(LuaEngineIsolatedTest, ApiStopReason_ReflectsAllEnumValues)
 }
 
 // ============================================================================
+// Chunk 6b — api.* closures: custom metrics (Pattern 3)
+//
+// Covers: api.report_metric(key, value) / api.report_metrics({table}) /
+// api.clear_custom_metrics() / readback via api.metrics().custom.
+// All six tests fully subsume their V2 counterparts (deleted in the
+// same commit per the delete-as-we-go policy established 2026-04-19).
+// ============================================================================
+
+TEST_F(LuaEngineIsolatedTest, ApiReportMetric_AppearsUnderCustom)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_report_metric_appears_under_custom",
+        {unique_dir("api_report_metric")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, ApiReportMetric_OverwriteSameKey)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_report_metric_overwrite_same_key",
+        {unique_dir("api_report_overwrite")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, ApiReportMetric_ZeroValuePreserved)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_report_metric_zero_value_preserved",
+        {unique_dir("api_report_zero")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(LuaEngineIsolatedTest, ApiReportMetrics_BatchAcceptsTable)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_report_metrics_batch_accepts_table",
+        {unique_dir("api_report_batch")});
+    ExpectWorkerOk(w);
+}
+
+// Lua's luaL_checktype raises on wrong arg type; the engine surfaces
+// that as a script error. The raised-error lua stacktrace message is
+// emitted at ERROR level by the pcall catch path, so the framework
+// needs to know about it.
+TEST_F(LuaEngineIsolatedTest, ApiReportMetrics_NonTableArg_IsError)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_report_metrics_non_table_arg_is_error",
+        {unique_dir("api_report_wrongarg")});
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"table expected"});
+}
+
+TEST_F(LuaEngineIsolatedTest, ApiClearCustomMetrics_EmptiesAndAllowsRewrite)
+{
+    auto w = SpawnWorker(
+        "lua_engine.api_clear_custom_metrics_empties_and_allows_rewrite",
+        {unique_dir("api_clear_custom")});
+    ExpectWorkerOk(w);
+}
+
+// ============================================================================
 // 8. Error handling
 // ============================================================================
 
@@ -1627,80 +1690,6 @@ TEST_F(LuaEngineTest, Api_EnvironmentStrings_LogsDirRunDir)
     engine.finalize();
 }
 
-TEST_F(LuaEngineTest, Api_CustomMetrics_ReportAndReadInMetrics)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            api.report_metric("latency_ms", 42.5)
-            api.report_metric("throughput", 100)
-
-            local m = api.metrics()
-            assert(m.custom ~= nil, "custom metrics group must exist")
-            assert(m.custom.latency_ms == 42.5,
-                   "latency_ms expected 42.5, got " .. tostring(m.custom.latency_ms))
-            assert(m.custom.throughput == 100,
-                   "throughput expected 100, got " .. tostring(m.custom.throughput))
-            return false
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, Api_CustomMetrics_ReportMetricsBatch)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            api.report_metrics({a = 1.0, b = 2.0, c = 3.0})
-
-            local m = api.metrics()
-            assert(m.custom.a == 1.0, "a expected 1.0")
-            assert(m.custom.b == 2.0, "b expected 2.0")
-            assert(m.custom.c == 3.0, "c expected 3.0")
-            return false
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
-}
-
-TEST_F(LuaEngineTest, Api_CustomMetrics_ClearRemovesAll)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            api.report_metric("x", 99)
-            api.clear_custom_metrics()
-
-            local m = api.metrics()
-            assert(m.custom == nil, "custom group should be nil after clear")
-            return false
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
-}
-
 TEST_F(LuaEngineTest, Api_ConsumerQueueState_WithoutQueue)
 {
     // Without a real consumer object, queue-state methods return safe defaults.
@@ -1925,61 +1914,6 @@ TEST_F(LuaEngineTest, Metrics_AllLoopFields_Present)
 }
 
 // ============================================================================
-// 27. Custom metrics — overwrite same key
-// ============================================================================
-
-TEST_F(LuaEngineTest, Api_CustomMetrics_OverwriteSameKey)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            api.report_metric("x", 1)
-            api.report_metric("x", 2)
-            local m = api.metrics()
-            assert(m.custom ~= nil, "custom metrics must exist")
-            assert(m.custom.x == 2,
-                   "x should be overwritten to 2, got " .. tostring(m.custom.x))
-            return false
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
-}
-
-// ============================================================================
-// 28. Custom metrics — zero value is preserved (not nil)
-// ============================================================================
-
-TEST_F(LuaEngineTest, Api_CustomMetrics_ZeroValue)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            api.report_metric("x", 0.0)
-            local m = api.metrics()
-            assert(m.custom ~= nil, "custom metrics must exist")
-            assert(m.custom.x ~= nil, "x must not be nil")
-            assert(m.custom.x == 0, "x should be 0, got " .. tostring(m.custom.x))
-            return false
-        end
-    )");
-
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
-}
-
-// ============================================================================
 // 29. invoke_produce with empty messages list
 // ============================================================================
 
@@ -2082,27 +2016,6 @@ TEST_F(LuaEngineTest, Eval_SyntaxError_ReturnsScriptError)
     ASSERT_TRUE(setup_engine(engine));
     auto result = engine.eval("invalid syntax {{{");
     EXPECT_EQ(result.status, InvokeStatus::ScriptError);
-    engine.finalize();
-}
-
-// ============================================================================
-// 34. api.report_metrics() with non-table argument is an error
-// ============================================================================
-
-TEST_F(LuaEngineTest, Api_ReportMetrics_NonTableArg_IsError)
-{
-    write_script(R"(
-        function on_produce(tx, msgs, api)
-            api.report_metrics(42)  -- wrong type, should error
-            return false
-        end
-    )");
-    LuaEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_GE(engine.script_error_count(), 1u);
     engine.finalize();
 }
 

@@ -108,6 +108,20 @@ int api_critical_error_set_and_read_and_stop_reason(const std::string &dir);
 /// via separate scripts.  HubDead was never tested before this.
 int api_stop_reason_reflects_all_enum_values(const std::string &dir);
 
+// ── API closures: custom metrics (chunk 6b) ────────────────────────────────
+//
+// `api.report_metric(key, value)` / `api.report_metrics({...})` /
+// `api.clear_custom_metrics()` / readback via `api.metrics().custom`.
+// All closures route through RoleHostCore's custom_metrics_ map (see
+// src/scripting/lua_engine.cpp:1622-1654).  L2-scoped: no queue / no
+// broker / no SHM infrastructure needed.
+int api_report_metric_appears_under_custom(const std::string &dir);
+int api_report_metric_overwrite_same_key(const std::string &dir);
+int api_report_metric_zero_value_preserved(const std::string &dir);
+int api_report_metrics_batch_accepts_table(const std::string &dir);
+int api_report_metrics_non_table_arg_is_error(const std::string &dir);
+int api_clear_custom_metrics_empties_and_allows_rewrite(const std::string &dir);
+
 // ── invoke_process (chunk 4) ────────────────────────────────────────────────
 //
 // Processor design note: a processor ALWAYS has an input channel (if a
