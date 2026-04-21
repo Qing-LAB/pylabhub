@@ -42,6 +42,40 @@
 
 ### ABI Compatibility (HEP-CORE-0032)
 
+- [ ] **ABI Check Facility (HEP-CORE-0026 extension)** — runtime check that
+  refuses to run when a binary is linked against an incompatible library build.
+  Motivating incident: 2026-04-21 `ProcessorCliTest.Validate_ExitZero` SIGSEGV
+  from stale `pylabhub-processor` binary (pre-`ScriptEngine::pending_script_engine_request_count()`
+  vtable) against freshly-rebuilt `pylabhub-utils`. SOVERSION did not catch
+  because vtable ordering is not a structural ABI signal. **Design:**
+  `docs/tech_draft/abi_check_facility_design.md`. **Scope summary:**
+    - Add `script_engine_major`/`_minor` axis to `ComponentVersions`
+      (initial 1.0 → 1.1 on today's additive virtual).
+    - Move `kWireMajor/Minor`, `kScriptApiMajor/Minor`, etc. from
+      `version_registry.cpp` to header as `inline constexpr`.
+    - Add `consteval compiled_against_here()` + `consteval abi_expected_here()`
+      helpers so each TU captures its compile-time view as a constant.
+    - Add CMake-generated `PYLABHUB_BUILD_ID` (git SHA + build type) for
+      freshness detection under `PYLABHUB_STRICT_ABI_CHECK` (default on in Debug).
+    - Add `AbiCheckResult check_abi(expected, expected_build_id = nullptr)`
+      exported from `pylabhub-utils` — major mismatch → compatible=false;
+      minor mismatch → WARN; build-id mismatch → compatible=false when non-null.
+  **Integration targets (Section 5 of design doc):**
+    - Required (call at `main()` entry): `plh_role` unified binary (primary
+      target after HEP-0024 Phase 19); `pylabhub-hubshell`. Three per-role
+      mains (`pylabhub-producer/consumer/processor`) will be deleted post-Phase 20
+      — defer integration to `plh_role` rather than wiring into
+      soon-to-be-removed mains.
+    - Required (extend existing ABI-check pattern): `NativeEngine` (extend
+      `PlhAbiInfo` struct in `native_engine_api.h` to carry `ComponentVersions`;
+      host compares on plugin load).
+    - Optional: `pylabhub_abi_info_json()` to include build_id + script_engine
+      axis; Broker `REG_REQ` payload to carry role's versions for control-plane
+      rejection of incompatible role registrations; Python bindings
+      `api.version_info_json()` to expose the extended struct to scripts.
+  Estimated cost ~275 LOC + ~100 test LOC. Land library-side first (can go any
+  time), integrate at `plh_role` after HEP-0024 Phase 19 binary unification.
+
 - [ ] **Phase 2**: Apply `PYLABHUB_UTILS_TEST_EXPORT` to internal-only classes (`RoleHostCore`, `NativeEngine`, `SchemaLibrary`, `SchemaStore`, `ContextMetrics`, `SlotWriteHandle`, `SlotConsumeHandle`, `SlotRecovery`, `SlotDiagnostics`, `IntegrityValidator`, `HeartbeatManager`)
 - [ ] **Phase 3**: Fix `std::function` in external-facing signatures — `RoleRegistrationBuilder::config_template/on_init`, `RoleAPIBase::set_metrics_hook` → use function pointers
 - [ ] **Phase 4**: Fix `std::optional<ChannelSide>` in `RoleAPIBase` (4 methods) → default enum value
