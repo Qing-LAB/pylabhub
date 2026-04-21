@@ -141,6 +141,130 @@ int invoke_on_init_script_error(const std::string &dir);
 int invoke_on_stop_script_error(const std::string &dir);
 int invoke_on_inbox_script_error(const std::string &dir);
 
+// ── Generic invoke + threading (chunk 10) ──────────────────────────────────
+//
+// Python's generic invoke() is dispatch-queued because
+// supports_multi_state() == false.  Chunk 10 workers pin:
+//   - direct (owner-thread) dispatch path
+//   - queued (non-owner) dispatch path + FIFO drain via hot-path
+//   - finalize() cancels ALL pending (not just the first)
+//   - admin-side dispatch failures (NotFound, empty name) MUST NOT
+//     increment script_error_count (reserved for script runtime errors)
+//   - invoke(name, args) reaches the callee with kwargs expansion on
+//     both non-empty and empty-dict args branches
+int invoke_existing_function_returns_true(const std::string &dir);
+int invoke_non_existent_function_returns_false(const std::string &dir);
+int invoke_empty_name_returns_false(const std::string &dir);
+int invoke_script_error_returns_false_and_increments_errors(const std::string &dir);
+int invoke_from_non_owner_thread_queued(const std::string &dir);
+int invoke_from_non_owner_thread_finalize_unblocks(const std::string &dir);
+int invoke_concurrent_non_owner_threads(const std::string &dir);
+int invoke_after_finalize_returns_false(const std::string &dir);
+int invoke_with_args_calls_function(const std::string &dir);
+int invoke_with_args_from_non_owner_thread(const std::string &dir);
+
+// ── Eval + shared data (chunk 11) ──────────────────────────────────────────
+//
+// eval() return-value scalar + container coverage; eval() error paths
+// (NameError, SyntaxError, ZeroDivisionError) all increment
+// script_error_count; api.shared_data is a reference-backed py::dict
+// (not a JSON copy) — identity, mutable-container propagation, and
+// lifecycle (on_init → on_produce → on_stop) all pinned.
+int eval_returns_scalar_result(const std::string &dir);
+int eval_error_returns_empty(const std::string &dir);
+int shared_data_persists_across_callbacks(const std::string &dir);
+
+// ── API diagnostics + identity (chunk 12) ──────────────────────────────────
+//
+// Live-read pins for core-backed accessors (loop_overrun_count,
+// last_cycle_work_us, critical_error, stop_reason), full identity
+// surface including role_dir-derived logs_dir/run_dir, and exact-1
+// error semantics for report_metrics type mismatch.
+int api_loop_overrun_count_reads_from_core(const std::string &dir);
+int api_last_cycle_work_us_reads_from_core(const std::string &dir);
+// V2's Api_CriticalError_DefaultIsFalse dropped — covered by chunk 6's
+// api_critical_error_set_and_read_and_stop_reason (same code path via
+// pybind11 wrapper).
+int api_identity_accessors_return_correct_values(const std::string &dir);
+// Note: V2's Api_StopReason_AfterCriticalError is covered by chunk 6's
+// api_stop_reason_reflects_all_enum_values (all 4 enum values) + chunk 6's
+// api_critical_error_set_and_read_and_stop_reason (bundled atomicity).
+int api_environment_strings_logs_dir_run_dir(const std::string &dir);
+int api_report_metrics_non_dict_arg_is_error(const std::string &dir);
+
+// ── Custom metrics (chunk 13) ──────────────────────────────────────────────
+//
+// report_metric / report_metrics / clear_custom_metrics semantics:
+// round-trip through RoleHostCore snapshot (not a Python-side local),
+// cross-invoke persistence, overwrite-not-accumulate on same key,
+// zero/negative/edge values storable and distinguishable from absent.
+int api_custom_metrics_report_and_read_in_metrics(const std::string &dir);
+int api_custom_metrics_batch_and_clear(const std::string &dir);
+int api_custom_metrics_overwrite_same_key(const std::string &dir);
+int api_custom_metrics_zero_value(const std::string &dir);
+int api_custom_metrics_report_type_errors(const std::string &dir);
+
+// ── Queue state / spinlock / channels / open_inbox / numpy (chunk 14) ─────
+//
+// Producer/Consumer/Processor queue-state defaults (all zero/empty when
+// no queue wired), processor dual-channel accessors, open_inbox without
+// broker, spinlock count + error-without-SHM, api.as_numpy round-trip
+// for array fields + TypeError on scalar fields.
+//
+// Note: V2's Api_Flexzone_WithoutSHM_ReturnsNone is fully covered by
+// chunk 9's invoke_produce_slot_only_no_flexzone_on_invoke (which
+// pins api.flexzone() is None, api.flexzone(api.Tx) is None, and
+// update_flexzone_checksum() is False) — not migrated separately.
+int api_producer_queue_state_without_queue(const std::string &dir);
+int api_consumer_queue_state_without_queue(const std::string &dir);
+int api_processor_queue_state_dual_defaults(const std::string &dir);
+int api_processor_channels_in_out(const std::string &dir);
+int api_open_inbox_without_broker(const std::string &dir);
+int api_spinlock_count_without_shm(const std::string &dir);
+int api_spinlock_without_shm_is_error(const std::string &dir);
+int api_as_numpy_array_field(const std::string &dir);
+int api_as_numpy_non_array_field_throws(const std::string &dir);
+
+// ── FullLifecycle + FullStartup (chunk 15) ─────────────────────────────────
+//
+// Full engine lifecycle via EngineModuleParams + engine_lifecycle_startup/
+// shutdown — the production setup path.  Pins SlotFrame/FlexFrame alias
+// semantics (single-direction roles only), callback ordering, data-transform
+// round-trip for processor, and shutdown idempotency.
+int full_lifecycle_verifies_callback_execution(const std::string &dir);
+int full_startup_producer_slot_only(const std::string &dir);
+int full_startup_producer_slot_and_flexzone(const std::string &dir);
+int full_startup_consumer(const std::string &dir);
+int full_startup_processor(const std::string &dir);
+
+// ── SlotLogicalSize + FlexzoneLogicalSize + multifield + band (chunk 16) ──
+//
+// api.slot_logical_size() / api.flexzone_logical_size() round-trip for
+// aligned vs packed vs complex-mixed schemas; multifield data round-trip
+// through padded offsets (producer/consumer/processor) with pad-byte
+// corruption guards; band_join/leave/broadcast/members all return
+// gracefully without a broker wired.
+int slot_logical_size_aligned_padding_sensitive(const std::string &dir);
+int slot_logical_size_packed_no_padding(const std::string &dir);
+int slot_logical_size_complex_mixed_aligned(const std::string &dir);
+int flexzone_logical_size_array_fields(const std::string &dir);
+int full_startup_producer_multifield(const std::string &dir);
+int full_startup_consumer_multifield(const std::string &dir);
+int full_startup_processor_multifield(const std::string &dir);
+int api_band_all_methods_graceful_no_broker(const std::string &dir);
+
+// ── State + slot + inbox (chunk 9) ─────────────────────────────────────────
+//
+// State persistence across calls, slot-only producer without flexzone,
+// and three inbox contracts (typed payload, canonical type_sizeof,
+// missing-type error path).  Mirrors lua chunk 9; each body is
+// strengthened vs the V2 original — details in per-body docblocks.
+int state_persists_across_calls(const std::string &dir);
+int invoke_produce_slot_only_no_flexzone_on_invoke(const std::string &dir);
+int invoke_on_inbox_typed_data(const std::string &dir);
+int type_sizeof_inbox_frame_returns_correct_size(const std::string &dir);
+int invoke_on_inbox_missing_type_reports_error(const std::string &dir);
+
 // ── Engine-internal dispatcher contract (chunk 1 gap-fill) ─────────────────
 //
 // Pins PythonEngine's supports_multi_state() returns false.
