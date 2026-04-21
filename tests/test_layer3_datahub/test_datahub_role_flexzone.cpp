@@ -11,8 +11,8 @@
  */
 #include "utils/role_api_base.hpp"
 #include "utils/role_host_core.hpp"
-#include "utils/hub_producer.hpp"
-#include "utils/hub_consumer.hpp"
+
+
 #include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
 #include "utils/crypto_utils.hpp"
@@ -63,11 +63,11 @@ std::unique_ptr<utils::LifecycleGuard> RoleFlexzoneTest::s_lifecycle_;
 // Caller must set_channel() on the api BEFORE build_tx_queue — channel
 // is sourced from RoleAPIBase state now.  Helper leaves opts carrying
 // only transport/schema/SHM-config knobs.
-static hub::ProducerOptions make_producer_opts(
+static hub::TxQueueOptions make_producer_opts(
     const hub::SchemaSpec &slot_spec,
     const hub::SchemaSpec &fz_spec, uint64_t secret)
 {
-    hub::ProducerOptions opts;
+    hub::TxQueueOptions opts;
     opts.has_shm = true;
     opts.shm_config.shared_secret        = secret;
     opts.shm_config.ring_buffer_capacity  = 4;
@@ -80,11 +80,11 @@ static hub::ProducerOptions make_producer_opts(
     return opts;
 }
 
-static hub::ConsumerOptions make_consumer_opts(
+static hub::RxQueueOptions make_consumer_opts(
     const std::string &shm_channel, const hub::SchemaSpec &slot_spec,
     uint64_t secret)
 {
-    hub::ConsumerOptions opts;
+    hub::RxQueueOptions opts;
     opts.shm_name = shm_channel;  // SHM segment name (distinct from
                                   // RoleAPIBase::channel — the latter
                                   // is set on the api separately).
@@ -177,7 +177,7 @@ TEST_F(RoleFlexzoneTest, ZmqOnly_FlexzoneIsNull)
     auto api = std::make_unique<RoleAPIBase>(core, "prod", "PROD-ZMQ-FZ");
     api->set_channel("test.fz.zmq");  // build_tx_queue reads this
 
-    hub::ProducerOptions opts;
+    hub::TxQueueOptions opts;
     opts.has_shm = false;
     opts.data_transport = "zmq";
     opts.zmq_node_endpoint = "tcp://127.0.0.1:0";

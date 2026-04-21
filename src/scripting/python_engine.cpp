@@ -14,7 +14,7 @@
 #include "python_engine.hpp"
 
 #include "utils/format_tools.hpp"
-#include "utils/hub_producer.hpp"
+
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/logger.hpp"
 #include "python_helpers.hpp"

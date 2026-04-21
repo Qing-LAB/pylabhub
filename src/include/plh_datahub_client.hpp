@@ -5,8 +5,9 @@
  *
  * Provides everything needed to read and write shared-memory channels:
  *   - DataBlock SHM layer (data_block.hpp)
- *   - Hub producer service (hub_producer.hpp)
- *   - Hub consumer service (hub_consumer.hpp)
+ *   - Queue options (TxQueueOptions / RxQueueOptions):
+ *     utils/role_api_base.hpp (post-2026-04-20; previously lived in
+ *     the retired hub_producer.hpp / hub_consumer.hpp)
  *   - Application framework (plh_service.hpp: lifecycle, logger, filelock, crypto)
  *
  * **Excluded vs plh_datahub.hpp** (server/admin infrastructure):
@@ -20,8 +21,8 @@
 #include "plh_service.hpp"
 
 #include "utils/data_block.hpp"
-#include "utils/hub_producer.hpp"
-#include "utils/hub_consumer.hpp"
+
+
 #include "utils/hub_queue.hpp"
 #include "utils/hub_shm_queue.hpp"
 #include "utils/hub_zmq_queue.hpp"
