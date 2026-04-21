@@ -338,8 +338,7 @@ Example `producer.json`:
 | `zmq_out_endpoint` | no† | — | ZMQ PUSH bind endpoint (required when `transport=zmq`) |
 | `zmq_out_bind` | no | `true` | Bind (true) or connect (false) for ZMQ PUSH socket |
 | `zmq_buffer_depth` | no | `64` | ZMQ send ring buffer depth (must be > 0) |
-| `zmq_packing` | no | `"aligned"` | `"aligned"` or `"packed"` |
-| `slot_schema` | yes‡ | — | Output slot layout |
+| `slot_schema` | yes‡ | — | Output slot layout.  Set `slot_schema.packing` to `"aligned"` (default) or `"packed"` — this single field drives the ctypes view in the script, the SHM slot layout, AND the ZMQ wire encoding. |
 | `schema_id` | no‡ | — | Named schema from HEP-CORE-0016 (overrides inline `slot_schema`) |
 | `flexzone_schema` | no | absent | Persistent flexzone layout; ignored for ZMQ transport |
 | `shm.enabled` | no | `true` | Allocate SHM segment |
@@ -350,10 +349,11 @@ Example `producer.json`:
 | `inbox_endpoint` | no | auto | ZMQ ROUTER bind endpoint for inbox |
 | `inbox_buffer_depth` | no | `64` | Inbox recv buffer depth (must be > 0) |
 | `inbox_overflow_policy` | no | `"drop"` | `"drop"` or `"block"` |
-| `inbox_zmq_packing` | no | `"aligned"` | Packing for inbox messages |
 | `script.type` | no | `"python"` | Script type |
 | `script.path` | no | `"."` | Script directory; resolves `<path>/script/<type>/__init__.py` |
 | `python_venv` | no | `""` | Virtual environment name; empty = base env (see §12) |
+
+> **Packing note (producer):** set via `slot_schema.packing`, `flexzone_schema.packing`, and `inbox_schema.packing` (each defaulting to `"aligned"`).  There is no transport-level packing key; the old `zmq_packing` / `inbox_zmq_packing` were removed 2026-04-20 and the parser rejects them.
 
 † Exactly one of `hub_dir` or `broker` is required.
 ‡ Exactly one of `slot_schema` or `schema_id` is required.
@@ -441,17 +441,17 @@ Example `consumer.json`:
 | `stop_on_script_error` | no | `false` | Halt consumer if `on_consume` raises an exception |
 | `flexzone_schema` | no | absent | Input flexzone layout (SHM only; zero-copy read) |
 | `zmq_buffer_depth` | no | `64` | Internal recv-ring buffer depth for ZMQ transport (must be > 0) |
-| `zmq_packing` | no | `"aligned"` | ZMQ frame packing: `"aligned"` or `"packed"` |
 | `shm.enabled` | no | `true` | Attach to producer's SHM segment (`queue_type=shm`) |
 | `shm.secret` | no | `0` | Shared secret matching the producer's `shm.secret` |
 | `inbox_schema` | no | absent | Inbox field list (enables inbox receive facility) |
 | `inbox_endpoint` | no | auto | ZMQ ROUTER bind endpoint for inbox |
 | `inbox_buffer_depth` | no | `64` | Inbox recv buffer depth (must be > 0) |
 | `inbox_overflow_policy` | no | `"drop"` | `"drop"` or `"block"` |
-| `inbox_zmq_packing` | no | `"aligned"` | Packing for inbox messages |
 | `script.type` | no | `"python"` | Script type |
 | `script.path` | no | `"."` | Script directory |
 | `python_venv` | no | `""` | Virtual environment name; empty = base env (see §12) |
+
+> **Packing note (consumer):** same rule as producer — set via schema `.packing` fields (`slot_schema.packing` / `flexzone_schema.packing` / `inbox_schema.packing`).  No transport-level packing key.
 
 † Exactly one of `hub_dir` or `broker` is required.
 ‡ Exactly one of `slot_schema` or `schema_id` is required.
@@ -550,8 +550,6 @@ Example `processor.json`:
 | `zmq_out_bind` | no | `true` | Bind (true) or connect (false) the PUSH socket |
 | `in_zmq_buffer_depth` | no | `64` | PULL recv ring buffer depth |
 | `out_zmq_buffer_depth` | no | `64` | PUSH send ring buffer depth |
-| `in_zmq_packing` | no | `"aligned"` | `"aligned"` or `"packed"` |
-| `out_zmq_packing` | no | `"aligned"` | `"aligned"` or `"packed"` |
 | `overflow_policy` | no | `"block"` | Output overflow policy: `"block"` or `"drop"` |
 | `checksum` | no | `"enforced"` | `"enforced"` (auto), `"manual"` (caller controls), `"none"` (skip). Applies to both input verification and output computation. |
 | `flexzone_checksum` | no | `true` | Flexzone checksum on output writes (SHM only) |
@@ -571,10 +569,11 @@ Example `processor.json`:
 | `inbox_endpoint` | no | auto | ZMQ ROUTER bind endpoint for inbox |
 | `inbox_buffer_depth` | no | `64` | Inbox recv buffer depth (must be > 0) |
 | `inbox_overflow_policy` | no | `"drop"` | `"drop"` or `"block"` |
-| `inbox_zmq_packing` | no | `"aligned"` | Packing for inbox messages |
 | `script.type` | no | `"python"` | Script type |
 | `script.path` | no | `"."` | Script directory |
 | `python_venv` | no | `""` | Virtual environment name; empty = base env (see §12) |
+
+> **Packing note (processor):** each of the 4 schemas (`in_slot_schema`, `out_slot_schema`, `flexzone_schema`, `inbox_schema`) carries its own `.packing` field (each defaulting to `"aligned"`).  No transport-level packing key — the old `in_zmq_packing` / `out_zmq_packing` / `inbox_zmq_packing` were removed 2026-04-20.
 
 † Exactly one of `hub_dir`, `in_hub_dir`/`out_hub_dir`, `broker`, or `in_broker`/`out_broker`
   combination is required per direction.

@@ -282,7 +282,6 @@ Created by `pylabhub-consumer --init <dir>`:
 | `inbox_endpoint` | no | auto | ZMQ ROUTER bind endpoint for inbox |
 | `inbox_buffer_depth` | no | `64` | Inbox recv buffer size (must be > 0) |
 | `inbox_overflow_policy` | no | `"drop"` | `"drop"` or `"block"` |
-| `zmq_packing` | no | `"aligned"` | ZMQ frame packing: `"aligned"` (C struct natural alignment) or `"packed"` (no padding); must be valid string |
 | `script.type` | yes | `"python"` | Script type: `"python"` or `"lua"` |
 | `script.path` | yes | `"."` | Base script directory; C++ resolves `<path>/script/<type>/__init__.py` |
 
@@ -1105,20 +1104,21 @@ operational once attached).
 
 **Producer role (channel creator):**
 
-1. Role host builds `ProducerOptions` with `data_transport="zmq"`, `zmq_node_endpoint`,
-   `zmq_schema`, `zmq_packing`, `item_size`, `flexzone_size`
-2. `hub::Producer::create()` → `CREATE_CHANNEL_REQ` to broker (data_transport="zmq",
+1. Role host builds `TxQueueOptions` with `data_transport="zmq"`, `zmq_node_endpoint`,
+   `slot_spec` (carries fields + packing), `fz_spec` — schema_hash is auto-computed
+   inside `build_tx_queue` from the specs.  Identity (uid, name, channel) comes from
+   RoleAPIBase state, not opts.
+2. `RoleAPIBase::build_tx_queue()` → broker registration (data_transport="zmq",
    zmq_node_endpoint advertised)
-3. Broker creates channel entry, stores ZMQ endpoint, replies `CREATE_CHANNEL_ACK`
-4. `establish_channel()`: creates `ZmqQueue` PUSH socket, binds to endpoint,
-   calls `start()` → sets internal `queue_writer_`
-5. Role host: `out_producer_->start_queue()` (idempotent)
-6. Role host: `out_producer_->set_checksum_options()` → `reset_queue_metrics()` → `set_queue_period()`
+3. Broker creates channel entry, stores ZMQ endpoint, replies success
+4. Internal path: creates `ZmqQueue` PUSH socket, binds to endpoint, calls `start()`
+5. Role host: `start_tx_queue()` (idempotent)
+6. Role host: checksum / metrics / loop-period wiring via RoleAPIBase
 
 **Consumer role (channel joiner):**
 
-1. Role host builds `ConsumerOptions` with `queue_type="zmq"`, `zmq_schema`, `zmq_packing`,
-   `item_size`, `flexzone_size`
+1. Role host builds `RxQueueOptions` with `data_transport="zmq"`, `slot_spec`
+   (carries fields + packing), `fz_spec` — expected_schema_hash auto-computed
 2. `hub::Consumer::connect()` → `CONSUMER_REG_REQ` to broker
 3. Broker replies `DISC_ACK` with `data_transport="zmq"`, `zmq_node_endpoint`
    (the Producer's bind address, discovered automatically)
