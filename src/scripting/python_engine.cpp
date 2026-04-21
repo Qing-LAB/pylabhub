@@ -602,6 +602,17 @@ bool PythonEngine::invoke(const std::string &name, const nlohmann::json &args)
     return future.get().status == InvokeStatus::Ok;
 }
 
+size_t PythonEngine::pending_script_engine_request_count() const noexcept
+{
+    // Status probe — returns 0 when not accepting (queue is drained
+    // + cancelled by finalize_engine_), which is the honest answer:
+    // no future drain will happen.
+    if (!is_accepting())
+        return 0;
+    std::lock_guard lk(queue_mu_);
+    return request_queue_.size();
+}
+
 InvokeResponse PythonEngine::eval(const std::string &code)
 {
     if (!is_accepting())

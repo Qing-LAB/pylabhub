@@ -109,6 +109,7 @@ class PythonEngine : public ScriptEngine
     bool invoke(const std::string &name) override;
     bool invoke(const std::string &name, const nlohmann::json &args) override;
     InvokeResponse eval(const std::string &code) override;
+    size_t pending_script_engine_request_count() const noexcept override;
 
     // ── Error state ────────────────────────────────────────────────────────
 
@@ -191,7 +192,7 @@ class PythonEngine : public ScriptEngine
         std::promise<InvokeResponse>     promise;
     };
     std::deque<PendingRequest>  request_queue_;
-    std::mutex                  queue_mu_;
+    mutable std::mutex          queue_mu_;
     // accepting_ is inherited from ScriptEngine base class.
 
     InvokeResponse execute_direct_(const std::string &name);
