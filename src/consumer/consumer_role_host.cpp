@@ -100,9 +100,6 @@ void ConsumerRoleHost::worker_main_()
                         : std::filesystem::weakly_canonical(sc.path);
     const std::filesystem::path script_dir = base_path / "script" / sc.type;
 
-    const std::string packing =
-        tr.zmq_packing.empty() ? "aligned" : tr.zmq_packing;
-
     hub::SchemaSpec in_fz_local;
     hub::SchemaSpec inbox_spec_local;
     {
@@ -129,6 +126,10 @@ void ConsumerRoleHost::worker_main_()
             return;
         }
     }
+
+    // Packing is schema-driven (was transport-level `zmq_packing` pre-2026-04-20).
+    const std::string packing =
+        in_slot_spec_.has_schema ? in_slot_spec_.packing : "aligned";
 
     // Compute and store sizes (infrastructure-authoritative).
     if (in_slot_spec_.has_schema)
@@ -332,7 +333,8 @@ bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     hub::ConsumerOptions opts;
     opts.channel_name         = ch;
     opts.shm_shared_secret    = shm.enabled ? shm.secret : 0u;
-    opts.expected_schema_hash = hub::compute_schema_hash(in_slot_spec_, core_.in_fz_spec());
+    opts.slot_spec            = in_slot_spec_;        // fields + packing
+    opts.fz_spec              = core_.in_fz_spec();   // for schema-hash match
     opts.consumer_uid         = id.uid;
     opts.consumer_name        = id.name;
 
@@ -342,12 +344,9 @@ bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
 
     // Transport declaration.
     const bool is_zmq = (tr.transport == config::Transport::Zmq);
-    opts.queue_type = is_zmq ? "zmq" : "shm";
 
     if (is_zmq)
     {
-        opts.zmq_schema       = hub::schema_spec_to_zmq_fields(in_slot_spec_);
-        opts.zmq_packing      = tr.zmq_packing;
         opts.zmq_buffer_depth = tr.zmq_buffer_depth;
     }
 

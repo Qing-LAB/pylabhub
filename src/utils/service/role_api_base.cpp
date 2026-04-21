@@ -138,12 +138,12 @@ bool RoleAPIBase::build_tx_queue(const hub::ProducerOptions &opts)
     // boundary. After this function, nothing below RoleAPIBase sees concrete
     // ShmQueue / ZmqQueue.
     std::unique_ptr<hub::QueueWriter> writer;
-    if (opts.has_shm && !opts.zmq_schema.empty())
+    if (opts.has_shm && opts.slot_spec.has_schema)
     {
         auto shm = hub::ShmQueue::create_writer(
             opts.channel_name,
-            opts.zmq_schema, opts.zmq_packing,
-            opts.fz_schema, opts.fz_packing,
+            hub::schema_spec_to_zmq_fields(opts.slot_spec), opts.slot_spec.packing,
+            hub::schema_spec_to_zmq_fields(opts.fz_spec),   opts.fz_spec.packing,
             opts.shm_config.ring_buffer_capacity,
             opts.shm_config.physical_page_size,
             opts.shm_config.shared_secret,
@@ -179,9 +179,16 @@ bool RoleAPIBase::build_tx_queue(const hub::ProducerOptions &opts)
         std::string inst_id = opts.instance_id.empty()
                                   ? (pImpl->role_tag + ":" + pImpl->uid + ":tx")
                                   : opts.instance_id;
+        // Schema tag (frame-validation 8-byte identity) is derived
+        // from slot_spec + fz_spec.  Auto-computed here so callers
+        // aren't carrying a redundant schema_hash field in opts.
+        const auto schema_hash = hub::compute_schema_hash(opts.slot_spec,
+                                                           opts.fz_spec);
         writer = hub::ZmqQueue::push_to(
-            opts.zmq_node_endpoint, opts.zmq_schema, opts.zmq_packing,
-            opts.zmq_bind, make_schema_tag(opts.schema_hash),
+            opts.zmq_node_endpoint,
+            hub::schema_spec_to_zmq_fields(opts.slot_spec),
+            opts.slot_spec.packing,
+            opts.zmq_bind, make_schema_tag(schema_hash),
             /*sndhwm=*/0, opts.zmq_buffer_depth, opts.zmq_overflow_policy,
             /*send_retry_interval_ms=*/10, std::move(inst_id));
         if (!writer)
@@ -209,11 +216,11 @@ bool RoleAPIBase::build_rx_queue(const hub::ConsumerOptions &opts)
     pImpl->rx_queue.reset();
 
     std::unique_ptr<hub::QueueReader> reader;
-    if (!opts.shm_name.empty() && opts.shm_shared_secret != 0 && !opts.zmq_schema.empty())
+    if (!opts.shm_name.empty() && opts.shm_shared_secret != 0 && opts.slot_spec.has_schema)
     {
         auto shm = hub::ShmQueue::create_reader(
             opts.shm_name, opts.shm_shared_secret,
-            opts.zmq_schema, opts.zmq_packing,
+            hub::schema_spec_to_zmq_fields(opts.slot_spec), opts.slot_spec.packing,
             opts.channel_name,
             /*verify_slot=*/false, /*verify_fz=*/false,
             opts.consumer_uid, opts.consumer_name);
@@ -232,10 +239,16 @@ bool RoleAPIBase::build_rx_queue(const hub::ConsumerOptions &opts)
         std::string inst_id = opts.instance_id.empty()
                                   ? (pImpl->role_tag + ":" + pImpl->uid + ":rx")
                                   : opts.instance_id;
+        // Expected schema hash auto-computed from specs (single source
+        // of truth — no redundant expected_schema_hash field in opts).
+        const auto expected_hash = hub::compute_schema_hash(opts.slot_spec,
+                                                             opts.fz_spec);
         reader = hub::ZmqQueue::pull_from(
-            opts.zmq_node_endpoint, opts.zmq_schema, opts.zmq_packing,
+            opts.zmq_node_endpoint,
+            hub::schema_spec_to_zmq_fields(opts.slot_spec),
+            opts.slot_spec.packing,
             /*bind=*/false, opts.zmq_buffer_depth,
-            make_schema_tag(opts.expected_schema_hash), std::move(inst_id));
+            make_schema_tag(expected_hash), std::move(inst_id));
         if (!reader)
             return false;
         if (!reader->start())

@@ -32,7 +32,14 @@ struct TransportConfig
     bool        zmq_bind{true};                                  ///< Bind (true) or connect (false).
     size_t      zmq_buffer_depth{hub::kZmqDefaultBufferDepth};   ///< Internal ring depth.
     std::string zmq_overflow_policy{"drop"};                     ///< "drop" or "block".
-    std::string zmq_packing{"aligned"};                          ///< "aligned" or "packed".
+    // NOTE: packing is NOT a transport-level knob.  It comes from the
+    // schema (SchemaSpec::packing, set by parse_schema_json).  The
+    // schema is the contract between the script and the slot layout
+    // the engine exposes; transport just honors it.  Having an
+    // independent transport-level `zmq_packing` historically allowed
+    // the two to diverge → silent corruption if misconfigured (no
+    // conversion layer re-packs between wire and slot layout).
+    // Removed 2026-04-20; packing propagates from schema everywhere.
 };
 
 /// Parse transport config for a given direction.
@@ -62,7 +69,6 @@ inline TransportConfig parse_transport_config(const nlohmann::json &j,
     tc.zmq_buffer_depth = j.value(pfx + "zmq_buffer_depth",
                                    static_cast<size_t>(hub::kZmqDefaultBufferDepth));
     tc.zmq_overflow_policy = j.value(pfx + "zmq_overflow_policy", std::string{"drop"});
-    tc.zmq_packing    = j.value(pfx + "zmq_packing", std::string{"aligned"});
 
     // Validate ZMQ fields when transport is ZMQ.
     if (tc.transport == Transport::Zmq)
@@ -80,11 +86,6 @@ inline TransportConfig parse_transport_config(const nlohmann::json &j,
         if (tc.zmq_buffer_depth == 0)
             throw std::invalid_argument(
                 std::string(tag) + ": '" + pfx + "zmq_buffer_depth' must be > 0");
-
-        if (tc.zmq_packing != "aligned" && tc.zmq_packing != "packed")
-            throw std::invalid_argument(
-                std::string(tag) + ": '" + pfx + "zmq_packing' must be \"aligned\" or \"packed\", got: \"" +
-                tc.zmq_packing + "\"");
 
         if (tc.zmq_overflow_policy != "drop" && tc.zmq_overflow_policy != "block")
             throw std::invalid_argument(

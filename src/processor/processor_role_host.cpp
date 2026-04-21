@@ -100,12 +100,6 @@ void ProcessorRoleHost::worker_main_()
                         : std::filesystem::weakly_canonical(sc.path);
     const std::filesystem::path script_dir = base_path / "script" / sc.type;
 
-    // Determine packing: input and output may use different ZMQ packing.
-    const std::string in_packing =
-        config_.in_transport().zmq_packing.empty() ? "aligned" : config_.in_transport().zmq_packing;
-    const std::string out_packing =
-        config_.out_transport().zmq_packing.empty() ? "aligned" : config_.out_transport().zmq_packing;
-
     hub::SchemaSpec out_fz_local;
     hub::SchemaSpec in_fz_local;
     hub::SchemaSpec inbox_spec_local;
@@ -143,6 +137,14 @@ void ProcessorRoleHost::worker_main_()
             return;
         }
     }
+
+    // Packing is schema-driven (was transport-level `zmq_packing` pre-2026-04-20).
+    // Input and output sides can have different packings; each is sourced from
+    // its own schema spec.
+    const std::string in_packing =
+        in_slot_spec_.has_schema ? in_slot_spec_.packing : "aligned";
+    const std::string out_packing =
+        out_slot_spec_.has_schema ? out_slot_spec_.packing : "aligned";
 
     // Compute and store sizes (infrastructure-authoritative).
     if (in_slot_spec_.has_schema)
@@ -376,20 +378,14 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     hub::ConsumerOptions in_opts;
     in_opts.channel_name         = config_.in_channel();
     in_opts.shm_shared_secret    = config_.in_shm().enabled ? config_.in_shm().secret : 0u;
-    in_opts.expected_schema_hash = hub::compute_schema_hash(
-                                       in_slot_spec_, core_.in_fz_spec());
+    in_opts.slot_spec            = in_slot_spec_;       // fields + packing
+    in_opts.fz_spec              = core_.in_fz_spec();  // schema-hash match
     in_opts.consumer_uid         = config_.identity().uid;
     in_opts.consumer_name        = config_.identity().name;
-    in_opts.zmq_schema           = hub::schema_spec_to_zmq_fields(in_slot_spec_);
-    in_opts.zmq_packing          = config_.in_transport().zmq_packing;
     in_opts.zmq_buffer_depth     = config_.in_transport().zmq_buffer_depth;
     // Per-role checksum policy — same value on both input and output (see config_single_truth.md).
     in_opts.checksum_policy      = config_.checksum().policy;
     in_opts.flexzone_checksum    = config_.checksum().flexzone && core_.has_rx_fz();
-    // Transport declaration — broker validates mismatch.
-    const bool in_is_zmq = (config_.in_transport().transport == config::Transport::Zmq);
-    in_opts.queue_type = in_is_zmq ? "zmq" : "shm";
-
     if (!api_ref.build_rx_queue(in_opts))
     {
         LOGGER_ERROR("[proc] Failed to connect consumer to in_channel '{}'",
@@ -400,11 +396,9 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     // ── Producer side (out_channel) ─────────────────────────────────────────
     hub::ProducerOptions out_opts;
     out_opts.channel_name  = config_.out_channel();
-    out_opts.pattern       = hub::ChannelPattern::PubSub;
     out_opts.has_shm       = config_.out_shm().enabled;
-    out_opts.schema_hash   = hub::compute_schema_hash(out_slot_spec_, core_.out_fz_spec());
-    out_opts.role_name     = config_.identity().name;
-    out_opts.role_uid      = config_.identity().uid;
+    out_opts.slot_spec     = out_slot_spec_;
+    out_opts.fz_spec       = core_.out_fz_spec();
     // Per-role checksum policy — same value on both input and output (see config_single_truth.md).
     out_opts.checksum_policy    = config_.checksum().policy;
     out_opts.flexzone_checksum  = config_.checksum().flexzone && core_.has_tx_fz();
@@ -426,8 +420,6 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
         out_opts.data_transport    = "zmq";
         out_opts.zmq_node_endpoint = config_.out_transport().zmq_endpoint;
         out_opts.zmq_bind          = config_.out_transport().zmq_bind;
-        out_opts.zmq_schema        = hub::schema_spec_to_zmq_fields(out_slot_spec_);
-        out_opts.zmq_packing       = config_.out_transport().zmq_packing;
         out_opts.zmq_buffer_depth  = config_.out_transport().zmq_buffer_depth;
         out_opts.zmq_overflow_policy =
             (config_.out_transport().zmq_overflow_policy == "block")

@@ -73,10 +73,8 @@ static hub::ProducerOptions make_producer_opts(
     opts.shm_config.policy                = hub::DataBlockPolicy::RingBuffer;
     opts.shm_config.consumer_sync_policy  = hub::ConsumerSyncPolicy::Sequential;
     opts.shm_config.checksum_policy       = hub::ChecksumPolicy::None;
-    opts.zmq_schema   = hub::schema_spec_to_zmq_fields(slot_spec);
-    opts.zmq_packing  = "aligned";
-    opts.fz_schema    = hub::schema_spec_to_zmq_fields(fz_spec);
-    opts.fz_packing   = "aligned";
+    opts.slot_spec    = slot_spec;   // carries fields + packing
+    opts.fz_spec      = fz_spec;
     opts.instance_id  = "test:fz-prod:tx";
     return opts;
 }
@@ -89,8 +87,7 @@ static hub::ConsumerOptions make_consumer_opts(
     opts.channel_name = channel;
     opts.shm_name = channel;
     opts.shm_shared_secret = secret;
-    opts.zmq_schema  = hub::schema_spec_to_zmq_fields(slot_spec);
-    opts.zmq_packing = "aligned";
+    opts.slot_spec = slot_spec;
     opts.instance_id = "test:fz-cons:rx";
     return opts;
 }
@@ -181,8 +178,7 @@ TEST_F(RoleFlexzoneTest, ZmqOnly_FlexzoneIsNull)
     opts.zmq_node_endpoint = "tcp://127.0.0.1:0";
     opts.zmq_bind = true;
     auto spec = pylabhub::tests::simple_schema();
-    opts.zmq_schema = hub::schema_spec_to_zmq_fields(spec);
-    opts.zmq_packing = "aligned";
+    opts.slot_spec = spec;   // carries fields + packing
     opts.instance_id = "test:fz-zmq:tx";
 
     ASSERT_TRUE(api->build_tx_queue(opts));

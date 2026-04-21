@@ -530,16 +530,49 @@ int zmq_transport_valid(const std::string &dir)
             j["out_zmq_endpoint"] = "tcp://0.0.0.0:5580";
             j["out_zmq_bind"] = true;
             j["out_zmq_buffer_depth"] = 128;
-            j["out_zmq_packing"] = "packed";
+            // Packing is schema-driven (removed from transport config
+            // 2026-04-20) — no in/out_zmq_packing key here.  Pins that
+            // the other ZMQ transport fields still parse without it.
             auto path = write_json(dir, "producer.json", j);
             auto cfg = RoleConfig::load(path.string(), "producer");
             EXPECT_EQ(cfg.out_transport().transport, pylabhub::config::Transport::Zmq);
             EXPECT_EQ(cfg.out_transport().zmq_endpoint, "tcp://0.0.0.0:5580");
             EXPECT_TRUE(cfg.out_transport().zmq_bind);
             EXPECT_EQ(cfg.out_transport().zmq_buffer_depth, 128u);
-            EXPECT_EQ(cfg.out_transport().zmq_packing, "packed");
         },
         "role_config::zmq_transport_valid",
+        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule());
+}
+
+int zmq_packing_key_rejected(const std::string &dir)
+{
+    // NEW (2026-04-20): pin that the removed `out_zmq_packing` /
+    // `in_zmq_packing` keys are rejected by the strict-whitelist
+    // parser.  Was a legal config key before; now a hard error.
+    // Catches anyone trying to re-introduce the key without updating
+    // the schema-driven packing propagation.
+    return run_gtest_worker(
+        [&]() {
+            auto j = minimal_producer_json();
+            j["out_transport"] = "zmq";
+            j["out_zmq_endpoint"] = "tcp://0.0.0.0:5580";
+            j["out_zmq_packing"] = "packed";  // removed key
+            auto path = write_json(dir, "producer.json", j);
+            try
+            {
+                auto cfg = RoleConfig::load(path.string(), "producer");
+                FAIL() << "out_zmq_packing must be rejected as unknown key";
+            }
+            catch (const std::exception &e)
+            {
+                EXPECT_NE(std::string(e.what()).find("out_zmq_packing"),
+                          std::string::npos)
+                    << "error message must name the offending key; got: "
+                    << e.what();
+            }
+        },
+        "role_config::zmq_packing_key_rejected",
         Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule());
 }

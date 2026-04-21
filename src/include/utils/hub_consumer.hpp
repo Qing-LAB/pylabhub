@@ -15,6 +15,7 @@
 #include "utils/data_block.hpp"
 #include "utils/hub_zmq_queue.hpp"  // ZmqSchemaField, kZmqDefaultBufferDepth
 #include "utils/schema_library.hpp"
+#include "utils/schema_types.hpp"   // SchemaSpec (slot_spec in ConsumerOptions)
 
 #include <cstddef>
 #include <optional>
@@ -28,31 +29,24 @@ struct ConsumerOptions
 {
     std::string channel_name;
 
-    std::string expected_schema_hash{};
-
     uint64_t shm_shared_secret{0};
-    std::optional<DataBlockConfig> expected_shm_config{};
-
     std::string consumer_uid{};
     std::string consumer_name{};
 
-    int timeout_ms{5000};
+    // Schema (single source of truth; expected_schema_hash is
+    // auto-computed from these at build_rx_queue time).
+    SchemaSpec slot_spec{};
+    SchemaSpec fz_spec{};
 
-    std::string expected_schema_id{};
-
-    // HEP-CORE-0021: ZMQ Endpoint Registry
-    std::vector<ZmqSchemaField> zmq_schema{};
-    std::string zmq_packing{"aligned"};
+    // Transport (HEP-CORE-0021)
+    std::string data_transport{"shm"};
+    std::string shm_name{};
+    std::string zmq_node_endpoint{};
     size_t zmq_buffer_depth{kZmqDefaultBufferDepth};
 
+    // Queue policy
     ChecksumPolicy checksum_policy{ChecksumPolicy::Enforced};
     bool flexzone_checksum{true};
-
-    std::string queue_type{};
-
-    std::string shm_name{};
-    std::string data_transport{"shm"};
-    std::string zmq_node_endpoint{};
 
     /// See ProducerOptions::instance_id. Role hosts set e.g. "cons:UID-...:rx".
     std::string instance_id{};

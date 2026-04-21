@@ -797,6 +797,16 @@ bool PythonEngine::register_slot_type(const hub::SchemaSpec &spec,
         return false;
     }
 
+    // Normalize: the explicit `packing` arg is authoritative for this
+    // registration.  We store a copy with spec.packing overwritten so
+    // that later consumers of the cached spec (notably build_api_'s
+    // SlotFrame/FlexFrame alias creation, which forwards
+    // <stored_spec>.packing) always see the packing that was actually
+    // used, regardless of what the caller set on spec.packing.
+    // Eliminates a footgun where the two can disagree.
+    hub::SchemaSpec stored_spec = spec;
+    stored_spec.packing = packing;
+
     // Compute expected size from schema (infrastructure-authoritative).
     auto [layout, expected_size] = hub::compute_field_layout(to_field_descs(spec.fields), packing);
 
@@ -817,27 +827,27 @@ bool PythonEngine::register_slot_type(const hub::SchemaSpec &spec,
         if (type_name == "InSlotFrame")
         {
             in_slot_type_ro_ = wrap_readonly_(type);
-            in_slot_spec_    = spec;
+            in_slot_spec_    = stored_spec;
         }
         else if (type_name == "OutSlotFrame")
         {
             out_slot_type_ = type;
-            out_slot_spec_ = spec;
+            out_slot_spec_ = stored_spec;
         }
         else if (type_name == "InFlexFrame")
         {
             in_fz_type_ = type; // mutable — flexzone is bidirectional per HEP-0002
-            in_fz_spec_ = spec;
+            in_fz_spec_ = stored_spec;
         }
         else if (type_name == "OutFlexFrame")
         {
             out_fz_type_ = type;
-            out_fz_spec_ = spec;
+            out_fz_spec_ = stored_spec;
         }
         else  // type_name == "InboxFrame" — guaranteed by upfront name check
         {
             inbox_type_ro_ = wrap_readonly_(type);
-            inbox_spec_    = spec;
+            inbox_spec_    = stored_spec;
         }
     }
     catch (const std::exception &e)
