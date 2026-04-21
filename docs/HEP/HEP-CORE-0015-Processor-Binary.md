@@ -120,8 +120,12 @@ Created by `pylabhub-processor --init <proc_dir>`:
   "zmq_out_bind":          true,
   "in_zmq_buffer_depth":   64,
   "out_zmq_buffer_depth":  64,
-  "in_zmq_packing":        "aligned",
-  "out_zmq_packing":       "aligned",
+  // NOTE: packing is NOT a transport-level JSON key.  It is sourced
+  // from each schema's "packing" field (in_slot_schema.packing /
+  // out_slot_schema.packing / flexzone_schema.packing / inbox_schema.
+  // packing).  The keys "in_zmq_packing" / "out_zmq_packing" were
+  // removed 2026-04-20 and are now rejected by the strict-whitelist
+  // config parser.
 
   "target_period_ms":  0,
   "loop_timing":       "max_rate",
@@ -151,7 +155,9 @@ Created by `pylabhub-processor --init <proc_dir>`:
   "inbox_endpoint":        "tcp://127.0.0.1:5600",
   "inbox_buffer_depth":    64,
   "inbox_overflow_policy": "drop",
-  "inbox_zmq_packing":     "aligned",
+  // Inbox packing is sourced from inbox_schema.packing (defaults to
+  // "aligned").  "inbox_zmq_packing" is NOT a config key; any such
+  // historical doc references were never parsed.
 
   "script": {"type": "python", "path": "."}
 }
@@ -204,8 +210,14 @@ no cross-hub interference.
 | `zmq_out_bind` | no | `true` | PUSH default = bind; set false to connect |
 | `in_zmq_buffer_depth` | no | `64` | ZMQ PULL high-water mark |
 | `out_zmq_buffer_depth` | no | `64` | ZMQ PUSH high-water mark |
-| `in_zmq_packing` | no | `"aligned"` | Wire packing: `"aligned"` or `"packed"` |
-| `out_zmq_packing` | no | `"aligned"` | Wire packing: `"aligned"` or `"packed"` |
+
+> **Packing** is a schema-level property (`in_slot_schema.packing` /
+> `out_slot_schema.packing` / `flexzone_schema.packing` / `inbox_schema.packing`,
+> each defaulting to `"aligned"`).  There is no separate transport-level
+> packing key — the prior `in_zmq_packing` / `out_zmq_packing` were removed
+> 2026-04-20 (the strict-whitelist parser now rejects them).  Wire packing,
+> slot layout, and the ctypes view the script sees all track the schema's
+> packing in one place; see HEP-CORE-0011 for the end-to-end contract.
 
 When `in_transport="shm"`, the broker's DISC_ACK provides the SHM segment name and
 producer's ZMQ ctrl endpoint. When `in_transport="zmq"`, the processor connects directly
@@ -261,17 +273,15 @@ Inbox fields are **flat top-level keys** (not nested under an `"inbox"` object):
 "inbox_schema":          {"fields": [{"name": "cmd", "type": "int32"}]},
 "inbox_endpoint":        "tcp://127.0.0.1:5600",
 "inbox_buffer_depth":    64,
-"inbox_overflow_policy": "drop",
-"inbox_zmq_packing":     "aligned"
+"inbox_overflow_policy": "drop"
 ```
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `inbox_schema` | yes (if inbox) | — | Slot layout for inbox messages |
+| `inbox_schema` | yes (if inbox) | — | Slot layout for inbox messages.  Packing comes from `inbox_schema.packing` (default `"aligned"`). |
 | `inbox_endpoint` | yes (if inbox) | — | ZMQ ROUTER bind endpoint |
 | `inbox_buffer_depth` | no | `64` | ZMQ ROUTER high-water mark (must be > 0) |
 | `inbox_overflow_policy` | no | `"drop"` | `"drop"` (finite HWM) or `"block"` (unlimited HWM) |
-| `inbox_zmq_packing` | no | `"aligned"` | Wire packing for inbox messages |
 
 When `inbox_schema` is non-empty, a ROUTER socket is bound at `inbox_endpoint` and a
 dedicated `inbox_thread_` processes messages. The endpoint is registered in REG_REQ so
@@ -513,8 +523,8 @@ struct ProcessorConfig {
     bool        zmq_out_bind{true};          // PUSH default = bind
     size_t      in_zmq_buffer_depth{64};
     size_t      out_zmq_buffer_depth{64};
-    std::string in_zmq_packing{"aligned"};
-    std::string out_zmq_packing{"aligned"};
+    // Packing moved to the schema spec (SchemaSpec::packing) 2026-04-20.
+    // No transport-level packing fields — schema is the single source.
 
     // Loop policy
     int         target_period_ms{0};          // 0 = free-run
@@ -537,7 +547,8 @@ struct ProcessorConfig {
     std::string    inbox_endpoint;
     size_t         inbox_buffer_depth{64};
     std::string    inbox_overflow_policy{"drop"};
-    std::string    inbox_zmq_packing{"aligned"};
+    // Inbox packing lives on the resolved schema spec (inbox_spec.packing);
+    // InboxConfig caches it post-setup.  Not a separate top-level key.
     bool has_inbox() const { return !inbox_schema_json.empty() && !inbox_endpoint.empty(); }
 
     // Startup coordination (HEP-0023 Phase 1)
