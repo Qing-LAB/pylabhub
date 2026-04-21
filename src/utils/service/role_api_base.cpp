@@ -132,6 +132,13 @@ bool RoleAPIBase::build_tx_queue(const hub::ProducerOptions &opts)
 {
     pImpl->tx_queue.reset();
 
+    // Identity read from RoleAPIBase state (single source of truth —
+    // opts does not carry channel_name/role_uid/role_name).  Tx uses
+    // out_channel when set (processor out side), falling back to
+    // channel for single-direction producers that set_channel() only.
+    const std::string &tx_channel =
+        pImpl->out_channel.empty() ? pImpl->channel : pImpl->out_channel;
+
     // Prefer SHM when configured and a slot schema is available; fall back to
     // ZMQ when data_transport == "zmq". The factories return concrete types,
     // which upcast into the abstract unique_ptr<QueueWriter> at the storage
@@ -141,7 +148,7 @@ bool RoleAPIBase::build_tx_queue(const hub::ProducerOptions &opts)
     if (opts.has_shm && opts.slot_spec.has_schema)
     {
         auto shm = hub::ShmQueue::create_writer(
-            opts.channel_name,
+            tx_channel,
             hub::schema_spec_to_zmq_fields(opts.slot_spec), opts.slot_spec.packing,
             hub::schema_spec_to_zmq_fields(opts.fz_spec),   opts.fz_spec.packing,
             opts.shm_config.ring_buffer_capacity,
@@ -160,7 +167,7 @@ bool RoleAPIBase::build_tx_queue(const hub::ProducerOptions &opts)
         if (!shm)
         {
             LOGGER_ERROR("[{}] ShmQueue create_writer failed for '{}'",
-                         pImpl->role_tag, opts.channel_name);
+                         pImpl->role_tag, tx_channel);
             return false;
         }
         writer.reset(shm.release()); // upcast: ShmQueue* → QueueWriter*
@@ -215,15 +222,20 @@ bool RoleAPIBase::build_rx_queue(const hub::ConsumerOptions &opts)
 {
     pImpl->rx_queue.reset();
 
+    // Identity read from RoleAPIBase state (single source of truth).
+    // Rx uses `channel` (which consumer/processor-in set via
+    // set_channel(in_channel)).
+    const std::string &rx_channel = pImpl->channel;
+
     std::unique_ptr<hub::QueueReader> reader;
     if (!opts.shm_name.empty() && opts.shm_shared_secret != 0 && opts.slot_spec.has_schema)
     {
         auto shm = hub::ShmQueue::create_reader(
             opts.shm_name, opts.shm_shared_secret,
             hub::schema_spec_to_zmq_fields(opts.slot_spec), opts.slot_spec.packing,
-            opts.channel_name,
+            rx_channel,
             /*verify_slot=*/false, /*verify_fz=*/false,
-            opts.consumer_uid, opts.consumer_name);
+            pImpl->uid, pImpl->name);
         if (!shm)
             return false;
         reader.reset(shm.release());

@@ -353,13 +353,13 @@ bool ProducerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     const auto &ch    = config_.out_channel();
 
     // --- Producer options ---
+    // channel_name / role_name / role_uid removed from opts — build_tx_queue
+    // reads those directly from RoleAPIBase state (set via set_channel /
+    // set_name, already called above).
     hub::ProducerOptions opts;
-    opts.channel_name = ch;
     opts.has_shm      = shm.enabled;
-    // Single source of truth for schema+packing: assign the specs
-    // directly.  Packing comes from spec.packing (was also passed as
-    // a separate transport-level knob pre-2026-04-20 — removed).
-    // Schema hash auto-computed inside build_tx_queue from these.
+    // Single source of truth for schema+packing; hash auto-computed
+    // inside build_tx_queue from these.
     opts.slot_spec    = out_slot_spec_;
     opts.fz_spec      = core_.out_fz_spec();
 
