@@ -1,170 +1,62 @@
 /**
  * @file test_python_engine.cpp
- * @brief Unit tests for PythonEngine -- the ScriptEngine implementation for CPython.
+ * @brief Pattern 3 (isolated-subprocess) test wrappers for PythonEngine.
  *
- * Tests the engine in isolation: no broker, no queues, no role host.
- * Uses raw memory buffers and temporary Python script files.
+ * This file is intentionally thin: every test here is a `SpawnWorker` +
+ * `ExpectWorkerOk` call that delegates the actual engine driving to a
+ * subprocess worker.  The worker functions live in
+ * `workers/python_engine_workers.cpp` and handle:
+ *   - Constructing PythonEngine + RoleHostCore + RoleAPIBase in isolation.
+ *   - Loading a Python script package (`script/python/__init__.py`).
+ *   - Driving invoke_produce / invoke_consume / invoke_process /
+ *     invoke_on_inbox / invoke / eval with raw memory buffers.
+ *   - Verifying script-side assertions via `script_error_count()` plus
+ *     C++-side cross-checks (e.g., `core.custom_metrics_snapshot()`).
  *
- * Mirrors the LuaEngine test suite (test_lua_engine.cpp) with Python-specific
- * adjustments:
- *   - Scripts are Python (__init__.py in script/python/ package)
- *   - Return values: True/False/None instead of true/false/nil
- *   - Messages: dicts for events, tuples (sender_hex, bytes) for data (producer)
- *   - Consumer messages: bare bytes for data
- *   - supports_multi_state() returns false
- *   - create_thread_state() returns nullptr
+ * No engine construction, no test fixture state, no helper that touches
+ * engine internals lives in this file — all of that was retired
+ * 2026-04-21 along with the V2 `PythonEngineTest` in-process fixture.
  *
- * Covers:
- *   1. Lifecycle: initialize -> load -> register -> build_api -> invoke -> finalize
- *   2. Type registration: ctypes sizeof validation
- *   3. invoke_produce: commit, discard, None slot, error paths
- *   4. invoke_consume: read-only slot, no return value, error detection
- *   5. invoke_process: dual slots, nil combinations
- *   6. Messages: dict format for producer/consumer
- *   7. API closures: version_info, stop, set_critical_error, stop_reason
- *   8. Error handling: script_error_count, stop_on_script_error
- *   9. Metrics closures from RoleHostCore
- *  10. create_thread_state: returns nullptr
+ * ## Coverage (delegated to the worker suite)
+ *
+ * The worker-side docstring (python_engine_workers.h) is authoritative
+ * for per-chunk coverage.  Chunks migrated:
+ *   1   — lifecycle + type registration + alias creation
+ *   2-5 — invoke_produce / _consume / _process / messages
+ *   6-8 — API closures, metrics accumulation, load_script errors
+ *   9   — state persistence + slot-only + typed inbox + missing-type
+ *  10-11 — generic invoke (thread queue) + eval + shared data
+ *  12   — API diagnostics + identity
+ *  13   — custom metrics round-trip
+ *  14   — queue-state + spinlock + channels + open_inbox + numpy
+ *  15   — FullLifecycle + FullStartup (producer/consumer/processor)
+ *  16   — SlotLogicalSize / FlexzoneLogicalSize + multifield + band
  */
 #include <gtest/gtest.h>
 
-#include "python_engine.hpp"
-#include "utils/engine_module_params.hpp"
-#include "utils/role_host_core.hpp"
-
-#include "utils/schema_utils.hpp"
 #include "test_patterns.h"     // Pattern 3 (IsolatedProcessTest) base
-#include "test_schema_helpers.h"
 
 #include <atomic>
-#include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <string>
 #include <unistd.h>
 #include <vector>
 
 namespace fs = std::filesystem;
-using pylabhub::scripting::PythonEngine;
-using pylabhub::scripting::ScriptEngine;
-using pylabhub::scripting::InvokeResult;
-using pylabhub::scripting::InvokeStatus;
-using pylabhub::scripting::InvokeResponse;
-using pylabhub::scripting::RoleAPIBase;
-using pylabhub::scripting::RoleHostCore;
-using pylabhub::scripting::IncomingMessage;
-using pylabhub::hub::SchemaSpec;
-using pylabhub::hub::FieldDef;
-using pylabhub::scripting::InvokeRx;
-using pylabhub::scripting::InvokeTx;
-using pylabhub::scripting::InvokeInbox;
-
-using pylabhub::tests::simple_schema;
-using pylabhub::tests::padding_schema;
-using pylabhub::tests::complex_mixed_schema;
-using pylabhub::tests::fz_array_schema;
-using pylabhub::tests::multifield_schema;
 
 namespace
 {
 
 // ============================================================================
-// Test fixture
-// ============================================================================
-
-class PythonEngineTest : public ::testing::Test
-{
-  protected:
-    void SetUp() override
-    {
-        tmp_ = fs::temp_directory_path() /
-               ("python_engine_test_" +
-                std::to_string(
-                    std::chrono::steady_clock::now().time_since_epoch().count()));
-        fs::create_directories(tmp_ / "script" / "python");
-    }
-
-    void TearDown() override
-    {
-        fs::remove_all(tmp_);
-    }
-
-    /// Write a Python script to <tmp>/script/python/__init__.py
-    void write_script(const std::string &content)
-    {
-        std::ofstream f(tmp_ / "script" / "python" / "__init__.py");
-        f << content;
-    }
-
-    RoleHostCore default_core_; ///< Default core for tests that don't provide one.
-
-    /// Build a minimal RoleAPIBase with role-appropriate identity.
-    /// KEEP IN SYNC with workers/python_engine_workers.cpp::make_api.
-    /// The duplication is time-limited — this fixture is scheduled
-    /// for removal once the V2→P3 chunk migration completes.  Until
-    /// then, any semantic change (default value, extra set_* call)
-    /// must be mirrored in both.
-    std::unique_ptr<RoleAPIBase> make_api(RoleHostCore &core,
-                                          const std::string &tag = "prod")
-    {
-        // role_tag + uid required at ctor time.
-        std::string uid;
-        if      (tag == "prod") uid = "PROD-TestEngine-00000001";
-        else if (tag == "cons") uid = "CONS-TestEngine-00000001";
-        else if (tag == "proc") uid = "PROC-TestEngine-00000001";
-        else                    uid = "TEST-" + tag + "-00000001";
-        auto api = std::make_unique<RoleAPIBase>(core, tag, uid);
-        api->set_name("TestEngine");
-        api->set_channel("test.channel");
-        api->set_log_level("error");
-        api->set_stop_on_script_error(false);
-        return api;
-    }
-
-    /// Initialize engine, load script, register type, build API.
-    bool setup_engine(PythonEngine &engine,
-                      const std::string &required_cb = "on_produce")
-    {
-        return setup_engine_with_core(engine, default_core_, required_cb);
-    }
-
-    /// Setup engine with a specific RoleHostCore.
-    bool setup_engine_with_core(PythonEngine &engine, RoleHostCore &core,
-                                const std::string &required_cb = "on_produce")
-    {
-        engine.set_python_venv("");
-        if (!engine.initialize("test", &core))
-            return false;
-        if (!engine.load_script(tmp_ / "script" / "python",
-                                "__init__.py", required_cb.c_str()))
-            return false;
-
-        auto spec = simple_schema();
-        if (!engine.register_slot_type(spec, "OutSlotFrame", "aligned"))
-            return false;
-
-        test_api_ = make_api(core);
-        return engine.build_api(*test_api_);
-    }
-
-    fs::path tmp_;
-    std::unique_ptr<RoleAPIBase> test_api_;  ///< Held alive for engine's lifetime.
-};
-
-// ============================================================================
-// Chunk 1 — Lifecycle / Type registration / Alias creation (Pattern 3)
+// PythonEngineIsolatedTest — Pattern 3 test fixture
 //
-// These tests used to live under the V2 PythonEngineTest fixture above;
-// they are being migrated to Pattern 3 chunk-by-chunk to mirror the
-// completed Lua sweep.  Each spawns a subprocess where the engine is
-// constructed and driven; bodies live in workers/python_engine_workers.cpp.
-//
-// The V2 fixture wrapper stays until its last test is converted; the
-// final commit of the sweep removes it along with unused includes.
+// All L2 PythonEngine tests run as subprocess workers via SpawnWorker.
+// Bodies live in workers/python_engine_workers.cpp.  The older V2
+// PythonEngineTest fixture (in-process gtest with a shared tmp_ dir,
+// setup_engine helpers, and make_api) was removed 2026-04-21 after
+// the last V2 test was migrated — all 103 engine tests now use
+// Pattern 3 exclusively.
 // ============================================================================
-
-namespace
-{
 
 class PythonEngineIsolatedTest : public pylabhub::tests::IsolatedProcessTest
 {
@@ -783,638 +675,219 @@ TEST_F(PythonEngineIsolatedTest, HasCallback)
 }
 
 // ============================================================================
-// 11. State persistence across calls
-// ============================================================================
-
-TEST_F(PythonEngineTest, StatePersistsAcrossCalls)
-{
-    // Module-level counter persists across invocations.
-    write_script(
-        "call_count = 0\n"
-        "\n"
-        "def on_produce(tx, msgs, api):\n"
-        "    global call_count\n"
-        "    call_count += 1\n"
-        "    if tx.slot is not None:\n"
-        "        tx.slot.value = float(call_count)\n"
-        "    return True\n");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    std::vector<IncomingMessage> msgs;
-
-    // Call 3 times -- counter should increment.
-    float buf1 = 0.0f;
-    engine.invoke_produce(InvokeTx{&buf1, sizeof(buf1)}, msgs);
-    EXPECT_FLOAT_EQ(buf1, 1.0f);
-
-    float buf2 = 0.0f;
-    engine.invoke_produce(InvokeTx{&buf2, sizeof(buf2)}, msgs);
-    EXPECT_FLOAT_EQ(buf2, 2.0f);
-
-    float buf3 = 0.0f;
-    engine.invoke_produce(InvokeTx{&buf3, sizeof(buf3)}, msgs);
-    EXPECT_FLOAT_EQ(buf3, 3.0f);
-
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    engine.finalize();
-}
-
-// ============================================================================
-// 12. Flexzone
-// ============================================================================
-
-TEST_F(PythonEngineTest, InvokeProduce_SlotOnly_NoFlexzoneOnInvoke)
-{
-    // Post-L3.ζ: flexzone is accessed via api.flexzone(side), not via tx.fz.
-    // This test verifies that slot writing works when no fz is on the invoke struct.
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    assert tx.slot is not None, 'expected slot'\n"
-        "    tx.slot.value = 10.0\n"
-        "    return True\n");
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_produce"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_);
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    float slot_buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-
-    auto result = engine.invoke_produce(
-        InvokeTx{&slot_buf, sizeof(slot_buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_FLOAT_EQ(slot_buf, 10.0f);
-
-    engine.finalize();
-}
-
-// ============================================================================
-// 13. invoke_on_inbox
-// ============================================================================
-
-TEST_F(PythonEngineTest, InvokeOnInbox_TypedData)
-{
-    // Script receives a typed ctypes struct (from_buffer_copy) and sender UID.
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    return False\n"
-        "\n"
-        "def on_inbox(msg, api):\n"
-        "    assert msg.data is not None, 'expected inbox data'\n"
-        "    assert hasattr(msg.data, 'value'), f'expected typed struct, got {type(msg.data)}'\n"
-        "    assert abs(msg.data.value - 77.0) < 0.01, (\n"
-        "        f'expected value ~77.0, got {msg.data.value}')\n"
-        "    assert msg.sender_uid == 'PROD-SENDER-00000001', (\n"
-        "        f'expected sender UID, got {msg.sender_uid}')\n"
-        "    return True\n");
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_produce"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
-
-    auto test_api = make_api(default_core_);
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    float inbox_data = 77.0f;
-    engine.invoke_on_inbox({&inbox_data, sizeof(inbox_data), "PROD-SENDER-00000001", 1});
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed -- inbox data or sender incorrect";
-
-    engine.finalize();
-}
-
-TEST_F(PythonEngineTest, TypeSizeof_InboxFrame_ReturnsCorrectSize)
-{
-    // type_sizeof("InboxFrame") must return the correct struct size after registration.
-    // This is used by role hosts to validate against InboxQueue::item_size().
-    // Use a multi-type schema that exercises alignment padding:
-    //   uint8 flag (1) + pad(3) + float64 value (8) + uint16 count (2) +
-    //   pad(2) + int32 status (4) + char[5] label (5) + pad(3) = 28 bytes aligned
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    return False\n");
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_produce"));
-
-    SchemaSpec spec;
-    spec.has_schema = true;
-    spec.fields.push_back({"flag",   "uint8",   1, 0});
-    spec.fields.push_back({"value",  "float64", 1, 0});
-    spec.fields.push_back({"count",  "uint16",  1, 0});
-    spec.fields.push_back({"status", "int32",   1, 0});
-    spec.fields.push_back({"label",  "string",  1, 5});
-
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
-
-    auto test_api = make_api(default_core_);
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    size_t slot_sz  = engine.type_sizeof("OutSlotFrame");
-    size_t inbox_sz = engine.type_sizeof("InboxFrame");
-    EXPECT_GT(slot_sz, 0u) << "OutSlotFrame size must be > 0";
-    EXPECT_GT(inbox_sz, 0u) << "InboxFrame size must be > 0";
-    EXPECT_EQ(slot_sz, inbox_sz) << "Same schema → same size";
-    // Aligned: 1 + 7pad + 8 + 2 + 2pad + 4 + 5 + 3pad = 32
-    EXPECT_EQ(inbox_sz, 32u) << "Expected 28 bytes with alignment padding";
-
-    engine.finalize();
-}
-
-TEST_F(PythonEngineTest, InvokeOnInbox_MissingType_ReportsError)
-{
-    // If InboxFrame is not registered, invoke_on_inbox must report an error.
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    return False\n"
-        "\n"
-        "def on_inbox(msg, api):\n"
-        "    return True\n");
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_produce"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-    // Deliberately NOT registering "InboxFrame".
-
-    auto test_api = make_api(default_core_);
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    float raw = 1.0f;
-    engine.invoke_on_inbox({&raw, sizeof(raw), "CONS-SENDER-00000001", 1});
-    EXPECT_GE(engine.script_error_count(), 1u)
-        << "Missing InboxFrame type should increment error count";
-
-    engine.finalize();
-}
-
-// ============================================================================
-// (V2 SupportsMultiState_ReturnsFalse stray duplicate removed — the P3
-// replacement landed in chunk 1 but the V2 body was not deleted at the
-// time.  Cleanup 2026-04-20.)
+// (V2 chunk-9 bodies — StatePersistsAcrossCalls,
+// InvokeProduce_SlotOnly_NoFlexzoneOnInvoke, InvokeOnInbox_TypedData,
+// TypeSizeof_InboxFrame_ReturnsCorrectSize,
+// InvokeOnInbox_MissingType_ReportsError — migrated to Pattern 3,
+// wrappers above in the chunk-9 section.  Cleanup 2026-04-20.
+//
+// Earlier V2 SupportsMultiState_ReturnsFalse duplicate was also removed
+// at the same time (P3 replacement landed in chunk 1).)
 // ============================================================================
 
 // ============================================================================
-// Generic invoke() tests
+// Chunk 10 — Generic invoke() + threading (migrated to Pattern 3)
+//
+// V2 bodies removed 2026-04-21; P3 workers at
+// workers/python_engine_workers.cpp (chunk 10 section) cover the
+// same behaviour with Python-specific strengthening: side-effect
+// verification via eval(), queue-blocking pins, multi-pending
+// finalize-cancellation, dual-path (owner + non-owner) after-finalize
+// guards, and kwargs-expansion for both non-empty and empty args.
 // ============================================================================
 
-TEST_F(PythonEngineTest, Invoke_ExistingFunction_ReturnsTrue)
+TEST_F(PythonEngineIsolatedTest, Invoke_ExistingFunction_ReturnsTrue)
 {
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    return True
-
-def on_heartbeat():
-    pass
-)");
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    EXPECT_TRUE(engine.invoke("on_heartbeat"));
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.invoke_existing_function_returns_true",
+                         {unique_dir("invoke_existing")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, Invoke_NonExistentFunction_ReturnsFalse)
+TEST_F(PythonEngineIsolatedTest, Invoke_NonExistentFunction_ReturnsFalse)
 {
-    write_script("def on_produce(tx, msgs, api):\n    return True\n");
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    EXPECT_FALSE(engine.invoke("no_such_function"));
-    engine.finalize();
+    auto w = SpawnWorker(
+        "python_engine.invoke_non_existent_function_returns_false",
+        {unique_dir("invoke_not_found")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, Invoke_EmptyName_ReturnsFalse)
+TEST_F(PythonEngineIsolatedTest, Invoke_EmptyName_ReturnsFalse)
 {
-    write_script("def on_produce(tx, msgs, api):\n    return True\n");
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    EXPECT_FALSE(engine.invoke(""));
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.invoke_empty_name_returns_false",
+                         {unique_dir("invoke_empty")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, Invoke_ScriptError_ReturnsFalseAndIncrementsErrors)
+TEST_F(PythonEngineIsolatedTest, Invoke_ScriptError_ReturnsFalseAndIncrementsErrors)
 {
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    return True
-
-def bad_func():
-    raise RuntimeError("intentional test error")
-)");
-    RoleHostCore core;
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    EXPECT_FALSE(engine.invoke("bad_func"));
-    EXPECT_EQ(core.script_error_count(), 1u);
-    engine.finalize();
+    // The script raises RuntimeError("intentional test error"); the
+    // engine logs the exception text via on_python_error_ at
+    // python_engine.cpp:644.  Pinned at the parent level so a
+    // regression that silently swallowed the log (but still
+    // incremented the count) would still fail here.
+    auto w = SpawnWorker(
+        "python_engine.invoke_script_error_returns_false_and_increments_errors",
+        {unique_dir("invoke_script_err")});
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"intentional test error"});
 }
 
-TEST_F(PythonEngineTest, Invoke_FromNonOwnerThread_Queued)
+TEST_F(PythonEngineIsolatedTest, Invoke_FromNonOwnerThread_Queued)
 {
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    return True
-
-def on_heartbeat():
-    pass
-)");
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    // Non-owner thread: enqueues request, blocks on future.
-    // Owner must process via process_pending_() which is called
-    // at the end of each hot-path invoke.
-    std::atomic<bool> done{false};
-    bool result = false;
-
-    std::thread t([&]
-    {
-        result = engine.invoke("on_heartbeat");
-        done.store(true, std::memory_order_release);
-    });
-
-    // Owner thread: trigger process_pending_() by calling hot-path invokes.
-    // Use a bounded loop with timeout to detect deadlock.
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (!done.load(std::memory_order_acquire))
-    {
-        ASSERT_LT(std::chrono::steady_clock::now(), deadline)
-            << "Timeout: non-owner invoke() was never processed by process_pending_()";
-        std::vector<IncomingMessage> msgs;
-        engine.invoke_produce({nullptr, 0}, msgs);
-        std::this_thread::yield();
-    }
-
-    t.join();
-    EXPECT_TRUE(result);
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.invoke_from_non_owner_thread_queued",
+                         {unique_dir("invoke_non_owner")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, Invoke_FromNonOwnerThread_FinalizeUnblocks)
+TEST_F(PythonEngineIsolatedTest, Invoke_FromNonOwnerThread_FinalizeUnblocks)
 {
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    return True
-
-def slow_func():
-    pass
-)");
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    // Non-owner thread: enqueues request, blocks on future.
-    std::atomic<bool> started{false};
-    bool result = true; // expect false after finalize cancels
-
-    std::thread t([&]
-    {
-        started.store(true, std::memory_order_release);
-        result = engine.invoke("slow_func");
-    });
-
-    // Wait for non-owner thread to enter invoke().
-    while (!started.load(std::memory_order_acquire))
-        std::this_thread::yield();
-
-    // finalize() cancels pending promises OR the thread sees accepting_=false.
-    // Either way, the non-owner thread's invoke() must return false.
-    engine.finalize();
-    t.join();
-
-    EXPECT_FALSE(result) << "Non-owner invoke must return false after finalize()";
+    auto w = SpawnWorker(
+        "python_engine.invoke_from_non_owner_thread_finalize_unblocks",
+        {unique_dir("invoke_finalize_unblock")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, Invoke_ConcurrentNonOwnerThreads)
+TEST_F(PythonEngineIsolatedTest, Invoke_ConcurrentNonOwnerThreads)
 {
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    return True
-
-def on_heartbeat():
-    pass
-)");
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    constexpr int kThreads = 4;
-    constexpr int kCallsPerThread = 10;
-    std::atomic<int> success_count{0};
-
-    std::vector<std::thread> threads;
-    for (int i = 0; i < kThreads; ++i)
-    {
-        threads.emplace_back([&]
-        {
-            for (int j = 0; j < kCallsPerThread; ++j)
-            {
-                if (engine.invoke("on_heartbeat"))
-                    success_count.fetch_add(1, std::memory_order_relaxed);
-            }
-        });
-    }
-
-    // Owner: drain the queue by calling hot-path invokes until all threads finish.
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (success_count.load(std::memory_order_relaxed) < kThreads * kCallsPerThread)
-    {
-        ASSERT_LT(std::chrono::steady_clock::now(), deadline)
-            << "Timeout: only " << success_count.load() << " of "
-            << kThreads * kCallsPerThread << " invokes completed";
-        std::vector<IncomingMessage> msgs;
-        engine.invoke_produce({nullptr, 0}, msgs);
-        std::this_thread::yield();
-    }
-
-    for (auto &t : threads)
-        t.join();
-
-    EXPECT_EQ(success_count.load(), kThreads * kCallsPerThread);
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.invoke_concurrent_non_owner_threads",
+                         {unique_dir("invoke_concurrent")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, Invoke_AfterFinalize_ReturnsFalse)
+TEST_F(PythonEngineIsolatedTest, Invoke_AfterFinalize_ReturnsFalse)
 {
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    return True
+    auto w = SpawnWorker("python_engine.invoke_after_finalize_returns_false",
+                         {unique_dir("invoke_after_finalize")});
+    ExpectWorkerOk(w);
+}
 
-def on_heartbeat():
-    pass
-)");
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-    engine.finalize();
+TEST_F(PythonEngineIsolatedTest, Invoke_WithArgs_CallsFunction)
+{
+    auto w = SpawnWorker("python_engine.invoke_with_args_calls_function",
+                         {unique_dir("invoke_with_args")});
+    ExpectWorkerOk(w);
+}
 
-    // After finalize, invoke should return false immediately.
-    EXPECT_FALSE(engine.invoke("on_heartbeat"));
+TEST_F(PythonEngineIsolatedTest, Invoke_WithArgs_FromNonOwnerThread)
+{
+    auto w = SpawnWorker(
+        "python_engine.invoke_with_args_from_non_owner_thread",
+        {unique_dir("invoke_args_non_owner")});
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
-// invoke(name, args) + eval(code)
+// Chunk 11 — Eval + shared data (migrated to Pattern 3)
+//
+// V2 bodies removed 2026-04-21; P3 workers at
+// workers/python_engine_workers.cpp (chunk 11 section) cover the
+// same behaviour with Python-specific strengthening: container
+// conversion (list/dict) + None + float + module namespace
+// reachability; 3 distinct eval error paths all ticking
+// script_error_count by exactly 1; api.shared_data identity pinned
+// by id() across callbacks plus on_stop persistence.
 // ============================================================================
 
-TEST_F(PythonEngineTest, Invoke_WithArgs_CallsFunction)
+TEST_F(PythonEngineIsolatedTest, Eval_ReturnsScalarResult)
 {
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    return True
-
-def greet(**kwargs):
-    pass
-)");
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    nlohmann::json args = {{"name", "test"}};
-    EXPECT_TRUE(engine.invoke("greet", args));
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.eval_returns_scalar_result",
+                         {unique_dir("eval_scalar")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, Eval_ReturnsScalarResult)
+TEST_F(PythonEngineIsolatedTest, Eval_ErrorReturnsEmpty)
 {
-    write_script("def on_produce(tx, msgs, api):\n    return True\n");
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    auto r1 = engine.eval("42");
-    EXPECT_EQ(r1.status, InvokeStatus::Ok);
-    EXPECT_EQ(r1.value, 42);
-
-    auto r2 = engine.eval("'hello'");
-    EXPECT_EQ(r2.status, InvokeStatus::Ok);
-    EXPECT_EQ(r2.value, "hello");
-
-    auto r3 = engine.eval("True");
-    EXPECT_EQ(r3.status, InvokeStatus::Ok);
-    EXPECT_EQ(r3.value, true);
-
-    engine.finalize();
+    // Parent pins one distinctive substring per error type so the
+    // engine's on_python_error_ translator (python_engine.cpp:693)
+    // is producing Python-side exception names — not a generic
+    // "eval failed" placeholder.
+    auto w = SpawnWorker("python_engine.eval_error_returns_empty",
+                         {unique_dir("eval_error")});
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"NameError", "SyntaxError", "ZeroDivisionError"});
 }
 
-TEST_F(PythonEngineTest, Eval_ErrorReturnsEmpty)
+TEST_F(PythonEngineIsolatedTest, SharedData_PersistsAcrossCallbacks)
 {
-    write_script("def on_produce(tx, msgs, api):\n    return True\n");
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    auto r = engine.eval("undefined_variable");
-    EXPECT_EQ(r.status, InvokeStatus::ScriptError);
-    engine.finalize();
-}
-
-// ============================================================================
-// Python shared_data (api.shared_data dict)
-// ============================================================================
-
-TEST_F(PythonEngineTest, SharedData_PersistsAcrossCallbacks)
-{
-    // Test that api.shared_data dict persists across callbacks.
-    // on_init sets counter=0, on_produce increments, get_counter returns it.
-    // We verify the ACTUAL VALUE (5 after 5 calls), not just "no errors".
-    write_script(R"(
-_api_ref = None
-
-def on_init(api):
-    global _api_ref
-    _api_ref = api
-    api.shared_data["counter"] = 0
-
-def on_produce(tx, msgs, api):
-    api.shared_data["counter"] += 1
-    return True
-
-def get_counter():
-    return _api_ref.shared_data["counter"]
-)");
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    engine.invoke_on_init();
-    ASSERT_EQ(engine.script_error_count(), 0u)
-        << "on_init failed";
-
-    std::vector<IncomingMessage> msgs;
-    for (int i = 0; i < 5; ++i)
-        engine.invoke_produce({nullptr, 0}, msgs);
-
-    ASSERT_EQ(engine.script_error_count(), 0u)
-        << "on_produce failed";
-
-    // Verify actual value via generic invoke + eval.
-    auto result = engine.eval("get_counter()");
-    EXPECT_EQ(result.status, InvokeStatus::Ok);
-    EXPECT_EQ(result.value, 5) << "Counter should be 5 after 5 on_produce calls";
-
-    engine.finalize();
+    auto w = SpawnWorker(
+        "python_engine.shared_data_persists_across_callbacks",
+        {unique_dir("shared_data")});
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
 // API parity tests — diagnostics, custom metrics, environment, queue-state
 // ============================================================================
 
-TEST_F(PythonEngineTest, Api_LoopOverrunCount_ReadsFromCore)
+// ============================================================================
+// Chunk 12 — API diagnostics + identity (migrated to Pattern 3)
+//
+// V2 bodies removed 2026-04-21; P3 workers at
+// workers/python_engine_workers.cpp (chunk 12 section) strengthen the
+// originals: live-read pins for core-backed accessors (loop_overrun,
+// last_cycle_work_us, critical_error → second invoke sees LIVE state,
+// not a snapshot cached at build_api time), exhaustive stop_reason
+// enum coverage (all 4 values, not just CriticalError), full identity
+// surface with role_dir-derived logs_dir/run_dir, and strict-1 error
+// semantics for report_metrics type mismatch.
+// ============================================================================
+
+TEST_F(PythonEngineIsolatedTest, Api_LoopOverrunCount_ReadsFromCore)
 {
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    v = api.loop_overrun_count()
-    assert v == 3, f"expected 3, got {v}"
-    return False
-)");
-
-    RoleHostCore core;
-    core.inc_loop_overrun();
-    core.inc_loop_overrun();
-    core.inc_loop_overrun();
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.api_loop_overrun_count_reads_from_core",
+                         {unique_dir("api_overrun")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, Api_LastCycleWorkUs_ReadsFromCore)
+TEST_F(PythonEngineIsolatedTest, Api_LastCycleWorkUs_ReadsFromCore)
 {
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    v = api.last_cycle_work_us()
-    assert v == 12345, f"expected 12345, got {v}"
-    return False
-)");
-
-    RoleHostCore core;
-    core.set_last_cycle_work_us(12345);
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.api_last_cycle_work_us_reads_from_core",
+                         {unique_dir("api_cycle_us")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, Api_CriticalError_DefaultIsFalse)
+// V2's Api_CriticalError_DefaultIsFalse removed — chunk 6's
+// Api_CriticalError_SetAndReadAndStopReason covers the same transition
+// (api.set_critical_error() → pybind11 → core::set_critical_error() is the
+// same underlying path as the V2 test's core.set_critical_error() direct
+// call), and chunk 6 also pins is_shutdown_requested() bundled-atomicity.
+
+TEST_F(PythonEngineIsolatedTest, Api_IdentityAccessors_ReturnCorrectValues)
 {
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    assert api.critical_error() == False, "critical_error should be False by default"
-    return False
-)");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
+    auto w = SpawnWorker(
+        "python_engine.api_identity_accessors_return_correct_values",
+        {unique_dir("api_identity")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, Api_IdentityAccessors_ReturnCorrectValues)
+// ============================================================================
+// Chunk 13 — Custom metrics (migrated to Pattern 3)
+//
+// V2 bodies removed 2026-04-21; P3 workers at
+// workers/python_engine_workers.cpp (chunk 13 section) strengthen with
+// C++-side core.custom_metrics_snapshot() cross-checks (pin the
+// pybind11 → RoleHostCore round-trip, not just the Python-side accessor
+// echoing its own storage), cross-invoke persistence, overwrite-not-
+// accumulate semantics, and edge-value coverage (pos_zero, neg_zero,
+// negative, tiny/large magnitudes).
+// ============================================================================
+
+TEST_F(PythonEngineIsolatedTest, Api_CustomMetrics_ReportAndReadInMetrics)
 {
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    assert api.uid() == "PROD-TestEngine-00000001", f"uid: {api.uid()}"
-    assert api.name() == "TestEngine", f"name: {api.name()}"
-    assert api.channel() == "test.channel", f"channel: {api.channel()}"
-    assert api.log_level() == "error", f"log_level: {api.log_level()}"
-    assert isinstance(api.script_dir(), str), "script_dir must be str"
-    assert isinstance(api.role_dir(), str), "role_dir must be str"
-    return False
-)");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
+    auto w = SpawnWorker(
+        "python_engine.api_custom_metrics_report_and_read_in_metrics",
+        {unique_dir("api_cm_read")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, Api_CustomMetrics_ReportAndReadInMetrics)
+TEST_F(PythonEngineIsolatedTest, Api_CustomMetrics_BatchAndClear)
 {
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    api.report_metric("latency_ms", 42.5)
-    api.report_metric("throughput", 100)
-
-    m = api.metrics()
-    assert "custom" in m, "custom metrics group must exist"
-    assert m["custom"]["latency_ms"] == 42.5, f"got {m['custom']['latency_ms']}"
-    assert m["custom"]["throughput"] == 100, f"got {m['custom']['throughput']}"
-    return False
-)");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
-}
-
-TEST_F(PythonEngineTest, Api_CustomMetrics_BatchAndClear)
-{
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    api.report_metrics({"a": 1.0, "b": 2.0, "c": 3.0})
-    m = api.metrics()
-    assert m["custom"]["a"] == 1.0
-    assert m["custom"]["b"] == 2.0
-    assert m["custom"]["c"] == 3.0
-
-    api.clear_custom_metrics()
-    m2 = api.metrics()
-    assert "custom" not in m2, "custom should be gone after clear"
-    return False
-)");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
+    auto w = SpawnWorker(
+        "python_engine.api_custom_metrics_batch_and_clear",
+        {unique_dir("api_cm_clear")});
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
@@ -1450,69 +923,89 @@ TEST_F(PythonEngineIsolatedTest, InvokeOnInbox_ScriptError)
 }
 
 // ============================================================================
+// Chunk 9 — State + slot + inbox
+// ============================================================================
+
+TEST_F(PythonEngineIsolatedTest, StatePersistsAcrossCalls)
+{
+    auto w = SpawnWorker("python_engine.state_persists_across_calls",
+                         {unique_dir("state_persists")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(PythonEngineIsolatedTest, InvokeProduce_SlotOnly_NoFlexzoneOnInvoke)
+{
+    auto w = SpawnWorker(
+        "python_engine.invoke_produce_slot_only_no_flexzone_on_invoke",
+        {unique_dir("slot_only_no_fz")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(PythonEngineIsolatedTest, InvokeOnInbox_TypedData)
+{
+    auto w = SpawnWorker("python_engine.invoke_on_inbox_typed_data",
+                         {unique_dir("inbox_typed")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(PythonEngineIsolatedTest, TypeSizeof_InboxFrame_ReturnsCorrectSize)
+{
+    auto w = SpawnWorker(
+        "python_engine.type_sizeof_inbox_frame_returns_correct_size",
+        {unique_dir("inbox_sizeof")});
+    ExpectWorkerOk(w);
+}
+
+TEST_F(PythonEngineIsolatedTest, InvokeOnInbox_MissingType_ReportsError)
+{
+    // Parent pins the engine's documented error text
+    // (python_engine.cpp: "InboxFrame type not registered") so a
+    // regression that silently fails (no ERROR log) would be caught at
+    // the ExpectWorkerOk layer even if script_error_count happened to
+    // be exactly 1 for a different reason.
+    auto w = SpawnWorker(
+        "python_engine.invoke_on_inbox_missing_type_reports_error",
+        {unique_dir("inbox_missing_type")});
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"InboxFrame type not registered"});
+}
+
+// ============================================================================
 // 16. Queue-state API defaults (no queue connected)
 // ============================================================================
 
-TEST_F(PythonEngineTest, Api_ProducerQueueState_WithoutQueue)
+// ============================================================================
+// Chunk 14 — Queue state / spinlock / channels / open_inbox / numpy
+// (migrated to Pattern 3)
+//
+// V2 bodies removed 2026-04-21; P3 workers at
+// workers/python_engine_workers.cpp (chunk 14 section) strengthen with
+// type assertions (int/str), expanded arg-shape coverage for
+// open_inbox (empty + unicode uids), ValueError-message pin for
+// spinlock error path, and C++-side buffer-offset verification for
+// the as_numpy round-trip.
+//
+// NOTE: V2's Api_Flexzone_WithoutSHM_ReturnsNone is not migrated —
+// chunk 9's invoke_produce_slot_only_no_flexzone_on_invoke already
+// covers api.flexzone() is None + api.flexzone(api.Tx) is None +
+// api.update_flexzone_checksum() is False.
+// ============================================================================
+
+TEST_F(PythonEngineIsolatedTest, Api_ProducerQueueState_WithoutQueue)
 {
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    cap = api.out_capacity()
-    pol = api.out_policy()
-    assert cap == 0, f"expected out_capacity==0, got {cap}"
-    assert pol == "", f"expected out_policy=='', got '{pol}'"
-    return False
-)");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed -- producer queue-state defaults incorrect";
-
-    engine.finalize();
+    auto w = SpawnWorker(
+        "python_engine.api_producer_queue_state_without_queue",
+        {unique_dir("api_prod_qs")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, Api_ProcessorQueueState_DualDefaults)
+TEST_F(PythonEngineIsolatedTest, Api_ProcessorQueueState_DualDefaults)
 {
-    write_script(R"(
-def on_process(rx, tx, msgs, api):
-    assert api.in_capacity() == 0, f"in_capacity={api.in_capacity()}"
-    assert api.in_policy() == "", f"in_policy='{api.in_policy()}'"
-    assert api.out_capacity() == 0, f"out_capacity={api.out_capacity()}"
-    assert api.out_policy() == "", f"out_policy='{api.out_policy()}'"
-    assert api.last_seq() == 0, f"last_seq={api.last_seq()}"
-    return False
-)");
-
-    RoleHostCore core;
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &core));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_process"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    auto test_api = make_api(core, "proc");
-    test_api->set_channel("test.in.channel");
-    test_api->set_out_channel("test.out.channel");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_process(
-        InvokeRx{nullptr, 0},
-        InvokeTx{nullptr, 0}, msgs);
-    EXPECT_EQ(result, InvokeResult::Discard);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed -- processor queue-state defaults incorrect";
-
-    engine.finalize();
+    auto w = SpawnWorker(
+        "python_engine.api_processor_queue_state_dual_defaults",
+        {unique_dir("api_proc_qs")});
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
@@ -1525,52 +1018,31 @@ def on_process(rx, tx, msgs, api):
 // 19. Custom metrics edge cases
 // ============================================================================
 
-TEST_F(PythonEngineTest, Api_CustomMetrics_OverwriteSameKey)
+TEST_F(PythonEngineIsolatedTest, Api_CustomMetrics_OverwriteSameKey)
 {
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    api.report_metric("x", 1)
-    api.report_metric("x", 2)
-    m = api.metrics()
-    assert "custom" in m, "custom group must exist"
-    assert m["custom"]["x"] == 2, f"expected x==2 after overwrite, got {m['custom']['x']}"
-    return False
-)");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed -- custom metric overwrite incorrect";
-
-    engine.finalize();
+    auto w = SpawnWorker(
+        "python_engine.api_custom_metrics_overwrite_same_key",
+        {unique_dir("api_cm_overwrite")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, Api_CustomMetrics_ZeroValue)
+TEST_F(PythonEngineIsolatedTest, Api_CustomMetrics_ZeroValue)
 {
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    api.report_metric("x", 0.0)
-    m = api.metrics()
-    assert "custom" in m, "custom group must exist even with zero value"
-    assert "x" in m["custom"], "key 'x' must be present"
-    assert m["custom"]["x"] == 0.0, f"expected x==0.0, got {m['custom']['x']}"
-    return False
-)");
+    auto w = SpawnWorker("python_engine.api_custom_metrics_zero_value",
+                         {unique_dir("api_cm_zero")});
+    ExpectWorkerOk(w);
+}
 
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed -- zero-value custom metric incorrect";
-
-    engine.finalize();
+TEST_F(PythonEngineIsolatedTest, Api_CustomMetrics_ReportTypeErrors)
+{
+    // Error-path coverage: each report_metric / report_metrics type
+    // mismatch triggers pybind11 TypeError caught in-script.  Also
+    // pins side-effect containment (a rejected dict update must NOT
+    // partially apply to the core snapshot).
+    auto w = SpawnWorker(
+        "python_engine.api_custom_metrics_report_type_errors",
+        {unique_dir("api_cm_typerr")});
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
@@ -1582,899 +1054,229 @@ def on_produce(tx, msgs, api):
 // 21. stop_reason after critical error
 // ============================================================================
 
-TEST_F(PythonEngineTest, Api_StopReason_AfterCriticalError)
-{
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    reason = api.stop_reason()
-    assert reason == "critical_error", f"expected 'critical_error', got '{reason}'"
-    return False
-)");
-
-    RoleHostCore core;
-    core.set_critical_error(); // sets StopReason::CriticalError(3) + shutdown_requested
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine_with_core(engine, core));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "stop_reason should be 'critical_error' after set_critical_error()";
-
-    engine.finalize();
-}
+// V2's Api_StopReason_AfterCriticalError was removed — chunk 6's
+// Api_StopReason_ReflectsAllEnumValues already covers all four
+// StopReason values (Normal, PeerDead, HubDead, CriticalError),
+// and chunk 6's Api_CriticalError_SetAndReadAndStopReason covers
+// the api.set_critical_error() bundled-atomicity path that V2's
+// test name implied.
 
 // ============================================================================
 // 22. Processor channels (in_channel / out_channel)
 // ============================================================================
 
-TEST_F(PythonEngineTest, Api_ProcessorChannels_InOut)
+TEST_F(PythonEngineIsolatedTest, Api_ProcessorChannels_InOut)
 {
-    write_script(R"(
-def on_process(rx, tx, msgs, api):
-    ic = api.in_channel()
-    oc = api.out_channel()
-    assert ic == "sensor.input", f"in_channel mismatch: {ic}"
-    assert oc == "sensor.output", f"out_channel mismatch: {oc}"
-    return False
-)");
-
-    RoleHostCore core;
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &core));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_process"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    auto test_api = make_api(core, "proc");
-    test_api->set_channel("sensor.input");
-    test_api->set_out_channel("sensor.output");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    float in_data  = 1.0f;
-    float out_data = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_process(
-        InvokeRx{&in_data, sizeof(in_data)},
-        InvokeTx{&out_data, sizeof(out_data)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Discard);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "Script assertion failed -- processor channels do not match context";
-
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.api_processor_channels_in_out",
+                         {unique_dir("api_proc_ch")});
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
 // 23. open_inbox without broker returns None
 // ============================================================================
 
-TEST_F(PythonEngineTest, Api_OpenInbox_WithoutBroker)
+TEST_F(PythonEngineIsolatedTest, Api_OpenInbox_WithoutBroker)
 {
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    result = api.open_inbox("some-uid")
-    assert result is None, f"expected None, got {result}"
-    return False
-)");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    auto result =
-        engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Discard);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "api.open_inbox() without broker should return None, not raise";
-
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.api_open_inbox_without_broker",
+                         {unique_dir("api_open_inbox")});
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
 // 24. report_metrics with non-dict argument produces error
 // ============================================================================
 
-TEST_F(PythonEngineTest, Api_ReportMetrics_NonDictArg_IsError)
+TEST_F(PythonEngineIsolatedTest, Api_ReportMetrics_NonDictArg_IsError)
 {
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    api.report_metrics(42)  # wrong type
-    return False
-)");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_GE(engine.script_error_count(), 1u)
-        << "report_metrics(42) should produce a script error (type mismatch)";
-
-    engine.finalize();
+    // Parent pins the pybind11 type-mismatch ERROR text — confirms
+    // the error came from the type guard, not some cascading follow-on.
+    auto w = SpawnWorker(
+        "python_engine.api_report_metrics_non_dict_arg_is_error",
+        {unique_dir("api_report_non_dict")});
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/{"report_metrics"});
 }
 
 // ============================================================================
 // 25. Full lifecycle with verified callback execution
 // ============================================================================
 
-TEST_F(PythonEngineTest, FullLifecycle_VerifiesCallbackExecution)
+// ============================================================================
+// Chunk 15 — FullLifecycle + FullStartup (migrated to Pattern 3)
+//
+// V2 bodies removed 2026-04-21; P3 workers at
+// workers/python_engine_workers.cpp (chunk 15 section) strengthen with
+// callback-order pins (init-before-stop via list), SlotFrame/FlexFrame
+// alias size cross-checks against compute_schema_size, processor's
+// explicit "SlotFrame is NOT an alias" property, and a real data-
+// transform round-trip on the processor.
+// ============================================================================
+
+TEST_F(PythonEngineIsolatedTest, FullLifecycle_VerifiesCallbackExecution)
 {
-    write_script(R"(
-_api_ref = None
-
-def on_init(api):
-    global _api_ref
-    _api_ref = api
-    api.shared_data['init_ran'] = True
-
-def on_produce(tx, msgs, api):
-    return False
-
-def on_stop(api):
-    api.shared_data['stop_ran'] = True
-
-def get_init_ran():
-    return _api_ref.shared_data.get('init_ran')
-
-def get_stop_ran():
-    return _api_ref.shared_data.get('stop_ran')
-)");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    // Verify on_init sets the flag.
-    engine.invoke_on_init();
-    ASSERT_EQ(engine.script_error_count(), 0u) << "on_init failed";
-
-    auto r1 = engine.eval("get_init_ran()");
-    EXPECT_EQ(r1.status, InvokeStatus::Ok);
-    EXPECT_EQ(r1.value, true) << "on_init should have set init_ran=True";
-
-    // Verify on_stop sets the flag.
-    engine.invoke_on_stop();
-    ASSERT_EQ(engine.script_error_count(), 0u) << "on_stop failed";
-
-    auto r2 = engine.eval("get_stop_ran()");
-    EXPECT_EQ(r2.status, InvokeStatus::Ok);
-    EXPECT_EQ(r2.value, true) << "on_stop should have set stop_ran=True";
-
-    engine.finalize();
+    auto w = SpawnWorker(
+        "python_engine.full_lifecycle_verifies_callback_execution",
+        {unique_dir("full_lifecycle")});
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
 // Parity tests — match Lua coverage
 // ============================================================================
 
-TEST_F(PythonEngineTest, Api_ConsumerQueueState_WithoutQueue)
+TEST_F(PythonEngineIsolatedTest, Api_ConsumerQueueState_WithoutQueue)
 {
-    write_script(R"(
-def on_consume(rx, msgs, api):
-    assert api.in_capacity() == 0, f"in_capacity: {api.in_capacity()}"
-    assert api.in_policy() == "", f"in_policy: {api.in_policy()}"
-    assert api.last_seq() == 0, f"last_seq: {api.last_seq()}"
-    return True
-)");
-
-    RoleHostCore core;
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &core));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_consume"));
-
-    auto spec = simple_schema();
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    auto test_api = make_api(core, "cons");
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    float buf = 1.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_consume(InvokeRx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
+    auto w = SpawnWorker(
+        "python_engine.api_consumer_queue_state_without_queue",
+        {unique_dir("api_cons_qs")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, Api_EnvironmentStrings_LogsDirRunDir)
+TEST_F(PythonEngineIsolatedTest, Api_EnvironmentStrings_LogsDirRunDir)
 {
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    assert isinstance(api.logs_dir(), str), "logs_dir must be str"
-    assert isinstance(api.run_dir(), str), "run_dir must be str"
-    # When role_dir is empty, logs_dir and run_dir are empty
-    return False
-)");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
+    auto w = SpawnWorker(
+        "python_engine.api_environment_strings_logs_dir_run_dir",
+        {unique_dir("api_env_strs")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, Api_SpinlockCount_WithoutSHM)
+TEST_F(PythonEngineIsolatedTest, Api_SpinlockCount_WithoutSHM)
 {
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    assert api.spinlock_count() == 0, f"spinlock_count: {api.spinlock_count()}"
-    return False
-)");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.api_spinlock_count_without_shm",
+                         {unique_dir("api_spinlock_count")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, Api_Spinlock_WithoutSHM_IsError)
+TEST_F(PythonEngineIsolatedTest, Api_Spinlock_WithoutSHM_IsError)
 {
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    try:
-        api.spinlock(0)
-        assert False, "spinlock(0) should raise without producer/consumer"
-    except ValueError:
-        pass  # expected
-    return False
-)");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u)
-        << "try/except should catch the error, not propagate";
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.api_spinlock_without_shm_is_error",
+                         {unique_dir("api_spinlock_err")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, Api_Flexzone_WithoutSHM_ReturnsNone)
+// V2's Api_Flexzone_WithoutSHM_ReturnsNone removed — chunk 9's
+// InvokeProduce_SlotOnly_NoFlexzoneOnInvoke already covers
+// api.flexzone() is None + api.flexzone(api.Tx) is None +
+// api.update_flexzone_checksum() is False.
+
+TEST_F(PythonEngineIsolatedTest, Api_AsNumpy_ArrayField)
 {
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    result = api.flexzone()
-    assert result is None, f"flexzone should be None without SHM, got {result}"
-    return False
-)");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    engine.finalize();
+    auto w = SpawnWorker("python_engine.api_as_numpy_array_field",
+                         {unique_dir("api_as_numpy_arr")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, Api_AsNumpy_ArrayField)
+TEST_F(PythonEngineIsolatedTest, Api_AsNumpy_NonArrayField_Throws)
 {
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    try:
-        import numpy as np
-    except ImportError:
-        return False  # skip test if numpy not available
-
-    arr = api.as_numpy(tx.slot.values)
-    assert isinstance(arr, np.ndarray), f"expected ndarray, got {type(arr)}"
-    assert arr.dtype == np.float32, f"expected float32, got {arr.dtype}"
-    assert len(arr) == 4, f"expected 4 elements, got {len(arr)}"
-    arr[:] = [1.0, 2.0, 3.0, 4.0]
-    return True
-)");
-
-    // Schema: one scalar + one array field
-    SchemaSpec spec;
-    spec.has_schema = true;
-    FieldDef f1;
-    f1.name     = "header";
-    f1.type_str = "float32";
-    f1.count    = 1;
-    f1.length   = 0;
-    spec.fields.push_back(f1);
-
-    FieldDef f2;
-    f2.name     = "values";
-    f2.type_str = "float32";
-    f2.count    = 4;
-    f2.length   = 0;
-    spec.fields.push_back(f2);
-
-    PythonEngine engine;
-    engine.set_python_venv("");
-    ASSERT_TRUE(engine.initialize("test", &default_core_));
-    ASSERT_TRUE(engine.load_script(tmp_ / "script" / "python",
-                                   "__init__.py", "on_produce"));
-    ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
-
-    auto test_api = make_api(default_core_);
-    ASSERT_TRUE(engine.build_api(*test_api));
-
-    // Buffer: 1 float (header) + 4 floats (values) = 20 bytes
-    // With aligned packing, no padding between float and float[4]
-    float buf[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_produce({buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    if (result == InvokeResult::Commit)
-    {
-        // numpy was available — verify the write went through
-        EXPECT_FLOAT_EQ(buf[1], 1.0f);
-        EXPECT_FLOAT_EQ(buf[2], 2.0f);
-        EXPECT_FLOAT_EQ(buf[3], 3.0f);
-        EXPECT_FLOAT_EQ(buf[4], 4.0f);
-    }
-    else
-    {
-        // numpy not available — script returned False (discard)
-        EXPECT_EQ(result, InvokeResult::Discard);
-        GTEST_SKIP() << "numpy not available in staged Python — skipping";
-    }
-
-    engine.finalize();
-}
-
-TEST_F(PythonEngineTest, Api_AsNumpy_NonArrayField_Throws)
-{
-    write_script(R"(
-def on_produce(tx, msgs, api):
-    try:
-        import numpy
-    except ImportError:
-        tx.slot.value = -1.0  # signal: numpy not available
-        return True
-    try:
-        api.as_numpy(tx.slot.value)  # scalar, not array
-        assert False, "as_numpy on scalar should raise"
-    except TypeError as e:
-        assert "ctypes array" in str(e), f"wrong error: {e}"
-    tx.slot.value = 1.0  # signal: test passed
-    return True
-)");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-    if (buf < 0.0f)
-        GTEST_SKIP() << "numpy not available in staged Python";
-    EXPECT_FLOAT_EQ(buf, 1.0f) << "TypeError should have been caught";
-    engine.finalize();
+    auto w = SpawnWorker(
+        "python_engine.api_as_numpy_non_array_field_throws",
+        {unique_dir("api_as_numpy_scalar")});
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
 // Full engine startup — tests the EngineModuleParams startup/shutdown path
 // ============================================================================
 
-TEST_F(PythonEngineTest, FullStartup_Producer_SlotOnly)
+TEST_F(PythonEngineIsolatedTest, FullStartup_Producer_SlotOnly)
 {
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    tx.slot.value = 77.0\n"
-        "    return True\n");
-
-    PythonEngine engine;
-    RoleHostCore core;
-
-    auto api = make_api(core, "prod");
-
-    pylabhub::scripting::EngineModuleParams params;
-    params.engine            = &engine;
-    params.api               = api.get();
-    params.tag               = "prod";
-    params.script_dir        = tmp_ / "script" / "python";
-    params.entry_point       = "__init__.py";
-    params.required_callback = "on_produce";
-    params.out_slot_spec     = simple_schema();
-    params.out_packing       = "aligned";
-
-    engine.set_python_venv("");
-    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
-
-    EXPECT_GT(engine.type_sizeof("OutSlotFrame"), 0u);
-    EXPECT_GT(engine.type_sizeof("SlotFrame"), 0u); // alias
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_FLOAT_EQ(buf, 77.0f);
-
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params); // idempotent
+    auto w = SpawnWorker("python_engine.full_startup_producer_slot_only",
+                         {unique_dir("full_prod_slot")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, FullStartup_Producer_SlotAndFlexzone)
+TEST_F(PythonEngineIsolatedTest, FullStartup_Producer_SlotAndFlexzone)
 {
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    tx.slot.value = 10.0\n"
-        "    return True\n");
-
-    PythonEngine engine;
-    RoleHostCore core;
-
-    auto api = make_api(core, "prod");
-
-    pylabhub::scripting::EngineModuleParams params;
-    params.engine            = &engine;
-    params.api               = api.get();
-    params.tag               = "prod";
-    params.script_dir        = tmp_ / "script" / "python";
-    params.entry_point       = "__init__.py";
-    params.required_callback = "on_produce";
-    params.out_slot_spec     = simple_schema();
-    params.out_fz_spec       = simple_schema();
-    params.out_packing       = "aligned";
-
-    // Role hosts set flexzone spec on core before engine startup (page-aligned).
-    core.set_out_fz_spec(params.out_fz_spec,
-                         pylabhub::hub::align_to_physical_page(
-                             pylabhub::hub::compute_schema_size(params.out_fz_spec, params.out_packing)));
-
-    engine.set_python_venv("");
-    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
-
-    EXPECT_GT(engine.type_sizeof("OutSlotFrame"), 0u);
-    EXPECT_GT(engine.type_sizeof("OutFlexFrame"), 0u);
-    EXPECT_GT(engine.type_sizeof("FlexFrame"), 0u); // alias
-    EXPECT_TRUE(core.has_tx_fz());
-    EXPECT_GT(core.out_schema_fz_size(), 0u);
-
-    // Cross-check: engine type size must match schema logical size.
-    // core.out_schema_fz_size() is page-aligned (physical); engine type is logical.
-    EXPECT_EQ(engine.type_sizeof("OutFlexFrame"),
-              pylabhub::hub::compute_schema_size(params.out_fz_spec, params.out_packing))
-        << "Engine-built type size must match schema logical size";
-
-    float slot_buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_produce(
-        InvokeTx{&slot_buf, sizeof(slot_buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_FLOAT_EQ(slot_buf, 10.0f);
-
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+    auto w = SpawnWorker(
+        "python_engine.full_startup_producer_slot_and_flexzone",
+        {unique_dir("full_prod_slotfz")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, FullStartup_Consumer)
+TEST_F(PythonEngineIsolatedTest, FullStartup_Consumer)
 {
-    write_script(
-        "def on_consume(rx, msgs, api):\n"
-        "    assert rx.slot is not None, 'expected slot'\n"
-        "    return True\n");
-
-    PythonEngine engine;
-    RoleHostCore core;
-
-    auto api = make_api(core, "cons");
-
-    pylabhub::scripting::EngineModuleParams params;
-    params.engine            = &engine;
-    params.api               = api.get();
-    params.tag               = "cons";
-    params.script_dir        = tmp_ / "script" / "python";
-    params.entry_point       = "__init__.py";
-    params.required_callback = "on_consume";
-    params.in_slot_spec      = simple_schema();
-    params.in_packing        = "aligned";
-
-    engine.set_python_venv("");
-    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
-
-    EXPECT_GT(engine.type_sizeof("InSlotFrame"), 0u);
-    EXPECT_GT(engine.type_sizeof("SlotFrame"), 0u); // alias
-
-    float data = 42.0f;
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_consume(InvokeRx{&data, sizeof(data)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+    auto w = SpawnWorker("python_engine.full_startup_consumer",
+                         {unique_dir("full_cons")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, FullStartup_Processor)
+TEST_F(PythonEngineIsolatedTest, FullStartup_Processor)
 {
-    write_script(
-        "def on_process(rx, tx, msgs, api):\n"
-        "    if rx.slot is not None and tx.slot is not None:\n"
-        "        tx.slot.value = rx.slot.value * 2.0\n"
-        "    return True\n");
-
-    PythonEngine engine;
-    RoleHostCore core;
-
-    auto api = make_api(core, "proc");
-
-    pylabhub::scripting::EngineModuleParams params;
-    params.engine            = &engine;
-    params.api               = api.get();
-    params.tag               = "proc";
-    params.script_dir        = tmp_ / "script" / "python";
-    params.entry_point       = "__init__.py";
-    params.required_callback = "on_process";
-    params.in_slot_spec      = simple_schema();
-    params.out_slot_spec     = simple_schema();
-    params.in_packing        = "aligned";
-    params.out_packing       = "aligned";
-
-    engine.set_python_venv("");
-    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
-
-    EXPECT_GT(engine.type_sizeof("InSlotFrame"), 0u);
-    EXPECT_GT(engine.type_sizeof("OutSlotFrame"), 0u);
-    EXPECT_EQ(engine.type_sizeof("SlotFrame"), 0u); // no alias for processor
-
-    float in_data = 5.0f;
-    float out_data = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_process(
-        InvokeRx{&in_data, sizeof(in_data)},
-        InvokeTx{&out_data, sizeof(out_data)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_FLOAT_EQ(out_data, 10.0f);
-
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+    auto w = SpawnWorker("python_engine.full_startup_processor",
+                         {unique_dir("full_proc")});
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
 // Schema logical size — complex schemas, aligned vs packed, slot + flexzone
 // ============================================================================
 
-TEST_F(PythonEngineTest, SlotLogicalSize_Aligned_PaddingSensitive)
+// ============================================================================
+// Chunk 16 — SlotLogicalSize + FlexzoneLogicalSize + multifield + band
+// (migrated to Pattern 3)
+//
+// V2 bodies removed 2026-04-21; P3 workers at
+// workers/python_engine_workers.cpp (chunk 16 section) strengthen with
+// live-read pins (two-invoke for aligned slot_logical_size), slot-vs-fz
+// distinct-size assertion, pad-byte corruption guards on multifield
+// producer/processor tests, and a scoped try/except around each band_*
+// method so regressions are attributed to the right call.
+// ============================================================================
+
+TEST_F(PythonEngineIsolatedTest, SlotLogicalSize_Aligned_PaddingSensitive)
 {
-    // Script reads api.slot_logical_size() and asserts against expected value.
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    sz = api.slot_logical_size()\n"
-        "    assert sz == 16, f'expected 16, got {sz}'\n"
-        "    return False\n");
-
-    PythonEngine engine;
-    RoleHostCore core;
-    auto api = make_api(core, "prod");
-
-    auto slot_spec = padding_schema();
-    slot_spec.packing = "aligned";
-    core.set_out_slot_spec(SchemaSpec{slot_spec},
-                           pylabhub::hub::compute_schema_size(slot_spec, "aligned"));
-
-    pylabhub::scripting::EngineModuleParams params;
-    params.engine            = &engine;
-    params.api               = api.get();
-    params.tag               = "prod";
-    params.script_dir        = tmp_ / "script" / "python";
-    params.entry_point       = "__init__.py";
-    params.required_callback = "on_produce";
-    params.out_slot_spec     = slot_spec;
-    params.out_packing       = "aligned";
-
-    engine.set_python_venv("");
-    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
-
-    // C++ side: verify compute_schema_size matches engine type_sizeof.
-    size_t logical = pylabhub::hub::compute_schema_size(slot_spec, "aligned");
-    EXPECT_EQ(logical, 16u);
-    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), logical);
-    EXPECT_EQ(core.out_slot_logical_size(), logical);
-
-    float buf[4] = {};
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+    auto w = SpawnWorker(
+        "python_engine.slot_logical_size_aligned_padding_sensitive",
+        {unique_dir("slot_ls_aligned")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, SlotLogicalSize_Packed_NoPadding)
+TEST_F(PythonEngineIsolatedTest, SlotLogicalSize_Packed_NoPadding)
 {
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    sz = api.slot_logical_size()\n"
-        "    assert sz == 13, f'expected 13, got {sz}'\n"
-        "    return False\n");
-
-    PythonEngine engine;
-    RoleHostCore core;
-    auto api = make_api(core, "prod");
-
-    auto slot_spec = padding_schema();
-    slot_spec.packing = "packed";
-    core.set_out_slot_spec(SchemaSpec{slot_spec},
-                           pylabhub::hub::compute_schema_size(slot_spec, "packed"));
-
-    pylabhub::scripting::EngineModuleParams params;
-    params.engine            = &engine;
-    params.api               = api.get();
-    params.tag               = "prod";
-    params.script_dir        = tmp_ / "script" / "python";
-    params.entry_point       = "__init__.py";
-    params.required_callback = "on_produce";
-    params.out_slot_spec     = slot_spec;
-    params.out_packing       = "packed";
-
-    engine.set_python_venv("");
-    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
-
-    size_t logical = pylabhub::hub::compute_schema_size(slot_spec, "packed");
-    EXPECT_EQ(logical, 13u);
-    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), logical);
-    EXPECT_EQ(core.out_slot_logical_size(), logical);
-
-    uint8_t buf[16] = {};
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+    auto w = SpawnWorker("python_engine.slot_logical_size_packed_no_padding",
+                         {unique_dir("slot_ls_packed")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, SlotLogicalSize_ComplexMixed_Aligned)
+TEST_F(PythonEngineIsolatedTest, SlotLogicalSize_ComplexMixed_Aligned)
 {
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    sz = api.slot_logical_size()\n"
-        "    assert sz == 56, f'expected 56, got {sz}'\n"
-        "    return False\n");
-
-    PythonEngine engine;
-    RoleHostCore core;
-    auto api = make_api(core, "prod");
-
-    auto slot_spec = complex_mixed_schema();
-    slot_spec.packing = "aligned";
-    core.set_out_slot_spec(SchemaSpec{slot_spec},
-                           pylabhub::hub::compute_schema_size(slot_spec, "aligned"));
-
-    pylabhub::scripting::EngineModuleParams params;
-    params.engine            = &engine;
-    params.api               = api.get();
-    params.tag               = "prod";
-    params.script_dir        = tmp_ / "script" / "python";
-    params.entry_point       = "__init__.py";
-    params.required_callback = "on_produce";
-    params.out_slot_spec     = slot_spec;
-    params.out_packing       = "aligned";
-
-    engine.set_python_venv("");
-    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
-
-    size_t logical = pylabhub::hub::compute_schema_size(slot_spec, "aligned");
-    EXPECT_EQ(logical, 56u);
-    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), logical);
-
-    uint8_t buf[64] = {};
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+    auto w = SpawnWorker(
+        "python_engine.slot_logical_size_complex_mixed_aligned",
+        {unique_dir("slot_ls_complex")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, FlexzoneLogicalSize_ArrayFields)
+TEST_F(PythonEngineIsolatedTest, FlexzoneLogicalSize_ArrayFields)
 {
-    // Slot + flexzone with different schemas — both logical sizes accessible.
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    slot_sz = api.slot_logical_size()\n"
-        "    fz_sz = api.flexzone_logical_size()\n"
-        "    assert slot_sz == 16, f'slot: expected 16, got {slot_sz}'\n"
-        "    assert fz_sz == 24, f'fz: expected 24, got {fz_sz}'\n"
-        "    return False\n");
-
-    PythonEngine engine;
-    RoleHostCore core;
-    auto api = make_api(core, "prod");
-
-    auto slot_spec = padding_schema();
-    slot_spec.packing = "aligned";
-    auto fz_spec = fz_array_schema();
-    fz_spec.packing = "aligned";
-
-    core.set_out_slot_spec(SchemaSpec{slot_spec},
-                           pylabhub::hub::compute_schema_size(slot_spec, "aligned"));
-    core.set_out_fz_spec(SchemaSpec{fz_spec},
-                         pylabhub::hub::align_to_physical_page(
-                             pylabhub::hub::compute_schema_size(fz_spec, "aligned")));
-
-    pylabhub::scripting::EngineModuleParams params;
-    params.engine            = &engine;
-    params.api               = api.get();
-    params.tag               = "prod";
-    params.script_dir        = tmp_ / "script" / "python";
-    params.entry_point       = "__init__.py";
-    params.required_callback = "on_produce";
-    params.out_slot_spec     = slot_spec;
-    params.out_fz_spec       = fz_spec;
-    params.out_packing       = "aligned";
-
-    engine.set_python_venv("");
-    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
-
-    // C++ cross-checks.
-    EXPECT_EQ(pylabhub::hub::compute_schema_size(slot_spec, "aligned"), 16u);
-    EXPECT_EQ(pylabhub::hub::compute_schema_size(fz_spec, "aligned"), 24u);
-    EXPECT_EQ(core.out_slot_logical_size(), 16u);
-    EXPECT_EQ(core.out_schema_fz_size(), 4096u); // page-aligned physical
-    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 16u);
-    EXPECT_EQ(engine.type_sizeof("OutFlexFrame"), 24u);
-
-    uint8_t slot_buf[16] = {};
-    uint8_t fz_buf[24] = {};
-    std::vector<IncomingMessage> msgs;
-    engine.invoke_produce(InvokeTx{slot_buf, sizeof(slot_buf)}, msgs);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+    auto w = SpawnWorker("python_engine.flexzone_logical_size_array_fields",
+                         {unique_dir("fz_ls_array")});
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
 // FullStartup — multifield schema data round-trip (all three roles)
 // ============================================================================
 
-TEST_F(PythonEngineTest, FullStartup_Producer_Multifield)
+TEST_F(PythonEngineIsolatedTest, FullStartup_Producer_Multifield)
 {
-    write_script(
-        "def on_produce(tx, msgs, api):\n"
-        "    tx.slot.ts = 1.23456789\n"
-        "    tx.slot.flag = 0xAB\n"
-        "    tx.slot.count = -42\n"
-        "    return True\n");
-
-    PythonEngine engine;
-    RoleHostCore core;
-    auto api = make_api(core, "prod");
-
-    auto spec = padding_schema();
-    spec.packing = "aligned";
-    core.set_out_slot_spec(SchemaSpec{spec},
-                           pylabhub::hub::compute_schema_size(spec, "aligned"));
-
-    pylabhub::scripting::EngineModuleParams params;
-    params.engine            = &engine;
-    params.api               = api.get();
-    params.tag               = "prod";
-    params.script_dir        = tmp_ / "script" / "python";
-    params.entry_point       = "__init__.py";
-    params.required_callback = "on_produce";
-    params.out_slot_spec     = spec;
-    params.out_packing       = "aligned";
-
-    engine.set_python_venv("");
-    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
-    EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 16u);
-
-    // C struct matching the schema layout.
-    struct { double ts; uint8_t flag; uint8_t pad[3]; int32_t count; } buf{};
-    static_assert(sizeof(buf) == 16);
-
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    EXPECT_DOUBLE_EQ(buf.ts, 1.23456789);
-    EXPECT_EQ(buf.flag, 0xAB);
-    EXPECT_EQ(buf.count, -42);
-
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+    auto w = SpawnWorker("python_engine.full_startup_producer_multifield",
+                         {unique_dir("full_prod_mf")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, FullStartup_Consumer_Multifield)
+TEST_F(PythonEngineIsolatedTest, FullStartup_Consumer_Multifield)
 {
-    write_script(
-        "def on_consume(rx, msgs, api):\n"
-        "    assert abs(rx.slot.ts - 9.87) < 0.001, f'ts={rx.slot.ts}'\n"
-        "    assert rx.slot.flag == 0xCD, f'flag={rx.slot.flag}'\n"
-        "    assert rx.slot.count == 100, f'count={rx.slot.count}'\n"
-        "    return True\n");
-
-    PythonEngine engine;
-    RoleHostCore core;
-    auto api = make_api(core, "cons");
-
-    auto spec = padding_schema();
-    spec.packing = "aligned";
-    core.set_in_slot_spec(SchemaSpec{spec},
-                          pylabhub::hub::compute_schema_size(spec, "aligned"));
-
-    pylabhub::scripting::EngineModuleParams params;
-    params.engine            = &engine;
-    params.api               = api.get();
-    params.tag               = "cons";
-    params.script_dir        = tmp_ / "script" / "python";
-    params.entry_point       = "__init__.py";
-    params.required_callback = "on_consume";
-    params.in_slot_spec      = spec;
-    params.in_packing        = "aligned";
-
-    engine.set_python_venv("");
-    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
-
-    struct { double ts; uint8_t flag; uint8_t pad[3]; int32_t count; } buf{};
-    buf.ts = 9.87; buf.flag = 0xCD; buf.count = 100;
-
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_consume(
-        pylabhub::scripting::InvokeRx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+    auto w = SpawnWorker("python_engine.full_startup_consumer_multifield",
+                         {unique_dir("full_cons_mf")});
+    ExpectWorkerOk(w);
 }
 
-TEST_F(PythonEngineTest, FullStartup_Processor_Multifield)
+TEST_F(PythonEngineIsolatedTest, FullStartup_Processor_Multifield)
 {
-    write_script(
-        "def on_process(rx, tx, msgs, api):\n"
-        "    tx.slot.ts = rx.slot.ts\n"
-        "    tx.slot.flag = rx.slot.flag\n"
-        "    tx.slot.count = rx.slot.count * 2\n"
-        "    return True\n");
-
-    PythonEngine engine;
-    RoleHostCore core;
-    auto api = make_api(core, "proc");
-
-    auto spec = padding_schema();
-    spec.packing = "aligned";
-    size_t sz = pylabhub::hub::compute_schema_size(spec, "aligned");
-    core.set_in_slot_spec(SchemaSpec{spec}, sz);
-    core.set_out_slot_spec(SchemaSpec{spec}, sz);
-
-    pylabhub::scripting::EngineModuleParams params;
-    params.engine            = &engine;
-    params.api               = api.get();
-    params.tag               = "proc";
-    params.script_dir        = tmp_ / "script" / "python";
-    params.entry_point       = "__init__.py";
-    params.required_callback = "on_process";
-    params.in_slot_spec      = spec;
-    params.out_slot_spec     = spec;
-    params.in_packing        = "aligned";
-    params.out_packing       = "aligned";
-
-    engine.set_python_venv("");
-    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
-
-    struct { double ts; uint8_t flag; uint8_t pad[3]; int32_t count; } in_buf{}, out_buf{};
-    in_buf.ts = 1.23456789; in_buf.flag = 0xAB; in_buf.count = -42;
-
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_process(
-        pylabhub::scripting::InvokeRx{&in_buf, sizeof(in_buf)},
-        InvokeTx{&out_buf, sizeof(out_buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit);
-    EXPECT_EQ(engine.script_error_count(), 0u);
-
-    EXPECT_DOUBLE_EQ(out_buf.ts, 1.23456789);
-    EXPECT_EQ(out_buf.flag, 0xAB);
-    EXPECT_EQ(out_buf.count, -84);
-
-    pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
+    auto w = SpawnWorker("python_engine.full_startup_processor_multifield",
+                         {unique_dir("full_proc_mf")});
+    ExpectWorkerOk(w);
 }
 
 // ============================================================================
@@ -2482,33 +1284,10 @@ TEST_F(PythonEngineTest, FullStartup_Processor_Multifield)
 // and return gracefully: None / False / no-op without any broker attached).
 // ============================================================================
 
-TEST_F(PythonEngineTest, Api_Band_AllMethodsGraceful_NoBroker)
+TEST_F(PythonEngineIsolatedTest, Api_Band_AllMethodsGraceful_NoBroker)
 {
-    write_script(
-        "results = {}\n"
-        "def on_produce(tx, msgs, api):\n"
-        "    results['join'] = api.band_join('#l2_test')\n"
-        "    results['leave'] = api.band_leave('#l2_test')\n"
-        "    api.band_broadcast('#l2_test', {'hello': 'world'})\n"
-        "    results['send_ok'] = True\n"
-        "    results['members'] = api.band_members('#l2_test')\n"
-        "    assert results['join'] is None, f\"join={results['join']}\"\n"
-        "    assert results['leave'] == False, f\"leave={results['leave']}\"\n"
-        "    assert results['members'] is None, f\"members={results['members']}\"\n"
-        "    return True\n");
-
-    PythonEngine engine;
-    ASSERT_TRUE(setup_engine(engine));
-
-    float buf = 0.0f;
-    std::vector<IncomingMessage> msgs;
-    auto result = engine.invoke_produce(
-        InvokeTx{&buf, sizeof(buf)}, msgs);
-    EXPECT_EQ(result, InvokeResult::Commit)
-        << "on_produce should commit: all 4 band methods must return "
-           "gracefully (None/False/no-op) without a broker";
-
-    engine.finalize();
+    auto w = SpawnWorker(
+        "python_engine.api_band_all_methods_graceful_no_broker",
+        {unique_dir("api_band_no_broker")});
+    ExpectWorkerOk(w);
 }
-
-} // anonymous namespace
