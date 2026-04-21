@@ -9,9 +9,9 @@
 
 #include "utils/config/checksum_config.hpp"
 #include "utils/format_tools.hpp"
-#include "utils/hub_consumer.hpp"
+
 #include "utils/hub_inbox_queue.hpp"
-#include "utils/hub_producer.hpp"
+
 #include "utils/hub_shm_queue.hpp"
 #include "utils/hub_zmq_queue.hpp"
 #include "utils/logger.hpp"
@@ -128,7 +128,7 @@ make_schema_tag(const std::string &hash)
 }
 } // namespace
 
-bool RoleAPIBase::build_tx_queue(const hub::ProducerOptions &opts)
+bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
 {
     pImpl->tx_queue.reset();
 
@@ -218,7 +218,7 @@ bool RoleAPIBase::build_tx_queue(const hub::ProducerOptions &opts)
     return true;
 }
 
-bool RoleAPIBase::build_rx_queue(const hub::ConsumerOptions &opts)
+bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
 {
     pImpl->rx_queue.reset();
 

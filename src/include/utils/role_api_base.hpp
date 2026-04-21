@@ -20,12 +20,12 @@
 #include "utils/timeout_constants.hpp"
 #include "utils/broker_request_comm.hpp"   // hub::BrokerRequestComm (for Config in start_ctrl_thread)
 #include "utils/config/inbox_config.hpp"   // config::InboxConfig (for CtrlThreadConfig)
+#include "utils/data_block.hpp"            // DataBlockConfig (for TxQueueOptions::shm_config)
 #include "utils/data_block_policy.hpp"     // hub::ChecksumPolicy
-#include "utils/hub_producer.hpp"          // hub::ProducerOptions (for build_tx_queue)
-#include "utils/hub_consumer.hpp"          // hub::ConsumerOptions (for build_rx_queue)
+#include "utils/hub_zmq_queue.hpp"         // hub::OverflowPolicy, kZmqDefaultBufferDepth
 #include "utils/json_fwd.hpp"
 #include "utils/role_host_core.hpp"        // RoleHostCore, StateValue
-#include "utils/schema_types.hpp"          // hub::SchemaSpec (for InboxOpenResult)
+#include "utils/schema_types.hpp"          // hub::SchemaSpec (for InboxOpenResult, TxQueueOptions, RxQueueOptions)
 
 #include <chrono>
 #include <cstddef>
@@ -43,6 +43,83 @@ class InboxQueue;
 class InboxClient;
 class SharedSpinLock;
 // BrokerRequestComm: full definition from broker_request_comm.hpp (needed for Config in start_ctrl_thread).
+
+// ============================================================================
+// Queue options
+// ============================================================================
+//
+// These structs are the parameter-object for RoleAPIBase::build_tx_queue()
+// and RoleAPIBase::build_rx_queue().  They live with the API that consumes
+// them — not in a separate hub_{producer,consumer}.hpp header — because
+// they have no other consumer.  Previously:
+//   - hub::Producer class was eliminated (post L3.γ A6.3); only the config
+//     struct survived in hub_producer.hpp
+//   - hub::Consumer class was eliminated; only the config struct survived
+//     in hub_consumer.hpp
+// Consolidating them here retires those two legacy headers and names the
+// structs by direction (Tx/Rx) to match the API method names.
+//
+// Identity fields (channel, uid, name) come from RoleAPIBase state, not
+// opts — so building a queue requires the api's identity already set
+// (set_channel / set_out_channel / set_name before build_{tx,rx}_queue).
+//
+// Schema + packing: single source of truth via SchemaSpec (spec.fields
+// and spec.packing).  Schema hash is auto-computed from specs at build
+// time — no redundant schema_hash field.
+
+/// Configuration for RoleAPIBase::build_tx_queue().  Output side
+/// (producer / processor-out).
+struct TxQueueOptions
+{
+    bool            has_shm{false};
+    DataBlockConfig shm_config{};
+
+    /// Slot + flexzone schemas — single source for fields + packing.
+    SchemaSpec slot_spec{};
+    SchemaSpec fz_spec{};
+
+    // Transport (HEP-CORE-0021)
+    std::string data_transport{"shm"};
+    std::string zmq_node_endpoint{};
+    bool zmq_bind{true};
+    size_t zmq_buffer_depth{kZmqDefaultBufferDepth};
+    OverflowPolicy zmq_overflow_policy{OverflowPolicy::Drop};
+
+    // Queue policy
+    ChecksumPolicy checksum_policy{ChecksumPolicy::Enforced};
+    bool flexzone_checksum{true};
+    bool always_clear_slot{true};
+
+    /// ThreadManager owner id for internal threads.  Empty → auto-derived
+    /// as "<role_tag>:<uid>:tx" from RoleAPIBase identity.  Set
+    /// explicitly only for direct-factory tests that bypass RoleAPIBase.
+    std::string instance_id{};
+};
+
+/// Configuration for RoleAPIBase::build_rx_queue().  Input side
+/// (consumer / processor-in).
+struct RxQueueOptions
+{
+    uint64_t shm_shared_secret{0};
+
+    /// Slot + flexzone schemas — single source for fields + packing.
+    SchemaSpec slot_spec{};
+    SchemaSpec fz_spec{};
+
+    // Transport (HEP-CORE-0021)
+    std::string data_transport{"shm"};
+    std::string shm_name{};
+    std::string zmq_node_endpoint{};
+    size_t zmq_buffer_depth{kZmqDefaultBufferDepth};
+
+    // Queue policy
+    ChecksumPolicy checksum_policy{ChecksumPolicy::Enforced};
+    bool flexzone_checksum{true};
+
+    /// Empty → auto-derived as "<role_tag>:<uid>:rx" from RoleAPIBase.
+    std::string instance_id{};
+};
+
 } // namespace pylabhub::hub
 
 namespace pylabhub::utils
@@ -96,12 +173,12 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// implementation (ShmQueue::create_writer or ZmqQueue::push_to) from
     /// the options and stores it as a unique_ptr<QueueWriter> on Impl.
     /// @return true on success. On failure, no queue is wired.
-    [[nodiscard]] bool build_tx_queue(const hub::ProducerOptions &opts);
+    [[nodiscard]] bool build_tx_queue(const hub::TxQueueOptions &opts);
 
     /// Build the input-side queue (Rx). Constructs the appropriate queue
     /// implementation (ShmQueue::create_reader or ZmqQueue::pull_from) from
     /// the options and stores it as a unique_ptr<QueueReader> on Impl.
-    [[nodiscard]] bool build_rx_queue(const hub::ConsumerOptions &opts);
+    [[nodiscard]] bool build_rx_queue(const hub::RxQueueOptions &opts);
 
     /// Start the Tx/Rx queues. Returns false if the side is not wired or
     /// the queue start() failed.

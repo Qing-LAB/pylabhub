@@ -377,7 +377,7 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     // ── Consumer side (in_channel) ──────────────────────────────────────────
     // channel_name / consumer_uid / consumer_name removed from opts —
     // build_rx_queue reads those from RoleAPIBase state.
-    hub::ConsumerOptions in_opts;
+    hub::RxQueueOptions in_opts;
     in_opts.shm_shared_secret    = config_.in_shm().enabled ? config_.in_shm().secret : 0u;
     in_opts.slot_spec            = in_slot_spec_;       // fields + packing
     in_opts.fz_spec              = core_.in_fz_spec();  // schema-hash match
@@ -395,7 +395,7 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     // ── Producer side (out_channel) ─────────────────────────────────────────
     // channel_name / role_name / role_uid removed from opts — build_tx_queue
     // reads those from RoleAPIBase state.
-    hub::ProducerOptions out_opts;
+    hub::TxQueueOptions out_opts;
     out_opts.has_shm       = config_.out_shm().enabled;
     out_opts.slot_spec     = out_slot_spec_;
     out_opts.fz_spec       = core_.out_fz_spec();

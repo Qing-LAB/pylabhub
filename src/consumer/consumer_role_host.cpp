@@ -333,7 +333,7 @@ bool ConsumerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     // channel_name / consumer_uid / consumer_name removed from opts —
     // build_rx_queue reads those directly from RoleAPIBase state
     // (set via set_channel / set_name, already called above).
-    hub::ConsumerOptions opts;
+    hub::RxQueueOptions opts;
     opts.shm_shared_secret    = shm.enabled ? shm.secret : 0u;
     opts.slot_spec            = in_slot_spec_;        // fields + packing
     opts.fz_spec              = core_.in_fz_spec();   // for schema-hash match
