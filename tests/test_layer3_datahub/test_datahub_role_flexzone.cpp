@@ -60,12 +60,14 @@ std::unique_ptr<utils::LifecycleGuard> RoleFlexzoneTest::s_lifecycle_;
 // Helpers
 // ============================================================================
 
+// Caller must set_channel() on the api BEFORE build_tx_queue — channel
+// is sourced from RoleAPIBase state now.  Helper leaves opts carrying
+// only transport/schema/SHM-config knobs.
 static hub::ProducerOptions make_producer_opts(
-    const std::string &channel, const hub::SchemaSpec &slot_spec,
+    const hub::SchemaSpec &slot_spec,
     const hub::SchemaSpec &fz_spec, uint64_t secret)
 {
     hub::ProducerOptions opts;
-    opts.channel_name = channel;
     opts.has_shm = true;
     opts.shm_config.shared_secret        = secret;
     opts.shm_config.ring_buffer_capacity  = 4;
@@ -73,22 +75,21 @@ static hub::ProducerOptions make_producer_opts(
     opts.shm_config.policy                = hub::DataBlockPolicy::RingBuffer;
     opts.shm_config.consumer_sync_policy  = hub::ConsumerSyncPolicy::Sequential;
     opts.shm_config.checksum_policy       = hub::ChecksumPolicy::None;
-    opts.slot_spec    = slot_spec;   // carries fields + packing
+    opts.slot_spec    = slot_spec;
     opts.fz_spec      = fz_spec;
-    opts.instance_id  = "test:fz-prod:tx";
     return opts;
 }
 
 static hub::ConsumerOptions make_consumer_opts(
-    const std::string &channel, const hub::SchemaSpec &slot_spec,
+    const std::string &shm_channel, const hub::SchemaSpec &slot_spec,
     uint64_t secret)
 {
     hub::ConsumerOptions opts;
-    opts.channel_name = channel;
-    opts.shm_name = channel;
+    opts.shm_name = shm_channel;  // SHM segment name (distinct from
+                                  // RoleAPIBase::channel — the latter
+                                  // is set on the api separately).
     opts.shm_shared_secret = secret;
     opts.slot_spec = slot_spec;
-    opts.instance_id = "test:fz-cons:rx";
     return opts;
 }
 
@@ -111,7 +112,9 @@ TEST_F(RoleFlexzoneTest, ProducerConsumer_FlexzoneRoundTrip)
         hub::align_to_physical_page(hub::compute_schema_size(fz_spec, "aligned")));
 
     auto prod_api = std::make_unique<RoleAPIBase>(prod_core, "prod", "PROD-FZ-TEST");
-    ASSERT_TRUE(prod_api->build_tx_queue(make_producer_opts(channel, slot_spec, fz_spec, secret)));
+    prod_api->set_channel(channel);   // build_tx_queue reads this
+    prod_api->set_name("fz-prod");
+    ASSERT_TRUE(prod_api->build_tx_queue(make_producer_opts(slot_spec, fz_spec, secret)));
     ASSERT_TRUE(prod_api->start_tx_queue());
 
     // Flexzone must be non-null with correct size.
@@ -135,6 +138,8 @@ TEST_F(RoleFlexzoneTest, ProducerConsumer_FlexzoneRoundTrip)
         hub::align_to_physical_page(hub::compute_schema_size(fz_spec, "aligned")));
 
     auto cons_api = std::make_unique<RoleAPIBase>(cons_core, "cons", "CONS-FZ-TEST");
+    cons_api->set_channel(channel);   // build_rx_queue reads this
+    cons_api->set_name("fz-cons");
     ASSERT_TRUE(cons_api->build_rx_queue(make_consumer_opts(channel, slot_spec, secret)));
     ASSERT_TRUE(cons_api->start_rx_queue());
 
@@ -170,16 +175,15 @@ TEST_F(RoleFlexzoneTest, ZmqOnly_FlexzoneIsNull)
 {
     RoleHostCore core;
     auto api = std::make_unique<RoleAPIBase>(core, "prod", "PROD-ZMQ-FZ");
+    api->set_channel("test.fz.zmq");  // build_tx_queue reads this
 
     hub::ProducerOptions opts;
-    opts.channel_name = "test.fz.zmq";
     opts.has_shm = false;
     opts.data_transport = "zmq";
     opts.zmq_node_endpoint = "tcp://127.0.0.1:0";
     opts.zmq_bind = true;
     auto spec = pylabhub::tests::simple_schema();
-    opts.slot_spec = spec;   // carries fields + packing
-    opts.instance_id = "test:fz-zmq:tx";
+    opts.slot_spec = spec;
 
     ASSERT_TRUE(api->build_tx_queue(opts));
     ASSERT_TRUE(api->start_tx_queue());

@@ -27,11 +27,11 @@ namespace pylabhub::hub
 
 struct ConsumerOptions
 {
-    std::string channel_name;
+    // NOTE: channel_name / consumer_uid / consumer_name are NOT here —
+    // RoleAPIBase owns its own identity (uid, name, channel) and
+    // build_rx_queue reads those directly.
 
     uint64_t shm_shared_secret{0};
-    std::string consumer_uid{};
-    std::string consumer_name{};
 
     // Schema (single source of truth; expected_schema_hash is
     // auto-computed from these at build_rx_queue time).
@@ -48,7 +48,8 @@ struct ConsumerOptions
     ChecksumPolicy checksum_policy{ChecksumPolicy::Enforced};
     bool flexzone_checksum{true};
 
-    /// See ProducerOptions::instance_id. Role hosts set e.g. "cons:UID-...:rx".
+    /// Leave empty to let build_rx_queue auto-derive as
+    /// "<role_tag>:<uid>:rx" from RoleAPIBase identity.
     std::string instance_id{};
 };
 

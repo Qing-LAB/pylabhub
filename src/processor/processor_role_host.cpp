@@ -375,13 +375,12 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     auto       &api_ref = api();
 
     // ── Consumer side (in_channel) ──────────────────────────────────────────
+    // channel_name / consumer_uid / consumer_name removed from opts —
+    // build_rx_queue reads those from RoleAPIBase state.
     hub::ConsumerOptions in_opts;
-    in_opts.channel_name         = config_.in_channel();
     in_opts.shm_shared_secret    = config_.in_shm().enabled ? config_.in_shm().secret : 0u;
     in_opts.slot_spec            = in_slot_spec_;       // fields + packing
     in_opts.fz_spec              = core_.in_fz_spec();  // schema-hash match
-    in_opts.consumer_uid         = config_.identity().uid;
-    in_opts.consumer_name        = config_.identity().name;
     in_opts.zmq_buffer_depth     = config_.in_transport().zmq_buffer_depth;
     // Per-role checksum policy — same value on both input and output (see config_single_truth.md).
     in_opts.checksum_policy      = config_.checksum().policy;
@@ -394,8 +393,9 @@ bool ProcessorRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     }
 
     // ── Producer side (out_channel) ─────────────────────────────────────────
+    // channel_name / role_name / role_uid removed from opts — build_tx_queue
+    // reads those from RoleAPIBase state.
     hub::ProducerOptions out_opts;
-    out_opts.channel_name  = config_.out_channel();
     out_opts.has_shm       = config_.out_shm().enabled;
     out_opts.slot_spec     = out_slot_spec_;
     out_opts.fz_spec       = core_.out_fz_spec();

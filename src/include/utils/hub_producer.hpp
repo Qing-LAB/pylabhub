@@ -26,7 +26,10 @@ namespace pylabhub::hub
 
 struct ProducerOptions
 {
-    std::string channel_name;
+    // NOTE: channel_name / role_uid / role_name are NOT here —
+    // RoleAPIBase owns its own identity (uid, name, channel,
+    // out_channel) and build_tx_queue reads those directly.  Having
+    // them as opts fields was a redundant second copy.
 
     bool            has_shm{false};
     DataBlockConfig shm_config{};
@@ -49,9 +52,10 @@ struct ProducerOptions
     bool always_clear_slot{true};
 
     /// Stable identifier for the queue's internal threads' lifecycle module.
-    /// Role hosts populate this (e.g. "prod:UID-...:tx") before calling
-    /// RoleAPIBase::build_tx_queue; empty means the queue will auto-generate
-    /// a pointer-address fallback (fine for one-off direct factory use).
+    /// Leave empty to let build_tx_queue auto-derive as
+    /// "<role_tag>:<uid>:tx" from RoleAPIBase identity.
+    /// Set explicitly only for direct-factory tests that bypass
+    /// RoleAPIBase.
     std::string instance_id{};
 };
 
