@@ -101,9 +101,6 @@ void ProducerRoleHost::worker_main_()
                         : std::filesystem::weakly_canonical(sc.path);
     const std::filesystem::path script_dir = base_path / "script" / sc.type;
 
-    const std::string packing =
-        tr.zmq_packing.empty() ? "aligned" : tr.zmq_packing;
-
     hub::SchemaSpec out_fz_local;
     hub::SchemaSpec inbox_spec_local;
     {
@@ -129,6 +126,13 @@ void ProducerRoleHost::worker_main_()
             return;
         }
     }
+
+    // Packing is schema-driven (was transport-level `zmq_packing` pre-2026-04-20).
+    // Slot and flexzone each carry their own packing; script/wire/SHM all honor
+    // the schema's packing for that side.  "aligned" fallback for flexzone-only
+    // roles where out_slot_spec_ is unset.
+    const std::string packing =
+        out_slot_spec_.has_schema ? out_slot_spec_.packing : "aligned";
 
     // Compute and store sizes (infrastructure-authoritative).
     if (out_slot_spec_.has_schema)
@@ -351,11 +355,13 @@ bool ProducerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     // --- Producer options ---
     hub::ProducerOptions opts;
     opts.channel_name = ch;
-    opts.pattern      = hub::ChannelPattern::PubSub;
     opts.has_shm      = shm.enabled;
-    opts.schema_hash  = hub::compute_schema_hash(out_slot_spec_, core_.out_fz_spec());
-    opts.role_name   = id.name;
-    opts.role_uid    = id.uid;
+    // Single source of truth for schema+packing: assign the specs
+    // directly.  Packing comes from spec.packing (was also passed as
+    // a separate transport-level knob pre-2026-04-20 — removed).
+    // Schema hash auto-computed inside build_tx_queue from these.
+    opts.slot_spec    = out_slot_spec_;
+    opts.fz_spec      = core_.out_fz_spec();
 
 
     // --- Inbox setup (optional) ---
@@ -391,8 +397,6 @@ bool ProducerRoleHost::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
         opts.data_transport    = "zmq";
         opts.zmq_node_endpoint = tr.zmq_endpoint;
         opts.zmq_bind          = tr.zmq_bind;
-        opts.zmq_schema        = hub::schema_spec_to_zmq_fields(out_slot_spec_);
-        opts.zmq_packing       = tr.zmq_packing;
         opts.zmq_buffer_depth  = tr.zmq_buffer_depth;
         opts.zmq_overflow_policy =
             (tr.zmq_overflow_policy == "block") ? hub::OverflowPolicy::Block

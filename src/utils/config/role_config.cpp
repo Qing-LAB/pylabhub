@@ -104,7 +104,10 @@ static const std::unordered_set<std::string> kAllowedKeys = {
     "in_zmq_bind", "out_zmq_bind",
     "in_zmq_buffer_depth", "out_zmq_buffer_depth",
     "in_zmq_overflow_policy", "out_zmq_overflow_policy",
-    "in_zmq_packing", "out_zmq_packing",
+    // NOTE: "in_zmq_packing" / "out_zmq_packing" removed 2026-04-20 —
+    // packing is schema-level only (SchemaSpec::packing, set via the
+    // schema JSON's "packing" field).  Having it also transport-level
+    // allowed divergence with no conversion layer → silent corruption.
     // Per-direction: SHM
     "in_shm_enabled", "out_shm_enabled",
     "in_shm_secret", "out_shm_secret",

@@ -15,6 +15,7 @@
 #include "utils/data_block.hpp"
 #include "utils/hub_zmq_queue.hpp"  // ZmqSchemaField, OverflowPolicy, kZmqDefaultBufferDepth
 #include "utils/schema_library.hpp"
+#include "utils/schema_types.hpp"   // SchemaSpec (slot_spec / fz_spec in ProducerOptions)
 
 #include <cstddef>
 #include <string>
@@ -25,34 +26,24 @@ namespace pylabhub::hub
 
 struct ProducerOptions
 {
-    std::string    channel_name;
-    ChannelPattern pattern{ChannelPattern::PubSub};
+    std::string channel_name;
 
     bool            has_shm{false};
     DataBlockConfig shm_config{};
 
-    std::string schema_hash{};
-    uint32_t    schema_version{0};
+    // Schema (single source of truth for fields + packing; hash is
+    // auto-computed from these at build_tx_queue time).
+    SchemaSpec slot_spec{};
+    SchemaSpec fz_spec{};
 
-    int timeout_ms{5000};
-
-    std::string role_name{};
-    std::string role_uid{};
-
-    std::string schema_id{};
-
-    // HEP-CORE-0021: ZMQ Endpoint Registry
+    // Transport (HEP-CORE-0021)
     std::string data_transport{"shm"};
     std::string zmq_node_endpoint{};
     bool zmq_bind{true};
-    std::vector<ZmqSchemaField> zmq_schema{};
-    std::string zmq_packing{"aligned"};
-    std::vector<ZmqSchemaField> fz_schema{};
-    std::string fz_packing{"aligned"};
     size_t zmq_buffer_depth{kZmqDefaultBufferDepth};
     OverflowPolicy zmq_overflow_policy{OverflowPolicy::Drop};
 
-    // Queue abstraction
+    // Queue policy
     ChecksumPolicy checksum_policy{ChecksumPolicy::Enforced};
     bool flexzone_checksum{true};
     bool always_clear_slot{true};

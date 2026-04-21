@@ -297,6 +297,10 @@ int register_slot_type_sizeof_correct(const std::string &dir)
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 4u)
                 << "simple_schema is a single float32 field";
 
+            // Reach the full lifecycle state for uniformity across
+            // chunk-1 tests — trivial safety net.
+            auto api = make_api(core);
+            ASSERT_TRUE(engine.build_api(*api));
             engine.finalize();
         },
         "python_engine::register_slot_type_sizeof_correct",
@@ -329,6 +333,8 @@ int register_slot_type_multi_field(const std::string &dir)
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 12u)
                 << "3 x float32 = 12 bytes";
 
+            auto api = make_api(core);
+            ASSERT_TRUE(engine.build_api(*api));
             engine.finalize();
         },
         "python_engine::register_slot_type_multi_field",
@@ -380,6 +386,21 @@ int register_slot_type_packed_packing(const std::string &dir)
                 << "packed: bool(1) + int32(4) = 5 — hand-verified "
                    "anchor for this schema";
 
+            auto api = make_api(core);
+            ASSERT_TRUE(engine.build_api(*api));
+
+            // After build_api, the SlotFrame alias (created by
+            // build_api_ for producer role) must use the same packing
+            // that register_slot_type was called with — not silently
+            // default to aligned.  Pins the register_slot_type
+            // spec.packing normalization (python_engine.cpp) — without
+            // it the alias would be 8 bytes (aligned), mismatching the
+            // 5-byte packed OutSlotFrame.
+            EXPECT_EQ(engine.type_sizeof("SlotFrame"), 5u)
+                << "SlotFrame alias must inherit packed packing from "
+                   "the OutSlotFrame registration; a mismatch here "
+                   "means build_api_ built the alias with different "
+                   "packing than the original slot";
             engine.finalize();
         },
         "python_engine::register_slot_type_packed_packing",
@@ -471,6 +492,8 @@ int register_slot_type_all_supported_types(const std::string &dir)
                 << "engine ctypes_sizeof must match the canonical "
                    "compute_schema_size for every scalar type";
 
+            auto api = make_api(core);
+            ASSERT_TRUE(engine.build_api(*api));
             engine.finalize();
         },
         "python_engine::register_slot_type_all_supported_types",
