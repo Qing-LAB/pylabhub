@@ -42,10 +42,16 @@ TEST_F(DatahubIntegrityRepairTest, FreshChecksumBlockPasses)
 TEST_F(DatahubIntegrityRepairTest, DetectsLayoutChecksumMismatch)
 {
     auto proc = SpawnWorker("integrity_repair.validate_integrity_detects_layout_checksum_mismatch", {});
-    // Corruption detection emits LOGGER_ERROR for layout checksum mismatch,
-    // then a second LOGGER_ERROR when consumer creation for slot verification also fails.
-    ExpectWorkerOk(proc, {}, {"INTEGRITY_CHECK: Layout checksum mismatch",
-                              "INTEGRITY_CHECK: Could not create a consumer"});
+    // Worker calls datablock_validate_integrity TWICE (repair=false then
+    // repair=true), each pass logging BOTH the layout-mismatch and the
+    // consumer-create ERRORs — so 4 ERROR lines total.  Multiset
+    // semantics (commit 72ca30d): each substring consumes exactly one
+    // ERROR line, so each text must be listed twice.
+    ExpectWorkerOk(proc, {},
+                   {"INTEGRITY_CHECK: Layout checksum mismatch",
+                    "INTEGRITY_CHECK: Could not create a consumer",
+                    "INTEGRITY_CHECK: Layout checksum mismatch",
+                    "INTEGRITY_CHECK: Could not create a consumer"});
 }
 
 // ─── Magic number corruption ──────────────────────────────────────────────────

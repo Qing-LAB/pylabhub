@@ -71,6 +71,11 @@ TEST_F(DatahubRecoveryScenariosTest, IsProcessAliveFalseForNonexistent)
 TEST_F(DatahubRecoveryScenariosTest, ForceResetUnsafeWhenWriterAlive)
 {
     auto proc = SpawnWorker("recovery_scenarios.force_reset_unsafe_when_writer_alive", {});
-    // Recovery API logs LOGGER_ERROR when refusing force-reset (writer is alive).
-    ExpectWorkerOk(proc, {}, {"write lock held by ALIVE"});
+    // Worker calls TWO recovery APIs that each log the same
+    // "write lock held by ALIVE" ERROR (force_reset_slot +
+    // release_zombie_writer).  Framework pairs substrings to ERROR
+    // lines 1:1, so two entries are required.
+    ExpectWorkerOk(proc, {},
+                   {"write lock held by ALIVE",
+                    "write lock held by ALIVE"});
 }
