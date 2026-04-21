@@ -340,6 +340,51 @@ class ScriptEngine
      */
     virtual InvokeResponse eval(const std::string &code) = 0;
 
+    /**
+     * @brief Instantaneous depth of the engine's admin dispatch queue.
+     *
+     * Status probe (not a metric — no accumulated statistics attached).
+     * Non-owner-thread calls to invoke() / eval() on script engines that
+     * dispatch synchronously to a single owner thread (e.g. PythonEngine,
+     * which holds the GIL on the owner and queues for off-thread callers)
+     * are enqueued and drained when the owner next reaches
+     * process_pending_() on a hot-path invoke. This returns the number
+     * of requests currently awaiting such dispatch.
+     *
+     * ## What "pending" counts
+     *
+     * This reflects the **pre-drain backlog** — requests that have been
+     * pushed onto the engine's queue but have not yet been pulled into
+     * an in-flight drain batch.  It is NOT the count of requests that
+     * are executing or in-flight on the owner thread.
+     *
+     * PythonEngine's process_pending_() swaps the whole queue into a
+     * local deque under queue_mu_ (one-shot) and then drains the local
+     * copy without holding the lock — so while a drain is in progress
+     * this accessor returns 0 even though those requests are still
+     * executing.  The honest meaning is "work not yet started."  A
+     * separate "in-flight" accessor would be needed for "work not yet
+     * finished"; this is not that.
+     *
+     * Engines that do NOT use an admin dispatch queue (LuaEngine, with
+     * supports_multi_state() == true, uses per-thread lua_State and
+     * dispatches directly; native C plugins are synchronous) return 0.
+     * A zero return therefore can mean "no pre-drain backlog", "drain
+     * in progress", OR "this engine does not use a dispatch queue" —
+     * the caller should treat 0 as "no backlog to worry about"
+     * regardless of which case applies.
+     *
+     * If a user wants this value recorded as a time-series metric, they
+     * may sample it from a script and emit via api.report_metric(...) —
+     * this accessor is deliberately not wired into snapshot_metrics_json().
+     *
+     * Thread-safe.
+     */
+    virtual size_t pending_script_engine_request_count() const noexcept
+    {
+        return 0;
+    }
+
     // ── Hot-path invocation (owner thread — data loop) ──────────────────
 
     virtual void invoke_on_init() = 0;
