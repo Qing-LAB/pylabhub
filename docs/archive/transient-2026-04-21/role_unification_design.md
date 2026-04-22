@@ -1,21 +1,64 @@
-# Tech Draft: Role Unification Design (L3)
+# Tech Draft: Role Unification Design (L3) — CLOSED
 
-**Status**: Active design (updated 2026-04-16)
+**Status**: ✅ CLOSED 2026-04-21 — binary unification landed (HEP-CORE-0024
+Phases 15-22). Architectural consolidation is considered **final and
+complete**; L3.β and L3.ε are intentionally not pursued (rationale below).
 **Branch**: `feature/lua-role-support`
 **Supersedes**: `unified_role_loop.md` (archived 2026-04-16 → HEP-0011).
 `loop_design_unified.md` (archived 2026-04-16 → HEP-0008 §2.2).
-**Baseline**: 1278/1278 tests (2026-04-16).
+**Final baseline**: 1456/1456 tests (2026-04-21).
 
-### Implementation Status
+### Implementation Status (verified against code 2026-04-21)
 
-| Phase | Status | Commit/Date |
-|-------|--------|-------------|
+| Phase | Status | Notes |
+|-------|--------|-------|
 | L3.α — flatten data-plane verbs | ✅ DONE | RoleAPIBase owns write_acquire/read_acquire etc. |
-| L3.β — collapse 3 CycleOps → 1 | ❌ NOT STARTED | Still 3 classes in cycle_ops.hpp |
+| L3.β — collapse 3 CycleOps → 1 | ⚪ **DEFERRED INDEFINITELY** | Code keeps `ProducerCycleOps` / `ConsumerCycleOps` / `ProcessorCycleOps` as `final` concrete classes in `src/utils/service/cycle_ops.hpp`, duck-typed via the `run_data_loop` template — see **"Why L3.β/L3.ε were not pursued"** below. |
 | L3.γ — delete hub::Producer/Consumer | ✅ DONE | A6.1-A6.3 (2026-04-15) |
-| L3.δ — generic RoleHost base | ❌ NOT STARTED | Still 3 separate RoleHost classes |
-| L3.ε — ScriptEngine framework-agnostic | ❌ NOT STARTED | Still has invoke_produce/consume/process |
-| L3.ζ — documentation update | 🔄 IN PROGRESS | Tech draft cleanup + HEP merges (2026-04-16) |
+| L3.δ — generic RoleHost base | ✅ DONE | `RoleHostBase` added as part of HEP-CORE-0024 Phase 15 (2026-04-18); all three role hosts inherit. |
+| L3.ε — ScriptEngine framework-agnostic | ⚪ **DEFERRED INDEFINITELY** | Code keeps typed `invoke_produce` / `invoke_consume` / `invoke_process` specializations alongside the generic `invoke(name[, args])` path — see below. |
+| L3.ζ — documentation update | ✅ DONE | HEP merges complete; tech draft cleanup (2026-04-16); this final close-out (2026-04-21). |
+
+### Why L3.β / L3.ε were not pursued
+
+After Phases α / γ / δ landed, the remaining two consolidations were
+evaluated against the actual code shape and found to conflict with two
+invariants the framework relies on:
+
+1. **Zero-copy `SlotView` semantics.** `InvokeTx` / `InvokeRx` carry raw
+   pointers into shared memory that a slot write/read acquired. These
+   pointers cannot survive a JSON round-trip, so unifying
+   `invoke_produce/consume/process` into a single `invoke(args_json)` would
+   either break zero-copy (serialise slot data → defeats the design) or
+   require a parallel typed path — which is what the code already has.
+2. **Template-specialized, duck-typed cycle operations.** `run_data_loop`
+   is a template; the compiler generates specialized code for each
+   concrete `CycleOps` without virtual dispatch. Collapsing the three
+   classes into one requires either boolean flags (`is_processor`,
+   `hold_on_backpressure`, `has_input_side`, …) or variant state — which
+   obscures per-role intent and reintroduces runtime branching.
+
+The processor specifically defeats unification cleanly: its cycle
+acquires *two* slots, can *hold* an input across cycles when downstream
+backpressure denies an output slot, and has two distinct timeout
+policies (drop vs block mode). These behaviors have no producer/consumer
+counterpart.
+
+**Spirit of the draft's goal is achieved**: role identity is contained to
+(a) `CycleOps` class, (b) role host subclass (`RoleHostBase` derivatives),
+and (c) role config block. Everything between — `run_data_loop`,
+`RoleAPIBase`, `RoleHostCore`, `ScriptEngine`'s generic `invoke(name)`
+path, the broker/protocol layer — is role-neutral. The draft wanted the
+CycleOps + typed-invoke methods unified *as well*; the code stops one step
+earlier, and this has been accepted as the final design.
+
+### Authoritative documentation pointer
+
+The live ScriptEngine + CycleOps design should be documented authoritatively
+in **HEP-CORE-0011 (ScriptHost Abstraction Framework) — rewrite pending**,
+tracked in `docs/todo/API_TODO.md` SE-03. That rewrite will absorb this
+draft's rationale and architecture; this draft is preserved as a historical
+record of the original refactor plan and the divergence point.
 
 Additional completed work not in original phases:
 - ZMQ cppzmq migration + shared ZMQContext module

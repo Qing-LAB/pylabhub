@@ -18,7 +18,7 @@ pyLabHub uses **two distinct directory types** that serve different purposes:
 |---|---|---|
 | **Install tree** | Binaries, libraries, headers, shared scripts | Build system (`cmake --install`) |
 | **Hub instance directory** | One hub's identity, secrets, config, logs | `pylabhub-hubshell --init` |
-| **Role instance directory** | One role's config, vault, script | `pylabhub-producer --init` / `pylabhub-consumer --init` / `pylabhub-processor --init` |
+| **Role instance directory** | One role's config, vault, script | `plh_role --init --role {producer\|consumer\|processor}` |
 
 The install tree is read-only at runtime and shared across all hubs running on the
 same machine. Hub and role directories are mutable, per-instance, and created at
@@ -34,10 +34,8 @@ The root is `${CMAKE_INSTALL_PREFIX}` (install) or `${PYLABHUB_STAGING_DIR}` (st
 ```
 <install-root>/
   bin/
-    pylabhub-hubshell          ← hub process (broker + admin shell + lifecycle)
-    pylabhub-producer          ← producer role binary
-    pylabhub-consumer          ← consumer role binary
-    pylabhub-processor         ← processor role binary
+    plh_role                   ← unified role binary (dispatches on --role tag)
+    pylabhub-hubshell          ← hub process (currently disabled; see HEP-CORE-0033)
     plh_pyenv             ← Python environment manager (bash wrapper)
     plh_pyenv.ps1         ← Python environment manager (PowerShell, Windows)
   lib/
@@ -191,8 +189,8 @@ new one with `--init` gives a fresh identity.
 
 ### Producer instance directory
 
-Created by: `pylabhub-producer --init <producer_dir>`
-Started by: `pylabhub-producer <producer_dir>`
+Created by: `plh_role --init --role producer <producer_dir>`
+Started by: `plh_role --role producer <producer_dir>`
 
 ```
 <producer_dir>/
@@ -207,8 +205,8 @@ Started by: `pylabhub-producer <producer_dir>`
 
 ### Consumer instance directory
 
-Created by: `pylabhub-consumer --init <consumer_dir>`
-Started by: `pylabhub-consumer <consumer_dir>`
+Created by: `plh_role --init --role consumer <consumer_dir>`
+Started by: `plh_role --role consumer <consumer_dir>`
 
 ```
 <consumer_dir>/
@@ -223,8 +221,8 @@ Started by: `pylabhub-consumer <consumer_dir>`
 
 ### Processor instance directory
 
-Created by: `pylabhub-processor --init <processor_dir>`
-Started by: `pylabhub-processor <processor_dir>`
+Created by: `plh_role --init --role processor <processor_dir>`
+Started by: `plh_role --role processor <processor_dir>`
 
 ```
 <processor_dir>/
@@ -324,7 +322,7 @@ Each role binary has a symmetric `--init` flow and directory-based startup:
 
 ```bash
 # First-time setup (producer example; same pattern for consumer/processor)
-pylabhub-producer --init <producer_dir>
+plh_role --init --role producer <producer_dir>
   # → prompts: role name (e.g. "Sensor1")
   # → generates producer_uid (PROD-{NAME}-{8HEX})
   # → writes producer.json with uid, name, defaults
@@ -332,10 +330,10 @@ pylabhub-producer --init <producer_dir>
   # → creates logs/, run/, vault/ subdirectories
 
 # Optional: generate CurveZMQ keypair (separate step)
-pylabhub-producer --config <producer_dir>/producer.json --keygen
+plh_role --role producer --config <producer_dir>/producer.json --keygen
 
 # Subsequent runs
-pylabhub-producer <producer_dir>
+plh_role --role producer <producer_dir>
   # → reads producer.json (broker endpoint, channel, schema, transport)
   # → resolves hub_dir to read broker endpoint and pubkey
   # → connects to broker with CurveZMQ
@@ -344,12 +342,12 @@ pylabhub-producer <producer_dir>
 
 ```bash
 # Same pattern for consumer:
-pylabhub-consumer --init <consumer_dir>
-pylabhub-consumer <consumer_dir>
+plh_role --init --role consumer <consumer_dir>
+plh_role --role consumer <consumer_dir>
 
 # Same pattern for processor:
-pylabhub-processor --init <processor_dir>
-pylabhub-processor <processor_dir>
+plh_role --init --role processor <processor_dir>
+plh_role --role processor <processor_dir>
 ```
 
 The role config contains a `hub_dir` field pointing to the hub instance directory.

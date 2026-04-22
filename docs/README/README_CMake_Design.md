@@ -105,12 +105,11 @@ Understanding what each CMake file does and where it lives is essential before m
 |------|---------|
 | `CMakeLists.txt` (root) | Top-level orchestrator: options, project definition, version, platform config, staging infrastructure, sub-project inclusion, install rules |
 | `third_party/CMakeLists.txt` | Includes all third-party wrappers, creates `build_prerequisites` target, defines INTERFACE/ALIAS targets for ExternalProject prereqs, processes staging registrations |
-| `src/CMakeLists.txt` | Includes `utils/`, `scripting/`, `producer/`, `consumer/`, `processor/`; defines `pylabhub-hubshell` executable |
-| `src/utils/CMakeLists.txt` | Builds `pylabhub-utils` shared library (70+ .cpp files), links all third-party deps, generates export header, applies sanitizers/clang-tidy, stages to lib/ |
-| `src/scripting/CMakeLists.txt` | Builds `pylabhub-scripting` (script host implementations, pybind11 modules) |
-| `src/producer/CMakeLists.txt` | Builds `pylabhub-producer` executable |
-| `src/consumer/CMakeLists.txt` | Builds `pylabhub-consumer` executable |
-| `src/processor/CMakeLists.txt` | Builds `pylabhub-processor` executable |
+| `src/CMakeLists.txt` | Includes `utils/`, `scripting/`, `plh_role/`; defines `pylabhub-hubshell` executable (currently disabled pending HEP-CORE-0033) |
+| `src/utils/CMakeLists.txt` | Builds `pylabhub-utils` shared library (70+ .cpp files including the role-side role_host/init sources under `src/{producer,consumer,processor}/`), links all third-party deps, generates export header, applies sanitizers/clang-tidy, stages to lib/ |
+| `src/scripting/CMakeLists.txt` | Builds `pylabhub-scripting` (script engines, pybind11 modules, including role APIs under `src/{producer,consumer,processor}/*_api.cpp`) |
+| `src/plh_role/CMakeLists.txt` | Builds `plh_role` unified executable — dispatches on `--role <tag>` to producer/consumer/processor runtime registered in `pylabhub-utils` |
+| `src/{producer,consumer,processor}/` | Role-specific library code (role_host, init, api, fields) — no per-role CMakeLists; sources are pulled into `pylabhub-utils` / `pylabhub-scripting` by absolute paths in the above |
 | `tests/CMakeLists.txt` | Includes all test sub-projects (layer0–layer4), collects test executables for staging |
 
 ## 2. Top-Level CMakeLists.txt Walkthrough

@@ -52,21 +52,20 @@ Python script authoring, connection policy, and operational patterns.
 
 ## 1. Overview
 
-pyLabHub is a high-performance IPC framework for scientific data acquisition. It uses four
-standalone binaries connected by a central broker (hub):
+pyLabHub is a high-performance IPC framework for scientific data acquisition. It uses two
+binaries connected by a central broker (hub):
 
 ```
-pylabhub-hubshell   — Broker process. Manages channel registry, SHM coordination,
-                      control plane. One per independent data domain.
+plh_role           — Unified role binary. Runs as producer, consumer, or processor
+                     depending on `--role <tag>`:
 
-pylabhub-producer   — Data source. Writes slots into a named channel (SHM or ZMQ).
-                      Runs user Python on_produce() callback per write cycle.
+                     plh_role --role producer   — Data source.      Runs user on_produce().
+                     plh_role --role consumer   — Data sink.        Runs user on_consume().
+                     plh_role --role processor  — Data transformer. Runs user on_process(rx, tx).
 
-pylabhub-consumer   — Data sink. Reads slots from a named channel.
-                      Runs user Python on_consume() callback per slot.
-
-pylabhub-processor  — Data transformer. Reads from one channel, writes to another.
-                      Runs user Python on_process(rx, tx) per input slot.
+pylabhub-hubshell  — Broker process. Manages channel registry, SHM coordination,
+                     control plane. One per independent data domain.
+                     (NOTE: currently disabled in build; hub refactor is HEP-CORE-0033.)
 ```
 
 Data flow in a typical SHM pipeline:
@@ -118,10 +117,8 @@ After `stage_all`, the build output at `build/stage-<buildtype>/` contains:
 
 ```
 bin/
-  pylabhub-hubshell     ← hub broker
-  pylabhub-producer     ← producer role binary
-  pylabhub-consumer     ← consumer role binary
-  pylabhub-processor    ← processor role binary
+  plh_role              ← unified role binary (dispatches on --role tag)
+  pylabhub-hubshell     ← hub broker (currently disabled; see HEP-CORE-0033)
   plh_pyenv        ← Python environment manager (Unix)
   plh_pyenv.py     ← Python environment manager (core)
   plh_pyenv.ps1    ← Python environment manager (Windows)
@@ -862,9 +859,9 @@ pylabhub-hubshell --init <hub-dir>/ --name "my-lab"
 cp <hub-dir>/hub.pubkey <producer-dir>/
 
 # 3. Create each role (generates role.json + role.vault)
-pylabhub-producer  --init <producer-dir>/  --name "MySensor"
-pylabhub-consumer  --init <consumer-dir>/  --name "MyLogger"
-pylabhub-processor --init <processor-dir>/ --name "MyFilter"
+plh_role --init --role producer  <producer-dir>/  --name "MySensor"
+plh_role --init --role consumer  <consumer-dir>/  --name "MyLogger"
+plh_role --init --role processor <processor-dir>/ --name "MyFilter"
 
 # 4. Set broker_pubkey in each role's JSON, or place hub.pubkey in the role dir
 # 5. Run the hub (prompts for vault password)
@@ -969,15 +966,15 @@ See `share/py-demo-dual-processor-bridge/` for a complete working example.
 pylabhub-hubshell hub/ --dev &
 
 # 2. Producer next (creates SHM)
-pylabhub-producer producer/ --log-file logs/producer.log &
+plh_role --role producer producer/ --log-file logs/producer.log &
 sleep 2.0   # wait for CurveZMQ handshake + SHM creation + broker registration
 
 # 3. Processor after producer (attaches to SHM)
-pylabhub-processor processor/ --log-file logs/processor.log &
+plh_role --role processor processor/ --log-file logs/processor.log &
 sleep 2.0
 
 # 4. Consumer last (or any order after producer)
-pylabhub-consumer consumer/ --log-file logs/consumer.log
+plh_role --role consumer consumer/ --log-file logs/consumer.log
 ```
 
 ### Shutdown
@@ -1006,9 +1003,9 @@ and DataExchangeHub emit their startup messages — via the `StartupLogFileSink`
 module (see HEP-CORE-0001 §StartupLogFileSink).
 
 ```bash
-pylabhub-producer  producer/  --log-file logs/producer.log
-pylabhub-consumer  consumer/  --log-file logs/consumer.log
-pylabhub-processor processor/ --log-file logs/processor.log
+plh_role --role producer  producer/  --log-file logs/producer.log
+plh_role --role consumer  consumer/  --log-file logs/consumer.log
+plh_role --role processor processor/ --log-file logs/processor.log
 ```
 
 The hub uses a rotating log file automatically when a hub directory is provided

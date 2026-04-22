@@ -69,7 +69,10 @@ add_executable(test_layer3_datahub
     workers/datahub_exception_safety_workers.cpp
     test_datahub_handle_semantics.cpp
     workers/datahub_handle_semantics_workers.cpp
-    test_datahub_loop_policy.cpp
+    test_role_api_loop_policy.cpp
+    workers/role_api_loop_policy_workers.cpp
+    test_role_api_raii.cpp
+    workers/role_api_raii_workers.cpp
 
     # ── Integration / Scenario (deleted — Step 7 Messenger removal) ─
 
@@ -124,8 +127,9 @@ add_executable(test_layer3_datahub
     test_datahub_hub_queue.cpp
     workers/datahub_hub_queue_workers.cpp
 
-    # ── Role-level flexzone round-trip (L3.ζ T2/T3) ──────────────────────────
-    test_datahub_role_flexzone.cpp
+    # ── Role-API integration: flexzone round-trip through RoleAPIBase ────────
+    test_role_api_flexzone.cpp
+    workers/role_api_flexzone_workers.cpp
 
     # ── Hub ZmqQueue unit tests ──────────────────────────────────────────────
     test_datahub_hub_zmq_queue.cpp

@@ -1,8 +1,9 @@
 # pyLabHub C++ API — Custom Role Development Guide
 
 > **Audience**: C++ developers building custom roles directly on `hub::Producer` and
-> `hub::Consumer`, beyond the four standard binaries (`pylabhub-producer`,
-> `pylabhub-consumer`, `pylabhub-processor`, `pylabhub-hubshell`).
+> `hub::Consumer`, beyond the stock `plh_role` binary (which covers producer,
+> consumer, and processor via `--role <tag>`) and the `pylabhub-hubshell` broker
+> (currently disabled; see HEP-CORE-0033).
 >
 > **Related docs**: `README_Deployment.md` (config-driven usage), `HEP-CORE-0017`
 > (pipeline architecture), `HEP-CORE-0021` (ZMQ transport).

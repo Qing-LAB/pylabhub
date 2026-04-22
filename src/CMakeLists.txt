@@ -7,10 +7,8 @@
 #   and defines installation and staging rules for all application components.
 #
 # Responsibilities:
+#   - Defines the `plh_role` executable (unified data-plane role binary).
 #   - Defines the `pylabhub-hubshell` executable (hub control plane).
-#   - Defines the `pylabhub-producer` executable (data producer).
-#   - Defines the `pylabhub-consumer` executable (data consumer).
-#   - Defines the `pylabhub-processor` executable (data transform processor).
 #   - Includes the `utils`, `scripting` subdirectories.
 #   - Applies common build settings (C++ standard, Clang-Tidy, sanitizers).
 #   - Defines installation rules for all executables.
@@ -23,10 +21,11 @@
 #   - Assumes `pylabhub_enable_clang_tidy_for_target` and
 #     `pylabhub_apply_sanitizer_to_target` functions are available.
 #
-# Standalone binaries (data plane):
-#   - `pylabhub-producer`  — timer-driven data producer  (src/producer/)
-#   - `pylabhub-consumer`  — demand-driven data consumer (src/consumer/)
-#   - `pylabhub-processor` — transform processor         (src/processor/)
+# Data-plane binary:
+#   - `plh_role` — unified role host (src/plh_role/) dispatching on --role
+#     tag to producer / consumer / processor code.  Role-specific sources
+#     under src/{producer,consumer,processor}/ are compiled into
+#     pylabhub-utils + pylabhub-scripting (see those subdirs' CMakeLists).
 # ------------------------------------------------------------------------------
 cmake_minimum_required(VERSION 3.28)
 
@@ -38,18 +37,10 @@ add_subdirectory(utils)
 # out of pure-C++ consumers of pylabhub-utils).
 add_subdirectory(scripting)
 
-# Standalone data-producer host (embeds CPython + pybind11).
-add_subdirectory(producer)
-
-# Standalone data-consumer host (embeds CPython + pybind11).
-add_subdirectory(consumer)
-
-# Standalone data-processor host (embeds CPython + pybind11).
-add_subdirectory(processor)
-
 # Unified role binary (HEP-0024 Phase 19). Dispatches on --role tag via
-# a static registration map. Replaces the three per-role binaries above
-# once Phase 20 (legacy deletion) lands.
+# a static registration map. The role-specific .cpp files under
+# src/{producer,consumer,processor}/ are compiled into pylabhub-utils
+# (role_host, init) and pylabhub-scripting (api) — no per-role executables.
 add_subdirectory(plh_role)
 
 # Define the main application executable (hubshell).
