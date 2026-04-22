@@ -9,6 +9,57 @@
 
 ## Current Focus
 
+### Closed 2026-04-22: L2 depth review (tracker `21.3.5`)
+
+L2 tier was audited in two passes — first against Pattern-3 discipline and
+the REVIEW_FullStack_2026-03-17 gap list, then a second fresh pass with no
+preassumptions about what to look for.
+
+**Pass 1 — Pattern-3 compliance + REVIEW_FullStack gap list**:
+- `test_logger.cpp::SetRotatingLogfileFailure` had an in-process
+  `LifecycleGuard` alongside sibling workers; converted to subprocess
+  worker `logger::test_set_rotating_logfile_failure`.
+- `HubVaultTest.OpenTruncatedVaultThrows` added for short-file rejection
+  (bit-flip case was already covered by `OpenCorruptedVaultThrows`).
+- ZMQ context concurrent/double-start: superseded (LifecycleGuard
+  framework owns singleton init/shutdown).
+- DataBlockMutex `WAIT_ABANDONED`: deferred to platform coverage
+  (Windows-robust-mutex-only path; POSIX CI cannot exercise).
+
+**Pass 2 — fresh sweep for assertion quality and vacuous tests**:
+- `test_role_directory.cpp::WarnIfKeyfileInRoleDir_*` — 4 tests used only
+  `EXPECT_NO_THROW` on a function whose sole observable behaviour is a
+  stderr warning.  Rewrote to capture stderr via
+  `testing::internal::CaptureStderr` / `GetCapturedStderr` and assert on
+  warning content: `_InsideRoleDir_Absolute` and `_RelativePath_Resolved`
+  now pin `"PYLABHUB SECURITY WARNING"` + offending keyfile path;
+  `_NoWarnWhenEmpty` and `_OutsideRoleDir_NoWarn` now assert stderr is
+  empty.  Before the rewrite, deleting the entire function body would
+  have still passed all 4.
+- `test_crypto_utils.cpp::GetLifecycleModule_ReturnsValidModule` — used
+  `SUCCEED() << "returns without crashing"` with no assertion on the
+  returned `ModuleDef` (which has no public getters beyond
+  `userdata_key()` anyway).  Deleted — `Lifecycle_FunctionsWorkAfterInit`
+  exercises the returned module through a real LifecycleGuard and would
+  fail at init time if `GetLifecycleModule()` returned a broken module.
+- `test_role_host_core.cpp` cross-thread metric test had a redundant
+  `EXPECT_NO_THROW(std::get<int64_t>(*final_val))` after the preceding
+  `EXPECT_EQ(std::get<int64_t>(*final_val), ...)` — the std::get in the
+  EXPECT_EQ line would throw first if the type were wrong, so the second
+  check was dead weight.  Deleted, with a comment noting where the
+  type-correctness is actually pinned.
+
+**Other findings** (verified non-issues): `EXPECT_NO_THROW` is used
+legitimately in install/uninstall idempotency tests (the no-throw IS the
+claim under test); `SetUpTestSuite`/`py::scoped_interpreter` scope in
+`test_slot_view_helpers.cpp` is correct by pybind11's one-interpreter-per-
+process constraint; pure-unit test files (`test_role_cli`, `test_role_host_core`,
+`test_role_directory`) correctly run in-process without lifecycle deps;
+platform-guarded `GTEST_SKIP` sites are legitimate.
+
+Full L2 tier: **778/778** (net: +1 from HubVault truncated, −1 from
+deleted vacuous crypto module test).  Full suite: **1463/1463**.
+
 ### Open: Review-deferred items from the test-framework sweep
 
 Items surfaced by the static review before Lua chunk 4 (see commit
@@ -321,21 +372,32 @@ be added later"): revisit when native error-accounting (review
 Finding #3) is designed.  HEP-CORE-0011 § "Error Handling & Log
 Conventions" (added 2026-04-20) documents the current state.
 
-### Deferred: System-level L4 tests (roles + hub) — owned by HEP-CORE-0033
+### Deferred: System-level L4 tests + hub-facing L3 Pattern-3 conversion — owned by HEP-CORE-0033
 
-System-level integration tests (roles + broker round-trip, channel
-broadcast, processor pipeline, hub-dead detection, inbox) are **not part
-of role-unification scope** — they test the full system including the
-hub binary, which is the HEP-CORE-0033 work stream. HEP-0024 closes
-with the no-hub-tier L4 suite at `tests/test_layer4_plh_role/` (71
-tests: `--init` / `--validate` / `--keygen` / CLI error paths).
+Two categories of test work are folded into the HEP-0033 Hub Character
+refactor rather than tracked standalone here:
 
-**Authoritative tracker**: `docs/todo/MESSAGEHUB_TODO.md` → "Open:
-HEP-CORE-0033 Hub Character refactor" → "System-level L4 tests".
-The six deferred tests (run-mode lifecycle, broker round-trip, channel
-broadcast, processor pipeline, hub-dead detection, inbox round-trip)
-are enumerated there; they become writable at HEP-0033 Phase 9 when
-`plh_hub` lands.
+1. **System-level L4 integration tests** (run-mode lifecycle, broker
+   round-trip, channel broadcast, processor pipeline, hub-dead
+   detection, inbox round-trip). They test the full system including
+   the hub binary, which is HEP-0033 work. Become writable at Phase 9
+   when `plh_hub` lands. HEP-0024 closes with the no-hub-tier suite at
+   `tests/test_layer4_plh_role/` (71 tests: `--init` / `--validate` /
+   `--keygen` / CLI error paths).
+
+2. **Pattern-3 conversion of 6 hub-facing L3 tests** (folded in from the
+   retired `21.L5` test-harness tracker 2026-04-22): `hub_config_script`,
+   `hub_zmq_queue`, `hub_inbox_queue`, `zmq_endpoint_registry`, `metrics`,
+   `hub_federation`. Each exercises a hub-owned subsystem that HEP-0033
+   will rewrite or heavily touch; lifecycle conversion is coupled with
+   the refactor and is best done as tests are rebuilt against the new
+   shape rather than chased through the old one. The two role-side files
+   originally in this tracker (`test_datahub_role_flexzone.cpp` and
+   `test_datahub_loop_policy.cpp`) were converted during HEP-0024 closure
+   and are no longer part of this work.
+
+**Authoritative tracker for both categories**: `docs/todo/MESSAGEHUB_TODO.md`
+→ "Open: HEP-CORE-0033 Hub Character refactor".
 
 `tests/test_layer4_integration/test_admin_shell.cpp` (disabled via
 `if(FALSE)`) is preserved as reference material until the new L4
@@ -384,9 +446,9 @@ refactor will likely change.
   `test_lua_processor_roundtrip` in test_layer4_*.
 - [ ] **L0 gap: No `uuid_utils` unit tests** — `generate_uuid4()` has no L0 test.
 - [ ] **L0 gap: No `bytes_to_hex`/`bytes_from_hex` tests** — Used in ZMQ identity encoding.
-- [ ] **L2 gap: ZMQ context tests minimal** (88 lines) — No concurrent start/stop, no double-start.
-- [ ] **L2 gap: No DataBlockMutex WAIT_ABANDONED test** for Windows robust mutex path.
-- [ ] **L2 gap: No vault corruption detection test** — truncated file, bit-flip in ciphertext.
+- [x] **L2 gap: No vault corruption detection test** — `OpenCorruptedVaultThrows` (bit-flip in ciphertext) and `OpenTruncatedVaultThrows` (short-file rejection) both present in `test_hub_vault.cpp` (2026-04-22 depth review).
+- [ ] **L2 gap: ZMQ context concurrent start/stop, double-start** — superseded by LifecycleGuard framework tests (singleton init/shutdown is Lifecycle's concern, not a ZMQContext-layer test); keeping the note to revisit if the ZMQContext ever grows independent init/shutdown semantics.
+- [ ] **L2 gap: No DataBlockMutex WAIT_ABANDONED test** for Windows robust mutex path — POSIX build can't exercise this; needs a Windows CI runner. Tracked separately as a platform-coverage item.
 
 ### Watchlist: ShmQueueWriteFlexzone intermittent timeout (2026-03-16)
 

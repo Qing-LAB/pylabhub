@@ -66,6 +66,40 @@ re-enabled in `src/CMakeLists.txt`:
 `if(FALSE)`) preserved as reference for the admin-shell ZMQ protocol
 that HEP-0033 will replace with structured RPC (`AdminService`).
 
+**Pattern-3 conversion of existing hub-facing L3 tests** (folded in
+from the retired `21.L5` test-harness tracker 2026-04-22 — these test
+files exercise hub-owned subsystems that HEP-0033 will rewrite or
+heavily touch, so their lifecycle rework is coupled with the refactor
+and is best done as tests are rebuilt against the new shape rather than
+chased through the old one):
+
+- [ ] `test_datahub_hub_config_script.cpp` (6 `LifecycleGuard`
+      violations) — HubConfig script-block parsing; couples to HEP-0033
+      §6 `HubConfig` composite.
+- [ ] `test_datahub_hub_zmq_queue.cpp` (4) — ZmqQueue at hub layer;
+      couples to HEP-0033 §7 broker-owned queue integration.
+- [ ] `test_datahub_hub_inbox_queue.cpp` (4) — inbox at hub layer; likely
+      rewritten against the new `HubAPI` inbox surface.
+- [ ] `test_datahub_zmq_endpoint_registry.cpp` (3) — endpoint tracking;
+      couples to HEP-0033 §8 `HubState`.
+- [ ] `test_datahub_metrics.cpp` (3) — broker metrics; couples to HEP-0033
+      §9 query-driven metrics (supersedes HEP-0019 §3-4).
+- [ ] `test_datahub_hub_federation.cpp` (3) — federation peer map;
+      couples to HEP-0033 `HubState` federation view.
+
+Conversion pattern per file: each TEST_F spawns a worker subprocess via
+`IsolatedProcessTest::SpawnWorker` + `run_gtest_worker(..., module_list)`
+(Logger + Crypto + DataBlock + whatever the subsystem needs).  Worker
+bodies in `workers/<file-base>_workers.{cpp,h}`, milestones
+`[WORKER_BEGIN]`/`[WORKER_END_OK]`/`[WORKER_FINALIZED]`, dispatcher
+registrar in anonymous namespace.  See `test_role_api_flexzone.cpp` +
+`workers/role_api_flexzone_workers.cpp` (converted 2026-04-21) for the
+reference shape.  Two other files in the original 21.L5 list —
+`test_datahub_role_flexzone.cpp` → `test_role_api_flexzone.cpp` and
+`test_datahub_loop_policy.cpp` → `test_role_api_loop_policy.cpp` +
+`test_role_api_raii.cpp` — were converted during HEP-0024 closure; they
+do not block HEP-0033.
+
 ### Completed 2026-04-14: HEP-CORE-0023 Phase 2 — Role-Liveness State Machine
 
 - Two-pass `check_heartbeat_timeouts`: Ready→Pending (transient demotion,

@@ -307,41 +307,21 @@ TEST_F(LoggerTest, TimestampedRotatingFileSink)
     expect_worker_ok(proc);
 }
 
-/// Tests the failure case for setting a rotating log file in a non-writable directory.
+/// Tests the failure case for setting a rotating log file in a non-writable
+/// directory.  Delegated to a worker subprocess so the test owns its own
+/// LifecycleGuard (Pattern 3) instead of creating an in-process guard that
+/// races with the shared Logger singleton when other TEST_F bodies in this
+/// suite run before it.
 TEST_F(LoggerTest, SetRotatingLogfileFailure)
 {
-    pylabhub::utils::LifecycleGuard guard({pylabhub::utils::Logger::GetLifecycleModule()});
-#if PYLABHUB_IS_POSIX
     auto unwritable_dir = GetUniqueLogPath("unwritable_dir_for_rotating").parent_path() /
                           "unwritable_dir_for_rotating";
-    fs::create_directories(unwritable_dir); // Ensure directory exists to set permissions
     paths_to_clean_.push_back(unwritable_dir);
-    // Make directory unwritable
-    fs::permissions(unwritable_dir, fs::perms::owner_read | fs::perms::owner_exec,
-                    fs::perm_options::replace);
-    auto log_path = unwritable_dir / "test.log";
-
-    std::error_code ec;
-    // This should fail because of the pre-flight check in set_rotating_logfile
-    pylabhub::utils::Logger::RotatingLogConfig cfg{1024, 5, false, true};
-    ASSERT_FALSE(
-        pylabhub::utils::Logger::instance().set_rotating_logfile(log_path, cfg, ec));
-
-    // The error code should indicate permission denied.
-    ASSERT_EQ(ec, std::errc::permission_denied);
-
-    // Restore permissions for cleanup
-    fs::permissions(unwritable_dir, fs::perms::owner_all, fs::perm_options::replace);
-#else
-    // On Windows, we can use an invalid path name to simulate failure.
-    // The pre-flight check for create_directories should fail.
-    auto invalid_log_path = "C:\\*\\invalid:path.log"; // Invalid characters in path
-    std::error_code ec;
-    pylabhub::utils::Logger::RotatingLogConfig cfg{1024, 5, false, true};
-    ASSERT_FALSE(pylabhub::utils::Logger::instance().set_rotating_logfile(invalid_log_path, cfg, ec));
-    ASSERT_TRUE(ec); // Should have an error. The specific error code might vary depending on OS
-                     // version and exact invalid path.
-#endif
+    WorkerProcess proc(g_self_exe_path, "logger.test_set_rotating_logfile_failure",
+                       {unwritable_dir.string()});
+    ASSERT_TRUE(proc.valid());
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
 }
 
 /**

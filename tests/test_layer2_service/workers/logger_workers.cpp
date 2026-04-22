@@ -304,6 +304,45 @@ int test_write_error_callback_async()
         "logger::test_write_error_callback_async", Logger::GetLifecycleModule());
 }
 
+// Worker for Logger::set_rotating_logfile failure-path coverage.  Owns
+// its own LifecycleGuard via run_gtest_worker so it never runs alongside
+// other TEST_F bodies in the parent process (Pattern 3 compliance —
+// previous in-process LifecycleGuard could race with the shared Logger
+// singleton if other tests in the suite initialised it first).
+int test_set_rotating_logfile_failure(const std::string &unwritable_dir_str)
+{
+    return run_gtest_worker(
+        [&]()
+        {
+#if PYLABHUB_IS_POSIX
+            fs::path unwritable_dir(unwritable_dir_str);
+            fs::create_directories(unwritable_dir);
+            fs::permissions(unwritable_dir,
+                            fs::perms::owner_read | fs::perms::owner_exec,
+                            fs::perm_options::replace);
+            auto log_path = unwritable_dir / "test.log";
+
+            std::error_code ec;
+            Logger::RotatingLogConfig cfg{1024, 5, false, true};
+            ASSERT_FALSE(Logger::instance().set_rotating_logfile(log_path, cfg, ec))
+                << "set_rotating_logfile should reject an unwritable dir";
+            ASSERT_EQ(ec, std::errc::permission_denied);
+
+            // Restore permissions so the parent's TearDown cleanup works.
+            std::error_code restore_ec;
+            fs::permissions(unwritable_dir, fs::perms::owner_all,
+                            fs::perm_options::replace, restore_ec);
+#else
+            auto invalid_log_path = "C:\\*\\invalid:path.log";
+            std::error_code ec;
+            Logger::RotatingLogConfig cfg{1024, 5, false, true};
+            ASSERT_FALSE(Logger::instance().set_rotating_logfile(invalid_log_path, cfg, ec));
+            ASSERT_TRUE(ec) << "an invalid path must produce an error code";
+#endif
+        },
+        "logger::test_set_rotating_logfile_failure", Logger::GetLifecycleModule());
+}
+
 // Worker to smoke test platform-specific logging sinks.
 int test_platform_sinks()
 {
@@ -846,6 +885,8 @@ struct LoggerWorkerRegistrar
                     return test_write_error_callback_async();
                 if (scenario == "test_platform_sinks")
                     return test_platform_sinks();
+                if (scenario == "test_set_rotating_logfile_failure" && argc > 2)
+                    return test_set_rotating_logfile_failure(argv[2]);
                 if (scenario == "test_concurrent_lifecycle_chaos" && argc > 2)
                     return test_concurrent_lifecycle_chaos(argv[2]);
                 if (scenario == "stress_log" && argc > 3)

@@ -251,6 +251,31 @@ TEST_F(HubVaultTest, OpenMissingVaultThrows)
     EXPECT_THROW(HubVault::open(hub_dir_, hub_uid_, kPassword), std::runtime_error);
 }
 
+TEST_F(HubVaultTest, OpenTruncatedVaultThrows)
+{
+    // Companion to OpenCorruptedVaultThrows: verify that a file truncated
+    // below the minimum valid vault size (24-byte nonce + MAC-protected
+    // ciphertext + footer) is rejected rather than silently decrypted to
+    // garbage.  libsodium's secretbox_open fails MAC verification on any
+    // truncation, but we pin the behaviour here to catch a regression
+    // that added a "partial-read is fine" path.
+    HubVault::create(hub_dir_, hub_uid_, kPassword);
+
+    const fs::path vault_path = hub_dir_ / "hub.vault";
+    const auto original_size = fs::file_size(vault_path);
+    ASSERT_GT(original_size, 0u);
+
+    // Chop the file to 16 bytes (shorter than even the 24-byte nonce
+    // header — open() must fail before touching the decrypt path).
+    fs::resize_file(vault_path, 16);
+    fs::permissions(vault_path,
+                    fs::perms::owner_read | fs::perms::owner_write,
+                    fs::perm_options::replace);
+    ASSERT_EQ(fs::file_size(vault_path), 16u);
+
+    EXPECT_THROW(HubVault::open(hub_dir_, hub_uid_, kPassword), std::runtime_error);
+}
+
 // ============================================================================
 // Encryption verification tests
 // ============================================================================

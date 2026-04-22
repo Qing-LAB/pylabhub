@@ -153,14 +153,14 @@ TEST_F(CryptoUtilsTest, Random_HandleNullOutput)
 // ============================================================================
 // Lifecycle Integration
 // ============================================================================
-
-TEST(CryptoUtilsLifecycleTest, GetLifecycleModule_ReturnsValidModule)
-{
-    // Pure API test — GetLifecycleModule() is a static function returning a struct.
-    // No lifecycle needed to call it; lifecycle is needed to USE the module.
-    auto module = pylabhub::crypto::GetLifecycleModule();
-    SUCCEED() << "GetLifecycleModule returns without crashing";
-}
+//
+// Note: there is no standalone "GetLifecycleModule_ReturnsValidModule" test.
+// `ModuleDef` is a builder type with no public getters beyond
+// `userdata_key()`, so a test that merely calls the factory and inspects the
+// returned object cannot prove anything meaningful.  Removed 2026-04-22.
+// The Lifecycle_FunctionsWorkAfterInit worker below exercises the returned
+// module through a real LifecycleGuard — if `GetLifecycleModule()` ever
+// returned a broken definition, that test would fail at init time.
 
 TEST_F(CryptoUtilsTest, Lifecycle_FunctionsWorkAfterInit)
 {

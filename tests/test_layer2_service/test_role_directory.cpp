@@ -346,25 +346,38 @@ TEST(RoleDirectoryTest, WarnIfKeyfileInRoleDir_NoWarnWhenEmpty)
     fs::create_directories(tmp);
     const auto rd = RoleDirectory::open(tmp);
 
-    // Must not crash or warn for empty keyfile
-    EXPECT_NO_THROW(RoleDirectory::warn_if_keyfile_in_role_dir(rd.base(), ""));
+    // Empty keyfile: must not emit any warning (early-return branch).
+    testing::internal::CaptureStderr();
+    RoleDirectory::warn_if_keyfile_in_role_dir(rd.base(), "");
+    const std::string captured = testing::internal::GetCapturedStderr();
+    EXPECT_TRUE(captured.empty())
+        << "empty keyfile must not produce any stderr output; got: " << captured;
+    fs::remove_all(tmp);
 }
 
 TEST(RoleDirectoryTest, WarnIfKeyfileInRoleDir_InsideRoleDir_Absolute)
 {
-    // Smoke-test: just verifies the function executes without throwing when
-    // the keyfile is inside the role dir (the warning goes to stderr).
+    // Keyfile inside the role dir must emit the SECURITY WARNING banner.
     const auto tmp = unique_temp_dir("wkf_inside");
     fs::create_directories(tmp / "vault");
     const auto rd = RoleDirectory::open(tmp);
 
     const auto kf = (rd.vault() / "PROD-TEST.vault").string();
-    EXPECT_NO_THROW(RoleDirectory::warn_if_keyfile_in_role_dir(rd.base(), kf));
+    testing::internal::CaptureStderr();
+    RoleDirectory::warn_if_keyfile_in_role_dir(rd.base(), kf);
+    const std::string captured = testing::internal::GetCapturedStderr();
+    // Pin both the warning banner (proves the warning path fired) and the
+    // keyfile path (proves the message references the actual input).
+    EXPECT_NE(captured.find("PYLABHUB SECURITY WARNING"), std::string::npos)
+        << "warning banner missing; stderr was: " << captured;
+    EXPECT_NE(captured.find(kf), std::string::npos)
+        << "warning must mention the offending keyfile path";
+    fs::remove_all(tmp);
 }
 
 TEST(RoleDirectoryTest, WarnIfKeyfileInRoleDir_OutsideRoleDir_NoWarn)
 {
-    // Keyfile outside role dir must not trigger a warning (no-throw, no crash).
+    // Keyfile outside role dir: warning must be suppressed (silent return).
     const auto role_tmp = unique_temp_dir("wkf_out_role");
     const auto sys_tmp  = unique_temp_dir("wkf_out_sys");
     fs::create_directories(role_tmp);
@@ -373,21 +386,30 @@ TEST(RoleDirectoryTest, WarnIfKeyfileInRoleDir_OutsideRoleDir_NoWarn)
     const auto rd = RoleDirectory::open(role_tmp);
     const auto kf = (sys_tmp / "PROD-TEST.vault").string();
 
-    EXPECT_NO_THROW(RoleDirectory::warn_if_keyfile_in_role_dir(rd.base(), kf));
+    testing::internal::CaptureStderr();
+    RoleDirectory::warn_if_keyfile_in_role_dir(rd.base(), kf);
+    const std::string captured = testing::internal::GetCapturedStderr();
+    EXPECT_TRUE(captured.empty())
+        << "keyfile outside role dir must not warn; got: " << captured;
     fs::remove_all(role_tmp);
     fs::remove_all(sys_tmp);
 }
 
 TEST(RoleDirectoryTest, WarnIfKeyfileInRoleDir_RelativePath_Resolved)
 {
-    // A relative keyfile path "vault/PROD-TEST.vault" resolved under the role
-    // dir is inside it — must not crash.
+    // Relative path "vault/PROD-TEST.vault" is resolved *under* the role dir
+    // — so it lands inside and must trigger the warning.  This pins the
+    // relative-resolution branch of the function (not just no-crash).
     const auto tmp = unique_temp_dir("wkf_rel");
     fs::create_directories(tmp / "vault");
     const auto rd = RoleDirectory::open(tmp);
 
-    EXPECT_NO_THROW(
-        RoleDirectory::warn_if_keyfile_in_role_dir(rd.base(), "vault/PROD-TEST.vault"));
+    testing::internal::CaptureStderr();
+    RoleDirectory::warn_if_keyfile_in_role_dir(rd.base(), "vault/PROD-TEST.vault");
+    const std::string captured = testing::internal::GetCapturedStderr();
+    EXPECT_NE(captured.find("PYLABHUB SECURITY WARNING"), std::string::npos)
+        << "relative keyfile resolved inside role dir must warn; stderr: "
+        << captured;
     fs::remove_all(tmp);
 }
 
