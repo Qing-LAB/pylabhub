@@ -22,6 +22,39 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
+### Snapshot — 2026-04-22
+
+**Full suite: 1463/1463.**  Branch `feature/lua-role-support`, 153 commits
+ahead of origin (not pushed).  Last commits: `fc9a1fd` (L2 depth review),
+`0b1ba9d` (HEP-0024 closure + HEP-0033 design + L3 rework).
+
+**Actively open (in priority order):**
+
+1. **HEP-CORE-0033 Hub Character implementation** — design ratified, impl
+   not started.  13 prerequisites (`docs/tech_draft/HUB_CHARACTER_PREREQUISITES.md`)
+   must resolve before Phase 1.  Suggested order: G1 (common `ScriptAPIBase`)
+   → G2 (`BrokerService`/`HubState` integration model) → G7 (`HubConfig`
+   lifecycle-module vs main-owned).
+2. **HEP-CORE-0032 ABI check facility** — design complete
+   (`docs/tech_draft/abi_check_facility_design.md`), impl not started.
+   Land library-side any time; integrate at `plh_role` main.
+3. **Subtopic backlogs** (see §Subtopic TODO Documents below):
+   - API/ABI: Phases 2-7 of the `PYLABHUB_UTILS_TEST_EXPORT` rollout,
+     `std::function`/`std::optional` ABI fixes, C API helpers.
+   - Platform: CI macOS/Windows jobs + clang-tidy pass, MSVC gaps.
+   - Testing: Lua V2-fixture cleanup tail, worker-helper unification,
+     Script-API live-vs-frozen contract work.
+   - MessageHub: HEP-0033 ancillary items (system-level L4 tests, 6
+     hub-facing L3 Pattern-3 conversions folded into HEP-0033 scope).
+
+**Closed this session (2026-04-21 / 22):**
+- HEP-CORE-0024 Role Binary Unification (all 22 phases).
+- HEP-CORE-0033 Hub Character design ratified.
+- L3 role-api tests Pattern-3 converted + deepened.
+- L2 depth review closed (tracker `21.3.5`): Pattern-3 compliance,
+  vacuous-test sweep, stderr-capture fixes, assertion-quality tighten.
+- 6 tech drafts archived to `docs/archive/transient-2026-04-21/`.
+
 ### Priority 0 (Next Sprint — design ratified 2026-04-21): HEP-CORE-0033 Hub Character
 
 📍 **Status**: Design ratified; implementation not started
@@ -456,11 +489,25 @@ Previously closed (archived):
 All detailed task tracking, completions, and phase-specific work is maintained in subtopic TODO documents.
 See `docs/todo/README.md` for full list and archiving history.
 
-### Active (have open items)
-- **`docs/todo/API_TODO.md`** — Producer/consumer/processor binary work (Steps 4–5), header layering, API backlog
-- **`docs/todo/TESTING_TODO.md`** — Layer 4 producer/consumer tests (pending), HP-C1/HP-C2/BN-H1, platform
-- **`docs/todo/PLATFORM_TODO.md`** — Clang-tidy pass, Windows MSVC CI gaps (backlog)
-- **`docs/todo/MESSAGEHUB_TODO.md`** — Broker feature backlog, schema registry (deferred)
+### Active (have open items) — as of 2026-04-22
+
+- **`docs/todo/API_TODO.md`** — HEP-CORE-0032 ABI check facility (design
+  ready, implementation not started); `PYLABHUB_UTILS_TEST_EXPORT`
+  Phases 2-7; std::function/std::optional ABI fixes; C API helpers;
+  `src/`+`src/include/` restructure plan (deferred); HEP-0002 architecture
+  diagrams tail.
+- **`docs/todo/MESSAGEHUB_TODO.md`** — HEP-CORE-0033 Hub Character impl
+  (13 prereqs G1-G13); system-level L4 tests folded into HEP-0033 scope;
+  6 hub-facing L3 Pattern-3 conversions also folded into HEP-0033 scope
+  (from retired 21.L5 tracker).
+- **`docs/todo/TESTING_TODO.md`** — Lua V2-fixture cleanup tail
+  (~65 remaining V2 tests across chunks 7+); worker-helper unification
+  (deferred until Python engine converted); Script-API live-vs-frozen
+  contract design; schema/packing round-trip gap; broker-protocol timing
+  audit.
+- **`docs/todo/PLATFORM_TODO.md`** — Linux-only CI vs documented
+  platform-support claim (widen CI or narrow docs); clang-tidy pass;
+  MSVC `/Zc:preprocessor` propagation audit; MSVC `/W4 /WX` CI gate.
 
 ### Archived (complete — no active items)
 - `SECURITY_TODO.md` → `docs/archive/transient-2026-03-02/` (all 6 phases done 2026-02-28)
