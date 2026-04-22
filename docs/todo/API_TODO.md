@@ -10,6 +10,15 @@
 
 ## Current Focus
 
+### Open: src/ + src/include/ restructure (deferred plan, 2026-04-21)
+
+Design document: `docs/tech_draft/SRC_STRUCTURE_PLAN.md`.  Captures the
+target layout (library code under `src/utils/<subdir>/` + `src/scripting/<subdir>/`;
+binary `main.cpp` files flat under `src/`), `core` → `basic` rename, header
+reorganization mirroring src/utils/ subdirs, and umbrella header public/internal
+audit.  Not scheduled — execute when builds are otherwise quiet.  Phasing:
+A (file moves + rename), B (include reorg), C (umbrella + public/internal audit).
+
 ### Recently Completed (2026-04-17)
 
 - [x] **HEP-0024 Phases 13-14** (logging) — `RotatingFileSink::Mode::Timestamped`

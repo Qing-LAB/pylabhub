@@ -321,6 +321,27 @@ be added later"): revisit when native error-accounting (review
 Finding #3) is designed.  HEP-CORE-0011 § "Error Handling & Log
 Conventions" (added 2026-04-20) documents the current state.
 
+### Deferred: System-level L4 tests (roles + hub) — owned by HEP-CORE-0033
+
+System-level integration tests (roles + broker round-trip, channel
+broadcast, processor pipeline, hub-dead detection, inbox) are **not part
+of role-unification scope** — they test the full system including the
+hub binary, which is the HEP-CORE-0033 work stream. HEP-0024 closes
+with the no-hub-tier L4 suite at `tests/test_layer4_plh_role/` (71
+tests: `--init` / `--validate` / `--keygen` / CLI error paths).
+
+**Authoritative tracker**: `docs/todo/MESSAGEHUB_TODO.md` → "Open:
+HEP-CORE-0033 Hub Character refactor" → "System-level L4 tests".
+The six deferred tests (run-mode lifecycle, broker round-trip, channel
+broadcast, processor pipeline, hub-dead detection, inbox round-trip)
+are enumerated there; they become writable at HEP-0033 Phase 9 when
+`plh_hub` lands.
+
+`tests/test_layer4_integration/test_admin_shell.cpp` (disabled via
+`if(FALSE)`) is preserved as reference material until the new L4
+tests are written — it covers the admin-shell ZMQ protocol the hub
+refactor will likely change.
+
 ### Phase C: Integration Tests
 **Status**: ✅ Complete (424/424 as of 2026-02-19; suite grown to **1181/1181** by 2026-03-30)
 

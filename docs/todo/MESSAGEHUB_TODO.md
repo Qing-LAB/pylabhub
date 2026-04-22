@@ -15,6 +15,57 @@ heartbeat-multiplier role-liveness state machine, three-response DISC_REQ,
 role-close cleanup hook (federation + band), `RoleStateMetrics` counters.
 See commits `cf53ed3`, `3201e08`, `6558b2c`.
 
+### Open: HEP-CORE-0033 Hub Character refactor (design ratified 2026-04-21)
+
+**Implementation reference**: `docs/HEP/HEP-CORE-0033-Hub-Character.md`
+(see §14 for 10 implementation phases; §15 for 8 open items deferred to
+implementation).
+**Prerequisites** (must be resolved before Phase 1 can start): see
+`docs/tech_draft/HUB_CHARACTER_PREREQUISITES.md` — 13 items (G1-G13)
+covering ScriptAPIBase introduction, BrokerService/HubState integration
+model, MetricsFilter schema, error code catalog, etc.
+
+Summary of what this HEP introduces:
+- `plh_hub` unified binary (replaces disabled `pylabhub-hubshell`).
+- `HubConfig` composite (parallel to `RoleConfig`), `hub_cli`, `HubDirectory`.
+- `HubHost` class owning `HubState` (channels/roles/bands/peers/shm_blocks/counters).
+- `AdminService` structured RPC (replaces `AdminShell` Python-eval-only).
+- `ScriptEngine`-based scripting (retires bespoke `PythonInterpreter`).
+- `HubAPI` pybind11 + Lua bindings (via `ScriptEngine`).
+- Query-driven metrics model (supersedes HEP-0019 §3-4; diagram in HEP-0033 §9).
+
+Implementation not started — role unification (HEP-0024 Phases 1-22) is now
+the precedent completed work.
+
+**System-level L4 tests** (become writable at HEP-0033 Phase 9 when
+`plh_hub` binary lands). Designed-from-scratch once the hub binary is
+re-enabled in `src/CMakeLists.txt`:
+
+- [ ] **plh_role run-mode lifecycle**: spawn `plh_role <dir>`, verify it
+  reaches the data loop, accepts SIGTERM, exits 0 with clean shutdown
+  diagnostics. Cover all 3 roles. Replaces the deleted
+  `test_layer4_{producer,consumer,processor}/` run-mode tests.
+- [ ] **plh_role + broker round-trip**: producer → broker → consumer
+  end-to-end via plh_role binaries; verify SHM data flow + control-plane
+  HELLO/BYE/registration tracking. Replaces deleted
+  `tests/test_layer4_integration/test_pipeline_roundtrip.cpp`.
+- [ ] **plh_role channel broadcast**: hub broadcast/notify control
+  plane reaching multiple plh_role consumers. Replaces deleted
+  `tests/test_layer4_integration/test_channel_broadcast.cpp`.
+- [ ] **plh_role cross-role processor pipeline**: producer → processor →
+  consumer chain through broker; verify data transformation + ordering
+  preserved end-to-end.
+- [ ] **plh_role hub-dead detection**: kill hub mid-flight; verify
+  plh_role detects via BrokerRequestComm socket monitor and shuts down
+  with `StopReason::HubDead`.
+- [ ] **plh_role inbox round-trip**: consumer with inbox → producer
+  posts to inbox via `api.open_inbox(uid)`; verify message receipt and
+  ack flow.
+
+`tests/test_layer4_integration/test_admin_shell.cpp` (disabled via
+`if(FALSE)`) preserved as reference for the admin-shell ZMQ protocol
+that HEP-0033 will replace with structured RPC (`AdminService`).
+
 ### Completed 2026-04-14: HEP-CORE-0023 Phase 2 — Role-Liveness State Machine
 
 - Two-pass `check_heartbeat_timeouts`: Ready→Pending (transient demotion,

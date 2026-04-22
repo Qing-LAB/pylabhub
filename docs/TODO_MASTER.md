@@ -22,6 +22,36 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
+### Priority 0 (Next Sprint — design ratified 2026-04-21): HEP-CORE-0033 Hub Character
+
+📍 **Status**: Design ratified; implementation not started
+📋 **Spec**: `docs/HEP/HEP-CORE-0033-Hub-Character.md` (normative)
+📋 **Prerequisites**: `docs/tech_draft/HUB_CHARACTER_PREREQUISITES.md`
+📋 **Detail**: `docs/todo/MESSAGEHUB_TODO.md`
+
+Unifies the disabled `pylabhub-hubshell` into a modern `plh_hub` binary
+paralleling `plh_role`: composite `HubConfig`, `hub_cli`, `HubDirectory`,
+`HubHost` + `HubState`, `AdminService` structured RPC, `ScriptEngine`-based
+scripting + `HubAPI`, query-driven metrics (supersedes HEP-0019 §3-4). 10
+implementation phases; see HEP §14.
+
+### Priority 0 (DONE — 2026-04-21): HEP-CORE-0024 — Role Binary Unification COMPLETE
+
+📍 **Status**: All 22 phases ✅; `test_layer4_plh_role/` 71 tests passing; full suite **1456/1456**
+📋 **Branch**: `feature/lua-role-support`
+
+- [x] Phases 15-17: `RoleHostBase` abstract class; `RoleRuntimeInfo` + `register_runtime()`; per-role bootstrap
+- [x] Phase 18: `role_cli` extended with `--role` / `--log-maxsize` / `--log-backups`; mode exclusion
+- [x] Phase 19: `plh_role` unified binary + CMake target
+- [x] Phase 20: `pylabhub-producer/consumer/processor` binaries + per-role `CMakeLists.txt` + `*_main.cpp` deleted
+- [x] Phase 21: L4 tests unified at `tests/test_layer4_plh_role/` (parametrized by role tag; 71 tests covering --init / --validate / --keygen / CLI error paths + round-trip init↔validate)
+- [x] Phase 22: README / Deployment docs updated for `plh_role`
+
+System-level L4 tests (broker round-trip, pipeline, channel broadcast, hub-dead,
+inbox) are **out of scope** for HEP-0024 — they are system-integration tests
+that require a hub binary, which is HEP-CORE-0033 work. Tracked in
+`docs/todo/MESSAGEHUB_TODO.md`.
+
 ### Priority 0 (DONE — 2026-04-17): HEP-0024 Phases 13-14 — Logging
 📍 **Status**: Complete; **1290/1290 tests**
 📋 **Branch**: `feature/lua-role-support`

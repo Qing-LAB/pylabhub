@@ -2751,12 +2751,19 @@ find_datablock_consumer_impl(const std::string &name, uint64_t shared_secret,
     auto *header = impl->dataBlock->header();
     if (header == nullptr)
     {
+        LOGGER_WARN("[DataBlock:{}] find_consumer: attached SHM has no "
+                    "readable header (mapping likely failed).", name);
         return nullptr;
     }
 
-    // Validate shared secret (first 8 bytes store capability for discovery)
+    // Validate shared secret (first 8 bytes store capability for discovery).
+    // Symmetrical with the WriteAttach path below so a legit
+    // misconfiguration surfaces in the operator log instead of a silent
+    // nullptr return.
     if (std::memcmp(header->shared_secret, &shared_secret, sizeof(shared_secret)) != 0)
     {
+        LOGGER_WARN("[DataBlock:{}] find_consumer: shared_secret mismatch.",
+                    name);
         return nullptr;
     }
 
@@ -2932,6 +2939,8 @@ attach_datablock_as_writer_impl(const std::string &name,
     auto *header = impl->dataBlock->header();
     if (header == nullptr)
     {
+        LOGGER_WARN("[DataBlock:{}] WriteAttach: attached SHM has no "
+                    "readable header (mapping likely failed).", name);
         return nullptr;
     }
 

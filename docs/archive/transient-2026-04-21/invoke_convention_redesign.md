@@ -1,14 +1,55 @@
-# Invoke Convention Redesign: Directional Grouping + Consistent Returns
+# Invoke Convention Redesign: Directional Grouping + Consistent Returns — CLOSED
 
-**Status**: Partially implemented (updated 2026-04-16)
+**Status**: ✅ CLOSED 2026-04-21 — all proposals implemented and shipped.
+The implementation evolved past the draft on two points (both improvements
+over the original proposal); see "Implementation divergence" below. Draft
+preserved as historical record.
 **Scope**: Script callback signatures, invoke interface
+**Authoritative documentation**: HEP-CORE-0011 §callbacks (callback
+signatures + Frame type names), HEP-CORE-0024 §15.3 (typed invoke
+rationale), HEP-CORE-0027 (inbox API).
+**Final baseline**: 1456/1456 tests (2026-04-21).
 
-> **2026-04-16 update**: The flexzone naming problem (§2) is RESOLVED —
-> `InvokeTx.fz` / `InvokeRx.fz` fields removed; flexzone accessed via
-> `api.flexzone(side)`. The callback signature is now 3-arg:
-> `on_produce(tx, msgs, api)`, `on_consume(rx, msgs, api)`,
-> `on_process(rx, tx, msgs, api)`. Remaining open work: L3.ε
-> (invoke_cycle handle-based dispatch) in role_unification_design.md.
+### Implementation status (verified against code 2026-04-21)
+
+| Draft proposal | Status | Notes |
+|---|---|---|
+| 3-arg callback signatures (`on_produce(tx, msgs, api)`, `on_consume(rx, msgs, api)`, `on_process(rx, tx, msgs, api)`, `on_inbox(msg, api)`) | ✅ DONE | Verified in `python_engine.cpp:963` and lua/native engines |
+| `InvokeTx` / `InvokeRx` / `InvokeInbox` structs in `script_engine.hpp` | ✅ DONE | Verified at `script_engine.hpp:99-120` |
+| All callbacks return `InvokeResult`; True/False from script | ✅ DONE | `parse_return_value_("on_produce")` in python_engine; old None-as-commit removed |
+| Frame type names: `InSlotFrame` / `OutSlotFrame` / `InFlexFrame` / `OutFlexFrame` / `InboxFrame` | ✅ DONE | Verified at `script_engine.hpp:273-277` |
+| Directional flexzone in `RoleHostCore`: `set_in_fz_spec` / `set_out_fz_spec` / `in_fz_spec()` / `out_fz_spec()` | ✅ DONE | Verified at `role_host_core.hpp:104-115, 372-373` |
+| Processor input flexzone (`in_flexzone_schema_json` in `ProcessorFields`) | ✅ DONE | Per draft Step 8.6 marked done |
+| HEP callback documentation updated | ✅ DONE | HEP-0011 lines 201-203, 554-566; HEP-0015 + HEP-0018 superseded (binaries retired 2026-04-21); HEP-0024 §15.3 documents typed-invoke rationale |
+
+### Implementation divergence (improvements over draft)
+
+**Divergence 1 — Flexzone removed from invoke structs entirely.**
+- Draft proposed `InvokeRx { slot, slot_size, fz, fz_size }` and
+  `InvokeTx { slot, slot_size, fz, fz_size }`.
+- Code shipped `InvokeRx { slot, slot_size }` and
+  `InvokeTx { slot, slot_size }` — **no fz field**. Header comment in
+  `script_engine.hpp:95-97`: *"Flexzone is NOT carried here — scripts
+  access it via api.flexzone(ChannelSide::Rx), which returns a cached
+  typed view built once at build_api() time."*
+- Why this is better:
+  - Slot lifecycle (acquired/released per cycle) and flexzone (long-lived
+    shared region) had different lifetimes anyway; packing them into the
+    same struct was a false symmetry.
+  - Cached typed view at `build_api()` time gives scripts a stable
+    Python/Lua object across cycles — no per-cycle reconstruction.
+  - No `const_cast` gymnastics — the runtime API holds the right type
+    up front.
+
+**Divergence 2 — `Rx`/`Tx` for runtime predicates; `in`/`out` for config.**
+- Draft proposed `has_in_fz()` / `has_out_fz()` for runtime predicates.
+- Code shipped `has_rx_fz()` / `has_tx_fz()` (`role_host_core.hpp:118-119`)
+  for runtime predicates while keeping `set_in_fz_spec()` / `in_fz_spec()`
+  for setters/getters and `in_flexzone_schema` for the JSON config key.
+- Why this is better: formalises the runtime-channel-side concept
+  (`ChannelSide::Rx|Tx`, used in `api.flexzone(ChannelSide::Rx)`) as
+  distinct from the config-time directional concept (`in_`/`out_`). One
+  prefix forced everywhere would have conflated them.
 
 ---
 

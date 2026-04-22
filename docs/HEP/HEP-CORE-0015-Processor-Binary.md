@@ -1,14 +1,24 @@
-# HEP-CORE-0015: Processor Binary
+# HEP-CORE-0015: Processor Binary (HISTORICAL)
 
 | Property      | Value                                                                      |
 |---------------|----------------------------------------------------------------------------|
 | **HEP**       | `HEP-CORE-0015`                                                            |
-| **Title**     | Processor Binary — Standalone `pylabhub-processor` Executable              |
-| **Status**    | ✅ Active — Phase 1+2+3 fully implemented; ZMQ transport + startup done     |
+| **Title**     | Processor Binary — historical spec for the retired `pylabhub-processor` executable |
+| **Status**    | **SUPERSEDED (2026-04-21)** — the `pylabhub-processor` binary no longer exists. Processor role is now launched via `plh_role --role processor`. Kept as a historical record of the original standalone design. |
 | **Created**   | 2026-03-01                                                                 |
-| **Revised**   | 2026-03-11 (startup coordination implemented; dual-hub bridge demo added)  |
-| **Area**      | Standalone Binaries / Processor (`src/processor/`)                         |
+| **Revised**   | 2026-03-11 (startup coordination); 2026-04-21 (retirement marker)          |
+| **Area**      | Historical — processor role library code now lives under `src/processor/` and compiles into `pylabhub-utils` / `pylabhub-scripting`; no dedicated binary. |
 | **Depends on**| HEP-CORE-0002, HEP-CORE-0007, HEP-CORE-0011, HEP-CORE-0016, HEP-CORE-0023 |
+| **Superseded by** | HEP-CORE-0024 — Role Directory Service (binary unification, Phases 15-22) |
+
+> **⚠️ Supersession note (2026-04-21)**: The `pylabhub-processor` binary
+> specified by this HEP **no longer exists** — it was deleted as part of
+> HEP-CORE-0024 Phase 20. The processor role's library code (role host, init,
+> API) still lives at `src/processor/` and compiles into `pylabhub-utils` +
+> `pylabhub-scripting`; the role is launched via `plh_role --role processor`.
+> Protocol-level and library-level content below remains accurate as a
+> historical reference; all CLI-surface content is superseded by
+> HEP-CORE-0024 §11 and `src/include/utils/role_cli.hpp`.
 
 ---
 

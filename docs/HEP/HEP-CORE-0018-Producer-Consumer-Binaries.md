@@ -1,14 +1,26 @@
-# HEP-CORE-0018: Producer and Consumer Binaries
+# HEP-CORE-0018: Producer and Consumer Binaries (HISTORICAL)
 
 | Property      | Value                                                                    |
 |---------------|--------------------------------------------------------------------------|
 | **HEP**       | `HEP-CORE-0018`                                                          |
-| **Title**     | Producer and Consumer Binaries — Standalone `pylabhub-producer` and `pylabhub-consumer` |
-| **Status**    | Implemented — Phase 1 + Layer 4 tests (2026-03-02)                       |
+| **Title**     | Producer and Consumer Binaries — historical spec for the retired `pylabhub-producer` and `pylabhub-consumer` executables |
+| **Status**    | **SUPERSEDED (2026-04-21)** — the `pylabhub-producer` and `pylabhub-consumer` binaries no longer exist. Both roles are launched via `plh_role --role producer` / `plh_role --role consumer`. Kept as a historical record of the original standalone design. |
 | **Created**   | 2026-03-01                                                               |
-| **Area**      | Data Components (`src/producer/`, `src/consumer/`)                       |
+| **Revised**   | 2026-04-21 (retirement marker)                                           |
+| **Area**      | Historical — producer/consumer role library code still lives under `src/producer/` and `src/consumer/` and compiles into `pylabhub-utils` / `pylabhub-scripting`; no dedicated binaries. |
 | **Depends on**| HEP-CORE-0002 (DataHub), HEP-CORE-0007 (Protocol), HEP-CORE-0008 (LoopPolicy), HEP-CORE-0011 (ScriptHost), HEP-CORE-0013 (Channel Identity), HEP-CORE-0016 (Named Schema Registry), HEP-CORE-0030 (Band Messaging) |
 | **Supersedes**| HEP-CORE-0010 (Actor Thread Model), HEP-CORE-0014 (Actor Framework Design) |
+| **Superseded by** | HEP-CORE-0024 — Role Directory Service (binary unification, Phases 15-22) |
+
+> **⚠️ Supersession note (2026-04-21)**: The `pylabhub-producer` and
+> `pylabhub-consumer` binaries specified by this HEP **no longer exist** —
+> they were deleted as part of HEP-CORE-0024 Phase 20. The role library code
+> (role host, init, API) still lives at `src/producer/` and `src/consumer/`
+> and compiles into `pylabhub-utils` + `pylabhub-scripting`; both roles are
+> launched via `plh_role --role producer` / `plh_role --role consumer`.
+> Protocol-level and library-level content below remains accurate as a
+> historical reference; all CLI-surface content is superseded by
+> HEP-CORE-0024 §11 and `src/include/utils/role_cli.hpp`.
 
 ---
 
