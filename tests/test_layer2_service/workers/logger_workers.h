@@ -149,6 +149,17 @@ int test_write_error_callback_async();
 int test_platform_sinks();
 
 /**
+ * @brief Exercises Logger::set_rotating_logfile failure path under a
+ *        non-writable directory (POSIX) or invalid path (Windows).
+ *        Asserts the return is false and error code is permission_denied
+ *        (POSIX) or any error (Windows).
+ * @param unwritable_dir_str Absolute path to a directory the worker will
+ *        chmod to read-only (POSIX) before attempting the write.
+ * @return 0 on success, non-zero on failure.
+ */
+int test_set_rotating_logfile_failure(const std::string &unwritable_dir_str);
+
+/**
 
  * @brief Tests the stability of the logger and lifecycle manager under chaotic concurrent
  operations.
