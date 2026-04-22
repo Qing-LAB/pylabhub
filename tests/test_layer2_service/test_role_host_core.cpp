@@ -464,11 +464,11 @@ TEST_F(RoleHostCoreTest, SharedData_ConcurrentReadWrite)
     });
     writer.join();
 
-    // After join, final value must be the last written.
+    // After join, final value must be the last written.  The std::get
+    // call inside the EXPECT_EQ below would throw std::bad_variant_access
+    // if the type were corrupted by concurrent access, so type-correctness
+    // is pinned by the same line that pins the value.
     auto final_val = core_.get_shared_data("counter");
     ASSERT_TRUE(final_val.has_value());
     EXPECT_EQ(std::get<int64_t>(*final_val), kIterations - 1);
-
-    // Verify type is correct (not corrupted by concurrent access).
-    EXPECT_NO_THROW(std::get<int64_t>(*final_val));
 }
