@@ -1,8 +1,16 @@
 # Test Compliance Audit — L1/L2/L3/L4
 
-**Date**: 2026-04-18
-**Purpose**: Ground-truth inventory of every test `.cpp` file under `tests/test_layer[1-4]_*/` against the framework contract. No fixes; findings only.
-**Scope**: 96 test files (excluding `workers/` subdirs, which are Pattern-3 implementation files not subject to fixture rules).
+**Date**: 2026-04-18 (audit snapshot); progress refreshed 2026-04-21.
+**Status**: **Active reference document.** §1-§5 are the authoritative
+contract + violation taxonomy + file-level verdicts — still accurate
+for the Pattern 3 conversion sweep. §7 progress tracker is updated
+through 2026-04-21 (L2 complete; L3 tracked in harness tasks
+`21.L4` + `21.L5`).
+**Purpose**: Ground-truth inventory of every test `.cpp` file under
+`tests/test_layer[1-4]_*/` against the framework contract. No fixes;
+findings only (remediation is tracked separately).
+**Scope**: 96 test files (excluding `workers/` subdirs, which are
+Pattern-3 implementation files not subject to fixture rules).
 
 ---
 
@@ -277,11 +285,10 @@ Two structural considerations for the correction pass (not designed here — rai
 
 ## 7. Correction status
 
-Refreshed 2026-04-19 (mid-sweep snapshot). Earlier per-file rows from
-the 2026-04-18 pass are kept; L2 state below is the cumulative result
-through commit `89b0e9e` (Lua chunk 3).
+Refreshed 2026-04-21. **L2 sweep complete; L3 sweep pending** (tracked
+under harness tasks `21.L4` 8-small + `21.L5` 6-large).
 
-### L2 — all V1 and V2 violations from the audit are converted
+### L2 — ✅ all V1/V2 violations converted (2026-04-21)
 
 | File | Violation | Status | Fixed in |
 |---|---|---|---|
@@ -297,8 +304,8 @@ through commit `89b0e9e` (Lua chunk 3).
 | `test_role_config.cpp` | V1 (SetUpTestSuite) | ✅ Fixed 2026-04-19 | `2af8d02` (Phase 2c) |
 | `test_scriptengine_native_dylib.cpp` | V2 (RoleAPIBase fab) | ✅ Fixed 2026-04-19 | `124eba1` (Phase 2d) |
 | `test_filelock.cpp` | V1 (suite-scope + parent-side FileLock) | ✅ Fixed 2026-04-19 | `3846de2` (Phase 2e; two-worker holder/contender pattern) |
-| `test_lua_engine.cpp` | V2 (RoleAPIBase fab) | 🟡 **In progress** — 22/~104 tests converted (chunks 1-3) | `cdaafa6` `712b770` `89b0e9e` |
-| `test_python_engine.cpp` | V2 (RoleAPIBase fab) | ⏸ Not started — planned after Lua sweep | — |
+| `test_lua_engine.cpp` | V2 (RoleAPIBase fab) | ✅ Fixed 2026-04-20 — chunk 13 completed sweep; V2 `LuaEngineTest` fixture removed; all 111 `LuaEngineIsolatedTest` tests use Pattern 3 | `cdaafa6` … (chunks 1-13) |
+| `test_python_engine.cpp` | V2 (RoleAPIBase fab) | ✅ Fixed 2026-04-21 — 105 `PythonEngineIsolatedTest` Pattern 3; V2 `PythonEngineTest` fixture removed | — |
 
 ### Framework strengthening (cross-cutting, not per-file)
 
@@ -311,15 +318,75 @@ through commit `89b0e9e` (Lua chunk 3).
 | HEP-CORE-0001 § "Testing implications" | ✅ Authored | `a63cb79` |
 | README_testing.md §4 "Choosing a test pattern" + antipatterns + milestones | ✅ Authored | `a63cb79` |
 
-### L3 — open (14 V1 + 1 borderline)
+### L3 — still open; 15 files unchanged (verified 2026-04-21)
 
-All 14 L3 V1 files and the borderline `test_datahub_zmq_poll_loop.cpp`
-remain untouched. Three L3 parents (`test_datahub_mutex.cpp`,
+Grep-verified 2026-04-21: **15 files in `tests/test_layer3_datahub/`
+still use the V1 `SetUpTestSuite` + `static std::unique_ptr<LifecycleGuard>`
+pattern**. None have been converted to Pattern 3. This tracks the
+audit's "14 V1 + 1 borderline" count (the extra is the borderline
+file found by the sweep).
+
+Sample (verified by reading `test_datahub_broker_admin.cpp:158-191`):
+
+```cpp
+class BrokerAdminTest : public ::testing::Test {
+    static void SetUpTestSuite() {
+        s_lifecycle_ = std::make_unique<LifecycleGuard>(...);
+    }
+    static std::unique_ptr<LifecycleGuard> s_lifecycle_;
+};
+```
+
+This is the exact V1 pattern §4 flags. README_testing.md §398 calls it
+a non-solution ("Still in-process; still runs pylabhub static-dtor
+order at program exit; hides the 60s hang"). It is **not** a
+"fixed per real needs" case — these files have simply not yet been
+converted.
+
+**Why the suite still passes at 1456/1456**: partial luck + framework
+robustness (worker-completion milestones from commit `2212a22` catch
+some regressions). But `21.X` ("Investigate teardown hangs +
+lifecycle race conditions") is `in_progress` in the harness task list
+— episodic SIGTERM-after-60s failures under `-j2` load confirm the
+class of bug is still present:
+- `DatahubShmQueueTest.ShmQueueWriteFlexzone` (mitigated by
+  `ThreePhaseBackoff` cap at 10ms, commit `1d3e584`)
+- `DatahubSlotDrainingTest.DrainHoldTrueNeverReturnsNullptr` (same)
+- `DatahubHeaderStructureTest.SchemaHashesPopulatedWithTemplateApi`
+  (2026-03-18; probable lifecycle teardown hang under load)
+
+**File-by-file breakdown** (`LifecycleGuard` count + recommended task):
+
+| File | Count | Task |
+|---|---|---|
+| `test_datahub_hub_config_script.cpp` | 6 | 21.L5 large |
+| `test_datahub_role_flexzone.cpp` | 4 | 21.L5 large |
+| `test_datahub_loop_policy.cpp` | 4 | 21.L5 large |
+| `test_datahub_hub_zmq_queue.cpp` | 4 | 21.L5 large |
+| `test_datahub_hub_inbox_queue.cpp` | 4 | 21.L5 large |
+| `test_datahub_zmq_endpoint_registry.cpp` | 3 | 21.L5 large |
+| `test_datahub_metrics.cpp` | 3 | 21.L5 large |
+| `test_datahub_hub_federation.cpp` | 3 | 21.L5 large |
+| `test_datahub_schema_registry.cpp` | 3 | 21.L4 small |
+| `test_datahub_channel_access_policy.cpp` | 3 | 21.L4 small |
+| `test_datahub_broker_shutdown.cpp` | 3 | 21.L4 small |
+| `test_datahub_broker_schema.cpp` | 3 | 21.L4 small |
+| `test_datahub_broker_protocol.cpp` | 3 | 21.L4 small |
+| `test_datahub_broker_admin.cpp` | 3 | 21.L4 small |
+| `test_datahub_hub_queue.cpp` | 1 | 21.L4 small |
+
+**Conversion tracked by harness tasks**:
+- `21.L4` — Pattern 3 conversion: 8 small L3 violators
+- `21.L5` — Pattern 3 conversion: 6 large L3 violators (plus 1
+  moved from 21.L4 after re-classification; see breakdown above —
+  totals may need rebalancing when conversion starts)
+
+Three other L3 parents (`test_datahub_mutex.cpp`,
 `test_datahub_broker_request_comm.cpp`,
 `test_datahub_channel_group.cpp`) were updated to opt out of the new
 milestone check via `ExpectLegacyWorkerOk` since their workers
 legitimately bypass `run_gtest_worker` — those remain on the "convert
-properly" list.
+properly" list too.
 
 ### New gap-fill tests added during the sweep (not fixes to violations)
 
@@ -333,13 +400,13 @@ review-and-augment pass found real coverage holes:
 | `LuaEngineIsolatedTest.InvokeProduce_DiscardOnFalse_ButLuaWroteSlot` | `712b770` | Discard does NOT roll back Lua-side writes |
 | `LuaEngineIsolatedTest.InvokeConsume_RxSlot_IsReadOnly` | `89b0e9e` | Consumer rx.slot read-only contract (was named but not tested) |
 
-### Next
+### Next (remaining work as of 2026-04-21)
 
-- Continue Lua chunks (invoke_process → messages → api → error →
-  multi-state → remaining), each with review-and-augment gap analysis.
-- After Lua: convert `test_python_engine.cpp` (~98 tests).
-- After both engines: the L3 V1 sweep (14 files).
-- Before closing the audit: re-grep every `tests/test_layer*/` for
-  stale V1/V2 patterns in case a new file was introduced mid-sweep.
+- **L3 V1 sweep** (15 files) — tracked as harness tasks `21.L4`
+  (8 small violators) + `21.L5` (6 large violators), plus the
+  1 borderline case (`test_datahub_zmq_poll_loop.cpp`).
+- **Before closing the audit**: re-grep every `tests/test_layer*/`
+  for stale V1/V2 patterns in case a new file was introduced
+  mid-sweep.
 
 End of audit.

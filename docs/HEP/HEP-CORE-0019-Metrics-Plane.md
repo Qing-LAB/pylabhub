@@ -4,10 +4,24 @@
 |----------------|----------------------------------------------------------------------------------|
 | **HEP**        | `HEP-CORE-0019`                                                                  |
 | **Title**      | Metrics Plane — Passive SHM Metrics, Broker-Initiated Pull, Global Role Table |
-| **Status**     | Phase 1 Implemented — 2026-03-05; **Phase 2 redesign** — 2026-03-25 (heartbeat/metrics separation) |
+| **Status**     | Phase 1 Implemented — 2026-03-05; **§3-4 SUPERSEDED** by HEP-CORE-0033 (2026-04-21) |
 | **Created**    | 2026-03-02                                                                        |
 | **Area**       | Framework Architecture (`pylabhub-utils`, all binaries, `BrokerService`)          |
 | **Depends on** | HEP-CORE-0002 (DataHub), HEP-CORE-0007 (Protocol), HEP-CORE-0017 (Pipeline)     |
+
+> **⚠️ Amendment (2026-04-21):** The Phase 2 "periodic broker-pull" metrics
+> architecture specified in §3 and §4 has been **superseded** by
+> **HEP-CORE-0033 (Hub Character)**, which replaces it with a **query-driven
+> model**: the hub maintains a global table whose entries hold role-pushed
+> metrics (via heartbeat piggyback + `METRICS_REPORT_REQ`) or point to
+> on-demand collectors (SHM blocks); queries walk the table at admin-RPC time,
+> collect, format as JSON, and return — with per-entry `_collected_at`
+> timestamps making freshness self-describing. **§3.2 (live SHM-derived block
+> merge) is retained** and carries over unchanged.
+>
+> Phase 1 (SHM passive monitoring, role-side `ContextMetrics`, role table) is
+> **unchanged** by the amendment and remains the basis for the query-driven
+> model. See HEP-CORE-0033 §9 for the replacement metrics design.
 
 ---
 

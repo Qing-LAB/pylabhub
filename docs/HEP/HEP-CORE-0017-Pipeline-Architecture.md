@@ -4,11 +4,18 @@
 |---------------|---------------------------------------------------------------------------------|
 | **HEP**       | `HEP-CORE-0017`                                                                 |
 | **Title**     | Pipeline Architecture — Components, Planes, Topologies, and Boundaries         |
-| **Status**    | Implemented — 2026-03-03                                                        |
+| **Status**    | Implemented — 2026-03-03. Updated 2026-04-21: per-role binaries retired; roles run via `plh_role --role <tag>` (HEP-CORE-0024). |
 | **Created**   | 2026-03-01                                                                      |
-| **Updated**   | 2026-03-01 (actor eliminated; producer/consumer binaries added)                 |
-| **Area**      | Framework Architecture (`pylabhub-utils`, `pylabhub-producer`, `pylabhub-consumer`, `pylabhub-processor`) |
-| **Depends on**| HEP-CORE-0002 (DataHub), HEP-CORE-0007 (Protocol), HEP-CORE-0011 (ScriptHost), HEP-CORE-0016 (Schema Registry), HEP-CORE-0018 (Producer/Consumer) |
+| **Updated**   | 2026-03-01 (actor eliminated; producer/consumer binaries added); 2026-04-21 (binary unification — `pylabhub-producer/consumer/processor` retired in favor of unified `plh_role`) |
+| **Area**      | Framework Architecture (`pylabhub-utils`, `pylabhub-scripting`, `plh_role` unified binary) |
+| **Depends on**| HEP-CORE-0002 (DataHub), HEP-CORE-0007 (Protocol), HEP-CORE-0011 (ScriptHost), HEP-CORE-0016 (Schema Registry), HEP-CORE-0024 (Role Directory Service — binary unification) |
+
+> **Naming note (2026-04-21)**: Topology diagrams and prose below use the
+> historical binary names `pylabhub-producer` / `pylabhub-consumer` /
+> `pylabhub-processor` as role labels. These refer to the *roles*; each role
+> is now launched via `plh_role --role <producer|consumer|processor>` (the
+> three dedicated binaries have been retired — see HEP-CORE-0024). Protocol,
+> topology, and architectural content is unchanged.
 
 ---
 

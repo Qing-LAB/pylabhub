@@ -724,21 +724,33 @@ role-specific content — it only provides the path framework.
 
 ### 10.7 Custom Role Registration
 
-A custom role binary registers its own init content using the same API:
+A custom role binary registers its own init content using
+`RoleDirectory::register_role`, which returns a fluent
+`RoleRegistrationBuilder`. The builder's setters take `std::function`
+callbacks — std::function objects are constructed inside the shared
+library so no function-object crosses the DSO boundary (ABI safe).
 
 ```cpp
 int main(int argc, char *argv[])
 {
     // Register before parsing args
-    RoleDirectory::register_role("sensor", {
-        .config_filename = "sensor.json",
-        .uid_prefix      = "SENS",
-        .role_label      = "Sensor",
-        .config_template = &my_sensor_config_template,
-        .on_init         = &my_sensor_post_init,
-    });
+    RoleDirectory::register_role("sensor")
+        .config_filename("sensor.json")
+        .uid_prefix("SENS")
+        .role_label("Sensor")
+        .config_template([](const std::string &uid, const std::string &name) {
+            // Return the JSON template body for sensor.json (with uid/name
+            // substituted). See producer_init.cpp for the canonical layout.
+            return /* nlohmann::json template */;
+        })
+        .on_init([](const RoleDirectory &dir, const std::string &name) {
+            // Optional post-init hook (create extra files, etc.).
+        });
+    // The builder commits on destruction; explicit .commit() also available.
 
-    const auto args = role_cli::parse_role_args(argc, argv, "sensor");
+    const auto parsed = role_cli::parse_role_args(argc, argv, "sensor");
+    if (parsed.exit_code >= 0) return parsed.exit_code;
+    const auto &args = parsed.args;
     if (args.init_only)
         return RoleDirectory::init_directory(args.role_dir, "sensor", args.init_name);
     // ...
@@ -747,6 +759,13 @@ int main(int argc, char *argv[])
 
 No subclassing. No changes to `RoleDirectory`. The registration API is the
 extension point.
+
+> **ABI note**: `RoleRegistrationBuilder` (this section, init-time) takes
+> **std::function** because the library owns the construction. By contrast,
+> `RoleRegistry::register_runtime` / `RoleRuntimeInfo::host_factory`
+> (§11 / §16.3 Step 4, runtime-time) takes a **plain function pointer** —
+> there the function value crosses from the binary into the library's stored
+> entry, so std::function would be ABI-fragile.
 
 ---
 
@@ -1022,14 +1041,20 @@ backwards compat; `plh_role` sets it true).
 | 12 | Rename `pylabhub-pyenv` → `plh_pyenv` | ✅ 2026-04-17 |
 | 13 | `RotatingFileSink::Mode::Timestamped` extension; `RotatingLogConfig::timestamped_names` | ✅ 2026-04-17 |
 | 14 | `LoggingConfig` category in `RoleConfig` with parser + whitelist | ✅ 2026-04-17 |
-| 15 | `RoleHostBase` abstract class (lib-internal) + three role hosts inherit | ⚪ |
-| 16 | `RoleRuntimeInfo` struct + `register_runtime()` builder + `get_runtime()` accessor | ⚪ |
-| 17 | Register producer/consumer/processor runtime info + `bootstrap_<role>()` per role | ⚪ |
-| 18 | Extend `role_cli`: `--role`, `--log-maxsize`, `--log-backups`, `--log-file`; flag mode-exclusion enforcement | ⚪ |
-| 19 | `plh_role` unified binary + CMake target | ⚪ |
-| 20 | Delete `pylabhub-producer/consumer/processor` binaries | ⚪ |
-| 21 | Migrate/unify L4 tests to parameterize on role tag via `plh_role` | ⚪ |
-| 22 | Update README / Deployment docs for `plh_role` + new CLI surface | ⚪ |
+| 15 | `RoleHostBase` abstract class (lib-internal) + three role hosts inherit | ✅ 2026-04-18 |
+| 16 | `RoleRuntimeInfo` struct + `register_runtime()` builder + `get_runtime()` accessor | ✅ 2026-04-18 |
+| 17 | Register producer/consumer/processor runtime info + `bootstrap_<role>()` per role | ✅ 2026-04-19 |
+| 18 | Extend `role_cli`: `--role`, `--log-maxsize`, `--log-backups`, `--log-file`; flag mode-exclusion enforcement | ✅ 2026-04-19 |
+| 19 | `plh_role` unified binary + CMake target | ✅ 2026-04-20 |
+| 20 | Delete `pylabhub-producer/consumer/processor` binaries | ✅ 2026-04-21 |
+| 21 | Migrate/unify L4 tests to parameterize on role tag via `plh_role` (71 tests in `test_layer4_plh_role/`) | ✅ 2026-04-21 |
+| 22 | Update README / Deployment docs for `plh_role` + new CLI surface | ✅ 2026-04-21 |
+
+**Closure note (2026-04-21)**: All HEP-0024 phases complete. System-level L4
+tests (broker round-trip, pipeline, channel broadcast, processor pipeline,
+hub-dead, inbox) are **out of scope** for this HEP — they are
+system-integration tests and land with HEP-CORE-0033 Hub Character (where a
+working hub binary exists). Tracked in `docs/todo/MESSAGEHUB_TODO.md`.
 
 ### Commit order
 
@@ -1046,14 +1071,402 @@ backwards compat; `plh_role` sets it true).
 
 ## 14. Source File Reference
 
+Updated 2026-04-21 to reflect the post-unification layout (per-role
+`*_main.cpp` deleted; per-role config parsing merged into `RoleConfig`).
+
 | Component | File |
 |-----------|------|
 | `RoleDirectory` class | `src/include/utils/role_directory.hpp` (public), `src/utils/config/role_directory.cpp` |
 | `role_cli.hpp` | `src/include/utils/role_cli.hpp` (public, header-only) |
-| Consumer config from_directory | `src/consumer/consumer_config.cpp` |
-| Producer config from_directory | `src/producer/producer_config.cpp` |
-| Processor config from_directory | `src/processor/processor_config.cpp` |
-| Producer binary main | `src/producer/producer_main.cpp` |
-| Consumer binary main | `src/consumer/consumer_main.cpp` |
-| Processor binary main | `src/processor/processor_main.cpp` |
+| `RoleConfig` composite | `src/include/utils/config/role_config.hpp`, `src/utils/config/role_config.cpp` |
+| Role-specific field parsers | `src/{producer,consumer,processor}/{producer,consumer,processor}_fields.hpp` |
+| `RoleHostBase` abstract | `src/include/utils/role_host_base.hpp` |
+| `RoleHostCore` shared state | `src/include/utils/role_host_core.hpp` (Pimpl'd) |
+| Per-role hosts (derive from `RoleHostBase`) | `src/{producer,consumer,processor}/*_role_host.cpp/.hpp` |
+| Per-role init registration (`register_<role>_init`) | `src/{producer,consumer,processor}/*_init.cpp/.hpp` |
+| Per-role runtime registration (`register_<role>_runtime`) | same file as `_init.cpp` above |
+| `CycleOps` classes (one per role shape) | `src/utils/service/cycle_ops.hpp` |
+| Per-role pybind11 / Lua API | `src/{producer,consumer,processor}/*_api.cpp/.hpp` |
+| `plh_role` unified binary main | `src/plh_role/plh_role_main.cpp` |
+| L4 no-hub-tier tests | `tests/test_layer4_plh_role/` (71 tests) |
 | Embedded API guide | `docs/README/README_EmbeddedAPI.md` |
+
+---
+
+## 15. Role Plurality — Design Rationale
+
+> Added 2026-04-21 after the unification was ratified as the final design.
+> See also: archived `docs/archive/transient-2026-04-21/role_unification_design.md`
+> for the historical refactor plan and the divergence rationale in-line.
+
+### 15.1 What is role-neutral vs role-specific
+
+After HEP-CORE-0024 Phases 15-22, the framework's role handling is split
+into two layers:
+
+| Layer | Role-neutral | Role-specific |
+|-------|--------------|---------------|
+| Binary | `plh_role` single executable | — |
+| CLI parsing | `role_cli::parse_role_args` | `--role <tag>` selector |
+| Config factory | `RoleConfig::load(path, role_tag, parser)` | role-specific field parser injected |
+| Host base | `RoleHostBase` abstract | three concrete hosts derive |
+| Host core state | `RoleHostCore` (pimpl'd) | — |
+| Data loop frame | `run_data_loop<CycleOps>` template | three `CycleOps` concrete classes |
+| Queue abstractions | `QueueWriter` / `QueueReader` | — |
+| Script engine | `ScriptEngine` interface + `invoke(name)` / `eval` generic paths | `invoke_produce` / `invoke_consume` / `invoke_process` typed paths |
+| Lifecycle helper | `scripting::role_lifecycle_modules()` | — |
+| Protocol / broker | BrokerService (broker side), BrokerRequestComm (role side) | — |
+| Band membership / pub-sub | `band_join` / `band_leave` / `band_broadcast` / `band_members` on `RoleAPIBase`; `BandRegistry` broker-side; `BAND_*_{REQ,ACK,NOTIFY}` protocol (HEP-CORE-0030) | — |
+
+**Role identity is deliberately plural at three levels**: (a) `CycleOps`
+class, (b) `RoleHostBase` subclass, (c) role config section. Everything
+between is role-neutral.
+
+### 15.2 Why three `CycleOps` classes (not one)
+
+`src/utils/service/cycle_ops.hpp` defines `ProducerCycleOps`,
+`ConsumerCycleOps`, `ProcessorCycleOps` as `final` concrete classes, each
+~100 lines. The data-loop template `run_data_loop<Ops>` duck-types on
+`Ops::acquire()`, `Ops::invoke_and_commit()`, `Ops::cleanup_on_*()`.
+
+The consolidation `3 classes → 1` was explicitly evaluated (as L3.β in the
+role-unification draft) and **declined**:
+
+1. **Processor has a fundamentally different cycle shape.** Its `acquire()`
+   takes two slots (input + output), holds the input across cycles when
+   backpressure denies the output slot, and has two timeout policies
+   (drop-mode vs block-mode). Producer and consumer each take one slot
+   with no cross-cycle hold. Unifying requires either boolean flags
+   (`has_input_side`, `has_output_side`, `hold_on_backpressure`, …) or
+   variant state — both of which obscure per-role intent more than three
+   small focused classes do.
+2. **Template specialization beats runtime branching.** `run_data_loop`
+   instantiates specialized code per role; the compiler inlines each
+   operation. Replacing this with a generic `CycleOps` that branches on
+   role kind at runtime would give up this optimization without any
+   architectural benefit.
+3. **Each class's state is exactly what that role needs.** Producer
+   carries `buf_`; consumer carries `data_`; processor carries
+   `held_input_ + out_buf_ + drop_mode_ + two item sizes`. Three focused
+   structs are more readable than one union-of-all.
+4. **Role identity is already contained.** The fact that there are three
+   classes doesn't pollute the rest of the framework — `run_data_loop`,
+   `RoleAPIBase`, `RoleHostCore`, broker protocol, and SHM/ZMQ queue
+   layers have no idea which role is running. The plurality is bounded
+   to exactly where the cycle shape genuinely differs.
+
+### 15.3 Why typed `invoke_*` methods (alongside generic `invoke`)
+
+`ScriptEngine` exposes both paths in parallel:
+
+- **Generic path**: `invoke(const std::string &name)`,
+  `invoke(const std::string &name, const nlohmann::json &args)`, and
+  `eval(const std::string &code)` — all virtual, used for lifecycle
+  callbacks (`on_start`, `on_stop`, `on_heartbeat`) and arbitrary
+  user-defined callbacks including future hub events.
+- **Typed path** (zero-copy, slot-bound):
+  - `invoke_produce(InvokeTx tx, std::vector<IncomingMessage> &msgs)` →
+    drives `on_produce`.
+  - `invoke_consume(InvokeRx rx, std::vector<IncomingMessage> &msgs)` →
+    drives `on_consume`.
+  - `invoke_process(InvokeRx rx, InvokeTx tx, std::vector<IncomingMessage> &msgs)`
+    → drives `on_process`.
+  - `invoke_on_inbox(InvokeInbox msg)` → drives `on_inbox` for inbox
+    messaging (HEP-CORE-0027).
+
+The typed path exists because **`InvokeTx` / `InvokeRx` / `InvokeInbox`
+carry raw pointers** into shared-memory slots / inbox frames acquired via
+`write_acquire` / `read_acquire` / `recv_one`. These pointers cannot
+round-trip through JSON — serialising them defeats the zero-copy design.
+The typed methods preserve that contract; collapsing them into
+`invoke(name, json_args)` would either break zero-copy or require a
+parallel typed path anyway. (Adding a future typed invoke for a new
+zero-copy pattern follows the same pattern: a new struct + a new typed
+virtual method.)
+
+### 15.4 What this means for extension
+
+- **Adding a custom script callback** (no new data-plane semantics) →
+  use the generic `invoke(name)` / `invoke(name, args_json)`. No engine
+  change; script just defines a function of the matching name.
+- **Adding a new role whose cycle shape matches an existing role** →
+  new config, new `RoleHostBase` subclass, but reuse an existing
+  `CycleOps` class and an existing `invoke_*` method.
+- **Adding a new role with a genuinely different cycle shape** → new
+  `CycleOps` class; may or may not need a new `invoke_*` method
+  depending on whether slot zero-copy is required.
+
+See §16 for the full add-a-new-role checklist.
+
+---
+
+## 16. Adding a New Role — End-to-End Checklist
+
+This section walks through everything needed to add a hypothetical new
+role `sensor` to the framework. The checklist assumes the new role fits
+the role-directory + plh_role binary model — i.e., it's a data-plane role
+that launches as `plh_role --role sensor <sensor_dir>` and uses the
+standard directory layout (`sensor.json`, `vault/`, `logs/`, `run/`,
+`script/<type>/`).
+
+### 16.1 Decide cycle shape first
+
+This decision determines how much code you write.
+
+| Cycle shape | What to do | Work scope |
+|-------------|------------|------------|
+| **Matches producer** (single out-side, no input) | Reuse `ProducerCycleOps` | Minimal — ~4 new files |
+| **Matches consumer** (single in-side, no output) | Reuse `ConsumerCycleOps` | Minimal — ~4 new files |
+| **Matches processor** (in + out, optional hold) | Reuse `ProcessorCycleOps` | Minimal — ~4 new files |
+| **Genuinely different** (e.g. bidirectional, multi-slot batch, event-triggered) | Write a new `CycleOps` class | Add ~100 LOC to `cycle_ops.hpp` + small `ScriptEngine` typed method if zero-copy needed |
+
+### 16.2 File inventory for a new role
+
+For each new role, create:
+
+```
+src/<role>/
+  <role>_fields.hpp         — role-specific config fields struct
+  <role>_init.hpp / .cpp    — register_<role>_init()    (directory template)
+                              register_<role>_runtime() (plh_role dispatch entry)
+  <role>_role_host.hpp/.cpp — class <Role>RoleHost : public RoleHostBase
+  <role>_api.hpp / .cpp     — <Role>API class + pybind11 / Lua bindings
+```
+
+(Compiled into `pylabhub-utils` + `pylabhub-scripting` via the absolute
+paths in `src/utils/CMakeLists.txt` + `src/scripting/CMakeLists.txt` —
+same as the existing three roles.)
+
+### 16.3 Implementation steps (in order)
+
+**Step 1 — Config fields.**
+`<role>_fields.hpp` defines the role-specific config struct (e.g.
+`struct SensorFields { sampling_rate_hz, channel_count, ... }`) and a
+free function with the exact signature
+
+```cpp
+inline std::any parse_sensor_fields(const nlohmann::json &j,
+                                     const pylabhub::config::RoleConfig &cfg);
+```
+
+that extracts those fields and returns them wrapped in `std::any`. This
+function becomes the `config_parser` slot in `RoleRuntimeInfo` (Step 4)
+and is what `RoleConfig::load_from_directory` uses to populate
+`role_data<SensorFields>()`. See `src/producer/producer_fields.hpp` for
+the canonical pattern.
+
+**Step 2 — Init registration.**
+`<role>_init.cpp` defines a free function `register_sensor_init()` that
+calls the `RoleDirectory::register_role` fluent builder. The builder's
+setters take `std::function` callbacks (constructed inside the shared
+library — ABI safe, see §10.7):
+
+```cpp
+void register_sensor_init()
+{
+    RoleDirectory::register_role("sensor")
+        .config_filename("sensor.json")
+        .uid_prefix("SENS")
+        .role_label("Sensor")
+        .config_template([](const std::string &uid, const std::string &name) {
+            // Return the JSON template body for sensor.json.
+            // See producer_init.cpp for the canonical layout.
+            return /* nlohmann::json template */;
+        })
+        .on_init([](const RoleDirectory &dir, const std::string &name) {
+            // Optional post-init hook (create extra files, etc.).
+        });
+    // The builder commits on destruction; explicit .commit() also available.
+}
+```
+
+Note: `RoleRegistrationBuilder` (init time) takes `std::function`
+because the library owns construction. By contrast, `register_runtime`
+(Step 4, runtime time) takes plain function pointers — different ABI
+constraints. See §10.7 ABI note.
+
+**Step 3 — Role host subclass + `worker_main_()` override (the substantial work).**
+
+Define `class SensorRoleHost : public scripting::RoleHostBase` with the
+standard constructor signature `(config::RoleConfig, std::unique_ptr<scripting::ScriptEngine>, std::atomic<bool>*)`.
+Then **override `worker_main_()`** — this is **pure virtual**
+(`role_host_base.hpp:174`); there is no default. Inside the override the
+host runs the role's full lifecycle on the worker thread.
+
+Producer's `worker_main_()` (`src/producer/producer_role_host.cpp:75-435`)
+is the canonical reference, ~360 LOC organised into **14 numbered
+sub-steps**:
+
+| Sub-step | Purpose |
+|---|---|
+| 1  | Resolve schemas from config (`role_data<RoleFields>()`) |
+| 2  | Setup infrastructure (queues, no engine yet) |
+| 3  | Wire infrastructure onto the role's `RoleAPIBase` |
+| 4  | Load engine via lifecycle module (`engine_lifecycle_startup`) |
+| 5  | Invoke `on_init` script callback |
+| 6  | Connect to broker, start ctrl thread, register |
+| 6b | Startup coordination — wait for prerequisite roles (HEP-CORE-0023) |
+| 7  | Signal startup-promise ready (so `RoleHostBase::startup_()` returns) |
+| **8** | **Construct CycleOps + call `run_data_loop` — blocks until shutdown** |
+| 9  | Stop accepting invoke from non-owner threads |
+| 9a | Deregister from broker (ctrl thread still alive) |
+| 10 | Last script callback (e.g. `on_stop`) — ctrl thread still up so script can ack |
+| 11 | Finalize engine (free script resources) |
+| 12 | Signal ctrl thread's poll loop to exit |
+| 13 | Teardown infrastructure (disconnect broker, close inbox/queues) |
+| 14 | Drain all managed threads (last) |
+
+A new role's `worker_main_()` follows the same skeleton. **Sub-step 8 is
+where CycleOps is selected and constructed** — see Step 6 below for the
+selection decision and the exact `run_data_loop` call site.
+
+**Step 4 — Runtime registration.**
+`<role>_init.cpp` also defines a free **factory function** (NOT a lambda
+— `RoleRuntimeInfo::host_factory` is an ABI-stable function pointer that
+capturing lambdas don't convert to) plus `register_sensor_runtime()`
+which calls the fluent `RoleRegistry::register_runtime` builder:
+
+```cpp
+namespace {
+
+// Free function — convertible to RoleRuntimeInfo::HostFactory function
+// pointer (lambdas with captures are NOT — see role_registry.hpp).
+std::unique_ptr<scripting::RoleHostBase> make_sensor_host(
+    config::RoleConfig config,
+    std::unique_ptr<scripting::ScriptEngine> engine,
+    std::atomic<bool> *shutdown_flag)
+{
+    return std::make_unique<SensorRoleHost>(
+        std::move(config), std::move(engine), shutdown_flag);
+}
+
+} // namespace
+
+void register_sensor_runtime()
+{
+    utils::RoleRegistry::register_runtime("sensor")
+        .role_label("Sensor")
+        .host_factory(&make_sensor_host)
+        .config_parser(&parse_sensor_fields)
+        .commit();   // .commit() is required to insert the entry; the
+                     // RuntimeBuilder destructor commits as a fallback.
+}
+```
+
+This is the exact pattern used in `src/producer/producer_init.cpp:147-165`
+for `make_producer_host` + `register_producer_runtime`. Reuse that as
+the canonical reference.
+
+**Step 5 — `plh_role` dispatch map.**
+Extend `kRegistrars()` in `src/plh_role/plh_role_main.cpp` (or in a
+downstream fork — see §10.7 for the "no-subclassing, register-only" model
+for out-of-tree custom roles):
+```cpp
+{"sensor", {&register_sensor_init, &register_sensor_runtime}},
+```
+
+**Step 6 — CycleOps decision (executed inside Step 3 sub-step 8).**
+
+Decide which `CycleOps` your role uses. There is no virtual-base or
+template-hook indirection (intentional — see §15.2); the choice is
+expressed directly by the type you instantiate at the `run_data_loop`
+call site inside `worker_main_()`:
+
+```cpp
+// Sub-step 8 in worker_main_(): construct CycleOps + run loop.
+ProducerCycleOps ops(api_ref, engine_ref, core_, sc.stop_on_script_error);
+//   ^^^ pick ProducerCycleOps / ConsumerCycleOps / ProcessorCycleOps,
+//       OR a new SensorCycleOps you wrote (see below).
+scripting::LoopConfig lcfg{ /* period_us, loop_timing, ... from config_ */ };
+scripting::run_data_loop(api_ref, core_, lcfg, ops);
+//             ^^^ template arg deduced from `ops` — no explicit <Ops>.
+```
+
+**Decision logic:**
+
+| New role's cycle shape | Action |
+|---|---|
+| Single-side output (matches producer) | Use existing `ProducerCycleOps`. No new file. |
+| Single-side input (matches consumer) | Use existing `ConsumerCycleOps`. No new file. |
+| Dual-side with input-hold + drop/block timeout (matches processor) | Use existing `ProcessorCycleOps`. No new file. |
+| Genuinely different (e.g. multi-slot batch, event-triggered, bidirectional with different policy) | Add a new `SensorCycleOps` class (`final`, ~100 LOC) to `src/utils/service/cycle_ops.hpp` with `acquire(ctx)` / `invoke_and_commit(msgs)` / `cleanup_on_shutdown()` / `cleanup_on_exit()` methods, then instantiate it in `worker_main_()` as above. |
+
+**Most new roles will not need a new `CycleOps`** — the existing three
+shapes cover the common patterns. If you do add one and it requires a
+new typed `invoke_*` for zero-copy slot args (because `InvokeTx` /
+`InvokeRx` / `InvokeInbox` don't fit), also add a parallel virtual
+method to `ScriptEngine` with default + Python / Lua / Native engine
+implementations. See §15.3 for why typed invokes coexist with the
+generic `invoke(name, args_json)`.
+
+**Step 7 — Script-facing API.**
+`<role>_api.cpp` defines a `SensorAPI` class that **wraps** (composition,
+not inheritance) a `scripting::RoleAPIBase &` — exactly the pattern used
+by `ProducerAPI` / `ConsumerAPI` / `ProcessorAPI`. Sketch:
+
+```cpp
+class SensorAPI {
+public:
+    explicit SensorAPI(scripting::RoleAPIBase &base) : base_(&base) {}
+
+    // Forward common queries to base_ (uid, name, channel, log_level, ...).
+    [[nodiscard]] const std::string &uid() const noexcept { return base_->uid(); }
+    // ... rest as in producer_api.hpp ...
+
+    // Add role-specific methods on top, e.g.:
+    void set_sampling_rate(double hz);
+
+private:
+    scripting::RoleAPIBase *base_;
+};
+```
+
+Then expose pybind11 bindings on `SensorAPI` (and Lua bindings via the
+LuaEngine pattern). See `src/producer/producer_api.hpp` for the
+canonical layout. **Do not** inherit from `RoleAPIBase` — the existing
+role APIs all use composition because RoleAPIBase carries lifecycle
+state owned by the role host.
+
+**Step 8 — Script callback name.**
+Pick the primary callback name the role dispatches to (producer uses
+`on_produce`, consumer `on_consume`, processor `on_process`). Use this
+name in the role host's invocation and document it in `<role>_api.hpp`.
+
+**Step 9 — CMake.**
+Add the role's `.cpp` files to `src/utils/CMakeLists.txt`
+(role_host + init) and `src/scripting/CMakeLists.txt` (api). No per-role
+`CMakeLists.txt` is needed — the role files compile into `pylabhub-utils`
+and `pylabhub-scripting` via absolute paths.
+
+**Step 10 — L4 tests.**
+Extend `tests/test_layer4_plh_role/` — most tests are parametrized over
+role tag (`RoleSpec`), so adding a new role often just requires adding
+it to the `INSTANTIATE_TEST_SUITE_P` list with role-specific
+`uid_prefix`, `role_json_key`, and `default_loop_timing`. A few tests
+(init-specific, role-specific field checks) may need dedicated cases.
+
+### 16.4 What you do NOT need to touch
+
+The following are role-neutral and stay unchanged for any new role:
+- `RoleDirectory`, `RoleRegistry`, `RoleHostCore`, `RoleAPIBase`, `role_cli`.
+- `run_data_loop`, `LoopTimingPolicy`, backoff strategies, heartbeat.
+- `BrokerService` (broker side), `BrokerRequestComm` (role side), ZMQ context.
+- **Band membership and pub-sub** (HEP-CORE-0030). `BandRegistry`,
+  `BAND_*_{REQ,ACK,NOTIFY}` protocol on the broker side, and the
+  `band_join` / `band_leave` / `band_broadcast` / `band_members` methods
+  on `RoleAPIBase` are role-neutral. A new role inherits band access
+  through `RoleAPIBase` automatically — no per-role wiring required.
+- `ScriptEngine` interface (unless adding a new typed invoke method).
+- `QueueReader` / `QueueWriter` abstractions and their SHM/ZMQ concretes.
+- `RoleConfig` composite (role-specific fields go through the injected
+  `RoleParser`; no class surgery required).
+- `plh_role` binary structure (only the dispatch map extends).
+- The L2 `role_cli` / `role_registry` / `engine_factory` tests.
+
+### 16.5 Out-of-tree custom roles
+
+A downstream project can register a custom role **without forking the
+codebase**: link against `pylabhub-utils` + `pylabhub-scripting`, write
+the 4 source files in §16.2 as a separate library, and write a thin main
+that extends `kRegistrars()` before parsing args. See §10.7 for the
+init-only API shape; runtime registration follows the same pattern.

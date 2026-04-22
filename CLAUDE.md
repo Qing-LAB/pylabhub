@@ -162,8 +162,7 @@ After implementing anything non-trivial, **before responding "done"**:
 
 | Area | File |
 |---|---|
-| RAII layer / `with_transaction` / Phase 3 | `docs/todo/RAII_LAYER_TODO.md` |
-| Primitive API / ABI / concurrency / lifecycle | `docs/todo/API_TODO.md` |
+| Primitive API / ABI / concurrency / lifecycle / RAII | `docs/todo/API_TODO.md` (RAII layer tracked in "Template RAII" section; design draft at `docs/tech_draft/raii_layer_redesign.md`) |
 | Windows/MSVC / cross-platform / CMake flags | `docs/todo/PLATFORM_TODO.md` |
 | Tests / coverage / new test scenarios | `docs/todo/TESTING_TODO.md` |
 | Memory layout / `SharedMemoryHeader` / struct sizes | `docs/todo/MEMORY_LAYOUT_TODO.md` |

@@ -51,11 +51,16 @@ if(BUILD_TESTS)
   add_subdirectory(test_layer1_base)
   add_subdirectory(test_layer2_service)
   add_subdirectory(test_layer3_datahub)
-  # test_layer4_actor REMOVED: pylabhub-actor replaced by standalone
-  # pylabhub-producer + pylabhub-consumer + pylabhub-processor binaries.
-  add_subdirectory(test_layer4_producer)
-  add_subdirectory(test_layer4_consumer)
-  add_subdirectory(test_layer4_processor)
+  # Historical note — removed test directories:
+  #   - test_layer4_actor: pylabhub-actor replaced by per-role binaries
+  #     (2026-03), then consolidated into plh_role (2026-04).
+  #   - test_layer4_{producer,consumer,processor}: retired with the
+  #     per-role binaries as HEP-0024 Phase 20 landed; CLI coverage
+  #     moved to test_layer4_plh_role (no-hub tier).
+  #   - test_layer4_integration test_channel_broadcast + test_pipeline_roundtrip:
+  #     broker-involved; deferred — see docs/todo/TESTING_TODO.md
+  #     "Deferred L4 broker tests".
+  add_subdirectory(test_layer4_plh_role)
   add_subdirectory(test_layer4_integration)
   # test_raii_layer REMOVED: test_result.cpp moved to test_layer1_base (T5.1)
 

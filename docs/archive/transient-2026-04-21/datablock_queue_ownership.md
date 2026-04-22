@@ -1,13 +1,58 @@
-# DataBlock / Queue Ownership Redesign
+# DataBlock / Queue Ownership Redesign — CLOSED
 
-**Status**: Partially implemented (updated 2026-04-16)
+**Status**: ✅ CLOSED 2026-04-21 — all proposals implemented and shipped.
+The "PENDING" item in §9 (Step 11 — remove role host size members) was
+verified as actually done; the draft's status banner was stale. Two
+sections describe entities that no longer exist (see "Stale sections"
+below). Draft preserved as historical record.
 **Scope**: ShmQueue owns DataBlock, symmetric with ZmqQueue, strict schema validation
+**Authoritative documentation**: HEP-CORE-0002 §17.2 (Queue Abstraction —
+Transport-Agnostic Data Plane) + §17.2.1 (Flexzone Access). Includes
+Mermaid class diagram of `QueueWriter` / `QueueReader` ↔ `ShmQueue` /
+`ZmqQueue` hierarchy, ownership note, and flexzone access pattern.
+**Final baseline**: 1456/1456 tests (2026-04-21).
 
-> **2026-04-16 update**: hub::Producer/Consumer deleted (L3.γ A6.3).
-> RoleAPIBase now owns queues via build_tx_queue/build_rx_queue.
-> Spinlocks/flexzone go through QueueWriter/QueueReader base virtuals.
-> §5.2 below is STALE — kept for historical context. RAII path (§5.3)
-> remains open (template factories need rework).
+### Implementation status (verified against code 2026-04-21)
+
+| Draft item | Status | Verified |
+|---|---|---|
+| §1 Self-contained queue abstractions (ZmqQueue/ShmQueue) | ✅ DONE | `hub_shm_queue.hpp` + `hub_zmq_queue.hpp` |
+| §3 `ShmQueue::create_writer` / `create_reader` factories | ✅ DONE | `hub_shm_queue.hpp:89, 128` |
+| §4 Schema validation in `create_reader` | ✅ DONE | size + hash + flexzone size checks per §4 |
+| §5.1 Unified `QueueReader` / `QueueWriter` interface | ✅ DONE | `hub_queue.hpp` |
+| §5.3 Template RAII path (`raw_producer` / `raw_consumer`) | ✅ DONE | `hub_shm_queue.hpp:141-142` |
+| §5.4 `Producer::shm()` accessor removed | ✅ DONE | hub::Producer/Consumer themselves deleted (L3.γ A6.3) |
+| §7 Role host size members removed (`out_schema_slot_size_` / `in_schema_slot_size_`) | ✅ DONE | `grep -rn` in `src/` returns zero hits |
+| §8 ProducerOptions/ConsumerOptions size fields removed | ✅ DONE | per §9 step 10 |
+| §9 Step 11 (role host size members) "PENDING" | ✅ Actually DONE — banner was stale |
+
+### Stale sections (refer to deleted entities)
+
+- **§5.2** describes `Producer::spinlock(idx)` / `Consumer::spinlock_count()`.
+  These methods existed on `hub::Producer` / `hub::Consumer`, both **deleted
+  in L3.γ A6.3 (2026-04-15)**. Their state and accessors migrated into
+  `RoleAPIBase::Impl`. The 2026-04-16 update banner already noted this is
+  stale.
+- **§6** describes `establish_channel(messenger, channel, opts)`. Function
+  no longer exists in `src/` (`grep -rn establish_channel src/` returns
+  zero matches). Channel establishment logic now lives in
+  `RoleAPIBase::build_tx_queue()` / `build_rx_queue()` per HEP-0002 §17.2.
+
+### Why no merge into HEP needed
+
+HEP-CORE-0002 §17.2 (updated 2026-04-16) already documents the queue-
+ownership design authoritatively, with:
+- A Mermaid class diagram showing `QueueWriter` / `QueueReader` abstract
+  interfaces with `ShmQueue` and `ZmqQueue` as concrete implementations.
+- Explicit ownership statement: "ShmQueue owns DataBlockProducer/Consumer"
+  and "ZmqQueue owns zmq::socket_t (from shared ZMQContext)".
+- A note on the post-L3.γ migration of `hub::Producer/Consumer` state
+  into `RoleAPIBase::Impl`.
+
+§17.2.1 covers the flexzone access pattern (cached `api.flexzone(side)`)
+that displaced the per-cycle approach implied by older drafts.
+
+The draft's substance is already absorbed into HEP-0002 §17.2 / §17.2.1.
 
 ---
 

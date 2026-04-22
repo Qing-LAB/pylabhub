@@ -11,9 +11,12 @@ A pyLabHub data pipeline consists of:
 
 - **Hub** (`pylabhub-hubshell`): The broker that coordinates all roles. Manages
   channel registration, consumer discovery, peer notifications, and metadata storage.
-- **Producer** (`pylabhub-producer`): Creates a data channel and writes typed slots.
-- **Consumer** (`pylabhub-consumer`): Subscribes to a channel and reads typed slots.
-- **Processor** (`pylabhub-processor`): Reads from one channel, transforms, writes to another.
+- **Producer** (`plh_role --role producer`): Creates a data channel and writes typed slots.
+- **Consumer** (`plh_role --role consumer`): Subscribes to a channel and reads typed slots.
+- **Processor** (`plh_role --role processor`): Reads from one channel, transforms, writes to another.
+
+All three roles are served by the unified `plh_role` binary; the role is
+selected at launch via `--role <tag>`.
 
 Roles communicate through two planes:
 - **Data plane**: Shared memory (SHM) or ZMQ for slot data transfer.
@@ -27,7 +30,7 @@ Roles communicate through two planes:
 ### 2.1 Initialize a role directory
 
 ```bash
-pylabhub-producer --init /path/to/my-producer
+plh_role --init --role producer /path/to/my-producer
 ```
 
 This creates the directory with a `producer.json` config template and a
@@ -255,10 +258,10 @@ for fixed-rate policies. Neither for max_rate.
                     Control plane (via Broker)
 ```
 
-1. Start hub: `pylabhub-hubshell /hub`
-2. Start producer: `pylabhub-producer --config /producer/producer.json`
-3. Start processor: `pylabhub-processor --config /processor/processor.json`
-4. Start consumer: `pylabhub-consumer --config /consumer/consumer.json`
+1. Start hub: `pylabhub-hubshell /hub` *(currently disabled in build; see HEP-CORE-0033)*
+2. Start producer: `plh_role --role producer --config /producer/producer.json`
+3. Start processor: `plh_role --role processor --config /processor/processor.json`
+4. Start consumer: `plh_role --role consumer --config /consumer/consumer.json`
 
 Order doesn't matter — the broker coordinates startup. Consumers retry discovery
 until the producer registers the channel. Use `"startup": {"wait_for_roles": [...]}`
