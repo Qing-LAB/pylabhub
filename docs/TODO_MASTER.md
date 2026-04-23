@@ -36,11 +36,15 @@ as single mutator" doc ratified), `139b4ca` (HEP-0033 G1 `RoleHostBase` →
    - G2 design: ✅ ratified; `HubState` sole-mutator-through-broker model
      (`e9fc8f6`).
    - G2.1 (HubState skeleton + entry types): ✅ compile-only landed (`8e1eadc`);
-     17 L2 unit tests; not wired into BrokerService yet.
-   - **Next**: G2.2 — convert BrokerService private maps (`channel_registry`,
-     `band_registry`, `inbound_peers_`, `metrics_store_`, notification maps)
-     to delegate into `HubState` via friend access; broker handlers call
-     `_set_*` mutators instead of updating ad-hoc maps.
+     17 L2 unit tests; primitive `_set_*` mutators; not yet wired.
+   - **Next**: G2.2 reframed around hub *capabilities* rather than broker
+     map-by-map absorption. Five sub-commits: G2.2.0 plumb HubState +
+     add `_on_*` capability-operation layer over primitives; G2.2.1
+     registration lifecycle (deletes `ChannelRegistry`); G2.2.2 liveness;
+     G2.2.3 membership routing (deletes `BandRegistry` + `inbound_peers_`);
+     G2.2.4 observability (metrics data-model deferred).  See
+     `HUB_CHARACTER_PREREQUISITES.md` §G2 "Capability-operation mutator
+     layer" and "Phasing proposal" for the rationale.
    - Then: G2.3 (`HubAPI` read accessors) → G2.4 (`HubAPI` mutation wrappers
      + remove ad-hoc request queues) → G2.5 (`AdminService` shell).
    - Remaining prereqs beyond G2: G7 (HubConfig lifecycle-module vs main-owned),

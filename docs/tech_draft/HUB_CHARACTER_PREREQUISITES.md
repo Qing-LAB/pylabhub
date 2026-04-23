@@ -766,36 +766,146 @@ machinery lives on HubState and is uniform for all subscribers
 |---|---|---|
 | `HubState` class (header + .cpp) | ~400 | New files; maps + mutex + typed snapshot structs + event registry |
 | Entry structs (`ChannelEntry`, `RoleEntry`, `BandEntry`, `PeerEntry`, `BrokerCounters`) | ~200 | New; HEP-0033 §8 shapes |
-| `BrokerService` mutator methods | ~300 | New public methods; each wraps authorize → lock → private setter → unlock → notify |
-| `BrokerService` inbound handlers refactor | ~250 | Convert each handler from "update private map + emit NOTIFY ad hoc" to "call own public mutator" |
-| `BrokerService` dead-code removal | −600 | Remove private maps, per-mutation request queues, ad-hoc callbacks |
+| Capability-operation mutator layer on `HubState` | ~250 | `_on_*` methods composing primitive `_set_*` setters (§ below) |
+| `BrokerService` inbound handlers refactor | ~200 | Each handler collapses to "authorize → `hub_state_._on_*()` → emit NOTIFY" |
+| `BrokerService` dead-code removal | −600 | Remove private maps (ChannelRegistry, BandRegistry, inbound_peers_, metrics_store_), per-mutation request queues, ad-hoc callbacks |
 | `HubAPI` (new) | ~300 | Read accessors + mutation wrappers + subscribe pass-through |
 | `AdminService` (new) | ~400 | RPC dispatcher using broker mutators; not fully in G2 scope but receives the design |
 | Tests | ~800 | HubState concurrency + mutation authorization + event dispatch + broker integration |
 | Touches to existing tests | ~200 | Replace direct registry access with `state.snapshot()` / `state.channel()` |
 
 **Total**: ~1850 new LOC, −600 LOC removed; net +1250 LOC.  Medium-risk
-refactor — touches every broker inbound handler.  Can be landed in
-phases (HubState skeleton first, broker handler conversion second,
-HubAPI/AdminService third) to keep each commit reviewable.
+refactor — touches every broker inbound handler.  Phased so each commit
+is behavior-neutral or strictly additive and the full suite stays green.
 
-#### Phasing proposal
+#### Capability-operation mutator layer
 
-1. **Phase G2.1**: introduce `HubState` skeleton + entry types
-   (compile-only; no wiring).  No behavior change; ~600 LOC.
-2. **Phase G2.2**: convert `BrokerService` private maps to delegate
-   into `HubState` (friend access).  Broker mutators and handlers
-   migrate to the new private setters.  At this point HubState is
-   populated; snapshot accessors work; events fire.
-3. **Phase G2.3**: introduce `HubAPI` read accessors only.  Script
-   can query state.  Not yet mutating.
-4. **Phase G2.4**: add `HubAPI` mutation wrappers.  Remove ad-hoc
-   request queues from BrokerService.
-5. **Phase G2.5**: AdminService shell using the same broker mutators.
-   May overlap with HEP-0033 Phase 6 (AdminService).
+**Design reframe** (ratified 2026-04-23 after G2.1 landed).  G2.1 shipped
+`HubState` with 16 primitive `_set_*` setters, one per field the broker
+touches (`_set_channel_opened`, `_set_role_registered`, `_set_shm_block`,
+`_bump_counter`, …).  Usable but *mechanical* — a `REG_REQ` handler has
+to call 4 setters in sequence and remember which ones go together.
+HubState ends up a bag of setters, not an abstraction.
 
-Each phase is behavior-neutral or strictly additive; full test suite
-green after each.
+**The reframe**: on top of the primitives, add a capability-operation
+layer whose methods represent what *the hub does*, not what field is
+being touched.  Each operation composes several primitives atomically:
+
+```cpp
+// Primitives (from G2.1 — kept, still useful for unit tests):
+void _set_channel_opened(ChannelEntry);
+void _set_role_registered(RoleEntry);
+void _set_shm_block(ShmBlockRef);
+void _bump_counter(std::string, uint64_t);
+// ... 12 more
+
+// Capability operations (G2.2.0 — new, layered on top):
+void _on_channel_registered(ChannelEntry entry);
+    // = _set_channel_opened(entry)
+    //   + _set_role_registered(derive_role_from_producer(entry))
+    //   + if (entry.has_shared_memory) _set_shm_block(derive_shm_ref(entry))
+    //   + _bump_counter("REG_REQ")
+    //   + fire events
+
+void _on_channel_closed(std::string name, ChannelCloseReason why);
+void _on_consumer_joined(std::string channel, ConsumerEntry consumer);
+void _on_consumer_left(std::string channel, std::string role_uid);
+void _on_heartbeat(std::string channel, std::string role_uid,
+                   std::chrono::steady_clock::time_point when,
+                   std::optional<nlohmann::json> metrics);
+void _on_heartbeat_timeout(std::string channel, std::string role_uid);
+void _on_pending_timeout(std::string channel);
+void _on_band_joined(std::string band, BandMember member);
+void _on_band_left(std::string band, std::string role_uid);
+void _on_peer_connected(PeerEntry peer);
+void _on_peer_disconnected(std::string hub_uid);
+void _on_message_processed(std::string msg_type,
+                           std::size_t bytes_in, std::size_t bytes_out);
+```
+
+Why this shape:
+- **One inbound wire message = one operation call.**  `REG_REQ` →
+  `_on_channel_registered`, `HEARTBEAT_REQ` → `_on_heartbeat`, etc.
+  The broker no longer knows which maps back each operation.
+- **Cross-cutting concerns are encapsulated.**  Upserting the producer's
+  `RoleEntry` on REG_REQ, recording `ShmBlockRef`, bumping counters —
+  all invisible to the broker.  If a new HubState field is added
+  later, the op changes; the broker doesn't.
+- **The operation list maps 1:1 to what the hub *does*.**  Registration
+  lifecycle (4 ops), liveness (3 ops), membership routing (4 ops),
+  observability (1 op).  That's the hub's public behavior vocabulary.
+- **Primitives remain**.  Unit tests (like the existing
+  `Layer2_HubState` suite) continue to drive individual primitives
+  for fine-grained coverage; broker integration tests drive the ops.
+
+Operations live on `HubState` (not `BrokerService`) because they belong
+to the *state's* contract — "here's what can happen to me, told
+atomically."  `friend class BrokerService` already grants broker the
+ability to call them.  `HubAPI` / `AdminService` will call the same
+ops (via `BrokerService` wrappers that attach `AuthContext`) in G2.4.
+
+#### Phasing proposal (revised 2026-04-23)
+
+**G2.1 — HubState skeleton + entry types** ✅ landed (`8e1eadc`).
+   Primitive `_set_*` mutators only; not yet wired into BrokerService.
+   1500/1500 tests green.
+
+**G2.2 — Broker absorption, grouped by capability.**  Each sub-commit
+is behavior-neutral and lands with the full suite green.
+
+   **G2.2.0 — Plumbing + capability-operation layer.**  Add
+   `hub::HubState hub_state_` field to `BrokerServiceImpl`.  Add the
+   `_on_*` operation layer on top of G2.1's primitives.  Public
+   `const HubState& hub_state() const` accessor on BrokerService so
+   HubAPI/AdminService/tests can subscribe.  No broker handler touches
+   yet.  (~150 LOC)
+
+   **G2.2.1 — Registration lifecycle capability.**  Inbound handlers
+   for `REG_REQ` / `DEREG_REQ` / `CONSUMER_REG_REQ` /
+   `CONSUMER_DEREG_REQ` migrate to `_on_channel_registered` /
+   `_on_channel_closed` / `_on_consumer_joined` / `_on_consumer_left`.
+   Delete `ChannelRegistry` (`channel_registry.hpp/.cpp`).
+   `RoleEntry` and `ShmBlockRef` populated automatically inside the
+   operations.  Readers (`query_channel_snapshot`, `list_channels_json_str`,
+   `collect_shm_info_json`) switch to `hub_state_.snapshot()` /
+   `hub_state_.channel(name)`.  (~300 LOC, −250 removed)
+
+   **G2.2.2 — Liveness capability.**  `HEARTBEAT_REQ` handler +
+   heartbeat-timeout sweep migrate to `_on_heartbeat` /
+   `_on_heartbeat_timeout` / `_on_pending_timeout`.  Counter bumps
+   (`m_metric_ready_to_pending`, etc.) move into `_on_*` and read
+   back through `hub_state_.counters()`.  (~200 LOC)
+
+   **G2.2.3 — Membership routing capability.**  `BAND_JOIN_REQ` /
+   `BAND_LEAVE_REQ` → `_on_band_joined` / `_on_band_left`.
+   `HUB_PEER_HELLO` / `HUB_PEER_BYE` → `_on_peer_connected` /
+   `_on_peer_disconnected`.  Delete `BandRegistry` and
+   `inbound_peers_`.  `channel_to_peer_identities_` (reverse index
+   for relay fan-out) and `hub_connected_notified_` (session flag)
+   stay broker-private — they're transport-layer optimizations, not
+   state the hub exposes.  (~250 LOC, −300 removed)
+
+   **G2.2.4 — Observability capability.**  `_on_message_processed`
+   replaces per-msg-type `++metric` lines scattered through
+   `process_message`.  `metrics_store_` absorption is deferred
+   until the data-model question is decided (role-centric
+   last-writer-wins per HEP §8, a secondary channel-metrics map, or
+   leave broker-private until G5's `MetricsFilter` schema is concrete).
+   (~100 LOC for counters; metrics TBD)
+
+**G2.3 — HubAPI read-only.**  Scripts can subscribe to events and
+   query state via `HubAPI` (pybind11 + Lua bindings).  No
+   mutation path yet.
+
+**G2.4 — HubAPI mutation wrappers + request-queue removal.**  Scripts
+   can `hub.close_channel(name)`, `hub.broadcast(channel, msg)` etc.
+   Calls route through `BrokerService` wrappers that attach
+   `AuthContext{Script, script_uid}`.  Delete `close_request_queue_`,
+   `broadcast_request_queue_`, `hub_targeted_queue_`.
+
+**G2.5 — AdminService.**  RPC dispatcher on top of the same
+   `BrokerService` mutators, with `AuthContext{Admin, token_owner}`.
+   May overlap with HEP-0033 Phase 6.
 
 ### G3. `ChannelRegistry` / `BandRegistry` (absorbed into G2)
 
