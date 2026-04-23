@@ -78,7 +78,12 @@ TEST_P(PlhRoleKeygenTest, WritesVaultFile)
 
     WorkerProcess p(plh_role_binary(), "--role",
         {std::string(s.role), "--config", cfg.string(), "--keygen"});
-    EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
+    // Keygen drives Argon2id (INTERACTIVE: ~100ms @ 64MiB locally).
+    // PYLABHUB_TEST_CRYPTO_TIMEOUT_S is set by tests/test_framework/
+    // CMakeLists.txt at configure time: 60s local, 120s under CI
+    // (picks up memory pressure + scheduler jitter without hiding hangs).
+    EXPECT_EQ(p.wait_for_exit(PYLABHUB_TEST_CRYPTO_TIMEOUT_S), 0)
+        << "stderr:\n" << p.get_stderr();
 
     EXPECT_TRUE(fs::exists(vault_path))
         << "vault file not created at " << vault_path;
