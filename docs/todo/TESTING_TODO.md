@@ -163,11 +163,11 @@ after sweep completes.
 the same area, or a dedicated "error-paths" chunk after the
 callback chunks):
 
-- [ ] **Test: `invoke_consume` returning Discard** (Lua `return false`).
-  Chunks 3 covers Commit (return true) and Error (error() call), but
-  not the Discard path. invoke_consume's return-value dispatch for
-  false → Discard is currently unverified. Drop into a later chunk
-  or add to chunk 3's scope (probably not worth reopening chunk 3).
+- [x] ~~Test: `invoke_consume` returning Discard~~ — **done 2026-04-22**
+  (commit `fffd095`).  `InvokeConsume_DiscardOnFalse_NoErrorBump` pins
+  `return false → Discard` + no script_error_count bump across 10
+  iterations.  Parallel `InvokeOnInbox_DiscardOnFalse_NoErrorBump`
+  added for the inbox path.
 
 - [x] ~~Tests: `engine.load_script` error paths~~ — **done 2026-04-20**
   in chunk 7b.  Three P3 tests landed (missing file, missing required
@@ -181,36 +181,31 @@ callback chunks):
   `is_accepting()` returns false, and post-finalize invoke returns
   `InvokeResult::Error` (not a crash).
 
-- [ ] **Test: `RegisterSlotType_CustomName_NotReadOnlyByDefault`**
-  (from the post-chunk-5 review, assumption A1 in the read-only
-  mechanism investigation). `register_slot_type` in
-  `src/scripting/lua_engine.cpp:697-717` dispatches by EXACT name:
-  only "InSlotFrame" and "InboxFrame" get `readonly=true` in the
-  cached ffi ctype; "OutSlotFrame" / "InFlexFrame" / "OutFlexFrame"
-  get `readonly=false`; any other name falls through without caching
-  into either ref.  A test that registers under a custom name and
-  attempts a Lua write should verify either:
-    - the write succeeds (no `const*` protection by default), OR
-    - the engine logs a clear diagnostic about the unknown type.
-  Pin whichever behaviour is the current implementation so a
-  regression that accidentally grants/denies const protection to
-  custom names would fail the test.
+- [x] ~~Test: `RegisterSlotType_CustomName_*`~~ — **done 2026-04-22**
+  (commit `fffd095`, reframed from original premise).  The TODO was
+  stale: `register_slot_type` was since hardened (lua_engine.cpp:660-671)
+  to reject unknown canonical names up front with ERROR + false return,
+  so the "fall-through" scenario no longer exists.  New test
+  `RegisterSlotType_UnknownName_RejectsWithNoSideEffect` pins current
+  behaviour (false return + ERROR log + `type_sizeof == 0` proving no
+  FFI side effect + engine remains usable for subsequent valid
+  registrations).
 
-- [ ] **Test: rx-write-in-invoke_on_inbox (same mechanism, separate
-  code path)**. Chunk 3 covers invoke_consume, chunk 4 covers
-  invoke_process. `invoke_on_inbox` (lua_engine.cpp:992) also pushes
-  a read-only frame (`ref_inbox_readonly_`, :715). Same loud-failure
-  contract should apply; test needs to be added when inbox coverage
-  lands (chunk 7 or later).
+- [x] ~~Test: rx-write-in-invoke_on_inbox~~ — **done 2026-04-22** (commit
+  `fffd095`).  `InvokeOnInbox_DataReadonly_WriteFailsAndBufferUnchanged`
+  pins the three coupled invariants (buffer unchanged, `InvokeResult::
+  Error`, `script_error_count == 1`) against the InboxFrame const* chain
+  (lua_engine.cpp:726 → lua_state.cpp:291 → lua_engine.cpp:1023).
 
 **Cross-cutting cleanup deferred to end of entire L2 sweep**:
 
-- [ ] Trim redundant `GTest::gmock` link additions from L2 CMake
-  targets where the parent file doesn't reference `::testing::`.
-  Added defensively in several sweep commits; harmless but
-  inconsistent. One focused commit at sweep-end to grep parents and
-  trim deps that aren't used. (15 instances in
-  `tests/test_layer2_service/CMakeLists.txt` as of 2026-04-22.)
+- [x] ~~Trim redundant `GTest::gmock` link additions~~ — **done 2026-04-22**
+  (commit `469dfe4`).  7 of 15 targets had explicit `GTest::gmock` even
+  though `pylabhub::test_framework` already exports it PUBLIC.  Trimmed
+  the 7 redundant ones (shared_memory_spinlock, crypto_utils,
+  role_logging_roundtrip, configure_logger, lua_engine, python_engine,
+  metrics_api).  Kept on 8 targets whose source or linked worker
+  actually uses gmock matchers.
 
 - [x] ~~Grep for stale test-name references across the repo~~ —
   **done 2026-04-22**. Searched all `.cpp|.h|.hpp|.md|.txt|.sh|.py|.cmake`
@@ -412,8 +407,19 @@ refactor will likely change.
 
 ### New Gaps Discovered (2026-03-30)
 
-- [ ] **ZMQ checksum policy execution tests** — ZmqQueue now supports `set_checksum_policy()` with compute + verify paths, but no L3 tests exercise the ZMQ-specific checksum compute/verify logic (only SHM checksum paths have coverage). Need: write with enforced checksum → read with verify → confirm match; write corrupted → read with verify → confirm `checksum_error_count` increments.
-- [ ] **Config key whitelist edge case tests** — Config parser now rejects unknown JSON keys, but edge cases need coverage: empty object `{}`, keys with Unicode, keys that are prefixes of valid keys (e.g. `"script_"` vs `"script"`), nested unknown keys inside known objects.
+- [x] ~~**ZMQ checksum policy execution tests**~~ — **covered 2026-04-22**.
+  `test_datahub_hub_zmq_queue.cpp` has `ChecksumEnforced_Roundtrip`
+  (enforced round-trip matches), `ChecksumManual_NoStamp_ReceiverRejects`
+  (uncheck-summed frame → `checksum_error_count` increments), and
+  `ChecksumNone_Roundtrip` (None path works).  Corruption-in-flight is
+  not applicable to in-process ZMQ frames (immutable post-send).
+- [x] ~~**Config key whitelist edge case tests**~~ — **done 2026-04-22**
+  (commit `fffd095`).  Top-level exact-match whitelist makes
+  empty/unicode/prefix cases trivially safe (std::unordered_set lookup).
+  The real gap was nested keys: 4 sub-parsers (script/auth/identity/startup)
+  accepted unknown inner keys silently.  Fixed with validators + test
+  `NestedUnknownKey_Throws` covering 5 probes (script typo, role-tag
+  typo, auth typo, startup typo, startup-entry typo).
 
 ### Schema/Packing Round-Trip Coverage Gap (closed 2026-04-22)
 
@@ -427,11 +433,13 @@ refactor will likely change.
   56 bytes aligned) and `ShmRoundTrip_ArrayField` (uint32 + float64[2])
   close this at the role-API boundary. Both pin `compute_schema_size`
   totals against the documented aligned/packed values.
-- [ ] **L3 gap: No aligned-vs-packed same-data comparison** — write
-  identical logical data through both packing modes, verify both produce
-  correct field values despite different physical layouts. Not closed
-  by the above (all three tests pin a single aligned layout). Add when
-  ZmqQueue packing tests are revisited.
+- [x] ~~L3 gap: No aligned-vs-packed same-data comparison~~ — **done
+  2026-04-22** (commit `fffd095`).  `Packing_SameLogicalData_RoundtripsBitExactInBothModes`
+  in `test_datahub_hub_zmq_queue.cpp` writes `{uint8 flag, int64 value}`
+  through aligned (16B, offset 8) and packed (9B, offset 1), asserts
+  item_size differs per packing, values round-trip bit-exact, and pins
+  the `write_acquire` zero-init invariant (hub_zmq_queue.cpp:823) that
+  Enforced-checksum round-trip depends on.
 
 ### BrokerProtocolTest Timing Audit (2026-03-23; audited 2026-04-22)
 
@@ -527,10 +535,15 @@ focused commit when prioritized.
 
 ### Codex Review: Testing docs staleness (2026-03-15)
 
-- [ ] **README_testing.md stale** — Phase C broker/message-plane still says "To be implemented"
-  but broker tests already exist. Platform matrix claims all 4 OS must run suite, but CI
-  is Linux-only. Examples reference `./test_layer2_filelock` (old style). Update to reflect
-  current ctest-based workflow and actual CI coverage.
+- [x] ~~**README_testing.md stale** — Phase C still said "To be implemented"~~ —
+  **done 2026-04-22** (commit `469dfe4`).  Coverage table rewritten to
+  reflect current state: Phase C (MessageHub + broker) Yes, Phase D
+  (concurrency/multi-process) Yes, role-API integration row added,
+  scenario matrix extended with bidirectional flexzone + aligned-vs-packed
+  coverage.  Summary paragraph distinguishes in-process broker tests
+  (done) from hub-binary-dependent L4 tests (HEP-0033 scope).  Platform
+  claim still needs narrowing separately (tracked under PLATFORM_TODO
+  Codex review).
 
 ---
 
