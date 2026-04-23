@@ -23,7 +23,7 @@
 #include "utils/config/role_config.hpp"
 #include "utils/native_engine.hpp"
 #include "utils/role_directory.hpp"
-#include "utils/role_host_base.hpp"
+#include "utils/engine_host.hpp"
 
 #include <fmt/core.h>
 #include <gtest/gtest.h>
