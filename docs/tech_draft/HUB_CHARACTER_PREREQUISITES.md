@@ -907,6 +907,205 @@ is behavior-neutral and lands with the full suite green.
    `BrokerService` mutators, with `AuthContext{Admin, token_owner}`.
    May overlap with HEP-0033 Phase 6.
 
+#### Naming conventions for hub identifiers (G2.2.0b)
+
+**Ratified 2026-04-23.**  Every identifier that enters `HubState` from
+the wire, from scripts, or from admin input follows this grammar.  One
+validator (`utils/naming.hpp`) is the single enforcement point.  HubState
+is the strong boundary — any identifier that reaches a `_on_*` mutator
+is guaranteed to match these rules.
+
+**Why this matters now**: G2.2.0 plumbs `HubState` in but does not yet
+mutate via the broker.  G2.2.1+ will start moving every REG_REQ /
+DEREG_REQ / CONSUMER_REG_REQ / BAND_JOIN_REQ / HUB_PEER_HELLO handler
+to call a HubState op.  Every one of those wire messages carries an
+identifier.  Settling the grammar before broker wiring means: (a) the
+broker handlers validate once at the wire boundary and HubState trusts;
+(b) future code that discovers drift can be corrected *against this
+document*, not against ad-hoc conventions in each handler.
+
+**Future-use contract**: this spec is authoritative.  When an
+inconsistency is detected later — in code, config, test fixtures, or
+HEP examples — correction proceeds *against this spec*, not against
+whatever happens to be in the code at that moment.
+
+##### Grammar per identifier kind
+
+```
+channel    := NameComponent ('.' NameComponent)*
+              // first component NOT in {prod, cons, proc, sys}
+band       := '!' NameComponent ('.' NameComponent)*
+role.uid   := ('prod'|'cons'|'proc') '.' NameComponent '.' NameComponent ('.' NameComponent)*
+              // MINIMUM 3 components: tag . name . unique_suffix
+role.name  := NameComponent ('.' NameComponent)*
+              // plain identifier; tag may or may not be included;
+              // no reserved-word restriction since names are paired
+              // with role_tag in every structured output
+peer       := '@' NameComponent ('.' NameComponent)*
+schema     := '$' NameComponent ('.' NameComponent)*
+sys.key    := 'sys' ('.' NameComponent)+
+              // broker-internal counter / event keys; user input is
+              // rejected at the wire boundary for this namespace
+
+NameComponent := [A-Za-z][A-Za-z0-9_-]{0,63}
+                 // first char must be a letter;
+                 // interior chars: alphanumeric + '_' + '-'
+```
+
+##### Universal constraints
+
+| Rule | Value |
+|---|---|
+| Charset (interior of a name component) | `[A-Za-z0-9_-]` |
+| Charset (first char of a name component) | `[A-Za-z]` |
+| Max length per name component | 64 |
+| Max total identifier length (sigil + body) | 128 |
+| Hierarchy separator | `.` (dot) |
+| Sigils (position 0 only) | `!` (band), `@` (peer), `$` (schema) |
+| Role tag prefix (first component of role.uid) | closed set `{prod, cons, proc}` |
+| Reserved first components for channel | `{prod, cons, proc, sys}` |
+| Case | preserved; comparisons case-sensitive |
+| Whitespace | forbidden |
+| Dot at start / end | forbidden (grammar excludes) |
+| Adjacent dots (`..`) | forbidden (grammar excludes) |
+
+##### UID construction (role)
+
+`role.uid` is composed of three mandatory parts:
+
+```
+role.uid ::= <role_tag> . <name> . <unique_suffix>
+```
+
+- **`role_tag`** — closed enum `{prod, cons, proc}`.  Identifies the
+  role's kind (producer / consumer / processor).
+- **`name`** — the role's human-readable display component.  Free-form
+  within `NameComponent`.  User-chosen.
+- **`unique_suffix`** — one or more dotted components that
+  disambiguate this role instance from others sharing the same name.
+  Convention: `pid<N>`, hostname, UUID, or any combination.  Must
+  have at least one component.
+
+Examples (all valid):
+- `prod.cam1.pid42`
+- `cons.logger.host-lab1.pid9876`
+- `proc.filter.abc123`
+- `prod.main.uuid-8f3a2c`
+
+Invalid (insufficient parts):
+- `prod.uid` — only 2 components; missing `unique_suffix`.
+- `prod` — only the tag; missing name and unique.
+
+##### Helpers (live in `utils/naming.hpp`)
+
+```cpp
+enum class IdentifierKind { Channel, Band, Role, RoleName, Peer, Schema, SysKey };
+
+bool is_valid_identifier(std::string_view, IdentifierKind) noexcept;
+void require_valid_identifier(std::string_view, IdentifierKind,
+                              std::string_view context);   // PLH_PANIC on invalid
+
+struct RoleUidParts {
+    std::string_view tag;     // "prod" / "cons" / "proc"
+    std::string_view name;    // second component
+    std::string_view unique;  // third + onward, joined by dots (may contain dots)
+};
+std::optional<RoleUidParts>     parse_role_uid(std::string_view uid) noexcept;
+std::optional<std::string_view> extract_role_tag(std::string_view uid) noexcept;
+
+std::string format_role_ref(std::string_view uid,
+                            std::string_view name = {},
+                            std::string_view tag  = {});
+```
+
+##### Classification from a bare identifier
+
+Every identifier string is classifiable from its leading characters alone:
+
+| Prefix | Kind |
+|---|---|
+| `!…` | band |
+| `@…` | peer |
+| `$…` | schema |
+| `sys.…` | broker-internal |
+| `prod.…` / `cons.…` / `proc.…` (exact match of first component) | role (uid) |
+| Any other `[A-Za-z]…` | channel |
+
+**`role.name` is deliberately not self-classifying** — it is free-form
+display text, always paired with `role_tag` in structured output (JSON,
+metrics), so it never stands alone.
+
+##### Logging / output policy
+
+Since `role.uid` carries tag, name, and unique suffix by construction,
+**logging `role.uid` alone is self-describing** and does not need
+redundant `role_tag` / `role_name` fields next to it.  The rules:
+
+| Output context | Include `role_tag` separately? |
+|---|---|
+| Log line that prints `role.uid` | No — redundant |
+| Log line that prints `role.name` only | Yes — or prefix as `[tag] name` |
+| JSON admin response where both `uid` and `name` appear | Include `role_tag` for explicitness (machine readers may or may not parse uid) |
+| JSON NOTIFY that carries only `uid` | `role_tag` optional (can be parsed from uid) |
+
+`naming.hpp::format_role_ref()` applies this policy: prefers `uid` if
+present (self-describing), else falls back to `[tag] name`.
+
+##### `RoleEntry.role_tag` and `RoleEntry.name` are derived caches
+
+HubState's `RoleEntry` keeps `role_tag` and `name` as fields (backward
+compatible with G2.1's struct shape), but they are **derived caches**
+populated from `uid` at every upsert via `parse_role_uid()`.  The
+invariant `role.role_tag == extract_role_tag(role.uid).value()` holds
+by construction.  Code that reads `role_tag` or `name` gets the cache;
+the uid is the source of truth.
+
+Wire-protocol handlers (G2.2.1+) MAY continue to accept separate
+`role_name` / `role_tag` fields in REG_REQ / CONSUMER_REG_REQ for
+backward compatibility, but the validator enforces consistency with
+the uid's parsed parts and rejects mismatches.
+
+##### Enforcement points
+
+1. **HubState `_on_*` ops** (strong boundary): call
+   `require_valid_identifier()` at entry.  Invalid → silent drop +
+   bump `sys.invalid_identifier_rejected` counter.  No exceptions
+   thrown into the broker's handler thread.
+2. **Broker wire handlers** (G2.2.1+): call `is_valid_identifier()`
+   before calling the HubState op, and return an explicit error reply
+   to the client on failure.  This gives the UX path (clients see
+   error) while the HubState silent-drop is the backstop.
+3. **Role-side config parsers** (follow-up commit after G2.2.1):
+   validate at `plh_role --validate` time so misconfigured role UIDs
+   fail early, not at first REG_REQ.
+
+##### Migration impact on existing code
+
+| Area | Impact |
+|---|---|
+| Existing test role uids (`prod-uid`, `cons-A`, `r1`, …) | **Rename** to 3-component form (`prod.uid.test`, `cons.A.test`, etc.).  ~30 sites. |
+| Existing channel names in tests (`ch1`, `sensor.data`, `lab.raw`) | **No change** — all already fit the grammar. |
+| Existing band names (none in tests beyond `"band"`) | Rename to `!band` or similar.  Handful of sites. |
+| Existing peer names (`p1`, `hub_uid1`) | Rename to `@p1`, `@hub1`.  Handful of sites. |
+| Existing HEP / README examples | Update in same commit for consistency. |
+
+All renames land in the same commit as `naming.hpp` to avoid a window
+where tests reference old forms.
+
+##### Consistency-check rule (for future sessions)
+
+If future work discovers an identifier in code, tests, or docs that
+**does not match this spec**, the policy is:
+
+1. Treat this spec as authoritative.
+2. Correct the violating identifier to match the spec.
+3. Do **not** relax the spec to match drifting code, unless the drift
+   represents a ratified design change recorded here first.
+
+This is the whole point of documenting before coding — the spec
+predates the enforcement, so it's the unambiguous reference for
+resolving any detected inconsistency.
+
 ### G3. `ChannelRegistry` / `BandRegistry` (absorbed into G2)
 
 **Resolved by G2's ratified model.**  The internal registry types are
