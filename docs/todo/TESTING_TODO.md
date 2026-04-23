@@ -209,28 +209,26 @@ callback chunks):
   targets where the parent file doesn't reference `::testing::`.
   Added defensively in several sweep commits; harmless but
   inconsistent. One focused commit at sweep-end to grep parents and
-  trim deps that aren't used.
+  trim deps that aren't used. (15 instances in
+  `tests/test_layer2_service/CMakeLists.txt` as of 2026-04-22.)
 
-- [ ] Grep for stale test-name references across the repo (CI
-  scripts, dashboards, docs) in case a sweep commit renamed a test
-  that is filtered for by name in some external script. Candidates
-  known to be renamed so far:
-  - `LuaEngineTest.InitializeFailsGracefully` →
-    `LuaEngineIsolatedTest.InitializeAndFinalize_Succeeds`
-  - `LuaEngineTest.RegisterSlotType_PackedPacking` →
-    `LuaEngineIsolatedTest.RegisterSlotType_Packed_vs_Aligned`
-  - `LuaEngineTest.InvokeConsume_ReceivesReadOnlySlot` →
-    `LuaEngineIsolatedTest.InvokeConsume_ReceivesSlot`
-  - `LuaEngineTest.InvokeProcess_NilInput` →
-    `LuaEngineIsolatedTest.InvokeProcess_BothSlotsNil`
-  - `LuaEngineTest.InvokeProcess_InputOnlyNoOutput` →
-    `LuaEngineIsolatedTest.InvokeProcess_RxPresent_TxNil`
+- [x] ~~Grep for stale test-name references across the repo~~ —
+  **done 2026-04-22**. Searched all `.cpp|.h|.hpp|.md|.txt|.sh|.py|.cmake`
+  for the 5 renamed test names (`LuaEngineTest.InitializeFailsGracefully`
+  and siblings): **zero external references**. Chunk 13 cleanup was
+  thorough. Also searched for retired class names
+  (`LuaProducerHost` / `LuaConsumerHost` / `LuaProcessorHost`) and
+  legacy per-role binary targets (`pylabhub-producer` / `-consumer` /
+  `-processor`): only leftover references are in
+  `tests/test_layer4_integration/CMakeLists.txt` inside an `if(FALSE)`
+  block (held for HEP-0033 reference). Also found one stale comment in
+  `role_api_flexzone_workers.cpp` referencing the pre-split
+  `role_api_loop_policy_raii_workers.cpp` — fixed in the same commit.
 
-- [ ] Final audit re-grep: after all L2+L3 conversions land, re-run
-  the original grep from `docs/tech_draft/test_compliance_audit.md`
-  across every `tests/test_layer*/test_*.cpp` to confirm no stale
-  V1/V2 patterns remain and no new ones were introduced during the
-  sweep timeframe.
+- [x] ~~Final audit re-grep after L2+L3 conversions land~~ —
+  **done 2026-04-22**. L2+L3 conversions completed this session
+  (Pattern-3 compliance audit + depth review closed); re-grep above
+  covers the full repo and found no stale patterns.
 
 ### Open: Stress-level calibration across converted Pattern-3 tests
 
@@ -417,11 +415,23 @@ refactor will likely change.
 - [ ] **ZMQ checksum policy execution tests** — ZmqQueue now supports `set_checksum_policy()` with compute + verify paths, but no L3 tests exercise the ZMQ-specific checksum compute/verify logic (only SHM checksum paths have coverage). Need: write with enforced checksum → read with verify → confirm match; write corrupted → read with verify → confirm `checksum_error_count` increments.
 - [ ] **Config key whitelist edge case tests** — Config parser now rejects unknown JSON keys, but edge cases need coverage: empty object `{}`, keys with Unicode, keys that are prefixes of valid keys (e.g. `"script_"` vs `"script"`), nested unknown keys inside known objects.
 
-### Schema/Packing Round-Trip Coverage Gap (2026-04-16)
+### Schema/Packing Round-Trip Coverage Gap (closed 2026-04-22)
 
-- [ ] **L3 gap: No aligned-packing round-trip with padding-sensitive schema** — Existing ZmqQueue tests use packed packing for mixed-type round-trip (`Schema_MixedArrayFields_MultipleTypes_Roundtrip`) and aligned for simple schemas. No test verifies data correctness through padding gaps (e.g., `{bool, int32, float64}` aligned: padding after bool and after int32 must not corrupt adjacent field data). Need: write complex schema with aligned packing → read back → verify every field bit-exact across padding boundaries.
-- [ ] **L3 gap: No SHM round-trip with complex schema** — SHM tests use blob schemas only. Need SHM round-trip with multi-field schema (both aligned and packed) to verify `compute_field_layout` → DataBlock → read-back integrity.
-- [ ] **L3 gap: No aligned-vs-packed same-data comparison** — Write identical logical data through both packing modes, verify both produce correct field values despite different physical layouts.
+- [x] ~~L3 gap: aligned-packing round-trip with padding-sensitive schema~~ —
+  **done 2026-04-21**. `ShmRoundTrip_PaddingSensitive` in
+  `tests/test_layer3_datahub/test_role_api_flexzone.cpp` writes
+  `{float64 ts, uint8 flag, int32 count}` aligned (16 bytes, 3-byte pad)
+  and asserts bit-exact read-back at layout-computed offsets.
+- [x] ~~L3 gap: SHM round-trip with complex schema~~ — **done 2026-04-21**.
+  `ShmRoundTrip_AllTypes` (13 fields across every scalar type,
+  56 bytes aligned) and `ShmRoundTrip_ArrayField` (uint32 + float64[2])
+  close this at the role-API boundary. Both pin `compute_schema_size`
+  totals against the documented aligned/packed values.
+- [ ] **L3 gap: No aligned-vs-packed same-data comparison** — write
+  identical logical data through both packing modes, verify both produce
+  correct field values despite different physical layouts. Not closed
+  by the above (all three tests pin a single aligned layout). Add when
+  ZmqQueue packing tests are revisited.
 
 ### BrokerProtocolTest Timing Audit (2026-03-23)
 - [ ] BrokerProtocolTest suite passes but execution times cluster near typical timeout values (~2s). Risk: tests could be masking timing-dependent failures by passing on timeout rather than on correct event sequence. Audit should verify each test validates actual event logs and message ordering, not just return codes or "didn't hang" outcomes.
@@ -440,12 +450,26 @@ refactor will likely change.
 
 ### Code Review REVIEW_FullStack_2026-03-17 — Testing gaps
 
-- [ ] **PARITY-01 HIGH: No Lua role integration tests** — LuaProducerHost, LuaConsumerHost,
-  LuaProcessorHost data loops, inbox drain, and startup coordination have zero integration test
-  coverage. Need `test_lua_producer_roundtrip`, `test_lua_consumer_roundtrip`,
-  `test_lua_processor_roundtrip` in test_layer4_*.
-- [ ] **L0 gap: No `uuid_utils` unit tests** — `generate_uuid4()` has no L0 test.
-- [ ] **L0 gap: No `bytes_to_hex`/`bytes_from_hex` tests** — Used in ZMQ identity encoding.
+- [x] ~~**PARITY-01 HIGH: No Lua role integration tests**~~ — **retired
+  2026-04-22 (superseded by HEP-0033 scope)**. Original framing named
+  `LuaProducerHost` / `LuaConsumerHost` / `LuaProcessorHost` classes
+  that no longer exist (eliminated in HEP-CORE-0024). Post-unification
+  there is one `RoleAPIBase` wrapping a `ScriptEngine` plugin; a
+  Lua-backed run-mode test is just `plh_role --role <tag>` with
+  `script.type=lua`. That test infrastructure requires a hub binary
+  to broker the channel — not yet available (HEP-0033 Phase 9). When
+  HEP-0033 system-level L4 tests (`plh_role + broker round-trip`,
+  `plh_role cross-role processor pipeline`, etc.) land, parametrize
+  them by `script.type` so Python + Lua + Native all get coverage.
+  Authoritative tracker: `docs/todo/MESSAGEHUB_TODO.md` under the
+  HEP-0033 refactor.
+- [x] ~~**L0 gap: No `uuid_utils` unit tests**~~ — **already covered**.
+  `tests/test_layer2_service/test_uid_utils.cpp` has 18 tests (L2, not
+  L0 as originally filed). The item was stale at filing time.
+- [x] ~~**L0 gap: No `bytes_to_hex`/`bytes_from_hex` tests**~~ —
+  **already covered**. `tests/test_layer0_platform/test_uuid_and_format.cpp`
+  tests empty / single-byte / multi-byte / case-insensitivity /
+  invalid hex / round-trip. Item was stale at filing time.
 - [x] **L2 gap: No vault corruption detection test** — `OpenCorruptedVaultThrows` (bit-flip in ciphertext) and `OpenTruncatedVaultThrows` (short-file rejection) both present in `test_hub_vault.cpp` (2026-04-22 depth review).
 - [ ] **L2 gap: ZMQ context concurrent start/stop, double-start** — superseded by LifecycleGuard framework tests (singleton init/shutdown is Lifecycle's concern, not a ZMQContext-layer test); keeping the note to revisit if the ZMQContext ever grows independent init/shutdown semantics.
 - [ ] **L2 gap: No DataBlockMutex WAIT_ABANDONED test** for Windows robust mutex path — POSIX build can't exercise this; needs a Windows CI runner. Tracked separately as a platform-coverage item.
