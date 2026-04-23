@@ -41,9 +41,11 @@
 #include "utils/role_registry.hpp"
 
 #include "plh_datahub.hpp"   // LifecycleGuard + hub/utils prelude
+#include "plh_version_registry.hpp"  // HEP-CORE-0032 ABI check
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -164,6 +166,32 @@ int do_init(const role_cli::RoleArgs &args)
 
 int main(int argc, char *argv[])
 {
+    // ── ABI compatibility check (HEP-CORE-0032) ───────────────────────
+    // Runs BEFORE LifecycleGuard, signal handler, and any library call
+    // that could exercise a mismatched vtable or protocol field.  If
+    // the caller binary was compiled against an older pylabhub-utils
+    // header than the one actually linked at runtime (the bug class
+    // that caused the 2026-04-21 ProcessorCliTest SIGSEGV), this check
+    // refuses to run with an actionable diagnostic.  In Debug or with
+    // PYLABHUB_STRICT_ABI_CHECK=ON, the build_id comparison also
+    // catches silent "stale binary + fresh library at same declared
+    // version" cases the per-axis check cannot see.
+    {
+        constexpr auto kAbiExpected = pylabhub::version::abi_expected_here();
+        const auto abi = pylabhub::version::check_abi(
+            kAbiExpected.versions, kAbiExpected.build_id);
+        if (!abi.compatible)
+        {
+            std::fprintf(stderr,
+                "[plh_role] ABI mismatch — refusing to run.\n"
+                "  %s\n"
+                "  Rebuild this binary against the installed library, "
+                "or reinstall a matching library.\n",
+                abi.message.c_str());
+            return 2;
+        }
+    }
+
     std::atomic<bool> g_shutdown{false};
 
     pylabhub::InteractiveSignalHandler signal_handler(
