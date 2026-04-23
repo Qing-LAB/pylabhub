@@ -15,15 +15,39 @@ heartbeat-multiplier role-liveness state machine, three-response DISC_REQ,
 role-close cleanup hook (federation + band), `RoleStateMetrics` counters.
 See commits `cf53ed3`, `3201e08`, `6558b2c`.
 
-### Open: HEP-CORE-0033 Hub Character refactor (design ratified 2026-04-21)
+### Open: HEP-CORE-0033 Hub Character refactor (in progress)
 
 **Implementation reference**: `docs/HEP/HEP-CORE-0033-Hub-Character.md`
 (see §14 for 10 implementation phases; §15 for 8 open items deferred to
 implementation).
-**Prerequisites** (must be resolved before Phase 1 can start): see
-`docs/tech_draft/HUB_CHARACTER_PREREQUISITES.md` — 13 items (G1-G13)
-covering ScriptAPIBase introduction, BrokerService/HubState integration
-model, MetricsFilter schema, error code catalog, etc.
+**Prerequisites**: `docs/tech_draft/HUB_CHARACTER_PREREQUISITES.md` — 13
+items (G1-G13).
+
+**Completed**:
+- G1 (host template): `RoleHostBase` = `EngineHost<ApiT>` template. `139b4ca`.
+- G2 design ratified ("broker as single mutator" model; G3+G4 absorbed). `e9fc8f6`.
+- G2.1 (HubState skeleton + entry types): compile-only landed. `8e1eadc`.
+  - `src/include/utils/hub_state.hpp` — class + 7 entry types + enums
+    + AuthContext + event subscription.
+  - `src/utils/ipc/hub_state.cpp` — shared_mutex, friend-only `_set_*`
+    mutators, handler fire outside state lock.
+  - 17 L2 unit tests (`Layer2_HubState`) via `friend struct
+    test::HubStateTestAccess` shim.
+  - Not yet wired into BrokerService — that's G2.2.
+
+**Next** (in order):
+- **G2.2** — convert BrokerService's private maps to delegate into
+  HubState via friend access. In scope: `channel_registry`, `band_registry`,
+  `inbound_peers_` + `channel_to_peer_identities_` + `hub_connected_notified_`,
+  `metrics_store_`. Each inbound handler in `broker_service.cpp` migrates
+  from "update private map + emit NOTIFY ad hoc" to "call own public
+  mutator → HubState `_set_*` → emit NOTIFY." ~550 new LOC / ~600 removed.
+- G2.3 — `HubAPI` read accessors only (script can query state, not mutate).
+- G2.4 — `HubAPI` mutation wrappers; remove `close_request_queue_` /
+  `broadcast_request_queue_` / `hub_targeted_queue_` ad-hoc queues.
+- G2.5 — `AdminService` shell using same broker mutators.
+- G7 — HubConfig lifecycle-module vs main-owned decision.
+- G5/G6/G8 spec gaps; G9-G13 ripples.
 
 Summary of what this HEP introduces:
 - `plh_hub` unified binary (replaces disabled `pylabhub-hubshell`).

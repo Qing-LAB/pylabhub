@@ -22,22 +22,32 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
-### Snapshot — 2026-04-22
+### Snapshot — 2026-04-23
 
-**Full suite: 1463/1463.**  Branch `feature/lua-role-support`, 153 commits
-ahead of origin (not pushed).  Last commits: `fc9a1fd` (L2 depth review),
-`0b1ba9d` (HEP-0024 closure + HEP-0033 design + L3 rework).
+**Full suite: 1500/1500.**  Branch `feature/lua-role-support`.  Last commits:
+`8e1eadc` (HEP-0033 G2.1 HubState skeleton), `e9fc8f6` (HEP-0033 G2 "broker
+as single mutator" doc ratified), `139b4ca` (HEP-0033 G1 `RoleHostBase` →
+`EngineHost<ApiT>` template), `399fbfc` (HEP-0032 Phase C ABI fingerprint).
 
 **Actively open (in priority order):**
 
-1. **HEP-CORE-0033 Hub Character implementation** — design ratified, impl
-   not started.  13 prerequisites (`docs/tech_draft/HUB_CHARACTER_PREREQUISITES.md`)
-   must resolve before Phase 1.  Suggested order: G1 (common `ScriptAPIBase`)
-   → G2 (`BrokerService`/`HubState` integration model) → G7 (`HubConfig`
-   lifecycle-module vs main-owned).
-2. **HEP-CORE-0032 ABI check facility** — design complete
-   (`docs/tech_draft/abi_check_facility_design.md`), impl not started.
-   Land library-side any time; integrate at `plh_role` main.
+1. **HEP-CORE-0033 Hub Character implementation** — in progress.
+   - G1 (host template): ✅ `RoleHostBase` = `EngineHost<RoleAPIBase>` (`139b4ca`).
+   - G2 design: ✅ ratified; `HubState` sole-mutator-through-broker model
+     (`e9fc8f6`).
+   - G2.1 (HubState skeleton + entry types): ✅ compile-only landed (`8e1eadc`);
+     17 L2 unit tests; not wired into BrokerService yet.
+   - **Next**: G2.2 — convert BrokerService private maps (`channel_registry`,
+     `band_registry`, `inbound_peers_`, `metrics_store_`, notification maps)
+     to delegate into `HubState` via friend access; broker handlers call
+     `_set_*` mutators instead of updating ad-hoc maps.
+   - Then: G2.3 (`HubAPI` read accessors) → G2.4 (`HubAPI` mutation wrappers
+     + remove ad-hoc request queues) → G2.5 (`AdminService` shell).
+   - Remaining prereqs beyond G2: G7 (HubConfig lifecycle-module vs main-owned),
+     G5/G6/G8 spec gaps, G9-G13 ripples. See
+     `docs/tech_draft/HUB_CHARACTER_PREREQUISITES.md`.
+2. **HEP-CORE-0032 ABI check facility** — ✅ all three phases landed
+   (`c91ae84` Phase A, `34255be` Phase B, `399fbfc` Phase C).
 3. **Subtopic backlogs** (see §Subtopic TODO Documents below):
    - API/ABI: Phases 2-7 of the `PYLABHUB_UTILS_TEST_EXPORT` rollout,
      `std::function`/`std::optional` ABI fixes, C API helpers.
