@@ -713,6 +713,78 @@ int unknown_key_throws(const std::string &dir)
         JsonConfig::GetLifecycleModule());
 }
 
+int nested_unknown_key_throws(const std::string &dir)
+{
+    // Pins the nested-key whitelist on the 4 sub-parsers that have one.
+    // Each sub-scope is probed with a single known-bad key; load() must
+    // throw with the correct nested-path in the message.  Runs each
+    // probe as an independent load() (distinct JSON file) so a failure
+    // in one probe doesn't mask the others.
+    return run_gtest_worker(
+        [&]() {
+            auto probe = [&](const char *tag,
+                              const std::function<void(nlohmann::json &)> &mutator,
+                              const std::string &expected_path)
+            {
+                SCOPED_TRACE(std::string("probe=") + tag);
+                auto j = minimal_producer_json();
+                mutator(j);
+                auto path = write_json(dir, std::string(tag) + ".json", j);
+                try {
+                    RoleConfig::load(path.string(), "producer");
+                    FAIL() << "expected RoleConfig::load to throw for " << tag;
+                } catch (const std::runtime_error &e) {
+                    EXPECT_THAT(e.what(), ::testing::HasSubstr("unknown config key"));
+                    EXPECT_THAT(e.what(), ::testing::HasSubstr(expected_path))
+                        << "expected message to contain '" << expected_path
+                        << "', got: " << e.what();
+                }
+            };
+
+            // script: `pahh` instead of `path` — the originating typo
+            // scenario that surfaced the library bug.
+            probe("script_typo",
+                  [](nlohmann::json &j) { j["script"]["pahh"] = "/opt/x"; },
+                  "script.pahh");
+
+            // producer (role-tag block): unknown sibling of uid/name/log_level/auth.
+            probe("producer_typo",
+                  [](nlohmann::json &j) { j["producer"]["nme"] = "MyRole"; },
+                  "producer.nme");
+
+            // producer.auth: unknown sibling of keyfile.
+            probe("auth_typo",
+                  [](nlohmann::json &j) {
+                      j["producer"]["auth"] = nlohmann::json::object();
+                      j["producer"]["auth"]["keyfiile"] = "/etc/vault";
+                  },
+                  "producer.auth.keyfiile");
+
+            // startup: unknown sibling of wait_for_roles.
+            probe("startup_typo",
+                  [](nlohmann::json &j) {
+                      j["startup"]["wait_for_rolez"] =
+                          nlohmann::json::array();
+                  },
+                  "startup.wait_for_rolez");
+
+            // startup.wait_for_roles[i]: unknown sibling of uid/timeout_ms.
+            probe("startup_entry_typo",
+                  [](nlohmann::json &j) {
+                      nlohmann::json entry = {
+                          {"uid", "PROD-OTHER-00000001"},
+                          {"timout_ms", 1000}  // typo: timout vs timeout
+                      };
+                      j["startup"]["wait_for_roles"] =
+                          nlohmann::json::array({entry});
+                  },
+                  "timout_ms");
+        },
+        "role_config::nested_unknown_key_throws",
+        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule());
+}
+
 // ── Logging ─────────────────────────────────────────────────────────────────
 
 int logging_default_all_defaults(const std::string &dir)
@@ -1029,6 +1101,8 @@ struct RoleConfigWorkerRegistrar
                     return checksum_null_default_enforced(dir);
                 if (sc == "unknown_key_throws")
                     return unknown_key_throws(dir);
+                if (sc == "nested_unknown_key_throws")
+                    return nested_unknown_key_throws(dir);
                 if (sc == "logging_default_all_defaults")
                     return logging_default_all_defaults(dir);
                 if (sc == "logging_explicit_all_fields")

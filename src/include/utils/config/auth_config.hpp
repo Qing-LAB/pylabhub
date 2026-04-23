@@ -34,7 +34,17 @@ inline AuthConfig parse_auth_config(const nlohmann::json &j, std::string_view ro
     {
         const auto &sect = j[sect_name];
         if (sect.contains("auth") && sect["auth"].is_object())
-            ac.keyfile = sect["auth"].value("keyfile", "");
+        {
+            const auto &a = sect["auth"];
+            for (auto it = a.begin(); it != a.end(); ++it)
+            {
+                if (it.key() != "keyfile")
+                    throw std::runtime_error(
+                        sect_name + ": unknown config key '" + sect_name +
+                        ".auth." + it.key() + "'");
+            }
+            ac.keyfile = a.value("keyfile", "");
+        }
     }
     return ac;
 }

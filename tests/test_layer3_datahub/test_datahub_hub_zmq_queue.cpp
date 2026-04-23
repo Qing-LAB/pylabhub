@@ -1808,6 +1808,104 @@ TEST_F(ZmqQueueTest, Packing_NaturalVsPacked_DifferentItemSize)
         << "aligned and packed must produce different item sizes for bool+int32";
 }
 
+TEST_F(ZmqQueueTest, Packing_SameLogicalData_RoundtripsBitExactInBothModes)
+{
+    // Pins three things for schema {uint8 flag, int64 value}:
+    //   - item_size differs by packing (16 aligned / 9 packed)
+    //   - values round-trip bit-exact at schema-computed offsets
+    //     (0/8 aligned, 0/1 packed)
+    //   - write_acquire returns a zero-initialised buffer
+    //     (hub_zmq_queue.cpp:823) — required so that Enforced-checksum
+    //     BLAKE2b over the full item_size (padding included) is
+    //     deterministic.  A regression that drops the zero-fill would
+    //     silently break round-trip for any padded schema.
+
+    const std::vector<ZmqSchemaField> schema = {
+        {"uint8",  1, 0},  // flag
+        {"int64",  1, 0},  // value
+    };
+
+    const uint8_t  kFlag  = 0xAB;
+    const int64_t  kValue = static_cast<int64_t>(0x0123456789ABCDEFLL);
+
+    auto run_roundtrip = [&](const char *packing, size_t expected_item_size,
+                              size_t value_offset)
+    {
+        SCOPED_TRACE(std::string("packing=") + packing);
+
+        auto push = ZmqQueue::push_to("tcp://127.0.0.1:0", schema, packing,
+                                        /*bind=*/true);
+        ASSERT_NE(push, nullptr);
+        EXPECT_EQ(push->item_size(), expected_item_size)
+            << "item_size mismatch for " << packing
+            << " — schema math drifted from the expected layout";
+        ASSERT_TRUE(push->start());
+        const std::string ep =
+            static_cast<ZmqQueue*>(push.get())->actual_endpoint();
+
+        auto pull = ZmqQueue::pull_from(ep, schema, packing, /*bind=*/false);
+        ASSERT_NE(pull, nullptr);
+        EXPECT_EQ(pull->item_size(), expected_item_size);
+        ASSERT_TRUE(pull->start());
+        std::this_thread::sleep_for(50ms);
+
+        // (4) Pin the zero-padding contract: write_acquire must return
+        // a fully-zeroed buffer.  If this regresses, Enforced-checksum
+        // round-trip silently fails on any padded schema.
+        void *wbuf = push->write_acquire(1000ms);
+        ASSERT_NE(wbuf, nullptr);
+        {
+            const auto *probe = static_cast<const uint8_t *>(wbuf);
+            for (size_t i = 0; i < expected_item_size; ++i)
+            {
+                ASSERT_EQ(probe[i], 0u)
+                    << "write_acquire must return zero-padded buffer "
+                       "(hub_zmq_queue.cpp:823-824 invariant) — non-zero "
+                       "byte at offset " << i << " under " << packing
+                    << " breaks the Enforced-checksum round-trip.";
+            }
+        }
+
+        // Write typed fields at schema-computed offsets; padding stays zero.
+        auto *wb = static_cast<uint8_t *>(wbuf);
+        wb[0] = kFlag;
+        std::memcpy(wb + value_offset, &kValue, sizeof(kValue));
+        push->write_commit();
+
+        // Read and verify bit-exact at the same packing-specific offsets.
+        const void *rbuf = pull->read_acquire(2000ms);
+        ASSERT_NE(rbuf, nullptr) << "item not received under " << packing
+            << " — checksum mismatch (see 'checksum error after decode' "
+               "log) points to the zero-padding contract breaking on "
+               "either send (write_acquire) or receive (decode_tmp_).";
+        const auto *rb = static_cast<const uint8_t *>(rbuf);
+
+        EXPECT_EQ(rb[0], kFlag)
+            << "flag corrupted on round-trip under " << packing;
+
+        int64_t read_value = 0;
+        std::memcpy(&read_value, rb + value_offset, sizeof(read_value));
+        EXPECT_EQ(read_value, kValue)
+            << "value corrupted on round-trip under " << packing
+            << " at offset " << value_offset;
+
+        pull->read_release();
+
+        EXPECT_EQ(pull->metrics().recv_frame_error_count, 0u)
+            << "no frame errors expected on the happy round-trip";
+        EXPECT_EQ(pull->metrics().checksum_error_count, 0u)
+            << "no checksum errors expected under the zero-padding "
+               "contract — a non-zero count here indicates either "
+               "sender or receiver drifted from the contract.";
+
+        push->stop();
+        pull->stop();
+    };
+
+    run_roundtrip("aligned", /*item_size=*/16, /*value_offset=*/8);
+    run_roundtrip("packed",  /*item_size=*/ 9, /*value_offset=*/1);
+}
+
 // ============================================================================
 // Checksum policy tests — symmetric with ShmQueue/hub API checksum tests
 // ============================================================================

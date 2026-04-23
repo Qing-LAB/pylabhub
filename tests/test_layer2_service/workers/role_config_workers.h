@@ -69,6 +69,7 @@ int checksum_explicit_none(const std::string &dir);
 int checksum_invalid_throws(const std::string &dir);
 int checksum_null_default_enforced(const std::string &dir);
 int unknown_key_throws(const std::string &dir);
+int nested_unknown_key_throws(const std::string &dir);
 
 // ── Logging ─────────────────────────────────────────────────────────────────
 int logging_default_all_defaults(const std::string &dir);

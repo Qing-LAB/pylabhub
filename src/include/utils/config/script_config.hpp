@@ -112,6 +112,15 @@ inline ScriptConfig parse_script_config(const nlohmann::json &j,
     if (j.contains("script") && j["script"].is_object())
     {
         const auto &s = j["script"];
+        // Reject unknown nested keys so typos like "pahh" instead of
+        // "path" fail loudly instead of silently defaulting.
+        for (auto it = s.begin(); it != s.end(); ++it)
+        {
+            const auto &k = it.key();
+            if (k != "type" && k != "path" && k != "checksum")
+                throw std::runtime_error(
+                    std::string(tag) + ": unknown config key 'script." + k + "'");
+        }
         sc.type_explicit = s.contains("type");
         sc.type = s.value("type", std::string{"python"});
         if (sc.type != "python" && sc.type != "lua" && sc.type != "native")

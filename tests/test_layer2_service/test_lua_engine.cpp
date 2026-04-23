@@ -133,6 +133,22 @@ TEST_F(LuaEngineIsolatedTest, RegisterSlotType_HasSchemaFalse_ReturnsFalse)
                    /*expected_error_substrings=*/{"has_schema"});
 }
 
+TEST_F(LuaEngineIsolatedTest, RegisterSlotType_UnknownName_RejectsWithNoSideEffect)
+{
+    auto w = SpawnWorker(
+        "lua_engine.register_slot_type_unknown_name_rejects_no_side_effect",
+        {unique_dir("unknown_name_reject")});
+    // Engine emits LOGGER_ERROR "register_slot_type: unknown canonical
+    // type_name 'FooBar' — must be one of …" at the rejection site
+    // (lua_engine.cpp:666-670).  Use a combined substring so both the
+    // canonical wording AND the rejected name are pinned on a single
+    // ERROR line (ExpectWorkerOk is multiset-per-entry, so two separate
+    // substrings would require two distinct error lines).
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"unknown canonical type_name 'FooBar'"});
+}
+
 // NEW: coverage fill for types previously not exercised at L2
 // (bool, int8, int16, uint64).  See all_types_schema in
 // tests/test_framework/test_schema_helpers.h for the full list and the
@@ -289,6 +305,19 @@ TEST_F(LuaEngineIsolatedTest, InvokeConsume_NilSlot)
 {
     auto w = SpawnWorker("lua_engine.invoke_consume_nil_slot",
                          {unique_dir("consume_nil_slot")});
+    ExpectWorkerOk(w);
+}
+
+// Bug-revealing: pins `return false` on the consume path → Discard,
+// without accumulating script_error_count or emitting the wrong-type /
+// missing-return-value ERRORs.  Guards against three regression classes
+// enumerated in the worker body (inverted ternary, misroute through
+// on_pcall_error_, treat-false-as-wrong-type).
+TEST_F(LuaEngineIsolatedTest, InvokeConsume_DiscardOnFalse_NoErrorBump)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_consume_discard_on_false_no_error_bump",
+        {unique_dir("consume_discard_no_bump")});
     ExpectWorkerOk(w);
 }
 
@@ -733,6 +762,35 @@ TEST_F(LuaEngineIsolatedTest, InvokeOnInbox_ScriptError_IncrementsCount)
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
                    {"inbox failed"});
+}
+
+// Bug-revealing parallel of InvokeConsume_DiscardOnFalse for the inbox
+// path.  Same three regression classes apply to invoke_on_inbox's
+// return-value dispatch (lua_engine.cpp:1041-1062).
+TEST_F(LuaEngineIsolatedTest, InvokeOnInbox_DiscardOnFalse_NoErrorBump)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_on_inbox_discard_on_false_no_error_bump",
+        {unique_dir("inbox_discard_no_bump")});
+    ExpectWorkerOk(w);
+}
+
+// Design-enforcement parallel of InvokeConsume_RxSlot_IsReadOnly for
+// the inbox path.  Pins three coupled invariants (buffer unchanged,
+// result=Error, counter bumped) against the InboxFrame readonly flag
+// (lua_engine.cpp:726) and the ref_inbox_readonly_ cast path
+// (lua_engine.cpp:1023).
+TEST_F(LuaEngineIsolatedTest, InvokeOnInbox_DataReadonly_WriteFailsAndBufferUnchanged)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_on_inbox_data_is_readonly_write_fails_buffer_unchanged",
+        {unique_dir("inbox_readonly")});
+    // Engine logs the FFI write-to-const error through the pcall error
+    // path as an ERROR; declare the substring the engine emits so the
+    // harness's "no unexpected ERROR" guard doesn't fire.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"on_inbox"});
 }
 
 TEST_F(LuaEngineIsolatedTest, Eval_SyntaxError_ReturnsScriptError)

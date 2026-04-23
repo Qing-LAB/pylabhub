@@ -407,6 +407,53 @@ int register_slot_type_has_schema_false_returns_false(const std::string &dir)
         Logger::GetLifecycleModule());
 }
 
+int register_slot_type_unknown_name_rejects_no_side_effect(const std::string &dir)
+{
+    // Pins the up-front name check at lua_engine.cpp:660-671:
+    //   - unknown name returns false (no cdef registered)
+    //   - type_sizeof == 0 proves no FFI side effect leaked through
+    //   - subsequent valid register still works (no state corruption)
+    // ERROR log content pinned at the parent TEST_F via
+    // expected_error_substrings (Logger is async; CaptureStderr in the
+    // worker would not see it).
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir,
+                         "function on_produce(tx, msgs, api) return true end");
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            ASSERT_TRUE(engine.initialize("test", &core));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
+                                            "on_produce"));
+
+            auto spec = simple_schema();
+
+            // (1) + (2): reject with false return + no FFI side effect.
+            // The ERROR log content is pinned at the parent test level
+            // via ExpectWorkerOk(expected_error_substrings=...)
+            // because Logger is async and its output bypasses
+            // testing::internal::CaptureStderr in the worker.
+            EXPECT_FALSE(engine.register_slot_type(spec, "FooBar", "aligned"))
+                << "register_slot_type must reject unknown canonical name";
+            EXPECT_EQ(engine.type_sizeof("FooBar"), 0u)
+                << "rejected name must NOT have a cdef in the FFI registry "
+                   "— a non-zero size here means the cdef was registered "
+                   "before the name check rejected it (ordering bug).";
+
+            // (3): engine still usable after the rejection.
+            ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame",
+                                                   "aligned"))
+                << "engine must remain usable after a rejected register";
+            EXPECT_GT(engine.type_sizeof("InSlotFrame"), 0u);
+
+            engine.finalize();
+        },
+        "lua_engine::register_slot_type_unknown_name_rejects_no_side_effect",
+        Logger::GetLifecycleModule());
+}
+
 int register_slot_type_all_supported_types(const std::string &dir)
 {
     // NEW coverage fill: before this test the suite never registered
@@ -913,6 +960,52 @@ int invoke_consume_script_error_detected(const std::string &dir)
                 pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Error);
             EXPECT_EQ(engine.script_error_count(), 1u);
+        });
+}
+
+int invoke_consume_discard_on_false_no_error_bump(const std::string &dir)
+{
+    // Pins `return false` → Discard + no error-counter bump for
+    // invoke_consume (lua_engine.cpp:888-905).  10-iteration loop
+    // catches accumulate-on-Discard bugs that a one-shot test wouldn't.
+    // Wrong-return-type / missing-return-value misroutes would show
+    // up as LOGGER_ERRORs caught by the parent's "no unexpected ERROR"
+    // guard.
+    return consume_worker_with_script(
+        dir, "lua_engine::invoke_consume_discard_on_false_no_error_bump",
+        R"(
+            function on_consume(rx, msgs, api)
+                -- Voluntary skip: downstream consumer-loop policy
+                -- (ignore or advance) is its own concern; the engine
+                -- must translate this as Discard, not Error.
+                return false
+            end
+        )",
+        [](pylabhub::scripting::LuaEngine &engine,
+           pylabhub::scripting::RoleHostCore & /*core*/) {
+            float data = 42.5f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+
+            for (int i = 0; i < 10; ++i)
+            {
+                auto result = engine.invoke_consume(
+                    pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
+                EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard)
+                    << "iter " << i << ": `return false` must yield Discard, "
+                       "not Error or Commit";
+            }
+
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "10 clean `return false` calls must yield 0 errors — "
+                   "a non-zero count means Discard is being routed through "
+                   "on_pcall_error_ (voluntary-skip contract violation).";
+
+            // The wrong-return-type / missing-return-value error paths
+            // both emit a LOGGER_ERROR at the call site (lua_engine.cpp:901,
+            // :894).  Any misroute in that direction would be caught by
+            // the parent's ExpectWorkerOk "no unexpected ERROR" scan —
+            // no in-worker stderr check needed (Logger is async anyway;
+            // CaptureStderr does not intercept its output reliably).
         });
 }
 
@@ -2389,6 +2482,134 @@ int invoke_on_init_or_stop_script_error_accumulates(const std::string &dir)
                 << "on_stop error must bump count again — script_error_count "
                    "is engine-wide, not per-callback";
         });
+}
+
+int invoke_on_inbox_discard_on_false_no_error_bump(const std::string &dir)
+{
+    // Inbox-path parallel of invoke_consume_discard_on_false_no_error_bump.
+    // Inline setup (no helper) because the inbox path needs
+    // register_slot_type("InboxFrame", ...) in addition to the producer
+    // stub that keeps load_script happy.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, R"LUA(
+                function on_produce(tx, msgs, api) return false end
+                function on_inbox(msg, api)
+                    return false
+                end
+            )LUA");
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            ASSERT_TRUE(engine.initialize("test", &core));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
+                                            "on_produce"));
+
+            auto spec = simple_schema();
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
+                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame",
+                                                   "aligned"));
+
+            auto api = make_api(core);
+            ASSERT_TRUE(engine.build_api(*api));
+
+            float inbox_data = 1.0f;
+            for (int i = 0; i < 10; ++i)
+            {
+                auto r = engine.invoke_on_inbox(
+                    {&inbox_data, sizeof(inbox_data),
+                     "SENDER-00000001", static_cast<uint64_t>(i)});
+                EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard)
+                    << "iter " << i << ": on_inbox `return false` must yield "
+                       "Discard";
+            }
+
+            EXPECT_EQ(engine.script_error_count(), 0u)
+                << "10 Discard returns must not accumulate error_count — "
+                   "a non-zero count means Discard is being routed through "
+                   "on_pcall_error_ on the inbox path.";
+
+            // Wrong-return-type / missing-return-value misroutes would
+            // log LOGGER_ERRORs (lua_engine.cpp:1049, :1056) caught by
+            // the parent ExpectWorkerOk "no unexpected ERROR" guard.
+
+            engine.finalize();
+        },
+        "lua_engine::invoke_on_inbox_discard_on_false_no_error_bump",
+        Logger::GetLifecycleModule());
+}
+
+int invoke_on_inbox_data_is_readonly_write_fails_buffer_unchanged(
+    const std::string &dir)
+{
+    // Inbox-path parallel of invoke_consume_rx_slot_is_read_only.
+    // Source chain: lua_engine.cpp:726 (readonly=true) →
+    // lua_state.cpp:291 ("InboxFrame const*") → lua_engine.cpp:1023
+    // (push_slot_view_cached with ref_inbox_readonly_).  Three coupled
+    // assertions — a regression in any link fails the test:
+    //   (a) buffer unchanged (const* cast actually prevents write)
+    //   (b) InvokeResult::Error (loud failure, not silent no-op)
+    //   (c) script_error_count bumped (routed through on_pcall_error_)
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, R"LUA(
+                function on_produce(tx, msgs, api) return false end
+                function on_inbox(msg, api)
+                    -- Attempt to mutate the inbox frame. Must raise a
+                    -- Lua error (caught by engine's pcall), NOT silently
+                    -- succeed.
+                    msg.data.value = 999.0
+                    return true  -- unreachable if the write raises
+                end
+            )LUA");
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            ASSERT_TRUE(engine.initialize("test", &core));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
+                                            "on_produce"));
+
+            auto spec = simple_schema();  // single float32 'value'
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
+                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame",
+                                                   "aligned"));
+
+            auto api = make_api(core);
+            ASSERT_TRUE(engine.build_api(*api));
+
+            const float sentinel = 77.25f;
+            float inbox_data = sentinel;
+            auto r = engine.invoke_on_inbox(
+                {&inbox_data, sizeof(inbox_data),
+                 "SENDER-00000001", 1});
+
+            // (a) Core buffer invariant: const* cast must prevent write.
+            EXPECT_FLOAT_EQ(inbox_data, sentinel)
+                << "msg.data write must NOT propagate to the underlying "
+                   "C buffer. inbox_data==999.0 here would indicate the "
+                   "engine dropped the `const*` cast on the InboxFrame "
+                   "path (lua_engine.cpp:726 readonly flag, or "
+                   "lua_state.cpp:291 type-str build).";
+
+            // (b) Loud failure: result is Error, not Commit.
+            EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Error)
+                << "inbox write must surface as InvokeResult::Error, not "
+                   "Discard or Commit — a silent no-op (Commit) would let "
+                   "broken scripts appear healthy.";
+
+            // (c) Metrics path + stop_on_script_error_ honour.
+            EXPECT_EQ(engine.script_error_count(), 1u)
+                << "inbox write error must route through on_pcall_error_ "
+                   "(bumps script_error_count by exactly 1).";
+
+            engine.finalize();
+        },
+        "lua_engine::invoke_on_inbox_data_is_readonly_write_fails_buffer_unchanged",
+        Logger::GetLifecycleModule());
 }
 
 int invoke_on_inbox_script_error_increments_count(const std::string &dir)
@@ -5420,6 +5641,8 @@ struct LuaEngineWorkerRegistrar
                     return register_slot_type_packed_packing(dir);
                 if (sc == "register_slot_type_has_schema_false_returns_false")
                     return register_slot_type_has_schema_false_returns_false(dir);
+                if (sc == "register_slot_type_unknown_name_rejects_no_side_effect")
+                    return register_slot_type_unknown_name_rejects_no_side_effect(dir);
                 if (sc == "register_slot_type_all_supported_types")
                     return register_slot_type_all_supported_types(dir);
                 if (sc == "alias_slot_frame_producer")
@@ -5452,6 +5675,8 @@ struct LuaEngineWorkerRegistrar
                     return invoke_consume_receives_slot(dir);
                 if (sc == "invoke_consume_nil_slot")
                     return invoke_consume_nil_slot(dir);
+                if (sc == "invoke_consume_discard_on_false_no_error_bump")
+                    return invoke_consume_discard_on_false_no_error_bump(dir);
                 if (sc == "invoke_consume_script_error_detected")
                     return invoke_consume_script_error_detected(dir);
                 if (sc == "invoke_consume_rx_slot_is_read_only")
@@ -5528,6 +5753,10 @@ struct LuaEngineWorkerRegistrar
                     return invoke_produce_stop_on_script_error_sets_shutdown(dir);
                 if (sc == "invoke_on_init_or_stop_script_error_accumulates")
                     return invoke_on_init_or_stop_script_error_accumulates(dir);
+                if (sc == "invoke_on_inbox_discard_on_false_no_error_bump")
+                    return invoke_on_inbox_discard_on_false_no_error_bump(dir);
+                if (sc == "invoke_on_inbox_data_is_readonly_write_fails_buffer_unchanged")
+                    return invoke_on_inbox_data_is_readonly_write_fails_buffer_unchanged(dir);
                 if (sc == "invoke_on_inbox_script_error_increments_count")
                     return invoke_on_inbox_script_error_increments_count(dir);
                 if (sc == "eval_syntax_error_returns_script_error")

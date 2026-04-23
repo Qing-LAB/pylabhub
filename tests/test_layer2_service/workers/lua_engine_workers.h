@@ -36,6 +36,9 @@ int register_slot_type_packed_packing(const std::string &dir);
 int register_slot_type_has_schema_false_returns_false(const std::string &dir);
 /// NEW: coverage fill — registers every scalar type the engine supports.
 int register_slot_type_all_supported_types(const std::string &dir);
+/// Unknown canonical name → reject up-front with ERROR, no FFI side effect,
+/// engine remains usable for subsequent valid registrations.
+int register_slot_type_unknown_name_rejects_no_side_effect(const std::string &dir);
 
 // ── Alias creation (SlotFrame / FlexFrame based on role_tag) ────────────────
 int alias_slot_frame_producer(const std::string &dir);
@@ -59,6 +62,9 @@ int invoke_consume_nil_slot(const std::string &dir);
 int invoke_consume_script_error_detected(const std::string &dir);
 /// NEW: verifies rx.slot is read-only — Lua cannot mutate the source buffer.
 int invoke_consume_rx_slot_is_read_only(const std::string &dir);
+/// `return false` from on_consume → InvokeResult::Discard, NO error counter bump.
+/// Guards against a regression that misroutes Discard through on_pcall_error_.
+int invoke_consume_discard_on_false_no_error_bump(const std::string &dir);
 
 // ── Messages (chunk 5) ──────────────────────────────────────────────────────
 //
@@ -152,6 +158,10 @@ int invoke_produce_wrong_return_string_is_error(const std::string &dir);
 int invoke_produce_stop_on_script_error_sets_shutdown(const std::string &dir);
 int invoke_on_init_or_stop_script_error_accumulates(const std::string &dir);
 int invoke_on_inbox_script_error_increments_count(const std::string &dir);
+/// `return false` from on_inbox → InvokeResult::Discard, NO error counter bump.
+int invoke_on_inbox_discard_on_false_no_error_bump(const std::string &dir);
+/// msg.data is read-only — Lua write must raise, buffer must remain unchanged.
+int invoke_on_inbox_data_is_readonly_write_fails_buffer_unchanged(const std::string &dir);
 int eval_syntax_error_returns_script_error(const std::string &dir);
 
 // ── Error handling: setup-phase error paths (chunk 7b) ─────────────────────

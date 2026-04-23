@@ -37,6 +37,17 @@ inline IdentityConfig parse_identity_config(const nlohmann::json &j,
             std::string(role_tag) + " config: missing '" + std::string(role_tag) + "' object");
 
     const auto &sect = j[std::string(role_tag)];
+    // Reject unknown nested keys in the role-tag block.  The block
+    // holds identity fields (uid/name/log_level) plus the auth
+    // sub-object (validated separately by parse_auth_config).
+    for (auto it = sect.begin(); it != sect.end(); ++it)
+    {
+        const auto &k = it.key();
+        if (k != "uid" && k != "name" && k != "log_level" && k != "auth")
+            throw std::runtime_error(
+                std::string(role_tag) + ": unknown config key '"
+                + std::string(role_tag) + "." + k + "'");
+    }
     IdentityConfig ic;
     ic.uid       = sect.value("uid",       "");
     ic.name      = sect.value("name",      "");
