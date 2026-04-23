@@ -1,5 +1,6 @@
 #include "utils/broker_service.hpp"
 #include "utils/format_tools.hpp"
+#include "utils/hub_state.hpp"
 #include "utils/net_address.hpp"
 
 #include "channel_registry.hpp"
@@ -122,7 +123,14 @@ public:
     std::string           server_public_z85;
     std::string           server_secret_z85;
     ChannelRegistry       registry;
-    BandRegistry  band_registry;
+    BandRegistry          band_registry;
+
+    /// HEP-CORE-0033 §8 state aggregate.  G2.2.0 introduces this field;
+    /// subsequent G2.2.x commits migrate handler mutations from the
+    /// private registries above into `hub_state_` via the capability
+    /// operations (`_on_channel_registered`, `_on_heartbeat`, ...).
+    /// Owned here for now; G2.3+ moves ownership to `HubHost`.
+    pylabhub::hub::HubState hub_state_;
     std::atomic<bool>     stop_requested{false};
 
     /// Guards registry reads/writes from external threads (e.g., list_channels_json_str).
@@ -2258,6 +2266,11 @@ BrokerService::~BrokerService() = default;
 const std::string& BrokerService::server_public_key() const
 {
     return pImpl->server_public_z85;
+}
+
+const pylabhub::hub::HubState& BrokerService::hub_state() const
+{
+    return pImpl->hub_state_;
 }
 
 void BrokerService::run()

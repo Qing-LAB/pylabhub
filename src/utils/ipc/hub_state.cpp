@@ -68,6 +68,18 @@ const char *to_string(PeerState s) noexcept
     return "Unknown";
 }
 
+const char *to_string(ChannelCloseReason r) noexcept
+{
+    switch (r)
+    {
+    case ChannelCloseReason::VoluntaryDereg:   return "VoluntaryDereg";
+    case ChannelCloseReason::HeartbeatTimeout: return "HeartbeatTimeout";
+    case ChannelCloseReason::AdminClose:       return "AdminClose";
+    case ChannelCloseReason::BrokerShutdown:   return "BrokerShutdown";
+    }
+    return "Unknown";
+}
+
 // ─── Impl ───────────────────────────────────────────────────────────────────
 
 struct HubState::Impl
@@ -500,6 +512,275 @@ void HubState::_set_role_state_metrics(const BrokerCounters &snapshot)
 {
     std::unique_lock lk(pImpl->mu);
     pImpl->counters = snapshot;
+}
+
+// ─── Capability-operation layer (HEP-0033 §G2) ──────────────────────────────
+//
+// Each `_on_*` composes primitive `_set_*` setters to represent one
+// hub-level event atomically at the semantic layer ("a channel was
+// registered") even though under the hood it touches multiple maps.
+// See hub_state.hpp for the atomicity note (field-level atomicity
+// preserved; multi-map composition is sequential, matching today's
+// broker behavior).
+
+namespace
+{
+
+/// Read-modify-write upsert for a RoleEntry, preserving the existing
+/// first_seen + channels list when the role already exists. This is
+/// the one compose step that can't be expressed as a G2.1 primitive
+/// call — _set_role_registered is insert_or_assign (replaces).
+/// Callers must hold no lock on entry; this helper takes the state
+/// writer lock briefly and returns the post-mutation entry for event
+/// dispatch.
+template <typename Impl>
+RoleEntry upsert_role_locked(Impl &impl, const std::string &uid,
+                             const std::string &name,
+                             const std::string &pubkey_z85,
+                             const std::string &added_channel,
+                             std::chrono::steady_clock::time_point heartbeat_when)
+{
+    std::unique_lock lk(impl.mu);
+    auto it = impl.roles.find(uid);
+    if (it == impl.roles.end())
+    {
+        RoleEntry r;
+        r.uid            = uid;
+        r.name           = name;
+        r.pubkey_z85     = pubkey_z85;
+        r.state          = RoleState::Connected;
+        r.last_heartbeat = heartbeat_when;
+        if (!added_channel.empty()) r.channels.push_back(added_channel);
+        auto [new_it, _] = impl.roles.emplace(uid, std::move(r));
+        return new_it->second;
+    }
+    auto &ex = it->second;
+    if (!name.empty())          ex.name       = name;
+    if (!pubkey_z85.empty())    ex.pubkey_z85 = pubkey_z85;
+    ex.state          = RoleState::Connected;
+    ex.last_heartbeat = heartbeat_when;
+    if (!added_channel.empty() &&
+        std::find(ex.channels.begin(), ex.channels.end(), added_channel) ==
+            ex.channels.end())
+    {
+        ex.channels.push_back(added_channel);
+    }
+    return ex;
+}
+
+} // namespace
+
+void HubState::_on_channel_registered(ChannelEntry entry)
+{
+    // Capture pieces needed for role/shm derivation before moving entry.
+    const std::string channel_name    = entry.name;
+    const std::string producer_uid    = entry.producer_role_uid;
+    const std::string producer_name   = entry.producer_role_name;
+    const std::string producer_pubkey = entry.zmq_pubkey;
+    const bool        has_shm         = entry.has_shared_memory;
+    const std::string shm_name        = entry.shm_name;
+
+    _set_channel_opened(std::move(entry));
+
+    if (!producer_uid.empty())
+    {
+        RoleEntry fired = upsert_role_locked(
+            *pImpl, producer_uid, producer_name, producer_pubkey,
+            channel_name, std::chrono::steady_clock::now());
+        for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_reg))
+            h(fired);
+    }
+
+    if (has_shm)
+        _set_shm_block(ShmBlockRef{channel_name, shm_name});
+
+    _bump_counter("REG_REQ");
+}
+
+void HubState::_on_channel_closed(const std::string &name, ChannelCloseReason why)
+{
+    _set_channel_closed(name);
+    // Remove channel from each role's channels list (so a dropped channel
+    // no longer appears under roles[*].channels).
+    {
+        std::unique_lock lk(pImpl->mu);
+        for (auto &[uid, role] : pImpl->roles)
+        {
+            auto it = std::find(role.channels.begin(), role.channels.end(), name);
+            if (it != role.channels.end()) role.channels.erase(it);
+        }
+        pImpl->shm_blocks.erase(name);
+    }
+    _bump_counter(std::string("close:") + to_string(why));
+}
+
+void HubState::_on_consumer_joined(const std::string &channel, ConsumerEntry consumer)
+{
+    const std::string consumer_uid    = consumer.role_uid;
+    const std::string consumer_name   = consumer.role_name;
+
+    _add_consumer(channel, std::move(consumer));
+
+    if (!consumer_uid.empty())
+    {
+        RoleEntry fired = upsert_role_locked(
+            *pImpl, consumer_uid, consumer_name, /*pubkey*/ {},
+            channel, std::chrono::steady_clock::now());
+        for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_reg))
+            h(fired);
+    }
+
+    _bump_counter("CONSUMER_REG_REQ");
+}
+
+void HubState::_on_consumer_left(const std::string &channel, const std::string &role_uid)
+{
+    _remove_consumer(channel, role_uid);
+    // Remove this channel from the role's channels list; do NOT mark the
+    // role disconnected — the role may still be producing on other
+    // channels or reachable via bands / peer federation.
+    if (!role_uid.empty())
+    {
+        std::unique_lock lk(pImpl->mu);
+        auto it = pImpl->roles.find(role_uid);
+        if (it != pImpl->roles.end())
+        {
+            auto &chs = it->second.channels;
+            auto  rm  = std::find(chs.begin(), chs.end(), channel);
+            if (rm != chs.end()) chs.erase(rm);
+        }
+    }
+    _bump_counter("CONSUMER_DEREG_REQ");
+}
+
+void HubState::_on_heartbeat(const std::string                   &channel,
+                             const std::string                   &role_uid,
+                             std::chrono::steady_clock::time_point when,
+                             const std::optional<nlohmann::json> &metrics)
+{
+    // 1. Channel liveness: first heartbeat transitions PendingReady -> Ready;
+    //    subsequent heartbeats update last_heartbeat without a status change.
+    bool fire_channel_ready = false;
+    {
+        std::unique_lock lk(pImpl->mu);
+        auto             it = pImpl->channels.find(channel);
+        if (it != pImpl->channels.end())
+        {
+            it->second.last_heartbeat = when;
+            if (it->second.status == ChannelStatus::PendingReady)
+            {
+                it->second.status      = ChannelStatus::Ready;
+                it->second.state_since = when;
+                fire_channel_ready     = true;
+            }
+        }
+    }
+    if (fire_channel_ready)
+    {
+        ChannelEntry fired;
+        {
+            std::shared_lock rlk(pImpl->mu);
+            auto             it = pImpl->channels.find(channel);
+            if (it != pImpl->channels.end()) fired = it->second;
+        }
+        for (auto &h : snapshot_handlers(pImpl->handlers_mu,
+                                         pImpl->ch_status_changed))
+            h(fired);
+    }
+
+    // 2. Role liveness: advance last_heartbeat; if Disconnected, revive.
+    if (!role_uid.empty())
+        _update_role_heartbeat(role_uid, when);
+
+    // 3. Role metrics: piggybacked in HEARTBEAT_REQ (HEP-0019 §1).
+    if (metrics.has_value() && !role_uid.empty())
+        _update_role_metrics(role_uid, *metrics,
+                             std::chrono::system_clock::now());
+
+    _bump_counter("HEARTBEAT_REQ");
+}
+
+void HubState::_on_heartbeat_timeout(const std::string &channel,
+                                     const std::string &role_uid)
+{
+    _set_channel_status(channel, ChannelStatus::PendingReady);
+    if (!role_uid.empty()) _set_role_disconnected(role_uid);
+    {
+        std::unique_lock lk(pImpl->mu);
+        ++pImpl->counters.ready_to_pending_total;
+    }
+}
+
+void HubState::_on_pending_timeout(const std::string &channel)
+{
+    _set_channel_status(channel, ChannelStatus::Closing);
+    {
+        std::unique_lock lk(pImpl->mu);
+        ++pImpl->counters.pending_to_deregistered_total;
+    }
+}
+
+void HubState::_on_metrics_reported(const std::string                    &channel,
+                                    const std::string                    &role_uid,
+                                    nlohmann::json                        metrics,
+                                    std::chrono::system_clock::time_point when)
+{
+    // HEP-0033 §9.1 "Metrics report tick" — dedicated METRICS_REPORT_REQ
+    // path. No liveness effect: a role could be stalled on the heartbeat
+    // axis but still drip metrics on this channel. `channel` is part of
+    // the wire schema; at the HubState level it's informational for the
+    // counter key only (metrics collapse onto RoleEntry per HEP §8).
+    if (!role_uid.empty())
+        _update_role_metrics(role_uid, std::move(metrics), when);
+    _bump_counter("METRICS_REPORT_REQ");
+    (void)channel; // reserved for future per-channel metrics splitting (G2.2.4)
+}
+
+void HubState::_on_band_joined(const std::string &band, BandMember member)
+{
+    const std::string role_uid = member.role_uid;
+    const std::string role_name = member.role_name;
+
+    _set_band_joined(band, std::move(member));
+
+    if (!role_uid.empty())
+    {
+        RoleEntry fired = upsert_role_locked(
+            *pImpl, role_uid, role_name, /*pubkey*/ {},
+            /*channel*/ {}, std::chrono::steady_clock::now());
+        for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_reg))
+            h(fired);
+    }
+
+    _bump_counter("BAND_JOIN_REQ");
+}
+
+void HubState::_on_band_left(const std::string &band, const std::string &role_uid)
+{
+    _set_band_left(band, role_uid);
+    _bump_counter("BAND_LEAVE_REQ");
+}
+
+void HubState::_on_peer_connected(PeerEntry peer)
+{
+    _set_peer_connected(std::move(peer));
+    _bump_counter("HUB_PEER_HELLO");
+}
+
+void HubState::_on_peer_disconnected(const std::string &hub_uid)
+{
+    _set_peer_disconnected(hub_uid);
+    _bump_counter("HUB_PEER_BYE");
+}
+
+void HubState::_on_message_processed(const std::string &msg_type,
+                                     std::size_t        bytes_in,
+                                     std::size_t        bytes_out)
+{
+    std::unique_lock lk(pImpl->mu);
+    ++pImpl->counters.msg_type_counts[msg_type];
+    pImpl->counters.bytes_in_total  += bytes_in;
+    pImpl->counters.bytes_out_total += bytes_out;
 }
 
 } // namespace pylabhub::hub

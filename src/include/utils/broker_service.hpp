@@ -26,6 +26,11 @@
 #include <string>
 #include <vector>
 
+namespace pylabhub::hub
+{
+class HubState;
+}
+
 namespace pylabhub::broker
 {
 
@@ -238,6 +243,24 @@ public:
      * Logged at startup; clients pass this to BrokerRequestComm for CURVE auth.
      */
     [[nodiscard]] const std::string& server_public_key() const;
+
+    /**
+     * @brief Access the hub's `HubState` aggregate (HEP-CORE-0033 §8).
+     *
+     * Exposes the hub's channel/role/band/peer/shm/counter state to
+     * HubAPI / AdminService and tests. The caller receives a const
+     * reference; mutation happens exclusively via BrokerService's own
+     * handlers (friend-access path). Subscribe to state events via
+     * `HubState::subscribe_*` — the subscription API is thread-safe.
+     *
+     * Lifetime: the `HubState` is owned by the `BrokerServiceImpl` and
+     * lives for as long as this BrokerService instance. Callers must
+     * ensure their subscription handlers outlive the subscriber (or
+     * `unsubscribe()` before destruction).
+     *
+     * Include `utils/hub_state.hpp` to name the returned type.
+     */
+    [[nodiscard]] const pylabhub::hub::HubState& hub_state() const;
 
     /**
      * @brief Main event loop. Blocks until stop() is called.
