@@ -36,11 +36,29 @@ inline StartupConfig parse_startup_config(const nlohmann::json &j, const char *t
         return sc;
 
     const auto &s = j.at("startup");
+    // Reject unknown nested keys under "startup".
+    for (auto it = s.begin(); it != s.end(); ++it)
+    {
+        if (it.key() != "wait_for_roles")
+            throw std::runtime_error(
+                "startup: unknown config key 'startup." + it.key() + "'");
+    }
     if (!s.contains("wait_for_roles") || !s.at("wait_for_roles").is_array())
         return sc;
 
     for (const auto &w : s.at("wait_for_roles"))
     {
+        if (!w.is_object())
+            throw std::runtime_error(
+                "startup.wait_for_roles: each entry must be a JSON object");
+        // Reject unknown keys per array entry.
+        for (auto it = w.begin(); it != w.end(); ++it)
+        {
+            const auto &k = it.key();
+            if (k != "uid" && k != "timeout_ms")
+                throw std::runtime_error(
+                    "startup.wait_for_roles[].: unknown config key '" + k + "'");
+        }
         if (!w.contains("uid") || !w.at("uid").is_string())
             throw std::runtime_error(
                 "startup.wait_for_roles: each entry must have a string 'uid'");
