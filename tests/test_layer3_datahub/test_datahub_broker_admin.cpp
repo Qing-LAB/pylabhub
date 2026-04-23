@@ -17,6 +17,7 @@
 #include "plh_service.hpp"
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
+#include "test_sync_utils.h"
 
 #include <atomic>
 #include <future>
@@ -358,34 +359,38 @@ TEST_F(BrokerAdminTest, CloseChannel_Existing)
     // Request close
     svc().request_close_channel(channel);
 
-    // Give broker a poll cycle to process the close request
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
-    // Channel should be gone from snapshot
-    ChannelSnapshot snap = svc().query_channel_snapshot();
-    bool still_present = false;
-    for (const auto &ch : snap.channels)
-    {
-        if (ch.name == channel && ch.status != "Closing")
-        {
-            still_present = true;
-            break;
-        }
-    }
-    EXPECT_FALSE(still_present) << "Channel should be closed or closing";
+    // Poll until the channel is either gone from the snapshot or marked
+    // "Closing" (both are legitimate end-states of request_close_channel:
+    // gone when members dereg'd, Closing while grace timer is active).
+    using pylabhub::tests::helper::poll_until;
+    auto channel_closed_or_gone = [&] {
+        auto s = svc().query_channel_snapshot();
+        for (const auto &ch : s.channels)
+            if (ch.name == channel && ch.status != "Closing") return false;
+        return true;
+    };
+    EXPECT_TRUE(poll_until(channel_closed_or_gone, std::chrono::seconds(3)))
+        << "Channel neither removed nor in Closing state within 3s of "
+           "request_close_channel";
 
     bh.stop();
 }
 
 TEST_F(BrokerAdminTest, CloseChannel_NonExistent)
 {
-    // Closing a nonexistent channel should not crash — silently ignored
+    // Closing a nonexistent channel should not crash — silently ignored.
+    // Because the broker takes no observable action on a bogus name
+    // (no callback, no log, no snapshot change), this is a legitimate
+    // "give async processing a window, then probe liveness" scenario —
+    // the sleep is not ordering events, it's bounding the silent path.
     EXPECT_NO_THROW(svc().request_close_channel(pid_chan("admin.close.bogus")));
-
-    // Give broker a poll cycle
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    // Broker still operational
-    ChannelSnapshot snap = svc().query_channel_snapshot();
-    (void)snap; // just check it doesn't crash
+    // Explicit liveness probe: broker must still serve admin requests
+    // (replaces the prior `(void)snap` which only caught outright
+    // crashes on the snapshot call itself).
+    EXPECT_NO_THROW({
+        ChannelSnapshot snap = svc().query_channel_snapshot();
+        (void)snap.channels.size();  // force materialization
+    });
 }

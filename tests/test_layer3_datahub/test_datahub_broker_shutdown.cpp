@@ -23,6 +23,7 @@
 #include "plh_service.hpp"
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
+#include "test_sync_utils.h"
 
 #include <atomic>
 #include <chrono>
@@ -260,12 +261,19 @@ TEST_F(BrokerShutdownTest, GracefulShutdown_ProducerDeregisters)
 
     // Producer deregisters (graceful)
     EXPECT_TRUE(bh.brc.deregister_channel(channel));
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
 
-    // Channel should be gone
-    snap = svc().query_channel_snapshot();
-    for (const auto &ch : snap.channels)
-        EXPECT_NE(ch.name, channel) << "Channel should be removed after deregister";
+    // Poll until broker has removed the channel from its registry.  The
+    // deregister_channel() call returns on ACK; the actual registry
+    // cleanup is async and can take a poll cycle on a loaded CI box.
+    using pylabhub::tests::helper::poll_until;
+    auto channel_gone = [&] {
+        auto s = svc().query_channel_snapshot();
+        for (const auto &ch : s.channels)
+            if (ch.name == channel) return false;
+        return true;
+    };
+    EXPECT_TRUE(poll_until(channel_gone, std::chrono::seconds(3)))
+        << "Channel not removed from broker registry within 3s after deregister";
 
     bh.stop();
 }
@@ -302,10 +310,16 @@ TEST_F(BrokerShutdownTest, ForceShutdown_GraceExpires)
     // Do NOT deregister — let grace expire
     ASSERT_TRUE(force_flag->wait(5000)) << "FORCE_SHUTDOWN not received after grace";
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    ChannelSnapshot snap = svc().query_channel_snapshot();
-    for (const auto &ch : snap.channels)
-        EXPECT_NE(ch.name, channel) << "Channel should be removed after FORCE_SHUTDOWN";
+    // FORCE_SHUTDOWN was sent; poll until broker completes registry removal.
+    using pylabhub::tests::helper::poll_until;
+    auto channel_gone = [&] {
+        auto s = svc().query_channel_snapshot();
+        for (const auto &ch : s.channels)
+            if (ch.name == channel) return false;
+        return true;
+    };
+    EXPECT_TRUE(poll_until(channel_gone, std::chrono::seconds(3)))
+        << "Channel not removed after FORCE_SHUTDOWN within 3s";
 
     bh.stop();
 }
@@ -353,17 +367,24 @@ TEST_F(BrokerShutdownTest, EarlyCleanup_AllMembersDeregister)
     ASSERT_TRUE(prod_closing->wait(3000)) << "Producer did not receive CHANNEL_CLOSING_NOTIFY";
     ASSERT_TRUE(cons_closing->wait(3000)) << "Consumer did not receive CHANNEL_CLOSING_NOTIFY";
 
-    // Consumer deregisters first
+    // Consumer deregisters.  No inter-dereg sleep: the test only
+    // asserts the end-state (channel removed once both dereg) — there
+    // is no intermediate state to observe between the two calls.
     cons_bh.brc.deregister_consumer(channel);
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    // Producer deregisters
+    // Producer deregisters.  Poll until the broker has removed the
+    // channel (async registry cleanup after both members gone).
     prod_bh.brc.deregister_channel(channel);
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
 
-    ChannelSnapshot snap = svc().query_channel_snapshot();
-    for (const auto &ch : snap.channels)
-        EXPECT_NE(ch.name, channel) << "Channel should be removed after all members deregister";
+    using pylabhub::tests::helper::poll_until;
+    auto channel_gone = [&] {
+        auto s = svc().query_channel_snapshot();
+        for (const auto &ch : s.channels)
+            if (ch.name == channel) return false;
+        return true;
+    };
+    EXPECT_TRUE(poll_until(channel_gone, std::chrono::seconds(3)))
+        << "Channel not removed within 3s after all members deregistered";
 
     cons_bh.stop();
     prod_bh.stop();
@@ -408,10 +429,15 @@ TEST_F(BrokerShutdownTest, ForceShutdown_ConsumerDoesNotDeregister)
     ASSERT_TRUE(prod_force->wait(5000)) << "Producer did not receive FORCE_SHUTDOWN";
     ASSERT_TRUE(cons_force->wait(5000)) << "Consumer did not receive FORCE_SHUTDOWN";
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    ChannelSnapshot snap = svc().query_channel_snapshot();
-    for (const auto &ch : snap.channels)
-        EXPECT_NE(ch.name, channel) << "Channel should be removed after FORCE_SHUTDOWN";
+    using pylabhub::tests::helper::poll_until;
+    auto channel_gone = [&] {
+        auto s = svc().query_channel_snapshot();
+        for (const auto &ch : s.channels)
+            if (ch.name == channel) return false;
+        return true;
+    };
+    EXPECT_TRUE(poll_until(channel_gone, std::chrono::seconds(3)))
+        << "Channel not removed after FORCE_SHUTDOWN within 3s";
 
     cons_bh.stop();
     prod_bh.stop();
@@ -472,12 +498,19 @@ TEST_F(BrokerShutdownTest, ZeroGrace_ImmediateForceShutdown)
 
     svc().request_close_channel(channel);
 
-    // grace=0 → force fires on next poll cycle
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
-    ChannelSnapshot snap = svc().query_channel_snapshot();
-    for (const auto &ch : snap.channels)
-        EXPECT_NE(ch.name, channel) << "Channel should be immediately removed with grace=0";
+    // grace=0 → force fires on next poll cycle.  No notification callback
+    // is registered in this test, so we poll for the observable end-state
+    // (channel gone from snapshot).  Timeout well above the broker's
+    // worst-case poll cycle for headroom.
+    using pylabhub::tests::helper::poll_until;
+    auto channel_gone = [&] {
+        auto s = svc().query_channel_snapshot();
+        for (const auto &ch : s.channels)
+            if (ch.name == channel) return false;
+        return true;
+    };
+    EXPECT_TRUE(poll_until(channel_gone, std::chrono::seconds(3)))
+        << "Channel should be removed on first broker poll cycle when grace=0";
 
     bh.stop();
 }
