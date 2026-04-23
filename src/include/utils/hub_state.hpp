@@ -82,9 +82,21 @@ enum class PeerState
     Disconnected,
 };
 
-PYLABHUB_UTILS_EXPORT const char *to_string(ChannelStatus s) noexcept;
-PYLABHUB_UTILS_EXPORT const char *to_string(RoleState    s) noexcept;
-PYLABHUB_UTILS_EXPORT const char *to_string(PeerState    s) noexcept;
+/// Why a channel is being closed (parameter to `_on_channel_closed`).
+/// The specific reason drives which CHANNEL_*_NOTIFY the broker emits;
+/// HubState itself stores no reason, but subscribers may care.
+enum class ChannelCloseReason
+{
+    VoluntaryDereg,   ///< DEREG_REQ from the producer (clean shutdown).
+    HeartbeatTimeout, ///< Heartbeat-sweep reclaimed a stuck channel.
+    AdminClose,       ///< Explicit close via script or admin RPC.
+    BrokerShutdown,   ///< Broker process is stopping.
+};
+
+PYLABHUB_UTILS_EXPORT const char *to_string(ChannelStatus      s) noexcept;
+PYLABHUB_UTILS_EXPORT const char *to_string(RoleState          s) noexcept;
+PYLABHUB_UTILS_EXPORT const char *to_string(PeerState          s) noexcept;
+PYLABHUB_UTILS_EXPORT const char *to_string(ChannelCloseReason r) noexcept;
 
 // ─── Auth context (HEP-0033 §G2) ────────────────────────────────────────────
 
@@ -350,6 +362,54 @@ class PYLABHUB_UTILS_EXPORT HubState
     void _set_shm_block(ShmBlockRef ref);
     void _bump_counter(const std::string &key, uint64_t n = 1);
     void _set_role_state_metrics(const BrokerCounters &snapshot);
+
+    // ── Capability-operation layer (HEP-0033 §G2) ──────────────────────
+    //
+    // Each `_on_*` represents one inbound wire message or sweep event
+    // as a single hub-level operation; internally it composes the
+    // primitive `_set_*` setters above.  Reshapes HubState's mutator
+    // surface from "field setters" into "hub capabilities" so callers
+    // don't have to remember which primitives belong together.
+    //
+    // Atomicity: each op takes the state lock per-primitive (not once
+    // for the whole op).  `snapshot()` consumers always see consistent
+    // state at the field level; single-entry lookups between primitives
+    // of the same op may observe partial state.  This matches today's
+    // broker, which touches ChannelRegistry, metrics_store_, and
+    // counters under separate locks.  If stricter atomicity is needed
+    // later, promote primitives to `_locked` variants and refactor ops
+    // to acquire the writer lock once.
+    //
+    // role_tag derivation: today's wire protocol (REG_REQ /
+    // CONSUMER_REG_REQ / BAND_JOIN_REQ) does not carry `role_tag`;
+    // RoleEntry.role_tag is left empty when auto-derived from these
+    // messages.  Admin / script paths may fill it in later.
+
+    void _on_channel_registered(ChannelEntry entry);
+    void _on_channel_closed(const std::string &name, ChannelCloseReason why);
+    void _on_consumer_joined(const std::string &channel, ConsumerEntry consumer);
+    void _on_consumer_left(const std::string &channel, const std::string &role_uid);
+    void _on_heartbeat(const std::string                           &channel,
+                       const std::string                           &role_uid,
+                       std::chrono::steady_clock::time_point        when,
+                       const std::optional<nlohmann::json>         &metrics);
+    void _on_heartbeat_timeout(const std::string &channel, const std::string &role_uid);
+    void _on_pending_timeout(const std::string &channel);
+    /// Dedicated metrics-report wire message (HEP-0033 §9.1 "Metrics report
+    /// tick"). `_on_heartbeat` handles the piggyback case; this op handles
+    /// the time-only METRICS_REPORT_REQ path that fires even when the role
+    /// has stopped its iteration-gated heartbeat cadence.
+    void _on_metrics_reported(const std::string                    &channel,
+                              const std::string                    &role_uid,
+                              nlohmann::json                        metrics,
+                              std::chrono::system_clock::time_point when);
+    void _on_band_joined(const std::string &band, BandMember member);
+    void _on_band_left(const std::string &band, const std::string &role_uid);
+    void _on_peer_connected(PeerEntry peer);
+    void _on_peer_disconnected(const std::string &hub_uid);
+    void _on_message_processed(const std::string &msg_type,
+                               std::size_t        bytes_in,
+                               std::size_t        bytes_out);
 
     struct Impl;
 #if defined(_MSC_VER)
