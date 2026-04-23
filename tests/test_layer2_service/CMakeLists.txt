@@ -132,7 +132,6 @@ target_link_libraries(test_layer2_shared_memory_spinlock
         pylabhub::test_framework
         GTest::gtest
         GTest::gtest_main
-        GTest::gmock
 )
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_shared_memory_spinlock)
@@ -165,7 +164,6 @@ target_link_libraries(test_layer2_crypto_utils
         pylabhub::utils
         pylabhub::test_framework
         GTest::gtest
-        GTest::gmock
 )
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_crypto_utils)
@@ -680,8 +678,7 @@ target_include_directories(test_layer2_role_logging_roundtrip PRIVATE
 target_link_libraries(test_layer2_role_logging_roundtrip PRIVATE
     pylabhub::utils
     pylabhub::test_framework
-    GTest::gtest
-    GTest::gmock)
+    GTest::gtest)
 pylabhub_ensure_sanitizer_for_executable(test_layer2_role_logging_roundtrip)
 pylabhub_register_test_for_staging(
     TARGET test_layer2_role_logging_roundtrip
@@ -707,8 +704,7 @@ target_include_directories(test_layer2_configure_logger PRIVATE
 target_link_libraries(test_layer2_configure_logger PRIVATE
     pylabhub::utils
     pylabhub::test_framework
-    GTest::gtest
-    GTest::gmock)
+    GTest::gtest)
 pylabhub_ensure_sanitizer_for_executable(test_layer2_configure_logger)
 pylabhub_register_test_for_staging(
     TARGET test_layer2_configure_logger
@@ -791,7 +787,6 @@ target_link_libraries(test_layer2_lua_engine
         pylabhub::scripting
         pylabhub::test_framework
         GTest::gtest
-        GTest::gmock
 )
 
 target_compile_definitions(test_layer2_lua_engine PRIVATE LOGGER_COMPILE_LEVEL=0)
@@ -829,7 +824,6 @@ target_link_libraries(test_layer2_python_engine
         pylabhub::test_framework
         pylabhub::third_party::pybind11_embed
         GTest::gtest
-        GTest::gmock
 )
 
 target_compile_definitions(test_layer2_python_engine PRIVATE LOGGER_COMPILE_LEVEL=0)
@@ -1066,7 +1060,6 @@ target_link_libraries(test_layer2_metrics_api
         pylabhub::test_framework
         pylabhub::third_party::pybind11_embed
         GTest::gtest
-        GTest::gmock
 )
 
 target_compile_features(test_layer2_metrics_api PRIVATE cxx_std_20)

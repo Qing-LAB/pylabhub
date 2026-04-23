@@ -433,8 +433,41 @@ refactor will likely change.
   by the above (all three tests pin a single aligned layout). Add when
   ZmqQueue packing tests are revisited.
 
-### BrokerProtocolTest Timing Audit (2026-03-23)
-- [ ] BrokerProtocolTest suite passes but execution times cluster near typical timeout values (~2s). Risk: tests could be masking timing-dependent failures by passing on timeout rather than on correct event sequence. Audit should verify each test validates actual event logs and message ordering, not just return codes or "didn't hang" outcomes.
+### BrokerProtocolTest Timing Audit (2026-03-23; audited 2026-04-22)
+
+Audit completed 2026-04-22.  8 broker-test files scanned (54 tests):
+5 of 8 files are SOLID (worker-subprocess + ExpectWorkerOk with pinned
+substrings — no in-process timing).  3 files have real timing-risk
+patterns:
+
+- [ ] **`test_datahub_broker_shutdown.cpp` — all 6 tests** have
+  post-event-wait sleeps (lines 263, 305, 358, 362, 411, 476) that are
+  300-500ms padding after `SignalFlag::wait()` already returned.
+  Replace each with `poll_until` on the actual condition (snapshot
+  state, deregister completion) — the wait() is the synchronization
+  point; the sleep is redundant and masks slow-broker regressions.
+
+- [ ] **`test_datahub_broker_protocol.cpp`** — 3 tests:
+  - `ChecksumErrorReport_UnknownChannel_Silent` (line 268): replace
+    `sleep(200); query_snapshot()` with poll on the expected silent-drop
+    state.
+  - `ClosingNotify_DeliveredToProducerAndConsumer` (lines 333-339):
+    replace 20ms-spin loop with `condition_variable::wait_for` on
+    `prod_closing && cons_closing` atomics.
+  - `Heartbeat_TransitionsToReady` (lines 403-423): poll channel status
+    == "Ready" instead of sleep(200ms) + single query.
+
+- [ ] **`test_datahub_broker_admin.cpp`** — 2 tests:
+  - `CloseChannel_Existing` (line 349): poll snapshot instead of
+    sleep(500ms) + single check.
+  - `CloseChannel_NonExistent` (line 380): currently vacuous
+    (`(void)snap` with no assertion); add snapshot content check or
+    delete.
+
+Total: 11 tests requiring conversion from sleep-based to poll_until-based
+synchronization.  Pattern helper `poll_until` already exists at
+`tests/test_framework/test_sync_utils.h`.  Self-contained work — one
+focused commit when prioritized.
 
 ### Phase D: High-Load and Edge Cases
 **Status**: 🔵 Partial — RAII stress tests added; extended/platform tests deferred
