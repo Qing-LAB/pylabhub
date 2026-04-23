@@ -56,4 +56,32 @@ else()
 endif()
 target_compile_definitions(pylabhub-test-framework PUBLIC STRESS_TEST_LEVEL=${_stress_level})
 
+# CI-specific test relaxations (detected by tests/CMakeLists.txt at
+# configure time).  When PYLABHUB_CI_BUILD is set, bake CI-appropriate
+# constants into every test TU that links this framework:
+#
+#   PYLABHUB_CI_BUILD                 - 1 when under CI, undefined locally
+#   PYLABHUB_TEST_CRYPTO_TIMEOUT_S    - wait_for_exit deadline for tests
+#                                       that drive Argon2id or other
+#                                       memory-bound crypto (keygen,
+#                                       vault open).  Local: 60s
+#                                       (Argon2id INTERACTIVE ~100ms +
+#                                       generous headroom).  CI: 120s
+#                                       (absorbs GH Actions scheduler
+#                                       jitter + memory pressure).
+#
+# Extend this block when a new category of CI-sensitive test shows up;
+# keep the defines at the CMake level rather than sprinkling runtime
+# env checks across test source.
+if(PYLABHUB_CI_BUILD)
+    target_compile_definitions(pylabhub-test-framework PUBLIC
+        PYLABHUB_CI_BUILD=1
+        PYLABHUB_TEST_CRYPTO_TIMEOUT_S=120
+    )
+else()
+    target_compile_definitions(pylabhub-test-framework PUBLIC
+        PYLABHUB_TEST_CRYPTO_TIMEOUT_S=60
+    )
+endif()
+
 pylabhub_apply_standard_msvc_options(pylabhub-test-framework)

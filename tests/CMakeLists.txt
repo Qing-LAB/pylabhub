@@ -22,6 +22,43 @@ if(BUILD_TESTS)
   # when BUILD_TESTS=ON. This makes PYLABHUB_UTILS_TEST_EXPORT symbols visible
   # in the shared library AND in test binaries.
 
+  # ── CI-environment detection ────────────────────────────────────────
+  # Detect at configure time whether this build is running inside a CI
+  # environment.  Captured as PYLABHUB_CI_BUILD (cache variable) and
+  # propagated to test translation units as -DPYLABHUB_CI_BUILD so test
+  # helpers can select CI-specific defaults (longer wait timeouts, etc.)
+  # at compile time.  No runtime env check needed.
+  #
+  # Signals:
+  #   - CI               — de-facto standard, set by GitHub Actions,
+  #                        GitLab CI, CircleCI, Travis, Jenkins, Azure
+  #                        DevOps, etc.
+  #   - GITHUB_ACTIONS   — GH-Actions-specific fallback.
+  #
+  # To simulate a CI build locally, `CI=1 cmake -S . -B build-ci`.
+  if(DEFINED ENV{CI} OR DEFINED ENV{GITHUB_ACTIONS})
+    set(PYLABHUB_CI_BUILD ON CACHE BOOL
+        "CI environment detected at configure time; tests apply relaxed deadlines")
+    message(STATUS "-- CI environment detected; enabling CI-specific test relaxations")
+
+    # Library-side: swap Argon2id from INTERACTIVE (~100ms @ 64MiB) to MIN
+    # (~1ms @ 8KiB) for CI test runs.  INTERACTIVE memory-thrashes on
+    # loaded GH Actions runners, stretching keygen from 100ms to 60+
+    # seconds.  MIN is cryptographically weak but acceptable for test
+    # vaults that never leave the test directory.  Only applied when
+    # BUILD_TESTS=ON + CI — production builds (no BUILD_TESTS) never
+    # set this flag and retain the production KDF.  See
+    # src/utils/service/vault_crypto.hpp header doc.
+    if(TARGET pylabhub-utils)
+      target_compile_definitions(pylabhub-utils PRIVATE PYLABHUB_VAULT_TEST_KDF)
+      message(STATUS "-- CI + BUILD_TESTS: Argon2id tuned to MIN for test vaults "
+                     "(production security unaffected)")
+    endif()
+  else()
+    set(PYLABHUB_CI_BUILD OFF CACHE BOOL
+        "CI environment detected at configure time; tests apply relaxed deadlines")
+  endif()
+
   # Use PRE_TEST discovery mode on multi-config generators (Visual Studio).
   # The default POST_BUILD mode runs the test executable at build time to
   # enumerate tests, which fails with VS because the WORKING_DIRECTORY
