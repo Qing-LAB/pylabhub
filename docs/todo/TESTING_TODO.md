@@ -441,41 +441,25 @@ refactor will likely change.
   the `write_acquire` zero-init invariant (hub_zmq_queue.cpp:823) that
   Enforced-checksum round-trip depends on.
 
-### BrokerProtocolTest Timing Audit (2026-03-23; audited 2026-04-22)
+### BrokerProtocolTest Timing Audit (2026-03-23; closed 2026-04-22)
 
-Audit completed 2026-04-22.  8 broker-test files scanned (54 tests):
-5 of 8 files are SOLID (worker-subprocess + ExpectWorkerOk with pinned
-substrings — no in-process timing).  3 files have real timing-risk
-patterns:
-
-- [ ] **`test_datahub_broker_shutdown.cpp` — all 6 tests** have
-  post-event-wait sleeps (lines 263, 305, 358, 362, 411, 476) that are
-  300-500ms padding after `SignalFlag::wait()` already returned.
-  Replace each with `poll_until` on the actual condition (snapshot
-  state, deregister completion) — the wait() is the synchronization
-  point; the sleep is redundant and masks slow-broker regressions.
-
-- [ ] **`test_datahub_broker_protocol.cpp`** — 3 tests:
-  - `ChecksumErrorReport_UnknownChannel_Silent` (line 268): replace
-    `sleep(200); query_snapshot()` with poll on the expected silent-drop
-    state.
-  - `ClosingNotify_DeliveredToProducerAndConsumer` (lines 333-339):
-    replace 20ms-spin loop with `condition_variable::wait_for` on
-    `prod_closing && cons_closing` atomics.
-  - `Heartbeat_TransitionsToReady` (lines 403-423): poll channel status
-    == "Ready" instead of sleep(200ms) + single query.
-
-- [ ] **`test_datahub_broker_admin.cpp`** — 2 tests:
-  - `CloseChannel_Existing` (line 349): poll snapshot instead of
-    sleep(500ms) + single check.
-  - `CloseChannel_NonExistent` (line 380): currently vacuous
-    (`(void)snap` with no assertion); add snapshot content check or
-    delete.
-
-Total: 11 tests requiring conversion from sleep-based to poll_until-based
-synchronization.  Pattern helper `poll_until` already exists at
-`tests/test_framework/test_sync_utils.h`.  Self-contained work — one
-focused commit when prioritized.
+- [x] ~~Audit + conversion~~ — **done 2026-04-22** (commit `d0ef300`).
+  Audited 8 broker-test files (54 tests); 5 were already SOLID
+  (worker-subprocess + pinned substrings).  11 sites across 3 files
+  reclassified case-by-case:
+    - 8 sites converted to `poll_until` on the actual observable
+      (channel removed, status transition, notification counter).
+    - 1 site removed entirely (padding between two deregs with no
+      intermediate state to observe).
+    - 2 sites retained the sleep (legitimate silent-async-processing
+      windows where no event fires on the happy path —
+      `ChecksumErrorReport_UnknownChannel_Silent` and
+      `CloseChannel_NonExistent`) but their vacuous `(void)snap`
+      assertions were upgraded to real `EXPECT_NO_THROW` liveness
+      probes.
+  Full suite: 1470/1470; broker-suite runtime unchanged (poll_until
+  returns on condition, so padded 300-500ms intervals no longer
+  contribute wall-clock cost).
 
 ### Phase D: High-Load and Edge Cases
 **Status**: 🔵 Partial — RAII stress tests added; extended/platform tests deferred
