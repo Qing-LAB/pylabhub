@@ -8,6 +8,7 @@
 #include "plh_platform.hpp"
 #include "pylabhub_version.h"  // PYLABHUB_RELEASE_VERSION, PYLABHUB_PYTHON_RUNTIME_VERSION
 #include "utils/data_block.hpp" // HEADER_VERSION_MAJOR/MINOR
+#include "utils/native_engine_api.h"  // PLH_COMPONENT_* C-visible mirrors
 
 #include <fmt/format.h>
 
@@ -27,6 +28,35 @@ static_assert(
     pylabhub::version::kShmMinor == pylabhub::hub::detail::HEADER_VERSION_MINOR,
     "plh_version_registry.hpp: kShmMinor drifted from "
     "data_block.hpp HEADER_VERSION_MINOR");
+
+// Pin the C-visible PLH_COMPONENT_* #defines (native_engine_api.h) to
+// the C++ `inline constexpr` values (plh_version_registry.hpp).  The
+// two locations exist because C plugins cannot include the C++ header;
+// a drift is a compile-time error.
+static_assert(PLH_COMPONENT_SHM_MAJOR           == pylabhub::version::kShmMajor,
+              "PLH_COMPONENT_SHM_MAJOR drift");
+static_assert(PLH_COMPONENT_SHM_MINOR           == pylabhub::version::kShmMinor,
+              "PLH_COMPONENT_SHM_MINOR drift");
+static_assert(PLH_COMPONENT_BROKER_PROTO_MAJOR  == pylabhub::version::kBrokerProtoMajor,
+              "PLH_COMPONENT_BROKER_PROTO_MAJOR drift");
+static_assert(PLH_COMPONENT_BROKER_PROTO_MINOR  == pylabhub::version::kBrokerProtoMinor,
+              "PLH_COMPONENT_BROKER_PROTO_MINOR drift");
+static_assert(PLH_COMPONENT_ZMQ_FRAME_MAJOR     == pylabhub::version::kZmqFrameMajor,
+              "PLH_COMPONENT_ZMQ_FRAME_MAJOR drift");
+static_assert(PLH_COMPONENT_ZMQ_FRAME_MINOR     == pylabhub::version::kZmqFrameMinor,
+              "PLH_COMPONENT_ZMQ_FRAME_MINOR drift");
+static_assert(PLH_COMPONENT_SCRIPT_API_MAJOR    == pylabhub::version::kScriptApiMajor,
+              "PLH_COMPONENT_SCRIPT_API_MAJOR drift");
+static_assert(PLH_COMPONENT_SCRIPT_API_MINOR    == pylabhub::version::kScriptApiMinor,
+              "PLH_COMPONENT_SCRIPT_API_MINOR drift");
+static_assert(PLH_COMPONENT_SCRIPT_ENGINE_MAJOR == pylabhub::version::kScriptEngineMajor,
+              "PLH_COMPONENT_SCRIPT_ENGINE_MAJOR drift");
+static_assert(PLH_COMPONENT_SCRIPT_ENGINE_MINOR == pylabhub::version::kScriptEngineMinor,
+              "PLH_COMPONENT_SCRIPT_ENGINE_MINOR drift");
+static_assert(PLH_COMPONENT_CONFIG_MAJOR        == pylabhub::version::kConfigMajor,
+              "PLH_COMPONENT_CONFIG_MAJOR drift");
+static_assert(PLH_COMPONENT_CONFIG_MINOR        == pylabhub::version::kConfigMinor,
+              "PLH_COMPONENT_CONFIG_MINOR drift");
 
 namespace pylabhub::version
 {

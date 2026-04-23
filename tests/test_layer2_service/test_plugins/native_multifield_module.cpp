@@ -6,6 +6,7 @@
  * Exercises all three roles (producer, consumer, processor).
  */
 #include "utils/native_engine_api.h"
+#include "pylabhub_version.h"  // PYLABHUB_VERSION_* for HEP-0032 axes
 
 #include <cstring>
 
@@ -35,12 +36,23 @@ static const PlhNativeContext *g_ctx = nullptr;
 
 extern "C" PLH_EXPORT const PlhAbiInfo *native_abi_info(void)
 {
+    // See good_producer_plugin.cpp for notes on the HEP-0032 fields.
     static const PlhAbiInfo info = {
         sizeof(PlhAbiInfo),
         static_cast<uint32_t>(sizeof(void *)),
         static_cast<uint32_t>(sizeof(size_t)),
         1,
-        PLH_NATIVE_API_VERSION
+        PLH_NATIVE_API_VERSION,
+        static_cast<uint16_t>(PYLABHUB_VERSION_MAJOR),
+        static_cast<uint16_t>(PYLABHUB_VERSION_MINOR),
+        static_cast<uint16_t>(PYLABHUB_VERSION_ROLLING),
+        PLH_COMPONENT_SHM_MAJOR,           PLH_COMPONENT_SHM_MINOR,
+        PLH_COMPONENT_BROKER_PROTO_MAJOR,  PLH_COMPONENT_BROKER_PROTO_MINOR,
+        PLH_COMPONENT_ZMQ_FRAME_MAJOR,     PLH_COMPONENT_ZMQ_FRAME_MINOR,
+        PLH_COMPONENT_SCRIPT_API_MAJOR,    PLH_COMPONENT_SCRIPT_API_MINOR,
+        PLH_COMPONENT_SCRIPT_ENGINE_MAJOR, PLH_COMPONENT_SCRIPT_ENGINE_MINOR,
+        PLH_COMPONENT_CONFIG_MAJOR,        PLH_COMPONENT_CONFIG_MINOR,
+        {0}
     };
     return &info;
 }
