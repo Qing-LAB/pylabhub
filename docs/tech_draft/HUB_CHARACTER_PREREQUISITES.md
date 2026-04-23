@@ -398,44 +398,425 @@ today after `-O2` inlining.
 **Recommendation**: land as its own commit (or small commit series)
 before starting HEP-0033 Phase 1.
 
-### G2. `BrokerService` / `HubState` integration model
-Today `BrokerService` privately owns `metrics_store_`, `ChannelRegistry`,
-`BandRegistry`, federation peer map. HEP-0033 §8 says `HubState` aggregates
-these. Three implementation patterns:
-- (a) **Refactor (move)**: maps move out of `BrokerService` into `HubState`;
-      `BrokerService` gets a `HubState *` and writes directly.
-- (b) **Wrap (reference)**: `HubState` is a view; references broker-internal
-      maps. Simpler but couples lifetime + locking.
-- (c) **Mirror (sync)**: `BrokerService` keeps its maps; `HubState` holds
-      copies updated via events. Doubled state + update paths.
+### G2. Hub composition — broker as the single mutator of `HubState`
 
-**Blocks**: HEP-0033 Phase 4 (HubState + HubHost).
-**Recommendation**: (a) — one source of truth, no duplication, mirrors how
-`RoleHostCore` absorbed state from per-role mains. Requires G3/G4 decisions
-to follow.
+**Discussion 2026-04-23 ratified the following model.**  Broker is not a
+peer of the hub — broker is the **network-protocol-dispatching component
+of the hub**, and also the **single authoritative mutator of hub state**.
+All mutation paths (network inbound, admin RPC, user script) converge
+on `BrokerService`'s public mutator methods.  This is a chokepoint for
+protocol consistency: state mutation and NOTIFY emission are one atomic
+operation, and only the broker knows the NOTIFY protocol.
 
-### G3. `ChannelRegistry` / `BandRegistry` are private-to-broker
-`src/utils/ipc/channel_registry.hpp` and `band_registry.hpp` are internal
-headers (inside `src/utils/ipc/`, not under `src/include/utils/`). HEP-0033
-needs external access for `HubState`. Resolved by G2:
-- If G2=(a): registries are **absorbed** into `HubState` public types.
-- If G2=(b)/(c): registries get **promoted** to public headers with
-  accessor APIs.
+Blocks: HEP-0033 Phase 4 (HubState + HubHost).  Also absorbs G3 and G4 —
+their questions fall out of this model naturally.
 
-**Blocks**: HEP-0033 Phase 4.
+#### Conceptual picture
 
-### G4. `BrokerService` event-publisher interface
-HEP-0033 §12.3 says "BrokerService gains internal callbacks that push events
-into HubHost". Today there are ad-hoc `on_channel_closed` / `on_consumer_closed`
-hooks for federation + band cleanup. Need a first-class publisher:
-- Add/remove-listener pattern (BrokerService knows N listeners).
-- Direct `HubState *` handle (simplest if G2=(a)).
-- Typed event struct + single dispatcher callback.
+Hub character (following HEP-0033 §2 premises):
+- Hub is a **process with state, scripts, admin surface, and a broker**.
+- Broker is **one component** of the hub, not the hub itself.
+- All state that scripts/admins/peers care about lives in one place
+  (`HubState`), mutated through one interface (broker public methods),
+  with mutation and network-notification coupled.
 
-**Blocks**: HEP-0033 Phase 4.
-**Recommendation**: collapses into G2=(a) — `BrokerService` holds
-`HubState *` and writes state+events directly; `HubState` in turn fans out
-to script callbacks via its own event notifier.
+#### Component ownership
+
+```mermaid
+classDiagram
+    class HubHost {
+        -unique_ptr~ScriptEngine~ engine_
+        -unique_ptr~HubAPI~ api_
+        -unique_ptr~BrokerService~ broker_
+        -unique_ptr~AdminService~ admin_
+        -HubState state_
+        +startup_()
+        +shutdown_()
+    }
+    class HubState {
+        <<data-only>>
+        -mutable shared_mutex mu_
+        -map~name, ChannelEntry~ channels_
+        -map~uid, RoleEntry~ roles_
+        -map~name, BandEntry~ bands_
+        -map~uid, PeerEntry~ peers_
+        +snapshot() HubStateSnapshot
+        +channel(name) optional~ChannelEntry~
+        +role(uid) optional~RoleEntry~
+        -BrokerService friend
+    }
+    class BrokerService {
+        +register_channel(opts, auth) Result
+        +close_channel(name, auth) Result
+        +register_role(opts, auth) Result
+        +deregister_role(uid, auth) Result
+        +broadcast_on_channel(name, msg, auth) Result
+        +send_hub_targeted(peer, channel, payload, auth) Result
+        +update_metrics(uid, blob, auth) Result
+        +subscribe_channel_opened(handler) HandlerId
+        +subscribe_channel_closed(handler) HandlerId
+        -poll_loop_()
+        -enqueue_notify_(type, ...)
+    }
+    class HubAPI {
+        +state_snapshot() HubStateSnapshot
+        +close_channel(name) Result
+        +broadcast_on_channel(name, msg) Result
+        +register_on_channel_opened(handler)
+    }
+    class AdminService {
+        +handle_rpc(request)
+    }
+    class ScriptEngine
+    HubHost o-- HubState
+    HubHost o-- BrokerService
+    HubHost o-- HubAPI
+    HubHost o-- AdminService
+    HubHost o-- ScriptEngine
+    BrokerService ..> HubState : friend (mutates private maps)
+    HubAPI ..> BrokerService : calls mutators w/ script AuthContext
+    HubAPI ..> HubState : reads via snapshot()
+    AdminService ..> BrokerService : calls mutators w/ admin AuthContext
+    AdminService ..> HubState : reads via snapshot()
+    BrokerService ..> BrokerService : own poll loop calls its own mutators on inbound frames
+```
+
+#### Mutation flow — three sources converge on broker
+
+```mermaid
+flowchart LR
+    subgraph Sources
+        S[user script<br/>api.close_channel]
+        A[admin RPC<br/>admin.close_channel]
+        N[network peer<br/>DISC_REQ frame]
+    end
+    S -->|AuthContext{Script, uid}| M[BrokerService::close_channel]
+    A -->|AuthContext{Admin, token.owner}| M
+    N -->|AuthContext{Network, peer_identity}| M
+    M --> V[authorize + validate]
+    V -->|OK| L1[lock HubState mutex]
+    L1 --> U[update private maps]
+    U --> L2[unlock]
+    L2 --> Q[enqueue CHANNEL_CLOSING_NOTIFY]
+    Q --> E[fire typed event to subscribers]
+    E --> E1[HubAPI on_channel_closed script callback]
+    E --> E2[AdminService audit log optional]
+    Q -.drained by.-> P[poll thread]
+    P --> Net[send NOTIFY frames via ZMQ socket]
+```
+
+Every mutation caller ends up in the same broker method, atomically:
+1. Authorizes the caller against a policy that depends on the caller's
+   `AuthContext::Source`.
+2. Validates the request against current `HubState`.
+3. Mutates `HubState` under its shared_mutex (writer lock).
+4. Enqueues outbound NOTIFY messages to a thread-safe send queue
+   (drained by the broker's poll thread outside the HubState lock).
+5. Fires typed events (e.g., `ChannelClosedEvent`) to subscribers
+   — the script's `on_channel_closed` callback, admin audit log, etc.
+
+#### Why "always through broker"
+
+Four reasons this model beats the earlier "all three call HubState
+directly" proposal:
+
+1. **Protocol consistency by construction.**  You cannot close a channel
+   without peers being told — the mutation and the NOTIFY are in the
+   same broker method.  A script has no path to mutate `HubState`
+   without triggering NOTIFY.  No silent divergence between "hub view"
+   and "peer view" of channel status.
+
+2. **Single place owning the hard question "who needs to know?"**
+   Answering "which peers get CHANNEL_CLOSING_NOTIFY for channel X" is
+   broker-internal knowledge (tracks producer, consumers, federation
+   peers).  Scripts shouldn't learn the NOTIFY protocol; AdminService
+   shouldn't either.  Broker is the only component that has to.
+
+3. **Automatic serialization.**  A script calling `api.close_channel()`
+   while a network `DISC_REQ` arrives for the same channel — both
+   paths go through the same broker mutex and the same mutator.  Last
+   one wins with atomic semantics.  No cross-path race is possible.
+
+4. **Audit for free.**  Every mutation passes through one method entry
+   point with `AuthContext`.  Logging "what changed + who asked" is a
+   single hook point, not a sweep across three call sites.
+
+#### HubState — data-only, private mutators, friend BrokerService
+
+`HubState` is a pure data store.  No public mutators.  `BrokerService`
+is a friend class; only it can call the private setters.  Public API:
+const accessors returning snapshot structs by value.
+
+```cpp
+class HubState {
+    friend class BrokerService;
+
+public:
+    // Read-only public surface.
+    HubStateSnapshot                snapshot() const;
+    std::optional<ChannelEntry>     channel(const std::string &name) const;
+    std::optional<RoleEntry>        role(const std::string &uid) const;
+    std::optional<BandEntry>        band(const std::string &name) const;
+    std::optional<PeerEntry>        peer(const std::string &hub_uid) const;
+    BrokerCounters                  counters() const;
+
+    // Event subscription — subscribers called on broker's mutator
+    // thread after the HubState lock is released.  Handlers must not
+    // call back into HubState mutators (would re-enter the broker's
+    // lock chain).
+    using ChannelOpenedHandler = std::function<void(const ChannelOpenedEvent &)>;
+    using ChannelClosedHandler = std::function<void(const ChannelClosedEvent &)>;
+    HandlerId subscribe_channel_opened(ChannelOpenedHandler);
+    HandlerId subscribe_channel_closed(ChannelClosedHandler);
+    // ... one per event type
+    void unsubscribe(HandlerId);
+
+private:
+    // Accessible only via friend BrokerService.  Each setter takes the
+    // writer lock, updates the relevant map, and appends to a pending
+    // events list that BrokerService drains after releasing the lock.
+    Result<void> _set_channel_opened(const ChannelEntry &);
+    Result<void> _set_channel_status(const std::string &name, ChannelStatus);
+    Result<void> _set_channel_closed(const std::string &name);
+    Result<void> _add_consumer(const std::string &ch, const std::string &uid);
+    // ...
+
+    mutable std::shared_mutex                       mu_;
+    std::unordered_map<std::string, ChannelEntry>   channels_;
+    std::unordered_map<std::string, RoleEntry>      roles_;
+    std::unordered_map<std::string, BandEntry>      bands_;
+    std::unordered_map<std::string, PeerEntry>      peers_;
+    BrokerCounters                                  counters_;
+
+    // Event machinery
+    std::unordered_map<HandlerId, ChannelOpenedHandler> on_channel_opened_;
+    // ...
+};
+```
+
+Design choices captured:
+- **Mutex model**: `std::shared_mutex`.  Reads (snapshot + single-entry
+  lookups) are very frequent from HubAPI + AdminService + broker poll
+  thread self-reads; writes are less frequent.  Reader-writer lock
+  keeps the common case unserialized.
+- **Accessor return shape**: snapshot-by-value (copy out under shared
+  lock, return to caller holding no lock).  No references into private
+  maps escape.  Matches HEP-0033 §8 "accessors return snapshot structs."
+- **Event callbacks fire on the broker's mutator thread**, outside the
+  HubState lock.  Handler execution is not time-critical; holding the
+  state lock during handler execution would serialize every inbound
+  frame behind every handler callback.
+
+#### BrokerService — sole mutator + network I/O
+
+BrokerService after the refactor is **smaller** than today.  What it
+loses (absorbed into HubState):
+
+- `ChannelRegistry       registry;`
+- `BandRegistry          band_registry;`
+- `unordered_map<std::string, InboundPeer> inbound_peers_;`
+- `unordered_map<std::string, std::vector<std::string>> channel_to_peer_identities_;`
+- `unordered_set<std::string> hub_connected_notified_;`
+- `unordered_map<std::string, ChannelMetrics> metrics_store_;`
+
+What it keeps (legitimate broker-internal machinery):
+
+- ZMQ sockets + poll-thread state.
+- `BrokerService::Config cfg;`
+- `server_public_z85 / server_secret_z85` — auth keys.
+- `atomic<bool> stop_requested;` — thread control.
+- Thread-safe outbound **send queue** (renamed from today's ad-hoc
+  request queues — now a single multi-producer single-consumer queue
+  of outbound NOTIFY messages; drained by the poll thread).
+- Relay dedup (`relay_dedup_queue_ / relay_dedup_set_ / relay_seq_`) —
+  protocol-level optimisation, invisible to scripts/admin.
+
+What it gains:
+
+- Public thread-safe mutator methods, one per operation HubState
+  supports.  Each method: authorize → lock HubState (writer) → apply
+  via private setters → unlock → enqueue NOTIFYs → fire events.
+- Private `AuthContext authorize_<op>(opts, auth)` policy helpers that
+  encode "who can do what" per mutation kind.
+- Subscribe/unsubscribe method pass-through to `HubState` event
+  subscribers (or HubState owns the subscription registry directly
+  — see decision 2 below).
+
+Gone entirely: `close_request_queue_`, `broadcast_request_queue_`,
+`hub_targeted_queue_`.  These existed because script thread couldn't
+touch broker state.  Under the new model, the script thread calls
+broker mutators directly (with thread-safe internal locking).  No
+cross-thread queue needed for the mutation itself; the poll thread
+still drains outbound NOTIFYs from the send queue, but that's a
+socket-threading concern, not a mutation-request-queue concern.
+
+#### HubAPI / AdminService — thin wrappers
+
+```cpp
+class HubAPI {
+public:
+    HubAPI(const HubState &state, BrokerService &broker,
+           std::string script_uid);
+
+    // Read accessors — delegate to HubState.
+    HubStateSnapshot state_snapshot() const { return state_.snapshot(); }
+    // ...
+
+    // Mutation wrappers — call broker with script AuthContext.
+    Result<void> close_channel(const std::string &name) {
+        return broker_.close_channel(name,
+            AuthContext{AuthSource::Script, script_uid_});
+    }
+    // ...
+
+    // Event subscription — delegate to HubState (or broker's pass-through).
+    // Script's on_channel_closed callback routes through this subscription.
+
+private:
+    const HubState  &state_;
+    BrokerService   &broker_;
+    std::string      script_uid_;
+};
+```
+
+`AdminService::handle_close_channel_rpc(name, token)` looks identical,
+with `AuthContext{AuthSource::Admin, token.owner_uid}`.
+
+#### Authorization policy examples
+
+`AuthContext` is the audit-carrying caller identity:
+
+```cpp
+enum class AuthSource { Script, Admin, Network };
+
+struct AuthContext {
+    AuthSource   source;
+    std::string  uid;        // script uid / admin token owner / network peer identity
+    // (more fields can be added as policy needs grow)
+};
+```
+
+Per-mutation authorization:
+- `close_channel(name, auth)`:
+  - `Network`: only the channel's registered producer peer can close
+    its own channel (today's DISC_REQ semantics).
+  - `Admin`: any channel (admin is fully privileged).
+  - `Script`: default-deny; policy can be "only channels the script's
+    owning role produced" or "only if config explicitly grants script
+    admin rights."  Starts restrictive, relaxes per deployment.
+- `broadcast_on_channel(name, msg, auth)`: similar — network from
+  producer; admin unrestricted; script from owning role only.
+- `register_channel(opts, auth)`: `Network` only today; admin could be
+  allowed to pre-register; script path currently doesn't exist.
+
+Policy lives in `BrokerService::authorize_<op>()` methods; tests can
+cover each case independently.
+
+#### Resolves G3 and G4 (they collapse)
+
+**G3 was**: "ChannelRegistry / BandRegistry are private-to-broker;
+HEP-0033 needs external access."  Under the new model those registries
+**do not become external** — they're absorbed into `HubState` as
+private maps (`channels_`, `bands_`).  External access is via
+`HubState`'s public const snapshot accessors.  The `channel_registry.hpp`
+and `band_registry.hpp` internal headers are either removed entirely
+(if the current classes weren't worth preserving) or reduced to thin
+adapter types used only at the network-message-parsing boundary.
+
+**G4 was**: "BrokerService needs a first-class event-publisher."
+Under the new model the event publisher is `HubState`, and
+`BrokerService` is both the sole producer of state-change events
+(fires after each successful mutation) and — for its own internal
+NOTIFY-emission path — one of the subscribers.  No separate
+add-listener pattern on BrokerService needed; the subscription
+machinery lives on HubState and is uniform for all subscribers
+(broker, script callbacks, admin audit).
+
+#### Design decisions ratified
+
+1. **Broker as concrete class, not interface.**
+   `BrokerService` public methods ARE the mutation interface.  No
+   abstract `BrokerInterface` base class for now.  If tests later
+   need to stub the broker for isolation, introduce the abstract at
+   that time.  (Deferred until justified.)
+
+2. **`HubState` owned by `HubHost`.**  Broker holds `HubState &` (or
+   `HubState *` if lifetime ordering requires it).  Separation of
+   "data store" from "mutator+network I/O" is valuable for reasoning
+   about ownership and for future unit testing.
+
+3. **Events via `HubState` subscription registry**, not via broker
+   subscription.  Broker fires events by calling `HubState`'s
+   internal `_fire_*` after each successful mutation; subscribers
+   registered with `HubState::subscribe_*` receive the call.
+   Uniform path for all subscriber kinds.
+
+4. **Mutex model**: `std::shared_mutex` on `HubState`; broker's
+   mutator methods take the writer lock; read accessors take the
+   reader lock.  Broker's own poll-thread reads (e.g., deciding
+   whom to NOTIFY) also take the reader lock, not the writer.
+
+5. **Internal mutation API shape**: `HubState` has `friend class
+   BrokerService` + private `_set_*` methods.  Scripts/admin cannot
+   name the private mutators; only broker can reach them.
+
+#### Refactor scope estimate
+
+| Area | LOC est. | Notes |
+|---|---|---|
+| `HubState` class (header + .cpp) | ~400 | New files; maps + mutex + typed snapshot structs + event registry |
+| Entry structs (`ChannelEntry`, `RoleEntry`, `BandEntry`, `PeerEntry`, `BrokerCounters`) | ~200 | New; HEP-0033 §8 shapes |
+| `BrokerService` mutator methods | ~300 | New public methods; each wraps authorize → lock → private setter → unlock → notify |
+| `BrokerService` inbound handlers refactor | ~250 | Convert each handler from "update private map + emit NOTIFY ad hoc" to "call own public mutator" |
+| `BrokerService` dead-code removal | −600 | Remove private maps, per-mutation request queues, ad-hoc callbacks |
+| `HubAPI` (new) | ~300 | Read accessors + mutation wrappers + subscribe pass-through |
+| `AdminService` (new) | ~400 | RPC dispatcher using broker mutators; not fully in G2 scope but receives the design |
+| Tests | ~800 | HubState concurrency + mutation authorization + event dispatch + broker integration |
+| Touches to existing tests | ~200 | Replace direct registry access with `state.snapshot()` / `state.channel()` |
+
+**Total**: ~1850 new LOC, −600 LOC removed; net +1250 LOC.  Medium-risk
+refactor — touches every broker inbound handler.  Can be landed in
+phases (HubState skeleton first, broker handler conversion second,
+HubAPI/AdminService third) to keep each commit reviewable.
+
+#### Phasing proposal
+
+1. **Phase G2.1**: introduce `HubState` skeleton + entry types
+   (compile-only; no wiring).  No behavior change; ~600 LOC.
+2. **Phase G2.2**: convert `BrokerService` private maps to delegate
+   into `HubState` (friend access).  Broker mutators and handlers
+   migrate to the new private setters.  At this point HubState is
+   populated; snapshot accessors work; events fire.
+3. **Phase G2.3**: introduce `HubAPI` read accessors only.  Script
+   can query state.  Not yet mutating.
+4. **Phase G2.4**: add `HubAPI` mutation wrappers.  Remove ad-hoc
+   request queues from BrokerService.
+5. **Phase G2.5**: AdminService shell using the same broker mutators.
+   May overlap with HEP-0033 Phase 6 (AdminService).
+
+Each phase is behavior-neutral or strictly additive; full test suite
+green after each.
+
+### G3. `ChannelRegistry` / `BandRegistry` (absorbed into G2)
+
+**Resolved by G2's ratified model.**  The internal registry types are
+**absorbed into `HubState` as private maps** (`channels_`, `bands_`).
+External access is via `HubState`'s public const snapshot accessors.
+The headers `src/utils/ipc/channel_registry.hpp` and `band_registry.hpp`
+become either thin adapter types (at the network-message-parsing
+boundary) or are retired entirely during Phase G2.2 — concrete
+fate decided during implementation based on what non-storage logic
+they still hold.
+
+### G4. `BrokerService` event-publisher interface (absorbed into G2)
+
+**Resolved by G2's ratified model.**  The event publisher is
+**`HubState`**, and broker is both the sole producer of state-change
+events (via post-mutation `_fire_*` hooks) and one of the subscribers
+(for internal NOTIFY-emission).  No separate add-listener pattern
+lives on BrokerService.  Subscribe/unsubscribe lives on HubState;
+HubAPI exposes subscription pass-through so scripts can register
+`on_channel_*` callbacks.
 
 ---
 
