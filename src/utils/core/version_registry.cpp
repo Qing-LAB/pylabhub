@@ -8,10 +8,10 @@
 #include "plh_platform.hpp"
 #include "pylabhub_version.h"  // PYLABHUB_RELEASE_VERSION, PYLABHUB_PYTHON_RUNTIME_VERSION
 #include "utils/data_block.hpp" // HEADER_VERSION_MAJOR/MINOR
-#include "utils/logger.hpp"
 
 #include <fmt/format.h>
 
+#include <cstdio>
 #include <cstring>
 
 // ============================================================================
@@ -160,15 +160,19 @@ AbiCheckResult check_abi(const ComponentVersions &exp,
         }
     }
 
-    // Minor-only deltas → WARN.  Safe to call LOGGER_WARN even before
-    // LifecycleGuard is up — the logger drops to stderr pre-init.
+    // Minor-only deltas → stderr WARN.  check_abi() is called BEFORE
+    // LifecycleGuard in the canonical main() pattern — using
+    // LOGGER_WARN here would trigger PLH_PANIC because the Logger
+    // state machine is still Uninitialized (logger.cpp:67).  Direct
+    // stderr keeps the WARN visible without a lifecycle precondition.
     auto warn_minor = [&](const char *name, auto e, auto c) {
         if (e != c)
         {
-            LOGGER_WARN("ABI check: {} minor {} != {} (additive change; "
-                        "caller should re-inspect runtime surface)",
-                        name, static_cast<unsigned>(e),
-                        static_cast<unsigned>(c));
+            std::fprintf(stderr,
+                "[pylabhub] ABI check WARN: %s minor %u != %u "
+                "(additive change; caller should re-inspect runtime surface)\n",
+                name, static_cast<unsigned>(e),
+                static_cast<unsigned>(c));
         }
     };
     warn_minor("library",       exp.library_minor,        cur.library_minor);
