@@ -933,7 +933,7 @@ whatever happens to be in the code at that moment.
 
 ```
 channel    := NameComponent ('.' NameComponent)*
-              // first component NOT in {prod, cons, proc, sys}
+              // first component NOT in {prod, cons, proc, hub, sys}
 band       := '!' NameComponent ('.' NameComponent)*
 role.uid   := ('prod'|'cons'|'proc') '.' NameComponent '.' NameComponent ('.' NameComponent)*
               // MINIMUM 3 components: tag . name . unique_suffix
@@ -941,8 +941,15 @@ role.name  := NameComponent ('.' NameComponent)*
               // plain identifier; tag may or may not be included;
               // no reserved-word restriction since names are paired
               // with role_tag in every structured output
-peer       := '@' NameComponent ('.' NameComponent)*
+peer.uid   := 'hub' '.' NameComponent '.' NameComponent ('.' NameComponent)*
+              // same tag.name.unique shape as role.uid — a federated
+              // hub is conceptually a role-like participant with the
+              // reserved tag 'hub'
 schema     := '$' NameComponent ('.' NameComponent)*
+              // version is a trailing name component, e.g. "$foo.v2"
+              // (NOT '@<version>' — that would collide with nothing now,
+              // but the uniform dotted form is simpler and matches the
+              // rest of the grammar)
 sys.key    := 'sys' ('.' NameComponent)+
               // broker-internal counter / event keys; user input is
               // rejected at the wire boundary for this namespace
@@ -961,9 +968,10 @@ NameComponent := [A-Za-z][A-Za-z0-9_-]{0,63}
 | Max length per name component | 64 |
 | Max total identifier length (sigil + body) | 128 |
 | Hierarchy separator | `.` (dot) |
-| Sigils (position 0 only) | `!` (band), `@` (peer), `$` (schema) |
+| Sigils (position 0 only) | `!` (band), `$` (schema) |
 | Role tag prefix (first component of role.uid) | closed set `{prod, cons, proc}` |
-| Reserved first components for channel | `{prod, cons, proc, sys}` |
+| Peer tag prefix (first component of peer.uid) | closed set `{hub}` |
+| Reserved first components for channel | `{prod, cons, proc, hub, sys}` |
 | Case | preserved; comparisons case-sensitive |
 | Whitespace | forbidden |
 | Dot at start / end | forbidden (grammar excludes) |
@@ -999,18 +1007,19 @@ Invalid (insufficient parts):
 ##### Helpers (live in `utils/naming.hpp`)
 
 ```cpp
-enum class IdentifierKind { Channel, Band, Role, RoleName, Peer, Schema, SysKey };
+enum class IdentifierKind { Channel, Band, RoleUid, RoleName, PeerUid, Schema, SysKey };
 
 bool is_valid_identifier(std::string_view, IdentifierKind) noexcept;
 void require_valid_identifier(std::string_view, IdentifierKind,
                               std::string_view context);   // PLH_PANIC on invalid
 
-struct RoleUidParts {
-    std::string_view tag;     // "prod" / "cons" / "proc"
+struct TaggedUidParts {
+    std::string_view tag;     // "prod" / "cons" / "proc" (role) or "hub" (peer)
     std::string_view name;    // second component
     std::string_view unique;  // third + onward, joined by dots (may contain dots)
 };
-std::optional<RoleUidParts>     parse_role_uid(std::string_view uid) noexcept;
+std::optional<TaggedUidParts>   parse_role_uid(std::string_view uid) noexcept;   // tag ∈ {prod,cons,proc}
+std::optional<TaggedUidParts>   parse_peer_uid(std::string_view uid) noexcept;   // tag == hub
 std::optional<std::string_view> extract_role_tag(std::string_view uid) noexcept;
 
 std::string format_role_ref(std::string_view uid,
@@ -1025,10 +1034,10 @@ Every identifier string is classifiable from its leading characters alone:
 | Prefix | Kind |
 |---|---|
 | `!…` | band |
-| `@…` | peer |
 | `$…` | schema |
 | `sys.…` | broker-internal |
 | `prod.…` / `cons.…` / `proc.…` (exact match of first component) | role (uid) |
+| `hub.…` (exact match of first component) | peer (uid) |
 | Any other `[A-Za-z]…` | channel |
 
 **`role.name` is deliberately not self-classifying** — it is free-form
@@ -1086,7 +1095,7 @@ the uid's parsed parts and rejects mismatches.
 | Existing test role uids (`prod-uid`, `cons-A`, `r1`, …) | **Rename** to 3-component form (`prod.uid.test`, `cons.A.test`, etc.).  ~30 sites. |
 | Existing channel names in tests (`ch1`, `sensor.data`, `lab.raw`) | **No change** — all already fit the grammar. |
 | Existing band names (none in tests beyond `"band"`) | Rename to `!band` or similar.  Handful of sites. |
-| Existing peer names (`p1`, `hub_uid1`) | Rename to `@p1`, `@hub1`.  Handful of sites. |
+| Existing peer names (`p1`, `hub_uid1`) | Rename to `hub.p1.test`, `hub.lab1.pid42`, etc. (same tagged-uid shape as roles).  Handful of sites. |
 | Existing HEP / README examples | Update in same commit for consistency. |
 
 All renames land in the same commit as `naming.hpp` to avoid a window

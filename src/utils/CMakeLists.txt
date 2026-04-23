@@ -23,6 +23,7 @@ set(UTILS_SOURCES
   core/uuid_utils.cpp
   core/interactive_signal_handler.cpp
   core/version_registry.cpp
+  core/naming.cpp
 
   # --- service: lifecycle, I/O, crypto, secrets ---
   service/lifecycle.cpp
