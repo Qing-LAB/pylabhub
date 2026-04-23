@@ -43,7 +43,12 @@
 namespace pylabhub::config { class RoleConfig; }
 namespace pylabhub::scripting
 {
-class RoleHostBase;
+// RoleHostBase is a typedef (EngineHost<RoleAPIBase>) — forward-declare
+// the template + the API class + define the alias.  Keeps this header
+// free of engine_host.hpp's full include.
+class RoleAPIBase;
+template <typename ApiT> class EngineHost;
+using RoleHostBase = EngineHost<RoleAPIBase>;
 class ScriptEngine;
 } // namespace pylabhub::scripting
 

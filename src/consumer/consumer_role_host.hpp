@@ -20,7 +20,7 @@
 
 #include "pylabhub_utils_export.h"
 #include "utils/config/role_config.hpp"
-#include "utils/role_host_base.hpp"
+#include "utils/engine_host.hpp"
 #include "plh_datahub.hpp"
 
 #include <atomic>

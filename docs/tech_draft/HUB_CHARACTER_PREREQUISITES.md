@@ -123,11 +123,11 @@ callbacks).
 So the unification target is the **Layer 1-2 plumbing** (owned today
 by `RoleHostBase`), generalized over the API class type.
 
-#### The refactor: promote `RoleHostBase` → `template <typename ApiT> ScriptHost<ApiT>`
+#### The refactor: promote `RoleHostBase` → `template <typename ApiT> EngineHost<ApiT>`
 
 ```cpp
 template <typename ApiT>
-class ScriptHost {
+class EngineHost {
     // Everything RoleHostBase does today — retyped.
     std::unique_ptr<ScriptEngine>  engine_;
     RoleHostCore                   core_;
@@ -151,26 +151,26 @@ class ScriptHost {
 };
 
 // Role side — existing names stay.
-using RoleHostBase = ScriptHost<RoleAPIBase>;
+using RoleHostBase = EngineHost<RoleAPIBase>;
 class ProducerRoleHost  : public RoleHostBase { void worker_main_() override; };
 class ConsumerRoleHost  : public RoleHostBase { ... };
 class ProcessorRoleHost : public RoleHostBase { ... };
 
 // Hub side — HEP-0033 drops in.
-using HubHostBase = ScriptHost<HubAPI>;
+using HubHostBase = EngineHost<HubAPI>;
 class HubHost : public HubHostBase { void worker_main_() override; };
 ```
 
-**Two template instantiations total** (`ScriptHost<RoleAPIBase>` and
-`ScriptHost<HubAPI>`).  The producer/consumer/processor distinction is
+**Two template instantiations total** (`EngineHost<RoleAPIBase>` and
+`EngineHost<HubAPI>`).  The producer/consumer/processor distinction is
 NOT a template parameter — it remains a virtual `worker_main_()` override
-within `ScriptHost<RoleAPIBase>`.
+within `EngineHost<RoleAPIBase>`.
 
 Class hierarchy after the refactor:
 
 ```mermaid
 classDiagram
-    class ScriptHost~ApiT~ {
+    class EngineHost~ApiT~ {
         <<template>>
         -unique_ptr~ScriptEngine~ engine_
         -unique_ptr~ApiT~ api_
@@ -186,11 +186,11 @@ classDiagram
     }
     class RoleHostBase {
         <<typedef>>
-        = ScriptHost~RoleAPIBase~
+        = EngineHost~RoleAPIBase~
     }
     class HubHostBase {
         <<typedef>>
-        = ScriptHost~HubAPI~
+        = EngineHost~HubAPI~
     }
     class ProducerRoleHost {
         +worker_main_() override
@@ -204,8 +204,8 @@ classDiagram
     class HubHost {
         +worker_main_() override
     }
-    ScriptHost <|-- RoleHostBase : ApiT = RoleAPIBase
-    ScriptHost <|-- HubHostBase : ApiT = HubAPI
+    EngineHost <|-- RoleHostBase : ApiT = RoleAPIBase
+    EngineHost <|-- HubHostBase : ApiT = HubAPI
     RoleHostBase <|-- ProducerRoleHost
     RoleHostBase <|-- ConsumerRoleHost
     RoleHostBase <|-- ProcessorRoleHost
@@ -216,7 +216,7 @@ Dependency graph (template parameter flow):
 
 ```mermaid
 flowchart LR
-    A[RoleAPIBase] -->|template arg| SH[ScriptHost&lt;ApiT&gt;]
+    A[RoleAPIBase] -->|template arg| SH[EngineHost&lt;ApiT&gt;]
     B[HubAPI<br/>HEP-0033] -->|template arg| SH
     SH -->|typedef| RHB[RoleHostBase]
     SH -->|typedef| HHB[HubHostBase]
@@ -262,7 +262,7 @@ ThreadManager ownership + lifecycle:
 
 ```mermaid
 flowchart TB
-    subgraph SH["ScriptHost&lt;ApiT&gt; (Layers 1-2 plumbing)"]
+    subgraph SH["EngineHost&lt;ApiT&gt; (Layers 1-2 plumbing)"]
         API["api_: unique_ptr&lt;ApiT&gt;"]
     end
     subgraph R[ApiT = RoleAPIBase]
@@ -299,7 +299,7 @@ uniform regardless of how many threads the concrete host spawned.
 `RoleHostBase` today holds a `config::RoleConfig` member.  The hub needs
 a `config::HubConfig`.  Options:
 
-- **(a)** Two-parameter template `ScriptHost<ApiT, ConfigT>`.  Cluttered.
+- **(a)** Two-parameter template `EngineHost<ApiT, ConfigT>`.  Cluttered.
 - **(b)** Traits specialisation:
   ```cpp
   template <typename ApiT> struct script_host_traits;
@@ -308,9 +308,9 @@ a `config::HubConfig`.  Options:
   template <> struct script_host_traits<HubAPI>
       { using ConfigT = config::HubConfig; };
   ```
-  `ScriptHost<ApiT>` uses `typename script_host_traits<ApiT>::ConfigT`
+  `EngineHost<ApiT>` uses `typename script_host_traits<ApiT>::ConfigT`
   internally.  Single-parameter from caller's view.
-- **(c)** Config not a member of `ScriptHost` — passed into `startup_()`
+- **(c)** Config not a member of `EngineHost` — passed into `startup_()`
   or stored in `ApiT`.  Messier; breaks current `host.config()` accessor.
 
 **Recommendation**: (b).  Standard C++ idiom, preserves single-parameter
@@ -332,7 +332,7 @@ class ScriptEngine {
 `build_api_(RoleAPIBase &)` as today.  Each adds `build_api_(HubAPI &)`
 when HEP-0033 Phase 8 (HubAPI bindings) lands; until then the base
 default (no-op returning false) is used, and no code path reaches it
-because nothing instantiates `ScriptHost<HubAPI>` yet.
+because nothing instantiates `EngineHost<HubAPI>` yet.
 
 **No pImpl change needed.**  ScriptEngine's data members stay as-is;
 the two typed overloads are a vtable addition tracked by the
@@ -341,13 +341,13 @@ the two typed overloads are a vtable addition tracked by the
 #### Refactor scope — outer shell only
 
 **Touched**:
-- `RoleHostBase` class becomes `template ScriptHost<ApiT>`.  Promoted
+- `RoleHostBase` class becomes `template EngineHost<ApiT>`.  Promoted
   to a header-resident template with explicit instantiation for
   `RoleAPIBase`.
 - `script_host_traits<ApiT>` introduced with role-side specialisation.
 - `ScriptEngine::build_api_(HubAPI &)` sibling virtual added with
   no-op default body.
-- `using RoleHostBase = ScriptHost<RoleAPIBase>;` keeps source-level
+- `using RoleHostBase = EngineHost<RoleAPIBase>;` keeps source-level
   compatibility for the three role host derived classes.
 
 **Not touched**:

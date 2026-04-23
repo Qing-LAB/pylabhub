@@ -145,8 +145,17 @@ inline constexpr uint8_t kScriptApiMajor       = 1;
 inline constexpr uint8_t kScriptApiMinor       = 0;
 // script_engine 1.0 → 1.1: pending_script_engine_request_count() added
 // with base-class default returning 0 (2026-04-21, commit 4e30fa3).
+// script_engine 1.1 → 1.2: RoleHostBase (non-template class) promoted
+// to EngineHost<ApiT> (template), with `using RoleHostBase =
+// EngineHost<RoleAPIBase>;` preserving the source-level name
+// (2026-04-23, HEP-0033 G1 prereq).  Source-compatible for derived
+// classes and any code using `RoleHostBase` by name; symbol-level
+// mangled names changed (pre-refactor binaries linking against the new
+// library get unresolved-symbol failures).  The build_id strict check
+// under PYLABHUB_STRICT_ABI_CHECK / Debug catches stale-binary cases;
+// this axis bump is the declared-axis signal for the rename.
 inline constexpr uint8_t kScriptEngineMajor    = 1;
-inline constexpr uint8_t kScriptEngineMinor    = 1;
+inline constexpr uint8_t kScriptEngineMinor    = 2;
 // config 1.0 → 1.1: nested-key whitelist rolled out across 4 sub-parsers
 // (script/auth/identity/startup, 2026-04-22, commit fffd095).  Additive
 // rejection behaviour — any existing valid config still loads; only

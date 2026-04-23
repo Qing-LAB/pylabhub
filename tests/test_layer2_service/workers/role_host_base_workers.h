@@ -5,7 +5,7 @@
  *
  * Each worker runs in a freshly spawned subprocess. The "abort" workers
  * deliberately trigger PLH_PANIC → std::abort(); the parent verifies
- * exit_code != 0 and "RoleHostBase destructor entered without shutdown_"
+ * exit_code != 0 and "EngineHost destructor entered without shutdown_"
  * appears in stderr. All other workers wrap their body in run_gtest_worker()
  * which owns the LifecycleGuard (Logger + FileLock + JsonConfig).
  */

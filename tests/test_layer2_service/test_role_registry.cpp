@@ -6,7 +6,7 @@
  * role_tag (suffixed with an atomic counter) so runs don't collide.
  */
 #include "utils/role_registry.hpp"
-#include "utils/role_host_base.hpp"
+#include "utils/engine_host.hpp"
 
 #include <gtest/gtest.h>
 

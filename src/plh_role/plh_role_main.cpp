@@ -36,7 +36,7 @@
 #include "utils/interactive_signal_handler.hpp"
 #include "utils/role_cli.hpp"
 #include "utils/role_directory.hpp"
-#include "utils/role_host_base.hpp"
+#include "utils/engine_host.hpp"
 #include "utils/role_main_helpers.hpp"
 #include "utils/role_registry.hpp"
 
