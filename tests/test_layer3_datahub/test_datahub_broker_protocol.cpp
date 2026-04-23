@@ -19,6 +19,7 @@
 #include "plh_service.hpp"
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
+#include "test_sync_utils.h"
 
 #include <atomic>
 #include <chrono>
@@ -277,11 +278,15 @@ TEST_F(BrokerProtocolTest, ChecksumErrorReport_UnknownChannel_Silent)
     report["reporter_pid"] = ::getpid();
 
     EXPECT_NO_THROW(reporter.brc.send_checksum_error(report));
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    // Broker still operational
-    ChannelSnapshot snap = svc().query_channel_snapshot();
-    (void)snap;
+    // An unknown-channel checksum report is silently dropped — there is
+    // no observable event (no callback, no metric bump, no log assertion
+    // we can pin) so we cannot poll_until a condition.  Give the broker
+    // a short async-processing window, then assert it is still operational
+    // by explicitly calling the admin API (not a vacuous `(void)snap`).
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_NO_THROW(svc().query_channel_snapshot())
+        << "broker must remain operational after unknown-channel checksum report";
 
     reporter.stop();
 }
@@ -330,13 +335,11 @@ TEST_F(BrokerProtocolTest, ClosingNotify_DeliveredToProducerAndConsumer)
 
     svc().request_close_channel(channel);
 
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (std::chrono::steady_clock::now() < deadline)
-    {
-        if (prod_closing.load() > 0 && cons_closing.load() > 0)
-            break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
+    using pylabhub::tests::helper::poll_until;
+    EXPECT_TRUE(poll_until(
+        [&] { return prod_closing.load() > 0 && cons_closing.load() > 0; },
+        std::chrono::seconds(5)))
+        << "CHANNEL_CLOSING_NOTIFY not delivered to both members within 5s";
 
     EXPECT_GE(prod_closing.load(), 1) << "Producer did not receive CHANNEL_CLOSING_NOTIFY";
     EXPECT_GE(cons_closing.load(), 1) << "Consumer did not receive CHANNEL_CLOSING_NOTIFY";
@@ -418,17 +421,18 @@ TEST_F(BrokerProtocolTest, Heartbeat_TransitionsToReady)
             EXPECT_EQ(ch.status, "PendingReady");
     }
 
-    // Send heartbeat
+    // Send heartbeat — broker flips status PendingReady → Ready asynchronously.
     bh.brc.send_heartbeat(channel, {});
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    // After heartbeat: Ready
-    snap = svc().query_channel_snapshot();
-    for (const auto &ch : snap.channels)
-    {
-        if (ch.name == channel)
-            EXPECT_EQ(ch.status, "Ready");
-    }
+    using pylabhub::tests::helper::poll_until;
+    auto channel_is_ready = [&] {
+        auto s = svc().query_channel_snapshot();
+        for (const auto &ch : s.channels)
+            if (ch.name == channel) return ch.status == "Ready";
+        return false;
+    };
+    EXPECT_TRUE(poll_until(channel_is_ready, std::chrono::seconds(3)))
+        << "channel did not transition to Ready within 3s after heartbeat";
 
     bh.stop();
 }
