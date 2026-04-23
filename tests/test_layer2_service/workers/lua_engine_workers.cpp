@@ -3756,6 +3756,63 @@ int type_sizeof_inbox_frame_returns_correct_size(const std::string &dir)
         Logger::GetLifecycleModule());
 }
 
+int invoke_on_inbox_missing_callback_counts_as_script_error(const std::string &dir)
+{
+    // Pins the L344 design decision (2026-04-22): when a required
+    // callback is missing and the engine is accepting, the invoke path
+    // MUST count it as a script error (not merely return Error with no
+    // counter bump).  Rationale: which callbacks are required depends
+    // on the role, so a missing callback is a script-author bug — the
+    // log is how they detect it.  Without the counter bump,
+    // stop_on_script_error_ can never fire on this path, which
+    // contradicts the role-contract semantics.
+    //
+    // Simplest reachable case: script defines on_produce but not
+    // on_inbox, then caller invokes on_inbox.  is_accepting() is true
+    // (build_api succeeded for a producer script) so the guarded
+    // LOGGER_ERROR + on_pcall_error_ fire.
+    return run_gtest_worker(
+        [&]() {
+            const fs::path script_dir(dir);
+            write_script(script_dir, R"LUA(
+                function on_produce(tx, msgs, api) return false end
+                -- deliberately NO on_inbox definition
+            )LUA");
+
+            RoleHostCore core;
+            LuaEngine    engine;
+            ASSERT_TRUE(engine.initialize("test", &core));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
+                                            "on_produce"));
+
+            auto spec = simple_schema();
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
+                                                   "aligned"));
+            // Register InboxFrame so the missing-callback guard (not the
+            // missing-type guard) is the one that fires.
+            ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame",
+                                                   "aligned"));
+
+            auto api = make_api(core);
+            ASSERT_TRUE(engine.build_api(*api));
+            ASSERT_TRUE(engine.is_accepting());
+            ASSERT_FALSE(engine.has_callback("on_inbox"));
+
+            float raw = 1.0f;
+            auto r = engine.invoke_on_inbox(
+                {&raw, sizeof(raw), "CONS-SENDER-00000001", 1});
+
+            EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Error)
+                << "missing callback must surface as Error result";
+            EXPECT_EQ(engine.script_error_count(), 1u)
+                << "missing required callback must bump script_error_count "
+                   "by exactly 1 (the L344 contract: role-contract violation "
+                   "is a script error, not a silent no-op)";
+        },
+        "lua_engine::invoke_on_inbox_missing_callback_counts_as_script_error",
+        Logger::GetLifecycleModule());
+}
+
 int invoke_on_inbox_missing_type_reports_error(const std::string &dir)
 {
     // Strengthened over V2.  V2 asserted script_error_count >= 1
@@ -5819,6 +5876,8 @@ struct LuaEngineWorkerRegistrar
                     return type_sizeof_inbox_frame_returns_correct_size(dir);
                 if (sc == "invoke_on_inbox_missing_type_reports_error")
                     return invoke_on_inbox_missing_type_reports_error(dir);
+                if (sc == "invoke_on_inbox_missing_callback_counts_as_script_error")
+                    return invoke_on_inbox_missing_callback_counts_as_script_error(dir);
 
                 // Chunk 9b: logical-size accessors
                 if (sc == "slot_logical_size_aligned_padding_sensitive")
