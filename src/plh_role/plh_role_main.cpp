@@ -45,7 +45,7 @@
 
 #include <atomic>
 #include <chrono>
-#include <cstdio>
+#include <cstdio>      // fprintf in check_abi failure branch
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>

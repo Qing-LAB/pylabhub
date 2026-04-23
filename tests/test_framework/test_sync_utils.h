@@ -29,6 +29,11 @@
 #include <chrono>
 #include <thread>
 
+// CI-specific test constants (like PYLABHUB_TEST_CRYPTO_TIMEOUT_S) are
+// defined by tests/test_framework/CMakeLists.txt — see that file for
+// the list.  Tests use the macros directly; no runtime detection or
+// ci_timeout() helper.
+
 namespace pylabhub::tests::helper
 {
 
