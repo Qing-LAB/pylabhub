@@ -36,8 +36,9 @@ using pylabhub::scripting::ChannelSide;
 using pylabhub::scripting::RoleAPIBase;
 using pylabhub::scripting::RoleHostCore;
 using pylabhub::utils::Logger;
-// Matches the using-directive style in role_api_loop_policy_raii_workers.cpp
-// so both files in this dir pull the test helpers the same way.
+// Matches the using-directive style in role_api_loop_policy_workers.cpp
+// and role_api_raii_workers.cpp so all role-api worker files in this dir
+// pull the test helpers the same way.
 using namespace pylabhub::tests::helper;
 
 namespace pylabhub::tests::worker::role_api_flexzone
