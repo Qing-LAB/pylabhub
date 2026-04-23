@@ -184,6 +184,18 @@ configure_file(
   @ONLY
 )
 
+# Generate build-id header for ABI freshness checks (HEP-CORE-0032).
+# Sets PYLABHUB_BUILD_ID to `<git-short-sha>-<CMAKE_BUILD_TYPE>`; consumed
+# by `plh_version_registry.hpp::abi_expected_here()` in strict mode.
+include(${CMAKE_SOURCE_DIR}/cmake/pylabhub_build_id.cmake)
+
+# Opt-in strict ABI check: forces build_id comparison even in Release.
+# Default: strict in Debug (via NDEBUG absence), tolerant in Release.
+if(PYLABHUB_STRICT_ABI_CHECK)
+    target_compile_definitions(pylabhub-utils PUBLIC PYLABHUB_STRICT_ABI_CHECK)
+    message(STATUS "PYLABHUB_STRICT_ABI_CHECK=ON — build_id check enforced in all modes")
+endif()
+
 # Generate Python version module (consumed by python/pylabhub/__init__.py).
 configure_file(
   "${CMAKE_SOURCE_DIR}/cmake/pylabhub_version.py.in"
@@ -286,6 +298,7 @@ target_compile_definitions(pylabhub-utils
 install(FILES
   "${CMAKE_CURRENT_BINARY_DIR}/pylabhub_utils_export.h"
   "${CMAKE_CURRENT_BINARY_DIR}/pylabhub_version.h"
+  "${CMAKE_CURRENT_BINARY_DIR}/pylabhub_build_id.h"
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 

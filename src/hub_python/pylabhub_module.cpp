@@ -119,8 +119,12 @@ Example::
     R"doc(
 Return a JSON string with all component version information.
 
-Keys: library, shm_major, shm_minor, wire_major, wire_minor,
-script_api_major, script_api_minor.
+Keys (see plh_version_registry.hpp for per-axis documentation):
+library, shm_major, shm_minor, broker_proto_major, broker_proto_minor,
+zmq_frame_major, zmq_frame_minor, script_api_major, script_api_minor,
+script_engine_major, script_engine_minor, config_major, config_minor,
+python_runtime, release.  The optional build_id key is present when
+the library was built with PYLABHUB_STRICT_ABI_CHECK or in Debug mode.
 
 Example::
 

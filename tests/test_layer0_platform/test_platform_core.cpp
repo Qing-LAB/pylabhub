@@ -359,10 +359,14 @@ TEST(VersionRegistryTest, CurrentReturnsConsistentValues)
     EXPECT_EQ(v.library_minor, static_cast<uint16_t>(platform::get_version_minor()));
     EXPECT_EQ(v.library_rolling, static_cast<uint16_t>(platform::get_version_rolling()));
 
-    // ABI/protocol versions must be positive.
+    // ABI/protocol versions must be positive (spot-check; full axis
+    // coverage lives in test_abi_check.cpp).
     EXPECT_GT(v.shm_major, 0);
-    EXPECT_GT(v.wire_major, 0);
+    EXPECT_GT(v.broker_proto_major, 0);
+    EXPECT_GT(v.zmq_frame_major, 0);
     EXPECT_GT(v.script_api_major, 0);
+    EXPECT_GT(v.script_engine_major, 0);
+    EXPECT_GT(v.config_major, 0);
 
 }
 
@@ -406,21 +410,29 @@ TEST(VersionRegistryTest, VersionInfoJsonParsesCorrectly)
     ASSERT_NO_THROW(j = nlohmann::json::parse(raw))
         << "version_info_json() should return valid JSON: " << raw;
 
-    // Required keys.
+    // Required keys — one per axis (broker_proto + zmq_frame +
+    // script_engine + config added 2026-04-22 alongside the rename of
+    // the former "wire_*" keys to "broker_proto_*").
     EXPECT_TRUE(j.contains("release"));
     EXPECT_TRUE(j.contains("library"));
     EXPECT_TRUE(j.contains("python_runtime"));
     EXPECT_TRUE(j.contains("shm_major"));
-    EXPECT_TRUE(j.contains("wire_major"));
+    EXPECT_TRUE(j.contains("broker_proto_major"));
+    EXPECT_TRUE(j.contains("zmq_frame_major"));
     EXPECT_TRUE(j.contains("script_api_major"));
+    EXPECT_TRUE(j.contains("script_engine_major"));
+    EXPECT_TRUE(j.contains("config_major"));
 
     // Release field matches the C API.
     EXPECT_EQ(j["release"].get<std::string>(), pylabhub::version::release_version());
 
     // Numeric fields are positive.
     EXPECT_GT(j["shm_major"].get<int>(), 0);
-    EXPECT_GT(j["wire_major"].get<int>(), 0);
+    EXPECT_GT(j["broker_proto_major"].get<int>(), 0);
+    EXPECT_GT(j["zmq_frame_major"].get<int>(), 0);
     EXPECT_GT(j["script_api_major"].get<int>(), 0);
+    EXPECT_GT(j["script_engine_major"].get<int>(), 0);
+    EXPECT_GT(j["config_major"].get<int>(), 0);
 }
 
 TEST(VersionRegistryTest, AbiInfoJsonCLinkageMatchesCpp)
