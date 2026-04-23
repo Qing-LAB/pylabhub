@@ -24,6 +24,8 @@
  */
 #include "utils/hub_state.hpp"
 
+#include "utils/naming.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <mutex>
@@ -527,26 +529,42 @@ namespace
 {
 
 /// Read-modify-write upsert for a RoleEntry, preserving the existing
-/// first_seen + channels list when the role already exists. This is
-/// the one compose step that can't be expressed as a G2.1 primitive
-/// call — _set_role_registered is insert_or_assign (replaces).
+/// first_seen + channels list when the role already exists.
+///
+/// Preconditions (caller-enforced): `uid` is a well-formed RoleUid
+/// per HEP-0033 §G2.2.0b.  This helper assumes validation has
+/// already happened at the `_on_*` op entry and derives `role.name`
+/// and `role.role_tag` from the uid via `parse_role_uid()`.
+///
 /// Callers must hold no lock on entry; this helper takes the state
 /// writer lock briefly and returns the post-mutation entry for event
 /// dispatch.
 template <typename Impl>
 RoleEntry upsert_role_locked(Impl &impl, const std::string &uid,
-                             const std::string &name,
                              const std::string &pubkey_z85,
                              const std::string &added_channel,
                              std::chrono::steady_clock::time_point heartbeat_when)
 {
+    // Derived fields from uid — uid is the source of truth for tag/name
+    // per HEP-0033 §G2.2.0b "UID construction".
+    const auto parts = parse_role_uid(uid);
+    // parse_role_uid failing here would be a caller-contract violation
+    // (op-entry validation should have caught it). Treat as defensive
+    // no-op: return an empty placeholder; the mutator's null-uid guard
+    // is the first line of defense.
+    if (!parts) return {};
+
+    const std::string derived_tag (parts->tag);
+    const std::string derived_name(parts->name);
+
     std::unique_lock lk(impl.mu);
-    auto it = impl.roles.find(uid);
+    auto             it = impl.roles.find(uid);
     if (it == impl.roles.end())
     {
         RoleEntry r;
         r.uid            = uid;
-        r.name           = name;
+        r.name           = derived_name;
+        r.role_tag       = derived_tag;
         r.pubkey_z85     = pubkey_z85;
         r.state          = RoleState::Connected;
         r.last_heartbeat = heartbeat_when;
@@ -555,8 +573,11 @@ RoleEntry upsert_role_locked(Impl &impl, const std::string &uid,
         return new_it->second;
     }
     auto &ex = it->second;
-    if (!name.empty())          ex.name       = name;
-    if (!pubkey_z85.empty())    ex.pubkey_z85 = pubkey_z85;
+    // name + role_tag are derived caches — re-derive on every upsert
+    // so the invariant role_tag == extract_role_tag(uid) always holds.
+    ex.name     = derived_name;
+    ex.role_tag = derived_tag;
+    if (!pubkey_z85.empty()) ex.pubkey_z85 = pubkey_z85;
     ex.state          = RoleState::Connected;
     ex.last_heartbeat = heartbeat_when;
     if (!added_channel.empty() &&
@@ -568,14 +589,39 @@ RoleEntry upsert_role_locked(Impl &impl, const std::string &uid,
     return ex;
 }
 
+/// Bumps the sys.invalid_identifier_rejected counter without taking
+/// any public mutator path (those might themselves run validation).
+/// Used by `_on_*` ops when they silent-drop on malformed input.
+template <typename Impl>
+void bump_invalid_identifier(Impl &impl) noexcept
+{
+    std::unique_lock lk(impl.mu);
+    ++impl.counters.msg_type_counts["sys.invalid_identifier_rejected"];
+}
+
 } // namespace
 
 void HubState::_on_channel_registered(ChannelEntry entry)
 {
+    // Validate at the op-entry boundary (HEP-0033 §G2.2.0b). Invalid
+    // identifiers result in a silent drop + sys.invalid_identifier_rejected
+    // counter bump; the wire-handler layer (G2.2.1+) is responsible for
+    // returning an explicit error to the client.
+    if (!is_valid_identifier(entry.name, IdentifierKind::Channel))
+    {
+        bump_invalid_identifier(*pImpl);
+        return;
+    }
+    if (!entry.producer_role_uid.empty() &&
+        !is_valid_identifier(entry.producer_role_uid, IdentifierKind::RoleUid))
+    {
+        bump_invalid_identifier(*pImpl);
+        return;
+    }
+
     // Capture pieces needed for role/shm derivation before moving entry.
     const std::string channel_name    = entry.name;
     const std::string producer_uid    = entry.producer_role_uid;
-    const std::string producer_name   = entry.producer_role_name;
     const std::string producer_pubkey = entry.zmq_pubkey;
     const bool        has_shm         = entry.has_shared_memory;
     const std::string shm_name        = entry.shm_name;
@@ -585,8 +631,8 @@ void HubState::_on_channel_registered(ChannelEntry entry)
     if (!producer_uid.empty())
     {
         RoleEntry fired = upsert_role_locked(
-            *pImpl, producer_uid, producer_name, producer_pubkey,
-            channel_name, std::chrono::steady_clock::now());
+            *pImpl, producer_uid, producer_pubkey, channel_name,
+            std::chrono::steady_clock::now());
         for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_reg))
             h(fired);
     }
@@ -599,6 +645,11 @@ void HubState::_on_channel_registered(ChannelEntry entry)
 
 void HubState::_on_channel_closed(const std::string &name, ChannelCloseReason why)
 {
+    if (!is_valid_identifier(name, IdentifierKind::Channel))
+    {
+        bump_invalid_identifier(*pImpl);
+        return;
+    }
     _set_channel_closed(name);
     // Remove channel from each role's channels list (so a dropped channel
     // no longer appears under roles[*].channels).
@@ -616,16 +667,27 @@ void HubState::_on_channel_closed(const std::string &name, ChannelCloseReason wh
 
 void HubState::_on_consumer_joined(const std::string &channel, ConsumerEntry consumer)
 {
-    const std::string consumer_uid    = consumer.role_uid;
-    const std::string consumer_name   = consumer.role_name;
+    if (!is_valid_identifier(channel, IdentifierKind::Channel))
+    {
+        bump_invalid_identifier(*pImpl);
+        return;
+    }
+    if (!consumer.role_uid.empty() &&
+        !is_valid_identifier(consumer.role_uid, IdentifierKind::RoleUid))
+    {
+        bump_invalid_identifier(*pImpl);
+        return;
+    }
+
+    const std::string consumer_uid = consumer.role_uid;
 
     _add_consumer(channel, std::move(consumer));
 
     if (!consumer_uid.empty())
     {
         RoleEntry fired = upsert_role_locked(
-            *pImpl, consumer_uid, consumer_name, /*pubkey*/ {},
-            channel, std::chrono::steady_clock::now());
+            *pImpl, consumer_uid, /*pubkey*/ {}, channel,
+            std::chrono::steady_clock::now());
         for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_reg))
             h(fired);
     }
@@ -635,6 +697,12 @@ void HubState::_on_consumer_joined(const std::string &channel, ConsumerEntry con
 
 void HubState::_on_consumer_left(const std::string &channel, const std::string &role_uid)
 {
+    if (!is_valid_identifier(channel, IdentifierKind::Channel) ||
+        (!role_uid.empty() && !is_valid_identifier(role_uid, IdentifierKind::RoleUid)))
+    {
+        bump_invalid_identifier(*pImpl);
+        return;
+    }
     _remove_consumer(channel, role_uid);
     // Remove this channel from the role's channels list; do NOT mark the
     // role disconnected — the role may still be producing on other
@@ -658,6 +726,12 @@ void HubState::_on_heartbeat(const std::string                   &channel,
                              std::chrono::steady_clock::time_point when,
                              const std::optional<nlohmann::json> &metrics)
 {
+    if (!is_valid_identifier(channel, IdentifierKind::Channel) ||
+        (!role_uid.empty() && !is_valid_identifier(role_uid, IdentifierKind::RoleUid)))
+    {
+        bump_invalid_identifier(*pImpl);
+        return;
+    }
     // 1. Channel liveness: first heartbeat transitions PendingReady -> Ready;
     //    subsequent heartbeats update last_heartbeat without a status change.
     bool fire_channel_ready = false;
@@ -703,6 +777,12 @@ void HubState::_on_heartbeat(const std::string                   &channel,
 void HubState::_on_heartbeat_timeout(const std::string &channel,
                                      const std::string &role_uid)
 {
+    if (!is_valid_identifier(channel, IdentifierKind::Channel) ||
+        (!role_uid.empty() && !is_valid_identifier(role_uid, IdentifierKind::RoleUid)))
+    {
+        bump_invalid_identifier(*pImpl);
+        return;
+    }
     _set_channel_status(channel, ChannelStatus::PendingReady);
     if (!role_uid.empty()) _set_role_disconnected(role_uid);
     {
@@ -713,6 +793,11 @@ void HubState::_on_heartbeat_timeout(const std::string &channel,
 
 void HubState::_on_pending_timeout(const std::string &channel)
 {
+    if (!is_valid_identifier(channel, IdentifierKind::Channel))
+    {
+        bump_invalid_identifier(*pImpl);
+        return;
+    }
     _set_channel_status(channel, ChannelStatus::Closing);
     {
         std::unique_lock lk(pImpl->mu);
@@ -725,6 +810,12 @@ void HubState::_on_metrics_reported(const std::string                    &channe
                                     nlohmann::json                        metrics,
                                     std::chrono::system_clock::time_point when)
 {
+    if (!is_valid_identifier(channel, IdentifierKind::Channel) ||
+        (!role_uid.empty() && !is_valid_identifier(role_uid, IdentifierKind::RoleUid)))
+    {
+        bump_invalid_identifier(*pImpl);
+        return;
+    }
     // HEP-0033 §9.1 "Metrics report tick" — dedicated METRICS_REPORT_REQ
     // path. No liveness effect: a role could be stalled on the heartbeat
     // axis but still drip metrics on this channel. `channel` is part of
@@ -738,16 +829,23 @@ void HubState::_on_metrics_reported(const std::string                    &channe
 
 void HubState::_on_band_joined(const std::string &band, BandMember member)
 {
+    if (!is_valid_identifier(band, IdentifierKind::Band) ||
+        (!member.role_uid.empty() &&
+         !is_valid_identifier(member.role_uid, IdentifierKind::RoleUid)))
+    {
+        bump_invalid_identifier(*pImpl);
+        return;
+    }
+
     const std::string role_uid = member.role_uid;
-    const std::string role_name = member.role_name;
 
     _set_band_joined(band, std::move(member));
 
     if (!role_uid.empty())
     {
         RoleEntry fired = upsert_role_locked(
-            *pImpl, role_uid, role_name, /*pubkey*/ {},
-            /*channel*/ {}, std::chrono::steady_clock::now());
+            *pImpl, role_uid, /*pubkey*/ {}, /*channel*/ {},
+            std::chrono::steady_clock::now());
         for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_reg))
             h(fired);
     }
@@ -757,18 +855,34 @@ void HubState::_on_band_joined(const std::string &band, BandMember member)
 
 void HubState::_on_band_left(const std::string &band, const std::string &role_uid)
 {
+    if (!is_valid_identifier(band, IdentifierKind::Band) ||
+        (!role_uid.empty() && !is_valid_identifier(role_uid, IdentifierKind::RoleUid)))
+    {
+        bump_invalid_identifier(*pImpl);
+        return;
+    }
     _set_band_left(band, role_uid);
     _bump_counter("BAND_LEAVE_REQ");
 }
 
 void HubState::_on_peer_connected(PeerEntry peer)
 {
+    if (!is_valid_identifier(peer.uid, IdentifierKind::PeerUid))
+    {
+        bump_invalid_identifier(*pImpl);
+        return;
+    }
     _set_peer_connected(std::move(peer));
     _bump_counter("HUB_PEER_HELLO");
 }
 
 void HubState::_on_peer_disconnected(const std::string &hub_uid)
 {
+    if (!is_valid_identifier(hub_uid, IdentifierKind::PeerUid))
+    {
+        bump_invalid_identifier(*pImpl);
+        return;
+    }
     _set_peer_disconnected(hub_uid);
     _bump_counter("HUB_PEER_BYE");
 }
