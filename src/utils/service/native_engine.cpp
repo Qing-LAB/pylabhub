@@ -19,6 +19,7 @@
 #include "utils/logger.hpp"
 #include "utils/module_def.hpp"
 #include "utils/native_engine_api.h"
+#include "plh_version_registry.hpp"   // ComponentVersions + check_abi (HEP-0032)
 #include "utils/schema_field_layout.hpp"
 #include "utils/role_host_core.hpp"
 
@@ -928,6 +929,79 @@ bool NativeEngine::verify_abi_() const
         LOGGER_ERROR("[{}] API version mismatch: native engine={}, host={}",
                      log_tag_, info->api_version, PLH_NATIVE_API_VERSION);
         return false;
+    }
+
+    // ── HEP-CORE-0032 extensions ─────────────────────────────────────
+    // Fields below were added 2026-04-22.  A plugin compiled against
+    // the older PlhAbiInfo reports a smaller struct_size and we
+    // silently skip these checks (backward-compat).  A plugin
+    // compiled against the new header populates them via the
+    // PLH_COMPONENT_* mirrors; we compare against the host's current
+    // ComponentVersions.
+    //
+    // Policy:
+    // - ComponentVersions axis mismatches are INFORMATIONAL only
+    //   (plugins don't directly cross those surfaces — they use
+    //   PlhNativeContext callbacks, not SharedMemoryHeader or the
+    //   broker protocol).  Log WARN, don't reject.
+    // - build_id mismatch is fatal under PYLABHUB_STRICT_ABI_CHECK or
+    //   Debug, matching the main binary's strict mode.  The
+    //   motivating bug class (stale-plugin-vs-fresh-library at same
+    //   declared axis values) is exactly what build_id catches.
+    constexpr size_t kAbiInfoV3Size = sizeof(PlhAbiInfo);
+    if (info->struct_size >= kAbiInfoV3Size)
+    {
+        const auto host = pylabhub::version::current();
+        auto warn_if_diff = [this](const char *name, unsigned plugin_v,
+                                    unsigned host_v)
+        {
+            if (plugin_v != host_v)
+                LOGGER_WARN("[{}] native engine compiled against different {} "
+                            "({} vs host {}) — proceeding (fingerprint only; "
+                            "plugin does not cross this surface)",
+                            log_tag_, name, plugin_v, host_v);
+        };
+        warn_if_diff("shm_major",           info->shm_major,           host.shm_major);
+        warn_if_diff("shm_minor",           info->shm_minor,           host.shm_minor);
+        warn_if_diff("broker_proto_major",  info->broker_proto_major,  host.broker_proto_major);
+        warn_if_diff("broker_proto_minor",  info->broker_proto_minor,  host.broker_proto_minor);
+        warn_if_diff("zmq_frame_major",     info->zmq_frame_major,     host.zmq_frame_major);
+        warn_if_diff("zmq_frame_minor",     info->zmq_frame_minor,     host.zmq_frame_minor);
+        warn_if_diff("script_api_major",    info->script_api_major,    host.script_api_major);
+        warn_if_diff("script_api_minor",    info->script_api_minor,    host.script_api_minor);
+        warn_if_diff("script_engine_major", info->script_engine_major, host.script_engine_major);
+        warn_if_diff("script_engine_minor", info->script_engine_minor, host.script_engine_minor);
+        warn_if_diff("config_major",        info->config_major,        host.config_major);
+        warn_if_diff("config_minor",        info->config_minor,        host.config_minor);
+
+        // build_id: strict in Debug (NDEBUG absent) or explicit opt-in.
+#if defined(PYLABHUB_STRICT_ABI_CHECK) || !defined(NDEBUG)
+        const char *host_bid = pylabhub::version::build_id();
+        if (info->build_id[0] != '\0' && host_bid != nullptr)
+        {
+            if (std::strncmp(info->build_id, host_bid,
+                             sizeof(info->build_id)) != 0)
+            {
+                LOGGER_ERROR("[{}] native engine build_id mismatch "
+                             "(plugin='{}' vs host='{}') — plugin is stale; "
+                             "rebuild against current pylabhub-utils",
+                             log_tag_, info->build_id, host_bid);
+                return false;
+            }
+        }
+        else if (info->build_id[0] == '\0' && host_bid != nullptr)
+        {
+            LOGGER_WARN("[{}] native engine reports no build_id but host "
+                        "has one ('{}') — cannot verify plugin freshness",
+                        log_tag_, host_bid);
+        }
+#endif
+    }
+    else
+    {
+        LOGGER_DEBUG("[{}] native engine uses legacy PlhAbiInfo layout "
+                     "({}B < {}B); skipping HEP-0032 component/build_id checks",
+                     log_tag_, info->struct_size, kAbiInfoV3Size);
     }
 
     return true;

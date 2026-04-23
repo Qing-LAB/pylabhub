@@ -7,6 +7,7 @@
  * wrapper (plh::Context, SpinLockGuard, with_spinlock).
  */
 #include "utils/native_engine_api.h"
+#include "pylabhub_version.h"  // PYLABHUB_VERSION_* for HEP-0032 axes
 
 #include <cstdlib>
 #include <cstring>
@@ -46,12 +47,29 @@ static int g_test_band_members_null = 0;  // 1 if band_members returned NULL
 
 extern "C" PLH_EXPORT const PlhAbiInfo *native_abi_info(void)
 {
+    // Populate the HEP-CORE-0032 ComponentVersions fields from the
+    // C-visible PLH_COMPONENT_* constants in native_engine_api.h.  A
+    // real third-party plugin would do the same — these are frozen at
+    // plugin-compile time and record the header values the plugin was
+    // built against.  build_id is left empty because plugins don't
+    // have a standard git-SHA generation step.
     static const PlhAbiInfo info = {
         sizeof(PlhAbiInfo),
         static_cast<uint32_t>(sizeof(void *)),
         static_cast<uint32_t>(sizeof(size_t)),
         1, // little-endian
-        PLH_NATIVE_API_VERSION
+        PLH_NATIVE_API_VERSION,
+        // HEP-0032 axes (struct_size >= extended size):
+        static_cast<uint16_t>(PYLABHUB_VERSION_MAJOR),
+        static_cast<uint16_t>(PYLABHUB_VERSION_MINOR),
+        static_cast<uint16_t>(PYLABHUB_VERSION_ROLLING),
+        PLH_COMPONENT_SHM_MAJOR,           PLH_COMPONENT_SHM_MINOR,
+        PLH_COMPONENT_BROKER_PROTO_MAJOR,  PLH_COMPONENT_BROKER_PROTO_MINOR,
+        PLH_COMPONENT_ZMQ_FRAME_MAJOR,     PLH_COMPONENT_ZMQ_FRAME_MINOR,
+        PLH_COMPONENT_SCRIPT_API_MAJOR,    PLH_COMPONENT_SCRIPT_API_MINOR,
+        PLH_COMPONENT_SCRIPT_ENGINE_MAJOR, PLH_COMPONENT_SCRIPT_ENGINE_MINOR,
+        PLH_COMPONENT_CONFIG_MAJOR,        PLH_COMPONENT_CONFIG_MINOR,
+        {0} // build_id: plugin-specific; empty = "cannot verify freshness"
     };
     return &info;
 }

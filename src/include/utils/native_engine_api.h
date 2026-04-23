@@ -179,10 +179,64 @@ typedef struct PlhAbiInfo
     uint32_t sizeof_size_t;     /**< sizeof(size_t) */
     uint32_t byte_order;        /**< 1 = little-endian, 2 = big-endian */
     uint32_t api_version;       /**< PLH_NATIVE_API_VERSION */
+
+    /* ─────────────────────────────────────────────────────────────────
+     * Fields below added in struct_size >= this struct's size
+     * (HEP-CORE-0032, 2026-04-22).  Host uses struct_size to decide
+     * whether these are present; plugins compiled against older
+     * headers still produce a smaller struct_size and the host skips
+     * the extra checks.
+     *
+     * ComponentVersions: fingerprint of pylabhub-utils headers the
+     * plugin was compiled against.  Mostly diagnostic — plugins use
+     * PlhNativeContext callbacks, not the C++ surfaces these axes
+     * cover, so a mismatch here is informational rather than fatal.
+     * Exception: build_id drift in strict mode is fatal, same as for
+     * the main binary.
+     * ───────────────────────────────────────────────────────────────── */
+
+    uint16_t library_major;
+    uint16_t library_minor;
+    uint16_t library_rolling;
+
+    uint8_t  shm_major,           shm_minor;
+    uint8_t  broker_proto_major,  broker_proto_minor;
+    uint8_t  zmq_frame_major,     zmq_frame_minor;
+    uint8_t  script_api_major,    script_api_minor;
+    uint8_t  script_engine_major, script_engine_minor;
+    uint8_t  config_major,        config_minor;
+
+    /** Null-terminated pylabhub build_id the plugin was compiled against,
+     *  or empty string if plugin was built without build-id support. */
+    char     build_id[48];
 } PlhAbiInfo;
 
-/** Current native engine API version. Increment on breaking changes. */
+/** Current native engine API version. Increment on breaking changes
+ *  to the call surface (new/removed required symbols, changed function
+ *  signatures).  Additive PlhAbiInfo fields are NOT breaking — they're
+ *  guarded by struct_size. */
 #define PLH_NATIVE_API_VERSION 2
+
+/* =========================================================================
+ * C-visible pylabhub ComponentVersions constants
+ *
+ * Mirror the C++ `inline constexpr` values in `plh_version_registry.hpp`.
+ * A static_assert in version_registry.cpp pins the two locations equal.
+ * C plugins use these to populate their PlhAbiInfo.
+ * ========================================================================= */
+
+#define PLH_COMPONENT_SHM_MAJOR            1
+#define PLH_COMPONENT_SHM_MINOR            0
+#define PLH_COMPONENT_BROKER_PROTO_MAJOR   1
+#define PLH_COMPONENT_BROKER_PROTO_MINOR   0
+#define PLH_COMPONENT_ZMQ_FRAME_MAJOR      1
+#define PLH_COMPONENT_ZMQ_FRAME_MINOR      0
+#define PLH_COMPONENT_SCRIPT_API_MAJOR     1
+#define PLH_COMPONENT_SCRIPT_API_MINOR     0
+#define PLH_COMPONENT_SCRIPT_ENGINE_MAJOR  1
+#define PLH_COMPONENT_SCRIPT_ENGINE_MINOR  1
+#define PLH_COMPONENT_CONFIG_MAJOR         1
+#define PLH_COMPONENT_CONFIG_MINOR         1
 
 /* =========================================================================
  * Channel side constants (for spinlock, schema size queries)
