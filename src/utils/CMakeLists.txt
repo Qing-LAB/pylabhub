@@ -82,11 +82,12 @@ set(UTILS_SOURCES
   network_comm/zmq_context.cpp
   network_comm/broker_request_comm.cpp
 
-  # --- ipc: broker service, channel/band registries ---
+  # --- ipc: broker service, channel/band registries, hub state aggregate ---
   ipc/band_registry.cpp
   ipc/heartbeat_manager.cpp
   ipc/channel_registry.cpp
   ipc/broker_service.cpp
+  ipc/hub_state.cpp
 
   # --- hub: transport-agnostic Queue + Processor + Inbox ---
   #     Tx/Rx queue ownership and factory logic moved into RoleAPIBase

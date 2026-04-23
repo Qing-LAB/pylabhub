@@ -116,6 +116,37 @@ gtest_discover_tests(test_layer2_backoff_strategy
 )
 
 # ============================================================================
+# Test: HubState skeleton (HEP-CORE-0033 §G2.1)
+# Pure class test — no workers, no staging dependency beyond the shared lib.
+# ============================================================================
+
+add_executable(test_layer2_hub_state
+    test_hub_state.cpp
+)
+
+target_link_libraries(test_layer2_hub_state
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_state)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_hub_state
+    SUITE_NAME "Layer2_HubState"
+)
+layer2_require_staged_utils(test_layer2_hub_state)
+
+gtest_discover_tests(test_layer2_hub_state
+    PROPERTIES
+        LABELS "layer2;service;hubstate"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: SharedSpinLock (foundational for DataBlock; Part 0 of test plan)
 # ============================================================================
 
