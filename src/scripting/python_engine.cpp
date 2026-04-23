@@ -969,15 +969,16 @@ InvokeResult PythonEngine::invoke_produce(
 {
     if (!is_callable(py_on_produce_))
     {
+        InvokeResult r = InvokeResult::Error;
         if (is_accepting())
         {
             LOGGER_ERROR("[{}] invoke_produce called but on_produce is not "
-                         "registered — this is a dispatch bug; load_script's "
-                         "required_callback check should have rejected it",
+                         "registered — the role requires this callback",
                          log_tag_);
+            r = handle_script_error_("on_produce [missing callback]");
         }
         process_pending_();
-        return InvokeResult::Error;
+        return r;
     }
     InvokeResult result = InvokeResult::Error;
     {
@@ -1010,14 +1011,16 @@ InvokeResult PythonEngine::invoke_consume(
 {
     if (!is_callable(py_on_consume_))
     {
+        InvokeResult r = InvokeResult::Error;
         if (is_accepting())
         {
             LOGGER_ERROR("[{}] invoke_consume called but on_consume is not "
-                         "registered — dispatch bug",
+                         "registered — the role requires this callback",
                          log_tag_);
+            r = handle_script_error_("on_consume [missing callback]");
         }
         process_pending_();
-        return InvokeResult::Error;
+        return r;
     }
     InvokeResult result = InvokeResult::Error;
     {
@@ -1054,14 +1057,16 @@ InvokeResult PythonEngine::invoke_process(
 {
     if (!is_callable(py_on_process_))
     {
+        InvokeResult r = InvokeResult::Error;
         if (is_accepting())
         {
             LOGGER_ERROR("[{}] invoke_process called but on_process is not "
-                         "registered — dispatch bug",
+                         "registered — the role requires this callback",
                          log_tag_);
+            r = handle_script_error_("on_process [missing callback]");
         }
         process_pending_();
-        return InvokeResult::Error;
+        return r;
     }
     InvokeResult result = InvokeResult::Error;
     {
@@ -1106,6 +1111,7 @@ InvokeResult PythonEngine::invoke_on_inbox(InvokeInbox msg)
             LOGGER_ERROR("[{}] invoke_on_inbox called but on_inbox is not "
                          "registered — caller should gate on has_callback",
                          log_tag_);
+            result = handle_script_error_("on_inbox [missing callback]");
         }
         process_pending_();
         return result;

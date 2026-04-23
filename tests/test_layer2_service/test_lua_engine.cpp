@@ -780,6 +780,19 @@ TEST_F(LuaEngineIsolatedTest, InvokeOnInbox_DiscardOnFalse_NoErrorBump)
 // result=Error, counter bumped) against the InboxFrame readonly flag
 // (lua_engine.cpp:726) and the ref_inbox_readonly_ cast path
 // (lua_engine.cpp:1023).
+// L344 contract: role-required callback missing → script error, not
+// silent Error.  Counter bumps so stop_on_script_error_ can fire and
+// metrics surface the problem.
+TEST_F(LuaEngineIsolatedTest, InvokeOnInbox_MissingCallback_CountsAsScriptError)
+{
+    auto w = SpawnWorker(
+        "lua_engine.invoke_on_inbox_missing_callback_counts_as_script_error",
+        {unique_dir("inbox_missing_cb")});
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/
+                   {"on_inbox is not"});
+}
+
 TEST_F(LuaEngineIsolatedTest, InvokeOnInbox_DataReadonly_WriteFailsAndBufferUnchanged)
 {
     auto w = SpawnWorker(
