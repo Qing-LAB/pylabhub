@@ -880,26 +880,26 @@ DataBlock depends on these; their correctness must be covered before relying on 
 - **Broker for tests:** In-process mock or small broker for REG_REQ/DISC_REQ with shm_name, schema_hash, schema_version.
 - **Schema tests:** validate_header_layout_hash and consumer schema mismatch (test_schema_validation enabled in CMake).
 
-### Current test coverage (Layer 3 DataHub)
+### Current test coverage (Layer 3 DataHub) — as of 2026-04-22
 
 | Plan area | Covered | Notes |
 |-----------|---------|--------|
 | Part 0 (foundations) | Yes | Platform shm, SharedSpinLock, Backoff, Crypto, Lifecycle, Schema BLDS |
-| Phase A – Protocol/API | Yes | test_phase_a_protocol, phase_a_workers, test_schema_validation |
-| Phase B – Slot protocol | Yes | test_slot_protocol, slot_protocol_workers |
-| Error handling | Yes | test_error_handling, error_handling_workers |
-| Recovery/diagnostics | Smoke | test_recovery_api, recovery_workers |
-| Phase C – MessageHub + broker | No | To be implemented |
-| Phase D – Concurrency / multi-process | Partial | D1–D5, D7 done; D6 partial; D8–D10 not done |
-| Recovery scenario | Deferred | Policy to be defined first |
+| Phase A – Protocol/API | Yes | Slot rw coordinator, datahub_hub_queue (SHM), datahub_hub_zmq_queue, datahub_hub_inbox_queue; schema validation |
+| Phase B – Slot protocol | Yes | datahub_primitive_api, datahub_transaction_api, datahub_policy_enforcement, datahub_handle_semantics, datahub_exception_safety |
+| Phase C – MessageHub + broker | Yes | Eight broker test files (`datahub_broker*.cpp`): protocol, consumer, admin, health, schema, shutdown, request_comm, plus hub_federation and hub_inbox_queue. Covers REG_REQ/DISC_REQ/metrics/admin/cleanup/shutdown paths. |
+| Phase D – Concurrency / multi-process | Yes | datahub_stress_raii (multi-process ring stress), datahub_e2e, broker integration, filelock multi-proc. Extended soak (hours) and slot-id wraparound remain deferred. |
+| Error handling | Yes | Integrated into each phase's tests (Cat1/Cat2 broker errors, schema mismatch, checksum fail, write errors) |
+| Recovery/diagnostics | Yes | datahub_recovery_scenarios, datahub_integrity_repair (facility-level); broker-coordinated cross-process recovery deferred to HEP-CORE-0033 |
+| Role-API integration | Yes | role_api_flexzone, role_api_loop_policy, role_api_raii (SHM round-trip, checksum corrupt detect, loop metrics) |
 
 ### Scenario coverage matrix (summary)
 
-Coverage exists for: **ConsumerSyncPolicy** (Latest_only, Sequential, Sequential_sync); **DataBlockPolicy** (Single, DoubleBuffer, RingBuffer); ring capacity 1–4; **Physical page size** (Size4K, Size4M); logical unit size 0 and custom; **Flexible zone** (no zones, single zone, zone with spinlock); **ChecksumPolicy** (None, Manual, Enforced). Optional gaps: ring capacity >4, Size16M.
+Coverage exists for: **ConsumerSyncPolicy** (Latest_only, Sequential, Sequential_sync); **DataBlockPolicy** (Single, DoubleBuffer, RingBuffer); ring capacity 1–4; **Physical page size** (Size4K, Size4M); logical unit size 0 and custom; **Flexible zone** (no zones, single zone, zone with spinlock, bidirectional user-managed, checksum round-trip + corrupt-detect); **ChecksumPolicy** (None, Manual, Enforced for both SHM and ZMQ transports); **Packing** (aligned vs packed round-trip bit-exact). Optional gaps: ring capacity >4, Size16M.
 
 ### Summary
 
-Prioritize: (1) flexible zone and checksum semantics (no access when undefined), (2) producer/consumer agreement and schema validation, (3) slot write/commit and read with checksums, (4) MessageHub with or without broker, (5) concurrency and multi-process. Implement in phases: API correctness → single-process slot protocol → MessageHub/broker → concurrency/multi-process. For MessageHub code review (header/impl alignment, C++20, abstraction, broker contract), see **`docs/IMPLEMENTATION_GUIDANCE.md`** § MessageHub code review.
+Layer 3 coverage is essentially complete for in-process broker scenarios (broker lives in `pylabhub-utils` shared library and is tested directly via `BrokerService`). System-level L4 tests that require a hub *binary* (`plh_hub`) are deferred to HEP-CORE-0033 and tracked in `docs/todo/MESSAGEHUB_TODO.md`. For MessageHub code review (header/impl alignment, C++20, abstraction, broker contract), see **`docs/IMPLEMENTATION_GUIDANCE.md`** § MessageHub code review.
 
 ---
 
