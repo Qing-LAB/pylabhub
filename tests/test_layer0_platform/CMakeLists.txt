@@ -181,9 +181,38 @@ gtest_discover_tests(test_layer0_uuid_and_format
         TIMEOUT 30
 )
 
+# ============================================================================
+# Test: ABI check facility (HEP-CORE-0032)
+# ============================================================================
+
+add_executable(test_layer0_abi_check test_abi_check.cpp)
+
+target_link_libraries(test_layer0_abi_check
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer0_abi_check)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer0_abi_check
+    SUITE_NAME "Layer0_AbiCheck"
+)
+layer0_require_staged_utils(test_layer0_abi_check)
+
+gtest_discover_tests(test_layer0_abi_check
+    PROPERTIES
+        LABELS "layer0;platform;abi"
+        TIMEOUT 30
+)
+
 message(STATUS "Layer 0 (Platform) tests configured successfully")
 message(STATUS "  - test_layer0_platform_core")
 message(STATUS "  - test_layer0_platform_debug")
 message(STATUS "  - test_layer0_platform_shm")
 message(STATUS "  - test_layer0_platform_sanitizers")
 message(STATUS "  - test_layer0_uuid_and_format")
+message(STATUS "  - test_layer0_abi_check")
