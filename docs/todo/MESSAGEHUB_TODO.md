@@ -35,13 +35,28 @@ items (G1-G13).
     test::HubStateTestAccess` shim.
   - Not yet wired into BrokerService — that's G2.2.
 
-**Next** (in order):
-- **G2.2** — convert BrokerService's private maps to delegate into
-  HubState via friend access. In scope: `channel_registry`, `band_registry`,
-  `inbound_peers_` + `channel_to_peer_identities_` + `hub_connected_notified_`,
-  `metrics_store_`. Each inbound handler in `broker_service.cpp` migrates
-  from "update private map + emit NOTIFY ad hoc" to "call own public
-  mutator → HubState `_set_*` → emit NOTIFY." ~550 new LOC / ~600 removed.
+**Next** (in order) — grouped by hub capability, not by broker-map structure
+(see `HUB_CHARACTER_PREREQUISITES.md` §G2 "Capability-operation mutator
+layer" for full rationale):
+- **G2.2.0** — Plumb `hub::HubState` into `BrokerServiceImpl`; add
+  capability-operation layer (`_on_*` methods composing primitive
+  `_set_*` setters); add `const HubState& hub_state()` accessor. No
+  handler touches yet. ~150 LOC.
+- **G2.2.1** — Registration lifecycle: `REG/DEREG/CONSUMER_REG/
+  CONSUMER_DEREG` handlers → `_on_channel_registered` / `_on_channel_closed` /
+  `_on_consumer_joined` / `_on_consumer_left`. Delete `ChannelRegistry`
+  (`channel_registry.hpp/.cpp`). RoleEntry + ShmBlockRef populated
+  inside the ops. Readers flip to `hub_state_`.
+- **G2.2.2** — Liveness: `HEARTBEAT_REQ` + timeout sweep → `_on_heartbeat` /
+  `_on_heartbeat_timeout` / `_on_pending_timeout`. Counter bumps absorbed.
+- **G2.2.3** — Membership routing: bands + federation peers. Delete
+  `BandRegistry` and `inbound_peers_`. Keep `channel_to_peer_identities_`
+  and `hub_connected_notified_` broker-private (transport-layer, not
+  state).
+- **G2.2.4** — Observability: `_on_message_processed` absorbs per-msg-type
+  counter bumps. `metrics_store_` absorption deferred pending data-model
+  decision (role-centric vs secondary channel-metrics map vs leave
+  broker-private).
 - G2.3 — `HubAPI` read accessors only (script can query state, not mutate).
 - G2.4 — `HubAPI` mutation wrappers; remove `close_request_queue_` /
   `broadcast_request_queue_` / `hub_targeted_queue_` ad-hoc queues.
