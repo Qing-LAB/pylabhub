@@ -326,6 +326,16 @@ TEST_F(RoleConfigTest, UnknownKey_Throws)
     ExpectWorkerOk(w);
 }
 
+// Nested-whitelist coverage: each of script/auth/role-tag/startup
+// validates its own inner keys so typos like `pahh` for `path` do
+// not silently default.  One worker drives all 4 nested parsers.
+TEST_F(RoleConfigTest, NestedUnknownKey_Throws)
+{
+    auto w = SpawnWorker("role_config.nested_unknown_key_throws",
+                         {unique_dir("nested_unknown_key_throws")});
+    ExpectWorkerOk(w);
+}
+
 // ── Logging ─────────────────────────────────────────────────────────────────
 
 TEST_F(RoleConfigTest, LoggingDefault_AllDefaults)
