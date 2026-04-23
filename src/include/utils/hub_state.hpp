@@ -220,9 +220,12 @@ struct RoleEntry
 };
 
 /// Federation peer (direct-connected hub, HEP-CORE-0022).
+///
+/// Peer uids follow the same `tag.name.unique` structure as role uids
+/// but with tag==`hub` (HEP-0033 §G2.2.0b). Example: `hub.lab1.pid42`.
 struct PeerEntry
 {
-    std::string uid;      ///< Peer hub UID; key in HubState::peers.
+    std::string uid;      ///< Peer hub UID; key in HubState::peers. Must validate as PeerUid.
     std::string endpoint;
     PeerState   state{PeerState::Connecting};
     std::chrono::steady_clock::time_point last_seen{
