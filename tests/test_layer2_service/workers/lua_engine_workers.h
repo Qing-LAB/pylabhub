@@ -225,6 +225,9 @@ int invoke_produce_slot_only_no_flexzone_on_invoke(const std::string &dir);
 int invoke_on_inbox_typed_data(const std::string &dir);
 int type_sizeof_inbox_frame_returns_correct_size(const std::string &dir);
 int invoke_on_inbox_missing_type_reports_error(const std::string &dir);
+/// L344 contract: missing required callback (role contract violation) →
+/// Error result + script_error_count bumped + stop_on_script_error_ honoured.
+int invoke_on_inbox_missing_callback_counts_as_script_error(const std::string &dir);
 
 // ── Logical-size accessors via engine_lifecycle_startup (chunk 9b) ─────────
 //

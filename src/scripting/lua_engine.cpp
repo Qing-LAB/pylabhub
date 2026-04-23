@@ -785,9 +785,9 @@ InvokeResult LuaEngine::invoke_produce(
         if (is_accepting())
         {
             LOGGER_ERROR("[{}] invoke_produce called but on_produce is not "
-                         "registered — dispatch bug (load_script's "
-                         "required_callback check should have rejected it)",
+                         "registered — the role requires this callback",
                          log_tag_);
+            return on_pcall_error_("on_produce [missing callback]");
         }
         return InvokeResult::Error;
     }
@@ -855,8 +855,9 @@ InvokeResult LuaEngine::invoke_consume(
         if (is_accepting())
         {
             LOGGER_ERROR("[{}] invoke_consume called but on_consume is not "
-                         "registered — dispatch bug",
+                         "registered — the role requires this callback",
                          log_tag_);
+            return on_pcall_error_("on_consume [missing callback]");
         }
         return InvokeResult::Error;
     }
@@ -920,8 +921,9 @@ InvokeResult LuaEngine::invoke_process(
         if (is_accepting())
         {
             LOGGER_ERROR("[{}] invoke_process called but on_process is not "
-                         "registered — dispatch bug",
+                         "registered — the role requires this callback",
                          log_tag_);
+            return on_pcall_error_("on_process [missing callback]");
         }
         return InvokeResult::Error;
     }
@@ -996,6 +998,7 @@ InvokeResult LuaEngine::invoke_on_inbox(InvokeInbox msg)
             LOGGER_ERROR("[{}] invoke_on_inbox called but on_inbox is not "
                          "registered — caller should gate on has_callback",
                          log_tag_);
+            return on_pcall_error_("on_inbox [missing callback]");
         }
         return InvokeResult::Error;
     }
