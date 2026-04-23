@@ -139,7 +139,7 @@ TEST_F(RoleHostBaseLifecycleTest, DtorContract_MissingShutdown_Aborts)
 {
     auto dir = unique_dir("dtor_missing");
     expect_panic_abort("role_host_base.dtor_missing_shutdown_aborts", dir,
-                       "RoleHostBase destructor entered without shutdown_");
+                       "destructor entered without shutdown_");
 }
 
 // ─── Virtual shutdown_ override calling base is allowed ─────────────────────
@@ -158,7 +158,7 @@ TEST_F(RoleHostBaseLifecycleTest, VirtualShutdown_OverrideWithoutBase_Aborts)
 {
     auto dir = unique_dir("ovr_no_base");
     expect_panic_abort("role_host_base.virtual_shutdown_no_base_aborts", dir,
-                       "RoleHostBase destructor entered without shutdown_");
+                       "destructor entered without shutdown_");
 }
 
 // ─── External shutdown-flag wiring: triggers loop exit via core_ ────────────

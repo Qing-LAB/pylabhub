@@ -1,26 +1,33 @@
 /**
- * @file role_host_base.cpp
- * @brief RoleHostBase — shared lifecycle scaffolding for role hosts.
+ * @file engine_host.cpp
+ * @brief EngineHost<ApiT> — shared lifecycle scaffolding for script hosts.
  *
- * The worker-thread body (`worker_main_`) is role-specific and lives in
+ * The worker-thread body (`worker_main_`) is host-specific and lives in
  * each derived class; this file owns only the setup/teardown pattern
- * around it — lazy construction of RoleAPIBase, worker spawn via the
- * role's own ThreadManager, shutdown contract enforcement.
+ * around it — lazy construction of ApiT, worker spawn via the host's
+ * own ThreadManager, shutdown contract enforcement.
+ *
+ * The template is instantiated explicitly at the bottom of this file
+ * for each ApiT the project supports.  Today: `RoleAPIBase` only.
+ * When HEP-CORE-0033 Phase 8 adds `HubAPI`, a second explicit
+ * instantiation lands here alongside the role one.
  */
-#include "utils/role_host_base.hpp"
+#include "utils/engine_host.hpp"
 #include "utils/debug_info.hpp"   // PLH_PANIC
 #include "utils/role_api_base.hpp"
 #include "utils/thread_manager.hpp"  // api_->thread_manager() inside startup_
 
+#include <typeinfo>   // typeid(ApiT).name() in destructor diagnostic
 #include <utility>
 
 namespace pylabhub::scripting
 {
 
-RoleHostBase::RoleHostBase(std::string_view role_tag,
-                             config::RoleConfig config,
-                             std::unique_ptr<ScriptEngine> engine,
-                             std::atomic<bool> *shutdown_flag)
+template <typename ApiT>
+EngineHost<ApiT>::EngineHost(std::string_view role_tag,
+                              config::RoleConfig config,
+                              std::unique_ptr<ScriptEngine> engine,
+                              std::atomic<bool> *shutdown_flag)
     : role_tag_(role_tag)
     , config_(std::move(config))
     , engine_(std::move(engine))
@@ -30,8 +37,8 @@ RoleHostBase::RoleHostBase(std::string_view role_tag,
 
 // ─── Destructor — contract enforcement ───────────────────────────────────────
 //
-// C++ guarantees this destructor body always runs whenever a RoleHostBase-
-// derived object is destroyed (provided RoleHostBase's own ctor completed).
+// C++ guarantees this destructor body always runs whenever a EngineHost-
+// derived object is destroyed (provided EngineHost's own ctor completed).
 // This is true for every lifetime path — normal scope exit, exception
 // unwinding, `delete`, `unique_ptr::reset`, container teardown, static/
 // thread-local destruction. The pure-virtual marker does NOT change that;
@@ -45,34 +52,44 @@ RoleHostBase::RoleHostBase(std::string_view role_tag,
 // Rather than paper over that with a defensive cleanup, we surface the
 // bug loudly via `std::abort()` with a diagnostic.
 //
-RoleHostBase::~RoleHostBase()
+template <typename ApiT>
+EngineHost<ApiT>::~EngineHost()
 {
     if (!shutdown_called_.load(std::memory_order_acquire))
     {
         // The uid may be empty if config was never parsed; PLH_PANIC
         // formats unconditionally so the message layout stays stable.
+        // `typeid(ApiT).name()` disambiguates which instantiation was
+        // under the contract — EngineHost<RoleAPIBase> and
+        // EngineHost<HubAPI> produce distinct mangled names, so a
+        // reviewer reading the panic knows immediately whether the
+        // failing host was role-side or hub-side.  Mangled name is
+        // compiler-specific but always unambiguous within a single build.
         PLH_PANIC(
-            "RoleHostBase destructor entered without shutdown_() having "
+            "EngineHost<{}> destructor entered without shutdown_() having "
             "been called. role_tag='{}' uid='{}'. Either the derived "
             "destructor did not call shutdown_() as its first statement, "
             "or an override of shutdown_() failed to call "
-            "RoleHostBase::shutdown_(). The worker thread may still "
+            "EngineHost::shutdown_(). The worker thread may still "
             "reference now-destroyed derived members; aborting to avoid "
             "silent use-after-free.",
+            typeid(ApiT).name(),
             role_tag_, config_.identity().uid);
     }
 }
 
-void RoleHostBase::startup_()
+template <typename ApiT>
+void EngineHost<ApiT>::startup_()
 {
     ready_promise_ = std::promise<bool>{};
     auto ready_future = ready_promise_.get_future();
 
     // Construct api_ here (not in ctor) so role_tag + uid are available
     // and the worker thread can be spawned under this api's ThreadManager.
-    // role_tag_ is the short form ("prod"/"cons"/"proc") used by the
-    // RoleAPIBase-owned ThreadManager name + log prefixes.
-    api_ = std::make_unique<RoleAPIBase>(
+    // role_tag_ is the short form ("prod"/"cons"/"proc" for role side;
+    // "hub" for hub side) used by the ApiT-owned ThreadManager name +
+    // log prefixes.
+    api_ = std::make_unique<ApiT>(
         core_, std::string(role_tag_), config_.identity().uid);
 
     api_->thread_manager().spawn("worker", [this] { worker_main_(); });
@@ -87,7 +104,8 @@ void RoleHostBase::startup_()
     }
 }
 
-void RoleHostBase::shutdown_() noexcept
+template <typename ApiT>
+void EngineHost<ApiT>::shutdown_() noexcept
 {
     // First effective call wins the exchange; subsequent calls see
     // "already true" and early-return. This makes shutdown_ idempotent
@@ -101,9 +119,25 @@ void RoleHostBase::shutdown_() noexcept
     // tries to race, the flag is the sole correctness gate here.
     core_.request_stop();
     core_.notify_incoming();
-    // api_.reset() → RoleAPIBase dtor → ThreadManager dtor →
-    // bounded join of every role-scope thread (worker, ctrl, custom).
+    // api_.reset() → ApiT dtor → ThreadManager dtor →
+    // bounded join of every host-scope thread (worker, ctrl, custom).
     api_.reset();
 }
+
+// ── Explicit instantiation ──────────────────────────────────────────────────
+//
+// Generate the template methods for each ApiT the library ships support
+// for.  PYLABHUB_UTILS_EXPORT on the template class declaration causes
+// these symbols to be exported from the shared library, so derived
+// classes in consumer binaries (plh_role, plh_hub) link against them
+// without recompiling the template body.
+//
+// To add a new host kind (e.g. HubHost after HEP-CORE-0033 Phase 8):
+//   1. Ensure the new ApiT satisfies the constructor + thread_manager()
+//      contract documented in engine_host.hpp.
+//   2. Add `template class EngineHost<NewApiT>;` here.
+//   3. Add a typedef `using NewHostBase = EngineHost<NewApiT>;` to the
+//      header.
+template class EngineHost<RoleAPIBase>;
 
 } // namespace pylabhub::scripting
