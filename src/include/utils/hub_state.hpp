@@ -53,7 +53,11 @@
 #include <unordered_map>
 #include <vector>
 
-namespace pylabhub::broker { class BrokerService; }
+namespace pylabhub::broker
+{
+class BrokerService;
+class BrokerServiceImpl; ///< pImpl; grants the impl class friend access too.
+}
 
 namespace pylabhub::hub
 {
@@ -340,6 +344,7 @@ class PYLABHUB_UTILS_EXPORT HubState
 
   private:
     friend class ::pylabhub::broker::BrokerService;
+    friend class ::pylabhub::broker::BrokerServiceImpl;
     friend struct ::pylabhub::hub::test::HubStateTestAccess;
 
     // ── Private mutators (friend-only) ──────────────────────────────────
