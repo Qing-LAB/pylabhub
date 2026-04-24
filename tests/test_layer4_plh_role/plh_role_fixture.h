@@ -122,7 +122,7 @@ inline void write_minimal_config(const fs::path       &cfg_path,
 
     if (role == "producer")
     {
-        j["producer"]["uid"]  = "PROD-L4TEST-00000001";
+        j["producer"]["uid"]  = "prod.l4test.u00000001";
         j["producer"]["name"] = "L4Test";
         j["producer"]["auth"]["keyfile"] = "";
         j["out_channel"]     = "lab.l4.test";
@@ -130,7 +130,7 @@ inline void write_minimal_config(const fs::path       &cfg_path,
     }
     else if (role == "consumer")
     {
-        j["consumer"]["uid"]  = "CONS-L4TEST-00000001";
+        j["consumer"]["uid"]  = "cons.l4test.u00000001";
         j["consumer"]["name"] = "L4Test";
         j["consumer"]["auth"]["keyfile"] = "";
         j["in_channel"]     = "lab.l4.test";
@@ -138,7 +138,7 @@ inline void write_minimal_config(const fs::path       &cfg_path,
     }
     else if (role == "processor")
     {
-        j["processor"]["uid"]  = "PROC-L4TEST-00000001";
+        j["processor"]["uid"]  = "proc.l4test.u00000001";
         j["processor"]["name"] = "L4Test";
         j["processor"]["auth"]["keyfile"] = "";
         j["in_channel"]      = "lab.l4.in";

@@ -361,11 +361,19 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
 
     try
     {
-        // Derive uid_hex from log_tag_ (e.g., "PROD-test-AABBCCDD" → "AABBCCDD").
-        std::string uid_hex = "00000000";
-        const auto  last_dash = log_tag_.rfind('-');
-        if (last_dash != std::string::npos)
-            uid_hex = log_tag_.substr(last_dash + 1);
+        // Derive uid_hex from log_tag_.  Under HEP-0033 §G2.2.0b the uid
+        // is `<tag>.<name>.u<8hex>` — everything after the last `.` is
+        // `u<8hex>`; we strip the leading `u` to leave just the hex.
+        // Fall back to "00000000" if log_tag_ isn't a full uid (e.g.,
+        // `"python"` was passed for a pre-init log tag).
+        std::string uid_hex  = "00000000";
+        const auto  last_dot = log_tag_.rfind('.');
+        if (last_dot != std::string::npos)
+        {
+            uid_hex = log_tag_.substr(last_dot + 1);
+            if (!uid_hex.empty() && uid_hex.front() == 'u')
+                uid_hex = uid_hex.substr(1);
+        }
 
         // Determine script type from the entry_point path.
         // Convention: script_dir is already ".../script/python/" or ".../script/lua/"

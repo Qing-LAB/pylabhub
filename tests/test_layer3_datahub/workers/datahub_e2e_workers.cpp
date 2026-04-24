@@ -150,7 +150,7 @@ int e2e_producer(int argc, char** argv)
     return run_gtest_worker(
         [&endpoint, &pubkey, &channel]()
         {
-            const std::string uid = "PROD-E2E-" + channel;
+            const std::string uid = "prod.e2e." + channel;
 
             BrokerRequestComm brc;
             BrokerRequestComm::Config brc_cfg;
@@ -235,7 +235,7 @@ int e2e_consumer(int argc, char** argv)
     return run_gtest_worker(
         [&endpoint, &pubkey, &channel]()
         {
-            const std::string cons_uid = "CONS-E2E-" + channel;
+            const std::string cons_uid = "cons.e2e." + channel;
 
             BrokerRequestComm brc;
             BrokerRequestComm::Config brc_cfg;

@@ -166,9 +166,9 @@ TEST(RoleDirectoryTest, DefaultKeyfile_InsideVault)
     fs::create_directories(tmp);
 
     const auto rd = RoleDirectory::open(tmp);
-    const auto kf = rd.default_keyfile("PROD-TEST-00000001");
+    const auto kf = rd.default_keyfile("prod.test.u00000001");
 
-    EXPECT_EQ(kf, rd.vault() / "PROD-TEST-00000001.vault");
+    EXPECT_EQ(kf, rd.vault() / "prod.test.u00000001.vault");
 }
 
 // ── resolve_hub_dir ────────────────────────────────────────────────────────────
@@ -362,7 +362,7 @@ TEST(RoleDirectoryTest, WarnIfKeyfileInRoleDir_InsideRoleDir_Absolute)
     fs::create_directories(tmp / "vault");
     const auto rd = RoleDirectory::open(tmp);
 
-    const auto kf = (rd.vault() / "PROD-TEST.vault").string();
+    const auto kf = (rd.vault() / "prod.test.vault").string();
     testing::internal::CaptureStderr();
     RoleDirectory::warn_if_keyfile_in_role_dir(rd.base(), kf);
     const std::string captured = testing::internal::GetCapturedStderr();
@@ -384,7 +384,7 @@ TEST(RoleDirectoryTest, WarnIfKeyfileInRoleDir_OutsideRoleDir_NoWarn)
     fs::create_directories(sys_tmp);
 
     const auto rd = RoleDirectory::open(role_tmp);
-    const auto kf = (sys_tmp / "PROD-TEST.vault").string();
+    const auto kf = (sys_tmp / "prod.test.vault").string();
 
     testing::internal::CaptureStderr();
     RoleDirectory::warn_if_keyfile_in_role_dir(rd.base(), kf);
@@ -397,7 +397,7 @@ TEST(RoleDirectoryTest, WarnIfKeyfileInRoleDir_OutsideRoleDir_NoWarn)
 
 TEST(RoleDirectoryTest, WarnIfKeyfileInRoleDir_RelativePath_Resolved)
 {
-    // Relative path "vault/PROD-TEST.vault" is resolved *under* the role dir
+    // Relative path "vault/prod.test.vault" is resolved *under* the role dir
     // — so it lands inside and must trigger the warning.  This pins the
     // relative-resolution branch of the function (not just no-crash).
     const auto tmp = unique_temp_dir("wkf_rel");
@@ -405,7 +405,7 @@ TEST(RoleDirectoryTest, WarnIfKeyfileInRoleDir_RelativePath_Resolved)
     const auto rd = RoleDirectory::open(tmp);
 
     testing::internal::CaptureStderr();
-    RoleDirectory::warn_if_keyfile_in_role_dir(rd.base(), "vault/PROD-TEST.vault");
+    RoleDirectory::warn_if_keyfile_in_role_dir(rd.base(), "vault/prod.test.vault");
     const std::string captured = testing::internal::GetCapturedStderr();
     EXPECT_NE(captured.find("PYLABHUB SECURITY WARNING"), std::string::npos)
         << "relative keyfile resolved inside role dir must warn; stderr: "
@@ -469,7 +469,7 @@ TEST(RoleDirectoryTest, InitDirectory_CreatesDirectoryAndConfig)
     const auto j = nlohmann::json::parse(f);
     EXPECT_EQ(j["test"]["name"], "MyTestRole");
     EXPECT_EQ(j["value"], 42);
-    EXPECT_TRUE(j["test"]["uid"].get<std::string>().find("TEST-") == 0);
+    EXPECT_TRUE(j["test"]["uid"].get<std::string>().find("TEST.") == 0);
 
     fs::remove_all(tmp);
 }

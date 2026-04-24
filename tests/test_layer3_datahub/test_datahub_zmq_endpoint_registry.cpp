@@ -183,7 +183,7 @@ std::unique_ptr<LifecycleGuard> ZmqEndpointRegistryTest::s_lifecycle_;
 TEST_F(ZmqEndpointRegistryTest, DefaultTransport_IsShm)
 {
     const std::string channel = pid_chan("zmqvc.default.shm");
-    const std::string uid     = "PROD-" + channel;
+    const std::string uid     = "prod.ep." + channel;
 
     BrcHandle bh;
     bh.start(ep(), pk(), uid);
@@ -196,7 +196,7 @@ TEST_F(ZmqEndpointRegistryTest, DefaultTransport_IsShm)
     bh.brc.send_heartbeat(channel, {});
 
     BrcHandle cons_bh;
-    cons_bh.start(ep(), pk(), "CONS-" + channel);
+    cons_bh.start(ep(), pk(), "cons.ep." + channel);
     auto disc = cons_bh.brc.discover_channel(channel, {}, 3000);
     ASSERT_TRUE(disc.has_value());
     EXPECT_EQ(disc->value("data_transport", ""), "shm");
@@ -210,7 +210,7 @@ TEST_F(ZmqEndpointRegistryTest, DefaultTransport_IsShm)
 TEST_F(ZmqEndpointRegistryTest, ZmqTransport_RoundTrip)
 {
     const std::string channel = pid_chan("zmqvc.zmq.roundtrip");
-    const std::string uid     = "PROD-" + channel;
+    const std::string uid     = "prod.ep." + channel;
     const std::string zmq_ep  = "tcp://127.0.0.1:55555";
 
     BrcHandle bh;
@@ -228,7 +228,7 @@ TEST_F(ZmqEndpointRegistryTest, ZmqTransport_RoundTrip)
     bh.brc.send_heartbeat(channel, {});
 
     BrcHandle cons_bh;
-    cons_bh.start(ep(), pk(), "CONS-" + channel);
+    cons_bh.start(ep(), pk(), "cons.ep." + channel);
     auto disc = cons_bh.brc.discover_channel(channel, {}, 3000);
     ASSERT_TRUE(disc.has_value());
     EXPECT_EQ(disc->value("data_transport", ""), "zmq");
@@ -243,7 +243,7 @@ TEST_F(ZmqEndpointRegistryTest, ZmqTransport_RoundTrip)
 TEST_F(ZmqEndpointRegistryTest, MultipleConsumers_DiscoverSameEndpoint)
 {
     const std::string channel = pid_chan("zmqvc.multi.disc");
-    const std::string uid     = "PROD-" + channel;
+    const std::string uid     = "prod.ep." + channel;
     const std::string zmq_ep  = "tcp://127.0.0.1:55556";
 
     BrcHandle bh;
@@ -282,8 +282,8 @@ TEST_F(ZmqEndpointRegistryTest, ShmAndZmq_Coexist)
     const std::string zmq_ch = pid_chan("zmqvc.coexist.zmq");
 
     BrcHandle shm_bh;
-    shm_bh.start(ep(), pk(), "PROD-" + shm_ch);
-    auto shm_reg = shm_bh.brc.register_channel(make_reg_opts(shm_ch, "PROD-" + shm_ch), 3000);
+    shm_bh.start(ep(), pk(), "prod.shm." + shm_ch);
+    auto shm_reg = shm_bh.brc.register_channel(make_reg_opts(shm_ch, "prod.shm." + shm_ch), 3000);
     ASSERT_TRUE(shm_reg.has_value());
 
     BrcHandle zmq_bh;
@@ -313,7 +313,7 @@ TEST_F(ZmqEndpointRegistryTest, ShmAndZmq_Coexist)
 TEST_F(ZmqEndpointRegistryTest, EndpointUpdate_ReflectedInDiscovery)
 {
     const std::string channel    = pid_chan("zmqvc.ep.update");
-    const std::string uid        = "PROD-" + channel;
+    const std::string uid        = "prod.ep." + channel;
     const std::string updated_ep = "tcp://127.0.0.1:44444";
 
     BrcHandle bh;
@@ -339,7 +339,7 @@ TEST_F(ZmqEndpointRegistryTest, EndpointUpdate_ReflectedInDiscovery)
     // it gets DISC_PENDING and retries — so the result still reflects the
     // updated endpoint.
     BrcHandle cons_bh;
-    cons_bh.start(ep(), pk(), "CONS-" + channel);
+    cons_bh.start(ep(), pk(), "cons.ep." + channel);
     auto disc = cons_bh.brc.discover_channel(channel, {}, 5000);
     ASSERT_TRUE(disc.has_value()) << "DISC_REQ timed out";
     EXPECT_EQ(disc->value("zmq_node_endpoint", ""), updated_ep);

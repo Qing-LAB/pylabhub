@@ -71,7 +71,7 @@ static void write_hub_json(const fs::path& dir)
     const json hub_json = {
         {"hub", {
             {"name",            "test-hub"},
-            {"uid",             "HUB-TEST-00000001"},
+            {"uid",             "hub.test.u00000001"},
             {"broker_endpoint", "tcp://127.0.0.1:0"},
             {"admin_endpoint",  "tcp://127.0.0.1:0"}
         }},
@@ -431,7 +431,7 @@ TEST_F(AdminShellTest, Probe_Config)
         auto out = resp->at("output").get<std::string>();
         EXPECT_NE(out.find("test-hub"), std::string::npos)
             << "config()['name'] should contain 'test-hub', got: " << out;
-        EXPECT_NE(out.find("HUB-TEST-00000001"), std::string::npos)
+        EXPECT_NE(out.find("hub.test.u00000001"), std::string::npos)
             << "config()['uid'] missing, got: " << out;
     }
 

@@ -88,7 +88,7 @@ static_assert(sizeof(MultiFieldSlot) == 40,
 std::unique_ptr<RoleAPIBase> make_native_api(RoleHostCore &core)
 {
     auto api = std::make_unique<RoleAPIBase>(core, "prod",
-                                             "PROD-TestNative-00000001");
+                                             "prod.testnative.u00000001");
     api->set_name("TestNative");
     api->set_channel("test.native.channel");
     api->set_log_level("error");
@@ -492,7 +492,7 @@ int full_startup_consumer(const std::string &plugin_dir)
             RoleHostCore core;
 
             auto api = std::make_unique<RoleAPIBase>(core, "cons",
-                                                     "CONS-TestNative-00000001");
+                                                     "cons.testnative.u00000001");
             api->set_name("TestNativeConsumer");
             api->set_channel("test.native.channel");
             api->set_log_level("error");
@@ -533,7 +533,7 @@ int full_startup_processor(const std::string &plugin_dir)
             RoleHostCore core;
 
             auto api = std::make_unique<RoleAPIBase>(core, "proc",
-                                                     "PROC-TestNative-00000001");
+                                                     "proc.testnative.u00000001");
             api->set_name("TestNativeProcessor");
             api->set_channel("test.native.in");
             api->set_out_channel("test.native.out");
@@ -631,7 +631,7 @@ int full_startup_consumer_multifield(const std::string &plugin_dir)
             RoleHostCore core;
 
             auto api = std::make_unique<RoleAPIBase>(core, "cons",
-                                                     "CONS-TestNative-00000001");
+                                                     "cons.testnative.u00000001");
             api->set_name("TestNativeConsumer");
             api->set_channel("test.native.channel");
             api->set_log_level("error");
@@ -676,7 +676,7 @@ int full_startup_processor_multifield(const std::string &plugin_dir)
             RoleHostCore core;
 
             auto api = std::make_unique<RoleAPIBase>(core, "proc",
-                                                     "PROC-TestNative-00000001");
+                                                     "proc.testnative.u00000001");
             api->set_name("TestNativeProcessor");
             api->set_channel("test.native.in");
             api->set_out_channel("test.native.out");
@@ -792,7 +792,7 @@ int invoke_on_inbox_typed_data(const std::string &plugin_dir)
 
             float inbox_data = 77.0f;
             engine.invoke_on_inbox(
-                {&inbox_data, sizeof(inbox_data), "PROD-SENDER-00000001", 1});
+                {&inbox_data, sizeof(inbox_data), "prod.sender.u00000001", 1});
             EXPECT_EQ(engine.script_error_count(), 0u);
 
             engine.finalize();
