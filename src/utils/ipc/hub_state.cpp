@@ -498,6 +498,25 @@ void HubState::_set_peer_disconnected(const std::string &hub_uid)
     for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->peer_disc)) h(hub_uid);
 }
 
+void HubState::_set_channel_closing_deadline(
+    const std::string                    &name,
+    std::chrono::steady_clock::time_point deadline)
+{
+    std::unique_lock lk(pImpl->mu);
+    auto             it = pImpl->channels.find(name);
+    if (it == pImpl->channels.end()) return;
+    it->second.closing_deadline = deadline;
+}
+
+void HubState::_set_channel_zmq_node_endpoint(const std::string &name,
+                                              std::string        endpoint)
+{
+    std::unique_lock lk(pImpl->mu);
+    auto             it = pImpl->channels.find(name);
+    if (it == pImpl->channels.end()) return;
+    it->second.zmq_node_endpoint = std::move(endpoint);
+}
+
 void HubState::_set_shm_block(ShmBlockRef ref)
 {
     std::unique_lock lk(pImpl->mu);
