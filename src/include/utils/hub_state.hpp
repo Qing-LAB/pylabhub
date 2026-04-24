@@ -367,6 +367,22 @@ class PYLABHUB_UTILS_EXPORT HubState
     void _set_band_left(const std::string &band, const std::string &role_uid);
     void _set_peer_connected(PeerEntry entry);
     void _set_peer_disconnected(const std::string &hub_uid);
+    /// Set the grace deadline on a channel that has transitioned to
+    /// Closing.  No-op if the channel is unknown.  Caller is expected
+    /// to also set status=Closing via `_set_channel_status`; this
+    /// primitive only writes the deadline field so the broker's
+    /// grace-expiry sweep observes a consistent value through HubState.
+    void _set_channel_closing_deadline(const std::string                    &name,
+                                        std::chrono::steady_clock::time_point deadline);
+
+    /// Update the producer's `zmq_node_endpoint` for a channel
+    /// (HEP-CORE-0021 ZMQ endpoint registry — ENDPOINT_UPDATE_REQ).
+    /// No-op if the channel is unknown.  Endpoint validation is the
+    /// caller's responsibility (broker handler runs validate_tcp_endpoint
+    /// before calling this).
+    void _set_channel_zmq_node_endpoint(const std::string &name,
+                                         std::string        endpoint);
+
     void _set_shm_block(ShmBlockRef ref);
     void _bump_counter(const std::string &key, uint64_t n = 1);
     void _set_role_state_metrics(const BrokerCounters &snapshot);

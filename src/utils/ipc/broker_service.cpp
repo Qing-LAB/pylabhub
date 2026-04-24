@@ -563,8 +563,13 @@ void BrokerServiceImpl::run()
                     // G2.2.1.b dual-write: mirror the status change into
                     // HubState so readers (query_channel_snapshot etc.)
                     // that now source from HubState observe "Closing".
+                    // G2.2.1.b.1: also mirror closing_deadline so the
+                    // grace-expiry sweep (when moved to HubState in
+                    // G2.2.1.c) can observe the same deadline.
                     hub_state_._set_channel_status(
                         ch, pylabhub::hub::ChannelStatus::Closing);
+                    hub_state_._set_channel_closing_deadline(
+                        ch, entry->closing_deadline);
                 }
             }
 
@@ -1395,10 +1400,15 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
         LOGGER_WARN("Broker: HEARTBEAT_REQ missing channel_name");
         return;
     }
-    // Peek status before updating so we can log + count state transitions.
-    bool was_pending = false;
+    // Peek status + producer_role_uid before updating so we can log
+    // state transitions and feed `_on_heartbeat` with the role context.
+    bool        was_pending      = false;
+    std::string producer_role_uid;
     if (auto* pre = registry.find_channel_mutable(channel_name); pre != nullptr)
-        was_pending = (pre->status == ChannelStatus::PendingReady);
+    {
+        was_pending       = (pre->status == ChannelStatus::PendingReady);
+        producer_role_uid = pre->producer_role_uid;
+    }
 
     if (registry.update_heartbeat(channel_name))
     {
@@ -1406,9 +1416,6 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
         {
             ++m_metric_pending_to_ready;
             LOGGER_INFO("Broker: role '{}' transitioned Pending -> Ready", channel_name);
-            // G2.2.1.b dual-write: reflect Pending -> Ready in HubState.
-            hub_state_._set_channel_status(
-                channel_name, pylabhub::hub::ChannelStatus::Ready);
         }
         LOGGER_DEBUG("Broker: heartbeat for channel '{}'", channel_name);
 
@@ -1418,7 +1425,24 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
                          channel_name);
         }
 
-        // HEP-CORE-0019: extract piggybacked metrics (if present).
+        // G2.2.1.b.1 — single capability-op call replaces the manual
+        // `_set_channel_status(Ready)` dual-write *and* the previously-
+        // missing per-tick `last_heartbeat` update.  `_on_heartbeat`
+        // unconditionally refreshes channel.last_heartbeat, transitions
+        // PendingReady→Ready when applicable (state_since auto-stamped),
+        // updates role.last_heartbeat (role-side liveness), and absorbs
+        // piggybacked metrics into role.latest_metrics (HEP-0033 §9.1).
+        std::optional<nlohmann::json> metrics_opt;
+        if (req.contains("metrics") && req["metrics"].is_object())
+            metrics_opt = req["metrics"];
+        hub_state_._on_heartbeat(channel_name,
+                                 producer_role_uid,
+                                 std::chrono::steady_clock::now(),
+                                 metrics_opt);
+
+        // HEP-CORE-0019: keep the legacy metrics_store_ in sync until
+        // G2.2.4 absorbs metrics.  After that, `_on_heartbeat`'s role-
+        // side metrics update is the only source.
         if (req.contains("metrics") && req["metrics"].is_object())
         {
             const uint64_t pid = req.value("producer_pid", uint64_t{0});
@@ -1536,6 +1560,12 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
         *target_field = endpoint;
         LOGGER_INFO("Broker: ENDPOINT_UPDATE_REQ for '{}' {} updated to '{}'",
                     channel_name, endpoint_type, endpoint);
+        // G2.2.1.b.1 dual-write: only `zmq_node` is currently mutable
+        // post-registration (inbox updates are rejected above).  Mirror
+        // into HubState so consumer DISC_REQ paths that resolve via
+        // HubState (post-G2.2.1.c) observe the up-to-date endpoint.
+        if (endpoint_type == "zmq_node")
+            hub_state_._set_channel_zmq_node_endpoint(channel_name, endpoint);
     }
 
     nlohmann::json resp;
