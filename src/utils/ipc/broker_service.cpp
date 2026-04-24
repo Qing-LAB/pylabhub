@@ -101,6 +101,81 @@ bool channel_name_matches_glob(const std::string& name, const std::string& glob)
     }
     return *g == '\0';
 }
+
+// ─── broker ↔ hub entry translation (HEP-0033 G2.2.1) ────────────────────────
+//
+// The broker's ChannelRegistry still owns the channel/consumer maps during
+// G2.2.1.{a,b}; HubState is populated in parallel.  These translators
+// project the broker-internal shape onto the HubState shape.  G2.2.1.c
+// deletes the broker-side types entirely and the translators become
+// unnecessary — everyone works against hub::ChannelEntry directly.
+
+[[nodiscard]] pylabhub::hub::ChannelStatus
+to_hub_status(ChannelStatus s) noexcept
+{
+    switch (s)
+    {
+    case ChannelStatus::PendingReady: return pylabhub::hub::ChannelStatus::PendingReady;
+    case ChannelStatus::Ready:        return pylabhub::hub::ChannelStatus::Ready;
+    case ChannelStatus::Closing:      return pylabhub::hub::ChannelStatus::Closing;
+    }
+    return pylabhub::hub::ChannelStatus::PendingReady;
+}
+
+[[nodiscard]] pylabhub::hub::ConsumerEntry
+to_hub_consumer(const ConsumerEntry &src)
+{
+    pylabhub::hub::ConsumerEntry dst;
+    dst.consumer_pid      = src.consumer_pid;
+    dst.consumer_hostname = src.consumer_hostname;
+    dst.zmq_identity      = src.zmq_identity;
+    dst.role_name         = src.role_name;
+    dst.role_uid          = src.role_uid;
+    dst.inbox_endpoint    = src.inbox_endpoint;
+    dst.inbox_schema_json = src.inbox_schema_json;
+    dst.inbox_packing     = src.inbox_packing;
+    dst.inbox_checksum    = src.inbox_checksum;
+    dst.connected_at      = src.connected_at;
+    return dst;
+}
+
+[[nodiscard]] pylabhub::hub::ChannelEntry
+to_hub_channel_entry(const ChannelEntry &src, const std::string &name)
+{
+    pylabhub::hub::ChannelEntry dst;
+    dst.name                  = name;
+    dst.shm_name              = src.shm_name;
+    dst.schema_hash           = src.schema_hash;
+    dst.schema_version        = src.schema_version;
+    dst.schema_id             = src.schema_id;
+    dst.schema_blds           = src.schema_blds;
+    dst.producer_pid          = src.producer_pid;
+    dst.producer_hostname     = src.producer_hostname;
+    dst.producer_role_name    = src.producer_role_name;
+    dst.producer_role_uid     = src.producer_role_uid;
+    dst.producer_zmq_identity = src.producer_zmq_identity;
+    dst.metadata              = src.metadata;
+    dst.consumers.reserve(src.consumers.size());
+    for (const auto &c : src.consumers) dst.consumers.push_back(to_hub_consumer(c));
+    dst.status                = to_hub_status(src.status);
+    dst.last_heartbeat        = src.last_heartbeat;
+    dst.state_since           = src.state_since;
+    dst.closing_deadline      = src.closing_deadline;
+    dst.has_shared_memory     = src.has_shared_memory;
+    dst.pattern               = src.pattern;  // already hub::ChannelPattern
+    dst.zmq_ctrl_endpoint     = src.zmq_ctrl_endpoint;
+    dst.zmq_data_endpoint     = src.zmq_data_endpoint;
+    dst.zmq_pubkey            = src.zmq_pubkey;
+    dst.data_transport        = src.data_transport;
+    dst.zmq_node_endpoint     = src.zmq_node_endpoint;
+    dst.inbox_endpoint        = src.inbox_endpoint;
+    dst.inbox_schema_json     = src.inbox_schema_json;
+    dst.inbox_packing         = src.inbox_packing;
+    dst.inbox_checksum        = src.inbox_checksum;
+    // `created_at` is stamped by hub::ChannelEntry's default ctor; leave it.
+    return dst;
+}
+
 } // namespace
 
 // ============================================================================
@@ -955,6 +1030,11 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         }
     }
 
+    // G2.2.1.a dual-write: capture a hub::ChannelEntry projection *before*
+    // moving `entry` into the registry.  HubState mirrors the mutation on
+    // success; no HubState write on the schema-mismatch error path.
+    auto hub_entry = to_hub_channel_entry(entry, channel_name);
+
     if (!registry.register_channel(channel_name, std::move(entry)))
     {
         // Cat 1: schema mismatch — invariant violation. Log + notify existing producer.
@@ -983,6 +1063,8 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
                           "Schema hash differs from existing registration for channel '" +
                               channel_name + "'");
     }
+
+    hub_state_._on_channel_registered(std::move(hub_entry));
 
     LOGGER_INFO("Broker: registered channel '{}' (pending first heartbeat)", channel_name);
     nlohmann::json resp;
@@ -1099,6 +1181,10 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
         return make_error(corr_id, "NOT_REGISTERED",
                           "Channel '" + channel_name + "' not registered or pid mismatch");
     }
+
+    // G2.2.1.a dual-write: producer voluntarily closed the channel.
+    hub_state_._on_channel_closed(channel_name,
+                                  pylabhub::hub::ChannelCloseReason::VoluntaryDereg);
 
     // Remove accumulated metrics so the store doesn't grow unboundedly.
     metrics_store_.erase(channel_name);
@@ -1219,7 +1305,11 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     entry.inbox_checksum    = req.value("inbox_checksum", "");
     // Capture ZMQ identity for future CHANNEL_CLOSING_NOTIFY.
     entry.zmq_identity.assign(static_cast<const char*>(identity.data()), identity.size());
+
+    // G2.2.1.a dual-write: capture hub projection before moving into registry.
+    auto hub_consumer = to_hub_consumer(entry);
     registry.register_consumer(channel_name, std::move(entry));
+    hub_state_._on_consumer_joined(channel_name, std::move(hub_consumer));
 
     LOGGER_INFO("Broker: consumer registered for channel '{}'", channel_name);
     nlohmann::json resp;
@@ -1272,6 +1362,12 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
                           "Consumer pid " + std::to_string(consumer_pid) +
                               " not registered for channel '" + channel_name + "'");
     }
+
+    // G2.2.1.a dual-write: consumer voluntarily left.  `closing_entry.role_uid`
+    // may be empty (legacy consumers), in which case HubState's _on_consumer_left
+    // silent-drops the role-side cleanup and still erases from the channel.
+    if (have_entry)
+        hub_state_._on_consumer_left(channel_name, closing_entry.role_uid);
     if (have_entry)
         on_consumer_closed(socket, channel_name, closing_entry, "voluntary_close");
 
@@ -1611,6 +1707,10 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
             on_channel_closed(socket, channel_name, *entry, "pending_timeout");
             const uint64_t pid = entry->producer_pid;
             registry.deregister_channel(channel_name, pid);
+            // G2.2.1.a dual-write: heartbeat-timeout reclaim.
+            hub_state_._on_channel_closed(
+                channel_name,
+                pylabhub::hub::ChannelCloseReason::HeartbeatTimeout);
             ++m_metric_pending_to_deregistered;
         }
     }
@@ -1659,6 +1759,8 @@ void BrokerServiceImpl::check_dead_consumers(zmq::socket_t& socket)
                             channel_name, dead_consumer.consumer_pid);
             }
             registry.deregister_consumer(channel_name, dead_consumer.consumer_pid);
+            // G2.2.1.a dual-write: liveness sweep removed a dead consumer.
+            hub_state_._on_consumer_left(channel_name, dead_consumer.role_uid);
             on_consumer_closed(socket, channel_name, dead_consumer, "process_dead");
         }
     }
@@ -1747,6 +1849,11 @@ void BrokerServiceImpl::check_closing_deadlines(zmq::socket_t& socket)
         {
             on_channel_closed(socket, name, *entry, "grace_expired");
             registry.deregister_channel(name, entry->producer_pid);
+            // G2.2.1.a dual-write: grace-expired close.  Reason =
+            // HeartbeatTimeout (this path only triggers for channels
+            // already in Closing from a heartbeat timeout).
+            hub_state_._on_channel_closed(
+                name, pylabhub::hub::ChannelCloseReason::HeartbeatTimeout);
         }
     }
 }
