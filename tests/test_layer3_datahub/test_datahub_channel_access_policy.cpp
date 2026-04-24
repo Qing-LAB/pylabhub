@@ -220,7 +220,7 @@ TEST_F(ConnectionPolicyBrokerTest, OpenPolicyAcceptsWithIdentity)
     cfg.connection_policy = ConnectionPolicy::Open;
     StartBroker(std::move(cfg));
     EXPECT_TRUE(try_register(ep(), pk(), pid_chan("lab.open.id"),
-                             "lab.sensor1", "PROD-SENSOR-AABBCCDD"));
+                             "lab.sensor1", "prod.sensor.uaabbccdd"));
 }
 
 TEST_F(ConnectionPolicyBrokerTest, RequiredPolicyRejectsAnonymous)
@@ -237,27 +237,27 @@ TEST_F(ConnectionPolicyBrokerTest, RequiredPolicyAcceptsWithIdentity)
     cfg.connection_policy = ConnectionPolicy::Required;
     StartBroker(std::move(cfg));
     EXPECT_TRUE(try_register(ep(), pk(), pid_chan("lab.req.id"),
-                             "lab.sensor1", "PROD-SENSOR-AABBCCDD"));
+                             "lab.sensor1", "prod.sensor.uaabbccdd"));
 }
 
 TEST_F(ConnectionPolicyBrokerTest, VerifiedPolicyRejectsUnknownRole)
 {
     BrokerService::Config cfg;
     cfg.connection_policy = ConnectionPolicy::Verified;
-    cfg.known_roles.push_back({"lab.sensor1", "PROD-SENSOR-AABBCCDD", "producer"});
+    cfg.known_roles.push_back({"lab.sensor1", "prod.sensor.uaabbccdd", "producer"});
     StartBroker(std::move(cfg));
     EXPECT_FALSE(try_register(ep(), pk(), pid_chan("lab.ver.unknown"),
-                              "lab.intruder", "PROD-INTRUDE-11223344"));
+                              "lab.intruder", "prod.intrude.u11223344"));
 }
 
 TEST_F(ConnectionPolicyBrokerTest, VerifiedPolicyAcceptsKnownRole)
 {
     BrokerService::Config cfg;
     cfg.connection_policy = ConnectionPolicy::Verified;
-    cfg.known_roles.push_back({"lab.sensor1", "PROD-SENSOR-AABBCCDD", "producer"});
+    cfg.known_roles.push_back({"lab.sensor1", "prod.sensor.uaabbccdd", "producer"});
     StartBroker(std::move(cfg));
     EXPECT_TRUE(try_register(ep(), pk(), pid_chan("lab.ver.known"),
-                             "lab.sensor1", "PROD-SENSOR-AABBCCDD"));
+                             "lab.sensor1", "prod.sensor.uaabbccdd"));
 }
 
 TEST_F(ConnectionPolicyBrokerTest, PerChannelGlobOverrideRestrictsChannel)
@@ -269,5 +269,5 @@ TEST_F(ConnectionPolicyBrokerTest, PerChannelGlobOverrideRestrictsChannel)
 
     EXPECT_TRUE(try_register(ep(), pk(), pid_chan("lab.regular")));
     EXPECT_FALSE(try_register(ep(), pk(), "lab.secure." + std::to_string(getpid()),
-                              "lab.sensor1", "PROD-SENSOR-AABBCCDD"));
+                              "lab.sensor1", "prod.sensor.uaabbccdd"));
 }

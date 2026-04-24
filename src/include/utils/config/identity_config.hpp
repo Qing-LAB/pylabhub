@@ -8,6 +8,7 @@
  */
 
 #include "utils/json_fwd.hpp"
+#include "utils/naming.hpp"
 #include "utils/uid_utils.hpp"
 
 #include <cstdio>
@@ -20,7 +21,7 @@ namespace pylabhub::config
 
 struct IdentityConfig
 {
-    std::string uid;                    ///< Role UID, e.g., "PROD-TEMPSENS-12345678"
+    std::string uid;                    ///< Role UID, e.g., "prod.tempsensor.u12345678"
     std::string name;                   ///< Human-readable name
     std::string log_level{"info"};      ///< "debug", "info", "warn", "error"
 };
@@ -77,25 +78,32 @@ inline IdentityConfig parse_identity_config(const nlohmann::json &j,
     }
     else
     {
-        // Validate prefix.
-        bool prefix_ok = false;
-        if (role_tag == "producer")
-            prefix_ok = pylabhub::uid::has_producer_prefix(ic.uid);
-        else if (role_tag == "consumer")
-            prefix_ok = pylabhub::uid::has_consumer_prefix(ic.uid);
-        else
-            prefix_ok = pylabhub::uid::has_processor_prefix(ic.uid);
-
-        if (!prefix_ok)
+        // Hard-reject invalid uids (HEP-0033 §G2.2.0b). Config is the
+        // single source of truth — an old-format uid in a config file
+        // will fail `plh_role --validate` so the operator notices
+        // and migrates (or clears the field to let auto-gen run).
+        if (!pylabhub::hub::is_valid_identifier(
+                ic.uid, pylabhub::hub::IdentifierKind::RoleUid))
         {
-            const char *expected = (role_tag == "producer") ? "PROD-"
-                                 : (role_tag == "consumer") ? "CONS-"
-                                 : "PROC-";
-            std::fprintf(stderr,
-                         "[%s] Warning: '%.*s.uid' = '%s' does not start with '%s'.\n",
-                         short_tag,
-                         static_cast<int>(role_tag.size()), role_tag.data(),
-                         ic.uid.c_str(), expected);
+            throw std::runtime_error(
+                std::string(role_tag) + ": invalid '" + std::string(role_tag) +
+                ".uid' = '" + ic.uid + "'. Must follow HEP-0033 §G2.2.0b "
+                "format <tag>.<name>.u<8hex>, e.g. '" + std::string(short_tag) +
+                ".main.u3a7f2b1c'. Clear this field to let auto-gen produce "
+                "a valid one.");
+        }
+
+        // The uid is structurally valid — now verify its tag matches
+        // the role_tag this config section is for. A `cons.*.*` uid
+        // in the `producer` block is nonsense even if grammatically OK.
+        const auto parts = pylabhub::hub::parse_role_uid(ic.uid);
+        if (!parts || parts->tag != short_tag)
+        {
+            throw std::runtime_error(
+                std::string(role_tag) + ": uid '" + ic.uid +
+                "' has tag '" + (parts ? std::string(parts->tag) : std::string{}) +
+                "' but is declared in the '" + std::string(role_tag) +
+                "' block (expected tag '" + std::string(short_tag) + "').");
         }
     }
 

@@ -293,8 +293,8 @@ int producer_auto_deregisters(int /*argc*/, char ** /*argv*/)
             // Register producer A
             {
                 BrcHandle bh;
-                bh.start(broker.endpoint, broker.pubkey, "PROD-A-" + ch_name);
-                auto reg = bh.brc.register_channel(make_reg_opts(ch_name, "PROD-A-" + ch_name), 3000);
+                bh.start(broker.endpoint, broker.pubkey, "prod.a." + ch_name);
+                auto reg = bh.brc.register_channel(make_reg_opts(ch_name, "prod.a." + ch_name), 3000);
                 ASSERT_TRUE(reg.has_value());
 
                 // Deregister
@@ -307,8 +307,8 @@ int producer_auto_deregisters(int /*argc*/, char ** /*argv*/)
             // Producer B should register the same channel immediately
             {
                 BrcHandle bh;
-                bh.start(broker.endpoint, broker.pubkey, "PROD-B-" + ch_name);
-                auto reg = bh.brc.register_channel(make_reg_opts(ch_name, "PROD-B-" + ch_name), 3000);
+                bh.start(broker.endpoint, broker.pubkey, "prod.b." + ch_name);
+                auto reg = bh.brc.register_channel(make_reg_opts(ch_name, "prod.b." + ch_name), 3000);
                 EXPECT_TRUE(reg.has_value())
                     << "Producer B failed to register — DEREG_REQ was not processed";
                 bh.stop();
@@ -423,7 +423,7 @@ int dead_consumer_exiter(int argc, char **argv)
             ASSERT_FALSE(endpoint.empty());
             ASSERT_FALSE(ch_name.empty());
 
-            const std::string cons_uid = "CONS-EXITER-" + ch_name;
+            const std::string cons_uid = "cons.exiter." + ch_name;
 
             BrcHandle bh;
             bh.start(endpoint, pubkey, cons_uid);
@@ -449,8 +449,8 @@ int schema_mismatch_notify(int /*argc*/, char ** /*argv*/)
             auto broker = start_broker();
 
             const std::string ch_name  = make_test_channel_name("health.schema_mismatch");
-            const std::string uid_a    = "PROD-A-" + ch_name;
-            const std::string uid_b    = "PROD-B-" + ch_name;
+            const std::string uid_a    = "prod.a." + ch_name;
+            const std::string uid_b    = "prod.b." + ch_name;
             const std::string hash_a   = std::string(64, 'a');
             const std::string hash_b   = std::string(64, 'b');
 

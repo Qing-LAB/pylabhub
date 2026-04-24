@@ -130,7 +130,7 @@ void register_producer_init()
 {
     utils::RoleDirectory::register_role("producer")
         .config_filename("producer.json")
-        .uid_prefix("PROD")
+        .uid_prefix("prod")
         .role_label("Producer")
         .config_template(&producer_config_template)
         .on_init(&producer_on_init);

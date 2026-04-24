@@ -191,12 +191,12 @@ TEST_F(BrokerFederationTest, HelloHandshake_FiresOnHubConnected)
     BrokerService::Config cfg_a;
     cfg_a.endpoint               = "tcp://127.0.0.1:0";
     cfg_a.grace_override         = std::chrono::milliseconds(0);
-    cfg_a.self_hub_uid           = "HUB-TEST-A";
+    cfg_a.self_hub_uid           = "hub.test.a";
     cfg_a.on_hub_connected       = [&](const std::string &uid)
     { hub_a_events.push_connected(uid); };
 
     FederationPeer peer_b_inbound;
-    peer_b_inbound.hub_uid = "HUB-TEST-B";
+    peer_b_inbound.hub_uid = "hub.test.b";
     cfg_a.peers.push_back(std::move(peer_b_inbound));
 
     auto hub_a = start_local_broker(std::move(cfg_a));
@@ -205,10 +205,10 @@ TEST_F(BrokerFederationTest, HelloHandshake_FiresOnHubConnected)
     BrokerService::Config cfg_b;
     cfg_b.endpoint               = "tcp://127.0.0.1:0";
     cfg_b.grace_override         = std::chrono::milliseconds(0);
-    cfg_b.self_hub_uid           = "HUB-TEST-B";
+    cfg_b.self_hub_uid           = "hub.test.b";
 
     FederationPeer peer_a;
-    peer_a.hub_uid         = "HUB-TEST-A";
+    peer_a.hub_uid         = "hub.test.a";
     peer_a.broker_endpoint = hub_a.endpoint;
     peer_a.pubkey_z85      = hub_a.pubkey;
     cfg_b.peers.push_back(std::move(peer_a));
@@ -220,11 +220,11 @@ TEST_F(BrokerFederationTest, HelloHandshake_FiresOnHubConnected)
 
     ASSERT_TRUE(hub_a_events.wait_for(1, 3000))
         << "Hub A did not fire on_hub_connected";
-    EXPECT_EQ(hub_a_events.get(0).hub_uid, "HUB-TEST-B");
+    EXPECT_EQ(hub_a_events.get(0).hub_uid, "hub.test.b");
 
     ASSERT_TRUE(hub_b_events.wait_for(1, 3000))
         << "Hub B did not fire on_hub_connected";
-    EXPECT_EQ(hub_b_events.get(0).hub_uid, "HUB-TEST-A");
+    EXPECT_EQ(hub_b_events.get(0).hub_uid, "hub.test.a");
 
     hub_b.stop_and_join();
     hub_a.stop_and_join();
@@ -247,12 +247,12 @@ TEST_F(BrokerFederationTest, TargetedMessage_FiresOnHubMessage)
     BrokerService::Config cfg_a;
     cfg_a.endpoint               = "tcp://127.0.0.1:0";
     cfg_a.grace_override         = std::chrono::milliseconds(0);
-    cfg_a.self_hub_uid           = "HUB-TARGET-A";
+    cfg_a.self_hub_uid           = "hub.target.a";
     cfg_a.on_hub_connected       = [&](const std::string &uid)
     { hub_a_events.push_connected(uid); };
 
     FederationPeer peer_b_inbound;
-    peer_b_inbound.hub_uid  = "HUB-TARGET-B";
+    peer_b_inbound.hub_uid  = "hub.target.b";
     peer_b_inbound.channels = {channel};
     cfg_a.peers.push_back(std::move(peer_b_inbound));
 
@@ -263,13 +263,13 @@ TEST_F(BrokerFederationTest, TargetedMessage_FiresOnHubMessage)
     BrokerService::Config cfg_b;
     cfg_b.endpoint               = "tcp://127.0.0.1:0";
     cfg_b.grace_override         = std::chrono::milliseconds(0);
-    cfg_b.self_hub_uid           = "HUB-TARGET-B";
+    cfg_b.self_hub_uid           = "hub.target.b";
     cfg_b.on_hub_message = [&](const std::string &ch, const std::string &payload,
                                const std::string &src)
     { hub_b_events.push_message(ch, payload, src); };
 
     FederationPeer peer_a;
-    peer_a.hub_uid         = "HUB-TARGET-A";
+    peer_a.hub_uid         = "hub.target.a";
     peer_a.broker_endpoint = hub_a.endpoint;
     peer_a.pubkey_z85      = hub_a.pubkey;
     cfg_b.peers.push_back(std::move(peer_a));
@@ -283,13 +283,13 @@ TEST_F(BrokerFederationTest, TargetedMessage_FiresOnHubMessage)
     ASSERT_TRUE(hub_a_events.wait_for(1, 3000)) << "Handshake not completed";
 
     // Hub A sends targeted message to Hub B (Hub B is inbound peer of Hub A).
-    hub_a.service->send_hub_targeted_msg("HUB-TARGET-B", channel, "hello from A");
+    hub_a.service->send_hub_targeted_msg("hub.target.b", channel, "hello from A");
 
     // Hub B should receive the message via on_hub_message callback.
     ASSERT_TRUE(hub_b_events.wait_for(2, 3000))
         << "Hub B did not receive HUB_TARGETED_MSG";
 
-    bool found_msg = hub_b_events.has_event("message", "HUB-TARGET-A");
+    bool found_msg = hub_b_events.has_event("message", "hub.target.a");
     EXPECT_TRUE(found_msg) << "No 'message' event from HUB-TARGET-A found in Hub B events";
 
     hub_b.stop_and_join();
@@ -308,14 +308,14 @@ TEST_F(BrokerFederationTest, PeerBye_TriggersOnHubDisconnected)
     BrokerService::Config cfg_a;
     cfg_a.endpoint               = "tcp://127.0.0.1:0";
     cfg_a.grace_override         = std::chrono::milliseconds(0);
-    cfg_a.self_hub_uid           = "HUB-BYE-A";
+    cfg_a.self_hub_uid           = "hub.bye.a";
     cfg_a.on_hub_connected       = [&](const std::string &uid)
     { hub_a_events.push_connected(uid); };
     cfg_a.on_hub_disconnected    = [&](const std::string &uid)
     { hub_a_events.push_disconnected(uid); };
 
     FederationPeer peer_b_inbound;
-    peer_b_inbound.hub_uid = "HUB-BYE-B";
+    peer_b_inbound.hub_uid = "hub.bye.b";
     cfg_a.peers.push_back(std::move(peer_b_inbound));
 
     auto hub_a = start_local_broker(std::move(cfg_a));
@@ -324,10 +324,10 @@ TEST_F(BrokerFederationTest, PeerBye_TriggersOnHubDisconnected)
     BrokerService::Config cfg_b;
     cfg_b.endpoint               = "tcp://127.0.0.1:0";
     cfg_b.grace_override         = std::chrono::milliseconds(0);
-    cfg_b.self_hub_uid           = "HUB-BYE-B";
+    cfg_b.self_hub_uid           = "hub.bye.b";
 
     FederationPeer peer_a;
-    peer_a.hub_uid         = "HUB-BYE-A";
+    peer_a.hub_uid         = "hub.bye.a";
     peer_a.broker_endpoint = hub_a.endpoint;
     peer_a.pubkey_z85      = hub_a.pubkey;
     cfg_b.peers.push_back(std::move(peer_a));
@@ -343,7 +343,7 @@ TEST_F(BrokerFederationTest, PeerBye_TriggersOnHubDisconnected)
     // Hub A should receive on_hub_disconnected
     ASSERT_TRUE(hub_a_events.wait_for(2, 3000))
         << "Hub A did not fire on_hub_disconnected after Hub B bye";
-    EXPECT_TRUE(hub_a_events.has_event("disconnected", "HUB-BYE-B"));
+    EXPECT_TRUE(hub_a_events.has_event("disconnected", "hub.bye.b"));
 
     hub_a.stop_and_join();
 }

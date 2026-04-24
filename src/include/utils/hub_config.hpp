@@ -59,7 +59,7 @@ namespace pylabhub
  */
 struct HubPeerConfig
 {
-    std::string                   hub_uid;          ///< Peer hub UID (e.g. "HUB-DEMOB-00000002")
+    std::string                   hub_uid;          ///< Peer hub UID (e.g. "hub.demob.u00000002")
     std::string                   broker_endpoint;  ///< Peer broker ROUTER endpoint
     std::string                   pubkey_z85;       ///< Z85 CURVE25519 public key (40 chars); empty = no auth
     std::vector<std::string>      channels;         ///< Channels this hub relays FROM itself TO the peer
@@ -137,7 +137,7 @@ class PYLABHUB_UTILS_EXPORT HubConfig
     /**
      * @brief Stable unique identifier for this hub instance.
      *
-     * Format: @c "HUB-{NAME}-{8HEX}" (e.g. "HUB-MYLABHUB-3A7F2B1C").
+     * Format: @c "hub.<name>.u<8hex>" (e.g. "hub.mylabhub.u3a7f2b1c").
      * Auto-generated from hub_name at first startup if not set in config.
      * Set via hub.json["hub"]["uid"].
      */

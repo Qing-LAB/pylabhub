@@ -81,7 +81,7 @@ class HubConfigScriptConfiguredTest : public ::testing::Test
         const std::string hub_json = R"({
   "hub": {
     "name": "test.hub.cfg",
-    "uid":  "HUB-TESTHUB-A0B1C2D3"
+    "uid":  "hub.testhub.ua0b1c2d3"
   },
   "script": {
     "path": "./my_script",

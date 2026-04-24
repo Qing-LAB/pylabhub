@@ -226,7 +226,7 @@ Primary API object passed to hub script callbacks.
 Identity
 --------
 hub_name()  → str   — Hub name in reverse-domain format.
-hub_uid()   → str   — Stable hub UID ("HUB-NAME-HEXSUFFIX").
+hub_uid()   → str   — Stable hub UID ("hub.<name>.u<hexsuffix>").
 
 Logging
 -------

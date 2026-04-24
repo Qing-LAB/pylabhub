@@ -116,7 +116,7 @@ void register_consumer_init()
 {
     utils::RoleDirectory::register_role("consumer")
         .config_filename("consumer.json")
-        .uid_prefix("CONS")
+        .uid_prefix("cons")
         .role_label("Consumer")
         .config_template(&consumer_config_template)
         .on_init(&consumer_on_init);

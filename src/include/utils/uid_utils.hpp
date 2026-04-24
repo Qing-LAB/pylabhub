@@ -1,33 +1,49 @@
 #pragma once
 /**
  * @file uid_utils.hpp
- * @brief Utilities for generating and validating pylabhub UIDs.
+ * @brief Utilities for generating pylabhub role + hub UIDs.
  *
- * ## UID format
+ * ## UID format (HEP-0033 §G2.2.0b)
  *
- *   Hub:       HUB-{NAME}-{SUFFIX}   (max ~21 chars; fits char[40] SHM field)
- *   Producer:  PROD-{NAME}-{SUFFIX}  (max ~22 chars)
- *   Consumer:  CONS-{NAME}-{SUFFIX}  (max ~22 chars)
- *   Processor: PROC-{NAME}-{SUFFIX}  (max ~22 chars)
- *
- * Where:
- *   {NAME}   -- Up to 8 uppercase alphanumeric characters derived from the
- *               human-readable name. Non-alphanumeric runs collapse to a single
- *               "-"; leading/trailing "-" are stripped. Falls back to "NODE".
- *   {SUFFIX} -- 8 uppercase hex digits from a 32-bit random value.
- *               Uses std::random_device; falls back to a high-res-clock+Knuth
- *               hash on platforms where entropy() == 0.
+ *   Role:  <role_tag>.<name>.u<8hex>
+ *          <role_tag> ∈ {prod, cons, proc}
+ *   Peer:  hub.<name>.u<8hex>
  *
  * Examples:
- *   "my lab hub"         -> HUB-MYLABHUB-3A7F2B1C
- *   "Temperature Sensor" -> PROD-TEMPERAT-9E1D4C2A
- *   (empty name)         -> HUB-NODE-B3F12E9A
+ *   "my lab hub"         -> hub.mylabhub.u3a7f2b1c
+ *   "Temperature Sensor" -> prod.temperaturesensor.u9e1d4c2a   (truncated to 32)
+ *   (empty name)         -> hub.node.ub3f12e9a
  *
- * Properties:
- *   - Human-readable: name component lets operators identify the source
- *   - Recognisable: same node generates similar names across restarts
- *   - Collision-resistant: 32-bit suffix = 1-in-4 billion chance per pair
- *   - Compact: fits in char[40] SHM fields without truncation
+ * Where:
+ *   <name>   — Up to 32 chars, lowercase letters + digits + dash. Derived
+ *              from the human-readable name by lowercasing letters, keeping
+ *              digits, collapsing runs of non-alnum to a single `-`, and
+ *              stripping leading/trailing `-`. If the first char of the
+ *              sanitized result is a digit, 'n' is prepended so the
+ *              NameComponent `[A-Za-z]` first-char rule holds. Falls back
+ *              to "node" when the result would otherwise be empty.
+ *   u<8hex>  — Letter-prefixed 8 lowercase hex digits from a 32-bit random
+ *              value. The `u` ("unique") prefix satisfies the grammar's
+ *              `[A-Za-z]` first-char rule for the unique component.
+ *              Uses std::random_device; falls back to a high-res clock +
+ *              Knuth hash on platforms where entropy() == 0.
+ *
+ * Properties
+ *   - Human-readable: the `<name>` component lets operators identify source
+ *     at a glance.
+ *   - Self-classifying: every uid starts with a reserved role tag, so its
+ *     kind is derivable from the string alone (see naming.hpp).
+ *   - Collision-resistant: 32-bit suffix = ~1-in-4-billion chance per pair.
+ *   - Compact: fits comfortably within the 128-char total + 64-per-component
+ *     caps in the HEP-0033 grammar.
+ *
+ * ## Migration note
+ *
+ * This file previously emitted `PREFIX-NAME-8HEX` uppercase-dashed uids
+ * (e.g. `PROD-TEMPSENS-3A7F2B1C`). That format FAILS the HEP-0033
+ * §G2.2.0b grammar and is rejected by `identity_config.hpp` at parse
+ * time. Any config file with an old-format uid must either clear the
+ * `uid` field (so auto-gen runs) or be updated to the new form.
  */
 
 #include <cctype>
@@ -44,22 +60,24 @@ namespace pylabhub::uid
 namespace detail
 {
 
-/// Derive up to @p max_len uppercase alphanumeric chars from @p name.
-/// Non-alnum runs become a single "-"; leading/trailing "-" are stripped.
-/// Returns "NODE" when the result would otherwise be empty.
-inline std::string sanitize_name_part(const std::string &name, std::size_t max_len = 8)
+constexpr std::size_t kMaxNamePart = 32;
+
+/// Derive up to @p max_len lowercase-alphanumeric-dash chars from @p name.
+/// Non-alnum runs collapse to a single `-`; leading/trailing `-` are
+/// stripped. If the first char of the sanitized result is a digit, 'n'
+/// is prepended so the result is a valid `NameComponent`. Falls back
+/// to "node" if sanitization leaves nothing usable.
+inline std::string sanitize_name_part(const std::string &name,
+                                      std::size_t        max_len = kMaxNamePart)
 {
     std::string out;
     out.reserve(max_len + 1);
     for (unsigned char c : name)
     {
-        if (out.size() >= max_len)
-        {
-            break;
-        }
+        if (out.size() >= max_len) break;
         if (std::isalpha(c) != 0)
         {
-            out += static_cast<char>(std::toupper(c));
+            out += static_cast<char>(std::tolower(c));
         }
         else if (std::isdigit(c) != 0)
         {
@@ -70,16 +88,23 @@ inline std::string sanitize_name_part(const std::string &name, std::size_t max_l
             out += '-';
         }
     }
-    while (!out.empty() && out.back() == '-')
+    while (!out.empty() && out.back() == '-') out.pop_back();
+    if (out.empty()) return "node";
+
+    // Grammar requires NameComponent to start with [A-Za-z]. If the
+    // sanitized result begins with a digit (e.g. name="123Temp" →
+    // "123temp"), prepend 'n' to make it legal.
+    if (std::isdigit(static_cast<unsigned char>(out.front())) != 0)
     {
-        out.pop_back();
+        if (out.size() + 1 > max_len) out.pop_back();
+        out.insert(out.begin(), 'n');
     }
-    return out.empty() ? "NODE" : out;
+    return out;
 }
 
 /// Returns a 32-bit random value.
 /// Prefers std::random_device; falls back to a high-res-clock+Knuth hash on failure.
-inline uint32_t random_u32()
+inline std::uint32_t random_u32()
 {
     try
     {
@@ -91,54 +116,76 @@ inline uint32_t random_u32()
     }
     catch (...) {}
     // Fallback: mix high-res timestamp (usually unique per invocation).
-    const auto ns = static_cast<uint64_t>(
+    const auto ns = static_cast<std::uint64_t>(
         std::chrono::high_resolution_clock::now().time_since_epoch().count());
-    // Knuth multiplicative hash step (good avalanche)
-    return static_cast<uint32_t>((ns ^ (ns >> 17U)) * 2654435761ULL);
+    // Knuth multiplicative hash step (good avalanche).
+    return static_cast<std::uint32_t>((ns ^ (ns >> 17U)) * 2654435761ULL);
+}
+
+/// Format a 32-bit value as `u<8 lowercase hex>`. Example: `u3a7f2b1c`.
+inline std::string unique_suffix()
+{
+    char buf[10]; // 'u' + 8 hex + NUL
+    std::snprintf(buf, sizeof(buf), "u%08x", random_u32());
+    return std::string(buf);
 }
 
 } // namespace detail
 
 // ---------------------------------------------------------------------------
-// Public generators
+// Public generators (HEP-0033 §G2.2.0b)
 // ---------------------------------------------------------------------------
 
 /**
- * @brief Generate a UID: @c "{PREFIX}-{NAME}-{8HEX}".
+ * @brief Generate a tagged UID: @c "<tag>.<name>.u<8hex>".
  *
- * @param prefix Role prefix (e.g. "HUB", "PROD", "CONS", "PROC").
- * @param name   Human-readable name (e.g. "TempSensor").
- *               May be empty — "NODE" is used in that case.
- * @return       A UID string of the form @c "PROD-TEMPSENS-3A7F2B1C".
+ * @param tag   Role / peer tag. One of `"hub"`, `"prod"`, `"cons"`, `"proc"`.
+ *              Pass it lowercase — the output uid is all lowercase.
+ * @param name  Human-readable name. May be empty — "node" is used.
+ *
+ * The returned string is guaranteed to validate as the matching
+ * `IdentifierKind::RoleUid` (for prod/cons/proc) or
+ * `IdentifierKind::PeerUid` (for hub) under `naming.hpp`.
  */
-inline std::string generate_uid(std::string_view prefix, const std::string &name = "")
+inline std::string generate_uid(std::string_view tag, const std::string &name = "")
 {
-    const auto name_part = detail::sanitize_name_part(name, 8U);
-    char suffix[9];
-    std::snprintf(suffix, sizeof(suffix), "%08X", detail::random_u32());
-    return std::string(prefix) + "-" + name_part + "-" + suffix;
+    return std::string(tag) + "." + detail::sanitize_name_part(name) + "."
+         + detail::unique_suffix();
 }
 
-inline std::string generate_hub_uid(const std::string &name = "")       { return generate_uid("HUB", name); }
-inline std::string generate_producer_uid(const std::string &name = "")  { return generate_uid("PROD", name); }
-inline std::string generate_consumer_uid(const std::string &name = "")  { return generate_uid("CONS", name); }
-inline std::string generate_processor_uid(const std::string &name = "") { return generate_uid("PROC", name); }
+inline std::string generate_hub_uid(const std::string &name = "")       { return generate_uid("hub",  name); }
+inline std::string generate_producer_uid(const std::string &name = "")  { return generate_uid("prod", name); }
+inline std::string generate_consumer_uid(const std::string &name = "")  { return generate_uid("cons", name); }
+inline std::string generate_processor_uid(const std::string &name = "") { return generate_uid("proc", name); }
 
 // ---------------------------------------------------------------------------
-// Validators
+// Prefix checks
 // ---------------------------------------------------------------------------
+//
+// Light-weight `starts-with-<tag>.` checks. For full grammar validation
+// (length caps, component-shape, reserved-word conflicts), use
+// `naming::is_valid_identifier(uid, IdentifierKind::RoleUid/PeerUid)`
+// from `utils/naming.hpp` instead. These helpers are kept for call sites
+// that only need a quick kind-discriminator on a uid already known to be
+// well-formed.
 
-/// True if @p uid starts with @c "{prefix}-" and has content after it.
-inline bool has_uid_prefix(std::string_view uid, std::string_view prefix) noexcept
+inline bool has_tag_prefix(std::string_view uid, std::string_view tag) noexcept
 {
-    return uid.size() > prefix.size() + 1 &&
-           uid.substr(0, prefix.size()) == prefix &&
-           uid[prefix.size()] == '-';
+    return uid.size() > tag.size() + 1 &&
+           uid.substr(0, tag.size()) == tag &&
+           uid[tag.size()] == '.';
 }
 
-inline bool has_hub_prefix(std::string_view uid) noexcept       { return has_uid_prefix(uid, "HUB"); }
-inline bool has_producer_prefix(std::string_view uid) noexcept  { return has_uid_prefix(uid, "PROD"); }
-inline bool has_consumer_prefix(std::string_view uid) noexcept  { return has_uid_prefix(uid, "CONS"); }
-inline bool has_processor_prefix(std::string_view uid) noexcept { return has_uid_prefix(uid, "PROC"); }
+inline bool has_hub_prefix(std::string_view uid) noexcept       { return has_tag_prefix(uid, "hub"); }
+inline bool has_producer_prefix(std::string_view uid) noexcept  { return has_tag_prefix(uid, "prod"); }
+inline bool has_consumer_prefix(std::string_view uid) noexcept  { return has_tag_prefix(uid, "cons"); }
+inline bool has_processor_prefix(std::string_view uid) noexcept { return has_tag_prefix(uid, "proc"); }
+
+/// Deprecated spelling retained so existing call sites compile. Prefer
+/// `has_tag_prefix`; both return identical results.
+inline bool has_uid_prefix(std::string_view uid, std::string_view tag) noexcept
+{
+    return has_tag_prefix(uid, tag);
+}
 
 } // namespace pylabhub::uid
