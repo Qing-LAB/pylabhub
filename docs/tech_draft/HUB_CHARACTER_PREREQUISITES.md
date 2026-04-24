@@ -945,11 +945,13 @@ peer.uid   := 'hub' '.' NameComponent '.' NameComponent ('.' NameComponent)*
               // same tag.name.unique shape as role.uid — a federated
               // hub is conceptually a role-like participant with the
               // reserved tag 'hub'
-schema     := '$' NameComponent ('.' NameComponent)*
-              // version is a trailing name component, e.g. "$foo.v2"
-              // (NOT '@<version>' — that would collide with nothing now,
-              // but the uniform dotted form is simpler and matches the
-              // rest of the grammar)
+schema     := '$' NameComponent ('.' NameComponent)* '.' 'v' [0-9]+
+              // ≥2 components after the sigil; the LAST component MUST be
+              // 'v' followed by one or more decimal digits — the schema's
+              // version.  Examples: "$foo.v1", "$lab.sensors.temp.v42".
+              // The '@<version>' form used before G2.2.0b is REJECTED —
+              // one canonical form, no fallback parser (migrated configs
+              // produce the new format; misconfigured ones fail early).
 sys.key    := 'sys' ('.' NameComponent)+
               // broker-internal counter / event keys; user input is
               // rejected at the wire boundary for this namespace
@@ -966,7 +968,7 @@ NameComponent := [A-Za-z][A-Za-z0-9_-]{0,63}
 | Charset (interior of a name component) | `[A-Za-z0-9_-]` |
 | Charset (first char of a name component) | `[A-Za-z]` |
 | Max length per name component | 64 |
-| Max total identifier length (sigil + body) | 128 |
+| Max total identifier length (sigil + body) | 256 |
 | Hierarchy separator | `.` (dot) |
 | Sigils (position 0 only) | `!` (band), `$` (schema) |
 | Role tag prefix (first component of role.uid) | closed set `{prod, cons, proc}` |
@@ -976,6 +978,20 @@ NameComponent := [A-Za-z][A-Za-z0-9_-]{0,63}
 | Whitespace | forbidden |
 | Dot at start / end | forbidden (grammar excludes) |
 | Adjacent dots (`..`) | forbidden (grammar excludes) |
+
+**Length-cap scope clarification.**  The 256-char total applies to a
+**single identifier** as a parsing-boundary DoS defense.  It is NOT a
+cap on composite or federated references.  When a query joins two
+identifiers (e.g. "role X on hub Y"), the composite is expressed as a
+**structured reference** — two JSON fields, two protocol slots, or
+two function arguments — not a concatenated string.  Each constituent
+identifier must individually satisfy the 256 cap; the composite can
+exceed that bound without issue because the composite is not itself
+an identifier.
+
+Rule of thumb: if a caller is tempted to build a single string by
+gluing two identifiers with a separator, they almost certainly want
+a structured (two-field) representation instead.
 
 ##### UID construction (role)
 

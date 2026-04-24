@@ -23,7 +23,7 @@
     "reader_sync_policy": "sequential"
   },
 
-  "slot_schema": "lab.demo.counter@1",
+  "slot_schema": "$lab.demo.counter.v1",
   "flexzone_schema": null,
 
   "script": { "type": "python", "path": "." },

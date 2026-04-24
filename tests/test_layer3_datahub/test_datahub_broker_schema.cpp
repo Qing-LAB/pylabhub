@@ -217,7 +217,7 @@ TEST_F(BrokerSchemaTest, SchemaId_StoredOnReg)
 {
     const std::string channel   = pid_chan("schema.id.stored");
     const std::string uid       = "PROD-" + channel;
-    const std::string schema_id = "lab.test.sensor@1";
+    const std::string schema_id = "$lab.test.sensor.v1";
 
     BrcHandle bh;
     bh.start(ep(), pk(), uid);
@@ -249,7 +249,7 @@ TEST_F(BrokerSchemaTest, SchemaId_StoredOnReg)
 TEST_F(BrokerSchemaTest, ConsumerSchemaId_Match_Succeeds)
 {
     const std::string channel   = pid_chan("schema.consumer.match");
-    const std::string schema_id = "lab.consumer.test@2";
+    const std::string schema_id = "$lab.consumer.test.v2";
     const std::string prod_uid  = "PROD-" + channel;
     const std::string cons_uid  = "CONS-" + channel;
 
@@ -282,8 +282,8 @@ TEST_F(BrokerSchemaTest, ConsumerSchemaId_Match_Succeeds)
 TEST_F(BrokerSchemaTest, ConsumerSchemaId_Mismatch_Fails)
 {
     const std::string channel  = pid_chan("schema.consumer.mismatch");
-    const std::string prod_sid = "lab.producer.schema@1";
-    const std::string cons_sid = "lab.other.schema@1";
+    const std::string prod_sid = "$lab.producer.schema.v1";
+    const std::string cons_sid = "$lab.other.schema.v1";
     const std::string prod_uid = "PROD-" + channel;
     const std::string cons_uid = "CONS-" + channel;
 
@@ -314,7 +314,7 @@ TEST_F(BrokerSchemaTest, ConsumerSchemaId_Mismatch_Fails)
 TEST_F(BrokerSchemaTest, ConsumerSchemaId_EmptyProducer_Fails)
 {
     const std::string channel  = pid_chan("schema.consumer.empty.prod");
-    const std::string cons_sid = "lab.expected.schema@3";
+    const std::string cons_sid = "$lab.expected.schema.v3";
     const std::string prod_uid = "PROD-" + channel;
     const std::string cons_uid = "CONS-" + channel;
 
