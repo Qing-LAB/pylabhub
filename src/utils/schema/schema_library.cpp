@@ -3,7 +3,12 @@
 // Implementation of SchemaLibrary: named schema loading, forward/reverse lookup.
 //
 // JSON schema format: HEP-CORE-0016 §6
-// ID format:          "{namespace}.{name}@{version}"
+// ID format (HEP-0033 §G2.2.0b): "$<namespace>.<name>.v<version>"
+//   Example: "$lab.sensors.temperature.raw.v1"
+//   - Leading '$' sigil classifies as Schema
+//   - Dotted base path (≥1 NameComponent)
+//   - Trailing 'v<digits>' version component is REQUIRED
+//   - Validated via naming::is_valid_identifier(id, Schema)
 // BLDS format:        HEP-CORE-0002 §11 / schema_blds.hpp
 //
 // JSON type → BLDS token map (HEP-CORE-0016 §6.1):
@@ -19,9 +24,10 @@
 //   - count > 1 → array of count scalars; alignment = scalar alignment
 
 #include "utils/schema_library.hpp"
-#include "utils/format_tools.hpp"
 #include "utils/crypto_utils.hpp"
+#include "utils/format_tools.hpp"
 #include "utils/logger.hpp"
+#include "utils/naming.hpp"
 
 #include "utils/json_fwd.hpp"
 
@@ -178,29 +184,55 @@ SchemaEntry entry_from_json(const json &j, const std::string &id_override)
 {
     SchemaEntry e;
 
-    // Resolve schema_id
+    // Resolve schema_id.  One canonical form per HEP-0033 §G2.2.0b:
+    //   "$<base>.v<version>"
+    // Any old `<base>@<version>` input is rejected with a clear
+    // diagnostic — no fallback parser (configs migrate to the new
+    // form explicitly).
     if (!id_override.empty())
     {
+        // Reject old-format overrides with a migration hint.
+        if (id_override.find('@') != std::string::npos)
+            throw std::runtime_error(
+                "Schema id override '" + id_override +
+                "' uses the retired '@<version>' form. Use "
+                "'$<base>.v<version>' (HEP-0033 §G2.2.0b).");
+
+        const auto parts = pylabhub::hub::parse_schema_id(id_override);
+        if (!parts)
+            throw std::runtime_error(
+                "Schema id override '" + id_override +
+                "' is not a valid schema id. Required form: "
+                "'$<base>.v<version>' (HEP-0033 §G2.2.0b).");
         e.schema_id = id_override;
-        // Extract version from the override if it contains '@'
-        const auto at = id_override.rfind('@');
-        if (at != std::string::npos)
-        {
-            try
-            {
-                e.version = static_cast<uint32_t>(std::stoul(id_override.substr(at + 1)));
-            }
-            catch (...)
-            {
-                e.version = 1;
-            }
-        }
+        e.version   = parts->version;
     }
     else
     {
-        const std::string base_id = j.at("id").get<std::string>();
-        e.version                 = j.value("version", 1u);
-        e.schema_id               = base_id + "@" + std::to_string(e.version);
+        const std::string base_id  = j.at("id").get<std::string>();
+        if (base_id.empty())
+            throw std::runtime_error("Schema: 'id' field is empty");
+        if (base_id.find('@') != std::string::npos)
+            throw std::runtime_error(
+                "Schema 'id' = '" + base_id +
+                "' must not contain '@'; version is encoded as '.v<N>' "
+                "(HEP-0033 §G2.2.0b).");
+        if (base_id.front() == '$')
+            throw std::runtime_error(
+                "Schema 'id' = '" + base_id +
+                "' must NOT include the '$' sigil — that is added "
+                "automatically along with the '.v<version>' suffix.");
+
+        e.version   = j.value("version", 1u);
+        e.schema_id = "$" + base_id + ".v" + std::to_string(e.version);
+
+        if (!pylabhub::hub::is_valid_identifier(
+                e.schema_id, pylabhub::hub::IdentifierKind::Schema))
+            throw std::runtime_error(
+                "Schema auto-generated id '" + e.schema_id +
+                "' is not a valid HEP-0033 schema id. Check that the "
+                "'id' field uses only [A-Za-z0-9_-] in name components "
+                "and '.' as separator.");
     }
 
     e.description = j.value("description", std::string{});

@@ -23,8 +23,8 @@
     "out": {"enabled": true, "secret": 2222222222, "slot_count": 64, "reader_sync_policy": "sequential"}
   },
 
-  "in_slot_schema": "lab.demo.counter@1",
-  "out_slot_schema": "lab.demo.processed@1",
+  "in_slot_schema": "$lab.demo.counter.v1",
+  "out_slot_schema": "$lab.demo.processed.v1",
   "flexzone_schema": null,
 
   "script": {"type": "python", "path": "."},

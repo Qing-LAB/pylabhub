@@ -618,6 +618,16 @@ void HubState::_on_channel_registered(ChannelEntry entry)
         bump_invalid_identifier(*pImpl);
         return;
     }
+    // schema_id is optional — validate only when set.  An old-format
+    // '<base>@<version>' schema_id would fail `Schema` grammar and get
+    // silent-dropped here, surfacing bugs at the HubState boundary
+    // (wire-handler layer G2.2.1+ will also reject with an error reply).
+    if (!entry.schema_id.empty() &&
+        !is_valid_identifier(entry.schema_id, IdentifierKind::Schema))
+    {
+        bump_invalid_identifier(*pImpl);
+        return;
+    }
 
     // Capture pieces needed for role/shm derivation before moving entry.
     const std::string channel_name    = entry.name;

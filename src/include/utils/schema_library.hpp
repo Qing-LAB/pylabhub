@@ -52,7 +52,7 @@ namespace pylabhub::schema
  * SchemaLibrary lib;           // uses default search path
  * lib.load_all();              // scan dirs, load all *.json schema files
  *
- * auto entry = lib.get("lab.sensors.temperature.raw@1");
+ * auto entry = lib.get("$lab.sensors.temperature.raw.v1");
  * if (entry) {
  *     auto fields = entry->slot_layout.fields;  // SchemaFieldDef list
  *     // Pass to ShmQueue::create_reader() which computes sizes internally
@@ -60,7 +60,7 @@ namespace pylabhub::schema
  *
  * // Reverse lookup: does this unnamed schema match a known named one?
  * auto id = lib.identify(producer_hash);
- * // id = "lab.sensors.temperature.raw@1" if a named schema matches
+ * // id = "$lab.sensors.temperature.raw.v1" if a named schema matches
  * @endcode
  */
 class PYLABHUB_UTILS_EXPORT SchemaLibrary
@@ -121,7 +121,7 @@ public:
     /**
      * @brief Forward lookup: schema ID → SchemaEntry.
      *
-     * @param id Schema ID including version, e.g. `"lab.sensors.temperature.raw@1"`.
+     * @param id Schema ID including version, e.g. `"$lab.sensors.temperature.raw.v1"`.
      * @return Matching entry, or nullopt if unknown.
      */
     [[nodiscard]] std::optional<SchemaEntry> get(const std::string &id) const;
