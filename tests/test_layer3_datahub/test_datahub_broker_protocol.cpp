@@ -123,7 +123,7 @@ struct BrcHandle
 
 std::string pid_chan(const std::string &base)
 {
-    return base + "." + std::to_string(getpid());
+    return base + ".pid" + std::to_string(getpid());
 }
 
 json make_reg_opts(const std::string &channel, const std::string &role_uid)
@@ -234,7 +234,7 @@ TEST_F(BrokerProtocolTest, ChecksumErrorReport_ForwardedToProducer)
     broker_.emplace(start_local_broker(std::move(cfg)));
 
     const std::string channel = pid_chan("proto.checksum.prod");
-    const std::string uid     = "PROD-" + channel;
+    const std::string uid     = "prod." + channel;
 
     auto prod_events = std::make_shared<EventCollector>();
     BrcHandle prod_bh;
@@ -305,8 +305,8 @@ TEST_F(BrokerProtocolTest, ClosingNotify_DeliveredToProducerAndConsumer)
     broker_.emplace(start_local_broker(std::move(cfg)));
 
     const std::string channel  = pid_chan("proto.close.all");
-    const std::string prod_uid = "PROD-" + channel;
-    const std::string cons_uid = "CONS-" + channel;
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
 
     std::atomic<int> prod_closing{0}, cons_closing{0};
 
@@ -406,7 +406,7 @@ TEST_F(BrokerProtocolTest, DuplicateReg_DifferentSchemaHash_Rejected)
 TEST_F(BrokerProtocolTest, Heartbeat_TransitionsToReady)
 {
     const std::string channel = pid_chan("proto.heartbeat.ready");
-    const std::string uid     = "PROD-" + channel;
+    const std::string uid     = "prod." + channel;
 
     BrcHandle bh;
     bh.start(ep(), pk(), uid);
@@ -445,7 +445,7 @@ TEST_F(BrokerProtocolTest, RolePresenceReq_UnknownUid_ReturnsFalse)
 {
     BrcHandle bh;
     bh.start(ep(), pk(), "QUERIER-unknown");
-    EXPECT_FALSE(bh.brc.query_role_presence("prod.unknown.udeadbeef", 2000));
+    EXPECT_FALSE(bh.brc.query_role_presence("prod.unknown.uiddeadbeef", 2000));
     bh.stop();
 }
 
@@ -453,7 +453,7 @@ TEST_F(BrokerProtocolTest, RoleInfoReq_UnknownUid_NotFound)
 {
     BrcHandle bh;
     bh.start(ep(), pk(), "QUERIER-unknown2");
-    auto info = bh.brc.query_role_info("prod.unknown.udeadbeef", 2000);
+    auto info = bh.brc.query_role_info("prod.unknown.uiddeadbeef", 2000);
     // BRC returns a JSON response (broker always replies), not nullopt.
     // For unknown UIDs, the response has "found":false.
     if (info.has_value())
@@ -465,7 +465,7 @@ TEST_F(BrokerProtocolTest, RoleInfoReq_UnknownUid_NotFound)
 TEST_F(BrokerProtocolTest, RolePresenceReq_ProducerUid_ReturnsTrue)
 {
     const std::string channel = pid_chan("proto.presence.prod");
-    const std::string uid     = "prod.prestest.uaaaa0001";
+    const std::string uid     = "prod.prestest.uidaaaa0001";
 
     BrcHandle prod_bh;
     prod_bh.start(ep(), pk(), uid);
@@ -485,8 +485,8 @@ TEST_F(BrokerProtocolTest, RolePresenceReq_ProducerUid_ReturnsTrue)
 TEST_F(BrokerProtocolTest, RolePresenceReq_ConsumerUid_ReturnsTrue)
 {
     const std::string channel      = pid_chan("proto.presence.cons");
-    const std::string prod_uid     = "PROD-" + channel;
-    const std::string consumer_uid = "cons.prestest.ubbbb0002";
+    const std::string prod_uid     = "prod." + channel;
+    const std::string consumer_uid = "cons.prestest.uidbbbb0002";
 
     BrcHandle prod_bh;
     prod_bh.start(ep(), pk(), prod_uid);
@@ -510,7 +510,7 @@ TEST_F(BrokerProtocolTest, RolePresenceReq_ConsumerUid_ReturnsTrue)
 TEST_F(BrokerProtocolTest, RoleInfoReq_WithInbox_ReturnsInfo)
 {
     const std::string channel     = pid_chan("proto.roleinfo.withinbox");
-    const std::string uid         = "prod.roleinfo.udddd0004";
+    const std::string uid         = "prod.roleinfo.uiddddd0004";
     const std::string inbox_ep    = "tcp://127.0.0.1:9987";
     const std::string schema_json = R"([{"type":"float64","count":1,"length":0}])";
     const std::string packing     = "aligned";
@@ -544,8 +544,8 @@ TEST_F(BrokerProtocolTest, RoleInfoReq_WithInbox_ReturnsInfo)
 TEST_F(BrokerProtocolTest, TransportMismatch_ShmProducer_ZmqConsumer_Fails)
 {
     const std::string channel  = pid_chan("proto.transport.shm_zmq");
-    const std::string prod_uid = "PROD-" + channel;
-    const std::string cons_uid = "CONS-" + channel;
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
 
     BrcHandle prod_bh;
     prod_bh.start(ep(), pk(), prod_uid);
@@ -567,8 +567,8 @@ TEST_F(BrokerProtocolTest, TransportMismatch_ShmProducer_ZmqConsumer_Fails)
 TEST_F(BrokerProtocolTest, TransportMatch_ShmConsumer_ShmProducer_Succeeds)
 {
     const std::string channel  = pid_chan("proto.transport.shm_shm");
-    const std::string prod_uid = "PROD-" + channel;
-    const std::string cons_uid = "CONS-" + channel;
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
 
     BrcHandle prod_bh;
     prod_bh.start(ep(), pk(), prod_uid);
@@ -590,8 +590,8 @@ TEST_F(BrokerProtocolTest, TransportMatch_ShmConsumer_ShmProducer_Succeeds)
 TEST_F(BrokerProtocolTest, TransportMatch_NoDriverField_AlwaysSucceeds)
 {
     const std::string channel  = pid_chan("proto.transport.nofield");
-    const std::string prod_uid = "PROD-" + channel;
-    const std::string cons_uid = "CONS-" + channel;
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
 
     BrcHandle prod_bh;
     prod_bh.start(ep(), pk(), prod_uid);

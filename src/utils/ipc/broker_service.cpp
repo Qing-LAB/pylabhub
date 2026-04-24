@@ -560,6 +560,11 @@ void BrokerServiceImpl::run()
                     entry->status = ChannelStatus::Closing;
                     entry->closing_deadline =
                         std::chrono::steady_clock::now() + cfg.effective_grace();
+                    // G2.2.1.b dual-write: mirror the status change into
+                    // HubState so readers (query_channel_snapshot etc.)
+                    // that now source from HubState observe "Closing".
+                    hub_state_._set_channel_status(
+                        ch, pylabhub::hub::ChannelStatus::Closing);
                 }
             }
 
@@ -1401,6 +1406,9 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
         {
             ++m_metric_pending_to_ready;
             LOGGER_INFO("Broker: role '{}' transitioned Pending -> Ready", channel_name);
+            // G2.2.1.b dual-write: reflect Pending -> Ready in HubState.
+            hub_state_._set_channel_status(
+                channel_name, pylabhub::hub::ChannelStatus::Ready);
         }
         LOGGER_DEBUG("Broker: heartbeat for channel '{}'", channel_name);
 
@@ -1684,6 +1692,9 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
             entry->status      = ChannelStatus::PendingReady;
             entry->state_since = now;
             ++m_metric_ready_to_pending;
+            // G2.2.1.b dual-write: reflect Ready -> Pending in HubState.
+            hub_state_._set_channel_status(
+                channel_name, pylabhub::hub::ChannelStatus::PendingReady);
         }
     }
 
@@ -2392,24 +2403,20 @@ void BrokerService::stop()
 
 std::string BrokerService::list_channels_json_str() const
 {
+    // G2.2.1.b: read from HubState instead of the broker's ChannelRegistry.
+    // HubState snapshot takes its own shared lock internally; no m_query_mu
+    // needed here (the registry is still written dual-write from handler
+    // code, but this reader path no longer touches it).
+    const auto snap = pImpl->hub_state_.snapshot();
     nlohmann::json result = nlohmann::json::array();
-    std::lock_guard<std::mutex> lock(pImpl->m_query_mu);
-    for (const auto& [name, entry] : pImpl->registry.all_channels())
+    for (const auto &[name, entry] : snap.channels)
     {
-        const char* status_str;
-        switch (entry.status)
-        {
-        case ChannelStatus::PendingReady: status_str = "PendingReady"; break;
-        case ChannelStatus::Ready:        status_str = "Ready";        break;
-        case ChannelStatus::Closing:      status_str = "Closing";      break;
-        default:                          status_str = "Unknown";      break;
-        }
         result.push_back(nlohmann::json{
             {"name",           name},
             {"schema_hash",    entry.schema_hash},
             {"consumer_count", static_cast<int>(entry.consumers.size())},
             {"producer_pid",   entry.producer_pid},
-            {"status",         status_str}
+            {"status",         pylabhub::hub::to_string(entry.status)}
         });
     }
     return result.dump();
@@ -2417,25 +2424,18 @@ std::string BrokerService::list_channels_json_str() const
 
 ChannelSnapshot BrokerService::query_channel_snapshot() const
 {
+    // G2.2.1.b: source of truth for channel view is HubState.
+    const auto hub_snap = pImpl->hub_state_.snapshot();
     ChannelSnapshot snap;
-    std::lock_guard<std::mutex> lock(pImpl->m_query_mu);
-    snap.channels.reserve(pImpl->registry.size());
-    for (const auto& [name, entry] : pImpl->registry.all_channels())
+    snap.channels.reserve(hub_snap.channels.size());
+    for (const auto &[name, entry] : hub_snap.channels)
     {
-        const char* status_str;
-        switch (entry.status)
-        {
-        case ChannelStatus::PendingReady: status_str = "PendingReady"; break;
-        case ChannelStatus::Ready:        status_str = "Ready";        break;
-        case ChannelStatus::Closing:      status_str = "Closing";      break;
-        default:                          status_str = "Unknown";      break;
-        }
         ChannelSnapshotEntry e;
-        e.name                = name;
-        e.status              = status_str;
-        e.consumer_count      = static_cast<int>(entry.consumers.size());
-        e.producer_pid        = entry.producer_pid;
-        e.schema_hash         = entry.schema_hash;
+        e.name               = name;
+        e.status             = pylabhub::hub::to_string(entry.status);
+        e.consumer_count     = static_cast<int>(entry.consumers.size());
+        e.producer_pid       = entry.producer_pid;
+        e.schema_hash        = entry.schema_hash;
         e.producer_role_name = entry.producer_role_name;
         e.producer_role_uid  = entry.producer_role_uid;
         snap.channels.push_back(std::move(e));
@@ -2466,21 +2466,22 @@ nlohmann::json BrokerServiceImpl::handle_shm_block_query(const nlohmann::json& r
 
 nlohmann::json BrokerServiceImpl::collect_shm_info(const std::string& channel) const
 {
-    // Snapshot registry data under the query mutex, then read SHM outside it.
+    // G2.2.1.b: source from HubState.  Snapshot under HubState's own lock
+    // (inside snapshot()), then read SHM outside any broker locks.
     struct BlockInfo
     {
-        std::string channel;
-        std::string shm_name;
-        uint64_t    producer_pid{0};
-        std::string producer_uid;
-        std::string producer_name;
-        std::vector<ConsumerEntry> consumers;
+        std::string                                channel;
+        std::string                                shm_name;
+        uint64_t                                   producer_pid{0};
+        std::string                                producer_uid;
+        std::string                                producer_name;
+        std::vector<pylabhub::hub::ConsumerEntry>  consumers;
     };
 
     std::vector<BlockInfo> blocks;
     {
-        std::lock_guard<std::mutex> lock(m_query_mu);
-        for (const auto& [name, entry] : registry.all_channels())
+        const auto snap = hub_state_.snapshot();
+        for (const auto &[name, entry] : snap.channels)
         {
             if (!channel.empty() && name != channel)
                 continue;

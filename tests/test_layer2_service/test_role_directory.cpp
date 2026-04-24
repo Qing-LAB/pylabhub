@@ -166,9 +166,9 @@ TEST(RoleDirectoryTest, DefaultKeyfile_InsideVault)
     fs::create_directories(tmp);
 
     const auto rd = RoleDirectory::open(tmp);
-    const auto kf = rd.default_keyfile("prod.test.u00000001");
+    const auto kf = rd.default_keyfile("prod.test.uid00000001");
 
-    EXPECT_EQ(kf, rd.vault() / "prod.test.u00000001.vault");
+    EXPECT_EQ(kf, rd.vault() / "prod.test.uid00000001.vault");
 }
 
 // ── resolve_hub_dir ────────────────────────────────────────────────────────────

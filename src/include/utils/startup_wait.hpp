@@ -12,8 +12,8 @@
  * {
  *   "startup": {
  *     "wait_for_roles": [
- *       { "uid": "prod.sensor.u3a7f2b1c", "timeout_ms": 10000 },
- *       { "uid": "cons.logger.u9e1d4c2a", "timeout_ms": 5000 }
+ *       { "uid": "prod.sensor.uid3a7f2b1c", "timeout_ms": 10000 },
+ *       { "uid": "cons.logger.uid9e1d4c2a", "timeout_ms": 5000 }
  *     ]
  *   }
  * }
@@ -40,7 +40,7 @@ inline constexpr int kMaxStartupWaitTimeoutMs = 3'600'000;
 /// One role-presence requirement for startup coordination (HEP-0023).
 struct WaitForRole
 {
-    std::string uid;                                      ///< Exact role UID to wait for (e.g. "prod.sensor.u3a7f2b1c").
+    std::string uid;                                      ///< Exact role UID to wait for (e.g. "prod.sensor.uid3a7f2b1c").
     int         timeout_ms{kDefaultStartupWaitTimeoutMs}; ///< Per-role wait timeout (ms). Must be > 0.
 };
 

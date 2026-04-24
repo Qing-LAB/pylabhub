@@ -504,7 +504,7 @@ struct HubConfig::Impl
             throw std::runtime_error(
                 "HubConfig: invalid 'hub.uid' = '" + hub_uid +
                 "'. Must follow HEP-0033 §G2.2.0b format "
-                "'hub.<name>.u<8hex>', e.g. 'hub.mylab.u3a7f2b1c'. "
+                "'hub.<name>.uid<8hex>', e.g. 'hub.mylab.uid3a7f2b1c'. "
                 "Clear this field to let auto-gen produce a valid one.");
         }
 

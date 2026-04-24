@@ -87,7 +87,7 @@ LocalBrokerHandle start_local_broker(BrokerService::Config cfg)
 
 std::string pid_chan(const std::string &base)
 {
-    return base + "." + std::to_string(getpid());
+    return base + ".pid" + std::to_string(getpid());
 }
 
 /// Build minimal JSON opts for BrokerRequestComm::register_channel().
@@ -209,8 +209,8 @@ TEST_F(BrokerAdminTest, ListChannels_OneChannel)
     const std::string channel = pid_chan("admin.list.one");
 
     BrcHandle bh;
-    bh.start(ep(), pk(), "PROD-" + channel);
-    auto reg = bh.brc.register_channel(make_reg_opts(channel, "PROD-" + channel), 3000);
+    bh.start(ep(), pk(), "prod." + channel);
+    auto reg = bh.brc.register_channel(make_reg_opts(channel, "prod." + channel), 3000);
     ASSERT_TRUE(reg.has_value()) << "register_channel failed";
 
     std::string result = svc().list_channels_json_str();
@@ -238,8 +238,8 @@ TEST_F(BrokerAdminTest, ListChannels_FieldPresence)
     const std::string channel = pid_chan("admin.list.fields");
 
     BrcHandle bh;
-    bh.start(ep(), pk(), "PROD-" + channel);
-    auto reg = bh.brc.register_channel(make_reg_opts(channel, "PROD-" + channel), 3000);
+    bh.start(ep(), pk(), "prod." + channel);
+    auto reg = bh.brc.register_channel(make_reg_opts(channel, "prod." + channel), 3000);
     ASSERT_TRUE(reg.has_value()) << "register_channel failed";
 
     std::string result = svc().list_channels_json_str();
@@ -281,8 +281,8 @@ TEST_F(BrokerAdminTest, Snapshot_OneChannel)
     const std::string channel = pid_chan("admin.snap.one");
 
     BrcHandle bh;
-    bh.start(ep(), pk(), "PROD-" + channel);
-    auto reg = bh.brc.register_channel(make_reg_opts(channel, "PROD-" + channel), 3000);
+    bh.start(ep(), pk(), "prod." + channel);
+    auto reg = bh.brc.register_channel(make_reg_opts(channel, "prod." + channel), 3000);
     ASSERT_TRUE(reg.has_value()) << "register_channel failed";
 
     ChannelSnapshot snap = svc().query_channel_snapshot();
@@ -311,8 +311,8 @@ TEST_F(BrokerAdminTest, Snapshot_AfterConsumer)
 
     // Register producer
     BrcHandle prod_bh;
-    prod_bh.start(ep(), pk(), "PROD-" + channel);
-    auto reg = prod_bh.brc.register_channel(make_reg_opts(channel, "PROD-" + channel), 3000);
+    prod_bh.start(ep(), pk(), "prod." + channel);
+    auto reg = prod_bh.brc.register_channel(make_reg_opts(channel, "prod." + channel), 3000);
     ASSERT_TRUE(reg.has_value()) << "register_channel failed";
 
     // Send heartbeat so broker marks channel Ready (required for consumer registration)
@@ -321,9 +321,9 @@ TEST_F(BrokerAdminTest, Snapshot_AfterConsumer)
 
     // Register consumer (separate BRC instance)
     BrcHandle cons_bh;
-    cons_bh.start(ep(), pk(), "CONS-" + channel);
+    cons_bh.start(ep(), pk(), "cons." + channel);
     auto cons_reg = cons_bh.brc.register_consumer(
-        make_cons_opts(channel, "CONS-" + channel), 3000);
+        make_cons_opts(channel, "cons." + channel), 3000);
     ASSERT_TRUE(cons_reg.has_value()) << "register_consumer failed";
 
     ChannelSnapshot snap = svc().query_channel_snapshot();
@@ -352,8 +352,8 @@ TEST_F(BrokerAdminTest, CloseChannel_Existing)
     const std::string channel = pid_chan("admin.close.existing");
 
     BrcHandle bh;
-    bh.start(ep(), pk(), "PROD-" + channel);
-    auto reg = bh.brc.register_channel(make_reg_opts(channel, "PROD-" + channel), 3000);
+    bh.start(ep(), pk(), "prod." + channel);
+    auto reg = bh.brc.register_channel(make_reg_opts(channel, "prod." + channel), 3000);
     ASSERT_TRUE(reg.has_value()) << "register_channel failed";
 
     // Request close

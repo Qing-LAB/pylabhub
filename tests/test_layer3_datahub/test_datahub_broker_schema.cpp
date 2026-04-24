@@ -115,7 +115,7 @@ struct BrcHandle
 
 std::string pid_chan(const std::string &base)
 {
-    return base + "." + std::to_string(getpid());
+    return base + ".pid" + std::to_string(getpid());
 }
 
 json make_reg_opts(const std::string &channel, const std::string &role_uid)
@@ -187,7 +187,7 @@ std::unique_ptr<LifecycleGuard> BrokerSchemaTest::s_lifecycle_;
 TEST_F(BrokerSchemaTest, SchemaHash_StoredOnReg)
 {
     const std::string channel  = pid_chan("schema.hash.stored");
-    const std::string uid      = "PROD-" + channel;
+    const std::string uid      = "prod." + channel;
     const std::string hash_hex = std::string(64, 'a');
 
     BrcHandle bh;
@@ -216,7 +216,7 @@ TEST_F(BrokerSchemaTest, SchemaHash_StoredOnReg)
 TEST_F(BrokerSchemaTest, SchemaId_StoredOnReg)
 {
     const std::string channel   = pid_chan("schema.id.stored");
-    const std::string uid       = "PROD-" + channel;
+    const std::string uid       = "prod." + channel;
     const std::string schema_id = "$lab.test.sensor.v1";
 
     BrcHandle bh;
@@ -250,8 +250,8 @@ TEST_F(BrokerSchemaTest, ConsumerSchemaId_Match_Succeeds)
 {
     const std::string channel   = pid_chan("schema.consumer.match");
     const std::string schema_id = "$lab.consumer.test.v2";
-    const std::string prod_uid  = "PROD-" + channel;
-    const std::string cons_uid  = "CONS-" + channel;
+    const std::string prod_uid  = "prod." + channel;
+    const std::string cons_uid  = "cons." + channel;
 
     BrcHandle prod_bh;
     prod_bh.start(ep(), pk(), prod_uid);
@@ -284,8 +284,8 @@ TEST_F(BrokerSchemaTest, ConsumerSchemaId_Mismatch_Fails)
     const std::string channel  = pid_chan("schema.consumer.mismatch");
     const std::string prod_sid = "$lab.producer.schema.v1";
     const std::string cons_sid = "$lab.other.schema.v1";
-    const std::string prod_uid = "PROD-" + channel;
-    const std::string cons_uid = "CONS-" + channel;
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
 
     BrcHandle prod_bh;
     prod_bh.start(ep(), pk(), prod_uid);
@@ -315,8 +315,8 @@ TEST_F(BrokerSchemaTest, ConsumerSchemaId_EmptyProducer_Fails)
 {
     const std::string channel  = pid_chan("schema.consumer.empty.prod");
     const std::string cons_sid = "$lab.expected.schema.v3";
-    const std::string prod_uid = "PROD-" + channel;
-    const std::string cons_uid = "CONS-" + channel;
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
 
     BrcHandle prod_bh;
     prod_bh.start(ep(), pk(), prod_uid);

@@ -21,7 +21,7 @@ namespace pylabhub::config
 
 struct IdentityConfig
 {
-    std::string uid;                    ///< Role UID, e.g., "prod.tempsensor.u12345678"
+    std::string uid;                    ///< Role UID, e.g., "prod.tempsensor.uid12345678"
     std::string name;                   ///< Human-readable name
     std::string log_level{"info"};      ///< "debug", "info", "warn", "error"
 };
@@ -88,8 +88,8 @@ inline IdentityConfig parse_identity_config(const nlohmann::json &j,
             throw std::runtime_error(
                 std::string(role_tag) + ": invalid '" + std::string(role_tag) +
                 ".uid' = '" + ic.uid + "'. Must follow HEP-0033 §G2.2.0b "
-                "format <tag>.<name>.u<8hex>, e.g. '" + std::string(short_tag) +
-                ".main.u3a7f2b1c'. Clear this field to let auto-gen produce "
+                "format <tag>.<name>.uid<8hex>, e.g. '" + std::string(short_tag) +
+                ".main.uid3a7f2b1c'. Clear this field to let auto-gen produce "
                 "a valid one.");
         }
 

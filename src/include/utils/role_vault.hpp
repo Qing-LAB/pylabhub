@@ -12,7 +12,7 @@
  * Decrypted payload is UTF-8 JSON:
  * @code{.json}
  * {
- *   "role_uid":   "prod.sensor1.u3a7f2b1c",
+ *   "role_uid":   "prod.sensor1.uid3a7f2b1c",
  *   "public_key": "<Z85 40-char>",
  *   "secret_key": "<Z85 40-char>"
  * }
