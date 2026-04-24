@@ -78,7 +78,7 @@ TEST_F(InboxQueueTest, BindAndConnect_Basic)
     EXPECT_FALSE(ep.empty());
     EXPECT_NE(ep.find("tcp://"), std::string::npos);
 
-    auto c = InboxClient::connect_to(ep, "prod.test.u00000001", uint32_schema());
+    auto c = InboxClient::connect_to(ep, "prod.test.uid00000001", uint32_schema());
     ASSERT_NE(c, nullptr);
     ASSERT_TRUE(c->start());
 
@@ -136,7 +136,7 @@ TEST_F(InboxQueueTest, MultipleMessages)
     ASSERT_NE(q, nullptr);
     ASSERT_TRUE(q->start());
 
-    auto c = InboxClient::connect_to(q->actual_endpoint(), "prod.multi.u00000001", uint32_schema());
+    auto c = InboxClient::connect_to(q->actual_endpoint(), "prod.multi.uid00000001", uint32_schema());
     ASSERT_NE(c, nullptr);
     ASSERT_TRUE(c->start());
 
@@ -187,7 +187,7 @@ TEST_F(InboxQueueTest, DoubleStop_NoThrow)
     EXPECT_NO_THROW(q->stop());
     EXPECT_NO_THROW(q->stop()); // second stop is a no-op
 
-    auto c = InboxClient::connect_to("tcp://127.0.0.1:5599", "prod.dblstop.u00000001",
+    auto c = InboxClient::connect_to("tcp://127.0.0.1:5599", "prod.dblstop.uid00000001",
                                      uint32_schema());
     ASSERT_NE(c, nullptr);
     // Don't start — just double-stop
@@ -200,7 +200,7 @@ TEST_F(InboxQueueTest, DoubleStop_NoThrow)
 // ─────────────────────────────────────────────────────────────────────────────
 TEST_F(InboxQueueTest, SenderUid_IsPreserved)
 {
-    const std::string kSenderId = "prod.test.u12345678";
+    const std::string kSenderId = "prod.test.uid12345678";
 
     auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
     ASSERT_NE(q, nullptr);
@@ -285,7 +285,7 @@ TEST_F(InboxQueueTest, AckCode3_HandlerError)
     ASSERT_NE(q, nullptr);
     ASSERT_TRUE(q->start());
 
-    auto c = InboxClient::connect_to(q->actual_endpoint(), "prod.ackerr.u00000001", uint32_schema());
+    auto c = InboxClient::connect_to(q->actual_endpoint(), "prod.ackerr.uid00000001", uint32_schema());
     ASSERT_NE(c, nullptr);
     ASSERT_TRUE(c->start());
 

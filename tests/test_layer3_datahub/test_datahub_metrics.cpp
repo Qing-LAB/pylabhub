@@ -117,7 +117,7 @@ struct BrcHandle
 
 std::string pid_chan(const std::string &base)
 {
-    return base + "." + std::to_string(getpid());
+    return base + ".pid" + std::to_string(getpid());
 }
 
 json make_reg_opts(const std::string &channel, const std::string &role_uid)
@@ -194,7 +194,7 @@ std::unique_ptr<LifecycleGuard> MetricsPlaneTest::s_lifecycle_;
 TEST_F(MetricsPlaneTest, HeartbeatMetrics_StoredByBroker)
 {
     const std::string channel = pid_chan("metrics.heartbeat.stored");
-    const std::string uid     = "PROD-" + channel;
+    const std::string uid     = "prod." + channel;
 
     BrcHandle bh;
     bh.start(ep(), pk(), uid);
@@ -222,8 +222,8 @@ TEST_F(MetricsPlaneTest, HeartbeatMetrics_StoredByBroker)
 TEST_F(MetricsPlaneTest, MetricsReport_ConsumerStoredByBroker)
 {
     const std::string channel  = pid_chan("metrics.consumer.stored");
-    const std::string prod_uid = "PROD-" + channel;
-    const std::string cons_uid = "CONS-" + channel;
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
 
     BrcHandle prod_bh;
     prod_bh.start(ep(), pk(), prod_uid);
@@ -267,7 +267,7 @@ TEST_F(MetricsPlaneTest, QueryMetrics_UnknownChannel_ReturnsEmpty)
 TEST_F(MetricsPlaneTest, QueryMetrics_AllChannels)
 {
     const std::string channel = pid_chan("metrics.all");
-    const std::string uid     = "PROD-" + channel;
+    const std::string uid     = "prod." + channel;
 
     BrcHandle bh;
     bh.start(ep(), pk(), uid);
@@ -291,7 +291,7 @@ TEST_F(MetricsPlaneTest, QueryMetrics_AllChannels)
 TEST_F(MetricsPlaneTest, HeartbeatNoMetrics_BackwardCompat)
 {
     const std::string channel = pid_chan("metrics.no.payload");
-    const std::string uid     = "PROD-" + channel;
+    const std::string uid     = "prod." + channel;
 
     BrcHandle bh;
     bh.start(ep(), pk(), uid);
@@ -312,7 +312,7 @@ TEST_F(MetricsPlaneTest, HeartbeatNoMetrics_BackwardCompat)
 TEST_F(MetricsPlaneTest, MetricsUpdate_OverwriteOnHeartbeat)
 {
     const std::string channel = pid_chan("metrics.overwrite");
-    const std::string uid     = "PROD-" + channel;
+    const std::string uid     = "prod." + channel;
 
     BrcHandle bh;
     bh.start(ep(), pk(), uid);
@@ -342,7 +342,7 @@ TEST_F(MetricsPlaneTest, MetricsUpdate_OverwriteOnHeartbeat)
 TEST_F(MetricsPlaneTest, ProducerPID_InQueryResult)
 {
     const std::string channel = pid_chan("metrics.pid");
-    const std::string uid     = "PROD-" + channel;
+    const std::string uid     = "prod." + channel;
 
     BrcHandle bh;
     bh.start(ep(), pk(), uid);

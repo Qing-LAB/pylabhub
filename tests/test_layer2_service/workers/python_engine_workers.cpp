@@ -84,9 +84,9 @@ std::unique_ptr<RoleAPIBase> make_api(RoleHostCore &core,
                                       const std::string &tag = "prod")
 {
     std::string uid;
-    if (tag == "prod") uid = "prod.testengine.u00000001";
-    else if (tag == "cons") uid = "cons.testengine.u00000001";
-    else if (tag == "proc") uid = "proc.testengine.u00000001";
+    if (tag == "prod") uid = "prod.testengine.uid00000001";
+    else if (tag == "cons") uid = "cons.testengine.uid00000001";
+    else if (tag == "proc") uid = "proc.testengine.uid00000001";
     else                    uid = "TEST-" + tag + "-00000001";
     auto api = std::make_unique<RoleAPIBase>(core, tag, uid);
     api->set_name("TestEngine");
@@ -2836,7 +2836,7 @@ def on_inbox(msg, api):
         f"tag@28 expected b'ABCDEFGH', got {bytes(msg.data.tag)!r}")
 
     # (3) Sender-UID and seq projection paths.
-    assert msg.sender_uid == "prod.sender.u00000001", (
+    assert msg.sender_uid == "prod.sender.uid00000001", (
         f"sender_uid expected 'PROD-SENDER-00000001', got {msg.sender_uid!r}")
     assert msg.seq == 7, f"seq expected 7, got {msg.seq}"
 
@@ -2915,7 +2915,7 @@ def on_inbox(msg, api):
             std::memcpy(inbox_buf.data() + 28, tag,    sizeof(tag));
 
             engine.invoke_on_inbox({inbox_buf.data(), inbox_buf.size(),
-                                     "prod.sender.u00000001", 7});
+                                     "prod.sender.uid00000001", 7});
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "Python-side asserts (ctypes.Structure, each field "
                    "at its padded offset, sender_uid, seq, read-only "
@@ -3122,7 +3122,7 @@ def on_inbox(msg, api):
 
             float raw = 1.0f;
             engine.invoke_on_inbox({&raw, sizeof(raw),
-                                     "cons.sender.u00000001", 1});
+                                     "cons.sender.uid00000001", 1});
             EXPECT_EQ(engine.script_error_count(), 1u)
                 << "missing InboxFrame must increment script_error_count "
                    "by EXACTLY 1 — more would mean the guard cascaded or "
@@ -4145,7 +4145,7 @@ int api_identity_accessors_return_correct_values(const std::string &dir)
             write_script(script_dir, R"PY(
 def on_produce(tx, msgs, api):
     # Identity set by make_api (tag="prod").
-    assert api.uid() == "prod.testengine.u00000001", (
+    assert api.uid() == "prod.testengine.uid00000001", (
         f"uid: {api.uid()!r}")
     assert api.name() == "TestEngine", f"name: {api.name()!r}"
     assert api.channel() == "test.channel", f"channel: {api.channel()!r}"
@@ -4807,7 +4807,7 @@ int api_open_inbox_without_broker(const std::string &dir)
         dir, "python_engine::api_open_inbox_without_broker",
         R"PY(
 def on_produce(tx, msgs, api):
-    for uid in ("prod.someone.u12345678", "", "PROD-δΣ-99999999"):
+    for uid in ("prod.someone.uid12345678", "", "PROD-δΣ-99999999"):
         r = api.open_inbox(uid)
         assert r is None, (
             f"api.open_inbox({uid!r}) without broker expected None, got {r!r}")

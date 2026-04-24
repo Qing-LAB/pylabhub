@@ -26,6 +26,19 @@
  *               // ≥2 components after the sigil; last component is the
  *               // version, must match `v<digits>` literally (e.g. v1, v42).
  *               // Examples: "$foo.v1", "$lab.sensors.temp.v42".
+ *
+ * Numeric-token convention (not validator-enforced; see HEP-0033
+ * §G2.2.0b "Numeric-token prefix convention"):
+ *   - PID-derived component       → `pid<digits>`      (e.g. "pid104577")
+ *   - Random/UUID-style unique     → `uid<hex>`         (e.g. "uid3a7f2b1c")
+ *   - Schema version (validator-enforced) → `v<digits>`  (e.g. "v2")
+ *
+ * Every `NameComponent` must start with `[A-Za-z]`, so bare numeric
+ * tokens (`42`, `3a7f2b1c`) fail the grammar.  The conventions above
+ * are the project-wide full-word prefixes that make the purpose
+ * self-evident in logs.  Prefer the helpers in `uid_utils.hpp` for
+ * construction and `parse_role_uid()` / `parse_schema_id()` here for
+ * dissection rather than ad-hoc string manipulation.
  * sys.key    := 'sys' ('.' NameComponent)+              // broker-internal
  * NameComponent := [A-Za-z][A-Za-z0-9_-]{0,63}
  * ```

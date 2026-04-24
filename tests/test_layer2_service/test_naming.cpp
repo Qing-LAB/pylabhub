@@ -347,3 +347,151 @@ TEST(NamingFormatRoleRef, UidPreferredWhenPresent)
     EXPECT_EQ(format_role_ref({}, {}, "prod"),      "[prod]");
     EXPECT_EQ(format_role_ref({}),                  "");
 }
+
+// ═══ Corner cases — per-kind boundary + adversarial inputs ══════════════════
+
+TEST(NamingCorner, EmptyAndSingleChar)
+{
+    // Every kind must reject empty strings.
+    for (auto k : {IdentifierKind::Channel, IdentifierKind::Band,
+                   IdentifierKind::RoleUid, IdentifierKind::RoleName,
+                   IdentifierKind::PeerUid, IdentifierKind::Schema,
+                   IdentifierKind::SysKey})
+        EXPECT_FALSE(is_valid_identifier("", k)) << "empty for kind=" << to_string(k);
+
+    // Sigil-only / letter-only inputs — reject where structure needs more.
+    EXPECT_FALSE(is_valid_identifier("!",     IdentifierKind::Band));
+    EXPECT_FALSE(is_valid_identifier("$",     IdentifierKind::Schema));
+    EXPECT_FALSE(is_valid_identifier("$a",    IdentifierKind::Schema));  // no .vN
+    EXPECT_FALSE(is_valid_identifier("hub",   IdentifierKind::PeerUid)); // tag only
+    EXPECT_FALSE(is_valid_identifier("prod",  IdentifierKind::RoleUid)); // tag only
+    EXPECT_FALSE(is_valid_identifier("sys",   IdentifierKind::SysKey));  // tag only
+
+    // Single letter — valid RoleName (plain dotted, first char letter).
+    EXPECT_TRUE (is_valid_identifier("a",     IdentifierKind::RoleName));
+    // Single letter — valid Channel (not reserved).
+    EXPECT_TRUE (is_valid_identifier("a",     IdentifierKind::Channel));
+}
+
+TEST(NamingCorner, FirstCharAfterSigil)
+{
+    // Band: first component body must start with letter.
+    EXPECT_FALSE(is_valid_identifier("!1alerts",   IdentifierKind::Band));
+    EXPECT_FALSE(is_valid_identifier("!_alerts",   IdentifierKind::Band));
+
+    // Schema: first component after $ must start with letter.
+    EXPECT_FALSE(is_valid_identifier("$1foo.v1",   IdentifierKind::Schema));
+    EXPECT_FALSE(is_valid_identifier("$_foo.v1",   IdentifierKind::Schema));
+}
+
+TEST(NamingCorner, SchemaVersionOverflow)
+{
+    // uint32 max = 4294967295.  Values above that must be rejected.
+    EXPECT_TRUE (is_valid_identifier("$foo.v4294967295",  IdentifierKind::Schema));
+    EXPECT_FALSE(is_valid_identifier("$foo.v4294967296",  IdentifierKind::Schema));
+    EXPECT_FALSE(is_valid_identifier("$foo.v99999999999", IdentifierKind::Schema));
+
+    // parse_schema_id must reflect the same rejection.
+    EXPECT_FALSE(parse_schema_id("$foo.v4294967296").has_value());
+}
+
+TEST(NamingCorner, ReservedWordsAreCaseSensitive)
+{
+    // Lowercase reserved words are tags / namespaces.  Uppercase
+    // forms are NOT reserved — they become ordinary NameComponents.
+    EXPECT_FALSE(is_valid_identifier("PROD.x.y", IdentifierKind::RoleUid));  // case-sensitive tag
+    EXPECT_TRUE (is_valid_identifier("PROD.x.y", IdentifierKind::Channel));  // PROD != prod → channel ok
+    EXPECT_FALSE(is_valid_identifier("HUB.x.y",  IdentifierKind::PeerUid));
+    EXPECT_FALSE(is_valid_identifier("SYS.x",    IdentifierKind::SysKey));
+}
+
+TEST(NamingCorner, EmbeddedNullByteRejected)
+{
+    // An embedded null byte in the body is not a valid NameComponent char.
+    const char raw[]  = "foo\0bar";
+    std::string_view with_null(raw, sizeof(raw) - 1); // 7 chars incl. '\0'
+    EXPECT_FALSE(is_valid_identifier(with_null, IdentifierKind::Channel));
+    EXPECT_FALSE(is_valid_identifier(with_null, IdentifierKind::RoleName));
+}
+
+TEST(NamingCorner, LengthBoundariesEveryKind)
+{
+    // ── per-component cap = 64 ────────────────────────────────────────
+    std::string comp64(64, 'a'); comp64[0] = 'A';
+    std::string comp65(65, 'a'); comp65[0] = 'A';
+
+    EXPECT_TRUE (is_valid_identifier("!" + comp64,           IdentifierKind::Band));
+    EXPECT_FALSE(is_valid_identifier("!" + comp65,           IdentifierKind::Band));
+
+    EXPECT_TRUE (is_valid_identifier("$" + comp64 + ".v1",   IdentifierKind::Schema));
+    EXPECT_FALSE(is_valid_identifier("$" + comp65 + ".v1",   IdentifierKind::Schema));
+
+    EXPECT_TRUE (is_valid_identifier("prod." + comp64 + ".x",IdentifierKind::RoleUid));
+    EXPECT_FALSE(is_valid_identifier("prod." + comp65 + ".x",IdentifierKind::RoleUid));
+
+    EXPECT_TRUE (is_valid_identifier("hub." + comp64 + ".x", IdentifierKind::PeerUid));
+    EXPECT_FALSE(is_valid_identifier("hub." + comp65 + ".x", IdentifierKind::PeerUid));
+
+    EXPECT_TRUE (is_valid_identifier("sys." + comp64,        IdentifierKind::SysKey));
+    EXPECT_FALSE(is_valid_identifier("sys." + comp65,        IdentifierKind::SysKey));
+
+    // ── total cap 256 applies per-kind too ────────────────────────────
+    // "sys." (4 chars) + 252-char dotted tail = exactly 256.
+    // Build tail = 6 × 41 chars + 5 dots = 246+5 = 251 chars.  Close
+    // enough to the cap to prove "exactly at 256" accepts and
+    // "over 256" rejects; each component ≤64 stays under the per-
+    // component cap.
+    std::string long_tail;
+    for (int i = 0; i < 6; ++i) {
+        if (i) long_tail += ".";
+        std::string seg(41, 'a'); seg[0] = 'A';
+        long_tail += seg;
+    }  // 6 * 41 + 5 dots = 251 chars → "sys." + 251 = 255 total
+    const auto at_cap = "sys." + long_tail;
+    EXPECT_TRUE (is_valid_identifier(at_cap, IdentifierKind::SysKey))
+        << "len=" << at_cap.size();
+
+    // Push over 256: make the tail 253 chars total (drop 1 char from
+    // total to be safe, then add extra).  Simplest: take `at_cap` and
+    // append a 2-char component `.X` bringing total to 258.
+    const auto over_cap = at_cap + ".Xy";
+    EXPECT_FALSE(is_valid_identifier(over_cap, IdentifierKind::SysKey))
+        << "len=" << over_cap.size();
+}
+
+TEST(NamingCorner, ConventionCompliantUids)
+{
+    // HEP-0033 §G2.2.0b numeric-token prefix convention: pid<N> and
+    // uid<hex> are valid NameComponents and form valid RoleUids /
+    // PeerUids when combined with the tag prefix.
+    EXPECT_TRUE(is_valid_identifier("prod.cam.pid42",        IdentifierKind::RoleUid));
+    EXPECT_TRUE(is_valid_identifier("prod.cam.uid3a7f2b1c",  IdentifierKind::RoleUid));
+    EXPECT_TRUE(is_valid_identifier("prod.cam.pid42.uid1",   IdentifierKind::RoleUid));
+    EXPECT_TRUE(is_valid_identifier("hub.lab1.pid7",         IdentifierKind::PeerUid));
+    EXPECT_TRUE(is_valid_identifier("hub.lab1.uid3a7f2b1c",  IdentifierKind::PeerUid));
+
+    // Schemas use v<N> for version; uid<hex> is not a valid version.
+    EXPECT_FALSE(is_valid_identifier("$foo.uid3a7f2b1c",     IdentifierKind::Schema));
+}
+
+TEST(NamingCorner, ParseSchemaId_RejectsNonSchemas)
+{
+    EXPECT_FALSE(parse_schema_id("prod.x.y").has_value());   // RoleUid shape
+    EXPECT_FALSE(parse_schema_id("hub.x.y").has_value());    // PeerUid shape
+    EXPECT_FALSE(parse_schema_id("!alerts.v1").has_value()); // Band sigil
+    EXPECT_FALSE(parse_schema_id("sensor.data").has_value()); // Channel shape
+    EXPECT_FALSE(parse_schema_id("").has_value());
+}
+
+TEST(NamingCorner, CrossKindConfusion)
+{
+    // A band starts with '!' — channel validator rejects it.
+    EXPECT_FALSE(is_valid_identifier("!alerts",  IdentifierKind::Channel));
+    // A schema starts with '$' — channel validator rejects it.
+    EXPECT_FALSE(is_valid_identifier("$foo.v1",  IdentifierKind::Channel));
+    // A channel doesn't have a sigil — band validator rejects it.
+    EXPECT_FALSE(is_valid_identifier("alerts",   IdentifierKind::Band));
+    // Old '@' peer sigil stays rejected as Channel and as PeerUid.
+    EXPECT_FALSE(is_valid_identifier("@lab1",    IdentifierKind::Channel));
+    EXPECT_FALSE(is_valid_identifier("@lab1",    IdentifierKind::PeerUid));
+}

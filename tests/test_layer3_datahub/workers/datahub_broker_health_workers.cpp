@@ -183,7 +183,7 @@ int producer_gets_closing_notify(int /*argc*/, char ** /*argv*/)
             auto broker = start_broker_with_cfg(std::move(cfg));
 
             const std::string ch_name = make_test_channel_name("health.closing_notify");
-            const std::string uid     = "PROD-" + ch_name;
+            const std::string uid     = "prod." + ch_name;
 
             std::atomic<bool> closing_fired{false};
 
@@ -231,8 +231,8 @@ int consumer_auto_deregisters(int /*argc*/, char ** /*argv*/)
             auto broker = start_broker();
 
             const std::string ch_name  = make_test_channel_name("health.consumer_dereg");
-            const std::string prod_uid = "PROD-" + ch_name;
-            const std::string cons_uid = "CONS-" + ch_name;
+            const std::string prod_uid = "prod." + ch_name;
+            const std::string cons_uid = "cons." + ch_name;
 
             // Register producer
             BrcHandle prod_bh;
@@ -344,7 +344,7 @@ int dead_consumer_orchestrator(int argc, char **argv)
             auto broker = start_broker_with_cfg(std::move(cfg));
 
             const std::string ch_name  = make_test_channel_name("health.dead_consumer");
-            const std::string prod_uid = "PROD-" + ch_name;
+            const std::string prod_uid = "prod." + ch_name;
 
             std::atomic<bool> consumer_died{false};
 

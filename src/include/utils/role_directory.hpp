@@ -154,7 +154,7 @@ public:
      * Returns `<base>/vault/<uid>.vault`.  The `vault/` directory is created
      * with 0700 permissions by @ref create().
      *
-     * @param uid  Role UID, e.g. "prod.tempsens.u12345678".
+     * @param uid  Role UID, e.g. "prod.tempsens.uid12345678".
      */
     std::filesystem::path default_keyfile(std::string_view uid) const
     {

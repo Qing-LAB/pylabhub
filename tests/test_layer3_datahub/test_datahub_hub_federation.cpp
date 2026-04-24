@@ -85,7 +85,7 @@ LocalBrokerHandle start_local_broker(BrokerService::Config cfg)
 
 std::string pid_chan(const std::string &base)
 {
-    return base + "." + std::to_string(getpid());
+    return base + ".pid" + std::to_string(getpid());
 }
 
 struct HubEventCollector

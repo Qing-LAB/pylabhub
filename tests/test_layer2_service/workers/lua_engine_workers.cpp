@@ -73,9 +73,9 @@ std::unique_ptr<RoleAPIBase> make_api(RoleHostCore &core,
                                      const std::string &tag = "prod")
 {
     std::string uid;
-    if      (tag == "prod") uid = "prod.testengine.u00000001";
-    else if (tag == "cons") uid = "cons.testengine.u00000001";
-    else if (tag == "proc") uid = "proc.testengine.u00000001";
+    if      (tag == "prod") uid = "prod.testengine.uid00000001";
+    else if (tag == "cons") uid = "cons.testengine.uid00000001";
+    else if (tag == "proc") uid = "proc.testengine.uid00000001";
     else                    uid = "TEST-" + tag + "-00000001";
     auto api = std::make_unique<RoleAPIBase>(core, tag, uid);
     api->set_name("TestEngine");
@@ -1557,7 +1557,7 @@ int api_identity_uid_name_channel(const std::string &dir)
         RoleKind::Producer,
         R"LUA(
             function on_produce(tx, msgs, api)
-                assert(api.uid() == "prod.testengine.u00000001",
+                assert(api.uid() == "prod.testengine.uid00000001",
                        "uid: " .. tostring(api.uid()))
                 assert(api.name() == "TestEngine",
                        "name: " .. tostring(api.name()))
@@ -3645,7 +3645,7 @@ int invoke_on_inbox_typed_data(const std::string &dir)
                     assert(msg.data ~= nil, "expected inbox data")
                     assert(math.abs(msg.data.value - 77.0) < 0.01,
                            "expected ~77.0, got " .. tostring(msg.data.value))
-                    assert(msg.sender_uid == "prod.sender.u00000001",
+                    assert(msg.sender_uid == "prod.sender.uid00000001",
                            "sender_uid expected, got " ..
                            tostring(msg.sender_uid))
                     -- NEW: pin seq projection (lua_engine.cpp:985-986).
@@ -3673,7 +3673,7 @@ int invoke_on_inbox_typed_data(const std::string &dir)
             float inbox_data = 77.0f;
             auto r = engine.invoke_on_inbox(
                 {&inbox_data, sizeof(inbox_data),
-                 "prod.sender.u00000001", 7});
+                 "prod.sender.uid00000001", 7});
 
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Commit)
                 << "on_inbox returned true → must map to Commit";
@@ -3800,7 +3800,7 @@ int invoke_on_inbox_missing_callback_counts_as_script_error(const std::string &d
 
             float raw = 1.0f;
             auto r = engine.invoke_on_inbox(
-                {&raw, sizeof(raw), "cons.sender.u00000001", 1});
+                {&raw, sizeof(raw), "cons.sender.uid00000001", 1});
 
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Error)
                 << "missing callback must surface as Error result";
@@ -3847,7 +3847,7 @@ int invoke_on_inbox_missing_type_reports_error(const std::string &dir)
 
             float raw = 1.0f;
             auto r = engine.invoke_on_inbox(
-                {&raw, sizeof(raw), "cons.sender.u00000001", 1});
+                {&raw, sizeof(raw), "cons.sender.uid00000001", 1});
 
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Error)
                 << "missing InboxFrame must surface as Error result";

@@ -1007,17 +1007,42 @@ role.uid ::= <role_tag> . <name> . <unique_suffix>
   within `NameComponent`.  User-chosen.
 - **`unique_suffix`** — one or more dotted components that
   disambiguate this role instance from others sharing the same name.
-  Convention: `pid<N>`, hostname, UUID, or any combination.  Must
-  have at least one component.
+  Must have at least one component.
+
+##### Numeric-token prefix convention
+
+Every `NameComponent` must start with `[A-Za-z]` — so raw numeric
+tokens (PID, random hex, timestamps, counters) embedded as distinct
+components need a letter prefix.  Rather than leaving each caller to
+pick their own prefix, the project uses a **full-word** convention
+that is self-documenting in logs:
+
+| Prefix | Meaning | Example component |
+|---|---|---|
+| `pid` | process id (typically for test-fixture isolation) | `pid104577` |
+| `uid` | opaque random unique suffix (uid_utils auto-gen) | `uid3a7f2b1c` |
+| `v`   | schema version — **short**, matches industry convention (semver, git tags) | `v2`, `v42` |
+
+These are conventions, not grammar rules — the validator only enforces
+`NameComponent` shape.  But every *new* site that embeds a numeric
+token should pick the conventional prefix for clarity, not invent its
+own (`p42`, `u...`, `42` all technically valid or not, but non-obvious
+to a reader).
+
+The version prefix stays `v<N>` because it is already industry-standard
+(npm, git tags, semver `v1.0`, ...) and appears in the *schema*
+grammar as a validator-enforced terminal component (HEP-0033 §G2.2.0b).
+The other kinds have no industry-standard single-letter convention, so
+the full-word form wins on readability.
 
 Examples (all valid):
 - `prod.cam1.pid42`
 - `cons.logger.host-lab1.pid9876`
-- `proc.filter.abc123`
-- `prod.main.uuid-8f3a2c`
+- `proc.filter.uid8f3a2c7b`
+- `prod.main.uid3a7f2b1c`                    (shape produced by uid_utils)
 
 Invalid (insufficient parts):
-- `prod.uid` — only 2 components; missing `unique_suffix`.
+- `prod.uid3a7f2b1c` — only 2 components; missing the `<name>` middle component.
 - `prod` — only the tag; missing name and unique.
 
 ##### Helpers (live in `utils/naming.hpp`)

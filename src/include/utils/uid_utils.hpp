@@ -5,14 +5,14 @@
  *
  * ## UID format (HEP-0033 §G2.2.0b)
  *
- *   Role:  <role_tag>.<name>.u<8hex>
+ *   Role:  <role_tag>.<name>.uid<8hex>
  *          <role_tag> ∈ {prod, cons, proc}
- *   Peer:  hub.<name>.u<8hex>
+ *   Peer:  hub.<name>.uid<8hex>
  *
  * Examples:
- *   "my lab hub"         -> hub.mylabhub.u3a7f2b1c
- *   "Temperature Sensor" -> prod.temperaturesensor.u9e1d4c2a   (truncated to 32)
- *   (empty name)         -> hub.node.ub3f12e9a
+ *   "my lab hub"         -> hub.mylabhub.uid3a7f2b1c
+ *   "Temperature Sensor" -> prod.temperaturesensor.uid9e1d4c2a   (truncated to 32)
+ *   (empty name)         -> hub.node.uidb3f12e9a
  *
  * Where:
  *   <name>   — Up to 32 chars, lowercase letters + digits + dash. Derived
@@ -22,10 +22,12 @@
  *              sanitized result is a digit, 'n' is prepended so the
  *              NameComponent `[A-Za-z]` first-char rule holds. Falls back
  *              to "node" when the result would otherwise be empty.
- *   u<8hex>  — Letter-prefixed 8 lowercase hex digits from a 32-bit random
- *              value. The `u` ("unique") prefix satisfies the grammar's
- *              `[A-Za-z]` first-char rule for the unique component.
- *              Uses std::random_device; falls back to a high-res clock +
+ *   uid<8hex> — `uid` full-word prefix + 8 lowercase hex digits from a
+ *              32-bit random value.  The `uid` prefix is the project-wide
+ *              convention for "opaque random unique suffix" (HEP-0033
+ *              §G2.2.0b "Numeric-token prefix convention") and satisfies
+ *              the grammar's `[A-Za-z]` first-char rule.  Uses
+ *              std::random_device; falls back to a high-res clock +
  *              Knuth hash on platforms where entropy() == 0.
  *
  * Properties
@@ -122,11 +124,14 @@ inline std::uint32_t random_u32()
     return static_cast<std::uint32_t>((ns ^ (ns >> 17U)) * 2654435761ULL);
 }
 
-/// Format a 32-bit value as `u<8 lowercase hex>`. Example: `u3a7f2b1c`.
+/// Format a 32-bit value as `uid<8 lowercase hex>`. Example: `uid3a7f2b1c`.
+/// The `uid` prefix is the project-wide convention for "opaque random
+/// unique suffix" (HEP-0033 §G2.2.0b "Numeric-token prefix convention")
+/// and satisfies the `NameComponent [A-Za-z]{first}` grammar rule.
 inline std::string unique_suffix()
 {
-    char buf[10]; // 'u' + 8 hex + NUL
-    std::snprintf(buf, sizeof(buf), "u%08x", random_u32());
+    char buf[12]; // "uid" + 8 hex + NUL
+    std::snprintf(buf, sizeof(buf), "uid%08x", random_u32());
     return std::string(buf);
 }
 
@@ -137,7 +142,7 @@ inline std::string unique_suffix()
 // ---------------------------------------------------------------------------
 
 /**
- * @brief Generate a tagged UID: @c "<tag>.<name>.u<8hex>".
+ * @brief Generate a tagged UID: @c "<tag>.<name>.uid<8hex>".
  *
  * @param tag   Role / peer tag. One of `"hub"`, `"prod"`, `"cons"`, `"proc"`.
  *              Pass it lowercase — the output uid is all lowercase.
