@@ -256,8 +256,8 @@ int consumer_reg_happy_path()
             auto broker = start_broker_in_thread(std::move(cfg));
 
             const std::string channel = "broker_consumer.reg_happy";
-            const std::string prod_uid = "PROD-" + channel;
-            const std::string cons_uid = "CONS-" + channel;
+            const std::string prod_uid = "prod." + channel;
+            const std::string cons_uid = "cons." + channel;
 
             // Register producer via BRC
             BrokerRequestComm prod_brc;
@@ -494,8 +494,8 @@ int disc_shows_consumer_count()
             auto broker = start_broker_in_thread(std::move(cfg));
 
             const std::string channel = "broker_consumer.disc_count";
-            const std::string prod_uid = "PROD-" + channel;
-            const std::string cons_uid = "CONS-" + channel;
+            const std::string prod_uid = "prod." + channel;
+            const std::string cons_uid = "cons." + channel;
 
             // Register producer via BRC
             BrokerRequestComm prod_brc;

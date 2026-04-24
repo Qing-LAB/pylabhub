@@ -96,7 +96,7 @@ LocalBrokerHandle start_local_broker(BrokerService::Config cfg)
 
 std::string pid_chan(const std::string &base)
 {
-    return base + "." + std::to_string(getpid());
+    return base + ".pid" + std::to_string(getpid());
 }
 
 // ── BrcHandle — BrokerRequestComm with poll thread ──────────────────────────
@@ -231,7 +231,7 @@ TEST_F(BrokerShutdownTest, GracefulShutdown_ProducerDeregisters)
 {
     start_broker(std::chrono::seconds(10));
     const std::string channel = pid_chan("shutdown.graceful.prod");
-    const std::string uid     = "PROD-" + channel;
+    const std::string uid     = "prod." + channel;
 
     BrcHandle bh;
     auto closing_flag = std::make_shared<SignalFlag>();
@@ -286,7 +286,7 @@ TEST_F(BrokerShutdownTest, ForceShutdown_GraceExpires)
 {
     start_broker(std::chrono::seconds(1));
     const std::string channel = pid_chan("shutdown.force.expire");
-    const std::string uid     = "PROD-" + channel;
+    const std::string uid     = "prod." + channel;
 
     BrcHandle bh;
     auto closing_flag = std::make_shared<SignalFlag>();
@@ -332,8 +332,8 @@ TEST_F(BrokerShutdownTest, EarlyCleanup_AllMembersDeregister)
 {
     start_broker(std::chrono::seconds(10));
     const std::string channel  = pid_chan("shutdown.early.cleanup");
-    const std::string prod_uid = "PROD-" + channel;
-    const std::string cons_uid = "CONS-" + channel;
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
 
     // Producer
     BrcHandle prod_bh;
@@ -398,8 +398,8 @@ TEST_F(BrokerShutdownTest, ForceShutdown_ConsumerDoesNotDeregister)
 {
     start_broker(std::chrono::seconds(1));
     const std::string channel  = pid_chan("shutdown.force.consumer");
-    const std::string prod_uid = "PROD-" + channel;
-    const std::string cons_uid = "CONS-" + channel;
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
 
     BrcHandle prod_bh;
     auto prod_force = std::make_shared<SignalFlag>();
@@ -451,7 +451,7 @@ TEST_F(BrokerShutdownTest, ClosingStatus_InSnapshot)
 {
     start_broker(std::chrono::seconds(10));
     const std::string channel = pid_chan("shutdown.status.closing");
-    const std::string uid     = "PROD-" + channel;
+    const std::string uid     = "prod." + channel;
 
     BrcHandle bh;
     auto closing_flag = std::make_shared<SignalFlag>();
@@ -489,7 +489,7 @@ TEST_F(BrokerShutdownTest, ZeroGrace_ImmediateForceShutdown)
 {
     start_broker(std::chrono::seconds(0));
     const std::string channel = pid_chan("shutdown.zerograce");
-    const std::string uid     = "PROD-" + channel;
+    const std::string uid     = "prod." + channel;
 
     BrcHandle bh;
     bh.start(ep(), pk(), uid);

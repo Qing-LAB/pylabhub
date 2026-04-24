@@ -17,6 +17,7 @@
 
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/logger.hpp"
+#include "utils/naming.hpp"
 #include "python_helpers.hpp"
 
 #include "plh_platform.hpp"
@@ -361,18 +362,18 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
 
     try
     {
-        // Derive uid_hex from log_tag_.  Under HEP-0033 §G2.2.0b the uid
-        // is `<tag>.<name>.u<8hex>` — everything after the last `.` is
-        // `u<8hex>`; we strip the leading `u` to leave just the hex.
-        // Fall back to "00000000" if log_tag_ isn't a full uid (e.g.,
-        // `"python"` was passed for a pre-init log tag).
-        std::string uid_hex  = "00000000";
-        const auto  last_dot = log_tag_.rfind('.');
-        if (last_dot != std::string::npos)
+        // Derive a stable module-name suffix from log_tag_ (which is
+        // typically the role uid).  Route through the naming API
+        // rather than hand-parsing: `parse_role_uid` returns the
+        // dissected TaggedUidParts, and `unique` is the
+        // uid_utils-generated `uid<8hex>` tail (HEP-0033 §G2.2.0b
+        // "Numeric-token prefix convention").  If log_tag_ isn't a
+        // full uid (e.g. pre-init log tag `"python"`), fall back.
+        std::string uid_hex = "uid00000000";
+        if (auto parts = pylabhub::hub::parse_role_uid(log_tag_);
+            parts.has_value())
         {
-            uid_hex = log_tag_.substr(last_dot + 1);
-            if (!uid_hex.empty() && uid_hex.front() == 'u')
-                uid_hex = uid_hex.substr(1);
+            uid_hex.assign(parts->unique.data(), parts->unique.size());
         }
 
         // Determine script type from the entry_point path.

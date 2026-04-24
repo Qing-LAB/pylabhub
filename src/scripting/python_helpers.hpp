@@ -324,7 +324,7 @@ struct PyInboxMsg
  *
  * Typical script pattern:
  * @code
- *   handle = api.open_inbox("prod.sensor.u12345678")  # None if not online
+ *   handle = api.open_inbox("prod.sensor.uid12345678")  # None if not online
  *   if handle and handle.is_ready():
  *       slot = handle.acquire()
  *       slot.value = 42.0

@@ -3,9 +3,9 @@
  * @brief Unit tests for uid_utils.hpp (HEP-0033 §G2.2.0b format).
  *
  * Every generated uid must match the HEP-0033 naming grammar —
- * `prod.<name>.u<8hex>` for roles and `hub.<name>.u<8hex>` for peers,
- * all lowercase, dot-separated, suffix letter-prefixed.  These tests
- * are the executable form of that contract.
+ * `prod.<name>.uid<8hex>` for roles and `hub.<name>.uid<8hex>` for peers,
+ * all lowercase, dot-separated, full-word-prefixed unique suffix.
+ * These tests are the executable form of that contract.
  *
  * Pure header-only API test — no lifecycle, no workers.
  */
@@ -101,17 +101,19 @@ TEST_F(UidUtilsTest, GenerateUid_Uniqueness)
     EXPECT_EQ(uids.size(), 100u);
 }
 
-TEST_F(UidUtilsTest, GenerateUid_SuffixIsLetterPrefixed)
+TEST_F(UidUtilsTest, GenerateUid_SuffixHasUidPrefix)
 {
     // HEP-0033 grammar requires every NameComponent to start with a
-    // letter. The random suffix is letter-prefixed with `u` for
-    // exactly this reason; verify by parsing.
+    // letter. The random suffix is prefixed with the `uid` full-word
+    // (HEP-0033 §G2.2.0b "Numeric-token prefix convention") — verify
+    // by parsing.
     auto uid   = generate_producer_uid("x");
     auto parts = pylabhub::hub::parse_role_uid(uid);
     ASSERT_TRUE(parts.has_value()) << "uid=" << uid;
-    EXPECT_FALSE(parts->unique.empty());
-    EXPECT_TRUE(std::isalpha(static_cast<unsigned char>(parts->unique.front())))
+    EXPECT_TRUE(parts->unique.starts_with("uid"))
         << "unique=" << parts->unique;
+    // 8 hex digits follow the `uid` prefix.
+    EXPECT_EQ(parts->unique.size(), 3u + 8u) << "unique=" << parts->unique;
 }
 
 // ============================================================================
@@ -120,8 +122,8 @@ TEST_F(UidUtilsTest, GenerateUid_SuffixIsLetterPrefixed)
 
 TEST_F(UidUtilsTest, HasHubPrefix_Valid)
 {
-    EXPECT_TRUE (has_hub_prefix("hub.foo.uabcd1234"));
-    EXPECT_FALSE(has_hub_prefix("prod.foo.u1234abcd"));
+    EXPECT_TRUE (has_hub_prefix("hub.foo.uidabcd1234"));
+    EXPECT_FALSE(has_hub_prefix("prod.foo.uid1234abcd"));
     EXPECT_FALSE(has_hub_prefix("hub"));           // no dot after tag
     EXPECT_FALSE(has_hub_prefix("hub."));          // nothing after dot
     EXPECT_FALSE(has_hub_prefix(""));
@@ -130,20 +132,20 @@ TEST_F(UidUtilsTest, HasHubPrefix_Valid)
 
 TEST_F(UidUtilsTest, HasProducerPrefix_Valid)
 {
-    EXPECT_TRUE (has_producer_prefix("prod.temp.uaabbccdd"));
-    EXPECT_FALSE(has_producer_prefix("cons.temp.uaabbccdd"));
+    EXPECT_TRUE (has_producer_prefix("prod.temp.uidaabbccdd"));
+    EXPECT_FALSE(has_producer_prefix("cons.temp.uidaabbccdd"));
 }
 
 TEST_F(UidUtilsTest, HasConsumerPrefix_Valid)
 {
-    EXPECT_TRUE (has_consumer_prefix("cons.log.u11223344"));
-    EXPECT_FALSE(has_consumer_prefix("proc.log.u11223344"));
+    EXPECT_TRUE (has_consumer_prefix("cons.log.uid11223344"));
+    EXPECT_FALSE(has_consumer_prefix("proc.log.uid11223344"));
 }
 
 TEST_F(UidUtilsTest, HasProcessorPrefix_Valid)
 {
-    EXPECT_TRUE (has_processor_prefix("proc.node.u12345678"));
-    EXPECT_FALSE(has_processor_prefix("prod.node.u12345678"));
+    EXPECT_TRUE (has_processor_prefix("proc.node.uid12345678"));
+    EXPECT_FALSE(has_processor_prefix("prod.node.uid12345678"));
 }
 
 // ============================================================================

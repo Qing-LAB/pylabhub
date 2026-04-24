@@ -145,7 +145,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
   public:
     /// @param core      RoleHostCore owned by the role host (lifetime > api).
     /// @param role_tag  Role type tag: "prod" / "cons" / "proc". Non-empty.
-    /// @param uid       Role instance uid (e.g. "prod.sensor.u00000001"). Non-empty.
+    /// @param uid       Role instance uid (e.g. "prod.sensor.uid00000001"). Non-empty.
     ///
     /// Identity (role_tag + uid) is required at construction time so the
     /// role's ThreadManager is built immediately as a member — no

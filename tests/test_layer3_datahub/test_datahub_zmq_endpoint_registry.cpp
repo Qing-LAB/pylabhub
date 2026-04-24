@@ -121,7 +121,7 @@ struct BrcHandle
 
 std::string pid_chan(const std::string &base)
 {
-    return base + "." + std::to_string(getpid());
+    return base + ".pid" + std::to_string(getpid());
 }
 
 json make_reg_opts(const std::string &channel, const std::string &role_uid)
@@ -287,8 +287,8 @@ TEST_F(ZmqEndpointRegistryTest, ShmAndZmq_Coexist)
     ASSERT_TRUE(shm_reg.has_value());
 
     BrcHandle zmq_bh;
-    zmq_bh.start(ep(), pk(), "PROD-" + zmq_ch);
-    auto zmq_opts = make_reg_opts(zmq_ch, "PROD-" + zmq_ch);
+    zmq_bh.start(ep(), pk(), "prod." + zmq_ch);
+    auto zmq_opts = make_reg_opts(zmq_ch, "prod." + zmq_ch);
     zmq_opts["data_transport"]    = "zmq";
     zmq_opts["zmq_node_endpoint"] = "tcp://127.0.0.1:55557";
     auto zmq_reg = zmq_bh.brc.register_channel(zmq_opts, 3000);

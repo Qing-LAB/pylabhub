@@ -142,7 +142,7 @@ int metrics_reclaim_cycle()
             auto broker = start_broker_with_cfg(std::move(cfg));
 
             const std::string ch  = make_test_channel_name("role_state.metrics_cycle");
-            const std::string uid = "PROD-" + ch;
+            const std::string uid = "prod." + ch;
 
             BrcHandle bh;
             bh.start(broker.endpoint, broker.pubkey, uid);
@@ -193,7 +193,7 @@ int pending_recovers_to_ready()
             auto broker = start_broker_with_cfg(std::move(cfg));
 
             const std::string ch  = make_test_channel_name("role_state.recover");
-            const std::string uid = "PROD-" + ch;
+            const std::string uid = "prod." + ch;
 
             BrcHandle bh;
             bh.start(broker.endpoint, broker.pubkey, uid);
@@ -250,7 +250,7 @@ int stuck_in_pending_reclaimed()
             auto broker = start_broker_with_cfg(std::move(cfg));
 
             const std::string ch  = make_test_channel_name("role_state.stuck_pending");
-            const std::string uid = "PROD-" + ch;
+            const std::string uid = "prod." + ch;
 
             BrcHandle bh;
             bh.start(broker.endpoint, broker.pubkey, uid);
