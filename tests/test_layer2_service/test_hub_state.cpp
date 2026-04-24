@@ -96,6 +96,17 @@ struct HubStateTestAccess
     {
         s._set_shm_block(std::move(r));
     }
+    static void set_channel_closing_deadline(
+        HubState &s, const std::string &name,
+        std::chrono::steady_clock::time_point deadline)
+    {
+        s._set_channel_closing_deadline(name, deadline);
+    }
+    static void set_channel_zmq_node_endpoint(
+        HubState &s, const std::string &name, std::string endpoint)
+    {
+        s._set_channel_zmq_node_endpoint(name, std::move(endpoint));
+    }
     static void bump_counter(HubState &s, const std::string &k, uint64_t n = 1)
     {
         s._bump_counter(k, n);
@@ -968,4 +979,217 @@ TEST(BrokerServicePlumbing, HubStateAccessorReturnsEmptyAggregate)
     // The accessor must return the same object on every call (not a
     // freshly-constructed proxy).
     EXPECT_EQ(&state, &broker.hub_state());
+}
+
+// ═══ G2.2.1.b.1 — closing_deadline / zmq_node_endpoint primitives ══════════
+//
+// These primitives close the field-divergence land-mines identified in the
+// G2.2.1.b code review.  Tests cover happy path, no-op-on-unknown, idempotence
+// across repeated calls, and that the two primitives are independent
+// (changing one doesn't disturb the other).
+
+TEST(HubStatePrimitivesB1, SetChannelClosingDeadline_HappyPath)
+{
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
+    const auto t0 = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    HubStateTestAccess::set_channel_closing_deadline(s, "ch1", t0);
+
+    auto got = s.channel("ch1");
+    ASSERT_TRUE(got.has_value());
+    EXPECT_EQ(got->closing_deadline, t0);
+}
+
+TEST(HubStatePrimitivesB1, SetChannelClosingDeadline_UnknownChannelIsNoop)
+{
+    HubState s;
+    // No channel registered — call must not crash, must not insert.
+    const auto t0 = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    HubStateTestAccess::set_channel_closing_deadline(s, "nope", t0);
+    EXPECT_FALSE(s.channel("nope").has_value());
+}
+
+TEST(HubStatePrimitivesB1, SetChannelClosingDeadline_OverwritesPriorValue)
+{
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
+    const auto t1 = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    const auto t2 = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    HubStateTestAccess::set_channel_closing_deadline(s, "ch1", t1);
+    HubStateTestAccess::set_channel_closing_deadline(s, "ch1", t2);
+    EXPECT_EQ(s.channel("ch1")->closing_deadline, t2);
+}
+
+TEST(HubStatePrimitivesB1, SetChannelClosingDeadline_DoesNotChangeStatus)
+{
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
+    // Channel currently in PendingReady (default after _on_channel_registered).
+    HubStateTestAccess::set_channel_closing_deadline(
+        s, "ch1", std::chrono::steady_clock::now() + std::chrono::seconds(5));
+    // The deadline-only primitive must NOT change status.  Caller is
+    // expected to call _set_channel_status(Closing) separately.
+    EXPECT_EQ(s.channel("ch1")->status, ChannelStatus::PendingReady);
+}
+
+TEST(HubStatePrimitivesB1, SetChannelZmqNodeEndpoint_HappyPath)
+{
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
+    HubStateTestAccess::set_channel_zmq_node_endpoint(
+        s, "ch1", "tcp://10.0.0.1:5555");
+    EXPECT_EQ(s.channel("ch1")->zmq_node_endpoint, "tcp://10.0.0.1:5555");
+}
+
+TEST(HubStatePrimitivesB1, SetChannelZmqNodeEndpoint_UnknownChannelIsNoop)
+{
+    HubState s;
+    HubStateTestAccess::set_channel_zmq_node_endpoint(s, "nope", "tcp://x:1");
+    EXPECT_FALSE(s.channel("nope").has_value());
+}
+
+TEST(HubStatePrimitivesB1, SetChannelZmqNodeEndpoint_OverwritesPriorValue)
+{
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
+    HubStateTestAccess::set_channel_zmq_node_endpoint(s, "ch1", "tcp://a:1");
+    HubStateTestAccess::set_channel_zmq_node_endpoint(s, "ch1", "tcp://b:2");
+    EXPECT_EQ(s.channel("ch1")->zmq_node_endpoint, "tcp://b:2");
+}
+
+TEST(HubStatePrimitivesB1, SetChannelZmqNodeEndpoint_EmptyValueAccepted)
+{
+    // Endpoint "validation" is the broker handler's job; the primitive
+    // should not editorialize.  Empty string is a meaningful sentinel
+    // ("no endpoint set yet") and must round-trip.
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
+    HubStateTestAccess::set_channel_zmq_node_endpoint(s, "ch1", "tcp://x:1");
+    HubStateTestAccess::set_channel_zmq_node_endpoint(s, "ch1", "");
+    EXPECT_EQ(s.channel("ch1")->zmq_node_endpoint, "");
+}
+
+TEST(HubStatePrimitivesB1, ClosingDeadlineAndEndpoint_AreIndependent)
+{
+    // Setting one primitive must not perturb the other field.
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
+
+    const auto t0 = std::chrono::steady_clock::now() + std::chrono::seconds(7);
+    HubStateTestAccess::set_channel_closing_deadline(s, "ch1", t0);
+    HubStateTestAccess::set_channel_zmq_node_endpoint(s, "ch1", "tcp://q:9");
+
+    auto got = s.channel("ch1");
+    ASSERT_TRUE(got.has_value());
+    EXPECT_EQ(got->closing_deadline,    t0);
+    EXPECT_EQ(got->zmq_node_endpoint,   "tcp://q:9");
+
+    // Mutate one — the other stays.
+    HubStateTestAccess::set_channel_zmq_node_endpoint(s, "ch1", "tcp://r:10");
+    auto got2 = s.channel("ch1");
+    ASSERT_TRUE(got2.has_value());
+    EXPECT_EQ(got2->closing_deadline,    t0);
+    EXPECT_EQ(got2->zmq_node_endpoint,   "tcp://r:10");
+}
+
+TEST(HubStatePrimitivesB1, ClosingDeadline_PostChannelClose_ChannelGoneIsNoop)
+{
+    // After _on_channel_closed, the channel is erased from HubState.
+    // Subsequent _set_channel_closing_deadline must NOT resurrect it.
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
+    HubStateTestAccess::on_channel_closed(s, "ch1",
+        ChannelCloseReason::HeartbeatTimeout);
+    HubStateTestAccess::set_channel_closing_deadline(
+        s, "ch1", std::chrono::steady_clock::now() + std::chrono::seconds(5));
+    EXPECT_FALSE(s.channel("ch1").has_value());
+}
+
+// ═══ G2.2.1.b.1 — heartbeat: last_heartbeat updated every tick ═════════════
+//
+// The pre-fix behavior updated `last_heartbeat` only on the Pending→Ready
+// transition (via `_set_channel_status`).  The fix routes through
+// `_on_heartbeat` which updates `last_heartbeat` unconditionally.
+
+TEST(HubStateHeartbeatB1, EveryTickUpdatesLastHeartbeat)
+{
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
+    auto t1 = std::chrono::steady_clock::now();
+    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", t1, std::nullopt);
+    EXPECT_EQ(s.channel("ch1")->last_heartbeat, t1);
+
+    auto t2 = t1 + std::chrono::milliseconds(500);
+    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", t2, std::nullopt);
+    EXPECT_EQ(s.channel("ch1")->last_heartbeat, t2)
+        << "second heartbeat must refresh last_heartbeat";
+
+    auto t3 = t2 + std::chrono::milliseconds(500);
+    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", t3, std::nullopt);
+    EXPECT_EQ(s.channel("ch1")->last_heartbeat, t3);
+}
+
+TEST(HubStateHeartbeatB1, HeartbeatStatusFlowAndFireSemantics)
+{
+    // Status flow: PendingReady (registered) → Ready (first heartbeat) →
+    // Ready (subsequent ticks; no re-fire) → PendingReady (timeout) →
+    // Ready (recovery heartbeat; fires again).
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
+
+    int ready_fires = 0;
+    s.subscribe_channel_status_changed(
+        [&](const ChannelEntry &) { ++ready_fires; });
+
+    auto t1 = std::chrono::steady_clock::now();
+    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", t1, std::nullopt);
+    EXPECT_EQ(s.channel("ch1")->status, ChannelStatus::Ready);
+    EXPECT_EQ(ready_fires, 1);
+
+    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test",
+                                     t1 + std::chrono::milliseconds(10),
+                                     std::nullopt);
+    EXPECT_EQ(ready_fires, 1) << "subsequent heartbeats must not re-fire status_changed";
+
+    HubStateTestAccess::on_heartbeat_timeout(s, "ch1", "prod.main.test");
+    EXPECT_EQ(s.channel("ch1")->status, ChannelStatus::PendingReady);
+
+    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test",
+                                     t1 + std::chrono::seconds(5),
+                                     std::nullopt);
+    EXPECT_EQ(s.channel("ch1")->status, ChannelStatus::Ready);
+    // Recovery via _on_heartbeat performs the same Pending→Ready
+    // transition that fires status_changed.
+}
+
+TEST(HubStateHeartbeatB1, HeartbeatOnUnknownChannelDropsSilently)
+{
+    HubState s;
+    HubStateTestAccess::on_heartbeat(s, "no.such.ch", "prod.x.y",
+                                     std::chrono::steady_clock::now(),
+                                     std::nullopt);
+    EXPECT_FALSE(s.channel("no.such.ch").has_value());
+    // Counter was bumped (op-entry validation passed; mutation simply
+    // can't apply).  Verify counter and absence of side effects.
+    auto c = s.counters();
+    EXPECT_EQ(c.msg_type_counts.at("HEARTBEAT_REQ"), 1u);
+}
+
+TEST(HubStateHeartbeatB1, HeartbeatRefreshesRoleLastHeartbeat)
+{
+    // Capability-op layered semantic: a heartbeat on the channel side
+    // also bumps the role's last_heartbeat clock.  Verifies the
+    // bonus role-side liveness tracking we promised in the design doc.
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
+
+    auto t0 = s.role("prod.main.test")->last_heartbeat;
+
+    // Sleep-free: stamp explicit later time to avoid wall-clock flake.
+    auto t1 = t0 + std::chrono::milliseconds(100);
+    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", t1, std::nullopt);
+
+    auto t_after = s.role("prod.main.test")->last_heartbeat;
+    EXPECT_GE(t_after, t1)
+        << "role.last_heartbeat should advance to at least the heartbeat timestamp";
 }
