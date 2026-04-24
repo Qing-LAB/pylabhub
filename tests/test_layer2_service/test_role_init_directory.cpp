@@ -97,14 +97,14 @@ struct RoleSpec
 {
     const char *role_tag;       // "producer" / "consumer" / "processor"
     const char *config_filename;// "producer.json" / ...
-    const char *uid_prefix;     // "PROD-" / "CONS-" / "PROC-"
+    const char *uid_prefix;     // "prod." / "cons." / "proc."
     const char *role_label;     // "Producer" / ...
 };
 
 constexpr RoleSpec kAll[] = {
-    {"producer",  "producer.json",  "PROD-", "Producer"},
-    {"consumer",  "consumer.json",  "CONS-", "Consumer"},
-    {"processor", "processor.json", "PROC-", "Processor"},
+    {"producer",  "producer.json",  "prod.", "Producer"},
+    {"consumer",  "consumer.json",  "cons.", "Consumer"},
+    {"processor", "processor.json", "proc.", "Processor"},
 };
 
 TEST_F(RoleInitDirectoryTest, Producer_StandardLayout)
@@ -151,7 +151,7 @@ TEST_F(RoleInitDirectoryTest, Producer_UidHasProdPrefix)
     ASSERT_EQ(RoleDirectory::init_directory(dir, "producer", "SampleProd"), 0);
     auto j = load_json(dir / "producer.json");
     const auto uid = j["producer"]["uid"].get<std::string>();
-    EXPECT_EQ(uid.rfind("PROD-", 0), 0u)
+    EXPECT_EQ(uid.rfind("prod.", 0), 0u)
         << "uid should start with PROD-; got: " << uid;
 }
 
@@ -161,7 +161,7 @@ TEST_F(RoleInitDirectoryTest, Consumer_UidHasConsPrefix)
     ASSERT_EQ(RoleDirectory::init_directory(dir, "consumer", "SampleCons"), 0);
     auto j = load_json(dir / "consumer.json");
     const auto uid = j["consumer"]["uid"].get<std::string>();
-    EXPECT_EQ(uid.rfind("CONS-", 0), 0u)
+    EXPECT_EQ(uid.rfind("cons.", 0), 0u)
         << "uid should start with CONS-; got: " << uid;
 }
 
@@ -171,7 +171,7 @@ TEST_F(RoleInitDirectoryTest, Processor_UidHasProcPrefix)
     ASSERT_EQ(RoleDirectory::init_directory(dir, "processor", "SampleProc"), 0);
     auto j = load_json(dir / "processor.json");
     const auto uid = j["processor"]["uid"].get<std::string>();
-    EXPECT_EQ(uid.rfind("PROC-", 0), 0u)
+    EXPECT_EQ(uid.rfind("proc.", 0), 0u)
         << "uid should start with PROC-; got: " << uid;
 }
 

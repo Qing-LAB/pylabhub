@@ -24,7 +24,7 @@ namespace
 struct RoleSpec
 {
     std::string_view role;              // "producer" / "consumer" / "processor"
-    std::string_view uid_prefix;        // "PROD-" / "CONS-" / "PROC-"
+    std::string_view uid_prefix;        // "prod." / "cons." / "proc."
     std::string_view role_json_key;     // "producer" / "consumer" / "processor"
     std::string_view default_loop_timing; // producer=fixed_rate; cons/proc=max_rate
     bool             expects_target_period_ms;
@@ -43,11 +43,11 @@ class PlhRoleInitTest : public PlhRoleCliTest,
 INSTANTIATE_TEST_SUITE_P(
     Roles, PlhRoleInitTest,
     ::testing::Values(
-        RoleSpec{"producer",  "PROD-", "producer",
+        RoleSpec{"producer",  "prod.", "producer",
                  "fixed_rate", /*expects_target_period_ms=*/true},
-        RoleSpec{"consumer",  "CONS-", "consumer",
+        RoleSpec{"consumer",  "cons.", "consumer",
                  "max_rate",   /*expects_target_period_ms=*/false},
-        RoleSpec{"processor", "PROC-", "processor",
+        RoleSpec{"processor", "proc.", "processor",
                  "max_rate",   /*expects_target_period_ms=*/false}),
     [](const auto &info) {
         return std::string(info.param.role);

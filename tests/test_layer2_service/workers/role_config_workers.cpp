@@ -60,7 +60,7 @@ fs::path write_json(const fs::path &dir, const std::string &filename,
 nlohmann::json minimal_producer_json()
 {
     return {
-        {"producer", {{"uid", "PROD-TEST-00000001"}, {"name", "TestProd"}}},
+        {"producer", {{"uid", "prod.test.u00000001"}, {"name", "TestProd"}}},
         {"out_hub_dir", ""},
         {"out_channel", "test.channel"},
         {"out_transport", "shm"},
@@ -77,7 +77,7 @@ nlohmann::json minimal_producer_json()
 nlohmann::json minimal_consumer_json()
 {
     return {
-        {"consumer", {{"uid", "CONS-TEST-00000002"}, {"name", "TestCons"}}},
+        {"consumer", {{"uid", "cons.test.u00000002"}, {"name", "TestCons"}}},
         {"in_hub_dir", ""},
         {"in_channel", "test.channel"},
         {"in_transport", "shm"},
@@ -90,7 +90,7 @@ nlohmann::json minimal_consumer_json()
 nlohmann::json minimal_processor_json()
 {
     return {
-        {"processor", {{"uid", "PROC-TEST-00000003"}, {"name", "TestProc"}}},
+        {"processor", {{"uid", "proc.test.u00000003"}, {"name", "TestProc"}}},
         {"in_hub_dir", ""},
         {"out_hub_dir", ""},
         {"in_channel", "raw.data"},
@@ -128,7 +128,7 @@ int load_producer_identity(const std::string &dir)
         [&]() {
             auto path = write_json(dir, "producer.json", minimal_producer_json());
             auto cfg = RoleConfig::load(path.string(), "producer");
-            EXPECT_EQ(cfg.identity().uid, "PROD-TEST-00000001");
+            EXPECT_EQ(cfg.identity().uid, "prod.test.u00000001");
             EXPECT_EQ(cfg.identity().name, "TestProd");
             EXPECT_EQ(cfg.identity().log_level, "info");
         },
@@ -229,7 +229,7 @@ int load_consumer_identity(const std::string &dir)
         [&]() {
             auto path = write_json(dir, "consumer.json", minimal_consumer_json());
             auto cfg = RoleConfig::load(path.string(), "consumer");
-            EXPECT_EQ(cfg.identity().uid, "CONS-TEST-00000002");
+            EXPECT_EQ(cfg.identity().uid, "cons.test.u00000002");
             EXPECT_EQ(cfg.script().type, "lua");
         },
         "role_config::load_consumer_identity",
@@ -448,7 +448,7 @@ int load_from_directory(const std::string &dir)
         [&]() {
             write_json(dir, "producer.json", minimal_producer_json());
             auto cfg = RoleConfig::load_from_directory(dir, "producer");
-            EXPECT_EQ(cfg.identity().uid, "PROD-TEST-00000001");
+            EXPECT_EQ(cfg.identity().uid, "prod.test.u00000001");
             EXPECT_EQ(cfg.out_channel(), "test.channel");
         },
         "role_config::load_from_directory",
@@ -586,7 +586,7 @@ int move_construct(const std::string &dir)
             auto path = write_json(dir, "producer.json", minimal_producer_json());
             auto cfg = RoleConfig::load(path.string(), "producer");
             RoleConfig moved(std::move(cfg));
-            EXPECT_EQ(moved.identity().uid, "PROD-TEST-00000001");
+            EXPECT_EQ(moved.identity().uid, "prod.test.u00000001");
         },
         "role_config::move_construct",
         Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
@@ -602,7 +602,7 @@ int move_assign(const std::string &dir)
             auto path2 = write_json(dir, "consumer.json", minimal_consumer_json());
             auto cfg2 = RoleConfig::load(path2.string(), "consumer");
             cfg2 = std::move(cfg1);
-            EXPECT_EQ(cfg2.identity().uid, "PROD-TEST-00000001");
+            EXPECT_EQ(cfg2.identity().uid, "prod.test.u00000001");
             EXPECT_EQ(cfg2.role_tag(), "producer");
         },
         "role_config::move_assign",
@@ -772,7 +772,7 @@ int nested_unknown_key_throws(const std::string &dir)
             probe("startup_entry_typo",
                   [](nlohmann::json &j) {
                       nlohmann::json entry = {
-                          {"uid", "PROD-OTHER-00000001"},
+                          {"uid", "prod.other.u00000001"},
                           {"timout_ms", 1000}  // typo: timout vs timeout
                       };
                       j["startup"]["wait_for_roles"] =

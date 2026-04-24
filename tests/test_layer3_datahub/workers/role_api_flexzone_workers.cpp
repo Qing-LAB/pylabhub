@@ -144,7 +144,7 @@ void build_payload_pair(PayloadPair &out,
 
     out.prod_core.set_out_fz_spec(hub::SchemaSpec{fz_spec}, out.fz_size);
     out.prod = std::make_unique<RoleAPIBase>(
-        out.prod_core, "prod", std::string("PROD-FZ-") + uid_tag);
+        out.prod_core, "prod", std::string("prod.fz.") + uid_tag);
     out.prod->set_channel(channel);
     out.prod->set_name("fz-prod");
     ASSERT_TRUE(out.prod->build_tx_queue(tx_opts));
@@ -161,7 +161,7 @@ void build_payload_pair(PayloadPair &out,
 
     out.cons_core.set_in_fz_spec(hub::SchemaSpec{fz_spec}, out.fz_size);
     out.cons = std::make_unique<RoleAPIBase>(
-        out.cons_core, "cons", std::string("CONS-FZ-") + uid_tag);
+        out.cons_core, "cons", std::string("cons.fz.") + uid_tag);
     out.cons->set_channel(channel);
     out.cons->set_name("fz-cons");
     ASSERT_TRUE(out.cons->build_rx_queue(rx_opts));
@@ -237,7 +237,7 @@ int zmq_tx_null()
         {
             RoleHostCore core;
             auto api = std::make_unique<RoleAPIBase>(
-                core, "prod", "PROD-ZMQ-FZ-TX");
+                core, "prod", "prod.zmq-fz.tx");
             api->set_channel("test.fz.zmq.tx");
 
             hub::TxQueueOptions opts;
@@ -275,7 +275,7 @@ int zmq_rx_null()
             // connect is non-blocking.
             RoleHostCore core;
             auto api = std::make_unique<RoleAPIBase>(
-                core, "cons", "CONS-ZMQ-FZ-RX");
+                core, "cons", "cons.zmq-fz.rx");
             api->set_channel("test.fz.zmq.rx");
 
             hub::RxQueueOptions rx_opts;
@@ -626,7 +626,7 @@ int shm_consumer_wrong_secret_rejected()
             RoleHostCore prod_core;
             prod_core.set_out_fz_spec(hub::SchemaSpec{fz_spec}, fz_size);
             auto prod = std::make_unique<RoleAPIBase>(
-                prod_core, "prod", "PROD-FZ-WRONG");
+                prod_core, "prod", "prod.fz.wrong");
             prod->set_channel(channel);
             prod->set_name("fz-wrong-prod");
             ASSERT_TRUE(prod->build_tx_queue(
@@ -642,7 +642,7 @@ int shm_consumer_wrong_secret_rejected()
             RoleHostCore cons_core;
             cons_core.set_in_fz_spec(hub::SchemaSpec{fz_spec}, fz_size);
             auto cons = std::make_unique<RoleAPIBase>(
-                cons_core, "cons", "CONS-FZ-WRONG");
+                cons_core, "cons", "cons.fz.wrong");
             cons->set_channel(channel);
             cons->set_name("fz-wrong-cons");
 
@@ -693,7 +693,7 @@ int shm_consumer_nonexistent_rejected()
         {
             RoleHostCore core;
             auto api = std::make_unique<RoleAPIBase>(
-                core, "cons", "CONS-FZ-NOEXIST");
+                core, "cons", "cons.fz.noexist");
             api->set_channel("test.fz.noexist");
             api->set_name("fz-noexist-cons");
 
@@ -753,7 +753,7 @@ int shm_slot_checksum_corrupt_detected()
             RoleHostCore prod_core;
             prod_core.set_out_fz_spec(hub::SchemaSpec{fz_spec}, fz_size);
             auto prod = std::make_unique<RoleAPIBase>(
-                prod_core, "prod", "PROD-FZ-CSUM-BAD");
+                prod_core, "prod", "prod.fz-csum.bad");
             prod->set_channel(channel);
             prod->set_name("fz-csum-bad-prod");
 
@@ -785,7 +785,7 @@ int shm_slot_checksum_corrupt_detected()
             RoleHostCore cons_core;
             cons_core.set_in_fz_spec(hub::SchemaSpec{fz_spec}, fz_size);
             auto cons = std::make_unique<RoleAPIBase>(
-                cons_core, "cons", "CONS-FZ-CSUM-BAD");
+                cons_core, "cons", "cons.fz-csum.bad");
             cons->set_channel(channel);
             cons->set_name("fz-csum-bad-cons");
 
@@ -863,7 +863,7 @@ int shm_flexzone_checksum_corrupt_detected()
             RoleHostCore prod_core;
             prod_core.set_out_fz_spec(hub::SchemaSpec{fz_spec}, fz_size);
             auto prod = std::make_unique<RoleAPIBase>(
-                prod_core, "prod", "PROD-FZ-FZ-CSUM-BAD");
+                prod_core, "prod", "prod.fz-fz-csum.bad");
             prod->set_channel(channel);
             prod->set_name("fz-fz-csum-bad-prod");
 
@@ -902,7 +902,7 @@ int shm_flexzone_checksum_corrupt_detected()
             RoleHostCore cons_core;
             cons_core.set_in_fz_spec(hub::SchemaSpec{fz_spec}, fz_size);
             auto cons = std::make_unique<RoleAPIBase>(
-                cons_core, "cons", "CONS-FZ-FZ-CSUM-BAD");
+                cons_core, "cons", "cons.fz-fz-csum.bad");
             cons->set_channel(channel);
             cons->set_name("fz-fz-csum-bad-cons");
 

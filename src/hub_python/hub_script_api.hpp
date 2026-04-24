@@ -148,7 +148,7 @@ public:
     /** Hub name in reverse-domain format (e.g. "asu.lab.main"). */
     std::string hub_name() const;
 
-    /** Stable hub UID (format: "HUB-{NAME}-{8HEX}"). */
+    /** Stable hub UID (format: "hub.<name>.u<8hex>"). */
     std::string hub_uid() const;
 
     // -----------------------------------------------------------------------

@@ -18,6 +18,7 @@
 #include "utils/channel_access_policy.hpp"
 #include "utils/hub_config.hpp"
 #include "utils/json_config.hpp"
+#include "utils/naming.hpp"
 #include "utils/net_address.hpp"
 #include "uid_utils.hpp"
 
@@ -124,7 +125,7 @@ struct HubConfig::Impl
     // Resolved values — populated once at startup, read-only afterwards.
     std::string hub_name       {"local.hub.default"};
     std::string hub_description{"pyLabHub instance"};
-    std::string hub_uid        {};  ///< Auto-generated if not in config: "HUB-{NAME}-{8HEX}"
+    std::string hub_uid        {};  ///< Auto-generated if not in config: "hub.<name>.u<8hex>"
     std::string broker_endpoint{"tcp://0.0.0.0:5570"};
     std::string admin_endpoint {"tcp://127.0.0.1:5600"};
     std::string admin_token    {}; ///< From vault only; vault is sole source (never from hub.json).
@@ -488,14 +489,23 @@ struct HubConfig::Impl
 
 
         // --- UID: auto-generate if not provided in config ---
+        //
+        // When present, the uid must match the HEP-0033 §G2.2.0b PeerUid
+        // grammar (`hub.<name>.<unique>`). Hard-reject on mismatch so
+        // misconfigured hubs fail at --validate time rather than silently
+        // producing a uid that HubState's op-entry validator would drop.
         if (hub_uid.empty())
         {
             hub_uid = pylabhub::uid::generate_hub_uid(hub_name);
         }
-        else if (!pylabhub::uid::has_hub_prefix(hub_uid))
+        else if (!pylabhub::hub::is_valid_identifier(
+                     hub_uid, pylabhub::hub::IdentifierKind::PeerUid))
         {
-            LOGGER_WARN("HubConfig: hub.uid '{}' does not start with 'HUB-'; "
-                        "recommend using generate_hub_uid() format.", hub_uid);
+            throw std::runtime_error(
+                "HubConfig: invalid 'hub.uid' = '" + hub_uid +
+                "'. Must follow HEP-0033 §G2.2.0b format "
+                "'hub.<name>.u<8hex>', e.g. 'hub.mylab.u3a7f2b1c'. "
+                "Clear this field to let auto-gen produce a valid one.");
         }
 
         LOGGER_INFO("HubConfig: hub_name          = {}", hub_name);

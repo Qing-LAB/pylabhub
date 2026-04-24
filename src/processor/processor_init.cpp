@@ -133,7 +133,7 @@ void register_processor_init()
 {
     utils::RoleDirectory::register_role("processor")
         .config_filename("processor.json")
-        .uid_prefix("PROC")
+        .uid_prefix("proc")
         .role_label("Processor")
         .config_template(&processor_config_template)
         .on_init(&processor_on_init);

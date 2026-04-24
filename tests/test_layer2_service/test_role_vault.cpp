@@ -57,7 +57,7 @@ protected:
 
     void SetUp() override
     {
-        role_uid_ = "PROD-TEST-" + generate_uuid4().substr(0, 8);
+        role_uid_ = "prod.test.u" + generate_uuid4().substr(0, 8);
         vault_dir_ =
             fs::temp_directory_path() / ("plh_test_role_vault_" + generate_uuid4().substr(0, 8));
         fs::create_directories(vault_dir_);
@@ -185,8 +185,8 @@ TEST_F(RoleVaultTest, Encrypt_SecretsNotInPlaintext)
 
 TEST_F(RoleVaultTest, Encrypt_DifferentUid_DifferentCiphertext)
 {
-    const std::string uid_a = "PROD-AAA-" + generate_uuid4().substr(0, 8);
-    const std::string uid_b = "PROD-BBB-" + generate_uuid4().substr(0, 8);
+    const std::string uid_a = "prod.aaa.u" + generate_uuid4().substr(0, 8);
+    const std::string uid_b = "prod.bbb.u" + generate_uuid4().substr(0, 8);
     const fs::path path_a = vault_dir_ / "a.key";
     const fs::path path_b = vault_dir_ / "b.key";
 
@@ -238,8 +238,8 @@ TEST_F(RoleVaultTest, MoveConstructor_TransfersOwnership)
 
 TEST_F(RoleVaultTest, DifferentUids_DifferentKeys)
 {
-    const std::string uid_a = "CONS-X-" + generate_uuid4().substr(0, 8);
-    const std::string uid_b = "CONS-Y-" + generate_uuid4().substr(0, 8);
+    const std::string uid_a = "cons.x.u" + generate_uuid4().substr(0, 8);
+    const std::string uid_b = "cons.y.u" + generate_uuid4().substr(0, 8);
     const fs::path path_a = vault_dir_ / "a.key";
     const fs::path path_b = vault_dir_ / "b.key";
 

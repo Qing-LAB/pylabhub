@@ -62,7 +62,7 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
     ///     "ZmqQueue", "BrokerService", "hubshell"). Identifies the owner's
     ///     CLASS/ROLE. Must be non-empty.
     /// @param owner_id   Owner instance identifier (e.g., role uid
-    ///     "PROD-SENSOR-00000001", queue channel name, broker endpoint).
+    ///     "prod.sensor.u00000001", queue channel name, broker endpoint).
     ///     Identifies the SPECIFIC instance within that tag. Must be non-empty.
     /// @param aggregate_shutdown_timeout  Lifecycle-layer ceiling on the
     ///     entire drain() call. Should be >= the sum of per-thread

@@ -445,7 +445,7 @@ TEST_F(BrokerProtocolTest, RolePresenceReq_UnknownUid_ReturnsFalse)
 {
     BrcHandle bh;
     bh.start(ep(), pk(), "QUERIER-unknown");
-    EXPECT_FALSE(bh.brc.query_role_presence("PROD-UNKNOWN-DEADBEEF", 2000));
+    EXPECT_FALSE(bh.brc.query_role_presence("prod.unknown.udeadbeef", 2000));
     bh.stop();
 }
 
@@ -453,7 +453,7 @@ TEST_F(BrokerProtocolTest, RoleInfoReq_UnknownUid_NotFound)
 {
     BrcHandle bh;
     bh.start(ep(), pk(), "QUERIER-unknown2");
-    auto info = bh.brc.query_role_info("PROD-UNKNOWN-DEADBEEF", 2000);
+    auto info = bh.brc.query_role_info("prod.unknown.udeadbeef", 2000);
     // BRC returns a JSON response (broker always replies), not nullopt.
     // For unknown UIDs, the response has "found":false.
     if (info.has_value())
@@ -465,7 +465,7 @@ TEST_F(BrokerProtocolTest, RoleInfoReq_UnknownUid_NotFound)
 TEST_F(BrokerProtocolTest, RolePresenceReq_ProducerUid_ReturnsTrue)
 {
     const std::string channel = pid_chan("proto.presence.prod");
-    const std::string uid     = "PROD-PRESTEST-AAAA0001";
+    const std::string uid     = "prod.prestest.uaaaa0001";
 
     BrcHandle prod_bh;
     prod_bh.start(ep(), pk(), uid);
@@ -486,7 +486,7 @@ TEST_F(BrokerProtocolTest, RolePresenceReq_ConsumerUid_ReturnsTrue)
 {
     const std::string channel      = pid_chan("proto.presence.cons");
     const std::string prod_uid     = "PROD-" + channel;
-    const std::string consumer_uid = "CONS-PRESTEST-BBBB0002";
+    const std::string consumer_uid = "cons.prestest.ubbbb0002";
 
     BrcHandle prod_bh;
     prod_bh.start(ep(), pk(), prod_uid);
@@ -510,7 +510,7 @@ TEST_F(BrokerProtocolTest, RolePresenceReq_ConsumerUid_ReturnsTrue)
 TEST_F(BrokerProtocolTest, RoleInfoReq_WithInbox_ReturnsInfo)
 {
     const std::string channel     = pid_chan("proto.roleinfo.withinbox");
-    const std::string uid         = "PROD-ROLEINFO-DDDD0004";
+    const std::string uid         = "prod.roleinfo.udddd0004";
     const std::string inbox_ep    = "tcp://127.0.0.1:9987";
     const std::string schema_json = R"([{"type":"float64","count":1,"length":0}])";
     const std::string packing     = "aligned";
