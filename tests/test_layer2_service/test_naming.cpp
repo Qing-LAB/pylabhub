@@ -18,6 +18,8 @@ using pylabhub::hub::IdentifierKind;
 using pylabhub::hub::is_valid_identifier;
 using pylabhub::hub::parse_peer_uid;
 using pylabhub::hub::parse_role_uid;
+using pylabhub::hub::parse_schema_id;
+using pylabhub::hub::SchemaIdParts;
 using pylabhub::hub::TaggedUidParts;
 
 // ─── NameComponent charset ─────────────────────────────────────────────────
@@ -75,12 +77,15 @@ TEST(NamingChannel, LengthLimits)
     std::string too_long(65, 'a'); too_long[0] = 'A';
     EXPECT_FALSE(is_valid_identifier(too_long, IdentifierKind::Channel));
 
-    // Total length cap 128.
-    std::string tot(128, 'a'); tot[0] = 'A';
+    // Total length cap 256 — applies per single identifier as a
+    // parsing-boundary DoS defense (HEP-0033 §G2.2.0b).  Composite /
+    // federated references use structured encoding and are not
+    // subject to this cap.
+    std::string tot(256, 'a'); tot[0] = 'A';
     for (size_t i = 60; i < tot.size(); i += 60) tot[i] = '.';
     EXPECT_TRUE(is_valid_identifier(tot, IdentifierKind::Channel));
 
-    std::string tot_over(129, 'a'); tot_over[0] = 'A';
+    std::string tot_over(257, 'a'); tot_over[0] = 'A';
     for (size_t i = 60; i < tot_over.size(); i += 60) tot_over[i] = '.';
     EXPECT_FALSE(is_valid_identifier(tot_over, IdentifierKind::Channel));
 }
@@ -94,6 +99,27 @@ TEST(NamingBand, RequiresSigil)
     EXPECT_FALSE(is_valid_identifier("alerts",           IdentifierKind::Band));
     EXPECT_FALSE(is_valid_identifier("!",                IdentifierKind::Band));
     EXPECT_FALSE(is_valid_identifier("@alerts",          IdentifierKind::Band));
+}
+
+TEST(NamingBand, RejectsMalformedBody)
+{
+    // Adjacent dots and leading/trailing dots in the body.
+    EXPECT_FALSE(is_valid_identifier("!alerts..critical", IdentifierKind::Band));
+    EXPECT_FALSE(is_valid_identifier("!.alerts",          IdentifierKind::Band));
+    EXPECT_FALSE(is_valid_identifier("!alerts.",          IdentifierKind::Band));
+    // First char of first body component must be a letter.
+    EXPECT_FALSE(is_valid_identifier("!1alerts",          IdentifierKind::Band));
+    // Whitespace inside body.
+    EXPECT_FALSE(is_valid_identifier("!alerts critical",  IdentifierKind::Band));
+}
+
+TEST(NamingBand, HonoursLengthLimits)
+{
+    // Per-component cap = 64: "!" + 64 chars ok; "!" + 65 chars over.
+    std::string ok = "!" + std::string(64, 'a');
+    EXPECT_TRUE (is_valid_identifier(ok,                       IdentifierKind::Band));
+    std::string over = "!" + std::string(65, 'a');
+    EXPECT_FALSE(is_valid_identifier(over,                     IdentifierKind::Band));
 }
 
 // ─── RoleUid — 3+ components, tag ∈ {prod,cons,proc} ──────────────────────
@@ -135,6 +161,22 @@ TEST(NamingRoleName, AllowsPlainOrTaggedForm)
     EXPECT_FALSE(is_valid_identifier(".cam1",         IdentifierKind::RoleName));
 }
 
+TEST(NamingRoleName, RejectsMalformedBody)
+{
+    EXPECT_FALSE(is_valid_identifier("cam1..test",    IdentifierKind::RoleName));
+    EXPECT_FALSE(is_valid_identifier("cam1.",         IdentifierKind::RoleName));
+    EXPECT_FALSE(is_valid_identifier("1cam",          IdentifierKind::RoleName));
+    EXPECT_FALSE(is_valid_identifier("cam 1",         IdentifierKind::RoleName));
+}
+
+TEST(NamingRoleName, HonoursLengthLimits)
+{
+    std::string ok(64, 'a'); ok[0] = 'A';
+    EXPECT_TRUE (is_valid_identifier(ok,                       IdentifierKind::RoleName));
+    std::string over(65, 'a'); over[0] = 'A';
+    EXPECT_FALSE(is_valid_identifier(over,                     IdentifierKind::RoleName));
+}
+
 // ─── PeerUid — 3+ components, tag == 'hub' ────────────────────────────────
 
 TEST(NamingPeerUid, OnlyHubTag)
@@ -157,13 +199,60 @@ TEST(NamingPeerUid, OnlyHubTag)
 
 // ─── Schema ────────────────────────────────────────────────────────────────
 
-TEST(NamingSchema, SigilAndDottedBody)
+TEST(NamingSchema, SigilAndBaseAndMandatoryVersion)
 {
-    EXPECT_TRUE (is_valid_identifier("$hep.core.slot",    IdentifierKind::Schema));
-    EXPECT_TRUE (is_valid_identifier("$hep.core.slot.v2", IdentifierKind::Schema));  // version = name comp
-    EXPECT_FALSE(is_valid_identifier("hep.core.slot",     IdentifierKind::Schema));  // missing sigil
-    EXPECT_FALSE(is_valid_identifier("$",                 IdentifierKind::Schema));
-    EXPECT_FALSE(is_valid_identifier("$hep@2",            IdentifierKind::Schema));  // old '@version' form
+    // Valid: $<base>.v<digits> with ≥1 base component
+    EXPECT_TRUE (is_valid_identifier("$foo.v1",              IdentifierKind::Schema));
+    EXPECT_TRUE (is_valid_identifier("$hep.core.slot.v2",    IdentifierKind::Schema));
+    EXPECT_TRUE (is_valid_identifier("$lab.sensors.temp.v42",IdentifierKind::Schema));
+    EXPECT_TRUE (is_valid_identifier("$x.v0",                IdentifierKind::Schema));
+
+    // Missing sigil
+    EXPECT_FALSE(is_valid_identifier("hep.core.slot.v1", IdentifierKind::Schema));
+
+    // Missing version component entirely (no .v tail)
+    EXPECT_FALSE(is_valid_identifier("$foo",             IdentifierKind::Schema));
+    EXPECT_FALSE(is_valid_identifier("$foo.bar",         IdentifierKind::Schema));
+    EXPECT_FALSE(is_valid_identifier("$hep.core.slot",   IdentifierKind::Schema));
+
+    // Malformed version components
+    EXPECT_FALSE(is_valid_identifier("$foo.v",    IdentifierKind::Schema)); // no digits
+    EXPECT_FALSE(is_valid_identifier("$foo.V1",   IdentifierKind::Schema)); // uppercase V
+    EXPECT_FALSE(is_valid_identifier("$foo.v1a",  IdentifierKind::Schema)); // trailing alpha
+    EXPECT_FALSE(is_valid_identifier("$foo.version1", IdentifierKind::Schema));
+
+    // Old '@<version>' form rejected (one canonical form only)
+    EXPECT_FALSE(is_valid_identifier("$hep@2",         IdentifierKind::Schema));
+    EXPECT_FALSE(is_valid_identifier("hep.core@2",     IdentifierKind::Schema));
+
+    // Edge: empty, sigil-only, sigil + nothing but digits
+    EXPECT_FALSE(is_valid_identifier("",          IdentifierKind::Schema));
+    EXPECT_FALSE(is_valid_identifier("$",         IdentifierKind::Schema));
+    EXPECT_FALSE(is_valid_identifier("$.v1",      IdentifierKind::Schema)); // empty base component
+}
+
+TEST(NamingParseSchemaId, SplitsBaseAndVersion)
+{
+    auto p = parse_schema_id("$foo.v1");
+    ASSERT_TRUE(p.has_value());
+    EXPECT_EQ(p->base,          "foo");
+    EXPECT_EQ(p->version_token, "v1");
+    EXPECT_EQ(p->version,       1u);
+
+    auto p2 = parse_schema_id("$lab.sensors.temp.v42");
+    ASSERT_TRUE(p2.has_value());
+    EXPECT_EQ(p2->base,          "lab.sensors.temp");
+    EXPECT_EQ(p2->version_token, "v42");
+    EXPECT_EQ(p2->version,       42u);
+
+    auto p3 = parse_schema_id("$x.v0");
+    ASSERT_TRUE(p3.has_value());
+    EXPECT_EQ(p3->version, 0u);
+
+    EXPECT_FALSE(parse_schema_id("$foo").has_value());
+    EXPECT_FALSE(parse_schema_id("$foo.bar").has_value());
+    EXPECT_FALSE(parse_schema_id("foo.v1").has_value());
+    EXPECT_FALSE(parse_schema_id("$foo@2").has_value());
 }
 
 // ─── SysKey ────────────────────────────────────────────────────────────────
@@ -176,6 +265,25 @@ TEST(NamingSysKey, RequiresSysPrefixAndOneMoreComponent)
     EXPECT_FALSE(is_valid_identifier("sys.",      IdentifierKind::SysKey));     // trailing dot
     EXPECT_FALSE(is_valid_identifier("system.x",  IdentifierKind::SysKey));     // prefix exact-match
     EXPECT_FALSE(is_valid_identifier(".sys.x",    IdentifierKind::SysKey));
+}
+
+TEST(NamingSysKey, RejectsMalformedBody)
+{
+    EXPECT_FALSE(is_valid_identifier("sys..x",       IdentifierKind::SysKey));  // adjacent dots
+    EXPECT_FALSE(is_valid_identifier("sys.1counter", IdentifierKind::SysKey));  // digit-start after sys.
+    EXPECT_FALSE(is_valid_identifier("sys.bad key",  IdentifierKind::SysKey));  // whitespace
+}
+
+TEST(NamingSysKey, HonoursLengthLimits)
+{
+    // "sys." (4) + 64 chars = 68 — valid (under per-component + total cap).
+    std::string ok_tail(64, 'a'); ok_tail[0] = 'A';
+    std::string ok = "sys." + ok_tail;
+    EXPECT_TRUE (is_valid_identifier(ok,   IdentifierKind::SysKey));
+    // Component over 64 → rejected even though total is well under 256.
+    std::string over_tail(65, 'a'); over_tail[0] = 'A';
+    std::string over = "sys." + over_tail;
+    EXPECT_FALSE(is_valid_identifier(over, IdentifierKind::SysKey));
 }
 
 // ─── parse_role_uid ────────────────────────────────────────────────────────

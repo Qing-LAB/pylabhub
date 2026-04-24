@@ -22,17 +22,25 @@
  * role.name  := NameComponent ('.' NameComponent)*      // plain; tag optional
  * peer.uid   := 'hub' '.' NameComponent '.' NameComponent
  *               ('.' NameComponent)*   // same tag.name.unique shape as role.uid
- * schema     := '$' NameComponent ('.' NameComponent)*
- *               // version expressed as a trailing name component, e.g. $foo.v2
+ * schema     := '$' NameComponent ('.' NameComponent)* '.' 'v' [0-9]+
+ *               // ≥2 components after the sigil; last component is the
+ *               // version, must match `v<digits>` literally (e.g. v1, v42).
+ *               // Examples: "$foo.v1", "$lab.sensors.temp.v42".
  * sys.key    := 'sys' ('.' NameComponent)+              // broker-internal
  * NameComponent := [A-Za-z][A-Za-z0-9_-]{0,63}
  * ```
  *
- * Total length ≤ 128 chars; per-component length ≤ 64.
+ * Total length ≤ 256 chars; per-component length ≤ 64.
+ *
+ * The total-length cap is per single identifier (DoS defense at the
+ * parsing boundary).  Composite / federated references (e.g. "role X
+ * on hub Y") use structured multi-field encoding, not string
+ * concatenation, and are not subject to this cap.
  */
 
 #include "pylabhub_utils_export.h"
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -112,6 +120,28 @@ std::optional<TaggedUidParts> parse_role_uid(std::string_view uid) noexcept;
  */
 [[nodiscard]] PYLABHUB_UTILS_EXPORT
 std::optional<TaggedUidParts> parse_peer_uid(std::string_view uid) noexcept;
+
+/// Dissection of a well-formed `schema` id (HEP-0033 §G2.2.0b).
+/// The trailing version component is factored out so callers don't
+/// have to parse it themselves.
+struct SchemaIdParts
+{
+    std::string_view base;            ///< Everything between '$' and the final version component.
+    std::string_view version_token;   ///< The literal "v<digits>" tail (e.g. "v2").
+    std::uint32_t    version{0};      ///< Parsed integer version (e.g. 2).
+};
+
+/**
+ * @brief Parse a schema id into its base + version parts.
+ *
+ * Returns std::nullopt if @p id is not a valid Schema identifier
+ * (missing '$' sigil, no '.v<digits>' tail, version digits out of
+ * uint32 range, or any component fails NameComponent rules).
+ *
+ * Views into the caller-owned string; output lifetime is tied to @p id.
+ */
+[[nodiscard]] PYLABHUB_UTILS_EXPORT
+std::optional<SchemaIdParts> parse_schema_id(std::string_view id) noexcept;
 
 /**
  * @brief Shorthand: the role_tag embedded in a well-formed role uid.

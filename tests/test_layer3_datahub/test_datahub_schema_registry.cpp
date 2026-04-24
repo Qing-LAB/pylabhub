@@ -104,9 +104,9 @@ TEST_F(SchemaRegistryTest, RegisterAndGet)
     const SchemaEntry e = SchemaLibrary::load_from_string(kTempRawJson);
     reg.register_schema(e);
 
-    const auto found = reg.get("lab.sensors.temperature.raw@1");
+    const auto found = reg.get("$lab.sensors.temperature.raw.v1");
     ASSERT_TRUE(found.has_value());
-    EXPECT_EQ(found->schema_id, "lab.sensors.temperature.raw@1");
+    EXPECT_EQ(found->schema_id, "$lab.sensors.temperature.raw.v1");
     EXPECT_EQ(found->slot_info.blds, "ts:f64;value:f32");
 }
 
@@ -122,7 +122,7 @@ TEST_F(SchemaRegistryTest, IdentifyByHash)
 
     const auto id = reg.identify(e.slot_info.hash);
     ASSERT_TRUE(id.has_value());
-    EXPECT_EQ(*id, "lab.sensors.temperature.raw@1");
+    EXPECT_EQ(*id, "$lab.sensors.temperature.raw.v1");
 }
 
 // ============================================================================
@@ -132,7 +132,7 @@ TEST_F(SchemaRegistryTest, IdentifyByHash)
 TEST_F(SchemaRegistryTest, GetUnknown_Nullopt)
 {
     auto &reg = SchemaStore::instance();
-    const auto found = reg.get("does.not.exist@99");
+    const auto found = reg.get("$does.not.exist.v99");
     EXPECT_FALSE(found.has_value());
 }
 
@@ -163,14 +163,14 @@ TEST_F(SchemaRegistryTest, Reload_ClearsAndReloads)
     const SchemaEntry e = SchemaLibrary::load_from_string(kSamplesJson);
     reg.register_schema(e);
 
-    const auto before = reg.get("lab.sensors.samples@1");
+    const auto before = reg.get("$lab.sensors.samples.v1");
     ASSERT_TRUE(before.has_value());
 
     // reload() replaces the library — in-memory entry is gone
     // (no schema files on disk in test env, so reload returns 0)
     reg.reload();
 
-    const auto after = reg.get("lab.sensors.samples@1");
+    const auto after = reg.get("$lab.sensors.samples.v1");
     EXPECT_FALSE(after.has_value()) << "In-memory registration should be cleared by reload()";
 }
 
@@ -193,8 +193,8 @@ TEST_F(SchemaRegistryTest, ListSchemas)
     const auto has = [&](const std::string &id) {
         return std::find(ids.begin(), ids.end(), id) != ids.end();
     };
-    EXPECT_TRUE(has("lab.sensors.temperature.raw@1"));
-    EXPECT_TRUE(has("lab.sensors.samples@1"));
+    EXPECT_TRUE(has("$lab.sensors.temperature.raw.v1"));
+    EXPECT_TRUE(has("$lab.sensors.samples.v1"));
 }
 
 // ============================================================================
@@ -222,7 +222,7 @@ TEST_F(SchemaRegistryTest, SetSearchDirs_LoadsFromCustomPath)
     reg.set_search_dirs({tmpdir.string()});
     reg.reload();
 
-    const auto found = reg.get("lab.sensors.temperature.raw@1");
+    const auto found = reg.get("$lab.sensors.temperature.raw.v1");
     EXPECT_TRUE(found.has_value()) << "Schema should be found after set_search_dirs + reload";
 
     // Cleanup
@@ -240,7 +240,7 @@ TEST_F(SchemaRegistryTest, SetSearchDirs_OverridesDefault)
 
     // Register something in-memory first
     reg.register_schema(SchemaLibrary::load_from_string(kTempRawJson));
-    ASSERT_TRUE(reg.get("lab.sensors.temperature.raw@1").has_value());
+    ASSERT_TRUE(reg.get("$lab.sensors.temperature.raw.v1").has_value());
 
     // Create an empty temp dir
     const auto empty_dir =

@@ -11,7 +11,7 @@
  * SchemaLibrary (schema_library.hpp/.cpp).
  *
  * **Schema ID format**: `{namespace}.{name}@{version}`
- * Example: `lab.sensors.temperature.raw@1`
+ * Example: `$lab.sensors.temperature.raw.v1`
  *
  * @see HEP-CORE-0016-Named-Schema-Registry.md
  * @see schema_library.hpp — loading, forward lookup (id→entry), reverse lookup (hash→id)
@@ -104,7 +104,7 @@ struct SchemaLayoutDef
  */
 struct SchemaEntry
 {
-    std::string    schema_id;    ///< Full ID: "lab.sensors.temperature.raw@1"
+    std::string    schema_id;    ///< Full ID: "$lab.sensors.temperature.raw.v1"
     uint32_t       version{1};   ///< Schema version integer (the N in @N)
     std::string    description;  ///< Optional human description from JSON
 

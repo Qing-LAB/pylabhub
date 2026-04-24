@@ -180,7 +180,7 @@ TEST_F(DatahubSchemaLibraryTest, LoadFromString_BasicParsing)
 {
     const SchemaEntry e = SchemaLibrary::load_from_string(kTempRawJson);
 
-    EXPECT_EQ(e.schema_id,  "lab.sensors.temperature.raw@1");
+    EXPECT_EQ(e.schema_id,  "$lab.sensors.temperature.raw.v1");
     EXPECT_EQ(e.version,    1u);
     EXPECT_EQ(e.description,"Raw temperature");
 
@@ -272,7 +272,7 @@ TEST_F(DatahubSchemaLibraryTest, FlexzoneSchemaInfoPopulated)
     const SchemaEntry e = SchemaLibrary::load_from_string(kWithFlexzoneJson);
 
     EXPECT_TRUE(e.has_flexzone());
-    EXPECT_EQ(e.schema_id, "lab.sensors.calibrated@2");
+    EXPECT_EQ(e.schema_id, "$lab.sensors.calibrated.v2");
 
     // flexzone: cal_offset(f64) + cal_scale(f64) → 16 bytes, no padding
     EXPECT_EQ(e.flexzone_info.blds, "cal_offset:f64;cal_scale:f64");
@@ -291,9 +291,9 @@ TEST_F(DatahubSchemaLibraryTest, RegisterAndGetForwardLookup)
     const SchemaEntry e = SchemaLibrary::load_from_string(kTempRawJson);
     lib_.register_schema(e);
 
-    const auto found = lib_.get("lab.sensors.temperature.raw@1");
+    const auto found = lib_.get("$lab.sensors.temperature.raw.v1");
     ASSERT_TRUE(found.has_value());
-    EXPECT_EQ(found->schema_id, "lab.sensors.temperature.raw@1");
+    EXPECT_EQ(found->schema_id, "$lab.sensors.temperature.raw.v1");
     EXPECT_EQ(found->slot_info.blds, "ts:f64;value:f32");
 }
 
@@ -303,7 +303,7 @@ TEST_F(DatahubSchemaLibraryTest, RegisterAndGetForwardLookup)
 
 TEST_F(DatahubSchemaLibraryTest, GetUnknownReturnsNullopt)
 {
-    const auto found = lib_.get("does.not.exist@99");
+    const auto found = lib_.get("$does.not.exist.v99");
     EXPECT_FALSE(found.has_value());
 }
 
@@ -318,7 +318,7 @@ TEST_F(DatahubSchemaLibraryTest, IdentifyReverseLookup)
 
     const auto id = lib_.identify(e.slot_info.hash);
     ASSERT_TRUE(id.has_value());
-    EXPECT_EQ(*id, "lab.sensors.temperature.raw@1");
+    EXPECT_EQ(*id, "$lab.sensors.temperature.raw.v1");
 }
 
 // ============================================================================
@@ -337,9 +337,9 @@ TEST_F(DatahubSchemaLibraryTest, ListReturnsAllIDs)
     const auto has = [&](const std::string &id) {
         return std::find(ids.begin(), ids.end(), id) != ids.end();
     };
-    EXPECT_TRUE(has("lab.sensors.temperature.raw@1"));
-    EXPECT_TRUE(has("lab.sensors.samples@1"));
-    EXPECT_TRUE(has("lab.sensors.calibrated@2"));
+    EXPECT_TRUE(has("$lab.sensors.temperature.raw.v1"));
+    EXPECT_TRUE(has("$lab.sensors.samples.v1"));
+    EXPECT_TRUE(has("$lab.sensors.calibrated.v2"));
 }
 
 // ============================================================================
@@ -377,8 +377,8 @@ TEST_F(DatahubSchemaLibraryTest, AllPrimitiveTypesParse)
 TEST_F(DatahubSchemaLibraryTest, SchemaIDOverride)
 {
     // Override the id — useful for in-memory registration with a custom alias
-    const SchemaEntry e = SchemaLibrary::load_from_string(kTempRawJson, "custom.alias@7");
-    EXPECT_EQ(e.schema_id, "custom.alias@7");
+    const SchemaEntry e = SchemaLibrary::load_from_string(kTempRawJson, "$custom.alias.v7");
+    EXPECT_EQ(e.schema_id, "$custom.alias.v7");
     EXPECT_EQ(e.version,   7u);
     // BLDS is from the JSON slot fields regardless of the id override
     EXPECT_EQ(e.slot_info.blds, "ts:f64;value:f32");
@@ -391,7 +391,7 @@ TEST_F(DatahubSchemaLibraryTest, SchemaIDOverride)
 TEST_F(DatahubSchemaLibraryTest, DeterministicHash)
 {
     const SchemaEntry e1 = SchemaLibrary::load_from_string(kTempRawJson);
-    const SchemaEntry e2 = SchemaLibrary::load_from_string(kTempRawJson, "other.name@1");
+    const SchemaEntry e2 = SchemaLibrary::load_from_string(kTempRawJson, "$other.name.v1");
 
     // Different IDs but same fields → same slot hash
     EXPECT_EQ(e1.slot_info.hash, e2.slot_info.hash);
@@ -464,7 +464,7 @@ TEST_F(DatahubSchemaLibraryTest, CppHashIdentifiesNamedSchema)
     const auto id = lib_.identify(cpp_info.hash);
     ASSERT_TRUE(id.has_value())
         << "Library did not identify C++ struct hash as a named schema";
-    EXPECT_EQ(*id, "lab.sensors.temperature.raw@1");
+    EXPECT_EQ(*id, "$lab.sensors.temperature.raw.v1");
 
     // Also verify the array struct variant independently
     lib_.register_schema(SchemaLibrary::load_from_string(kSamplesJson));
@@ -472,7 +472,7 @@ TEST_F(DatahubSchemaLibraryTest, CppHashIdentifiesNamedSchema)
         "SamplesSlot", SchemaVersion{1, 0, 0});
     const auto id2 = lib_.identify(cpp_samples.hash);
     ASSERT_TRUE(id2.has_value());
-    EXPECT_EQ(*id2, "lab.sensors.samples@1");
+    EXPECT_EQ(*id2, "$lab.sensors.samples.v1");
 }
 
 // ============================================================================
@@ -504,7 +504,7 @@ TEST_F(DatahubSchemaPhase2Test, MatchingStruct_NoThrow)
     // TempRawSlot is registered with PYLABHUB_SCHEMA macros and matches kTempRawJson.
     EXPECT_NO_THROW(
         (pylabhub::schema::validate_named_schema<TempRawSlot>(
-            "lab.sensors.temperature.raw@1", lib_)));
+            "$lab.sensors.temperature.raw.v1", lib_)));
 }
 
 // ── Test 19: empty schema_id → no check, no exception ────────────────────────
@@ -522,7 +522,7 @@ TEST_F(DatahubSchemaPhase2Test, UnknownId_Throws)
 {
     EXPECT_THROW(
         (pylabhub::schema::validate_named_schema<TempRawSlot>(
-            "does.not.exist@99", lib_)),
+            "$does.not.exist.v99", lib_)),
         pylabhub::schema::SchemaValidationException);
 }
 
@@ -534,7 +534,7 @@ TEST_F(DatahubSchemaPhase2Test, SlotSizeMismatch_Throws)
     // No PYLABHUB_SCHEMA macros on TinySlot → size-only check.
     EXPECT_THROW(
         (pylabhub::schema::validate_named_schema<TinySlot>(
-            "lab.sensors.temperature.raw@1", lib_)),
+            "$lab.sensors.temperature.raw.v1", lib_)),
         pylabhub::schema::SchemaValidationException);
 }
 
@@ -547,7 +547,7 @@ TEST_F(DatahubSchemaPhase2Test, SlotHashMismatch_Throws)
     // WrongOrderSlot IS registered with PYLABHUB_SCHEMA macros → hash check fires.
     EXPECT_THROW(
         (pylabhub::schema::validate_named_schema<WrongOrderSlot>(
-            "lab.sensors.temperature.raw@1", lib_)),
+            "$lab.sensors.temperature.raw.v1", lib_)),
         pylabhub::schema::SchemaValidationException);
 }
 
@@ -559,7 +559,7 @@ TEST_F(DatahubSchemaPhase2Test, FlexzoneSizeMismatch_Throws)
     // TinySlot as FlexT: sizeof=4 → mismatch.
     EXPECT_THROW(
         (pylabhub::schema::validate_named_schema<TempRawSlot, TinySlot>(
-            "lab.sensors.calibrated@2", lib_)),
+            "$lab.sensors.calibrated.v2", lib_)),
         pylabhub::schema::SchemaValidationException);
 }
 
@@ -572,7 +572,7 @@ TEST_F(DatahubSchemaPhase2Test, MatchingFlexzone_NoThrow)
     // Both registered with PYLABHUB_SCHEMA macros → hash check fires on both.
     EXPECT_NO_THROW(
         (pylabhub::schema::validate_named_schema<TempRawSlot, CalibFZ>(
-            "lab.sensors.calibrated@2", lib_)));
+            "$lab.sensors.calibrated.v2", lib_)));
 }
 
 // ============================================================================
@@ -631,9 +631,9 @@ TEST_F(DatahubSchemaFileLoadTest, LoadFromDir_SingleFile)
     size_t loaded = lib.load_all();
     EXPECT_GE(loaded, 1u) << "Expected at least 1 schema loaded from directory";
 
-    auto entry = lib.get("test.simple@1");
+    auto entry = lib.get("$test.simple.v1");
     ASSERT_TRUE(entry.has_value()) << "Schema 'test.simple@1' not found after load_all()";
-    EXPECT_EQ(entry->schema_id, "test.simple@1");
+    EXPECT_EQ(entry->schema_id, "$test.simple.v1");
 }
 
 TEST_F(DatahubSchemaFileLoadTest, LoadFromDir_NestedPath)
@@ -655,7 +655,7 @@ TEST_F(DatahubSchemaFileLoadTest, LoadFromDir_NestedPath)
     size_t loaded = lib.load_all();
     EXPECT_GE(loaded, 1u);
 
-    auto entry = lib.get("lab.sensors.temperature.raw@1");
+    auto entry = lib.get("$lab.sensors.temperature.raw.v1");
     ASSERT_TRUE(entry.has_value()) << "Nested schema not found after load_all()";
 }
 
@@ -676,6 +676,6 @@ TEST_F(DatahubSchemaFileLoadTest, LoadFromDir_InvalidJson_Skipped)
     size_t loaded = lib.load_all();
     EXPECT_GE(loaded, 1u) << "Valid schema should still load despite broken JSON file";
 
-    auto valid = lib.get("test.valid@1");
+    auto valid = lib.get("$test.valid.v1");
     EXPECT_TRUE(valid.has_value()) << "Valid schema should be loadable";
 }

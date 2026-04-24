@@ -20,7 +20,7 @@
     "secret":  2222222222
   },
 
-  "slot_schema": "lab.demo.processed@1",
+  "slot_schema": "$lab.demo.processed.v1",
   "flexzone_schema": null,
 
   "script": { "type": "python", "path": "." },

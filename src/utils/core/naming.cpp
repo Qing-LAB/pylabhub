@@ -11,7 +11,10 @@
 #include "utils/debug_info.hpp" // PLH_PANIC
 
 #include <algorithm>
+#include <cerrno>
 #include <cstddef>
+#include <cstdlib>
+#include <limits>
 
 namespace pylabhub::hub
 {
@@ -20,7 +23,11 @@ namespace
 {
 
 constexpr std::size_t kMaxComponentLen = 64;
-constexpr std::size_t kMaxTotalLen     = 128;
+// Per-identifier total length cap.  DoS defense at the parsing
+// boundary — NOT a cap on federated / composite references, which
+// use structured (multi-field) encoding, not string concatenation.
+// See HEP-0033 §G2.2.0b "Length-cap scope clarification."
+constexpr std::size_t kMaxTotalLen     = 256;
 
 [[nodiscard]] constexpr bool is_first_char(char c) noexcept
 {
@@ -117,6 +124,35 @@ constexpr std::string_view kChannelReservedFirst[]  = {"prod", "cons", "proc", "
     return (d == std::string_view::npos) ? s : s.substr(0, d);
 }
 
+/// Returns the substring after the last dot, or the full string if no
+/// dot is present (the latter is never a well-formed schema version
+/// component since schema requires ≥2 components).
+[[nodiscard]] std::string_view last_component(std::string_view s) noexcept
+{
+    auto d = s.rfind('.');
+    return (d == std::string_view::npos) ? s : s.substr(d + 1);
+}
+
+/// True iff @p s matches exactly `v[0-9]+` (HEP-0033 §G2.2.0b schema
+/// version component rule).  Also writes the parsed uint32 to
+/// @p out_version on success.  On overflow the value is saturated
+/// and the function returns false.
+[[nodiscard]] bool is_version_component(std::string_view  s,
+                                        std::uint32_t    &out_version) noexcept
+{
+    if (s.size() < 2 || s[0] != 'v') return false;
+    std::uint64_t acc = 0;
+    for (std::size_t i = 1; i < s.size(); ++i)
+    {
+        const char c = s[i];
+        if (c < '0' || c > '9') return false;
+        acc = acc * 10 + static_cast<std::uint32_t>(c - '0');
+        if (acc > std::numeric_limits<std::uint32_t>::max()) return false;
+    }
+    out_version = static_cast<std::uint32_t>(acc);
+    return true;
+}
+
 } // namespace
 
 const char *to_string(IdentifierKind k) noexcept
@@ -153,7 +189,17 @@ bool is_valid_identifier(std::string_view s, IdentifierKind kind) noexcept
         return s.front() == '!' && validate_dotted_body(s.substr(1));
 
     case IdentifierKind::Schema:
-        return s.front() == '$' && validate_dotted_body(s.substr(1));
+    {
+        if (s.size() < 2 || s.front() != '$') return false;
+        const auto body = s.substr(1);
+        if (!validate_dotted_body(body)) return false;
+        // Need ≥2 components total in the body (base + version), so
+        // at least one dot is required.
+        if (body.find('.') == std::string_view::npos) return false;
+        // Last component must match v[0-9]+.
+        std::uint32_t v = 0;
+        return is_version_component(last_component(body), v);
+    }
 
     case IdentifierKind::RoleUid:
         return is_valid_tagged_uid_structure(s) &&
@@ -210,6 +256,23 @@ std::optional<TaggedUidParts> parse_peer_uid(std::string_view uid) noexcept
 {
     if (!is_valid_identifier(uid, IdentifierKind::PeerUid)) return std::nullopt;
     return split_tagged_uid(uid);
+}
+
+std::optional<SchemaIdParts> parse_schema_id(std::string_view id) noexcept
+{
+    if (!is_valid_identifier(id, IdentifierKind::Schema)) return std::nullopt;
+    // Strip the '$' sigil.
+    const auto body = id.substr(1);
+    // Last component is guaranteed `v[0-9]+` by the validator.
+    const auto last_dot = body.rfind('.');
+    // `body` has ≥2 components (validator enforces), so last_dot exists.
+    SchemaIdParts parts;
+    parts.base          = body.substr(0, last_dot);
+    parts.version_token = body.substr(last_dot + 1);
+    std::uint32_t v     = 0;
+    (void)is_version_component(parts.version_token, v); // already validated
+    parts.version = v;
+    return parts;
 }
 
 std::optional<std::string_view> extract_role_tag(std::string_view uid) noexcept
