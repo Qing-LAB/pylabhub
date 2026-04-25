@@ -5737,25 +5737,25 @@ int api_band_all_methods_graceful_no_broker(const std::string &dir)
         R"PY(
 def on_produce(tx, msgs, api):
     # (1) band_join — graceful no-op returning None without broker.
-    r = api.band_join("#l2_test")
+    r = api.band_join("!l2_test")
     assert r is None, f"band_join expected None, got {r!r}"
 
     # (2) band_leave — graceful False (no-op couldn't have succeeded).
-    r = api.band_leave("#l2_test")
+    r = api.band_leave("!l2_test")
     assert r is False, f"band_leave expected False, got {r!r}"
 
     # (3) band_broadcast — must not raise even though there's no one
     # to broadcast to.  Scope an explicit try so a regression's
     # exception is attributed here, not to a later line.
     try:
-        api.band_broadcast("#l2_test", {"hello": "world"})
+        api.band_broadcast("!l2_test", {"hello": "world"})
     except Exception as e:
         assert False, (
             f"band_broadcast without broker must not raise, got "
             f"{type(e).__name__}: {e}")
 
     # (4) band_members — None (no broker to query).
-    r = api.band_members("#l2_test")
+    r = api.band_members("!l2_test")
     assert r is None, f"band_members expected None, got {r!r}"
     return True
 )PY",

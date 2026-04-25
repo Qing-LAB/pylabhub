@@ -147,23 +147,23 @@ extern "C" PLH_EXPORT bool on_produce(const plh_tx_t *tx)
     {
         if (g_ctx->band_join)
         {
-            char *r = g_ctx->band_join(g_ctx, "#l2_test");
+            char *r = g_ctx->band_join(g_ctx, "!l2_test");
             g_test_band_join_null = (r == nullptr) ? 1 : 0;
             if (r) free(r);
         }
         if (g_ctx->band_leave)
         {
             g_test_band_leave_zero =
-                (g_ctx->band_leave(g_ctx, "#l2_test") == 0) ? 1 : 0;
+                (g_ctx->band_leave(g_ctx, "!l2_test") == 0) ? 1 : 0;
         }
         if (g_ctx->band_broadcast)
         {
-            g_ctx->band_broadcast(g_ctx, "#l2_test", "{\"k\":1}");
+            g_ctx->band_broadcast(g_ctx, "!l2_test", "{\"k\":1}");
             g_test_band_send_ok = 1; // reached next line = no crash
         }
         if (g_ctx->band_members)
         {
-            char *r = g_ctx->band_members(g_ctx, "#l2_test");
+            char *r = g_ctx->band_members(g_ctx, "!l2_test");
             g_test_band_members_null = (r == nullptr) ? 1 : 0;
             if (r) free(r);
         }

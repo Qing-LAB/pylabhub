@@ -42,39 +42,49 @@ This protocol replaces:
 
 ## 3. Band Naming
 
-Format: `#band_name@hub_uid`
+Format: `!band_name` (HEP-CORE-0033 §G2.2.0b grammar).
 
-- `#` prefix distinguishes band names from role UIDs and data registrations
-- `band_name` is application-defined (alphanumeric + underscore)
-- `@hub_uid` identifies which broker hub the band belongs to
-- Examples: `#sensor_sync@HUB-TestLab-3F2A1B0E`, `#pipeline_ctrl@HUB-Prod-A1B2C3D4`
+- `!` prefix distinguishes band names from role uids, channel names, and
+  schema ids.  Single enforcement point: `is_valid_identifier(s,
+  IdentifierKind::Band)` in `utils/naming.hpp`.
+- The body is one or more dotted `NameComponent`s — each component matches
+  `[A-Za-z][A-Za-z0-9_-]{0,63}`.
+- Federation routing does **not** use a name-encoded `@hub_uid` suffix;
+  cross-hub relay is decided by per-peer `relay_channels` lists in
+  `PeerEntry` (HEP-CORE-0022 §3 / HEP-CORE-0033 §8).
+- Examples: `!sensor_sync`, `!pipeline.ctrl`, `!ops.alpha-1`.
 
 ---
 
-## 4. Broker Data Structure
+## 4. Hub State
 
-The broker maintains a `BandRegistry` separate from the existing
-`ChannelRegistry` (which handles data plane registration / REG_REQ).
+Bands live in `pylabhub::hub::HubState` (HEP-CORE-0033 §8) alongside
+channels, roles, and federation peers.  All mutations go through
+`BrokerService` capability ops (`_on_band_joined` / `_on_band_left`)
+which validate identifiers at the boundary.
 
 ```cpp
 struct BandMember
 {
-    std::string role_uid;       // e.g. "PROD-Sensor-A1B2C3D4"
+    std::string role_uid;       // e.g. "prod.sensor.uid12345678"
     std::string role_name;      // e.g. "sensor_producer"
     std::string zmq_identity;   // ROUTER identity for push notifications
     std::chrono::steady_clock::time_point joined_at;
 };
 
-struct Band
+struct BandEntry
 {
-    std::string name;           // "#band_name@hub"
+    std::string name;           // e.g. "!sensor_sync"
     std::vector<BandMember> members;
     std::chrono::steady_clock::time_point created_at;
+    std::chrono::steady_clock::time_point last_activity;
 };
 ```
 
-Thread safety: accessed only from the broker run() thread (same discipline
-as existing ChannelRegistry — no internal mutex needed).
+Thread safety: HubState owns a single internal mutex; mutators (`_on_band_*`)
+take the writer lock per primitive, snapshot readers take the reader lock.
+Broker handler code is single-threaded under the run() loop's `m_query_mu`,
+so the broker side never observes concurrent state mutations.
 
 ---
 
@@ -94,13 +104,13 @@ Direction:  Role → Broker → Role
 Purpose:    Join a band (auto-creates if it doesn't exist)
 
 Request payload:
-  band                  string   "#band_name@hub"
+  band                  string   "!band_name"
   role_uid              string   Joining role's UID
   role_name             string   Joining role's display name
 
 Reply payload (BAND_JOIN_ACK):
   status                string   "success"
-  band                  string   "#band_name@hub"
+  band                  string   "!band_name"
   members               array    Current member list [{role_uid, role_name}, ...]
 
 Broker behavior:
@@ -117,7 +127,7 @@ Direction:  Role → Broker → Role
 Purpose:    Leave a band
 
 Request payload:
-  band                  string   "#band_name@hub"
+  band                  string   "!band_name"
   role_uid              string   Leaving role's UID
 
 Reply payload (BAND_LEAVE_ACK):
@@ -137,10 +147,10 @@ Direction:  Role → Broker → Role
 Purpose:    Query current band member list
 
 Request payload:
-  band                  string   "#band_name@hub"
+  band                  string   "!band_name"
 
 Reply payload (BAND_MEMBERS_ACK):
-  band                  string   "#band_name@hub"
+  band                  string   "!band_name"
   members               array    [{role_uid, role_name}, ...]
                                   Empty array if band doesn't exist
 ```
@@ -154,12 +164,12 @@ Direction:  Role → Broker (no reply)
 Purpose:    Send JSON message to all band members
 
 Payload:
-  band                  string   "#band_name@hub"
+  band                  string   "!band_name"
   sender_uid            string   Sender's role UID
   body                  object   Application-defined JSON body
 
 Broker behavior:
-  1. Look up band in BandRegistry
+  1. Look up band via `hub_state_.band(name)` snapshot
   2. For each member (excluding sender):
        send_to_identity(socket, member.zmq_identity,
            "BAND_BROADCAST_NOTIFY", {band, sender_uid, body})
@@ -175,7 +185,7 @@ Direction:  Broker → All existing band members
 Trigger:    Another role joined the band
 
 Payload:
-  band                  string   "#band_name@hub"
+  band                  string   "!band_name"
   role_uid              string   Joining role's UID
   role_name             string   Joining role's display name
 ```
@@ -187,7 +197,7 @@ Direction:  Broker → All remaining band members
 Trigger:    A role left the band (voluntarily or heartbeat timeout)
 
 Payload:
-  band                  string   "#band_name@hub"
+  band                  string   "!band_name"
   role_uid              string   Leaving role's UID
   reason                string   "voluntary" | "heartbeat_timeout"
 ```
@@ -199,7 +209,7 @@ Direction:  Broker → All band members (except sender)
 Trigger:    BAND_BROADCAST_REQ received from a member
 
 Payload:
-  band                  string   "#band_name@hub"
+  band                  string   "!band_name"
   sender_uid            string   Sending role's UID
   body                  object   Application-defined JSON body (passthrough)
 ```
@@ -238,14 +248,14 @@ std::optional<nlohmann::json> band_members(const std::string &band,
 
 ```python
 # Join/leave
-members = api.band_join("#sensor_sync")
-api.band_leave("#sensor_sync")
+members = api.band_join("!sensor_sync")
+api.band_leave("!sensor_sync")
 
 # Messaging
-api.band_broadcast("#sensor_sync", {"event": "calibration_done", "ts": 123.4})
+api.band_broadcast("!sensor_sync", {"event": "calibration_done", "ts": 123.4})
 
 # Query
-members = api.band_members("#sensor_sync")
+members = api.band_members("!sensor_sync")
 # Returns: [{"role_uid": "PROD-Sensor-A1B2", "role_name": "sensor_prod"}, ...]
 ```
 
@@ -367,7 +377,7 @@ The following elements from HEP-CORE-0007 are superseded by this HEP:
 | System | Relationship |
 |--------|-------------|
 | **Data plane** (QueueReader/QueueWriter, SHM, ZMQ PUSH/PULL) | Independent. Band messaging is for coordination, not data streaming. |
-| **Broker registration** (REG_REQ, DISC_REQ) | Independent. Data plane registration uses different registry (ChannelRegistry). Band pub/sub uses BandRegistry. |
+| **Broker registration** (REG_REQ, DISC_REQ) | Independent. Channel state and band state both live in `HubState` (HEP-CORE-0033 §8) — but they are independent maps; a band name need not correspond to any registered data channel. |
 | **Inbox** (InboxQueue/InboxClient) | Complementary. Inbox is point-to-point. Band is pub/sub. `api.send_to(uid, data)` uses inbox. |
 | **Heartbeat** (HEARTBEAT_REQ) | Reused. Broker heartbeat liveness drives auto-leave from bands. |
 | **BrokerRequestComm** | Transport. Band API methods are added to BrokerRequestComm. Messages flow through its DEALER socket. |
@@ -409,7 +419,7 @@ graph TD
         P --> C2["Consumer 2 (DEALER)"]
     end
     subgraph New["New: Bands"]
-        R1["Role A"] --> B["Broker (BandRegistry)"]
+        R1["Role A"] --> B["Broker + HubState bands"]
         R2["Role B"] --> B
         R3["Role C"] --> B
         B --> R1
