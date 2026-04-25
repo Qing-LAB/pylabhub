@@ -337,7 +337,7 @@ token.
   same password source chain, loads the broker's stable CURVE keypair
   for the ROUTER socket. If `admin.token_required: true`, the vault
   also carries the admin token (separate slot, same KDF domain) — the
-  `AdminService` (§10.3) compares against this token on each request.
+  `AdminService` (§11.3) compares against this token on each request.
   See `src/include/utils/hub_vault.hpp` for the existing storage shape;
   it already supports both keypair and token slots — no vault extension
   needed.
@@ -417,9 +417,212 @@ evict immediately.
 **Consistency**: single internal mutex; accessors return snapshot structs. No
 cross-field consistency guarantee; each metric entry carries `_collected_at`.
 
-## 9. Metrics model (supersedes HEP-CORE-0019 §3-4)
+## 9. Message-Processing Contract
 
-### 9.1 Ingress — role→hub push only (unchanged from today)
+The broker's `process_message()` and the per-handler dispatch operate
+under a fixed contract that defines: (i) what counter goes up when,
+(ii) what happens on error/exception, (iii) what reply (if any) the
+client receives, and (iv) where in the pipeline each side-effect
+occurs.  This contract is the seam between the wire (ZMQ frames) and
+the model (`HubState` mutations).  It is normative for any handler
+added to `process_message()` and for any code that reads counters via
+`HubState::counters()`.
+
+### 9.1 Pipeline stages
+
+Every inbound message traverses these stages in order:
+
+```
+S0  Socket recv         zmq::recv_multipart returns frames
+S1  Frame validation    frame count, size cap (1 MB)
+S2  Body parse          nlohmann::json::parse(frames[3])
+S3  Dispatch            msg_type → handler branch in process_message()
+S4  Handler execution   broker validation → HubState op → reply build
+S5  Reply send          send_reply() (request-reply types only)
+S6  Post-process        counters, hook
+```
+
+Stages S0–S2 happen in the recv loop, before `process_message()` is
+invoked.  S3–S6 happen inside `process_message()`.
+
+### 9.2 Reply-shape classification (per msg_type)
+
+Each msg_type is **statically classified** at code-time as one of:
+
+- **request-reply** — client always expects exactly one reply frame
+  (`*_ACK` on success, `ERROR` on failure).  The protocol shape is
+  fixed; the server's outcome does not change it.
+- **fire-and-forget** — client never expects a reply.  Errors are
+  handled entirely on the server side (counter + hook + log).  The
+  client cannot distinguish "delivered" from "error" — that is the
+  intentional contract of fire-and-forget messages.
+
+Current classification (single source of truth: the dispatcher branch
+that either calls `send_reply()` or does not):
+
+```
+Request-reply:
+  REG_REQ, DISC_REQ, DEREG_REQ,
+  CONSUMER_REG_REQ, CONSUMER_DEREG_REQ, CONSUMER_DEREG_ACK,
+  ENDPOINT_UPDATE_REQ, SCHEMA_REQ,
+  CHANNEL_LIST_REQ, METRICS_REQ, SHM_BLOCK_QUERY_REQ,
+  ROLE_PRESENCE_REQ, ROLE_INFO_REQ,
+  BAND_JOIN_REQ, BAND_LEAVE_REQ, BAND_MEMBERS_REQ,
+  HUB_PEER_HELLO         (HUB_PEER_HELLO_ACK)
+
+Fire-and-forget:
+  HEARTBEAT_REQ, METRICS_REPORT_REQ,
+  CHECKSUM_ERROR_REPORT,
+  CHANNEL_NOTIFY_REQ, CHANNEL_BROADCAST_REQ,
+  BAND_BROADCAST_REQ,
+  HUB_PEER_BYE,
+  HUB_RELAY_MSG (peer-DEALER inbound),
+  HUB_TARGETED_MSG (peer-DEALER inbound)
+```
+
+When adding a new msg_type, the contributor MUST classify it
+explicitly in the dispatcher, and the classification table above
+MUST be updated.
+
+### 9.3 Failure-mode disposition (per stage)
+
+| Stage | Failure | Action | Counter | Hook fires? |
+|---|---|---|---|---|
+| S0 | recv error (`EAGAIN`, `EINTR`) | log at TRACE; continue loop | none | no |
+| S1 | wrong frame count, oversized payload | `LOGGER_WARN`; drop; continue | `sys.malformed_frame` | yes (msg_type empty) |
+| S2 | `nlohmann::json::parse_error` | `LOGGER_WARN`; drop; continue | `sys.malformed_json` | yes (msg_type empty) |
+| S3 | unknown msg_type | `LOGGER_WARN`; ERROR reply (request-reply shape per the unknown name's lack of classification — falls to fire-and-forget by default; current dispatcher always replies ERROR for unknowns); continue | **only `sys.unknown_msg_type`** — the unknown msg_type string is NOT inserted into `msg_type_counts` (cardinality-attack mitigation, R1) | yes |
+| S4 | broker-level validation rejected (e.g. missing required field) | request-reply: ERROR reply; fire-and-forget: log + counter only | `msg_type_counts[type]` | no — this is a normal protocol error, surfaced via the ERROR reply for request-reply types |
+| S4 | HubState validator silent-drop (e.g. invalid uid) | reply built from POST-state read; client sees actual outcome | `msg_type_counts[type]` only; `sys.invalid_identifier_rejected` bumped inside HubState | no — HubState handles internally |
+| S4 | unexpected exception (e.g. `zmq::error_t`, `std::bad_alloc`) | request-reply: best-effort ERROR reply (inner try/catch); fire-and-forget: NO reply (never confuse the client); always continue loop | `msg_type_counts[type]` + `msg_type_errors[type]` + `sys.handler_exception` | yes |
+| S5 | reply send fails (DEALER closed, HWM hit) | inner try/catch; `LOGGER_WARN`; continue | none (this is a transport-layer issue, not a processing one) | no |
+| S6 | counter bump | atomic increment; never fails | n/a | n/a |
+
+### 9.4 Counter taxonomy
+
+Three independent kinds; all live in `BrokerCounters` and are exposed
+via `HubState::counters()`:
+
+**Wire metrics** (broker dispatcher; bump policy: post-processing):
+
+```
+msg_type_counts[<known_msg_type>]   bumped at S6 if S0–S3 succeeded;
+                                    counts every dispatch-completed message
+                                    (success OR error) of a known type.
+
+bytes_in_total                      bumped at S6 with frames[3].size().
+bytes_out_total                     deferred — multi-target fan-out
+                                    (broadcast/relay) makes per-message
+                                    accounting ambiguous.
+
+msg_type_errors[<known_msg_type>]   bumped at S6 alongside msg_type_counts
+                                    if S4 hit an exception or validation
+                                    rejection (request-reply types only).
+```
+
+**Operational metrics** (failure-point bump):
+
+```
+sys.malformed_frame             — S1 failure (count, size limits).
+sys.malformed_json              — S2 failure (JSON parse).
+sys.unknown_msg_type            — S3 failure (no handler matched).
+sys.handler_exception           — S4 uncaught exception.
+sys.invalid_identifier_rejected — bumped INSIDE HubState capability ops
+                                  when an _on_* op silent-drops on validator.
+                                  (Independent of the dispatcher; counts
+                                  state-mutation rejects, not message arrivals.)
+```
+
+**Semantic metrics** (HubState capability op; bump atomic with state change):
+
+```
+ready_to_pending_total          HEP-CORE-0023 §2.5
+pending_to_ready_total
+pending_to_deregistered_total
+close:<reason>                  per ChannelCloseReason enum value
+```
+
+These are triggered by **state transitions**, which include but are
+not limited to message arrivals (the heartbeat-timeout sweep fires
+`ready_to_pending_total` from a timer, no inbound message).  They
+remain inside the capability ops because the dispatcher cannot detect
+a transition without state-diff introspection.
+
+### 9.5 Exception-safety contract
+
+> `process_message()` MUST NOT propagate exceptions to its caller (the
+> recv loop).  Any `std::exception` from any stage S3–S5 is caught,
+> logged at ERROR, the appropriate counters and hook are fired, a
+> best-effort ERROR reply is sent **only for request-reply types**, and
+> the broker continues to the next message.
+
+Implementation: outer try/catch in `process_message()`; inner try/catch
+around the best-effort ERROR reply send (R11); inner try/catch around
+the hook invocation (R2 — the user-supplied hook may throw, broker
+must survive).
+
+The recv loop's existing outer `try/catch (nlohmann::json::exception)`
+remains as-is for S2 protection; the new contract removes the broader
+exception class from escaping past `process_message()`.
+
+### 9.6 `on_processing_error` hook
+
+Opt-in callback on `BrokerService::Config`:
+
+```cpp
+struct ProcessingError {
+    std::string                msg_type;       // empty for S1/S2 errors
+    std::string                error_kind;     // "malformed_frame" | "malformed_json" |
+                                               // "unknown_msg_type"  | "exception"
+    std::string                detail;         // exception what() / parse error / etc.
+    std::optional<std::string> peer_identity;  // ROUTER routing identity if available
+};
+
+std::function<void(const ProcessingError &)> on_processing_error;
+```
+
+Fired AFTER counter bumps (so a hook handler reading
+`HubState::counters()` sees fresh state).  Invoked under broker thread,
+synchronously — handler must be fast; for slow work, enqueue and
+return.  Hook may throw; broker swallows.
+
+The struct is **append-only** for ABI stability: future fields may be
+added at the end; existing fields may not be removed or reordered.
+(R6.)
+
+### 9.7 Mutation-vs-reply ordering (request-reply handlers)
+
+```
+1. Parse + broker-level field validation
+       if invalid → ERROR reply, return
+
+2. Call HubState capability op
+       op may silent-drop on internal validator failure; that is fine
+
+3. Build reply from POST-state read
+       e.g. `auto entry = hub_state_.channel(name);`
+       if op silent-dropped, the entry is absent → reply reflects reality
+
+4. send_reply(...)
+```
+
+This rule eliminates the bug class where the broker reports success
+but HubState silently dropped the mutation: because the reply is
+constructed from observed state, a silent drop surfaces as a NOT_FOUND
+or empty-payload reply rather than a misleading ACK.
+
+### 9.8 Cross-reference
+
+This contract is exercised in:
+- `src/utils/ipc/broker_service.cpp` — `process_message()` is the
+  single dispatch entrypoint that conforms to this contract.
+- `src/utils/ipc/hub_state.cpp` — capability ops bump only **semantic**
+  counters; **wire** counter bumps were moved to the dispatcher in
+  HEP-CORE-0033 G2.2.4.
+
+## 10. Metrics model (supersedes HEP-CORE-0019 §3-4)
+
+### 10.1 Ingress — role→hub push only (unchanged from today)
 
 - `HEARTBEAT_REQ` with `metrics` field, iteration-gated, stops when role stalls.
 - `METRICS_REPORT_REQ`, time-only, configurable via role's `cfg.report_metrics`.
@@ -446,12 +649,12 @@ sequenceDiagram
 ```
 
 
-### 9.2 Entry types
+### 10.2 Entry types
 
 - **In-position**: role-pushed metrics, broker counters, federation peer states.
 - **Pointer-to-collect**: SHM block metrics (invoke `hub::DataBlock::get_metrics(channel)` at query time). Future extensions (system CPU/RSS, etc.) use this pattern.
 
-### 9.3 Query flow
+### 10.3 Query flow
 
 ```mermaid
 sequenceDiagram
@@ -496,18 +699,18 @@ sequenceDiagram
    ```
 5. Return. No retry, no wait-for-update.
 
-### 9.4 Relation to existing `BrokerService::query_metrics_json_str`
+### 10.4 Relation to existing `BrokerService::query_metrics_json_str`
 
 Existing impl (`broker_service.cpp:2336`, `2523`, `2534`) already has this shape
 for channels + shm_blocks. Refactor extends it with role/band/peer/broker
 categories, `_collected_at` per entry, and plumbs through `HubHost` (not
 directly on `BrokerService`).
 
-## 10. Admin RPC surface — `AdminService`
+## 11. Admin RPC surface — `AdminService`
 
 Replaces legacy `AdminShell` which only offered `{token, code}` → `exec(code)`.
 
-### 10.1 Transport
+### 11.1 Transport
 
 - ZMQ REP socket at `admin.endpoint` (default `tcp://127.0.0.1:5600`).
 - Request: `{ "method": "<name>", "token": "<admin_token>", "params": { ... } }`.
@@ -540,7 +743,7 @@ sequenceDiagram
 ```
 
 
-### 10.2 Methods (v1)
+### 11.2 Methods (v1)
 
 **Query**: `list_channels`, `get_channel`, `list_roles`, `get_role`,
 `list_bands`, `list_peers`, `query_metrics`, `list_known_roles`.
@@ -551,7 +754,7 @@ sequenceDiagram
 **Dev-only** (gated by `admin.dev_mode: true`): `exec_python` — runs in the
 hub script engine's namespace via `ScriptEngine::eval`.
 
-### 10.3 Authorization
+### 11.3 Authorization
 
 - `admin.token_required: true` → request `"token"` must match vault's
   admin token (KDF-derived, same-vault different slot). Mismatch →
@@ -560,19 +763,19 @@ hub script engine's namespace via `ScriptEngine::eval`.
   `127.0.0.1` (enforced at construction).
 - `exec_python` always requires token when gated, plus `dev_mode: true`.
 
-### 10.4 Files
+### 11.4 Files
 
 - `src/include/utils/admin_service.hpp`, `src/utils/service/admin_service.cpp`.
 
-## 11. Script callbacks + `HubAPI`
+## 12. Script callbacks + `HubAPI`
 
-### 11.1 Engine
+### 12.1 Engine
 
 `HubHost` owns `std::unique_ptr<scripting::ScriptEngine>` (null if no script).
 Runs on its own thread with the cross-thread dispatch pattern roles use.
 Engine factory: `scripting::make_engine_from_script_config(cfg.script())`.
 
-### 11.2 Callbacks (all optional; C++ defaults = no-op / accept)
+### 12.2 Callbacks (all optional; C++ defaults = no-op / accept)
 
 **Lifecycle**: `on_start(api)`, `on_tick(api)`, `on_stop(api)`.
 
@@ -595,7 +798,7 @@ Engine factory: `scripting::make_engine_from_script_config(cfg.script())`.
 Script exceptions caught; `stop_on_script_error: true` promotes to fatal (same
 as role side).
 
-### 11.3 `HubAPI` surface (bound into Python + Lua)
+### 12.3 `HubAPI` surface (bound into Python + Lua)
 
 Read: `list_channels`, `get_channel`, `list_roles`, `get_role`, `list_bands`,
 `list_peers`, `query_metrics`, `config`, `uid`, `name`.
@@ -607,17 +810,17 @@ All methods resolve via `HubHost` accessors; scripts never touch
 `BrokerService` directly. Pybind11 bindings live in
 `src/scripting/hub/hub_api.cpp`.
 
-## 12. Protocol — additions / unchanged
+## 13. Protocol — additions / unchanged
 
 - **Role→broker protocol**: unchanged. REG_REQ, DISC_REQ, HEARTBEAT_REQ,
   METRICS_REPORT_REQ, notifies, etc. No wire-format break.
 - **Role-side headers, config, lifecycle**: unchanged.
-- **New admin RPC on the admin socket**: methods above (§10).
+- **New admin RPC on the admin socket**: methods above (§11).
 - **Internal callbacks**: `BrokerService` gains event hooks into `HubHost`
   (which fans out to script events). Replaces ad-hoc `pylabhub_module`
   callback wiring.
 
-## 13. Relationship to existing HEPs
+## 14. Relationship to existing HEPs
 
 ```mermaid
 graph TB
@@ -655,7 +858,7 @@ graph TB
 | HEP-CORE-0024 | Shape mirrored: hub gets `HubDirectory`, `hub_cli`, `--init/--validate/--keygen`, directory layout. |
 | HEP-CORE-0030 | Band events surface via script callbacks; admin RPC includes `list_bands`. |
 
-## 14. Implementation phases
+## 15. Implementation phases
 
 Phases should each land in a build-green, test-green checkpoint.
 
@@ -703,19 +906,19 @@ can land in parallel once P1 lands.
   snapshot accessors.
 - **Phase 5** — Query engine (`HubHost::query_metrics`) over `HubState` +
   existing `collect_shm_info`. L2 tests for filter coverage + `_collected_at`.
-- **Phase 6** — `AdminService` structured RPC (§10); retire `AdminShell`
+- **Phase 6** — `AdminService` structured RPC (§11); retire `AdminShell`
   dependency. L3 tests for each RPC method.
 - **Phase 7** — `scripting::hub_lifecycle_modules()` + `HubScriptRunner` using
   `ScriptEngine`; retire `PythonInterpreter`/`HubScript`/`hub_script_api`/
   `pylabhub_module`. L3 tests for each callback + default no-op behavior.
-- **Phase 8** — `HubAPI` pybind11 + Lua bindings (§11.3). L3 tests via each
+- **Phase 8** — `HubAPI` pybind11 + Lua bindings (§12.3). L3 tests via each
   engine.
 - **Phase 9** — `plh_hub` binary; re-enable build; delete `src/hubshell.cpp` +
   `src/hub_python/*`. L4 no-hub tier tests (parallel `test_layer4_plh_role/`).
 - **Phase 10** — HEP-0019 amendment finalised; README + deployment docs
   updated.
 
-## 15. Open items (deferred to implementation)
+## 16. Open items (deferred to implementation)
 
 1. `add_known_role`/`remove_known_role` persistence — in-memory only by default;
    `persist_known_role_changes: false` toggle for opt-in disk write.
@@ -728,11 +931,11 @@ can land in parallel once P1 lands.
 7. Script engine thread lifetime ordering vs `BrokerService` teardown.
 8. Dev-mode admin token behaviour.
 
-## 16. Out of scope
+## 17. Out of scope
 
 - Hub-side HA / replication.
 - Hub script hot-reload mid-run.
 - Binary variants (`--kind`) — subsystems toggled via config only.
 - Role-side rewrites.
 - HEP-CORE-0019 periodic broker-pull (explicitly replaced by query-driven
-  model; §9).
+  model; §10).

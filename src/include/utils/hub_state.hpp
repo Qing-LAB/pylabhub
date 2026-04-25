@@ -266,7 +266,18 @@ struct BrokerCounters
     uint64_t bytes_out_total{0};
 
     // Per-message-type counts (kept opaque to stay extensible).
+    // `msg_type_counts[type]` bumps for every dispatch-completed message
+    // of a known msg_type (success OR error).  Unknown msg_types are NOT
+    // inserted here — they only bump `msg_type_counts["sys.unknown_msg_type"]`
+    // (cardinality-attack mitigation per HEP-0033 §9.3 R1).
+    // `msg_type_counts[type]_errors` (suffix convention) is unused; per-type
+    // errors live in `msg_type_errors` below.
     std::unordered_map<std::string, uint64_t> msg_type_counts;
+
+    /// Per-msg-type error subset of `msg_type_counts` — bumped at the same
+    /// dispatcher post-processing step when the handler hit an exception or
+    /// validation rejection.  Per HEP-CORE-0033 §9.4.
+    std::unordered_map<std::string, uint64_t> msg_type_errors;
 };
 
 /// Point-in-time aggregate returned by HubState::snapshot().
@@ -385,6 +396,12 @@ class PYLABHUB_UTILS_EXPORT HubState
 
     void _set_shm_block(ShmBlockRef ref);
     void _bump_counter(const std::string &key, uint64_t n = 1);
+    /// Bump `msg_type_errors[<msg_type>]` (HEP-CORE-0033 §9.4). Called
+    /// by the broker dispatcher when a known-msg_type handler hit an
+    /// exception or validation rejection.  Atomic with the
+    /// `_on_message_processed` bump that always fires for the same
+    /// message.
+    void _bump_msg_type_error(const std::string &msg_type, uint64_t n = 1);
     void _set_role_state_metrics(const BrokerCounters &snapshot);
 
     // ── Capability-operation layer (HEP-0033 §G2) ──────────────────────
