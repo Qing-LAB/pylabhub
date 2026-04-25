@@ -356,17 +356,19 @@ TEST_F(BrokerProtocolTest, DuplicateReg_SameSchemaHash_Succeeds)
 {
     const std::string channel  = pid_chan("proto.dup.same");
     const std::string hash_hex = std::string(64, 'a');
+    const std::string uid1     = "prod.proto.dup.same.uid00000001";
+    const std::string uid2     = "prod.proto.dup.same.uid00000002";
 
     BrcHandle bh1;
-    bh1.start(ep(), pk(), "PROD1-" + channel);
-    auto opts1 = make_reg_opts(channel, "PROD1-" + channel);
+    bh1.start(ep(), pk(), uid1);
+    auto opts1 = make_reg_opts(channel, uid1);
     opts1["schema_hash"] = hash_hex;
     auto h1 = bh1.brc.register_channel(opts1, 3000);
     ASSERT_TRUE(h1.has_value());
 
     BrcHandle bh2;
-    bh2.start(ep(), pk(), "PROD2-" + channel);
-    auto opts2 = make_reg_opts(channel, "PROD2-" + channel);
+    bh2.start(ep(), pk(), uid2);
+    auto opts2 = make_reg_opts(channel, uid2);
     opts2["schema_hash"] = hash_hex;
     auto h2 = bh2.brc.register_channel(opts2, 3000);
     EXPECT_TRUE(h2.has_value()) << "Same schema hash re-registration should succeed";
@@ -380,17 +382,19 @@ TEST_F(BrokerProtocolTest, DuplicateReg_DifferentSchemaHash_Rejected)
     const std::string channel = pid_chan("proto.dup.diff");
     const std::string hash_a  = std::string(64, 'a');
     const std::string hash_b  = std::string(64, 'b');
+    const std::string uid1    = "prod.proto.dup.diff.uid00000001";
+    const std::string uid2    = "prod.proto.dup.diff.uid00000002";
 
     BrcHandle bh1;
-    bh1.start(ep(), pk(), "PROD1-" + channel);
-    auto opts1 = make_reg_opts(channel, "PROD1-" + channel);
+    bh1.start(ep(), pk(), uid1);
+    auto opts1 = make_reg_opts(channel, uid1);
     opts1["schema_hash"] = hash_a;
     auto h1 = bh1.brc.register_channel(opts1, 3000);
     ASSERT_TRUE(h1.has_value());
 
     BrcHandle bh2;
-    bh2.start(ep(), pk(), "PROD2-" + channel);
-    auto opts2 = make_reg_opts(channel, "PROD2-" + channel);
+    bh2.start(ep(), pk(), uid2);
+    auto opts2 = make_reg_opts(channel, uid2);
     opts2["schema_hash"] = hash_b;
     auto h2 = bh2.brc.register_channel(opts2, 3000);
     EXPECT_FALSE(h2.has_value()) << "Different schema hash re-registration should be rejected";

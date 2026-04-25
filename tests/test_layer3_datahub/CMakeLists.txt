@@ -91,7 +91,6 @@ add_executable(test_layer3_datahub
     # ── Broker service integration tests ─────────────────────────────────────────
     test_datahub_broker.cpp
     workers/datahub_broker_workers.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/ipc/channel_registry.cpp
 
     # ── Channel access policy enforcement tests (Phase 3) ─────────────────────
     test_datahub_channel_access_policy.cpp

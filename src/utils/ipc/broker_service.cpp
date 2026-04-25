@@ -3,8 +3,8 @@
 #include "utils/hub_state.hpp"
 #include "utils/net_address.hpp"
 
-#include "channel_registry.hpp"
 #include "band_registry.hpp"
+#include "utils/channel_pattern.hpp"
 
 #include "utils/recovery_api.hpp"
 #include "utils/schema_library.hpp"
@@ -47,8 +47,7 @@ constexpr std::chrono::milliseconds kPollTimeout{100};
 // Universal framing: Frame 0 type byte for all ZMQ messages.
 constexpr char kFrameTypeControl = 'C';
 
-// Bring shared pattern helpers into scope (defined in utils/channel_pattern.hpp,
-// included via channel_registry.hpp ->utils/channel_pattern.hpp).
+// Bring shared pattern helpers into scope (defined in utils/channel_pattern.hpp).
 using pylabhub::hub::channel_pattern_to_str;
 using pylabhub::hub::channel_pattern_from_str;
 
@@ -102,80 +101,6 @@ bool channel_name_matches_glob(const std::string& name, const std::string& glob)
     return *g == '\0';
 }
 
-// ─── broker ↔ hub entry translation (HEP-0033 G2.2.1) ────────────────────────
-//
-// The broker's ChannelRegistry still owns the channel/consumer maps during
-// G2.2.1.{a,b}; HubState is populated in parallel.  These translators
-// project the broker-internal shape onto the HubState shape.  G2.2.1.c
-// deletes the broker-side types entirely and the translators become
-// unnecessary — everyone works against hub::ChannelEntry directly.
-
-[[nodiscard]] pylabhub::hub::ChannelStatus
-to_hub_status(ChannelStatus s) noexcept
-{
-    switch (s)
-    {
-    case ChannelStatus::PendingReady: return pylabhub::hub::ChannelStatus::PendingReady;
-    case ChannelStatus::Ready:        return pylabhub::hub::ChannelStatus::Ready;
-    case ChannelStatus::Closing:      return pylabhub::hub::ChannelStatus::Closing;
-    }
-    return pylabhub::hub::ChannelStatus::PendingReady;
-}
-
-[[nodiscard]] pylabhub::hub::ConsumerEntry
-to_hub_consumer(const ConsumerEntry &src)
-{
-    pylabhub::hub::ConsumerEntry dst;
-    dst.consumer_pid      = src.consumer_pid;
-    dst.consumer_hostname = src.consumer_hostname;
-    dst.zmq_identity      = src.zmq_identity;
-    dst.role_name         = src.role_name;
-    dst.role_uid          = src.role_uid;
-    dst.inbox_endpoint    = src.inbox_endpoint;
-    dst.inbox_schema_json = src.inbox_schema_json;
-    dst.inbox_packing     = src.inbox_packing;
-    dst.inbox_checksum    = src.inbox_checksum;
-    dst.connected_at      = src.connected_at;
-    return dst;
-}
-
-[[nodiscard]] pylabhub::hub::ChannelEntry
-to_hub_channel_entry(const ChannelEntry &src, const std::string &name)
-{
-    pylabhub::hub::ChannelEntry dst;
-    dst.name                  = name;
-    dst.shm_name              = src.shm_name;
-    dst.schema_hash           = src.schema_hash;
-    dst.schema_version        = src.schema_version;
-    dst.schema_id             = src.schema_id;
-    dst.schema_blds           = src.schema_blds;
-    dst.producer_pid          = src.producer_pid;
-    dst.producer_hostname     = src.producer_hostname;
-    dst.producer_role_name    = src.producer_role_name;
-    dst.producer_role_uid     = src.producer_role_uid;
-    dst.producer_zmq_identity = src.producer_zmq_identity;
-    dst.metadata              = src.metadata;
-    dst.consumers.reserve(src.consumers.size());
-    for (const auto &c : src.consumers) dst.consumers.push_back(to_hub_consumer(c));
-    dst.status                = to_hub_status(src.status);
-    dst.last_heartbeat        = src.last_heartbeat;
-    dst.state_since           = src.state_since;
-    dst.closing_deadline      = src.closing_deadline;
-    dst.has_shared_memory     = src.has_shared_memory;
-    dst.pattern               = src.pattern;  // already hub::ChannelPattern
-    dst.zmq_ctrl_endpoint     = src.zmq_ctrl_endpoint;
-    dst.zmq_data_endpoint     = src.zmq_data_endpoint;
-    dst.zmq_pubkey            = src.zmq_pubkey;
-    dst.data_transport        = src.data_transport;
-    dst.zmq_node_endpoint     = src.zmq_node_endpoint;
-    dst.inbox_endpoint        = src.inbox_endpoint;
-    dst.inbox_schema_json     = src.inbox_schema_json;
-    dst.inbox_packing         = src.inbox_packing;
-    dst.inbox_checksum        = src.inbox_checksum;
-    // `created_at` is stamped by hub::ChannelEntry's default ctor; leave it.
-    return dst;
-}
-
 } // namespace
 
 // ============================================================================
@@ -197,7 +122,6 @@ public:
     BrokerService::Config cfg;
     std::string           server_public_z85;
     std::string           server_secret_z85;
-    ChannelRegistry       registry;
     BandRegistry          band_registry;
 
     /// HEP-CORE-0033 §8 state aggregate.  G2.2.0 introduces this field;
@@ -550,9 +474,6 @@ void BrokerServiceImpl::run()
             }
             for (const auto& ch : pending_closes)
             {
-                // G2.2.1.c phase 2: read status from HubState (truth);
-                // HubState mutators are authoritative; registry mirror
-                // remains until phase 3 deletes the registry.
                 auto hub_entry = hub_state_.channel(ch);
                 if (hub_entry.has_value() &&
                     hub_entry->status != pylabhub::hub::ChannelStatus::Closing)
@@ -566,11 +487,6 @@ void BrokerServiceImpl::run()
                     hub_state_._set_channel_status(
                         ch, pylabhub::hub::ChannelStatus::Closing);
                     hub_state_._set_channel_closing_deadline(ch, deadline);
-                    if (auto* reg = registry.find_channel_mutable(ch); reg != nullptr)
-                    {
-                        reg->status           = ChannelStatus::Closing;
-                        reg->closing_deadline = deadline;
-                    }
                 }
             }
 
@@ -796,7 +712,7 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
     else if (msg_type == "HEARTBEAT_REQ")
     {
         // Fire-and-forget from client. State transitions (PendingReady -> Ready)
-        // happen in registry.update_heartbeat() called from the handler.
+        // happen inside hub_state_._on_heartbeat() called from the handler.
         handle_heartbeat_req(payload);
     }
     else if (msg_type == "CHECKSUM_ERROR_REPORT")
@@ -942,14 +858,15 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         return *err;
     }
 
-    ChannelEntry entry;
+    pylabhub::hub::ChannelEntry entry;
+    entry.name                  = channel_name;
     entry.shm_name              = req.value("shm_name", "");
     entry.schema_hash           = attempted_schema;
     entry.schema_version        = req.value("schema_version", uint32_t{0});
     entry.producer_pid          = attempted_pid;
     entry.producer_hostname     = req.value("producer_hostname", "");
-    entry.producer_role_name   = role_name;
-    entry.producer_role_uid    = role_uid;
+    entry.producer_role_name    = role_name;
+    entry.producer_role_uid     = role_uid;
     entry.has_shared_memory     = req.value("has_shared_memory", false);
     entry.pattern               = channel_pattern_from_str(req.value("channel_pattern", "PubSub"));
     entry.zmq_ctrl_endpoint     = req.value("zmq_ctrl_endpoint", "");
@@ -1041,44 +958,45 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         }
     }
 
-    // G2.2.1.a dual-write: capture a hub::ChannelEntry projection *before*
-    // moving `entry` into the registry.  HubState mirrors the mutation on
-    // success; no HubState write on the schema-mismatch error path.
-    auto hub_entry = to_hub_channel_entry(entry, channel_name);
-
-    if (!registry.register_channel(channel_name, std::move(entry)))
+    // G2.2.1.c phase 3: HubState is the sole channel store.
+    // Replicate ChannelRegistry::register_channel's gating semantics:
+    //   - new channel: insert.
+    //   - same schema_hash: re-register, preserving existing consumers.
+    //   - different schema_hash: SCHEMA_MISMATCH error + notify existing.
+    if (auto existing_opt = hub_state_.channel(channel_name); existing_opt.has_value())
     {
-        // Cat 1: schema mismatch — invariant violation. Log + notify existing producer.
-        // G2.2.1.c phase 1: source from HubState (registration mirrored at
-        // initial REG_REQ); registry.register_channel above failed so
-        // HubState was NOT mirrored on this attempt — the existing entry
-        // there is the legitimate prior registration we want to notify.
-        auto existing_opt = hub_state_.channel(channel_name);
-        const std::string existing_schema = existing_opt ? existing_opt->schema_hash : "(unknown)";
-        LOGGER_ERROR(
-            "Broker: Cat1 schema mismatch on '{}': existing={} attempted={} attempted_pid={}",
-            channel_name, existing_schema, attempted_schema, attempted_pid);
-        if (existing_opt && !existing_opt->producer_zmq_identity.empty())
+        if (existing_opt->schema_hash != entry.schema_hash)
         {
-            nlohmann::json err;
-            err["channel_name"]          = channel_name;
-            err["event"]                 = "schema_mismatch_attempt";
-            err["existing_schema_hash"]  = existing_schema;
-            err["attempted_schema_hash"] = attempted_schema;
-            err["attempted_pid"]         = attempted_pid;
-            send_to_identity(socket, existing_opt->producer_zmq_identity, "CHANNEL_ERROR_NOTIFY",
-                             err);
-            LOGGER_ERROR("Broker: CHANNEL_ERROR_NOTIFY to producer of '{}': event={}, "
-                         "existing_hash={}, attempted_hash={}, attempted_pid={}",
-                         channel_name, "schema_mismatch_attempt",
-                         existing_schema, attempted_schema, attempted_pid);
+            // Cat 1: schema mismatch — invariant violation.
+            const std::string &existing_schema = existing_opt->schema_hash;
+            LOGGER_ERROR(
+                "Broker: Cat1 schema mismatch on '{}': existing={} attempted={} attempted_pid={}",
+                channel_name, existing_schema, attempted_schema, attempted_pid);
+            if (!existing_opt->producer_zmq_identity.empty())
+            {
+                nlohmann::json err;
+                err["channel_name"]          = channel_name;
+                err["event"]                 = "schema_mismatch_attempt";
+                err["existing_schema_hash"]  = existing_schema;
+                err["attempted_schema_hash"] = attempted_schema;
+                err["attempted_pid"]         = attempted_pid;
+                send_to_identity(socket, existing_opt->producer_zmq_identity,
+                                 "CHANNEL_ERROR_NOTIFY", err);
+                LOGGER_ERROR("Broker: CHANNEL_ERROR_NOTIFY to producer of '{}': event={}, "
+                             "existing_hash={}, attempted_hash={}, attempted_pid={}",
+                             channel_name, "schema_mismatch_attempt",
+                             existing_schema, attempted_schema, attempted_pid);
+            }
+            return make_error(corr_id, "SCHEMA_MISMATCH",
+                              "Schema hash differs from existing registration for channel '" +
+                                  channel_name + "'");
         }
-        return make_error(corr_id, "SCHEMA_MISMATCH",
-                          "Schema hash differs from existing registration for channel '" +
-                              channel_name + "'");
+        // Same schema — re-registration (producer restart).  Preserve
+        // existing consumers so they are still notified on close.
+        entry.consumers = std::move(existing_opt->consumers);
     }
 
-    hub_state_._on_channel_registered(std::move(hub_entry));
+    hub_state_._on_channel_registered(std::move(entry));
 
     LOGGER_INFO("Broker: registered channel '{}' (pending first heartbeat)", channel_name);
     nlohmann::json resp;
@@ -1181,16 +1099,11 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
 
     const uint64_t producer_pid = req.value("producer_pid", uint64_t{0});
 
-    // Notify consumers BEFORE removing the entry so the consumer list is still intact.
-    // G2.2.1.c phase 1: source from HubState.
+    // G2.2.1.c phase 3: HubState is the sole channel store; replicate
+    // ChannelRegistry::deregister_channel's NOT_REGISTERED gate (channel
+    // exists AND producer_pid matches).
     auto entry = hub_state_.channel(channel_name);
-    if (entry.has_value())
-    {
-        send_closing_notify(socket, channel_name, *entry, "producer_deregistered");
-        on_channel_closed(socket, channel_name, *entry, "producer_deregistered");
-    }
-
-    if (!registry.deregister_channel(channel_name, producer_pid))
+    if (!entry.has_value() || entry->producer_pid != producer_pid)
     {
         LOGGER_WARN("Broker: DEREG_REQ failed for channel '{}' (pid={})", channel_name,
                     producer_pid);
@@ -1198,7 +1111,11 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
                           "Channel '" + channel_name + "' not registered or pid mismatch");
     }
 
-    // G2.2.1.a dual-write: producer voluntarily closed the channel.
+    // Notify consumers BEFORE removing the entry so the consumer list is still intact.
+    send_closing_notify(socket, channel_name, *entry, "producer_deregistered");
+    on_channel_closed(socket, channel_name, *entry, "producer_deregistered");
+
+    // Producer voluntarily closed the channel — HubState authoritative remove.
     hub_state_._on_channel_closed(channel_name,
                                   pylabhub::hub::ChannelCloseReason::VoluntaryDereg);
 
@@ -1311,9 +1228,9 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
         return *err;
     }
 
-    ConsumerEntry entry;
-    entry.consumer_pid       = req.value("consumer_pid", uint64_t{0});
-    entry.consumer_hostname  = req.value("consumer_hostname", "");
+    pylabhub::hub::ConsumerEntry entry;
+    entry.consumer_pid      = req.value("consumer_pid", uint64_t{0});
+    entry.consumer_hostname = req.value("consumer_hostname", "");
     entry.role_name         = role_name;
     entry.role_uid          = role_uid;
     entry.inbox_endpoint    = req.value("inbox_endpoint", "");
@@ -1323,10 +1240,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // Capture ZMQ identity for future CHANNEL_CLOSING_NOTIFY.
     entry.zmq_identity.assign(static_cast<const char*>(identity.data()), identity.size());
 
-    // G2.2.1.a dual-write: capture hub projection before moving into registry.
-    auto hub_consumer = to_hub_consumer(entry);
-    registry.register_consumer(channel_name, std::move(entry));
-    hub_state_._on_consumer_joined(channel_name, std::move(hub_consumer));
+    hub_state_._on_consumer_joined(channel_name, std::move(entry));
 
     LOGGER_INFO("Broker: consumer registered for channel '{}'", channel_name);
     nlohmann::json resp;
@@ -1372,7 +1286,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
         }
     }
 
-    if (!registry.deregister_consumer(channel_name, consumer_pid))
+    // G2.2.1.c phase 3: HubState is the sole consumer store.
+    if (!have_entry)
     {
         LOGGER_WARN("Broker: CONSUMER_DEREG_REQ failed for channel '{}' (pid={})", channel_name,
                     consumer_pid);
@@ -1381,13 +1296,11 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
                               " not registered for channel '" + channel_name + "'");
     }
 
-    // G2.2.1.a dual-write: consumer voluntarily left.  `closing_entry.role_uid`
-    // may be empty (legacy consumers), in which case HubState's _on_consumer_left
+    // Consumer voluntarily left.  `closing_entry.role_uid` may be empty
+    // (legacy consumers), in which case HubState's _on_consumer_left
     // silent-drops the role-side cleanup and still erases from the channel.
-    if (have_entry)
-        hub_state_._on_consumer_left(channel_name, closing_entry.role_uid);
-    if (have_entry)
-        on_consumer_closed(socket, channel_name, closing_entry, "voluntary_close");
+    hub_state_._on_consumer_left(channel_name, closing_entry.role_uid);
+    on_consumer_closed(socket, channel_name, closing_entry, "voluntary_close");
 
     LOGGER_INFO("Broker: consumer deregistered from channel '{}'", channel_name);
     nlohmann::json resp;
@@ -1410,61 +1323,49 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
     }
     // Peek status + producer_role_uid before updating so we can log
     // state transitions and feed `_on_heartbeat` with the role context.
-    // G2.2.1.c phase 1: read-only peek sources from HubState.
-    bool        was_pending      = false;
-    std::string producer_role_uid;
-    if (auto pre = hub_state_.channel(channel_name); pre.has_value())
-    {
-        was_pending       = (pre->status == pylabhub::hub::ChannelStatus::PendingReady);
-        producer_role_uid = pre->producer_role_uid;
-    }
-
-    if (registry.update_heartbeat(channel_name))
-    {
-        if (was_pending)
-        {
-            ++m_metric_pending_to_ready;
-            LOGGER_INFO("Broker: role '{}' transitioned Pending -> Ready", channel_name);
-        }
-        LOGGER_DEBUG("Broker: heartbeat for channel '{}'", channel_name);
-
-        if (!req.contains("producer_pid") || req["producer_pid"].get<uint64_t>() == 0)
-        {
-            LOGGER_ERROR("Broker: HEARTBEAT_REQ for '{}' missing or zero producer_pid",
-                         channel_name);
-        }
-
-        // G2.2.1.b.1 — single capability-op call replaces the manual
-        // `_set_channel_status(Ready)` dual-write *and* the previously-
-        // missing per-tick `last_heartbeat` update.  `_on_heartbeat`
-        // unconditionally refreshes channel.last_heartbeat, transitions
-        // PendingReady→Ready when applicable (state_since auto-stamped),
-        // updates role.last_heartbeat (role-side liveness), and absorbs
-        // piggybacked metrics into role.latest_metrics (HEP-0033 §9.1).
-        std::optional<nlohmann::json> metrics_opt;
-        if (req.contains("metrics") && req["metrics"].is_object())
-            metrics_opt = req["metrics"];
-        hub_state_._on_heartbeat(channel_name,
-                                 producer_role_uid,
-                                 std::chrono::steady_clock::now(),
-                                 metrics_opt);
-
-        // HEP-CORE-0019: keep the legacy metrics_store_ in sync until
-        // G2.2.4 absorbs metrics.  After that, `_on_heartbeat`'s role-
-        // side metrics update is the only source.
-        if (req.contains("metrics") && req["metrics"].is_object())
-        {
-            const uint64_t pid = req.value("producer_pid", uint64_t{0});
-            update_producer_metrics(channel_name, req["metrics"], pid);
-        }
-
-        // HEP-CORE-0023 §2.1: registry.update_heartbeat() transitions
-        // PendingReady -> Ready internally. No additional action needed here;
-        // the next DISC_REQ will observe Ready and return DISC_ACK.
-    }
-    else
+    // G2.2.1.c phase 3: HubState is the sole channel store.  Peek
+    // existence + status to log the Pending->Ready transition correctly.
+    auto pre = hub_state_.channel(channel_name);
+    if (!pre.has_value())
     {
         LOGGER_WARN("Broker: HEARTBEAT_REQ for unknown channel '{}'", channel_name);
+        return;
+    }
+    const bool        was_pending       = (pre->status == pylabhub::hub::ChannelStatus::PendingReady);
+    const std::string producer_role_uid = pre->producer_role_uid;
+
+    if (was_pending)
+    {
+        ++m_metric_pending_to_ready;
+        LOGGER_INFO("Broker: role '{}' transitioned Pending -> Ready", channel_name);
+    }
+    LOGGER_DEBUG("Broker: heartbeat for channel '{}'", channel_name);
+
+    if (!req.contains("producer_pid") || req["producer_pid"].get<uint64_t>() == 0)
+    {
+        LOGGER_ERROR("Broker: HEARTBEAT_REQ for '{}' missing or zero producer_pid",
+                     channel_name);
+    }
+
+    // `_on_heartbeat` unconditionally refreshes channel.last_heartbeat,
+    // transitions PendingReady→Ready when applicable (state_since auto-
+    // stamped), updates role.last_heartbeat (role-side liveness), and
+    // absorbs piggybacked metrics into role.latest_metrics (HEP-0033 §9.1).
+    std::optional<nlohmann::json> metrics_opt;
+    if (req.contains("metrics") && req["metrics"].is_object())
+        metrics_opt = req["metrics"];
+    hub_state_._on_heartbeat(channel_name,
+                             producer_role_uid,
+                             std::chrono::steady_clock::now(),
+                             metrics_opt);
+
+    // HEP-CORE-0019: keep the legacy metrics_store_ in sync until
+    // G2.2.4 absorbs metrics.  After that, `_on_heartbeat`'s role-
+    // side metrics update is the only source.
+    if (req.contains("metrics") && req["metrics"].is_object())
+    {
+        const uint64_t pid = req.value("producer_pid", uint64_t{0});
+        update_producer_metrics(channel_name, req["metrics"], pid);
     }
 }
 
@@ -1494,8 +1395,6 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
                           "Endpoint '" + endpoint + "' is invalid or has port 0");
     }
 
-    // G2.2.1.c phase 2: read channel state from HubState (truth);
-    // registry mirror updated below until phase 3 deletes the registry.
     auto entry = hub_state_.channel(channel_name);
     if (!entry.has_value())
     {
@@ -1566,10 +1465,7 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
     {
         LOGGER_INFO("Broker: ENDPOINT_UPDATE_REQ for '{}' {} updated to '{}'",
                     channel_name, endpoint_type, endpoint);
-        // HubState authoritative; registry mirror.
         hub_state_._set_channel_zmq_node_endpoint(channel_name, endpoint);
-        if (auto* reg = registry.find_channel_mutable(channel_name); reg != nullptr)
-            reg->zmq_node_endpoint = endpoint;
     }
 
     nlohmann::json resp;
@@ -1712,9 +1608,6 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
     const auto ready_timeout   = cfg.effective_ready_timeout();
     const auto pending_timeout = cfg.effective_pending_timeout();
 
-    // G2.2.1.c phase 2: source liveness state from HubState snapshot;
-    // registry mutation remains as a passive mirror until phase 3 deletes
-    // the registry entirely.  One snapshot covers both passes.
     const auto snap = hub_state_.snapshot();
     const auto now  = std::chrono::steady_clock::now();
 
@@ -1728,14 +1621,8 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
         LOGGER_WARN("Broker: role '{}' demoted Ready -> Pending "
                     "(no heartbeat within {} ms)",
                     channel_name, ready_timeout.count());
-        // HubState is the truth (auto-stamps state_since); registry mirror.
         hub_state_._set_channel_status(
             channel_name, pylabhub::hub::ChannelStatus::PendingReady);
-        if (auto* reg = registry.find_channel_mutable(channel_name); reg != nullptr)
-        {
-            reg->status      = ChannelStatus::PendingReady;
-            reg->state_since = now;
-        }
         ++m_metric_ready_to_pending;
     }
 
@@ -1761,8 +1648,6 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
         // Invoke cleanup hook BEFORE erasing so federation/band can read
         // entry fields (producer_role_uid, channel_name, ...).
         on_channel_closed(socket, channel_name, entry, "pending_timeout");
-        registry.deregister_channel(channel_name, entry.producer_pid);
-        // HubState authoritative close.
         hub_state_._on_channel_closed(
             channel_name,
             pylabhub::hub::ChannelCloseReason::HeartbeatTimeout);
@@ -1783,8 +1668,6 @@ void BrokerServiceImpl::check_dead_consumers(zmq::socket_t& socket)
     }
     m_last_consumer_check = now;
 
-    // G2.2.1.c phase 2: iterate HubState snapshot; registry deregister
-    // remains as a passive mirror until phase 3 deletes the registry.
     const auto snap = hub_state_.snapshot();
     for (const auto& [channel_name, entry] : snap.channels)
     {
@@ -1815,8 +1698,6 @@ void BrokerServiceImpl::check_dead_consumers(zmq::socket_t& socket)
                             "consumer_pid={}, reason=process_dead",
                             channel_name, dead_consumer.consumer_pid);
             }
-            registry.deregister_consumer(channel_name, dead_consumer.consumer_pid);
-            // HubState authoritative consumer-leave.
             hub_state_._on_consumer_left(channel_name, dead_consumer.role_uid);
             on_consumer_closed(socket, channel_name, dead_consumer, "process_dead");
         }
@@ -1879,8 +1760,6 @@ void BrokerServiceImpl::check_closing_deadlines(zmq::socket_t& socket)
     const auto now = std::chrono::steady_clock::now();
     std::vector<std::string> to_remove;
 
-    // G2.2.1.c phase 2: iterate HubState snapshot.  Registry cleanup
-    // remains as a passive mirror until phase 3 deletes the registry.
     const auto snap = hub_state_.snapshot();
     for (const auto& [name, entry] : snap.channels)
     {
@@ -1908,7 +1787,6 @@ void BrokerServiceImpl::check_closing_deadlines(zmq::socket_t& socket)
         if (entry.has_value())
         {
             on_channel_closed(socket, name, *entry, "grace_expired");
-            registry.deregister_channel(name, entry->producer_pid);
             // HubState authoritative grace-expired close.  Reason =
             // HeartbeatTimeout (this path only triggers for channels
             // already in Closing from a heartbeat timeout).

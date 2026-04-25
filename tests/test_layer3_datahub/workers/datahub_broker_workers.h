@@ -5,9 +5,6 @@
 namespace pylabhub::tests::worker::broker
 {
 
-/** Pure ChannelRegistry unit tests (no ZMQ, no lifecycle). */
-int channel_registry_ops();
-
 /** Register a channel via Messenger, discover it back — full REG/DISC round-trip. */
 int broker_reg_disc_happy_path();
 

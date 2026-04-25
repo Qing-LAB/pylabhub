@@ -5,9 +5,6 @@
 namespace pylabhub::tests::worker::broker_consumer
 {
 
-/** Pure ChannelRegistry consumer CRUD tests (no ZMQ, no lifecycle). */
-int channel_registry_consumer_ops();
-
 /** CONSUMER_REG_REQ for a channel that is not registered → ERROR CHANNEL_NOT_FOUND. */
 int consumer_reg_channel_not_found();
 
