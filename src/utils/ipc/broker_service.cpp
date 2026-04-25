@@ -100,6 +100,54 @@ bool channel_name_matches_glob(const std::string& name, const std::string& glob)
     return *g == '\0';
 }
 
+// ─── HEP-CORE-0033 §9.2 reply-shape classification ──────────────────────────
+//
+// Single source of truth for which msg_types are request-reply (ACK/ERROR
+// reply expected) vs fire-and-forget (no reply, ever).  Used by the
+// dispatcher to:
+//   - validate that an inbound msg_type is known (R1: don't pollute
+//     msg_type_counts with attacker-supplied unknowns); and
+//   - decide whether the catch-block ERROR reply path runs (R3: never
+//     send an ERROR reply for a fire-and-forget type).
+//
+// When adding a new msg_type to process_message(), it MUST also be listed
+// in the appropriate array below.
+
+constexpr std::array<std::string_view, 16> kRequestReplyTypes = {
+    "REG_REQ", "DISC_REQ", "DEREG_REQ",
+    "CONSUMER_REG_REQ", "CONSUMER_DEREG_REQ",
+    "ENDPOINT_UPDATE_REQ", "SCHEMA_REQ",
+    "CHANNEL_LIST_REQ", "METRICS_REQ", "SHM_BLOCK_QUERY_REQ",
+    "ROLE_PRESENCE_REQ", "ROLE_INFO_REQ",
+    "BAND_JOIN_REQ", "BAND_LEAVE_REQ", "BAND_MEMBERS_REQ",
+    "HUB_PEER_HELLO",
+};
+
+constexpr std::array<std::string_view, 9> kFireAndForgetTypes = {
+    "HEARTBEAT_REQ", "METRICS_REPORT_REQ", "CHECKSUM_ERROR_REPORT",
+    "CHANNEL_NOTIFY_REQ", "CHANNEL_BROADCAST_REQ", "BAND_BROADCAST_REQ",
+    "HUB_PEER_BYE",
+    // Inbound on outbound DEALER (peer→us); not request-reply but valid:
+    "HUB_RELAY_MSG", "HUB_TARGETED_MSG",
+};
+
+[[nodiscard]] bool is_request_reply(std::string_view t) noexcept
+{
+    for (auto x : kRequestReplyTypes) if (x == t) return true;
+    return false;
+}
+
+[[nodiscard]] bool is_fire_and_forget(std::string_view t) noexcept
+{
+    for (auto x : kFireAndForgetTypes) if (x == t) return true;
+    return false;
+}
+
+[[nodiscard]] bool is_known_msg_type(std::string_view t) noexcept
+{
+    return is_request_reply(t) || is_fire_and_forget(t);
+}
+
 } // namespace
 
 // ============================================================================
@@ -207,7 +255,17 @@ public:
     void process_message(zmq::socket_t&       socket,
                          const zmq::message_t& identity,
                          const std::string&    msg_type,
-                         const nlohmann::json& payload);
+                         const nlohmann::json& payload,
+                         std::size_t           bytes_in);
+
+    /// HEP-CORE-0033 §9.6: invoke `cfg.on_processing_error` if configured,
+    /// catching any user-supplied callback exception (R2).  `identity` may
+    /// be nullptr for failures that happen before the routing identity is
+    /// known (peer-DEALER inbound, S1/S2 errors).
+    void emit_processing_error(const std::string&    msg_type,
+                               const std::string&    error_kind,
+                               const std::string&    detail,
+                               const zmq::message_t* identity);
 
     nlohmann::json handle_reg_req(const nlohmann::json& req,
                                    const zmq::message_t& identity,
@@ -555,13 +613,21 @@ void BrokerServiceImpl::run()
                 {
                     try
                     {
-                        // Reject oversized payloads before string construction and JSON parse.
-                        // ROUTER socket: silently drop — no mandatory reply.
+                        // S1 frame validation — reject oversized payloads
+                        // before string construction and JSON parse.
+                        // ROUTER socket: no mandatory reply (HEP-0033 §9.3).
                         static constexpr size_t kMaxPayloadBytes = 1u << 20; // 1 MB
                         if (frames[3].size() > kMaxPayloadBytes)
                         {
                             LOGGER_WARN("Broker: oversized payload ({} bytes) — dropped",
                                         frames[3].size());
+                            hub_state_._bump_counter("sys.malformed_frame");
+                            emit_processing_error(/*msg_type=*/"",
+                                                  "malformed_frame",
+                                                  "oversized payload " +
+                                                      std::to_string(frames[3].size()) +
+                                                      " bytes",
+                                                  &frames[0]);
                         }
                         else
                         {
@@ -570,12 +636,19 @@ void BrokerServiceImpl::run()
                             LOGGER_TRACE("Broker: recv msg_type='{}' payload_len={}",
                                          msg_type, payload_raw.size());
                             nlohmann::json payload = nlohmann::json::parse(payload_raw);
-                            process_message(router, frames[0], msg_type, payload);
+                            process_message(router, frames[0], msg_type, payload,
+                                            payload_raw.size());
                         }
                     }
                     catch (const nlohmann::json::exception& e)
                     {
+                        // S2 body parse — drop, count, hook (no reply path
+                        // because we don't yet know msg_type / corr_id).
                         LOGGER_WARN("Broker: malformed JSON: {}", e.what());
+                        hub_state_._bump_counter("sys.malformed_json");
+                        emit_processing_error(/*msg_type=*/"",
+                                              "malformed_json", e.what(),
+                                              &frames[0]);
                     }
                 }
             }
@@ -652,12 +725,42 @@ void BrokerServiceImpl::run()
 void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
                                         const zmq::message_t& identity,
                                         const std::string&    msg_type,
-                                        const nlohmann::json& payload)
+                                        const nlohmann::json& payload,
+                                        std::size_t           bytes_in)
 {
     LOGGER_TRACE("Broker: dispatch {} channel='{}'", msg_type,
                  payload.is_object()
                      ? payload.value("channel_name", payload.value("channel", std::string{}))
                      : std::string{});
+
+    // HEP-CORE-0033 §9.3 S3: unknown msg_type — bump only sys.unknown_msg_type
+    // (R1: do NOT pollute msg_type_counts with attacker-supplied strings),
+    // ERROR reply, fire hook, return.
+    if (!is_known_msg_type(msg_type))
+    {
+        LOGGER_WARN("Broker: unknown msg_type '{}'", msg_type);
+        const std::string corr_id = payload.value("correlation_id", "");
+        try {
+            send_reply(socket, identity, "ERROR",
+                       make_error(corr_id, "UNKNOWN_MSG_TYPE",
+                                  "Unknown message type: " + msg_type));
+        } catch (const std::exception &re) {
+            LOGGER_WARN("Broker: failed to send UNKNOWN_MSG_TYPE ERROR reply: {}",
+                        re.what());
+        }
+        hub_state_._bump_counter("sys.unknown_msg_type");
+        emit_processing_error(msg_type, "unknown_msg_type", msg_type, &identity);
+        return;
+    }
+
+    // HEP-CORE-0033 §9.5 exception-safety contract: process_message MUST NOT
+    // propagate exceptions to its caller (the recv loop).  Wrap the dispatch
+    // chain so any std::exception is logged + counted + (request-reply only)
+    // an ERROR reply attempted, and the broker continues to the next message.
+    bool errored = false;
+
+    try
+    {
 
     if (msg_type == "REG_REQ")
     {
@@ -811,13 +914,81 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
         auto resp = handle_band_members_req(payload);
         send_reply(socket, identity, "BAND_MEMBERS_ACK", resp);
     }
+    // No final `else` branch: unknown msg_types are short-circuited at the
+    // top of process_message (R1).  If we reach here, msg_type was on the
+    // known list but the dispatcher chain did not match — that is a code
+    // bug (added to is_known_msg_type but not to dispatch); log loudly.
     else
     {
-        LOGGER_WARN("Broker: unknown msg_type '{}'", msg_type);
-        const std::string corr_id = payload.value("correlation_id", "");
-        send_reply(socket, identity, "ERROR",
-                   make_error(corr_id, "UNKNOWN_MSG_TYPE",
-                              "Unknown message type: " + msg_type));
+        LOGGER_ERROR("Broker: msg_type '{}' is classified as known but "
+                     "process_message has no dispatch branch — this is a "
+                     "broker bug",
+                     msg_type);
+    }
+
+    } // end try
+    catch (const std::exception &e)
+    {
+        errored = true;
+        LOGGER_ERROR("Broker: handler exception for msg_type='{}': {}",
+                     msg_type, e.what());
+        // R3: ERROR reply only for request-reply types — the protocol
+        // shape is fixed per msg_type, not per outcome.  Fire-and-forget
+        // clients never expect a reply, even when the server errored.
+        if (is_request_reply(msg_type))
+        {
+            try {
+                send_reply(socket, identity, "ERROR",
+                           make_error(payload.value("correlation_id", ""),
+                                      "INTERNAL_ERROR", e.what()));
+            } catch (const std::exception &re) {
+                // R11: best-effort; swallow.
+                LOGGER_WARN("Broker: failed to send INTERNAL_ERROR reply for "
+                            "msg_type='{}': {}", msg_type, re.what());
+            } catch (...) {}
+        }
+        hub_state_._bump_counter("sys.handler_exception");
+        emit_processing_error(msg_type, "exception", e.what(), &identity);
+    }
+
+    // HEP-CORE-0033 §9.4 wire metric: always bump for known msg_types,
+    // regardless of error outcome (counts dispatch-completed messages).
+    // bytes_out=0 because multi-target fan-out (broadcast/relay) makes a
+    // single per-message accounting ambiguous; per-target byte tracking
+    // deferred.
+    hub_state_._on_message_processed(msg_type, bytes_in, /*bytes_out=*/0);
+    if (errored)
+        hub_state_._bump_msg_type_error(msg_type);
+}
+
+// HEP-CORE-0033 §9.6: invoke the on_processing_error hook (if configured),
+// catching any user-supplied callback exception (R2) so it never escapes
+// past process_message.
+void BrokerServiceImpl::emit_processing_error(const std::string&    msg_type,
+                                               const std::string&    error_kind,
+                                               const std::string&    detail,
+                                               const zmq::message_t* identity)
+{
+    if (!cfg.on_processing_error) return;
+    pylabhub::broker::ProcessingError err;
+    err.msg_type   = msg_type;
+    err.error_kind = error_kind;
+    err.detail     = detail;
+    if (identity != nullptr && identity->size() > 0)
+        err.peer_identity = std::string(static_cast<const char*>(identity->data()),
+                                        identity->size());
+    try {
+        cfg.on_processing_error(err);
+    }
+    catch (const std::exception &he) {
+        LOGGER_ERROR("Broker: on_processing_error callback threw "
+                     "(msg_type='{}', kind='{}'): {}",
+                     msg_type, error_kind, he.what());
+    }
+    catch (...) {
+        LOGGER_ERROR("Broker: on_processing_error callback threw "
+                     "(unknown exception type, msg_type='{}', kind='{}')",
+                     msg_type, error_kind);
     }
 }
 
