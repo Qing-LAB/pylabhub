@@ -326,10 +326,8 @@ public:
     std::chrono::steady_clock::time_point m_last_consumer_check{};
 
     // ── Role state-machine metrics (HEP-CORE-0023 §2.5) ─────────────────
-    // Monotonic counters, accessed only from the broker run() thread.
-    uint64_t m_metric_ready_to_pending{0};
-    uint64_t m_metric_pending_to_deregistered{0};
-    uint64_t m_metric_pending_to_ready{0};
+    // Owned by HubState (`BrokerCounters`) per HEP-CORE-0033 §8;
+    // accessed via `hub_state_.counters()`.
 
     // ── Hub federation handlers (HEP-CORE-0022) ───────────────────────────
     void handle_hub_peer_hello(zmq::socket_t&       socket,
@@ -958,8 +956,8 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         }
     }
 
-    // G2.2.1.c phase 3: HubState is the sole channel store.
-    // Replicate ChannelRegistry::register_channel's gating semantics:
+    // HubState is the sole channel store.  Replicate the historical
+    // ChannelRegistry::register_channel gating semantics:
     //   - new channel: insert.
     //   - same schema_hash: re-register, preserving existing consumers.
     //   - different schema_hash: SCHEMA_MISMATCH error + notify existing.
@@ -1019,7 +1017,6 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
         return make_error(corr_id, "INVALID_REQUEST", "Missing or empty 'channel_name'");
     }
 
-    // G2.2.1.c phase 1: source channel state from HubState.
     auto entry = hub_state_.channel(channel_name);
 
     // ── HEP-CORE-0023 §2.2: Three-response state-machine dispatch ──────
@@ -1099,8 +1096,8 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
 
     const uint64_t producer_pid = req.value("producer_pid", uint64_t{0});
 
-    // G2.2.1.c phase 3: HubState is the sole channel store; replicate
-    // ChannelRegistry::deregister_channel's NOT_REGISTERED gate (channel
+    // HubState is the sole channel store; replicate the historical
+    // ChannelRegistry::deregister_channel NOT_REGISTERED gate (channel
     // exists AND producer_pid matches).
     auto entry = hub_state_.channel(channel_name);
     if (!entry.has_value() || entry->producer_pid != producer_pid)
@@ -1143,7 +1140,6 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
         return make_error(corr_id, "INVALID_REQUEST", "Missing or empty 'channel_name'");
     }
 
-    // G2.2.1.c phase 1: source channel state from HubState.
     const auto channel_entry = hub_state_.channel(channel_name);
     if (!channel_entry.has_value())
     {
@@ -1267,7 +1263,6 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
     const uint64_t consumer_pid = req.value("consumer_pid", uint64_t{0});
 
     // Fetch consumer entry BEFORE removal so the cleanup hook can read role_uid.
-    // G2.2.1.c phase 1: source from HubState.
     pylabhub::hub::ConsumerEntry closing_entry{};
     bool have_entry = false;
     {
@@ -1286,7 +1281,6 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
         }
     }
 
-    // G2.2.1.c phase 3: HubState is the sole consumer store.
     if (!have_entry)
     {
         LOGGER_WARN("Broker: CONSUMER_DEREG_REQ failed for channel '{}' (pid={})", channel_name,
@@ -1321,10 +1315,9 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
         LOGGER_WARN("Broker: HEARTBEAT_REQ missing channel_name");
         return;
     }
-    // Peek status + producer_role_uid before updating so we can log
-    // state transitions and feed `_on_heartbeat` with the role context.
-    // G2.2.1.c phase 3: HubState is the sole channel store.  Peek
-    // existence + status to log the Pending->Ready transition correctly.
+    // Peek existence + status before applying the heartbeat so we can log
+    // the Pending->Ready transition (the actual mutation + counter bump
+    // happens inside hub_state_._on_heartbeat below).
     auto pre = hub_state_.channel(channel_name);
     if (!pre.has_value())
     {
@@ -1336,7 +1329,8 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
 
     if (was_pending)
     {
-        ++m_metric_pending_to_ready;
+        // `pending_to_ready_total` is bumped by `_on_heartbeat` itself
+        // when the PendingReady -> Ready transition fires.
         LOGGER_INFO("Broker: role '{}' transitioned Pending -> Ready", channel_name);
     }
     LOGGER_DEBUG("Broker: heartbeat for channel '{}'", channel_name);
@@ -1502,7 +1496,6 @@ nlohmann::json BrokerServiceImpl::handle_schema_req(const nlohmann::json& req)
     {
         return make_error(corr_id, "INVALID_REQUEST", "Missing 'channel_name'");
     }
-    // G2.2.1.c phase 1: source from HubState.
     const auto entry = hub_state_.channel(channel_name);
     if (!entry.has_value())
     {
@@ -1611,7 +1604,10 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
     const auto snap = hub_state_.snapshot();
     const auto now  = std::chrono::steady_clock::now();
 
-    // ── Pass 1: Ready -> Pending demotion ─────────────────────────────────
+    // ── Pass 1: Ready -> Pending demotion (HEP-CORE-0023 §2.1) ───────────
+    // Single capability op: HubState atomically transitions + bumps
+    // `ready_to_pending_total`.  Role state stays Connected — Pending is
+    // "suspicious, may recover via the next heartbeat", not "gone".
     for (const auto& [channel_name, entry] : snap.channels)
     {
         if (entry.status != pylabhub::hub::ChannelStatus::Ready)
@@ -1621,12 +1617,10 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
         LOGGER_WARN("Broker: role '{}' demoted Ready -> Pending "
                     "(no heartbeat within {} ms)",
                     channel_name, ready_timeout.count());
-        hub_state_._set_channel_status(
-            channel_name, pylabhub::hub::ChannelStatus::PendingReady);
-        ++m_metric_ready_to_pending;
+        hub_state_._on_heartbeat_timeout(channel_name, entry.producer_role_uid);
     }
 
-    // ── Pass 2: Pending -> deregistered (immediate, no Closing state) ─────
+    // ── Pass 2: Pending -> deregistered (HEP-CORE-0023 §2.1, no grace) ──
     // Re-snapshot to observe pass 1's transitions: channels demoted Ready
     // -> Pending in this same call appear here with their freshly-stamped
     // state_since (≈ now), so `now - state_since < pending_timeout` skips
@@ -1641,17 +1635,12 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
         LOGGER_WARN("Broker: role '{}' reclaimed from Pending "
                     "(no heartbeat within {} ms); sending CHANNEL_CLOSING_NOTIFY + dereg",
                     channel_name, pending_timeout.count());
-        // Notify consumers (best-effort — a stuck/disconnected consumer
-        // may miss this; it will eventually observe CHANNEL_NOT_FOUND on
-        // its next DISC_REQ).  Pass the snapshot copy directly to helpers.
+        // Transport sends + federation/band cleanup happen first, while the
+        // entry is still in HubState; `_on_pending_timeout` then erases the
+        // entry and bumps `pending_to_deregistered_total`.
         send_closing_notify(socket, channel_name, entry, "pending_timeout");
-        // Invoke cleanup hook BEFORE erasing so federation/band can read
-        // entry fields (producer_role_uid, channel_name, ...).
         on_channel_closed(socket, channel_name, entry, "pending_timeout");
-        hub_state_._on_channel_closed(
-            channel_name,
-            pylabhub::hub::ChannelCloseReason::HeartbeatTimeout);
-        ++m_metric_pending_to_deregistered;
+        hub_state_._on_pending_timeout(channel_name);
     }
 }
 
@@ -1912,7 +1901,6 @@ void BrokerServiceImpl::handle_checksum_error_report(zmq::socket_t&        socke
 
     if (cfg.checksum_repair_policy == ChecksumRepairPolicy::NotifyOnly)
     {
-        // G2.2.1.c phase 1: source from HubState.
         auto entry = hub_state_.channel(channel);
         if (entry)
         {
@@ -1956,7 +1944,6 @@ void BrokerServiceImpl::handle_channel_notify_req(zmq::socket_t&        socket,
         return;
     }
 
-    // G2.2.1.c phase 1: source from HubState.
     auto entry = hub_state_.channel(target_channel);
     if (!entry || entry->producer_zmq_identity.empty())
     {
@@ -2004,7 +1991,6 @@ void BrokerServiceImpl::handle_channel_broadcast_req(zmq::socket_t&        socke
         return;
     }
 
-    // G2.2.1.c phase 1: source from HubState.
     auto entry = hub_state_.channel(target_channel);
     if (!entry)
     {
@@ -2075,7 +2061,6 @@ nlohmann::json BrokerServiceImpl::handle_channel_list_req()
     nlohmann::json resp;
     resp["status"] = "success";
 
-    // G2.2.1.c phase 1: source from HubState snapshot.
     nlohmann::json channels = nlohmann::json::array();
     const auto snap = hub_state_.snapshot();
     for (const auto& [name, entry] : snap.channels)
@@ -2113,7 +2098,6 @@ nlohmann::json BrokerServiceImpl::handle_role_presence_req(const nlohmann::json&
     }
 
     // Scan all channels: check producer_role_uid and each consumer's role_uid.
-    // G2.2.1.c phase 1: source from HubState snapshot.
     const auto snap = hub_state_.snapshot();
     for (const auto& [name, entry] : snap.channels)
     {
@@ -2160,7 +2144,6 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
     }
 
     // Search for a channel whose producer_role_uid matches.
-    // G2.2.1.c phase 1: source from HubState snapshot.
     const auto snap = hub_state_.snapshot();
     for (const auto& [name, entry] : snap.channels)
     {
@@ -2194,7 +2177,6 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
     }
 
     // Search consumer entries across all channels.
-    // G2.2.1.c phase 1: reuse the same HubState snapshot taken above.
     for (const auto& [name, entry] : snap.channels)
     {
         for (const auto& cons : entry.consumers)
@@ -2340,10 +2322,8 @@ void BrokerService::stop()
 
 std::string BrokerService::list_channels_json_str() const
 {
-    // G2.2.1.b: read from HubState instead of the broker's ChannelRegistry.
     // HubState snapshot takes its own shared lock internally; no m_query_mu
-    // needed here (the registry is still written dual-write from handler
-    // code, but this reader path no longer touches it).
+    // needed here.
     const auto snap = pImpl->hub_state_.snapshot();
     nlohmann::json result = nlohmann::json::array();
     for (const auto &[name, entry] : snap.channels)
@@ -2361,7 +2341,6 @@ std::string BrokerService::list_channels_json_str() const
 
 ChannelSnapshot BrokerService::query_channel_snapshot() const
 {
-    // G2.2.1.b: source of truth for channel view is HubState.
     const auto hub_snap = pImpl->hub_state_.snapshot();
     ChannelSnapshot snap;
     snap.channels.reserve(hub_snap.channels.size());
@@ -2382,11 +2361,13 @@ ChannelSnapshot BrokerService::query_channel_snapshot() const
 
 RoleStateMetrics BrokerService::query_role_state_metrics() const
 {
-    std::lock_guard<std::mutex> lock(pImpl->m_query_mu);
+    // Single-source-of-truth via HubState (HEP-CORE-0033 §8).  HubState
+    // takes its own internal lock; m_query_mu not needed here.
+    const auto c = pImpl->hub_state_.counters();
     return RoleStateMetrics{
-        pImpl->m_metric_ready_to_pending,
-        pImpl->m_metric_pending_to_deregistered,
-        pImpl->m_metric_pending_to_ready,
+        c.ready_to_pending_total,
+        c.pending_to_deregistered_total,
+        c.pending_to_ready_total,
     };
 }
 
@@ -2403,8 +2384,8 @@ nlohmann::json BrokerServiceImpl::handle_shm_block_query(const nlohmann::json& r
 
 nlohmann::json BrokerServiceImpl::collect_shm_info(const std::string& channel) const
 {
-    // G2.2.1.b: source from HubState.  Snapshot under HubState's own lock
-    // (inside snapshot()), then read SHM outside any broker locks.
+    // Snapshot under HubState's own lock (inside snapshot()), then read SHM
+    // outside any broker locks.
     struct BlockInfo
     {
         std::string                                channel;
@@ -2800,7 +2781,6 @@ void BrokerServiceImpl::handle_hub_relay_msg(zmq::socket_t&        socket,
 
     // Deliver locally as CHANNEL_EVENT_NOTIFY (to channel producer only, like CHANNEL_NOTIFY_REQ).
     // Include relayed_from so scripts can distinguish relayed events.
-    // G2.2.1.c phase 1: source from HubState.
     auto entry = hub_state_.channel(channel);
     if (!entry || entry->producer_zmq_identity.empty())
     {

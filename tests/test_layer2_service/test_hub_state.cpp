@@ -811,7 +811,59 @@ TEST(HubStateOps, Heartbeat_WithMetrics_StoresOnRole)
     EXPECT_NE(r->metrics_collected_at, std::chrono::system_clock::time_point{});
 }
 
-TEST(HubStateOps, HeartbeatTimeout_DemotesAndBumpsCounter)
+// HEP-CORE-0023 §2.1: Ready -> Pending demotion on heartbeat timeout.
+// Role is NOT marked Disconnected — Pending means "suspicious, may recover".
+// Counter bumps only when an actual Ready -> Pending transition fires.
+TEST(HubStateOps, HeartbeatTimeout_DemotesChannelOnly_RoleStillConnected)
+{
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
+    HubStateTestAccess::on_heartbeat(
+        s, "ch1", "prod.main.test", std::chrono::steady_clock::now(), std::nullopt);
+    ASSERT_EQ(s.channel("ch1")->status, ChannelStatus::Ready);
+    ASSERT_EQ(s.role("prod.main.test")->state, RoleState::Connected);
+
+    HubStateTestAccess::on_heartbeat_timeout(s, "ch1", "prod.main.test");
+    EXPECT_EQ(s.channel("ch1")->status, ChannelStatus::PendingReady);
+    EXPECT_EQ(s.role("prod.main.test")->state, RoleState::Connected)
+        << "Per HEP-0023 §2.1, Ready->Pending demote does NOT disconnect the role";
+    EXPECT_EQ(s.counters().ready_to_pending_total, 1u);
+}
+
+// Counter must not bump when the channel is not in Ready (e.g. already
+// Pending, or already gone).  Avoids over-counting under sweep races.
+TEST(HubStateOps, HeartbeatTimeout_NotReady_NoCounterBump)
+{
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
+    // Channel is freshly registered: status=PendingReady, not Ready.
+    HubStateTestAccess::on_heartbeat_timeout(s, "ch1", "prod.main.test");
+    EXPECT_EQ(s.channel("ch1")->status, ChannelStatus::PendingReady);
+    EXPECT_EQ(s.counters().ready_to_pending_total, 0u);
+
+    // Unknown channel: also no-op + no counter bump.
+    HubStateTestAccess::on_heartbeat_timeout(s, "no.such.channel.uid00000001",
+                                              "prod.main.test");
+    EXPECT_EQ(s.counters().ready_to_pending_total, 0u);
+}
+
+// HEP-CORE-0023 §2.1: Pending -> deregistered (no grace, no Closing).
+TEST(HubStateOps, PendingTimeout_DeregistersChannelAndBumpsCounter)
+{
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
+    ASSERT_TRUE(s.channel("ch1").has_value());
+    ASSERT_EQ(s.channel("ch1")->status, ChannelStatus::PendingReady);
+
+    HubStateTestAccess::on_pending_timeout(s, "ch1");
+    EXPECT_FALSE(s.channel("ch1").has_value())
+        << "Per HEP-0023 §2.1, Pending->deregistered fully removes the channel "
+           "(no Closing intermediate)";
+    EXPECT_EQ(s.counters().pending_to_deregistered_total, 1u);
+}
+
+// Counter must not bump when the channel is not in PendingReady state.
+TEST(HubStateOps, PendingTimeout_NotPending_NoOpAndNoCounterBump)
 {
     HubState s;
     HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
@@ -819,19 +871,43 @@ TEST(HubStateOps, HeartbeatTimeout_DemotesAndBumpsCounter)
         s, "ch1", "prod.main.test", std::chrono::steady_clock::now(), std::nullopt);
     ASSERT_EQ(s.channel("ch1")->status, ChannelStatus::Ready);
 
-    HubStateTestAccess::on_heartbeat_timeout(s, "ch1", "prod.main.test");
-    EXPECT_EQ(s.channel("ch1")->status, ChannelStatus::PendingReady);
-    EXPECT_EQ(s.role("prod.main.test")->state, RoleState::Disconnected);
-    EXPECT_EQ(s.counters().ready_to_pending_total, 1u);
+    // Channel is Ready, not Pending — _on_pending_timeout must be no-op.
+    HubStateTestAccess::on_pending_timeout(s, "ch1");
+    EXPECT_EQ(s.channel("ch1")->status, ChannelStatus::Ready);
+    EXPECT_EQ(s.counters().pending_to_deregistered_total, 0u);
+
+    // Unknown channel: also no-op.
+    HubStateTestAccess::on_pending_timeout(s, "no.such.channel.uid00000001");
+    EXPECT_EQ(s.counters().pending_to_deregistered_total, 0u);
 }
 
-TEST(HubStateOps, PendingTimeout_ClosingAndBumpsCounter)
+// HEP-CORE-0023 §2.5: every PendingReady -> Ready transition (first heartbeat
+// OR recovery from Pending) bumps `pending_to_ready_total`.
+TEST(HubStateOps, Heartbeat_PendingToReady_BumpsRecoveryCounter)
 {
     HubState s;
     HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
-    HubStateTestAccess::on_pending_timeout(s, "ch1");
-    EXPECT_EQ(s.channel("ch1")->status, ChannelStatus::Closing);
-    EXPECT_EQ(s.counters().pending_to_deregistered_total, 1u);
+    ASSERT_EQ(s.channel("ch1")->status, ChannelStatus::PendingReady);
+    ASSERT_EQ(s.counters().pending_to_ready_total, 0u);
+
+    // First heartbeat: PendingReady -> Ready (counts as "first heartbeat" recovery).
+    HubStateTestAccess::on_heartbeat(
+        s, "ch1", "prod.main.test", std::chrono::steady_clock::now(), std::nullopt);
+    EXPECT_EQ(s.channel("ch1")->status, ChannelStatus::Ready);
+    EXPECT_EQ(s.counters().pending_to_ready_total, 1u);
+
+    // Subsequent Ready->Ready heartbeat: no transition, no counter bump.
+    HubStateTestAccess::on_heartbeat(
+        s, "ch1", "prod.main.test", std::chrono::steady_clock::now(), std::nullopt);
+    EXPECT_EQ(s.counters().pending_to_ready_total, 1u);
+
+    // Demote, then heartbeat to recover: another Pending->Ready, counter bumps.
+    HubStateTestAccess::on_heartbeat_timeout(s, "ch1", "prod.main.test");
+    ASSERT_EQ(s.channel("ch1")->status, ChannelStatus::PendingReady);
+    HubStateTestAccess::on_heartbeat(
+        s, "ch1", "prod.main.test", std::chrono::steady_clock::now(), std::nullopt);
+    EXPECT_EQ(s.channel("ch1")->status, ChannelStatus::Ready);
+    EXPECT_EQ(s.counters().pending_to_ready_total, 2u);
 }
 
 TEST(HubStateOps, BandJoined_UpsertsMemberRole)
