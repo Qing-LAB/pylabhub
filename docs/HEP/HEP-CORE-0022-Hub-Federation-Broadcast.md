@@ -296,7 +296,7 @@ sequenceDiagram
     HB->>HA: Connect DEALER to tcp://127.0.0.1:5570
     HB->>HA: HUB_PEER_HELLO {hub_uid="HUB-B"}
     HA->>HA: Lookup "HUB-B" in cfg.peers<br/>→ relay_channels=["lab.bridge.raw"]
-    HA->>HA: Register InboundPeer {uid="HUB-B",<br/>zmq_identity=<B's routing ID>,<br/>relay_channels=[...]}
+    HA->>HA: hub_state_._on_peer_connected({uid="HUB-B",<br/>zmq_identity=<B's routing ID>,<br/>relay_channels=[...], state=Connected})
     HA->>HSA: on_hub_connected("HUB-B")
     HA->>HB: HUB_PEER_HELLO_ACK {status="ok", hub_uid="HUB-A"}
     HB->>HSB: on_hub_connected("HUB-A")
@@ -334,7 +334,7 @@ sequenceDiagram
     HSA->>HA: api.notify_hub("HUB-B", "ctrl.ch", payload)
     HA->>HA: Enqueue to hub_targeted_queue_
     Note over HA: Next poll cycle drains queue
-    HA->>HA: Lookup "HUB-B" in inbound_peers_<br/>→ found, zmq_identity = <B's id>
+    HA->>HA: hub_state_.peer("HUB-B")<br/>→ {state=Connected, zmq_identity=<B's id>}
     HA->>HB: HUB_TARGETED_MSG via ROUTER<br/>{target="HUB-B", channel="ctrl.ch", payload}
     Note over HB: Receives on DEALER socket
     HB->>HB: Verify target_hub_uid matches self UID
@@ -353,7 +353,7 @@ sequenceDiagram
     Note over HB: Hub B shutdown triggered
     HB->>HB: BrokerService::stop()
     HB->>HA: HUB_PEER_BYE {hub_uid="HUB-B"}<br/>(best-effort, via DEALER)
-    HA->>HA: Erase "HUB-B" from inbound_peers_
+    HA->>HA: hub_state_._on_peer_disconnected("HUB-B")<br/>→ entry retained, state=Disconnected<br/>(HEP-CORE-0033 §8 retention)
     HA->>HSA: on_hub_disconnected("HUB-B")
     HB->>HB: Close DEALER socket
 ```
@@ -524,13 +524,22 @@ Hub B starts:
 
 Hub B stops (graceful):
   1. Sends HUB_PEER_BYE to Hub A (via DEALER, best-effort)
-  2. Hub A removes Hub B from inbound_peers_ and relay lists
+  2. Hub A: hub_state_._on_peer_disconnected("HUB-B")
+        — entry retained at state=Disconnected (HEP-CORE-0033 §8 retention)
+        — relay_notify_to_peers filters on state==Connected so further
+          relays are suppressed automatically
   3. HubScript on_hub_disconnected fires on Hub A
 
 Hub B crashes (no BYE):
-  1. Hub A's DEALER socket to Hub B (if bidirectional) detects disconnect
-  2. Hub A removes Hub B from relay lists (no heartbeat path for hub peers)
-  3. Hub B's broker reconnects automatically on restart (ZMQ DEALER auto-reconnect)
+  1. Hub A holds the peer at state=Connected; relay sends silently
+     succeed at the ZMQ layer (DEALER buffers locally) but the message
+     never arrives.  See §15 — known gaps.
+  2. When Hub B's broker restarts and re-HELLOs, Hub A's handler
+     observes the existing Connected entry, fires on_hub_disconnected
+     for the stale session, then _on_peer_connected overwrites with
+     the fresh entry and fires on_hub_connected.
+  3. ZMQ DEALER on Hub B auto-reconnects; Hub A's ROUTER captures a new
+     routing identity (the prior identity is replaced).
 ```
 
 ---
@@ -540,7 +549,7 @@ Hub B crashes (no BYE):
 | Scenario | Behavior |
 |----------|----------|
 | Ring topology A ↔ B ↔ C ↔ A | No loop — one-hop rule is a protocol invariant |
-| Hub peer crashes mid-broadcast | Relay frame lost; Hub B's local subscribers miss it; ZMQ reconnects; future broadcasts delivered normally after reconnect |
+| Hub peer crashes mid-broadcast | Relay frame lost; Hub B's local subscribers miss it.  Hub A continues to consider the peer Connected until Hub B re-HELLOs (§15 gap).  Subsequent relays during the silent window are also lost.  After Hub B's restart-HELLO, Hub A fires on_hub_disconnected (for the stale session) then on_hub_connected (for the fresh one) and relays resume. |
 | Both hubs subscribe to each other on same channel (bidirectional) | Each hub's own broadcasts reach the other. `msg_id` dedup prevents double-delivery if message arrives via two paths simultaneously |
 | Hub peer key changes (ephemeral dev key) | Connection fails at CURVE handshake. Operator must redistribute new pubkey and restart. Dev mode issue — production uses vault-stable keys |
 | `channels` list mismatch between peers | Hub A will only relay channels in its own allow-list for Hub B. Unlisted channels are silently not relayed |
@@ -561,7 +570,226 @@ Hub B crashes (no BYE):
 
 ---
 
-## 13. Implementation Status
+## 13. Deployment Patterns
+
+Federation is intentionally minimal — one-hop ctrl-plane relay, static
+config — but that minimum spans several useful deployment shapes.  This
+section enumerates the patterns operators have used or that the design
+clearly supports.
+
+### 13.1 Synchronized event signaling
+
+Two independent hubs federated on a single control channel.  An event
+fired on Hub A reaches both Hub A's local subscribers and Hub B's
+subscribers in one step.
+
+```json
+// Hub A's hub.json
+"peers": [{
+  "hub_uid":         "hub.lab2.uid00000001",
+  "broker_endpoint": "tcp://lab2.local:5570",
+  "pubkey_file":     "peers/lab2.pubkey",
+  "channels":        ["calibration.events"]
+}]
+```
+
+Hub A producers publish `notify_channel("calibration.events", "done")`
+and Hub B's consumers see the same event without any application-level
+coordination.
+
+### 13.2 Distributed instrument coordination
+
+N hubs, one per physical instrument, each near its hardware.  Instruments
+exchange small ctrl signals (trigger, gating, done-flag) via federated
+ctrl channels while their data planes stay local.
+
+```mermaid
+graph LR
+    DET[Hub-Detector] -- trigger.events --> SPEC[Hub-Spectrometer]
+    SPEC -- gate.done --> DET
+    DET -- shot.complete --> ANL[Hub-Analytics]
+    SPEC -- shot.complete --> ANL
+```
+
+Each hub's `hub.json` declares only direct neighbors.  No global routing
+table.
+
+### 13.3 Trust boundaries
+
+Different operators or different security domains run separate hubs.
+Federation channels are the only path data crosses between them, and
+each side's `peers[].channels` allow-list is the audit point.
+
+```
+[Public Hub]                       [Private Experiment Hub]
+weather.feed   ──── relays only ───► weather.feed
+                                     experiment.data  (NOT exported)
+```
+
+Public-hub operator can audit "what does my hub send to the private
+hub": exactly the channels in `peers[hub.private...].channels`.
+Private-hub operator can audit symmetrically.
+
+### 13.4 Hub-as-bridge (hub-and-spoke)
+
+A central hub federated with multiple peripheral hubs, exporting
+different channel subsets to each.
+
+```json
+// Central hub.json
+"peers": [
+  { "hub_uid": "hub.site.a.uid01", "channels": ["alarms.global"] },
+  { "hub_uid": "hub.site.b.uid02", "channels": ["alarms.global"] },
+  { "hub_uid": "hub.site.c.uid03", "channels": ["alarms.global", "metrics.aggregate"] }
+]
+```
+
+Spokes don't see each other directly (no transitive relay — §7 one-hop
+guarantee).  This is a feature: the central hub is the only auditable
+choke point.
+
+### 13.5 HubScript-driven cross-hub coordination
+
+Each hub runs a HubScript whose `on_hub_message` reacts to peer events.
+`api.notify_hub(peer_uid, ...)` sends a targeted message that is
+delivered only to the peer's HubScript — not to any local channel
+subscriber.
+
+Useful for command-style hub-to-hub interactions:
+```python
+# Hub A's script
+api.notify_hub("hub.b.uid00000001", "ctrl", '{"cmd": "request_baseline"}')
+
+# Hub B's script
+def on_hub_message(channel, payload, source_hub_uid, api):
+    if channel == "ctrl" and json.loads(payload)["cmd"] == "request_baseline":
+        api.notify_channel("baseline.events", "starting", "")
+```
+
+Targeted messages bypass the relay machinery and are not deduped or
+forwarded — they're a direct hub→hub control channel.
+
+### 13.6 Independent failure domains
+
+Each hub stays operational regardless of peer state.  When a peer
+crashes (or a WAN link drops), the local hub continues; only relays to
+that peer are silently dropped (see §15 known-gap on detection latency).
+HubScripts can react to `on_hub_disconnected` to switch to local-only
+behavior:
+
+```python
+peer_alive = {}
+def on_hub_connected(uid, api):
+    peer_alive[uid] = True
+def on_hub_disconnected(uid, api):
+    peer_alive[uid] = False
+def on_init(api):
+    # in role logic, gate cross-hub coordination on peer_alive
+    pass
+```
+
+This is **not** a hot-standby pattern — federation does not replicate
+data — but it does enable local-hub continuity when peers are unreachable.
+
+### 13.7 What this design is *not* good for
+
+- **Data replication / hot standby.**  Federation is ctrl-plane-only.
+  For data replication, run separate producer/consumer roles per hub
+  pulling data via SHM or ZMQ.
+- **Many-hub mesh broadcasts.**  One-hop means each hub must declare
+  every other hub it wants to reach — O(N²) config in a full mesh.
+  Use the hub-and-spoke pattern (§13.4) instead.
+- **Best-effort guarantees only.**  Relays are fire-and-forget — no
+  acknowledgement, no retry, no flow control.  Don't use federation as
+  a transport layer for important state.
+- **High-frequency events.**  Each relay is a serialize + ROUTER send +
+  dedup-set insert.  Hundreds-per-second is fine; tens-of-thousands is
+  not the design target.
+
+---
+
+## 14. Known Gaps & Future Work
+
+The current implementation (post-G2.2.3) covers the protocol described
+in §5 and the deployment patterns in §13.  Several refinements are
+explicitly out of scope for the present revision and tracked here.
+
+### 14.1 No silent peer-death detection (gap)
+
+**Symptom.**  When a peer's broker crashes without sending HUB_PEER_BYE,
+the local hub holds the peer at state=Connected indefinitely.  Relays
+to the dead peer succeed at the ZMQ layer (DEALER buffers locally) but
+the messages never arrive.  Detection only happens when the peer
+restarts and re-HELLOs.
+
+**Impact.**  During the silent window, all relays to the dead peer are
+lost.  Subscribers on the surviving hub do not observe a state change.
+HubScripts cannot react until the peer re-HELLOs.
+
+**Fix.**  Register `zmq_socket_monitor` on each outbound DEALER
+(analogous to the existing `Messenger` hub-dead detection in
+`messenger.cpp`); on `ZMQ_EVENT_DISCONNECTED` invoke
+`hub_state_._on_peer_disconnected(uid)` and fire the
+`on_hub_disconnected` callback.  Roughly 30 LOC.
+
+**Status.**  Tracked in `docs/todo/MESSAGEHUB_TODO.md`.
+
+### 14.2 No relay backpressure / flow control (limitation by design)
+
+Relays are best-effort.  If a peer's DEALER receive queue fills (HWM
+hit), ZMQ drops or blocks per its socket settings.  No application-layer
+acknowledgement, no retry, no priority.  This is consistent with
+HEP-0007 ctrl-plane semantics but worth restating: **federation is not a
+reliable messaging substrate**.
+
+For reliable cross-hub state, use a dedicated channel with a
+producer/consumer pair (data plane semantics, SHM or ZMQ) instead of
+relying on relays.
+
+### 14.3 No multi-hop routing (intentional)
+
+A relay propagates exactly one hop.  Use the hub-and-spoke pattern
+(§13.4) for transitive coordination.  Multi-hop routing would
+require:
+- A persistent routing table (vs. today's per-hub `peers[]` allow-list).
+- TTL fields and full loop-detection (vs. today's `relay=true` bit).
+- Backpressure / queue-overflow semantics across multiple hops.
+
+These are non-trivial and would change federation from a simple ctrl
+relay into a message-bus.  Not on the roadmap.
+
+### 14.4 No automatic peer pubkey rotation (limitation)
+
+CURVE keys are pre-distributed at deploy time.  Key rotation requires
+operator action: redistribute the new pubkey, restart the affected
+hubs.  Vault-backed stable keys (HEP-CORE-0024 RoleVault analogue) are
+the recommended dev practice.
+
+### 14.5 `disconnected_grace_ms` peer-eviction not implemented
+
+HEP-CORE-0033 §8 retention model:
+> disconnected roles linger... before eviction; LRU cap...
+
+Currently disconnected peers stay in `HubState.peers` indefinitely.  No
+LRU cap, no grace timer.  Acceptable for the small N of operator-
+configured peers but should be implemented before scaling beyond a few
+dozen federated hubs.
+
+**Status.**  Part of HEP-CORE-0033 §8 retention work, deferred to a
+later HubHost phase.
+
+### 14.6 No federation-level ACK or causal ordering
+
+Two relays from the same originator arrive at a peer in send order
+(ZMQ DEALER↔ROUTER preserves frame order on a single socket pair) but
+relays from different originators race at the receiver.  HubScripts
+that depend on cross-originator ordering must establish their own
+ordering via `msg_id` or sender_uid + sender-local sequence number in
+the payload.
+
+---
+
+## 15. Implementation Status
 
 | Phase | Scope | Status | Key files |
 |-------|-------|--------|-----------|
@@ -569,14 +797,22 @@ Hub B crashes (no BYE):
 | 2 | Broker outbound DEALER per peer; `HUB_PEER_HELLO` / ACK handshake | Done | `src/utils/ipc/broker_service.cpp` |
 | 3 | Broker relay: on `CHANNEL_NOTIFY_REQ/BROADCAST_REQ` → `HUB_RELAY_MSG` | Done | `src/utils/ipc/broker_service.cpp` |
 | 4 | Broker receive: accept `HUB_RELAY_MSG`, deliver locally, dedup by `msg_id` | Done | `src/utils/ipc/broker_service.cpp` |
-| 5 | `HUB_TARGETED_MSG` send/receive; `on_hub_message()` dispatch | Done | `src/hub_python/hub_script_api.hpp/cpp` |
-| 6 | HubScript Python hooks: `on_hub_connected/disconnected/message`, `api.notify_hub()` | Done | `src/hub_python/hub_script.hpp/cpp` |
-| 7 | `BrokerService::FederationPeer` struct in broker namespace (avoids hub_config.hpp include chain) | Done | `src/include/utils/broker_service.hpp` |
+| 5 | `HUB_TARGETED_MSG` send/receive; `on_hub_message()` dispatch | Done (broker side); HubScript side disabled | `src/hub_python/hub_script_api.hpp/cpp` |
+| 6 | HubScript Python hooks: `on_hub_connected/disconnected/message`, `api.notify_hub()` | Done; binary disabled — see note below | `src/hub_python/hub_script.hpp/cpp` |
+| 7 | `BrokerService::FederationPeer` struct in broker namespace | Done | `src/include/utils/broker_service.hpp` |
+| 8 | Peer state migrated into `HubState.peers` (HEP-CORE-0033 G2.2.3): `_on_peer_connected` / `_on_peer_disconnected` capability ops; `relay_notify_to_peers` computes targets from snapshot; `inbound_peers_` and `channel_to_peer_identities_` removed | Done | `src/utils/ipc/broker_service.cpp`, `src/utils/ipc/hub_state.cpp` |
 | Tests | 6 L3 broker federation protocol tests (BrokerFederationTest) | Done | `tests/test_layer3_datahub/test_datahub_hub_federation.cpp` |
+
+**Hubshell binary status.**  The `pylabhub-hubshell` executable is
+currently disabled in `src/CMakeLists.txt` (`if(FALSE)`) pending the
+HEP-CORE-0033 unified `plh_hub` binary.  Federation protocol handling
+in `BrokerService` is fully active and exercised by the L3 tests above;
+HubScript-side callbacks (Phases 5–6) become reachable again once
+`plh_hub` lands.
 
 ---
 
-## 14. Source File Reference
+## 16. Source File Reference
 
 | Component | File |
 |-----------|------|
