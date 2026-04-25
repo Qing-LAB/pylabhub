@@ -264,7 +264,7 @@ int broker_reg_disc_happy_path()
             auto broker = start_broker_in_thread(std::move(cfg));
 
             const std::string channel = "broker.ch1";
-            const std::string uid     = "PROD-broker-ch1";
+            const std::string uid     = "prod.broker.ch1.uid00000001";
 
             BrokerRequestComm brc;
             BrokerRequestComm::Config brc_cfg;
@@ -372,7 +372,7 @@ int broker_channel_not_found()
             BrokerRequestComm::Config brc_cfg;
             brc_cfg.broker_endpoint = broker.endpoint;
             brc_cfg.broker_pubkey   = broker.pubkey;
-            brc_cfg.role_uid        = "QUERIER-notfound";
+            brc_cfg.role_uid        = "prod.querier.notfound.uid00000001";
             ASSERT_TRUE(brc.connect(brc_cfg));
             std::atomic<bool> running{true};
             std::thread t([&] { brc.run_poll_loop([&] { return running.load(); }); });
@@ -406,7 +406,7 @@ int broker_dereg_happy_path()
             auto broker = start_broker_in_thread(std::move(cfg));
 
             const std::string channel = "broker.dereg.ch";
-            const std::string uid     = "PROD-dereg-ch";
+            const std::string uid     = "prod.dereg.ch.uid00000001";
 
             BrokerRequestComm brc;
             BrokerRequestComm::Config brc_cfg;
