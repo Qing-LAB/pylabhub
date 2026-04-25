@@ -139,7 +139,7 @@ int register_and_discover()
     reg_opts["zmq_ctrl_endpoint"] = "tcp://127.0.0.1:0";
     reg_opts["zmq_data_endpoint"] = "tcp://127.0.0.1:0";
     reg_opts["zmq_pubkey"]        = "";
-    reg_opts["role_uid"]          = "test_prod_001";
+    reg_opts["role_uid"]          = "prod.test.uid00000001";
     reg_opts["role_name"]         = "test_producer";
 
     auto reg_result = ch.register_channel(reg_opts, 5000);
@@ -153,7 +153,7 @@ int register_and_discover()
 
     // Discover the channel.
     nlohmann::json disc_opts;
-    disc_opts["consumer_uid"]  = "test_cons_001";
+    disc_opts["consumer_uid"]  = "cons.test.uid00000001";
     disc_opts["consumer_name"] = "test_consumer";
 
     auto disc_result = ch.discover_channel("test_ch", disc_opts, 5000);
@@ -204,14 +204,14 @@ int role_presence()
     reg_opts["zmq_ctrl_endpoint"] = "tcp://127.0.0.1:0";
     reg_opts["zmq_data_endpoint"] = "tcp://127.0.0.1:0";
     reg_opts["zmq_pubkey"]        = "";
-    reg_opts["role_uid"]          = "prod_uid_42";
+    reg_opts["role_uid"]          = "prod.my.uid00000042";
     reg_opts["role_name"]         = "my_producer";
 
     auto reg = ch.register_channel(reg_opts, 5000);
     EXPECT_TRUE(reg.has_value());
 
     // Now query — should be present.
-    present = ch.query_role_presence("prod_uid_42", 3000);
+    present = ch.query_role_presence("prod.my.uid00000042", 3000);
     EXPECT_TRUE(present);
 
     running.store(false);
@@ -256,7 +256,7 @@ int notification_dispatch()
     reg_opts["zmq_ctrl_endpoint"] = "tcp://127.0.0.1:0";
     reg_opts["zmq_data_endpoint"] = "tcp://127.0.0.1:0";
     reg_opts["zmq_pubkey"]        = "";
-    reg_opts["role_uid"]          = "notify_prod";
+    reg_opts["role_uid"]          = "prod.notify.uid00000001";
     reg_opts["role_name"]         = "notify_producer";
 
     auto reg = ch.register_channel(reg_opts, 5000);

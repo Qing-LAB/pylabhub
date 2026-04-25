@@ -47,6 +47,18 @@ layer" for full rationale):
   `_on_consumer_joined` / `_on_consumer_left`. Delete `ChannelRegistry`
   (`channel_registry.hpp/.cpp`). RoleEntry + ShmBlockRef populated
   inside the ops. Readers flip to `hub_state_`.
+  - G2.2.1.a (channel dual-write): ✅ done.
+  - G2.2.1.b (flip readers + heartbeat capability-op): ✅ done.
+  - G2.2.1.c phase 1 (read-only handlers source from HubState; helper
+    signatures take `hub::ChannelEntry`/`hub::ConsumerEntry`): ✅ done
+    (this commit). 11 `find_channel`, 2 `find_consumers`, 4 const
+    `all_channels()` migrated. 4 test files updated to valid uid format.
+  - G2.2.1.c phase 2 (mutating sweeps absorbed into HubState
+    capability ops): pending — requires sweep-cursor primitives or
+    full snapshot+iterate replacements for `find_timed_out_*`,
+    dead-consumer iteration, closing-deadline iteration.
+  - G2.2.1.c phase 3 (delete `ChannelRegistry`, `channel_registry.{hpp,cpp}`,
+    translator helpers): pending — gated on phase 2.
 - **G2.2.2** — Liveness: `HEARTBEAT_REQ` + timeout sweep → `_on_heartbeat` /
   `_on_heartbeat_timeout` / `_on_pending_timeout`. Counter bumps absorbed.
 - **G2.2.3** — Membership routing: bands + federation peers. Delete
