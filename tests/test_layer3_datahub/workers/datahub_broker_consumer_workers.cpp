@@ -6,7 +6,6 @@
 
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
-#include "channel_registry.hpp"
 #include "plh_datahub.hpp"
 
 #include <gtest/gtest.h>
@@ -150,64 +149,6 @@ nlohmann::json raw_req(const std::string& endpoint,
 std::string zero_hex(size_t bytes = 32) { return std::string(bytes * 2, '0'); }
 
 } // anonymous namespace
-
-// ============================================================================
-// channel_registry_consumer_ops — pure ChannelRegistry consumer CRUD (no ZMQ)
-// ============================================================================
-
-int channel_registry_consumer_ops()
-{
-    return run_worker_bare(
-        []()
-        {
-            ChannelRegistry reg;
-
-            // Register a channel first
-            ChannelEntry ch;
-            ch.shm_name = "shm_ch";
-            ch.schema_hash = zero_hex();
-            ch.schema_version = 1;
-            ch.producer_pid = 1001;
-            EXPECT_TRUE(reg.register_channel("ch1", ch));
-
-            // No consumers yet
-            EXPECT_TRUE(reg.find_consumers("ch1").empty());
-            EXPECT_TRUE(reg.find_consumers("no_such_channel").empty());
-
-            // Register consumer → true
-            ConsumerEntry c1;
-            c1.consumer_pid = 2001;
-            c1.consumer_hostname = "host-a";
-            EXPECT_TRUE(reg.register_consumer("ch1", c1));
-            EXPECT_EQ(reg.find_consumers("ch1").size(), 1u);
-
-            // Register second consumer → true
-            ConsumerEntry c2;
-            c2.consumer_pid = 2002;
-            c2.consumer_hostname = "host-b";
-            EXPECT_TRUE(reg.register_consumer("ch1", c2));
-            EXPECT_EQ(reg.find_consumers("ch1").size(), 2u);
-
-            // Register consumer for non-existent channel → false
-            EXPECT_FALSE(reg.register_consumer("no_such_channel", c1));
-
-            // Deregister consumer1 with correct pid → true
-            EXPECT_TRUE(reg.deregister_consumer("ch1", 2001));
-            EXPECT_EQ(reg.find_consumers("ch1").size(), 1u);
-            EXPECT_EQ(reg.find_consumers("ch1")[0].consumer_pid, 2002u);
-
-            // Deregister consumer1 again → false (pid not found)
-            EXPECT_FALSE(reg.deregister_consumer("ch1", 2001));
-
-            // Deregister consumer2 → true; consumers now empty
-            EXPECT_TRUE(reg.deregister_consumer("ch1", 2002));
-            EXPECT_TRUE(reg.find_consumers("ch1").empty());
-
-            // Deregister from non-existent channel → false
-            EXPECT_FALSE(reg.deregister_consumer("no_such_channel", 9999));
-        },
-        "broker_consumer.channel_registry_consumer_ops");
-}
 
 // ============================================================================
 // consumer_reg_channel_not_found — CONSUMER_REG_REQ for unknown channel → ERROR
@@ -605,8 +546,6 @@ struct BrokerConsumerWorkerRegistrar
                     return -1;
                 std::string scenario(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::broker_consumer;
-                if (scenario == "channel_registry_consumer_ops")
-                    return channel_registry_consumer_ops();
                 if (scenario == "consumer_reg_channel_not_found")
                     return consumer_reg_channel_not_found();
                 if (scenario == "consumer_reg_happy_path")

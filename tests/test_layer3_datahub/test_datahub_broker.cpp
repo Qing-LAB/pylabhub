@@ -15,13 +15,6 @@ class DatahubBrokerTest : public IsolatedProcessTest
 {
 };
 
-TEST_F(DatahubBrokerTest, ChannelRegistryOps)
-{
-    // Pure ChannelRegistry unit tests — no ZMQ, no lifecycle.
-    auto proc = SpawnWorker("broker.channel_registry_ops", {});
-    ExpectWorkerOk(proc);
-}
-
 TEST_F(DatahubBrokerTest, RegDiscHappyPath)
 {
     // Full REG/DISC round-trip: BrokerRequestComm → real BrokerService.

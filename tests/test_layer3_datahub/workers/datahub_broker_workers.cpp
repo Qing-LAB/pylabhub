@@ -6,7 +6,6 @@
 
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
-#include "channel_registry.hpp"
 #include "plh_datahub.hpp"
 
 #include <gtest/gtest.h>
@@ -175,79 +174,6 @@ std::string aa_hex(size_t bytes = 32)
 }
 
 } // anonymous namespace
-
-// ============================================================================
-// channel_registry_ops — pure ChannelRegistry unit test (no ZMQ, no lifecycle)
-// ============================================================================
-
-int channel_registry_ops()
-{
-    return run_worker_bare(
-        []()
-        {
-            ChannelRegistry reg;
-
-            // Initially empty
-            EXPECT_EQ(reg.size(), 0u);
-            EXPECT_TRUE(reg.list_channels().empty());
-
-            // Register "ch1" → succeeds
-            ChannelEntry e1;
-            e1.shm_name = "shm_ch1";
-            e1.schema_hash = zero_hex();
-            e1.schema_version = 1;
-            e1.producer_pid = 1001;
-            EXPECT_TRUE(reg.register_channel("ch1", e1));
-            EXPECT_EQ(reg.size(), 1u);
-
-            // find "ch1" → present
-            auto found = reg.find_channel("ch1");
-            ASSERT_TRUE(found.has_value());
-            EXPECT_EQ(found->shm_name, "shm_ch1");
-
-            // find "ch2" → nullopt
-            EXPECT_FALSE(reg.find_channel("ch2").has_value());
-
-            // Re-register "ch1" same hash → allowed (producer restart)
-            ChannelEntry e1b = e1;
-            e1b.producer_pid = 1002;
-            EXPECT_TRUE(reg.register_channel("ch1", e1b));
-            EXPECT_EQ(reg.size(), 1u);
-
-            // Re-register "ch1" different hash → SCHEMA_MISMATCH (returns false)
-            ChannelEntry e1c = e1;
-            e1c.schema_hash = aa_hex();
-            EXPECT_FALSE(reg.register_channel("ch1", e1c));
-            EXPECT_EQ(reg.size(), 1u); // still registered
-
-            // Deregister "ch1" with wrong pid → false; channel still present
-            EXPECT_FALSE(reg.deregister_channel("ch1", 9999));
-            EXPECT_TRUE(reg.find_channel("ch1").has_value());
-
-            // Deregister "ch1" with correct pid (1002, from the re-registration) → true
-            EXPECT_TRUE(reg.deregister_channel("ch1", 1002));
-            EXPECT_FALSE(reg.find_channel("ch1").has_value());
-            EXPECT_EQ(reg.size(), 0u);
-
-            // list_channels() and size() after multiple ops
-            ChannelEntry e2;
-            e2.shm_name = "shm_ch2";
-            e2.schema_hash = zero_hex();
-            e2.schema_version = 2;
-            e2.producer_pid = 2001;
-            ChannelEntry e3;
-            e3.shm_name = "shm_ch3";
-            e3.schema_hash = zero_hex();
-            e3.schema_version = 3;
-            e3.producer_pid = 3001;
-            reg.register_channel("ch2", e2);
-            reg.register_channel("ch3", e3);
-            EXPECT_EQ(reg.size(), 2u);
-            auto names = reg.list_channels();
-            EXPECT_EQ(names.size(), 2u);
-        },
-        "broker.channel_registry_ops");
-}
 
 // ============================================================================
 // broker_reg_disc_happy_path — full REG/DISC round-trip via BrokerRequestComm
@@ -544,8 +470,6 @@ struct BrokerWorkerRegistrar
                     return -1;
                 std::string scenario(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::broker;
-                if (scenario == "channel_registry_ops")
-                    return channel_registry_ops();
                 if (scenario == "broker_reg_disc_happy_path")
                     return broker_reg_disc_happy_path();
                 if (scenario == "broker_schema_mismatch")

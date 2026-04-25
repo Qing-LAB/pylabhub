@@ -15,13 +15,6 @@ class DatahubBrokerConsumerTest : public IsolatedProcessTest
 {
 };
 
-TEST_F(DatahubBrokerConsumerTest, ChannelRegistryConsumerOps)
-{
-    // Pure ChannelRegistry consumer CRUD — no ZMQ, no lifecycle.
-    auto proc = SpawnWorker("broker_consumer.channel_registry_consumer_ops", {});
-    ExpectWorkerOk(proc);
-}
-
 TEST_F(DatahubBrokerConsumerTest, ConsumerRegChannelNotFound)
 {
     // CONSUMER_REG_REQ for an unknown channel → CHANNEL_NOT_FOUND error response (raw ZMQ).
