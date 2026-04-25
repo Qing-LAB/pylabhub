@@ -763,6 +763,8 @@ void HubState::_on_heartbeat(const std::string                   &channel,
     }
     // 1. Channel liveness: first heartbeat transitions PendingReady -> Ready;
     //    subsequent heartbeats update last_heartbeat without a status change.
+    //    Per HEP-CORE-0023 §2.5, every PendingReady -> Ready transition (first
+    //    heartbeat OR recovery) increments `pending_to_ready_total`.
     bool fire_channel_ready = false;
     {
         std::unique_lock lk(pImpl->mu);
@@ -774,6 +776,7 @@ void HubState::_on_heartbeat(const std::string                   &channel,
             {
                 it->second.status      = ChannelStatus::Ready;
                 it->second.state_since = when;
+                ++pImpl->counters.pending_to_ready_total;
                 fire_channel_ready     = true;
             }
         }
@@ -812,11 +815,34 @@ void HubState::_on_heartbeat_timeout(const std::string &channel,
         bump_invalid_identifier(*pImpl);
         return;
     }
-    _set_channel_status(channel, ChannelStatus::PendingReady);
-    if (!role_uid.empty()) _set_role_disconnected(role_uid);
+    // HEP-CORE-0023 §2.1: Ready -> Pending demotion.  Role is NOT marked
+    // Disconnected here — Pending means "suspicious, may recover via the
+    // next heartbeat".  Role disconnect (if any) happens at Pending ->
+    // deregistered (`_on_pending_timeout`).  `role_uid` is informational
+    // only at this layer; the broker uses it for logging.
+    //
+    // Atomic transition + counter under a single writer-lock so the
+    // counter only bumps when an actual Ready -> Pending demotion fires.
+    bool         transitioned = false;
+    ChannelEntry fired_entry;
     {
         std::unique_lock lk(pImpl->mu);
-        ++pImpl->counters.ready_to_pending_total;
+        auto             it = pImpl->channels.find(channel);
+        if (it != pImpl->channels.end() &&
+            it->second.status == ChannelStatus::Ready)
+        {
+            it->second.status      = ChannelStatus::PendingReady;
+            it->second.state_since = std::chrono::steady_clock::now();
+            ++pImpl->counters.ready_to_pending_total;
+            fired_entry  = it->second;
+            transitioned = true;
+        }
+    }
+    if (transitioned)
+    {
+        for (auto &h : snapshot_handlers(pImpl->handlers_mu,
+                                         pImpl->ch_status_changed))
+            h(fired_entry);
     }
 }
 
@@ -827,7 +853,24 @@ void HubState::_on_pending_timeout(const std::string &channel)
         bump_invalid_identifier(*pImpl);
         return;
     }
-    _set_channel_status(channel, ChannelStatus::Closing);
+    // HEP-CORE-0023 §2.1: Pending -> deregistered, **no grace, no Closing
+    // intermediate**.  Closing is reserved for the voluntary-close path
+    // (DEREG_REQ / admin / script close).  Eligibility check + close +
+    // counter:
+    //   - eligibility: channel exists and is in PendingReady;
+    //   - close: same as `_on_channel_closed(HeartbeatTimeout)`
+    //     (erases entry, removes from each role's `channels` list, fires
+    //     close handlers, bumps the per-reason msg-type counter);
+    //   - counter: bump `pending_to_deregistered_total` only when an
+    //     actual Pending -> deregistered transition fired (per §2.5).
+    {
+        std::shared_lock rlk(pImpl->mu);
+        auto             it = pImpl->channels.find(channel);
+        if (it == pImpl->channels.end() ||
+            it->second.status != ChannelStatus::PendingReady)
+            return;
+    }
+    _on_channel_closed(channel, ChannelCloseReason::HeartbeatTimeout);
     {
         std::unique_lock lk(pImpl->mu);
         ++pImpl->counters.pending_to_deregistered_total;
