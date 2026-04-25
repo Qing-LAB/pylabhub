@@ -83,8 +83,7 @@ set(UTILS_SOURCES
   network_comm/zmq_context.cpp
   network_comm/broker_request_comm.cpp
 
-  # --- ipc: broker service, band registry, hub state aggregate ---
-  ipc/band_registry.cpp
+  # --- ipc: broker service, hub state aggregate ---
   ipc/heartbeat_manager.cpp
   ipc/broker_service.cpp
   ipc/hub_state.cpp

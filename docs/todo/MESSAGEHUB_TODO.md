@@ -60,11 +60,16 @@ layer" for full rationale):
   - G2.2.1.c phase 3 (delete `ChannelRegistry`, `channel_registry.{hpp,cpp}`,
     translator helpers): pending — gated on phase 2.
 - **G2.2.2** — Liveness: `HEARTBEAT_REQ` + timeout sweep → `_on_heartbeat` /
-  `_on_heartbeat_timeout` / `_on_pending_timeout`. Counter bumps absorbed.
-- **G2.2.3** — Membership routing: bands + federation peers. Delete
-  `BandRegistry` and `inbound_peers_`. Keep `channel_to_peer_identities_`
-  and `hub_connected_notified_` broker-private (transport-layer, not
-  state).
+  `_on_heartbeat_timeout` / `_on_pending_timeout`. Counter bumps absorbed. ✅
+- **G2.2.3** — Membership routing: bands + federation peers absorbed into
+  HubState. Deleted `BandRegistry`, `inbound_peers_`, and the
+  `channel_to_peer_identities_` reverse index (relay targets now computed
+  on-the-fly from snapshot — perf optimization deferred). Kept
+  `hub_connected_notified_` broker-private (session flag, not state).
+  HUB_PEER_BYE switched to mark-Disconnected per HEP-0033 §8 retention.
+  Bug-fixed `_on_heartbeat_timeout` (no premature role disconnect) and
+  `_on_pending_timeout` (deregisters, not Closing). HEP-0030 doc
+  rewritten: `#`→`!` band sigil, no `@hub` federation suffix. ✅
 - **G2.2.4** — Observability: `_on_message_processed` absorbs per-msg-type
   counter bumps. `metrics_store_` absorption deferred pending data-model
   decision (role-centric vs secondary channel-metrics map vs leave

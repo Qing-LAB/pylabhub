@@ -104,11 +104,11 @@ int channel_join_leave()
     auto broker = start_broker();
 
     ChannelClient c1, c2;
-    c1.connect(broker.endpoint, broker.pubkey, "ROLE-A-001", "role_a");
-    c2.connect(broker.endpoint, broker.pubkey, "ROLE-B-002", "role_b");
+    c1.connect(broker.endpoint, broker.pubkey, "prod.role.a.uid00000001", "role_a");
+    c2.connect(broker.endpoint, broker.pubkey, "prod.role.b.uid00000002", "role_b");
 
     // Role A joins channel.
-    auto join1 = c1.ch.band_join("#test_ch", 5000);
+    auto join1 = c1.ch.band_join("!test_ch", 5000);
     EXPECT_TRUE(join1.has_value()) << "BAND_JOIN_REQ timed out";
     if (join1)
     {
@@ -118,7 +118,7 @@ int channel_join_leave()
     }
 
     // Role B joins — should see both members.
-    auto join2 = c2.ch.band_join("#test_ch", 5000);
+    auto join2 = c2.ch.band_join("!test_ch", 5000);
     EXPECT_TRUE(join2.has_value());
     if (join2)
     {
@@ -127,7 +127,7 @@ int channel_join_leave()
     }
 
     // Query members.
-    auto mq = c1.ch.band_members("#test_ch", 5000);
+    auto mq = c1.ch.band_members("!test_ch", 5000);
     EXPECT_TRUE(mq.has_value());
     if (mq)
     {
@@ -136,11 +136,11 @@ int channel_join_leave()
     }
 
     // Role A leaves.
-    bool left = c1.ch.band_leave("#test_ch", 5000);
+    bool left = c1.ch.band_leave("!test_ch", 5000);
     EXPECT_TRUE(left);
 
     // Query again — should have 1 member.
-    auto mq2 = c2.ch.band_members("#test_ch", 5000);
+    auto mq2 = c2.ch.band_members("!test_ch", 5000);
     EXPECT_TRUE(mq2.has_value());
     if (mq2)
     {
@@ -180,18 +180,18 @@ int channel_msg_fanout()
         }
     });
 
-    c1.connect(broker.endpoint, broker.pubkey, "SENDER-001", "sender");
-    c2.connect(broker.endpoint, broker.pubkey, "RECVR-002", "receiver");
+    c1.connect(broker.endpoint, broker.pubkey, "prod.sender.uid00000001", "sender");
+    c2.connect(broker.endpoint, broker.pubkey, "cons.recvr.uid00000002", "receiver");
 
     // Both join the channel.
-    c1.ch.band_join("#msg_ch", 5000);
-    c2.ch.band_join("#msg_ch", 5000);
+    c1.ch.band_join("!msg_ch", 5000);
+    c2.ch.band_join("!msg_ch", 5000);
 
     // Give broker time to process joins.
     std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
     // Sender sends a message.
-    c1.ch.band_broadcast("#msg_ch", {{"event", "hello"}, {"value", 42}});
+    c1.ch.band_broadcast("!msg_ch", {{"event", "hello"}, {"value", 42}});
 
     // Wait for receiver to get it.
     bool got = pylabhub::tests::helper::poll_until(
@@ -237,14 +237,14 @@ int channel_join_notify()
         }
     });
 
-    c1.connect(broker.endpoint, broker.pubkey, "FIRST-001", "first");
+    c1.connect(broker.endpoint, broker.pubkey, "prod.first.uid00000001", "first");
 
     // First joins channel.
-    c1.ch.band_join("#notify_ch", 5000);
+    c1.ch.band_join("!notify_ch", 5000);
 
     // Second joins — first should get BAND_JOIN_NOTIFY.
-    c2.connect(broker.endpoint, broker.pubkey, "SECOND-002", "second");
-    c2.ch.band_join("#notify_ch", 5000);
+    c2.connect(broker.endpoint, broker.pubkey, "prod.second.uid00000002", "second");
+    c2.ch.band_join("!notify_ch", 5000);
 
     bool got = pylabhub::tests::helper::poll_until(
         [&] { return join_notify_count.load() > 0; },
@@ -254,7 +254,7 @@ int channel_join_notify()
     if (got)
     {
         std::lock_guard<std::mutex> lk(mu);
-        EXPECT_EQ(notified_uid, "SECOND-002");
+        EXPECT_EQ(notified_uid, "prod.second.uid00000002");
     }
 
     c1.stop();
@@ -279,8 +279,8 @@ int roleapi_channel()
     core1.set_running(true);
     core2.set_running(true);
 
-    auto api1 = std::make_unique<scripting::RoleAPIBase>(core1, "role_a", "ROLE-A-100");
-    auto api2 = std::make_unique<scripting::RoleAPIBase>(core2, "role_b", "ROLE-B-200");
+    auto api1 = std::make_unique<scripting::RoleAPIBase>(core1, "role_a", "prod.role.a.uid00000100");
+    auto api2 = std::make_unique<scripting::RoleAPIBase>(core2, "role_b", "prod.role.b.uid00000200");
 
     auto bc1 = std::make_unique<BrokerRequestComm>();
     auto bc2 = std::make_unique<BrokerRequestComm>();
@@ -326,11 +326,11 @@ int roleapi_channel()
     std::thread t2([&] { bc2->run_poll_loop([&] { return running2.load(); }); });
 
     // Role A joins channel via RoleAPIBase.
-    auto join1 = api1->band_join("#api_test_ch");
+    auto join1 = api1->band_join("!api_test_ch");
     EXPECT_TRUE(join1.has_value()) << "band_join failed";
 
     // Role B joins — Role A should get BAND_JOIN_NOTIFY.
-    auto join2 = api2->band_join("#api_test_ch");
+    auto join2 = api2->band_join("!api_test_ch");
     EXPECT_TRUE(join2.has_value());
 
     // Wait for notification to arrive in core1's message queue.
@@ -348,7 +348,7 @@ int roleapi_channel()
     EXPECT_TRUE(got_notify) << "BAND_JOIN_NOTIFY not received in core1";
 
     // Role A sends a channel message via RoleAPIBase.
-    api1->band_broadcast("#api_test_ch", {{"action", "start"}, {"seq", 1}});
+    api1->band_broadcast("!api_test_ch", {{"action", "start"}, {"seq", 1}});
 
     // Wait for Role B to receive BAND_BROADCAST_NOTIFY.
     bool got_msg = pylabhub::tests::helper::poll_until(
@@ -365,7 +365,7 @@ int roleapi_channel()
     EXPECT_TRUE(got_msg) << "BAND_BROADCAST_NOTIFY not received in core2";
 
     // Query members via RoleAPIBase.
-    auto members = api1->band_members("#api_test_ch");
+    auto members = api1->band_members("!api_test_ch");
     EXPECT_TRUE(members.has_value());
     if (members)
     {
@@ -374,7 +374,7 @@ int roleapi_channel()
     }
 
     // Leave via RoleAPIBase.
-    bool left = api1->band_leave("#api_test_ch");
+    bool left = api1->band_leave("!api_test_ch");
     EXPECT_TRUE(left);
 
     running1.store(false);
@@ -416,15 +416,15 @@ int channel_leave_notify()
         }
     });
 
-    c1.connect(broker.endpoint, broker.pubkey, "STAYER-001", "stayer");
-    c2.connect(broker.endpoint, broker.pubkey, "LEAVER-002", "leaver");
+    c1.connect(broker.endpoint, broker.pubkey, "prod.stayer.uid00000001", "stayer");
+    c2.connect(broker.endpoint, broker.pubkey, "prod.leaver.uid00000002", "leaver");
 
-    c1.ch.band_join("#leave_ch", 5000);
-    c2.ch.band_join("#leave_ch", 5000);
+    c1.ch.band_join("!leave_ch", 5000);
+    c2.ch.band_join("!leave_ch", 5000);
     std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
     // Leaver leaves.
-    c2.ch.band_leave("#leave_ch", 5000);
+    c2.ch.band_leave("!leave_ch", 5000);
 
     bool got = pylabhub::tests::helper::poll_until(
         [&] { return leave_count.load() > 0; },
@@ -433,7 +433,7 @@ int channel_leave_notify()
     if (got)
     {
         std::lock_guard<std::mutex> lk(mu);
-        EXPECT_EQ(left_uid, "LEAVER-002");
+        EXPECT_EQ(left_uid, "prod.leaver.uid00000002");
         EXPECT_EQ(left_reason, "voluntary");
     }
 
@@ -467,15 +467,15 @@ int channel_self_excluded()
             receiver_msg_count.fetch_add(1);
     });
 
-    c1.connect(broker.endpoint, broker.pubkey, "SENDER-001", "sender");
-    c2.connect(broker.endpoint, broker.pubkey, "RECVR-002", "receiver");
+    c1.connect(broker.endpoint, broker.pubkey, "prod.sender.uid00000001", "sender");
+    c2.connect(broker.endpoint, broker.pubkey, "cons.recvr.uid00000002", "receiver");
 
-    c1.ch.band_join("#self_ch", 5000);
-    c2.ch.band_join("#self_ch", 5000);
+    c1.ch.band_join("!self_ch", 5000);
+    c2.ch.band_join("!self_ch", 5000);
     std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
     // Sender sends a message.
-    c1.ch.band_broadcast("#self_ch", {{"ping", true}});
+    c1.ch.band_broadcast("!self_ch", {{"ping", true}});
 
     // Wait for receiver to get it.
     bool got = pylabhub::tests::helper::poll_until(
@@ -514,29 +514,29 @@ int channel_multi_channel()
         if (type == "BAND_BROADCAST_NOTIFY")
         {
             std::string ch = payload.value("channel", "");
-            if (ch == "#ch_alpha")
+            if (ch == "!ch_alpha")
                 msg_on_ch1.fetch_add(1);
-            else if (ch == "#ch_beta")
+            else if (ch == "!ch_beta")
                 msg_on_ch2.fetch_add(1);
         }
     });
 
     ChannelClient c2;
 
-    c1.connect(broker.endpoint, broker.pubkey, "MULTI-001", "multi_role");
-    c2.connect(broker.endpoint, broker.pubkey, "OTHER-002", "other_role");
+    c1.connect(broker.endpoint, broker.pubkey, "prod.multi.uid00000001", "multi_role");
+    c2.connect(broker.endpoint, broker.pubkey, "prod.other.uid00000002", "other_role");
 
     // Role 1 joins both channels.
-    c1.ch.band_join("#ch_alpha", 5000);
-    c1.ch.band_join("#ch_beta", 5000);
+    c1.ch.band_join("!ch_alpha", 5000);
+    c1.ch.band_join("!ch_beta", 5000);
 
     // Role 2 joins both channels.
-    c2.ch.band_join("#ch_alpha", 5000);
-    c2.ch.band_join("#ch_beta", 5000);
+    c2.ch.band_join("!ch_alpha", 5000);
+    c2.ch.band_join("!ch_beta", 5000);
     std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
     // Role 2 sends to ch_alpha only.
-    c2.ch.band_broadcast("#ch_alpha", {{"target", "alpha"}});
+    c2.ch.band_broadcast("!ch_alpha", {{"target", "alpha"}});
 
     bool got1 = pylabhub::tests::helper::poll_until(
         [&] { return msg_on_ch1.load() > 0; },
@@ -548,7 +548,7 @@ int channel_multi_channel()
     EXPECT_EQ(msg_on_ch2.load(), 0) << "Message leaked to #ch_beta";
 
     // Now send to ch_beta.
-    c2.ch.band_broadcast("#ch_beta", {{"target", "beta"}});
+    c2.ch.band_broadcast("!ch_beta", {{"target", "beta"}});
 
     bool got2 = pylabhub::tests::helper::poll_until(
         [&] { return msg_on_ch2.load() > 0; },

@@ -4141,7 +4141,7 @@ int api_band_join_without_broker_returns_nil(const std::string &dir)
     return run_graceful_degrade_case(
         dir, "lua_engine::api_band_join_without_broker_returns_nil",
         R"LUA(
-            local r = api.band_join("#test_ch")
+            local r = api.band_join("!test_ch")
             assert(r == nil,
                    "band_join without broker must return nil, got "
                    .. tostring(r))
@@ -4153,7 +4153,7 @@ int api_band_leave_without_broker_returns_false(const std::string &dir)
     return run_graceful_degrade_case(
         dir, "lua_engine::api_band_leave_without_broker_returns_false",
         R"LUA(
-            local r = api.band_leave("#test_ch")
+            local r = api.band_leave("!test_ch")
             assert(r == false,
                    "band_leave without broker must return false (NOT nil), "
                    .. "got " .. tostring(r))
@@ -4168,7 +4168,7 @@ int api_band_broadcast_without_broker_no_error(const std::string &dir)
     return run_graceful_degrade_case(
         dir, "lua_engine::api_band_broadcast_without_broker_no_error",
         R"LUA(
-            api.band_broadcast("#test_ch", {hello = "world", value = 42})
+            api.band_broadcast("!test_ch", {hello = "world", value = 42})
         )LUA");
 }
 
@@ -4177,7 +4177,7 @@ int api_band_members_without_broker_returns_nil(const std::string &dir)
     return run_graceful_degrade_case(
         dir, "lua_engine::api_band_members_without_broker_returns_nil",
         R"LUA(
-            local r = api.band_members("#test_ch")
+            local r = api.band_members("!test_ch")
             assert(r == nil,
                    "band_members without broker must return nil, got "
                    .. tostring(r))

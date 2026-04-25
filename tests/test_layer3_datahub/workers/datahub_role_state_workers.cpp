@@ -297,7 +297,7 @@ int band_membership_cleaned_on_role_close()
             const std::string ch_b    = make_test_channel_name("role_state.band_b");
             const std::string uid_a   = "prod.band.a.uid00000001";
             const std::string uid_b   = "prod.band.b.uid00000002";
-            const std::string band    = make_test_channel_name("test.band");
+            const std::string band    = "!" + make_test_channel_name("test.band");
 
             BrcHandle a, b;
             a.start(broker.endpoint, broker.pubkey, uid_a);

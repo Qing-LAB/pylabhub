@@ -3,7 +3,6 @@
 #include "utils/hub_state.hpp"
 #include "utils/net_address.hpp"
 
-#include "band_registry.hpp"
 #include "utils/channel_pattern.hpp"
 
 #include "utils/recovery_api.hpp"
@@ -122,7 +121,6 @@ public:
     BrokerService::Config cfg;
     std::string           server_public_z85;
     std::string           server_secret_z85;
-    BandRegistry          band_registry;
 
     /// HEP-CORE-0033 §8 state aggregate.  G2.2.0 introduces this field;
     /// subsequent G2.2.x commits migrate handler mutations from the
@@ -148,22 +146,14 @@ public:
     std::deque<BroadcastRequest> broadcast_request_queue_;
 
     // ── Hub federation (HEP-CORE-0022) ─────────────────────────────────────
-    /// Inbound peer: a remote hub whose DEALER connected to our ROUTER and sent HELLO.
-    struct InboundPeer
-    {
-        std::string              hub_uid;
-        std::string              zmq_identity;    ///< Raw routing identity for send_to_identity
-        std::vector<std::string> relay_channels;  ///< Channels we relay TO this peer
-    };
-    /// hub_uid ->InboundPeer; only accessed from the run() thread (no mutex needed).
-    std::unordered_map<std::string, InboundPeer> inbound_peers_;
-
-    /// [BR5] Inverted index: channel_name ->list of peer zmq_identities subscribed to it.
-    /// Updated on HELLO/BYE. Enables O(1) per-channel relay lookup instead of O(peers×channels).
-    std::unordered_map<std::string, std::vector<std::string>> channel_to_peer_identities_;
+    // Peer state (uid, state, last_seen, zmq_identity, relay_channels) lives
+    // in HubState (HEP-CORE-0033 §8).  The inbound-peer map and the
+    // channel→identities reverse index (former [BR5] optimization) are now
+    // computed on-the-fly from the snapshot in `relay_notify_to_peers`.
 
     /// [BR1] Track which hub_uids have already triggered on_hub_connected, to avoid
     /// double-firing in bidirectional federation (each side sends HELLO + receives ACK).
+    /// Session flag, not state — kept broker-private.
     std::unordered_set<std::string> hub_connected_notified_;
 
     /// [BR7] Relay dedup: ordered deque for O(expired) pruning + set for O(1) lookup.
@@ -521,8 +511,10 @@ void BrokerServiceImpl::run()
                 }
                 for (const auto& ht : pending_targeted)
                 {
-                    auto it = inbound_peers_.find(ht.target_hub_uid);
-                    if (it == inbound_peers_.end())
+                    auto peer = hub_state_.peer(ht.target_hub_uid);
+                    if (!peer.has_value() ||
+                        peer->state != pylabhub::hub::PeerState::Connected ||
+                        peer->zmq_identity.empty())
                     {
                         LOGGER_WARN("Broker: send_hub_targeted_msg: peer '{}' not connected",
                                     ht.target_hub_uid);
@@ -533,7 +525,7 @@ void BrokerServiceImpl::run()
                     msg["channel_name"]   = ht.channel;
                     msg["sender_uid"]     = cfg.self_hub_uid;
                     msg["payload"]        = ht.payload;
-                    send_to_identity(router, it->second.zmq_identity, "HUB_TARGETED_MSG", msg);
+                    send_to_identity(router, peer->zmq_identity, "HUB_TARGETED_MSG", msg);
                     LOGGER_DEBUG("Broker: sent HUB_TARGETED_MSG to peer '{}'", ht.target_hub_uid);
                 }
             }
@@ -1811,13 +1803,15 @@ void BrokerServiceImpl::on_consumer_closed(zmq::socket_t&                      s
 }
 
 void BrokerServiceImpl::federation_on_channel_closed(
-    const std::string&                          channel_name,
+    const std::string&                          /*channel_name*/,
     const pylabhub::hub::ChannelEntry&          /*entry*/,
     const std::string&                          /*reason*/)
 {
-    // Drop this channel from the federation relay index so no further
-    // HUB_RELAY_MSG attempts reference a gone channel.
-    channel_to_peer_identities_.erase(channel_name);
+    // No broker-internal index to maintain (relay targets are computed
+    // on-the-fly from `hub_state_.snapshot().peers`).  Stale channel-name
+    // entries in a peer's `relay_channels` are benign: relay_notify_to_peers
+    // only fires when a NOTIFY arrives for a live channel name; if the
+    // channel is gone, no NOTIFY arrives.
 }
 
 void BrokerServiceImpl::band_on_role_closed(zmq::socket_t& socket,
@@ -1825,22 +1819,35 @@ void BrokerServiceImpl::band_on_role_closed(zmq::socket_t& socket,
 {
     if (role_uid.empty())
         return;  // Anonymous role — never joined any band under a uid.
-    const auto affected_bands = band_registry.remove_from_all(role_uid);
+    // Snapshot bands; identify those containing this role; for each, fire
+    // _on_band_left and notify the remaining members (HEP-CORE-0030: band
+    // fan-out correctness requires up-to-date membership).
+    const auto snap = hub_state_.snapshot();
+    std::vector<std::string> affected_bands;
+    for (const auto& [band_name, band_entry] : snap.bands)
+    {
+        const bool is_member = std::any_of(
+            band_entry.members.begin(), band_entry.members.end(),
+            [&](const pylabhub::hub::BandMember& m) { return m.role_uid == role_uid; });
+        if (is_member) affected_bands.push_back(band_name);
+    }
     for (const auto& band_name : affected_bands)
     {
         LOGGER_INFO("Broker: role '{}' removed from band '{}' (role closed)",
                     role_uid, band_name);
-        // Notify remaining members so their local member cache stays fresh
-        // (HEP-CORE-0030: band fan-out correctness requires up-to-date membership).
-        auto remaining_ids = band_registry.member_identities(band_name);
-        if (remaining_ids.empty())
-            continue;
+        hub_state_._on_band_left(band_name, role_uid);
+        // Notify remaining members from a fresh snapshot of this band.
+        auto remaining = hub_state_.band(band_name);
+        if (!remaining.has_value()) continue; // band evicted (was last member)
         nlohmann::json notify;
         notify["channel"]  = band_name;
         notify["role_uid"] = role_uid;
         notify["reason"]   = "role_closed";
-        for (const auto& mid : remaining_ids)
-            send_to_identity(socket, mid, "BAND_LEAVE_NOTIFY", notify);
+        for (const auto& m : remaining->members)
+        {
+            if (!m.zmq_identity.empty())
+                send_to_identity(socket, m.zmq_identity, "BAND_LEAVE_NOTIFY", notify);
+        }
     }
 }
 
@@ -2665,31 +2672,27 @@ void BrokerServiceImpl::handle_hub_peer_hello(zmq::socket_t&        socket,
 
     const std::string identity_str(static_cast<const char*>(identity.data()), identity.size());
 
-    // [BR2] If this peer was already registered (e.g. reconnect after crash), fire
-    // on_hub_disconnected for the old entry before overwriting it.
-    auto existing = inbound_peers_.find(peer_hub_uid);
-    if (existing != inbound_peers_.end())
+    // [BR2] If this peer was already Connected (reconnect after crash), fire
+    // on_hub_disconnected for the old entry before overwriting it.  HubState's
+    // _on_peer_connected does insert_or_assign internally; we just need to
+    // emit the disconnected callback once before overwriting.
+    if (auto pre = hub_state_.peer(peer_hub_uid);
+        pre.has_value() && pre->state == pylabhub::hub::PeerState::Connected)
     {
         LOGGER_INFO("Broker: federation peer '{}' re-connected — treating as reconnect",
                     peer_hub_uid);
-        // Remove old channels from the inverted index. [BR5]
-        for (const auto& ch : existing->second.relay_channels)
-        {
-            auto& vec = channel_to_peer_identities_[ch];
-            vec.erase(std::remove(vec.begin(), vec.end(), existing->second.zmq_identity),
-                      vec.end());
-        }
         hub_connected_notified_.erase(peer_hub_uid); // Allow re-notification after reconnect.
         if (cfg.on_hub_disconnected)
             cfg.on_hub_disconnected(peer_hub_uid);
     }
 
-    // Register as inbound peer.
-    inbound_peers_[peer_hub_uid] = {peer_hub_uid, identity_str, relay_channels};
-
-    // [BR5] Update inverted channel ->peer-identities index.
-    for (const auto& ch : relay_channels)
-        channel_to_peer_identities_[ch].push_back(identity_str);
+    pylabhub::hub::PeerEntry pe;
+    pe.uid             = peer_hub_uid;
+    pe.zmq_identity    = identity_str;
+    pe.relay_channels  = relay_channels;
+    pe.last_seen       = std::chrono::steady_clock::now();
+    // state defaults to Connecting; _on_peer_connected forces Connected.
+    hub_state_._on_peer_connected(std::move(pe));
 
     LOGGER_INFO("Broker: federation peer '{}' connected; relay_channels=[{}]",
                 peer_hub_uid, [&]{
@@ -2715,19 +2718,15 @@ void BrokerServiceImpl::handle_hub_peer_bye(const nlohmann::json& payload)
     const std::string peer_hub_uid = payload.value("hub_uid", "");
     if (peer_hub_uid.empty()) return;
 
-    auto it = inbound_peers_.find(peer_hub_uid);
-    if (it == inbound_peers_.end()) return;
+    auto pre = hub_state_.peer(peer_hub_uid);
+    if (!pre.has_value() || pre->state != pylabhub::hub::PeerState::Connected) return;
 
-    // [BR5] Remove this peer's identity from the inverted channel index.
-    for (const auto& ch : it->second.relay_channels)
-    {
-        auto& vec = channel_to_peer_identities_[ch];
-        vec.erase(std::remove(vec.begin(), vec.end(), it->second.zmq_identity), vec.end());
-    }
-    inbound_peers_.erase(it);
+    // HEP-CORE-0033 §8 retention: peer entry stays with state=Disconnected;
+    // observable via snapshot until grace eviction (deferred work).
+    hub_state_._on_peer_disconnected(peer_hub_uid);
     hub_connected_notified_.erase(peer_hub_uid); // [BR1] Allow re-notification on reconnect.
 
-    LOGGER_INFO("Broker: federation peer '{}' sent BYE — removed", peer_hub_uid);
+    LOGGER_INFO("Broker: federation peer '{}' sent BYE — marked Disconnected", peer_hub_uid);
     if (cfg.on_hub_disconnected)
         cfg.on_hub_disconnected(peer_hub_uid);
 }
@@ -2828,13 +2827,24 @@ void BrokerServiceImpl::relay_notify_to_peers(zmq::socket_t&     socket,
 {
     if (cfg.self_hub_uid.empty()) return;
 
-    // [BR5] O(1) lookup via inverted index instead of O(peers × relay_channels).
-    auto idx_it = channel_to_peer_identities_.find(channel);
-    if (idx_it == channel_to_peer_identities_.end() || idx_it->second.empty()) return;
+    // Compute relay targets from HubState's PeerEntry data (state==Connected
+    // AND channel ∈ relay_channels).  For a small N of peers this is fine;
+    // a precomputed reverse index is documented as a future optimization.
+    const auto snap = hub_state_.snapshot();
+    std::vector<std::string> targets;
+    for (const auto& [uid, peer] : snap.peers)
+    {
+        if (peer.state != pylabhub::hub::PeerState::Connected) continue;
+        if (peer.zmq_identity.empty()) continue;
+        if (std::find(peer.relay_channels.begin(), peer.relay_channels.end(), channel)
+            == peer.relay_channels.end()) continue;
+        targets.push_back(peer.zmq_identity);
+    }
+    if (targets.empty()) return;
 
     const std::string msg_id = cfg.self_hub_uid + ":" + std::to_string(relay_seq_++);
 
-    for (const auto& peer_identity : idx_it->second)
+    for (const auto& peer_identity : targets)
     {
         nlohmann::json relay;
         relay["relay"]          = true;
@@ -2879,8 +2889,8 @@ nlohmann::json BrokerServiceImpl::handle_band_join_req(
     const zmq::message_t& identity,
     zmq::socket_t& socket)
 {
-    const std::string channel  = req.value("channel", "");
-    const std::string role_uid = req.value("role_uid", "");
+    const std::string channel   = req.value("channel", "");
+    const std::string role_uid  = req.value("role_uid", "");
     const std::string role_name = req.value("role_name", "");
 
     if (channel.empty() || role_uid.empty())
@@ -2891,27 +2901,46 @@ nlohmann::json BrokerServiceImpl::handle_band_join_req(
     const std::string id_str(
         static_cast<const char *>(identity.data()), identity.size());
 
-    // Notify existing members before adding the new one.
-    auto existing_ids = band_registry.member_identities(channel);
+    // Notify existing members before adding the new one.  Read from HubState
+    // snapshot so the strict identifier validation has the final say on
+    // which bands/members exist.
     nlohmann::json notify;
-    notify["channel"] = channel;
-    notify["role_uid"] = role_uid;
+    notify["channel"]   = channel;
+    notify["role_uid"]  = role_uid;
     notify["role_name"] = role_name;
-    for (const auto &mid : existing_ids)
+    if (auto pre_band = hub_state_.band(channel); pre_band.has_value())
     {
-        send_to_identity(socket, mid, "BAND_JOIN_NOTIFY", notify);
+        for (const auto& m : pre_band->members)
+        {
+            if (!m.zmq_identity.empty())
+                send_to_identity(socket, m.zmq_identity, "BAND_JOIN_NOTIFY", notify);
+        }
     }
 
-    bool is_new = band_registry.join(channel, role_uid, role_name, id_str);
-    LOGGER_INFO("Broker: BAND_JOIN '{}' role='{}' ({})",
-                channel, role_uid, is_new ? "new" : "rejoin");
+    pylabhub::hub::BandMember member;
+    member.role_uid     = role_uid;
+    member.role_name    = role_name;
+    member.zmq_identity = id_str;
+    hub_state_._on_band_joined(channel, std::move(member));
 
-    auto members = band_registry.members_json(channel);
+    LOGGER_INFO("Broker: BAND_JOIN '{}' role='{}'", channel, role_uid);
+
+    nlohmann::json members_json = nlohmann::json::array();
+    if (auto post_band = hub_state_.band(channel); post_band.has_value())
+    {
+        for (const auto& m : post_band->members)
+        {
+            members_json.push_back({
+                {"role_uid",  m.role_uid},
+                {"role_name", m.role_name}
+            });
+        }
+    }
 
     nlohmann::json resp;
-    resp["status"] = "success";
+    resp["status"]  = "success";
     resp["channel"] = channel;
-    resp["members"] = members.value_or(nlohmann::json::array());
+    resp["members"] = std::move(members_json);
     return resp;
 }
 
@@ -2927,21 +2956,36 @@ nlohmann::json BrokerServiceImpl::handle_band_leave_req(
         return make_error("", "INVALID_REQUEST", "Missing channel or role_uid");
     }
 
-    bool removed = band_registry.leave(channel, role_uid);
+    // Was the role actually a member?  Check against HubState snapshot so
+    // the BAND_LEAVE_NOTIFY only fires on a real removal.
+    bool was_member = false;
+    if (auto pre = hub_state_.band(channel); pre.has_value())
+    {
+        for (const auto& m : pre->members)
+        {
+            if (m.role_uid == role_uid) { was_member = true; break; }
+        }
+    }
 
-    if (removed)
+    hub_state_._on_band_left(channel, role_uid);
+
+    if (was_member)
     {
         LOGGER_INFO("Broker: BAND_LEAVE '{}' role='{}'", channel, role_uid);
 
-        // Notify remaining members.
-        auto remaining_ids = band_registry.member_identities(channel);
+        // Notify remaining members (if any — leaving the last member also
+        // erases the band from HubState; the snapshot is then empty).
         nlohmann::json notify;
-        notify["channel"] = channel;
+        notify["channel"]  = channel;
         notify["role_uid"] = role_uid;
-        notify["reason"] = "voluntary";
-        for (const auto &mid : remaining_ids)
+        notify["reason"]   = "voluntary";
+        if (auto post = hub_state_.band(channel); post.has_value())
         {
-            send_to_identity(socket, mid, "BAND_LEAVE_NOTIFY", notify);
+            for (const auto& m : post->members)
+            {
+                if (!m.zmq_identity.empty())
+                    send_to_identity(socket, m.zmq_identity, "BAND_LEAVE_NOTIFY", notify);
+            }
         }
     }
 
@@ -2958,23 +3002,27 @@ void BrokerServiceImpl::handle_band_broadcast_req(
     const std::string channel    = req.value("channel", "");
     const std::string sender_uid = req.value("sender_uid", "");
 
-    if (channel.empty())
-        return;
-
-    auto target_ids = band_registry.member_identities(channel, sender_uid);
+    if (channel.empty()) return;
 
     nlohmann::json notify;
-    notify["channel"] = channel;
+    notify["channel"]    = channel;
     notify["sender_uid"] = sender_uid;
-    notify["body"] = req.value("body", nlohmann::json::object());
+    notify["body"]       = req.value("body", nlohmann::json::object());
 
-    for (const auto &mid : target_ids)
+    std::size_t recipients = 0;
+    if (auto band = hub_state_.band(channel); band.has_value())
     {
-        send_to_identity(socket, mid, "BAND_BROADCAST_NOTIFY", notify);
+        for (const auto& m : band->members)
+        {
+            if (m.role_uid == sender_uid) continue;
+            if (m.zmq_identity.empty()) continue;
+            send_to_identity(socket, m.zmq_identity, "BAND_BROADCAST_NOTIFY", notify);
+            ++recipients;
+        }
     }
 
     LOGGER_DEBUG("Broker: BAND_BROADCAST '{}' from '{}' ->{} recipients",
-                 channel, sender_uid, target_ids.size());
+                 channel, sender_uid, recipients);
 }
 
 nlohmann::json BrokerServiceImpl::handle_band_members_req(
@@ -2982,10 +3030,21 @@ nlohmann::json BrokerServiceImpl::handle_band_members_req(
 {
     const std::string channel = req.value("channel", "");
 
+    nlohmann::json members_json = nlohmann::json::array();
+    if (auto band = hub_state_.band(channel); band.has_value())
+    {
+        for (const auto& m : band->members)
+        {
+            members_json.push_back({
+                {"role_uid",  m.role_uid},
+                {"role_name", m.role_name}
+            });
+        }
+    }
+
     nlohmann::json resp;
     resp["channel"] = channel;
-    resp["members"] = band_registry.members_json(channel)
-                          .value_or(nlohmann::json::array());
+    resp["members"] = std::move(members_json);
     return resp;
 }
 
