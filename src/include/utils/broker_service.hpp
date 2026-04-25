@@ -93,6 +93,27 @@ struct FederationPeer
     std::vector<std::string> channels;         ///< Channels this hub relays TO the peer
 };
 
+/// Argument to `BrokerService::Config::on_processing_error`
+/// (HEP-CORE-0033 §9.6).  This struct is **append-only** for ABI
+/// stability: future fields may be added at the end; existing fields
+/// must not be removed or reordered.
+struct ProcessingError
+{
+    /// msg_type the dispatcher saw, or empty if the failure happened
+    /// before the msg_type frame was parsed (S1/S2 errors).
+    std::string                msg_type;
+    /// One of: "malformed_frame" | "malformed_json" | "unknown_msg_type"
+    /// | "exception".  See HEP-CORE-0033 §9.3 for the failure-mode
+    /// mapping.
+    std::string                error_kind;
+    /// Free-form detail: exception what(), parse-error description, etc.
+    std::string                detail;
+    /// Raw ZMQ ROUTER routing identity bytes when available
+    /// (request-reply paths); nullopt for inbound peer-DEALER traffic
+    /// or pre-dispatch failures with no identity context.
+    std::optional<std::string> peer_identity;
+};
+
 class PYLABHUB_UTILS_EXPORT BrokerService
 {
 public:
@@ -230,6 +251,20 @@ public:
         std::function<void(const std::string& channel,
                            const std::string& payload,
                            const std::string& source_hub_uid)> on_hub_message;
+
+        /// Hook fired when broker message processing hits an error
+        /// (HEP-CORE-0033 §9.6).  Opt-in.  Invoked AFTER counter bumps
+        /// (so a handler reading HubState::counters() sees fresh state),
+        /// synchronously on the broker run() thread.
+        ///
+        /// **Hook contract:**
+        /// - May throw — broker swallows.
+        /// - Must be fast / non-blocking — for slow work, enqueue and return.
+        /// - May call back into BrokerService / HubState (no broker locks
+        ///   are held during invocation).
+        ///
+        /// **Lifetime**: same as on_ready.
+        std::function<void(const ProcessingError&)> on_processing_error;
     };
 
     explicit BrokerService(Config cfg);

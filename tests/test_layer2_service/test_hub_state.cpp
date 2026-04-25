@@ -651,8 +651,10 @@ TEST(HubStateOps, ChannelRegistered_ComposesChannelAndRoleAndShmAndCounter)
     ASSERT_TRUE(shm.has_value());
     EXPECT_EQ(shm->block_path, "ch1-shm");
 
-    // Counter bumped.
-    EXPECT_EQ(s.counters().msg_type_counts.at("REG_REQ"), 1u);
+    // Per HEP-CORE-0033 §9.4, msg_type_counts is bumped at the dispatcher
+    // level (broker), NOT inside HubState capability ops.  The op-only
+    // L2 path here exercises the state mutation, not the wire counter.
+    EXPECT_EQ(s.counters().msg_type_counts.count("REG_REQ"), 0u);
 
     // Events for channel + role both fired.
     EXPECT_EQ(opened_fired, (std::vector<std::string>{"ch1"}));
@@ -931,17 +933,19 @@ TEST(HubStateOps, BandJoined_UpsertsMemberRole)
     EXPECT_EQ(r->name, "r1");
     EXPECT_EQ(r->role_tag, "prod");
     EXPECT_TRUE(r->channels.empty()); // band membership doesn't populate channels
-    EXPECT_EQ(s.counters().msg_type_counts.at("BAND_JOIN_REQ"), 1u);
+    // Per HEP-CORE-0033 §9.4, msg_type counters live at dispatcher level.
+    EXPECT_EQ(s.counters().msg_type_counts.count("BAND_JOIN_REQ"), 0u);
 }
 
-TEST(HubStateOps, PeerConnected_InsertsAndBumpsCounter)
+TEST(HubStateOps, PeerConnected_Inserts)
 {
     HubState s;
     HubStateTestAccess::on_peer_connected(s, make_peer("hub.p1.test"));
     auto p = s.peer("hub.p1.test");
     ASSERT_TRUE(p.has_value());
     EXPECT_EQ(p->state, PeerState::Connected);
-    EXPECT_EQ(s.counters().msg_type_counts.at("HUB_PEER_HELLO"), 1u);
+    // Per HEP-CORE-0033 §9.4, msg_type counters live at dispatcher level.
+    EXPECT_EQ(s.counters().msg_type_counts.count("HUB_PEER_HELLO"), 0u);
 }
 
 TEST(HubStateOps, MetricsReported_StoresOnRoleWithoutLivenessSideEffect)
@@ -966,7 +970,8 @@ TEST(HubStateOps, MetricsReported_StoresOnRoleWithoutLivenessSideEffect)
     // Crucially: metrics report does NOT bump the role's liveness clock.
     EXPECT_EQ(r->last_heartbeat, role_hb_before);
 
-    EXPECT_EQ(s.counters().msg_type_counts.at("METRICS_REPORT_REQ"), 1u);
+    // Per HEP-CORE-0033 §9.4, msg_type counters live at dispatcher level.
+    EXPECT_EQ(s.counters().msg_type_counts.count("METRICS_REPORT_REQ"), 0u);
 }
 
 TEST(HubStateOps, MessageProcessed_BumpsCounterAndBytes)
@@ -1245,10 +1250,11 @@ TEST(HubStateHeartbeatB1, HeartbeatOnUnknownChannelDropsSilently)
                                      std::chrono::steady_clock::now(),
                                      std::nullopt);
     EXPECT_FALSE(s.channel("no.such.ch").has_value());
-    // Counter was bumped (op-entry validation passed; mutation simply
-    // can't apply).  Verify counter and absence of side effects.
-    auto c = s.counters();
-    EXPECT_EQ(c.msg_type_counts.at("HEARTBEAT_REQ"), 1u);
+    // Per HEP-CORE-0033 §9.4, msg_type counters are dispatcher-level
+    // (not bumped by HubState ops directly).  This test exercises the
+    // op-only path; the channel doesn't exist so no state mutation
+    // happened — verified above.
+    EXPECT_EQ(s.counters().msg_type_counts.count("HEARTBEAT_REQ"), 0u);
 }
 
 TEST(HubStateHeartbeatB1, HeartbeatRefreshesRoleLastHeartbeat)

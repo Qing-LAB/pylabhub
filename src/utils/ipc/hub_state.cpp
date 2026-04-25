@@ -523,6 +523,12 @@ void HubState::_set_shm_block(ShmBlockRef ref)
     pImpl->shm_blocks.insert_or_assign(ref.channel_name, std::move(ref));
 }
 
+void HubState::_bump_msg_type_error(const std::string &msg_type, uint64_t n)
+{
+    std::unique_lock lk(pImpl->mu);
+    pImpl->counters.msg_type_errors[msg_type] += n;
+}
+
 void HubState::_bump_counter(const std::string &key, uint64_t n)
 {
     std::unique_lock lk(pImpl->mu);
@@ -669,7 +675,6 @@ void HubState::_on_channel_registered(ChannelEntry entry)
     if (has_shm)
         _set_shm_block(ShmBlockRef{channel_name, shm_name});
 
-    _bump_counter("REG_REQ");
 }
 
 void HubState::_on_channel_closed(const std::string &name, ChannelCloseReason why)
@@ -721,7 +726,6 @@ void HubState::_on_consumer_joined(const std::string &channel, ConsumerEntry con
             h(fired);
     }
 
-    _bump_counter("CONSUMER_REG_REQ");
 }
 
 void HubState::_on_consumer_left(const std::string &channel, const std::string &role_uid)
@@ -747,7 +751,6 @@ void HubState::_on_consumer_left(const std::string &channel, const std::string &
             if (rm != chs.end()) chs.erase(rm);
         }
     }
-    _bump_counter("CONSUMER_DEREG_REQ");
 }
 
 void HubState::_on_heartbeat(const std::string                   &channel,
@@ -803,7 +806,6 @@ void HubState::_on_heartbeat(const std::string                   &channel,
         _update_role_metrics(role_uid, *metrics,
                              std::chrono::system_clock::now());
 
-    _bump_counter("HEARTBEAT_REQ");
 }
 
 void HubState::_on_heartbeat_timeout(const std::string &channel,
@@ -895,7 +897,6 @@ void HubState::_on_metrics_reported(const std::string                    &channe
     // counter key only (metrics collapse onto RoleEntry per HEP §8).
     if (!role_uid.empty())
         _update_role_metrics(role_uid, std::move(metrics), when);
-    _bump_counter("METRICS_REPORT_REQ");
     (void)channel; // reserved for future per-channel metrics splitting (G2.2.4)
 }
 
@@ -922,7 +923,6 @@ void HubState::_on_band_joined(const std::string &band, BandMember member)
             h(fired);
     }
 
-    _bump_counter("BAND_JOIN_REQ");
 }
 
 void HubState::_on_band_left(const std::string &band, const std::string &role_uid)
@@ -934,7 +934,6 @@ void HubState::_on_band_left(const std::string &band, const std::string &role_ui
         return;
     }
     _set_band_left(band, role_uid);
-    _bump_counter("BAND_LEAVE_REQ");
 }
 
 void HubState::_on_peer_connected(PeerEntry peer)
@@ -945,7 +944,6 @@ void HubState::_on_peer_connected(PeerEntry peer)
         return;
     }
     _set_peer_connected(std::move(peer));
-    _bump_counter("HUB_PEER_HELLO");
 }
 
 void HubState::_on_peer_disconnected(const std::string &hub_uid)
@@ -956,7 +954,6 @@ void HubState::_on_peer_disconnected(const std::string &hub_uid)
         return;
     }
     _set_peer_disconnected(hub_uid);
-    _bump_counter("HUB_PEER_BYE");
 }
 
 void HubState::_on_message_processed(const std::string &msg_type,
