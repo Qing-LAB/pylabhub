@@ -550,31 +550,27 @@ void BrokerServiceImpl::run()
             }
             for (const auto& ch : pending_closes)
             {
-                auto* entry = registry.find_channel_mutable(ch);
-                if (entry != nullptr && entry->status != ChannelStatus::Closing)
+                // G2.2.1.c phase 2: read status from HubState (truth);
+                // HubState mutators are authoritative; registry mirror
+                // remains until phase 3 deletes the registry.
+                auto hub_entry = hub_state_.channel(ch);
+                if (hub_entry.has_value() &&
+                    hub_entry->status != pylabhub::hub::ChannelStatus::Closing)
                 {
                     LOGGER_INFO("Broker: script-requested close for channel '{}'", ch);
-                    // G2.2.1.c phase 1: helpers take hub::ChannelEntry; refetch
-                    // from HubState (mirrored at registration; status not yet
-                    // mutated to Closing — we want the pre-Closing snapshot
-                    // here so consumer/producer identities are still listed).
-                    if (auto hub_entry = hub_state_.channel(ch); hub_entry.has_value())
-                        send_closing_notify(router, ch, *hub_entry, "script_requested");
+                    send_closing_notify(router, ch, *hub_entry, "script_requested");
                     // Transition to Closing with a grace deadline — don't deregister yet.
                     // Clients have until the deadline to process queued messages and deregister.
-                    entry->status = ChannelStatus::Closing;
-                    entry->closing_deadline =
+                    const auto deadline =
                         std::chrono::steady_clock::now() + cfg.effective_grace();
-                    // G2.2.1.b dual-write: mirror the status change into
-                    // HubState so readers (query_channel_snapshot etc.)
-                    // that now source from HubState observe "Closing".
-                    // G2.2.1.b.1: also mirror closing_deadline so the
-                    // grace-expiry sweep (when moved to HubState in
-                    // G2.2.1.c) can observe the same deadline.
                     hub_state_._set_channel_status(
                         ch, pylabhub::hub::ChannelStatus::Closing);
-                    hub_state_._set_channel_closing_deadline(
-                        ch, entry->closing_deadline);
+                    hub_state_._set_channel_closing_deadline(ch, deadline);
+                    if (auto* reg = registry.find_channel_mutable(ch); reg != nullptr)
+                    {
+                        reg->status           = ChannelStatus::Closing;
+                        reg->closing_deadline = deadline;
+                    }
                 }
             }
 
@@ -1498,8 +1494,10 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
                           "Endpoint '" + endpoint + "' is invalid or has port 0");
     }
 
-    auto *entry = registry.find_channel_mutable(channel_name);
-    if (!entry)
+    // G2.2.1.c phase 2: read channel state from HubState (truth);
+    // registry mirror updated below until phase 3 deletes the registry.
+    auto entry = hub_state_.channel(channel_name);
+    if (!entry.has_value())
     {
         return make_error(corr_id, "CHANNEL_NOT_FOUND",
                           "Channel '" + channel_name + "' is not registered");
@@ -1515,13 +1513,8 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
                           "Sender is not the creator of channel '" + channel_name + "'");
     }
 
-    // Resolve the target field.
-    std::string *target_field = nullptr;
-    if (endpoint_type == "zmq_node")
-    {
-        target_field = &entry->zmq_node_endpoint;
-    }
-    else if (endpoint_type == "inbox")
+    // Only `zmq_node` is mutable post-registration; reject everything else.
+    if (endpoint_type == "inbox")
     {
         // Inbox endpoints must be resolved before REG_REQ — runtime update is not
         // supported. If the inbox port is 0, that's a registration bug, not an
@@ -1541,7 +1534,7 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
                           "Inbox endpoint must be resolved before REG_REQ, "
                           "not updated afterwards");
     }
-    else
+    if (endpoint_type != "zmq_node")
     {
         return make_error(corr_id, "UNKNOWN_ENDPOINT_TYPE",
                           "endpoint_type must be 'zmq_node', got: '" +
@@ -1549,10 +1542,11 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
     }
 
     // Check current value: already non-zero ->reject unless same value (idempotent).
-    auto current = pylabhub::validate_tcp_endpoint(*target_field);
+    const std::string &current_value = entry->zmq_node_endpoint;
+    auto current = pylabhub::validate_tcp_endpoint(current_value);
     if (current.ok() && current.port != 0)
     {
-        if (*target_field == endpoint)
+        if (current_value == endpoint)
         {
             LOGGER_DEBUG("Broker: ENDPOINT_UPDATE_REQ for '{}' {} — "
                          "already set to '{}' (idempotent)",
@@ -1562,23 +1556,20 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
         {
             LOGGER_WARN("Broker: ENDPOINT_UPDATE_REQ for '{}' {} rejected — "
                         "already set to '{}', cannot change to '{}'",
-                        channel_name, endpoint_type, *target_field, endpoint);
+                        channel_name, endpoint_type, current_value, endpoint);
             return make_error(corr_id, "ENDPOINT_ALREADY_SET",
                               endpoint_type + " endpoint already set to '" +
-                                  *target_field + "'");
+                                  current_value + "'");
         }
     }
     else
     {
-        *target_field = endpoint;
         LOGGER_INFO("Broker: ENDPOINT_UPDATE_REQ for '{}' {} updated to '{}'",
                     channel_name, endpoint_type, endpoint);
-        // G2.2.1.b.1 dual-write: only `zmq_node` is currently mutable
-        // post-registration (inbox updates are rejected above).  Mirror
-        // into HubState so consumer DISC_REQ paths that resolve via
-        // HubState (post-G2.2.1.c) observe the up-to-date endpoint.
-        if (endpoint_type == "zmq_node")
-            hub_state_._set_channel_zmq_node_endpoint(channel_name, endpoint);
+        // HubState authoritative; registry mirror.
+        hub_state_._set_channel_zmq_node_endpoint(channel_name, endpoint);
+        if (auto* reg = registry.find_channel_mutable(channel_name); reg != nullptr)
+            reg->zmq_node_endpoint = endpoint;
     }
 
     nlohmann::json resp;
@@ -1721,59 +1712,61 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
     const auto ready_timeout   = cfg.effective_ready_timeout();
     const auto pending_timeout = cfg.effective_pending_timeout();
 
+    // G2.2.1.c phase 2: source liveness state from HubState snapshot;
+    // registry mutation remains as a passive mirror until phase 3 deletes
+    // the registry entirely.  One snapshot covers both passes.
+    const auto snap = hub_state_.snapshot();
+    const auto now  = std::chrono::steady_clock::now();
+
     // ── Pass 1: Ready -> Pending demotion ─────────────────────────────────
+    for (const auto& [channel_name, entry] : snap.channels)
     {
-        const auto demote = registry.find_timed_out_ready(ready_timeout);
-        const auto now = std::chrono::steady_clock::now();
-        for (const auto& channel_name : demote)
+        if (entry.status != pylabhub::hub::ChannelStatus::Ready)
+            continue;
+        if (now - entry.last_heartbeat < ready_timeout)
+            continue;
+        LOGGER_WARN("Broker: role '{}' demoted Ready -> Pending "
+                    "(no heartbeat within {} ms)",
+                    channel_name, ready_timeout.count());
+        // HubState is the truth (auto-stamps state_since); registry mirror.
+        hub_state_._set_channel_status(
+            channel_name, pylabhub::hub::ChannelStatus::PendingReady);
+        if (auto* reg = registry.find_channel_mutable(channel_name); reg != nullptr)
         {
-            auto* entry = registry.find_channel_mutable(channel_name);
-            if (entry == nullptr || entry->status != ChannelStatus::Ready)
-                continue;
-            LOGGER_WARN("Broker: role '{}' demoted Ready -> Pending "
-                        "(no heartbeat within {} ms)",
-                        channel_name, ready_timeout.count());
-            entry->status      = ChannelStatus::PendingReady;
-            entry->state_since = now;
-            ++m_metric_ready_to_pending;
-            // G2.2.1.b dual-write: reflect Ready -> Pending in HubState.
-            hub_state_._set_channel_status(
-                channel_name, pylabhub::hub::ChannelStatus::PendingReady);
+            reg->status      = ChannelStatus::PendingReady;
+            reg->state_since = now;
         }
+        ++m_metric_ready_to_pending;
     }
 
     // ── Pass 2: Pending -> deregistered (immediate, no Closing state) ─────
+    // Re-snapshot to observe pass 1's transitions: channels demoted Ready
+    // -> Pending in this same call appear here with their freshly-stamped
+    // state_since (≈ now), so `now - state_since < pending_timeout` skips
+    // them — they get one full pending_timeout window before reclaim.
+    const auto snap2 = hub_state_.snapshot();
+    for (const auto& [channel_name, entry] : snap2.channels)
     {
-        const auto reclaim = registry.find_timed_out_pending(pending_timeout);
-        for (const auto& channel_name : reclaim)
-        {
-            auto* entry = registry.find_channel_mutable(channel_name);
-            if (entry == nullptr || entry->status != ChannelStatus::PendingReady)
-                continue;
-            LOGGER_WARN("Broker: role '{}' reclaimed from Pending "
-                        "(no heartbeat within {} ms); sending CHANNEL_CLOSING_NOTIFY + dereg",
-                        channel_name, pending_timeout.count());
-            // Notify consumers (best-effort — a stuck/disconnected consumer
-            // may miss this; it will eventually observe CHANNEL_NOT_FOUND on
-            // its next DISC_REQ).
-            // G2.2.1.c phase 1: helpers take hub::ChannelEntry; HubState
-            // mirrors registration so this fetch is always populated here
-            // (registry's `entry` would not yet have been deregistered).
-            const uint64_t pid = entry->producer_pid;
-            if (auto hub_entry = hub_state_.channel(channel_name); hub_entry.has_value())
-            {
-                send_closing_notify(socket, channel_name, *hub_entry, "pending_timeout");
-                // Invoke cleanup hook BEFORE erasing so federation/band can read
-                // entry fields (producer_role_uid, channel_name, ...).
-                on_channel_closed(socket, channel_name, *hub_entry, "pending_timeout");
-            }
-            registry.deregister_channel(channel_name, pid);
-            // G2.2.1.a dual-write: heartbeat-timeout reclaim.
-            hub_state_._on_channel_closed(
-                channel_name,
-                pylabhub::hub::ChannelCloseReason::HeartbeatTimeout);
-            ++m_metric_pending_to_deregistered;
-        }
+        if (entry.status != pylabhub::hub::ChannelStatus::PendingReady)
+            continue;
+        if (now - entry.state_since < pending_timeout)
+            continue;
+        LOGGER_WARN("Broker: role '{}' reclaimed from Pending "
+                    "(no heartbeat within {} ms); sending CHANNEL_CLOSING_NOTIFY + dereg",
+                    channel_name, pending_timeout.count());
+        // Notify consumers (best-effort — a stuck/disconnected consumer
+        // may miss this; it will eventually observe CHANNEL_NOT_FOUND on
+        // its next DISC_REQ).  Pass the snapshot copy directly to helpers.
+        send_closing_notify(socket, channel_name, entry, "pending_timeout");
+        // Invoke cleanup hook BEFORE erasing so federation/band can read
+        // entry fields (producer_role_uid, channel_name, ...).
+        on_channel_closed(socket, channel_name, entry, "pending_timeout");
+        registry.deregister_channel(channel_name, entry.producer_pid);
+        // HubState authoritative close.
+        hub_state_._on_channel_closed(
+            channel_name,
+            pylabhub::hub::ChannelCloseReason::HeartbeatTimeout);
+        ++m_metric_pending_to_deregistered;
     }
 }
 
@@ -1790,9 +1783,12 @@ void BrokerServiceImpl::check_dead_consumers(zmq::socket_t& socket)
     }
     m_last_consumer_check = now;
 
-    for (auto& [channel_name, entry] : registry.all_channels())
+    // G2.2.1.c phase 2: iterate HubState snapshot; registry deregister
+    // remains as a passive mirror until phase 3 deletes the registry.
+    const auto snap = hub_state_.snapshot();
+    for (const auto& [channel_name, entry] : snap.channels)
     {
-        std::vector<ConsumerEntry> dead;
+        std::vector<pylabhub::hub::ConsumerEntry> dead;
         for (const auto& c : entry.consumers)
         {
             if (!pylabhub::platform::is_process_alive(c.consumer_pid))
@@ -1802,7 +1798,7 @@ void BrokerServiceImpl::check_dead_consumers(zmq::socket_t& socket)
         }
         for (const auto& dead_consumer : dead)
         {
-            // Cat 2: dead consumer — notify producer + clean registry.
+            // Cat 2: dead consumer — notify producer + clean state.
             LOGGER_WARN(
                 "Broker: Cat2 dead consumer pid={} host='{}' on channel '{}' — removing",
                 dead_consumer.consumer_pid, dead_consumer.consumer_hostname, channel_name);
@@ -1820,13 +1816,9 @@ void BrokerServiceImpl::check_dead_consumers(zmq::socket_t& socket)
                             channel_name, dead_consumer.consumer_pid);
             }
             registry.deregister_consumer(channel_name, dead_consumer.consumer_pid);
-            // G2.2.1.a dual-write: liveness sweep removed a dead consumer.
+            // HubState authoritative consumer-leave.
             hub_state_._on_consumer_left(channel_name, dead_consumer.role_uid);
-            // G2.2.1.c phase 1: hook takes hub::ConsumerEntry; project broker
-            // entry now (registry will be deleted in a later sub-phase, after
-            // which dead-consumer iteration sources from HubState directly).
-            on_consumer_closed(socket, channel_name,
-                               to_hub_consumer(dead_consumer), "process_dead");
+            on_consumer_closed(socket, channel_name, dead_consumer, "process_dead");
         }
     }
 }
@@ -1884,17 +1876,20 @@ void BrokerServiceImpl::send_closing_notify(zmq::socket_t&                     s
 
 void BrokerServiceImpl::check_closing_deadlines(zmq::socket_t& socket)
 {
-    auto now = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
     std::vector<std::string> to_remove;
 
-    for (auto& [name, entry] : registry.all_channels())
+    // G2.2.1.c phase 2: iterate HubState snapshot.  Registry cleanup
+    // remains as a passive mirror until phase 3 deletes the registry.
+    const auto snap = hub_state_.snapshot();
+    for (const auto& [name, entry] : snap.channels)
     {
-        if (entry.status != ChannelStatus::Closing)
+        if (entry.status != pylabhub::hub::ChannelStatus::Closing)
             continue;
 
         // Grace period not yet expired.
         // Note: if all consumers deregister AND the producer sends DEREG_REQ,
-        // deregister_channel() erases the entry from the registry — so no
+        // _on_channel_closed() erases the entry from HubState — so no
         // explicit early-cleanup check is needed here. We only act on deadline.
         if (now < entry.closing_deadline)
             continue;
@@ -1903,24 +1898,18 @@ void BrokerServiceImpl::check_closing_deadlines(zmq::socket_t& socket)
         LOGGER_WARN("Broker: channel '{}' — grace period expired with {} consumers "
                     "still registered, sending FORCE_SHUTDOWN",
                     name, entry.consumers.size());
-        // G2.2.1.c phase 1: send_force_shutdown takes hub::ChannelEntry.
-        // HubState mirrors registration; this path only acts on entries
-        // already in Closing (transitioned via dual-write earlier).
-        if (auto hub_entry = hub_state_.channel(name); hub_entry.has_value())
-            send_force_shutdown(socket, name, *hub_entry);
+        send_force_shutdown(socket, name, entry);
         to_remove.push_back(name);
     }
 
     for (const auto& name : to_remove)
     {
-        // G2.2.1.c phase 1: source from HubState (still mirrored at this
-        // point — registry deregister + HubState close happen below).
         auto entry = hub_state_.channel(name);
         if (entry.has_value())
         {
             on_channel_closed(socket, name, *entry, "grace_expired");
             registry.deregister_channel(name, entry->producer_pid);
-            // G2.2.1.a dual-write: grace-expired close.  Reason =
+            // HubState authoritative grace-expired close.  Reason =
             // HeartbeatTimeout (this path only triggers for channels
             // already in Closing from a heartbeat timeout).
             hub_state_._on_channel_closed(
