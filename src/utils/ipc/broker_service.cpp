@@ -334,27 +334,27 @@ public:
     // band members).
     void on_channel_closed(zmq::socket_t& socket,
                            const std::string& channel_name,
-                           const ChannelEntry& entry,
+                           const pylabhub::hub::ChannelEntry& entry,
                            const std::string& reason);
     void on_consumer_closed(zmq::socket_t& socket,
                             const std::string& channel_name,
-                            const ConsumerEntry& consumer,
+                            const pylabhub::hub::ConsumerEntry& consumer,
                             const std::string& reason);
 
     // Per-module cleanup helpers (invoked by the hooks above).
     void federation_on_channel_closed(const std::string& channel_name,
-                                       const ChannelEntry& entry,
+                                       const pylabhub::hub::ChannelEntry& entry,
                                        const std::string& reason);
     void band_on_role_closed(zmq::socket_t& socket,
                              const std::string& role_uid);
 
-    void send_closing_notify(zmq::socket_t&                    socket,
-                             const std::string&                channel_name,
-                             const ChannelEntry&               entry,
-                             const std::string&                reason);
-    void send_force_shutdown(zmq::socket_t&      socket,
-                             const std::string&   channel_name,
-                             const ChannelEntry&  entry);
+    void send_closing_notify(zmq::socket_t&                            socket,
+                             const std::string&                        channel_name,
+                             const pylabhub::hub::ChannelEntry&        entry,
+                             const std::string&                        reason);
+    void send_force_shutdown(zmq::socket_t&                            socket,
+                             const std::string&                        channel_name,
+                             const pylabhub::hub::ChannelEntry&        entry);
 
     void handle_checksum_error_report(zmq::socket_t&        socket,
                                       const nlohmann::json& req);
@@ -554,7 +554,12 @@ void BrokerServiceImpl::run()
                 if (entry != nullptr && entry->status != ChannelStatus::Closing)
                 {
                     LOGGER_INFO("Broker: script-requested close for channel '{}'", ch);
-                    send_closing_notify(router, ch, *entry, "script_requested");
+                    // G2.2.1.c phase 1: helpers take hub::ChannelEntry; refetch
+                    // from HubState (mirrored at registration; status not yet
+                    // mutated to Closing — we want the pre-Closing snapshot
+                    // here so consumer/producer identities are still listed).
+                    if (auto hub_entry = hub_state_.channel(ch); hub_entry.has_value())
+                        send_closing_notify(router, ch, *hub_entry, "script_requested");
                     // Transition to Closing with a grace deadline — don't deregister yet.
                     // Clients have until the deadline to process queued messages and deregister.
                     entry->status = ChannelStatus::Closing;
@@ -1048,8 +1053,11 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     if (!registry.register_channel(channel_name, std::move(entry)))
     {
         // Cat 1: schema mismatch — invariant violation. Log + notify existing producer.
-        // Read-only access: use find_channel() not find_channel_mutable().
-        auto existing_opt = registry.find_channel(channel_name);
+        // G2.2.1.c phase 1: source from HubState (registration mirrored at
+        // initial REG_REQ); registry.register_channel above failed so
+        // HubState was NOT mirrored on this attempt — the existing entry
+        // there is the legitimate prior registration we want to notify.
+        auto existing_opt = hub_state_.channel(channel_name);
         const std::string existing_schema = existing_opt ? existing_opt->schema_hash : "(unknown)";
         LOGGER_ERROR(
             "Broker: Cat1 schema mismatch on '{}': existing={} attempted={} attempted_pid={}",
@@ -1097,7 +1105,8 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
         return make_error(corr_id, "INVALID_REQUEST", "Missing or empty 'channel_name'");
     }
 
-    auto entry = registry.find_channel(channel_name);
+    // G2.2.1.c phase 1: source channel state from HubState.
+    auto entry = hub_state_.channel(channel_name);
 
     // ── HEP-CORE-0023 §2.2: Three-response state-machine dispatch ──────
     // Broker replies immediately based on current role state. No queuing.
@@ -1109,7 +1118,7 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
                           "Channel '" + channel_name + "' is not registered");
     }
 
-    if (entry->status == ChannelStatus::PendingReady)
+    if (entry->status == pylabhub::hub::ChannelStatus::PendingReady)
     {
         // Role registered but not yet Ready (no heartbeat received).
         // Client is responsible for retry.
@@ -1148,7 +1157,7 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
     resp["schema_version"]    = entry->schema_version;
     resp["metadata"]          = entry->metadata;
     resp["consumer_count"]    =
-        static_cast<uint32_t>(registry.find_consumers(channel_name).size());
+        static_cast<uint32_t>(entry->consumers.size());
     resp["has_shared_memory"] = entry->has_shared_memory;
     resp["channel_pattern"]   = channel_pattern_to_str(entry->pattern);
     resp["zmq_ctrl_endpoint"]  = entry->zmq_ctrl_endpoint;
@@ -1177,7 +1186,8 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
     const uint64_t producer_pid = req.value("producer_pid", uint64_t{0});
 
     // Notify consumers BEFORE removing the entry so the consumer list is still intact.
-    auto entry = registry.find_channel(channel_name);
+    // G2.2.1.c phase 1: source from HubState.
+    auto entry = hub_state_.channel(channel_name);
     if (entry.has_value())
     {
         send_closing_notify(socket, channel_name, *entry, "producer_deregistered");
@@ -1220,7 +1230,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
         return make_error(corr_id, "INVALID_REQUEST", "Missing or empty 'channel_name'");
     }
 
-    const auto channel_entry = registry.find_channel(channel_name);
+    // G2.2.1.c phase 1: source channel state from HubState.
+    const auto channel_entry = hub_state_.channel(channel_name);
     if (!channel_entry.has_value())
     {
         LOGGER_WARN("Broker: CONSUMER_REG_REQ channel '{}' not found", channel_name);
@@ -1346,10 +1357,11 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
     const uint64_t consumer_pid = req.value("consumer_pid", uint64_t{0});
 
     // Fetch consumer entry BEFORE removal so the cleanup hook can read role_uid.
-    ConsumerEntry closing_entry{};
+    // G2.2.1.c phase 1: source from HubState.
+    pylabhub::hub::ConsumerEntry closing_entry{};
     bool have_entry = false;
     {
-        auto ch = registry.find_channel(channel_name);
+        auto ch = hub_state_.channel(channel_name);
         if (ch.has_value())
         {
             for (const auto& c : ch->consumers)
@@ -1402,11 +1414,12 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
     }
     // Peek status + producer_role_uid before updating so we can log
     // state transitions and feed `_on_heartbeat` with the role context.
+    // G2.2.1.c phase 1: read-only peek sources from HubState.
     bool        was_pending      = false;
     std::string producer_role_uid;
-    if (auto* pre = registry.find_channel_mutable(channel_name); pre != nullptr)
+    if (auto pre = hub_state_.channel(channel_name); pre.has_value())
     {
-        was_pending       = (pre->status == ChannelStatus::PendingReady);
+        was_pending       = (pre->status == pylabhub::hub::ChannelStatus::PendingReady);
         producer_role_uid = pre->producer_role_uid;
     }
 
@@ -1602,7 +1615,8 @@ nlohmann::json BrokerServiceImpl::handle_schema_req(const nlohmann::json& req)
     {
         return make_error(corr_id, "INVALID_REQUEST", "Missing 'channel_name'");
     }
-    const auto entry = registry.find_channel(channel_name);
+    // G2.2.1.c phase 1: source from HubState.
+    const auto entry = hub_state_.channel(channel_name);
     if (!entry.has_value())
     {
         LOGGER_WARN("Broker: SCHEMA_REQ channel '{}' not found", channel_name);
@@ -1742,11 +1756,17 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
             // Notify consumers (best-effort — a stuck/disconnected consumer
             // may miss this; it will eventually observe CHANNEL_NOT_FOUND on
             // its next DISC_REQ).
-            send_closing_notify(socket, channel_name, *entry, "pending_timeout");
-            // Invoke cleanup hook BEFORE erasing so federation/band can read
-            // entry fields (producer_role_uid, channel_name, ...).
-            on_channel_closed(socket, channel_name, *entry, "pending_timeout");
+            // G2.2.1.c phase 1: helpers take hub::ChannelEntry; HubState
+            // mirrors registration so this fetch is always populated here
+            // (registry's `entry` would not yet have been deregistered).
             const uint64_t pid = entry->producer_pid;
+            if (auto hub_entry = hub_state_.channel(channel_name); hub_entry.has_value())
+            {
+                send_closing_notify(socket, channel_name, *hub_entry, "pending_timeout");
+                // Invoke cleanup hook BEFORE erasing so federation/band can read
+                // entry fields (producer_role_uid, channel_name, ...).
+                on_channel_closed(socket, channel_name, *hub_entry, "pending_timeout");
+            }
             registry.deregister_channel(channel_name, pid);
             // G2.2.1.a dual-write: heartbeat-timeout reclaim.
             hub_state_._on_channel_closed(
@@ -1802,15 +1822,19 @@ void BrokerServiceImpl::check_dead_consumers(zmq::socket_t& socket)
             registry.deregister_consumer(channel_name, dead_consumer.consumer_pid);
             // G2.2.1.a dual-write: liveness sweep removed a dead consumer.
             hub_state_._on_consumer_left(channel_name, dead_consumer.role_uid);
-            on_consumer_closed(socket, channel_name, dead_consumer, "process_dead");
+            // G2.2.1.c phase 1: hook takes hub::ConsumerEntry; project broker
+            // entry now (registry will be deleted in a later sub-phase, after
+            // which dead-consumer iteration sources from HubState directly).
+            on_consumer_closed(socket, channel_name,
+                               to_hub_consumer(dead_consumer), "process_dead");
         }
     }
 }
 
-void BrokerServiceImpl::send_closing_notify(zmq::socket_t&     socket,
-                                             const std::string& channel_name,
-                                             const ChannelEntry& entry,
-                                             const std::string& reason)
+void BrokerServiceImpl::send_closing_notify(zmq::socket_t&                     socket,
+                                             const std::string&                 channel_name,
+                                             const pylabhub::hub::ChannelEntry& entry,
+                                             const std::string&                 reason)
 {
     nlohmann::json body;
     body["channel_name"] = channel_name;
@@ -1879,13 +1903,19 @@ void BrokerServiceImpl::check_closing_deadlines(zmq::socket_t& socket)
         LOGGER_WARN("Broker: channel '{}' — grace period expired with {} consumers "
                     "still registered, sending FORCE_SHUTDOWN",
                     name, entry.consumers.size());
-        send_force_shutdown(socket, name, entry);
+        // G2.2.1.c phase 1: send_force_shutdown takes hub::ChannelEntry.
+        // HubState mirrors registration; this path only acts on entries
+        // already in Closing (transitioned via dual-write earlier).
+        if (auto hub_entry = hub_state_.channel(name); hub_entry.has_value())
+            send_force_shutdown(socket, name, *hub_entry);
         to_remove.push_back(name);
     }
 
     for (const auto& name : to_remove)
     {
-        auto entry = registry.find_channel(name);
+        // G2.2.1.c phase 1: source from HubState (still mirrored at this
+        // point — registry deregister + HubState close happen below).
+        auto entry = hub_state_.channel(name);
         if (entry.has_value())
         {
             on_channel_closed(socket, name, *entry, "grace_expired");
@@ -1903,10 +1933,10 @@ void BrokerServiceImpl::check_closing_deadlines(zmq::socket_t& socket)
 // Role-close cleanup API (HEP-CORE-0023 §2.5)
 // ============================================================================
 
-void BrokerServiceImpl::on_channel_closed(zmq::socket_t& socket,
-                                           const std::string& channel_name,
-                                           const ChannelEntry& entry,
-                                           const std::string& reason)
+void BrokerServiceImpl::on_channel_closed(zmq::socket_t&                     socket,
+                                           const std::string&                 channel_name,
+                                           const pylabhub::hub::ChannelEntry& entry,
+                                           const std::string&                 reason)
 {
     // Keep this list small and explicit. When a new broker module needs to
     // react to role death, add one line here and implement the helper below.
@@ -1914,10 +1944,10 @@ void BrokerServiceImpl::on_channel_closed(zmq::socket_t& socket,
     band_on_role_closed(socket, entry.producer_role_uid);
 }
 
-void BrokerServiceImpl::on_consumer_closed(zmq::socket_t& socket,
-                                            const std::string& /*channel_name*/,
-                                            const ConsumerEntry& consumer,
-                                            const std::string& /*reason*/)
+void BrokerServiceImpl::on_consumer_closed(zmq::socket_t&                      socket,
+                                            const std::string&                  /*channel_name*/,
+                                            const pylabhub::hub::ConsumerEntry& consumer,
+                                            const std::string&                  /*reason*/)
 {
     // Consumer's role may have joined bands independently of its channel
     // participation — remove from all band memberships.
@@ -1925,9 +1955,9 @@ void BrokerServiceImpl::on_consumer_closed(zmq::socket_t& socket,
 }
 
 void BrokerServiceImpl::federation_on_channel_closed(
-    const std::string& channel_name,
-    const ChannelEntry& /*entry*/,
-    const std::string& /*reason*/)
+    const std::string&                          channel_name,
+    const pylabhub::hub::ChannelEntry&          /*entry*/,
+    const std::string&                          /*reason*/)
 {
     // Drop this channel from the federation relay index so no further
     // HUB_RELAY_MSG attempts reference a gone channel.
@@ -1962,9 +1992,9 @@ void BrokerServiceImpl::band_on_role_closed(zmq::socket_t& socket,
 // send_force_shutdown — bypass client message queue, immediate shutdown
 // ============================================================================
 
-void BrokerServiceImpl::send_force_shutdown(zmq::socket_t&     socket,
-                                             const std::string& channel_name,
-                                             const ChannelEntry& entry)
+void BrokerServiceImpl::send_force_shutdown(zmq::socket_t&                     socket,
+                                             const std::string&                 channel_name,
+                                             const pylabhub::hub::ChannelEntry& entry)
 {
     nlohmann::json body;
     body["channel_name"] = channel_name;
@@ -2015,7 +2045,8 @@ void BrokerServiceImpl::handle_checksum_error_report(zmq::socket_t&        socke
 
     if (cfg.checksum_repair_policy == ChecksumRepairPolicy::NotifyOnly)
     {
-        auto entry = registry.find_channel(channel);
+        // G2.2.1.c phase 1: source from HubState.
+        auto entry = hub_state_.channel(channel);
         if (entry)
         {
             nlohmann::json fwd = req;
@@ -2058,7 +2089,8 @@ void BrokerServiceImpl::handle_channel_notify_req(zmq::socket_t&        socket,
         return;
     }
 
-    auto entry = registry.find_channel(target_channel);
+    // G2.2.1.c phase 1: source from HubState.
+    auto entry = hub_state_.channel(target_channel);
     if (!entry || entry->producer_zmq_identity.empty())
     {
         LOGGER_DEBUG("Broker: CHANNEL_NOTIFY_REQ for '{}' — channel not found or no producer",
@@ -2105,7 +2137,8 @@ void BrokerServiceImpl::handle_channel_broadcast_req(zmq::socket_t&        socke
         return;
     }
 
-    auto entry = registry.find_channel(target_channel);
+    // G2.2.1.c phase 1: source from HubState.
+    auto entry = hub_state_.channel(target_channel);
     if (!entry)
     {
         LOGGER_DEBUG("Broker: CHANNEL_BROADCAST_REQ for '{}' — channel not found",
@@ -2175,8 +2208,10 @@ nlohmann::json BrokerServiceImpl::handle_channel_list_req()
     nlohmann::json resp;
     resp["status"] = "success";
 
+    // G2.2.1.c phase 1: source from HubState snapshot.
     nlohmann::json channels = nlohmann::json::array();
-    for (const auto& [name, entry] : registry.all_channels())
+    const auto snap = hub_state_.snapshot();
+    for (const auto& [name, entry] : snap.channels)
     {
         nlohmann::json ch;
         ch["name"]           = name;
@@ -2185,9 +2220,9 @@ nlohmann::json BrokerServiceImpl::handle_channel_list_req()
         ch["consumer_count"] = entry.consumers.size();
         switch (entry.status)
         {
-            case ChannelStatus::PendingReady: ch["status"] = "PendingReady"; break;
-            case ChannelStatus::Ready:        ch["status"] = "Ready";        break;
-            case ChannelStatus::Closing:      ch["status"] = "Closing";      break;
+            case pylabhub::hub::ChannelStatus::PendingReady: ch["status"] = "PendingReady"; break;
+            case pylabhub::hub::ChannelStatus::Ready:        ch["status"] = "Ready";        break;
+            case pylabhub::hub::ChannelStatus::Closing:      ch["status"] = "Closing";      break;
         }
         channels.push_back(std::move(ch));
     }
@@ -2211,7 +2246,9 @@ nlohmann::json BrokerServiceImpl::handle_role_presence_req(const nlohmann::json&
     }
 
     // Scan all channels: check producer_role_uid and each consumer's role_uid.
-    for (const auto& [name, entry] : registry.all_channels())
+    // G2.2.1.c phase 1: source from HubState snapshot.
+    const auto snap = hub_state_.snapshot();
+    for (const auto& [name, entry] : snap.channels)
     {
         if (!entry.producer_role_uid.empty() && entry.producer_role_uid == uid)
         {
@@ -2256,7 +2293,9 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
     }
 
     // Search for a channel whose producer_role_uid matches.
-    for (const auto& [name, entry] : registry.all_channels())
+    // G2.2.1.c phase 1: source from HubState snapshot.
+    const auto snap = hub_state_.snapshot();
+    for (const auto& [name, entry] : snap.channels)
     {
         if (!entry.producer_role_uid.empty() && entry.producer_role_uid == uid)
         {
@@ -2288,9 +2327,10 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
     }
 
     // Search consumer entries across all channels.
-    for (const auto& [name, entry] : registry.all_channels())
+    // G2.2.1.c phase 1: reuse the same HubState snapshot taken above.
+    for (const auto& [name, entry] : snap.channels)
     {
-        for (const auto& cons : registry.find_consumers(name))
+        for (const auto& cons : entry.consumers)
         {
             if (!cons.role_uid.empty() && cons.role_uid == uid)
             {
@@ -2893,7 +2933,8 @@ void BrokerServiceImpl::handle_hub_relay_msg(zmq::socket_t&        socket,
 
     // Deliver locally as CHANNEL_EVENT_NOTIFY (to channel producer only, like CHANNEL_NOTIFY_REQ).
     // Include relayed_from so scripts can distinguish relayed events.
-    auto entry = registry.find_channel(channel);
+    // G2.2.1.c phase 1: source from HubState.
+    auto entry = hub_state_.channel(channel);
     if (!entry || entry->producer_zmq_identity.empty())
     {
         LOGGER_DEBUG("Broker: HUB_RELAY_MSG for '{}' — no local channel or producer", channel);

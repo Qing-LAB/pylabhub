@@ -289,11 +289,11 @@ int roleapi_channel()
     bc_cfg.broker_endpoint = broker.endpoint;
     bc_cfg.broker_pubkey = broker.pubkey;
 
-    bc_cfg.role_uid = "ROLE-A-100";
+    bc_cfg.role_uid = "prod.role.a.uid00000100";
     bc_cfg.role_name = "role_a";
     EXPECT_TRUE(bc1->connect(bc_cfg));
 
-    bc_cfg.role_uid = "ROLE-B-200";
+    bc_cfg.role_uid = "prod.role.b.uid00000200";
     bc_cfg.role_name = "role_b";
     EXPECT_TRUE(bc2->connect(bc_cfg));
 
