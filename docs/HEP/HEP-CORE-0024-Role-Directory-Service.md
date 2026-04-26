@@ -80,6 +80,8 @@ consistent custom role binary development with correct security properties by de
   logs/                             ← RoleDirectory::logs()    — Logger sink
   run/                              ← RoleDirectory::run()     — PID, FileLock artefacts
   vault/                            ← RoleDirectory::vault()   — RoleVault files (0700)
+  schemas/                          ← OPTIONAL — local schema cache (HEP-CORE-0034 §13)
+    lab/sensors/temperature.raw.v1.json
   script/
     python/
       __init__.py                   ← default script entry point
@@ -135,6 +137,31 @@ The default vault file path for a role is:
 When `auth.keyfile` is empty in the config, `RoleDirectory::default_keyfile(uid)` returns
 this path. Vault files are always placed inside `vault/` (0700) to prevent world-readable
 access to encrypted secret keys.
+
+### 3.5 Schemas Subdirectory (HEP-CORE-0034)
+
+`<role_dir>/schemas/` is **optional** and **non-authoritative**. It is a local cache of
+schema JSON files used to construct registration payloads — the source of truth for any
+running schema record is the hub (`HubState.schemas`, per HEP-CORE-0034 §11).
+
+| Role | Use of `<role_dir>/schemas/` |
+|---|---|
+| Producer | Reads its own schema JSON to build path-B `REG_REQ` (sends `schema_id` + BLDS + hash + packing). |
+| Consumer | Optional pre-flight: read local file to compute expected hash before issuing `CONSUMER_REG_REQ`. |
+| Processor | Same as consumer for input; same as producer for output. |
+
+A role with no `schemas/` directory is fully valid:
+
+- Producer using a compile-time C++ schema (`PYLABHUB_SCHEMA` macros) builds BLDS in code.
+- Producer adopting a hub global needs only `(hub, schema_id)` in its config — no local file.
+- Consumer/processor can resolve via `SCHEMA_REQ` after handshake.
+
+If a local file disagrees with the hub's record, the **hub wins** (registration fails with
+`fingerprint_mismatch` REG_NACK; operator updates the local file). `RoleDirectory` does not
+parse or load these files itself; that is the responsibility of `SchemaLibrary`
+(HEP-CORE-0034 §4) when the role's config or scripting layer requests a named schema.
+
+`RoleDirectory::subdir("schemas")` returns the path; no dedicated accessor is required.
 
 ---
 
