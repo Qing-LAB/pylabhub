@@ -535,12 +535,6 @@ void HubState::_bump_counter(const std::string &key, uint64_t n)
     pImpl->counters.msg_type_counts[key] += n;
 }
 
-void HubState::_set_role_state_metrics(const BrokerCounters &snapshot)
-{
-    std::unique_lock lk(pImpl->mu);
-    pImpl->counters = snapshot;
-}
-
 // ─── Capability-operation layer (HEP-0033 §G2) ──────────────────────────────
 //
 // Each `_on_*` composes primitive `_set_*` setters to represent one

@@ -8,7 +8,6 @@
 #
 # Responsibilities:
 #   - Defines the `plh_role` executable (unified data-plane role binary).
-#   - Defines the `pylabhub-hubshell` executable (hub control plane).
 #   - Includes the `utils`, `scripting` subdirectories.
 #   - Applies common build settings (C++ standard, Clang-Tidy, sanitizers).
 #   - Defines installation rules for all executables.
@@ -43,43 +42,8 @@ add_subdirectory(scripting)
 # (role_host, init) and pylabhub-scripting (api) — no per-role executables.
 add_subdirectory(plh_role)
 
-# Define the main application executable (hubshell).
-# DISABLED: hubshell still uses legacy ScriptHost/PythonScriptHost stack
-# which predates the ScriptEngine abstraction (LuaEngine/PythonEngine).
-# Re-enable after migrating hubshell to PythonEngine.
-# See: docs/todo/API_TODO.md — hubshell PythonEngine migration
-if(FALSE)
-add_executable(pylabhub-hubshell
-    hubshell.cpp
-    hub_python/python_interpreter.cpp
-    hub_python/pylabhub_module.cpp
-    hub_python/admin_shell.cpp
-    hub_python/hub_script_api.cpp
-    hub_python/hub_script.cpp
-    scripting/python_script_host.cpp
-)
-add_executable(pylabhub::hubshell ALIAS pylabhub-hubshell)
-pylabhub_enable_clang_tidy_for_target(pylabhub-hubshell)
-target_compile_features(pylabhub-hubshell PRIVATE cxx_std_20)
-if(MSVC)
-  target_compile_options(pylabhub-hubshell PRIVATE /Zc:preprocessor)
-endif()
-target_compile_definitions(pylabhub-hubshell PRIVATE LOGGER_COMPILE_LEVEL=${PYLABHUB_LOGGER_COMPILE_LEVEL})
-if(PYLABHUB_LOGGER_DEBUG)
-  target_compile_definitions(pylabhub-hubshell PRIVATE _LOGGER_DEBUG_ENABLED=1)
-endif()
-target_include_directories(pylabhub-hubshell PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/hub_python
-    ${CMAKE_CURRENT_SOURCE_DIR}/scripting
-)
-target_link_libraries(pylabhub-hubshell PRIVATE
-    pylabhub::utils
-    pylabhub::scripting
-    pylabhub::third_party::pybind11_embed
-)
-pylabhub_apply_sanitizer_to_target(pylabhub-hubshell)
-install(TARGETS pylabhub-hubshell DESTINATION ${CMAKE_INSTALL_BINDIR})
-pylabhub_stage_executable(TARGET pylabhub-hubshell DESTINATION bin)
-set_property(GLOBAL APPEND PROPERTY CORE_STAGE_TARGETS pylabhub-hubshell)
-message(STATUS "Configured executable 'pylabhub::hubshell'.")
-endif() # end DISABLED hubshell block
+# The previous `pylabhub-hubshell` executable + `src/hub_python/` legacy
+# stack (PythonScriptHost / pylabhub_module / admin_shell / HubScript)
+# were deleted with the HEP-CORE-0033 G2 cleanup pass.  The replacement
+# `plh_hub` binary lands as part of HEP-CORE-0033 Phase 9 — see
+# `docs/HEP/HEP-CORE-0033-Hub-Character.md` §15 (Implementation phases).
