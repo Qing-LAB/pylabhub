@@ -15,7 +15,7 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 - **Implementation Guidance**: `docs/IMPLEMENTATION_GUIDANCE.md`
 - **Pipeline Architecture**: `docs/HEP/HEP-CORE-0017-Pipeline-Architecture.md`
 - **Producer + Consumer Binaries**: `docs/HEP/HEP-CORE-0018-Producer-Consumer-Binaries.md`
-- **Named Schema Registry**: `docs/HEP/HEP-CORE-0016-Named-Schema-Registry.md` (Phase 1 done)
+- **Schema Registry**: `docs/HEP/HEP-CORE-0034-Schema-Registry.md` (ratified 2026-04-26; supersedes HEP-CORE-0016)
 - **Policy Reference**: `docs/HEP/HEP-CORE-0009-Policy-Reference.md` (active cross-reference)
 
 ---
@@ -68,6 +68,14 @@ as single mutator" doc ratified), `139b4ca` (HEP-0033 G1 `RoleHostBase` →
 - L2 depth review closed (tracker `21.3.5`): Pattern-3 compliance,
   vacuous-test sweep, stderr-capture fixes, assertion-quality tighten.
 - 6 tech drafts archived to `docs/archive/transient-2026-04-21/`.
+
+**Ratified 2026-04-26:**
+- **HEP-CORE-0034 Schema Registry** — owner-authoritative model; supersedes
+  HEP-CORE-0016. Namespace-by-owner records, owner-bound eviction (no
+  refcount), cross-citation rejected even on hash match,
+  fingerprint includes packing. HEP-0016 marked Superseded. HEP-0033 §7/§8/§9.4/§14
+  cross-referenced. HEP-0024 §3.1/§3.5 updated for role-side `schemas/` cache.
+  Six implementation phases pending (see §Priority 2).
 
 ### Priority 0 (Next Sprint — design ratified 2026-04-21): HEP-CORE-0033 Hub Character
 
@@ -367,23 +375,27 @@ Completed:
 - [x] `tests/test_layer4_consumer/` — config unit tests (6) + CLI integration tests (6)
 - [x] Integration test: full pipeline round-trip via live broker — `test_pipeline_roundtrip.cpp` (hubshell + producer + processor + consumer)
 
-### Priority 2: Schema Registry (HEP-CORE-0016) Phases 2–5
-📍 **Status**: ✅ Phase 5 complete (2026-03-02); all 5 phases done
-📋 **Details**: `docs/HEP/HEP-CORE-0016-Named-Schema-Registry.md`
+### Priority 2: Schema Registry — superseded model (HEP-CORE-0016 → HEP-CORE-0034)
+📍 **Status**: HEP-CORE-0016 5 phases shipped 2026-03-02 → **superseded by HEP-CORE-0034 (ratified 2026-04-26)**.
+📋 **New spec**: `docs/HEP/HEP-CORE-0034-Schema-Registry.md`
+📋 **Historical spec**: `docs/HEP/HEP-CORE-0016-Named-Schema-Registry.md` (kept for reference)
 
-Completed:
+HEP-0016 historical phases (all shipped, retained context):
 - [x] Phase 1: SchemaLibrary + JSON format (2026-03-01)
 - [x] Phase 2: C++ Integration — `has_schema_registry_v<T>`, `validate_named_schema<>()`,
               `ProducerOptions::schema_id`, `ConsumerOptions::expected_schema_id`; 7 tests (2026-03-02)
 - [x] Phase 3: Broker protocol — `REG_REQ` schema_id/blds fields, Case A/B annotation,
               `SCHEMA_REQ/ACK`, consumer expected_schema_id validation; 7 tests (2026-03-02)
-- [x] Phase 4: `SchemaStore` lifecycle singleton — thread-safe wrapper around SchemaLibrary,
-              manual `reload()`, explicit `query_from_broker()`; 8 tests (2026-03-02)
+- [x] Phase 4: `SchemaStore` lifecycle singleton (**to be removed in HEP-0034 Phase 4** — file watcher + broker query fallback no longer fit hub-mutator model)
+- [x] Phase 5: Script integration — named schema strings in config resolve via `SchemaLibrary`
 
-- [x] Phase 5: Script integration — named schema strings in config resolve via
-              `SchemaLibrary`; `resolve_schema()` dispatches string/object/null;
-              `schema_entry_to_spec()` converts `SchemaFieldDef` → `FieldDef`;
-              7 tests (2026-03-02)
+HEP-0034 implementation phases (open — sequenced, none started):
+- [ ] Phase 1: Fingerprint correction — include `packing` in `compute_schema_hash`; reject schemas without explicit packing; collision tests. Wire-incompatible with pre-Phase-1 binaries (pre-1.0, no migration burden).
+- [ ] Phase 2: `HubState` schema records — `SchemaRecord` + `schemas` map + `ChannelEntry.{schema_owner, schema_id}`; capability ops `_on_schema_registered` / `_on_schemas_evicted_for_owner` / `_validate_schema_citation`; `_on_role_deregistered` cascade for producers.
+- [ ] Phase 3: Wire protocol + broker dispatch — extend `REG_REQ` / `CONSUMER_REG_REQ` / `PROC_REG_REQ` with schema_owner/id/hash/packing; `SCHEMA_REG_NACK` reasons; generalised `SCHEMA_REQ`/`SCHEMA_ACK` (owner+id keying).
+- [ ] Phase 4: `SchemaLibrary` refactor — drop lifecycle module + file watcher; library becomes stateless file loader returning records; hub startup walks `<hub_dir>/schemas/` and registers globals.
+- [ ] Phase 5: Client-side citation API — `ProducerOptions::{schema_owner, schema_id}`, `ConsumerOptions::expected_*`; `create<F,D>()` issues `SCHEMA_REQ` for path C, sends BLDS for path B; `PYLABHUB_SCHEMA_BEGIN` packing argument.
+- [ ] Phase 6: Docs sweep + HEP-0016 closure — code review of HEP-0034 implementation; verify cross-references consistent.
 
 ### Priority 3: Processor Binary Tests + Phase 2 (HEP-CORE-0015)
 📍 **Status**: ✅ Phase 2 complete (2026-03-03) — dual-broker + hub::Processor delegation; **750/750 passing**
@@ -460,7 +472,7 @@ Completed:
 | Testing | ✅ Complete | `docs/todo/TESTING_TODO.md` | **1181/1181 passing** (2026-03-30). SHM-C2 audit: +2 draining tests, fixed stalling DrainingTimeoutRestoresCommitted. ProcessorHandlerRemoval flake fixed (sleep→poll_until barrier). Full sleep audit: 8 races eliminated in hub_processor_workers.cpp. `test_sync_utils.h` shared facility created. |
 | Memory Layout | ✅ Complete | `docs/archive/transient-2026-03-02/MEMORY_LAYOUT_TODO.md` | Single structure; alignment fixed; sub-4K slots. TODO archived; minor test backlog absorbed into TESTING_TODO. |
 | Schema Validation | ✅ Complete | — | BLDS schema done; dual-schema producer/consumer validation working |
-| Named Schema Registry | ✅ Complete | `docs/HEP/HEP-CORE-0016-Named-Schema-Registry.md` | All 5 phases done (2026-03-02). Script host helpers deduplicated into shared headers. |
+| Schema Registry | 🟡 In flight (HEP-0034 ratified 2026-04-26) | `docs/HEP/HEP-CORE-0034-Schema-Registry.md` | HEP-0016 (5 phases shipped 2026-03-02) **superseded**. New owner-authoritative model: namespace-by-owner records `(owner_uid, schema_id)`, owner-bound eviction (no refcount), cross-citation rejected even on hash match, `<hub_dir>/schemas/` for hub-globals, fingerprint corrected to include packing. Six implementation phases pending; tracked in §Priority 2. |
 | Processor Binary | ✅ Phase 3 complete | `docs/HEP/HEP-CORE-0015-Processor-Binary.md` | **Phase 1+2 done (2026-03-03). Phase 3 config+ScriptHost 2026-03-10:** timing policy, inbox (ROUTER), direct ZMQ PULL input, verify_checksum, zmq_packing/buffer from config. REVIEW_Processor_2026-03-10.md: all 20 items ✅ CLOSED 2026-03-10. **1078/1078 tests.** |
 | Startup Coordination | ✅ Phase 1+2 complete | `docs/HEP/HEP-CORE-0023-Startup-Coordination.md` | **Phase 1 (2026-03-11):** `startup.wait_for_roles` config + per-role timeout. **Phase 2 (2026-04-14):** three-response DISC_REQ state machine + heartbeat-multiplier liveness timeouts (no skip; floored at 1 heartbeat) + role-close cleanup hook (federation + band) + `RoleStateMetrics` counters. Heartbeat-death path dereg's immediately (no Closing/grace); voluntary-close keeps grace+FORCE_SHUTDOWN. **1275/1275 tests** (commits `cf53ed3`, `3201e08`, `6558b2c`). |
 | Role Directory Service | 🟢 Implemented (Phases 1-4,6) | `docs/HEP/HEP-CORE-0024-Role-Directory-Service.md` | **HEP-0024 Phases 1-4+6 DONE 2026-03-12.** `RoleDirectory` + `role_cli.hpp` public API; all 3 `from_directory()` migrated; all 3 `do_init()`/`parse_args()` migrated; 26 new L2 tests. Deferred: Phase 5 (script-host `script_entry()` migration), Phase 7 (docs), Phase 8 (L4 tests). **1104 tests.** |
