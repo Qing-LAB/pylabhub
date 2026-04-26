@@ -285,7 +285,9 @@ called on every incoming REG_REQ (producer) and CONSUMER_REG_REQ (consumer).
 | `Verified` | Yes (producer_name + producer_uid) | Yes (allowlist) | Production |
 
 **Configuration**: `BrokerService::Config::connection_policy` wired from
-`HubConfig::connection_policy()` in `hubshell.cpp`.
+`HubConfig::connection_policy()` (formerly in `hubshell.cpp`; the legacy
+binary was deleted in the post-G2 cleanup pass.  Wiring will return on
+the new `plh_hub` binary — HEP-CORE-0033 §15 Phase 9).
 JSON: hub.json `"connection_policy": "open"` | `"tracked"` | `"required"` | `"verified"`.
 
 **Per-channel override**: `ChannelPolicy` (list of glob patterns + policy level) can

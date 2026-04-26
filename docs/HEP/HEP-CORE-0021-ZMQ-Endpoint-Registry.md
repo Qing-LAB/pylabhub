@@ -630,7 +630,7 @@ This is enforced in all socket creation sites:
 | Messenger P2C ctrl (server) | `src/utils/ipc/messenger.cpp` | ROUTER |
 | Messenger P2C ctrl (client) | `src/utils/ipc/messenger.cpp` | DEALER |
 | Messenger P2C data | `src/utils/ipc/messenger.cpp` | XPUB / SUB / PUSH / PULL |
-| AdminShell | `src/hub_python/admin_shell.cpp` | REP |
+| AdminShell | (deleted in post-G2 cleanup; structured `AdminService` lands as HEP-CORE-0033 §11 / §15 Phase 6) | REP |
 | ZmqQueue PUSH | `src/utils/hub/hub_zmq_queue.cpp` | PUSH |
 | ZmqQueue PULL | `src/utils/hub/hub_zmq_queue.cpp` | PULL |
 | InboxQueue | `src/utils/hub/hub_inbox_queue.cpp` | ROUTER |

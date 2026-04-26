@@ -153,7 +153,7 @@ Classes that external C++ consumers construct or call through:
 | `SharedSpinLockGuard` | No | RAII guard. |
 | `QueueReader` | No | Abstract interface (virtual). |
 | `QueueWriter` | No | Abstract interface (virtual). |
-| `BrokerService` | Yes | Hub broker (hubshell uses it). |
+| `BrokerService` | Yes | Hub broker (consumed by future `plh_hub` binary — HEP-CORE-0033 §15 Phase 9). |
 | `BrokerRequestComm` | Yes | Broker client communication. |
 | `HubConfig` | Yes | Hub configuration. |
 | `InteractiveSignalHandler` | Yes | Signal handling for CLI binaries. |

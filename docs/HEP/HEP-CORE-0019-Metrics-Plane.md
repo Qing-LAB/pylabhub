@@ -628,7 +628,7 @@ Files modified during implementation:
 | **Messenger protocol** | `src/utils/ipc/messenger_protocol.cpp` | `METRICS_REPORT_REQ` handler, `METRICS_REQ/ACK` dispatch |
 | **Messenger internal** | `src/utils/ipc/messenger_internal.hpp` | `MetricsReportCmd` struct added to `MessengerCommand` variant |
 | **Messenger** | `src/include/utils/messenger.hpp` | `enqueue_heartbeat(channel, json)` overload, `enqueue_metrics_report()` |
-| **AdminShell module** | `src/hub_python/pylabhub_module.hpp/cpp` | `pylabhub.metrics(channel="")` binding |
+| **AdminShell module** | (deleted in post-G2 cleanup; the `pylabhub.metrics()` binding will return as part of the unified `plh_hub` binary in HEP-CORE-0033 §11.3 / §15 Phase 8) | `pylabhub.metrics(channel="")` binding |
 | **ProducerScriptHost** | `src/producer/producer_script_host.cpp` | zmq_thread_ heartbeat now includes `api_.snapshot_metrics_json()` |
 | **ConsumerScriptHost** | `src/consumer/consumer_script_host.cpp` | zmq_thread_ periodic `METRICS_REPORT_REQ` via `HeartbeatTracker` |
 | **ProcessorScriptHost** | `src/processor/processor_script_host.cpp` | zmq_thread_ heartbeat now includes `api_.snapshot_metrics_json()` |

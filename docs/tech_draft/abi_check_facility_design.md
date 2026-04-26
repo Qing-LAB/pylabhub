@@ -284,8 +284,8 @@ int main(int argc, char *argv[])
 | `pylabhub-producer` | `src/producer/producer_main.cpp` | First statement in `main()`; deleted after Phase 20 |
 | `pylabhub-consumer` | `src/consumer/consumer_main.cpp` | First statement in `main()`; deleted after Phase 20 |
 | `pylabhub-processor` | `src/processor/processor_main.cpp` | First statement in `main()`; deleted after Phase 20 |
-| `pylabhub-hubshell` | `src/hubshell/hubshell.cpp` | First statement in `main()`; persists post-Phase 20 |
-| `plh_role` (unified) | `src/plh_role/main.cpp` (future) | Primary integration target after Phase 19 |
+| `plh_hub` (future) | `src/plh_hub/plh_hub_main.cpp` (HEP-CORE-0033 §15 Phase 9) | Replaces deleted `pylabhub-hubshell`; first statement in `main()` |
+| `plh_role` (unified) | `src/plh_role/main.cpp` | Primary integration target after Phase 19 |
 
 ### 5.2 Required (already has ABI-check pattern; extend for new axis)
 
@@ -360,7 +360,7 @@ helpers, build-id plumbing) independently.
 3. **Native engine extension** (any time after library side): extend
    `PlhAbiInfo` to carry ComponentVersions; extend `NativeEngine::load_plugin_()`
    to compare.
-4. **hubshell** (any time): add check to `hubshell.cpp::main()`.
+4. **plh_hub** (HEP-CORE-0033 Phase 9): add check to `plh_hub_main.cpp::main()`.
 
 ## 8. Estimated Cost
 
