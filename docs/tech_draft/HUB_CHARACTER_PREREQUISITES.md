@@ -2,6 +2,18 @@
 
 **Status**: 🔵 Design reference (no code yet).
 **Created**: 2026-04-21.
+**Updated 2026-04-25**: G2.0–G2.4 absorption sequence complete (HubState
+landed; broker is sole mutator).  Phase 4 `HubHost` deferred to Phase 6
+(see HEP-CORE-0033 §4 phasing note) — single-subsystem wrapper had no
+load-bearing rationale; HubHost gets extracted at Phase 6 when
+`AdminService` provides the second mutation client.  The
+`HubHostBase = EngineHost<HubAPI>` hierarchy described in §G1 below was
+based on a polymorphism-borrowing-from-role-side argument that does
+**not** carry over: hubs are singletons (one binary kind, one config,
+no dispatch), so there is no polymorphism to abstract over.  When
+`HubHost` is built at Phase 6, expect a single concrete class owning
+its subsystems directly — no `EngineHost`-style template, no virtual
+`worker_main_`.
 **Purpose**: Catalog gaps, conflicts, and open spec items that must be
 resolved before HEP-CORE-0033 implementation phases can begin. Each gap has
 a sequencing note (which HEP-0033 phase it blocks) so prerequisite work can

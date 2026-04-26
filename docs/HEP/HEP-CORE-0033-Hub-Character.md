@@ -73,6 +73,19 @@ The hub binary performs seven functions. This HEP is organised around them.
 Single class owning the hub's runtime state and exposing read/write access to
 `AdminService` and `HubAPI`.
 
+> **Phasing note (added 2026-04-25).** The `HubHost` class is **not built
+> in the early phases.**  When `plh_hub_main.cpp` first lands (§15
+> Phase 5), it owns `BrokerService` directly — there is no second
+> mutation client to justify a curated wrapper at that point, and
+> a single-subsystem HubHost would be a wrapper-without-purpose
+> (CLAUDE.md "no half-finished implementations").  The class is
+> introduced at §15 Phase 6 alongside `AdminService`, when two
+> mutation clients (admin RPC + script bindings) make a single
+> curated surface load-bearing — centralized auth-context wrapping,
+> audit logging, and encapsulation of broker-internal request queues.
+> Until Phase 6, the §4 design below is normative for the eventual
+> shape but not implemented.
+
 ### 4.0 Component architecture
 
 ```mermaid
@@ -867,9 +880,9 @@ graph LR
     P1[Phase 1<br/>Config]
     P2[Phase 2<br/>hub_cli]
     P3[Phase 3<br/>HubDirectory + --init]
-    P4[Phase 4<br/>HubState + HubHost]
+    P4[Phase 4<br/>HubState ✅<br/>HubHost deferred to P6]
     P5[Phase 5<br/>Query engine]
-    P6[Phase 6<br/>AdminService]
+    P6[Phase 6<br/>AdminService<br/>+ HubHost extracted]
     P7[Phase 7<br/>HubScriptRunner]
     P8[Phase 8<br/>HubAPI bindings]
     P9[Phase 9<br/>plh_hub binary<br/>delete hub_python/]
@@ -901,13 +914,23 @@ can land in parallel once P1 lands.
   `role_cli` test shape.
 - **Phase 3** — `HubDirectory` + `--init` template output. L2 tests for dir
   layout + template validation.
-- **Phase 4** — `HubState` struct + accessors on a new `HubHost` class (wraps
-  existing `BrokerService` without changing broker behavior). L2 tests for
-  snapshot accessors.
-- **Phase 5** — Query engine (`HubHost::query_metrics`) over `HubState` +
-  existing `collect_shm_info`. L2 tests for filter coverage + `_collected_at`.
-- **Phase 6** — `AdminService` structured RPC (§11); retire `AdminShell`
-  dependency. L3 tests for each RPC method.
+- **Phase 4** — `HubState` struct + accessors. ✅ **Already complete** —
+  HubState landed via the HEP-CORE-0033 G2.0–G2.2 absorption sequence
+  (sole owner of channel/role/band/peer/shm/counter state; capability ops;
+  HEP-CORE-0033 §9 Message-Processing Contract).  The `HubHost` class
+  originally scoped here is **deferred to Phase 6** — see §4 phasing
+  note.  Until then, future `plh_hub_main.cpp` (Phase 9) owns
+  `BrokerService` directly and reads `HubState` via
+  `BrokerService::hub_state()`.
+- **Phase 5** — Query engine over `HubState` + existing `collect_shm_info`.
+  L2 tests for filter coverage + `_collected_at`.  (Originally scoped as
+  `HubHost::query_metrics`; pending the §4 deferral, exposed as a free
+  function or on `BrokerService` until Phase 6 introduces `HubHost`.)
+- **Phase 6** — **`AdminService` structured RPC (§11) + introduce
+  `HubHost`** as the single curated mutation surface for AdminService and
+  (in Phase 8) HubAPI to share — auth-context wrapping, audit logging,
+  encapsulation of broker-internal request queues live here.  Retire
+  `AdminShell` dependency.  L3 tests for each RPC method.
 - **Phase 7** — `scripting::hub_lifecycle_modules()` + `HubScriptRunner` using
   `ScriptEngine`; retire `PythonInterpreter`/`HubScript`/`hub_script_api`/
   `pylabhub_module`. L3 tests for each callback + default no-op behavior.
