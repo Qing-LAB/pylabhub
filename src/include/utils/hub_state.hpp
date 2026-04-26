@@ -102,21 +102,6 @@ PYLABHUB_UTILS_EXPORT const char *to_string(RoleState          s) noexcept;
 PYLABHUB_UTILS_EXPORT const char *to_string(PeerState          s) noexcept;
 PYLABHUB_UTILS_EXPORT const char *to_string(ChannelCloseReason r) noexcept;
 
-// ─── Auth context (HEP-0033 §G2) ────────────────────────────────────────────
-
-enum class AuthSource
-{
-    Script,  ///< In-process hub script path.
-    Admin,   ///< AdminService RPC (token-authenticated).
-    Network, ///< Inbound ZMQ peer (role or federation hub).
-};
-
-struct AuthContext
-{
-    AuthSource  source{AuthSource::Network};
-    std::string uid; ///< script uid / admin token owner / network peer identity
-};
-
 // ─── Entry types (HEP-CORE-0033 §8) ─────────────────────────────────────────
 
 /// Consumer attached to a channel.
@@ -261,9 +246,10 @@ struct BrokerCounters
     uint64_t pending_to_ready_total{0};
 
     // Loop instrumentation.
-    uint64_t ctrl_queue_depth{0};
     uint64_t bytes_in_total{0};
-    uint64_t bytes_out_total{0};
+    uint64_t bytes_out_total{0};   // Always 0 today — multi-target fan-out
+                                   // makes per-message accounting ambiguous;
+                                   // see HEP-CORE-0033 §9.4.
 
     // Per-message-type counts (kept opaque to stay extensible).
     // `msg_type_counts[type]` bumps for every dispatch-completed message
@@ -402,7 +388,6 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// `_on_message_processed` bump that always fires for the same
     /// message.
     void _bump_msg_type_error(const std::string &msg_type, uint64_t n = 1);
-    void _set_role_state_metrics(const BrokerCounters &snapshot);
 
     // ── Capability-operation layer (HEP-0033 §G2) ──────────────────────
     //

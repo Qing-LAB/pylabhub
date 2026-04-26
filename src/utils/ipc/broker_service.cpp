@@ -170,16 +170,18 @@ public:
     std::string           server_public_z85;
     std::string           server_secret_z85;
 
-    /// HEP-CORE-0033 §8 state aggregate.  G2.2.0 introduces this field;
-    /// subsequent G2.2.x commits migrate handler mutations from the
-    /// private registries above into `hub_state_` via the capability
-    /// operations (`_on_channel_registered`, `_on_heartbeat`, ...).
-    /// Owned here for now; G2.3+ moves ownership to `HubHost`.
+    /// HEP-CORE-0033 §8 state aggregate.  Sole owner of channel / role /
+    /// band / peer / shm / counter state; mutated only via the broker's
+    /// `_on_*` capability ops (friend access).  Owned here for now;
+    /// HEP-CORE-0033 Phase 4 moves ownership to `HubHost`.
     pylabhub::hub::HubState hub_state_;
     std::atomic<bool>     stop_requested{false};
 
-    /// Guards registry reads/writes from external threads (e.g., list_channels_json_str).
-    /// The run() thread holds this lock during post-poll registry operations (not during poll).
+    /// Serializes the run() thread's post-poll work against external
+    /// readers (e.g. `list_channels_json_str()`).  HubState has its own
+    /// internal mutex; this one only protects broker-private structures
+    /// (request queues, federation session flags) and orders post-poll
+    /// drainage with respect to external query callers.
     mutable std::mutex    m_query_mu;
 
     /// Guards close_request_queue_ for thread-safe request_close_channel().
