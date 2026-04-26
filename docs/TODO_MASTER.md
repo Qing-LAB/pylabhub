@@ -76,7 +76,8 @@ as single mutator" doc ratified), `139b4ca` (HEP-0033 G1 `RoleHostBase` →
 📋 **Prerequisites**: `docs/tech_draft/HUB_CHARACTER_PREREQUISITES.md`
 📋 **Detail**: `docs/todo/MESSAGEHUB_TODO.md`
 
-Unifies the disabled `pylabhub-hubshell` into a modern `plh_hub` binary
+Replaces the deleted `pylabhub-hubshell` (legacy `src/hub_python/` stack
+removed in the post-G2 cleanup pass) with a modern `plh_hub` binary
 paralleling `plh_role`: composite `HubConfig`, `hub_cli`, `HubDirectory`,
 `HubHost` + `HubState`, `AdminService` structured RPC, `ScriptEngine`-based
 scripting + `HubAPI`, query-driven metrics (supersedes HEP-0019 §3-4). 10
@@ -263,7 +264,7 @@ Deferred (after code stabilizes):
 - [ ] SE-07: --validate implementation
 - [ ] SE-08: HEP-0018/0015 class name refs update
 - [ ] Engine thread model: 6 phases — invoke/eval, cross-thread dispatch, shared state, NativeEngine (see `docs/tech_draft/engine_thread_model.md`)
-- [ ] ScriptEngine cleanup: RoleHostCore encapsulation (CR-03), RoleContext const char*→string, hubshell migration
+- [ ] ScriptEngine cleanup: RoleHostCore encapsulation (CR-03), RoleContext const char*→string. (Hubshell migration superseded — legacy `src/hub_python/` deleted in post-G2 cleanup; replacement is HEP-CORE-0033 §15 Phase 7 ScriptEngine integration on the new `plh_hub` binary.)
 
 ### Code Review (CLOSED — 2026-03-17): REVIEW_FullStack_2026-03-17
 📋 `docs/code_review/REVIEW_FullStack_2026-03-17.md` — 30 non-Lua findings: 17 FIXED, 8 ACCEPTED, 4 DEFERRED, 1 Lua WIP; **1184/1184 tests**

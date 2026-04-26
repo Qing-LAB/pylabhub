@@ -237,7 +237,9 @@ void notify_channel(const std::string &target, const std::string &event,
 - `src/producer/producer_api.cpp`
 - `src/consumer/consumer_api.cpp`
 - `src/processor/processor_api.cpp`
-- `src/hub_python/pylabhub_module.cpp`
+- (Hub-side `pylabhub_module.cpp` was deleted with `src/hub_python/`;
+  the replacement HubAPI bindings will land under `src/scripting/hub/`
+  per HEP-CORE-0033 §15 Phase 8.)
 
 ---
 
@@ -619,7 +621,7 @@ int main() {
 }
 ```
 
-**DataBlock / MessageHub**: `create_datablock_producer()` and `find_datablock_consumer()` throw if the Data Exchange Hub module is not initialized. Include `pylabhub::hub::GetLifecycleModule()` (and typically `CryptoUtils`, `Logger`) in your guard. See **`src/hubshell.cpp`** for a full template.
+**DataBlock / MessageHub**: `create_datablock_producer()` and `find_datablock_consumer()` throw if the Data Exchange Hub module is not initialized. Include `pylabhub::hub::GetLifecycleModule()` (and typically `CryptoUtils`, `Logger`) in your guard. See **`src/plh_role/plh_role_main.cpp`** for a full template (the previous `src/hubshell.cpp` template was deleted in the post-G2 cleanup pass).
 
 ### 2. Logger Integration
 

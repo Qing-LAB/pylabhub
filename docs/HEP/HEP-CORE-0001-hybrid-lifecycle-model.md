@@ -8,7 +8,7 @@
 | **Status**       | Implemented                                    |
 | **Category**     | Core                                           |
 | **Created**      | 2026-01-05                                     |
-| **Updated**      | 2026-02-12                                     |
+| **Updated**      | 2026-02-12; 2026-04-25 — `pylabhub-hubshell` referenced in §6 examples has been deleted; the hub-side lifecycle pattern returns on the new `plh_hub` binary (HEP-CORE-0033 §15 Phase 9). The lifecycle model itself is unchanged. |
 | **C++-Standard** | C++20                                           |
 
 ---

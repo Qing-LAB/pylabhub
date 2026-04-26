@@ -4,7 +4,7 @@
 |---------------|---------------------------------------------------------------------------------|
 | **HEP**       | `HEP-CORE-0017`                                                                 |
 | **Title**     | Pipeline Architecture — Components, Planes, Topologies, and Boundaries         |
-| **Status**    | Implemented — 2026-03-03. Updated 2026-04-21: per-role binaries retired; roles run via `plh_role --role <tag>` (HEP-CORE-0024). |
+| **Status**    | Implemented — 2026-03-03. Updated 2026-04-21: per-role binaries retired; roles run via `plh_role --role <tag>` (HEP-CORE-0024).  Updated 2026-04-25: legacy `pylabhub-hubshell` and the `src/hub_python/` stack also deleted; replacement `plh_hub` binary is HEP-CORE-0033 §15 Phase 9.  Diagrams in this HEP that still show `pylabhub-hubshell` describe the historical interconnection — protocol semantics are unchanged but the binary boundary will land on `plh_hub` once HEP-CORE-0033 phases complete. |
 | **Created**   | 2026-03-01                                                                      |
 | **Updated**   | 2026-03-01 (actor eliminated; producer/consumer binaries added); 2026-04-21 (binary unification — `pylabhub-producer/consumer/processor` retired in favor of unified `plh_role`) |
 | **Area**      | Framework Architecture (`pylabhub-utils`, `pylabhub-scripting`, `plh_role` unified binary) |

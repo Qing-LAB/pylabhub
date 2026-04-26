@@ -150,12 +150,13 @@ in `scripting/roles/`, not `utils/roles/`.)
 ### 4.5 Future hub-binary parallel
 
 When the hub refactor lands:
-- `src/plh_hub_main.cpp` flat under `src/`.
+- `src/plh_hub_main.cpp` flat under `src/` (or `src/plh_hub/main.cpp`,
+  mirroring `src/plh_role/`).
 - Hub library code under `src/utils/hub/` (already exists; absorbs
   `BrokerService`, `Messenger`, etc. as the abstraction matures).
 - Hub pybind11 API under `src/scripting/hub/`.
-- Delete `src/hubshell.cpp` and `src/hub_python/` once their content
-  has been replaced by the new abstraction.
+- Legacy `src/hubshell.cpp` and `src/hub_python/` already deleted in the
+  post-G2 cleanup pass — `plh_hub` lands as greenfield.
 
 ---
 

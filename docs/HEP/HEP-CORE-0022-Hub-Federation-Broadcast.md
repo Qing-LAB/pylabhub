@@ -797,18 +797,21 @@ the payload.
 | 2 | Broker outbound DEALER per peer; `HUB_PEER_HELLO` / ACK handshake | Done | `src/utils/ipc/broker_service.cpp` |
 | 3 | Broker relay: on `CHANNEL_NOTIFY_REQ/BROADCAST_REQ` → `HUB_RELAY_MSG` | Done | `src/utils/ipc/broker_service.cpp` |
 | 4 | Broker receive: accept `HUB_RELAY_MSG`, deliver locally, dedup by `msg_id` | Done | `src/utils/ipc/broker_service.cpp` |
-| 5 | `HUB_TARGETED_MSG` send/receive; `on_hub_message()` dispatch | Done (broker side); HubScript side disabled | `src/hub_python/hub_script_api.hpp/cpp` |
-| 6 | HubScript Python hooks: `on_hub_connected/disconnected/message`, `api.notify_hub()` | Done; binary disabled — see note below | `src/hub_python/hub_script.hpp/cpp` |
+| 5 | `HUB_TARGETED_MSG` send/receive; `on_hub_message()` dispatch | Done (broker side); script-side awaits HEP-CORE-0033 §15 Phase 7-8 (ScriptEngine + HubAPI on `plh_hub`) | (legacy `src/hub_python/hub_script_api.*` deleted) |
+| 6 | HubScript Python hooks: `on_hub_connected/disconnected/message`, `api.notify_hub()` | Conceptual; script-side awaits HEP-CORE-0033 §15 Phase 7-8 | (legacy `src/hub_python/hub_script.*` deleted) |
 | 7 | `BrokerService::FederationPeer` struct in broker namespace | Done | `src/include/utils/broker_service.hpp` |
 | 8 | Peer state migrated into `HubState.peers` (HEP-CORE-0033 G2.2.3): `_on_peer_connected` / `_on_peer_disconnected` capability ops; `relay_notify_to_peers` computes targets from snapshot; `inbound_peers_` and `channel_to_peer_identities_` removed | Done | `src/utils/ipc/broker_service.cpp`, `src/utils/ipc/hub_state.cpp` |
 | Tests | 6 L3 broker federation protocol tests (BrokerFederationTest) | Done | `tests/test_layer3_datahub/test_datahub_hub_federation.cpp` |
 
-**Hubshell binary status.**  The `pylabhub-hubshell` executable is
-currently disabled in `src/CMakeLists.txt` (`if(FALSE)`) pending the
-HEP-CORE-0033 unified `plh_hub` binary.  Federation protocol handling
-in `BrokerService` is fully active and exercised by the L3 tests above;
-HubScript-side callbacks (Phases 5–6) become reachable again once
-`plh_hub` lands.
+**Hubshell binary status.**  The legacy `pylabhub-hubshell` executable
+and its `src/hub_python/` PythonScriptHost stack were **deleted** in the
+post-G2 cleanup pass; the replacement `plh_hub` binary is HEP-CORE-0033
+§15 Phase 9.  Federation protocol handling in `BrokerService` is fully
+active and exercised by the L3 tests above; the script-side callbacks
+described in this HEP (`on_hub_connected/disconnected/message`,
+`api.notify_hub`) are conceptual — they will be implemented again on
+the new `plh_hub` via `ScriptEngine` integration (HEP-CORE-0033 §15
+Phase 7) and `HubAPI` bindings (Phase 8).
 
 ---
 
@@ -819,8 +822,8 @@ HubScript-side callbacks (Phases 5–6) become reachable again once
 | Hub peer config parsing | `src/utils/config/hub_config.hpp/cpp` |
 | `FederationPeer` struct + `BrokerService::Config` federation fields | `src/include/utils/broker_service.hpp` |
 | Broker peer connection, relay, dedup, targeted msg | `src/utils/ipc/broker_service.cpp` |
-| HubScript event dispatch (connected/disconnected/message) | `src/hub_python/hub_script.hpp/cpp` |
-| `HubScriptAPI::notify_hub()` + hub event queue | `src/hub_python/hub_script_api.hpp/cpp` |
-| Wiring in hubshell (broker_cfg ← hub_cfg.peers) | `src/hubshell.cpp` |
+| HubScript event dispatch (connected/disconnected/message) | (deleted; future: HEP-CORE-0033 §15 Phase 7 ScriptEngine on plh_hub) |
+| `HubScriptAPI::notify_hub()` + hub event queue | (deleted; future: HEP-CORE-0033 §11.3 / §15 Phase 8 HubAPI bindings) |
+| Wiring in hubshell (broker_cfg ← hub_cfg.peers) | (deleted; future: HEP-CORE-0033 §15 Phase 9 plh_hub binary) |
 | L3 federation protocol tests | `tests/test_layer3_datahub/test_datahub_hub_federation.cpp` |
 | Demo: dual-hub with broadcast relay | `share/py-demo-dual-processor-bridge/` |
