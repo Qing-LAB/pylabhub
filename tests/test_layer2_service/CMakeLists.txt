@@ -669,6 +669,20 @@ gtest_discover_tests(test_layer2_role_cli
     PROPERTIES LABELS "layer2;service;role_cli" TIMEOUT 30)
 
 # ============================================================================
+# Test: hub_cli::parse_hub_args + ParseResult (HEP-CORE-0033 §15 Phase 2)
+# ============================================================================
+
+add_executable(test_layer2_hub_cli test_hub_cli.cpp)
+target_link_libraries(test_layer2_hub_cli PRIVATE
+    pylabhub::utils GTest::gtest GTest::gtest_main)
+pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_cli)
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_hub_cli SUITE_NAME "Layer2_HubCli")
+layer2_require_staged_utils(test_layer2_hub_cli)
+gtest_discover_tests(test_layer2_hub_cli
+    PROPERTIES LABELS "layer2;service;hub_cli" TIMEOUT 30)
+
+# ============================================================================
 # Test: RoleRegistry + RuntimeBuilder
 # ============================================================================
 
