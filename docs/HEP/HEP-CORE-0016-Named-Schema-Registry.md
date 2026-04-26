@@ -1,13 +1,31 @@
 # HEP-CORE-0016: Named Schema Registry
 
+> **⚠ SUPERSEDED by [HEP-CORE-0034](./HEP-CORE-0034-Schema-Registry.md) (2026-04-26).**
+>
+> The hash-as-truth model defined here is incompatible with the hub-as-single-mutator
+> architecture (HEP-CORE-0033 §G2) and with the requirement that schema authority follow
+> channel authority (HEP-CORE-0013, HEP-CORE-0023). HEP-CORE-0034 redefines the registry
+> around explicit ownership, owner-bound lifecycle, and citation-as-ownership-claim.
+>
+> **What HEP-0034 carries forward**: JSON file format (§6), field type system (§6.1),
+> alignment/packing (§6.2 — now with packing in the fingerprint), `<hub_dir>/schemas/`
+> for hub-global definitions.
+>
+> **What HEP-0034 removes**: `SchemaRegistry` lifecycle module, `SchemaLibrary` as a
+> standalone authority, broker-side reverse-hash annotation, periodic file watching,
+> hash-equality-as-citation. `SchemaLibrary` survives as a stateless file loader only.
+>
+> This document is retained for historical reference. New work must follow HEP-CORE-0034.
+
 | Property      | Value                                                                   |
 |---------------|-------------------------------------------------------------------------|
 | **HEP**       | `HEP-CORE-0016`                                                         |
 | **Title**     | Named Schema Registry — Channel Schema Identity and Discovery            |
-| **Status**    | Implemented — all 5 phases complete (2026-03-02)                        |
+| **Status**    | **Superseded by HEP-CORE-0034** (2026-04-26). Original status: Implemented (2026-03-02). |
 | **Created**   | 2026-03-01                                                              |
 | **Area**      | Schema System (`pylabhub-utils`, broker, standalone binaries)           |
 | **Depends on**| HEP-CORE-0002 (DataHub), HEP-CORE-0007 (Protocol), HEP-CORE-0015 (Processor Binary) |
+| **Superseded by** | HEP-CORE-0034 (Schema Registry — Owner-Authoritative Model)         |
 
 ### Source file reference
 

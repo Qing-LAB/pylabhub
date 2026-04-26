@@ -367,6 +367,8 @@ token.
 ├── script/                     # OPTIONAL — absent = hub runs without scripting
 │   └── python/                 #   (or lua/ or native/)
 │       └── __init__.py
+├── schemas/                    # OPTIONAL — hub-global schema definitions
+│   └── lab/sensors/temperature.raw.v1.json   # (HEP-CORE-0034 §12)
 ├── vault/
 │   └── hub.vault               # CURVE keypair + (optional) admin token
 ├── logs/
@@ -375,8 +377,14 @@ token.
 ```
 
 Mirrors HEP-CORE-0024 role layout. `HubDirectory` helper (new) mirrors
-`RoleDirectory` accessors (`base_dir/vault/logs/script/run`,
+`RoleDirectory` accessors (`base_dir/vault/logs/script/run/schemas`,
 `create_standard_layout()`, `has_standard_layout()`).
+
+`schemas/` holds **hub-global** schema records (owner = `hub`) per
+HEP-CORE-0034. Hub startup walks the tree and loads each `*.json` file into
+`HubState.schemas`; failure to parse any file aborts startup with a precise
+`<path>: <error>` diagnostic. An empty or absent `schemas/` directory is
+valid — the hub then serves only producer-private schema records.
 
 ## 8. State tables — `HubState`
 
@@ -391,12 +399,14 @@ graph TB
     HubState --> Bands["bands<br/>map&lt;name, BandEntry&gt;"]
     HubState --> Peers["peers<br/>map&lt;uid, PeerEntry&gt;"]
     HubState --> ShmBlocks["shm_blocks<br/>map&lt;name, ShmBlockRef&gt;"]
+    HubState --> Schemas["schemas<br/>map&lt;(owner,id), SchemaRecord&gt;"]
     HubState --> Counters["BrokerCounters"]
 
     Channels -.in-position.-> M1["role metrics blobs<br/>_collected_at"]
     Roles -.in-position.-> M2["ContextMetrics snapshots<br/>_collected_at"]
     Counters -.in-position.-> M3["RoleStateMetrics<br/>broker counters"]
     ShmBlocks -.pointer-to-collect.-> M4["hub::DataBlock::get_metrics<br/>invoked at query time"]
+    Schemas -.foreign-key.-> Channels
 
     style M4 stroke:#f90,stroke-width:2px
 ```
@@ -409,18 +419,21 @@ struct HubState
     std::unordered_map<std::string, BandEntry>     bands;
     std::unordered_map<std::string, PeerEntry>     peers;
     std::unordered_map<std::string, ShmBlockRef>   shm_blocks;  // pointer-to-collect
+    std::map<std::pair<std::string, std::string>,
+             schema::SchemaRecord>                 schemas;     // (owner_uid, schema_id)
     BrokerCounters                                  counters;   // in-position
 };
 ```
 
 | Entry | Updated by | Holds |
 |---|---|---|
-| `ChannelEntry` | REG_REQ / DISC_REQ / CHANNEL_CLOSING / broker-internal | name, schema, producer PID, consumers, created_at, status |
+| `ChannelEntry` | REG_REQ / DISC_REQ / CHANNEL_CLOSING / broker-internal | name, **schema_owner**, **schema_id**, producer PID, consumers, created_at, status |
 | `RoleEntry` | REG/HEARTBEAT/METRICS_REPORT/DISC/timeout | uid, name, role_tag, channels, state, first_seen, last_heartbeat, latest metrics, `metrics_collected_at`, pubkey |
 | `BandEntry` | BAND_JOIN / BAND_LEAVE | name, members[], last_activity |
 | `PeerEntry` | HUB_PEER_HELLO / HUB_PEER_BYE / federation heartbeat | uid, endpoint, state, last_seen |
 | `ShmBlockRef` | channel registration with SHM transport | channel name, block path; metrics collected via `collect_shm_info(channel)` at query time |
-| `BrokerCounters` | broker internal | `RoleStateMetrics` (HEP-0023 §2.5), ctrl queue depth, byte counts, per-msg-type counts |
+| `SchemaRecord` | hub-startup (globals) / REG_REQ (private) / `_on_role_deregistered` (cascade evict) | owner_uid, schema_id, hash, packing, blds, registered_at — see HEP-CORE-0034 §4 |
+| `BrokerCounters` | broker internal | `RoleStateMetrics` (HEP-0023 §2.5), ctrl queue depth, byte counts, per-msg-type counts, **schema counters (HEP-0034 §11.3)** |
 
 **Retention**: disconnected roles linger `state.disconnected_grace_ms` (default
 60s) with `status: "disconnected"` before eviction; LRU cap
@@ -553,13 +566,19 @@ ready_to_pending_total          HEP-CORE-0023 §2.5
 pending_to_ready_total
 pending_to_deregistered_total
 close:<reason>                  per ChannelCloseReason enum value
+
+schema_registered_total         HEP-CORE-0034 §11.3
+schema_evicted_total              bumped per record removed by cascade
+schema_citation_rejected_total    bumped on _validate_schema_citation NACK
 ```
 
 These are triggered by **state transitions**, which include but are
 not limited to message arrivals (the heartbeat-timeout sweep fires
-`ready_to_pending_total` from a timer, no inbound message).  They
-remain inside the capability ops because the dispatcher cannot detect
-a transition without state-diff introspection.
+`ready_to_pending_total` from a timer, no inbound message; producer
+deregistration fires both `pending_to_deregistered_total` and any
+number of `schema_evicted_total` bumps inside the same mutator
+section).  They remain inside the capability ops because the dispatcher
+cannot detect a transition without state-diff introspection.
 
 ### 9.5 Exception-safety contract
 
@@ -846,6 +865,7 @@ graph TB
     H23[HEP-0023<br/>Startup Coord]
     H24[HEP-0024<br/>Role Directory]
     H30[HEP-0030<br/>Band Messaging]
+    H34[HEP-0034<br/>Schema Registry]
 
     H33 -.supersedes §3-4.-> H19
     H33 -->|uses| H01
@@ -855,6 +875,7 @@ graph TB
     H33 -->|uses| H23
     H33 -->|shape mirrors| H24
     H33 -->|exposes events| H30
+    H33 -->|hosts records of| H34
 
     style H33 fill:#d4f1d4,stroke:#2a2
     style H19 stroke-dasharray: 5 5
@@ -869,6 +890,7 @@ graph TB
 | HEP-CORE-0022 | Used verbatim; federation config is factored into `HubFederationConfig`. |
 | HEP-CORE-0023 | Used verbatim (Phase 2 multiplier included). |
 | HEP-CORE-0024 | Shape mirrored: hub gets `HubDirectory`, `hub_cli`, `--init/--validate/--keygen`, directory layout. |
+| HEP-CORE-0034 | Schema records live in `HubState.schemas`. Hub-globals loaded from `<hub_dir>/schemas/`; private records owned by registering producers; hub is the single mutator (HEP-0033 §G2 invariant). |
 | HEP-CORE-0030 | Band events surface via script callbacks; admin RPC includes `list_bands`. |
 
 ## 15. Implementation phases
