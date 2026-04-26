@@ -21,7 +21,7 @@ This is the **authoritative, implementation-ready specification** for the Data E
 **Design Maturity:** 100% complete
 - All 9 critical design tasks completed (P9 Schema Validation implemented via HEP-CORE-0016)
 - 750/750 tests passing as of 2026-03-03
-- Four standalone binaries operational (hubshell, producer, consumer, processor)
+- Originally shipped as four standalone binaries (hubshell, producer, consumer, processor); since superseded — producer/consumer/processor are now the unified `plh_role` (HEP-CORE-0024) and hubshell is replaced by `plh_hub` (HEP-CORE-0033 §15 Phase 9, in progress)
 
 **Confidence Level:** High (95%+)
 - Core architecture validated and in production use
@@ -3535,10 +3535,9 @@ selection rules that govern the bridge Processor.
 ### Layer 4: Standalone Binaries
 | File | Description |
 |------|-------------|
-| `src/hubshell.cpp` | `pylabhub-hubshell` entry point |
-| `src/producer/` | `pylabhub-producer` (config, API, script host, main) |
-| `src/consumer/` | `pylabhub-consumer` (config, API, script host, main) |
-| `src/processor/` | `pylabhub-processor` (config, API, script host, main) |
+| `src/plh_role/` | `plh_role --role <tag>` unified role binary (HEP-CORE-0024 §19) |
+| `src/{producer,consumer,processor}/` | role library code (no longer standalone binaries; consumed by `pylabhub-utils` + `pylabhub-scripting`) |
+| (`src/hubshell.cpp` deleted; replacement `plh_hub` is HEP-CORE-0033 §15 Phase 9) | |
 | `src/scripting/role_host_core.hpp` | Engine-agnostic script host infrastructure |
 | `src/scripting/python_role_host_base.hpp` | Python common layer (~15 virtual hooks) |
 

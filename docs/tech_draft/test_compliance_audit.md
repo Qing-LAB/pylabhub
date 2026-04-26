@@ -198,9 +198,9 @@ All L4 test files spawn binaries as child processes (not via `SpawnWorker`-to-se
 
 | File | Verdict | Notes |
 |---|---|---|
-| `test_layer4_integration/test_admin_shell.cpp` | **P3** | Spawns `pylabhub-hubshell`. |
-| `test_layer4_integration/test_channel_broadcast.cpp` | **P3** | Spawns hubshell + role binaries. |
-| `test_layer4_integration/test_pipeline_roundtrip.cpp` | **P3** | Spawns hubshell + role binaries. |
+| `test_layer4_integration/test_admin_shell.cpp` | **P3** | (Disabled — spawned the now-deleted `pylabhub-hubshell`; revisit when `plh_hub` lands per HEP-CORE-0033 §15 Phase 9.) |
+| `test_layer4_integration/test_channel_broadcast.cpp` | **P3** | (Disabled — same reason.) |
+| `test_layer4_integration/test_pipeline_roundtrip.cpp` | **P3** | (Disabled — same reason.) |
 | `test_layer4_producer/test_producer_cli.cpp` | **P3** | Spawns `pylabhub-producer`. Scheduled for deletion in HEP-0024 Phase 20. |
 | `test_layer4_consumer/test_consumer_cli.cpp` | **P3** | Same. Scheduled for deletion. |
 | `test_layer4_processor/test_processor_cli.cpp` | **P3** | Same. Scheduled for deletion. |

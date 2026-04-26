@@ -4,7 +4,7 @@
 |----------------|--------------------------------------------------------------------------------|
 | **HEP**        | `HEP-CORE-0020`                                                                |
 | **Title**      | Interactive Signal Handler — Jupyter-style Ctrl-C with Status, Confirmation, and Resume |
-| **Status**     | Implemented (2026-03-02)                                                        |
+| **Status**     | Implemented (2026-03-02). Updated 2026-04-25: `pylabhub-hubshell` and the per-role binaries referenced throughout this HEP have been retired; the role-side handler now lives under the unified `plh_role` (HEP-CORE-0024); the hub-side handler will return with the new `plh_hub` binary (HEP-CORE-0033 §15 Phase 9). Protocol semantics (3-press confirmation, status callback) are unchanged. |
 | **Created**    | 2026-03-02                                                                      |
 | **Area**       | Framework Infrastructure (`pylabhub-utils`, all binaries)                       |
 | **Depends on** | HEP-CORE-0001 (Lifecycle), HEP-CORE-0017 (Pipeline Architecture)               |

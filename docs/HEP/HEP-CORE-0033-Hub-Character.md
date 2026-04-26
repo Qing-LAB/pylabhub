@@ -913,8 +913,10 @@ can land in parallel once P1 lands.
   `pylabhub_module`. L3 tests for each callback + default no-op behavior.
 - **Phase 8** — `HubAPI` pybind11 + Lua bindings (§12.3). L3 tests via each
   engine.
-- **Phase 9** — `plh_hub` binary; re-enable build; delete `src/hubshell.cpp` +
-  `src/hub_python/*`. L4 no-hub tier tests (parallel `test_layer4_plh_role/`).
+- **Phase 9** — `plh_hub` binary; new build target.  (Legacy
+  `src/hubshell.cpp` + `src/hub_python/*` already deleted in the post-G2
+  cleanup pass — Phase 9 is now greenfield.)  L4 no-hub tier tests
+  (parallel `test_layer4_plh_role/`).
 - **Phase 10** — HEP-0019 amendment finalised; README + deployment docs
   updated.
 
