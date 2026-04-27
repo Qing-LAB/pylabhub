@@ -17,6 +17,7 @@ int schema_info_hash_is_deterministic();
 int schema_info_different_struct_different_hash();
 int schema_info_matches();
 int schema_info_matches_hash();
+int packing_macro_distinct_hashes();
 int validate_schema_match_same_does_not_throw();
 int validate_schema_match_different_throws();
 int validate_schema_hash_matching_does_not_throw();
