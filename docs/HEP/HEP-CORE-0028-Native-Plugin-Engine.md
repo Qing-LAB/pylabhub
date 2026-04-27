@@ -718,5 +718,5 @@ engine can increment indirectly via `ctx->set_critical_error(ctx)`.
 - **HEP-CORE-0018 SS15**: Producer/Consumer binary architecture (engine selection logic)
 - **HEP-CORE-0015 SS4**: Processor binary (engine selection, dual-queue dispatch)
 - **HEP-CORE-0027**: Inbox messaging (on_inbox callback, InboxFrame schema validation)
-- **HEP-CORE-0016**: Named Schema Registry (schema field definitions used in PLH_DECLARE_SCHEMA)
+- **HEP-CORE-0034**: Schema Registry — schema field definitions used in `PLH_DECLARE_SCHEMA` (supersedes HEP-CORE-0016). Native-plugin schemas are owned by the role that hosts the plugin (same as if the role had registered a JSON schema file); citation rules in §9.1 apply unchanged.
 - **HEP-CORE-0019 SS5**: Metrics plane (ctx->report_metric integration)
