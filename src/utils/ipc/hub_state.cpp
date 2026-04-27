@@ -93,6 +93,8 @@ struct HubState::Impl
     std::unordered_map<std::string, BandEntry>    bands;
     std::unordered_map<std::string, PeerEntry>    peers;
     std::unordered_map<std::string, ShmBlockRef>  shm_blocks;
+    /// HEP-CORE-0034 §11.1 — owner-keyed schema records.
+    std::map<SchemaKey, schema::SchemaRecord>     schemas;
     BrokerCounters                                counters;
 
     // Handler registries. Separate mutex so subscribe/unsubscribe and
@@ -134,6 +136,7 @@ HubStateSnapshot HubState::snapshot() const
     s.bands       = pImpl->bands;
     s.peers       = pImpl->peers;
     s.shm_blocks  = pImpl->shm_blocks;
+    s.schemas     = pImpl->schemas;
     s.counters    = pImpl->counters;
     s.captured_at = std::chrono::system_clock::now();
     return s;
@@ -183,6 +186,21 @@ BrokerCounters HubState::counters() const
 {
     std::shared_lock lk(pImpl->mu);
     return pImpl->counters;
+}
+
+std::optional<schema::SchemaRecord>
+HubState::schema(const std::string &owner_uid, const std::string &schema_id) const
+{
+    std::shared_lock lk(pImpl->mu);
+    auto it = pImpl->schemas.find(SchemaKey{owner_uid, schema_id});
+    if (it == pImpl->schemas.end()) return std::nullopt;
+    return it->second;
+}
+
+std::size_t HubState::schema_count() const
+{
+    std::shared_lock lk(pImpl->mu);
+    return pImpl->schemas.size();
 }
 
 // ─── Subscribe / unsubscribe ────────────────────────────────────────────────
@@ -414,7 +432,8 @@ void HubState::_update_role_metrics(const std::string                     &uid,
 
 void HubState::_set_role_disconnected(const std::string &uid)
 {
-    bool fire = false;
+    bool        fire           = false;
+    std::size_t schemas_evicted = 0;
     {
         std::unique_lock lk(pImpl->mu);
         auto             it = pImpl->roles.find(uid);
@@ -423,6 +442,31 @@ void HubState::_set_role_disconnected(const std::string &uid)
         {
             it->second.state = RoleState::Disconnected;
             fire             = true;
+
+            // HEP-CORE-0034 §7.2 — schemas evict atomically with the
+            // producer's role transition to Disconnected.  The schema's
+            // lifetime is the role's process lifetime; once the role is
+            // gone from the network, its private records have no
+            // authority and must be removed before any later citer can
+            // observe a stale entry.  Hub-globals (owner=="hub") are
+            // never touched here.
+            //
+            // We do the eviction inside the same lock as the state
+            // transition, so a snapshot taken after this op sees a
+            // consistent (Disconnected role, no orphan schemas) view.
+            for (auto sit = pImpl->schemas.begin(); sit != pImpl->schemas.end(); )
+            {
+                if (sit->first.first == uid)
+                {
+                    sit = pImpl->schemas.erase(sit);
+                    ++schemas_evicted;
+                }
+                else
+                {
+                    ++sit;
+                }
+            }
+            pImpl->counters.schema_evicted_total += schemas_evicted;
         }
     }
     if (!fire) return;
@@ -958,6 +1002,138 @@ void HubState::_on_message_processed(const std::string &msg_type,
     ++pImpl->counters.msg_type_counts[msg_type];
     pImpl->counters.bytes_in_total  += bytes_in;
     pImpl->counters.bytes_out_total += bytes_out;
+}
+
+// ─── Schema-registry capability ops (HEP-CORE-0034 §11) ─────────────────────
+
+schema::SchemaRegOutcome HubState::_on_schema_registered(schema::SchemaRecord rec)
+{
+    using O = schema::SchemaRegOutcome;
+
+    // HubState-local invariants only (Phase 2):
+    //   - Owner uid must be present.  Distinguishing "is this caller
+    //     allowed to claim this owner?" requires broker-side role context
+    //     (Phase 3), so we only catch the empty-string case here.
+    //   - Schema id must be present (defensive — REG_REQ shape check
+    //     should catch this earlier in Phase 3).
+    //   - Hash and packing must be consistent (we rely on parse_schema_json
+    //     / SchemaRegistry to build them, so we only check non-empty here).
+    if (rec.owner_uid.empty() || rec.schema_id.empty())
+        return O::kForbiddenOwner;
+    if (rec.packing.empty())
+        return O::kForbiddenOwner;
+
+    std::unique_lock lk(pImpl->mu);
+    const SchemaKey  key{rec.owner_uid, rec.schema_id};
+
+    auto it = pImpl->schemas.find(key);
+    if (it != pImpl->schemas.end())
+    {
+        // Existing record under this (owner, id).  Idempotent only if
+        // hash AND packing match exactly — bytewise-equal layout means
+        // the caller is re-asserting the same record.
+        if (it->second.hash == rec.hash && it->second.packing == rec.packing)
+            return O::kIdempotent;
+        return O::kHashMismatchSelf;
+    }
+
+    // New record.  Stamp the registration time and insert.
+    rec.registered_at = std::chrono::system_clock::now();
+    pImpl->schemas.emplace(key, std::move(rec));
+    ++pImpl->counters.schema_registered_total;
+    return O::kCreated;
+}
+
+std::size_t HubState::_on_schemas_evicted_for_owner(const std::string &owner_uid)
+{
+    if (owner_uid.empty()) return 0;
+
+    // Hub-globals (owner=="hub") must never be evicted by this op — they
+    // only leave HubState when the hub process exits.
+    if (owner_uid == "hub") return 0;
+
+    std::size_t        removed = 0;
+    {
+        std::unique_lock lk(pImpl->mu);
+        for (auto it = pImpl->schemas.begin(); it != pImpl->schemas.end(); )
+        {
+            if (it->first.first == owner_uid)
+            {
+                it = pImpl->schemas.erase(it);
+                ++removed;
+            }
+            else
+            {
+                ++it;
+            }
+        }
+        pImpl->counters.schema_evicted_total += removed;
+    }
+    return removed;
+}
+
+schema::CitationOutcome HubState::_validate_schema_citation(
+    const std::string &/*citer_uid*/,
+    const std::string &channel_producer_uid,
+    const std::string &cited_owner,
+    const std::string &cited_id,
+    const std::array<uint8_t, 32> &expected_hash,
+    const std::string &expected_packing)
+{
+    using R = schema::CitationOutcome::Reason;
+    schema::CitationOutcome out{R::kOk, {}};
+
+    // Rule 1 — cited owner must be either "hub" or the channel's producer.
+    // Cross-citation of a third role is rejected even on hash match
+    // (HEP-CORE-0034 §9.1, §9.3).  Cheap check, do it before taking lock.
+    if (cited_owner != "hub" && cited_owner != channel_producer_uid)
+    {
+        out.reason = R::kCrossCitation;
+        out.detail = "cited owner '" + cited_owner +
+                     "' is neither 'hub' nor channel producer '" +
+                     channel_producer_uid + "'";
+    }
+    else
+    {
+        // Rules 2 + 3 — owner-known + record-exists + fingerprint-match,
+        // all under one reader lock.
+        std::shared_lock lk(pImpl->mu);
+        const bool owner_known =
+            cited_owner == "hub" ||
+            pImpl->roles.find(cited_owner) != pImpl->roles.end();
+
+        if (!owner_known)
+        {
+            out.reason = R::kUnknownOwner;
+            out.detail = "owner '" + cited_owner +
+                         "' is not a registered role and is not 'hub'";
+        }
+        else
+        {
+            auto it = pImpl->schemas.find(SchemaKey{cited_owner, cited_id});
+            if (it == pImpl->schemas.end())
+            {
+                out.reason = R::kUnknownSchema;
+                out.detail =
+                    "no record under (" + cited_owner + ", " + cited_id + ")";
+            }
+            else if (it->second.hash != expected_hash ||
+                     it->second.packing != expected_packing)
+            {
+                out.reason = R::kFingerprintMismatch;
+                out.detail = "record (" + cited_owner + ", " + cited_id +
+                             ") exists but hash or packing differs";
+            }
+            // else: fingerprint matches → out.reason stays kOk.
+        }
+    }
+
+    if (!out.ok())
+    {
+        std::unique_lock lk(pImpl->mu);
+        ++pImpl->counters.schema_citation_rejected_total;
+    }
+    return out;
 }
 
 } // namespace pylabhub::hub

@@ -43,14 +43,18 @@
 #include "pylabhub_utils_export.h"
 #include "utils/channel_pattern.hpp"
 #include "utils/json_fwd.hpp"
+#include "utils/schema_record.hpp"  // SchemaRecord, SchemaRegOutcome, CitationOutcome
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>  // std::pair
 #include <vector>
 
 namespace pylabhub::broker
@@ -133,6 +137,14 @@ struct ChannelEntry
     uint32_t    schema_version{0};
     std::string schema_id;     ///< Named-schema id; empty = anonymous.
     std::string schema_blds;
+
+    /// HEP-CORE-0034 §11 — foreign key into `HubState.schemas`.  When
+    /// non-empty, identifies the schema record this channel is contracted
+    /// against.  Values: `"hub"` if the channel adopts a hub-global, or
+    /// the producer's role uid if the producer registered its own private
+    /// record via path-B.  Anonymous (legacy) channels leave both
+    /// `schema_owner` and `schema_id` empty.
+    std::string schema_owner;
 
     uint64_t    producer_pid{0};
     std::string producer_hostname;
@@ -264,7 +276,20 @@ struct BrokerCounters
     /// dispatcher post-processing step when the handler hit an exception or
     /// validation rejection.  Per HEP-CORE-0033 §9.4.
     std::unordered_map<std::string, uint64_t> msg_type_errors;
+
+    // ── Schema-registry counters (HEP-CORE-0034 §11.3) ──────────────────
+    /// Bumped each time `_on_schema_registered` returns Created.
+    uint64_t schema_registered_total{0};
+    /// Bumped per record removed by `_on_schemas_evicted_for_owner`.
+    uint64_t schema_evicted_total{0};
+    /// Bumped each time `_validate_schema_citation` returns non-ok.
+    uint64_t schema_citation_rejected_total{0};
 };
+
+/// Key for the schemas map: `(owner_uid, schema_id)`.
+/// HEP-CORE-0034 §4.2 — namespace-by-owner; two roles may both register
+/// `frame` and they live under separate keys.
+using SchemaKey = std::pair<std::string, std::string>;
 
 /// Point-in-time aggregate returned by HubState::snapshot().
 struct HubStateSnapshot
@@ -274,6 +299,11 @@ struct HubStateSnapshot
     std::unordered_map<std::string, BandEntry>    bands;
     std::unordered_map<std::string, PeerEntry>    peers;
     std::unordered_map<std::string, ShmBlockRef>  shm_blocks;
+    /// HEP-CORE-0034 §11.1 — owner-keyed schema records.
+    /// `std::map` (not unordered) so iteration is deterministic for tests
+    /// and admin diagnostics; the table is small (one record per role
+    /// + hub-globals) so the log-N cost is irrelevant.
+    std::map<SchemaKey, schema::SchemaRecord>     schemas;
     BrokerCounters                                counters;
     std::chrono::system_clock::time_point         captured_at{
         std::chrono::system_clock::now()};
@@ -308,6 +338,18 @@ class PYLABHUB_UTILS_EXPORT HubState
     [[nodiscard]] std::optional<PeerEntry>    peer(const std::string &hub_uid) const;
     [[nodiscard]] std::optional<ShmBlockRef>  shm_block(const std::string &channel_name) const;
     [[nodiscard]] BrokerCounters              counters() const;
+
+    /// Look up one schema record by `(owner_uid, schema_id)`.  Returns
+    /// nullopt if the record does not exist.  Per HEP-CORE-0034 §11 the
+    /// hub is the authoritative source for schema records — citers should
+    /// ground their assumptions in this lookup, not in their local
+    /// `<role_dir>/schemas/` cache.
+    [[nodiscard]] std::optional<schema::SchemaRecord>
+    schema(const std::string &owner_uid, const std::string &schema_id) const;
+
+    /// Number of schema records currently stored.  Cheap read; useful for
+    /// tests and admin diagnostics.
+    [[nodiscard]] std::size_t schema_count() const;
 
     // ── Event subscription ──────────────────────────────────────────────
     using ChannelOpenedHandler        = std::function<void(const ChannelEntry &)>;
@@ -436,6 +478,81 @@ class PYLABHUB_UTILS_EXPORT HubState
     void _on_message_processed(const std::string &msg_type,
                                std::size_t        bytes_in,
                                std::size_t        bytes_out);
+
+    // ── Schema-registry capability ops (HEP-CORE-0034 §11) ──────────────
+    //
+    // These are pure HubState mutations — Phase 2 surface only.  The
+    // broker dispatcher will call them in Phase 3 from REG_REQ /
+    // CONSUMER_REG_REQ / PROC_REG_REQ handlers.  Until then they exist
+    // for L2 unit tests via HubStateTestAccess.
+
+    /**
+     * @brief Register or accept a schema record.
+     *
+     * The record's `registered_at` field is overwritten with the current
+     * time before insertion (callers should leave it default-initialised).
+     *
+     * Conflict policy is namespace-by-owner (HEP-CORE-0034 §8): two
+     * different `owner_uid` values for the same `schema_id` are independent
+     * records, never collide.  Same-owner re-registration is idempotent if
+     * the hash AND packing match exactly; rejected with `kHashMismatchSelf`
+     * otherwise.
+     *
+     * Phase 2 enforces only the local invariants that HubState can verify:
+     *   - `kForbiddenOwner` is reserved for Phase 3 broker validation
+     *     (e.g. "this REG_REQ comes from role X but cites owner=hub
+     *     without authorization") — Phase 2 returns `kForbiddenOwner` only
+     *     if the record's `owner_uid` is empty.
+     *
+     * @return Created on insert, Idempotent on no-op success, or one of
+     *         the rejection codes.  Counter `schema_registered_total` is
+     *         bumped only on `kCreated`.
+     */
+    schema::SchemaRegOutcome _on_schema_registered(schema::SchemaRecord rec);
+
+    /**
+     * @brief Cascade-evict every schema record owned by `owner_uid`.
+     *
+     * Called from `_set_role_disconnected` (HEP-CORE-0034 §7.2) when a
+     * role's process exits.  No-op if the role owns zero records or is
+     * unknown.  Counter `schema_evicted_total` is bumped per record
+     * removed.
+     *
+     * Caller invariant: this should be the only public path that removes
+     * private schema records — hub-globals (owner=`"hub"`) are never
+     * evicted by this op.
+     *
+     * @return Number of records actually removed.
+     */
+    std::size_t _on_schemas_evicted_for_owner(const std::string &owner_uid);
+
+    /**
+     * @brief Validate a citation for a connecting role / channel.
+     *
+     * Implements the HEP-CORE-0034 §9.1 invariant:
+     *   - Cited owner must be either `"hub"` or `channel_producer_uid`.
+     *   - Cited record must exist.
+     *   - Cited record's hash AND packing must equal the citer's expected
+     *     fingerprint.
+     *
+     * Cross-citation (owner is a third role) is rejected even on hash
+     * match — see HEP-CORE-0034 §9.3 for rationale.  On any non-ok
+     * outcome, counter `schema_citation_rejected_total` is bumped.
+     *
+     * @param citer_uid              Role uid making the citation (for diagnostics; not used for routing in Phase 2).
+     * @param channel_producer_uid   Producer uid that owns the channel the citer is connecting to.
+     * @param cited_owner            `"hub"` or producer uid as cited by the citer.
+     * @param cited_id               Schema id under cited_owner's namespace.
+     * @param expected_hash          Citer's expected fingerprint bytes (32).
+     * @param expected_packing       Citer's expected packing string.
+     */
+    schema::CitationOutcome _validate_schema_citation(
+        const std::string &citer_uid,
+        const std::string &channel_producer_uid,
+        const std::string &cited_owner,
+        const std::string &cited_id,
+        const std::array<uint8_t, 32> &expected_hash,
+        const std::string &expected_packing);
 
     struct Impl;
 #if defined(_MSC_VER)
