@@ -19,7 +19,7 @@
 This is the **authoritative, implementation-ready specification** for the Data Exchange Hub, consolidating all design decisions from the review process. This single document supersedes all previous drafts and working documents (now archived in `docs/archive/data-hub/`).
 
 **Design Maturity:** 100% complete
-- All 9 critical design tasks completed (P9 Schema Validation implemented via HEP-CORE-0016)
+- All 9 critical design tasks completed (P9 Schema Validation implemented via HEP-CORE-0034; supersedes HEP-CORE-0016)
 - 750/750 tests passing as of 2026-03-03
 - Originally shipped as four standalone binaries (hubshell, producer, consumer, processor); since superseded — producer/consumer/processor are now the unified `plh_role` (HEP-CORE-0024) and hubshell is replaced by `plh_hub` (HEP-CORE-0033 §15 Phase 9, in progress)
 
@@ -136,7 +136,7 @@ The **Data Exchange Hub** is a high-performance, zero-copy, cross-process commun
 - P6: Broker + Heartbeat (minimal protocol, peer-to-peer)
 - P7: Transaction API (lambda-based RAII)
 - P8: Error Recovery (diagnostics, PID checks)
-- P9: Schema Validation — implemented via Named Schema Registry (HEP-CORE-0016, all 5 phases)
+- P9: Schema Validation — implemented via Schema Registry (HEP-CORE-0034, owner-authoritative model; supersedes HEP-CORE-0016)
 - P10: Observability (256-byte metrics, automatic tracking)
 
 ### 1.5 Design Confidence
@@ -3516,8 +3516,7 @@ selection rules that govern the bridge Processor.
 | `src/include/utils/messenger.hpp` | `Messenger` — **OBSOLETE**, replaced by `BrokerRequestComm` |
 | `src/include/utils/broker_service.hpp` | `BrokerService` — channel registry, policy enforcement |
 | `src/include/utils/schema_blds.hpp` | BLDS generation, `SchemaRegistry<T>` traits |
-| `src/include/utils/schema_library.hpp` | `SchemaLibrary` — named schema file lookup |
-| `src/include/utils/schema_registry.hpp` | `SchemaStore` — lifecycle singleton |
+| `src/include/utils/schema_library.hpp` | `SchemaLibrary` — stateless file loader for hub-globals + role-side caches (HEP-0034 §4); replaces HEP-0016-era SchemaStore singleton |
 
 ### Implementation
 | File | Description |
@@ -3546,7 +3545,8 @@ selection rules that govern the bridge Processor.
 ## Document Status
 
 **Fully implemented** — all sections (1-17) correspond to working code. 750/750 tests passing
-as of 2026-03-03. Schema validation (§12) implemented via HEP-CORE-0016 (Named Schema Registry).
+as of 2026-03-03. Schema validation (§12) implemented via HEP-CORE-0034 (Schema Registry —
+Owner-Authoritative Model); HEP-CORE-0016 superseded 2026-04-26.
 
 **Revision History:**
 - 2026-03-03: Actor terminology scrub; source file reference added; stale cross-refs fixed
