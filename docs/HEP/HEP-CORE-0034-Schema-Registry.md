@@ -637,18 +637,50 @@ struct ConsumerOptions {
 
 ### 14.2 Compile-time fingerprint
 
-`PYLABHUB_SCHEMA_BEGIN/MEMBER/END` macros gain a `packing` argument (defaults
-to `aligned` for backward compatibility). The generated `SchemaTraits<T>::hash`
-is computed over canonical-fields + packing.
+The C++ template path provides two macros — one per packing mode — and
+`SchemaInfo::compute_hash()` folds packing into the canonical form
+(HEP-CORE-0034 §6.3) so the fingerprint matches what `compute_schema_hash`
+produces for an equivalent JSON schema.
 
 ```cpp
-PYLABHUB_SCHEMA_BEGIN(RawTempSlot, aligned)
+// Natural-aligned struct (the common case). Existing call sites do not
+// change; the macro now sets `SchemaRegistry<T>::packing == "aligned"`.
+struct RawTempSlot { double ts; float samples[8]; uint16_t sensor_id; uint16_t _pad; };
+PYLABHUB_SCHEMA_BEGIN(RawTempSlot)
   PYLABHUB_SCHEMA_MEMBER(ts)
   PYLABHUB_SCHEMA_MEMBER(samples)
   PYLABHUB_SCHEMA_MEMBER(sensor_id)
   PYLABHUB_SCHEMA_MEMBER(_pad)
 PYLABHUB_SCHEMA_END(RawTempSlot)
+
+// Explicitly-packed struct.  The struct itself MUST be declared packed
+// (`#pragma pack(push,1)` or `__attribute__((packed))`); the
+// `_PACKED` macro records that intent in `SchemaRegistry<T>::packing`
+// so the fingerprint reflects the actual layout.
+#pragma pack(push, 1)
+struct PackedFrame { double ts; uint8_t flags; int32_t value; };
+#pragma pack(pop)
+PYLABHUB_SCHEMA_BEGIN_PACKED(PackedFrame)
+  PYLABHUB_SCHEMA_MEMBER(ts)
+  PYLABHUB_SCHEMA_MEMBER(flags)
+  PYLABHUB_SCHEMA_MEMBER(value)
+PYLABHUB_SCHEMA_END(PackedFrame)
 ```
+
+Two separate macros (rather than a single macro with a packing argument)
+were chosen so existing call sites do not need to add `, aligned` to every
+schema declaration, and so the call site reads as documentation: `_PACKED`
+in the macro name is a visible signal that the struct's layout deviates
+from the C++ default.
+
+> **Implementation note (Phase 1, 2026-04-27).** A compile-time
+> `static_assert` that verifies `sizeof(T)` matches the size implied by the
+> declared packing is desirable but deferred — the BLDSBuilder is a runtime
+> string accumulator, so there is no constexpr field-size info available at
+> macro-expansion time. Today the failure mode is "hash mismatch at
+> REG_REQ" rather than "compile error", which is correct but less friendly.
+> A future revision may add the assertion via a parallel constexpr
+> accumulator.
 
 ### 14.3 Validation at `create<F,D>()`
 
@@ -672,14 +704,28 @@ in-tree code migrates.
 
 ## 15. Phased delivery
 
-### Phase 1 — Fingerprint correction (foundation)
+### Phase 1 — Fingerprint correction (foundation) — ✅ shipped 2026-04-27
 
-- `compute_schema_hash()` includes packing in canonical form.
-- `SchemaSpec` carries `packing` (already does, but ensure it propagates).
-- `parse_schema_json()` rejects schemas without explicit packing.
-- All in-tree configs / schema JSON files updated to declare packing.
-- Tests: hash collision (same fields, different packing) → distinct hashes.
-- **Wire-incompatible** with pre-Phase-1 binaries; pre-1.0, no migration burden.
+- `compute_schema_hash()` (SchemaSpec runtime path) includes packing in
+  canonical form per §6.3.
+- `SchemaInfo::compute_hash()` (C++ template path) includes packing
+  (`SchemaInfo` gained a `packing` field; `SchemaRegistry<T>::packing`
+  is set by the macro and propagated through `generate_schema_info<T>()`).
+- `compute_inbox_schema_tag()` (HEP-0027 inbox queue) includes packing
+  in its 8-byte tag — the same fingerprint-correction principle applied
+  to the inbox wire path.
+- `SchemaSpec` and `SchemaLayoutDef` both carry per-section packing.
+- `parse_schema_json()` and the file loader's `parse_layout()` reject
+  schemas / layout sections without explicit packing.
+- New macro `PYLABHUB_SCHEMA_BEGIN_PACKED` for opt-in packed structs;
+  `PYLABHUB_SCHEMA_BEGIN` defaults to `packing="aligned"` (unchanged
+  call-site syntax).
+- All in-tree configs, role `--init` templates, and test fixtures
+  updated to declare packing explicitly.
+- Tests: same-fields-different-packing → distinct hashes (slot,
+  flexzone, and inbox paths); macro path verified separately.
+- **Wire-incompatible** with pre-Phase-1 binaries; pre-1.0, no migration
+  burden.
 
 ### Phase 2 — `HubState` schema records + cascade eviction
 
@@ -720,7 +766,9 @@ in-tree code migrates.
 
 - `ProducerOptions::{schema_owner, schema_id}`, `ConsumerOptions::expected_*`.
 - `create<F,D>()` issues `SCHEMA_REQ` for path C; sends BLDS for path B.
-- `PYLABHUB_SCHEMA_BEGIN` packing argument.
+- New `PYLABHUB_SCHEMA_BEGIN_PACKED` macro for explicitly-packed C++ structs;
+  `PYLABHUB_SCHEMA_BEGIN` retains its existing one-argument form (defaults
+  to `packing="aligned"`).
 - Tests: producer adopts hub-global, consumer cites it, all paths round-trip.
 
 ### Phase 6 — Docs sweep + HEP-0016 closure

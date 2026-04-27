@@ -34,6 +34,32 @@ PYLABHUB_SCHEMA_MEMBER(x)
 PYLABHUB_SCHEMA_MEMBER(y)
 PYLABHUB_SCHEMA_END(WorkerOtherSchema)
 
+// HEP-CORE-0034 §6.3 — packing is part of the fingerprint. Two structs with
+// the same fields and different packing must produce different hashes.  These
+// two structs share fields but differ in actual layout: WorkerAlignedAB uses
+// natural alignment, WorkerPackedAB uses pragma-pack(1).
+struct WorkerAlignedAB
+{
+    bool    flag;   // 1 byte + 3 padding (natural alignment)
+    int32_t value;  // 4 bytes
+};
+PYLABHUB_SCHEMA_BEGIN(WorkerAlignedAB)
+PYLABHUB_SCHEMA_MEMBER(flag)
+PYLABHUB_SCHEMA_MEMBER(value)
+PYLABHUB_SCHEMA_END(WorkerAlignedAB)
+
+#pragma pack(push, 1)
+struct WorkerPackedAB
+{
+    bool    flag;   // 1 byte (no padding under #pragma pack(1))
+    int32_t value;  // 4 bytes
+};
+#pragma pack(pop)
+PYLABHUB_SCHEMA_BEGIN_PACKED(WorkerPackedAB)
+PYLABHUB_SCHEMA_MEMBER(flag)
+PYLABHUB_SCHEMA_MEMBER(value)
+PYLABHUB_SCHEMA_END(WorkerPackedAB)
+
 namespace pylabhub::tests::worker::schema_blds
 {
 
@@ -121,6 +147,43 @@ int schema_info_matches_hash()
         "schema_info_matches_hash", crypto_module());
 }
 
+int packing_macro_distinct_hashes()
+{
+    // HEP-CORE-0034 §6.3 — PYLABHUB_SCHEMA_BEGIN vs PYLABHUB_SCHEMA_BEGIN_PACKED
+    // produce SchemaInfo records with different `packing` fields, and therefore
+    // different hashes for the same field list.  This pins the macro behaviour
+    // at the C++ template-path layer (compile-time fingerprint).
+    return run_gtest_worker(
+        []()
+        {
+            const SchemaInfo aligned =
+                generate_schema_info<WorkerAlignedAB>("aligned", SchemaVersion{1, 0, 0});
+            const SchemaInfo packed =
+                generate_schema_info<WorkerPackedAB>("packed", SchemaVersion{1, 0, 0});
+
+            // 1. Macro sets the packing string correctly.
+            EXPECT_EQ(aligned.packing, "aligned");
+            EXPECT_EQ(packed.packing,  "packed");
+
+            // 2. BLDS string is field-list-only and identical (same fields).
+            EXPECT_EQ(aligned.blds, packed.blds)
+                << "BLDS should reflect field list only; packing lives in canonical form";
+
+            // 3. Hash differs because canonical form includes packing.
+            EXPECT_NE(aligned.hash, packed.hash)
+                << "PYLABHUB_SCHEMA_BEGIN vs _PACKED must produce distinct fingerprints";
+            EXPECT_FALSE(aligned.matches(packed));
+
+            // 4. Struct sizes reflect actual layout (sanity that the macro
+            //    aligns with the underlying struct declaration).
+            EXPECT_EQ(aligned.struct_size, sizeof(WorkerAlignedAB));
+            EXPECT_EQ(packed.struct_size,  sizeof(WorkerPackedAB));
+            EXPECT_GT(aligned.struct_size, packed.struct_size)
+                << "natural-aligned bool+int32 (8B) should be larger than packed (5B)";
+        },
+        "packing_macro_distinct_hashes", crypto_module());
+}
+
 int validate_schema_match_same_does_not_throw()
 {
     return run_gtest_worker(
@@ -203,6 +266,8 @@ struct SchemaBLDSWorkerRegistrar
                     return schema_info_matches();
                 if (scenario == "schema_info_matches_hash")
                     return schema_info_matches_hash();
+                if (scenario == "packing_macro_distinct_hashes")
+                    return packing_macro_distinct_hashes();
                 if (scenario == "validate_match_same_ok")
                     return validate_schema_match_same_does_not_throw();
                 if (scenario == "validate_match_diff_throws")
