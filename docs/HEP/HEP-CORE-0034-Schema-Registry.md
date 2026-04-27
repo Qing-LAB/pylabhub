@@ -514,6 +514,47 @@ Three counters added to `BrokerCounters`:
 | `schema_evicted_total`           | each record removed by `_on_schemas_evicted_for_owner` |
 | `schema_citation_rejected_total` | `_validate_schema_citation` returns non-ok |
 
+### 11.4 Inbox schemas (HEP-CORE-0027 integration)
+
+The inbox messaging protocol (HEP-CORE-0027) is receiver-authoritative — the
+inbox owner provides schema, packing, and checksum policy at REG_REQ time, and
+senders adopt these values via `ROLE_INFO_REQ` (HEP-0027 §4.1, line 132-133;
+checksum policy explicitly receiver-dictated, §4.1 step 7-8). This maps
+directly onto HEP-0034's owner model.
+
+**Record key.** Inbox schemas live in `HubState.schemas` under
+`(receiver_uid, "inbox")`. The schema_id is the literal string `"inbox"`; one
+inbox per role uid. A role that owns both a producer-channel schema and an
+inbox schema gets two records: `(role_uid, "frame")` and `(role_uid, "inbox")`
+— no collision (§8 namespace-by-owner).
+
+**Lifecycle.** Identical to private producer schemas. Created from the
+receiver's REG_REQ when the inbox-config block is present and non-empty;
+cascade-evicted from `_on_role_deregistered` along with the role's other
+schema records, in the same mutator section. No special path.
+
+**Citation by senders.** Senders cite via path A `(receiver_uid, "inbox")` in
+`CONSUMER_REG_REQ` / `PROC_REG_REQ` (or in any other message that establishes
+an inbox connection). The §9.1 invariant remains intact: senders are
+connecting to the inbox owner, so the cited owner equals the channel
+authority. Cross-citation — e.g., a sender citing role A's `inbox` while
+connecting to role B's inbox — is rejected with `cross_citation`.
+
+**Wire-protocol mapping.** The existing inbox fields in REG_REQ
+(`inbox_endpoint`, `inbox_schema_json`, `inbox_packing`, `inbox_checksum` —
+HEP-0027 §4.1 line 140) carry the equivalent of schema_id=`"inbox"`, BLDS,
+packing, and checksum policy. Phase 3 implementation routes these fields
+through `_on_schema_registered({owner: receiver_uid, id: "inbox", ...})`
+inside the same handler that processes the rest of REG_REQ. The wire-format
+field names are retained for HEP-0027 compatibility; only the broker-side
+storage is unified into `HubState.schemas`.
+
+**Discovery.** HEP-0027's `ROLE_INFO_REQ` flow (§4.1 step 5) for fetching
+inbox metadata remains supported and is the recommended path for
+sender-side configuration. `SCHEMA_REQ(receiver_uid, "inbox")` is an
+equivalent lower-level fallback that returns just the schema record;
+`ROLE_INFO_REQ` additionally returns the endpoint and checksum policy.
+
 ---
 
 ## 12. Hub directory — `<hub_dir>/schemas/`
@@ -656,8 +697,15 @@ in-tree code migrates.
 - New `SCHEMA_REG_NACK` reasons in `REG_NACK` envelope.
 - `SCHEMA_REQ`/`SCHEMA_ACK` generalised to owner+id keying.
 - Broker dispatcher routes through §9.1 validation.
+- Inbox handler (HEP-0027 REG_REQ inbox-config block) calls
+  `_on_schema_registered({owner: receiver_uid, id: "inbox", ...})` inline;
+  inbox sender REG_REQ (CONSUMER_REG_REQ / PROC_REG_REQ that bind an inbox)
+  routes through `_validate_schema_citation` against `(receiver_uid, "inbox")`.
+  Wire field names from HEP-0027 retained for compatibility — only the
+  broker-side storage is unified into `HubState.schemas` (§11.4).
 - Tests: cross-citation rejected, fingerprint mismatch rejected, hub-global
-  adoption succeeds, path A/B/C round-trips.
+  adoption succeeds, path A/B/C round-trips, inbox citation A round-trip,
+  inbox cross-citation rejected.
 
 ### Phase 4 — `SchemaLibrary` refactor
 
@@ -694,6 +742,8 @@ in-tree code migrates.
 | HEP-CORE-0016 (Named Schema Registry) | **Superseded by this HEP.** |
 | HEP-CORE-0023 (Startup Coordination) | `_on_role_deregistered` cascade extended to schemas. State machine unchanged. |
 | HEP-CORE-0024 (Role Directory Service) | Role-side `<role_dir>/schemas/` is local cache only — see §13. |
+| HEP-CORE-0027 (Inbox Messaging) | Inbox schemas integrated as `(receiver_uid, "inbox")` records owned by the inbox receiver — see §11.4. Existing HEP-0027 wire fields retained; broker-side storage unified into `HubState.schemas`. |
+| HEP-CORE-0030 (Band Messaging) | Band payloads are free-form JSON (HEP-0030 §1, §326, §413); no schema records, no HEP-0034 integration. |
 | HEP-CORE-0033 (Hub Character) | Schema records live in `HubState.schemas`. §G2 hub-as-mutator invariant covers schema mutations. §9 message-processing contract applies to schema messages. |
 
 ---
