@@ -396,3 +396,8 @@ elif ack == 255:
 - **HEP-CORE-0015 §4, §6.4**: Processor inbox config fields + InboxHandle API
 - **HEP-CORE-0018 §15.6**: Inbox plane overview (superseded by this document for details)
 - **HEP-CORE-0019 §5.4**: Metrics serialization architecture
+- **HEP-CORE-0034 §11.4**: Inbox schemas integrate into the hub's owner-authoritative
+  schema registry as `(receiver_uid, "inbox")` records. Receiver-as-authority model
+  (this HEP §4.1 step 7-8) maps directly onto HEP-0034 ownership rules; existing wire
+  fields (`inbox_endpoint`, `inbox_schema_json`, `inbox_packing`, `inbox_checksum`) are
+  retained, with broker-side storage unified into `HubState.schemas`.
