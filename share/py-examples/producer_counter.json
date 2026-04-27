@@ -28,6 +28,7 @@
   },
   "flexzone_schema": {
     "_comment": "Persistent producer metadata — readable by any connected consumer.",
+    "packing": "aligned",
     "fields": [
       {"name": "producer_pid",  "type": "uint64"},
       {"name": "start_time",    "type": "float64"},

@@ -74,15 +74,22 @@ struct SchemaFieldDef
 
 /**
  * @struct SchemaLayoutDef
- * @brief Field list for one layout section (slot or flexzone).
+ * @brief Field list + packing for one layout section (slot or flexzone).
  *
- * Only `"packing": "aligned"` is supported (HEP-CORE-0016 §6.2).
- * Offsets and struct size are computed by SchemaLibrary from field order and
- * C++ natural alignment rules — they are not stored in the JSON.
+ * `packing` is one of `"aligned"` (natural C-struct layout) or `"packed"`
+ * (no padding, `_pack_=1`).  It MUST be declared explicitly in the JSON
+ * `slot` / `flexzone` block (HEP-CORE-0034 §6.2); the parser rejects
+ * blocks that omit it.  Packing is part of the schema fingerprint
+ * (HEP-CORE-0034 §6.3) — two layouts with the same fields and different
+ * packing have different hashes.
+ *
+ * Offsets and struct size are computed by SchemaLibrary from field order
+ * and the declared packing rule — they are not stored in the JSON.
  */
 struct SchemaLayoutDef
 {
     std::vector<SchemaFieldDef> fields;
+    std::string                 packing{"aligned"}; ///< "aligned" or "packed"
 };
 
 // ============================================================================

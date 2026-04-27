@@ -42,7 +42,15 @@ inline SchemaSpec parse_schema_json(const nlohmann::json &schema_obj)
     if (schema_obj.contains("expose_as"))
         throw std::runtime_error("expose_as is no longer supported; use field-based schemas");
 
-    spec.packing  = schema_obj.value("packing", "aligned");
+    // HEP-CORE-0034 §6.2 — `packing` MUST be declared explicitly.  It is
+    // part of the schema fingerprint (§6.3); a missing packing field
+    // would silently default to one mode and collide with the other.
+    if (!schema_obj.contains("packing"))
+        throw std::runtime_error(
+            "Schema: 'packing' field is required (HEP-CORE-0034 §6.2). "
+            "Set \"packing\": \"aligned\" for natural C-struct layout or "
+            "\"packing\": \"packed\" for no-padding layout.");
+    spec.packing = schema_obj["packing"].get<std::string>();
     if (spec.packing != "aligned" && spec.packing != "packed")
         throw std::runtime_error("Schema: 'packing' must be 'aligned' or 'packed'");
 
@@ -96,7 +104,7 @@ inline SchemaSpec schema_entry_to_spec(const schema::SchemaLayoutDef &layout)
 {
     SchemaSpec spec;
     spec.has_schema = true;
-    spec.packing    = "aligned";
+    spec.packing    = layout.packing;  // HEP-CORE-0034 — propagate per-section packing
 
     for (const auto &sf : layout.fields)
     {
@@ -154,6 +162,13 @@ inline SchemaSpec resolve_schema(const nlohmann::json &schema_json, bool use_fle
 }
 
 // ── Schema hash ──────────────────────────────────────────────────────────────
+//
+// Canonical form (HEP-CORE-0034 §6.3):
+//
+//   slot:<fields>|pack:<packing>[|fz:<fields>|fzpack:<packing>]
+//
+// `packing` is appended for each present section so two layouts with
+// identical fields and different packing produce different hashes.
 
 inline void append_schema_canonical(std::string &out, const std::string &prefix,
                                     const SchemaSpec &spec)
@@ -179,9 +194,17 @@ inline std::string compute_schema_hash(const SchemaSpec &slot_spec, const Schema
     std::string canonical;
     canonical.reserve(256);
     if (slot_spec.has_schema)
+    {
         append_schema_canonical(canonical, "slot:", slot_spec);
+        canonical += "|pack:";
+        canonical += slot_spec.packing;
+    }
     if (fz_spec.has_schema)
+    {
         append_schema_canonical(canonical, slot_spec.has_schema ? "|fz:" : "fz:", fz_spec);
+        canonical += slot_spec.has_schema ? "|fzpack:" : "|pack:";
+        canonical += fz_spec.packing;
+    }
 
     const auto hash = pylabhub::crypto::compute_blake2b_array(
         canonical.data(), canonical.size());

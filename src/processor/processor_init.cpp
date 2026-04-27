@@ -44,10 +44,13 @@ nlohmann::json processor_config_template(const std::string &uid,
     j["out_shm_enabled"]    = true;
     j["out_shm_slot_count"] = 4;
 
-    j["in_slot_schema"]["fields"] = nlohmann::json::array({
+    // HEP-CORE-0034 §6.2 — packing is required (no silent default).
+    j["in_slot_schema"]["packing"] = "aligned";
+    j["in_slot_schema"]["fields"]  = nlohmann::json::array({
         nlohmann::json{{"name", "value"}, {"type", "float32"}}
     });
-    j["out_slot_schema"]["fields"] = nlohmann::json::array({
+    j["out_slot_schema"]["packing"] = "aligned";
+    j["out_slot_schema"]["fields"]  = nlohmann::json::array({
         nlohmann::json{{"name", "value"}, {"type", "float32"}}
     });
     j["out_flexzone_schema"] = nullptr;

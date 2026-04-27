@@ -110,6 +110,7 @@ inline void write_minimal_config(const fs::path       &cfg_path,
     auto slot_schema = nlohmann::json::object();
     auto fields = nlohmann::json::array();
     fields.push_back(nlohmann::json{{"name", "v"}, {"type", "float32"}});
+    slot_schema["packing"] = "aligned";  // HEP-CORE-0034 §6.2 — required
     slot_schema["fields"] = fields;
 
     j["script"]["type"] = "python";
