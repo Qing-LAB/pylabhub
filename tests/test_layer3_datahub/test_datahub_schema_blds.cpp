@@ -215,3 +215,14 @@ TEST_F(DatahubSchemaBldsInfoTest, ValidateSchemaHash_Mismatch_Throws)
     auto w = SpawnWorker("schema_blds.validate_hash_mismatch_throws");
     ExpectWorkerOk(w);
 }
+
+// HEP-CORE-0034 §6.3 — PYLABHUB_SCHEMA_BEGIN vs PYLABHUB_SCHEMA_BEGIN_PACKED
+// must produce distinct fingerprints.  Pins the macro behaviour at the C++
+// template-path layer; complements the runtime-JSON-path tests in
+// test_schema_validation.cpp (ParseError_MissingPacking +
+// FingerprintIncludesPacking_*).
+TEST_F(DatahubSchemaBldsInfoTest, PackingMacro_DistinctHashesFromAligned)
+{
+    auto w = SpawnWorker("schema_blds.packing_macro_distinct_hashes");
+    ExpectWorkerOk(w);
+}

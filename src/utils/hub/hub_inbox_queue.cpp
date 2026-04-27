@@ -141,11 +141,17 @@ static bool validate_inbox_schema(const std::vector<ZmqSchemaField>& schema,
     return true;
 }
 
-/// Compute 8-byte schema tag from ZmqSchemaField list (BLAKE2b-256 of canonical string).
-/// Same concept as ZmqQueue schema_tag: deterministic hash of field definitions.
-static std::array<uint8_t, 8> compute_inbox_schema_tag(const std::vector<ZmqSchemaField>& schema)
+/// Compute 8-byte schema tag from ZmqSchemaField list + packing (BLAKE2b-256 of
+/// canonical string).  Mirrors HEP-CORE-0034 §6.3 fingerprint correction: the
+/// canonical form ends with `|pack:<packing>` so two schemas with identical
+/// fields and different packing produce different tags.  Without this, a
+/// sender publishing packed bytes and a receiver decoding as aligned (or vice
+/// versa) would silently misinterpret the wire — the exact bug Phase 1 fixes
+/// on the SchemaSpec/SchemaInfo paths.
+static std::array<uint8_t, 8> compute_inbox_schema_tag(
+    const std::vector<ZmqSchemaField>& schema, const std::string& packing)
 {
-    // Build canonical string: "type:count:length;" per field
+    // Build canonical string: "type:count:length;" per field, then "|pack:<packing>".
     std::string canonical;
     for (const auto& f : schema)
     {
@@ -156,6 +162,8 @@ static std::array<uint8_t, 8> compute_inbox_schema_tag(const std::vector<ZmqSche
         canonical += std::to_string(f.length);
         canonical += ';';
     }
+    canonical += "|pack:";
+    canonical += packing;
     auto full_hash = pylabhub::crypto::compute_blake2b_array(canonical.data(), canonical.size());
     std::array<uint8_t, 8> tag{};
     std::memcpy(tag.data(), full_hash.data(), 8);
@@ -191,7 +199,7 @@ InboxQueue::bind_at(const std::string& endpoint, std::vector<ZmqSchemaField> sch
     impl->item_sz        = item_sz;
     impl->max_frame_sz   = wire_detail::max_frame_size(layouts);
     impl->rcvhwm         = rcvhwm;
-    impl->schema_tag_    = compute_inbox_schema_tag(schema);
+    impl->schema_tag_    = compute_inbox_schema_tag(schema, packing);
     impl->schema_defs_   = std::move(layouts);
     impl->decode_buf_.resize(item_sz, std::byte{0});
     impl->frame_recv_buf_.resize(impl->max_frame_sz, '\0');
@@ -462,7 +470,7 @@ InboxClient::connect_to(const std::string& endpoint, const std::string& sender_u
     impl->endpoint       = endpoint;
     impl->sender_uid     = sender_uid;
     impl->item_sz        = item_sz;
-    impl->schema_tag_    = compute_inbox_schema_tag(schema);
+    impl->schema_tag_    = compute_inbox_schema_tag(schema, packing);
     impl->schema_defs_   = std::move(layouts);
     impl->write_buf_.resize(item_sz, std::byte{0});
 
