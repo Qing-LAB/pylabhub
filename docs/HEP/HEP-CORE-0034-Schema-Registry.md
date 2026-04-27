@@ -727,15 +727,30 @@ in-tree code migrates.
 - **Wire-incompatible** with pre-Phase-1 binaries; pre-1.0, no migration
   burden.
 
-### Phase 2 — `HubState` schema records + cascade eviction
+### Phase 2 — `HubState` schema records + cascade eviction — ✅ shipped 2026-04-27
 
-- Add `SchemaRecord` and `HubState.schemas` map.
-- Add `ChannelEntry.{schema_owner, schema_id}`.
-- Implement `_on_schema_registered`, `_on_schemas_evicted_for_owner`,
-  `_validate_schema_citation` capability ops.
-- Wire `_on_role_deregistered` cascade for producers.
-- Tests: producer dereg evicts schemas atomically with channel close;
-  re-register idempotency; conflict-policy (a) two-producer same id.
+- `SchemaRecord` defined in `src/include/utils/schema_record.hpp`;
+  outcomes (`SchemaRegOutcome`, `CitationOutcome`) live there too so the
+  schema layer doesn't depend on hub_state.
+- `HubState.schemas`: `std::map<SchemaKey, SchemaRecord>` (deterministic
+  iteration; small table).
+- `ChannelEntry.schema_owner` foreign-key field added (the existing
+  `schema_id` field is the rest of the key; together they reference
+  `HubState.schemas`).
+- Capability ops: `_on_schema_registered`, `_on_schemas_evicted_for_owner`,
+  `_validate_schema_citation`.
+- Cascade integration: `_set_role_disconnected` evicts the role's
+  schemas inside the same writer-lock section as the state transition,
+  so snapshots taken after `Disconnected` never see orphan records.
+  Hub-globals (owner=="hub") are immune.
+- Counters wired (HEP-0033 §9.4 / HEP-0034 §11.3):
+  `schema_registered_total`, `schema_evicted_total`,
+  `schema_citation_rejected_total`.
+- Tests: 15 new in `test_hub_state.cpp` covering: registration outcomes
+  (Created/Idempotent/HashMismatchSelf/ForbiddenOwner), namespace-by-owner
+  conflict policy, eviction (per-owner + cascade-on-disconnect), hub-global
+  immunity, citation validation across all reasons including
+  cross-citation-rejected-on-hash-equality.
 
 ### Phase 3 — Wire protocol + broker dispatch
 
