@@ -31,6 +31,7 @@
     ]
   },
   "flexzone_schema": {
+    "packing": "aligned",
     "fields": [
       {"name": "device_id",   "type": "uint16"},
       {"name": "sample_rate", "type": "uint32"},

@@ -242,3 +242,78 @@ TEST(SchemaValidationTest, ToFieldDescs_PreservesTypeCountLength)
     EXPECT_EQ(descs[2].type_str, "string");
     EXPECT_EQ(descs[2].length, 32u);
 }
+
+// ============================================================================
+// HEP-CORE-0034 §6.3 — packing is part of the fingerprint
+// ============================================================================
+
+TEST(SchemaValidationTest, ParseError_MissingPacking)
+{
+    // HEP-CORE-0034 §6.2 — packing is required, no silent default
+    json s;
+    s["fields"] = json::array({make_field("x", "int32")});
+    // packing intentionally absent
+    EXPECT_THROW(parse_schema_json(s), std::runtime_error);
+}
+
+TEST(SchemaValidationTest, FingerprintIncludesPacking_AlignedVsPackedDistinct)
+{
+    // Identical fields, different packing → MUST produce different fingerprints.
+    // This is the bug HEP-0034 Phase 1 corrects: pre-fix, both produced the
+    // same hash, conflating layouts that occupy different memory.
+    auto s_aligned = make_schema({make_field("flag", "bool"),
+                                  make_field("val", "int32")},
+                                 "aligned");
+    auto s_packed  = make_schema({make_field("flag", "bool"),
+                                  make_field("val", "int32")},
+                                 "packed");
+    auto spec_aligned = parse_schema_json(s_aligned);
+    auto spec_packed  = parse_schema_json(s_packed);
+
+    SchemaSpec empty;  // no flexzone
+    const auto h_aligned = compute_schema_hash(spec_aligned, empty);
+    const auto h_packed  = compute_schema_hash(spec_packed,  empty);
+
+    EXPECT_FALSE(h_aligned.empty());
+    EXPECT_FALSE(h_packed.empty());
+    EXPECT_NE(h_aligned, h_packed)
+        << "aligned vs packed schemas with identical fields must have different fingerprints "
+           "(HEP-CORE-0034 §6.3)";
+}
+
+TEST(SchemaValidationTest, FingerprintIncludesPacking_FlexzoneAlsoCovered)
+{
+    // Slot identical, flexzone packing differs → distinct fingerprints.
+    auto slot = make_schema({make_field("x", "int32")}, "aligned");
+    auto fz_a = make_schema({make_field("flag", "bool"),
+                             make_field("val", "int32")},
+                            "aligned");
+    auto fz_p = make_schema({make_field("flag", "bool"),
+                             make_field("val", "int32")},
+                            "packed");
+    auto slot_spec = parse_schema_json(slot);
+    auto fz_aligned_spec = parse_schema_json(fz_a);
+    auto fz_packed_spec  = parse_schema_json(fz_p);
+
+    const auto h_a = compute_schema_hash(slot_spec, fz_aligned_spec);
+    const auto h_p = compute_schema_hash(slot_spec, fz_packed_spec);
+    EXPECT_NE(h_a, h_p)
+        << "flexzone packing must affect the schema fingerprint (HEP-CORE-0034 §6.3)";
+}
+
+TEST(SchemaValidationTest, FingerprintIncludesPacking_MatchingPackingProducesSameHash)
+{
+    // Sanity: same fields + same packing → same hash (deterministic).
+    auto s1 = make_schema({make_field("x", "int32"),
+                           make_field("y", "float64")},
+                          "aligned");
+    auto s2 = make_schema({make_field("x", "int32"),
+                           make_field("y", "float64")},
+                          "aligned");
+    auto spec1 = parse_schema_json(s1);
+    auto spec2 = parse_schema_json(s2);
+
+    SchemaSpec empty;
+    EXPECT_EQ(compute_schema_hash(spec1, empty),
+              compute_schema_hash(spec2, empty));
+}

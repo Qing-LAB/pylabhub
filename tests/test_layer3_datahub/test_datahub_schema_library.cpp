@@ -100,6 +100,7 @@ static constexpr const char kTempRawJson[] = R"json({
   "version": 1,
   "description": "Raw temperature",
   "slot": {
+    "packing": "aligned",
     "fields": [
       {"name": "ts",    "type": "float64"},
       {"name": "value", "type": "float32"}
@@ -112,6 +113,7 @@ static constexpr const char kSamplesJson[] = R"json({
   "id":      "lab.sensors.samples",
   "version": 1,
   "slot": {
+    "packing": "aligned",
     "fields": [
       {"name": "ts",      "type": "float64"},
       {"name": "samples", "type": "float32", "count": 8}
@@ -124,12 +126,14 @@ static constexpr const char kWithFlexzoneJson[] = R"json({
   "id":      "lab.sensors.calibrated",
   "version": 2,
   "slot": {
+    "packing": "aligned",
     "fields": [
       {"name": "ts",    "type": "float64"},
       {"name": "value", "type": "float32"}
     ]
   },
   "flexzone": {
+    "packing": "aligned",
     "fields": [
       {"name": "cal_offset", "type": "float64"},
       {"name": "cal_scale",  "type": "float64"}
@@ -142,6 +146,7 @@ static constexpr const char kAllTypesJson[] = R"json({
   "id":      "test.all_types",
   "version": 1,
   "slot": {
+    "packing": "aligned",
     "fields": [
       {"name": "f32_field", "type": "float32"},
       {"name": "f64_field", "type": "float64"},
@@ -620,6 +625,7 @@ TEST_F(DatahubSchemaFileLoadTest, LoadFromDir_SingleFile)
         "id": "test.simple",
         "version": 1,
         "slot": {
+            "packing": "aligned",
             "fields": [
                 {"name": "value", "type": "float32"}
             ]
@@ -643,6 +649,7 @@ TEST_F(DatahubSchemaFileLoadTest, LoadFromDir_NestedPath)
         "id": "lab.sensors.temperature.raw",
         "version": 1,
         "slot": {
+            "packing": "aligned",
             "fields": [
                 {"name": "ts", "type": "uint64"},
                 {"name": "temperature", "type": "float64"}
@@ -666,6 +673,7 @@ TEST_F(DatahubSchemaFileLoadTest, LoadFromDir_InvalidJson_Skipped)
         "id": "test.valid",
         "version": 1,
         "slot": {
+            "packing": "aligned",
             "fields": [{"name": "x", "type": "int32"}]
         }
     })";

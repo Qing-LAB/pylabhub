@@ -167,9 +167,25 @@ SchemaFieldDef parse_field(const json &j)
     return f;
 }
 
-SchemaLayoutDef parse_layout(const json &j)
+SchemaLayoutDef parse_layout(const json &j, const std::string &section_label)
 {
     SchemaLayoutDef layout;
+
+    // HEP-CORE-0034 §6.2 — `packing` MUST be declared explicitly per section.
+    // It is part of the schema fingerprint (§6.3); a missing field would
+    // silently default to one mode and collide with the other.
+    if (!j.contains("packing"))
+        throw std::runtime_error(
+            "Schema: '" + section_label +
+            ".packing' is required (HEP-CORE-0034 §6.2). Set "
+            "\"packing\": \"aligned\" or \"packing\": \"packed\".");
+    layout.packing = j.at("packing").get<std::string>();
+    if (layout.packing != "aligned" && layout.packing != "packed")
+        throw std::runtime_error(
+            "Schema: '" + section_label +
+            ".packing' must be \"aligned\" or \"packed\" (got \"" +
+            layout.packing + "\").");
+
     if (j.contains("fields"))
     {
         for (const auto &fj : j.at("fields"))
@@ -240,18 +256,21 @@ SchemaEntry entry_from_json(const json &j, const std::string &id_override)
     // Parse slot (required)
     if (!j.contains("slot"))
         throw std::runtime_error("Schema '" + e.schema_id + "': missing required \"slot\" block");
-    e.slot = parse_layout(j.at("slot"));
+    e.slot = parse_layout(j.at("slot"), e.schema_id + ".slot");
 
     // Parse flexzone (optional)
     if (j.contains("flexzone"))
-        e.flexzone = parse_layout(j.at("flexzone"));
+        e.flexzone = parse_layout(j.at("flexzone"), e.schema_id + ".flexzone");
 
-    // Compute slot SchemaInfo
-    e.slot_info      = SchemaLibrary::compute_layout_info(e.slot.fields, e.schema_id + ".slot");
+    // Compute slot SchemaInfo (packing folded into fingerprint per HEP-CORE-0034 §6.3)
+    e.slot_info     = SchemaLibrary::compute_layout_info(
+        e.slot.fields, e.slot.packing, e.schema_id + ".slot");
 
-    // Compute flexzone SchemaInfo (even if empty — results in zero hash + zero size)
-    e.flexzone_info  = SchemaLibrary::compute_layout_info(e.flexzone.fields,
-                                                          e.schema_id + ".flexzone");
+    // Compute flexzone SchemaInfo (even if empty — results in zero hash + zero size).
+    // When flexzone is absent, the SchemaLayoutDef default packing="aligned" is fine
+    // because compute_layout_info early-returns on empty fields.
+    e.flexzone_info = SchemaLibrary::compute_layout_info(
+        e.flexzone.fields, e.flexzone.packing, e.schema_id + ".flexzone");
 
     return e;
 }
@@ -292,12 +311,14 @@ std::string SchemaLibrary::hash_to_hex(const std::array<uint8_t, 32> &h)
 }
 
 SchemaInfo SchemaLibrary::compute_layout_info(const std::vector<SchemaFieldDef> &fields,
-                                              const std::string                  &name)
+                                              const std::string                 &packing,
+                                              const std::string                 &name)
 {
     SchemaInfo info;
     info.name        = name;
     info.struct_size = fields_to_struct_size(fields);
     info.blds        = fields_to_blds(fields);
+    info.packing     = packing;  // HEP-CORE-0034 §6.3 — packing in fingerprint
 
     if (!info.blds.empty())
         info.compute_hash();
