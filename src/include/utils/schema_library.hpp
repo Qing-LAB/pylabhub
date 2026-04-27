@@ -158,18 +158,21 @@ public:
     // ── Utilities ─────────────────────────────────────────────────────────────
 
     /**
-     * @brief Compute the SchemaInfo (BLDS, hash, struct_size) for a field list.
+     * @brief Compute the SchemaInfo (BLDS, hash, struct_size, packing) for a field list.
      *
      * Public for testing and for C++ producers that want to validate a
      * compile-time struct against a named schema without loading a file.
      *
-     * @param fields   Parsed field list (from a SchemaLayoutDef).
-     * @param name     Logical name stored in SchemaInfo::name (informational only).
-     * @return SchemaInfo with blds, hash, and struct_size populated.
+     * @param fields    Parsed field list (from a SchemaLayoutDef).
+     * @param packing   "aligned" or "packed" (HEP-CORE-0034 §6.2).  Folded into
+     *                  the fingerprint canonical form (§6.3).
+     * @param name      Logical name stored in SchemaInfo::name (informational only).
+     * @return SchemaInfo with blds, hash, struct_size, and packing populated.
      * @throws std::invalid_argument if any field has an unknown type string.
      */
     static SchemaInfo compute_layout_info(const std::vector<SchemaFieldDef> &fields,
-                                          const std::string                  &name = {});
+                                          const std::string                 &packing = "aligned",
+                                          const std::string                 &name    = {});
 
     /**
      * @brief Return the default search directories for the current environment.

@@ -29,6 +29,7 @@ static constexpr const char kTempRawJson[] = R"json({
   "id":      "lab.sensors.temperature.raw",
   "version": 1,
   "slot": {
+    "packing": "aligned",
     "fields": [
       {"name": "ts",    "type": "float64"},
       {"name": "value", "type": "float32"}
@@ -40,6 +41,7 @@ static constexpr const char kSamplesJson[] = R"json({
   "id":      "lab.sensors.samples",
   "version": 1,
   "slot": {
+    "packing": "aligned",
     "fields": [
       {"name": "ts",      "type": "float64"},
       {"name": "samples", "type": "float32", "count": 8}

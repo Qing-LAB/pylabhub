@@ -26,6 +26,7 @@
   },
   "flexzone_schema": {
     "_comment": "Must match the producer's flexzone_schema.",
+    "packing": "aligned",
     "fields": [
       {"name": "producer_pid",  "type": "uint64"},
       {"name": "start_time",    "type": "float64"},

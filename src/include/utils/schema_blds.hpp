@@ -194,25 +194,39 @@ struct SchemaVersion
 
 /**
  * @brief Complete schema information for a DataBlock structure.
+ *
+ * `packing` is part of the fingerprint (HEP-CORE-0034 §6.3): two SchemaInfos
+ * with identical BLDS but different packing have different hashes.  C++
+ * template producers populate `packing` from `SchemaRegistry<T>::packing`
+ * (set by `PYLABHUB_SCHEMA_BEGIN` / `PYLABHUB_SCHEMA_BEGIN_PACKED`); the
+ * file loader populates it from the JSON `slot.packing` / `flexzone.packing`
+ * fields.
  */
 struct SchemaInfo
 {
     std::string name;                       ///< Schema name (e.g., "SensorHub.SensorData")
     std::string blds;                       ///< BLDS string representation
-    std::array<uint8_t, 32> hash{};         ///< BLAKE2b-256 hash of BLDS (zero-init)
+    std::array<uint8_t, 32> hash{};         ///< BLAKE2b-256 hash of canonical(BLDS, packing)
     SchemaVersion version;                  ///< Semantic version
     size_t struct_size = 0;                 ///< sizeof(T) for validation
+    std::string packing{"aligned"};         ///< "aligned" | "packed" (HEP-CORE-0034 §6.3)
 
     /**
-     * @brief Computes the BLAKE2b-256 hash of the canonical BLDS string.
-     * @details The hash is derived purely from the BLDS string (field-name:type pairs,
-     *          optionally with @offset:size for layout validation). No RTTI or typeid()
-     *          is used — the hash is deterministic and platform-independent.
+     * @brief Computes the BLAKE2b-256 hash of the canonical schema string.
+     * @details Canonical form is `blds + "|pack:" + packing`.  Hash is
+     *          deterministic and platform-independent.  Two schemas with
+     *          identical BLDS but different packing produce different hashes
+     *          (HEP-CORE-0034 Phase 1 fingerprint correction).
      *          Uses libsodium via crypto_utils module.
      */
     void compute_hash()
     {
-        hash = pylabhub::crypto::compute_blake2b_array(blds.data(), blds.size());
+        std::string canonical;
+        canonical.reserve(blds.size() + 16);
+        canonical.append(blds);
+        canonical.append("|pack:");
+        canonical.append(packing);
+        hash = pylabhub::crypto::compute_blake2b_array(canonical.data(), canonical.size());
     }
 
     /**
@@ -350,7 +364,11 @@ inline constexpr bool has_schema_registry_v = has_schema_registry<T>::value;
 
 /**
  * @def PYLABHUB_SCHEMA_BEGIN(StructName)
- * @brief Begins schema registration for a struct.
+ * @brief Begins schema registration for a natural-aligned struct.
+ *
+ * Produces `SchemaRegistry<StructName>::packing == "aligned"`.  Use this
+ * for plain C++ structs that follow natural alignment — the default for
+ * almost every producer.
  *
  * @example
  * PYLABHUB_SCHEMA_BEGIN(SensorData)
@@ -358,13 +376,54 @@ inline constexpr bool has_schema_registry_v = has_schema_registry<T>::value;
  *     PYLABHUB_SCHEMA_MEMBER(temperature)
  *     PYLABHUB_SCHEMA_MEMBER(pressure)
  * PYLABHUB_SCHEMA_END(SensorData)
+ *
+ * @see PYLABHUB_SCHEMA_BEGIN_PACKED — for `#pragma pack(1)` / `__attribute__((packed))` structs
  */
 #define PYLABHUB_SCHEMA_BEGIN(StructName)                                                          \
+    PYLABHUB_SCHEMA_BEGIN_IMPL_(StructName, "aligned")
+
+/**
+ * @def PYLABHUB_SCHEMA_BEGIN_PACKED(StructName)
+ * @brief Begins schema registration for a `_pack_=1` (packed) struct.
+ *
+ * Produces `SchemaRegistry<StructName>::packing == "packed"`.  Use this
+ * only when the struct itself is declared packed via
+ * `#pragma pack(push, 1) ... #pragma pack(pop)` or
+ * `__attribute__((packed))`.  The wire fingerprint includes `packing`
+ * (HEP-CORE-0034 §6.3), so a packed C++ producer is wire-compatible only
+ * with consumers that explicitly declare `"packing": "packed"` in JSON.
+ *
+ * @note A `static_assert` in `PYLABHUB_SCHEMA_END` verifies that
+ *       `sizeof(StructName)` matches the size computed under the declared
+ *       packing.  If the assertion fires, either the `_PACKED` macro was
+ *       used on a non-packed struct, or the regular macro was used on a
+ *       packed struct — fix the macro to match the struct declaration.
+ *
+ * @example
+ * #pragma pack(push, 1)
+ * struct WireFrame {
+ *     double  ts;
+ *     uint8_t flags;
+ *     int32_t value;
+ * };
+ * #pragma pack(pop)
+ *
+ * PYLABHUB_SCHEMA_BEGIN_PACKED(WireFrame)
+ *     PYLABHUB_SCHEMA_MEMBER(ts)
+ *     PYLABHUB_SCHEMA_MEMBER(flags)
+ *     PYLABHUB_SCHEMA_MEMBER(value)
+ * PYLABHUB_SCHEMA_END(WireFrame)
+ */
+#define PYLABHUB_SCHEMA_BEGIN_PACKED(StructName)                                                   \
+    PYLABHUB_SCHEMA_BEGIN_IMPL_(StructName, "packed")
+
+#define PYLABHUB_SCHEMA_BEGIN_IMPL_(StructName, PackingStr)                                        \
     namespace pylabhub::schema                                                                     \
     {                                                                                              \
     template <> struct SchemaRegistry<StructName>                                                  \
     {                                                                                              \
         using StructType = StructName;                                                             \
+        static constexpr const char *packing = PackingStr;                                         \
         static std::string generate_blds()                                                         \
         {                                                                                          \
             BLDSBuilder builder;
@@ -418,7 +477,11 @@ SchemaInfo generate_schema_info(const std::string &name, const SchemaVersion &ve
     // Generate BLDS string using SchemaRegistry specialization
     info.blds = SchemaRegistry<T>::generate_blds();
 
-    // Compute BLAKE2b-256 hash
+    // Pull declared packing from the macro-generated specialization
+    // (HEP-CORE-0034 §6.3 — packing is part of the fingerprint).
+    info.packing = SchemaRegistry<T>::packing;
+
+    // Compute BLAKE2b-256 hash over canonical(BLDS, packing)
     info.compute_hash();
 
     return info;
