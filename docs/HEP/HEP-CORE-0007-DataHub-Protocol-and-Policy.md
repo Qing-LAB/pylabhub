@@ -900,21 +900,30 @@ Payload (DEREG_REQ):
   producer_pid          uint64
 ```
 
-#### SCHEMA_REQ / SCHEMA_ACK — Query Channel Schema
+#### SCHEMA_REQ / SCHEMA_ACK — Fetch Schema Record (HEP-CORE-0034 §10.3)
 
 ```
 Direction:  Any → Broker → Any
-Trigger:    Messenger::query_channel_schema() or SchemaStore::query_from_broker()
+Trigger:    Any participant fetching a schema record by owner+id
+            (e.g. consumer pre-flight before CONSUMER_REG_REQ).
 
 Payload (SCHEMA_REQ):
-  channel_name          string
+  owner                 string   "hub" or producer/inbox-receiver uid
+  schema_id             string   "frame", "lab.sensors.x@1", "inbox", ...
 
 Payload (SCHEMA_ACK):
-  status                string   "success"
-  schema_id             string   Named schema ID (empty if anonymous)
-  blds                  string   BLDS type string (empty if not provided)
-  schema_hash           string   64-char hex hash
+  status                string   "success" | error reason
+  owner                 string   echo
+  schema_id             string   echo
+  schema_hash           string   64-char hex hash (BLAKE2b-256(canonical || packing))
+  packing               string   "aligned" | "packed"
+  blds                  string   canonical BLDS for ctypes reconstruction
 ```
+
+The HEP-0016-era channel-keyed lookup (`SCHEMA_REQ { channel_name }`) is
+replaced by owner+id keying. To find which schema a channel uses, callers
+read `ChannelEntry.{schema_owner, schema_id}` from the channel-listing RPC,
+then issue `SCHEMA_REQ` on the result.
 
 #### METRICS_REQ / METRICS_ACK — Query Metrics (HEP-CORE-0019)
 

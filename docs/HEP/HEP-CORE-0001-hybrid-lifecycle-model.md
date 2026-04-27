@@ -164,33 +164,28 @@ flowchart BT
     Logger["Logger"]
     FileLock["FileLock"]
     Crypto["Crypto"]
-    SchemaStore["SchemaStore"]
 
     FileLock -.->|depends on| Logger
-    SchemaStore -.->|depends on| Logger
 
     subgraph Binaries["Binary entry points"]
         direction LR
-        HubShell["hubshell.cpp"]
-        ProdMain["producer_main.cpp"]
-        ConsMain["consumer_main.cpp"]
-        ProcMain["processor_main.cpp"]
+        PlhRole["plh_role"]
+        PlhHub["plh_hub (HEP-0033)"]
     end
 
-    HubShell -->|LifecycleGuard| Logger
-    HubShell -->|LifecycleGuard| FileLock
-    HubShell -->|LifecycleGuard| Crypto
-    ProdMain -->|LifecycleGuard| Logger
-    ProdMain -->|LifecycleGuard| Crypto
-    ConsMain -->|LifecycleGuard| Logger
-    ConsMain -->|LifecycleGuard| Crypto
-    ProcMain -->|LifecycleGuard| Logger
-    ProcMain -->|LifecycleGuard| Crypto
+    PlhHub  -->|LifecycleGuard| Logger
+    PlhHub  -->|LifecycleGuard| FileLock
+    PlhHub  -->|LifecycleGuard| Crypto
+    PlhRole -->|LifecycleGuard| Logger
+    PlhRole -->|LifecycleGuard| Crypto
 ```
 
 Each binary constructs a `LifecycleGuard` with its required `ModuleDef` set.
-The topological sort ensures Logger starts before FileLock and SchemaStore (which depend on it).
-Crypto has no dependencies and can start in any position.
+The topological sort ensures Logger starts before FileLock (which depends on it).
+Crypto has no dependencies and can start in any position. Schema records are
+not a lifecycle module — they live in `HubState.schemas` and are mutated only
+via the broker (HEP-CORE-0034 §11; supersedes the HEP-0016-era `SchemaStore`
+singleton, which is removed by HEP-0034 Phase 4).
 
 ### StartupLogFileSink — early log sink switching
 
@@ -472,7 +467,7 @@ int main() {
 ## Testing implications
 
 Lifecycle modules (`Logger`, `FileLock`, `JsonConfig`, `CryptoUtils`, `ZMQContext`,
-`HubConfig`, `SchemaStore`, hub `DataBlock`) are process-global singletons owned
+`HubConfig`, hub `DataBlock`) are process-global singletons owned
 by a single `LifecycleManager`. The design choices in this HEP constrain how
 tests can exercise any code that touches a lifecycle-backed module.
 

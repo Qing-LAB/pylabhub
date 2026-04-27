@@ -8,7 +8,7 @@
 | **Created**   | 2026-03-01                                                                      |
 | **Updated**   | 2026-03-01 (actor eliminated; producer/consumer binaries added); 2026-04-21 (binary unification — `pylabhub-producer/consumer/processor` retired in favor of unified `plh_role`) |
 | **Area**      | Framework Architecture (`pylabhub-utils`, `pylabhub-scripting`, `plh_role` unified binary) |
-| **Depends on**| HEP-CORE-0002 (DataHub), HEP-CORE-0007 (Protocol), HEP-CORE-0011 (ScriptHost), HEP-CORE-0016 (Schema Registry), HEP-CORE-0024 (Role Directory Service — binary unification) |
+| **Depends on**| HEP-CORE-0002 (DataHub), HEP-CORE-0007 (Protocol), HEP-CORE-0011 (ScriptHost), HEP-CORE-0034 (Schema Registry — supersedes HEP-CORE-0016), HEP-CORE-0024 (Role Directory Service — binary unification) |
 
 > **Naming note (2026-04-21)**: Topology diagrams and prose below use the
 > historical binary names `pylabhub-producer` / `pylabhub-consumer` /
@@ -391,37 +391,45 @@ When constructing a pipeline, each channel endpoint declares its expected slot l
 This layout drives:
 
 1. **C++ struct size** passed as `item_size` to `ShmQueue::from_consumer/producer()`
-2. **BLDS string** registered with the broker in `REG_REQ` (unnamed schema)
-3. **Schema ID** optionally referenced in `ProducerOptions::schema_id` (named schema, HEP-CORE-0016)
+2. **BLDS string + packing** registered with the broker in `REG_REQ`
+   (HEP-CORE-0034 §10.1; fingerprint = BLAKE2b-256 over canonical fields + packing)
+3. **Schema record key** `(schema_owner, schema_id)` carried in `REG_REQ`
+   (HEP-CORE-0034 §4) — owner is `hub` for adoption of a hub-global, or self
+   for a producer registering its own private schema
 
-Schema validation occurs at the control-plane level (broker checks producer/consumer
-BLDS hash match) before the data plane is even established. By the time
-`read_acquire()` returns the first slot, the schema contract has already been verified.
+Schema validation occurs at the control-plane level (broker checks fingerprint
+match against the cited schema record) before the data plane is even established.
+By the time `read_acquire()` returns the first slot, the schema contract has
+already been verified.
 
-### 5.2 Named vs Unnamed Schemas
+### 5.2 Schema Ownership and Citation (HEP-CORE-0034)
 
-| Schema type | Identity | Config syntax | Broker behavior |
-|-------------|----------|---------------|-----------------|
-| **Unnamed** | BLAKE2b-256 hash of BLDS string | Inline field list in `slot_schema` | Stores hash; attempts reverse lookup against schema library |
-| **Named** | Human-readable ID (`lab.sensors.temperature.raw@1`) | `schema_id: "lab.sensors.temperature.raw@1"` | Resolves ID → hash; stores both |
+Every schema in flight is owned by exactly one party — either a registered
+producer (private schema) or the hub itself (`<hub_dir>/schemas/` global).
+Records are keyed `(owner_uid, schema_id)`; two producers may both register a
+private schema named `frame` without colliding (HEP-CORE-0034 §8 namespace-by-owner).
 
-The **checksum is always the wire primitive** — the broker always verifies the BLDS
-hash match. The name is an alias that makes mismatches human-readable and enables
-discoverability via `SCHEMA_REQ`.
+| Citation path | Wire payload | Authority check |
+|---|---|---|
+| **Path A — cite by id** | `schema_owner` + `schema_id` + expected hash | Hub looks up record; owner must equal channel authority |
+| **Path B — register-and-cite** (producer only) | `schema_owner=self` + `schema_id` + BLDS + hash + packing | Hub creates record under producer ownership |
+| **Path C — adopt hub global** (producer only) | `schema_owner="hub"` + `schema_id` | Hub validates global exists with matching fingerprint |
 
-See HEP-CORE-0016 for the full Named Schema Registry specification.
+Cross-citation (citing a third role's schema while connecting to a different
+producer) is rejected even when fingerprints match — see HEP-CORE-0034 §9.1.
 
 ### 5.3 C++ Type ↔ Schema Linkage
 
 In C++ code, struct registration via `PYLABHUB_SCHEMA_BEGIN/MEMBER/END` macros
-produces a `SchemaInfo` that contains both the BLDS string and its hash. This
-hash is passed directly in `ProducerOptions::schema_blds_hash` — the struct IS
+produces a `SchemaInfo` that contains the BLDS string, packing, and the
+fingerprint hash (BLAKE2b-256 over canonical fields + packing per HEP-0034
+§6.3). The hash is passed in `ProducerOptions::schema_hash` — the struct IS
 the schema at compile time. No runtime JSON parsing is involved.
 
-For scripted roles (Python), the schema library provides runtime ctypes generation
-from the named schema JSON. The ctypes layout must match the BLDS string exactly
-(alignment, field order, types). See HEP-CORE-0016 §6 for the ctypes generation
-rules.
+For scripted roles (Python), `SchemaLibrary` (HEP-CORE-0034 §4 — stateless
+file loader) reads named schema JSON and produces records that match the
+runtime ctypes layout exactly (alignment determined by the explicit `packing`
+field, no longer inferred). See HEP-CORE-0034 §6 for the JSON file format.
 
 ---
 
@@ -617,7 +625,7 @@ component additions:
 | Channel identity and UID provenance | HEP-CORE-0013 |
 | Producer and Consumer standalone binaries | HEP-CORE-0018 |
 | Processor standalone binary | HEP-CORE-0015 |
-| Named schema ID format, library, registry | HEP-CORE-0016 |
+| Schema records, ownership, citation rules | HEP-CORE-0034 (supersedes HEP-CORE-0016) |
 
 ---
 
@@ -639,8 +647,8 @@ This is an architecture overview document. The source files that implement each 
 | **pylabhub-producer** | `src/producer/producer_main.cpp`, `src/producer/producer_script_host.cpp` |
 | **pylabhub-consumer** | `src/consumer/consumer_main.cpp`, `src/consumer/consumer_script_host.cpp` |
 | **pylabhub-processor** | `src/processor/processor_main.cpp`, `src/processor/processor_script_host.cpp` |
-| **SchemaLibrary** | `src/include/utils/schema_library.hpp`, `src/utils/schema/schema_library.cpp` |
-| **SchemaStore** | `src/include/utils/schema_registry.hpp`, `src/utils/schema/schema_registry.cpp` |
+| **SchemaLibrary** | `src/include/utils/schema_library.hpp`, `src/utils/schema/schema_library.cpp` (stateless file loader; HEP-0034 §4) |
+| **HubState.schemas** | `src/include/utils/hub_state.hpp` — authoritative runtime registry, replacing the HEP-0016-era `SchemaStore` lifecycle singleton (removed by HEP-0034 Phase 4) |
 | **LoopPolicy** | `src/include/plh_datahub.hpp` (DataBlock timing) |
 
 ---
@@ -651,13 +659,13 @@ This is an architecture overview document. The source files that implement each 
 
 This document captures architectural decisions made during the Queue Abstraction and
 Processor design phase (2026-03-01). All components described here are implemented:
-four standalone binaries, hub::Queue abstraction, hub::Processor transform layer,
-Named Schema Registry, and the four-plane architecture. 750/750 tests passing.
+unified `plh_role` binary (HEP-CORE-0024), hub::Queue abstraction, hub::Processor
+transform layer, Schema Registry (HEP-CORE-0034), and the five-plane architecture.
 
 **Resolved topics:**
-- HEP-CORE-0018: `pylabhub-producer` and `pylabhub-consumer` — Phase 1 + Layer 4 tests
-- HEP-CORE-0015: Phase 1+2 — dual-broker config, hub::Processor delegation
-- HEP-CORE-0016: Named Schema Registry — all 5 phases complete
+- HEP-CORE-0018: producer + consumer binaries — superseded by HEP-CORE-0024 unification
+- HEP-CORE-0015: processor binary — superseded by HEP-CORE-0024 unification
+- HEP-CORE-0016: Named Schema Registry — superseded by HEP-CORE-0034 (owner-authoritative model, 2026-04-26)
 
 **Pending extension:**
 - HEP-CORE-0019: Metrics Plane — fifth plane (implemented 2026-03-05; 19 tests)

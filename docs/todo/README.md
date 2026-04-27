@@ -48,7 +48,7 @@ Design decisions, cross-references, etc.
 - **`PLATFORM_TODO.md`** 🟢 — Clang-tidy pass, Windows MSVC CI gaps (backlog only)
 
 ### Supporting Systems
-- **`MESSAGEHUB_TODO.md`** 🟢 — Broker feature backlog, schema registry deferred
+- **`MESSAGEHUB_TODO.md`** 🟢 — Broker feature backlog. Schema registry: HEP-CORE-0034 ratified 2026-04-26; six implementation phases pending — see `TODO_MASTER.md` §Priority 2.
 
 ### Archived TODO Documents
 The following TODO files have been archived to `docs/archive/transient-2026-03-02/` because

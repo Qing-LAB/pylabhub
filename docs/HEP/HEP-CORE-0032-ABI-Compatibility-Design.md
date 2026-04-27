@@ -171,8 +171,7 @@ Internal classes that only tests access directly:
 |-------|---------------------|
 | `RoleHostCore` | L2 unit tests construct it directly for metrics/shutdown testing. |
 | `NativeEngine` | L2 engine tests instantiate it directly. |
-| `SchemaLibrary` | L3 schema tests. |
-| `SchemaStore` | L3 schema tests. |
+| `SchemaLibrary` | L3 schema tests (stateless file loader; HEP-0034 §4). |
 | `ContextMetrics` | L2/L3 queue metric tests. |
 | `SlotWriteHandle` | L3 DataBlock tests. |
 | `SlotConsumeHandle` | L3 DataBlock tests. |
