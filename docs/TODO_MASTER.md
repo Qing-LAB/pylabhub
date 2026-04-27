@@ -75,7 +75,14 @@ as single mutator" doc ratified), `139b4ca` (HEP-0033 G1 `RoleHostBase` →
   refcount), cross-citation rejected even on hash match,
   fingerprint includes packing. HEP-0016 marked Superseded. HEP-0033 §7/§8/§9.4/§14
   cross-referenced. HEP-0024 §3.1/§3.5 updated for role-side `schemas/` cache.
-  Six implementation phases pending (see §Priority 2).
+
+**HEP-0034 Phase 1 landed 2026-04-27 (commit `d60ddf2`):**
+- Fingerprint correction (`compute_schema_hash` and `SchemaInfo::compute_hash`
+  now include packing); `parse_schema_json` mandates explicit packing;
+  `PYLABHUB_SCHEMA_BEGIN_PACKED` macro added for opt-in packed C++ structs;
+  share/ JSON configs + role `--init` templates emit explicit packing.
+  +4 tests covering aligned-vs-packed-distinct fingerprints. 1602/1602.
+- Five implementation phases remain (see §Priority 2).
 
 ### Priority 0 (Next Sprint — design ratified 2026-04-21): HEP-CORE-0033 Hub Character
 
@@ -389,12 +396,12 @@ HEP-0016 historical phases (all shipped, retained context):
 - [x] Phase 4: `SchemaStore` lifecycle singleton (**to be removed in HEP-0034 Phase 4** — file watcher + broker query fallback no longer fit hub-mutator model)
 - [x] Phase 5: Script integration — named schema strings in config resolve via `SchemaLibrary`
 
-HEP-0034 implementation phases (open — sequenced, none started):
-- [ ] Phase 1: Fingerprint correction — include `packing` in `compute_schema_hash`; reject schemas without explicit packing; collision tests. Wire-incompatible with pre-Phase-1 binaries (pre-1.0, no migration burden).
+HEP-0034 implementation phases:
+- [x] Phase 1 (2026-04-27, commit `d60ddf2`): Fingerprint correction — `compute_schema_hash` and `SchemaInfo::compute_hash` include packing; `parse_schema_json` rejects missing packing; `PYLABHUB_SCHEMA_BEGIN_PACKED` macro added; share/ JSONs + role init templates updated to declare packing explicitly. +4 tests (`ParseError_MissingPacking`, `FingerprintIncludesPacking_*`). 1602/1602.
 - [ ] Phase 2: `HubState` schema records — `SchemaRecord` + `schemas` map + `ChannelEntry.{schema_owner, schema_id}`; capability ops `_on_schema_registered` / `_on_schemas_evicted_for_owner` / `_validate_schema_citation`; `_on_role_deregistered` cascade for producers.
-- [ ] Phase 3: Wire protocol + broker dispatch — extend `REG_REQ` / `CONSUMER_REG_REQ` / `PROC_REG_REQ` with schema_owner/id/hash/packing; `SCHEMA_REG_NACK` reasons; generalised `SCHEMA_REQ`/`SCHEMA_ACK` (owner+id keying).
+- [ ] Phase 3: Wire protocol + broker dispatch — extend `REG_REQ` / `CONSUMER_REG_REQ` / `PROC_REG_REQ` with schema_owner/id/hash/packing; `SCHEMA_REG_NACK` reasons; generalised `SCHEMA_REQ`/`SCHEMA_ACK` (owner+id keying); inbox path-A integration.
 - [ ] Phase 4: `SchemaLibrary` refactor — drop lifecycle module + file watcher; library becomes stateless file loader returning records; hub startup walks `<hub_dir>/schemas/` and registers globals.
-- [ ] Phase 5: Client-side citation API — `ProducerOptions::{schema_owner, schema_id}`, `ConsumerOptions::expected_*`; `create<F,D>()` issues `SCHEMA_REQ` for path C, sends BLDS for path B; `PYLABHUB_SCHEMA_BEGIN` packing argument.
+- [ ] Phase 5: Client-side citation API — `ProducerOptions::{schema_owner, schema_id}`, `ConsumerOptions::expected_*`; `create<F,D>()` issues `SCHEMA_REQ` for path C, sends BLDS for path B.
 - [ ] Phase 6: Docs sweep + HEP-0016 closure — code review of HEP-0034 implementation; verify cross-references consistent.
 
 ### Priority 3: Processor Binary Tests + Phase 2 (HEP-CORE-0015)
