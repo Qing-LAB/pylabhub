@@ -182,6 +182,31 @@ struct HubStateTestAccess
     {
         s._on_message_processed(msg_type, in, out);
     }
+
+    // ── Schema-registry forwarders (HEP-CORE-0034 §11) ──────────────────
+    static ::pylabhub::schema::SchemaRegOutcome
+    on_schema_registered(HubState &s, ::pylabhub::schema::SchemaRecord rec)
+    {
+        return s._on_schema_registered(std::move(rec));
+    }
+    static std::size_t on_schemas_evicted_for_owner(HubState          &s,
+                                                    const std::string &owner_uid)
+    {
+        return s._on_schemas_evicted_for_owner(owner_uid);
+    }
+    static ::pylabhub::schema::CitationOutcome validate_schema_citation(
+        HubState                       &s,
+        const std::string              &citer_uid,
+        const std::string              &channel_producer_uid,
+        const std::string              &cited_owner,
+        const std::string              &cited_id,
+        const std::array<uint8_t, 32>  &expected_hash,
+        const std::string              &expected_packing)
+    {
+        return s._validate_schema_citation(citer_uid, channel_producer_uid,
+                                           cited_owner, cited_id,
+                                           expected_hash, expected_packing);
+    }
 };
 
 } // namespace pylabhub::hub::test
@@ -200,7 +225,11 @@ using pylabhub::hub::PeerEntry;
 using pylabhub::hub::PeerState;
 using pylabhub::hub::RoleEntry;
 using pylabhub::hub::RoleState;
+using pylabhub::hub::SchemaKey;
 using pylabhub::hub::ShmBlockRef;
+using pylabhub::schema::CitationOutcome;
+using pylabhub::schema::SchemaRecord;
+using pylabhub::schema::SchemaRegOutcome;
 using pylabhub::hub::test::HubStateTestAccess;
 
 namespace
@@ -1274,4 +1303,321 @@ TEST(HubStateHeartbeatB1, HeartbeatRefreshesRoleLastHeartbeat)
     auto t_after = s.role("prod.main.test")->last_heartbeat;
     EXPECT_GE(t_after, t1)
         << "role.last_heartbeat should advance to at least the heartbeat timestamp";
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Schema-registry capability ops (HEP-CORE-0034 §11)
+// ────────────────────────────────────────────────────────────────────────────
+
+namespace
+{
+
+/// Build a SchemaRecord with deterministic content for a test.  Hash bytes
+/// derive from a single seed so two records produced with the same seed
+/// compare equal at the byte level.
+SchemaRecord make_schema_rec(std::string owner_uid, std::string schema_id,
+                             std::string packing = "aligned",
+                             uint8_t     seed    = 0x11)
+{
+    SchemaRecord rec;
+    rec.owner_uid = std::move(owner_uid);
+    rec.schema_id = std::move(schema_id);
+    rec.packing   = std::move(packing);
+    rec.blds      = "v:f64;count:u32";
+    rec.hash.fill(seed);
+    return rec;
+}
+
+} // namespace
+
+TEST(HubStateSchemas, OnSchemaRegistered_NewRecord_Created)
+{
+    HubState s;
+    auto rec = make_schema_rec("prod.cam.uid01234567", "frame");
+
+    auto out = HubStateTestAccess::on_schema_registered(s, rec);
+    EXPECT_EQ(out, SchemaRegOutcome::kCreated);
+
+    // Record visible via accessor.
+    auto fetched = s.schema("prod.cam.uid01234567", "frame");
+    ASSERT_TRUE(fetched.has_value());
+    EXPECT_EQ(fetched->owner_uid, "prod.cam.uid01234567");
+    EXPECT_EQ(fetched->schema_id, "frame");
+    EXPECT_EQ(fetched->packing,   "aligned");
+    EXPECT_EQ(fetched->hash,      rec.hash);
+
+    // schema_count + counter both reflect the insert.
+    EXPECT_EQ(s.schema_count(), 1u);
+    EXPECT_EQ(s.counters().schema_registered_total, 1u);
+    EXPECT_EQ(s.counters().schema_evicted_total,    0u);
+}
+
+TEST(HubStateSchemas, OnSchemaRegistered_SameRecord_Idempotent)
+{
+    HubState s;
+    auto rec = make_schema_rec("prod.cam.uid01234567", "frame");
+    HubStateTestAccess::on_schema_registered(s, rec);
+
+    // Second insert with identical hash + packing → idempotent, no extra
+    // counter bump, single record.
+    auto out2 = HubStateTestAccess::on_schema_registered(s, rec);
+    EXPECT_EQ(out2, SchemaRegOutcome::kIdempotent);
+    EXPECT_EQ(s.schema_count(), 1u);
+    EXPECT_EQ(s.counters().schema_registered_total, 1u)
+        << "idempotent re-registration must NOT bump the registered counter";
+}
+
+TEST(HubStateSchemas, OnSchemaRegistered_DifferentHash_RejectedAsHashMismatchSelf)
+{
+    HubState s;
+    auto rec  = make_schema_rec("prod.cam.uid01234567", "frame", "aligned", 0xAA);
+    auto rec2 = make_schema_rec("prod.cam.uid01234567", "frame", "aligned", 0xBB);
+
+    HubStateTestAccess::on_schema_registered(s, rec);
+    auto out = HubStateTestAccess::on_schema_registered(s, rec2);
+    EXPECT_EQ(out, SchemaRegOutcome::kHashMismatchSelf);
+
+    // Original record preserved; counter unchanged.
+    auto fetched = s.schema("prod.cam.uid01234567", "frame");
+    ASSERT_TRUE(fetched.has_value());
+    EXPECT_EQ(fetched->hash, rec.hash);
+    EXPECT_EQ(s.counters().schema_registered_total, 1u);
+}
+
+TEST(HubStateSchemas, OnSchemaRegistered_DifferentPacking_RejectedAsHashMismatchSelf)
+{
+    HubState s;
+    auto rec_a = make_schema_rec("prod.cam.uid01234567", "frame", "aligned", 0x11);
+    auto rec_p = make_schema_rec("prod.cam.uid01234567", "frame", "packed",  0x11);
+    // Same hash bytes (seed 0x11) but different packing → still rejected,
+    // because in real wire flow the hash WOULD differ; this test pins the
+    // store-level invariant that packing is part of the equality check
+    // even when the hash bytes happen to coincide.
+    HubStateTestAccess::on_schema_registered(s, rec_a);
+    auto out = HubStateTestAccess::on_schema_registered(s, rec_p);
+    EXPECT_EQ(out, SchemaRegOutcome::kHashMismatchSelf);
+}
+
+TEST(HubStateSchemas, ConflictPolicy_NamespaceByOwner_TwoRolesSameId)
+{
+    HubState s;
+    // Two different producers register `frame` with different hashes.
+    // HEP-CORE-0034 §8 — namespace-by-owner; both records exist
+    // independently, no collision.
+    auto rec_a = make_schema_rec("prod.cam_a.uid00000001", "frame", "aligned", 0xAA);
+    auto rec_b = make_schema_rec("prod.cam_b.uid00000002", "frame", "aligned", 0xBB);
+
+    EXPECT_EQ(HubStateTestAccess::on_schema_registered(s, rec_a),
+              SchemaRegOutcome::kCreated);
+    EXPECT_EQ(HubStateTestAccess::on_schema_registered(s, rec_b),
+              SchemaRegOutcome::kCreated);
+
+    EXPECT_EQ(s.schema_count(), 2u);
+    EXPECT_TRUE(s.schema("prod.cam_a.uid00000001", "frame").has_value());
+    EXPECT_TRUE(s.schema("prod.cam_b.uid00000002", "frame").has_value());
+    EXPECT_EQ(s.counters().schema_registered_total, 2u);
+}
+
+TEST(HubStateSchemas, OnSchemaRegistered_EmptyOwnerOrId_ForbiddenOwner)
+{
+    HubState s;
+    // Empty owner: rejected.
+    EXPECT_EQ(HubStateTestAccess::on_schema_registered(
+                  s, make_schema_rec("", "frame")),
+              SchemaRegOutcome::kForbiddenOwner);
+    // Empty id: rejected.
+    EXPECT_EQ(HubStateTestAccess::on_schema_registered(
+                  s, make_schema_rec("prod.x.uid00000001", "")),
+              SchemaRegOutcome::kForbiddenOwner);
+    // Empty packing: rejected (packing is part of the fingerprint).
+    EXPECT_EQ(HubStateTestAccess::on_schema_registered(
+                  s, make_schema_rec("prod.x.uid00000001", "frame", "")),
+              SchemaRegOutcome::kForbiddenOwner);
+    EXPECT_EQ(s.schema_count(), 0u);
+}
+
+TEST(HubStateSchemas, OnSchemasEvictedForOwner_RemovesAllOwnerRecords)
+{
+    HubState s;
+    // One owner with two records, one other-owner record that must NOT
+    // be evicted.
+    HubStateTestAccess::on_schema_registered(
+        s, make_schema_rec("prod.cam.uid01234567", "frame_v1", "aligned", 0xAA));
+    HubStateTestAccess::on_schema_registered(
+        s, make_schema_rec("prod.cam.uid01234567", "frame_v2", "aligned", 0xBB));
+    HubStateTestAccess::on_schema_registered(
+        s, make_schema_rec("prod.other.uid89abcdef", "frame", "aligned", 0xCC));
+    ASSERT_EQ(s.schema_count(), 3u);
+
+    auto removed = HubStateTestAccess::on_schemas_evicted_for_owner(
+        s, "prod.cam.uid01234567");
+    EXPECT_EQ(removed, 2u);
+    EXPECT_EQ(s.schema_count(), 1u);
+    EXPECT_TRUE(s.schema("prod.other.uid89abcdef", "frame").has_value());
+    EXPECT_FALSE(s.schema("prod.cam.uid01234567", "frame_v1").has_value());
+    EXPECT_FALSE(s.schema("prod.cam.uid01234567", "frame_v2").has_value());
+
+    EXPECT_EQ(s.counters().schema_evicted_total, 2u);
+}
+
+TEST(HubStateSchemas, OnSchemasEvictedForOwner_HubGlobalNeverEvicted)
+{
+    HubState s;
+    HubStateTestAccess::on_schema_registered(
+        s, make_schema_rec("hub", "lab.demo.frame@1"));
+
+    auto removed = HubStateTestAccess::on_schemas_evicted_for_owner(s, "hub");
+    EXPECT_EQ(removed, 0u);
+    EXPECT_EQ(s.schema_count(), 1u);
+    EXPECT_TRUE(s.schema("hub", "lab.demo.frame@1").has_value());
+}
+
+TEST(HubStateSchemas, RoleDisconnect_CascadeEvictsOwnedSchemas)
+{
+    // HEP-CORE-0034 §7.2 — schemas evict atomically with role state
+    // transition to Disconnected.  Producer's role record is registered;
+    // its schemas are too; on _set_role_disconnected the schemas vanish.
+    HubState s;
+
+    HubStateTestAccess::set_role_registered(s, make_role("prod.cam.uid01234567"));
+    HubStateTestAccess::on_schema_registered(
+        s, make_schema_rec("prod.cam.uid01234567", "frame", "aligned", 0xAA));
+    HubStateTestAccess::on_schema_registered(
+        s, make_schema_rec("prod.cam.uid01234567", "inbox", "aligned", 0xBB));
+    HubStateTestAccess::on_schema_registered(
+        s, make_schema_rec("hub", "lab.demo.frame@1"));
+    ASSERT_EQ(s.schema_count(), 3u);
+
+    HubStateTestAccess::set_role_disconnected(s, "prod.cam.uid01234567");
+
+    EXPECT_EQ(s.schema_count(), 1u) << "hub-global must survive";
+    EXPECT_TRUE(s.schema("hub", "lab.demo.frame@1").has_value());
+    EXPECT_FALSE(s.schema("prod.cam.uid01234567", "frame").has_value());
+    EXPECT_FALSE(s.schema("prod.cam.uid01234567", "inbox").has_value());
+
+    // The cascade went through _set_role_disconnected, which adds 2 to
+    // schema_evicted_total (one per record removed).
+    EXPECT_EQ(s.counters().schema_evicted_total, 2u);
+}
+
+TEST(HubStateSchemas, ValidateCitation_SelfOwnedRecord_Ok)
+{
+    HubState s;
+    const std::string prod_uid = "prod.cam.uid01234567";
+    HubStateTestAccess::set_role_registered(s, make_role(prod_uid));
+    auto rec = make_schema_rec(prod_uid, "frame", "aligned", 0x11);
+    HubStateTestAccess::on_schema_registered(s, rec);
+
+    auto out = HubStateTestAccess::validate_schema_citation(
+        s, /*citer_uid=*/"cons.viewer.uid00000005",
+        /*channel_producer_uid=*/prod_uid,
+        /*cited_owner=*/prod_uid,
+        /*cited_id=*/"frame",
+        /*expected_hash=*/rec.hash,
+        /*expected_packing=*/"aligned");
+    EXPECT_TRUE(out.ok()) << "self-owned-record citation should validate; reason=" << out.detail;
+    EXPECT_EQ(s.counters().schema_citation_rejected_total, 0u);
+}
+
+TEST(HubStateSchemas, ValidateCitation_HubGlobal_Ok)
+{
+    HubState s;
+    auto rec = make_schema_rec("hub", "lab.demo.frame@1", "aligned", 0x33);
+    HubStateTestAccess::on_schema_registered(s, rec);
+
+    auto out = HubStateTestAccess::validate_schema_citation(
+        s, /*citer_uid=*/"prod.cam.uid01234567",
+        /*channel_producer_uid=*/"prod.cam.uid01234567",
+        /*cited_owner=*/"hub",
+        /*cited_id=*/"lab.demo.frame@1",
+        /*expected_hash=*/rec.hash,
+        /*expected_packing=*/"aligned");
+    EXPECT_TRUE(out.ok()) << "hub-global citation should validate";
+    EXPECT_EQ(s.counters().schema_citation_rejected_total, 0u);
+}
+
+TEST(HubStateSchemas, ValidateCitation_CrossCitation_Rejected)
+{
+    // Consumer connects to producer A but cites producer B's schema.
+    // HEP-CORE-0034 §9.1 — rejected even if hashes match.
+    HubState s;
+    const std::string prod_a = "prod.cam_a.uid00000001";
+    const std::string prod_b = "prod.cam_b.uid00000002";
+
+    HubStateTestAccess::set_role_registered(s, make_role(prod_a));
+    HubStateTestAccess::set_role_registered(s, make_role(prod_b));
+
+    auto rec_a = make_schema_rec(prod_a, "frame", "aligned", 0x11);
+    auto rec_b = make_schema_rec(prod_b, "frame", "aligned", 0x11);  // same hash bytes
+    HubStateTestAccess::on_schema_registered(s, rec_a);
+    HubStateTestAccess::on_schema_registered(s, rec_b);
+
+    auto out = HubStateTestAccess::validate_schema_citation(
+        s, /*citer_uid=*/"cons.viewer.uid00000005",
+        /*channel_producer_uid=*/prod_a,           // connecting to A
+        /*cited_owner=*/prod_b,                    // citing B → rejected
+        /*cited_id=*/"frame",
+        /*expected_hash=*/rec_b.hash,              // even though hashes match!
+        /*expected_packing=*/"aligned");
+    EXPECT_FALSE(out.ok());
+    EXPECT_EQ(out.reason, CitationOutcome::Reason::kCrossCitation);
+    EXPECT_EQ(s.counters().schema_citation_rejected_total, 1u);
+}
+
+TEST(HubStateSchemas, ValidateCitation_FingerprintMismatch_Rejected)
+{
+    HubState s;
+    const std::string prod_uid = "prod.cam.uid01234567";
+    HubStateTestAccess::set_role_registered(s, make_role(prod_uid));
+
+    auto rec = make_schema_rec(prod_uid, "frame", "aligned", 0x11);
+    HubStateTestAccess::on_schema_registered(s, rec);
+
+    // Hash mismatch:
+    std::array<uint8_t, 32> wrong_hash;
+    wrong_hash.fill(0x99);
+    auto out_h = HubStateTestAccess::validate_schema_citation(
+        s, "cons.viewer.uid00000005", prod_uid, prod_uid, "frame",
+        wrong_hash, "aligned");
+    EXPECT_FALSE(out_h.ok());
+    EXPECT_EQ(out_h.reason, CitationOutcome::Reason::kFingerprintMismatch);
+
+    // Packing mismatch:
+    auto out_p = HubStateTestAccess::validate_schema_citation(
+        s, "cons.viewer.uid00000005", prod_uid, prod_uid, "frame",
+        rec.hash, "packed");
+    EXPECT_FALSE(out_p.ok());
+    EXPECT_EQ(out_p.reason, CitationOutcome::Reason::kFingerprintMismatch);
+
+    EXPECT_EQ(s.counters().schema_citation_rejected_total, 2u);
+}
+
+TEST(HubStateSchemas, ValidateCitation_UnknownSchema_Rejected)
+{
+    HubState s;
+    const std::string prod_uid = "prod.cam.uid01234567";
+    HubStateTestAccess::set_role_registered(s, make_role(prod_uid));
+    // No schema registered.
+
+    std::array<uint8_t, 32> any_hash{};
+    auto out = HubStateTestAccess::validate_schema_citation(
+        s, "cons.viewer.uid00000005", prod_uid, prod_uid, "frame",
+        any_hash, "aligned");
+    EXPECT_FALSE(out.ok());
+    EXPECT_EQ(out.reason, CitationOutcome::Reason::kUnknownSchema);
+    EXPECT_EQ(s.counters().schema_citation_rejected_total, 1u);
+}
+
+TEST(HubStateSchemas, ValidateCitation_UnknownOwner_Rejected)
+{
+    HubState s;
+    // No role registered; cited owner is neither hub nor a registered role.
+    const std::string ghost = "prod.ghost.uid00000099";
+    std::array<uint8_t, 32> any_hash{};
+    auto out = HubStateTestAccess::validate_schema_citation(
+        s, "cons.viewer.uid00000005", ghost, ghost, "frame",
+        any_hash, "aligned");
+    EXPECT_FALSE(out.ok());
+    EXPECT_EQ(out.reason, CitationOutcome::Reason::kUnknownOwner);
+    EXPECT_EQ(s.counters().schema_citation_rejected_total, 1u);
 }
