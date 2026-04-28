@@ -400,4 +400,8 @@ elif ack == 255:
   schema registry as `(receiver_uid, "inbox")` records. Receiver-as-authority model
   (this HEP §4.1 step 7-8) maps directly onto HEP-0034 ownership rules; existing wire
   fields (`inbox_endpoint`, `inbox_schema_json`, `inbox_packing`, `inbox_checksum`) are
-  retained, with broker-side storage unified into `HubState.schemas`.
+  retained, with broker-side storage unified into `HubState.schemas`. The broker
+  computes the SchemaRecord fingerprint using the same canonical bytes as
+  `compute_inbox_schema_tag` so `SchemaRecord.hash[0..7] == wire schema_tag`. Inbox
+  records cascade-evict via `_on_channel_closed` when the producer's data channel
+  closes (DEREG_REQ or heartbeat timeout) — see HEP-0034 §7.2.

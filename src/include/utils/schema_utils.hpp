@@ -165,16 +165,33 @@ inline SchemaSpec resolve_schema(const nlohmann::json &schema_json, bool use_fle
 //
 // Canonical form (HEP-CORE-0034 §6.3):
 //
-//   slot:<fields>|pack:<packing>[|fz:<fields>|fzpack:<packing>]
+//   slot:<canonical_fields>|pack:<packing>
+//   [|fz:<canonical_fields>|fzpack:<packing>]
 //
-// `packing` is appended for each present section so two layouts with
-// identical fields and different packing produce different hashes.
+// where canonical_fields = "name:type:count:length" joined with "|"
+//
+// The "|pack:..." suffix is appended for each present section so two
+// layouts with identical fields and different packing produce different
+// fingerprints (Phase 1 correction).
+//
+// Wire-format invariant (HEP-0034 §10.1):
+//
+//   The wire field `schema_blds` is precisely the `canonical_fields`
+//   string for the slot (no "slot:" prefix, no "|pack:..." suffix).  The
+//   wire field `flexzone_blds` is the same form for the flexzone.
+//   Packing is sent as a separate `schema_packing` / `flexzone_packing`
+//   field.  This split lets the broker recompute the full canonical
+//   bytes deterministically and verify the producer's claimed hash —
+//   `compute_canonical_hash_from_wire()` below is the verification path.
 
-inline void append_schema_canonical(std::string &out, const std::string &prefix,
-                                    const SchemaSpec &spec)
+/// Build the slot's `canonical_fields` portion of the canonical bytes
+/// (HEP-CORE-0034 §6.3 / §10.1).  Public so producer-side code can
+/// populate the wire `schema_blds` field with the exact bytes the
+/// broker will hash.
+inline std::string canonical_fields_str(const SchemaSpec &spec)
 {
-    out += prefix;
-    bool first = true;
+    std::string out;
+    bool        first = true;
     for (const auto &f : spec.fields)
     {
         if (!first) out += '|';
@@ -184,6 +201,14 @@ inline void append_schema_canonical(std::string &out, const std::string &prefix,
         out += std::to_string(f.count);  out += ':';
         out += std::to_string(f.length);
     }
+    return out;
+}
+
+inline void append_schema_canonical(std::string &out, const std::string &prefix,
+                                    const SchemaSpec &spec)
+{
+    out += prefix;
+    out += canonical_fields_str(spec);
 }
 
 inline std::string compute_schema_hash(const SchemaSpec &slot_spec, const SchemaSpec &fz_spec)
@@ -209,6 +234,40 @@ inline std::string compute_schema_hash(const SchemaSpec &slot_spec, const Schema
     const auto hash = pylabhub::crypto::compute_blake2b_array(
         canonical.data(), canonical.size());
     return std::string(reinterpret_cast<const char *>(hash.data()), hash.size());
+}
+
+/// Reconstruct the canonical bytes from the wire fields and hash.
+///
+/// The producer sends `schema_blds` = `canonical_fields_str(slot_spec)`
+/// and `schema_packing` (and optionally `flexzone_blds` /
+/// `flexzone_packing`).  The broker calls this helper to recompute the
+/// 32-byte fingerprint and compare against the producer's claimed
+/// `schema_hash`.  Identical algorithm to `compute_schema_hash` above
+/// — just operating on already-canonical wire strings instead of
+/// SchemaSpec inputs.
+inline std::array<uint8_t, 32>
+compute_canonical_hash_from_wire(const std::string &slot_blds,
+                                 const std::string &slot_packing,
+                                 const std::string &fz_blds   = {},
+                                 const std::string &fz_packing = {})
+{
+    std::string canonical;
+    canonical.reserve(slot_blds.size() + fz_blds.size() + 64);
+    if (!slot_blds.empty())
+    {
+        canonical += "slot:";
+        canonical += slot_blds;
+        canonical += "|pack:";
+        canonical += slot_packing;
+    }
+    if (!fz_blds.empty())
+    {
+        canonical += slot_blds.empty() ? "fz:" : "|fz:";
+        canonical += fz_blds;
+        canonical += slot_blds.empty() ? "|pack:" : "|fzpack:";
+        canonical += fz_packing;
+    }
+    return pylabhub::crypto::compute_blake2b_array(canonical.data(), canonical.size());
 }
 
 // ── Schema size computation ──────────────────────────────────────────────────

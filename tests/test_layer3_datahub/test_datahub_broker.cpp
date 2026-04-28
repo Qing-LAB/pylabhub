@@ -164,3 +164,57 @@ TEST_F(DatahubBrokerTest, Sch_InboxInvalidPacking)
     auto proc = SpawnWorker("broker.broker_sch_inbox_invalid_packing", {});
     ExpectWorkerOk(proc);
 }
+
+// ── Phase 3 follow-up — Stage-2 verification + tightened gates ─────────────
+
+TEST_F(DatahubBrokerTest, Sch_RegMissingPacking)
+{
+    // REG_REQ with schema_id but no schema_packing → MISSING_PACKING.
+    auto proc = SpawnWorker("broker.broker_sch_reg_missing_packing", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerTest, Sch_RegFingerprintInconsistent)
+{
+    // Producer claims a hash that doesn't match its BLDS+packing →
+    // FINGERPRINT_INCONSISTENT (Stage-2 verification).
+    auto proc = SpawnWorker("broker.broker_sch_reg_fingerprint_inconsistent", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerTest, Sch_ConsumerNamed_MissingHash)
+{
+    // expected_schema_id without expected_schema_hash → NACK.
+    auto proc = SpawnWorker("broker.broker_sch_cons_named_missing_hash", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerTest, Sch_ConsumerAnonymous_HappyPath)
+{
+    // Consumer in anonymous mode (full structure, no id) succeeds.
+    auto proc = SpawnWorker("broker.broker_sch_cons_anonymous_happy_path", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerTest, Sch_ConsumerAnonymous_MissingPacking)
+{
+    // Anonymous mode requires both blds and packing.
+    auto proc = SpawnWorker("broker.broker_sch_cons_anonymous_missing_packing", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerTest, Sch_ConsumerNamed_WithStructureMismatch)
+{
+    // Defense-in-depth: named citation + structure that doesn't hash
+    // to the channel's hash → FINGERPRINT_INCONSISTENT.
+    auto proc = SpawnWorker("broker.broker_sch_cons_named_with_structure_mismatch", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerTest, Sch_InboxEvictsOnDisconnect)
+{
+    // Audit-found gap: producer's (uid, "inbox") record evicts on
+    // channel close (DEREG_REQ → `_on_channel_closed` cascade).
+    auto proc = SpawnWorker("broker.broker_sch_inbox_evicts_on_disconnect", {});
+    ExpectWorkerOk(proc);
+}

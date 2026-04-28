@@ -77,4 +77,35 @@ int broker_sch_schema_req_invalid();
  *  → INVALID_INBOX_PACKING. */
 int broker_sch_inbox_invalid_packing();
 
+// ── HEP-0034 Phase 3 follow-up — Stage-2 verification + tightened gates ────
+
+/** REG_REQ with schema_id but missing schema_packing → MISSING_PACKING. */
+int broker_sch_reg_missing_packing();
+
+/** REG_REQ with schema_id but schema_blds doesn't hash to schema_hash
+ *  → FINGERPRINT_INCONSISTENT (Stage-2). */
+int broker_sch_reg_fingerprint_inconsistent();
+
+/** CONSUMER_REG_REQ with expected_schema_id but no expected_schema_hash
+ *  → MISSING_HASH_FOR_NAMED_CITATION. */
+int broker_sch_cons_named_missing_hash();
+
+/** CONSUMER_REG_REQ anonymous mode (no id) with full structure +
+ *  matching hash → success.  Pins the new anonymous-citation path. */
+int broker_sch_cons_anonymous_happy_path();
+
+/** CONSUMER_REG_REQ anonymous: blds present but packing missing →
+ *  MISSING_PACKING_FOR_ANONYMOUS_CITATION. */
+int broker_sch_cons_anonymous_missing_packing();
+
+/** CONSUMER_REG_REQ named-mode WITH consumer-supplied structure that
+ *  doesn't hash to the channel's hash → FINGERPRINT_INCONSISTENT
+ *  (defense-in-depth catches consumer-local blds drift). */
+int broker_sch_cons_named_with_structure_mismatch();
+
+/** Producer with inbox metadata; on role disconnect (heartbeat
+ *  timeout), the (uid, "inbox") schema record evicts atomically.
+ *  Audit-found gap. */
+int broker_sch_inbox_evicts_on_disconnect();
+
 } // namespace pylabhub::tests::worker::broker
