@@ -265,6 +265,18 @@ void ProducerRoleHost::worker_main_()
             ctrl_cfg.producer_reg_opts["data_transport"]    = "zmq";
             ctrl_cfg.producer_reg_opts["zmq_node_endpoint"] = tr.zmq_endpoint;
         }
+
+        // HEP-CORE-0034 §10.1 — schema fields (Phase 5a wire population).
+        // The producer's slot/flexzone SchemaSpecs were resolved at Step 1
+        // above; here we serialize them onto the wire so the broker can
+        // run Stage-2 fingerprint verification (broker_service.cpp's
+        // FINGERPRINT_INCONSISTENT gate).  Backward compat: roles with
+        // no slot/flexzone schema produce empty fields → broker takes
+        // the legacy/anonymous path.
+        const auto wire_schema = hub::make_wire_schema_fields(
+            pf.out_slot_schema_json, out_slot_spec_, core_.out_fz_spec());
+        hub::apply_producer_schema_fields(ctrl_cfg.producer_reg_opts, wire_schema);
+
         if (inbox_cfg_.has_inbox())
             ctrl_cfg.inbox = inbox_cfg_;
 

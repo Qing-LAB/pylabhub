@@ -245,6 +245,18 @@ void ConsumerRoleHost::worker_main_()
         ctrl_cfg.consumer_reg_opts["consumer_name"] = id.name;
         ctrl_cfg.consumer_reg_opts["consumer_pid"]  = pylabhub::platform::get_pid();
 
+        // HEP-CORE-0034 §10.3 — citation fields (Phase 5a wire population).
+        // Mode (named vs anonymous) is decided by what the config
+        // produced: the JSON schema-id form yields named-mode citation,
+        // an inline schema yields anonymous-mode.  All-empty (no
+        // in_slot_schema in config) → no validation (legacy compat).
+        // Broker enforces the mode rules; we just paste whichever
+        // fields make_wire_schema_fields populated.
+        const auto &cf_for_wire = config_.role_data<consumer::ConsumerFields>();
+        const auto wire_schema = hub::make_wire_schema_fields(
+            cf_for_wire.in_slot_schema_json, in_slot_spec_, core_.in_fz_spec());
+        hub::apply_consumer_schema_fields(ctrl_cfg.consumer_reg_opts, wire_schema);
+
         if (inbox_cfg_.has_inbox())
             ctrl_cfg.inbox = inbox_cfg_;
 
