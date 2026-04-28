@@ -837,12 +837,43 @@ INVALID_REQUEST, inbox invalid packing.
 
 ### Phase 4 — `SchemaLibrary` refactor
 
-- Remove `SchemaRegistry` lifecycle module + file watcher (HEP-0016 Phase 4).
-- `SchemaLibrary` becomes a stateless file loader returning `SchemaRecord`
-  values. No singleton, no broker query.
-- Hub-side: hub startup walks `<hub_dir>/schemas/` and calls
-  `_on_schema_registered({owner: "hub", ...})` for each file.
-- Tests: hub startup loads all globals; malformed file fails startup with path.
+Sliced into two sub-phases for review manageability:
+
+**Phase 4a** (commit `4b83636`, 2026-04-28) — ✅ shipped:
+- Deleted `SchemaStore` lifecycle module (`schema_registry.hpp` /
+  `.cpp`) and its lifecycle-singleton tests.  External references
+  consolidated to `schema_record.hpp` + `schema_utils.hpp`.
+- `SchemaLibrary` was already stateless (no lifecycle module wrapping
+  it after HEP-0024); no further refactor needed at the library layer.
+- Added `to_hub_schema_record(SchemaEntry)` bridge helper that
+  produces a `SchemaRecord` keyed under `(owner_uid="hub", schema_id)`,
+  computing the wire-form canonical hash via
+  `compute_canonical_hash_from_wire(canonical_fields_str(slot_spec),
+  ...)`.  Critical: this is NOT the same hash as
+  `SchemaEntry::slot_info.hash` — the SHM-header hash uses the
+  HEP-0002 BLDS format (`name:tok[count];...`) while the wire/registry
+  hash uses the HEP-0034 canonical form (`name:type:count:length|...`).
+  Consumer citations against `(hub, id)` recompute the wire form, so
+  the stored record must use that form.
+- Folded in a Phase 3 follow-up bug fix surfaced while writing the
+  helper: broker REG_REQ Stage-2 verification was passing only
+  `slot_blds` + `slot_packing` to `compute_canonical_hash_from_wire`,
+  so any producer with a flexzone would NACK
+  `FINGERPRINT_INCONSISTENT`.  Broker now reads `flexzone_blds` +
+  `flexzone_packing` from the wire and includes them in the
+  recomputation.  +2 tests (`WireForm_HashMatchesSchemaSpecHash`,
+  `WireForm_FlexzoneIncluded`).
+
+**Phase 4b** — pending `plh_hub` binary (HEP-CORE-0033 Phase 6+):
+- Hub startup walks `<hub_dir>/schemas/*.json`, runs each file through
+  `SchemaLibrary::load_from_file`, then `to_hub_schema_record` to
+  produce the canonical form, then `_on_schema_registered({owner:
+  "hub", ...})` to insert into `HubState.schemas`.
+- Malformed file or duplicate `(hub, id)` → fail startup with the
+  offending path in the diagnostic.
+- Tests: hub startup loads all globals (round-trip via SCHEMA_REQ);
+  malformed file fails startup with path; duplicate id fails with
+  both paths in the diagnostic.
 
 ### Phase 5 — Client-side citation API
 
