@@ -722,6 +722,22 @@ void HubState::_on_channel_closed(const std::string &name, ChannelCloseReason wh
         bump_invalid_identifier(*pImpl);
         return;
     }
+
+    // HEP-CORE-0034 §7.2 — capture the channel's producer uid BEFORE
+    // erasing the channel, then cascade-evict the producer's schema
+    // records once channel state is gone.  In the user's deployment
+    // model (1 role ↔ 1 data channel, HEP-0034 §11.4) channel closure
+    // is equivalent to the producer leaving the network, so its
+    // private schema records lose their authority and must be removed
+    // before any later citer can observe a stale entry.  Hub-globals
+    // (owner=="hub") are immune.
+    std::string producer_uid;
+    {
+        std::shared_lock rlk(pImpl->mu);
+        auto it = pImpl->channels.find(name);
+        if (it != pImpl->channels.end()) producer_uid = it->second.producer_role_uid;
+    }
+
     _set_channel_closed(name);
     // Remove channel from each role's channels list (so a dropped channel
     // no longer appears under roles[*].channels).
@@ -735,6 +751,11 @@ void HubState::_on_channel_closed(const std::string &name, ChannelCloseReason wh
         pImpl->shm_blocks.erase(name);
     }
     _bump_counter(std::string("close:") + to_string(why));
+
+    // Cascade schema eviction — outside any lock held above
+    // (`_on_schemas_evicted_for_owner` takes its own writer lock).
+    if (!producer_uid.empty())
+        _on_schemas_evicted_for_owner(producer_uid);
 }
 
 void HubState::_on_consumer_joined(const std::string &channel, ConsumerEntry consumer)

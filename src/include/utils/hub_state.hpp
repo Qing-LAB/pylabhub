@@ -4,24 +4,22 @@
  * @brief HubState — read-mostly aggregate of the hub's authoritative state.
  *
  * HEP-CORE-0033 §8; ratified in docs/tech_draft/HUB_CHARACTER_PREREQUISITES.md
- * §G2 ("broker as single mutator" model).
+ * §G2 ("broker as single mutator" model).  HEP-CORE-0034 adds the
+ * owner-keyed schema registry (`schemas` map).
  *
- * Phase G2.1 (skeleton, this commit)
- * ----------------------------------
- * The class, its entry types, and its event subscription API compile and link
- * but are NOT yet wired into BrokerService. Mutators exist as `friend`-access
- * private methods; they update the private maps and fire subscribed handlers,
- * but broker handlers still write into their own private maps. G2.2 flips
- * that around: BrokerService's private maps become `HubState&`, and each
- * broker inbound handler calls a HubState mutator instead of mutating
- * ad-hoc.
+ * Status: G2.2 absorption complete; HEP-0034 Phase 2-3 wired through.
+ * BrokerService calls `_on_*` capability ops directly from its REG_REQ
+ * / CONSUMER_REG_REQ / DISC_REQ / heartbeat handlers; there are no
+ * remaining broker-side maps that duplicate HubState.  Schema records
+ * are populated by REG_REQ and cascade-evicted when the owning role
+ * transitions to Disconnected (HEP-CORE-0034 §7.2).
  *
  * Ownership
  * ---------
  * HubHost owns the single HubState. BrokerService holds a `HubState&`
- * (plumbed during G2.2) and is the only caller of the private `_set_*`
- * mutators — enforced by `friend class broker::BrokerService`. Scripts
- * and admin reach state via HubAPI / AdminService, which hold:
+ * and is the only caller of the private `_set_*` and `_on_*` mutators
+ * — enforced by `friend class broker::BrokerService`.  Scripts and
+ * admin reach state via HubAPI / AdminService, which hold:
  *   - `const HubState&` for reads (via public snapshot accessors), and
  *   - `BrokerService&` for mutations (which re-enter HubState through
  *     the friend path after authorization).

@@ -413,62 +413,94 @@ working channel — it is not a **sufficient** condition for citation:
 
 ### 10.1 `REG_REQ` (producer → hub)
 
-Adds two optional fields:
+Schema fields:
 
 ```
-schema_owner : string   default = "" → interpreted as self (producer's uid)
-schema_id    : string   default = ""
-schema_hash  : bytes32  (existing field, semantics unchanged)
-schema_blds  : string   (existing — present for path B; empty for path C)
-schema_packing : string  default = "aligned"  (NEW — needed for fingerprint)
+schema_id      : string   ""  = anonymous; non-empty triggers path B / C
+schema_hash    : hex(32)  required when schema_id is non-empty
+schema_blds    : string   required when schema_id is non-empty
+                          (canonical wire form — see below)
+schema_packing : string   required when schema_id is non-empty;
+                          one of "aligned" | "packed"
+schema_owner   : string   "" = self (path B) | "hub" (path C; Phase 4+)
 ```
+
+**Wire-form `schema_blds`** is the **canonical fields string** of the slot
+schema (HEP-CORE-0034 §6.3): `name:type:count:length` joined by `|`.
+Example: `ts:f64:1:0|value:f32:1:0`.  The broker recomputes
+`BLAKE2b-256(canonical(blds, packing))` and verifies it equals
+`schema_hash` (Stage-2 fingerprint check) — a mismatch returns
+`FINGERPRINT_INCONSISTENT`.
 
 Path resolution:
-- `schema_owner=""` and `schema_id=""` → no schema record created (anonymous channel,
-  legacy mode; deprecated, kept for one release cycle for migration ease).
-- `schema_owner=""` and `schema_id="X"` → path B. Owner becomes self.
-- `schema_owner="hub"` and `schema_id="X"` → path C. Hub validates global exists.
-- `schema_owner=<other producer>` → **Rejected**. Producers cannot register against
-  another producer's namespace.
+- `schema_id=""` → anonymous channel; the channel's `schema_hash` /
+  `schema_blds` / `schema_packing` are stored at the channel level only.
+  No SchemaRecord is created.
+- `schema_id="X"`, `schema_owner=""` → **path B**. Owner becomes the
+  producer's role uid; Stage-2 hash verification is enforced.
+- `schema_owner="hub"` and `schema_id="X"` → **path C** (Phase 4+).
+  Hub validates that `(hub, X)` exists with matching fingerprint.
+- `schema_owner=<other producer>` → **Rejected** with
+  `SCHEMA_FORBIDDEN_OWNER`. Producers cannot register against another
+  producer's namespace.
 
 ### 10.2 `CONSUMER_REG_REQ` and `PROC_REG_REQ`
 
-Add `schema_owner` + `schema_id` + `schema_hash` + `schema_packing`. Hub runs
-§9.1 validation. No `schema_blds` — consumers and processors do not register
-schemas.
+Two citation modes per HEP-CORE-0034 §10.3:
+
+| Mode | Wire fields | Semantics |
+|---|---|---|
+| **Named** | `expected_schema_id` + `expected_schema_hash` (required); `expected_blds` + `expected_packing` (optional) | Citer asserts knowledge of the schema by name. Broker checks id and hash match the channel's stored values. If the citer also supplies the structure, the broker verifies it hashes to the channel's hash (defense-in-depth — catches consumer-local blds drift). |
+| **Anonymous** | `expected_blds` + `expected_packing` (required); `expected_schema_hash` (optional) | Citer has no name claim. Must supply the full structure; broker recomputes the fingerprint and compares to the channel's hash. If `expected_schema_hash` is present, the broker also verifies the citer's claimed hash equals the recomputed one (Stage-2 self-consistency). |
+| **Empty** | none of the above | No validation; backward-compat path for legacy clients. |
+
+A request with `expected_schema_id` but no `expected_schema_hash` is
+rejected with `MISSING_HASH_FOR_NAMED_CITATION`.  A request with no
+`expected_schema_id` and no full structure is rejected with
+`MISSING_BLDS_FOR_ANONYMOUS_CITATION` /
+`MISSING_PACKING_FOR_ANONYMOUS_CITATION`.
 
 ### 10.3 `SCHEMA_REQ` / `SCHEMA_ACK`
 
-Generalised from HEP-0016's channel-keyed lookup to owner+id keyed lookup:
+Owner+id keying:
 
 ```
 SCHEMA_REQ  { owner: string, schema_id: string }
 SCHEMA_ACK  { owner: string, schema_id: string,
-              hash: bytes32, packing: string, blds: string }
+              schema_hash: hex(32), packing: string, blds: string }
 ```
 
-Allows any participant (post-handshake) to fetch a record by owner+id. The
-HEP-0016-era "what schema does channel X carry?" query is replaced by reading
-`ChannelEntry.{schema_owner, schema_id}` from the existing channel listing
-RPC, then issuing `SCHEMA_REQ` on the result.
+Allows any participant (post-handshake) to fetch a record by owner+id.
+Unknown record → `SCHEMA_UNKNOWN`.
 
-### 10.4 `SCHEMA_REG_NACK` reasons
+**Legacy form** (HEP-CORE-0016 era) is retained: `SCHEMA_REQ
+{ channel_name }` returns `{ channel_name, schema_id, schema_owner,
+schema_hash, blds }` — note the legacy form does **not** include the
+`packing` field (it was inferred from `aligned` pre-Phase-1).
+New clients should prefer the owner+id form.
 
-A new error class for schema-related registration failures. Reasons:
+### 10.4 Error codes
 
-| reason | Meaning |
-|---|---|
-| `cross_citation`        | cited owner is neither hub nor channel's producer |
-| `unknown_owner`         | cited owner uid not registered as a producer (and not `hub`) |
-| `unknown_schema`        | `(owner, id)` record does not exist |
-| `fingerprint_mismatch`  | record exists but hash or packing differs from cited |
-| `hash_mismatch_self`    | producer re-registers own id with different fingerprint |
-| `forbidden_owner`       | producer attempts to register under another producer's owner uid |
-| `missing_packing`       | REG_REQ omitted packing (now mandatory) |
-| `missing_blds`          | path B used but BLDS string not provided |
+All schema-related errors are emitted via the standard error envelope
+`{ status: "error", error_code: <code>, error_message: <detail> }`;
+they are **not** a separate wire frame.
 
-These are emitted via the standard `REG_NACK` envelope with a structured
-`reason` field; they are **not** a separate wire frame.
+| Code | Where | Meaning |
+|---|---|---|
+| `MISSING_PACKING`                          | REG_REQ                              | `schema_id` set but `schema_packing` missing |
+| `MISSING_BLDS`                             | REG_REQ / CONSUMER_REG_REQ           | `schema_id` set but `schema_blds` missing (REG); or partial structure on consumer named-citation defense-in-depth |
+| `MISSING_HASH`                             | REG_REQ                              | `schema_id` set but `schema_hash` missing |
+| `MISSING_ROLE_UID`                         | REG_REQ                              | `schema_id` set but no `role_uid` for owner attribution |
+| `FINGERPRINT_INCONSISTENT`                 | REG_REQ / CONSUMER_REG_REQ           | producer's claimed `schema_hash` does not equal `BLAKE2b(canonical(blds) || "\|pack:" + packing)`; or consumer-side equivalent |
+| `SCHEMA_HASH_MISMATCH_SELF`                | REG_REQ                              | producer re-registers own `(owner, id)` with different fingerprint |
+| `SCHEMA_FORBIDDEN_OWNER`                   | REG_REQ                              | producer attempts to register under another owner uid |
+| `SCHEMA_CITATION_REJECTED`                 | CONSUMER_REG_REQ                     | citation fails id-match, hash-match, or cross-citation rule |
+| `MISSING_HASH_FOR_NAMED_CITATION`          | CONSUMER_REG_REQ                     | named mode: `expected_schema_id` present but `expected_schema_hash` missing |
+| `MISSING_BLDS_FOR_ANONYMOUS_CITATION`      | CONSUMER_REG_REQ                     | anonymous mode: `expected_blds` missing |
+| `MISSING_PACKING_FOR_ANONYMOUS_CITATION`   | CONSUMER_REG_REQ                     | anonymous mode: `expected_packing` missing |
+| `SCHEMA_UNKNOWN`                           | SCHEMA_REQ                           | `(owner, id)` lookup found no record |
+| `INBOX_SCHEMA_INVALID`                     | REG_REQ                              | `inbox_schema_json` could not be parsed as a JSON array of fields |
+| `INVALID_INBOX_PACKING`                    | REG_REQ                              | `inbox_packing` is neither `"aligned"` nor `"packed"` |
 
 ---
 

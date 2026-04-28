@@ -16,6 +16,8 @@
 #include "plh_service.hpp"
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
+#include "utils/format_tools.hpp"
+#include "utils/schema_utils.hpp"  // compute_canonical_hash_from_wire (HEP-0034 §10.1)
 
 #include <atomic>
 #include <future>
@@ -143,6 +145,25 @@ json make_cons_opts(const std::string &channel, const std::string &consumer_uid)
     return opts;
 }
 
+/// Phase-3-follow-up helper: hex-encoded canonical hash matching the wire
+/// fingerprint that the broker recomputes (HEP-CORE-0034 §6.3 / §10.1).
+std::string canonical_hash_hex(const std::string &slot_blds,
+                               const std::string &slot_packing)
+{
+    const auto h = pylabhub::hub::compute_canonical_hash_from_wire(slot_blds, slot_packing);
+    return pylabhub::format_tools::bytes_to_hex(
+        {reinterpret_cast<const char *>(h.data()), h.size()});
+}
+
+/// Default minimal valid schema fields for tests that just want to
+/// register a named channel without caring about the specific layout.
+struct DefaultSchema
+{
+    std::string blds    = "ts:f64:1:0|value:f32:1:0";
+    std::string packing = "aligned";
+    std::string hash    = canonical_hash_hex("ts:f64:1:0|value:f32:1:0", "aligned");
+};
+
 } // anonymous namespace
 
 // ============================================================================
@@ -218,12 +239,18 @@ TEST_F(BrokerSchemaTest, SchemaId_StoredOnReg)
     const std::string channel   = pid_chan("schema.id.stored");
     const std::string uid       = "prod." + channel;
     const std::string schema_id = "$lab.test.sensor.v1";
+    const DefaultSchema sch;
 
     BrcHandle bh;
     bh.start(ep(), pk(), uid);
 
     auto opts = make_reg_opts(channel, uid);
-    opts["schema_id"] = schema_id;
+    // HEP-0034 §10.1 — named REG_REQ requires the full structure
+    // (id + hash + packing + blds).  Stage-2 broker verifies hash.
+    opts["schema_id"]      = schema_id;
+    opts["schema_hash"]    = sch.hash;
+    opts["schema_packing"] = sch.packing;
+    opts["schema_blds"]    = sch.blds;
     auto reg = bh.brc.register_channel(opts, 3000);
     ASSERT_TRUE(reg.has_value());
 
@@ -252,24 +279,29 @@ TEST_F(BrokerSchemaTest, ConsumerSchemaId_Match_Succeeds)
     const std::string schema_id = "$lab.consumer.test.v2";
     const std::string prod_uid  = "prod." + channel;
     const std::string cons_uid  = "cons." + channel;
+    const DefaultSchema sch;
 
     BrcHandle prod_bh;
     prod_bh.start(ep(), pk(), prod_uid);
 
     auto opts = make_reg_opts(channel, prod_uid);
-    opts["schema_id"] = schema_id;
+    opts["schema_id"]      = schema_id;
+    opts["schema_hash"]    = sch.hash;
+    opts["schema_packing"] = sch.packing;
+    opts["schema_blds"]    = sch.blds;
     auto reg = prod_bh.brc.register_channel(opts, 3000);
     ASSERT_TRUE(reg.has_value());
 
     // Heartbeat → Ready
     // CONSUMER_REG_REQ does not gate on Ready (HEP-CORE-0023 §2.2).
 
-    // Consumer with matching expected_schema_id
+    // Consumer named-citation per HEP-0034 §10.3 — id + matching hash.
     BrcHandle cons_bh;
     cons_bh.start(ep(), pk(), cons_uid);
 
     auto cons_opts = make_cons_opts(channel, cons_uid);
-    cons_opts["expected_schema_id"] = schema_id;
+    cons_opts["expected_schema_id"]   = schema_id;
+    cons_opts["expected_schema_hash"] = sch.hash;
     auto cons_reg = cons_bh.brc.register_consumer(cons_opts, 3000);
     EXPECT_TRUE(cons_reg.has_value()) << "Consumer should succeed when schema_id matches";
 
@@ -286,12 +318,16 @@ TEST_F(BrokerSchemaTest, ConsumerSchemaId_Mismatch_Fails)
     const std::string cons_sid = "$lab.other.schema.v1";
     const std::string prod_uid = "prod." + channel;
     const std::string cons_uid = "cons." + channel;
+    const DefaultSchema sch;
 
     BrcHandle prod_bh;
     prod_bh.start(ep(), pk(), prod_uid);
 
     auto opts = make_reg_opts(channel, prod_uid);
-    opts["schema_id"] = prod_sid;
+    opts["schema_id"]      = prod_sid;
+    opts["schema_hash"]    = sch.hash;
+    opts["schema_packing"] = sch.packing;
+    opts["schema_blds"]    = sch.blds;
     auto reg = prod_bh.brc.register_channel(opts, 3000);
     ASSERT_TRUE(reg.has_value());
 
@@ -301,7 +337,10 @@ TEST_F(BrokerSchemaTest, ConsumerSchemaId_Mismatch_Fails)
     cons_bh.start(ep(), pk(), cons_uid);
 
     auto cons_opts = make_cons_opts(channel, cons_uid);
-    cons_opts["expected_schema_id"] = cons_sid;
+    // Consumer cites a DIFFERENT schema_id than the channel's.  Under
+    // HEP-0034 §10.3 named-mode, this NACKs SCHEMA_ID_MISMATCH.
+    cons_opts["expected_schema_id"]   = cons_sid;
+    cons_opts["expected_schema_hash"] = sch.hash;
     auto cons_reg = cons_bh.brc.register_consumer(cons_opts, 3000);
     EXPECT_FALSE(cons_reg.has_value()) << "Consumer should fail on schema_id mismatch";
 
