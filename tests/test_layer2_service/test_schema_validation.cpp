@@ -8,6 +8,7 @@
 #include "utils/schema_utils.hpp"
 #include "utils/schema_field_layout.hpp"
 
+#include <cstring>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
@@ -316,4 +317,55 @@ TEST(SchemaValidationTest, FingerprintIncludesPacking_MatchingPackingProducesSam
     SchemaSpec empty;
     EXPECT_EQ(compute_schema_hash(spec1, empty),
               compute_schema_hash(spec2, empty));
+}
+
+// ============================================================================
+// HEP-CORE-0034 Phase 4a — wire-form / SchemaSpec hash equality
+// ============================================================================
+
+TEST(SchemaValidationTest, WireForm_HashMatchesSchemaSpecHash)
+{
+    // Pin: `compute_canonical_hash_from_wire(canonical_fields_str(spec),
+    // spec.packing)` produces the same 32 bytes as
+    // `compute_schema_hash(spec, empty_fz)`.  Without this invariant
+    // the broker's Stage-2 verification would always reject producer
+    // hashes (broker-2619b17 follow-up).
+    auto s = make_schema({make_field("ts", "float64"),
+                          make_field("v",  "float32")}, "aligned");
+    auto spec = parse_schema_json(s);
+
+    const auto from_spec = compute_schema_hash(spec, SchemaSpec{});
+    const auto from_wire = compute_canonical_hash_from_wire(
+        canonical_fields_str(spec), spec.packing);
+    EXPECT_EQ(from_spec.size(), from_wire.size());
+    EXPECT_EQ(0, std::memcmp(from_spec.data(), from_wire.data(),
+                              from_wire.size()));
+}
+
+TEST(SchemaValidationTest, WireForm_FlexzoneIncluded)
+{
+    // Pin: when the producer's REG_REQ has both slot AND flexzone,
+    // the broker MUST recompute over both — otherwise a producer
+    // with flexzone NACKs FINGERPRINT_INCONSISTENT (the bug fixed
+    // alongside Phase 4a).
+    auto slot = make_schema({make_field("x", "int32")}, "aligned");
+    auto fz   = make_schema({make_field("y", "float64")}, "aligned");
+    auto slot_spec = parse_schema_json(slot);
+    auto fz_spec   = parse_schema_json(fz);
+
+    const auto from_spec_slot_only =
+        compute_schema_hash(slot_spec, SchemaSpec{});
+    const auto from_spec_with_fz =
+        compute_schema_hash(slot_spec, fz_spec);
+    EXPECT_NE(from_spec_slot_only, from_spec_with_fz)
+        << "flexzone must be part of the slot+fz fingerprint";
+
+    // Wire form: pass slot + flexzone fields → must match
+    // compute_schema_hash(slot, fz).
+    const auto from_wire_with_fz = compute_canonical_hash_from_wire(
+        canonical_fields_str(slot_spec), slot_spec.packing,
+        canonical_fields_str(fz_spec),   fz_spec.packing);
+    EXPECT_EQ(0, std::memcmp(from_spec_with_fz.data(),
+                              from_wire_with_fz.data(),
+                              from_wire_with_fz.size()));
 }

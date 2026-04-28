@@ -95,9 +95,12 @@ set(UTILS_SOURCES
   hub/hub_zmq_queue.cpp
   hub/hub_inbox_queue.cpp
 
-  # --- schema: Named Schema Registry (HEP-CORE-0016) ---
+  # --- schema: HEP-CORE-0034 owner-authoritative schema registry ---
+  # SchemaLibrary is a stateless file loader for hub-globals + role-side
+  # caches; the authoritative runtime registry lives in HubState.schemas
+  # (broker-mutator pattern per HEP-CORE-0033 §G2).  The HEP-0016-era
+  # SchemaStore lifecycle singleton was removed in Phase 4a.
   schema/schema_library.cpp
-  schema/schema_registry.cpp
 
   # --- scripting: removed (ScriptHost/LuaScriptHost replaced by ScriptEngine in pylabhub-scripting) ---
 

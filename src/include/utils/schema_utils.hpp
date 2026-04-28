@@ -17,6 +17,7 @@
 #include "utils/hub_zmq_queue.hpp"
 #include "utils/schema_field_layout.hpp"
 #include "utils/schema_library.hpp"
+#include "utils/schema_record.hpp"  // SchemaRecord (HEP-CORE-0034)
 
 #include "utils/json_fwd.hpp"
 
@@ -268,6 +269,52 @@ compute_canonical_hash_from_wire(const std::string &slot_blds,
         canonical += fz_packing;
     }
     return pylabhub::crypto::compute_blake2b_array(canonical.data(), canonical.size());
+}
+
+// ── HEP-CORE-0034 §12 hub-global record helpers ─────────────────────────────
+//
+// `to_hub_schema_record(SchemaEntry)` is the bridge between the file-loader
+// (`SchemaLibrary`, which produces `SchemaEntry` from a JSON file) and the
+// owner-keyed registry (`HubState.schemas`, keyed by `(owner_uid, schema_id)`).
+//
+// Used by hub startup (Phase 4b — deferred until plh_hub binary lands) to
+// register globals via `_on_schema_registered({owner: "hub", id, hash, ...})`.
+// The hash is the WIRE-FORM fingerprint
+// (`compute_canonical_hash_from_wire`), NOT `SchemaEntry::slot_info.hash`
+// — those use different canonical forms (the SHM-header hash includes only
+// the slot's BLDS, while wire/registry hashes use canonical_fields_str).
+// Consumer citation against `(hub, id)` recomputes the wire hash, so the
+// stored record must use the same form.
+
+inline ::pylabhub::schema::SchemaRecord
+to_hub_schema_record(const ::pylabhub::schema::SchemaEntry &entry)
+{
+    ::pylabhub::schema::SchemaRecord rec;
+    rec.owner_uid = "hub";
+    rec.schema_id = entry.schema_id;
+
+    // SchemaEntry::slot is `SchemaLayoutDef` (uses "char" for char arrays);
+    // schema_entry_to_spec maps "char[N]" → string{length=N}.  This gives
+    // us a SchemaSpec whose canonical_fields_str() exactly matches what
+    // a wire client would build via the same conversion.
+    auto slot_spec = schema_entry_to_spec(entry.slot);
+    auto fz_spec   = entry.has_flexzone() ? schema_entry_to_spec(entry.flexzone)
+                                           : SchemaSpec{};
+
+    // Hub-globals are slot-canonical for citation purposes.  If a global
+    // schema declares a flexzone, the canonical form folds it in too —
+    // identical to the producer's path.
+    rec.blds    = canonical_fields_str(slot_spec);
+    rec.packing = entry.slot.packing;
+    rec.hash    = compute_canonical_hash_from_wire(rec.blds,
+                                                    rec.packing,
+                                                    fz_spec.has_schema
+                                                        ? canonical_fields_str(fz_spec)
+                                                        : std::string{},
+                                                    fz_spec.has_schema
+                                                        ? entry.flexzone.packing
+                                                        : std::string{});
+    return rec;
 }
 
 // ── Schema size computation ──────────────────────────────────────────────────

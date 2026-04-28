@@ -136,11 +136,13 @@ add_executable(test_layer3_datahub
     # ── Schema Library unit tests (HEP-CORE-0016 Phase 1) ─────────────────────
     test_datahub_schema_library.cpp
 
-    # ── Broker named schema protocol tests (HEP-CORE-0016 Phase 3) ────────────
+    # ── Broker named schema protocol tests (HEP-CORE-0034 path B / inbox path A) ──
     test_datahub_broker_schema.cpp
 
-    # ── Schema Registry lifecycle tests (HEP-CORE-0016 Phase 4) ─────────────
-    test_datahub_schema_registry.cpp
+    # NOTE: test_datahub_schema_registry.cpp (HEP-0016 SchemaStore lifecycle)
+    # was deleted in HEP-0034 Phase 4a — the SchemaStore singleton was
+    # removed; runtime schema state now lives in HubState.schemas
+    # (covered by test_hub_state.cpp + test_datahub_broker.cpp Sch_*).
 
     # ── BrokerService admin API tests ─────────────────────────────────────────
     test_datahub_broker_admin.cpp
