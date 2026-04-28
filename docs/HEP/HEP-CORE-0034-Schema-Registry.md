@@ -752,21 +752,56 @@ in-tree code migrates.
   immunity, citation validation across all reasons including
   cross-citation-rejected-on-hash-equality.
 
-### Phase 3 — Wire protocol + broker dispatch
+### Phase 3 — Wire protocol + broker dispatch — ✅ shipped 2026-04-27
 
-- Extend `REG_REQ`, `CONSUMER_REG_REQ`, `PROC_REG_REQ` with schema fields.
-- New `SCHEMA_REG_NACK` reasons in `REG_NACK` envelope.
-- `SCHEMA_REQ`/`SCHEMA_ACK` generalised to owner+id keying.
-- Broker dispatcher routes through §9.1 validation.
-- Inbox handler (HEP-0027 REG_REQ inbox-config block) calls
-  `_on_schema_registered({owner: receiver_uid, id: "inbox", ...})` inline;
-  inbox sender REG_REQ (CONSUMER_REG_REQ / PROC_REG_REQ that bind an inbox)
-  routes through `_validate_schema_citation` against `(receiver_uid, "inbox")`.
-  Wire field names from HEP-0027 retained for compatibility — only the
-  broker-side storage is unified into `HubState.schemas` (§11.4).
-- Tests: cross-citation rejected, fingerprint mismatch rejected, hub-global
-  adoption succeeds, path A/B/C round-trips, inbox citation A round-trip,
-  inbox cross-citation rejected.
+Sliced into two commits for review manageability:
+
+**Phase 3a** (commit `92775ac`):
+- `REG_REQ` with new `schema_packing` field constructs a SchemaRecord
+  under `(role_uid, schema_id)` (path B) and calls `_on_schema_registered`.
+  Outcomes mapped to NACK reasons SCHEMA_HASH_MISMATCH_SELF /
+  SCHEMA_FORBIDDEN_OWNER.  On success, `entry.schema_owner = role_uid`
+  so subsequent consumer citation can resolve the record.
+- `CONSUMER_REG_REQ` with new `expected_packing` field validates via
+  `_validate_schema_citation` against `(channel.schema_owner,
+  channel.schema_id)`.  Non-ok outcome → NACK reason
+  SCHEMA_CITATION_REJECTED with the validator's detail string.
+- Backward compat: REG_REQs without `schema_packing` skip the new
+  block entirely; legacy HEP-0016 library annotation on
+  `entry.schema_id` and the old SCHEMA_MISMATCH path still fire for
+  pre-Phase-3 clients.
+
+**Phase 3b** (commit `87390c8`):
+- `SCHEMA_REQ` accepts `(owner, schema_id)` keying — direct lookup in
+  `HubState.schemas`, returns
+  `{owner, schema_id, packing, blds, schema_hash}`.  Unknown record →
+  SCHEMA_UNKNOWN.  Legacy `channel_name` form retained and now also
+  surfaces `schema_owner`.
+- Inbox path-A integration (HEP-0034 §11.4): when REG_REQ carries
+  inbox metadata, the broker validates `inbox_packing`, parses
+  `inbox_schema_json`, computes the canonical form (matches
+  `compute_inbox_schema_tag` so `SchemaRecord.hash[0..7] == wire
+  schema_tag`), hashes BLAKE2b-256, and registers under
+  `(role_uid, "inbox")`.  Same outcome mapping as path B; new error
+  codes INBOX_SCHEMA_INVALID and INVALID_INBOX_PACKING.
+- Defensive null-payload handling in `handle_schema_req` (DoS hardening
+  surfaced by the new SCHEMA_REQ-Invalid test).
+
+**Tests** (Pattern 3, in `test_datahub_broker.cpp`): 13 new scenarios
+covering path B creation + idempotency + hash-mismatch-self, consumer
+citation match/mismatch, backward compat, SCHEMA_REQ owner+id round
+trip and unknown record, inbox path-A end-to-end, inbox hash-mismatch
+across two channels of same uid, inbox idempotent re-registration,
+inbox invalid JSON, two-owners namespace-by-owner, SCHEMA_REQ no-keys
+INVALID_REQUEST, inbox invalid packing.
+
+**Deferred** to later phases:
+- Path C (hub-global adoption) — requires Phase 4 to populate
+  `(hub, *)` records at startup.
+- `forbidden_owner` enforcement against cross-owner claims —
+  requires Phase 5 client API populating `schema_owner` on the wire.
+- Cross-citation test coverage — same Phase 5 dependency (consumers
+  need to be able to cite explicitly).
 
 ### Phase 4 — `SchemaLibrary` refactor
 
