@@ -30,6 +30,7 @@
 #include "utils/engine_module_params.hpp"
 #include "utils/role_host_helpers.hpp"
 #include "utils/zmq_poll_loop.hpp"
+#include "utils/role_reg_payload.hpp"
 #include "utils/schema_utils.hpp"
 
 #include <algorithm>
@@ -271,23 +272,17 @@ void ProcessorRoleHost::worker_main_()
         ctrl_cfg.heartbeat_interval_ms = config_.timing().heartbeat_interval_ms;
         ctrl_cfg.report_metrics        = false;
 
-        // Output producer registration (REG_REQ).
-        ctrl_cfg.producer_reg_opts["channel_name"]      = config_.out_channel();
-        ctrl_cfg.producer_reg_opts["pattern"]            = "PubSub";
-        ctrl_cfg.producer_reg_opts["has_shared_memory"]  = shm.enabled;
-        ctrl_cfg.producer_reg_opts["producer_pid"]       = pylabhub::platform::get_pid();
-        ctrl_cfg.producer_reg_opts["shm_name"]           = config_.out_channel();
-        ctrl_cfg.producer_reg_opts["role_uid"]           = id.uid;
-        ctrl_cfg.producer_reg_opts["role_name"]          = id.name;
-        ctrl_cfg.producer_reg_opts["role_type"]          = "processor";
-        ctrl_cfg.producer_reg_opts["zmq_ctrl_endpoint"]  = "tcp://127.0.0.1:0";
-        ctrl_cfg.producer_reg_opts["zmq_data_endpoint"]  = "tcp://127.0.0.1:0";
-        ctrl_cfg.producer_reg_opts["zmq_pubkey"]         = "";
-
-        if (tr.transport == config::Transport::Zmq)
+        // Output producer registration (REG_REQ) via Phase 5b helper.
         {
-            ctrl_cfg.producer_reg_opts["data_transport"]    = "zmq";
-            ctrl_cfg.producer_reg_opts["zmq_node_endpoint"] = tr.zmq_endpoint;
+            hub::ProducerRegInputs reg_in;
+            reg_in.channel           = config_.out_channel();
+            reg_in.role_uid          = id.uid;
+            reg_in.role_name         = id.name;
+            reg_in.role_tag          = "processor";
+            reg_in.has_shm           = shm.enabled;
+            reg_in.is_zmq_transport  = (tr.transport == config::Transport::Zmq);
+            reg_in.zmq_node_endpoint = tr.zmq_endpoint;
+            ctrl_cfg.producer_reg_opts = hub::build_producer_reg_payload(reg_in);
         }
 
         // HEP-CORE-0034 §10.1 — output schema fields (Phase 5a).
@@ -303,11 +298,9 @@ void ProcessorRoleHost::worker_main_()
         if (inbox_cfg_.has_inbox())
             ctrl_cfg.inbox = inbox_cfg_;
 
-        // Input consumer registration (CONSUMER_REG_REQ).
-        ctrl_cfg.consumer_reg_opts["channel_name"]  = config_.in_channel();
-        ctrl_cfg.consumer_reg_opts["consumer_uid"]  = id.uid;
-        ctrl_cfg.consumer_reg_opts["consumer_name"] = id.name;
-        ctrl_cfg.consumer_reg_opts["consumer_pid"]  = pylabhub::platform::get_pid();
+        // Input consumer registration (CONSUMER_REG_REQ) via Phase 5b helper.
+        ctrl_cfg.consumer_reg_opts = hub::build_consumer_reg_payload(
+            hub::ConsumerRegInputs{config_.in_channel(), id.uid, id.name});
 
         // HEP-CORE-0034 §10.3 — input citation fields (Phase 5a).
         // Same helper as consumer_role_host; mode (named/anonymous)
