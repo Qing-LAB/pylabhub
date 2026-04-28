@@ -14,6 +14,7 @@
  */
 
 #include "utils/crypto_utils.hpp"
+#include "utils/format_tools.hpp"
 #include "utils/hub_zmq_queue.hpp"
 #include "utils/schema_field_layout.hpp"
 #include "utils/schema_library.hpp"
@@ -315,6 +316,125 @@ to_hub_schema_record(const ::pylabhub::schema::SchemaEntry &entry)
                                                         ? entry.flexzone.packing
                                                         : std::string{});
     return rec;
+}
+
+// ── HEP-CORE-0034 §10 wire fields — producer + consumer payload helpers ─────
+//
+// `WireSchemaFields` packages every schema field that REG_REQ /
+// CONSUMER_REG_REQ / PROC_REG_REQ may carry on the wire, computed once
+// from the role's resolved SchemaSpecs.  Two `apply_*` helpers paste
+// the fields into a `nlohmann::json` payload using the producer-side
+// (`schema_*`) or consumer-side (`expected_*`) key names.
+//
+// These exist because role hosts (producer, consumer, processor) all
+// need to build the same payload from the same inputs; without the
+// helpers, the four call sites (producer-out, processor-out,
+// consumer-in, processor-in) would diverge under maintenance.
+
+struct WireSchemaFields
+{
+    /// Empty for anonymous channels; otherwise the named schema id
+    /// extracted from the JSON config (when the config used the
+    /// `"<schema>": "$lab.x.v1"` string form).
+    std::string schema_id;
+
+    /// Hex-encoded BLAKE2b-256 fingerprint over canonical(slot, fz)
+    /// per HEP-CORE-0034 §6.3.  Empty when the role has no schema.
+    std::string schema_hash;
+
+    /// `canonical_fields_str(slot_spec)`.  Empty when no slot schema.
+    std::string schema_blds;
+
+    /// Slot's packing string ("aligned" | "packed").  Empty when
+    /// no slot schema.
+    std::string schema_packing;
+
+    /// `canonical_fields_str(fz_spec)`.  Empty when no flexzone.
+    std::string flexzone_blds;
+
+    /// Flexzone's packing.  Empty when no flexzone.
+    std::string flexzone_packing;
+};
+
+/// Build the wire fields from the role's resolved schema state.
+///
+/// `slot_schema_json` is the original config JSON value (a string for
+/// named schemas, an object for inline schemas, null for none).  We
+/// pull the schema_id out of the string form; if the JSON is an
+/// object, schema_id stays empty (anonymous channel).
+///
+/// `slot_spec` and `fz_spec` are the resolved `SchemaSpec`s the role
+/// host has already built via `resolve_schema()`.  `has_schema=false`
+/// on either is treated as "not present" (the corresponding wire
+/// fields stay empty, which is the producer's signal that the role
+/// has no slot/flexzone for this side).
+inline WireSchemaFields
+make_wire_schema_fields(const nlohmann::json &slot_schema_json,
+                        const SchemaSpec     &slot_spec,
+                        const SchemaSpec     &fz_spec)
+{
+    WireSchemaFields w;
+    if (slot_schema_json.is_string())
+        w.schema_id = slot_schema_json.get<std::string>();
+    if (slot_spec.has_schema)
+    {
+        w.schema_blds    = canonical_fields_str(slot_spec);
+        w.schema_packing = slot_spec.packing;
+    }
+    if (fz_spec.has_schema)
+    {
+        w.flexzone_blds    = canonical_fields_str(fz_spec);
+        w.flexzone_packing = fz_spec.packing;
+    }
+    if (slot_spec.has_schema || fz_spec.has_schema)
+    {
+        const auto h = compute_canonical_hash_from_wire(
+            w.schema_blds, w.schema_packing,
+            w.flexzone_blds, w.flexzone_packing);
+        w.schema_hash = pylabhub::format_tools::bytes_to_hex(
+            {reinterpret_cast<const char *>(h.data()), h.size()});
+    }
+    return w;
+}
+
+/// Paste the producer-side wire fields into a REG_REQ payload.
+/// Empty fields in `w` are skipped — this preserves the
+/// "no schema fields → no Stage-2 verification" backward-compat path
+/// for roles that haven't declared a schema.
+inline void apply_producer_schema_fields(nlohmann::json         &reg_opts,
+                                         const WireSchemaFields &w)
+{
+    if (!w.schema_id.empty())        reg_opts["schema_id"]        = w.schema_id;
+    if (!w.schema_hash.empty())      reg_opts["schema_hash"]      = w.schema_hash;
+    if (!w.schema_blds.empty())      reg_opts["schema_blds"]      = w.schema_blds;
+    if (!w.schema_packing.empty())   reg_opts["schema_packing"]   = w.schema_packing;
+    if (!w.flexzone_blds.empty())    reg_opts["flexzone_blds"]    = w.flexzone_blds;
+    if (!w.flexzone_packing.empty()) reg_opts["flexzone_packing"] = w.flexzone_packing;
+}
+
+/// Paste the consumer-side wire fields into a CONSUMER_REG_REQ payload.
+/// Field name mapping (HEP-CORE-0034 §10.3):
+///   schema_id        → expected_schema_id
+///   schema_hash      → expected_schema_hash
+///   schema_blds      → expected_blds
+///   schema_packing   → expected_packing
+///   flexzone_blds    → expected_flexzone_blds
+///   flexzone_packing → expected_flexzone_packing
+///
+/// Mode is determined by which fields the consumer's config produced:
+///   - id present → broker treats as named-citation; structure
+///     fields (when present) drive defense-in-depth verification.
+///   - id absent + structure present → anonymous citation.
+///   - all empty → no validation (legacy backward-compat).
+inline void apply_consumer_schema_fields(nlohmann::json         &reg_opts,
+                                         const WireSchemaFields &w)
+{
+    if (!w.schema_id.empty())        reg_opts["expected_schema_id"]      = w.schema_id;
+    if (!w.schema_hash.empty())      reg_opts["expected_schema_hash"]    = w.schema_hash;
+    if (!w.schema_blds.empty())      reg_opts["expected_blds"]           = w.schema_blds;
+    if (!w.schema_packing.empty())   reg_opts["expected_packing"]        = w.schema_packing;
+    if (!w.flexzone_blds.empty())    reg_opts["expected_flexzone_blds"]  = w.flexzone_blds;
+    if (!w.flexzone_packing.empty()) reg_opts["expected_flexzone_packing"] = w.flexzone_packing;
 }
 
 // ── Schema size computation ──────────────────────────────────────────────────

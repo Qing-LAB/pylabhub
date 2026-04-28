@@ -1563,10 +1563,18 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     //
     //   Empty: all expected_* empty → no validation (consumer signals
     //     "I don't care about schema").
-    const std::string expected_schema_id = req.value("expected_schema_id", "");
-    const std::string expected_hash_hex  = req.value("expected_schema_hash", "");
-    const std::string expected_blds      = req.value("expected_blds", "");
-    const std::string expected_packing   = req.value("expected_packing", "");
+    const std::string expected_schema_id    = req.value("expected_schema_id", "");
+    const std::string expected_hash_hex     = req.value("expected_schema_hash", "");
+    const std::string expected_blds         = req.value("expected_blds", "");
+    const std::string expected_packing      = req.value("expected_packing", "");
+    // HEP-0034 §10.3 — flexzone mirrors the producer-side wire fields
+    // (Phase 5a).  When the consumer's structure includes flexzone, the
+    // recomputed fingerprint must include it too — otherwise the
+    // consumer-recomputed hash (slot+fz) won't match the channel's
+    // stored hash (slot+fz from REG_REQ).  Same correctness gap that
+    // Phase 4a fixed on the REG_REQ side; mirrored here for symmetry.
+    const std::string expected_fz_blds      = req.value("expected_flexzone_blds", "");
+    const std::string expected_fz_packing   = req.value("expected_flexzone_packing", "");
 
     if (!expected_schema_id.empty())
     {
@@ -1606,7 +1614,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
                                   "expected_packing required when expected_blds "
                                   "is provided alongside named citation");
             const auto h_c = pylabhub::hub::compute_canonical_hash_from_wire(
-                expected_blds, expected_packing);
+                expected_blds, expected_packing,
+                expected_fz_blds, expected_fz_packing);
             if (h_c != hex_to_hash_array(channel_entry->schema_hash))
                 return make_error(corr_id, "FINGERPRINT_INCONSISTENT",
                                   "Consumer's expected_blds + expected_packing "
@@ -1614,7 +1623,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
                                   "named-citation defense-in-depth (HEP-0034 §10.3)");
         }
     }
-    else if (!expected_hash_hex.empty() || !expected_blds.empty() || !expected_packing.empty())
+    else if (!expected_hash_hex.empty() || !expected_blds.empty() || !expected_packing.empty()
+             || !expected_fz_blds.empty() || !expected_fz_packing.empty())
     {
         // Anonymous-citation mode.  HEP-0034 §10.3 — full structure required.
         if (expected_blds.empty())
@@ -1626,7 +1636,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
                               "Anonymous citation requires expected_packing");
 
         const auto h_c = pylabhub::hub::compute_canonical_hash_from_wire(
-            expected_blds, expected_packing);
+            expected_blds, expected_packing,
+            expected_fz_blds, expected_fz_packing);
 
         // Self-consistency check: if consumer also supplied a hash, it
         // must equal the recomputed hash.  Catches consumer-local
