@@ -916,26 +916,35 @@ void HubState::_on_pending_timeout(const std::string &channel)
     }
     // HEP-CORE-0023 §2.1: Pending -> deregistered, **no grace, no Closing
     // intermediate**.  Closing is reserved for the voluntary-close path
-    // (DEREG_REQ / admin / script close).  Eligibility check + close +
-    // counter:
-    //   - eligibility: channel exists and is in PendingReady;
-    //   - close: same as `_on_channel_closed(HeartbeatTimeout)`
-    //     (erases entry, removes from each role's `channels` list, fires
-    //     close handlers, bumps the per-reason msg-type counter);
-    //   - counter: bump `pending_to_deregistered_total` only when an
-    //     actual Pending -> deregistered transition fired (per §2.5).
-    {
-        std::shared_lock rlk(pImpl->mu);
-        auto             it = pImpl->channels.find(channel);
-        if (it == pImpl->channels.end() ||
-            it->second.status != ChannelStatus::PendingReady)
-            return;
-    }
-    _on_channel_closed(channel, ChannelCloseReason::HeartbeatTimeout);
+    // (DEREG_REQ / admin / script close).
+    //
+    // Atomicity (matches the `_on_heartbeat_timeout` Ready→Pending pattern):
+    // eligibility check + counter bump live under a single writer-lock so
+    // two concurrent timer fires can't both observe `PendingReady`, both
+    // call `_on_channel_closed`, and both bump `pending_to_deregistered_total`
+    // — only the first transition increments the counter.  The actual
+    // close work runs after the lock is released because
+    // `_on_channel_closed` takes its own writer-lock and fires handlers.
+    bool eligible = false;
     {
         std::unique_lock lk(pImpl->mu);
-        ++pImpl->counters.pending_to_deregistered_total;
+        auto             it = pImpl->channels.find(channel);
+        if (it != pImpl->channels.end() &&
+            it->second.status == ChannelStatus::PendingReady)
+        {
+            // Mark Closing under the same lock so a concurrent
+            // `_on_pending_timeout` immediately fails the
+            // `status == PendingReady` check (`Closing` is reserved for
+            // voluntary-close, but at this point the role is gone — using
+            // it as a "winner takes all" flag is benign because
+            // `_on_channel_closed` will erase the entry shortly).
+            it->second.status = ChannelStatus::Closing;
+            ++pImpl->counters.pending_to_deregistered_total;
+            eligible          = true;
+        }
     }
+    if (eligible)
+        _on_channel_closed(channel, ChannelCloseReason::HeartbeatTimeout);
 }
 
 void HubState::_on_metrics_reported(const std::string                    &channel,

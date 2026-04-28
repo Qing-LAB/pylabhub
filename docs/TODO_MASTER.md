@@ -400,9 +400,27 @@ HEP-0034 implementation phases:
 - [x] Phase 1 (2026-04-27, commit `d60ddf2`): Fingerprint correction — `compute_schema_hash` and `SchemaInfo::compute_hash` include packing; `parse_schema_json` rejects missing packing; `PYLABHUB_SCHEMA_BEGIN_PACKED` macro added; share/ JSONs + role init templates updated to declare packing explicitly. +4 tests (`ParseError_MissingPacking`, `FingerprintIncludesPacking_*`). Follow-up `dc9b6ef`: `compute_inbox_schema_tag` now includes packing; `PackingMacro_DistinctHashesFromAligned` test pins macro hash distinction; HEP §14.2 doc aligned to two-macro design. 1603/1603.
 - [x] Phase 2 (2026-04-27, commit `e23e33e`): HubState schema records — `SchemaRecord` (`schema_record.hpp`) + `HubState.schemas` map keyed `(owner_uid, schema_id)` + `ChannelEntry.schema_owner`; capability ops `_on_schema_registered` / `_on_schemas_evicted_for_owner` / `_validate_schema_citation`; cascade eviction wired into `_set_role_disconnected`; three new counters (`schema_{registered,evicted,citation_rejected}_total`). +15 tests in `test_hub_state.cpp` covering namespace-by-owner conflict policy, idempotent re-registration, hash/packing-mismatch rejection, cross-citation rejection on hash-equality, hub-global immunity. 1618/1618.
 - [x] Phase 3 (2026-04-27, commits `92775ac` + `87390c8` + follow-up `2619b17`): Wire protocol + broker dispatch — `REG_REQ` with `schema_packing` creates path-B records; `CONSUMER_REG_REQ` with full named/anonymous citation rule per HEP-0034 §10.3 (named: id+hash with optional structure for defense-in-depth; anonymous: full structure required, hash optional with self-consistency check); `SCHEMA_REQ` accepts `(owner, schema_id)` keying alongside legacy `channel_name`; inbox metadata creates `(role_uid, "inbox")` records cascade-evicted via `_on_channel_closed`. Broker recomputes every claimed fingerprint (Stage-2 verification) — `compute_canonical_hash_from_wire` helper pinned the wire canonical form. Channel-mismatch gate moved before schema-record creation (no orphan records on failed REG_REQ). 13 NACK reasons documented in HEP-0034 §10.4. +20 Pattern-3 L3 tests across the three commits. Backward compat preserved. 1638/1638.
-- [ ] Phase 4: `SchemaLibrary` refactor — drop lifecycle module + file watcher; library becomes stateless file loader returning records; hub startup walks `<hub_dir>/schemas/` and registers globals.
-- [ ] Phase 5: Client-side citation API — `ProducerOptions::{schema_owner, schema_id}`, `ConsumerOptions::expected_*`; `create<F,D>()` issues `SCHEMA_REQ` for path C, sends BLDS for path B.
-- [ ] Phase 6: Docs sweep + HEP-0016 closure — code review of HEP-0034 implementation; verify cross-references consistent.
+- [ ] Phase 4: `SchemaLibrary` refactor — drop lifecycle module + file watcher; library becomes stateless file loader returning records; hub startup walks `<hub_dir>/schemas/` and registers globals. *Includes:* delete `src/include/utils/schema_registry.hpp` + `src/utils/schema/schema_registry.cpp` + `tests/test_layer3_datahub/test_datahub_schema_registry.cpp` (the SchemaStore lifecycle module is fully obsolete after HEP-0034 §11 absorption — flagged by 2026-04-28 audit).
+- [ ] Phase 5: Client-side citation API — `ProducerOptions::{schema_owner, schema_id}`, `ConsumerOptions::expected_*`; `create<F,D>()` issues `SCHEMA_REQ` for path C, sends BLDS for path B. *Pair with:* (a) extract REG_REQ / CONSUMER_REG_REQ payload-builders into helpers (audit found ~50 LOC duplicated across producer/consumer/processor role hosts in `producer_role_host.cpp:251-269` etc.); (b) extract role-host main-loop boilerplate (Steps 4-14) into a shared `RoleHostBase` template — ~200 LOC duplicated across the three hosts.
+- [ ] Phase 6: Docs sweep + HEP-0016 closure — code review of HEP-0034 implementation; verify cross-references consistent. *Includes:* finish `Messenger`→`BrokerRequestComm` doc sweep across HEP-0001/0002/0006/0011/0017/0019/0021/0027/0033 (HEP-0007 swept 2026-04-28; the rest still reference the deleted `Messenger` class — audit-deferred).
+
+### Priority 2.5: User-facing demo / example refresh (deferred — after `plh_hub` ships)
+
+📍 **Status**: 🔵 Deferred — touch only after HEP-CORE-0033 hub-binary refactoring stabilizes
+📋 **Audit found 2026-04-28**:
+
+The user-facing entry points have not been refreshed for HEP-CORE-0024 (per-role binaries deleted) or HEP-CORE-0034 (config field renames `hub_dir`→`in_/out_hub_dir`, `channel`→`in_/out_channel`, top-level `validation` block removed, `slot_schema`→`in_/out_slot_schema`, mandatory `packing` in schema JSON).  L4 tests use synthetic configs (`plh_role_fixture.h::write_minimal_config`) so CI doesn't catch the drift, but anyone running the in-tree examples will hit immediate parse errors.
+
+Items to address as a single commit once `plh_hub` lands:
+- [ ] `README.md` §"The Four Binaries" — replace with `plh_role <dir> --role <tag>` + `plh_hub <dir>` description.  All CLI examples updated.
+- [ ] `share/py-demo-single-processor-shm/run_demo.sh` — REQUIRED_BINS list + every binary invocation updated to `plh_role` / `plh_hub`.
+- [ ] `share/py-examples/{producer_counter,consumer_logger,sensor_node}.json` — migrate to current field names (`in_/out_*`, drop `validation` block in favour of top-level `checksum` + `stop_on_script_error`, drop top-level `broker` since it's read from hub.json, etc.).
+- [ ] `share/py-demo-single-processor-shm/{producer,consumer,processor,hub}/*.json` — same migration.
+- [ ] `share/py-demo-dual-processor-bridge/**/*.json` — same migration.
+- [ ] In-line `_comment` blocks in those JSONs that say `"Run with: pylabhub-producer <dir>"` etc. — update.
+- [ ] Verify each example actually loads via `plh_role --validate` after migration.
+
+Scope rationale (deferred): the hub-side refactoring (HEP-0033 plh_hub binary, Phase 6+) will likely add or rename more config fields; doing the demo refresh once at the end avoids two churns of user-facing files.
 
 ### Priority 3: Processor Binary Tests + Phase 2 (HEP-CORE-0015)
 📍 **Status**: ✅ Phase 2 complete (2026-03-03) — dual-broker + hub::Processor delegation; **750/750 passing**
