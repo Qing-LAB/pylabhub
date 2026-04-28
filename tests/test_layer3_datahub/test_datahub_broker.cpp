@@ -54,3 +54,46 @@ TEST_F(DatahubBrokerTest, DeregPidMismatch)
     auto proc = SpawnWorker("broker.broker_dereg_pid_mismatch", {});
     ExpectWorkerOk(proc);
 }
+
+// ── HEP-CORE-0034 Phase 3a — schema record + citation wire paths ───────────
+
+TEST_F(DatahubBrokerTest, Sch_RegPathBCreated)
+{
+    // REG_REQ with `schema_packing` → broker records under
+    // (role_uid, schema_id); re-registering same fields succeeds
+    // (idempotent at the registry level).
+    auto proc = SpawnWorker("broker.broker_sch_record_path_b_created", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerTest, Sch_RegHashMismatchSelf)
+{
+    // Same uid+schema_id, different hash, both with `schema_packing` →
+    // SCHEMA_HASH_MISMATCH_SELF (HEP-0034 §10.4).  Broker logs a WARN
+    // ("schema record mismatch") only.
+    auto proc = SpawnWorker("broker.broker_sch_record_hash_mismatch_self", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerTest, Sch_ConsumerCitationMatch)
+{
+    auto proc = SpawnWorker("broker.broker_sch_consumer_citation_match", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerTest, Sch_ConsumerCitationMismatch)
+{
+    // Wrong expected_packing → SCHEMA_CITATION_REJECTED.
+    auto proc = SpawnWorker("broker.broker_sch_consumer_citation_mismatch", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerTest, Sch_NoPackingBackwardCompat)
+{
+    // REG_REQ without schema_packing → legacy path; second REG_REQ with
+    // different hash returns SCHEMA_MISMATCH (the OLD code), proving the
+    // new HEP-0034 path is opt-in.  Broker emits Cat1 ERROR log on the
+    // second REG_REQ — tolerate via expected substrings.
+    auto proc = SpawnWorker("broker.broker_sch_no_packing_backward_compat", {});
+    ExpectWorkerOk(proc, {}, {"Cat1 schema mismatch", "CHANNEL_ERROR_NOTIFY"});
+}

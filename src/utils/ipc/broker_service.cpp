@@ -1121,6 +1121,54 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         }
     }
 
+    // ── HEP-CORE-0034 Phase 3 — schema record under producer ownership ──
+    //
+    // When the producer supplies the new `schema_packing` field (Phase 3
+    // wire-format addition), build a SchemaRecord and call the HubState
+    // capability op so the registry stays consistent with the channel.
+    // Backward compat: REG_REQs without `schema_packing` skip this block
+    // and behave exactly as before (anonymous from the registry's point
+    // of view; HEP-0016 library annotation on `entry.schema_id` is
+    // unaffected).
+    //
+    // Phase 3a only handles path B (owner = producer's role uid).  Path
+    // C (owner == "hub") will land alongside Phase 4 (hub-globals
+    // populating HubState.schemas at startup).
+    const std::string req_schema_packing = req.value("schema_packing", "");
+    if (!entry.schema_id.empty() && !req_schema_packing.empty() && !role_uid.empty())
+    {
+        pylabhub::schema::SchemaRecord rec;
+        rec.owner_uid = role_uid;
+        rec.schema_id = entry.schema_id;
+        rec.hash      = hex_to_hash_array(attempted_schema);
+        rec.packing   = req_schema_packing;
+        rec.blds      = entry.schema_blds;
+
+        using O = pylabhub::schema::SchemaRegOutcome;
+        const auto outcome = hub_state_._on_schema_registered(rec);
+        if (outcome == O::kHashMismatchSelf)
+        {
+            LOGGER_WARN("Broker: REG_REQ schema record mismatch for ({}, {}): "
+                        "existing record under producer's namespace has different "
+                        "hash or packing",
+                        role_uid, entry.schema_id);
+            return make_error(corr_id, "SCHEMA_HASH_MISMATCH_SELF",
+                              "Schema record (" + role_uid + ", " + entry.schema_id +
+                                  ") already exists with a different hash or packing");
+        }
+        if (outcome == O::kForbiddenOwner)
+        {
+            // Defensive — should not fire here since we set owner ourselves.
+            return make_error(corr_id, "SCHEMA_FORBIDDEN_OWNER",
+                              "Schema record (" + role_uid + ", " + entry.schema_id +
+                                  ") rejected as forbidden_owner — "
+                                  "missing required fields");
+        }
+        // Created or Idempotent → success path; mark the channel as owned by
+        // this producer's record so consumer citation can resolve it.
+        entry.schema_owner = role_uid;
+    }
+
     // HubState is the sole channel store.  Replicate the historical
     // ChannelRegistry::register_channel gating semantics:
     //   - new channel: insert.
@@ -1387,6 +1435,38 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
                                            /*is_consumer=*/true))
     {
         return *err;
+    }
+
+    // ── HEP-CORE-0034 Phase 3 — fingerprint citation against the channel's
+    //    schema record.  When the consumer supplies the new
+    //    `expected_packing` field, look up the channel's schema_owner /
+    //    schema_id record in HubState.schemas and verify the consumer's
+    //    expected hash + packing match.  Backward compat: consumers that
+    //    don't send `expected_packing` skip this block (HEP-0016
+    //    library-based ID-match logic above still runs).
+    //
+    //    Phase 3a uses (channel.schema_owner, channel.schema_id) as the
+    //    cited record — Phase 5 client API will let consumers cite
+    //    explicitly to enable cross-citation rejection coverage.
+    const std::string expected_packing  = req.value("expected_packing", "");
+    const std::string expected_hash_hex = req.value("expected_schema_hash", "");
+    if (!expected_packing.empty() && !expected_hash_hex.empty() &&
+        channel_entry.has_value() && !channel_entry->schema_owner.empty())
+    {
+        const auto expected_hash = hex_to_hash_array(expected_hash_hex);
+        const auto outcome = hub_state_._validate_schema_citation(
+            role_uid,
+            channel_entry->producer_role_uid,
+            channel_entry->schema_owner,
+            channel_entry->schema_id,
+            expected_hash,
+            expected_packing);
+        if (!outcome.ok())
+        {
+            LOGGER_WARN("Broker: CONSUMER_REG_REQ schema citation rejected on '{}': {}",
+                        channel_name, outcome.detail);
+            return make_error(corr_id, "SCHEMA_CITATION_REJECTED", outcome.detail);
+        }
     }
 
     pylabhub::hub::ConsumerEntry entry;
