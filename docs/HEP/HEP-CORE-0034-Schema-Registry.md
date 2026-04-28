@@ -875,14 +875,56 @@ Sliced into two sub-phases for review manageability:
   malformed file fails startup with path; duplicate id fails with
   both paths in the diagnostic.
 
-### Phase 5 — Client-side citation API
+### Phase 5 — Client-side citation API + role-host refactors
 
-- `ProducerOptions::{schema_owner, schema_id}`, `ConsumerOptions::expected_*`.
-- `create<F,D>()` issues `SCHEMA_REQ` for path C; sends BLDS for path B.
-- New `PYLABHUB_SCHEMA_BEGIN_PACKED` macro for explicitly-packed C++ structs;
-  `PYLABHUB_SCHEMA_BEGIN` retains its existing one-argument form (defaults
-  to `packing="aligned"`).
-- Tests: producer adopts hub-global, consumer cites it, all paths round-trip.
+Sliced into four sub-phases:
+
+**Phase 5a** (commit `dc8b517`, 2026-04-28) — ✅ shipped:
+- `WireSchemaFields` struct + three helpers in `schema_utils.hpp`:
+  - `make_wire_schema_fields(slot_json, slot_spec, fz_spec)` builds
+    the wire fields once from the role's resolved schema state.
+  - `apply_producer_schema_fields(reg_opts, w)` pastes the fields
+    into a REG_REQ payload using producer-side keys.
+  - `apply_consumer_schema_fields(reg_opts, w)` pastes the fields
+    using consumer-side `expected_*` keys.  Includes
+    `expected_flexzone_blds` / `expected_flexzone_packing`, which
+    the broker now reads in `handle_consumer_reg_req` (mirror of
+    Phase 4a's REG_REQ flexzone fix).
+- Producer / consumer / processor role hosts wire up the helpers in
+  their REG_REQ / CONSUMER_REG_REQ construction.  Wire payloads now
+  carry the full HEP-0034 §10 field set; broker-side gates (Stage-2
+  verification, schema records, citation rules) become reachable
+  from real `plh_role` processes for the first time.
+- +7 unit tests covering the helpers (named/inline schema, flexzone,
+  empty-payload backward-compat, key-prefix isolation).
+- New `PYLABHUB_SCHEMA_BEGIN_PACKED` macro for explicitly-packed
+  C++ structs landed earlier as part of Phase 1 follow-up
+  (`PYLABHUB_SCHEMA_BEGIN` retains its existing one-argument form
+  defaulting to `packing="aligned"`).
+
+**Phase 5b** — pending: extract `build_producer_reg_payload()` /
+`build_consumer_reg_payload()` helpers covering the channel/uid
+/transport fields the three role hosts still duplicate (Phase 5a
+helpers covered only the schema fields).
+
+**Phase 5c** — pending: extract role-host main-loop boilerplate
+(Steps 4-14) into a shared `RoleHostBase` template — ~200 LOC
+duplicated across producer/consumer/processor role hosts.
+
+**Phase 5d** — pending: typed C++ API surface
+`ProducerOptions::{schema_owner, schema_id}`,
+`ConsumerOptions::expected_*`; `create<F,D>()` issues `SCHEMA_REQ`
+for path C, sends BLDS for path B (HEP-0034 §14).  Today producers
+populate the wire from config JSON via the Phase 5a helpers; Phase
+5d adds the C++-only API for the same fields.
+
+**Tests** for the full citation lifecycle (producer adopts
+hub-global, consumer cites it, all three paths round-trip) wait for
+Phase 4b (hub-globals from `<hub_dir>/schemas/`) so they have a
+real `(hub, id)` record to cite.  Phase 5a's tests pin the
+producer/consumer wire-construction layer; Phase 3 tests pin the
+broker-side gates.  The end-to-end story is gated on Phase 4b's
+`plh_hub` binary.
 
 ### Phase 6 — Docs sweep + HEP-0016 closure
 
