@@ -28,6 +28,7 @@
 #include "utils/engine_module_params.hpp"
 #include "utils/role_host_helpers.hpp"
 #include "utils/zmq_poll_loop.hpp"
+#include "utils/role_reg_payload.hpp"
 #include "utils/schema_utils.hpp"
 
 #include <chrono>
@@ -238,12 +239,12 @@ void ConsumerRoleHost::worker_main_()
         ctrl_cfg.heartbeat_interval_ms = config_.timing().heartbeat_interval_ms;
         ctrl_cfg.report_metrics        = true;
 
-        // Build consumer registration payload (CONSUMER_REG_REQ).
+        // Build consumer registration payload (CONSUMER_REG_REQ) via the
+        // shared helper (HEP-CORE-0034 Phase 5b).  Schema fields layered
+        // on below.
         const auto &ch = config_.in_channel();
-        ctrl_cfg.consumer_reg_opts["channel_name"]  = ch;
-        ctrl_cfg.consumer_reg_opts["consumer_uid"]  = id.uid;
-        ctrl_cfg.consumer_reg_opts["consumer_name"] = id.name;
-        ctrl_cfg.consumer_reg_opts["consumer_pid"]  = pylabhub::platform::get_pid();
+        ctrl_cfg.consumer_reg_opts = hub::build_consumer_reg_payload(
+            hub::ConsumerRegInputs{ch, id.uid, id.name});
 
         // HEP-CORE-0034 §10.3 — citation fields (Phase 5a wire population).
         // Mode (named vs anonymous) is decided by what the config
