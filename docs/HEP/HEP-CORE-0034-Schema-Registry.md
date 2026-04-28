@@ -902,14 +902,31 @@ Sliced into four sub-phases:
   (`PYLABHUB_SCHEMA_BEGIN` retains its existing one-argument form
   defaulting to `packing="aligned"`).
 
-**Phase 5b** — pending: extract `build_producer_reg_payload()` /
-`build_consumer_reg_payload()` helpers covering the channel/uid
-/transport fields the three role hosts still duplicate (Phase 5a
-helpers covered only the schema fields).
+**Phase 5b** (commit `900fe23`, 2026-04-28) — ✅ shipped:
+- `build_producer_reg_payload(ProducerRegInputs)` /
+  `build_consumer_reg_payload(ConsumerRegInputs)` in
+  `role_reg_payload.hpp`.  Inputs: channel, role uid/name, role tag,
+  has_shm, optional ZMQ endpoint.  Producer/consumer/processor hosts
+  call them in place of ~50 lines of inline JSON-key population.
 
-**Phase 5c** — pending: extract role-host main-loop boilerplate
-(Steps 4-14) into a shared `RoleHostBase` template — ~200 LOC
-duplicated across producer/consumer/processor role hosts.
+**Phase 5c** (commit `2e52319`, 2026-04-28) — ✅ shipped (smaller-scope
+variant):
+- `make_broker_comm_config(hub, auth, uid, name)` —
+  `BrokerRequestComm::Config` builder (HEP-0007 §12 + HEP-0021 keys).
+- `do_role_teardown(engine, api, core, broker_comm, has_api,
+  teardown_cb)` — runs the worker_main epilogue Steps 9-14 (stop
+  accepting → deregister → invoke_on_stop → finalize → notify →
+  drain).  Role-specific `teardown_infrastructure_()` is the only
+  varying piece, passed in as a callback.
+- ~75 LOC removed across the three hosts.
+
+**Phase 5c-large** — pending: full `RoleHostBase<CycleOps>` template
+absorbing Steps 1-8 (schema setup, infrastructure setup, ctrl-thread
+launch, `run_data_loop`).  Larger refactor — needs a `CycleOps`
+shape covering all three roles, careful movement of the differing
+slot/flexzone/inbox spec members, consistent validate-only
+early-exit.  Defer until other Phase 5/6 work stabilizes the
+surface.
 
 **Phase 5d** — pending: typed C++ API surface
 `ProducerOptions::{schema_owner, schema_id}`,
