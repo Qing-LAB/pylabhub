@@ -20,4 +20,27 @@ int broker_dereg_happy_path();
 /** Deregister with wrong pid → broker replies NOT_REGISTERED; channel still discoverable. */
 int broker_dereg_pid_mismatch();
 
+// ── HEP-CORE-0034 Phase 3a — schema record + citation wire-protocol paths ───
+
+/** REG_REQ with schema_packing → broker creates schema record (path B);
+ *  re-register with same fields succeeds (idempotent at registry layer). */
+int broker_sch_record_path_b_created();
+
+/** Two REG_REQs from same uid+schema_id with different hashes (both with
+ *  schema_packing set) → second returns SCHEMA_HASH_MISMATCH_SELF. */
+int broker_sch_record_hash_mismatch_self();
+
+/** Producer with schema_packing + consumer with matching expected_packing →
+ *  CONSUMER_REG_REQ succeeds (citation validates). */
+int broker_sch_consumer_citation_match();
+
+/** Producer with schema_packing + consumer with WRONG expected_packing →
+ *  CONSUMER_REG_REQ returns SCHEMA_CITATION_REJECTED. */
+int broker_sch_consumer_citation_mismatch();
+
+/** REG_REQ without schema_packing field → no schema record created
+ *  (legacy/anonymous behaviour preserved; broker still uses the older
+ *  SCHEMA_MISMATCH path on hash conflict, not SCHEMA_HASH_MISMATCH_SELF). */
+int broker_sch_no_packing_backward_compat();
+
 } // namespace pylabhub::tests::worker::broker
