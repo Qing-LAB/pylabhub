@@ -713,7 +713,7 @@ This applies to:
 All ZMQ messages use a multi-frame format. Frame 0 is a single-byte type discriminator.
 
 ```
-Control frame (Messenger ↔ Broker):
+Control frame (Role ↔ Broker via BrokerRequestComm):
   Frame 0: 'C'               (1 byte — control type)
   Frame 1: message_type       (string, e.g. "REG_REQ")
   Frame 2: JSON payload        (string)
@@ -745,7 +745,7 @@ until the broker sends the corresponding ACK or ERROR.
 
 ```
 Direction:  Producer → Broker → Producer
-Trigger:    Messenger::create_channel() or Messenger::register_producer()
+Trigger:    BrokerRequestComm::register_channel() (called from RoleAPIBase during role startup)
 Sequence:
   1. Producer sends REG_REQ with channel identity, schema, and SHM info
   2. Broker validates connection policy, stores ChannelEntry
@@ -892,7 +892,7 @@ Payload (CONSUMER_DEREG_REQ):
 
 ```
 Direction:  Producer → Broker → Producer
-Trigger:    Messenger::unregister_channel() during Producer::close()
+Trigger:    BrokerRequestComm::deregister_channel() during role shutdown
 Effect:     Removes channel from registry; triggers CHANNEL_CLOSING_NOTIFY to consumers
 
 Payload (DEREG_REQ):
@@ -929,7 +929,7 @@ then issue `SCHEMA_REQ` on the result.
 
 ```
 Direction:  Any → Broker → Any
-Trigger:    pylabhub.metrics(channel) (AdminShell) or direct Messenger call
+Trigger:    pylabhub.metrics(channel) (AdminShell) or direct BrokerRequestComm call
 Pattern:    Synchronous request/response
 
 Payload (METRICS_REQ):
@@ -990,7 +990,7 @@ loop is progressing — not just that the ZMQ connection is alive.
 
 ```
 Direction:  Producer/Consumer → Broker
-Trigger:    Messenger::report_checksum_error()
+Trigger:    BrokerRequestComm::report_checksum_error() (fire-and-forget)
 Effect:     Broker logs and, if ChecksumRepairPolicy::NotifyOnly, forwards as
             CHANNEL_ERROR_NOTIFY to all channel participants
 
@@ -1037,7 +1037,7 @@ separate fire-and-forget message to report metrics at the same interval.
 
 ```
 Direction:  Any role → Broker → Any role
-Trigger:    api.list_channels() or Messenger::list_channels()
+Trigger:    api.list_channels() or BrokerRequestComm::list_channels()
 Pattern:    Synchronous request/response (blocks until broker replies)
 
 Payload (CHANNEL_LIST_REQ):
@@ -1062,7 +1062,7 @@ Use cases:
 
 ```
 Direction:  Any role → Broker → Any role
-Trigger:    api.wait_for_role() polling loop; or direct Messenger call
+Trigger:    api.wait_for_role() polling loop; or direct BrokerRequestComm call
 Pattern:    Synchronous request/response
 
 Payload (ROLE_PRESENCE_REQ):
@@ -1121,7 +1121,8 @@ The inbox owner dictates the checksum policy. The sender (InboxClient) reads
 ### 12.5 Unsolicited Broker Notifications
 
 These are pushed asynchronously by the broker to connected clients. They are received
-by the Messenger worker thread and dispatched to registered callbacks.
+by the BrokerRequestComm poll loop (running on the role's ctrl thread)
+and dispatched to registered callbacks.
 
 #### CHANNEL_CLOSING_NOTIFY — Graceful Channel Shutdown (Tier 1)
 
@@ -1131,7 +1132,7 @@ Trigger:    request_close_channel(), or heartbeat timeout (producer died)
 Effect:     Channel enters Closing state. Broker starts grace period timer.
             Recipients receive event in their message queue (FIFO).
             Script is expected to call api.stop() after cleanup.
-Callback:   Messenger::on_channel_closing(channel, cb)
+Callback:   BrokerRequestComm::on_channel_closing(channel, cb)
             → hub::Producer/Consumer::on_channel_closing(cb)
 
 Payload:
@@ -1156,7 +1157,7 @@ Trigger:    Grace period expired after CHANNEL_CLOSING_NOTIFY;
             client still registered (did not send DEREG_REQ/CONSUMER_DEREG_REQ).
 Effect:     Bypasses message queue. Forces immediate shutdown_requested flag.
             Broker deregisters the channel entry.
-Callback:   Messenger::on_force_shutdown(channel, cb)
+Callback:   BrokerRequestComm::on_force_shutdown(channel, cb)
             → hub::Producer/Consumer::on_force_shutdown(cb)
 
 Payload:
@@ -1176,7 +1177,7 @@ Config: BrokerService::Config::channel_shutdown_grace (default 5s).
 Direction:  Broker → Producer
 Trigger:    Broker's periodic check_dead_consumers() detects consumer PID no longer alive
 Effect:     Producer informed that a consumer has died
-Callback:   Messenger::on_consumer_died(channel, cb) → hub::Producer::on_consumer_died(cb)
+Callback:   BrokerRequestComm::on_consumer_died(channel, cb) → producer-side handler
 
 Payload:
   channel_name          string
@@ -1193,7 +1194,7 @@ Script host delivery: Event dict in msgs:
 Direction:  Broker → Affected client
 Trigger:    Schema mismatch on REG_REQ, connection policy rejection
 Effect:     Informs client of a protocol-level error
-Callback:   Messenger::on_channel_error(channel, cb)
+Callback:   BrokerRequestComm::on_channel_error(channel, cb)
 
 Payload:
   channel_name          string
@@ -1490,9 +1491,9 @@ All worker thread `while` loops must check both `running_threads` AND `shutdown_
 | `src/utils/shm/data_block.cpp` | impl | SHM create/attach, slot acquire/release, checksum, DRAINING spin |
 | `src/utils/shm/data_block_mutex.cpp` | impl | `DataBlockMutex` — OS-backed mutex for control zone |
 | `src/utils/shm/shared_memory_spinlock.cpp` | impl | `SharedSpinLock` — atomic PID-based spinlock for data slots |
-| `src/utils/ipc/messenger.cpp` | impl | `Messenger` — ZMQ sockets, heartbeat, registration |
-| `src/utils/ipc/messenger_protocol.cpp` | impl | Protocol frame parsing, REG_REQ/ACK, CONSUMER_REG |
-| `src/utils/ipc/broker_service.cpp` | impl | `BrokerService` — channel registry, policy enforcement |
+| `src/utils/network_comm/broker_request_comm.cpp` | impl | `BrokerRequestComm` — REQ/REP-style ROUTER client; protocol frame build/parse, REG/DISC/HEARTBEAT/SCHEMA/METRICS, periodic-task scheduler. Replaces the deleted `messenger.cpp` / `messenger_protocol.cpp`. |
+| `src/utils/ipc/broker_service.cpp` | impl | `BrokerService` — sole mutator of `HubState` (channel/role/band/peer/schema records), policy enforcement, federation relay, message-processing contract per HEP-CORE-0033 §9 |
+| `src/utils/ipc/hub_state.cpp` | impl | `HubState` — authoritative state aggregate (HEP-CORE-0033 §G2). Mutated only by `BrokerService` via `_on_*` capability ops. |
 | `tests/test_layer3_datahub/` | test | Slot state machine, DRAINING, heartbeat, checksum, broker protocol |
 
 ### Related Documents

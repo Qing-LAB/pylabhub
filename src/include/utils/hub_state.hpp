@@ -31,11 +31,6 @@
  * happens outside the state lock — each mutator copies the handler list
  * under a short handlers-lock and invokes handlers without holding either
  * lock, so a handler is free to subscribe/unsubscribe or read state.
- *
- * Strategy A (HEP-0033 §G2.1): entry types here are fresh definitions in
- * `pylabhub::hub`, duplicating today's broker-internal `ChannelEntry`
- * and `Band` field sets for the duration of G2.1. G2.2 removes the
- * broker duplicates when BrokerService's maps are absorbed into HubState.
  */
 
 #include "pylabhub_utils_export.h"
