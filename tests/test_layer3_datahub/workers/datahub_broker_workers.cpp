@@ -446,6 +446,252 @@ int broker_dereg_pid_mismatch()
         logger_module(), zmq_module());
 }
 
+// ============================================================================
+// HEP-CORE-0034 Phase 3a — schema record + citation wire paths
+// ============================================================================
+
+namespace
+{
+
+/// Build a baseline REG_REQ payload that the broker accepts.  Tests below
+/// add or override fields (notably `schema_packing`, `schema_id`, `schema_hash`).
+nlohmann::json baseline_reg_req(const std::string &channel,
+                                const std::string &uid,
+                                const std::string &shm_name = "sch.shm")
+{
+    nlohmann::json req;
+    req["channel_name"]      = channel;
+    req["shm_name"]          = shm_name;
+    req["schema_version"]    = 1;
+    req["producer_pid"]      = pylabhub::platform::get_pid();
+    req["producer_hostname"] = "localhost";
+    req["role_uid"]          = uid;
+    req["role_name"]         = "test_producer";
+    return req;
+}
+
+} // anonymous namespace
+
+// ── REG_REQ creates schema record (path B, owner=role_uid) ──────────────────
+
+int broker_sch_record_path_b_created()
+{
+    return run_gtest_worker(
+        []()
+        {
+            BrokerService::Config cfg;
+            cfg.endpoint  = "tcp://127.0.0.1:0";
+            cfg.use_curve = false;
+            auto broker   = start_broker_in_thread(std::move(cfg));
+
+            const std::string channel = "broker.sch.path_b";
+            const std::string uid     = "prod.broker.sch_b.uid00000001";
+            const std::string sid     = "$lab.sch_b.frame.v1";
+
+            auto req = baseline_reg_req(channel, uid);
+            req["schema_id"]      = sid;
+            req["schema_hash"]    = aa_hex();    // 32 bytes of 0xaa
+            req["schema_packing"] = "aligned";
+            req["schema_blds"]    = "ts:f64;value:f32";
+
+            auto resp = raw_req(broker.endpoint, "REG_REQ", req);
+            ASSERT_FALSE(resp.is_null()) << "raw_req timed out";
+            EXPECT_EQ(resp.value("status", std::string{}), "success")
+                << "REG_REQ with schema_packing must succeed; got: " << resp.dump();
+
+            // Re-register with identical fields → still success.  At the
+            // registry level this is kIdempotent; at the channel level it
+            // is a same-hash re-registration that preserves consumers.
+            auto resp2 = raw_req(broker.endpoint, "REG_REQ", req);
+            EXPECT_EQ(resp2.value("status", std::string{}), "success")
+                << "Idempotent re-register must succeed; got: " << resp2.dump();
+
+            broker.stop_and_join();
+        },
+        "broker.broker_sch_record_path_b_created",
+        logger_module(), zmq_module());
+}
+
+// ── Same uid+schema_id, different hash, both with schema_packing → reject ───
+
+int broker_sch_record_hash_mismatch_self()
+{
+    return run_gtest_worker(
+        []()
+        {
+            BrokerService::Config cfg;
+            cfg.endpoint  = "tcp://127.0.0.1:0";
+            cfg.use_curve = false;
+            auto broker   = start_broker_in_thread(std::move(cfg));
+
+            const std::string channel = "broker.sch.mismatch_self";
+            const std::string uid     = "prod.broker.sch_mm.uid00000001";
+            const std::string sid     = "$lab.sch_mm.frame.v1";
+
+            auto req1 = baseline_reg_req(channel, uid);
+            req1["schema_id"]      = sid;
+            req1["schema_hash"]    = aa_hex();
+            req1["schema_packing"] = "aligned";
+            req1["schema_blds"]    = "ts:f64;value:f32";
+            auto r1 = raw_req(broker.endpoint, "REG_REQ", req1);
+            ASSERT_EQ(r1.value("status", std::string{}), "success") << r1.dump();
+
+            // Second REG_REQ — same (owner, schema_id) but different hash
+            // bytes → HubState rejects with kHashMismatchSelf, broker
+            // returns SCHEMA_HASH_MISMATCH_SELF (HEP-CORE-0034 §10.4).
+            auto req2 = req1;
+            req2["schema_hash"] = zero_hex();  // different from aa_hex
+            auto r2 = raw_req(broker.endpoint, "REG_REQ", req2);
+            ASSERT_FALSE(r2.is_null()) << "raw_req timed out";
+            EXPECT_EQ(r2.value("status", std::string{}), "error")
+                << "Second REG_REQ with different hash must NACK; got: " << r2.dump();
+            EXPECT_EQ(r2.value("error_code", std::string{}), "SCHEMA_HASH_MISMATCH_SELF")
+                << "Error code must be SCHEMA_HASH_MISMATCH_SELF; got: " << r2.dump();
+
+            broker.stop_and_join();
+        },
+        "broker.broker_sch_record_hash_mismatch_self",
+        logger_module(), zmq_module());
+}
+
+// ── Consumer citation: matching expected_packing → success ──────────────────
+
+int broker_sch_consumer_citation_match()
+{
+    return run_gtest_worker(
+        []()
+        {
+            BrokerService::Config cfg;
+            cfg.endpoint  = "tcp://127.0.0.1:0";
+            cfg.use_curve = false;
+            auto broker   = start_broker_in_thread(std::move(cfg));
+
+            const std::string channel = "broker.sch.cons_ok";
+            const std::string p_uid   = "prod.broker.sch_cok.uid00000001";
+            const std::string c_uid   = "cons.broker.sch_cok.uid00000002";
+            const std::string sid     = "$lab.sch_cok.frame.v1";
+            const std::string hash    = aa_hex();
+
+            auto reg = baseline_reg_req(channel, p_uid);
+            reg["schema_id"]      = sid;
+            reg["schema_hash"]    = hash;
+            reg["schema_packing"] = "aligned";
+            reg["schema_blds"]    = "ts:f64;value:f32";
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg)
+                          .value("status", std::string{}),
+                      "success");
+
+            nlohmann::json cons_req;
+            cons_req["channel_name"]         = channel;
+            cons_req["consumer_uid"]         = c_uid;
+            cons_req["consumer_name"]        = "test_consumer";
+            cons_req["consumer_pid"]         = pylabhub::platform::get_pid();
+            cons_req["expected_schema_hash"] = hash;
+            cons_req["expected_packing"]     = "aligned";
+            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons_req);
+            ASSERT_FALSE(cr.is_null()) << "raw_req timed out";
+            EXPECT_EQ(cr.value("status", std::string{}), "success")
+                << "Citation match must succeed; got: " << cr.dump();
+
+            broker.stop_and_join();
+        },
+        "broker.broker_sch_consumer_citation_match",
+        logger_module(), zmq_module());
+}
+
+// ── Consumer citation: WRONG expected_packing → SCHEMA_CITATION_REJECTED ────
+
+int broker_sch_consumer_citation_mismatch()
+{
+    return run_gtest_worker(
+        []()
+        {
+            BrokerService::Config cfg;
+            cfg.endpoint  = "tcp://127.0.0.1:0";
+            cfg.use_curve = false;
+            auto broker   = start_broker_in_thread(std::move(cfg));
+
+            const std::string channel = "broker.sch.cons_bad";
+            const std::string p_uid   = "prod.broker.sch_cbad.uid00000001";
+            const std::string c_uid   = "cons.broker.sch_cbad.uid00000002";
+            const std::string sid     = "$lab.sch_cbad.frame.v1";
+            const std::string hash    = aa_hex();
+
+            auto reg = baseline_reg_req(channel, p_uid);
+            reg["schema_id"]      = sid;
+            reg["schema_hash"]    = hash;
+            reg["schema_packing"] = "aligned";
+            reg["schema_blds"]    = "ts:f64;value:f32";
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg)
+                          .value("status", std::string{}),
+                      "success");
+
+            // Consumer expects same hash but DIFFERENT packing → citation
+            // resolves to fingerprint_mismatch, broker NACKs with
+            // SCHEMA_CITATION_REJECTED.
+            nlohmann::json cons_req;
+            cons_req["channel_name"]         = channel;
+            cons_req["consumer_uid"]         = c_uid;
+            cons_req["consumer_name"]        = "test_consumer";
+            cons_req["consumer_pid"]         = pylabhub::platform::get_pid();
+            cons_req["expected_schema_hash"] = hash;
+            cons_req["expected_packing"]     = "packed";  // diverges
+            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons_req);
+            ASSERT_FALSE(cr.is_null()) << "raw_req timed out";
+            EXPECT_EQ(cr.value("status", std::string{}), "error")
+                << "Mismatched packing must be NACKed; got: " << cr.dump();
+            EXPECT_EQ(cr.value("error_code", std::string{}),
+                      "SCHEMA_CITATION_REJECTED")
+                << "Error code must be SCHEMA_CITATION_REJECTED; got: " << cr.dump();
+
+            broker.stop_and_join();
+        },
+        "broker.broker_sch_consumer_citation_mismatch",
+        logger_module(), zmq_module());
+}
+
+// ── REG_REQ without schema_packing → no record created (backward compat) ────
+
+int broker_sch_no_packing_backward_compat()
+{
+    return run_gtest_worker(
+        []()
+        {
+            BrokerService::Config cfg;
+            cfg.endpoint  = "tcp://127.0.0.1:0";
+            cfg.use_curve = false;
+            auto broker   = start_broker_in_thread(std::move(cfg));
+
+            const std::string channel = "broker.sch.bc";
+            const std::string uid     = "prod.broker.sch_bc.uid00000001";
+
+            // No schema_packing → new schema-record block is skipped.
+            auto req1 = baseline_reg_req(channel, uid);
+            req1["schema_hash"] = zero_hex();
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", req1)
+                          .value("status", std::string{}),
+                      "success");
+
+            // Re-register with different hash, again without schema_packing.
+            // The OLD channel-mismatch path runs (SCHEMA_MISMATCH), proving
+            // the new HEP-0034 path was not taken (would have been
+            // SCHEMA_HASH_MISMATCH_SELF instead).
+            auto req2 = req1;
+            req2["schema_hash"] = aa_hex();
+            auto r2 = raw_req(broker.endpoint, "REG_REQ", req2);
+            ASSERT_EQ(r2.value("status", std::string{}), "error") << r2.dump();
+            EXPECT_EQ(r2.value("error_code", std::string{}), "SCHEMA_MISMATCH")
+                << "Backward-compat REG_REQ must use the legacy "
+                   "SCHEMA_MISMATCH path, not the new "
+                   "SCHEMA_HASH_MISMATCH_SELF; got: "
+                << r2.dump();
+
+            broker.stop_and_join();
+        },
+        "broker.broker_sch_no_packing_backward_compat",
+        logger_module(), zmq_module());
+}
+
 } // namespace pylabhub::tests::worker::broker
 
 // ============================================================================
@@ -480,6 +726,16 @@ struct BrokerWorkerRegistrar
                     return broker_dereg_happy_path();
                 if (scenario == "broker_dereg_pid_mismatch")
                     return broker_dereg_pid_mismatch();
+                if (scenario == "broker_sch_record_path_b_created")
+                    return broker_sch_record_path_b_created();
+                if (scenario == "broker_sch_record_hash_mismatch_self")
+                    return broker_sch_record_hash_mismatch_self();
+                if (scenario == "broker_sch_consumer_citation_match")
+                    return broker_sch_consumer_citation_match();
+                if (scenario == "broker_sch_consumer_citation_mismatch")
+                    return broker_sch_consumer_citation_mismatch();
+                if (scenario == "broker_sch_no_packing_backward_compat")
+                    return broker_sch_no_packing_backward_compat();
                 fmt::print(stderr, "ERROR: Unknown broker scenario '{}'\n", scenario);
                 return 1;
             });
