@@ -1206,8 +1206,21 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         // verify against producer's claimed hash.  Mismatch indicates
         // either a producer-side bug (BLDS doesn't match the struct)
         // or wire corruption — either way, refuse to register.
+        //
+        // HEP-CORE-0034 §6.3 / §10.1 — the canonical form covers BOTH
+        // the slot and the flexzone (if present).  The producer's
+        // `schema_hash` is computed via `compute_schema_hash(slot_spec,
+        // fz_spec)` which always includes the flexzone when set, so the
+        // broker MUST do the same.  Pre-Phase-4a this only passed the
+        // slot fields → any producer with a flexzone NACKed
+        // FINGERPRINT_INCONSISTENT.  No tests exercised the flexzone
+        // path (so the bug survived), but client-API consumers (Phase 5)
+        // would have hit it.
+        const std::string req_flexzone_blds    = req.value("flexzone_blds", "");
+        const std::string req_flexzone_packing = req.value("flexzone_packing", "");
         const auto h_recomputed = pylabhub::hub::compute_canonical_hash_from_wire(
-            entry.schema_blds, req_schema_packing);
+            entry.schema_blds, req_schema_packing,
+            req_flexzone_blds, req_flexzone_packing);
         const auto h_claimed = hex_to_hash_array(attempted_schema);
         if (h_recomputed != h_claimed)
         {
