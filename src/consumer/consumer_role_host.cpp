@@ -28,6 +28,7 @@
 #include "utils/engine_module_params.hpp"
 #include "utils/role_host_helpers.hpp"
 #include "utils/zmq_poll_loop.hpp"
+#include "utils/role_host_lifecycle.hpp"
 #include "utils/role_reg_payload.hpp"
 #include "utils/schema_utils.hpp"
 
@@ -227,13 +228,9 @@ void ConsumerRoleHost::worker_main_()
     // ── Step 6: Connect to broker, start ctrl thread, register ────────────
     core_.set_running(true);
     {
-        hub::BrokerRequestComm::Config bc_cfg;
-        bc_cfg.broker_endpoint = config_.in_hub().broker;
-        bc_cfg.broker_pubkey   = config_.in_hub().broker_pubkey;
-        bc_cfg.client_pubkey   = config_.auth().client_pubkey;
-        bc_cfg.client_seckey   = config_.auth().client_seckey;
-        bc_cfg.role_uid        = id.uid;
-        bc_cfg.role_name       = id.name;
+        // HEP-CORE-0034 Phase 5c — broker-comm config builder.
+        auto bc_cfg = scripting::make_broker_comm_config(
+            config_.in_hub(), config_.auth(), id.uid, id.name);
 
         scripting::RoleAPIBase::CtrlThreadConfig ctrl_cfg;
         ctrl_cfg.heartbeat_interval_ms = config_.timing().heartbeat_interval_ms;
@@ -300,29 +297,10 @@ void ConsumerRoleHost::worker_main_()
         scripting::run_data_loop(api_ref, core_, lcfg, ops);
     }
 
-    // Step 9: stop accepting invoke from non-owner threads.
-    engine_ref.stop_accepting();
-
-    // Step 9a: Explicitly deregister from broker (ctrl thread still running).
-    if (has_api())
-        api_ref.deregister_from_broker();
-
-    // Step 10: last script callback (ctrl still alive for final I/O).
-    engine_ref.invoke_on_stop();
-
-    // Step 11: finalize engine.
-    engine_ref.finalize();
-
-    // Step 12: signal ctrl to exit (non-destructive stop, no socket close).
-    if (broker_comm_) broker_comm_->stop();
-    core_.set_running(false);
-    core_.notify_incoming();
-
-    // Step 13: teardown infrastructure.
-    teardown_infrastructure_();
-
-    // Step 14: drain all managed threads — last.
-    api_ref.thread_manager().drain();
+    // Steps 9-14: shared epilogue (HEP-CORE-0034 Phase 5c).
+    scripting::do_role_teardown(
+        engine_ref, api_ref, core_, broker_comm_.get(), has_api(),
+        [this] { teardown_infrastructure_(); });
 }
 
 // ============================================================================
