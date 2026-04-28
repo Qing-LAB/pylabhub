@@ -1120,9 +1120,15 @@ The inbox owner dictates the checksum policy. The sender (InboxClient) reads
 
 ### 12.5 Unsolicited Broker Notifications
 
-These are pushed asynchronously by the broker to connected clients. They are received
-by the BrokerRequestComm poll loop (running on the role's ctrl thread)
-and dispatched to registered callbacks.
+These are pushed asynchronously by the broker to connected clients.  They
+are received by the `BrokerRequestComm` poll loop (running on the role's
+ctrl thread) and delivered to a single user-supplied callback registered
+via `BrokerRequestComm::on_notification(NotificationCallback cb)`.  The
+callback gets the raw `(msg_type, payload)` pair and dispatches to
+event-specific logic by `msg_type` string match — there is no
+per-event-method API on `BrokerRequestComm` itself.  Each notification
+type below documents the wire payload and the role-host's typical
+dispatch behaviour.
 
 #### CHANNEL_CLOSING_NOTIFY — Graceful Channel Shutdown (Tier 1)
 
@@ -1132,8 +1138,9 @@ Trigger:    request_close_channel(), or heartbeat timeout (producer died)
 Effect:     Channel enters Closing state. Broker starts grace period timer.
             Recipients receive event in their message queue (FIFO).
             Script is expected to call api.stop() after cleanup.
-Callback:   BrokerRequestComm::on_channel_closing(channel, cb)
-            → hub::Producer/Consumer::on_channel_closing(cb)
+Dispatch:   `on_notification(cb)` callback receives msg_type
+            "CHANNEL_CLOSING_NOTIFY"; role host queues an
+            `IncomingMessage{event="channel_closing", ...}` for the script.
 
 Payload:
   channel_name          string
@@ -1157,8 +1164,9 @@ Trigger:    Grace period expired after CHANNEL_CLOSING_NOTIFY;
             client still registered (did not send DEREG_REQ/CONSUMER_DEREG_REQ).
 Effect:     Bypasses message queue. Forces immediate shutdown_requested flag.
             Broker deregisters the channel entry.
-Callback:   BrokerRequestComm::on_force_shutdown(channel, cb)
-            → hub::Producer/Consumer::on_force_shutdown(cb)
+Dispatch:   `on_notification(cb)` callback receives msg_type
+            "FORCE_SHUTDOWN"; role host sets
+            `core_.shutdown_requested = true` directly (no queue).
 
 Payload:
   channel_name          string
@@ -1177,7 +1185,8 @@ Config: BrokerService::Config::channel_shutdown_grace (default 5s).
 Direction:  Broker → Producer
 Trigger:    Broker's periodic check_dead_consumers() detects consumer PID no longer alive
 Effect:     Producer informed that a consumer has died
-Callback:   BrokerRequestComm::on_consumer_died(channel, cb) → producer-side handler
+Dispatch:   `on_notification(cb)` callback receives msg_type
+            "CONSUMER_DIED_NOTIFY"; producer role host queues an event for the script.
 
 Payload:
   channel_name          string
@@ -1194,7 +1203,8 @@ Script host delivery: Event dict in msgs:
 Direction:  Broker → Affected client
 Trigger:    Schema mismatch on REG_REQ, connection policy rejection
 Effect:     Informs client of a protocol-level error
-Callback:   BrokerRequestComm::on_channel_error(channel, cb)
+Dispatch:   `on_notification(cb)` callback receives msg_type
+            "CHANNEL_ERROR_NOTIFY"; role host queues an event for the script.
 
 Payload:
   channel_name          string
