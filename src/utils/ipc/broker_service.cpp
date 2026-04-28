@@ -1169,6 +1169,100 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         entry.schema_owner = role_uid;
     }
 
+    // ── HEP-CORE-0034 §11.4 Phase 3b — inbox schema record (path A) ─────
+    //
+    // When the producer's REG_REQ carries inbox metadata
+    // (`inbox_endpoint` + `inbox_schema_json` + `inbox_packing`), the
+    // broker constructs a SchemaRecord under (role_uid, "inbox") so
+    // sender-side citers can resolve it via `(role_uid, "inbox")`.
+    //
+    // Canonical form mirrors `compute_inbox_schema_tag` exactly so the
+    // 32-byte SchemaRecord.hash and the 8-byte wire `schema_tag` agree
+    // bytewise (tag = hash[0..7]).
+    //
+    // Backward compat: REG_REQs without `inbox_packing` skip this block;
+    // inbox metadata is still stored on `entry` but no SchemaRecord
+    // exists for it.
+    if (!entry.inbox_endpoint.empty() &&
+        !entry.inbox_schema_json.empty() &&
+        !entry.inbox_packing.empty() &&
+        !role_uid.empty())
+    {
+        // Reject invalid packing strings up-front — mirrors the queue-layer
+        // check in `hub_inbox_queue.cpp::validate_inbox_packing`.  Without
+        // this, the broker would compute a canonical form with a bogus
+        // packing string and persist it, but no inbox queue could later
+        // bind/connect against it.
+        if (entry.inbox_packing != "aligned" && entry.inbox_packing != "packed")
+        {
+            LOGGER_WARN("Broker: REG_REQ for '{}' rejected — inbox_packing '{}' "
+                        "must be 'aligned' or 'packed'",
+                        channel_name, entry.inbox_packing);
+            return make_error(corr_id, "INVALID_INBOX_PACKING",
+                              "inbox_packing '" + entry.inbox_packing +
+                                  "' must be 'aligned' or 'packed'");
+        }
+
+        // Compute the 32-byte fingerprint over inbox fields + packing.
+        std::string canonical;
+        try
+        {
+            const auto schema_arr = nlohmann::json::parse(entry.inbox_schema_json);
+            if (!schema_arr.is_array())
+                throw std::runtime_error("inbox_schema_json is not an array");
+            canonical.reserve(schema_arr.size() * 16 + 16);
+            for (const auto &f : schema_arr)
+            {
+                canonical += f.value("type", "");
+                canonical += ':';
+                canonical += std::to_string(f.value("count", uint32_t{1}));
+                canonical += ':';
+                canonical += std::to_string(f.value("length", uint32_t{0}));
+                canonical += ';';
+            }
+        }
+        catch (const std::exception &ex)
+        {
+            LOGGER_WARN("Broker: REG_REQ inbox_schema_json invalid for '{}': {}",
+                        channel_name, ex.what());
+            return make_error(corr_id, "INBOX_SCHEMA_INVALID",
+                              std::string("inbox_schema_json parse error: ") + ex.what());
+        }
+        canonical += "|pack:";
+        canonical += entry.inbox_packing;
+
+        pylabhub::schema::SchemaRecord rec;
+        rec.owner_uid = role_uid;
+        rec.schema_id = "inbox";
+        rec.hash      = pylabhub::crypto::compute_blake2b_array(
+            canonical.data(), canonical.size());
+        rec.packing   = entry.inbox_packing;
+        rec.blds      = entry.inbox_schema_json;
+
+        using O = pylabhub::schema::SchemaRegOutcome;
+        const auto outcome = hub_state_._on_schema_registered(rec);
+        if (outcome == O::kHashMismatchSelf)
+        {
+            LOGGER_WARN("Broker: REG_REQ inbox schema record mismatch for ({}, inbox): "
+                        "existing record under producer's namespace differs",
+                        role_uid);
+            return make_error(corr_id, "SCHEMA_HASH_MISMATCH_SELF",
+                              "Inbox schema record (" + role_uid +
+                                  ", inbox) already exists with a different "
+                                  "hash or packing");
+        }
+        if (outcome == O::kForbiddenOwner)
+        {
+            return make_error(corr_id, "SCHEMA_FORBIDDEN_OWNER",
+                              "Inbox schema record (" + role_uid +
+                                  ", inbox) rejected — missing required fields");
+        }
+        // Created or Idempotent → success.  No need to set anything on
+        // `entry`: the inbox is keyed by role uid (not by channel name),
+        // so citers always look up `(producer_role_uid, "inbox")` —
+        // there is no per-channel inbox-record reference to maintain.
+    }
+
     // HubState is the sole channel store.  Replicate the historical
     // ChannelRegistry::register_channel gating semantics:
     //   - new channel: insert.
@@ -1735,11 +1829,60 @@ pylabhub::schema::SchemaLibrary& BrokerServiceImpl::get_schema_library() noexcep
 
 nlohmann::json BrokerServiceImpl::handle_schema_req(const nlohmann::json& req)
 {
-    const std::string corr_id      = req.value("correlation_id", "");
+    // Defensive: null or non-object payloads would throw inside `value()`
+    // below (`json.exception.type_error.306`), which would escape past
+    // the dispatcher's outer catch and crash the broker.  Wire payloads
+    // are always JSON objects per protocol; reject anything else.
+    if (req.is_null() || !req.is_object())
+    {
+        return make_error(/*correlation_id=*/{}, "INVALID_REQUEST",
+                          "SCHEMA_REQ payload must be a JSON object");
+    }
+
+    const std::string corr_id = req.value("correlation_id", "");
+
+    // HEP-CORE-0034 §10.3 — owner+id keying.  When both `owner` and
+    // `schema_id` are present, look up the SchemaRecord directly in
+    // HubState.schemas and return it.  This is the preferred form going
+    // forward; the legacy `channel_name` form below is retained for
+    // backward compatibility (Phase 3a clients that still ask for
+    // schemas by channel).
+    const std::string req_owner     = req.value("owner", "");
+    const std::string req_schema_id = req.value("schema_id", "");
+    if (!req_owner.empty() && !req_schema_id.empty())
+    {
+        const auto rec = hub_state_.schema(req_owner, req_schema_id);
+        if (!rec.has_value())
+        {
+            LOGGER_WARN("Broker: SCHEMA_REQ no record under ({}, {})",
+                        req_owner, req_schema_id);
+            return make_error(corr_id, "SCHEMA_UNKNOWN",
+                              "No schema record under (" + req_owner + ", " +
+                                  req_schema_id + ")");
+        }
+        nlohmann::json resp;
+        resp["status"]    = "success";
+        resp["owner"]     = rec->owner_uid;
+        resp["schema_id"] = rec->schema_id;
+        resp["packing"]   = rec->packing;
+        resp["blds"]      = rec->blds;
+        resp["schema_hash"] =
+            format_tools::bytes_to_hex({reinterpret_cast<const char *>(rec->hash.data()),
+                                         rec->hash.size()});
+        if (!corr_id.empty())
+            resp["correlation_id"] = corr_id;
+        return resp;
+    }
+
+    // Legacy form: channel_name → returns the channel's schema fields
+    // (HEP-CORE-0016 era).  Phase 3a clients with `schema_owner` set on
+    // the channel will see that field too in the response.
     const std::string channel_name = req.value("channel_name", "");
     if (channel_name.empty())
     {
-        return make_error(corr_id, "INVALID_REQUEST", "Missing 'channel_name'");
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "SCHEMA_REQ requires either ('owner' + 'schema_id') "
+                          "or 'channel_name'");
     }
     const auto entry = hub_state_.channel(channel_name);
     if (!entry.has_value())
@@ -1752,6 +1895,7 @@ nlohmann::json BrokerServiceImpl::handle_schema_req(const nlohmann::json& req)
     resp["status"]       = "success";
     resp["channel_name"] = channel_name;
     resp["schema_id"]    = entry->schema_id;
+    resp["schema_owner"] = entry->schema_owner;  // HEP-0034 — empty for legacy channels
     resp["blds"]         = entry->schema_blds;
     resp["schema_hash"]  = entry->schema_hash;
     if (!corr_id.empty())
