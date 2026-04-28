@@ -289,6 +289,17 @@ void ProcessorRoleHost::worker_main_()
             ctrl_cfg.producer_reg_opts["data_transport"]    = "zmq";
             ctrl_cfg.producer_reg_opts["zmq_node_endpoint"] = tr.zmq_endpoint;
         }
+
+        // HEP-CORE-0034 §10.1 — output schema fields (Phase 5a).
+        // Processor's REG_REQ for the OUTPUT channel populates the
+        // schema record under (uid, schema_id) so downstream consumers
+        // can cite (uid, "out_schema_id") via path A.  Same helper as
+        // producer_role_host uses.
+        const auto &pf_for_wire = config_.role_data<ProcessorFields>();
+        const auto out_wire = hub::make_wire_schema_fields(
+            pf_for_wire.out_slot_schema_json, out_slot_spec_, core_.out_fz_spec());
+        hub::apply_producer_schema_fields(ctrl_cfg.producer_reg_opts, out_wire);
+
         if (inbox_cfg_.has_inbox())
             ctrl_cfg.inbox = inbox_cfg_;
 
@@ -297,6 +308,13 @@ void ProcessorRoleHost::worker_main_()
         ctrl_cfg.consumer_reg_opts["consumer_uid"]  = id.uid;
         ctrl_cfg.consumer_reg_opts["consumer_name"] = id.name;
         ctrl_cfg.consumer_reg_opts["consumer_pid"]  = pylabhub::platform::get_pid();
+
+        // HEP-CORE-0034 §10.3 — input citation fields (Phase 5a).
+        // Same helper as consumer_role_host; mode (named/anonymous)
+        // decided by what the config produced.
+        const auto in_wire = hub::make_wire_schema_fields(
+            pf_for_wire.in_slot_schema_json, in_slot_spec_, core_.in_fz_spec());
+        hub::apply_consumer_schema_fields(ctrl_cfg.consumer_reg_opts, in_wire);
 
         if (!api_ref.start_ctrl_thread(bc_cfg, ctrl_cfg))
         {

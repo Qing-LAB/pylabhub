@@ -369,3 +369,132 @@ TEST(SchemaValidationTest, WireForm_FlexzoneIncluded)
                               from_wire_with_fz.data(),
                               from_wire_with_fz.size()));
 }
+
+// ============================================================================
+// HEP-CORE-0034 Phase 5a — make_wire_schema_fields / apply_*_schema_fields
+// ============================================================================
+
+TEST(SchemaValidationTest, MakeWireFields_NamedSchema_PopulatesId)
+{
+    // Config gave a named schema as a JSON string ("$lab.x.v1"); the
+    // helper should pull schema_id out of that.
+    const json named_form = "$lab.demo.frame.v1";
+    auto slot = make_schema({make_field("v", "float32")}, "aligned");
+    auto slot_spec = parse_schema_json(slot);
+
+    auto w = make_wire_schema_fields(named_form, slot_spec, SchemaSpec{});
+    EXPECT_EQ(w.schema_id, "$lab.demo.frame.v1");
+    EXPECT_FALSE(w.schema_blds.empty());
+    EXPECT_EQ(w.schema_packing, "aligned");
+    EXPECT_FALSE(w.schema_hash.empty());
+    EXPECT_EQ(w.schema_hash.size(), 64u);  // 32 bytes hex
+    EXPECT_TRUE(w.flexzone_blds.empty());
+    EXPECT_TRUE(w.flexzone_packing.empty());
+}
+
+TEST(SchemaValidationTest, MakeWireFields_InlineSchema_NoId)
+{
+    // Inline schema (config used an object) → schema_id stays empty
+    // (anonymous channel mode).
+    auto slot = make_schema({make_field("v", "float32")}, "aligned");
+    auto slot_spec = parse_schema_json(slot);
+
+    auto w = make_wire_schema_fields(slot, slot_spec, SchemaSpec{});
+    EXPECT_TRUE(w.schema_id.empty());
+    EXPECT_FALSE(w.schema_blds.empty());
+}
+
+TEST(SchemaValidationTest, MakeWireFields_FlexzonePopulated)
+{
+    // Slot + flexzone both present → wire fields cover both.
+    auto slot = make_schema({make_field("v", "float32")}, "aligned");
+    auto fz   = make_schema({make_field("p", "uint64")},   "packed");
+    auto slot_spec = parse_schema_json(slot);
+    auto fz_spec   = parse_schema_json(fz);
+
+    auto w = make_wire_schema_fields(nlohmann::json{}, slot_spec, fz_spec);
+    EXPECT_FALSE(w.schema_blds.empty());
+    EXPECT_EQ(w.schema_packing,    "aligned");
+    EXPECT_FALSE(w.flexzone_blds.empty());
+    EXPECT_EQ(w.flexzone_packing,  "packed");
+    // Sanity: the hash matches what compute_canonical_hash_from_wire
+    // produces for the same inputs.
+    const auto h_expected = compute_canonical_hash_from_wire(
+        w.schema_blds, w.schema_packing, w.flexzone_blds, w.flexzone_packing);
+    EXPECT_EQ(w.schema_hash,
+              ::pylabhub::format_tools::bytes_to_hex(
+                  {reinterpret_cast<const char *>(h_expected.data()),
+                   h_expected.size()}));
+}
+
+TEST(SchemaValidationTest, MakeWireFields_NoSchema_AllEmpty)
+{
+    // No slot, no flexzone → all empty (signals "no Stage-2 verification";
+    // broker takes the legacy/anonymous path).
+    auto w = make_wire_schema_fields(nlohmann::json{}, SchemaSpec{}, SchemaSpec{});
+    EXPECT_TRUE(w.schema_id.empty());
+    EXPECT_TRUE(w.schema_hash.empty());
+    EXPECT_TRUE(w.schema_blds.empty());
+    EXPECT_TRUE(w.schema_packing.empty());
+    EXPECT_TRUE(w.flexzone_blds.empty());
+    EXPECT_TRUE(w.flexzone_packing.empty());
+}
+
+TEST(SchemaValidationTest, ApplyProducerFields_AddsKeysWithSchemaPrefix)
+{
+    WireSchemaFields w;
+    w.schema_id        = "$lab.x.v1";
+    w.schema_hash      = std::string(64, 'a');
+    w.schema_blds      = "ts:f64:1:0";
+    w.schema_packing   = "aligned";
+    w.flexzone_blds    = "p:u64:1:0";
+    w.flexzone_packing = "packed";
+
+    json reg;
+    apply_producer_schema_fields(reg, w);
+    EXPECT_EQ(reg.value("schema_id",        ""), "$lab.x.v1");
+    EXPECT_EQ(reg.value("schema_hash",      ""), w.schema_hash);
+    EXPECT_EQ(reg.value("schema_blds",      ""), w.schema_blds);
+    EXPECT_EQ(reg.value("schema_packing",   ""), "aligned");
+    EXPECT_EQ(reg.value("flexzone_blds",    ""), "p:u64:1:0");
+    EXPECT_EQ(reg.value("flexzone_packing", ""), "packed");
+    // No expected_* keys leaked into the producer payload.
+    EXPECT_FALSE(reg.contains("expected_schema_id"));
+    EXPECT_FALSE(reg.contains("expected_blds"));
+}
+
+TEST(SchemaValidationTest, ApplyConsumerFields_AddsKeysWithExpectedPrefix)
+{
+    WireSchemaFields w;
+    w.schema_id        = "$lab.x.v1";
+    w.schema_hash      = std::string(64, 'a');
+    w.schema_blds      = "ts:f64:1:0";
+    w.schema_packing   = "aligned";
+    w.flexzone_blds    = "p:u64:1:0";
+    w.flexzone_packing = "packed";
+
+    json reg;
+    apply_consumer_schema_fields(reg, w);
+    EXPECT_EQ(reg.value("expected_schema_id",      ""), "$lab.x.v1");
+    EXPECT_EQ(reg.value("expected_schema_hash",    ""), w.schema_hash);
+    EXPECT_EQ(reg.value("expected_blds",           ""), w.schema_blds);
+    EXPECT_EQ(reg.value("expected_packing",        ""), "aligned");
+    EXPECT_EQ(reg.value("expected_flexzone_blds",  ""), "p:u64:1:0");
+    EXPECT_EQ(reg.value("expected_flexzone_packing", ""), "packed");
+    // No producer-side keys leaked into the consumer payload.
+    EXPECT_FALSE(reg.contains("schema_id"));
+    EXPECT_FALSE(reg.contains("schema_blds"));
+}
+
+TEST(SchemaValidationTest, ApplyFields_EmptyWireFields_NoKeysAdded)
+{
+    // Empty fields → no keys added → broker takes legacy/anonymous path.
+    WireSchemaFields w;
+    json reg;
+    apply_producer_schema_fields(reg, w);
+    EXPECT_TRUE(reg.empty());
+
+    json reg2;
+    apply_consumer_schema_fields(reg2, w);
+    EXPECT_TRUE(reg2.empty());
+}
