@@ -806,6 +806,190 @@ TEST(MyRole, ProducesExpectedValues) {
 
 Lets users test cycle logic without subprocess / broker / real queues.
 
+## 6.15 Schema citation integration (HEP-CORE-0034)
+
+**Status**: reference design for the typed C++ addon. Helpers listed
+here are not yet implemented — they land alongside `SimpleProducerHost`
+/ `SimpleConsumerHost` / `SimpleProcessorHost` (Phase 5 of this draft,
+matching HEP-CORE-0034 Phase 5d). This section is what an implementer
+should read first.
+
+### 6.15.1 Authority recap (binding rules)
+
+The typed RAII path inherits HEP-CORE-0034 §2.4 invariants verbatim. In
+particular:
+
+- **I1+I3+I4** — the typed addon never holds a schema registry, never
+  performs schema lookups by id, never performs validation on its own.
+  The broker (via `HubState::_validate_schema_citation` and the
+  REG_REQ Stage-2 fingerprint check) is the sole validator. A typed
+  wrapper that throws `SchemaValidationException` before broker sees the
+  message is a defect in the wrapper, not a defense-in-depth measure.
+- **I5** — no caches. No `static thread_local SchemaSpec` keyed on the
+  type. Each call to `make_wire_schema_fields_from_types<SlotT>` is a
+  fresh computation (it's cheap; PYLABHUB_SCHEMA_* output is constexpr
+  metadata).
+- **I6** — when the typed addon emits a fingerprint for the wire, it
+  uses HEP-0034 wire form
+  (`compute_canonical_hash_from_wire(canonical_fields_str(spec)+packing)`),
+  **not** the HEP-0002 BLDS form in `SchemaInfo::hash`. Mixing the two
+  is a category error.
+
+### 6.15.2 Typed → wire helper (the primitive)
+
+A new template helper, anticipated in `schema_utils.hpp` (HEP-0034 §15
+Phase 5d):
+
+```cpp
+namespace pylabhub::schema {
+
+/// Build a HEP-0034 §10 wire payload (slot + optional flexzone fields)
+/// from a typed C++ struct registered via PYLABHUB_SCHEMA_BEGIN/MEMBER/END.
+///
+/// The struct's compile-time field list is pulled out via
+/// `generate_schema_info<SlotT>()` (existing PYLABHUB_SCHEMA output);
+/// `canonical_fields_str` produces the §10.1 BLDS bytes; the wire fields
+/// (schema_blds, schema_packing, schema_hash, optionally
+/// flexzone_blds/flexzone_packing) are populated.
+///
+/// Path B (self-register): caller passes `schema_id` only; `schema_owner`
+/// stays empty so the broker reads "owner = role_uid".
+/// Path C (adopt hub-global): caller passes `schema_id` + `schema_owner = "hub"`.
+/// Path A (cite by id, consumer-side): not produced here — see
+/// `make_consumer_citation_fields_from_types` below.
+///
+/// **Does not** consult any registry. **Does not** validate. The wire
+/// payload it produces is what the broker checks server-side.
+template <typename SlotT, typename FzT = void>
+WireSchemaFields make_wire_schema_fields_from_types(
+    std::string_view schema_id,
+    std::string_view schema_owner = {},
+    std::string_view packing      = "aligned",
+    std::string_view fz_packing   = "aligned");
+
+} // namespace pylabhub::schema
+```
+
+Symmetric helper for consumer/processor citation:
+
+```cpp
+/// Consumer-side variant — emits expected_schema_blds / expected_packing
+/// / expected_schema_hash (and optional expected_schema_id for named
+/// citation).  Defense-in-depth: even when `expected_schema_id` is set,
+/// the structure fields are still emitted so the broker can run the
+/// FINGERPRINT_INCONSISTENT check in `handle_consumer_reg_req` (HEP-0034 §10.3).
+template <typename SlotT, typename FzT = void>
+WireSchemaFields make_consumer_citation_fields_from_types(
+    std::string_view expected_schema_id    = {},
+    std::string_view expected_schema_owner = {},
+    std::string_view packing               = "aligned",
+    std::string_view fz_packing            = "aligned");
+```
+
+### 6.15.3 Where the helpers are used
+
+Three call sites in the typed host classes:
+
+| Host | Helper call | Wire message |
+|------|-------------|--------------|
+| `SimpleProducerHost<SlotT, FzT>::start()` | `make_wire_schema_fields_from_types<SlotT, FzT>(opts.schema_id, opts.schema_owner)` | REG_REQ |
+| `SimpleConsumerHost<SlotT, FzT>::start()` | `make_consumer_citation_fields_from_types<SlotT, FzT>(opts.expected_schema_id, opts.expected_schema_owner)` | CONSUMER_REG_REQ |
+| `SimpleProcessorHost<InT, OutT>::start()` | both — input as consumer, output as producer | CONSUMER_REG_REQ + REG_REQ |
+
+The helpers are called once at host construction, results held in
+`WireSchemaFields` and pasted into the JSON payload via
+`apply_producer_schema_fields` / `apply_consumer_schema_fields` (already
+exists, HEP-0034 §15 Phase 5a).
+
+### 6.15.4 Compile-time checks the typed hosts perform
+
+```cpp
+// Inside SimpleProducerHost<SlotT, FzT>:
+static_assert(pylabhub::schema::has_schema_registry_v<SlotT>,
+              "SlotT must be registered with PYLABHUB_SCHEMA_BEGIN/MEMBER/END");
+static_assert(sizeof(SlotT) > 0,
+              "SlotT must be a non-empty type");
+
+// When FzT != void:
+static_assert(pylabhub::schema::has_schema_registry_v<FzT>,
+              "FzT must be registered with PYLABHUB_SCHEMA macros");
+```
+
+These are the only compile-time schema checks. There is no
+`static_assert(hash<SlotT>() == lib.get(id)->hash)` — the broker is the
+authority (§2.4 I4); compile-time can't see the broker; runtime via
+REG_REQ NACK is the safety net.
+
+### 6.15.5 Path-C preflight (optional, never required)
+
+A typed host adopting a hub-global may want to fail fast in the
+constructor if the local cache file disagrees with the type. This is a
+**local check only**, never a registry interaction:
+
+```cpp
+// In application code, NOT inside SimpleProducerHost:
+auto entry  = pylabhub::schema::load_from_file(role_dir / "schemas" /
+                                                (opts.schema_id + ".json"));
+auto info   = pylabhub::schema::generate_schema_info<MySlot>();
+if (info.blds != entry.slot.canonical_blds()) {
+    return Result::error("local schema cache disagrees with MySlot layout");
+}
+SimpleProducerHost<MySlot> host{...};  // proceed knowing local cache matches
+```
+
+The framework does **not** offer a `validate_against_local_cache<T>(id)`
+helper — applications that want this can write 5 lines of glue (parse,
+generate, compare). Adding a framework helper would invite users to
+treat the cache file as authoritative, which it is not (§2.4 I8).
+
+### 6.15.6 Inbox + band typing (resolves §9 Q3)
+
+For typed inbox (`TypedInboxClient<MsgT>`) and typed band
+(`TypedBand<EventT>`):
+
+- `static_assert(pylabhub::schema::has_schema_registry_v<MsgT>)` for
+  inbox; band payloads are JSON (HEP-CORE-0030 §1) so no schema check.
+- Runtime size check on first `send()` if the inbox schema differs.
+- The inbox schema is registered once at `build_api()` time — driven by
+  the role's config, not the typed wrapper. The typed wrapper consumes
+  the schema; it does not register it.
+
+This is consistent with §2.4 I4 (broker is the validator); the typed
+wrapper does not duplicate the check.
+
+### 6.15.7 What the typed addon does NOT need
+
+To keep §2.4 invariants visible at the Surface a future implementer
+will copy from:
+
+- **No client-side `SchemaLibrary` reference**. The deleted-by-Phase-4
+  surface (`get`, `identify`, `list`, `register_schema`) is not coming
+  back in any guise.
+- **No `validate_named_schema<T,F>(id, lib)` template**. Was deleted
+  alongside the `SchemaLibrary` state surface; the replacement is the
+  broker NACK on REG_REQ + the `make_*_fields_from_types<>` helpers
+  above.
+- **No reverse-by-hash lookup helper**. Forbidden under
+  namespace-by-owner (§2.4 I7).
+- **No schema-side cache or memoisation in the typed addon**. PYLABHUB_SCHEMA
+  output is already constexpr; a runtime cache would re-introduce I5
+  state.
+
+### 6.15.8 Implementer checklist (Phase 5d)
+
+When the templated wire-fields builder is implemented:
+
+- [ ] `make_wire_schema_fields_from_types<SlotT, FzT>(...)` in `schema_utils.hpp`.
+- [ ] `make_consumer_citation_fields_from_types<SlotT, FzT>(...)` symmetric.
+- [ ] Unit tests covering: PYLABHUB_SCHEMA-registered struct → expected
+      `WireSchemaFields`; flexzone present and absent; named vs anonymous
+      citation; schema_owner = "hub" path-C output; round-trip via
+      `apply_*_schema_fields` produces the same JSON keys as the
+      Phase 5a helpers' non-templated path.
+- [ ] HEP-CORE-0034 §15 Phase 5d entry updated: mark shipped, link to
+      this §6.15 from the phase description.
+- [ ] Cross-link from `schema_utils.hpp` doc-comment back here.
+
 ## 7. Migration Path (revised)
 
 ### Phase 1: Timing unification ✅ DONE 2026-03-29
@@ -962,15 +1146,13 @@ abstraction documentation.
    Exception → `write_discard()` (safe default, matches the
    `cleanup_on_shutdown` contract in the manual `CycleOps` classes
    per HEP-CORE-0024 §15.2). Settled.
-3. **Typed inbox / band schema discovery at compile time.**
-   `TypedInboxClient<MsgT>` should `static_assert(sizeof(MsgT)
-   == inbox_schema_payload_size)` where determinable — but the
-   inbox schema is registered at runtime (build_api time). Compile-time
-   check is best-effort; runtime check is the safety net. Open question:
-   should the addon offer a macro / sizeof-traits helper for users to
-   declare their schema↔struct correspondence, or should we trust
-   `static_assert(sizeof(MsgT) > 0)` plus runtime size check at first
-   `send()`? Likely the latter for v1; macro can come later.
+3. **Typed inbox / band schema discovery at compile time.** **Resolved
+   2026-04-28** (see §6.15.6). The compile-time check is
+   `static_assert(has_schema_registry_v<MsgT>)` for inbox; runtime size
+   check on first `send()` is the safety net. No new macro is
+   introduced — the existing `PYLABHUB_SCHEMA_*` registration is the
+   source of truth, and broker NACK is the validator (HEP-CORE-0034
+   §2.4 I4). The typed addon does not duplicate validation responsibility.
 4. **`TypedBand<EventT>` JSON serialisation requirements.**
    `nlohmann::json j = event;` requires either ADL `to_json` /
    `from_json` free functions for `EventT`, or an
@@ -992,6 +1174,13 @@ abstraction documentation.
 - HEP-CORE-0024 §15 (Role Plurality — explains why the manual
   `CycleOps` classes are the script path's equivalent of what RAII is
   doing on the C++ user side).
+- **HEP-CORE-0034 §2.4** (Module ownership and runtime invariants —
+  binding rules for §6.15 schema integration; I1 single mutator, I3
+  single reader, I4 single validator, I5 stateless parser, I6
+  canonical-form rule, I7 no reverse-by-hash).
+- **HEP-CORE-0034 §15 Phase 5d** (typed C++ API surface — where
+  `make_wire_schema_fields_from_types<>` and
+  `make_consumer_citation_fields_from_types<>` are scheduled to ship).
 - `docs/todo/API_TODO.md` "Template RAII" section (where the remaining
   Phase 2-4 work is tracked).
 - `src/include/utils/slot_iterator.hpp` (current implementation —
@@ -1000,3 +1189,6 @@ abstraction documentation.
   — Phase 3 target).
 - `src/include/utils/role_api_base.hpp` (the API class the RAII path
   sources queues + facilities from).
+- `src/include/utils/schema_utils.hpp` (host of the templated wire-fields
+  helpers per §6.15.2 / Phase 5d; co-located with the existing
+  `make_wire_schema_fields` non-templated path from Phase 5a).

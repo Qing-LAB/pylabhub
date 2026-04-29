@@ -3516,7 +3516,7 @@ selection rules that govern the bridge Processor.
 | `src/include/utils/messenger.hpp` | `Messenger` — **OBSOLETE**, replaced by `BrokerRequestComm` |
 | `src/include/utils/broker_service.hpp` | `BrokerService` — channel registry, policy enforcement |
 | `src/include/utils/schema_blds.hpp` | BLDS generation, `SchemaRegistry<T>` traits |
-| `src/include/utils/schema_library.hpp` | `SchemaLibrary` — stateless file loader for hub-globals + role-side caches (HEP-0034 §4); replaces HEP-0016-era SchemaStore singleton |
+| `src/include/utils/schema_loader.hpp` | Stateless schema-file parsers (`load_from_file`, `load_from_string`, `load_all_from_dirs`, `default_search_dirs`) for hub-globals + role-side caches (HEP-CORE-0034 §2.4 I5); replaces HEP-0016-era stateful `SchemaLibrary` + `SchemaStore` singleton |
 
 ### Implementation
 | File | Description |

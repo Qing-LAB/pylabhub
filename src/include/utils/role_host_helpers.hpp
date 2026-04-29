@@ -89,7 +89,8 @@ inline bool wait_for_roles(hub::BrokerRequestComm        &brc,
 
 /**
  * @brief Serialize an inbox hub::SchemaSpec into the JSON format expected by
- * ProducerOptions/ConsumerOptions for broker registration.
+ * the broker's REG_REQ `inbox_schema_json` wire field (HEP-CORE-0027 §3,
+ * HEP-CORE-0034 §11.4).
  *
  * @param spec  The resolved inbox schema spec.
  * @return JSON object with "fields" array matching the spec.
@@ -119,7 +120,9 @@ inline nlohmann::json serialize_inbox_spec_json(const hub::SchemaSpec &spec)
 // ============================================================================
 
 /**
- * @brief Result of inbox queue setup — used to populate ProducerOptions/ConsumerOptions.
+ * @brief Result of inbox queue setup — fields consumed by producer/consumer/processor
+ *        role hosts to populate their REG_REQ inbox metadata (HEP-CORE-0027,
+ *        HEP-CORE-0034 §11.4).
  */
 struct InboxSetupResult
 {

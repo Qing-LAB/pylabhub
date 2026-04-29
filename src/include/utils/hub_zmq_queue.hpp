@@ -91,8 +91,9 @@ namespace pylabhub::hub
 struct ZmqQueueImpl;
 
 /// Default depth for ZmqQueue internal ring buffers (PULL recv ring and PUSH send ring).
-/// Used as the default argument in pull_from() / push_to() and in ProducerOptions /
-/// ConsumerOptions so all callers share the same default without embedding a magic 64.
+/// Used as the default argument in `pull_from()` / `push_to()` and as the default for
+/// the role-config `zmq_buffer_depth` field so all callers share the same default
+/// without embedding a magic 64.
 inline constexpr size_t kZmqDefaultBufferDepth = 64;
 
 /**
