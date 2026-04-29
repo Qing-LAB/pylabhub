@@ -1575,14 +1575,15 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     //   Named: expected_schema_id present.  Consumer is asserting it
     //     knows the schema by name (presumably has the structure cached
     //     locally).  Hash check is sufficient.  If the consumer ALSO
-    //     supplies expected_blds + expected_packing, the broker
-    //     opportunistically verifies the consumer's local structure
-    //     against the channel's hash (defense-in-depth — catches
-    //     consumer-side hash/blds drift).
+    //     supplies expected_schema_blds + expected_schema_packing, the
+    //     broker opportunistically verifies the consumer's local
+    //     structure against the channel's hash (defense-in-depth —
+    //     catches consumer-side hash/blds drift).
     //
     //   Anonymous: expected_schema_id empty AND any other expected_*
     //     field set.  Consumer must supply the full structure
-    //     (expected_blds + expected_packing); expected_schema_hash is
+    //     (expected_schema_blds + expected_schema_packing);
+    //     expected_schema_hash is
     //     optional but, if present, must match the recomputed hash.
     //     Broker recomputes h_c from the structure and compares to the
     //     channel's schema_hash.
@@ -1591,8 +1592,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     //     "I don't care about schema").
     const std::string expected_schema_id    = req.value("expected_schema_id", "");
     const std::string expected_hash_hex     = req.value("expected_schema_hash", "");
-    const std::string expected_blds         = req.value("expected_blds", "");
-    const std::string expected_packing      = req.value("expected_packing", "");
+    const std::string expected_blds         = req.value("expected_schema_blds", "");
+    const std::string expected_packing      = req.value("expected_schema_packing", "");
     // HEP-0034 §10.3 — flexzone mirrors the producer-side wire fields
     // (Phase 5a).  When the consumer's structure includes flexzone, the
     // recomputed fingerprint must include it too — otherwise the
@@ -1633,20 +1634,23 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
         {
             if (expected_blds.empty())
                 return make_error(corr_id, "MISSING_BLDS",
-                                  "expected_blds required when expected_packing "
-                                  "is provided alongside named citation");
+                                  "expected_schema_blds required when "
+                                  "expected_schema_packing is provided alongside "
+                                  "named citation");
             if (expected_packing.empty())
                 return make_error(corr_id, "MISSING_PACKING",
-                                  "expected_packing required when expected_blds "
-                                  "is provided alongside named citation");
+                                  "expected_schema_packing required when "
+                                  "expected_schema_blds is provided alongside "
+                                  "named citation");
             const auto h_c = pylabhub::hub::compute_canonical_hash_from_wire(
                 expected_blds, expected_packing,
                 expected_fz_blds, expected_fz_packing);
             if (h_c != hex_to_hash_array(channel_entry->schema_hash))
                 return make_error(corr_id, "FINGERPRINT_INCONSISTENT",
-                                  "Consumer's expected_blds + expected_packing "
-                                  "does not hash to the channel's schema_hash; "
-                                  "named-citation defense-in-depth (HEP-0034 §10.3)");
+                                  "Consumer's expected_schema_blds + "
+                                  "expected_schema_packing does not hash to the "
+                                  "channel's schema_hash; named-citation "
+                                  "defense-in-depth (HEP-0034 §10.3)");
         }
     }
     else if (!expected_hash_hex.empty() || !expected_blds.empty() || !expected_packing.empty()
@@ -1656,10 +1660,10 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
         if (expected_blds.empty())
             return make_error(corr_id, "MISSING_BLDS_FOR_ANONYMOUS_CITATION",
                               "Anonymous citation (no expected_schema_id) requires "
-                              "expected_blds (HEP-CORE-0034 §10.3)");
+                              "expected_schema_blds (HEP-CORE-0034 §10.3)");
         if (expected_packing.empty())
             return make_error(corr_id, "MISSING_PACKING_FOR_ANONYMOUS_CITATION",
-                              "Anonymous citation requires expected_packing");
+                              "Anonymous citation requires expected_schema_packing");
 
         const auto h_c = pylabhub::hub::compute_canonical_hash_from_wire(
             expected_blds, expected_packing,
@@ -1673,7 +1677,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
             if (h_c != hex_to_hash_array(expected_hash_hex))
                 return make_error(corr_id, "FINGERPRINT_INCONSISTENT",
                                   "expected_schema_hash does not match BLAKE2b-256 of "
-                                  "canonical(expected_blds || \"|pack:\" + expected_packing)");
+                                  "canonical(expected_schema_blds || \"|pack:\" + "
+                                  "expected_schema_packing)");
         }
 
         // Compare against producer's hash on the channel.

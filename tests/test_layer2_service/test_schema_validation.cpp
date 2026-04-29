@@ -460,7 +460,7 @@ TEST(SchemaValidationTest, ApplyProducerFields_AddsKeysWithSchemaPrefix)
     EXPECT_EQ(reg.value("flexzone_packing", ""), "packed");
     // No expected_* keys leaked into the producer payload.
     EXPECT_FALSE(reg.contains("expected_schema_id"));
-    EXPECT_FALSE(reg.contains("expected_blds"));
+    EXPECT_FALSE(reg.contains("expected_schema_blds"));
 }
 
 TEST(SchemaValidationTest, ApplyConsumerFields_AddsKeysWithExpectedPrefix)
@@ -477,8 +477,8 @@ TEST(SchemaValidationTest, ApplyConsumerFields_AddsKeysWithExpectedPrefix)
     apply_consumer_schema_fields(reg, w);
     EXPECT_EQ(reg.value("expected_schema_id",      ""), "$lab.x.v1");
     EXPECT_EQ(reg.value("expected_schema_hash",    ""), w.schema_hash);
-    EXPECT_EQ(reg.value("expected_blds",           ""), w.schema_blds);
-    EXPECT_EQ(reg.value("expected_packing",        ""), "aligned");
+    EXPECT_EQ(reg.value("expected_schema_blds",           ""), w.schema_blds);
+    EXPECT_EQ(reg.value("expected_schema_packing",        ""), "aligned");
     EXPECT_EQ(reg.value("expected_flexzone_blds",  ""), "p:u64:1:0");
     EXPECT_EQ(reg.value("expected_flexzone_packing", ""), "packed");
     // No producer-side keys leaked into the consumer payload.
