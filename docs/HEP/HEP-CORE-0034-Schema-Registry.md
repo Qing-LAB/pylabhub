@@ -39,6 +39,23 @@ The table below names the files; the binding rules live in §2.4.
 | Legacy HEP-0016 Cases A and B in `handle_reg_req` (auto-annotate by id, reverse-lookup by hash) | Compared HEP-0034 wire-form `attempted_schema` against HEP-0002 `SchemaInfo::hash` — different canonical forms (§2.4 I6). Reverse-by-hash also forbidden under namespace-by-owner (§2.4 I7). Deleted Phase 4. |
 | `BrokerServiceImpl::schema_lib_` member + `get_schema_library()` accessor | Lazy-init parser-state held inside dispatcher. After demotion `schema_loader` is stateless, so the accessor has no purpose. Replaced by direct free-function call in `load_hub_globals_`. Deleted Phase 4. |
 
+**Two parallel field-definition types — by design.** The schema subsystem
+carries two distinct field types in different namespaces, bridged by a
+pure translator:
+
+| Type | Namespace | Members | Purpose |
+|------|-----------|---------|---------|
+| `SchemaFieldDef` | `pylabhub::schema` | `name`, `type` (string), `count`, `unit`, `description` | File-form: parsed from a JSON schema file.  Carries optional `unit` / `description` metadata for documentation and tooling. |
+| `FieldDef` | `pylabhub::hub` | `name`, `type_str`, `count`, `length` | Runtime form: consumed by queues (ZmqQueue, InboxQueue) and the canonical-form helpers (`canonical_fields_str`, `compute_canonical_hash_from_wire`). Carries `length` for variable-width types (`string`, `bytes`); `unit`/`description` are dropped because the runtime path does not need them. |
+
+The translator is `schema_entry_to_spec(SchemaLayoutDef) → SchemaSpec`
+in `src/include/utils/schema_utils.hpp`.  It maps the JSON-form `"char"`
+type to the runtime-form `"string"` (with `length = count` propagated
+through), and otherwise propagates `name` / `type` / `count` verbatim.
+Round-trip through the translator preserves every field affecting the
+fingerprint; the `unit` / `description` metadata is intentionally
+dropped at the runtime boundary.
+
 ---
 
 ## 1. Motivation
@@ -279,6 +296,29 @@ struct ChannelEntry {
 The pair `(schema_owner, schema_id)` is a foreign key into `HubState.schemas`.
 The hub guarantees referential integrity at mutation time (a channel's
 `schema_owner` is always either `hub` or the producer of that channel).
+
+**Denormalized cache fields.** `ChannelEntry` also carries `schema_hash`
+(hex 64), `schema_blds` (canonical wire form), and `schema_packing` directly
+on the channel.  These are **denormalized cache copies** of values that
+appear in the referenced `SchemaRecord`; they exist for two reasons:
+
+1. **Channel-mismatch gate** (HEP-0007 Cat-1 invariant) — re-registration
+   of an existing channel name with a different schema_hash is rejected
+   without consulting `HubState.schemas`, since the gate runs in the same
+   mutator section as the SchemaRecord lookup and the per-channel cache
+   is the authoritative comparison key for that gate.
+2. **Anonymous channels** (no `schema_owner`) — for legacy / pre-Phase-3
+   producers that send no `schema_id`, no SchemaRecord exists; the
+   channel's cached fields are the only source of truth.
+
+For path-B / path-C channels, the cache and the SchemaRecord agree by
+construction at registration time and stay in sync because they share an
+owner-bound lifetime: the SchemaRecord is created or adopted in the same
+REG_REQ that populated the channel cache, and both are evicted in the
+same `_on_role_deregistered` cascade.  Code that needs the *current*
+canonical form should still prefer reading the SchemaRecord via
+`HubState::schema(owner, id)` when both are available — the cache is for
+the channel-mismatch gate, not for general consultation.
 
 ---
 
@@ -755,6 +795,49 @@ inbox metadata remains supported and is the recommended path for
 sender-side configuration. `SCHEMA_REQ(receiver_uid, "inbox")` is an
 equivalent lower-level fallback that returns just the schema record;
 `ROLE_INFO_REQ` additionally returns the endpoint and checksum policy.
+
+**Inbox canonical form.** Inbox tags use a **different canonical form**
+than slot/flexzone schemas (§6.3) — deliberately, because inbox messages
+are envelope-typed and carry no field names on the wire (the receiver
+already knows the schema by `(receiver_uid, "inbox")` lookup):
+
+```
+canon_inbox(fields) = "type:count:length;" per field, concatenated
+canonical_inbox     = canon_inbox(fields) + "|pack:" + packing
+fingerprint_inbox   = BLAKE2b-256(canonical_inbox)
+schema_tag          = fingerprint_inbox[0..8]   (first 8 bytes; runtime guard)
+```
+
+Worked example for `[{"name":"sender_uid","type":"uint64"},
+{"name":"timestamp","type":"float64"},{"name":"payload","type":"bytes","length":256}]`
+with `packing="aligned"`:
+
+```
+canon_inbox = "uint64:1:0;float64:1:0;bytes:1:256;"
+canonical   = "uint64:1:0;float64:1:0;bytes:1:256;|pack:aligned"
+fingerprint = BLAKE2b-256("uint64:1:0;float64:1:0;bytes:1:256;|pack:aligned")
+```
+
+Differences from the slot/flexzone canonical form (§6.3):
+
+| Aspect | Slot/flexzone (§6.3) | Inbox (§11.4) |
+|---|---|---|
+| Field-name component | included (`name:type:count:length`) | omitted (`type:count:length`) |
+| Field separator | `\|` | `;` |
+| Section prefix | `slot:` (and optional `\|fz:`) | none |
+| Wire envelope | named-field msgpack array | envelope-typed bin payload |
+| Tag length on wire | 32 bytes (in SchemaRecord) | 8 bytes (msgpack frame) |
+
+Both forms are computed via `BLAKE2b-256` and stored as
+`SchemaRecord.hash` for their respective records; the broker's REG_REQ
+inbox handler (`broker_service.cpp::handle_reg_req`) and
+`compute_inbox_schema_tag` (`hub_inbox_queue.cpp`) build identical
+canonical bytes so the 32-byte SchemaRecord.hash and the 8-byte wire
+schema_tag agree bytewise (`tag = hash[0..8]`).
+
+Implementations: `compute_inbox_schema_tag` in
+`src/utils/hub/hub_inbox_queue.cpp`; broker-side mirror in
+`src/utils/ipc/broker_service.cpp::handle_reg_req` (path-A inbox block).
 
 ---
 

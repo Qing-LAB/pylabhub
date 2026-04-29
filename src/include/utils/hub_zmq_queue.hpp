@@ -10,7 +10,9 @@
  * Each ZMQ message is encoded as a msgpack fixarray of 4 elements:
  *   [magic:uint32, schema_tag:bin8, seq:uint64, payload]
  *   - magic      : 0x51484C50 ('PLHQ') — frame identity guard
- *   - schema_tag : first 8 bytes of BLAKE2b-256(BLDS) — schema identity guard
+ *   - schema_tag : first 8 bytes of BLAKE2b-256 over the HEP-CORE-0034 §6.3
+ *                  canonical wire form (`compute_schema_hash(slot_spec, fz_spec)`);
+ *                  NOT the HEP-0002 BLDS short form — schema identity guard
  *   - seq        : monotonic send counter (uint64, wraps around); gaps are counted
  *   - payload    : msgpack array of N typed field values:
  *       scalar field  → native msgpack type (int32, float64, bool, …)
@@ -133,7 +135,9 @@ public:
      * @param bind              If true, bind; otherwise connect.
      * @param max_buffer_depth  Drop oldest item when internal buffer exceeds this depth.
      * @param schema_tag        Optional 8-byte identity guard (first 8 B of BLAKE2b-256
-     *                          of BLDS).  Mismatched tags → recv_frame_error_count++.
+     *                          over the HEP-CORE-0034 §6.3 canonical wire form,
+     *                          via `compute_schema_hash(slot_spec, fz_spec)`).
+     *                          Mismatched tags → recv_frame_error_count++.
      * @param instance_id       Caller-provided stable identifier (e.g. role_tag+uid+":rx").
      *                          Used as the ThreadManager owner_id for the recv thread;
      *                          MUST be unique across every ZmqQueue live at the same
