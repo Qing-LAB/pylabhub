@@ -756,13 +756,21 @@ Payload (REG_REQ):
   channel_name          string   Channel identifier (e.g. "lab.sensors.raw")
   shm_name              string   SHM segment name (= channel_name when has_shared_memory)
   producer_pid          uint64   Producer process ID
-  schema_hash           string   64-char hex BLAKE2b-256 hash (or empty)
-  schema_version        uint32   Schema version number
   has_shared_memory     bool     Whether SHM segment exists
   role_name             string   (opt) Human-readable producer name
-  role_uid              string   (opt) Producer UID (e.g. "PROD-MySensor-A1B2C3D4")
-  schema_id             string   (opt) Named schema ID (e.g. "lab.sensors.temperature.raw@1")
-  schema_blds           string   (opt) BLDS type description string
+  role_uid              string   (opt) Producer UID
+                                 (HEP-CORE-0033 §G2.2.0a: "$<base>.uid<8hex>")
+
+  # Schema-citation fields — see HEP-CORE-0034 §10.1 for the full
+  # schema-related wire-field list (schema_id / schema_owner /
+  # schema_hash / schema_blds / schema_packing / flexzone_blds /
+  # flexzone_packing) and HEP-CORE-0034 §6.3 for the canonical-form
+  # rule.  HEP-0007 is the message-frame contract; HEP-0034 owns the
+  # schema-field semantics.
+
+  # Inbox-citation fields — see HEP-CORE-0027 §4.1 (inbox_endpoint /
+  # inbox_schema_json / inbox_packing / inbox_checksum) and
+  # HEP-CORE-0034 §11.4 for owner-keyed storage.
 
 Payload (REG_ACK):
   status                string   "success"
@@ -866,7 +874,17 @@ Payload (CONSUMER_REG_REQ):
   consumer_hostname     string
   consumer_uid          string   (opt) Consumer UID
   consumer_name         string   (opt) Human-readable name
-  expected_schema_id    string   (opt) Validate schema matches this ID
+
+  # Schema-citation fields — see HEP-CORE-0034 §10.2 + §10.3 for the
+  # full citation field list and rules:
+  #   Named mode:     expected_schema_id + expected_schema_hash (required);
+  #                   expected_schema_blds + expected_schema_packing (optional,
+  #                   defense-in-depth)
+  #   Anonymous mode: expected_schema_blds + expected_schema_packing
+  #                   (required); expected_schema_hash (optional,
+  #                   self-consistency)
+  #   Plus expected_flexzone_blds / expected_flexzone_packing when the
+  #   citer's structure includes a flexzone.
 
 Payload (CONSUMER_REG_ACK):
   status                string   "success"
@@ -915,9 +933,15 @@ Payload (SCHEMA_ACK):
   status                string   "success" | error reason
   owner                 string   echo
   schema_id             string   echo
-  schema_hash           string   64-char hex hash (BLAKE2b-256(canonical || packing))
+  schema_hash           string   64-char hex hash; BLAKE2b-256 over the
+                                 HEP-CORE-0034 §6.3 canonical wire form
+                                 ("slot:" + canon_fields + "|pack:" + packing
+                                 [+ flexzone section]).
   packing               string   "aligned" | "packed"
-  blds                  string   canonical BLDS for ctypes reconstruction
+  blds                  string   canonical wire-form BLDS for ctypes
+                                 reconstruction (HEP-CORE-0034 §6.3 form,
+                                 NOT the HEP-CORE-0002 BLDS short-token form
+                                 used in SHM-header SchemaInfo)
 ```
 
 The HEP-0016-era channel-keyed lookup (`SCHEMA_REQ { channel_name }`) is
