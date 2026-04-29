@@ -129,4 +129,34 @@ int broker_sch_path_c_unknown_global();
  *  not "hub") → SCHEMA_FORBIDDEN_OWNER. */
 int broker_sch_path_x_forbidden_owner();
 
+// ── Wire-fields helpers × broker integration tests ──────────────────────────
+//
+// These three workers verify that JSON payloads built by the production
+// wire-fields helpers (`make_wire_schema_fields` + `apply_producer_schema_fields`
+// / `apply_consumer_schema_fields` in `schema_utils.hpp`) are accepted by a
+// real `BrokerService` and round-trip through SCHEMA_REQ with the
+// helper-emitted fingerprint matching the broker-stored fingerprint.
+
+/** Named-citation path: producer REG_REQ + consumer CONSUMER_REG_REQ both
+ *  built by the helpers; SCHEMA_REQ pins helper hash == broker hash;
+ *  idempotent re-register succeeds.  Pins HEP-CORE-0034 §6.3 + §10.1/10.2
+ *  + §2.4 I6 end-to-end (slot only). */
+int broker_sch_wire_helpers_register_and_cite();
+
+/** Anonymous-citation path: producer registers under named mode; consumer
+ *  uses the helper with a non-string `slot_schema_json` so `WireSchemaFields::schema_id`
+ *  stays empty while structure fields populate.  Pins the
+ *  `is_string()` mode-selection seam in `make_wire_schema_fields` and
+ *  HEP-0034 §10.3 broker anonymous-mode dispatch. */
+int broker_sch_wire_helpers_anonymous_citation();
+
+/** Slot + flexzone round-trip via helpers: producer's REG_REQ carries
+ *  `flexzone_blds` / `flexzone_packing` in addition to the slot fields;
+ *  helper folds both into the §6.3 canonical hash; broker recomputes
+ *  matching bytes; consumer cites with full slot+fz structure and
+ *  defense-in-depth recompute on the broker side includes the fz
+ *  fields.  Pins the Phase 4a flexzone-in-canonical-form fix and its
+ *  Phase 5a consumer-side mirror. */
+int broker_sch_wire_helpers_flexzone_round_trip();
+
 } // namespace pylabhub::tests::worker::broker
