@@ -647,7 +647,7 @@ This is an architecture overview document. The source files that implement each 
 | **pylabhub-producer** | `src/producer/producer_main.cpp`, `src/producer/producer_script_host.cpp` |
 | **pylabhub-consumer** | `src/consumer/consumer_main.cpp`, `src/consumer/consumer_script_host.cpp` |
 | **pylabhub-processor** | `src/processor/processor_main.cpp`, `src/processor/processor_script_host.cpp` |
-| **SchemaLibrary** | `src/include/utils/schema_library.hpp`, `src/utils/schema/schema_library.cpp` (stateless file loader; HEP-0034 §4) |
+| **schema_loader** | `src/include/utils/schema_loader.hpp`, `src/utils/schema/schema_loader.cpp` (stateless file parsers; HEP-CORE-0034 §2.4 I5) |
 | **HubState.schemas** | `src/include/utils/hub_state.hpp` — authoritative runtime registry, replacing the HEP-0016-era `SchemaStore` lifecycle singleton (removed by HEP-0034 Phase 4) |
 | **LoopPolicy** | `src/include/plh_datahub.hpp` (DataBlock timing) |
 

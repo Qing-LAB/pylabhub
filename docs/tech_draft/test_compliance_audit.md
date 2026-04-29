@@ -178,7 +178,7 @@ File locations: all under `tests/` (path prefix omitted).
 | `test_datahub_role_flexzone.cpp` | 4 | 0 | **V1** | `static s_lifecycle_` + `SetUpTestSuite` at line 41. Comment at line 10 notes the intent. |
 | `test_datahub_role_state_machine.cpp` | 0 | 4 | **P3** | `IsolatedProcessTest`. |
 | `test_datahub_schema_blds.cpp` | 0 | 10 | **P3** | `IsolatedProcessTest`. |
-| `test_datahub_schema_library.cpp` | 0 | 0 | **P1** | Explicit file-header comment (line 5): *"SchemaLibrary is a plain utility class (no SHM, no ZMQ, no lifecycle)"*. |
+| `test_datahub_schema_loader.cpp` | 0 | 0 | **P1** | Renamed from `test_datahub_schema_library.cpp` in HEP-CORE-0034 Phase 4c (2026-04-28). Pure parser tests; no SHM, no ZMQ, no lifecycle. |
 | `test_datahub_schema_registry.cpp` | 3 | 0 | **V1** | `static s_lifecycle_` + `SetUpTestSuite` at line 60. |
 | `test_datahub_schema_validation.cpp` | 0 | 5 | **P3** | `IsolatedProcessTest`. |
 | `test_datahub_stress_raii.cpp` | 0 | 2 | **P3** | `IsolatedProcessTest`. |

@@ -6,7 +6,7 @@
 #include "utils/channel_pattern.hpp"
 
 #include "utils/recovery_api.hpp"
-#include "utils/schema_library.hpp"
+#include "utils/schema_loader.hpp"
 #include "utils/schema_utils.hpp"  // canonical_fields_str, compute_canonical_hash_from_wire
 
 #include "plh_platform.hpp"
@@ -287,15 +287,16 @@ public:
                                                const zmq::message_t& identity);
     nlohmann::json handle_schema_req(const nlohmann::json& req);
 
-    // ── Schema library (HEP-CORE-0016 Phase 3) ──────────────────────────────
-    /// Lazily-initialized named schema library. Loaded on first call from cfg.schema_search_dirs
-    /// (or SchemaLibrary::default_search_dirs() if empty). nullptr_t pattern: nullopt = not yet
-    /// loaded; value = library (may be empty if no schema files found).
-    mutable std::optional<pylabhub::schema::SchemaLibrary> schema_lib_;
-
-    /// Returns a reference to the lazily-loaded SchemaLibrary.
-    /// Thread-unsafe: caller must hold m_query_mu.
-    pylabhub::schema::SchemaLibrary& get_schema_library() noexcept;
+    /// HEP-CORE-0034 Phase 4b — register hub-global schemas at broker startup.
+    /// Walks `cfg.schema_search_dirs` via the stateless free function
+    /// `schema::load_all_from_dirs`, translates each parsed entry into a
+    /// `(hub, schema_id)` SchemaRecord via `to_hub_schema_record`, and
+    /// inserts it into `HubState.schemas` via `_on_schema_registered`.
+    /// Path C citations (producer adopts hub-global) become valid once
+    /// this completes.  Idempotent on repeated calls; safe to invoke
+    /// from `run()` startup.
+    /// @see HEP-CORE-0034 §2.4 I1+I2 (single mutator, single load pipeline)
+    void load_hub_globals_();
 
     void check_heartbeat_timeouts(zmq::socket_t& socket);
     void check_dead_consumers(zmq::socket_t& socket);
@@ -498,6 +499,13 @@ void BrokerServiceImpl::run()
             peer_sockets.push_back(std::move(ps));
         }
     }
+
+    // HEP-CORE-0034 Phase 4b — register hub-globals into HubState.schemas.
+    // Runs once after federation peers are wired but before the poll loop
+    // accepts inbound REG_REQ / CONSUMER_REG_REQ.  This makes path-C
+    // citations (producer adopts a hub-global by sending
+    // schema_owner="hub") valid immediately when REG_REQ arrives.
+    load_hub_globals_();
 
     while (!stop_requested.load(std::memory_order_acquire))
     {
@@ -1067,60 +1075,23 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
                                         identity.size());
     // status starts as PendingReady (default); last_heartbeat = now() (default).
 
-    // ── Schema annotation (HEP-CORE-0016 Phase 3) ──────────────────────────
-    const std::string req_schema_id   = req.value("schema_id", "");
-    const std::string req_schema_blds = req.value("schema_blds", "");
-    entry.schema_blds = req_schema_blds;
-
-    if (!req_schema_id.empty())
-    {
-        // Case A: producer asserts a named schema_id — validate hash against library.
-        const auto schema_entry = get_schema_library().get(req_schema_id);
-        if (schema_entry)
-        {
-            const auto producer_hash = hex_to_hash_array(attempted_schema);
-            if (producer_hash != schema_entry->slot_info.hash)
-            {
-                LOGGER_WARN("Broker: schema_id '{}' hash mismatch for channel '{}': "
-                            "producer hash does not match schema library",
-                            req_schema_id, channel_name);
-                return make_error(corr_id, "SCHEMA_ID_MISMATCH",
-                                  "Producer schema_id '" + req_schema_id +
-                                      "' does not match the BLDS hash in the schema library "
-                                      "for channel '" + channel_name + "'");
-            }
-            entry.schema_id = req_schema_id;
-            LOGGER_INFO("Broker: channel '{}' confirmed named schema '{}'",
-                        channel_name, req_schema_id);
-        }
-        else
-        {
-            // schema_id not in library — accept but log a warning; store the ID as-is
-            // (library might not be populated; Case B annotation still applies later).
-            entry.schema_id = req_schema_id;
-            LOGGER_WARN("Broker: schema_id '{}' not found in schema library for channel '{}'"
-                        " — stored as-is (library may be empty or schema files missing)",
-                        req_schema_id, channel_name);
-        }
-    }
-    else if (!attempted_schema.empty() && attempted_schema.size() == 64)
-    {
-        // Case B: anonymous schema — attempt reverse hash lookup to auto-annotate.
-        const auto producer_hash = hex_to_hash_array(attempted_schema);
-        const auto found_id = get_schema_library().identify(producer_hash);
-        if (found_id)
-        {
-            entry.schema_id = *found_id;
-            // Populate BLDS from library if not provided by producer.
-            if (entry.schema_blds.empty())
-            {
-                const auto sch_entry = get_schema_library().get(*found_id);
-                if (sch_entry) entry.schema_blds = sch_entry->slot_info.blds;
-            }
-            LOGGER_INFO("Broker: channel '{}' auto-annotated with schema_id '{}' via hash lookup",
-                        channel_name, *found_id);
-        }
-    }
+    // ── Wire schema fields (HEP-CORE-0034 §10.1) ────────────────────────────
+    //
+    // The producer's wire `schema_blds` is the slot's HEP-0034 canonical
+    // form; copy it into the channel entry so the channel-mismatch gate
+    // below can compare prior vs new BLDS for re-registration.  Schema
+    // record creation (path B) and adoption (path C) happen in the
+    // dedicated HEP-CORE-0034 block further below; this assignment is
+    // purely the wire-field passthrough.
+    //
+    // Legacy HEP-CORE-0016 Case A (lookup-by-id against SchemaLibrary)
+    // and Case B (reverse-by-hash auto-annotation) were removed in HEP-CORE-0034
+    // Phase 4: Case A used HEP-0002 BLDS form vs HEP-0034 wire form
+    // (different by design — §2.4 I6); Case B is forbidden under
+    // namespace-by-owner (§2.4 I7).  All schema authority now routes
+    // through the HEP-CORE-0034 path B/C block (paths and storage owned
+    // by HubState — §2.4 I1+I3).
+    entry.schema_blds = req.value("schema_blds", "");
 
     // ── Channel-mismatch gate (audit fix — must precede schema-record
     //    creation so a failed REG_REQ leaves no orphan records in
@@ -1164,25 +1135,41 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         entry.consumers = std::move(existing_opt->consumers);
     }
 
-    // ── HEP-CORE-0034 Phase 3 — named schema record (path B) ────────────
+    // ── HEP-CORE-0034 Phase 3+4b — named schema record (paths B + C) ───
     //
     // When the producer claims a named schema (schema_id non-empty), the
     // wire payload MUST carry the full structure: schema_blds (canonical
     // fields per HEP-CORE-0034 §10.1), schema_packing, and schema_hash.
     // The broker recomputes BLAKE2b-256 over the wire form and rejects
     // if the producer's claimed hash doesn't match — Stage-2
-    // self-verification, audit follow-up.
+    // self-verification.
+    //
+    // The wire `schema_owner` field selects between two paths:
+    //
+    //   Path B (default): schema_owner empty or equal to role_uid.
+    //     Producer self-registers a new record under (role_uid, schema_id).
+    //     Other roles cite (role_uid, schema_id) via path A.  This is the
+    //     common case for producer-private schemas.
+    //
+    //   Path C (Phase 4b): schema_owner == "hub".  Producer adopts a
+    //     pre-loaded hub-global record under (hub, schema_id).  The
+    //     broker verifies the producer's fingerprint matches the
+    //     existing global; no new record is created.  Producer's
+    //     channel.schema_owner is set to "hub" so consumer citations
+    //     resolve through the global record.
+    //
+    //   Cross-owner: schema_owner equals some third role's uid.  Rejected
+    //     with SCHEMA_FORBIDDEN_OWNER — producers cannot register or
+    //     adopt records owned by another producer.
     //
     // Backward compat: REG_REQs without schema_id (truly anonymous /
     // pre-Phase-3 legacy) skip this block entirely.  HEP-0016 library
     // annotation above may have populated `entry.schema_id`; that
     // annotation is informational and does not by itself trigger
-    // record creation — only an explicit `schema_id` from the wire
-    // does.
-    //
-    // Path C (owner=="hub" hub-global adoption) waits for Phase 4 globals.
+    // record creation.
     const std::string req_schema_packing = req.value("schema_packing", "");
     const std::string req_schema_id_raw  = req.value("schema_id", "");
+    const std::string req_schema_owner   = req.value("schema_owner", "");
     if (!req_schema_id_raw.empty())
     {
         if (req_schema_packing.empty())
@@ -1202,20 +1189,9 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
                               "REG_REQ with schema_id requires role_uid for "
                               "owner attribution (HEP-CORE-0034 §10.1)");
 
-        // Stage-2: recompute fingerprint from wire blds + packing,
-        // verify against producer's claimed hash.  Mismatch indicates
-        // either a producer-side bug (BLDS doesn't match the struct)
-        // or wire corruption — either way, refuse to register.
-        //
-        // HEP-CORE-0034 §6.3 / §10.1 — the canonical form covers BOTH
-        // the slot and the flexzone (if present).  The producer's
-        // `schema_hash` is computed via `compute_schema_hash(slot_spec,
-        // fz_spec)` which always includes the flexzone when set, so the
-        // broker MUST do the same.  Pre-Phase-4a this only passed the
-        // slot fields → any producer with a flexzone NACKed
-        // FINGERPRINT_INCONSISTENT.  No tests exercised the flexzone
-        // path (so the bug survived), but client-API consumers (Phase 5)
-        // would have hit it.
+        // Stage-2 fingerprint check (slot + flexzone) — common to both
+        // path B and path C.  HEP-CORE-0034 §6.3 / §10.1 — the canonical
+        // form covers BOTH the slot and the flexzone when present.
         const std::string req_flexzone_blds    = req.value("flexzone_blds", "");
         const std::string req_flexzone_packing = req.value("flexzone_packing", "");
         const auto h_recomputed = pylabhub::hub::compute_canonical_hash_from_wire(
@@ -1234,37 +1210,87 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
                               "see HEP-CORE-0034 §6.3");
         }
 
-        pylabhub::schema::SchemaRecord rec;
-        rec.owner_uid = role_uid;
-        rec.schema_id = req_schema_id_raw;
-        rec.hash      = h_recomputed;
-        rec.packing   = req_schema_packing;
-        rec.blds      = entry.schema_blds;
-
-        using O = pylabhub::schema::SchemaRegOutcome;
-        const auto outcome = hub_state_._on_schema_registered(rec);
-        if (outcome == O::kHashMismatchSelf)
+        const bool is_path_c = (req_schema_owner == "hub");
+        const bool is_path_b = req_schema_owner.empty() ||
+                               req_schema_owner == role_uid;
+        if (!is_path_b && !is_path_c)
         {
-            LOGGER_WARN("Broker: REG_REQ schema record mismatch for ({}, {}): "
-                        "existing record under producer's namespace has different "
-                        "hash or packing",
-                        role_uid, req_schema_id_raw);
-            return make_error(corr_id, "SCHEMA_HASH_MISMATCH_SELF",
-                              "Schema record (" + role_uid + ", " + req_schema_id_raw +
-                                  ") already exists with a different hash or packing");
-        }
-        if (outcome == O::kForbiddenOwner)
-        {
-            // Defensive — should not fire here since we set owner ourselves.
+            // Cross-owner attempt — third role's uid claimed.
+            LOGGER_WARN("Broker: REG_REQ rejected — producer '{}' attempted "
+                        "to register under foreign owner '{}'",
+                        role_uid, req_schema_owner);
             return make_error(corr_id, "SCHEMA_FORBIDDEN_OWNER",
-                              "Schema record (" + role_uid + ", " + req_schema_id_raw +
-                                  ") rejected as forbidden_owner — "
-                                  "missing required fields");
+                              "Producer cannot register schema under owner '" +
+                                  req_schema_owner + "' — only \"hub\" "
+                                  "(adopt global) or self are permitted");
         }
-        // Created or Idempotent → success path; mark the channel as owned by
-        // this producer's record so consumer citation can resolve it.
-        entry.schema_id    = req_schema_id_raw;
-        entry.schema_owner = role_uid;
+
+        if (is_path_c)
+        {
+            // Path C: adopt an existing hub-global.  No new record is
+            // created; we only verify that the producer's fingerprint
+            // matches the global's stored fingerprint.
+            const auto existing = hub_state_.schema("hub", req_schema_id_raw);
+            if (!existing.has_value())
+            {
+                LOGGER_WARN("Broker: REG_REQ path-C rejected for '{}' — "
+                            "no hub-global record under (hub, {})",
+                            channel_name, req_schema_id_raw);
+                return make_error(corr_id, "SCHEMA_UNKNOWN",
+                                  "Hub-global schema (hub, " + req_schema_id_raw +
+                                      ") not registered; cannot adopt");
+            }
+            if (existing->hash != h_recomputed ||
+                existing->packing != req_schema_packing)
+            {
+                LOGGER_WARN("Broker: REG_REQ path-C rejected for '{}' — "
+                            "producer's fingerprint does not match hub-global "
+                            "(hub, {})",
+                            channel_name, req_schema_id_raw);
+                return make_error(corr_id, "FINGERPRINT_INCONSISTENT",
+                                  "Producer's schema fingerprint does not "
+                                  "match hub-global (hub, " +
+                                      req_schema_id_raw + "); cannot adopt");
+            }
+            // Adoption succeeds.  Channel is owned by the hub-global,
+            // not by the producer.
+            entry.schema_id    = req_schema_id_raw;
+            entry.schema_owner = "hub";
+        }
+        else
+        {
+            // Path B: self-registration.
+            pylabhub::schema::SchemaRecord rec;
+            rec.owner_uid = role_uid;
+            rec.schema_id = req_schema_id_raw;
+            rec.hash      = h_recomputed;
+            rec.packing   = req_schema_packing;
+            rec.blds      = entry.schema_blds;
+
+            using O = pylabhub::schema::SchemaRegOutcome;
+            const auto outcome = hub_state_._on_schema_registered(rec);
+            if (outcome == O::kHashMismatchSelf)
+            {
+                LOGGER_WARN("Broker: REG_REQ schema record mismatch for ({}, {}): "
+                            "existing record under producer's namespace has different "
+                            "hash or packing",
+                            role_uid, req_schema_id_raw);
+                return make_error(corr_id, "SCHEMA_HASH_MISMATCH_SELF",
+                                  "Schema record (" + role_uid + ", " + req_schema_id_raw +
+                                      ") already exists with a different hash or packing");
+            }
+            if (outcome == O::kForbiddenOwner)
+            {
+                // Defensive — should not fire here since we set owner ourselves.
+                return make_error(corr_id, "SCHEMA_FORBIDDEN_OWNER",
+                                  "Schema record (" + role_uid + ", " + req_schema_id_raw +
+                                      ") rejected as forbidden_owner — "
+                                      "missing required fields");
+            }
+            // Created or Idempotent → success.
+            entry.schema_id    = req_schema_id_raw;
+            entry.schema_owner = role_uid;
+        }
     }
 
     // ── HEP-CORE-0034 §11.4 Phase 3b — inbox schema record (path A) ─────
@@ -1913,23 +1939,81 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
 }
 
 // ============================================================================
-// Schema library + SCHEMA_REQ handler (HEP-CORE-0016 Phase 3)
+// HEP-CORE-0034 Phase 4b — hub-globals startup loader
+// ----------------------------------------------------------------------------
+// Routes hub-global schema files into HubState.schemas via the §2.4 I2
+// pipeline:
+//
+//   filesystem(<hub_dir>/schemas/*.json)
+//     → schema::load_all_from_dirs   (stateless parser; §2.4 I5)
+//     → to_hub_schema_record         (HEP-0002 → HEP-0034 wire form; §2.4 I6)
+//     → HubState::_on_schema_registered  (sole mutator; §2.4 I1)
+//
+// No state held inside BrokerServiceImpl; the broker is not a registry
+// (§2.4 I3 — only HubState is).  This method may be invoked once at
+// `run()` startup; idempotency is provided by HubState's `kIdempotent`
+// outcome on equivalent re-registration.
 // ============================================================================
 
-pylabhub::schema::SchemaLibrary& BrokerServiceImpl::get_schema_library() noexcept
+void BrokerServiceImpl::load_hub_globals_()
 {
-    if (!schema_lib_.has_value())
+    const auto dirs = cfg.schema_search_dirs.empty()
+        ? pylabhub::schema::SchemaLibrary::default_search_dirs()
+        : cfg.schema_search_dirs;
+
+    const auto entries = pylabhub::schema::load_all_from_dirs(dirs);
+
+    using O = pylabhub::schema::SchemaRegOutcome;
+    std::size_t created    = 0;
+    std::size_t idempotent = 0;
+    std::size_t conflicted = 0;
+
+    for (const auto &[path, entry] : entries)
     {
-        const auto dirs = cfg.schema_search_dirs.empty()
-            ? pylabhub::schema::SchemaLibrary::default_search_dirs()
-            : cfg.schema_search_dirs;
-        schema_lib_.emplace(dirs);
-        const size_t loaded = schema_lib_->load_all();
-        LOGGER_INFO("Broker: SchemaLibrary loaded {} schema(s) from {} dir(s)",
-                    loaded, dirs.size());
+        // Translate file-form SchemaEntry → wire-form SchemaRecord.  This
+        // recomputes the hash under HEP-CORE-0034 §6.3 canonical form;
+        // the SHM-header form (`SchemaInfo::hash`) is NOT used here
+        // (§2.4 I6 — the two forms are different by design).
+        auto rec = pylabhub::hub::to_hub_schema_record(entry);
+        const std::string id_for_log = rec.schema_id;  // captured before move
+
+        const auto outcome = hub_state_._on_schema_registered(std::move(rec));
+        switch (outcome)
+        {
+            case O::kCreated:
+                ++created;
+                break;
+            case O::kIdempotent:
+                ++idempotent;
+                break;
+            case O::kHashMismatchSelf:
+                LOGGER_WARN(
+                    "Broker: hub-global schema '{}' from '{}' rejected as "
+                    "hash_mismatch_self — another (hub, {}) entry already "
+                    "registered with a different fingerprint",
+                    id_for_log, path, id_for_log);
+                ++conflicted;
+                break;
+            case O::kForbiddenOwner:
+                // Defensive — owner is set to "hub" by to_hub_schema_record;
+                // this branch indicates an invariant violation in the
+                // translator.
+                LOGGER_ERROR(
+                    "Broker: hub-global schema '{}' from '{}' rejected as "
+                    "forbidden_owner — internal invariant violation",
+                    id_for_log, path);
+                ++conflicted;
+                break;
+        }
     }
-    return *schema_lib_;
+    LOGGER_INFO("Broker: registered {} hub-global schema record(s) "
+                "({} idempotent, {} conflicted) from {} dir(s)",
+                created, idempotent, conflicted, dirs.size());
 }
+
+// ============================================================================
+// SCHEMA_REQ handler (HEP-CORE-0034 §10.3)
+// ============================================================================
 
 nlohmann::json BrokerServiceImpl::handle_schema_req(const nlohmann::json& req)
 {

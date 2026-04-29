@@ -1,15 +1,19 @@
-// schema_library.cpp
+// schema_loader.cpp
 //
-// Implementation of SchemaLibrary: named schema loading, forward/reverse lookup.
+// Stateless schema-file parsers (HEP-CORE-0034 §2.4 I5).
 //
-// JSON schema format: HEP-CORE-0016 §6
+// This file holds:
+//   - Static parser methods on `SchemaLibrary` (load_from_file,
+//     load_from_string, compute_layout_info, default_search_dirs)
+//   - Free function `load_all_from_dirs` (the §2.4 I2 entry-point)
+//
+// No state is held anywhere. The historical class state (`by_id_`,
+// `by_hash_`) was removed by HEP-CORE-0034 Phase 4; runtime authority
+// for schemas lives in `HubState.schemas` per §2.4 I1+I3.
+//
+// JSON schema format: HEP-CORE-0034 §6 / HEP-CORE-0016 §6
 // ID format (HEP-0033 §G2.2.0b): "$<namespace>.<name>.v<version>"
 //   Example: "$lab.sensors.temperature.raw.v1"
-//   - Leading '$' sigil classifies as Schema
-//   - Dotted base path (≥1 NameComponent)
-//   - Trailing 'v<digits>' version component is REQUIRED
-//   - Validated via naming::is_valid_identifier(id, Schema)
-// BLDS format:        HEP-CORE-0002 §11 / schema_blds.hpp
 //
 // JSON type → BLDS token map (HEP-CORE-0016 §6.1):
 //   float32 → f32    float64 → f64
@@ -23,7 +27,7 @@
 //   - Absent "count" or count==1 → scalar
 //   - count > 1 → array of count scalars; alignment = scalar alignment
 
-#include "utils/schema_library.hpp"
+#include "utils/schema_loader.hpp"
 #include "utils/crypto_utils.hpp"
 #include "utils/format_tools.hpp"
 #include "utils/logger.hpp"
@@ -293,17 +297,8 @@ std::string home_dir()
 } // anonymous namespace
 
 // ============================================================================
-// SchemaLibrary — public implementation
+// SchemaLibrary — static parser methods (no state)
 // ============================================================================
-
-SchemaLibrary::SchemaLibrary(std::vector<std::string> search_dirs)
-    : search_dirs_(std::move(search_dirs))
-{
-    if (search_dirs_.empty())
-        search_dirs_ = default_search_dirs();
-}
-
-// ── Static helpers ────────────────────────────────────────────────────────────
 
 std::string SchemaLibrary::hash_to_hex(const std::array<uint8_t, 32> &h)
 {
@@ -369,12 +364,47 @@ std::vector<std::string> SchemaLibrary::default_search_dirs()
     return dirs;
 }
 
-// ── Loading ───────────────────────────────────────────────────────────────────
-
-size_t SchemaLibrary::load_all()
+std::optional<SchemaEntry> SchemaLibrary::load_from_file(const std::string &path)
 {
-    size_t loaded = 0;
-    for (const auto &dir : search_dirs_)
+    std::ifstream file(path);
+    if (!file.is_open())
+    {
+        LOGGER_WARN("[schema_loader] Cannot open schema file: {}", path);
+        return std::nullopt;
+    }
+
+    try
+    {
+        const json j = json::parse(file);
+        return entry_from_json(j, {});
+    }
+    catch (const std::exception &ex)
+    {
+        LOGGER_WARN("[schema_loader] Failed to parse schema file '{}': {}", path, ex.what());
+        return std::nullopt;
+    }
+}
+
+SchemaEntry SchemaLibrary::load_from_string(const std::string &json_text,
+                                            const std::string &schema_id)
+{
+    const json j = json::parse(json_text); // throws on parse error
+    return entry_from_json(j, schema_id);
+}
+
+// ============================================================================
+// Free function — pure walker (HEP-CORE-0034 §2.4 I2 entry-point)
+// ============================================================================
+
+std::vector<std::pair<std::string, SchemaEntry>>
+load_all_from_dirs(const std::vector<std::string> &dirs)
+{
+    std::vector<std::pair<std::string, SchemaEntry>> out;
+    // Track schema_ids seen so we can apply first-match-wins across dirs
+    // without holding any persistent state ourselves.
+    std::vector<std::string> seen_ids;
+
+    for (const auto &dir : dirs)
     {
         std::error_code ec;
         if (!fs::exists(dir, ec) || !fs::is_directory(dir, ec))
@@ -389,114 +419,23 @@ size_t SchemaLibrary::load_all()
             if (de.path().extension() != ".json")
                 continue;
 
-            auto opt = load_from_file(de.path().string());
+            auto opt = SchemaLibrary::load_from_file(de.path().string());
             if (!opt)
                 continue;
 
-            // First-wins: skip if already registered under this ID
-            if (by_id_.count(opt->schema_id) == 0)
+            const auto id = opt->schema_id;
+            if (std::find(seen_ids.begin(), seen_ids.end(), id) != seen_ids.end())
             {
-                register_schema(*opt);
-                ++loaded;
+                LOGGER_WARN("[schema_loader] Duplicate schema_id '{}' in '{}' — "
+                            "earlier directory wins (HEP-CORE-0034 §2.4 I2)",
+                            id, de.path().string());
+                continue;
             }
+            seen_ids.push_back(id);
+            out.emplace_back(de.path().string(), std::move(*opt));
         }
     }
-    return loaded;
-}
-
-std::optional<SchemaEntry> SchemaLibrary::load_from_file(const std::string &path)
-{
-    std::ifstream file(path);
-    if (!file.is_open())
-    {
-        LOGGER_WARN("[SchemaLibrary] Cannot open schema file: {}", path);
-        return std::nullopt;
-    }
-
-    try
-    {
-        const json j = json::parse(file);
-        return entry_from_json(j, {});
-    }
-    catch (const std::exception &ex)
-    {
-        LOGGER_WARN("[SchemaLibrary] Failed to parse schema file '{}': {}", path, ex.what());
-        return std::nullopt;
-    }
-}
-
-SchemaEntry SchemaLibrary::load_from_string(const std::string &json_text,
-                                            const std::string &schema_id)
-{
-    const json j = json::parse(json_text); // throws on parse error
-    return entry_from_json(j, schema_id);
-}
-
-// ── Lookup ────────────────────────────────────────────────────────────────────
-
-std::optional<SchemaEntry> SchemaLibrary::get(const std::string &id) const
-{
-    const auto it = by_id_.find(id);
-    if (it == by_id_.end())
-        return std::nullopt;
-    return it->second;
-}
-
-std::optional<std::string>
-SchemaLibrary::identify(const std::array<uint8_t, 32> &slot_hash) const
-{
-    const std::string hex = hash_to_hex(slot_hash);
-    const auto        it  = by_hash_.find(hex);
-    if (it == by_hash_.end())
-        return std::nullopt;
-    return it->second;
-}
-
-// ── Registration ──────────────────────────────────────────────────────────────
-
-void SchemaLibrary::register_schema(const SchemaEntry &entry)
-{
-    const std::string hex = hash_to_hex(entry.slot_info.hash);
-
-    // Check for ID collision with different hash
-    auto id_it = by_id_.find(entry.schema_id);
-    if (id_it != by_id_.end())
-    {
-        if (id_it->second.slot_info.hash != entry.slot_info.hash)
-        {
-            LOGGER_WARN("[SchemaLibrary] ID '{}' already registered with different hash — "
-                        "keeping first registration",
-                        entry.schema_id);
-        }
-        return; // first-wins
-    }
-
-    by_id_.emplace(entry.schema_id, entry);
-
-    // Register reverse map only if slot has fields (non-empty hash)
-    const auto zero_hash = std::array<uint8_t, 32>{};
-    if (entry.slot_info.hash != zero_hash)
-    {
-        // Only warn if a DIFFERENT schema ID already claims this hash
-        auto hash_it = by_hash_.find(hex);
-        if (hash_it == by_hash_.end())
-            by_hash_.emplace(hex, entry.schema_id);
-        else if (hash_it->second != entry.schema_id)
-            LOGGER_WARN("[SchemaLibrary] Hash collision: schemas '{}' and '{}' have the same "
-                        "slot hash — keeping first",
-                        hash_it->second, entry.schema_id);
-    }
-}
-
-// ── Enumeration ───────────────────────────────────────────────────────────────
-
-std::vector<std::string> SchemaLibrary::list() const
-{
-    std::vector<std::string> ids;
-    ids.reserve(by_id_.size());
-    for (const auto &[id, _] : by_id_)
-        ids.push_back(id);
-    return ids;
+    return out;
 }
 
 } // namespace pylabhub::schema

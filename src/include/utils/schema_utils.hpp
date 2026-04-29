@@ -17,7 +17,7 @@
 #include "utils/format_tools.hpp"
 #include "utils/hub_zmq_queue.hpp"
 #include "utils/schema_field_layout.hpp"
-#include "utils/schema_library.hpp"
+#include "utils/schema_loader.hpp"
 #include "utils/schema_record.hpp"  // SchemaRecord (HEP-CORE-0034)
 
 #include "utils/json_fwd.hpp"
@@ -129,6 +129,23 @@ inline SchemaSpec schema_entry_to_spec(const schema::SchemaLayoutDef &layout)
     return spec;
 }
 
+/// Resolve a `schema_id` against the role-side local schema cache
+/// (`<role_dir>/schemas/` + the platform default search dirs) by parsing
+/// every file in the search path and returning the matching entry's
+/// SchemaSpec.  Used by config-driven role startup to populate queue
+/// options (slot / flexzone field lists) when the role's config refers
+/// to a schema by name.
+///
+/// **Authority note (HEP-CORE-0034 §2.4 I8):** the role-side cache is
+/// **not authoritative**.  This call resolves locally so the role can
+/// open its queues; the broker independently validates the role's
+/// schema fingerprint on REG_REQ (Stage-2).  If the local cache
+/// disagrees with the hub, REG_REQ NACKs — there is no role-local
+/// "truth" to defend.
+///
+/// **No state held:** this function performs a fresh parse on each
+/// call (HEP-CORE-0034 §2.4 I5).  Callers that need the result more
+/// than once should hold onto the returned SchemaSpec, not re-resolve.
 inline SchemaSpec resolve_named_schema(const std::string &schema_id, bool use_flexzone,
                                        const char *label,
                                        const std::vector<std::string> &extra_search_dirs = {})
@@ -136,14 +153,20 @@ inline SchemaSpec resolve_named_schema(const std::string &schema_id, bool use_fl
     auto search_dirs = extra_search_dirs;
     const auto defaults = schema::SchemaLibrary::default_search_dirs();
     search_dirs.insert(search_dirs.end(), defaults.begin(), defaults.end());
-    schema::SchemaLibrary lib(std::move(search_dirs));
-    lib.load_all();
-    auto entry = lib.get(schema_id);
-    if (!entry)
+
+    // Walk the search path and look for the matching id.  First-match-wins
+    // across directories is enforced inside `load_all_from_dirs`.
+    const auto entries = schema::load_all_from_dirs(search_dirs);
+    auto it = std::find_if(entries.begin(), entries.end(),
+                           [&](const auto &p) { return p.second.schema_id == schema_id; });
+    if (it == entries.end())
         throw std::runtime_error(
             std::string("[") + label + "] Named schema '" + schema_id +
-            "' not found in schema library");
-    const auto &layout = use_flexzone ? entry->flexzone : entry->slot;
+            "' not found in role-side schema cache (search dirs: " +
+            std::to_string(search_dirs.size()) + ")");
+
+    const auto &entry  = it->second;
+    const auto &layout = use_flexzone ? entry.flexzone : entry.slot;
     if (layout.fields.empty())
         throw std::runtime_error(
             std::string("[") + label + "] Named schema '" + schema_id +
@@ -338,6 +361,14 @@ struct WireSchemaFields
     /// `"<schema>": "$lab.x.v1"` string form).
     std::string schema_id;
 
+    /// Selects between path B (self-register, default empty) and
+    /// path C (adopt hub-global, set to the literal string `"hub"`).
+    /// HEP-CORE-0034 §10.1.  Today only Phase 5d's typed C++ API
+    /// populates this for path C; `make_wire_schema_fields` always
+    /// leaves it empty (path B), so role hosts default to
+    /// self-registration.  Tests may set it manually.
+    std::string schema_owner;
+
     /// Hex-encoded BLAKE2b-256 fingerprint over canonical(slot, fz)
     /// per HEP-CORE-0034 §6.3.  Empty when the role has no schema.
     std::string schema_hash;
@@ -405,6 +436,7 @@ inline void apply_producer_schema_fields(nlohmann::json         &reg_opts,
                                          const WireSchemaFields &w)
 {
     if (!w.schema_id.empty())        reg_opts["schema_id"]        = w.schema_id;
+    if (!w.schema_owner.empty())     reg_opts["schema_owner"]     = w.schema_owner;
     if (!w.schema_hash.empty())      reg_opts["schema_hash"]      = w.schema_hash;
     if (!w.schema_blds.empty())      reg_opts["schema_blds"]      = w.schema_blds;
     if (!w.schema_packing.empty())   reg_opts["schema_packing"]   = w.schema_packing;

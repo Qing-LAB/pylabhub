@@ -27,7 +27,7 @@
 #include "utils/hub_shm_queue.hpp"
 #include "utils/hub_zmq_queue.hpp"
 #include "utils/schema_def.hpp"
-#include "utils/schema_library.hpp"
+#include "utils/schema_loader.hpp"
 #include "utils/schema_record.hpp"
 #include "utils/heartbeat_manager.hpp"
 #include "utils/recovery_api.hpp"

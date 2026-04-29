@@ -1,20 +1,20 @@
 #pragma once
 /**
  * @file schema_def.hpp
- * @brief Parsed schema data structures for the Named Schema Registry (HEP-CORE-0016).
+ * @brief Parsed schema data structures (HEP-CORE-0034 §6 file format).
  *
  * This header is the data-only layer of the schema system.  It defines the
  * in-memory representation of a parsed schema JSON file, including field
  * definitions, computed BLDS strings, BLAKE2b hashes, and struct sizes.
  *
  * It has no dependency on JSON or filesystem.  Those concerns belong to
- * SchemaLibrary (schema_library.hpp/.cpp).
+ * `schema_loader.hpp` / `.cpp` (the stateless parser per HEP-CORE-0034 §2.4 I5).
  *
- * **Schema ID format**: `{namespace}.{name}@{version}`
+ * **Schema ID format** (HEP-CORE-0033 §G2.2.0b): `${namespace}.{name}.v{version}`
  * Example: `$lab.sensors.temperature.raw.v1`
  *
- * @see HEP-CORE-0016-Named-Schema-Registry.md
- * @see schema_library.hpp — loading, forward lookup (id→entry), reverse lookup (hash→id)
+ * @see HEP-CORE-0034-Schema-Registry.md
+ * @see schema_loader.hpp — pure parsers (load_from_file, load_from_string, load_all_from_dirs)
  */
 
 #include "utils/schema_blds.hpp" // SchemaInfo, BLDSBuilder, BLDSTypeID
@@ -83,8 +83,9 @@ struct SchemaFieldDef
  * (HEP-CORE-0034 §6.3) — two layouts with the same fields and different
  * packing have different hashes.
  *
- * Offsets and struct size are computed by SchemaLibrary from field order
- * and the declared packing rule — they are not stored in the JSON.
+ * Offsets and struct size are computed by `compute_layout_info` (in
+ * `schema_loader.cpp`) from field order and the declared packing rule —
+ * they are not stored in the JSON.
  */
 struct SchemaLayoutDef
 {
@@ -100,7 +101,8 @@ struct SchemaLayoutDef
  * @struct SchemaEntry
  * @brief Complete parsed and computed representation of one named schema.
  *
- * Populated by SchemaLibrary::load_from_file() or load_from_string().
+ * Populated by `pylabhub::schema::SchemaLibrary::load_from_file()` or
+ * `load_from_string()` (declared in `schema_loader.hpp`).
  * The `slot_info` and `flexzone_info` members are computed (not stored in JSON):
  *   - `blds`  — semicolon-separated `name:type_id` pairs, built from `fields`
  *   - `hash`  — BLAKE2b-256 of the BLDS string
@@ -118,9 +120,9 @@ struct SchemaEntry
     SchemaLayoutDef slot;     ///< Slot layout (always present for valid entries)
     SchemaLayoutDef flexzone; ///< FlexZone layout (may be empty if not declared)
 
-    /// Computed from `slot.fields` by SchemaLibrary.
+    /// Computed from `slot.fields` by `compute_layout_info` (schema_loader.cpp).
     SchemaInfo slot_info;
-    /// Computed from `flexzone.fields` by SchemaLibrary. Zero-filled if empty.
+    /// Computed from `flexzone.fields` by `compute_layout_info`. Zero-filled if empty.
     SchemaInfo flexzone_info;
 
     /// True if the schema declares any flexzone fields.

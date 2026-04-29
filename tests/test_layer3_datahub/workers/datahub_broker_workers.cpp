@@ -19,6 +19,8 @@
 
 #include <array>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <memory>
 #include <string>
@@ -1387,6 +1389,244 @@ int broker_sch_inbox_evicts_on_disconnect()
         logger_module(), zmq_module());
 }
 
+// ============================================================================
+// HEP-0034 Phase 4b — hub-globals + path-C adoption
+// ============================================================================
+
+namespace
+{
+
+/// Create a temp dir + write `<dir>/<id>/<id>.v<N>.json` with the given
+/// fields.  Returns the dir path.  Caller deletes via remove_all().
+/// Mirrors what `<hub_dir>/schemas/` would look like in a real
+/// deployment, so the broker's `load_hub_globals_()` walker
+/// (HEP-CORE-0034 §2.4 I2) auto-loads it.
+std::filesystem::path make_global_schema_dir(
+    const std::string &id_dotted,         // e.g. "lab.demo.frame"
+    int                version,
+    const std::string &fields_array_json) // e.g. R"([{"name":"v","type":"float32"}])"
+{
+    auto root = std::filesystem::temp_directory_path() /
+                ("plh_p4b_" + std::to_string(::getpid()) + "_" +
+                 std::to_string(std::chrono::steady_clock::now()
+                                    .time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+
+    // Convert dot-separated id to nested directory tree
+    // (lab.demo.frame → lab/demo/frame.v1.json).
+    std::vector<std::string> parts;
+    {
+        std::string s; std::stringstream ss(id_dotted);
+        while (std::getline(ss, s, '.')) parts.push_back(s);
+    }
+    auto dir = root;
+    for (size_t i = 0; i + 1 < parts.size(); ++i) dir /= parts[i];
+    std::filesystem::create_directories(dir);
+
+    const std::string fname = parts.back() + ".v" + std::to_string(version) + ".json";
+    std::ofstream f(dir / fname);
+    f << R"({"id":")" << id_dotted << R"(","version":)" << version
+      << R"(,"slot":{"packing":"aligned","fields":)" << fields_array_json << R"(}})";
+    return root;
+}
+
+} // anonymous namespace
+
+int broker_sch_hub_globals_loaded_at_startup()
+{
+    return run_gtest_worker(
+        []()
+        {
+            // Stage a hub-global schema file at <tmp>/lab/demo/frame.v1.json
+            const auto schema_root = make_global_schema_dir(
+                "lab.demo.frame", 1,
+                R"([{"name":"v","type":"float32"}])");
+
+            BrokerService::Config cfg;
+            cfg.endpoint           = "tcp://127.0.0.1:0";
+            cfg.use_curve          = false;
+            cfg.schema_search_dirs = {schema_root.string()};
+            auto broker = start_broker_in_thread(std::move(cfg));
+
+            // SCHEMA_REQ for (hub, $lab.demo.frame.v1) must succeed —
+            // proves Phase 4b loaded the global into HubState.schemas.
+            nlohmann::json sreq;
+            sreq["owner"]     = "hub";
+            sreq["schema_id"] = "$lab.demo.frame.v1";
+            auto resp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq);
+            ASSERT_FALSE(resp.is_null());
+            EXPECT_EQ(resp.value("status", std::string{}), "success") << resp.dump();
+            EXPECT_EQ(resp.value("owner",     std::string{}), "hub");
+            EXPECT_EQ(resp.value("schema_id", std::string{}), "$lab.demo.frame.v1");
+            EXPECT_EQ(resp.value("packing",   std::string{}), "aligned");
+
+            broker.stop_and_join();
+            std::filesystem::remove_all(schema_root);
+        },
+        "broker.broker_sch_hub_globals_loaded_at_startup",
+        logger_module(), zmq_module());
+}
+
+int broker_sch_path_c_adoption_succeeds()
+{
+    return run_gtest_worker(
+        []()
+        {
+            const std::string sid_dotted = "lab.demo.adopt";
+            const std::string sid        = "$lab.demo.adopt.v1";
+            // HEP-0034 §6.3 — wire `type` is the JSON type name ("float32"),
+            // NOT the BLDS token ("f32").  The hub-global is loaded from
+            // JSON with `"type":"float32"`; producer must match exactly.
+            const std::string blds       = "v:float32:1:0";
+            const std::string packing    = "aligned";
+            const std::string hash       = canonical_hash_hex(blds, packing);
+            const auto schema_root = make_global_schema_dir(
+                sid_dotted, 1, R"([{"name":"v","type":"float32"}])");
+
+            BrokerService::Config cfg;
+            cfg.endpoint           = "tcp://127.0.0.1:0";
+            cfg.use_curve          = false;
+            cfg.schema_search_dirs = {schema_root.string()};
+            auto broker = start_broker_in_thread(std::move(cfg));
+
+            const std::string channel = "broker.sch.adopt";
+            const std::string uid     = "prod.broker.adopt.uid00000001";
+            auto reg = baseline_reg_req(channel, uid);
+            reg["schema_owner"]   = "hub";          // path C
+            reg["schema_id"]      = sid;
+            reg["schema_hash"]    = hash;
+            reg["schema_packing"] = packing;
+            reg["schema_blds"]    = blds;
+            auto resp = raw_req(broker.endpoint, "REG_REQ", reg);
+            EXPECT_EQ(resp.value("status", std::string{}), "success") << resp.dump();
+
+            // Verify channel.schema_owner == "hub" via legacy SCHEMA_REQ.
+            nlohmann::json sreq;
+            sreq["channel_name"] = channel;
+            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq);
+            EXPECT_EQ(sresp.value("schema_owner", std::string{}), "hub")
+                << "Path-C-adopted channel should report owner=hub";
+
+            broker.stop_and_join();
+            std::filesystem::remove_all(schema_root);
+        },
+        "broker.broker_sch_path_c_adoption_succeeds",
+        logger_module(), zmq_module());
+}
+
+int broker_sch_path_c_fingerprint_mismatch()
+{
+    return run_gtest_worker(
+        []()
+        {
+            const std::string sid = "$lab.demo.mm.v1";
+            // Hub-global has field "v:float32"; producer claims "v:int32".
+            const auto schema_root = make_global_schema_dir(
+                "lab.demo.mm", 1, R"([{"name":"v","type":"float32"}])");
+
+            BrokerService::Config cfg;
+            cfg.endpoint           = "tcp://127.0.0.1:0";
+            cfg.use_curve          = false;
+            cfg.schema_search_dirs = {schema_root.string()};
+            auto broker = start_broker_in_thread(std::move(cfg));
+
+            // HEP-0034 §6.3 — wire `type` is the JSON type name.
+            const std::string blds_wrong    = "v:int32:1:0";
+            const std::string packing       = "aligned";
+            const std::string hash_wrong    = canonical_hash_hex(blds_wrong, packing);
+
+            auto reg = baseline_reg_req("broker.sch.mm",
+                                        "prod.broker.mm.uid00000001");
+            reg["schema_owner"]   = "hub";
+            reg["schema_id"]      = sid;
+            reg["schema_hash"]    = hash_wrong;
+            reg["schema_packing"] = packing;
+            reg["schema_blds"]    = blds_wrong;
+            auto resp = raw_req(broker.endpoint, "REG_REQ", reg);
+            EXPECT_EQ(resp.value("status", std::string{}), "error") << resp.dump();
+            EXPECT_EQ(resp.value("error_code", std::string{}),
+                      "FINGERPRINT_INCONSISTENT");
+
+            broker.stop_and_join();
+            std::filesystem::remove_all(schema_root);
+        },
+        "broker.broker_sch_path_c_fingerprint_mismatch",
+        logger_module(), zmq_module());
+}
+
+int broker_sch_path_c_unknown_global()
+{
+    return run_gtest_worker(
+        []()
+        {
+            // No schema_search_dirs configured → no globals loaded.
+            BrokerService::Config cfg;
+            cfg.endpoint  = "tcp://127.0.0.1:0";
+            cfg.use_curve = false;
+            // Use an explicit (empty) override so the default dirs aren't
+            // searched (would be flaky if /usr/share/pylabhub has files).
+            cfg.schema_search_dirs = {std::filesystem::temp_directory_path() /
+                                      ("plh_p4b_empty_" +
+                                       std::to_string(::getpid()))};
+            std::filesystem::create_directories(cfg.schema_search_dirs[0]);
+            auto schema_root = std::filesystem::path(cfg.schema_search_dirs[0]);
+            auto broker = start_broker_in_thread(std::move(cfg));
+
+            const std::string blds    = "v:f32:1:0";
+            const std::string packing = "aligned";
+            const std::string hash    = canonical_hash_hex(blds, packing);
+
+            auto reg = baseline_reg_req("broker.sch.unk",
+                                        "prod.broker.unk.uid00000001");
+            reg["schema_owner"]   = "hub";
+            reg["schema_id"]      = "$does.not.exist.v1";
+            reg["schema_hash"]    = hash;
+            reg["schema_packing"] = packing;
+            reg["schema_blds"]    = blds;
+            auto resp = raw_req(broker.endpoint, "REG_REQ", reg);
+            EXPECT_EQ(resp.value("status", std::string{}), "error") << resp.dump();
+            EXPECT_EQ(resp.value("error_code", std::string{}), "SCHEMA_UNKNOWN");
+
+            broker.stop_and_join();
+            std::filesystem::remove_all(schema_root);
+        },
+        "broker.broker_sch_path_c_unknown_global",
+        logger_module(), zmq_module());
+}
+
+int broker_sch_path_x_forbidden_owner()
+{
+    return run_gtest_worker(
+        []()
+        {
+            BrokerService::Config cfg;
+            cfg.endpoint  = "tcp://127.0.0.1:0";
+            cfg.use_curve = false;
+            auto broker = start_broker_in_thread(std::move(cfg));
+
+            const std::string blds    = "v:f32:1:0";
+            const std::string packing = "aligned";
+            const std::string hash    = canonical_hash_hex(blds, packing);
+
+            auto reg = baseline_reg_req("broker.sch.fbd",
+                                        "prod.broker.fbd.uid00000001");
+            // Foreign owner (not self, not "hub") → must be rejected.
+            reg["schema_owner"]   = "prod.someone.else.uid00000099";
+            reg["schema_id"]      = "$lab.someone.frame.v1";
+            reg["schema_hash"]    = hash;
+            reg["schema_packing"] = packing;
+            reg["schema_blds"]    = blds;
+            auto resp = raw_req(broker.endpoint, "REG_REQ", reg);
+            EXPECT_EQ(resp.value("status", std::string{}), "error") << resp.dump();
+            EXPECT_EQ(resp.value("error_code", std::string{}),
+                      "SCHEMA_FORBIDDEN_OWNER");
+
+            broker.stop_and_join();
+        },
+        "broker.broker_sch_path_x_forbidden_owner",
+        logger_module(), zmq_module());
+}
+
 } // namespace pylabhub::tests::worker::broker
 
 // ============================================================================
@@ -1461,6 +1701,16 @@ struct BrokerWorkerRegistrar
                     return broker_sch_cons_named_with_structure_mismatch();
                 if (scenario == "broker_sch_inbox_evicts_on_disconnect")
                     return broker_sch_inbox_evicts_on_disconnect();
+                if (scenario == "broker_sch_hub_globals_loaded_at_startup")
+                    return broker_sch_hub_globals_loaded_at_startup();
+                if (scenario == "broker_sch_path_c_adoption_succeeds")
+                    return broker_sch_path_c_adoption_succeeds();
+                if (scenario == "broker_sch_path_c_fingerprint_mismatch")
+                    return broker_sch_path_c_fingerprint_mismatch();
+                if (scenario == "broker_sch_path_c_unknown_global")
+                    return broker_sch_path_c_unknown_global();
+                if (scenario == "broker_sch_path_x_forbidden_owner")
+                    return broker_sch_path_x_forbidden_owner();
                 fmt::print(stderr, "ERROR: Unknown broker scenario '{}'\n", scenario);
                 return 1;
             });

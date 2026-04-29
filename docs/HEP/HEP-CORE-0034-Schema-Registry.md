@@ -12,27 +12,32 @@
 
 ### Source file reference
 
-Existing files (refactored by this HEP):
+Module ownership is fixed by **§2.4** (Module ownership and runtime invariants).
+The table below names the files; the binding rules live in §2.4.
 
 | File | Layer | Description |
 |------|-------|-------------|
 | `src/include/utils/schema_types.hpp` | L3 (public) | `FieldDef`, `SchemaSpec`, `FieldType` — pure data |
-| `src/include/utils/schema_blds.hpp` | L3 (public) | BLDS string generation, `SchemaRegistry<T>` template traits |
+| `src/include/utils/schema_blds.hpp` | L3 (public) | HEP-0002 BLDS string generation, `SchemaRegistry<T>` template traits, `SchemaInfo::hash` (SHM-header form, **not** registry form — §2.4 I6) |
 | `src/include/utils/schema_def.hpp` | L3 (public) | `SchemaDef`, `SchemaLayoutDef`, `SchemaEntry` — file-record types |
 | `src/include/utils/schema_field_layout.hpp` | L3 (public) | `compute_field_layout()` — packing-aware field offsets |
-| `src/include/utils/schema_utils.hpp` | L3 (public) | `parse_schema_json()`, `compute_schema_hash()`, `resolve_schema()` — fingerprint includes packing (Phase 1) |
-| `src/include/utils/schema_library.hpp` | L3 (public) | `SchemaLibrary` — file loader (no authority; produces records for REG_REQ) |
-| `src/utils/schema/schema_library.cpp` | impl | File loader implementation |
-| `src/include/utils/hub_state.hpp` | L3 (public) | `SchemaRecord`, `schemas` map added to `HubState` (Phase 2) |
-| `src/utils/ipc/hub_state.cpp` | impl | `_on_schema_registered`, `_on_schema_evicted`, `_on_role_deregistered` cascade (Phase 2) |
-| `src/utils/ipc/broker_service.cpp` | impl | `REG_REQ` / `SCHEMA_REQ` extended; `SCHEMA_REG_NACK` reasons (Phase 3) |
+| `src/include/utils/schema_utils.hpp` | L3 (public) | HEP-0034 wire form: `canonical_fields_str`, `compute_canonical_hash_from_wire`, `to_hub_schema_record` (the only sanctioned bridge into the registry — §2.4 I2), `WireSchemaFields` + `apply_*_schema_fields` |
+| `src/include/utils/schema_loader.hpp` | L3 (public) | Stateless parsers — `load_from_file`, `load_from_string`, `load_all_from_dirs`, `default_search_dirs`. No class state, no maps, no caches (§2.4 I5). Renamed from `schema_library.hpp` by Phase 4. |
+| `src/utils/schema/schema_loader.cpp` | impl | Parser implementation |
+| `src/include/utils/hub_state.hpp` | L3 (public) | `SchemaRecord`, `schemas` map; sole runtime authority (§2.4 I1+I3+I4) |
+| `src/utils/ipc/hub_state.cpp` | impl | `_on_schema_registered` (sole mutator), `schema(owner, id)` (sole reader), `_validate_schema_citation` (sole validator), `_on_role_deregistered` cascade |
+| `src/utils/ipc/broker_service.cpp` | impl | `handle_reg_req` / `handle_consumer_reg_req` / `handle_schema_req` / `load_hub_globals_` — message dispatch only, no schema state of its own |
 
-Removed by this HEP (was HEP-0016 Phase 4 design, never relied upon):
+**Removed by this HEP:**
 
-| File | Reason |
-|------|--------|
-| `src/include/utils/schema_registry.hpp` | `SchemaStore` lifecycle module, file watcher, broker query fallback — replaced by hub-as-mutator + `HubState.schemas` |
+| Element | Reason |
+|---------|--------|
+| `src/include/utils/schema_registry.hpp` (was HEP-0016 Phase 4 design) | `SchemaStore` lifecycle module, file watcher, broker query fallback — replaced by hub-as-mutator + `HubState.schemas`. Deleted Phase 4a. |
 | `src/utils/schema/schema_registry.cpp` | (same) |
+| `class SchemaLibrary` state surface (`by_id_`, `by_hash_`, `register_schema`, `get`, `identify`, `list`, `load_all` member) | Parallel registry that violated §2.4 I1+I3+I5. Replaced by stateless free functions in `pylabhub::schema` + `HubState.schemas`. Deleted Phase 4. |
+| `validate_named_schema<T,F>(id, lib)` and `validate_named_schema_from_env<T,F>` | Zero production callers; cited a `Producer::create<F,D>` API that was retired with HEP-0024. Broker NACK on REG_REQ is the validator (§2.4 I4). Deleted Phase 4. |
+| Legacy HEP-0016 Cases A and B in `handle_reg_req` (auto-annotate by id, reverse-lookup by hash) | Compared HEP-0034 wire-form `attempted_schema` against HEP-0002 `SchemaInfo::hash` — different canonical forms (§2.4 I6). Reverse-by-hash also forbidden under namespace-by-owner (§2.4 I7). Deleted Phase 4. |
+| `BrokerServiceImpl::schema_lib_` member + `get_schema_library()` accessor | Lazy-init parser-state held inside dispatcher. After demotion `schema_loader` is stateless, so the accessor has no purpose. Replaced by direct free-function call in `load_hub_globals_`. Deleted Phase 4. |
 
 ---
 
@@ -79,6 +84,137 @@ data conforms to **owner X's** schema with id `id`". The hub validates that
 owner X is the channel's authority — which is either the producer of that
 channel, or the hub itself for hub-globals adopted by the channel. Hash
 equality alone does **not** authorise a third-party citation.
+
+### 2.4 Module ownership and runtime invariants
+
+This section is the **design contract** for every module that touches schemas.
+Code that violates any rule below is a defect; doc-comments in `schema_loader.hpp`,
+`hub_state.hpp`, and `broker_service.cpp` reference this section by name as
+the binding rules.
+
+```mermaid
+flowchart TB
+    subgraph FS["Filesystem (authoritative source for hub-globals)"]
+        HD["&lt;hub_dir&gt;/schemas/*.json"]
+        RD["&lt;role_dir&gt;/schemas/*.json — local cache, NON-authoritative"]
+    end
+
+    subgraph PARSE["schema_loader (stateless parsers — Layer 3 public)"]
+        L1["load_from_file(path) → SchemaEntry"]
+        L2["load_from_string(json) → SchemaEntry"]
+        L3["load_all_from_dirs(dirs) → vector&lt;path, SchemaEntry&gt;"]
+    end
+
+    subgraph XLATE["schema_utils (pure helpers — no state)"]
+        T1["to_hub_schema_record(SchemaEntry) → SchemaRecord"]
+        T2["compute_canonical_hash_from_wire(...)"]
+    end
+
+    subgraph AUTH["Runtime authority (HEP-0033 §G2)"]
+        HDIR["HubDirectory — filesystem orchestrator (HEP-0033 §7)"]
+        HS["HubState — sole runtime authority<br/>schemas map<br/>_on_schema_registered (sole mutator)<br/>schema(owner, id) (sole reader)<br/>_validate_schema_citation (sole validator)"]
+    end
+
+    subgraph DISP["Message dispatch (no state of its own)"]
+        BS["BrokerService — handle_reg_req,<br/>handle_consumer_reg_req, handle_schema_req"]
+    end
+
+    HD --> L3
+    RD -.optional preflight.-> L1
+    L3 --> HDIR
+    L1 --> HDIR
+    HDIR -->|via T1| HS
+    BS -->|read/write/validate via HubState API only| HS
+```
+
+**Invariants:**
+
+1. **Single mutator** *(I1)* — `HubState::_on_schema_registered(SchemaRecord)` is the
+   sole entry-point that mutates the schema registry. No other module may insert,
+   remove, or modify entries. This follows HEP-CORE-0033 §G2 (hub as single
+   mutator); schemas are not exempt.
+
+2. **Single load pipeline** *(I2)* — schemas enter `HubState` through exactly one
+   path: `schema_loader::load_from_file` (or `load_all_from_dirs`) →
+   `to_hub_schema_record` → `HubState::_on_schema_registered`. No module may
+   construct `SchemaRecord` values directly from a `.json` file without going
+   through `to_hub_schema_record`. The translation step is what makes the
+   canonical-form rule (I6) automatic.
+
+3. **Single reader** *(I3)* — code that needs to look up a schema by
+   `(owner, id)` calls `HubState::schema(owner, id)`. There is no parallel
+   in-memory map elsewhere. Consumers of the schema registry never hold their
+   own copy keyed by id or by hash.
+
+4. **Single validator** *(I4)* — citation validation goes through
+   `HubState::_validate_schema_citation(channel_owner, channel_id, cited_owner,
+   cited_id, cited_hash, cited_packing)`. The broker's only job is to extract
+   wire fields and forward them to this method. Stage-2 fingerprint
+   recomputation (`compute_canonical_hash_from_wire` vs claimed `schema_hash`)
+   is a producer-side check that runs in `handle_reg_req` before the validator
+   is reached; it is not a separate validator.
+
+5. **Stateless parser** *(I5)* — `schema_loader` holds **no state**: no maps,
+   no caches, no in-memory registry. Each parser function takes input, returns
+   a parsed value, and forgets. The historical class `SchemaLibrary` (HEP-0016)
+   carried `by_id_` / `by_hash_` maps; those maps are deleted by HEP-0034
+   Phase 4. A parser that grew internal state would be a defect; review
+   should reject any reintroduction.
+
+6. **Canonical-form rule** *(I6)* — two distinct canonical forms exist by design:
+   - **HEP-0002 BLDS form** (`name:tok[count]` joined by `;`), computed by
+     `compute_layout_info()`, populates `SchemaInfo::hash`. Used by the
+     **SHM-header self-description** so a memory-mapped block can be
+     introspected without external metadata. Internal to a single process
+     image.
+   - **HEP-0034 wire form** (`slot:name:type:count:length|...|pack:...|fz:...|fzpack:...`),
+     computed by `compute_canonical_hash_from_wire()`, populates
+     `SchemaRecord::hash`. Used by the **cross-process schema registry** for
+     citation, adoption, and Stage-2 verification.
+
+   These two hashes are **different by design** for the same logical schema.
+   Cross-comparison is a category error: it cannot succeed for a non-trivial
+   schema. Code that mixes the two is a defect — see HEP-0034 Phase 4 commit
+   log for the prior incident this rule prevents.
+
+7. **No reverse-by-hash lookup** *(I7)* — under namespace-by-owner (§2.1, §5),
+   the same canonical bytes can legitimately exist as `(role_uid, "frame")` and
+   `(hub, "frame")` simultaneously. A `hash → schema_id` reverse lookup
+   collapses owners and is therefore **ambiguous by construction**. Broker code
+   must not perform such lookups; auto-annotation (HEP-0016 Case B) is removed
+   by HEP-0034 Phase 4. Citers must always carry an explicit `(owner, id)` —
+   absent that, the citation is anonymous and creates no record.
+
+8. **Filesystem is hub-authoritative only** *(I8)* — schema files at
+   `<hub_dir>/schemas/*.json` are the only filesystem-authoritative source.
+   `<role_dir>/schemas/*.json` is a local cache for offline development and
+   debugging; it is **not** consulted by the broker and may be stale. Per
+   HEP-CORE-0024 §3.5, on disagreement the hub wins.
+
+9. **HubDirectory absorbs filesystem orchestration** *(I9, future)* — when
+   `HubDirectory` is built per HEP-CORE-0033 §7, it owns the call to
+   `schema_loader::load_all_from_dirs` and the chain of `_on_schema_registered`
+   calls at startup. Until then, `BrokerServiceImpl::load_hub_globals_()` is
+   the temporary host. The substitution is a pure ownership move with no
+   behavioural change because `schema_loader` is stateless and `to_hub_schema_record`
+   is pure.
+
+**Forbidden patterns** (review must reject):
+
+- Construction of `SchemaRecord` outside `to_hub_schema_record` or test
+  fixtures.
+- Any field of `SchemaInfo` (HEP-0002) used as input to citation logic, or any
+  field of `SchemaRecord` used to populate a SHM header. The two forms do not
+  interoperate.
+- Lazy initialisation of a parser-side map keyed on schema_id or hash.
+- Validation logic in any class other than `HubState`.
+
+**Permitted patterns:**
+
+- A producer parsing `<role_dir>/schemas/foo.json` locally with
+  `schema_loader::load_from_file()` and comparing struct size or BLDS against
+  `compute_layout_info(struct_fields)` for **its own** preflight check (no
+  registry interaction). This is local-only and creates no record anywhere.
 
 ---
 
@@ -254,6 +390,28 @@ canonical(slot, fz)
 canon_fields(fields) = "name:type:count:length" joined with "|"
 
 fingerprint = BLAKE2b-256(canonical_bytes)
+```
+
+**Type token convention:** `type` is the **JSON type name** as it appears in the
+schema file's `"type"` field — `"float32"`, `"float64"`, `"int8"`, `"int16"`,
+`"int32"`, `"int64"`, `"uint8"`, `"uint16"`, `"uint32"`, `"uint64"`, `"bool"`,
+`"char"`, `"string"`, `"bytes"`. This is **not** the HEP-0002 BLDS token form
+(`f32`, `f64`, `i8`, …); the BLDS token form is reserved for `SchemaInfo::blds`
+in the SHM-header self-description (HEP-0002 §11). The wire form and the
+SHM-header form are deliberately distinct (§2.4 I6) and a producer building
+the wire payload by hand MUST emit the JSON type name to match what the hub
+recomputes from its globals at startup.
+
+`length` is `0` for fixed-width primitives; for `string`/`bytes` it is the
+byte length declared in the schema (HEP-0002 §11.1). `count` is the array
+arity (`1` for scalar, `>1` for array; HEP-0002 §11.2).
+
+Worked example for `[{"name":"v","type":"float32"}]` with `packing="aligned"`:
+
+```
+canon_fields = "v:float32:1:0"
+canonical    = "slot:v:float32:1:0|pack:aligned"
+fingerprint  = BLAKE2b-256("slot:v:float32:1:0|pack:aligned")
 ```
 
 This corrects the HEP-0016 fingerprint, which omitted both packing strings.
@@ -835,16 +993,14 @@ INVALID_REQUEST, inbox invalid packing.
 - Cross-citation test coverage — same Phase 5 dependency (consumers
   need to be able to cite explicitly).
 
-### Phase 4 — `SchemaLibrary` refactor
+### Phase 4 — `SchemaLibrary` demotion + hub-globals + legacy purge
 
-Sliced into two sub-phases for review manageability:
+Sliced into three sub-phases for review manageability:
 
 **Phase 4a** (commit `4b83636`, 2026-04-28) — ✅ shipped:
 - Deleted `SchemaStore` lifecycle module (`schema_registry.hpp` /
   `.cpp`) and its lifecycle-singleton tests.  External references
   consolidated to `schema_record.hpp` + `schema_utils.hpp`.
-- `SchemaLibrary` was already stateless (no lifecycle module wrapping
-  it after HEP-0024); no further refactor needed at the library layer.
 - Added `to_hub_schema_record(SchemaEntry)` bridge helper that
   produces a `SchemaRecord` keyed under `(owner_uid="hub", schema_id)`,
   computing the wire-form canonical hash via
@@ -854,7 +1010,7 @@ Sliced into two sub-phases for review manageability:
   HEP-0002 BLDS format (`name:tok[count];...`) while the wire/registry
   hash uses the HEP-0034 canonical form (`name:type:count:length|...`).
   Consumer citations against `(hub, id)` recompute the wire form, so
-  the stored record must use that form.
+  the stored record must use that form (§2.4 I6).
 - Folded in a Phase 3 follow-up bug fix surfaced while writing the
   helper: broker REG_REQ Stage-2 verification was passing only
   `slot_blds` + `slot_packing` to `compute_canonical_hash_from_wire`,
@@ -863,17 +1019,108 @@ Sliced into two sub-phases for review manageability:
   `flexzone_packing` from the wire and includes them in the
   recomputation.  +2 tests (`WireForm_HashMatchesSchemaSpecHash`,
   `WireForm_FlexzoneIncluded`).
+- **Note (2026-04-28 correction):** the original Phase 4a writeup
+  claimed "SchemaLibrary was already stateless".  That was inaccurate
+  — the class held `by_id_` and `by_hash_` maps populated by
+  `register_schema` / `load_all`.  The true stateless demotion lands
+  in Phase 4c below.
 
-**Phase 4b** — pending `plh_hub` binary (HEP-CORE-0033 Phase 6+):
-- Hub startup walks `<hub_dir>/schemas/*.json`, runs each file through
-  `SchemaLibrary::load_from_file`, then `to_hub_schema_record` to
-  produce the canonical form, then `_on_schema_registered({owner:
-  "hub", ...})` to insert into `HubState.schemas`.
-- Malformed file or duplicate `(hub, id)` → fail startup with the
-  offending path in the diagnostic.
-- Tests: hub startup loads all globals (round-trip via SCHEMA_REQ);
-  malformed file fails startup with path; duplicate id fails with
-  both paths in the diagnostic.
+**Phase 4b** (this commit, 2026-04-28) — ✅ shipped:
+- `BrokerServiceImpl::load_hub_globals_()` invoked from `BrokerService::run()`
+  walks `cfg.schema_search_dirs` (or `default_search_dirs()` when empty),
+  parses each `.json` file via the stateless free function
+  `pylabhub::schema::load_all_from_dirs`, translates each entry via
+  `to_hub_schema_record`, and inserts into `HubState.schemas` via
+  `_on_schema_registered`.  Path C (producer adopts hub-global) is
+  reachable from the very first inbound REG_REQ.
+- Outcome handling: `kCreated` and `kIdempotent` count as success;
+  `kHashMismatchSelf` logs WARN with the offending file path (the
+  `(path, SchemaEntry)` pair returned by the walker is what makes
+  this diagnostic possible); `kForbiddenOwner` is defensively logged
+  ERROR (translator sets owner="hub" itself, so this branch
+  indicates an invariant violation).
+- This shipped via `BrokerServiceImpl` directly rather than waiting
+  for a `plh_hub` binary; when `HubDirectory` (HEP-CORE-0033 §7) is
+  built, ownership of this load step moves there per §2.4 I9 — pure
+  ownership move with no behavioural change.
+- Tests (Pattern 3, in `test_datahub_broker.cpp`): 5 new scenarios
+  covering: hub globals loaded at startup (round-trip via SCHEMA_REQ);
+  path-C adoption succeeds; path-C fingerprint mismatch →
+  FINGERPRINT_INCONSISTENT; path-C citing unknown id → SCHEMA_UNKNOWN;
+  cross-owner attempt → SCHEMA_FORBIDDEN_OWNER.
+
+**Phase 4c** (this commit, 2026-04-28) — ✅ shipped: legacy purge +
+`SchemaLibrary` demotion to stateless parser-shell.
+
+Removed (HEP-CORE-0034 §2.4 I1+I3+I5+I6+I7 enforcement):
+
+- `SchemaLibrary` non-static state: `by_id_` map, `by_hash_` map,
+  `search_dirs_` member, the `(vector<string>)` constructor, and
+  members `load_all`, `register_schema`, `get`, `identify`, `list`.
+  All deleted-with-prejudice copy/move constructors so the class
+  shell can no longer be instantiated; only static parsers remain.
+- Templated `validate_named_schema<T,F>(id, lib)` and
+  `validate_named_schema_from_env<T,F>(id)` — zero production
+  callers; cited a `Producer::create<F,D>` API that retired with
+  HEP-0024.  Broker NACK on REG_REQ is now the validator (§2.4 I4).
+  When the typed RAII addon needs an analogous primitive, it uses
+  `make_wire_schema_fields_from_types<>` (Phase 5d) — different
+  shape, different output, written fresh.
+- Legacy HEP-0016 Cases A and B in `handle_reg_req` (broker REG_REQ
+  schema annotation): Case A (lookup-by-id against SchemaLibrary
+  comparing producer's `attempted_schema` against
+  `slot_info.hash`) used HEP-0002 BLDS form vs HEP-0034 wire form
+  (different by design — §2.4 I6), so always rejected real path-C
+  REG_REQs with `SCHEMA_ID_MISMATCH`.  Case B (reverse-by-hash
+  auto-annotation) is forbidden under namespace-by-owner (§2.4 I7).
+  Replaced by the channel-mismatch gate alone (`entry.schema_blds =
+  req_schema_blds` line preserved for that gate); schema record
+  authority lives in the HEP-CORE-0034 path B/C block.
+- `BrokerServiceImpl::schema_lib_` member and
+  `get_schema_library()` accessor: lazy-init parser-state held inside
+  the dispatcher.  After demotion, `schema_loader` is stateless
+  (§2.4 I5) and `load_hub_globals_()` calls the free function
+  directly.
+
+Added:
+
+- Free function
+  `pylabhub::schema::load_all_from_dirs(dirs) →
+   vector<pair<string, SchemaEntry>>` — pure walker; first-match-wins
+  by `schema_id` across directories; returns `(file_path, parsed_entry)`
+  pairs so diagnostics on `kHashMismatchSelf` can name the offending
+  file.  This is the §2.4 I2 entry-point.
+- `resolve_named_schema` in `schema_utils.hpp` rewritten to use
+  `load_all_from_dirs` + linear scan (was using
+  `SchemaLibrary::load_all` + `lib.get(id)`); §2.4 I8 note added
+  documenting that role-side cache is non-authoritative.
+
+Tests:
+
+- `test_datahub_schema_loader.cpp` rewritten (renamed from
+  `test_datahub_schema_library.cpp`): 12 parser tests retained
+  (load_from_string variants, BLDS / hash / size / flexzone / all
+  primitive types / determinism / C++ struct ↔ JSON parity); 4 new
+  `load_all_from_dirs` tests (single file, nested path, broken JSON
+  skipped, first-match-wins across dirs).  Removed: 5 registry-state
+  tests (RegisterAndGetForwardLookup, GetUnknownReturnsNullopt,
+  IdentifyReverseLookup, ListReturnsAllIDs, CppHashIdentifiesNamedSchema)
+  + 7 `validate_named_schema*` tests — all targeted surfaces deleted by
+  this phase.
+
+Documentation:
+
+- HEP-0034 §2.4 (Module ownership and runtime invariants) added —
+  binding rules I1-I9 with module-flow Mermaid diagram, forbidden
+  patterns, permitted patterns.  Header doc-comments in
+  `schema_loader.hpp`, broker_service.cpp, and hub_state.hpp
+  reference §2.4 by invariant id.
+- §3 file list rewritten to reflect post-Phase-4c state with §2.4
+  cross-refs.
+- `docs/tech_draft/raii_layer_redesign.md` §6.15 added — reference
+  design for the typed RAII addon's schema integration; resolves §9
+  Q3; aligns RAII implementer expectations with the broker-as-validator
+  invariant (§2.4 I4).
 
 ### Phase 5 — Client-side citation API + role-host refactors
 
@@ -928,12 +1175,30 @@ slot/flexzone/inbox spec members, consistent validate-only
 early-exit.  Defer until other Phase 5/6 work stabilizes the
 surface.
 
-**Phase 5d** — pending: typed C++ API surface
-`ProducerOptions::{schema_owner, schema_id}`,
-`ConsumerOptions::expected_*`; `create<F,D>()` issues `SCHEMA_REQ`
-for path C, sends BLDS for path B (HEP-0034 §14).  Today producers
-populate the wire from config JSON via the Phase 5a helpers; Phase
-5d adds the C++-only API for the same fields.
+**Phase 5d** — pending: typed C++ API surface for the RAII addon
+(`SimpleProducerHost<SlotT, FzT>`, `SimpleConsumerHost<SlotT, FzT>`,
+`SimpleProcessorHost<InT, OutT>`). Today producers populate the wire
+from config JSON via the Phase 5a helpers; Phase 5d adds the C++-only
+helpers for the same fields driven by struct types:
+
+- `make_wire_schema_fields_from_types<SlotT, FzT>(...)` in
+  `schema_utils.hpp` — produces a `WireSchemaFields` for REG_REQ from
+  a PYLABHUB_SCHEMA-registered struct. Path B (self-register) and
+  path C (adopt hub-global) selected via `schema_owner` argument.
+- `make_consumer_citation_fields_from_types<SlotT, FzT>(...)` —
+  symmetric, for CONSUMER_REG_REQ. Anonymous and named citation
+  selected via `expected_schema_id`.
+
+Both helpers are stateless wrappers over the existing
+`canonical_fields_str` + `compute_canonical_hash_from_wire` primitives
+(§2.4 I5+I6); they consult no registry (§2.4 I3) and perform no
+client-side validation (§2.4 I4).
+
+**Implementer reference**: see
+[`docs/tech_draft/raii_layer_redesign.md` §6.15](../tech_draft/raii_layer_redesign.md)
+for the full design, call-site map, compile-time check inventory,
+and what NOT to add. That section is the canonical specification for
+Phase 5d implementation; this paragraph is the index entry.
 
 **Tests** for the full citation lifecycle (producer adopts
 hub-global, consumer cites it, all three paths round-trip) wait for
