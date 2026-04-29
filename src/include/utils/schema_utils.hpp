@@ -461,11 +461,14 @@ inline void apply_producer_schema_fields(nlohmann::json         &reg_opts,
 inline void apply_consumer_schema_fields(nlohmann::json         &reg_opts,
                                          const WireSchemaFields &w)
 {
-    if (!w.schema_id.empty())        reg_opts["expected_schema_id"]      = w.schema_id;
-    if (!w.schema_hash.empty())      reg_opts["expected_schema_hash"]    = w.schema_hash;
-    if (!w.schema_blds.empty())      reg_opts["expected_blds"]           = w.schema_blds;
-    if (!w.schema_packing.empty())   reg_opts["expected_packing"]        = w.schema_packing;
-    if (!w.flexzone_blds.empty())    reg_opts["expected_flexzone_blds"]  = w.flexzone_blds;
+    // HEP-CORE-0034 §10.2 — every consumer-side wire field carries the
+    // `expected_schema_*` / `expected_flexzone_*` prefix to mirror the
+    // producer's `schema_*` / `flexzone_*` fields.
+    if (!w.schema_id.empty())        reg_opts["expected_schema_id"]        = w.schema_id;
+    if (!w.schema_hash.empty())      reg_opts["expected_schema_hash"]      = w.schema_hash;
+    if (!w.schema_blds.empty())      reg_opts["expected_schema_blds"]      = w.schema_blds;
+    if (!w.schema_packing.empty())   reg_opts["expected_schema_packing"]   = w.schema_packing;
+    if (!w.flexzone_blds.empty())    reg_opts["expected_flexzone_blds"]    = w.flexzone_blds;
     if (!w.flexzone_packing.empty()) reg_opts["expected_flexzone_packing"] = w.flexzone_packing;
 }
 

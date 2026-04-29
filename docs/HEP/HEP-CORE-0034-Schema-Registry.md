@@ -584,8 +584,10 @@ schema_owner   : string   "" = self (path B) | "hub" (path C; Phase 4+)
 ```
 
 **Wire-form `schema_blds`** is the **canonical fields string** of the slot
-schema (HEP-CORE-0034 §6.3): `name:type:count:length` joined by `|`.
-Example: `ts:f64:1:0|value:f32:1:0`.  The broker recomputes
+schema (HEP-CORE-0034 §6.3): `name:type:count:length` joined by `|`,
+where `type` is the **JSON type name** (e.g. `"float32"`), NOT the
+HEP-0002 BLDS token form (`"f32"`).  Example:
+`ts:float64:1:0|value:float32:1:0`.  The broker recomputes
 `BLAKE2b-256(canonical(blds, packing))` and verifies it equals
 `schema_hash` (Stage-2 fingerprint check) — a mismatch returns
 `FINGERPRINT_INCONSISTENT`.
@@ -608,15 +610,24 @@ Two citation modes per HEP-CORE-0034 §10.3:
 
 | Mode | Wire fields | Semantics |
 |---|---|---|
-| **Named** | `expected_schema_id` + `expected_schema_hash` (required); `expected_blds` + `expected_packing` (optional) | Citer asserts knowledge of the schema by name. Broker checks id and hash match the channel's stored values. If the citer also supplies the structure, the broker verifies it hashes to the channel's hash (defense-in-depth — catches consumer-local blds drift). |
-| **Anonymous** | `expected_blds` + `expected_packing` (required); `expected_schema_hash` (optional) | Citer has no name claim. Must supply the full structure; broker recomputes the fingerprint and compares to the channel's hash. If `expected_schema_hash` is present, the broker also verifies the citer's claimed hash equals the recomputed one (Stage-2 self-consistency). |
+| **Named** | `expected_schema_id` + `expected_schema_hash` (required); `expected_schema_blds` + `expected_schema_packing` (optional) | Citer asserts knowledge of the schema by name. Broker checks id and hash match the channel's stored values. If the citer also supplies the structure, the broker verifies it hashes to the channel's hash (defense-in-depth — catches consumer-local blds drift). |
+| **Anonymous** | `expected_schema_blds` + `expected_schema_packing` (required); `expected_schema_hash` (optional) | Citer has no name claim. Must supply the full structure; broker recomputes the fingerprint and compares to the channel's hash. If `expected_schema_hash` is present, the broker also verifies the citer's claimed hash equals the recomputed one (Stage-2 self-consistency). |
 | **Empty** | none of the above | No validation; backward-compat path for legacy clients. |
+
+All consumer-side wire fields carry the `expected_schema_*`
+or `expected_flexzone_*` prefix to mirror the producer's
+`schema_*` / `flexzone_*` fields (Phase 4d naming alignment,
+2026-04-28).  The form `expected_blds` / `expected_packing` (no
+`schema_` infix) was used in pre-Phase-4d code and is no longer
+accepted.
 
 A request with `expected_schema_id` but no `expected_schema_hash` is
 rejected with `MISSING_HASH_FOR_NAMED_CITATION`.  A request with no
 `expected_schema_id` and no full structure is rejected with
 `MISSING_BLDS_FOR_ANONYMOUS_CITATION` /
-`MISSING_PACKING_FOR_ANONYMOUS_CITATION`.
+`MISSING_PACKING_FOR_ANONYMOUS_CITATION` (the codes refer to the
+`expected_schema_blds` / `expected_schema_packing` fields
+respectively; the codes themselves are kept short for stability).
 
 ### 10.3 `SCHEMA_REQ` / `SCHEMA_ACK`
 
@@ -654,8 +665,8 @@ they are **not** a separate wire frame.
 | `SCHEMA_FORBIDDEN_OWNER`                   | REG_REQ                              | producer attempts to register under another owner uid |
 | `SCHEMA_CITATION_REJECTED`                 | CONSUMER_REG_REQ                     | citation fails id-match, hash-match, or cross-citation rule |
 | `MISSING_HASH_FOR_NAMED_CITATION`          | CONSUMER_REG_REQ                     | named mode: `expected_schema_id` present but `expected_schema_hash` missing |
-| `MISSING_BLDS_FOR_ANONYMOUS_CITATION`      | CONSUMER_REG_REQ                     | anonymous mode: `expected_blds` missing |
-| `MISSING_PACKING_FOR_ANONYMOUS_CITATION`   | CONSUMER_REG_REQ                     | anonymous mode: `expected_packing` missing |
+| `MISSING_BLDS_FOR_ANONYMOUS_CITATION`      | CONSUMER_REG_REQ                     | anonymous mode: `expected_schema_blds` missing |
+| `MISSING_PACKING_FOR_ANONYMOUS_CITATION`   | CONSUMER_REG_REQ                     | anonymous mode: `expected_schema_packing` missing |
 | `SCHEMA_UNKNOWN`                           | SCHEMA_REQ                           | `(owner, id)` lookup found no record |
 | `INBOX_SCHEMA_INVALID`                     | REG_REQ                              | `inbox_schema_json` could not be parsed as a JSON array of fields |
 | `INVALID_INBOX_PACKING`                    | REG_REQ                              | `inbox_packing` is neither `"aligned"` nor `"packed"` |
@@ -819,9 +830,9 @@ struct ProducerOptions {
 
 struct ConsumerOptions {
     // ... existing fields ...
-    std::string expected_owner;
+    std::string expected_schema_owner;
     std::string expected_schema_id;
-    std::string expected_packing;   // default "aligned"
+    std::string expected_schema_packing;   // default "aligned"
 };
 ```
 
@@ -1121,6 +1132,44 @@ Documentation:
   design for the typed RAII addon's schema integration; resolves §9
   Q3; aligns RAII implementer expectations with the broker-as-validator
   invariant (§2.4 I4).
+
+**Phase 4d** (2026-04-28) — ✅ shipped: wire-field naming alignment +
+canonical-form pinning.  Two related corrections surfaced by static
+review of Phase 4c:
+
+1. **Consumer wire-field naming asymmetry** — Phase 3a defined the
+   consumer-side wire fields as `expected_blds` / `expected_packing`
+   (no `schema_` infix), while keeping `expected_schema_id` /
+   `expected_schema_hash` (with infix).  The asymmetry served no
+   purpose and was a documentation hazard.  All consumer wire fields
+   now carry the `expected_schema_*` (or `expected_flexzone_*`) prefix
+   to mirror the producer side:
+   - `expected_blds` → `expected_schema_blds`
+   - `expected_packing` → `expected_schema_packing`
+
+   Touched: `apply_consumer_schema_fields` (`schema_utils.hpp`),
+   `handle_consumer_reg_req` (`broker_service.cpp`), all CONSUMER_REG_REQ
+   error messages, ~5 Pattern-3 worker tests, 2 unit tests.  NACK error
+   *codes* are unchanged (`MISSING_BLDS_FOR_ANONYMOUS_CITATION` /
+   `MISSING_PACKING_FOR_ANONYMOUS_CITATION`) — they're stable
+   identifiers; only their description text references the new field
+   names.
+
+2. **Canonical-form type-token convention pinned** — §6.3 was silent
+   on whether the wire `type` token was the JSON name (`"float32"`)
+   or the BLDS short token (`"f32"`).  Real production code emits
+   the JSON name (via `canonical_fields_str(spec)` →
+   `f.type_str` ← `parse_schema_json` ← JSON `"type"`); hand-crafted
+   tests previously emitted the BLDS form and were self-consistent
+   only because both sides used the same form.  Phase 4b's path-C
+   `Sch_PathC_AdoptionSucceeds` failure exposed the gap (broker's
+   JSON-loaded global mismatched the test's BLDS-form payload).
+   §6.3 + §10.1 now pin the JSON name as the wire form with worked
+   examples; HEP-0002 BLDS short form remains in `SchemaInfo::blds`
+   for SHM-header self-description (§2.4 I6) and is not used on the
+   wire.
+
+1631/1631 tests passing after rename + canonical-form fix.
 
 ### Phase 5 — Client-side citation API + role-host refactors
 
