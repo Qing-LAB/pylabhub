@@ -445,11 +445,11 @@ inline void apply_producer_schema_fields(nlohmann::json         &reg_opts,
 }
 
 /// Paste the consumer-side wire fields into a CONSUMER_REG_REQ payload.
-/// Field name mapping (HEP-CORE-0034 §10.3):
+/// Field name mapping (HEP-CORE-0034 §10.2 / Phase 4d alignment):
 ///   schema_id        → expected_schema_id
 ///   schema_hash      → expected_schema_hash
-///   schema_blds      → expected_blds
-///   schema_packing   → expected_packing
+///   schema_blds      → expected_schema_blds
+///   schema_packing   → expected_schema_packing
 ///   flexzone_blds    → expected_flexzone_blds
 ///   flexzone_packing → expected_flexzone_packing
 ///
