@@ -658,8 +658,11 @@ LoopPolicy C++ metrics tests (HEP-CORE-0008) are fully covered in
   consumer reads `in_slot.counter` and `in_slot.doubled` (ctypes fields from `from_buffer_copy()`)
   and verifies transformation correctness (`doubled == counter * 10.0 * 2.0`).
 
-### HubConfig script-block fields (tests done — 2026-02-28)
-**Status**: ✅ Complete — 9 tests in `tests/test_layer3_datahub/test_datahub_hub_config_script.cpp`
+### HubConfig script-block fields (tests done — 2026-02-28; **superseded 2026-04-29**)
+**Status**: ⚪ Retired with the legacy singleton (2026-04-29). The 9 tests below
+covered `pylabhub::HubConfig`, which was deleted with its file. Coverage for
+the new `pylabhub::config::HubConfig` (HEP-0033 §6.1) lives in
+`tests/test_layer2_service/test_hub_config.cpp` (Pattern 3, 9 tests).
 
 - [x] **`hub_script_dir()` from JSON** — resolves to `<hub_dir>/my_script/python`
 - [x] **`script_type()` from JSON** — reads `"type"` field correctly
@@ -942,6 +945,8 @@ LoopPolicy C++ metrics tests (HEP-CORE-0008) are fully covered in
 - ✅ **Layer 3 tests: HubConfig script-block fields** (9 tests) — `tests/test_layer3_datahub/test_datahub_hub_config_script.cpp`:
   two lifecycle fixtures (Logger + CryptoUtils + FileLock + JsonConfig + HubConfig); configured fixture
   (hub.json with all script/python fields; 5 tests); defaults fixture (absent script/python block; 4 tests).
+  *(Retired 2026-04-29 — file deleted with the legacy singleton; replaced by
+  `tests/test_layer2_service/test_hub_config.cpp`.)*
 - ✅ **CMake: `PYLABHUB_PYTHON_REQUIREMENTS_FILE`** — `cmake/ToplevelOptions.cmake` FILEPATH cache var;
   `third_party/cmake/python.cmake` uses variable (+ existence check); `CMakeLists.txt` status message.
   **Total: 573/573 passing**

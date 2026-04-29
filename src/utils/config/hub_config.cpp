@@ -1,663 +1,234 @@
 /**
  * @file hub_config.cpp
- * @brief HubConfig singleton lifecycle module implementation.
+ * @brief HubConfig composite — pImpl + JsonConfig backend, strict-key parsing.
  *
- * Config loading strategy (priority low → high):
- *  1. Built-in C++ defaults (hard-coded in Impl struct fields)
- *  2. hub.json from hub instance directory — loaded when set_config_path() is called
- *     (i.e. when pylabhub-hubshell is launched with a hub_dir argument)
- *  3. PYLABHUB_CONFIG_FILE env var — explicit single-file override (useful for CI)
- *  4. PYLABHUB_HUB_NAME / PYLABHUB_BROKER_ENDPOINT / PYLABHUB_ADMIN_ENDPOINT
- *     — process-level overrides applied after file loading
+ * Mirrors `RoleConfig` in shape (HEP-CORE-0033 §6.1).  Owns the identity /
+ * auth / script / logging / network / admin / broker / federation / state
+ * sub-configs that together form a single `hub.json`.  No directional
+ * `in_`/`out_` slots — the hub is single-sided.
+ *
+ * The legacy `pylabhub::HubConfig` lifecycle singleton (and its self-test)
+ * was retired 2026-04-29 along with the never-built `pylabhub-hubshell`
+ * binary.
  */
-#include "plh_platform.hpp"
-#include "utils/crypto_utils.hpp"
-#include "utils/lifecycle.hpp"
-#include "utils/logger.hpp"
-#include "utils/timeout_constants.hpp"
-#include "utils/channel_access_policy.hpp"
-#include "utils/hub_config.hpp"
+#include "utils/config/hub_config.hpp"
+#include "utils/hub_vault.hpp"
 #include "utils/json_config.hpp"
-#include "utils/naming.hpp"
-#include "utils/net_address.hpp"
-#include "uid_utils.hpp"
 
 #include <cassert>
-#include <atomic>
-#include <chrono>
-#include <cstdlib>
-#include <filesystem>
-#include <fstream>
-#include <memory>
-#include <mutex>
-#include <optional>
-#include <string>
+#include <cstdio>
+#include <unordered_set>
+#include <nlohmann/json.hpp>
+#include <stdexcept>
 
-namespace pylabhub
+namespace pylabhub::config
 {
 
-namespace fs = std::filesystem;
-
-// ---------------------------------------------------------------------------
-// Module-level state
-// ---------------------------------------------------------------------------
-
-/// Lifecycle state for HubConfig — mirrors the Logger's state-machine pattern.
-///
-///   Uninitialized ──► Initializing ──► Initialized ──► ShuttingDown
-///
-/// get_instance() is allowed in Initializing (the startup callback loads the
-/// config via get_instance().load_()) and Initialized (normal runtime).
-/// Calls during Uninitialized or ShuttingDown trigger an assertion failure,
-/// catching modules that forget to declare a dependency on pylabhub::HubConfig.
-enum class HubConfigState : int { Uninitialized, Initializing, Initialized, ShuttingDown };
-static std::atomic<HubConfigState> g_hub_config_state{HubConfigState::Uninitialized};
-
-static std::mutex g_config_path_mu;
-static fs::path   g_config_path_override; ///< Set by set_config_path() before startup.
-
-static std::mutex  g_admin_token_mu;
-static std::string g_admin_token; ///< Set by set_admin_token() before startup; vault is sole source.
-
-// ---------------------------------------------------------------------------
-// Helpers (anonymous namespace)
-// ---------------------------------------------------------------------------
-
-namespace
-{
-
-/// Returns the absolute path to the running executable's directory.
-/// Delegates to platform::get_executable_name() which correctly handles
-/// Linux (/proc/self/exe), macOS (_NSGetExecutablePath), and Windows
-/// (GetModuleFileNameW).
-fs::path get_binary_dir() noexcept
-{
-    try
-    {
-        const std::string exe = platform::get_executable_name(/*include_path=*/true);
-        if (exe != "unknown" && exe != "unknown_win")
-            return fs::path(exe).parent_path();
-    }
-    catch (...) {}
-    return {};
-}
-
-/// Resolves a relative path in the config against the config directory.
-fs::path resolve_path(const fs::path& config_dir, const std::string& raw) noexcept
-{
-    if (raw.empty())
-        return {};
-    try
-    {
-        fs::path p(raw);
-        if (p.is_absolute())
-            return fs::weakly_canonical(p);
-        return fs::weakly_canonical(config_dir / p);
-    }
-    catch (...) { return fs::path(raw); }
-}
-
-/// Reads a JSON file from disk into an nlohmann::json object.
-/// Returns a null JSON value on failure.
-nlohmann::json read_json_file(const fs::path& path) noexcept
-{
-    try
-    {
-        std::ifstream f(path);
-        if (!f.is_open())
-            return nlohmann::json{};
-        nlohmann::json j;
-        f >> j;
-        return j;
-    }
-    catch (...) {}
-    return nlohmann::json{};
-}
-
-} // anonymous namespace
-
-// ---------------------------------------------------------------------------
-// HubConfig::Impl
-// ---------------------------------------------------------------------------
+// ============================================================================
+// Impl
+// ============================================================================
 
 struct HubConfig::Impl
 {
-    // Resolved values — populated once at startup, read-only afterwards.
-    std::string hub_name       {"local.hub.default"};
-    std::string hub_description{"pyLabHub instance"};
-    std::string hub_uid        {};  ///< Auto-generated if not in config: "hub.<name>.u<8hex>"
-    std::string broker_endpoint{"tcp://0.0.0.0:5570"};
-    std::string admin_endpoint {"tcp://127.0.0.1:5600"};
-    std::string admin_token    {}; ///< From vault only; vault is sole source (never from hub.json).
+    utils::JsonConfig          jcfg;
+    std::filesystem::path      base_dir;
+    nlohmann::json             raw_json;
 
-    // Role liveness (HEP-CORE-0023 §2.5).
-    std::chrono::milliseconds heartbeat_interval{::pylabhub::kDefaultHeartbeatIntervalMs};
-    uint32_t                  ready_miss_heartbeats   {::pylabhub::kDefaultReadyMissHeartbeats};
-    uint32_t                  pending_miss_heartbeats {::pylabhub::kDefaultPendingMissHeartbeats};
-    uint32_t                  grace_heartbeats        {::pylabhub::kDefaultGraceHeartbeats};
-    std::optional<std::chrono::milliseconds> ready_timeout_override;
-    std::optional<std::chrono::milliseconds> pending_timeout_override;
-    std::optional<std::chrono::milliseconds> grace_override;
-    std::chrono::seconds      consumer_liveness_check {5};
+    HubIdentityConfig   identity;
+    AuthConfig          auth;
+    ScriptConfig        script;
+    LoggingConfig       logging;
+    HubNetworkConfig    network;
+    HubAdminConfig      admin;
+    HubBrokerConfig     broker;
+    HubFederationConfig federation;
+    HubStateConfig      state;
 
-    fs::path root_dir;
-    fs::path config_dir;
-    fs::path scripts_python_dir;
-    fs::path scripts_lua_dir;
-    fs::path data_dir;
-    fs::path    hub_script_dir;     ///< Resolved from hub.json["script"]["path"] + type subdir.
-    std::string script_type_;       ///< hub.json["script"]["type"]. Empty = not configured.
-    fs::path python_requirements;
-    int tick_interval_ms_    {1000};   ///< hub.json["script"]["tick_interval_ms"]
-    int health_log_interval_ms_{60000}; ///< hub.json["script"]["health_log_interval_ms"]
-
-    // ── Connection policy (Phase 3) ──────────────────────────────────────────
-    broker::ConnectionPolicy             connection_policy{broker::ConnectionPolicy::Open};
-    std::vector<broker::KnownRole>      known_roles;
-    std::vector<broker::ChannelPolicy>   channel_policies;
-
-    // ── Federation peers (HEP-CORE-0022) ────────────────────────────────────
-    std::vector<HubPeerConfig>           peers_;
-
-    utils::JsonConfig cfg; ///< Holds the merged JSON for raw access.
-
-    // ------------------------------------------------------------------
-    // Reset all fields to built-in defaults (for lifecycle re-init).
-    // ------------------------------------------------------------------
-    void reset_to_defaults()
-    {
-        hub_name           = "local.hub.default";
-        hub_description    = "pyLabHub instance";
-        hub_uid            = {};
-        broker_endpoint    = "tcp://0.0.0.0:5570";
-        admin_endpoint     = "tcp://127.0.0.1:5600";
-        admin_token        = {};
-        heartbeat_interval       = std::chrono::milliseconds{::pylabhub::kDefaultHeartbeatIntervalMs};
-        ready_miss_heartbeats    = ::pylabhub::kDefaultReadyMissHeartbeats;
-        pending_miss_heartbeats  = ::pylabhub::kDefaultPendingMissHeartbeats;
-        grace_heartbeats         = ::pylabhub::kDefaultGraceHeartbeats;
-        ready_timeout_override.reset();
-        pending_timeout_override.reset();
-        grace_override.reset();
-        consumer_liveness_check  = std::chrono::seconds{5};
-        root_dir.clear();
-        config_dir.clear();
-        scripts_python_dir.clear();
-        scripts_lua_dir.clear();
-        data_dir.clear();
-        hub_script_dir.clear();
-        script_type_.clear();
-        python_requirements.clear();
-        tick_interval_ms_       = 1000;
-        health_log_interval_ms_ = 60000;
-        connection_policy  = broker::ConnectionPolicy::Open;
-        known_roles.clear();
-        channel_policies.clear();
-        peers_.clear();
-        cfg = utils::JsonConfig{};
-    }
-
-    // ------------------------------------------------------------------
-    // Parse a JSON object and extract all known fields into member vars.
-    // ------------------------------------------------------------------
-    void apply_json(const nlohmann::json& j)
-    {
-        if (j.contains("hub"))
-        {
-            const auto& h = j.at("hub");
-            if (h.contains("name"))             hub_name        = h.at("name").get<std::string>();
-            if (h.contains("description"))      hub_description = h.at("description").get<std::string>();
-            if (h.contains("uid"))              hub_uid         = h.at("uid").get<std::string>();
-            if (h.contains("broker_endpoint"))  broker_endpoint = h.at("broker_endpoint").get<std::string>();
-            if (h.contains("admin_endpoint"))   admin_endpoint  = h.at("admin_endpoint").get<std::string>();
-
-            // Validate endpoints.
-            {
-                auto r = pylabhub::validate_tcp_endpoint(broker_endpoint);
-                if (!r.ok())
-                    throw std::runtime_error("hub config: invalid broker_endpoint: " + r.error);
-            }
-            {
-                auto r = pylabhub::validate_tcp_endpoint(admin_endpoint);
-                if (!r.ok())
-                    throw std::runtime_error("hub config: invalid admin_endpoint: " + r.error);
-            }
-
-            // ── Connection policy (Phase 3) ──────────────────────────────────
-            if (h.contains("connection_policy") && h.at("connection_policy").is_string())
-            {
-                const std::string policy_str = h.at("connection_policy").get<std::string>();
-                connection_policy = broker::connection_policy_from_str(policy_str);
-                if (connection_policy == broker::ConnectionPolicy::Open &&
-                    policy_str != "open" && !policy_str.empty())
-                {
-                    LOGGER_WARN(
-                        "HubConfig: unknown connection_policy '{}' — defaulting to 'open'. "
-                        "Valid values: open, tracked, required, verified.",
-                        policy_str);
-                }
-            }
-            if (h.contains("known_roles") && h.at("known_roles").is_array())
-            {
-                known_roles.clear();
-                for (const auto& a : h.at("known_roles"))
-                {
-                    broker::KnownRole ka;
-                    ka.name = a.value("name", "");
-                    ka.uid  = a.value("uid", "");
-                    ka.role = a.value("role", "any");
-                    if (!ka.name.empty() && !ka.uid.empty())
-                    {
-                        known_roles.push_back(std::move(ka));
-                    }
-                }
-            }
-            if (h.contains("channel_policies") && h.at("channel_policies").is_array())
-            {
-                channel_policies.clear();
-                for (const auto& cp : h.at("channel_policies"))
-                {
-                    const std::string glob = cp.value("channel", "");
-                    const std::string pstr = cp.value("connection_policy", "open");
-                    if (!glob.empty())
-                    {
-                        const auto pol = broker::connection_policy_from_str(pstr);
-                        if (pol == broker::ConnectionPolicy::Open &&
-                            pstr != "open" && !pstr.empty())
-                        {
-                            LOGGER_WARN(
-                                "HubConfig: unknown channel_policy '{}' for glob '{}' — "
-                                "defaulting to 'open'.", pstr, glob);
-                        }
-                        channel_policies.push_back({glob, pol});
-                    }
-                }
-            }
-        }
-        if (j.contains("admin"))
-        {
-            const auto& a = j.at("admin");
-            if (a.contains("token") && a.at("token").is_string() &&
-                !a.at("token").get<std::string>().empty())
-            {
-                LOGGER_ERROR("HubConfig: 'admin.token' found in hub.json — "
-                             "this is a SECURITY VIOLATION. hub.json is world-readable (0644). "
-                             "Remove 'admin.token' from hub.json. The admin token is stored "
-                             "exclusively in the encrypted vault (hub.vault, 0600) and injected "
-                             "at runtime via HubConfig::set_admin_token(). The value is IGNORED.");
-            }
-        }
-        if (j.contains("broker"))
-        {
-            const auto& b = j.at("broker");
-            // Obsolete keys — hard error so users see the rename.
-            if (b.contains("channel_timeout_s") ||
-                b.contains("channel_shutdown_grace_s"))
-            {
-                throw std::runtime_error(
-                    "hub.json: 'broker.channel_timeout_s' and "
-                    "'broker.channel_shutdown_grace_s' are obsolete. Use "
-                    "'heartbeat_interval_ms', 'ready_miss_heartbeats', "
-                    "'pending_miss_heartbeats', 'grace_heartbeats' (or the "
-                    "explicit *_timeout_ms / grace_ms overrides). See "
-                    "docs/HEP/HEP-CORE-0023.");
-            }
-            if (b.contains("heartbeat_interval_ms"))
-                heartbeat_interval = std::chrono::milliseconds(
-                    b.at("heartbeat_interval_ms").get<int>());
-            if (b.contains("ready_miss_heartbeats"))
-                ready_miss_heartbeats = b.at("ready_miss_heartbeats").get<uint32_t>();
-            if (b.contains("pending_miss_heartbeats"))
-                pending_miss_heartbeats = b.at("pending_miss_heartbeats").get<uint32_t>();
-            if (b.contains("grace_heartbeats"))
-                grace_heartbeats = b.at("grace_heartbeats").get<uint32_t>();
-            if (b.contains("ready_timeout_ms"))
-                ready_timeout_override = std::chrono::milliseconds(
-                    b.at("ready_timeout_ms").get<int>());
-            if (b.contains("pending_timeout_ms"))
-                pending_timeout_override = std::chrono::milliseconds(
-                    b.at("pending_timeout_ms").get<int>());
-            if (b.contains("grace_ms"))
-                grace_override = std::chrono::milliseconds(
-                    b.at("grace_ms").get<int>());
-            if (b.contains("consumer_liveness_check_s"))
-                consumer_liveness_check = std::chrono::seconds(
-                    b.at("consumer_liveness_check_s").get<int>());
-        }
-        if (j.contains("paths") && !config_dir.empty())
-        {
-            const auto& p = j.at("paths");
-            auto get_str = [&](const std::string& key) -> std::string {
-                return p.contains(key) ? p.at(key).get<std::string>() : std::string{};
-            };
-            auto python_path = get_str("scripts_python");
-            auto lua_path    = get_str("scripts_lua");
-            auto data_path   = get_str("data_dir");
-            if (!python_path.empty()) scripts_python_dir = resolve_path(config_dir, python_path);
-            if (!lua_path.empty())    scripts_lua_dir    = resolve_path(config_dir, lua_path);
-            if (!data_path.empty())   data_dir           = resolve_path(config_dir, data_path);
-        }
-        // Language-neutral "script" block (current format).
-        // Tick timing, script path, and type belong here regardless of scripting language.
-        if (j.contains("script") && !config_dir.empty())
-        {
-            const auto& sc = j.at("script");
-            // Parse type (required when path is also set).
-            if (sc.contains("type") && sc.at("type").is_string())
-                script_type_ = sc.at("type").get<std::string>();
-            // Resolve base path and append the type-specific subdirectory.
-            // Both "type" AND "path" must be present to form a valid hub_script_dir.
-            // e.g. path="./script", type="python" → hub_script_dir = <hub_dir>/script/python/
-            //      path="./script", type="lua"    → hub_script_dir = <hub_dir>/script/lua/
-            // If either is absent, hub_script_dir stays empty (no script loaded).
-            if (sc.contains("path") && !sc.at("path").is_null() && !script_type_.empty())
-            {
-                const fs::path base = resolve_path(config_dir,
-                    sc.at("path").get<std::string>());
-                hub_script_dir = base / script_type_;
-            }
-            if (sc.contains("tick_interval_ms") && sc.at("tick_interval_ms").is_number_integer())
-                tick_interval_ms_ = sc.at("tick_interval_ms").get<int>();
-            if (sc.contains("health_log_interval_ms") &&
-                sc.at("health_log_interval_ms").is_number_integer())
-                health_log_interval_ms_ = sc.at("health_log_interval_ms").get<int>();
-        }
-
-        // ── Federation peers (HEP-CORE-0022) ────────────────────────────────
-        if (j.contains("peers") && j.at("peers").is_array())
-        {
-            peers_.clear();
-            for (const auto& p : j.at("peers"))
-            {
-                HubPeerConfig pc;
-                pc.hub_uid         = p.value("hub_uid",         "");
-                pc.broker_endpoint = p.value("broker_endpoint", "");
-                pc.pubkey_z85      = p.value("pubkey_z85",      "");
-                if (p.contains("channels") && p.at("channels").is_array())
-                {
-                    for (const auto& ch : p.at("channels"))
-                        if (ch.is_string())
-                            pc.channels.push_back(ch.get<std::string>());
-                }
-                if (!pc.broker_endpoint.empty())
-                    peers_.push_back(std::move(pc));
-                else
-                    LOGGER_WARN("HubConfig: peers[] entry missing 'broker_endpoint' — skipped");
-            }
-        }
-
-        // Python-specific settings ("python" block).
-        // Backward compat: also accept old "python"."script" + tick keys from pre-unified hubs.
-        if (j.contains("python") && !config_dir.empty())
-        {
-            const auto& py = j.at("python");
-            // python-specific: requirements file path.
-            if (py.contains("requirements") && !py.at("requirements").is_null())
-                python_requirements = resolve_path(config_dir,
-                    py.at("requirements").get<std::string>());
-            // backward compat: old hubs stored script path + tick settings under "python".
-            if (hub_script_dir.empty() && py.contains("script") && !py.at("script").is_null())
-                hub_script_dir = resolve_path(config_dir,
-                    py.at("script").get<std::string>());
-            if (tick_interval_ms_ == 1000 &&
-                py.contains("tick_interval_ms") && py.at("tick_interval_ms").is_number_integer())
-                tick_interval_ms_ = py.at("tick_interval_ms").get<int>();
-            if (health_log_interval_ms_ == 60000 &&
-                py.contains("health_log_interval_ms") &&
-                py.at("health_log_interval_ms").is_number_integer())
-                health_log_interval_ms_ = py.at("health_log_interval_ms").get<int>();
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // Main startup: load hub.json from hub instance directory.
-    // ------------------------------------------------------------------
-    void load(const fs::path& override_path)
-    {
-        // Reset all fields so lifecycle re-init starts fresh (critical for tests
-        // that create multiple LifecycleGuard instances in the same process).
-        reset_to_defaults();
-
-        // Determine which config file to load (if any).
-        fs::path target;
-        if (!override_path.empty())
-        {
-            // Hub instance directory mode: set_config_path(hub_dir / "hub.json").
-            target = override_path;
-        }
-        else if (const char* env = std::getenv("PYLABHUB_CONFIG_FILE"))
-        {
-            // CI / scripted deployment: explicit single-file override.
-            target = fs::path(env);
-        }
-
-        if (!target.empty())
-        {
-            config_dir = target.parent_path();
-            root_dir   = fs::weakly_canonical(config_dir / "..");
-
-            nlohmann::json j = read_json_file(target);
-            if (!j.empty())
-            {
-                LOGGER_INFO("HubConfig: loading '{}'", target.string());
-                apply_json(j);
-                std::error_code ec;
-                cfg.init(target, /*createIfMissing=*/false, &ec);
-            }
-            else
-            {
-                LOGGER_WARN("HubConfig: '{}' not readable — using built-in defaults",
-                            target.string());
-            }
-        }
-        else
-        {
-            // No config file: use built-in defaults.
-            // Derive root_dir from the binary location for path resolution.
-            fs::path bin = get_binary_dir();
-            if (!bin.empty())
-            {
-                root_dir   = fs::weakly_canonical(bin / "..");
-                config_dir = root_dir;
-            }
-            LOGGER_INFO("HubConfig: no hub.json specified — using built-in defaults");
-        }
-
-        // --- Fill path defaults for anything not set by the JSON ---
-        if (scripts_python_dir.empty() && !root_dir.empty())
-            scripts_python_dir = root_dir / "share" / "scripts" / "python";
-        if (scripts_lua_dir.empty() && !root_dir.empty())
-            scripts_lua_dir = root_dir / "share" / "scripts" / "lua";
-        if (data_dir.empty() && !root_dir.empty())
-            data_dir = root_dir / "data";
-        if (python_requirements.empty() && !scripts_python_dir.empty())
-            python_requirements = scripts_python_dir / "requirements.txt";
-
-        // --- Process-level env var overrides (highest priority) ---
-        if (const char* env = std::getenv("PYLABHUB_HUB_NAME"))
-            hub_name = env;
-        if (const char* env = std::getenv("PYLABHUB_BROKER_ENDPOINT"))
-            broker_endpoint = env;
-        if (const char* env = std::getenv("PYLABHUB_ADMIN_ENDPOINT"))
-            admin_endpoint = env;
-
-        // --- Admin token: from vault only (set before lifecycle via set_admin_token()) ---
-        {
-            std::lock_guard lock(g_admin_token_mu);
-            admin_token = g_admin_token;
-        }
-
-
-        // --- UID: auto-generate if not provided in config ---
-        //
-        // When present, the uid must match the HEP-0033 §G2.2.0b PeerUid
-        // grammar (`hub.<name>.<unique>`). Hard-reject on mismatch so
-        // misconfigured hubs fail at --validate time rather than silently
-        // producing a uid that HubState's op-entry validator would drop.
-        if (hub_uid.empty())
-        {
-            hub_uid = pylabhub::uid::generate_hub_uid(hub_name);
-        }
-        else if (!pylabhub::hub::is_valid_identifier(
-                     hub_uid, pylabhub::hub::IdentifierKind::PeerUid))
-        {
-            throw std::runtime_error(
-                "HubConfig: invalid 'hub.uid' = '" + hub_uid +
-                "'. Must follow HEP-0033 §G2.2.0b format "
-                "'hub.<name>.uid<8hex>', e.g. 'hub.mylab.uid3a7f2b1c'. "
-                "Clear this field to let auto-gen produce a valid one.");
-        }
-
-        LOGGER_INFO("HubConfig: hub_name          = {}", hub_name);
-        LOGGER_INFO("HubConfig: hub_uid           = {}", hub_uid);
-        LOGGER_INFO("HubConfig: broker_endpoint   = {}", broker_endpoint);
-        LOGGER_INFO("HubConfig: admin_endpoint    = {}", admin_endpoint);
-        LOGGER_INFO("HubConfig: root_dir          = {}", root_dir.string());
-        LOGGER_INFO("HubConfig: config_dir        = {}", config_dir.string());
-        LOGGER_INFO("HubConfig: scripts_python    = {}", scripts_python_dir.string());
-        LOGGER_INFO("HubConfig: data_dir          = {}", data_dir.string());
-    }
+    void load_all(const nlohmann::json &j);
 };
 
-// ---------------------------------------------------------------------------
-// HubConfig public interface
-// ---------------------------------------------------------------------------
-
-HubConfig::HubConfig() : pImpl(std::make_unique<Impl>()) {}
+HubConfig::HubConfig() = default;
 HubConfig::~HubConfig() = default;
+HubConfig::HubConfig(HubConfig &&) noexcept = default;
+HubConfig &HubConfig::operator=(HubConfig &&) noexcept = default;
 
-// static
-void HubConfig::set_config_path(const fs::path& path)
+// ============================================================================
+// Strict-key whitelist (HEP-0033 §6.3)
+// ============================================================================
+
+/// Allowed top-level keys in hub.json.  Unknown keys throw a hard error so
+/// operators see typos immediately.  Sub-objects (network, admin, broker,
+/// federation, state, hub.*, script.*, logging.*) are validated by their
+/// respective sub-parsers.
+static const std::unordered_set<std::string> kAllowedTopLevelKeys = {
+    "hub",
+    "script", "stop_on_script_error", "python_venv",
+    "logging",
+    "network", "admin", "broker", "federation", "state",
+};
+
+static void validate_top_level_keys(const nlohmann::json &j)
 {
-    std::lock_guard lock(g_config_path_mu);
-    g_config_path_override = path;
-}
-
-// static
-void HubConfig::set_admin_token(const std::string& token)
-{
-    std::lock_guard lock(g_admin_token_mu);
-    g_admin_token = token;
-}
-
-// static
-bool HubConfig::lifecycle_initialized() noexcept
-{
-    return g_hub_config_state.load(std::memory_order_acquire) == HubConfigState::Initialized;
-}
-
-// static
-HubConfig& HubConfig::get_instance()
-{
-    const auto st = g_hub_config_state.load(std::memory_order_acquire);
-    assert((st == HubConfigState::Initializing || st == HubConfigState::Initialized) &&
-           "HubConfig::get_instance() called outside valid lifecycle state — "
-           "ensure your module declares a dependency on pylabhub::HubConfig");
-    static HubConfig instance;
-    return instance;
-}
-
-// Called once during lifecycle init, before any worker threads are started.
-// After init completes the config is read-only; no locking is needed on accessors.
-void HubConfig::load_(const fs::path& override_path)
-{
-    pImpl->load(override_path);
-}
-
-const std::string& HubConfig::hub_name()        const noexcept { return pImpl->hub_name; }
-const std::string& HubConfig::hub_description() const noexcept { return pImpl->hub_description; }
-const std::string& HubConfig::hub_uid()         const noexcept { return pImpl->hub_uid; }
-const std::string& HubConfig::broker_endpoint() const noexcept { return pImpl->broker_endpoint; }
-const std::string& HubConfig::admin_endpoint()  const noexcept { return pImpl->admin_endpoint; }
-const std::string& HubConfig::admin_token()     const noexcept { return pImpl->admin_token; }
-
-std::chrono::milliseconds HubConfig::heartbeat_interval()        const noexcept { return pImpl->heartbeat_interval; }
-uint32_t                  HubConfig::ready_miss_heartbeats()     const noexcept { return pImpl->ready_miss_heartbeats; }
-uint32_t                  HubConfig::pending_miss_heartbeats()   const noexcept { return pImpl->pending_miss_heartbeats; }
-uint32_t                  HubConfig::grace_heartbeats()          const noexcept { return pImpl->grace_heartbeats; }
-std::optional<std::chrono::milliseconds> HubConfig::ready_timeout_override()   const noexcept { return pImpl->ready_timeout_override; }
-std::optional<std::chrono::milliseconds> HubConfig::pending_timeout_override() const noexcept { return pImpl->pending_timeout_override; }
-std::optional<std::chrono::milliseconds> HubConfig::grace_override()           const noexcept { return pImpl->grace_override; }
-std::chrono::seconds      HubConfig::consumer_liveness_check()   const noexcept { return pImpl->consumer_liveness_check; }
-
-const fs::path& HubConfig::root_dir()           const noexcept { return pImpl->root_dir; }
-const fs::path& HubConfig::config_dir()         const noexcept { return pImpl->config_dir; }
-const fs::path& HubConfig::scripts_python_dir() const noexcept { return pImpl->scripts_python_dir; }
-const fs::path& HubConfig::scripts_lua_dir()    const noexcept { return pImpl->scripts_lua_dir; }
-const fs::path& HubConfig::data_dir()           const noexcept { return pImpl->data_dir; }
-const fs::path& HubConfig::hub_script_dir()     const noexcept { return pImpl->hub_script_dir; }
-const std::string& HubConfig::script_type()     const noexcept { return pImpl->script_type_; }
-const fs::path& HubConfig::python_requirements() const noexcept { return pImpl->python_requirements; }
-int HubConfig::tick_interval_ms()     const noexcept { return pImpl->tick_interval_ms_; }
-int HubConfig::health_log_interval_ms() const noexcept { return pImpl->health_log_interval_ms_; }
-
-const utils::JsonConfig& HubConfig::json_config() const noexcept { return pImpl->cfg; }
-
-// ── Connection policy (Phase 3) ─────────────────────────────────────────────
-broker::ConnectionPolicy HubConfig::connection_policy() const noexcept
-{
-    return pImpl->connection_policy;
-}
-std::vector<broker::KnownRole> HubConfig::known_roles() const
-{
-    return pImpl->known_roles;
-}
-std::vector<broker::ChannelPolicy> HubConfig::channel_policies() const
-{
-    return pImpl->channel_policies;
-}
-
-// ── Federation peers (HEP-CORE-0022) ────────────────────────────────────────
-const std::vector<HubPeerConfig>& HubConfig::peers() const noexcept { return pImpl->peers_; }
-
-// ── Directory model (Phase 5) ───────────────────────────────────────────────
-const fs::path& HubConfig::hub_dir() const noexcept { return pImpl->config_dir; }
-
-std::filesystem::path HubConfig::hub_pubkey_path() const noexcept
-{
-    if (pImpl->config_dir.empty())
+    for (auto it = j.begin(); it != j.end(); ++it)
     {
-        return {};
+        if (kAllowedTopLevelKeys.find(it.key()) == kAllowedTopLevelKeys.end())
+            throw std::runtime_error("hub: unknown config key '" + it.key() + "'");
     }
-    return pImpl->config_dir / "hub.pubkey";
 }
 
-// ---------------------------------------------------------------------------
-// Lifecycle startup / shutdown
-// ---------------------------------------------------------------------------
+// ============================================================================
+// Impl::load_all
+// ============================================================================
 
-namespace
+void HubConfig::Impl::load_all(const nlohmann::json &j)
 {
-void do_hub_config_startup(const char* /*arg*/, void* /*userdata*/)
+    validate_top_level_keys(j);
+
+    identity   = parse_hub_identity_config(j);
+    auth       = parse_auth_config(j, "hub");  // reads j["hub"]["auth"]
+    script     = parse_script_config(j, base_dir, "hub");
+    logging    = parse_logging_config(j, "hub");
+    network    = parse_hub_network_config(j);
+    admin      = parse_hub_admin_config(j);
+    broker     = parse_hub_broker_config(j);
+    federation = parse_hub_federation_config(j);
+    state      = parse_hub_state_config(j);
+}
+
+// ============================================================================
+// Factory methods
+// ============================================================================
+
+HubConfig HubConfig::load(const std::string &path)
 {
-    g_hub_config_state.store(HubConfigState::Initializing, std::memory_order_release);
-    fs::path override_path;
+    namespace fs = std::filesystem;
+
+    HubConfig cfg;
+    cfg.impl_ = std::make_unique<Impl>();
+    auto &s = *cfg.impl_;
+
+    s.base_dir = fs::path(path).parent_path();
+
+    std::error_code ec;
+    s.jcfg = utils::JsonConfig(fs::path(path), /*createIfMissing=*/false, &ec);
+    if (ec)
+        throw std::runtime_error(
+            "HubConfig: cannot open config file '" + path + "': " + ec.message());
+
     {
-        std::lock_guard lock(g_config_path_mu);
-        override_path = g_config_path_override;
+        std::error_code lock_ec;
+        auto rlock = s.jcfg.lock_for_read(&lock_ec);
+        if (!rlock)
+            throw std::runtime_error(
+                "HubConfig: cannot read config '" + path + "': " + lock_ec.message());
+        s.raw_json = rlock->json();
     }
-    HubConfig::get_instance().load_(override_path);
-    g_hub_config_state.store(HubConfigState::Initialized, std::memory_order_release);
+
+    s.load_all(s.raw_json);
+    return cfg;
 }
 
-void do_hub_config_shutdown(const char* /*arg*/, void* /*userdata*/)
+HubConfig HubConfig::load_from_directory(const std::string &dir)
 {
-    g_hub_config_state.store(HubConfigState::ShuttingDown, std::memory_order_release);
-    std::lock_guard lock(g_admin_token_mu);
-    g_admin_token.clear();
+    namespace fs = std::filesystem;
+    const fs::path base = fs::weakly_canonical(fs::path(dir));
+    return load((base / "hub.json").string());
 }
-} // namespace
 
-// static
-utils::ModuleDef HubConfig::GetLifecycleModule()
+// ============================================================================
+// Accessors
+// ============================================================================
+
+const HubIdentityConfig   &HubConfig::identity()   const { assert(impl_); return impl_->identity; }
+const AuthConfig          &HubConfig::auth()       const { assert(impl_); return impl_->auth; }
+const ScriptConfig        &HubConfig::script()     const { assert(impl_); return impl_->script; }
+const LoggingConfig       &HubConfig::logging()    const { assert(impl_); return impl_->logging; }
+const HubNetworkConfig    &HubConfig::network()    const { assert(impl_); return impl_->network; }
+const HubAdminConfig      &HubConfig::admin()      const { assert(impl_); return impl_->admin; }
+const HubBrokerConfig     &HubConfig::broker()     const { assert(impl_); return impl_->broker; }
+const HubFederationConfig &HubConfig::federation() const { assert(impl_); return impl_->federation; }
+const HubStateConfig      &HubConfig::state()      const { assert(impl_); return impl_->state; }
+
+// ============================================================================
+// Vault operations
+// ============================================================================
+
+// HubVault stores keys at the fixed path `<hub_dir>/hub.vault`; the
+// `auth.keyfile` field from HEP-0033 §6.2 is informational (its
+// documented value is `"vault/hub.vault"`) and selects "use the vault"
+// vs "no CURVE auth" via empty/non-empty.
+bool HubConfig::load_keypair(const std::string &password)
 {
-    utils::ModuleDef module("pylabhub::HubConfig");
-    module.add_dependency("pylabhub::utils::Logger");
-    module.add_dependency("pylabhub::utils::JsonConfig");
-    module.set_startup(&do_hub_config_startup);
-    module.set_shutdown(&do_hub_config_shutdown,
-                        std::chrono::milliseconds(pylabhub::kShortTimeoutMs));
-    return module;
+    assert(impl_);
+    auto &auth = impl_->auth;
+    if (auth.keyfile.empty())
+        return false;  // operator opt-out: no auth configured
+
+    const auto &hub_dir = impl_->base_dir;
+    const auto &uid     = impl_->identity.uid;
+
+    namespace fs = std::filesystem;
+    if (!fs::exists(hub_dir / "hub.vault"))
+    {
+        std::fprintf(stderr,
+                     "[hub] hub.vault not found in '%s' — using ephemeral CURVE identity\n",
+                     hub_dir.string().c_str());
+        return false;
+    }
+
+    const auto vault = utils::HubVault::open(hub_dir, uid, password);
+    auth.client_pubkey = vault.broker_curve_public_key();
+    auth.client_seckey = vault.broker_curve_secret_key();
+    std::fprintf(stderr, "[hub] Loaded vault from '%s' (pubkey: %.8s...)\n",
+                 (hub_dir / "hub.vault").string().c_str(),
+                 vault.broker_curve_public_key().c_str());
+    return true;
 }
 
-} // namespace pylabhub
+std::string HubConfig::create_keypair(const std::string &password)
+{
+    assert(impl_);
+    const auto &auth = impl_->auth;
+    if (auth.keyfile.empty())
+        throw std::runtime_error("HubConfig: auth.keyfile not configured");
+
+    const auto &hub_dir = impl_->base_dir;
+    const auto &uid     = impl_->identity.uid;
+    const auto vault = utils::HubVault::create(hub_dir, uid, password);
+    return vault.broker_curve_public_key();
+}
+
+// ============================================================================
+// Raw JSON / JsonConfig operations
+// ============================================================================
+
+const nlohmann::json &HubConfig::raw() const
+{
+    assert(impl_);
+    return impl_->raw_json;
+}
+
+bool HubConfig::reload_if_changed()
+{
+    assert(impl_);
+    bool updated = false;
+    impl_->jcfg.transaction(utils::JsonConfig::AccessFlags::ReloadFirst)
+        .read([&](const nlohmann::json &j)
+    {
+        if (j != impl_->raw_json)
+        {
+            impl_->raw_json = j;
+            impl_->load_all(j);
+            updated = true;
+        }
+    });
+    return updated;
+}
+
+const std::filesystem::path &HubConfig::base_dir() const
+{
+    assert(impl_);
+    return impl_->base_dir;
+}
+
+} // namespace pylabhub::config

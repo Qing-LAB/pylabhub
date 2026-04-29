@@ -38,7 +38,7 @@ These are style/mechanical only: no logic change, no renames.
 - `src/utils/service/vault_crypto.cpp`: braces (many), return braced-init (1).
 - `src/utils/service/hub_vault.cpp`: braces (2).
 - `src/utils/service/actor_vault.cpp`: braces (3).
-- `src/utils/config/hub_config.cpp`: braces (many), return braced-init (1), redundant-member-init (2).
+- ~~`src/utils/config/hub_config.cpp`: braces (many), return braced-init (1), redundant-member-init (2).~~ — *Obsolete: legacy file deleted 2026-04-29 with the `pylabhub::HubConfig` singleton. The new file at the same path is the HEP-0033 §6.1 composite (fresh code, no legacy lint debt).*
 - `src/utils/logging/logger.cpp`: braces (1), implicit bool (2).
 - `src/utils/shm/data_block.cpp`: braces (many), redundant-member-init (4), simplify-boolean (1), return braced-init (1).
 

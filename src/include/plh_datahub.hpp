@@ -18,7 +18,10 @@
  *     RxQueueOptions live next to the build_tx_queue/build_rx_queue
  *     methods that consume them).  The legacy hub_producer.hpp /
  *     hub_consumer.hpp headers were retired 2026-04-20.
- *   - Server (hub admin):  utils/broker_service.hpp + utils/hub_config.hpp
+ *   - Server (hub admin):  utils/broker_service.hpp
+ *     (the legacy `utils/hub_config.hpp` singleton was retired
+ *     2026-04-29; the new hub-side composite per HEP-CORE-0033 §6.1
+ *     lives at `utils/config/hub_config.hpp`)
  */
 #include "plh_service.hpp"
 
@@ -27,7 +30,6 @@
 #include "utils/broker_service.hpp"
 #include "utils/data_block.hpp"
 
-#include "utils/hub_config.hpp"
 #include "utils/channel_access_policy.hpp"
 #include "utils/channel_pattern.hpp"
 #include "utils/data_block_mutex.hpp"

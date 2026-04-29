@@ -21,7 +21,7 @@ have since been established on the role side:
 | Capability        | Role side (HEP-0024, modern) | Hub side (`pylabhub-hubshell`, legacy) |
 |-------------------|------------------------------|----------------------------------------|
 | CLI parsing       | `role_cli::parse_role_args` (no-exit, stream-directed) | inline `argv` walking in `main()` |
-| Config            | Composite `RoleConfig` with typed sub-configs + strict key whitelist | monolithic `HubConfig` singleton; whitelist status unverified |
+| Config            | Composite `RoleConfig` with typed sub-configs + strict key whitelist | (legacy `pylabhub::HubConfig` lifecycle singleton — deleted 2026-04-29; superseded by `pylabhub::config::HubConfig` per §6.1) |
 | Env setup         | `scripting::role_lifecycle_modules()` helper | inline `LifecycleGuard` wiring |
 | Script engine     | `ScriptEngine` abstraction (Python + Lua + Native) | bespoke `PythonInterpreter` (CPython embed, Python-only) |
 | Script API        | Modern pybind11 `ProducerAPI`/`ConsumerAPI`/`ProcessorAPI` | `HubScriptAPI` + `pylabhub_module` (pre-abstraction style) |
@@ -329,9 +329,11 @@ asymmetric sides.
 
 Reused from role-side: `auth_config.hpp`, `script_config.hpp`, `logging_config.hpp`.
 
-**Rename required**: the existing `src/include/utils/config/hub_config.hpp` is
-role-facing (for `in_hub_dir`/`out_hub_dir` references). Renamed to
-`hub_ref_config.hpp` to free the `HubConfig` name for the hub-side config here.
+**Rename completed (2026-04-29, Phase 1)**: the role-facing
+`src/include/utils/config/hub_config.hpp` (for `in_hub_dir`/`out_hub_dir`
+references) was renamed to `hub_ref_config.hpp`, freeing the `HubConfig` name
+for the hub-side composite config here. Class `HubConfig` →
+`HubRefConfig`; function `parse_hub_config` → `parse_hub_ref_config`.
 
 ### 6.5 Vault + keygen (three-mode semantics)
 
@@ -929,9 +931,19 @@ Phase numbering reflects dependency order; independent phases (e.g. P2, P3, P4)
 can land in parallel once P1 lands.
 
 
-- **Phase 1** — Config: rename role-facing `hub_config.hpp` → `hub_ref_config.hpp`;
-  create new hub-side sub-configs (§6.4); create `HubConfig` composite class.
-  No behavior change (hub binary still disabled). Covered by L2 tests.
+- **Phase 1** — ✅ **Shipped 2026-04-29.**  Config: renamed role-facing
+  `hub_config.hpp` → `hub_ref_config.hpp` (class `HubConfig` → `HubRefConfig`,
+  function `parse_hub_config` → `parse_hub_ref_config`); created 6 new
+  hub-side sub-configs (§6.4) — `hub_identity_config.hpp`,
+  `hub_network_config.hpp`, `hub_admin_config.hpp`, `hub_broker_config.hpp`,
+  `hub_federation_config.hpp`, `hub_state_config.hpp`; created
+  `pylabhub::config::HubConfig` composite class with pImpl + JsonConfig
+  backend, strict-key whitelist, vault hooks, `reload_if_changed()`.  The
+  legacy `pylabhub::HubConfig` lifecycle singleton + its self-test
+  (`test_datahub_hub_config_script.cpp`) were deleted in the same change.
+  Covered by 9 L2 Pattern-3 tests in
+  `tests/test_layer2_service/test_hub_config.cpp`. No behavior change for
+  any live binary (hub binary remains disabled).
 - **Phase 2** — `hub_cli::parse_hub_args` (§5). Covered by L2 tests mirroring
   `role_cli` test shape.
 - **Phase 3** — `HubDirectory` + `--init` template output. L2 tests for dir
