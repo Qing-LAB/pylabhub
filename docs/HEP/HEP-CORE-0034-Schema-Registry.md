@@ -4,7 +4,7 @@
 |---------------|-------------------------------------------------------------------------|
 | **HEP**       | `HEP-CORE-0034`                                                         |
 | **Title**     | Schema Registry — Owner-authoritative records, owner-bound lifecycle    |
-| **Status**    | Ratified — pending implementation (2026-04-26)                          |
+| **Status**    | Ratified 2026-04-26; Phases 1-4d + 5a-5c shipped; 5c-large, 5d, 6 pending (2026-04-29) |
 | **Created**   | 2026-04-26                                                              |
 | **Area**      | Schema system (`pylabhub-utils`, broker, hub, all role binaries)         |
 | **Supersedes**| `HEP-CORE-0016` (Named Schema Registry)                                  |
@@ -151,12 +151,25 @@ flowchart TB
    remove, or modify entries. This follows HEP-CORE-0033 §G2 (hub as single
    mutator); schemas are not exempt.
 
-2. **Single load pipeline** *(I2)* — schemas enter `HubState` through exactly one
-   path: `schema_loader::load_from_file` (or `load_all_from_dirs`) →
-   `to_hub_schema_record` → `HubState::_on_schema_registered`. No module may
-   construct `SchemaRecord` values directly from a `.json` file without going
-   through `to_hub_schema_record`. The translation step is what makes the
-   canonical-form rule (I6) automatic.
+2. **Sanctioned record-construction sources** *(I2)* — every `SchemaRecord`
+   reaches `HubState` via `_on_schema_registered` (I1).  The record itself
+   may be constructed in exactly two sanctioned ways:
+   - **From a parsed JSON file** — must go through
+     `to_hub_schema_record(SchemaEntry)`, which produces the wire-form
+     canonical hash via `compute_canonical_hash_from_wire`.  This is the
+     hub-globals path (`load_hub_globals_` at broker startup).
+   - **From wire fields on REG_REQ** — `handle_reg_req` (paths B/C) and
+     the inbox path-A handler read `schema_id` / `schema_blds` /
+     `schema_packing` / `schema_hash` (or the `inbox_*` equivalents) from
+     the incoming JSON and construct a `SchemaRecord` inline.  The
+     broker's Stage-2 verification (`compute_canonical_hash_from_wire`
+     vs claimed `schema_hash`) runs before the record is forwarded to
+     the mutator, so the canonical-form rule (I6) is enforced.
+
+   No third path exists; no module may bypass the mutator.  Both
+   sanctioned paths use the same canonical-form algorithm
+   (`compute_canonical_hash_from_wire` for slot/flexzone schemas;
+   `compute_inbox_schema_tag` form for inbox schemas — see §11.4).
 
 3. **Single reader** *(I3)* — code that needs to look up a schema by
    `(owner, id)` calls `HubState::schema(owner, id)`. There is no parallel
@@ -1119,7 +1132,7 @@ Sliced into three sub-phases for review manageability:
   `register_schema` / `load_all`.  The true stateless demotion lands
   in Phase 4c below.
 
-**Phase 4b** (this commit, 2026-04-28) — ✅ shipped:
+**Phase 4b** (commit `fd030fe`, 2026-04-28) — ✅ shipped:
 - `BrokerServiceImpl::load_hub_globals_()` invoked from `BrokerService::run()`
   walks `cfg.schema_search_dirs` (or `default_search_dirs()` when empty),
   parses each `.json` file via the stateless free function
@@ -1143,7 +1156,7 @@ Sliced into three sub-phases for review manageability:
   FINGERPRINT_INCONSISTENT; path-C citing unknown id → SCHEMA_UNKNOWN;
   cross-owner attempt → SCHEMA_FORBIDDEN_OWNER.
 
-**Phase 4c** (this commit, 2026-04-28) — ✅ shipped: legacy purge +
+**Phase 4c** (commit `fd030fe`, 2026-04-28) — ✅ shipped: legacy purge +
 `SchemaLibrary` demotion to stateless parser-shell.
 
 Removed (HEP-CORE-0034 §2.4 I1+I3+I5+I6+I7 enforcement):
@@ -1216,7 +1229,7 @@ Documentation:
   Q3; aligns RAII implementer expectations with the broker-as-validator
   invariant (§2.4 I4).
 
-**Phase 4d** (2026-04-28) — ✅ shipped: wire-field naming alignment +
+**Phase 4d** (commit `3fcd0bb`, 2026-04-28) — ✅ shipped: wire-field naming alignment +
 canonical-form pinning.  Two related corrections surfaced by static
 review of Phase 4c:
 
