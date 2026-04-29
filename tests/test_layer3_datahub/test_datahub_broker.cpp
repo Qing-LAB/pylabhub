@@ -258,3 +258,32 @@ TEST_F(DatahubBrokerTest, Sch_PathX_ForbiddenOwner)
     auto proc = SpawnWorker("broker.broker_sch_path_x_forbidden_owner", {});
     ExpectWorkerOk(proc);
 }
+
+// ── Wire-fields helpers × broker integration ───────────────────────────────
+
+TEST_F(DatahubBrokerTest, Sch_WireHelpers_RegisterAndCite)
+{
+    // Named-citation path: helper-built REG_REQ + CONSUMER_REG_REQ accepted
+    // by real broker; SCHEMA_REQ round-trip pins helper hash == broker
+    // hash; idempotent re-register succeeds.
+    auto proc = SpawnWorker("broker.broker_sch_wire_helpers_register_and_cite", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerTest, Sch_WireHelpers_AnonymousCitation)
+{
+    // Helper with non-string slot_schema_json leaves WireSchemaFields::schema_id
+    // empty; consumer cites in anonymous mode (HEP-0034 §10.3); broker
+    // recomputes hash from full structure and matches the channel.
+    auto proc = SpawnWorker("broker.broker_sch_wire_helpers_anonymous_citation", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerTest, Sch_WireHelpers_FlexzoneRoundTrip)
+{
+    // Slot + flexzone via helpers: helper folds fz into §6.3 canonical form;
+    // broker recomputes matching bytes on REG_REQ Stage-2 and on
+    // CONSUMER_REG_REQ defense-in-depth.  Pins the Phase 4a flexzone fix.
+    auto proc = SpawnWorker("broker.broker_sch_wire_helpers_flexzone_round_trip", {});
+    ExpectWorkerOk(proc);
+}

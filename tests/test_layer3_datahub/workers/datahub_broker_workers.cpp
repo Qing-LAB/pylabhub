@@ -1627,6 +1627,372 @@ int broker_sch_path_x_forbidden_owner()
         logger_module(), zmq_module());
 }
 
+// ── Wire-fields helpers × broker integration tests ──────────────────────────
+//
+// The wire-fields helpers (`make_wire_schema_fields`,
+// `apply_producer_schema_fields`, `apply_consumer_schema_fields` in
+// `schema_utils.hpp`) translate role-side schema state (config JSON +
+// resolved SchemaSpec) into the HEP-CORE-0034 §10 wire payloads that
+// REG_REQ / CONSUMER_REG_REQ carry.  The helpers are unit-tested in
+// `test_schema_validation.cpp` (L2) at the JSON-output level; broker-side
+// gates are tested elsewhere in this file with hand-crafted JSON.  These
+// three workers test the seam between the two — a payload built entirely
+// by the production helpers, sent to a real `BrokerService`, with full
+// round-trip verification of the canonical-form bytes.
+
+// Worker A — named citation, slot-only.
+//
+// Pins:
+//   - HEP-0034 §6.3 type-token convention: helper emits JSON name form
+//     ("float32"), broker recomputes the same bytes, hashes match.
+//   - HEP-0034 §10.1 producer wire field set: schema_id / schema_blds /
+//     schema_packing / schema_hash / schema_owner ("" for path B).
+//   - HEP-0034 §10.2 consumer named-citation: expected_schema_id +
+//     expected_schema_hash required, expected_schema_blds +
+//     expected_schema_packing optional defense-in-depth.
+//   - HEP-0034 §10.3 SCHEMA_REQ owner+id round-trip: helper-emitted
+//     blds/hash equal what HubState stores.
+//   - Idempotent re-register at the channel + record level.
+int broker_sch_wire_helpers_register_and_cite()
+{
+    return run_gtest_worker(
+        []()
+        {
+            BrokerService::Config cfg;
+            cfg.endpoint  = "tcp://127.0.0.1:0";
+            cfg.use_curve = false;
+            auto broker   = start_broker_in_thread(std::move(cfg));
+
+            const std::string channel  = "broker.sch.helpers.named";
+            const std::string prod_uid = "prod.broker.helpers_n.uid00000001";
+            const std::string cons_uid = "cons.broker.helpers_n.uid00000002";
+            const std::string sid      = "$lab.helpers.frame.v1";
+
+            pylabhub::hub::SchemaSpec slot_spec;
+            slot_spec.has_schema = true;
+            slot_spec.packing    = "aligned";
+            slot_spec.fields.push_back({"ts",    "float64", 1u, 0u});
+            slot_spec.fields.push_back({"value", "float32", 1u, 0u});
+            const pylabhub::hub::SchemaSpec fz_spec; // no flexzone
+
+            // Producer-side helper output: passing `sid` as string makes
+            // make_wire_schema_fields populate w.schema_id (named mode).
+            const auto w = pylabhub::hub::make_wire_schema_fields(
+                nlohmann::json(sid), slot_spec, fz_spec);
+
+            // Helper-output sanity: HEP-0034 §6.3 canonical bytes.
+            const std::string blds_json_form = "ts:float64:1:0|value:float32:1:0";
+            const std::string expected_hash =
+                canonical_hash_hex(blds_json_form, "aligned");
+            ASSERT_EQ(w.schema_blds, blds_json_form)
+                << "make_wire_schema_fields must emit JSON-name canonical form (§6.3)";
+            ASSERT_EQ(w.schema_packing, "aligned");
+            ASSERT_EQ(w.schema_id, sid);
+            ASSERT_EQ(w.schema_hash, expected_hash);
+            ASSERT_TRUE(w.flexzone_blds.empty());
+            ASSERT_TRUE(w.flexzone_packing.empty());
+
+            // ── Producer REG_REQ via apply_producer_schema_fields ─────
+            auto reg = baseline_reg_req(channel, prod_uid);
+            pylabhub::hub::apply_producer_schema_fields(reg, w);
+
+            // Helper-emitted JSON keys must match the §10.1 wire field set.
+            ASSERT_TRUE(reg.contains("schema_id"));
+            ASSERT_TRUE(reg.contains("schema_hash"));
+            ASSERT_TRUE(reg.contains("schema_blds"));
+            ASSERT_TRUE(reg.contains("schema_packing"));
+            ASSERT_FALSE(reg.contains("schema_owner"))
+                << "Empty schema_owner must NOT be emitted (path B is implicit)";
+            ASSERT_FALSE(reg.contains("flexzone_blds"));
+            ASSERT_FALSE(reg.contains("flexzone_packing"));
+
+            auto reg_resp = raw_req(broker.endpoint, "REG_REQ", reg);
+            ASSERT_FALSE(reg_resp.is_null()) << "REG_REQ raw_req timed out";
+            ASSERT_EQ(reg_resp.value("status", std::string{}), "success")
+                << "Helper-built REG_REQ must succeed; got: " << reg_resp.dump();
+
+            // ── SCHEMA_REQ owner+id round-trip ─────────────────────────
+            // path B → owner = role uid; helper hash/blds must equal what
+            // HubState stores (HEP-0034 §10.3).
+            nlohmann::json sreq;
+            sreq["owner"]     = prod_uid;
+            sreq["schema_id"] = sid;
+            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq);
+            ASSERT_FALSE(sresp.is_null()) << "SCHEMA_REQ raw_req timed out";
+            ASSERT_EQ(sresp.value("status", std::string{}), "success") << sresp.dump();
+            EXPECT_EQ(sresp.value("owner", std::string{}), prod_uid);
+            EXPECT_EQ(sresp.value("schema_id", std::string{}), sid);
+            EXPECT_EQ(sresp.value("packing", std::string{}), "aligned");
+            EXPECT_EQ(sresp.value("blds", std::string{}), w.schema_blds)
+                << "SchemaRecord.blds must equal helper-emitted canonical bytes";
+            EXPECT_EQ(sresp.value("schema_hash", std::string{}), w.schema_hash)
+                << "SchemaRecord.hash (hex) must equal helper-emitted fingerprint";
+
+            // ── Consumer CONSUMER_REG_REQ via apply_consumer_schema_fields ─
+            const auto wc = pylabhub::hub::make_wire_schema_fields(
+                nlohmann::json(sid), slot_spec, fz_spec);
+            ASSERT_EQ(wc.schema_hash, w.schema_hash)
+                << "Consumer-side helper must produce same fingerprint as producer";
+
+            nlohmann::json cons;
+            cons["channel_name"]      = channel;
+            cons["consumer_pid"]      = pylabhub::platform::get_pid();
+            cons["consumer_hostname"] = "localhost";
+            cons["consumer_uid"]      = cons_uid;
+            cons["consumer_name"]     = "test_consumer";
+            pylabhub::hub::apply_consumer_schema_fields(cons, wc);
+
+            // Helper must emit the §10.2 expected_schema_* prefix consistently.
+            ASSERT_TRUE(cons.contains("expected_schema_id"));
+            ASSERT_TRUE(cons.contains("expected_schema_hash"));
+            ASSERT_TRUE(cons.contains("expected_schema_blds"));
+            ASSERT_TRUE(cons.contains("expected_schema_packing"));
+            EXPECT_FALSE(cons.contains("expected_blds"))
+                << "wire field rename (§10.2): bare expected_blds must not be emitted";
+            EXPECT_FALSE(cons.contains("expected_packing"))
+                << "wire field rename (§10.2): bare expected_packing must not be emitted";
+
+            auto creg_resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons);
+            ASSERT_FALSE(creg_resp.is_null()) << "CONSUMER_REG_REQ raw_req timed out";
+            EXPECT_EQ(creg_resp.value("status", std::string{}), "success")
+                << "Helper-built CONSUMER_REG_REQ (named, with defense-in-depth "
+                   "structure) must succeed; got: " << creg_resp.dump();
+
+            // ── Idempotent re-register: same producer, same payload, same channel.
+            // Channel-mismatch gate sees identical schema_hash → preserves
+            // existing consumers; SchemaRecord layer sees kIdempotent.
+            //
+            // NOTE: this asserts only the broker's success status, not that
+            // the previously-registered consumer was actually preserved on
+            // the channel.  Direct preservation verification needs a
+            // broker-side admin API to list/inspect ChannelEntry.consumers
+            // (currently no such RPC exists — `SCHEMA_REQ(owner, id)`
+            // resolves the schema record but not the channel's consumer
+            // list).  Tracked in TODO_MASTER under Priority 2.
+            auto reg_resp2 = raw_req(broker.endpoint, "REG_REQ", reg);
+            ASSERT_FALSE(reg_resp2.is_null());
+            EXPECT_EQ(reg_resp2.value("status", std::string{}), "success")
+                << "Idempotent re-register with helper-built payload must succeed; "
+                   "got: " << reg_resp2.dump();
+
+            broker.stop_and_join();
+        },
+        "broker.broker_sch_wire_helpers_register_and_cite",
+        logger_module(), zmq_module());
+}
+
+// Worker B — anonymous citation via helpers.
+//
+// Producer registers a named-mode schema (any channel needs an owner +
+// fingerprint).  Consumer cites in anonymous mode by passing a non-string
+// `slot_schema_json` to the helper, which leaves `WireSchemaFields::schema_id`
+// empty while still populating `schema_blds` / `schema_packing` /
+// `schema_hash` from the SchemaSpec.  Pins:
+//   - Helper mode-selection seam: `if (slot_schema_json.is_string())` in
+//     make_wire_schema_fields (schema_utils.hpp:412).  Non-string input
+//     → anonymous output.
+//   - HEP-0034 §10.3 anonymous-citation broker path: full structure
+//     required, broker recomputes hash and matches channel's stored hash.
+//   - apply_consumer_schema_fields skips the empty-id branch (no
+//     `expected_schema_id` key emitted) — broker dispatches via the
+//     `else if` arm at handle_consumer_reg_req.
+int broker_sch_wire_helpers_anonymous_citation()
+{
+    return run_gtest_worker(
+        []()
+        {
+            BrokerService::Config cfg;
+            cfg.endpoint  = "tcp://127.0.0.1:0";
+            cfg.use_curve = false;
+            auto broker   = start_broker_in_thread(std::move(cfg));
+
+            const std::string channel  = "broker.sch.helpers.anon";
+            const std::string prod_uid = "prod.broker.helpers_a.uid00000001";
+            const std::string cons_uid = "cons.broker.helpers_a.uid00000002";
+            const std::string sid      = "$lab.helpers_anon.frame.v1";
+
+            pylabhub::hub::SchemaSpec slot_spec;
+            slot_spec.has_schema = true;
+            slot_spec.packing    = "aligned";
+            slot_spec.fields.push_back({"ts",    "float64", 1u, 0u});
+            slot_spec.fields.push_back({"value", "float32", 1u, 0u});
+            const pylabhub::hub::SchemaSpec fz_spec;
+
+            // Producer registers under named mode (the channel needs a
+            // schema_owner for any subsequent citation to resolve).
+            const auto wp = pylabhub::hub::make_wire_schema_fields(
+                nlohmann::json(sid), slot_spec, fz_spec);
+            auto reg = baseline_reg_req(channel, prod_uid);
+            pylabhub::hub::apply_producer_schema_fields(reg, wp);
+            auto reg_resp = raw_req(broker.endpoint, "REG_REQ", reg);
+            ASSERT_FALSE(reg_resp.is_null());
+            ASSERT_EQ(reg_resp.value("status", std::string{}), "success") << reg_resp.dump();
+
+            // Consumer-side: feed a non-string sentinel (empty JSON
+            // object) so make_wire_schema_fields skips the `is_string()`
+            // branch and leaves schema_id empty.  Same SchemaSpec →
+            // same fingerprint as the producer.  In production this
+            // path is taken when a role's config carries inline
+            // structure (`"slot_schema": {"fields": [...]}`) instead
+            // of a schema_id string.
+            const auto wc = pylabhub::hub::make_wire_schema_fields(
+                nlohmann::json::object(), slot_spec, fz_spec);
+            ASSERT_TRUE(wc.schema_id.empty())
+                << "non-string slot_schema_json must leave schema_id empty";
+            ASSERT_FALSE(wc.schema_blds.empty());
+            ASSERT_FALSE(wc.schema_packing.empty());
+            ASSERT_FALSE(wc.schema_hash.empty());
+            EXPECT_EQ(wc.schema_hash, wp.schema_hash)
+                << "Same SchemaSpec must produce same fingerprint regardless of id";
+
+            nlohmann::json cons;
+            cons["channel_name"]      = channel;
+            cons["consumer_pid"]      = pylabhub::platform::get_pid();
+            cons["consumer_hostname"] = "localhost";
+            cons["consumer_uid"]      = cons_uid;
+            cons["consumer_name"]     = "test_consumer_anon";
+            pylabhub::hub::apply_consumer_schema_fields(cons, wc);
+
+            // Anonymous-mode shape: id NOT emitted, structure fields emitted.
+            EXPECT_FALSE(cons.contains("expected_schema_id"))
+                << "Empty schema_id must not be emitted as a key";
+            ASSERT_TRUE(cons.contains("expected_schema_blds"));
+            ASSERT_TRUE(cons.contains("expected_schema_packing"));
+            ASSERT_TRUE(cons.contains("expected_schema_hash"))
+                << "Helper still emits hash; broker uses it for §10.3 self-consistency";
+
+            auto creg_resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons);
+            ASSERT_FALSE(creg_resp.is_null()) << "CONSUMER_REG_REQ raw_req timed out";
+            EXPECT_EQ(creg_resp.value("status", std::string{}), "success")
+                << "Helper-built anonymous CONSUMER_REG_REQ must succeed (HEP-0034 "
+                   "§10.3 anonymous mode); got: " << creg_resp.dump();
+
+            broker.stop_and_join();
+        },
+        "broker.broker_sch_wire_helpers_anonymous_citation",
+        logger_module(), zmq_module());
+}
+
+// Worker D — slot + flexzone via helpers, full round-trip.
+//
+// Pins:
+//   - HEP-0034 §6.3 fz section: helper folds flexzone_blds /
+//     flexzone_packing into the canonical bytes
+//     (compute_canonical_hash_from_wire), broker recomputes the same
+//     bytes, hashes match.
+//   - apply_producer_schema_fields emits the flexzone_* keys (the gap
+//     Phase 4a closed at the broker side, mirrored on the producer
+//     side here).
+//   - SchemaRecord stores slot-only `blds` / `packing` (per
+//     to_hub_schema_record), but `hash` includes the flexzone — verified
+//     by SCHEMA_REQ owner+id round-trip below (response.schema_hash ==
+//     helper-computed hash that includes the fz section).
+//   - apply_consumer_schema_fields emits expected_flexzone_blds /
+//     expected_flexzone_packing; broker's CONSUMER_REG_REQ handler
+//     reads and folds them into the recompute (Phase 5a fix mirrored
+//     for the consumer side).
+int broker_sch_wire_helpers_flexzone_round_trip()
+{
+    return run_gtest_worker(
+        []()
+        {
+            BrokerService::Config cfg;
+            cfg.endpoint  = "tcp://127.0.0.1:0";
+            cfg.use_curve = false;
+            auto broker   = start_broker_in_thread(std::move(cfg));
+
+            const std::string channel  = "broker.sch.helpers.fz";
+            const std::string prod_uid = "prod.broker.helpers_fz.uid00000001";
+            const std::string cons_uid = "cons.broker.helpers_fz.uid00000002";
+            const std::string sid      = "$lab.helpers_fz.frame.v1";
+
+            // Slot: ts (float64), value (float32) — packing aligned.
+            pylabhub::hub::SchemaSpec slot_spec;
+            slot_spec.has_schema = true;
+            slot_spec.packing    = "aligned";
+            slot_spec.fields.push_back({"ts",    "float64", 1u, 0u});
+            slot_spec.fields.push_back({"value", "float32", 1u, 0u});
+
+            // Flexzone: cal (float64[8]) — packing aligned.  Distinct from
+            // slot to verify the canonical form preserves field order +
+            // section semantics.
+            pylabhub::hub::SchemaSpec fz_spec;
+            fz_spec.has_schema = true;
+            fz_spec.packing    = "aligned";
+            fz_spec.fields.push_back({"cal", "float64", 8u, 0u});
+
+            // Helper-emitted full payload, slot + fz folded into the hash.
+            const auto w = pylabhub::hub::make_wire_schema_fields(
+                nlohmann::json(sid), slot_spec, fz_spec);
+
+            const std::string slot_blds = "ts:float64:1:0|value:float32:1:0";
+            const std::string fz_blds   = "cal:float64:8:0";
+            const std::string expected_hash =
+                canonical_hash_hex(slot_blds, "aligned", fz_blds, "aligned");
+            ASSERT_EQ(w.schema_blds,    slot_blds);
+            ASSERT_EQ(w.schema_packing, "aligned");
+            ASSERT_EQ(w.flexzone_blds,    fz_blds);
+            ASSERT_EQ(w.flexzone_packing, "aligned");
+            ASSERT_EQ(w.schema_hash, expected_hash)
+                << "Helper hash must include flexzone canonical bytes (§6.3 fz section)";
+
+            // ── Producer REG_REQ ─────────────────────────────────────────
+            auto reg = baseline_reg_req(channel, prod_uid);
+            pylabhub::hub::apply_producer_schema_fields(reg, w);
+            ASSERT_TRUE(reg.contains("flexzone_blds"))
+                << "Helper must emit flexzone_blds key when fz_spec.has_schema";
+            ASSERT_TRUE(reg.contains("flexzone_packing"));
+
+            auto reg_resp = raw_req(broker.endpoint, "REG_REQ", reg);
+            ASSERT_FALSE(reg_resp.is_null());
+            ASSERT_EQ(reg_resp.value("status", std::string{}), "success")
+                << "Slot+flexzone REG_REQ via helpers must succeed; broker recomputes "
+                   "the full canonical form (Phase 4a fix); got: " << reg_resp.dump();
+
+            // ── SCHEMA_REQ owner+id: hash includes flexzone ──────────────
+            nlohmann::json sreq;
+            sreq["owner"]     = prod_uid;
+            sreq["schema_id"] = sid;
+            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq);
+            ASSERT_FALSE(sresp.is_null());
+            ASSERT_EQ(sresp.value("status", std::string{}), "success") << sresp.dump();
+            EXPECT_EQ(sresp.value("schema_hash", std::string{}), w.schema_hash)
+                << "SchemaRecord.hash must include flexzone in canonical form";
+
+            // ── Consumer CONSUMER_REG_REQ with slot + flexzone ───────────
+            // Defense-in-depth: consumer supplies the full structure; broker
+            // recomputes including flexzone fields and matches the channel's
+            // hash.  Verifies expected_flexzone_blds / expected_flexzone_packing
+            // path (mirror of Phase 4a on the consumer side).
+            const auto wc = pylabhub::hub::make_wire_schema_fields(
+                nlohmann::json(sid), slot_spec, fz_spec);
+            ASSERT_EQ(wc.schema_hash, w.schema_hash);
+
+            nlohmann::json cons;
+            cons["channel_name"]      = channel;
+            cons["consumer_pid"]      = pylabhub::platform::get_pid();
+            cons["consumer_hostname"] = "localhost";
+            cons["consumer_uid"]      = cons_uid;
+            cons["consumer_name"]     = "test_consumer_fz";
+            pylabhub::hub::apply_consumer_schema_fields(cons, wc);
+
+            ASSERT_TRUE(cons.contains("expected_flexzone_blds"))
+                << "Consumer helper must emit expected_flexzone_blds for fz spec";
+            ASSERT_TRUE(cons.contains("expected_flexzone_packing"));
+
+            auto creg_resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons);
+            ASSERT_FALSE(creg_resp.is_null());
+            EXPECT_EQ(creg_resp.value("status", std::string{}), "success")
+                << "Helper-built CONSUMER_REG_REQ with slot+flexzone (named, "
+                   "defense-in-depth) must succeed; broker must include flexzone "
+                   "fields in the recomputed fingerprint; got: " << creg_resp.dump();
+
+            broker.stop_and_join();
+        },
+        "broker.broker_sch_wire_helpers_flexzone_round_trip",
+        logger_module(), zmq_module());
+}
+
 } // namespace pylabhub::tests::worker::broker
 
 // ============================================================================
@@ -1711,6 +2077,12 @@ struct BrokerWorkerRegistrar
                     return broker_sch_path_c_unknown_global();
                 if (scenario == "broker_sch_path_x_forbidden_owner")
                     return broker_sch_path_x_forbidden_owner();
+                if (scenario == "broker_sch_wire_helpers_register_and_cite")
+                    return broker_sch_wire_helpers_register_and_cite();
+                if (scenario == "broker_sch_wire_helpers_anonymous_citation")
+                    return broker_sch_wire_helpers_anonymous_citation();
+                if (scenario == "broker_sch_wire_helpers_flexzone_round_trip")
+                    return broker_sch_wire_helpers_flexzone_round_trip();
                 fmt::print(stderr, "ERROR: Unknown broker scenario '{}'\n", scenario);
                 return 1;
             });

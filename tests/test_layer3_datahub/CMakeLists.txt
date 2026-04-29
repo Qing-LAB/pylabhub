@@ -133,8 +133,9 @@ add_executable(test_layer3_datahub
     # ── Hub ZmqQueue unit tests ──────────────────────────────────────────────
     test_datahub_hub_zmq_queue.cpp
 
-    # ── Schema Library unit tests (HEP-CORE-0016 Phase 1) ─────────────────────
-    test_datahub_schema_library.cpp
+    # ── Schema parser unit tests (HEP-CORE-0034 §2.4 I5; renamed from
+    # test_datahub_schema_library.cpp in Phase 4c, 2026-04-28) ────────────────
+    test_datahub_schema_loader.cpp
 
     # ── Broker named schema protocol tests (HEP-CORE-0034 path B / inbox path A) ──
     test_datahub_broker_schema.cpp
