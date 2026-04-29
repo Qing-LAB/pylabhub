@@ -129,9 +129,10 @@ heavily touch, so their lifecycle rework is coupled with the refactor
 and is best done as tests are rebuilt against the new shape rather than
 chased through the old one):
 
-- [ ] `test_datahub_hub_config_script.cpp` (6 `LifecycleGuard`
-      violations) — HubConfig script-block parsing; couples to HEP-0033
-      §6 `HubConfig` composite.
+- [x] ~~`test_datahub_hub_config_script.cpp`~~ — **deleted 2026-04-29**
+      with the legacy `pylabhub::HubConfig` singleton it tested. Replaced
+      by `tests/test_layer2_service/test_hub_config.cpp` (Pattern 3,
+      9 tests) covering the new HEP-0033 §6.1 composite.
 - [ ] `test_datahub_hub_zmq_queue.cpp` (4) — ZmqQueue at hub layer;
       couples to HEP-0033 §7 broker-owned queue integration.
 - [ ] `test_datahub_hub_inbox_queue.cpp` (4) — inbox at hub layer; likely

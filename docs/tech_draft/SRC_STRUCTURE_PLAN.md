@@ -35,9 +35,7 @@ design.  No file moves have happened — current tree is unchanged.
 src/
 ├── CMakeLists.txt
 ├── plh_role_main.cpp          # binary main, flat
-├── plh_hub_main.cpp           # future — binary main, flat
-├── hubshell.cpp               # parked legacy binary (until hub refactor consumes it)
-├── hub_python/                # parked legacy hubshell support (likewise)
+├── plh_hub_main.cpp           # future — binary main, flat (HEP-0033)
 ├── utils/
 │   ├── CMakeLists.txt
 │   ├── basic/                 # was `core/` — see §4.1 rename
@@ -61,8 +59,9 @@ src/
 ```
 
 **No more top-level wrapper dirs**: `src/producer/`, `src/consumer/`,
-`src/processor/`, `src/plh_role/`, `src/roles/`, `src/hub/` (other than
-the parked-legacy `hub_python/`) all gone.
+`src/processor/`, `src/plh_role/`, `src/roles/`, `src/hub/` all gone.
+The legacy `hubshell.cpp` + `hub_python/` were removed in the post-G2
+cleanup; the new hub binary will be defined by HEP-0033.
 
 ---
 
@@ -75,7 +74,7 @@ src/include/utils/
 ├── basic/         # debug_info, format_tools, recursion_guard, scope_guard,
 │                  # platform, uuid_utils, version_registry
 ├── ipc/           # broker_service, broker_request_comm, channel_*,
-│                  # heartbeat_manager, hub_config (the broker-side one)
+│                  # heartbeat_manager
 ├── logging/       # logger, logger_sinks/*
 ├── service/       # lifecycle, file_lock, crypto_utils, hub_vault,
 │                  # engine_module_params, startup_config, startup_wait

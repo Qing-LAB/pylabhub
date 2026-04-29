@@ -84,7 +84,10 @@ struct RoleStateMetrics
 };
 
 /// Configuration for one outbound federation peer (HEP-CORE-0022).
-/// Mirrors pylabhub::HubPeerConfig but lives in broker namespace to avoid pulling in hub_config.hpp.
+/// The hub-side composite (`pylabhub::config::HubFederationConfig` per
+/// HEP-CORE-0033 §6.4) parses the `federation.peers[]` block and the
+/// hub's main wires the resulting list into `BrokerService::Config`
+/// once `plh_hub` is built (HEP-0033 §15 Phase 9).
 struct FederationPeer
 {
     std::string              hub_uid;          ///< Peer hub UID
