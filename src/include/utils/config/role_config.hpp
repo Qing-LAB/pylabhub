@@ -36,7 +36,7 @@
 #include "utils/config/auth_config.hpp"
 #include "utils/config/checksum_config.hpp"
 #include "utils/config/logging_config.hpp"
-#include "utils/config/hub_config.hpp"
+#include "utils/config/hub_ref_config.hpp"
 #include "utils/config/identity_config.hpp"
 #include "utils/config/inbox_config.hpp"
 #include "utils/config/monitoring_config.hpp"
@@ -99,8 +99,8 @@ class PYLABHUB_UTILS_EXPORT RoleConfig
 
     // ── Directional accessors (two slots each) ───────────────────────
 
-    const HubConfig                    &in_hub()        const;
-    const HubConfig                    &out_hub()       const;
+    const HubRefConfig                    &in_hub()        const;
+    const HubRefConfig                    &out_hub()       const;
     const TransportConfig              &in_transport()  const;
     const TransportConfig              &out_transport() const;
     const ShmConfig                    &in_shm()        const;

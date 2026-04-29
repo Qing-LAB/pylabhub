@@ -45,7 +45,6 @@ These classes define their own lifecycle module via `Get*LifecycleModule()` or `
 | `Logger` | `src/include/utils/logger.hpp:97` | `Logger::GetLifecycleModule()` |
 | `FileLock` | `src/include/utils/file_lock.hpp:143` | `FileLock::GetLifecycleModule()` |
 | `JsonConfig` | `src/include/utils/json_config.hpp:283` | `JsonConfig::GetLifecycleModule()` |
-| `HubConfig` | `src/include/utils/hub_config.hpp:110` | `HubConfig::GetLifecycleModule()` |
 | `SchemaStore` | `src/include/utils/schema_registry.hpp:52` | `SchemaStore::GetLifecycleModule()` |
 | `CryptoUtils` | `src/include/utils/crypto_utils.hpp:190` | `crypto::GetLifecycleModule()` |
 | `ZMQContext` | `src/include/utils/zmq_context.hpp:45` | `hub::GetZMQContextModule()` |
@@ -55,7 +54,10 @@ These classes define their own lifecycle module via `Get*LifecycleModule()` or `
 - `JsonConfig` (`src/utils/config/json_config.cpp:83-87, 94-98`) — aborts without its module
 - `FileLock` — per header `src/include/utils/file_lock.hpp:149`
 - `SchemaStore` — per `src/utils/schema/schema_registry.cpp:64`
-- `HubConfig` — per `src/utils/config/hub_config.cpp:534`
+
+> Note (2026-04-29): the legacy `pylabhub::HubConfig` lifecycle singleton was deleted in
+> the post-G2 cleanup. The new `pylabhub::config::HubConfig` (HEP-0033 §6.1) does NOT
+> register a lifecycle module — it is a value-type composite over `JsonConfig`.
 
 ### Classes transitively requiring lifecycle (register dynamic modules or use lifecycle-backed singletons)
 - **`ThreadManager`** (`src/utils/service/thread_manager.cpp:175-185`) — registers dynamic module at ctor; declares `depends_on "pylabhub::utils::Logger"`. Silently degrades if LifecycleManager not initialized, but degrades unsafely (hang demonstrated in `MetricsApiTest.ProcessorAPI_ReportAndSnapshot`).
@@ -162,7 +164,7 @@ File locations: all under `tests/` (path prefix omitted).
 | `test_datahub_exception_safety.cpp` | 0 | 3 | **P3** | `IsolatedProcessTest`. |
 | `test_datahub_handle_semantics.cpp` | 0 | 3 | **P3** | `IsolatedProcessTest`. |
 | `test_datahub_header_structure.cpp` | 0 | 3 | **P3** | `IsolatedProcessTest`. |
-| `test_datahub_hub_config_script.cpp` | 6 | 0 | **V1** | Two fixture classes each with `static s_lifecycle_` + `SetUpTestSuite` at lines 75 and 179. |
+| `test_datahub_hub_config_script.cpp` | — | — | **(deleted 2026-04-29)** | Self-test for the legacy `pylabhub::HubConfig` singleton; deleted with that class. New `pylabhub::config::HubConfig` is covered by `tests/test_layer2_service/test_hub_config.cpp` (Pattern 3). |
 | `test_datahub_hub_federation.cpp` | 3 | 0 | **V1** | `static s_lifecycle_` + `SetUpTestSuite` at line 167. |
 | `test_datahub_hub_inbox_queue.cpp` | 4 | 0 | **V1** | `static s_lifecycle_` + `SetUpTestSuite` at line 42. Comment at line 35-37 acknowledges "owns the process-wide LifecycleGuard" — the intentional compromise. |
 | `test_datahub_hub_monitored_queue.cpp` | 0 | 0 | **P1** | Tests `hub::MonitoredQueue<T>` — a plain container class. File header (line 1-14) documents it as pure data-structure testing. No ZMQ / Logger / lifecycle-managed class. |
@@ -242,7 +244,7 @@ All L4 test files spawn binaries as child processes (not via `SpawnWorker`-to-se
 - `test_datahub_broker_schema.cpp`
 - `test_datahub_broker_shutdown.cpp`
 - `test_datahub_channel_access_policy.cpp`
-- `test_datahub_hub_config_script.cpp`
+- `test_datahub_hub_config_script.cpp` *(deleted 2026-04-29 — legacy singleton retired)*
 - `test_datahub_hub_federation.cpp`
 - `test_datahub_hub_inbox_queue.cpp`
 - `test_datahub_hub_zmq_queue.cpp`
@@ -359,7 +361,7 @@ class of bug is still present:
 
 | File | Count | Task |
 |---|---|---|
-| `test_datahub_hub_config_script.cpp` | 6 | 21.L5 large |
+| ~~`test_datahub_hub_config_script.cpp`~~ | — | **deleted 2026-04-29** (legacy singleton retired) |
 | `test_datahub_role_flexzone.cpp` | 4 | 21.L5 large |
 | `test_datahub_loop_policy.cpp` | 4 | 21.L5 large |
 | `test_datahub_hub_zmq_queue.cpp` | 4 | 21.L5 large |

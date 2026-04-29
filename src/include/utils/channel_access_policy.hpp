@@ -31,9 +31,11 @@ namespace pylabhub::broker
  * the effective policy for specific channel glob patterns.
  *
  * **Where set:**
- *   - BrokerService::Config::connection_policy (broker_service.hpp)
- *   - HubConfig::connection_policy() parses hub.json `"connection_policy"` key
- *   - hubshell.cpp wires HubConfig value into BrokerService::Config at startup.
+ *   - `BrokerService::Config::connection_policy` (`broker_service.hpp`).
+ *   - The hub-side composite config (`HubConfig` per HEP-CORE-0033 §6.1)
+ *     parses the `broker.default_channel_policy` key and the hub's main
+ *     wires that into `BrokerService::Config` at startup once `plh_hub`
+ *     is built (HEP-0033 §15 Phase 9).
  * **Where checked:** BrokerServiceImpl::check_connection_policy() in
  *   broker_service.cpp — called on every REG_REQ (producer) and CONSUMER_REG_REQ
  *   (consumer). Returns error string on rejection; empty string on acceptance.

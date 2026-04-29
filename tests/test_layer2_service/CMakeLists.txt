@@ -1083,6 +1083,39 @@ gtest_discover_tests(test_layer2_role_config
 )
 
 # ============================================================================
+# Test: HubConfig — composite hub-side config (HEP-CORE-0033 §6.1)
+# ============================================================================
+
+add_executable(test_layer2_hub_config
+    test_hub_config.cpp
+    workers/hub_config_workers.cpp
+)
+
+target_include_directories(test_layer2_hub_config PRIVATE workers)
+
+target_link_libraries(test_layer2_hub_config
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gmock
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_config)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_hub_config
+    SUITE_NAME "Layer2_HubConfig"
+)
+layer2_require_staged_utils(test_layer2_hub_config)
+
+gtest_discover_tests(test_layer2_hub_config
+    PROPERTIES
+        LABELS "layer2;service;config"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: SchemaValidation — parse_schema_json, compute_schema_size, to_field_descs
 # ============================================================================
 

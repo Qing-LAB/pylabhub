@@ -44,8 +44,8 @@ struct RoleConfig::Impl
     MonitoringConfig monitoring;
 
     // ── Directional categories (two slots each) ──────────────────────
-    HubConfig                    in_hub;
-    HubConfig                    out_hub;
+    HubRefConfig                    in_hub;
+    HubRefConfig                    out_hub;
     TransportConfig              in_transport;
     TransportConfig              out_transport;
     ShmConfig                    in_shm;
@@ -150,8 +150,8 @@ void RoleConfig::Impl::load_common(const nlohmann::json &j)
     monitoring = parse_monitoring_config(j);
 
     // ── Directional categories (always load both slots) ──────────────
-    in_hub        = parse_hub_config(j, base_dir, "in");
-    out_hub       = parse_hub_config(j, base_dir, "out");
+    in_hub        = parse_hub_ref_config(j, base_dir, "in");
+    out_hub       = parse_hub_ref_config(j, base_dir, "out");
     in_transport  = parse_transport_config(j, "in",  tag);
     out_transport = parse_transport_config(j, "out", tag);
     in_shm        = parse_shm_config(j, "in",  tag);
@@ -237,8 +237,8 @@ const LoggingConfig    &RoleConfig::logging()    const { assert(impl_); return i
 // Directional accessors
 // ============================================================================
 
-const HubConfig                   &RoleConfig::in_hub()        const { assert(impl_); return impl_->in_hub; }
-const HubConfig                   &RoleConfig::out_hub()       const { assert(impl_); return impl_->out_hub; }
+const HubRefConfig                   &RoleConfig::in_hub()        const { assert(impl_); return impl_->in_hub; }
+const HubRefConfig                   &RoleConfig::out_hub()       const { assert(impl_); return impl_->out_hub; }
 const TransportConfig             &RoleConfig::in_transport()  const { assert(impl_); return impl_->in_transport; }
 const TransportConfig             &RoleConfig::out_transport() const { assert(impl_); return impl_->out_transport; }
 const ShmConfig                   &RoleConfig::in_shm()        const { assert(impl_); return impl_->in_shm; }

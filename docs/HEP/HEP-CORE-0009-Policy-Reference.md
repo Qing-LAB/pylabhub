@@ -284,11 +284,13 @@ called on every incoming REG_REQ (producer) and CONSUMER_REG_REQ (consumer).
 | `Required` | Yes (producer_name + producer_uid) | No | Deployment environments |
 | `Verified` | Yes (producer_name + producer_uid) | Yes (allowlist) | Production |
 
-**Configuration**: `BrokerService::Config::connection_policy` wired from
-`HubConfig::connection_policy()` (formerly in `hubshell.cpp`; the legacy
-binary was deleted in the post-G2 cleanup pass.  Wiring will return on
-the new `plh_hub` binary — HEP-CORE-0033 §15 Phase 9).
-JSON: hub.json `"connection_policy": "open"` | `"tracked"` | `"required"` | `"verified"`.
+**Configuration**: `BrokerService::Config::connection_policy` will be wired
+from `pylabhub::config::HubConfig::broker().default_channel_policy` on the new
+`plh_hub` binary (HEP-CORE-0033 §15 Phase 9). The legacy
+`pylabhub::HubConfig` lifecycle singleton was deleted 2026-04-29 along with
+the legacy `hubshell.cpp` binary; the new HubConfig composite (§6) ships in
+`src/include/utils/config/hub_config.hpp`.
+JSON: hub.json `"broker": { "default_channel_policy": "open" | "tracked" | "required" | "verified" }`.
 
 **Per-channel override**: `ChannelPolicy` (list of glob patterns + policy level) can
 tighten the effective policy for specific channels. First match wins.

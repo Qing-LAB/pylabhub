@@ -119,8 +119,10 @@ add_executable(test_layer3_datahub
     test_datahub_stress_raii.cpp
     workers/datahub_stress_raii_workers.cpp
 
-    # ── HubConfig script-block fields (lifecycle unit tests) ──────────────────
-    test_datahub_hub_config_script.cpp
+    # NOTE: test_datahub_hub_config_script.cpp deleted 2026-04-29 — it
+    # tested the legacy `pylabhub::HubConfig` lifecycle singleton, which
+    # was retired in favour of the HEP-CORE-0033 §6.1 `pylabhub::config::HubConfig`
+    # composite (tests for the replacement live in test_layer2_service/).
 
     # ── Hub ShmQueue unit tests ────────────────────────────────────────────────
     test_datahub_hub_queue.cpp

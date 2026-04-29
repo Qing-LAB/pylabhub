@@ -10,7 +10,7 @@
  *  - `make_broker_comm_config()` — builds `BrokerRequestComm::Config`
  *    from the role's hub-reference + auth + identity.  Same shape
  *    across all three hosts; the only role-specific input is which
- *    `HubConfig` to use (in_hub / out_hub).
+ *    `HubRefConfig` to use (in_hub / out_hub).
  *
  *  - `do_role_teardown()` — runs Steps 9-14 of the worker_main
  *    epilogue (stop_accepting → deregister → invoke_on_stop →
@@ -27,7 +27,7 @@
 
 #include "utils/broker_request_comm.hpp"
 #include "utils/config/auth_config.hpp"
-#include "utils/config/hub_config.hpp"
+#include "utils/config/hub_ref_config.hpp"
 
 #include <functional>
 #include <string>
@@ -60,7 +60,7 @@ namespace pylabhub::scripting
  * @param role_name  Human-readable role name.
  */
 inline ::pylabhub::hub::BrokerRequestComm::Config
-make_broker_comm_config(const ::pylabhub::config::HubConfig  &hub,
+make_broker_comm_config(const ::pylabhub::config::HubRefConfig  &hub,
                         const ::pylabhub::config::AuthConfig &auth,
                         const std::string                    &role_uid,
                         const std::string                    &role_name)
