@@ -11,7 +11,12 @@
  * ## Wire format (MessagePack array, 4 elements — same as ZmqQueue)
  *   [magic:uint32, schema_tag:bin8, seq:uint64, payload:array(N fields)]
  *   - magic      : 0x51484C50 ('PLHQ')
- *   - schema_tag : first 8 bytes of BLAKE2b-256(BLDS) (optional identity guard)
+ *   - schema_tag : first 8 bytes of BLAKE2b-256 over the inbox canonical
+ *                  form (HEP-CORE-0034 §11.4 — `type:count:length;...|pack:`,
+ *                  computed by `compute_inbox_schema_tag`).  Note: this is
+ *                  a different canonical form than slot/flexzone (§6.3)
+ *                  because inbox messages are envelope-typed and carry no
+ *                  field names on the wire.  Optional identity guard.
  *   - seq        : monotonic sender counter
  *   - payload    : N typed field values (scalar or bin)
  *
