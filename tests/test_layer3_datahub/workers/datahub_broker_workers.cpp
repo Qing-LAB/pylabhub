@@ -1233,8 +1233,8 @@ int broker_sch_cons_anonymous_happy_path()
             cons["consumer_uid"]     = c;
             cons["consumer_name"]    = "test_consumer";
             cons["consumer_pid"]     = pylabhub::platform::get_pid();
-            cons["expected_blds"]    = blds;
-            cons["expected_packing"] = packing;
+            cons["expected_schema_blds"]    = blds;
+            cons["expected_schema_packing"] = packing;
             // (no expected_schema_id, no expected_schema_hash)
             auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons);
             EXPECT_EQ(cr.value("status", std::string{}), "success") << cr.dump();
@@ -1270,7 +1270,7 @@ int broker_sch_cons_anonymous_missing_packing()
             cons["consumer_uid"]  = c;
             cons["consumer_name"] = "test_consumer";
             cons["consumer_pid"]  = pylabhub::platform::get_pid();
-            cons["expected_blds"] = "ts:f64:1:0";
+            cons["expected_schema_blds"] = "ts:f64:1:0";
             // intentionally no expected_packing
             auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons);
             EXPECT_EQ(cr.value("status", std::string{}), "error") << cr.dump();
@@ -1320,8 +1320,8 @@ int broker_sch_cons_named_with_structure_mismatch()
             cons["consumer_pid"]         = pylabhub::platform::get_pid();
             cons["expected_schema_id"]   = sid;
             cons["expected_schema_hash"] = canonical_hash_hex(blds_p, packing);
-            cons["expected_blds"]        = blds_c;   // diverges from producer
-            cons["expected_packing"]     = packing;
+            cons["expected_schema_blds"]        = blds_c;   // diverges from producer
+            cons["expected_schema_packing"]     = packing;
             auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons);
             EXPECT_EQ(cr.value("status", std::string{}), "error") << cr.dump();
             EXPECT_EQ(cr.value("error_code", std::string{}), "FINGERPRINT_INCONSISTENT");
