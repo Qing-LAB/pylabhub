@@ -21,14 +21,15 @@ namespace pylabhub::hub
  * @enum ChannelPattern
  * @brief ZMQ socket topology for the producer–consumer data channel.
  *
- * **Where set:** ProducerOptions::channel_pattern (hub_producer.hpp); sent to the broker
- *   in the REG_REQ JSON `"channel_pattern"` field; stored in ChannelRegistry::ChannelEntry.
+ * **Where set:** Role config JSON (`channel_pattern` field, parsed by per-role
+ *   config readers); sent to the broker in the REG_REQ JSON `"channel_pattern"`
+ *   field; stored in `ChannelEntry` (HEP-CORE-0033 §8).
  * **Where applied:**
- *   - Messenger.cpp (producer side): creates and binds the data socket with the
+ *   - Producer role host: creates and binds the data socket with the
  *     appropriate ZMQ socket type based on this value.
- *   - BrokerService.cpp: includes pattern in CHANNEL_READY_NOTIFY so consumers
+ *   - BrokerService: includes pattern in CHANNEL_READY_NOTIFY so consumers
  *     know which socket type to create when connecting.
- *   - hub_consumer.cpp (consumer side): creates matching ZMQ socket and connects
+ *   - Consumer role host: creates matching ZMQ socket and connects
  *     to the endpoint advertised by the broker.
  *
  * | Value    | Producer socket | Consumer socket | Use case                               |

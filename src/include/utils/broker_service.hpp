@@ -217,11 +217,16 @@ public:
         /// Per-channel policy overrides (first matching glob wins).
         std::vector<ChannelPolicy>  channel_policies;
 
-        // ── Schema registry (HEP-CORE-0016 Phase 3) ────────────────────────
-        /// Directories to search for named schema JSON files (*.json).
-        /// When empty, the broker uses SchemaLibrary::default_search_dirs()
-        /// (PYLABHUB_SCHEMA_PATH env, ~/.pylabhub/schemas, /usr/share/pylabhub/schemas).
-        /// Set in tests to an explicit temp directory containing schema fixtures.
+        // ── Schema registry (HEP-CORE-0034) ─────────────────────────────────
+        /// Directories to search for hub-global schema JSON files (`*.json`).
+        /// When empty, the broker uses
+        /// `pylabhub::schema::SchemaLibrary::default_search_dirs()`
+        /// (`PYLABHUB_SCHEMA_PATH` env, `~/.pylabhub/schemas`,
+        /// `/usr/share/pylabhub/schemas`).  At broker startup, every parsed
+        /// entry is translated via `to_hub_schema_record` and inserted into
+        /// `HubState.schemas` under `(owner_uid="hub", schema_id)` —
+        /// HEP-CORE-0034 §2.4 I2 (single load pipeline).  Set in tests to
+        /// an explicit temp directory containing schema fixtures.
         std::vector<std::string>    schema_search_dirs;
 
         // ── Hub federation (HEP-CORE-0022) ──────────────────────────────────

@@ -339,10 +339,12 @@ template <typename T> struct SchemaRegistry;
 /**
  * @brief Trait: true when T has been registered with PYLABHUB_SCHEMA_BEGIN/MEMBER/END.
  *
- * Used in `validate_named_schema<DataT, FlexT>()` (schema_library.hpp) to
- * conditionally enable hash-level schema verification alongside size checks.
- * Without the macro registration, only `sizeof(T)` is compared against the
- * schema's `struct_size`; the BLDS hash is not checked.
+ * Anticipated use in the typed RAII layer's
+ * `make_wire_schema_fields_from_types<SlotT, FzT>()` helper
+ * (HEP-CORE-0034 Phase 5d / `docs/tech_draft/raii_layer_redesign.md` §6.15)
+ * to gate compile-time checks on whether a struct exposes its field
+ * registry.  Other callers may use the trait to specialise behaviour for
+ * registered vs unregistered types.
  *
  * @tparam T  Any C++ type.
  */

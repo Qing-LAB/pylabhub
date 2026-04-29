@@ -108,4 +108,25 @@ int broker_sch_cons_named_with_structure_mismatch();
  *  Audit-found gap. */
 int broker_sch_inbox_evicts_on_disconnect();
 
+// ── HEP-0034 Phase 4b — hub-globals + path-C adoption ──────────────────────
+
+/** Broker startup loads schemas from `cfg.schema_search_dirs` and
+ *  registers each as `(hub, schema_id)` in HubState.schemas. */
+int broker_sch_hub_globals_loaded_at_startup();
+
+/** Producer REG_REQ with `schema_owner="hub"` and matching fingerprint
+ *  adopts a pre-loaded hub-global; channel.schema_owner becomes "hub"
+ *  (not the role uid). */
+int broker_sch_path_c_adoption_succeeds();
+
+/** Path-C with mismatching fingerprint → FINGERPRINT_INCONSISTENT. */
+int broker_sch_path_c_fingerprint_mismatch();
+
+/** Path-C citing a hub-global that was never loaded → SCHEMA_UNKNOWN. */
+int broker_sch_path_c_unknown_global();
+
+/** REG_REQ with `schema_owner` set to a third role's uid (not self,
+ *  not "hub") → SCHEMA_FORBIDDEN_OWNER. */
+int broker_sch_path_x_forbidden_owner();
+
 } // namespace pylabhub::tests::worker::broker

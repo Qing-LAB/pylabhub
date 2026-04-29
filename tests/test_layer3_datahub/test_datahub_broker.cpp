@@ -218,3 +218,43 @@ TEST_F(DatahubBrokerTest, Sch_InboxEvictsOnDisconnect)
     auto proc = SpawnWorker("broker.broker_sch_inbox_evicts_on_disconnect", {});
     ExpectWorkerOk(proc);
 }
+
+// ── HEP-0034 Phase 4b — hub-globals + path-C adoption ─────────────────────
+
+TEST_F(DatahubBrokerTest, Sch_HubGlobalsLoadedAtStartup)
+{
+    // Broker startup walks `cfg.schema_search_dirs`, loads each `.json`,
+    // and registers it under `(hub, schema_id)` in HubState.schemas.
+    // SCHEMA_REQ for that key must succeed.
+    auto proc = SpawnWorker("broker.broker_sch_hub_globals_loaded_at_startup", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerTest, Sch_PathC_AdoptionSucceeds)
+{
+    // Producer REG_REQ with schema_owner="hub" + matching fingerprint
+    // adopts the pre-loaded global; channel.schema_owner becomes "hub".
+    auto proc = SpawnWorker("broker.broker_sch_path_c_adoption_succeeds", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerTest, Sch_PathC_FingerprintMismatch)
+{
+    // Path-C with mismatching fingerprint → FINGERPRINT_INCONSISTENT.
+    auto proc = SpawnWorker("broker.broker_sch_path_c_fingerprint_mismatch", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerTest, Sch_PathC_UnknownGlobal)
+{
+    // Path-C citing a hub-global that was never loaded → SCHEMA_UNKNOWN.
+    auto proc = SpawnWorker("broker.broker_sch_path_c_unknown_global", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerTest, Sch_PathX_ForbiddenOwner)
+{
+    // schema_owner set to a third role's uid → SCHEMA_FORBIDDEN_OWNER.
+    auto proc = SpawnWorker("broker.broker_sch_path_x_forbidden_owner", {});
+    ExpectWorkerOk(proc);
+}
