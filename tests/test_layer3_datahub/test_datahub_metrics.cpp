@@ -18,6 +18,7 @@
 #include "plh_service.hpp"
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
+#include "utils/hub_metrics_filter.hpp"
 
 #include <atomic>
 #include <future>
@@ -360,4 +361,156 @@ TEST_F(MetricsPlaneTest, ProducerPID_InQueryResult)
     EXPECT_EQ(m["producer"].value("pid", 0), ::getpid());
 
     bh.stop();
+}
+
+// ============================================================================
+// Unified query engine — HEP-CORE-0033 §10.3
+// ============================================================================
+
+TEST_F(MetricsPlaneTest, QueryEngine_EmptyFilter_AllCategoriesPresent)
+{
+    const std::string channel = pid_chan("query.empty.all");
+    const std::string uid     = "prod." + channel;
+    BrcHandle bh;
+    bh.start(ep(), pk(), uid);
+    auto reg = bh.brc.register_channel(make_reg_opts(channel, uid), 3000);
+    ASSERT_TRUE(reg.has_value());
+
+    pylabhub::hub::MetricsFilter f;
+    json result = svc().query_metrics(f);
+
+    EXPECT_EQ(result.value("status", ""), "success");
+    EXPECT_TRUE(result.contains("queried_at"));
+    EXPECT_FALSE(result.value("queried_at", "").empty());
+    EXPECT_TRUE(result.contains("filter"));
+    // All seven categories must be present when filter is empty.
+    EXPECT_TRUE(result.contains("channels"));
+    EXPECT_TRUE(result.contains("roles"));
+    EXPECT_TRUE(result.contains("bands"));
+    EXPECT_TRUE(result.contains("peers"));
+    EXPECT_TRUE(result.contains("broker"));
+    EXPECT_TRUE(result.contains("shm"));
+    EXPECT_TRUE(result.contains("schemas"));
+
+    bh.stop();
+}
+
+TEST_F(MetricsPlaneTest, QueryEngine_CategoryFilter_OnlyBroker)
+{
+    pylabhub::hub::MetricsFilter f;
+    f.categories.insert(pylabhub::hub::metrics_category::kBroker);
+    json result = svc().query_metrics(f);
+
+    EXPECT_EQ(result.value("status", ""), "success");
+    EXPECT_TRUE(result.contains("broker"));
+    EXPECT_FALSE(result.contains("channels"));
+    EXPECT_FALSE(result.contains("roles"));
+    EXPECT_FALSE(result.contains("bands"));
+    EXPECT_FALSE(result.contains("peers"));
+    EXPECT_FALSE(result.contains("shm"));
+    EXPECT_FALSE(result.contains("schemas"));
+
+    // Broker counters carry _collected_at.
+    EXPECT_TRUE(result["broker"].contains("_collected_at"));
+}
+
+TEST_F(MetricsPlaneTest, QueryEngine_ChannelIdentityFilter)
+{
+    const std::string ch1 = pid_chan("query.identity.A");
+    const std::string ch2 = pid_chan("query.identity.B");
+
+    BrcHandle b1; b1.start(ep(), pk(), "prod." + ch1);
+    auto r1 = b1.brc.register_channel(make_reg_opts(ch1, "prod." + ch1), 3000);
+    ASSERT_TRUE(r1.has_value());
+
+    BrcHandle b2; b2.start(ep(), pk(), "prod." + ch2);
+    auto r2 = b2.brc.register_channel(make_reg_opts(ch2, "prod." + ch2), 3000);
+    ASSERT_TRUE(r2.has_value());
+
+    pylabhub::hub::MetricsFilter f;
+    f.categories.insert(pylabhub::hub::metrics_category::kChannel);
+    f.channels = {ch1};
+    json result = svc().query_metrics(f);
+
+    ASSERT_TRUE(result.contains("channels"));
+    EXPECT_TRUE(result["channels"].contains(ch1));
+    EXPECT_FALSE(result["channels"].contains(ch2));
+
+    b1.stop();
+    b2.stop();
+}
+
+TEST_F(MetricsPlaneTest, QueryEngine_RolesCarryCollectedAt)
+{
+    const std::string channel = pid_chan("query.role.collected");
+    const std::string uid     = "prod." + channel;
+    BrcHandle bh;
+    bh.start(ep(), pk(), uid);
+    auto reg = bh.brc.register_channel(make_reg_opts(channel, uid), 3000);
+    ASSERT_TRUE(reg.has_value());
+
+    json metrics;
+    metrics["iteration_count"] = 7;
+    bh.brc.send_heartbeat(channel, metrics);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+    pylabhub::hub::MetricsFilter f;
+    f.categories.insert(pylabhub::hub::metrics_category::kRole);
+    f.roles = {uid};
+    json result = svc().query_metrics(f);
+
+    ASSERT_TRUE(result.contains("roles"));
+    ASSERT_TRUE(result["roles"].contains(uid));
+    const auto &r = result["roles"][uid];
+    EXPECT_EQ(r.value("uid", ""), uid);
+    EXPECT_EQ(r.value("role_tag", ""), "prod");
+    EXPECT_TRUE(r.contains("_collected_at"));
+    // After a metrics-bearing heartbeat, _collected_at must be non-empty.
+    EXPECT_FALSE(r.value("_collected_at", "").empty());
+
+    bh.stop();
+}
+
+TEST_F(MetricsPlaneTest, QueryEngine_ChannelsHaveProducerAndConsumerMetrics)
+{
+    const std::string channel = pid_chan("query.channel.metrics");
+    const std::string uid     = "prod." + channel;
+    BrcHandle bh;
+    bh.start(ep(), pk(), uid);
+    auto reg = bh.brc.register_channel(make_reg_opts(channel, uid), 3000);
+    ASSERT_TRUE(reg.has_value());
+
+    json metrics;
+    metrics["iteration_count"] = 99;
+    bh.brc.send_heartbeat(channel, metrics);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+    pylabhub::hub::MetricsFilter f;
+    f.categories.insert(pylabhub::hub::metrics_category::kChannel);
+    json result = svc().query_metrics(f);
+
+    ASSERT_TRUE(result.contains("channels"));
+    ASSERT_TRUE(result["channels"].contains(channel));
+    const auto &c = result["channels"][channel];
+    EXPECT_TRUE(c.contains("producer_metrics"));
+    EXPECT_EQ(c["producer_metrics"].value("iteration_count", 0), 99);
+    EXPECT_TRUE(c.contains("_collected_at"));
+
+    bh.stop();
+}
+
+TEST_F(MetricsPlaneTest, QueryEngine_FilterEcho)
+{
+    pylabhub::hub::MetricsFilter f;
+    f.categories.insert("role");
+    f.roles = {"prod.specific.uid12345678"};
+    json result = svc().query_metrics(f);
+
+    ASSERT_TRUE(result.contains("filter"));
+    const auto &echo = result["filter"];
+    EXPECT_TRUE(echo.contains("categories"));
+    ASSERT_TRUE(echo.contains("roles"));
+    ASSERT_EQ(echo["roles"].size(), 1u);
+    EXPECT_EQ(echo["roles"][0].get<std::string>(),
+              "prod.specific.uid12345678");
 }
