@@ -271,30 +271,34 @@ at parse time. Prevents typos, obsolete keys, and ambiguous configuration.
 
 ---
 
-### 2.7 Channel Access Policy (broker layer)
+### 2.7 Hub-role authentication & federation trust
 
-**`ConnectionPolicy`** — `src/include/utils/channel_access_policy.hpp`
-**Applied by**: `BrokerServiceImpl::check_connection_policy()` in `broker_service.cpp`,
-called on every incoming REG_REQ (producer) and CONSUMER_REG_REQ (consumer).
-
-| Value | Identity required? | Must be in known_roles? | Suitable for |
-|-------|--------------------|--------------------------|--------------|
-| `Open` | No | No | Dev/local hubs (default) |
-| `Tracked` | Optional (if provided, stored in registry) | No | Observability and auditing |
-| `Required` | Yes (producer_name + producer_uid) | No | Deployment environments |
-| `Verified` | Yes (producer_name + producer_uid) | Yes (allowlist) | Production |
-
-**Configuration**: `BrokerService::Config::connection_policy` will be wired
-from `pylabhub::config::HubConfig::broker().default_channel_policy` on the new
-`plh_hub` binary (HEP-CORE-0033 §15 Phase 9). The legacy
-`pylabhub::HubConfig` lifecycle singleton was deleted 2026-04-29 along with
-the legacy `hubshell.cpp` binary; the new HubConfig composite (§6) ships in
-`src/include/utils/config/hub_config.hpp`.
-JSON: hub.json `"broker": { "default_channel_policy": "open" | "tracked" | "required" | "verified" }`.
-
-**Per-channel override**: `ChannelPolicy` (list of glob patterns + policy level) can
-tighten the effective policy for specific channels. First match wins.
-`BrokerServiceImpl::effective_policy()` applies the override logic.
+> 🚧 **Superseded by [HEP-CORE-0035](HEP-CORE-0035-Hub-Role-Authentication-and-Federation-Trust.md) — in design, not implemented.**
+> This section previously documented `ConnectionPolicy` (`Open`/`Tracked`/`Required`/`Verified`)
+> as the broker-side access-control mechanism. That model **pre-dates the
+> CURVE-required role architecture and the HEP-CORE-0022 federation model**:
+> it operates only on self-asserted JSON identity strings, never consults the
+> connecting socket's CURVE pubkey, and has no concept of cross-hub role
+> trust. It is a placeholder, not the design.
+>
+> **HEP-CORE-0035 is the single authoritative source** for hub-role auth and
+> federation trust. It defines:
+> - The CURVE-required invariant + mutual pubkey knowledge between roles
+>   and hubs.
+> - A two-layer enforcement model (ZAP-level pubkey allowlist + application-level
+>   federation-trust gate).
+> - The replacement hub.json fields (`broker.known_roles[].pubkey` required;
+>   `broker.federation_trust_mode`).
+> - What is removed: `ConnectionPolicy::{Required,Verified,Tracked,Open}`,
+>   `ChannelPolicy` per-channel overrides.
+>
+> The legacy `ConnectionPolicy` enum, `BrokerServiceImpl::check_connection_policy`,
+> `KnownRole`, and `ChannelPolicy` types remain in the source tree (and in L3
+> test `test_datahub_channel_access_policy.cpp`) until HEP-CORE-0035 Phase 6
+> deletes them in one sweep. Do **not** treat them as the design.
+>
+> See HEP-CORE-0035 §1 (status), §2 (invariants), §3 (gap analysis of the
+> placeholder), §4 (design), §5 (hub.json fields).
 
 ---
 
