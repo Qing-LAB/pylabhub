@@ -655,6 +655,36 @@ gtest_discover_tests(test_layer2_role_directory
 )
 
 # ============================================================================
+# Test: HubDirectory (pure filesystem API — no lifecycle)
+# HEP-CORE-0033 §7
+# ============================================================================
+
+add_executable(test_layer2_hub_directory
+    test_hub_directory.cpp
+)
+
+target_link_libraries(test_layer2_hub_directory
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_directory)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_hub_directory
+    SUITE_NAME "Layer2_HubDirectory"
+)
+layer2_require_staged_utils(test_layer2_hub_directory)
+
+gtest_discover_tests(test_layer2_hub_directory
+    PROPERTIES
+        LABELS "layer2;service;hub_directory"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: role_cli::parse_role_args + ParseResult (in-process, no std::exit)
 # ============================================================================
 
