@@ -540,35 +540,26 @@ bool RoleAPIBase::start_ctrl_thread(
         core->request_stop();
     });
 
-    // ── Step 3: Spawn ctrl thread (heartbeat + poll loop) ──────────────────
-    LOGGER_INFO("[{}] ctrl: starting control thread (heartbeat={}ms)",
-                pImpl->role_tag, cfg.heartbeat_interval_ms);
+    // ── Step 3: Spawn ctrl thread — runs poll loop only ────────────────────
+    // Periodic tasks (heartbeat, metrics) are NOT scheduled here.  Per
+    // HEP-CORE-0023 §2.5 "Role-side preferred cadence vs. hub authority",
+    // the heartbeat cadence is negotiated at REG_ACK time: the role's
+    // configured `heartbeat_interval_ms` must be ≤ the hub's tolerated
+    // interval.  Scheduling happens in Step 5 below, after registration
+    // returns the hub's heartbeat block, with the negotiated effective
+    // interval.  set_periodic_task() routes through the cmd queue so
+    // post-startup install is supported without restructuring the loop.
+    LOGGER_INFO("[{}] ctrl: starting control thread (heartbeat install "
+                "deferred to post-REG_ACK)", pImpl->role_tag);
 
-    thread_manager().spawn("ctrl", [this, cfg]()
+    thread_manager().spawn("ctrl", [this]()
     {
-        // Engine cross-thread dispatch guard + entry/exit logging — the
-        // wrapper that used to live inside spawn_thread() shim.
         auto *eng = pImpl->engine;
         scripting::ThreadEngineGuard guard(*eng);
         LOGGER_INFO("[{}/ctrl] thread started", pImpl->role_tag);
 
         auto *bc   = pImpl->broker_channel;
         auto *core = pImpl->core;
-
-        // Heartbeat: iteration-gated (stops if script stuck → broker detects dead).
-        bc->set_periodic_task(
-            [this] { on_heartbeat_tick_(); },
-            cfg.heartbeat_interval_ms,
-            [core] { return core->iteration_count(); });
-
-        // Metrics report: time-only (fires even when idle).
-        if (cfg.report_metrics)
-        {
-            bc->set_periodic_task(
-                [this] { on_metrics_report_tick_(); },
-                cfg.heartbeat_interval_ms,
-                nullptr);
-        }
 
         LOGGER_TRACE("[{}] ctrl: entering poll loop", pImpl->role_tag);
         bc->run_poll_loop([core] {
@@ -579,7 +570,7 @@ bool RoleAPIBase::start_ctrl_thread(
     });
 
     // ── Step 4: Register with broker (main thread, blocks) ─────────────────
-    // The ctrl thread is now running and can process commands.
+    // The ctrl thread is now running and can process REG_REQ via the cmd queue.
 
     // Append inbox metadata to registration payload if inbox is configured.
     auto append_inbox = [&](nlohmann::json &opts) {
@@ -592,6 +583,12 @@ bool RoleAPIBase::start_ctrl_thread(
             opts["inbox_checksum"]    = cfg.inbox->checksum;
         }
     };
+
+    // Track the hub's negotiated heartbeat interval.  Either registration
+    // path populates it from the REG_ACK / CONSUMER_REG_ACK `heartbeat`
+    // block.  When neither registration is configured, we have no hub
+    // authority to defer to and use the role's local cadence as-is.
+    std::optional<int> hub_heartbeat_interval_ms;
 
     if (!cfg.producer_reg_opts.empty())
     {
@@ -606,6 +603,12 @@ bool RoleAPIBase::start_ctrl_thread(
             return false;
         }
         pImpl->registered_producer_channel = reg.value("channel_name", "");
+        if (result->contains("heartbeat") && (*result)["heartbeat"].is_object() &&
+            (*result)["heartbeat"].contains("heartbeat_interval_ms"))
+        {
+            hub_heartbeat_interval_ms =
+                (*result)["heartbeat"]["heartbeat_interval_ms"].get<int>();
+        }
     }
 
     if (!cfg.consumer_reg_opts.empty())
@@ -620,9 +623,59 @@ bool RoleAPIBase::start_ctrl_thread(
             return false;
         }
         pImpl->registered_consumer_channel = reg.value("channel_name", "");
+        if (result->contains("heartbeat") && (*result)["heartbeat"].is_object() &&
+            (*result)["heartbeat"].contains("heartbeat_interval_ms"))
+        {
+            hub_heartbeat_interval_ms =
+                (*result)["heartbeat"]["heartbeat_interval_ms"].get<int>();
+        }
     }
 
-    LOGGER_INFO("[{}] ctrl: broker communication ready", pImpl->role_tag);
+    // ── Step 5: Negotiate heartbeat cadence + install periodic tasks ───────
+    // HEP-CORE-0023 §2.5 — hub's heartbeat_interval_ms is the **maximum
+    // tolerated silence** (timeout ceiling).  Role's configured cadence is
+    // its preferred (typically faster) pace.  Effective cadence is
+    // min(role, hub); a slower role triggers a warning + downgrade so the
+    // role doesn't get reaped by hub-side liveness.
+    int effective_interval_ms = cfg.heartbeat_interval_ms;
+    if (hub_heartbeat_interval_ms.has_value())
+    {
+        const int hub_max = *hub_heartbeat_interval_ms;
+        if (cfg.heartbeat_interval_ms > hub_max)
+        {
+            LOGGER_WARN(
+                "[{}] heartbeat: configured interval {} ms exceeds hub's "
+                "tolerated max {} ms — resetting to hub max to avoid "
+                "liveness timeout (HEP-CORE-0023 §2.5)",
+                pImpl->role_tag, cfg.heartbeat_interval_ms, hub_max);
+            effective_interval_ms = hub_max;
+        }
+        else
+        {
+            LOGGER_INFO(
+                "[{}] heartbeat: aligned with hub — role cadence {} ms, "
+                "hub max {} ms",
+                pImpl->role_tag, cfg.heartbeat_interval_ms, hub_max);
+        }
+    }
+
+    auto *bc_post   = pImpl->broker_channel;
+    auto *core_post = pImpl->core;
+    bc_post->set_periodic_task(
+        [this] { on_heartbeat_tick_(); },
+        effective_interval_ms,
+        [core_post] { return core_post->iteration_count(); });
+
+    if (cfg.report_metrics)
+    {
+        bc_post->set_periodic_task(
+            [this] { on_metrics_report_tick_(); },
+            effective_interval_ms,
+            nullptr);
+    }
+
+    LOGGER_INFO("[{}] ctrl: broker communication ready (heartbeat={}ms)",
+                pImpl->role_tag, effective_interval_ms);
     return true;
 }
 

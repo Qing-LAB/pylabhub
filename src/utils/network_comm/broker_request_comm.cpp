@@ -70,7 +70,21 @@ struct RequestCmd
     std::optional<nlohmann::json>     result;
 };
 
-using BrokerCommand = std::variant<SendCmd, std::shared_ptr<RequestCmd>>;
+/// Install a periodic task into the running poll loop.
+/// All installs (pre-startup + post-startup) flow through this command so
+/// `pImpl->periodic_tasks` storage is unnecessary and the post-REG_ACK
+/// heartbeat-cadence negotiation (HEP-CORE-0023 §2.5) works without
+/// special-casing.
+struct InstallPeriodicTaskCmd
+{
+    std::function<void()>     action;
+    int                       interval_ms{0};
+    std::function<uint64_t()> get_iteration; // optional (nullptr = time-only)
+};
+
+using BrokerCommand = std::variant<SendCmd,
+                                    std::shared_ptr<RequestCmd>,
+                                    InstallPeriodicTaskCmd>;
 
 } // anonymous namespace
 
@@ -104,8 +118,13 @@ struct BrokerRequestComm::Impl
     std::string role_uid;
     std::string role_name;
 
-    // Periodic tasks (added before run_poll_loop, consumed during run).
-    std::vector<scripting::PeriodicTask> periodic_tasks;
+    // Periodic tasks: owned by the active poll-loop's local vector.
+    // active_loop_periodic_tasks is set while run_poll_loop is running so
+    // InstallPeriodicTaskCmd can append at any time (pre- or post-startup).
+    // The pointer is only ever read/written from the ctrl thread (the same
+    // thread that runs the poll loop and drains the cmd queue), so no
+    // atomic is needed for the pointer itself.
+    std::vector<scripting::PeriodicTask> *active_loop_periodic_tasks{nullptr};
     std::atomic<bool> poll_loop_running{false};
 
     // State.
@@ -268,6 +287,20 @@ struct BrokerRequestComm::Impl
         for (const auto &ack : cmd->expected_acks)
             pending_requests[ack] = cmd;
         send_message(cmd->msg_type, cmd->payload);
+    }
+
+    void handle_command(InstallPeriodicTaskCmd &cmd)
+    {
+        // Drained on the ctrl thread (same thread as the poll loop's tick),
+        // so direct emplace into the active loop's vector is safe.
+        if (!active_loop_periodic_tasks)
+        {
+            LOGGER_WARN("BrokerRequestComm: InstallPeriodicTaskCmd dropped — "
+                        "no active poll loop");
+            return;
+        }
+        active_loop_periodic_tasks->emplace_back(
+            std::move(cmd.action), cmd.interval_ms, std::move(cmd.get_iteration));
     }
 
     /// Remove a completed/cancelled request from all of its ack keys.
@@ -495,13 +528,12 @@ void BrokerRequestComm::set_periodic_task(std::function<void()> action,
                                               int interval_ms,
                                               std::function<uint64_t()> get_iteration)
 {
-    if (pImpl->poll_loop_running.load(std::memory_order_acquire))
-    {
-        LOGGER_ERROR("BrokerRequestComm: set_periodic_task called after run_poll_loop started");
-        return;
-    }
-    pImpl->periodic_tasks.emplace_back(
-        std::move(action), interval_ms, std::move(get_iteration));
+    // All installs (pre-startup + post-startup, e.g. heartbeat scheduled
+    // after REG_ACK heartbeat-cadence negotiation per HEP-CORE-0023 §2.5)
+    // flow through the cmd queue.  The handler runs on the ctrl thread and
+    // appends directly into the active poll-loop's periodic_tasks vector.
+    pImpl->cmd_queue.push(InstallPeriodicTaskCmd{
+        std::move(action), interval_ms, std::move(get_iteration)});
 }
 
 // ============================================================================
@@ -539,13 +571,19 @@ void BrokerRequestComm::run_poll_loop(std::function<bool()> should_run)
         loop.drain_commands = [this] { pImpl->drain_command_queue(); };
     }
 
-    // Move periodic tasks into the loop.
+    // Publish a pointer to the loop's periodic_tasks vector so the
+    // InstallPeriodicTaskCmd handler can append into it from inside the
+    // drain handler.  The loop starts with an empty vector — even the
+    // first heartbeat install (before REG_ACK) is queued up via the cmd
+    // queue and drained on the first poll iteration.  See HEP-CORE-0023
+    // §2.5 for the heartbeat-cadence negotiation that motivates this.
+    pImpl->active_loop_periodic_tasks = &loop.periodic_tasks;
     pImpl->poll_loop_running.store(true, std::memory_order_release);
-    loop.periodic_tasks = std::move(pImpl->periodic_tasks);
 
     loop.run();
 
     pImpl->poll_loop_running.store(false, std::memory_order_release);
+    pImpl->active_loop_periodic_tasks = nullptr;
 }
 
 void BrokerRequestComm::stop() noexcept
