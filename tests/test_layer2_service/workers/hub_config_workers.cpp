@@ -87,11 +87,6 @@ nlohmann::json full_hub_json()
         {"broker", {
             {"heartbeat_timeout_ms", 20000},
             {"heartbeat_multiplier", 4},
-            {"default_channel_policy", "named_only"},
-            {"known_roles", nlohmann::json::array({
-                {{"uid", "prod.cam.uid01234567"}, {"name", "Camera"},
-                 {"pubkey", ""}},
-            })},
         }},
         {"federation", {
             {"enabled", true},
@@ -135,10 +130,6 @@ int load_full(const char *tmpdir)
 
             EXPECT_EQ(cfg.broker().heartbeat_timeout_ms, 20000);
             EXPECT_EQ(cfg.broker().heartbeat_multiplier,    4);
-            EXPECT_EQ(cfg.broker().default_channel_policy, "named_only");
-            ASSERT_EQ(cfg.broker().known_roles.size(), 1u);
-            EXPECT_EQ(cfg.broker().known_roles[0].uid,  "prod.cam.uid01234567");
-            EXPECT_EQ(cfg.broker().known_roles[0].name, "Camera");
 
             EXPECT_TRUE(cfg.federation().enabled);
             EXPECT_EQ(cfg.federation().forward_timeout_ms, 1500);
@@ -182,8 +173,6 @@ int load_minimal(const char *tmpdir)
 
             EXPECT_EQ(cfg.broker().heartbeat_timeout_ms, 15000);
             EXPECT_EQ(cfg.broker().heartbeat_multiplier,     5);
-            EXPECT_EQ(cfg.broker().default_channel_policy, "open");
-            EXPECT_TRUE(cfg.broker().known_roles.empty());
 
             EXPECT_FALSE(cfg.federation().enabled);
             EXPECT_TRUE(cfg.federation().peers.empty());

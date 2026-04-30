@@ -88,6 +88,11 @@ struct RoleStateMetrics
 /// HEP-CORE-0033 §6.4) parses the `federation.peers[]` block and the
 /// hub's main wires the resulting list into `BrokerService::Config`
 /// once `plh_hub` is built (HEP-0033 §15 Phase 9).
+///
+/// HEP-CORE-0035 will extend the peer's HUB_PEER_HELLO with an optional
+/// `roles[]` array (peer's `(role_uid, role_pubkey)` list) to support
+/// `peer_delegated` federation-trust mode; that augmentation is part of
+/// HEP-0035 Phase 5, not Phase 1 of HEP-0033.
 struct FederationPeer
 {
     std::string              hub_uid;          ///< Peer hub UID

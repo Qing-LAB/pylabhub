@@ -1,13 +1,23 @@
 #pragma once
 /**
  * @file hub_broker_config.hpp
- * @brief HubBrokerConfig — broker timing + policy + known-roles list.
+ * @brief HubBrokerConfig — broker timing parameters.
  *
  * Parsed from the top-level `"broker"` JSON sub-object (HEP-CORE-0033 §6.2).
- * Owns the heartbeat timeout / multiplier, the default channel-policy when
- * a channel registers without an explicit one, and the list of pre-known
- * roles (uid + name + pubkey) the broker should recognise at registration
- * time.  Strict key whitelist per HEP-CORE-0033 §6.3.
+ * Owns the heartbeat timeout / multiplier.  Strict key whitelist per
+ * HEP-CORE-0033 §6.3.
+ *
+ * **Auth/access fields deliberately omitted** (`default_channel_policy`,
+ * `known_roles`, `channel_policies`).  The legacy `pylabhub::HubConfig`
+ * carried these, but the implementation pre-dates the current CURVE-required
+ * role model and the HEP-0022 federation-trust model.  See
+ * `docs/tech_draft/hub_role_auth_design.md` for the design that must land
+ * before these fields return — it covers ZAP-level pubkey allowlisting
+ * (`known_roles[].pubkey`) and federation-delegated trust over
+ * `federation.peers[]`.  Until that design exists, the broker-service
+ * `BrokerService::Config` continues to carry the legacy `connection_policy`
+ * + `known_roles` fields directly (set by Phase 9 wiring or by tests),
+ * unchanged.
  */
 
 #include "utils/json_fwd.hpp"
@@ -15,24 +25,14 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
-#include <vector>
 
 namespace pylabhub::config
 {
 
-struct KnownRoleEntry
-{
-    std::string uid;        ///< Role uid (HEP-0033 §G2.2.0a)
-    std::string name;       ///< Human-readable name
-    std::string pubkey;     ///< Z85 CURVE25519 public key (40 chars), or empty
-};
-
 struct HubBrokerConfig
 {
-    int32_t                       heartbeat_timeout_ms{15000};
-    int32_t                       heartbeat_multiplier{5};
-    std::string                   default_channel_policy{"open"};
-    std::vector<KnownRoleEntry>   known_roles;
+    int32_t heartbeat_timeout_ms{15000};
+    int32_t heartbeat_multiplier{5};
 };
 
 inline HubBrokerConfig parse_hub_broker_config(const nlohmann::json &j)
@@ -47,8 +47,7 @@ inline HubBrokerConfig parse_hub_broker_config(const nlohmann::json &j)
     for (auto it = sect.begin(); it != sect.end(); ++it)
     {
         const auto &k = it.key();
-        if (k != "heartbeat_timeout_ms" && k != "heartbeat_multiplier" &&
-            k != "default_channel_policy" && k != "known_roles")
+        if (k != "heartbeat_timeout_ms" && k != "heartbeat_multiplier")
             throw std::runtime_error("hub: unknown config key 'broker." + k + "'");
     }
 
@@ -56,8 +55,6 @@ inline HubBrokerConfig parse_hub_broker_config(const nlohmann::json &j)
                                           bc.heartbeat_timeout_ms);
     bc.heartbeat_multiplier = sect.value("heartbeat_multiplier",
                                           bc.heartbeat_multiplier);
-    bc.default_channel_policy = sect.value("default_channel_policy",
-                                            bc.default_channel_policy);
 
     if (bc.heartbeat_timeout_ms < 0)
         throw std::runtime_error(
@@ -67,40 +64,6 @@ inline HubBrokerConfig parse_hub_broker_config(const nlohmann::json &j)
         throw std::runtime_error(
             "hub: 'broker.heartbeat_multiplier' must be >= 1 (got " +
             std::to_string(bc.heartbeat_multiplier) + ")");
-    if (bc.default_channel_policy != "open" &&
-        bc.default_channel_policy != "named_only" &&
-        bc.default_channel_policy != "closed")
-        throw std::runtime_error(
-            "hub: 'broker.default_channel_policy' must be 'open', "
-            "'named_only', or 'closed' (got '" + bc.default_channel_policy + "')");
-
-    if (sect.contains("known_roles"))
-    {
-        const auto &arr = sect["known_roles"];
-        if (!arr.is_array())
-            throw std::runtime_error("hub: 'broker.known_roles' must be an array");
-        for (const auto &e : arr)
-        {
-            if (!e.is_object())
-                throw std::runtime_error(
-                    "hub: 'broker.known_roles[]' entry must be an object");
-            for (auto it = e.begin(); it != e.end(); ++it)
-            {
-                const auto &k = it.key();
-                if (k != "uid" && k != "name" && k != "pubkey")
-                    throw std::runtime_error(
-                        "hub: unknown config key 'broker.known_roles[]." + k + "'");
-            }
-            KnownRoleEntry kr;
-            kr.uid    = e.value("uid",    std::string{});
-            kr.name   = e.value("name",   std::string{});
-            kr.pubkey = e.value("pubkey", std::string{});
-            if (kr.uid.empty())
-                throw std::runtime_error(
-                    "hub: 'broker.known_roles[].uid' is required");
-            bc.known_roles.push_back(std::move(kr));
-        }
-    }
     return bc;
 }
 
