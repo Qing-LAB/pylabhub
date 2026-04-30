@@ -94,6 +94,15 @@ int producer_metrics_accumulate()
                 auto h = producer->acquire_write_slot(1000);
                 ASSERT_TRUE(h) << "acquire_write_slot failed at i=" << i;
                 (void)h->commit(sizeof(TestDataBlock));
+                // Inject a measurable inter-iteration gap.  Without it,
+                // back-to-back acquires can complete in <1µs of wall-clock
+                // on a fast Release-build CI runner, and the iteration
+                // delta truncates to 0 after duration_cast<microseconds>
+                // (the metric IS recorded — but with a truthful zero,
+                // which collides with the initial-value 0).  100µs is
+                // well above any clock-source granularity yet keeps the
+                // test sub-millisecond.
+                std::this_thread::sleep_for(100us);
             }
 
             const auto &m = producer->metrics();
@@ -135,6 +144,9 @@ int producer_metrics_clear()
                 auto h = producer->acquire_write_slot(1000);
                 ASSERT_TRUE(h);
                 (void)h->commit(sizeof(TestDataBlock));
+                // Measurable inter-iteration gap — see
+                // producer_metrics_accumulate above for rationale.
+                std::this_thread::sleep_for(100us);
             }
 
             // Pre-clear: the per-iteration timing captures must have
@@ -216,10 +228,15 @@ int consumer_metrics_accumulate()
                 ASSERT_TRUE(wh) << "producer acquire_write_slot failed at i=" << i;
                 (void)wh->commit(sizeof(TestDataBlock));
                 (void)producer->release_write_slot(*wh);
+                // Measurable inter-iteration gap on the producer side —
+                // see producer_metrics_accumulate above for rationale.
+                std::this_thread::sleep_for(100us);
 
                 auto rh = consumer->acquire_consume_slot(1000);
                 ASSERT_TRUE(rh) << "consumer acquire_consume_slot failed at i=" << i;
                 (void)consumer->release_consume_slot(*rh);
+                // Same on the consumer side.
+                std::this_thread::sleep_for(100us);
             }
 
             const auto &pm = producer->metrics();
@@ -338,12 +355,16 @@ int last_iteration_us_populated()
             auto producer = make_metrics_producer("LPLastIter", 80009);
 
             // First acquire sets the anchor; second produces the first
-            // last_iteration_us measurement.
+            // last_iteration_us measurement.  Measurable inter-iteration
+            // gap (100µs) so the delta survives microsecond truncation —
+            // see producer_metrics_accumulate above for rationale.
             for (int i = 0; i < 2; ++i)
             {
                 auto h = producer->acquire_write_slot(1000);
                 ASSERT_TRUE(h);
                 (void)h->commit(sizeof(TestDataBlock));
+                if (i == 0)
+                    std::this_thread::sleep_for(100us);
             }
 
             EXPECT_GT(producer->metrics().last_iteration_us_val(), uint64_t{0});
