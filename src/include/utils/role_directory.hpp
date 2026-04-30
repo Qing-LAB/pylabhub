@@ -273,7 +273,7 @@ public:
      * @brief Scaffolding init for a registered role.
      *
      * The library performs NO user interaction. Callers (binary main()) must
-     * resolve the name before calling — e.g., via role_cli::resolve_init_name()
+     * resolve the name before calling — e.g., via cli::resolve_init_name()
      * for CLI/interactive flow. This keeps the lib scriptable and testable.
      *
      * Sequence:

@@ -15,9 +15,12 @@
  *     does NOT call `std::exit` (the caller decides what to do, and
  *     tests can capture usage / error output via in-memory ostreams).
  *
- * Header-only, no link dependency beyond system headers and the
- * already-existing `role_cli.hpp` (for the shared `is_stdin_tty()`
- * helper — TTY detection is identical for both binaries).
+ * Header-only, no link dependency beyond system headers.
+ *
+ * Generic CLI helpers (`is_stdin_tty`, password input, init-name
+ * resolution) live in `cli_helpers.hpp` (namespace `pylabhub::cli`);
+ * call them directly from the eventual `plh_hub_main.cpp` (Phase 9)
+ * — no need for forwarders here.
  *
  * The eventual `plh_hub_main.cpp` (Phase 9) consumes the parsed
  * `HubArgs` directly; until that binary lands, the parser has no
@@ -26,9 +29,6 @@
  * See: docs/HEP/HEP-CORE-0033-Hub-Character.md §5 (CLI) + §15 (phases).
  */
 
-#include "utils/role_cli.hpp"  // is_stdin_tty(), read_password_interactive()
-
-#include <cstdio>
 #include <iostream>
 #include <optional>
 #include <ostream>
@@ -242,25 +242,6 @@ inline ParseResult parse_hub_args(int argc, char *argv[],
             "Error: specify a hub directory, --init, or --config <path>\n\n");
 
     return result;  // exit_code stays -1 → caller proceeds
-}
-
-/**
- * @brief Resolve the `--name` / interactive prompt flow for `--init`.
- *
- * Identical contract to `role_cli::resolve_init_name`:
- * - `cli_name` non-empty → returned directly.
- * - stdin is a TTY → prompt with `prompt` and read a line.
- * - Otherwise → prints error to stderr and returns nullopt.
- *
- * @param cli_name  Value of the `--name` flag (may be empty).
- * @param prompt    Prompt string displayed when falling back to interactive input.
- */
-inline std::optional<std::string>
-resolve_init_name(const std::string &cli_name, const char *prompt)
-{
-    // Reuse role_cli's identical implementation — same TTY-vs-pipe
-    // semantics apply to the hub binary.
-    return ::pylabhub::role_cli::resolve_init_name(cli_name, prompt);
 }
 
 } // namespace pylabhub::hub_cli

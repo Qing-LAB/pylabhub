@@ -6,6 +6,7 @@
  */
 
 #include "utils/role_directory.hpp"
+#include "utils/cli_helpers.hpp"
 #include "utils/role_cli.hpp"
 
 #include <gtest/gtest.h>
@@ -252,31 +253,78 @@ TEST(RoleDirectoryTest, HubPubkeyPath_ConcatenatesFilename)
               fs::path("/some/hub/hub.pubkey"));
 }
 
-// ── Phase 2: role_cli helpers ──────────────────────────────────────────────────
+// ── pylabhub::cli generic helpers ──────────────────────────────────────────────
 
-TEST(RoleCliTest, IsStdinTty_Runs)
+TEST(CliHelpersTest, IsStdinTty_Runs)
 {
     // Just verify it compiles and returns a bool; we can't control TTY in tests.
-    [[maybe_unused]] const bool result = pylabhub::role_cli::is_stdin_tty();
+    [[maybe_unused]] const bool result = pylabhub::cli::is_stdin_tty();
     (void)result;
 }
 
-TEST(RoleCliTest, ResolveInitName_CliNameProvided)
+TEST(CliHelpersTest, ResolveInitName_CliNameProvided)
 {
     const auto result =
-        pylabhub::role_cli::resolve_init_name("MyRole", "Enter name: ");
+        pylabhub::cli::resolve_init_name("MyRole", "Enter name: ");
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(*result, "MyRole");
 }
 
-TEST(RoleCliTest, ResolveInitName_EmptyNonInteractive_ReturnsNullopt)
+TEST(CliHelpersTest, ResolveInitName_EmptyNonInteractive_ReturnsNullopt)
 {
     // When stdin is not a TTY (CI environment) and cli_name is empty → nullopt.
     // When stdin IS a TTY (developer machine) this test would prompt — skip it.
-    if (pylabhub::role_cli::is_stdin_tty())
+    if (pylabhub::cli::is_stdin_tty())
         GTEST_SKIP() << "stdin is a TTY; test requires non-interactive mode";
 
-    const auto result = pylabhub::role_cli::resolve_init_name("", "Enter name: ");
+    const auto result = pylabhub::cli::resolve_init_name("", "Enter name: ");
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(CliHelpersTest, GetPassword_EnvVarSet_ReturnsEnvValue)
+{
+    // Env-var override path — works regardless of TTY.
+    const char *kVarName = "PYLABHUB_TEST_GETPW_VAR_A";
+    ::setenv(kVarName, "secret-from-env", /*overwrite=*/1);
+    const auto result = pylabhub::cli::get_password("test", kVarName, "Prompt: ");
+    ::unsetenv(kVarName);
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, "secret-from-env");
+}
+
+TEST(CliHelpersTest, GetPassword_EnvVarUnset_NonInteractive_ReturnsNullopt)
+{
+    if (pylabhub::cli::is_stdin_tty())
+        GTEST_SKIP() << "stdin is a TTY; test requires non-interactive mode";
+
+    const char *kVarName = "PYLABHUB_TEST_GETPW_VAR_B";
+    ::unsetenv(kVarName);
+    const auto result = pylabhub::cli::get_password("test", kVarName, "Prompt: ");
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(CliHelpersTest, GetNewPassword_EnvVarSet_ReturnsEnvValueWithoutConfirm)
+{
+    const char *kVarName = "PYLABHUB_TEST_NEWPW_VAR_A";
+    ::setenv(kVarName, "new-secret", /*overwrite=*/1);
+    const auto result = pylabhub::cli::get_new_password(
+        "test", kVarName, "New: ", "Confirm: ");
+    ::unsetenv(kVarName);
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, "new-secret");
+}
+
+TEST(CliHelpersTest, GetNewPassword_EnvVarUnset_NonInteractive_ReturnsNullopt)
+{
+    if (pylabhub::cli::is_stdin_tty())
+        GTEST_SKIP() << "stdin is a TTY; test requires non-interactive mode";
+
+    const char *kVarName = "PYLABHUB_TEST_NEWPW_VAR_B";
+    ::unsetenv(kVarName);
+    const auto result = pylabhub::cli::get_new_password(
+        "test", kVarName, "New: ", "Confirm: ");
     EXPECT_FALSE(result.has_value());
 }
 
