@@ -18,7 +18,6 @@
 #include "plh_version_registry.hpp"
 #include "utils/config/role_config.hpp"
 #include "utils/interactive_signal_handler.hpp"
-#include "utils/role_cli.hpp"      // public TTY + password helpers (HEP-CORE-0024)
 #include "utils/timeout_constants.hpp"
 
 #include <atomic>
@@ -34,31 +33,6 @@
 
 namespace pylabhub::scripting
 {
-
-// ============================================================================
-// TTY detection + password helpers
-// ============================================================================
-// These thin wrappers forward to the public pylabhub::role_cli API so that
-// existing callers in producer/consumer/processor main files continue to compile
-// without change while the public API becomes the single canonical implementation.
-
-/** @copydoc pylabhub::role_cli::is_stdin_tty */
-inline bool is_stdin_tty()
-{
-    return ::pylabhub::role_cli::is_stdin_tty();
-}
-
-/** @copydoc pylabhub::role_cli::read_password_interactive */
-inline std::string read_password_interactive(const char *role_name, const char *prompt)
-{
-    return ::pylabhub::role_cli::read_password_interactive(role_name, prompt);
-}
-
-/** @copydoc pylabhub::role_cli::get_role_password */
-inline std::optional<std::string> get_role_password(const char *role_name, const char *prompt)
-{
-    return ::pylabhub::role_cli::get_role_password(role_name, prompt);
-}
 
 // ============================================================================
 // Lifecycle helpers
