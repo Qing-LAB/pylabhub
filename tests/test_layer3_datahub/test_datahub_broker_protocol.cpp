@@ -19,6 +19,7 @@
 #include "plh_service.hpp"
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
+#include "utils/timeout_constants.hpp"
 #include "test_sync_utils.h"
 
 #include <atomic>
@@ -611,6 +612,100 @@ TEST_F(BrokerProtocolTest, TransportMatch_NoDriverField_AlwaysSucceeds)
     auto cons_reg = cons_bh.brc.register_consumer(make_cons_opts(channel, cons_uid), 3000);
     EXPECT_TRUE(cons_reg.has_value())
         << "Should succeed when consumer_queue_type is omitted";
+
+    cons_bh.stop();
+    prod_bh.stop();
+}
+
+// ============================================================================
+// REG_ACK / CONSUMER_REG_ACK heartbeat negotiation block (HEP-CORE-0023 §2.5)
+// ============================================================================
+
+TEST_F(BrokerProtocolTest, RegAck_ContainsHeartbeatBlock_Defaults)
+{
+    const std::string channel = pid_chan("proto.regack.hb_default");
+    const std::string uid     = "prod." + channel;
+
+    BrcHandle bh;
+    bh.start(ep(), pk(), uid);
+    auto reg = bh.brc.register_channel(make_reg_opts(channel, uid), 3000);
+    ASSERT_TRUE(reg.has_value());
+
+    // The default fixture uses BrokerService::Config defaults, which pull
+    // from timeout_constants.hpp.  REG_ACK must surface them so the role
+    // can validate / align (HEP-CORE-0023 §2.5).
+    ASSERT_TRUE(reg->contains("heartbeat")) << "REG_ACK missing heartbeat block";
+    const auto &hb = (*reg)["heartbeat"];
+    ASSERT_TRUE(hb.is_object());
+
+    EXPECT_EQ(hb.value("heartbeat_interval_ms", -1),
+              ::pylabhub::kDefaultHeartbeatIntervalMs);
+    EXPECT_EQ(hb.value("ready_miss_heartbeats",   uint32_t{0}),
+              ::pylabhub::kDefaultReadyMissHeartbeats);
+    EXPECT_EQ(hb.value("pending_miss_heartbeats", uint32_t{0}),
+              ::pylabhub::kDefaultPendingMissHeartbeats);
+    EXPECT_EQ(hb.value("grace_heartbeats",        uint32_t{99}),
+              ::pylabhub::kDefaultGraceHeartbeats);
+
+    bh.stop();
+}
+
+TEST_F(BrokerProtocolTest, RegAck_HeartbeatBlock_HonorsCustomConfig)
+{
+    // Reset the default broker and start one with non-default heartbeat values.
+    broker_.reset();
+    BrokerService::Config cfg;
+    cfg.endpoint                = "tcp://127.0.0.1:0";
+    cfg.heartbeat_interval      = std::chrono::milliseconds(250);
+    cfg.ready_miss_heartbeats   = 12;
+    cfg.pending_miss_heartbeats = 8;
+    cfg.grace_heartbeats        = 2;
+    cfg.grace_override          = std::chrono::milliseconds(0);
+    broker_.emplace(start_local_broker(std::move(cfg)));
+
+    const std::string channel = pid_chan("proto.regack.hb_custom");
+    const std::string uid     = "prod." + channel;
+
+    BrcHandle bh;
+    bh.start(ep(), pk(), uid);
+    auto reg = bh.brc.register_channel(make_reg_opts(channel, uid), 3000);
+    ASSERT_TRUE(reg.has_value());
+
+    ASSERT_TRUE(reg->contains("heartbeat"));
+    const auto &hb = (*reg)["heartbeat"];
+    EXPECT_EQ(hb.value("heartbeat_interval_ms",   -1),    250);
+    EXPECT_EQ(hb.value("ready_miss_heartbeats",    uint32_t{0}),  12u);
+    EXPECT_EQ(hb.value("pending_miss_heartbeats",  uint32_t{0}),  8u);
+    EXPECT_EQ(hb.value("grace_heartbeats",         uint32_t{99}), 2u);
+
+    bh.stop();
+}
+
+TEST_F(BrokerProtocolTest, ConsumerRegAck_ContainsHeartbeatBlock)
+{
+    const std::string channel  = pid_chan("proto.cons_regack.hb");
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
+
+    BrcHandle prod_bh;
+    prod_bh.start(ep(), pk(), prod_uid);
+    auto reg = prod_bh.brc.register_channel(make_reg_opts(channel, prod_uid), 3000);
+    ASSERT_TRUE(reg.has_value());
+    prod_bh.brc.send_heartbeat(channel, {});
+
+    BrcHandle cons_bh;
+    cons_bh.start(ep(), pk(), cons_uid);
+    auto cons_reg = cons_bh.brc.register_consumer(
+        make_cons_opts(channel, cons_uid), 3000);
+    ASSERT_TRUE(cons_reg.has_value());
+
+    ASSERT_TRUE(cons_reg->contains("heartbeat"))
+        << "CONSUMER_REG_ACK missing heartbeat block";
+    const auto &hb = (*cons_reg)["heartbeat"];
+    EXPECT_TRUE(hb.contains("heartbeat_interval_ms"));
+    EXPECT_TRUE(hb.contains("ready_miss_heartbeats"));
+    EXPECT_TRUE(hb.contains("pending_miss_heartbeats"));
+    EXPECT_TRUE(hb.contains("grace_heartbeats"));
 
     cons_bh.stop();
     prod_bh.stop();

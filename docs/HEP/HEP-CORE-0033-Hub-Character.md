@@ -282,8 +282,21 @@ asymmetric sides.
   },
 
   "broker": {
-    "heartbeat_timeout_ms":   15000,
-    "heartbeat_multiplier":   5
+    // Heartbeat-multiplier role-liveness timeouts — HEP-CORE-0023 §2.5.
+    // Field-for-field parity with `BrokerService::Config`; Phase 9 wiring
+    // is a literal copy.  `heartbeat_interval_ms` is the **maximum tolerated
+    // silence** the hub will accept; roles may run faster (HEP-0023 §2.5.1
+    // role-side preferred cadence vs. hub authority).  REG_ACK / CONSUMER_REG_ACK
+    // surface these four multiplier fields to the registering role.
+    "heartbeat_interval_ms":    500,
+    "ready_miss_heartbeats":     10,
+    "pending_miss_heartbeats":   10,
+    "grace_heartbeats":           4,
+
+    // Optional explicit overrides (null = derive from interval × miss).
+    "ready_timeout_ms":   null,
+    "pending_timeout_ms": null,
+    "grace_ms":           null
   },
   // NOTE: `broker.known_roles[]` and `broker.federation_trust_mode` are
   // deferred to HEP-CORE-0035 (Hub-Role Authentication & Federation
@@ -325,7 +338,15 @@ asymmetric sides.
 - `hub_identity_config.hpp` — `HubIdentityConfig { uid, name, log_level }`.
 - `hub_network_config.hpp` — broker endpoint/bind/io_threads.
 - `hub_admin_config.hpp` — endpoint/enabled/dev_mode/token_required.
-- `hub_broker_config.hpp` — heartbeat timeouts only. Auth/access fields
+- `hub_broker_config.hpp` — heartbeat-multiplier role-liveness timeouts
+  (HEP-CORE-0023 §2.5): `heartbeat_interval_ms`,
+  `ready_miss_heartbeats`, `pending_miss_heartbeats`, `grace_heartbeats`,
+  plus three optional explicit overrides (`ready_timeout_ms` /
+  `pending_timeout_ms` / `grace_ms`).  Field-for-field parity with
+  `BrokerService::Config`'s heartbeat block — Phase 9 wiring is a
+  literal copy, no translation layer.  REG_ACK / CONSUMER_REG_ACK
+  surface the four multiplier fields to the registering role for the
+  cadence-negotiation contract in HEP-0023 §2.5.1.  Auth/access fields
   (`known_roles[]`, `federation_trust_mode`) deferred to **HEP-CORE-0035**;
   see that HEP for the full design and §5 for the eventual hub.json shape.
 - `hub_federation_config.hpp` — enabled/peers/forward_timeout.
@@ -954,6 +975,20 @@ can land in parallel once P1 lands.
   must land before they are added.  The legacy `ConnectionPolicy` placeholder
   remains in `BrokerService::Config` (settable by tests + future Phase 9
   code, not by hub.json) until HEP-0035 Phase 6 retires it.
+
+  **Heartbeat alignment with HEP-CORE-0023 §2.5 (2026-04-29 follow-up).**
+  `HubBrokerConfig` now carries the four heartbeat-multiplier fields
+  (`heartbeat_interval_ms`, `ready_miss_heartbeats`,
+  `pending_miss_heartbeats`, `grace_heartbeats`) plus three optional
+  explicit overrides — field-for-field parity with `BrokerService::Config`.
+  REG_ACK / CONSUMER_REG_ACK now carry a `heartbeat` block surfacing
+  these four multiplier fields so the registering role can validate
+  its configured cadence against the hub's max (HEP-0023 §2.5.1
+  "Role-side preferred cadence vs. hub authority"); a slower role logs
+  a WARN and resets to the hub's value to avoid liveness reaping.
+  `BrokerRequestComm::set_periodic_task` is now post-startup-callable
+  (routes through the cmd queue) so the role's heartbeat task is
+  installed *after* REG_ACK with the negotiated effective interval.
 - **Phase 2** — ✅ **Shipped 2026-04-25** (commit `9ba6ac1`).
   `hub_cli::parse_hub_args` + `HubArgs` + `ParseResult` in
   `src/include/utils/hub_cli.hpp`; mirrors the `role_cli`

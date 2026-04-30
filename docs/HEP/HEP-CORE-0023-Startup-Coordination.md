@@ -102,8 +102,9 @@ sequenceDiagram
     Note over C: wait retry_interval_ms
 
     P->>B: REG_REQ
-    B-->>P: REG_ACK
+    B-->>P: REG_ACK<br/>+ heartbeat block (§2.5.1)
     Note over B: producer → Pending
+    Note over P: validate cadence vs hub max,<br/>install heartbeat task
 
     C->>B: DISC_REQ (retry)
     B-->>C: DISC_PENDING<br/>(awaiting first heartbeat)
@@ -116,7 +117,8 @@ sequenceDiagram
     B-->>C: DISC_ACK (connection info)
 
     C->>B: CONSUMER_REG_REQ
-    B-->>C: CONSUMER_REG_ACK
+    B-->>C: CONSUMER_REG_ACK<br/>+ heartbeat block (§2.5.1)
+    Note over C: validate cadence vs hub max,<br/>install heartbeat task
 ```
 
 See HEP-CORE-0007 §DISC_REQ for the precise payload of each response variant.
@@ -225,6 +227,64 @@ when a role exits — for any reason — its band memberships are removed and
 any federation relay state referencing it is dropped, before the next
 broadcast or relay is processed. See `BrokerServiceImpl::on_channel_closed`
 in `src/utils/ipc/broker_service.cpp`.
+
+### 2.5.1 Role-side preferred cadence vs. hub authority
+
+**The hub is authoritative for the timeout contract.**  `heartbeat_interval_ms`
+in the hub's broker config is the **maximum tolerated silence** the hub will
+accept before progressing the Ready→Pending→deregistered countdown.  Roles
+may run their heartbeat sender at a faster cadence (smaller interval) for
+their own operational reasons, but they must never run slower.
+
+**Role config field.**  `role.json::timing.heartbeat_interval_ms` (already
+parsed by `TimingConfig`) is the role's *preferred* cadence — its own
+decision, ≤ hub's max.
+
+**Negotiation at registration time.**  REG_ACK and CONSUMER_REG_ACK carry
+a `heartbeat` JSON block populated from the broker's running config:
+
+```jsonc
+{
+  "status": "success",
+  "channel_id": "...",
+  "heartbeat": {
+    "heartbeat_interval_ms":    500,   // hub's max tolerated silence
+    "ready_miss_heartbeats":     10,
+    "pending_miss_heartbeats":   10,
+    "grace_heartbeats":           4
+  }
+}
+```
+
+The role compares its configured `heartbeat_interval_ms` against the hub's
+returned value:
+
+| Comparison              | Action                                                       |
+|-------------------------|--------------------------------------------------------------|
+| `role ≤ hub`            | INFO log "aligned with hub". Role keeps its faster cadence.  |
+| `role > hub`            | WARN log + **reset role's interval to hub's value** (the role would otherwise be reaped by hub-side liveness). |
+
+**Why reset, not reject.**  A misconfigured role that exceeds the hub's
+tolerance would otherwise be cycled through Ready→Pending→deregistered on
+every connection.  Resetting to the hub's max keeps the role functional
+and surfaces the misconfiguration via the WARN, leaving the operator to
+fix the role-side config at their convenience.
+
+**Implementation note (HEP-CORE-0033 §15 Phase 9 wiring).**  The role's
+periodic-heartbeat task is installed *after* REG_ACK arrives — not at
+ctrl-thread spawn — so the negotiated effective interval is always honored
+without runtime mutation of an already-scheduled task.
+`BrokerRequestComm::set_periodic_task` routes through the cmd queue and
+appends into the active poll-loop's task vector, so post-startup install
+is supported without restructuring the loop.
+
+**Out of scope.**  Per-role / per-channel overrides are deliberately
+absent: the hub's value is broker-wide and applies uniformly.  The
+optional `ready_timeout_ms` / `pending_timeout_ms` / `grace_ms` overrides
+are broker-internal (see §2.5 above) and are NOT part of the heartbeat ACK
+block — only the four multiplier fields are.
+
+---
 
 **State-machine metrics** (HEP-CORE-0019 integration). The broker exposes
 monotonic counters via `BrokerService::query_role_state_metrics()` returning
@@ -610,3 +670,4 @@ For single-hub roles (producer, consumer), `source_hub_uid` is always the one co
 | ROLE_PRESENCE_REQ/ACK | Role → Broker → Role | Added §12.3 |
 | ROLE_INFO_REQ/ACK | Role → Broker → Role | Added §12.3 |
 | DISC_REQ deferral | Consumer → Broker | Modified §12.3 |
+| REG_ACK / CONSUMER_REG_ACK `heartbeat` block | Broker → Role | Added §2.5.1 |

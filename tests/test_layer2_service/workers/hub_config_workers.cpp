@@ -15,6 +15,7 @@
 #include "utils/hub_directory.hpp"
 #include "utils/json_config.hpp"
 #include "utils/logger.hpp"
+#include "utils/timeout_constants.hpp"
 
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
@@ -86,8 +87,11 @@ nlohmann::json full_hub_json()
             {"token_required", true},
         }},
         {"broker", {
-            {"heartbeat_timeout_ms", 20000},
-            {"heartbeat_multiplier", 4},
+            {"heartbeat_interval_ms",    250},
+            {"ready_miss_heartbeats",     12},
+            {"pending_miss_heartbeats",    8},
+            {"grace_heartbeats",           2},
+            {"ready_timeout_ms",        4000},  // explicit override
         }},
         {"federation", {
             {"enabled", true},
@@ -129,8 +133,14 @@ int load_full(const char *tmpdir)
             EXPECT_FALSE(cfg.admin().dev_mode);
             EXPECT_TRUE(cfg.admin().token_required);
 
-            EXPECT_EQ(cfg.broker().heartbeat_timeout_ms, 20000);
-            EXPECT_EQ(cfg.broker().heartbeat_multiplier,    4);
+            EXPECT_EQ(cfg.broker().heartbeat_interval_ms,     250);
+            EXPECT_EQ(cfg.broker().ready_miss_heartbeats,      12u);
+            EXPECT_EQ(cfg.broker().pending_miss_heartbeats,     8u);
+            EXPECT_EQ(cfg.broker().grace_heartbeats,            2u);
+            ASSERT_TRUE(cfg.broker().ready_timeout_ms.has_value());
+            EXPECT_EQ(*cfg.broker().ready_timeout_ms, 4000);
+            EXPECT_FALSE(cfg.broker().pending_timeout_ms.has_value());
+            EXPECT_FALSE(cfg.broker().grace_ms.has_value());
 
             EXPECT_TRUE(cfg.federation().enabled);
             EXPECT_EQ(cfg.federation().forward_timeout_ms, 1500);
@@ -172,8 +182,17 @@ int load_minimal(const char *tmpdir)
             EXPECT_FALSE(cfg.admin().dev_mode);
             EXPECT_TRUE(cfg.admin().token_required);
 
-            EXPECT_EQ(cfg.broker().heartbeat_timeout_ms, 15000);
-            EXPECT_EQ(cfg.broker().heartbeat_multiplier,     5);
+            EXPECT_EQ(cfg.broker().heartbeat_interval_ms,
+                      ::pylabhub::kDefaultHeartbeatIntervalMs);
+            EXPECT_EQ(cfg.broker().ready_miss_heartbeats,
+                      ::pylabhub::kDefaultReadyMissHeartbeats);
+            EXPECT_EQ(cfg.broker().pending_miss_heartbeats,
+                      ::pylabhub::kDefaultPendingMissHeartbeats);
+            EXPECT_EQ(cfg.broker().grace_heartbeats,
+                      ::pylabhub::kDefaultGraceHeartbeats);
+            EXPECT_FALSE(cfg.broker().ready_timeout_ms.has_value());
+            EXPECT_FALSE(cfg.broker().pending_timeout_ms.has_value());
+            EXPECT_FALSE(cfg.broker().grace_ms.has_value());
 
             EXPECT_FALSE(cfg.federation().enabled);
             EXPECT_TRUE(cfg.federation().peers.empty());
@@ -382,8 +401,10 @@ int init_template_loads_via_hubconfig(const char *tmpdir)
             EXPECT_FALSE(cfg.identity().uid.empty());
             EXPECT_EQ(cfg.network().broker_endpoint, "tcp://0.0.0.0:5570");
             EXPECT_TRUE(cfg.network().broker_bind);
-            EXPECT_EQ(cfg.broker().heartbeat_timeout_ms, 15000);
-            EXPECT_EQ(cfg.broker().heartbeat_multiplier, 5);
+            EXPECT_EQ(cfg.broker().heartbeat_interval_ms,
+                      ::pylabhub::kDefaultHeartbeatIntervalMs);
+            EXPECT_EQ(cfg.broker().ready_miss_heartbeats,
+                      ::pylabhub::kDefaultReadyMissHeartbeats);
             EXPECT_FALSE(cfg.federation().enabled);
             EXPECT_EQ(cfg.state().disconnected_grace_ms, 60000);
         },
