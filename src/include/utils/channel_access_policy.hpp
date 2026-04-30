@@ -1,17 +1,25 @@
 #pragma once
 /**
  * @file channel_access_policy.hpp
- * @brief Hub channel access control policy types shared by BrokerService and HubConfig.
+ * @brief Hub registration access-control placeholder (legacy).
  *
- * Defined once here (analogous to channel_pattern.hpp) to avoid coupling between
- * hub_config.hpp and broker_service.hpp.
+ * 🚧 **Superseded by HEP-CORE-0035 (in design, not implemented).**
+ * The `ConnectionPolicy` enum + `KnownRole` + `ChannelPolicy` types here
+ * pre-date the CURVE-required role model and the HEP-0022 federation
+ * model.  They operate on self-asserted JSON identity strings and never
+ * consult the connecting socket's CURVE pubkey.  HEP-CORE-0035 replaces
+ * them with a two-layer enforcement model (ZAP pubkey allowlist +
+ * federation-trust gate).  Until HEP-0035 Phase 6 retires this code,
+ * the types remain live: settable directly on `BrokerService::Config`
+ * by tests and (eventually) Phase 9 wiring; **not** parsed from hub.json
+ * by `pylabhub::config::HubConfig` (Phase 1 deliberately omits the
+ * auth fields — see HEP-0033 §15 Phase 1 + HEP-0035 §3).
  *
- * Policy levels escalate from open (no checks) to verified (allowlist enforcement):
- *
- *   Open     — no identity required; any client connects (default for dev)
- *   Tracked  — identity accepted and recorded if provided; not required
- *   Required — role_name + role_uid must be present in every REG_REQ / CONSUMER_REG_REQ
- *   Verified — role_name + role_uid must match an entry in the hub's known_roles list
+ * Legacy semantics (do NOT treat as design):
+ *   Open     — no identity required; any client connects.
+ *   Tracked  — identity accepted and recorded if provided; not required.
+ *   Required — role_name + role_uid must be present in REG_REQ / CONSUMER_REG_REQ.
+ *   Verified — role_name + role_uid must string-match an entry in `known_roles`.
  */
 #include "pylabhub_utils_export.h"
 
@@ -30,12 +38,11 @@ namespace pylabhub::broker
  * A per-channel override via ChannelPolicy::policy can tighten (but not loosen)
  * the effective policy for specific channel glob patterns.
  *
- * **Where set:**
+ * **Where set (today):**
  *   - `BrokerService::Config::connection_policy` (`broker_service.hpp`).
- *   - The hub-side composite config (`HubConfig` per HEP-CORE-0033 §6.1)
- *     parses the `broker.default_channel_policy` key and the hub's main
- *     wires that into `BrokerService::Config` at startup once `plh_hub`
- *     is built (HEP-0033 §15 Phase 9).
+ *     Set directly by tests (`test_datahub_channel_access_policy.cpp`).
+ *     **Not** parsed from hub.json — `HubBrokerConfig` deliberately omits
+ *     the field pending HEP-CORE-0035.
  * **Where checked:** BrokerServiceImpl::check_connection_policy() in
  *   broker_service.cpp — called on every REG_REQ (producer) and CONSUMER_REG_REQ
  *   (consumer). Returns error string on rejection; empty string on acceptance.

@@ -283,12 +283,14 @@ asymmetric sides.
 
   "broker": {
     "heartbeat_timeout_ms":   15000,
-    "heartbeat_multiplier":   5,
-    "default_channel_policy": "open",
-    "known_roles": [
-      { "uid": "PROD-SRC-...", "name": "Source", "pubkey": "z85..." }
-    ]
+    "heartbeat_multiplier":   5
   },
+  // NOTE: `broker.known_roles[]` and `broker.federation_trust_mode` are
+  // deferred to HEP-CORE-0035 (Hub-Role Authentication & Federation
+  // Trust). They are NOT parsed in Phase 1; the placeholder
+  // `ConnectionPolicy` machinery in `BrokerService::Config` is unaffected
+  // by config (still settable directly on the service Config struct,
+  // exercised only by `test_datahub_channel_access_policy.cpp`).
 
   "federation": {
     "enabled":           false,
@@ -323,7 +325,9 @@ asymmetric sides.
 - `hub_identity_config.hpp` — `HubIdentityConfig { uid, name, log_level }`.
 - `hub_network_config.hpp` — broker endpoint/bind/io_threads.
 - `hub_admin_config.hpp` — endpoint/enabled/dev_mode/token_required.
-- `hub_broker_config.hpp` — heartbeat timeouts/policy/known_roles.
+- `hub_broker_config.hpp` — heartbeat timeouts only. Auth/access fields
+  (`known_roles[]`, `federation_trust_mode`) deferred to **HEP-CORE-0035**;
+  see that HEP for the full design and §5 for the eventual hub.json shape.
 - `hub_federation_config.hpp` — enabled/peers/forward_timeout.
 - `hub_state_config.hpp` — disconnected_grace / max_disconnected_entries.
 
@@ -944,6 +948,12 @@ can land in parallel once P1 lands.
   Covered by 9 L2 Pattern-3 tests in
   `tests/test_layer2_service/test_hub_config.cpp`. No behavior change for
   any live binary (hub binary remains disabled).
+  **Auth/access fields (`broker.known_roles[]`,
+  `broker.federation_trust_mode`, per-channel overrides) deliberately
+  omitted from `HubBrokerConfig` — see HEP-CORE-0035** for the design that
+  must land before they are added.  The legacy `ConnectionPolicy` placeholder
+  remains in `BrokerService::Config` (settable by tests + future Phase 9
+  code, not by hub.json) until HEP-0035 Phase 6 retires it.
 - **Phase 2** — `hub_cli::parse_hub_args` (§5). Covered by L2 tests mirroring
   `role_cli` test shape.
 - **Phase 3** — `HubDirectory` + `--init` template output. L2 tests for dir
