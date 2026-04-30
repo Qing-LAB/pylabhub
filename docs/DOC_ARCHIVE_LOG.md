@@ -6,6 +6,27 @@
 
 ## Archive batches
 
+### 2026-04-30 (HEP-CORE-0033 prereqs doc fully superseded by HEP)
+
+`HUB_CHARACTER_PREREQUISITES.md` archived.  All 13 gaps it tracked are
+resolved: 9 have shipped (Phase 1, 3, 4, 5 of HEP-0033 §15) and 4 open
+items moved into HEP-CORE-0033 itself (§15 Phase 9 note for L4 test
+infrastructure; §16 items 9 + 10 for `reload_config` whitelist + admin
+RPC error catalog; §16 item 2 already covered for tick cadence).
+The doc's §G2 "broker-side `authorize_<op>()` with AuthContext"
+sub-design was rejected — HEP-CORE-0033 §11.3 + §12.3 pin
+authorization at the calling module's boundary (AdminService validates
+token, HubAPI/HubHost gates script access; broker is a state-accessor
+with no per-call acceptance logic).  Doc moved to
+`docs/archive/transient-2026-04-30/` with a banner directing readers
+to HEP-CORE-0033 as the single source of truth.
+
+| Archived | From | Reason |
+|---|---|---|
+| `HUB_CHARACTER_PREREQUISITES.md` | `docs/tech_draft/` | All gaps resolved or moved into HEP-CORE-0033; §G2 broker-side-auth model rejected per HEP §11.3/§12.3. |
+
+---
+
 ### 2026-04-05 (RoleAPIBase refactoring + lifecycle integration complete)
 
 Five tech drafts archived — all fully implemented and verified against code.

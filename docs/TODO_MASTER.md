@@ -42,14 +42,14 @@ as single mutator" doc ratified), `139b4ca` (HEP-0033 G1 `RoleHostBase` →
      add `_on_*` capability-operation layer over primitives; G2.2.1
      registration lifecycle (deletes `ChannelRegistry`); G2.2.2 liveness;
      G2.2.3 membership routing (deletes `BandRegistry` + `inbound_peers_`);
-     G2.2.4 observability (metrics data-model deferred).  See
-     `HUB_CHARACTER_PREREQUISITES.md` §G2 "Capability-operation mutator
-     layer" and "Phasing proposal" for the rationale.
-   - Then: G2.3 (`HubAPI` read accessors) → G2.4 (`HubAPI` mutation wrappers
-     + remove ad-hoc request queues) → G2.5 (`AdminService` shell).
-   - Remaining prereqs beyond G2: G7 (HubConfig lifecycle-module vs main-owned),
-     G5/G6/G8 spec gaps, G9-G13 ripples. See
-     `docs/tech_draft/HUB_CHARACTER_PREREQUISITES.md`.
+     G2.2.4 observability (metrics data-model deferred).
+   - Then: G2.3 / G2.4 (`HubAPI` read accessors and mutation wrappers
+     — see HEP-CORE-0033 §12) → G2.5 (`AdminService` — see HEP §11).
+   - Naming grammar moved into HEP-CORE-0033 Appendix §G2.2.0b.
+   - Remaining open spec items: see HEP-CORE-0033 §15 Phase 9 (L4 test
+     infrastructure) + §16 items 9 + 10 (`reload_config` whitelist,
+     admin RPC error catalog).  The original prereqs working notes are
+     archived at `docs/archive/transient-2026-04-30/HUB_CHARACTER_PREREQUISITES.md`.
 2. **HEP-CORE-0032 ABI check facility** — ✅ all three phases landed
    (`c91ae84` Phase A, `34255be` Phase B, `399fbfc` Phase C).
 3. **Subtopic backlogs** (see §Subtopic TODO Documents below):
@@ -87,8 +87,7 @@ as single mutator" doc ratified), `139b4ca` (HEP-0033 G1 `RoleHostBase` →
 ### Priority 0 (Next Sprint — design ratified 2026-04-21): HEP-CORE-0033 Hub Character
 
 📍 **Status**: Design ratified; implementation not started
-📋 **Spec**: `docs/HEP/HEP-CORE-0033-Hub-Character.md` (normative)
-📋 **Prerequisites**: `docs/tech_draft/HUB_CHARACTER_PREREQUISITES.md`
+📋 **Spec**: `docs/HEP/HEP-CORE-0033-Hub-Character.md` (normative — single source of truth)
 📋 **Detail**: `docs/todo/MESSAGEHUB_TODO.md`
 
 Replaces the deleted `pylabhub-hubshell` (legacy `src/hub_python/` stack

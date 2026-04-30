@@ -2,9 +2,10 @@
  * @file naming.cpp
  * @brief Identifier validator + parser implementation.
  *
- * Grammar authoritative source: docs/tech_draft/HUB_CHARACTER_PREREQUISITES.md
- * §G2.2.0b "Naming conventions for hub identifiers".  When in doubt,
- * the spec wins — this file tracks it, not the reverse.
+ * Grammar authoritative source: HEP-CORE-0033 Appendix §G2.2.0b
+ * "Naming grammar for hub identifiers"
+ * (`docs/HEP/HEP-CORE-0033-Hub-Character.md`).  When in doubt, the
+ * spec wins — this file tracks it, not the reverse.
  */
 #include "utils/naming.hpp"
 

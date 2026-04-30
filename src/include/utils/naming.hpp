@@ -4,10 +4,10 @@
  * @brief Hub identifier validators + parsers.
  *
  * Single enforcement point for the identifier grammar ratified in
- * `docs/tech_draft/HUB_CHARACTER_PREREQUISITES.md` §G2.2.0b "Naming
- * conventions for hub identifiers."
+ * HEP-CORE-0033 Appendix §G2.2.0b "Naming grammar for hub identifiers"
+ * (`docs/HEP/HEP-CORE-0033-Hub-Character.md`).
  *
- * Doc is authoritative — this header must match the spec exactly;
+ * HEP is authoritative — this header must match the spec exactly;
  * when inconsistency is detected anywhere (code, tests, HEP examples),
  * it's the code/tests that bend to the spec, not the spec to them.
  *

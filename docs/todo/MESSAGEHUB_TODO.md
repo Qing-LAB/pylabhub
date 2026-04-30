@@ -18,10 +18,14 @@ See commits `cf53ed3`, `3201e08`, `6558b2c`.
 ### Open: HEP-CORE-0033 Hub Character refactor (in progress)
 
 **Implementation reference**: `docs/HEP/HEP-CORE-0033-Hub-Character.md`
-(see §14 for 10 implementation phases; §15 for 8 open items deferred to
-implementation).
-**Prerequisites**: `docs/tech_draft/HUB_CHARACTER_PREREQUISITES.md` — 13
-items (G1-G13).
+(single source of truth — see §15 for the 10 implementation phases,
+§16 for open items deferred to implementation, Appendix §G2.2.0b for
+the naming grammar).
+**Working notes (archived 2026-04-30)**: the original 13-gap prereqs
+analysis lived in `docs/tech_draft/HUB_CHARACTER_PREREQUISITES.md`;
+that doc is fully superseded by HEP-CORE-0033 and now archived at
+`docs/archive/transient-2026-04-30/HUB_CHARACTER_PREREQUISITES.md`
+(historical reference only — do not cite from new code).
 
 **Completed**:
 - G1 (host template): `RoleHostBase` = `EngineHost<ApiT>` template. `139b4ca`.
@@ -36,8 +40,8 @@ items (G1-G13).
   - Not yet wired into BrokerService — that's G2.2.
 
 **Next** (in order) — grouped by hub capability, not by broker-map structure
-(see `HUB_CHARACTER_PREREQUISITES.md` §G2 "Capability-operation mutator
-layer" for full rationale):
+(rationale recorded in HEP-CORE-0033 §8 + the archived prereqs notes
+under `docs/archive/transient-2026-04-30/`):
 - **G2.2.0** — Plumb `hub::HubState` into `BrokerServiceImpl`; add
   capability-operation layer (`_on_*` methods composing primitive
   `_set_*` setters); add `const HubState& hub_state()` accessor. No

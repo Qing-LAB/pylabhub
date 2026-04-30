@@ -1,4 +1,50 @@
-# HEP-CORE-0033 Hub Character — Prerequisites / Gap Analysis
+# HEP-CORE-0033 Hub Character — Prerequisites / Gap Analysis (ARCHIVED)
+
+> ⚠️ **ARCHIVED — DO NOT USE AS A REFERENCE.**
+>
+> This document was a working gap-analysis written 2026-04-21 alongside
+> the HEP-CORE-0033 design.  It has been **fully superseded by
+> HEP-CORE-0033** (`docs/HEP/HEP-CORE-0033-Hub-Character.md`).
+>
+> **Authoritative spec for hub design and coding: HEP-CORE-0033.**
+>
+> Status of items recorded here, as of 2026-04-30:
+>
+> - **G1 (Host+Engine common base)** — *Superseded.*  Hubs are singletons;
+>   no polymorphism to abstract over.  `HubHost` is a single concrete
+>   class — see HEP-0033 §4 phasing note.
+> - **G2 (Hub composition / broker as mutator)** — *Partially superseded.*
+>   The "broker is the protocol-dispatch + state-update component" idea
+>   is correct and shipped (HEP-0033 §8 + Phase 4 G2.x absorption).
+>   The "broker-side `authorize_<op>()` with `AuthContext` threading"
+>   sub-design **is wrong** and was rejected: HEP-0033 §11.3 + §12.3
+>   pin authorization at the calling module's boundary (AdminService
+>   validates token; HubAPI/HubHost gates script access; broker is a
+>   plain state-accessor with no per-call acceptance logic).  Treat
+>   the §G2 mermaid diagrams + class signatures showing `auth` parameters
+>   as **historical only**.
+> - **G3, G4** — *Shipped* (registries absorbed into HubState; events
+>   on HubState).
+> - **G5 (MetricsFilter)** — *Shipped* (Phase 5, see HEP-0033 §10.3 +
+>   `src/include/utils/hub_metrics_filter.hpp`).
+> - **G6 (`reload_config` tunable whitelist)** — *Open;* moved to
+>   HEP-0033 §16 item 9.
+> - **G7 (HubConfig ownership)** — *Shipped* (Phase 1; main-owned value
+>   type, not a lifecycle module).
+> - **G8 (Admin RPC error catalog)** — *Open;* moved to HEP-0033 §16 item 10.
+> - **G9, G10, G11** — *Shipped* (Phase 1 + Phase 3).
+> - **G12 (L4 test infrastructure for hub)** — *Open;* moved to
+>   HEP-0033 §15 Phase 9 note.
+> - **G13 (script tick cadence storage)** — *Open;* covered by HEP-0033
+>   §16 item 2 with explicit recommendation now folded in.
+>
+> The remainder of this document is the original 2026-04-21 working
+> notes, kept for historical context only.  Do not edit; do not cite
+> from new code or docs; do not let it shape new design decisions.
+
+---
+
+**Original front-matter (preserved):**
 
 **Status**: 🔵 Design reference (no code yet).
 **Created**: 2026-04-21.
