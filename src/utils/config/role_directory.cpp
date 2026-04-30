@@ -120,7 +120,23 @@ std::string RoleDirectory::hub_broker_endpoint(const std::filesystem::path &hub_
             "RoleDirectory: cannot open hub.json at '" + hub_json.string() + "'");
 
     const auto hj = nlohmann::json::parse(f);
-    return hj.at("hub").at("broker_endpoint").get<std::string>();
+
+    // HEP-CORE-0033 §6.2 places `broker_endpoint` under the top-level
+    // `network` block.  Legacy demo hub.json files (and any hub.json
+    // pre-dating Phase 1) still use `hub.broker_endpoint`.  Try the new
+    // path first, fall back to the legacy path so role configs work
+    // against either shape during the HEP-0033 transition.  Mirrors the
+    // dual-path logic in `hub_ref_config.hpp`.
+    if (hj.contains("network") && hj["network"].is_object() &&
+        hj["network"].contains("broker_endpoint"))
+        return hj["network"]["broker_endpoint"].get<std::string>();
+    if (hj.contains("hub") && hj["hub"].is_object() &&
+        hj["hub"].contains("broker_endpoint"))
+        return hj["hub"]["broker_endpoint"].get<std::string>();
+
+    throw std::runtime_error(
+        "RoleDirectory: '" + hub_json.string() +
+        "' has neither 'network.broker_endpoint' nor 'hub.broker_endpoint'");
 }
 
 std::string RoleDirectory::hub_broker_pubkey(const std::filesystem::path &hub_dir)

@@ -12,6 +12,7 @@
 #include "utils/config/hub_config.hpp"
 #include "utils/config/hub_state_config.hpp"  // for kInfiniteGrace sentinel
 #include "utils/file_lock.hpp"
+#include "utils/hub_directory.hpp"
 #include "utils/json_config.hpp"
 #include "utils/logger.hpp"
 
@@ -358,6 +359,39 @@ int reload_if_changed(const char *tmpdir)
         JsonConfig::GetLifecycleModule());
 }
 
+// ── init_template_loads_via_hubconfig ───────────────────────────────────────
+
+int init_template_loads_via_hubconfig(const char *tmpdir)
+{
+    return run_gtest_worker(
+        [&]() {
+            const std::string dir = tmpdir;
+
+            // 1. HubDirectory::init_directory writes the template.
+            const int rc = pylabhub::utils::HubDirectory::init_directory(
+                dir, "RoundTripHub");
+            ASSERT_EQ(rc, 0);
+
+            // 2. HubConfig::load_from_directory must parse it without throwing.
+            //    This locks in the contract that the template's keys match
+            //    the parser's strict whitelist (top level + every sub-section).
+            HubConfig cfg = HubConfig::load_from_directory(dir);
+
+            // 3. Spot-check fields the template populates.
+            EXPECT_EQ(cfg.identity().name, "RoundTripHub");
+            EXPECT_FALSE(cfg.identity().uid.empty());
+            EXPECT_EQ(cfg.network().broker_endpoint, "tcp://0.0.0.0:5570");
+            EXPECT_TRUE(cfg.network().broker_bind);
+            EXPECT_EQ(cfg.broker().heartbeat_timeout_ms, 15000);
+            EXPECT_EQ(cfg.broker().heartbeat_multiplier, 5);
+            EXPECT_FALSE(cfg.federation().enabled);
+            EXPECT_EQ(cfg.state().disconnected_grace_ms, 60000);
+        },
+        "hub_config::init_template_loads_via_hubconfig",
+        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        JsonConfig::GetLifecycleModule());
+}
+
 } // namespace hub_config
 } // namespace pylabhub::tests::worker
 
@@ -401,6 +435,8 @@ struct HubConfigWorkerRegistrar
                 if (sc == "state_grace_sentinel")      return state_grace_sentinel(dir);
                 if (sc == "load_from_directory")       return load_from_directory(dir);
                 if (sc == "reload_if_changed")         return reload_if_changed(dir);
+                if (sc == "init_template_loads_via_hubconfig")
+                    return init_template_loads_via_hubconfig(dir);
                 fmt::print(stderr, "hub_config: unknown scenario '{}'\n", sc);
                 return 1;
             });

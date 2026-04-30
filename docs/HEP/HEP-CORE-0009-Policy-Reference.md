@@ -393,7 +393,7 @@ For **safety-critical** applications, set:
 | `QueueType` | `consumer_config.hpp` | `queue_type` | `ConsumerScriptHost` — selects SHM vs ZMQ as backing queue for the data plane |
 | `LoopTimingPolicy` | `producer_config.hpp`, `consumer_config.hpp` | `loop_timing` | `ProducerScriptHost` / `ConsumerScriptHost` when `target_period_ms > 0` |
 | `LoopPolicy` *(RAII Pass 2)* | `data_block_policy.hpp` | auto-set from `target_period_ms` | Sleep: `SlotIterator::operator++()`; overrun: `acquire_write_slot()` |
-| `ConnectionPolicy` | `channel_access_policy.hpp` | hub.json `"connection_policy"` | `BrokerServiceImpl::check_connection_policy()` |
+| `ConnectionPolicy` *(legacy placeholder — see §2.7)* | `channel_access_policy.hpp` | **not parsed from hub.json** (HEP-0035 supersedes; auth fields deferred) | `BrokerServiceImpl::check_connection_policy()` (live for tests until HEP-0035 Phase 6) |
 | `ChannelPattern` | `channel_pattern.hpp` | `ProducerOptions::channel_pattern` | `Messenger` (socket type) + `BrokerService` (CHANNEL_READY_NOTIFY) |
 
 ---
@@ -405,7 +405,6 @@ flowchart TB
     subgraph Config["JSON Config Layer"]
         VPol["validation:\n  slot_checksum\n  on_checksum_fail\n  on_script_error"]
         LPol["loop_policy\nperiod_ms"]
-        CPol["connection_policy\n(hub.json)"]
     end
 
     subgraph Binary["Binary Layer (ScriptHost)"]
@@ -422,19 +421,21 @@ flowchart TB
 
     subgraph Broker["Broker Layer"]
         CRPol["ChecksumRepairPolicy"]
-        ConnP["ConnectionPolicy"]
         ChanP["ChannelPattern"]
     end
 
     VPol --> ValPol
     LPol --> LoopP
     LPol --> LTPol
-    CPol --> ConnP
     ValPol -->|"schedules"| CkPol
     LoopP -->|"drives sleep in"| CSPol
     CkPol -->|"error report"| CRPol
-    ConnP -->|"enforced on"| ChanP
 ```
+
+> Note: hub-role authentication / federation-trust enforcement
+> (formerly `ConnectionPolicy`) is **out of scope** for this graph
+> — it is being redesigned as part of HEP-CORE-0035 (in design, not
+> implemented).  See §2.7 for the retraction.
 
 ---
 
@@ -443,9 +444,9 @@ flowchart TB
 | File | Layer | Description |
 |------|-------|-------------|
 | `src/include/utils/data_block_policy.hpp` | L3 (public) | `DataBlockPolicy`, `ConsumerSyncPolicy`, `ChecksumPolicy`, `LoopPolicy` |
-| `src/include/utils/channel_access_policy.hpp` | L3 (public) | `ConnectionPolicy` enum |
+| `src/include/utils/channel_access_policy.hpp` | L3 (public) | `ConnectionPolicy` enum *(legacy placeholder — superseded by HEP-CORE-0035)* |
 | `src/include/utils/channel_pattern.hpp` | L3 (public) | `ChannelPattern` enum |
-| `src/include/utils/broker_service.hpp` | L3 (public) | `BrokerService::Config` — `ChecksumRepairPolicy`, `ConnectionPolicy` |
+| `src/include/utils/broker_service.hpp` | L3 (public) | `BrokerService::Config` — `ChecksumRepairPolicy`; carries `ConnectionPolicy` field, settable only by tests pending HEP-CORE-0035 |
 | `src/producer/producer_config.hpp` | L4 | `ValidationPolicy` struct, `LoopTimingPolicy` |
 | `src/consumer/consumer_config.hpp` | L4 | Same policy config fields for consumer |
 | `src/processor/processor_config.hpp` | L4 | `overflow_policy`, validation policy for processor |
