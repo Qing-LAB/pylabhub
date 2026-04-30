@@ -3,8 +3,9 @@
  * @file hub_state.hpp
  * @brief HubState — read-mostly aggregate of the hub's authoritative state.
  *
- * HEP-CORE-0033 §8; ratified in docs/tech_draft/HUB_CHARACTER_PREREQUISITES.md
- * §G2 ("broker as single mutator" model).  HEP-CORE-0034 adds the
+ * HEP-CORE-0033 §8 (data shape + accessors) + the "broker performs
+ * state changes; HubState exposes only const snapshot accessors"
+ * model HEP-0033 §4 / §8 / §9 establish.  HEP-CORE-0034 adds the
  * owner-keyed schema registry (`schemas` map).
  *
  * Status: G2.2 absorption complete; HEP-0034 Phase 2-3 wired through.

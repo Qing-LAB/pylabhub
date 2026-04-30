@@ -51,8 +51,15 @@
  * from the same thread while the worker runs. Not copyable, not movable
  * (owns an internal worker thread).
  *
- * See `docs/tech_draft/HUB_CHARACTER_PREREQUISITES.md` §G1 for the full
- * design rationale + class-hierarchy / thread-ownership diagrams.
+ * Design rationale: this template was originally proposed (in the now-
+ * archived HEP-0033 prereqs notes, §G1) as a unification point between
+ * role-side `RoleHostBase` and a future `HubHostBase`.  That hub-side
+ * unification was retracted — hubs are singletons (one binary kind, one
+ * config, no dispatch), so there is no polymorphism to abstract over.
+ * `EngineHost<RoleAPIBase>` remains the role-side base; the future
+ * `HubHost` will be a single concrete class owning its subsystems
+ * directly, **not** a subclass of `EngineHost`.  See HEP-CORE-0033 §4
+ * for the simplified hub layering.
  */
 
 #include "pylabhub_utils_export.h"

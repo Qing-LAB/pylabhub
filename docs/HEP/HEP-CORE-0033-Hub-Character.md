@@ -1038,8 +1038,11 @@ can land in parallel once P1 lands.
   engine.
 - **Phase 9** — `plh_hub` binary; new build target.  (Legacy
   `src/hubshell.cpp` + `src/hub_python/*` already deleted in the post-G2
-  cleanup pass — Phase 9 is now greenfield.)  L4 no-hub tier tests
-  (parallel `test_layer4_plh_role/`).
+  cleanup pass — Phase 9 is now greenfield.)  L4 test infrastructure:
+  new `tests/test_layer4_plh_hub/` directory paralleling
+  `tests/test_layer4_plh_role/` with its own `plh_hub_fixture.h` reusing
+  the existing fixture-pattern conventions (subprocess spawn, no
+  external broker dependency).
 - **Phase 10** — HEP-0019 amendment finalised; README + deployment docs
   updated.
 
@@ -1048,6 +1051,9 @@ can land in parallel once P1 lands.
 1. `add_known_role`/`remove_known_role` persistence — in-memory only by default;
    `persist_known_role_changes: false` toggle for opt-in disk write.
 2. `script.tick_interval_ms` location — `ScriptConfig` vs new `HubScriptConfig`.
+   Recommendation: a new `HubScriptConfig` wrapping `ScriptConfig` + the
+   tick field; keeps `ScriptConfig` clean for the role side which has no
+   tick concept.
 3. Band event hooks — `BandRegistry` currently broker-thread-internal; needs
    hook point for `HubState` updates.
 4. Graceful-vs-fast shutdown semantics for `request_shutdown`.
@@ -1055,6 +1061,17 @@ can land in parallel once P1 lands.
 6. `_collected_at` semantics for pointer-to-collect entries.
 7. Script engine thread lifetime ordering vs `BrokerService` teardown.
 8. Dev-mode admin token behaviour.
+9. **`reload_config` runtime-tunable whitelist.**  §11.2 lists
+   `reload_config` as an admin RPC but most config fields cannot change
+   safely at runtime (endpoints, vault paths, admin port).  Tunable
+   subset (heartbeat timeouts, state-retention values, federation peer
+   list contents) vs frozen subset (everything else) must be enumerated
+   before Phase 6 wires the RPC.
+10. **Admin RPC error-code catalog.**  §11.1 shows the response shape
+    `{status, error:{code, message}}` but does not enumerate the codes.
+    Needed before Phase 6: `unauthorized`, `unknown_method`,
+    `invalid_params`, `not_found`, `conflict`, `internal`,
+    `script_error`, `policy_rejected` (veto-hook refusal).
 
 ## 17. Out of scope
 
@@ -1064,3 +1081,199 @@ can land in parallel once P1 lands.
 - Role-side rewrites.
 - HEP-CORE-0019 periodic broker-pull (explicitly replaced by query-driven
   model; §10).
+
+---
+
+## Appendix G2.2.0b — Naming grammar for hub identifiers
+
+**Ratified 2026-04-23.** Every identifier that enters `HubState` from
+the wire, from scripts, or from admin input follows this grammar.  One
+validator (`utils/naming.hpp`) is the single enforcement point.  HubState
+is the strong boundary — any identifier that reaches a `_on_*` op is
+guaranteed to match these rules.
+
+This grammar was originally drafted in
+`docs/tech_draft/HUB_CHARACTER_PREREQUISITES.md` §G2.2.0b (now archived
+under `docs/archive/transient-2026-04-30/`).  It moved here on
+2026-04-30 to make HEP-0033 the single source of truth.
+
+### G2.2.0b.1 Grammar per identifier kind
+
+```
+channel    := NameComponent ('.' NameComponent)*
+              // first component NOT in {prod, cons, proc, hub, sys}
+band       := '!' NameComponent ('.' NameComponent)*
+role.uid   := ('prod'|'cons'|'proc') '.' NameComponent '.' NameComponent ('.' NameComponent)*
+              // MINIMUM 3 components: tag . name . unique_suffix
+role.name  := NameComponent ('.' NameComponent)*
+              // plain identifier; tag may or may not be included;
+              // no reserved-word restriction since names are paired
+              // with role_tag in every structured output
+peer.uid   := 'hub' '.' NameComponent '.' NameComponent ('.' NameComponent)*
+              // same tag.name.unique shape as role.uid — a federated
+              // hub is conceptually a role-like participant with the
+              // reserved tag 'hub'
+schema     := '$' NameComponent ('.' NameComponent)* '.' 'v' [0-9]+
+              // ≥2 components after the sigil; the LAST component MUST be
+              // 'v' followed by one or more decimal digits — the schema's
+              // version.  Examples: "$foo.v1", "$lab.sensors.temp.v42".
+              // The '@<version>' form used before G2.2.0b is REJECTED —
+              // one canonical form, no fallback parser (migrated configs
+              // produce the new format; misconfigured ones fail early).
+sys.key    := 'sys' ('.' NameComponent)+
+              // broker-internal counter / event keys; user input is
+              // rejected at the wire boundary for this namespace
+
+NameComponent := [A-Za-z][A-Za-z0-9_-]{0,63}
+                 // first char must be a letter;
+                 // interior chars: alphanumeric + '_' + '-'
+```
+
+### G2.2.0b.2 Universal constraints
+
+| Rule | Value |
+|---|---|
+| Charset (interior of a name component) | `[A-Za-z0-9_-]` |
+| Charset (first char of a name component) | `[A-Za-z]` |
+| Max length per name component | 64 |
+| Max total identifier length (sigil + body) | 256 |
+| Hierarchy separator | `.` (dot) |
+| Sigils (position 0 only) | `!` (band), `$` (schema) |
+| Role tag prefix (first component of role.uid) | closed set `{prod, cons, proc}` |
+| Peer tag prefix (first component of peer.uid) | closed set `{hub}` |
+| Reserved first components for channel | `{prod, cons, proc, hub, sys}` |
+| Case | preserved; comparisons case-sensitive |
+| Whitespace | forbidden |
+| Dot at start / end | forbidden (grammar excludes) |
+| Adjacent dots (`..`) | forbidden (grammar excludes) |
+
+The 256-char total applies to a **single identifier** as a
+parsing-boundary DoS defense.  It is NOT a cap on composite or
+federated references.  When a query joins two identifiers (e.g. "role
+X on hub Y"), the composite is expressed as a structured reference —
+two JSON fields, two protocol slots, or two function arguments — not a
+concatenated string.  Each constituent identifier must individually
+satisfy the 256 cap; the composite can exceed that bound without
+issue because the composite is not itself an identifier.
+
+### G2.2.0b.3 UID construction (role)
+
+`role.uid` is composed of three mandatory parts:
+
+```
+role.uid ::= <role_tag> . <name> . <unique_suffix>
+```
+
+- **`role_tag`** — closed enum `{prod, cons, proc}`.  Identifies the
+  role's kind (producer / consumer / processor).
+- **`name`** — the role's human-readable display component.  Free-form
+  within `NameComponent`.  User-chosen.
+- **`unique_suffix`** — one or more dotted components that
+  disambiguate this role instance from others sharing the same name.
+  Must have at least one component.
+
+### G2.2.0b.4 Numeric-token prefix convention
+
+Every `NameComponent` must start with `[A-Za-z]` — so raw numeric
+tokens (PID, random hex, timestamps, counters) embedded as distinct
+components need a letter prefix.  The project uses a **full-word**
+convention that is self-documenting in logs:
+
+| Prefix | Meaning | Example component |
+|---|---|---|
+| `pid` | process id (typically for test-fixture isolation) | `pid104577` |
+| `uid` | opaque random unique suffix (uid_utils auto-gen) | `uid3a7f2b1c` |
+| `v`   | schema version — short, matches industry convention (semver, git tags) | `v2`, `v42` |
+
+These are conventions, not grammar rules — the validator only enforces
+`NameComponent` shape.  But every *new* site that embeds a numeric
+token should pick the conventional prefix for clarity.
+
+Examples (all valid):
+- `prod.cam1.pid42`
+- `cons.logger.host-lab1.pid9876`
+- `proc.filter.uid8f3a2c7b`
+- `prod.main.uid3a7f2b1c`                 (shape produced by uid_utils)
+
+Invalid (insufficient parts):
+- `prod.uid3a7f2b1c` — only 2 components; missing the `<name>` middle component.
+- `prod` — only the tag; missing name and unique.
+
+### G2.2.0b.5 Helpers (`utils/naming.hpp`)
+
+```cpp
+enum class IdentifierKind { Channel, Band, RoleUid, RoleName, PeerUid, Schema, SysKey };
+
+bool is_valid_identifier(std::string_view, IdentifierKind) noexcept;
+void require_valid_identifier(std::string_view, IdentifierKind,
+                              std::string_view context);   // PLH_PANIC on invalid
+
+struct TaggedUidParts {
+    std::string_view tag;     // "prod" / "cons" / "proc" (role) or "hub" (peer)
+    std::string_view name;    // second component
+    std::string_view unique;  // third + onward, joined by dots
+};
+std::optional<TaggedUidParts>   parse_role_uid(std::string_view uid) noexcept;
+std::optional<TaggedUidParts>   parse_peer_uid(std::string_view uid) noexcept;
+std::optional<std::string_view> extract_role_tag(std::string_view uid) noexcept;
+
+std::string format_role_ref(std::string_view uid,
+                            std::string_view name = {},
+                            std::string_view tag  = {});
+```
+
+### G2.2.0b.6 Classification from a bare identifier
+
+Every identifier string is classifiable from its leading characters alone:
+
+| Prefix | Kind |
+|---|---|
+| `!…` | band |
+| `$…` | schema |
+| `sys.…` | broker-internal |
+| `prod.…` / `cons.…` / `proc.…` (exact match of first component) | role (uid) |
+| `hub.…` (exact match of first component) | peer (uid) |
+| Any other `[A-Za-z]…` | channel |
+
+`role.name` is deliberately not self-classifying — it is free-form
+display text, always paired with `role_tag` in structured output (JSON,
+metrics), so it never stands alone.
+
+### G2.2.0b.7 Logging / output policy
+
+Since `role.uid` carries tag, name, and unique suffix by construction,
+**logging `role.uid` alone is self-describing** and does not need
+redundant `role_tag` / `role_name` fields next to it.
+
+| Output context | Include `role_tag` separately? |
+|---|---|
+| Log line that prints `role.uid` | No — redundant |
+| Log line that prints `role.name` only | Yes — or prefix as `[tag] name` |
+| JSON admin response where both `uid` and `name` appear | Include `role_tag` for explicitness |
+| JSON NOTIFY that carries only `uid` | `role_tag` optional (parsable from uid) |
+
+`naming.hpp::format_role_ref()` applies this policy: prefers `uid` if
+present (self-describing), else falls back to `[tag] name`.
+
+### G2.2.0b.8 Enforcement points
+
+1. **HubState `_on_*` ops** (strong boundary): call
+   `require_valid_identifier()` at entry.  Invalid → silent drop +
+   bump `sys.invalid_identifier_rejected` counter.  No exceptions
+   thrown into the broker's handler thread.
+2. **Broker wire handlers**: call `is_valid_identifier()` before
+   calling the HubState op, and return an explicit error reply to the
+   client on failure.  This gives the UX path (clients see error)
+   while the HubState silent-drop is the backstop.
+3. **Role-side config parsers**: validate at `plh_role --validate`
+   time so misconfigured role UIDs fail early, not at first REG_REQ.
+
+### G2.2.0b.9 Consistency-check rule
+
+If future work discovers an identifier in code, tests, or docs that
+**does not match this spec**, the policy is:
+
+1. Treat this spec as authoritative.
+2. Correct the violating identifier to match the spec.
+3. Do **not** relax the spec to match drifting code, unless the drift
+   represents a ratified design change recorded here first.
