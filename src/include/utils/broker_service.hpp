@@ -17,6 +17,8 @@
  */
 #include "pylabhub_utils_export.h"
 #include "utils/channel_access_policy.hpp"
+#include "utils/hub_metrics_filter.hpp"
+#include "utils/json_fwd.hpp"
 #include "utils/timeout_constants.hpp"
 
 #include <chrono>
@@ -387,6 +389,41 @@ public:
      * @return JSON string with the METRICS_ACK-format response.
      */
     [[nodiscard]] std::string query_metrics_json_str(const std::string& channel = {}) const;
+
+    /**
+     * @brief Unified hub-state query engine (HEP-CORE-0033 §10.3).
+     *
+     * Walks `HubState` under the query mutex, builds a single JSON
+     * response covering all categories the filter selects.  Pointer-to-
+     * collect SHM metrics are read live via `collect_shm_info` after the
+     * snapshot is taken — the broker's mutex is released before the
+     * SHM read so a slow shared-spinlock acquisition cannot stall
+     * unrelated handlers.  Each entry carries a `_collected_at`
+     * ISO-formatted timestamp per HEP-0033 §10.2 (in-position uses
+     * the entry's own update time; pointer-to-collect stamps `now()`).
+     *
+     * Response shape (only requested categories appear):
+     * @code
+     * {
+     *   "status":     "success",
+     *   "queried_at": "YYYY-MM-DD HH:MM:SS.uuuuuu",
+     *   "filter":     { ... echoed back ... },
+     *   "channels":   { "<name>": { producer:..., consumers:..., status:..., _collected_at:... }, ... },
+     *   "roles":      { "<uid>": { state, name, role_tag, channels, latest_metrics, _collected_at }, ... },
+     *   "bands":      { "<name>": { members, created_at, last_activity }, ... },
+     *   "peers":      { "<uid>": { endpoint, state, last_seen, relay_channels }, ... },
+     *   "broker":     { ready_to_pending_total, ..., msg_type_counts, ... },
+     *   "shm":        { "<channel>": { shm_metrics or null, _collected_at, ... }, ... },
+     *   "schemas":    { "<owner>:<id>": { ... }, ... }
+     * }
+     * @endcode
+     *
+     * Thread-safe.  HEP-0033 §15 Phase 5 deliverable.  Once `HubHost`
+     * lands (Phase 6) this entrypoint moves; for now it sits on
+     * `BrokerService` as the spec permits.
+     */
+    [[nodiscard]] nlohmann::json
+    query_metrics(const pylabhub::hub::MetricsFilter &filter) const;
 
     /**
      * @brief Query SHM block topology and DataBlockMetrics for all channels (or one).
