@@ -3,6 +3,7 @@
  * @brief HubDirectory — canonical hub directory layout (HEP-CORE-0033 §7).
  */
 #include "utils/hub_directory.hpp"
+#include "utils/timeout_constants.hpp"
 #include "utils/uid_utils.hpp"
 
 #include "plh_platform.hpp" // PYLABHUB_IS_POSIX
@@ -143,8 +144,10 @@ nlohmann::json build_hub_json_template(const std::string &uid,
             {"token_required", true},
         }},
         {"broker", {
-            {"heartbeat_timeout_ms", 15000},
-            {"heartbeat_multiplier", 5},
+            {"heartbeat_interval_ms",   ::pylabhub::kDefaultHeartbeatIntervalMs},
+            {"ready_miss_heartbeats",   ::pylabhub::kDefaultReadyMissHeartbeats},
+            {"pending_miss_heartbeats", ::pylabhub::kDefaultPendingMissHeartbeats},
+            {"grace_heartbeats",        ::pylabhub::kDefaultGraceHeartbeats},
         }},
         {"federation", {
             {"enabled",            false},

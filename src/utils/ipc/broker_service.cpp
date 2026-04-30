@@ -283,6 +283,14 @@ public:
     nlohmann::json handle_consumer_dereg_req(zmq::socket_t& socket,
                                               const nlohmann::json& req);
     void           handle_heartbeat_req(const nlohmann::json& req);
+
+    /// HEP-CORE-0023 §2.5 — heartbeat negotiation block carried in
+    /// REG_ACK / CONSUMER_REG_ACK.  Communicates the hub's tolerated
+    /// timeout contract so the registering role can validate its own
+    /// configured cadence (`role.heartbeat_interval_ms ≤ hub_max`) and
+    /// align its periodic-task schedule.  Always populated from
+    /// `cfg.heartbeat_*` — no per-channel override.
+    nlohmann::json heartbeat_ack_block() const;
     nlohmann::json handle_endpoint_update_req(const nlohmann::json& req,
                                                const zmq::message_t& identity);
     nlohmann::json handle_schema_req(const nlohmann::json& req);
@@ -1394,6 +1402,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     resp["status"]     = "success";
     resp["channel_id"] = channel_name;
     resp["message"]    = "Producer registered successfully";
+    resp["heartbeat"]  = heartbeat_ack_block(); // HEP-CORE-0023 §2.5
     if (!corr_id.empty())
     {
         resp["correlation_id"] = corr_id;
@@ -1717,6 +1726,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     resp["status"]       = "success";
     resp["channel_name"] = channel_name;
     resp["message"]      = "Consumer registered successfully";
+    resp["heartbeat"]    = heartbeat_ack_block(); // HEP-CORE-0023 §2.5
     if (!corr_id.empty())
     {
         resp["correlation_id"] = corr_id;
@@ -2167,6 +2177,21 @@ BrokerServiceImpl::check_connection_policy(const std::string& channel_name,
     }
 
     return std::nullopt;
+}
+
+// ============================================================================
+// Heartbeat negotiation block (HEP-CORE-0023 §2.5)
+// ============================================================================
+
+nlohmann::json BrokerServiceImpl::heartbeat_ack_block() const
+{
+    nlohmann::json hb;
+    hb["heartbeat_interval_ms"]    = static_cast<int64_t>(
+        cfg.heartbeat_interval.count());
+    hb["ready_miss_heartbeats"]    = cfg.ready_miss_heartbeats;
+    hb["pending_miss_heartbeats"]  = cfg.pending_miss_heartbeats;
+    hb["grace_heartbeats"]         = cfg.grace_heartbeats;
+    return hb;
 }
 
 // ============================================================================
