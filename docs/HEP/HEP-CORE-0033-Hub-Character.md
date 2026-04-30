@@ -954,10 +954,31 @@ can land in parallel once P1 lands.
   must land before they are added.  The legacy `ConnectionPolicy` placeholder
   remains in `BrokerService::Config` (settable by tests + future Phase 9
   code, not by hub.json) until HEP-0035 Phase 6 retires it.
-- **Phase 2** — `hub_cli::parse_hub_args` (§5). Covered by L2 tests mirroring
-  `role_cli` test shape.
-- **Phase 3** — `HubDirectory` + `--init` template output. L2 tests for dir
-  layout + template validation.
+- **Phase 2** — ✅ **Shipped 2026-04-25** (commit `9ba6ac1`).
+  `hub_cli::parse_hub_args` + `HubArgs` + `ParseResult` in
+  `src/include/utils/hub_cli.hpp`; mirrors the `role_cli`
+  no-`std::exit` stream-directed parser contract.  Generic CLI helpers
+  (`is_stdin_tty`, password input, init-name resolution) subsequently
+  factored out of `role_cli` into `pylabhub::cli` namespace
+  (`utils/cli_helpers.hpp`, 2026-04-29) so role and hub CLIs share a
+  peer rather than depending on each other.  Covered by L2 tests in
+  `tests/test_layer2_service/test_hub_cli.cpp` (parser) and
+  `test_role_directory.cpp` (`CliHelpersTest.*`).
+- **Phase 3** — ✅ **Shipped 2026-04-29.**  `HubDirectory` value-class
+  in `src/include/utils/hub_directory.hpp` + impl in
+  `src/utils/config/hub_directory.cpp`; mirrors `RoleDirectory`'s
+  shape (open/from_config_file/create + path accessors + script_entry
+  + has_standard_layout) but is single-kind — no registration
+  builder.  `init_directory(dir, name, log_overrides)` writes the
+  HEP-0033 §6.2 hub.json template (minus the auth/access fields
+  deferred to HEP-0035) and creates `logs/run/vault/schemas/script/python`
+  with vault/ at 0700 on POSIX.  schemas/ is created but optional in
+  `has_standard_layout()` per §7.  Covered by 13 L2 tests in
+  `tests/test_layer2_service/test_hub_directory.cpp` (path accessors,
+  create-idempotent, layout-with/without-optionals, script_entry
+  python+lua, init writes parseable template, log overrides land,
+  empty-name/pre-existing-hub.json error paths, generated UID
+  validates as PeerUid).
 - **Phase 4** — `HubState` struct + accessors. ✅ **Already complete** —
   HubState landed via the HEP-CORE-0033 G2.0–G2.2 absorption sequence
   (sole owner of channel/role/band/peer/shm/counter state; capability ops;

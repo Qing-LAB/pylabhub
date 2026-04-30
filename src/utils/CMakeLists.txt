@@ -62,9 +62,10 @@ set(UTILS_SOURCES
   logging/logger_sinks/syslog_sink.cpp
   logging/logger_sinks/event_log_sink.cpp
 
-  # --- config: JSON config, role + hub composite configs, role directory ---
+  # --- config: JSON config, role + hub composite configs, directories ---
   config/json_config.cpp
   config/hub_config.cpp     # pylabhub::config::HubConfig (HEP-CORE-0033 §6.1)
+  config/hub_directory.cpp  # pylabhub::utils::HubDirectory (HEP-CORE-0033 §7)
   config/role_directory.cpp
   config/role_config.cpp
 
