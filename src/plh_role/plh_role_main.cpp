@@ -32,6 +32,7 @@
 #include "processor_init.hpp"      // src/processor/
 
 #include "engine_factory.hpp"      // src/scripting/
+#include "utils/cli_helpers.hpp"
 #include "utils/config/role_config.hpp"
 #include "utils/interactive_signal_handler.hpp"
 #include "utils/role_cli.hpp"
@@ -57,6 +58,7 @@
 
 using namespace pylabhub::utils;
 namespace scripting = pylabhub::scripting;
+namespace cli       = pylabhub::cli;
 namespace role_cli  = pylabhub::role_cli;
 
 // ── Dispatch map: role tag → (init registrar, runtime registrar) ─────────────
@@ -144,7 +146,7 @@ int do_init(const role_cli::RoleArgs &args)
                              ? fs::current_path()
                              : fs::path(args.role_dir);
 
-    const auto name_opt = role_cli::resolve_init_name(
+    const auto name_opt = cli::resolve_init_name(
         args.init_name,
         "Role name (human-readable, e.g. 'TempSensor'): ");
     if (!name_opt)
@@ -253,8 +255,9 @@ int main(int argc, char *argv[])
             return 1;
         }
 
-        const auto pw_opt = role_cli::get_new_role_password(
+        const auto pw_opt = cli::get_new_password(
             info->role_tag.c_str(),
+            "PYLABHUB_ROLE_PASSWORD",
             "Role vault password (empty = no encryption): ",
             "Confirm password: ");
         if (!pw_opt)
@@ -279,8 +282,10 @@ int main(int argc, char *argv[])
     // ── Auth: unlock vault if configured ──────────────────────────────
     if (!c.auth().keyfile.empty())
     {
-        const auto vault_password = scripting::get_role_password(
-            info->role_tag.c_str(), "Role vault password: ");
+        const auto vault_password = cli::get_password(
+            info->role_tag.c_str(),
+            "PYLABHUB_ROLE_PASSWORD",
+            "Role vault password: ");
         if (!vault_password)
             return 1;
         c.load_keypair(*vault_password);
