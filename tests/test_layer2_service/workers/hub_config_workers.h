@@ -40,4 +40,9 @@ int load_from_directory(const char *tmpdir);
 /// and surfaces the new values after rewriting the file.
 int reload_if_changed(const char *tmpdir);
 
+/// Round-trip: HubDirectory::init_directory() writes a hub.json template
+/// that HubConfig::load_from_directory() parses without throwing.  Locks
+/// in the contract that the template's keys match the parser's whitelist.
+int init_template_loads_via_hubconfig(const char *tmpdir);
+
 } // namespace pylabhub::tests::worker::hub_config
