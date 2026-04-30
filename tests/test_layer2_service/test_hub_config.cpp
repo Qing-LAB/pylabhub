@@ -114,3 +114,15 @@ TEST_F(HubConfigTest, ReloadIfChanged_NoChangeFalse_AfterModifyTrue)
                          {unique_dir("reload_if_changed")});
     ExpectWorkerOk(w);
 }
+
+// Cross-cutting: HubDirectory::init_directory must write a template that
+// HubConfig::load_from_directory accepts without throwing.  Catches drift
+// between the template (hub_directory.cpp::build_hub_json_template) and
+// the parser whitelist (hub_config.cpp::kAllowedTopLevelKeys + each
+// sub-section parser).
+TEST_F(HubConfigTest, InitTemplate_LoadsViaHubConfig)
+{
+    auto w = SpawnWorker("hub_config.init_template_loads_via_hubconfig",
+                         {unique_dir("init_template_round_trip")});
+    ExpectWorkerOk(w);
+}
