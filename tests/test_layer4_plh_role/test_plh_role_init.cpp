@@ -30,6 +30,19 @@ struct RoleSpec
     bool             expects_target_period_ms;
 };
 
+// PrintTo for gtest's UniversalPrinter — used by `--gtest_list_tests`
+// to populate the `# GetParam() = ...` comment that CMake's
+// `gtest_discover_tests` (PRETTY_VALUES mode, the default) consumes
+// to derive the CTest test-name suffix.  Without this, gtest falls
+// back to a raw-byte dump like "72-byte object <08-00 ...>", which
+// then surfaces as the CTest display name.  Print just the role tag
+// so each parameterised test reads as
+// `Roles/PlhRoleInitTest.<Case>/producer`.
+inline void PrintTo(const RoleSpec &s, std::ostream *os)
+{
+    *os << s.role;
+}
+
 // Parametrized fixture: each PlhRoleInitTest.<name> runs 3x, one per role.
 class PlhRoleInitTest : public PlhRoleCliTest,
                         public ::testing::WithParamInterface<RoleSpec>
