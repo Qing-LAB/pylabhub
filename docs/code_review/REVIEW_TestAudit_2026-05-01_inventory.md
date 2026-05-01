@@ -40,49 +40,49 @@ for a file IN THE SAME COMMIT that fixes the file.
 | # | File | A | B | C | D | Verification / Notes |
 |---|------|---|---|---|---|----------------------|
 | L2-01 | `test_layer2_service/test_admin_service.cpp` | ✅ `db9f8f9` | n/a | n/a | ✅ `db9f8f9` | ping mutation + log-capture mutation both produced expected red |
-| L2-02 | `test_layer2_service/test_backoff_strategy.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-03 | `test_layer2_service/test_configure_logger.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-04 | `test_layer2_service/test_crypto_utils.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-05 | `test_layer2_service/test_engine_factory.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L2-02 | `test_layer2_service/test_backoff_strategy.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  2 sleep_for references are in COMMENTS only (lines 119, 348 documenting `sleep_for() sleeps AT LEAST` semantics).  No actual sleeps. |
+| L2-03 | `test_layer2_service/test_configure_logger.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
+| L2-04 | `test_layer2_service/test_crypto_utils.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
+| L2-05 | `test_layer2_service/test_engine_factory.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
 | L2-06 | `test_layer2_service/test_filelock.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 deferred (subprocess) | Audited `<this commit>`.  Pattern 3 parent file delegating to filelock_workers.cpp.  No broad EXPECT_THROW / EXPECT_NO_THROW / sleep_for / discarded timeout returns in parent. |
-| L2-07 | `test_layer2_service/test_filelock_singleprocess.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-08 | `test_layer2_service/test_framework_selftest.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-09 | `test_layer2_service/test_hub_cli.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-10 | `test_layer2_service/test_hub_config.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-11 | `test_layer2_service/test_hub_directory.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L2-07 | `test_layer2_service/test_filelock_singleprocess.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
+| L2-08 | `test_layer2_service/test_framework_selftest.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
+| L2-09 | `test_layer2_service/test_hub_cli.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
+| L2-10 | `test_layer2_service/test_hub_config.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
+| L2-11 | `test_layer2_service/test_hub_directory.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  1 EXPECT_NO_THROW gates the no-throw create() contract.  Class B/C: clean. |
 | L2-12 | `test_layer2_service/test_hub_host.cpp` | ⚠ PARTIAL `6f54322` | 🟡 | 🟡 | 🟡 | FSM tests + 3 startup tests pinned; rest of file not yet audited |
-| L2-13 | `test_layer2_service/test_hub_state.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-14 | `test_layer2_service/test_hub_vault.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-15 | `test_layer2_service/test_interactive_signal_handler.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L2-13 | `test_layer2_service/test_hub_state.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
+| L2-14 | `test_layer2_service/test_hub_vault.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Class A: 7 EXPECT_THROW(`std::runtime_error`) for HubVault::open with wrong-password / corrupted / mismatched scenarios.  Each test exercises a distinct vault-failure scenario with a distinct input; type-only discrimination acceptable per audit §1.1 (caveat: if production grows new throw sites with the same type, tightening to message substring would help).  Class B/C: clean. |
+| L2-15 | `test_layer2_service/test_interactive_signal_handler.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  4 EXPECT_NO_THROW gate the no-throw contract for InteractiveSignalHandler set_status_callback / install / uninstall / lifecycle module construction.  Class B/C: clean. |
 | L2-16 | `test_layer2_service/test_jsonconfig.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 deferred (subprocess) | Audited `<this commit>`.  Pattern 3 parent file; no broad EXPECT_THROW / sleep_for / discarded timeout returns in parent. |
-| L2-17 | `test_layer2_service/test_lifecycle.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-18 | `test_layer2_service/test_lifecycle_dynamic.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L2-17 | `test_layer2_service/test_lifecycle.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Class A: 5 EXPECT_THROW/NO_THROW for ModuleDef name validation — same pattern as L1-04, type-discriminating (`std::invalid_argument` / `std::length_error`).  Class B/C: clean. |
+| L2-18 | `test_layer2_service/test_lifecycle_dynamic.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Pattern 3 parent file delegating to lifecycle_workers.cpp.  No EXPECT_THROW / sleep_for / discarded timeout returns in parent. |
 | L2-19 | `test_layer2_service/test_logger.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 deferred (subprocess) | Audited `<this commit>`.  20 TEST_F entries, all delegate to subprocess workers (Pattern 3).  Class A: no broad `EXPECT_THROW` / `EXPECT_NO_THROW` in parent; assertions delegated to workers.  Class B: no `sleep_for` in parent.  Class C: no timeout-bearing return-value discards. |
-| L2-20 | `test_layer2_service/test_loop_timing_policy.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-21 | `test_layer2_service/test_lua_engine.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-22 | `test_layer2_service/test_metrics_api.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-23 | `test_layer2_service/test_naming.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-24 | `test_layer2_service/test_net_address.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-25 | `test_layer2_service/test_plugins/good_producer_plugin.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-26 | `test_layer2_service/test_plugins/native_multifield_module.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-27 | `test_layer2_service/test_python_engine.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-28 | `test_layer2_service/test_role_cli.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-29 | `test_layer2_service/test_role_config.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L2-20 | `test_layer2_service/test_loop_timing_policy.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Class A: 1 EXPECT_THROW(`std::runtime_error`) at line 43 for `parse_loop_timing_policy("turbo", "ctx")` — single invalid-string error path; type-discriminating.  Class B/C: clean. |
+| L2-21 | `test_layer2_service/test_lua_engine.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
+| L2-22 | `test_layer2_service/test_metrics_api.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
+| L2-23 | `test_layer2_service/test_naming.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
+| L2-24 | `test_layer2_service/test_net_address.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
+| L2-25 | `test_layer2_service/test_plugins/good_producer_plugin.cpp` | ⚪ N/A | ⚪ N/A | ⚪ N/A | ⚪ N/A | Audited <this commit>.  test plugin (compiled as plugin .so for other tests to load) — not a TEST_F file.  No assertions to audit. |
+| L2-26 | `test_layer2_service/test_plugins/native_multifield_module.cpp` | ⚪ N/A | ⚪ N/A | ⚪ N/A | ⚪ N/A | Audited <this commit>.  test plugin module (compiled as native engine plugin) — not a TEST_F file. |
+| L2-27 | `test_layer2_service/test_python_engine.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
+| L2-28 | `test_layer2_service/test_role_cli.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
+| L2-29 | `test_layer2_service/test_role_config.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
 | L2-30 | `test_layer2_service/test_role_data_loop.cpp` | ⚠ NOTE | 🟢 OK | 🟢 OK | 🟡 deferred (subprocess) | Audited `<this commit>`.  Class A: `ThreadManagerTest.JoinInReverseOrder` name is misleading — only asserts `order.size() == 2`, NOT actual join order.  Assertion matches the real "drain waits for all threads" contract though, so this is a naming issue not a silent-failure bug; flagged here so a future rename or stronger test can be considered.  Other 7 tests pin specific counts (`EXPECT_GE(count, N)`, `EXPECT_EQ(count, N)`).  Class B: 8 `sleep_for` instances all in the worker file — acceptable per-pattern (see L2-67 row).  Class C: no timeout-bearing returns discarded. |
-| L2-31 | `test_layer2_service/test_role_directory.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L2-31 | `test_layer2_service/test_role_directory.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
 | L2-32 | `test_layer2_service/test_role_host_base.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 deferred (subprocess Pattern 3) | Audited `<this commit>`.  Class A: 13 TEST_F all use `expect_panic_abort(..., panic_substring)` which path-pins death tests via message substring; no broad `EXPECT_THROW`.  Class B: worker uses `wait_for(pred, timeout_ms)` condition-based helper (line 204) — correct pattern.  `wait_for_wakeup` test pins an upper-bound timing (`EXPECT_LT(elapsed_ms, 500)`).  No bare `sleep_for` ordering antipattern.  Class C: no timeout-bearing-return discards.  Class D: Pattern 3 subprocess; LogCaptureFixture rollout for subprocess workers is a separate fixture-wide phase. |
-| L2-33 | `test_layer2_service/test_role_host_core.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-34 | `test_layer2_service/test_role_init_directory.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-35 | `test_layer2_service/test_role_logging_roundtrip.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-36 | `test_layer2_service/test_role_registry.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-37 | `test_layer2_service/test_role_vault.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-38 | `test_layer2_service/test_schema_validation.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L2-33 | `test_layer2_service/test_role_host_core.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
+| L2-34 | `test_layer2_service/test_role_init_directory.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
+| L2-35 | `test_layer2_service/test_role_logging_roundtrip.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
+| L2-36 | `test_layer2_service/test_role_registry.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Class A: 3 EXPECT_THROW(`std::runtime_error`) at lines 98, 114 (RoleRegistry::commit on conflict) + 1 EXPECT_NO_THROW for idempotent commit at 165.  Each commit-failure test exercises a distinct collision scenario; type-discriminating.  Class B/C: clean. |
+| L2-37 | `test_layer2_service/test_role_vault.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Class A: 6 EXPECT_THROW(`std::runtime_error`) for RoleVault::open with wrong-password / mismatched-uid scenarios — same pattern as L2-14 hub_vault.  Type-discriminating per scenario.  Class B/C: clean. |
+| L2-38 | `test_layer2_service/test_schema_validation.cpp` | ⚠ NOTE | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Class A: 11 EXPECT_THROW(`std::runtime_error`) for parse_schema_json with distinct malformed inputs (empty fields, missing keys, bad types, zero-length strings, unknown packing, etc.).  Each test uses a unique input; in practice the test inputs cleanly map to distinct error paths.  HOWEVER: production has many runtime_error throw sites in parse_schema_json — if a regression made input A trigger error path B's throw, type-only EXPECT_THROW would still pass.  Tightening to message substring (per audit §1.1) is recommended but is significant volume; flagged for follow-up.  Class B/C: clean. |
 | L2-39 | `test_layer2_service/test_scriptengine_native_dylib.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-40 | `test_layer2_service/test_shared_memory_spinlock.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited `<this commit>`.  Class A: 2 `EXPECT_THROW(..., std::runtime_error)` at lines 87 and 207 testing `SharedSpinLock::unlock` not-held path.  Verified `shared_memory_spinlock.cpp:147` has a SINGLE `runtime_error` throw site ("Attempted to unlock by non-owner.") — type alone is path-discriminating, acceptable per audit §1.1's exception for single-throw-site functions.  Class B: 4 sleeps — line 123 is a "let other thread reach try_lock_for, then unlock" time-budget; line 193 is the absence-of-event verification window (`sleep_for(50ms); EXPECT_FALSE(acquired)` — verifying contender stays blocked); lines 240/251 are 10us sleeps inside locked sections to amplify mutual-exclusion contention.  None are ordering antipatterns.  Class C: `try_lock_for` returns are captured and asserted (lines 105-109, 162). |
-| L2-41 | `test_layer2_service/test_slot_rw_coordinator.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-42 | `test_layer2_service/test_slot_view_helpers.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-43 | `test_layer2_service/test_uid_utils.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-44 | `test_layer2_service/test_zmq_context.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L2-41 | `test_layer2_service/test_slot_rw_coordinator.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  1 sleep_for at line 194 (`sleep_for(seconds(duration_sec))`) — `duration_sec` is a test-config constant for a stress test; sleep IS the test scenario.  Class A/C: clean. |
+| L2-42 | `test_layer2_service/test_slot_view_helpers.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
+| L2-43 | `test_layer2_service/test_uid_utils.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
+| L2-44 | `test_layer2_service/test_zmq_context.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
 | L2-45 | `test_layer2_service/workers/crypto_workers.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-46 | `test_layer2_service/workers/crypto_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
 | L2-47 | `test_layer2_service/workers/filelock_singleprocess_workers.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
