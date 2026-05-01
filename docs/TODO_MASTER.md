@@ -22,11 +22,21 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
-### Snapshot — 2026-04-23
+### Snapshot — 2026-05-01
 
-**Full suite: 1500/1500.**  Branch `feature/lua-role-support`.  Last commits:
-`8e1eadc` (HEP-0033 G2.1 HubState skeleton), `e9fc8f6` (HEP-0033 G2 "broker
-as single mutator" doc ratified), `139b4ca` (HEP-0033 G1 `RoleHostBase` →
+**Full suite: 1677/1677.**  Branch `feature/lua-role-support`.  Last commits:
+`9822ce4`/`536e129` (HEP-0033 §4 doc — phase FSM ratified), `70cd6cc`
+(test name cosmetic — `PrintTo(RoleSpec)`), `0d728ea` (3-phase
+start/stop FSM on EngineHost + HubHost — `Constructed → Running →
+ShutDown`, CAS-driven, single-use after shutdown, retryable on failed
+startup), `a0fd3a8` (HubHost Phase 6.1 fix-up: startup rollback + pinned
+init/shutdown protocols), `72da2db` (HubHost Phase 6.1b — concrete
+class), `e59bb90` (HubHost Phase 6.1a — HubState ownership refactor).
+
+Earlier this sprint:
+`d60ddf2` (HEP-0034 Phase 1 — fingerprint includes packing), `8e1eadc`
+(HEP-0033 G2.1 HubState skeleton), `e9fc8f6` (HEP-0033 G2 "broker as
+single mutator" doc ratified), `139b4ca` (HEP-0033 G1 `RoleHostBase` →
 `EngineHost<ApiT>` template), `399fbfc` (HEP-0032 Phase C ABI fingerprint).
 
 **Actively open (in priority order):**
@@ -36,16 +46,26 @@ as single mutator" doc ratified), `139b4ca` (HEP-0033 G1 `RoleHostBase` →
    - G2 design: ✅ ratified; `HubState` sole-mutator-through-broker model
      (`e9fc8f6`).
    - G2.1 (HubState skeleton + entry types): ✅ compile-only landed (`8e1eadc`);
-     17 L2 unit tests; primitive `_set_*` mutators; not yet wired.
-   - **Next**: G2.2 reframed around hub *capabilities* rather than broker
-     map-by-map absorption. Five sub-commits: G2.2.0 plumb HubState +
-     add `_on_*` capability-operation layer over primitives; G2.2.1
-     registration lifecycle (deletes `ChannelRegistry`); G2.2.2 liveness;
-     G2.2.3 membership routing (deletes `BandRegistry` + `inbound_peers_`);
-     G2.2.4 observability (metrics data-model deferred).
-   - Then: G2.3 / G2.4 (`HubAPI` read accessors and mutation wrappers
-     — see HEP-CORE-0033 §12) → G2.5 (`AdminService` — see HEP §11).
-   - Naming grammar moved into HEP-CORE-0033 Appendix §G2.2.0b.
+     17 L2 unit tests; primitive `_set_*` mutators.
+   - G2.2 (broker absorption): ✅ G2.2.0–G2.2.3 shipped earlier this
+     sprint; G2.2.4 (observability) partial — `_on_message_processed`
+     in place; metrics_store_ absorption deferred.
+   - **Phase 6.1 — HubHost concrete class**: ✅ shipped 2026-04-30 / 2026-05-01.
+     `e59bb90` (HubState ownership externalized from broker), `72da2db`
+     (HubHost class — `startup()`/`shutdown()`/`run_main_loop()`/
+     `request_shutdown()`/`is_running()` + const accessors), `a0fd3a8`
+     (rollback on partial startup, request_shutdown contract pin,
+     init/shutdown step lists pinned in HEP §4.1/§4.2), `0d728ea`
+     (3-phase FSM `Constructed → Running → ShutDown` shared with
+     `EngineHost` — single-use after shutdown, retryable on failed
+     startup, CAS-driven, idempotent on repeated calls).
+     9 L2 HubHost tests + 12 L2 RoleHostBase tests + 3 L3 integration
+     tests.
+   - **Next**: Phase 6.2 (`AdminService` structured RPC — HEP-0033 §11).
+     Then G2.3 / G2.4 (`HubAPI` read accessors and mutation wrappers —
+     HEP-0033 §12) → G2.5 (`AdminService` shell using same broker
+     mutators).
+   - Naming grammar in HEP-CORE-0033 Appendix §G2.2.0b.
    - Remaining open spec items: see HEP-CORE-0033 §15 Phase 9 (L4 test
      infrastructure) + §16 items 9 + 10 (`reload_config` whitelist,
      admin RPC error catalog).  The original prereqs working notes are
@@ -84,9 +104,10 @@ as single mutator" doc ratified), `139b4ca` (HEP-0033 G1 `RoleHostBase` →
   +4 tests covering aligned-vs-packed-distinct fingerprints. 1602/1602.
 - Five implementation phases remain (see §Priority 2).
 
-### Priority 0 (Next Sprint — design ratified 2026-04-21): HEP-CORE-0033 Hub Character
+### Priority 0 (in progress — Phase 6.1 shipped 2026-04-30 / 2026-05-01): HEP-CORE-0033 Hub Character
 
-📍 **Status**: Design ratified; implementation not started
+📍 **Status**: G1, G2 design + G2.1 + G2.2.0–2.2.3 + Phase 6.1 (HubHost
+concrete class with phase FSM) shipped.  **Next: Phase 6.2 — `AdminService`.**
 📋 **Spec**: `docs/HEP/HEP-CORE-0033-Hub-Character.md` (normative — single source of truth)
 📋 **Detail**: `docs/todo/MESSAGEHUB_TODO.md`
 

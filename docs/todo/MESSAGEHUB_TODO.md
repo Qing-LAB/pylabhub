@@ -10,10 +10,15 @@
 
 ## Current Status
 
-✅ **1275/1275 tests (2026-04-14).** HEP-CORE-0023 Phase 2 complete:
-heartbeat-multiplier role-liveness state machine, three-response DISC_REQ,
-role-close cleanup hook (federation + band), `RoleStateMetrics` counters.
-See commits `cf53ed3`, `3201e08`, `6558b2c`.
+✅ **1677/1677 tests (2026-05-01).** HEP-CORE-0033 Phase 6.1 complete:
+HubHost concrete class shipped with `Constructed → Running → ShutDown`
+phase FSM (single-use after shutdown, retryable on failed startup,
+CAS-driven, idempotent).  Same FSM applied to `EngineHost<ApiT>` on
+the role side.  HEP-0033 §4 docs updated to match.  See commits
+`e59bb90` (HubState ownership), `72da2db` (HubHost class), `a0fd3a8`
+(rollback + protocol pin), `0d728ea` (3-phase FSM rework), `536e129`
++ `9822ce4` (§4 doc).  Earlier this sprint: HEP-CORE-0023 Phase 2
+(`cf53ed3`/`3201e08`/`6558b2c`), HEP-0034 Phase 1 (`d60ddf2`).
 
 ### Open: HEP-CORE-0033 Hub Character refactor (in progress)
 
@@ -78,6 +83,35 @@ under `docs/archive/transient-2026-04-30/`):
   counter bumps. `metrics_store_` absorption deferred pending data-model
   decision (role-centric vs secondary channel-metrics map vs leave
   broker-private).
+- **Phase 6.1 — HubHost concrete class.** ✅ shipped 2026-04-30 / 2026-05-01.
+  - 6.1a (`e59bb90`): `BrokerService` ctor takes `HubState&` by reference;
+    test fixtures own the HubState alongside the broker (HEP-0033 §4
+    component-diagram alignment). 1663/1663.
+  - 6.1b (`72da2db`): single concrete `HubHost` class owning `HubConfig`
+    (value), `HubState` (value), `BrokerService` + `ThreadManager`
+    (unique_ptrs).  Public surface: `startup()`/`run_main_loop()`/
+    `shutdown()`/`request_shutdown()`/`is_running()` plus const
+    accessors.  ThreadManager auto-registers as a dynamic
+    `LifecycleGuard` module.  `shutdown()` synchronous; drains threads.
+  - 6.1 fix-up (`a0fd3a8`): rollback on partial startup, pinned
+    init/shutdown step lists into HEP §4.1/§4.2, request_shutdown
+    contract clarified (async-only; phase transition stays in
+    `shutdown()`).
+  - 6.1 FSM rework (`0d728ea`): `Constructed → Running → ShutDown` via
+    CAS on EngineHost and HubHost.  Single-use after successful
+    shutdown (regression-trapping); failed-startup rolls back to
+    `Constructed` (retryable).  HubHost throws `std::logic_error` on
+    startup-after-shutdown; EngineHost panics (worker-driven, noexcept
+    shutdown).  + 9 L2 HubHost tests + 12 L2 RoleHostBase tests + 3
+    L3 integration tests.
+  - HEP-0033 §4 doc updated (`536e129` + `9822ce4`): §4.3 phase FSM
+    contract; §4.1/§4.2 step lists reference phase mutations;
+    terminology disambiguates HubHost's phase FSM from process-wide
+    `LifecycleGuard` modules.
+- **Phase 6.2 — `AdminService` structured RPC (§11).**  Pending.
+  Token-validated REP socket; thin wrapper that calls `host.broker()`
+  mutators directly (acceptance gate at the RPC entry point per §11.3).
+  Retires the legacy `AdminShell` dep.  L3 tests for each RPC method.
 - G2.3 — `HubAPI` read accessors only (script can query state, not mutate).
 - G2.4 — `HubAPI` mutation wrappers; remove `close_request_queue_` /
   `broadcast_request_queue_` / `hub_targeted_queue_` ad-hoc queues.
