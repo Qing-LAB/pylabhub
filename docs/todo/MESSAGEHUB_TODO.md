@@ -10,7 +10,16 @@
 
 ## Current Status
 
-✅ **1677/1677 tests (2026-05-01).** HEP-CORE-0033 Phase 6.1 complete:
+🟡 **Phase 6.2a shipped; Phase 6.2b/c BLOCKED on test-correctness audit.**
+See `docs/code_review/REVIEW_TestAudit_2026-05-01.md` (top-priority
+ground-truth tracker; §11 contains the hub-resume bookmark).  Phase 6.2b/c
+implementation cannot start until audit Phase 1 (L2 service tests for
+code touched in this branch) closes.
+
+✅ **1697/1697 tests at commit `db9f8f9`.**  AdminService Phase 6.2a
+skeleton + LogCaptureFixture integration shipped.
+
+✅ **1677/1677 tests (2026-05-01 morning).** HEP-CORE-0033 Phase 6.1 complete:
 HubHost concrete class shipped with `Constructed → Running → ShutDown`
 phase FSM (single-use after shutdown, retryable on failed startup,
 CAS-driven, idempotent).  Same FSM applied to `EngineHost<ApiT>` on

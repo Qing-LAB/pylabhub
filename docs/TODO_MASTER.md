@@ -22,9 +22,19 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
-### Snapshot — 2026-05-01
+### Snapshot — 2026-05-01 (afternoon)
 
-**Full suite: 1677/1677.**  Branch `feature/lua-role-support`.  Last commits:
+**Full suite: 1697/1697 last verified at commit `db9f8f9`** (10 new
+AdminService tests added Phase 6.2a).  Branch `feature/lua-role-support`.
+
+**Active blockers — DO NOT advance Phase 6.2b/c without addressing:**
+- Test-correctness audit (`docs/code_review/REVIEW_TestAudit_2026-05-01.md`)
+  Phase 1 (L2 service tests for code I touched) must close.  Three
+  bug classes documented; two real incidents already fixed; rest of
+  the 1687-test suite NOT yet verified.  See that doc §11 for the
+  hub-resume bookmark.
+
+  Last commits:
 `9822ce4`/`536e129` (HEP-0033 §4 doc — phase FSM ratified), `70cd6cc`
 (test name cosmetic — `PrintTo(RoleSpec)`), `0d728ea` (3-phase
 start/stop FSM on EngineHost + HubHost — `Constructed → Running →
@@ -545,11 +555,22 @@ Completed:
 | Hub Federation Broadcast | ✅ Complete | `docs/HEP/HEP-CORE-0022-Hub-Federation-Broadcast.md` | **HEP-0022 fully implemented (2026-03-06).** HUB_PEER_HELLO/ACK/BYE, HUB_RELAY_MSG, dedup window, channel_to_peer_identities_ index, HubScript federation callbacks (on_hub_connected/disconnected/message, api.notify_hub). |
 
 **Active code reviews:**
+- `REVIEW_TestAudit_2026-05-01.md` — **TOP PRIORITY** full-codebase
+  test-correctness audit; ground-truth tracker for three failure
+  classes (outcome-only assertions, sleep-ordering, discarded
+  timeout returns) + LogCaptureFixture rollout.  §11 preserves
+  hub-implementation state (Phase 6.2a shipped; 6.2b/c blocked on
+  audit Phase 1 acceptance).  This file is the resume bookmark
+  during the audit and after.
+- `REVIEW_CatchBlocks_2026-05-01.md` — production-code catch sweep
+  (226 catches across `src/`); paired with TestAudit, must close
+  together.
 - `REVIEW_AdminService_2026-05-01.md` — Phase 6.2 pre-implementation
   audit: §11.2 method-readiness matrix (10 unblocked / 6 deferred to
   HEP-0035 + Phase 7 + small new mutator), 6.2a/b/c sub-phase split,
   3 wiring decisions (vault→HubHost, ipc/ vs service/ placement,
-  hub init_directory template). 8 open action items.
+  hub init_directory template).  6.2a ✅ shipped (commits `5f652d2`,
+  `db9f8f9`); 6.2b / 6.2c PENDING — gated by `REVIEW_TestAudit` Phase 1.
 
 (Previously closed and archived to `docs/archive/transient-2026-03-12/`.)
 
