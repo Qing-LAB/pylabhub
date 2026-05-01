@@ -1,6 +1,7 @@
 /**
  * @file hub_host.cpp
- * @brief HubHost — lifecycle owner (HEP-CORE-0033 §4).
+ * @brief HubHost — start/stop owner for the hub binary
+ *        (HEP-CORE-0033 §4).  Not a `LifecycleGuard` module.
  */
 #include "utils/hub_host.hpp"
 
@@ -35,8 +36,37 @@ struct HubHost::Impl
     std::unique_ptr<broker::BrokerService>     broker;       // built in startup()
     std::unique_ptr<utils::ThreadManager>      thread_mgr;   // built in startup()
 
+    /// Start/stop run-state FSM — monotonic transitions
+    /// `Constructed → Running → ShutDown`.  CAS-based transitions in
+    /// `startup()` / `shutdown()` make both race-free; the contract
+    /// still expects a single-driver caller, but accidental
+    /// concurrent calls resolve cleanly.  See HEP-CORE-0033 §4.1/§4.2
+    /// for the ordered protocol steps these transitions enforce.
+    ///
+    /// Note: this is NOT related to `LifecycleGuard` — HubHost is not
+    /// a `LifecycleGuard` module (its `LifecycleModule::Init/Shutdown`
+    /// hooks are not used).  This `phase` field tracks the host's own
+    /// start/stop state; the `LifecycleGuard` system manages
+    /// independent process-wide modules (Logger, ZMQContext, …) and is
+    /// installed by the binary `main` BEFORE constructing HubHost.
+    ///
+    /// Member is named `phase` (not `state`) to avoid shadowing the
+    /// @c HubState value member directly above — `state` is the
+    /// protocol/data state owned by the hub, while `phase` is the
+    /// run-state of this host instance.
+    enum class Phase : uint8_t
+    {
+        Constructed,  // initial; startup() never succeeded
+        Running,      // startup() succeeded; cleanup pending
+        ShutDown,     // shutdown() called; terminal — single-use
+    };
+    std::atomic<Phase>                         phase{Phase::Constructed};
+
+    // Wake-up signal for run_main_loop().  Distinct from `phase`
+    // because run_main_loop wakes on `request_shutdown()` (which
+    // sets the flag) BEFORE phase transitions to ShutDown (which
+    // happens later in `shutdown()`).
     std::atomic<bool>                          shutdown_flag{false};
-    std::atomic<bool>                          running{false};
 
     // Bound endpoint + pubkey, populated when the broker fires
     // `on_ready` (post-bind, pre-poll-loop).  startup() blocks on the
@@ -62,7 +92,9 @@ HubHost::HubHost(config::HubConfig cfg)
 HubHost::~HubHost()
 {
     // Idempotent shutdown if the caller didn't run it explicitly.
-    if (impl_ && impl_->running.load(std::memory_order_acquire))
+    if (impl_ &&
+        impl_->phase.load(std::memory_order_acquire) ==
+            Impl::Phase::Running)
     {
         try
         {
@@ -82,13 +114,27 @@ HubHost::~HubHost()
 }
 
 // ============================================================================
-// Lifecycle
+// Start / stop  (NOT a LifecycleGuard module — see Impl::phase comment)
 // ============================================================================
 
 void HubHost::startup()
 {
-    if (impl_->running.load(std::memory_order_acquire))
-        return; // idempotent: already running
+    // Phase FSM: Constructed → Running.  CAS rejects re-entry from
+    // Running (idempotent no-op) and from ShutDown (single-use after
+    // shutdown — construct a new HubHost).
+    Impl::Phase expected = Impl::Phase::Constructed;
+    if (!impl_->phase.compare_exchange_strong(
+            expected, Impl::Phase::Running,
+            std::memory_order_acq_rel))
+    {
+        if (expected == Impl::Phase::Running)
+            return; // idempotent: already running
+        // expected == Impl::Phase::ShutDown
+        throw std::logic_error(
+            "HubHost::startup() called after shutdown() — this host "
+            "instance is single-use.  Construct a new HubHost instance "
+            "to start fresh.");
+    }
 
     // Build BrokerService::Config from HubConfig.
     broker::BrokerService::Config bcfg;
@@ -145,7 +191,9 @@ void HubHost::startup()
     };
 
     // Cleanup helper used by every failure branch below.  Must be
-    // safe regardless of how far startup() got.
+    // safe regardless of how far startup() got.  Restores the phase
+    // to Constructed so the caller can retry after fixing whatever
+    // caused the failure (e.g., port collision).
     auto rollback_partial_startup = [this]() noexcept {
         try
         {
@@ -158,7 +206,8 @@ void HubHost::startup()
         impl_->bound_endpoint.clear();
         impl_->bound_pubkey.clear();
         impl_->shutdown_flag.store(false, std::memory_order_release);
-        impl_->running.store(false, std::memory_order_release);
+        impl_->phase.store(Impl::Phase::Constructed,
+                            std::memory_order_release);
     };
 
     try
@@ -210,7 +259,8 @@ void HubHost::startup()
         throw;
     }
 
-    impl_->running.store(true, std::memory_order_release);
+    // Phase was already set to Running by the CAS at the top of this
+    // function.  Reaching here means the broker is bound and ready.
     LOGGER_INFO("[HubHost:{}] startup complete (broker on {})",
                 impl_->cfg.identity().uid, impl_->bound_endpoint);
 }
@@ -227,8 +277,19 @@ void HubHost::run_main_loop()
 
 void HubHost::shutdown()
 {
-    if (!impl_->running.load(std::memory_order_acquire))
-        return; // idempotent: not running, nothing to stop
+    // Phase FSM: Running → ShutDown.  CAS makes the transition
+    // race-free; only the first effective caller does the cleanup
+    // work.  Other concurrent callers (or repeated calls after
+    // ShutDown) early-return without touching state.
+    Impl::Phase expected = Impl::Phase::Running;
+    if (!impl_->phase.compare_exchange_strong(
+            expected, Impl::Phase::ShutDown,
+            std::memory_order_acq_rel))
+    {
+        // Either Constructed (never started — nothing to stop) or
+        // already ShutDown (idempotent).  Either way, no-op.
+        return;
+    }
 
     LOGGER_INFO("[HubHost:{}] shutdown initiated",
                 impl_->cfg.identity().uid);
@@ -262,7 +323,6 @@ void HubHost::shutdown()
         }
     }
 
-    impl_->running.store(false, std::memory_order_release);
     LOGGER_INFO("[HubHost:{}] shutdown complete",
                 impl_->cfg.identity().uid);
 }
@@ -292,7 +352,8 @@ void HubHost::request_shutdown() noexcept
 
 bool HubHost::is_running() const noexcept
 {
-    return impl_->running.load(std::memory_order_acquire);
+    return impl_->phase.load(std::memory_order_acquire) ==
+           Impl::Phase::Running;
 }
 
 // ============================================================================

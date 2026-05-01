@@ -1,7 +1,12 @@
 #pragma once
 /**
  * @file engine_host.hpp
- * @brief EngineHost<ApiT> — template base for script-hosting lifecycle.
+ * @brief EngineHost<ApiT> — template base for script-hosting start/stop.
+ *
+ * Not a `LifecycleGuard` module — the host's own start/stop is invoked
+ * directly by the binary's main (or by tests), distinct from the
+ * process-wide `LifecycleGuard` modules (Logger, ZMQContext, …) that
+ * must be active before any EngineHost is constructed.
  *
  * (Renamed from `role_host_base.hpp` on 2026-04-23 alongside the
  * HEP-CORE-0033 G1 refactor that promoted the former `RoleHostBase`
@@ -9,8 +14,8 @@
  * EngineHost<RoleAPIBase>` at the bottom of this header preserves
  * source-level compatibility for role-side callers.)
  *
- * Unifies the public lifecycle surface that binaries (`plh_role`, future
- * `plh_hub`) call on a script host:
+ * Unifies the public start/stop surface that binaries (`plh_role`,
+ * future `plh_hub`) call on a script host:
  *
  *     construct → startup_() → (is_running()/wait_for_wakeup() loop) → shutdown_()
  *
@@ -27,7 +32,7 @@
  * Each concrete host (Producer/Consumer/Processor for role side, HubHost
  * for hub side) derives from the appropriate typedef and implements a
  * single pure virtual hook, @ref worker_main_, which runs the full
- * engine-and-broker lifecycle on the host's worker thread.
+ * engine-and-broker run loop on the host's worker thread.
  *
  * Base owns shared state (role_tag, config, engine, RoleHostCore, ApiT,
  * ready-promise). Derived owns role/hub-specific state (schemas, queues,
@@ -117,9 +122,9 @@ class PYLABHUB_UTILS_EXPORT EngineHost
     /// is nothing to clean up.
     ///
     /// **Contract enforcement**:
-    /// The body checks the @c shutdown_called_ flag set by @ref shutdown_
-    /// and calls `std::abort()` with a clear diagnostic if the flag was
-    /// never set. No silent fallback — programmer error (a missed
+    /// The body checks `phase_` and calls `std::abort()` with a clear
+    /// diagnostic if the host is destroyed while still in the
+    /// `Running` phase.  No silent fallback — programmer error (a missed
     /// @ref shutdown_ call or an override that did not forward to
     /// `EngineHost::shutdown_()`) is surfaced loudly.
     virtual ~EngineHost() = 0;
@@ -135,7 +140,7 @@ class PYLABHUB_UTILS_EXPORT EngineHost
     /// Must be called before @ref startup.
     void set_validate_only(bool v) { core_.set_validate_only(v); }
 
-    // ── Lifecycle ────────────────────────────────────────────────────────
+    // ── Start / Stop  (not a LifecycleGuard module) ─────────────────────
 
     /// Spawn worker thread via api_->thread_manager(); block until ready
     /// (or the worker signals failure). Constructs @ref api lazily so the
@@ -199,7 +204,7 @@ class PYLABHUB_UTILS_EXPORT EngineHost
     // ── Virtual hook (derived must implement) ────────────────────────────
 
     /// Worker thread entry point. Runs the full engine + data-loop
-    /// lifecycle (schema resolve → infra → engine_lifecycle_startup →
+    /// sequence (schema resolve → infra → engine_lifecycle_startup →
     /// on_init → broker register → ready_promise_.set_value → data loop →
     /// on_stop → finalize → teardown → thread_manager().drain()).
     ///
@@ -221,12 +226,32 @@ class PYLABHUB_UTILS_EXPORT EngineHost
 
     std::promise<bool>             ready_promise_;
 
-    // Contract-enforcement flag. Set by the first effective call to
-    // @ref shutdown_ via a CAS exchange. Read by the destructor to
-    // detect missing-shutdown bugs. Atomic because @ref shutdown_ may
-    // be invoked from a signal handler / other thread before the dtor
-    // runs on the owning thread.
-    std::atomic<bool>              shutdown_called_{false};
+    /// Start/stop run-state FSM.  Transitions are monotonic:
+    /// `Constructed → Running → ShutDown`.  Once `ShutDown`, this
+    /// instance is single-use — `startup_()` after `shutdown_()`
+    /// panics.  A failed `startup_()` rolls back to `Constructed`
+    /// (the throw path resets the phase) so the user may retry after
+    /// fixing the underlying problem.
+    ///
+    /// CAS-based transitions in `startup_` / `shutdown_` make both
+    /// methods race-free under concurrent calls; the contract still
+    /// expects a single-driver caller, but accidental concurrent
+    /// invocations resolve to "first wins, others are no-ops" rather
+    /// than corrupting state.
+    ///
+    /// **Not related to `LifecycleGuard`.**  EngineHost is not a
+    /// `LifecycleGuard` module; its start/stop is invoked directly by
+    /// the binary's main (or by tests) — `LifecycleGuard` modules
+    /// (Logger, FileLock, etc.) are independent and managed
+    /// separately.  The name `phase_` is chosen to keep this
+    /// distinction visible at every read/write site.
+    enum class Phase : uint8_t
+    {
+        Constructed,
+        Running,
+        ShutDown,
+    };
+    std::atomic<Phase>             phase_{Phase::Constructed};
 };
 
 // ── Backward-compatible alias for the role-side instantiation ───────────────
