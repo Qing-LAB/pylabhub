@@ -38,6 +38,15 @@ int dynamic_persistent_module_finalize();
 int dynamic_persistent_in_middle();
 int dynamic_unload_timeout();
 
+// --- Owner-managed teardown (HEP-CORE-0001 §"Owner-managed teardown") ---
+// Validator-fail at unload time + `set_owner_managed_teardown(true)` →
+// success-without-callback (graph cleaned, no contamination, no WARN).
+int dynamic_owner_managed_teardown_clean_unload();
+// Validator-fail at unload time WITHOUT the opt-in flag → HEP-0001
+// default anomaly (FAILED_SHUTDOWN, contaminated, retained in graph,
+// re-registration with same name fails).
+int dynamic_validator_fail_default_anomaly();
+
 // --- Log sink injection tests ---
 int log_sink_routes_warning();
 int log_sink_cleared_uses_fallback();

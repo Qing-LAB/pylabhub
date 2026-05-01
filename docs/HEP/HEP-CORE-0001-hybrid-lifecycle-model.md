@@ -346,6 +346,49 @@ enum class DynamicModuleStatus {
 
 Cycle detection during `load_module` uses `LOADING` to detect recursive load.
 
+### Owner-managed teardown — opt-in exception to "validator-fail = anomaly"
+
+By default, a userdata-validator returning false at unload time is treated as an **anomaly**: the lifecycle layer logs a WARN, marks the module contaminated, sets status `FAILED_SHUTDOWN`, and retains the entry in the graph for diagnostics. `wait_for_unload` reflects this via `ShutdownFailed`.  Re-registering with the same name fails because the entry persists.
+
+A **module owner** (a C++ class whose destructor performs the real teardown synchronously, with the registered shutdown callback being a contractual no-op) can opt out of this anomaly classification by calling:
+
+```cpp
+ModuleDef mod(name, this, my_validator);
+mod.set_startup(...);
+mod.set_shutdown(my_shutdown_noop, timeout);
+mod.set_owner_managed_teardown(true);  // opt-in flag
+LifecycleManager::instance().register_dynamic_module(std::move(mod));
+```
+
+When the flag is `true`, a validator-fail at unload time is treated as a **success-without-callback**:
+
+| Aspect                        | Default (flag `false`)             | Owner-managed (flag `true`)         |
+|-------------------------------|------------------------------------|-------------------------------------|
+| Logged severity               | WARN                               | DEBUG                               |
+| Module status                 | `FAILED_SHUTDOWN`                  | (entry removed)                     |
+| Contamination                 | yes                                | no                                  |
+| Graph entry retention         | retained                           | erased                              |
+| `wait_for_unload` outcome     | (closure not cleaned, eventually `Unloading` after timeout) | `NotRegistered` (clean) |
+| Re-registration with same name| fails (entry persists)             | succeeds                            |
+| Cascaded dependency unload    | halted ("destabilized" warning)    | propagates as in success path       |
+
+**When to use the flag:**
+
+- The module's registered shutdown callback is documented to be a no-op (cannot mutate state) AND
+- The C++ owner's destructor performs the real teardown synchronously BEFORE letting the validator return false, AND
+- The validator's only failure mode is the owner's deliberate "I'm gone, skip my callback" signal — not arbitrary memory corruption.
+
+The canonical example is `pylabhub::utils::ThreadManager`: its destructor calls `drain()` (synchronous bounded-join of all spawned threads) BEFORE flipping `impl_alive=false`; the lifecycle-dispatched `tm_shutdown` thunk is a documented no-op (see `src/utils/service/thread_manager.cpp::tm_shutdown` and `tm_impl_validate`). Without the flag, every `~ThreadManager` would log a WARN as the lifecycle layer treated the deliberate validator-fail as anomaly.
+
+**When NOT to use the flag:**
+
+- If the validator's failure could mean genuine corruption (memory bug, double-destroy, bad userdata pointer), the flag would silently mask it. Modules with that failure-mode profile must NOT opt in — keep the default anomaly classification so corruption surfaces as a WARN.
+
+**Implementation:**
+- Field on `ModuleDef` (and persisted into `InternalModuleDef` / `InternalGraphNode`).
+- `processOneUnloadInThread` reads the flag in Step 1 and branches in the validator-fail block — the owner-managed branch performs the same graph cleanup as the success path via the shared `cleanupAfterUnload_` helper.
+- See `src/utils/service/lifecycle_dynamic.cpp` for the implementation; `tests/test_layer2_service/test_lifecycle_dynamic.cpp` covers both branches.
+
 ---
 
 ## Sequence of operations

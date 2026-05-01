@@ -548,6 +548,7 @@ void LifecycleManagerImpl::processOneUnloadInThread(const std::string &node_name
     UserDataValidateFn ud_validate{nullptr};
     void *ud_ptr{nullptr};
     std::vector<std::string> deps_copy;
+    bool owner_managed_teardown = false;
     {
         std::lock_guard<std::mutex> lock(m_graph_mutation_mutex);
         auto module_iterator = m_module_graph.find(node_name);
@@ -569,11 +570,54 @@ void LifecycleManagerImpl::processOneUnloadInThread(const std::string &node_name
         ud_key = node.userdata_key;
         ud_validate = node.userdata_validate;
         ud_ptr = node.userdata;
+        owner_managed_teardown = node.owner_managed_teardown;
     }
 
     // Step 1b: Validate userdata before shutdown if configured.
     if (ud_key != 0 && ud_validate && !ud_validate(ud_ptr, ud_key))
     {
+        if (owner_managed_teardown)
+        {
+            // The owner has cleared its userdata as a deliberate signal
+            // ("I've torn myself down, skip my no-op callback"), per
+            // the `ModuleDef::set_owner_managed_teardown(true)` opt-in.
+            // Treat as a success-without-callback: run the same graph
+            // cleanup the success path runs, so the module name is freed
+            // for re-registration (e.g. an owner that constructs a new
+            // instance with the same name after a failed/aborted run).
+            // No `FAILED_SHUTDOWN`, no contamination, no WARN.
+            //
+            // Closure cleanup (matches the unconditional cleanup the
+            // success/failure path does at the head of Step 3): we are
+            // an early return, so we must do it ourselves before
+            // notifying the wait CV.
+            PLH_DEBUG("processOneUnloadInThread: '{}' owner-managed teardown — "
+                      "skipping no-op callback, performing graph cleanup.", node_name);
+            std::vector<std::string> deps_to_process;
+            {
+                std::lock_guard<std::mutex> lock(m_graph_mutation_mutex);
+                for (auto cit = m_pending_unload_closures.begin();
+                     cit != m_pending_unload_closures.end();)
+                {
+                    cit->second.erase(node_name);
+                    if (cit->second.empty())
+                        cit = m_pending_unload_closures.erase(cit);
+                    else
+                        ++cit;
+                }
+                cleanupAfterUnload_(node_name, deps_copy, deps_to_process);
+                m_unload_complete_cv.notify_all();
+            }
+            // Step 4-equivalent: recursively process deps that hit
+            // ref_count 0 — outside the lock.
+            for (const auto &dep_name : deps_to_process)
+            {
+                processOneUnloadInThread(dep_name);
+            }
+            return;
+        }
+
+        // HEP-CORE-0001 default: validator-fail = anomaly.
         lifecycleWarn("processOneUnloadInThread: '{}' userdata validation failed — "
                       "skipping shutdown callback", node_name);
         // Mark contaminated — proceed to cleanup without running callback.
@@ -618,55 +662,7 @@ void LifecycleManagerImpl::processOneUnloadInThread(const std::string &node_name
         {
             PLH_DEBUG("processOneUnloadInThread: '{}' shut down successfully. Removing from graph.",
                       node_name);
-            m_marked_for_unload.erase(node_name);
-
-            // Clean up this node's entry in each dependency's `dependents` list.
-            // NOTE: m_module_graph.erase(module_iterator) at line 605 runs AFTER this loop
-            // completes, so all `n->name` dereferences inside the lambda are valid — the
-            // removed node's map entry still exists for the duration of this loop.
-            if (module_iterator != m_module_graph.end())
-            {
-                for (const auto &dep_name : deps_copy)
-                {
-                    auto dep_it = m_module_graph.find(dep_name);
-                    if (dep_it != m_module_graph.end())
-                    {
-                        auto &dependents_list = dep_it->second.dependents;
-                        dependents_list.erase(std::remove_if(dependents_list.begin(), dependents_list.end(),
-                                                [&node_name](InternalGraphNode *n)
-                                                { return n->name == node_name; }),
-                                 dependents_list.end());
-                    }
-                }
-                m_module_graph.erase(module_iterator);
-            }
-
-            recalculateReferenceCounts();
-
-            // Collect deps in the closure whose ref_count has now dropped to 0.
-            for (const auto &dep_name : deps_copy)
-            {
-                auto dep_it = m_module_graph.find(dep_name);
-                if (dep_it == m_module_graph.end())
-                {
-                    continue;
-                }
-                const InternalGraphNode &dep = dep_it->second;
-                if (!dep.is_dynamic || dep.is_persistent)
-                {
-                    continue;
-                }
-                if (dep.dynamic_status.load(std::memory_order_acquire) !=
-                    DynamicModuleStatus::UNLOADING)
-                {
-                    continue; // Not in the closure.
-                }
-                if (dep.ref_count.load(std::memory_order_acquire) > 0)
-                {
-                    continue; // Still referenced by another loaded module.
-                }
-                deps_to_process.push_back(dep_name);
-            }
+            cleanupAfterUnload_(node_name, deps_copy, deps_to_process);
         }
         else
         {
@@ -841,6 +837,82 @@ void LifecycleManagerImpl::recalculateReferenceCounts()
                 }
             }
         }
+    }
+}
+
+// ============================================================================
+// cleanupAfterUnload_  (helper shared by success path + owner-managed branch)
+// ============================================================================
+//
+// Caller MUST hold `m_graph_mutation_mutex` for the full duration of this
+// call.  The caller invokes `processOneUnloadInThread` on each name in
+// @p deps_to_process AFTER releasing the mutex (see Step 4 in
+// processOneUnloadInThread).
+//
+// This is the post-callback cleanup that the SUCCESS path runs and that the
+// OWNER-MANAGED-TEARDOWN validator-fail branch also runs (since both treat
+// the module as cleanly torn down — the owner-managed case skips the
+// callback because it is contractually a no-op for owner-managed modules,
+// while the success case ran the callback to completion).  Extracted from
+// the success path verbatim so the two paths are guaranteed to maintain
+// identical graph state.
+//
+void LifecycleManagerImpl::cleanupAfterUnload_(
+    const std::string              &node_name,
+    const std::vector<std::string> &deps_copy,
+    std::vector<std::string>       &deps_to_process)
+{
+    m_marked_for_unload.erase(node_name);
+
+    // Remove this node's entry in each dependency's `dependents` list,
+    // then erase the node from the graph.  Order matters: the dependents
+    // loop runs BEFORE m_module_graph.erase so the lambda's `n->name`
+    // references stay valid (the removed node's entry persists for the
+    // duration of the loop).
+    auto module_iterator = m_module_graph.find(node_name);
+    if (module_iterator != m_module_graph.end())
+    {
+        for (const auto &dep_name : deps_copy)
+        {
+            auto dep_it = m_module_graph.find(dep_name);
+            if (dep_it != m_module_graph.end())
+            {
+                auto &dependents_list = dep_it->second.dependents;
+                dependents_list.erase(
+                    std::remove_if(dependents_list.begin(), dependents_list.end(),
+                                   [&node_name](InternalGraphNode *n)
+                                   { return n->name == node_name; }),
+                    dependents_list.end());
+            }
+        }
+        m_module_graph.erase(module_iterator);
+    }
+
+    recalculateReferenceCounts();
+
+    // Collect deps in the closure whose ref_count has now dropped to 0.
+    for (const auto &dep_name : deps_copy)
+    {
+        auto dep_it = m_module_graph.find(dep_name);
+        if (dep_it == m_module_graph.end())
+        {
+            continue;
+        }
+        const InternalGraphNode &dep = dep_it->second;
+        if (!dep.is_dynamic || dep.is_persistent)
+        {
+            continue;
+        }
+        if (dep.dynamic_status.load(std::memory_order_acquire) !=
+            DynamicModuleStatus::UNLOADING)
+        {
+            continue; // Not in the closure.
+        }
+        if (dep.ref_count.load(std::memory_order_acquire) > 0)
+        {
+            continue; // Still referenced by another loaded module.
+        }
+        deps_to_process.push_back(dep_name);
     }
 }
 

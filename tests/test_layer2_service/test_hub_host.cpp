@@ -23,6 +23,7 @@
 
 #include "utils/hub_host.hpp"
 
+#include "log_capture_fixture.h"
 #include "plh_service.hpp"
 #include "utils/broker_service.hpp"
 #include "utils/config/hub_config.hpp"
@@ -98,7 +99,8 @@ void write_test_hub_json(const fs::path &dir, const std::string &name)
 
 // ─── Test fixture ──────────────────────────────────────────────────────────
 
-class HubHostTest : public ::testing::Test
+class HubHostTest : public ::testing::Test,
+                     public pylabhub::tests::LogCaptureFixture
 {
 public:
     static void SetUpTestSuite()
@@ -121,8 +123,18 @@ public:
     static void TearDownTestSuite() { s_lifecycle_.reset(); }
 
 protected:
+    void SetUp() override
+    {
+        // Capture log output for the duration of each test.  Tests
+        // that drive a known warning path declare it via
+        // ExpectLogWarn(...).  Anything else is a failure.
+        LogCaptureFixture::Install();
+    }
+
     void TearDown() override
     {
+        AssertNoUnexpectedLogWarnError();
+        LogCaptureFixture::Uninstall();
         for (const auto &p : paths_to_clean_)
         {
             std::error_code ec;
