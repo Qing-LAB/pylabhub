@@ -25,15 +25,15 @@ for a file IN THE SAME COMMIT that fixes the file.
 
 | # | File | A | B | C | D | Verification / Notes |
 |---|------|---|---|---|---|----------------------|
-| L1-01 | `test_layer1_base/test_backoff_strategy.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L1-02 | `test_layer1_base/test_debug_info.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L1-03 | `test_layer1_base/test_formattable.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L1-04 | `test_layer1_base/test_module_def.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L1-05 | `test_layer1_base/test_portable_atomic_shared_ptr.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L1-06 | `test_layer1_base/test_recursionguard.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L1-07 | `test_layer1_base/test_result.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L1-08 | `test_layer1_base/test_scopeguard.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L1-09 | `test_layer1_base/test_spinlock.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L1-01 | `test_layer1_base/test_backoff_strategy.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Class A: no EXPECT_THROW.  Class B: no sleep_for (only a comment-reference at line 6 documenting Windows clock resolution).  Class C: no timeout-bearing return discards. |
+| L1-02 | `test_layer1_base/test_debug_info.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean — no Class A/B/C concerns. |
+| L1-03 | `test_layer1_base/test_formattable.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean. |
+| L1-04 | `test_layer1_base/test_module_def.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Class A: 4 EXPECT_THROW with specific types (`std::invalid_argument` for empty name, `std::length_error` for over-long).  Each ctor scenario throws a distinct type → type-discriminating, acceptable per audit §1.1.  5 EXPECT_NO_THROW used to assert valid inputs are accepted (the contract is no-throw).  Class B/C: clean. |
+| L1-05 | `test_layer1_base/test_portable_atomic_shared_ptr.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean. |
+| L1-06 | `test_layer1_base/test_recursionguard.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean. |
+| L1-07 | `test_layer1_base/test_result.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Class A: 3 EXPECT_THROW with `std::logic_error` for `Result::content()` / `Result::error()` / `Result::error_code()` accessor mis-use.  Each throws `logic_error` from a single wrong-state-access path → type-discriminating.  Class B/C: clean. |
+| L1-08 | `test_layer1_base/test_scopeguard.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Class A: 1 EXPECT_THROW(`std::runtime_error`) at line 238 testing `invoke_and_rethrow` which by contract rethrows the deferred exception — type matches the test's deliberately-thrown runtime_error.  4 EXPECT_NO_THROW gate the no-throw contract for normal scope-guard paths.  Class B/C: clean. |
+| L1-09 | `test_layer1_base/test_spinlock.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Class B: 1 sleep_for at line 135 (`rng() & 0xFF` microseconds) — randomized stress jitter inside a contention test loop.  Class A/C: clean. |
 
 ## Layer 2 — service tests  (81 files)
 
