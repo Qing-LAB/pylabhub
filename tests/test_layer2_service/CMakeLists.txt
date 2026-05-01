@@ -715,6 +715,38 @@ gtest_discover_tests(test_layer2_hub_host
 )
 
 # ============================================================================
+# Test: AdminService skeleton (HEP-CORE-0033 §11 / Phase 6.2a)
+# Pattern 2 — in-process LifecycleGuard, REP socket round-trip via the
+# shared ZMQ context.  Mirrors test_layer2_hub_host shape.
+# ============================================================================
+
+add_executable(test_layer2_admin_service
+    test_admin_service.cpp
+)
+
+target_link_libraries(test_layer2_admin_service
+    PRIVATE
+        pylabhub::utils
+        pylabhub::third_party::cppzmq
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_admin_service)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_admin_service
+    SUITE_NAME "Layer2_AdminService"
+)
+layer2_require_staged_utils(test_layer2_admin_service)
+
+gtest_discover_tests(test_layer2_admin_service
+    PROPERTIES
+        LABELS "layer2;service;admin"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: role_cli::parse_role_args + ParseResult (in-process, no std::exit)
 # ============================================================================
 

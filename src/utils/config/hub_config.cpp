@@ -179,6 +179,7 @@ bool HubConfig::load_keypair(const std::string &password)
     const auto vault = utils::HubVault::open(hub_dir, uid, password);
     auth.client_pubkey = vault.broker_curve_public_key();
     auth.client_seckey = vault.broker_curve_secret_key();
+    impl_->admin.admin_token = vault.admin_token();
     std::fprintf(stderr, "[hub] Loaded vault from '%s' (pubkey: %.8s...)\n",
                  (hub_dir / "hub.vault").string().c_str(),
                  vault.broker_curve_public_key().c_str());
