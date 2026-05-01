@@ -230,8 +230,10 @@ constructing a new `HubHost`.
 5. **Construct BrokerService** bound to `HubHost::state_` by
    reference (HEP-0033 §4 ownership invariant).
 6. **Construct ThreadManager** with `owner_tag="HubHost"`,
-   `owner_id=cfg.identity().uid`.  Auto-registers as the dynamic
-   lifecycle module `"ThreadManager:HubHost:<uid>"`.
+   `owner_id=cfg.identity().uid`.  Auto-registers as a dynamic
+   `LifecycleGuard` module `"ThreadManager:HubHost:<uid>"` (this IS
+   a `LifecycleGuard` interaction — distinct from HubHost's own
+   phase FSM in §4.3).
 7. **Spawn broker thread** via `thread_mgr.spawn("broker", broker.run)`.
    Thread enters `BrokerService::run()`, binds the ROUTER socket,
    fires `on_ready`, enters the poll loop.
