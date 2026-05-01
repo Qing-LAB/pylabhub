@@ -14,12 +14,12 @@ for a file IN THE SAME COMMIT that fixes the file.
 
 | # | File | A | B | C | D | Verification / Notes |
 |---|------|---|---|---|---|----------------------|
-| L0-01 | `test_layer0_platform/test_abi_check.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L0-02 | `test_layer0_platform/test_platform_core.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L0-03 | `test_layer0_platform/test_platform_debug.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L0-04 | `test_layer0_platform/test_platform_sanitizers.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L0-05 | `test_layer0_platform/test_platform_shm.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L0-06 | `test_layer0_platform/test_uuid_and_format.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L0-01 | `test_layer0_platform/test_abi_check.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean. |
+| L0-02 | `test_layer0_platform/test_platform_core.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Class B: 2 sleep_for at lines 100/138 — both are test stimuli for the platform monotonic-time API (measuring elapsed time across a known-duration sleep).  The sleep IS the test condition.  Class A/C: clean. |
+| L0-03 | `test_layer0_platform/test_platform_debug.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean. |
+| L0-04 | `test_layer0_platform/test_platform_sanitizers.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean. |
+| L0-05 | `test_layer0_platform/test_platform_shm.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean. |
+| L0-06 | `test_layer0_platform/test_uuid_and_format.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Clean. |
 
 ## Layer 1 — base tests  (9 files)
 
