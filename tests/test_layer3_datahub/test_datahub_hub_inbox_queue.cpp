@@ -226,7 +226,13 @@ TEST_F(InboxQueueTest, SenderUid_IsPreserved)
     });
 
     std::this_thread::sleep_for(ms{30});
-    c->send(ms{1500});
+    // ACK code 0 = success ack from server (recv_one + send_ack(0)).
+    // Discarding this return is a Class C silent-failure: a send
+    // timeout would leave the test green if the recv future also
+    // happened to set `item` non-null via a different path.  Per
+    // REVIEW_TestAudit_2026-05-01.md §1.3, capture and assert.
+    const uint8_t ack = c->send(ms{1500});
+    EXPECT_EQ(ack, 0u) << "send timed out or got non-zero ack=" << static_cast<int>(ack);
 
     ASSERT_TRUE(fut.get());
     ASSERT_NE(item, nullptr);
@@ -384,10 +390,23 @@ TEST_F(InboxQueueTest, SchemaMismatch_DifferentType_DropsFrame)
     const InboxItem *item = nullptr;
     auto fut = std::async(std::launch::async, [&] {
         item = q->recv_one(ms{500});
+        // Ack only when the server accepted the frame.  This makes the
+        // ack=255 assert below sensitive to the regression "server
+        // failed to drop": if a bad frame leaks through, recv_one
+        // returns it, send_ack(0) fires, client gets ack=0 → assert
+        // fails.  Without this ack-when-non-null branch the ack would
+        // time out regardless of whether the server dropped, making
+        // the new assert toothless.
+        if (item) q->send_ack(0);
         return item != nullptr;
     });
     std::this_thread::sleep_for(ms{30});
-    c->send(ms{1500});
+    // Receiver rejects the schema-mismatched frame → recv_one returns
+    // null → no send_ack → client send TIMES OUT (ack=255).  A
+    // regression that fails to drop would surface as ack=0 here.
+    const uint8_t ack = c->send(ms{1500});
+    EXPECT_EQ(ack, 255u) << "expected ACK timeout (255) on rejected frame; got "
+                          << static_cast<int>(ack);
 
     // Frame should be dropped due to schema tag mismatch.
     EXPECT_FALSE(fut.get()) << "Schema mismatch: recv_one should reject";
@@ -418,10 +437,13 @@ TEST_F(InboxQueueTest, SchemaMismatch_DifferentSize_DropsFrame)
     const InboxItem *item = nullptr;
     auto fut = std::async(std::launch::async, [&] {
         item = q->recv_one(ms{500});
+        if (item) q->send_ack(0); // see SchemaMismatch_DifferentType for rationale
         return item != nullptr;
     });
     std::this_thread::sleep_for(ms{30});
-    c->send(ms{1500});
+    const uint8_t ack = c->send(ms{1500});
+    EXPECT_EQ(ack, 255u) << "expected ACK timeout (255) on rejected frame; got "
+                          << static_cast<int>(ack);
 
     // Frame should be dropped — schema tag differs (uint32 vs uint64 produce different hashes).
     EXPECT_FALSE(fut.get()) << "Size mismatch: recv_one should reject";
@@ -459,7 +481,9 @@ TEST_F(InboxQueueTest, ChecksumEnforced_Roundtrip)
         return item != nullptr;
     });
     std::this_thread::sleep_for(ms{30});
-    c->send(ms{1500});
+    // Happy path: server recv_one succeeds → send_ack(0).  Pin ack=0.
+    const uint8_t ack = c->send(ms{1500});
+    EXPECT_EQ(ack, 0u) << "send timed out or got non-zero ack=" << static_cast<int>(ack);
 
     ASSERT_TRUE(fut.get()) << "Enforced: recv_one should succeed";
     ASSERT_NE(item, nullptr);
@@ -492,10 +516,15 @@ TEST_F(InboxQueueTest, ChecksumManual_NoStamp_ReceiverRejects)
     const InboxItem *item = nullptr;
     auto fut = std::async(std::launch::async, [&] {
         item = q->recv_one(ms{500});
+        if (item) q->send_ack(0); // see SchemaMismatch_DifferentType for rationale
         return item != nullptr;
     });
     std::this_thread::sleep_for(ms{30});
-    c->send(ms{1500});
+    // Receiver rejects the missing-checksum frame → recv_one returns
+    // null → no send_ack → client send TIMES OUT (ack=255).
+    const uint8_t ack = c->send(ms{1500});
+    EXPECT_EQ(ack, 255u) << "expected ACK timeout (255) on rejected frame; got "
+                          << static_cast<int>(ack);
 
     EXPECT_FALSE(fut.get()) << "Manual no-stamp: recv_one should reject";
     EXPECT_GT(q->checksum_error_count(), 0u);
@@ -528,7 +557,9 @@ TEST_F(InboxQueueTest, ChecksumNone_Roundtrip)
         return item != nullptr;
     });
     std::this_thread::sleep_for(ms{30});
-    c->send(ms{1500});
+    // Happy path: server recv_one succeeds → send_ack(0).
+    const uint8_t ack = c->send(ms{1500});
+    EXPECT_EQ(ack, 0u) << "send timed out or got non-zero ack=" << static_cast<int>(ack);
 
     ASSERT_TRUE(fut.get()) << "None: recv_one should succeed";
     ASSERT_NE(item, nullptr);
