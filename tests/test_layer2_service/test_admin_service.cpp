@@ -433,10 +433,17 @@ TEST_F(AdminServiceTest, HubHost_AdminEnabled_RoundTripWorks)
     ASSERT_TRUE(poll_until(
         [&] { return !host.admin()->bound_endpoint().empty(); }, 2000ms));
 
-    // End-to-end ping over the host-driven admin endpoint.
+    // End-to-end ping over the host-driven admin endpoint.  Verify the
+    // full result envelope, not just status — a regression that
+    // returned `{"status":"ok", "result":{}}` would slip past a
+    // status-only check (verified via mutation sweep 2026-05-01).
     const json reply = req_reply(host.admin()->bound_endpoint(),
-        {{"method", "ping"}, {"token", kTestToken}});
+        {{"method", "ping"}, {"token", kTestToken},
+         {"params", {{"trip", 42}}}});
     EXPECT_EQ(reply.value("status", ""), "ok");
+    ASSERT_TRUE(reply.contains("result"));
+    EXPECT_EQ(reply["result"].value("pong", false), true);
+    EXPECT_EQ(reply["result"]["echo"].value("trip", 0), 42);
 
     host.shutdown();
     EXPECT_FALSE(host.is_running());
