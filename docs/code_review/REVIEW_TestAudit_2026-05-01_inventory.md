@@ -54,7 +54,7 @@ for a file IN THE SAME COMMIT that fixes the file.
 | L2-13 | `test_layer2_service/test_hub_state.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-14 | `test_layer2_service/test_hub_vault.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-15 | `test_layer2_service/test_interactive_signal_handler.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-16 | `test_layer2_service/test_jsonconfig.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L2-16 | `test_layer2_service/test_jsonconfig.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 deferred (subprocess) | Audited `<this commit>`.  Pattern 3 parent file; no broad EXPECT_THROW / sleep_for / discarded timeout returns in parent. |
 | L2-17 | `test_layer2_service/test_lifecycle.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-18 | `test_layer2_service/test_lifecycle_dynamic.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-19 | `test_layer2_service/test_logger.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 deferred (subprocess) | Audited `<this commit>`.  20 TEST_F entries, all delegate to subprocess workers (Pattern 3).  Class A: no broad `EXPECT_THROW` / `EXPECT_NO_THROW` in parent; assertions delegated to workers.  Class B: no `sleep_for` in parent.  Class C: no timeout-bearing return-value discards. |
@@ -78,7 +78,7 @@ for a file IN THE SAME COMMIT that fixes the file.
 | L2-37 | `test_layer2_service/test_role_vault.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-38 | `test_layer2_service/test_schema_validation.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-39 | `test_layer2_service/test_scriptengine_native_dylib.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-40 | `test_layer2_service/test_shared_memory_spinlock.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L2-40 | `test_layer2_service/test_shared_memory_spinlock.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited `<this commit>`.  Class A: 2 `EXPECT_THROW(..., std::runtime_error)` at lines 87 and 207 testing `SharedSpinLock::unlock` not-held path.  Verified `shared_memory_spinlock.cpp:147` has a SINGLE `runtime_error` throw site ("Attempted to unlock by non-owner.") — type alone is path-discriminating, acceptable per audit §1.1's exception for single-throw-site functions.  Class B: 4 sleeps — line 123 is a "let other thread reach try_lock_for, then unlock" time-budget; line 193 is the absence-of-event verification window (`sleep_for(50ms); EXPECT_FALSE(acquired)` — verifying contender stays blocked); lines 240/251 are 10us sleeps inside locked sections to amplify mutual-exclusion contention.  None are ordering antipatterns.  Class C: `try_lock_for` returns are captured and asserted (lines 105-109, 162). |
 | L2-41 | `test_layer2_service/test_slot_rw_coordinator.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-42 | `test_layer2_service/test_slot_view_helpers.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-43 | `test_layer2_service/test_uid_utils.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
@@ -91,7 +91,7 @@ for a file IN THE SAME COMMIT that fixes the file.
 | L2-50 | `test_layer2_service/workers/filelock_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
 | L2-51 | `test_layer2_service/workers/hub_config_workers.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-52 | `test_layer2_service/workers/hub_config_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
-| L2-53 | `test_layer2_service/workers/jsonconfig_workers.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L2-53 | `test_layer2_service/workers/jsonconfig_workers.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 deferred (subprocess) | Audited `<this commit>`.  Class B: 4 `sleep_for` instances all randomized backoff/jitter — line 76 is post-write-failure backoff (10-50ms random), lines 476/589/605 are random pacing inside read/write contention loops (0-500us / 0-100us / 0-200us).  All stress-test contention jitter, none are state-change ordering antipatterns.  Class A/C: no broad EXPECT_THROW or discarded timeout returns. |
 | L2-54 | `test_layer2_service/workers/jsonconfig_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
 | L2-55 | `test_layer2_service/workers/lifecycle_workers.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-56 | `test_layer2_service/workers/lifecycle_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
