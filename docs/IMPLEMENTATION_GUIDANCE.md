@@ -952,6 +952,65 @@ This is the same idea as mutation testing, scoped to the assertions
 you just wrote rather than the whole codebase. Required for any test
 that gates a behavior contract; optional for trivial sanity checks.
 
+#### Tests must verify the absence of unexpected log warnings/errors
+
+A test that exercises a "happy path" must FAIL if production code emits
+a `LOGGER_WARN` or `LOGGER_ERROR` during the test run.  Without this
+check, a regression that takes a fallback path silently logs the
+problem and the test still reports green — exactly the silent-failure
+mode the rules above forbid, applied at the log boundary instead of
+the assertion boundary.
+
+Required test fixture pattern (canonical): each test installs a log
+capture mechanism in `SetUp` that records every WARN/ERROR entry.
+In `TearDown`, the recorded list must be EMPTY unless the test
+explicitly registered an expected-warning matcher (substring +
+optional source tag).  Tests that drive an error path declare the
+expected warnings up-front; everything else must report zero.
+
+```cpp
+// Canonical pattern — pseudocode, framework hook documented in
+// tests/test_framework/log_capture_fixture.h:
+class MyTest : public ::testing::Test, public LogCaptureFixture {
+    void SetUp() override   { LogCaptureFixture::Install(); }
+    void TearDown() override {
+        // For happy-path tests:
+        EXPECT_NO_UNEXPECTED_LOG_WARN_ERROR();
+        LogCaptureFixture::Uninstall();
+    }
+};
+
+TEST_F(MyTest, HappyPath_NoLogNoise)
+{
+    f();  // any LOGGER_WARN/ERROR here -> TearDown asserts -> test fails
+}
+
+TEST_F(MyTest, ErrorPath_LogsWarnAsExpected)
+{
+    EXPECT_LOG_WARN_CONTAINS("expected substring");
+    g_with_error();
+}
+```
+
+The framework hook is intentionally the same shape as the assertion
+rules above: declare what is expected; anything unexpected is a
+failure.
+
+**Why:** A 2026-05-01 incident showed how silent log emission masks
+regressions.  In `HubHost::startup()` a broker bind exception was
+silently swallowed by a `catch` block whose comment claimed "surface
+via logs only" but did not log.  No test caught the regression
+because no test asserted "no warnings emitted".  After fixing the
+catch, this rule is the structural prevention for the same class of
+bug across the whole codebase.
+
+**Scope of rollout:** This rule applies to all new tests written
+going forward, and to existing tests as they are touched.  Bulk
+retrofit across the existing 1687-test suite is incremental — each
+file picks up the fixture as it is edited.  Files not yet retrofitted
+are tracked in `docs/code_review/REVIEW_CatchBlocks_2026-05-01.md`
+§3 ("Test assertion findings") so progress is visible.
+
 #### Failure-mode catalog
 
 Common shapes that violate the rules above and how to fix them:

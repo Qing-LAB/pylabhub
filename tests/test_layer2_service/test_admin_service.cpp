@@ -29,6 +29,7 @@
 
 #include "utils/admin_service.hpp"
 
+#include "log_capture_fixture.h"
 #include "plh_service.hpp"
 #include "utils/broker_service.hpp"
 #include "utils/config/hub_config.hpp"
@@ -157,7 +158,8 @@ json req_reply(const std::string &endpoint, const json &request,
 
 // ─── Test fixture ──────────────────────────────────────────────────────────
 
-class AdminServiceTest : public ::testing::Test
+class AdminServiceTest : public ::testing::Test,
+                          public pylabhub::tests::LogCaptureFixture
 {
 public:
     static void SetUpTestSuite()
@@ -173,8 +175,20 @@ public:
     static void TearDownTestSuite() { s_lifecycle_.reset(); }
 
 protected:
+    void SetUp() override
+    {
+        // Capture logger output for the duration of the test.  Happy
+        // paths must not emit WARN/ERROR; tests that drive an error
+        // path declare the expected warning via ExpectLogWarn(...).
+        LogCaptureFixture::Install();
+    }
+
     void TearDown() override
     {
+        // Verify no unexpected log entries before reverting capture
+        // and cleaning temp dirs.
+        AssertNoUnexpectedLogWarnError();
+        LogCaptureFixture::Uninstall();
         for (const auto &p : paths_to_clean_)
         {
             std::error_code ec;
@@ -440,6 +454,16 @@ TEST_F(AdminServiceTest, DevMode_TokenSkipped_PingAccepted)
 
 TEST_F(AdminServiceTest, HubHost_AdminEnabled_RoundTripWorks)
 {
+    // KNOWN teardown race: HubHost owns a `ThreadManager` registered as
+    // a dynamic `LifecycleGuard` module; on test exit the dynamic-
+    // shutdown worker may still be processing the unload by the time
+    // HubHost has destroyed its userdata.  LifecycleGuard logs a WARN
+    // ("userdata validation failed — skipping shutdown callback") and
+    // skips the callback (safe — the work was already done by HubHost
+    // dtor).  Tracked separately; declare it expected so the rest of
+    // the log-noise check still gates this test.
+    ExpectLogWarn("userdata validation failed");
+
     auto [cfg, dir] = make_config("hubhost");
     HubHost host(std::move(cfg));
 
@@ -473,6 +497,9 @@ TEST_F(AdminServiceTest, HubHost_AdminEnabled_RoundTripWorks)
 
 TEST_F(AdminServiceTest, HubHost_AdminDisabled_NoAdminConstructed)
 {
+    // KNOWN teardown race — see HubHost_AdminEnabled_RoundTripWorks.
+    ExpectLogWarn("userdata validation failed");
+
     auto [cfg, dir] = make_config("disabled");
     // Disable admin in-place.
     const_cast<HubAdminConfig &>(cfg.admin()).enabled = false;
