@@ -232,15 +232,15 @@ for a file IN THE SAME COMMIT that fixes the file.
 
 | # | File | A | B | C | D | Verification / Notes |
 |---|------|---|---|---|---|----------------------|
-| L4i-01 | `test_layer4_integration/test_admin_shell.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L4i-01 | `test_layer4_integration/test_admin_shell.cpp` | ⚪ N/A | ⚪ N/A | ⚪ N/A | ⚪ N/A | Audited <this commit>.  ⚪ NOT BUILT — commented out in test_layer4_integration/CMakeLists.txt:16 because the legacy `pylabhub-hubshell` binary it tests was deleted with the hub_python stack.  Preserved as reference for the admin-shell ZMQ protocol that HEP-CORE-0033 §11 AdminService replaces with structured RPC.  No active code path; audit doesn't apply. |
 
 ## Layer 4 — plh_role tests  (5 files)
 
 | # | File | A | B | C | D | Verification / Notes |
 |---|------|---|---|---|---|----------------------|
 | L4r-01 | `test_layer4_plh_role/plh_role_fixture.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
-| L4r-02 | `test_layer4_plh_role/test_plh_role_errors.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L4r-03 | `test_layer4_plh_role/test_plh_role_init.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L4r-04 | `test_layer4_plh_role/test_plh_role_keygen.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L4r-05 | `test_layer4_plh_role/test_plh_role_validate.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L4r-02 | `test_layer4_plh_role/test_plh_role_errors.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Class A: parametrized error-path CLI tests, no broad EXPECT_THROW.  Class B/C: clean. |
+| L4r-03 | `test_layer4_plh_role/test_plh_role_init.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Class A: parametrized init-template tests; PrintTo override added in `70cd6cc` for clean test names.  Class B/C: clean. |
+| L4r-04 | `test_layer4_plh_role/test_plh_role_keygen.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Class A: parametrized keygen tests; PrintTo override added in `70cd6cc`.  Class B/C: clean. |
+| L4r-05 | `test_layer4_plh_role/test_plh_role_validate.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 | Audited <this commit>.  Class A: parametrized validate-mode tests; PrintTo override added in `70cd6cc`.  Class B/C: clean. |
 
