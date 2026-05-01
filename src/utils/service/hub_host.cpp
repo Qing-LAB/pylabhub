@@ -248,8 +248,9 @@ void HubHost::startup()
         // swallow that since the failure is post-startup and the broker
         // poll loop will have stopped on its own.
         auto *broker_ptr = impl_->broker.get();
+        const std::string uid_for_log = impl_->cfg.identity().uid;
         if (!impl_->thread_mgr->spawn("broker",
-                                       [broker_ptr, ready_promise]
+                                       [broker_ptr, ready_promise, uid_for_log]
                                        {
                                            try
                                            {
@@ -257,17 +258,47 @@ void HubHost::startup()
                                            }
                                            catch (...)
                                            {
+                                               // Capture before any other
+                                               // exception machinery rebinds
+                                               // current_exception().
+                                               auto broker_exc =
+                                                   std::current_exception();
                                                try
                                                {
                                                    ready_promise->set_exception(
-                                                       std::current_exception());
+                                                       broker_exc);
                                                }
                                                catch (const std::future_error &)
                                                {
-                                                   // promise already
-                                                   // satisfied — broker
-                                                   // succeeded then died;
-                                                   // surface via logs only.
+                                                   // Promise already satisfied
+                                                   // — broker fired on_ready
+                                                   // successfully then died
+                                                   // mid-run.  Log the
+                                                   // ORIGINAL broker exception
+                                                   // so the failure isn't
+                                                   // silently swallowed; the
+                                                   // host's `request_shutdown`
+                                                   // path is responsible for
+                                                   // tearing down on detection.
+                                                   try
+                                                   {
+                                                       std::rethrow_exception(broker_exc);
+                                                   }
+                                                   catch (const std::exception &e)
+                                                   {
+                                                       LOGGER_ERROR(
+                                                           "[HubHost:{}] broker thread "
+                                                           "died after on_ready: {}",
+                                                           uid_for_log, e.what());
+                                                   }
+                                                   catch (...)
+                                                   {
+                                                       LOGGER_ERROR(
+                                                           "[HubHost:{}] broker thread "
+                                                           "died after on_ready "
+                                                           "(non-std exception)",
+                                                           uid_for_log);
+                                                   }
                                                }
                                            }
                                        }))
