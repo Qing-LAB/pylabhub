@@ -544,7 +544,14 @@ Completed:
 | ZMQ Endpoint Registry | ✅ Complete | `docs/HEP/HEP-CORE-0021-ZMQ-Endpoint-Registry.md` | **HEP-0021 implemented (2026-03-06).** `data_transport`+`zmq_node_endpoint` in REG_REQ/DISC_ACK, hub::Producer/Consumer, ProcessorScriptHost. 12 L3 protocol tests (848/848 pass). Deferred: ZMQ data-plane runtime checksum+type-tag (HEP-0023). |
 | Hub Federation Broadcast | ✅ Complete | `docs/HEP/HEP-CORE-0022-Hub-Federation-Broadcast.md` | **HEP-0022 fully implemented (2026-03-06).** HUB_PEER_HELLO/ACK/BYE, HUB_RELAY_MSG, dedup window, channel_to_peer_identities_ index, HubScript federation callbacks (on_hub_connected/disconnected/message, api.notify_hub). |
 
-**Active code reviews:** None — all closed and archived to `docs/archive/transient-2026-03-12/` (2026-03-12).
+**Active code reviews:**
+- `REVIEW_AdminService_2026-05-01.md` — Phase 6.2 pre-implementation
+  audit: §11.2 method-readiness matrix (10 unblocked / 6 deferred to
+  HEP-0035 + Phase 7 + small new mutator), 6.2a/b/c sub-phase split,
+  3 wiring decisions (vault→HubHost, ipc/ vs service/ placement,
+  hub init_directory template). 8 open action items.
+
+(Previously closed and archived to `docs/archive/transient-2026-03-12/`.)
 
 Previously closed (archived):
 - `REVIEW_FullSource_2026-03-06.md` — ✅ CLOSED 2026-03-12 (archived)
