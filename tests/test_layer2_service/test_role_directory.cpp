@@ -254,7 +254,21 @@ TEST(RoleDirectoryTest, HubBrokerEndpoint_NeitherKey_Throws)
         std::ofstream f(tmp / "hub.json");
         f << R"({"hub":{"name":"x"}})";  // no broker_endpoint anywhere
     }
-    EXPECT_THROW(RoleDirectory::hub_broker_endpoint(tmp), std::exception);
+    // Pin both type AND message substring so a regression that throws
+    // a different runtime_error (e.g. the parse-failure path or the
+    // missing-file path) doesn't silently masquerade as the
+    // missing-broker_endpoint case.  Both production throw sites use
+    // `std::runtime_error` (see role_directory.cpp:119, 137); the
+    // message substring is what discriminates the path.
+    bool threw = false;
+    std::string msg;
+    try { (void)RoleDirectory::hub_broker_endpoint(tmp); }
+    catch (const std::runtime_error &e) { threw = true; msg = e.what(); }
+    EXPECT_TRUE(threw);
+    EXPECT_NE(msg.find("neither 'network.broker_endpoint' nor "
+                        "'hub.broker_endpoint'"),
+              std::string::npos)
+        << "wrong runtime_error path; what(): " << msg;
     fs::remove_all(tmp);
 }
 
@@ -263,7 +277,13 @@ TEST(RoleDirectoryTest, HubBrokerEndpoint_MissingJson_Throws)
     const auto tmp = unique_temp_dir("hbe_miss");
     fs::create_directories(tmp); // no hub.json
 
-    EXPECT_THROW(RoleDirectory::hub_broker_endpoint(tmp), std::exception);
+    bool threw = false;
+    std::string msg;
+    try { (void)RoleDirectory::hub_broker_endpoint(tmp); }
+    catch (const std::runtime_error &e) { threw = true; msg = e.what(); }
+    EXPECT_TRUE(threw);
+    EXPECT_NE(msg.find("cannot open hub.json"), std::string::npos)
+        << "wrong runtime_error path; what(): " << msg;
     fs::remove_all(tmp);
 }
 
