@@ -4,8 +4,9 @@
 |-----------------|----------------------------------------------------------------------|
 | **Status**      | 🟡 OPEN — ground-truth tracker; multiple sessions of work            |
 | **Created**     | 2026-05-01                                                           |
-| **Trigger**     | Two silent-failure regressions shipped on this branch (slow-path `EXPECT_THROW`, envelope-only `status==ok`); a freshly-written catch swallowed an exception via dead "log only" comment.  User: "you motherfucker don't build houses on sand."  Audit covers every test under `tests/`. |
-| **Scope**       | Every test file under `tests/`.  No file exempt.                     |
+| **Trigger**     | Two silent-failure regressions shipped on this branch (slow-path `EXPECT_THROW`, envelope-only `status==ok`); a freshly-written catch swallowed an exception via dead "log only" comment.  User: "you motherfucker don't build houses on sand. … i cannot trust any of your coding until you check every test, not the fucking recent ones only."  Trust in the suite is suspended until this audit closes. |
+| **Scope**       | **EVERY test file under `tests/`.**  Not limited to recent commits.  Not limited to files I touched.  Every fixture, every TEST_F, every assertion, every sleep, every timeout-bearing call.  No file exempt — files written before this branch existed are EQUALLY in scope. |
+| **Trust gate**  | Until all §3 acceptance criteria hold, the suite-pass count (e.g. "1697/1697 green") is **NOT** evidence of correctness.  The two incidents in §0 both reported green for weeks/sessions before being caught.  Do not cite a green run as a sign of done. |
 | **Disposition** | Transient — archive ONLY when every item in §6 is verdict'd, every §7 item is ✅ FIXED-with-commit-hash, and the suite-wide acceptance criteria in §3 are met. |
 | **Owner**       | Whoever picks this up next.  This file is the handoff.               |
 
@@ -175,9 +176,11 @@ This is the honest list.  Anything not in this section is unverified.
 Archive this document to `docs/archive/transient-YYYY-MM-DD/` ONLY
 when ALL of these hold:
 
-1. Every row in §6 (Class A/B/C census) is either ✅ FIXED with
-   commit hash + mutation summary, or 🟢 ACCEPTABLE with one-line
-   justification.
+1. **Every test file under `tests/` has been audited** against §0
+   classes A/B/C/D using the §4 methodology and §1 verification
+   protocol.  Every row in §6 is either ✅ FIXED with commit hash
+   + mutation summary, or 🟢 ACCEPTABLE with one-line justification.
+   No `🟡 OPEN` and no `🟡 not yet scanned` rows remain.
 2. Every fixture in §7 (LogCaptureFixture rollout) is ✅ FIXED.
 3. Every row in §8 (real bugs surfaced) is closed with a
    production fix or has a tracked deferral with explicit owner +
@@ -191,8 +194,26 @@ when ALL of these hold:
    silent-failure prevention" so they survive after this transient
    doc is archived.
 
-Until ALL five hold, the doc stays 🟡 OPEN.  Partial completion is
-not "closed".
+**Until ALL five hold, the doc stays 🟡 OPEN.  Partial completion is
+NOT "closed".  A green test run while the audit is open is not
+evidence of correctness — see the trust-gate row in the header.**
+
+### 3.1 What "every test file" means concretely
+
+Run this BEFORE claiming gate (1) holds — it must produce the same
+list of files that §6 contains:
+
+```bash
+find /home/qqing/Work/pylabhub/tests \
+     -type f \( -name '*.cpp' -o -name '*.h' \) \
+     -not -path '*/test_framework/*' \
+| sort
+```
+
+Every file in that listing must appear in §6 with all four columns
+(A/B/C/D) verdict'd.  If `find` produces a file that §6 does not
+list, §6 is incomplete — add the file and audit it before claiming
+gate (1).
 
 ---
 
@@ -342,137 +363,108 @@ to refresh.
 
 ---
 
-## 6. Per-file audit checklist
+## 6. Per-file audit ground truth
 
-Mark each row with the verdict from §1 once verified.  Status legend:
-🟡 OPEN | 🟢 ACCEPTABLE (no fix needed) | ✅ FIXED (commit-hash) | ⚠ PARTIAL.
+The exhaustive 204-row file inventory lives in a companion document
+to keep this master plan navigable:
 
-Each row has a verification sub-row that must reference the commit
-that ran the §1 mutation sweep.
+  **`docs/code_review/REVIEW_TestAudit_2026-05-01_inventory.md`**
 
-### 6.A — Layer 2 service tests
+That file is the ground truth.  Update its row for a file IN THE
+SAME COMMIT that fixes the file.  This master plan does NOT
+duplicate the row data — duplication would rot.
 
-| # | File | Class A | Class B | Class C | Class D | Verification |
-|---|------|---------|---------|---------|---------|--------------|
-| L2-01 | `test_layer2_admin_service.cpp` | ✅ `db9f8f9` | n/a (no sleeps) | n/a | ✅ `db9f8f9` | Mutations recorded in §2 |
-| L2-02 | `test_layer2_hub_host.cpp` | ⚠ PARTIAL `6f54322` (FSM tests + 3 startup tests fixed) | 🟡 not yet scanned | 🟡 not yet scanned | 🟡 not yet retrofitted | — |
-| L2-03 | `test_layer2_role_host_base.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L2-04 | `test_layer2_role_data_loop.cpp` | 🟡 | 🟡 (workers: 8 sleeps) | 🟡 | 🟡 | — |
-| L2-05 | `test_layer2_logger.cpp` (+ workers) | 🟡 | 🟡 (workers: 5 sleeps) | 🟡 | 🟡 | — |
-| L2-06 | `test_layer2_file_lock.cpp` (+ workers) | 🟡 | 🟡 (workers: 5 sleeps) | 🟡 | 🟡 | — |
-| L2-07 | `test_layer2_json_config.cpp` (+ workers) | 🟡 | 🟡 (workers: 4 sleeps) | 🟡 | 🟡 | — |
-| L2-08 | `test_layer2_shared_memory_spinlock.cpp` | 🟡 | 🟡 (4 sleeps) | 🟡 | 🟡 | — |
-| L2-09 | `test_layer2_lifecycle.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L2-10 | `test_layer2_role_config.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L2-11 | `test_layer2_hub_config.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L2-12 | `test_layer2_role_directory.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L2-13 | `test_layer2_role_cli.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L2-14 | `test_layer2_hub_cli.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L2-15 | `test_layer2_hub_directory.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L2-16 | `test_layer2_hub_vault.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L2-17 | `test_layer2_role_vault.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L2-18 | `test_layer2_python_engine.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L2-19 | `test_layer2_lua_engine.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L2-20 | `test_layer2_metrics_api.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L2-21 | `test_layer2_schema_validation.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L2-22 | `test_layer2_role_host_core.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L2-23 | `test_layer2_role_registry.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L2-24 | `test_layer2_loop_timing_policy.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L2-25 | `test_layer2_backoff_strategy.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L2-26 | `test_layer2_crypto_utils.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L2-27 | `test_layer2_slot_rw_coordinator.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L2-28 | `test_layer2_scriptengine_native_dylib.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L2-29 | other L2 files (run `ls tests/test_layer2_service/*.cpp` to enumerate) | 🟡 | 🟡 | 🟡 | 🟡 | — |
+**Snapshot of the inventory state (refresh by re-counting from the
+inventory file):**
 
-### 6.B — Layer 3 datahub tests
+| Layer | Total files (.cpp + .h) | ✅ FIXED | ⚠ PARTIAL | 🔴 KNOWN BAD | 🟡 OPEN | n/a (header) |
+|-------|----------------------|---------|-----------|--------------|---------|--------------|
+| L0 — platform | 6 | 0 | 0 | 0 | 6 | 0 |
+| L1 — base | 9 | 0 | 0 | 0 | 9 | 0 |
+| L2 — service | 81 | 1 | 1 | 0 | 49 | 30 |
+| L3 — datahub | 102 | 0 | 0 | 2 | 51 | 49 |
+| L4 — integration | 1 | 0 | 0 | 0 | 1 | 0 |
+| L4 — plh_role | 5 | 0 | 0 | 0 | 4 | 1 |
+| **Total** | **204** | **1** | **1** | **2** | **120** | **80** |
 
-(One target `test_layer3_datahub`, many source/worker files.)
+Refresh command:
 
-| # | File | Class A | Class B | Class C | Class D | Verification |
-|---|------|---------|---------|---------|---------|--------------|
-| L3-01 | `test_datahub_hub_zmq_queue.cpp` | 🟡 | 🟡 (33 sleeps; first-pass check suggests all are post-`start()` ZMQ-TCP-establishment — needs per-line confirmation) | 🟡 | 🟡 | — |
-| L3-02 | `test_datahub_zmq_poll_loop.cpp` | 🟡 | 🔴 KNOWN BAD (multiple `sleep_for(50ms); EXPECT_GE(count, 1)` ordering sites — see §0 incident) | 🟡 | 🟡 | — |
-| L3-03 | `test_datahub_hub_inbox_queue.cpp` | 🟡 | 🟡 (10 sleeps; mostly `connect`-establishment but verify each) | 🔴 KNOWN BAD (6 unchecked `c->send(1500ms)` at lines 229/390/424/462/498/531) | 🟡 | — |
-| L3-04 | `test_datahub_metrics.cpp` (+ workers) | 🟡 | 🟡 (9 sleeps) | 🟡 | 🟡 | — |
-| L3-05 | `workers/role_api_loop_policy_workers.cpp` | 🟡 | 🟡 (9 sleeps) | 🟡 | 🟡 | — |
-| L3-06 | `workers/datahub_broker_health_workers.cpp` | 🟡 | 🟡 (8 sleeps) | 🟡 | 🟡 | — |
-| L3-07 | `workers/datahub_mutex_workers.cpp` | 🟡 | 🟡 (7 sleeps) | 🟡 | 🟡 | — |
-| L3-08 | `workers/datahub_channel_group_workers.cpp` | 🟡 | 🟡 (6 sleeps) | 🟡 | 🟡 | — |
-| L3-09 | `test_datahub_hub_monitored_queue.cpp` | 🟡 | 🟡 (6 sleeps) | 🟡 | 🟡 | — |
-| L3-10 | `workers/datahub_stress_raii_workers.cpp` | 🟡 | 🟡 (5 sleeps) | 🟡 | 🟡 | — |
-| L3-11 | `workers/datahub_c_api_draining_workers.cpp` | 🟡 | 🟡 (3 sleeps) | 🟡 | 🟡 | — |
-| L3-12 | `workers/datahub_broker_workers.cpp` | 🟡 | 🟡 (3 sleeps) | 🟡 | 🟡 | — |
-| L3-13 | `workers/datahub_broker_consumer_workers.cpp` | 🟡 | 🟡 (3 sleeps) | 🟡 | 🟡 | — |
-| L3-14 | `workers/role_api_raii_workers.cpp` | 🟡 | 🟡 (2 sleeps) | 🟡 | 🟡 | — |
-| L3-15 | other L3 source/worker files (run `ls tests/test_layer3_datahub/*.cpp tests/test_layer3_datahub/workers/*.cpp` to enumerate) | 🟡 | 🟡 | 🟡 | 🟡 | — |
+```bash
+grep -cE "✅ FIXED|⚠ PARTIAL|🔴|🟡 |n/a" \
+     /home/qqing/Work/pylabhub/docs/code_review/REVIEW_TestAudit_2026-05-01_inventory.md
+```
 
-### 6.C — Layer 4 integration tests
-
-| # | File | Class A | Class B | Class C | Class D | Verification |
-|---|------|---------|---------|---------|---------|--------------|
-| L4-01 | `test_layer4_plh_role/test_plh_role_init.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L4-02 | `test_layer4_plh_role/test_plh_role_validate.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L4-03 | `test_layer4_plh_role/test_plh_role_keygen.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L4-04 | `test_layer4_plh_role/test_plh_role_round_trip.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | — |
-| L4-05 | other L4 files (run `find tests/test_layer4*/ -name '*.cpp'`) | 🟡 | 🟡 | 🟡 | 🟡 | — |
-
-### 6.D — Layer 1 base tests
-
-(Likely smallest scope; finish last.)
-
-| # | File | Class A | Class B | Class C | Class D | Verification |
-|---|------|---------|---------|---------|---------|--------------|
-| L1-01 | every file under `tests/test_layer1_*/` (run `find` to enumerate) | 🟡 | 🟡 | 🟡 | 🟡 | — |
-
-### 6.E — Layer 0 platform tests
-
-| # | File | Class A | Class B | Class C | Class D | Verification |
-|---|------|---------|---------|---------|---------|--------------|
-| L0-01 | every file under `tests/test_layer0_platform/` | 🟡 | 🟡 | 🟡 | 🟡 | — |
+**Read the inventory before working any file** — not this snapshot.
 
 ---
 
-## 7. Phased rollout plan
+## 7. Session-sized phases
 
-Each phase delivers a coherent partial state; finishing a phase
-flips a count of rows in §6 to ✅.
+Each phase is **explicitly sized** to fit in a single working
+session (one Claude context window or one human work block).  No
+phase covers more than one layer or more than ~15 .cpp files.
+Phases are picked off one at a time; "next phase" is whichever
+small block is up next, not "the whole audit".
 
-### Phase 1 — Foundation: L2 service tests for code I touched
+**Estimating session budget**: per file, expect ~10–20 minutes of
+careful read + 5 minutes of mutation sweep + 5 minutes commit
+overhead.  ~3–5 files per session is realistic with rigorous §1
+verification.
 
-**Goal**: every fixture I created or heavily edited in this branch
-gets the full §1 protocol applied, including LogCaptureFixture.
+### Phase 1 — Known-bad rows (3 files)
 
-| # | Item | Owner | Status |
-|---|------|-------|--------|
-| 7.1.1 | `test_layer2_admin_service.cpp` — full audit (already partial) | tbd | ✅ |
-| 7.1.2 | `test_layer2_hub_host.cpp` — full audit (FSM tests fixed; remainder pending) | tbd | 🟡 |
-| 7.1.3 | `test_layer2_role_host_base.cpp` — full audit | tbd | 🟡 |
-| 7.1.4 | `test_layer2_role_data_loop.cpp` — full audit | tbd | 🟡 |
+Already-identified Class B / C bad patterns.  Highest priority
+because we have the diagnosis already.
 
-### Phase 2 — Highest sleep_for + known-bad files (L3)
+| # | File | What | Acceptance |
+|---|------|------|------------|
+| 7.1.1 | `test_datahub_zmq_poll_loop.cpp` | Convert all `sleep_for; EXPECT_GE(count,1)` sites (lines 81/154/208/234/237/260/263/280/314/318/340) to `poll_until` | §1.2 mutation passes |
+| 7.1.2 | `test_datahub_hub_inbox_queue.cpp` | Capture + assert each of 6 unchecked `c->send(1500ms)` returns at lines 229/390/424/462/498/531; sweep for any other timeout-bearing call | §1.3 mutation passes |
+| 7.1.3 | `test_datahub_hub_zmq_queue.cpp` | Confirm all 33 `sleep_for(50ms)` sites are post-bind/connect ZMQ-TCP-establishment per the existing rule; mark 🟢 ACCEPTABLE per row in inventory | per-row annotation |
 
-| # | Item | Owner | Status |
-|---|------|-------|--------|
-| 7.2.1 | `test_datahub_zmq_poll_loop.cpp` — fix Class B ordering sites | tbd | 🟡 |
-| 7.2.2 | `test_datahub_hub_inbox_queue.cpp` — fix 6 Class C unchecked sends + sweep | tbd | 🟡 |
-| 7.2.3 | `test_datahub_hub_zmq_queue.cpp` — confirm 33 sleeps are all ZMQ-TCP-establishment, annotate | tbd | 🟡 |
+### Phase 2 — L2 fixtures touched by this branch (3 files)
 
-### Phase 3 — Remaining L3 worker files
+The fixtures I edited but did not fully audit beyond the §6 partial
+in `test_hub_host.cpp`.  These gate Phase 6.2b / 6.2c hub work.
 
-(Expand as files are touched; one row per file once started.)
+| # | File | What | Acceptance |
+|---|------|------|------------|
+| 7.2.1 | `test_layer2_hub_host.cpp` | Audit Class A on remaining tests; convert sleeps; install `LogCaptureFixture`; sweep `LOGGER_*` mutation | §1.1 + §1.4 mutations pass |
+| 7.2.2 | `test_layer2_role_host_base.cpp` | Same — full §1 protocol | same |
+| 7.2.3 | `test_layer2_role_data_loop.cpp` | Same; pay attention to worker file (8 sleeps) | same |
 
-### Phase 4 — Remaining L2 fixtures + LogCaptureFixture rollout
+### Phase 3 — L0 + L1 (15 files; smallest layer)
 
-(One row per fixture.  Each gets §1.4 protocol.)
+| # | What | Acceptance |
+|---|------|------------|
+| 7.3.x | Per file: §4 methodology applied; row updated in inventory | §1 protocol per row |
 
-### Phase 5 — L4 integration tests
+### Phase 4–N — L2 remaining + L3 + L4
 
-### Phase 6 — L0 / L1 base tests
+Phases 4 and beyond are session-sized blocks of 3–5 files each,
+selected by audit-priority order:
 
-### Phase 7 — Suite-wide mutation sweep on guard assertions
+1. files with explicit `sleep_for` outside ZMQ-TCP-establishment;
+2. files with timeout-bearing operations (`recv`, `send`,
+   `try_*_for`, `wait_for`);
+3. files with `EXPECT_THROW(..., std::exception)` or `EXPECT_NO_THROW`;
+4. fixtures not yet wearing `LogCaptureFixture`;
+5. everything else.
 
-(For tests that gate behavior contracts but we have not yet
-mutated.  Walk §6 and verify every ✅ row's mutation entry.)
+The exact phase numbering is established at the start of each
+session by reading the inventory and selecting the next 3–5 files
+in priority order.  Each session ends with the audited files'
+rows ✅ FIXED in the inventory (or 🟢 ACCEPTABLE) AND the master
+plan §2 status snapshot updated.
+
+### Final phase — Suite-wide mutation sweep on guard assertions
+
+Walk the inventory; for every row marked ✅ FIXED, verify the
+"Verification / Notes" cell records a concrete mutation that
+produced expected red→green.  Any ✅ row missing a mutation
+record is downgraded to 🟡 and re-audited.
+
+When this phase passes, gate (1) of §3 is met.
 
 ---
 
