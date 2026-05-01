@@ -598,7 +598,15 @@ void BrokerRequestComm::stop() noexcept
             pImpl->signal_write->send(zmq::message_t("S", 1),
                                       zmq::send_flags::dontwait);
         }
-        catch (...) {}
+        catch (...)
+        {
+            // Best-effort wake-up — if the inproc PAIR send fails the
+            // poll loop simply waits out its timeout instead of
+            // bailing immediately.  Intentional silent swallow; not
+            // load-bearing for shutdown correctness.  Logging here
+            // would be noise (stop() can race with the poll loop's
+            // own teardown of signal_read on context termination).
+        }
     }
 }
 

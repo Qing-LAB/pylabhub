@@ -917,8 +917,15 @@ size_t PythonEngine::type_sizeof(const std::string &type_name) const
     {
         return ctypes_sizeof(type);
     }
-    catch (const std::exception &)
+    catch (const std::exception &e)
     {
+        // ctypes_sizeof failed (rare — usually means a registered type
+        // alias is broken).  Return 0 like the type.is_none() path, but
+        // log at DEBUG so the cause shows up in diagnostic traces; without
+        // this the caller would see an unexplained "size = 0" and have
+        // no signal that ctypes itself raised.
+        LOGGER_DEBUG("[{}] PythonEngine: ctypes_sizeof('{}') threw: {}",
+                     log_tag_, type_name, e.what());
         return 0;
     }
 }

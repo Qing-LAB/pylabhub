@@ -182,7 +182,19 @@ void ctx_spinlock_unlock(const PlhNativeContext *ctx, int index, int side)
         auto lock = api->get_spinlock(static_cast<size_t>(index), side_from_int(side));
         lock.unlock();
     }
-    catch (...) {}
+    catch (const std::exception &e)
+    {
+        // Swallow — C ABI boundary into native script.  Unlock failure
+        // is rare (typically PID mismatch on a stale lock).  Log at
+        // WARN so regressions don't disappear silently.
+        LOGGER_WARN("native_engine: ctx_spinlock_unlock(idx={}) threw: {}",
+                    index, e.what());
+    }
+    catch (...)
+    {
+        LOGGER_WARN("native_engine: ctx_spinlock_unlock(idx={}) "
+                    "threw (non-std exception)", index);
+    }
 }
 
 uint32_t ctx_spinlock_count(const PlhNativeContext *ctx, int side)
@@ -258,7 +270,14 @@ void ctx_band_broadcast(const PlhNativeContext *ctx, const char *channel, const 
         auto body = nlohmann::json::parse(body_json);
         static_cast<RoleAPIBase *>(ctx->_api)->band_broadcast(channel, body);
     }
-    catch (const nlohmann::json::exception &) {}
+    catch (const nlohmann::json::exception &e)
+    {
+        // Native script passed malformed JSON.  Silent drop hides a
+        // real bug (script's body_json string is invalid); log at WARN
+        // so the script developer sees the cause in the role log.
+        LOGGER_WARN("native_engine: ctx_band_broadcast('{}') JSON parse "
+                    "error: {}", channel, e.what());
+    }
 }
 
 char *ctx_band_members(const PlhNativeContext *ctx, const char *channel)

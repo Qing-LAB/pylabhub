@@ -2,6 +2,7 @@
 #include "plh_platform.hpp"
 #include "utils/lifecycle.hpp"
 #include "utils/file_lock.hpp"
+#include "utils/logger.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -472,8 +473,18 @@ static bool acquire_process_local_lock(FileLockImpl *pImpl, bool blocking,
                     acquired = true;
                 }
             }
+            catch (const std::exception &e)
+            {
+                // condition_variable::wait_for can throw on system errors
+                // (interrupted clock, pthread internals).  Log so the
+                // failure shows up — caller only sees `false` + timed_out
+                // which doesn't distinguish "real timeout" from "wait threw".
+                LOGGER_WARN("FileLock: wait_for threw: {}", e.what());
+                acquired = false;
+            }
             catch (...)
             {
+                LOGGER_WARN("FileLock: wait_for threw (non-std exception)");
                 acquired = false;
             }
 

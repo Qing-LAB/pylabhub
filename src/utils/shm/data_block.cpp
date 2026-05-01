@@ -1330,8 +1330,18 @@ std::unique_ptr<DataBlockDiagnosticHandle> open_datablock_for_diagnostic(const s
         return std::unique_ptr<DataBlockDiagnosticHandle>(
             new DataBlockDiagnosticHandle(std::move(impl)));
     }
+    catch (const std::exception &e)
+    {
+        // Diagnostic factory — caller distinguishes failure via nullptr.
+        // Log at DEBUG so operators investigating a missing handle can
+        // see the cause (file-not-found, permission, layout mismatch)
+        // instead of just "got null".
+        LOGGER_DEBUG("DataBlockDiagnosticHandle: open failed: {}", e.what());
+        return nullptr;
+    }
     catch (...)
     {
+        LOGGER_DEBUG("DataBlockDiagnosticHandle: open failed (non-std exception)");
         return nullptr;
     }
 }

@@ -966,7 +966,14 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
                 // R11: best-effort; swallow.
                 LOGGER_WARN("Broker: failed to send INTERNAL_ERROR reply for "
                             "msg_type='{}': {}", msg_type, re.what());
-            } catch (...) {}
+            } catch (...) {
+                // Non-std exception type from a ZMQ send path —
+                // unexpected but we still don't want to abort the
+                // handler.  Log a generic line so the failure surfaces.
+                LOGGER_WARN("Broker: failed to send INTERNAL_ERROR reply "
+                            "for msg_type='{}' (non-std exception type)",
+                            msg_type);
+            }
         }
         hub_state_->_bump_counter("sys.handler_exception");
         emit_processing_error(msg_type, "exception", e.what(), &identity);
@@ -2785,8 +2792,18 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
                 {
                     resp["inbox_schema"] = nlohmann::json::parse(entry.inbox_schema_json);
                 }
-                catch (const nlohmann::json::exception &)
+                catch (const nlohmann::json::exception &je)
                 {
+                    // Stored schema string is malformed.  REG_REQ
+                    // validation in handle_reg_req should have rejected
+                    // this — reaching here means stored state is
+                    // corrupt.  Surface a warning instead of silently
+                    // returning an empty schema (which the consumer
+                    // would happily use, masking the corruption).
+                    LOGGER_WARN("Broker: stored inbox_schema_json for "
+                                "channel '{}' is malformed: {}; "
+                                "returning empty array",
+                                name, je.what());
                     resp["inbox_schema"] = nlohmann::json::array();
                 }
             }
@@ -2819,8 +2836,17 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
                     {
                         resp["inbox_schema"] = nlohmann::json::parse(cons.inbox_schema_json);
                     }
-                    catch (const nlohmann::json::exception &)
+                    catch (const nlohmann::json::exception &je)
                     {
+                        // Same rationale as the producer-entry path
+                        // above — stored consumer inbox_schema_json is
+                        // corrupt; log instead of silently returning
+                        // an empty array.
+                        LOGGER_WARN("Broker: stored consumer "
+                                    "inbox_schema_json for channel '{}' "
+                                    "uid='{}' is malformed: {}; "
+                                    "returning empty array",
+                                    name, uid, je.what());
                         resp["inbox_schema"] = nlohmann::json::array();
                     }
                 }
