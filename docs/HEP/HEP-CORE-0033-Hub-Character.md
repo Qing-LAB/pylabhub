@@ -186,6 +186,87 @@ graph LR
 Dashed modules are config-gated; a minimal hub (admin off, federation off, no
 script, no auth) runs with only the solid-edge nodes.
 
+### 4.1 Init protocol (ordered steps)
+
+Pinned by HubHost::startup().  Failure at any step rolls back the
+preceding ones (broker stop + ThreadManager drain + reset of
+unique_ptrs + `running=false`) before rethrowing.
+
+1. **Read config.**  `HubConfig::load_from_directory(dir)` (caller-side,
+   before HubHost ctor).
+2. **Vault unlock** *(if `cfg.auth().keyfile` non-empty)*.
+   `cfg.load_keypair(password)` populates `cfg.auth().client_pubkey/seckey`.
+   Caller-side, BEFORE constructing HubHost — this is the **deliberate
+   deviation from the §4 mermaid which shows HubVault as a peer
+   subsystem**.  Rationale: vault unlock is a config-time concern
+   (interactive password prompt, env-var fallback) and the resulting
+   keypair is part of HubConfig once unlocked.  Subsystem-level
+   HubVault wiring is required only when admin token validation
+   (Phase 6.2) and key rotation (HEP-CORE-0035) come online; until
+   then HubHost reads the unlocked keypair from `cfg.auth()`.
+3. **Construct HubHost.**  `HubHost host(std::move(cfg))` — no
+   threads, no sockets yet.  Allocates `Impl` with the value-owned
+   `HubState`.
+4. **Build `BrokerService::Config`** from `cfg`: endpoint, CURVE keys
+   (from `cfg.auth()`), heartbeat-multiplier timeouts (HEP-CORE-0023
+   §2.5), federation peers, `on_ready` callback that signals a
+   ready_future inside HubHost.
+5. **Construct BrokerService** bound to `HubHost::state_` by
+   reference (HEP-0033 §4 ownership invariant).
+6. **Construct ThreadManager** with `owner_tag="HubHost"`,
+   `owner_id=cfg.identity().uid`.  Auto-registers as the dynamic
+   lifecycle module `"ThreadManager:HubHost:<uid>"`.
+7. **Spawn broker thread** via `thread_mgr.spawn("broker", broker.run)`.
+   Thread enters `BrokerService::run()`, binds the ROUTER socket,
+   fires `on_ready`, enters the poll loop.
+8. **Wait on ready_future** with a 5-second deadline.  Timeout or
+   exception from the future = startup failure (rollback above).
+9. *(Phase 6.2)* **Construct AdminService** + spawn admin thread via
+   the same ThreadManager.
+10. *(Phase 7)* **Construct ScriptEngine + HubScriptRunner**, spawn
+    script thread.
+11. **Set `running_=true`.**  HubHost is now serving.
+
+After step 11: `host.broker_endpoint()` reflects the actual bound
+address; `host.broker()` and `host.state()` are valid; the hub is
+processing inbound traffic.
+
+### 4.2 Shutdown protocol (ordered steps)
+
+Pinned by HubHost::shutdown().  Synchronous: returns only after all
+spawned threads have exited.  Idempotent.
+
+1. **Wake `run_main_loop()`** by flipping `shutdown_flag_` and
+   notifying the condition variable.
+2. *(Phase 7)* **Stop ScriptEngine** — `script.stop()`.  Allows
+   in-flight callbacks to complete.
+3. *(Phase 6.2)* **Stop AdminService** — `admin.stop()`.  Closes the
+   REP socket; in-flight RPCs that have already entered a broker
+   handler complete; new RPCs are rejected.
+4. **Stop BrokerService** — `broker.stop()`.  Flips the broker's
+   internal stop atomic, sends an inproc PAIR wake-up, broker's
+   poll loop exits, broker drains outbound NOTIFY queue one final
+   time then returns from `run()`.
+5. **Drain ThreadManager** — `thread_mgr.drain()`.  Joins all spawned
+   threads in **reverse spawn order** (LIFO): script first, admin
+   second, broker last.  Per-thread bounded join timeout
+   (`kMidTimeoutMs` = 5 s).  Any thread that fails to exit within
+   its timeout is detached (logged); ThreadManager returns the
+   detached count.
+6. **Set `running_=false`.**  HubHost no longer serving.
+
+Subsystem destruction (when HubHost goes out of scope) runs in
+reverse declaration order: ThreadManager (already drained — no-op)
+→ BrokerService → HubState → HubConfig.  All threads have already
+joined by step 5, so subsystem destruction touches no live threads.
+
+`request_shutdown()` is the **async equivalent** of steps 1+4 only:
+flips the flag, calls `broker.stop()`, returns immediately without
+waiting for threads to join.  Typical use: signal handler / admin
+RPC / broker error path → `request_shutdown()` → `run_main_loop()`
+returns on the main thread → main thread drives `shutdown()` for
+the synchronous wind-down.
+
 ## 5. CLI (`plh_hub`)
 
 Mirrors `plh_role` CLI shape and parser contract.

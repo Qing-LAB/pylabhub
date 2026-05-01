@@ -131,44 +131,84 @@ void HubHost::startup()
 
     // Wire on_ready so startup() can block until the broker has bound
     // and capture the actual endpoint / pubkey (broker_endpoint may be
-    // an ephemeral port like `tcp://127.0.0.1:0`).
+    // an ephemeral port like `tcp://127.0.0.1:0`).  on_ready is
+    // contracted to fire exactly once per BrokerService instance; if
+    // it fires twice, set_value will throw `future_error` which we
+    // surface as a startup failure (catches a real broker bug).
     auto ready_promise = std::make_shared<
         std::promise<std::pair<std::string, std::string>>>();
     auto ready_future  = ready_promise->get_future();
     bcfg.on_ready = [ready_promise](const std::string &ep,
                                      const std::string &pk)
     {
-        try { ready_promise->set_value({ep, pk}); }
-        catch (...) { /* set_value-after-set: ignore */ }
+        ready_promise->set_value({ep, pk});
     };
 
-    // Construct broker bound to our HubState (HEP-0033 §4 ownership).
-    impl_->broker = std::make_unique<broker::BrokerService>(
-        std::move(bcfg), impl_->state);
+    // Cleanup helper used by every failure branch below.  Must be
+    // safe regardless of how far startup() got.
+    auto rollback_partial_startup = [this]() noexcept {
+        try
+        {
+            if (impl_->broker) impl_->broker->stop();
+            if (impl_->thread_mgr) impl_->thread_mgr->drain();
+        }
+        catch (...) { /* swallow — already in error path */ }
+        impl_->broker.reset();
+        impl_->thread_mgr.reset();
+        impl_->bound_endpoint.clear();
+        impl_->bound_pubkey.clear();
+        impl_->shutdown_flag.store(false, std::memory_order_release);
+        impl_->running.store(false, std::memory_order_release);
+    };
 
-    // ThreadManager auto-registers as a dynamic lifecycle module
-    // "ThreadManager:HubHost:<uid>".  Owns the broker thread (and, in
-    // Phase 6.2, the admin thread) for bounded-join shutdown.
-    impl_->thread_mgr = std::make_unique<utils::ThreadManager>(
-        "HubHost", impl_->cfg.identity().uid);
-
-    // Spawn broker thread.  ThreadManager only joins; the broker's
-    // internal stop atomic + ZMQ wake-up break the poll loop on
-    // shutdown.
-    auto *broker_ptr = impl_->broker.get();
-    if (!impl_->thread_mgr->spawn("broker",
-                                   [broker_ptr] { broker_ptr->run(); }))
+    try
     {
-        throw std::runtime_error(
-            "HubHost::startup: ThreadManager refused to spawn broker thread");
-    }
+        // Construct broker bound to our HubState (HEP-0033 §4 ownership).
+        impl_->broker = std::make_unique<broker::BrokerService>(
+            std::move(bcfg), impl_->state);
 
-    // Block until the broker fires on_ready.  After this returns,
-    // broker_endpoint() / broker_pubkey() are valid and the broker is
-    // listening for connections.
-    auto info = ready_future.get();
-    impl_->bound_endpoint = info.first;
-    impl_->bound_pubkey   = info.second;
+        // ThreadManager auto-registers as a dynamic lifecycle module
+        // "ThreadManager:HubHost:<uid>".  Owns the broker thread (and,
+        // in Phase 6.2, the admin thread) for bounded-join shutdown.
+        impl_->thread_mgr = std::make_unique<utils::ThreadManager>(
+            "HubHost", impl_->cfg.identity().uid);
+
+        // Spawn broker thread.  ThreadManager only joins; the broker's
+        // internal stop atomic + ZMQ wake-up break the poll loop on
+        // shutdown.
+        auto *broker_ptr = impl_->broker.get();
+        if (!impl_->thread_mgr->spawn("broker",
+                                       [broker_ptr] { broker_ptr->run(); }))
+        {
+            throw std::runtime_error(
+                "HubHost::startup: ThreadManager refused to spawn broker thread");
+        }
+
+        // Block until the broker fires on_ready, with a bounded
+        // deadline.  A healthy broker binds in <100 ms; 5 s is
+        // generous.  If the broker thread silently exits before
+        // firing on_ready (binding failure with no exception
+        // surfaced through this future), wait_for() reports timeout
+        // and we treat it as startup failure rather than hanging
+        // forever.  If the broker thread did throw, the future also
+        // delivers that exception via get().
+        const auto status =
+            ready_future.wait_for(std::chrono::seconds(5));
+        if (status == std::future_status::timeout)
+        {
+            throw std::runtime_error(
+                "HubHost::startup: broker did not signal ready within 5s "
+                "(bind likely failed silently — check logs)");
+        }
+        auto info = ready_future.get(); // may throw if broker thread did
+        impl_->bound_endpoint = info.first;
+        impl_->bound_pubkey   = info.second;
+    }
+    catch (...)
+    {
+        rollback_partial_startup();
+        throw;
+    }
 
     impl_->running.store(true, std::memory_order_release);
     LOGGER_INFO("[HubHost:{}] startup complete (broker on {})",
@@ -229,7 +269,21 @@ void HubHost::shutdown()
 
 void HubHost::request_shutdown() noexcept
 {
+    // Async equivalent of `shutdown()` minus the synchronous drain:
+    //   1. flip the shutdown flag (run_main_loop's wait predicate)
+    //   2. break the broker's poll loop
+    //   3. wake run_main_loop
+    // After this returns, the broker has begun stopping; the broker
+    // thread will exit shortly.  ThreadManager join happens later
+    // (in `shutdown()` if the caller drives it; otherwise in
+    // `~HubHost`).  Safe from any thread (signal handler, admin RPC
+    // dispatcher, broker error path).
     impl_->shutdown_flag.store(true, std::memory_order_release);
+    if (impl_->broker)
+    {
+        try { impl_->broker->stop(); }
+        catch (...) { /* noexcept contract — swallow */ }
+    }
     {
         std::lock_guard<std::mutex> lk(impl_->wake_mu);
     }

@@ -220,7 +220,14 @@ TEST_F(HubHostTest, RunMainLoop_BlocksUntilRequestShutdown)
     std::this_thread::sleep_for(50ms);
     EXPECT_FALSE(loop_returned.load());
 
-    // Wake it up.
+    // Wake it up.  Per the contract, request_shutdown() also calls
+    // broker.stop() — verify by checking the broker is no longer
+    // serving its poll loop.  We can't observe the broker thread
+    // state directly here (ThreadManager owns it); instead the L3
+    // integration test exercises the post-request_shutdown REG_REQ
+    // failure path.  At L2 we verify the API contract: caller can
+    // follow request_shutdown() with shutdown() and the second call
+    // completes promptly.
     host.request_shutdown();
 
     // Bounded wait for return.
@@ -228,7 +235,56 @@ TEST_F(HubHostTest, RunMainLoop_BlocksUntilRequestShutdown)
         main_thread.join();
     EXPECT_TRUE(loop_returned.load());
 
+    // shutdown() drains the now-stopped broker thread.  Because
+    // request_shutdown() already broke the broker poll loop, this
+    // should complete promptly.  A buggy request_shutdown() that
+    // ONLY flipped the flag would leave the broker running, and
+    // shutdown() here would still call broker.stop() and drain
+    // (still passes) — so this is not a strict regression test for
+    // the contract; the L3 integration test covers that side.
     host.shutdown();
+    EXPECT_FALSE(host.is_running());
+}
+
+TEST_F(HubHostTest, Startup_FailsCleanlyOnBusyPort)
+{
+    // First host binds an ephemeral port; we capture it as the busy
+    // address and point a second host at the same endpoint.  The
+    // second startup() must throw and leave the second HubHost in a
+    // clean state — no leaked broker thread, no detached worker.
+    auto [cfg1, dir1] = make_config("busy_first");
+    HubHost host1(std::move(cfg1));
+    host1.startup();
+    const std::string busy_endpoint = host1.broker_endpoint();
+    ASSERT_FALSE(busy_endpoint.empty());
+
+    // Build a second HubConfig and patch its endpoint to collide.
+    auto [cfg2, dir2] = make_config("busy_second");
+    {
+        nlohmann::json j;
+        const auto hub_json = dir2 / "hub.json";
+        {
+            std::ifstream f(hub_json);
+            j = nlohmann::json::parse(f);
+        }
+        j["network"]["broker_endpoint"] = busy_endpoint;
+        {
+            std::ofstream f(hub_json);
+            f << j.dump(2);
+        }
+        cfg2 = HubConfig::load_from_directory(dir2.string());
+    }
+
+    HubHost host2(std::move(cfg2));
+    EXPECT_THROW(host2.startup(), std::exception)
+        << "second startup() on busy endpoint must throw";
+    EXPECT_FALSE(host2.is_running())
+        << "after failed startup, is_running must be false";
+    // host2 destruction must not hang or detach threads — verified by
+    // the test reaching this point and the ThreadManager bounded-join
+    // running in the dtor.
+
+    host1.shutdown();
 }
 
 TEST_F(HubHostTest, Destructor_CleansUpEvenWithoutExplicitShutdown)
