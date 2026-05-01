@@ -21,11 +21,12 @@ This document outlines the architecture of the pyLabHub C++ test suite. Its goal
 
 ## 1. High-Level Philosophy
 
-Our test suite is built on three core principles:
+Our test suite is built on four core principles:
 
 1.  **Clarity**: Test code should be as readable and well-organized as the production code it validates.
 2.  **Dependency Isolation**: Tests for base utilities (Layer 1) should not depend on full `pylabhub-utils` when testing foundational types (e.g. spin state/SpinGuard, `recursion_guard`, `scope_guard`).
 3.  **Speed**: A fast "inner loop" is critical. Developers must be able to run only the tests relevant to their changes without waiting for a full suite build.
+4.  **Assertion rigor (silent-failure prevention)**: Every load-bearing assertion must distinguish *which* path produced the outcome — not just whether the outcome was reached. **The full policy lives in `docs/IMPLEMENTATION_GUIDANCE.md` § "Assertion Design — silent-failure prevention"** (path discrimination, timing bounds, structural payload, sensitivity-check via mutation sweep, failure-mode catalog). README_testing.md does not duplicate that policy; this principle is the pointer.
 
 To achieve this, we use a **multiple-executable model**, where different test categories have their own dedicated test executables.
 

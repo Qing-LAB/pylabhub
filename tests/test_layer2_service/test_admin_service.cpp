@@ -219,6 +219,10 @@ std::unique_ptr<LifecycleGuard> AdminServiceTest::s_lifecycle_;
 TEST_F(AdminServiceTest, Construct_TokenOff_NonLoopbackEndpoint_Throws)
 {
     // §11.3 invariant: token_required==false demands a loopback bind.
+    // Both this test and Construct_TokenOn_EmptyToken_Throws below use
+    // the same exception type (std::invalid_argument); pin the message
+    // substring so a regression that throws the OTHER ctor check
+    // doesn't slip through this test.
     HubAdminConfig acfg;
     acfg.endpoint       = "tcp://0.0.0.0:5600";
     acfg.token_required = false;
@@ -227,16 +231,24 @@ TEST_F(AdminServiceTest, Construct_TokenOff_NonLoopbackEndpoint_Throws)
     auto [cfg, dir] = make_config("nonloopback");
     HubHost host(std::move(cfg)); // not started — backref only
 
-    EXPECT_THROW(
+    bool threw = false;
+    std::string msg;
+    try
+    {
         AdminService(pylabhub::hub::get_zmq_context(),
-                     acfg, /*token=*/"", host),
-        std::invalid_argument);
+                     acfg, /*token=*/"", host);
+    }
+    catch (const std::invalid_argument &e) { threw = true; msg = e.what(); }
+    EXPECT_TRUE(threw);
+    EXPECT_NE(msg.find("loopback"), std::string::npos)
+        << "wrong invalid_argument path; what(): " << msg;
 }
 
 TEST_F(AdminServiceTest, Construct_TokenOn_EmptyToken_Throws)
 {
     // §11.3 invariant: token gate ON requires a non-empty token,
-    // otherwise every request silently authenticates.
+    // otherwise every request silently authenticates.  Pin the
+    // message substring (see comment on the loopback test above).
     HubAdminConfig acfg;
     acfg.endpoint       = "tcp://127.0.0.1:0";
     acfg.token_required = true;
@@ -244,10 +256,17 @@ TEST_F(AdminServiceTest, Construct_TokenOn_EmptyToken_Throws)
     auto [cfg, dir] = make_config("emptytoken");
     HubHost host(std::move(cfg));
 
-    EXPECT_THROW(
+    bool threw = false;
+    std::string msg;
+    try
+    {
         AdminService(pylabhub::hub::get_zmq_context(),
-                     acfg, /*token=*/"", host),
-        std::invalid_argument);
+                     acfg, /*token=*/"", host);
+    }
+    catch (const std::invalid_argument &e) { threw = true; msg = e.what(); }
+    EXPECT_TRUE(threw);
+    EXPECT_NE(msg.find("admin_token is empty"), std::string::npos)
+        << "wrong invalid_argument path; what(): " << msg;
 }
 
 // ─── Standalone run loop + ping ────────────────────────────────────────────
