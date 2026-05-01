@@ -1026,11 +1026,39 @@ can land in parallel once P1 lands.
   L2 tests for filter coverage + `_collected_at`.  (Originally scoped as
   `HubHost::query_metrics`; pending the §4 deferral, exposed as a free
   function or on `BrokerService` until Phase 6 introduces `HubHost`.)
-- **Phase 6** — **`AdminService` structured RPC (§11) + introduce
-  `HubHost`** as the single curated mutation surface for AdminService and
-  (in Phase 8) HubAPI to share — auth-context wrapping, audit logging,
-  encapsulation of broker-internal request queues live here.  Retire
-  `AdminShell` dependency.  L3 tests for each RPC method.
+- **Phase 6** — split into 6.1 (HubState ownership + HubHost lifecycle
+  owner) and 6.2 (AdminService).
+  - **Phase 6.1a — HubState ownership refactor** ✅ shipped 2026-04-30
+    (commit `e59bb90`).  `BrokerService` ctor takes `HubState&` by
+    reference; `BrokerServiceImpl` stores a non-owning pointer; test
+    fixtures (`LocalBrokerHandle` etc.) own the HubState alongside the
+    broker.  Behavior unchanged; 1663/1663 tests stay green.  Aligns
+    with §4 component diagram (HubState is a peer subsystem of
+    BrokerService, not nested inside it).
+  - **Phase 6.1b — HubHost lifecycle owner** ✅ shipped 2026-04-30.
+    Single concrete class (no template hierarchy — hubs are
+    singletons) owning `HubState` (value), `BrokerService` and
+    `ThreadManager` (unique_ptrs).  Public surface: `startup()` /
+    `run_main_loop()` / `shutdown()` / `request_shutdown()` /
+    `is_running()` plus const accessors `config()`, `broker()`,
+    `state()`, `broker_endpoint()`, `broker_pubkey()`.  No
+    state-changing API — the broker is the curated state-accessor
+    surface; HubHost just owns and sequences subsystems.  ThreadManager
+    auto-registers as the dynamic lifecycle module
+    `"ThreadManager:HubHost:<uid>"` (same pattern as role-side).
+    `shutdown()` is synchronous: drains the ThreadManager so the
+    broker thread has actually exited by the time the call returns —
+    no in-flight protocol traffic slips through after shutdown.
+    Covered by 7 L2 tests (lifecycle state machine + HEP §4 ownership
+    invariant `&host.state() == &host.broker().hub_state()`) and 3
+    L3 integration tests (broker reachable, REG_REQ round-trip with
+    HubBrokerConfig values reflected in REG_ACK heartbeat block,
+    shutdown breaks client connection).
+  - **Phase 6.2 — AdminService structured RPC (§11)** — pending.
+    Token-validated REP socket; thin wrapper that calls
+    `host.broker()` mutators directly (acceptance gate at the RPC
+    entry point per §11.3).  Retires the legacy `AdminShell` dep.
+    L3 tests for each RPC method.
 - **Phase 7** — `scripting::hub_lifecycle_modules()` + `HubScriptRunner` using
   `ScriptEngine`; retire `PythonInterpreter`/`HubScript`/`hub_script_api`/
   `pylabhub_module`. L3 tests for each callback + default no-op behavior.

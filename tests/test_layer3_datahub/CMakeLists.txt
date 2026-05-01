@@ -153,6 +153,9 @@ add_executable(test_layer3_datahub
     # ── Broker control-plane protocol tests (broadcast, notify, list_channels) ──
     test_datahub_broker_protocol.cpp
 
+    # ── HubHost ↔ BrokerService integration (HEP-CORE-0033 §4 / Phase 6.1b) ──
+    test_datahub_hub_host_integration.cpp
+
     # ── Messenger hex codec tests (deleted — Step 7 Messenger removal) ─
 
     # ── ZmqPollLoop + HeartbeatTracker unit tests ────────────────────────────
