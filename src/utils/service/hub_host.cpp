@@ -227,34 +227,69 @@ void HubHost::startup()
         impl_->thread_mgr = std::make_unique<utils::ThreadManager>(
             "HubHost", impl_->cfg.identity().uid);
 
-        // Spawn broker thread.  ThreadManager only joins; the broker's
-        // internal stop atomic + ZMQ wake-up break the poll loop on
-        // shutdown.
+        // Spawn broker thread.  Wrap the run() call in a try/catch
+        // that forwards any exception to `ready_promise` so the
+        // parent thread fails fast (~ms) instead of waiting out the
+        // 5s ready timeout when bind fails (busy port, etc.).  Without
+        // this, the thread dies, no on_ready fires, and the parent
+        // observes only a 5s wait_for timeout — a real-bug-shaped
+        // delay that masquerades as a wait.  Worth the boilerplate.
+        //
+        // Two outcomes from inside the lambda:
+        //   1. broker.run() returns normally → on_ready already fired
+        //      from inside; promise was set there; this path is a
+        //      regular thread exit (e.g. after stop()).
+        //   2. broker.run() throws (bind failure most commonly) →
+        //      promise wasn't set yet; we set it to the exception so
+        //      ready_future.get() rethrows on the parent thread.
+        // If the broker fired on_ready successfully (case 1) and then
+        // threw later, the promise is already satisfied — `set_exception`
+        // would throw `future_error::promise_already_satisfied`; we
+        // swallow that since the failure is post-startup and the broker
+        // poll loop will have stopped on its own.
         auto *broker_ptr = impl_->broker.get();
         if (!impl_->thread_mgr->spawn("broker",
-                                       [broker_ptr] { broker_ptr->run(); }))
+                                       [broker_ptr, ready_promise]
+                                       {
+                                           try
+                                           {
+                                               broker_ptr->run();
+                                           }
+                                           catch (...)
+                                           {
+                                               try
+                                               {
+                                                   ready_promise->set_exception(
+                                                       std::current_exception());
+                                               }
+                                               catch (const std::future_error &)
+                                               {
+                                                   // promise already
+                                                   // satisfied — broker
+                                                   // succeeded then died;
+                                                   // surface via logs only.
+                                               }
+                                           }
+                                       }))
         {
             throw std::runtime_error(
                 "HubHost::startup: ThreadManager refused to spawn broker thread");
         }
 
-        // Block until the broker fires on_ready, with a bounded
-        // deadline.  A healthy broker binds in <100 ms; 5 s is
-        // generous.  If the broker thread silently exits before
-        // firing on_ready (binding failure with no exception
-        // surfaced through this future), wait_for() reports timeout
-        // and we treat it as startup failure rather than hanging
-        // forever.  If the broker thread did throw, the future also
-        // delivers that exception via get().
+        // Block until the broker fires on_ready (success) or the
+        // worker forwards its exception via the promise (failure).
+        // A healthy broker binds in <100 ms; the 5 s deadline now only
+        // matters for genuinely hung threads (no exception, no on_ready
+        // — should not happen in practice, but kept as a safety net).
         const auto status =
             ready_future.wait_for(std::chrono::seconds(5));
         if (status == std::future_status::timeout)
         {
             throw std::runtime_error(
                 "HubHost::startup: broker did not signal ready within 5s "
-                "(bind likely failed silently — check logs)");
+                "(broker thread is hung — neither bound nor exited)");
         }
-        auto info = ready_future.get(); // may throw if broker thread did
+        auto info = ready_future.get(); // rethrows broker bind exception fast
         impl_->bound_endpoint = info.first;
         impl_->bound_pubkey   = info.second;
 
