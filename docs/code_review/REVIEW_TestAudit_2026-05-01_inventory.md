@@ -44,7 +44,7 @@ for a file IN THE SAME COMMIT that fixes the file.
 | L2-03 | `test_layer2_service/test_configure_logger.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-04 | `test_layer2_service/test_crypto_utils.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-05 | `test_layer2_service/test_engine_factory.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-06 | `test_layer2_service/test_filelock.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L2-06 | `test_layer2_service/test_filelock.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 deferred (subprocess) | Audited `<this commit>`.  Pattern 3 parent file delegating to filelock_workers.cpp.  No broad EXPECT_THROW / EXPECT_NO_THROW / sleep_for / discarded timeout returns in parent. |
 | L2-07 | `test_layer2_service/test_filelock_singleprocess.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-08 | `test_layer2_service/test_framework_selftest.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-09 | `test_layer2_service/test_hub_cli.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
@@ -87,7 +87,7 @@ for a file IN THE SAME COMMIT that fixes the file.
 | L2-46 | `test_layer2_service/workers/crypto_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
 | L2-47 | `test_layer2_service/workers/filelock_singleprocess_workers.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-48 | `test_layer2_service/workers/filelock_singleprocess_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
-| L2-49 | `test_layer2_service/workers/filelock_workers.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L2-49 | `test_layer2_service/workers/filelock_workers.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 deferred (subprocess) | Audited `<this commit>`.  Class B: 5 `sleep_for` instances categorized — line 84 is "hold lock for 200ms" time-budget; the test's actual assertion is `ASSERT_TRUE(thread_saw_block)` which measures the contender's wait duration (>100ms), not the parent's sleep — a regression to non-blocking would fail the assertion regardless of timing.  Lines 241/307/322 are randomized contention jitter inside stress-test loops.  Line 410 is `sleep_for(hold_ms)` where `hold_ms` is the test's configured hold duration (the contract being tested).  None are sleep-then-assert-state-change ordering antipatterns.  Class A/C: no broad EXPECT_THROW or discarded timeout returns. |
 | L2-50 | `test_layer2_service/workers/filelock_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
 | L2-51 | `test_layer2_service/workers/hub_config_workers.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-52 | `test_layer2_service/workers/hub_config_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
