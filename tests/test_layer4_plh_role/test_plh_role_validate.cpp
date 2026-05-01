@@ -21,6 +21,13 @@ namespace
 
 struct RoleSpec { std::string_view role; };
 
+// See PrintTo rationale in test_plh_role_init.cpp — keeps CTest test
+// names as `Roles/<Case>/producer` instead of a raw 16-byte dump.
+inline void PrintTo(const RoleSpec &s, std::ostream *os)
+{
+    *os << s.role;
+}
+
 class PlhRoleValidateTest : public PlhRoleCliTest,
                             public ::testing::WithParamInterface<RoleSpec>
 {
