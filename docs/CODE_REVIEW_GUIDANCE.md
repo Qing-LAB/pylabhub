@@ -96,6 +96,7 @@ in **`docs/IMPLEMENTATION_GUIDANCE.md`** § "Common Pitfalls and Solutions".
 - [ ] pImpl class: destructor defined in `.cpp`
 - [ ] External input entry point: size bounded before parse; auth before body
 - [ ] C API tests preserved: never delete `test_slot_rw_coordinator` or `test_recovery_api`
+- [ ] **New / modified tests pass the silent-failure prevention rules** in `docs/IMPLEMENTATION_GUIDANCE.md` § "Assertion Design — silent-failure prevention": no broad-catch `EXPECT_THROW`, timing bounds where "fast" is part of the contract, structural-payload checks (not just envelope `status==ok`), and a sensitivity-check (mutation sweep) for any assertion that gates a contract
 
 **Architecture checks** — see **`docs/IMPLEMENTATION_GUIDANCE.md`** § "Before Submitting PR"
 for the full checklist covering pImpl, layers, ABI, concurrency, `[[nodiscard]]`, and

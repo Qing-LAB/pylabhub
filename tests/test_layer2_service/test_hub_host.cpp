@@ -276,8 +276,45 @@ TEST_F(HubHostTest, Startup_FailsCleanlyOnBusyPort)
     }
 
     HubHost host2(std::move(cfg2));
-    EXPECT_THROW(host2.startup(), std::exception)
+
+    // ── Outcome + path + speed ─────────────────────────────────────────────
+    //
+    // Throw alone is not sufficient — a regression that breaks broker
+    // exception-forwarding falls back to the 5 s ready_future timeout,
+    // and `EXPECT_THROW(...)` would still pass (just 5 s later).  Pin
+    // BOTH the speed (must fail fast: <1 s) and the path (the message
+    // must NOT be the timeout-path message), so any future regression
+    // surfaces as a real failure and not just a slow test.  This is
+    // the lesson from 2026-05-01: the prior test asserted only "throws"
+    // and the slow path silently became normal for weeks.
+    bool threw = false;
+    std::string err_what;
+    const auto t0 = std::chrono::steady_clock::now();
+    try
+    {
+        host2.startup();
+    }
+    catch (const std::exception &e)
+    {
+        threw = true;
+        err_what = e.what();
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - t0;
+    const auto elapsed_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+
+    EXPECT_TRUE(threw)
         << "second startup() on busy endpoint must throw";
+    EXPECT_LT(elapsed_ms, 1000)
+        << "startup() must fail FAST on bind error (<1 s); took "
+        << elapsed_ms << " ms.  Slow failure indicates broker exception "
+           "is no longer being forwarded via ready_promise — see the "
+           "lambda in HubHost::startup() that wraps broker.run() in a "
+           "try/catch and calls ready_promise->set_exception().";
+    EXPECT_EQ(err_what.find("did not signal ready within 5s"),
+              std::string::npos)
+        << "startup() failed via the timeout path, not the bind-error path; "
+           "what(): " << err_what;
     EXPECT_FALSE(host2.is_running())
         << "after failed startup, is_running must be false";
     // host2 destruction must not hang or detach threads — verified by
@@ -334,8 +371,17 @@ TEST_F(HubHostTest, StartupAfterShutdown_Throws)
     host.shutdown();
     EXPECT_FALSE(host.is_running());
 
-    // Second startup() must throw — host is single-use.
-    EXPECT_THROW(host.startup(), std::logic_error);
+    // Second startup() must throw — host is single-use.  Pin both the
+    // exception type AND a message substring so that a regression
+    // returning a different std::logic_error (e.g. from a downstream
+    // assert) does not silently masquerade as the FSM single-use throw.
+    bool threw = false;
+    std::string msg;
+    try { host.startup(); }
+    catch (const std::logic_error &e) { threw = true; msg = e.what(); }
+    EXPECT_TRUE(threw) << "second startup() must throw std::logic_error";
+    EXPECT_NE(msg.find("after shutdown"), std::string::npos)
+        << "wrong logic_error path; what(): " << msg;
     EXPECT_FALSE(host.is_running())
         << "rejected startup() must not change FSM state";
 }
@@ -370,7 +416,27 @@ TEST_F(HubHostTest, FailedStartupAllowsRetry)
     }
 
     HubHost host(std::move(cfg2));
-    EXPECT_THROW(host.startup(), std::exception);
+
+    // Pin outcome + speed + path (see Startup_FailsCleanlyOnBusyPort
+    // for the lesson: an outcome-only `EXPECT_THROW` would silently
+    // accept a 5 s ready-future timeout regression).
+    bool threw = false;
+    std::string err_what;
+    const auto t0 = std::chrono::steady_clock::now();
+    try { host.startup(); }
+    catch (const std::exception &e) { threw = true; err_what = e.what(); }
+    const auto elapsed_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+    EXPECT_TRUE(threw);
+    EXPECT_LT(elapsed_ms, 1000)
+        << "startup() must fail FAST on bind error (<1 s); took "
+        << elapsed_ms << " ms — broker exception not forwarded via "
+           "ready_promise.  See HubHost::startup() lambda.";
+    EXPECT_EQ(err_what.find("did not signal ready within 5s"),
+              std::string::npos)
+        << "startup() failed via the timeout path, not the bind-error path; "
+           "what(): " << err_what;
     EXPECT_FALSE(host.is_running());
 
     // Free the busy endpoint and patch host's config to a fresh one.

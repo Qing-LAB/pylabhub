@@ -27,6 +27,27 @@ Build outputs go to `build/stage-<buildtype>/` with `bin/`, `lib/`, `tests/`, `i
 
 ### Testing Practice (Mandatory)
 
+- **Tests must pin path, timing, and structure — never just outcome.**
+  An assertion that checks only "did it throw" or "status==ok" silently
+  accepts regressions that produce the same outcome via the wrong path.
+  Required for every load-bearing assertion:
+  - **Path discrimination.** `EXPECT_THROW(..., std::exception)` is forbidden;
+    pin a specific exception type AND a substring of the expected message.
+    If the wrong failure mode is taken, the test must fail.
+  - **Timing bound where speed is part of the contract.** Capture wall-clock
+    via `std::chrono::steady_clock` and `EXPECT_LT(elapsed_ms, bound)`.
+    Without a bound, "fast" rots silently into "eventually" (see 2026-05-01:
+    two HubHost tests passed for weeks while waiting out a 5s timeout
+    regression).
+  - **Structural payload, not just envelope.** For `{status, result}`-shaped
+    responses, dig into `result.field` — a regression that returns
+    `{"status":"ok"}` with empty/wrong result will pass an envelope-only
+    check (verified by mutation sweep that broke the same day).
+  - **Sensitivity check before claim.** For any newly-written assertion
+    that gates a contract: deliberately break the production code, run
+    the test, watch it fail, restore. If the test still passes against
+    the mutation, the assertion is shaped wrong — fix it before commit.
+
 - **Never re-run tests or builds just to grep a different pattern.** Capture output to a
   temp file once, then query from that file:
   ```bash

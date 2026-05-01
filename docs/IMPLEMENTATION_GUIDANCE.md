@@ -860,6 +860,112 @@ if (!lock.try_lock()) {
 
 For detailed test plans, phase rationale, and execution priorities, see **`docs/README/README_testing.md`** and **`docs/TODO_MASTER.md`**.
 
+### Assertion Design — silent-failure prevention (MANDATORY)
+
+A test that asserts only the *outcome* will silently accept a regression
+that produces the same outcome via the wrong path. **This is not a
+hypothetical concern** — it shipped twice in this codebase (2026-05-01
+audit, both caught only because a test reviewer demanded a sensitivity
+check):
+
+- **`HubHostTest.Startup_FailsCleanlyOnBusyPort` and
+  `FailedStartupAllowsRetry`** asserted only `EXPECT_THROW(host.startup(),
+  std::exception)`. The throw came from the fast bind-error path *or*
+  from a 5-second `ready_future` timeout path. Both paths look identical
+  to `EXPECT_THROW`. The slow path silently became normal; both tests
+  ran 5 seconds longer for weeks without surfacing as failures.
+
+- **`AdminServiceTest.HubHost_AdminEnabled_RoundTripWorks`** asserted
+  only `EXPECT_EQ(reply.value("status", ""), "ok")`. A deliberate
+  mutation that returned `{"status":"ok", "result":{"pong":false}}` —
+  envelope correct, payload wrong — passed the test.
+
+#### Path discrimination
+
+`EXPECT_THROW(..., std::exception)` and `EXPECT_THROW(..., std::runtime_error)`
+**without a message check** are forbidden when the production code has
+multiple throw sites of that type that the test is meant to distinguish.
+Pin a specific exception type AND a substring of the expected message:
+
+```cpp
+// BAD — outcome only.  Any std::logic_error from any path passes.
+EXPECT_THROW(host.startup(), std::logic_error);
+
+// GOOD — type + message substring pin the path.
+bool threw = false;
+std::string msg;
+try { host.startup(); }
+catch (const std::logic_error &e) { threw = true; msg = e.what(); }
+EXPECT_TRUE(threw);
+EXPECT_NE(msg.find("after shutdown"), std::string::npos)
+    << "wrong logic_error path; what(): " << msg;
+```
+
+If a function throws only one type of exception from one path, a
+type-only `EXPECT_THROW` is acceptable — but verify by reading the
+production code, not by assuming.
+
+#### Timing bound when "fast" is part of the contract
+
+If a function has a fast-fail contract (e.g. fail-fast on bind error,
+sub-millisecond local op), the test must assert wall-clock bounds.
+Without a bound, "fast" rots silently into "eventually":
+
+```cpp
+const auto t0 = std::chrono::steady_clock::now();
+bool threw = false;
+try { f(); } catch (...) { threw = true; }
+const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::steady_clock::now() - t0).count();
+EXPECT_TRUE(threw);
+EXPECT_LT(elapsed_ms, bound_ms)
+    << "regression: slow path taken, took " << elapsed_ms << " ms";
+```
+
+#### Structural payload, not just envelope
+
+For `{status, result}`-shaped responses (admin RPC, JSON envelopes,
+error objects), asserting `status==ok` does NOT validate `result`. A
+regression that returns `{"status":"ok"}` with empty/wrong result
+will pass an envelope-only check. Dig into the structured fields:
+
+```cpp
+// BAD — envelope only.
+EXPECT_EQ(reply.value("status", ""), "ok");
+
+// GOOD — envelope + payload structure.
+EXPECT_EQ(reply.value("status", ""), "ok");
+ASSERT_TRUE(reply.contains("result"));
+EXPECT_EQ(reply["result"].value("expected_field", default), expected_value);
+```
+
+#### Sensitivity check before claiming a contract guard
+
+For any newly-written assertion that gates a contract: deliberately
+break the production code (mutate a return value, flip a sign, return
+a stub), run the test, watch it fail, restore. If the test still
+passes against the mutation, the assertion is shaped wrong — fix it
+before commit. A 30-second mutation sweep would have caught both
+2026-05-01 failures before they reached the user.
+
+This is the same idea as mutation testing, scoped to the assertions
+you just wrote rather than the whole codebase. Required for any test
+that gates a behavior contract; optional for trivial sanity checks.
+
+#### Failure-mode catalog
+
+Common shapes that violate the rules above and how to fix them:
+
+| Anti-pattern | Why it fails silently | Fix |
+|---|---|---|
+| `EXPECT_THROW(f(), std::exception)` | Any thrown exception passes | Pin specific type + message substring |
+| `EXPECT_THROW(f(), std::runtime_error)` (multi-throw-site code) | Wrong runtime_error path passes | Add message substring check |
+| `EXPECT_NO_THROW(f())` | Doesn't assert *what* happened | Add positive assertions on side effects |
+| `EXPECT_EQ(status, "ok")` only | Empty/wrong payload passes | Add payload field assertions |
+| `EXPECT_TRUE(result.has_value())` only | Wrong content passes | Inspect the value's fields |
+| Test that asserts only `is_running()==true` after start | Wrong subsystem started passes | Check the specific subsystem accessor |
+| Test that runs 5 s and "passes" | Slow regression masquerades as correct | Add `EXPECT_LT(elapsed, bound)` |
+
 ### Test Organization
 
 ```
