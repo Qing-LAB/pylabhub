@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(find /home/qqing/Work/pylabhub/tests -name *federat* -o -name *peer* -o -name *hub_peer*)",
-      "Bash(cmake --build build -j2 --target pylabhub-producer)"
-    ]
-  }
-}
