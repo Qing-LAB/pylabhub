@@ -30,15 +30,38 @@
  *     "broker"); runs `BrokerService::run()`.
  *   - Admin thread (Phase 6.2) is spawned via the same ThreadManager
  *     (named "admin"); runs `AdminService::run()`.
- *   - On shutdown, the flag is flipped, subsystem `stop()` methods
- *     break their poll loops, ThreadManager destructor joins all
- *     tracked threads with a bounded timeout.
+ *   - `shutdown()` is synchronous: it flips the shutdown flag, calls
+ *     each subsystem's `stop()` to break its poll loop, then drains
+ *     the ThreadManager so all tracked threads have actually exited
+ *     before the call returns.  After `shutdown()`, no protocol
+ *     traffic is being processed and no in-flight handlers can run.
+ *   - `~HubHost` calls `shutdown()` if the caller didn't, then
+ *     destroys subsystems in reverse spawn order (thread_mgr → broker
+ *     → state → cfg).
+ *
+ * Preconditions for use:
+ *   - A `LifecycleGuard` providing Logger, FileLock, JsonConfig,
+ *     CryptoUtils, and ZMQContext lifecycle modules MUST be active
+ *     before `startup()` is called.  HubHost itself is not a lifecycle
+ *     module (it's an application-level lifecycle owner, like
+ *     `RoleHostBase` on the role side).
+ *   - `cfg.load_keypair(password)` MUST be called by the caller
+ *     BEFORE constructing HubHost if CURVE auth is desired (vault
+ *     unlock is a config-time concern; HubHost reads the resulting
+ *     pubkey/seckey from `cfg.auth()`).
+ *   - Single-driver assumption: only one thread should call
+ *     `startup()` / `shutdown()` / `run_main_loop()` per HubHost
+ *     instance.  These methods are idempotent w.r.t. repeated calls
+ *     from the SAME thread, but not safe under concurrent calls from
+ *     different threads.  `request_shutdown()` is the one exception —
+ *     it is safe from any thread (signal handler, admin RPC, broker
+ *     error path).
  *
  * `HubHost` is non-copyable, non-movable, single-instance per hub
  * binary.  Use one of the factory-style sequences:
  *   HubHost host(std::move(cfg));
  *   host.startup();
- *   host.run_main_loop();   // blocks
+ *   host.run_main_loop();   // blocks until request_shutdown / shutdown
  *   host.shutdown();        // optional; dtor runs it idempotently
  */
 
@@ -82,14 +105,23 @@ public:
     /// `shutdown()` is called.  Typically the main thread's last call.
     void run_main_loop();
 
-    /// Stop subsystems (broker.stop()), flip the shutdown flag, wake
-    /// `run_main_loop()`.  Idempotent; threads are joined when
-    /// `~HubHost` runs (ThreadManager destructor with bounded join).
+    /// Synchronous shutdown.  Flips the shutdown flag, calls
+    /// `broker.stop()` (and, in Phase 6.2, `admin.stop()`), then
+    /// drains the ThreadManager so the broker thread has actually
+    /// exited before this returns.  Idempotent: a second call is a
+    /// no-op.  After `shutdown()` returns: `is_running()` is false,
+    /// `broker()` is unsafe to call, no protocol traffic is being
+    /// served, and the broker socket is closed.
     void shutdown();
 
-    /// Thread-safe shutdown signal — flips the atomic + notifies the
-    /// run-loop's condition variable.  Safe from any thread (admin
-    /// RPC handler, signal handler, broker error path).
+    /// Async shutdown signal — safe from any thread.  Flips the
+    /// shutdown flag, calls `broker.stop()` to break its poll loop,
+    /// and notifies `run_main_loop()`'s condition variable.  Returns
+    /// immediately; ThreadManager join is deferred to a subsequent
+    /// `shutdown()` call (or to `~HubHost`).  Typical use: signal
+    /// handler / admin RPC / broker error path → call this →
+    /// `run_main_loop()` returns on the main thread → main thread
+    /// drives `shutdown()` for synchronous wind-down.
     void request_shutdown() noexcept;
 
     /// True between successful `startup()` and the start of `shutdown()`.

@@ -252,15 +252,13 @@ TEST_F(HubHostIntegrationTest, HubHost_RegReq_RoundTripsViaSpawnedBroker)
 
 TEST_F(HubHostIntegrationTest, HubHost_Shutdown_BreaksClientConnection)
 {
-    // After host->shutdown(), the broker's poll loop must exit (not
-    // just the running flag).  Verified via the BRC's hub-dead
-    // callback firing within a bounded window.
+    // After host->shutdown(), the broker's poll loop must have exited
+    // (not just the running flag flipped).  We probe by attempting a
+    // post-shutdown REG_REQ — it should time out quickly because the
+    // broker is no longer servicing the socket.
     auto host = spawn_host("shutdown");
 
-    std::atomic<bool> hub_dead_fired{false};
-
     BrcHandle client;
-    client.brc.on_hub_dead([&] { hub_dead_fired.store(true); });
     client.start(host->broker_endpoint(), host->broker_pubkey(),
                  "prod.test.uid_shutdown");
 
@@ -271,14 +269,15 @@ TEST_F(HubHostIntegrationTest, HubHost_Shutdown_BreaksClientConnection)
         3000);
     ASSERT_TRUE(reg.has_value());
 
-    // Shut the host down; broker thread should exit promptly.
+    // Shut the host down.  shutdown() is synchronous: it drains the
+    // ThreadManager so the broker thread has actually exited by the
+    // time this returns.
     host->shutdown();
+    EXPECT_FALSE(host->is_running());
 
-    // ZMTP heartbeat-driven hub-dead detection takes up to
-    // ZMQ_HEARTBEAT_TIMEOUT (30s) by default; we don't wait that
-    // long here.  The cheaper signal is that the broker thread has
-    // actually exited — we can probe by attempting a request that
-    // will time out fast (3 s) instead of hanging forever.
+    // Post-shutdown REG_REQ should fail (broker no longer services
+    // the socket).  3 s timeout — generous for clean failure;
+    // significantly shorter than the ZMTP heartbeat detection path.
     auto reg2 = client.brc.register_channel(
         make_reg_opts(pid_chan("hubhost.shutdown.postcheck"),
                        "prod.test.uid_shutdown"),
