@@ -1,6 +1,10 @@
 /**
  * @file engine_host.cpp
- * @brief EngineHost<ApiT> — shared lifecycle scaffolding for script hosts.
+ * @brief EngineHost<ApiT> — shared start/stop scaffolding for script
+ *        hosts.  Not a `LifecycleGuard` module: this file owns the
+ *        host's own start/stop FSM (Constructed → Running → ShutDown);
+ *        `LifecycleGuard` modules (Logger, ZMQContext, …) are
+ *        independent and managed by the binary's main.
  *
  * The worker-thread body (`worker_main_`) is host-specific and lives in
  * each derived class; this file owns only the setup/teardown pattern
@@ -17,6 +21,7 @@
 #include "utils/role_api_base.hpp"
 #include "utils/thread_manager.hpp"  // api_->thread_manager() inside startup_
 
+#include <atomic>
 #include <typeinfo>   // typeid(ApiT).name() in destructor diagnostic
 #include <utility>
 
@@ -55,7 +60,14 @@ EngineHost<ApiT>::EngineHost(std::string_view role_tag,
 template <typename ApiT>
 EngineHost<ApiT>::~EngineHost()
 {
-    if (!shutdown_called_.load(std::memory_order_acquire))
+    // Contract: the host must be in `Constructed` (never started) or
+    // `ShutDown` (started + properly shut down) by the time the
+    // destructor runs.  If phase is `Running`, the worker thread is
+    // still alive and may reference derived members that are about
+    // to be destroyed — silent use-after-free.  Abort loudly with
+    // diagnostic instead of papering over.
+    const Phase p = phase_.load(std::memory_order_acquire);
+    if (p == Phase::Running)
     {
         // The uid may be empty if config was never parsed; PLH_PANIC
         // formats unconditionally so the message layout stays stable.
@@ -66,13 +78,13 @@ EngineHost<ApiT>::~EngineHost()
         // failing host was role-side or hub-side.  Mangled name is
         // compiler-specific but always unambiguous within a single build.
         PLH_PANIC(
-            "EngineHost<{}> destructor entered without shutdown_() having "
-            "been called. role_tag='{}' uid='{}'. Either the derived "
-            "destructor did not call shutdown_() as its first statement, "
-            "or an override of shutdown_() failed to call "
-            "EngineHost::shutdown_(). The worker thread may still "
-            "reference now-destroyed derived members; aborting to avoid "
-            "silent use-after-free.",
+            "EngineHost<{}> destructor entered while in Running phase — "
+            "shutdown_() was never called.  role_tag='{}' uid='{}'.  "
+            "Either the derived destructor did not call shutdown_() as "
+            "its first statement, or an override of shutdown_() failed "
+            "to call EngineHost::shutdown_().  The worker thread may "
+            "still reference now-destroyed derived members; aborting "
+            "to avoid silent use-after-free.",
             typeid(ApiT).name(),
             role_tag_, config_.identity().uid);
     }
@@ -81,42 +93,78 @@ EngineHost<ApiT>::~EngineHost()
 template <typename ApiT>
 void EngineHost<ApiT>::startup_()
 {
-    ready_promise_ = std::promise<bool>{};
-    auto ready_future = ready_promise_.get_future();
-
-    // Construct api_ here (not in ctor) so role_tag + uid are available
-    // and the worker thread can be spawned under this api's ThreadManager.
-    // role_tag_ is the short form ("prod"/"cons"/"proc" for role side;
-    // "hub" for hub side) used by the ApiT-owned ThreadManager name +
-    // log prefixes.
-    api_ = std::make_unique<ApiT>(
-        core_, std::string(role_tag_), config_.identity().uid);
-
-    api_->thread_manager().spawn("worker", [this] { worker_main_(); });
-
-    const bool ok = ready_future.get();
-    if (!ok)
+    // Phase FSM (NOT a LifecycleGuard transition): Constructed → Running.
+    // CAS rejects re-entry from Running (idempotent) and from ShutDown
+    // (single-use after shutdown — construct a new host).
+    Phase expected = Phase::Constructed;
+    if (!phase_.compare_exchange_strong(expected, Phase::Running,
+                                         std::memory_order_acq_rel))
     {
-        // Worker signaled setup failure. Run shutdown_ to execute the
-        // cleanup path AND set the contract flag — otherwise the base
-        // destructor would abort even though we did clean up.
-        shutdown_();
+        if (expected == Phase::Running)
+            return;  // idempotent: already running
+        // expected == Phase::ShutDown
+        PLH_PANIC(
+            "EngineHost<{}>::startup_() called after shutdown_() — "
+            "this host instance is single-use.  role_tag='{}' uid='{}'.  "
+            "Construct a new EngineHost instance to start fresh.",
+            typeid(ApiT).name(),
+            role_tag_, config_.identity().uid);
+    }
+
+    try
+    {
+        ready_promise_ = std::promise<bool>{};
+        auto ready_future = ready_promise_.get_future();
+
+        // Construct api_ here (not in ctor) so role_tag + uid are
+        // available and the worker thread can be spawned under this
+        // api's ThreadManager.  role_tag_ is the short form
+        // ("prod"/"cons"/"proc" for role side; "hub" for hub side)
+        // used by the ApiT-owned ThreadManager name + log prefixes.
+        api_ = std::make_unique<ApiT>(
+            core_, std::string(role_tag_), config_.identity().uid);
+
+        api_->thread_manager().spawn("worker", [this] { worker_main_(); });
+
+        const bool ok = ready_future.get();
+        if (!ok)
+        {
+            // Worker signaled setup failure.  Run cleanup
+            // (transitions Running → ShutDown so the destructor's
+            // contract check passes; keeps host single-use).
+            shutdown_();
+        }
+    }
+    catch (...)
+    {
+        // Construction failure or worker spawn failure.  Roll back to
+        // Constructed so the user can retry (e.g., after fixing the
+        // config) without constructing a new host.  No partial state
+        // remains: api_ is reset; no thread was successfully spawned
+        // (or if it was, ready_future would have surfaced its result).
+        api_.reset();
+        phase_.store(Phase::Constructed, std::memory_order_release);
+        throw;
     }
 }
 
 template <typename ApiT>
 void EngineHost<ApiT>::shutdown_() noexcept
 {
-    // First effective call wins the exchange; subsequent calls see
-    // "already true" and early-return. This makes shutdown_ idempotent
-    // AND guarantees the contract flag is set exactly at the point
-    // cleanup work has been initiated.
-    if (shutdown_called_.exchange(true, std::memory_order_acq_rel))
+    // Phase FSM (NOT a LifecycleGuard transition): Running → ShutDown.
+    // CAS makes the transition race-free; only the first effective
+    // caller does the work.
+    Phase expected = Phase::Running;
+    if (!phase_.compare_exchange_strong(expected, Phase::ShutDown,
+                                         std::memory_order_acq_rel))
+    {
+        // Either still Constructed (never started — nothing to do) or
+        // already ShutDown (idempotent).  Either way, no-op.
         return;
+    }
 
-    // Underlying ops themselves tolerate repeated calls (atomic store,
-    // condvar notify, reset-of-null-unique_ptr), so even if someone
-    // tries to race, the flag is the sole correctness gate here.
+    // Underlying ops themselves tolerate repeated calls; the phase
+    // transition above is the sole correctness gate.
     core_.request_stop();
     core_.notify_incoming();
     // api_.reset() → ApiT dtor → ThreadManager dtor →

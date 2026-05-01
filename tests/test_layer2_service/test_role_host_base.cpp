@@ -139,7 +139,7 @@ TEST_F(RoleHostBaseLifecycleTest, DtorContract_MissingShutdown_Aborts)
 {
     auto dir = unique_dir("dtor_missing");
     expect_panic_abort("role_host_base.dtor_missing_shutdown_aborts", dir,
-                       "destructor entered without shutdown_");
+                       "destructor entered while in Running phase");
 }
 
 // ─── Virtual shutdown_ override calling base is allowed ─────────────────────
@@ -158,7 +158,25 @@ TEST_F(RoleHostBaseLifecycleTest, VirtualShutdown_OverrideWithoutBase_Aborts)
 {
     auto dir = unique_dir("ovr_no_base");
     expect_panic_abort("role_host_base.virtual_shutdown_no_base_aborts", dir,
-                       "destructor entered without shutdown_");
+                       "destructor entered while in Running phase");
+}
+
+// ─── Phase FSM single-use: startup_ after shutdown_ → abort ─────────────────
+//
+// EngineHost has a 3-phase run-state machine: Constructed → Running →
+// ShutDown — separate from `LifecycleGuard`, which is not involved in
+// the host's start/stop.  ShutDown is terminal: restarting the same
+// host would cause ThreadManager to refuse a duplicate "worker"
+// registration AND would race against a half-torn-down ApiT.
+// PLH_PANIC ensures regressions fail loudly instead of producing
+// subtle UB.  Counterpart of the HubHost L2 StartupAfterShutdown_Throws
+// (which uses logic_error because the hub side is non-noexcept and can
+// surface to a caller).
+TEST_F(RoleHostBaseLifecycleTest, StartupAfterShutdown_Aborts)
+{
+    auto dir = unique_dir("startup_after_shutdown");
+    expect_panic_abort("role_host_base.startup_after_shutdown_aborts", dir,
+                       "startup_() called after shutdown_()");
 }
 
 // ─── External shutdown-flag wiring: triggers loop exit via core_ ────────────

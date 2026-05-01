@@ -469,6 +469,31 @@ int virtual_shutdown_no_base_aborts(const std::string &dir)
     return 99;
 }
 
+// Lifecycle FSM: ShutDown is terminal — startup_() after shutdown_()
+// must PLH_PANIC.  Pinned here as a death scenario so a future
+// regression that quietly re-enters Running (e.g., dropping the CAS
+// guard, or mistakenly using a `bool` instead of the 3-state enum)
+// fails loudly instead of silently re-spawning the worker thread
+// against a half-torn-down ApiT.
+int startup_after_shutdown_aborts(const std::string &dir)
+{
+    LifecycleGuard guard(MakeModDefList(Logger::GetLifecycleModule(),
+                                        FileLock::GetLifecycleModule(),
+                                        JsonConfig::GetLifecycleModule()));
+    register_producer_once();
+    std::atomic<bool> shutdown{false};
+    {
+        TestRoleHost host(build_config(dir),
+                          std::make_unique<NativeEngine>(), &shutdown);
+        host.startup_();
+        host.shutdown_();
+        // Re-startup on a ShutDown host → CAS sees ShutDown → PLH_PANIC.
+        host.startup_();
+    }
+    fmt::print(stderr, "[WORKER FAILURE] expected abort did not occur\n");
+    return 99;
+}
+
 } // namespace role_host_base
 } // namespace pylabhub::tests::worker
 
@@ -520,6 +545,8 @@ struct RoleHostBaseWorkerRegistrar
                     return dtor_missing_shutdown_aborts(dir);
                 if (sc == "virtual_shutdown_no_base_aborts")
                     return virtual_shutdown_no_base_aborts(dir);
+                if (sc == "startup_after_shutdown_aborts")
+                    return startup_after_shutdown_aborts(dir);
 
                 fmt::print(stderr,
                            "[role_host_base] ERROR: unknown scenario '{}'\n", sc);

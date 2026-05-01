@@ -1,7 +1,10 @@
 #pragma once
 /**
  * @file hub_host.hpp
- * @brief HubHost — top-level lifecycle owner for the hub binary.
+ * @brief HubHost — top-level start/stop owner for the hub binary.
+ *        Not a `LifecycleGuard` module; the binary's `LifecycleGuard`
+ *        manages independent process-wide modules (Logger, ZMQContext,
+ *        …) and must be active before HubHost is constructed.
  *
  * Per HEP-CORE-0033 §4, HubHost is a single concrete class (not a
  * template hierarchy — hubs are singletons, no polymorphism to abstract
@@ -41,10 +44,12 @@
  *
  * Preconditions for use:
  *   - A `LifecycleGuard` providing Logger, FileLock, JsonConfig,
- *     CryptoUtils, and ZMQContext lifecycle modules MUST be active
- *     before `startup()` is called.  HubHost itself is not a lifecycle
- *     module (it's an application-level lifecycle owner, like
- *     `RoleHostBase` on the role side).
+ *     CryptoUtils, and ZMQContext modules MUST be active before
+ *     `startup()` is called.  HubHost itself is **not** a
+ *     `LifecycleGuard` module — it is an application-level
+ *     start/stop owner, like `RoleHostBase` on the role side.  Its
+ *     `startup()` / `shutdown()` are called directly by `main`, not
+ *     dispatched by `LifecycleGuard`.
  *   - `cfg.load_keypair(password)` MUST be called by the caller
  *     BEFORE constructing HubHost if CURVE auth is desired (vault
  *     unlock is a config-time concern; HubHost reads the resulting
@@ -94,7 +99,7 @@ public:
     HubHost(HubHost &&)                 = delete;
     HubHost &operator=(HubHost &&)      = delete;
 
-    // ── Lifecycle ──────────────────────────────────────────────────
+    // ── Start / Stop  (not a LifecycleGuard module) ───────────────
 
     /// Build subsystems and spawn their threads via the owned
     /// ThreadManager.  Idempotent: a second call after success is a
