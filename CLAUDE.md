@@ -47,6 +47,15 @@ Build outputs go to `build/stage-<buildtype>/` with `bin/`, `lib/`, `tests/`, `i
     that gates a contract: deliberately break the production code, run
     the test, watch it fail, restore. If the test still passes against
     the mutation, the assertion is shaped wrong — fix it before commit.
+  - **Tests must verify the absence of unexpected log warnings/errors.**
+    Happy-path tests must FAIL if production code emits a
+    `LOGGER_WARN` / `LOGGER_ERROR` during the test run; error-path tests
+    declare expected warnings up-front and reject anything else. A
+    regression that takes a silent fallback path emits a warning and
+    the old "outcome only" test would pass — same silent-failure mode
+    as outcome-only assertions, applied at the log boundary. Use the
+    log-capture fixture (see `docs/IMPLEMENTATION_GUIDANCE.md` §
+    "Tests must verify the absence of unexpected log warnings/errors").
 
 - **Never re-run tests or builds just to grep a different pattern.** Capture output to a
   temp file once, then query from that file:

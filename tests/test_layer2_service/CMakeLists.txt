@@ -727,6 +727,7 @@ add_executable(test_layer2_admin_service
 target_link_libraries(test_layer2_admin_service
     PRIVATE
         pylabhub::utils
+        pylabhub::test_framework
         pylabhub::third_party::cppzmq
         GTest::gtest
         GTest::gtest_main
