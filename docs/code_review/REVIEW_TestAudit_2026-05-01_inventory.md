@@ -70,7 +70,7 @@ for a file IN THE SAME COMMIT that fixes the file.
 | L2-29 | `test_layer2_service/test_role_config.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-30 | `test_layer2_service/test_role_data_loop.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-31 | `test_layer2_service/test_role_directory.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-32 | `test_layer2_service/test_role_host_base.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L2-32 | `test_layer2_service/test_role_host_base.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 deferred (subprocess Pattern 3) | Audited `<this commit>`.  Class A: 13 TEST_F all use `expect_panic_abort(..., panic_substring)` which path-pins death tests via message substring; no broad `EXPECT_THROW`.  Class B: worker uses `wait_for(pred, timeout_ms)` condition-based helper (line 204) — correct pattern.  `wait_for_wakeup` test pins an upper-bound timing (`EXPECT_LT(elapsed_ms, 500)`).  No bare `sleep_for` ordering antipattern.  Class C: no timeout-bearing-return discards.  Class D: Pattern 3 subprocess; LogCaptureFixture rollout for subprocess workers is a separate fixture-wide phase. |
 | L2-33 | `test_layer2_service/test_role_host_core.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-34 | `test_layer2_service/test_role_init_directory.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-35 | `test_layer2_service/test_role_logging_roundtrip.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
@@ -107,7 +107,7 @@ for a file IN THE SAME COMMIT that fixes the file.
 | L2-66 | `test_layer2_service/workers/role_config_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
 | L2-67 | `test_layer2_service/workers/role_data_loop_workers.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-68 | `test_layer2_service/workers/role_data_loop_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
-| L2-69 | `test_layer2_service/workers/role_host_base_workers.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L2-69 | `test_layer2_service/workers/role_host_base_workers.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 deferred (subprocess) | Audited `<this commit>` with L2-32.  Workers use `wait_for(pred, timeout_ms)` condition-based helper (line 204) for state-change waits; `wait_for_incoming(50)` and `wait_for_wakeup(20)` are testing those APIs with bounded-deadline contracts. |
 | L2-70 | `test_layer2_service/workers/role_host_base_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
 | L2-71 | `test_layer2_service/workers/role_logging_workers.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-72 | `test_layer2_service/workers/role_logging_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
