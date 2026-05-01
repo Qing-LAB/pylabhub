@@ -21,6 +21,8 @@
 #include "utils/hub_state.hpp"
 #include "utils/hub_metrics_filter.hpp"
 
+#include "test_sync_utils.h"
+
 #include <atomic>
 #include <future>
 #include <memory>
@@ -186,6 +188,24 @@ protected:
         return json::parse(svc().query_metrics_json_str(channel));
     }
 
+    /// Wait until a freshly-queried metrics JSON satisfies @p pred or
+    /// the deadline elapses.  Replaces the `sleep_for(N ms); query +
+    /// assert` Class B ordering pattern: a regression in broker
+    /// processing speed now fails this `poll_until` with the
+    /// channel/predicate diagnostic instead of failing the downstream
+    /// `EXPECT_EQ` on a stale snapshot.  Polls every 5 ms (cheap in-
+    /// process call to `query_metrics_json_str`) up to 2 s by default.
+    bool wait_for_metric(const std::string &channel,
+                         std::function<bool(const json &)> pred,
+                         std::chrono::milliseconds timeout =
+                             std::chrono::seconds(2))
+    {
+        return ::pylabhub::tests::helper::poll_until(
+            [&] { return pred(query_metrics(channel)); },
+            timeout,
+            std::chrono::milliseconds(5));
+    }
+
     std::optional<LocalBrokerHandle> broker_;
 
 private:
@@ -210,7 +230,13 @@ TEST_F(MetricsPlaneTest, HeartbeatMetrics_StoredByBroker)
     metrics["iteration_count"] = 42;
     metrics["avg_period_us"]   = 1000;
     bh.brc.send_heartbeat(channel, metrics);
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    ASSERT_TRUE(wait_for_metric(channel, [](const json &r) {
+        return r.value("status", "") == "success"
+            && r.contains("metrics")
+            && r["metrics"].contains("producer")
+            && r["metrics"]["producer"].value("iteration_count", 0) == 42;
+    })) << "broker did not record producer iteration_count=42 within 2s";
 
     auto result = query_metrics(channel);
     ASSERT_EQ(result.value("status", ""), "success");
@@ -244,7 +270,13 @@ TEST_F(MetricsPlaneTest, MetricsReport_ConsumerStoredByBroker)
     json cons_metrics;
     cons_metrics["read_count"] = 100;
     cons_bh.brc.send_metrics_report(channel, cons_uid, cons_metrics);
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    ASSERT_TRUE(wait_for_metric(channel, [&](const json &r) {
+        return r.contains("metrics")
+            && r["metrics"].contains("consumers")
+            && r["metrics"]["consumers"].contains(cons_uid)
+            && r["metrics"]["consumers"][cons_uid].value("read_count", 0) == 100;
+    })) << "broker did not record consumer read_count=100 within 2s";
 
     auto result = query_metrics(channel);
     ASSERT_TRUE(result.contains("metrics"));
@@ -282,7 +314,15 @@ TEST_F(MetricsPlaneTest, QueryMetrics_AllChannels)
     json metrics;
     metrics["test_field"] = 99;
     bh.brc.send_heartbeat(channel, metrics);
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    // Wait until the channel appears under the all-channels query.
+    // Empty channel arg → query_metrics returns "channels" map.
+    ASSERT_TRUE(::pylabhub::tests::helper::poll_until([&] {
+        auto r = query_metrics();
+        return r.contains("channels") && r["channels"].contains(channel);
+    }, std::chrono::seconds(2)))
+        << "channel '" << channel << "' did not appear in all-channels "
+        << "query within 2s after heartbeat";
 
     auto result = query_metrics();
     ASSERT_TRUE(result.contains("channels"));
@@ -304,8 +344,11 @@ TEST_F(MetricsPlaneTest, HeartbeatNoMetrics_BackwardCompat)
     ASSERT_TRUE(reg.has_value());
 
     bh.brc.send_heartbeat(channel, {});
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
+    // Empty heartbeat: nothing to wait for in the metrics payload.
+    // The query is unconditionally "success" once REG_REQ has succeeded
+    // (which already happened above), so this just exercises the
+    // backward-compat path.  No sleep needed.
     auto result = query_metrics(channel);
     EXPECT_EQ(result.value("status", ""), "success");
 
@@ -327,12 +370,20 @@ TEST_F(MetricsPlaneTest, MetricsUpdate_OverwriteOnHeartbeat)
     json m1;
     m1["iteration_count"] = 10;
     bh.brc.send_heartbeat(channel, m1);
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // Wait until m1 propagated, so the m2 overwrite is observable as
+    // a transition rather than a coincident write.
+    ASSERT_TRUE(wait_for_metric(channel, [](const json &r) {
+        return r.contains("metrics") && r["metrics"].contains("producer")
+            && r["metrics"]["producer"].value("iteration_count", 0) == 10;
+    })) << "first heartbeat (iteration_count=10) did not propagate within 2s";
 
     json m2;
     m2["iteration_count"] = 20;
     bh.brc.send_heartbeat(channel, m2);
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    ASSERT_TRUE(wait_for_metric(channel, [](const json &r) {
+        return r.contains("metrics") && r["metrics"].contains("producer")
+            && r["metrics"]["producer"].value("iteration_count", 0) == 20;
+    })) << "second heartbeat (iteration_count=20) did not overwrite first within 2s";
 
     auto result = query_metrics(channel);
     auto &m = result["metrics"];
@@ -357,7 +408,13 @@ TEST_F(MetricsPlaneTest, ProducerPID_InQueryResult)
     json metrics;
     metrics["test"] = 1;
     bh.brc.send_heartbeat(channel, metrics);
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    // Wait until the producer record carries this process's PID.
+    // Replaces a bare sleep_for(200ms) Class B ordering.
+    ASSERT_TRUE(wait_for_metric(channel, [](const json &r) {
+        return r.contains("metrics") && r["metrics"].contains("producer")
+            && r["metrics"]["producer"].value("pid", 0) == ::getpid();
+    })) << "producer PID did not appear in metrics within 2s";
 
     auto result = query_metrics(channel);
     auto &m = result["metrics"];
@@ -456,20 +513,26 @@ TEST_F(MetricsPlaneTest, QueryEngine_RolesCarryCollectedAt)
     json metrics;
     metrics["iteration_count"] = 7;
     bh.brc.send_heartbeat(channel, metrics);
-    std::this_thread::sleep_for(std::chrono::milliseconds(150));
 
     pylabhub::hub::MetricsFilter f;
     f.categories.insert(pylabhub::hub::metrics_category::kRole);
     f.roles = {uid};
-    json result = svc().query_metrics(f);
+    // Wait until the heartbeat has been processed and _collected_at
+    // is populated (the post-condition the test then asserts).
+    ASSERT_TRUE(::pylabhub::tests::helper::poll_until([&] {
+        json r = svc().query_metrics(f);
+        return r.contains("roles") && r["roles"].contains(uid)
+            && !r["roles"][uid].value("_collected_at", "").empty();
+    }, std::chrono::seconds(2)))
+        << "role record _collected_at did not populate within 2s";
 
+    json result = svc().query_metrics(f);
     ASSERT_TRUE(result.contains("roles"));
     ASSERT_TRUE(result["roles"].contains(uid));
     const auto &r = result["roles"][uid];
     EXPECT_EQ(r.value("uid", ""), uid);
     EXPECT_EQ(r.value("role_tag", ""), "prod");
     EXPECT_TRUE(r.contains("_collected_at"));
-    // After a metrics-bearing heartbeat, _collected_at must be non-empty.
     EXPECT_FALSE(r.value("_collected_at", "").empty());
 
     bh.stop();
@@ -487,12 +550,20 @@ TEST_F(MetricsPlaneTest, QueryEngine_ChannelsHaveProducerAndConsumerMetrics)
     json metrics;
     metrics["iteration_count"] = 99;
     bh.brc.send_heartbeat(channel, metrics);
-    std::this_thread::sleep_for(std::chrono::milliseconds(150));
 
     pylabhub::hub::MetricsFilter f;
     f.categories.insert(pylabhub::hub::metrics_category::kChannel);
-    json result = svc().query_metrics(f);
+    // Wait until producer_metrics shows iteration_count=99.
+    ASSERT_TRUE(::pylabhub::tests::helper::poll_until([&] {
+        json r = svc().query_metrics(f);
+        return r.contains("channels") && r["channels"].contains(channel)
+            && r["channels"][channel].contains("producer_metrics")
+            && r["channels"][channel]["producer_metrics"]
+                   .value("iteration_count", 0) == 99;
+    }, std::chrono::seconds(2)))
+        << "channel producer_metrics iteration_count=99 not visible within 2s";
 
+    json result = svc().query_metrics(f);
     ASSERT_TRUE(result.contains("channels"));
     ASSERT_TRUE(result["channels"].contains(channel));
     const auto &c = result["channels"][channel];
