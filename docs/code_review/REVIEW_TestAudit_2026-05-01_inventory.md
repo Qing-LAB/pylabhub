@@ -164,7 +164,7 @@ for a file IN THE SAME COMMIT that fixes the file.
 | L3-37 | `test_layer3_datahub/test_datahub_transaction_api.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L3-38 | `test_layer3_datahub/test_datahub_write_attach.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L3-39 | `test_layer3_datahub/test_datahub_zmq_endpoint_registry.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L3-40 | `test_layer3_datahub/test_datahub_zmq_poll_loop.cpp` | 🟡 | 🔴 | 🟡 | 🟡 | Class B sites at lines 81, 154, 208, 234, 237, 260, 263, 280, 314, 318, 340 — convert to poll_until |
+| L3-40 | `test_layer3_datahub/test_datahub_zmq_poll_loop.cpp` | 🟢 | ✅ FIXED `<this commit>` | n/a | 🟡 deferred | Class B: 4 ordering sites converted to `poll_until` with named predicates (DispatchesOnPollin, SignalSocketWakesLoop, MultipleSocketsDispatchCorrectly, PeriodicTasksFireDuringLoop).  Mutation: each converted site's callback side-effect commented out → exactly that test failed at the `poll_until` ASSERT_TRUE with the path-discriminating predicate message; restored → 7/7 pass at 0.72 s.  Lines 81/154 are PeriodicTask interval-timing tests (acceptable per existing rule); lines 208/280 are pre-shutdown loop-letting-run sleeps (acceptable, no state assertion follows).  Class A: no broad EXPECT_THROW.  Class C: no timeout-bearing returns discarded (PeriodicTask & loop test all-local).  Class D LogCaptureFixture rollout deferred to fixture-wide phase. |
 | L3-41 | `test_layer3_datahub/test_role_api_flexzone.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L3-42 | `test_layer3_datahub/test_role_api_loop_policy.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L3-43 | `test_layer3_datahub/test_role_api_raii.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |

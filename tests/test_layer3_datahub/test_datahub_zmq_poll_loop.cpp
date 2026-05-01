@@ -9,6 +9,8 @@
 #include "utils/zmq_poll_loop.hpp"
 #include "utils/zmq_context.hpp"
 
+#include "test_sync_utils.h"
+
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -16,6 +18,7 @@
 #include <thread>
 
 using namespace pylabhub::scripting;
+using pylabhub::tests::helper::poll_until;
 
 // ============================================================================
 // PeriodicTask tests (iteration-gated mode)
@@ -231,10 +234,22 @@ TEST_F(ZmqPollLoopTest, DispatchesOnPollin)
 
     std::thread t([&] { loop.run(); });
 
+    // ZMQ inproc PAIR establishment is synchronous after bind/connect,
+    // but the worker thread needs a moment to actually enter zmq::poll
+    // before we send.  Sending before poll is entered would still be
+    // delivered (queued by ZMQ) — kept short.
     std::this_thread::sleep_for(std::chrono::milliseconds{10});
     sender.send(zmq::message_t("X", 1), zmq::send_flags::none);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    // Wait for the dispatch handler to actually run.  Replaces a
+    // bare `sleep_for(50ms); EXPECT_GE(count, 1)` ordering pattern
+    // (Class B silent-failure — see REVIEW_TestAudit_2026-05-01.md
+    // §0).  A regression where dispatch never fires now produces
+    // a clear "did not see >=1 dispatch" failure within the 2 s
+    // deadline instead of an opaque count-mismatch.
+    ASSERT_TRUE(poll_until([&] { return dispatch_count.load() >= 1; },
+                           std::chrono::seconds{2}))
+        << "dispatch handler did not fire within 2 s after send";
     EXPECT_GE(dispatch_count.load(), 1);
 
     running.store(false);
@@ -257,10 +272,14 @@ TEST_F(ZmqPollLoopTest, SignalSocketWakesLoop)
 
     std::thread t([&] { loop.run(); });
 
+    // Same rationale as DispatchesOnPollin: short establishment
+    // sleep + condition wait on the side-effect.
     std::this_thread::sleep_for(std::chrono::milliseconds{10});
     sig_write.send(zmq::message_t("W", 1), zmq::send_flags::none);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    ASSERT_TRUE(poll_until([&] { return drain_count.load() >= 1; },
+                           std::chrono::seconds{2}))
+        << "drain_commands callback did not run within 2 s after signal";
     EXPECT_GE(drain_count.load(), 1);
 
     running.store(false);
@@ -315,7 +334,15 @@ TEST_F(ZmqPollLoopTest, MultipleSocketsDispatchCorrectly)
     c1.send(zmq::message_t("A", 1), zmq::send_flags::none);
     c2.send(zmq::message_t("B", 1), zmq::send_flags::none);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    // Wait until BOTH per-socket dispatchers have run.  A regression
+    // that only routes one socket would now fail with the explicit
+    // "both >=1" predicate inside the deadline rather than producing
+    // a confusing post-deadline count comparison.
+    ASSERT_TRUE(poll_until(
+        [&] { return count1.load() >= 1 && count2.load() >= 1; },
+        std::chrono::seconds{2}))
+        << "expected both per-socket dispatchers to fire; "
+        << "count1=" << count1.load() << " count2=" << count2.load();
     EXPECT_GE(count1.load(), 1);
     EXPECT_GE(count2.load(), 1);
 
@@ -337,7 +364,15 @@ TEST_F(ZmqPollLoopTest, PeriodicTasksFireDuringLoop)
         [&] { fire_count.fetch_add(1); }, 10); // 10ms, time-only
 
     std::thread t([&] { loop.run(); });
-    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    // Periodic task fires at 10 ms cadence; wait until at least 2
+    // fires are observed.  Replaces `sleep_for(50ms); EXPECT_GE(>=2)`
+    // — a 100× slower regression would have produced the same green
+    // result on the old form because we never asserted the upper
+    // bound.
+    ASSERT_TRUE(poll_until([&] { return fire_count.load() >= 2; },
+                           std::chrono::seconds{2}))
+        << "PeriodicTask fired " << fire_count.load() << " times; "
+        << "expected >=2 within 2 s at 10 ms cadence";
     EXPECT_GE(fire_count.load(), 2);
 
     running.store(false);
