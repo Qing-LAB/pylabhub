@@ -126,6 +126,14 @@ void ModuleDef::set_as_persistent(bool persistent)
     }
 }
 
+void ModuleDef::set_owner_managed_teardown(bool enabled)
+{
+    if (pImpl)
+    {
+        pImpl->def.owner_managed_teardown = enabled;
+    }
+}
+
 // ============================================================================
 // LifecycleManager::next_unique_key
 // ============================================================================
@@ -240,6 +248,7 @@ bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalMod
     node.dependencies = def.dependencies;
     node.is_dynamic = true;
     node.is_persistent = def.is_persistent;
+    node.owner_managed_teardown = def.owner_managed_teardown;
     node.userdata = def.userdata;
     node.userdata_key = def.userdata_key;
     node.userdata_validate = def.userdata_validate;

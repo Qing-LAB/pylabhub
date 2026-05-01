@@ -454,16 +454,13 @@ TEST_F(AdminServiceTest, DevMode_TokenSkipped_PingAccepted)
 
 TEST_F(AdminServiceTest, HubHost_AdminEnabled_RoundTripWorks)
 {
-    // KNOWN teardown race: HubHost owns a `ThreadManager` registered as
-    // a dynamic `LifecycleGuard` module; on test exit the dynamic-
-    // shutdown worker may still be processing the unload by the time
-    // HubHost has destroyed its userdata.  LifecycleGuard logs a WARN
-    // ("userdata validation failed — skipping shutdown callback") and
-    // skips the callback (safe — the work was already done by HubHost
-    // dtor).  Tracked separately; declare it expected so the rest of
-    // the log-noise check still gates this test.
-    ExpectLogWarn("userdata validation failed");
-
+    // The teardown-race that previously surfaced here (LifecycleGuard
+    // logging a WARN for the documented-normal validator-fail on
+    // owner-managed modules) was fixed in production: validator-fail
+    // for an UNLOADING module is now logged at DEBUG and the module
+    // entry is fully cleaned from the graph so subsequent
+    // re-registration with the same name succeeds.  No
+    // `ExpectLogWarn` papering needed.
     auto [cfg, dir] = make_config("hubhost");
     HubHost host(std::move(cfg));
 
@@ -497,9 +494,8 @@ TEST_F(AdminServiceTest, HubHost_AdminEnabled_RoundTripWorks)
 
 TEST_F(AdminServiceTest, HubHost_AdminDisabled_NoAdminConstructed)
 {
-    // KNOWN teardown race — see HubHost_AdminEnabled_RoundTripWorks.
-    ExpectLogWarn("userdata validation failed");
-
+    // See HubHost_AdminEnabled_RoundTripWorks — the production fix
+    // for the teardown-race makes ExpectLogWarn unnecessary.
     auto [cfg, dir] = make_config("disabled");
     // Disable admin in-place.
     const_cast<HubAdminConfig &>(cfg.admin()).enabled = false;

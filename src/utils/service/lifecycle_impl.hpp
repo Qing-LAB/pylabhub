@@ -70,6 +70,17 @@ struct InternalModuleDef
     InternalModuleShutdownDef shutdown;
     bool is_persistent = false;
 
+    /// Opt-in: owner-managed teardown (HEP-CORE-0001 §"Owner-managed
+    /// teardown" exception).  When `true`, the module declares that its
+    /// C++ owner performs the real teardown synchronously and clears the
+    /// validator's userdata as a deliberate "I'm gone, skip my callback"
+    /// signal.  In that case, validator-fail at unload is treated as a
+    /// success-without-callback rather than as an anomaly: no
+    /// `FAILED_SHUTDOWN`, no contamination, full graph cleanup so the
+    /// module name can be re-registered.  Default `false` preserves the
+    /// HEP-0001 anomaly semantics for every module that does not opt in.
+    bool owner_managed_teardown = false;
+
     // User data (set at ModuleDef construction, immutable).
     void *userdata{nullptr};
     uint64_t userdata_key{0};
@@ -132,6 +143,10 @@ class LifecycleManagerImpl
         std::atomic<ModuleStatus> status = {ModuleStatus::Registered};
         bool is_dynamic = false;
         bool is_persistent = false;
+        /// Mirror of `InternalModuleDef::owner_managed_teardown` (set
+        /// at registration, immutable thereafter).  See that field's
+        /// doc for semantics.  Read-only on the unload path.
+        bool owner_managed_teardown = false;
         std::atomic<DynamicModuleStatus> dynamic_status = {DynamicModuleStatus::UNLOADED};
         std::atomic<int> ref_count = {0};
 
@@ -140,6 +155,21 @@ class LifecycleManagerImpl
         uint64_t userdata_key{0};
         pylabhub::utils::UserDataValidateFn userdata_validate{nullptr};
     };
+
+    // --- Internal helpers ---
+
+    /// Performs the post-callback graph cleanup that the success path
+    /// runs (and that owner-managed-teardown validator-fail also runs,
+    /// since both treat the module as cleanly torn down).  Caller MUST
+    /// hold `m_graph_mutation_mutex` for the duration of this call.
+    /// Populates @p deps_to_process with dependencies whose ref_count
+    /// dropped to 0 as a result of removing this module from the graph;
+    /// the caller is responsible for invoking
+    /// `processOneUnloadInThread` on each of those names AFTER
+    /// releasing the mutex.
+    void cleanupAfterUnload_(const std::string              &node_name,
+                             const std::vector<std::string> &deps_copy,
+                             std::vector<std::string>       &deps_to_process);
 
     // --- Public API Methods ---
     void registerStaticModule(lifecycle_internal::InternalModuleDef def);

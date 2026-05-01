@@ -172,6 +172,20 @@ ThreadManager::ThreadManager(std::string owner_tag,
         mod.add_dependency("pylabhub::utils::Logger");
         mod.set_startup(tm_startup);
         mod.set_shutdown(tm_shutdown, aggregate_shutdown_timeout);
+        // Opt in to owner-managed teardown (HEP-CORE-0001 §"Owner-managed
+        // teardown" exception / `ModuleDef::set_owner_managed_teardown`).
+        // ~ThreadManager performs the real teardown synchronously (drain +
+        // bounded join) BEFORE flipping `impl_alive=false`; the flip then
+        // makes `tm_impl_validate` return false on any later lifecycle-
+        // dispatched shutdown.  With the flag set, the lifecycle layer
+        // treats this validator-fail as a success-without-callback (the
+        // registered `tm_shutdown` is contractually a no-op anyway), runs
+        // full graph cleanup so the module name is freed for re-
+        // registration, and does NOT log a WARN or mark the module
+        // contaminated.  Without the flag this fallback is anomalous per
+        // HEP-0001 and surfaces as a real WARN — exactly what we want for
+        // any module that does not deliberately opt in.
+        mod.set_owner_managed_teardown(true);
         if (LifecycleManager::instance().register_dynamic_module(std::move(mod)))
         {
             (void)LoadModule(pImpl->module_name);

@@ -187,6 +187,35 @@ class PYLABHUB_UTILS_EXPORT ModuleDef
      */
     void set_as_persistent(bool persistent = true);
 
+    /**
+     * @brief Opt in to owner-managed teardown semantics.
+     *
+     * When `true`, the module declares that its C++ owner performs the real
+     * teardown synchronously (e.g. in the owner's destructor) and clears the
+     * userdata pointer / flips the validator-fail-signal flag as a deliberate
+     * indicator of "I'm gone, skip my callback".
+     *
+     * Effect on the unload path (`processOneUnloadInThread`):
+     *   - **Without this flag (default)**: a validator-fail at unload time is
+     *     treated as an anomaly per HEP-CORE-0001 — `FAILED_SHUTDOWN` status,
+     *     module marked contaminated, name retained in the graph for
+     *     diagnostics, WARN logged.
+     *   - **With this flag (`true`)**: a validator-fail at unload time is
+     *     treated as a success-without-callback — the registered shutdown
+     *     callback (which is contractually a no-op for owner-managed modules)
+     *     is skipped, and full graph cleanup runs as if the callback had
+     *     succeeded.  The module name is freed for re-registration; no WARN
+     *     fires.
+     *
+     * Use ONLY if the registered shutdown callback is genuinely a no-op
+     * (cannot mutate state) AND the C++ owner reliably performs the real
+     * teardown synchronously.  See `src/utils/service/thread_manager.cpp` for
+     * the canonical example.
+     *
+     * @param enabled `true` (default) to enable owner-managed teardown.
+     */
+    void set_owner_managed_teardown(bool enabled = true);
+
   private:
     // LifecycleManager is the sole consumer of the pImpl internals.
     friend class LifecycleManager;

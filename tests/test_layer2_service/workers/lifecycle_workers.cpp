@@ -608,6 +608,170 @@ int pylabhub::tests::worker::lifecycle::dynamic_persistent_module_finalize()
     }, "lifecycle::dynamic.persistent_module_finalize");
 }
 
+// ============================================================================
+// Owner-managed teardown — see HEP-CORE-0001 §"Owner-managed teardown" /
+// `ModuleDef::set_owner_managed_teardown`.
+// ============================================================================
+
+namespace
+{
+// Userdata pattern used by the owner-managed teardown tests below: a
+// simple atomic flag that the validator reads.  The "owner" simulates
+// its destructor's synchronous teardown by flipping this flag to false
+// BEFORE calling UnloadModule, then re-checking the lifecycle state
+// after WaitForUnload returns.  Mirrors the ThreadManager pattern in
+// `src/utils/service/thread_manager.cpp::tm_impl_validate`.
+struct OwnerManagedUserdata
+{
+    std::atomic<bool> alive{true};
+};
+
+bool owner_managed_validator(void *userdata, uint64_t /*key*/) noexcept
+{
+    auto *ud = static_cast<OwnerManagedUserdata *>(userdata);
+    return ud != nullptr && ud->alive.load(std::memory_order_acquire);
+}
+
+std::atomic<int> g_owner_managed_callback_runs{0};
+void owner_managed_shutdown_callback(const char *, void *)
+{
+    // The flag-set test (clean unload) must NOT see this fire — when
+    // the validator returns false, the lifecycle layer skips the
+    // callback.  The flag-clear test (default anomaly) must ALSO NOT
+    // see this fire — same reason: validator-fail skips the callback.
+    // So a non-zero count from EITHER test indicates a regression where
+    // the lifecycle layer ran the callback despite the validator
+    // returning false.
+    g_owner_managed_callback_runs.fetch_add(1, std::memory_order_relaxed);
+}
+} // namespace
+
+int pylabhub::tests::worker::lifecycle::dynamic_owner_managed_teardown_clean_unload()
+{
+    return run_worker_bare([&]() {
+        g_owner_managed_callback_runs.store(0);
+        LifecycleGuard guard(Logger::GetLifecycleModule());
+
+        OwnerManagedUserdata ud;
+
+        // Register WITH the owner-managed flag.
+        {
+            ModuleDef mod("OwnerManagedDyn", &ud, owner_managed_validator);
+            mod.set_startup([](const char *, void *) {});
+            mod.set_shutdown(owner_managed_shutdown_callback,
+                             std::chrono::milliseconds(100));
+            mod.set_owner_managed_teardown(true);
+            ASSERT_TRUE(RegisterDynamicModule(std::move(mod)));
+        }
+        ASSERT_TRUE(LoadModule("OwnerManagedDyn"));
+        ASSERT_EQ(GetDynamicModuleState("OwnerManagedDyn"),
+                  DynModuleState::Loaded);
+
+        // Owner "destroys itself": flip alive=false BEFORE UnloadModule.
+        // The async unload worker will run, find validator-fail, take
+        // the owner-managed branch, and clean the graph.
+        ud.alive.store(false, std::memory_order_release);
+        ASSERT_TRUE(UnloadModule("OwnerManagedDyn"));
+        const auto wait_result =
+            WaitForUnload("OwnerManagedDyn", std::chrono::seconds(2));
+
+        // Owner-managed branch removes the module from the graph (matches
+        // the success-path cleanup), so wait returns NotRegistered, NOT
+        // ShutdownFailed.
+        EXPECT_EQ(wait_result, DynModuleState::NotRegistered)
+            << "owner-managed teardown must clean the graph entry "
+               "(NotRegistered), not contaminate (ShutdownFailed)";
+
+        // Shutdown callback must NOT have run.
+        EXPECT_EQ(g_owner_managed_callback_runs.load(), 0)
+            << "owner-managed teardown skips the callback (validator-fail "
+               "is the documented no-callback signal)";
+
+        // Re-registration with the same name must succeed (graph entry
+        // freed).  This is the canonical use case — owner constructed a
+        // new instance with the same name after the previous one's dtor.
+        OwnerManagedUserdata ud2;
+        {
+            ModuleDef mod2("OwnerManagedDyn", &ud2, owner_managed_validator);
+            mod2.set_startup([](const char *, void *) {});
+            mod2.set_shutdown(owner_managed_shutdown_callback,
+                              std::chrono::milliseconds(100));
+            mod2.set_owner_managed_teardown(true);
+            ASSERT_TRUE(RegisterDynamicModule(std::move(mod2)))
+                << "owner-managed teardown must free the module name for "
+                   "re-registration";
+        }
+        // Clean teardown of the second instance: flip alive=false +
+        // unload, so the test exits cleanly.
+        ASSERT_TRUE(LoadModule("OwnerManagedDyn"));
+        ud2.alive.store(false, std::memory_order_release);
+        ASSERT_TRUE(UnloadModule("OwnerManagedDyn"));
+        (void)WaitForUnload("OwnerManagedDyn", std::chrono::seconds(2));
+    }, "lifecycle::dynamic.owner_managed_teardown_clean_unload");
+}
+
+int pylabhub::tests::worker::lifecycle::dynamic_validator_fail_default_anomaly()
+{
+    return run_worker_bare([&]() {
+        g_owner_managed_callback_runs.store(0);
+        LifecycleGuard guard(Logger::GetLifecycleModule());
+
+        OwnerManagedUserdata ud;
+
+        // Register WITHOUT the owner-managed flag — HEP-0001 default.
+        {
+            ModuleDef mod("AnomalyDyn", &ud, owner_managed_validator);
+            mod.set_startup([](const char *, void *) {});
+            mod.set_shutdown(owner_managed_shutdown_callback,
+                             std::chrono::milliseconds(100));
+            // No set_owner_managed_teardown — default false.
+            ASSERT_TRUE(RegisterDynamicModule(std::move(mod)));
+        }
+        ASSERT_TRUE(LoadModule("AnomalyDyn"));
+        ASSERT_EQ(GetDynamicModuleState("AnomalyDyn"),
+                  DynModuleState::Loaded);
+
+        ud.alive.store(false, std::memory_order_release);
+        ASSERT_TRUE(UnloadModule("AnomalyDyn"));
+
+        // Validator-fail in the default branch:
+        //   - WARN logged ("userdata validation failed — skipping
+        //     shutdown callback") — visible in stderr; this test does
+        //     NOT capture/assert it (covered by HubHostTest /
+        //     AdminServiceTest LogCaptureFixture rollouts in §6).
+        //   - status set to FAILED_SHUTDOWN
+        //   - module marked contaminated
+        //   - graph entry RETAINED
+        //
+        // Note: WaitForUnload uses a short timeout because the default
+        // anomaly path does not erase the closure entry, so wait will
+        // run to its full timeout.  This is by design for the default
+        // semantics (HEP-0001) and is verified explicitly in this test.
+        const auto wait_result =
+            WaitForUnload("AnomalyDyn", std::chrono::milliseconds(300));
+        EXPECT_EQ(wait_result, DynModuleState::Unloading)
+            << "default anomaly path leaves the closure tracking in "
+               "place (HEP-CORE-0001 protocol); WaitForUnload must time "
+               "out as Unloading rather than report a clean termination";
+
+        // Re-registration must FAIL (contaminated dependency / name in graph).
+        {
+            OwnerManagedUserdata ud2;
+            ModuleDef mod2("AnomalyDyn", &ud2, owner_managed_validator);
+            mod2.set_startup([](const char *, void *) {});
+            mod2.set_shutdown(owner_managed_shutdown_callback,
+                              std::chrono::milliseconds(100));
+            EXPECT_FALSE(RegisterDynamicModule(std::move(mod2)))
+                << "default anomaly path retains the module entry — "
+                   "re-registration with the same name must fail";
+        }
+
+        // Shutdown callback must NOT have run (validator-fail skips it
+        // in BOTH branches — only difference is graph cleanup).
+        EXPECT_EQ(g_owner_managed_callback_runs.load(), 0);
+    }, "lifecycle::dynamic.validator_fail_default_anomaly");
+}
+
 int pylabhub::tests::worker::lifecycle::dynamic_unload_timeout()
 {
     return run_worker_bare([&]() {
@@ -917,6 +1081,10 @@ struct LifecycleWorkerRegistrar
                     return dynamic_persistent_module_finalize();
                 if (scenario == "dynamic.unload_timeout")
                     return dynamic_unload_timeout();
+                if (scenario == "dynamic.owner_managed_teardown_clean_unload")
+                    return dynamic_owner_managed_teardown_clean_unload();
+                if (scenario == "dynamic.validator_fail_default_anomaly")
+                    return dynamic_validator_fail_default_anomaly();
                 if (scenario == "load_module_null_returns_false")
                     return load_module_null_returns_false();
                 if (scenario == "load_module_overflow_returns_false")

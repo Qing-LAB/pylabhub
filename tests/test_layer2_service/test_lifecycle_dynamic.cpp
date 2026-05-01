@@ -158,6 +158,36 @@ TEST_F(LifecycleDynamicTest, PersistentModuleIsUnloadedOnFinalize)
     expect_worker_ok(proc);
 }
 
+// ─── Owner-managed teardown (HEP-CORE-0001 §"Owner-managed teardown") ─────
+//
+// `ModuleDef::set_owner_managed_teardown(true)` opts a module into the
+// validator-fail-as-clean-teardown semantics used by `ThreadManager`.
+// A validator that returns false at unload time then triggers a
+// success-without-callback path (full graph cleanup, no contamination,
+// no WARN), instead of the HEP-0001 default anomaly path.
+// See `src/utils/service/lifecycle_dynamic.cpp::processOneUnloadInThread`
+// + `src/utils/service/thread_manager.cpp` for the canonical use.
+
+TEST_F(LifecycleDynamicTest, OwnerManagedTeardown_CleanUnload)
+{
+    WorkerProcess proc(g_self_exe_path,
+                       "lifecycle.dynamic.owner_managed_teardown_clean_unload",
+                       {});
+    ASSERT_TRUE(proc.valid());
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
+}
+
+TEST_F(LifecycleDynamicTest, ValidatorFail_DefaultAnomaly)
+{
+    WorkerProcess proc(g_self_exe_path,
+                       "lifecycle.dynamic.validator_fail_default_anomaly",
+                       {});
+    ASSERT_TRUE(proc.valid());
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
+}
+
 TEST_F(LifecycleDynamicTest, UnloadTimeout)
 
 {

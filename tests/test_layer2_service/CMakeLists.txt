@@ -696,6 +696,7 @@ add_executable(test_layer2_hub_host
 target_link_libraries(test_layer2_hub_host
     PRIVATE
         pylabhub::utils
+        pylabhub::test_framework
         GTest::gtest
         GTest::gtest_main
 )
