@@ -150,6 +150,12 @@ size_t BaseFileSink::size() const
     }
     catch (const std::filesystem::filesystem_error &)
     {
+        // Silent on purpose: this runs from inside a Logger sink, so
+        // recursive LOGGER_* calls would re-enter the sink and risk
+        // infinite recursion / GIL-style deadlock.  Returning 0 means
+        // the rotation policy will not trigger on a broken stat — the
+        // sink keeps writing.  Operators see the symptom (file growing
+        // past the configured size) and can investigate via fs tooling.
         return 0;
     }
 }

@@ -157,7 +157,19 @@ void ProducerAPI::clear_inbox_cache()
         {
             handle_obj.cast<scripting::InboxHandle &>().clear_pyobjects();
         }
-        catch (...) {}
+        catch (const std::exception &e)
+        {
+            // Cleanup path — must not throw out (called during stop).
+            // Log so broken handles do not silently leak Python refs;
+            // continue draining the rest of the cache.
+            LOGGER_WARN("ProducerAPI: clear_inbox_cache uid='{}' threw: {}",
+                        uid, e.what());
+        }
+        catch (...)
+        {
+            LOGGER_WARN("ProducerAPI: clear_inbox_cache uid='{}' "
+                        "threw (non-std exception)", uid);
+        }
     }
     inbox_cache_.clear();
 }

@@ -148,8 +148,23 @@ void ConsumerAPI::clear_inbox_cache()
 {
     for (auto &[uid, handle_obj] : inbox_cache_)
     {
-        try { handle_obj.cast<scripting::InboxHandle &>().clear_pyobjects(); }
-        catch (...) {}
+        try
+        {
+            handle_obj.cast<scripting::InboxHandle &>().clear_pyobjects();
+        }
+        catch (const std::exception &e)
+        {
+            // Cleanup path; see ProducerAPI::clear_inbox_cache for the
+            // rationale.  Log so broken handles surface; continue with
+            // the rest of the cache.
+            LOGGER_WARN("ConsumerAPI: clear_inbox_cache uid='{}' threw: {}",
+                        uid, e.what());
+        }
+        catch (...)
+        {
+            LOGGER_WARN("ConsumerAPI: clear_inbox_cache uid='{}' "
+                        "threw (non-std exception)", uid);
+        }
     }
     inbox_cache_.clear();
 }

@@ -15,6 +15,7 @@
  */
 
 #include "utils/json_fwd.hpp"
+#include "utils/logger.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -78,10 +79,15 @@ inline HubRefConfig parse_hub_ref_config(const nlohmann::json &j,
                      hj["hub"].contains("broker_endpoint"))
                 hc.broker = hj["hub"]["broker_endpoint"].get<std::string>();
         }
-        catch (const std::exception &)
+        catch (const std::exception &e)
         {
             // hub.json exists but malformed — leave broker empty,
-            // caller decides.
+            // caller decides.  Log via LOGGER_WARN so the operator
+            // sees their hub.json is broken instead of a silent
+            // "no broker" symptom.  HubRefConfig is read at role
+            // config-load time, after Logger lifecycle is up.
+            LOGGER_WARN("HubRefConfig: hub.json at '{}' is malformed: {}",
+                        resolved.string(), e.what());
         }
     }
 
