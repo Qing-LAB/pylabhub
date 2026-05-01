@@ -35,6 +35,10 @@ htmlcov/
 **/.cursor
 **/.cache/
 
+# AI tool per-user state (Claude Code memory + settings, etc.)
+.claude/
+**/.claude/
+
 # OS files
 .DS_Store
 Thumbs.db
