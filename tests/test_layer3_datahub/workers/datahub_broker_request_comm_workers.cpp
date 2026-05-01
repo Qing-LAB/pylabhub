@@ -13,6 +13,7 @@
 #include "utils/broker_request_comm.hpp"
 #include "utils/logger.hpp"
 #include "utils/broker_service.hpp"
+#include "utils/hub_state.hpp"
 #include "utils/lifecycle.hpp"
 #include "utils/zmq_context.hpp"
 #include "plh_datahub.hpp"
@@ -43,10 +44,11 @@ namespace
 
 struct BrokerHandle
 {
-    std::unique_ptr<BrokerService> service;
-    std::thread thread;
-    std::string endpoint;
-    std::string pubkey;
+    std::unique_ptr<pylabhub::hub::HubState> hub_state;
+    std::unique_ptr<BrokerService>           service;
+    std::thread                              thread;
+    std::string                              endpoint;
+    std::string                              pubkey;
 
     void stop_and_join()
     {
@@ -68,12 +70,14 @@ BrokerHandle start_broker()
     bcfg.on_ready = [ready_promise](const std::string &ep, const std::string &pk)
     { ready_promise->set_value({ep, pk}); };
 
-    auto svc = std::make_unique<BrokerService>(std::move(bcfg));
-    auto *raw = svc.get();
+    auto state = std::make_unique<pylabhub::hub::HubState>();
+    auto svc   = std::make_unique<BrokerService>(std::move(bcfg), *state);
+    auto *raw  = svc.get();
     std::thread t([raw] { raw->run(); });
 
     auto info = ready_future.get();
-    return {std::move(svc), std::move(t), info.first, info.second};
+    return {std::move(state), std::move(svc), std::move(t),
+            info.first, info.second};
 }
 
 // ============================================================================

@@ -172,10 +172,12 @@ public:
     std::string           server_secret_z85;
 
     /// HEP-CORE-0033 §8 state aggregate.  Sole owner of channel / role /
-    /// band / peer / shm / counter state; mutated only via the broker's
-    /// `_on_*` capability ops (friend access).  Owned here for now;
-    /// HEP-CORE-0033 Phase 4 moves ownership to `HubHost`.
-    pylabhub::hub::HubState hub_state_;
+    /// band / peer / shm / counter state; updated only via the broker's
+    /// `_on_*` capability ops (friend access).  Per HEP-CORE-0033 §4,
+    /// ownership lives in `HubHost`; the broker holds a non-owning
+    /// pointer.  In tests, the L3 fixture (`LocalBrokerHandle`) plays
+    /// the HubHost role and owns the HubState alongside the broker.
+    pylabhub::hub::HubState *hub_state_{nullptr};
     std::atomic<bool>     stop_requested{false};
 
     /// Serializes the run() thread's post-poll work against external
@@ -387,7 +389,7 @@ public:
 
     // ── Role state-machine metrics (HEP-CORE-0023 §2.5) ─────────────────
     // Owned by HubState (`BrokerCounters`) per HEP-CORE-0033 §8;
-    // accessed via `hub_state_.counters()`.
+    // accessed via `hub_state_->counters()`.
 
     // ── Hub federation handlers (HEP-CORE-0022) ───────────────────────────
     void handle_hub_peer_hello(zmq::socket_t&       socket,
@@ -539,7 +541,7 @@ void BrokerServiceImpl::run()
             }
             for (const auto& ch : pending_closes)
             {
-                auto hub_entry = hub_state_.channel(ch);
+                auto hub_entry = hub_state_->channel(ch);
                 if (hub_entry.has_value() &&
                     hub_entry->status != pylabhub::hub::ChannelStatus::Closing)
                 {
@@ -549,9 +551,9 @@ void BrokerServiceImpl::run()
                     // Clients have until the deadline to process queued messages and deregister.
                     const auto deadline =
                         std::chrono::steady_clock::now() + cfg.effective_grace();
-                    hub_state_._set_channel_status(
+                    hub_state_->_set_channel_status(
                         ch, pylabhub::hub::ChannelStatus::Closing);
-                    hub_state_._set_channel_closing_deadline(ch, deadline);
+                    hub_state_->_set_channel_closing_deadline(ch, deadline);
                 }
             }
 
@@ -588,7 +590,7 @@ void BrokerServiceImpl::run()
                 }
                 for (const auto& ht : pending_targeted)
                 {
-                    auto peer = hub_state_.peer(ht.target_hub_uid);
+                    auto peer = hub_state_->peer(ht.target_hub_uid);
                     if (!peer.has_value() ||
                         peer->state != pylabhub::hub::PeerState::Connected ||
                         peer->zmq_identity.empty())
@@ -640,7 +642,7 @@ void BrokerServiceImpl::run()
                         {
                             LOGGER_WARN("Broker: oversized payload ({} bytes) — dropped",
                                         frames[3].size());
-                            hub_state_._bump_counter("sys.malformed_frame");
+                            hub_state_->_bump_counter("sys.malformed_frame");
                             emit_processing_error(/*msg_type=*/"",
                                                   "malformed_frame",
                                                   "oversized payload " +
@@ -664,7 +666,7 @@ void BrokerServiceImpl::run()
                         // S2 body parse — drop, count, hook (no reply path
                         // because we don't yet know msg_type / corr_id).
                         LOGGER_WARN("Broker: malformed JSON: {}", e.what());
-                        hub_state_._bump_counter("sys.malformed_json");
+                        hub_state_->_bump_counter("sys.malformed_json");
                         emit_processing_error(/*msg_type=*/"",
                                               "malformed_json", e.what(),
                                               &frames[0]);
@@ -767,7 +769,7 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
             LOGGER_WARN("Broker: failed to send UNKNOWN_MSG_TYPE ERROR reply: {}",
                         re.what());
         }
-        hub_state_._bump_counter("sys.unknown_msg_type");
+        hub_state_->_bump_counter("sys.unknown_msg_type");
         emit_processing_error(msg_type, "unknown_msg_type", msg_type, &identity);
         return;
     }
@@ -824,7 +826,7 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
     else if (msg_type == "HEARTBEAT_REQ")
     {
         // Fire-and-forget from client. State transitions (PendingReady -> Ready)
-        // happen inside hub_state_._on_heartbeat() called from the handler.
+        // happen inside hub_state_->_on_heartbeat() called from the handler.
         handle_heartbeat_req(payload);
     }
     else if (msg_type == "CHECKSUM_ERROR_REPORT")
@@ -966,7 +968,7 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
                             "msg_type='{}': {}", msg_type, re.what());
             } catch (...) {}
         }
-        hub_state_._bump_counter("sys.handler_exception");
+        hub_state_->_bump_counter("sys.handler_exception");
         emit_processing_error(msg_type, "exception", e.what(), &identity);
     }
 
@@ -975,9 +977,9 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
     // bytes_out=0 because multi-target fan-out (broadcast/relay) makes a
     // single per-message accounting ambiguous; per-target byte tracking
     // deferred.
-    hub_state_._on_message_processed(msg_type, bytes_in, /*bytes_out=*/0);
+    hub_state_->_on_message_processed(msg_type, bytes_in, /*bytes_out=*/0);
     if (errored)
-        hub_state_._bump_msg_type_error(msg_type);
+        hub_state_->_bump_msg_type_error(msg_type);
 }
 
 // HEP-CORE-0033 §9.6: invoke the on_processing_error hook (if configured),
@@ -1110,7 +1112,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // existing consumers (producer-restart scenario).  This check used
     // to run AFTER the schema-record creation — moved up in the
     // Phase 3 follow-up so a NACK here cannot leave a half-baked record.
-    if (auto existing_opt = hub_state_.channel(channel_name); existing_opt.has_value())
+    if (auto existing_opt = hub_state_->channel(channel_name); existing_opt.has_value())
     {
         if (existing_opt->schema_hash != entry.schema_hash)
         {
@@ -1238,7 +1240,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
             // Path C: adopt an existing hub-global.  No new record is
             // created; we only verify that the producer's fingerprint
             // matches the global's stored fingerprint.
-            const auto existing = hub_state_.schema("hub", req_schema_id_raw);
+            const auto existing = hub_state_->schema("hub", req_schema_id_raw);
             if (!existing.has_value())
             {
                 LOGGER_WARN("Broker: REG_REQ path-C rejected for '{}' — "
@@ -1276,7 +1278,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
             rec.blds      = entry.schema_blds;
 
             using O = pylabhub::schema::SchemaRegOutcome;
-            const auto outcome = hub_state_._on_schema_registered(rec);
+            const auto outcome = hub_state_->_on_schema_registered(rec);
             if (outcome == O::kHashMismatchSelf)
             {
                 LOGGER_WARN("Broker: REG_REQ schema record mismatch for ({}, {}): "
@@ -1372,7 +1374,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         rec.blds      = entry.inbox_schema_json;
 
         using O = pylabhub::schema::SchemaRegOutcome;
-        const auto outcome = hub_state_._on_schema_registered(rec);
+        const auto outcome = hub_state_->_on_schema_registered(rec);
         if (outcome == O::kHashMismatchSelf)
         {
             LOGGER_WARN("Broker: REG_REQ inbox schema record mismatch for ({}, inbox): "
@@ -1395,7 +1397,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         // there is no per-channel inbox-record reference to maintain.
     }
 
-    hub_state_._on_channel_registered(std::move(entry));
+    hub_state_->_on_channel_registered(std::move(entry));
 
     LOGGER_INFO("Broker: registered channel '{}' (pending first heartbeat)", channel_name);
     nlohmann::json resp;
@@ -1419,7 +1421,7 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
         return make_error(corr_id, "INVALID_REQUEST", "Missing or empty 'channel_name'");
     }
 
-    auto entry = hub_state_.channel(channel_name);
+    auto entry = hub_state_->channel(channel_name);
 
     // ── HEP-CORE-0023 §2.2: Three-response state-machine dispatch ──────
     // Broker replies immediately based on current role state. No queuing.
@@ -1501,7 +1503,7 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
     // HubState is the sole channel store; replicate the historical
     // ChannelRegistry::deregister_channel NOT_REGISTERED gate (channel
     // exists AND producer_pid matches).
-    auto entry = hub_state_.channel(channel_name);
+    auto entry = hub_state_->channel(channel_name);
     if (!entry.has_value() || entry->producer_pid != producer_pid)
     {
         LOGGER_WARN("Broker: DEREG_REQ failed for channel '{}' (pid={})", channel_name,
@@ -1515,7 +1517,7 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
     on_channel_closed(socket, channel_name, *entry, "producer_deregistered");
 
     // Producer voluntarily closed the channel — HubState authoritative remove.
-    hub_state_._on_channel_closed(channel_name,
+    hub_state_->_on_channel_closed(channel_name,
                                   pylabhub::hub::ChannelCloseReason::VoluntaryDereg);
 
     // Remove accumulated metrics so the store doesn't grow unboundedly.
@@ -1542,7 +1544,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
         return make_error(corr_id, "INVALID_REQUEST", "Missing or empty 'channel_name'");
     }
 
-    const auto channel_entry = hub_state_.channel(channel_name);
+    const auto channel_entry = hub_state_->channel(channel_name);
     if (!channel_entry.has_value())
     {
         LOGGER_WARN("Broker: CONSUMER_REG_REQ channel '{}' not found", channel_name);
@@ -1719,7 +1721,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // Capture ZMQ identity for future CHANNEL_CLOSING_NOTIFY.
     entry.zmq_identity.assign(static_cast<const char*>(identity.data()), identity.size());
 
-    hub_state_._on_consumer_joined(channel_name, std::move(entry));
+    hub_state_->_on_consumer_joined(channel_name, std::move(entry));
 
     LOGGER_INFO("Broker: consumer registered for channel '{}'", channel_name);
     nlohmann::json resp;
@@ -1750,7 +1752,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
     pylabhub::hub::ConsumerEntry closing_entry{};
     bool have_entry = false;
     {
-        auto ch = hub_state_.channel(channel_name);
+        auto ch = hub_state_->channel(channel_name);
         if (ch.has_value())
         {
             for (const auto& c : ch->consumers)
@@ -1777,7 +1779,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
     // Consumer voluntarily left.  `closing_entry.role_uid` may be empty
     // (legacy consumers), in which case HubState's _on_consumer_left
     // silent-drops the role-side cleanup and still erases from the channel.
-    hub_state_._on_consumer_left(channel_name, closing_entry.role_uid);
+    hub_state_->_on_consumer_left(channel_name, closing_entry.role_uid);
     on_consumer_closed(socket, channel_name, closing_entry, "voluntary_close");
 
     LOGGER_INFO("Broker: consumer deregistered from channel '{}'", channel_name);
@@ -1801,8 +1803,8 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
     }
     // Peek existence + status before applying the heartbeat so we can log
     // the Pending->Ready transition (the actual mutation + counter bump
-    // happens inside hub_state_._on_heartbeat below).
-    auto pre = hub_state_.channel(channel_name);
+    // happens inside hub_state_->_on_heartbeat below).
+    auto pre = hub_state_->channel(channel_name);
     if (!pre.has_value())
     {
         LOGGER_WARN("Broker: HEARTBEAT_REQ for unknown channel '{}'", channel_name);
@@ -1832,7 +1834,7 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
     std::optional<nlohmann::json> metrics_opt;
     if (req.contains("metrics") && req["metrics"].is_object())
         metrics_opt = req["metrics"];
-    hub_state_._on_heartbeat(channel_name,
+    hub_state_->_on_heartbeat(channel_name,
                              producer_role_uid,
                              std::chrono::steady_clock::now(),
                              metrics_opt);
@@ -1873,7 +1875,7 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
                           "Endpoint '" + endpoint + "' is invalid or has port 0");
     }
 
-    auto entry = hub_state_.channel(channel_name);
+    auto entry = hub_state_->channel(channel_name);
     if (!entry.has_value())
     {
         return make_error(corr_id, "CHANNEL_NOT_FOUND",
@@ -1943,7 +1945,7 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
     {
         LOGGER_INFO("Broker: ENDPOINT_UPDATE_REQ for '{}' {} updated to '{}'",
                     channel_name, endpoint_type, endpoint);
-        hub_state_._set_channel_zmq_node_endpoint(channel_name, endpoint);
+        hub_state_->_set_channel_zmq_node_endpoint(channel_name, endpoint);
     }
 
     nlohmann::json resp;
@@ -1992,7 +1994,7 @@ void BrokerServiceImpl::load_hub_globals_()
         auto rec = pylabhub::hub::to_hub_schema_record(entry);
         const std::string id_for_log = rec.schema_id;  // captured before move
 
-        const auto outcome = hub_state_._on_schema_registered(std::move(rec));
+        const auto outcome = hub_state_->_on_schema_registered(std::move(rec));
         switch (outcome)
         {
             case O::kCreated:
@@ -2054,7 +2056,7 @@ nlohmann::json BrokerServiceImpl::handle_schema_req(const nlohmann::json& req)
     const std::string req_schema_id = req.value("schema_id", "");
     if (!req_owner.empty() && !req_schema_id.empty())
     {
-        const auto rec = hub_state_.schema(req_owner, req_schema_id);
+        const auto rec = hub_state_->schema(req_owner, req_schema_id);
         if (!rec.has_value())
         {
             LOGGER_WARN("Broker: SCHEMA_REQ no record under ({}, {})",
@@ -2087,7 +2089,7 @@ nlohmann::json BrokerServiceImpl::handle_schema_req(const nlohmann::json& req)
                           "SCHEMA_REQ requires either ('owner' + 'schema_id') "
                           "or 'channel_name'");
     }
-    const auto entry = hub_state_.channel(channel_name);
+    const auto entry = hub_state_->channel(channel_name);
     if (!entry.has_value())
     {
         LOGGER_WARN("Broker: SCHEMA_REQ channel '{}' not found", channel_name);
@@ -2208,7 +2210,7 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
     const auto ready_timeout   = cfg.effective_ready_timeout();
     const auto pending_timeout = cfg.effective_pending_timeout();
 
-    const auto snap = hub_state_.snapshot();
+    const auto snap = hub_state_->snapshot();
     const auto now  = std::chrono::steady_clock::now();
 
     // ── Pass 1: Ready -> Pending demotion (HEP-CORE-0023 §2.1) ───────────
@@ -2224,7 +2226,7 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
         LOGGER_WARN("Broker: role '{}' demoted Ready -> Pending "
                     "(no heartbeat within {} ms)",
                     channel_name, ready_timeout.count());
-        hub_state_._on_heartbeat_timeout(channel_name, entry.producer_role_uid);
+        hub_state_->_on_heartbeat_timeout(channel_name, entry.producer_role_uid);
     }
 
     // ── Pass 2: Pending -> deregistered (HEP-CORE-0023 §2.1, no grace) ──
@@ -2232,7 +2234,7 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
     // -> Pending in this same call appear here with their freshly-stamped
     // state_since (≈ now), so `now - state_since < pending_timeout` skips
     // them — they get one full pending_timeout window before reclaim.
-    const auto snap2 = hub_state_.snapshot();
+    const auto snap2 = hub_state_->snapshot();
     for (const auto& [channel_name, entry] : snap2.channels)
     {
         if (entry.status != pylabhub::hub::ChannelStatus::PendingReady)
@@ -2247,7 +2249,7 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
         // entry and bumps `pending_to_deregistered_total`.
         send_closing_notify(socket, channel_name, entry, "pending_timeout");
         on_channel_closed(socket, channel_name, entry, "pending_timeout");
-        hub_state_._on_pending_timeout(channel_name);
+        hub_state_->_on_pending_timeout(channel_name);
     }
 }
 
@@ -2264,7 +2266,7 @@ void BrokerServiceImpl::check_dead_consumers(zmq::socket_t& socket)
     }
     m_last_consumer_check = now;
 
-    const auto snap = hub_state_.snapshot();
+    const auto snap = hub_state_->snapshot();
     for (const auto& [channel_name, entry] : snap.channels)
     {
         std::vector<pylabhub::hub::ConsumerEntry> dead;
@@ -2294,7 +2296,7 @@ void BrokerServiceImpl::check_dead_consumers(zmq::socket_t& socket)
                             "consumer_pid={}, reason=process_dead",
                             channel_name, dead_consumer.consumer_pid);
             }
-            hub_state_._on_consumer_left(channel_name, dead_consumer.role_uid);
+            hub_state_->_on_consumer_left(channel_name, dead_consumer.role_uid);
             on_consumer_closed(socket, channel_name, dead_consumer, "process_dead");
         }
     }
@@ -2356,7 +2358,7 @@ void BrokerServiceImpl::check_closing_deadlines(zmq::socket_t& socket)
     const auto now = std::chrono::steady_clock::now();
     std::vector<std::string> to_remove;
 
-    const auto snap = hub_state_.snapshot();
+    const auto snap = hub_state_->snapshot();
     for (const auto& [name, entry] : snap.channels)
     {
         if (entry.status != pylabhub::hub::ChannelStatus::Closing)
@@ -2379,14 +2381,14 @@ void BrokerServiceImpl::check_closing_deadlines(zmq::socket_t& socket)
 
     for (const auto& name : to_remove)
     {
-        auto entry = hub_state_.channel(name);
+        auto entry = hub_state_->channel(name);
         if (entry.has_value())
         {
             on_channel_closed(socket, name, *entry, "grace_expired");
             // HubState authoritative grace-expired close.  Reason =
             // HeartbeatTimeout (this path only triggers for channels
             // already in Closing from a heartbeat timeout).
-            hub_state_._on_channel_closed(
+            hub_state_->_on_channel_closed(
                 name, pylabhub::hub::ChannelCloseReason::HeartbeatTimeout);
         }
     }
@@ -2423,7 +2425,7 @@ void BrokerServiceImpl::federation_on_channel_closed(
     const std::string&                          /*reason*/)
 {
     // No broker-internal index to maintain (relay targets are computed
-    // on-the-fly from `hub_state_.snapshot().peers`).  Stale channel-name
+    // on-the-fly from `hub_state_->snapshot().peers`).  Stale channel-name
     // entries in a peer's `relay_channels` are benign: relay_notify_to_peers
     // only fires when a NOTIFY arrives for a live channel name; if the
     // channel is gone, no NOTIFY arrives.
@@ -2437,7 +2439,7 @@ void BrokerServiceImpl::band_on_role_closed(zmq::socket_t& socket,
     // Snapshot bands; identify those containing this role; for each, fire
     // _on_band_left and notify the remaining members (HEP-CORE-0030: band
     // fan-out correctness requires up-to-date membership).
-    const auto snap = hub_state_.snapshot();
+    const auto snap = hub_state_->snapshot();
     std::vector<std::string> affected_bands;
     for (const auto& [band_name, band_entry] : snap.bands)
     {
@@ -2450,9 +2452,9 @@ void BrokerServiceImpl::band_on_role_closed(zmq::socket_t& socket,
     {
         LOGGER_INFO("Broker: role '{}' removed from band '{}' (role closed)",
                     role_uid, band_name);
-        hub_state_._on_band_left(band_name, role_uid);
+        hub_state_->_on_band_left(band_name, role_uid);
         // Notify remaining members from a fresh snapshot of this band.
-        auto remaining = hub_state_.band(band_name);
+        auto remaining = hub_state_->band(band_name);
         if (!remaining.has_value()) continue; // band evicted (was last member)
         nlohmann::json notify;
         notify["channel"]  = band_name;
@@ -2523,7 +2525,7 @@ void BrokerServiceImpl::handle_checksum_error_report(zmq::socket_t&        socke
 
     if (cfg.checksum_repair_policy == ChecksumRepairPolicy::NotifyOnly)
     {
-        auto entry = hub_state_.channel(channel);
+        auto entry = hub_state_->channel(channel);
         if (entry)
         {
             nlohmann::json fwd = req;
@@ -2566,7 +2568,7 @@ void BrokerServiceImpl::handle_channel_notify_req(zmq::socket_t&        socket,
         return;
     }
 
-    auto entry = hub_state_.channel(target_channel);
+    auto entry = hub_state_->channel(target_channel);
     if (!entry || entry->producer_zmq_identity.empty())
     {
         LOGGER_DEBUG("Broker: CHANNEL_NOTIFY_REQ for '{}' — channel not found or no producer",
@@ -2613,7 +2615,7 @@ void BrokerServiceImpl::handle_channel_broadcast_req(zmq::socket_t&        socke
         return;
     }
 
-    auto entry = hub_state_.channel(target_channel);
+    auto entry = hub_state_->channel(target_channel);
     if (!entry)
     {
         LOGGER_DEBUG("Broker: CHANNEL_BROADCAST_REQ for '{}' — channel not found",
@@ -2684,7 +2686,7 @@ nlohmann::json BrokerServiceImpl::handle_channel_list_req()
     resp["status"] = "success";
 
     nlohmann::json channels = nlohmann::json::array();
-    const auto snap = hub_state_.snapshot();
+    const auto snap = hub_state_->snapshot();
     for (const auto& [name, entry] : snap.channels)
     {
         nlohmann::json ch;
@@ -2720,7 +2722,7 @@ nlohmann::json BrokerServiceImpl::handle_role_presence_req(const nlohmann::json&
     }
 
     // Scan all channels: check producer_role_uid and each consumer's role_uid.
-    const auto snap = hub_state_.snapshot();
+    const auto snap = hub_state_->snapshot();
     for (const auto& [name, entry] : snap.channels)
     {
         if (!entry.producer_role_uid.empty() && entry.producer_role_uid == uid)
@@ -2766,7 +2768,7 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
     }
 
     // Search for a channel whose producer_role_uid matches.
-    const auto snap = hub_state_.snapshot();
+    const auto snap = hub_state_->snapshot();
     for (const auto& [name, entry] : snap.channels)
     {
         if (!entry.producer_role_uid.empty() && entry.producer_role_uid == uid)
@@ -2894,9 +2896,11 @@ nlohmann::json BrokerServiceImpl::make_error(const std::string& correlation_id,
 // BrokerService — Pimpl delegation
 // ============================================================================
 
-BrokerService::BrokerService(Config cfg) : pImpl(std::make_unique<BrokerServiceImpl>())
+BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState& state)
+    : pImpl(std::make_unique<BrokerServiceImpl>())
 {
     pImpl->cfg = std::move(cfg);
+    pImpl->hub_state_ = &state;  // non-owning; HubHost (or test fixture) owns it
     if (pImpl->cfg.use_curve)
     {
         if (!pImpl->cfg.server_secret_key.empty() && !pImpl->cfg.server_public_key.empty())
@@ -2929,7 +2933,7 @@ const std::string& BrokerService::server_public_key() const
 
 const pylabhub::hub::HubState& BrokerService::hub_state() const
 {
-    return pImpl->hub_state_;
+    return *pImpl->hub_state_;
 }
 
 void BrokerService::run()
@@ -2946,7 +2950,7 @@ std::string BrokerService::list_channels_json_str() const
 {
     // HubState snapshot takes its own shared lock internally; no m_query_mu
     // needed here.
-    const auto snap = pImpl->hub_state_.snapshot();
+    const auto snap = pImpl->hub_state_->snapshot();
     nlohmann::json result = nlohmann::json::array();
     for (const auto &[name, entry] : snap.channels)
     {
@@ -2963,7 +2967,7 @@ std::string BrokerService::list_channels_json_str() const
 
 ChannelSnapshot BrokerService::query_channel_snapshot() const
 {
-    const auto hub_snap = pImpl->hub_state_.snapshot();
+    const auto hub_snap = pImpl->hub_state_->snapshot();
     ChannelSnapshot snap;
     snap.channels.reserve(hub_snap.channels.size());
     for (const auto &[name, entry] : hub_snap.channels)
@@ -2985,7 +2989,7 @@ RoleStateMetrics BrokerService::query_role_state_metrics() const
 {
     // Single-source-of-truth via HubState (HEP-CORE-0033 §8).  HubState
     // takes its own internal lock; m_query_mu not needed here.
-    const auto c = pImpl->hub_state_.counters();
+    const auto c = pImpl->hub_state_->counters();
     return RoleStateMetrics{
         c.ready_to_pending_total,
         c.pending_to_deregistered_total,
@@ -3020,7 +3024,7 @@ nlohmann::json BrokerServiceImpl::collect_shm_info(const std::string& channel) c
 
     std::vector<BlockInfo> blocks;
     {
-        const auto snap = hub_state_.snapshot();
+        const auto snap = hub_state_->snapshot();
         for (const auto &[name, entry] : snap.channels)
         {
             if (!channel.empty() && name != channel)
@@ -3255,7 +3259,7 @@ BrokerService::query_metrics(const pylabhub::hub::MetricsFilter &filter) const
     namespace mc = pylabhub::hub::metrics_category;
 
     // Snapshot HubState under its own lock; release before SHM reads.
-    pylabhub::hub::HubStateSnapshot snap = pImpl->hub_state_.snapshot();
+    pylabhub::hub::HubStateSnapshot snap = pImpl->hub_state_->snapshot();
 
     // Parallel snapshot of role-pushed channel metrics under broker mutex.
     // ChannelMetrics is broker-internal — copy via decltype to avoid leaking
@@ -3569,7 +3573,7 @@ void BrokerServiceImpl::handle_hub_peer_hello(zmq::socket_t&        socket,
     // on_hub_disconnected for the old entry before overwriting it.  HubState's
     // _on_peer_connected does insert_or_assign internally; we just need to
     // emit the disconnected callback once before overwriting.
-    if (auto pre = hub_state_.peer(peer_hub_uid);
+    if (auto pre = hub_state_->peer(peer_hub_uid);
         pre.has_value() && pre->state == pylabhub::hub::PeerState::Connected)
     {
         LOGGER_INFO("Broker: federation peer '{}' re-connected — treating as reconnect",
@@ -3585,7 +3589,7 @@ void BrokerServiceImpl::handle_hub_peer_hello(zmq::socket_t&        socket,
     pe.relay_channels  = relay_channels;
     pe.last_seen       = std::chrono::steady_clock::now();
     // state defaults to Connecting; _on_peer_connected forces Connected.
-    hub_state_._on_peer_connected(std::move(pe));
+    hub_state_->_on_peer_connected(std::move(pe));
 
     LOGGER_INFO("Broker: federation peer '{}' connected; relay_channels=[{}]",
                 peer_hub_uid, [&]{
@@ -3611,12 +3615,12 @@ void BrokerServiceImpl::handle_hub_peer_bye(const nlohmann::json& payload)
     const std::string peer_hub_uid = payload.value("hub_uid", "");
     if (peer_hub_uid.empty()) return;
 
-    auto pre = hub_state_.peer(peer_hub_uid);
+    auto pre = hub_state_->peer(peer_hub_uid);
     if (!pre.has_value() || pre->state != pylabhub::hub::PeerState::Connected) return;
 
     // HEP-CORE-0033 §8 retention: peer entry stays with state=Disconnected;
     // observable via snapshot until grace eviction (deferred work).
-    hub_state_._on_peer_disconnected(peer_hub_uid);
+    hub_state_->_on_peer_disconnected(peer_hub_uid);
     hub_connected_notified_.erase(peer_hub_uid); // [BR1] Allow re-notification on reconnect.
 
     LOGGER_INFO("Broker: federation peer '{}' sent BYE — marked Disconnected", peer_hub_uid);
@@ -3673,7 +3677,7 @@ void BrokerServiceImpl::handle_hub_relay_msg(zmq::socket_t&        socket,
 
     // Deliver locally as CHANNEL_EVENT_NOTIFY (to channel producer only, like CHANNEL_NOTIFY_REQ).
     // Include relayed_from so scripts can distinguish relayed events.
-    auto entry = hub_state_.channel(channel);
+    auto entry = hub_state_->channel(channel);
     if (!entry || entry->producer_zmq_identity.empty())
     {
         LOGGER_DEBUG("Broker: HUB_RELAY_MSG for '{}' — no local channel or producer", channel);
@@ -3723,7 +3727,7 @@ void BrokerServiceImpl::relay_notify_to_peers(zmq::socket_t&     socket,
     // Compute relay targets from HubState's PeerEntry data (state==Connected
     // AND channel ∈ relay_channels).  For a small N of peers this is fine;
     // a precomputed reverse index is documented as a future optimization.
-    const auto snap = hub_state_.snapshot();
+    const auto snap = hub_state_->snapshot();
     std::vector<std::string> targets;
     for (const auto& [uid, peer] : snap.peers)
     {
@@ -3801,7 +3805,7 @@ nlohmann::json BrokerServiceImpl::handle_band_join_req(
     notify["channel"]   = channel;
     notify["role_uid"]  = role_uid;
     notify["role_name"] = role_name;
-    if (auto pre_band = hub_state_.band(channel); pre_band.has_value())
+    if (auto pre_band = hub_state_->band(channel); pre_band.has_value())
     {
         for (const auto& m : pre_band->members)
         {
@@ -3814,12 +3818,12 @@ nlohmann::json BrokerServiceImpl::handle_band_join_req(
     member.role_uid     = role_uid;
     member.role_name    = role_name;
     member.zmq_identity = id_str;
-    hub_state_._on_band_joined(channel, std::move(member));
+    hub_state_->_on_band_joined(channel, std::move(member));
 
     LOGGER_INFO("Broker: BAND_JOIN '{}' role='{}'", channel, role_uid);
 
     nlohmann::json members_json = nlohmann::json::array();
-    if (auto post_band = hub_state_.band(channel); post_band.has_value())
+    if (auto post_band = hub_state_->band(channel); post_band.has_value())
     {
         for (const auto& m : post_band->members)
         {
@@ -3852,7 +3856,7 @@ nlohmann::json BrokerServiceImpl::handle_band_leave_req(
     // Was the role actually a member?  Check against HubState snapshot so
     // the BAND_LEAVE_NOTIFY only fires on a real removal.
     bool was_member = false;
-    if (auto pre = hub_state_.band(channel); pre.has_value())
+    if (auto pre = hub_state_->band(channel); pre.has_value())
     {
         for (const auto& m : pre->members)
         {
@@ -3860,7 +3864,7 @@ nlohmann::json BrokerServiceImpl::handle_band_leave_req(
         }
     }
 
-    hub_state_._on_band_left(channel, role_uid);
+    hub_state_->_on_band_left(channel, role_uid);
 
     if (was_member)
     {
@@ -3872,7 +3876,7 @@ nlohmann::json BrokerServiceImpl::handle_band_leave_req(
         notify["channel"]  = channel;
         notify["role_uid"] = role_uid;
         notify["reason"]   = "voluntary";
-        if (auto post = hub_state_.band(channel); post.has_value())
+        if (auto post = hub_state_->band(channel); post.has_value())
         {
             for (const auto& m : post->members)
             {
@@ -3903,7 +3907,7 @@ void BrokerServiceImpl::handle_band_broadcast_req(
     notify["body"]       = req.value("body", nlohmann::json::object());
 
     std::size_t recipients = 0;
-    if (auto band = hub_state_.band(channel); band.has_value())
+    if (auto band = hub_state_->band(channel); band.has_value())
     {
         for (const auto& m : band->members)
         {
@@ -3924,7 +3928,7 @@ nlohmann::json BrokerServiceImpl::handle_band_members_req(
     const std::string channel = req.value("channel", "");
 
     nlohmann::json members_json = nlohmann::json::array();
-    if (auto band = hub_state_.band(channel); band.has_value())
+    if (auto band = hub_state_->band(channel); band.has_value())
     {
         for (const auto& m : band->members)
         {

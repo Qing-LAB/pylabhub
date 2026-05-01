@@ -282,7 +282,27 @@ public:
         std::function<void(const ProcessingError&)> on_processing_error;
     };
 
-    explicit BrokerService(Config cfg);
+    /**
+     * @brief Construct the broker bound to an externally-owned HubState.
+     *
+     * Per HEP-CORE-0033 §4 component architecture, `HubState` is a peer
+     * subsystem owned by `HubHost`, not nested inside `BrokerService`.
+     * The caller (HubHost in production; the L3 test fixture
+     * `LocalBrokerHandle` in tests) owns the HubState instance and
+     * passes it here by reference.
+     *
+     * The broker stores a non-owning pointer to the state and changes
+     * it through its friend-only `_set_*` / `_on_*` capability ops
+     * (HubState's compile-time enforcement gate — see HEP-0033 §8).
+     *
+     * @param cfg    Broker configuration (endpoint, heartbeat fields,
+     *               federation peers, etc.).
+     * @param state  HubState to operate on.  MUST outlive this
+     *               `BrokerService` instance — destruction order in the
+     *               owner is `service` first (which calls `stop()`),
+     *               `state` second.
+     */
+    BrokerService(Config cfg, pylabhub::hub::HubState& state);
     ~BrokerService();
 
     BrokerService(const BrokerService&) = delete;
@@ -297,16 +317,11 @@ public:
     /**
      * @brief Access the hub's `HubState` aggregate (HEP-CORE-0033 §8).
      *
-     * Exposes the hub's channel/role/band/peer/shm/counter state to
-     * HubAPI / AdminService and tests. The caller receives a const
-     * reference; mutation happens exclusively via BrokerService's own
-     * handlers (friend-access path). Subscribe to state events via
+     * Exposes the externally-owned `HubState` (passed at construction)
+     * to HubAPI / AdminService and tests. The caller receives a const
+     * reference; state changes happen exclusively via BrokerService's
+     * own handlers (friend-access path). Subscribe to state events via
      * `HubState::subscribe_*` — the subscription API is thread-safe.
-     *
-     * Lifetime: the `HubState` is owned by the `BrokerServiceImpl` and
-     * lives for as long as this BrokerService instance. Callers must
-     * ensure their subscription handlers outlive the subscriber (or
-     * `unsubscribe()` before destruction).
      *
      * Include `utils/hub_state.hpp` to name the returned type.
      */

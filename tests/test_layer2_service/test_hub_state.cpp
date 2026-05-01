@@ -1071,24 +1071,30 @@ TEST(HubStateValidation, ConsumerJoined_InvalidRoleUid_DroppedAndCounted)
 /// no broker handler is yet mutating it. The accessor test verifies the
 /// reference is stable and the state starts empty. End-to-end "broker
 /// mutates HubState via `_on_*`" coverage lands in G2.2.1+.
-TEST(BrokerServicePlumbing, HubStateAccessorReturnsEmptyAggregate)
+TEST(BrokerServicePlumbing, HubStateAccessorReturnsExternalAggregate)
 {
+    // HEP-CORE-0033 §4 — HubState is owned by HubHost, not by the broker.
+    // Construct it externally (here, on the stack) and pass to the broker;
+    // the broker stores a non-owning pointer.  In production this is what
+    // `HubHost` does at startup.
+    pylabhub::hub::HubState state;
+
     pylabhub::broker::BrokerService::Config cfg;
     cfg.endpoint  = "tcp://127.0.0.1:0";
     cfg.use_curve = false;
-    pylabhub::broker::BrokerService broker(cfg);
+    pylabhub::broker::BrokerService broker(cfg, state);
 
-    const auto &state = broker.hub_state();
-    auto        snap  = state.snapshot();
+    const auto &state_ref = broker.hub_state();
+    auto        snap      = state_ref.snapshot();
     EXPECT_TRUE(snap.channels.empty());
     EXPECT_TRUE(snap.roles.empty());
     EXPECT_TRUE(snap.bands.empty());
     EXPECT_TRUE(snap.peers.empty());
     EXPECT_TRUE(snap.shm_blocks.empty());
 
-    // The accessor must return the same object on every call (not a
-    // freshly-constructed proxy).
-    EXPECT_EQ(&state, &broker.hub_state());
+    // The accessor must return the externally-owned object (same address).
+    EXPECT_EQ(&state_ref, &state);
+    EXPECT_EQ(&state_ref, &broker.hub_state());
 }
 
 // ═══ G2.2.1.b.1 — closing_deadline / zmq_node_endpoint primitives ══════════

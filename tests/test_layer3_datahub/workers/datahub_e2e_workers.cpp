@@ -9,6 +9,7 @@
 
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
+#include "utils/hub_state.hpp"
 #include "plh_datahub.hpp"
 
 #include <gtest/gtest.h>
@@ -47,6 +48,7 @@ constexpr uint64_t kE2ESecret = 0xE2EC0FFEEC0FFEULL;
 
 struct BrokerHandle
 {
+    std::unique_ptr<pylabhub::hub::HubState> hub_state;
     std::unique_ptr<BrokerService> service;
     std::thread thread;
     std::string endpoint;
@@ -71,13 +73,15 @@ BrokerHandle start_broker_in_thread(BrokerService::Config cfg)
     cfg.on_ready = [ready_promise](const std::string& ep, const std::string& pk)
     { ready_promise->set_value({ep, pk}); };
 
-    auto service = std::make_unique<BrokerService>(std::move(cfg));
+    auto state   = std::make_unique<pylabhub::hub::HubState>();
+    auto service = std::make_unique<BrokerService>(std::move(cfg), *state);
     BrokerService* raw_ptr = service.get();
     std::thread t([raw_ptr]() { raw_ptr->run(); });
 
     auto info = ready_future.get();
 
     BrokerHandle handle;
+    handle.hub_state = std::move(state);
     handle.service = std::move(service);
     handle.thread = std::move(t);
     handle.endpoint = info.first;
