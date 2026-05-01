@@ -255,18 +255,29 @@ int consumer_auto_deregisters(int /*argc*/, char ** /*argv*/)
 
             // Consumer deregisters
             EXPECT_TRUE(cons_bh.brc.deregister_consumer(ch_name));
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-            // Verify consumer_count = 0 via admin snapshot
-            ChannelSnapshot snap = broker.service->query_channel_snapshot();
-            for (const auto &ch : snap.channels)
+            // Wait until the broker reflects consumer_count=0 in its
+            // admin snapshot.  Replaces a bare sleep_for(200ms) Class B
+            // ordering pattern: a regression that delays deregister
+            // processing would silently fail the EXPECT_EQ on a stale
+            // count rather than failing here with a clear timeout
+            // diagnostic.
+            const auto consumer_count_for = [&](const std::string &name) -> int {
+                ChannelSnapshot snap = broker.service->query_channel_snapshot();
+                for (const auto &ch : snap.channels)
+                    if (ch.name == name) return ch.consumer_count;
+                return -1;
+            };
+            const auto cdeadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (consumer_count_for(ch_name) != 0 &&
+                   std::chrono::steady_clock::now() < cdeadline)
             {
-                if (ch.name == ch_name)
-                {
-                    EXPECT_EQ(ch.consumer_count, 0)
-                        << "Expected consumer_count=0 after deregister";
-                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
+            EXPECT_EQ(consumer_count_for(ch_name), 0)
+                << "broker did not reflect consumer_count=0 within 2s "
+                   "after deregister_consumer";
 
             cons_bh.stop();
             prod_bh.stop();

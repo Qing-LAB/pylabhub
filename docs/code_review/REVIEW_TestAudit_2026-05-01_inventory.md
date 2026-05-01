@@ -128,7 +128,7 @@ for a file IN THE SAME COMMIT that fixes the file.
 | L3-01 | `test_layer3_datahub/test_datahub_broker_admin.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L3-02 | `test_layer3_datahub/test_datahub_broker_consumer.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L3-03 | `test_layer3_datahub/test_datahub_broker.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L3-04 | `test_layer3_datahub/test_datahub_broker_health.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L3-04 | `test_layer3_datahub/test_datahub_broker_health.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 deferred (subprocess) | Audited `<this commit>`.  Pattern 3 parent file.  No broad EXPECT_THROW / sleep_for / discarded timeout returns in parent. |
 | L3-05 | `test_layer3_datahub/test_datahub_broker_protocol.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L3-06 | `test_layer3_datahub/test_datahub_broker_request_comm.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L3-07 | `test_layer3_datahub/test_datahub_broker_schema.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
@@ -170,7 +170,7 @@ for a file IN THE SAME COMMIT that fixes the file.
 | L3-43 | `test_layer3_datahub/test_role_api_raii.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L3-44 | `test_layer3_datahub/workers/datahub_broker_consumer_workers.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L3-45 | `test_layer3_datahub/workers/datahub_broker_consumer_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
-| L3-46 | `test_layer3_datahub/workers/datahub_broker_health_workers.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L3-46 | `test_layer3_datahub/workers/datahub_broker_health_workers.cpp` | 🟢 OK | ✅ FIXED `<this commit>` (1/8) | 🟢 OK | 🟡 deferred (subprocess) | Audited `<this commit>`.  Class B: 8 sleep_for instances triaged — line 258 (consumer_auto_deregisters: bare `sleep_for(200ms); EXPECT_EQ(consumer_count, 0)`) was the canonical Class B antipattern; converted to a poll-loop with 2s deadline that polls `query_channel_snapshot` every 10ms.  Other 7 sites are: lines 214/389/493/487 already use poll-loop pattern (`while (cond && now < deadline) { sleep_for(50ms); }`) — correct pattern; lines 248/367 are short broker-bookkeeping waits with no immediate post-sleep assertion (probe-style); line 308 is a "let prior bh.stop() complete before next bh.start()" time-budget; line 381 is the 2s wait for an external exiter process to connect-and-die (followed by a separate poll-loop on `consumer_died.load()`).  Class A/C: no broad EXPECT_THROW or discarded timeout returns. |
 | L3-47 | `test_layer3_datahub/workers/datahub_broker_health_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
 | L3-48 | `test_layer3_datahub/workers/datahub_broker_request_comm_workers.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L3-49 | `test_layer3_datahub/workers/datahub_broker_workers.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
