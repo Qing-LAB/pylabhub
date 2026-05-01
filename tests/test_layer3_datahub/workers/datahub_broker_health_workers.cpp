@@ -8,6 +8,7 @@
 
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
+#include "utils/hub_state.hpp"
 #include "plh_datahub.hpp"
 
 #include <gtest/gtest.h>
@@ -43,6 +44,7 @@ namespace
 
 struct BrokerHandle
 {
+    std::unique_ptr<pylabhub::hub::HubState> hub_state;
     std::unique_ptr<BrokerService> service;
     std::thread                    thread;
     std::string                    endpoint;
@@ -83,17 +85,19 @@ BrokerHandle start_broker_with_cfg(BrokerService::Config cfg)
         promise->set_value({ep, pk});
     };
 
-    auto service = std::make_unique<BrokerService>(std::move(cfg));
+    auto state   = std::make_unique<pylabhub::hub::HubState>();
+    auto service = std::make_unique<BrokerService>(std::move(cfg), *state);
     auto *raw    = service.get();
     std::thread t([raw]() { raw->run(); });
 
     auto info = future.get();
 
     BrokerHandle h;
-    h.service  = std::move(service);
-    h.thread   = std::move(t);
-    h.endpoint = info.first;
-    h.pubkey   = info.second;
+    h.hub_state = std::move(state);
+    h.service   = std::move(service);
+    h.thread    = std::move(t);
+    h.endpoint  = info.first;
+    h.pubkey    = info.second;
     return h;
 }
 

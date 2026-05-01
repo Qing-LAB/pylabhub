@@ -18,6 +18,7 @@
 #include "plh_service.hpp"
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
+#include "utils/hub_state.hpp"
 #include "utils/hub_metrics_filter.hpp"
 
 #include <atomic>
@@ -40,6 +41,7 @@ namespace
 
 struct LocalBrokerHandle
 {
+    std::unique_ptr<pylabhub::hub::HubState> hub_state;
     std::unique_ptr<BrokerService> service;
     std::thread                    thread;
     std::string                    endpoint;
@@ -70,13 +72,15 @@ LocalBrokerHandle start_local_broker(BrokerService::Config cfg)
     cfg.on_ready = [promise](const std::string &ep, const std::string &pk)
     { promise->set_value({ep, pk}); };
 
-    auto svc     = std::make_unique<BrokerService>(std::move(cfg));
+    auto state     = std::make_unique<pylabhub::hub::HubState>();
+    auto svc     = std::make_unique<BrokerService>(std::move(cfg), *state);
     auto raw_ptr = svc.get();
     std::thread t([raw_ptr] { raw_ptr->run(); });
 
     auto info = future.get();
 
     LocalBrokerHandle h;
+    h.hub_state  = std::move(state);
     h.service  = std::move(svc);
     h.thread   = std::move(t);
     h.endpoint = info.first;

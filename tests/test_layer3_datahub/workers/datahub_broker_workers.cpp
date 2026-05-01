@@ -6,6 +6,7 @@
 
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
+#include "utils/hub_state.hpp"
 #include "plh_datahub.hpp"
 #include "utils/schema_utils.hpp"  // compute_canonical_hash_from_wire (HEP-0034 §6.3)
 #include "utils/format_tools.hpp"  // bytes_to_hex
@@ -53,6 +54,7 @@ namespace
 // -----------------------------------------------------------------------------
 struct BrokerHandle
 {
+    std::unique_ptr<pylabhub::hub::HubState> hub_state;
     std::unique_ptr<BrokerService> service;
     std::thread thread;
     std::string endpoint;
@@ -79,13 +81,15 @@ BrokerHandle start_broker_in_thread(BrokerService::Config cfg)
         ready_promise->set_value({ep, pk});
     };
 
-    auto service = std::make_unique<BrokerService>(std::move(cfg));
+    auto state   = std::make_unique<pylabhub::hub::HubState>();
+    auto service = std::make_unique<BrokerService>(std::move(cfg), *state);
     BrokerService* raw_ptr = service.get();
     std::thread t([raw_ptr]() { raw_ptr->run(); });
 
     auto info = ready_future.get(); // blocks until broker is bound and listening
 
     BrokerHandle handle;
+    handle.hub_state = std::move(state);
     handle.service = std::move(service);
     handle.thread = std::move(t);
     handle.endpoint = info.first;

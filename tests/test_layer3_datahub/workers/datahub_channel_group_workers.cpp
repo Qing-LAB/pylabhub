@@ -9,6 +9,7 @@
 
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
+#include "utils/hub_state.hpp"
 #include "utils/role_api_base.hpp"
 #include "utils/role_host_core.hpp"
 #include "utils/script_engine.hpp"
@@ -38,10 +39,11 @@ namespace
 
 struct BrokerHandle
 {
-    std::unique_ptr<BrokerService> service;
-    std::thread thread;
-    std::string endpoint;
-    std::string pubkey;
+    std::unique_ptr<pylabhub::hub::HubState> hub_state;
+    std::unique_ptr<BrokerService>           service;
+    std::thread                              thread;
+    std::string                              endpoint;
+    std::string                              pubkey;
     void stop_and_join() { service->stop(); if (thread.joinable()) thread.join(); }
 };
 
@@ -55,11 +57,13 @@ BrokerHandle start_broker()
     bcfg.use_curve = true;
     bcfg.on_ready = [rp](const std::string &ep, const std::string &pk)
     { rp->set_value({ep, pk}); };
-    auto svc = std::make_unique<BrokerService>(std::move(bcfg));
-    auto *raw = svc.get();
+    auto state = std::make_unique<pylabhub::hub::HubState>();
+    auto svc   = std::make_unique<BrokerService>(std::move(bcfg), *state);
+    auto *raw  = svc.get();
     std::thread t([raw] { raw->run(); });
     auto info = rf.get();
-    return {std::move(svc), std::move(t), info.first, info.second};
+    return {std::move(state), std::move(svc), std::move(t),
+            info.first, info.second};
 }
 
 struct ChannelClient
