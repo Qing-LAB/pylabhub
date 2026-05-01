@@ -68,10 +68,19 @@ The hub binary performs seven functions. This HEP is organised around them.
 | 6 | Maintain metrics           | Global table (part of `HubState`) + query engine          |
 | 7 | Answer requests            | `AdminService` RPC + `HubAPI` script binding              |
 
-## 4. `HubHost` class + lifecycle
+## 4. `HubHost` class + start/stop
 
 Single class owning the hub's runtime state and exposing read/write access to
 `AdminService` and `HubAPI`.
+
+> **Terminology note.**  HubHost is **not** a `LifecycleGuard` module —
+> its `startup()` / `shutdown()` are invoked directly by `plh_hub_main`
+> (or by tests).  The process-wide `LifecycleGuard` (Logger, FileLock,
+> CryptoUtils, JsonConfig, ZMQContext, ThreadManager) wraps HubHost
+> from the outside.  When this section says "start/stop" or "phase FSM"
+> it means HubHost's own run-state machine (§4.3); when it says
+> "LifecycleGuard module ordering" it means the surrounding modules.
+> The two are distinct and the doc keeps them visibly separate.
 
 > **Phasing note (added 2026-04-25).** The `HubHost` class is **not built
 > in the early phases.**  When `plh_hub_main.cpp` first lands (§15
@@ -161,8 +170,10 @@ private:
 } // namespace pylabhub::hub_host
 ```
 
-**Lifecycle module ordering** (driven by config toggles — disabled subsystems
-are not constructed):
+**`LifecycleGuard` module ordering** (driven by config toggles — disabled
+subsystems are not constructed).  These are the **process-wide modules**
+that wrap HubHost; HubHost itself is not in this graph (see §4.3 for
+HubHost's own phase FSM):
 
 ```mermaid
 graph LR
@@ -188,9 +199,14 @@ script, no auth) runs with only the solid-edge nodes.
 
 ### 4.1 Init protocol (ordered steps)
 
-Pinned by HubHost::startup().  Failure at any step rolls back the
-preceding ones (broker stop + ThreadManager drain + reset of
-unique_ptrs + `running=false`) before rethrowing.
+Pinned by `HubHost::startup()`.  Drives the phase FSM (§4.3) from
+`Constructed → Running` via a CAS guard at the head of the method:
+re-entry from `Running` is a no-op (idempotent); re-entry from
+`ShutDown` throws `std::logic_error` (single-use after shutdown — see
+§4.3).  Failure at any step rolls back the preceding ones (broker stop
++ ThreadManager drain + reset of unique_ptrs) and resets the phase to
+`Constructed` so the caller may retry on a fixed config without
+constructing a new `HubHost`.
 
 1. **Read config.**  `HubConfig::load_from_directory(dir)` (caller-side,
    before HubHost ctor).
@@ -225,7 +241,10 @@ unique_ptrs + `running=false`) before rethrowing.
    the same ThreadManager.
 10. *(Phase 7)* **Construct ScriptEngine + HubScriptRunner**, spawn
     script thread.
-11. **Set `running_=true`.**  HubHost is now serving.
+11. **Phase FSM commit.**  The CAS at step 0 already moved
+    `phase = Running`.  Steps 1-10 ran under that phase; on success
+    no further write is needed.  HubHost is now serving — `is_running()`
+    returns `true` (it reads `phase == Phase::Running`).
 
 After step 11: `host.broker_endpoint()` reflects the actual bound
 address; `host.broker()` and `host.state()` are valid; the hub is
@@ -233,8 +252,12 @@ processing inbound traffic.
 
 ### 4.2 Shutdown protocol (ordered steps)
 
-Pinned by HubHost::shutdown().  Synchronous: returns only after all
-spawned threads have exited.  Idempotent.
+Pinned by `HubHost::shutdown()`.  Drives the phase FSM (§4.3) from
+`Running → ShutDown` via a CAS guard at the head of the method.  Any
+caller that observes a non-`Running` phase early-returns (idempotent
+no-op for repeated `shutdown()` from any thread; harmless no-op when
+the host was constructed but never started).  Synchronous: returns
+only after all spawned threads have exited.
 
 1. **Wake `run_main_loop()`** by flipping `shutdown_flag_` and
    notifying the condition variable.
@@ -253,7 +276,11 @@ spawned threads have exited.  Idempotent.
    (`kMidTimeoutMs` = 5 s).  Any thread that fails to exit within
    its timeout is detached (logged); ThreadManager returns the
    detached count.
-6. **Set `running_=false`.**  HubHost no longer serving.
+6. **Phase FSM commit.**  The CAS at step 0 already moved
+   `phase = ShutDown`.  Steps 1-5 ran under that terminal phase;
+   `is_running()` is now `false` and any further `startup()` will
+   throw `std::logic_error` (single-use; see §4.3).  HubHost is no
+   longer serving.
 
 Subsystem destruction (when HubHost goes out of scope) runs in
 reverse declaration order: ThreadManager (already drained — no-op)
@@ -266,6 +293,102 @@ waiting for threads to join.  Typical use: signal handler / admin
 RPC / broker error path → `request_shutdown()` → `run_main_loop()`
 returns on the main thread → main thread drives `shutdown()` for
 the synchronous wind-down.
+
+`request_shutdown()` does **not** transition the phase FSM — it only
+breaks `run_main_loop()`'s wait and stops the broker poll.  The
+`Running → ShutDown` transition happens in `shutdown()` proper,
+where the synchronous join is performed under the same CAS guard.
+
+### 4.3 Phase FSM (start/stop run state)
+
+`HubHost` carries a single atomic `Phase` field (defined in the
+`Impl` struct in `hub_host.cpp`) that tracks the host's run state:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Constructed
+    Constructed --> Running: startup() — CAS Constructed → Running
+    Running --> Constructed: startup() throws — rollback resets phase
+    Running --> ShutDown: shutdown() — CAS Running → ShutDown
+    Constructed --> Constructed: shutdown() — no-op
+    Running --> Running: startup() — idempotent no-op
+    ShutDown --> ShutDown: shutdown() — idempotent no-op
+    ShutDown --> [*]: ~HubHost runs
+    Constructed --> [*]: ~HubHost runs (never started)
+    note right of ShutDown
+        startup() from ShutDown
+        throws std::logic_error
+        (single-use: construct
+        a fresh HubHost to retry)
+    end note
+```
+
+**Contract**:
+
+1. **Monotonic across a successful run.**  Once `shutdown()` succeeds,
+   the host is single-use; a subsequent `startup()` throws
+   `std::logic_error` rather than racing ApiT/ThreadManager teardown.
+   Construct a fresh `HubHost` to start a new run.
+
+2. **Failed startup is reversible.**  If any step in §4.1 throws, the
+   `catch` block in `startup()` resets the phase to `Constructed`
+   (after running the rollback ops) so the caller may retry on a
+   fixed config without constructing a new instance.  This is the
+   only Running → Constructed edge; it requires a thrown exception
+   from inside `startup()`.
+
+3. **Idempotent on repeated calls.**  `startup()` from `Running` and
+   `shutdown()` from `Constructed`/`ShutDown` are no-ops (the CAS
+   fails and the method early-returns).  Repeated calls on the same
+   thread are harmless; concurrent calls from different threads
+   resolve to "first wins, others are no-ops" — but the single-driver
+   assumption (§HubHost preconditions) still applies for everything
+   beyond the FSM (subsystem state, run loop, etc.).
+
+4. **Not a `LifecycleGuard` transition.**  The phase FSM is internal
+   to HubHost.  `LifecycleGuard` modules (Logger, FileLock,
+   CryptoUtils, JsonConfig, ZMQContext, ThreadManager) wrap HubHost
+   from the outside; their init/teardown is independent of the phase
+   FSM and runs at process scope.  ThreadManager IS registered as a
+   dynamic LifecycleGuard module owned by HubHost, but that
+   registration is about ensuring its drain runs in the correct
+   process-shutdown order — it does not gate the phase FSM.
+
+**Error-surface choice — `std::logic_error` vs `PLH_PANIC`**:
+
+| Host         | Method      | `noexcept` | On startup-after-shutdown |
+| ------------ | ----------- | ---------- | ------------------------- |
+| `HubHost`    | `startup()` | no         | `throw std::logic_error`  |
+| `HubHost`    | `shutdown()`| yes        | (n/a — terminal idempotent) |
+| `EngineHost` | `startup_()`| no         | `PLH_PANIC` (see below)   |
+| `EngineHost` | `shutdown_()`| yes       | (n/a — terminal idempotent) |
+
+`HubHost::startup()` is non-`noexcept` and called from `plh_hub_main`
+(or tests), so a thrown `std::logic_error` is recoverable by the
+caller and surfaces the contract violation as a typed error.
+
+`EngineHost::startup_()` (role side, see HEP-CORE-0024 §15 +
+`engine_host.hpp`) panics instead of throwing, because role hosts
+share the same FSM but are typically driven from `plh_role`'s main
+loop where startup-after-shutdown almost certainly indicates a
+test/regression bug rather than a recoverable user error.  Both
+sides use the same `Constructed → Running → ShutDown` shape; the
+difference is only in how the violation surfaces.
+
+**Counterpart in role-side `EngineHost`**:
+
+The same FSM lives in `EngineHost<ApiT>` (`src/include/utils/
+engine_host.hpp`).  L2 tests in
+`tests/test_layer2_service/test_role_host_base.cpp` and
+`tests/test_layer2_service/test_hub_host.cpp` exercise the
+single-use contract on both sides:
+
+  - `RoleHostBaseLifecycleTest.StartupAfterShutdown_Aborts` —
+    role-side panic via worker-process death test.
+  - `HubHostTest.StartupAfterShutdown_Throws` — hub-side typed
+    error via in-process check.
+  - `HubHostTest.FailedStartupAllowsRetry` — rollback edge
+    (busy port → throw → fresh host on patched config succeeds).
 
 ## 5. CLI (`plh_hub`)
 
@@ -1130,8 +1253,10 @@ can land in parallel once P1 lands.
     `shutdown()` is synchronous: drains the ThreadManager so the
     broker thread has actually exited by the time the call returns —
     no in-flight protocol traffic slips through after shutdown.
-    Covered by 7 L2 tests (lifecycle state machine + HEP §4 ownership
-    invariant `&host.state() == &host.broker().hub_state()`) and 3
+    Covered by 9 L2 tests (phase FSM — Constructed/Running/ShutDown,
+    incl. single-use after shutdown + failed-startup rollback per
+    §4.3 — and HEP §4 ownership invariant
+    `&host.state() == &host.broker().hub_state()`) and 3
     L3 integration tests (broker reachable, REG_REQ round-trip with
     HubBrokerConfig values reflected in REG_ACK heartbeat block,
     shutdown breaks client connection).
