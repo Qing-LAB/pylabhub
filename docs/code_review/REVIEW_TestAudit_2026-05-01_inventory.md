@@ -57,7 +57,7 @@ for a file IN THE SAME COMMIT that fixes the file.
 | L2-16 | `test_layer2_service/test_jsonconfig.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-17 | `test_layer2_service/test_lifecycle.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-18 | `test_layer2_service/test_lifecycle_dynamic.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
-| L2-19 | `test_layer2_service/test_logger.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L2-19 | `test_layer2_service/test_logger.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 deferred (subprocess) | Audited `<this commit>`.  20 TEST_F entries, all delegate to subprocess workers (Pattern 3).  Class A: no broad `EXPECT_THROW` / `EXPECT_NO_THROW` in parent; assertions delegated to workers.  Class B: no `sleep_for` in parent.  Class C: no timeout-bearing return-value discards. |
 | L2-20 | `test_layer2_service/test_loop_timing_policy.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-21 | `test_layer2_service/test_lua_engine.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-22 | `test_layer2_service/test_metrics_api.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
@@ -95,7 +95,7 @@ for a file IN THE SAME COMMIT that fixes the file.
 | L2-54 | `test_layer2_service/workers/jsonconfig_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
 | L2-55 | `test_layer2_service/workers/lifecycle_workers.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-56 | `test_layer2_service/workers/lifecycle_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
-| L2-57 | `test_layer2_service/workers/logger_workers.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
+| L2-57 | `test_layer2_service/workers/logger_workers.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 deferred (subprocess) | Audited `<this commit>`.  Class B: 5 `sleep_for` instances categorized — line 50 is randomized jitter (`rand()%100us`) inside a stress-test loop simulating real-world conditions; line 228 is the absence-of-event verification window (post-shutdown log call → 100ms wait → assert NOT in file); lines 396/406 are pacing inside chaos-test worker bodies; line 422 is the time-budget for the stress test duration.  None are sleep-then-assert-state-change ordering antipatterns.  Class A/C: no broad EXPECT_THROW or discarded timeout returns. |
 | L2-58 | `test_layer2_service/workers/logger_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
 | L2-59 | `test_layer2_service/workers/lua_engine_workers.cpp` | 🟡 | 🟡 | 🟡 | 🟡 | not yet audited |
 | L2-60 | `test_layer2_service/workers/lua_engine_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
