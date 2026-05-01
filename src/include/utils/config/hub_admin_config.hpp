@@ -23,6 +23,13 @@ struct HubAdminConfig
     std::string endpoint{"tcp://127.0.0.1:5600"};               ///< ZMQ endpoint
     bool        dev_mode{false};                                ///< Skip vault + token (localhost-only)
     bool        token_required{true};                           ///< Require admin token in non-dev mode
+
+    /// Runtime-only: 64-char hex admin token.  Populated by
+    /// `HubConfig::load_keypair()` from the unlocked `HubVault`; NOT
+    /// parsed from JSON (the token is a vault secret, never on disk
+    /// in plaintext).  Empty until the vault is unlocked.  Mirrors
+    /// the `AuthConfig::client_pubkey/seckey` runtime-only pattern.
+    std::string admin_token;
 };
 
 inline HubAdminConfig parse_hub_admin_config(const nlohmann::json &j)

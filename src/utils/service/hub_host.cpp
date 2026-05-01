@@ -5,11 +5,13 @@
  */
 #include "utils/hub_host.hpp"
 
+#include "utils/admin_service.hpp"
 #include "utils/broker_service.hpp"
 #include "utils/config/hub_config.hpp"
 #include "utils/hub_state.hpp"
 #include "utils/logger.hpp"
 #include "utils/thread_manager.hpp"
+#include "utils/zmq_context.hpp"
 
 #include <atomic>
 #include <condition_variable>
@@ -34,6 +36,7 @@ struct HubHost::Impl
     config::HubConfig                          cfg;
     hub::HubState                              state;        // owned by HubHost
     std::unique_ptr<broker::BrokerService>     broker;       // built in startup()
+    std::unique_ptr<admin::AdminService>       admin_svc;    // built in startup() if admin.enabled
     std::unique_ptr<utils::ThreadManager>      thread_mgr;   // built in startup()
 
     /// Start/stop run-state FSM — monotonic transitions
@@ -197,10 +200,12 @@ void HubHost::startup()
     auto rollback_partial_startup = [this]() noexcept {
         try
         {
+            if (impl_->admin_svc) impl_->admin_svc->stop();
             if (impl_->broker) impl_->broker->stop();
             if (impl_->thread_mgr) impl_->thread_mgr->drain();
         }
         catch (...) { /* swallow — already in error path */ }
+        impl_->admin_svc.reset();
         impl_->broker.reset();
         impl_->thread_mgr.reset();
         impl_->bound_endpoint.clear();
@@ -252,6 +257,38 @@ void HubHost::startup()
         auto info = ready_future.get(); // may throw if broker thread did
         impl_->bound_endpoint = info.first;
         impl_->bound_pubkey   = info.second;
+
+        // ── Phase 6.2 — AdminService (HEP-CORE-0033 §4.1 step 9) ───────────
+        //
+        // Built only when `admin.enabled=true`.  AdminService takes the
+        // shared process-wide ZMQ context (caller installs `ZMQContext`
+        // via the LifecycleGuard before constructing HubHost) and the
+        // admin token populated by `HubConfig::load_keypair()` from the
+        // unlocked vault.  Spawned on the same ThreadManager as the
+        // broker for unified bounded-join shutdown.
+        if (impl_->cfg.admin().enabled)
+        {
+            impl_->admin_svc = std::make_unique<admin::AdminService>(
+                hub::get_zmq_context(),
+                impl_->cfg.admin(),
+                impl_->cfg.admin().admin_token,
+                *this);
+
+            auto *admin_ptr = impl_->admin_svc.get();
+            if (!impl_->thread_mgr->spawn("admin",
+                                           [admin_ptr] { admin_ptr->run(); }))
+            {
+                throw std::runtime_error(
+                    "HubHost::startup: ThreadManager refused to spawn admin thread");
+            }
+            // No ready handshake: AdminService binds at the head of
+            // run().  If the bind throws, the worker thread terminates
+            // and the next ThreadManager join surfaces it.  For
+            // ephemeral-port test endpoints, the actual bound endpoint
+            // is queryable via `host.admin()->bound_endpoint()` once
+            // the worker has progressed past bind (Phase 6.2a tests
+            // poll for non-empty endpoint before connecting).
+        }
     }
     catch (...)
     {
@@ -301,6 +338,14 @@ void HubHost::shutdown()
     }
     impl_->wake_cv.notify_all();
 
+    // Stop AdminService FIRST (HEP-CORE-0033 §4.2 step 3): closing
+    // the REP socket blocks new RPCs while in-flight handlers that
+    // already entered the broker complete normally.  Order matters:
+    // if we stopped the broker first, an in-flight admin RPC could
+    // observe a half-torn-down broker mid-call.
+    if (impl_->admin_svc)
+        impl_->admin_svc->stop();
+
     // Break the broker's poll loop.  Internal atomic flip + ZMQ
     // wake-up; broker thread exits run() shortly after.
     if (impl_->broker)
@@ -339,6 +384,8 @@ void HubHost::request_shutdown() noexcept
     // `~HubHost`).  Safe from any thread (signal handler, admin RPC
     // dispatcher, broker error path).
     impl_->shutdown_flag.store(true, std::memory_order_release);
+    if (impl_->admin_svc)
+        impl_->admin_svc->stop();   // already noexcept
     if (impl_->broker)
     {
         try { impl_->broker->stop(); }
@@ -383,6 +430,11 @@ const std::string &HubHost::broker_endpoint() const noexcept
 const std::string &HubHost::broker_pubkey() const noexcept
 {
     return impl_->bound_pubkey;
+}
+
+admin::AdminService *HubHost::admin() noexcept
+{
+    return impl_->admin_svc.get();
 }
 
 } // namespace pylabhub::hub_host

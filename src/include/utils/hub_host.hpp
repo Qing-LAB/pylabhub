@@ -78,6 +78,7 @@
 namespace pylabhub::config { class HubConfig; }
 namespace pylabhub::broker { class BrokerService; }
 namespace pylabhub::hub    { class HubState; }
+namespace pylabhub::admin  { class AdminService; }
 
 namespace pylabhub::hub_host
 {
@@ -155,6 +156,15 @@ public:
     /// Broker's CURVE public key (Z85, 40 chars), or empty if CURVE is
     /// disabled.  Same lifetime semantics as `broker_endpoint()`.
     [[nodiscard]] const std::string &broker_pubkey() const noexcept;
+
+    /// AdminService pointer, or nullptr if `admin.enabled=false` in
+    /// the config (or before `startup()` / after `shutdown()`).  When
+    /// non-null, only valid between `startup()` and `shutdown()` —
+    /// dereference outside that window is undefined behaviour.  Used
+    /// primarily by tests to check the bound endpoint and round-trip
+    /// the REP socket.  Production code rarely touches this directly;
+    /// AdminService dispatches RPCs into HubHost via its own backref.
+    [[nodiscard]] admin::AdminService *admin() noexcept;
 
 private:
     struct Impl;

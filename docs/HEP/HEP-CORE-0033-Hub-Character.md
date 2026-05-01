@@ -1030,7 +1030,14 @@ hub script engine's namespace via `ScriptEngine::eval`.
 
 ### 11.4 Files
 
-- `src/include/utils/admin_service.hpp`, `src/utils/service/admin_service.cpp`.
+- `src/include/utils/admin_service.hpp`, `src/utils/ipc/admin_service.cpp`.
+
+  Implementation lives under `src/utils/ipc/` (not `src/utils/service/`)
+  so that the two REP-socket-owning hub subsystems — `BrokerService`
+  and `AdminService` — sit side-by-side.  `src/utils/service/` is
+  reserved for owned-services that are not transport-bound (HubHost,
+  HubVault, ThreadManager, etc.).  Decision recorded in
+  `docs/code_review/REVIEW_AdminService_2026-05-01.md` §2.4.
 
 ## 12. Script callbacks + `HubAPI`
 
