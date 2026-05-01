@@ -685,6 +685,36 @@ gtest_discover_tests(test_layer2_hub_directory
 )
 
 # ============================================================================
+# Test: HubHost (lifecycle owner — Pattern 2, in-process LifecycleGuard)
+# HEP-CORE-0033 §4 / Phase 6.1b
+# ============================================================================
+
+add_executable(test_layer2_hub_host
+    test_hub_host.cpp
+)
+
+target_link_libraries(test_layer2_hub_host
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_host)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_hub_host
+    SUITE_NAME "Layer2_HubHost"
+)
+layer2_require_staged_utils(test_layer2_hub_host)
+
+gtest_discover_tests(test_layer2_hub_host
+    PROPERTIES
+        LABELS "layer2;service;hub_host"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: role_cli::parse_role_args + ParseResult (in-process, no std::exit)
 # ============================================================================
 
