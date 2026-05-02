@@ -22,6 +22,7 @@
 #include "utils/hub_metrics_filter.hpp"
 
 #include "test_sync_utils.h"
+#include "log_capture_fixture.h"
 
 #include <atomic>
 #include <future>
@@ -158,7 +159,8 @@ json make_cons_opts(const std::string &channel, const std::string &consumer_uid)
 // MetricsPlaneTest fixture
 // ============================================================================
 
-class MetricsPlaneTest : public ::testing::Test
+class MetricsPlaneTest : public ::testing::Test,
+                          public pylabhub::tests::LogCaptureFixture
 {
 public:
     static void SetUpTestSuite()
@@ -172,11 +174,19 @@ public:
 protected:
     void SetUp() override
     {
+        LogCaptureFixture::Install();
         BrokerService::Config cfg;
         cfg.endpoint               = "tcp://127.0.0.1:0";
         cfg.schema_search_dirs     = {};
         cfg.grace_override         = std::chrono::milliseconds(0);
         broker_.emplace(start_local_broker(std::move(cfg)));
+    }
+
+    void TearDown() override
+    {
+        broker_.reset();
+        AssertNoUnexpectedLogWarnError();
+        LogCaptureFixture::Uninstall();
     }
 
     const std::string &ep() const { return broker_->endpoint; }

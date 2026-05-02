@@ -17,6 +17,8 @@
 #include "utils/broker_service.hpp"
 #include "utils/hub_state.hpp"
 
+#include "log_capture_fixture.h"
+
 #include <atomic>
 #include <condition_variable>
 #include <future>
@@ -165,7 +167,8 @@ struct HubEventCollector
 // BrokerFederationTest fixture
 // ============================================================================
 
-class BrokerFederationTest : public ::testing::Test
+class BrokerFederationTest : public ::testing::Test,
+                              public pylabhub::tests::LogCaptureFixture
 {
 public:
     static void SetUpTestSuite()
@@ -175,6 +178,14 @@ public:
             pylabhub::hub::GetZMQContextModule()), std::source_location::current());
     }
     static void TearDownTestSuite() { s_lifecycle_.reset(); }
+
+protected:
+    void SetUp()    override { LogCaptureFixture::Install(); }
+    void TearDown() override
+    {
+        AssertNoUnexpectedLogWarnError();
+        LogCaptureFixture::Uninstall();
+    }
 
 private:
     static std::unique_ptr<LifecycleGuard> s_lifecycle_;
