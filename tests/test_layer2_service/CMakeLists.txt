@@ -1125,6 +1125,7 @@ add_executable(test_layer2_role_host_core
 target_link_libraries(test_layer2_role_host_core
     PRIVATE
         pylabhub::utils
+        pylabhub::test_framework
         GTest::gtest
         GTest::gtest_main
 )
