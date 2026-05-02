@@ -211,14 +211,22 @@ int main(int argc, char *argv[])
     if (!info)
         return 1;
 
-    // ── Init mode ─────────────────────────────────────────────────────
-    if (args.init_only)
-        return do_init(args);
-
-    // ── Lifecycle init (before any JsonConfig/RoleConfig use) ─────────
+    // ── Lifecycle init (covers --init / --keygen / --validate / run) ──
+    // Hoisted above the --init dispatch so every mode shares the same
+    // LOGGER_* / Logger-rotation / Crypto-init semantics.  Previously
+    // --init exited BEFORE LifecycleGuard, which made LOGGER_* a silent
+    // no-op in that path and broke the L4 Class D gate (audit
+    // 2026-05-02): a regression that emitted LOGGER_WARN from
+    // RoleDirectory::init_directory would have gone undetected because
+    // Logger's worker thread was never started.  Uniform lifecycle
+    // means uniform error-emission guarantees.
     LifecycleGuard runner_lifecycle(scripting::role_lifecycle_modules());
     scripting::register_signal_handler_lifecycle(signal_handler, "[plh_role]");
     scripting::log_version_info("[plh_role]");
+
+    // ── Init mode ─────────────────────────────────────────────────────
+    if (args.init_only)
+        return do_init(args);
 
     // ── Load config ───────────────────────────────────────────────────
     std::optional<pylabhub::config::RoleConfig> config;

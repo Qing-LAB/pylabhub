@@ -214,4 +214,32 @@ class PlhRoleCliTest : public pylabhub::tests::IsolatedProcessTest
     std::vector<fs::path> paths_to_clean_;
 };
 
+/// Class D gate for plh_role binary tests.  Pattern-3 workers get
+/// `[ERROR ]`-line scanning for free via `expect_worker_ok`; the
+/// plh_role L4 tests bypass that helper because they spawn a real
+/// binary (not a `run_gtest_worker` worker), so the worker-completion
+/// markers don't apply.  Call this from every happy-path test to
+/// catch stray ERROR-level logs the binary may have emitted while
+/// still exiting 0 (the silent-fallback signature documented in
+/// REVIEW_TestAudit_2026-05-01.md §0 Class D).
+///
+/// Error-path tests (those expecting non-zero exit code) intentionally
+/// do NOT call this — the binary's own diagnostic output is part of
+/// the contract there, and the test pins specific error substrings
+/// via Class A path-discrimination.
+inline void expect_no_unexpected_errors(
+    const pylabhub::tests::helper::WorkerProcess &p)
+{
+    const std::string &err = p.get_stderr();
+    std::istringstream lines(err);
+    std::string line;
+    while (std::getline(lines, line))
+    {
+        if (line.find("[ERROR ]") != std::string::npos)
+            ADD_FAILURE() << "Unexpected ERROR-level log in plh_role "
+                             "stderr (Class D gate, audit §0):\n  "
+                          << line;
+    }
+}
+
 } // namespace pylabhub::tests::plh_role_l4
