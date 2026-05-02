@@ -31,6 +31,8 @@
 #include "utils/hub_host.hpp"
 #include "utils/hub_state.hpp"
 
+#include "log_capture_fixture.h"
+
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
@@ -148,7 +150,8 @@ struct BrcHandle
 
 // ─── Fixture ────────────────────────────────────────────────────────────────
 
-class HubHostIntegrationTest : public ::testing::Test
+class HubHostIntegrationTest : public ::testing::Test,
+                                public pylabhub::tests::LogCaptureFixture
 {
 public:
     static void SetUpTestSuite()
@@ -164,6 +167,7 @@ public:
     static void TearDownTestSuite() { s_lifecycle_.reset(); }
 
 protected:
+    void SetUp() override { LogCaptureFixture::Install(); }
     void TearDown() override
     {
         for (const auto &p : paths_to_clean_)
@@ -172,6 +176,8 @@ protected:
             fs::remove_all(p, ec);
         }
         paths_to_clean_.clear();
+        AssertNoUnexpectedLogWarnError();
+        LogCaptureFixture::Uninstall();
     }
 
     std::unique_ptr<HubHost> spawn_host(const char *tag)
@@ -252,6 +258,9 @@ TEST_F(HubHostIntegrationTest, HubHost_RegReq_RoundTripsViaSpawnedBroker)
 
 TEST_F(HubHostIntegrationTest, HubHost_Shutdown_BreaksClientConnection)
 {
+    // Post-shutdown REG_REQ deliberately times out — the production
+    // BrokerRequestComm logs the timeout as WARN, expected here.
+    ExpectLogWarn("REG_REQ timed out");
     // After host->shutdown(), the broker's poll loop must have exited
     // (not just the running flag flipped).  We probe by attempting a
     // post-shutdown REG_REQ — it should time out quickly because the

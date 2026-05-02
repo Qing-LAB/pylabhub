@@ -18,6 +18,8 @@
 #include "utils/hub_state.hpp"
 #include "utils/channel_access_policy.hpp"
 
+#include "log_capture_fixture.h"
+
 #include <future>
 #include <memory>
 #include <optional>
@@ -142,6 +144,7 @@ std::string pid_chan(const std::string &base)
 class ConnectionPolicyEnumTest : public ::testing::Test
 {
 };
+// (Pure enum/string conversion tests — no LOGGER paths exercised.)
 
 TEST_F(ConnectionPolicyEnumTest, ToStrAllValues)
 {
@@ -180,7 +183,8 @@ TEST_F(ConnectionPolicyEnumTest, ToStrFromStrRoundTrip)
 // Suite 2 — Broker policy enforcement via BrokerRequestComm
 // ============================================================================
 
-class ConnectionPolicyBrokerTest : public ::testing::Test
+class ConnectionPolicyBrokerTest : public ::testing::Test,
+                                    public pylabhub::tests::LogCaptureFixture
 {
 public:
     static void SetUpTestSuite()
@@ -192,6 +196,14 @@ public:
     static void TearDownTestSuite() { s_lifecycle_.reset(); }
 
 protected:
+    void SetUp() override { LogCaptureFixture::Install(); }
+    void TearDown() override
+    {
+        broker_.reset();
+        AssertNoUnexpectedLogWarnError();
+        LogCaptureFixture::Uninstall();
+    }
+
     std::optional<LocalBrokerHandle> broker_;
 
     void StartBroker(BrokerService::Config cfg)
@@ -229,6 +241,7 @@ TEST_F(ConnectionPolicyBrokerTest, OpenPolicyAcceptsWithIdentity)
 
 TEST_F(ConnectionPolicyBrokerTest, RequiredPolicyRejectsAnonymous)
 {
+    ExpectLogWarn("policy=required rejected producer");
     BrokerService::Config cfg;
     cfg.connection_policy = ConnectionPolicy::Required;
     StartBroker(std::move(cfg));
@@ -246,6 +259,7 @@ TEST_F(ConnectionPolicyBrokerTest, RequiredPolicyAcceptsWithIdentity)
 
 TEST_F(ConnectionPolicyBrokerTest, VerifiedPolicyRejectsUnknownRole)
 {
+    ExpectLogWarn("Verified policy rejected producer");
     BrokerService::Config cfg;
     cfg.connection_policy = ConnectionPolicy::Verified;
     cfg.known_roles.push_back({"lab.sensor1", "prod.sensor.uidaabbccdd", "producer"});
@@ -266,6 +280,7 @@ TEST_F(ConnectionPolicyBrokerTest, VerifiedPolicyAcceptsKnownRole)
 
 TEST_F(ConnectionPolicyBrokerTest, PerChannelGlobOverrideRestrictsChannel)
 {
+    ExpectLogWarn("Verified policy rejected producer");
     BrokerService::Config cfg;
     cfg.connection_policy = ConnectionPolicy::Tracked;
     cfg.channel_policies.push_back({"lab.secure.*", ConnectionPolicy::Verified});
