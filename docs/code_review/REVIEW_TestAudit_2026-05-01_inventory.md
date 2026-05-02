@@ -196,7 +196,7 @@ for a file IN THE SAME COMMIT that fixes the file.
 | L3-69 | `test_layer3_datahub/workers/datahub_handle_semantics_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
 | L3-70 | `test_layer3_datahub/workers/datahub_header_structure_workers.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 deferred (subprocess) | Audited <this commit>.  Clean — no Class A/B/C concerns. |
 | L3-71 | `test_layer3_datahub/workers/datahub_header_structure_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
-| L3-72 | `test_layer3_datahub/workers/datahub_hub_queue_workers.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 deferred (subprocess) | Audited <this commit>.  Clean — no Class A/B/C concerns. |
+| L3-72 | `test_layer3_datahub/workers/datahub_hub_queue_workers.cpp` | ✅ FIXED `<this commit>` | 🟢 OK | 🟢 OK | 🟡 deferred (subprocess) | Audited + fixed `<this commit>`.  Class A: 4 EXPECT_THROW(`std::runtime_error`) for remap-stub not-implemented paths.  Tightened to capture-and-pin function-name substring per audit §1.1 (each stub message has a function-name prefix).  Earlier batch-update marked this row 🟢 OK without tightening; corrected. |
 | L3-73 | `test_layer3_datahub/workers/datahub_hub_queue_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
 | L3-74 | `test_layer3_datahub/workers/datahub_integrity_repair_workers.cpp` | 🟢 OK | 🟢 OK | 🟢 OK | 🟡 deferred (subprocess) | Audited <this commit>.  Clean — no Class A/B/C concerns. |
 | L3-75 | `test_layer3_datahub/workers/datahub_integrity_repair_workers.h` | n/a | n/a | n/a | n/a | header — audited as part of its companion .cpp |
