@@ -63,7 +63,16 @@ TEST_F(ThreadManagerTest, MultipleThreads)
     ExpectWorkerOk(w);
 }
 
-TEST_F(ThreadManagerTest, JoinInReverseOrder)
+// Test was previously named `JoinInReverseOrder` but the worker only
+// asserts `order.size() == 2` — i.e. that drain() waits for ALL
+// spawned threads to complete (including a slow one).  It does NOT
+// observe the order in which drain() invokes `join()` on the slots.
+// Verifying actual reverse-spawn-order join from outside the
+// ThreadManager would require exposing internal join-sequence state
+// (e.g. a per-slot "joined_at" timestamp), which is not currently
+// part of the public surface.  Renamed to match what's actually
+// tested; reverse-order verification is a separate follow-up.
+TEST_F(ThreadManagerTest, DrainJoinsAllThreads)
 {
     auto w = SpawnWorker("role_data_loop.thread_manager_join_in_reverse_order",
                          {});
