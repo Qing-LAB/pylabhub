@@ -42,6 +42,38 @@ static DataBlockConfig make_valid_config(uint64_t secret)
     return cfg;
 }
 
+// Shared helper: assert `create_datablock_producer_impl` throws
+// `std::invalid_argument` whose what() contains @p needle.  Replaces
+// type-only `EXPECT_THROW(..., std::invalid_argument)` per audit
+// §1.1 — production has 6 distinct invalid_argument throw sites in
+// `data_block.cpp` (lines 394/399/404/409/414/464) so type alone is
+// not path-discriminating; a regression where field A's check fails
+// to fire and field B's check fires instead would silently pass the
+// type check.
+static void expect_invalid_arg(const std::string &channel,
+                               const DataBlockConfig &cfg,
+                               DataBlockPolicy policy_arg,
+                               std::string_view needle)
+{
+    bool threw = false;
+    std::string msg;
+    try
+    {
+        (void)create_datablock_producer_impl(channel, policy_arg, cfg,
+                                             nullptr, nullptr);
+    }
+    catch (const std::invalid_argument &e)
+    {
+        threw = true;
+        msg = e.what();
+    }
+    EXPECT_TRUE(threw)
+        << "create_datablock_producer_impl must throw std::invalid_argument";
+    EXPECT_NE(msg.find(needle), std::string::npos)
+        << "wrong invalid_argument path; expected substring '" << needle
+        << "', got: " << msg;
+}
+
 // ============================================================================
 // 1. policy_unset_throws
 // ============================================================================
@@ -56,12 +88,8 @@ int policy_unset_throws()
             DataBlockConfig cfg = make_valid_config(73001);
             cfg.policy = DataBlockPolicy::Unset;
 
-            EXPECT_THROW(
-                (void)create_datablock_producer_impl(channel, DataBlockPolicy::Unset,
-                                                     cfg, nullptr, nullptr),
-                std::invalid_argument)
-                << "create_datablock_producer_impl must throw std::invalid_argument "
-                   "when DataBlockConfig::policy is Unset";
+            expect_invalid_arg(channel, cfg, DataBlockPolicy::Unset,
+                               "DataBlockConfig::policy must be set explicitly");
         },
         "policy_unset_throws", logger_module(), crypto_module(), hub_module());
 }
@@ -80,11 +108,8 @@ int consumer_sync_policy_unset_throws()
             DataBlockConfig cfg = make_valid_config(73002);
             cfg.consumer_sync_policy = ConsumerSyncPolicy::Unset;
 
-            EXPECT_THROW(
-                (void)create_datablock_producer_impl(channel, cfg.policy,
-                                                     cfg, nullptr, nullptr),
-                std::invalid_argument)
-                << "create_datablock_producer_impl must throw when consumer_sync_policy is Unset";
+            expect_invalid_arg(channel, cfg, cfg.policy,
+                               "DataBlockConfig::consumer_sync_policy must be set explicitly");
         },
         "consumer_sync_policy_unset_throws", logger_module(), crypto_module(), hub_module());
 }
@@ -103,11 +128,8 @@ int physical_page_size_unset_throws()
             DataBlockConfig cfg = make_valid_config(73003);
             cfg.physical_page_size = DataBlockPageSize::Unset;
 
-            EXPECT_THROW(
-                (void)create_datablock_producer_impl(channel, cfg.policy,
-                                                     cfg, nullptr, nullptr),
-                std::invalid_argument)
-                << "create_datablock_producer_impl must throw when physical_page_size is Unset";
+            expect_invalid_arg(channel, cfg, cfg.policy,
+                               "DataBlockConfig::physical_page_size must be set explicitly");
         },
         "physical_page_size_unset_throws", logger_module(), crypto_module(), hub_module());
 }
@@ -126,11 +148,8 @@ int ring_buffer_capacity_zero_throws()
             DataBlockConfig cfg = make_valid_config(73004);
             cfg.ring_buffer_capacity = 0;
 
-            EXPECT_THROW(
-                (void)create_datablock_producer_impl(channel, cfg.policy,
-                                                     cfg, nullptr, nullptr),
-                std::invalid_argument)
-                << "create_datablock_producer_impl must throw when ring_buffer_capacity is 0";
+            expect_invalid_arg(channel, cfg, cfg.policy,
+                               "DataBlockConfig::ring_buffer_capacity must be set");
         },
         "ring_buffer_capacity_zero_throws", logger_module(), crypto_module(), hub_module());
 }
