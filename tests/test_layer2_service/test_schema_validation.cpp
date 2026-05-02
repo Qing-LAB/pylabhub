@@ -89,81 +89,116 @@ TEST(SchemaValidationTest, ParseValid_PackedPacking)
 
 // ============================================================================
 // parse_schema_json — error paths
+//
+// Each test pins both the exception type AND a substring of the expected
+// message (audit §1.1) so a regression where input A triggers error
+// path B's throw is caught with a clear diagnostic.  Production has 9
+// distinct runtime_error throw sites in `parse_schema_json` (see
+// schema_utils.hpp:44-98); type alone is not path-discriminating.
+//
+// History note: prior to commit `<this>`, this file's
+// EmptyFieldsArray / MissingFieldName / MissingFieldType tests omitted
+// `"packing"` in the input, which caused all three to actually fire
+// the packing-required error path rather than the named scenario.  The
+// tests passed type-wise but verified the wrong invariant — exactly
+// the silent-failure mode this audit was set up to catch.  Fixed by
+// adding `"packing": "aligned"` to those inputs so each test exercises
+// the path its name claims.
 // ============================================================================
+
+namespace
+{
+/// Shared helper: invoke `parse_schema_json(s)` and assert it throws a
+/// `std::runtime_error` whose what() contains @p needle.  Path-pinned.
+void expect_parse_error(const json &s, std::string_view needle)
+{
+    bool threw = false;
+    std::string msg;
+    try { (void)parse_schema_json(s); }
+    catch (const std::runtime_error &e) { threw = true; msg = e.what(); }
+    EXPECT_TRUE(threw) << "parse_schema_json must throw runtime_error";
+    EXPECT_NE(msg.find(needle), std::string::npos)
+        << "wrong error path; expected substring '" << needle
+        << "', got: " << msg;
+}
+} // namespace
 
 TEST(SchemaValidationTest, ParseError_EmptyFieldsArray)
 {
     json s;
-    s["fields"] = json::array();
-    EXPECT_THROW(parse_schema_json(s), std::runtime_error);
+    s["packing"] = "aligned";
+    s["fields"]  = json::array();
+    expect_parse_error(s, "'fields' array must not be empty");
 }
 
 TEST(SchemaValidationTest, ParseError_MissingFieldsKey)
 {
     json s;
     s["packing"] = "aligned";
-    EXPECT_THROW(parse_schema_json(s), std::runtime_error);
+    expect_parse_error(s, "ctypes mode requires a 'fields' array");
 }
 
 TEST(SchemaValidationTest, ParseError_MissingFieldName)
 {
     json s;
-    s["fields"] = json::array();
+    s["packing"] = "aligned";
+    s["fields"]  = json::array();
     json f;
     f["type"] = "int32";
     // No "name" key
     s["fields"].push_back(f);
-    EXPECT_THROW(parse_schema_json(s), std::runtime_error);
+    expect_parse_error(s, "each field must have a string 'name'");
 }
 
 TEST(SchemaValidationTest, ParseError_MissingFieldType)
 {
     json s;
-    s["fields"] = json::array();
+    s["packing"] = "aligned";
+    s["fields"]  = json::array();
     json f;
     f["name"] = "x";
     // No "type" key
     s["fields"].push_back(f);
-    EXPECT_THROW(parse_schema_json(s), std::runtime_error);
+    expect_parse_error(s, "missing 'type'");
 }
 
 TEST(SchemaValidationTest, ParseError_InvalidTypeStr)
 {
     auto s = make_schema({make_field("x", "complex128")});
-    EXPECT_THROW(parse_schema_json(s), std::runtime_error);
+    expect_parse_error(s, "unknown type 'complex128'");
 }
 
 TEST(SchemaValidationTest, ParseError_CountZero)
 {
     json s = make_schema({make_field("x", "int32")});
     s["fields"][0]["count"] = 0;
-    EXPECT_THROW(parse_schema_json(s), std::runtime_error);
+    expect_parse_error(s, "'count' = 0");
 }
 
 TEST(SchemaValidationTest, ParseError_StringLengthZero)
 {
     auto s = make_schema({make_field("label", "string", 1, 0)});
-    EXPECT_THROW(parse_schema_json(s), std::runtime_error);
+    expect_parse_error(s, "requires 'length' > 0");
 }
 
 TEST(SchemaValidationTest, ParseError_BytesLengthZero)
 {
     auto s = make_schema({make_field("data", "bytes", 1, 0)});
-    EXPECT_THROW(parse_schema_json(s), std::runtime_error);
+    expect_parse_error(s, "requires 'length' > 0");
 }
 
 TEST(SchemaValidationTest, ParseError_ExposeAsPresent)
 {
     json s;
     s["expose_as"] = "SomeType";
-    s["fields"] = json::array({make_field("x", "int32")});
-    EXPECT_THROW(parse_schema_json(s), std::runtime_error);
+    s["fields"]    = json::array({make_field("x", "int32")});
+    expect_parse_error(s, "expose_as is no longer supported");
 }
 
 TEST(SchemaValidationTest, ParseError_InvalidPacking)
 {
     auto s = make_schema({make_field("x", "int32")}, "natural");
-    EXPECT_THROW(parse_schema_json(s), std::runtime_error);
+    expect_parse_error(s, "'packing' must be 'aligned' or 'packed'");
 }
 
 // ============================================================================
@@ -254,7 +289,7 @@ TEST(SchemaValidationTest, ParseError_MissingPacking)
     json s;
     s["fields"] = json::array({make_field("x", "int32")});
     // packing intentionally absent
-    EXPECT_THROW(parse_schema_json(s), std::runtime_error);
+    expect_parse_error(s, "'packing' field is required");
 }
 
 TEST(SchemaValidationTest, FingerprintIncludesPacking_AlignedVsPackedDistinct)
