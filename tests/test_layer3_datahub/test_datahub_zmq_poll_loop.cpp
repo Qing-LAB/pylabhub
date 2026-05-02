@@ -6,10 +6,12 @@
  * ZmqPollLoop tests use ZMQ inproc sockets for deterministic control.
  */
 
+#include "plh_service.hpp"
 #include "utils/zmq_poll_loop.hpp"
 #include "utils/zmq_context.hpp"
 
 #include "test_sync_utils.h"
+#include "log_capture_fixture.h"
 
 #include <gtest/gtest.h>
 
@@ -24,9 +26,32 @@ using pylabhub::tests::helper::poll_until;
 // PeriodicTask tests (iteration-gated mode)
 // ============================================================================
 
-class PeriodicTaskTest : public ::testing::Test
+class PeriodicTaskTest : public ::testing::Test,
+                          public pylabhub::tests::LogCaptureFixture
 {
+public:
+    static void SetUpTestSuite()
+    {
+        s_lifecycle_ = std::make_unique<pylabhub::utils::LifecycleGuard>(
+            pylabhub::utils::MakeModDefList(
+                pylabhub::utils::Logger::GetLifecycleModule()),
+            std::source_location::current());
+    }
+    static void TearDownTestSuite() { s_lifecycle_.reset(); }
+
+protected:
+    void SetUp()    override { LogCaptureFixture::Install(); }
+    void TearDown() override
+    {
+        AssertNoUnexpectedLogWarnError();
+        LogCaptureFixture::Uninstall();
+    }
+
+private:
+    static std::unique_ptr<pylabhub::utils::LifecycleGuard> s_lifecycle_;
 };
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+std::unique_ptr<pylabhub::utils::LifecycleGuard> PeriodicTaskTest::s_lifecycle_;
 
 TEST_F(PeriodicTaskTest, FirstTickFiresImmediatelyOnProgress)
 {
@@ -175,21 +200,40 @@ TEST_F(PeriodicTaskTest, TimeOnlyMode_IntervalNotElapsed)
 // ZmqPollLoop tests
 // ============================================================================
 
-class ZmqPollLoopTest : public ::testing::Test
+class ZmqPollLoopTest : public ::testing::Test,
+                         public pylabhub::tests::LogCaptureFixture
 {
+public:
+    static void SetUpTestSuite()
+    {
+        s_lifecycle_ = std::make_unique<pylabhub::utils::LifecycleGuard>(
+            pylabhub::utils::MakeModDefList(
+                pylabhub::utils::Logger::GetLifecycleModule()),
+            std::source_location::current());
+    }
+    static void TearDownTestSuite() { s_lifecycle_.reset(); }
+
   protected:
     void SetUp() override
     {
+        LogCaptureFixture::Install();
         ctx_ = std::make_unique<zmq::context_t>(1);
     }
 
     void TearDown() override
     {
         ctx_.reset();
+        AssertNoUnexpectedLogWarnError();
+        LogCaptureFixture::Uninstall();
     }
 
     std::unique_ptr<zmq::context_t> ctx_;
+
+  private:
+    static std::unique_ptr<pylabhub::utils::LifecycleGuard> s_lifecycle_;
 };
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+std::unique_ptr<pylabhub::utils::LifecycleGuard> ZmqPollLoopTest::s_lifecycle_;
 
 TEST_F(ZmqPollLoopTest, EmptySocketsReturnsImmediately)
 {
