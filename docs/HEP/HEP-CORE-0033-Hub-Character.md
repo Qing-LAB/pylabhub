@@ -1039,6 +1039,35 @@ hub script engine's namespace via `ScriptEngine::eval`.
   HubVault, ThreadManager, etc.).  Decision recorded in
   `docs/code_review/REVIEW_AdminService_2026-05-01.md` §2.4.
 
+### 11.5 Error code catalog
+
+Every non-`ok` admin RPC response carries `error.code` from this
+finite set.  Codes are stable wire constants — once shipped, a code
+NEVER changes meaning across versions.  New codes append-only.
+
+| Code               | When                                                                                            | Per-method                                     |
+|--------------------|-------------------------------------------------------------------------------------------------|------------------------------------------------|
+| `unauthorized`     | `token_required` is on AND `token` is missing / wrong size / mismatched                         | Any method when token gate is active           |
+| `unknown_method`   | Method name is not in §11.2                                                                     | Any                                            |
+| `invalid_request`  | Top-level frame is not a JSON object, or `method` field missing/non-string                      | Any                                            |
+| `invalid_params`   | `params` is missing a required field, has the wrong type, or fails validation                   | All `get_*` (missing key); control methods     |
+| `not_found`        | The requested entity (channel, role, band, peer) does not exist in `HubState`                   | `get_channel`, `get_role`, `close_channel`, `broadcast_channel`, `revoke_role` |
+| `conflict`         | Operation refused because the target is in a state that disallows it (e.g. close on draining)   | `close_channel`, `request_shutdown` (already shutting down) |
+| `policy_rejected`  | A veto hook (script callback or connection policy) refused the operation                        | `close_channel`, `add_known_role`, `revoke_role` |
+| `script_error`     | `exec_python` (dev-mode) — Python raised, traceback included in `error.message`                 | `exec_python` only                             |
+| `not_implemented`  | Method is on the §11.2 list but not yet wired in this build (deferred per §16 / HEP-0035 / Phase 7) | `revoke_role`, `reload_config`, `add/remove/list_known_roles`, `exec_python` |
+| `internal`         | Caught exception in dispatch path that is not one of the above                                  | Any (last-resort)                              |
+
+All response bodies follow the §11.1 envelope:
+```json
+{ "status": "error", "error": { "code": "<one-of-above>", "message": "<human readable>" } }
+```
+
+The `message` field is for diagnostics only; tooling matches on
+`code`.  Tests pin `code` first, then optionally a substring of
+`message` per the audit Class A path-discrimination rule (`CLAUDE.md`
+§ "Testing Practice (Mandatory)").
+
 ## 12. Script callbacks + `HubAPI`
 
 ### 12.1 Engine
@@ -1310,11 +1339,11 @@ can land in parallel once P1 lands.
    subset (heartbeat timeouts, state-retention values, federation peer
    list contents) vs frozen subset (everything else) must be enumerated
    before Phase 6 wires the RPC.
-10. **Admin RPC error-code catalog.**  §11.1 shows the response shape
-    `{status, error:{code, message}}` but does not enumerate the codes.
-    Needed before Phase 6: `unauthorized`, `unknown_method`,
-    `invalid_params`, `not_found`, `conflict`, `internal`,
-    `script_error`, `policy_rejected` (veto-hook refusal).
+10. ✅ **CLOSED 2026-05-02** — Admin RPC error-code catalog now
+    enumerated in §11.5.  Catalog: `unauthorized`, `unknown_method`,
+    `invalid_request`, `invalid_params`, `not_found`, `conflict`,
+    `policy_rejected`, `script_error`, `not_implemented`, `internal`.
+    Stable wire constants, append-only.
 
 ## 17. Out of scope
 
