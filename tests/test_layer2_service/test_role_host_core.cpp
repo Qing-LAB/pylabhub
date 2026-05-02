@@ -13,22 +13,53 @@
  *   - Cross-thread metric visibility (write on one thread, read on another)
  */
 
+#include "plh_service.hpp"
 #include "utils/role_host_core.hpp"
+#include "log_capture_fixture.h"
 
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <memory>
 #include <thread>
 #include <vector>
 
 using pylabhub::scripting::IncomingMessage;
 using pylabhub::scripting::RoleHostCore;
 
-class RoleHostCoreTest : public ::testing::Test
+class RoleHostCoreTest : public ::testing::Test,
+                          public pylabhub::tests::LogCaptureFixture
 {
+public:
+    static void SetUpTestSuite()
+    {
+        // Logger module required so LogCaptureFixture::Install() can
+        // call Logger::set_logfile() without UB (the variant
+        // storage destructor crashes if the worker thread was never
+        // started — i.e. Logger module never initialized).
+        s_lifecycle_ = std::make_unique<pylabhub::utils::LifecycleGuard>(
+            pylabhub::utils::MakeModDefList(
+                pylabhub::utils::Logger::GetLifecycleModule()),
+            std::source_location::current());
+    }
+    static void TearDownTestSuite() { s_lifecycle_.reset(); }
+
   protected:
+    void SetUp()    override { LogCaptureFixture::Install(); }
+    void TearDown() override
+    {
+        AssertNoUnexpectedLogWarnError();
+        LogCaptureFixture::Uninstall();
+    }
+
     RoleHostCore core_;
+
+  private:
+    static std::unique_ptr<pylabhub::utils::LifecycleGuard> s_lifecycle_;
 };
+
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+std::unique_ptr<pylabhub::utils::LifecycleGuard> RoleHostCoreTest::s_lifecycle_;
 
 // ============================================================================
 // Default state
@@ -239,6 +270,9 @@ TEST_F(RoleHostCoreTest, MessageQueue_EnqueueAndDrain)
 
 TEST_F(RoleHostCoreTest, MessageQueue_OverflowDropsOldest)
 {
+    // Production code emits LOGGER_WARN per dropped message — the
+    // test deliberately overflows by 10, so up to 10 warns expected.
+    ExpectLogWarn("Incoming queue full — dropping message");
     for (size_t i = 0; i < RoleHostCore::kMaxIncomingQueue + 10; ++i)
     {
         IncomingMessage msg;
@@ -253,6 +287,8 @@ TEST_F(RoleHostCoreTest, MessageQueue_OverflowDropsOldest)
 
 TEST_F(RoleHostCoreTest, MessageQueue_CrossThread)
 {
+    // 100 enqueues vs kMaxIncomingQueue cap — overflow path may fire.
+    ExpectLogWarn("Incoming queue full — dropping message");
     constexpr int kMessages = 100;
 
     std::thread producer([&]
