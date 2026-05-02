@@ -166,6 +166,28 @@ int roundtrip_both(const std::string &dir, const std::string &role, double max_s
         JsonConfig::GetLifecycleModule());
 }
 
+// Helper: assert `RoleConfig::load_from_directory` throws a
+// `std::runtime_error` whose what() contains @p needle.  Tightens the
+// EXPECT_THROW Class A check per audit §1.1: LoggingConfig::parse has
+// distinct runtime_error throw sites for each kind of bad input
+// (logging_config.hpp:70/81/94/114) — type alone could let a regression
+// where check A fails to fire and check B fires instead pass silently.
+static void expect_load_runtime_error(const std::string &dir,
+                                       const std::string &role,
+                                       std::string_view needle)
+{
+    bool threw = false; std::string msg;
+    try {
+        (void)RoleConfig::load_from_directory(dir, role.c_str(),
+                                              get_role_parser(role));
+    } catch (const std::runtime_error &e) { threw = true; msg = e.what(); }
+    EXPECT_TRUE(threw)
+        << "load_from_directory must throw runtime_error for invalid logging config";
+    EXPECT_NE(msg.find(needle), std::string::npos)
+        << "wrong runtime_error path; expected substring '" << needle
+        << "', got: " << msg;
+}
+
 int roundtrip_error_backups_zero(const std::string &dir, const std::string &role)
 {
     return run_gtest_worker(
@@ -175,9 +197,8 @@ int roundtrip_error_backups_zero(const std::string &dir, const std::string &role
             RoleDirectory::LogInitOverrides ov;
             ov.backups = 0;
             ASSERT_EQ(RoleDirectory::init_directory(dir, role, "X", ov), 0);
-            EXPECT_THROW(
-                (void)RoleConfig::load_from_directory(dir, role.c_str(), get_role_parser(role)),
-                std::runtime_error);
+            expect_load_runtime_error(dir, role,
+                                      "'logging.backups' must be >= 1");
         },
         "role_logging::roundtrip_error_backups_zero",
         Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
@@ -193,9 +214,8 @@ int roundtrip_error_maxsize_zero(const std::string &dir, const std::string &role
             RoleDirectory::LogInitOverrides ov;
             ov.max_size_mb = 0.0;
             ASSERT_EQ(RoleDirectory::init_directory(dir, role, "X", ov), 0);
-            EXPECT_THROW(
-                (void)RoleConfig::load_from_directory(dir, role.c_str(), get_role_parser(role)),
-                std::runtime_error);
+            expect_load_runtime_error(dir, role,
+                                      "'logging.max_size_mb' must be > 0");
         },
         "role_logging::roundtrip_error_maxsize_zero",
         Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
