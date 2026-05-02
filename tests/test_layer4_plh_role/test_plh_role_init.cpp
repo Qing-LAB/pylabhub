@@ -81,6 +81,7 @@ TEST_P(PlhRoleInitTest, CreatesDirectoryStructure)
         {"--role", std::string(s.role), dir.string(), "--name", "TestRole"});
     EXPECT_EQ(p.wait_for_exit(), 0)
         << "stderr:\n" << p.get_stderr();
+    expect_no_unexpected_errors(p);
 
     // (a) Config file exists.
     const fs::path cfg_path = dir / (std::string(s.role) + ".json");
@@ -125,6 +126,7 @@ TEST_P(PlhRoleInitTest, DefaultValues)
         {"--role", std::string(s.role), dir.string(),
          "--name", "DefaultTest"});
     ASSERT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
+    expect_no_unexpected_errors(p);
 
     const auto j = read_json(dir / (std::string(s.role) + ".json"));
     ASSERT_FALSE(j.is_null()) << "config parse failed";
@@ -202,6 +204,7 @@ TEST_P(PlhRoleInitTest, DefaultAuthKeyfileEmpty)
     WorkerProcess p(plh_role_binary(), "--init",
         {"--role", std::string(s.role), dir.string(), "--name", "AuthTest"});
     ASSERT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
+    expect_no_unexpected_errors(p);
 
     const auto j = read_json(dir / (std::string(s.role) + ".json"));
     ASSERT_FALSE(j.is_null());
@@ -235,6 +238,7 @@ TEST_P(PlhRoleInitTest, LogOverridesThreadThrough)
          "--log-maxsize", "25",
          "--log-backups", "7"});
     ASSERT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
+    expect_no_unexpected_errors(p);
 
     const auto j = read_json(dir / (std::string(s.role) + ".json"));
     ASSERT_FALSE(j.is_null());
@@ -260,6 +264,7 @@ TEST_P(PlhRoleInitTest, LogBackupsUnlimitedSentinel)
         {"--role", std::string(s.role), dir.string(), "--name", "LogTest",
          "--log-backups", "-1"});
     ASSERT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
+    expect_no_unexpected_errors(p);
 
     const auto j = read_json(dir / (std::string(s.role) + ".json"));
     ASSERT_FALSE(j.is_null());
@@ -284,6 +289,7 @@ TEST_P(PlhRoleInitTest, InitOutputValidates)
         {"--role", std::string(s.role), dir.string(), "--name", "RTTest"});
     ASSERT_EQ(init_p.wait_for_exit(), 0)
         << "init failed; stderr:\n" << init_p.get_stderr();
+    expect_no_unexpected_errors(init_p);
 
     // Step 2: --validate against the directory (positional form) —
     // exercises the run-directory-style entry path that production
@@ -293,6 +299,7 @@ TEST_P(PlhRoleInitTest, InitOutputValidates)
     ASSERT_EQ(val_p.wait_for_exit(), 0)
         << "validate of init-produced config failed; stderr:\n"
         << val_p.get_stderr();
+    expect_no_unexpected_errors(val_p);
     EXPECT_NE(val_p.get_stdout().find("Validation passed"), std::string::npos)
         << "validate should print 'Validation passed' on success; got stdout:\n"
         << val_p.get_stdout();

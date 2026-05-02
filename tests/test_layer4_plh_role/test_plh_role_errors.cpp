@@ -70,6 +70,7 @@ TEST_F(PlhRoleCliTest, HelpLongFormExitsZero)
 {
     WorkerProcess p(plh_role_binary(), "--help", {});
     EXPECT_EQ(p.wait_for_exit(10), 0);
+    expect_no_unexpected_errors(p);
     const std::string &out = p.get_stdout();
     // "Usage:" is the literal header from print_role_usage.
     EXPECT_NE(out.find("Usage:"), std::string::npos)
@@ -84,6 +85,7 @@ TEST_F(PlhRoleCliTest, HelpShortFormExitsZero)
 {
     WorkerProcess p(plh_role_binary(), "-h", {});
     EXPECT_EQ(p.wait_for_exit(10), 0);
+    expect_no_unexpected_errors(p);
     EXPECT_NE(p.get_stdout().find("Usage:"), std::string::npos)
         << "'-h' should print usage to stdout; got:\n" << p.get_stdout();
     EXPECT_TRUE(p.get_stderr().empty());
@@ -100,6 +102,7 @@ TEST_F(PlhRoleCliTest, HelpWinsOverOtherFlags)
     EXPECT_EQ(p.wait_for_exit(10), 0)
         << "--help must win over --init+--validate; got exit="
         << p.wait_for_exit(10) << "\nstderr:\n" << p.get_stderr();
+    expect_no_unexpected_errors(p);
     EXPECT_NE(p.get_stdout().find("Usage:"), std::string::npos);
 }
 
@@ -295,6 +298,7 @@ TEST_F(PlhRoleCliTest, LogBackupsBelowSentinelRejectedByValidate)
          "--log-backups", "-2"});
     ASSERT_EQ(init_p.wait_for_exit(10), 0)
         << "init must accept -2 at CLI level (threads value through)";
+    expect_no_unexpected_errors(init_p);
 
     // Step 2: validate rejects the resulting config.
     WorkerProcess val_p(plh_role_binary(), "--role",

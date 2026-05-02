@@ -56,6 +56,7 @@ TEST_P(PlhRoleValidateTest, MinimalConfigPasses)
     WorkerProcess p(plh_role_binary(), "--role",
         {std::string(s.role), "--config", cfg.string(), "--validate"});
     EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
+    expect_no_unexpected_errors(p);
     EXPECT_NE(p.get_stdout().find("Validation passed"), std::string::npos)
         << "stdout did not contain 'Validation passed'; got:\n"
         << p.get_stdout();
@@ -78,6 +79,7 @@ TEST_P(PlhRoleValidateTest, DirectoryFlavorPasses)
     WorkerProcess p(plh_role_binary(), "--role",
         {std::string(s.role), dir.string(), "--validate"});
     EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
+    expect_no_unexpected_errors(p);
     EXPECT_NE(p.get_stdout().find("Validation passed"), std::string::npos);
 }
 

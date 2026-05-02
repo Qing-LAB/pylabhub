@@ -91,6 +91,7 @@ TEST_P(PlhRoleKeygenTest, WritesVaultFile)
     // (picks up memory pressure + scheduler jitter without hiding hangs).
     EXPECT_EQ(p.wait_for_exit(PYLABHUB_TEST_CRYPTO_TIMEOUT_S), 0)
         << "stderr:\n" << p.get_stderr();
+    expect_no_unexpected_errors(p);
 
     EXPECT_TRUE(fs::exists(vault_path))
         << "vault file not created at " << vault_path;
