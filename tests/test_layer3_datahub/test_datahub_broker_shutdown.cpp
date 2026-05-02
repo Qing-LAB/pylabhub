@@ -25,6 +25,7 @@
 #include "utils/broker_service.hpp"
 #include "utils/hub_state.hpp"
 #include "test_sync_utils.h"
+#include "log_capture_fixture.h"
 
 #include <atomic>
 #include <chrono>
@@ -194,7 +195,8 @@ struct SignalFlag
 // BrokerShutdownTest fixture — configurable grace period
 // ============================================================================
 
-class BrokerShutdownTest : public ::testing::Test
+class BrokerShutdownTest : public ::testing::Test,
+                            public pylabhub::tests::LogCaptureFixture
 {
 public:
     static void SetUpTestSuite()
@@ -206,6 +208,14 @@ public:
     static void TearDownTestSuite() { s_lifecycle_.reset(); }
 
 protected:
+    void SetUp() override { LogCaptureFixture::Install(); }
+    void TearDown() override
+    {
+        broker_.reset();
+        AssertNoUnexpectedLogWarnError();
+        LogCaptureFixture::Uninstall();
+    }
+
     void start_broker(std::chrono::seconds grace)
     {
         BrokerService::Config cfg;
@@ -288,6 +298,7 @@ TEST_F(BrokerShutdownTest, GracefulShutdown_ProducerDeregisters)
 
 TEST_F(BrokerShutdownTest, ForceShutdown_GraceExpires)
 {
+    ExpectLogWarn("grace period expired");
     start_broker(std::chrono::seconds(1));
     const std::string channel = pid_chan("shutdown.force.expire");
     const std::string uid     = "prod." + channel;
@@ -400,6 +411,7 @@ TEST_F(BrokerShutdownTest, EarlyCleanup_AllMembersDeregister)
 
 TEST_F(BrokerShutdownTest, ForceShutdown_ConsumerDoesNotDeregister)
 {
+    ExpectLogWarn("grace period expired");
     start_broker(std::chrono::seconds(1));
     const std::string channel  = pid_chan("shutdown.force.consumer");
     const std::string prod_uid = "prod." + channel;
@@ -491,6 +503,7 @@ TEST_F(BrokerShutdownTest, ClosingStatus_InSnapshot)
 
 TEST_F(BrokerShutdownTest, ZeroGrace_ImmediateForceShutdown)
 {
+    ExpectLogWarn("grace period expired");
     start_broker(std::chrono::seconds(0));
     const std::string channel = pid_chan("shutdown.zerograce");
     const std::string uid     = "prod." + channel;

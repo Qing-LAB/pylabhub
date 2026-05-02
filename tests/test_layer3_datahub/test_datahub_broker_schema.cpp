@@ -19,6 +19,7 @@
 #include "utils/hub_state.hpp"
 #include "utils/format_tools.hpp"
 #include "utils/schema_utils.hpp"  // compute_canonical_hash_from_wire (HEP-0034 §10.1)
+#include "log_capture_fixture.h"
 
 #include <atomic>
 #include <future>
@@ -174,7 +175,8 @@ struct DefaultSchema
 // BrokerSchemaTest — in-process broker, empty schema library
 // ============================================================================
 
-class BrokerSchemaTest : public ::testing::Test
+class BrokerSchemaTest : public ::testing::Test,
+                          public pylabhub::tests::LogCaptureFixture
 {
 public:
     static void SetUpTestSuite()
@@ -188,11 +190,19 @@ public:
 protected:
     void SetUp() override
     {
+        LogCaptureFixture::Install();
         BrokerService::Config cfg;
         cfg.endpoint           = "tcp://127.0.0.1:0";
         cfg.schema_search_dirs = {};
         cfg.grace_override     = std::chrono::milliseconds(0);
         broker_.emplace(start_local_broker(std::move(cfg)));
+    }
+
+    void TearDown() override
+    {
+        broker_.reset();
+        AssertNoUnexpectedLogWarnError();
+        LogCaptureFixture::Uninstall();
     }
 
     const std::string &ep() const { return broker_->endpoint; }
@@ -317,6 +327,7 @@ TEST_F(BrokerSchemaTest, ConsumerSchemaId_Match_Succeeds)
 
 TEST_F(BrokerSchemaTest, ConsumerSchemaId_Mismatch_Fails)
 {
+    ExpectLogWarn("CONSUMER_REG_REQ schema_id mismatch");
     const std::string channel  = pid_chan("schema.consumer.mismatch");
     const std::string prod_sid = "$lab.producer.schema.v1";
     const std::string cons_sid = "$lab.other.schema.v1";
