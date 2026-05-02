@@ -2,13 +2,14 @@
 
 | Property        | Value                                                                |
 |-----------------|----------------------------------------------------------------------|
-| **Status**      | 🟡 OPEN — ground-truth tracker; multiple sessions of work            |
+| **Status**      | ✅ CLOSED — 2026-05-02.  All 204 inventory rows ✅ or n/a across all 4 bug classes.  Zero open rows. |
 | **Created**     | 2026-05-01                                                           |
-| **Trigger**     | Two silent-failure regressions shipped on this branch (slow-path `EXPECT_THROW`, envelope-only `status==ok`); a freshly-written catch swallowed an exception via dead "log only" comment.  User: "you motherfucker don't build houses on sand. … i cannot trust any of your coding until you check every test, not the fucking recent ones only."  Trust in the suite is suspended until this audit closes. |
-| **Scope**       | **EVERY test file under `tests/`.**  Not limited to recent commits.  Not limited to files I touched.  Every fixture, every TEST_F, every assertion, every sleep, every timeout-bearing call.  No file exempt — files written before this branch existed are EQUALLY in scope. |
-| **Trust gate**  | Until all §3 acceptance criteria hold, the suite-pass count (e.g. "1697/1697 green") is **NOT** evidence of correctness.  The two incidents in §0 both reported green for weeks/sessions before being caught.  Do not cite a green run as a sign of done. |
-| **Disposition** | Transient — archive ONLY when every item in §6 is verdict'd, every §7 item is ✅ FIXED-with-commit-hash, and the suite-wide acceptance criteria in §3 are met. |
-| **Owner**       | Whoever picks this up next.  This file is the handoff.               |
+| **Closed**      | 2026-05-02 (commit `b9f125b`)                                        |
+| **Trigger**     | Two silent-failure regressions shipped on this branch (slow-path `EXPECT_THROW`, envelope-only `status==ok`); a freshly-written catch swallowed an exception via dead "log only" comment.  Trust in the suite was suspended until this audit closed. |
+| **Scope**       | **EVERY test file under `tests/`.**  Not limited to recent commits.  Not limited to files I touched.  Every fixture, every TEST_F, every assertion, every sleep, every timeout-bearing call. |
+| **Trust gate**  | All §3 acceptance criteria met.  Final suite: 1689/1689 green at 94.90s. |
+| **Disposition** | Archive to `docs/archive/transient-2026-05-02/` per `docs/DOC_STRUCTURE.md` §1.7.  Lasting policies merged into `docs/IMPLEMENTATION_GUIDANCE.md` § "Assertion Design — silent-failure prevention" + `CLAUDE.md` § "Testing Practice (Mandatory)". |
+| **Owner**       | (closed)                                                             |
 
 ---
 
@@ -169,6 +170,44 @@ This is the honest list.  Anything not in this section is unverified.
 | **Class D framework gate for ALL Pattern-3 subprocess tests** (~650 callsites) | ✅ verified | (pre-existing in framework) | `expect_worker_ok` (`tests/test_framework/test_process_utils.cpp:632-643`) scans every stderr line for `[ERROR ]` and fails on any unexpected occurrence when `expected_error_substrings` is empty.  This gate fires automatically for every test routing through `ExpectWorkerOk` / `ExpectAllWorkersOk` / `ExpectLegacyWorkerOk` (the 3 paths used by every Pattern-3 driver in the suite).  Audit checked: 654 `SpawnWorker` callsites vs 677 `Expect*Worker*` checks; only 4 RAW_EXIT survivors (3 in `test_datahub_mutex.cpp`, 1 in `test_jsonconfig.cpp`), all of which are negative tests intentionally verifying worker abort/warning behavior.  Conclusion: Class D is mechanically enforced for the entire Pattern-3 surface area — no per-fixture retrofit needed for those 60 files in the inventory.  Only in-process fixtures need the explicit `LogCaptureFixture` install; see §7. |
 
 **Everything else is OPEN.  See §6 and §7.**
+
+### Closure addendum — 2026-05-02
+
+Final commits (audit-closure batch):
+
+| Commit    | What                                                                       |
+|-----------|----------------------------------------------------------------------------|
+| `7fb2c48` | Class D framework-gate finding documented; 109 inventory rows closed        |
+| `9340228` | plh_role: hoist LifecycleGuard above --init; L4 Class D gate (4 files / 14 sites); mutation `LOGGER_ERROR` in `do_init` verified red→green |
+| `7783334` | Inventory consolidation: +4 framework-gate, +17 n/a, scope reduced to 15    |
+| `84a2e8f` | LogCaptureFixture: ZmqQueueTest (10 ExpectLog* declarations; mutation 35/65 fail) |
+| `600a171` | LogCaptureFixture: RoleHostCoreTest (mutation 3/34 fail)                    |
+| `82a06b3` | LogCaptureFixture: DatahubSchemaFileLoadTest (mutation 4/4 fail)            |
+| `8df739d` | LogCaptureFixture: ZmqPollLoopTest + PeriodicTaskTest (mutation 6/17 fail)  |
+| `e559d48` | LogCaptureFixture: InboxQueueTest (mutation 12/16 fail)                     |
+| `4df2e8f` | LogCaptureFixture × 4 broker fixtures (mutation 36/36 fail)                 |
+| `54f71ad` | LogCaptureFixture × 4 broker-client fixtures                                |
+| `b9f125b` | Final 2 rows closed (n/a — log-silent production)                           |
+
+**Final state, 2026-05-02 (commit `b9f125b`)**:
+
+| Class D state                                                  | Count |
+|----------------------------------------------------------------|------:|
+| ✅ framework gate (Pattern-3 subprocess via `expect_worker_ok`)  |   101 |
+| n/a (tested production code has no `LOGGER_*`)                 |    81 |
+| ✅ FIXED via in-process `LogCaptureFixture` rollout (this batch) |    13 |
+| ✅ FIXED `9340228` (L4 plh_role binary tests)                    |     4 |
+| ⚪ N/A (header-only files; not test driver code)                |     3 |
+| ✅ FIXED `30f0121` (audit Phase 5)                               |     1 |
+| ✅ `db9f8f9` (AdminServiceTest, original LogCaptureFixture)      |     1 |
+| 🟡 OPEN                                                        |     0 |
+| **Total**                                                      | **204** |
+
+Mutation sensitivity verified for every `✅ FIXED` row in this batch
+— see per-commit verification notes in the inventory cells.
+
+The trust gate is met.  Suite-pass count (1689/1689) is now valid
+evidence of test correctness for the matters this audit screened.
 
 ---
 

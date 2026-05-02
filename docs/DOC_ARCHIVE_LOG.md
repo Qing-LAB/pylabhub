@@ -6,6 +6,35 @@
 
 ## Archive batches
 
+### 2026-05-02 (Test-correctness audit closed)
+
+User-driven 2-day audit triggered by two silent-failure regressions
+(slow-path `EXPECT_THROW`, envelope-only `status==ok`).  Final state:
+all 204 inventory rows ✅ FIXED or n/a across all four bug classes
+(A: outcome-only assertions; B: timing-by-sleep ordering; C: discarded
+timeout returns; D: missing log-noise gate).  Suite: 1689/1689 green.
+
+Lasting policies were merged into `docs/IMPLEMENTATION_GUIDANCE.md`
+§ "Assertion Design — silent-failure prevention" and `CLAUDE.md`
+§ "Testing Practice (Mandatory)" earlier in the audit; both are
+now durable.  Subsequent regressions in any of the four bug classes
+should be opened as fresh REVIEW files, not appended to the closed
+audit.
+
+Class D framework gate finding documented (the auditing-side win):
+`expect_worker_ok` (`tests/test_framework/test_process_utils.cpp:632-643`)
+already scans every Pattern-3 worker stderr for `[ERROR ]` lines —
+~650 subprocess tests get the gate for free.  In-process fixtures
+that touch log-emitting production code use `LogCaptureFixture`
+(`tests/test_framework/log_capture_fixture.h`).
+
+| Archived | From | Reason |
+|---|---|---|
+| `REVIEW_TestAudit_2026-05-01.md` | `docs/code_review/` | Audit closed; all acceptance criteria met. |
+| `REVIEW_TestAudit_2026-05-01_inventory.md` | `docs/code_review/` | Companion inventory; archived alongside master plan. |
+
+---
+
 ### 2026-04-30 (HEP-CORE-0033 prereqs doc fully superseded by HEP)
 
 `HUB_CHARACTER_PREREQUISITES.md` archived.  All 13 gaps it tracked are
