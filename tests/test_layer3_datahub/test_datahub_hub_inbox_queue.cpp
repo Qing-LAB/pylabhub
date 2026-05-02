@@ -15,6 +15,8 @@
 #include "utils/logger.hpp"
 #include "utils/zmq_context.hpp"
 
+#include "log_capture_fixture.h"
+
 #include <gtest/gtest.h>
 #include <zmq.h>
 
@@ -36,7 +38,8 @@ using ms = std::chrono::milliseconds;
 // InboxQueue/InboxClient can call pylabhub::hub::get_zmq_context(). Mirrors
 // ZmqQueueTest::SetUpTestSuite.
 // ─────────────────────────────────────────────────────────────────────────────
-class InboxQueueTest : public ::testing::Test
+class InboxQueueTest : public ::testing::Test,
+                        public pylabhub::tests::LogCaptureFixture
 {
   public:
     static void SetUpTestSuite()
@@ -49,6 +52,14 @@ class InboxQueueTest : public ::testing::Test
             std::source_location::current());
     }
     static void TearDownTestSuite() { s_lifecycle_.reset(); }
+
+  protected:
+    void SetUp()    override { LogCaptureFixture::Install(); }
+    void TearDown() override
+    {
+        AssertNoUnexpectedLogWarnError();
+        LogCaptureFixture::Uninstall();
+    }
 
   private:
     static std::unique_ptr<pylabhub::utils::LifecycleGuard> s_lifecycle_;
@@ -337,12 +348,14 @@ TEST_F(InboxQueueTest, NotStarted_RecvReturnsNull)
 // ─────────────────────────────────────────────────────────────────────────────
 TEST_F(InboxQueueTest, EmptySchema_FactoryFails)
 {
+    ExpectLogError("schema must not be empty");
     auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", {}); // empty schema
     EXPECT_EQ(q, nullptr);
 }
 
 TEST_F(InboxQueueTest, EmptySchema_ClientFactoryFails)
 {
+    ExpectLogError("schema must not be empty");
     auto c = InboxClient::connect_to("tcp://127.0.0.1:5599", "TEST-UID", {}); // empty schema
     EXPECT_EQ(c, nullptr);
 }
@@ -371,6 +384,7 @@ TEST_F(InboxQueueTest, ItemSize_MatchesSchema)
 
 TEST_F(InboxQueueTest, SchemaMismatch_DifferentType_DropsFrame)
 {
+    ExpectLogWarn("ACK timeout");
     // Receiver expects uint32, sender sends with float64 schema → schema tag mismatch.
     auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
     ASSERT_NE(q, nullptr);
@@ -419,6 +433,7 @@ TEST_F(InboxQueueTest, SchemaMismatch_DifferentType_DropsFrame)
 
 TEST_F(InboxQueueTest, SchemaMismatch_DifferentSize_DropsFrame)
 {
+    ExpectLogWarn("ACK timeout");
     // Receiver expects uint32 (4 bytes), sender sends with uint64 (8 bytes) → size mismatch.
     auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
     ASSERT_NE(q, nullptr);
@@ -498,6 +513,8 @@ TEST_F(InboxQueueTest, ChecksumEnforced_Roundtrip)
 
 TEST_F(InboxQueueTest, ChecksumManual_NoStamp_ReceiverRejects)
 {
+    ExpectLogError("checksum error after decode");
+    ExpectLogWarn("ACK timeout");
     auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
     ASSERT_NE(q, nullptr);
     q->set_checksum_policy(ChecksumPolicy::Enforced); // receiver verifies
