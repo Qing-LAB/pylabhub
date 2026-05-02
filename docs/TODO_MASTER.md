@@ -22,26 +22,43 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
-### Snapshot — 2026-05-01 (afternoon)
+### Snapshot — 2026-05-02
 
-**Full suite: 1697/1697 last verified at commit `db9f8f9`** (10 new
-AdminService tests added Phase 6.2a).  Branch `feature/lua-role-support`.
+**Full suite: 1689/1689 green at 94.90s** (last verified `b9f125b`).
+Branch `feature/lua-role-support`.
 
-**Active blockers — DO NOT advance Phase 6.2b/c without addressing:**
-- Test-correctness audit (`docs/code_review/REVIEW_TestAudit_2026-05-01.md`)
-  Phase 1 (L2 service tests for code I touched) must close.  Three
-  bug classes documented; two real incidents already fixed; rest of
-  the 1687-test suite NOT yet verified.  See that doc §11 for the
-  hub-resume bookmark.
+**🎯 Test-correctness audit CLOSED — 2026-05-02.**  All 204 inventory
+rows are now ✅ FIXED or n/a across all four bug classes (A/B/C/D).
+Zero open rows.  Class D (log-noise gate) coverage:
+  - 101 ✅ framework gate (Pattern-3 subprocess via `expect_worker_ok`)
+  -  81 n/a (tested production code has no `LOGGER_*`)
+  -  13 ✅ FIXED via in-process `LogCaptureFixture` rollout (this branch)
+  -   4 ✅ FIXED via L4 plh_role binary stderr gate (`9340228`)
+  -   3 ⚪ N/A (header-only files; not test driver code)
+  -   1 ✅ FIXED `30f0121` (audit Phase 5)
+  -   1 ✅ `db9f8f9` (AdminServiceTest, original LogCaptureFixture)
 
-  Last commits:
+The trust gate of `REVIEW_TestAudit_2026-05-01.md` §3 is met.  The
+audit doc may now be archived per its disposition rule.
+
+  Last commits (2026-05-02 audit-closure batch):
+`b9f125b` (final 2 Class D rows → n/a), `54f71ad` (4 broker-client
+fixtures LogCaptureFixture), `4df2e8f` (4 broker fixtures
+LogCaptureFixture + BrokerService::run mutation sweep), `e559d48`
+(InboxQueueTest LogCaptureFixture), `8df739d` (zmq_poll_loop
+LogCaptureFixture), `82a06b3` (schema_loader LogCaptureFixture),
+`600a171` (role_host_core LogCaptureFixture), `84a2e8f`
+(hub_zmq_queue LogCaptureFixture), `7783334` (inventory
+consolidation: -21 rows), `9340228` (plh_role: hoist LifecycleGuard
+above --init; wire L4 Class D gate, 4 files / 14 sites; mutation
+LOGGER_ERROR in do_init verified red→green), `7fb2c48` (framework
+gate finding documented).
+
+Earlier sprint:
 `9822ce4`/`536e129` (HEP-0033 §4 doc — phase FSM ratified), `70cd6cc`
-(test name cosmetic — `PrintTo(RoleSpec)`), `0d728ea` (3-phase
-start/stop FSM on EngineHost + HubHost — `Constructed → Running →
-ShutDown`, CAS-driven, single-use after shutdown, retryable on failed
-startup), `a0fd3a8` (HubHost Phase 6.1 fix-up: startup rollback + pinned
-init/shutdown protocols), `72da2db` (HubHost Phase 6.1b — concrete
-class), `e59bb90` (HubHost Phase 6.1a — HubState ownership refactor).
+(test name cosmetic), `0d728ea` (3-phase FSM on EngineHost + HubHost),
+`a0fd3a8` (HubHost Phase 6.1 fix-up), `72da2db` (HubHost Phase 6.1b),
+`e59bb90` (HubHost Phase 6.1a — HubState ownership).
 
 Earlier this sprint:
 `d60ddf2` (HEP-0034 Phase 1 — fingerprint includes packing), `8e1eadc`
