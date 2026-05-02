@@ -900,13 +900,29 @@ int datablock_producer_remap_stubs_throw()
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
             // Both remap stubs are not implemented; verify they throw rather than silently
-            // doing nothing or corrupting state.
-            EXPECT_THROW(
-                producer->request_structure_remap(std::nullopt, std::nullopt),
-                std::runtime_error);
-            EXPECT_THROW(
-                producer->commit_structure_remap(0, std::nullopt, std::nullopt),
-                std::runtime_error);
+            // doing nothing or corrupting state.  Pin the message
+            // substring (function-name prefix) per audit §1.1 — type
+            // alone (`runtime_error`) is shared with other hub_queue
+            // throw sites and would not catch a regression where one
+            // stub's throw fires from the wrong path.
+            {
+                bool threw = false; std::string msg;
+                try { (void)producer->request_structure_remap(std::nullopt, std::nullopt); }
+                catch (const std::runtime_error &e) { threw = true; msg = e.what(); }
+                EXPECT_TRUE(threw);
+                EXPECT_NE(msg.find("DataBlockProducer::request_structure_remap"),
+                          std::string::npos)
+                    << "wrong runtime_error path; what(): " << msg;
+            }
+            {
+                bool threw = false; std::string msg;
+                try { producer->commit_structure_remap(0, std::nullopt, std::nullopt); }
+                catch (const std::runtime_error &e) { threw = true; msg = e.what(); }
+                EXPECT_TRUE(threw);
+                EXPECT_NE(msg.find("DataBlockProducer::commit_structure_remap"),
+                          std::string::npos)
+                    << "wrong runtime_error path; what(): " << msg;
+            }
 #pragma GCC diagnostic pop
         },
         "hub_queue.datablock_producer_remap_stubs_throw",
@@ -934,11 +950,26 @@ int datablock_consumer_remap_stubs_throw()
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-            // Both consumer remap stubs are not implemented.
-            EXPECT_THROW(consumer->release_for_remap(), std::runtime_error);
-            EXPECT_THROW(
-                consumer->reattach_after_remap(std::nullopt, std::nullopt),
-                std::runtime_error);
+            // Both consumer remap stubs are not implemented.  Pin
+            // function-name substring per audit §1.1.
+            {
+                bool threw = false; std::string msg;
+                try { consumer->release_for_remap(); }
+                catch (const std::runtime_error &e) { threw = true; msg = e.what(); }
+                EXPECT_TRUE(threw);
+                EXPECT_NE(msg.find("DataBlockConsumer::release_for_remap"),
+                          std::string::npos)
+                    << "wrong runtime_error path; what(): " << msg;
+            }
+            {
+                bool threw = false; std::string msg;
+                try { consumer->reattach_after_remap(std::nullopt, std::nullopt); }
+                catch (const std::runtime_error &e) { threw = true; msg = e.what(); }
+                EXPECT_TRUE(threw);
+                EXPECT_NE(msg.find("DataBlockConsumer::reattach_after_remap"),
+                          std::string::npos)
+                    << "wrong runtime_error path; what(): " << msg;
+            }
 #pragma GCC diagnostic pop
         },
         "hub_queue.datablock_consumer_remap_stubs_throw",
