@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "test_sync_utils.h"
+#include "log_capture_fixture.h"
 
 #include <gtest/gtest.h>
 
@@ -79,7 +80,8 @@ inline uint8_t data_pattern(size_t i) noexcept
 // Fixture — Logger lifecycle only (ZmqQueue creates its own ZMQ context)
 // ============================================================================
 
-class ZmqQueueTest : public ::testing::Test
+class ZmqQueueTest : public ::testing::Test,
+                     public pylabhub::tests::LogCaptureFixture
 {
 public:
     static void SetUpTestSuite()
@@ -91,6 +93,14 @@ public:
                 pylabhub::hub::GetZMQContextModule()), std::source_location::current());
     }
     static void TearDownTestSuite() { s_lifecycle_.reset(); }
+
+protected:
+    void SetUp()    override { LogCaptureFixture::Install(); }
+    void TearDown() override
+    {
+        AssertNoUnexpectedLogWarnError();
+        LogCaptureFixture::Uninstall();
+    }
 
 private:
     static std::unique_ptr<pylabhub::utils::LifecycleGuard> s_lifecycle_;
@@ -419,6 +429,7 @@ TEST_F(ZmqQueueTest, SchemaTag_Match_DeliversItem)
 
 TEST_F(ZmqQueueTest, SchemaTag_Mismatch_DropsAndCountsErrors)
 {
+    ExpectLogWarn("schema tag mismatch");
     // PUSH uses tag A, PULL expects tag B → frames are rejected; none delivered.
     auto tag_a = make_tag(0x1111111111111111ull);
     auto tag_b = make_tag(0x2222222222222222ull);
@@ -757,6 +768,7 @@ TEST_F(ZmqQueueTest, Schema_Mixed_Natural_Roundtrip)
 
 TEST_F(ZmqQueueTest, Schema_InvalidPacking_ReturnsNullptr)
 {
+    ExpectLogError("invalid packing");
     // Any packing string other than "aligned" or "packed" must return nullptr (B1).
     auto pull = ZmqQueue::pull_from(schema_ep(4), blob_schema(8), "NATURAL", /*bind=*/true);
     EXPECT_EQ(pull, nullptr) << "pull_from: invalid packing must return nullptr";
@@ -767,6 +779,7 @@ TEST_F(ZmqQueueTest, Schema_InvalidPacking_ReturnsNullptr)
 
 TEST_F(ZmqQueueTest, Schema_ZeroLengthBytesField_ReturnsNullptr)
 {
+    ExpectLogError("string/bytes field has length=0");
     // A string/bytes field with length=0 creates a degenerate zero-size schema (B2).
     // Both factories must reject it.
     std::vector<ZmqSchemaField> schema = {{"bytes", 1, 0}};
@@ -782,6 +795,7 @@ TEST_F(ZmqQueueTest, Schema_ZeroLengthBytesField_ReturnsNullptr)
 
 TEST_F(ZmqQueueTest, Schema_EmptySchema_ReturnsNullptr)
 {
+    ExpectLogError("schema must not be empty");
     // Empty schema is an error — both factories must return nullptr.
     auto pull = ZmqQueue::pull_from(schema_ep(4), {}, "aligned", /*bind=*/true);
     EXPECT_EQ(pull, nullptr) << "pull_from with empty schema must return nullptr";
@@ -1179,6 +1193,7 @@ TEST_F(ZmqQueueTest, Schema_MixedArrayFields_MultipleTypes_Roundtrip)
 
 TEST_F(ZmqQueueTest, PushTo_ZeroDepth_ReturnsNull)
 {
+    ExpectLogError("send_buffer_depth must be > 0");
     // send_buffer_depth == 0 is invalid; factory must return nullptr.
     auto q = ZmqQueue::push_to(schema_ep(11), blob_schema(16), "aligned",
                                /*bind=*/true, /*tag=*/std::nullopt,
@@ -1188,6 +1203,7 @@ TEST_F(ZmqQueueTest, PushTo_ZeroDepth_ReturnsNull)
 
 TEST_F(ZmqQueueTest, PullFrom_ZeroDepth_ReturnsNull)
 {
+    ExpectLogError("max_buffer_depth must be > 0");
     // max_buffer_depth == 0 causes % 0 UB in recv_thread_; factory must reject it (C1).
     auto q = ZmqQueue::pull_from(schema_ep(11), blob_schema(16), "aligned",
                                  /*bind=*/true, /*max_buffer_depth=*/0);
@@ -1196,6 +1212,7 @@ TEST_F(ZmqQueueTest, PullFrom_ZeroDepth_ReturnsNull)
 
 TEST_F(ZmqQueueTest, Schema_ZeroCountField_ReturnsNull)
 {
+    ExpectLogError("numeric/array field count must be >= 1");
     // count == 0 for a numeric field yields zero byte_size with aliased struct offsets
     // — silent data corruption.  Both factories must reject it (C2).
     std::vector<ZmqSchemaField> bad = {{"int32", 0, 0}}; // count=0 is the defect
@@ -1592,6 +1609,7 @@ TEST_F(ZmqQueueTest, PushQueue_RecvFieldsAreZero)
 
 TEST_F(ZmqQueueTest, Schema_InvalidTypeStr_ReturnsNull)
 {
+    ExpectLogError("invalid type_str");
     // Factories must return nullptr if any ZmqSchemaField has an unrecognised type_str.
     // This covers the ZQ1 validation path (factory-time type check).
     auto push = ZmqQueue::push_to(schema_ep(19), {{"invalid_type", 1, 0}}, "aligned");
@@ -1680,6 +1698,7 @@ TEST_F(ZmqQueueTest, ActualEndpoint_BeforeStart_ReturnsConfiguredEndpoint)
 
 TEST_F(ZmqQueueTest, SchemaMismatch_TagMismatch_IncrementsFrameError)
 {
+    ExpectLogWarn("schema tag mismatch");
     // PUSH sends with tag A; PULL is configured with tag B.
     // Receiver must reject every frame and count it in recv_frame_error_count().
     const auto tag_a = make_tag(0x0102030405060708ULL);
@@ -1943,6 +1962,7 @@ TEST_F(ZmqQueueTest, ChecksumEnforced_Roundtrip)
 
 TEST_F(ZmqQueueTest, ChecksumManual_NoStamp_ReceiverRejects)
 {
+    ExpectLogError("checksum error after decode");
     // Manual: sender does NOT stamp (zeros), receiver verifies → frame dropped.
     auto pull = ZmqQueue::pull_from("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
     ASSERT_NE(pull, nullptr);
