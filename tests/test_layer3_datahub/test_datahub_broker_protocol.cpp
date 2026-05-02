@@ -22,6 +22,7 @@
 #include "utils/hub_state.hpp"
 #include "utils/timeout_constants.hpp"
 #include "test_sync_utils.h"
+#include "log_capture_fixture.h"
 
 #include <atomic>
 #include <chrono>
@@ -192,7 +193,8 @@ struct EventCollector
 // BrokerProtocolTest fixture
 // ============================================================================
 
-class BrokerProtocolTest : public ::testing::Test
+class BrokerProtocolTest : public ::testing::Test,
+                            public pylabhub::tests::LogCaptureFixture
 {
 public:
     static void SetUpTestSuite()
@@ -206,11 +208,19 @@ public:
 protected:
     void SetUp() override
     {
+        LogCaptureFixture::Install();
         BrokerService::Config cfg;
         cfg.endpoint               = "tcp://127.0.0.1:0";
         cfg.schema_search_dirs     = {};
         cfg.grace_override         = std::chrono::milliseconds(0);
         broker_.emplace(start_local_broker(std::move(cfg)));
+    }
+
+    void TearDown() override
+    {
+        broker_.reset();
+        AssertNoUnexpectedLogWarnError();
+        LogCaptureFixture::Uninstall();
     }
 
     const std::string &ep() const { return broker_->endpoint; }
@@ -231,6 +241,7 @@ std::unique_ptr<LifecycleGuard> BrokerProtocolTest::s_lifecycle_;
 
 TEST_F(BrokerProtocolTest, ChecksumErrorReport_ForwardedToProducer)
 {
+    ExpectLogWarn("Cat2 checksum error");
     broker_.reset();
     BrokerService::Config cfg;
     cfg.endpoint               = "tcp://127.0.0.1:0";
@@ -273,6 +284,7 @@ TEST_F(BrokerProtocolTest, ChecksumErrorReport_ForwardedToProducer)
 
 TEST_F(BrokerProtocolTest, ChecksumErrorReport_UnknownChannel_Silent)
 {
+    ExpectLogWarn("Cat2 checksum error");
     BrcHandle reporter;
     reporter.start(ep(), pk(), "REPORT-bogus");
 
@@ -384,6 +396,8 @@ TEST_F(BrokerProtocolTest, DuplicateReg_SameSchemaHash_Succeeds)
 
 TEST_F(BrokerProtocolTest, DuplicateReg_DifferentSchemaHash_Rejected)
 {
+    ExpectLogError("Cat1 schema mismatch");
+    ExpectLogError("CHANNEL_ERROR_NOTIFY");
     const std::string channel = pid_chan("proto.dup.diff");
     const std::string hash_a  = std::string(64, 'a');
     const std::string hash_b  = std::string(64, 'b');
@@ -552,6 +566,7 @@ TEST_F(BrokerProtocolTest, RoleInfoReq_WithInbox_ReturnsInfo)
 
 TEST_F(BrokerProtocolTest, TransportMismatch_ShmProducer_ZmqConsumer_Fails)
 {
+    ExpectLogWarn("transport mismatch");
     const std::string channel  = pid_chan("proto.transport.shm_zmq");
     const std::string prod_uid = "prod." + channel;
     const std::string cons_uid = "cons." + channel;

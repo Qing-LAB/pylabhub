@@ -19,6 +19,7 @@
 #include "utils/broker_service.hpp"
 #include "utils/hub_state.hpp"
 #include "test_sync_utils.h"
+#include "log_capture_fixture.h"
 
 #include <atomic>
 #include <future>
@@ -160,7 +161,8 @@ struct BrcHandle
 // BrokerAdminTest fixture
 // ============================================================================
 
-class BrokerAdminTest : public ::testing::Test
+class BrokerAdminTest : public ::testing::Test,
+                         public pylabhub::tests::LogCaptureFixture
 {
 public:
     static void SetUpTestSuite()
@@ -175,11 +177,19 @@ public:
 protected:
     void SetUp() override
     {
+        LogCaptureFixture::Install();
         BrokerService::Config cfg;
         cfg.endpoint                = "tcp://127.0.0.1:0";
         cfg.schema_search_dirs      = {};
         cfg.grace_override          = std::chrono::milliseconds(0); // immediate deregister in L3 tests
         broker_.emplace(start_local_broker(std::move(cfg)));
+    }
+
+    void TearDown() override
+    {
+        broker_.reset();
+        AssertNoUnexpectedLogWarnError();
+        LogCaptureFixture::Uninstall();
     }
 
     const std::string &ep() const { return broker_->endpoint; }
@@ -353,6 +363,9 @@ TEST_F(BrokerAdminTest, Snapshot_AfterConsumer)
 
 TEST_F(BrokerAdminTest, CloseChannel_Existing)
 {
+    // Close-channel admin path expires the grace timer with 0 consumers
+    // → expected WARN before FORCE_SHUTDOWN.
+    ExpectLogWarn("grace period expired");
     const std::string channel = pid_chan("admin.close.existing");
 
     BrcHandle bh;
