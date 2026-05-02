@@ -20,6 +20,7 @@
 
 #include "plh_datahub_client.hpp"
 #include "utils/schema_loader.hpp"
+#include "log_capture_fixture.h"
 
 #include <gtest/gtest.h>
 
@@ -280,13 +281,25 @@ TEST(DatahubSchemaParser, CppStructMatchesJsonSchema)
 // responsibility (broker_service.cpp::load_hub_globals_).
 // ============================================================================
 
-class DatahubSchemaFileLoadTest : public ::testing::Test
+class DatahubSchemaFileLoadTest : public ::testing::Test,
+                                   public pylabhub::tests::LogCaptureFixture
 {
+public:
+    static void SetUpTestSuite()
+    {
+        s_lifecycle_ = std::make_unique<pylabhub::utils::LifecycleGuard>(
+            pylabhub::utils::MakeModDefList(
+                pylabhub::utils::Logger::GetLifecycleModule()),
+            std::source_location::current());
+    }
+    static void TearDownTestSuite() { s_lifecycle_.reset(); }
+
 protected:
     std::filesystem::path tmpdir_;
 
     void SetUp() override
     {
+        LogCaptureFixture::Install();
         tmpdir_ = std::filesystem::temp_directory_path() /
                   ("plh_schema_file_test_" + std::to_string(getpid()));
         std::filesystem::create_directories(tmpdir_);
@@ -302,6 +315,8 @@ protected:
         catch (...)
         {
         }
+        AssertNoUnexpectedLogWarnError();
+        LogCaptureFixture::Uninstall();
     }
 
     void write_json(const std::filesystem::path &relative, const std::string &content)
@@ -311,7 +326,14 @@ protected:
         std::ofstream ofs(full_path);
         ofs << content;
     }
+
+private:
+    static std::unique_ptr<pylabhub::utils::LifecycleGuard> s_lifecycle_;
 };
+
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+std::unique_ptr<pylabhub::utils::LifecycleGuard>
+    DatahubSchemaFileLoadTest::s_lifecycle_;
 
 TEST_F(DatahubSchemaFileLoadTest, LoadAllFromDirs_SingleFile)
 {
@@ -355,6 +377,7 @@ TEST_F(DatahubSchemaFileLoadTest, LoadAllFromDirs_NestedPath)
 
 TEST_F(DatahubSchemaFileLoadTest, LoadAllFromDirs_InvalidJsonSkipped)
 {
+    ExpectLogWarn("Failed to parse schema file");
     const std::string valid_json = R"({
         "id": "test.valid",
         "version": 1,
@@ -373,6 +396,7 @@ TEST_F(DatahubSchemaFileLoadTest, LoadAllFromDirs_InvalidJsonSkipped)
 
 TEST_F(DatahubSchemaFileLoadTest, LoadAllFromDirs_FirstMatchWinsAcrossDirs)
 {
+    ExpectLogWarn("Duplicate schema_id");
     // Two directories: dir_a has the "winning" version; dir_b has a duplicate
     // schema_id with a different field. The walker should keep dir_a's copy
     // and skip dir_b's.
