@@ -90,6 +90,7 @@ set(UTILS_SOURCES
   ipc/heartbeat_manager.cpp
   ipc/broker_service.cpp
   ipc/hub_state.cpp
+  ipc/hub_state_json.cpp
   ipc/admin_service.cpp
 
   # --- hub: transport-agnostic Queue + Processor + Inbox ---

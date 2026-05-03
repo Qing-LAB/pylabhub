@@ -372,7 +372,7 @@ TEST_F(AdminServiceTest, TokenGate_Wrong_Returns_Unauthorized)
 
 // ─── Method dispatch — stubs and unknown ───────────────────────────────────
 
-TEST_F(AdminServiceTest, Dispatch_KnownStubMethod_Returns_NotImplemented)
+TEST_F(AdminServiceTest, Dispatch_DeferredMethod_Returns_NotImplemented)
 {
     HubAdminConfig acfg;
     acfg.endpoint       = "tcp://127.0.0.1:0";
@@ -386,13 +386,14 @@ TEST_F(AdminServiceTest, Dispatch_KnownStubMethod_Returns_NotImplemented)
     ASSERT_TRUE(poll_until(
         [&] { return !svc.bound_endpoint().empty(); }, 2000ms));
 
-    // `list_channels` is a known §11.2 method but unimplemented in
-    // Phase 6.2a — it must surface as `not_implemented`, not as
-    // `unknown_method`, so a client typo is distinguishable from a
-    // staged feature.
+    // `reload_config` is a known §11.2 method but explicitly deferred
+    // (HEP-0033 §16 #9 — runtime-tunable whitelist not yet enumerated).
+    // It must surface as `not_implemented`, not as `unknown_method`,
+    // so a client typo is distinguishable from a staged feature.
     const json reply = req_reply(svc.bound_endpoint(),
-        {{"method", "list_channels"}, {"token", kTestToken}});
-    EXPECT_EQ(reply.value("status", ""), "error");
+        {{"method", "reload_config"}, {"token", kTestToken}});
+    ASSERT_EQ(reply.value("status", ""), "error")
+        << "reload_config is deferred; expected status=error, got: " << reply.dump();
     EXPECT_EQ(reply["error"]["code"], "not_implemented");
 
     svc.stop();
@@ -422,7 +423,179 @@ TEST_F(AdminServiceTest, Dispatch_UnknownMethod_Returns_UnknownMethod)
     worker.join();
 }
 
-// ─── dev_mode round-trip — no token required ───────────────────────────────
+// ─── §11.2 query methods (Phase 6.2b) ──────────────────────────────────────
+//
+// These tests exercise the read-through dispatch paths that touch
+// `host.state()` (HubState) without needing the broker thread to be
+// running.  HubState is a value member of HubHost, so its accessors
+// are safe before `host.startup()`; the result snapshots are empty
+// (zero channels / roles / bands / peers in a freshly-constructed
+// host).  Each test pins:
+//   - status == "ok" and result is the right shape (object/empty)
+//   - error.code on the negative paths (path-discrimination per
+//     audit Class A — matches HEP-0033 §11.5 catalog).
+
+TEST_F(AdminServiceTest, Query_ListChannels_Empty_ReturnsOkObject)
+{
+    HubAdminConfig acfg;
+    acfg.endpoint       = "tcp://127.0.0.1:0";
+    acfg.token_required = true;
+
+    auto [cfg, dir] = make_config("q_list_chan");
+    HubHost host(std::move(cfg));
+    AdminService svc(pylabhub::hub::get_zmq_context(), acfg, kTestToken, host);
+    std::thread worker([&] { svc.run(); });
+    ASSERT_TRUE(poll_until([&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+
+    const json reply = req_reply(svc.bound_endpoint(),
+        {{"method", "list_channels"}, {"token", kTestToken}});
+    ASSERT_EQ(reply.value("status", ""), "ok") << reply.dump();
+    ASSERT_TRUE(reply.contains("result"));
+    EXPECT_TRUE(reply["result"].is_object());
+    EXPECT_TRUE(reply["result"].empty()) << "no channels expected pre-startup";
+
+    svc.stop();
+    worker.join();
+}
+
+TEST_F(AdminServiceTest, Query_GetChannel_MissingParams_Returns_InvalidParams)
+{
+    HubAdminConfig acfg;
+    acfg.endpoint       = "tcp://127.0.0.1:0";
+    acfg.token_required = true;
+
+    auto [cfg, dir] = make_config("q_get_chan_bad");
+    HubHost host(std::move(cfg));
+    AdminService svc(pylabhub::hub::get_zmq_context(), acfg, kTestToken, host);
+    std::thread worker([&] { svc.run(); });
+    ASSERT_TRUE(poll_until([&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+
+    // No params block → invalid_params.
+    const json reply = req_reply(svc.bound_endpoint(),
+        {{"method", "get_channel"}, {"token", kTestToken}});
+    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
+    EXPECT_EQ(reply["error"]["code"], "invalid_params");
+    // Message must mention the missing field so the operator can fix it.
+    EXPECT_NE(reply["error"]["message"].get<std::string>().find("channel"),
+              std::string::npos);
+
+    svc.stop();
+    worker.join();
+}
+
+TEST_F(AdminServiceTest, Query_GetChannel_Unknown_Returns_NotFound)
+{
+    HubAdminConfig acfg;
+    acfg.endpoint       = "tcp://127.0.0.1:0";
+    acfg.token_required = true;
+
+    auto [cfg, dir] = make_config("q_get_chan_404");
+    HubHost host(std::move(cfg));
+    AdminService svc(pylabhub::hub::get_zmq_context(), acfg, kTestToken, host);
+    std::thread worker([&] { svc.run(); });
+    ASSERT_TRUE(poll_until([&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+
+    const json reply = req_reply(svc.bound_endpoint(),
+        {{"method", "get_channel"},
+         {"token",  kTestToken},
+         {"params", {{"channel", "no.such.channel"}}}});
+    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
+    EXPECT_EQ(reply["error"]["code"], "not_found");
+
+    svc.stop();
+    worker.join();
+}
+
+TEST_F(AdminServiceTest, Query_ListRoles_Empty_ReturnsOkObject)
+{
+    HubAdminConfig acfg;
+    acfg.endpoint       = "tcp://127.0.0.1:0";
+    acfg.token_required = true;
+
+    auto [cfg, dir] = make_config("q_list_roles");
+    HubHost host(std::move(cfg));
+    AdminService svc(pylabhub::hub::get_zmq_context(), acfg, kTestToken, host);
+    std::thread worker([&] { svc.run(); });
+    ASSERT_TRUE(poll_until([&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+
+    const json reply = req_reply(svc.bound_endpoint(),
+        {{"method", "list_roles"}, {"token", kTestToken}});
+    ASSERT_EQ(reply.value("status", ""), "ok") << reply.dump();
+    EXPECT_TRUE(reply["result"].is_object());
+    EXPECT_TRUE(reply["result"].empty());
+
+    svc.stop();
+    worker.join();
+}
+
+TEST_F(AdminServiceTest, Query_GetRole_Unknown_Returns_NotFound)
+{
+    HubAdminConfig acfg;
+    acfg.endpoint       = "tcp://127.0.0.1:0";
+    acfg.token_required = true;
+
+    auto [cfg, dir] = make_config("q_get_role_404");
+    HubHost host(std::move(cfg));
+    AdminService svc(pylabhub::hub::get_zmq_context(), acfg, kTestToken, host);
+    std::thread worker([&] { svc.run(); });
+    ASSERT_TRUE(poll_until([&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+
+    const json reply = req_reply(svc.bound_endpoint(),
+        {{"method", "get_role"},
+         {"token",  kTestToken},
+         {"params", {{"uid", "prod.nope.uid00000000"}}}});
+    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
+    EXPECT_EQ(reply["error"]["code"], "not_found");
+
+    svc.stop();
+    worker.join();
+}
+
+TEST_F(AdminServiceTest, Query_ListBands_Empty_ReturnsOkObject)
+{
+    HubAdminConfig acfg;
+    acfg.endpoint       = "tcp://127.0.0.1:0";
+    acfg.token_required = true;
+
+    auto [cfg, dir] = make_config("q_list_bands");
+    HubHost host(std::move(cfg));
+    AdminService svc(pylabhub::hub::get_zmq_context(), acfg, kTestToken, host);
+    std::thread worker([&] { svc.run(); });
+    ASSERT_TRUE(poll_until([&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+
+    const json reply = req_reply(svc.bound_endpoint(),
+        {{"method", "list_bands"}, {"token", kTestToken}});
+    ASSERT_EQ(reply.value("status", ""), "ok") << reply.dump();
+    EXPECT_TRUE(reply["result"].is_object());
+    EXPECT_TRUE(reply["result"].empty());
+
+    svc.stop();
+    worker.join();
+}
+
+TEST_F(AdminServiceTest, Query_ListPeers_Empty_ReturnsOkObject)
+{
+    HubAdminConfig acfg;
+    acfg.endpoint       = "tcp://127.0.0.1:0";
+    acfg.token_required = true;
+
+    auto [cfg, dir] = make_config("q_list_peers");
+    HubHost host(std::move(cfg));
+    AdminService svc(pylabhub::hub::get_zmq_context(), acfg, kTestToken, host);
+    std::thread worker([&] { svc.run(); });
+    ASSERT_TRUE(poll_until([&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+
+    const json reply = req_reply(svc.bound_endpoint(),
+        {{"method", "list_peers"}, {"token", kTestToken}});
+    ASSERT_EQ(reply.value("status", ""), "ok") << reply.dump();
+    EXPECT_TRUE(reply["result"].is_object());
+    EXPECT_TRUE(reply["result"].empty());
+
+    svc.stop();
+    worker.join();
+}
+
+
 
 TEST_F(AdminServiceTest, DevMode_TokenSkipped_PingAccepted)
 {
@@ -490,6 +663,38 @@ TEST_F(AdminServiceTest, HubHost_AdminEnabled_RoundTripWorks)
     // After shutdown(), the admin pointer is still owned by HubHost
     // (cleared at next startup or at host destruction); but the
     // service has been stopped — its bound endpoint is closed.
+}
+
+TEST_F(AdminServiceTest, HubHost_AdminEnabled_QueryMetricsRoundTrip)
+{
+    // query_metrics calls `host.broker().query_metrics_json_str()`,
+    // which is UB before HubHost::startup().  This test runs the
+    // full lifecycle so the broker thread is up.
+    auto [cfg, dir] = make_config("metrics");
+    HubHost host(std::move(cfg));
+
+    host.startup();
+    ASSERT_TRUE(host.is_running());
+    ASSERT_NE(host.admin(), nullptr);
+    ASSERT_TRUE(poll_until(
+        [&] { return !host.admin()->bound_endpoint().empty(); }, 2000ms));
+
+    const json reply = req_reply(host.admin()->bound_endpoint(),
+        {{"method", "query_metrics"}, {"token", kTestToken}});
+    ASSERT_EQ(reply.value("status", ""), "ok") << reply.dump();
+    // The broker's metrics document is wrapped in our envelope's
+    // "result" field; structural pin: status==success in the
+    // metrics body, plus the channels/roles/bands/peers categories
+    // present (even if empty).  Without the inner status check, an
+    // envelope-only "ok" could slip past on a regression that returned
+    // an empty/garbled metrics document.
+    ASSERT_TRUE(reply["result"].is_object());
+    EXPECT_EQ(reply["result"].value("status", ""), "success");
+    EXPECT_TRUE(reply["result"].contains("channels"));
+    EXPECT_TRUE(reply["result"].contains("roles"));
+    EXPECT_TRUE(reply["result"].contains("queried_at"));
+
+    host.shutdown();
 }
 
 TEST_F(AdminServiceTest, HubHost_AdminDisabled_NoAdminConstructed)
