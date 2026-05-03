@@ -22,7 +22,82 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
-### Snapshot — 2026-05-02 (Phase 6.2 closed)
+### Snapshot — 2026-05-03 (Phase 7 in flight — D1 + D1.5 shipped)
+
+**Full suite: 1709/1710 green at last full run** (`2a9dd3b`; one
+flake on `Roles/PlhRoleInitTest.DefaultValues/producer` — fork+exec
+race under heavy parallel load, individual re-run 3/3 PASS).
+Branch `feature/lua-role-support`.
+
+**🎯 HEP-0033 Phase 7 — IN FLIGHT.**  Sub-commits split for review hygiene:
+
+  - `3a750e3` — Commit A: `script_host_traits<ApiT>` template + sibling
+                 `build_api_(HubAPI &)` virtual on ScriptEngine + symmetric
+                 `hub_api_` member.  Behavior-neutral refactor; 1702/1702
+                 green post-commit.
+  - `239078c` — Commit B: `HubConfig::timing()` accessor (mirrors
+                 `RoleConfig::timing()`); hub script tick reuses the
+                 existing `LoopTimingPolicy` enum + `TimingConfig` struct.
+                 Hub init template emits `loop_timing: fixed_rate` /
+                 `target_period_ms: 1000` defaults.
+  - `4a1fc63` — Commit C: HubAPI class declared; `script_host_traits<HubAPI>`
+                 specialization; explicit `template class EngineHost<HubAPI>;`;
+                 private `HubScriptRunner final : EngineHost<HubAPI>` with
+                 `worker_main_()` event-and-tick loop.  Reuses RoleHostCore
+                 message queue + Phase 6.2b `hub_state_json` serializers.
+                 Encapsulated (no public `host.script_runner()` accessor —
+                 hub-side scripts don't need outside reach-through).
+  - `2a9dd3b` — Commit D1: HubAPI gains `log` / `metrics` / `uid` mirroring
+                 RoleAPIBase signatures.  L2 unit tests with affirmative
+                 path-discrimination on log levels.  Surfaced + recorded
+                 a Class A weakness in `LogCaptureFixture::ExpectLogWarn`
+                 (permissive allowlist; doesn't enforce emission).
+  - **(this commit)** — Commit D1.5: `LogCaptureFixture` gains strict
+                 `ExpectLogWarnMustFire` / `ExpectLogErrorMustFire` variants;
+                 13 L2 tests verify the framework facility itself
+                 (using `EXPECT_NONFATAL_FAILURE` to capture inner
+                 assertion failures).  TODO entry filed in
+                 `docs/todo/TESTING_TODO.md` — migration of existing
+                 `ExpectLog*` callers to strict where appropriate is
+                 deferred per-fixture review.
+
+**Phase 7 remaining sub-commits**:
+
+  - **D2** — HubHost wires `HubScriptRunner` into startup/shutdown
+             ordering (HEP §4.1 step 10 / §4.2 step 2); adds
+             `host.eval_in_script(code)` wrapper for Commit E.
+             L3 lifecycle test: script-disabled / script-enabled
+             startup+shutdown clean (no script callbacks tested yet —
+             engine bindings come in D3/D4).
+  - **D3** — `LuaEngine::build_api_(HubAPI&)` override + 3
+             `lua_api_hub_*` closures (log/metrics/uid).
+             Parametric L3 dispatch tests with Lua script fixture
+             (on_tick fires, on_role_registered fires when broker
+             registers a role, api.log/metrics/uid round-trip).
+  - **D4** — `PythonEngine::build_api_(HubAPI&)` override + new
+             `src/hub/hub_api_python.cpp` defining
+             `PYBIND11_EMBEDDED_MODULE(pylabhub_hub, m)` with HubAPI
+             bindings.  Same parametric L3 tests, Python script
+             fixture.
+  - **E** — AdminService `exec_python` admin RPC: wires through
+             `host.eval_in_script(code)` which forwards to script
+             engine's `eval()`.  Closes one of the 6 deferred §11.2
+             methods.
+
+**🎯 Test-correctness audit CLOSED — 2026-05-02.**  All 204 inventory
+rows ✅ FIXED or n/a across all four bug classes (A/B/C/D).
+The trust gate of `REVIEW_TestAudit_2026-05-01.md` §3 is met;
+both audit docs archived to `docs/archive/transient-2026-05-02/`.
+
+**🟡 Open follow-up — `ExpectLog*` strict-migration**: see
+`docs/todo/TESTING_TODO.md` § "Open 2026-05-03".  13 fixtures using
+the permissive variants — per-needle review needed to convert to
+`MustFire` where the warn/error is deterministic.  Race-conditional
+emissions stay permissive.
+
+---
+
+### Snapshot — 2026-05-02 (Phase 6.2 closed) — superseded by 05-03
 
 **Full suite: 1702/1702 green** (last verified post-`38591dc`).
 Branch `feature/lua-role-support`.
