@@ -128,6 +128,63 @@ bool poll_until(Pred pred, std::chrono::milliseconds timeout)
     return pred();
 }
 
+/// RAII bundle: HubAdminConfig + HubHost + AdminService + worker thread.
+/// Used by every test that needs an AdminService running against a
+/// freshly-constructed (NOT started-up) HubHost.  Replaces ~12 lines
+/// of boilerplate per test with ~2 lines:
+///
+/// @code
+/// auto [cfg, dir] = make_config("tag");
+/// StandaloneAdmin a(std::move(cfg), kTestToken);
+/// const json reply = req_reply(a.endpoint(),
+///     {{"method", "ping"}, {"token", kTestToken}});
+/// @endcode
+///
+/// The destructor stops the AdminService and joins the worker
+/// thread, so each TEST_F gets a clean teardown without explicit
+/// stop/join boilerplate.  Not copyable / not movable (owns thread
+/// + socket).  Tests that need a started HubHost (broker thread up)
+/// keep their bespoke setup — see the `HubHost_*` integration block.
+class StandaloneAdmin
+{
+public:
+    StandaloneAdmin(HubConfig          cfg,
+                    std::string_view   token,
+                    bool               token_required = true,
+                    bool               dev_mode       = false)
+        : host_(std::move(cfg))
+    {
+        acfg_.endpoint       = "tcp://127.0.0.1:0";
+        acfg_.token_required = token_required;
+        acfg_.dev_mode       = dev_mode;
+        svc_.emplace(pylabhub::hub::get_zmq_context(), acfg_, token, host_);
+        worker_ = std::thread([this] { svc_->run(); });
+        EXPECT_TRUE(poll_until(
+            [this] { return !svc_->bound_endpoint().empty(); },
+            2000ms))
+            << "AdminService never bound";
+    }
+
+    ~StandaloneAdmin()
+    {
+        if (svc_) svc_->stop();
+        if (worker_.joinable()) worker_.join();
+    }
+
+    StandaloneAdmin(const StandaloneAdmin &)            = delete;
+    StandaloneAdmin &operator=(const StandaloneAdmin &) = delete;
+    StandaloneAdmin(StandaloneAdmin &&)                 = delete;
+    StandaloneAdmin &operator=(StandaloneAdmin &&)      = delete;
+
+    const std::string &endpoint() const { return svc_->bound_endpoint(); }
+
+private:
+    HubAdminConfig                acfg_{};
+    HubHost                       host_;
+    std::optional<AdminService>   svc_;
+    std::thread                   worker_;
+};
+
 /// Send a JSON request to a REP endpoint and return the parsed reply.
 /// Caller-managed timeout via socket option; throws on timeout.
 json req_reply(const std::string &endpoint, const json &request,
@@ -287,21 +344,9 @@ TEST_F(AdminServiceTest, Construct_TokenOn_EmptyToken_Throws)
 
 TEST_F(AdminServiceTest, Run_PingRoundTrip_TokenGate)
 {
-    HubAdminConfig acfg;
-    acfg.endpoint       = "tcp://127.0.0.1:0";
-    acfg.token_required = true;
 
     auto [cfg, dir] = make_config("ping");
-    HubHost host(std::move(cfg));
-
-    AdminService svc(pylabhub::hub::get_zmq_context(),
-                     acfg, kTestToken, host);
-
-    std::thread worker([&] { svc.run(); });
-
-    ASSERT_TRUE(poll_until(
-        [&] { return !svc.bound_endpoint().empty(); }, 2000ms))
-        << "AdminService did not publish bound endpoint within 2s";
+    StandaloneAdmin a(std::move(cfg), kTestToken);
 
     // ── Valid token → ok, echo arrives back ────────────────────────────────
     const json req = {
@@ -309,118 +354,67 @@ TEST_F(AdminServiceTest, Run_PingRoundTrip_TokenGate)
         {"token",  kTestToken},
         {"params", {{"hello", "world"}}},
     };
-    const json reply = req_reply(svc.bound_endpoint(), req);
+    const json reply = req_reply(a.endpoint(), req);
     EXPECT_EQ(reply.value("status", ""), "ok");
     ASSERT_TRUE(reply.contains("result"));
     EXPECT_EQ(reply["result"].value("pong", false), true);
     EXPECT_EQ(reply["result"]["echo"]["hello"], "world");
-
-    svc.stop();
-    worker.join();
 }
 
 // ─── Token gate — wrong / missing token paths ──────────────────────────────
 
 TEST_F(AdminServiceTest, TokenGate_Missing_Returns_Unauthorized)
 {
-    HubAdminConfig acfg;
-    acfg.endpoint       = "tcp://127.0.0.1:0";
-    acfg.token_required = true;
-
     auto [cfg, dir] = make_config("token_missing");
-    HubHost host(std::move(cfg));
-    AdminService svc(pylabhub::hub::get_zmq_context(),
-                     acfg, kTestToken, host);
-    std::thread worker([&] { svc.run(); });
-    ASSERT_TRUE(poll_until(
-        [&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+    StandaloneAdmin a(std::move(cfg), kTestToken);
 
-    const json reply = req_reply(svc.bound_endpoint(),
+    const json reply = req_reply(a.endpoint(),
                                   {{"method", "ping"}});
     EXPECT_EQ(reply.value("status", ""), "error");
     EXPECT_EQ(reply["error"]["code"], "unauthorized");
-
-    svc.stop();
-    worker.join();
 }
 
 TEST_F(AdminServiceTest, TokenGate_Wrong_Returns_Unauthorized)
 {
-    HubAdminConfig acfg;
-    acfg.endpoint       = "tcp://127.0.0.1:0";
-    acfg.token_required = true;
-
     auto [cfg, dir] = make_config("token_wrong");
-    HubHost host(std::move(cfg));
-    AdminService svc(pylabhub::hub::get_zmq_context(),
-                     acfg, kTestToken, host);
-    std::thread worker([&] { svc.run(); });
-    ASSERT_TRUE(poll_until(
-        [&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+    StandaloneAdmin a(std::move(cfg), kTestToken);
 
     // Same-length wrong token — exercises the constant-time-equal
     // path, not the early-exit length check.
     const std::string wrong(64, 'f');
-    const json reply = req_reply(svc.bound_endpoint(),
+    const json reply = req_reply(a.endpoint(),
         {{"method", "ping"}, {"token", wrong}});
     EXPECT_EQ(reply.value("status", ""), "error");
     EXPECT_EQ(reply["error"]["code"], "unauthorized");
-
-    svc.stop();
-    worker.join();
 }
 
 // ─── Method dispatch — stubs and unknown ───────────────────────────────────
 
 TEST_F(AdminServiceTest, Dispatch_DeferredMethod_Returns_NotImplemented)
 {
-    HubAdminConfig acfg;
-    acfg.endpoint       = "tcp://127.0.0.1:0";
-    acfg.token_required = true;
-
     auto [cfg, dir] = make_config("stub");
-    HubHost host(std::move(cfg));
-    AdminService svc(pylabhub::hub::get_zmq_context(),
-                     acfg, kTestToken, host);
-    std::thread worker([&] { svc.run(); });
-    ASSERT_TRUE(poll_until(
-        [&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+    StandaloneAdmin a(std::move(cfg), kTestToken);
 
     // `reload_config` is a known §11.2 method but explicitly deferred
     // (HEP-0033 §16 #9 — runtime-tunable whitelist not yet enumerated).
     // It must surface as `not_implemented`, not as `unknown_method`,
     // so a client typo is distinguishable from a staged feature.
-    const json reply = req_reply(svc.bound_endpoint(),
+    const json reply = req_reply(a.endpoint(),
         {{"method", "reload_config"}, {"token", kTestToken}});
     ASSERT_EQ(reply.value("status", ""), "error")
         << "reload_config is deferred; expected status=error, got: " << reply.dump();
     EXPECT_EQ(reply["error"]["code"], "not_implemented");
-
-    svc.stop();
-    worker.join();
 }
 
 TEST_F(AdminServiceTest, Dispatch_UnknownMethod_Returns_UnknownMethod)
 {
-    HubAdminConfig acfg;
-    acfg.endpoint       = "tcp://127.0.0.1:0";
-    acfg.token_required = true;
-
     auto [cfg, dir] = make_config("unknown");
-    HubHost host(std::move(cfg));
-    AdminService svc(pylabhub::hub::get_zmq_context(),
-                     acfg, kTestToken, host);
-    std::thread worker([&] { svc.run(); });
-    ASSERT_TRUE(poll_until(
-        [&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+    StandaloneAdmin a(std::move(cfg), kTestToken);
 
-    const json reply = req_reply(svc.bound_endpoint(),
+    const json reply = req_reply(a.endpoint(),
         {{"method", "totally_made_up_method"}, {"token", kTestToken}});
     EXPECT_EQ(reply.value("status", ""), "error");
     EXPECT_EQ(reply["error"]["code"], "unknown_method");
-
-    svc.stop();
-    worker.join();
 }
 
 // ─── §11.2 query methods (Phase 6.2b) ──────────────────────────────────────
@@ -437,190 +431,107 @@ TEST_F(AdminServiceTest, Dispatch_UnknownMethod_Returns_UnknownMethod)
 
 TEST_F(AdminServiceTest, Query_ListChannels_Empty_ReturnsOkObject)
 {
-    HubAdminConfig acfg;
-    acfg.endpoint       = "tcp://127.0.0.1:0";
-    acfg.token_required = true;
-
     auto [cfg, dir] = make_config("q_list_chan");
-    HubHost host(std::move(cfg));
-    AdminService svc(pylabhub::hub::get_zmq_context(), acfg, kTestToken, host);
-    std::thread worker([&] { svc.run(); });
-    ASSERT_TRUE(poll_until([&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+    StandaloneAdmin a(std::move(cfg), kTestToken);
 
-    const json reply = req_reply(svc.bound_endpoint(),
+    const json reply = req_reply(a.endpoint(),
         {{"method", "list_channels"}, {"token", kTestToken}});
     ASSERT_EQ(reply.value("status", ""), "ok") << reply.dump();
     ASSERT_TRUE(reply.contains("result"));
     EXPECT_TRUE(reply["result"].is_object());
     EXPECT_TRUE(reply["result"].empty()) << "no channels expected pre-startup";
-
-    svc.stop();
-    worker.join();
 }
 
 TEST_F(AdminServiceTest, Query_GetChannel_MissingParams_Returns_InvalidParams)
 {
-    HubAdminConfig acfg;
-    acfg.endpoint       = "tcp://127.0.0.1:0";
-    acfg.token_required = true;
-
     auto [cfg, dir] = make_config("q_get_chan_bad");
-    HubHost host(std::move(cfg));
-    AdminService svc(pylabhub::hub::get_zmq_context(), acfg, kTestToken, host);
-    std::thread worker([&] { svc.run(); });
-    ASSERT_TRUE(poll_until([&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+    StandaloneAdmin a(std::move(cfg), kTestToken);
 
     // No params block → invalid_params.
-    const json reply = req_reply(svc.bound_endpoint(),
+    const json reply = req_reply(a.endpoint(),
         {{"method", "get_channel"}, {"token", kTestToken}});
     ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
     EXPECT_EQ(reply["error"]["code"], "invalid_params");
     // Message must mention the missing field so the operator can fix it.
     EXPECT_NE(reply["error"]["message"].get<std::string>().find("channel"),
               std::string::npos);
-
-    svc.stop();
-    worker.join();
 }
 
 TEST_F(AdminServiceTest, Query_GetChannel_Unknown_Returns_NotFound)
 {
-    HubAdminConfig acfg;
-    acfg.endpoint       = "tcp://127.0.0.1:0";
-    acfg.token_required = true;
-
     auto [cfg, dir] = make_config("q_get_chan_404");
-    HubHost host(std::move(cfg));
-    AdminService svc(pylabhub::hub::get_zmq_context(), acfg, kTestToken, host);
-    std::thread worker([&] { svc.run(); });
-    ASSERT_TRUE(poll_until([&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+    StandaloneAdmin a(std::move(cfg), kTestToken);
 
-    const json reply = req_reply(svc.bound_endpoint(),
+    const json reply = req_reply(a.endpoint(),
         {{"method", "get_channel"},
          {"token",  kTestToken},
          {"params", {{"channel", "no.such.channel"}}}});
     ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
     EXPECT_EQ(reply["error"]["code"], "not_found");
-
-    svc.stop();
-    worker.join();
 }
 
 TEST_F(AdminServiceTest, Query_ListRoles_Empty_ReturnsOkObject)
 {
-    HubAdminConfig acfg;
-    acfg.endpoint       = "tcp://127.0.0.1:0";
-    acfg.token_required = true;
-
     auto [cfg, dir] = make_config("q_list_roles");
-    HubHost host(std::move(cfg));
-    AdminService svc(pylabhub::hub::get_zmq_context(), acfg, kTestToken, host);
-    std::thread worker([&] { svc.run(); });
-    ASSERT_TRUE(poll_until([&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+    StandaloneAdmin a(std::move(cfg), kTestToken);
 
-    const json reply = req_reply(svc.bound_endpoint(),
+    const json reply = req_reply(a.endpoint(),
         {{"method", "list_roles"}, {"token", kTestToken}});
     ASSERT_EQ(reply.value("status", ""), "ok") << reply.dump();
     EXPECT_TRUE(reply["result"].is_object());
     EXPECT_TRUE(reply["result"].empty());
-
-    svc.stop();
-    worker.join();
 }
 
 TEST_F(AdminServiceTest, Query_GetRole_Unknown_Returns_NotFound)
 {
-    HubAdminConfig acfg;
-    acfg.endpoint       = "tcp://127.0.0.1:0";
-    acfg.token_required = true;
-
     auto [cfg, dir] = make_config("q_get_role_404");
-    HubHost host(std::move(cfg));
-    AdminService svc(pylabhub::hub::get_zmq_context(), acfg, kTestToken, host);
-    std::thread worker([&] { svc.run(); });
-    ASSERT_TRUE(poll_until([&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+    StandaloneAdmin a(std::move(cfg), kTestToken);
 
-    const json reply = req_reply(svc.bound_endpoint(),
+    const json reply = req_reply(a.endpoint(),
         {{"method", "get_role"},
          {"token",  kTestToken},
          {"params", {{"uid", "prod.nope.uid00000000"}}}});
     ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
     EXPECT_EQ(reply["error"]["code"], "not_found");
-
-    svc.stop();
-    worker.join();
 }
 
 TEST_F(AdminServiceTest, Query_ListBands_Empty_ReturnsOkObject)
 {
-    HubAdminConfig acfg;
-    acfg.endpoint       = "tcp://127.0.0.1:0";
-    acfg.token_required = true;
-
     auto [cfg, dir] = make_config("q_list_bands");
-    HubHost host(std::move(cfg));
-    AdminService svc(pylabhub::hub::get_zmq_context(), acfg, kTestToken, host);
-    std::thread worker([&] { svc.run(); });
-    ASSERT_TRUE(poll_until([&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+    StandaloneAdmin a(std::move(cfg), kTestToken);
 
-    const json reply = req_reply(svc.bound_endpoint(),
+    const json reply = req_reply(a.endpoint(),
         {{"method", "list_bands"}, {"token", kTestToken}});
     ASSERT_EQ(reply.value("status", ""), "ok") << reply.dump();
     EXPECT_TRUE(reply["result"].is_object());
     EXPECT_TRUE(reply["result"].empty());
-
-    svc.stop();
-    worker.join();
 }
 
 TEST_F(AdminServiceTest, Query_ListPeers_Empty_ReturnsOkObject)
 {
-    HubAdminConfig acfg;
-    acfg.endpoint       = "tcp://127.0.0.1:0";
-    acfg.token_required = true;
-
     auto [cfg, dir] = make_config("q_list_peers");
-    HubHost host(std::move(cfg));
-    AdminService svc(pylabhub::hub::get_zmq_context(), acfg, kTestToken, host);
-    std::thread worker([&] { svc.run(); });
-    ASSERT_TRUE(poll_until([&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+    StandaloneAdmin a(std::move(cfg), kTestToken);
 
-    const json reply = req_reply(svc.bound_endpoint(),
+    const json reply = req_reply(a.endpoint(),
         {{"method", "list_peers"}, {"token", kTestToken}});
     ASSERT_EQ(reply.value("status", ""), "ok") << reply.dump();
     EXPECT_TRUE(reply["result"].is_object());
     EXPECT_TRUE(reply["result"].empty());
-
-    svc.stop();
-    worker.join();
 }
 
 
 
 TEST_F(AdminServiceTest, DevMode_TokenSkipped_PingAccepted)
 {
-    HubAdminConfig acfg;
-    acfg.endpoint       = "tcp://127.0.0.1:0";
-    acfg.token_required = false;
-    acfg.dev_mode       = true;
-
     auto [cfg, dir] = make_config("dev", /*token_required=*/false,
                                   /*dev_mode=*/true);
-    HubHost host(std::move(cfg));
-    AdminService svc(pylabhub::hub::get_zmq_context(),
-                     acfg, /*token=*/"", host);
-    std::thread worker([&] { svc.run(); });
-    ASSERT_TRUE(poll_until(
-        [&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+    StandaloneAdmin a(std::move(cfg), /*token=*/"",
+                      /*token_required=*/false, /*dev_mode=*/true);
 
     // No `token` field at all — accepted because token_required=false.
-    const json reply = req_reply(svc.bound_endpoint(),
-        {{"method", "ping"}});
+    const json reply = req_reply(a.endpoint(), {{"method", "ping"}});
     EXPECT_EQ(reply.value("status", ""), "ok");
     EXPECT_EQ(reply["result"].value("pong", false), true);
-
-    svc.stop();
-    worker.join();
 }
 
 // ─── §11.2 control methods (Phase 6.2c) ────────────────────────────────────
@@ -631,65 +542,38 @@ TEST_F(AdminServiceTest, DevMode_TokenSkipped_PingAccepted)
 
 TEST_F(AdminServiceTest, Control_CloseChannel_MissingParams_Returns_InvalidParams)
 {
-    HubAdminConfig acfg;
-    acfg.endpoint       = "tcp://127.0.0.1:0";
-    acfg.token_required = true;
-
     auto [cfg, dir] = make_config("c_close_bad");
-    HubHost host(std::move(cfg));
-    AdminService svc(pylabhub::hub::get_zmq_context(), acfg, kTestToken, host);
-    std::thread worker([&] { svc.run(); });
-    ASSERT_TRUE(poll_until([&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+    StandaloneAdmin a(std::move(cfg), kTestToken);
 
-    const json reply = req_reply(svc.bound_endpoint(),
+    const json reply = req_reply(a.endpoint(),
         {{"method", "close_channel"}, {"token", kTestToken}});
     ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
     EXPECT_EQ(reply["error"]["code"], "invalid_params");
     EXPECT_NE(reply["error"]["message"].get<std::string>().find("channel"),
               std::string::npos);
-
-    svc.stop();
-    worker.join();
 }
 
 TEST_F(AdminServiceTest, Control_CloseChannel_Unknown_Returns_NotFound)
 {
-    HubAdminConfig acfg;
-    acfg.endpoint       = "tcp://127.0.0.1:0";
-    acfg.token_required = true;
-
     auto [cfg, dir] = make_config("c_close_404");
-    HubHost host(std::move(cfg));
-    AdminService svc(pylabhub::hub::get_zmq_context(), acfg, kTestToken, host);
-    std::thread worker([&] { svc.run(); });
-    ASSERT_TRUE(poll_until([&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+    StandaloneAdmin a(std::move(cfg), kTestToken);
 
-    const json reply = req_reply(svc.bound_endpoint(),
+    const json reply = req_reply(a.endpoint(),
         {{"method", "close_channel"},
          {"token",  kTestToken},
          {"params", {{"channel", "no.such.channel"}}}});
     ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
     EXPECT_EQ(reply["error"]["code"], "not_found");
-
-    svc.stop();
-    worker.join();
 }
 
 TEST_F(AdminServiceTest, Control_BroadcastChannel_MissingMessage_Returns_InvalidParams)
 {
-    HubAdminConfig acfg;
-    acfg.endpoint       = "tcp://127.0.0.1:0";
-    acfg.token_required = true;
-
     auto [cfg, dir] = make_config("c_bcast_bad");
-    HubHost host(std::move(cfg));
-    AdminService svc(pylabhub::hub::get_zmq_context(), acfg, kTestToken, host);
-    std::thread worker([&] { svc.run(); });
-    ASSERT_TRUE(poll_until([&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+    StandaloneAdmin a(std::move(cfg), kTestToken);
 
     // channel present but message missing → invalid_params (not silent
     // accept of an empty message).
-    const json reply = req_reply(svc.bound_endpoint(),
+    const json reply = req_reply(a.endpoint(),
         {{"method", "broadcast_channel"},
          {"token",  kTestToken},
          {"params", {{"channel", "lab.x"}}}});
@@ -697,32 +581,19 @@ TEST_F(AdminServiceTest, Control_BroadcastChannel_MissingMessage_Returns_Invalid
     EXPECT_EQ(reply["error"]["code"], "invalid_params");
     EXPECT_NE(reply["error"]["message"].get<std::string>().find("message"),
               std::string::npos);
-
-    svc.stop();
-    worker.join();
 }
 
 TEST_F(AdminServiceTest, Control_BroadcastChannel_Unknown_Returns_NotFound)
 {
-    HubAdminConfig acfg;
-    acfg.endpoint       = "tcp://127.0.0.1:0";
-    acfg.token_required = true;
-
     auto [cfg, dir] = make_config("c_bcast_404");
-    HubHost host(std::move(cfg));
-    AdminService svc(pylabhub::hub::get_zmq_context(), acfg, kTestToken, host);
-    std::thread worker([&] { svc.run(); });
-    ASSERT_TRUE(poll_until([&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+    StandaloneAdmin a(std::move(cfg), kTestToken);
 
-    const json reply = req_reply(svc.bound_endpoint(),
+    const json reply = req_reply(a.endpoint(),
         {{"method", "broadcast_channel"},
          {"token",  kTestToken},
          {"params", {{"channel", "no.such.channel"}, {"message", "go"}}}});
     ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
     EXPECT_EQ(reply["error"]["code"], "not_found");
-
-    svc.stop();
-    worker.join();
 }
 
 // ─── HubHost integration — admin spawned + drained ─────────────────────────
