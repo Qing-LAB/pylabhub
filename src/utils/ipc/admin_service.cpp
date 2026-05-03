@@ -392,16 +392,75 @@ json AdminService::Impl::dispatch(const json &request)
         return make_ok(host.broker().query_metrics(filter));
     }
 
-    // ── §11.2 control methods (Phase 6.2c — wired in next commit) ───────────
-    static const char *const kControlMethods[] = {
-        "close_channel", "broadcast_channel", "request_shutdown",
-    };
-    for (const char *m : kControlMethods)
+    // ── Phase 6.2c: Control methods (HEP-CORE-0033 §11.2 control block) ─────
+    //
+    // Each delegates to an existing mutator on `host.broker()` or to a
+    // HubHost-level operation (`request_shutdown`).  The broker mutators
+    // are queue-based — fire-and-forget — so the admin response is the
+    // accept ack, NOT a completion signal.  Per §11.5 the codes are:
+    //   - invalid_params: required field missing / wrong type
+    //   - not_found: target channel doesn't exist (where pre-checkable)
+    //   - ok: request accepted into the broker queue (or applied for
+    //         host-level ops like request_shutdown)
+
+    if (method == "close_channel")
     {
-        if (method == m)
-            return make_error("not_implemented",
-                              std::string("method '") + method +
-                              "' is Phase 6.2c (control surface, pending)");
+        const auto pit = request.find("params");
+        if (pit == request.end() || !pit->is_object() ||
+            !pit->contains("channel") || !(*pit)["channel"].is_string())
+            return make_error("invalid_params",
+                              "close_channel requires params.channel (string)");
+        const auto &name = (*pit)["channel"].get_ref<const std::string &>();
+        // Pre-check existence so a typo produces not_found rather than
+        // a silent no-op (BrokerService::request_close_channel is
+        // idempotent and silently drops unknown names).
+        if (!host.state().channel(name))
+            return make_error("not_found",
+                              std::string("channel '") + name + "' not registered");
+        host.broker().request_close_channel(name);
+        return make_ok(json{{"queued", true}, {"channel", name}});
+    }
+
+    if (method == "broadcast_channel")
+    {
+        const auto pit = request.find("params");
+        if (pit == request.end() || !pit->is_object())
+            return make_error("invalid_params",
+                              "broadcast_channel requires params.{channel,message}");
+        const auto cit = pit->find("channel");
+        const auto mit = pit->find("message");
+        if (cit == pit->end() || !cit->is_string() ||
+            mit == pit->end() || !mit->is_string())
+            return make_error("invalid_params",
+                              "broadcast_channel requires params.channel (string) "
+                              "and params.message (string)");
+        const auto &channel = cit->get_ref<const std::string &>();
+        const auto &message = mit->get_ref<const std::string &>();
+        if (!host.state().channel(channel))
+            return make_error("not_found",
+                              std::string("channel '") + channel + "' not registered");
+        // Optional `data` payload (string).
+        std::string data;
+        const auto dit = pit->find("data");
+        if (dit != pit->end())
+        {
+            if (!dit->is_string())
+                return make_error("invalid_params",
+                                  "broadcast_channel: params.data must be a string if present");
+            data = dit->get<std::string>();
+        }
+        host.broker().request_broadcast_channel(channel, message, data);
+        return make_ok(json{{"queued", true}, {"channel", channel}, {"message", message}});
+    }
+
+    if (method == "request_shutdown")
+    {
+        // Returns OK *before* the host actually stops — the admin
+        // socket would otherwise be torn down with the response in
+        // flight.  Caller may follow up with `query_metrics` / `ping`
+        // and observe the EOF when the socket closes.
+        host.request_shutdown();
+        return make_ok(json{{"shutdown_requested", true}});
     }
 
     // ── Deferred methods (HEP-0035 / §16 #1 / §16 #9 / Phase 7) ─────────────
