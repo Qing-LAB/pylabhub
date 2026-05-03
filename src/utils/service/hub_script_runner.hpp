@@ -50,18 +50,17 @@
 
 #include "utils/engine_host.hpp"
 #include "utils/hub_api.hpp"
-// Full HubConfig required at this point: HubScriptRunner inherits from
-// HubScriptRunnerBase = EngineHost<HubAPI>, whose `ConfigT config_`
-// member is `HubConfig` (per script_host_traits<HubAPI>).  Forward
-// declaration is insufficient at the inheritance site — the compiler
-// must instantiate EngineHost<HubAPI>'s layout to derive from it.
-// Acceptable here because hub_script_runner.hpp is a PRIVATE header
-// (only hub_host.cpp / hub_script_runner.cpp / Phase 7 tests include it).
-#include "utils/config/hub_config.hpp"
+//
+// HubConfig is intentionally NOT included here under Phase 7 Option E.
+// `script_host_traits<HubAPI>::ConfigT = std::monostate` (see
+// hub_api.hpp), so EngineHost<HubAPI> stores nothing of HubConfig
+// shape.  HubConfig fields (timing, identity) are read through the
+// `host_` backref inside `worker_main_()` — that is a .cpp-only
+// dependency, not a header dependency.  Keeping it out of this header
+// preserves single-config-owner discipline at the type level.
 
 #include <atomic>
 #include <memory>
-#include <string>
 
 namespace pylabhub::hub_host { class HubHost; }
 
@@ -78,16 +77,16 @@ class HubScriptRunner final : public HubScriptRunnerBase
 public:
     /// @param host        HubHost backref — outlives the runner per
     ///                    HEP-0033 §4.2 step 2.  Set on the HubAPI
-    ///                    after EngineHost lazy-constructs it.
-    /// @param cfg         HubConfig moved into the EngineHost base —
-    ///                    timing() drives the tick loop pacing.
+    ///                    after EngineHost lazy-constructs it.  Per
+    ///                    Phase 7 Option E, the runner does NOT own a
+    ///                    HubConfig — it reads timing/identity through
+    ///                    `host.config()` inside `worker_main_()`.
     /// @param engine      ScriptEngine instance — caller (HubHost)
     ///                    creates via `make_engine_from_script_config`
     ///                    and moves in.
     /// @param shutdown_flag  External shutdown atomic shared with main
     ///                       and HubHost; nullptr ok in tests.
     HubScriptRunner(pylabhub::hub_host::HubHost  &host,
-                    config::HubConfig             cfg,
                     std::unique_ptr<ScriptEngine> engine,
                     std::atomic<bool>            *shutdown_flag = nullptr);
 

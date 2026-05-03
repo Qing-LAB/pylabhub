@@ -54,7 +54,9 @@ using Clock = std::chrono::steady_clock;
 ProcessorRoleHost::ProcessorRoleHost(config::RoleConfig config,
                                        std::unique_ptr<scripting::ScriptEngine> engine,
                                        std::atomic<bool> *shutdown_flag)
-    : scripting::RoleHostBase("proc", std::move(config), std::move(engine),
+    : scripting::RoleHostBase("proc",
+                              std::move(config),
+                              std::move(engine),
                               shutdown_flag)
 {
 }

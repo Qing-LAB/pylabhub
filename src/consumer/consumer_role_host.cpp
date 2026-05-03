@@ -51,7 +51,9 @@ using Clock = std::chrono::steady_clock;
 ConsumerRoleHost::ConsumerRoleHost(config::RoleConfig config,
                                      std::unique_ptr<scripting::ScriptEngine> engine,
                                      std::atomic<bool> *shutdown_flag)
-    : scripting::RoleHostBase("cons", std::move(config), std::move(engine),
+    : scripting::RoleHostBase("cons",
+                              std::move(config),
+                              std::move(engine),
                               shutdown_flag)
 {
 }
