@@ -9,6 +9,42 @@
 
 ## Current Focus
 
+### Open 2026-05-03: PlhRoleCliTest.LogBackupsBelowSentinelRejectedByValidate stalls under parallel load (framework concern)
+
+`PlhRoleCliTest.LogBackupsBelowSentinelRejectedByValidate` passes solo
+in ~0.11 s but intermittently times out at the 10 s ctest deadline
+when running under `ctest -j2`.  Failure mode: subprocess returns
+SIGTERM (exit 143) — the test-process-utility wait loop killed the
+child after the deadline.
+
+**This is NOT a "just flake" — there is no logical reason a 100 ms
+test should stall 100× under modest parallel load.**  Hypotheses to
+investigate:
+
+- `init -p <path>` then `validate -p <path>` — these acquire `flock`
+  on `<path>/role.json.lock`.  If a sibling test holds a lock on the
+  same canonical path (different `tag` collision in `unique_temp_dir`?
+  shared `/tmp` directory contention?) the validate path may block
+  on the file lock indefinitely.
+- `test_process_utils.cpp:555` (the failing assertion site) — review
+  `wait_for_exit(seconds)` for the actual semantics: does it kill on
+  timeout?  Does the parent block on a pipe read that the child never
+  closes?  Does the framework drain stderr before the join?
+- The `--validate` path uses `JsonConfig::lock_for_read` — does this
+  share a global lock with sibling tests' write transactions on
+  unrelated files?  Audit `FileLock` accidentally-global state.
+- gtest filter glob: are two parallel ctest runners filtering the
+  same test binary and racing on its temp dirs?  Confirm each test
+  spawns a child with PID-namespaced temp paths.
+
+**Action:** before claiming this test reliable, walk through the test
++ framework code and identify the actual contention point.  Surface
+it as a fix (not a retry-loop bandage).  Tracked as framework-level
+because the same shape can mask other tests' real failures.
+
+Confirmed pattern: D2.1 build (2026-05-03) — `ctest -j2` showed this
+as the sole failure across 1723 tests; solo re-run passed cleanly.
+
 ### Open 2026-05-03: Strict must-fire migration in LogCaptureFixture-using tests
 
 `LogCaptureFixture` was extended in HEP-0033 Phase 7 Commit D1.5 (commit

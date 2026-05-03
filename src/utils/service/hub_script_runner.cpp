@@ -61,6 +61,19 @@ HubScriptRunner::~HubScriptRunner()
 }
 
 // ============================================================================
+// Public surface
+// ============================================================================
+
+InvokeResponse HubScriptRunner::eval(const std::string &code)
+{
+    // engine() is the protected accessor on EngineHost — usable here
+    // because HubScriptRunner derives from EngineHost<HubAPI>.  Forwards
+    // verbatim; serialization w.r.t. the worker thread's invoke calls
+    // is the caller's responsibility (see header docs).
+    return engine().eval(code);
+}
+
+// ============================================================================
 // worker_main_ — event-and-tick loop
 // ============================================================================
 

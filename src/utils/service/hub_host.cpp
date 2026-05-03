@@ -5,11 +5,13 @@
  */
 #include "utils/hub_host.hpp"
 
+#include "hub_script_runner.hpp"          // private header — HubScriptRunner ctor
 #include "utils/admin_service.hpp"
 #include "utils/broker_service.hpp"
 #include "utils/config/hub_config.hpp"
 #include "utils/hub_state.hpp"
 #include "utils/logger.hpp"
+#include "utils/script_engine.hpp"        // ScriptEngine + InvokeResponse
 #include "utils/thread_manager.hpp"
 #include "utils/zmq_context.hpp"
 
@@ -29,8 +31,10 @@ namespace pylabhub::hub_host
 
 struct HubHost::Impl
 {
-    explicit Impl(config::HubConfig c)
+    Impl(config::HubConfig c,
+         std::unique_ptr<scripting::ScriptEngine> e)
         : cfg(std::move(c))
+        , engine_pre_startup(std::move(e))
     {}
 
     config::HubConfig                          cfg;
@@ -38,6 +42,22 @@ struct HubHost::Impl
     std::unique_ptr<broker::BrokerService>     broker;       // built in startup()
     std::unique_ptr<admin::AdminService>       admin_svc;    // built in startup() if admin.enabled
     std::unique_ptr<utils::ThreadManager>      thread_mgr;   // built in startup()
+
+    // Script engine handed in via the 2-arg ctor.  Held here from
+    // construction until startup() moves it into the HubScriptRunner.
+    // Null when scripts are disabled (1-arg ctor or 2-arg ctor with
+    // engine=nullptr).  After startup(), this stays null — runner owns
+    // the engine.  Per HEP-CORE-0033 Phase 7 (Option E) the runner
+    // does not own a copy of HubConfig — it reads via its host_
+    // backref — so config flow stays single-owner here.
+    std::unique_ptr<scripting::ScriptEngine>   engine_pre_startup;
+
+    // Hub-side script runtime — built in startup() if engine is set
+    // and `cfg.script().path` is non-empty (Phase 7 §4.1 step 10).
+    // Stopped FIRST in shutdown (§4.2 step 2 — before admin and
+    // broker) so any in-flight script callbacks complete before
+    // subsystems they may depend on tear down.
+    std::unique_ptr<scripting::HubScriptRunner> runner;
 
     /// Start/stop run-state FSM — monotonic transitions
     /// `Constructed → Running → ShutDown`.  CAS-based transitions in
@@ -88,7 +108,13 @@ struct HubHost::Impl
 // ============================================================================
 
 HubHost::HubHost(config::HubConfig cfg)
-    : impl_(std::make_unique<Impl>(std::move(cfg)))
+    : impl_(std::make_unique<Impl>(std::move(cfg), nullptr))
+{
+}
+
+HubHost::HubHost(config::HubConfig cfg,
+                 std::unique_ptr<scripting::ScriptEngine> engine)
+    : impl_(std::make_unique<Impl>(std::move(cfg), std::move(engine)))
 {
 }
 
@@ -200,11 +226,16 @@ void HubHost::startup()
     auto rollback_partial_startup = [this]() noexcept {
         try
         {
+            // Runner first (HEP-CORE-0033 §4.2 step 2 ordering — script
+            // shuts down before admin/broker so any in-flight callbacks
+            // complete).  shutdown_() is idempotent.
+            if (impl_->runner) impl_->runner->shutdown_();
             if (impl_->admin_svc) impl_->admin_svc->stop();
             if (impl_->broker) impl_->broker->stop();
             if (impl_->thread_mgr) impl_->thread_mgr->drain();
         }
         catch (...) { /* swallow — already in error path */ }
+        impl_->runner.reset();
         impl_->admin_svc.reset();
         impl_->broker.reset();
         impl_->thread_mgr.reset();
@@ -355,6 +386,60 @@ void HubHost::startup()
             // the worker has progressed past bind (Phase 6.2a tests
             // poll for non-empty endpoint before connecting).
         }
+
+        // ── Phase 7 — HubScriptRunner (HEP-CORE-0033 §4.1 step 10) ─────────
+        //
+        // Built only when an engine was injected at construction AND
+        // `cfg.script().path` is non-empty.  The two are required
+        // together: an engine without a script path has nothing to
+        // load; a script path without an engine cannot run.  Operator
+        // misconfiguration surfaces as a fail-fast `logic_error` here
+        // — better than a silent no-op runner that leaves the script
+        // dead on the disk.
+        const bool engine_set = (impl_->engine_pre_startup != nullptr);
+        const bool path_set   = !impl_->cfg.script().path.empty();
+        if (engine_set != path_set)
+        {
+            throw std::logic_error(
+                std::string("HubHost::startup: script-engine / script-path "
+                            "mismatch — engine ") +
+                (engine_set ? "INJECTED" : "absent") +
+                " but cfg.script().path is " +
+                (path_set ? "non-empty" : "empty") +
+                ".  Either set both (script-enabled hub) or neither "
+                "(script-disabled hub).");
+        }
+        if (engine_set)
+        {
+            // Construct + start the runner.  Per Option E, runner
+            // reads HubConfig fields through its host_ backref —
+            // HubHost stays the sole owner of HubConfig.  Engine
+            // ownership transfers from impl_->engine_pre_startup
+            // (where it lived between construction and now) into
+            // the runner; the field is left null afterward.
+            impl_->runner = std::make_unique<scripting::HubScriptRunner>(
+                *this,
+                std::move(impl_->engine_pre_startup),
+                &impl_->shutdown_flag);
+
+            // startup_() spawns the worker thread + blocks on its
+            // ready_promise.  On worker startup failure (script load
+            // error, etc.), startup_() returns having internally run
+            // shutdown_() — runner is in ShutDown phase.  We treat
+            // that as a hard startup failure (HubHost cannot meet
+            // its contract: an engine-enabled hub has no live script
+            // runtime).  The rollback path resets the runner and
+            // surfaces a runtime_error to the caller.
+            impl_->runner->startup_();
+            if (!impl_->runner->is_running())
+            {
+                throw std::runtime_error(
+                    "HubHost::startup: script runner failed to start "
+                    "(see preceding logs from HubScriptRunner / engine "
+                    "for the underlying cause — typically a script "
+                    "syntax error or missing callback).");
+            }
+        }
     }
     catch (...)
     {
@@ -404,11 +489,25 @@ void HubHost::shutdown()
     }
     impl_->wake_cv.notify_all();
 
-    // Stop AdminService FIRST (HEP-CORE-0033 §4.2 step 3): closing
-    // the REP socket blocks new RPCs while in-flight handlers that
-    // already entered the broker complete normally.  Order matters:
-    // if we stopped the broker first, an in-flight admin RPC could
-    // observe a half-torn-down broker mid-call.
+    // Stop the HubScriptRunner FIRST (HEP-CORE-0033 §4.2 step 2):
+    // runner observes the shared shutdown flag, drains pending events,
+    // calls `on_stop`, joins its worker thread.  Stopping the runner
+    // before admin/broker ensures any in-flight script callback that's
+    // mid-call into broker / admin completes against still-live
+    // subsystems — if we stopped the broker first, a script callback
+    // could observe a half-torn-down broker mid-call.
+    if (impl_->runner)
+        impl_->runner->shutdown_();
+
+    // Stop AdminService SECOND (HEP-CORE-0033 §4.2 step 3, after the
+    // runner above): closing the REP socket blocks new RPCs while
+    // in-flight handlers that already entered the broker complete
+    // normally.  Order matters: if we stopped the broker first, an
+    // in-flight admin RPC could observe a half-torn-down broker
+    // mid-call.  Runner stops BEFORE admin so any script-side
+    // `eval_in_script` admin RPC tail completes against a live
+    // engine (the runner stop drains pending events + runs on_stop
+    // first).
     if (impl_->admin_svc)
         impl_->admin_svc->stop();
 
@@ -501,6 +600,23 @@ const std::string &HubHost::broker_pubkey() const noexcept
 admin::AdminService *HubHost::admin() noexcept
 {
     return impl_->admin_svc.get();
+}
+
+scripting::InvokeResponse HubHost::eval_in_script(const std::string &code)
+{
+    // Forward to the runner's owned engine only when the runner is
+    // actively running.  Three "no script available" cases all return
+    // the same `NotFound` shape so operators get a uniform answer:
+    //   1. scripts disabled (no engine injected, no path) → no runner.
+    //   2. startup() was not called yet → no runner.
+    //   3. shutdown() has been called → runner exists (we leave it
+    //      intact for diagnostics, parallel to broker_/admin_) but
+    //      its worker thread has exited; engine state is gone.
+    // Without the `is_running()` guard, case 3 would still forward
+    // into a half-torn-down engine — surfaces as wrong-status.
+    if (!impl_->runner || !impl_->runner->is_running())
+        return {scripting::InvokeStatus::NotFound, {}};
+    return impl_->runner->eval(code);
 }
 
 } // namespace pylabhub::hub_host
