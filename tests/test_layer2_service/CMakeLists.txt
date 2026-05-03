@@ -1175,6 +1175,36 @@ gtest_discover_tests(test_layer2_hub_api
 )
 
 # ============================================================================
+# Test: LogCaptureFixture itself (test framework — Phase 7 Commit D1.5)
+# ============================================================================
+
+add_executable(test_layer2_log_capture_fixture
+    test_log_capture_fixture.cpp
+)
+
+target_link_libraries(test_layer2_log_capture_fixture
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_log_capture_fixture)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_log_capture_fixture
+    SUITE_NAME "Layer2_LogCaptureFixture"
+)
+layer2_require_staged_utils(test_layer2_log_capture_fixture)
+
+gtest_discover_tests(test_layer2_log_capture_fixture
+    PROPERTIES
+        LABELS "layer2;test_framework;log_capture"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: RoleConfig — unified config class
 # ============================================================================
 

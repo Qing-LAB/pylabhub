@@ -9,6 +9,58 @@
 
 ## Current Focus
 
+### Open 2026-05-03: Strict must-fire migration in LogCaptureFixture-using tests
+
+`LogCaptureFixture` was extended in HEP-0033 Phase 7 Commit D1.5 (commit
+TBD) with strict `ExpectLogWarnMustFire` / `ExpectLogErrorMustFire`
+declarations.  These FAIL the test if the declared substring never
+matches an emitted WARN/ERROR line — closing the audit §1.1 Class A
+gap where `ExpectLogWarn` was a permissive allowlist that silently
+accepted "expected warn was not emitted" regressions.
+
+**Migration target.** Existing tests using `ExpectLogWarn` /
+`ExpectLogError` should be reviewed and converted to the strict
+`MustFire` variants where the declared warn/error is genuinely an
+expected production-code emission (i.e. the test is verifying a
+specific error path that MUST log).
+
+**Out of scope for migration.** Some tests use `ExpectLogWarn`
+intentionally for warns that are RACE-CONDITIONAL (e.g.
+timing-dependent ACK-timeout warns that may-or-may-not fire on a
+given run).  Those should stay permissive; converting them would
+introduce flakes.
+
+**Inventory of tests using `ExpectLog*`** (from grep across `tests/`,
+2026-05-03 — review each for must-fire fitness):
+
+  tests/test_layer2_service/test_admin_service.cpp
+  tests/test_layer2_service/test_role_host_core.cpp
+  tests/test_layer3_datahub/test_datahub_broker_admin.cpp
+  tests/test_layer3_datahub/test_datahub_broker_protocol.cpp
+  tests/test_layer3_datahub/test_datahub_broker_schema.cpp
+  tests/test_layer3_datahub/test_datahub_broker_shutdown.cpp
+  tests/test_layer3_datahub/test_datahub_channel_access_policy.cpp
+  tests/test_layer3_datahub/test_datahub_hub_host_integration.cpp
+  tests/test_layer3_datahub/test_datahub_hub_inbox_queue.cpp
+  tests/test_layer3_datahub/test_datahub_hub_zmq_queue.cpp
+  tests/test_layer3_datahub/test_datahub_metrics.cpp
+  tests/test_layer3_datahub/test_datahub_schema_loader.cpp
+  tests/test_layer3_datahub/test_datahub_zmq_poll_loop.cpp
+
+Migration policy: per-file review, per-needle decision.  No bulk
+sed — each `ExpectLogWarn` call is a judgment call about whether the
+warn is "definitely fires" vs "may-or-may-not fire".  Convert
+generously toward strict where the production code path is
+deterministic (the test exercises a guaranteed-error input); stay
+permissive for race/timeout paths.
+
+Verification per migrated file: build → run → mutation sweep
+(deliberately suppress the production warn → matching test must
+fail at `ExpectLogWarnMustFire`); restore.  Same protocol as audit
+§1.4.  Updated row goes in
+`docs/code_review/REVIEW_TestAudit_2026-05-01_inventory.md` (or
+successor if archived) with the migration commit hash.
+
 ### Closed 2026-04-22: L2 depth review (tracker `21.3.5`)
 
 L2 tier was audited in two passes — first against Pattern-3 discipline and
