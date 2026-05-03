@@ -14,8 +14,12 @@
 
 #include "utils/admin_service.hpp"
 
+#include "utils/broker_service.hpp"
 #include "utils/config/hub_admin_config.hpp"
 #include "utils/hub_host.hpp"
+#include "utils/hub_metrics_filter.hpp"
+#include "utils/hub_state.hpp"
+#include "utils/hub_state_json.hpp"
 #include "utils/logger.hpp"
 #include "utils/timeout_constants.hpp"
 
@@ -183,7 +187,8 @@ void AdminService::run()
             // Last-resort safety net.  Specific dispatcher failure
             // modes should produce typed errors via dispatch() itself;
             // this catches programmer errors and unknown exceptions.
-            reply = make_error("internal_error", e.what());
+            // Code per HEP-0033 §11.5 catalog.
+            reply = make_error("internal", e.what());
         }
 
         const std::string reply_str = reply.dump();
@@ -258,25 +263,160 @@ json AdminService::Impl::dispatch(const json &request)
         return make_ok(std::move(result));
     }
 
-    // §11.2 method names not yet implemented (Phase 6.2b/c).  Listed
-    // explicitly so a typo in the client surfaces as `unknown_method`
-    // rather than blending into the catch-all.
-    static const char *const kKnownStubs[] = {
-        // Query (Phase 6.2b)
-        "list_channels", "get_channel", "list_roles", "get_role",
-        "list_bands", "list_peers", "query_metrics",
-        // Control (Phase 6.2c)
+    // ── Phase 6.2b: Query methods (HEP-CORE-0033 §11.2 query block) ─────────
+    //
+    // All read-through `host.state()` (HubState) accessors.  No mutation;
+    // the broker keeps its single-mutator invariant.  Per HEP §11.5 the
+    // not_found code is the right one when a `get_*` target does not
+    // exist; invalid_params when the client omitted the required field.
+
+    if (method == "list_channels")
+    {
+        const auto snap = host.state().snapshot();
+        json channels = json::object();
+        for (const auto &[name, ch] : snap.channels)
+            channels[name] = pylabhub::hub::channel_to_json(ch);
+        return make_ok(std::move(channels));
+    }
+
+    if (method == "get_channel")
+    {
+        const auto pit = request.find("params");
+        if (pit == request.end() || !pit->is_object() ||
+            !pit->contains("channel") || !(*pit)["channel"].is_string())
+            return make_error("invalid_params",
+                              "get_channel requires params.channel (string)");
+        const auto &name = (*pit)["channel"].get_ref<const std::string &>();
+        auto ch = host.state().channel(name);
+        if (!ch)
+            return make_error("not_found",
+                              std::string("channel '") + name + "' not registered");
+        return make_ok(pylabhub::hub::channel_to_json(*ch));
+    }
+
+    if (method == "list_roles")
+    {
+        const auto snap = host.state().snapshot();
+        json roles = json::object();
+        for (const auto &[uid, r] : snap.roles)
+            roles[uid] = pylabhub::hub::role_to_json(r);
+        return make_ok(std::move(roles));
+    }
+
+    if (method == "get_role")
+    {
+        const auto pit = request.find("params");
+        if (pit == request.end() || !pit->is_object() ||
+            !pit->contains("uid") || !(*pit)["uid"].is_string())
+            return make_error("invalid_params",
+                              "get_role requires params.uid (string)");
+        const auto &uid = (*pit)["uid"].get_ref<const std::string &>();
+        auto r = host.state().role(uid);
+        if (!r)
+            return make_error("not_found",
+                              std::string("role '") + uid + "' not registered");
+        return make_ok(pylabhub::hub::role_to_json(*r));
+    }
+
+    if (method == "list_bands")
+    {
+        const auto snap = host.state().snapshot();
+        json bands = json::object();
+        for (const auto &[name, b] : snap.bands)
+            bands[name] = pylabhub::hub::band_to_json(b);
+        return make_ok(std::move(bands));
+    }
+
+    if (method == "list_peers")
+    {
+        const auto snap = host.state().snapshot();
+        json peers = json::object();
+        for (const auto &[uid, p] : snap.peers)
+            peers[uid] = pylabhub::hub::peer_to_json(p);
+        return make_ok(std::move(peers));
+    }
+
+    if (method == "query_metrics")
+    {
+        // Optional `params` filter — narrows the response to specific
+        // categories / channels / roles / bands / peers.  Empty
+        // params (or empty filter fields) means include everything.
+        // Delegates to the broker's existing metrics aggregator
+        // (HEP-0019 + HEP-0033 §9.4) so admin RPC and the legacy
+        // query path emit identical JSON.
+        pylabhub::hub::MetricsFilter filter;
+        const auto pit = request.find("params");
+        if (pit != request.end() && pit->is_object())
+        {
+            // Per-field type validation.  Anything wrong is invalid_params
+            // (a typo'd filter should not silently include everything).
+            auto opt_string_array = [&](const char *field,
+                                        std::vector<std::string> &out) -> json
+            {
+                const auto it = pit->find(field);
+                if (it == pit->end()) return {};
+                if (!it->is_array())
+                    return make_error("invalid_params",
+                        std::string("query_metrics: params.") + field +
+                        " must be an array of strings");
+                for (const auto &v : *it)
+                {
+                    if (!v.is_string())
+                        return make_error("invalid_params",
+                            std::string("query_metrics: params.") + field +
+                            " entries must be strings");
+                    out.push_back(v.get<std::string>());
+                }
+                return {};
+            };
+            if (auto e = opt_string_array("channels", filter.channels); !e.is_null()) return e;
+            if (auto e = opt_string_array("roles",    filter.roles);    !e.is_null()) return e;
+            if (auto e = opt_string_array("bands",    filter.bands);    !e.is_null()) return e;
+            if (auto e = opt_string_array("peers",    filter.peers);    !e.is_null()) return e;
+            // Categories are an unordered_set<string>.
+            const auto cit = pit->find("categories");
+            if (cit != pit->end())
+            {
+                if (!cit->is_array())
+                    return make_error("invalid_params",
+                        "query_metrics: params.categories must be an array of strings");
+                for (const auto &v : *cit)
+                {
+                    if (!v.is_string())
+                        return make_error("invalid_params",
+                            "query_metrics: params.categories entries must be strings");
+                    filter.categories.insert(v.get<std::string>());
+                }
+            }
+        }
+        return make_ok(host.broker().query_metrics(filter));
+    }
+
+    // ── §11.2 control methods (Phase 6.2c — wired in next commit) ───────────
+    static const char *const kControlMethods[] = {
         "close_channel", "broadcast_channel", "request_shutdown",
-        // Deferred — see REVIEW_AdminService_2026-05-01.md §2.2
-        "list_known_roles", "add_known_role", "remove_known_role",
-        "revoke_role", "reload_config", "exec_python",
     };
-    for (const char *m : kKnownStubs)
+    for (const char *m : kControlMethods)
     {
         if (method == m)
             return make_error("not_implemented",
                               std::string("method '") + method +
-                              "' not yet implemented (Phase 6.2a skeleton)");
+                              "' is Phase 6.2c (control surface, pending)");
+    }
+
+    // ── Deferred methods (HEP-0035 / §16 #1 / §16 #9 / Phase 7) ─────────────
+    static const char *const kDeferredMethods[] = {
+        "list_known_roles", "add_known_role", "remove_known_role", // HEP-0035
+        "revoke_role",                                              // §16 #1
+        "reload_config",                                            // §16 #9
+        "exec_python",                                              // Phase 7
+    };
+    for (const char *m : kDeferredMethods)
+    {
+        if (method == m)
+            return make_error("not_implemented",
+                              std::string("method '") + method +
+                              "' is deferred to a later HEP / phase");
     }
 
     return make_error("unknown_method",
