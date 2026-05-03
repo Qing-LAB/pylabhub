@@ -24,15 +24,22 @@
  * module (binary mains, not generic external consumers).
  *
  * The class is a template parameterised on `ApiT`, the script-visible API
- * class.  Two instantiations are anticipated:
+ * class.  Two instantiations exist:
  *
- *     using RoleHostBase = EngineHost<RoleAPIBase>;           // existing
- *     using HubHostBase  = EngineHost<HubAPI>;                // HEP-0033
+ *     using RoleHostBase        = EngineHost<RoleAPIBase>;   // role side ✅
+ *     using HubScriptRunnerBase = EngineHost<HubAPI>;        // hub side (Phase 7)
  *
- * Each concrete host (Producer/Consumer/Processor for role side, HubHost
- * for hub side) derives from the appropriate typedef and implements a
+ * Three role-side concrete classes derive from `RoleHostBase`
+ * (Producer/Consumer/Processor); one hub-side concrete class derives
+ * from `HubScriptRunnerBase` (`HubScriptRunner`).  Each implements a
  * single pure virtual hook, @ref worker_main_, which runs the full
- * engine-and-broker run loop on the host's worker thread.
+ * engine-and-loop sequence on the host's worker thread.
+ *
+ * Note (per §G1 retraction below): the OUTER hub container `HubHost`
+ * is a plain concrete class — NOT derived from `EngineHost`.  The
+ * `EngineHost<HubAPI>` instantiation is for the inner script-thread
+ * runtime (`HubScriptRunner`), which is one of `HubHost`'s owned
+ * subsystems.
  *
  * Base owns shared state (role_tag, config, engine, RoleHostCore, ApiT,
  * ready-promise). Derived owns role/hub-specific state (schemas, queues,
@@ -56,15 +63,17 @@
  * from the same thread while the worker runs. Not copyable, not movable
  * (owns an internal worker thread).
  *
- * Design rationale: this template was originally proposed (in the now-
- * archived HEP-0033 prereqs notes, §G1) as a unification point between
- * role-side `RoleHostBase` and a future `HubHostBase`.  That hub-side
- * unification was retracted — hubs are singletons (one binary kind, one
- * config, no dispatch), so there is no polymorphism to abstract over.
- * `EngineHost<RoleAPIBase>` remains the role-side base; the future
- * `HubHost` will be a single concrete class owning its subsystems
- * directly, **not** a subclass of `EngineHost`.  See HEP-CORE-0033 §4
- * for the simplified hub layering.
+ * Design rationale (retraction scope): the original §G1 prereqs proposal
+ * had a `HubHostBase = EngineHost<HubAPI>` typedef that `HubHost` itself
+ * would derive from.  That OUTER-CONTAINER unification was retracted —
+ * hubs are singletons (one binary kind, one config, no dispatch over
+ * multiple hub kinds), so there is no polymorphism to abstract over at
+ * the HubHost layer; `HubHost` is a single concrete class owning its
+ * subsystems directly.  The retraction does NOT touch the inner
+ * script-thread runtime: `HubScriptRunner` (Phase 7) derives from
+ * `EngineHost<HubAPI>` for code reuse — getting the phase FSM, thread
+ * spawn, ready promise, and RAII shutdown machinery.  See HEP-CORE-0033
+ * §4 for HubHost layering and §15 Phase 7 for the runner.
  */
 
 #include "pylabhub_utils_export.h"
@@ -82,23 +91,53 @@
 namespace pylabhub::scripting
 {
 
+// ============================================================================
+// script_host_traits<ApiT> — per-ApiT trait carrier
+// ============================================================================
+//
+// Decouples `EngineHost<ApiT>` from a hardcoded config type so the same
+// template body works for the role-side instantiation (`ConfigT =
+// RoleConfig`) and for a future hub-side instantiation (`ConfigT =
+// HubConfig` — added in HEP-CORE-0033 Phase 7 Commit B alongside the
+// `HubAPI` specialization).  Pure compile-time aliasing — substitution
+// for `ApiT = RoleAPIBase` produces bit-identical generated code to
+// the pre-trait era (verifiable via objdump if needed).
+//
+// Adding a new ApiT:
+//   1. Define ApiT.
+//   2. Specialize `script_host_traits<NewApiT>` with its ConfigT.
+//   3. Add `template class EngineHost<NewApiT>;` to engine_host.cpp.
+//   4. Hub-side specializations live in `hub_script_runner.hpp` (or
+//      similar) so engine_host.hpp doesn't need to include hub configs
+//      that role-only TUs would never use.
+template <typename ApiT> struct script_host_traits;
+
+template <> struct script_host_traits<RoleAPIBase>
+{
+    using ConfigT = config::RoleConfig;
+};
+
 template <typename ApiT>
 class PYLABHUB_UTILS_EXPORT EngineHost
 {
   public:
+    /// Convenience alias for the per-ApiT config type carried by the
+    /// trait.  For `EngineHost<RoleAPIBase>` this resolves to
+    /// `config::RoleConfig`; for `EngineHost<HubAPI>` (Phase 7 Commit B)
+    /// it will resolve to the hub-side config type.
+    using ConfigT = typename script_host_traits<ApiT>::ConfigT;
+
     /// @param role_tag    Short host tag used for ApiT construction
     ///                    and log prefixes (e.g. "prod"/"cons"/"proc"
     ///                    for role hosts, "hub" for the hub host).
-    /// @param config      Parsed config (moved into the host).  The
-    ///                    config type is `config::RoleConfig` for the
-    ///                    `EngineHost<RoleAPIBase>` instantiation; a
-    ///                    traits-based parameterisation will replace
-    ///                    this when HEP-0033 adds `HubConfig`.
+    /// @param config      Parsed config (moved into the host).  Type is
+    ///                    `script_host_traits<ApiT>::ConfigT` —
+    ///                    `RoleConfig` today; `HubConfig` after Commit B.
     /// @param engine      Script engine (moved into the host).
     /// @param shutdown_flag  External shutdown signal shared with main;
     ///                       may be nullptr.
     EngineHost(std::string_view role_tag,
-                config::RoleConfig config,
+                ConfigT config,
                 std::unique_ptr<ScriptEngine> engine,
                 std::atomic<bool> *shutdown_flag = nullptr);
 
@@ -178,7 +217,7 @@ class PYLABHUB_UTILS_EXPORT EngineHost
 
     [[nodiscard]] bool is_running()     const noexcept { return core_.is_running(); }
     [[nodiscard]] bool script_load_ok() const noexcept { return core_.is_script_load_ok(); }
-    [[nodiscard]] const config::RoleConfig &config()   const noexcept { return config_; }
+    [[nodiscard]] const ConfigT            &config()   const noexcept { return config_; }
     [[nodiscard]] std::string_view          role_tag() const noexcept { return role_tag_; }
 
     /// Block until wakeup (shutdown, incoming message, or timeout).
@@ -215,7 +254,7 @@ class PYLABHUB_UTILS_EXPORT EngineHost
 
   private:
     std::string                    role_tag_;
-    config::RoleConfig             config_;
+    ConfigT                        config_;
     std::unique_ptr<ScriptEngine>  engine_;
     RoleHostCore                   core_;
 
@@ -262,8 +301,12 @@ class PYLABHUB_UTILS_EXPORT EngineHost
 // code still referring to `RoleHostBase` by name resolves to the
 // template instantiation `EngineHost<RoleAPIBase>` without change.
 //
-// Hub side will add a parallel typedef when HEP-CORE-0033 Phase 8
-// lands:   using HubHostBase = EngineHost<HubAPI>;
+// Hub side will add a parallel typedef in HEP-CORE-0033 Phase 7
+// (Commit B):  `using HubScriptRunnerBase = EngineHost<HubAPI>;`,
+// followed by `class HubScriptRunner : public HubScriptRunnerBase`.
+// Per the §G1 retraction (lines 59-67 above), this is the SCRIPT-
+// thread runtime — the OUTER `HubHost` container remains a plain
+// concrete class (not derived from EngineHost).
 using RoleHostBase = EngineHost<RoleAPIBase>;
 
 } // namespace pylabhub::scripting

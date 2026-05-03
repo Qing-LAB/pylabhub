@@ -42,8 +42,13 @@
 #include <thread>
 #include <vector>
 
+namespace pylabhub::hub_host { class HubAPI; }  // fwd decl — defined in
+                                                  // HEP-0033 Phase 7 / 8
+
 namespace pylabhub::scripting
 {
+
+using pylabhub::hub_host::HubAPI;
 
 // Maximum recursion depth for JSON ↔ script type conversion.
 // Set via CMake option PYLABHUB_SCRIPT_MAX_RECURSION_DEPTH (default: 20).
@@ -207,6 +212,28 @@ class ScriptEngine
     [[nodiscard]] bool build_api(RoleAPIBase &api)
     {
         api_ = &api;
+        if (!build_api_(api))
+            return false;
+        state_ = EngineState::ApiBuilt;
+        accepting_.store(true, std::memory_order_release);
+        return true;
+    }
+
+    /**
+     * @brief Hub-side overload of @ref build_api.
+     *
+     * Same lifecycle bookkeeping as the role-side wrapper but stores the
+     * pointer in @ref hub_api_ and dispatches to the sibling virtual
+     * @ref build_api_(HubAPI &).  A given engine instance is bound to ONE
+     * API surface (role or hub) for its lifetime — either @ref api_
+     * (role) or @ref hub_api_ (hub) is non-null after this returns true,
+     * never both.  Hub-side concrete engines override `build_api_(HubAPI&)`;
+     * role-only engines use the no-op default and never reach this path
+     * (no caller invokes it).
+     */
+    [[nodiscard]] bool build_api(HubAPI &api)
+    {
+        hub_api_ = &api;
         if (!build_api_(api))
             return false;
         state_ = EngineState::ApiBuilt;
@@ -532,6 +559,20 @@ class ScriptEngine
     /// Returns true on success. If false, build_api() does NOT set accepting_=true.
     virtual bool build_api_(RoleAPIBase &api) = 0;
 
+    /// Hub-side sibling overload — added in HEP-CORE-0033 Phase 7
+    /// Commit A.  No-op default returning `false` so existing role-only
+    /// engines (LuaEngine / PythonEngine / NativeEngine) need not change.
+    /// Hub-side concrete engines (Phase 7+8) override this to bind the
+    /// HubAPI surface (events + tick + state reads) into the script
+    /// namespace.
+    ///
+    /// Default-false rationale: a role-only engine that ever receives a
+    /// `build_api(HubAPI &)` call should fail loudly rather than silently
+    /// accepting a binding it has no implementation for — `build_api`'s
+    /// wrapper sees `false` and does NOT set `accepting_=true`, so any
+    /// subsequent invoke is rejected.
+    virtual bool build_api_(HubAPI &) { return false; }
+
     /// Release all script objects, close interpreter. Called by finalize().
     virtual void finalize_engine_() = 0;
 
@@ -540,8 +581,15 @@ class ScriptEngine
     std::thread::id owner_thread_id_;
 
     /// Role API — single source of truth for identity, infrastructure, and operations.
-    /// Non-owning pointer, set by build_api(). Owned by role host.
+    /// Non-owning pointer, set by `build_api(RoleAPIBase&)`.  Owned by role host.
+    /// Mutually exclusive with @ref hub_api_ (each engine instance is
+    /// bound to exactly one API surface for its lifetime).
     RoleAPIBase *api_{nullptr};
+
+    /// Hub API — script-visible surface for hub-side scripts (HubScriptRunner).
+    /// Non-owning pointer, set by `build_api(HubAPI&)`.  Owned by HubScriptRunner.
+    /// Null for role-side engines.  Mutually exclusive with @ref api_.
+    HubAPI *hub_api_{nullptr};
 
   private:
     /// Accepting flag — true only between successful build_api() and stop_accepting().
