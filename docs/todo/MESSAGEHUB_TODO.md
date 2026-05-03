@@ -29,6 +29,51 @@ the role side.  HEP-0033 §4 docs updated to match.  See commits
 + `9822ce4` (§4 doc).  Earlier this sprint: HEP-CORE-0023 Phase 2
 (`cf53ed3`/`3201e08`/`6558b2c`), HEP-0034 Phase 1 (`d60ddf2`).
 
+### Open 2026-05-03: IncomingMessage `sender` field semantics for hub events
+
+`HubScriptRunner::worker_main_()` (Phase 7 Commit C) reuses
+`scripting::IncomingMessage` from `role_host_core.hpp` as the
+cross-thread queue payload between broker subscriptions and the
+script-thread runner.  The struct's role-side semantics:
+
+```cpp
+struct IncomingMessage {
+    std::string  event;     // event type
+    std::string  sender;    // role-side: ORIGINATOR's role uid
+    std::vector<std::byte> data;
+    nlohmann::json details;
+};
+```
+
+For hub events, the `sender` field is currently overloaded as a
+"lookup key" varying per event type:
+  - `channel_*` events  → channel name
+  - `consumer_*` events → channel name
+  - `role_*` events     → role uid
+  - `band_*` events     → band name
+  - `peer_*` events     → peer hub uid
+
+Field name "sender" doesn't describe these — for hub events, there
+is NO originator role; events come from broker state mutations.
+The same identifier is also already in `details` (e.g.
+`details["name"]` for channels).
+
+**Resolution options** (decide before Phase 8 binds the API to scripts):
+  - (a) Drop `sender` for hub events (pass `""`); hub bindings expose
+        the key from `details` only.
+  - (b) Document each hub event's `sender` field meaning explicitly
+        (in HubScriptRunner header + a Phase 8 binding doc).
+  - (c) Add a new field to `IncomingMessage` (e.g. `key`) — breaks
+        role compat unless we extend defensively.
+
+Recommended: (a) — simplest, most honest about no-originator
+semantics, no breaking change.  Defer the actual change until Phase
+8 wires the script bindings (the field's surface will become script-
+visible at that point and the cleanup is naturally bundled with the
+binding decision).
+
+**Surfaced 2026-05-03 during Phase 7 D1.6 static review.**
+
 ### Open: HEP-CORE-0033 Hub Character refactor (in progress)
 
 **Implementation reference**: `docs/HEP/HEP-CORE-0033-Hub-Character.md`
