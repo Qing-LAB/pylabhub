@@ -102,6 +102,17 @@ public:
         expected_errors_.push_back(std::move(substring));
     }
 
+    /// Path to the per-test capture file.  Exposed so tests can
+    /// affirmatively verify a WARN/ERROR / INFO line was emitted —
+    /// `ExpectLogWarn`/`Error` only DECLARE an allowlist; they don't
+    /// enforce the warning actually fired.  For tests that need to
+    /// gate on emission (per audit §1.1 Class A path-discrimination)
+    /// open this file and grep for the expected substring directly.
+    [[nodiscard]] const std::filesystem::path &log_path() const noexcept
+    {
+        return log_path_;
+    }
+
     /// Read the capture file, fail the test for every WARN or ERROR
     /// line that does not match a previously-declared expectation.
     /// Call this from `TearDown` (or directly at the end of a test).

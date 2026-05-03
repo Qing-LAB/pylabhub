@@ -96,6 +96,48 @@ public:
     /// LifecycleGuard module pattern roles use.
     [[nodiscard]] utils::ThreadManager &thread_manager();
 
+    // ── Script-visible API (HEP-CORE-0033 §12.3 Phase 7 minimum) ──────────
+    //
+    // Mirrors RoleAPIBase signatures verbatim where the hub equivalent
+    // makes sense:
+    //   - `log(level, msg)` — same param order, same level tokens
+    //     ("info" / "warn" / "error" / "debug"; default = info).
+    //   - `metrics()` is the hub equivalent of role's
+    //     `snapshot_metrics_json()` — no parameter, returns a JSON
+    //     snapshot.  For hub the snapshot is the broker's full
+    //     metrics view (HEP-CORE-0019 + §9.4); for role it was the
+    //     role's own queue + custom metrics.
+    //   - `uid()` is the hub equivalent of role's `uid()` accessor;
+    //     `role_tag()` is omitted because it's always "hub".
+    //
+    // Phase 8 will add state read accessors (list_channels / get_channel
+    // etc.) and control delegates (broadcast_channel, etc.) incrementally
+    // as application use cases land.  Each new method is a small
+    // mechanical triplet: one C++ method here + one binding line in
+    // PythonEngine + one closure entry in LuaEngine.
+
+    /// Emit a log line through the process Logger sink with a
+    /// `[hub/<uid>]` prefix.  Level tokens follow the role-side
+    /// `RoleAPIBase::log` convention: "debug" / "warn"/"warning" /
+    /// "error" route to LOGGER_DEBUG / WARN / ERROR; anything else
+    /// routes to LOGGER_INFO.
+    void log(const std::string &level, const std::string &msg);
+
+    /// Snapshot of the broker's metrics — channel/role/band/peer
+    /// aggregates plus broker counters.  Same JSON shape AdminService
+    /// emits for `query_metrics` (single source of truth via Phase 6.2b's
+    /// `hub_state_json` serializers).  Empty filter = all categories.
+    ///
+    /// Returns an empty object (not an error) when called before
+    /// `set_host` has wired the HubHost backref — should not happen
+    /// in production (HubScriptRunner sets host immediately after
+    /// construction) but the path is defended for safety.
+    [[nodiscard]] nlohmann::json metrics() const;
+
+    /// Hub instance uid (e.g. "hub.lab1.uid00000001").  Captured at
+    /// construction; stable for the life of the HubAPI instance.
+    [[nodiscard]] const std::string &uid() const noexcept;
+
     // ── Host wiring (called once by HubScriptRunner after construction) ───
 
     /// Bind to the HubHost backref.  Required before any state-reading
