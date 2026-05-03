@@ -623,6 +623,108 @@ TEST_F(AdminServiceTest, DevMode_TokenSkipped_PingAccepted)
     worker.join();
 }
 
+// ─── §11.2 control methods (Phase 6.2c) ────────────────────────────────────
+//
+// Negative paths only at the standalone-AdminService level (no broker
+// running).  Positive paths require a startup-ed HubHost and are
+// covered in the HubHost_Admin* integration block below.
+
+TEST_F(AdminServiceTest, Control_CloseChannel_MissingParams_Returns_InvalidParams)
+{
+    HubAdminConfig acfg;
+    acfg.endpoint       = "tcp://127.0.0.1:0";
+    acfg.token_required = true;
+
+    auto [cfg, dir] = make_config("c_close_bad");
+    HubHost host(std::move(cfg));
+    AdminService svc(pylabhub::hub::get_zmq_context(), acfg, kTestToken, host);
+    std::thread worker([&] { svc.run(); });
+    ASSERT_TRUE(poll_until([&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+
+    const json reply = req_reply(svc.bound_endpoint(),
+        {{"method", "close_channel"}, {"token", kTestToken}});
+    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
+    EXPECT_EQ(reply["error"]["code"], "invalid_params");
+    EXPECT_NE(reply["error"]["message"].get<std::string>().find("channel"),
+              std::string::npos);
+
+    svc.stop();
+    worker.join();
+}
+
+TEST_F(AdminServiceTest, Control_CloseChannel_Unknown_Returns_NotFound)
+{
+    HubAdminConfig acfg;
+    acfg.endpoint       = "tcp://127.0.0.1:0";
+    acfg.token_required = true;
+
+    auto [cfg, dir] = make_config("c_close_404");
+    HubHost host(std::move(cfg));
+    AdminService svc(pylabhub::hub::get_zmq_context(), acfg, kTestToken, host);
+    std::thread worker([&] { svc.run(); });
+    ASSERT_TRUE(poll_until([&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+
+    const json reply = req_reply(svc.bound_endpoint(),
+        {{"method", "close_channel"},
+         {"token",  kTestToken},
+         {"params", {{"channel", "no.such.channel"}}}});
+    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
+    EXPECT_EQ(reply["error"]["code"], "not_found");
+
+    svc.stop();
+    worker.join();
+}
+
+TEST_F(AdminServiceTest, Control_BroadcastChannel_MissingMessage_Returns_InvalidParams)
+{
+    HubAdminConfig acfg;
+    acfg.endpoint       = "tcp://127.0.0.1:0";
+    acfg.token_required = true;
+
+    auto [cfg, dir] = make_config("c_bcast_bad");
+    HubHost host(std::move(cfg));
+    AdminService svc(pylabhub::hub::get_zmq_context(), acfg, kTestToken, host);
+    std::thread worker([&] { svc.run(); });
+    ASSERT_TRUE(poll_until([&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+
+    // channel present but message missing → invalid_params (not silent
+    // accept of an empty message).
+    const json reply = req_reply(svc.bound_endpoint(),
+        {{"method", "broadcast_channel"},
+         {"token",  kTestToken},
+         {"params", {{"channel", "lab.x"}}}});
+    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
+    EXPECT_EQ(reply["error"]["code"], "invalid_params");
+    EXPECT_NE(reply["error"]["message"].get<std::string>().find("message"),
+              std::string::npos);
+
+    svc.stop();
+    worker.join();
+}
+
+TEST_F(AdminServiceTest, Control_BroadcastChannel_Unknown_Returns_NotFound)
+{
+    HubAdminConfig acfg;
+    acfg.endpoint       = "tcp://127.0.0.1:0";
+    acfg.token_required = true;
+
+    auto [cfg, dir] = make_config("c_bcast_404");
+    HubHost host(std::move(cfg));
+    AdminService svc(pylabhub::hub::get_zmq_context(), acfg, kTestToken, host);
+    std::thread worker([&] { svc.run(); });
+    ASSERT_TRUE(poll_until([&] { return !svc.bound_endpoint().empty(); }, 2000ms));
+
+    const json reply = req_reply(svc.bound_endpoint(),
+        {{"method", "broadcast_channel"},
+         {"token",  kTestToken},
+         {"params", {{"channel", "no.such.channel"}, {"message", "go"}}}});
+    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
+    EXPECT_EQ(reply["error"]["code"], "not_found");
+
+    svc.stop();
+    worker.join();
+}
+
 // ─── HubHost integration — admin spawned + drained ─────────────────────────
 
 TEST_F(AdminServiceTest, HubHost_AdminEnabled_RoundTripWorks)
@@ -695,6 +797,36 @@ TEST_F(AdminServiceTest, HubHost_AdminEnabled_QueryMetricsRoundTrip)
     EXPECT_TRUE(reply["result"].contains("queried_at"));
 
     host.shutdown();
+}
+
+TEST_F(AdminServiceTest, HubHost_AdminEnabled_RequestShutdown_StopsHost)
+{
+    // Positive control-method path.  request_shutdown must:
+    //   - return ok with shutdown_requested=true
+    //   - flip the host's shutdown atomic so run_main_loop returns
+    //   - leave the host in a state that accepts host.shutdown()
+    auto [cfg, dir] = make_config("rsd");
+    HubHost host(std::move(cfg));
+
+    host.startup();
+    ASSERT_TRUE(host.is_running());
+    ASSERT_NE(host.admin(), nullptr);
+    ASSERT_TRUE(poll_until(
+        [&] { return !host.admin()->bound_endpoint().empty(); }, 2000ms));
+
+    const json reply = req_reply(host.admin()->bound_endpoint(),
+        {{"method", "request_shutdown"}, {"token", kTestToken}});
+    ASSERT_EQ(reply.value("status", ""), "ok") << reply.dump();
+    EXPECT_EQ(reply["result"].value("shutdown_requested", false), true);
+
+    // The post-RPC host.shutdown() must succeed cleanly (no double-
+    // request issue, no resource leak).  request_shutdown is the
+    // soft-stop signal that run_main_loop would observe; this test
+    // doesn't enter run_main_loop, so we verify the synchronous path
+    // by calling shutdown() and asserting clean state-machine
+    // transition.
+    host.shutdown();
+    EXPECT_FALSE(host.is_running());
 }
 
 TEST_F(AdminServiceTest, HubHost_AdminDisabled_NoAdminConstructed)
