@@ -51,8 +51,8 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <variant>                   // std::monostate for the trait specialization
 
-namespace pylabhub::config       { class HubConfig; }
 namespace pylabhub::utils        { class ThreadManager; }
 namespace pylabhub::hub_host     { class HubHost; }
 namespace pylabhub::scripting    { class RoleHostCore;
@@ -179,17 +179,29 @@ private:
 } // namespace pylabhub::hub_host
 
 // ============================================================================
-// script_host_traits<HubAPI> specialization (HEP-CORE-0033 Phase 7)
+// script_host_traits<HubAPI> specialization (HEP-CORE-0033 Phase 7 Option E)
 // ============================================================================
 //
 // Located here (alongside HubAPI's public declaration) rather than in
 // the private hub_script_runner.hpp so that engine_host.cpp can include
 // it directly to instantiate `template class EngineHost<HubAPI>;`.
 //
-// The role-side specialization for `RoleAPIBase` lives inline in
-// engine_host.hpp because RoleConfig is a baseline include there;
-// HubConfig isn't, and we don't want engine_host.hpp pulling hub
-// headers into role-only TUs.
+// **ConfigT = std::monostate** is the deliberate Option E choice:
+//   - HubHost is the SOLE owner of HubConfig (one config per hub
+//     instance — see HEP-CORE-0033 §4 + Phase 7 design discussion).
+//   - HubScriptRunner is a SUBSYSTEM under HubHost, not its own
+//     top-level container.  It does not own a config; it reads what
+//     it needs (uid + timing) through its `host_` backref.
+//   - The runner therefore stores nothing config-shaped of its own.
+//     `EngineHost<HubAPI>::config()` returns a `const std::monostate&`
+//     and is intentionally never called on the hub side — verified by
+//     code search.
+//
+// Contrast with the role-side specialization (`ConfigT = RoleConfig`):
+// the role binary IS the top-level container; its EngineHost
+// instantiation is the sole owner of RoleConfig.  EngineHost itself
+// doesn't reach into ConfigT — uid is passed as a separate ctor param
+// (D2.1) — so the same template body works for both shapes.
 
 namespace pylabhub::scripting
 {
@@ -197,7 +209,18 @@ namespace pylabhub::scripting
 template <>
 struct script_host_traits<pylabhub::hub_host::HubAPI>
 {
-    using ConfigT = config::HubConfig;
+    using ConfigT = std::monostate;
+    /// `monostate` carries no fields — the hub uid is owned by HubHost,
+    /// and `HubScriptRunner` populates it via `set_uid()` in its ctor
+    /// body using the host backref (`host_.config().identity().uid`).
+    /// Returning empty here lets the EngineHost ctor complete without
+    /// reaching into anything that doesn't exist; the uid is overwritten
+    /// before startup_() reads it.  Trait contract documented in
+    /// `engine_host.hpp`.
+    static std::string uid_from_config(const std::monostate &)
+    {
+        return std::string{};
+    }
 };
 
 } // namespace pylabhub::scripting

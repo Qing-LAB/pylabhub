@@ -97,24 +97,40 @@ namespace pylabhub::scripting
 //
 // Decouples `EngineHost<ApiT>` from a hardcoded config type so the same
 // template body works for the role-side instantiation (`ConfigT =
-// RoleConfig`) and for a future hub-side instantiation (`ConfigT =
-// HubConfig` — added in HEP-CORE-0033 Phase 7 Commit B alongside the
-// `HubAPI` specialization).  Pure compile-time aliasing — substitution
-// for `ApiT = RoleAPIBase` produces bit-identical generated code to
-// the pre-trait era (verifiable via objdump if needed).
+// RoleConfig` — the role binary owns its config) and the hub-side
+// instantiation (`ConfigT = std::monostate` — HubHost owns HubConfig;
+// the runner reads through the host backref, see HEP-CORE-0033 §4 +
+// Phase 7 Option E).  Pure compile-time aliasing.
+//
+// Trait contract:
+//   - `using ConfigT = ...`               — the per-ApiT config type.
+//   - `static std::string uid_from_config(const ConfigT &c)`
+//                                         — extracts the host instance
+//     uid from the moved-in config.  EngineHost calls this once in its
+//     ctor body, AFTER the move into `config_`.  Role-side returns
+//     `c.identity().uid`.  Hub-side returns "" — HubScriptRunner's
+//     ctor body then calls `set_uid(host_.config().identity().uid)`
+//     to populate the real uid before startup_().
 //
 // Adding a new ApiT:
 //   1. Define ApiT.
-//   2. Specialize `script_host_traits<NewApiT>` with its ConfigT.
+//   2. Specialize `script_host_traits<NewApiT>` with its ConfigT and
+//      `uid_from_config()` extractor (use `std::monostate` ConfigT +
+//      empty-string uid if the new host is a subsystem; the outer
+//      container's derived class then sets the real uid via setter).
 //   3. Add `template class EngineHost<NewApiT>;` to engine_host.cpp.
-//   4. Hub-side specializations live in `hub_script_runner.hpp` (or
-//      similar) so engine_host.hpp doesn't need to include hub configs
-//      that role-only TUs would never use.
+//   4. Hub-side specializations live in `hub_api.hpp` (alongside the
+//      ApiT class) so engine_host.hpp doesn't need to include hub
+//      headers that role-only TUs would never use.
 template <typename ApiT> struct script_host_traits;
 
 template <> struct script_host_traits<RoleAPIBase>
 {
     using ConfigT = config::RoleConfig;
+    static std::string uid_from_config(const ConfigT &c)
+    {
+        return c.identity().uid;
+    }
 };
 
 template <typename ApiT>
@@ -131,11 +147,29 @@ class PYLABHUB_UTILS_EXPORT EngineHost
     ///                    and log prefixes (e.g. "prod"/"cons"/"proc"
     ///                    for role hosts, "hub" for the hub host).
     /// @param config      Parsed config (moved into the host).  Type is
-    ///                    `script_host_traits<ApiT>::ConfigT` —
-    ///                    `RoleConfig` today; `HubConfig` after Commit B.
+    ///                    `script_host_traits<ApiT>::ConfigT`.  For
+    ///                    `RoleAPIBase` this is `config::RoleConfig`
+    ///                    (the role binary's sole owner of its config).
+    ///                    For `HubAPI` (HEP-CORE-0033 Phase 7 Option E)
+    ///                    this is `std::monostate` — HubScriptRunner
+    ///                    is a SUBSYSTEM under HubHost; HubHost is the
+    ///                    sole owner of `HubConfig` and the runner reads
+    ///                    fields it needs through the host backref it
+    ///                    already holds.
     /// @param engine      Script engine (moved into the host).
     /// @param shutdown_flag  External shutdown signal shared with main;
     ///                       may be nullptr.
+    ///
+    /// Uid: extracted from @p config POST-move via the trait helper
+    /// `script_host_traits<ApiT>::uid_from_config(config_)`.  Role-side
+    /// returns `c.identity().uid` directly.  Hub-side (where ConfigT is
+    /// `std::monostate`) returns empty — HubScriptRunner sets the real
+    /// uid in its ctor body via @ref set_uid using its host backref.
+    /// This pattern avoids the C++ argument-evaluation-order pitfall
+    /// (`cfg.identity().uid` vs `std::move(cfg)` in the same call are
+    /// indeterminately sequenced — g++ chose to move first, leaving a
+    /// moved-from cfg for the uid read; D2.1 caught this in the test
+    /// suite).  See `script_host_traits` docs above for the contract.
     EngineHost(std::string_view role_tag,
                 ConfigT config,
                 std::unique_ptr<ScriptEngine> engine,
@@ -178,6 +212,22 @@ class PYLABHUB_UTILS_EXPORT EngineHost
     /// Enable validate-only mode (parse + engine load; no broker / no loop).
     /// Must be called before @ref startup.
     void set_validate_only(bool v) { core_.set_validate_only(v); }
+
+  protected:
+    /// Override the uid captured by the trait extractor at construction.
+    /// Used by hub-side derived (HubScriptRunner) to populate the real
+    /// uid from `host_.config()` post base-construction — the trait
+    /// returns "" for `ConfigT = std::monostate` because monostate has
+    /// no fields to read.  Role-side derived never call this — the
+    /// trait extractor produces the right value directly.
+    ///
+    /// MUST be called before @ref startup_ — uid_ is read during ApiT
+    /// construction in startup_'s body.  Calling after startup_ has
+    /// begun is a contract violation (uid would not propagate to ApiT,
+    /// only to subsequent diagnostics).
+    void set_uid(std::string uid) noexcept { uid_ = std::move(uid); }
+
+  public:
 
     // ── Start / Stop  (not a LifecycleGuard module) ─────────────────────
 
@@ -254,6 +304,15 @@ class PYLABHUB_UTILS_EXPORT EngineHost
 
   private:
     std::string                    role_tag_;
+    /// Host instance uid — captured at construction (not derived from
+    /// `config_`).  Used for diagnostics + as the uid arg to ApiT's
+    /// ctor.  Storing it separately decouples EngineHost from any
+    /// particular ConfigT shape: hub-side ConfigT is `std::monostate`
+    /// (no `.identity().uid`); role-side derived classes extract
+    /// `cfg.identity().uid` and pass it explicitly.  See HEP-CORE-0033
+    /// Phase 7 Option E (single config owner per layer; subsystems read
+    /// through the owner — runner reads HubConfig via host backref).
+    std::string                    uid_;
     ConfigT                        config_;
     std::unique_ptr<ScriptEngine>  engine_;
     RoleHostCore                   core_;

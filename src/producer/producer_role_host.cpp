@@ -52,7 +52,9 @@ using Clock = std::chrono::steady_clock;
 ProducerRoleHost::ProducerRoleHost(config::RoleConfig config,
                                      std::unique_ptr<scripting::ScriptEngine> engine,
                                      std::atomic<bool> *shutdown_flag)
-    : scripting::RoleHostBase("prod", std::move(config), std::move(engine),
+    : scripting::RoleHostBase("prod",
+                              std::move(config),
+                              std::move(engine),
                               shutdown_flag)
 {
 }

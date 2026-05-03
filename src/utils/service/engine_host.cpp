@@ -37,6 +37,19 @@ EngineHost<ApiT>::EngineHost(std::string_view role_tag,
     , config_(std::move(config))
     , engine_(std::move(engine))
 {
+    // Extract uid via the per-ApiT trait helper AFTER the move into
+    // `config_`.  Reading through the trait + the moved-in `config_`
+    // (rather than the source `config` parameter) avoids the C++
+    // argument-evaluation-order pitfall where `cfg.identity().uid` and
+    // `std::move(cfg)` in the same call site are indeterminately
+    // sequenced — g++ chose to move first, leaving uid extraction
+    // reading from a moved-from RoleConfig (caught by D2.1 testing).
+    //
+    // Hub-side specialization returns "" because ConfigT is
+    // `std::monostate` (no fields).  HubScriptRunner's ctor body then
+    // calls `set_uid(host_.config().identity().uid)` to populate the
+    // real uid before any startup_() call reads it.
+    uid_ = script_host_traits<ApiT>::uid_from_config(config_);
     core_.set_shutdown_flag(shutdown_flag);
 }
 
@@ -86,7 +99,7 @@ EngineHost<ApiT>::~EngineHost()
             "still reference now-destroyed derived members; aborting "
             "to avoid silent use-after-free.",
             typeid(ApiT).name(),
-            role_tag_, config_.identity().uid);
+            role_tag_, uid_);
     }
 }
 
@@ -108,7 +121,7 @@ void EngineHost<ApiT>::startup_()
             "this host instance is single-use.  role_tag='{}' uid='{}'.  "
             "Construct a new EngineHost instance to start fresh.",
             typeid(ApiT).name(),
-            role_tag_, config_.identity().uid);
+            role_tag_, uid_);
     }
 
     try
@@ -121,8 +134,10 @@ void EngineHost<ApiT>::startup_()
         // api's ThreadManager.  role_tag_ is the short form
         // ("prod"/"cons"/"proc" for role side; "hub" for hub side)
         // used by the ApiT-owned ThreadManager name + log prefixes.
+        // uid_ is the host instance uid carried separately from
+        // ConfigT (Phase 7 Option E — see engine_host.hpp ctor docs).
         api_ = std::make_unique<ApiT>(
-            core_, std::string(role_tag_), config_.identity().uid);
+            core_, std::string(role_tag_), uid_);
 
         api_->thread_manager().spawn("worker", [this] { worker_main_(); });
 
@@ -191,17 +206,17 @@ template class EngineHost<RoleAPIBase>;
 
 } // namespace pylabhub::scripting
 
-// ── HubAPI instantiation (HEP-CORE-0033 Phase 7) ────────────────────────────
+// ── HubAPI instantiation (HEP-CORE-0033 Phase 7 — Option E) ─────────────────
 //
-// The HubAPI specialization of EngineHost lives in pylabhub-utils too.
+// The HubAPI specialization of EngineHost lives in pylabhub-utils.
 // The instantiation must include hub_api.hpp so the trait specialization
-// (script_host_traits<HubAPI>::ConfigT = HubConfig) is visible AND
-// HubAPI's full type is available for the unique_ptr<ApiT> destructor.
-//
-// HubConfig must be COMPLETE here (not just forward-declared) because
-// EngineHost holds `ConfigT config_;` as a value member.
+// (`script_host_traits<HubAPI>::ConfigT = std::monostate`) is visible
+// AND HubAPI's full type is available for the unique_ptr<ApiT>
+// destructor.  HubConfig is NOT needed here (and was deliberately
+// dropped from this TU during D2.1) — EngineHost is opaque to ConfigT,
+// and the hub-side runner reads HubConfig fields through its host
+// backref, not through `config()`.
 #include "utils/hub_api.hpp"
-#include "utils/config/hub_config.hpp"
 
 namespace pylabhub::scripting
 {

@@ -8,7 +8,7 @@
 
 #include "hub_script_runner.hpp"
 
-#include "utils/config/hub_config.hpp"
+#include "utils/config/hub_config.hpp"     // host_.config() reads (worker only)
 #include "utils/hub_host.hpp"
 #include "utils/hub_state.hpp"
 #include "utils/hub_state_json.hpp"   // channel_to_json / role_to_json / ... (Phase 6.2b)
@@ -18,6 +18,7 @@
 #include "utils/script_engine.hpp"
 
 #include <chrono>
+#include <variant>                       // std::monostate sentinel for ConfigT
 #include <vector>
 
 namespace pylabhub::scripting
@@ -28,12 +29,25 @@ namespace pylabhub::scripting
 // ============================================================================
 
 HubScriptRunner::HubScriptRunner(pylabhub::hub_host::HubHost  &host,
-                                  config::HubConfig             cfg,
                                   std::unique_ptr<ScriptEngine> engine,
                                   std::atomic<bool>            *shutdown_flag)
-    : HubScriptRunnerBase("hub", std::move(cfg), std::move(engine), shutdown_flag)
+    // Phase 7 Option E: HubScriptRunner does NOT own a HubConfig (HubHost
+    // is the sole owner — single config per hub instance).  Pass
+    // `std::monostate{}` for ConfigT — EngineHost is opaque to it and
+    // its trait specialization for HubAPI returns empty uid (which we
+    // override below via `set_uid` once host_ is wired).
+    : HubScriptRunnerBase("hub",
+                           std::monostate{},
+                           std::move(engine),
+                           shutdown_flag)
     , host_(host)
 {
+    // Set the real uid from HubHost's config — must run before
+    // `startup_()` (EngineHost reads uid_ when constructing ApiT).
+    // Construction order guarantees this: HubScriptRunner is built by
+    // HubHost::startup() and `startup_()` is called explicitly AFTER
+    // construction completes, so the body runs first.
+    set_uid(host_.config().identity().uid);
 }
 
 HubScriptRunner::~HubScriptRunner()
@@ -56,7 +70,7 @@ void HubScriptRunner::worker_main_()
     namespace js = pylabhub::hub;   // channel_to_json / role_to_json / etc.
 
     LOGGER_INFO("[HubScriptRunner:{}] worker_main_ entered",
-                config().identity().uid);
+                host_.config().identity().uid);
 
     // ── Mark runner as running (gates `is_running()` queries) ─────────────
     //
@@ -197,7 +211,7 @@ void HubScriptRunner::worker_main_()
     // Hand-rolled `next = now + period` only implements FixedRate and
     // silently downgrades the catch-up variant — fixed in Phase 7
     // D1.6 (S2) after the static review.
-    const auto timing      = config().timing().timing_params();
+    const auto timing      = host_.config().timing().timing_params();
     const auto policy      = timing.policy;
     const double period_us = static_cast<double>(timing.period_us);
     const bool is_max_rate = (policy == LoopTimingPolicy::MaxRate);
@@ -265,7 +279,7 @@ void HubScriptRunner::worker_main_()
     LOGGER_INFO("[HubScriptRunner:{}] shutting down — draining pending "
                 "events and running on_stop; cleanup may take up to one "
                 "tick period ({} ms)",
-                config().identity().uid,
+                host_.config().identity().uid,
                 is_max_rate ? 0 : static_cast<int>(period_us / 1000));
 
     auto remaining = core().drain_messages();
@@ -278,7 +292,7 @@ void HubScriptRunner::worker_main_()
     core().set_running(false);
 
     LOGGER_INFO("[HubScriptRunner:{}] worker_main_ exiting",
-                config().identity().uid);
+                host_.config().identity().uid);
 }
 
 } // namespace pylabhub::scripting
