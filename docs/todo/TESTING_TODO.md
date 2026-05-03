@@ -14,36 +14,80 @@
 `PlhRoleCliTest.LogBackupsBelowSentinelRejectedByValidate` passes solo
 in ~0.11 s but intermittently times out at the 10 s ctest deadline
 when running under `ctest -j2`.  Failure mode: subprocess returns
-SIGTERM (exit 143) — the test-process-utility wait loop killed the
-child after the deadline.
+SIGTERM (exit 143) — `test_process_utils.cpp::wait_for_worker_and_get_exit_code`
+hits the deadline (50 ms poll, 10 s budget), sends SIGTERM, then
+SIGKILL after a 2 s grace.  Reproduces ~1 in 3 full-suite runs.
 
 **This is NOT a "just flake" — there is no logical reason a 100 ms
-test should stall 100× under modest parallel load.**  Hypotheses to
-investigate:
+test should stall 100× under modest parallel load.**
 
-- `init -p <path>` then `validate -p <path>` — these acquire `flock`
-  on `<path>/role.json.lock`.  If a sibling test holds a lock on the
-  same canonical path (different `tag` collision in `unique_temp_dir`?
-  shared `/tmp` directory contention?) the validate path may block
-  on the file lock indefinitely.
-- `test_process_utils.cpp:555` (the failing assertion site) — review
-  `wait_for_exit(seconds)` for the actual semantics: does it kill on
-  timeout?  Does the parent block on a pipe read that the child never
-  closes?  Does the framework drain stderr before the join?
-- The `--validate` path uses `JsonConfig::lock_for_read` — does this
-  share a global lock with sibling tests' write transactions on
-  unrelated files?  Audit `FileLock` accidentally-global state.
-- gtest filter glob: are two parallel ctest runners filtering the
-  same test binary and racing on its temp dirs?  Confirm each test
-  spawns a child with PID-namespaced temp paths.
+**D2.1 audit (2026-05-03) — preliminary findings.**  Walked through
+the test, fixture, and framework + the `--init` code path:
 
-**Action:** before claiming this test reliable, walk through the test
-+ framework code and identify the actual contention point.  Surface
-it as a fix (not a retry-loop bandage).  Tracked as framework-level
-because the same shape can mask other tests' real failures.
+- *Test code is clean.*  Two-step spawn → `wait_for_exit(10)` for each.
+  No shared state between the spawn and the wait.
+- *Temp dirs are PID + counter unique* (`make_tmp_dir`), so cross-test
+  filesystem path collisions are ruled out.
+- *`wait_for_exit` is correct:* polls `waitpid(WNOHANG)` every 50 ms,
+  SIGTERM at deadline, SIGKILL after 2 s grace.  No bug there.
+- *Solo plh_role suite under `-j2` runs 5/5 clean* — the contention
+  is from OTHER suites running concurrently with plh_role tests,
+  not within plh_role's own L4 set.
+- *`--init` code path:* parses CLI args, then runs the full
+  `LifecycleGuard runner_lifecycle(scripting::role_lifecycle_modules())`
+  with **6 modules**: Logger (spawns worker thread), FileLock,
+  CryptoUtils (libsodium init), JsonConfig (flag-flip), ZMQContext
+  (`zmq_ctx_new` — spawns IO threads), DataBlock (flag-flip).  Then
+  calls `RoleDirectory::init_directory` (writes JSON).  In isolation
+  this is well under 100 ms; under heavy parallel load several of
+  these can each cost 10–100 ms more.
 
-Confirmed pattern: D2.1 build (2026-05-03) — `ctest -j2` showed this
-as the sole failure across 1723 tests; solo re-run passed cleanly.
+**Most likely root causes (untested, ranked by probability):**
+
+1. *Process-fork + dlopen overhead.*  Spawning a fresh `plh_role`
+   binary loads `libpylabhub-utils.so` + libpython + libsodium +
+   libluajit + libzmq.  Under `-j2` with concurrent test binaries
+   each doing the same, ld.so + glibc lock contention can multiply
+   startup cost by 10×.
+2. *Logger worker-thread spawn races with sibling tests' Logger inits.*
+   pthread_create takes a runtime-internal lock; multiple processes
+   doing it simultaneously serialize.
+3. *ZMQ context creation* — `zmq_ctx_new` spawns N IO threads,
+   default 1.  Same pthread-internal serialization argument.
+4. *Filesystem contention* on `/tmp` during simultaneous file lock
+   creation.  tmpfs is usually fine, but kernel inode/lock-block
+   contention is observable under stress.
+
+**Next steps for a focused investigation session:**
+
+- *Reproduce reliably:* run the full suite 10× with `-j2` while
+  another long-running ctest binary saturates one core (e.g.,
+  `test_layer3_datahub` in a tight loop).  Capture stderr from the
+  failed `--init` child via `--stop-on-failure --output-on-failure`.
+- *Time the binary's startup phases.*  Add a temporary
+  `LOGGER_INFO("[plh_role] phase=lifecycle_started", ...)` etc. at
+  each phase boundary in `plh_role_main.cpp` and compare wall-clock
+  in the slow run vs the fast run.
+- *Strace*: `strace -e trace=open,mmap -tt -f plh_role --init ...`
+  during a stressed run to see where the binary blocks.
+- *Try a smaller lifecycle for `--init` mode* — `--init` only writes
+  JSON; it doesn't need ZMQContext or DataBlock or even
+  CryptoUtils.  A leaner init-mode lifecycle (Logger + FileLock +
+  JsonConfig only) would shave most of the modules and likely make
+  the timeout flake disappear.  HEP-0024 §12 hoisted the full
+  lifecycle above `--init` for uniform LOGGER_* semantics; perhaps
+  there's a middle ground (full lifecycle for run/validate, light
+  for init only).
+
+**Action:** schedule a focused 2-hour session to land one of the
+above next steps and either fix the root cause or raise the timeout
+to 30 s with a recorded justification.  Do NOT mask with a retry
+loop — that would mask real regressions in the same shape.
+
+Confirmed flake pattern: D2.1 build (1723 tests) and D2.2 build
+(1728 tests) — `ctest -j2` shows this as the sole intermittent
+failure in roughly 1-of-3 full runs; solo re-run always passes
+in 0.1–0.2 s.
 
 ### Open 2026-05-03: Strict must-fire migration in LogCaptureFixture-using tests
 
