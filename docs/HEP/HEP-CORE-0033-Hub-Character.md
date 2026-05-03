@@ -1298,11 +1298,29 @@ can land in parallel once P1 lands.
     L3 integration tests (broker reachable, REG_REQ round-trip with
     HubBrokerConfig values reflected in REG_ACK heartbeat block,
     shutdown breaks client connection).
-  - **Phase 6.2 — AdminService structured RPC (§11)** — pending.
+  - **Phase 6.2 — AdminService structured RPC (§11)** — ✅ COMPLETE 2026-05-02.
     Token-validated REP socket; thin wrapper that calls
     `host.broker()` mutators directly (acceptance gate at the RPC
-    entry point per §11.3).  Retires the legacy `AdminShell` dep.
-    L3 tests for each RPC method.
+    entry point per §11.3).  Retires the legacy `AdminShell`.
+    Sub-phases:
+      - **6.2a** ✅ `db9f8f9` — skeleton: REP socket bind, JSON envelope,
+        token gate, localhost-bind enforcement, `ping` round-trip,
+        ThreadManager registration, HubHost lifecycle integration.
+      - **6.2b** ✅ `c0408a8` — 7 query methods (`list_channels`,
+        `get_channel`, `list_roles`, `get_role`, `list_bands`,
+        `list_peers`, `query_metrics`).  HubState entry-type
+        serializers promoted from `broker_service.cpp` to shared
+        `utils/hub_state_json.{hpp,cpp}` so admin RPC and metrics
+        path emit identical JSON.
+      - **6.2c** ✅ `38591dc` — 3 control methods (`close_channel`,
+        `broadcast_channel`, `request_shutdown`).  Each delegates
+        to an existing fire-and-forget mutator; admin response is
+        the accept-ack, not completion.
+    23 L2 AdminService tests; mutation-verified per sub-phase.
+    10 of 16 §11.2 methods wired; 6 deferred with explicit
+    upstream-HEP citations (revoke_role / reload_config /
+    add/remove/list_known_roles / exec_python — see §16 #1, #9,
+    HEP-0035, Phase 7 respectively).
 - **Phase 7** — `scripting::hub_lifecycle_modules()` + `HubScriptRunner` using
   `ScriptEngine`; retire `PythonInterpreter`/`HubScript`/`hub_script_api`/
   `pylabhub_module`. L3 tests for each callback + default no-op behavior.

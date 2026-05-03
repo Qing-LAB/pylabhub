@@ -22,24 +22,34 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
-### Snapshot — 2026-05-02
+### Snapshot — 2026-05-02 (Phase 6.2 closed)
 
-**Full suite: 1689/1689 green at 94.90s** (last verified `b9f125b`).
+**Full suite: 1702/1702 green** (last verified post-`38591dc`).
 Branch `feature/lua-role-support`.
 
-**🎯 Test-correctness audit CLOSED — 2026-05-02.**  All 204 inventory
-rows are now ✅ FIXED or n/a across all four bug classes (A/B/C/D).
-Zero open rows.  Class D (log-noise gate) coverage:
-  - 101 ✅ framework gate (Pattern-3 subprocess via `expect_worker_ok`)
-  -  81 n/a (tested production code has no `LOGGER_*`)
-  -  13 ✅ FIXED via in-process `LogCaptureFixture` rollout (this branch)
-  -   4 ✅ FIXED via L4 plh_role binary stderr gate (`9340228`)
-  -   3 ⚪ N/A (header-only files; not test driver code)
-  -   1 ✅ FIXED `30f0121` (audit Phase 5)
-  -   1 ✅ `db9f8f9` (AdminServiceTest, original LogCaptureFixture)
+**🎯 HEP-0033 Phase 6.2 (AdminService) CLOSED — 2026-05-02.**
+All 10 of 16 §11.2 methods wired; 6 deferred with explicit
+upstream-HEP citations.  Three sub-commits this batch:
 
-The trust gate of `REVIEW_TestAudit_2026-05-01.md` §3 is met.  The
-audit doc may now be archived per its disposition rule.
+  - `dd5ac0d` — HEP-0033 §11.5 error code catalog (closes §16 #10)
+  - `c0408a8` — Phase 6.2b: 7 query methods + shared
+                `utils/hub_state_json.{hpp,cpp}` serializers
+  - `38591dc` — Phase 6.2c: 3 control methods (close_channel,
+                broadcast_channel, request_shutdown)
+
+Pre-implementation review `REVIEW_AdminService_2026-05-01.md`
+fully closed; archived to `docs/archive/transient-2026-05-02/`.
+
+23 L2 AdminService tests; mutation-verified per sub-phase.  The
+L3 broker test suite already covers the data-plane interactions
+(BrokerService tests); Phase 6.2c commits don't add separate L3
+tests because the control methods delegate to existing,
+already-tested broker mutators.
+
+**🎯 Test-correctness audit CLOSED — 2026-05-02.**  All 204 inventory
+rows ✅ FIXED or n/a across all four bug classes (A/B/C/D).
+The trust gate of `REVIEW_TestAudit_2026-05-01.md` §3 is met;
+both audit docs archived to `docs/archive/transient-2026-05-02/`.
 
   Last commits (2026-05-02 audit-closure batch):
 `b9f125b` (final 2 Class D rows → n/a), `54f71ad` (4 broker-client
@@ -131,10 +141,13 @@ single mutator" doc ratified), `139b4ca` (HEP-0033 G1 `RoleHostBase` →
   +4 tests covering aligned-vs-packed-distinct fingerprints. 1602/1602.
 - Five implementation phases remain (see §Priority 2).
 
-### Priority 0 (in progress — Phase 6.1 shipped 2026-04-30 / 2026-05-01): HEP-CORE-0033 Hub Character
+### Priority 0 (in progress — Phase 6.2 shipped 2026-05-02): HEP-CORE-0033 Hub Character
 
 📍 **Status**: G1, G2 design + G2.1 + G2.2.0–2.2.3 + Phase 6.1 (HubHost
-concrete class with phase FSM) shipped.  **Next: Phase 6.2 — `AdminService`.**
+concrete class with phase FSM) + Phase 6.2 (AdminService — 6.2a/b/c
+all shipped, 23 L2 tests, mutation-verified per sub-phase) shipped.
+**Next: Phase 7 — `scripting::hub_lifecycle_modules()` + HubScriptRunner
+(retire `PythonInterpreter`/`HubScript`/`hub_script_api`/`pylabhub_module`).**
 📋 **Spec**: `docs/HEP/HEP-CORE-0033-Hub-Character.md` (normative — single source of truth)
 📋 **Detail**: `docs/todo/MESSAGEHUB_TODO.md`
 

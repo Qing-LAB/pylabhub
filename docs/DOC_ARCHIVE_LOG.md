@@ -6,6 +6,35 @@
 
 ## Archive batches
 
+### 2026-05-02 (HEP-0033 Phase 6.2 closed; AdminService review archived)
+
+Phase 6.2 (AdminService structured RPC) shipped in three sub-commits:
+`db9f8f9` (6.2a skeleton), `c0408a8` (6.2b queries),
+`38591dc` (6.2c control methods).  All four §4.1 action items in the
+pre-implementation review (`REVIEW_AdminService_2026-05-01.md`) are
+✅ FIXED:
+
+  - **A1** vault→HubHost wiring → option (a) shipped: `admin_token` lives
+    on `cfg.admin().admin_token`, populated at vault unlock.
+  - **A2** file path → `src/utils/ipc/admin_service.cpp` (matches
+    `broker_service.cpp` placement; HEP §11.4 updated in 6.2a).
+  - **A3** hub `init_directory` template → `HubAdminConfig` block
+    fully populated.
+  - **A4–A6** Phase 6.2a/b/c implementation per the recommended split.
+  - **A7** HEP §11.2 deferred-method citations → done.
+  - **A8** MESSAGEHUB_TODO refresh → folded into TODO_MASTER snapshot.
+
+§16 item 10 (admin RPC error-code catalog) closed via new HEP-0033
+§11.5 (commit `dd5ac0d`).  10 of 16 §11.2 methods wired; the 6
+deferred methods carry explicit upstream-HEP citations
+(HEP-0035 / §16 #1 / §16 #9 / Phase 7).
+
+| Archived | From | Reason |
+|---|---|---|
+| `REVIEW_AdminService_2026-05-01.md` | `docs/code_review/` | All §4.1 action items resolved; Phase 6.2 closed. |
+
+---
+
 ### 2026-05-02 (Test-correctness audit closed)
 
 User-driven 2-day audit triggered by two silent-failure regressions
