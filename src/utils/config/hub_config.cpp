@@ -37,6 +37,7 @@ struct HubConfig::Impl
     HubIdentityConfig   identity;
     AuthConfig          auth;
     ScriptConfig        script;
+    TimingConfig        timing;
     LoggingConfig       logging;
     HubNetworkConfig    network;
     HubAdminConfig      admin;
@@ -63,6 +64,17 @@ HubConfig &HubConfig::operator=(HubConfig &&) noexcept = default;
 static const std::unordered_set<std::string> kAllowedTopLevelKeys = {
     "hub",
     "script", "stop_on_script_error", "python_venv",
+    // Timing keys for the hub script tick (HEP-CORE-0033 Phase 7 Commit B).
+    // Same parser + same enum + same JSON shape as RoleConfig — see
+    // `src/include/utils/config/timing_config.hpp`.  `loop_timing`
+    // is REQUIRED; `target_period_ms` / `target_rate_hz` exactly one
+    // when policy is `fixed_rate`/`fixed_rate_with_compensation`.
+    // The other TimingConfig fields (`queue_io_wait_timeout_ratio`,
+    // `heartbeat_interval_ms`) are intentionally NOT whitelisted at the
+    // hub top level — they are queue / role-broker concepts that have
+    // no meaning for the hub script tick.  parse_timing_config defaults
+    // them to 0 / kDefault on the hub side.
+    "loop_timing", "target_period_ms", "target_rate_hz",
     "logging",
     "network", "admin", "broker", "federation", "state",
 };
@@ -87,6 +99,7 @@ void HubConfig::Impl::load_all(const nlohmann::json &j)
     identity   = parse_hub_identity_config(j);
     auth       = parse_auth_config(j, "hub");  // reads j["hub"]["auth"]
     script     = parse_script_config(j, base_dir, "hub");
+    timing     = parse_timing_config(j, "hub");
     logging    = parse_logging_config(j, "hub");
     network    = parse_hub_network_config(j);
     admin      = parse_hub_admin_config(j);
@@ -142,6 +155,7 @@ HubConfig HubConfig::load_from_directory(const std::string &dir)
 const HubIdentityConfig   &HubConfig::identity()   const { assert(impl_); return impl_->identity; }
 const AuthConfig          &HubConfig::auth()       const { assert(impl_); return impl_->auth; }
 const ScriptConfig        &HubConfig::script()     const { assert(impl_); return impl_->script; }
+const TimingConfig        &HubConfig::timing()     const { assert(impl_); return impl_->timing; }
 const LoggingConfig       &HubConfig::logging()    const { assert(impl_); return impl_->logging; }
 const HubNetworkConfig    &HubConfig::network()    const { assert(impl_); return impl_->network; }
 const HubAdminConfig      &HubConfig::admin()      const { assert(impl_); return impl_->admin; }

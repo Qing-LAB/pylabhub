@@ -126,6 +126,14 @@ nlohmann::json build_hub_json_template(const std::string &uid,
         {"script",               {{"type", "python"}, {"path", "."}}},
         {"python_venv",          ""},
         {"stop_on_script_error", false},
+        // Hub script tick (HEP-CORE-0033 Phase 7).  Same shape and
+        // semantics as the role-side data loop's pacing — see
+        // `utils/loop_timing_policy.hpp`.  Default `fixed_rate` at 1 Hz
+        // gives `on_tick(api)` once per second; switch to `max_rate`
+        // for continuous polling, or omit/raise the period for slower
+        // ticks.  `loop_timing` is REQUIRED at parse time.
+        {"loop_timing",          "fixed_rate"},
+        {"target_period_ms",     1000},
         {"logging", {
             {"file_path",    ""},
             {"max_size_mb",  10},

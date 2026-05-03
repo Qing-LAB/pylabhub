@@ -55,10 +55,15 @@ fs::path write_hub_json(const std::string &dir, const nlohmann::json &content)
 }
 
 /// Minimal config with just enough for HubConfig::load to succeed.
+/// `loop_timing` is required by `parse_timing_config` (HEP-CORE-0033
+/// Phase 7 Commit B); use `max_rate` here to avoid pulling in a
+/// `target_period_ms` value that the minimal-config tests don't care
+/// about.
 nlohmann::json minimal_hub_json(const std::string &uid = "hub.test.uid00000001")
 {
     return {
         {"hub", {{"uid", uid}, {"name", "TestHub"}}},
+        {"loop_timing", "max_rate"},
     };
 }
 
@@ -74,6 +79,8 @@ nlohmann::json full_hub_json()
         }},
         {"script", {{"type", "python"}, {"path", "."}}},
         {"stop_on_script_error", true},
+        {"loop_timing", "fixed_rate"},
+        {"target_period_ms", 1000},
         {"logging", {{"file_path", ""}, {"max_size_mb", 20}, {"backups", 3}}},
         {"network", {
             {"broker_endpoint", "tcp://0.0.0.0:5571"},
@@ -151,6 +158,13 @@ int load_full(const char *tmpdir)
             EXPECT_EQ(cfg.state().disconnected_grace_ms,    30000);
             EXPECT_EQ(cfg.state().max_disconnected_entries,   500);
 
+            // Timing — full config sets fixed_rate at 1000 ms.
+            // HEP-CORE-0033 Phase 7 Commit B: hub script tick uses
+            // the same TimingConfig + parser as role data loops.
+            EXPECT_EQ(cfg.timing().loop_timing,
+                      ::pylabhub::LoopTimingPolicy::FixedRate);
+            EXPECT_EQ(cfg.timing().period_us, 1000.0 * 1000.0);  // 1000 ms in µs
+
             // base_dir() returns the directory containing hub.json.
             EXPECT_EQ(cfg.base_dir(), fs::path(dir));
 
@@ -197,6 +211,11 @@ int load_minimal(const char *tmpdir)
             EXPECT_FALSE(cfg.federation().enabled);
             EXPECT_TRUE(cfg.federation().peers.empty());
             EXPECT_EQ(cfg.federation().forward_timeout_ms, 2000);
+
+            // Timing — minimal config sets max_rate (no period field).
+            EXPECT_EQ(cfg.timing().loop_timing,
+                      ::pylabhub::LoopTimingPolicy::MaxRate);
+            EXPECT_EQ(cfg.timing().period_us, 0.0);
 
             EXPECT_EQ(cfg.state().disconnected_grace_ms,    60000);
             EXPECT_EQ(cfg.state().max_disconnected_entries,  1000);
@@ -286,7 +305,12 @@ int uid_auto_generated(const char *tmpdir)
         [&]() {
             const std::string dir = tmpdir;
             // Omit hub.uid; provide just hub.name so generator has a base.
-            const nlohmann::json j = {{"hub", {{"name", "MyHub"}}}};
+            // loop_timing is required by parse_timing_config — same shape
+            // as minimal_hub_json above; max_rate keeps the fixture small.
+            const nlohmann::json j = {
+                {"hub", {{"name", "MyHub"}}},
+                {"loop_timing", "max_rate"},
+            };
             write_hub_json(dir, j);
 
             auto cfg = HubConfig::load_from_directory(dir);

@@ -28,6 +28,7 @@
 #include "utils/config/hub_state_config.hpp"
 #include "utils/config/logging_config.hpp"
 #include "utils/config/script_config.hpp"
+#include "utils/config/timing_config.hpp"
 
 #include <filesystem>
 #include <memory>
@@ -54,6 +55,7 @@ class PYLABHUB_UTILS_EXPORT HubConfig
     const HubIdentityConfig   &identity()   const;
     const AuthConfig          &auth()       const;
     const ScriptConfig        &script()     const;
+    const TimingConfig        &timing()     const;
     const LoggingConfig       &logging()    const;
     const HubNetworkConfig    &network()    const;
     const HubAdminConfig      &admin()      const;
