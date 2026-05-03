@@ -1,0 +1,161 @@
+#pragma once
+/**
+ * @file hub_api.hpp
+ * @brief HubAPI — script-visible surface for hub-side scripts (HEP-CORE-0033 §12.3).
+ *
+ * Hub-side parallel of `RoleAPIBase`.  Carried into the script engine
+ * via `ScriptEngine::build_api(HubAPI &)` (the sibling overload added
+ * in HEP-CORE-0033 Phase 7 Commit A).  Phase 7 Commit C ships the
+ * minimal dispatch surface — Phase 8 layers pybind11 / Lua bindings
+ * on top in `pylabhub-scripting` (parallels `python_engine.cpp` /
+ * `lua_engine.cpp` binding `RoleAPIBase`).
+ *
+ * Contract on the EngineHost<HubAPI> instantiation:
+ *   - Constructor `HubAPI(scripting::RoleHostCore &, std::string role_tag,
+ *                         std::string uid)` — same shape as RoleAPIBase
+ *     so EngineHost's lazy-construction path in startup_() works for
+ *     both ApiT specializations without conditional logic.  RoleHostCore
+ *     is reused as-is (its cross-thread message queue + wakeup primitives
+ *     are exactly what the hub script runner needs; queue-iteration
+ *     counters stay zero on the hub side, no harm).
+ *   - `ThreadManager &thread_manager()` accessor — required by
+ *     EngineHost contract for spawning custom worker threads.  Hub side
+ *     uses it for the runner's own worker thread + any future broker
+ *     event-fan-out threads.
+ *
+ * Phase 7 dispatch surface:
+ *   - `dispatch_event(const IncomingMessage &)` — runner's worker thread
+ *     calls this for every event drained from the queue.  Looks at
+ *     `IncomingMessage::event` (e.g. "channel_opened") and forwards to
+ *     the script engine's named-event invoke.
+ *   - `dispatch_tick()` — called by the runner when the LoopTimingPolicy
+ *     deadline elapses.  Forwards to the script engine's on_tick.
+ *
+ * Phase 8 will add rich state-read + control-op methods (list_channels,
+ * close_channel, etc.) that scripts can call — those go through
+ * `host_->state()` and `host_->broker().request_*` respectively.  The
+ * `host_` backref is stored at construction and is a non-owning pointer.
+ *
+ * Lifetime:
+ *   - Constructed by EngineHost<HubAPI>::startup_() (lazy, on the
+ *     runner's worker thread) so the owned `ThreadManager` is parented
+ *     to the right thread for bounded-join shutdown.
+ *   - Destroyed by EngineHost::shutdown_() before the engine is dropped.
+ *   - The HubHost backref must outlive HubAPI; per HEP-0033 §4.2 the
+ *     ScriptRunner is stopped (step 2) BEFORE HubHost destruction begins.
+ */
+
+#include "pylabhub_utils_export.h"
+#include "utils/engine_host.hpp"     // script_host_traits<ApiT> primary template
+
+#include <memory>
+#include <string>
+#include <string_view>
+
+namespace pylabhub::config       { class HubConfig; }
+namespace pylabhub::utils        { class ThreadManager; }
+namespace pylabhub::hub_host     { class HubHost; }
+namespace pylabhub::scripting    { class RoleHostCore;
+                                   class ScriptEngine;
+                                   struct IncomingMessage; }
+
+namespace pylabhub::hub_host
+{
+
+/// Script-visible surface for hub-side scripts.
+///
+/// Phase 7 ships the minimal dispatch surface (event + tick forwarding
+/// to the script engine).  Rich state reads and control ops land in
+/// Phase 8 alongside the pybind11 / Lua bindings.
+class PYLABHUB_UTILS_EXPORT HubAPI
+{
+public:
+    /// EngineHost<HubAPI>::startup_() constructs HubAPI lazily on the
+    /// runner's worker thread.  All three params are required:
+    ///
+    /// @param core      RoleHostCore owned by EngineHost (lifetime > api).
+    ///                  Used for cross-thread message queue + shutdown
+    ///                  flag wiring.
+    /// @param role_tag  Always "hub" for the hub-side instantiation;
+    ///                  carried verbatim through to log prefixes.
+    /// @param uid       Hub instance uid (e.g. "hub.lab1.uid00000001").
+    HubAPI(scripting::RoleHostCore &core,
+           std::string              role_tag,
+           std::string              uid);
+    ~HubAPI();
+
+    HubAPI(const HubAPI &)            = delete;
+    HubAPI &operator=(const HubAPI &) = delete;
+    HubAPI(HubAPI &&)                 = delete;
+    HubAPI &operator=(HubAPI &&)      = delete;
+
+    // ── EngineHost contract ───────────────────────────────────────────────
+
+    /// Required by EngineHost<HubAPI> for spawning custom worker threads.
+    /// Owns "ThreadManager:hub:<uid>" — same auto-registered dynamic
+    /// LifecycleGuard module pattern roles use.
+    [[nodiscard]] utils::ThreadManager &thread_manager();
+
+    // ── Host wiring (called once by HubScriptRunner after construction) ───
+
+    /// Bind to the HubHost backref.  Required before any state-reading
+    /// or mutator-delegating method is invoked (Phase 8).  Not in the
+    /// ctor because HubAPI is constructed lazily inside EngineHost's
+    /// startup_() path — at that point HubHost is the OUTER caller, so
+    /// passing `*this` from inside HubScriptRunner's worker_main_()
+    /// post-construction is the cleanest sequencing.
+    void set_host(HubHost &host) noexcept;
+
+    // ── Dispatch surface (Phase 7) ─────────────────────────────────────────
+
+    /// Forward a HubState event (drained from the runner's queue) to
+    /// the script's named callback.  Looks up `on_<event>` (e.g.
+    /// `on_channel_opened`) in the script namespace; if not defined,
+    /// the engine no-ops.  Payload is the JSON serialization produced
+    /// on the broker thread by Phase 6.2b's `channel_to_json` /
+    /// `role_to_json` / etc.
+    ///
+    /// Called by HubScriptRunner::worker_main_() on the runner thread.
+    void dispatch_event(const scripting::IncomingMessage &msg);
+
+    /// Fire the periodic `on_tick` callback.  Called by the runner when
+    /// the configured LoopTimingPolicy deadline elapses.  No-op if the
+    /// script does not define `on_tick`.
+    void dispatch_tick();
+
+    // ── Engine wiring (called once by HubScriptRunner before dispatch) ────
+
+    /// Set the script engine pointer used by dispatch_event/tick.  The
+    /// engine is owned by EngineHost; HubAPI holds a non-owning pointer.
+    void set_engine(scripting::ScriptEngine &engine) noexcept;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+} // namespace pylabhub::hub_host
+
+// ============================================================================
+// script_host_traits<HubAPI> specialization (HEP-CORE-0033 Phase 7)
+// ============================================================================
+//
+// Located here (alongside HubAPI's public declaration) rather than in
+// the private hub_script_runner.hpp so that engine_host.cpp can include
+// it directly to instantiate `template class EngineHost<HubAPI>;`.
+//
+// The role-side specialization for `RoleAPIBase` lives inline in
+// engine_host.hpp because RoleConfig is a baseline include there;
+// HubConfig isn't, and we don't want engine_host.hpp pulling hub
+// headers into role-only TUs.
+
+namespace pylabhub::scripting
+{
+
+template <>
+struct script_host_traits<pylabhub::hub_host::HubAPI>
+{
+    using ConfigT = config::HubConfig;
+};
+
+} // namespace pylabhub::scripting

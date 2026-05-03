@@ -180,12 +180,30 @@ void EngineHost<ApiT>::shutdown_() noexcept
 // classes in consumer binaries (plh_role, plh_hub) link against them
 // without recompiling the template body.
 //
-// To add a new host kind (e.g. HubHost after HEP-CORE-0033 Phase 8):
+// To add a new host kind (e.g. a future binary or test fixture):
 //   1. Ensure the new ApiT satisfies the constructor + thread_manager()
 //      contract documented in engine_host.hpp.
-//   2. Add `template class EngineHost<NewApiT>;` here.
-//   3. Add a typedef `using NewHostBase = EngineHost<NewApiT>;` to the
-//      header.
+//   2. Add a `script_host_traits<NewApiT>` specialization (mirrors
+//      hub_api.hpp's specialization for HubAPI).
+//   3. Add `template class EngineHost<NewApiT>;` below.
+//   4. (Optional) Add a typedef `using NewHostBase = EngineHost<NewApiT>;`.
 template class EngineHost<RoleAPIBase>;
 
+} // namespace pylabhub::scripting
+
+// ── HubAPI instantiation (HEP-CORE-0033 Phase 7) ────────────────────────────
+//
+// The HubAPI specialization of EngineHost lives in pylabhub-utils too.
+// The instantiation must include hub_api.hpp so the trait specialization
+// (script_host_traits<HubAPI>::ConfigT = HubConfig) is visible AND
+// HubAPI's full type is available for the unique_ptr<ApiT> destructor.
+//
+// HubConfig must be COMPLETE here (not just forward-declared) because
+// EngineHost holds `ConfigT config_;` as a value member.
+#include "utils/hub_api.hpp"
+#include "utils/config/hub_config.hpp"
+
+namespace pylabhub::scripting
+{
+template class EngineHost<pylabhub::hub_host::HubAPI>;
 } // namespace pylabhub::scripting
