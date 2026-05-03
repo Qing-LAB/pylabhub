@@ -82,6 +82,10 @@ fs::path init_test_hub_dir(const char *tag)
     }
     j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
     j["admin"]["enabled"]           = false;
+    // Disable script runtime — Phase 7 D2.2 introduces strict
+    // engine/path matching at startup (engine null + path set →
+    // throws).  These integration tests don't exercise scripts.
+    j["script"]["path"]             = "";
     {
         std::ofstream f(dir / "hub.json");
         f << j.dump(2);

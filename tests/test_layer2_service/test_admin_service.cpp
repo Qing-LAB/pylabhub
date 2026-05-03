@@ -104,6 +104,10 @@ nlohmann::json read_hub_json_for_test(const fs::path &dir,
     }
     j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0"; // ephemeral
     j["admin"]["endpoint"]          = "tcp://127.0.0.1:0"; // ephemeral
+    // Disable script runtime — Phase 7 D2.2 introduces strict
+    // engine/path matching at startup (engine null + path set
+    // → throws).  AdminService tests don't exercise scripts.
+    j["script"]["path"]             = "";
     return j;
 }
 
