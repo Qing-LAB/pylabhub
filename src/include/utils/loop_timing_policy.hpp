@@ -32,6 +32,31 @@
  *     retrying until deadline approaches.
  *
  * See docs/tech_draft/loop_design_unified.md for the full design.
+ *
+ * ## Canonical loop helpers — DO NOT REINVENT
+ *
+ * Any new periodic loop driven by this policy should use the helpers
+ * defined further down in this header rather than rolling its own
+ * deadline math.  The single source of truth is:
+ *
+ *   - `compute_next_deadline(policy, prev_deadline, cycle_start, period_us)`
+ *     — handles all three policies correctly.  Returns
+ *     `time_point::max()` for MaxRate (no deadline); resets to
+ *     `cycle_start + period` for FixedRate; advances from
+ *     `prev_deadline` for FixedRateWithCompensation (catch-up).
+ *   - `compute_short_timeout(period_us, ratio)` — io-wait timeout for
+ *     polled-acquire patterns.
+ *
+ * Reference uses:
+ *   - `src/utils/service/data_loop.hpp` — `run_data_loop<Ops>` template
+ *     (role-side data loop; canonical pattern).
+ *   - `src/utils/service/hub_script_runner.cpp` — hub-side event /
+ *     tick loop.
+ *
+ * Hand-rolling `next_deadline = now + period` only implements
+ * FixedRate; it silently downgrades FixedRateWithCompensation to
+ * FixedRate (no catch-up after overrun).  Caught and corrected
+ * 2026-05-03 in HubScriptRunner during Phase 7 D1.6.
  */
 
 #include <algorithm>

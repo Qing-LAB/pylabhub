@@ -13,6 +13,7 @@
 #include "utils/hub_state.hpp"
 #include "utils/hub_state_json.hpp"   // channel_to_json / role_to_json / ... (Phase 6.2b)
 #include "utils/logger.hpp"
+#include "utils/loop_timing_policy.hpp"  // compute_next_deadline — DO NOT REINVENT
 #include "utils/role_host_core.hpp"
 #include "utils/script_engine.hpp"
 
@@ -51,11 +52,25 @@ HubScriptRunner::~HubScriptRunner()
 
 void HubScriptRunner::worker_main_()
 {
-    using clock = std::chrono::steady_clock;
+    using Clock = std::chrono::steady_clock;
     namespace js = pylabhub::hub;   // channel_to_json / role_to_json / etc.
 
     LOGGER_INFO("[HubScriptRunner:{}] worker_main_ entered",
                 config().identity().uid);
+
+    // ── Mark runner as running (gates `is_running()` queries) ─────────────
+    //
+    // RoleHostCore's `is_running()` (which `EngineHost::is_running()`
+    // delegates to) reads `running_threads_`.  Default value is FALSE
+    // until the worker explicitly sets it true — same convention every
+    // role host uses (see producer_role_host.cpp / consumer_role_host.cpp /
+    // processor_role_host.cpp `set_running(true/false)` bracketing).
+    //
+    // Without this, the loop condition `is_running()` returns false on
+    // the first iteration → loop exits immediately → runner does no
+    // work despite "starting cleanly".  Caught by static review during
+    // Phase 7 D1.6 (R1).
+    core().set_running(true);
 
     // ── Wire HubAPI to outer host + engine ─────────────────────────────────
     //
@@ -169,63 +184,69 @@ void HubScriptRunner::worker_main_()
 
     // ── Event-and-tick loop ────────────────────────────────────────────────
     //
-    // Pacing per `cfg.timing()` — same LoopTimingPolicy enum + same
-    // params as role data loops.  MaxRate (period_us == 0) means
-    // wait_for_incoming(0) → returns immediately, on_tick fires every
-    // iteration at maximum rate.  FixedRate (period_us > 0) means
-    // wait_for_incoming(period_ms) → blocks until an event arrives or
-    // the period elapses, on_tick fires once per period.
-    const auto timing = config().timing().timing_params();
-    const int  tick_period_ms =
-        (timing.period_us == 0)
-            ? 0  // MaxRate: poll-only, on_tick fires every iteration
-            : static_cast<int>(timing.period_us / 1000);
+    // Pacing per `cfg.timing()` uses the SHARED loop-timing facility
+    // — `compute_next_deadline()` defined in
+    // `src/include/utils/loop_timing_policy.hpp`.  This is the same
+    // helper role-side `run_data_loop<Ops>` uses
+    // (`src/utils/service/data_loop.hpp:160`).  DO NOT REINVENT — the
+    // helper handles all three policies correctly:
+    //   - MaxRate                   → returns time_point::max() (no deadline)
+    //   - FixedRate                 → resets to cycle_start + period
+    //   - FixedRateWithCompensation → advances from prev_deadline (catch-up)
+    //
+    // Hand-rolled `next = now + period` only implements FixedRate and
+    // silently downgrades the catch-up variant — fixed in Phase 7
+    // D1.6 (S2) after the static review.
+    const auto timing      = config().timing().timing_params();
+    const auto policy      = timing.policy;
+    const double period_us = static_cast<double>(timing.period_us);
+    const bool is_max_rate = (policy == LoopTimingPolicy::MaxRate);
 
-    auto next_tick = clock::now() +
-        std::chrono::microseconds(timing.period_us);
+    auto deadline = Clock::time_point::max();   // first cycle has no deadline
 
     while (is_running() && !core().is_shutdown_requested())
     {
-        // Drain any pending events first; if the queue is empty, block
-        // until something arrives or the tick deadline fires.
+        const auto cycle_start = Clock::now();
+
+        // Drain pending events first.
         auto events = core().drain_messages();
         for (auto &e : events)
             api().dispatch_event(e);
 
-        const auto now = clock::now();
-        if (timing.period_us > 0 && now >= next_tick)
+        // Tick gate.  MaxRate fires every iteration unconditionally;
+        // timed policies fire when the cycle has reached/passed the
+        // current deadline.  First cycle (deadline == max) only fires
+        // for MaxRate — timed policies wait one full period before
+        // their first tick.
+        if (is_max_rate ||
+            (deadline != Clock::time_point::max() &&
+             cycle_start >= deadline))
         {
-            api().dispatch_tick();
-            // Reset deadline per LoopTimingPolicy::FixedRate semantics —
-            // on overrun, deadline resets to `now + period` (no catch-
-            // up).  FixedRateWithCompensation (catch-up) variant would
-            // advance from `next_tick` instead; defer until a real use
-            // case demands it.
-            next_tick = now +
-                std::chrono::microseconds(timing.period_us);
-        }
-        else if (timing.period_us == 0)
-        {
-            // MaxRate: fire on_tick every iteration with no sleep.
             api().dispatch_tick();
         }
 
-        // Compute how long to wait for the NEXT event arrival before
-        // either the next tick deadline or shutdown wakes us.
-        if (timing.period_us > 0)
+        // Advance the deadline using the shared canonical helper.
+        deadline = compute_next_deadline(policy, deadline,
+                                          cycle_start, period_us);
+
+        // Wait for next event or until the deadline elapses.  MaxRate
+        // uses 0 (non-blocking poll); timed policies wait the
+        // remaining ms until `deadline`, capped at zero (already-due).
+        if (is_max_rate)
+        {
+            // Poll the queue; do not block.  on_tick already fired
+            // above so the loop spins through both phases at maximum
+            // rate as documented for LoopTimingPolicy::MaxRate.
+            core().wait_for_incoming(0);
+        }
+        else
         {
             const auto remain_us = std::chrono::duration_cast<
-                std::chrono::microseconds>(next_tick - clock::now()).count();
+                std::chrono::microseconds>(deadline - Clock::now()).count();
             const int wait_ms = (remain_us > 0)
                 ? static_cast<int>(remain_us / 1000)
                 : 0;
             core().wait_for_incoming(wait_ms);
-        }
-        else
-        {
-            // MaxRate: do not block; spin between drain + tick.
-            // wait_for_incoming(0) returns immediately if nothing pending.
-            core().wait_for_incoming(0);
         }
     }
 
@@ -235,14 +256,29 @@ void HubScriptRunner::worker_main_()
     // the queue (no harm; each event is a typed dispatch that the
     // script can ignore if it doesn't care), then invoke on_stop so
     // the script can flush dashboards / write final metrics.
+    //
+    // S1 — user-facing shutdown notice.  EngineHost::shutdown_() races
+    // can leave the worker blocked in wait_for_incoming for up to one
+    // tick period (default 1 s) before observing the shutdown signal.
+    // Surfacing this expectation up-front avoids "is the hub stuck?"
+    // confusion during operator-driven shutdown.
+    LOGGER_INFO("[HubScriptRunner:{}] shutting down — draining pending "
+                "events and running on_stop; cleanup may take up to one "
+                "tick period ({} ms)",
+                config().identity().uid,
+                is_max_rate ? 0 : static_cast<int>(period_us / 1000));
+
     auto remaining = core().drain_messages();
     for (auto &e : remaining)
         api().dispatch_event(e);
     (void) engine().invoke("on_stop");
 
+    // Mirror the role-side bracketing — flips `running_threads_` back
+    // to false so any subsequent `is_running()` query returns false.
+    core().set_running(false);
+
     LOGGER_INFO("[HubScriptRunner:{}] worker_main_ exiting",
                 config().identity().uid);
-    (void) tick_period_ms;  // silence -Wunused if compiler optimises it out
 }
 
 } // namespace pylabhub::scripting
