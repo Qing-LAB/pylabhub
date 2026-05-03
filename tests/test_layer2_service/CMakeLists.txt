@@ -1145,6 +1145,36 @@ gtest_discover_tests(test_layer2_role_host_core
 )
 
 # ============================================================================
+# Test: HubAPI script-visible surface (HEP-CORE-0033 §12.3 Phase 7 Commit D1)
+# ============================================================================
+
+add_executable(test_layer2_hub_api
+    test_hub_api.cpp
+)
+
+target_link_libraries(test_layer2_hub_api
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_api)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_hub_api
+    SUITE_NAME "Layer2_HubAPI"
+)
+layer2_require_staged_utils(test_layer2_hub_api)
+
+gtest_discover_tests(test_layer2_hub_api
+    PROPERTIES
+        LABELS "layer2;service;hub_api"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: RoleConfig — unified config class
 # ============================================================================
 

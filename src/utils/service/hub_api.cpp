@@ -10,11 +10,16 @@
 
 #include "utils/hub_api.hpp"
 
+#include "utils/broker_service.hpp"      // query_metrics for HubAPI::metrics()
+#include "utils/hub_host.hpp"            // backref for metrics path
+#include "utils/hub_metrics_filter.hpp"  // empty MetricsFilter = all categories
+#include "utils/logger.hpp"              // LOGGER_INFO/WARN/ERROR/DEBUG
 #include "utils/role_host_core.hpp"      // IncomingMessage, RoleHostCore
 #include "utils/script_engine.hpp"       // ScriptEngine::invoke / eval
 #include "utils/thread_manager.hpp"
 
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 
 namespace pylabhub::hub_host
@@ -117,6 +122,54 @@ void HubAPI::dispatch_tick()
     if (!impl_->engine)
         return;
     (void) impl_->engine->invoke("on_tick");
+}
+
+// ============================================================================
+// Script-visible API (Phase 7 minimum) — log / metrics / uid
+// ============================================================================
+//
+// Mirrors RoleAPIBase signatures.  Each method is independently
+// testable; metrics() additionally requires a wired HubHost backref
+// (set_host) and a started broker — that path is exercised at the
+// integration level in Phase 7 Commit D L3 tests.
+
+void HubAPI::log(const std::string &level, const std::string &msg)
+{
+    // Same level-token mapping as RoleAPIBase::log (case-insensitive
+    // for "Warn"/"Error" too).  Anything we don't recognize routes to
+    // LOGGER_INFO — never silently drops the message.  Prefix
+    // "[hub/<uid>]" matches role's "[<role_tag>/<uid>]" so log
+    // analysis tooling can parse both cases with one regex.
+    const std::string_view lv = level;
+    if (lv == "debug" || lv == "Debug")
+        LOGGER_DEBUG("[hub/{}] {}", impl_->uid, msg);
+    else if (lv == "warn" || lv == "Warn" || lv == "warning")
+        LOGGER_WARN("[hub/{}] {}", impl_->uid, msg);
+    else if (lv == "error" || lv == "Error")
+        LOGGER_ERROR("[hub/{}] {}", impl_->uid, msg);
+    else
+        LOGGER_INFO("[hub/{}] {}", impl_->uid, msg);
+}
+
+nlohmann::json HubAPI::metrics() const
+{
+    // Defended path: if set_host was never called we return an empty
+    // object rather than nullptr-deref.  Production code path always
+    // sets host immediately post-construction (HubScriptRunner does
+    // it on the worker thread before subscribing to events) so this
+    // branch should not fire in normal operation.
+    if (!impl_->host)
+        return nlohmann::json::object();
+    // Empty filter ⇒ all categories.  Same JSON shape AdminService
+    // emits for query_metrics — single source of truth via Phase 6.2b's
+    // hub_state_json serializers (channel_to_json / role_to_json /
+    // band_to_json / peer_to_json / broker_counters_to_json).
+    return impl_->host->broker().query_metrics(pylabhub::hub::MetricsFilter{});
+}
+
+const std::string &HubAPI::uid() const noexcept
+{
+    return impl_->uid;
 }
 
 } // namespace pylabhub::hub_host
