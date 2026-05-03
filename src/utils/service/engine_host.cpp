@@ -30,7 +30,7 @@ namespace pylabhub::scripting
 
 template <typename ApiT>
 EngineHost<ApiT>::EngineHost(std::string_view role_tag,
-                              config::RoleConfig config,
+                              ConfigT config,
                               std::unique_ptr<ScriptEngine> engine,
                               std::atomic<bool> *shutdown_flag)
     : role_tag_(role_tag)
