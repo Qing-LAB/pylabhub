@@ -495,10 +495,29 @@ LuaEngine *LuaEngine::get_or_create_thread_state_()
     if (it != thread_states_.end())
         return it->second.get();
 
+    // Resolve which ApiT was bound — same null-safe shape `on_pcall_error_`
+    // and `script_error_count` use.  Pre-Phase-7 this method assumed
+    // `api_` (RoleAPIBase*) was set — `child->initialize(..., api_->core())`
+    // and `child->build_api(*api_)` would null-deref on hub side
+    // (`api_` is null when `hub_api_` is set).  The hub-side admin
+    // RPC tail (HEP-CORE-0033 Phase 7 Commit E) drives that path:
+    // AdminService thread calls `engine.eval(code)` which routes to
+    // a child state via this method.
+    RoleHostCore *core = api_     ? api_->core()
+                       : hub_api_ ? hub_api_->core()
+                                  : nullptr;
+    if (!core)
+    {
+        LOGGER_ERROR("[{}] get_or_create_thread_state_: no ApiT bound — "
+                     "build_api must run before cross-thread invoke/eval",
+                     log_tag_);
+        return nullptr;
+    }
+
     // Create fully initialized child state.
     auto child = std::make_unique<LuaEngine>();
     child->set_owner_engine(this); // child delegates is_accepting() to parent
-    if (!child->initialize(log_tag_, api_->core()))
+    if (!child->initialize(log_tag_, core))
     {
         LOGGER_ERROR("[{}] Failed to create thread-local LuaEngine", log_tag_);
         return nullptr;
@@ -510,7 +529,13 @@ LuaEngine *LuaEngine::get_or_create_thread_state_()
         child->finalize();
         return nullptr;
     }
-    if (!child->build_api(*api_))
+    // Dispatch build_api on whichever ApiT is set.  Both overloads are
+    // virtuals on ScriptEngine; the public `build_api()` non-virtual
+    // base wrapper picks the right one based on the argument type.
+    const bool ok = api_     ? child->build_api(*api_)
+                  : hub_api_ ? child->build_api(*hub_api_)
+                             : false;
+    if (!ok)
     {
         LOGGER_ERROR("[{}] Thread-local LuaEngine: build_api failed", log_tag_);
         child->finalize();

@@ -10,6 +10,34 @@
 
 ## Current Focus
 
+### Open: script-spawned worker threads (HEP-0033 Phase 7+, deferred 2026-05-04)
+
+Multithread-capable engines (Lua today; future engines that mark
+`supports_multi_state() == true`) should expose an API for the script
+itself to spawn worker threads — the script assigns a callable + args,
+and the new thread runs under the same `ThreadManager` the role/hub
+already owns (so lifetime, joining, and shutdown are uniform with
+broker / runner threads).
+
+Lua has the per-thread state machinery (`get_or_create_thread_state_`)
+ready; what's missing is:
+  - An `api.spawn_worker(name, fn, args)` (or similar) closure that
+    asks `ThreadManager` to start a managed thread, with the new
+    thread's `LuaState` being the per-thread child state.
+  - Shutdown semantics: spawned threads must drain on host shutdown
+    (already true if registered with `ThreadManager`).
+  - Naming + observability: thread name surfaces in metrics and
+    log prefixes.
+
+Python is GIL-bound, so this API would mostly be useful for I/O-bound
+scripts (releasing GIL via `with nogil:` or `concurrent.futures`).
+The wrapper can no-op or error for `supports_multi_state() == false`
+engines, or alternatively use `threading.Thread` and register the
+resulting OS thread with `ThreadManager` post-hoc.
+
+Defer until after Commit E (Phase 7 closure).  Not blocking any
+current sprint.
+
 ### Open: src/ + src/include/ restructure (deferred plan, 2026-04-21)
 
 Design document: `docs/tech_draft/SRC_STRUCTURE_PLAN.md`.  Captures the

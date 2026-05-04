@@ -1111,6 +1111,139 @@ All methods resolve via `HubHost` accessors; scripts never touch
 `BrokerService` directly. Pybind11 bindings live in
 `src/scripting/hub/hub_api.cpp`.
 
+### 12.4 Dispatch model — single worker thread, event + tick gated by `LoopTimingPolicy`
+
+Implementation: `HubScriptRunner::worker_main_` (`src/utils/service/hub_script_runner.cpp`).
+
+**One worker thread per hub instance.** Owns the engine's primary state
+(GIL for Python, primary `lua_State` for Lua). All script callbacks
+dispatched from the loop run on this thread, synchronously,
+sequentially. There is no side-thread, worker pool, or timer thread —
+`on_tick` is just another sequential callback inside the loop body.
+
+The loop body, post-Phase-7-D-track:
+
+```cpp
+// Initialize once before the loop (period from cfg.timing()).
+deadline = is_max_rate
+    ? Clock::time_point::max()
+    : Clock::now() + period;
+
+while (is_running() && !shutdown_requested()) {
+    cycle_start = Clock::now();
+
+    // 1. Drain & dispatch events (channel/role/band/peer/...).
+    auto events = core().drain_messages();
+    for (auto &e : events)
+        api().dispatch_event(e);  // engine.invoke("on_" + e.event, e.details)
+
+    // 2. Tick gate — uses post-events `now`, NOT cycle_start.
+    const auto now = Clock::now();
+    if (is_max_rate || (deadline != max && now >= deadline)) {
+        api().dispatch_tick();    // engine.invoke("on_tick")
+        // Advance deadline ONLY when the tick fires.
+        deadline = compute_next_deadline(policy, deadline, cycle_start, period_us);
+    }
+
+    // 3. Wait until next event or deadline.
+    wait_for_incoming(remain_to_deadline_or_zero);  // CV wait with timeout
+}
+```
+
+**Wakeup sources** for `wait_for_incoming`:
+- `notify_incoming()` from broker thread (an event was enqueued onto
+  `RoleHostCore`'s message queue).
+- `notify_incoming()` from `request_shutdown()`.
+- Timeout — `remain_us / 1000 ms` until the deadline.
+
+**`on_tick` contract** (ratified Phase 7 D-track loop revision):
+
+> `on_tick` fires once per period, deterministically, whenever the
+> deadline has been crossed. The check is `now() >= deadline` *after*
+> event-handler dispatch, so a long-running event handler that pushes
+> past the deadline still triggers `on_tick` in the same iteration
+> ("beyond timeout but called"). Events alone do not shift the
+> `on_tick` schedule — they may extend the wait but cannot suppress
+> ticks.
+
+This required two changes from the literal role-side data-loop pattern
+(which advances `compute_next_deadline` every iteration and gates on
+`cycle_start`):
+
+1. **Gate uses post-events `now`** rather than the pre-events
+   `cycle_start`. A slow event handler that crossed the deadline
+   mid-cycle still triggers `on_tick`.
+2. **`compute_next_deadline` is invoked only when the tick fires.**
+   Event-driven wakes that don't cross the deadline keep the schedule
+   intact — the loop returns to wait for the original deadline.
+
+**Policy interaction:**
+
+| Policy | Behavior under bursty events |
+|---|---|
+| `MaxRate` | Tick fires every iteration unconditionally; `wait_for_incoming(0)` polls. CPU-bound. |
+| `FixedRate` | Tick fires once per period. Long event handler pushing past the deadline → tick fires immediately after handler; `compute_next_deadline` resets to `now + period` (no catch-up). |
+| `FixedRateWithCompensation` | Tick fires once per period, on the absolute grid (`prev_deadline + period`). After a long stall, missed slots fire in tight succession on resume — `wait_for_incoming(0)` returns immediately, gate fires, advance, gate fires, advance, … until `deadline > now` and the loop returns to normal pacing. |
+
+**`on_<event>` callbacks** dispatch synchronously inside the
+event-drain loop, before the tick gate. A burst arriving on the
+broker thread is processed serially in one wake; the tick gate
+evaluates exactly once per iteration after all events have run.
+
+**Cross-thread access to the engine** (admin RPC `exec_python`,
+future programmatic eval) — see §12.5.
+
+### 12.5 Cross-thread engine access
+
+Two engine families, two paths.
+
+**Single-state engines (Python, native).** `engine.eval(code)` from a
+non-owner thread (e.g. `AdminService`) enqueues a request on
+`PythonEngine::request_queue_` and blocks on a future. The worker
+thread drains the queue at the end of every owner-thread invoke
+(`execute_direct_`'s post-call `process_pending_()`); each iteration
+that fires `on_tick` or any `on_<event>` therefore drains pending
+admin evals. Worst-case latency: one period.
+
+```
+Admin thread:                   Worker thread:
+─────────────                   ──────────────
+runner.eval(code)               (in wait_for_incoming or running cb)
+  → engine.eval(code)              ↓
+  → enqueue on request_queue_      ↓ (deadline expires OR event fires)
+  → future.get() ─────┐         dispatch_tick / dispatch_event
+                      │           → execute_direct_(name)
+                      │             → fn(...)
+                      │             → process_pending_()
+                      │               → drain request_queue_
+                      └───────────────  → promise.set_value(result)
+  ← result returned                ← back to wait_for_incoming
+```
+
+`AdminService::handle_exec_python` wraps `host.eval_in_script(code)`,
+which forwards to `runner.eval(code)`.
+
+**Multi-state engines (Lua).** `engine.eval(code)` from a non-owner
+thread routes via `get_or_create_thread_state_` to a per-thread
+**child Lua state**. The child re-runs `load_script` (script body
+re-executes, declaring functions and module-level globals afresh) and
+its own `build_api(*hub_api_)`. Eval runs concurrently with the worker
+thread on its own state — the main loop is not blocked.
+
+**Isolation surprise (documented contract):** child states do NOT
+share Lua globals with the worker's primary state. An admin
+`exec_python "return counter"` reads the child's freshly-loaded
+`counter`, not the worker's. To inspect the worker's runtime state,
+the script must publish via `api.set_shared_data(key, value)` (a
+`RoleHostCore`-backed map shared across states); admin reads via
+`api.get_shared_data(key)`. This is the same contract role-side Lua
+already commits to.
+
+**Native engine** today does not override `build_api_(HubAPI&)`, so
+hub + native fails fast at runner setup. `engine.eval` returns
+`NotFound` unconditionally regardless. Hub support for `NativeEngine`
+is out of scope for Phase 7.
+
 ## 13. Protocol — additions / unchanged
 
 - **Role→broker protocol**: unchanged. REG_REQ, DISC_REQ, HEARTBEAT_REQ,

@@ -122,7 +122,9 @@ protected:
     /// @param lua_body verbatim body of init.lua written under
     ///                 `<dir>/script/lua/init.lua`
     /// @return         absolute path to the created hub directory
-    fs::path make_lua_hub_dir(const char *tag, const std::string &lua_body)
+    fs::path make_lua_hub_dir(const char *tag, const std::string &lua_body,
+                               const std::string &loop_timing = "fixed_rate",
+                               int target_period_ms = 1000)
     {
         const fs::path dir = unique_temp_dir(tag);
         HubDirectory::init_directory(dir, "L3LuaHub");
@@ -137,6 +139,14 @@ protected:
         j["admin"]["enabled"]           = false;
         j["script"]["type"]             = "lua";
         j["script"]["path"]             = ".";
+        // Loop timing — the on_tick semantics tests pin specific
+        // policies + short periods so the hub fires multiple ticks
+        // within a sub-second test window.  Default keeps the
+        // pre-existing 1 Hz fixed_rate config the prior tests relied
+        // on (one cycle is long enough that on_tick never fires
+        // during their startup→shutdown windows).
+        j["loop_timing"]      = loop_timing;
+        j["target_period_ms"] = target_period_ms;
         {
             std::ofstream f(dir / "hub.json");
             f << j.dump(2);
@@ -148,6 +158,19 @@ protected:
             f << lua_body;
         }
         return dir;
+    }
+
+    /// Count occurrences of `marker` in `haystack`.
+    static int count_markers(const std::string &haystack, const std::string &marker)
+    {
+        int count = 0;
+        size_t pos = 0;
+        while ((pos = haystack.find(marker, pos)) != std::string::npos)
+        {
+            ++count;
+            pos += marker.size();
+        }
+        return count;
     }
 
 private:
@@ -318,4 +341,207 @@ TEST_F(HubLuaIntegrationTest, ScriptSyntaxError_StartupThrows)
     }
 
     EXPECT_FALSE(host.is_running());
+}
+
+// ─── on_tick semantic tests (HEP-CORE-0033 §12.4 dispatch model) ───────────
+//
+// These tests pin the post-Phase-7-D-track on_tick contract:
+//
+//   on_tick fires once per period, deterministically, whenever the
+//   deadline has been crossed.  The check is `now() >= deadline`
+//   AFTER event-handler dispatch — events alone don't shift the
+//   schedule.
+//
+// Coverage (event-injection scenarios T2/T3 from the test plan are
+// SKIPPED — Phase 7 minimum HubAPI surface doesn't expose channel /
+// role mutators that scripts could call to inject events from inside
+// the test, and spinning up a real producer subprocess just for these
+// tests is too heavy.  The HubLuaIntegrationTest sibling for Python
+// also doesn't get on_tick tests for the same reason — single-thread
+// rule means we keep that test minimal too).
+
+TEST_F(HubLuaIntegrationTest, OnTick_FiresPeriodically_WhenIdle)
+{
+    // T1 — baseline contract: an idle hub fires on_tick once per
+    // period via the timeout-driven wake (no events injected; only
+    // wakeup source is `wait_for_incoming` returning at deadline).
+    //
+    // Config: FixedRate at 100 ms.  Run for 550 ms post-startup.
+    //
+    // Expected ticks: 4-6.
+    //   floor: first tick fires after one full period of warm-up
+    //     (deadline initialized to startup + 100 ms), so the first
+    //     possible tick is at ~T+100 ms.  By T+550 ms we should see
+    //     ticks at ~100/200/300/400/500 → 5.
+    //   - allow 4 (CI jitter shaving the last tick)
+    //   - allow 6 (CI scheduling pushing one in)
+    // NOTE: on_tick takes NO arguments — `engine.invoke("on_tick")`
+    // (called via `HubAPI::dispatch_tick`) passes 0 args.  The api
+    // table is reachable via the Lua global set by
+    // `LuaEngine::build_api_(HubAPI&)`.  Mirrors the role-side
+    // convention for non-data-loop callbacks (event handlers receive
+    // their typed payload arg; tick gets nothing).
+    const std::string lua_body =
+        "function on_tick()\n"
+        "    api.log('info', 'PHASE7_E_TICK_T1')\n"
+        "end\n";
+
+    const fs::path dir = make_lua_hub_dir(
+        "tick_idle", lua_body, /*loop_timing=*/"fixed_rate",
+        /*target_period_ms=*/100);
+
+    auto cfg = HubConfig::load_from_directory(dir.string());
+    auto engine =
+        pylabhub::scripting::make_engine_from_script_config(cfg.script());
+
+    HubHost host(std::move(cfg), std::move(engine));
+    ASSERT_NO_THROW(host.startup());
+
+    // Sleep for 550 ms — long enough to observe ~5 ticks at 100 ms.
+    // Acceptable in a test (no other thread synchronization point
+    // exists for "the worker has fired N ticks"; the runner is
+    // intentionally encapsulated and exposes no tick-count).
+    std::this_thread::sleep_for(std::chrono::milliseconds{550});
+
+    host.shutdown();
+
+    const std::string log = read_log_file(LogCaptureFixture::log_path());
+    const int tick_count = count_markers(log, "PHASE7_E_TICK_T1");
+
+    EXPECT_GE(tick_count, 4)
+        << "expected >= 4 on_tick markers in 550 ms with period=100 ms; "
+           "got " << tick_count
+        << " — regression in deadline-driven tick (timeout path) or "
+           "loop init.\nLog dump:\n" << log;
+    EXPECT_LE(tick_count, 6)
+        << "expected <= 6 on_tick markers in 550 ms with period=100 ms; "
+           "got " << tick_count
+        << " — regression in deadline advancement (over-firing).\nLog dump:\n"
+        << log;
+}
+
+TEST_F(HubLuaIntegrationTest, OnTick_CatchUp_FixedRateWithCompensation)
+{
+    // T4 — FixedRateWithCompensation catch-up semantic.  After a
+    // long-running script callback (here: on_init busy-loops for
+    // ~500 ms), `wait_for_incoming` immediately returns 0 ms (the
+    // already-passed deadline) and the gate fires repeatedly while
+    // `compute_next_deadline` walks the absolute grid forward by
+    // `period` until `deadline > now`.  Result: a tight burst of
+    // on_tick markers covering the missed slots, then normal-pace
+    // ticks.
+    //
+    // Config: FRWithComp at 100 ms.  Stall the FIRST on_tick callback
+    // for ~500 ms (counter-gated so subsequent ticks return fast).
+    // By the time tick #1 returns, the schedule grid (T+100/200/300/
+    // 400/500) is 4 slots in the past.  `wait_for_incoming` returns
+    // 0 immediately (deadline-already-passed) and the gate fires
+    // repeatedly while `compute_next_deadline` walks the grid forward
+    // — burst of catch-up ticks until `deadline > now`.
+    //
+    // Why stall in on_tick (not on_init)?  The loop's deadline init
+    // runs AFTER on_init returns — so a stalled on_init doesn't put
+    // anything into the past.  The stall must happen INSIDE the loop,
+    // on a callback that runs after the deadline grid is laid.
+    //
+    // Sleep 800 ms post-startup → covers warm-up (100 ms) + stall
+    // (500 ms) + catch-up burst + ≥1 normal-pace tick.
+    //
+    // Expected timeline:
+    //   T+0       startup, on_init logs (fast).
+    //   T+0+ε     worker enters loop, deadline = T+100.
+    //   T+100     tick #1 fires; busy-loops to T+600.
+    //   T+600+ε   catch-up burst: ticks #2..#6 fire in quick
+    //             succession as compute_next_deadline walks
+    //             T+200/300/400/500/600 forward.
+    //   T+700     tick #7 fires (normal pace).
+    //   T+800     test ends shortly after tick #8 fires.
+    //
+    // Expected total ticks: ≥ 6 (stalled #1 + ≥4 catch-up + ≥1
+    // normal).  Upper bound 12 (room for clock jitter).
+    //
+    // Why this matters: pre-fix, `compute_next_deadline` was called
+    // every iteration (including on event-driven wakes that didn't
+    // fire a tick), advancing the deadline forward without firing
+    // on_tick.  Under heavy event activity OR long callbacks, the
+    // FRWithComp "compensation" semantic was silently downgraded to
+    // FixedRate-with-skips.  This test mutation-protects the post-
+    // fix behavior: only advance deadline when tick fires.
+    // Stall mechanism: FFI nanosleep for a true wall-clock sleep.
+    // A busy-loop on os.clock() measures CPU time, which on a
+    // CPU-contended machine (e.g. ctest -j2) drifts arbitrarily off
+    // wall time and shrinks/extends the apparent stall — flaky.
+    // nanosleep is the worker thread blocking on the kernel for a
+    // guaranteed wall-clock duration regardless of CPU pressure.
+    const std::string lua_body =
+        "local ffi = require('ffi')\n"
+        "ffi.cdef[[\n"
+        "typedef struct plh_ts { long tv_sec; long tv_nsec; } plh_ts;\n"
+        "int nanosleep(const plh_ts *req, plh_ts *rem);\n"
+        "]]\n"
+        "tick_count = 0\n"
+        "function on_init(api)\n"
+        "    api.log('info', 'PHASE7_E_INIT_T4')\n"
+        "end\n"
+        "function on_tick()\n"
+        "    tick_count = tick_count + 1\n"
+        "    api.log('info', 'PHASE7_E_TICK_T4')\n"
+        "    if tick_count == 1 then\n"
+        "        -- Stall ONLY the first tick — 500 ms wall-clock.\n"
+        "        local req = ffi.new('plh_ts', 0, 500 * 1000 * 1000)\n"
+        "        ffi.C.nanosleep(req, nil)\n"
+        "        api.log('info', 'PHASE7_E_TICK_STALL_DONE_T4')\n"
+        "    end\n"
+        "end\n";
+
+    const fs::path dir = make_lua_hub_dir(
+        "tick_catchup", lua_body,
+        /*loop_timing=*/"fixed_rate_with_compensation",
+        /*target_period_ms=*/100);
+
+    auto cfg = HubConfig::load_from_directory(dir.string());
+    auto engine =
+        pylabhub::scripting::make_engine_from_script_config(cfg.script());
+
+    HubHost host(std::move(cfg), std::move(engine));
+
+    ASSERT_NO_THROW(host.startup());
+
+    // Cover warm-up (100 ms) + stall (500 ms) + catch-up + ≥1 normal.
+    std::this_thread::sleep_for(std::chrono::milliseconds{800});
+
+    host.shutdown();
+
+    const std::string log = read_log_file(LogCaptureFixture::log_path());
+    const int tick_count = count_markers(log, "PHASE7_E_TICK_T4");
+
+    EXPECT_GE(tick_count, 6)
+        << "expected >= 6 on_tick markers (stalled #1 + >=4 catch-up + "
+           ">=1 normal); got " << tick_count
+        << " — regression in FRWithComp catch-up: deadline likely "
+           "being advanced on non-tick iterations again, swallowing "
+           "missed slots.\nLog dump:\n" << log;
+    EXPECT_LE(tick_count, 12)
+        << "expected <= 12 on_tick markers; got " << tick_count
+        << " — regression in catch-up termination: deadline isn't "
+           "advancing past `now` after the burst, so on_tick keeps "
+           "firing every iteration even at normal pace.\nLog dump:\n"
+        << log;
+
+    // Pin that the stalled tick #1 actually completed (busy-loop
+    // exited normally), and that subsequent ticks fired AFTER it.
+    const auto stall_done = log.find("PHASE7_E_TICK_STALL_DONE_T4");
+    ASSERT_NE(stall_done, std::string::npos)
+        << "stalled tick #1 never completed";
+
+    // Count ticks AFTER the stall_done marker — those are the
+    // catch-up + normal ticks.  Should be tick_count - 1 (we stalled
+    // tick #1, and STALL_DONE is logged right at the end of tick #1).
+    const std::string post_stall = log.substr(stall_done);
+    const int post_stall_ticks = count_markers(post_stall, "PHASE7_E_TICK_T4");
+    EXPECT_GE(post_stall_ticks, 5)
+        << "expected >= 5 ticks after stall_done (catch-up burst + "
+           "normal); got " << post_stall_ticks
+        << " — regression in catch-up: deadline not walking the grid "
+           "forward.\nLog dump after stall:\n" << post_stall;
 }
