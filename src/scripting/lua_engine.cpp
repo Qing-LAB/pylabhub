@@ -2183,4 +2183,22 @@ int LuaEngine::lua_api_flexzone(lua_State *L)
     return 1;
 }
 
+// ============================================================================
+// script_error_count — null-safe across role/hub paths (S1 fix)
+// ============================================================================
+//
+// Mirrors the resolution shape of on_pcall_error_ (the writer):
+// counter is bumped through whichever ApiT was bound; reading it must
+// resolve through the same path or the metric silently lies on hub
+// side (api_ is null when hub_api_ is set, post-D3).  Out-of-line
+// because hub_api_->core() needs the full HubAPI type, which the
+// header only forward-declares.
+
+uint64_t LuaEngine::script_error_count() const noexcept
+{
+    return api_     ? api_->core()->script_error_count()
+         : hub_api_ ? hub_api_->core()->script_error_count()
+                    : 0;
+}
+
 } // namespace pylabhub::scripting
