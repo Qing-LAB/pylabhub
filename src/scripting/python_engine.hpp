@@ -126,10 +126,9 @@ class PythonEngine : public ScriptEngine
 
     // ── Error state ────────────────────────────────────────────────────────
 
-    [[nodiscard]] uint64_t script_error_count() const noexcept override
-    {
-        return api_ ? api_->core()->script_error_count() : 0;
-    }
+    // Body in python_engine.cpp — needs full HubAPI type to call
+    // hub_api_->core(); this header only forward-declares HubAPI.
+    [[nodiscard]] uint64_t script_error_count() const noexcept override;
 
     // ── Threading ──────────────────────────────────────────────────────────
 

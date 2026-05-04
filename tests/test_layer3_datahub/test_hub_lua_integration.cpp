@@ -204,16 +204,21 @@ TEST_F(HubLuaIntegrationTest, RealLuaScript_OnInitOnStop_FireAndLog)
 
     HubHost host(std::move(cfg), std::move(engine));
 
-    // Wall-clock bound on startup.  Real LuaEngine adds load_script +
-    // FFI sandbox setup — generous bound (5 s) but still tight enough
-    // to catch a regression that degrades into a multi-second wait.
+    // Wall-clock bound on startup.  Observed steady-state on dev
+    // hardware: ~110 ms (LuaJIT init + FFI sandbox + load_script +
+    // build_api + on_init + ready_promise round-trip).  Bound 1500 ms
+    // gives ~13× headroom for slow CI / sanitizer builds while still
+    // catching a sub-second slowdown — looser bounds (the original
+    // 5 s) accept multi-second regressions silently, which is exactly
+    // the failure mode CLAUDE.md "tests must pin path, timing, and
+    // structure" forbids.  Tighten further only if CI false-positives.
     const auto t_startup = std::chrono::steady_clock::now();
     ASSERT_NO_THROW(host.startup());
     const auto startup_ms =
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - t_startup).count();
-    EXPECT_LT(startup_ms, 5000)
-        << "host.startup() with real LuaEngine must complete in <5 s; "
+    EXPECT_LT(startup_ms, 1500)
+        << "host.startup() with real LuaEngine must complete in <1500 ms; "
            "took " << startup_ms << " ms — regression in engine init / "
            "load_script / build_api / on_init paths";
     EXPECT_TRUE(host.is_running());

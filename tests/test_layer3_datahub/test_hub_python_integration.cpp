@@ -208,18 +208,24 @@ TEST_F(HubPythonIntegrationTest, RealPythonScript_OnInitOnStop_FireAndLog)
 
     HubHost host(std::move(cfg), std::move(engine));
 
-    // Wall-clock bound on startup.  Real PythonEngine adds
-    // py::scoped_interpreter creation + import_role_script_module +
-    // pylabhub_hub binding lookup — generous bound (8 s, vs. 5 s for
-    // Lua) but still tight enough to catch a regression that degrades
-    // into a multi-second hang.  Python init is heavier than LuaJIT.
+    // Wall-clock bound on startup.  Observed steady-state on dev
+    // hardware: ~120 ms (py::scoped_interpreter init +
+    // import_role_script_module + pylabhub_hub lookup + build_api +
+    // on_init + ready_promise round-trip).  Bound 2500 ms gives ~20×
+    // headroom for slow CI / sanitizer builds + first-run venv import
+    // cache warmup; still catches a sub-2-second slowdown (looser
+    // bounds — the original 8 s — accept multi-second regressions
+    // silently, the failure mode CLAUDE.md "tests must pin path,
+    // timing, and structure" forbids).  Tighten further only if CI
+    // false-positives.  Python's bound is wider than Lua's 1500 ms
+    // because Python init is heavier (interpreter + module import).
     const auto t_startup = std::chrono::steady_clock::now();
     ASSERT_NO_THROW(host.startup());
     const auto startup_ms =
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - t_startup).count();
-    EXPECT_LT(startup_ms, 8000)
-        << "host.startup() with real PythonEngine must complete in <8 s; "
+    EXPECT_LT(startup_ms, 2500)
+        << "host.startup() with real PythonEngine must complete in <2500 ms; "
            "took " << startup_ms << " ms — regression in interpreter init / "
            "load_script / build_api / on_init paths";
     EXPECT_TRUE(host.is_running());
