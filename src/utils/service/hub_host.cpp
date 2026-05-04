@@ -13,6 +13,7 @@
 #include "utils/logger.hpp"
 #include "utils/script_engine.hpp"        // ScriptEngine + InvokeResponse
 #include "utils/thread_manager.hpp"
+#include "utils/timeout_constants.hpp"    // kAdminPollIntervalMs
 #include "utils/zmq_context.hpp"
 
 #include <atomic>
@@ -455,10 +456,24 @@ void HubHost::startup()
 
 void HubHost::run_main_loop()
 {
-    std::unique_lock<std::mutex> lk(impl_->wake_mu);
-    impl_->wake_cv.wait(lk, [this] {
-        return impl_->shutdown_flag.load(std::memory_order_acquire);
-    });
+    // Mirror the role-side `run_role_main_loop` pattern (see
+    // `role_main_helpers.hpp` + `RoleHostCore::wait_for_incoming`):
+    // timed wait + flag check at the LOOP TOP, NOT predicate-inside-
+    // wait.  This makes the shutdown atomic the sole source of truth
+    // (read outside any mutex at the top of each iteration); the CV
+    // is just an optimization to skip useless polling work between
+    // ticks.  Lost-wake (a `notify_all` that arrives before the
+    // waiter is fully registered with the CV) costs at most one tick
+    // of latency — never permanent block.  This eliminates the
+    // empty-body lock_guard handshake in `request_shutdown` and
+    // keeps the request_shutdown implementation in lockstep with
+    // `RoleHostCore::notify_incoming` (just `cv.notify_all()`).
+    while (!impl_->shutdown_flag.load(std::memory_order_acquire))
+    {
+        std::unique_lock<std::mutex> lk(impl_->wake_mu);
+        impl_->wake_cv.wait_for(
+            lk, std::chrono::milliseconds(pylabhub::kAdminPollIntervalMs));
+    }
     LOGGER_INFO("[HubHost:{}] main loop woke for shutdown",
                 impl_->cfg.identity().uid);
 }
@@ -539,26 +554,24 @@ void HubHost::shutdown()
 
 void HubHost::request_shutdown() noexcept
 {
-    // Async equivalent of `shutdown()` minus the synchronous drain:
-    //   1. flip the shutdown flag (run_main_loop's wait predicate)
-    //   2. break the broker's poll loop
-    //   3. wake run_main_loop
-    // After this returns, the broker has begun stopping; the broker
-    // thread will exit shortly.  ThreadManager join happens later
-    // (in `shutdown()` if the caller drives it; otherwise in
-    // `~HubHost`).  Safe from any thread (signal handler, admin RPC
-    // dispatcher, broker error path).
+    // DUMB async signal — exactly mirrors `RoleHostCore::notify_incoming`:
+    //   flag store + cv.notify_all().  Nothing else.
+    //
+    // Pre-D2.3 this method actively called `admin_svc->stop()` and
+    // `broker->stop()` directly — that broke the HEP-CORE-0033 §4.2
+    // ordering on the async path because admin/broker began winding
+    // down before the runner had a chance to drain its dispatch
+    // queue, leaving a window where a script callback (Phase 8 will
+    // let scripts call `host.broker().*`) could observe a half-
+    // stopped broker.  The role-side pattern shows the right shape:
+    // only the main thread orchestrates teardown, exclusively in
+    // shutdown(), in the order §4.2 defines (runner → admin →
+    // broker → drain).
+    //
+    // No lock_guard handshake needed: `run_main_loop` uses
+    // `wait_for(timeout)` + flag-checked-at-loop-top, so any lost-
+    // wake recovers within one tick.  See `run_main_loop` above.
     impl_->shutdown_flag.store(true, std::memory_order_release);
-    if (impl_->admin_svc)
-        impl_->admin_svc->stop();   // already noexcept
-    if (impl_->broker)
-    {
-        try { impl_->broker->stop(); }
-        catch (...) { /* noexcept contract — swallow */ }
-    }
-    {
-        std::lock_guard<std::mutex> lk(impl_->wake_mu);
-    }
     impl_->wake_cv.notify_all();
 }
 

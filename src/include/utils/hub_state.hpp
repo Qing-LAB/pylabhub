@@ -362,18 +362,26 @@ class PYLABHUB_UTILS_EXPORT HubState
     using PeerConnectedHandler        = std::function<void(const PeerEntry &)>;
     using PeerDisconnectedHandler     = std::function<void(const std::string & /*hub_uid*/)>;
 
-    HandlerId subscribe_channel_opened(ChannelOpenedHandler h);
-    HandlerId subscribe_channel_status_changed(ChannelStatusChangedHandler h);
-    HandlerId subscribe_channel_closed(ChannelClosedHandler h);
-    HandlerId subscribe_consumer_added(ConsumerAddedHandler h);
-    HandlerId subscribe_consumer_removed(ConsumerRemovedHandler h);
-    HandlerId subscribe_role_registered(RoleRegisteredHandler h);
-    HandlerId subscribe_role_disconnected(RoleDisconnectedHandler h);
-    HandlerId subscribe_band_joined(BandJoinedHandler h);
-    HandlerId subscribe_band_left(BandLeftHandler h);
-    HandlerId subscribe_peer_connected(PeerConnectedHandler h);
-    HandlerId subscribe_peer_disconnected(PeerDisconnectedHandler h);
-    void      unsubscribe(HandlerId id) noexcept;
+    // Subscription / dispatch is logically `const` on the observable
+    // HubState data: the `handlers_mu` mutex is `mutable` (declared in
+    // the impl), and the registries it guards are independent of `mu`
+    // which guards the channel/role/peer/band data.  Subscribers may
+    // therefore register through a `const HubState&` — the same handle
+    // returned by `HubHost::state()`.  See file-level "Thread model"
+    // comment for the orthogonality between `mu` (data lock) and
+    // `handlers_mu` (subscriber-registry lock).
+    HandlerId subscribe_channel_opened(ChannelOpenedHandler h) const;
+    HandlerId subscribe_channel_status_changed(ChannelStatusChangedHandler h) const;
+    HandlerId subscribe_channel_closed(ChannelClosedHandler h) const;
+    HandlerId subscribe_consumer_added(ConsumerAddedHandler h) const;
+    HandlerId subscribe_consumer_removed(ConsumerRemovedHandler h) const;
+    HandlerId subscribe_role_registered(RoleRegisteredHandler h) const;
+    HandlerId subscribe_role_disconnected(RoleDisconnectedHandler h) const;
+    HandlerId subscribe_band_joined(BandJoinedHandler h) const;
+    HandlerId subscribe_band_left(BandLeftHandler h) const;
+    HandlerId subscribe_peer_connected(PeerConnectedHandler h) const;
+    HandlerId subscribe_peer_disconnected(PeerDisconnectedHandler h) const;
+    void      unsubscribe(HandlerId id) const noexcept;
 
   private:
     friend class ::pylabhub::broker::BrokerService;
