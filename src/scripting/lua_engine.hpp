@@ -184,6 +184,18 @@ class LuaEngine : public ScriptEngine
     static int lua_api_hub_log(lua_State *L);
     static int lua_api_hub_uid(lua_State *L);
     static int lua_api_hub_metrics(lua_State *L);
+    // Phase 8a — read accessors (HEP-CORE-0033 §12.3 read block)
+    static int lua_api_hub_name(lua_State *L);
+    static int lua_api_hub_config(lua_State *L);
+    static int lua_api_hub_list_channels(lua_State *L);
+    static int lua_api_hub_get_channel(lua_State *L);
+    static int lua_api_hub_list_roles(lua_State *L);
+    static int lua_api_hub_get_role(lua_State *L);
+    static int lua_api_hub_list_bands(lua_State *L);
+    static int lua_api_hub_get_band(lua_State *L);
+    static int lua_api_hub_list_peers(lua_State *L);
+    static int lua_api_hub_get_peer(lua_State *L);
+    static int lua_api_hub_query_metrics(lua_State *L);
     static int lua_api_set_critical_error(lua_State *L);
     static int lua_api_stop_reason(lua_State *L);
     static int lua_api_script_error_count(lua_State *L);

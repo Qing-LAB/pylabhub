@@ -208,10 +208,10 @@ TEST_F(HubLuaIntegrationTest, RealLuaScript_OnInitOnStop_FireAndLog)
     const std::string lua_body =
         "function on_init(api)\n"
         "    local m = api.metrics()  -- callable, no error\n"
-        "    api.log(\"info\", \"PHASE7_D33_INIT uid=\" .. api.uid())\n"
+        "    api.log(\"info\", \"HUB_INIT uid=\" .. api.uid())\n"
         "end\n"
         "function on_stop(api)\n"
-        "    api.log(\"info\", \"PHASE7_D33_STOP uid=\" .. api.uid())\n"
+        "    api.log(\"info\", \"HUB_STOP uid=\" .. api.uid())\n"
         "end\n";
 
     const fs::path dir = make_lua_hub_dir("oninit", lua_body);
@@ -264,8 +264,8 @@ TEST_F(HubLuaIntegrationTest, RealLuaScript_OnInitOnStop_FireAndLog)
     // must be present + on_init must precede on_stop in the file.
     const std::string log = read_log_file(LogCaptureFixture::log_path());
 
-    const auto pos_init = log.find("PHASE7_D33_INIT");
-    const auto pos_stop = log.find("PHASE7_D33_STOP");
+    const auto pos_init = log.find("HUB_INIT");
+    const auto pos_stop = log.find("HUB_STOP");
 
     ASSERT_NE(pos_init, std::string::npos)
         << "missing on_init log marker — api:log() did not route through "
@@ -280,7 +280,7 @@ TEST_F(HubLuaIntegrationTest, RealLuaScript_OnInitOnStop_FireAndLog)
     // Pin api:uid() actually returns the configured uid (not empty
     // string, not garbage).  Both markers carry it; checking on_init
     // is enough.
-    const std::string init_line_marker = "PHASE7_D33_INIT uid=" + expected_uid;
+    const std::string init_line_marker = "HUB_INIT uid=" + expected_uid;
     EXPECT_NE(log.find(init_line_marker), std::string::npos)
         << "api:uid() must return cfg.identity().uid; expected to find\n  "
         << init_line_marker << "\nLog dump:\n" << log;
@@ -383,7 +383,7 @@ TEST_F(HubLuaIntegrationTest, OnTick_FiresPeriodically_WhenIdle)
     // their typed payload arg; tick gets nothing).
     const std::string lua_body =
         "function on_tick()\n"
-        "    api.log('info', 'PHASE7_E_TICK_T1')\n"
+        "    api.log('info', 'TICK_IDLE')\n"
         "end\n";
 
     const fs::path dir = make_lua_hub_dir(
@@ -406,7 +406,7 @@ TEST_F(HubLuaIntegrationTest, OnTick_FiresPeriodically_WhenIdle)
     host.shutdown();
 
     const std::string log = read_log_file(LogCaptureFixture::log_path());
-    const int tick_count = count_markers(log, "PHASE7_E_TICK_T1");
+    const int tick_count = count_markers(log, "TICK_IDLE");
 
     EXPECT_GE(tick_count, 4)
         << "expected >= 4 on_tick markers in 550 ms with period=100 ms; "
@@ -481,16 +481,16 @@ TEST_F(HubLuaIntegrationTest, OnTick_CatchUp_FixedRateWithCompensation)
         "]]\n"
         "tick_count = 0\n"
         "function on_init(api)\n"
-        "    api.log('info', 'PHASE7_E_INIT_T4')\n"
+        "    api.log('info', 'INIT_RAN')\n"
         "end\n"
         "function on_tick()\n"
         "    tick_count = tick_count + 1\n"
-        "    api.log('info', 'PHASE7_E_TICK_T4')\n"
+        "    api.log('info', 'TICK_CATCHUP')\n"
         "    if tick_count == 1 then\n"
         "        -- Stall ONLY the first tick — 500 ms wall-clock.\n"
         "        local req = ffi.new('plh_ts', 0, 500 * 1000 * 1000)\n"
         "        ffi.C.nanosleep(req, nil)\n"
-        "        api.log('info', 'PHASE7_E_TICK_STALL_DONE_T4')\n"
+        "        api.log('info', 'TICK_STALL_DONE')\n"
         "    end\n"
         "end\n";
 
@@ -513,7 +513,7 @@ TEST_F(HubLuaIntegrationTest, OnTick_CatchUp_FixedRateWithCompensation)
     host.shutdown();
 
     const std::string log = read_log_file(LogCaptureFixture::log_path());
-    const int tick_count = count_markers(log, "PHASE7_E_TICK_T4");
+    const int tick_count = count_markers(log, "TICK_CATCHUP");
 
     EXPECT_GE(tick_count, 6)
         << "expected >= 6 on_tick markers (stalled #1 + >=4 catch-up + "
@@ -530,7 +530,7 @@ TEST_F(HubLuaIntegrationTest, OnTick_CatchUp_FixedRateWithCompensation)
 
     // Pin that the stalled tick #1 actually completed (busy-loop
     // exited normally), and that subsequent ticks fired AFTER it.
-    const auto stall_done = log.find("PHASE7_E_TICK_STALL_DONE_T4");
+    const auto stall_done = log.find("TICK_STALL_DONE");
     ASSERT_NE(stall_done, std::string::npos)
         << "stalled tick #1 never completed";
 
@@ -538,10 +538,131 @@ TEST_F(HubLuaIntegrationTest, OnTick_CatchUp_FixedRateWithCompensation)
     // catch-up + normal ticks.  Should be tick_count - 1 (we stalled
     // tick #1, and STALL_DONE is logged right at the end of tick #1).
     const std::string post_stall = log.substr(stall_done);
-    const int post_stall_ticks = count_markers(post_stall, "PHASE7_E_TICK_T4");
+    const int post_stall_ticks = count_markers(post_stall, "TICK_CATCHUP");
     EXPECT_GE(post_stall_ticks, 5)
         << "expected >= 5 ticks after stall_done (catch-up burst + "
            "normal); got " << post_stall_ticks
         << " — regression in catch-up: deadline not walking the grid "
            "forward.\nLog dump after stall:\n" << post_stall;
+}
+
+// ─── Read-accessor binding surface (HEP-CORE-0033 §12.3) ───────────────────
+
+TEST_F(HubLuaIntegrationTest, ReadAccessors_AllReachable_FromOnInit)
+{
+    // Verifies every HubAPI read accessor is callable from a Lua
+    // script and returns a sensibly-typed value:
+    //   - api.name() / api.uid() — strings (already exists for uid)
+    //   - api.config() — table (full hub config snapshot)
+    //   - api.list_channels()/_roles()/_bands()/_peers() — empty
+    //     tables (no roles registered in this isolated test hub)
+    //   - api.get_channel/_role/_band/_peer(missing) — nil
+    //   - api.metrics() — table (already exists)
+    //   - api.query_metrics({"counters"}) — table filtered to one
+    //     category
+    //
+    // The hub runs alone (no real producer/consumer/peer connects),
+    // so the lists are expected to be empty.  This test pins the
+    // BINDING surface — every method is reachable, types are correct,
+    // no Lua errors.  Functional content (entries appearing when
+    // roles register) is covered by future end-to-end tests once
+    // there's a script-driven mutator surface; for now the binding
+    // pin is what we need.
+    //
+    // Each call's outcome is logged with a unique marker; the test
+    // greps for all markers.  If any binding throws a Lua error, the
+    // pcall path emits LOGGER_ERROR which the LogCaptureFixture
+    // rejects in TearDown — that fails the test before any marker
+    // assertion runs.
+    const std::string lua_body = R"LUA(
+function on_init(api)
+    -- name() — string, non-empty (matches cfg.identity().name).
+    local n = api.name()
+    if type(n) == 'string' and #n > 0 then
+        api.log('info', 'API_NAME_OK:' .. n)
+    end
+
+    -- config() — table with at least 'hub' and 'admin' keys.
+    local c = api.config()
+    if type(c) == 'table' and type(c.hub) == 'table' and
+       type(c.admin) == 'table' then
+        api.log('info', 'API_CONFIG_OK')
+    end
+
+    -- list_*() — all return tables (empty in this isolated hub).
+    if type(api.list_channels()) == 'table' then
+        api.log('info', 'API_LIST_CHANNELS_OK')
+    end
+    if type(api.list_roles()) == 'table' then
+        api.log('info', 'API_LIST_ROLES_OK')
+    end
+    if type(api.list_bands()) == 'table' then
+        api.log('info', 'API_LIST_BANDS_OK')
+    end
+    if type(api.list_peers()) == 'table' then
+        api.log('info', 'API_LIST_PEERS_OK')
+    end
+
+    -- get_*(missing) — nil (Lua null is nil).
+    if api.get_channel('no.such.channel') == nil then
+        api.log('info', 'API_GET_CHANNEL_NIL_OK')
+    end
+    if api.get_role('no.such.role') == nil then
+        api.log('info', 'API_GET_ROLE_NIL_OK')
+    end
+    if api.get_band('no.such.band') == nil then
+        api.log('info', 'API_GET_BAND_NIL_OK')
+    end
+    if api.get_peer('no.such.peer') == nil then
+        api.log('info', 'API_GET_PEER_NIL_OK')
+    end
+
+    -- query_metrics({}) — table (all categories).
+    if type(api.query_metrics({})) == 'table' then
+        api.log('info', 'API_QUERY_METRICS_ALL_OK')
+    end
+
+    -- query_metrics({'counters'}) — table (filtered).
+    local m_filt = api.query_metrics({'counters'})
+    if type(m_filt) == 'table' then
+        api.log('info', 'API_QUERY_METRICS_FILTERED_OK')
+    end
+end
+)LUA";
+
+    const fs::path dir = make_lua_hub_dir("read_accessors", lua_body);
+
+    auto cfg = HubConfig::load_from_directory(dir.string());
+    auto engine =
+        pylabhub::scripting::make_engine_from_script_config(cfg.script());
+    HubHost host(std::move(cfg), std::move(engine));
+
+    ASSERT_NO_THROW(host.startup());
+    host.shutdown();
+
+    const std::string log = read_log_file(LogCaptureFixture::log_path());
+
+    // 12 markers, one per binding.
+    static constexpr const char *kExpectedMarkers[] = {
+        "API_NAME_OK:",
+        "API_CONFIG_OK",
+        "API_LIST_CHANNELS_OK",
+        "API_LIST_ROLES_OK",
+        "API_LIST_BANDS_OK",
+        "API_LIST_PEERS_OK",
+        "API_GET_CHANNEL_NIL_OK",
+        "API_GET_ROLE_NIL_OK",
+        "API_GET_BAND_NIL_OK",
+        "API_GET_PEER_NIL_OK",
+        "API_QUERY_METRICS_ALL_OK",
+        "API_QUERY_METRICS_FILTERED_OK",
+    };
+    for (const char *m : kExpectedMarkers)
+    {
+        EXPECT_NE(log.find(m), std::string::npos)
+            << "missing binding marker '" << m
+            << "' — HubAPI read accessor failed to bind, returned "
+               "wrong type, or the Lua test code mistyped it.\nLog dump:\n"
+            << log;
+    }
 }

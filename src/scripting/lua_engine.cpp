@@ -429,9 +429,21 @@ bool LuaEngine::build_api_(::pylabhub::hub_host::HubAPI &api)
         lua_setfield(L, -2, name);
     };
 
-    push_closure("log",     lua_api_hub_log);
-    push_closure("uid",     lua_api_hub_uid);
-    push_closure("metrics", lua_api_hub_metrics);
+    push_closure("log",            lua_api_hub_log);
+    push_closure("uid",            lua_api_hub_uid);
+    push_closure("metrics",        lua_api_hub_metrics);
+    // Phase 8a — read accessors (HEP-CORE-0033 §12.3 read block)
+    push_closure("name",           lua_api_hub_name);
+    push_closure("config",         lua_api_hub_config);
+    push_closure("list_channels",  lua_api_hub_list_channels);
+    push_closure("get_channel",    lua_api_hub_get_channel);
+    push_closure("list_roles",     lua_api_hub_list_roles);
+    push_closure("get_role",       lua_api_hub_get_role);
+    push_closure("list_bands",     lua_api_hub_list_bands);
+    push_closure("get_band",       lua_api_hub_get_band);
+    push_closure("list_peers",     lua_api_hub_list_peers);
+    push_closure("get_peer",       lua_api_hub_get_peer);
+    push_closure("query_metrics",  lua_api_hub_query_metrics);
 
     // Expose the api table as a Lua global so scripts can call
     // `api:log(...)` from event/tick callbacks.  We dup the table
@@ -1505,6 +1517,112 @@ int LuaEngine::lua_api_hub_metrics(lua_State *L)
     // path + role-side metrics path).  Empty filter = all categories.
     const auto j = self->hub_api_->metrics();
     json_to_lua(L, j);
+    return 1;
+}
+
+// ── Phase 8a — Read accessors (HEP-CORE-0033 §12.3 read block) ──────────────
+//
+// Each closure pulls `self` from upvalue(1), forwards to the
+// corresponding `HubAPI::*` accessor (which returns nlohmann::json
+// or std::string), and converts to a Lua value via the shared
+// `json_to_lua` helper for tables / `lua_pushstring` for strings.
+// Pattern is identical across all 11 — kept verbose-but-mechanical
+// rather than templated because LuaJIT's C-API expects raw
+// `int (*)(lua_State*)` function pointers.
+
+int LuaEngine::lua_api_hub_name(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    lua_pushstring(L, self->hub_api_->name().c_str());
+    return 1;
+}
+
+int LuaEngine::lua_api_hub_config(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    json_to_lua(L, self->hub_api_->config());
+    return 1;
+}
+
+int LuaEngine::lua_api_hub_list_channels(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    json_to_lua(L, self->hub_api_->list_channels());
+    return 1;
+}
+
+int LuaEngine::lua_api_hub_get_channel(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *name = luaL_checkstring(L, 1);
+    json_to_lua(L, self->hub_api_->get_channel(name));
+    return 1;
+}
+
+int LuaEngine::lua_api_hub_list_roles(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    json_to_lua(L, self->hub_api_->list_roles());
+    return 1;
+}
+
+int LuaEngine::lua_api_hub_get_role(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *uid = luaL_checkstring(L, 1);
+    json_to_lua(L, self->hub_api_->get_role(uid));
+    return 1;
+}
+
+int LuaEngine::lua_api_hub_list_bands(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    json_to_lua(L, self->hub_api_->list_bands());
+    return 1;
+}
+
+int LuaEngine::lua_api_hub_get_band(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *name = luaL_checkstring(L, 1);
+    json_to_lua(L, self->hub_api_->get_band(name));
+    return 1;
+}
+
+int LuaEngine::lua_api_hub_list_peers(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    json_to_lua(L, self->hub_api_->list_peers());
+    return 1;
+}
+
+int LuaEngine::lua_api_hub_get_peer(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *hub_uid = luaL_checkstring(L, 1);
+    json_to_lua(L, self->hub_api_->get_peer(hub_uid));
+    return 1;
+}
+
+int LuaEngine::lua_api_hub_query_metrics(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    // Optional first arg: a Lua table of category strings.  Absent or
+    // not-a-table → empty list (= all categories).
+    std::vector<std::string> categories;
+    if (lua_gettop(L) >= 1 && lua_istable(L, 1))
+    {
+        const int len = static_cast<int>(lua_objlen(L, 1));
+        categories.reserve(len);
+        for (int i = 1; i <= len; ++i)
+        {
+            lua_rawgeti(L, 1, i);
+            if (lua_isstring(L, -1))
+                categories.emplace_back(lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+    }
+    json_to_lua(L, self->hub_api_->query_metrics(categories));
     return 1;
 }
 

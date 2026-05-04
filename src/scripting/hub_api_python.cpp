@@ -96,5 +96,108 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_hub, m) // NOLINT
              "Empty dict when called before HubHost::startup() or after "
              "shutdown() — same shape AdminService's query_metrics RPC "
              "uses (single source of truth via Phase 6.2b's "
-             "hub_state_json serializers).");
+             "hub_state_json serializers).")
+
+        // ── Phase 8a — Read accessors (HEP-CORE-0033 §12.3) ───────────────
+        //
+        // Each method delegates straight to the C++ HubAPI accessor and
+        // converts via the shared json_to_py walker.  The lambda wrappers
+        // do nothing the C++ side doesn't already do — they exist only
+        // because pybind11 can't auto-bind a method returning
+        // nlohmann::json (no native converter).
+
+        .def("name", &HubAPI::name,
+             "Hub display name (cfg.identity().name) — distinct from "
+             "uid().  Empty string if HubHost backref isn't wired yet "
+             "(only happens in unit tests).")
+
+        .def("config",
+             [](const HubAPI &self) -> py::dict {
+                 return pylabhub::scripting::detail::json_to_py(
+                            self.config())
+                     .cast<py::dict>();
+             },
+             "Full hub config snapshot — equivalent to the contents of "
+             "hub.json post-default-merge.  Read-only; mutations go "
+             "through curated admin RPCs / Phase 8b control delegates.")
+
+        .def("list_channels",
+             [](const HubAPI &self) -> py::list {
+                 return pylabhub::scripting::detail::json_to_py(
+                            self.list_channels())
+                     .cast<py::list>();
+             },
+             "List of all currently-registered channels (each a dict in "
+             "the same shape AdminService's list_channels RPC emits).")
+
+        .def("get_channel",
+             [](const HubAPI &self, const std::string &name) -> py::object {
+                 return pylabhub::scripting::detail::json_to_py(
+                            self.get_channel(name));
+             },
+             py::arg("name"),
+             "Single channel lookup.  Returns the channel dict or None "
+             "if not registered.")
+
+        .def("list_roles",
+             [](const HubAPI &self) -> py::list {
+                 return pylabhub::scripting::detail::json_to_py(
+                            self.list_roles())
+                     .cast<py::list>();
+             },
+             "List of all roles (producers / consumers / processors).")
+
+        .def("get_role",
+             [](const HubAPI &self, const std::string &uid) -> py::object {
+                 return pylabhub::scripting::detail::json_to_py(
+                            self.get_role(uid));
+             },
+             py::arg("uid"),
+             "Single role lookup by uid.  Returns the role dict or "
+             "None.")
+
+        .def("list_bands",
+             [](const HubAPI &self) -> py::list {
+                 return pylabhub::scripting::detail::json_to_py(
+                            self.list_bands())
+                     .cast<py::list>();
+             },
+             "List of all bands (HEP-CORE-0030 pub/sub channels).")
+
+        .def("get_band",
+             [](const HubAPI &self, const std::string &name) -> py::object {
+                 return pylabhub::scripting::detail::json_to_py(
+                            self.get_band(name));
+             },
+             py::arg("name"),
+             "Single band lookup.  Returns the band dict or None.")
+
+        .def("list_peers",
+             [](const HubAPI &self) -> py::list {
+                 return pylabhub::scripting::detail::json_to_py(
+                            self.list_peers())
+                     .cast<py::list>();
+             },
+             "List of all federation peer hubs.")
+
+        .def("get_peer",
+             [](const HubAPI &self, const std::string &hub_uid) -> py::object {
+                 return pylabhub::scripting::detail::json_to_py(
+                            self.get_peer(hub_uid));
+             },
+             py::arg("hub_uid"),
+             "Single peer lookup by hub uid.  Returns the peer dict or "
+             "None.")
+
+        .def("query_metrics",
+             [](const HubAPI &self,
+                const std::vector<std::string> &categories) -> py::dict {
+                 return pylabhub::scripting::detail::json_to_py(
+                            self.query_metrics(categories))
+                     .cast<py::dict>();
+             },
+             py::arg("categories") = std::vector<std::string>{},
+             "Filtered metrics — categories is a list of category names "
+             "(e.g. ['channels', 'counters']); empty/absent = all "
+             "categories.  Same JSON shape metrics() produces.");
 }
