@@ -45,6 +45,9 @@ namespace py = pybind11;
 namespace pylabhub::producer { class ProducerAPI; }
 namespace pylabhub::consumer { class ConsumerAPI; }
 namespace pylabhub::processor { class ProcessorAPI; }
+// Forward declaration for HubAPI — full type only needed in
+// python_engine.cpp (build_api_(HubAPI&) impl + py::cast).
+namespace pylabhub::hub_host  { class HubAPI; }
 
 namespace pylabhub::scripting
 {
@@ -72,6 +75,16 @@ class PythonEngine : public ScriptEngine
                      const std::string &entry_point,
                      const std::string &required_callback) override;
     bool build_api_(RoleAPIBase &api) override;
+    /// Hub-side build_api override (HEP-CORE-0033 Phase 7 D4.1).
+    /// Imports `pylabhub_hub` (registered by hub_api_python.cpp via
+    /// PYBIND11_EMBEDDED_MODULE), wraps the HubAPI in a py::object,
+    /// stores it in `api_obj_` for `invoke_on_init` / `invoke_on_stop`
+    /// (which pass `api` as a positional arg), and ALSO sets it as
+    /// `<script_module>.api` so event/tick callbacks dispatched via
+    /// generic `engine.invoke(name, args)` (which doesn't pass api)
+    /// can still reach it via module-global lookup.  Mirrors the Lua
+    /// dual-exposure pattern (registry ref + Lua global).
+    bool build_api_(::pylabhub::hub_host::HubAPI &api) override;
     void finalize_engine_() override;
 
     // ── Queries ────────────────────────────────────────────────────────────

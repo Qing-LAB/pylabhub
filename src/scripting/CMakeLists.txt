@@ -30,6 +30,10 @@ add_library(pylabhub-scripting STATIC
     ${CMAKE_SOURCE_DIR}/src/producer/producer_api.cpp
     ${CMAKE_SOURCE_DIR}/src/consumer/consumer_api.cpp
     ${CMAKE_SOURCE_DIR}/src/processor/processor_api.cpp
+    # Hub-side pybind11 embedded module (HEP-CORE-0033 Phase 7 D4).
+    # HubAPI itself is in pylabhub-utils; only the Python binding
+    # needs pybind11 deps so it lives here alongside python_engine.
+    hub_api_python.cpp
 )
 add_library(pylabhub::scripting ALIAS pylabhub-scripting)
 
