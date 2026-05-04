@@ -56,8 +56,9 @@ The wrapper can no-op or error for `supports_multi_state() == false`
 engines, or alternatively use `threading.Thread` and register the
 resulting OS thread with `ThreadManager` post-hoc.
 
-Defer until after Commit E (Phase 7 closure).  Not blocking any
-current sprint.
+Phase 7 is now closed (2026-05-04, Commit E rejected by design —
+HEP-0033 §17.1).  Defer this work to Phase 8+ alongside the rich
+HubAPI surface; not blocking any current sprint.
 
 ### Open: src/ + src/include/ restructure (deferred plan, 2026-04-21)
 
