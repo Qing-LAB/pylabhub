@@ -232,6 +232,17 @@ def on_init(api):
     if isinstance(api.query_metrics(['counters']), dict):
         api.log('info', 'API_QUERY_METRICS_FILTERED_OK')
 
+    # Control delegates — fire-and-forget; broker tolerates unknown
+    # channels idempotently.  Pins the BINDING surface only.
+    # request_shutdown is exercised by the Lua test's dedicated case
+    # (it shuts the hub down, conflicting with this test's lifecycle).
+    api.close_channel('no.such.channel')
+    api.log('info', 'API_CLOSE_CHANNEL_OK')
+    api.broadcast_channel('no.such.channel', 'hello')
+    api.log('info', 'API_BROADCAST_CHANNEL_OK')
+    api.broadcast_channel('no.such.channel', 'with-payload', 'payload-bytes')
+    api.log('info', 'API_BROADCAST_CHANNEL_DATA_OK')
+
 def on_stop(api):
     api.log('info', 'HUB_STOP uid=' + api.uid())
 )PY";
@@ -338,6 +349,9 @@ def on_stop(api):
         "API_GET_PEER_NIL_OK",
         "API_QUERY_METRICS_ALL_OK",
         "API_QUERY_METRICS_FILTERED_OK",
+        "API_CLOSE_CHANNEL_OK",
+        "API_BROADCAST_CHANNEL_OK",
+        "API_BROADCAST_CHANNEL_DATA_OK",
     };
     for (const char *m : kAccessorMarkers)
     {

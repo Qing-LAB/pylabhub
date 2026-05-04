@@ -443,7 +443,11 @@ bool LuaEngine::build_api_(::pylabhub::hub_host::HubAPI &api)
     push_closure("get_band",       lua_api_hub_get_band);
     push_closure("list_peers",     lua_api_hub_list_peers);
     push_closure("get_peer",       lua_api_hub_get_peer);
-    push_closure("query_metrics",  lua_api_hub_query_metrics);
+    push_closure("query_metrics",     lua_api_hub_query_metrics);
+    // Phase 8b — control delegates (HEP-CORE-0033 §12.3 control block)
+    push_closure("close_channel",     lua_api_hub_close_channel);
+    push_closure("broadcast_channel", lua_api_hub_broadcast_channel);
+    push_closure("request_shutdown",  lua_api_hub_request_shutdown);
 
     // Expose the api table as a Lua global so scripts can call
     // `api:log(...)` from event/tick callbacks.  We dup the table
@@ -1624,6 +1628,41 @@ int LuaEngine::lua_api_hub_query_metrics(lua_State *L)
     }
     json_to_lua(L, self->hub_api_->query_metrics(categories));
     return 1;
+}
+
+// ── Control delegates (HEP-CORE-0033 §12.3 control block) ───────────────────
+//
+// Fire-and-forget mutators delegating to the corresponding HubAPI
+// method (which delegates further to host.broker().request_*).  All
+// return 0 results — Lua callers that pcall this get nothing back,
+// matching the admin-RPC accept-ack semantics.
+
+int LuaEngine::lua_api_hub_close_channel(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *name = luaL_checkstring(L, 1);
+    self->hub_api_->close_channel(name);
+    return 0;
+}
+
+int LuaEngine::lua_api_hub_broadcast_channel(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *channel = luaL_checkstring(L, 1);
+    const char *message = luaL_checkstring(L, 2);
+    // Optional third arg: data payload, default empty.
+    const char *data = (lua_gettop(L) >= 3 && lua_isstring(L, 3))
+                           ? lua_tostring(L, 3)
+                           : "";
+    self->hub_api_->broadcast_channel(channel, message, data);
+    return 0;
+}
+
+int LuaEngine::lua_api_hub_request_shutdown(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    self->hub_api_->request_shutdown();
+    return 0;
 }
 
 // ============================================================================

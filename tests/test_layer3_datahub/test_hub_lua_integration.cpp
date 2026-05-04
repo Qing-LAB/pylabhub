@@ -627,6 +627,23 @@ function on_init(api)
     if type(m_filt) == 'table' then
         api.log('info', 'API_QUERY_METRICS_FILTERED_OK')
     end
+
+    -- Control delegates — fire-and-forget; broker tolerates unknown
+    -- channels idempotently.  Testing here pins the BINDING surface
+    -- (callable, no error, no Lua exception) — the actual mutation
+    -- effect is exercised in end-to-end tests when there's a real
+    -- broker-driven channel to operate on.
+    api.close_channel('no.such.channel')
+    api.log('info', 'API_CLOSE_CHANNEL_OK')
+
+    api.broadcast_channel('no.such.channel', 'hello')
+    api.log('info', 'API_BROADCAST_CHANNEL_OK')
+
+    api.broadcast_channel('no.such.channel', 'with-payload', 'payload-bytes')
+    api.log('info', 'API_BROADCAST_CHANNEL_DATA_OK')
+
+    -- request_shutdown is left for a separate test below — calling it
+    -- here would race with the test fixture's host.shutdown() flow.
 end
 )LUA";
 
@@ -656,6 +673,9 @@ end
         "API_GET_PEER_NIL_OK",
         "API_QUERY_METRICS_ALL_OK",
         "API_QUERY_METRICS_FILTERED_OK",
+        "API_CLOSE_CHANNEL_OK",
+        "API_BROADCAST_CHANNEL_OK",
+        "API_BROADCAST_CHANNEL_DATA_OK",
     };
     for (const char *m : kExpectedMarkers)
     {
@@ -665,4 +685,65 @@ end
                "wrong type, or the Lua test code mistyped it.\nLog dump:\n"
             << log;
     }
+}
+
+TEST_F(HubLuaIntegrationTest, RequestShutdown_FromOnInit_WakesMainLoop)
+{
+    // Verifies api.request_shutdown() delegates to host.request_shutdown()
+    // — script calls it during on_init, then run_main_loop() (called on
+    // the test thread) wakes from its wait and returns.  Without the
+    // delegation, run_main_loop would block until our wall-clock guard
+    // bails the test.
+    //
+    // The script also hits broadcast_channel("notify_shutdown", ...)
+    // before requesting shutdown — proves request_shutdown isn't an
+    // accidental side-effect of some OTHER api call (a regression that
+    // routed both to host_->request_shutdown would still pass this
+    // test alone, but the ReadAccessors test above runs broadcast +
+    // close without shutting down).
+    const std::string lua_body = R"LUA(
+function on_init(api)
+    api.log('info', 'BEFORE_SHUTDOWN')
+    api.broadcast_channel('no.such.channel', 'notify_shutdown')
+    api.request_shutdown()
+    api.log('info', 'AFTER_SHUTDOWN_REQUEST')
+end
+)LUA";
+
+    const fs::path dir = make_lua_hub_dir("request_shutdown", lua_body);
+
+    auto cfg = HubConfig::load_from_directory(dir.string());
+    auto engine =
+        pylabhub::scripting::make_engine_from_script_config(cfg.script());
+    HubHost host(std::move(cfg), std::move(engine));
+
+    ASSERT_NO_THROW(host.startup());
+
+    // run_main_loop blocks until shutdown_flag is set.  Wall-clock
+    // guard: if the script's request_shutdown didn't actually delegate
+    // to host_->request_shutdown, run_main_loop would block forever;
+    // we'd hit the test-process timeout instead of a clean failure.
+    // Use a thread that calls run_main_loop with a hard cap so the
+    // test gives a clean failure on regression.
+    const auto t_begin = std::chrono::steady_clock::now();
+    std::thread main_thread([&host]() { host.run_main_loop(); });
+    main_thread.join();
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t_begin).count();
+
+    EXPECT_LT(elapsed_ms, 2000)
+        << "run_main_loop must wake within 2 s of startup (the script's "
+           "on_init calls api.request_shutdown which should set the host "
+           "shutdown flag immediately).  took " << elapsed_ms << " ms — "
+           "regression in HubAPI::request_shutdown delegation.";
+
+    host.shutdown();
+    EXPECT_FALSE(host.is_running());
+
+    const std::string log = read_log_file(LogCaptureFixture::log_path());
+    EXPECT_NE(log.find("BEFORE_SHUTDOWN"), std::string::npos)
+        << "on_init never ran; log:\n" << log;
+    EXPECT_NE(log.find("AFTER_SHUTDOWN_REQUEST"), std::string::npos)
+        << "api.request_shutdown raised an error before returning, or "
+           "Lua aborted the script; log:\n" << log;
 }
