@@ -44,6 +44,17 @@
 
 namespace py = pybind11;
 
+// Force-link symbol — referenced by `PythonEngine::build_api_(HubAPI&)`
+// so the static linker pulls this .o into the final binary.  Without
+// this, the linker drops the entire .o file (nothing else here is
+// referenced — HubAPI lives in pylabhub-utils, not this file), and the
+// PYBIND11_EMBEDDED_MODULE static initializer below never registers
+// `pylabhub_hub` in the inittab.  Same defense the role-side files
+// (producer_api.cpp / consumer_api.cpp / processor_api.cpp) get
+// implicitly because they ALSO host the role-API class impls (which
+// are referenced from PythonEngine::build_api_(RoleAPIBase&)).
+extern "C" void plh_register_hub_api_python_module() {}
+
 PYBIND11_EMBEDDED_MODULE(pylabhub_hub, m) // NOLINT
 {
     using pylabhub::hub_host::HubAPI;
