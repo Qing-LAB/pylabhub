@@ -66,6 +66,16 @@ HubScriptRunner::~HubScriptRunner()
 
 InvokeResponse HubScriptRunner::eval(const std::string &code)
 {
+    // Gate on is_running() so direct callers (today: HubHost::eval_in_script;
+    // tomorrow: anything that holds a runner pointer) get the same
+    // NotFound shape post-shutdown that HubHost's wrapper provides.
+    // Without this, a caller bypassing HubHost would forward into a
+    // partially-torn-down engine after shutdown_() — the runner ptr
+    // is intentionally left intact post-shutdown for diagnostics
+    // (parallel to broker_/admin_), but the engine state is gone.
+    if (!is_running())
+        return {InvokeStatus::NotFound, {}};
+
     // engine() is the protected accessor on EngineHost — usable here
     // because HubScriptRunner derives from EngineHost<HubAPI>.  Forwards
     // verbatim; serialization w.r.t. the worker thread's invoke calls
@@ -82,8 +92,12 @@ void HubScriptRunner::worker_main_()
     using Clock = std::chrono::steady_clock;
     namespace js = pylabhub::hub;   // channel_to_json / role_to_json / etc.
 
-    LOGGER_INFO("[HubScriptRunner:{}] worker_main_ entered",
-                host_.config().identity().uid);
+    // Capture uid once.  `host_.config().identity().uid` is stable
+    // for the life of HubHost; we use it for log prefixes throughout
+    // worker_main_ (entry, shutdown notice, exit).
+    const std::string uid = host_.config().identity().uid;
+
+    LOGGER_INFO("[HubScriptRunner:{}] worker_main_ entered", uid);
 
     // ── Mark runner as running (gates `is_running()` queries) ─────────────
     //
@@ -291,7 +305,7 @@ void HubScriptRunner::worker_main_()
     LOGGER_INFO("[HubScriptRunner:{}] shutting down — draining pending "
                 "events and running on_stop; cleanup may take up to one "
                 "tick period ({} ms)",
-                host_.config().identity().uid,
+                uid,
                 is_max_rate ? 0 : static_cast<int>(period_us / 1000));
 
     auto remaining = core().drain_messages();
@@ -303,8 +317,7 @@ void HubScriptRunner::worker_main_()
     // to false so any subsequent `is_running()` query returns false.
     core().set_running(false);
 
-    LOGGER_INFO("[HubScriptRunner:{}] worker_main_ exiting",
-                host_.config().identity().uid);
+    LOGGER_INFO("[HubScriptRunner:{}] worker_main_ exiting", uid);
 }
 
 } // namespace pylabhub::scripting
