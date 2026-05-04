@@ -617,17 +617,13 @@ admin::AdminService *HubHost::admin() noexcept
 
 scripting::InvokeResponse HubHost::eval_in_script(const std::string &code)
 {
-    // Forward to the runner's owned engine only when the runner is
-    // actively running.  Three "no script available" cases all return
-    // the same `NotFound` shape so operators get a uniform answer:
-    //   1. scripts disabled (no engine injected, no path) → no runner.
-    //   2. startup() was not called yet → no runner.
-    //   3. shutdown() has been called → runner exists (we leave it
-    //      intact for diagnostics, parallel to broker_/admin_) but
-    //      its worker thread has exited; engine state is gone.
-    // Without the `is_running()` guard, case 3 would still forward
-    // into a half-torn-down engine — surfaces as wrong-status.
-    if (!impl_->runner || !impl_->runner->is_running())
+    // Forward to the runner when present.  Two "no script available"
+    // cases return the uniform NotFound shape:
+    //   1. no runner (scripts disabled at ctor or before startup).
+    //   2. runner exists but not running (post-shutdown) — gated
+    //      INSIDE `HubScriptRunner::eval` itself, so any direct
+    //      caller bypassing HubHost gets the same answer.
+    if (!impl_->runner)
         return {scripting::InvokeStatus::NotFound, {}};
     return impl_->runner->eval(code);
 }

@@ -13,8 +13,13 @@
  *
  *   - HubState           (value member; HEP-0033 §8)
  *   - BrokerService      (unique_ptr; HEP-0033 §9)
- *   - AdminService       (unique_ptr; HEP-0033 §11 — Phase 6.2)
- *   - ScriptEngine       (unique_ptr; HEP-0033 §12 — Phase 7, optional)
+ *   - AdminService       (unique_ptr; HEP-0033 §11; built only when
+ *                         `cfg.admin().enabled` is true)
+ *   - HubScriptRunner    (unique_ptr; HEP-0033 §12 / Phase 7; built
+ *                         only when an engine is injected at ctor and
+ *                         `cfg.script().path` is non-empty.  Owns the
+ *                         injected ScriptEngine + a worker thread for
+ *                         event/tick dispatch.)
  *   - ThreadManager      (unique_ptr; auto-registers as the dynamic
  *                         lifecycle module "ThreadManager:HubHost:<uid>")
  *
@@ -27,20 +32,26 @@
  * reach the broker and read-only HubState.
  *
  * Thread model:
- *   - Main thread runs `run_main_loop()` which blocks on the shutdown
- *     atomic via a condition variable.
+ *   - Main thread runs `run_main_loop()` which polls the shutdown
+ *     atomic at 100 ms tick (timed `wait_for` on a condition
+ *     variable; flag is the source of truth, checked at loop top).
+ *     Mirrors the role-side `run_role_main_loop` pattern.
  *   - Broker thread is spawned via the owned ThreadManager (named
  *     "broker"); runs `BrokerService::run()`.
- *   - Admin thread (Phase 6.2) is spawned via the same ThreadManager
- *     (named "admin"); runs `AdminService::run()`.
- *   - `shutdown()` is synchronous: it flips the shutdown flag, calls
- *     each subsystem's `stop()` to break its poll loop, then drains
- *     the ThreadManager so all tracked threads have actually exited
- *     before the call returns.  After `shutdown()`, no protocol
- *     traffic is being processed and no in-flight handlers can run.
+ *   - Admin thread (when `admin.enabled`) is spawned via the same
+ *     ThreadManager (named "admin"); runs `AdminService::run()`.
+ *   - HubScriptRunner worker thread (when scripts are enabled) is
+ *     spawned via its own owned ThreadManager (inherited from the
+ *     EngineHost<HubAPI> instantiation); runs the event/tick loop.
+ *   - `shutdown()` is synchronous and ordered per HEP-CORE-0033 §4.2
+ *     step 2: stops the runner FIRST (drains in-flight script
+ *     callbacks + runs on_stop + joins worker), then admin, then
+ *     broker, then drains the host's ThreadManager.  After
+ *     `shutdown()`, no protocol traffic is being processed and no
+ *     in-flight handlers can run.
  *   - `~HubHost` calls `shutdown()` if the caller didn't, then
- *     destroys subsystems in reverse spawn order (thread_mgr → broker
- *     → state → cfg).
+ *     destroys subsystems in reverse spawn order (thread_mgr →
+ *     runner → admin → broker → state → cfg).
  *
  * Preconditions for use:
  *   - A `LifecycleGuard` providing Logger, FileLock, JsonConfig,
@@ -130,23 +141,29 @@ public:
     /// `shutdown()` is called.  Typically the main thread's last call.
     void run_main_loop();
 
-    /// Synchronous shutdown.  Flips the shutdown flag, calls
-    /// `broker.stop()` (and, in Phase 6.2, `admin.stop()`), then
-    /// drains the ThreadManager so the broker thread has actually
-    /// exited before this returns.  Idempotent: a second call is a
-    /// no-op.  After `shutdown()` returns: `is_running()` is false,
-    /// `broker()` is unsafe to call, no protocol traffic is being
-    /// served, and the broker socket is closed.
+    /// Synchronous shutdown — ordered per HEP-CORE-0033 §4.2 step 2:
+    ///   1. flip the shared shutdown atomic + wake `run_main_loop`
+    ///   2. `runner->shutdown_()` (drain script events, run on_stop,
+    ///      join the runner's worker thread) when scripts are enabled
+    ///   3. `admin->stop()` (close REP socket; in-flight RPCs finish)
+    ///   4. `broker->stop()` (break broker poll loop)
+    ///   5. `thread_mgr->drain()` (bounded join of broker + admin)
+    /// Idempotent: a second call is a no-op.  After `shutdown()`
+    /// returns: `is_running()` is false, `broker()` is unsafe to
+    /// call, no protocol traffic is being served, no script
+    /// callbacks can fire, and all sockets are closed.
     void shutdown();
 
-    /// Async shutdown signal — safe from any thread.  Flips the
-    /// shutdown flag, calls `broker.stop()` to break its poll loop,
-    /// and notifies `run_main_loop()`'s condition variable.  Returns
-    /// immediately; ThreadManager join is deferred to a subsequent
-    /// `shutdown()` call (or to `~HubHost`).  Typical use: signal
-    /// handler / admin RPC / broker error path → call this →
-    /// `run_main_loop()` returns on the main thread → main thread
-    /// drives `shutdown()` for synchronous wind-down.
+    /// Async shutdown signal — safe from any thread.  Mirrors the
+    /// role-side `RoleHostCore::notify_incoming` shape: flips the
+    /// shared shutdown atomic + notifies `run_main_loop`'s CV.
+    /// Returns immediately.  Does NOT actively stop subsystems —
+    /// the synchronous, ordered teardown happens exclusively in
+    /// `shutdown()` on the main thread, preserving HEP-CORE-0033
+    /// §4.2 step 2 ordering (runner first, then admin, then broker).
+    /// Typical use: signal handler / admin RPC / broker error path
+    /// → call this → `run_main_loop()` returns on the main thread →
+    /// main thread drives `shutdown()` for synchronous wind-down.
     void request_shutdown() noexcept;
 
     /// True between successful `startup()` and the start of `shutdown()`.

@@ -52,7 +52,8 @@
  * Contract on `ApiT`:
  *   - Constructor `ApiT(RoleHostCore &, std::string role_tag, std::string uid)`
  *   - `ThreadManager &thread_manager()` accessor
- *   (HubAPI will satisfy both when HEP-0033 Phase 8 lands.)
+ *   Both `RoleAPIBase` and `HubAPI` satisfy these (HubAPI added in
+ *   HEP-0033 Phase 7 Commit C).
  *
  * New hosts add custom worker threads by calling @c api().thread_manager()
  * @c .spawn(...) inside their @ref worker_main_; all such threads are
@@ -139,8 +140,11 @@ class PYLABHUB_UTILS_EXPORT EngineHost
   public:
     /// Convenience alias for the per-ApiT config type carried by the
     /// trait.  For `EngineHost<RoleAPIBase>` this resolves to
-    /// `config::RoleConfig`; for `EngineHost<HubAPI>` (Phase 7 Commit B)
-    /// it will resolve to the hub-side config type.
+    /// `config::RoleConfig` (the role binary owns its config).  For
+    /// `EngineHost<HubAPI>` it resolves to `std::monostate` — the
+    /// runner is a subsystem under HubHost; HubHost owns the config
+    /// and the runner reads through its host backref (HEP-CORE-0033
+    /// Phase 7 Option E).
     using ConfigT = typename script_host_traits<ApiT>::ConfigT;
 
     /// @param role_tag    Short host tag used for ApiT construction
@@ -356,16 +360,15 @@ class PYLABHUB_UTILS_EXPORT EngineHost
 //
 // `RoleHostBase` was the pre-template class name; it remains the
 // role-side reference type.  Three derived classes (ProducerRoleHost,
-// ConsumerRoleHost, ProcessorRoleHost) inherit from this alias.  Any
-// code still referring to `RoleHostBase` by name resolves to the
-// template instantiation `EngineHost<RoleAPIBase>` without change.
+// ConsumerRoleHost, ProcessorRoleHost) inherit from this alias.
 //
-// Hub side will add a parallel typedef in HEP-CORE-0033 Phase 7
-// (Commit B):  `using HubScriptRunnerBase = EngineHost<HubAPI>;`,
-// followed by `class HubScriptRunner : public HubScriptRunnerBase`.
-// Per the §G1 retraction (lines 59-67 above), this is the SCRIPT-
-// thread runtime — the OUTER `HubHost` container remains a plain
-// concrete class (not derived from EngineHost).
+// Hub side has a parallel typedef `HubScriptRunnerBase =
+// EngineHost<HubAPI>` defined in `src/utils/service/hub_script_runner.hpp`
+// (private header — not exposed because nothing outside pylabhub-utils
+// constructs HubScriptRunner directly).  Per the §G1 retraction
+// (lines 59-67 above), HubScriptRunner is the SCRIPT-thread runtime;
+// the OUTER `HubHost` container remains a plain concrete class (not
+// derived from EngineHost).
 using RoleHostBase = EngineHost<RoleAPIBase>;
 
 } // namespace pylabhub::scripting
