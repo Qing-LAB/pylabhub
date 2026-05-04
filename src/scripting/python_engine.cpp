@@ -556,11 +556,25 @@ bool PythonEngine::build_api_(RoleAPIBase &api)
 // The HubAPI Python class itself is bound via PYBIND11_EMBEDDED_MODULE
 // in src/scripting/hub_api_python.cpp — `pylabhub_hub.HubAPI`.
 
+// Forward decl for force-link symbol — defined in hub_api_python.cpp.
+// Calling it (even discarding the result of an empty function) forces
+// the static linker to keep that .o file, so its PYBIND11_EMBEDDED_MODULE
+// static initializer runs at program startup and registers `pylabhub_hub`
+// in the inittab.  Without this, linking pylabhub-scripting as a static
+// archive drops the .o (no other symbol referenced) and `import
+// pylabhub_hub` raises ModuleNotFoundError.
+extern "C" void plh_register_hub_api_python_module();
+
 bool PythonEngine::build_api_(::pylabhub::hub_host::HubAPI &api)
 {
     // Hub doesn't expose stop_on_script_error on HubAPI today (see
     // LuaEngine::build_api_(HubAPI&) — same default).  Default false.
     stop_on_script_error_ = false;
+
+    // Force the static linker to keep hub_api_python.cpp's .o so its
+    // PYBIND11_EMBEDDED_MODULE initializer fires at process start
+    // (must happen BEFORE any `import pylabhub_hub`).
+    plh_register_hub_api_python_module();
 
     py::gil_scoped_acquire gil;
 
