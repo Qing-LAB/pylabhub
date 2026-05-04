@@ -10,6 +10,27 @@
 
 ## Current Focus
 
+### Open: pylabhub Python client SDK (deferred until hub C++ design is closed)
+
+External operator/script access to a running hub is provided via a
+**library binding**, not via remote code transmission over the wire.
+Pattern (mirrors boto3 / kubectl-go-client):
+
+  - SDK is a Python package on the operator's host.
+  - SDK methods compose structured AdminService RPCs (HEP-0033 §11.2)
+    — `list_channels`, `query_metrics`, `close_channel`,
+    `broadcast_channel`, `request_shutdown`, future curated additions.
+  - Operator writes Python locally; SDK marshals each method to a
+    JSON envelope on the AdminService REP socket.
+  - **No code is transmitted over the wire** — only structured
+    requests with fixed schemas.  See HEP-0033 §17 (No remote code
+    injection) for the policy this enforces.
+
+Defer until the hub C++ design is fully closed (post-Phase-9
+plh_hub binary, after the §11.2 method list stabilizes — adding
+SDK methods piecemeal as RPCs land would lead to API churn).
+Tracked here so the work item survives Phase-7-closure context resets.
+
 ### Open: script-spawned worker threads (HEP-0033 Phase 7+, deferred 2026-05-04)
 
 Multithread-capable engines (Lua today; future engines that mark

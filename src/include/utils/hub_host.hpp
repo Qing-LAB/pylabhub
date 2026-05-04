@@ -82,7 +82,6 @@
  */
 
 #include "pylabhub_utils_export.h"
-#include "utils/script_engine.hpp"   // InvokeResponse for eval_in_script return
 
 #include <memory>
 #include <string>
@@ -201,29 +200,6 @@ public:
     /// the REP socket.  Production code rarely touches this directly;
     /// AdminService dispatches RPCs into HubHost via its own backref.
     [[nodiscard]] admin::AdminService *admin() noexcept;
-
-    /// Evaluate a snippet of code in the hub script's namespace.  Used
-    /// by AdminService for the `exec_python` admin RPC tail (per
-    /// HEP-CORE-0033 §11.3).  Returns `{InvokeStatus::NotFound, {}}`
-    /// when the runner is not running (no engine injected at ctor or
-    /// before/after the `startup()`–`shutdown()` window) — operators
-    /// see the same shape as a script with no eval handler.  Forwards
-    /// to the runner's owned `ScriptEngine::eval(code)` when running.
-    ///
-    /// **Thread-safety caveat (D2.2):** this method calls the runner's
-    /// engine directly from the caller's thread, while the runner's
-    /// worker thread is concurrently invoking event/tick callbacks on
-    /// the same engine.  Both PythonEngine (GIL-bound) and LuaEngine
-    /// (single-threaded) require single-threaded access.  AdminService
-    /// is not yet wiring this method (the admin RPC tail lands in
-    /// HEP-CORE-0033 Phase 7 Commit E); the serialization mechanism
-    /// (mutex inside the runner, or queue-through-worker) ships in
-    /// Commit E alongside the wiring.  For D2.2 the method is safe to
-    /// call only when (a) no events are firing AND (b) no other
-    /// caller is mid-eval — true in L3 lifecycle tests that exercise
-    /// it from the main thread on an idle runner.
-    [[nodiscard]] scripting::InvokeResponse
-    eval_in_script(const std::string &code);
 
 private:
     struct Impl;

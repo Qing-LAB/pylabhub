@@ -1000,10 +1000,6 @@ sequenceDiagram
         Admin->>Host: control operation
         Host-->>Admin: Result<void, Error>
         Admin-->>Client: {status, result/error}
-    else method = exec_python (dev_mode)
-        Admin->>Engine: eval(code)
-        Engine-->>Admin: captured stdout + result
-        Admin-->>Client: {status, result}
     end
 ```
 
@@ -1016,8 +1012,14 @@ sequenceDiagram
 **Control**: `close_channel`, `broadcast_channel`, `revoke_role`,
 `add_known_role`, `remove_known_role`, `reload_config`, `request_shutdown`.
 
-**Dev-only** (gated by `admin.dev_mode: true`): `exec_python` — runs in the
-hub script engine's namespace via `ScriptEngine::eval`.
+**No remote eval surface.** Earlier drafts of this section listed an
+`exec_python` admin RPC for arbitrary script-side code execution.
+That entry was removed entirely — the hub deliberately accepts no
+arbitrary executable code over the wire.  Operator scripting access
+is provided via the future Python SDK (composes structured admin
+RPCs locally on the operator's host); see §17 "No remote code
+injection" for the policy and `docs/todo/API_TODO.md` "pylabhub
+Python client SDK" for the binding plan.
 
 ### 11.3 Authorization
 
@@ -1026,7 +1028,6 @@ hub script engine's namespace via `ScriptEngine::eval`.
   `{"status": "error", "error": {"code": "unauthorized"}}`.
 - `admin.token_required: false` → token ignored; endpoint MUST bind to
   `127.0.0.1` (enforced at construction).
-- `exec_python` always requires token when gated, plus `dev_mode: true`.
 
 ### 11.4 Files
 
@@ -1054,8 +1055,7 @@ NEVER changes meaning across versions.  New codes append-only.
 | `not_found`        | The requested entity (channel, role, band, peer) does not exist in `HubState`                   | `get_channel`, `get_role`, `close_channel`, `broadcast_channel`, `revoke_role` |
 | `conflict`         | Operation refused because the target is in a state that disallows it (e.g. close on draining)   | `close_channel`, `request_shutdown` (already shutting down) |
 | `policy_rejected`  | A veto hook (script callback or connection policy) refused the operation                        | `close_channel`, `add_known_role`, `revoke_role` |
-| `script_error`     | `exec_python` (dev-mode) — Python raised, traceback included in `error.message`                 | `exec_python` only                             |
-| `not_implemented`  | Method is on the §11.2 list but not yet wired in this build (deferred per §16 / HEP-0035 / Phase 7) | `revoke_role`, `reload_config`, `add/remove/list_known_roles`, `exec_python` |
+| `not_implemented`  | Method is on the §11.2 list but not yet wired in this build (deferred per §16 / HEP-0035)         | `revoke_role`, `reload_config`, `add/remove/list_known_roles` |
 | `internal`         | Caught exception in dispatch path that is not one of the above                                  | Any (last-resort)                              |
 
 All response bodies follow the §11.1 envelope:
@@ -1190,59 +1190,14 @@ event-drain loop, before the tick gate. A burst arriving on the
 broker thread is processed serially in one wake; the tick gate
 evaluates exactly once per iteration after all events have run.
 
-**Cross-thread access to the engine** (admin RPC `exec_python`,
-future programmatic eval) — see §12.5.
-
-### 12.5 Cross-thread engine access
-
-Two engine families, two paths.
-
-**Single-state engines (Python, native).** `engine.eval(code)` from a
-non-owner thread (e.g. `AdminService`) enqueues a request on
-`PythonEngine::request_queue_` and blocks on a future. The worker
-thread drains the queue at the end of every owner-thread invoke
-(`execute_direct_`'s post-call `process_pending_()`); each iteration
-that fires `on_tick` or any `on_<event>` therefore drains pending
-admin evals. Worst-case latency: one period.
-
-```
-Admin thread:                   Worker thread:
-─────────────                   ──────────────
-runner.eval(code)               (in wait_for_incoming or running cb)
-  → engine.eval(code)              ↓
-  → enqueue on request_queue_      ↓ (deadline expires OR event fires)
-  → future.get() ─────┐         dispatch_tick / dispatch_event
-                      │           → execute_direct_(name)
-                      │             → fn(...)
-                      │             → process_pending_()
-                      │               → drain request_queue_
-                      └───────────────  → promise.set_value(result)
-  ← result returned                ← back to wait_for_incoming
-```
-
-`AdminService::handle_exec_python` wraps `host.eval_in_script(code)`,
-which forwards to `runner.eval(code)`.
-
-**Multi-state engines (Lua).** `engine.eval(code)` from a non-owner
-thread routes via `get_or_create_thread_state_` to a per-thread
-**child Lua state**. The child re-runs `load_script` (script body
-re-executes, declaring functions and module-level globals afresh) and
-its own `build_api(*hub_api_)`. Eval runs concurrently with the worker
-thread on its own state — the main loop is not blocked.
-
-**Isolation surprise (documented contract):** child states do NOT
-share Lua globals with the worker's primary state. An admin
-`exec_python "return counter"` reads the child's freshly-loaded
-`counter`, not the worker's. To inspect the worker's runtime state,
-the script must publish via `api.set_shared_data(key, value)` (a
-`RoleHostCore`-backed map shared across states); admin reads via
-`api.get_shared_data(key)`. This is the same contract role-side Lua
-already commits to.
-
-**Native engine** today does not override `build_api_(HubAPI&)`, so
-hub + native fails fast at runner setup. `engine.eval` returns
-`NotFound` unconditionally regardless. Hub support for `NativeEngine`
-is out of scope for Phase 7.
+**No external eval surface.** Hub script callbacks fire only from
+the worker thread's main loop (events + tick).  No admin RPC, no
+network surface, no operator command can inject code into the
+engine — see §17 "No remote code injection" for the policy.  The
+engine's internal `eval` virtual remains a C++ extensibility point
+but has no external trigger; the cross-thread queue / Lua child-
+state machinery is preserved only as an internal invariant against
+future C++ callers that hold non-owner-thread references.
 
 ## 13. Protocol — additions / unchanged
 
@@ -1450,10 +1405,10 @@ can land in parallel once P1 lands.
         to an existing fire-and-forget mutator; admin response is
         the accept-ack, not completion.
     23 L2 AdminService tests; mutation-verified per sub-phase.
-    10 of 16 §11.2 methods wired; 6 deferred with explicit
-    upstream-HEP citations (revoke_role / reload_config /
-    add/remove/list_known_roles / exec_python — see §16 #1, #9,
-    HEP-0035, Phase 7 respectively).
+    10 of 16 prior-draft §11.2 methods wired; 5 remain deferred
+    (`revoke_role` / `reload_config` / `add/remove/list_known_roles`
+    — see §16 #1, #9, HEP-0035 respectively).  `exec_python` was
+    removed entirely 2026-05-04 — see §17 "No remote code injection".
 - **Phase 7** — `HubScriptRunner` + per-engine `build_api_(HubAPI&)`
   bindings.  Retires `PythonInterpreter`/`HubScript`/`hub_script_api`/
   `pylabhub_module` (already deleted in the post-G2 cleanup; Phase 7
@@ -1475,14 +1430,14 @@ can land in parallel once P1 lands.
       variants (13 framework self-tests).
     - **D2 (D2.1–D2.5)** ✅ shipped 2026-05-03 — `HubHost` wires
       `HubScriptRunner` into startup/shutdown ordering (§4.1
-      step 10 / §4.2 step 2); `host.eval_in_script(code)` wrapper
-      added (full RPC plumbing deferred to Commit E).  Review
-      fixes folded in: `subscribe_*` made `const` on `HubState`
-      (handler-list mutex was already `mutable`, removing the prior
-      const_cast smell); `request_shutdown` adopts the role-side
-      dumb-signal pattern (flag + cv.notify_all; main thread drives
-      ordered shutdown).  D2.2 test rigor pass added timing bounds
-      and a mutation sweep.
+      step 10 / §4.2 step 2).  Review fixes folded in:
+      `subscribe_*` made `const` on `HubState` (handler-list mutex
+      was already `mutable`, removing the prior const_cast smell);
+      `request_shutdown` adopts the role-side dumb-signal pattern
+      (flag + cv.notify_all; main thread drives ordered shutdown).
+      D2.2 test rigor pass added timing bounds and a mutation sweep.
+      (D2.2's `host.eval_in_script` wrapper was retired 2026-05-04
+      when `exec_python` was removed — see §17.)
     - **D3.1 / D3.2 / D3.3** ✅ shipped 2026-05-03 —
       `HubScriptRunner::worker_main_` runs the engine setup
       sequence inline (initialize → load_script → build_api),
@@ -1516,11 +1471,19 @@ can land in parallel once P1 lands.
       the `json.loads(dump())` round-trip (S5).  Lua-hub redundant
       callback-ref re-extract in `build_api_(HubAPI&)` removed
       (S7) — `load_script` is the single extraction site.
-  - **Commit E pending** — `AdminService::exec_python` admin RPC:
-    wires `host.eval_in_script(code)` through to engine `eval()`
-    with serialization w.r.t. the worker thread's invoke path
-    (mutex-in-runner or queue-through-worker; design TBD).
-    Closes one of the 6 deferred §11.2 methods.
+  - **Commit E ✅ rejected by design 2026-05-04** — the previously
+    drafted scope (`AdminService::exec_python` admin RPC wiring
+    `host.eval_in_script(code)` through to `engine.eval()`) was
+    REMOVED ENTIRELY rather than shipped.  Security review found
+    that arbitrary-code-over-wire would be the first non-curated
+    state-affecting RPC on the hub — every other admin mutator
+    has a fixed schema and a code-reviewable effect site, and we
+    decided not to introduce a new threat class.  Operator
+    scripting access is provided via the future Python SDK that
+    composes structured admin RPCs locally on the operator's
+    host (see §17 and `docs/todo/API_TODO.md`).  Phase 7 D-track
+    is the closure point for Phase 7 — there is no Phase 7
+    Commit E follow-up.
 - **Phase 8** — Rich `HubAPI` callback surface beyond log/uid/metrics
   (§12.3): channel/role/band/peer mutators, scoped event-callback
   registration, etc.  L3 tests via each engine.
@@ -1569,6 +1532,63 @@ can land in parallel once P1 lands.
 - Role-side rewrites.
 - HEP-CORE-0019 periodic broker-pull (explicitly replaced by query-driven
   model; §10).
+- **Remote code injection.**  See the "Design tenet" subsection below.
+
+### 17.1 Design tenet — no remote code injection
+
+The hub deliberately accepts **no arbitrary executable code over the
+wire**.  All hub-state mutation is provided through structured admin
+RPCs (§11.2) with bounded schema and bounded effect.  Threat surface
+scales with the curated method count, not with what an operator could
+think to type into an eval prompt.
+
+**What this excludes:**
+- `exec_python` / `exec_lua` / `exec_<lang>` — operator REPLs over the
+  admin REP socket.  An earlier draft of §11.2 reserved an
+  `exec_python` slot for Phase 7 wiring; that entry was removed
+  entirely 2026-05-04 after security review.  See §15 Phase 7
+  Commit-E rejection note.
+- Stored-procedure-style admin RPCs that take code as a parameter
+  and execute it server-side.
+- `engine.eval(code)`-equivalent surfaces routed from any external
+  network protocol (admin, federation, role-broker).
+
+**What's still allowed:**
+- The hub script loaded at startup from `script/<lang>/...` per
+  `script.path` config — operator-controlled, on the hub host's disk,
+  loaded once during `HubHost::startup`.  This is the *only* path by
+  which user code runs in the hub process.
+- Curated state-mutating admin RPCs (`close_channel`,
+  `broadcast_channel`, `request_shutdown`, future `revoke_role` /
+  `reload_config` / known-roles management) — fixed JSON schema, fixed
+  effect.
+- Future structured admin RPCs added as the protocol grows.  Each
+  addition gets a §11.2 row, a §11.5 error-code mapping, and a
+  reviewable handler.
+
+**External scripting access — the supported path:**
+- Provided by a Python SDK (Phase 8+; tracked in
+  `docs/todo/API_TODO.md` "pylabhub Python client SDK").
+- SDK runs on the operator's host, composes structured admin RPCs,
+  sends only JSON envelopes over the wire.
+- Same pattern as `boto3` over the AWS HTTP API or
+  `kubernetes-client/python` over the K8s REST API: SDK methods are
+  thin wrappers around documented RPC methods; user code is local.
+- Operators write Python locally, never transmit Python to the hub.
+
+**Why this matters:**
+- Every admin mutator is a code-reviewable effect site.
+  `exec_python(code)` would have made the effect site `code` — i.e.,
+  unbounded.  The threat model would have changed from "trust the
+  operator to call our methods correctly" to "trust the operator to
+  not type anything malicious into a string".
+- Audit logging an `exec_python` call gives you a code blob; audit
+  logging a `close_channel` call gives you the channel name.  The
+  latter is forensically useful; the former is only useful if you
+  can also re-parse the code, which defeats the audit guarantee.
+- The "operator REPL" use case is real (diagnose live state, custom
+  queries) but is fully covered by curated query RPCs (§11.2 query
+  block) plus the SDK composing them locally.
 
 ---
 

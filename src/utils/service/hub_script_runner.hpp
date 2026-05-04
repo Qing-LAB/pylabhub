@@ -98,18 +98,6 @@ public:
     HubScriptRunner(const HubScriptRunner &)            = delete;
     HubScriptRunner &operator=(const HubScriptRunner &) = delete;
 
-    /// Forward to the owned `ScriptEngine::eval(code)`.  HubHost calls
-    /// this through `HubHost::eval_in_script(code)` for the admin
-    /// `exec_python` RPC tail (Phase 7 Commit E).  Public-on-the-runner
-    /// rather than friending HubHost: keeps the access surface narrow
-    /// (just `eval`, not the whole engine) and parallel to how the
-    /// admin RPC dispatches to other host methods.
-    ///
-    /// Thread-safety caveat: see `HubHost::eval_in_script` docs —
-    /// the engine has the runner's worker thread as a concurrent
-    /// caller.  Serialization mechanism arrives in Commit E.
-    [[nodiscard]] InvokeResponse eval(const std::string &code);
-
 protected:
     /// EngineHost worker hook.  Subscribes to all 11 HubState events
     /// at startup, then runs the event-poll-or-tick loop until

@@ -519,10 +519,9 @@ void HubHost::shutdown()
     // in-flight handlers that already entered the broker complete
     // normally.  Order matters: if we stopped the broker first, an
     // in-flight admin RPC could observe a half-torn-down broker
-    // mid-call.  Runner stops BEFORE admin so any script-side
-    // `eval_in_script` admin RPC tail completes against a live
-    // engine (the runner stop drains pending events + runs on_stop
-    // first).
+    // mid-call.  Runner stops BEFORE admin so the script's on_stop
+    // hook runs against a live broker (Phase 8 may extend the script
+    // surface to mutator hooks; the ordering invariant covers that).
     if (impl_->admin_svc)
         impl_->admin_svc->stop();
 
@@ -613,19 +612,6 @@ const std::string &HubHost::broker_pubkey() const noexcept
 admin::AdminService *HubHost::admin() noexcept
 {
     return impl_->admin_svc.get();
-}
-
-scripting::InvokeResponse HubHost::eval_in_script(const std::string &code)
-{
-    // Forward to the runner when present.  Two "no script available"
-    // cases return the uniform NotFound shape:
-    //   1. no runner (scripts disabled at ctor or before startup).
-    //   2. runner exists but not running (post-shutdown) — gated
-    //      INSIDE `HubScriptRunner::eval` itself, so any direct
-    //      caller bypassing HubHost gets the same answer.
-    if (!impl_->runner)
-        return {scripting::InvokeStatus::NotFound, {}};
-    return impl_->runner->eval(code);
 }
 
 } // namespace pylabhub::hub_host

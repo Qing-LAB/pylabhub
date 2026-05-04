@@ -22,17 +22,35 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
-### Snapshot — 2026-05-04 (Phase 7 D-track done — Commit E pending)
+### Snapshot — 2026-05-04 (Phase 7 CLOSED — Commit E rejected by design)
 
-**Full suite: 1731/1731 green** (`8f4c957`, last full re-run at the
-S7 commit).  Branch `feature/lua-role-support`.
+**Full suite: 1733/1733 green** (last full re-run at `c94f130`,
+plus this commit's removals + test deletions land at the same
+green count after the eval-related L2 tests are dropped).
+Branch `feature/lua-role-support`.
 
-**🎯 HEP-0033 Phase 7 D-track — COMPLETE.**  D1 / D1.5 / D2 / D3 / D4
-all shipped; the only Phase 7 work remaining is **Commit E**
-(`AdminService::exec_python` admin RPC wiring through
-`host.eval_in_script(code)` with serialization w.r.t. the worker
-thread's invoke path — see HEP-0033 §15 Phase 7 for the design TBDs).
-Suite grew from 1709 → 1731 across the D-track.
+**🎯 HEP-0033 Phase 7 — COMPLETE.**  All D-track sub-commits shipped
+(D1 / D1.5 / D2 / D3 / D4 + S1/S2/S5/S7 review fixes + loop semantics
+revision).  **Commit E was rejected by design 2026-05-04** — the
+prior scope (`AdminService::exec_python` admin RPC) was removed
+entirely rather than wired.  Security review found that arbitrary-
+code-over-wire would be the first non-curated state-affecting RPC
+on the hub; we deliberately don't introduce that threat class.  See
+HEP-0033 §17.1 "No remote code injection" for the policy.  Operator
+scripting access will be provided via the future Python SDK that
+composes structured admin RPCs locally on the operator's host (see
+`docs/todo/API_TODO.md` "pylabhub Python client SDK").
+
+Removals associated with the rejection:
+  - `AdminService` `exec_python` deferred-method entry.
+  - `HubHost::eval_in_script` (declaration + impl).
+  - `HubScriptRunner::eval` (declaration + impl).
+  - L2 test_hub_host eval-forwarding tests.
+  - HEP-0033 §11.2 / §11.3 / §11.5 / §12.5 references.
+
+The engine-level `eval` virtual + `process_pending_` queue stay as
+internal C++ extensibility points — no external trigger remains, but
+the cross-thread invariant is preserved against future C++ callers.
 
 D-track sub-commits since the 2026-05-03 snapshot:
 

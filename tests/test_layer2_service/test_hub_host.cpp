@@ -497,14 +497,18 @@ TEST_F(HubHostTest, FailedStartupAllowsRetry)
 //   - Mismatch (engine null + path set, or engine set + path empty)
 //     throws fail-fast at startup() with a descriptive logic_error.
 //   - Runner stops BEFORE admin and broker per HEP §4.2 step 2 ordering.
-//   - eval_in_script() forwards to the runner's engine when running;
-//     returns NotFound otherwise.
 //
 // Uses an in-file HubStubEngine that satisfies all ScriptEngine virtuals
 // with no-op behaviour and reports successful build_api(HubAPI&) so the
 // runner's startup path completes without loading any real script.
 // Pattern mirrors `tests/.../role_data_loop_workers.cpp::StubEngine` for
 // the role side.
+//
+// Eval-in-script forwarding tests removed when the
+// `HubHost::eval_in_script` / `HubScriptRunner::eval` / admin
+// `exec_python` chain was removed entirely (HEP-CORE-0033 §17 "No
+// remote code injection") — there is no longer an external eval
+// surface to test.
 
 namespace {
 
@@ -522,16 +526,9 @@ using pylabhub::hub_host::HubAPI;
 
 /// No-op ScriptEngine that satisfies all virtuals.  Override
 /// `build_api_(HubAPI&)` to return true so the runner's startup path
-/// signals ready.  Tracks eval/invoke calls for assertions.
+/// signals ready.
 class HubStubEngine : public ScriptEngine
 {
-public:
-    /// Distinct sentinel returned from eval() so tests can confirm the
-    /// forwarding path actually traversed this engine.
-    InvokeStatus  eval_status{InvokeStatus::Ok};
-    nlohmann::json eval_value_payload = "stub_eval_ok";
-    std::atomic<int> eval_calls{0};
-
 protected:
     bool init_engine_(const std::string &, RoleHostCore *) override { return true; }
     bool build_api_(RoleAPIBase &) override { return true; }
@@ -549,10 +546,7 @@ public:
     bool           invoke(const std::string &) override { return true; }
     bool           invoke(const std::string &, const nlohmann::json &) override { return true; }
     InvokeResponse eval(const std::string &) override
-    {
-        eval_calls.fetch_add(1, std::memory_order_relaxed);
-        return {eval_status, eval_value_payload};
-    }
+    { return {InvokeStatus::NotFound, {}}; }
     void invoke_on_init() override {}
     void invoke_on_stop() override {}
     InvokeResult invoke_produce(InvokeTx, std::vector<IncomingMessage> &) override
@@ -612,16 +606,6 @@ TEST_F(HubHostTest, ScriptEnabled_StartupConstructsRunner_ShutdownStopsCleanly)
            "runner ready_promise wait paths";
     EXPECT_TRUE(host.is_running());
 
-    // Runner is in flight — eval forwards to engine (single test thread,
-    // no concurrent worker dispatch).  Confirms HubHost::eval_in_script
-    // routes through HubScriptRunner::eval into the engine.
-    auto resp = host.eval_in_script("dummy_code");
-    EXPECT_EQ(resp.status, InvokeStatus::Ok)
-        << "eval_in_script must forward to engine when runner is running";
-    const auto resp_payload = resp.value.get<std::string>();
-    EXPECT_EQ(resp_payload, "stub_eval_ok")
-        << "eval_in_script must surface engine.eval()'s payload verbatim";
-
     // Wall-clock bound on shutdown: stub script has nothing to drain;
     // runner observes the flag, drains empty queue, joins worker.  Bound
     // generously above the runner's tick period (1 s default — runner's
@@ -637,28 +621,20 @@ TEST_F(HubHostTest, ScriptEnabled_StartupConstructsRunner_ShutdownStopsCleanly)
         << " ms — runner drain / admin stop / broker stop / "
            "thread_mgr drain timing regression";
     EXPECT_FALSE(host.is_running());
-
-    // After shutdown, eval falls through to NotFound.
-    auto resp_after = host.eval_in_script("dummy_code");
-    EXPECT_EQ(resp_after.status, InvokeStatus::NotFound)
-        << "eval_in_script must return NotFound after shutdown — runner is gone";
 }
 
-TEST_F(HubHostTest, ScriptDisabled_NoEngine_NoRunner_EvalReturnsNotFound)
+TEST_F(HubHostTest, ScriptDisabled_NoEngine_NoRunner_StartupSucceeds)
 {
     // Default fixture is script-disabled (write_test_hub_json sets
     // script.path = "").  Use the 2-arg ctor with nullptr engine to
-    // pin the script-disabled path explicitly.
+    // pin the script-disabled path explicitly.  Confirms HubHost
+    // starts/stops cleanly with no script runner attached.
     auto [cfg, dir] = make_config("sd_no_engine");
     HubHost host(std::move(cfg), nullptr);
     ASSERT_NO_THROW(host.startup());
     EXPECT_TRUE(host.is_running());
-
-    auto resp = host.eval_in_script("anything");
-    EXPECT_EQ(resp.status, InvokeStatus::NotFound)
-        << "eval_in_script must return NotFound when no runner exists";
-
     host.shutdown();
+    EXPECT_FALSE(host.is_running());
 }
 
 TEST_F(HubHostTest, EngineSetButPathEmpty_StartupThrowsLogicError)

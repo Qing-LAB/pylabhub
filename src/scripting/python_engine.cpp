@@ -681,10 +681,12 @@ InvokeResponse PythonEngine::execute_direct_(const std::string &name)
     // Drain pending cross-thread requests AFTER the owner-thread invoke
     // finishes — same point on the timeline `invoke_produce` / `_consume`
     // / `_process` / `_on_inbox` already drain (see line ~1024 below).
-    // Without this drain, hub-side `engine.invoke("on_tick")` (and
-    // event dispatch) never picks up admin-thread eval requests, so
-    // `AdminService::exec_python` would block forever.  Role-side path
-    // already drains via the role-specific invoke_* methods.
+    // Hub-side has no external eval surface today (HEP-CORE-0033 §17
+    // "No remote code injection"), but the drain stays as an internal
+    // invariant: any future C++ caller that holds a non-owner-thread
+    // reference to `engine.invoke/eval` queues here, and the next
+    // owner-thread invoke discharges the queue.  Role-side already
+    // drains via the role-specific invoke_* methods.
     process_pending_();
     return resp;
 }
