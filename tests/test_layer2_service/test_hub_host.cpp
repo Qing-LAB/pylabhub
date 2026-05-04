@@ -242,14 +242,14 @@ TEST_F(HubHostTest, RunMainLoop_BlocksUntilRequestShutdown)
     std::this_thread::sleep_for(50ms);
     EXPECT_FALSE(loop_returned.load());
 
-    // Wake it up.  Per the contract, request_shutdown() also calls
-    // broker.stop() — verify by checking the broker is no longer
-    // serving its poll loop.  We can't observe the broker thread
-    // state directly here (ThreadManager owns it); instead the L3
-    // integration test exercises the post-request_shutdown REG_REQ
-    // failure path.  At L2 we verify the API contract: caller can
-    // follow request_shutdown() with shutdown() and the second call
-    // completes promptly.
+    // Wake it up.  Post-D2.3 (Option E follow-up) the request_shutdown
+    // contract is the role-side "dumb signal" pattern: flip the
+    // shutdown atomic + wake the run_main_loop CV; do NOT actively
+    // stop admin/broker.  The synchronous, ordered teardown happens
+    // exclusively in `shutdown()` on the main thread (HEP-CORE-0033
+    // §4.2: runner first, then admin, then broker).  At L2 we verify
+    // the API contract end-to-end: signal arrives, run_main_loop
+    // returns, follow-up shutdown() completes cleanly.
     host.request_shutdown();
 
     // Bounded wait for return.
@@ -257,13 +257,11 @@ TEST_F(HubHostTest, RunMainLoop_BlocksUntilRequestShutdown)
         main_thread.join();
     EXPECT_TRUE(loop_returned.load());
 
-    // shutdown() drains the now-stopped broker thread.  Because
-    // request_shutdown() already broke the broker poll loop, this
-    // should complete promptly.  A buggy request_shutdown() that
-    // ONLY flipped the flag would leave the broker running, and
-    // shutdown() here would still call broker.stop() and drain
-    // (still passes) — so this is not a strict regression test for
-    // the contract; the L3 integration test covers that side.
+    // shutdown() does the actual broker/admin stop + ThreadManager
+    // drain.  Should complete promptly even though request_shutdown
+    // didn't pre-emptively touch broker — the broker's poll loop is
+    // still running here, but `broker->stop()` inside shutdown() will
+    // wake it on the next tick.
     host.shutdown();
     EXPECT_FALSE(host.is_running());
 }

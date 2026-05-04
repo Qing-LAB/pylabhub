@@ -242,63 +242,63 @@ auto snapshot_handlers(std::mutex &mu, const Vec &v)
 
 } // namespace
 
-HandlerId HubState::subscribe_channel_opened(ChannelOpenedHandler h)
+HandlerId HubState::subscribe_channel_opened(ChannelOpenedHandler h) const
 {
     return add_handler(pImpl->handlers_mu, pImpl->next_handler_id,
                        pImpl->ch_opened, std::move(h));
 }
-HandlerId HubState::subscribe_channel_status_changed(ChannelStatusChangedHandler h)
+HandlerId HubState::subscribe_channel_status_changed(ChannelStatusChangedHandler h) const
 {
     return add_handler(pImpl->handlers_mu, pImpl->next_handler_id,
                        pImpl->ch_status_changed, std::move(h));
 }
-HandlerId HubState::subscribe_channel_closed(ChannelClosedHandler h)
+HandlerId HubState::subscribe_channel_closed(ChannelClosedHandler h) const
 {
     return add_handler(pImpl->handlers_mu, pImpl->next_handler_id,
                        pImpl->ch_closed, std::move(h));
 }
-HandlerId HubState::subscribe_consumer_added(ConsumerAddedHandler h)
+HandlerId HubState::subscribe_consumer_added(ConsumerAddedHandler h) const
 {
     return add_handler(pImpl->handlers_mu, pImpl->next_handler_id,
                        pImpl->cons_added, std::move(h));
 }
-HandlerId HubState::subscribe_consumer_removed(ConsumerRemovedHandler h)
+HandlerId HubState::subscribe_consumer_removed(ConsumerRemovedHandler h) const
 {
     return add_handler(pImpl->handlers_mu, pImpl->next_handler_id,
                        pImpl->cons_removed, std::move(h));
 }
-HandlerId HubState::subscribe_role_registered(RoleRegisteredHandler h)
+HandlerId HubState::subscribe_role_registered(RoleRegisteredHandler h) const
 {
     return add_handler(pImpl->handlers_mu, pImpl->next_handler_id,
                        pImpl->role_reg, std::move(h));
 }
-HandlerId HubState::subscribe_role_disconnected(RoleDisconnectedHandler h)
+HandlerId HubState::subscribe_role_disconnected(RoleDisconnectedHandler h) const
 {
     return add_handler(pImpl->handlers_mu, pImpl->next_handler_id,
                        pImpl->role_disc, std::move(h));
 }
-HandlerId HubState::subscribe_band_joined(BandJoinedHandler h)
+HandlerId HubState::subscribe_band_joined(BandJoinedHandler h) const
 {
     return add_handler(pImpl->handlers_mu, pImpl->next_handler_id,
                        pImpl->band_joined, std::move(h));
 }
-HandlerId HubState::subscribe_band_left(BandLeftHandler h)
+HandlerId HubState::subscribe_band_left(BandLeftHandler h) const
 {
     return add_handler(pImpl->handlers_mu, pImpl->next_handler_id,
                        pImpl->band_left, std::move(h));
 }
-HandlerId HubState::subscribe_peer_connected(PeerConnectedHandler h)
+HandlerId HubState::subscribe_peer_connected(PeerConnectedHandler h) const
 {
     return add_handler(pImpl->handlers_mu, pImpl->next_handler_id,
                        pImpl->peer_conn, std::move(h));
 }
-HandlerId HubState::subscribe_peer_disconnected(PeerDisconnectedHandler h)
+HandlerId HubState::subscribe_peer_disconnected(PeerDisconnectedHandler h) const
 {
     return add_handler(pImpl->handlers_mu, pImpl->next_handler_id,
                        pImpl->peer_disc, std::move(h));
 }
 
-void HubState::unsubscribe(HandlerId id) noexcept
+void HubState::unsubscribe(HandlerId id) const noexcept
 {
     if (id == kInvalidHandlerId) return;
     std::lock_guard lk(pImpl->handlers_mu);

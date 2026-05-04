@@ -124,6 +124,11 @@ void HubScriptRunner::worker_main_()
     // small and avoids holding `this` (no chance of accidentally
     // dereferencing a dangling HubScriptRunner if ever the lifetime
     // contract were violated — handlers see only the queue).
+    //
+    // Subscription is `const` on HubState (the handler-list mutex is
+    // `mutable`, separate from the data-state mutex — see hub_state.hpp
+    // "Thread model" note), so we register through the const reference
+    // returned by `host_.state()` directly — no const_cast needed.
     auto &state = host_.state();
     auto &core_ = core();
 
@@ -138,25 +143,19 @@ void HubScriptRunner::worker_main_()
         core_.enqueue_message(std::move(m));
     };
 
-    // const_cast OK: HubHost::state() returns const&, but subscribe_* is
-    // a non-const op (mutates handler list).  HubState's own header
-    // documents that subscription is thread-safe and uses an internal
-    // lock independent of the read-only state-snapshot lock.
-    auto &state_mut = const_cast<pylabhub::hub::HubState &>(state);
-
-    state_mut.subscribe_channel_opened(
+    state.subscribe_channel_opened(
         [enqueue](const pylabhub::hub::ChannelEntry &ch) {
             enqueue("channel_opened", ch.name, js::channel_to_json(ch));
         });
-    state_mut.subscribe_channel_status_changed(
+    state.subscribe_channel_status_changed(
         [enqueue](const pylabhub::hub::ChannelEntry &ch) {
             enqueue("channel_status_changed", ch.name, js::channel_to_json(ch));
         });
-    state_mut.subscribe_channel_closed(
+    state.subscribe_channel_closed(
         [enqueue](const std::string &name) {
             enqueue("channel_closed", name, nlohmann::json{{"name", name}});
         });
-    state_mut.subscribe_consumer_added(
+    state.subscribe_consumer_added(
         [enqueue](const std::string &channel,
                   const pylabhub::hub::ConsumerEntry &cons) {
             nlohmann::json j;
@@ -166,20 +165,20 @@ void HubScriptRunner::worker_main_()
             j["consumer_pid"] = cons.consumer_pid;
             enqueue("consumer_added", channel, std::move(j));
         });
-    state_mut.subscribe_consumer_removed(
+    state.subscribe_consumer_removed(
         [enqueue](const std::string &channel, const std::string &role_uid) {
             enqueue("consumer_removed", channel,
                     nlohmann::json{{"channel", channel}, {"role_uid", role_uid}});
         });
-    state_mut.subscribe_role_registered(
+    state.subscribe_role_registered(
         [enqueue](const pylabhub::hub::RoleEntry &r) {
             enqueue("role_registered", r.uid, js::role_to_json(r));
         });
-    state_mut.subscribe_role_disconnected(
+    state.subscribe_role_disconnected(
         [enqueue](const std::string &uid) {
             enqueue("role_disconnected", uid, nlohmann::json{{"uid", uid}});
         });
-    state_mut.subscribe_band_joined(
+    state.subscribe_band_joined(
         [enqueue](const std::string &band, const pylabhub::hub::BandMember &m) {
             nlohmann::json j;
             j["band"]      = band;
@@ -187,16 +186,16 @@ void HubScriptRunner::worker_main_()
             j["role_name"] = m.role_name;
             enqueue("band_joined", band, std::move(j));
         });
-    state_mut.subscribe_band_left(
+    state.subscribe_band_left(
         [enqueue](const std::string &band, const std::string &role_uid) {
             enqueue("band_left", band,
                     nlohmann::json{{"band", band}, {"role_uid", role_uid}});
         });
-    state_mut.subscribe_peer_connected(
+    state.subscribe_peer_connected(
         [enqueue](const pylabhub::hub::PeerEntry &p) {
             enqueue("peer_connected", p.uid, js::peer_to_json(p));
         });
-    state_mut.subscribe_peer_disconnected(
+    state.subscribe_peer_disconnected(
         [enqueue](const std::string &hub_uid) {
             enqueue("peer_disconnected", hub_uid,
                     nlohmann::json{{"hub_uid", hub_uid}});
