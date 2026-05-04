@@ -6,6 +6,43 @@
 
 ## Archive batches
 
+### 2026-05-04 (Engine thread model draft superseded by HEP-0011 + HEP-0028)
+
+Static review of the post-Phase-7-closure tree (commit `b4c00c3`)
+flagged `docs/tech_draft/engine_thread_model.md` (~1579 lines, dated
+2026-03-20) for archival review.  Section-by-section audit confirmed
+the draft's content was fully absorbed into canonical docs:
+
+  - **§1–10** (ScriptEngine interface, queue/mutex execution model,
+    LuaEngine thread states, PythonEngine queue, GIL strategy,
+    lifecycle, shared resources, runtime cost, integration points,
+    implementation phases) → **HEP-CORE-0011 ScriptHost Abstraction
+    Framework** (1085 lines normative spec).
+  - **§11** (NativeEngine — Dynamic C++ Library Extension: motivation,
+    interface mapping, symbol convention, threading, zero-copy data
+    access, schema validation, configuration, runtime cost, API
+    header, comparison) → **HEP-CORE-0028 Native Plugin Engine**
+    (722 lines normative spec) + `docs/README/README_NativePlugin.md`
+    (829 lines developer guide) + `src/include/utils/native_engine_api.h`
+    (the C ABI header itself).
+
+Coexisting policy update: the related `dev_mode` admin config flag
+was removed entirely on 2026-05-04 — see HEP-CORE-0033 §11.3 + §17.1.
+Tests follow production-required-token semantics; the
+`token_required=false` capability is preserved for the legitimate
+single-host loopback-only operator scenario but is no longer
+exercised in the test suite via a dev-mode bypass path.
+
+| Archived | From | Reason |
+|---|---|---|
+| `engine_thread_model.md` | `docs/tech_draft/` | Fully merged into HEP-0011 + HEP-0028 + README_NativePlugin.md.  Preserved for historical reference (incl. §8 runtime-cost-analysis numbers not re-baselined into canonical docs). |
+
+Merge map: `docs/archive/transient-2026-05-04/README.md` —
+section-by-section pointers to the canonical destination of each
+chunk of the draft's content.
+
+---
+
 ### 2026-05-02 (HEP-0033 Phase 6.2 closed; AdminService review archived)
 
 Phase 6.2 (AdminService structured RPC) shipped in three sub-commits:

@@ -90,7 +90,6 @@ nlohmann::json full_hub_json()
         {"admin", {
             {"enabled", true},
             {"endpoint", "tcp://127.0.0.1:5601"},
-            {"dev_mode", false},
             {"token_required", true},
         }},
         {"broker", {
@@ -137,7 +136,6 @@ int load_full(const char *tmpdir)
 
             EXPECT_TRUE(cfg.admin().enabled);
             EXPECT_EQ(cfg.admin().endpoint, "tcp://127.0.0.1:5601");
-            EXPECT_FALSE(cfg.admin().dev_mode);
             EXPECT_TRUE(cfg.admin().token_required);
 
             EXPECT_EQ(cfg.broker().heartbeat_interval_ms,     250);
@@ -193,7 +191,6 @@ int load_minimal(const char *tmpdir)
 
             EXPECT_TRUE(cfg.admin().enabled);
             EXPECT_EQ(cfg.admin().endpoint, "tcp://127.0.0.1:5600");
-            EXPECT_FALSE(cfg.admin().dev_mode);
             EXPECT_TRUE(cfg.admin().token_required);
 
             EXPECT_EQ(cfg.broker().heartbeat_interval_ms,

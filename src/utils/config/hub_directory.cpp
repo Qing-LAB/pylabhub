@@ -148,7 +148,6 @@ nlohmann::json build_hub_json_template(const std::string &uid,
         {"admin", {
             {"enabled",        true},
             {"endpoint",       "tcp://127.0.0.1:5600"},
-            {"dev_mode",       false},
             {"token_required", true},
         }},
         {"broker", {

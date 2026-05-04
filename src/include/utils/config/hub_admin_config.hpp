@@ -5,8 +5,10 @@
  *
  * Parsed from the top-level `"admin"` JSON sub-object (HEP-CORE-0033 §6.2 / §11).
  * Controls whether the structured admin RPC endpoint is enabled, where it
- * binds, and whether it requires a token.  Dev-mode skips token gating but
- * is enforced bind-localhost-only by the AdminService.
+ * binds, and whether it requires a token.  When `token_required=false`,
+ * AdminService enforces a loopback-only bind (§11.3 invariant) — single-
+ * host operator scenarios where the network surface is just the local
+ * machine.
  */
 
 #include "utils/json_fwd.hpp"
@@ -21,8 +23,7 @@ struct HubAdminConfig
 {
     bool        enabled{true};                                  ///< AdminService on/off
     std::string endpoint{"tcp://127.0.0.1:5600"};               ///< ZMQ endpoint
-    bool        dev_mode{false};                                ///< Skip vault + token (localhost-only)
-    bool        token_required{true};                           ///< Require admin token in non-dev mode
+    bool        token_required{true};                           ///< Require admin token (loopback-only when false; §11.3)
 
     /// Runtime-only: 64-char hex admin token.  Populated by
     /// `HubConfig::load_keypair()` from the unlocked `HubVault`; NOT
@@ -44,14 +45,12 @@ inline HubAdminConfig parse_hub_admin_config(const nlohmann::json &j)
     for (auto it = sect.begin(); it != sect.end(); ++it)
     {
         const auto &k = it.key();
-        if (k != "enabled" && k != "endpoint" && k != "dev_mode" &&
-            k != "token_required")
+        if (k != "enabled" && k != "endpoint" && k != "token_required")
             throw std::runtime_error("hub: unknown config key 'admin." + k + "'");
     }
 
     ac.enabled        = sect.value("enabled",        ac.enabled);
     ac.endpoint       = sect.value("endpoint",       ac.endpoint);
-    ac.dev_mode       = sect.value("dev_mode",       ac.dev_mode);
     ac.token_required = sect.value("token_required", ac.token_required);
     return ac;
 }

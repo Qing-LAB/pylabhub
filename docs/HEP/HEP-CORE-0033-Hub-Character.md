@@ -483,7 +483,6 @@ asymmetric sides.
   "admin": {
     "enabled":        true,
     "endpoint":       "tcp://127.0.0.1:5600",
-    "dev_mode":       false,
     "token_required": true
   },
 
@@ -543,7 +542,7 @@ asymmetric sides.
 
 - `hub_identity_config.hpp` — `HubIdentityConfig { uid, name, log_level }`.
 - `hub_network_config.hpp` — broker endpoint/bind/io_threads.
-- `hub_admin_config.hpp` — endpoint/enabled/dev_mode/token_required.
+- `hub_admin_config.hpp` — endpoint/enabled/token_required.
 - `hub_broker_config.hpp` — heartbeat-multiplier role-liveness timeouts
   (HEP-CORE-0023 §2.5): `heartbeat_interval_ms`,
   `ready_miss_heartbeats`, `pending_miss_heartbeats`, `grace_heartbeats`,
