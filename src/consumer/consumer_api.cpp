@@ -14,6 +14,7 @@
 #include "utils/json_fwd.hpp"
 #include "utils/metrics_json.hpp"
 #include "metrics_pydict.hpp"
+#include "../scripting/json_py_helpers.hpp"   // detail::json_to_py (S5)
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
 
@@ -60,8 +61,10 @@ py::object ConsumerAPI::band_members(const std::string &channel)
 
 py::dict ConsumerAPI::metrics() const
 {
-    auto j = base_->snapshot_metrics_json();
-    return py::module_::import("json").attr("loads")(j.dump()).cast<py::dict>();
+    // S5: was `json.loads(j.dump())` round-trip — replaced with the
+    // shared fast-path walker (src/scripting/json_py_helpers.hpp).
+    return scripting::detail::json_to_py(base_->snapshot_metrics_json())
+        .cast<py::dict>();
 }
 
 uint64_t ConsumerAPI::slot_logical_size(std::optional<int> side) const

@@ -36,6 +36,8 @@
 
 #include "utils/hub_api.hpp"
 
+#include "json_py_helpers.hpp"   // detail::json_to_py (S5)
+
 #include <pybind11/embed.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -78,15 +80,16 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_hub, m) // NOLINT
 
         .def("metrics",
              [](const HubAPI &self) -> py::dict {
-                 // HubAPI::metrics() returns nlohmann::json — convert
-                 // via Python's json.loads (same trick role-side
-                 // ProducerAPI::metrics uses to avoid hand-rolling a
-                 // json→py::dict converter; pybind11 itself doesn't
-                 // know how to convert nlohmann::json natively).
-                 auto j = self.metrics();
-                 return py::module_::import("json")
-                            .attr("loads")(j.dump())
-                            .cast<py::dict>();
+                 // S5: shared fast-path walker
+                 // (src/scripting/json_py_helpers.hpp) — same converter
+                 // PythonEngine's dispatch hot path uses for
+                 // event-detail kwargs.  Replaces the prior
+                 // json.loads(dump()) round-trip; semantics match for
+                 // metrics payloads (no NaN/Inf, no deep recursion —
+                 // see header docstring for the divergence rows).
+                 return pylabhub::scripting::detail::json_to_py(
+                            self.metrics())
+                     .cast<py::dict>();
              },
              "Return a snapshot of the broker's metrics — channels / "
              "roles / bands / peers aggregates plus broker counters.\n"
