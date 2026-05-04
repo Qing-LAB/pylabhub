@@ -96,6 +96,14 @@ public:
     /// LifecycleGuard module pattern roles use.
     [[nodiscard]] utils::ThreadManager &thread_manager();
 
+    /// Hub-side analogue of `RoleAPIBase::core()`.  Returns the
+    /// `RoleHostCore` HubAPI was constructed against — used by
+    /// `ScriptEngine::on_pcall_error_` to bump the script-error counter
+    /// + request shutdown via the SAME core path the role engines use,
+    /// so the `current_core()`-resolved access is uniform across both
+    /// ApiT instantiations.
+    [[nodiscard]] scripting::RoleHostCore *core() const noexcept;
+
     // ── Script-visible API (HEP-CORE-0033 §12.3 Phase 7 minimum) ──────────
     //
     // Mirrors RoleAPIBase signatures verbatim where the hub equivalent

@@ -12,6 +12,7 @@
 #include "metrics_lua.hpp"
 
 #include "utils/format_tools.hpp"
+#include "utils/hub_api.hpp"          // build_api_(HubAPI&) needs full type
 
 
 #include "utils/hub_inbox_queue.hpp"
@@ -374,6 +375,85 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
     lua_pushvalue(L, -1);            // duplicate the api table
     lua_setglobal(L, "api");         // set as global for scripts calling api.* from free functions
     ref_api_ = luaL_ref(L, LUA_REGISTRYINDEX);
+    return true;
+}
+
+// ============================================================================
+// build_api(HubAPI&) — hub-side surface (HEP-CORE-0033 Phase 7 D3.2)
+// ============================================================================
+//
+// Mirrors the role-side build_api_(RoleAPIBase&) shape but with the
+// Phase 7 minimum closure set (log/uid/metrics) and no schema-driven
+// FFI typedefs (hub has no slots/flexzones).
+//
+// The api table is exposed BOTH:
+//   (a) as a Lua global named `api` so scripts can call `api:log(...)`
+//       from any callback (on_init, on_tick, on_channel_opened, ...).
+//       Hub event-dispatch uses generic `engine.invoke(name, args)`
+//       which does NOT pass the api table as an argument (unlike role-
+//       side `invoke_on_init` which does), so the global is the only
+//       way scripts reach the api from event/tick callbacks.
+//   (b) as a Lua registry ref (`ref_api_`) so `invoke_on_init` /
+//       `invoke_on_stop` can pass it explicitly to `on_init(api)` /
+//       `on_stop(api)` if the script defines those — same shape role-
+//       side uses.
+//
+// Pre-extracts on_init / on_stop callback refs because invoke_on_init /
+// invoke_on_stop dispatch through the registry refs (not lua_getglobal).
+// Other hub callbacks (on_tick, on_channel_opened, ...) flow through
+// `invoke(name, args)` which uses lua_getglobal at call time and so
+// doesn't need pre-extraction.
+
+bool LuaEngine::build_api_(::pylabhub::hub_host::HubAPI &api)
+{
+    // Hub doesn't expose `stop_on_script_error` on HubAPI today
+    // (HubConfig.script() has the field; if needed in Phase 8 plumb it
+    // through HubAPI).  Default to false — script errors are logged
+    // but don't request shutdown.  RoleAPIBase::stop_on_script_error()
+    // is the role-side analogue.
+    stop_on_script_error_ = false;
+
+    lua_State *L = state_.raw();
+
+    // Create the api table.
+    lua_newtable(L);
+
+    // Helper: push a C closure with `this` as upvalue(1).  Same shape
+    // build_api_(RoleAPIBase&) uses.  Closures unconditionally
+    // dereference `self->hub_api_` — guaranteed non-null because this
+    // method is only entered when `build_api(HubAPI&)` set it (the
+    // base class wrapper sets `hub_api_ = &api` BEFORE calling this).
+    auto push_closure = [&](const char *name, lua_CFunction fn) {
+        lua_pushlightuserdata(L, this);
+        lua_pushcclosure(L, fn, 1);
+        lua_setfield(L, -2, name);
+    };
+
+    push_closure("log",     lua_api_hub_log);
+    push_closure("uid",     lua_api_hub_uid);
+    push_closure("metrics", lua_api_hub_metrics);
+
+    // Expose the api table as a Lua global so scripts can call
+    // `api:log(...)` from event/tick callbacks.  We dup the table
+    // first because `lua_setglobal` consumes it and we still need it
+    // on the stack to store as a registry ref.
+    lua_pushvalue(L, -1);          // dup api table
+    lua_setglobal(L, "api");       // setglobal consumes the dup
+
+    // Store the original (non-dup'd) table as a registry ref —
+    // `luaL_ref` consumes the value at the top of the stack.
+    ref_api_ = luaL_ref(L, LUA_REGISTRYINDEX);
+
+    // Pre-extract callback refs for the dedicated invoke_on_init /
+    // invoke_on_stop dispatch paths.  Other event callbacks (on_tick,
+    // on_<event_name>) flow through `invoke(name, args)` which does
+    // lua_getglobal at call time — no pre-extraction needed.
+    ref_on_init_ = extract_callback_ref_("on_init");
+    ref_on_stop_ = extract_callback_ref_("on_stop");
+
+    LOGGER_INFO("[{}] build_api(HubAPI) complete — api global set, "
+                "uid='{}'",
+                log_tag_, api.uid());
     return true;
 }
 
@@ -1081,14 +1161,25 @@ int LuaEngine::extract_callback_ref_(const char *name)
 
 InvokeResult LuaEngine::on_pcall_error_(const std::string &callback_name)
 {
-    api_->core()->inc_script_error_count();
+    // Resolve core via whichever ApiT was bound — base class stores
+    // ONE of `api_` (RoleAPIBase*, role-side) or `hub_api_` (HubAPI*,
+    // hub-side); the other is null per build_api's contract.  Both
+    // expose the same `core()` accessor shape, so the resolved
+    // RoleHostCore* drives the script-error counter + stop-request
+    // path uniformly.
+    RoleHostCore *core = api_       ? api_->core()
+                       : hub_api_   ? hub_api_->core()
+                                    : nullptr;
+    if (core)
+        core->inc_script_error_count();
     // Hot-path callers (invoke_produce etc.) use state_.pcall() which logs the error.
     // Generic invoke() callers log the error themselves before calling this.
     if (stop_on_script_error_)
     {
         LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} error",
                      log_tag_, callback_name);
-        api_->core()->request_stop();
+        if (core)
+            core->request_stop();
     }
     return InvokeResult::Error;
 }
@@ -1351,6 +1442,43 @@ void LuaEngine::register_inbox_metatable_()
         });
     }
     lua_pop(L, 1); // pop metatable
+}
+
+// ============================================================================
+// API closure statics — hub-side (HEP-CORE-0033 Phase 7 D3.2)
+// ============================================================================
+//
+// Three closures forming the Phase 7 minimum hub API: log / uid /
+// metrics.  Each grabs `LuaEngine *self` from upvalue(1) and forwards
+// to `self->hub_api_->...`.  hub_api_ is guaranteed non-null when
+// these closures fire — they're only registered by build_api_(HubAPI&)
+// which the base class calls AFTER setting hub_api_.
+
+int LuaEngine::lua_api_hub_log(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *level = luaL_checkstring(L, 1);
+    const char *msg   = luaL_checkstring(L, 2);
+    self->hub_api_->log(level, msg);
+    return 0;
+}
+
+int LuaEngine::lua_api_hub_uid(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    lua_pushstring(L, self->hub_api_->uid().c_str());
+    return 1;
+}
+
+int LuaEngine::lua_api_hub_metrics(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    // HubAPI::metrics() returns nlohmann::json — convert to a Lua
+    // table via the shared json_to_lua helper (same as eval()'s return
+    // path + role-side metrics path).  Empty filter = all categories.
+    const auto j = self->hub_api_->metrics();
+    json_to_lua(L, j);
+    return 1;
 }
 
 // ============================================================================
