@@ -22,7 +22,69 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
-### Snapshot — 2026-05-03 (Phase 7 in flight — D1 + D1.5 shipped)
+### Snapshot — 2026-05-04 (Phase 7 D-track done — Commit E pending)
+
+**Full suite: 1731/1731 green** (`8f4c957`, last full re-run at the
+S7 commit).  Branch `feature/lua-role-support`.
+
+**🎯 HEP-0033 Phase 7 D-track — COMPLETE.**  D1 / D1.5 / D2 / D3 / D4
+all shipped; the only Phase 7 work remaining is **Commit E**
+(`AdminService::exec_python` admin RPC wiring through
+`host.eval_in_script(code)` with serialization w.r.t. the worker
+thread's invoke path — see HEP-0033 §15 Phase 7 for the design TBDs).
+Suite grew from 1709 → 1731 across the D-track.
+
+D-track sub-commits since the 2026-05-03 snapshot:
+
+  - `b5f16f7` D1.6 — HubScriptRunner R1+S1+S2 (runner now actually runs).
+  - `b5f5adc` D2.1 — single config owner per hub (Option E).
+  - `a321727` D2.2 — HubHost wires HubScriptRunner.
+  - `b507510` D2.3 — review fixes: role-parity shutdown + const
+    `subscribe_*` on HubState (handler-list mutex was already
+    `mutable`, removing the prior const_cast smell).
+  - `6495507` D2.4 — review fixes (eval guard, uid capture, doc
+    drift).
+  - `9ab6ffb` D2.5 — D2.2 test rigor (timing bounds + mutation sweep).
+  - `2230d39` D3.1 — `HubScriptRunner::worker_main_` engine setup
+    wiring (initialize → load_script → build_api inline; mirrors
+    role-side phase ordering).
+  - `cfd388d` D3.2 — `LuaEngine::build_api_(HubAPI&)` + 3 hub
+    closures (`api.log` / `api.uid` / `api.metrics`); `on_pcall_error_`
+    null-safe across role/hub paths.
+  - `69a6133` D3.3 — L3 integration test `HubLuaIntegrationTest`
+    (HubHost + LuaEngine + real `init.lua`; 2 tests).
+  - `78355d7` D4.1 — `PythonEngine::build_api_(HubAPI&)` +
+    `src/scripting/hub_api_python.cpp` with
+    `PYBIND11_EMBEDDED_MODULE(pylabhub_hub, m)`; force-link symbol
+    keeps the static-archive linker from dropping the .o.
+  - `92c82c4` D4.2 — L3 integration test `HubPythonIntegrationTest`
+    (single TEST_F by design — pybind11 `scoped_interpreter` re-init
+    in one process is unsafe).
+  - `b8f7cd6` Static review S1 + S2 — `script_error_count()` null-
+    safe across role/hub paths (both engines, was returning 0 on
+    hub path); L3 timing bounds tightened (5/8 s → 1.5/2.5 s based
+    on ~110–140 ms steady state).
+  - `ce132d1` Static review S5 — extracted `json_to_py` /
+    `py_to_json` from `python_engine.cpp` to private header
+    `src/scripting/json_py_helpers.hpp` (`pylabhub::scripting::detail`
+    namespace); adopted by all 4 `metrics()` bindings.
+  - `8f4c957` Static review S7 — Lua-hub redundant callback-ref
+    re-extract in `build_api_(HubAPI&)` removed (load_script is the
+    single extraction site).
+
+Remaining static-review notes (deferred):
+  - **S3** — test boilerplate duplication between
+    `test_hub_lua_integration.cpp` and `test_hub_python_integration.cpp`
+    (~90% identical fixture).  Refactor when adding a 3rd integration
+    test (likely Phase 8 or Python-subprocess pattern).
+  - **S6** — force-link symbol fragility (theoretical: a future
+    refactor could remove the `plh_register_hub_api_python_module`
+    call without realizing it's load-bearing).  Verified working
+    via `nm`; comments at both call sites flag the rationale.
+    Hardening (whole-archive link or OBJECT library) deferred unless
+    the symbol ever actually goes missing.
+
+### Snapshot — 2026-05-03 (Phase 7 in flight — D1 + D1.5 shipped) — superseded by 05-04
 
 **Full suite: 1709/1710 green at last full run** (`2a9dd3b`; one
 flake on `Roles/PlhRoleInitTest.DefaultValues/producer` — fork+exec

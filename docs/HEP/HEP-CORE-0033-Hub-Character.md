@@ -1321,11 +1321,76 @@ can land in parallel once P1 lands.
     upstream-HEP citations (revoke_role / reload_config /
     add/remove/list_known_roles / exec_python — see §16 #1, #9,
     HEP-0035, Phase 7 respectively).
-- **Phase 7** — `scripting::hub_lifecycle_modules()` + `HubScriptRunner` using
-  `ScriptEngine`; retire `PythonInterpreter`/`HubScript`/`hub_script_api`/
-  `pylabhub_module`. L3 tests for each callback + default no-op behavior.
-- **Phase 8** — `HubAPI` pybind11 + Lua bindings (§12.3). L3 tests via each
-  engine.
+- **Phase 7** — `HubScriptRunner` + per-engine `build_api_(HubAPI&)`
+  bindings.  Retires `PythonInterpreter`/`HubScript`/`hub_script_api`/
+  `pylabhub_module` (already deleted in the post-G2 cleanup; Phase 7
+  is greenfield).
+  Sub-commits:
+    - **A/B/C** ✅ shipped 2026-05-03 — `script_host_traits<ApiT>`
+      template + sibling `build_api_(HubAPI&)` virtual on
+      `ScriptEngine`; `HubConfig::timing()` accessor; `HubAPI` class
+      declared with `script_host_traits<HubAPI>` specialization;
+      explicit `template class EngineHost<HubAPI>;` and private
+      `HubScriptRunner final : EngineHost<HubAPI>` with
+      `worker_main_()` event-and-tick loop reusing `RoleHostCore`
+      message queue + `hub_state_json` serializers.
+    - **D1 / D1.5** ✅ shipped 2026-05-03 — `HubAPI::log` /
+      `metrics` / `uid` (Phase 7 minimum surface mirroring
+      `RoleAPIBase`).  L2 unit tests with affirmative path-
+      discrimination on log levels.  `LogCaptureFixture` gained
+      strict `ExpectLogWarnMustFire` / `ExpectLogErrorMustFire`
+      variants (13 framework self-tests).
+    - **D2 (D2.1–D2.5)** ✅ shipped 2026-05-03 — `HubHost` wires
+      `HubScriptRunner` into startup/shutdown ordering (§4.1
+      step 10 / §4.2 step 2); `host.eval_in_script(code)` wrapper
+      added (full RPC plumbing deferred to Commit E).  Review
+      fixes folded in: `subscribe_*` made `const` on `HubState`
+      (handler-list mutex was already `mutable`, removing the prior
+      const_cast smell); `request_shutdown` adopts the role-side
+      dumb-signal pattern (flag + cv.notify_all; main thread drives
+      ordered shutdown).  D2.2 test rigor pass added timing bounds
+      and a mutation sweep.
+    - **D3.1 / D3.2 / D3.3** ✅ shipped 2026-05-03 —
+      `HubScriptRunner::worker_main_` runs the engine setup
+      sequence inline (initialize → load_script → build_api),
+      mirroring role-side phase ordering.  `LuaEngine::build_api_(HubAPI&)`
+      adds 3 hub closures (`api.log` / `api.uid` / `api.metrics`)
+      + `on_pcall_error_` null-safe across role/hub paths.  L3
+      integration test `HubLuaIntegrationTest` runs a real `init.lua`
+      against a real `LuaEngine` end-to-end; 2 tests (happy path +
+      script-syntax-error startup-throws).
+    - **D4.1 / D4.2** ✅ shipped 2026-05-04 —
+      `PythonEngine::build_api_(HubAPI&)` + new
+      `src/scripting/hub_api_python.cpp` defining
+      `PYBIND11_EMBEDDED_MODULE(pylabhub_hub, m)` exposing
+      `pylabhub_hub.HubAPI`.  Force-link symbol
+      (`plh_register_hub_api_python_module`) keeps the static-archive
+      linker from dropping the .o (no other referenced symbol there
+      — analogous role files implicitly survive because they also
+      host the role-API class impls).  L3 integration test
+      `HubPythonIntegrationTest` (single TEST_F by design — pybind11
+      `scoped_interpreter` re-init in one process is unsafe; L2
+      Python tests use Pattern 3 subprocess workers for the same
+      reason).
+    - **Static review S1/S2/S5/S7** ✅ shipped 2026-05-04 —
+      `script_error_count()` made null-safe across role/hub paths
+      in both engines (S1).  L3 integration test timing bounds
+      tightened from 5–8 s to 1.5–2.5 s based on observed steady-
+      state ~110–140 ms (S2).  `json_to_py` / `py_to_json` extracted
+      from `python_engine.cpp` to private header
+      `src/scripting/json_py_helpers.hpp` (`pylabhub::scripting::detail`
+      namespace) and adopted by all 4 `metrics()` bindings, replacing
+      the `json.loads(dump())` round-trip (S5).  Lua-hub redundant
+      callback-ref re-extract in `build_api_(HubAPI&)` removed
+      (S7) — `load_script` is the single extraction site.
+  - **Commit E pending** — `AdminService::exec_python` admin RPC:
+    wires `host.eval_in_script(code)` through to engine `eval()`
+    with serialization w.r.t. the worker thread's invoke path
+    (mutex-in-runner or queue-through-worker; design TBD).
+    Closes one of the 6 deferred §11.2 methods.
+- **Phase 8** — Rich `HubAPI` callback surface beyond log/uid/metrics
+  (§12.3): channel/role/band/peer mutators, scoped event-callback
+  registration, etc.  L3 tests via each engine.
 - **Phase 9** — `plh_hub` binary; new build target.  (Legacy
   `src/hubshell.cpp` + `src/hub_python/*` already deleted in the post-G2
   cleanup pass — Phase 9 is now greenfield.)  L4 test infrastructure:
