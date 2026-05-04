@@ -29,6 +29,7 @@
 #include "../producer/producer_api.hpp"
 #include "../consumer/consumer_api.hpp"
 #include "../processor/processor_api.hpp"
+#include "utils/hub_api.hpp"   // build_api_(HubAPI&) needs full type
 
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
@@ -527,6 +528,73 @@ bool PythonEngine::build_api_(RoleAPIBase &api)
                 sys_modules[py::str(mod)] = py::none();
         }
     }
+    return true;
+}
+
+// ============================================================================
+// build_api(HubAPI&) — hub-side surface (HEP-CORE-0033 Phase 7 D4.1)
+// ============================================================================
+//
+// Mirrors the role-side build_api_(RoleAPIBase&) shape but with the
+// Phase 7 minimum surface (log/uid/metrics).  No schema-driven ctypes
+// types (hub has no slots/flexzones).
+//
+// Wires the api object into the script's namespace via TWO paths,
+// matching the LuaEngine dual-exposure pattern (D3.2):
+//
+//   1. As `<script_module>.api` — set as a module attribute so
+//      callbacks dispatched via generic `engine.invoke(name, args)`
+//      can reach it via module-global lookup.  Generic invoke does
+//      NOT pass api as an argument, so this is the only path for
+//      event/tick callbacks (on_tick, on_channel_opened, ...).
+//
+//   2. As `api_obj_` — for `invoke_on_init` / `invoke_on_stop` which
+//      pass api explicitly as the first positional arg (mirrors role-
+//      side `fn(api_obj_)` shape).  Scripts that prefer the explicit-
+//      arg style can write `def on_init(api): api.log(...)`.
+//
+// The HubAPI Python class itself is bound via PYBIND11_EMBEDDED_MODULE
+// in src/scripting/hub_api_python.cpp — `pylabhub_hub.HubAPI`.
+
+bool PythonEngine::build_api_(::pylabhub::hub_host::HubAPI &api)
+{
+    // Hub doesn't expose stop_on_script_error on HubAPI today (see
+    // LuaEngine::build_api_(HubAPI&) — same default).  Default false.
+    stop_on_script_error_ = false;
+
+    py::gil_scoped_acquire gil;
+
+    // Importing the embedded module triggers its
+    // PYBIND11_EMBEDDED_MODULE static-init binding (registered at
+    // process start).  This must succeed for `py::cast(&api)` below
+    // to find the bound HubAPI class.
+    try
+    {
+        py::module_::import("pylabhub_hub");
+    }
+    catch (const py::error_already_set &e)
+    {
+        LOGGER_ERROR("[{}] PythonEngine::build_api(HubAPI): "
+                     "failed to import pylabhub_hub embedded module: {}",
+                     log_tag_, e.what());
+        return false;
+    }
+
+    // Wrap the C++ HubAPI as a Python object.  Reference policy —
+    // pybind11 holds a non-owning pointer; HubAPI's lifetime is owned
+    // by EngineHost<HubAPI>::api_, which outlives the engine's
+    // finalize_engine_ (which clears api_obj_).
+    api_obj_ = py::cast(&api, py::return_value_policy::reference);
+
+    // Set as `<script_module>.api` so callbacks dispatched via
+    // generic invoke (which doesn't pass api as an arg) can reach
+    // it via module-global lookup.
+    if (!module_.is_none())
+        py::setattr(module_, "api", api_obj_);
+
+    LOGGER_INFO("[{}] build_api(HubAPI) complete — api set on script "
+                "module + stored for invoke_on_init; uid='{}'",
+                log_tag_, api.uid());
     return true;
 }
 
@@ -1280,13 +1348,24 @@ InvokeResult PythonEngine::on_python_error_(const char *callback_name,
 
 InvokeResult PythonEngine::handle_script_error_(const char *callback_tag)
 {
-    api_->core()->inc_script_error_count();
+    // Resolve core via whichever ApiT was bound — base class stores
+    // ONE of `api_` (RoleAPIBase*, role-side) or `hub_api_` (HubAPI*,
+    // hub-side, HEP-CORE-0033 Phase 7 D4); the other is null per
+    // build_api's contract.  Mirrors LuaEngine::on_pcall_error_'s
+    // resolution shape.  Pre-D4 the direct `api_->core()` access
+    // would null-deref on the hub path.
+    RoleHostCore *core = api_     ? api_->core()
+                       : hub_api_ ? hub_api_->core()
+                                  : nullptr;
+    if (core)
+        core->inc_script_error_count();
 
     if (stop_on_script_error_)
     {
         LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} error",
                      log_tag_, callback_tag);
-        api_->core()->request_stop();
+        if (core)
+            core->request_stop();
     }
     return InvokeResult::Error;
 }
