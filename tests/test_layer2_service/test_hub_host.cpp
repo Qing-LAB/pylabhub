@@ -506,9 +506,9 @@ TEST_F(HubHostTest, FailedStartupAllowsRetry)
 //
 // Eval-in-script forwarding tests removed when the
 // `HubHost::eval_in_script` / `HubScriptRunner::eval` / admin
-// `exec_python` chain was removed entirely (HEP-CORE-0033 §17 "No
-// remote code injection") — there is no longer an external eval
-// surface to test.
+// `exec_python` chain was removed entirely (HEP-CORE-0033 §17.1
+// "No remote code injection") — there is no longer an external
+// eval surface to test.
 
 namespace {
 

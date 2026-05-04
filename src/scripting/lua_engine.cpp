@@ -499,10 +499,11 @@ LuaEngine *LuaEngine::get_or_create_thread_state_()
     // and `script_error_count` use.  Pre-Phase-7 this method assumed
     // `api_` (RoleAPIBase*) was set — `child->initialize(..., api_->core())`
     // and `child->build_api(*api_)` would null-deref on hub side
-    // (`api_` is null when `hub_api_` is set).  The hub-side admin
-    // RPC tail (HEP-CORE-0033 Phase 7 Commit E) drives that path:
-    // AdminService thread calls `engine.eval(code)` which routes to
-    // a child state via this method.
+    // (`api_` is null when `hub_api_` is set).  No external trigger
+    // currently routes here on the hub path (HEP-CORE-0033 §17.1
+    // forbids remote code injection); the null-safe dispatch is kept
+    // as an internal C++ extensibility invariant for any future C++
+    // caller that holds a non-owner-thread reference to the engine.
     RoleHostCore *core = api_     ? api_->core()
                        : hub_api_ ? hub_api_->core()
                                   : nullptr;
