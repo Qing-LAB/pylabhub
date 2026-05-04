@@ -18,6 +18,7 @@
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/logger.hpp"
 #include "utils/naming.hpp"
+#include "json_py_helpers.hpp"   // detail::json_to_py / detail::py_to_json
 #include "python_helpers.hpp"
 
 #include "plh_platform.hpp"
@@ -46,87 +47,12 @@ namespace fs = std::filesystem;
 namespace pylabhub::scripting
 {
 
-// ============================================================================
-// json_to_py — recursive nlohmann::json → py::object conversion
-// ============================================================================
-
-static py::object json_to_py(const nlohmann::json &val, int depth = 0)
-{
-    if (depth > kScriptMaxRecursionDepth)
-        return py::str("<recursion limit>");
-    if (val.is_string())
-        return py::str(val.get<std::string>());
-    if (val.is_boolean())
-        return py::bool_(val.get<bool>());
-    if (val.is_number_unsigned())
-        return py::int_(val.get<uint64_t>());
-    if (val.is_number_integer())
-        return py::int_(val.get<int64_t>());
-    if (val.is_number_float())
-        return py::float_(val.get<double>());
-    if (val.is_object())
-    {
-        py::dict d;
-        for (auto &[k, v] : val.items())
-            d[py::str(k)] = json_to_py(v, depth + 1);
-        return std::move(d);
-    }
-    if (val.is_array())
-    {
-        py::list l;
-        for (auto &elem : val)
-            l.append(json_to_py(elem, depth + 1));
-        return std::move(l);
-    }
-    if (val.is_null())
-        return py::none();
-    return py::str(val.dump());
-}
-
-// ============================================================================
-// py_to_json — recursive py::object → nlohmann::json conversion
-// ============================================================================
-
-static nlohmann::json py_to_json(const py::object &obj, int depth = 0)
-{
-    if (depth > kScriptMaxRecursionDepth)
-        return "<recursion limit>";
-    if (obj.is_none())
-        return nullptr;
-    // Check bool before int — isinstance(True, int) is True in Python.
-    if (py::isinstance<py::bool_>(obj))
-        return obj.cast<bool>();
-    if (py::isinstance<py::int_>(obj))
-        return obj.cast<int64_t>();
-    if (py::isinstance<py::float_>(obj))
-        return obj.cast<double>();
-    if (py::isinstance<py::str>(obj))
-        return obj.cast<std::string>();
-    if (py::isinstance<py::dict>(obj))
-    {
-        nlohmann::json j = nlohmann::json::object();
-        for (auto &item : obj.cast<py::dict>())
-            j[item.first.cast<std::string>()] =
-                py_to_json(item.second.cast<py::object>(), depth + 1);
-        return j;
-    }
-    if (py::isinstance<py::list>(obj))
-    {
-        nlohmann::json j = nlohmann::json::array();
-        for (auto &elem : obj.cast<py::list>())
-            j.push_back(py_to_json(elem.cast<py::object>(), depth + 1));
-        return j;
-    }
-    if (py::isinstance<py::tuple>(obj))
-    {
-        nlohmann::json j = nlohmann::json::array();
-        for (auto &elem : obj.cast<py::tuple>())
-            j.push_back(py_to_json(elem.cast<py::object>(), depth + 1));
-        return j;
-    }
-    // Fallback: repr as string.
-    return py::str(obj).cast<std::string>();
-}
+// json_to_py / py_to_json moved to src/scripting/json_py_helpers.hpp
+// (S5 extraction) so role API metrics() bindings + hub_api_python.cpp
+// can share the fast path instead of round-tripping through json.loads
+// / json.dumps.  Local using-decls keep call sites unchanged.
+using detail::json_to_py;
+using detail::py_to_json;
 
 // ============================================================================
 // Destructor

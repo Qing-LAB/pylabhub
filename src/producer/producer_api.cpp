@@ -15,6 +15,7 @@
 #include "utils/json_fwd.hpp"
 #include "utils/metrics_json.hpp"
 #include "metrics_pydict.hpp"
+#include "../scripting/json_py_helpers.hpp"   // detail::json_to_py (S5)
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
 
@@ -63,10 +64,14 @@ py::object ProducerAPI::band_members(const std::string &channel)
 
 py::dict ProducerAPI::metrics() const
 {
-    // Delegate to base for complete JSON, then convert to py::dict.
-    auto j = base_->snapshot_metrics_json();
-    auto json_str = j.dump();
-    return py::module_::import("json").attr("loads")(json_str).cast<py::dict>();
+    // S5: was `json.loads(j.dump())` round-trip — replaced with the
+    // shared fast-path walker (src/scripting/json_py_helpers.hpp).
+    // Same converter `python_engine.cpp::execute_direct_` already
+    // uses on the dispatch hot path; semantics match for metrics
+    // payloads (no NaN/Inf, no deep recursion — see header docstring
+    // for the divergence rows).
+    return scripting::detail::json_to_py(base_->snapshot_metrics_json())
+        .cast<py::dict>();
 }
 
 uint64_t ProducerAPI::slot_logical_size(std::optional<int> side) const
