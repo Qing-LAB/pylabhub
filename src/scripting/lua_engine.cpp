@@ -444,12 +444,13 @@ bool LuaEngine::build_api_(::pylabhub::hub_host::HubAPI &api)
     // `luaL_ref` consumes the value at the top of the stack.
     ref_api_ = luaL_ref(L, LUA_REGISTRYINDEX);
 
-    // Pre-extract callback refs for the dedicated invoke_on_init /
-    // invoke_on_stop dispatch paths.  Other event callbacks (on_tick,
+    // ref_on_init_ / ref_on_stop_ are already extracted by load_script
+    // (see line ~228, six-callback bulk-extract — runs for both role
+    // and hub paths).  Re-extracting here would `luaL_ref` a fresh
+    // registry slot and orphan the prior slot until lua_close — small
+    // bounded leak per hub instance.  Other event callbacks (on_tick,
     // on_<event_name>) flow through `invoke(name, args)` which does
     // lua_getglobal at call time — no pre-extraction needed.
-    ref_on_init_ = extract_callback_ref_("on_init");
-    ref_on_stop_ = extract_callback_ref_("on_stop");
 
     LOGGER_INFO("[{}] build_api(HubAPI) complete — api global set, "
                 "uid='{}'",
