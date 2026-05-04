@@ -595,7 +595,21 @@ TEST_F(HubHostTest, ScriptEnabled_StartupConstructsRunner_ShutdownStopsCleanly)
     auto cfg = HubConfig::load_from_directory(dir.string());
 
     HubHost host(std::move(cfg), std::make_unique<HubStubEngine>());
+
+    // Wall-clock bound on startup: HubStubEngine is no-op + the runner
+    // worker just installs subscriptions and signals ready.  Realistic
+    // upper bound is well under 1 s (broker bind + admin spawn + runner
+    // thread spawn).  2 s is a generous bound that still surfaces a
+    // regression where startup degrades to "eventually completes" via
+    // some unintended timeout path.
+    const auto t_startup_begin = std::chrono::steady_clock::now();
     ASSERT_NO_THROW(host.startup());
+    const auto startup_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t_startup_begin).count();
+    EXPECT_LT(startup_ms, 2000)
+        << "host.startup() with stub engine must complete in <2 s; took "
+        << startup_ms << " ms — regression in broker bind / admin spawn / "
+           "runner ready_promise wait paths";
     EXPECT_TRUE(host.is_running());
 
     // Runner is in flight — eval forwards to engine (single test thread,
@@ -608,7 +622,20 @@ TEST_F(HubHostTest, ScriptEnabled_StartupConstructsRunner_ShutdownStopsCleanly)
     EXPECT_EQ(resp_payload, "stub_eval_ok")
         << "eval_in_script must surface engine.eval()'s payload verbatim";
 
+    // Wall-clock bound on shutdown: stub script has nothing to drain;
+    // runner observes the flag, drains empty queue, joins worker.  Bound
+    // generously above the runner's tick period (1 s default — runner's
+    // wait_for_incoming might be one full tick before the flag is
+    // observed).  Anything more than ~1.5 s of additional overhead is a
+    // regression.
+    const auto t_shutdown_begin = std::chrono::steady_clock::now();
     host.shutdown();
+    const auto shutdown_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t_shutdown_begin).count();
+    EXPECT_LT(shutdown_ms, 3000)
+        << "host.shutdown() must complete in <3 s; took " << shutdown_ms
+        << " ms — runner drain / admin stop / broker stop / "
+           "thread_mgr drain timing regression";
     EXPECT_FALSE(host.is_running());
 
     // After shutdown, eval falls through to NotFound.
