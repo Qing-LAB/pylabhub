@@ -310,20 +310,25 @@ json AdminService::Impl::dispatch(const json &request)
             return (this->*m.handler)(request);
     }
 
-    // ── Deferred methods (HEP-0035 / §16 #1 / §16 #9 / Phase 7) ─────────────
+    // ── Deferred methods (HEP-0035 / §16 #1 / §16 #9) ───────────────────────
     //
     // Listed explicitly so a typo lands on `unknown_method` while a
     // deferred-but-spec'd method lands on `not_implemented`.  Updates
     // to this list:
-    //   - When Phase 7 ships HubScriptRunner → remove `exec_python`
-    //     (and add a `handle_exec_python` row to kMethods).
     //   - When HEP-0035 lands → remove the three known_roles entries.
     //   - When §16 #1 / §16 #9 close → remove revoke_role / reload_config.
+    //
+    // `exec_python` was removed entirely (was previously deferred for
+    // Phase 7 wiring).  See HEP-CORE-0033 §17 "No remote code
+    // injection" — the hub deliberately does not accept arbitrary
+    // executable code over the wire.  Operator scripting access is
+    // routed through the future Python SDK (composes structured
+    // AdminService RPCs locally on the operator's host); see
+    // `docs/todo/API_TODO.md` "pylabhub Python client SDK".
     static constexpr std::string_view kDeferredMethods[] = {
         "list_known_roles", "add_known_role", "remove_known_role", // HEP-0035
         "revoke_role",                                              // §16 #1
         "reload_config",                                            // §16 #9
-        "exec_python",                                              // Phase 7
     };
     for (const auto &m : kDeferredMethods)
     {

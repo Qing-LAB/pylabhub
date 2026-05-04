@@ -61,29 +61,6 @@ HubScriptRunner::~HubScriptRunner()
 }
 
 // ============================================================================
-// Public surface
-// ============================================================================
-
-InvokeResponse HubScriptRunner::eval(const std::string &code)
-{
-    // Gate on is_running() so direct callers (today: HubHost::eval_in_script;
-    // tomorrow: anything that holds a runner pointer) get the same
-    // NotFound shape post-shutdown that HubHost's wrapper provides.
-    // Without this, a caller bypassing HubHost would forward into a
-    // partially-torn-down engine after shutdown_() — the runner ptr
-    // is intentionally left intact post-shutdown for diagnostics
-    // (parallel to broker_/admin_), but the engine state is gone.
-    if (!is_running())
-        return {InvokeStatus::NotFound, {}};
-
-    // engine() is the protected accessor on EngineHost — usable here
-    // because HubScriptRunner derives from EngineHost<HubAPI>.  Forwards
-    // verbatim; serialization w.r.t. the worker thread's invoke calls
-    // is the caller's responsibility (see header docs).
-    return engine().eval(code);
-}
-
-// ============================================================================
 // worker_main_ — event-and-tick loop
 // ============================================================================
 
