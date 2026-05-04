@@ -657,12 +657,18 @@ InvokeResponse PythonEngine::execute_direct_(const std::string &name)
     py::gil_scoped_acquire gil;
     py::object fn = py::getattr(module_, name.c_str(), py::none());
     if (fn.is_none())
+    {
+        // NotFound still drains pending — a misnamed callback shouldn't
+        // stall cross-thread invoke/eval requests on the queue.
+        process_pending_();
         return {InvokeStatus::NotFound, {}};
+    }
 
+    InvokeResponse resp;
     try
     {
         fn();
-        return {InvokeStatus::Ok, {}};
+        resp = {InvokeStatus::Ok, {}};
     }
     catch (const py::error_already_set &e)
     {
@@ -670,8 +676,17 @@ InvokeResponse PythonEngine::execute_direct_(const std::string &name)
         // stop_on_script_error_ consistently with the hot-path callbacks.
         const std::string tag = "invoke('" + name + "')";
         on_python_error_(tag.c_str(), e);
-        return {InvokeStatus::ScriptError, {}};
+        resp = {InvokeStatus::ScriptError, {}};
     }
+    // Drain pending cross-thread requests AFTER the owner-thread invoke
+    // finishes — same point on the timeline `invoke_produce` / `_consume`
+    // / `_process` / `_on_inbox` already drain (see line ~1024 below).
+    // Without this drain, hub-side `engine.invoke("on_tick")` (and
+    // event dispatch) never picks up admin-thread eval requests, so
+    // `AdminService::exec_python` would block forever.  Role-side path
+    // already drains via the role-specific invoke_* methods.
+    process_pending_();
+    return resp;
 }
 
 InvokeResponse PythonEngine::execute_direct_(const std::string &name,
@@ -683,8 +698,12 @@ InvokeResponse PythonEngine::execute_direct_(const std::string &name,
     py::gil_scoped_acquire gil;
     py::object fn = py::getattr(module_, name.c_str(), py::none());
     if (fn.is_none())
+    {
+        process_pending_();
         return {InvokeStatus::NotFound, {}};
+    }
 
+    InvokeResponse resp;
     try
     {
         // Unpack JSON args as keyword arguments (recursive for nested types).
@@ -692,14 +711,18 @@ InvokeResponse PythonEngine::execute_direct_(const std::string &name,
         for (auto it = args.begin(); it != args.end(); ++it)
             kwargs[py::str(it.key())] = json_to_py(it.value());
         fn(**kwargs);
-        return {InvokeStatus::Ok, {}};
+        resp = {InvokeStatus::Ok, {}};
     }
     catch (const py::error_already_set &e)
     {
         const std::string tag = "invoke('" + name + "', args)";
         on_python_error_(tag.c_str(), e);
-        return {InvokeStatus::ScriptError, {}};
+        resp = {InvokeStatus::ScriptError, {}};
     }
+    // See process_pending_() comment in the no-args overload above —
+    // mirrors the role-side `invoke_produce` drain pattern.
+    process_pending_();
+    return resp;
 }
 
 InvokeResponse PythonEngine::eval_direct_(const std::string &code)
@@ -944,8 +967,16 @@ size_t PythonEngine::type_sizeof(const std::string &type_name) const
 
 void PythonEngine::invoke_on_init()
 {
-    // No process_pending_() needed: called before ctrl_thread_ is spawned,
-    // so no non-owner threads exist yet to queue requests.
+    // No process_pending_() needed: any request enqueued before on_init
+    // returns is drained at the next owner-thread invoke (either
+    // role-side `invoke_produce` etc. inside the data loop, or
+    // hub-side `execute_direct_` inside the event/tick loop).  For the
+    // role-side fast path the original argument also holds — `ctrl_thread_`
+    // is not yet spawned, so no non-owner thread exists to queue
+    // requests.  For hub-side, AdminService is already running by
+    // ctor time, so a pre-on_init eval is theoretically possible —
+    // but it lands on the queue and waits at most one event/tick
+    // cycle (typically ms-to-1s) before draining via execute_direct_.
     if (!is_callable(py_on_init_))
         return;
 

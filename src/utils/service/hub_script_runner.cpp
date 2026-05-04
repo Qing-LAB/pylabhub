@@ -325,7 +325,15 @@ void HubScriptRunner::worker_main_()
     const double period_us = static_cast<double>(timing.period_us);
     const bool is_max_rate = (policy == LoopTimingPolicy::MaxRate);
 
-    auto deadline = Clock::time_point::max();   // first cycle has no deadline
+    // Initialize the first deadline ONCE here rather than relying on
+    // `compute_next_deadline`'s `prev_deadline == max` first-cycle
+    // branch.  Cleaner because the post-tick advance below now has
+    // exactly one job (advance from a known prior deadline), and the
+    // `max` sentinel still flags MaxRate paths uniformly.
+    auto deadline = is_max_rate
+        ? Clock::time_point::max()
+        : Clock::now() + std::chrono::microseconds{
+              static_cast<int64_t>(period_us)};
 
     while (is_running() && !core().is_shutdown_requested())
     {
@@ -336,25 +344,36 @@ void HubScriptRunner::worker_main_()
         for (auto &e : events)
             api().dispatch_event(e);
 
-        // Tick gate.  MaxRate fires every iteration unconditionally;
-        // timed policies fire when the cycle has reached/passed the
-        // current deadline.  First cycle (deadline == max) only fires
-        // for MaxRate — timed policies wait one full period before
-        // their first tick.
+        // Tick gate (post-events).  Use `now()` rather than `cycle_start`
+        // so a slow event handler that pushed past the deadline still
+        // fires `on_tick` this iteration ("beyond timeout but called",
+        // per the ratified contract).  MaxRate fires unconditionally;
+        // timed policies fire whenever the deadline has been crossed.
+        // First cycle for timed policies: `now < deadline` until one
+        // full period has elapsed — script gets one period of warm-up
+        // before the first tick.
+        const auto now = Clock::now();
         if (is_max_rate ||
-            (deadline != Clock::time_point::max() &&
-             cycle_start >= deadline))
+            (deadline != Clock::time_point::max() && now >= deadline))
         {
             api().dispatch_tick();
+            // Advance the deadline ONLY when the tick fires.  Events
+            // alone do not shift the on_tick schedule — `on_tick` fires
+            // once per period deterministically, regardless of how
+            // often events drove the loop in between.  For
+            // FixedRateWithCompensation this also restores the
+            // documented catch-up semantic: missed slots fire in tight
+            // succession on resume because `compute_next_deadline`
+            // walks the absolute grid forward by `period`.
+            deadline = compute_next_deadline(policy, deadline,
+                                              cycle_start, period_us);
         }
-
-        // Advance the deadline using the shared canonical helper.
-        deadline = compute_next_deadline(policy, deadline,
-                                          cycle_start, period_us);
 
         // Wait for next event or until the deadline elapses.  MaxRate
         // uses 0 (non-blocking poll); timed policies wait the
-        // remaining ms until `deadline`, capped at zero (already-due).
+        // remaining ms until `deadline`, capped at zero (already-due —
+        // the next iteration runs back-to-back, used by FRWithComp
+        // catch-up after a long stall).
         if (is_max_rate)
         {
             // Poll the queue; do not block.  on_tick already fired
