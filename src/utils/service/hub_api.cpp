@@ -11,8 +11,11 @@
 #include "utils/hub_api.hpp"
 
 #include "utils/broker_service.hpp"      // query_metrics for HubAPI::metrics()
+#include "utils/config/hub_config.hpp"   // host.config().raw() / .identity()
 #include "utils/hub_host.hpp"            // backref for metrics path
 #include "utils/hub_metrics_filter.hpp"  // empty MetricsFilter = all categories
+#include "utils/hub_state.hpp"           // HubState::channel/role/band/peer/snapshot
+#include "utils/hub_state_json.hpp"      // channel_to_json / role_to_json / etc.
 #include "utils/logger.hpp"              // LOGGER_INFO/WARN/ERROR/DEBUG
 #include "utils/role_host_core.hpp"      // IncomingMessage, RoleHostCore
 #include "utils/script_engine.hpp"       // ScriptEngine::invoke / eval
@@ -175,6 +178,147 @@ nlohmann::json HubAPI::metrics() const
 const std::string &HubAPI::uid() const noexcept
 {
     return impl_->uid;
+}
+
+// ============================================================================
+// Phase 8a — Read accessors (HEP-CORE-0033 §12.3 read block)
+// ============================================================================
+//
+// All methods defend against `host == nullptr` (pre-`set_host` call) so a
+// script can call them at any point without nullptr-deref; the empty
+// fallback is documented in the header.  In production the runner wires
+// host immediately after EngineHost constructs HubAPI, so the fallback
+// only fires in unit tests that exercise HubAPI in isolation.
+//
+// Each method delegates to `host_->state().*` (HubState lookup) and
+// serializes via the shared `hub_state_json::*` helpers.  The List
+// methods snapshot the whole map and serialize each entry; the Get
+// methods use the typed lookup to avoid copying the full snapshot.
+
+namespace
+{
+    // Cached static empty value to avoid allocating per-call when the
+    // host backref is missing.  Read-only.
+    const std::string &empty_string()
+    {
+        static const std::string e;
+        return e;
+    }
+}
+
+const std::string &HubAPI::name() const noexcept
+{
+    if (!impl_->host)
+        return empty_string();
+    return impl_->host->config().identity().name;
+}
+
+nlohmann::json HubAPI::config() const
+{
+    if (!impl_->host)
+        return nlohmann::json::object();
+    // HubConfig::raw() returns the parsed JSON (post-default-merge).
+    // Read-only — scripts inspect; mutations go through the curated
+    // admin RPCs / Phase 8b control delegates.
+    return impl_->host->config().raw();
+}
+
+nlohmann::json HubAPI::list_channels() const
+{
+    if (!impl_->host)
+        return nlohmann::json::array();
+    namespace js = pylabhub::hub;
+    nlohmann::json arr = nlohmann::json::array();
+    const auto snap = impl_->host->state().snapshot();
+    for (const auto &[name, ch] : snap.channels)
+        arr.push_back(js::channel_to_json(ch));
+    return arr;
+}
+
+nlohmann::json HubAPI::get_channel(const std::string &name) const
+{
+    if (!impl_->host)
+        return nullptr;
+    const auto opt = impl_->host->state().channel(name);
+    if (!opt.has_value())
+        return nullptr;
+    return pylabhub::hub::channel_to_json(*opt);
+}
+
+nlohmann::json HubAPI::list_roles() const
+{
+    if (!impl_->host)
+        return nlohmann::json::array();
+    namespace js = pylabhub::hub;
+    nlohmann::json arr = nlohmann::json::array();
+    const auto snap = impl_->host->state().snapshot();
+    for (const auto &[uid, r] : snap.roles)
+        arr.push_back(js::role_to_json(r));
+    return arr;
+}
+
+nlohmann::json HubAPI::get_role(const std::string &role_uid) const
+{
+    if (!impl_->host)
+        return nullptr;
+    const auto opt = impl_->host->state().role(role_uid);
+    if (!opt.has_value())
+        return nullptr;
+    return pylabhub::hub::role_to_json(*opt);
+}
+
+nlohmann::json HubAPI::list_bands() const
+{
+    if (!impl_->host)
+        return nlohmann::json::array();
+    namespace js = pylabhub::hub;
+    nlohmann::json arr = nlohmann::json::array();
+    const auto snap = impl_->host->state().snapshot();
+    for (const auto &[name, b] : snap.bands)
+        arr.push_back(js::band_to_json(b));
+    return arr;
+}
+
+nlohmann::json HubAPI::get_band(const std::string &name) const
+{
+    if (!impl_->host)
+        return nullptr;
+    const auto opt = impl_->host->state().band(name);
+    if (!opt.has_value())
+        return nullptr;
+    return pylabhub::hub::band_to_json(*opt);
+}
+
+nlohmann::json HubAPI::list_peers() const
+{
+    if (!impl_->host)
+        return nlohmann::json::array();
+    namespace js = pylabhub::hub;
+    nlohmann::json arr = nlohmann::json::array();
+    const auto snap = impl_->host->state().snapshot();
+    for (const auto &[uid, p] : snap.peers)
+        arr.push_back(js::peer_to_json(p));
+    return arr;
+}
+
+nlohmann::json HubAPI::get_peer(const std::string &hub_uid) const
+{
+    if (!impl_->host)
+        return nullptr;
+    const auto opt = impl_->host->state().peer(hub_uid);
+    if (!opt.has_value())
+        return nullptr;
+    return pylabhub::hub::peer_to_json(*opt);
+}
+
+nlohmann::json HubAPI::query_metrics(const std::vector<std::string> &categories) const
+{
+    if (!impl_->host)
+        return nlohmann::json::object();
+    pylabhub::hub::MetricsFilter filter;
+    for (const auto &c : categories)
+        filter.categories.insert(c);
+    return impl_->host->broker().query_metrics(filter);
 }
 
 } // namespace pylabhub::hub_host

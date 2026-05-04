@@ -52,6 +52,7 @@
 #include <string>
 #include <string_view>
 #include <variant>                   // std::monostate for the trait specialization
+#include <vector>                    // query_metrics(categories)
 
 namespace pylabhub::utils        { class ThreadManager; }
 namespace pylabhub::hub_host     { class HubHost; }
@@ -145,6 +146,66 @@ public:
     /// Hub instance uid (e.g. "hub.lab1.uid00000001").  Captured at
     /// construction; stable for the life of the HubAPI instance.
     [[nodiscard]] const std::string &uid() const noexcept;
+
+    // ── Phase 8a — Read accessors (HEP-CORE-0033 §12.3 read block) ────────
+    //
+    // Each delegates to `host_->state().*` and serializes via the shared
+    // `utils/hub_state_json.hpp` helpers (Phase 6.2b's single source of
+    // truth shared with AdminService — same JSON shape operators see
+    // through the admin RPC).  All return nlohmann::json so the
+    // pybind11 / Lua bindings convert via the shared `json_to_py` /
+    // `json_to_lua` helpers without per-method binding logic.
+    //
+    // All methods return an empty array / null / empty object (NOT an
+    // error) when called before `set_host` has wired the HubHost
+    // backref — should not happen in production but the path is
+    // defended for safety.  Caller can distinguish "no host" from
+    // "no entries" by the host wiring contract (post-startup the
+    // host is always set).
+
+    /// Hub display name (`cfg.identity().name`) — distinct from `uid()`
+    /// which is the canonical instance identifier.
+    [[nodiscard]] const std::string &name() const noexcept;
+
+    /// Full hub config snapshot — equivalent to `HubConfig::raw()`.
+    /// Returns the JSON the operator wrote into hub.json (post-default-
+    /// merge).  Read-only — scripts inspect, they don't mutate.
+    [[nodiscard]] nlohmann::json config() const;
+
+    /// List of all currently-registered channels, each serialized via
+    /// `channel_to_json`.  Order follows HubState's internal map order
+    /// (unordered — scripts that need stable ordering should sort).
+    [[nodiscard]] nlohmann::json list_channels() const;
+
+    /// Single channel lookup by name.  Returns the channel JSON if
+    /// registered, or `null` (JSON null) if not — scripts can test
+    /// truthiness in their language.
+    [[nodiscard]] nlohmann::json get_channel(const std::string &name) const;
+
+    /// List of all roles, serialized via `role_to_json`.
+    [[nodiscard]] nlohmann::json list_roles() const;
+
+    /// Single role lookup by uid.  Returns `null` if not found.
+    [[nodiscard]] nlohmann::json get_role(const std::string &role_uid) const;
+
+    /// List of all bands (HEP-CORE-0030), serialized via `band_to_json`.
+    [[nodiscard]] nlohmann::json list_bands() const;
+
+    /// Single band lookup by name.  Returns `null` if not found.
+    [[nodiscard]] nlohmann::json get_band(const std::string &name) const;
+
+    /// List of all federation peers, serialized via `peer_to_json`.
+    [[nodiscard]] nlohmann::json list_peers() const;
+
+    /// Single peer lookup by hub_uid.  Returns `null` if not found.
+    [[nodiscard]] nlohmann::json get_peer(const std::string &hub_uid) const;
+
+    /// Filtered metrics — optional category list (e.g.
+    /// `{"channels", "counters"}`); empty/absent = all categories.
+    /// Same JSON shape `metrics()` produces, but with the
+    /// `MetricsFilter::categories` set populated from `categories`.
+    [[nodiscard]] nlohmann::json
+    query_metrics(const std::vector<std::string> &categories) const;
 
     // ── Host wiring (called once by HubScriptRunner after construction) ───
 

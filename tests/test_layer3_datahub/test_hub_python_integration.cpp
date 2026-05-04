@@ -172,27 +172,69 @@ std::unique_ptr<LifecycleGuard> HubPythonIntegrationTest::s_lifecycle_;
 
 TEST_F(HubPythonIntegrationTest, RealPythonScript_OnInitOnStop_FireAndLog)
 {
-    // __init__.py exercises all 3 hub bindings via the api positional arg:
-    //   - api.log     — verified by grep'ing the log file
-    //   - api.uid()   — appears inside the log message, pins the
-    //                    binding actually returns HubHost's uid
-    //   - api.metrics() — called for its side effect (returns a dict;
-    //                    we don't read it from C++, but calling it
-    //                    proves the closure round-trips json.loads
-    //                    on the broker's empty-state metrics without
-    //                    raising — which would land as a Python error
-    //                    LogCaptureFixture would reject in TearDown)
+    // __init__.py exercises every HubAPI binding the Python side
+    // expose: lifecycle (log / uid / metrics), then the read-accessor
+    // surface (name / config / list_* / get_* / query_metrics).
+    // Single-test design constraint: pybind11 scoped_interpreter
+    // re-init in one process is unsafe (see L2 PythonEngine subprocess
+    // pattern), so every Python-side binding assertion must live in
+    // this one test.
     //
-    // Mirrors role-side convention: callbacks receive `api` as their
-    // first positional arg.  Same shape as D3.3's Lua script
-    // (api.log("info", ...) — dot syntax, not method-call colon).
-    const std::string py_body =
-        "def on_init(api):\n"
-        "    m = api.metrics()  # callable, returns dict, no exception\n"
-        "    api.log('info', 'PHASE7_D42_INIT uid=' + api.uid())\n"
-        "\n"
-        "def on_stop(api):\n"
-        "    api.log('info', 'PHASE7_D42_STOP uid=' + api.uid())\n";
+    // Markers HUB_INIT / HUB_STOP exercise lifecycle; each accessor
+    // emits an API_*_OK marker after a type-shape check.  Greps below
+    // assert all markers present.
+    //
+    // Lists are empty in this isolated hub (no real producer/consumer
+    // connects).  get_*(missing) returns Python None.  Functional
+    // content (entries appearing post-registration) is covered by
+    // future end-to-end tests that drive the broker; this test pins
+    // the BINDING surface — every method is reachable, types are
+    // correct, no Python exceptions.
+    const std::string py_body = R"PY(
+def on_init(api):
+    api.log('info', 'HUB_INIT uid=' + api.uid())
+    m = api.metrics()  # callable, returns dict, no exception
+    if isinstance(m, dict):
+        api.log('info', 'METRICS_OK')
+
+    # Phase 8a read accessors.
+    n = api.name()
+    if isinstance(n, str) and len(n) > 0:
+        api.log('info', 'API_NAME_OK:' + n)
+
+    c = api.config()
+    if isinstance(c, dict) and 'hub' in c and 'admin' in c:
+        api.log('info', 'API_CONFIG_OK')
+
+    # list_*() — all return lists (empty in isolated hub).
+    if isinstance(api.list_channels(), list):
+        api.log('info', 'API_LIST_CHANNELS_OK')
+    if isinstance(api.list_roles(), list):
+        api.log('info', 'API_LIST_ROLES_OK')
+    if isinstance(api.list_bands(), list):
+        api.log('info', 'API_LIST_BANDS_OK')
+    if isinstance(api.list_peers(), list):
+        api.log('info', 'API_LIST_PEERS_OK')
+
+    # get_*(missing) — None.
+    if api.get_channel('no.such.channel') is None:
+        api.log('info', 'API_GET_CHANNEL_NIL_OK')
+    if api.get_role('no.such.role') is None:
+        api.log('info', 'API_GET_ROLE_NIL_OK')
+    if api.get_band('no.such.band') is None:
+        api.log('info', 'API_GET_BAND_NIL_OK')
+    if api.get_peer('no.such.peer') is None:
+        api.log('info', 'API_GET_PEER_NIL_OK')
+
+    # query_metrics() — both shapes.
+    if isinstance(api.query_metrics(), dict):
+        api.log('info', 'API_QUERY_METRICS_ALL_OK')
+    if isinstance(api.query_metrics(['counters']), dict):
+        api.log('info', 'API_QUERY_METRICS_FILTERED_OK')
+
+def on_stop(api):
+    api.log('info', 'HUB_STOP uid=' + api.uid())
+)PY";
 
     const fs::path dir = make_python_hub_dir("oninit", py_body);
 
@@ -244,8 +286,8 @@ TEST_F(HubPythonIntegrationTest, RealPythonScript_OnInitOnStop_FireAndLog)
     // ── Pin the structural log content ──────────────────────────────────
     const std::string log = read_log_file(LogCaptureFixture::log_path());
 
-    const auto pos_init = log.find("PHASE7_D42_INIT");
-    const auto pos_stop = log.find("PHASE7_D42_STOP");
+    const auto pos_init = log.find("HUB_INIT");
+    const auto pos_stop = log.find("HUB_STOP");
 
     ASSERT_NE(pos_init, std::string::npos)
         << "missing on_init log marker — api.log() did not route through "
@@ -259,7 +301,7 @@ TEST_F(HubPythonIntegrationTest, RealPythonScript_OnInitOnStop_FireAndLog)
     // Pin api.uid() actually returns the configured uid (not empty
     // string, not garbage).  Both markers carry it; checking on_init
     // is enough.
-    const std::string init_line_marker = "PHASE7_D42_INIT uid=" + expected_uid;
+    const std::string init_line_marker = "HUB_INIT uid=" + expected_uid;
     EXPECT_NE(log.find(init_line_marker), std::string::npos)
         << "api.uid() must return cfg.identity().uid; expected to find\n  "
         << init_line_marker << "\nLog dump:\n" << log;
@@ -273,4 +315,35 @@ TEST_F(HubPythonIntegrationTest, RealPythonScript_OnInitOnStop_FireAndLog)
     EXPECT_NE(log.find("[hub/" + expected_uid + "]"), std::string::npos)
         << "HubAPI::log() must emit lines with prefix [hub/<uid>]; "
            "not found in:\n" << log;
+
+    // ── Read-accessor binding surface ───────────────────────────────────
+    //
+    // Each accessor emits an API_*_OK marker after passing a
+    // type-shape check inside on_init.  Failing to bind, raising on
+    // call, or returning the wrong shape leaves the marker missing here.
+    // (A raised Python exception would also land as LOGGER_ERROR via
+    // on_python_error_, which TearDown's AssertNoUnexpectedLogWarnError
+    // would reject — but the marker grep is the affirmative signal.)
+    static constexpr const char *kAccessorMarkers[] = {
+        "METRICS_OK",
+        "API_NAME_OK:",
+        "API_CONFIG_OK",
+        "API_LIST_CHANNELS_OK",
+        "API_LIST_ROLES_OK",
+        "API_LIST_BANDS_OK",
+        "API_LIST_PEERS_OK",
+        "API_GET_CHANNEL_NIL_OK",
+        "API_GET_ROLE_NIL_OK",
+        "API_GET_BAND_NIL_OK",
+        "API_GET_PEER_NIL_OK",
+        "API_QUERY_METRICS_ALL_OK",
+        "API_QUERY_METRICS_FILTERED_OK",
+    };
+    for (const char *m : kAccessorMarkers)
+    {
+        EXPECT_NE(log.find(m), std::string::npos)
+            << "missing read-accessor binding marker '" << m
+            << "' — pybind11 binding failed to bind, raised, or returned "
+               "wrong type.\nLog dump:\n" << log;
+    }
 }
