@@ -83,6 +83,11 @@ utils::ThreadManager &HubAPI::thread_manager()
     return impl_->thread_mgr;
 }
 
+scripting::RoleHostCore *HubAPI::core() const noexcept
+{
+    return &impl_->core;
+}
+
 // ============================================================================
 // Wiring (called by HubScriptRunner immediately post-construction)
 // ============================================================================
