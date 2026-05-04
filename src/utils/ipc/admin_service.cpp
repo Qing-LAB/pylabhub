@@ -84,7 +84,6 @@ struct AdminService::Impl
     std::string                    endpoint;
     std::string                    admin_token;
     bool                           token_required;
-    bool                           dev_mode;
 
     std::atomic<bool>              stop_requested{false};
     std::string                    bound_endpoint;
@@ -136,13 +135,10 @@ AdminService::AdminService(zmq::context_t          &zmq_ctx,
     impl_->endpoint       = cfg.endpoint;
     impl_->admin_token    = std::string(admin_token);
     impl_->token_required = cfg.token_required;
-    impl_->dev_mode       = cfg.dev_mode;
 
     // §11.3 invariant: when token gating is off, bind must be loopback.
     // Enforced at construction so misconfiguration is caught before
-    // the socket is opened.  `dev_mode==true` is allowed to imply
-    // `token_required==false` per HEP §11.3, so this check covers
-    // both forms.
+    // the socket is opened.
     if (!cfg.token_required && !is_loopback_tcp_endpoint(cfg.endpoint))
     {
         throw std::invalid_argument(
@@ -179,8 +175,8 @@ void AdminService::run()
     sock.bind(impl_->endpoint);
     impl_->bound_endpoint = sock.get(zmq::sockopt::last_endpoint);
 
-    LOGGER_INFO("[admin] AdminService listening on {} (token_required={}, dev_mode={})",
-                impl_->bound_endpoint, impl_->token_required, impl_->dev_mode);
+    LOGGER_INFO("[admin] AdminService listening on {} (token_required={})",
+                impl_->bound_endpoint, impl_->token_required);
 
     while (!impl_->stop_requested.load(std::memory_order_acquire))
     {

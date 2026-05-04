@@ -15,7 +15,6 @@
  *   - Run/stop: spawned thread, bind endpoint visible, ping round-trip.
  *   - Token gate: valid / missing / wrong token.
  *   - Dispatch: ping ok, known stub → not_implemented, unknown_method.
- *   - dev_mode: token_required=false → ping accepted without token.
  *   - HubHost integration: admin enabled at startup → bound endpoint;
  *     ping via that endpoint works; HubHost::shutdown drains admin
  *     thread cleanly.
@@ -154,13 +153,11 @@ class StandaloneAdmin
 public:
     StandaloneAdmin(HubConfig          cfg,
                     std::string_view   token,
-                    bool               token_required = true,
-                    bool               dev_mode       = false)
+                    bool               token_required = true)
         : host_(std::move(cfg))
     {
         acfg_.endpoint       = "tcp://127.0.0.1:0";
         acfg_.token_required = token_required;
-        acfg_.dev_mode       = dev_mode;
         svc_.emplace(pylabhub::hub::get_zmq_context(), acfg_, token, host_);
         worker_ = std::thread([this] { svc_->run(); });
         EXPECT_TRUE(poll_until(
@@ -261,14 +258,13 @@ protected:
     /// Returns a HubConfig + dir; admin is enabled with ephemeral port,
     /// token gate ON, admin_token = kTestToken.
     std::pair<HubConfig, fs::path> make_config(const char *tag,
-        bool token_required = true, bool dev_mode = false)
+        bool token_required = true)
     {
         const fs::path dir = unique_temp_dir(tag);
         paths_to_clean_.push_back(dir);
         auto j = read_hub_json_for_test(dir, "AdminTestHub");
         j["admin"]["enabled"]        = true;
         j["admin"]["token_required"] = token_required;
-        j["admin"]["dev_mode"]       = dev_mode;
         write_hub_json(dir, j);
 
         auto cfg = HubConfig::load_from_directory(dir.string());
@@ -301,7 +297,6 @@ TEST_F(AdminServiceTest, Construct_TokenOff_NonLoopbackEndpoint_Throws)
     HubAdminConfig acfg;
     acfg.endpoint       = "tcp://0.0.0.0:5600";
     acfg.token_required = false;
-    acfg.dev_mode       = true;
 
     auto [cfg, dir] = make_config("nonloopback");
     HubHost host(std::move(cfg)); // not started — backref only
@@ -524,19 +519,6 @@ TEST_F(AdminServiceTest, Query_ListPeers_Empty_ReturnsOkObject)
 }
 
 
-
-TEST_F(AdminServiceTest, DevMode_TokenSkipped_PingAccepted)
-{
-    auto [cfg, dir] = make_config("dev", /*token_required=*/false,
-                                  /*dev_mode=*/true);
-    StandaloneAdmin a(std::move(cfg), /*token=*/"",
-                      /*token_required=*/false, /*dev_mode=*/true);
-
-    // No `token` field at all — accepted because token_required=false.
-    const json reply = req_reply(a.endpoint(), {{"method", "ping"}});
-    EXPECT_EQ(reply.value("status", ""), "ok");
-    EXPECT_EQ(reply["result"].value("pong", false), true);
-}
 
 // ─── §11.2 control methods (Phase 6.2c) ────────────────────────────────────
 //

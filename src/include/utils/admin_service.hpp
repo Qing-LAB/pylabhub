@@ -64,11 +64,11 @@ class PYLABHUB_UTILS_EXPORT AdminService
 {
 public:
     /// Construct around an already-loaded HubAdminConfig.  Validates
-    /// the localhost-bind invariant for `dev_mode`/`!token_required`
-    /// configurations; throws `std::invalid_argument` on violation.
-    /// Does NOT bind the socket — that happens at the head of
-    /// `run()` so bind failures are reported on the admin worker
-    /// thread (consistent with `BrokerService::run()`).
+    /// the localhost-bind invariant when `token_required==false` (§11.3);
+    /// throws `std::invalid_argument` on violation.  Does NOT bind the
+    /// socket — that happens at the head of `run()` so bind failures
+    /// are reported on the admin worker thread (consistent with
+    /// `BrokerService::run()`).
     ///
     /// @param zmq_ctx       Process-wide ZMQ context (caller-owned;
     ///                      AdminService stores a non-owning pointer).
