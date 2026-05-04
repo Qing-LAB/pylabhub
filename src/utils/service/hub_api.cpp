@@ -321,4 +321,37 @@ nlohmann::json HubAPI::query_metrics(const std::vector<std::string> &categories)
     return impl_->host->broker().query_metrics(filter);
 }
 
+// ============================================================================
+// Phase 8b — Control delegates (HEP-CORE-0033 §12.3 control block)
+// ============================================================================
+//
+// All methods are fire-and-forget — the broker queue absorbs the
+// request and processes asynchronously.  No return value because there's
+// nothing to wait for; the broker handles validation (unknown channel
+// names → idempotent drop) and schedule.  No-op if the HubHost backref
+// isn't wired yet (defended for unit tests in isolation).
+
+void HubAPI::close_channel(const std::string &name)
+{
+    if (!impl_->host)
+        return;
+    impl_->host->broker().request_close_channel(name);
+}
+
+void HubAPI::broadcast_channel(const std::string &channel,
+                                const std::string &message,
+                                const std::string &data)
+{
+    if (!impl_->host)
+        return;
+    impl_->host->broker().request_broadcast_channel(channel, message, data);
+}
+
+void HubAPI::request_shutdown() noexcept
+{
+    if (!impl_->host)
+        return;
+    impl_->host->request_shutdown();
+}
+
 } // namespace pylabhub::hub_host

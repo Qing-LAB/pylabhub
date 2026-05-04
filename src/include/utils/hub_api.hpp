@@ -207,6 +207,39 @@ public:
     [[nodiscard]] nlohmann::json
     query_metrics(const std::vector<std::string> &categories) const;
 
+    // ── Phase 8b — Control delegates (HEP-CORE-0033 §12.3 control block) ──
+    //
+    // Fire-and-forget mutators.  Each delegates to an existing
+    // `host_->broker().request_*` or `host_->request_shutdown()` —
+    // same code path AdminService's `handle_close_channel` /
+    // `handle_broadcast_channel` / `handle_request_shutdown` use.
+    // The script-side wrappers don't return errors; the broker is
+    // responsible for tolerating unknown-channel inputs idempotently
+    // (matches the admin RPC accept-ack semantics — the response is
+    // the queue accept, not a completion signal).
+    //
+    // No-op (silently discarded) when called before `set_host` has
+    // wired the HubHost backref.
+
+    /// Request the broker to close a channel (drains in-flight slots,
+    /// notifies consumers, removes from `HubState`).  Idempotent for
+    /// unknown channel names.
+    void close_channel(const std::string &name);
+
+    /// Send a control-plane broadcast frame to all consumers of a
+    /// channel.  `data` is optional — empty string by default for
+    /// pure control messages.
+    void broadcast_channel(const std::string &channel,
+                            const std::string &message,
+                            const std::string &data = "");
+
+    /// Request hub shutdown.  Sets the host's shutdown flag and wakes
+    /// any thread blocked on `host.run_main_loop()` (or an equivalent
+    /// wait-for-shutdown caller).  The orderly teardown sequence
+    /// (runner → admin → broker → drain) runs on the main thread when
+    /// `host.shutdown()` is invoked next.  Idempotent.
+    void request_shutdown() noexcept;
+
     // ── Host wiring (called once by HubScriptRunner after construction) ───
 
     /// Bind to the HubHost backref.  Required before any state-reading

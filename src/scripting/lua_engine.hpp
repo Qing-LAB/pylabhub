@@ -196,6 +196,10 @@ class LuaEngine : public ScriptEngine
     static int lua_api_hub_list_peers(lua_State *L);
     static int lua_api_hub_get_peer(lua_State *L);
     static int lua_api_hub_query_metrics(lua_State *L);
+    // Phase 8b — control delegates (HEP-CORE-0033 §12.3 control block)
+    static int lua_api_hub_close_channel(lua_State *L);
+    static int lua_api_hub_broadcast_channel(lua_State *L);
+    static int lua_api_hub_request_shutdown(lua_State *L);
     static int lua_api_set_critical_error(lua_State *L);
     static int lua_api_stop_reason(lua_State *L);
     static int lua_api_script_error_count(lua_State *L);

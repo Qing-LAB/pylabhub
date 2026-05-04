@@ -199,5 +199,27 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_hub, m) // NOLINT
              py::arg("categories") = std::vector<std::string>{},
              "Filtered metrics — categories is a list of category names "
              "(e.g. ['channels', 'counters']); empty/absent = all "
-             "categories.  Same JSON shape metrics() produces.");
+             "categories.  Same JSON shape metrics() produces.")
+
+        // ── Control delegates (HEP-CORE-0033 §12.3) ───────────────────────
+        //
+        // Fire-and-forget mutators delegating to host.broker().request_*
+        // / host.request_shutdown().  None return a value — the broker
+        // handles unknown-channel inputs idempotently (matches admin
+        // RPC accept-ack semantics).
+
+        .def("close_channel", &HubAPI::close_channel,
+             py::arg("name"),
+             "Request the broker to close a channel.  Idempotent for "
+             "unknown channel names.")
+
+        .def("broadcast_channel", &HubAPI::broadcast_channel,
+             py::arg("channel"), py::arg("message"), py::arg("data") = "",
+             "Send a control-plane broadcast frame to all consumers of "
+             "a channel.  `data` defaults to empty for pure control "
+             "messages.")
+
+        .def("request_shutdown", &HubAPI::request_shutdown,
+             "Request hub shutdown.  Sets the host's shutdown flag and "
+             "wakes any caller of host.run_main_loop().  Idempotent.");
 }
