@@ -243,6 +243,36 @@ gtest_discover_tests(test_layer2_crypto_utils
 )
 
 # ============================================================================
+# Test: ThreadManager::join_named (HEP-CORE-0033 §4.2 step 2)
+# ============================================================================
+
+add_executable(test_layer2_thread_manager_join_named
+    test_thread_manager_join_named.cpp
+)
+
+target_link_libraries(test_layer2_thread_manager_join_named
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gmock
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_thread_manager_join_named)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_thread_manager_join_named
+    SUITE_NAME "Layer2_ThreadManagerJoinNamed"
+)
+layer2_require_staged_utils(test_layer2_thread_manager_join_named)
+
+gtest_discover_tests(test_layer2_thread_manager_join_named
+    PROPERTIES
+        LABELS "layer2;service;thread_manager"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: Lifecycle (static modules)
 # ============================================================================
 

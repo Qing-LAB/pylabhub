@@ -92,6 +92,7 @@ namespace pylabhub::hub       { class HubState; }
 namespace pylabhub::admin     { class AdminService; }
 namespace pylabhub::scripting { class ScriptEngine;
                                 class HubScriptRunner; }
+namespace pylabhub::hub_host  { class HubAPI; }
 
 namespace pylabhub::hub_host
 {
@@ -200,6 +201,16 @@ public:
     /// the REP socket.  Production code rarely touches this directly;
     /// AdminService dispatches RPCs into HubHost via its own backref.
     [[nodiscard]] admin::AdminService *admin() noexcept;
+
+    /// HubAPI pointer for the running script (HEP-CORE-0033 §12.3),
+    /// or `nullptr` if no script is configured / runner not yet
+    /// constructed / runner already torn down.  Used by AdminService
+    /// + BrokerService to call into `augment_*` methods after
+    /// building the default response (HEP-CORE-0033 §12.2.2 response
+    /// augmentation hooks).  HubAPI methods called here are thread-
+    /// safe — augment_* internally route to the worker thread via
+    /// `engine.invoke_returning`.
+    [[nodiscard]] HubAPI *hub_api() noexcept;
 
 private:
     struct Impl;

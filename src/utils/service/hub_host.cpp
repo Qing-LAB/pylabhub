@@ -504,29 +504,53 @@ void HubHost::shutdown()
     }
     impl_->wake_cv.notify_all();
 
-    // Stop the HubScriptRunner FIRST (HEP-CORE-0033 §4.2 step 2):
-    // runner observes the shared shutdown flag, drains pending events,
-    // calls `on_stop`, joins its worker thread.  Stopping the runner
-    // before admin/broker ensures any in-flight script callback that's
-    // mid-call into broker / admin completes against still-live
-    // subsystems — if we stopped the broker first, a script callback
-    // could observe a half-torn-down broker mid-call.
+    // ── Drain admin FIRST (HEP-CORE-0033 §4.2 step 2 — Phase 8c
+    //    revision) ────────────────────────────────────────────────────
+    //
+    // Pre-Phase-8c the order was runner → admin → broker, justified by
+    // the script-side `on_stop` needing both broker and admin alive.
+    // Phase 8c added `HubAPI::augment_*` hooks invoked by AdminService
+    // handlers; admin in-flight RPCs can therefore reach into the
+    // script-side HubAPI mid-call.  If we tore the runner down first
+    // (which destroys HubAPI as part of the EngineHost teardown), an
+    // admin RPC parked between recv'ing the request and finishing the
+    // augment hook would deref a destroyed HubAPI → UB.
+    //
+    // Fix: signal admin (atomic flip) and synchronously join its
+    // thread BEFORE runner shutdown.  AdminService::stop is non-
+    // blocking by design (atomic only); the bounded-join lives at the
+    // ThreadManager via the new `join_named("admin")` primitive.
+    // After the join returns, no admin thread is alive → no path
+    // reaches into HubAPI from outside the worker thread → runner
+    // destruction is safe.
+    //
+    // Admin's `on_stop`-equivalent observability invariant is
+    // preserved: scripts run their `on_stop` against a live broker,
+    // and a live HubAPI (since runner.shutdown_ runs AFTER admin is
+    // joined but BEFORE HubAPI is destroyed inside that call).  Admin
+    // RPCs are simply unavailable during on_stop — same as in any
+    // shutdown-driven scenario.
+    if (impl_->admin_svc)
+    {
+        impl_->admin_svc->stop();                       // atomic flag flip
+        if (impl_->thread_mgr)
+            (void) impl_->thread_mgr->join_named("admin");  // bounded join
+    }
+
+    // ── Runner shutdown ─────────────────────────────────────────────
+    // Drains pending events, runs `on_stop` (broker still alive for
+    // `api.broadcast_channel`), finalizes the engine (cancels any
+    // pending augment futures with EngineShutdown — currently none
+    // since admin is already drained), and destroys HubAPI.
     if (impl_->runner)
         impl_->runner->shutdown_();
 
-    // Stop AdminService SECOND (HEP-CORE-0033 §4.2 step 3, after the
-    // runner above): closing the REP socket blocks new RPCs while
-    // in-flight handlers that already entered the broker complete
-    // normally.  Order matters: if we stopped the broker first, an
-    // in-flight admin RPC could observe a half-torn-down broker
-    // mid-call.  Runner stops BEFORE admin so the script's on_stop
-    // hook runs against a live broker (Phase 8 may extend the script
-    // surface to mutator hooks; the ordering invariant covers that).
-    if (impl_->admin_svc)
-        impl_->admin_svc->stop();
-
-    // Break the broker's poll loop.  Internal atomic flip + ZMQ
-    // wake-up; broker thread exits run() shortly after.
+    // ── Broker stop ─────────────────────────────────────────────────
+    // Async signal as before; the broker thread is joined by the
+    // thread_mgr drain below.  (Future HEP §13 work: `HUB_TARGETED_ACK`
+    // wires `on_peer_message_augment`, at which point broker also
+    // needs a synchronous `stop_inbound + join_named` step BEFORE
+    // runner shutdown — symmetric to admin above.)
     if (impl_->broker)
         impl_->broker->stop();
 
@@ -612,6 +636,18 @@ const std::string &HubHost::broker_pubkey() const noexcept
 admin::AdminService *HubHost::admin() noexcept
 {
     return impl_->admin_svc.get();
+}
+
+HubAPI *HubHost::hub_api() noexcept
+{
+    // Runner is the EngineHost<HubAPI> — its ApiT instance is built
+    // lazily inside startup_() on the worker thread.  Before startup
+    // (or if scripts are disabled) runner is null; before the worker
+    // thread completes its setup phase the api isn't built.  Both
+    // cases return nullptr — caller skips augmentation.
+    if (!impl_->runner)
+        return nullptr;
+    return impl_->runner->hub_api_ptr();
 }
 
 } // namespace pylabhub::hub_host

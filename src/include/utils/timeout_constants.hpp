@@ -95,4 +95,16 @@ inline constexpr uint32_t kDefaultGraceHeartbeats =
 /// per broker heartbeat window.
 inline constexpr int kRetrySliceMs = kDefaultHeartbeatIntervalMs;
 
+/// HEP-CORE-0033 §12.2.2 default cross-thread wait bound for hub
+/// script-side response augmentation (`HubAPI::augment_*`).  Admin
+/// or broker thread blocks on the worker for up to
+/// (kDefaultAugmentTimeoutHeartbeats * kDefaultHeartbeatIntervalMs)
+/// before giving up and shipping the default response with status
+/// `InvokeStatus::TimedOut`.  Scripts may override at runtime via
+/// `api.set_augment_timeout(ms)` (typically inside `on_start`):
+///   -1 → infinite
+///    0 → non-blocking (no augmentation effect)
+///   >0 → wait N ms
+inline constexpr uint32_t kDefaultAugmentTimeoutHeartbeats = 30;
+
 } // namespace pylabhub

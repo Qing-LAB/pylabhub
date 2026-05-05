@@ -25,7 +25,9 @@
 #include "utils/role_host_core.hpp"      // IncomingMessage, RoleHostCore
 #include "utils/script_engine.hpp"       // ScriptEngine::invoke / eval
 #include "utils/thread_manager.hpp"
+#include "utils/timeout_constants.hpp"   // kDefaultAugmentTimeoutHeartbeats
 
+#include <atomic>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -42,6 +44,9 @@ struct HubAPI::Impl
         , role_tag(std::move(role_tag))
         , uid(std::move(uid))
         , thread_mgr(this->role_tag, this->uid)
+        , augment_timeout_ms(
+              static_cast<int64_t>(pylabhub::kDefaultAugmentTimeoutHeartbeats)
+              * static_cast<int64_t>(pylabhub::kDefaultHeartbeatIntervalMs))
     {}
 
     scripting::RoleHostCore       &core;             // owned by EngineHost
@@ -62,7 +67,17 @@ struct HubAPI::Impl
 
     /// Script engine pointer — set by HubScriptRunner before any
     /// dispatch call.  Non-owning (engine owned by EngineHost).
+    /// Lifetime contract: outlives any caller of `augment_*` because
+    /// HEP-CORE-0033 §4.2 step 2 drains admin (and broker, when
+    /// HUB_TARGETED_ACK lands) BEFORE the runner destroys the engine
+    /// + this HubAPI.  Wired in `set_engine`, never reset.
     scripting::ScriptEngine       *engine{nullptr};
+
+    /// HEP-CORE-0033 §12.2.2 augment timeout — atomic so the worker-
+    /// thread setter (`set_augment_timeout`) and the admin/broker
+    /// reader (`augment_timeout_ms`) interleave safely without a
+    /// mutex.  Semantics: -1=infinite, 0=non-blocking, >0=N ms.
+    std::atomic<int64_t>           augment_timeout_ms;
 };
 
 // ============================================================================
@@ -342,6 +357,176 @@ void HubAPI::request_shutdown() noexcept
     if (!impl_->host)
         return;
     impl_->host->request_shutdown();
+}
+
+// ============================================================================
+// Augmentation timeout (HEP-CORE-0033 §12.2.2)
+// ============================================================================
+
+int64_t HubAPI::augment_timeout_ms() const noexcept
+{
+    return impl_->augment_timeout_ms.load(std::memory_order_acquire);
+}
+
+void HubAPI::set_augment_timeout(int64_t ms) noexcept
+{
+    impl_->augment_timeout_ms.store(ms, std::memory_order_release);
+}
+
+// ============================================================================
+// Events (HEP-CORE-0033 §12.2.3 user-posted events)
+// ============================================================================
+
+namespace
+{
+
+/// Local C-identifier check for `post_event` name argument.  We don't
+/// reuse `pylabhub::hub::is_valid_identifier` here because that grammar
+/// allows dotted forms (Channel) and reserved sigils (Band, Schema) —
+/// neither makes sense for a callback-name suffix.  An event name
+/// becomes part of the dispatch lookup `on_app_<name>`, so the
+/// constraint is simply "valid C identifier" — leading letter or
+/// underscore, then alphanumeric + underscore.
+bool is_valid_event_name(std::string_view s) noexcept
+{
+    if (s.empty())
+        return false;
+    auto leading = static_cast<unsigned char>(s.front());
+    const bool leading_ok =
+        (leading >= 'a' && leading <= 'z') ||
+        (leading >= 'A' && leading <= 'Z') ||
+        (leading == '_');
+    if (!leading_ok)
+        return false;
+    for (size_t i = 1; i < s.size(); ++i)
+    {
+        auto c = static_cast<unsigned char>(s[i]);
+        const bool ok =
+            (c >= 'a' && c <= 'z') ||
+            (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') ||
+            (c == '_');
+        if (!ok)
+            return false;
+    }
+    return true;
+}
+
+} // namespace
+
+void HubAPI::post_event(const std::string &name,
+                         const nlohmann::json &data)
+{
+    if (!is_valid_event_name(name))
+        throw std::invalid_argument(
+            "HubAPI::post_event: invalid event name '" + name +
+            "' (must be a valid C identifier)");
+
+    // Build the IncomingMessage.  Event prefix `app_` reserves the
+    // user-posted namespace away from built-in events
+    // (`channel_closed`, `role_registered`, …) — see HEP-CORE-0033
+    // §12.2.3.  Worker-side dispatch_event prepends `on_`, so the
+    // script's callback name is `on_app_<name>`.
+    scripting::IncomingMessage m;
+    m.event   = "app_" + name;
+    m.sender  = impl_->uid;     // hub uid; consistent with broker-posted events
+    m.details = data;
+
+    impl_->core.enqueue_message(std::move(m));
+    // enqueue_message already calls notify_incoming() internally; no
+    // additional wake needed (verified against role_host_core.cpp).
+}
+
+// ============================================================================
+// Response augmentation (HEP-CORE-0033 §12.2.2)
+// ============================================================================
+//
+// Each method follows the same pattern:
+//   1. Probe `engine.has_callback("on_<rpc>")`.  Cheap; reads a single
+//      cached py::object / lua ref via the existing has_callback path.
+//   2. If absent, return — the caller ships the default response.
+//   3. Otherwise call `engine.invoke_returning(...)` with the params
+//      and prepared response.  The engine routes to the worker thread
+//      (cross-thread queue + future for non-W callers) so the script
+//      callback runs with full state visibility (§12.4 invariant).
+//   4. If the script returned a non-null value, replace the response;
+//      null/None means "keep the default response".
+//
+// Errors (script raised, engine shutdown) leave the response unchanged —
+// the wire reply ships normally; the error is logged and counted as a
+// script error inside the engine (§12.2.4).
+
+namespace
+{
+
+/// Common fold: dispatch to the script callback if it exists, replace
+/// `response` if the script returned a non-null value.  Centralises the
+/// has_callback probe + null-return discrimination so each augment_*
+/// method below is just a one-line build-args + this call.
+///
+/// `timeout_ms` is the cross-thread wait bound carried into the engine
+/// (HEP-CORE-0033 §12.2.2): -1=infinite, 0=non-blocking, >0=N ms.
+/// On TimedOut / ScriptError / EngineShutdown the response is left
+/// unchanged — caller ships the default it built.
+void run_augment(scripting::ScriptEngine *engine,
+                 const std::string         &callback,
+                 const nlohmann::json      &args,
+                 nlohmann::json            &response,
+                 int64_t                    timeout_ms)
+{
+    if (!engine)
+        return;
+    if (!engine->has_callback(callback))
+        return;
+
+    auto resp = engine->invoke_returning(callback, args, timeout_ms);
+    if (resp.status != scripting::InvokeStatus::Ok)
+        return;  // script error / engine shutdown / timeout — keep default
+    if (resp.value.is_null())
+        return;  // script returned None/nil — keep default response
+    response = std::move(resp.value);
+}
+
+} // namespace
+
+void HubAPI::augment_query_metrics(const nlohmann::json &params,
+                                    nlohmann::json &response)
+{
+    nlohmann::json args = nlohmann::json::object();
+    args["params"]   = params;
+    args["response"] = response;
+    run_augment(impl_->engine, "on_query_metrics", args, response,
+                augment_timeout_ms());
+}
+
+void HubAPI::augment_list_roles(nlohmann::json &response)
+{
+    nlohmann::json args = nlohmann::json::object();
+    args["response"] = response;
+    run_augment(impl_->engine, "on_list_roles", args, response,
+                augment_timeout_ms());
+}
+
+void HubAPI::augment_get_channel(const std::string &name,
+                                  nlohmann::json &response)
+{
+    nlohmann::json args = nlohmann::json::object();
+    args["name"]     = name;
+    args["response"] = response;
+    run_augment(impl_->engine, "on_get_channel", args, response,
+                augment_timeout_ms());
+}
+
+void HubAPI::augment_peer_message(const std::string &peer_uid,
+                                   const nlohmann::json &msg,
+                                   nlohmann::json &response)
+{
+    nlohmann::json args = nlohmann::json::object();
+    args["peer_uid"] = peer_uid;
+    args["msg"]      = msg;
+    args["response"] = response;
+    run_augment(impl_->engine, "on_peer_message", args, response,
+                augment_timeout_ms());
 }
 
 } // namespace pylabhub::hub_host

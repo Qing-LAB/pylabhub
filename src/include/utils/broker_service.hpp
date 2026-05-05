@@ -267,6 +267,27 @@ public:
                            const std::string& payload,
                            const std::string& source_hub_uid)> on_hub_message;
 
+        /// HEP-CORE-0033 §12.2.2 response augmentation hook for the
+        /// HUB_TARGETED_MSG peer wire frame.  Called (from run() thread)
+        /// AFTER any default response has been built but BEFORE the ack
+        /// frame is shipped on the wire.  When set, the broker invokes
+        /// this with the peer's uid + the inbound message JSON + a
+        /// mutable response JSON; the wired callback (HubAPI::
+        /// augment_peer_message) routes synchronously to the hub script
+        /// runner's worker thread, where the script's `on_peer_message`
+        /// callback may mutate the response.  The broker then ships
+        /// whatever sits in `response`.
+        ///
+        /// **Lifetime**: same as on_ready.
+        ///
+        /// **Threading**: the callback may block briefly (one worker-
+        /// loop iteration) while the runner processes the augmentation
+        /// request — same blocking shape as a synchronous send on the
+        /// broker thread.
+        std::function<void(const std::string& peer_uid,
+                           const nlohmann::json& msg,
+                           nlohmann::json& response)> on_peer_message_augment;
+
         /// Hook fired when broker message processing hits an error
         /// (HEP-CORE-0033 §9.6).  Opt-in.  Invoked AFTER counter bumps
         /// (so a handler reading HubState::counters() sees fresh state),

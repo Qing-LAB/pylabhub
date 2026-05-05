@@ -79,13 +79,17 @@ enum class InvokeStatus : uint8_t
     NotFound        = 1,   ///< Function name not found in script.
     ScriptError     = 2,   ///< Script raised an exception.
     EngineShutdown  = 3,   ///< Engine is finalizing; request rejected.
+    TimedOut        = 4,   ///< Cross-thread future expired before the
+                           ///< owner thread drained (HEP-CORE-0033 §12.2.2
+                           ///< augment_timeout); response unchanged.
 };
 
-/// Response from a generic invoke() or eval() call.
+/// Response from a generic invoke() / eval() / invoke_returning() call.
 struct InvokeResponse
 {
     InvokeStatus   status{InvokeStatus::Ok};
-    nlohmann::json value;   ///< Populated only for eval(); empty for invoke().
+    nlohmann::json value;   ///< Populated for eval() and invoke_returning();
+                            ///< empty for invoke().
 };
 
 // RoleContext is eliminated — RoleAPIBase is the single context structure.
@@ -366,6 +370,63 @@ class ScriptEngine
      * status (Ok/ScriptError/EngineShutdown) and value (JSON result or empty).
      */
     virtual InvokeResponse eval(const std::string &code) = 0;
+
+    /**
+     * @brief Invoke a named callback and capture its return value.
+     *
+     * Like @ref invoke but populates @ref InvokeResponse::value with the
+     * (JSON-converted) return value of the script function.  HEP-CORE-0033
+     * §12.2.2 augmentation hooks use this: the script callback receives
+     * the prepared response (mutable dict / table) and returns the
+     * (possibly mutated) response — C++ ships whatever comes back.
+     *
+     * Threading: same contract as @ref invoke — owner thread runs inline,
+     * non-owner threads queue to the owner's pending drain (Python:
+     * existing request_queue_; Lua: same shape, hub-side single-state
+     * pending queue) and block on a future until the owner drains.
+     *
+     * Cross-thread callers MUST call from a thread that is allowed to
+     * block — the admin/broker thread paths in HEP-CORE-0033 §12.4 do
+     * this between recv'ing a request and replying.
+     *
+     * @param name Function name (must be defined as a script-side
+     *             callable; missing function returns NotFound, value
+     *             is null).
+     * @param args JSON args, unpacked as the engine's native call shape
+     *             (Python: keyword args; Lua: single table arg).
+     * @param timeout_ms  Cross-thread wait bound (project convention:
+     *             -1 = infinite, 0 = non-blocking, >0 = wait N ms).
+     *             Owner-thread direct execution ignores it (no future
+     *             involved).  On timeout the response is
+     *             @ref InvokeStatus::TimedOut with empty value; the
+     *             worker may still complete the callback later
+     *             (its result lands in the now-detached future).
+     *             Hub usage typically passes the script-tunable
+     *             timeout from `HubAPI::augment_timeout_ms()`.
+     * @return Status + the function's return value as JSON.  Empty value
+     *         (not error) when the function returns None / nil.
+     */
+    virtual InvokeResponse invoke_returning(const std::string &name,
+                                             const nlohmann::json &args,
+                                             int64_t timeout_ms = -1) = 0;
+
+    /**
+     * @brief Drain pending cross-thread invoke / eval / invoke_returning
+     *        requests on the owner thread.
+     *
+     * The hub's @ref HubScriptRunner main loop calls this between the
+     * event-drain phase and the tick gate — see HEP-CORE-0033 §12.4
+     * loop body.  Engines that don't queue cross-thread work (no
+     * implementations today, but the default protects future engines
+     * that route everything through a sync API) override this with a
+     * no-op.
+     *
+     * Safe to call from the owner thread only; non-owner calls are a
+     * no-op.  PythonEngine: drains the existing request_queue_ via
+     * process_pending_().  LuaEngine: drains the Phase 8c
+     * single-state pending queue.
+     */
+    virtual void process_pending() {}
 
     /**
      * @brief Instantaneous depth of the engine's admin dispatch queue.
