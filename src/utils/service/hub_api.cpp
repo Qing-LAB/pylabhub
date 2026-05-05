@@ -1,11 +1,16 @@
 /**
  * @file hub_api.cpp
- * @brief HubAPI implementation — Phase 7 dispatch surface only.
+ * @brief HubAPI implementation — script-visible surface for hub-side scripts.
  *
- * Phase 7 Commit C ships the minimal class — event/tick forwarding to
- * the script engine and the EngineHost-contract members (ctor + thread
- * manager).  Phase 8 will add the rich state-read + control-op methods
- * that scripts call from inside their callbacks.
+ * Three surface groups:
+ *   1. EngineHost-contract members (ctor, thread_manager, core).
+ *   2. Lifecycle / dispatch (set_host, set_engine, dispatch_event,
+ *      dispatch_tick, log, metrics, uid).
+ *   3. Read accessors + control delegates (HEP-CORE-0033 §12.3) —
+ *      delegate to `host_->state()` + `hub_state_json` serializers
+ *      / `host_->broker().request_*` / `host_->request_shutdown()`.
+ *
+ * See hub_api.hpp for the full surface summary and lifetime contract.
  */
 
 #include "utils/hub_api.hpp"
@@ -49,9 +54,10 @@ struct HubAPI::Impl
     utils::ThreadManager           thread_mgr;
 
     /// Backref to the outer HubHost.  Set by HubScriptRunner immediately
-    /// after EngineHost::startup_() constructs HubAPI.  Phase 8 dispatch
-    /// methods (list_channels / close_channel etc.) read state and call
-    /// mutators through this.  Non-owning.
+    /// after EngineHost::startup_() constructs HubAPI.  Read accessors
+    /// (`list_channels`, `get_role`, …) and control delegates
+    /// (`close_channel`, …) read state and call mutators through this.
+    /// Non-owning.
     HubHost                       *host{nullptr};
 
     /// Script engine pointer — set by HubScriptRunner before any
@@ -106,7 +112,7 @@ void HubAPI::set_engine(scripting::ScriptEngine &engine) noexcept
 }
 
 // ============================================================================
-// Dispatch surface (Phase 7)
+// Dispatch surface
 // ============================================================================
 
 void HubAPI::dispatch_event(const scripting::IncomingMessage &msg)
@@ -133,13 +139,14 @@ void HubAPI::dispatch_tick()
 }
 
 // ============================================================================
-// Script-visible API (Phase 7 minimum) — log / metrics / uid
+// Script-visible API — log / metrics / uid
 // ============================================================================
 //
 // Mirrors RoleAPIBase signatures.  Each method is independently
 // testable; metrics() additionally requires a wired HubHost backref
-// (set_host) and a started broker — that path is exercised at the
-// integration level in Phase 7 Commit D L3 tests.
+// (set_host) and a started broker — exercised end-to-end by the
+// L3 hub integration tests (test_hub_lua_integration /
+// test_hub_python_integration).
 
 void HubAPI::log(const std::string &level, const std::string &msg)
 {
@@ -169,8 +176,8 @@ nlohmann::json HubAPI::metrics() const
     if (!impl_->host)
         return nlohmann::json::object();
     // Empty filter ⇒ all categories.  Same JSON shape AdminService
-    // emits for query_metrics — single source of truth via Phase 6.2b's
-    // hub_state_json serializers (channel_to_json / role_to_json /
+    // emits for query_metrics — single source of truth via the shared
+    // `hub_state_json` serializers (channel_to_json / role_to_json /
     // band_to_json / peer_to_json / broker_counters_to_json).
     return impl_->host->broker().query_metrics(pylabhub::hub::MetricsFilter{});
 }
@@ -181,7 +188,7 @@ const std::string &HubAPI::uid() const noexcept
 }
 
 // ============================================================================
-// Phase 8a — Read accessors (HEP-CORE-0033 §12.3 read block)
+// Read accessors (HEP-CORE-0033 §12.3 read block)
 // ============================================================================
 //
 // All methods defend against `host == nullptr` (pre-`set_host` call) so a
@@ -191,25 +198,16 @@ const std::string &HubAPI::uid() const noexcept
 // only fires in unit tests that exercise HubAPI in isolation.
 //
 // Each method delegates to `host_->state().*` (HubState lookup) and
-// serializes via the shared `hub_state_json::*` helpers.  The List
-// methods snapshot the whole map and serialize each entry; the Get
-// methods use the typed lookup to avoid copying the full snapshot.
-
-namespace
-{
-    // Cached static empty value to avoid allocating per-call when the
-    // host backref is missing.  Read-only.
-    const std::string &empty_string()
-    {
-        static const std::string e;
-        return e;
-    }
-}
+// serializes via the shared `pylabhub::hub::*_to_json` helpers.  The
+// list_*  methods snapshot the whole map and serialize each entry;
+// the get_*  methods use the typed lookup to avoid copying the full
+// snapshot.
 
 const std::string &HubAPI::name() const noexcept
 {
+    static const std::string empty;
     if (!impl_->host)
-        return empty_string();
+        return empty;
     return impl_->host->config().identity().name;
 }
 
@@ -218,8 +216,8 @@ nlohmann::json HubAPI::config() const
     if (!impl_->host)
         return nlohmann::json::object();
     // HubConfig::raw() returns the parsed JSON (post-default-merge).
-    // Read-only — scripts inspect; mutations go through the curated
-    // admin RPCs / Phase 8b control delegates.
+    // Read-only — scripts inspect; mutations go through curated admin
+    // RPCs and the control delegates below.
     return impl_->host->config().raw();
 }
 
@@ -227,11 +225,9 @@ nlohmann::json HubAPI::list_channels() const
 {
     if (!impl_->host)
         return nlohmann::json::array();
-    namespace js = pylabhub::hub;
     nlohmann::json arr = nlohmann::json::array();
-    const auto snap = impl_->host->state().snapshot();
-    for (const auto &[name, ch] : snap.channels)
-        arr.push_back(js::channel_to_json(ch));
+    for (const auto &kv : impl_->host->state().snapshot().channels)
+        arr.push_back(pylabhub::hub::channel_to_json(kv.second));
     return arr;
 }
 
@@ -249,11 +245,9 @@ nlohmann::json HubAPI::list_roles() const
 {
     if (!impl_->host)
         return nlohmann::json::array();
-    namespace js = pylabhub::hub;
     nlohmann::json arr = nlohmann::json::array();
-    const auto snap = impl_->host->state().snapshot();
-    for (const auto &[uid, r] : snap.roles)
-        arr.push_back(js::role_to_json(r));
+    for (const auto &kv : impl_->host->state().snapshot().roles)
+        arr.push_back(pylabhub::hub::role_to_json(kv.second));
     return arr;
 }
 
@@ -271,11 +265,9 @@ nlohmann::json HubAPI::list_bands() const
 {
     if (!impl_->host)
         return nlohmann::json::array();
-    namespace js = pylabhub::hub;
     nlohmann::json arr = nlohmann::json::array();
-    const auto snap = impl_->host->state().snapshot();
-    for (const auto &[name, b] : snap.bands)
-        arr.push_back(js::band_to_json(b));
+    for (const auto &kv : impl_->host->state().snapshot().bands)
+        arr.push_back(pylabhub::hub::band_to_json(kv.second));
     return arr;
 }
 
@@ -293,11 +285,9 @@ nlohmann::json HubAPI::list_peers() const
 {
     if (!impl_->host)
         return nlohmann::json::array();
-    namespace js = pylabhub::hub;
     nlohmann::json arr = nlohmann::json::array();
-    const auto snap = impl_->host->state().snapshot();
-    for (const auto &[uid, p] : snap.peers)
-        arr.push_back(js::peer_to_json(p));
+    for (const auto &kv : impl_->host->state().snapshot().peers)
+        arr.push_back(pylabhub::hub::peer_to_json(kv.second));
     return arr;
 }
 
@@ -322,7 +312,7 @@ nlohmann::json HubAPI::query_metrics(const std::vector<std::string> &categories)
 }
 
 // ============================================================================
-// Phase 8b — Control delegates (HEP-CORE-0033 §12.3 control block)
+// Control delegates (HEP-CORE-0033 §12.3 control block)
 // ============================================================================
 //
 // All methods are fire-and-forget — the broker queue absorbs the

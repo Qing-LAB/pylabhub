@@ -379,12 +379,13 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
 }
 
 // ============================================================================
-// build_api(HubAPI&) — hub-side surface (HEP-CORE-0033 Phase 7 D3.2)
+// build_api(HubAPI&) — hub-side surface (HEP-CORE-0033 §12.3)
 // ============================================================================
 //
 // Mirrors the role-side build_api_(RoleAPIBase&) shape but with the
-// Phase 7 minimum closure set (log/uid/metrics) and no schema-driven
-// FFI typedefs (hub has no slots/flexzones).
+// hub closure set (lifecycle log/uid/metrics + read accessors +
+// control delegates) and no schema-driven FFI typedefs (hub has no
+// slots/flexzones).
 //
 // The api table is exposed BOTH:
 //   (a) as a Lua global named `api` so scripts can call `api:log(...)`
@@ -407,8 +408,8 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
 bool LuaEngine::build_api_(::pylabhub::hub_host::HubAPI &api)
 {
     // Hub doesn't expose `stop_on_script_error` on HubAPI today
-    // (HubConfig.script() has the field; if needed in Phase 8 plumb it
-    // through HubAPI).  Default to false — script errors are logged
+    // (HubConfig.script() has the field; plumb it through HubAPI when
+    // a use case lands).  Default to false — script errors are logged
     // but don't request shutdown.  RoleAPIBase::stop_on_script_error()
     // is the role-side analogue.
     stop_on_script_error_ = false;
@@ -429,22 +430,23 @@ bool LuaEngine::build_api_(::pylabhub::hub_host::HubAPI &api)
         lua_setfield(L, -2, name);
     };
 
-    push_closure("log",            lua_api_hub_log);
-    push_closure("uid",            lua_api_hub_uid);
-    push_closure("metrics",        lua_api_hub_metrics);
-    // Phase 8a — read accessors (HEP-CORE-0033 §12.3 read block)
-    push_closure("name",           lua_api_hub_name);
-    push_closure("config",         lua_api_hub_config);
-    push_closure("list_channels",  lua_api_hub_list_channels);
-    push_closure("get_channel",    lua_api_hub_get_channel);
-    push_closure("list_roles",     lua_api_hub_list_roles);
-    push_closure("get_role",       lua_api_hub_get_role);
-    push_closure("list_bands",     lua_api_hub_list_bands);
-    push_closure("get_band",       lua_api_hub_get_band);
-    push_closure("list_peers",     lua_api_hub_list_peers);
-    push_closure("get_peer",       lua_api_hub_get_peer);
+    // Lifecycle.
+    push_closure("log",               lua_api_hub_log);
+    push_closure("uid",               lua_api_hub_uid);
+    push_closure("metrics",           lua_api_hub_metrics);
+    // Read accessors (HEP-CORE-0033 §12.3 read block).
+    push_closure("name",              lua_api_hub_name);
+    push_closure("config",            lua_api_hub_config);
+    push_closure("list_channels",     lua_api_hub_list_channels);
+    push_closure("get_channel",       lua_api_hub_get_channel);
+    push_closure("list_roles",        lua_api_hub_list_roles);
+    push_closure("get_role",          lua_api_hub_get_role);
+    push_closure("list_bands",        lua_api_hub_list_bands);
+    push_closure("get_band",          lua_api_hub_get_band);
+    push_closure("list_peers",        lua_api_hub_list_peers);
+    push_closure("get_peer",          lua_api_hub_get_peer);
     push_closure("query_metrics",     lua_api_hub_query_metrics);
-    // Phase 8b — control delegates (HEP-CORE-0033 §12.3 control block)
+    // Control delegates (HEP-CORE-0033 §12.3 control block).
     push_closure("close_channel",     lua_api_hub_close_channel);
     push_closure("broadcast_channel", lua_api_hub_broadcast_channel);
     push_closure("request_shutdown",  lua_api_hub_request_shutdown);
@@ -1488,14 +1490,17 @@ void LuaEngine::register_inbox_metatable_()
 }
 
 // ============================================================================
-// API closure statics — hub-side (HEP-CORE-0033 Phase 7 D3.2)
+// API closure statics — hub-side (HEP-CORE-0033 §12.3)
 // ============================================================================
 //
-// Three closures forming the Phase 7 minimum hub API: log / uid /
-// metrics.  Each grabs `LuaEngine *self` from upvalue(1) and forwards
-// to `self->hub_api_->...`.  hub_api_ is guaranteed non-null when
-// these closures fire — they're only registered by build_api_(HubAPI&)
-// which the base class calls AFTER setting hub_api_.
+// Lua closures backing the hub script API surface: lifecycle (log /
+// uid / metrics), read accessors (name / config / list_* / get_* /
+// query_metrics), and control delegates (close_channel /
+// broadcast_channel / request_shutdown).  Each grabs `LuaEngine *self`
+// from upvalue(1) and forwards to `self->hub_api_->...`.  hub_api_ is
+// guaranteed non-null when these closures fire — they're only
+// registered by build_api_(HubAPI&) which the base class calls AFTER
+// setting hub_api_.
 
 int LuaEngine::lua_api_hub_log(lua_State *L)
 {
@@ -1524,15 +1529,14 @@ int LuaEngine::lua_api_hub_metrics(lua_State *L)
     return 1;
 }
 
-// ── Phase 8a — Read accessors (HEP-CORE-0033 §12.3 read block) ──────────────
+// ── Read accessors (HEP-CORE-0033 §12.3 read block) ─────────────────────────
 //
 // Each closure pulls `self` from upvalue(1), forwards to the
-// corresponding `HubAPI::*` accessor (which returns nlohmann::json
-// or std::string), and converts to a Lua value via the shared
-// `json_to_lua` helper for tables / `lua_pushstring` for strings.
-// Pattern is identical across all 11 — kept verbose-but-mechanical
-// rather than templated because LuaJIT's C-API expects raw
-// `int (*)(lua_State*)` function pointers.
+// corresponding `HubAPI::*` accessor, and converts the return value
+// to a Lua value — `json_to_lua` for the json-returning methods,
+// `lua_pushstring` for `name()`.  Pattern is mechanical across all
+// closures — kept verbose rather than templated because LuaJIT's
+// C-API expects raw `int (*)(lua_State*)` function pointers.
 
 int LuaEngine::lua_api_hub_name(lua_State *L)
 {

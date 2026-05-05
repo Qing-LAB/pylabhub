@@ -4,11 +4,10 @@
  * @brief HubAPI — script-visible surface for hub-side scripts (HEP-CORE-0033 §12.3).
  *
  * Hub-side parallel of `RoleAPIBase`.  Carried into the script engine
- * via `ScriptEngine::build_api(HubAPI &)` (the sibling overload added
- * in HEP-CORE-0033 Phase 7 Commit A).  Phase 7 Commit C ships the
- * minimal dispatch surface — Phase 8 layers pybind11 / Lua bindings
- * on top in `pylabhub-scripting` (parallels `python_engine.cpp` /
- * `lua_engine.cpp` binding `RoleAPIBase`).
+ * via `ScriptEngine::build_api(HubAPI &)` — the sibling overload of
+ * `build_api(RoleAPIBase &)`.  Pybind11 / Lua bindings live in
+ * `pylabhub-scripting` (parallels `python_engine.cpp` / `lua_engine.cpp`
+ * binding `RoleAPIBase`).
  *
  * Contract on the EngineHost<HubAPI> instantiation:
  *   - Constructor `HubAPI(scripting::RoleHostCore &, std::string role_tag,
@@ -19,22 +18,26 @@
  *     are exactly what the hub script runner needs; queue-iteration
  *     counters stay zero on the hub side, no harm).
  *   - `ThreadManager &thread_manager()` accessor — required by
- *     EngineHost contract for spawning custom worker threads.  Hub side
- *     uses it for the runner's own worker thread + any future broker
- *     event-fan-out threads.
+ *     EngineHost contract for spawning custom worker threads.
  *
- * Phase 7 dispatch surface:
- *   - `dispatch_event(const IncomingMessage &)` — runner's worker thread
- *     calls this for every event drained from the queue.  Looks at
- *     `IncomingMessage::event` (e.g. "channel_opened") and forwards to
- *     the script engine's named-event invoke.
- *   - `dispatch_tick()` — called by the runner when the LoopTimingPolicy
- *     deadline elapses.  Forwards to the script engine's on_tick.
- *
- * Phase 8 will add rich state-read + control-op methods (list_channels,
- * close_channel, etc.) that scripts can call — those go through
- * `host_->state()` and `host_->broker().request_*` respectively.  The
- * `host_` backref is stored at construction and is a non-owning pointer.
+ * Surface summary:
+ *   - **Lifecycle / dispatch** (called by `HubScriptRunner`):
+ *     `dispatch_event` (forwards drained queue events to
+ *     `engine.invoke("on_<event>", details)`), `dispatch_tick`
+ *     (forwards `on_tick` per `LoopTimingPolicy` deadline).
+ *   - **Read accessors** (script-callable): `name`, `uid`, `config`,
+ *     `metrics`, `query_metrics(categories)`, `list_channels` /
+ *     `get_channel`, `list_roles` / `get_role`, `list_bands` /
+ *     `get_band`, `list_peers` / `get_peer`.  All delegate to
+ *     `host_->state()` + the shared `hub_state_json::*` serializers
+ *     (single source of truth shared with AdminService).
+ *   - **Control delegates** (script-callable): `close_channel`,
+ *     `broadcast_channel`, `request_shutdown`.  Each delegates to
+ *     `host_->broker().request_*` / `host_->request_shutdown()` —
+ *     same paths AdminService's curated admin RPCs use.
+ *   - **Veto hooks** (sync, bool return): not yet wired (HEP-0033
+ *     §12.2 "veto hooks" block — broker thread blocks on script
+ *     thread for a sync `bool`; needs broker hook points).
  *
  * Lifetime:
  *   - Constructed by EngineHost<HubAPI>::startup_() (lazy, on the
@@ -63,11 +66,9 @@ namespace pylabhub::scripting    { class RoleHostCore;
 namespace pylabhub::hub_host
 {
 
-/// Script-visible surface for hub-side scripts.
-///
-/// Phase 7 ships the minimal dispatch surface (event + tick forwarding
-/// to the script engine).  Rich state reads and control ops land in
-/// Phase 8 alongside the pybind11 / Lua bindings.
+/// Script-visible surface for hub-side scripts.  See file-header
+/// docstring for the surface summary; method-level docstrings below
+/// for individual contracts.
 class PYLABHUB_UTILS_EXPORT HubAPI
 {
 public:
@@ -105,7 +106,7 @@ public:
     /// ApiT instantiations.
     [[nodiscard]] scripting::RoleHostCore *core() const noexcept;
 
-    // ── Script-visible API (HEP-CORE-0033 §12.3 Phase 7 minimum) ──────────
+    // ── Script-visible API (HEP-CORE-0033 §12.3) ──────────────────────────
     //
     // Mirrors RoleAPIBase signatures verbatim where the hub equivalent
     // makes sense:
@@ -119,11 +120,10 @@ public:
     //   - `uid()` is the hub equivalent of role's `uid()` accessor;
     //     `role_tag()` is omitted because it's always "hub".
     //
-    // Phase 8 will add state read accessors (list_channels / get_channel
-    // etc.) and control delegates (broadcast_channel, etc.) incrementally
-    // as application use cases land.  Each new method is a small
-    // mechanical triplet: one C++ method here + one binding line in
-    // PythonEngine + one closure entry in LuaEngine.
+    // Read accessors below (list_channels / get_channel / etc.) and
+    // control delegates (close_channel / etc.) follow the same pattern:
+    // one C++ method here + one binding line in PythonEngine + one
+    // closure entry in LuaEngine.
 
     /// Emit a log line through the process Logger sink with a
     /// `[hub/<uid>]` prefix.  Level tokens follow the role-side
@@ -134,8 +134,9 @@ public:
 
     /// Snapshot of the broker's metrics — channel/role/band/peer
     /// aggregates plus broker counters.  Same JSON shape AdminService
-    /// emits for `query_metrics` (single source of truth via Phase 6.2b's
-    /// `hub_state_json` serializers).  Empty filter = all categories.
+    /// emits for `query_metrics` (single source of truth via the
+    /// shared `hub_state_json` serializers).  Empty filter = all
+    /// categories.
     ///
     /// Returns an empty object (not an error) when called before
     /// `set_host` has wired the HubHost backref — should not happen
@@ -147,14 +148,14 @@ public:
     /// construction; stable for the life of the HubAPI instance.
     [[nodiscard]] const std::string &uid() const noexcept;
 
-    // ── Phase 8a — Read accessors (HEP-CORE-0033 §12.3 read block) ────────
+    // ── Read accessors (HEP-CORE-0033 §12.3 read block) ───────────────────
     //
     // Each delegates to `host_->state().*` and serializes via the shared
-    // `utils/hub_state_json.hpp` helpers (Phase 6.2b's single source of
-    // truth shared with AdminService — same JSON shape operators see
-    // through the admin RPC).  All return nlohmann::json so the
-    // pybind11 / Lua bindings convert via the shared `json_to_py` /
-    // `json_to_lua` helpers without per-method binding logic.
+    // `utils/hub_state_json.hpp` helpers (single source of truth shared
+    // with AdminService — same JSON shape operators see through the
+    // admin RPC).  All return nlohmann::json so the pybind11 / Lua
+    // bindings convert via the shared `json_to_py` / `json_to_lua`
+    // helpers without per-method binding logic.
     //
     // All methods return an empty array / null / empty object (NOT an
     // error) when called before `set_host` has wired the HubHost
@@ -207,7 +208,7 @@ public:
     [[nodiscard]] nlohmann::json
     query_metrics(const std::vector<std::string> &categories) const;
 
-    // ── Phase 8b — Control delegates (HEP-CORE-0033 §12.3 control block) ──
+    // ── Control delegates (HEP-CORE-0033 §12.3 control block) ─────────────
     //
     // Fire-and-forget mutators.  Each delegates to an existing
     // `host_->broker().request_*` or `host_->request_shutdown()` —
@@ -243,21 +244,21 @@ public:
     // ── Host wiring (called once by HubScriptRunner after construction) ───
 
     /// Bind to the HubHost backref.  Required before any state-reading
-    /// or mutator-delegating method is invoked (Phase 8).  Not in the
-    /// ctor because HubAPI is constructed lazily inside EngineHost's
+    /// or mutator-delegating method is invoked.  Not in the ctor
+    /// because HubAPI is constructed lazily inside EngineHost's
     /// startup_() path — at that point HubHost is the OUTER caller, so
     /// passing `*this` from inside HubScriptRunner's worker_main_()
     /// post-construction is the cleanest sequencing.
     void set_host(HubHost &host) noexcept;
 
-    // ── Dispatch surface (Phase 7) ─────────────────────────────────────────
+    // ── Dispatch surface ──────────────────────────────────────────────────
 
     /// Forward a HubState event (drained from the runner's queue) to
     /// the script's named callback.  Looks up `on_<event>` (e.g.
     /// `on_channel_opened`) in the script namespace; if not defined,
     /// the engine no-ops.  Payload is the JSON serialization produced
-    /// on the broker thread by Phase 6.2b's `channel_to_json` /
-    /// `role_to_json` / etc.
+    /// on the broker thread by `channel_to_json` / `role_to_json` /
+    /// etc. (the shared `hub_state_json` serializers).
     ///
     /// Called by HubScriptRunner::worker_main_() on the runner thread.
     void dispatch_event(const scripting::IncomingMessage &msg);
@@ -281,16 +282,16 @@ private:
 } // namespace pylabhub::hub_host
 
 // ============================================================================
-// script_host_traits<HubAPI> specialization (HEP-CORE-0033 Phase 7 Option E)
+// script_host_traits<HubAPI> specialization
 // ============================================================================
 //
 // Located here (alongside HubAPI's public declaration) rather than in
 // the private hub_script_runner.hpp so that engine_host.cpp can include
 // it directly to instantiate `template class EngineHost<HubAPI>;`.
 //
-// **ConfigT = std::monostate** is the deliberate Option E choice:
+// **ConfigT = std::monostate** — single-config-owner design:
 //   - HubHost is the SOLE owner of HubConfig (one config per hub
-//     instance — see HEP-CORE-0033 §4 + Phase 7 design discussion).
+//     instance — see HEP-CORE-0033 §4).
 //   - HubScriptRunner is a SUBSYSTEM under HubHost, not its own
 //     top-level container.  It does not own a config; it reads what
 //     it needs (uid + timing) through its `host_` backref.
