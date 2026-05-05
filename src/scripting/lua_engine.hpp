@@ -8,6 +8,31 @@
  *
  * supports_multi_state() returns true: create_thread_state() creates a new
  * LuaEngine with its own LuaState, loading the same script independently.
+ *
+ * ## Dual-mode threading (HEP-CORE-0033 §12.4.1)
+ *
+ * The engine has TWO non-owner-thread paths for cross-thread invocation,
+ * intentionally divergent because role-side and hub-side use cases want
+ * different semantics:
+ *
+ *   1. `invoke(name)` / `invoke(name, args)` / `eval(code)` — when called
+ *      from a non-owner thread, creates a CHILD `lua_State` (lazy, cached
+ *      per `std::thread::id` in `thread_states_`) and runs the script
+ *      there in isolation.  This is the role-side path: per-thread state
+ *      means parallel admin queries on a producer don't serialize on the
+ *      worker.  Each child runs `load_script` independently.
+ *
+ *   2. `invoke_returning(name, args, timeout_ms)` — ALWAYS queues to the
+ *      worker thread's PRIMARY `lua_State` via `request_queue_` +
+ *      `std::future`, drained by `process_pending()`.  This is the
+ *      hub-side path: augmentation hooks (`on_query_metrics`,
+ *      `on_list_roles`, …) need to share state with `on_tick`-cached
+ *      data, which only the primary state has.
+ *
+ * Plain `invoke` / `eval` retain the existing child-state behaviour for
+ * backward compatibility; only `invoke_returning` (added Phase 8c) takes
+ * the single-state queued path.  See HEP §12.4.1 for the full table of
+ * implications and the per-callback-name signature conventions.
  */
 
 #include "lua_state.hpp"

@@ -6,6 +6,61 @@
 
 ## Archive batches
 
+### 2026-05-05 (Phase 8c script-response draft superseded by HEP-0033 §12.2/§12.4.1/§12.5)
+
+`docs/tech_draft/HEP_0033_PHASE_8C_SCRIPT_RESPONSE.md` (dated 2026-05-04,
+"Draft, not yet ratified") proposed a script-mediated request/response
+mechanism for hub augmentation hooks.  During implementation the design
+was revised — the draft's larger abstraction surface (`IConsultationHost`,
+`ConsultationRequest`/`ConsultationReply` structs, `encode_request_id`
+subsystem encoding, park-and-drain reply queues, `api.respond` script
+method) was rejected as over-engineered.  The shipped design (HEP-0033
+§12.2.2) reuses the engine's existing cross-thread machinery with one
+new virtual `invoke_returning(name, args, timeout_ms)` and four
+`HubAPI::augment_*` methods — no new abstraction classes.
+
+Section-by-section absorption:
+
+  - **§1–2** Motivation + architecture overview → **HEP-CORE-0033 §12.2**
+    (Callbacks: design principle + 12.2.1 event observers + 12.2.2
+    response augmentation hooks).  Rewritten to drop the "veto" framing
+    (the user clarified the model is purely additive — bookkeeping
+    always completes; scripts decorate the response).
+  - **§3** Common abstraction (`script_consultation.hpp`,
+    `IConsultationHost`, `ConsultationRequest`, `ConsultationReply`,
+    `encode_request_id`) → **rejected**.  The shipped design uses a
+    `timeout_ms` parameter on `invoke_returning` and the existing
+    engine pending-queue + `std::future` machinery.
+  - **§4–5** AdminService + BrokerService changes (per-method handler
+    map, parked replies, drain in recv loop) → **simplified** to
+    direct `host.hub_api()->augment_<rpc>(params, response)` calls
+    inline in the existing handlers.  AdminService keeps its existing
+    REP-socket synchronous shape; broker-side wiring deferred per
+    HEP-0033 §12.2.2 table (needs `HUB_TARGETED_ACK` wire frame —
+    HEP §13 follow-up).
+  - **§6** HubAPI surface → absorbed into **HEP-CORE-0033 §12.3** with
+    the four `augment_*` methods + `post_event` (the latter from §12.2.3
+    user-posted events) + `augment_timeout_ms` / `set_augment_timeout`
+    runtime knob (HEP §12.2.2 timeout block).
+  - **§7** Script-side examples → absorbed into **HEP-CORE-0033
+    §12.2.2** (callback signatures table) and **README_Deployment.md
+    §4.4** (Hub script guide).
+  - **§8** `send_timeout_heartbeats` socket hardening → **deferred**
+    (separate slice; HEP §13 follow-up).
+  - **§9** Threading model walk → absorbed into **HEP-CORE-0033 §12.4**
+    (worker main-loop drain + augmentation request transport) + new
+    **§12.4.1 Engine-specific threading models** with full Mermaid
+    treatment of PythonEngine vs LuaEngine differences.
+  - **§10** Implementation phase plan → reflected in **HEP-CORE-0033
+    §15 Phase 8c entry**.
+
+Files moved to `archive/transient-2026-05-05/`:
+
+  - `HEP_0033_PHASE_8C_SCRIPT_RESPONSE.md`
+
+The implementation landed in commit `3c65dfa` ("HEP-0033 Phase 8c:
+response augmentation hooks + post_event + shutdown drain").
+
 ### 2026-05-04 (Engine thread model draft superseded by HEP-0011 + HEP-0028)
 
 Static review of the post-Phase-7-closure tree (commit `b4c00c3`)
