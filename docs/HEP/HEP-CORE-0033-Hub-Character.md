@@ -1075,28 +1075,133 @@ The `message` field is for diagnostics only; tooling matches on
 Runs on its own thread with the cross-thread dispatch pattern roles use.
 Engine factory: `scripting::make_engine_from_script_config(cfg.script())`.
 
-### 12.2 Callbacks (all optional; C++ defaults = no-op / accept)
+### 12.2 Callbacks (all optional; default = no-op / unmodified response)
 
-**Lifecycle**: `on_start(api)`, `on_tick(api)`, `on_stop(api)`.
+**Design principle.**  The hub's default protocol is complete on its own.
+Internal bookkeeping (channel maps, role tables, broker counters,
+default response building) always runs to completion on the receiving
+thread (admin/broker) before any script callback fires.  Script
+callbacks are purely additive: they observe events that have already
+happened, or they augment a response that has already been built.
+Scripts cannot veto, reject, or modify the underlying action —
+without any script provided (even with the engine running) the hub
+operates correctly under its default protocol.
 
-**Role events**: `on_role_registered(api, role_info)`,
-`on_role_closed(api, uid, reason)`.
+#### 12.2.1 Event observers (fire-and-forget)
 
-**Channel events**: `on_channel_opened(api, channel_info)`,
-`on_channel_closed(api, name)`.
+Posted from the receiving thread as `IncomingMessage` after bookkeeping
+completes; drained on the worker thread's main loop and dispatched as
+`engine.invoke("on_" + event, details)`.  No reply path; the
+receiving thread never blocks.
 
-**Band events** (HEP-0030): `on_band_joined(api, band, member_uid)`,
-`on_band_left(api, band, member_uid)`.
+- **Lifecycle**: `on_start(api)`, `on_tick(api)`, `on_stop(api)`.
+- **Role events**: `on_role_registered(api, role_info)`,
+  `on_role_closed(api, role_info)`.
+- **Channel events**: `on_channel_opened(api, channel_info)`,
+  `on_channel_closed(api, name)`.
+- **Band events** (HEP-0030): `on_band_joined(api, band, member_uid)`,
+  `on_band_left(api, band, member_uid)`.
+- **Federation events**: `on_peer_connected(api, peer_uid)`,
+  `on_peer_disconnected(api, peer_uid, reason)`.
 
-**Federation events**: `on_peer_connected(api, peer_uid)`,
-`on_peer_disconnected(api, peer_uid, reason)`.
+#### 12.2.2 Response augmentation hooks (sync; mutate prepared response)
 
-**Veto hooks** (sync, bool return, default accept):
-`on_channel_close_request(api, channel) → bool`,
-`on_role_register_request(api, info) → bool`.
+For request/response RPCs the receiving thread:
 
-Script exceptions caught; `stop_on_script_error: true` promotes to fatal (same
-as role side).
+1. Builds the default response from `HubState` / broker state (existing
+   inline path — unchanged).
+2. If a script handler is registered for the method, calls
+   `engine.invoke_returning("on_" + method, {params, response})`.
+   The engine routes the call to the worker thread's main-loop drain
+   (§12.4).  The worker invokes the callback, which mutates `response`
+   in place; the call returns the (possibly mutated) response back to
+   the receiving thread via `std::future`.
+3. Ships the response on the wire.
+
+Without a registered handler step 2 is skipped; the default response
+goes out unchanged.
+
+Augmentation hooks defined in this phase:
+
+| Callback | Trigger | Response shape script may mutate | Status |
+|---|---|---|---|
+| `on_query_metrics(api, params, response)` | admin `query_metrics` RPC | metrics dict | ✅ Phase 8c |
+| `on_list_roles(api, response)` | admin `list_roles` RPC | role list | ✅ Phase 8c |
+| `on_get_channel(api, name, response)` | admin `get_channel` RPC | channel dict / `null` | ✅ Phase 8c |
+| `on_peer_message(api, peer_uid, msg, response)` | broker `HUB_TARGETED_MSG` peer wire | reply payload | ⏸  Deferred — requires `HUB_TARGETED_ACK` wire frame addition (HEP §13).  C++ surface (`HubAPI::augment_peer_message` + `BrokerService::Config::on_peer_message_augment`) ships with Phase 8c so the broker wiring is a one-line follow-up when the wire frame lands. |
+
+The set is open to extension per RPC as needed; each addition is a
+new row here plus a wiring point in `HubAPI::augment_*`.
+
+`on_tick`-cached state is the natural source for augmentation
+callbacks: heavy periodic computation runs on the worker thread on its
+own pace, the augmentation hook does only the cheap merge.  Both
+callbacks fire on the same worker thread → same `lua_State` / same
+Python globals → no synchronization needed.
+
+#### 12.2.3 User-posted events (`api.post_event`)
+
+Scripts may inject their own events into the worker's queue via
+`api.post_event(name, data)` — callable from **any thread**
+(`on_tick`, an event observer, an out-of-band server thread, etc.).
+The worker drains the event in its main loop and dispatches it as
+`engine.invoke("on_app_" + name, data)`.  No reply path; the caller
+returns immediately after enqueue (fire-and-forget, identical
+semantics to broker-posted built-in events).
+
+Naming rules:
+- The `name` argument is the suffix only — `app_` is prepended by
+  the hub.  Calling `api.post_event("my_event", ...)` fires
+  `on_app_my_event(api, data)`.  Reserved namespace prevents
+  collision with built-in event handlers (`on_channel_closed`,
+  `on_role_registered`, …).
+- `name` must satisfy the identifier grammar in Appendix G2.2.0b
+  (alphanumeric + underscore, leading letter/underscore).  Invalid
+  names raise on the call site; the queue is never polluted.
+
+Use cases:
+- Out-of-band server (Flask, etc.) signaling that a request needs
+  W-side handling — see §12.5.3.
+- Internal cross-thread fan-out from a script-spawned worker.
+- Self-scheduling: a callback posts `app_followup` to itself for
+  deferred processing on the next loop iteration.
+
+```mermaid
+sequenceDiagram
+    participant Flask as out-of-band thread<br/>(Flask handler)
+    participant Core as RoleHostCore queue<br/>(thread-safe)
+    participant W as Worker thread
+    participant Script
+
+    Note over Flask: api.post_event("user_request",<br/>{path, payload})
+    Flask->>Core: push IncomingMessage<br/>{event:"app_user_request", details:{...}}
+    Flask->>W: notify_incoming()
+    Note over Flask: returns immediately
+    W->>Core: drain_messages()
+    W->>Script: invoke("on_app_user_request", details)
+    Note over Script: runs on W with full<br/>access to script state<br/>+ HubAPI surface
+    Script-->>W: returns
+```
+
+`post_event` is fire-and-forget. If the caller needs a response
+(e.g. Flask wants to wait for W to finish processing before replying
+to its HTTP client), the script must build that handshake in script
+code — for example, the Flask handler creates a `threading.Event`,
+stashes it in a dict keyed by a request id, posts the event, and
+waits on the `threading.Event`; `on_app_user_request` does its work
+and signals the `threading.Event` to wake Flask.  This kind of
+hand-built handshake is encouraged to live entirely in script code,
+not as a hub primitive — it keeps the engine API surface small and
+keeps the engine re-entry rule (§12.5.2) intact (Flask never calls
+back into the engine; it only waits on a Python primitive).
+
+#### 12.2.4 Error handling
+
+Script exceptions caught; `stop_on_script_error: true` promotes to fatal
+(same as role side).  For augmentation hooks specifically, an
+exception in the callback leaves the prepared default response
+unchanged and the wire reply ships normally; the error is logged and
+counted under `script_errors_`.
 
 ### 12.3 `HubAPI` surface (bound into Python + Lua)
 
@@ -1105,6 +1210,10 @@ Read: `list_channels`, `get_channel`, `list_roles`, `get_role`, `list_bands`,
 
 Control: `close_channel`, `broadcast_channel`, `revoke_role`, `add_known_role`,
 `remove_known_role`, `request_shutdown`.
+
+Events: `post_event(name, data)` — fire-and-forget enqueue of a user
+event onto the worker's queue (§12.2.3); thread-safe, callable from
+any context.
 
 All methods resolve via `HubHost` accessors; scripts never touch
 `BrokerService` directly. Pybind11 bindings live in
@@ -1136,7 +1245,13 @@ while (is_running() && !shutdown_requested()) {
     for (auto &e : events)
         api().dispatch_event(e);  // engine.invoke("on_" + e.event, e.details)
 
-    // 2. Tick gate — uses post-events `now`, NOT cycle_start.
+    // 2. Drain pending augmentation requests queued by admin/broker
+    //    threads via engine.invoke_returning(name, {params, response}).
+    //    Each pending request: invoke callback, set caller's future
+    //    with the (possibly mutated) response.
+    engine().process_pending();
+
+    // 3. Tick gate — uses post-events `now`, NOT cycle_start.
     const auto now = Clock::now();
     if (is_max_rate || (deadline != max && now >= deadline)) {
         api().dispatch_tick();    // engine.invoke("on_tick")
@@ -1144,7 +1259,7 @@ while (is_running() && !shutdown_requested()) {
         deadline = compute_next_deadline(policy, deadline, cycle_start, period_us);
     }
 
-    // 3. Wait until next event or deadline.
+    // 4. Wait until next event, augmentation request, or deadline.
     wait_for_incoming(remain_to_deadline_or_zero);  // CV wait with timeout
 }
 ```
@@ -1152,6 +1267,8 @@ while (is_running() && !shutdown_requested()) {
 **Wakeup sources** for `wait_for_incoming`:
 - `notify_incoming()` from broker thread (an event was enqueued onto
   `RoleHostCore`'s message queue).
+- `notify_incoming()` from admin/broker thread (an augmentation request
+  was enqueued via `engine.invoke_returning`).
 - `notify_incoming()` from `request_shutdown()`.
 - Timeout — `remain_us / 1000 ms` until the deadline.
 
@@ -1190,13 +1307,384 @@ broker thread is processed serially in one wake; the tick gate
 evaluates exactly once per iteration after all events have run.
 
 **No external eval surface.** Hub script callbacks fire only from
-the worker thread's main loop (events + tick).  No admin RPC, no
-network surface, no operator command can inject code into the
-engine — see §17 "No remote code injection" for the policy.  The
-engine's internal `eval` virtual remains a C++ extensibility point
-but has no external trigger; the cross-thread queue / Lua child-
-state machinery is preserved only as an internal invariant against
-future C++ callers that hold non-owner-thread references.
+the worker thread's main loop — events, augmentation drain, and
+tick.  No admin RPC, no network surface, no operator command can
+inject code into the engine — see §17 "No remote code injection"
+for the policy.  The engine's internal `eval` virtual remains a
+C++ extensibility point but has no external trigger.
+
+**Augmentation request transport.**  Admin and broker threads call
+`engine.invoke_returning(name, {params, response}, timeout_ms)`; the
+engine enqueues the request onto its internal pending-queue (Python:
+`request_queue_` + `std::future` — already present; LuaEngine: same
+shape, added by Phase 8c so hub-side single-state semantics hold —
+augmentation hooks share state with `on_tick` / event observers).
+The worker thread drains via `process_pending()` between the event
+dispatch and tick gate (see loop body above).  The receiving thread
+blocks on the future up to `timeout_ms` (default
+`kDefaultAugmentTimeoutHeartbeats * kDefaultHeartbeatIntervalMs`,
+overridable via `api.set_augment_timeout(ms)`); on expiry, status is
+`InvokeStatus::TimedOut` and the receiver ships the default response.
+
+#### 12.4.1 Engine-specific threading models for `invoke` family
+
+The two production engines differ in how they handle non-owner-thread
+calls into `invoke` / `eval` / `invoke_returning`.  This matters when
+designing scripts and reasoning about state visibility, latency, and
+GIL/lock contention.
+
+**PythonEngine — single-state, queue + GIL.**
+
+```mermaid
+sequenceDiagram
+    participant A as Admin/Broker thread
+    participant Q as engine.request_queue_
+    participant W as Worker thread<br/>(holds Python GIL)
+    participant Script
+
+    A->>Q: invoke_returning enqueue
+    A->>W: notify_incoming()
+    A->>A: future.wait_for(timeout_ms)
+    Note over W: process_pending drain<br/>under GIL
+    W->>Script: fn(**kwargs) — primary state
+    Script-->>W: return value
+    W->>Q: future.set_value(resp)
+    Q-->>A: unblocks
+```
+
+- **One** `py::scoped_interpreter`, one `lua_State`-equivalent global
+  state for the whole engine.  All callbacks run on the worker
+  thread; the GIL is held by the worker and only released during
+  `wait_for_incoming`.
+- Non-owner calls to `invoke`, `eval`, or `invoke_returning` queue
+  to `request_queue_` and block on a `std::future`.  Worker drains
+  them in `process_pending_()` after every owner-thread invoke (and
+  in §12.4 step 2 of the main loop).
+- All script state (module globals, `on_tick`-cached caches,
+  user-spawned Flask threads' module references) live in a single
+  Python interpreter — fully consistent.
+- Latency cost: cross-thread call adds one CV wake + one queue +
+  one future round-trip (≈100s of µs idle, ≈ event-loop iteration
+  worst case).
+- **Script signature convention**: the engine unpacks JSON `args`
+  as Python keyword arguments (`fn(**kwargs)`).  The hub-side `api`
+  object is exposed as a **module global** (set by
+  `PythonEngine::build_api_(HubAPI&)` via `setattr(module, "api", …)`),
+  so script callbacks omit `api` from their signature:
+  ```python
+  def on_query_metrics(params, response):
+      response["custom"] = compute()  # api looked up as global
+      return response
+  ```
+  The exception is `on_init` / `on_stop`, which receive `api` as a
+  positional argument (matching the role-side convention) — see
+  `hub_api_python.cpp` header.
+
+**LuaEngine — multi-state for `invoke`, single-state for `invoke_returning`.**
+
+```mermaid
+flowchart TB
+    subgraph LuaEng[LuaEngine]
+        Primary[Primary lua_State<br/>worker thread]
+        ChildA[Child lua_State<br/>thread A]
+        ChildB[Child lua_State<br/>thread B]
+        Pending[(request_queue_<br/>hub-side single-state)]
+    end
+
+    A1[Admin thread] -->|invoke / eval| ChildA
+    A2[Broker thread] -->|invoke / eval| ChildB
+    A3[Admin thread] -->|invoke_returning| Pending
+    Pending -->|process_pending drain| Primary
+    Worker[Worker thread] --> Primary
+```
+
+LuaEngine has two non-owner-thread paths, intentionally divergent
+because role-side and hub-side use cases want different semantics:
+
+- **`invoke(name)` / `invoke(name, args)` / `eval(code)`**: when
+  called from a non-owner thread, LuaEngine creates a *child*
+  `lua_State` (lazy, cached per `std::thread::id`) and runs the
+  script in that isolated state.  This is the role-side hot path
+  — admin RPCs / broker control frames hitting role engines need
+  per-thread state isolation to avoid serializing on the worker.
+  Each child state runs `load_script` independently, so the script
+  body executes there as if the engine were single-threaded but
+  per-thread.
+- **`invoke_returning(name, args, timeout_ms)`**: hub-side
+  augmentation hooks need to share state with `on_tick` / event
+  observers running on the worker.  Child states have isolated
+  globals — they can't see `custom_cache` populated by `on_tick`.
+  So `invoke_returning` ALWAYS queues to the worker thread's
+  primary state (same shape as PythonEngine's
+  `request_queue_`).  Worker drains via `process_pending`.
+- **Script signature convention**: invoke pushes `args` as a single
+  positional Lua table; the script callback signature is one
+  argument:
+  ```lua
+  function on_query_metrics(args)
+      args.response.custom = compute()
+      return args.response
+  end
+  ```
+  The `api` table is exposed as a Lua **global** (set by
+  `LuaEngine::build_api_(HubAPI&)` via `lua_setglobal(L, "api")`),
+  so the callback can call `api.log(...)` / `api.list_roles()` from
+  any context where the global is visible (worker thread sees the
+  primary table; child states get their own copy via the same
+  `build_api_` path during their own `load_script`).
+
+**Consequences for script design.**
+
+| Concern | Python | Lua |
+|---|---|---|
+| Worker-thread state visible to non-owner-thread `invoke`? | Yes (same interpreter, same module globals) | **No** — child state is fully isolated |
+| Worker-thread state visible to `invoke_returning` augmentation hook? | Yes (same interpreter) | Yes (queued to worker thread, runs in primary state) |
+| Out-of-band server (Flask, etc.)? | §12.5 supported pattern: spawn server thread in `on_start`, share state via module globals under GIL | Not supported — `lua_State` is single-thread; child-state path provides isolation, not sharing |
+| Heavy `on_tick` work blocks `invoke_returning`? | Yes (GIL held) | Yes (worker thread is sole drain) |
+| Heavy `on_tick` work blocks `invoke` from a non-owner thread? | Yes (GIL held) | **No** — child state runs independently in the calling thread |
+
+The asymmetry is deliberate: roles and hub have different concurrency
+profiles.  Roles benefit from per-thread isolation (parallel admin
+queries on a producer); hub benefits from single-state coherence
+(consistent view for augmentation hooks reading `on_tick` caches).
+Phase 8c lands the dual-mode by adding a primary-state queue path
+to LuaEngine without disturbing the existing child-state behaviour
+for plain `invoke`.
+
+### 12.5 Out-of-band script-managed services (HTTP / WebSocket / etc.)
+
+A hub script may spawn its own threads inside `on_start` to run
+in-process services — most commonly an HTTP server (Flask, FastAPI,
+aiohttp) for custom REST endpoints, but the same pattern applies to
+any framework that runs under the Python GIL.  This is **not** a hub
+feature; it is a documented and supported usage of the script
+sandbox built on the existing thread-safety guarantees of `HubAPI`.
+
+#### 12.5.1 Why this works without new hub plumbing
+
+The script's threads end up structurally equivalent to the admin /
+broker threads from the hub's point of view: non-W threads that read
+shared script-side state and call into the thread-safe `HubAPI`
+surface.  No new cross-thread invoke path is added, no future/queue
+machinery is involved on the Flask path — the request handler is just
+ordinary Python under the GIL doing dict reads and pybind11-bound
+HubAPI calls.
+
+```mermaid
+flowchart LR
+    subgraph Proc[hub process]
+        W[W thread<br/>on_tick / on_*<br/>writes module globals]
+        Flask[script-spawned thread<br/>e.g. Flask request handler]
+        Globals[(Python module globals<br/>dicts / queues / scalars)]
+        HubAPI[HubAPI<br/>thread-safe by design]
+    end
+    Client[external HTTP client]
+
+    W -->|GIL-protected writes| Globals
+    Flask -->|GIL-protected reads / writes| Globals
+    Flask -->|read accessors,<br/>fire-and-forget controls| HubAPI
+    Client -->|HTTP request| Flask
+    Flask -->|HTTP response| Client
+```
+
+#### 12.5.2 The four-rule design contract
+
+A script enabling out-of-band services accepts these rules:
+
+1. **No engine re-entry from out-of-band threads.**  Out-of-band
+   request handlers must not call any path that re-enters the
+   engine — no `engine.eval` (it has no script-facing binding
+   anyway), no hypothetical `dispatch_to_self`, no recursive
+   `invoke_returning`.  Only `HubAPI` methods and ordinary Python
+   reads/writes on shared state.
+
+2. **W → out-of-band hand-off via atomic rebind.**  When `on_tick`
+   or an event observer publishes new state, build the full new
+   object and rebind the global in one statement.  Do not mutate
+   in-place where an out-of-band reader could see a partial update.
+
+   ```python
+   # GOOD
+   new_cache = build_cache(api)        # complete fresh dict
+   global custom_cache
+   custom_cache = new_cache            # atomic rebind
+
+   # BAD — readers can observe a half-cleared dict
+   custom_cache.clear()
+   for k, v in build_cache(api).items():
+       custom_cache[k] = v
+   ```
+
+3. **Out-of-band → W flow.**  Three patterns, picked by latency
+   requirement and the kind of work needed.
+
+   **3a. Direct broker control** — call `HubAPI` control delegates
+   straight from the out-of-band handler.  Fire-and-forget on the
+   broker queue; the broker's own subsequent state mutation will
+   surface to the script as a normal event observer
+   (`on_channel_closed` etc.).  Lowest latency, no script-side
+   work needed.
+
+   ```python
+   @app.post("/control/close/<name>")
+   def close(name):
+       api.close_channel(name)         # thread-safe, returns immediately
+       return "", 204
+   ```
+
+   **3b. `api.post_event` — script-side W-thread handler** (§12.2.3).
+   Use when the request requires logic that belongs in the script
+   (custom domain rules, access to script-only cached state,
+   computations that should run under W's serialization
+   guarantees).  W picks up the event on the next loop iteration
+   — no tick-interval delay; the loop wakes on the
+   `notify_incoming()` issued by `post_event`.
+
+   ```python
+   # Flask thread
+   @app.post("/process")
+   def process():
+       api.post_event("process_request", {"payload": request.get_json()})
+       return "", 202                   # accepted; processed asynchronously
+
+   # W thread
+   def on_app_process_request(api, data):
+       # runs on W with full script-state access; can call any HubAPI method
+       result = run_domain_logic(data["payload"])
+       global last_result
+       last_result = result             # publish for /result endpoint to read
+   ```
+
+   **3c. `queue.Queue` drained in `on_tick`** — use only when
+   batching is desirable (e.g. coalescing many commands into one
+   tick's worth of work).  Otherwise prefer 3b: lower latency,
+   one callback per event, no batching code in `on_tick`.
+
+   ```python
+   import queue
+   _cmd_q = queue.Queue()
+
+   @app.post("/cmd")
+   def cmd():
+       _cmd_q.put(request.get_json())
+       return "", 204
+
+   def on_tick(api):
+       batch = []
+       while True:
+           try:    batch.append(_cmd_q.get_nowait())
+           except queue.Empty: break
+       if batch:
+           handle_batch(batch, api)
+   ```
+
+4. **Lifecycle: spawn in `on_start`, shut down in `on_stop`.**  The
+   server thread must be joinable before `on_stop` returns; a
+   stale daemon thread that outlives the engine will crash on its
+   next `HubAPI` call.  Production-grade ASGI servers
+   (uvicorn / hypercorn) expose `should_exit` flags; Flask's dev
+   server doesn't, so the recommended production pattern is
+   uvicorn + a `Flask`-compatible ASGI shim, or hypercorn directly.
+
+#### 12.5.3 Anti-patterns — what *not* to do
+
+```python
+# ANTI-PATTERN 1 — re-entering the engine from an out-of-band thread.
+# Even if invoke_returning routes to W, this couples HTTP latency to
+# W's main-loop drain cadence, risks deadlock under HTTP-loopback
+# callback chains, and breaks symmetry with Lua (no equivalent).
+@app.get("/decorated")
+def decorated():
+    return jsonify(api.dispatch_to_self("compute_decoration", {}))   # DON'T
+
+# RIGHT WAY — pre-compute on W, read atomically from Flask.
+def on_tick(api):
+    global decoration_cache
+    decoration_cache = compute_decoration(api)
+
+@app.get("/decorated")
+def decorated():
+    return jsonify(decoration_cache)
+```
+
+```python
+# ANTI-PATTERN 2 — mutating shared state in place from W while an
+# out-of-band reader can see partial state.
+def on_tick(api):
+    custom_cache.clear()                                # BAD
+    for k, v in build_cache(api).items():
+        custom_cache[k] = v
+
+@app.get("/health")
+def health():
+    return jsonify(custom_cache)        # may observe an empty dict mid-update
+
+# RIGHT WAY — build new object, single atomic rebind.
+def on_tick(api):
+    global custom_cache
+    custom_cache = build_cache(api)
+```
+
+```python
+# ANTI-PATTERN 3 — long-blocking call inside an event observer or
+# augmentation hook.  Holds the GIL on W; every Flask request stalls
+# behind it.
+def on_query_metrics(api, params, response):
+    response["heavy"] = pure_python_aggregate(huge_dataset)   # BAD — seconds-long
+
+# RIGHT WAY — heavy work runs on `on_tick` cadence (or a script-spawned
+# worker thread that releases GIL via numpy/IO), augmentation hook
+# does only the cheap merge.
+def on_tick(api):
+    global heavy_cache
+    heavy_cache = pure_python_aggregate(huge_dataset)
+
+def on_query_metrics(api, params, response):
+    response["heavy"] = heavy_cache
+```
+
+```python
+# ANTI-PATTERN 4 — leaking the server thread past on_stop.
+def on_start(api):
+    threading.Thread(target=app.run, daemon=True).start()   # works in dev,
+                                                            # leaks in prod
+def on_stop(api):
+    pass                                                    # BAD
+
+# RIGHT WAY — shutdown signal + join.
+import uvicorn
+
+_server = None
+def on_start(api):
+    global _server
+    config = uvicorn.Config(app, host="0.0.0.0", port=8080)
+    _server = uvicorn.Server(config)
+    threading.Thread(target=_server.run, daemon=False).start()
+
+def on_stop(api):
+    _server.should_exit = True
+    # join in the launcher thread — omitted for brevity
+```
+
+#### 12.5.4 Lua parity
+
+Lua (LuaJIT) does not ship with a thread-safe in-process HTTP
+server, and `lua_State` is not multi-thread-safe.  Out-of-band
+services in Lua scripts are not supported by this section; if a
+Lua-side hub needs to expose HTTP, the recommended path is the
+hub-managed `on_web_request` augmentation hook (deferred Phase 8d
+work — symmetric to §12.2.2 but with an HTTP wire surface in front,
+hub owns the listener).
+
+#### 12.5.5 Security model unchanged
+
+Out-of-band services live entirely inside the script that was loaded
+from disk at hub startup (§17.1).  No code is accepted over the wire
+from any direction.  Operator-provided routes, handler logic, and
+auth schemes are all part of the on-disk script and subject to the
+same review process as any other hub-side configuration artefact.
+The hub itself does not know or care that the script chose to
+expose Flask.
 
 ## 13. Protocol — additions / unchanged
 
@@ -1486,6 +1974,19 @@ can land in parallel once P1 lands.
 - **Phase 8** — Rich `HubAPI` callback surface beyond log/uid/metrics
   (§12.3): channel/role/band/peer mutators, scoped event-callback
   registration, etc.  L3 tests via each engine.
+  - **8a** read accessors (✅), **8b** control delegates (✅).
+  - **8c** response augmentation hooks (§12.2.2).  Adds
+    `ScriptEngine::invoke_returning(name, args) → InvokeResponse` —
+    one new pure virtual; PythonEngine extends existing
+    `request_queue_` + future drain, LuaEngine adds the analogous
+    pending-queue path so hub-side single-state semantics hold.
+    `HubAPI::augment_query_metrics / augment_list_roles /
+    augment_get_channel / augment_peer_message` wired by AdminService
+    + a new `BrokerService::Config::on_peer_message_augment`
+    callback (same `std::function` shape as the existing
+    `on_hub_message`, `on_hub_connected` Config fields).  No
+    veto semantics — bookkeeping always completes before the
+    script is consulted.
 - **Phase 9** — `plh_hub` binary; new build target.  (Legacy
   `src/hubshell.cpp` + `src/hub_python/*` already deleted in the post-G2
   cleanup pass — Phase 9 is now greenfield.)  L4 test infrastructure:

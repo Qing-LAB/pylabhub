@@ -402,6 +402,63 @@ std::size_t ThreadManager::drain()
     return detached;
 }
 
+bool ThreadManager::join_named(std::string_view name)
+{
+    if (!pImpl) return false;
+
+    // Extract the named slot under the lock so the rest of the
+    // operation runs without blocking concurrent spawn / drain calls.
+    // Same per-slot bounded-join semantics as drain(); difference is
+    // we only touch one slot and we DON'T flip `closing` (other
+    // threads can still be spawned afterwards).
+    ThreadSlot slot;
+    bool found = false;
+    {
+        std::lock_guard<std::mutex> lock(pImpl->mu);
+        if (pImpl->closing.load(std::memory_order_acquire))
+            return false;  // drain() already ran — no slots to find
+        for (auto it = pImpl->slots.begin(); it != pImpl->slots.end(); ++it)
+        {
+            if (it->name == name)
+            {
+                slot = std::move(*it);
+                pImpl->slots.erase(it);
+                found = true;
+                break;
+            }
+        }
+    }
+    if (!found) return false;
+
+    if (!slot.thread.joinable())
+        return true;  // already joined/detached — idempotent
+
+    const auto deadline = std::chrono::steady_clock::now() + slot.join_timeout;
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        if (slot.done->load(std::memory_order_acquire))
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+
+    if (slot.done->load(std::memory_order_acquire))
+    {
+        slot.thread.join();
+        LOGGER_DEBUG("[ThreadManager:{}] thread '{}' joined cleanly via join_named",
+                     pImpl->composed_identity, slot.name);
+        return true;
+    }
+
+    LOGGER_ERROR(
+        "[ThreadManager:{}] join_named: thread '{}' did NOT exit within {}ms — "
+        "detaching.  Caller depending on this thread's exit may observe "
+        "stale state.",
+        pImpl->composed_identity, slot.name, slot.join_timeout.count());
+    slot.thread.detach();
+    g_process_detached_count.fetch_add(1, std::memory_order_acq_rel);
+    return false;
+}
+
 // ============================================================================
 // Accessors
 // ============================================================================

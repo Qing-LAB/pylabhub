@@ -854,6 +854,20 @@ InvokeResponse NativeEngine::eval(const std::string & /*code*/)
     return {InvokeStatus::NotFound, {}};
 }
 
+InvokeResponse NativeEngine::invoke_returning(const std::string & /*name*/,
+                                               const nlohmann::json & /*args*/,
+                                               int64_t /*timeout_ms*/)
+{
+    // Native engines (HEP-CORE-0028 compiled plugins) don't expose a
+    // generic named-callback return-value capture surface — their
+    // script-side contract is the typed cycle ops (invoke_produce /
+    // _consume / _process / _on_inbox).  Returning NotFound makes
+    // HubAPI::augment_* a no-op for native-engine hubs (no script-
+    // side augmentation), which is the right behaviour given the
+    // absent surface.
+    return {InvokeStatus::NotFound, {}};
+}
+
 // ============================================================================
 // Error state / threading
 // ============================================================================

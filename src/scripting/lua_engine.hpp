@@ -17,8 +17,11 @@
 
 #include <lua.hpp>
 
+#include <deque>
 #include <filesystem>
+#include <future>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 
@@ -90,6 +93,10 @@ class LuaEngine : public ScriptEngine
     bool invoke(const std::string &name) override;
     bool invoke(const std::string &name, const nlohmann::json &args) override;
     InvokeResponse eval(const std::string &code) override;
+    InvokeResponse invoke_returning(const std::string &name,
+                                    const nlohmann::json &args,
+                                    int64_t timeout_ms = -1) override;
+    void process_pending() override;
 
     // ── Error state ──────────────────────────────────────────────────────
 
@@ -152,6 +159,32 @@ class LuaEngine : public ScriptEngine
 
     LuaEngine *get_or_create_thread_state_();
 
+    // ── Owner-thread pending queue (HEP-CORE-0033 §12.4 augmentation) ────
+    //
+    // `invoke_returning` from a non-owner thread enqueues here and blocks
+    // on a future; the owner thread drains via `process_pending()` (called
+    // from HubScriptRunner's main loop).  Hub-side single-state semantics:
+    // the callback runs in the primary lua_State so on_tick-cached state
+    // is visible to augmentation hooks.
+    //
+    // Plain `invoke` / `eval` keep their existing child-state path
+    // (`get_or_create_thread_state_()`) for role-side use cases that
+    // benefit from per-thread isolation; only `invoke_returning` routes
+    // through this queue.
+    struct PendingRequest
+    {
+        std::string                  name;
+        nlohmann::json               args;
+        std::promise<InvokeResponse> promise;
+    };
+    std::deque<PendingRequest>  request_queue_;
+    mutable std::mutex          queue_mu_;
+
+    /// Owner-thread direct path for `invoke_returning` — captures the
+    /// top-of-stack return value into the response.
+    InvokeResponse execute_direct_returning_(const std::string &name,
+                                             const nlohmann::json &args);
+
     // ── Internal helpers ─────────────────────────────────────────────────
 
     /// Build FFI cdef string from hub::SchemaSpec. Returns empty string on error.
@@ -200,6 +233,11 @@ class LuaEngine : public ScriptEngine
     static int lua_api_hub_close_channel(lua_State *L);
     static int lua_api_hub_broadcast_channel(lua_State *L);
     static int lua_api_hub_request_shutdown(lua_State *L);
+    // HEP-CORE-0033 §12.2.3 — user-posted events.
+    static int lua_api_hub_post_event(lua_State *L);
+    // HEP-CORE-0033 §12.2.2 — augmentation timeout knob.
+    static int lua_api_hub_augment_timeout_ms(lua_State *L);
+    static int lua_api_hub_set_augment_timeout(lua_State *L);
     static int lua_api_set_critical_error(lua_State *L);
     static int lua_api_stop_reason(lua_State *L);
     static int lua_api_script_error_count(lua_State *L);

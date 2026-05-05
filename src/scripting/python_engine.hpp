@@ -122,6 +122,10 @@ class PythonEngine : public ScriptEngine
     bool invoke(const std::string &name) override;
     bool invoke(const std::string &name, const nlohmann::json &args) override;
     InvokeResponse eval(const std::string &code) override;
+    InvokeResponse invoke_returning(const std::string &name,
+                                    const nlohmann::json &args,
+                                    int64_t timeout_ms = -1) override;
+    void process_pending() override;
     size_t pending_script_engine_request_count() const noexcept override;
 
     // ── Error state ────────────────────────────────────────────────────────
@@ -196,11 +200,22 @@ class PythonEngine : public ScriptEngine
     bool stop_on_script_error_{false};
 
     // ── Generic invoke queue (§4/§6 of engine_thread_model.md) ────────────
+    /// Discriminator for request_queue_ entries.  Mirrors the three
+    /// public entry points (`invoke`, `eval`, `invoke_returning`).  The
+    /// "Returning" variant captures the script function's return value
+    /// into InvokeResponse::value (HEP-CORE-0033 §12.2.2 augmentation
+    /// path) — the other two ignore it.
+    enum class RequestKind : uint8_t
+    {
+        Invoke,            ///< plain `invoke()` — bool result, value ignored
+        InvokeReturning,   ///< `invoke_returning()` — return value captured
+        Eval,              ///< `eval(code)` — value is `eval_direct_` result
+    };
     struct PendingRequest
     {
         std::string                      name;
         nlohmann::json                   args;
-        bool                             is_eval{false};
+        RequestKind                      kind{RequestKind::Invoke};
         std::promise<InvokeResponse>     promise;
     };
     std::deque<PendingRequest>  request_queue_;
@@ -209,6 +224,11 @@ class PythonEngine : public ScriptEngine
 
     InvokeResponse execute_direct_(const std::string &name);
     InvokeResponse execute_direct_(const std::string &name, const nlohmann::json &args);
+    /// `invoke_returning` direct path — same call shape as
+    /// `execute_direct_(name, args)` but captures the function's return
+    /// value into the response.
+    InvokeResponse execute_direct_returning_(const std::string &name,
+                                             const nlohmann::json &args);
     InvokeResponse eval_direct_(const std::string &code);
     void process_pending_();
 

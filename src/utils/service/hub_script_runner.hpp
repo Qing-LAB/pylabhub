@@ -98,6 +98,16 @@ public:
     HubScriptRunner(const HubScriptRunner &)            = delete;
     HubScriptRunner &operator=(const HubScriptRunner &) = delete;
 
+    /// HEP-CORE-0033 §12.2.2 — public accessor needed by HubHost::hub_api()
+    /// so AdminService / BrokerService can reach the augment_* hooks
+    /// without becoming friends of EngineHost.  Returns nullptr until
+    /// the worker thread's startup_() lazy-constructs ApiT (signaled
+    /// to the main thread via ready_promise — same gate startup() uses).
+    [[nodiscard]] pylabhub::hub_host::HubAPI *hub_api_ptr() noexcept
+    {
+        return EngineHost::has_api() ? &EngineHost::api() : nullptr;
+    }
+
 protected:
     /// EngineHost worker hook.  Subscribes to all 11 HubState events
     /// at startup, then runs the event-poll-or-tick loop until

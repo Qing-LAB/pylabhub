@@ -241,6 +241,89 @@ public:
     /// `host.shutdown()` is invoked next.  Idempotent.
     void request_shutdown() noexcept;
 
+    // ── Augmentation timeout (HEP-CORE-0033 §12.2.2) ──────────────────────
+
+    /// Get the current cross-thread wait bound (in ms) used by
+    /// `augment_*` when delegating to `engine.invoke_returning`.  Read
+    /// from the receiving (admin / broker) thread; updates from the
+    /// worker thread (typically inside `on_start`) are visible here
+    /// via the underlying atomic.
+    /// Convention: -1 = infinite, 0 = non-blocking, >0 = N ms.
+    [[nodiscard]] int64_t augment_timeout_ms() const noexcept;
+
+    /// Set the augment timeout.  Intended for scripts to call from
+    /// `on_start(api)` (or any later callback) to override the
+    /// hub-default timeout per-instance.  Lives in HubAPI rather than
+    /// HubConfig because the value is a script-runtime knob, not an
+    /// operator configuration — operator default comes from
+    /// `kDefaultAugmentTimeoutHeartbeats * kDefaultHeartbeatIntervalMs`
+    /// at HubAPI construction.
+    /// Convention: -1 = infinite, 0 = non-blocking, >0 = N ms.
+    void set_augment_timeout(int64_t ms) noexcept;
+
+    // ── Events (HEP-CORE-0033 §12.2.3 user-posted events) ─────────────────
+
+    /// Post a user-defined event onto the worker's main-loop queue.
+    /// Fires `on_app_<name>(api, data)` on the worker thread.
+    ///
+    /// Thread-safe; callable from any thread (script callbacks running
+    /// on the worker, out-of-band server threads spawned per §12.5,
+    /// admin/broker threads — though hub C++ subsystems should normally
+    /// post built-in events directly via `RoleHostCore::enqueue_message`).
+    /// Fire-and-forget — the caller returns immediately after enqueue;
+    /// no handshake.
+    ///
+    /// @param name  Event suffix.  Must be a valid identifier per
+    ///              Appendix G2.2.0b grammar (alphanumeric + underscore,
+    ///              leading letter/underscore).  The hub prepends `app_`,
+    ///              so `post_event("foo", ...)` fires
+    ///              `on_app_foo(api, data)`.  Reserved namespace prevents
+    ///              collision with built-in event handlers.
+    /// @param data  Optional JSON payload delivered as the callback's
+    ///              `data` argument.  Default = empty object.
+    /// @throws std::invalid_argument if `name` is not a valid identifier.
+    void post_event(const std::string &name,
+                    const nlohmann::json &data = nlohmann::json::object());
+
+    // ── Response augmentation (HEP-CORE-0033 §12.2.2) ─────────────────────
+    //
+    // Each method is called by AdminService / BrokerService AFTER they
+    // have built the default response on their own thread.  If the
+    // script defines `on_<rpc>`, the method delegates to
+    // `engine.invoke_returning("on_<rpc>", {...})` which routes to the
+    // worker thread; the script callback receives params + the prepared
+    // response, mutates it (or builds a new one), and returns the
+    // result.  The caller ships whatever comes back.
+    //
+    // No-op (response unchanged) when:
+    //   - `set_engine` hasn't been called yet (pre-runner-setup)
+    //   - `engine.has_callback("on_<rpc>")` returns false
+    //   - the script callback raises an exception (logged + counted as
+    //     a script error per §12.2.4; default response shipped)
+    //   - the script callback returns null/None (interpreted as
+    //     "keep the default response")
+
+    /// Augment the response for the `query_metrics` admin RPC.
+    /// Script callback: `on_query_metrics(api, params, response)`.
+    void augment_query_metrics(const nlohmann::json &params,
+                               nlohmann::json &response);
+
+    /// Augment the response for the `list_roles` admin RPC.
+    /// Script callback: `on_list_roles(api, response)`.
+    void augment_list_roles(nlohmann::json &response);
+
+    /// Augment the response for the `get_channel` admin RPC.
+    /// Script callback: `on_get_channel(api, name, response)`.
+    void augment_get_channel(const std::string &name,
+                             nlohmann::json &response);
+
+    /// Augment the broker-side reply for a `HUB_TARGETED_MSG` peer wire
+    /// frame.  Script callback: `on_peer_message(api, peer_uid, msg, response)`.
+    /// Wired into BrokerService via `BrokerService::Config::on_peer_message_augment`.
+    void augment_peer_message(const std::string &peer_uid,
+                              const nlohmann::json &msg,
+                              nlohmann::json &response);
+
     // ── Host wiring (called once by HubScriptRunner after construction) ───
 
     /// Bind to the HubHost backref.  Required before any state-reading

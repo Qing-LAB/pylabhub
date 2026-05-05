@@ -76,6 +76,15 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
     bool invoke(const std::string &name) override;
     bool invoke(const std::string &name, const nlohmann::json &args) override;
     InvokeResponse eval(const std::string &code) override;
+    /// HEP-CORE-0033 §12.2.2 augmentation hook entry point.  Native
+    /// engines have no script-side return-value capture surface today
+    /// (compiled C plugins use the typed cycle ops instead) — this
+    /// returns NotFound so HubAPI::augment_* leaves the default
+    /// response unchanged.  `process_pending` inherits the base
+    /// no-op default — there's no cross-thread pending queue here.
+    InvokeResponse invoke_returning(const std::string &name,
+                                    const nlohmann::json &args,
+                                    int64_t timeout_ms = -1) override;
 
     // ── Error state ──────────────────────────────────────────────────────
 

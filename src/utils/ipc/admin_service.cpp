@@ -16,6 +16,7 @@
 
 #include "utils/broker_service.hpp"
 #include "utils/config/hub_admin_config.hpp"
+#include "utils/hub_api.hpp"               // augment_* hooks (HEP-0033 §12.2.2)
 #include "utils/hub_host.hpp"
 #include "utils/hub_metrics_filter.hpp"
 #include "utils/hub_state.hpp"
@@ -387,7 +388,13 @@ json AdminService::Impl::handle_get_channel(const json &request)
     if (!ch)
         return make_error("not_found",
                           std::string("channel '") + name + "' not registered");
-    return make_ok(pylabhub::hub::channel_to_json(*ch));
+    json result = pylabhub::hub::channel_to_json(*ch);
+    // HEP-CORE-0033 §12.2.2 — script-side response augmentation hook.
+    // No-op when no script is loaded or the script doesn't define
+    // `on_get_channel`; otherwise the script may mutate `result`.
+    if (auto *api = host.hub_api())
+        api->augment_get_channel(name, result);
+    return make_ok(std::move(result));
 }
 
 json AdminService::Impl::handle_list_roles(const json & /*request*/)
@@ -396,6 +403,8 @@ json AdminService::Impl::handle_list_roles(const json & /*request*/)
     json roles = json::object();
     for (const auto &[uid, r] : snap.roles)
         roles[uid] = pylabhub::hub::role_to_json(r);
+    if (auto *api = host.hub_api())
+        api->augment_list_roles(roles);
     return make_ok(std::move(roles));
 }
 
@@ -487,7 +496,19 @@ json AdminService::Impl::handle_query_metrics(const json &request)
             }
         }
     }
-    return make_ok(host.broker().query_metrics(filter));
+    json result = host.broker().query_metrics(filter);
+    // HEP-CORE-0033 §12.2.2 — script-side augmentation: pass the
+    // request's params (or empty object if absent) so the script can
+    // see the same filter view AdminService applied, then mutate the
+    // metrics dict (e.g. add custom aggregates computed in on_tick).
+    if (auto *api = host.hub_api())
+    {
+        json params_for_hook = (pit != request.end() && pit->is_object())
+                                   ? *pit
+                                   : json::object();
+        api->augment_query_metrics(params_for_hook, result);
+    }
+    return make_ok(std::move(result));
 }
 
 // ============================================================================

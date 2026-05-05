@@ -125,6 +125,10 @@ struct StubEngine : public ScriptEngine
     bool           invoke(const std::string &, const nlohmann::json &) override { return true; }
     InvokeResponse eval(const std::string &) override
     { return {InvokeStatus::NotFound, {}}; }
+    InvokeResponse invoke_returning(const std::string &,
+                                    const nlohmann::json &,
+                                    int64_t) override
+    { return {InvokeStatus::NotFound, {}}; }
     void invoke_on_init() override {}
     void invoke_on_stop() override {}
     InvokeResult invoke_produce(InvokeTx, std::vector<IncomingMessage> &) override

@@ -595,7 +595,7 @@ bool PythonEngine::invoke(const std::string &name)
         std::lock_guard lk(queue_mu_);
         if (!is_accepting())
             return false;
-        request_queue_.push_back({name, {}, false, std::move(promise)});
+        request_queue_.push_back({name, {}, RequestKind::Invoke, std::move(promise)});
     }
     return future.get().status == InvokeStatus::Ok;
 }
@@ -614,9 +614,59 @@ bool PythonEngine::invoke(const std::string &name, const nlohmann::json &args)
         std::lock_guard lk(queue_mu_);
         if (!is_accepting())
             return false;
-        request_queue_.push_back({name, args, false, std::move(promise)});
+        request_queue_.push_back({name, args, RequestKind::Invoke, std::move(promise)});
     }
     return future.get().status == InvokeStatus::Ok;
+}
+
+InvokeResponse PythonEngine::invoke_returning(const std::string &name,
+                                               const nlohmann::json &args,
+                                               int64_t timeout_ms)
+{
+    if (!is_accepting())
+        return {InvokeStatus::EngineShutdown, {}};
+
+    if (std::this_thread::get_id() == owner_thread_id_)
+        return execute_direct_returning_(name, args);
+
+    std::promise<InvokeResponse> promise;
+    auto future = promise.get_future();
+    {
+        std::lock_guard lk(queue_mu_);
+        if (!is_accepting())
+            return {InvokeStatus::EngineShutdown, {}};
+        request_queue_.push_back({name, args, RequestKind::InvokeReturning,
+                                  std::move(promise)});
+    }
+    // Wake the worker thread so it drains process_pending() promptly,
+    // matching the §12.4 augmentation request transport contract.
+    if (hub_api_ && hub_api_->core())
+        hub_api_->core()->notify_incoming();
+    else if (api_ && api_->core())
+        api_->core()->notify_incoming();
+
+    // Project timeout convention: -1=infinite, 0=non-blocking, >0=wait N ms.
+    if (timeout_ms < 0)
+        return future.get();
+
+    if (future.wait_for(std::chrono::milliseconds(timeout_ms))
+        == std::future_status::ready)
+    {
+        return future.get();
+    }
+    // Worker hasn't drained in time.  The future stays alive as a
+    // detached `std::future` (the promise is owned by the queued
+    // PendingRequest); when the worker eventually drains, it will set
+    // the value on a future no one is reading — harmless.  Return
+    // TimedOut so HubAPI::run_augment ships the default response.
+    return {InvokeStatus::TimedOut, {}};
+}
+
+void PythonEngine::process_pending()
+{
+    if (std::this_thread::get_id() != owner_thread_id_)
+        return;
+    process_pending_();
 }
 
 size_t PythonEngine::pending_script_engine_request_count() const noexcept
@@ -644,7 +694,7 @@ InvokeResponse PythonEngine::eval(const std::string &code)
         std::lock_guard lk(queue_mu_);
         if (!is_accepting())
             return {InvokeStatus::EngineShutdown, {}};
-        request_queue_.push_back({code, {}, true, std::move(promise)});
+        request_queue_.push_back({code, {}, RequestKind::Eval, std::move(promise)});
     }
     return future.get();
 }
@@ -727,6 +777,47 @@ InvokeResponse PythonEngine::execute_direct_(const std::string &name,
     return resp;
 }
 
+InvokeResponse PythonEngine::execute_direct_returning_(const std::string &name,
+                                                       const nlohmann::json &args)
+{
+    // HEP-CORE-0033 §12.2.2 augmentation hook entry — same call shape as
+    // execute_direct_(name, args) but the script's return value is
+    // converted back to JSON and returned in resp.value (instead of
+    // being discarded).  Used by HubAPI::augment_* paths after the
+    // hub has built the default response on the receiving thread.
+    if (name.empty())
+        return {InvokeStatus::NotFound, {}};
+
+    py::gil_scoped_acquire gil;
+    py::object fn = py::getattr(module_, name.c_str(), py::none());
+    if (fn.is_none())
+    {
+        process_pending_();
+        return {InvokeStatus::NotFound, {}};
+    }
+
+    InvokeResponse resp;
+    try
+    {
+        py::dict kwargs;
+        for (auto it = args.begin(); it != args.end(); ++it)
+            kwargs[py::str(it.key())] = json_to_py(it.value());
+        py::object ret = fn(**kwargs);
+        // py_to_json handles py::none() → nlohmann::json(nullptr) so a
+        // missing-return script callback yields {Ok, null} rather than
+        // an error — the augment caller then keeps the default response.
+        resp = {InvokeStatus::Ok, py_to_json(ret)};
+    }
+    catch (const py::error_already_set &e)
+    {
+        const std::string tag = "invoke_returning('" + name + "', args)";
+        on_python_error_(tag.c_str(), e);
+        resp = {InvokeStatus::ScriptError, {}};
+    }
+    process_pending_();
+    return resp;
+}
+
 InvokeResponse PythonEngine::eval_direct_(const std::string &code)
 {
     if (code.empty())
@@ -768,18 +859,24 @@ void PythonEngine::process_pending_()
             req.promise.set_value({InvokeStatus::EngineShutdown, {}});
             continue;
         }
-        if (req.is_eval)
+        switch (req.kind)
         {
+        case RequestKind::Eval:
             req.promise.set_value(eval_direct_(req.name));
-        }
-        else
-        {
+            break;
+        case RequestKind::InvokeReturning:
+            req.promise.set_value(
+                execute_direct_returning_(req.name.c_str(), req.args));
+            break;
+        case RequestKind::Invoke:
+        default:
             InvokeResponse resp;
             if (req.args.is_null() || req.args.empty())
                 resp = execute_direct_(req.name.c_str());
             else
                 resp = execute_direct_(req.name.c_str(), req.args);
             req.promise.set_value(std::move(resp));
+            break;
         }
     }
 }

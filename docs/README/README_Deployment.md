@@ -251,19 +251,130 @@ The hub listens at `hub.broker_endpoint`. Producers, consumers, and processors c
 this address. In dev mode, a fresh ephemeral CurveZMQ key pair is generated each run; roles
 must either omit `broker_pubkey` or re-read `hub.pubkey` after each start.
 
-### 4.4 Hub Python script (optional)
+### 4.4 Hub script (optional) — Python or Lua
 
-Place `<hub-dir>/script/python/__init__.py`. Callbacks:
+Hub-side scripts live at `<hub-dir>/script/python/__init__.py` (Python)
+or `<hub-dir>/script/lua/init.lua` (Lua), selected by
+`hub.json:script.type`.  Authoritative spec is HEP-CORE-0033 §12;
+this is the operator-facing summary.
+
+#### Callback signature conventions (engine-specific)
+
+The two engines pass arguments differently:
+
+- **Python** unpacks JSON arguments as **keyword arguments**.  The
+  `api` object is set as a **module global** (not passed to most
+  callbacks).  Script callbacks omit `api` from their signature:
+
+  ```python
+  def on_query_metrics(params, response):
+      response["custom"] = compute()  # `api` resolved as module global
+      return response
+  ```
+
+  Exception: `on_init(api)` and `on_stop(api)` receive `api` as a
+  positional argument (matches the role-side convention).
+
+- **Lua** passes JSON arguments as **one positional table arg**.
+  The `api` table is set as a **Lua global**:
+
+  ```lua
+  function on_query_metrics(args)
+      args.response.custom = compute()
+      return args.response
+  end
+  ```
+
+#### Available callbacks
 
 ```python
-def on_start(api):              pass  # hub started
-def on_channel_registered(api, channel_name, producer_uid): pass
-def on_channel_deregistered(api, channel_name): pass
-def on_hub_connected(api, peer_hub_name):    pass  # federation
-def on_hub_disconnected(api, peer_hub_name): pass
-def on_hub_message(api, peer_hub_name, topic, data): pass
-def on_stop(api):               pass
+# ── Lifecycle ───────────────────────────────────────────────────────
+def on_start(api):  pass        # api is positional here (per role-side convention)
+def on_tick():      pass        # periodic, paced by hub.json:script.timing.period_ms
+def on_stop(api):   pass
+
+# ── Event observers (post-bookkeeping; HEP §12.2.1) ─────────────────
+def on_channel_opened(channel_info):  pass
+def on_channel_closed(name):          pass
+def on_role_registered(role_info):    pass
+def on_role_closed(role_info):        pass
+def on_band_joined(band, member_uid): pass
+def on_band_left(band, member_uid):   pass
+def on_peer_connected(peer_uid):      pass
+def on_peer_disconnected(peer_uid, reason): pass
+
+# ── Response augmentation hooks (HEP §12.2.2) ────────────────────────
+# Hub builds the default response, then calls these (if defined) on the
+# worker thread; you mutate the response (or build a new one) and return
+# it.  Returning None / nil keeps the default.
+def on_query_metrics(params, response):    return response
+def on_list_roles(response):               return response
+def on_get_channel(name, response):        return response
+def on_peer_message(peer_uid, msg, response): return response  # deferred — needs HUB_TARGETED_ACK
+
+# ── User-posted events (HEP §12.2.3) ─────────────────────────────────
+# Triggered by api.post_event("foo", {...}) from any thread (script
+# callback, out-of-band Flask handler, etc.).  Fires on_app_<name>.
+def on_app_my_event(data): pass
 ```
+
+#### `HubAPI` surface (HEP §12.3)
+
+```
+api.log(level, msg)                # "debug" / "info" / "warn" / "error"
+api.uid()                          # hub instance uid
+api.name()                         # hub display name
+api.config()                       # full hub.json snapshot
+api.metrics()                      # broker metrics snapshot
+api.list_channels() / .get_channel(name)
+api.list_roles() / .get_role(uid)
+api.list_bands() / .get_band(name)
+api.list_peers() / .get_peer(hub_uid)
+api.query_metrics(categories=[])
+
+api.close_channel(name)            # fire-and-forget through broker
+api.broadcast_channel(channel, message, data="")
+api.request_shutdown()
+
+api.post_event(name, data={})      # enqueue on_app_<name> on worker
+api.augment_timeout_ms()           # current cross-thread wait bound
+api.set_augment_timeout(ms)        # override; -1=infinite, 0=non-blocking, >0=N ms
+```
+
+#### Threading model — important differences between Python and Lua
+
+See HEP-CORE-0033 §12.4.1 for the full treatment.  Quick summary:
+
+- **PythonEngine** is single-state, single-interpreter.  All callbacks
+  run on the worker thread under one shared GIL; cross-thread
+  `api.*` calls and out-of-band server threads (Flask, FastAPI, etc.)
+  share the same module globals.  This is the supported path for
+  custom HTTP endpoints (HEP §12.5).
+- **LuaEngine** is dual-mode: `invoke` from a non-owner thread runs
+  in a **child `lua_State`** (isolated globals — used for role-side
+  parallel admin queries), but `invoke_returning` (augmentation
+  hooks) always queues to the worker thread's primary state so
+  `on_tick`-cached state is visible to augmentation hooks.  Lua
+  does not support out-of-band servers (no thread-safe HTTP server
+  ecosystem in LuaJIT).
+
+#### Augmentation timeout
+
+The admin/broker thread that calls into an augmentation hook blocks
+for up to `api.augment_timeout_ms()` milliseconds before giving up
+and shipping the default response.  Default is
+`kDefaultAugmentTimeoutHeartbeats` × `kDefaultHeartbeatIntervalMs`
+(currently 30s).  Override per-instance in `on_start`:
+
+```python
+def on_start(api):
+    api.set_augment_timeout(-1)       # infinite — no admin-side timeout
+    # or api.set_augment_timeout(5000) — 5 second cap
+```
+
+`-1` is the project-wide infinite-wait sentinel (matches
+`SharedSpinLock::try_lock_for(-1)`); `0` means "non-blocking" (the
+hook is effectively disabled — callbacks never get a chance to run).
 
 ---
 

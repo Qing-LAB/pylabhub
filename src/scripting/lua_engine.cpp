@@ -450,6 +450,11 @@ bool LuaEngine::build_api_(::pylabhub::hub_host::HubAPI &api)
     push_closure("close_channel",     lua_api_hub_close_channel);
     push_closure("broadcast_channel", lua_api_hub_broadcast_channel);
     push_closure("request_shutdown",  lua_api_hub_request_shutdown);
+    // Events (HEP-CORE-0033 §12.2.3 user-posted events).
+    push_closure("post_event",        lua_api_hub_post_event);
+    // Augmentation timeout knob (HEP-CORE-0033 §12.2.2).
+    push_closure("augment_timeout_ms",   lua_api_hub_augment_timeout_ms);
+    push_closure("set_augment_timeout",  lua_api_hub_set_augment_timeout);
 
     // Expose the api table as a Lua global so scripts can call
     // `api:log(...)` from event/tick callbacks.  We dup the table
@@ -486,6 +491,15 @@ void LuaEngine::finalize_engine_()
         return;
 
     // accepting_ already set false by base class finalize().
+
+    // Cancel any pending cross-thread invoke_returning requests so blocked
+    // callers unblock with EngineShutdown.  Same shape PythonEngine uses.
+    {
+        std::lock_guard lk(queue_mu_);
+        for (auto &req : request_queue_)
+            req.promise.set_value({InvokeStatus::EngineShutdown, {}});
+        request_queue_.clear();
+    }
 
     // Destroy all child thread states.
     {
@@ -685,6 +699,123 @@ InvokeResponse LuaEngine::eval(const std::string &code)
         lua_settop(L, 0);
     }
     return {InvokeStatus::Ok, std::move(val)};
+}
+
+// ============================================================================
+// invoke_returning + process_pending — HEP-CORE-0033 §12.2.2 augmentation
+// ============================================================================
+//
+// Cross-thread `invoke_returning` calls are queued onto `request_queue_`
+// and drained by the owner thread via `process_pending()` (called from
+// HubScriptRunner's main loop between event drain and tick gate).  Hub-
+// side single-state: the callback runs in the primary lua_State so
+// on_tick-cached state is visible to the augmentation hook.
+//
+// Plain `invoke()` keeps the multi-state child-state path because role-
+// side use cases (where `supports_multi_state() == true` is exercised)
+// benefit from per-thread isolation.  Only `invoke_returning` is hub-
+// specific and forces single-state.
+
+InvokeResponse LuaEngine::execute_direct_returning_(const std::string &name,
+                                                    const nlohmann::json &args)
+{
+    if (name.empty())
+        return {InvokeStatus::NotFound, {}};
+
+    auto *L = state_.raw();
+    lua_getglobal(L, name.c_str());
+    if (!lua_isfunction(L, -1))
+    {
+        lua_pop(L, 1);
+        return {InvokeStatus::NotFound, {}};
+    }
+
+    json_to_lua(L, args);  // single positional table arg, mirrors `invoke(name, args)`
+
+    if (lua_pcall(L, 1, 1, 0) != 0)
+    {
+        const char *err = lua_tostring(L, -1);
+        LOGGER_ERROR("[{}] invoke_returning('{}', args): {}",
+                     log_tag_, name, err ? err : "unknown error");
+        lua_pop(L, 1);
+        on_pcall_error_(name);
+        return {InvokeStatus::ScriptError, {}};
+    }
+
+    // Capture top-of-stack return value (the script's return), convert
+    // to JSON.  Nil → JSON null → augment caller treats as "keep the
+    // default response".
+    nlohmann::json ret;
+    if (lua_gettop(L) > 0)
+    {
+        ret = lua_to_json(L, lua_gettop(L));
+        lua_pop(L, 1);
+    }
+    return {InvokeStatus::Ok, std::move(ret)};
+}
+
+InvokeResponse LuaEngine::invoke_returning(const std::string &name,
+                                            const nlohmann::json &args,
+                                            int64_t timeout_ms)
+{
+    if (name.empty() || !is_accepting())
+        return {InvokeStatus::EngineShutdown, {}};
+
+    if (std::this_thread::get_id() == owner_thread_id_)
+        return execute_direct_returning_(name, args);
+
+    std::promise<InvokeResponse> promise;
+    auto future = promise.get_future();
+    {
+        std::lock_guard lk(queue_mu_);
+        if (!is_accepting())
+            return {InvokeStatus::EngineShutdown, {}};
+        request_queue_.push_back({name, args, std::move(promise)});
+    }
+    // Wake the worker thread so it drains process_pending() promptly.
+    RoleHostCore *core = api_     ? api_->core()
+                       : hub_api_ ? hub_api_->core()
+                                  : nullptr;
+    if (core)
+        core->notify_incoming();
+
+    // Project timeout convention: -1=infinite, 0=non-blocking, >0=wait N ms.
+    if (timeout_ms < 0)
+        return future.get();
+
+    if (future.wait_for(std::chrono::milliseconds(timeout_ms))
+        == std::future_status::ready)
+    {
+        return future.get();
+    }
+    // Same timeout semantics as PythonEngine — see notes there.
+    return {InvokeStatus::TimedOut, {}};
+}
+
+void LuaEngine::process_pending()
+{
+    if (std::this_thread::get_id() != owner_thread_id_)
+        return;
+    if (!is_accepting())
+        return;
+
+    std::deque<PendingRequest> local;
+    {
+        std::lock_guard lk(queue_mu_);
+        if (request_queue_.empty())
+            return;
+        local.swap(request_queue_);
+    }
+
+    for (auto &req : local)
+    {
+        if (!is_accepting())
+        {
+            req.promise.set_value({InvokeStatus::EngineShutdown, {}});
+            continue;
+        }
+        req.promise.set_value(execute_direct_returning_(req.name, req.args));
+    }
 }
 
 // ============================================================================
@@ -1666,6 +1797,62 @@ int LuaEngine::lua_api_hub_request_shutdown(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     self->hub_api_->request_shutdown();
+    return 0;
+}
+
+int LuaEngine::lua_api_hub_augment_timeout_ms(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    lua_pushinteger(L,
+        static_cast<lua_Integer>(self->hub_api_->augment_timeout_ms()));
+    return 1;
+}
+
+int LuaEngine::lua_api_hub_set_augment_timeout(lua_State *L)
+{
+    // api.set_augment_timeout(ms)
+    //   ms : integer  — -1=infinite, 0=non-blocking, >0=N ms
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const auto ms = static_cast<int64_t>(luaL_checkinteger(L, 1));
+    self->hub_api_->set_augment_timeout(ms);
+    return 0;
+}
+
+int LuaEngine::lua_api_hub_post_event(lua_State *L)
+{
+    // api.post_event(name [, data])
+    //   name : string  — event suffix (becomes on_app_<name>)
+    //   data : table   — optional payload (default = empty table)
+    //
+    // HEP-CORE-0033 §12.2.3: thread-safe enqueue onto the worker's
+    // queue.  HubAPI::post_event validates `name` and may throw
+    // std::invalid_argument; we surface that as a Lua error via
+    // luaL_error so scripts get a stack trace pointing at the bad call.
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *name = luaL_checkstring(L, 1);
+
+    nlohmann::json data;
+    if (lua_gettop(L) >= 2 && !lua_isnil(L, 2))
+    {
+        if (!lua_istable(L, 2))
+            return luaL_error(L,
+                "api.post_event: data must be a table or nil (got %s)",
+                lua_typename(L, lua_type(L, 2)));
+        data = lua_to_json(L, 2);
+    }
+    else
+    {
+        data = nlohmann::json::object();
+    }
+
+    try
+    {
+        self->hub_api_->post_event(name, data);
+    }
+    catch (const std::invalid_argument &e)
+    {
+        return luaL_error(L, "api.post_event: %s", e.what());
+    }
     return 0;
 }
 

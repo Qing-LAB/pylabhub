@@ -321,6 +321,35 @@ void HubScriptRunner::worker_main_()
         for (auto &e : events)
             api().dispatch_event(e);
 
+        // Drain pending cross-thread invoke_returning requests
+        // (HEP-CORE-0033 §12.4 augmentation request transport).  Admin
+        // and broker threads call `engine.invoke_returning(name, args)`
+        // and block on a future; the engine queues the request onto its
+        // pending list and signals `notify_incoming()`.  We pick up the
+        // request here, the engine runs the callback on this worker
+        // thread (sole owner of script state), and sets the caller's
+        // future with the (possibly mutated) response.
+        //
+        // Engine-specific behaviour of this call:
+        //   - PythonEngine: typically a no-op here.  PythonEngine's
+        //     `execute_direct_` already drains pending at the END of
+        //     every `dispatch_event` invoke (see python_engine.cpp:690),
+        //     so by this point the queue is empty.  The call is
+        //     idempotent — one mutex acquire + empty-queue check.
+        //   - LuaEngine: REQUIRED.  Lua's `invoke()` does NOT auto-drain
+        //     (no equivalent to PythonEngine's tail-drain pattern), so
+        //     augmentation requests posted by admin/broker threads
+        //     between worker iterations would otherwise sit unserviced
+        //     until the next event arrived to drag them through.
+        //   - NativeEngine: no-op (default base implementation).
+        //
+        // The call is here to give a single, engine-agnostic invariant
+        // ("between events and tick the pending queue is empty") rather
+        // than relying on per-engine implicit drain points.  The
+        // marginal cost on Python is one mutex lock — acceptable for
+        // the cross-engine uniformity it buys.
+        engine().process_pending();
+
         // Tick gate (post-events).  Use `now()` rather than `cycle_start`
         // so a slow event handler that pushed past the deadline still
         // fires `on_tick` this iteration ("beyond timeout but called",

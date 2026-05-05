@@ -126,6 +126,29 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
     ///   than treating a `void` return as evidence of clean teardown.
     std::size_t drain();
 
+    /// Join (and remove) a single managed thread by name.  The caller
+    /// is responsible for signalling the thread to exit (e.g., flipping
+    /// its stop-requested atomic) BEFORE invoking this — ThreadManager
+    /// only joins, it does not signal.  Same per-slot bounded-join
+    /// semantics as @ref drain (poll the thread's done flag in 10 ms
+    /// granularity up to its `SpawnOptions::join_timeout`; on expiry,
+    /// detach with an ERROR log).  Idempotent: a second call with the
+    /// same name is a no-op (slot already removed).  After successful
+    /// join the named slot is removed from the tracked list, so a
+    /// subsequent @ref drain skips it.
+    ///
+    /// Use case: dependency-ordered shutdown where one subsystem must
+    /// drain before another's lifetime ends.  HEP-CORE-0033 §4.2 step 2
+    /// uses this to drain admin (so in-flight RPCs that called into
+    /// `HubAPI::augment_*` complete) BEFORE the script runner destroys
+    /// HubAPI.
+    ///
+    /// @param name Thread identifier passed at @ref spawn time.
+    /// @return true if a slot named @p name was found and joined cleanly;
+    ///   false if no such slot existed, drain() has already run, or the
+    ///   slot was detached after timeout.
+    [[nodiscard]] bool join_named(std::string_view name);
+
     /// Count of threads that were detached during the most recent drain()
     /// call (0 if no drain yet or last call was fully clean).
     /// Intended for test assertions and process-exit policy:

@@ -224,5 +224,45 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_hub, m) // NOLINT
 
         .def("request_shutdown", &HubAPI::request_shutdown,
              "Request hub shutdown.  Sets the host's shutdown flag and "
-             "wakes any caller of host.run_main_loop().  Idempotent.");
+             "wakes any caller of host.run_main_loop().  Idempotent.")
+
+        // ── Augmentation timeout (HEP-CORE-0033 §12.2.2) ──────────────────
+        .def("augment_timeout_ms", &HubAPI::augment_timeout_ms,
+             "Current cross-thread wait bound (in ms) used by the "
+             "AdminService / BrokerService threads when delegating to "
+             "augmentation hooks (on_query_metrics, on_list_roles, "
+             "on_get_channel, on_peer_message).  Default is "
+             "kDefaultAugmentTimeoutHeartbeats * "
+             "kDefaultHeartbeatIntervalMs.\n"
+             "Convention: -1 = infinite, 0 = non-blocking, >0 = N ms.")
+        .def("set_augment_timeout", &HubAPI::set_augment_timeout,
+             py::arg("ms"),
+             "Override the augmentation cross-thread wait bound.  "
+             "Intended to be called from on_start(api) (or any later "
+             "callback) when the script knows its callbacks may take "
+             "longer than the hub default.  Pass -1 for infinite "
+             "(maximum flexibility).  Survives until the next call.")
+
+        // ── Events (HEP-CORE-0033 §12.2.3 user-posted events) ─────────────
+        .def("post_event",
+             [](HubAPI &self, const std::string &name, py::object data) {
+                 // None / no-arg → empty object; otherwise convert via
+                 // pylabhub::scripting::detail::py_to_json (single source
+                 // of truth for py↔json on this side, used by every
+                 // other surface in this module).
+                 nlohmann::json j;
+                 if (data.is_none())
+                     j = nlohmann::json::object();
+                 else
+                     j = pylabhub::scripting::detail::py_to_json(data);
+                 self.post_event(name, j);
+             },
+             py::arg("name"),
+             py::arg("data") = py::none(),
+             "Post a user-defined event onto the worker's main-loop "
+             "queue.  Fires `on_app_<name>(api, data)` on the worker "
+             "thread.  Thread-safe; callable from any thread including "
+             "out-of-band server threads (HEP-CORE-0033 §12.5).  Fire-"
+             "and-forget — returns immediately after enqueue.\n"
+             "Raises ValueError if name isn't a valid C identifier.");
 }
