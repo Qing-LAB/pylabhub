@@ -1,13 +1,15 @@
 /**
  * @file hub_api_python.cpp
- * @brief PYBIND11_EMBEDDED_MODULE(pylabhub_hub) — Python surface for HubAPI.
- *        Phase 7 D4.1 (HEP-CORE-0033 §12.3, mirrors lua_engine D3.2).
+ * @brief PYBIND11_EMBEDDED_MODULE(pylabhub_hub) — Python surface for HubAPI
+ *        (HEP-CORE-0033 §12.3).
  *
  * The embedded module is registered at static-init time when the
  * binary that links pylabhub-scripting starts up — `import pylabhub_hub`
- * inside Python then resolves to this binding.  The module exposes
- * `pylabhub_hub.HubAPI` with the Phase 7 minimum surface (log / uid /
- * metrics).
+ * inside Python then resolves to this binding.  Exposes
+ * `pylabhub_hub.HubAPI` with the lifecycle (log / uid / metrics),
+ * read accessor (name / config / list_* / get_* / query_metrics),
+ * and control-delegate (close_channel / broadcast_channel /
+ * request_shutdown) surface.
  *
  * Hub scripts access the bound HubAPI via two paths, both wired by
  * `PythonEngine::build_api_(HubAPI&)` (analogue of build_api_(RoleAPIBase&)):
@@ -62,12 +64,12 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_hub, m) // NOLINT
     using pylabhub::hub_host::HubAPI;
 
     py::class_<HubAPI>(m, "HubAPI",
-        "Hub-side script API surface (HEP-CORE-0033 §12.3 Phase 7 minimum).\n"
+        "Hub-side script API surface (HEP-CORE-0033 §12.3).\n"
         "Exposed as a module global `api` to scripts after\n"
         "PythonEngine::build_api_(HubAPI&) wires it.  Scripts written\n"
         "for the role side use the same idiom (api.log / api.uid).")
 
-        // ── Phase 7 minimum API ───────────────────────────────────────────
+        // ── Lifecycle / log / uid / metrics ───────────────────────────────
         .def("log", &HubAPI::log, py::arg("level"), py::arg("msg"),
              "Emit a log line through the process logger with a "
              "[hub/<uid>] prefix.  Level tokens: 'debug', 'info', "
@@ -95,10 +97,10 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_hub, m) // NOLINT
              "roles / bands / peers aggregates plus broker counters.\n"
              "Empty dict when called before HubHost::startup() or after "
              "shutdown() — same shape AdminService's query_metrics RPC "
-             "uses (single source of truth via Phase 6.2b's "
+             "uses (single source of truth via the shared "
              "hub_state_json serializers).")
 
-        // ── Phase 8a — Read accessors (HEP-CORE-0033 §12.3) ───────────────
+        // ── Read accessors (HEP-CORE-0033 §12.3 read block) ───────────────
         //
         // Each method delegates straight to the C++ HubAPI accessor and
         // converts via the shared json_to_py walker.  The lambda wrappers
@@ -119,7 +121,8 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_hub, m) // NOLINT
              },
              "Full hub config snapshot — equivalent to the contents of "
              "hub.json post-default-merge.  Read-only; mutations go "
-             "through curated admin RPCs / Phase 8b control delegates.")
+             "through curated admin RPCs and the control delegates "
+             "below.")
 
         .def("list_channels",
              [](const HubAPI &self) -> py::list {
@@ -148,11 +151,11 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_hub, m) // NOLINT
              "List of all roles (producers / consumers / processors).")
 
         .def("get_role",
-             [](const HubAPI &self, const std::string &uid) -> py::object {
+             [](const HubAPI &self, const std::string &role_uid) -> py::object {
                  return pylabhub::scripting::detail::json_to_py(
-                            self.get_role(uid));
+                            self.get_role(role_uid));
              },
-             py::arg("uid"),
+             py::arg("role_uid"),
              "Single role lookup by uid.  Returns the role dict or "
              "None.")
 
@@ -201,7 +204,7 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_hub, m) // NOLINT
              "(e.g. ['channels', 'counters']); empty/absent = all "
              "categories.  Same JSON shape metrics() produces.")
 
-        // ── Control delegates (HEP-CORE-0033 §12.3) ───────────────────────
+        // ── Control delegates (HEP-CORE-0033 §12.3 control block) ─────────
         //
         // Fire-and-forget mutators delegating to host.broker().request_*
         // / host.request_shutdown().  None return a value — the broker

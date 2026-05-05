@@ -44,14 +44,14 @@ class LuaEngine : public ScriptEngine
                      const std::string &entry_point,
                      const std::string &required_callback) override;
     bool build_api_(RoleAPIBase &api) override;
-    /// Hub-side build_api override (HEP-CORE-0033 Phase 7 D3.2).
-    /// Creates a Lua `api` table with the Phase 7 minimum surface
-    /// (log / metrics / uid), exposes it as a global so scripts can
-    /// reference `api:log(...)` from any callback, and pre-extracts
-    /// `on_init` / `on_stop` callback refs so invoke_on_init/stop work.
-    /// Hub scripts use the generic `invoke(name, args)` for event
-    /// callbacks (on_channel_opened etc.) — those don't need pre-
-    /// extraction because invoke uses lua_getglobal on each call.
+    /// Hub-side build_api override (HEP-CORE-0033 §12.3).  Creates a
+    /// Lua `api` table populated with closures for the hub script
+    /// surface (lifecycle log/uid/metrics + read accessors + control
+    /// delegates), exposes it as a global so scripts can reference
+    /// `api.log(...)` from any callback.  Hub scripts use the generic
+    /// `invoke(name, args)` for event callbacks (`on_channel_opened`
+    /// etc.) — those don't need pre-extraction because invoke uses
+    /// lua_getglobal on each call.
     bool build_api_(::pylabhub::hub_host::HubAPI &api) override;
     void finalize_engine_() override;
 
@@ -177,14 +177,14 @@ class LuaEngine : public ScriptEngine
     static int lua_api_log(lua_State *L);
     static int lua_api_stop(lua_State *L);
 
-    // ── Hub-side closures (HEP-CORE-0033 Phase 7 D3.2) ────────────────
-    // Hub script API surface — minimal Phase 7 (log/uid/metrics).
+    // ── Hub-side closures (HEP-CORE-0033 §12.3) ───────────────────────
     // Each closure captures `this` (LuaEngine*) as upvalue(1) and
     // dispatches to the bound `hub_api_` (set by build_api(HubAPI&)).
+    // Lifecycle.
     static int lua_api_hub_log(lua_State *L);
     static int lua_api_hub_uid(lua_State *L);
     static int lua_api_hub_metrics(lua_State *L);
-    // Phase 8a — read accessors (HEP-CORE-0033 §12.3 read block)
+    // Read accessors (§12.3 read block).
     static int lua_api_hub_name(lua_State *L);
     static int lua_api_hub_config(lua_State *L);
     static int lua_api_hub_list_channels(lua_State *L);
@@ -196,7 +196,7 @@ class LuaEngine : public ScriptEngine
     static int lua_api_hub_list_peers(lua_State *L);
     static int lua_api_hub_get_peer(lua_State *L);
     static int lua_api_hub_query_metrics(lua_State *L);
-    // Phase 8b — control delegates (HEP-CORE-0033 §12.3 control block)
+    // Control delegates (§12.3 control block).
     static int lua_api_hub_close_channel(lua_State *L);
     static int lua_api_hub_broadcast_channel(lua_State *L);
     static int lua_api_hub_request_shutdown(lua_State *L);
