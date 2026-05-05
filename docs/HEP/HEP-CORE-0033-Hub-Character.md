@@ -82,19 +82,6 @@ Single class owning the hub's runtime state and exposing read/write access to
 > "LifecycleGuard module ordering" it means the surrounding modules.
 > The two are distinct and the doc keeps them visibly separate.
 
-> **Phasing note (added 2026-04-25).** The `HubHost` class is **not built
-> in the early phases.**  When `plh_hub_main.cpp` first lands (§15
-> Phase 5), it owns `BrokerService` directly — there is no second
-> mutation client to justify a curated wrapper at that point, and
-> a single-subsystem HubHost would be a wrapper-without-purpose
-> (CLAUDE.md "no half-finished implementations").  The class is
-> introduced at §15 Phase 6 alongside `AdminService`, when two
-> mutation clients (admin RPC + script bindings) make a single
-> curated surface load-bearing — centralized auth-context wrapping,
-> audit logging, and encapsulation of broker-internal request queues.
-> Until Phase 6, the §4 design below is normative for the eventual
-> shape but not implemented.
-
 ### 4.0 Component architecture
 
 ```mermaid
@@ -217,9 +204,9 @@ constructing a new `HubHost`.
    subsystem**.  Rationale: vault unlock is a config-time concern
    (interactive password prompt, env-var fallback) and the resulting
    keypair is part of HubConfig once unlocked.  Subsystem-level
-   HubVault wiring is required only when admin token validation
-   (Phase 6.2) and key rotation (HEP-CORE-0035) come online; until
-   then HubHost reads the unlocked keypair from `cfg.auth()`.
+   HubVault wiring is required only for admin token validation and
+   key rotation (HEP-CORE-0035); until those land, HubHost reads
+   the unlocked keypair from `cfg.auth()`.
 3. **Construct HubHost.**  `HubHost host(std::move(cfg))` — no
    threads, no sockets yet.  Allocates `Impl` with the value-owned
    `HubState`.
@@ -239,10 +226,10 @@ constructing a new `HubHost`.
    fires `on_ready`, enters the poll loop.
 8. **Wait on ready_future** with a 5-second deadline.  Timeout or
    exception from the future = startup failure (rollback above).
-9. *(Phase 6.2)* **Construct AdminService** + spawn admin thread via
-   the same ThreadManager.
-10. *(Phase 7)* **Construct ScriptEngine + HubScriptRunner**, spawn
-    script thread.
+9. **Construct AdminService** + spawn admin thread via the same
+   ThreadManager (skipped if `cfg.admin().enabled == false`).
+10. **Construct ScriptEngine + HubScriptRunner**, spawn script thread
+    (skipped if no engine was injected at HubHost construction).
 11. **Phase FSM commit.**  The CAS at step 0 already moved
     `phase = Running`.  Steps 1-10 ran under that phase; on success
     no further write is needed.  HubHost is now serving — `is_running()`
@@ -263,21 +250,31 @@ only after all spawned threads have exited.
 
 1. **Wake `run_main_loop()`** by flipping `shutdown_flag_` and
    notifying the condition variable.
-2. *(Phase 7)* **Stop ScriptEngine** — `script.stop()`.  Allows
-   in-flight callbacks to complete.
-3. *(Phase 6.2)* **Stop AdminService** — `admin.stop()`.  Closes the
-   REP socket; in-flight RPCs that have already entered a broker
-   handler complete; new RPCs are rejected.
+2. **Drain AdminService** — `admin.stop()` (atomic flag flip)
+   followed by `thread_mgr.join_named("admin")` (synchronous
+   bounded join).  This pair is the **synchronous "stop accepting
+   + drain in-flight"** step for admin.  Once `join_named` returns,
+   the admin thread is no longer alive; any RPC that reached into
+   `HubAPI::augment_*` has either completed or been cleaned up via
+   the engine's pending-future cancellation.  REQUIRED before step 3
+   destroys HubAPI — see §4.2.1 for the rationale.
+3. **Stop ScriptEngine + destroy HubAPI** — `runner->shutdown_()`.
+   Drains pending events, runs `on_stop` (broker still alive for
+   `api.broadcast_channel`), finalizes the engine (cancels any
+   pending `invoke_returning` futures with
+   `InvokeStatus::EngineShutdown` — empty in normal operation
+   because step 2 already drained admin), destroys the HubAPI
+   instance.
 4. **Stop BrokerService** — `broker.stop()`.  Flips the broker's
    internal stop atomic, sends an inproc PAIR wake-up, broker's
    poll loop exits, broker drains outbound NOTIFY queue one final
    time then returns from `run()`.
-5. **Drain ThreadManager** — `thread_mgr.drain()`.  Joins all spawned
-   threads in **reverse spawn order** (LIFO): script first, admin
-   second, broker last.  Per-thread bounded join timeout
-   (`kMidTimeoutMs` = 5 s).  Any thread that fails to exit within
-   its timeout is detached (logged); ThreadManager returns the
-   detached count.
+5. **Drain ThreadManager** — `thread_mgr.drain()`.  Joins remaining
+   spawned threads in **reverse spawn order** (LIFO): broker last
+   (admin already removed by step 2's `join_named`).  Per-thread
+   bounded join timeout (`kMidTimeoutMs` = 5 s).  Any thread that
+   fails to exit within its timeout is detached (logged);
+   ThreadManager returns the detached count.
 6. **Phase FSM commit.**  The CAS at step 0 already moved
    `phase = ShutDown`.  Steps 1-5 ran under that terminal phase;
    `is_running()` is now `false` and any further `startup()` will
@@ -300,6 +297,51 @@ the synchronous wind-down.
 breaks `run_main_loop()`'s wait and stops the broker poll.  The
 `Running → ShutDown` transition happens in `shutdown()` proper,
 where the synchronous join is performed under the same CAS guard.
+
+#### 4.2.1 Rationale — admin drain ordering
+
+The §12.2.2 augmentation hooks invoked by AdminService handlers
+make admin in-flight RPCs reach into the script-side HubAPI
+mid-call.  If the runner were torn down first (which destroys
+HubAPI as part of `EngineHost::shutdown_`), an admin RPC parked
+between `recv()`'ing the request and finishing the augment hook
+would deref a destroyed HubAPI → undefined behaviour.
+
+The fix in step 2 above follows the universal subsystem-shutdown
+pattern (**stop accepting → drain in-flight → tear down**) at finer
+granularity:
+
+- `admin.stop()` is the "stop accepting" half — non-blocking flag
+  flip; the admin recv loop polls it on the next iteration.
+- `thread_mgr.join_named("admin")` is the "drain in-flight" half —
+  bounded synchronous join; any in-flight handler completes before
+  this returns.
+
+Two designs were considered and **rejected**:
+
+- *(b) `shared_ptr<HubAPI>` with weak refs in callbacks.*  Refcount
+  ownership would let teardown happen in any order ("HubAPI lives
+  until the last admin caller drops its weak ref"), but it masks
+  the dependency in the type system instead of expressing it in the
+  shutdown ordering.  Lifetime-by-ordering is the C++ idiom that
+  scales; pessimistic refcounting is the language fallback when
+  ordering is too costly to express.  Here ordering is cheap (one
+  bounded join), so it wins.
+- *(c.alt) AdminService owning its own thread.*  Would let
+  `AdminService::stop()` block-and-join internally.  Rejected:
+  ThreadManager is the single source of truth for thread lifecycle
+  in this codebase; introducing a parallel thread-owner would
+  fragment the model and require AdminService to replicate
+  bounded-join + detach-on-timeout semantics that ThreadManager
+  already provides.  The alternative — `ThreadManager::join_named`
+  (HEP-0033 §4.2 step 2 dependency) — keeps thread lifecycle in one
+  place and exposes a precise "drain just this thread" primitive.
+
+The same pattern will extend to the broker side when
+`HUB_TARGETED_ACK` lands and `BrokerService::Config::on_peer_message_augment`
+becomes load-bearing — broker will gain a `stop_inbound + join_named`
+step BEFORE step 3, while keeping its outbound queue alive for
+`on_stop` broadcasts.
 
 ### 4.3 Phase FSM (start/stop run state)
 
@@ -488,8 +530,9 @@ asymmetric sides.
 
   "broker": {
     // Heartbeat-multiplier role-liveness timeouts — HEP-CORE-0023 §2.5.
-    // Field-for-field parity with `BrokerService::Config`; Phase 9 wiring
-    // is a literal copy.  `heartbeat_interval_ms` is the **maximum tolerated
+    // Field-for-field parity with `BrokerService::Config`; the wiring
+    // from `HubBrokerConfig` to `BrokerService::Config` is a literal
+    // copy.  `heartbeat_interval_ms` is the **maximum tolerated
     // silence** the hub will accept; roles may run faster (HEP-0023 §2.5.1
     // role-side preferred cadence vs. hub authority).  REG_ACK / CONSUMER_REG_ACK
     // surface these four multiplier fields to the registering role.
@@ -505,7 +548,7 @@ asymmetric sides.
   },
   // NOTE: `broker.known_roles[]` and `broker.federation_trust_mode` are
   // deferred to HEP-CORE-0035 (Hub-Role Authentication & Federation
-  // Trust). They are NOT parsed in Phase 1; the placeholder
+  // Trust).  They are NOT parsed; the placeholder
   // `ConnectionPolicy` machinery in `BrokerService::Config` is unaffected
   // by config (still settable directly on the service Config struct,
   // exercised only by `test_datahub_channel_access_policy.cpp`).
@@ -548,8 +591,9 @@ asymmetric sides.
   `ready_miss_heartbeats`, `pending_miss_heartbeats`, `grace_heartbeats`,
   plus three optional explicit overrides (`ready_timeout_ms` /
   `pending_timeout_ms` / `grace_ms`).  Field-for-field parity with
-  `BrokerService::Config`'s heartbeat block — Phase 9 wiring is a
-  literal copy, no translation layer.  REG_ACK / CONSUMER_REG_ACK
+  `BrokerService::Config`'s heartbeat block — the `HubBrokerConfig` →
+  `BrokerService::Config` wiring is a literal copy, no translation
+  layer.  REG_ACK / CONSUMER_REG_ACK
   surface the four multiplier fields to the registering role for the
   cadence-negotiation contract in HEP-0023 §2.5.1.  Auth/access fields
   (`known_roles[]`, `federation_trust_mode`) deferred to **HEP-CORE-0035**;
@@ -559,10 +603,10 @@ asymmetric sides.
 
 Reused from role-side: `auth_config.hpp`, `script_config.hpp`, `logging_config.hpp`.
 
-**Rename completed (2026-04-29, Phase 1)**: the role-facing
-`src/include/utils/config/hub_config.hpp` (for `in_hub_dir`/`out_hub_dir`
-references) was renamed to `hub_ref_config.hpp`, freeing the `HubConfig` name
-for the hub-side composite config here. Class `HubConfig` →
+**Rename note**: the role-facing `src/include/utils/config/hub_config.hpp`
+(for `in_hub_dir`/`out_hub_dir` references) was renamed to
+`hub_ref_config.hpp`, freeing the `HubConfig` name for the hub-side
+composite config here.  Class `HubConfig` →
 `HubRefConfig`; function `parse_hub_config` → `parse_hub_ref_config`.
 
 ### 6.5 Vault + keygen (three-mode semantics)
@@ -1094,15 +1138,33 @@ completes; drained on the worker thread's main loop and dispatched as
 `engine.invoke("on_" + event, details)`.  No reply path; the
 receiving thread never blocks.
 
-- **Lifecycle**: `on_start(api)`, `on_tick(api)`, `on_stop(api)`.
-- **Role events**: `on_role_registered(api, role_info)`,
-  `on_role_closed(api, role_info)`.
-- **Channel events**: `on_channel_opened(api, channel_info)`,
-  `on_channel_closed(api, name)`.
-- **Band events** (HEP-0030): `on_band_joined(api, band, member_uid)`,
-  `on_band_left(api, band, member_uid)`.
-- **Federation events**: `on_peer_connected(api, peer_uid)`,
-  `on_peer_disconnected(api, peer_uid, reason)`.
+The signatures below are conceptual — they list the data each event
+carries.  Per §12.4.1 the engines pass it differently:
+
+- **Python**: kwargs unpack (`fn(**details)`).  `api` is a module
+  global (NOT a positional arg) for these callbacks.  Script
+  signature is the keys verbatim, e.g.
+  `def on_channel_closed(name): ...`.
+- **Lua**: one positional table arg.  `api` is a Lua global.
+  Script signature `function on_channel_closed(args) ... end` and
+  the data is reachable as `args.name`.
+- **Special-cased lifecycle pair**: `on_init(api)` and `on_stop(api)`
+  receive `api` as a positional argument (matches the role-side
+  convention via `engine.invoke_on_init` / `_on_stop`).  `on_tick`
+  is dispatched via `engine.invoke("on_tick")` with no args, so its
+  Python signature is `def on_tick():` (api as module global).
+
+Conceptual signatures (data contract — see above for actual call shape):
+
+- **Lifecycle**: `on_start(api)`, `on_tick()`, `on_stop(api)`.
+- **Role events**: `on_role_registered(role_info)`,
+  `on_role_closed(role_info)`.
+- **Channel events**: `on_channel_opened(channel_info)`,
+  `on_channel_closed(name)`.
+- **Band events** (HEP-0030): `on_band_joined(band, member_uid)`,
+  `on_band_left(band, member_uid)`.
+- **Federation events**: `on_peer_connected(peer_uid)`,
+  `on_peer_disconnected(peer_uid, reason)`.
 
 #### 12.2.2 Response augmentation hooks (sync; mutate prepared response)
 
@@ -1121,17 +1183,54 @@ For request/response RPCs the receiving thread:
 Without a registered handler step 2 is skipped; the default response
 goes out unchanged.
 
-Augmentation hooks defined in this phase:
+Augmentation hooks defined in this phase.  The "callback args" column
+lists the JSON keys the engine passes; per §12.4.1 Python unpacks
+these as kwargs (so the script signature is the keys verbatim, no
+positional `api` — it's a module global), Lua receives them as one
+positional table.
 
-| Callback | Trigger | Response shape script may mutate | Status |
-|---|---|---|---|
-| `on_query_metrics(api, params, response)` | admin `query_metrics` RPC | metrics dict | ✅ Phase 8c |
-| `on_list_roles(api, response)` | admin `list_roles` RPC | role list | ✅ Phase 8c |
-| `on_get_channel(api, name, response)` | admin `get_channel` RPC | channel dict / `null` | ✅ Phase 8c |
-| `on_peer_message(api, peer_uid, msg, response)` | broker `HUB_TARGETED_MSG` peer wire | reply payload | ⏸  Deferred — requires `HUB_TARGETED_ACK` wire frame addition (HEP §13).  C++ surface (`HubAPI::augment_peer_message` + `BrokerService::Config::on_peer_message_augment`) ships with Phase 8c so the broker wiring is a one-line follow-up when the wire frame lands. |
+| Callback name | Trigger | Callback args (JSON keys) | Mutable response shape | Status |
+|---|---|---|---|---|
+| `on_query_metrics` | admin `query_metrics` RPC | `params`, `response` | metrics dict | ✅ wired |
+| `on_list_roles` | admin `list_roles` RPC | `response` | role list | ✅ wired |
+| `on_get_channel` | admin `get_channel` RPC | `name`, `response` | channel dict / `null` | ✅ wired |
+| `on_peer_message` | broker `HUB_TARGETED_MSG` peer wire | `peer_uid`, `msg`, `response` | reply payload | ⏸  Deferred — requires `HUB_TARGETED_ACK` wire frame addition (§13).  C++ surface (`HubAPI::augment_peer_message` + `BrokerService::Config::on_peer_message_augment`) is in place; the broker-side wiring is a one-line follow-up when the wire frame lands. |
 
 The set is open to extension per RPC as needed; each addition is a
 new row here plus a wiring point in `HubAPI::augment_*`.
+
+**Mutation contract — script MUST return the response.**  The
+engine captures the script function's *return value* (not the post-
+call state of any kwarg).  Mutating the response argument in place
+WITHOUT returning it is a footgun: the mutation lands on the
+engine-side transient copy, but C++ ships the *default* response
+because the function returned `None`/`nil` (treated as "keep the
+default").
+
+```python
+# ✅ CORRECT — return the (possibly mutated) response
+def on_query_metrics(params, response):
+    response["custom"] = compute()
+    return response
+
+# ✅ ALSO CORRECT — build a new response object
+def on_query_metrics(params, response):
+    return {**response, "custom": compute()}
+
+# ❌ WRONG — mutation is silently lost; default response ships
+def on_query_metrics(params, response):
+    response["custom"] = compute()
+    # missing return — implicit None means "keep the default"
+```
+
+Lua follows the same rule:
+
+```lua
+function on_query_metrics(args)
+    args.response.custom = compute()
+    return args.response                  -- MUST return
+end
+```
 
 `on_tick`-cached state is the natural source for augmentation
 callbacks: heavy periodic computation runs on the worker thread on its
@@ -1272,7 +1371,7 @@ while (is_running() && !shutdown_requested()) {
 - `notify_incoming()` from `request_shutdown()`.
 - Timeout — `remain_us / 1000 ms` until the deadline.
 
-**`on_tick` contract** (ratified Phase 7 D-track loop revision):
+**`on_tick` contract:**
 
 > `on_tick` fires once per period, deterministically, whenever the
 > deadline has been crossed. The check is `now() >= deadline` *after*
@@ -1315,10 +1414,10 @@ C++ extensibility point but has no external trigger.
 
 **Augmentation request transport.**  Admin and broker threads call
 `engine.invoke_returning(name, {params, response}, timeout_ms)`; the
-engine enqueues the request onto its internal pending-queue (Python:
-`request_queue_` + `std::future` — already present; LuaEngine: same
-shape, added by Phase 8c so hub-side single-state semantics hold —
-augmentation hooks share state with `on_tick` / event observers).
+engine enqueues the request onto its internal pending-queue (PythonEngine
+and LuaEngine both have a `request_queue_` + `std::future` pending-
+drain shape — augmentation hooks share state with `on_tick` / event
+observers via the worker thread's primary state).
 The worker thread drains via `process_pending()` between the event
 dispatch and tick gate (see loop body above).  The receiving thread
 blocks on the future up to `timeout_ms` (default
@@ -1447,9 +1546,9 @@ The asymmetry is deliberate: roles and hub have different concurrency
 profiles.  Roles benefit from per-thread isolation (parallel admin
 queries on a producer); hub benefits from single-state coherence
 (consistent view for augmentation hooks reading `on_tick` caches).
-Phase 8c lands the dual-mode by adding a primary-state queue path
-to LuaEngine without disturbing the existing child-state behaviour
-for plain `invoke`.
+The dual-mode is implemented by routing `invoke_returning` through
+a primary-state queue while plain `invoke` keeps its child-state
+behaviour.
 
 ### 12.5 Out-of-band script-managed services (HTTP / WebSocket / etc.)
 
@@ -1548,9 +1647,12 @@ A script enabling out-of-band services accepts these rules:
        return "", 202                   # accepted; processed asynchronously
 
    # W thread
-   def on_app_process_request(api, data):
-       # runs on W with full script-state access; can call any HubAPI method
-       result = run_domain_logic(data["payload"])
+   def on_app_process_request(payload):
+       # runs on W with full script-state access; can call any HubAPI
+       # method.  `api` is a module global (see §12.4.1); the kwargs
+       # are unpacked from the dict the Flask handler posted.  `payload`
+       # matches the key passed to api.post_event above.
+       result = run_domain_logic(payload)
        global last_result
        last_result = result             # publish for /result endpoint to read
    ```
@@ -1569,13 +1671,14 @@ A script enabling out-of-band services accepts these rules:
        _cmd_q.put(request.get_json())
        return "", 204
 
-   def on_tick(api):
+   def on_tick():
+       # `api` is a module global (see §12.4.1) — no positional arg.
        batch = []
        while True:
            try:    batch.append(_cmd_q.get_nowait())
            except queue.Empty: break
        if batch:
-           handle_batch(batch, api)
+           handle_batch(batch, api)     # api resolved as module global
    ```
 
 4. **Lifecycle: spawn in `on_start`, shut down in `on_stop`.**  The
@@ -1598,9 +1701,9 @@ def decorated():
     return jsonify(api.dispatch_to_self("compute_decoration", {}))   # DON'T
 
 # RIGHT WAY — pre-compute on W, read atomically from Flask.
-def on_tick(api):
+def on_tick():
     global decoration_cache
-    decoration_cache = compute_decoration(api)
+    decoration_cache = compute_decoration(api)   # api is module global
 
 @app.get("/decorated")
 def decorated():
@@ -1610,7 +1713,7 @@ def decorated():
 ```python
 # ANTI-PATTERN 2 — mutating shared state in place from W while an
 # out-of-band reader can see partial state.
-def on_tick(api):
+def on_tick():                                        # api is module global
     custom_cache.clear()                                # BAD
     for k, v in build_cache(api).items():
         custom_cache[k] = v
@@ -1620,7 +1723,7 @@ def health():
     return jsonify(custom_cache)        # may observe an empty dict mid-update
 
 # RIGHT WAY — build new object, single atomic rebind.
-def on_tick(api):
+def on_tick():
     global custom_cache
     custom_cache = build_cache(api)
 ```
@@ -1629,18 +1732,20 @@ def on_tick(api):
 # ANTI-PATTERN 3 — long-blocking call inside an event observer or
 # augmentation hook.  Holds the GIL on W; every Flask request stalls
 # behind it.
-def on_query_metrics(api, params, response):
+def on_query_metrics(params, response):              # api is module global
     response["heavy"] = pure_python_aggregate(huge_dataset)   # BAD — seconds-long
+    return response
 
 # RIGHT WAY — heavy work runs on `on_tick` cadence (or a script-spawned
 # worker thread that releases GIL via numpy/IO), augmentation hook
 # does only the cheap merge.
-def on_tick(api):
+def on_tick():
     global heavy_cache
     heavy_cache = pure_python_aggregate(huge_dataset)
 
-def on_query_metrics(api, params, response):
+def on_query_metrics(params, response):
     response["heavy"] = heavy_cache
+    return response                       # MUST return — see §12.2.2
 ```
 
 ```python
@@ -1672,9 +1777,9 @@ Lua (LuaJIT) does not ship with a thread-safe in-process HTTP
 server, and `lua_State` is not multi-thread-safe.  Out-of-band
 services in Lua scripts are not supported by this section; if a
 Lua-side hub needs to expose HTTP, the recommended path is the
-hub-managed `on_web_request` augmentation hook (deferred Phase 8d
-work — symmetric to §12.2.2 but with an HTTP wire surface in front,
-hub owns the listener).
+hub-managed `on_web_request` augmentation hook (deferred — symmetric
+to §12.2.2 but with an HTTP wire surface in front, hub owns the
+listener).
 
 #### 12.5.5 Security model unchanged
 
@@ -1685,6 +1790,248 @@ auth schemes are all part of the on-disk script and subject to the
 same review process as any other hub-side configuration artefact.
 The hub itself does not know or care that the script chose to
 expose Flask.
+
+### 12.6 Design rationale — rejected alternatives
+
+This subsection records the designs that were considered for the
+script-callback surface (§12.2 / §12.3 / §12.4) and **rejected**, plus
+the load-bearing rationale behind the choices that shipped.  Future
+readers tempted to "improve" any of these should consult this
+section first — the reasoning here represents costed alternatives,
+not first-draft preferences.
+
+#### 12.6.1 Why no veto pattern
+
+An earlier draft proposed `on_channel_close_request(channel) → bool`
+and `on_role_register_request(info) → bool` — sync veto hooks where
+the script could reject a channel-close or role-register request.
+
+**Rejected.**  The hub's default protocol must be complete on its
+own; without a script provided (even with the engine running) the
+hub has to operate correctly under the role/admin protocols.  Veto
+hooks invert that: the protocol becomes *partial* until a script
+fills in the policy gates.  Diagnosis becomes harder ("did the
+broker reject this, or did the script veto it?"), and operators
+pay the script-thread latency on every state mutation regardless
+of whether they wrote a veto handler.
+
+The shipped model (§12.2 design principle) is purely additive: the
+broker performs all bookkeeping, then notifies the script of what
+happened.  Scripts can decorate responses, log, side-effect — but
+cannot modify or reject the underlying action.  The state-mutation
+half of the protocol is the broker's, full stop.
+
+#### 12.6.2 Why no `IConsultationHost` / `ConsultationRequest` / `ConsultationReply` / `encode_request_id` / `api.respond`
+
+The pre-implementation tech draft proposed a full
+script-mediated request/response infrastructure:
+
+- A `script_consultation.hpp` header with `ConsultationRequest`
+  and `ConsultationReply` structs.
+- An abstract `IConsultationHost` that AdminService and BrokerService
+  would each implement to receive script replies.
+- An `encode_request_id(subsystem, counter)` scheme that packed the
+  subsystem identity into the high bits of a 64-bit request ID so
+  the engine could route replies back without a registry lookup.
+- Per-subsystem reply queues (`reply_mu_`, `reply_queue_`,
+  `pending_consultations_`) on each subsystem.
+- A new `api.respond(request_id, body)` method scripts would call
+  to deliver replies.
+
+**Rejected** during the design review (the user's "we are not
+reinventing wheels" feedback).  Existing wheels suffice:
+
+- `ScriptEngine` already has cross-thread pending-queue + future
+  machinery in PythonEngine's `request_queue_`.  Adding one virtual
+  `invoke_returning` reuses that whole machinery instead of
+  inventing a parallel one.
+- `BrokerService::Config::on_*` callback shape (used by
+  `on_hub_message`, `on_hub_connected`, `on_hub_disconnected`,
+  `on_processing_error`) is the established pattern for giving
+  the broker external functionality without hard coupling.
+  Adding `on_peer_message_augment` reuses the same pattern.
+- `nlohmann::json` is the established args-and-result type at the
+  engine boundary.  No new struct needed.
+- `std::future` is the established cross-thread sync primitive.
+  No new identifier-routing scheme needed — the future itself is
+  the routing.
+
+The shipped surface is one pure virtual on `ScriptEngine`
+(`invoke_returning(name, args, timeout_ms)`), one no-op virtual
+(`process_pending`), four `HubAPI::augment_*` methods, one
+`std::function` field on `BrokerService::Config`, and `post_event`.
+No new abstraction classes; no new identifier encoding; no new
+script-side `respond` method.
+
+#### 12.6.3 Why scripts MUST return the response (not mutate-in-place)
+
+The augmentation hook signature is "callback receives params +
+prepared response, returns result."  The engine captures the
+function's *return value*, not the post-call state of any kwarg.
+
+A more permissive design ("if return is None / nil, capture
+`kwargs["response"]` instead") was considered.  **Rejected** because:
+
+- The two engines use different argument-passing shapes (Python
+  kwargs vs Lua single positional table).  Mutate-in-place semantics
+  rely on dict/table reference behaviour, but the recovery logic
+  on the C++ side would be different per language.  Forcing
+  symmetric return-value capture keeps the contract identical
+  across engines.
+- The "must return" rule makes "build new response" and "mutate
+  existing" symmetric.  The permissive version made one shape
+  (mutate-no-return) silently the same as the no-script case
+  ("default response shipped"), which is a subtle footgun (see
+  §12.2.2 anti-pattern).
+
+The cost is a one-line discipline rule for script authors,
+documented with explicit ✅/❌ examples in §12.2.2.
+
+#### 12.6.4 Why `invoke_returning` takes a timeout (and the heartbeat-multiplier default)
+
+A buggy script callback (`while True: pass`) on the worker thread
+would otherwise block the admin thread indefinitely on
+`future.get()`.  The admin REP socket has no clock; a single slow
+`query_metrics` RPC freezes admin forever.
+
+**Default:** `kDefaultAugmentTimeoutHeartbeats *
+kDefaultHeartbeatIntervalMs` (currently 30 × 1000 ms = 30 s).
+Heartbeat-multiplier convention matches the rest of the broker
+liveness math (HEP-CORE-0023 §2.5: ready-miss, pending-miss,
+grace-window) — single tunable per environment, not a separate
+ms-value the operator has to keep in sync.
+
+**Override:** `api.set_augment_timeout(ms)` from `on_start` — the
+script knows whether its callbacks are "milliseconds" or "many
+seconds" work.  `-1` is the project-wide infinite-wait sentinel
+(matches `SharedSpinLock::try_lock_for(-1)`); `0` is non-blocking
+(disables augmentation in practice — useful as a temporary
+bypass).
+
+Why a script-side knob and not a config field:
+
+- The right value depends on the script's own callback latency,
+  which the operator writing `hub.json` doesn't know.  Operators
+  set the default; scripts override.
+- An atomic field on HubAPI is read by admin/broker threads under
+  acquire ordering, written by the worker thread under release —
+  no lock needed, no contention.
+- A config field would freeze the value at startup; the script
+  knob can be retuned mid-run if the workload changes.
+
+#### 12.6.5 Why per-RPC `augment_*` methods (not one generic `augment`)
+
+Each `augment_*` is a 4-line forwarder:
+
+```cpp
+void HubAPI::augment_query_metrics(const json &params, json &response) {
+    json args = json::object();
+    args["params"]   = params;
+    args["response"] = response;
+    run_augment(impl_->engine, "on_query_metrics", args, response,
+                augment_timeout_ms());
+}
+```
+
+A single generic method `augment(rpc_name, args, response)` would
+let callers build the args dict inline, saving ~20 lines of
+HubAPI surface.
+
+**Per-RPC kept.**  The args structure is the *callback contract*:
+`on_query_metrics` expects `params` and `response`,
+`on_get_channel` expects `name` and `response`, etc.  Encapsulating
+the args build inside HubAPI keeps the contract in one place — if
+we ever change the args shape (rename a key, add a new one), only
+HubAPI changes; admin call sites stay.  Generic-with-inline-args
+would couple the caller to the callback contract.
+
+The 20-line overhead also gives the AdminService call sites
+self-documenting names (`api->augment_query_metrics(params,
+response)` reads better than `api->augment("on_query_metrics",
+{{"params", params}, {"response", response}}, response)`).
+
+#### 12.6.6 Why `post_event` reuses the existing event queue
+
+`api.post_event(name, data)` posts an `IncomingMessage` onto
+`RoleHostCore::incoming_queue_` — the same queue broker-posted
+events (channel_opened, role_registered, etc.) use.
+
+A separate "user event queue" was briefly considered but offered
+no benefit: same drain cadence, same dispatch path, same
+thread-safety guarantees.  The single-queue model means W's main
+loop has one place to look for work, not two.
+
+The `app_` prefix on the event name reserves the user-event
+namespace away from built-in events (an event name `channel_closed`
+posted by a script would otherwise fire `on_channel_closed` —
+confusing; the prefix prevents it).
+
+#### 12.6.7 Why `on_peer_message` ships with declared-but-unwired surface
+
+`HubAPI::augment_peer_message` and
+`BrokerService::Config::on_peer_message_augment` are part of the
+C++ surface even though the broker doesn't call them yet.  The
+reason: the existing `HUB_TARGETED_MSG` peer wire frame is
+fire-and-forget (no ACK).  Adding response augmentation requires
+a new `HUB_TARGETED_ACK` wire frame — protocol-surface work
+(§13) outside the script-callback scope of §12.
+
+Shipping the C++ surface declared but unwired:
+
+- Lets the four `augment_*` methods be a uniform set on HubAPI
+  (no "and there's also peer_message coming later" caveat in the
+  surface diagram).
+- Documents the design intent clearly in the C++ types so the
+  HEP-§13 wire-frame slice can wire it in a single line:
+  ```cpp
+  cfg.on_peer_message_augment =
+      [&host](const std::string &peer, const json &msg, json &resp) {
+          if (auto *api = host.hub_api()) api->augment_peer_message(peer, msg, resp);
+      };
+  ```
+- Costs one unused `std::function` field on `BrokerService::Config`
+  and one method on HubAPI — both trivial, both consistent with
+  the rest of the surface.
+
+#### 12.6.8 Why dual-mode LuaEngine (multi-state for `invoke`, single-state for `invoke_returning`)
+
+LuaEngine has `supports_multi_state() == true`: non-owner-thread
+`invoke` calls create a child `lua_State` per calling thread.
+This is right for role-side use (parallel admin queries on a
+producer don't serialize on the worker).
+
+Hub use breaks the assumption.  Augmentation hooks need to share
+state with `on_tick`-cached data, but child states have isolated
+globals — the cache populated by the worker thread's `on_tick`
+isn't visible to a child state spawned by the admin thread.
+
+Three options:
+
+- **Force single-state in LuaEngine** — would change role-side
+  behavior; rejected.
+- **Add a "mode" flag to LuaEngine** that the binary toggles —
+  more configuration, more places things can go wrong; rejected.
+- **Path-specific routing** (shipped) — `invoke` keeps child-state
+  for backward compat; `invoke_returning` always queues to the
+  primary state.  No flag, no mode — the contract is per-method.
+
+The shipped design adds one queue + future to LuaEngine (mirroring
+PythonEngine's existing `request_queue_`) and routes only
+`invoke_returning` through it.  See §12.4.1 for the full
+side-by-side treatment vs PythonEngine.
+
+#### 12.6.9 Why `process_pending` is engine-agnostic in the worker loop
+
+`HubScriptRunner::worker_main_` calls `engine().process_pending()`
+between the event-drain phase and the tick gate.  This is a no-op
+for PythonEngine (its `execute_direct_` already drains pending at
+the end of every owner-thread invoke) but **required** for
+LuaEngine (Lua's `invoke` doesn't auto-drain).  The call is here
+to give a single, engine-agnostic invariant ("between events and
+tick the pending queue is empty") rather than relying on per-engine
+implicit drain points.  The marginal cost on Python is one mutex
+lock + empty-queue check — acceptable for the cross-engine
+uniformity.
 
 ## 13. Protocol — additions / unchanged
 
@@ -1790,8 +2137,8 @@ can land in parallel once P1 lands.
   `broker.federation_trust_mode`, per-channel overrides) deliberately
   omitted from `HubBrokerConfig` — see HEP-CORE-0035** for the design that
   must land before they are added.  The legacy `ConnectionPolicy` placeholder
-  remains in `BrokerService::Config` (settable by tests + future Phase 9
-  code, not by hub.json) until HEP-0035 Phase 6 retires it.
+  remains in `BrokerService::Config` (settable by tests directly, not by
+  hub.json) until HEP-CORE-0035 retires it.
 
   **Heartbeat alignment with HEP-CORE-0023 §2.5 (2026-04-29 follow-up).**
   `HubBrokerConfig` now carries the four heartbeat-multiplier fields

@@ -305,8 +305,12 @@ def on_peer_disconnected(peer_uid, reason): pass
 
 # ── Response augmentation hooks (HEP §12.2.2) ────────────────────────
 # Hub builds the default response, then calls these (if defined) on the
-# worker thread; you mutate the response (or build a new one) and return
-# it.  Returning None / nil keeps the default.
+# worker thread; you mutate the response (or build a new one) and
+# **return** it.  The engine captures the function's return value, NOT
+# the post-call state of the response argument — mutating in place
+# without returning is a footgun: the default response ships and your
+# changes are silently lost.  See the explicit ✅/❌ examples in HEP
+# §12.2.2.
 def on_query_metrics(params, response):    return response
 def on_list_roles(response):               return response
 def on_get_channel(name, response):        return response
@@ -375,6 +379,88 @@ def on_start(api):
 `-1` is the project-wide infinite-wait sentinel (matches
 `SharedSpinLock::try_lock_for(-1)`); `0` means "non-blocking" (the
 hook is effectively disabled — callbacks never get a chance to run).
+
+#### Custom HTTP endpoints (Flask / FastAPI / aiohttp)
+
+Hub scripts can spawn an in-process HTTP server in `on_start` to
+expose custom REST endpoints that read hub state.  This is a
+documented Python-only pattern (HEP §12.5 — "Out-of-band
+script-managed services") built on the thread-safety guarantees of
+HubAPI; no special hub support needed beyond what already ships.
+
+The four-rule contract (HEP §12.5.2): no engine re-entry from the
+HTTP handler, atomic-rebind for W → handler state hand-off,
+thread-safe queue or `api.post_event` for handler → W flow,
+spawn in `on_start` and shut down in `on_stop`.
+
+Minimal recipe:
+
+```python
+import threading, queue
+from flask import Flask, jsonify, request
+
+_cache = {}                    # rebound atomically by on_tick
+_cmd_q = queue.Queue()         # Flask → on_tick batch path
+_app = None
+_thread = None
+
+def on_tick():
+    # Drain Flask-issued commands.
+    while True:
+        try:    cmd = _cmd_q.get_nowait()
+        except queue.Empty: break
+        handle_cmd(cmd)
+    # Recompute and atomically publish.
+    global _cache
+    _cache = build_cache(api)
+
+def on_query_metrics(params, response):
+    response["custom"] = _cache.get("custom", {})
+    return response             # MUST return — see above
+
+def _build_app():
+    app = Flask(__name__)
+
+    @app.get("/health")
+    def health():
+        return jsonify(_cache.get("custom", {}))
+
+    @app.get("/roles")
+    def roles():
+        return jsonify(api.list_roles())   # thread-safe HubAPI call
+
+    @app.post("/cmd")
+    def cmd():
+        _cmd_q.put(request.get_json())
+        return "", 204
+
+    # Or: synchronous "wake the worker now" via api.post_event
+    @app.post("/process")
+    def process():
+        api.post_event("process_request", {"payload": request.get_json()})
+        return "", 202
+
+    return app
+
+def on_start(api):
+    global _app, _thread
+    _app = _build_app()
+    _thread = threading.Thread(
+        target=lambda: _app.run(host="0.0.0.0", port=8080,
+                                use_reloader=False, threaded=True),
+        daemon=True)
+    _thread.start()
+
+def on_app_process_request(payload):
+    # Runs on the worker thread with full script-state access.
+    result = run_domain_logic(payload)
+    # publish for /result endpoint to read, etc.
+```
+
+For production, prefer uvicorn/hypercorn (graceful shutdown via
+`should_exit`) over Flask's dev server.  Lua does NOT support this
+pattern — `lua_State` is single-threaded and there's no thread-safe
+in-process HTTP ecosystem in LuaJIT.
 
 ---
 
