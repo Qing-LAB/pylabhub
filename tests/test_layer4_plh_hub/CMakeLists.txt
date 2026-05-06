@@ -20,6 +20,7 @@ add_executable(test_layer4_plh_hub
     test_plh_hub_validate.cpp
     test_plh_hub_keygen.cpp
     test_plh_hub_errors.cpp
+    test_plh_hub_runmode.cpp
 )
 
 target_include_directories(test_layer4_plh_hub PRIVATE
