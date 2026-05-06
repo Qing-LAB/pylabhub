@@ -27,6 +27,7 @@
 
 #include "utils/broker_service.hpp"
 #include "utils/hub_state.hpp"
+#include "hub_state_test_access.h"
 
 #include <gtest/gtest.h>
 
@@ -38,6 +39,7 @@
 namespace pylabhub::hub::test
 {
 
+#if 0   // Definition lives in tests/test_framework/hub_state_test_access.h.
 /// Friend shim. Forwards to private `_set_*` mutators so the tests do
 /// not need broker plumbing. HubState declares this `friend`.
 struct HubStateTestAccess
@@ -208,6 +210,7 @@ struct HubStateTestAccess
                                            expected_hash, expected_packing);
     }
 };
+#endif  // duplicate definition removed; see hub_state_test_access.h
 
 } // namespace pylabhub::hub::test
 
