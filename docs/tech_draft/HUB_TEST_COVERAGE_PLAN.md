@@ -312,7 +312,35 @@ These are noted but out of scope for "fully functional hub" pinning:
   test plan when implementation lands.
 - HEP-CORE-0035 auth / federation trust tests — known_roles[] /
   federation_trust_mode are placeholders today.
-- `HUB_TARGETED_ACK` wire frame + `on_peer_message_augment`
-  end-to-end — gated on the wire-frame slice.
+- **Federation tests in general** — federation needs its own
+  design pass, gated on completing the hub itself.  The current
+  `test_datahub_hub_federation.cpp` (3 tests on HUB_PEER_HELLO/BYE
+  handshake) stays as-is; no `plh_hub`↔`plh_hub` integration tests
+  in this plan.  `HUB_TARGETED_ACK` + `on_peer_message_augment`
+  end-to-end coverage is gated on the federation redesign.
 - Stress / soak tests — hub-side load testing is its own work
   track, currently no infrastructure for it.
+
+## Event-observer coverage matrix (per-event detail)
+
+The 11 events HubScriptRunner subscribes to (HEP §12.2.1) — all
+currently lack end-to-end script-callback coverage.  Slice 2 is
+expanded to cover one representative test per event family:
+
+| Event | Family | Slice 2 test |
+|---|---|---|
+| `on_channel_opened` | channel | `Channel_OpenedFromBroker_FiresOnChannelOpened` |
+| `on_channel_status_changed` | channel | (folded into above — exercises the full lifecycle) |
+| `on_channel_closed` | channel | (same) |
+| `on_consumer_added` | consumer | `Consumer_RegistrationFiresOnConsumerAdded` |
+| `on_consumer_removed` | consumer | (folded into above) |
+| `on_role_registered` | role | `Role_RegistrationFiresOnRoleRegistered` |
+| `on_role_disconnected` | role | `Role_DisconnectFiresOnRoleDisconnected` |
+| `on_band_joined` | band | `Band_JoinFiresOnBandJoined` |
+| `on_band_left` | band | (folded into above) |
+| `on_peer_connected` | federation | **deferred — federation own design pass** |
+| `on_peer_disconnected` | federation | **deferred** |
+| `on_app_<name>` | user-posted | `Post_EventFiresOnAppCallback` (Phase 8c) |
+
+That's ~5-6 tests instead of the original 1 in slice 2 — still well
+within the slice's scope.
