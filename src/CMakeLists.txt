@@ -32,8 +32,10 @@ cmake_minimum_required(VERSION 3.28)
 # This must be done before defining any targets that depend on it.
 add_subdirectory(utils)
 
-# PythonScriptHost static lib (thin CPython embedding layer; keeps libpython
-# out of pure-C++ consumers of pylabhub-utils).
+# pylabhub-scripting static lib (LuaEngine + PythonEngine + role API
+# classes).  Kept separate from pylabhub-utils so libpython is NOT a hard
+# dependency of pure-C++ consumers — only binaries that embed Python
+# (plh_role, plh_hub) link this lib in addition to pylabhub-utils.
 add_subdirectory(scripting)
 
 # Unified role binary (HEP-0024 Phase 19). Dispatches on --role tag via
@@ -42,8 +44,8 @@ add_subdirectory(scripting)
 # (role_host, init) and pylabhub-scripting (api) — no per-role executables.
 add_subdirectory(plh_role)
 
-# The previous `pylabhub-hubshell` executable + `src/hub_python/` legacy
-# stack (PythonScriptHost / pylabhub_module / admin_shell / HubScript)
-# were deleted with the HEP-CORE-0033 G2 cleanup pass.  The replacement
-# `plh_hub` binary lands as part of HEP-CORE-0033 Phase 9 — see
-# `docs/HEP/HEP-CORE-0033-Hub-Character.md` §15 (Implementation phases).
+# Single-kind hub binary (HEP-CORE-0033 §15).  Replaces the deleted
+# pylabhub-hubshell + src/hub_python/ legacy stack (cleared with the
+# HEP-0033 G2 cleanup).  Uses HubHost + HubConfig + the same engine
+# factory plh_role uses.
+add_subdirectory(plh_hub)

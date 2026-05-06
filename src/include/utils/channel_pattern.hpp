@@ -4,8 +4,8 @@
  * @brief Canonical ChannelPattern enum shared by Messenger and BrokerService.
  *
  * Defined once here to avoid duplication between the public Messenger API
- * (pylabhub::hub) and the broker-internal ChannelRegistry (pylabhub::broker).
- * BrokerService and ChannelRegistry import this via a type alias.
+ * (pylabhub::hub) and the broker-internal channel state (pylabhub::broker —
+ * now `HubState::channels`; ChannelRegistry was retired with G2.2.1.c).
  *
  * Also provides the canonical string conversion helpers channel_pattern_to_str()
  * and channel_pattern_from_str() so that both Messenger and BrokerService use

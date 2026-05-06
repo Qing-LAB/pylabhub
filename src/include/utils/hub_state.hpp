@@ -444,11 +444,11 @@ class PYLABHUB_UTILS_EXPORT HubState
     // Atomicity: each op takes the state lock per-primitive (not once
     // for the whole op).  `snapshot()` consumers always see consistent
     // state at the field level; single-entry lookups between primitives
-    // of the same op may observe partial state.  This matches today's
-    // broker, which touches ChannelRegistry, metrics_store_, and
-    // counters under separate locks.  If stricter atomicity is needed
-    // later, promote primitives to `_locked` variants and refactor ops
-    // to acquire the writer lock once.
+    // of the same op may observe partial state.  This matches the
+    // broker's pattern of touching state and counters under separate
+    // locks.  If stricter atomicity is needed later, promote
+    // primitives to `_locked` variants and refactor ops to acquire
+    // the writer lock once.
     //
     // role_tag derivation: today's wire protocol (REG_REQ /
     // CONSUMER_REG_REQ / BAND_JOIN_REQ) does not carry `role_tag`;

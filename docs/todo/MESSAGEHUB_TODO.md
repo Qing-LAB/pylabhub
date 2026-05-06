@@ -113,15 +113,15 @@ under `docs/archive/transient-2026-04-30/`):
   - G2.2.1.a (channel dual-write): ✅ done.
   - G2.2.1.b (flip readers + heartbeat capability-op): ✅ done.
   - G2.2.1.c phase 1 (read-only handlers source from HubState; helper
-    signatures take `hub::ChannelEntry`/`hub::ConsumerEntry`): ✅ done
-    (this commit). 11 `find_channel`, 2 `find_consumers`, 4 const
-    `all_channels()` migrated. 4 test files updated to valid uid format.
+    signatures take `hub::ChannelEntry`/`hub::ConsumerEntry`): ✅ done.
+    11 `find_channel`, 2 `find_consumers`, 4 const `all_channels()`
+    migrated. 4 test files updated to valid uid format.
   - G2.2.1.c phase 2 (mutating sweeps absorbed into HubState
-    capability ops): pending — requires sweep-cursor primitives or
-    full snapshot+iterate replacements for `find_timed_out_*`,
-    dead-consumer iteration, closing-deadline iteration.
+    capability ops): ✅ done in the same sweep that landed phase 3
+    (mutating handlers absorbed; sweep-cursor primitives folded in).
   - G2.2.1.c phase 3 (delete `ChannelRegistry`, `channel_registry.{hpp,cpp}`,
-    translator helpers): pending — gated on phase 2.
+    translator helpers): ✅ done — files removed; comment-residue
+    references swept in the §15 plh_hub commit (2026-05-05).
 - **G2.2.2** — Liveness: `HEARTBEAT_REQ` + timeout sweep → `_on_heartbeat` /
   `_on_heartbeat_timeout` / `_on_pending_timeout`. Counter bumps absorbed. ✅
 - **G2.2.3** — Membership routing: bands + federation peers absorbed into
@@ -162,15 +162,36 @@ under `docs/archive/transient-2026-04-30/`):
     contract; §4.1/§4.2 step lists reference phase mutations;
     terminology disambiguates HubHost's phase FSM from process-wide
     `LifecycleGuard` modules.
-- **Phase 6.2 — `AdminService` structured RPC (§11).**  Pending.
-  Token-validated REP socket; thin wrapper that calls `host.broker()`
-  mutators directly (acceptance gate at the RPC entry point per §11.3).
-  Retires the legacy `AdminShell` dep.  L3 tests for each RPC method.
-- G2.3 — `HubAPI` read accessors only (script can query state, not mutate).
-- G2.4 — `HubAPI` mutation wrappers; remove `close_request_queue_` /
-  `broadcast_request_queue_` / `hub_targeted_queue_` ad-hoc queues.
-- G2.5 — `AdminService` shell using same broker mutators.
-- G7 — HubConfig lifecycle-module vs main-owned decision.
+- **Phase 6.2 — `AdminService` structured RPC (§11).**  ✅ shipped
+  2026-05-02.  Token-validated REP socket; thin wrapper that calls
+  `host.broker()` mutators directly (acceptance gate at the RPC entry
+  point per §11.3).  Retires the legacy `AdminShell` dep (files
+  deleted; the sender_uid literal `"admin_shell"` in
+  `BrokerServiceImpl::run` was renamed to `cfg.self_hub_uid` in the
+  2026-05-05 cleanup pass).  L3 tests for each RPC method (23 L2
+  tests, mutation-verified).
+- **G2.3 — `HubAPI` read accessors.**  ✅ shipped
+  (HEP-0033 §12.3 read block: `list_channels` / `get_channel` /
+  `list_roles` / `get_role` / `list_bands` / `list_peers` /
+  `query_metrics` / `config` / `uid` / `name`).
+- **G2.4 — `HubAPI` mutation wrappers.**  ✅ shipped
+  (HEP-0033 §12.3 control block: `close_channel` /
+  `broadcast_channel` / `request_shutdown`; admin-side wiring uses
+  the same `host.broker().request_*` paths).  The
+  `close_request_queue_` / `broadcast_request_queue_` /
+  `hub_targeted_queue_` deques are RETAINED — they're the broker's
+  cross-thread mailbox for each request type and remain load-bearing
+  (called by both HubAPI script delegates AND AdminService RPC
+  handlers).  An eventual unification refactor (one generic command
+  queue) is possible but is a code-consolidation concern, not a
+  dead-code removal one — out of scope for the §15 cleanup.
+- **G2.5 — `AdminService` shell using same broker mutators.**  ✅
+  shipped (Phase 6.2c — `handle_close_channel` / `handle_broadcast_channel`
+  / `handle_request_shutdown` route through `host.broker().request_*`,
+  same code path HubAPI uses).
+- G7 — HubConfig lifecycle-module vs main-owned decision.  ✅
+  resolved (Option E — single config owner per hub, owned by
+  HubHost; HubScriptRunner reads via host backref).
 - G5/G6/G8 spec gaps; G9-G13 ripples.
 
 Summary of what this HEP introduces:

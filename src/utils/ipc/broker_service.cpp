@@ -434,10 +434,10 @@ public:
 void BrokerServiceImpl::run()
 {
     // Use the shared process-wide zmq::context_t owned by the ZMQContext
-    // lifecycle module. The broker binary (hubshell) already includes
-    // GetZMQContextModule() in its LifecycleGuard; so do all BrokerService
-    // tests. No per-instance context — matches the pattern used by
-    // ZmqQueue, InboxQueue, BrokerRequestComm, AdminShell, and Messenger.
+    // lifecycle module.  The hub binary (plh_hub) and every role binary
+    // include GetZMQContextModule() in their LifecycleGuard; so do all
+    // BrokerService tests.  No per-instance context — matches the pattern
+    // used by ZmqQueue, InboxQueue, BrokerRequestComm, and Messenger.
     zmq::context_t &ctx = pylabhub::hub::get_zmq_context();
     zmq::socket_t router(ctx, zmq::socket_type::router);
     router.set(zmq::sockopt::linger, 0); // policy: always LINGER=0; see §ZMQ socket policy
@@ -558,7 +558,10 @@ void BrokerServiceImpl::run()
                 }
             }
 
-            // Drain admin-shell-requested broadcasts.
+            // Drain hub-side broadcast requests (originating from
+            // BrokerService::request_broadcast_channel — called by
+            // HubAPI::broadcast_channel control delegate / AdminService
+            // broadcast RPC / future hub-internal callers).
             std::vector<BroadcastRequest> pending_broadcasts;
             {
                 std::lock_guard<std::mutex> bcast_lk(m_broadcast_req_mu);
@@ -570,9 +573,17 @@ void BrokerServiceImpl::run()
             for (const auto& br : pending_broadcasts)
             {
                 // Build a synthetic CHANNEL_BROADCAST_REQ payload and delegate.
+                // sender_uid = self_hub_uid: the broadcast originates inside
+                // this hub instance (the request_broadcast_channel API has
+                // no caller-identity field — the natural sender is the hub).
+                // Falls back to "hub" when self_hub_uid is unset (test
+                // configurations + early HubHost::startup before identity
+                // is wired).
                 nlohmann::json req;
                 req["target_channel"] = br.channel;
-                req["sender_uid"]     = "admin_shell";
+                req["sender_uid"]     = cfg.self_hub_uid.empty()
+                                            ? std::string("hub")
+                                            : cfg.self_hub_uid;
                 req["message"]        = br.message;
                 if (!br.data.empty())
                     req["data"] = br.data;
@@ -1508,9 +1519,9 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
 
     const uint64_t producer_pid = req.value("producer_pid", uint64_t{0});
 
-    // HubState is the sole channel store; replicate the historical
-    // ChannelRegistry::deregister_channel NOT_REGISTERED gate (channel
-    // exists AND producer_pid matches).
+    // HubState is the sole channel store.  Apply the deregister
+    // NOT_REGISTERED gate: channel must exist AND producer_pid must
+    // match (rejecting cross-producer deregister requests).
     auto entry = hub_state_->channel(channel_name);
     if (!entry.has_value() || entry->producer_pid != producer_pid)
     {

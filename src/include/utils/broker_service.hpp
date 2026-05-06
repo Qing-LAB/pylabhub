@@ -378,7 +378,7 @@ public:
      *
      * Thread-safe: locks the internal query mutex briefly to copy channel data.
      * Prefer this over list_channels_json_str() when strongly-typed access is needed
-     * (e.g. from HubScript tick thread).
+     * (e.g. from a hub script's `on_tick` callback).
      */
     [[nodiscard]] ChannelSnapshot query_channel_snapshot() const;
 
