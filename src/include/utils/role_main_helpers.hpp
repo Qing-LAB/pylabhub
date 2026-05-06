@@ -212,7 +212,7 @@ void run_role_main_loop(std::atomic<bool> &g_shutdown, Host &host, const char *l
 
         if (!host.is_running())
         {
-            LOGGER_INFO("{} ScriptHost no longer running, exiting main loop", log_tag);
+            LOGGER_INFO("{} Role host no longer running, exiting main loop", log_tag);
             break;
         }
     }

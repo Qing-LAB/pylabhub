@@ -94,11 +94,16 @@ if(BUILD_TESTS)
   #   - test_layer4_{producer,consumer,processor}: retired with the
   #     per-role binaries as HEP-0024 Phase 20 landed; CLI coverage
   #     moved to test_layer4_plh_role (no-hub tier).
-  #   - test_layer4_integration test_channel_broadcast + test_pipeline_roundtrip:
-  #     broker-involved; deferred — see docs/todo/TESTING_TODO.md
-  #     "Deferred L4 broker tests".
+  #   - test_layer4_integration: spawned the deleted pylabhub-hubshell
+  #     against deleted hub_python/admin_shell paths; was permanently
+  #     `if(FALSE)`-disabled and removed 2026-05-05 alongside the
+  #     plh_hub binary work (HEP-CORE-0033 §15).  Replacement no-hub
+  #     L4 coverage lives in test_layer4_plh_hub (added with plh_hub).
+  #     Broker-involved L4 tests (channel broadcast, pipeline round-
+  #     trip) are deferred — see docs/todo/TESTING_TODO.md "Deferred
+  #     L4 broker tests".
   add_subdirectory(test_layer4_plh_role)
-  add_subdirectory(test_layer4_integration)
+  add_subdirectory(test_layer4_plh_hub)
   # test_raii_layer REMOVED: test_result.cpp moved to test_layer1_base (T5.1)
 
   # Collect all test executables registered by the subdirectories

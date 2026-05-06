@@ -9,8 +9,7 @@
 #   `libpython` (embedded via pybind11::embed) must NOT become a hard dependency
 #   of all `pylabhub-utils` consumers.  Pure-C++ clients that never embed Python
 #   should link only against `pylabhub-utils`.  Executables that embed Python
-#   (pylabhub-hubshell, pylabhub-producer, pylabhub-consumer, pylabhub-processor)
-#   link against this additional static lib.
+#   (`plh_role`, `plh_hub`) link against this additional static lib.
 #
 # Dependencies:
 #   - pylabhub::utils   — RoleHostCore, Logger, platform utilities

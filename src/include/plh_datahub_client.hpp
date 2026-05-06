@@ -11,9 +11,9 @@
  *   - Application framework (plh_service.hpp: lifecycle, logger, filelock, crypto)
  *
  * **Excluded vs plh_datahub.hpp** (server/admin infrastructure):
- *   - BrokerService  — run the channel registry hub (hubshell only)
+ *   - BrokerService  — run the channel registry hub (plh_hub only)
  *   - JsonConfig     — JSON-based config loading
- *   - HubConfig      — hub configuration singleton
+ *   - HubConfig      — composite hub config (plh_hub binary)
  *   - schema_blds    — raw BLDS schema helpers (only needed by SHM creators)
  *
  * Use plh_datahub.hpp when you need BrokerService, JsonConfig, or HubConfig.

@@ -59,7 +59,7 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
     };
 
     /// @param owner_tag  Owner tag / category (e.g., "prod", "cons", "proc",
-    ///     "ZmqQueue", "BrokerService", "hubshell"). Identifies the owner's
+    ///     "hub", "ZmqQueue", "BrokerService"). Identifies the owner's
     ///     CLASS/ROLE. Must be non-empty.
     /// @param owner_id   Owner instance identifier (e.g., role uid
     ///     "prod.sensor.uid00000001", queue channel name, broker endpoint).
