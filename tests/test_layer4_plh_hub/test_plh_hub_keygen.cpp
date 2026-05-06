@@ -40,17 +40,16 @@ TEST_F(PlhHubCliTest, GeneratesVaultFileAndEmitsPubkey)
     const auto dir = tmp("keygen_ok");
     const auto cfg_path = dir / "hub.json";
 
-    // The actual vault file path is FIXED: HubVault::{create,open}
-    // ignore the `auth.keyfile` value and write to `<hub_dir>/hub.vault`
-    // (where hub_dir is HubConfig::base_dir() — the parent dir of the
-    // hub.json passed via `--config`).  The `auth.keyfile` field acts
-    // as a non-empty/empty toggle for "vault auth on/off"; its value
-    // is informational only (HEP-0033 §6.2 documented value:
-    // `"vault/hub.vault"`).
+    // Vault file path is fixed at `<hub_dir>/vault/hub.vault`
+    // (HEP-CORE-0033 §7).  HubVault::{create,open} ignore the
+    // `auth.keyfile` value at the moment — the field acts as a
+    // non-empty/empty toggle for "vault auth on/off" and the path
+    // is hard-coded.  Its documented value matches the actual
+    // location.
     nlohmann::json overrides;
     overrides["hub"]["auth"]["keyfile"] = "vault/hub.vault";
     write_minimal_config(cfg_path, dir, overrides);
-    const fs::path vault_actual = dir / "hub.vault";
+    const fs::path vault_actual = dir / "vault" / "hub.vault";
 
     ScopedHubPassword pw("test-password");
     WorkerProcess p(plh_hub_binary(), "--config",

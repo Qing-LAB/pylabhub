@@ -102,12 +102,17 @@ HubVault HubVault::create(const fs::path    &hub_dir,
     // Generate admin token.
     const std::string admin_tok = generate_admin_token();
 
-    // Serialize payload and encrypt.
+    // Serialize payload and encrypt.  Vault file lives under
+    // `<hub_dir>/vault/` (HEP-CORE-0033 §7 + HubDirectory layout).
+    // Ensure the vault directory exists; --init creates it but
+    // direct callers (tests, programmatic use) may not have.
     const json payload = {
         {"broker", {{"curve_secret_key", broker_secret}, {"curve_public_key", broker_public}}},
         {"admin",  {{"token", admin_tok}}}
     };
-    detail::vault_write(hub_dir / "hub.vault", payload.dump(), password, hub_uid);
+    fs::create_directories(hub_dir / "vault");
+    detail::vault_write(hub_dir / "vault" / "hub.vault",
+                        payload.dump(), password, hub_uid);
 
     HubVault v;
     v.pImpl->broker_secret_key = broker_secret;
@@ -126,7 +131,9 @@ HubVault HubVault::open(const fs::path    &hub_dir,
 {
     detail::vault_require_sodium();
 
-    const std::string plaintext = detail::vault_read(hub_dir / "hub.vault", password, hub_uid);
+    // Vault file path: <hub_dir>/vault/hub.vault (HEP §7).
+    const std::string plaintext = detail::vault_read(
+        hub_dir / "vault" / "hub.vault", password, hub_uid);
 
     HubVault v;
     try

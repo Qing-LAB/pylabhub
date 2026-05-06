@@ -185,7 +185,7 @@ int load_minimal(const char *tmpdir)
             auto cfg = HubConfig::load_from_directory(dir);
 
             // Defaults take over for absent sections (HEP-0033 §6.3).
-            EXPECT_EQ(cfg.network().broker_endpoint, "tcp://0.0.0.0:5570");
+            EXPECT_EQ(cfg.network().broker_endpoint, "tcp://127.0.0.1:5570");
             EXPECT_TRUE(cfg.network().broker_bind);
             EXPECT_EQ(cfg.network().zmq_io_threads, 1);
 
@@ -420,7 +420,7 @@ int init_template_loads_via_hubconfig(const char *tmpdir)
             // 3. Spot-check fields the template populates.
             EXPECT_EQ(cfg.identity().name, "RoundTripHub");
             EXPECT_FALSE(cfg.identity().uid.empty());
-            EXPECT_EQ(cfg.network().broker_endpoint, "tcp://0.0.0.0:5570");
+            EXPECT_EQ(cfg.network().broker_endpoint, "tcp://127.0.0.1:5570");
             EXPECT_TRUE(cfg.network().broker_bind);
             EXPECT_EQ(cfg.broker().heartbeat_interval_ms,
                       ::pylabhub::kDefaultHeartbeatIntervalMs);
