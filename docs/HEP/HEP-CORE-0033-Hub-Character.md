@@ -443,7 +443,6 @@ Usage:
   plh_hub --init [<hub_dir>]            # Create hub directory + template config
   plh_hub <hub_dir>                     # Run from directory
   plh_hub --config <path.json> [--validate | --keygen]
-  plh_hub --dev                         # Dev/test mode; ephemeral keys, no vault
   plh_hub --help | -h
 
 Init-only options:
@@ -517,7 +516,14 @@ asymmetric sides.
   },
 
   "network": {
-    "broker_endpoint": "tcp://0.0.0.0:5570",
+    // The same string is used as the broker's BIND address by the hub
+    // AND as the CONNECT target string roles read via HubRefConfig.
+    // Default `tcp://127.0.0.1:5570` works for single-machine setups;
+    // cross-host deployments must change this to an externally-
+    // visible address (`tcp://10.0.0.5:5570`, `tcp://0.0.0.0:5570`
+    // for bind-all + manual rewrite of the published endpoint per
+    // operator policy, etc.).
+    "broker_endpoint": "tcp://127.0.0.1:5570",
     "broker_bind":     true,
     "zmq_io_threads":  1
   },
@@ -616,24 +622,30 @@ stores the broker's stable CURVE keypair plus, optionally, the admin
 token.
 
 - **`plh_hub --keygen`** generates a CURVE25519 keypair, writes the
-  secret half into `hub.auth.keyfile` encrypted with `PYLABHUB_HUB_PASSWORD`
+  secret half into the vault file encrypted with `PYLABHUB_HUB_PASSWORD`
   (env var → interactive prompt fallback per the same source-chain as
-  role-side), prints the public key (for roles to pin via
-  `in_hub_pubkey` / `out_hub_pubkey` in their own configs) and the
-  `hub_uid`. Idempotent against the same vault file via the existing
-  `HubVault` API.
-- **Run mode** (without `--dev`) reads the vault, unlocks it via the
-  same password source chain, loads the broker's stable CURVE keypair
-  for the ROUTER socket. If `admin.token_required: true`, the vault
-  also carries the admin token (separate slot, same KDF domain) — the
-  `AdminService` (§11.3) compares against this token on each request.
-  See `src/include/utils/hub_vault.hpp` for the existing storage shape;
-  it already supports both keypair and token slots — no vault extension
-  needed.
-- **`plh_hub --dev`** generates an ephemeral CURVE keypair at startup,
-  skips vault entirely, skips admin token. The `AdminService` endpoint
-  is enforced to bind only to `127.0.0.1` in this mode, since there is
-  no token to gate access. Use for local development and tests only.
+  role-side), publishes the public key to `<hub_dir>/hub.pubkey` so
+  roles can read it via `HubRefConfig::parse_hub_ref_config`, prints
+  the public key + `hub_uid` to stdout for operator confirmation.
+  Idempotent against the same vault file via the existing `HubVault`
+  API.
+- **Run mode** reads the vault, unlocks it via the same password
+  source chain, loads the broker's stable CURVE keypair for the
+  ROUTER socket. If `admin.token_required: true`, the vault also
+  carries the admin token (separate slot, same KDF domain) — the
+  `AdminService` (§11.3) compares against this token on each
+  request.  See `src/include/utils/hub_vault.hpp` for the existing
+  storage shape; it already supports both keypair and token slots —
+  no vault extension needed.
+
+Operators wanting an ephemeral / no-CURVE setup leave
+`hub.auth.keyfile` empty in the generated `hub.json`; HubHost then
+runs the broker without CURVE auth and `AdminService` enforces a
+loopback-only bind whenever `token_required: false` (§11.3).
+The previously-drafted `--dev` mode that bundled "no vault + no
+token + loopback admin" was rejected — see §17.1 "No remote code
+injection" for the rationale (the same review pass that removed
+`exec_python` removed the dev-mode admin shortcut).
 
 ## 7. Hub directory layout (`--init` output)
 
@@ -2370,6 +2382,18 @@ can land in parallel once P1 lands.
     `invalid_request`, `invalid_params`, `not_found`, `conflict`,
     `policy_rejected`, `script_error`, `not_implemented`, `internal`.
     Stable wire constants, append-only.
+11. **Vault directory layout discrepancy.**  HEP §7 + the `--init`
+    template document the vault file at `<hub_dir>/vault/hub.vault`
+    (and `HubDirectory::hub_vault_file()` returns that path), but
+    `HubVault::{create,open}` actually use `<hub_dir>/hub.vault` —
+    one level shallower.  Both write and read use the same wrong
+    path so functionality is unaffected; the bug is operator
+    confusion (`vault/` is empty after `--keygen`) and HEP credibility.
+    Fix is a small refactor in `HubVault` + 4 test-expectation
+    updates in `tests/test_layer2_service/test_hub_vault.cpp`;
+    deferred to a focused slice.  See
+    `docs/code_review/REVIEW_HEP_0033_PostP9_2026-05-05.md` F2 for
+    the detailed audit and fix options.
 
 ## 17. Out of scope
 

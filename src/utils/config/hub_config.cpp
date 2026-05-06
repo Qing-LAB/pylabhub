@@ -210,6 +210,14 @@ std::string HubConfig::create_keypair(const std::string &password)
     const auto &hub_dir = impl_->base_dir;
     const auto &uid     = impl_->identity.uid;
     const auto vault = utils::HubVault::create(hub_dir, uid, password);
+    // Publish the broker's CURVE public key alongside the vault file
+    // so that role-side `HubRefConfig::parse_hub_ref_config` finds it
+    // at `<hub_dir>/hub.pubkey` and pins the broker correctly during
+    // CURVE handshake.  Without this the role's `broker_pubkey` stays
+    // empty and the producer→hub→consumer pipeline either bypasses
+    // CURVE auth (if both sides allow it) or fails at REG_REQ time
+    // (audit REVIEW_HEP_0033_PostP9_2026-05-05.md F1).
+    vault.publish_public_key(hub_dir);
     return vault.broker_curve_public_key();
 }
 

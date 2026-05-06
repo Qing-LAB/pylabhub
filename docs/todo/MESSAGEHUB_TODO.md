@@ -206,9 +206,11 @@ Summary of what this HEP introduces:
 Implementation not started — role unification (HEP-0024 Phases 1-22) is now
 the precedent completed work.
 
-**System-level L4 tests** (become writable at HEP-0033 Phase 9 when
-`plh_hub` binary lands). Designed-from-scratch once the hub binary is
-re-enabled in `src/CMakeLists.txt`:
+**System-level L4 tests** — `plh_hub` binary shipped 2026-05-05; the
+17-test `test_layer4_plh_hub` suite covers the no-hub tier (--init /
+--validate / --keygen / CLI errors).  The deferred broker-round-trip
+tests below are now writable.  Audit context for what they would catch:
+`docs/code_review/REVIEW_HEP_0033_PostP9_2026-05-05.md` F5.
 
 - [ ] **plh_role run-mode lifecycle**: spawn `plh_role <dir>`, verify it
   reaches the data loop, accepts SIGTERM, exits 0 with clean shutdown
