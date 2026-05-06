@@ -141,7 +141,14 @@ nlohmann::json build_hub_json_template(const std::string &uid,
             {"timestamped",  true},
         }},
         {"network", {
-            {"broker_endpoint", "tcp://0.0.0.0:5570"},
+            // Default to loopback so single-machine demos work out of
+            // the box.  The same string is read by role-side
+            // `HubRefConfig::parse_hub_ref_config` as the *connect*
+            // target — `tcp://0.0.0.0:5570` would have been a correct
+            // bind address but an unreachable connect target.
+            // Operators deploying cross-host edit this to the hub's
+            // externally-visible address.  See HEP-CORE-0033 §6.2.
+            {"broker_endpoint", "tcp://127.0.0.1:5570"},
             {"broker_bind",     true},
             {"zmq_io_threads",  1},
         }},
