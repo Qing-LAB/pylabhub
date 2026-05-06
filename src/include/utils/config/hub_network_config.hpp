@@ -20,7 +20,13 @@ namespace pylabhub::config
 
 struct HubNetworkConfig
 {
-    std::string broker_endpoint{"tcp://0.0.0.0:5570"};  ///< ZMQ ROUTER endpoint
+    /// ZMQ ROUTER endpoint.  Loopback default so single-machine
+    /// setups work out of the box; the SAME string is read by role-
+    /// side `HubRefConfig::parse_hub_ref_config` as the *connect*
+    /// target, so a `tcp://0.0.0.0:5570` bind-all default would have
+    /// been an unreachable connect target for roles.  Cross-host
+    /// deployments override this in hub.json (HEP-CORE-0033 §6.2).
+    std::string broker_endpoint{"tcp://127.0.0.1:5570"};
     bool        broker_bind{true};                       ///< true → bind, false → connect
     int32_t     zmq_io_threads{1};                       ///< zmq::context_t IO threads
 };

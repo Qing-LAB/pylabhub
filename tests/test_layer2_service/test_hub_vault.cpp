@@ -130,7 +130,7 @@ TEST_F(HubVaultTest, CreateWritesVaultFile)
 {
     HubVault::create(hub_dir_, hub_uid_, kPassword);
 
-    const fs::path vault_path = hub_dir_ / "hub.vault";
+    const fs::path vault_path = hub_dir_ / "vault" / "hub.vault";
     ASSERT_TRUE(fs::exists(vault_path)) << "hub.vault not created";
     EXPECT_GT(fs::file_size(vault_path), 40u) << "hub.vault suspiciously small";
 }
@@ -139,7 +139,7 @@ TEST_F(HubVaultTest, CreateVaultFileHasRestrictedPermissions)
 {
     HubVault::create(hub_dir_, hub_uid_, kPassword);
 
-    const fs::path vault_path = hub_dir_ / "hub.vault";
+    const fs::path vault_path = hub_dir_ / "vault" / "hub.vault";
 #if defined(PYLABHUB_PLATFORM_WIN64)
     // Windows: verify the DACL denies access to the "Everyone" group.
     // fs::permissions() cannot represent POSIX group/other bits on Windows;
@@ -181,7 +181,7 @@ TEST_F(HubVaultTest, EmptyPasswordCreatesVaultSuccessfully)
 {
     // Dev-mode: empty password is allowed (weak but functional).
     EXPECT_NO_THROW(HubVault::create(hub_dir_, hub_uid_, ""));
-    EXPECT_TRUE(fs::exists(hub_dir_ / "hub.vault"));
+    EXPECT_TRUE(fs::exists(hub_dir_ / "vault" / "hub.vault"));
 }
 
 TEST_F(HubVaultTest, TwoCreatesProduceDifferentKeypairs)
@@ -229,7 +229,7 @@ TEST_F(HubVaultTest, OpenCorruptedVaultThrows)
     HubVault::create(hub_dir_, hub_uid_, kPassword);
 
     // Flip bytes in the middle of the ciphertext (after the 24-byte nonce).
-    const fs::path vault_path = hub_dir_ / "hub.vault";
+    const fs::path vault_path = hub_dir_ / "vault" / "hub.vault";
     {
         std::fstream f(vault_path, std::ios::in | std::ios::out | std::ios::binary);
         ASSERT_TRUE(f.is_open());
@@ -261,7 +261,7 @@ TEST_F(HubVaultTest, OpenTruncatedVaultThrows)
     // that added a "partial-read is fine" path.
     HubVault::create(hub_dir_, hub_uid_, kPassword);
 
-    const fs::path vault_path = hub_dir_ / "hub.vault";
+    const fs::path vault_path = hub_dir_ / "vault" / "hub.vault";
     const auto original_size = fs::file_size(vault_path);
     ASSERT_GT(original_size, 0u);
 
@@ -286,7 +286,7 @@ TEST_F(HubVaultTest, VaultFileDoesNotContainPlaintextSecrets)
     // not contain the Z85 keys or the admin token as printable substrings.
     HubVault v = HubVault::create(hub_dir_, hub_uid_, kPassword);
 
-    std::ifstream ifs(hub_dir_ / "hub.vault", std::ios::binary);
+    std::ifstream ifs(hub_dir_ / "vault" / "hub.vault", std::ios::binary);
     const std::string raw_bytes((std::istreambuf_iterator<char>(ifs)),
                                  std::istreambuf_iterator<char>());
 

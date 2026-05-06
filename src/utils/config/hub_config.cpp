@@ -182,11 +182,13 @@ bool HubConfig::load_keypair(const std::string &password)
     const auto &uid     = impl_->identity.uid;
 
     namespace fs = std::filesystem;
-    if (!fs::exists(hub_dir / "hub.vault"))
+    // Vault file path matches HEP-CORE-0033 §7: <hub_dir>/vault/hub.vault.
+    const auto vault_path = hub_dir / "vault" / "hub.vault";
+    if (!fs::exists(vault_path))
     {
         std::fprintf(stderr,
-                     "[hub] hub.vault not found in '%s' — using ephemeral CURVE identity\n",
-                     hub_dir.string().c_str());
+                     "[hub] %s not found — using ephemeral CURVE identity\n",
+                     vault_path.string().c_str());
         return false;
     }
 
@@ -195,7 +197,7 @@ bool HubConfig::load_keypair(const std::string &password)
     auth.client_seckey = vault.broker_curve_secret_key();
     impl_->admin.admin_token = vault.admin_token();
     std::fprintf(stderr, "[hub] Loaded vault from '%s' (pubkey: %.8s...)\n",
-                 (hub_dir / "hub.vault").string().c_str(),
+                 vault_path.string().c_str(),
                  vault.broker_curve_public_key().c_str());
     return true;
 }
