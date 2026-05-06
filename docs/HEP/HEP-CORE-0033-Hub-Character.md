@@ -2382,18 +2382,15 @@ can land in parallel once P1 lands.
     `invalid_request`, `invalid_params`, `not_found`, `conflict`,
     `policy_rejected`, `script_error`, `not_implemented`, `internal`.
     Stable wire constants, append-only.
-11. **Vault directory layout discrepancy.**  HEP §7 + the `--init`
-    template document the vault file at `<hub_dir>/vault/hub.vault`
-    (and `HubDirectory::hub_vault_file()` returns that path), but
-    `HubVault::{create,open}` actually use `<hub_dir>/hub.vault` —
-    one level shallower.  Both write and read use the same wrong
-    path so functionality is unaffected; the bug is operator
-    confusion (`vault/` is empty after `--keygen`) and HEP credibility.
-    Fix is a small refactor in `HubVault` + 4 test-expectation
-    updates in `tests/test_layer2_service/test_hub_vault.cpp`;
-    deferred to a focused slice.  See
-    `docs/code_review/REVIEW_HEP_0033_PostP9_2026-05-05.md` F2 for
-    the detailed audit and fix options.
+11. ✅ **CLOSED 2026-05-05** — Vault directory layout discrepancy.
+    `HubVault::{create,open}` now use `<hub_dir>/vault/hub.vault`
+    (matches HEP §7, `HubDirectory::hub_vault_file()`, and the
+    `--init` template's `auth.keyfile = "vault/hub.vault"`).  6 test
+    expectations updated; full suite 1757/1757.  Bundled with the
+    F4 follow-up (HubNetworkConfig struct default also changed to
+    `tcp://127.0.0.1:5570` to converge with the init-template
+    default fixed earlier in the audit cycle).  See
+    `docs/code_review/REVIEW_HEP_0033_PostP9_2026-05-05.md` F2.
 
 ## 17. Out of scope
 
