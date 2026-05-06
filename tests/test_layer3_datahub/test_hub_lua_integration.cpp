@@ -30,6 +30,8 @@
 
 #include "engine_factory.hpp"     // make_engine_from_script_config (scripting)
 
+#include "utils/broker_request_comm.hpp"   // role-side client of broker
+#include "utils/hub_api.hpp"
 #include "log_capture_fixture.h"
 
 #include <gtest/gtest.h>
@@ -39,8 +41,10 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <sstream>
 #include <string>
+#include <thread>
 
 namespace fs = std::filesystem;
 using pylabhub::utils::Logger;
@@ -746,4 +750,411 @@ end
     EXPECT_NE(log.find("AFTER_SHUTDOWN_REQUEST"), std::string::npos)
         << "api.request_shutdown raised an error before returning, or "
            "Lua aborted the script; log:\n" << log;
+}
+
+// ─── HEP §12.2.1 event observers + §12.2.3 user-posted events ───────────────
+//
+// These tests pin the full production chain
+//   wire-protocol message (REG_REQ / CONSUMER_REG_REQ / ...)
+//   → BrokerService handler
+//     → HubState capability op (_on_*)
+//       → HubState subscribers
+//         → HubScriptRunner enqueue lambda
+//           → IncomingMessage queue
+//             → worker thread drain
+//               → engine.invoke("on_<event>", details)
+//                 → Lua script callback runs
+//
+// Federation observers (on_peer_*) are deliberately deferred —
+// federation needs its own design pass per HEP-0033 §16.
+//
+// Test rigor pattern (per CLAUDE.md "tests must pin path, timing, and
+// structure" + the user direction "validate from solid output, not
+// return values" + "the framework should LEAD TO the calling, not
+// bypass it"):
+//
+//   1. The TEST runs a real broker (HubHost::startup spawns the broker
+//      thread + binds the ROUTER socket).  No friend-access shortcut
+//      to call _on_* directly — that would test "the function exists",
+//      not "the framework calls it under wire-protocol triggers."
+//
+//   2. The TEST acts as a real role: spawns BrokerRequestComm pointing
+//      at the host's bound endpoint and sends register_channel /
+//      register_consumer.  The broker's own handlers walk the path
+//      down to the script callbacks.
+//
+//   3. Each script callback (a) emits a uniquely-marked log line
+//      carrying the wire details it received AND (b) calls
+//      api.request_shutdown.  The shutdown call is the SOLID OUTPUT
+//      that proves the callback actually executed (not just "engine
+//      returned true"); the log line confirms the dispatch carried
+//      the right details (path-discriminating).
+//
+//   4. The TEST runs host.run_main_loop on a watchdog future; the
+//      future's wait_for is the bounded ceiling, NOT a "wait long
+//      enough and hope" pattern.  Wakeup MUST come from the
+//      callback's request_shutdown — anything else times out cleanly.
+
+namespace
+{
+
+/// Run host.run_main_loop on a watchdog future.  Returns true if it
+/// returned within @p timeout (i.e., something actually called
+/// request_shutdown — proves the script-side callback executed).
+/// Returns false if the watchdog expired (regression: callback did
+/// not fire OR did not invoke request_shutdown).
+bool run_main_loop_with_watchdog(HubHost &host,
+                                  std::chrono::milliseconds timeout)
+{
+    auto fut = std::async(std::launch::async,
+                           [&host]() { host.run_main_loop(); });
+    return fut.wait_for(timeout) == std::future_status::ready;
+}
+
+/// Flush the async logger so subsequent reads see all written lines.
+void flush_logger() { Logger::instance().flush(); }
+
+/// Build a minimal REG_REQ payload — same shape role-side
+/// BrokerRequestComm::register_channel(opts) accepts.
+nlohmann::json make_reg_opts(const std::string &channel, const std::string &uid)
+{
+    nlohmann::json opts;
+    opts["channel_name"]      = channel;
+    opts["pattern"]           = "PubSub";
+    opts["has_shared_memory"] = false;
+    opts["producer_pid"]      = ::getpid();
+    opts["zmq_ctrl_endpoint"] = "tcp://127.0.0.1:0";
+    opts["zmq_data_endpoint"] = "tcp://127.0.0.1:0";
+    opts["zmq_pubkey"]        = "";
+    opts["role_uid"]          = uid;
+    opts["role_name"]         = "L3TestProducer";
+    return opts;
+}
+
+} // namespace
+
+TEST_F(HubLuaIntegrationTest, EventObservers_ChannelRegistration_FiresOnChannelOpenedAndOnRoleRegistered)
+{
+    // Single REG_REQ over the wire fires BOTH `on_channel_opened` AND
+    // `on_role_registered` (the producer's role isn't seen until it
+    // registers a channel; channel registration also creates the role
+    // entry).  Validate both observers fire and carry the right
+    // details, using the script's request_shutdown as the synchronous
+    // "callback executed" signal.
+    const std::string lua_body = R"LUA(
+seen = { channel = false, role = false }
+function on_init(api) api.log('info', 'INIT_RAN') end
+function on_channel_opened(ci)
+    api.log('info', 'CHANNEL_OPENED name=' .. (ci.name or '<missing>'))
+    seen.channel = true
+    if seen.channel and seen.role then api.request_shutdown() end
+end
+function on_role_registered(ri)
+    api.log('info', 'ROLE_REGISTERED uid=' .. (ri.uid or '<missing>'))
+    seen.role = true
+    if seen.channel and seen.role then api.request_shutdown() end
+end
+)LUA";
+
+    const fs::path dir = make_lua_hub_dir("evt_chan_role", lua_body,
+                                           "fixed_rate", 100);
+    auto cfg = HubConfig::load_from_directory(dir.string());
+    auto engine =
+        pylabhub::scripting::make_engine_from_script_config(cfg.script());
+    HubHost host(std::move(cfg), std::move(engine));
+    ASSERT_NO_THROW(host.startup());
+
+    // Spawn a real role-side client and send REG_REQ.  The host's
+    // bound endpoint may be ephemeral (tcp://127.0.0.1:0 → kernel-
+    // assigned port); read it back via host.broker_endpoint().
+    pylabhub::hub::BrokerRequestComm brc;
+    pylabhub::hub::BrokerRequestComm::Config bcfg;
+    bcfg.broker_endpoint = host.broker_endpoint();
+    bcfg.broker_pubkey   = host.broker_pubkey();
+    bcfg.role_uid        = "prod.l3test.uid12345678";
+    ASSERT_TRUE(brc.connect(bcfg));
+
+    std::atomic<bool> running{true};
+    std::thread brc_thread([&brc, &running] {
+        brc.run_poll_loop([&running] { return running.load(); });
+    });
+
+    auto reg = brc.register_channel(
+        make_reg_opts("lab.evt.channel", "prod.l3test.uid12345678"), 3000);
+    ASSERT_TRUE(reg.has_value())
+        << "register_channel failed — broker rejected the REG_REQ; "
+           "events never reach the script.  Reg result: "
+        << (reg.has_value() ? "ok" : "no value");
+
+    ASSERT_TRUE(run_main_loop_with_watchdog(host, std::chrono::seconds{5}))
+        << "watchdog expired — neither on_channel_opened nor "
+           "on_role_registered invoked request_shutdown.  The chain "
+           "broker→HubState._on_*→subscriber→IncomingMessage→dispatch_event→"
+           "engine.invoke is broken somewhere.  Log dump:\n"
+        << read_log_file(LogCaptureFixture::log_path());
+
+    running.store(false);
+    brc.stop();
+    brc_thread.join();
+    brc.disconnect();
+    host.shutdown();
+    flush_logger();
+
+    const std::string log = read_log_file(LogCaptureFixture::log_path());
+    EXPECT_NE(log.find("INIT_RAN"), std::string::npos);
+    EXPECT_NE(log.find("CHANNEL_OPENED name=lab.evt.channel"), std::string::npos)
+        << "on_channel_opened details wrong; channel_to_json regression.\n"
+        << log;
+    EXPECT_NE(log.find("ROLE_REGISTERED uid=prod.l3test.uid12345678"),
+              std::string::npos)
+        << "on_role_registered details wrong; role_to_json regression.\n"
+        << log;
+}
+
+TEST_F(HubLuaIntegrationTest, EventObserver_ConsumerRegistration_FiresOnConsumerAdded)
+{
+    // Two-step wire flow: producer's REG_REQ creates the channel,
+    // then consumer's CONSUMER_REG_REQ fires on_consumer_added.
+    // The script only requests shutdown after consumer fires (channel
+    // and role are merely the prerequisite events).
+    const std::string lua_body = R"LUA(
+function on_init(api) api.log('info', 'INIT_RAN') end
+function on_channel_opened(ci) api.log('info', 'CHANNEL_OPENED') end
+function on_role_registered(ri) api.log('info', 'ROLE_REGISTERED') end
+function on_consumer_added(d)
+    api.log('info', 'CONSUMER_ADDED ch=' .. (d.channel or '<m>') ..
+                 ' role=' .. (d.role_uid or '<m>'))
+    api.request_shutdown()
+end
+)LUA";
+
+    const fs::path dir = make_lua_hub_dir("evt_cons_add", lua_body,
+                                           "fixed_rate", 100);
+    auto cfg = HubConfig::load_from_directory(dir.string());
+    auto engine =
+        pylabhub::scripting::make_engine_from_script_config(cfg.script());
+    HubHost host(std::move(cfg), std::move(engine));
+    ASSERT_NO_THROW(host.startup());
+
+    pylabhub::hub::BrokerRequestComm prod_brc;
+    pylabhub::hub::BrokerRequestComm::Config bcfg;
+    bcfg.broker_endpoint = host.broker_endpoint();
+    bcfg.broker_pubkey   = host.broker_pubkey();
+    bcfg.role_uid        = "prod.evcons.uid";
+    ASSERT_TRUE(prod_brc.connect(bcfg));
+    std::atomic<bool> prod_running{true};
+    std::thread prod_thread([&prod_brc, &prod_running] {
+        prod_brc.run_poll_loop([&prod_running] { return prod_running.load(); });
+    });
+
+    auto prod_reg = prod_brc.register_channel(
+        make_reg_opts("lab.cons.channel", "prod.evcons.uid"), 3000);
+    ASSERT_TRUE(prod_reg.has_value()) << "producer REG_REQ failed";
+
+    pylabhub::hub::BrokerRequestComm cons_brc;
+    pylabhub::hub::BrokerRequestComm::Config cbcfg;
+    cbcfg.broker_endpoint = host.broker_endpoint();
+    cbcfg.broker_pubkey   = host.broker_pubkey();
+    cbcfg.role_uid        = "cons.l3.uid12345678";
+    ASSERT_TRUE(cons_brc.connect(cbcfg));
+    std::atomic<bool> cons_running{true};
+    std::thread cons_thread([&cons_brc, &cons_running] {
+        cons_brc.run_poll_loop([&cons_running] { return cons_running.load(); });
+    });
+
+    // CONSUMER_REG_REQ wire fields are `consumer_uid` / `consumer_name`
+    // (not the role-side terminology — see broker_service.cpp:1723).
+    // The broker translates them to ConsumerEntry.role_uid/role_name
+    // when populating HubState; HubScriptRunner re-exposes them as
+    // role_uid/role_name in the script's details payload.
+    nlohmann::json cons_opts;
+    cons_opts["channel_name"]  = "lab.cons.channel";
+    cons_opts["consumer_pid"]  = ::getpid();
+    cons_opts["consumer_uid"]  = "cons.l3.uid12345678";
+    cons_opts["consumer_name"] = "L3TestConsumer";
+    auto cons_reg = cons_brc.register_consumer(cons_opts, 3000);
+    ASSERT_TRUE(cons_reg.has_value()) << "consumer CONSUMER_REG_REQ failed";
+
+    ASSERT_TRUE(run_main_loop_with_watchdog(host, std::chrono::seconds{5}))
+        << "watchdog expired — on_consumer_added never invoked "
+           "request_shutdown.\n"
+        << read_log_file(LogCaptureFixture::log_path());
+
+    cons_running.store(false); cons_brc.stop(); cons_thread.join(); cons_brc.disconnect();
+    prod_running.store(false); prod_brc.stop(); prod_thread.join(); prod_brc.disconnect();
+    host.shutdown();
+    flush_logger();
+
+    const std::string log = read_log_file(LogCaptureFixture::log_path());
+    EXPECT_NE(log.find("CONSUMER_ADDED ch=lab.cons.channel role=cons.l3.uid12345678"),
+              std::string::npos)
+        << "on_consumer_added details (channel + role_uid) wrong; log:\n"
+        << log;
+}
+
+// Note on band events: HEP-CORE-0030 BAND_JOIN_REQ is a separate wire
+// surface; covering it would require BrokerRequestComm to expose a
+// band_join helper or this test to format the BAND_JOIN_REQ wire frame
+// directly.  Deferred — not a hub-character regression risk on the
+// observer-dispatch chain (which is what the channel/role/consumer
+// tests above prove); covered separately when band-side work lands.
+//
+// Note on federation events (on_peer_*): per HEP-0033 §16, federation
+// needs its own design pass after the hub itself is finished.
+
+// ─── §12.2.3 user-posted events ─────────────────────────────────────────────
+
+TEST_F(HubLuaIntegrationTest, PostEvent_FromOnInit_FiresOnAppCallback)
+{
+    // Script's on_init posts a user event; the worker thread drains
+    // the IncomingMessage and dispatches on_app_<name>; that callback
+    // calls request_shutdown.  No timing dependency: the watchdog
+    // wakeup is the proof of execution.
+    const std::string lua_body = R"LUA(
+function on_init(api)
+    api.log('info', 'INIT_RAN posting event')
+    api.post_event('user_event', { seq = 42, msg = 'hello' })
+end
+function on_app_user_event(args)
+    api.log('info', 'APP_EVENT seq=' .. tostring(args.seq) ..
+                ' msg=' .. tostring(args.msg))
+    api.request_shutdown()
+end
+)LUA";
+    const fs::path dir = make_lua_hub_dir("post_event", lua_body,
+                                           "fixed_rate", 100);
+    auto cfg = HubConfig::load_from_directory(dir.string());
+    auto engine =
+        pylabhub::scripting::make_engine_from_script_config(cfg.script());
+    HubHost host(std::move(cfg), std::move(engine));
+    ASSERT_NO_THROW(host.startup());
+
+    ASSERT_TRUE(run_main_loop_with_watchdog(host, std::chrono::seconds{5}))
+        << "watchdog expired — on_app_user_event never fired.  Either "
+           "api.post_event didn't enqueue, or the worker didn't dispatch the "
+           "app_<name>-prefixed event, or the script callback raised an "
+           "error before request_shutdown.\n"
+        << read_log_file(LogCaptureFixture::log_path());
+
+    host.shutdown();
+    flush_logger();
+
+    const std::string log = read_log_file(LogCaptureFixture::log_path());
+    EXPECT_NE(log.find("APP_EVENT seq=42 msg=hello"), std::string::npos)
+        << "on_app_user_event fired but the args payload was wrong — "
+           "json_to_lua / dispatch_event regression. Log dump:\n" << log;
+}
+
+// ─── §12.2.2 augmentation hooks ─────────────────────────────────────────────
+
+TEST_F(HubLuaIntegrationTest, Augment_QueryMetrics_FromAdminThreadCallSite_MutatesResponse)
+{
+    // Direct test of the augmentation flow: post-startup, the test
+    // thread (acting as the admin thread would) calls
+    // host.hub_api()->augment_query_metrics().  The script's
+    // on_query_metrics adds a sentinel field and returns the response;
+    // the test verifies the returned response carries the sentinel —
+    // this is the response-mutation contract of HEP §12.2.2.
+    //
+    // SOLID-OUTPUT contract: the assertion is on the returned response
+    // object's content (a structural value), NOT on the call returning
+    // — a regression that returned the original response unmodified
+    // would still "succeed" by exception/return-value criteria but
+    // fail this assertion.
+    const std::string lua_body = R"LUA(
+function on_init(api) api.log('info', 'INIT_RAN') end
+function on_query_metrics(args)
+    api.log('info', 'AUGMENT_RAN params=' ..
+                (args.params and tostring(args.params.x) or 'nil'))
+    args.response.augmented_field = 'sentinel-99'
+    args.response.echo_x = (args.params and args.params.x) or -1
+    return args.response
+end
+)LUA";
+    const fs::path dir = make_lua_hub_dir("augment_qm", lua_body,
+                                           "fixed_rate", 100);
+    auto cfg = HubConfig::load_from_directory(dir.string());
+    auto engine =
+        pylabhub::scripting::make_engine_from_script_config(cfg.script());
+    HubHost host(std::move(cfg), std::move(engine));
+    ASSERT_NO_THROW(host.startup());
+
+    auto *api = host.hub_api();
+    ASSERT_NE(api, nullptr) << "hub_api() returned null after startup — "
+                               "EngineHost lazy-construction did not complete";
+
+    nlohmann::json params   = {{"x", 7}};
+    nlohmann::json response = {{"baseline", "kept-or-mutated"}};
+    api->augment_query_metrics(params, response);
+
+    // Solid-output assertions: the script's mutation must be visible
+    // in the response we passed in.  Also check the script's own log
+    // marker AND that the params round-tripped correctly.
+    EXPECT_EQ(response.value("augmented_field", std::string{}), "sentinel-99")
+        << "augment_query_metrics did NOT mutate response — script's return "
+           "value was either ignored, or on_query_metrics never fired.  "
+           "Response:\n" << response.dump(2);
+    EXPECT_EQ(response.value("echo_x", -999), 7)
+        << "params field 'x' did not round-trip into the script's args.params; "
+           "json_to_lua regression.  Response:\n" << response.dump(2);
+    EXPECT_EQ(response.value("baseline", std::string{}), "kept-or-mutated")
+        << "script lost the baseline field — should have preserved it via "
+           "args.response.";
+
+    host.shutdown();
+    flush_logger();
+
+    const std::string log = read_log_file(LogCaptureFixture::log_path());
+    EXPECT_NE(log.find("AUGMENT_RAN params=7"), std::string::npos)
+        << "on_query_metrics fired but params didn't carry x=7; log:\n" << log;
+}
+
+TEST_F(HubLuaIntegrationTest, Augment_NullReturn_KeepsDefaultResponse)
+{
+    // Script returns nil — the C++ side must KEEP the default response
+    // unchanged (the "must return the response" contract — see HEP
+    // §12.2.2).  Pins the §12.2.2 anti-pattern: mutate-without-return
+    // is silently treated as "no change."
+    const std::string lua_body = R"LUA(
+function on_init(api) api.log('info', 'INIT_RAN') end
+function on_query_metrics(args)
+    api.log('info', 'AUGMENT_RAN_NIL_RETURN')
+    args.response.would_have_been = 'lost'
+    -- intentionally no `return` -> nil
+end
+)LUA";
+    const fs::path dir = make_lua_hub_dir("augment_nil", lua_body,
+                                           "fixed_rate", 100);
+    auto cfg = HubConfig::load_from_directory(dir.string());
+    auto engine =
+        pylabhub::scripting::make_engine_from_script_config(cfg.script());
+    HubHost host(std::move(cfg), std::move(engine));
+    ASSERT_NO_THROW(host.startup());
+
+    auto *api = host.hub_api();
+    ASSERT_NE(api, nullptr);
+
+    nlohmann::json params   = nlohmann::json::object();
+    nlohmann::json response = {{"default", true}};
+    api->augment_query_metrics(params, response);
+
+    // Solid-output: the default field must still be present, and the
+    // sentinel the script tried to set in-place must NOT be present.
+    EXPECT_EQ(response.value("default", false), true)
+        << "default response was lost despite nil-return contract.  "
+           "Response:\n" << response.dump(2);
+    EXPECT_EQ(response.contains("would_have_been"), false)
+        << "in-place mutation leaked into the response despite the script "
+           "returning nil — contract violation: only `return` should "
+           "publish changes.  Response:\n" << response.dump(2);
+
+    host.shutdown();
+    flush_logger();
+
+    // The log marker confirms on_query_metrics ran (the absent
+    // mutation isn't because the callback didn't fire).
+    const std::string log = read_log_file(LogCaptureFixture::log_path());
+    EXPECT_NE(log.find("AUGMENT_RAN_NIL_RETURN"), std::string::npos)
+        << "on_query_metrics never fired — nil-return contract test is "
+           "vacuous if the callback didn't run.  Log:\n" << log;
 }
