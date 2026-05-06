@@ -255,9 +255,14 @@ for follow-up.
 
 | Item | Status |
 |---|---|
-| F1 — hub.pubkey publishing | ❌ OPEN — fix in this commit |
-| F2 — vault subdir layout | ❌ OPEN — separate slice |
-| F3 — `--dev` doc stale | ❌ OPEN — fix in this commit |
-| F4 — broker_endpoint default | ❌ OPEN — fix in this commit |
+| F1 — hub.pubkey publishing | ✅ FIXED 2026-05-05 (commit `1439ef4`) |
+| F2 — vault subdir layout | ✅ FIXED 2026-05-05 (commit `efb604c`) |
+| F3 — `--dev` doc stale | ✅ FIXED 2026-05-05 (commit `1439ef4`) |
+| F4 — broker_endpoint default | ✅ FIXED 2026-05-05 (commits `1439ef4` template + `efb604c` struct default) |
 | F5 — L4 hub-pipeline tests | ❌ OPEN — tracked in MESSAGEHUB_TODO |
 | F6 — sender_uid renaming | ✅ verified compatible (no fix needed) |
+
+All audit findings except F5 (deferred integration tests) are resolved.
+F5 is independent ongoing work tracked in
+`docs/todo/MESSAGEHUB_TODO.md` "System-level L4 tests"; per-test slices
+land separately.
