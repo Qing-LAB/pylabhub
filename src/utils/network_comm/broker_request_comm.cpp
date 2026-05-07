@@ -615,10 +615,22 @@ void BrokerRequestComm::stop() noexcept
 // ============================================================================
 
 void BrokerRequestComm::send_heartbeat(const std::string &channel,
+                                           const std::string &uid,
+                                           const std::string &role_type,
                                            const nlohmann::json &metrics)
 {
+    // HEP-CORE-0019 §4.1 / HEP-CORE-0023 §2.5.2 / HEP-CORE-0033 §18
+    // (Phase 6 per-presence wire format).  The `uid` and `role_type`
+    // fields are required as of M0; the broker handler reads them
+    // from the payload (rather than deriving uid from
+    // `channel.producer_role_uid` as in pre-Phase-6) once M1 ships.
+    // `producer_pid` is retained from the Phase 1 wire format for
+    // backward audit / diagnostics; the broker uses it only for an
+    // ERROR log when missing or zero.
     nlohmann::json payload;
     payload["channel_name"] = channel;
+    payload["uid"]          = uid;
+    payload["role_type"]    = role_type;
     payload["producer_pid"] = pylabhub::platform::get_pid();
     if (!metrics.empty())
         payload["metrics"] = metrics;

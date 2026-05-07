@@ -97,7 +97,25 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
 
     // ── Fire-and-forget messages (thread-safe, enqueued) ─────────────────
 
+    /// Send HEARTBEAT_REQ for a specific (channel, uid, role_type)
+    /// presence — see HEP-CORE-0019 §4.1 (Phase 6 wire format) and
+    /// HEP-CORE-0033 §18 (Class A — channel-bound) + §19 (per-presence
+    /// emission).
+    ///
+    /// `role_type` is the WIRE value: `"producer"` for a producer-kind
+    /// presence's heartbeat, `"consumer"` for a consumer-kind
+    /// presence's heartbeat.  A processor role emits two heartbeats
+    /// per cycle (post-Phase-6) — one for each presence — each with
+    /// its own role_type.  Pre-Phase-6 single-tick installation
+    /// (today, before role_host migration M2) sends one heartbeat
+    /// with the role_tag-derived role_type; broker-side handler
+    /// changes (M1) consume the new fields.
+    ///
+    /// `metrics` is optional — pass empty json `{}` when nothing
+    /// new to report.
     void send_heartbeat(const std::string &channel,
+                        const std::string &uid,
+                        const std::string &role_type,
                         const nlohmann::json &metrics);
     void send_metrics_report(const std::string &channel,
                              const std::string &uid,

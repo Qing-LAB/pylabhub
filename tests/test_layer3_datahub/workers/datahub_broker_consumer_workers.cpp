@@ -227,7 +227,7 @@ int consumer_reg_happy_path()
             ASSERT_TRUE(reg.has_value()) << "register_channel failed";
 
             // Heartbeat → Ready
-            prod_brc.send_heartbeat(channel, {});
+            prod_brc.send_heartbeat(channel, prod_uid, "producer", {});
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
             // Register consumer via separate BRC
@@ -464,7 +464,7 @@ int disc_shows_consumer_count()
             auto reg = prod_brc.register_channel(reg_opts, 3000);
             ASSERT_TRUE(reg.has_value());
 
-            prod_brc.send_heartbeat(channel, {});
+            prod_brc.send_heartbeat(channel, prod_uid, "producer", {});
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
             nlohmann::json disc_req;

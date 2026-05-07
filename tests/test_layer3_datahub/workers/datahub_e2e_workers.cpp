@@ -192,7 +192,7 @@ int e2e_producer(int argc, char** argv)
             reg_opts["role_uid"]          = uid;
             auto reg = brc.register_channel(reg_opts, 3000);
             ASSERT_TRUE(reg.has_value()) << "e2e_producer: register_channel failed";
-            brc.send_heartbeat(channel, {});
+            brc.send_heartbeat(channel, uid, "producer", {});
 
             // Write kNumSlots slots with incrementing uint32_t values
             for (uint32_t i = 0; i < kNumSlots; ++i)
