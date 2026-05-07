@@ -476,9 +476,28 @@ void RoleAPIBase::on_heartbeat_tick_()
                                  ? pImpl->channel
                                  : pImpl->out_channel;
 
-    LOGGER_TRACE("[{}] ctrl: sending heartbeat for '{}'",
-                 pImpl->role_tag, hb_channel);
-    bc->send_heartbeat(hb_channel, snapshot_metrics_json());
+    // HEP-CORE-0019 §4.1 (Phase 6 wire format) — heartbeat carries
+    // (channel, uid, role_type).  Pre-Phase-6 single-tick installation:
+    // we map role_tag to a single role_type for this tick.
+    //   - "prod" → "producer"   (heartbeat for out_channel as producer — correct)
+    //   - "cons" → "consumer"   (heartbeat for in_channel as consumer — broker
+    //                            mis-attributes pre-M1; M1's handler split fixes it)
+    //   - "proc" → "producer"   (today's processor sends one tick for out_channel
+    //                            as the producer presence; M2+ adds the consumer
+    //                            presence's tick separately per HEP-CORE-0033 §19)
+    // M2 retires the consumer-side tick installation; the wire format here
+    // is the per-presence form that M5+ presence-list emission also uses.
+    std::string hb_role_type;
+    if (pImpl->role_tag == "prod" || pImpl->role_tag == "proc")
+        hb_role_type = "producer";
+    else if (pImpl->role_tag == "cons")
+        hb_role_type = "consumer";
+    else
+        hb_role_type = "producer"; // safe default for unknown role_tag
+
+    LOGGER_TRACE("[{}] ctrl: sending heartbeat for '{}' (uid='{}' role_type='{}')",
+                 pImpl->role_tag, hb_channel, pImpl->uid, hb_role_type);
+    bc->send_heartbeat(hb_channel, pImpl->uid, hb_role_type, snapshot_metrics_json());
 
     if (eng && eng->has_callback("on_heartbeat"))
         eng->invoke("on_heartbeat");

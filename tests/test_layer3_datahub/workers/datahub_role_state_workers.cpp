@@ -155,7 +155,7 @@ int metrics_reclaim_cycle()
             ASSERT_TRUE(reg.has_value());
 
             // One heartbeat -> PendingReady -> Ready, bumps pending_to_ready.
-            bh.brc.send_heartbeat(ch, {});
+            bh.brc.send_heartbeat(ch, uid, "producer", {});
 
             // Stop heartbeating; wait for Ready -> Pending -> dereg via metrics.
             auto metrics_reclaimed = [&]() {
@@ -204,7 +204,7 @@ int pending_recovers_to_ready()
 
             auto reg = bh.brc.register_channel(make_reg_opts(ch, uid), 3000);
             ASSERT_TRUE(reg.has_value());
-            bh.brc.send_heartbeat(ch, {});  // -> Ready
+            bh.brc.send_heartbeat(ch, uid, "producer", {});  // -> Ready
 
             // Wait for demotion to Pending.
             auto demoted = [&]() {
@@ -216,7 +216,7 @@ int pending_recovers_to_ready()
 
             // Heartbeat again -> should transition Pending -> Ready (counter +1).
             auto before = broker.service->query_role_state_metrics().pending_to_ready_total;
-            bh.brc.send_heartbeat(ch, {});
+            bh.brc.send_heartbeat(ch, uid, "producer", {});
             auto recovered = [&]() {
                 auto m = broker.service->query_role_state_metrics();
                 return m.pending_to_ready_total > before;
@@ -309,8 +309,8 @@ int band_membership_cleaned_on_role_close()
 
             ASSERT_TRUE(a.brc.register_channel(make_reg_opts(ch_a, uid_a), 3000).has_value());
             ASSERT_TRUE(b.brc.register_channel(make_reg_opts(ch_b, uid_b), 3000).has_value());
-            a.brc.send_heartbeat(ch_a, {});
-            b.brc.send_heartbeat(ch_b, {});
+            a.brc.send_heartbeat(ch_a, uid_a, "producer", {});
+            b.brc.send_heartbeat(ch_b, uid_b, "producer", {});
 
             ASSERT_TRUE(a.brc.band_join(band, 3000).has_value());
             ASSERT_TRUE(b.brc.band_join(band, 3000).has_value());

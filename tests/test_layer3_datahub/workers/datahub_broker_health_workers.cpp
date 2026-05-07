@@ -203,7 +203,7 @@ int producer_gets_closing_notify(int /*argc*/, char ** /*argv*/)
             ASSERT_TRUE(reg.has_value()) << "register_channel failed";
 
             // Send one heartbeat to mark Ready, then stop sending.
-            bh.brc.send_heartbeat(ch_name, {});
+            bh.brc.send_heartbeat(ch_name, uid, "producer", {});
 
             // Wait ~1s for state machine to demote Ready -> Pending -> deregister + CHANNEL_CLOSING_NOTIFY.
             const auto deadline =
@@ -244,7 +244,7 @@ int consumer_auto_deregisters(int /*argc*/, char ** /*argv*/)
             auto reg = prod_bh.brc.register_channel(make_reg_opts(ch_name, prod_uid), 3000);
             ASSERT_TRUE(reg.has_value());
 
-            prod_bh.brc.send_heartbeat(ch_name, {});
+            prod_bh.brc.send_heartbeat(ch_name, prod_uid, "producer", {});
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
             // Register consumer
@@ -374,7 +374,7 @@ int dead_consumer_orchestrator(int argc, char **argv)
             auto reg = bh.brc.register_channel(make_reg_opts(ch_name, prod_uid), 3000);
             ASSERT_TRUE(reg.has_value());
 
-            bh.brc.send_heartbeat(ch_name, {});
+            bh.brc.send_heartbeat(ch_name, prod_uid, "producer", {});
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
             // Write connection info for the exiter

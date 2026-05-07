@@ -1838,7 +1838,19 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
         // when the PendingReady -> Ready transition fires.
         LOGGER_INFO("Broker: role '{}' transitioned Pending -> Ready", channel_name);
     }
-    LOGGER_DEBUG("Broker: heartbeat for channel '{}'", channel_name);
+    // Wire-format observability — HEP-CORE-0019 §4.1 (Phase 6).  The
+    // role-side `BrokerRequestComm::send_heartbeat(channel, uid,
+    // role_type, metrics)` puts these fields on the wire under those
+    // exact keys; this DEBUG line echoes what the broker DECODED so
+    // downstream diagnostics + L3 tests can verify the round-trip.
+    // Pre-Phase-6 wire payloads omit `uid` / `role_type` — those
+    // values render empty here, which is the visible signal that
+    // a pre-M0 client is talking to a post-M0 broker.  M1 will
+    // make the fields required (broker rejects empty).
+    const std::string wire_uid       = req.value("uid",       std::string{});
+    const std::string wire_role_type = req.value("role_type", std::string{});
+    LOGGER_DEBUG("Broker: HEARTBEAT_REQ channel='{}' uid='{}' role_type='{}'",
+                 channel_name, wire_uid, wire_role_type);
 
     if (!req.contains("producer_pid") || req["producer_pid"].get<uint64_t>() == 0)
     {

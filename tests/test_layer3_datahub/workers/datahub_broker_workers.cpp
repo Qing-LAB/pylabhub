@@ -223,7 +223,7 @@ int broker_reg_disc_happy_path()
             auto reg = brc.register_channel(reg_opts, 3000);
             ASSERT_TRUE(reg.has_value()) << "register_channel must succeed";
 
-            brc.send_heartbeat(channel, {});
+            brc.send_heartbeat(channel, uid, "producer", {});
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
             auto disc = brc.discover_channel(channel, {}, 5000);
@@ -363,7 +363,7 @@ int broker_dereg_happy_path()
             auto reg = brc.register_channel(reg_opts, 3000);
             ASSERT_TRUE(reg.has_value()) << "register_channel must succeed";
 
-            brc.send_heartbeat(channel, {});
+            brc.send_heartbeat(channel, uid, "producer", {});
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
             // Verify channel is discoverable

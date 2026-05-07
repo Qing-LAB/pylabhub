@@ -103,7 +103,10 @@ int connect_and_heartbeat()
         ch.run_poll_loop([&] { return running.load(); });
     });
 
-    ch.send_heartbeat("test_channel", {{"test_key", 42}});
+    // Wire-format probe: per HEP-CORE-0019 §4.1 (Phase 6),
+    // HEARTBEAT_REQ requires (channel, uid, role_type).
+    ch.send_heartbeat("test_channel", "prod.test.uid00000001", "producer",
+                      {{"test_key", 42}});
     std::this_thread::sleep_for(std::chrono::milliseconds{100});
 
     running.store(false);
@@ -152,7 +155,8 @@ int register_and_discover()
         EXPECT_EQ(reg_result->value("status", ""), "success");
 
     // Send heartbeat so broker marks channel as Ready (required before DISC_REQ).
-    ch.send_heartbeat("test_ch", {});
+    // Per HEP-CORE-0019 §4.1 (Phase 6) — wire format requires (channel, uid, role_type).
+    ch.send_heartbeat("test_ch", "prod.test.uid00000001", "producer", {});
     std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
     // Discover the channel.

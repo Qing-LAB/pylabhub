@@ -239,7 +239,7 @@ TEST_F(MetricsPlaneTest, HeartbeatMetrics_StoredByBroker)
     json metrics;
     metrics["iteration_count"] = 42;
     metrics["avg_period_us"]   = 1000;
-    bh.brc.send_heartbeat(channel, metrics);
+    bh.brc.send_heartbeat(channel, uid, "producer", metrics);
 
     ASSERT_TRUE(wait_for_metric(channel, [](const json &r) {
         return r.value("status", "") == "success"
@@ -323,7 +323,7 @@ TEST_F(MetricsPlaneTest, QueryMetrics_AllChannels)
 
     json metrics;
     metrics["test_field"] = 99;
-    bh.brc.send_heartbeat(channel, metrics);
+    bh.brc.send_heartbeat(channel, uid, "producer", metrics);
 
     // Wait until the channel appears under the all-channels query.
     // Empty channel arg → query_metrics returns "channels" map.
@@ -353,7 +353,7 @@ TEST_F(MetricsPlaneTest, HeartbeatNoMetrics_BackwardCompat)
     auto reg = bh.brc.register_channel(make_reg_opts(channel, uid), 3000);
     ASSERT_TRUE(reg.has_value());
 
-    bh.brc.send_heartbeat(channel, {});
+    bh.brc.send_heartbeat(channel, uid, "producer", {});
 
     // Empty heartbeat: nothing to wait for in the metrics payload.
     // The query is unconditionally "success" once REG_REQ has succeeded
@@ -379,7 +379,7 @@ TEST_F(MetricsPlaneTest, MetricsUpdate_OverwriteOnHeartbeat)
 
     json m1;
     m1["iteration_count"] = 10;
-    bh.brc.send_heartbeat(channel, m1);
+    bh.brc.send_heartbeat(channel, uid, "producer", m1);
     // Wait until m1 propagated, so the m2 overwrite is observable as
     // a transition rather than a coincident write.
     ASSERT_TRUE(wait_for_metric(channel, [](const json &r) {
@@ -389,7 +389,7 @@ TEST_F(MetricsPlaneTest, MetricsUpdate_OverwriteOnHeartbeat)
 
     json m2;
     m2["iteration_count"] = 20;
-    bh.brc.send_heartbeat(channel, m2);
+    bh.brc.send_heartbeat(channel, uid, "producer", m2);
     ASSERT_TRUE(wait_for_metric(channel, [](const json &r) {
         return r.contains("metrics") && r["metrics"].contains("producer")
             && r["metrics"]["producer"].value("iteration_count", 0) == 20;
@@ -417,7 +417,7 @@ TEST_F(MetricsPlaneTest, ProducerPID_InQueryResult)
 
     json metrics;
     metrics["test"] = 1;
-    bh.brc.send_heartbeat(channel, metrics);
+    bh.brc.send_heartbeat(channel, uid, "producer", metrics);
 
     // Wait until the producer record carries this process's PID.
     // Replaces a bare sleep_for(200ms) Class B ordering.
@@ -522,7 +522,7 @@ TEST_F(MetricsPlaneTest, QueryEngine_RolesCarryCollectedAt)
 
     json metrics;
     metrics["iteration_count"] = 7;
-    bh.brc.send_heartbeat(channel, metrics);
+    bh.brc.send_heartbeat(channel, uid, "producer", metrics);
 
     pylabhub::hub::MetricsFilter f;
     f.categories.insert(pylabhub::hub::metrics_category::kRole);
@@ -559,7 +559,7 @@ TEST_F(MetricsPlaneTest, QueryEngine_ChannelsHaveProducerAndConsumerMetrics)
 
     json metrics;
     metrics["iteration_count"] = 99;
-    bh.brc.send_heartbeat(channel, metrics);
+    bh.brc.send_heartbeat(channel, uid, "producer", metrics);
 
     pylabhub::hub::MetricsFilter f;
     f.categories.insert(pylabhub::hub::metrics_category::kChannel);

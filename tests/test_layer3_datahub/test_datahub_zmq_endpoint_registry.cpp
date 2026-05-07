@@ -197,7 +197,7 @@ TEST_F(ZmqEndpointRegistryTest, DefaultTransport_IsShm)
     // Producer must heartbeat for channel to become Ready.
     // discover_channel retries on DISC_PENDING (HEP-CORE-0023 §2.2),
     // so the consumer does not need to wait here.
-    bh.brc.send_heartbeat(channel, {});
+    bh.brc.send_heartbeat(channel, uid, "producer", {});
 
     BrcHandle cons_bh;
     cons_bh.start(ep(), pk(), "cons.ep." + channel);
@@ -229,7 +229,7 @@ TEST_F(ZmqEndpointRegistryTest, ZmqTransport_RoundTrip)
     // Producer must heartbeat for channel to become Ready.
     // discover_channel retries on DISC_PENDING (HEP-CORE-0023 §2.2),
     // so the consumer does not need to wait here.
-    bh.brc.send_heartbeat(channel, {});
+    bh.brc.send_heartbeat(channel, uid, "producer", {});
 
     BrcHandle cons_bh;
     cons_bh.start(ep(), pk(), "cons.ep." + channel);
@@ -260,7 +260,7 @@ TEST_F(ZmqEndpointRegistryTest, MultipleConsumers_DiscoverSameEndpoint)
     ASSERT_TRUE(reg.has_value());
 
     // Heartbeat to trigger Ready transition; discover_channel retries on DISC_PENDING.
-    bh.brc.send_heartbeat(channel, {});
+    bh.brc.send_heartbeat(channel, uid, "producer", {});
 
     BrcHandle c1, c2;
     c1.start(ep(), pk(), "CONS1-" + channel);
@@ -332,7 +332,7 @@ TEST_F(ZmqEndpointRegistryTest, EndpointUpdate_ReflectedInDiscovery)
     // Heartbeat → Ready, then send endpoint update.
     // Both are fire-and-forget; the broker processes them in order from the
     // ROUTER socket since they come from the same DEALER identity.
-    bh.brc.send_heartbeat(channel, {});
+    bh.brc.send_heartbeat(channel, uid, "producer", {});
     bh.brc.send_endpoint_update(channel, "zmq_node", updated_ep);
 
     // discover_channel retries on DISC_PENDING per HEP-CORE-0023 §2.2.

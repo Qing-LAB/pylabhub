@@ -330,7 +330,7 @@ TEST_F(BrokerAdminTest, Snapshot_AfterConsumer)
     ASSERT_TRUE(reg.has_value()) << "register_channel failed";
 
     // Send heartbeat so broker marks channel Ready (required for consumer registration)
-    prod_bh.brc.send_heartbeat(channel, {});
+    prod_bh.brc.send_heartbeat(channel, "prod." + channel, "producer", {});
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
     // Register consumer (separate BRC instance)
