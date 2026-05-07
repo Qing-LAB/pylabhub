@@ -4,18 +4,20 @@
 |---------------|---------------------------------------------------------------------------------|
 | **HEP**       | `HEP-CORE-0017`                                                                 |
 | **Title**     | Pipeline Architecture — Components, Planes, Topologies, and Boundaries         |
-| **Status**    | Implemented — 2026-03-03. Updated 2026-04-21: per-role binaries retired; roles run via `plh_role --role <tag>` (HEP-CORE-0024).  Updated 2026-04-25: legacy `pylabhub-hubshell` and the `src/hub_python/` stack also deleted; replacement `plh_hub` binary is HEP-CORE-0033 §15 Phase 9.  Diagrams in this HEP that still show `pylabhub-hubshell` describe the historical interconnection — protocol semantics are unchanged but the binary boundary will land on `plh_hub` once HEP-CORE-0033 phases complete. |
+| **Status**    | Implemented — 2026-03-03.  Doc text refreshed 2026-05-06 against current binaries: roles run via `plh_role --role <producer|consumer|processor>` (HEP-CORE-0024) and the hub binary is `plh_hub` (HEP-CORE-0033 §15).  Earlier per-role binaries (`pylabhub-producer/consumer/processor`) and the legacy `pylabhub-hubshell` have been retired and deleted from the tree. |
 | **Created**   | 2026-03-01                                                                      |
 | **Updated**   | 2026-03-01 (actor eliminated; producer/consumer binaries added); 2026-04-21 (binary unification — `pylabhub-producer/consumer/processor` retired in favor of unified `plh_role`) |
 | **Area**      | Framework Architecture (`pylabhub-utils`, `pylabhub-scripting`, `plh_role` unified binary) |
 | **Depends on**| HEP-CORE-0002 (DataHub), HEP-CORE-0007 (Protocol), HEP-CORE-0011 (ScriptHost), HEP-CORE-0034 (Schema Registry — supersedes HEP-CORE-0016), HEP-CORE-0024 (Role Directory Service — binary unification) |
 
-> **Naming note (2026-04-21)**: Topology diagrams and prose below use the
-> historical binary names `pylabhub-producer` / `pylabhub-consumer` /
-> `pylabhub-processor` as role labels. These refer to the *roles*; each role
-> is now launched via `plh_role --role <producer|consumer|processor>` (the
-> three dedicated binaries have been retired — see HEP-CORE-0024). Protocol,
-> topology, and architectural content is unchanged.
+> **Binaries (current, 2026-05-06)**: this document uses the current
+> launch form throughout: roles run via
+> `plh_role --role <producer|consumer|processor>` (HEP-CORE-0024) and
+> the hub binary is `plh_hub` (HEP-CORE-0033 §15).  Where this HEP
+> earlier referred to per-role binaries (`pylabhub-{producer,consumer,
+> processor}`) or the legacy `pylabhub-hubshell`, those names are
+> retained only in `## 12 Document History` for traceability.
+> Protocol, topology, and architectural content is unchanged.
 
 ---
 
@@ -45,7 +47,7 @@ These planes are strictly orthogonal: changes to one have no effect on the other
 |-------|-----------|-----------|---------------|
 | **Data plane** | Slot payloads (typed fields) | SHM ring buffer (`DataBlockProducer`/`Consumer`) or msgpack-encoded ZMQ frames (`hub::ZmqQueue`) | HEP-CORE-0002 §3, §7.1 |
 | **Control plane** | HELLO / BYE / REG / DISC / HEARTBEAT | ZMQ ROUTER–DEALER ctrl sockets + Broker | HEP-CORE-0007 |
-| **Message plane** | Arbitrary typed messages (bidirectional) | ZMQ via `Messenger` | HEP-CORE-0007 §6 |
+| **Message plane** | Inter-role messaging (broker-coordinated channel events + point-to-point inbox) | ZMQ via `BrokerRequestComm` (channel notifications, role discovery, broadcasts) and `InboxQueue` / `InboxClient` (point-to-point, HEP-CORE-0027) | HEP-CORE-0007 §6, HEP-CORE-0027 |
 | **Timing plane** | Loop pacing — fixed rate, max rate, compensating | `LoopPolicy` on `DataBlockProducer`/`Consumer` | HEP-CORE-0008 |
 | **Metrics plane** | Counter snapshots, custom KV pairs | Piggyback on HEARTBEAT (producer/processor), `METRICS_REPORT_REQ` (consumer), `METRICS_REQ/ACK` (query) | HEP-CORE-0019 |
 
@@ -63,8 +65,8 @@ graph LR
     end
 
     subgraph "Message Plane"
-        MP_MSG["Messenger<br/>(bidirectional)"]
-        MP_TYPED["Typed Messages"]
+        MP_BRC["BrokerRequestComm<br/>(broker-coordinated)"]
+        MP_INBOX["InboxQueue / InboxClient<br/>(point-to-point — HEP-0027)"]
     end
 
     subgraph "Timing Plane"
@@ -78,8 +80,9 @@ graph LR
     end
 
     DP_SHM -.->|"orthogonal"| CP_BROKER
-    CP_BROKER -.->|"orthogonal"| MP_MSG
-    MP_MSG -.->|"orthogonal"| TP_LP
+    CP_BROKER -.->|"orthogonal"| MP_BRC
+    MP_BRC -.->|"orthogonal"| MP_INBOX
+    MP_INBOX -.->|"orthogonal"| TP_LP
     TP_LP -.->|"orthogonal"| MET_STORE
 ```
 
@@ -99,44 +102,48 @@ Data bytes never pass through the broker.
 
 ## 3. Component Roles and Boundaries
 
-### 3.1 Producer (`hub::Producer`)
+### 3.1 Producer role
 
 | Property | Value |
-|----------|-------|
+|---|---|
 | Direction | Write-only |
-| Data transport | SHM exclusively |
-| Channel ownership | Creates the SHM segment; registers as writer with broker |
-| SHM-specific facilities | Spinlocks (`api.spinlock(i)`), `WriteProcessorContext`, `LoopPolicy`, acquire-timing metrics |
-| Broker protocol | `REG_REQ` → `REG_ACK`; sends `HEARTBEAT_REQ`; handles `BYE` from consumers |
-| Lives on | Same host as the SHM segment |
-
-The Producer is **intentionally SHM-specific**. Its SHM facilities (spinlocks, slot
-transaction API, timing metrics, LoopPolicy) are core features, not implementation
-details. `hub::Queue` must not be inserted between Producer and its underlying
-`DataBlockProducer` — there is no benefit and significant cost (API dilution,
-spurious ZMQ code paths, lost spinlock access).
-
-### 3.2 Consumer (`hub::Consumer`)
-
-| Property | Value |
-|----------|-------|
-| Direction | Read-only |
-| Data transport | SHM (`loop_trigger=shm`) **or** ZMQ (`loop_trigger=zmq`) |
-| Channel ownership | Attaches to existing SHM or connects to ZMQ endpoint; registers as reader with broker |
-| SHM-specific facilities | Spinlocks, zero-copy slot view, flexzone R/W, acquire-timing metrics |
-| ZMQ-specific note | Endpoint discovered from broker `DISC_ACK` (HEP-0021); consumer never binds |
-| Broker protocol | `CONSUMER_REG_REQ` → `DISC_ACK`; sends HELLO to producer; `CONSUMER_DEREG_REQ` on exit |
+| Data transport | SHM **or** ZMQ (selected via `out_transport` in `producer.json`) |
+| Channel ownership | Creates the channel; registers as producer with broker via `REG_REQ` |
+| SHM-specific facilities (when `out_transport=shm`) | Spinlocks (`api.spinlock(i)`), zero-copy slot writes, flexzone R/W, acquire-timing metrics |
+| Broker protocol | `REG_REQ` → `REG_ACK`; sends `HEARTBEAT_REQ` (per-presence — see HEP-CORE-0019 §2.3); handles consumer `BYE` events |
 | Lives on | SHM: same host as the SHM segment. ZMQ: any host with TCP connectivity. |
 
-The consumer data transport is declared via `loop_trigger` in `consumer.json` and sent
-as `consumer_loop_driver` in `CONSUMER_REG_REQ`. The broker enforces transport
-compatibility (rejects with `TRANSPORT_MISMATCH` if consumer and producer transports
-do not match). The control plane (`ctrl_thread_`) is always active regardless of
-data transport.
+The Producer role is implemented today as `ProducerRoleHost` (in
+`src/producer/`); the role's data plane is reached via
+`RoleAPIBase::build_tx_queue()` which selects `ShmQueue` or `ZmqQueue`
+internally based on `out_transport`.  The historical `Producer`
+wrapper class was retired in L3.γ A6.3 (2026-03-01); SHM-specific
+facilities (spinlocks, flexzone) are now exposed directly through
+`RoleAPIBase` for the SHM-side transport.
 
-SHM-specific facilities (spinlocks, flexzone) are only available when `loop_trigger=shm`.
-For cross-machine reading, compose with a bridge Processor (§4.3) or use `loop_trigger=zmq`
-with a ZMQ-transport producer.
+### 3.2 Consumer role
+
+| Property | Value |
+|---|---|
+| Direction | Read-only |
+| Data transport | SHM **or** ZMQ (selected via `in_transport` in `consumer.json`) |
+| Channel ownership | Attaches to existing SHM or connects to ZMQ endpoint; registers as consumer via `CONSUMER_REG_REQ` |
+| SHM-specific facilities (when `in_transport=shm`) | Spinlocks, zero-copy slot view, flexzone R/W, acquire-timing metrics |
+| ZMQ-specific note | Endpoint discovered from broker `DISC_ACK` (HEP-0021); consumer never binds |
+| Broker protocol | `CONSUMER_REG_REQ` → `CONSUMER_REG_ACK`; sends HELLO to producer; `CONSUMER_DEREG_REQ` on exit |
+| Lives on | SHM: same host as the SHM segment. ZMQ: any host with TCP connectivity. |
+
+The Consumer role is implemented as `ConsumerRoleHost` (in
+`src/consumer/`); data plane via `RoleAPIBase::build_rx_queue()`.  The
+broker enforces transport compatibility (rejects with
+`TRANSPORT_MISMATCH` if consumer and producer transports diverge).
+The control plane (ctrl thread inside `RoleAPIBase`) is always active
+regardless of data transport.
+
+SHM-specific facilities (spinlocks, flexzone) are only available when
+`in_transport=shm`.  For cross-machine reading, compose with a bridge
+Processor (§4.3) or use `in_transport=zmq` with a ZMQ-transport
+producer.
 
 ### 3.3 hub::QueueReader and hub::QueueWriter
 
@@ -162,14 +169,14 @@ flexzone_size, name, metrics, start, stop, is_running, capacity, policy_info) ar
 implemented once in the concrete class. Virtual dispatch costs ~2 ns vs 100–500 ns
 for the actual SHM acquire — < 1% overhead.
 
-`hub::Processor` receives its queues as separate references:
-```cpp
-Processor::create(QueueReader& in_q, QueueWriter& out_q, opts)
-```
+QueueReader and QueueWriter are designed for independent ownership and
+composition.  A processor role obtains BOTH (one per side) via
+RoleAPIBase; a producer role uses only a QueueWriter; a consumer role
+uses only a QueueReader.
 
 | Property | Value |
-|----------|-------|
-| Used by | `hub::Processor` (both sides); `ConsumerScriptHost` (QueueReader); `ProducerScriptHost` (QueueWriter) |
+|---|---|
+| Used by | `ProducerRoleHost` (`QueueWriter` only, via `RoleAPIBase::build_tx_queue`); `ConsumerRoleHost` (`QueueReader` only, via `build_rx_queue`); `ProcessorRoleHost` (both — one per side) |
 | Does NOT carry | Control plane, message plane, timing plane |
 
 #### ZmqQueue — API contract and schema requirements
@@ -216,28 +223,42 @@ See HEP-CORE-0002 §7.1 for the complete wire format specification.
 
 See HEP-CORE-0002 §17.3 for detailed rationale.
 
-### 3.4 hub::Processor
+### 3.4 Processor role transform loop
 
 | Property | Value |
-|----------|-------|
+|---|---|
 | Direction | Read-from-one-Queue, write-to-another-Queue |
-| Data transport | Any Queue type (SHM, ZMQ, or mixed) |
-| Channel ownership | None — takes `Queue&` references; channels are owned by caller |
-| Control plane | Optional: when embedded inside `ProcessorRoleWorker`, connects to broker(s) |
-| Timing | Demand-driven: blocks on `in_q->read_acquire(timeout)`; no fixed rate |
-| Lives on | Any host — transport constraints are per-Queue, not per-Processor |
+| Data transport | Any QueueReader / QueueWriter combination (SHM, ZMQ, or mixed) |
+| Channel ownership | Both sides — input via `RoleAPIBase::build_rx_queue`, output via `build_tx_queue` |
+| Control plane | One BrokerRequestComm per hub the processor participates in (1 in single-hub deployment after dedup; 2 in dual-hub — see HEP-CORE-0033 §19) |
+| Timing | Inner retry on `read_acquire(short_timeout)`; deadline-driven outer loop per `LoopTimingPolicy` (HEP-CORE-0008) |
+| Lives on | Any host — transport constraints are per-Queue, not per-role |
 
-The Processor's transform loop is purely data-plane: acquire input slot →
-optionally acquire output slot → call handler → commit or discard → release input.
-It has no knowledge of schema, broker protocol, or Python GIL. Those concerns are
-handled by `processor_main` (standalone binary) and `ProcessorScriptHost`,
-which construct the appropriate Queues and own the control plane.
+The processor's transform body is implemented by `ProcessorCycleOps`
+(see `src/utils/service/cycle_ops.hpp`) plugged into the shared
+`run_data_loop` template (`src/utils/service/data_loop.hpp`).  Per
+cycle: acquire input slot → conditionally acquire output slot → call
+the script's `on_process(rx, tx, msgs, api)` → commit or discard
+output → release input.  The cycle ops know nothing about schema,
+broker protocol, or Python GIL — those concerns are handled by
+`ProcessorRoleHost` (in `src/processor/`), which builds both queues
+via `RoleAPIBase` and owns the BRC(s) + ctrl thread(s).
 
-### 3.5 Producer and Consumer Operation Modes
+(The pre-L3.γ standalone `hub::Processor` C++ class — which took
+`Queue&` references and ran independently of any role host — was
+retired in L3.γ A6.3, 2026-03-01.  Today the role host IS the
+processor.)
 
-`hub::Producer` and `hub::Consumer` each support two operation modes that govern
-thread ownership and ZMQ socket management. The choice is orthogonal to the data
-transport (SHM vs ZMQ) and to the SHM data-plane mode (Queue vs Real-time).
+### 3.5 Operation modes
+
+(Historical note: the pre-L3.γ `Producer` / `Consumer`
+classes had two operation modes — "standalone" with internal threads
+and "embedded" external-poll.  After L3.γ A6.3 (2026-03-01) those
+classes were retired and the role-host is the single owner of every
+thread it needs; "embedded" is no longer a separate mode of the data-
+plane object.  The text below describes the historical contract, kept
+for context — current behaviour is "the role host's threads", with
+ThreadManager bounded join.)
 
 **Standalone mode** (`start()` / `stop()`): The object launches its own internal
 threads. Producer spawns `peer_thread` (ctrl socket polling, peer-dead check) and
@@ -301,7 +322,7 @@ graph TD
 All components on the same host, single broker:
 
 ```
-  hub::Producer ──[SHM]──► hub::Consumer
+  Producer ──[SHM]──► Consumer
 ```
 
 - Producer creates the SHM segment and registers with broker.
@@ -316,15 +337,16 @@ This is the baseline topology. No Queue, no Processor involved.
 All components on the same host; Processor transforms in-line:
 
 ```
-  hub::Producer ──[SHM]──► ShmQueue(read) ──► Processor ──► ShmQueue(write) ──[SHM]──► hub::Consumer
+  Producer ──[SHM]──► ShmQueue(read) ──► Processor ──► ShmQueue(write) ──[SHM]──► Consumer
 ```
 
 - Producer and Consumer own their SHM segments and broker registrations.
-- Processor is a pure transform unit: no broker registration of its own when
-  used as a standalone `hub::Processor` (no control plane); the caller is responsible
-  for building the ShmQueues after obtaining DataBlock handles.
-- When run as `pylabhub-processor`, the `ProcessorScriptHost` holds
-  the control-plane connections and constructs the Queues after broker handshake.
+- The processor's transform body (`ProcessorCycleOps`) is a pure
+  data-plane unit: it knows nothing about brokers or schemas.
+- When the processor runs as `plh_role --role processor`,
+  `ProcessorRoleHost` builds the input + output queues via RoleAPIBase
+  and owns the broker connection(s); the cycle ops then run inside
+  the shared `run_data_loop` template.
 
 ### 4.3 Cross-Machine Bridge
 
@@ -332,10 +354,10 @@ Processor bridges SHM on Machine A to SHM on Machine B via ZMQ:
 
 ```
 Machine A:
-  hub::Producer ──[SHM]──► ShmQueue(read) ──► Processor(bridge A) ──► ZmqQueue(write) ──[net]──►
+  Producer ──[SHM]──► ShmQueue(read) ──► Processor(bridge A) ──► ZmqQueue(write) ──[net]──►
 
 Machine B:
-  ──[net]──► ZmqQueue(read) ──► Processor(bridge B) ──► ShmQueue(write) ──[SHM]──► hub::Consumer
+  ──[net]──► ZmqQueue(read) ──► Processor(bridge B) ──► ShmQueue(write) ──[SHM]──► Consumer
 ```
 
 Each bridge Processor:
@@ -344,7 +366,7 @@ Each bridge Processor:
 - Has a pass-through handler (copy in_slot → out_slot) or a lightweight transform
 - Maintains separate control-plane connections to its respective broker(s)
 
-`hub::Producer` and `hub::Consumer` at both ends are unchanged — they remain
+`Producer` and `Consumer` at both ends are unchanged — they remain
 SHM-local and expose the full set of SHM-specific facilities to their callers.
 
 A runnable 6-process dual-hub bridge demo (2 hubs, 1 producer, 2 processors, 1 consumer)
@@ -358,10 +380,11 @@ Multiple Processors in series for staged processing:
   Producer ──[SHM]──► P1(normalize) ──[SHM]──► P2(filter) ──[SHM]──► P3(compress) ──[SHM]──► Consumer
 ```
 
-Each Processor reads from one SHM channel and writes to the next. Each has its
-own `hub::Processor` instance, its own broker registration, and its own transform
-callback. The intermediate SHM segments have no direct Producer/Consumer — they
-are created by P1/P2/P3 as their output channels.
+Each Processor reads from one SHM channel and writes to the next.  Each runs as
+its own `plh_role --role processor` instance with its own ProcessorRoleHost,
+its own broker registration(s), and its own `on_process` script callback.  The
+intermediate SHM segments have no direct Producer/Consumer — they are created
+by P1/P2/P3 as their output channels.
 
 Note: In this topology each intermediate channel has only one writer (Processor Pn)
 and one reader (Processor Pn+1). The Producer/Consumer heartbeat model handles
@@ -369,12 +392,12 @@ liveness for each hop.
 
 ### 4.5 Fan-Out Pipeline
 
-One `pylabhub-producer`, multiple consumers (including processors):
+One producer, multiple consumers (including processors):
 
 ```
-                         ──► pylabhub-consumer  (local monitor)
-  pylabhub-producer ──[SHM]──► pylabhub-processor (archive)
-                         ──► pylabhub-processor (analysis, cross-machine)
+                                       ──► plh_role --role consumer  (local monitor)
+  plh_role --role producer ──[SHM]──► plh_role --role processor (archive)
+                                       ──► plh_role --role processor (analysis, cross-machine)
 ```
 
 The SHM ring buffer supports multiple consumers natively (`ConsumerSyncPolicy`).
@@ -439,65 +462,65 @@ field, no longer inferred). See HEP-CORE-0034 §6 for the JSON file format.
 
 ```mermaid
 graph LR
-    subgraph "pylabhub-hubshell"
+    subgraph PLH_HUB["plh_hub"]
         BROKER["BrokerService<br/>(ROUTER)"]
-        ADMIN["AdminShell<br/>(ZMQ REP)"]
-        HSCRIPT["HubScript"]
+        ADMIN["AdminService<br/>(ZMQ REP)"]
+        HRUNNER["HubScriptRunner<br/>(EngineHost&lt;HubAPI&gt;)"]
     end
 
-    subgraph "pylabhub-producer"
-        P_SH["ProducerScriptHost"]
-        P_API["ProducerAPI"]
-        P_PROD["hub::Producer"]
-        P_MSG["Messenger"]
+    subgraph PROD["plh_role --role producer"]
+        P_RH["ProducerRoleHost"]
+        P_API["RoleAPIBase + ProducerAPI"]
+        P_TXQ["Tx queue<br/>(Shm or Zmq)"]
+        P_BRC["BrokerRequestComm"]
     end
 
-    subgraph "pylabhub-processor"
-        PR_SH["ProcessorScriptHost"]
-        PR_API["ProcessorAPI"]
-        PR_PROC["hub::Processor"]
-        PR_MSG_IN["Messenger (in)"]
-        PR_MSG_OUT["Messenger (out)"]
+    subgraph PROC["plh_role --role processor"]
+        PR_RH["ProcessorRoleHost"]
+        PR_API["RoleAPIBase + ProcessorAPI"]
+        PR_RXQ["Rx queue<br/>(in side)"]
+        PR_TXQ["Tx queue<br/>(out side)"]
+        PR_BRC["BrokerRequestComm<br/>(per presence in dual-hub —<br/>see HEP-0033 §19)"]
     end
 
-    subgraph "pylabhub-consumer"
-        C_SH["ConsumerScriptHost"]
-        C_API["ConsumerAPI"]
-        C_CONS["hub::Consumer"]
-        C_MSG["Messenger"]
+    subgraph CONS["plh_role --role consumer"]
+        C_RH["ConsumerRoleHost"]
+        C_API["RoleAPIBase + ConsumerAPI"]
+        C_RXQ["Rx queue"]
+        C_BRC["BrokerRequestComm"]
     end
 
-    P_MSG -->|ctrl| BROKER
-    C_MSG -->|ctrl| BROKER
-    PR_MSG_IN -->|ctrl| BROKER
-    PR_MSG_OUT -->|ctrl| BROKER
+    P_BRC -->|ctrl| BROKER
+    C_BRC -->|ctrl| BROKER
+    PR_BRC -->|ctrl| BROKER
 
-    P_PROD ===|SHM| C_CONS
-    P_PROD ===|SHM| PR_PROC
-    PR_PROC ===|SHM| C_CONS
+    P_TXQ ===|SHM/ZMQ| C_RXQ
+    P_TXQ ===|SHM/ZMQ| PR_RXQ
+    PR_TXQ ===|SHM/ZMQ| C_RXQ
 ```
 
 ### 6.2 Binary Types
 
-The framework ships four user-facing binaries:
+The framework ships two user-facing binaries.  `plh_role` is
+parameterised by `--role <tag>`; `plh_hub` is the single hub binary.
 
-| Binary | Identity format | Config file | Description |
-|--------|----------------|-------------|-------------|
-| `pylabhub-hubshell` | `HUB-{NAME}-{8HEX}` | `hub.json` | Data hub: broker service + Python admin shell |
-| `pylabhub-producer` | `PROD-{NAME}-{8HEX}` | `producer.json` | Standalone producer: writes to one channel |
-| `pylabhub-consumer` | `CONS-{NAME}-{8HEX}` | `consumer.json` | Standalone consumer: reads from one channel |
-| `pylabhub-processor` | `PROC-{NAME}-{8HEX}` | `processor.json` | Standalone processor: reads from A, transforms, writes to B |
+| Binary invocation | Identity format | Config file | Description |
+|---|---|---|---|
+| `plh_hub <hub_dir>` | `hub.{name}.{8hex}` | `hub.json` | Data hub: broker service + AdminService + hub script runtime (HEP-CORE-0033 §15) |
+| `plh_role --role producer <role_dir>` | `prod.{name}.{8hex}` | `producer.json` | Producer role: writes to one channel |
+| `plh_role --role consumer <role_dir>` | `cons.{name}.{8hex}` | `consumer.json` | Consumer role: reads from one channel |
+| `plh_role --role processor <role_dir>` | `proc.{name}.{8hex}` | `processor.json` | Processor role: reads from in-side, transforms, writes to out-side; may bridge two hubs (HEP-CORE-0033 §19) |
 
-Each binary:
+Each launched instance:
 - Owns its directory: one config file, one vault, one script package, one PID lock
 - Has exactly one UID — immutable after generation
-- Hosts exactly one data-plane role (one channel in and/or one channel out)
+- Hosts exactly one role kind (selected by `--role` for `plh_role`)
 
 ### 6.3 Configuration Hierarchy
 
 ```
 <hub_dir>/
-  hub.json           ← HubShell config (broker, script, vault)
+  hub.json           ← plh_hub config (broker, admin, script, vault)
   vault/             ← Encrypted keypair store (HubVault)
   script/
     python/
@@ -507,7 +530,7 @@ Each binary:
 
 <producer_dir>/
   producer.json      ← producer name, channel, broker, schema, script
-  vault/             ← Encrypted keypair store (ProducerVault)
+  vault/             ← Encrypted keypair store (RoleVault)
   script/
     python/
       __init__.py    ← on_init(api) / on_produce(out_slot, fz, msgs, api) / on_stop(api)
@@ -517,7 +540,7 @@ Each binary:
 
 <consumer_dir>/
   consumer.json      ← consumer name, channel, broker, schema, script
-  vault/             ← Encrypted keypair store (ConsumerVault)
+  vault/             ← Encrypted keypair store (RoleVault)
   script/
     python/
       __init__.py    ← on_init(api) / on_consume(in_slot, fz, msgs, api) / on_stop(api)
@@ -527,7 +550,7 @@ Each binary:
 
 <processor_dir>/
   processor.json     ← processor name, in_channel, out_channel, broker(s), schema, script
-  vault/             ← Encrypted keypair store (ProcessorVault)
+  vault/             ← Encrypted keypair store (RoleVault)
   script/
     python/
       __init__.py    ← on_init(api) / on_process(in_slot, out_slot, fz, msgs, api) / on_stop(api)
@@ -582,19 +605,23 @@ component additions:
    via SHM or ZMQ point-to-point. The broker only coordinates registration and
    monitors liveness.
 
-2. **Producer is permanently SHM-local.** No transport-agnostic abstraction is
-   inserted between `hub::Producer` and its underlying `DataBlockProducer`. The
-   Consumer may use SHM or ZMQ transport (`loop_trigger` in `consumer.json`),
-   but its control-plane connection to the broker (`ctrl_thread_`) is always active
-   regardless of data transport. Cross-machine flow with SHM producer is achieved
-   via bridge Processors (§4.3) or via `loop_trigger=zmq` on the consumer when
-   the producer uses `transport=zmq`.
+2. **Data plane and control plane are independent.** The data
+   transport (SHM or ZMQ) is selected per-side via `in_transport` /
+   `out_transport` in the role config; ZMQ-side transports work
+   cross-machine while SHM-side transports require same-host
+   placement.  The role's control-plane connection to the broker
+   (the ctrl thread inside `RoleAPIBase`) is always active
+   regardless of data transport.  Cross-machine SHM flow is achieved
+   either via bridge processors (§4.3) or via `in_transport=zmq` on
+   the consumer when the producer uses `out_transport=zmq`.
 
 3. **hub::QueueReader and hub::QueueWriter carry the data plane only.** Queue
-   implementations do not manage control-plane sockets, Messenger instances, or
-   LoopPolicy. Those are the responsibility of the component that owns the Queue.
-   The old `hub::Queue` combined class is eliminated; access-mode enforcement
-   is by type at compile time.
+   implementations do not manage control-plane sockets, BrokerRequestComm
+   instances, or LoopPolicy. Those are the responsibility of the component
+   that owns the Queue (today: `RoleAPIBase` for the data-plane queue
+   handles; the role host's derived class for the BRC).  The old
+   `hub::Queue` combined class is eliminated; access-mode enforcement is
+   by type at compile time.
 
 4. **The checksum is the schema truth.** The broker always validates the BLAKE2b-256
    hash of the BLDS string. Schema names are human-readable aliases; they never
@@ -621,11 +648,14 @@ component additions:
 | HELLO/BYE/REG/DISC/HEARTBEAT protocol | HEP-CORE-0007 |
 | LoopPolicy and iteration metrics | HEP-CORE-0008 |
 | Connection policy (ConsumerSyncPolicy, etc.) | HEP-CORE-0009 |
-| ScriptHost abstraction, PythonScriptHost, Lua | HEP-CORE-0011 |
+| Script engine abstraction (RoleHostBase, RoleAPIBase, ScriptEngine) | HEP-CORE-0011 |
 | Channel identity and UID provenance | HEP-CORE-0013 |
-| Producer and Consumer standalone binaries | HEP-CORE-0018 |
-| Processor standalone binary | HEP-CORE-0015 |
+| Role binary unification (`plh_role --role <tag>`) | HEP-CORE-0024 (supersedes HEP-CORE-0018 producer+consumer binaries and HEP-CORE-0015 processor binary) |
+| Hub binary (`plh_hub`) + AdminService + HubScriptRunner | HEP-CORE-0033 |
 | Schema records, ownership, citation rules | HEP-CORE-0034 (supersedes HEP-CORE-0016) |
+| Inbox messaging (point-to-point ROUTER/DEALER side channel) | HEP-CORE-0027 |
+| Metrics plane (per-presence keying — see HEP-0019 §2.3) | HEP-CORE-0019 |
+| Startup coordination + heartbeat-derived liveness timeouts | HEP-CORE-0023 |
 
 ---
 
@@ -634,22 +664,19 @@ component additions:
 This is an architecture overview document. The source files that implement each component:
 
 | Component | Key Source Files |
-|-----------|-----------------|
-| **hub::Producer** | `src/include/utils/hub_producer.hpp`, `src/utils/hub/` |
-| **hub::Consumer** | `src/include/utils/hub_consumer.hpp`, `src/utils/hub/` |
-| **hub::QueueReader / hub::QueueWriter** | `src/include/utils/hub_queue.hpp` (abstract bases; replaces old `hub::Queue`) |
+|---|---|
+| **hub::QueueReader / hub::QueueWriter** | `src/include/utils/hub_queue.hpp` (abstract bases; the historical `Producer` / `Consumer` wrapper classes were retired in L3.γ A6.3, 2026-03-01 — the data plane is now reached via `RoleAPIBase`'s `build_tx_queue()` / `build_rx_queue()`) |
 | **hub::ShmQueue** | `src/include/utils/hub_shm_queue.hpp`, `src/utils/hub/hub_shm_queue.cpp` |
 | **hub::ZmqQueue** | `src/include/utils/hub_zmq_queue.hpp`, `src/utils/hub/hub_zmq_queue.cpp` |
-| **hub::Processor** | `src/include/utils/hub_processor.hpp`, `src/utils/hub/hub_processor.cpp` |
+| **hub::InboxQueue / hub::InboxClient** | `src/include/utils/hub_inbox_queue.hpp`, `src/utils/hub/hub_inbox_queue.cpp` (HEP-CORE-0027) |
 | **BrokerService** | `src/include/utils/broker_service.hpp`, `src/utils/ipc/broker_service.cpp` |
-| **Messenger** | `src/include/utils/messenger.hpp`, `src/utils/ipc/messenger.cpp` |
-| **pylabhub-hubshell** | `src/hubshell.cpp` |
-| **pylabhub-producer** | `src/producer/producer_main.cpp`, `src/producer/producer_script_host.cpp` |
-| **pylabhub-consumer** | `src/consumer/consumer_main.cpp`, `src/consumer/consumer_script_host.cpp` |
-| **pylabhub-processor** | `src/processor/processor_main.cpp`, `src/processor/processor_script_host.cpp` |
+| **BrokerRequestComm** | `src/include/utils/broker_request_comm.hpp`, `src/utils/network_comm/broker_request_comm.cpp` (role-side DEALER + ctrl-thread poll loop) |
+| **plh_hub binary** | `src/plh_hub/plh_hub_main.cpp` + `src/plh_hub/CMakeLists.txt` (HEP-CORE-0033 §15) |
+| **plh_role binary** | `src/plh_role/plh_role_main.cpp` + per-role `worker_main_()` in `src/{producer,consumer,processor}/*_role_host.cpp` (HEP-CORE-0024) |
+| **RoleAPIBase / RoleHostCore / EngineHost** | `src/include/utils/role_api_base.hpp` + `src/include/utils/role_host_core.hpp` + `src/include/utils/engine_host.hpp` (HEP-CORE-0011) |
+| **HubState** | `src/include/utils/hub_state.hpp` — authoritative role + channel + schema registry (HEP-CORE-0033 §8 + HEP-CORE-0034) |
 | **schema_loader** | `src/include/utils/schema_loader.hpp`, `src/utils/schema/schema_loader.cpp` (stateless file parsers; HEP-CORE-0034 §2.4 I5) |
-| **HubState.schemas** | `src/include/utils/hub_state.hpp` — authoritative runtime registry, replacing the HEP-0016-era `SchemaStore` lifecycle singleton (removed by HEP-0034 Phase 4) |
-| **LoopPolicy** | `src/include/plh_datahub.hpp` (DataBlock timing) |
+| **LoopPolicy** | `src/include/utils/loop_timing_policy.hpp` (loop cadence enum + math) |
 
 ---
 
@@ -659,8 +686,13 @@ This is an architecture overview document. The source files that implement each 
 
 This document captures architectural decisions made during the Queue Abstraction and
 Processor design phase (2026-03-01). All components described here are implemented:
-unified `plh_role` binary (HEP-CORE-0024), hub::Queue abstraction, hub::Processor
-transform layer, Schema Registry (HEP-CORE-0034), and the five-plane architecture.
+unified `plh_role` binary (HEP-CORE-0024), `plh_hub` binary (HEP-CORE-0033),
+QueueReader / QueueWriter abstraction (`hub::ShmQueue` + `hub::ZmqQueue`),
+Schema Registry (HEP-CORE-0034), and the five-plane architecture.  The
+historical `hub::Producer`, `hub::Consumer`, `hub::Processor`, and `hub::Queue`
+wrapper classes were retired in L3.γ A6.3 (2026-03-01); their roles are now
+fulfilled by `RoleAPIBase::build_tx_queue` / `build_rx_queue` (data plane) +
+`ProcessorRoleHost` (transform).
 
 **Resolved topics:**
 - HEP-CORE-0018: producer + consumer binaries — superseded by HEP-CORE-0024 unification

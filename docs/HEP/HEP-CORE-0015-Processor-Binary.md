@@ -80,10 +80,32 @@ Example: `PROC-TEMPNORM-A3F7C219`
 └──────────────────────────────────────────────────────┘
 ```
 
-The script host connects to up to two brokers via `hub::Consumer` (input) and
-`hub::Producer` (output) for the **control plane** (registration, heartbeat, shutdown
-notifications). The **data plane** runs through the Queue abstraction and may be SHM or ZMQ
-regardless of whether the broker connection exists.
+**Dual-broker design — moved.**  The original processor-side dual-broker
+control-plane design (one `BrokerRequestComm` per hub, with the
+processor maintaining presences on both `in_hub` and `out_hub`)
+documented historically in this section has been moved to its
+canonical home in **HEP-CORE-0033 §19 "Multi-presence roles"**.
+HEP-0015 itself is SUPERSEDED (binary unification — see HEP-CORE-0024)
+and the multi-presence model now applies uniformly across all roles
+(producer/consumer/processor/future), not just processor; HEP-0033 §19
+is the single source of truth.  Refer to:
+
+- **HEP-CORE-0033 §19** — presence list, `HubConnection` dedup,
+  per-presence registration + heartbeat, Class B fall-through queries
+  (and §19.7 for the bug history this design resolves).
+- **HEP-CORE-0033 §18** — the broker message routing classes that
+  the multi-presence model dispatches against.
+- **HEP-CORE-0023 §2.5.2 + §5.5** — broker-side per-presence heartbeat
+  contract + post-migration `wait_for_roles` Class B fall-through.
+
+(Historical content for traceability: the script host connects to
+up to two brokers — for the control plane (registration, heartbeat,
+shutdown notifications); the data plane runs through the Queue
+abstraction and may be SHM or ZMQ regardless of whether the broker
+connection exists.  The historical references to `hub::Consumer` /
+`hub::Producer` wrapper classes are retired — those classes were
+eliminated in L3.γ A6.3, 2026-03-01; the data plane today goes
+through `RoleAPIBase::build_rx_queue` / `build_tx_queue`.)
 
 ---
 

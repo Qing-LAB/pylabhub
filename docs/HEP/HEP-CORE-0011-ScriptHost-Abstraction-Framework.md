@@ -7,9 +7,9 @@
 | **Author**         | pylabhub development team                               |
 | **Status**         | Implemented (revised 2026-04-04; obsolete-term scrub 2026-04-14) |
 | **Created**        | 2026-02-28                                              |
-| **Updated**        | 2026-04-14 (Messenger -> BrokerRequestComm; ctrl thread is now in RoleAPIBase per HEP-CORE-0023 §2.5; full §"Threading Model" rewrite deferred until role-host unification lands) |
+| **Updated**        | 2026-05-06 (post-HEP-0024 alignment: role-host unification has shipped; `hub::Producer`/`hub::Consumer` references scrubbed — those classes were eliminated in L3.γ A6.3 (2026-03-01) and the data plane is now reached via `RoleAPIBase`'s internally-owned Tx/Rx queue handles; threading-model deferral note retired since unification has landed); 2026-04-14 (Messenger -> BrokerRequestComm; ctrl thread is now in RoleAPIBase per HEP-CORE-0023 §2.5) |
 | **Supersedes**     | `HEP-CORE-0005` (Script Interface Abstraction Framework)|
-| **Related**        | `HEP-CORE-0018` (Producer and Consumer Binaries), `HEP-CORE-0023` (Startup Coordination & Role Liveness) |
+| **Related**        | `HEP-CORE-0024` (Role Directory Service — `plh_role` unified binary; supersedes the per-role binaries originally in HEP-CORE-0018), `HEP-CORE-0023` (Startup Coordination & Role Liveness), `HEP-CORE-0019` §2.3 (per-presence heartbeat protocol — Phase 6) |
 
 ---
 
@@ -23,8 +23,15 @@ separates concerns into three layers:
 2. **RoleAPIBase** (unified, language-neutral) -- single C++ class exposing all role
    operations (identity, messaging, broker, inbox, spinlocks, metrics, schema sizes).
    ABI-stable via Pimpl. Part of `pylabhub-utils` shared library.
-3. **RoleHost** (engine-agnostic) -- owns infrastructure (broker, queues, SHM) and the
-   data loop. Creates RoleAPIBase, loads the engine via lifecycle startup, runs callbacks.
+3. **RoleHost** (engine-agnostic) -- a class hierarchy: `EngineHost<RoleAPIBase>`
+   (aliased `RoleHostBase`) is the template base that owns shared scaffolding
+   (RoleHostCore, ScriptEngine, RoleAPIBase, ready-promise, phase FSM, worker
+   thread spawn).  The concrete derived classes (ProducerRoleHost,
+   ConsumerRoleHost, ProcessorRoleHost) own the role-specific infrastructure
+   (BrokerRequestComm, InboxQueue, resolved schema specs) and implement
+   `worker_main_()` — the data loop and the setup/teardown of role-specific
+   queues.  The data plane (Tx/Rx queues, SHM/ZMQ underneath) is owned by
+   RoleAPIBase via `build_tx_queue` / `build_rx_queue`.
 
 The design principle: **the engine knows nothing about infrastructure; the role host
 knows nothing about the script language.** RoleAPIBase is the bridge.
@@ -36,23 +43,35 @@ knows nothing about the script language.** RoleAPIBase is the bridge.
 ### Ownership and Dependency
 
 ```
-RoleHost (ProducerRoleHost / ConsumerRoleHost / ProcessorRoleHost)
+RoleHostBase (= EngineHost<RoleAPIBase>)
+  |   (template base; owns shared role state)
   |
   |-- owns --> RoleHostCore (metrics, state, shutdown flags, schema specs)
-  |-- owns --> RoleAPIBase (wired to infrastructure after setup)
   |-- owns --> ScriptEngine (PythonEngine / LuaEngine / NativeEngine)
-  |-- owns --> Infrastructure (BrokerRequestComm, hub::Producer/Consumer, InboxQueue)
+  |-- owns --> RoleAPIBase  (constructed lazily in startup_; wired by derived
+  |                          before broker register; RoleAPIBase internally
+  |                          owns its Tx/Rx QueueWriter/Reader handles)
   |
-  |-- calls --> engine_lifecycle_startup(EngineModuleParams)
-  |               |-- initialize()
-  |               |-- load_script()
-  |               |-- register_slot_type() x N
-  |               |-- build_api(RoleAPIBase)
+  ^   inherits
   |
-  |-- calls --> engine->invoke_on_init()
-  |-- calls --> engine->invoke_produce / invoke_consume / invoke_process (loop)
-  |-- calls --> engine->invoke_on_stop()
-  |-- calls --> engine->finalize()
+ProducerRoleHost / ConsumerRoleHost / ProcessorRoleHost
+  |   (concrete derived; owns role-specific state)
+  |
+  |-- owns --> BrokerRequestComm
+  |-- owns --> InboxQueue (optional, when inbox is configured)
+  |-- owns --> resolved schema specs (in_slot, out_slot, in_fz, out_fz, inbox)
+  |
+  |-- implements --> worker_main_():
+  |     |-- calls --> engine_lifecycle_startup(EngineModuleParams)
+  |     |               |-- initialize()
+  |     |               |-- load_script()
+  |     |               |-- register_slot_type() x N
+  |     |               |-- build_api(RoleAPIBase)
+  |     |
+  |     |-- calls --> engine->invoke_on_init()
+  |     |-- calls --> engine->invoke_produce / invoke_consume / invoke_process (loop)
+  |     |-- calls --> engine->invoke_on_stop()
+  |     |-- calls --> engine->finalize()
 ```
 
 ### Class Hierarchy
@@ -67,14 +86,39 @@ RoleHostCore (engine-agnostic state -- in pylabhub-utils)
   -- metrics counters, shutdown flags, schema specs, inbox cache, shared data
 
 RoleAPIBase (unified role API -- in pylabhub-utils, Pimpl, ABI-stable)
-  -- wired to: RoleHostCore, hub::Producer*, hub::Consumer*, BrokerRequestComm*, InboxQueue*
-  -- direction-agnostic: role defined by which pointers are set
+  -- internally owns: Tx queue handle (QueueWriter*) for producer-side
+                       Rx queue handle (QueueReader*) for consumer-side
+                       (built via build_tx_queue / build_rx_queue —
+                        underlying type is ShmQueue or ZmqQueue depending
+                        on transport; the `hub::Producer` / `hub::Consumer`
+                        wrapper classes were retired in L3.γ A6.3, 2026-03-01)
+  -- wired to (non-owning): RoleHostCore*, BrokerRequestComm*, InboxQueue*
+  -- direction-agnostic: role defined by which queues + pointers are set
   -- owns ctrl thread (start_ctrl_thread): heartbeat, broker notifications,
      deregistration sequencing -- see HEP-CORE-0023 §2.5
 
+EngineHost<ApiT>  (template base, in pylabhub-utils)
+  -- generic start/stop scaffold parameterised on the script-visible API:
+       phase FSM (Constructed → Running → ShutDown), ApiT lazy construction
+       in startup_(), worker thread spawn under api_->thread_manager(),
+       ready promise plumbing, RAII shutdown.
+  -- pure virtual hook: worker_main_() — derived runs the engine + data loop here.
+  -- one type alias per ApiT:
+       using RoleHostBase        = EngineHost<RoleAPIBase>;   // role-side
+       using HubScriptRunnerBase = EngineHost<HubAPI>;        // hub-side (HEP-CORE-0033 §15)
+  -- the OUTER hub container `HubHost` is a plain concrete class —
+     NOT derived from EngineHost (HEP-CORE-0033 §G1 retraction).
+  -- introduced HEP-CORE-0033 G1 (commit 139b4ca, 2026-04-23); promoted from
+     the prior non-template `RoleHostBase` class.
+
 ProducerRoleHost / ConsumerRoleHost / ProcessorRoleHost
-  -- engine-agnostic data loop + infrastructure setup/teardown
-  -- each owns one ScriptEngine, one RoleAPIBase, one RoleHostCore
+  : public RoleHostBase   (= EngineHost<RoleAPIBase>)
+  -- inherit shared state from base: ScriptEngine, RoleHostCore,
+     RoleAPIBase, ready_promise (+ role_tag, uid, config).
+  -- own role-specific state directly: BrokerRequestComm, InboxQueue,
+     resolved schema specs, engine_module_name.
+  -- implement worker_main_() with the role-specific data loop +
+     setup_infrastructure_ / teardown_infrastructure_ helpers.
 ```
 
 ### Data Flow Diagram
@@ -166,7 +210,7 @@ pylabhub-processor (executable)
 |---|----------|-----------|
 | 1 | ScriptEngine owns lifecycle + invocation; not a generic `call_function` API | Avoids type-erased ScriptValue; each engine uses native types |
 | 2 | RoleAPIBase is pure C++ (no pybind11, no Lua) | Single implementation, multiple bindings; ABI-stable in shared lib |
-| 3 | Direction-agnostic: role defined by wired pointers, not class hierarchy | No subclasses; Producer sets `set_producer()`, Consumer sets `set_consumer()`, Processor sets both |
+| 3 | Direction-agnostic: role defined by which queues + ctrl pointers are wired, not class hierarchy | No subclasses; producer-side roles call `build_tx_queue()`, consumer-side call `build_rx_queue()`, processor calls both.  The ctrl-plane wiring (`set_inbox_queue`, `set_broker_comm`, `set_engine`) is the same for every role |
 | 4 | `ChannelSide::Tx` / `ChannelSide::Rx` for side-specific access | Spinlocks, schema sizes: optional for single-side roles, required for processor |
 | 5 | Lifecycle startup via `engine_lifecycle_startup()` | One function replaces 150+ lines of manual engine init per role host |
 | 6 | Inbox packing from schema, not transport config | Inbox is an independent communication path; packing is in `SchemaSpec.packing` |
@@ -444,14 +488,22 @@ Step 1: Resolve schemas from config
     core.set_out_fz_spec(spec, align_to_physical_page(compute_schema_size(spec, packing)))
 
 Step 2: Setup infrastructure (no engine dependency)
-  - Create hub::Producer / hub::Consumer (SHM + ZMQ queues)
+  - Build Tx queue (producer-side) and/or Rx queue (consumer-side) via
+    api_->build_tx_queue(...) / api_->build_rx_queue(...).  The factory
+    selects ShmQueue or ZmqQueue based on the transport in opts; the
+    queue is owned internally by RoleAPIBase.
   - Setup inbox via setup_inbox_facility() (shared helper)
 
-Step 3: Create RoleAPIBase and wire infrastructure
-  - api_ = make_unique<RoleAPIBase>(core_)
-  - api_->set_producer(out_producer_), set_consumer(in_consumer_)
-  - api_->set_broker_comm(&brc_), set_inbox_queue(inbox_queue_)
-  - api_->set_uid(), set_name(), set_channel(), etc.
+Step 3: Wire ctrl-plane pointers + identity onto api_
+  - (api_ was constructed earlier by EngineHost::startup_() so the
+     worker thread can spawn under api_'s ThreadManager — bounded join.)
+  - api_->set_name(), set_channel(in or out), set_log_level(),
+     set_script_dir(), set_role_dir(), set_checksum_policy(),
+     set_stop_on_script_error(), set_engine(&engine_)
+  - api_->set_inbox_queue(inbox_queue_.get())   // if inbox configured
+  - api_->set_broker_comm(broker_comm_.get())   // BRC pointer
+  - (The Tx/Rx queues built in Step 2 are already owned internally by
+     RoleAPIBase; Step 3 only wires ctrl-plane pointers + identity.)
   - (Broker REG_REQ + heartbeat are handled inside start_ctrl_thread; see Step 6.)
 
 Step 4: Load engine via engine_lifecycle_startup()

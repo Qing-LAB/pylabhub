@@ -4,24 +4,50 @@
 |----------------|----------------------------------------------------------------------------------|
 | **HEP**        | `HEP-CORE-0019`                                                                  |
 | **Title**      | Metrics Plane — Passive SHM Metrics, Broker-Initiated Pull, Global Role Table |
-| **Status**     | Phase 1 Implemented — 2026-03-05; **§3-4 SUPERSEDED** by HEP-CORE-0033 (2026-04-21) |
+| **Status**     | Phase 1 Implemented — 2026-03-05.  §3-4 partially superseded — see amendment notes below.  Phase 6 (per-presence keying) is the current normative model — 2026-05-06; lands with the role-host abstraction work tracked in `docs/tech_draft/role_host_template_design.md`. |
 | **Created**    | 2026-03-02                                                                        |
 | **Area**       | Framework Architecture (`pylabhub-utils`, all binaries, `BrokerService`)          |
-| **Depends on** | HEP-CORE-0002 (DataHub), HEP-CORE-0007 (Protocol), HEP-CORE-0017 (Pipeline)     |
+| **Depends on** | HEP-CORE-0002 (DataHub), HEP-CORE-0007 (Protocol), HEP-CORE-0017 (Pipeline), HEP-CORE-0023 (Heartbeat semantics), HEP-CORE-0033 §8 (HubState entry types — `RoleEntry.latest_metrics`, `RoleEntry.metrics_collected_at` carry the per-presence rows), HEP-CORE-0033 §18 (broker routing classes — METRICS_REQ is Class C, HEARTBEAT_REQ metrics piggyback is Class A) |
 
-> **⚠️ Amendment (2026-04-21):** The Phase 2 "periodic broker-pull" metrics
-> architecture specified in §3 and §4 has been **superseded** by
-> **HEP-CORE-0033 (Hub Character)**, which replaces it with a **query-driven
-> model**: the hub maintains a global table whose entries hold role-pushed
-> metrics (via heartbeat piggyback + `METRICS_REPORT_REQ`) or point to
-> on-demand collectors (SHM blocks); queries walk the table at admin-RPC time,
-> collect, format as JSON, and return — with per-entry `_collected_at`
-> timestamps making freshness self-describing. **§3.2 (live SHM-derived block
-> merge) is retained** and carries over unchanged.
+> **Design layer history.**  This HEP records three layered designs.
+> Sections below are tagged with which layer applies; readers should
+> treat the **Phase 6 (current normative)** content as authoritative
+> and the earlier layers as historical context.
 >
-> Phase 1 (SHM passive monitoring, role-side `ContextMetrics`, role table) is
-> **unchanged** by the amendment and remains the basis for the query-driven
-> model. See HEP-CORE-0033 §9 for the replacement metrics design.
+> **Layer 1 — Phase 1-5, "original" (2026-03-02 → 2026-03-05).**
+> Producer/processor piggyback metrics on every `HEARTBEAT_REQ`;
+> consumer pushes metrics via a separate `METRICS_REPORT_REQ`.  All
+> five sub-phases (§9) shipped.  Code state today still matches this
+> layer with two latent bugs: consumer's heartbeat refreshes the
+> channel FSM (which it should not — that's producer authority); and
+> consumer's metrics get attributed to the producer's role row in the
+> broker (because the wire payload omits `uid` / `role_type` and the
+> broker derives them from `channel.producer_role_uid`).  See the
+> Phase 6 design draft §1 for the full bug analysis.
+>
+> **Layer 2 — Phase 2 "nudge + on-demand heartbeat" (2026-03-25, paper-only).**
+> §2.1 + §3 + §4.1-4.3 propose a model where heartbeats are
+> liveness-only by default and metrics ride on an enriched heartbeat
+> only after a `METRICS_COLLECT_REQ` nudge from the broker.  This
+> design **never shipped** — neither `METRICS_COLLECT_REQ` nor the
+> nudge handling exist in code.  Retained in this HEP as a deferred
+> design alternative; not the path forward.
+>
+> **Layer 3 — Phase 6 "per-presence keying" (2026-05-06, current normative).**
+> Heartbeats unconditionally carry `(channel_name, uid, role_type)` +
+> optional metrics.  Each presence (one per `(hub, channel, role_kind)`
+> tuple a role registers as) emits its own heartbeat.  The broker's
+> `MetricsStore` keys per `(channel, uid, role_type)` so a processor
+> with two presences (consumer-of-in_channel + producer-of-out_channel)
+> writes two distinct rows.  `channel.last_heartbeat` is refreshed
+> only by the producer's heartbeat for that channel — consumer
+> heartbeats do not gate the channel's Pending↔Ready FSM.
+> `METRICS_REPORT_REQ` is **deprecated** but its broker-side handler
+> remains for one release for backward compatibility (no role
+> auto-emits it after the migration).  See `docs/tech_draft/role_host_template_design.md`
+> §6 for the full design and `HEP-CORE-0033 §18` for the canonical
+> four-class routing taxonomy that places metrics reports in
+> Class A and metrics queries in Class C.
 
 ---
 
@@ -55,106 +81,148 @@ through the broker as the single aggregation point.
 
 ---
 
-## 2. Design Principles
+## 2. Design Principles (Phase 6 — current normative)
 
 1. **Passive SHM, active ZMQ**: SHM metrics are always being collected (they're
    embedded in `SharedMemoryHeader`). ZMQ metrics are collected by roles and
-   reported on demand when the broker requests them.
+   reported via heartbeat to the broker.
 
-2. **Broker maintains a global role table**: The broker stores the latest metrics
-   snapshot per (channel, role UID), with timestamps. Monitoring tools query the
-   broker. The broker never relays metrics between participants.
+2. **Broker maintains a per-presence metrics table.**  Each presence
+   (one per `(hub, channel, role_kind)` a role participates as)
+   writes one row keyed `(channel_name, uid, role_type)`.  Monitoring
+   tools query the broker; the broker never relays metrics between
+   participants.
 
-3. **Heartbeat is liveness only**: `HEARTBEAT_REQ` carries `channel_name`, `uid`,
-   and `role_type` — enough to identify the sender and confirm it is alive. No
-   metrics payload. All roles (producer, consumer, processor) send heartbeats
-   using the same message format.
+3. **Heartbeat carries identity + optional metrics.**  `HEARTBEAT_REQ`
+   always carries `channel_name`, `uid`, and `role_type` — enough to
+   identify the sending presence.  When the role has new metrics to
+   report, it includes a `metrics` field with the snapshot.
+   Producer-presence heartbeats also drive the channel-FSM
+   (PendingReady → Ready) refresh; consumer-presence heartbeats do
+   NOT touch the channel FSM (consumer liveness is tracked
+   independently via OS PID check + ZMTP socket monitoring).
+   See HEP-CORE-0023 §2.5 for the timeout math.
 
-4. **Metrics are broker-initiated pull**: When a monitoring tool sends `METRICS_REQ`,
-   the broker requests metrics from each active role via `METRICS_COLLECT_REQ`.
-   Roles respond with their current `snapshot_metrics_json()`. The broker stores
-   the response in its global table and returns the aggregated view to the requester.
+4. **Per-presence emission.**  A role with N presences emits N
+   heartbeats per cycle, each carrying its own (channel, uid,
+   role_type) tuple, all over the appropriate `BrokerRequestComm`
+   (which may be one connection or multiple after dedup — see
+   HEP-CORE-0033 §19).  Producer / consumer / single-hub processor
+   each emit 1 / 1 / 2 heartbeats respectively over their single
+   DEALER socket; dual-hub processor emits 1 + 1 over two sockets.
 
 5. **Scripts extend via `api.report_metric()`**: Custom key-value metrics are
-   accumulated on the API object and included in the next metrics response.
-   Zero configuration — just call the API.
+   accumulated on the API object and included in the next heartbeat-borne
+   metrics payload.  Zero configuration — just call the API.
 
 6. **SHM metrics read locally**: Processes that have SHM mapped can read
    `DataBlockMetrics` directly (zero-copy, no ZMQ). The broker also reads SHM
    metrics for channels it knows about, merging them into the aggregated view.
 
-### 2.1 Phase 2 changes (2026-03-25)
+7. **`METRICS_REPORT_REQ` is deprecated.**  The wire-protocol message
+   stays one release for backward compatibility (the broker still
+   handles it and writes to the same per-presence metrics table) but
+   no role auto-emits it after the Phase 6 migration — consumer-side
+   metrics now ride on the consumer's own heartbeat per Principle 4.
 
-Phase 1 piggybacked metrics on heartbeats (producer/processor) and used a separate
-`METRICS_REPORT_REQ` for consumers. This created:
-- Inconsistency: three different reporting paths for the same logical operation
-- Heartbeat bloat: liveness pings carried large JSON payloads
-- No broker-to-role pull: the broker stored whatever was last pushed
+### 2.1 Phase 2 (paper-only nudge model — superseded by Phase 6)
 
-Phase 2 separates concerns:
-- **Heartbeat** → lightweight liveness ping (all roles, same format)
-- **Metrics** → broker pulls from roles on demand (all roles, same format)
-- **Global role table** → broker indexes by (channel, UID) with role_type and timestamps
+(Historical note, retained for traceability.  The 2026-03-25 redesign
+proposed a "nudge + on-demand heartbeat" model: heartbeats would be
+liveness-only and metrics would ride on an enriched heartbeat only
+after a `METRICS_COLLECT_REQ` from the broker.  That design never
+shipped — neither `METRICS_COLLECT_REQ` nor the nudge handling exist
+in code.  Phase 6 supersedes it with always-on metrics piggyback,
+which removes the round-trip latency and matches what the role-side
+code already does.)
 
 ---
 
-## 3. Architecture
+## 3. Architecture (Phase 6 — current normative)
 
-### Phase 2 architecture (2026-03-25)
+```mermaid
+flowchart LR
+    classDef role fill:#ffd,stroke:#a60
+    classDef hub  fill:#dff,stroke:#06a
+    classDef admin fill:#dfd,stroke:#080
 
-```
-┌─────────────┐   HEARTBEAT_REQ              ┌──────────────────────┐
-│  Producer    │  {channel, uid, role_type}   │                      │
-│              │─────────────────────────────►│                      │
-└─────────────┘                               │     Broker           │
-                                              │                      │
-┌─────────────┐   HEARTBEAT_REQ              │  ┌────────────────┐  │   METRICS_REQ
-│  Processor   │  {channel, uid, role_type}   │  │ Global Role    │  │◄─────────────┐
-│              │─────────────────────────────►│  │ Table          │  │              │
-└─────────────┘                               │  │                │  │   ┌──────────┤
-                                              │  │ channel → {    │  │   │  Admin   │
-┌─────────────┐   HEARTBEAT_REQ              │  │   uid → {      │  │   │  Shell / │
-│  Consumer    │  {channel, uid, role_type}   │  │     role_type  │  │   │  CLI /   │
-│              │─────────────────────────────►│  │     heartbeat  │  │   │  Monitor │
-└─────────────┘                               │  │     metrics    │  │   └──────────┘
-                                              │  │     timestamp  │  │
-        ┌─────────────────────────────────────│  │   }            │──┤
-        │  METRICS_COLLECT_REQ (broker→role)  │  │ }              │  │ METRICS_ACK
-        │  METRICS_COLLECT_ACK (role→broker)  │  └────────────────┘  │──────────────►
-        └─────────────────────────────────────│                      │
-                                              │  ┌────────────────┐  │
-                                              │  │ SHM direct     │  │
-                                              │  │ read (on query)│  │
-                                              │  └────────────────┘  │
-                                              └──────────────────────┘
+    P["Producer<br/>1 presence"]:::role
+    PR["Processor<br/>2 presences:<br/>consumer + producer"]:::role
+    C["Consumer<br/>1 presence"]:::role
+
+    subgraph BR["Broker"]
+        TBL["MetricsStore<br/>keyed (channel, uid, role_type)<br/>one row per presence"]
+        SHM["SHM live read<br/>(DataBlockMetrics — passive)"]
+    end
+
+    ADM["Admin / Monitoring"]:::admin
+
+    P    -->|"HEARTBEAT_REQ {channel, uid, role_type='producer', metrics?}"| TBL
+    PR   -->|"HEARTBEAT_REQ x 2 (one per presence)"| TBL
+    C    -->|"HEARTBEAT_REQ {…, role_type='consumer', metrics?}"| TBL
+
+    ADM  -->|"METRICS_REQ {channel?}"| TBL
+    TBL  -->|"METRICS_ACK<br/>per-presence rows + SHM merge<br/>+ _collected_at timestamps"| ADM
+    SHM  -.->|"merge on query"| TBL
 ```
 
-### 3.1 Message flows
+The data plane is per-presence:
 
-**Heartbeat** (role → broker, periodic, all roles):
+- A producer role has 1 presence → 1 heartbeat per cycle → 1 metrics row.
+- A consumer role has 1 presence → 1 heartbeat per cycle → 1 metrics row.
+- A single-hub processor has 2 presences (consumer-of-in_channel +
+  producer-of-out_channel) → 2 heartbeats per cycle over 1 DEALER
+  socket (the connection deduplicates because both presences resolve
+  to the same `(broker_endpoint, broker_pubkey)` pair) → 2 distinct
+  rows in the broker's metrics store.
+- A dual-hub processor has 2 presences → 2 heartbeats per cycle over
+  2 DEALER sockets → 2 rows, one per hub.
 
-| Field | Description |
-|-------|-------------|
-| `channel_name` | Channel this role is registered on |
-| `uid` | Role's unique identity (e.g. "PROD-Sensor-AABBCCDD") |
-| `role_type` | "producer", "consumer", or "processor" |
+Channel-FSM refresh is producer-only (Principle 3 above).
+Consumer-presence heartbeats refresh `RoleEntry(uid).last_heartbeat`
+(informational) and write the consumer's metrics row, but do NOT
+touch `channel(name).last_heartbeat` — that's producer authority.
 
-Lightweight liveness ping. No metrics payload. All roles use the same format.
-The broker updates `last_heartbeat` in its global role table.
+### 3.1 Message flows (Phase 6)
 
-**Metrics collection** (nudge + enriched heartbeat):
+**Heartbeat** (per-presence, role → broker, periodic):
+
+| Field | Required | Description |
+|---|---|---|
+| `channel_name` | yes | Channel this presence is registered on |
+| `uid` | yes | Role's unique identity (e.g. `prod.sensor.aabbccdd`) |
+| `role_type` | yes | `"producer"` or `"consumer"` (a processor's two presences send two heartbeats with distinct role_types) |
+| `producer_pid` | yes (back-compat field) | Sending process PID — retained from Phase 1 wire format |
+| `metrics` | optional | Snapshot of role-side metrics (`snapshot_metrics_json()`) when the role has new data; omit when nothing has changed since the last heartbeat |
+
+A role with N presences emits N heartbeats per cycle.  Each
+heartbeat carries the right `role_type` for its presence — even when
+the same role process has multiple presences on the same hub
+(processor in single-hub deployment), the two heartbeats land in two
+distinct rows of the broker's metrics store.
+
+**Broker handler** (`handle_heartbeat_req`):
+
+1. Read `(channel_name, uid, role_type)` from the payload.
+2. If `role_type == "producer"`: refresh `channel(channel_name).last_heartbeat`,
+   run the PendingReady → Ready FSM transition (HEP-CORE-0023 §2.5)
+   if applicable, write metrics under `(channel, uid, "producer")`.
+3. If `role_type == "consumer"`: do NOT touch `channel.last_heartbeat`,
+   do NOT run the FSM, write metrics under `(channel, uid, "consumer")`.
+4. (Both branches) refresh `RoleEntry(uid).last_heartbeat` — informational.
+
+**Metrics query** (admin → broker):
 
 | Step | Message | Direction | Content |
-|------|---------|-----------|---------|
-| 1 | `METRICS_REQ` | Admin → Broker | `{channel_name}` (optional — omit for all channels) |
-| 2 | `METRICS_COLLECT_REQ` | Broker → each active role | `{channel_name, uid}` (one-way nudge, no response expected) |
-| 3 | (role sets internal flag: "include metrics in next heartbeat") | | |
-| 4 | `HEARTBEAT_REQ` | Role → Broker (next heartbeat cycle) | `{channel_name, uid, role_type, metrics: {...}}` (enriched) |
-| 5 | Broker stores metrics in global table | | |
-| 6 | `METRICS_ACK` | Broker → Admin | Current table contents + live SHM data |
+|---|---|---|---|
+| 1 | `METRICS_REQ` | Admin → Broker | `{channel_name?}` (omit for all channels) |
+| 2 | broker walks `MetricsStore` keyed `(channel, uid, role_type)`; merges live SHM `DataBlockMetrics` (§3.2); composes `_collected_at` per row | | |
+| 3 | `METRICS_ACK` | Broker → Admin | Aggregated view: per-channel rows for `producer_metrics` + `consumers[uid]` map |
 
-The `METRICS_COLLECT_REQ` is a one-way nudge — no response expected. The role
-sets an internal flag and includes `snapshot_metrics_json()` in its next heartbeat.
+No `METRICS_COLLECT_REQ` round-trip is involved — the broker
+returns whatever rows are currently in the store (last-known
+metrics).  Roles refresh those rows on every heartbeat that
+carries a `metrics` payload.
 The broker returns immediately to the admin with whatever is currently in the
 global table (may be stale). The admin can poll again after one heartbeat interval
 (~1-2s) to get fresh data.
@@ -223,114 +291,128 @@ The broker maintains a table indexed by `(channel_name, uid)`:
 - `metrics` + `metrics_timestamp` updated on each `METRICS_COLLECT_ACK`
 - Entry removed on `DISC_ACK` (role deregistered) or heartbeat timeout
 
-### 3.3 Removed from Phase 2
+### 3.3 Phase 6 changes (vs. Phase 1 baseline)
 
-- **`METRICS_REPORT_REQ`**: voluntary push from consumer — replaced by nudge+heartbeat
-- **Always-on heartbeat metrics piggybacking**: metrics are included only after a `METRICS_COLLECT_REQ` nudge, not on every heartbeat
-- **Different heartbeat formats**: all roles now use the same `{channel_name, uid, role_type}` base format
-- **`METRICS_COLLECT_ACK`**: no separate response message — metrics come via the next enriched heartbeat
+- **Heartbeat wire payload gains `uid` + `role_type`** — required.
+  Pre-Phase-6 broker handlers ignored these fields harmlessly; the
+  Phase 6 broker handler requires them.  See HEP-CORE-0023 §2.2 for
+  the updated sequence diagram.
+- **Per-presence keying**: `MetricsStore` is keyed `(channel, uid,
+  role_type)` instead of channel-keyed.  A processor with two
+  presences writes two rows; admin queries can filter by any
+  combination.
+- **Channel-FSM refresh becomes producer-only**: consumer-presence
+  heartbeats refresh role-level liveness only; the channel's Pending
+  ↔ Ready transition is driven exclusively by producer-presence
+  heartbeats.  Fixes the "consumer keeps a dead-producer channel
+  artificially Ready" bug.
+- **`METRICS_REPORT_REQ` is deprecated** as a periodic role-side
+  emission.  The wire-protocol message and broker handler stay one
+  release for backward compatibility; admin tools may continue
+  sending metrics this way during the transition.  After Phase 6
+  migration, no role auto-emits it — consumer-side metrics now ride
+  on the consumer's own heartbeat.
+
+### 3.3a Phase 2 nudge-design content (paper-only — never shipped)
+
+The 2026-03-25 redesign proposed a `METRICS_COLLECT_REQ` nudge from
+broker to roles, with metrics riding on an "enriched" heartbeat
+returned from the next cycle.  None of that machinery exists in code:
+no `METRICS_COLLECT_REQ` wire type, no enriched-heartbeat flag, no
+`METRICS_COLLECT_ACK`.  Phase 6 supersedes this design — roles emit
+metrics on every heartbeat where they have new data, with no
+broker-driven prompt — which removes the round-trip latency and
+matches the role-side code that already ships metrics on every
+heartbeat.
 
 ---
 
-## 4. Protocol Extensions
+## 4. Protocol Extensions (Phase 6)
 
-### 4.1 `HEARTBEAT_REQ` (Phase 2 — liveness only)
+### 4.1 `HEARTBEAT_REQ` (per-presence)
 
-All roles send the same format:
-
-```json
-{
-  "msg_type": "HEARTBEAT_REQ",
-  "channel_name": "sensor.data",
-  "uid": "PROD-Sensor-AABBCCDD",
-  "role_type": "producer"
-}
-```
-
-No metrics payload. The broker updates `last_heartbeat` in the global role table.
-`role_type` is one of `"producer"`, `"consumer"`, `"processor"`.
-
-### 4.2 `METRICS_COLLECT_REQ` (broker → role, one-way nudge)
-
-Triggered by `METRICS_REQ` from admin. Broker sends to each active role on the
-requested channel:
-
-```json
-{
-  "msg_type": "METRICS_COLLECT_REQ",
-  "channel_name": "sensor.data",
-  "uid": "PROD-Sensor-AABBCCDD"
-}
-```
-
-**No response expected.** The role sets an internal flag (`metrics_requested_`).
-On its next heartbeat cycle, the role includes `snapshot_metrics_json()` in the
-heartbeat payload, then clears the flag.
-
-### 4.3 Enriched `HEARTBEAT_REQ` (role → broker, after nudge)
-
-When `metrics_requested_` is set, the role sends:
+Every presence sends one heartbeat per cycle:
 
 ```json
 {
   "msg_type": "HEARTBEAT_REQ",
   "channel_name": "sensor.data",
-  "uid": "PROD-Sensor-AABBCCDD",
-  "role_type": "producer",
+  "uid":          "prod.sensor.aabbccdd",
+  "role_type":    "producer",
+  "producer_pid": 12345,
   "metrics": {
-    "base": { ... },
-    "custom": { ... }
+    "base":   { ... per-presence base counters ... },
+    "custom": { ... user `api.report_metric()` keys ... }
   }
 }
 ```
 
-The `metrics` field is present ONLY when the flag is set. The broker stores it
-in the global role table with a timestamp and clears the pending flag.
+`role_type` is `"producer"` or `"consumer"`.  A processor role
+emits two heartbeats per cycle — one with `role_type="consumer"`
+(for its in_channel presence) and one with `role_type="producer"`
+(for its out_channel presence) — over the appropriate connection(s)
+per HEP-CORE-0033 §19.
 
-Normal heartbeats (no nudge) carry no `metrics` field.
+The `metrics` field is OPTIONAL.  Roles emit it whenever they have
+new data (today's `snapshot_metrics_json()` clears-on-read; sending
+on every heartbeat is the simplest correct behaviour).  The broker
+stores the snapshot in `MetricsStore[(channel, uid, role_type)]`
+with a `_collected_at` timestamp.
 
-### 4.3 `METRICS_REQ` / `METRICS_ACK` (admin → broker)
+`producer_pid` is retained from the Phase 1 wire format for
+backward audit / diagnostic purposes — the broker only uses it for
+an ERROR log when missing or zero.
 
-Request:
+### 4.2 `METRICS_REQ` / `METRICS_ACK` (admin → broker)
+
+Direct query against the broker's `MetricsStore`.  No role-side
+round-trip involved.
+
+**Request:**
 ```json
 {
-  "msg_type": "METRICS_REQ",
-  "channel_name": "ch"
+  "msg_type":     "METRICS_REQ",
+  "channel_name": "sensor.data"        // optional; omit for all channels
 }
 ```
 
-If `channel_name` is omitted, returns metrics for **all channels**.
+**Response (`METRICS_ACK`)** — per-channel rows aggregating each
+presence registered on the channel.  Producer-presence rows appear
+under `producer`; consumer-presence rows appear in the `consumers`
+list keyed by uid.  Each row has its own `_collected_at` timestamp
+(when the broker last received an update for that
+`(channel, uid, role_type)` tuple) and `last_report` (alias) for
+back-compat with Phase 1-5 admin tools.
 
-Response:
 ```json
 {
   "msg_type": "METRICS_ACK",
-  "status": "success",
+  "status":   "success",
   "channels": {
-    "ch": {
+    "sensor.data": {
       "producer": {
-        "uid": "PROD-SENSOR-A1B2C3D4",
+        "uid": "prod.sensor.a1b2c3d4",
         "pid": 1234,
-        "last_report": "2026-03-02T14:30:01.234Z",
+        "_collected_at": "2026-03-02T14:30:01.234Z",
         "base": {
-          "out_written": 50042,
-          "drops": 3,
-          "script_errors": 0,
+          "out_written":     50042,
+          "drops":           3,
+          "script_errors":   0,
           "iteration_count": 50045
         },
         "custom": {
           "events_above_threshold": 127,
-          "avg_processing_ms": 2.3
+          "avg_processing_ms":      2.3
         }
       },
       "consumers": [
         {
-          "uid": "CONS-LOGGER-A1B2C3D4",
+          "uid": "cons.logger.a1b2c3d4",
           "pid": 5678,
-          "last_report": "2026-03-02T14:30:00.891Z",
+          "_collected_at": "2026-03-02T14:30:00.891Z",
           "base": {
-            "in_received": 49980,
-            "script_errors": 0,
+            "in_received":     49980,
+            "script_errors":   0,
             "iteration_count": 49981
           },
           "custom": {
@@ -340,17 +422,57 @@ Response:
       ],
       "shm": {
         "write_lock_contention": 12,
-        "writer_timeout_count": 0,
-        "reader_race_detected": 3,
-        "reader_peak_count": 2
+        "writer_timeout_count":  0,
+        "reader_race_detected":  3,
+        "reader_peak_count":     2
       }
     }
   }
 }
 ```
 
-The `shm` section is populated on-demand when the broker can access the SHM
-segment. If the SHM is unavailable (e.g., ZMQ-only channel), `shm` is omitted.
+The `shm` section is populated on-demand when the broker can access
+the SHM segment.  If the SHM is unavailable (e.g., ZMQ-only channel),
+`shm` is omitted.
+
+For a processor, both its `(in_channel, proc_uid, "consumer")` row
+(under `channels.in_channel.consumers[]`) and its
+`(out_channel, proc_uid, "producer")` row (under
+`channels.out_channel.producer`) appear in the response —
+admin tools can correlate the two by uid to get the full per-cycle
+picture for the processor.
+
+### 4.3 Deprecated: `METRICS_REPORT_REQ`
+
+The Phase 1 message type for consumer-pushed metrics.  Wire format:
+
+```json
+{
+  "msg_type":     "METRICS_REPORT_REQ",
+  "channel_name": "sensor.data",
+  "uid":          "cons.monitor.aabbccdd",
+  "metrics":      { ... }
+}
+```
+
+**Deprecated under Phase 6.**  No role auto-emits this after the
+migration — consumer-side metrics now ride on the consumer's own
+`HEARTBEAT_REQ` (§4.1).  The broker retains the handler one
+release for backward compatibility (writes the same per-presence
+metrics row); admin tools that previously pushed via this path
+continue to work during the transition.  The handler is
+scheduled for removal in the release after the Phase 6 migration
+completes.
+
+### 4.4 Deferred: `METRICS_COLLECT_REQ` nudge model (never shipped)
+
+(Historical, retained for traceability.)  The 2026-03-25 paper
+design proposed a broker → role nudge that would set a
+`metrics_requested_` flag on the role; the role would then
+include metrics in the next heartbeat and clear the flag.  Neither
+the wire message nor the role-side flag exist in code; Phase 6's
+always-on metrics piggyback supersedes this design and removes
+the round-trip latency.
 
 ---
 
@@ -532,19 +654,17 @@ sequenceDiagram
 
 ```mermaid
 graph LR
-    P1["Phase 1<br/>C++ infra"] --> P2["Phase 2<br/>Heartbeat ext."]
-    P2 --> P3["Phase 3<br/>Consumer report"]
-    P3 --> P4["Phase 4<br/>Query API"]
-    P4 --> P5["Phase 5<br/>Python bindings"]
+    P1["Phase 1<br/>C++ infra"]:::shipped --> P2["Phase 2<br/>Heartbeat ext."]:::shipped
+    P2 --> P3["Phase 3<br/>Consumer report"]:::shipped
+    P3 --> P4["Phase 4<br/>Query API"]:::shipped
+    P4 --> P5["Phase 5<br/>Python bindings"]:::shipped
+    P5 --> P6["Phase 6<br/>Per-presence keying<br/>(current normative)"]:::pending
 
-    style P1 fill:#2a4a2a,stroke:#333
-    style P2 fill:#2a4a2a,stroke:#333
-    style P3 fill:#2a4a2a,stroke:#333
-    style P4 fill:#2a4a2a,stroke:#333
-    style P5 fill:#2a4a2a,stroke:#333
+    classDef shipped fill:#2a4a2a,stroke:#333,color:#fff
+    classDef pending fill:#a08020,stroke:#333,color:#fff
 ```
 
-### Phase 1: C++ infrastructure ✅
+### Phase 1: C++ infrastructure ✅ (historical)
 
 1. Added `custom_metrics_` map + `InProcessSpinState` to `ProducerAPI`, `ConsumerAPI`,
    `ProcessorAPI`
@@ -552,32 +672,74 @@ graph LR
 3. Added `snapshot_metrics_json()` for zmq thread consumption (snapshot-and-clear)
 4. Added `MetricsStore` to `BrokerService` (Pimpl-internal, guarded by `m_query_mu`)
 
-### Phase 2: Heartbeat extension (producer + processor) ✅
+### Phase 2: Heartbeat extension (producer + processor) ✅ (historical)
 
-1. Extended `Messenger::enqueue_heartbeat(channel, json metrics)` overload
-2. In `run_zmq_thread_()`: `api_.snapshot_metrics_json()` → pass to `enqueue_heartbeat()`
-   via `HeartbeatTracker` periodic task (`ZmqPollLoop`)
-3. Broker: `handle_heartbeat_req()` extracts `metrics` field, updates `MetricsStore`
+1. Extended heartbeat-message wire format with optional `metrics` field
+   (originally `Messenger::enqueue_heartbeat(channel, json metrics)`;
+   now via `BrokerRequestComm::send_heartbeat`).
+2. In role-side ctrl thread: `api_.snapshot_metrics_json()` → pass to
+   `send_heartbeat()` via the periodic-task scheduler.
+3. Broker: `handle_heartbeat_req()` extracts `metrics` field, updates `MetricsStore`.
 
-### Phase 3: Consumer metrics reporting ✅
+### Phase 3: Consumer metrics reporting ✅ (historical — deprecated by Phase 6)
 
-1. Added `METRICS_REPORT_REQ` message type (`MetricsReportCmd` in messenger_internal.hpp)
-2. Consumer `run_zmq_thread_()`: periodic `HeartbeatTracker` sends `METRICS_REPORT_REQ`
-   with base counters + custom metrics
-3. Broker: `handle_metrics_report_req()` updates `MetricsStore`
+1. Added `METRICS_REPORT_REQ` message type.
+2. Consumer ctrl thread: periodic task sends `METRICS_REPORT_REQ`
+   with base counters + custom metrics.
+3. Broker: `handle_metrics_report_req()` updates `MetricsStore`.
 
-### Phase 4: Query API ✅
+(Under Phase 6, the consumer-side periodic task is removed; consumer
+metrics ride on consumer's own `HEARTBEAT_REQ` instead.  The
+broker-side `METRICS_REPORT_REQ` handler stays one release for
+backward compatibility — see §4.3.)
 
-1. Added `METRICS_REQ`/`METRICS_ACK` handler to `BrokerService`
-2. SHM `DataBlockMetrics` read deferred (not included in Phase 4 — query returns ZMQ-reported metrics only)
-3. Exposed via AdminShell: `pylabhub.metrics("channel_name")` → JSON
+### Phase 4: Query API ✅ (historical, mostly)
 
-### Phase 5: Python bindings ✅
+1. Added `METRICS_REQ`/`METRICS_ACK` handler to `BrokerService`.
+2. SHM `DataBlockMetrics` read deferred (not included in Phase 4 — query returns ZMQ-reported metrics only).
+3. Exposed via AdminService: `query_metrics(channel)` → JSON.
+4. **Phase 6 update**: response shape gains the per-presence
+   `(channel, uid, role_type)` keying; `producer_metrics` and
+   `consumers[uid]` rows each carry `_collected_at` timestamps.
+
+### Phase 5: Python bindings ✅ (historical)
 
 1. Bound `api.report_metric(key, value)`, `api.report_metrics(dict)`,
-   `api.clear_custom_metrics()` in all three `PYBIND11_EMBEDDED_MODULE` blocks
+   `api.clear_custom_metrics()` in all three `PYBIND11_EMBEDDED_MODULE` blocks.
 2. Defaults applied at pybind11 level only (per pybind11 Default Parameter Rule —
-   `docs/IMPLEMENTATION_GUIDANCE.md` § "pybind11 Default Parameter Rule")
+   `docs/IMPLEMENTATION_GUIDANCE.md` § "pybind11 Default Parameter Rule").
+
+### Phase 6: Per-presence keying ⏸ pending — current normative design
+
+Resolves the latent bugs in Phase 1-5 where consumer's HEARTBEAT_REQ
+(carrying no `uid` / `role_type`) was silently attributed to the
+channel's producer in `MetricsStore`, and where the consumer's
+heartbeat refreshed `channel.last_heartbeat` (gating the FSM that
+should be producer-only).
+
+1. **Wire-format addition**: `HEARTBEAT_REQ` payload gains required
+   `uid` and `role_type` fields (additive — pre-Phase-6 brokers
+   ignored them harmlessly; post-Phase-6 broker requires them).
+2. **Broker handler split**: `handle_heartbeat_req` reads
+   `(channel, uid, role_type)` from the payload, refreshes
+   `channel.last_heartbeat` only when `role_type == "producer"`,
+   writes metrics under `MetricsStore[(channel, uid, role_type)]`.
+3. **Consumer-side heartbeat fix**: today's consumer auto-emission
+   path is removed; consumer's own heartbeat carries
+   `role_type="consumer"` and writes its own row.
+4. **Per-presence emission**: a role with N presences emits N
+   heartbeats per cycle, each with the right `(uid, role_type)`.
+5. **`METRICS_REPORT_REQ` deprecated**: broker handler retained one
+   release for compat; no role auto-emits.
+6. **`metrics_store_` legacy retired**: single per-presence-keyed
+   path going forward; query handlers updated to read the unified
+   store.
+
+Implementation lands in
+`docs/tech_draft/role_host_template_design.md` Wave B (M0+M1+M2);
+HEP-CORE-0023 §2.2 sequence-diagram update lands alongside; this
+HEP's status closes when M9 ships.  Tests are revised + added per
+that draft's Wave B test plan (§14.2).
 
 ### Test coverage
 
@@ -606,31 +768,26 @@ graph LR
 
 ## 11. Relationship to Existing Metrics
 
-| Existing mechanism | Status after this HEP |
+| Existing mechanism | Status under Phase 6 |
 |---|---|
-| `DataBlockMetrics` in SHM header | **Unchanged** — still updated passively. Broker reads on query. |
-| Per-API counters (`in_received`, etc.) | **Extended** — now reported to broker via heartbeat/metrics report. |
-| `iteration_count_` (internal) | **Included** in base metrics — proves liveness quantitatively. |
+| `DataBlockMetrics` in SHM header | **Unchanged** — still updated passively. Broker reads on query and merges into the response. |
+| Per-API counters (`in_received`, etc.) | **Extended + per-presence-keyed** — reported via the role's own heartbeat carrying `(uid, role_type)`; landed in `MetricsStore[(channel, uid, role_type)]`. |
+| `iteration_count_` (internal) | **Included** in the base metrics payload — proves liveness quantitatively. |
 | SHM heartbeat pool (consumer PIDs in header) | **Unchanged** — data-plane liveness, orthogonal to metrics plane. |
+| `METRICS_REPORT_REQ` consumer-pushed metrics (Phase 3) | **Deprecated** — broker handler retained one release for back-compat; no role auto-emits.  Consumer metrics now ride on consumer's own `HEARTBEAT_REQ` per-presence. |
 
 ---
 
-## 12. Source File Reference
+## 12. Source File Reference (current — Phase 6 implementation surface)
 
-Files modified during implementation:
-
-| Component | Source File | Impact |
-|-----------|------------|--------|
-| **ProducerAPI** | `src/producer/producer_api.hpp/cpp` | `report_metric()`, `custom_metrics_` map, `snapshot_metrics_json()`, pybind11 bindings |
-| **ConsumerAPI** | `src/consumer/consumer_api.hpp/cpp` | Same as ProducerAPI |
-| **ProcessorAPI** | `src/processor/processor_api.hpp/cpp` | Same as ProducerAPI |
-| **BrokerService** | `src/utils/ipc/broker_service.cpp` | `MetricsStore` (Pimpl-internal), `handle_metrics_report_req()`, `handle_metrics_req()` |
-| **Messenger protocol** | `src/utils/ipc/messenger_protocol.cpp` | `METRICS_REPORT_REQ` handler, `METRICS_REQ/ACK` dispatch |
-| **Messenger internal** | `src/utils/ipc/messenger_internal.hpp` | `MetricsReportCmd` struct added to `MessengerCommand` variant |
-| **Messenger** | `src/include/utils/messenger.hpp` | `enqueue_heartbeat(channel, json)` overload, `enqueue_metrics_report()` |
-| **AdminShell module** | (deleted in post-G2 cleanup; the `pylabhub.metrics()` binding will return as part of the unified `plh_hub` binary in HEP-CORE-0033 §11.3 / §15 Phase 8) | `pylabhub.metrics(channel="")` binding |
-| **ProducerScriptHost** | `src/producer/producer_script_host.cpp` | zmq_thread_ heartbeat now includes `api_.snapshot_metrics_json()` |
-| **ConsumerScriptHost** | `src/consumer/consumer_script_host.cpp` | zmq_thread_ periodic `METRICS_REPORT_REQ` via `HeartbeatTracker` |
-| **ProcessorScriptHost** | `src/processor/processor_script_host.cpp` | zmq_thread_ heartbeat now includes `api_.snapshot_metrics_json()` |
-| **Tests (protocol)** | `tests/test_layer3_datahub/test_datahub_metrics_plane.cpp` | 10 `MetricsPlaneTest` tests |
-| **Tests (API)** | `tests/test_layer4_producer/test_metrics_api.cpp` | 9 `MetricsApiTest` tests (pybind11-linked) |
+| Component | Source file | Role in the metrics plane |
+|---|---|---|
+| **RoleAPIBase** | `src/include/utils/role_api_base.hpp` + `src/utils/service/role_api_base.cpp` | `report_metric()` / `report_metrics()` / `clear_custom_metrics()` script-API surface; `snapshot_metrics_json()` (snapshot-and-clear); periodic heartbeat tick installed via `start_ctrl_thread` (Phase 6: per-presence) |
+| **ProducerAPI / ConsumerAPI / ProcessorAPI** | `src/{producer,consumer,processor}/{producer,consumer,processor}_api.{hpp,cpp}` | pybind11 thin wrappers exposing the `RoleAPIBase` surface to Python scripts |
+| **RoleHostCore** | `src/include/utils/role_host_core.hpp` + `src/utils/service/role_host_core.cpp` | Custom-metrics map (`custom_metrics_`), iteration counters, base loop metrics (HEP-0008) |
+| **BrokerRequestComm** | `src/include/utils/broker_request_comm.hpp` + `src/utils/network_comm/broker_request_comm.cpp` | `send_heartbeat(channel, uid, role_type, metrics)` wire emission (Phase 6 signature); `send_metrics_report(...)` retained one release for back-compat |
+| **BrokerService** | `src/include/utils/broker_service.hpp` + `src/utils/ipc/broker_service.cpp` | `handle_heartbeat_req()` (Phase 6: split FSM-refresh from metrics-write); `handle_metrics_report_req()` (deprecated, retained one release); `handle_metrics_req()` (admin query) |
+| **HubState** | `src/include/utils/hub_state.hpp` + `src/utils/ipc/hub_state.cpp` | `_on_heartbeat()` capability op; `RoleEntry.latest_metrics`; per-presence keying via `MetricsStore[(channel, uid, role_type)]` (Phase 6); previous channel-keyed `metrics_store_` retired in Phase 6 M1 |
+| **Hub-side query** | `src/utils/ipc/admin_service.cpp` (HEP-CORE-0033 §11) | `query_metrics(channel)` admin RPC; returns the `METRICS_ACK` shape from §4.2 |
+| **Tests (broker protocol)** | `tests/test_layer3_datahub/test_datahub_metrics.cpp` | `MetricsPlaneTest` suite — heartbeat-with-metrics, per-presence keying (Phase 6), `METRICS_REPORT_REQ` back-compat handler, all-channels query, SHM merge |
+| **Tests (RoleAPIBase + RoleHostCore)** | `tests/test_layer2_service/test_role_host_core.cpp` + `test_role_api_base.cpp` | Custom-metrics map ops, snapshot semantics, periodic-tick installation conditions (Phase 6: only producer presences) |

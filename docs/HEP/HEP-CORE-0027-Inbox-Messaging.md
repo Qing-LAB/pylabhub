@@ -1,8 +1,9 @@
 # HEP-CORE-0027: Inbox Messaging
 
-**Status**: Implemented (documenting existing system)
+**Status**: Implemented (documenting existing system).  Reachability + multi-hub advertisement section (§13) added 2026-05-06 to align with HEP-CORE-0033 §19 (multi-presence roles, planned — Wave A item A7) and HEP-CORE-0019 §2.3 (Phase 6 per-presence heartbeats).
 **Created**: 2026-03-27
 **Scope**: InboxQueue, InboxClient, peer-to-peer messaging side channel
+**Depends on**: HEP-CORE-0007 §12.4 (ROLE_INFO_REQ/ACK), HEP-CORE-0034 §11.4 (inbox-as-schema-record), HEP-CORE-0033 §8 (HubState entry types — `ChannelEntry` / `ConsumerEntry` hold per-presence inbox metadata), HEP-CORE-0033 §18 (broker routing classes — ROLE_INFO_REQ is Class B), HEP-CORE-0033 §19 (multi-presence roles — drives per-presence inbox advertisement)
 
 ---
 
@@ -73,9 +74,9 @@ Role A (sender)                          Role B (receiver)
 | Component | Relationship |
 |-----------|-------------|
 | Data queue (SHM/ZMQ) | Orthogonal. Inbox is a separate ZMQ channel. Both can be active simultaneously. |
-| Messenger | Discovery only. Messenger routes ROLE_INFO_REQ to broker; not involved in data flow. |
-| Broker | Metadata storage only. Stores inbox_endpoint + schema from REG_REQ; serves via ROLE_INFO_REQ. |
-| RoleHostCore | Inbox metrics will be exposed through RoleContext (see §8). |
+| BrokerRequestComm | Discovery only.  Routes ROLE_INFO_REQ to broker; not involved in inbox data flow.  Per HEP-CORE-0033 §18, the lookup is a Class B fall-through across all the asker's hub connections. |
+| Broker | Metadata storage only.  Stores `inbox_endpoint` + schema fields per-presence (from REG_REQ / CONSUMER_REG_REQ — see §4.1); serves via ROLE_INFO_REQ.  Not in the inbox data path. |
+| RoleHostCore | Owns the InboxQueue (one per role) + the inbox cache for outbound `InboxClient`s.  Inbox metrics serialised through the RoleHostCore metrics pipeline (HEP-CORE-0019 §5.4). |
 
 ---
 
@@ -134,22 +135,50 @@ The DEALER/ROUTER envelope uses ZMQ's built-in identity routing:
 3. inbox_queue_->start()                    — bind ROUTER socket
 4. inbox_queue_->set_checksum_policy(config_.checksum().policy)
 5. inbox_queue_->actual_endpoint()          — resolve port-0 if used
-6. Inbox info included in registration:
-   - Producer/Processor: ProducerOptions → REG_REQ
-   - Consumer: ConsumerOptions → CONSUMER_REG_REQ
-   Fields: inbox_endpoint, inbox_schema_json, inbox_packing, inbox_checksum
-7. Broker stores inbox info on ChannelEntry (producer) or ConsumerEntry (consumer)
+6. For EACH presence the role registers (one for producer/consumer roles;
+   two for processor — see HEP-CORE-0033 §19), the inbox metadata
+   block is appended to that presence's registration payload:
+     - producer presence  → REG_REQ          (ProducerRegInputs)
+     - consumer presence  → CONSUMER_REG_REQ (ConsumerRegInputs)
+   Fields per presence: inbox_endpoint, inbox_schema_json, inbox_packing,
+   inbox_checksum.  Same `inbox_endpoint` string is sent in every
+   presence's payload — there is one InboxQueue per role, regardless
+   of how many hubs the role registers with.
+7. Broker stores the metadata once per presence:
+     - producer-presence registration → ChannelEntry.inbox_*  (per channel)
+     - consumer-presence registration → ConsumerEntry.inbox_* (per channel)
+   For dual-hub processor, this means in_hub holds the ConsumerEntry copy
+   (under in_channel) and out_hub holds the ChannelEntry copy (under
+   out_channel) — both with identical inbox_endpoint strings.
 8. inbox_thread_ started: loop { recv_one() → invoke_on_inbox() → send_ack() }
 ```
+
+**Why advertise on every presence.**  ROLE_INFO_REQ (used by senders
+to discover a target's inbox — see §4.2) is a Class B fall-through
+query (HEP-CORE-0033 §18).  Each hub answers ROLE_INFO_REQ
+from its own local view; a sender connected to in_hub will not find
+a target that's only registered on out_hub.  By advertising the
+inbox metadata on every presence's registration, the role becomes
+discoverable from any hub it registers with, with zero hub-side
+federation required.
 
 ### 4.2 Sender Connection (on demand)
 
 ```
 1. Script calls api.open_inbox("TARGET-UID-1234")
 2. ScriptEngine → RoleHostCore::open_inbox() (cached, thread-safe)
-3. Messenger sends ROLE_INFO_REQ to broker
-4. Broker searches producer entries (by producer_role_uid), then consumer entries
-   (by role_uid). Returns first match.
+3. BrokerRequestComm sends ROLE_INFO_REQ to a broker.
+   • Single-hub sender: ROLE_INFO_REQ goes to the role's only hub.
+   • Multi-hub sender (e.g. dual-hub processor as the asker):
+     Class B fall-through (HEP-CORE-0033 §18) — the asker
+     queries each of its hub connections in turn; first hub that
+     answers "found" wins.  If no hub returns a match within the
+     timeout, the call fails with "uid not found".
+4. The hub that answers searches its own ChannelEntry (by
+   producer_role_uid), then its ConsumerEntry list (by role_uid).
+   Returns the first match.  Other hubs (if the target is registered
+   there too) hold a duplicate copy with the same inbox_endpoint
+   string — first answer wins.
 5. ROLE_INFO_ACK: inbox_endpoint, inbox_schema, inbox_packing, inbox_checksum
 6. InboxClient::connect_to(endpoint, my_uid, schema, packing) → shared_ptr
 7. client->start()                          — connect DEALER socket
@@ -157,6 +186,12 @@ The DEALER/ROUTER envelope uses ZMQ's built-in identity routing:
    The inbox OWNER dictates the checksum policy. The sender adopts it.
 9. InboxHandle wraps client for script use
 ```
+
+**Sender ↔ receiver are direct ZMQ.**  Once the sender has
+`inbox_endpoint`, the DEALER↔ROUTER connection is direct
+TCP/IPC — no hub is in the data path.  Cross-hub inbox messaging
+works automatically as long as the endpoint is network-routable
+from the sender's host (see §13).
 
 ### 4.3 Message Exchange
 
@@ -178,6 +213,59 @@ Sender (InboxClient):                    Receiver (InboxQueue):
 3. Connected InboxClients get ZMQ disconnect; send() returns 255
 4. InboxClient::stop() called in RoleHostCore cache cleanup
 ```
+
+### 4.5 Multi-Hub Reachability
+
+The inbox is a **direct** ZMQ DEALER↔ROUTER channel: once a sender
+discovers the receiver's `inbox_endpoint` (via ROLE_INFO_REQ —
+§4.2), the connection bypasses every hub.  This means inbox traffic
+crosses host boundaries iff the endpoint URL is routable from the
+sender's host.  Three deployment cases:
+
+| Topology | Sender host | Receiver bind | Works? |
+|---|---|---|---|
+| Same-host single-hub | localhost | `tcp://127.0.0.1:NNNN` or `ipc://...` | ✓ |
+| Same-host single-hub | localhost | `tcp://0.0.0.0:NNNN` | ✓ (loopback works on the all-interfaces bind) |
+| Cross-host single-hub | host-A | `tcp://127.0.0.1:NNNN` | ✗ (loopback unreachable from outside) |
+| Cross-host single-hub | host-A | `tcp://0.0.0.0:NNNN` (or `tcp://<NIC-IP>:NNNN`) | ✓ (routable bind) |
+| Dual-hub processor (sender on `in_hub`, receiver on both hubs) | wherever the sender is | bind address must be reachable from BOTH hubs' senders | ✓ if bind is routable from both networks |
+
+**Operator responsibility — bind address.**  The inbox `endpoint`
+field in `inbox_config` is the role's chosen bind URL.  For
+deployments where senders may live on hosts that can reach one but
+not all of the role's hubs, the operator MUST bind to an address
+routable from every sender host.  Loopback binds are appropriate
+only when all senders are on the same host.
+
+**Per-presence advertisement (recap from §4.1).**  The same
+`inbox_endpoint` string is sent in every presence's REG_REQ /
+CONSUMER_REG_REQ payload.  For a dual-hub processor, both hubs
+hold independent copies of the inbox metadata — senders connected
+to either hub can discover the role via the local hub's
+ROLE_INFO_REQ.  No hub-to-hub federation is required for
+discovery; reachability is the operator's network configuration.
+
+**Why no hub-side federation here.**  HEP-CORE-0022 (Hub Federation
+Broadcast) is a separate concern (cross-hub broadcasts, peer
+relay).  Inbox is intentionally simpler: every interested hub
+holds its own metadata copy; ROLE_INFO_REQ is a Class B
+fall-through query at the role-side (HEP-CORE-0033 §18).
+The inbox's data path is not hub-routed at all, so there's nothing
+for federation to relay.
+
+**Failure semantics.**
+
+- Endpoint unreachable from sender's host: `InboxClient::start()`
+  returns success (DEALER `connect()` is non-blocking + idempotent),
+  but `send()` returns 255 (timeout) on every attempt.  The
+  receiver never sees the sender.  Operator-side fix: change the
+  receiver's bind to a routable address.
+- Endpoint reachable but receiver process is down: same observable
+  symptom (255 on send) until the receiver restarts and rebinds.
+- Receiver restarts with a new ephemeral port (port 0 → OS-assigned):
+  cached `InboxClient` instances are stale.  Senders should refresh
+  via a fresh `api.open_inbox(uid)` after detecting repeated 255
+  acks, which re-runs ROLE_INFO_REQ and gets the new endpoint.
 
 ---
 
@@ -381,7 +469,7 @@ elif ack == 255:
 | Wire helpers | `src/utils/hub/zmq_wire_helpers.hpp` | Shared msgpack pack/unpack |
 | Script handle | `src/scripting/python_helpers.hpp` | `InboxHandle` wrapper |
 | Drain helper | `src/scripting/role_host_helpers.hpp` | `drain_inbox_sync()` |
-| Discovery | `src/include/utils/messenger.hpp` | `query_role_info()` for ROLE_INFO_REQ |
+| Discovery | `src/include/utils/broker_request_comm.hpp` | `query_role_info()` for ROLE_INFO_REQ (Class B fall-through — HEP-CORE-0033 §18) |
 | Protocol | HEP-CORE-0007 §12.4 | ROLE_INFO_REQ/ACK message format |
 | Metrics X-macro | `src/include/utils/hub_inbox_queue.hpp` | `PYLABHUB_INBOX_METRICS_FIELDS` |
 | Metrics adapters | `metrics_json.hpp`, `metrics_pydict.hpp`, `metrics_lua.hpp` | Serialization helpers |
@@ -393,9 +481,14 @@ elif ack == 255:
 
 - **HEP-CORE-0007 §12.4**: ROLE_INFO_REQ/ACK protocol for inbox endpoint discovery
 - **HEP-CORE-0008 §6.1**: Hierarchical metrics schema (inbox group)
-- **HEP-CORE-0015 §4, §6.4**: Processor inbox config fields + InboxHandle API
-- **HEP-CORE-0018 §15.6**: Inbox plane overview (superseded by this document for details)
+- **HEP-CORE-0019 §2.3**: Per-presence heartbeat protocol (Phase 6) — inbox metadata flows on every presence's registration as part of the same per-presence model
 - **HEP-CORE-0019 §5.4**: Metrics serialization architecture
+- **HEP-CORE-0023 §2.5.2**: Per-presence heartbeat contract — explains the "every presence registers on its hub" pattern that §4.1 relies on
+- **HEP-CORE-0033 §8**: HubState entry types — `ChannelEntry.inbox_*` and `ConsumerEntry.inbox_*` are where per-presence inbox metadata lives broker-side
+- **HEP-CORE-0033 §18**: Broker message routing classes — ROLE_INFO_REQ is Class B (role-bound, fall-through query)
+- **HEP-CORE-0033 §19**: Multi-presence roles — defines presence list + per-hub registration that drives §4.1's per-presence advertisement
+- **HEP-CORE-0015 §4, §6.4** (SUPERSEDED — see HEP-CORE-0033 §19): historical processor inbox config fields + InboxHandle API
+- **HEP-CORE-0018 §15.6** (SUPERSEDED): historical inbox plane overview — superseded by this document
 - **HEP-CORE-0034 §11.4**: Inbox schemas integrate into the hub's owner-authoritative
   schema registry as `(receiver_uid, "inbox")` records. Receiver-as-authority model
   (this HEP §4.1 step 7-8) maps directly onto HEP-0034 ownership rules; existing wire
