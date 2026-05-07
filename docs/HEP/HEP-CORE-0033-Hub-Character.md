@@ -715,8 +715,8 @@ struct HubState
 
 | Entry | Updated by | Holds |
 |---|---|---|
-| `ChannelEntry` | REG_REQ / DISC_REQ / CHANNEL_CLOSING / broker-internal | name, **schema_owner**, **schema_id**, producer PID, consumers, created_at, status |
-| `RoleEntry` | REG/HEARTBEAT/METRICS_REPORT/DISC/timeout | uid, name, role_tag, channels, state, first_seen, last_heartbeat, latest metrics, `metrics_collected_at`, pubkey |
+| `ChannelEntry` | REG_REQ / producer-presence HEARTBEAT_REQ (drives FSM) / CONSUMER_REG_REQ / CONSUMER_DEREG_REQ / CHANNEL_CLOSING / broker-internal | name, **schema_owner**, **schema_id**, producer PID, consumers[], `last_heartbeat` (refreshed only by the channel's producer-presence heartbeat — HEP-CORE-0023 §2.1 / §2.5.2), created_at, status |
+| `RoleEntry` | REG / per-presence HEARTBEAT_REQ / DISC / role-side timeout | uid, name, role_tag, channels[], state, first_seen, `last_heartbeat` (informational; refreshed by any presence's heartbeat from this uid — see HEP-CORE-0019 §2.3 / Phase 6 per-presence keying), `latest_metrics`, `metrics_collected_at`, pubkey.  Note: `MetricsStore` is keyed `(channel_name, uid, role_type)` not just `uid` — see §18.4. |
 | `BandEntry` | BAND_JOIN / BAND_LEAVE | name, members[], last_activity |
 | `PeerEntry` | HUB_PEER_HELLO / HUB_PEER_BYE / federation heartbeat | uid, endpoint, state, last_seen |
 | `ShmBlockRef` | channel registration with SHM transport | channel name, block path; metrics collected via `collect_shm_info(channel)` at query time |
@@ -2457,6 +2457,373 @@ think to type into an eval prompt.
 - The "operator REPL" use case is real (diagnose live state, custom
   queries) but is fully covered by curated query RPCs (§11.2 query
   block) plus the SDK composing them locally.
+
+---
+
+## 18. Broker message routing classes
+
+**Status:** Normative.  Added 2026-05-06 to consolidate the routing
+taxonomy that was previously implicit across HEP-CORE-0007 (wire
+protocol), HEP-CORE-0019 §2.3 (per-presence heartbeats), HEP-CORE-0023
+(presence-coordination), and HEP-CORE-0027 (inbox).  This is the
+canonical home — other HEPs cross-reference here rather than restate.
+
+### 18.1 The four classes
+
+Every broker request/response/notification belongs to exactly one of
+four routing classes.  The class determines how the role-side
+abstraction routes the message in both directions and how the broker
+processes it.
+
+```
+Class A — Channel-bound.    Bound by `channel_name` in the payload.
+                            Routing: send/receive via the
+                            BrokerRequestComm connected to the hub
+                            that owns `channel_name`.
+Class B — Role-bound.       Asks "is uid X alive / where's its inbox".
+                            Routing: send via any connection;
+                            fall-through over connections; first hit
+                            wins.  No per-asker affinity.
+Class C — Hub-bound.        Asks "what does THIS hub know" (channel
+                            list, aggregated metrics, SHM blocks).
+                            Routing: caller picks hub explicitly
+                            (script API: `api.in_hub.*` /
+                            `api.out_hub.*`).
+Class D — Band-bound.       Bound by `band_name`; bands live on one
+                            hub at a time.  Routing: send/receive
+                            via the connection where the band was
+                            joined (band_index in the role-side
+                            handler records the choice).
+```
+
+The four classes are exhaustive: every existing broker message fits
+exactly one, and new messages classify into one of these four.  The
+classes are also disjoint — no message dual-classifies.
+
+### 18.2 Full message inventory (classified)
+
+#### Outbound: role → hub
+
+| Message | Class | Notes |
+|---|---|---|
+| `REG_REQ` | A | Producer presence registers its channel. |
+| `CONSUMER_REG_REQ` | A | Consumer presence joins a channel. |
+| `DEREG_REQ` | A | Producer voluntary close. |
+| `CONSUMER_DEREG_REQ` | A | Consumer voluntary leave. |
+| `DISC_REQ` | A | Discover channel's connection info. |
+| `ENDPOINT_UPDATE_REQ` | A | Producer publishes resolved port (port-0 → real). |
+| `SCHEMA_REQ` | A (owner-bound) | Routes via the connection where the owning record lives — see HEP-CORE-0034 §10.3. |
+| `CHANNEL_NOTIFY_REQ` | A | Fire-and-forget channel-targeted event. |
+| `CHANNEL_BROADCAST_REQ` | A | Fan-out broadcast on a channel. |
+| `CHECKSUM_ERROR_REPORT` | A | Consumer-detected; routes by channel. |
+| `HEARTBEAT_REQ` (per-presence — HEP-CORE-0019 §2.3) | A | Producer-presence drives the channel FSM (§2.5 of HEP-CORE-0023); consumer-presence refreshes per-presence metrics row only. |
+| `BAND_JOIN_REQ` / `BAND_LEAVE_REQ` / `BAND_BROADCAST_REQ` / `BAND_MEMBERS_REQ` | D | Band lives on the hub the role chooses at join time. |
+| `ROLE_PRESENCE_REQ` | B | "Is uid X alive?" — fall-through. |
+| `ROLE_INFO_REQ` | B | Inbox-discovery — fall-through (HEP-CORE-0027 §4.2). |
+| `CHANNEL_LIST_REQ` | C | This-hub-only channel inventory. |
+| `METRICS_REQ` | C | This-hub-only `MetricsStore` query (HEP-CORE-0019 §4.2). |
+| `SHM_BLOCK_QUERY_REQ` | C | This-hub-only diagnostic. |
+| `METRICS_REPORT_REQ` (deprecated, see HEP-CORE-0019 §4.3) | A | Wire handler retained one release; no role auto-emits after Phase 6. |
+
+#### Inbound: hub → role
+
+| Notification | Class | Notes |
+|---|---|---|
+| `CHANNEL_CLOSING_NOTIFY` | A | To every member; receiver is the BRC connected to the channel's hub. |
+| `CHANNEL_EVENT_NOTIFY` | A | Producer of channel (or all members for broadcast events). |
+| `CHANNEL_BROADCAST_NOTIFY` | A | Fan-out result of `CHANNEL_BROADCAST_REQ`. |
+| `CHANNEL_ERROR_NOTIFY` | A | Schema mismatch, etc. |
+| `CONSUMER_DIED_NOTIFY` | A | Producer of channel (when broker detects a consumer process is dead). |
+| `FORCE_SHUTDOWN` | A | Channel-level forced close (after grace expires). |
+| `BAND_JOIN_NOTIFY` / `BAND_LEAVE_NOTIFY` / `BAND_BROADCAST_NOTIFY` | D | Band members. |
+
+(`HUB_TARGETED_MSG`, `HUB_RELAY_MSG`, `HUB_PEER_HELLO`, `HUB_PEER_BYE`
+are federation-internal — hub-to-hub only — and not part of the
+role-side surface; see HEP-CORE-0022.)
+
+### 18.3 Role-side handler dispatch
+
+The role-side `RoleHandler` (HEP-CORE-0033 §19, planned — Wave A
+item A7) builds three indexes once at startup:
+
+```
+channel_index : map<channel_name, Presence*>
+band_index    : map<band_name,    Presence*>     // populated lazily on band_join
+connections   : vector<HubConnection>             // dedup of presences by (endpoint, pubkey)
+```
+
+Outbound dispatch is then constant-time:
+
+| Class | Outbound dispatch | Cost |
+|---|---|---|
+| A | `channel_index[channel_name]->connection.brc.send(msg, body)` | O(1) hashmap |
+| B | for each `connection`: `connection.brc.query(msg, body)`; first non-empty answer wins | O(connections) — typically 1 or 2 |
+| C | caller picks `connection` explicitly via `api.in_hub.*` / `api.out_hub.*` | O(1) once picked |
+| D | `band_index[band_name]->connection.brc.send(msg, body)` | O(1) hashmap |
+
+Inbound dispatch is per-`HubConnection`'s `on_notification` callback;
+each callback tags the incoming `IncomingMessage` with its
+originating presence (resolved from `body.channel_name` for Class A,
+`body.band_name` for Class D, `sender_uid` for inbox messages)
+before enqueueing into `RoleHostCore::incoming_queue_`.  Scripts
+that care about origin filter by the tag; scripts that don't ignore
+it.
+
+### 18.4 Broker-side handling implications
+
+For Class A messages that carry a `(uid, role_type)` tuple in the
+payload (notably `HEARTBEAT_REQ` per HEP-CORE-0019 Phase 6), the
+broker handler keys per-presence rows in `MetricsStore` on
+`(channel_name, uid, role_type)`.  The channel FSM
+(`ChannelEntry.last_heartbeat` in §8) is refreshed only when
+`role_type == "producer"`; consumer-presence heartbeats refresh
+`RoleEntry.last_heartbeat` (informational) and
+`MetricsStore[(channel, uid, "consumer")]` only.  See HEP-CORE-0023
+§2.1 + §2.5.2 for the full handler split.
+
+For Class B messages, the broker walks its local `HubState.channels`
++ `HubState.roles` and answers from its own view.  No cross-hub
+federation is involved at this layer — the asker handles cross-hub
+fall-through on the role side.
+
+For Class C messages, the broker exposes its local view only.
+Aggregating across hubs is the admin tool's responsibility (or a
+future federation feature, out of scope here).
+
+For Class D messages, the broker maintains `HubState.bands` keyed by
+band name.  Bands are local to one hub; cross-hub bands would need
+hub-to-hub federation (HEP-CORE-0022 — out of scope here).
+
+### 18.5 Why this taxonomy
+
+Three concrete payoffs:
+
+1. **No special-case dispatch logic spreads across the role host.**
+   The four classes have four well-defined routing functions over
+   the three indexes; every message fits, and adding a new message
+   classifies into one of the four.
+2. **Multi-hub topologies are first-class.**  Class A routes by
+   channel name → presence → connection, regardless of how many
+   physical connections the role has.  Class B's fall-through
+   handles cross-hub role-presence queries automatically.
+3. **The taxonomy is also a checklist for new messages.**  Any
+   future broker message must classify; if it doesn't fit, the
+   design needs review (e.g., a "broadcast across all hubs" message
+   would be Class C-prime — not a current message — and would
+   require hub federation).
+
+### 18.6 Cross-references
+
+- HEP-CORE-0019 §2.3 — Phase 6 per-presence heartbeats: the
+  HEARTBEAT_REQ wire format that makes per-presence keying possible.
+- HEP-CORE-0019 §4.2 — METRICS_REQ / METRICS_ACK: the canonical
+  Class C example.
+- HEP-CORE-0023 §2.5.2 — per-presence heartbeat contract from the
+  broker-side perspective.
+- HEP-CORE-0023 §2.6 — `HubState` channel/role/consumer split that
+  this section's keying assumes.
+- HEP-CORE-0027 §4.2 — inbox discovery: the canonical Class B
+  example.
+- §19 below — the role-side abstraction that materialises the
+  channel_index + band_index + connections lookups described in
+  §18.3.
+
+---
+
+## 19. Multi-presence roles
+
+**Status:** Normative.  Added 2026-05-06.  Absorbs the dual-broker
+processor design previously documented in HEP-CORE-0015 §83-84
+(SUPERSEDED), and generalises it to a per-role presence-list model
+that fits producer / consumer / processor / future N-input roles
+under one abstraction.
+
+This section is the canonical home for the role-side multi-hub
+control-plane architecture.  Wave B (M0-M9) of
+`docs/tech_draft/role_host_template_design.md` is the implementation
+plan; this section is the normative spec.
+
+### 19.1 The presence model
+
+A role's relationship with the hub system is a **list of registered
+presences**.  Each presence is one tuple:
+
+```
+Presence ::= ( hub: HubRefConfig,
+               channel: string,
+               role_kind: producer | consumer,
+               schemas: { slot, fz, inbox },
+               inbox_meta: { endpoint, schema, packing, checksum } )
+```
+
+The `hub` field carries a fully-resolved broker endpoint + CURVE
+public key (the operator's `in_hub_dir` / `out_hub_dir` config
+resolves to these at startup).
+
+Per-role cardinality:
+
+| Role | Presences | Wave-B trait class |
+|---|---|---|
+| Producer | 1 — `{ out_hub, out_channel, producer }` | `role_host_traits<ProducerHost>` |
+| Consumer | 1 — `{ in_hub, in_channel, consumer }` | `role_host_traits<ConsumerHost>` |
+| Processor | 2 — `{ in_hub, in_channel, consumer }` + `{ out_hub, out_channel, producer }` | `role_host_traits<ProcessorHost>` |
+| Future N-input router (illustrative) | N — one per input channel + 1 per output | new trait specialisation |
+
+The presence list is declared at startup via the role's trait
+specialisation; it does not change during the role's lifetime.
+
+### 19.2 HubConnection — per-broker DEALER
+
+Multiple presences may target the same physical broker (`in_hub ==
+out_hub` is the common single-hub processor case).  The role-side
+runtime materialises a `HubConnection` per **unique** broker — keyed
+on the resolved `(broker_endpoint, broker_pubkey)` pair:
+
+```
+HubConnection ::= ( brc: BrokerRequestComm,    // owns the DEALER socket
+                    ctrl_thread: ThreadHandle, // runs the BRC's poll loop
+                    ztmp_monitor: ZmqMonitor ) // hub-dead detection
+```
+
+Two presences resolve to the same `HubConnection` iff their
+`(broker_endpoint, broker_pubkey)` pair is bitwise-equal.  This makes
+the optimisation operator-invisible:
+
+| Topology | Presences | HubConnections |
+|---|---|---|
+| Producer | 1 | 1 |
+| Consumer | 1 | 1 |
+| Processor, single-hub (`in_hub == out_hub`) | 2 | **1** (dedup collapses both presences onto one DEALER) |
+| Processor, dual-hub (`in_hub != out_hub`) | 2 | 2 |
+
+Each `HubConnection`:
+- Owns a single `BrokerRequestComm` (DEALER socket + cmd queue).
+- Spawns a single ctrl thread that runs the BRC poll loop.
+- Owns a single ZMTP socket monitor (hub-dead detection — fires
+  `core.set_stop_reason(HubDead)` on disconnect).
+- Receives notifications via a single `on_notification` callback;
+  outgoing messages route via the role-side handler's three indexes
+  (§18.3).
+
+### 19.3 Per-presence registration + heartbeat
+
+At startup, the role's `RoleHandler` walks the presence list and:
+
+1. **For each unique `HubConnection`** (after dedup): connect the
+   BRC, spawn the ctrl thread, wire the hub-dead callback + the
+   notification callback, register the periodic-task scheduler.
+2. **For each presence**: send the appropriate registration message
+   over its connection (`REG_REQ` for producer-kind,
+   `CONSUMER_REG_REQ` for consumer-kind) — including the inbox
+   metadata block (HEP-CORE-0027 §4.1).
+3. **For each presence**: install a periodic heartbeat tick on its
+   connection, emitting `HEARTBEAT_REQ` with `(channel, uid,
+   role_type)` per HEP-CORE-0019 §2.3.
+
+Heartbeat counts per cycle:
+
+| Topology | Heartbeats per cycle | Channel-FSM heartbeats (= producer-kind) |
+|---|---:|---:|
+| Producer | 1 | 1 |
+| Consumer | 1 | 0 |
+| Processor, single-hub | 2 (over the same DEALER) | 1 (out_channel) |
+| Processor, dual-hub | 2 (one per DEALER) | 1 (on out_hub) |
+
+### 19.4 Routing — defers to §18
+
+Outbound and inbound message routing follows the four-class taxonomy
+in §18.  The `RoleHandler` builds three indexes once at startup
+(§18.3) — `channel_index`, `band_index`, `connections` — and every
+dispatch is a constant-time lookup.
+
+For Class B fall-through specifically (role-bound queries like
+`ROLE_PRESENCE_REQ` / `ROLE_INFO_REQ`): the handler walks
+`connections` in declaration order; first hub that returns a
+non-empty answer wins.  This is what makes `wait_for_roles`
+(HEP-CORE-0023 §5.5) work for dual-hub processors — the asker can
+wait for prerequisites registered on either hub without operator-side
+broker selection.
+
+### 19.5 InboxQueue — per-role, not per-presence
+
+The `InboxQueue` (HEP-CORE-0027) is a **per-role** facility — one
+ROUTER bound at a single endpoint, regardless of how many presences
+the role has.  The same `inbox_endpoint` string is advertised in
+every presence's registration payload, so any hub the role
+participates in can answer `ROLE_INFO_REQ` with the same endpoint
+(see HEP-CORE-0027 §4.1 + §4.5).
+
+The receiver-as-authority schema model (HEP-CORE-0034 §11.4) is
+unaffected: the inbox schema record lives under
+`(role_uid, "inbox")` in `HubState.schemas`, with the same hash
+across hubs because every advertisement carries the same canonical
+schema bytes.
+
+### 19.6 Hub-dead detection
+
+Each `HubConnection` runs its own ZMTP socket monitor (broker-side
+`ZMQ_HEARTBEAT_IVL` = 5s, `ZMQ_HEARTBEAT_TIMEOUT` = 30s).  On
+disconnect, the BRC fires `on_hub_dead` which:
+
+```
+core.set_stop_reason(StopReason::HubDead)
+core.request_stop()
+```
+
+For multi-presence roles: if EITHER hub dies, the role exits with
+`StopReason::HubDead` — its job is impossible without all hubs it
+participates in.  The first `on_hub_dead` to fire wins; later
+firings (if any) become no-ops.
+
+### 19.7 What was wrong before this section
+
+Pre-Phase-6 code (current as of 2026-05-06) had a single implicit
+assumption — "each role talks to one broker via a single
+`BrokerRequestComm`" — which silently created five distinct bugs:
+
+1. Consumer's heartbeat masks producer-death (refreshes
+   `channel.last_heartbeat` because the broker derives the producer
+   uid from the channel and treats every heartbeat for the channel
+   as producer-attribution).
+2. Consumer's metrics are written into the producer's `RoleEntry`
+   row (same root cause).
+3. Dual-hub processor is invisible on its `in_hub`: today's
+   processor sends `CONSUMER_REG_REQ` via the `out_hub` BRC, going
+   to the wrong hub.
+4. Dual-hub processor cannot discover its `in_channel` via DISC_REQ
+   (single BRC routes to `out_hub`).
+5. Dual-hub processor never receives `CHANNEL_*_NOTIFY` for
+   `in_channel` (BRC isn't connected to `in_hub`).
+
+The presence-list model + §18 routing classes resolve all five with
+one architectural change.  See `docs/tech_draft/role_host_template_design.md`
+§1 for the full bug analysis and Wave B (M0-M9) for the migration
+plan.
+
+### 19.8 Implementation references
+
+When Wave B lands, this section gets file references for:
+
+- `src/include/utils/role_presence.hpp` — `Presence`, `HubConnection`, `RoleHandler` types
+- `src/utils/service/role_handler.cpp` — implementation
+- Per-role trait specialisations: `src/{producer,consumer,processor}/{producer,consumer,processor}_role_host.hpp` (`role_host_traits<*Host>` specialisations)
+- `src/utils/service/role_host_frame.hpp` — `RoleHostFrame<HostT>` template (5c-large absorption)
+- L4 dual-hub processor test: `tests/test_layer4_plh_hub/test_plh_hub_dual_hub_processor.cpp` (added in M8)
+
+### 19.9 Cross-references
+
+- §18 — Broker message routing classes (the four-class taxonomy this
+  section's `RoleHandler` dispatches against).
+- HEP-CORE-0019 §2.3 / §4.1 — Phase 6 per-presence heartbeats; wire
+  format includes `(uid, role_type)`.
+- HEP-CORE-0023 §2.1, §2.5.2 — channel-FSM is producer-only;
+  per-presence heartbeat contract.
+- HEP-CORE-0023 §5.5 — `wait_for_roles` post-Wave-A: Class B
+  fall-through across all hub connections.
+- HEP-CORE-0027 §4.1 + §4.5 — inbox per-presence advertisement +
+  reachability requirements for multi-hub deployment.
+- HEP-CORE-0015 §83-84 (SUPERSEDED — content moved here):
+  historical dual-broker processor design.
 
 ---
 

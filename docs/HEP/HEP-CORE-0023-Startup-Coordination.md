@@ -4,12 +4,11 @@
 |---------------|--------------------------------------------------------------------|
 | **HEP**       | `HEP-CORE-0023`                                                    |
 | **Title**     | Startup Coordination — Role State Machine and Presence Waiting     |
-| **Status**    | Phase 1 implemented (2026-03-11); Phase 2 redesigned (2026-04-14)  |
+| **Status**    | Phase 1 implemented (2026-03-11); Phase 2 redesigned (2026-04-14); §2.1/§2.2/§2.5.2/§2.6/§5.5 updated 2026-05-06 to align with HEP-CORE-0019 §2.3 (Phase 6 per-presence heartbeats) and HEP-CORE-0033 §8 (HubState channel/role/consumer entry types). |
 | **Created**   | 2026-03-10                                                         |
-| **Revised**   | 2026-04-14: Phase 2 replaced "Deferred DISC_ACK" (broker-queued    |
-|               | replies) with a role state-machine + three-response DISC_REQ model |
+| **Revised**   | 2026-04-14: Phase 2 replaced "Deferred DISC_ACK" (broker-queued replies) with a role state-machine + three-response DISC_REQ model.  2026-05-06: clarified channel-FSM is producer-driven; added §2.5.2 per-presence heartbeat contract; §2.6 data structures match current `HubState` (channels_, consumers nested, roles_); §5.5 updated for presence-list dual-hub model. |
 | **Area**      | Broker Protocol / Script Hosts / Config                            |
-| **Depends on**| HEP-CORE-0007 (Protocol), HEP-CORE-0015 (Processor)                |
+| **Depends on**| HEP-CORE-0007 (Protocol), HEP-CORE-0019 §2.3 (Per-presence heartbeats — Phase 6), HEP-CORE-0033 §8 (HubState entry types), HEP-CORE-0033 §18 (broker routing classes), HEP-CORE-0033 §19 (multi-presence roles) |
 
 ---
 
@@ -35,61 +34,107 @@ Two complementary coordination mechanisms:
 
 ## 2. Role State Machine + Three-Response DISC_REQ
 
-### 2.1 Role Lifecycle States
+> **Tense note (read first).**  §2.1 + §2.2 below describe the
+> **post-Phase-6 corrected behaviour** — the channel FSM driven by
+> the channel's producer presence only, with consumer-presence
+> heartbeats refreshing per-uid liveness rows but not the channel
+> FSM.  This is the **target** behaviour the Wave B migration in
+> `docs/tech_draft/role_host_template_design.md` delivers.
+>
+> **Pre-Phase-6 actual behaviour** (current code, before the
+> migration completes): the broker's `handle_heartbeat_req` does
+> not read `role_type` from the wire payload — it derives the
+> producer uid from `channel.producer_role_uid` and treats every
+> heartbeat for the channel as if it came from that producer.
+> Consequence: a consumer-presence heartbeat for channel X
+> currently DOES refresh `channel(X).last_heartbeat` and DOES
+> attribute the consumer's metrics piggyback to the producer's
+> `RoleEntry` row.  This is the latent bug HEP-CORE-0019 §2.3
+> (Phase 6) fixes.
+>
+> §2.5.2 explicitly carries the "Phase 6" label to call out this
+> distinction within the timeout discussion; §2.1 + §2.2 are
+> presented in their corrected form for forward readability.
+> Implementation status of the migration is tracked in
+> `role_host_template_design.md` Wave B (M0-M9).
 
-Every registered role (producer/consumer/processor) has a well-defined status
-in the broker's registry. There are two terminal paths: a **heartbeat-death**
-path (presumed-dead role, no grace) and a **voluntary-close** path (live role,
-grace given to consumers to drain).
+### 2.1 Channel Lifecycle States
+
+The state machine here is the **channel's** Pending/Ready/Closing
+state, owned by `ChannelEntry.status` in the broker's registry and
+driven by the producer's `HEARTBEAT_REQ` for that channel.  Consumer
+presences do not transition this FSM — see §2.5.2 for the
+per-presence heartbeat contract that supersedes the earlier
+"every registered role" framing (HEP-CORE-0019 §2.3 / Phase 6).
+
+There are two terminal paths: a **heartbeat-death** path (presumed-
+dead producer, no grace) and a **voluntary-close** path (live
+producer, grace given to consumers to drain).
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Pending : REG_REQ accepted
-    Pending --> Ready : first HEARTBEAT_REQ received
-    Ready --> Ready : HEARTBEAT_REQ (refresh last_heartbeat)
-    Ready --> Pending : ready_timeout (missed heartbeats)
-    Pending --> Ready : HEARTBEAT_REQ (recovery)
+    [*] --> Pending : REG_REQ accepted (channel created)
+    Pending --> Ready : first producer HEARTBEAT_REQ received
+    Ready --> Ready : producer HEARTBEAT_REQ<br/>(refresh channel.last_heartbeat)
+    Ready --> Pending : ready_timeout<br/>(missed producer heartbeats)
+    Pending --> Ready : producer HEARTBEAT_REQ (recovery)
 
-    %% Heartbeat-death path: dead role -> immediate dereg, no grace.
+    %% Heartbeat-death path: dead producer -> immediate dereg, no grace.
     Pending --> [*] : pending_timeout<br/>send CHANNEL_CLOSING_NOTIFY<br/>(reason="pending_timeout")<br/>then deregister
 
-    %% Voluntary close path: live role -> Closing, grace, then FORCE_SHUTDOWN.
+    %% Voluntary close path: live producer -> Closing, grace, then FORCE_SHUTDOWN.
     Ready --> Closing : DEREG_REQ / admin_close / script_close<br/>send CHANNEL_CLOSING_NOTIFY
     Pending --> Closing : DEREG_REQ accepted<br/>send CHANNEL_CLOSING_NOTIFY
     Closing --> [*] : grace expires<br/>send FORCE_SHUTDOWN to lingering consumers<br/>then deregister
 ```
 
-Precise transitions:
-| Trigger                                       | From          | To            | Side effect                                   |
-|-----------------------------------------------|---------------|---------------|-----------------------------------------------|
-| `REG_REQ` accepted                            | —             | Pending       | —                                             |
-| `HEARTBEAT_REQ` received                      | Pending       | Ready         | refresh `last_heartbeat`, set `state_since`   |
-| `HEARTBEAT_REQ` received                      | Ready         | Ready         | refresh `last_heartbeat`                      |
-| Missed heartbeats for `effective_ready_timeout`   | Ready     | Pending       | reset `state_since`                           |
-| Missed heartbeats for `effective_pending_timeout` | Pending   | deregistered  | send `CHANNEL_CLOSING_NOTIFY`; **no grace**   |
-| `DEREG_REQ` / admin / script close            | Ready/Pending | Closing       | send `CHANNEL_CLOSING_NOTIFY`, start grace    |
-| Grace expires                                 | Closing       | deregistered  | send `FORCE_SHUTDOWN` to stragglers           |
+Precise transitions (all driven by the channel's **producer** presence
+unless otherwise noted):
+
+| Trigger | From | To | Side effect |
+|---|---|---|---|
+| `REG_REQ` accepted (producer registers channel) | — | Pending | — |
+| Producer `HEARTBEAT_REQ` received | Pending | Ready | refresh `channel.last_heartbeat`, set `state_since`, bump `pending_to_ready_total` |
+| Producer `HEARTBEAT_REQ` received | Ready | Ready | refresh `channel.last_heartbeat` |
+| Missed producer heartbeats for `effective_ready_timeout` | Ready | Pending | reset `state_since` |
+| Missed producer heartbeats for `effective_pending_timeout` | Pending | deregistered | send `CHANNEL_CLOSING_NOTIFY`; **no grace** |
+| `DEREG_REQ` (producer) / admin / script close | Ready/Pending | Closing | send `CHANNEL_CLOSING_NOTIFY`, start grace |
+| Grace expires | Closing | deregistered | send `FORCE_SHUTDOWN` to stragglers |
+
+(Consumer-presence `HEARTBEAT_REQ` for the same channel does NOT
+appear in this table — it does not drive the FSM.  See §2.5.2.)
 
 **Rationale:**
 
-- `Ready → Pending` on timeout keeps the role registered while advertising it
-  as "not currently responsive". A transient pause (GC, load spike) can recover
-  via the next heartbeat — `Pending → Ready` increments
+- `Ready → Pending` on timeout keeps the channel registered while
+  advertising it as "not currently responsive". A transient producer
+  pause (GC, load spike) can recover via the next producer
+  heartbeat — `Pending → Ready` increments
   `pending_to_ready_total` and zero data is lost.
-- **Heartbeat-death path skips the Closing/grace state**: the producer is
-  presumed dead, so the broker has no one to wait for. CHANNEL_CLOSING_NOTIFY
-  is best-effort to consumers (they may be transiently disconnected; if so,
-  they observe `CHANNEL_NOT_FOUND` on their next DISC_REQ and treat that
-  equivalently to a closing notification).
-- **Voluntary-close path keeps the Closing/grace state**: the producer is
-  alive and asked to leave cleanly. Grace gives **consumers** time to drain
-  in-flight work and deregister. After grace, FORCE_SHUTDOWN tells stragglers
-  to release.
+- **Heartbeat-death path skips the Closing/grace state**: the producer
+  is presumed dead, so the broker has no one to wait for.
+  CHANNEL_CLOSING_NOTIFY is best-effort to consumers (they may be
+  transiently disconnected; if so, they observe `CHANNEL_NOT_FOUND`
+  on their next DISC_REQ and treat that equivalently to a closing
+  notification).
+- **Voluntary-close path keeps the Closing/grace state**: the producer
+  is alive and asked to leave cleanly. Grace gives **consumers** time
+  to drain in-flight work and deregister. After grace, FORCE_SHUTDOWN
+  tells stragglers to release.
+
+**Producer-only refresh — why.**  Consumer-presence heartbeats also
+arrive at the broker (per HEP-CORE-0019 §2.3), but they refresh the
+**consumer's** row in `MetricsStore[(channel, uid, "consumer")]`
+and `RoleEntry(uid).last_heartbeat` only — they do NOT touch
+`channel.last_heartbeat` and do NOT drive the FSM above.  Otherwise
+a consumer's heartbeat would mask a dead producer's silence and
+keep the channel artificially Ready while data has stopped flowing
+(the bug Phase 6 of HEP-CORE-0019 fixes).
 
 ### 2.2 Three-Response DISC_REQ
 
 When a consumer sends `DISC_REQ`, the broker **always replies immediately** with
-one of three well-defined responses based on the current role state:
+one of three well-defined responses based on the current channel state:
 
 ```mermaid
 sequenceDiagram
@@ -98,30 +143,52 @@ sequenceDiagram
     participant P as Producer
 
     C->>B: DISC_REQ
-    B-->>C: DISC_PENDING<br/>(producer not registered)
+    B-->>C: DISC_PENDING<br/>(channel not registered)
     Note over C: wait retry_interval_ms
 
     P->>B: REG_REQ
     B-->>P: REG_ACK<br/>+ heartbeat block (§2.5.1)
-    Note over B: producer → Pending
-    Note over P: validate cadence vs hub max,<br/>install heartbeat task
+    Note over B: channel → Pending
+    Note over P: validate cadence vs hub max,<br/>install per-presence<br/>heartbeat task
 
     C->>B: DISC_REQ (retry)
-    B-->>C: DISC_PENDING<br/>(awaiting first heartbeat)
+    B-->>C: DISC_PENDING<br/>(awaiting first producer heartbeat)
     Note over C: wait retry_interval_ms
 
-    P->>B: HEARTBEAT_REQ
-    Note over B: producer → Ready
+    P->>B: HEARTBEAT_REQ {role_type=producer}
+    Note over B: channel → Ready<br/>(producer drives FSM)
 
     C->>B: DISC_REQ (retry)
     B-->>C: DISC_ACK (connection info)
 
     C->>B: CONSUMER_REG_REQ
     B-->>C: CONSUMER_REG_ACK<br/>+ heartbeat block (§2.5.1)
-    Note over C: validate cadence vs hub max,<br/>install heartbeat task
+    Note over C: validate cadence vs hub max,<br/>install per-presence<br/>heartbeat task
+
+    loop steady state
+        P->>B: HEARTBEAT_REQ {role_type=producer, metrics?}
+        Note over B: refresh channel.last_heartbeat<br/>+ MetricsStore[(channel, prod_uid, "producer")]
+        C->>B: HEARTBEAT_REQ {role_type=consumer, metrics?}
+        Note over B: refresh RoleEntry[cons_uid].last_heartbeat<br/>+ MetricsStore[(channel, cons_uid, "consumer")]<br/>(channel.last_heartbeat NOT touched — §2.5.2)
+    end
 ```
 
 See HEP-CORE-0007 §DISC_REQ for the precise payload of each response variant.
+
+**Notes on the steady-state loop:**
+
+- Both producer-presence and consumer-presence emit per-cycle
+  heartbeats with `(channel, uid, role_type)` in the wire payload.
+  See HEP-CORE-0019 §4.1 for the full HEARTBEAT_REQ shape (Phase 6).
+- Only the **producer's** heartbeat for the channel drives the
+  `channel.last_heartbeat` watchdog and the Pending/Ready FSM.
+  Consumer heartbeats refresh per-presence rows in `MetricsStore`
+  and `RoleEntry.last_heartbeat`, but do NOT touch the channel FSM.
+- A processor with two presences (consumer-of-in_channel +
+  producer-of-out_channel) sends two heartbeats per cycle — one with
+  `role_type="consumer"` for `in_channel` (does not drive in_channel's
+  FSM; the in_channel's actual producer does that) and one with
+  `role_type="producer"` for `out_channel` (drives out_channel's FSM).
 
 ### 2.3 Chain Resolution (Multi-hop)
 
@@ -284,6 +351,57 @@ optional `ready_timeout_ms` / `pending_timeout_ms` / `grace_ms` overrides
 are broker-internal (see §2.5 above) and are NOT part of the heartbeat ACK
 block — only the four multiplier fields are.
 
+### 2.5.2 Per-presence heartbeat contract (Phase 6)
+
+A role declares a list of **presences** at startup — one per
+`(hub, channel, role_kind)` tuple it registers as.  Each presence
+emits its own `HEARTBEAT_REQ` per cycle, carrying `(channel_name, uid,
+role_type)` in the wire payload (per HEP-CORE-0019 §4.1).  Cardinality:
+
+| Role | Presences | Heartbeats / cycle |
+|---|---|---|
+| Producer | 1 (`{out_hub, out_channel, producer}`) | 1 |
+| Consumer | 1 (`{in_hub, in_channel, consumer}`) | 1 |
+| Single-hub processor (`in_hub == out_hub`) | 2 (`{hub, in_channel, consumer}` + `{hub, out_channel, producer}`) | 2 over a single DEALER (the underlying connection deduplicates by `(broker_endpoint, broker_pubkey)`) |
+| Dual-hub processor | 2 (one per hub) | 2 (one over each DEALER) |
+
+The broker's `handle_heartbeat_req` routes by `role_type`:
+
+- `role_type == "producer"`: refresh **`channel(channel_name).last_heartbeat`**
+  (drives the §2.1 FSM); write metrics under
+  `MetricsStore[(channel, uid, "producer")]`; refresh
+  `RoleEntry(uid).last_heartbeat`.
+- `role_type == "consumer"`: write metrics under
+  `MetricsStore[(channel, uid, "consumer")]`; refresh
+  `RoleEntry(uid).last_heartbeat`; **do NOT** touch
+  `channel.last_heartbeat`.
+
+**Watchdog scope.**  The §2.5 timeout-multiplier math
+(`ready_miss_heartbeats`, `pending_miss_heartbeats`, `grace_heartbeats`)
+applies to `channel.last_heartbeat` — i.e., to the channel FSM
+driven by the channel's producer presence.  `RoleEntry.last_heartbeat`
+is informational; no automatic eviction is driven by it today
+(consumer-presence death is detected via OS PID check on the same
+host or via ZMTP socket disconnect — both orthogonal to the
+heartbeat-multiplier math).
+
+**Failure modes resolved.**  Pre-Phase-6 brokers (HEP-CORE-0019
+§9 Phase 1-5 era) ignored `uid` and `role_type` and treated every
+heartbeat for a channel as if it came from that channel's producer.
+Two consequences:
+- Consumer's heartbeat refreshed `channel.last_heartbeat`, masking
+  producer-death so the FSM never demoted Ready→Pending.
+- Consumer's metrics piggyback was attributed to the producer's
+  `RoleEntry.latest_metrics`.
+The Phase 6 split (above) fixes both.
+
+**Implementation note.**  The role-side heartbeat tick is installed
+per-presence; a role with N presences runs N tick callbacks per
+cycle.  Producer presences drive the channel FSM; consumer-presence
+ticks emit a heartbeat for liveness + metrics reporting only.  See
+`docs/tech_draft/role_host_template_design.md` §6 for the role-side
+implementation; HEP-CORE-0033 §19 for the multi-presence connection model.
+
 ---
 
 **State-machine metrics** (HEP-CORE-0019 integration). The broker exposes
@@ -299,89 +417,128 @@ a `RoleStateMetrics` snapshot:
 These counters give tests a race-free way to assert state transitions occurred,
 without relying on wall-clock sleeps.
 
-### 2.6 Data Structure
+### 2.6 Data Structures
 
-Single authoritative role map keyed by channel name, with a status field:
+The current implementation (HEP-CORE-0033 §8 + HEP-CORE-0034)
+splits broker-side state across **three** struct types in
+`HubState`, each with its own keying — not a single role map.
+Brief summary; see `src/include/utils/hub_state.hpp` for the
+authoritative definitions.
+
+| Struct | Map | Keyed by | Owns the FSM? | last_heartbeat semantics |
+|---|---|---|---|---|
+| `ChannelEntry` | `HubState.channels` | channel name | **yes** — `status` field drives the §2.1 FSM | refreshed by **producer**'s `HEARTBEAT_REQ` for this channel |
+| `ConsumerEntry` (nested in `ChannelEntry.consumers`) | per-channel vector | (channel, consumer_uid) | no | none — consumer liveness is OS-PID based + ZMTP socket monitor |
+| `RoleEntry` | `HubState.roles` | role uid | no — informational only | refreshed by **any** `HEARTBEAT_REQ` from this uid (any presence) |
 
 ```cpp
-struct RoleEntry {
-    // Identity
-    std::string channel_name;
-    std::string role_uid;
-    std::string role_name;
-    std::string role_type;           // "producer" | "consumer" | "processor"
-    uint64_t    pid;
-    std::string zmq_identity;        // ROUTER routing identity (for unsolicited sends)
+// Schematic — see hub_state.hpp for exact fields.
 
-    // State
-    enum class Status { Pending, Ready };
-    Status                                status{Status::Pending};
-    std::chrono::steady_clock::time_point last_heartbeat;
-    std::chrono::steady_clock::time_point state_since;  // when current status began
-
-    // Connection metadata (data plane, filled at REG_REQ)
-    std::string data_transport;      // "shm" | "zmq"
-    std::string shm_name;
-    std::string zmq_node_endpoint;
-    std::string schema_hash;
-    // ... etc
+struct ChannelEntry {
+    std::string                            name;
+    std::string                            producer_role_uid;
+    std::string                            producer_zmq_identity;
+    std::vector<ConsumerEntry>             consumers;
+    ChannelStatus                          status;            // Pending|Ready|Closing
+    std::chrono::steady_clock::time_point  last_heartbeat;    // producer-driven
+    std::chrono::steady_clock::time_point  state_since;
+    std::chrono::steady_clock::time_point  closing_deadline;
+    // ... data-plane endpoint / schema metadata
 };
 
-/// Source of truth: one entry per registered role, keyed by channel (producer)
-/// or consumer_uid (consumer). Accessed only from the broker run() thread.
-std::unordered_map<std::string, RoleEntry> roles_;
+struct ConsumerEntry {
+    std::string  consumer_uid;
+    std::string  consumer_name;
+    uint64_t     consumer_pid;
+    std::string  zmq_identity;             // ROUTER routing for direct notify
+    // ... inbox metadata, connected_at
+};
+
+struct RoleEntry {
+    std::string                                  uid;
+    std::string                                  name;
+    std::string                                  role_tag;     // "prod"|"cons"|"proc"
+    std::vector<std::string>                     channels;     // channels this uid is on
+    RoleState                                    state;        // Connected | Disconnected
+    std::chrono::system_clock::time_point        first_seen;
+    std::chrono::steady_clock::time_point        last_heartbeat;   // any presence
+    nlohmann::json                               latest_metrics;   // Phase 6 detail in HEP-0019
+    std::chrono::system_clock::time_point        metrics_collected_at;
+    // ...
+};
+
+class HubState {
+    std::unordered_map<std::string, ChannelEntry> channels_;
+    std::unordered_map<std::string, RoleEntry>    roles_;
+    // (also: bands_, peers_, schemas_ — see HEP-0033 §8 / HEP-0034)
+};
 ```
 
-**Rationale for a single map (vs. dual status-indexed maps):**
-- Single field update = atomic state transition. No risk of two maps diverging.
-- Heartbeat check iterates all roles once, evaluates status + last_heartbeat in place.
-- DISC_REQ handler does one lookup by channel name, reads status field, responds.
-- O(N) iteration on heartbeat check is bounded by role count, acceptable at typical scale
-  (tens to hundreds of roles per hub).
+**Rationale for the three-struct split:**
+
+- **`ChannelEntry` owns the FSM.**  Producer drives `last_heartbeat`
+  refresh + Pending/Ready transitions; downstream consumers attach
+  but don't drive the FSM (they're watched, not watchdogs).
+- **`ConsumerEntry` is per-membership.**  A consumer registered on
+  multiple channels has multiple entries (one per channel).  The
+  same uid may also appear in `roles_` for cross-channel queries.
+- **`RoleEntry` is per-uid.**  One row per role process,
+  `channels[]` records all channels this uid is registered on.
+  `last_heartbeat` is informational — useful for diagnostics and
+  per-uid presence queries (Class B in the HEP-0033 routing
+  taxonomy) — but not used for active eviction by the broker today.
+
+**FSM watchdog scope.**  The §2.5 timeout-multiplier math
+(`ready_miss_heartbeats`, `pending_miss_heartbeats`,
+`grace_heartbeats`) applies to `ChannelEntry.last_heartbeat`.
+Consumer-presence death is detected via `is_process_alive(pid)`
+(same-host) or via ZMTP socket disconnect (any host) — orthogonal
+to the channel-FSM watchdog.
 
 **Future optimization — lazy status-indexed views** (deferred):
 
-At higher scale, the heartbeat check loop (O(N) every poll cycle) and repeated DISC_REQ
-traffic during startup can become hot. A lazy secondary index avoids full iteration
-for common queries:
+At higher scale, the channel-FSM watchdog loop (O(N) every poll
+cycle, where N = channel count) can become hot. A lazy secondary
+index avoids full iteration for common queries:
 
 ```cpp
-// Secondary indices — maintained alongside roles_ via a single helper.
-std::unordered_set<std::string> ready_uids_;    ///< Roles currently in Ready
-std::unordered_set<std::string> pending_uids_;  ///< Roles currently in Pending
+// Secondary indices — maintained alongside channels_ via a single helper.
+std::unordered_set<std::string> ready_channels_;    ///< Channels currently Ready
+std::unordered_set<std::string> pending_channels_;  ///< Channels currently Pending
 
 /// Single transition point — updates both the map entry and the indices atomically.
 /// All state changes MUST go through this helper.
-void transition_status(const std::string &uid, RoleEntry::Status new_status) {
-    auto it = roles_.find(uid);
-    if (it == roles_.end()) return;
+void transition_status(const std::string &name, ChannelStatus new_status) {
+    auto it = channels_.find(name);
+    if (it == channels_.end()) return;
     if (it->second.status == new_status) return;
     // Remove from old index
-    if (it->second.status == RoleEntry::Status::Ready)
-        ready_uids_.erase(uid);
+    if (it->second.status == ChannelStatus::Ready)
+        ready_channels_.erase(name);
     else
-        pending_uids_.erase(uid);
+        pending_channels_.erase(name);
     // Update status + state_since
     it->second.status      = new_status;
     it->second.state_since = std::chrono::steady_clock::now();
     // Insert into new index
-    if (new_status == RoleEntry::Status::Ready)
-        ready_uids_.insert(uid);
+    if (new_status == ChannelStatus::Ready)
+        ready_channels_.insert(name);
     else
-        pending_uids_.insert(uid);
+        pending_channels_.insert(name);
 }
 ```
 
 **Invariants** (enforce via code review + unit tests):
-- Every entry in `roles_` must be in exactly one of `ready_uids_` / `pending_uids_`.
-- No entry may exist in an index without a matching entry in `roles_`.
+- Every entry in `channels_` must be in exactly one of `ready_channels_` / `pending_channels_`.
+- No entry may exist in an index without a matching entry in `channels_`.
 - All mutations must go through `transition_status()` — never assign `it->second.status`
   directly.
 
-**When to add:** when profiling shows heartbeat-check iteration or status-filter queries
-dominate broker CPU time. Indicators: `heartbeat_check_us_avg > poll_interval / 4`, or
-N > 500 roles per hub. Until then, the simpler single-map design is preferred for
-robustness over speed.
+**When to add:** when profiling shows channel-FSM watchdog iteration
+or status-filter queries dominate broker CPU time.  Indicators:
+`heartbeat_check_us_avg > poll_interval / 4`, or N > 500 channels
+per hub.  Until then, the simpler single-map design is preferred
+for robustness over speed.
 
 ### 2.7 Migration from Prior Design (superseded 2026-04-14)
 
@@ -544,8 +701,14 @@ for (const auto& wr : config_.wait_for_roles) {
 }
 ```
 
-Uses `Messenger::query_role_presence()` (ROLE_PRESENCE_REQ polling, 200ms poll interval).
-GIL is released during each 200ms poll so other Python threads remain unblocked.
+Uses `BrokerRequestComm::query_role_presence()` (ROLE_PRESENCE_REQ
+polling, 200 ms poll interval).  GIL is released during each
+200 ms poll so other Python threads remain unblocked.  After the
+Phase 6 / presence-list migration (HEP-CORE-0033 §19), this call
+becomes a Class B fall-through across all of the role's hub
+connections — see §5.5 — letting dual-hub roles wait for
+prerequisites on either hub without operator-side broker
+selection.
 
 ### 5.4 Deferred: UID Prefix Restrictions (Phase 2)
 
@@ -559,20 +722,37 @@ in any role type.
 
 ### 5.5 Dual-Hub Processor: Broker Selection for wait_for_roles
 
-For a processor with `in_hub_dir` ≠ `out_hub_dir` (dual-broker configuration), the
-startup wait queries **`out_messenger_` only** (the output broker). This means:
+**Pre-Phase-6 limitation (current behaviour, being replaced).**  In
+the current code, a processor with `in_hub_dir` ≠ `out_hub_dir`
+maintains only one `BrokerRequestComm` (against `out_hub`); the
+startup wait queries that single connection.  Roles registered only
+on the input hub are not found and the wait times out.  Documented
+mitigation: configure `startup.wait_for_roles` only with UIDs of
+roles on the same hub as `out_hub_dir`.
 
-- Roles registered on the **output hub** are correctly detected.
-- Roles registered only on the **input hub** (e.g. an upstream SHM producer) will
-  **not** be found and the wait will time out.
+**Phase 6 / presence-list resolution (post-migration).**  The
+multi-presence connection model (HEP-CORE-0033 §19) gives the role
+one `BrokerRequestComm` per hub it participates in.  `wait_for_roles`
+becomes a **Class B fall-through query** (HEP-CORE-0033 §18): the
+role asks each connection in
+turn (`ROLE_PRESENCE_REQ` / `ROLE_INFO_REQ`); the first hub that
+answers "found" wins; if no hub answers, the wait continues to
+retry up to `timeout_ms`.
 
-**Consequence**: In dual-hub setups, configure `startup.wait_for_roles` only with UIDs
-of roles on the same hub as `out_hub_dir`. For single-hub processors (`in_hub_dir ==
-out_hub_dir`, or `hub_dir` only), both producer and consumer are on the same broker and
-this distinction does not apply.
+Concrete consequences after the migration:
 
-**Phase 2 note**: A `broker: "in"|"out"` per-role field is deferred to Phase 2 to
-allow explicit broker selection when waiting for roles on the input hub.
+- A dual-hub processor can wait for prerequisites registered on
+  **either** hub; configure `startup.wait_for_roles` with UIDs from
+  whichever hub they live on, no `broker: "in"|"out"` discriminator
+  needed.
+- Single-hub processors (`in_hub_dir == out_hub_dir`, or just
+  `hub_dir`) collapse to one connection at runtime; the fall-through
+  reduces to a single query — same wall-clock behaviour as today.
+
+The implementation lands in
+`docs/tech_draft/role_host_template_design.md` Wave B M8 along
+with the L4 dual-hub processor test.  Until then, the pre-Phase-6
+limitation above applies.
 
 ---
 

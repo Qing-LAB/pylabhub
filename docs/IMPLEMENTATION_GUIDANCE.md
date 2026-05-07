@@ -426,6 +426,74 @@ Access to checksum, magic, schema, and config should go through the **C API or C
 
 **Principle:** Prefer C API (or C++ wrappers) for any facility that callers need; keep `SharedMemoryHeader` layout and raw field access out of the public contract so that all layers above (C++, Python, admin) benefit from a single, stable surface.
 
+### Presence-list pattern (multi-hub roles)
+
+Roles that participate on **more than one hub** (today: only the
+processor in dual-hub deployments; future: multi-input routers)
+declare a list of presences instead of assuming a single
+`BrokerRequestComm`.  Each presence is a `(hub, channel, role_kind,
+schemas, inbox_meta)` tuple.  At runtime, the role-side handler:
+
+1. **Deduplicates** presences by `(broker_endpoint, broker_pubkey)`
+   into a `vector<HubConnection>` — one per unique broker.  Two
+   presences pointing at the same broker share a single DEALER socket
+   + ctrl thread.
+2. **Builds three indexes** once at startup: `channel_index`
+   (channel name → presence), `band_index` (band name → presence,
+   populated lazily), and `connections` (the unique `HubConnection`
+   list for Class B fall-through).
+3. **Registers each presence** on its connection with the right
+   message kind (`REG_REQ` for producer, `CONSUMER_REG_REQ` for
+   consumer), advertising the per-role inbox endpoint on every
+   presence.
+4. **Installs per-presence heartbeat ticks** carrying `(channel,
+   uid, role_type)` per HEP-CORE-0019 §2.3 (Phase 6).
+
+Per-role cardinality:
+
+| Role | Presences | HubConnections (after dedup) | Heartbeats / cycle |
+|---|---:|---:|---:|
+| Producer | 1 | 1 | 1 |
+| Consumer | 1 | 1 | 1 |
+| Processor, single-hub (`in_hub == out_hub`) | 2 | 1 | 2 (over the same DEALER) |
+| Processor, dual-hub (`in_hub != out_hub`) | 2 | 2 | 2 (one per DEALER) |
+
+The same code paths handle all four cases — there are no
+"single-hub special case" branches in the role-side handler.  The
+operator's choice of `in_hub_dir` / `out_hub_dir` config drives the
+runtime topology via the dedup rule.
+
+**Canonical specification:** HEP-CORE-0033 §19 (full
+`Presence` / `HubConnection` / `RoleHandler` definitions, dedup
+rule, registration sequence, hub-dead semantics).
+
+**Implementation:** see Wave B of
+`docs/tech_draft/role_host_template_design.md` (M0-M9) for the
+migration plan.
+
+### Broker message routing classes — quick-reference
+
+Every broker-protocol message classifies into one of four routing
+classes.  Use this table when adding a new message or auditing where
+to dispatch in the role-side handler.
+
+| Class | Bound by | Routing | Examples |
+|---|---|---|---|
+| **A — Channel-bound** | `channel_name` in payload | role-side: `channel_index[channel_name]->connection.brc.send(...)` | `REG_REQ`, `CONSUMER_REG_REQ`, `DEREG_REQ`, `DISC_REQ`, `HEARTBEAT_REQ` (per-presence — Phase 6), `CHANNEL_NOTIFY_REQ`, `CHANNEL_BROADCAST_REQ`, `CHECKSUM_ERROR_REPORT`, `SCHEMA_REQ` (owner-bound), all inbound `CHANNEL_*_NOTIFY` |
+| **B — Role-bound** | target `uid` | fall-through over `connections`; first non-empty answer wins | `ROLE_PRESENCE_REQ`, `ROLE_INFO_REQ` (inbox discovery — HEP-CORE-0027 §4.2) |
+| **C — Hub-bound** | which hub the caller asks | caller picks hub explicitly (`api.in_hub.*` / `api.out_hub.*`) | `CHANNEL_LIST_REQ`, `METRICS_REQ` (HEP-CORE-0019 §4.2), `SHM_BLOCK_QUERY_REQ` |
+| **D — Band-bound** | `band_name` in payload | `band_index[band_name]->connection.brc.send(...)` | `BAND_JOIN_REQ`, `BAND_LEAVE_REQ`, `BAND_BROADCAST_REQ`, `BAND_MEMBERS_REQ`, all inbound `BAND_*_NOTIFY` |
+
+The four classes are exhaustive + disjoint.  When designing a new
+broker message, classify it first; if it doesn't fit, the design
+needs review (e.g., a "broadcast across all hubs" message would be
+Class C-prime — not a current message — and would require hub
+federation, HEP-CORE-0022).
+
+**Canonical specification:** HEP-CORE-0033 §18 (full message
+inventory, role-side handler dispatch shapes, broker-side handling
+implications).
+
 ---
 
 ## DataBlock API, Concurrency, and Protocol
