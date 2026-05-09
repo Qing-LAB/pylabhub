@@ -475,7 +475,8 @@ class PYLABHUB_UTILS_EXPORT HubState
 
     // ── Event subscription ──────────────────────────────────────────────
     using ChannelOpenedHandler        = std::function<void(const ChannelEntry &)>;
-    using ChannelStatusChangedHandler = std::function<void(const ChannelEntry &)>;
+    using ChannelStatusChangedHandler =
+        std::function<void(const ChannelEntry &, ChannelObservable)>;
     using ChannelClosedHandler        = std::function<void(const std::string & /*name*/)>;
     using ConsumerAddedHandler        = std::function<void(const std::string & /*channel*/,
                                                            const ConsumerEntry &)>;
