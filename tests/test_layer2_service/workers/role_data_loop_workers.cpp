@@ -116,7 +116,7 @@ struct StubEngine : public ScriptEngine
   public:
     bool load_script(const std::filesystem::path &, const std::string &,
                      const std::string &) override { return true; }
-    bool has_callback(const std::string &) const override { return false; }
+    bool has_callback(const std::string &) const noexcept override { return false; }
     bool register_slot_type(const pylabhub::hub::SchemaSpec &,
                             const std::string &, const std::string &) override
     { return true; }

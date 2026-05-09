@@ -545,6 +545,141 @@ TEST_F(BrokerProtocolTest, Heartbeat_WirePayloadIncludesUidAndRoleType)
     bh.stop();
 }
 
+// ─── HEARTBEAT_REQ per-presence keying (Wave B M1.1) ───────────────────────
+//
+// Design contract: each presence (one per `(uid, channel, role_type)` a
+// role is registered as) gets its own row in `RoleEntry.presences`.  A
+// producer's HEARTBEAT_REQ refreshes its own producer-presence row;
+// a consumer's HEARTBEAT_REQ refreshes its own consumer-presence row.
+// Neither heartbeat ever touches the other's bookkeeping.
+//
+// Per HEP-CORE-0019 §2.3 / Phase 6 + HEP-CORE-0023 §2.6.
+//
+// This test pins the **structural separation** that M1.1 introduces:
+// after a producer-uid emits HEARTBEAT_REQ with role_type="producer"
+// AND a (separate-uid) consumer emits HEARTBEAT_REQ with
+// role_type="consumer", the broker's HubState carries TWO distinct
+// presence rows under TWO different RoleEntries — each keyed by the
+// wire-decoded (uid, role_type).  The test reads HubState directly,
+// so it bypasses the still-pre-M1.2 metrics-query path and pins the
+// structural data contract that M1.2 will then move the FSM onto.
+//
+// Mutation kills (verified):
+//   - broker passes producer_role_uid (instead of wire_uid) to
+//     `_on_heartbeat` for the consumer heartbeat → consumer presence
+//     row would land under the producer's RoleEntry, the consumer's
+//     RoleEntry would have no presences → `cons_re->find_presence(
+//     channel, "consumer")` returns nullptr → test fails.
+//   - broker drops `role_type` before the keyed call (passes "" instead)
+//     → `find_presence(channel, "producer")` returns nullptr; lazy
+//     creation creates a row with role_type="" → test fails on the
+//     `role_type` field check.
+//   - `RolePresence.first_heartbeat_seen` not set on lazy-create →
+//     test fails on the EXPECT_TRUE(first_heartbeat_seen) check.
+
+TEST_F(BrokerProtocolTest, HeartbeatKeying_ProducerVsConsumer_DistinctRows)
+{
+    const std::string channel  = pid_chan("proto.heartbeat.keying");
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
+
+    BrcHandle prod_h, cons_h;
+    prod_h.start(ep(), pk(), prod_uid);
+    cons_h.start(ep(), pk(), cons_uid);
+
+    auto reg = prod_h.brc.register_channel(make_reg_opts(channel, prod_uid),
+                                            3000);
+    ASSERT_TRUE(reg.has_value()) << "REG_REQ should succeed";
+
+    // Heartbeat once so the channel reaches Ready and DISC_REQ resolves.
+    prod_h.brc.send_heartbeat(channel, prod_uid, "producer", {});
+
+    auto disc = cons_h.brc.discover_channel(channel,
+                                             nlohmann::json::object(), 3000);
+    ASSERT_TRUE(disc.has_value()) << "DISC_REQ should resolve";
+    auto cons_reg = cons_h.brc.register_consumer(
+        make_cons_opts(channel, cons_uid), 3000);
+    ASSERT_TRUE(cons_reg.has_value()) << "CONSUMER_REG_REQ should succeed";
+
+    // Send distinct metrics with each presence's heartbeat so we can
+    // pin that the row stores the SENDER's metrics, not the other
+    // presence's.  Producer's metrics use 'out_written' (producer-side
+    // counter); consumer's metrics use 'in_received' (consumer-side
+    // counter); the two should never co-mingle.
+    nlohmann::json prod_metrics = {{"out_written", 100}, {"drops", 0}};
+    nlohmann::json cons_metrics = {{"in_received", 100}, {"drops", 0}};
+
+    prod_h.brc.send_heartbeat(channel, prod_uid, "producer", prod_metrics);
+    cons_h.brc.send_heartbeat(channel, cons_uid, "consumer", cons_metrics);
+
+    // Both presence rows must materialise in HubState (lazy creation in
+    // M1.1; M1.2 will move creation to REG_REQ / CONSUMER_REG_REQ).
+    using pylabhub::tests::helper::poll_until;
+    auto presences_landed = [&] {
+        auto prod_re = broker_->hub_state->role(prod_uid);
+        auto cons_re = broker_->hub_state->role(cons_uid);
+        if (!prod_re.has_value() || !cons_re.has_value()) return false;
+        return prod_re->find_presence(channel, "producer") != nullptr &&
+               cons_re->find_presence(channel, "consumer") != nullptr;
+    };
+    EXPECT_TRUE(poll_until(presences_landed, std::chrono::seconds(2)))
+        << "presence rows for both producer-uid and consumer-uid did not "
+           "materialise in HubState within 2s";
+
+    // ── Producer presence row contract ──────────────────────────────────
+    auto prod_re = broker_->hub_state->role(prod_uid);
+    ASSERT_TRUE(prod_re.has_value());
+    const RolePresence *prod_p = prod_re->find_presence(channel, "producer");
+    ASSERT_NE(prod_p, nullptr) << "producer-presence row missing";
+    EXPECT_EQ(prod_p->channel, channel);
+    EXPECT_EQ(prod_p->role_type, "producer");
+    EXPECT_TRUE(prod_p->first_heartbeat_seen);
+    EXPECT_EQ(prod_p->state, RoleState::Connected);
+    // Producer's metrics rode on the wire and landed in this presence row.
+    // Pre-flight type guard so a structural regression (latest_metrics
+    // assigned a non-object) gets a clear assertion message rather than
+    // a downstream JSON exception.
+    ASSERT_TRUE(prod_p->latest_metrics.is_object())
+        << "producer-presence latest_metrics is not a JSON object: "
+        << prod_p->latest_metrics.type_name();
+    ASSERT_TRUE(prod_p->latest_metrics.contains("out_written"));
+    EXPECT_EQ(prod_p->latest_metrics.value("out_written", 0), 100);
+
+    // ── Consumer presence row contract ──────────────────────────────────
+    auto cons_re = broker_->hub_state->role(cons_uid);
+    ASSERT_TRUE(cons_re.has_value());
+    const RolePresence *cons_p = cons_re->find_presence(channel, "consumer");
+    ASSERT_NE(cons_p, nullptr) << "consumer-presence row missing";
+    EXPECT_EQ(cons_p->channel, channel);
+    EXPECT_EQ(cons_p->role_type, "consumer");
+    EXPECT_TRUE(cons_p->first_heartbeat_seen);
+    EXPECT_EQ(cons_p->state, RoleState::Connected);
+    ASSERT_TRUE(cons_p->latest_metrics.is_object())
+        << "consumer-presence latest_metrics is not a JSON object: "
+        << cons_p->latest_metrics.type_name();
+    ASSERT_TRUE(cons_p->latest_metrics.contains("in_received"));
+    EXPECT_EQ(cons_p->latest_metrics.value("in_received", 0), 100);
+
+    // ── Structural separation: rows live under DIFFERENT RoleEntries ────
+    // The producer's RoleEntry must contain ONLY producer-presence rows
+    // for `channel`; vice versa for the consumer's.  This pins that
+    // wire_uid is what the broker keys on, not a derived producer_uid.
+    EXPECT_EQ(prod_re->find_presence(channel, "consumer"), nullptr)
+        << "producer's RoleEntry incorrectly contains a consumer-presence "
+           "row — broker keyed off the channel's producer_role_uid instead "
+           "of the wire-decoded uid (B1+B2 latent bug returned)";
+    EXPECT_EQ(cons_re->find_presence(channel, "producer"), nullptr)
+        << "consumer's RoleEntry incorrectly contains a producer-presence "
+           "row";
+
+    // Each RoleEntry should have exactly one presence row for this channel.
+    EXPECT_EQ(prod_re->presences.size(), 1u);
+    EXPECT_EQ(cons_re->presences.size(), 1u);
+
+    cons_h.stop();
+    prod_h.stop();
+}
+
 // ============================================================================
 // 5. ROLE_PRESENCE_REQ + ROLE_INFO_REQ
 // ============================================================================

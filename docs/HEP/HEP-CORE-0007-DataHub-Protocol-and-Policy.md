@@ -781,29 +781,38 @@ role_type field (added 2026-03-10):
                                  Absent field treated as "producer" for backward compatibility.
 ```
 
-#### DISC_REQ — Discover Channel (three-response state-machine, HEP-CORE-0023 rev 2)
+#### DISC_REQ — Discover Channel (three-response state-machine, HEP-CORE-0023 §2.2)
 
 ```
 Direction:  Consumer → Broker → Consumer
 Trigger:    BrokerRequestComm::discover_channel()
 Pattern:    Synchronous request/reply. Broker always replies immediately —
             no queued/deferred responses. The reply encodes one of three
-            well-defined states; the client decides how to react.
+            outcomes derived from the producer-PRESENCE's FSM state
+            (HEP-CORE-0023 §2.1); the client decides how to react.
 
 Payload (DISC_REQ):
   channel_name          string
 
 Broker dispatch logic:
-  let role = registry.find_role(channel_name)   // single source of truth
-  if role == nullptr:
+  let ch = HubState.channels[channel_name]
+  if ch == nullptr:
       reply ERROR "CHANNEL_NOT_FOUND"
-  elif role.status == Ready:
+  let prod = HubState.roles[ch.producer_role_uid]
+            .find_presence(channel_name, "producer")
+  if prod == nullptr or prod.state == Disconnected:
+      // ChannelEntry is removed atomically on producer-presence
+      // Disconnected (HEP-CORE-0023 §2.1), so this branch is rare;
+      // it can only happen during the brief window between FSM
+      // transition and channel removal.
+      reply ERROR "CHANNEL_NOT_FOUND"
+  elif prod.state == Connected and prod.last_heartbeat.is_set():
       reply DISC_ACK with connection info
-  elif role.status == Pending:
+  else:                  // Connected (no heartbeat yet) OR Pending
       reply DISC_PENDING (no connection info — client MUST retry)
 ```
 
-**Reply variant 1 — DISC_ACK (channel is Ready):**
+**Reply variant 1 — DISC_ACK (producer-presence Connected, heartbeats fresh):**
 ```
 Payload:
   status                string   "success"
@@ -818,7 +827,7 @@ Payload:
   zmq_node_endpoint     string   (if data_transport="zmq")
 ```
 
-**Reply variant 2 — DISC_PENDING (channel registered but not yet Ready):**
+**Reply variant 2 — DISC_PENDING (producer-presence registered but heartbeats not fresh):**
 ```
 Payload:
   status                string   "pending"
@@ -983,28 +992,41 @@ Returns empty channels if no metrics have been reported yet.
 
 These require no response from the broker.
 
-#### HEARTBEAT_REQ — Producer Liveness + Metrics
+#### HEARTBEAT_REQ — Per-Presence Liveness + Metrics
 
 ```
-Direction:  Producer/Processor → Broker
-Trigger:    Periodic HeartbeatTracker in zmq_thread_ (fires when iteration_count
-            advances AND heartbeat interval elapsed, default 2s)
-Effect:     Updates channel last_heartbeat timestamp; transitions PendingReady → Ready;
-            if metrics field present, updates MetricsStore (HEP-CORE-0019)
+Direction:  Producer / Consumer / Processor → Broker
+            (one heartbeat per presence — see HEP-CORE-0019 §2.3 / Phase 6)
+Trigger:    Periodic per-presence tick installed by the role host's
+            ctrl thread after REG_ACK / CONSUMER_REG_ACK
+            (default cadence 500 ms = 2 Hz; HEP-CORE-0023 §2.5)
+Effect:     Looks up RoleEntry(uid).find_presence(channel_name, role_type),
+            refreshes that presence's last_heartbeat, advances its
+            Connected ↔ Pending FSM (HEP-CORE-0023 §2.1).
+            If the metrics field is present, writes
+            MetricsStore[(channel_name, uid, role_type)] (HEP-CORE-0019).
+            No heartbeat ever touches another presence's bookkeeping;
+            channel observability is derived from the producer-presence's
+            state, not from a separate ChannelEntry field.
 
-Payload:
+Payload (Phase 6 — required fields):
   channel_name          string
-  producer_pid          uint64
-  metrics               object   (opt, HEP-CORE-0019) Metrics snapshot:
-    out_written          uint64   Slots committed
-    drops                uint64   Overflow drops
-    script_errors        uint64   Script exception count
-    iteration_count      uint64   Loop iterations
-    in_received          uint64   (processor only) Input slots received
-    custom               object   (opt) User-defined {key: number} pairs
+  uid                   string   Sending presence's role UID
+  role_type             string   "producer" | "consumer"
+  producer_pid          uint64   Sending process PID (back-compat field;
+                                 retained from Phase 1 wire format)
+  metrics               object   (opt, HEP-CORE-0019) Per-presence metrics
+                                 snapshot.  Shape varies by presence
+                                 (producer: out_written, drops, ...;
+                                 consumer: in_received, drops, ...);
+                                 see HEP-CORE-0019 §3 for full schemas.
 
-Backward compatibility: Brokers that predate HEP-CORE-0019 ignore the metrics field
-(unknown JSON keys are silently dropped). No version negotiation needed.
+Backward compatibility: brokers that predate HEP-CORE-0019 Phase 6
+(no `uid` / `role_type` fields) ignore the metrics field but ALSO
+silently mis-attributed every heartbeat to the channel's producer.
+Phase 6-aware brokers require both new fields and reject heartbeats
+that omit them; pre-Phase-6 roles must be updated together with the
+broker.
 
 Note: Heartbeats are sent only when iteration_count advances, proving the script
 loop is progressing — not just that the ZMQ connection is alive.
@@ -1035,26 +1057,37 @@ See HEP-CORE-0030 §5.2 for the replacement.
 Replaced by `BAND_BROADCAST_REQ` in the new band pub/sub protocol.
 See HEP-CORE-0030 §5.2 for the replacement.
 
-#### METRICS_REPORT_REQ — Consumer Metrics Report (HEP-CORE-0019)
+#### ~~METRICS_REPORT_REQ~~ — **DEPRECATED** (Phase 6, HEP-CORE-0019 §4.3)
 
 ```
 Direction:  Consumer → Broker
-Trigger:    Periodic HeartbeatTracker in consumer zmq_thread_
-Effect:     Broker updates MetricsStore with consumer's latest metrics snapshot
+Status:     DEPRECATED — broker handler retained for one release for
+            backward compat; no role auto-emits this message after
+            Phase 6.  Consumers now send their own per-presence
+            HEARTBEAT_REQ with role_type="consumer", which carries
+            the same metrics piggyback under the same MetricsStore
+            keying — see HEARTBEAT_REQ above.
 
-Payload:
+Legacy payload (for the retained handler):
   channel_name          string
   consumer_pid          uint64
-  consumer_uid          string   Consumer UID (e.g. "CONS-LOGGER-A1B2C3D4")
+  consumer_uid          string   Consumer UID
   metrics               object   Metrics snapshot:
     in_received          uint64   Slots consumed
     script_errors        uint64   Script exception count
     iteration_count      uint64   Loop iterations
     custom               object   (opt) User-defined {key: number} pairs
 
-Why consumers use a dedicated message: Consumers don't send HEARTBEAT_REQ
-(the broker tracks their liveness via PID checks). So consumers use this
-separate fire-and-forget message to report metrics at the same interval.
+Effect (legacy):  Broker writes MetricsStore[(channel_name, consumer_uid,
+                  "consumer")] from the snapshot — same row a Phase 6
+                  consumer-presence HEARTBEAT_REQ would write.
+
+Why removed: pre-Phase-6 consumers did not send HEARTBEAT_REQ (the
+broker tracked liveness via PID checks), so a separate metrics
+report was needed.  Phase 6 unifies all presences under a single
+HEARTBEAT_REQ shape with `(uid, role_type)` keying — consumers
+become regular presences with their own FSM row in RoleEntry, and
+the dedicated METRICS_REPORT_REQ is no longer needed.
 ```
 
 #### CHANNEL_LIST_REQ — Query Registered Channels
@@ -1071,10 +1104,23 @@ Payload (CHANNEL_LIST_ACK):
   status                string   "success"
   channels              array    Array of channel objects:
     name                string   Channel identifier
-    status              string   "Ready" | "PendingReady" | "Closing"
+    observability       string   Derived from the producer-presence's
+                                 state in RoleEntry (HEP-CORE-0023 §2.6):
+                                   "live"        — producer-presence Connected,
+                                                   heartbeats fresh
+                                   "stalled"     — producer-presence Pending
+                                                   (heartbeats stalled but
+                                                   recoverable)
+                                   "registering" — producer-presence
+                                                   Connected, no heartbeat
+                                                   seen yet (just registered)
+                                 Channels whose producer-presence is
+                                 Disconnected are removed atomically
+                                 (HEP-CORE-0023 §2.1) and do not appear
+                                 in this list.
     producer_uid        string   Producer UID
     schema_id           string   Named schema ID (empty if anonymous)
-    consumer_count      int      Number of registered consumers
+    consumer_count      int      Number of registered consumer-presences
 
 Use cases:
   - Role queries available channels for dynamic subscription
@@ -1158,49 +1204,56 @@ dispatch behaviour.
 
 ```
 Direction:  Broker → All channel participants (producer + consumers)
-Trigger:    request_close_channel(), or heartbeat timeout (producer died)
-Effect:     Channel enters Closing state. Broker starts grace period timer.
-            Recipients receive event in their message queue (FIFO).
-            Script is expected to call api.stop() after cleanup.
+Trigger:    request_close_channel(); DEREG_REQ from producer-role;
+            producer-presence transition to Disconnected
+            (heartbeat-timeout reap per HEP-CORE-0023 §2.1).
+Effect:     Channel is removed from the broker's registry atomically
+            with the fan-out.  Recipients receive the event in their
+            message queue (FIFO); script is expected to call
+            `api.stop()` after cleanup.
 Dispatch:   `on_notification(cb)` callback receives msg_type
             "CHANNEL_CLOSING_NOTIFY"; role host queues an
             `IncomingMessage{event="channel_closing", ...}` for the script.
 
 Payload:
   channel_name          string
-  reason                string   ("script_requested" | "heartbeat_timeout")
+  reason                string   ("script_requested" | "heartbeat_timeout" | "voluntary_close")
 
 Script host behavior: Queued as IncomingMessage{event="channel_closing"}.
   Delivered in FIFO order alongside other messages (broadcasts, data, etc.).
   Script should process pending work, then call api.stop() to deregister.
-
-Two-tier shutdown protocol:
-  1. CHANNEL_CLOSING_NOTIFY → queued message, script decides when to stop.
-  2. If client does not deregister within channel_shutdown_grace (default 5s),
-     broker escalates to FORCE_SHUTDOWN (see below).
+  No subsequent broker-driven escalation: a consumer that does not
+  deregister will simply observe its data-plane connection drop (when
+  the broker tears down channel resources) and any later DISC_REQ
+  returns CHANNEL_NOT_FOUND.  See HEP-CORE-0023 §2.1.
 ```
 
-#### FORCE_SHUTDOWN — Forced Channel Shutdown (Tier 2)
+#### ~~FORCE_SHUTDOWN~~ — **REMOVED 2026-05-07**
 
 ```
-Direction:  Broker → All remaining channel participants
-Trigger:    Grace period expired after CHANNEL_CLOSING_NOTIFY;
-            client still registered (did not send DEREG_REQ/CONSUMER_DEREG_REQ).
-Effect:     Bypasses message queue. Forces immediate shutdown_requested flag.
-            Broker deregisters the channel entry.
-Dispatch:   `on_notification(cb)` callback receives msg_type
-            "FORCE_SHUTDOWN"; role host sets
-            `core_.shutdown_requested = true` directly (no queue).
+The broker-side post-grace escalation was removed when the channel
+"Closing" state was retired (HEP-CORE-0023 §2.1).  Channel teardown
+is now atomic on the producer-presence's transition to Disconnected:
+the broker emits CHANNEL_CLOSING_NOTIFY (best-effort) and removes
+the channel entry in the same handler.  There is no second tier.
 
-Payload:
-  channel_name          string
-  reason                string   ("grace_period_expired")
+Rationale:
+  - The role-presence's pending_miss_heartbeats window already gives
+    a bounded recovery interval; the channel-grace was redundant.
+  - Voluntary DEREG_REQ is initiated by the producer-role itself —
+    no "we asked it to leave but it hasn't" race that grace covers.
+  - Consumers that fail to drain in time observe the data-plane
+    socket close (broker tears down channel resources) and respond
+    to CHANNEL_NOT_FOUND on any subsequent DISC_REQ — same observable
+    end-state as FORCE_SHUTDOWN, without a separate wire message.
 
-Script host behavior: Sets core_.shutdown_requested = true directly (no queue).
-  This is the "kill -9" equivalent — script may not get on_stop() callback.
+Operator escalation: if an admin needs to forcibly remove a hung
+member, use admin tooling that drives CHANNEL_CLOSING_NOTIFY +
+broker-side resource teardown — same path as the natural close.
 
-Config: BrokerService::Config::channel_shutdown_grace (default 5s).
-  Set to 0 for immediate deregister (legacy behavior, used in L3 tests).
+Config: BrokerService::Config::channel_shutdown_grace_s and the
+former wire message FORCE_SHUTDOWN are both retired; remove from
+hub.json.
 ```
 
 #### CONSUMER_DIED_NOTIFY — Consumer Process Death
@@ -1326,57 +1379,44 @@ Replacement mechanisms:
      │                    │                    │
 ```
 
-#### Sequence B: Graceful Channel Shutdown (Two-Tier Protocol)
+#### Sequence B: Channel Shutdown (single-tier — corrected 2026-05-07)
 
-**Tier 1 — Cooperative shutdown** (CHANNEL_CLOSING_NOTIFY):
-The broker sends CHANNEL_CLOSING_NOTIFY to all channel members. This is delivered
-as a queued FIFO event message so scripts can finish in-flight work before calling
-`api.stop()`. Clients deregister normally (DEREG_REQ / CONSUMER_DEREG_REQ).
+**Trigger.**  CHANNEL_CLOSING_NOTIFY is fanned out (best-effort, FIFO-
+queued) when ANY of:
+- Producer-role calls `request_close_channel()` or sends `DEREG_REQ`.
+- Producer-presence transitions to Disconnected via heartbeat
+  timeout (HEP-CORE-0023 §2.1 — the role's `pending_miss_heartbeats`
+  window IS the only grace).
 
-**Tier 2 — Forced shutdown** (FORCE_SHUTDOWN):
-If clients do not deregister within `channel_shutdown_grace` (default 5 s), the
-broker sends FORCE_SHUTDOWN which bypasses the message queue and sets the shutdown
-flag directly. The broker then deregisters all remaining members.
+**Atomic teardown.**  The broker removes the `ChannelEntry` in the
+same handler that emits the notify.  Consumers' `RoleEntry` rows are
+unaffected (the consumer-presence may still be alive on other
+channels); only their `ConsumerEntry` membership in the closed
+channel is removed.
 
 ```
 ┌──────────┐          ┌────────┐          ┌──────────┐
 │ Producer  │          │ Broker │          │ Consumer │
 └────┬─────┘          └───┬────┘          └────┬─────┘
      │                    │                    │
-     │   request_close_channel("ch")           │
+     │── DEREG_REQ ──────>│                    │
+     │   (or producer-presence reaped by heartbeat timeout)
      │                    │                    │
      │<── CHANNEL_CLOSING │── CHANNEL_CLOSING ─>│
      │    NOTIFY          │    NOTIFY           │
      │                    │                    │
-     │  (script handles   │  (status = Closing) │
-     │   event, calls     │  (deadline set)     │
-     │   api.stop())      │                    │
+     │   (broker removes ChannelEntry atomically;
+     │    data-plane resources torn down;
+     │    consumer's CONSUMER_DEREG_REQ is optional —
+     │    its ConsumerEntry is already gone)
      │                    │                    │
-     │                    │<── CONSUMER_DEREG ──│
-     │                    │── CONSUMER_DEREG    │
-     │                    │   ACK ─────────────>│
-     │                    │                    │
-     │── DEREG_REQ ──────>│                    │
      │<── DEREG_ACK ──────│                    │
      │                    │                    │
-     │   (all members deregistered →           │
-     │    channel removed from registry)       │
-     │                    │                    │
-```
-
-If clients do NOT deregister before the grace period expires:
-
-```
-     │                    │                    │
-     │   ... grace period expires ...          │
-     │                    │                    │
-     │<── FORCE_SHUTDOWN  │── FORCE_SHUTDOWN ──>│
-     │                    │                    │
-     │  (shutdown_requested set directly,      │
-     │   bypasses message queue)               │
-     │                    │                    │
-     │  (broker deregisters all remaining      │
-     │   members, channel removed)             │
+     │  (script handles   │                    │  (script handles
+     │   event, calls     │                    │   event, drains in-flight
+     │   api.stop())      │                    │   work, calls api.stop();
+     │                    │                    │   any future DISC_REQ
+     │                    │                    │   returns CHANNEL_NOT_FOUND)
      │                    │                    │
 ```
 

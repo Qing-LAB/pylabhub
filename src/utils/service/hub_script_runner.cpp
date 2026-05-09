@@ -8,6 +8,7 @@
 
 #include "hub_script_runner.hpp"
 
+#include "utils/script_engine_factory.hpp"  // create_engine + PythonGilLease (Step 0)
 #include "utils/config/hub_config.hpp"     // host_.config() reads (worker only)
 #include "utils/hub_host.hpp"
 #include "utils/hub_state.hpp"
@@ -18,6 +19,7 @@
 #include "utils/script_engine.hpp"
 
 #include <chrono>
+#include <optional>                      // EngineGlobalLockRelease guard
 #include <variant>                       // std::monostate sentinel for ConfigT
 #include <vector>
 
@@ -29,16 +31,18 @@ namespace pylabhub::scripting
 // ============================================================================
 
 HubScriptRunner::HubScriptRunner(pylabhub::hub_host::HubHost  &host,
-                                  std::unique_ptr<ScriptEngine> engine,
                                   std::atomic<bool>            *shutdown_flag)
     // Phase 7 Option E: HubScriptRunner does NOT own a HubConfig (HubHost
     // is the sole owner — single config per hub instance).  Pass
     // `std::monostate{}` for ConfigT — EngineHost is opaque to it and
     // its trait specialization for HubAPI returns empty uid (which we
     // override below via `set_uid` once host_ is wired).
+    //
+    // Per HEP-CORE-0011 §"Engine Construction Lifecycle" (2026-05-07):
+    // engine is NOT passed in — `worker_main_` Step 0 constructs it on
+    // the worker thread via scripting::create_engine.
     : HubScriptRunnerBase("hub",
                            std::monostate{},
-                           std::move(engine),
                            shutdown_flag)
     , host_(host)
 {
@@ -77,6 +81,32 @@ void HubScriptRunner::worker_main_()
     const std::string  log_tag = "hub";
 
     LOGGER_INFO("[HubScriptRunner:{}] worker_main_ entered", uid);
+
+    // ── GIL pickup (HEP-CORE-0011 §"Engine Construction Lifecycle",
+    //    Option E final design).  PythonInterpreter is owned by main(),
+    //    which released the GIL via a stored py::gil_scoped_release in
+    //    pi_startup so workers can acquire it.  PythonGilLease's ctor
+    //    acquires the GIL on THIS thread (no-op if Python isn't loaded
+    //    — Lua/native deployments).  The lease is held for the entire
+    //    worker_main_ lifetime, so all PythonEngine py::object
+    //    operations below run under GIL on this thread.
+    pylabhub::scripting::PythonGilLease gil_lease;
+
+    // ── Step 0: construct engine on this worker thread.  GIL is held
+    //    by the lease above iff Python is in play, so PythonEngine's
+    //    py::object{py::none()} member-default-initializers run under
+    //    GIL safely.  For script-disabled hubs (cfg.script().path
+    //    empty), HubHost does not construct the runner at all, so we
+    //    always have a valid script config here.
+    set_engine_(scripting::create_engine(host_.config().script()));
+    if (!has_engine())
+    {
+        LOGGER_ERROR("[HubScriptRunner:{}] scripting::create_engine returned "
+                     "null for script.type='{}'",
+                     uid, host_.config().script().type);
+        ready_promise().set_value(false);
+        return;
+    }
 
     // ─────────────────────────────────────────────────────────────────────
     // Mirrors the role-side `worker_main_()` phase ordering (see
@@ -302,6 +332,13 @@ void HubScriptRunner::worker_main_()
     const double period_us = static_cast<double>(timing.period_us);
     const bool is_max_rate = (policy == LoopTimingPolicy::MaxRate);
 
+    // Cache GIL-release-during-wait flag.  See data_loop.hpp comment for
+    // the same pattern.  Read once from the engine; the loop body never
+    // reaches into the engine for this.  When false (default) the inner
+    // optional<EngineGlobalLockRelease> stays empty and the call shape
+    // is byte-identical to pre-flag behaviour.
+    const bool release_lock_idle = engine().release_global_lock_during_wait();
+
     // Initialize the first deadline ONCE here rather than relying on
     // `compute_next_deadline`'s `prev_deadline == max` first-cycle
     // branch.  Cleaner because the post-tick advance below now has
@@ -380,22 +417,58 @@ void HubScriptRunner::worker_main_()
         // remaining ms until `deadline`, capped at zero (already-due —
         // the next iteration runs back-to-back, used by FRWithComp
         // catch-up after a long stall).
-        if (is_max_rate)
+        //
+        // GIL-release wrap (HEP-CORE-0011 §"Engine Thread Affinity"
+        // sub-section "Optional global-lock release during idle waits").
+        // When release_lock_idle is true the GIL is released across
+        // the wait so cooperative Python sub-threads (Flask /
+        // asyncio / threading.Thread spawned from the hub script)
+        // can run.  wait_for_incoming itself is a pure C++
+        // condition-variable wait — no engine touch — so releasing
+        // here is safe.  When false the optional stays empty: the
+        // ctor/dtor are no-ops and the call shape matches the
+        // pre-flag version exactly.
+        //
+        // The post-wait shutdown observation is made INSIDE the wrap
+        // (atomic-flag read; no GIL needed) so that a shutdown
+        // signal is observed even if the dtor's reacquire would
+        // block on a stolen GIL.  The bounded-join in
+        // EngineHost::shutdown_() (HEP-CORE-0011 §"ThreadManager" →
+        // "Bounded Shutdown Join") catches the worst-case blocked
+        // reacquire.
+        bool shutdown_observed = false;
         {
-            // Poll the queue; do not block.  on_tick already fired
-            // above so the loop spins through both phases at maximum
-            // rate as documented for LoopTimingPolicy::MaxRate.
-            core().wait_for_incoming(0);
+            std::optional<scripting::EngineGlobalLockRelease> idle_release;
+            if (release_lock_idle)
+                idle_release.emplace();
+
+            if (is_max_rate)
+            {
+                // Poll the queue; do not block.  on_tick already fired
+                // above so the loop spins through both phases at maximum
+                // rate as documented for LoopTimingPolicy::MaxRate.
+                core().wait_for_incoming(0);
+            }
+            else
+            {
+                const auto remain_us = std::chrono::duration_cast<
+                    std::chrono::microseconds>(deadline - Clock::now()).count();
+                const int wait_ms = (remain_us > 0)
+                    ? static_cast<int>(remain_us / 1000)
+                    : 0;
+                core().wait_for_incoming(wait_ms);
+            }
+
+            // Step B' — observe shutdown BEFORE the dtor reacquires
+            // the GIL.  The hub has no per-cycle slot to clean up
+            // (no cleanup_on_shutdown analog); the loop's outer
+            // teardown (H0/H1/H3/H4 below) handles draining + on_stop.
+            if (!is_running() || core().is_shutdown_requested())
+                shutdown_observed = true;
         }
-        else
-        {
-            const auto remain_us = std::chrono::duration_cast<
-                std::chrono::microseconds>(deadline - Clock::now()).count();
-            const int wait_ms = (remain_us > 0)
-                ? static_cast<int>(remain_us / 1000)
-                : 0;
-            core().wait_for_incoming(wait_ms);
-        }
+
+        if (shutdown_observed)
+            break;
     }
 
     // ── H. Teardown ───────────────────────────────────────────────────────

@@ -171,9 +171,6 @@ graph LR
     "broker_endpoint": "tcp://127.0.0.1:5570",
     "admin_endpoint":  "tcp://127.0.0.1:5600"
   },
-  "broker": {
-    "channel_shutdown_grace_s": 2
-  },
   "peers": [
     {
       "hub_uid":         "HUB-DEMOB-00000002",

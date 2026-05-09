@@ -60,10 +60,19 @@ namespace
 class TestRoleHost : public RoleHostBase
 {
   public:
-    TestRoleHost(RoleConfig cfg, std::unique_ptr<ScriptEngine> engine,
+    /// Per HEP-CORE-0011 §"Engine Construction Lifecycle" (2026-05-07):
+    /// engine is no longer passed in; in production it would be
+    /// constructed inside worker_main_ Step 0 via
+    /// scripting::create_engine.  This L2 test stub does NOT need an
+    /// engine — its worker_main_ override below uses none — so we just
+    /// drop the param.  If a future test variant needs an engine, it
+    /// should construct one in its own worker_main_ via either
+    /// scripting::create_engine or by directly instantiating a stub
+    /// engine type (e.g., a NativeEngine derived class).
+    TestRoleHost(RoleConfig cfg,
                  std::atomic<bool> *shutdown_flag, bool report_ready = true,
                  bool run_after_ready = true)
-        : RoleHostBase("test", std::move(cfg), std::move(engine), shutdown_flag),
+        : RoleHostBase("test", std::move(cfg), shutdown_flag),
           report_ready_(report_ready), run_after_ready_(run_after_ready)
     {
     }
@@ -109,9 +118,9 @@ class TestRoleHost : public RoleHostBase
 class NoShutdownHost : public RoleHostBase
 {
   public:
-    NoShutdownHost(RoleConfig cfg, std::unique_ptr<ScriptEngine> engine,
+    NoShutdownHost(RoleConfig cfg,
                    std::atomic<bool> *shutdown_flag)
-        : RoleHostBase("no_sd", std::move(cfg), std::move(engine), shutdown_flag)
+        : RoleHostBase("no_sd", std::move(cfg), shutdown_flag)
     {
     }
     ~NoShutdownHost() override = default;  // deliberately no shutdown_()
@@ -128,9 +137,9 @@ class NoShutdownHost : public RoleHostBase
 class OverridingShutdownHost : public RoleHostBase
 {
   public:
-    OverridingShutdownHost(RoleConfig cfg, std::unique_ptr<ScriptEngine> engine,
+    OverridingShutdownHost(RoleConfig cfg,
                            std::atomic<bool> *shutdown_flag)
-        : RoleHostBase("ovr", std::move(cfg), std::move(engine), shutdown_flag)
+        : RoleHostBase("ovr", std::move(cfg), shutdown_flag)
     {
     }
     ~OverridingShutdownHost() override { shutdown_(); }
@@ -159,9 +168,9 @@ class OverridingShutdownHost : public RoleHostBase
 class ForgetfulShutdownHost : public RoleHostBase
 {
   public:
-    ForgetfulShutdownHost(RoleConfig cfg, std::unique_ptr<ScriptEngine> engine,
+    ForgetfulShutdownHost(RoleConfig cfg,
                           std::atomic<bool> *shutdown_flag)
-        : RoleHostBase("forget", std::move(cfg), std::move(engine), shutdown_flag)
+        : RoleHostBase("forget", std::move(cfg), shutdown_flag)
     {
     }
     ~ForgetfulShutdownHost() override { shutdown_(); }
@@ -226,7 +235,7 @@ int construct_not_running(const std::string &dir)
             register_producer_once();
             std::atomic<bool> shutdown{false};
             TestRoleHost host(build_config(dir),
-                              std::make_unique<NativeEngine>(), &shutdown);
+                              &shutdown);
             EXPECT_FALSE(host.is_running());
             EXPECT_FALSE(host.script_load_ok());
             EXPECT_EQ(host.role_tag(), "test");
@@ -244,7 +253,7 @@ int startup_run_shutdown(const std::string &dir)
             register_producer_once();
             std::atomic<bool> shutdown{false};
             auto host = std::make_unique<TestRoleHost>(
-                build_config(dir), std::make_unique<NativeEngine>(), &shutdown);
+                build_config(dir), &shutdown);
 
             host->startup_();
             EXPECT_TRUE(host->script_load_ok());
@@ -271,7 +280,7 @@ int startup_ready_false(const std::string &dir)
             register_producer_once();
             std::atomic<bool> shutdown{false};
             TestRoleHost host(build_config(dir),
-                              std::make_unique<NativeEngine>(), &shutdown,
+                              &shutdown,
                               /*report_ready=*/false,
                               /*run_after_ready=*/false);
             host.startup_();
@@ -292,7 +301,7 @@ int validate_mode(const std::string &dir)
             register_producer_once();
             std::atomic<bool> shutdown{false};
             TestRoleHost host(build_config(dir),
-                              std::make_unique<NativeEngine>(), &shutdown,
+                              &shutdown,
                               /*report_ready=*/true,
                               /*run_after_ready=*/false);
             host.startup_();
@@ -315,7 +324,7 @@ int shutdown_idempotent(const std::string &dir)
             register_producer_once();
             std::atomic<bool> shutdown{false};
             TestRoleHost host(build_config(dir),
-                              std::make_unique<NativeEngine>(), &shutdown);
+                              &shutdown);
             host.startup_();
             host.shutdown_();
             host.shutdown_();
@@ -335,7 +344,7 @@ int shutdown_before_startup(const std::string &dir)
             register_producer_once();
             std::atomic<bool> shutdown{false};
             TestRoleHost host(build_config(dir),
-                              std::make_unique<NativeEngine>(), &shutdown);
+                              &shutdown);
             host.shutdown_();
             EXPECT_FALSE(host.is_running());
             EXPECT_EQ(host.worker_calls.load(), 0);
@@ -353,7 +362,7 @@ int virtual_shutdown_override_forwards(const std::string &dir)
             register_producer_once();
             std::atomic<bool> shutdown{false};
             OverridingShutdownHost host(build_config(dir),
-                                        std::make_unique<NativeEngine>(), &shutdown);
+                              &shutdown);
             host.startup_();
             host.shutdown_();
             EXPECT_EQ(host.derived_shutdown_calls.load(), 1);
@@ -372,7 +381,7 @@ int external_shutdown_flag(const std::string &dir)
             register_producer_once();
             std::atomic<bool> shutdown{false};
             auto host = std::make_unique<TestRoleHost>(
-                build_config(dir), std::make_unique<NativeEngine>(), &shutdown);
+                build_config(dir), &shutdown);
             host->startup_();
             ASSERT_TRUE(wait_for([&]() { return host->worker_entered_loop.load(); }));
 
@@ -393,7 +402,7 @@ int accessors_config_and_role_tag(const std::string &dir)
             register_producer_once();
             std::atomic<bool> shutdown{false};
             TestRoleHost host(build_config(dir),
-                              std::make_unique<NativeEngine>(), &shutdown);
+                              &shutdown);
             EXPECT_EQ(host.role_tag(), "test");
             EXPECT_EQ(&host.config(), &host.config());
         },
@@ -410,7 +419,7 @@ int wait_for_wakeup_honours_timeout(const std::string &dir)
             register_producer_once();
             std::atomic<bool> shutdown{false};
             TestRoleHost host(build_config(dir),
-                              std::make_unique<NativeEngine>(), &shutdown);
+                              &shutdown);
             host.startup_();
 
             const auto t0 = std::chrono::steady_clock::now();
@@ -443,7 +452,7 @@ int dtor_missing_shutdown_aborts(const std::string &dir)
     std::atomic<bool> shutdown{false};
     {
         NoShutdownHost host(build_config(dir),
-                            std::make_unique<NativeEngine>(), &shutdown);
+                              &shutdown);
         host.startup_();
         // Dropping host here → base dtor sees missing flag → PLH_PANIC → abort.
     }
@@ -461,7 +470,7 @@ int virtual_shutdown_no_base_aborts(const std::string &dir)
     std::atomic<bool> shutdown{false};
     {
         ForgetfulShutdownHost host(build_config(dir),
-                                   std::make_unique<NativeEngine>(), &shutdown);
+                              &shutdown);
         host.startup_();
         // dtor → derived shutdown_ (no-op) → base dtor → PLH_PANIC → abort.
     }
@@ -484,7 +493,7 @@ int startup_after_shutdown_aborts(const std::string &dir)
     std::atomic<bool> shutdown{false};
     {
         TestRoleHost host(build_config(dir),
-                          std::make_unique<NativeEngine>(), &shutdown);
+                              &shutdown);
         host.startup_();
         host.shutdown_();
         // Re-startup on a ShutDown host → CAS sees ShutDown → PLH_PANIC.

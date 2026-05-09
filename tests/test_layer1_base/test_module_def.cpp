@@ -147,3 +147,24 @@ TEST(ModuleDefTest, SetAsPersistent)
     EXPECT_NO_THROW(m.set_as_persistent(true));
     EXPECT_NO_THROW(m.set_as_persistent(false));
 }
+
+// ============================================================================
+// set_synchronous_shutdown — opt-in to direct-call shutdown on the
+// finalize() caller's thread (no timedShutdown worker spawn).  See
+// HEP-CORE-0011 §"Engine Construction Lifecycle" + lifecycle.cpp
+// finalize() Phase 2/3 dispatch.
+// ============================================================================
+
+TEST(ModuleDefTest, SetSynchronousShutdown)
+{
+    ModuleDef m("TestModule");
+    EXPECT_NO_THROW(m.set_synchronous_shutdown(true));
+    EXPECT_NO_THROW(m.set_synchronous_shutdown(false));
+}
+
+TEST(ModuleDefTest, SetSynchronousShutdown_DefaultArg_Enables)
+{
+    // Default arg is `true` — calling with no argument flips the flag on.
+    ModuleDef m("TestModule");
+    EXPECT_NO_THROW(m.set_synchronous_shutdown());
+}

@@ -193,6 +193,21 @@ TEST_F(PythonEngineIsolatedTest, SupportsMultiState_ReturnsFalse)
     ExpectWorkerOk(w);
 }
 
+// HEP-CORE-0011 §"Engine Thread Affinity" → "Optional global-lock
+// release during idle waits".  Verifies EngineGlobalLockRelease
+// actually releases the GIL by comparing how far a Python sub-thread
+// can advance during a held-GIL C++ sleep vs. a released-GIL C++
+// sleep of the same duration.  Path-discriminating: a no-op release
+// makes both deltas equal and the test fails with a specific
+// diagnostic.
+TEST_F(PythonEngineIsolatedTest, ReleaseGlobalLockDuringWait_LetsSubthreadRun)
+{
+    auto w = SpawnWorker(
+        "python_engine.release_global_lock_during_wait_lets_subthread_run",
+        {unique_dir("gil_release")});
+    ExpectWorkerOk(w);
+}
+
 // ============================================================================
 // (V2 chunk-1 tests removed — converted to Pattern 3 at top of file.)
 

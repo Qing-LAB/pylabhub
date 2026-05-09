@@ -494,6 +494,37 @@ federation, HEP-CORE-0022).
 inventory, role-side handler dispatch shapes, broker-side handling
 implications).
 
+### Engine construction lives on the worker thread (added 2026-05-07)
+
+`ScriptEngine` instances (`PythonEngine`, `LuaEngine`, `NativeEngine`)
+are constructed by the host's `worker_main_()` (Step 0), **not** by
+`main()`.  The `HostFactory` signature is
+`(RoleConfig, atomic<bool>*) → unique_ptr<RoleHostBase>` — no engine
+parameter.
+
+**Why**: `PythonEngine` has class-level `py::object{py::none()}` member
+defaults; their copy-ctor `inc_ref`s `Py_None`, which requires
+(a) the interpreter to be alive AND (b) the GIL to be held on the
+calling thread.  Construction-on-`main` ran these defaults before
+either invariant was satisfied.  The fix is structural: construct on
+the worker, where the `PythonInterpreter` lifecycle module is loaded
+on the same thread that becomes the GIL holder.
+
+See HEP-CORE-0011 §"Engine Construction Lifecycle" for the full
+rationale, the dynamic lifecycle module
+(`pylabhub::scripting::PythonInterpreter`), and the `ensure_/release_`
+ctor/dtor pattern.
+
+When adding a new engine type:
+- Construct it inside `make_engine_from_script_config(sc)` on the
+  worker thread.  Mains never touch engine-type-specific lifecycle.
+- If the engine wraps a process-singleton runtime, model it after
+  `PythonInterpreter`: a dynamic lifecycle module that owns the
+  runtime; the engine ctor calls `ensure_*_loaded()` to bump the
+  module's refcount; the engine dtor calls `release_*()`.
+- Per-instance runtimes (e.g. Lua's `lua_State`) need no module —
+  the engine constructor allocates the state directly.
+
 ---
 
 ## DataBlock API, Concurrency, and Protocol

@@ -490,8 +490,9 @@ stateDiagram-v2
 ### 7.2 Private schemas
 
 Created by `REG_REQ` from a producer. Owner is the producer's uid. Evicted
-atomically when the producer deregisters (any reason: explicit DISC,
-heartbeat-timeout, hub-initiated FORCE_SHUTDOWN).
+atomically when the producer-presence transitions to Disconnected (any
+reason: explicit DEREG_REQ, heartbeat-timeout reap per HEP-CORE-0023
+§2.1).
 
 ```mermaid
 stateDiagram-v2

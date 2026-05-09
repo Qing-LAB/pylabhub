@@ -583,7 +583,7 @@ void NativeEngine::finalize_engine_()
 // has_callback
 // ============================================================================
 
-bool NativeEngine::has_callback(const std::string &name) const
+bool NativeEngine::has_callback(const std::string &name) const noexcept
 {
     if (name == "on_init")       return fn_on_init_ != nullptr;
     if (name == "on_stop")       return fn_on_stop_ != nullptr;

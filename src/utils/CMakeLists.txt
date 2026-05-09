@@ -47,6 +47,7 @@ set(UTILS_SOURCES
   service/hub_host.cpp     # pylabhub::hub_host::HubHost (HEP-CORE-0033 §4)
   service/hub_api.cpp      # pylabhub::hub_host::HubAPI (HEP-CORE-0033 §12.3)
   service/hub_script_runner.cpp  # pylabhub::scripting::HubScriptRunner (HEP-CORE-0033 Phase 7)
+  service/engine_factory_registry.cpp  # ScriptEngine plugin registry (HEP-CORE-0011)
 
   # --- role hosts: lifecycle + data loop for each role ---
   ${CMAKE_SOURCE_DIR}/src/producer/producer_role_host.cpp

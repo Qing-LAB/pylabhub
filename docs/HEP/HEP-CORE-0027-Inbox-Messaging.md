@@ -1,6 +1,6 @@
 # HEP-CORE-0027: Inbox Messaging
 
-**Status**: Implemented (documenting existing system).  Reachability + multi-hub advertisement section (§13) added 2026-05-06 to align with HEP-CORE-0033 §19 (multi-presence roles, planned — Wave A item A7) and HEP-CORE-0019 §2.3 (Phase 6 per-presence heartbeats).
+**Status**: Implemented (documenting existing system).  Reachability + multi-hub advertisement section (§4.5) added 2026-05-06 to align with HEP-CORE-0033 §19 (multi-presence roles, planned — Wave A item A7) and HEP-CORE-0019 §2.3 (Phase 6 per-presence heartbeats).
 **Created**: 2026-03-27
 **Scope**: InboxQueue, InboxClient, peer-to-peer messaging side channel
 **Depends on**: HEP-CORE-0007 §12.4 (ROLE_INFO_REQ/ACK), HEP-CORE-0034 §11.4 (inbox-as-schema-record), HEP-CORE-0033 §8 (HubState entry types — `ChannelEntry` / `ConsumerEntry` hold per-presence inbox metadata), HEP-CORE-0033 §18 (broker routing classes — ROLE_INFO_REQ is Class B), HEP-CORE-0033 §19 (multi-presence roles — drives per-presence inbox advertisement)

@@ -39,8 +39,10 @@ namespace pylabhub::consumer
 class PYLABHUB_UTILS_EXPORT ConsumerRoleHost final : public scripting::RoleHostBase
 {
   public:
+    /// Per HEP-CORE-0011 §"Engine Construction Lifecycle" (2026-05-07):
+    /// engine is NOT passed in — it is constructed inside `worker_main_`
+    /// Step 0 via `scripting::create_engine(config_.script())`.
     explicit ConsumerRoleHost(config::RoleConfig config,
-                              std::unique_ptr<scripting::ScriptEngine> engine,
                               std::atomic<bool> *shutdown_flag = nullptr);
     ~ConsumerRoleHost() override;
 

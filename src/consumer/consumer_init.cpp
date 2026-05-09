@@ -129,11 +129,10 @@ namespace
 
 std::unique_ptr<scripting::RoleHostBase> make_consumer_host(
     config::RoleConfig config,
-    std::unique_ptr<scripting::ScriptEngine> engine,
     std::atomic<bool> *shutdown_flag)
 {
     return std::make_unique<ConsumerRoleHost>(
-        std::move(config), std::move(engine), shutdown_flag);
+        std::move(config), shutdown_flag);
 }
 
 } // namespace

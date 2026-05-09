@@ -54,6 +54,7 @@ const char *to_string(RoleState s) noexcept
     switch (s)
     {
     case RoleState::Connected:    return "Connected";
+    case RoleState::Pending:      return "Pending";
     case RoleState::Disconnected: return "Disconnected";
     }
     return "Unknown";
@@ -814,6 +815,7 @@ void HubState::_on_consumer_left(const std::string &channel, const std::string &
 
 void HubState::_on_heartbeat(const std::string                   &channel,
                              const std::string                   &role_uid,
+                             const std::string                   &role_type,
                              std::chrono::steady_clock::time_point when,
                              const std::optional<nlohmann::json> &metrics)
 {
@@ -823,10 +825,24 @@ void HubState::_on_heartbeat(const std::string                   &channel,
         bump_invalid_identifier(*pImpl);
         return;
     }
-    // 1. Channel liveness: first heartbeat transitions PendingReady -> Ready;
-    //    subsequent heartbeats update last_heartbeat without a status change.
-    //    Per HEP-CORE-0023 §2.5, every PendingReady -> Ready transition (first
-    //    heartbeat OR recovery) increments `pending_to_ready_total`.
+    // M1.1 transitional model — per HEP-CORE-0023 §2.6 + §2.5.2.
+    //
+    // The presence row on `RoleEntry.presences[]` is the new source of
+    // truth (M1.2 will retire the legacy ChannelEntry.status /
+    // last_heartbeat below).  Until then we maintain BOTH the per-
+    // presence row AND the legacy fields so the sweep loop (which still
+    // reads ChannelEntry.last_heartbeat) and existing admin-query
+    // consumers keep working.
+    //
+    // role_type empty → legacy behaviour only (no presence row touched).
+    // This is the M0-era fallback for the brief window before all
+    // role-host call sites pass role_type through.
+
+    // 1. Channel liveness (legacy path — kept for back-compat in M1.1):
+    //    first heartbeat transitions PendingReady -> Ready; subsequent
+    //    heartbeats update last_heartbeat without a status change.
+    //    Per HEP-CORE-0023 §2.5, every PendingReady -> Ready transition
+    //    (first heartbeat OR recovery) increments `pending_to_ready_total`.
     bool fire_channel_ready = false;
     {
         std::unique_lock lk(pImpl->mu);
@@ -856,15 +872,71 @@ void HubState::_on_heartbeat(const std::string                   &channel,
             h(fired);
     }
 
-    // 2. Role liveness: advance last_heartbeat; if Disconnected, revive.
+    // 2. Role liveness (legacy per-uid path — kept for back-compat in M1.1):
+    //    advance last_heartbeat; if Disconnected, revive.  M1.2 will drop
+    //    the per-uid `state` and route this through the per-presence row.
     if (!role_uid.empty())
         _update_role_heartbeat(role_uid, when);
 
-    // 3. Role metrics: piggybacked in HEARTBEAT_REQ (HEP-0019 §1).
+    // 3. Role metrics — legacy per-uid path (kept for back-compat).
+    //    The per-presence row in step 4 also stores the same metrics
+    //    snapshot; M1.2 will remove this duplication.
     if (metrics.has_value() && !role_uid.empty())
         _update_role_metrics(role_uid, *metrics,
                              std::chrono::system_clock::now());
 
+    // 4. Per-presence refresh (NEW — HEP-CORE-0023 §2.6 + §2.5.2).
+    //    Only fires when the wire payload carried `(uid, role_type)`
+    //    (M0+ broker handlers always populate; pre-M0 fallback skips).
+    //    Lookup is keyed on `(uid, channel, role_type)`; each heartbeat
+    //    refreshes ONLY its own presence row.  Lazy creation in M1.1 —
+    //    M1.2 will move creation to REG_REQ / CONSUMER_REG_REQ time.
+    if (!role_uid.empty() && !role_type.empty())
+    {
+        std::unique_lock lk(pImpl->mu);
+        auto             rit = pImpl->roles.find(role_uid);
+        if (rit != pImpl->roles.end())
+        {
+            auto *p = rit->second.find_presence(channel, role_type);
+            if (p == nullptr)
+            {
+                RolePresence np;
+                np.channel              = channel;
+                np.role_type            = role_type;
+                np.state                = RoleState::Connected;
+                np.first_heartbeat_seen = true;
+                np.last_heartbeat       = when;
+                np.state_since          = when;
+                if (metrics.has_value())
+                {
+                    np.latest_metrics       = *metrics;
+                    np.metrics_collected_at = std::chrono::system_clock::now();
+                }
+                rit->second.presences.push_back(std::move(np));
+            }
+            else
+            {
+                p->last_heartbeat       = when;
+                p->first_heartbeat_seen = true;
+                if (p->state == RoleState::Pending)
+                {
+                    p->state       = RoleState::Connected;
+                    p->state_since = when;
+                    // M1.2 will bump pending_to_connected_total here.
+                }
+                else if (p->state == RoleState::Disconnected)
+                {
+                    p->state       = RoleState::Connected;
+                    p->state_since = when;
+                }
+                if (metrics.has_value())
+                {
+                    p->latest_metrics       = *metrics;
+                    p->metrics_collected_at = std::chrono::system_clock::now();
+                }
+            }
+        }
+    }
 }
 
 void HubState::_on_heartbeat_timeout(const std::string &channel,

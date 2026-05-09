@@ -47,6 +47,28 @@ int dynamic_owner_managed_teardown_clean_unload();
 // re-registration with same name fails).
 int dynamic_validator_fail_default_anomaly();
 
+// --- Synchronous shutdown (HEP-CORE-0011 §"Engine Construction
+//     Lifecycle"; ModuleDef::set_synchronous_shutdown opt-in) ---
+//
+// Persistent dynamic module with sync flag set: at finalize() Phase 2
+// the framework MUST call shutdown.func DIRECTLY on the
+// ~LifecycleGuard thread (no `timedShutdown` worker spawn).  Verified
+// by recording `std::this_thread::get_id()` inside the callback and
+// comparing to the test thread's id.
+int dynamic_sync_shutdown_runs_on_caller_thread();
+// Persistent dynamic module WITHOUT the sync flag (default): at
+// finalize() Phase 2 the framework MUST use `timedShutdown` (spawns
+// a worker thread per module).  Verified by recording the callback's
+// thread id and asserting it differs from the test thread.  Locks
+// the regression-protection contract: sync is opt-in, default
+// behaviour preserved for every module that does not opt in.
+int dynamic_default_shutdown_runs_on_spawned_thread();
+// Sync-shutdown callback that throws — must be caught by the
+// inline-shutdown try/catch in `finalize()` (`run_inline` lambda) and
+// recorded as `FailedShutdown` rather than propagating out of the
+// LifecycleGuard dtor.
+int dynamic_sync_shutdown_callback_throws_is_failed_shutdown();
+
 // --- Log sink injection tests ---
 int log_sink_routes_warning();
 int log_sink_cleared_uses_fallback();

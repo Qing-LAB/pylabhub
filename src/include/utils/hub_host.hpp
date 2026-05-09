@@ -100,28 +100,21 @@ namespace pylabhub::hub_host
 class PYLABHUB_UTILS_EXPORT HubHost
 {
 public:
-    /// Construct around an already-loaded HubConfig (script-disabled
-    /// path — equivalent to `HubHost(std::move(cfg), nullptr)`).  The
-    /// caller is responsible for unlocking the vault if CURVE auth is
-    /// desired (call `cfg.load_keypair(password)` before passing the
-    /// cfg here).  HubHost inspects `cfg.auth().client_pubkey` at
-    /// startup to decide whether to enable CURVE on the broker.
+    /// Construct around an already-loaded HubConfig.  Per HEP-CORE-0011
+    /// §"Engine Construction Lifecycle" (2026-05-07), HubHost is built
+    /// with config only — the engine (when scripts are enabled) is
+    /// constructed inside `HubScriptRunner::worker_main_` Step 0 on
+    /// the runner's worker thread via
+    /// `scripting::create_engine(host_.config().script())`.  The
+    /// runner is built only when `cfg.script().path` is non-empty.
+    /// The caller MUST unlock the vault before constructing HubHost
+    /// in production (call `cfg.load_keypair(password)`); CURVE is
+    /// always enforced on hub↔role transport per HEP-CORE-0026 /
+    /// HEP-CORE-0033 §10.  The startup-time check on
+    /// `cfg.auth().client_pubkey` only exists to allow L2 in-process
+    /// tests to bind a no-CURVE loopback broker — production hubs
+    /// always have a loaded keypair and always enable CURVE.
     explicit HubHost(config::HubConfig cfg);
-
-    /// Construct around an already-loaded HubConfig with an injected
-    /// script engine (HEP-CORE-0033 Phase 7 — Option E).  When @p
-    /// engine is non-null, `cfg.script().path` MUST be non-empty and
-    /// HubHost::startup() will build a HubScriptRunner that owns the
-    /// engine.  When @p engine is null, the runner is not built and
-    /// HubHost behaves as in the script-disabled ctor above.
-    ///
-    /// The engine is INJECTED (not constructed by HubHost) because
-    /// engine factories live in `pylabhub-scripting` (Python/Lua),
-    /// which is layered ABOVE `pylabhub-utils` where HubHost lives.
-    /// Callers (binary mains, test fixtures) build the engine via
-    /// `make_engine_from_script_config(cfg.script())` and move it in.
-    HubHost(config::HubConfig cfg,
-            std::unique_ptr<scripting::ScriptEngine> engine);
 
     ~HubHost();
 

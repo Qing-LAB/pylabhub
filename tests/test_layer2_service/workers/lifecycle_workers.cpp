@@ -1015,6 +1015,163 @@ int pylabhub::tests::worker::lifecycle::finalize_sink_safe_during_async_failure(
     }, "lifecycle::finalize_sink_safe_during_async_failure");
 }
 
+// ============================================================================
+// Synchronous shutdown — `ModuleDef::set_synchronous_shutdown(true)` opt-in.
+// HEP-CORE-0011 §"Engine Construction Lifecycle".  Three contracts:
+//
+//   1. Sync flag set + persistent → `finalize()` Phase 2 calls
+//      `shutdown.func` DIRECTLY on the calling thread (= the
+//      `~LifecycleGuard` thread).  No `timedShutdown` worker spawn.
+//
+//   2. Sync flag NOT set + persistent → `finalize()` Phase 2 uses the
+//      existing `shutdownModuleWithTimeout` (spawns a worker thread
+//      with deadline enforcement).  Default behaviour preserved.
+//
+//   3. Sync flag set + callback throws → caught by the inline-shutdown
+//      try/catch in `finalize()`'s `run_inline` lambda; module ends in
+//      FailedShutdown state; LifecycleGuard dtor returns cleanly (no
+//      exception propagation across the dtor boundary).
+// ============================================================================
+
+namespace
+{
+
+/// Stable, comparable snapshot of a thread id.  Captured inside a
+/// shutdown callback and read from the test thread after `finalize()`
+/// returns.  No mutex needed: the LifecycleGuard dtor's return is a
+/// happens-before edge for the test's read.
+std::atomic<bool>     g_sync_callback_ran{false};
+std::atomic<uint64_t> g_sync_callback_native_tid{0};
+std::atomic<bool>     g_sync_callback_threw{false};
+
+void sync_capture_tid_callback(const char *, void *)
+{
+    g_sync_callback_native_tid.store(
+        pylabhub::platform::get_native_thread_id(),
+        std::memory_order_release);
+    g_sync_callback_ran.store(true, std::memory_order_release);
+}
+
+void sync_throwing_callback(const char *, void *)
+{
+    g_sync_callback_native_tid.store(
+        pylabhub::platform::get_native_thread_id(),
+        std::memory_order_release);
+    g_sync_callback_ran.store(true, std::memory_order_release);
+    g_sync_callback_threw.store(true, std::memory_order_release);
+    throw std::runtime_error(
+        "sync_throwing_callback: deliberate throw to verify "
+        "inline-shutdown error path");
+}
+
+void sync_reset_globals()
+{
+    g_sync_callback_ran.store(false);
+    g_sync_callback_native_tid.store(0);
+    g_sync_callback_threw.store(false);
+}
+
+} // namespace
+
+int pylabhub::tests::worker::lifecycle::dynamic_sync_shutdown_runs_on_caller_thread()
+{
+    return run_worker_bare([&]() {
+        sync_reset_globals();
+        const uint64_t test_tid = pylabhub::platform::get_native_thread_id();
+
+        {
+            LifecycleGuard guard(Logger::GetLifecycleModule());
+
+            ModuleDef mod("SyncShutdownDyn");
+            mod.set_startup([](const char *, void *) {});
+            mod.set_shutdown(sync_capture_tid_callback,
+                             std::chrono::milliseconds(100));
+            mod.set_as_persistent(true);
+            mod.set_synchronous_shutdown(true);
+            ASSERT_TRUE(RegisterDynamicModule(std::move(mod)));
+
+            ASSERT_TRUE(LoadModule("SyncShutdownDyn"));
+            // No UnloadModule — persistent stays loaded; finalize() Phase 2
+            // is the only shutdown path.
+        }
+        // ~LifecycleGuard ran on THIS thread; finalize() Phase 2 dispatched
+        // sync_capture_tid_callback DIRECTLY on this thread per the
+        // synchronous_shutdown opt-in.
+        ASSERT_TRUE(g_sync_callback_ran.load(std::memory_order_acquire))
+            << "sync shutdown callback must have run during finalize() Phase 2";
+        EXPECT_EQ(g_sync_callback_native_tid.load(std::memory_order_acquire), test_tid)
+            << "sync shutdown contract: callback must execute on the "
+               "~LifecycleGuard thread (test_tid="
+            << test_tid
+            << "), not on a spawned worker (callback_tid="
+            << g_sync_callback_native_tid.load() << ")";
+    }, "lifecycle::dynamic.sync_shutdown_runs_on_caller_thread");
+}
+
+int pylabhub::tests::worker::lifecycle::dynamic_default_shutdown_runs_on_spawned_thread()
+{
+    return run_worker_bare([&]() {
+        sync_reset_globals();
+        const uint64_t test_tid = pylabhub::platform::get_native_thread_id();
+
+        {
+            LifecycleGuard guard(Logger::GetLifecycleModule());
+
+            ModuleDef mod("DefaultShutdownDyn");
+            mod.set_startup([](const char *, void *) {});
+            mod.set_shutdown(sync_capture_tid_callback,
+                             std::chrono::milliseconds(100));
+            mod.set_as_persistent(true);
+            // No set_synchronous_shutdown — default false → existing
+            // timedShutdown worker-thread-spawn path.
+            ASSERT_TRUE(RegisterDynamicModule(std::move(mod)));
+
+            ASSERT_TRUE(LoadModule("DefaultShutdownDyn"));
+        }
+        ASSERT_TRUE(g_sync_callback_ran.load(std::memory_order_acquire))
+            << "callback must have run during finalize() Phase 2";
+        EXPECT_NE(g_sync_callback_native_tid.load(std::memory_order_acquire), test_tid)
+            << "default shutdown contract: callback must execute on a "
+               "spawned worker thread (per timedShutdown), NOT on the "
+               "~LifecycleGuard thread.  test_tid=" << test_tid
+            << " callback_tid=" << g_sync_callback_native_tid.load()
+            << " — if these match, the framework's sync-vs-async dispatch "
+               "regressed and is silently sync-calling all modules.";
+    }, "lifecycle::dynamic.default_shutdown_runs_on_spawned_thread");
+}
+
+int pylabhub::tests::worker::lifecycle::dynamic_sync_shutdown_callback_throws_is_failed_shutdown()
+{
+    return run_worker_bare([&]() {
+        sync_reset_globals();
+
+        // ~LifecycleGuard's dtor MUST return cleanly even when the
+        // synchronous shutdown callback throws.  A propagated
+        // exception out of a noexcept dtor would terminate the
+        // process; the test process surviving to the post-guard
+        // assertions is itself part of the contract being verified.
+        {
+            LifecycleGuard guard(Logger::GetLifecycleModule());
+
+            ModuleDef mod("SyncThrowDyn");
+            mod.set_startup([](const char *, void *) {});
+            mod.set_shutdown(sync_throwing_callback,
+                             std::chrono::milliseconds(100));
+            mod.set_as_persistent(true);
+            mod.set_synchronous_shutdown(true);
+            ASSERT_TRUE(RegisterDynamicModule(std::move(mod)));
+
+            ASSERT_TRUE(LoadModule("SyncThrowDyn"));
+        }
+        // Process is still alive → guard dtor returned normally → the
+        // inline-shutdown try/catch caught the throw.
+        EXPECT_TRUE(g_sync_callback_ran.load(std::memory_order_acquire))
+            << "throwing callback must have actually been invoked";
+        EXPECT_TRUE(g_sync_callback_threw.load(std::memory_order_acquire))
+            << "callback must have reached its throw site";
+    }, "lifecycle::dynamic.sync_shutdown_callback_throws_is_failed_shutdown");
+}
+
 // Self-registering dispatcher — no separate dispatcher file needed.
 namespace
 {
@@ -1085,6 +1242,12 @@ struct LifecycleWorkerRegistrar
                     return dynamic_owner_managed_teardown_clean_unload();
                 if (scenario == "dynamic.validator_fail_default_anomaly")
                     return dynamic_validator_fail_default_anomaly();
+                if (scenario == "dynamic.sync_shutdown_runs_on_caller_thread")
+                    return dynamic_sync_shutdown_runs_on_caller_thread();
+                if (scenario == "dynamic.default_shutdown_runs_on_spawned_thread")
+                    return dynamic_default_shutdown_runs_on_spawned_thread();
+                if (scenario == "dynamic.sync_shutdown_callback_throws_is_failed_shutdown")
+                    return dynamic_sync_shutdown_callback_throws_is_failed_shutdown();
                 if (scenario == "load_module_null_returns_false")
                     return load_module_null_returns_false();
                 if (scenario == "load_module_overflow_returns_false")

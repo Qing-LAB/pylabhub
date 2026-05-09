@@ -188,6 +188,50 @@ TEST_F(LifecycleDynamicTest, ValidatorFail_DefaultAnomaly)
     expect_worker_ok(proc);
 }
 
+// ─── Synchronous shutdown opt-in (set_synchronous_shutdown) ────────────────
+//
+// HEP-CORE-0011 §"Engine Construction Lifecycle".  Three contracts:
+//   - Sync flag set + persistent → finalize() Phase 2 calls the
+//     shutdown callback DIRECTLY on the ~LifecycleGuard thread (no
+//     timedShutdown spawn).  Required for thread-affined resources
+//     like CPython's Py_FinalizeEx.
+//   - Sync flag NOT set + persistent → existing timedShutdown
+//     worker-thread path.  Default behaviour preserved (regression
+//     guard for every non-opted-in module).
+//   - Sync callback throws → caught by inline-shutdown try/catch in
+//     finalize()'s run_inline; LifecycleGuard dtor returns cleanly,
+//     module ends in FailedShutdown.
+
+TEST_F(LifecycleDynamicTest, SyncShutdown_RunsOnCallerThread)
+{
+    WorkerProcess proc(g_self_exe_path,
+                       "lifecycle.dynamic.sync_shutdown_runs_on_caller_thread",
+                       {});
+    ASSERT_TRUE(proc.valid());
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
+}
+
+TEST_F(LifecycleDynamicTest, DefaultShutdown_RunsOnSpawnedThread)
+{
+    WorkerProcess proc(g_self_exe_path,
+                       "lifecycle.dynamic.default_shutdown_runs_on_spawned_thread",
+                       {});
+    ASSERT_TRUE(proc.valid());
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
+}
+
+TEST_F(LifecycleDynamicTest, SyncShutdown_CallbackThrows_IsFailedShutdown)
+{
+    WorkerProcess proc(g_self_exe_path,
+                       "lifecycle.dynamic.sync_shutdown_callback_throws_is_failed_shutdown",
+                       {});
+    ASSERT_TRUE(proc.valid());
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
+}
+
 TEST_F(LifecycleDynamicTest, UnloadTimeout)
 
 {

@@ -1858,15 +1858,34 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
                      channel_name);
     }
 
-    // `_on_heartbeat` unconditionally refreshes channel.last_heartbeat,
-    // transitions PendingReady→Ready when applicable (state_since auto-
-    // stamped), updates role.last_heartbeat (role-side liveness), and
-    // absorbs piggybacked metrics into role.latest_metrics (HEP-0033 §9.1).
+    // `_on_heartbeat` does the following (M1.1 transitional behaviour):
+    //   1. Refresh ChannelEntry.last_heartbeat + PendingReady→Ready FSM
+    //      transition (legacy back-compat — sweep loop still reads this).
+    //   2. Refresh per-uid RoleEntry.last_heartbeat + latest_metrics
+    //      (legacy back-compat).
+    //   3. NEW: refresh the per-presence row keyed on
+    //      `(role_uid, channel, role_type)` — the new source of truth
+    //      per HEP-CORE-0023 §2.6 + HEP-CORE-0019 §2.3 / Phase 6.
+    //
+    // For M1.1 we pass the WIRE-DECODED uid + role_type into step 3.
+    // The legacy steps 1+2 still use `producer_role_uid` derived from
+    // the channel — that is the latent pre-Phase-6 behaviour M1.2 will
+    // retire when the FSM moves entirely onto the per-presence row.
     std::optional<nlohmann::json> metrics_opt;
     if (req.contains("metrics") && req["metrics"].is_object())
         metrics_opt = req["metrics"];
+    // Step 3's keyed lookup needs the WIRE uid (the actual sender);
+    // steps 1+2 use the channel's producer uid for back-compat.
+    // When wire_uid is non-empty AND differs from producer_role_uid
+    // (the consumer-presence case), the legacy refresh still attributes
+    // to the channel's producer — this is the documented latent bug
+    // M1.2 fixes.  M1.1's job is only to add the new per-presence path
+    // alongside.
+    const std::string &hb_uid =
+        wire_uid.empty() ? producer_role_uid : wire_uid;
     hub_state_->_on_heartbeat(channel_name,
-                             producer_role_uid,
+                             hb_uid,
+                             wire_role_type,
                              std::chrono::steady_clock::now(),
                              metrics_opt);
 

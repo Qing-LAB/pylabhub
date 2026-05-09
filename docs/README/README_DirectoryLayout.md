@@ -142,7 +142,9 @@ field reference).
     "startup_script": "startup.py"
   },
   "broker": {
-    "channel_timeout_s": 10,
+    "heartbeat_interval_ms":   500,
+    "ready_miss_heartbeats":    10,
+    "pending_miss_heartbeats":  10,
     "consumer_liveness_check_s": 5
   }
 }

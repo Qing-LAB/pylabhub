@@ -32,10 +32,8 @@ namespace pylabhub::hub_host
 
 struct HubHost::Impl
 {
-    Impl(config::HubConfig c,
-         std::unique_ptr<scripting::ScriptEngine> e)
+    explicit Impl(config::HubConfig c)
         : cfg(std::move(c))
-        , engine_pre_startup(std::move(e))
     {}
 
     config::HubConfig                          cfg;
@@ -44,14 +42,11 @@ struct HubHost::Impl
     std::unique_ptr<admin::AdminService>       admin_svc;    // built in startup() if admin.enabled
     std::unique_ptr<utils::ThreadManager>      thread_mgr;   // built in startup()
 
-    // Script engine handed in via the 2-arg ctor.  Held here from
-    // construction until startup() moves it into the HubScriptRunner.
-    // Null when scripts are disabled (1-arg ctor or 2-arg ctor with
-    // engine=nullptr).  After startup(), this stays null — runner owns
-    // the engine.  Per HEP-CORE-0033 Phase 7 (Option E) the runner
-    // does not own a copy of HubConfig — it reads via its host_
-    // backref — so config flow stays single-owner here.
-    std::unique_ptr<scripting::ScriptEngine>   engine_pre_startup;
+    // Per HEP-CORE-0011 §"Engine Construction Lifecycle" (2026-05-07):
+    // engine_pre_startup REMOVED.  HubHost no longer holds the engine.
+    // The runner constructs it on its worker thread in
+    // `worker_main_` Step 0 via scripting::create_engine.  Script-
+    // enabled vs script-disabled mode is selected by cfg.script().path.
 
     // Hub-side script runtime — built in startup() if engine is set
     // and `cfg.script().path` is non-empty (Phase 7 §4.1 step 10).
@@ -109,14 +104,12 @@ struct HubHost::Impl
 // ============================================================================
 
 HubHost::HubHost(config::HubConfig cfg)
-    : impl_(std::make_unique<Impl>(std::move(cfg), nullptr))
+    : impl_(std::make_unique<Impl>(std::move(cfg)))
 {
-}
-
-HubHost::HubHost(config::HubConfig cfg,
-                 std::unique_ptr<scripting::ScriptEngine> engine)
-    : impl_(std::make_unique<Impl>(std::move(cfg), std::move(engine)))
-{
+    // Per HEP-CORE-0011 §"Engine Construction Lifecycle" (2026-05-07):
+    // engine is no longer injected.  HubScriptRunner constructs it on
+    // its worker thread in worker_main_ Step 0.  Script-enabled vs
+    // script-disabled mode is selected by impl_->cfg.script().path.
 }
 
 HubHost::~HubHost()
@@ -390,37 +383,22 @@ void HubHost::startup()
 
         // ── Phase 7 — HubScriptRunner (HEP-CORE-0033 §4.1 step 10) ─────────
         //
-        // Built only when an engine was injected at construction AND
-        // `cfg.script().path` is non-empty.  The two are required
-        // together: an engine without a script path has nothing to
-        // load; a script path without an engine cannot run.  Operator
-        // misconfiguration surfaces as a fail-fast `logic_error` here
-        // — better than a silent no-op runner that leaves the script
-        // dead on the disk.
-        const bool engine_set = (impl_->engine_pre_startup != nullptr);
-        const bool path_set   = !impl_->cfg.script().path.empty();
-        if (engine_set != path_set)
-        {
-            throw std::logic_error(
-                std::string("HubHost::startup: script-engine / script-path "
-                            "mismatch — engine ") +
-                (engine_set ? "INJECTED" : "absent") +
-                " but cfg.script().path is " +
-                (path_set ? "non-empty" : "empty") +
-                ".  Either set both (script-enabled hub) or neither "
-                "(script-disabled hub).");
-        }
-        if (engine_set)
+        // Per HEP-CORE-0011 §"Engine Construction Lifecycle" (2026-05-07):
+        // script-enabled vs script-disabled mode is now selected solely
+        // by `cfg.script().path` — non-empty enables, empty disables.
+        // Engine construction has moved off main() / HubHost into the
+        // runner's worker_main_ Step 0.  No engine_pre_startup
+        // injection any more.
+        const bool path_set = !impl_->cfg.script().path.empty();
+        if (path_set)
         {
             // Construct + start the runner.  Per Option E, runner
             // reads HubConfig fields through its host_ backref —
-            // HubHost stays the sole owner of HubConfig.  Engine
-            // ownership transfers from impl_->engine_pre_startup
-            // (where it lived between construction and now) into
-            // the runner; the field is left null afterward.
+            // HubHost stays the sole owner of HubConfig.  The engine
+            // is constructed on the runner's worker thread in
+            // worker_main_ Step 0 via scripting::create_engine.
             impl_->runner = std::make_unique<scripting::HubScriptRunner>(
                 *this,
-                std::move(impl_->engine_pre_startup),
                 &impl_->shutdown_flag);
 
             // startup_() spawns the worker thread + blocks on its

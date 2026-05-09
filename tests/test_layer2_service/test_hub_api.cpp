@@ -425,7 +425,7 @@ public:
                             const std::string &, const std::string &) override
     { return true; }
     size_t type_sizeof(const std::string &) const override { return 0; }
-    bool   has_callback(const std::string &) const override { return has_callback_returns; }
+    bool   has_callback(const std::string &) const noexcept override { return has_callback_returns; }
 
     bool   invoke(const std::string &) override { return true; }
     bool   invoke(const std::string &, const nlohmann::json &) override { return true; }

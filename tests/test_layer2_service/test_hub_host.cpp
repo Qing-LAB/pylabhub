@@ -28,14 +28,10 @@
 #include "utils/broker_service.hpp"
 #include "utils/config/hub_config.hpp"
 #include "utils/file_lock.hpp"
-#include "utils/hub_api.hpp"            // HubStubEngine builds against HubAPI
 #include "utils/hub_directory.hpp"
 #include "utils/hub_state.hpp"
 #include "utils/json_config.hpp"
 #include "utils/logger.hpp"
-#include "utils/role_api_base.hpp"      // StubEngine ApiT polymorph base
-#include "utils/role_host_core.hpp"     // StubEngine init_engine_ takes RoleHostCore*
-#include "utils/script_engine.hpp"      // HubStubEngine derives from ScriptEngine
 
 #include <gtest/gtest.h>
 
@@ -93,11 +89,13 @@ void write_test_hub_json(const fs::path &dir, const std::string &name)
     j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0"; // ephemeral
     // Disable admin so we don't bind a second port; Phase 6.2 covers admin.
     j["admin"]["enabled"] = false;
-    // Disable script runtime by default — Phase 7 D2.2 introduces strict
-    // engine/path matching at startup (engine null + path set → throw).
-    // Existing HubHost lifecycle tests don't exercise scripts; explicit
-    // empty path keeps them script-disabled.  The new D2.2 script-
-    // enabled tests use `make_config_with_script()` to opt back in.
+    // Script-disabled by default: empty path → HubHost::startup() does
+    // not construct HubScriptRunner, so no engine is needed.  Per
+    // HEP-CORE-0011 §"Engine Construction Lifecycle" (2026-05-07) the
+    // engine is constructed inside HubScriptRunner::worker_main_;
+    // L2 tests cannot inject a stub engine, so script-enabled
+    // lifecycle coverage moved to L4 plh_hub integration tests where a
+    // real script lives on disk.
     j["script"]["path"] = "";
     {
         std::ofstream f(hub_json);
@@ -487,240 +485,3 @@ TEST_F(HubHostTest, FailedStartupAllowsRetry)
     retry_host.shutdown();
 }
 
-// ───────────────────────────────────────────────────────────────────────────
-// HEP-CORE-0033 Phase 7 D2.2 — script-enabled HubHost lifecycle
-// ───────────────────────────────────────────────────────────────────────────
-//
-// Coverage for the runner wiring added in D2.2:
-//   - 2-arg ctor accepts an injected ScriptEngine; runner builds in
-//     startup() when both engine != null AND cfg.script().path is set.
-//   - Mismatch (engine null + path set, or engine set + path empty)
-//     throws fail-fast at startup() with a descriptive logic_error.
-//   - Runner stops BEFORE admin and broker per HEP §4.2 step 2 ordering.
-//
-// Uses an in-file HubStubEngine that satisfies all ScriptEngine virtuals
-// with no-op behaviour and reports successful build_api(HubAPI&) so the
-// runner's startup path completes without loading any real script.
-// Pattern mirrors `tests/.../role_data_loop_workers.cpp::StubEngine` for
-// the role side.
-//
-// Eval-in-script forwarding tests removed when the
-// `HubHost::eval_in_script` / `HubScriptRunner::eval` / admin
-// `exec_python` chain was removed entirely (HEP-CORE-0033 §17.1
-// "No remote code injection") — there is no longer an external
-// eval surface to test.
-
-namespace {
-
-using pylabhub::scripting::IncomingMessage;
-using pylabhub::scripting::InvokeResponse;
-using pylabhub::scripting::InvokeResult;
-using pylabhub::scripting::InvokeRx;
-using pylabhub::scripting::InvokeTx;
-using pylabhub::scripting::InvokeInbox;
-using pylabhub::scripting::InvokeStatus;
-using pylabhub::scripting::RoleAPIBase;
-using pylabhub::scripting::RoleHostCore;
-using pylabhub::scripting::ScriptEngine;
-using pylabhub::hub_host::HubAPI;
-
-/// No-op ScriptEngine that satisfies all virtuals.  Override
-/// `build_api_(HubAPI&)` to return true so the runner's startup path
-/// signals ready.
-class HubStubEngine : public ScriptEngine
-{
-protected:
-    bool init_engine_(const std::string &, RoleHostCore *) override { return true; }
-    bool build_api_(RoleAPIBase &) override { return true; }
-    bool build_api_(HubAPI &) override { return true; }   // <-- hub-side enable
-    void finalize_engine_() override {}
-
-public:
-    bool load_script(const std::filesystem::path &, const std::string &,
-                     const std::string &) override { return true; }
-    bool has_callback(const std::string &) const override { return false; }
-    bool register_slot_type(const pylabhub::hub::SchemaSpec &,
-                            const std::string &, const std::string &) override
-    { return true; }
-    size_t         type_sizeof(const std::string &) const override { return 0; }
-    bool           invoke(const std::string &) override { return true; }
-    bool           invoke(const std::string &, const nlohmann::json &) override { return true; }
-    InvokeResponse eval(const std::string &) override
-    { return {InvokeStatus::NotFound, {}}; }
-    InvokeResponse invoke_returning(const std::string &,
-                                    const nlohmann::json &,
-                                    int64_t) override
-    { return {InvokeStatus::NotFound, {}}; }
-    void invoke_on_init() override {}
-    void invoke_on_stop() override {}
-    InvokeResult invoke_produce(InvokeTx, std::vector<IncomingMessage> &) override
-    { return InvokeResult::Commit; }
-    InvokeResult invoke_consume(InvokeRx, std::vector<IncomingMessage> &) override
-    { return InvokeResult::Commit; }
-    InvokeResult invoke_process(InvokeRx, InvokeTx,
-                                std::vector<IncomingMessage> &) override
-    { return InvokeResult::Commit; }
-    InvokeResult invoke_on_inbox(InvokeInbox) override { return InvokeResult::Commit; }
-    uint64_t     script_error_count() const noexcept override { return 0; }
-    bool         supports_multi_state() const noexcept override { return false; }
-};
-
-/// Patch hub.json to set script.path to a non-empty value (the dir
-/// itself is fine — HubStubEngine.load_script ignores the path).
-void make_script_enabled(const fs::path &dir)
-{
-    const fs::path hub_json = dir / "hub.json";
-    nlohmann::json j;
-    {
-        std::ifstream f(hub_json);
-        j = nlohmann::json::parse(f);
-    }
-    j["script"]["path"] = ".";  // non-empty — opt back into scripts
-    {
-        std::ofstream f(hub_json);
-        f << j.dump(2);
-    }
-}
-
-} // namespace
-
-// ── Script-enabled lifecycle ────────────────────────────────────────────────
-
-TEST_F(HubHostTest, ScriptEnabled_StartupConstructsRunner_ShutdownStopsCleanly)
-{
-    auto [cfg_disabled, dir] = make_config("se_lifecycle");
-    make_script_enabled(dir);
-    auto cfg = HubConfig::load_from_directory(dir.string());
-
-    HubHost host(std::move(cfg), std::make_unique<HubStubEngine>());
-
-    // Wall-clock bound on startup: HubStubEngine is no-op + the runner
-    // worker just installs subscriptions and signals ready.  Realistic
-    // upper bound is well under 1 s (broker bind + admin spawn + runner
-    // thread spawn).  2 s is a generous bound that still surfaces a
-    // regression where startup degrades to "eventually completes" via
-    // some unintended timeout path.
-    const auto t_startup_begin = std::chrono::steady_clock::now();
-    ASSERT_NO_THROW(host.startup());
-    const auto startup_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - t_startup_begin).count();
-    EXPECT_LT(startup_ms, 2000)
-        << "host.startup() with stub engine must complete in <2 s; took "
-        << startup_ms << " ms — regression in broker bind / admin spawn / "
-           "runner ready_promise wait paths";
-    EXPECT_TRUE(host.is_running());
-
-    // Wall-clock bound on shutdown: stub script has nothing to drain;
-    // runner observes the flag, drains empty queue, joins worker.  Bound
-    // generously above the runner's tick period (1 s default — runner's
-    // wait_for_incoming might be one full tick before the flag is
-    // observed).  Anything more than ~1.5 s of additional overhead is a
-    // regression.
-    const auto t_shutdown_begin = std::chrono::steady_clock::now();
-    host.shutdown();
-    const auto shutdown_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - t_shutdown_begin).count();
-    EXPECT_LT(shutdown_ms, 3000)
-        << "host.shutdown() must complete in <3 s; took " << shutdown_ms
-        << " ms — runner drain / admin stop / broker stop / "
-           "thread_mgr drain timing regression";
-    EXPECT_FALSE(host.is_running());
-}
-
-TEST_F(HubHostTest, ScriptDisabled_NoEngine_NoRunner_StartupSucceeds)
-{
-    // Default fixture is script-disabled (write_test_hub_json sets
-    // script.path = "").  Use the 2-arg ctor with nullptr engine to
-    // pin the script-disabled path explicitly.  Confirms HubHost
-    // starts/stops cleanly with no script runner attached.
-    auto [cfg, dir] = make_config("sd_no_engine");
-    HubHost host(std::move(cfg), nullptr);
-    ASSERT_NO_THROW(host.startup());
-    EXPECT_TRUE(host.is_running());
-    host.shutdown();
-    EXPECT_FALSE(host.is_running());
-}
-
-TEST_F(HubHostTest, EngineSetButPathEmpty_StartupThrowsLogicError)
-{
-    // Default fixture has script.path = "" (script-disabled).  Passing
-    // an engine here is a config/main mismatch — startup must reject.
-    auto [cfg, dir] = make_config("se_path_empty");
-    HubHost host(std::move(cfg), std::make_unique<HubStubEngine>());
-
-    try
-    {
-        host.startup();
-        FAIL() << "startup() must throw on engine-set + path-empty mismatch";
-    }
-    catch (const std::logic_error &e)
-    {
-        const std::string what = e.what();
-        EXPECT_NE(what.find("script-engine / script-path mismatch"),
-                  std::string::npos)
-            << "exception must name the mismatch; what(): " << what;
-        EXPECT_NE(what.find("engine INJECTED"), std::string::npos)
-            << "exception must report engine state; what(): " << what;
-        EXPECT_NE(what.find("path is empty"), std::string::npos)
-            << "exception must report path state; what(): " << what;
-    }
-    catch (const std::exception &e)
-    {
-        FAIL() << "startup() threw wrong exception type: " << e.what();
-    }
-
-    EXPECT_FALSE(host.is_running())
-        << "after a failed startup, host must not be running";
-}
-
-TEST_F(HubHostTest, NoEngineButPathSet_StartupThrowsLogicError)
-{
-    auto [cfg_disabled, dir] = make_config("sd_path_set");
-    make_script_enabled(dir);
-    auto cfg = HubConfig::load_from_directory(dir.string());
-
-    HubHost host(std::move(cfg), nullptr);
-
-    try
-    {
-        host.startup();
-        FAIL() << "startup() must throw on engine-null + path-set mismatch";
-    }
-    catch (const std::logic_error &e)
-    {
-        const std::string what = e.what();
-        EXPECT_NE(what.find("script-engine / script-path mismatch"),
-                  std::string::npos)
-            << "exception must name the mismatch; what(): " << what;
-        EXPECT_NE(what.find("engine absent"), std::string::npos)
-            << "exception must report engine state; what(): " << what;
-        EXPECT_NE(what.find("path is non-empty"), std::string::npos)
-            << "exception must report path state; what(): " << what;
-    }
-    catch (const std::exception &e)
-    {
-        FAIL() << "startup() threw wrong exception type: " << e.what();
-    }
-
-    EXPECT_FALSE(host.is_running());
-}
-
-TEST_F(HubHostTest, ScriptEnabled_DestructorCleansUpRunnerWithoutExplicitShutdown)
-{
-    // Mirrors the existing Destructor_CleansUpEvenWithoutExplicitShutdown
-    // shape but with the script-enabled path — verifies that ~HubHost's
-    // idempotent shutdown also tears the runner down.
-    auto [cfg_disabled, dir] = make_config("se_dtor");
-    make_script_enabled(dir);
-    auto cfg = HubConfig::load_from_directory(dir.string());
-
-    {
-        HubHost host(std::move(cfg), std::make_unique<HubStubEngine>());
-        ASSERT_NO_THROW(host.startup());
-        EXPECT_TRUE(host.is_running());
-        // Let scope exit drive the destructor — must not panic, abort,
-        // or emit unexpected warns/errors (LogCaptureFixture asserts
-        // this in TearDown).
-    }
-    SUCCEED();
-}

@@ -6,10 +6,14 @@
  *   - Parses hub.json (`HubConfig::load_from_directory` /
  *     `HubConfig::load`).  Schema errors surface as non-zero exit
  *     with "Config error" in stderr.
- *   - Builds the engine + HubHost(cfg, engine).
+ *   - Builds HubHost(cfg).  When `script.path` is non-empty, HubHost
+ *     constructs HubScriptRunner; the engine itself is built inside
+ *     the runner's worker thread via `scripting::create_engine`
+ *     (HEP-CORE-0011 §"Engine Construction Lifecycle").
  *   - Runs `host.startup()` followed immediately by `host.shutdown()`.
  *     This exercises broker bind, admin bind, engine init +
- *     load_script, and the orderly shutdown sequence.
+ *     load_script (when scripts are enabled), and the orderly
+ *     shutdown sequence.
  *   - Prints "Validation passed" on success.
  *
  * The startup→shutdown round-trip is the strongest validation we can

@@ -5,9 +5,9 @@
 | **HEP**            | `HEP-CORE-0011`                                         |
 | **Title**          | Script Engine Abstraction Framework                      |
 | **Author**         | pylabhub development team                               |
-| **Status**         | Implemented (revised 2026-04-04; obsolete-term scrub 2026-04-14) |
+| **Status**         | Implemented (revised 2026-04-04; obsolete-term scrub 2026-04-14; engine-construction-on-worker + `PythonInterpreter` lifecycle module added 2026-05-07) |
 | **Created**        | 2026-02-28                                              |
-| **Updated**        | 2026-05-06 (post-HEP-0024 alignment: role-host unification has shipped; `hub::Producer`/`hub::Consumer` references scrubbed — those classes were eliminated in L3.γ A6.3 (2026-03-01) and the data plane is now reached via `RoleAPIBase`'s internally-owned Tx/Rx queue handles; threading-model deferral note retired since unification has landed); 2026-04-14 (Messenger -> BrokerRequestComm; ctrl thread is now in RoleAPIBase per HEP-CORE-0023 §2.5) |
+| **Updated**        | 2026-05-07: §"Engine Construction Lifecycle" (NEW) ratifies that script engines are constructed on the worker thread, not on `main()`. `PythonInterpreter` becomes a dynamic lifecycle module (`pylabhub::scripting::PythonInterpreter`) loaded lazily on first `PythonEngine` ctor, fixing the pybind11 `inc_ref()`-without-GIL violation that fired during process startup when class-level `py::object{py::none()}` defaults ran on `main` before the interpreter existed. `HostFactory` signature changes: drops the `unique_ptr<ScriptEngine>` parameter; the host's `worker_main_` constructs the engine via `make_engine_from_script_config`. — 2026-05-06 (post-HEP-0024 alignment: role-host unification has shipped; `hub::Producer`/`hub::Consumer` references scrubbed — those classes were eliminated in L3.γ A6.3 (2026-03-01) and the data plane is now reached via `RoleAPIBase`'s internally-owned Tx/Rx queue handles; threading-model deferral note retired since unification has landed); 2026-04-14 (Messenger -> BrokerRequestComm; ctrl thread is now in RoleAPIBase per HEP-CORE-0023 §2.5) |
 | **Supersedes**     | `HEP-CORE-0005` (Script Interface Abstraction Framework)|
 | **Related**        | `HEP-CORE-0024` (Role Directory Service — `plh_role` unified binary; supersedes the per-role binaries originally in HEP-CORE-0018), `HEP-CORE-0023` (Startup Coordination & Role Liveness), `HEP-CORE-0019` §2.3 (per-presence heartbeat protocol — Phase 6) |
 
@@ -46,11 +46,14 @@ knows nothing about the script language.** RoleAPIBase is the bridge.
 RoleHostBase (= EngineHost<RoleAPIBase>)
   |   (template base; owns shared role state)
   |
-  |-- owns --> RoleHostCore (metrics, state, shutdown flags, schema specs)
-  |-- owns --> ScriptEngine (PythonEngine / LuaEngine / NativeEngine)
-  |-- owns --> RoleAPIBase  (constructed lazily in startup_; wired by derived
-  |                          before broker register; RoleAPIBase internally
-  |                          owns its Tx/Rx QueueWriter/Reader handles)
+  |-- owns --> RoleConfig          (passed in at construction; held until worker_main_)
+  |-- owns --> RoleHostCore        (metrics, state, shutdown flags, schema specs)
+  |-- owns --> ScriptEngine        (PythonEngine / LuaEngine / NativeEngine —
+  |                                  constructed in worker_main_ Step 0,
+  |                                  see "Engine Construction Lifecycle" §)
+  |-- owns --> RoleAPIBase         (constructed lazily in startup_; wired by derived
+  |                                  before broker register; RoleAPIBase internally
+  |                                  owns its Tx/Rx QueueWriter/Reader handles)
   |
   ^   inherits
   |
@@ -62,6 +65,14 @@ ProducerRoleHost / ConsumerRoleHost / ProcessorRoleHost
   |-- owns --> resolved schema specs (in_slot, out_slot, in_fz, out_fz, inbox)
   |
   |-- implements --> worker_main_():
+  |     |-- Step 0:  make_engine_from_script_config(config_.script())
+  |     |             |-- (PythonEngine path) ensure_python_interpreter_loaded()
+  |     |             |     → first ctor: PythonInterpreter module registered + loaded
+  |     |             |       on THIS worker thread → py::scoped_interpreter on worker
+  |     |             |       → worker holds GIL.
+  |     |             |-- engine ctor's {py::none()} defaults run safely (GIL held).
+  |     |             engine_ = std::move(engine);
+  |     |
   |     |-- calls --> engine_lifecycle_startup(EngineModuleParams)
   |     |               |-- initialize()
   |     |               |-- load_script()
@@ -72,6 +83,8 @@ ProducerRoleHost / ConsumerRoleHost / ProcessorRoleHost
   |     |-- calls --> engine->invoke_produce / invoke_consume / invoke_process (loop)
   |     |-- calls --> engine->invoke_on_stop()
   |     |-- calls --> engine->finalize()
+  |     |-- engine_.reset()  → ~PythonEngine → release_python_interpreter()
+  |                           → if last engine, module unload → Py_Finalize
 ```
 
 ### Class Hierarchy
@@ -474,11 +487,202 @@ All three engines reject non-canonical names identically.
 
 ---
 
+## Engine Construction Lifecycle (added 2026-05-07)
+
+### Why on the worker thread, not on `main()`
+
+Script engines that wrap a process-singleton runtime (currently
+`PythonEngine`, which embeds CPython) have to satisfy two invariants
+simultaneously:
+
+1. **The interpreter must be alive** before any pybind11 operation that
+   touches Python state (e.g., `py::none()` returns a handle to
+   `Py_None`; the copy / inc-ref'd into a `py::object` member runs the
+   GIL-held assertion).
+2. **A single thread must own the GIL for the engine's lifetime** (the
+   request-queue model — see §"Thread Safety").  That thread is the
+   **worker thread** the host spawns inside `EngineHost::startup_()`.
+
+Pre-2026-05-07 code constructed the engine on `main()` (via
+`make_engine_from_script_config(...)` called before `host_factory(...)`).
+At that point neither invariant held: the interpreter wasn't initialized
+(it was created later, inside `PythonEngine::initialize()` on the
+worker), and the worker thread didn't exist yet.  The class-level
+`py::object x{py::none()};` default-initializers in `PythonEngine`
+nonetheless fired during the construction call, triggering pybind11's
+`pybind11::handle::inc_ref()` GIL-held assertion in debug builds and
+silent racy-Py_None refcount bumps in release.
+
+The fix is structural: **construct the engine on the worker thread**.
+The worker is the only thread that can simultaneously (a) know that
+the runtime it's about to use is alive and (b) be the lasting GIL
+holder.
+
+### `PythonInterpreter` dynamic lifecycle module
+
+A new dynamic LifecycleManager module — name
+`pylabhub::scripting::PythonInterpreter` — owns the embedded CPython
+interpreter as a process-singleton.
+
+```mermaid
+graph TD
+    A["plh_role main()"] -->|reads| B["RoleConfig"]
+    A -->|host_factory(config, shutdown)| C["ProducerRoleHost"]
+    A -->|host->startup_()| D["EngineHost::startup_()"]
+    D -->|spawns worker thread| E["worker_main_()"]
+    E -->|"Step 0"| F["make_engine_from_script_config(config.script())"]
+    F -->|"sc.type == python"| G["new PythonEngine"]
+    G -->|ctor calls| H["ensure_python_interpreter_loaded()"]
+    H -->|first call: register + load| I["PythonInterpreter module startup"]
+    I -->|on worker thread| J["py::scoped_interpreter ctor → worker holds GIL"]
+    G -.->|"GIL held → {py::none()} defaults safe"| K["engine ready"]
+
+    F -->|"sc.type == lua"| L["new LuaEngine"]
+    L -.->|"no module load"| M["engine ready"]
+
+    F -->|"sc.type == native"| N["new NativeEngine"]
+    N -.->|"no module load"| M
+```
+
+**Module startup callback** (runs on whichever thread first calls
+`ensure_python_interpreter_loaded()` — by design this is the worker
+thread, on first `PythonEngine` ctor):
+
+1. Resolve Python home (3-tier chain — see below).
+2. Build `PyConfig`; pass to `py::scoped_interpreter` constructor —
+   interpreter alive, GIL held on this thread.
+3. Stash the `py::scoped_interpreter` in module userdata.
+
+**Python home resolution (3-tier chain)** — same logic that previously
+lived in `PythonEngine::init_engine_`, moved to the module:
+
+| Tier | Source | When used |
+|---|---|---|
+| **1** | `$PYLABHUB_PYTHON_HOME` environment variable | User override; explicit "use this Python install" — useful for development against an alternate venv-base or for system-Python deployments |
+| **2** | `<install_prefix>/config/pylabhub.json` field `python_home` | Defensive escape hatch.  **NOT written by the build today** — no current CMake target produces this file.  Retained as a future system-config injection point (see deferred TODO below) |
+| **3** | `<install_prefix>/opt/python` (standalone default) | The path the build's stage step populates with the embedded CPython distribution.  This is the **operative default** for every deployment today |
+
+The `<install_prefix>` is computed relative to the binary's path
+(`exe_path.parent_path() / ".."`).  No config file is required for the
+standalone default — it falls out of the install layout.
+
+**Deferred TODO (out of M1.1 scope)** — promote `pylabhub.json` (or a
+successor) to a real process-level platform config managed by a new
+helper, e.g. `pylabhub::platform::config`, loaded once at binary
+startup.  Today's `pylabhub.json` is a phantom escape hatch
+referenced only by the resolver itself; the deferred work is to
+either (a) make it a first-class staged artifact or (b) replace it
+with a proper platform-config system covering `python_home` plus
+other cross-cutting platform settings (Python venv search dir,
+LD_LIBRARY_PATH overrides, etc.).  Tracked in `docs/TODO_MASTER.md`
+under the 2026-05-07 entry.
+
+**Per-instance Python config** (e.g. `script.python_venv` from
+`RoleConfig.script` / `HubConfig.script`) is **NOT** part of the
+module's resolution — it is per-engine-instance and remains applied
+inside `PythonEngine::init_engine_` (after the interpreter is up,
+GIL held, via `py::module_::import("site").attr("addsitedir")`).
+The module owns the **process-level** Python install; `RoleConfig` /
+`HubConfig` own the **per-instance** Python script settings.
+
+**Module shutdown callback** (runs on the same thread when last
+`release_python_interpreter()` drops the refcount to zero):
+
+1. `~py::scoped_interpreter` runs `Py_FinalizeEx` and releases GIL.
+
+The module is **registered + loaded lazily** on first need — never on
+process startup, never for Lua-only or Native-only roles.  Once
+loaded the module's lifecycle refcount is held by the live
+`PythonEngine`(s); a new engine bumps the count, a destroyed engine
+drops it.
+
+### Engine factory contract
+
+```cpp
+// pylabhub::scripting::make_engine_from_script_config
+//
+// Called from worker_main_() on the worker thread.  Dispatches on
+// sc.type and returns the constructed engine.  Engine-type-specific
+// lifecycle dependencies (e.g., the PythonInterpreter module for
+// PythonEngine) are handled by the engine ctor itself, not by this
+// factory.
+unique_ptr<ScriptEngine>
+make_engine_from_script_config(const config::ScriptConfig &sc);
+```
+
+The factory is the only place that dispatches on `sc.type`.  Mains
+never see engine-type-specific lifecycle.
+
+### `PythonEngine` ctor / dtor — module-ref discipline
+
+```cpp
+// src/scripting/python_engine.cpp
+PythonEngine::PythonEngine() {
+    if (!ensure_python_interpreter_loaded()) {
+        PLH_PANIC("PythonEngine: PythonInterpreter module failed to load");
+    }
+    // Class-level py::object{py::none()} defaults run here.  The
+    // interpreter is alive (module startup just finished on this
+    // thread) and the worker now holds GIL → defaults are safe.
+}
+
+PythonEngine::~PythonEngine() {
+    finalize();                       // existing — clear py::objects under GIL
+    release_python_interpreter();     // drop module refcount;
+                                      // last drop → module shutdown →
+                                      // ~py::scoped_interpreter → Py_Finalize
+}
+```
+
+Other engines (`LuaEngine`, `NativeEngine`) do **not** call
+`ensure_python_interpreter_loaded()` — the module is never registered
+when only those engines are in use.
+
+### `HostFactory` signature change
+
+```cpp
+// Before (pre-2026-05-07):
+using HostFactory = unique_ptr<RoleHostBase>(*)(
+    RoleConfig, unique_ptr<ScriptEngine>, atomic<bool>*);
+
+// After (2026-05-07):
+using HostFactory = unique_ptr<RoleHostBase>(*)(
+    RoleConfig, atomic<bool>*);
+```
+
+`main()` no longer constructs the engine; the host stores `RoleConfig`
+and constructs the engine on its worker thread (Step 0 below).
+
+### Why this is the right shape long-term
+
+- **`main()` is engine-agnostic.**  It only sees `RoleConfig` and
+  `RoleHostBase`.  Adding a future engine type does not touch `main()`.
+- **The library does not pay for what it doesn't use.**  A Lua-only
+  deployment never registers the `PythonInterpreter` module.
+- **Engine construction is on the same thread that owns the runtime.**
+  No GIL handoff, no `PyEval_SaveThread`/`RestoreThread` plumbing, no
+  cross-thread coordination.
+- **The construction-time invariant is enforced declaratively** — by
+  the engine's ctor calling its own dependency, with a loud
+  `PLH_PANIC` if the module fails to load.
+
+---
+
 ## Initialization Protocol
 
 ### Role Host `worker_main_()` Steps
 
 ```
+Step 0: Construct the script engine ON THE WORKER THREAD
+  - auto engine = make_engine_from_script_config(config_.script());
+  - For Python config: PythonEngine ctor calls
+    ensure_python_interpreter_loaded() — first call registers + loads
+    the PythonInterpreter dynamic module on this worker thread,
+    constructing py::scoped_interpreter and acquiring the GIL.
+  - For Lua / Native: no lifecycle module is loaded; engine is
+    self-contained.
+  - engine_ = std::move(engine);  // Host now owns the engine.
+
 Step 1: Resolve schemas from config
   - out_slot_spec_, in_slot_spec_ from role-specific JSON
   - out_fz_local, in_fz_local from flexzone JSON
@@ -522,7 +726,8 @@ Step 6: api_->start_ctrl_thread(CtrlThreadConfig)
         — sends REG_REQ / CONSUMER_REG_REQ from the ctrl thread
         — periodic heartbeat (default 500ms = 2 Hz, see HEP-CORE-0023 §2.5)
         — dispatches unsolicited broker notifications (CHANNEL_CLOSING_NOTIFY,
-          FORCE_SHUTDOWN, CHANNEL_ERROR_NOTIFY) onto the message queue
+          CHANNEL_ERROR_NOTIFY, ROLE_REGISTERED_NOTIFY,
+          ROLE_DEREGISTERED_NOTIFY) onto the message queue
         — signal ready
 Step 7: Run data loop (invoke_produce / invoke_consume / invoke_process)
 Step 8: stop_accepting() + deregister_from_broker()
@@ -666,6 +871,185 @@ end
 | Non-owner thread guard | `accepting_` flag + queue | `accepting_` flag + queue | `accepting_` flag + queue |
 | Inbox drain | Before each data callback | Before each data callback | Before each data callback |
 | Broker control events | Ctrl thread owned by RoleAPIBase, GIL not held | Ctrl thread owned by RoleAPIBase | Ctrl thread owned by RoleAPIBase |
+| Idle-wait GIL release (opt-in) | Worker may release GIL during queue/sleep waits — see §"Engine Thread Affinity" below | N/A (no GIL) | N/A (no interpreter) |
+
+---
+
+## Engine Thread Affinity (added 2026-05-08)
+
+This section formalises the thread-safety contract that every
+`ScriptEngine` virtual must honour, the Tier 1 callback-presence cache
+that backs cross-thread `has_callback` lookups, and the optional
+global-lock release during idle waits.
+
+### Annotation contract
+
+Every virtual on `ScriptEngine` carries one of three thread-safety
+annotations in its doc comment:
+
+- **`THREAD-SAFETY: any thread`** — callable from any thread without
+  holding the language runtime's lock.  Implementations MUST NOT
+  touch GIL-required (Python) or `lua_State`-required (Lua) state.
+  Examples: `has_callback`, `script_error_count`,
+  `pending_script_engine_request_count`, `supports_multi_state`,
+  `supports_dynamic_callbacks`, `release_global_lock_during_wait`.
+- **`THREAD-SAFETY: worker only (runtime lock required)`** — must run
+  on the engine's owner thread (the thread that ran `initialize()`)
+  which holds the runtime lock.  Examples: `load_script`,
+  `register_slot_type`, `invoke_*` (typed cycle ops), `finalize_engine_`.
+- **`THREAD-SAFETY: any thread (cross-thread routing)`** — callable
+  from any thread; implementation routes to the worker via the
+  engine's request queue.  Examples: `invoke_returning`.
+
+The Tier 1 callback-presence cache (populated under the runtime lock
+during `load_script`, read lock-free thereafter) backs the any-thread
+`has_callback` contract.  Full design: `docs/tech_draft/engine_callback_tiers.md`.
+
+### Optional global-lock release during idle waits
+
+#### Motivation
+
+The historical default is that the worker thread holds the GIL for
+the **entire** lifetime of `worker_main_` — released only at process
+exit.  This is the cheapest hot path: no per-iteration
+acquire/release, every engine touch is GIL-held by construction, and
+no race can arise between the worker and any other Python code in
+the process (because there IS no other Python code in the process —
+the GIL is permanently parked on the worker).
+
+This breaks for a class of useful integrations: a hub script that
+runs a Flask web endpoint on a `threading.Thread`, a role script
+that uses `asyncio` in a side thread for concurrent I/O, any script
+that wants cooperative Python-level concurrency.  In those cases the
+sub-thread starves — it never gets the GIL because the worker never
+yields.
+
+The opt-in flag `script.release_global_lock_during_wait` (false by
+default) tells the worker loop to release the GIL across its
+**idle-wait sites** — the points where the worker is doing pure C++
+work that does not touch the engine.  Cooperative Python sub-threads
+get a window every loop iteration to run.
+
+#### Where the GIL is released
+
+In role-side `run_data_loop` (`src/utils/service/data_loop.hpp`) the
+release wraps Steps A + B + B':
+
+| Step | What runs | Engine touched? | GIL needed? |
+|---|---|---|---|
+| A — `ops.acquire(ctx)` | SHM/ZMQ queue read with timeout | No | No |
+| B — `sleep_until(deadline)` | Deterministic period sleep | No | No |
+| B' — shutdown observation + `cleanup_on_shutdown` | Atomic flag reads + SHM slot release | No | No |
+| C — `drain_messages` | C++ queue drain | No | No |
+| D — `drain_inbox_sync` + `invoke_and_commit` | Inbox dispatch + script callback | **Yes** | **Yes** |
+| F — metrics | Atomic counters | No | No |
+| G — `compute_next_deadline` | Pure math | No | No |
+
+The wrap covers A + B + B' only.  Step C onwards runs with the GIL
+re-held by the optional's destructor at the closing brace of the
+wrap.
+
+In `HubScriptRunner::worker_main_` the same pattern applies around
+`core().wait_for_incoming(ms)`.
+
+#### The 4-step cycle (flag enabled)
+
+```mermaid
+sequenceDiagram
+    participant W as Worker thread
+    participant K as CPython kernel
+    participant S as Script sub-thread (Flask, asyncio, …)
+
+    note over W: Steps C–G ran with GIL held<br/>(engine + drain + commit)
+
+    W->>K: PyEval_SaveThread() — release GIL
+    note over W: Step A — queue I/O wait<br/>Step B — deadline sleep
+    K-->>S: GIL available
+    S->>K: take_gil() succeeds
+    note over S: Sub-thread runs.  Pure-Python yields<br/>every ~5 ms (sys.setswitchinterval)
+    S->>K: voluntary release on yield<br/>or end of work
+    note over W: shutdown observation +<br/>cleanup_on_shutdown<br/>(atomic flag reads, no GIL needed)
+    W->>K: PyEval_RestoreThread() — reacquire GIL
+    note over W: Steps C–G next iteration<br/>(GIL held)
+```
+
+#### Why the shutdown check moved INSIDE the wrap
+
+The dtor at the closing brace of the wrap calls
+`PyEval_RestoreThread`, which BLOCKS until the GIL is available.  In
+the rare case that a script-spawned non-yielding C extension holds
+the GIL, that reacquire blocks indefinitely.  By placing the
+shutdown observation INSIDE the wrap (atomic-flag read; no GIL
+needed) we guarantee the worker observes the signal AND runs
+`cleanup_on_shutdown` (audited GIL-free for all three roles —
+SHM queue ops only) BEFORE attempting the reacquire.  The reacquire
+is still attempted on scope exit; if it blocks, the bounded join in
+`EngineHost::shutdown_()` (HEP-CORE-0023 §"Bounded Shutdown Join")
+detaches the worker thread after the timeout so the parent unblocks.
+
+#### CPython GIL semantics — why pure Python is safe
+
+`take_gil()` (called by `PyEval_RestoreThread`) is not a hard wait.
+CPython 3.10+ wakes the would-be acquirer every
+`sys.setswitchinterval()` (default **5 ms**) and signals the current
+holder (`_PY_GIL_DROP_REQUEST_BIT` on `eval_breaker`).  Pure-Python
+code observes the eval breaker at every bytecode boundary (~100
+bytecodes since 3.10) and yields the GIL.  In practice:
+
+- **Pure-Python `while True: pass`** — yields within ~5 ms.
+- **`time.sleep(...)`** — yields immediately (CPython implementation
+  releases GIL).
+- **Most `numpy` / `scipy` / `pandas` ops** — yield (use `with nogil:`
+  internally for hot paths).
+- **A C extension that does NOT release the GIL** — wedges the
+  reacquire until the extension returns.  This is the only failure
+  mode for the flag.
+
+So the residual risk is **narrow but real**: scripts that opt in
+must verify that any C extension called from a sub-thread either
+yields the GIL (pure Python or `with nogil:`) or returns promptly.
+The bounded-join safety net catches the worst case so the operator
+gets a CRITICAL log + clean process exit instead of a silent hang.
+
+#### Cost when disabled (the default)
+
+The cached flag is a runtime `const bool`; the inner
+`std::optional<EngineGlobalLockRelease>` stays empty when the flag
+is false.  Construct + destruct of an empty `optional<T>` is one
+test of the engaged-bit; the compiler typically elides both.  No
+GIL syscalls, no engine virtual call per iteration.  Identical
+observable behaviour to the pre-flag loop.
+
+#### Cost when enabled
+
+Two CPython operations per loop iteration: `PyEval_SaveThread` on
+release, `PyEval_RestoreThread` on reacquire.  Each is a few atomic
+ops + (under contention) a condition-variable signal.  Steady-state
+cost ~100 ns each on contemporary x86-64.  For a 100 Hz tick loop:
+~20 µs/sec overhead — negligible.  For a 10 kHz tick loop: ~2 ms/sec
+— measurable but the script writer who opted in is paying for
+sub-thread compatibility.
+
+#### Wiring summary
+
+- **Config:** `ScriptConfig::release_global_lock_during_wait` (default
+  false), parsed from `script.release_global_lock_during_wait`.
+- **Engine virtual:** `ScriptEngine::release_global_lock_during_wait()`
+  — default returns false; `PythonEngine` overrides to return the
+  config field; `LuaEngine` and `NativeEngine` keep default.
+- **Loop frame:** `LoopConfig::release_global_lock_during_wait` —
+  populated by the role host BEFORE calling `run_data_loop` (cached
+  bool); the loop body never reaches into the engine.
+- **RAII type:** `pylabhub::scripting::EngineGlobalLockRelease`
+  declared in `utils/script_engine_factory.hpp`; impl registered by
+  `pylabhub-scripting`'s `init_scripting()` (uses
+  `py::gil_scoped_release`).  No-op for Lua/native-only builds.
+- **Bounded shutdown safety net:** existing
+  `ThreadManager::drain()` + per-thread join timeout (default 5 s) +
+  detach + ERROR log on timeout.  `EngineHost::shutdown_()` adds a
+  CRITICAL diagnostic when the leak coincides with this flag being
+  enabled, pointing at non-yielding C extensions as the most likely
+  cause.
 
 ---
 
@@ -677,6 +1061,44 @@ end
 
 Role hosts access it via `api_->thread_manager()`. All role-scope threads
 (worker, ctrl, future) live under one ThreadManager instance per role.
+
+### Bounded Shutdown Join (safety net for stolen-GIL wedge)
+
+`EngineHost::shutdown_()` calls `api_->thread_manager().drain()` which
+runs a per-thread bounded join with detach + ERROR log on timeout
+(default per-thread timeout: `kMidTimeoutMs` = 5 s).  This is the
+process-level safety net for any case where the worker thread cannot
+exit cleanly — including the rare case where a script-spawned C
+extension holds the GIL across the worker's reacquire (see §"Engine
+Thread Affinity" → "Optional global-lock release during idle waits").
+
+The drain sequence:
+
+1. `core_.request_stop()` — flips the shutdown atomic the worker reads.
+2. `core_.notify_incoming()` — wakes the worker out of `wait_for_incoming`.
+3. `api_->thread_manager().drain()` — per-thread bounded join, LIFO.
+   - For each thread: poll the `done` flag at 10 ms granularity until
+     `join_timeout` elapses.  If `done` flips, `join()` is fast.
+   - On timeout: detach + LOGGER_ERROR identifying owner + thread name.
+   - Returns count of detached threads; bumps process-wide
+     `g_process_detached_count`.
+4. **GIL-stolen diagnostic** (added 2026-05-08): if any thread detached
+   AND the engine has `release_global_lock_during_wait` enabled,
+   `EngineHost::shutdown_()` emits a `LOGGER_CRITICAL` message
+   pointing at non-yielding C extensions in script sub-threads as
+   the most likely cause.  This is the user-facing "look here first"
+   pointer that the generic ThreadManager log does not provide.
+5. `api_.reset()` — drops API + remaining role infrastructure (queues,
+   broker_comm).
+
+The detached worker is leaked until process exit, where the OS reaps
+it.  Engine-owned resources (Python objects, sockets) may leak with
+it; the operator is expected to investigate the reported C-extension
+hang and fix the script, then restart.
+
+This safety net is **always active** — it is not gated on the GIL flag.
+The flag's only effect is the ADDITIONAL CRITICAL diagnostic that
+narrows the diagnosis when the leak coincides with the flag being on.
 
 ---
 

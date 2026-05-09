@@ -22,6 +22,45 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
+### 🔥 2026-05-07 — HIGHEST PRIORITY: Python lifecycle redesign (in progress)
+
+**Status**: partially landed; MUST finish before resuming any other work.
+
+**Problem**: `PythonEngine`'s class-level `py::object{py::none()}` member-default initializers fire during `make_unique<PythonEngine>()` on `main()`, before the embedded CPython interpreter has been initialized. This calls `pybind11::handle::inc_ref()` without a held GIL on a stale `Py_None`, producing the GIL-held assertion fail visible in stderr as `pybind11::handle::inc_ref() is being called while the GIL is either not held or invalid`. Causes ~25% intermittent failure rate of `PlhHubCliTest.RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters`. Confirmed pre-existing on the prior commit by git-stash + re-run (so unrelated to M1.1 per-presence work).
+
+**Design (locked, in HEP-CORE-0011 §"Engine Construction Lifecycle")**:
+- New dynamic lifecycle module `pylabhub::scripting::PythonInterpreter` owns `py::scoped_interpreter` (process-singleton). Lazily registered + loaded on first need; refcounted; unloaded on last release.
+- `PythonEngine` is a plain C++ class. Constructor calls `ensure_python_interpreter_loaded()` and `PLH_PANIC`s if it returns false. Destructor calls `release_python_interpreter()`.
+- Engine construction moves from `main()` to `worker_main_()` Step 0 — the worker thread becomes the GIL holder (current model preserved). `HostFactory` signature drops the `unique_ptr<ScriptEngine>` parameter.
+- Lua / Native deployments: PythonInterpreter module never registered; zero Python startup cost.
+- Python-home resolution kept as the existing 3-tier chain (env `PYLABHUB_PYTHON_HOME` → `<install>/config/pylabhub.json` → `<install>/opt/python` standalone default). `pylabhub.json` is dead code today (no build artifact creates it) but kept as a defensive escape hatch. **Deferred TODO**: a process-level platform-config object (e.g. `pylabhub::platform::config`) loaded once at startup, holding `python_home` plus future cross-cutting platform settings.
+
+**Done (in this branch, uncommitted)**:
+- `engine_host.cpp` shutdown race fix (drain BEFORE reset) — confirmed kills the HubLuaIntegrationTest SIGSEGV.
+- HEP-CORE-0011 §"Engine Construction Lifecycle" added (Mermaid + ctor/dtor pattern + HostFactory rationale).
+- HEP-CORE-0001 owner-managed-teardown counter-example for the new module.
+- IMPLEMENTATION_GUIDANCE.md "Engine construction lives on the worker thread".
+- `src/scripting/python_interpreter_module.hpp` and `.cpp` written (3-tier resolution ported from `python_engine.cpp:72`; `pi_startup` constructs `py::scoped_interpreter`; `pi_shutdown` finalizes; `std::call_once` + atomic refcount).
+- `src/scripting/CMakeLists.txt` updated.
+
+**Pending (must finish)**:
+1. `python_engine.hpp/.cpp` — drop `interp_` member; ctor calls `ensure_python_interpreter_loaded()` + `PLH_PANIC`; dtor calls `release_python_interpreter()`; `init_engine_` drops `Py_InitializeFromConfig` block; keep venv activation (still per-engine).
+2. `role_registry.hpp` — `HostFactory` signature change.
+3. `plh_role_main.cpp`, `plh_hub_main.cpp` — drop engine construction.
+4. `producer_role_host.{hpp,cpp}`, `consumer_role_host.{hpp,cpp}`, `processor_role_host.{hpp,cpp}` — ctors drop engine param; `worker_main_` Step 0 constructs engine.
+5. `hub_host.{hpp,cpp}` + `hub_script_runner.cpp` — same shape.
+6. Tests adapted (`tests/test_layer3_datahub/test_hub_lua_integration.cpp`, `test_hub_python_integration.cpp`, plh_role + plh_hub fixtures, etc.).
+7. Build clean; full suite green; mutation-verify the GIL-violation fix.
+
+**After this lands**, resume in order:
+- Commit M1.1 (per-presence keying — code + test passing, uncommitted).
+- M1.2 (move FSM from `ChannelEntry` to `RolePresence`; drop `ChannelEntry.status`/`last_heartbeat`; add `ConsumerHeartbeat_DoesNotRefreshProducerPresence` + `ChannelEntry_HasNoStoredFSMFields` tests).
+- M1.3 (retire `FORCE_SHUTDOWN` + `grace_heartbeats` + `Closing` channel state; rewrite shutdown tests).
+- M2 (retire consumer heartbeat tick).
+- M3-M9 per `docs/tech_draft/role_host_template_design.md` — covers the dual-hub processor scenario fix (B3-B5 in M8).
+
+---
+
 ### Snapshot — 2026-05-04 (Phase 7 CLOSED — Commit E rejected by design)
 
 **Full suite: 1733/1733 green** (last full re-run at `c94f130`,
@@ -729,13 +768,13 @@ Completed:
 | Schema Validation | ✅ Complete | — | BLDS schema done; dual-schema producer/consumer validation working |
 | Schema Registry | 🟡 In flight (HEP-0034 ratified 2026-04-26) | `docs/HEP/HEP-CORE-0034-Schema-Registry.md` | HEP-0016 (5 phases shipped 2026-03-02) **superseded**. New owner-authoritative model: namespace-by-owner records `(owner_uid, schema_id)`, owner-bound eviction (no refcount), cross-citation rejected even on hash match, `<hub_dir>/schemas/` for hub-globals, fingerprint corrected to include packing. Six implementation phases pending; tracked in §Priority 2. |
 | Processor Binary | ✅ Phase 3 complete | `docs/HEP/HEP-CORE-0015-Processor-Binary.md` | **Phase 1+2 done (2026-03-03). Phase 3 config+ScriptHost 2026-03-10:** timing policy, inbox (ROUTER), direct ZMQ PULL input, verify_checksum, zmq_packing/buffer from config. REVIEW_Processor_2026-03-10.md: all 20 items ✅ CLOSED 2026-03-10. **1078/1078 tests.** |
-| Startup Coordination | ✅ Phase 1+2 complete | `docs/HEP/HEP-CORE-0023-Startup-Coordination.md` | **Phase 1 (2026-03-11):** `startup.wait_for_roles` config + per-role timeout. **Phase 2 (2026-04-14):** three-response DISC_REQ state machine + heartbeat-multiplier liveness timeouts (no skip; floored at 1 heartbeat) + role-close cleanup hook (federation + band) + `RoleStateMetrics` counters. Heartbeat-death path dereg's immediately (no Closing/grace); voluntary-close keeps grace+FORCE_SHUTDOWN. **1275/1275 tests** (commits `cf53ed3`, `3201e08`, `6558b2c`). |
+| Startup Coordination | ✅ Phase 1+2 (docs revised 2026-05-07) | `docs/HEP/HEP-CORE-0023-Startup-Coordination.md` | **Phase 1 (2026-03-11):** `startup.wait_for_roles` config + per-role timeout. **Phase 2 (2026-04-14):** three-response DISC_REQ state machine + heartbeat-multiplier liveness timeouts + role-close cleanup hook + `RoleStateMetrics` counters. **2026-05-07 doc rewrite:** §2 retired the channel-side FSM (Closing state and FORCE_SHUTDOWN escalation removed); the FSM is now per-presence on `RoleEntry` (Connected/Pending/Disconnected); channel teardown is atomic on producer-presence Disconnected.  Code changes ship under Wave B M1 (`role_host_template_design.md`). **1275/1275 tests** at the Phase 2 baseline; M1 will land additional regression tests. |
 | Role Directory Service | 🟢 Implemented (Phases 1-4,6) | `docs/HEP/HEP-CORE-0024-Role-Directory-Service.md` | **HEP-0024 Phases 1-4+6 DONE 2026-03-12.** `RoleDirectory` + `role_cli.hpp` public API; all 3 `from_directory()` migrated; all 3 `do_init()`/`parse_args()` migrated; 26 new L2 tests. Deferred: Phase 5 (script-host `script_entry()` migration), Phase 7 (docs), Phase 8 (L4 tests). **1104 tests.** |
 | Pipeline Architecture | ✅ Design | `docs/HEP/HEP-CORE-0017-Pipeline-Architecture.md` | Design complete (2026-03-01, updated 2026-03-05). Five planes (Metrics added), four standalone binaries, topology patterns. |
 | Metrics Plane | ✅ Complete | `docs/HEP/HEP-CORE-0019-Metrics-Plane.md` | **Implemented (2026-03-05).** All 5 phases. 19 tests. Heartbeat metrics extension, METRICS_REPORT_REQ, METRICS_REQ/ACK, Python bindings, AdminShell. |
 | Interactive Signal Handler | ✅ Complete | `docs/HEP/HEP-CORE-0020-Interactive-Signal-Handler.md` | **Implemented (2026-03-02).** All 4 binaries integrated. Old signal handlers removed. 705/705 pass. |
 | Recovery API | ✅ Complete | — | P8 recovery API done; DRAINING recovery restores COMMITTED |
-| Messenger / Broker | ✅ Complete | `docs/todo/MESSAGEHUB_TODO.md` | Two-tier shutdown (CHANNEL_CLOSING_NOTIFY + FORCE_SHUTDOWN); Cat 1/Cat 2 health; event handlers; CHANNEL_NOTIFY_REQ relay; HEP-0007 §12 |
+| Messenger / Broker | ✅ Complete | `docs/todo/MESSAGEHUB_TODO.md` | Single-tier atomic channel shutdown (CHANNEL_CLOSING_NOTIFY fan-out + atomic ChannelEntry removal on producer-presence Disconnected — HEP-0007 §12 + HEP-0023 §2.1, corrected 2026-05-07; FORCE_SHUTDOWN escalation retired); Cat 1/Cat 2 health; event handlers; CHANNEL_NOTIFY_REQ relay |
 | ZMQ Endpoint Registry | ✅ Complete | `docs/HEP/HEP-CORE-0021-ZMQ-Endpoint-Registry.md` | **HEP-0021 implemented (2026-03-06).** `data_transport`+`zmq_node_endpoint` in REG_REQ/DISC_ACK, hub::Producer/Consumer, ProcessorScriptHost. 12 L3 protocol tests (848/848 pass). Deferred: ZMQ data-plane runtime checksum+type-tag (HEP-0023). |
 | Hub Federation Broadcast | ✅ Complete | `docs/HEP/HEP-CORE-0022-Hub-Federation-Broadcast.md` | **HEP-0022 fully implemented (2026-03-06).** HUB_PEER_HELLO/ACK/BYE, HUB_RELAY_MSG, dedup window, channel_to_peer_identities_ index, HubScript federation callbacks (on_hub_connected/disconnected/message, api.notify_hub). |
 

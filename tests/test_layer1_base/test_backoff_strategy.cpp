@@ -16,6 +16,17 @@
 using namespace pylabhub::utils;
 using Clock = std::chrono::steady_clock;
 
+// CI-relaxation factor for upper-bound timing assertions.  Mirrors the
+// L2 helper in tests/test_layer2_service/test_backoff_strategy.cpp.
+// PYLABHUB_CI_BUILD is set by tests/CMakeLists.txt under CI builds.
+#ifdef PYLABHUB_CI_BUILD
+constexpr long kCiUpperBoundMul = 10;
+#else
+constexpr long kCiUpperBoundMul = 1;
+#endif
+
+constexpr long ci_upper(long ms) noexcept { return ms * kCiUpperBoundMul; }
+
 // ============================================================================
 // ThreePhaseBackoff
 // ============================================================================
@@ -108,8 +119,10 @@ TEST(BackoffStrategyTest, NoBackoff_IsNoOp)
     for (int i = 0; i < 1000; ++i)
         bo(i);
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0);
-    // 1000 no-ops should complete in < 10ms
-    EXPECT_LT(elapsed.count(), 10);
+    // 1000 no-ops complete in < 10ms on a quiet workstation; relaxed
+    // to ci_upper(10ms) on CI runners where scheduler preemption can
+    // stretch the loop without invalidating the no-op contract.
+    EXPECT_LT(elapsed.count(), ci_upper(10));
 
     // Verify callable with any iteration
     static_assert(noexcept(bo(0)));

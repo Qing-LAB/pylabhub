@@ -65,11 +65,22 @@ struct RoleRuntimeInfo
     /// Human-readable label for diagnostics ("Producer"/"Consumer"/...).
     std::string role_label;
 
-    /// Factory: construct a concrete role host. Function pointer (NOT
-    /// std::function) for ABI stability across compiler/stdlib versions.
+    /// Per HEP-CORE-0011 §"Engine Construction Lifecycle" (2026-05-07):
+    /// engine construction is the host's responsibility, performed
+    /// inside `worker_main_` Step 0 via `pylabhub::scripting::create_engine(
+    /// config_.script())`.  This guarantees the engine ctor (which may
+    /// trigger `py::scoped_interpreter` construction via the
+    /// PythonInterpreter dynamic lifecycle module) runs on the worker
+    /// thread — making the worker the GIL holder, preserving the
+    /// owner-thread-holds-GIL-forever model in HEP-CORE-0011 §"Thread
+    /// Safety".  `create_engine` is declared in
+    /// `utils/script_engine_factory.hpp` (pylabhub-utils forward-decl);
+    /// defined in `pylabhub-scripting` so libpython does NOT become a
+    /// build-time dependency of pylabhub-utils consumers.  Symbol
+    /// resolution at the binary's link step pulls in the static lib's
+    /// definition.
     using HostFactory = std::unique_ptr<scripting::RoleHostBase>(*)(
         pylabhub::config::RoleConfig config,
-        std::unique_ptr<scripting::ScriptEngine> engine,
         std::atomic<bool> *shutdown_flag);
     HostFactory host_factory = nullptr;
 

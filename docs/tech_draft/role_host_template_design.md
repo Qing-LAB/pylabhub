@@ -61,9 +61,10 @@ The fix is one architectural change with one wire-protocol addendum:
    role_kind)` triples it participates in; the runtime materialises
    the right number of BRCs.
 2. **Protocol:** HEARTBEAT_REQ gains `uid` and `role_type` fields.  The
-   broker keys per-presence metrics on `(channel, uid, role_type)`;
-   `channel.last_heartbeat` is refreshed only by the producer's
-   heartbeat for that channel.
+   broker keys per-presence metrics on `(channel, uid, role_type)`
+   and refreshes only the matching presence row in `RoleEntry`.
+   Channel observability is derived from the producer-presence's
+   state — there is no separate channel-side FSM (HEP-CORE-0023 §2.6).
 
 These two changes resolve all five bugs.  HEP-CORE-0019 §2.3 already
 documented the per-presence heartbeat shape but never landed; this
@@ -178,7 +179,7 @@ Full classification (pulled from `broker_service.cpp::kRequestReplyTypes`
 | `CHANNEL_BROADCAST_NOTIFY` | hub → role | Fan-out from BROADCAST_REQ. |
 | `CHANNEL_ERROR_NOTIFY` | hub → role | Schema mismatch, etc. |
 | `CONSUMER_DIED_NOTIFY` | hub → role | To producer. |
-| `FORCE_SHUTDOWN` | hub → role | Channel-level forced close. |
+| ~~`FORCE_SHUTDOWN`~~ | — | **Removed 2026-05-07** along with the `Closing` channel state and `grace_heartbeats` (HEP-CORE-0023 §2.1).  Channel teardown is atomic on producer-presence Disconnected; consumers learn via `CHANNEL_CLOSING_NOTIFY` and any later `DISC_REQ` returns `CHANNEL_NOT_FOUND`. |
 
 ### Class B — Role-bound
 
@@ -416,59 +417,67 @@ LOGGER_ERROR if missing.
 
 ### 6.2 Broker-side handler revision
 
-`handle_heartbeat_req` splits responsibilities by `role_type`:
+`handle_heartbeat_req` looks up the matching presence row keyed on
+`(uid, role_type)` and refreshes only that row:
 
 ```
 read channel_name, uid, role_type from payload
 
-if role_type == "producer":
-    (this is the channel-FSM driver — same as today)
-    refresh channel(channel_name).last_heartbeat
-    if channel was PendingReady → transition to Ready (bump counter)
-    write metrics under (channel, uid, "producer")
+presence = RoleEntry(uid).find_presence(channel_name, role_type)
+if not presence: LOGGER_WARN("HEARTBEAT_REQ for unknown presence"); return
 
-else (role_type == "consumer"):
-    (do NOT refresh channel.last_heartbeat — fixes B1)
-    (do NOT run Pending→Ready FSM — only producer drives that)
-    write metrics under (channel, uid, "consumer")        ← fixes B2
+refresh presence.last_heartbeat
+advance presence FSM:
+    if was Pending: transition to Connected (bump pending_to_connected_total)
+    else: stay Connected (refresh state_since unchanged)
 
-(both branches)
-refresh RoleEntry(uid).last_heartbeat              ← informational
+if payload has metrics:
+    write MetricsStore[(channel_name, uid, role_type)] = metrics
 ```
 
+There is no `role_type`-conditional branch.  Both producer and
+consumer presences run through the **same** lookup-and-refresh code
+path.  The asymmetry only appears when a presence later transitions
+to `Disconnected` (via heartbeat timeout or `DEREG_REQ`): the
+`on_role_disconnected` hook checks `role_type == "producer"` and, if
+so, removes the matching `ChannelEntry` and emits
+`CHANNEL_CLOSING_NOTIFY`.
+
 The metrics store is keyed on `(channel_name, uid, role_type)`.  Two
-distinct rows for processor's two presences, even on the same hub.
+distinct rows for a processor's two presences, even on the same hub.
 
 ### 6.3 Heartbeat tick count (table)
 
-| Topology | Presences | Heartbeats sent / cycle | Channel-FSM heartbeats (= producer-side) | Distinct metric rows updated |
+| Topology | Presences | Heartbeats sent / cycle | Distinct presence rows refreshed | Distinct metric rows updated |
 |---|---|---|---|---|
 | Producer | 1P | 1 | 1 | 1 |
-| Consumer | 1C | 1 | 0 | 1 |
-| Processor, single-hub (in==out) | 1C + 1P | 2 (over same DEALER) | 1 (out_channel) | 2 (both on the same hub) |
-| Processor, dual-hub | 1C + 1P | 1 to in_hub + 1 to out_hub | 1 on out_hub | 2 (one per hub) |
-| Future N-input router | k consumers + 1 producer | k+1 | 1 | k+1 |
+| Consumer | 1C | 1 | 1 | 1 |
+| Processor, single-hub (in==out) | 1C + 1P | 2 (over same DEALER) | 2 | 2 |
+| Processor, dual-hub | 1C + 1P | 1 to in_hub + 1 to out_hub | 2 (one per hub) | 2 (one per hub) |
+| Future N-input router | k consumers + 1 producer | k+1 | k+1 | k+1 |
 
 Heartbeat-cadence math (HEP-CORE-0023 §2.5) is unchanged: each
 presence's tick fires every `effective_interval_ms`.  Multiple presences
 sharing a connection emit multiple frames per tick interval over one
 DEALER — same socket, multiple wire frames.
 
-### 6.4 Rationale: why per-presence (revised from earlier discussion)
+### 6.4 Rationale: why per-presence
 
-Earlier in this design session we argued for **producer-only**
-heartbeats based on the broker-side liveness machinery.  That argument
-held for *liveness* but not for *metrics reporting*: each presence has
-its own metrics view (consumer's input-queue metrics ≠ producer's
-output-queue metrics) and they need distinct rows in the broker's
-store to be queryable.
+Each presence has its own liveness state AND its own metrics view
+(consumer's input-queue metrics ≠ producer's output-queue metrics);
+they need distinct rows in the broker's store to be queryable AND
+distinct FSM rows so that one presence going silent does not affect
+the other.
 
 Per-presence heartbeats give:
 
-- Liveness driven only by producer's heartbeat (channel FSM unchanged)
-- Per-presence metrics rows (admin queryable by `(channel, uid, role_type)`)
+- Per-presence liveness state — a processor's silent consumer-side
+  is reaped without disturbing its producer-side
+- Per-presence metrics rows — admin queryable by `(channel, uid, role_type)`
 - Consumer's heartbeat no longer corrupts producer state (B1+B2 fixed)
 - One protocol covers both the liveness and the metrics flows
+- Channel observability falls out for free — query the producer-
+  presence's state for that channel
 
 ---
 
@@ -861,8 +870,9 @@ contract has two halves:
 | Single ctrl thread, single BRC, both REG_REQ + CONSUMER_REG_REQ via same connection | Per-presence ctrl thread + BRC; each registration via its own connection |
 | Single heartbeat tick per cycle | Per-presence heartbeat tick |
 | HEARTBEAT_REQ wire payload omits `uid`, `role_type` | Wire payload includes both |
-| Broker derives uid from `channel.producer_role_uid` | Broker reads `uid`, `role_type` from payload; keys metrics on `(channel, uid, role_type)` |
-| Consumer's heartbeat refreshes channel.last_heartbeat | Consumer's heartbeat does NOT refresh it (producer-only FSM) |
+| Broker derives uid from `channel.producer_role_uid` | Broker reads `(uid, role_type)` from payload; looks up the matching presence row in `RoleEntry`; refreshes only that presence; keys metrics on `(channel, uid, role_type)` |
+| `ChannelEntry.status` and `ChannelEntry.last_heartbeat` carry the FSM, refreshed by any heartbeat for the channel | `ChannelEntry` holds no FSM fields; channel observability is derived from the producer-presence's state in `RoleEntry` (HEP-CORE-0023 §2.6) |
+| Consumer's heartbeat refreshes the producer's bookkeeping (masking producer death) | Consumer's heartbeat refreshes only its own consumer-presence row |
 | `discover_channel` always uses `pImpl->broker_channel` (single BRC) | Routes by channel name to the right presence's connection |
 | `api.broadcast_channel(...)` always uses primary BRC | Class A routing by target channel |
 
@@ -1030,7 +1040,7 @@ out, not commented out).
 | **A1** | `HEP-CORE-0011-ScriptHost-Abstraction-Framework.md` lines 44, 70, 447 + threading-model deferral note | Replace `hub::Producer/Consumer` references with the actual current architecture: `RoleAPIBase` owns Tx/Rx queues internally; the role host owns `BrokerRequestComm` (or after Wave B: a `RoleHandler` with N hub connections).  Reframe the threading-model section now that HEP-0024 has shipped — describe what's actually current, not what was deferred.  Add a §"Status of this HEP after HEP-0024" subsection if the doc's scope materially shifted. | A1 |
 | **A2** | `HEP-CORE-0017-Pipeline-Architecture.md` body + diagrams + binaries-table (§11/§12/§13) | Replace every occurrence of `pylabhub-{producer,consumer,processor,hubshell}` with the current launch form: `plh_role --role <tag>` for the three role kinds, `plh_hub` for the hub binary.  Update the binaries table to reflect actual binaries.  Update Mermaid diagrams.  The status note already acknowledges this — make the body match. | A2 |
 | **A3** | `HEP-CORE-0019-Metrics-Plane.md` §9 (Implementation Phases) vs §2.3 (Phase 2 architecture) | Two contradictory truths in one HEP.  §9 still shows old "Phase 1-5" with `METRICS_REPORT_REQ ✅ shipped`; §2.3 says it's removed.  Resolution: rewrite §9 to mark Phase 1-5 as "historical (Phase-1 design, 2026-03-05)" — these LANDED but the architecture they implement was REPLACED by §2.3.  Add explicit "Phase 6: per-presence keying" entry pointing to this draft.  After Wave B+C, the per-presence keying becomes ✅ in §9. | A3 |
-| **A4** | `HEP-CORE-0023-Startup-Coordination.md` §2.2 sequence diagram + §2.5 timeouts | Update the Mermaid sequence to show consumer heartbeats too (matching HEP-0019 §2.3).  Add prose explicitly: `channel.last_heartbeat` is producer-driven (FSM); consumer heartbeats refresh `RoleEntry.last_heartbeat` and `MetricsStore[(channel, uid, role_type)]` but DO NOT touch the channel FSM.  Cross-reference HEP-0019 §2.3. | A4 |
+| **A4** | `HEP-CORE-0023-Startup-Coordination.md` §2 entire FSM section | Rewrite §2.1 from "Channel Lifecycle States" to "Role Lifecycle States" with three role states (Connected/Pending/Disconnected) and two timeouts (ready_miss/pending_miss).  Drop `Closing`/`grace_heartbeats`/`FORCE_SHUTDOWN`.  Drop `ChannelEntry.status` and `ChannelEntry.last_heartbeat` from §2.6 (channel observability is derived from the producer-presence's state).  Update Mermaid + transition tables to attribute transitions to per-presence FSM rows.  Cross-reference HEP-0019 §2.3.  Done 2026-05-07. | A4 |
 | **A5** | `HEP-CORE-0027-Inbox-Messaging.md` (new §13 — Reachability and Multi-Hub Advertisement) | New section: when a role registers on N hubs (typically processor with N=2), the inbox endpoint MUST be bind-routable from senders connected to ALL N hubs.  Loopback (`tcp://127.0.0.1:NNNN`) is fine for same-host; cross-host requires `tcp://0.0.0.0:NNNN` or a specific routable NIC.  Document that inbox metadata is independently advertised on each presence's registration, so cross-hub `ROLE_INFO_REQ` finds the role via either hub. | A6 |
 | **A6** | `HEP-CORE-0033-Hub-Character.md` — add new top-level **§18 "Broker message routing classes"** | Document the four-class taxonomy (A/B/C/D) with the full message-type table from §4 of this draft.  Update §8 (HubState entry-types) and §9 (Message-Processing Contract) so the role-table description matches the per-presence keying `(channel, uid, role_type)` introduced by HEP-CORE-0019 Phase 6.  This is the canonical home for the classification — once landed, all other docs reference HEP-0033 §18 rather than re-stating it.  Top-level §18 is chosen because the existing G2.x naming (G2.0/G2.1/G2.2 absorption phases + Appendix G2.2.0b naming-grammar) is already taken. | A7 |
 | **A7** | `HEP-CORE-0033-Hub-Character.md` — add new top-level **§19 "Multi-presence roles"** + cross-ref from `HEP-CORE-0015 §83-84` | §19 absorbs the dual-broker design that lives only in HEP-CORE-0015 §83-84 (which is SUPERSEDED).  Defines presence list, HubConnection, dedup rule, per-presence-heartbeat semantics; canonical home for the multi-hub processor architecture.  Then HEP-CORE-0015 §83-84 gets a one-line replacement: "Dual-broker processor design previously documented here is now in HEP-CORE-0033 §19."  HEP-CORE-0015 stays SUPERSEDED for the binary-naming part. | A5 |
@@ -1056,7 +1066,7 @@ Tests are not afterthoughts.  A phase is not done until its tests prove the new 
 | Phase | Code change | Test changes (revised design coverage) | Audit cross-ref |
 |---|---|---|---|
 | **M0** | `BrokerRequestComm::send_heartbeat(channel, uid, role_type, metrics)` API.  Wire payload gains `uid`, `role_type`.  All 14+ call sites in tests updated explicitly (no defaults). | **NEW**: `BrokerProtocolTest::Heartbeat_WirePayloadIncludesUidAndRoleType` — pin the new wire fields.  **REVISED**: every `bh.brc.send_heartbeat(channel, ...)` call site.  Mutation: omit `uid` from wire → test fails. | C2 |
-| **M1** | `handle_heartbeat_req` splits.  Per-`(channel, uid, role_type)` keying.  Retire `metrics_store_` legacy map. | **NEW**: `BrokerProtocolTest::HeartbeatKeying_ProducerVsConsumer_DistinctRows` — register P + C, both heartbeat with metrics, query returns 2 distinct rows.  **NEW**: `BrokerProtocolTest::ConsumerHeartbeat_DoesNotRefreshChannelFSM` — consumer heartbeats; channel demotes to Pending when producer is gone (B1 regression).  **REVISED**: `MetricsReport_ConsumerStoredByBroker` confirmed still passing on the unified store. | B5 |
+| **M1** | `handle_heartbeat_req` keyed lookup over `RoleEntry(uid).find_presence(channel, role_type)`; per-`(channel, uid, role_type)` metrics keying.  Move FSM state from `ChannelEntry` (delete `status` + `last_heartbeat`) to per-presence rows on `RoleEntry`.  Retire `metrics_store_` legacy map. | **NEW**: `BrokerProtocolTest::HeartbeatKeying_ProducerVsConsumer_DistinctRows` — register P + C, both heartbeat with metrics, query returns 2 distinct rows.  **NEW**: `BrokerProtocolTest::ConsumerHeartbeat_DoesNotRefreshProducerPresence` — consumer heartbeats with producer absent; producer-presence demotes Connected→Pending→Disconnected on schedule (channel torn down on producer-presence Disconnected).  **NEW**: `BrokerProtocolTest::ChannelEntry_HasNoStoredFSMFields` — assert `ChannelEntry` no longer carries `status` / `last_heartbeat`; channel observability is derived.  **REVISED**: `MetricsReport_ConsumerStoredByBroker` confirmed still passing on the unified store. | B5 |
 | **M2** | Heartbeat tick installed only when role has a producer presence.  Consumer's tick removed.  `out_channel.empty() ? ...` hack deleted. | **NEW**: `RoleAPIBaseTest::Consumer_DoesNotInstallHeartbeatTick` (L2).  **NEW**: B1+B2 end-to-end regression tests (consumer's tick gone → producer-death properly visible; consumer metrics correctly attributed).  Mutation: re-install the consumer tick → these fail. | B1+B2, C3 |
 | **M3** | Headers for `Presence`, `HubConnection`, `RoleHandler`. Build-only. | **NEW**: `RolePresenceTest` (L2) — unit tests for `Presence` struct, dedup logic, channel_index/band_index lookup.  Pure data-structure tests. | none |
 | **M4** | `RoleAPIBase::pImpl` swap.  All 24 `pImpl->broker_channel` sites delegate via handler. | **REVISED**: `RoleAPIBaseTest` — every test setting up a `RoleAPIBase` now creates it with a `RoleHandler` (test fixture).  Public API surface unchanged so existing tests keep passing.  **NEW**: `RoleAPIBaseTest::HandlerDelegation_SingleConnection_BehaviourPreserved` — explicit confirmation. | B3 |
@@ -1070,7 +1080,7 @@ Tests are not afterthoughts.  A phase is not done until its tests prove the new 
 
 - Every "NEW" test is mutation-verified (write-failing → fix → green; or break the production code → confirm test goes red).
 - Every "REVISED" test gets a comment explaining what changed and why.
-- No test is silently retained when its premise changed.  If a test was pinning buggy behaviour (e.g., consumer's HEARTBEAT_REQ refreshing channel FSM), it gets explicitly REPLACED by a test that pins the corrected behaviour.
+- No test is silently retained when its premise changed.  If a test was pinning buggy behaviour (e.g., consumer's HEARTBEAT_REQ refreshing the producer's presence row), it gets explicitly REPLACED by a test that pins the corrected behaviour.
 
 ### 14.3 Wave C — Closure
 
@@ -1145,11 +1155,10 @@ The map below splits into two phases:
 |---|---|---|
 | `HEP-CORE-0011` lines 44, 70, 447 + threading-model note | A1 | Scrub `hub::Producer/Consumer`; describe current architecture; reframe deferred-rewrite note. |
 | `HEP-CORE-0017` body, §11/§12/§13 | A2 | Replace all `pylabhub-{role}` / `pylabhub-hubshell` with `plh_role --role <tag>` / `plh_hub`.  Update Mermaid diagrams + binaries-table. |
-| `HEP-CORE-0019` §2.3 | A3 | Make normative (currently aspirational).  Document `uid` + `role_type` wire fields.  State that consumer-heartbeat does NOT refresh channel FSM. |
+| `HEP-CORE-0019` §2.3 | A3 | Make normative (currently aspirational).  Document `uid` + `role_type` wire fields.  State that each heartbeat refreshes only its own `(uid, role_type)` presence row in `RoleEntry` — no heartbeat touches another presence's bookkeeping. |
 | `HEP-CORE-0019` §3.3 | A3 | Reframe `METRICS_REPORT_REQ` as deprecated; consumer-only periodic task removed; wire handler stays one release for backward compat. |
 | `HEP-CORE-0019` §9 | A3 | Mark Phase 1-5 as historical; add Phase 6: per-presence keying — points to HEP-0033 §18 implementation. |
-| `HEP-CORE-0023` §2.2 sequence diagram | A4 | Show consumer heartbeats; note `channel.last_heartbeat` is producer-driven (FSM); other timestamps are informational. |
-| `HEP-CORE-0023` §2.5 | A4 | Clarify the watchdog/timeout discussion to match the new keying. |
+| `HEP-CORE-0023` §2 entire FSM rewrite | A4 | Replace channel-FSM with per-presence role FSM (Connected/Pending/Disconnected); drop `Closing`/`grace_heartbeats`/`FORCE_SHUTDOWN`; drop `ChannelEntry.status`/`last_heartbeat` (channel observability is derived).  Done 2026-05-07. |
 | `HEP-CORE-0027` new §13 (Reachability) | A5 | Add binding-guidance for dual-hub deployments (loopback only same-host; cross-host needs routable bind).  Document per-presence inbox-metadata advertisement. |
 | `HEP-CORE-0033` new top-level §18 (Routing Classes) | A6 | Full four-class taxonomy (A/B/C/D) with the message-type table from §4 of this draft.  This is the canonical home. |
 | `HEP-CORE-0033` §8 + §9 keying description | A6 | Update from single-uid to `(channel, uid, role_type)` keying for `MetricsStore` and per-presence row description. |
@@ -1200,13 +1209,14 @@ audit is enforcing, not advisory.
 
 | ID | HEP | Issue | Migration cross-ref |
 |---|---|---|---|
-| **A1** | `HEP-CORE-0011 §Architecture Overview` (lines 44, 70, 447) | Says `RoleHost owns Infrastructure (BrokerRequestComm, hub::Producer/Consumer, InboxQueue)`. `hub::Producer/Consumer` were eliminated 2026-03-01 (L3.γ A6.3).  Threading-model rewrite "deferred until role-host unification lands" — HEP-0024 has shipped. | Wave A item A1 |
-| **A2** | `HEP-CORE-0017` extensive | Diagrams + binaries-table + prose use `pylabhub-{producer,consumer,processor,hubshell}` as primary names.  All retired (HEP-0024 + post-G2 cleanup).  Status note acknowledges this but the doc body still misleads. | Wave A item A2 |
-| **A3** | `HEP-CORE-0019` internal | §2.3 (new "Phase 2", 2026-03-25) says all roles heartbeat with `(channel_name, uid, role_type)`; §3.3 says METRICS_REPORT_REQ is "removed"; §9 still marks Phase 1-5 ✅ shipped including "Phase 3 = METRICS_REPORT_REQ shipped".  Three contradictory truths. | Wave A item A3 (substantive); Wave C C1 (status closure post-M9) |
-| **A4** | `HEP-CORE-0023 §2.2` sequence diagram | Shows producer-only heartbeat (`P->>B: HEARTBEAT_REQ`).  Conflicts with HEP-0019 §2.3's "all roles heartbeat".  No reconciliation note. | Wave A item A4 (substantive); Wave C C1 (status closure) |
-| **A5** | `HEP-CORE-0015 §83-84` | Documents dual-broker processor; HEP marked SUPERSEDED but the dual-broker design lives nowhere else canonically; current code doesn't implement it (B3-B5). | Wave A item A7 (move design body to HEP-0033 §19; HEP-0015 keeps cross-ref) |
-| **A6** | `HEP-CORE-0027` | No reachability section for dual-hub deployment.  No per-presence advertisement note. | Wave A item A5 (§13 added) |
-| **A7** | `HEP-CORE-0033` (resolved 2026-05-06 — top-level §18 + §19 added) | Doesn't document the four-class routing principle; doesn't describe per-presence role-table keying.  Existing G2.x naming refers to absorption phases — new content landed at top-level §18 + §19 to avoid the collision. | ✅ Wave A items A6 (§18) + A7 (§19) shipped |
+| **A1** | `HEP-CORE-0011 §Architecture Overview` (lines 44, 70, 447) | Says `RoleHost owns Infrastructure (BrokerRequestComm, hub::Producer/Consumer, InboxQueue)`. `hub::Producer/Consumer` were eliminated 2026-03-01 (L3.γ A6.3).  Threading-model rewrite "deferred until role-host unification lands" — HEP-0024 has shipped. | ✅ Wave A item A1 shipped |
+| **A2** | `HEP-CORE-0017` extensive | Diagrams + binaries-table + prose use `pylabhub-{producer,consumer,processor,hubshell}` as primary names.  All retired (HEP-0024 + post-G2 cleanup).  Status note acknowledges this but the doc body still misleads. | ✅ Wave A item A2 shipped |
+| **A3** | `HEP-CORE-0019` internal | §2.3 (new "Phase 2", 2026-03-25) says all roles heartbeat with `(channel_name, uid, role_type)`; §3.3 says METRICS_REPORT_REQ is "removed"; §9 still marks Phase 1-5 ✅ shipped including "Phase 3 = METRICS_REPORT_REQ shipped".  Three contradictory truths. | ✅ Wave A item A3 + A.5.2 shipped (3-layer history added; Phase 6 normative); Wave C C1 marks Phase 6 ✅ post-M9 |
+| **A4** | `HEP-CORE-0023 §2.2` sequence diagram | Shows producer-only heartbeat (`P->>B: HEARTBEAT_REQ`).  Conflicts with HEP-0019 §2.3's "all roles heartbeat".  No reconciliation note. | ✅ Wave A.5.1 shipped 2026-05-07 — §2 fully rewritten as per-presence role FSM (Connected/Pending/Disconnected); `Closing`/`grace_heartbeats`/`FORCE_SHUTDOWN` removed; `ChannelEntry.status`/`last_heartbeat` removed (channel observability is derived) |
+| **A5** | `HEP-CORE-0015 §83-84` | Documents dual-broker processor; HEP marked SUPERSEDED but the dual-broker design lives nowhere else canonically; current code doesn't implement it (B3-B5). | ✅ Wave A item A7 shipped (design body moved to HEP-0033 §19; HEP-0015 §83-84 holds the cross-ref) |
+| **A6** | `HEP-CORE-0027` | No reachability section for dual-hub deployment.  No per-presence advertisement note. | ✅ Wave A item A5 shipped (§4.5 added) |
+| **A7** | `HEP-CORE-0033` (resolved 2026-05-06 — top-level §18 + §19 added) | Doesn't document the four-class routing principle; doesn't describe per-presence role-table keying.  Existing G2.x naming refers to absorption phases — new content landed at top-level §18 + §19 to avoid the collision. | ✅ Wave A items A6 (§18) + A7 (§19) + A.5.3 (§8 + §15 + §18.2 corrections) shipped |
+| **A8** | Cross-doc cascade from §2 rewrite (added 2026-05-07) | The 2026-05-07 §2 rewrite of HEP-0023 cascaded into HEP-0007 (FORCE_SHUTDOWN section + Sequence B + HEARTBEAT_REQ + CHANNEL_LIST_ACK), HEP-0019 (broker handler description + Phase 6 phase list), HEP-0021 (channel-lifecycle reference list), HEP-0034 (schema-eviction trigger phrasing), HEP-0011 (notification-type list), HEP-0022 (config example), README_Deployment (config table + JSON example), TODO_MASTER + MESSAGEHUB_TODO + HUB_TEST_COVERAGE_PLAN + raii_layer_redesign. | ✅ Wave A.5.5 shipped 2026-05-07 |
 
 ### 17.2 Code / comment staleness
 

@@ -1912,7 +1912,7 @@ broker is used only for channel registration and consumer discovery.
 | CONSUMER_DEREG_REQ / _ACK | Consumer → Broker | Req/Resp | Deregister consumer from channel |
 | DEREG_REQ / DEREG_ACK | Producer → Broker | Req/Resp | Unregister channel; triggers CLOSING_NOTIFY |
 | SCHEMA_REQ / SCHEMA_ACK | Any → Broker | Req/Resp | Query channel schema info (HEP-0016) |
-| HEARTBEAT_REQ | Producer → Broker | Fire&Forget | Channel liveness; PendingReady → Ready |
+| HEARTBEAT_REQ | Per presence (producer / consumer / processor) → Broker | Fire&Forget | Per-presence liveness + optional metrics; refreshes RoleEntry presence row + advances Connected ↔ Pending FSM (HEP-CORE-0019 §2.3 / Phase 6, HEP-CORE-0023 §2.1) |
 | CHECKSUM_ERROR_REPORT | Any → Broker | Fire&Forget | Report slot integrity error (Cat 2) |
 | CHANNEL_NOTIFY_REQ | Any → Broker | Fire&Forget | Relay application signal to target channel producer |
 | CHANNEL_CLOSING_NOTIFY | Broker → All | Push | Channel shutting down (triggers graceful exit) |

@@ -10,6 +10,18 @@
 
 ## Current Status
 
+> **2026-05-07 architectural correction (docs only — implementation
+> work is Wave B M1).**  HEP-CORE-0023 §2 was rewritten: the Pending /
+> Ready / **Closing** channel FSM was retired in favour of a per-
+> presence role FSM (Connected / Pending / Disconnected) on
+> `RoleEntry`.  Channel teardown is now **atomic** on producer-presence
+> Disconnected — no separate "channel grace" window, no
+> `FORCE_SHUTDOWN` escalation.  The historical "Completed 2026-04-14"
+> entry below describes what was true on that date (Closing/grace path
+> alongside the new Ready→Pending→deregistered path); the
+> 2026-05-07 rewrite removes the Closing/grace path entirely.
+> Implementation lands in Wave B M1 (`role_host_template_design.md`).
+
 🟡 **Phase 6.2a shipped; Phase 6.2b/c BLOCKED on test-correctness audit.**
 See `docs/code_review/REVIEW_TestAudit_2026-05-01.md` (top-priority
 ground-truth tracker; §11 contains the hub-resume bookmark).  Phase 6.2b/c

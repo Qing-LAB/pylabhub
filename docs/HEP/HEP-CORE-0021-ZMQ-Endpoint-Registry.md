@@ -56,7 +56,7 @@ the same REG_REQ / CONSUMER_REG_ACK protocol as SHM channels.
    (`REG_REQ` with `transport=zmq`). The consumer side discovers via
    `CONSUMER_REG_REQ` and gets back the endpoint. Same handshake, different
    payload. Existing channel lifecycle (heartbeat, CHANNEL_CLOSING_NOTIFY,
-   FORCE_SHUTDOWN, metrics) applies unchanged.
+   metrics) applies unchanged.
 
 4. **Transport is producer's declaration**: The producer declares `transport=zmq`
    at registration time. Consumers do not need to know or configure the transport
@@ -307,7 +307,7 @@ CONSUMER_REG_ACK (broker → consumer)
 The broker's `ChannelEntry` struct gains a `transport` discriminator and a
 `zmq_endpoint` field (populated only for `transport=zmq`). No other broker
 state changes. Channel lifecycle management (timeout, heartbeat tracking,
-CHANNEL_CLOSING_NOTIFY, FORCE_SHUTDOWN, metrics) is identical for both transport types.
+CHANNEL_CLOSING_NOTIFY, metrics) is identical for both transport types.
 
 ---
 
@@ -655,7 +655,9 @@ two failure modes in pyLabHub:
 **pyLabHub does not rely on socket linger for delivery guarantees.** Shutdown is
 always coordinated through explicit protocol messages:
 - Producers send `CHANNEL_CLOSING_NOTIFY` before closing.
-- Processors/consumers receive `FORCE_SHUTDOWN` or handle `CHANNEL_CLOSING_NOTIFY`.
+- Processors/consumers handle `CHANNEL_CLOSING_NOTIFY` (queued FIFO event)
+  and call `api.stop()` after draining.  No second-tier escalation is
+  emitted — see HEP-CORE-0007 §12 (FORCE_SHUTDOWN removed 2026-05-07).
 - All parties wait for protocol-level acknowledgment before destroying sockets.
 
 Since message delivery is guaranteed by protocol, not by socket linger, LINGER=0

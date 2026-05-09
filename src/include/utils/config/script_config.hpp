@@ -24,6 +24,75 @@ struct ScriptConfig
     std::string checksum;                ///< BLAKE2b-256 hex of native .so (native only)
     bool        type_explicit{false};    ///< true when "type" was present in JSON
     bool        stop_on_script_error{false}; ///< Fatal on script exception in callback.
+
+    /// Release the engine's global interpreter lock during the worker
+    /// loop's idle waits (queue I/O wait, deadline sleep, hub event
+    /// wait).  Default: false — preserve the hot-path no-overhead
+    /// behaviour that has shipped historically.
+    ///
+    /// **Applies only when the engine has a single global interpreter
+    /// lock** (i.e. `ScriptEngine::supports_multi_state() == false`).
+    /// The PythonEngine reads this flag and reports it via
+    /// `release_global_lock_during_wait()`; LuaEngine and NativeEngine
+    /// have no global lock to release, so they always report false
+    /// regardless of this setting.
+    ///
+    /// **Use case (the only one):** Python scripts that spawn
+    /// cooperative sub-threads — e.g. a hub script running a Flask
+    /// server on a `threading.Thread`, or a role script using
+    /// `asyncio` in a side thread.  Without this flag, the worker
+    /// thread holds the GIL across `wait_for_incoming` / queue reads /
+    /// deadline sleeps, starving Python sub-threads on the same
+    /// interpreter.  With this flag, the GIL is released across those
+    /// waits and the sub-threads make progress.
+    ///
+    /// **Cost when enabled:** one PyEval_SaveThread + PyEval_RestoreThread
+    /// pair per loop iteration's idle wait.  Measurable for
+    /// >1 kHz tick loops; negligible for typical 10–100 Hz roles.
+    /// **Cost when disabled (default):** zero — the optional guard
+    /// inside the loop is constant-folded away.
+    ///
+    /// ──────────────────────────────────────────────────────────────
+    /// **WARNING — script contract for opting in.**
+    /// ──────────────────────────────────────────────────────────────
+    ///
+    /// CPython's GIL reacquire (`PyEval_RestoreThread`, called by the
+    /// worker's loop frame on its way out of the idle-wait scope) is
+    /// not a hard wait: CPython 3.10+ wakes the would-be acquirer
+    /// every `sys.setswitchinterval()` (default **5 ms**) and signals
+    /// the current GIL holder (`_PY_GIL_DROP_REQUEST_BIT` on the
+    /// holder's eval breaker).  Pure-Python code observes the eval
+    /// breaker at every bytecode boundary (~100 bytecodes since 3.10)
+    /// and yields the GIL.  In practice:
+    ///
+    ///   - Pure-Python `while True: pass`               → yields ~5 ms
+    ///   - `time.sleep(...)`                            → yields immediately
+    ///   - Most NumPy / SciPy / pandas ops              → yield (`with nogil:`)
+    ///   - **A C extension that does NOT release GIL**  → wedges reacquire
+    ///
+    /// **The only failure mode is a script-spawned C extension that
+    /// holds the GIL without yielding.**  Examples that can wedge:
+    /// long native NumPy/SciPy ops without `with nogil:`, custom C
+    /// modules with extended pure-C paths, `time.sleep` from a C
+    /// library that does not drop the GIL.  Pure Python code in
+    /// sub-threads cannot wedge the worker — it always yields.
+    ///
+    /// If a wedge occurs, the worker thread will block inside the
+    /// optional's destructor on `PyEval_RestoreThread`.  The bounded-
+    /// join in `EngineHost::shutdown_()` (HEP-CORE-0011 §"ThreadManager"
+    /// → "Bounded Shutdown Join") will detect this within the per-
+    /// thread join timeout (default 5 s), DETACH the worker thread,
+    /// emit a CRITICAL log naming this flag as the likely cause, and
+    /// allow the parent process to continue clean teardown.  The
+    /// detached worker is leaked; some engine-owned resources (Python
+    /// objects, sockets) may leak with it until process exit.
+    ///
+    /// **Recommendation when opting in:** review every C extension
+    /// reachable from the script's sub-threads.  Verify each either
+    /// (a) is pure Python, (b) wraps its native work in `with nogil:`,
+    /// or (c) returns within a few hundred ms.  Test the shutdown
+    /// path under representative workload before deployment.
+    bool        release_global_lock_during_wait{false};
 };
 
 /// Platform-specific shared library extension.
@@ -117,7 +186,8 @@ inline ScriptConfig parse_script_config(const nlohmann::json &j,
         for (auto it = s.begin(); it != s.end(); ++it)
         {
             const auto &k = it.key();
-            if (k != "type" && k != "path" && k != "checksum")
+            if (k != "type" && k != "path" && k != "checksum"
+                && k != "release_global_lock_during_wait")
                 throw std::runtime_error(
                     std::string(tag) + ": unknown config key 'script." + k + "'");
         }
@@ -129,6 +199,8 @@ inline ScriptConfig parse_script_config(const nlohmann::json &j,
                 + sc.type + "\"");
         sc.path = s.value("path", std::string{"."});
         sc.checksum = s.value("checksum", std::string{});
+        sc.release_global_lock_during_wait =
+            s.value("release_global_lock_during_wait", false);
     }
 
     sc.python_venv = j.value("python_venv", std::string{});
