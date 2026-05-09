@@ -17,6 +17,7 @@
  * its setup_infrastructure_() / teardown_infrastructure_() helpers.
  */
 #include "processor_role_host.hpp"
+#include "utils/script_engine_factory.hpp"  // scripting::create_engine — worker_main_ Step 0
 #include "utils/thread_manager.hpp"
 #include "service/cycle_ops.hpp"
 #include "service/data_loop.hpp"
@@ -52,13 +53,13 @@ using Clock = std::chrono::steady_clock;
 // ============================================================================
 
 ProcessorRoleHost::ProcessorRoleHost(config::RoleConfig config,
-                                       std::unique_ptr<scripting::ScriptEngine> engine,
                                        std::atomic<bool> *shutdown_flag)
     : scripting::RoleHostBase("proc",
                               std::move(config),
-                              std::move(engine),
                               shutdown_flag)
 {
+    // Engine constructed in worker_main_ Step 0 — see HEP-CORE-0011
+    // §"Engine Construction Lifecycle".
 }
 
 ProcessorRoleHost::~ProcessorRoleHost()
@@ -81,11 +82,27 @@ ProcessorRoleHost::~ProcessorRoleHost()
 
 void ProcessorRoleHost::worker_main_()
 {
+    // GIL pickup — see HEP-CORE-0011 §"Engine Construction Lifecycle"
+    // and the same comment block in producer_role_host.cpp.  Holds GIL
+    // on this thread for worker_main_'s lifetime iff Python is in play.
+    pylabhub::scripting::PythonGilLease gil_lease;
+
+    // Step 0: construct engine on this worker thread (HEP-CORE-0011
+    // §"Engine Construction Lifecycle").  GIL is held via the lease
+    // above iff Python is configured.
     auto       &core_        = core();
     const auto &config_      = config();
+    auto       &promise_ref  = ready_promise();
+    set_engine_(scripting::create_engine(config_.script()));
+    if (!has_engine())
+    {
+        LOGGER_ERROR("[proc] scripting::create_engine returned null for "
+                     "script.type='{}'", config_.script().type);
+        promise_ref.set_value(false);
+        return;
+    }
     auto       &engine_ref   = engine();
     auto       &api_ref      = api();
-    auto       &promise_ref  = ready_promise();
 
     const auto &sc = config_.script();
 
@@ -350,6 +367,8 @@ void ProcessorRoleHost::worker_main_()
         lcfg.period_us                   = tc_loop.period_us;
         lcfg.loop_timing                 = tc_loop.loop_timing;
         lcfg.queue_io_wait_timeout_ratio = tc_loop.queue_io_wait_timeout_ratio;
+        lcfg.release_global_lock_during_wait =
+            engine_ref.release_global_lock_during_wait();
         scripting::run_data_loop(api_ref, core_, lcfg, ops);
     }
 

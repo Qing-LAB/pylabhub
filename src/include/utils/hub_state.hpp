@@ -71,10 +71,16 @@ enum class ChannelStatus
 
 enum class RoleState
 {
-    Connected,    ///< Role has registered; heartbeats flowing.
-    Disconnected, ///< Role lost; still in map within the grace window.
-                  ///< Past grace, the entry is removed from `HubState::roles`
-                  ///< entirely (no persisted "evicted" state — see HEP-0033 §8).
+    Connected,    ///< Heartbeats flowing within `effective_ready_timeout`.
+    Pending,      ///< Heartbeats stalled but recoverable (the next matching
+                  ///< heartbeat returns the presence to Connected).  Per
+                  ///< HEP-CORE-0023 §2.1.  Added 2026-05-07 as part of the
+                  ///< role-FSM rewrite (was: a channel-side state).
+    Disconnected, ///< Terminal.  Presence row reaped.  For producer-presences,
+                  ///< channel teardown fires atomically (HEP-CORE-0023 §2.1).
+                  ///< RoleEntry stays in `HubState::roles` for a short grace
+                  ///< window (`disconnected_grace_ms`) for diagnostics; past
+                  ///< that, the whole RoleEntry is removed.
 };
 
 enum class PeerState
@@ -194,6 +200,42 @@ struct BandEntry
         std::chrono::steady_clock::now()};
 };
 
+/// One per-`(channel, role_type)` row under a RoleEntry.  A role with N
+/// presences runs N independent FSMs and writes N distinct rows in the
+/// per-presence metrics store.  Per HEP-CORE-0023 §2.1 + §2.6.
+///
+/// A processor with `(uid, "consumer")` on `in_channel` and
+/// `(uid, "producer")` on `out_channel` carries two `RolePresence`
+/// entries; each refreshes only on its own matching `HEARTBEAT_REQ`.
+///
+/// Added 2026-05-07 as part of the M1.1 additive migration; in M1.2
+/// the per-presence FSM becomes the source of truth and the
+/// ChannelEntry.status / last_heartbeat back-compat fields are
+/// removed.
+struct RolePresence
+{
+    std::string channel;    ///< Channel this presence is registered on.
+    std::string role_type;  ///< "producer" | "consumer".
+
+    RoleState   state{RoleState::Connected};
+    /// Set true once at least one HEARTBEAT_REQ matching this presence's
+    /// `(uid, channel, role_type)` has been received.  False between
+    /// REG_REQ acceptance and first heartbeat.  DISC_REQ uses this to
+    /// distinguish "registered but no heartbeat yet" (DISC_PENDING with
+    /// reason="awaiting_first_heartbeat") from "live" (DISC_ACK).
+    bool        first_heartbeat_seen{false};
+
+    std::chrono::steady_clock::time_point last_heartbeat{
+        std::chrono::steady_clock::now()};
+    /// Wall-clock instant of the last FSM transition (Connected ↔ Pending,
+    /// or initial Connected on REG).  Used by sweep loops and diagnostics.
+    std::chrono::steady_clock::time_point state_since{
+        std::chrono::steady_clock::now()};
+
+    nlohmann::json                        latest_metrics;
+    std::chrono::system_clock::time_point metrics_collected_at{};
+};
+
 /// Registered role (plh_role process). Independent of channel membership.
 struct RoleEntry
 {
@@ -212,6 +254,33 @@ struct RoleEntry
     std::chrono::system_clock::time_point metrics_collected_at{};
 
     std::string pubkey_z85; ///< Role's CurveZMQ public key (Z85, 40 chars).
+
+    /// Per-presence rows.  One row per `(channel, role_type)` this role
+    /// uid is registered on.  Empty in M1.1 only when no heartbeat has
+    /// arrived for any of this uid's `(channel, role_type)` tuples yet
+    /// (lazy creation on first heartbeat — see `_on_heartbeat`).  In M1.2
+    /// presence rows are created at REG_REQ / CONSUMER_REG_REQ time
+    /// instead.  Per HEP-CORE-0023 §2.6.
+    std::vector<RolePresence> presences;
+
+    /// Find the presence row matching `(channel, role_type)`.  Returns
+    /// nullptr if not found.  Linear scan — `presences` is small
+    /// (typically 1, occasionally 2 for processors).  Inline so callers
+    /// in tests / headers don't need a library symbol.
+    const RolePresence *find_presence(const std::string &channel,
+                                       const std::string &role_type) const noexcept
+    {
+        for (const auto &p : presences)
+            if (p.channel == channel && p.role_type == role_type) return &p;
+        return nullptr;
+    }
+    RolePresence *find_presence(const std::string &channel,
+                                 const std::string &role_type) noexcept
+    {
+        for (auto &p : presences)
+            if (p.channel == channel && p.role_type == role_type) return &p;
+        return nullptr;
+    }
 };
 
 /// Federation peer (direct-connected hub, HEP-CORE-0022).
@@ -459,8 +528,26 @@ class PYLABHUB_UTILS_EXPORT HubState
     void _on_channel_closed(const std::string &name, ChannelCloseReason why);
     void _on_consumer_joined(const std::string &channel, ConsumerEntry consumer);
     void _on_consumer_left(const std::string &channel, const std::string &role_uid);
+    /// Refresh the presence row matching `(channel, role_uid, role_type)`
+    /// (creating it lazily if absent in M1.1 — M1.2 will move creation to
+    /// REG_REQ / CONSUMER_REG_REQ time).  Per HEP-CORE-0019 §2.3 / Phase 6
+    /// + HEP-CORE-0023 §2.5.2: each heartbeat refreshes ONLY its own
+    /// `(uid, role_type)` presence row; no heartbeat ever touches another
+    /// presence's bookkeeping.
+    ///
+    /// In the M1.1 transitional model the legacy ChannelEntry.last_heartbeat
+    /// + .status fields (and the legacy RoleEntry.last_heartbeat /
+    /// latest_metrics) are ALSO refreshed for back-compat — admin queries
+    /// and the sweep loop continue to use those.  M1.2 retires the legacy
+    /// fields and routes the sweep through `presences[]`.
+    ///
+    /// `role_type` empty falls back to legacy behaviour (refresh
+    /// channel + role-level fields only, no presence row).  This lets
+    /// pre-M0 brokers process heartbeats from pre-M0 clients during the
+    /// transition; new clients always populate it.
     void _on_heartbeat(const std::string                           &channel,
                        const std::string                           &role_uid,
+                       const std::string                           &role_type,
                        std::chrono::steady_clock::time_point        when,
                        const std::optional<nlohmann::json>         &metrics);
     void _on_heartbeat_timeout(const std::string &channel, const std::string &role_uid);

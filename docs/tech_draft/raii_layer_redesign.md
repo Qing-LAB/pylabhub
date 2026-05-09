@@ -612,8 +612,9 @@ host.on_notify<ChannelClosingPayload>("CHANNEL_CLOSING_NOTIFY",
 Internally hooks `BrokerRequestComm::on_notify_cb` with per-msg_type
 dispatch. Complements `on_band_message<EventT>` (§6.3); band messages
 are a subset of broker notifications. Known notification types today:
-`ROLE_REGISTERED_NOTIFY`, `CHANNEL_CLOSING_NOTIFY`, `CHANNEL_BROADCAST`,
-`FORCE_SHUTDOWN`, `BAND_BROADCAST_NOTIFY`, `BAND_LEAVE_NOTIFY`.
+`ROLE_REGISTERED_NOTIFY`, `ROLE_DEREGISTERED_NOTIFY`,
+`CHANNEL_CLOSING_NOTIFY`, `CHANNEL_ERROR_NOTIFY`,
+`CONSUMER_DIED_NOTIFY`, `BAND_BROADCAST_NOTIFY`, `BAND_LEAVE_NOTIFY`.
 
 ### 6.10.1 Error handling for notification / event hooks
 

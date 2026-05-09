@@ -279,5 +279,15 @@ int invoke_on_inbox_missing_type_reports_error(const std::string &dir);
 // surfaces loudly.
 int supports_multi_state_returns_false(const std::string &dir);
 
+// ── GIL release during idle waits (HEP-CORE-0011 §"Engine Thread
+//    Affinity" → "Optional global-lock release during idle waits") ──
+//
+// Verifies `pylabhub::scripting::EngineGlobalLockRelease` actually
+// releases the GIL by comparing how far a Python sub-thread can
+// advance during a held-GIL C++ sleep vs. a released-GIL C++ sleep
+// of the same duration.
+int release_global_lock_during_wait_lets_subthread_run(
+    const std::string &dir);
+
 } // namespace python_engine
 } // namespace pylabhub::tests::worker

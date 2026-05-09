@@ -37,10 +37,10 @@ truth; this doc is the synthesis.
 | `test_datahub_broker.cpp`              | 33 | Broker REG_REQ/DEREG, CONSUMER_REG, heartbeat, channel lifecycle |
 | `test_datahub_broker_protocol.cpp`     | 17 | Wire protocol envelopes, error frames, sender_uid, correlation_id |
 | `test_datahub_broker_admin.cpp`        | 8  | Legacy `query_metrics_json_str`, `list_channels_json_str` (kept for §10 migration period) |
-| `test_datahub_broker_health.cpp`       | 5  | Liveness states (Ready/Pending), heartbeat-miss timeout |
+| `test_datahub_broker_health.cpp`       | 5  | Per-presence FSM states (Connected/Pending/Disconnected — HEP-0023 §2.1, post-2026-05-07 rewrite), heartbeat-miss timeout.  **NOTE:** legacy "Ready/Pending" terminology retained until Wave B M1 reshapes the broker code; tests will need rename + restructure as part of M1. |
 | `test_datahub_broker_consumer.cpp`     | 5  | Consumer registration, multi-consumer broadcast |
 | `test_datahub_broker_schema.cpp`       | 5  | Schema-on-channel registration, mismatch rejection |
-| `test_datahub_broker_shutdown.cpp`     | 6  | CHANNEL_CLOSING_NOTIFY, FORCE_SHUTDOWN, broker.stop() ordering |
+| `test_datahub_broker_shutdown.cpp`     | 6  | CHANNEL_CLOSING_NOTIFY atomic fan-out + ChannelEntry teardown, broker.stop() ordering.  **NOTE:** the 6-test suite includes legacy `FORCE_SHUTDOWN` cases that will be retired or rewritten in Wave B M1 (the wire message + post-grace escalation are removed per HEP-0007 §12 / HEP-0023 §2.1). |
 | `test_datahub_broker_request_comm.cpp` | 4  | Role-side broker-request-comm wrapper |
 | `test_datahub_metrics.cpp`             | 13 | `BrokerService::query_metrics` filter shapes (categories / channels / roles / etc.) |
 | `test_datahub_hub_host_integration.cpp`| 3  | HubHost + spawned broker thread: reachable, REG_REQ round-trip, shutdown breaks clients |

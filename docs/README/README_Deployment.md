@@ -197,9 +197,10 @@ CurveZMQ private key live exclusively in `hub.vault` (0600, encrypted).
   },
 
   "broker": {
-    "channel_timeout_s":          10,
-    "consumer_liveness_check_s":   5,
-    "channel_shutdown_grace_s":    5
+    "heartbeat_interval_ms":     500,
+    "ready_miss_heartbeats":      10,
+    "pending_miss_heartbeats":    10,
+    "consumer_liveness_check_s":   5
   },
 
   "script": {
@@ -221,9 +222,12 @@ CurveZMQ private key live exclusively in `hub.vault` (0600, encrypted).
 | `hub.broker_endpoint` | no | `"tcp://0.0.0.0:5570"` | ZMQ ROUTER bind address for the data broker |
 | `hub.admin_endpoint` | no | `"tcp://127.0.0.1:5600"` | ZMQ ROUTER bind address for the admin shell |
 | `hub.connection_policy` | no | `"open"` | Channel registration policy: `open`/`tracked`/`required`/`verified` |
-| `broker.channel_timeout_s` | no | `10` | Seconds without heartbeat before channel is closed |
-| `broker.consumer_liveness_check_s` | no | `5` | Consumer liveness check interval (0 = disabled) |
-| `broker.channel_shutdown_grace_s` | no | `5` | Grace period between CHANNEL_CLOSING_NOTIFY and FORCE_SHUTDOWN |
+| `broker.heartbeat_interval_ms` | no | `500` | Hub's max tolerated silence between heartbeats from any presence (broker-wide).  Roles may run faster (HEP-CORE-0023 §2.5.1) |
+| `broker.ready_miss_heartbeats` | no | `10` | Connected → Pending demotion after this many consecutive missed heartbeats from a presence (HEP-CORE-0023 §2.1) |
+| `broker.pending_miss_heartbeats` | no | `10` | Pending → Disconnected after this many additional missed heartbeats; on producer-presence Disconnected, channel is torn down atomically (HEP-CORE-0023 §2.1) |
+| `broker.ready_timeout_ms` | no | `null` | Optional explicit override for ready timeout.  `null` derives from `heartbeat_interval_ms × ready_miss_heartbeats` |
+| `broker.pending_timeout_ms` | no | `null` | Optional explicit override for pending timeout.  `null` derives from `heartbeat_interval_ms × pending_miss_heartbeats` |
+| `broker.consumer_liveness_check_s` | no | `5` | Consumer-process liveness check interval (PID check, separate from the heartbeat path; 0 = disabled) |
 | `script.type` | no | — | Script language; `"python"` is the only supported value |
 | `script.path` | no | — | Base directory; hub script is at `<path>/<type>/__init__.py` |
 | `script.tick_interval_ms` | no | `1000` | Callback interval for `on_tick()` |
@@ -1100,8 +1104,9 @@ before the socket is closed.
 
 pyLabHub does not rely on socket linger for delivery guarantees. Shutdown is always
 coordinated through explicit protocol messages (`CHANNEL_CLOSING_NOTIFY`,
-`FORCE_SHUTDOWN`). By the time any socket is closed, the counterpart has already
-received a shutdown notification through the control path.
+fan-out atomic with channel teardown; see HEP-CORE-0007 §12 + HEP-CORE-0023 §2.1).
+By the time any socket is closed, the counterpart has already
+received the shutdown notification through the control path.
 
 LINGER=0 is set at socket **creation** (not deferred to close time) so it takes
 effect before any sends are queued. See §15 in `docs/HEP/HEP-CORE-0021` for the

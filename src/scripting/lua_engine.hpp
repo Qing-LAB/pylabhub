@@ -84,8 +84,19 @@ class LuaEngine : public ScriptEngine
     void finalize_engine_() override;
 
     // ── Queries ──────────────────────────────────────────────────────────
+    //
+    // `has_callback` is inherited from `ScriptEngine` (HEP-CORE-0011
+    // §"Engine Thread Affinity"; Tier 1 standard cache).  Populated by
+    // `load_script()` via `set_standard_callback_present()`; read from
+    // any thread thereafter via the base-class lookup.  Arbitrary-name
+    // probing on the worker thread goes through
+    // `probe_uncached_callback_` below.
 
-    [[nodiscard]] bool has_callback(const std::string &name) const override;
+  protected:
+    [[nodiscard]] bool probe_uncached_callback_(const std::string &name)
+        const noexcept override;
+
+  public:
 
     // ── Schema / type building ───────────────────────────────────────────
 

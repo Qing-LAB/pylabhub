@@ -30,11 +30,16 @@
  *                                   no external shutdown-flag ctor)
  */
 
-#include "engine_factory.hpp"               // src/scripting/
+// Engine is constructed on the runner's worker thread via
+// scripting::create_engine in HubScriptRunner::worker_main_ Step 0
+// (HEP-CORE-0011 §"Engine Construction Lifecycle", 2026-05-07).
+// `init_scripting()` registers the dispatching factory once at main().
 
 #include "utils/cli_helpers.hpp"
 #include "utils/config/hub_config.hpp"
 #include "utils/hub_cli.hpp"
+#include "utils/script_engine_factory.hpp"  // scripting::init_scripting()
+#include "../scripting/python_interpreter_module.hpp"  // ensure_python_interpreter_loaded
 #include "utils/hub_directory.hpp"
 #include "utils/hub_host.hpp"
 #include "utils/interactive_signal_handler.hpp"
@@ -204,6 +209,13 @@ int main(int argc, char *argv[])
         {.binary_name = "plh_hub"}, &g_shutdown);
     signal_handler.install();
 
+    // 2a. Register the dispatching ScriptEngine factory with the
+    //     utils-side plugin registry (HEP-CORE-0011 §"Engine Construction
+    //     Lifecycle").  Must run before HubHost is constructed so that
+    //     HubScriptRunner::worker_main_ Step 0 can resolve the factory.
+    //     Idempotent.
+    pylabhub::scripting::init_scripting();
+
     // 3. Parse CLI.  hub_cli::parse_hub_args writes usage / errors to
     //    out_stream / err_stream (defaults to stdout / stderr) and returns
     //    a ParseResult; it does NOT call std::exit.
@@ -273,13 +285,35 @@ int main(int argc, char *argv[])
         }
     }
 
-    // 10. Build engine if a script is configured.  HubHost(cfg, engine)
-    //     accepts a null engine (script-disabled run); cfg.script().path
-    //     non-empty + engine non-null is the script-enabled path
-    //     (HEP-0033 §12).
-    std::unique_ptr<scripting::ScriptEngine> engine;
-    if (!cfg.script().path.empty())
-        engine = scripting::make_engine_from_script_config(cfg.script());
+    // 10. PythonInterpreter conditional load (HEP-CORE-0011 §"Engine
+    //     Construction Lifecycle", Option E final design).  Main thread
+    //     loads the persistent dynamic module IFF the hub config selects
+    //     a Python script.  pi_startup runs Py_InitializeFromConfig on
+    //     this thread (= main) and parks a py::gil_scoped_release so
+    //     HubScriptRunner's worker_main_ can pick up the GIL via
+    //     PythonGilLease.  Native and Lua deployments skip this entirely.
+    //
+    //     The module is registered persistent — it stays loaded until
+    //     ~LifecycleGuard runs at process exit, where finalize() Phase 2
+    //     invokes pi_shutdown synchronously on THIS thread (same thread
+    //     as Py_InitializeFromConfig), satisfying CPython's single-thread
+    //     init/finalize contract.
+    if (!cfg.script().path.empty() &&
+        (cfg.script().type == "python" || cfg.script().type.empty()))
+    {
+        if (!pylabhub::scripting::ensure_python_interpreter_loaded())
+        {
+            std::cerr << "Failed to load PythonInterpreter — see logs.\n";
+            return 1;
+        }
+    }
+
+    // Per HEP-CORE-0011 §"Engine Construction Lifecycle":
+    // the script engine is constructed by HubScriptRunner's
+    // worker_main_ Step 0 on its worker thread via
+    // scripting::create_engine, after PythonGilLease acquires the GIL.
+    // Script-enabled vs script-disabled mode is selected by
+    // cfg.script().path non-empty / empty.
 
     // 11. --validate mode: do a full startup → shutdown round-trip.  This
     //     exercises broker bind, admin bind (if enabled), engine init +
@@ -290,7 +324,7 @@ int main(int argc, char *argv[])
     {
         try
         {
-            pylabhub::hub_host::HubHost host(std::move(cfg), std::move(engine));
+            pylabhub::hub_host::HubHost host(std::move(cfg));
             host.startup();
             host.shutdown();
         }
@@ -304,7 +338,7 @@ int main(int argc, char *argv[])
     }
 
     // 12. Run mode.
-    pylabhub::hub_host::HubHost host(std::move(cfg), std::move(engine));
+    pylabhub::hub_host::HubHost host(std::move(cfg));
     try
     {
         host.startup();

@@ -24,6 +24,9 @@ add_library(pylabhub-scripting STATIC
     lua_state.cpp
     lua_engine.cpp
     python_engine.cpp
+    python_interpreter_module.cpp
+    engine_factory.cpp           # create_engine() — defined here so libpython
+                                 # only flows into binaries that link this lib
     # Role API classes — in the shared lib so PythonEngine and future
     # dynamic bindings can access all 3 without per-binary compilation.
     ${CMAKE_SOURCE_DIR}/src/producer/producer_api.cpp

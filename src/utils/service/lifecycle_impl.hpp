@@ -81,6 +81,21 @@ struct InternalModuleDef
     /// HEP-0001 anomaly semantics for every module that does not opt in.
     bool owner_managed_teardown = false;
 
+    /// Opt-in: synchronous shutdown.  When `true`, the framework
+    /// invokes `shutdown.func` DIRECTLY on the calling thread —
+    /// no `timedShutdown` worker-thread spawn, no deadline
+    /// enforcement.  Required for resources whose teardown has hard
+    /// thread-affinity (CPython's `Py_FinalizeEx` MUST run on the
+    /// thread that called `Py_Initialize`).  Set this AND
+    /// `is_persistent` together so the only path to shutdown is the
+    /// caller-thread sync path in `finalize()`.
+    ///
+    /// **Cost.**  No deadline enforcement: a hang in the callback
+    /// hangs the calling thread (typically `~LifecycleGuard` on main).
+    /// Use ONLY when thread-affinity is a hard requirement.
+    bool synchronous_shutdown = false;
+
+
     // User data (set at ModuleDef construction, immutable).
     void *userdata{nullptr};
     uint64_t userdata_key{0};
@@ -147,6 +162,12 @@ class LifecycleManagerImpl
         /// at registration, immutable thereafter).  See that field's
         /// doc for semantics.  Read-only on the unload path.
         bool owner_managed_teardown = false;
+        /// Mirror of `InternalModuleDef::synchronous_shutdown` (set
+        /// at registration, immutable thereafter).  Read by
+        /// `LifecycleManagerImpl::finalize()` Phase 2/3 dispatch to
+        /// choose between direct call (sync) and timedShutdown
+        /// worker-thread spawn.
+        bool synchronous_shutdown = false;
         std::atomic<DynamicModuleStatus> dynamic_status = {DynamicModuleStatus::UNLOADED};
         std::atomic<int> ref_count = {0};
 

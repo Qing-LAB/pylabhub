@@ -140,7 +140,22 @@ struct HubStateTestAccess
                              std::chrono::steady_clock::time_point     when,
                              const std::optional<nlohmann::json>      &m)
     {
-        s._on_heartbeat(ch, uid, when, m);
+        // Legacy 4-arg overload — preserves call sites written before
+        // M1.1 added the role_type parameter.  Routes the heartbeat
+        // through the per-uid back-compat path (legacy steps 1-3 only;
+        // no per-presence row touched).  New tests should call
+        // `on_heartbeat_typed` below to also exercise the per-presence
+        // refresh.
+        s._on_heartbeat(ch, uid, /*role_type=*/std::string{}, when, m);
+    }
+    static void on_heartbeat_typed(HubState                             &s,
+                                   const std::string                    &ch,
+                                   const std::string                    &uid,
+                                   const std::string                    &role_type,
+                                   std::chrono::steady_clock::time_point when,
+                                   const std::optional<nlohmann::json>  &m)
+    {
+        s._on_heartbeat(ch, uid, role_type, when, m);
     }
     static void on_heartbeat_timeout(HubState          &s,
                                      const std::string &ch,

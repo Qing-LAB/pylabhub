@@ -27,8 +27,9 @@
 #include "utils/config/hub_config.hpp"
 #include "utils/hub_directory.hpp"
 #include "utils/hub_host.hpp"
+#include "utils/script_engine_factory.hpp"  // pylabhub::scripting::init_scripting
 
-#include "engine_factory.hpp"     // make_engine_from_script_config (scripting)
+// engine_factory.hpp removed (HEP-CORE-0011 §"Engine Construction Lifecycle", 2026-05-07)
 
 #include "utils/broker_request_comm.hpp"   // role-side client of broker
 #include "utils/hub_api.hpp"
@@ -100,6 +101,10 @@ public:
             pylabhub::crypto::GetLifecycleModule(),
             pylabhub::hub::GetZMQContextModule()),
             std::source_location::current());
+        // HEP-CORE-0011 §"Engine Construction Lifecycle": register the
+        // dispatching ScriptEngine factory exactly the way `plh_hub`'s
+        // `main()` does in production.  Idempotent across test suites.
+        pylabhub::scripting::init_scripting();
     }
     static void TearDownTestSuite() { s_lifecycle_.reset(); }
 
@@ -225,11 +230,8 @@ TEST_F(HubLuaIntegrationTest, RealLuaScript_OnInitOnStop_FireAndLog)
     ASSERT_FALSE(expected_uid.empty())
         << "init_directory must have generated a hub uid";
 
-    auto engine =
-        pylabhub::scripting::make_engine_from_script_config(cfg.script());
-    ASSERT_NE(engine, nullptr) << "factory must return a LuaEngine for type=lua";
 
-    HubHost host(std::move(cfg), std::move(engine));
+    HubHost host(std::move(cfg));
 
     // Wall-clock bound on startup.  Observed steady-state on dev
     // hardware: ~110 ms (LuaJIT init + FFI sandbox + load_script +
@@ -323,9 +325,7 @@ TEST_F(HubLuaIntegrationTest, ScriptSyntaxError_StartupThrows)
     const fs::path dir = make_lua_hub_dir("syntax", broken_lua);
 
     auto cfg = HubConfig::load_from_directory(dir.string());
-    auto engine =
-        pylabhub::scripting::make_engine_from_script_config(cfg.script());
-    HubHost host(std::move(cfg), std::move(engine));
+    HubHost host(std::move(cfg));
 
     try
     {
@@ -395,10 +395,8 @@ TEST_F(HubLuaIntegrationTest, OnTick_FiresPeriodically_WhenIdle)
         /*target_period_ms=*/100);
 
     auto cfg = HubConfig::load_from_directory(dir.string());
-    auto engine =
-        pylabhub::scripting::make_engine_from_script_config(cfg.script());
 
-    HubHost host(std::move(cfg), std::move(engine));
+    HubHost host(std::move(cfg));
     ASSERT_NO_THROW(host.startup());
 
     // Sleep for 550 ms — long enough to observe ~5 ticks at 100 ms.
@@ -504,10 +502,8 @@ TEST_F(HubLuaIntegrationTest, OnTick_CatchUp_FixedRateWithCompensation)
         /*target_period_ms=*/100);
 
     auto cfg = HubConfig::load_from_directory(dir.string());
-    auto engine =
-        pylabhub::scripting::make_engine_from_script_config(cfg.script());
 
-    HubHost host(std::move(cfg), std::move(engine));
+    HubHost host(std::move(cfg));
 
     ASSERT_NO_THROW(host.startup());
 
@@ -654,9 +650,7 @@ end
     const fs::path dir = make_lua_hub_dir("read_accessors", lua_body);
 
     auto cfg = HubConfig::load_from_directory(dir.string());
-    auto engine =
-        pylabhub::scripting::make_engine_from_script_config(cfg.script());
-    HubHost host(std::move(cfg), std::move(engine));
+    HubHost host(std::move(cfg));
 
     ASSERT_NO_THROW(host.startup());
     host.shutdown();
@@ -717,9 +711,7 @@ end
     const fs::path dir = make_lua_hub_dir("request_shutdown", lua_body);
 
     auto cfg = HubConfig::load_from_directory(dir.string());
-    auto engine =
-        pylabhub::scripting::make_engine_from_script_config(cfg.script());
-    HubHost host(std::move(cfg), std::move(engine));
+    HubHost host(std::move(cfg));
 
     ASSERT_NO_THROW(host.startup());
 
@@ -859,9 +851,7 @@ end
     const fs::path dir = make_lua_hub_dir("evt_chan_role", lua_body,
                                            "fixed_rate", 100);
     auto cfg = HubConfig::load_from_directory(dir.string());
-    auto engine =
-        pylabhub::scripting::make_engine_from_script_config(cfg.script());
-    HubHost host(std::move(cfg), std::move(engine));
+    HubHost host(std::move(cfg));
     ASSERT_NO_THROW(host.startup());
 
     // Spawn a real role-side client and send REG_REQ.  The host's
@@ -931,9 +921,7 @@ end
     const fs::path dir = make_lua_hub_dir("evt_cons_add", lua_body,
                                            "fixed_rate", 100);
     auto cfg = HubConfig::load_from_directory(dir.string());
-    auto engine =
-        pylabhub::scripting::make_engine_from_script_config(cfg.script());
-    HubHost host(std::move(cfg), std::move(engine));
+    HubHost host(std::move(cfg));
     ASSERT_NO_THROW(host.startup());
 
     pylabhub::hub::BrokerRequestComm prod_brc;
@@ -1024,9 +1012,7 @@ end
     const fs::path dir = make_lua_hub_dir("post_event", lua_body,
                                            "fixed_rate", 100);
     auto cfg = HubConfig::load_from_directory(dir.string());
-    auto engine =
-        pylabhub::scripting::make_engine_from_script_config(cfg.script());
-    HubHost host(std::move(cfg), std::move(engine));
+    HubHost host(std::move(cfg));
     ASSERT_NO_THROW(host.startup());
 
     ASSERT_TRUE(run_main_loop_with_watchdog(host, std::chrono::seconds{5}))
@@ -1074,9 +1060,7 @@ end
     const fs::path dir = make_lua_hub_dir("augment_qm", lua_body,
                                            "fixed_rate", 100);
     auto cfg = HubConfig::load_from_directory(dir.string());
-    auto engine =
-        pylabhub::scripting::make_engine_from_script_config(cfg.script());
-    HubHost host(std::move(cfg), std::move(engine));
+    HubHost host(std::move(cfg));
     ASSERT_NO_THROW(host.startup());
 
     auto *api = host.hub_api();
@@ -1126,9 +1110,7 @@ end
     const fs::path dir = make_lua_hub_dir("augment_nil", lua_body,
                                            "fixed_rate", 100);
     auto cfg = HubConfig::load_from_directory(dir.string());
-    auto engine =
-        pylabhub::scripting::make_engine_from_script_config(cfg.script());
-    HubHost host(std::move(cfg), std::move(engine));
+    HubHost host(std::move(cfg));
     ASSERT_NO_THROW(host.startup());
 
     auto *api = host.hub_api();

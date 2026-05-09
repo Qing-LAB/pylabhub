@@ -174,9 +174,23 @@ class PYLABHUB_UTILS_EXPORT EngineHost
     /// indeterminately sequenced — g++ chose to move first, leaving a
     /// moved-from cfg for the uid read; D2.1 caught this in the test
     /// suite).  See `script_host_traits` docs above for the contract.
+    /// Per HEP-CORE-0011 §"Engine Construction Lifecycle" (2026-05-07):
+    /// the engine is NOT passed in — it is constructed on the host's
+    /// worker thread inside `worker_main_` Step 0 by calling
+    /// `pylabhub::scripting::create_engine(config_.script())`.  This
+    /// moves engine construction off `main()` (where the
+    /// PythonInterpreter dynamic lifecycle module would have loaded
+    /// `py::scoped_interpreter` on the wrong thread) onto the worker
+    /// — which becomes the GIL holder for the engine's lifetime.
+    ///
+    /// `create_engine` is forward-declared in
+    /// `utils/script_engine_factory.hpp` (pylabhub-utils) and defined
+    /// in `pylabhub-scripting/engine_factory.cpp`.  Cross-library symbol
+    /// resolution at the binary's link step pulls in the static-lib
+    /// definition, while pylabhub-utils consumers that never link
+    /// scripting see no libpython dependency.
     EngineHost(std::string_view role_tag,
                 ConfigT config,
-                std::unique_ptr<ScriptEngine> engine,
                 std::atomic<bool> *shutdown_flag = nullptr);
 
     /// Pure virtual — EngineHost is abstract. Every derived class must
@@ -283,8 +297,18 @@ class PYLABHUB_UTILS_EXPORT EngineHost
     RoleHostCore         &core()          noexcept { return core_; }
     const RoleHostCore   &core()    const noexcept { return core_; }
     ScriptEngine         &engine()        noexcept { return *engine_; }
+    bool                  has_engine() const noexcept { return engine_ != nullptr; }
     ApiT                 &api()           noexcept { return *api_; }
     bool                  has_api() const noexcept { return api_ != nullptr; }
+
+    /// Install the script engine.  Must be called from `worker_main_`
+    /// Step 0 (the worker thread that will become the GIL holder for
+    /// any Python engine).  Per HEP-CORE-0011 §"Engine Construction
+    /// Lifecycle" (2026-05-07).
+    void set_engine_(std::unique_ptr<ScriptEngine> engine) noexcept
+    {
+        engine_ = std::move(engine);
+    }
 
     /// Valid only while @ref startup_ is in progress or the worker is
     /// active. Derived classes set the result from the worker thread
@@ -318,6 +342,11 @@ class PYLABHUB_UTILS_EXPORT EngineHost
     /// through the owner — runner reads HubConfig via host backref).
     std::string                    uid_;
     ConfigT                        config_;
+    /// Engine instance — constructed in derived `worker_main_` Step 0
+    /// via `set_engine_(scripting::create_engine(config_.script()))`,
+    /// not by the EngineHost ctor.  See HEP-CORE-0011 §"Engine
+    /// Construction Lifecycle" for the rationale (worker thread must
+    /// be the GIL holder for Python engines).
     std::unique_ptr<ScriptEngine>  engine_;
     RoleHostCore                   core_;
 

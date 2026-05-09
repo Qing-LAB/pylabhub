@@ -31,7 +31,10 @@
 #include "consumer_init.hpp"       // src/consumer/
 #include "processor_init.hpp"      // src/processor/
 
-#include "engine_factory.hpp"      // src/scripting/
+// engine_factory.hpp removed — engine is constructed in host's
+// worker_main_ Step 0 via the forward-declared scripting::create_engine
+// (see HEP-CORE-0011 §"Engine Construction Lifecycle").  main() no
+// longer constructs engines.
 #include "utils/cli_helpers.hpp"
 #include "utils/config/role_config.hpp"
 #include "utils/interactive_signal_handler.hpp"
@@ -40,6 +43,8 @@
 #include "utils/engine_host.hpp"
 #include "utils/role_main_helpers.hpp"
 #include "utils/role_registry.hpp"
+#include "utils/script_engine_factory.hpp"  // scripting::init_scripting / ensure_python
+#include "../scripting/python_interpreter_module.hpp"  // ensure_python_interpreter_loaded
 
 #include "plh_datahub.hpp"   // LifecycleGuard + hub/utils prelude
 #include "plh_version_registry.hpp"  // HEP-CORE-0032 ABI check
@@ -200,6 +205,13 @@ int main(int argc, char *argv[])
         {.binary_name = "plh_role"}, &g_shutdown);
     signal_handler.install();
 
+    // Register the dispatching ScriptEngine factory with the utils-side
+    // plugin registry (HEP-CORE-0011 §"Engine Construction Lifecycle").
+    // Must run BEFORE any role host is constructed — host worker_main_
+    // Step 0 calls `scripting::create_engine` which returns nullptr if
+    // no factory has been registered.  Idempotent.
+    pylabhub::scripting::init_scripting();
+
     // Parse args. The role_name passed to parse_role_args is only used
     // in the usage text ("<role_dir>"); the real selector is args.role.
     auto parsed = role_cli::parse_role_args(argc, argv, "role");
@@ -299,10 +311,35 @@ int main(int argc, char *argv[])
         c.load_keypair(*vault_password);
     }
 
-    // ── Engine + host via registry factory ────────────────────────────
-    auto engine = scripting::make_engine_from_script_config(c.script());
-    auto host = info->host_factory(
-        std::move(*config), std::move(engine), &g_shutdown);
+    // ── PythonInterpreter conditional load (Option E final design) ────
+    // HEP-CORE-0011 §"Engine Construction Lifecycle": main loads the
+    // PythonInterpreter dynamic lifecycle module on THIS thread iff the
+    // config selects a Python script.  pi_startup runs Py_InitializeFromConfig
+    // on main and releases the GIL via a stored py::gil_scoped_release;
+    // the role host's worker thread acquires it via PythonGilLease at
+    // the top of worker_main_.  The module is registered as persistent —
+    // it stays loaded until LifecycleGuard tears down at process exit,
+    // where Phase 2 of finalize() runs Py_FinalizeEx synchronously on
+    // THIS thread (same thread as Py_InitializeFromConfig).
+    //
+    // Native and Lua deployments skip this entirely; Py_Initialize cost
+    // is paid only when actually needed.
+    if (c.script().type == "python" || c.script().type.empty())
+    {
+        if (!pylabhub::scripting::ensure_python_interpreter_loaded())
+        {
+            std::cerr << "Failed to load PythonInterpreter — see logs.\n";
+            return 1;
+        }
+    }
+
+    // ── Host via registry factory ─────────────────────────────────────
+    // Per HEP-CORE-0011 §"Engine Construction Lifecycle" (2026-05-07):
+    // engine is NOT constructed here.  The host's worker_main_ Step 0
+    // constructs it via scripting::create_engine(config_.script()) on
+    // the worker thread, after PythonGilLease acquires the GIL on that
+    // thread.
+    auto host = info->host_factory(std::move(*config), &g_shutdown);
     host->set_validate_only(args.validate_only);
 
     try { host->startup_(); }

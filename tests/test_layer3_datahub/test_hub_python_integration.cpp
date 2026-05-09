@@ -41,8 +41,10 @@
 #include "utils/config/hub_config.hpp"
 #include "utils/hub_directory.hpp"
 #include "utils/hub_host.hpp"
+#include "utils/script_engine_factory.hpp"  // pylabhub::scripting::init_scripting
+#include "../../src/scripting/python_interpreter_module.hpp"  // ensure_python_interpreter_loaded
 
-#include "engine_factory.hpp"
+// engine_factory.hpp removed (HEP-CORE-0011 §"Engine Construction Lifecycle", 2026-05-07)
 
 #include "log_capture_fixture.h"
 
@@ -106,6 +108,15 @@ public:
             pylabhub::crypto::GetLifecycleModule(),
             pylabhub::hub::GetZMQContextModule()),
             std::source_location::current());
+        // HEP-CORE-0011 §"Engine Construction Lifecycle": register the
+        // dispatching ScriptEngine factory + GIL helpers, then load the
+        // PythonInterpreter persistent dynamic module on THIS thread
+        // (test thread) — same role as plh_hub's main() in production.
+        // Py_FinalizeEx will run on this thread at LifecycleGuard
+        // teardown via finalize() Phase 2.
+        pylabhub::scripting::init_scripting();
+        ASSERT_TRUE(pylabhub::scripting::ensure_python_interpreter_loaded())
+            << "PythonInterpreter failed to load — Python tests cannot run";
     }
     static void TearDownTestSuite() { s_lifecycle_.reset(); }
 
@@ -254,12 +265,8 @@ def on_stop(api):
     ASSERT_FALSE(expected_uid.empty())
         << "init_directory must have generated a hub uid";
 
-    auto engine =
-        pylabhub::scripting::make_engine_from_script_config(cfg.script());
-    ASSERT_NE(engine, nullptr)
-        << "factory must return a PythonEngine for type=python";
 
-    HubHost host(std::move(cfg), std::move(engine));
+    HubHost host(std::move(cfg));
 
     // Wall-clock bound on startup.  Observed steady-state on dev
     // hardware: ~120 ms (py::scoped_interpreter init +

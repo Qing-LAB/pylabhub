@@ -29,7 +29,6 @@ namespace
 // implementation trivial.
 std::unique_ptr<pylabhub::scripting::RoleHostBase>
 dummy_host_factory(pylabhub::config::RoleConfig,
-                    std::unique_ptr<pylabhub::scripting::ScriptEngine>,
                     std::atomic<bool> *)
 {
     return nullptr;

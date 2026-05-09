@@ -149,11 +149,10 @@ namespace
 
 std::unique_ptr<scripting::RoleHostBase> make_processor_host(
     config::RoleConfig config,
-    std::unique_ptr<scripting::ScriptEngine> engine,
     std::atomic<bool> *shutdown_flag)
 {
     return std::make_unique<ProcessorRoleHost>(
-        std::move(config), std::move(engine), shutdown_flag);
+        std::move(config), shutdown_flag);
 }
 
 } // namespace

@@ -30,6 +30,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/embed.h>
 
+#include <atomic>
 #include <deque>
 #include <filesystem>
 #include <future>
@@ -37,6 +38,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace py = pybind11;
@@ -70,6 +72,21 @@ class PythonEngine : public ScriptEngine
     /// Empty = use base environment (default).
     void set_python_venv(const std::string &venv) { python_venv_ = venv; }
 
+    /// Set the GIL-release-during-wait flag before initialize().
+    /// True → the worker loop releases the GIL across each idle wait
+    /// (queue read, deadline sleep, hub event wait) so cooperative
+    /// sub-threads on the same Python interpreter can run.  See
+    /// `ScriptEngine::release_global_lock_during_wait()` for full semantics.
+    void set_release_global_lock_during_wait(bool v) noexcept
+    {
+        release_global_lock_during_wait_ = v;
+    }
+
+    [[nodiscard]] bool release_global_lock_during_wait() const noexcept override
+    {
+        return release_global_lock_during_wait_;
+    }
+
     bool init_engine_(const std::string &log_tag, RoleHostCore *core) override;
     bool load_script(const std::filesystem::path &script_dir,
                      const std::string &entry_point,
@@ -88,8 +105,22 @@ class PythonEngine : public ScriptEngine
     void finalize_engine_() override;
 
     // ── Queries ────────────────────────────────────────────────────────────
+    //
+    // `has_callback` is inherited from `ScriptEngine` (HEP-CORE-0011
+    // §"Engine Thread Affinity"; Tier 1 standard cache).  Populated by
+    // `load_script()` below via
+    // `ScriptEngine::set_standard_callback_present()`; read from any
+    // thread thereafter via the base-class lookup.  This subclass
+    // additionally provides arbitrary-name probing via the
+    // `probe_uncached_callback_` hook — but ONLY when the caller is
+    // on the engine's owner thread (= worker, holding the GIL); see
+    // the override below for the contract.
 
-    [[nodiscard]] bool has_callback(const std::string &name) const override;
+  protected:
+    [[nodiscard]] bool probe_uncached_callback_(const std::string &name)
+        const noexcept override;
+
+  public:
 
     // ── Schema / type building ─────────────────────────────────────────────
 
@@ -139,14 +170,45 @@ class PythonEngine : public ScriptEngine
     [[nodiscard]] bool supports_multi_state() const noexcept override { return false; }
 
   private:
-    // ── Interpreter ────────────────────────────────────────────────────────
-    std::optional<py::scoped_interpreter> interp_;
+    // ── Interpreter ownership (HEP-CORE-0011 §"Engine Construction
+    //                            Lifecycle", Option E) ──────────────────────
+    //
+    // The embedded CPython interpreter is owned by the BINARY'S MAIN
+    // THREAD via the `pylabhub::scripting::PythonInterpreter` dynamic
+    // lifecycle module.  PythonEngine does NOT refcount the interpreter
+    // and does NOT carry an interpreter-scope member.  The contract is:
+    //
+    //   1. main() (or test fixture's SetUpTestSuite) calls
+    //      `ensure_python_interpreter_loaded()` ONCE on its own thread
+    //      after config parse.  pi_startup runs Py_InitializeFromConfig
+    //      on main and releases the GIL via a stored
+    //      py::gil_scoped_release.
+    //   2. Worker threads acquire the GIL with `py::gil_scoped_acquire`
+    //      at the top of `worker_main_`, BEFORE constructing PythonEngine.
+    //   3. PythonEngine ctor runs on the worker (which now holds the GIL),
+    //      so the `py::object{py::none()}` member-default-initializers
+    //      below execute under GIL safely.  ctor body calls
+    //      `validate_python_interpreter()` as defence-in-depth and
+    //      PLH_PANICs on failure.
+    //   4. ~PythonEngine may run on any thread (often main, via HubHost
+    //      destruction).  Cross-thread destruction is made safe by the
+    //      detach pattern in `clear_pyobjects_` (run from `finalize_engine_`
+    //      on the worker under GIL): each py::object is reset to
+    //      py::none() AND released so its m_ptr becomes nullptr.  The
+    //      eventual ~py::object is then a no-op on any thread.
 
     // ── Script ─────────────────────────────────────────────────────────────
     std::string log_tag_;
     std::string entry_point_;
     std::string required_callback_;
     std::string python_venv_;     ///< Optional venv name.
+
+    /// Mirror of `script.release_global_lock_during_wait` from config.
+    /// Read by the worker loop frame ONCE at worker startup (cached as a
+    /// local bool) — never per iteration.  See HEP-CORE-0011 §"Engine
+    /// Thread Affinity" sub-section "Optional global-lock release
+    /// during idle waits."
+    bool        release_global_lock_during_wait_{false};
 
     py::object module_{py::none()};
     py::object py_on_init_{py::none()};
@@ -155,6 +217,10 @@ class PythonEngine : public ScriptEngine
     py::object py_on_consume_{py::none()};
     py::object py_on_process_{py::none()};
     py::object py_on_inbox_{py::none()};
+    // Standard callback presence cache lives on `ScriptEngine` (HEP-CORE-0011
+    // §"Engine Thread Affinity"; populated by `load_script()` via
+    // `set_standard_callback_present(...)` + `freeze_standard_callback_cache()`).
+    // `has_callback()` reads from there — no per-PythonEngine duplicate state.
 
     // ── API object (one of these is active based on role) ──────────────────
     py::object api_obj_{py::none()};

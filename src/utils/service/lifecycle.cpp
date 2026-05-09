@@ -134,6 +134,14 @@ void ModuleDef::set_owner_managed_teardown(bool enabled)
     }
 }
 
+void ModuleDef::set_synchronous_shutdown(bool enabled)
+{
+    if (pImpl)
+    {
+        pImpl->def.synchronous_shutdown = enabled;
+    }
+}
+
 // ============================================================================
 // LifecycleManager::next_unique_key
 // ============================================================================
@@ -249,6 +257,7 @@ bool LifecycleManagerImpl::registerDynamicModule(lifecycle_internal::InternalMod
     node.is_dynamic = true;
     node.is_persistent = def.is_persistent;
     node.owner_managed_teardown = def.owner_managed_teardown;
+    node.synchronous_shutdown = def.synchronous_shutdown;
     node.userdata = def.userdata;
     node.userdata_key = def.userdata_key;
     node.userdata_validate = def.userdata_validate;
@@ -413,39 +422,148 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
         }
     }
 
+    // Inline shutdown helper for the sync paths (Phase 2 + Phase 3).
+    // Sync = DIRECT call on the calling thread — no `timedShutdown`
+    // wrapper, no per-module thread spawn.  This is what makes
+    // `~LifecycleGuard`'s thread the ACTUAL thread the shutdown
+    // callback runs on, which matters for resources with hard
+    // thread-affinity (CPython's `Py_FinalizeEx` requires it).
+    //
+    // **Logging discipline.**  Each per-module step is PLH_DEBUG'd
+    // BEFORE and AFTER the actual call rather than accumulated into
+    // `debug_info` (which is only flushed at the end of finalize()).
+    // A hang inside a module's shutdown callback would otherwise hide
+    // the operator's last sign of progress; with immediate flush an
+    // operator can `tail -f` the log and see exactly which module's
+    // shutdown is in flight when the hang happens.  The aggregated
+    // `debug_info` string still gets the same content for the final
+    // bulk-flush summary.
+    auto run_inline = [&debug_info](InternalGraphNode &mod) {
+        const char *const type_str = mod.is_dynamic ? "dynamic" : "static";
+
+        PLH_DEBUG("[PLH_LifeCycle] [SYNC|inline-shutdown|thread={}] ENTER "
+                  "{} module '{}' — direct call (no thread spawn, no "
+                  "deadline; if this is the last log line before a hang, "
+                  "the stall is INSIDE this module's shutdown callback).",
+                  pylabhub::platform::get_native_thread_id(),
+                  type_str, mod.name);
+        debug_info += fmt::format("     <- [SYNC] Shutting down {} module: '{}'...",
+                                   type_str, mod.name);
+
+        if (!mod.shutdown.func)
+        {
+            mod.status.store(ModuleStatus::Shutdown, std::memory_order_release);
+            debug_info += "no-op done.\n";
+            PLH_DEBUG("[PLH_LifeCycle] [SYNC|inline-shutdown|thread={}] "
+                      "EXIT {} module '{}' — no shutdown.func registered "
+                      "(no-op).",
+                      pylabhub::platform::get_native_thread_id(),
+                      type_str, mod.name);
+            return;
+        }
+
+        try
+        {
+            mod.shutdown.func();
+            mod.status.store(ModuleStatus::Shutdown, std::memory_order_release);
+            debug_info += "done.\n";
+            PLH_DEBUG("[PLH_LifeCycle] [SYNC|inline-shutdown|thread={}] EXIT "
+                      "{} module '{}' — shutdown callback returned cleanly.",
+                      pylabhub::platform::get_native_thread_id(),
+                      type_str, mod.name);
+        }
+        catch (const std::exception &e)
+        {
+            mod.status.store(ModuleStatus::FailedShutdown, std::memory_order_release);
+            debug_info += fmt::format(
+                "\n     **** ERROR: {} module '{}' threw on shutdown: {}\n",
+                type_str, mod.name, e.what());
+            PLH_DEBUG("[PLH_LifeCycle] [SYNC|inline-shutdown|thread={}] EXIT "
+                      "{} module '{}' — shutdown callback THREW: {}",
+                      pylabhub::platform::get_native_thread_id(),
+                      type_str, mod.name, e.what());
+        }
+        catch (...)
+        {
+            mod.status.store(ModuleStatus::FailedShutdown, std::memory_order_release);
+            debug_info += fmt::format(
+                "\n     **** ERROR: {} module '{}' threw a non-std exception on shutdown.\n",
+                type_str, mod.name);
+            PLH_DEBUG("[PLH_LifeCycle] [SYNC|inline-shutdown|thread={}] EXIT "
+                      "{} module '{}' — shutdown callback threw a non-std "
+                      "exception.",
+                      pylabhub::platform::get_native_thread_id(),
+                      type_str, mod.name);
+        }
+    };
+
+    // Per-module dispatch helper.  Modules that opted into
+    // `set_synchronous_shutdown(true)` get the DIRECT-call path
+    // (`run_inline`); everyone else gets the existing timed-thread
+    // path (`shutdownModuleWithTimeout`).  The choice is logged so an
+    // operator who sees a stall knows which path is in flight.
+    auto dispatch_shutdown = [&](InternalGraphNode &mod) {
+        if (mod.synchronous_shutdown)
+        {
+            PLH_DEBUG("[PLH_LifeCycle] [DISPATCH|thread={}] module '{}' "
+                      "opted into SYNC shutdown — calling DIRECTLY on this "
+                      "thread (no timedShutdown thread spawn).",
+                      pylabhub::platform::get_native_thread_id(), mod.name);
+            run_inline(mod);
+        }
+        else
+        {
+            PLH_DEBUG("[PLH_LifeCycle] [DISPATCH|thread={}] module '{}' "
+                      "uses default ASYNC-with-timeout shutdown — "
+                      "spawning timedShutdown worker (deadline {}ms).",
+                      pylabhub::platform::get_native_thread_id(), mod.name,
+                      mod.shutdown.timeout.count());
+            shutdownModuleWithTimeout(mod, debug_info);
+        }
+    };
+
     if (!loaded_dyn_nodes.empty())
     {
         auto dyn_shutdown_order = topologicalSort(loaded_dyn_nodes);
         std::reverse(dyn_shutdown_order.begin(), dyn_shutdown_order.end());
-        debug_info += "     -> Shutting down remaining dynamic modules...\n";
+        debug_info += fmt::format(
+            "     -> [Phase-2|thread={}] tearing down {} remaining "
+            "dynamic module(s) in reverse-topological order; per-module "
+            "dispatch (SYNC direct-call vs ASYNC timed-thread) selected "
+            "by ModuleDef::set_synchronous_shutdown().\n",
+            pylabhub::platform::get_native_thread_id(),
+            dyn_shutdown_order.size());
         for (auto *mod : dyn_shutdown_order)
-        {
-            shutdownModuleWithTimeout(*mod, debug_info);
-        }
-        debug_info += "     --- Remaining dynamic module shutdown complete ---\n";
+            dispatch_shutdown(*mod);
     }
     else
     {
-        debug_info += "     --- No remaining dynamic modules to shut down ---\n";
+        debug_info += fmt::format(
+            "     --- [Phase-2|thread={}] no remaining dynamic modules ---\n",
+            pylabhub::platform::get_native_thread_id());
     }
 
-    // Phase 3: Shut down static modules in reverse startup order.
-    debug_info += "\n     <- Shutting down static modules...\n";
+    // Phase 3: static modules in reverse startup order.
+    debug_info += fmt::format(
+        "\n     <- [Phase-3|thread={}] tearing down static modules "
+        "in reverse-topological order; per-module dispatch selected "
+        "by ModuleDef::set_synchronous_shutdown().\n",
+        pylabhub::platform::get_native_thread_id());
     for (auto *mod : m_shutdown_order)
     {
         if (mod->status.load(std::memory_order_acquire) == ModuleStatus::Started)
-        {
-            shutdownModuleWithTimeout(*mod, debug_info);
-        }
+            dispatch_shutdown(*mod);
         else
         {
             mod->status.store(ModuleStatus::Shutdown, std::memory_order_release);
-            debug_info += fmt::format("     <- Shutting down static module: '{}'...(no-op) done.\n",
+            debug_info += fmt::format("     <- static module '{}' (skip — not Started)\n",
                                       mod->name);
         }
     }
-    debug_info += "\n     --- Static module shutdown complete ---\n     -> Application "
-                  "finalization complete.\n";
+    debug_info += fmt::format(
+        "\n     --- [SYNC|Phase-2+3|thread={}] complete; application "
+        "finalization done. ---\n",
+        pylabhub::platform::get_native_thread_id());
     PLH_DEBUG("{}", debug_info);
 }
 

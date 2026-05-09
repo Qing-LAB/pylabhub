@@ -18,12 +18,13 @@
 > Producer/processor piggyback metrics on every `HEARTBEAT_REQ`;
 > consumer pushes metrics via a separate `METRICS_REPORT_REQ`.  All
 > five sub-phases (§9) shipped.  Code state today still matches this
-> layer with two latent bugs: consumer's heartbeat refreshes the
-> channel FSM (which it should not — that's producer authority); and
-> consumer's metrics get attributed to the producer's role row in the
-> broker (because the wire payload omits `uid` / `role_type` and the
-> broker derives them from `channel.producer_role_uid`).  See the
-> Phase 6 design draft §1 for the full bug analysis.
+> layer with two latent bugs: consumer's heartbeat is treated as if
+> it came from the channel's producer-role (refreshing the producer's
+> liveness bookkeeping) because the wire payload omits `uid` /
+> `role_type` and the broker derives both from
+> `channel.producer_role_uid`; consequently the consumer's metrics
+> piggyback gets attributed to the producer's `RoleEntry` row.  See
+> the Phase 6 design draft §1 for the full bug analysis.
 >
 > **Layer 2 — Phase 2 "nudge + on-demand heartbeat" (2026-03-25, paper-only).**
 > §2.1 + §3 + §4.1-4.3 propose a model where heartbeats are
@@ -39,9 +40,10 @@
 > tuple a role registers as) emits its own heartbeat.  The broker's
 > `MetricsStore` keys per `(channel, uid, role_type)` so a processor
 > with two presences (consumer-of-in_channel + producer-of-out_channel)
-> writes two distinct rows.  `channel.last_heartbeat` is refreshed
-> only by the producer's heartbeat for that channel — consumer
-> heartbeats do not gate the channel's Pending↔Ready FSM.
+> writes two distinct rows.  Each heartbeat refreshes only its own
+> presence row in `RoleEntry` — there is no separate channel-side
+> bookkeeping; channel observability is derived from the producer-
+> role's per-presence state (HEP-CORE-0023 §2.6).
 > `METRICS_REPORT_REQ` is **deprecated** but its broker-side handler
 > remains for one release for backward compatibility (no role
 > auto-emits it after the migration).  See `docs/tech_draft/role_host_template_design.md`
@@ -96,12 +98,15 @@ through the broker as the single aggregation point.
 3. **Heartbeat carries identity + optional metrics.**  `HEARTBEAT_REQ`
    always carries `channel_name`, `uid`, and `role_type` — enough to
    identify the sending presence.  When the role has new metrics to
-   report, it includes a `metrics` field with the snapshot.
-   Producer-presence heartbeats also drive the channel-FSM
-   (PendingReady → Ready) refresh; consumer-presence heartbeats do
-   NOT touch the channel FSM (consumer liveness is tracked
-   independently via OS PID check + ZMTP socket monitoring).
-   See HEP-CORE-0023 §2.5 for the timeout math.
+   report, it includes a `metrics` field with the snapshot.  Each
+   heartbeat refreshes only its **own** `(uid, role_type)` presence
+   row in `RoleEntry` (advancing that presence's Connected ↔ Pending
+   FSM per HEP-CORE-0023 §2.1) and writes its own
+   `MetricsStore[(channel, uid, role_type)]` row — no heartbeat
+   touches another presence's bookkeeping.  Same-host consumer
+   liveness is also tracked independently via OS PID check + ZMTP
+   socket monitoring as a faster reap signal.  See HEP-CORE-0023
+   §2.5 for the timeout math.
 
 4. **Per-presence emission.**  A role with N presences emits N
    heartbeats per cycle, each carrying its own (channel, uid,
@@ -204,12 +209,17 @@ distinct rows of the broker's metrics store.
 **Broker handler** (`handle_heartbeat_req`):
 
 1. Read `(channel_name, uid, role_type)` from the payload.
-2. If `role_type == "producer"`: refresh `channel(channel_name).last_heartbeat`,
-   run the PendingReady → Ready FSM transition (HEP-CORE-0023 §2.5)
-   if applicable, write metrics under `(channel, uid, "producer")`.
-3. If `role_type == "consumer"`: do NOT touch `channel.last_heartbeat`,
-   do NOT run the FSM, write metrics under `(channel, uid, "consumer")`.
-4. (Both branches) refresh `RoleEntry(uid).last_heartbeat` — informational.
+2. Look up the matching presence row:
+   `RoleEntry(uid).find_presence(channel_name, role_type)`.
+3. Refresh that presence's `last_heartbeat` and advance its
+   Connected ↔ Pending FSM transition (HEP-CORE-0023 §2.1).
+4. If a `metrics` payload is present, write it under
+   `MetricsStore[(channel_name, uid, role_type)]`.
+
+The handler never reaches into `ChannelEntry` for liveness
+bookkeeping — `ChannelEntry` no longer stores `last_heartbeat` or
+`status` (HEP-CORE-0023 §2.6).  The producer-presence row's state
+is what makes a channel observable as live.
 
 **Metrics query** (admin → broker):
 
@@ -611,7 +621,7 @@ This HEP adds a **fifth plane: Metrics**:
 
 | Plane | What flows | Mechanism | Where defined |
 |-------|-----------|-----------|---------------|
-| **Metrics plane** | Counter snapshots, custom KV pairs | Piggyback on HEARTBEAT (producer/processor), `METRICS_REPORT_REQ` (consumer), `METRICS_REQ/ACK` (query) | HEP-CORE-0019 |
+| **Metrics plane** | Counter snapshots, custom KV pairs | Piggyback on per-presence `HEARTBEAT_REQ` (Phase 6 — every presence, including consumers, carries an optional `metrics` field on its own heartbeat); `METRICS_REQ/ACK` (admin query). `METRICS_REPORT_REQ` retained one release for back-compat — see §4.3. | HEP-CORE-0019 |
 
 The metrics plane is **read-only from the broker's perspective** — participants
 report in, the broker aggregates and serves queries, but never pushes metrics
@@ -713,17 +723,18 @@ backward compatibility — see §4.3.)
 
 Resolves the latent bugs in Phase 1-5 where consumer's HEARTBEAT_REQ
 (carrying no `uid` / `role_type`) was silently attributed to the
-channel's producer in `MetricsStore`, and where the consumer's
-heartbeat refreshed `channel.last_heartbeat` (gating the FSM that
-should be producer-only).
+channel's producer-role in both `MetricsStore` and the producer-
+role's `RoleEntry` liveness bookkeeping.
 
 1. **Wire-format addition**: `HEARTBEAT_REQ` payload gains required
    `uid` and `role_type` fields (additive — pre-Phase-6 brokers
    ignored them harmlessly; post-Phase-6 broker requires them).
-2. **Broker handler split**: `handle_heartbeat_req` reads
-   `(channel, uid, role_type)` from the payload, refreshes
-   `channel.last_heartbeat` only when `role_type == "producer"`,
-   writes metrics under `MetricsStore[(channel, uid, role_type)]`.
+2. **Broker handler keyed lookup**: `handle_heartbeat_req` reads
+   `(channel, uid, role_type)` from the payload, looks up the
+   matching presence row in `RoleEntry(uid)`, refreshes that
+   presence's `last_heartbeat` + FSM, and writes metrics under
+   `MetricsStore[(channel, uid, role_type)]`.  No heartbeat ever
+   touches another presence's bookkeeping.
 3. **Consumer-side heartbeat fix**: today's consumer auto-emission
    path is removed; consumer's own heartbeat carries
    `role_type="consumer"` and writes its own row.
@@ -734,6 +745,9 @@ should be producer-only).
 6. **`metrics_store_` legacy retired**: single per-presence-keyed
    path going forward; query handlers updated to read the unified
    store.
+7. **`ChannelEntry.status` / `ChannelEntry.last_heartbeat` removed**:
+   channel observability is derived from the producer-presence's
+   state in `RoleEntry` (HEP-CORE-0023 §2.6).
 
 Implementation lands in
 `docs/tech_draft/role_host_template_design.md` Wave B (M0+M1+M2);

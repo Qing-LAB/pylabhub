@@ -20,9 +20,11 @@
 #include "utils/loop_timing_policy.hpp"
 #include "utils/role_api_base.hpp"
 #include "utils/role_host_core.hpp"
+#include "utils/script_engine_factory.hpp"  // EngineGlobalLockRelease
 
 #include <chrono>
 #include <functional>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -71,6 +73,15 @@ struct LoopConfig
     double            period_us{0};
     LoopTimingPolicy  loop_timing{LoopTimingPolicy::MaxRate};
     double            queue_io_wait_timeout_ratio{0.1};
+
+    /// Mirror of `ScriptEngine::release_global_lock_during_wait()` for
+    /// the engine bound to this loop.  Read by the role host BEFORE
+    /// calling `run_data_loop` and stored here as a cached bool —
+    /// `run_data_loop` itself never reaches into the engine to query
+    /// it.  Default false → wraps below are constant-folded out.
+    /// See ScriptEngine + HEP-CORE-0011 §"Engine Thread Affinity"
+    /// "Optional global-lock release during idle waits".
+    bool              release_global_lock_during_wait{false};
 };
 
 // ============================================================================
@@ -103,6 +114,17 @@ void run_data_loop(RoleAPIBase &api, RoleHostCore &core,
     using Clock = std::chrono::steady_clock;
     auto deadline = Clock::time_point::max();
 
+    // Cache the GIL-release-during-wait flag ONCE.  Read from cfg here,
+    // never per-iteration via the engine — keeps the loop free of any
+    // ScriptEngine virtual call.  When false (default) the inner
+    // `std::optional<EngineGlobalLockRelease>` stays empty: ctor/dtor
+    // are no-ops, no engine touch, identical observable behaviour to
+    // the pre-flag loop.  When true the optional is emplaced ONCE per
+    // cycle around the idle-wait region (Steps A + B); the GIL is
+    // released across the wait and reacquired before any subsequent
+    // engine-touching step (drain_inbox_sync, invoke_and_commit).
+    const bool release_lock_idle = cfg.release_global_lock_during_wait;
+
     // -- Outer loop ----------------------------------------------------------
     while (core.is_running() &&
            !core.is_shutdown_requested() &&
@@ -113,30 +135,67 @@ void run_data_loop(RoleAPIBase &api, RoleHostCore &core,
 
         const auto cycle_start = Clock::now();
 
-        // -- Step A: Role-specific acquire -----------------------------------
+        // -- Steps A + B + B': idle-wait region with INSIDE-the-wrap
+        //    shutdown check.  Wrapped in EngineGlobalLockRelease iff
+        //    `release_lock_idle` is true.  Steps A (queue I/O wait),
+        //    B (deadline sleep), AND the post-wait shutdown check
+        //    (Step B') are all pure C++ — they do NOT touch the
+        //    engine — so they all run with the GIL released.
+        //
+        //    **Why Step B' moved INSIDE the wrap (HEP-CORE-0011
+        //    §"Engine Thread Affinity" sub-section "Optional global-
+        //    lock release during idle waits"):**  the optional dtor
+        //    at the closing brace reacquires the GIL via
+        //    `PyEval_RestoreThread`, which BLOCKS until the GIL is
+        //    available.  If a script-spawned non-yielding C
+        //    extension (Flask handler with a long native call,
+        //    NumPy op without `nogil`, buggy module) holds the GIL,
+        //    that reacquire blocks indefinitely.  By checking the
+        //    shutdown flag (a plain C++ atomic read — no GIL
+        //    needed) BEFORE the dtor's reacquire, we guarantee that
+        //    a shutdown signal is OBSERVED and that
+        //    `cleanup_on_shutdown` (audited GIL-free for all three
+        //    roles — SHM queue ops only) RUNS even on the worst
+        //    case where the reacquire would block.  The reacquire
+        //    is still attempted on scope exit; if it blocks, the
+        //    bounded join in `EngineHost::shutdown_()` (HEP-CORE-0011
+        //    §"ThreadManager" → "Bounded Shutdown Join") detaches
+        //    the worker thread after the timeout so the parent
+        //    unblocks.
         AcquireContext ctx{short_timeout, short_timeout_us, deadline, is_max_rate};
-        bool has_data = ops.acquire(ctx);
+        bool has_data;
+        bool shutdown_observed = false;
+        {
+            std::optional<scripting::EngineGlobalLockRelease> idle_release;
+            if (release_lock_idle)
+                idle_release.emplace();
 
-        // -- Step B: Deadline wait -------------------------------------------
-        if (!is_max_rate && has_data &&
-            deadline != Clock::time_point::max() && Clock::now() < deadline)
-        {
-            std::this_thread::sleep_until(deadline);
+            // -- Step A: Role-specific acquire -----------------------------------
+            has_data = ops.acquire(ctx);
+
+            // -- Step B: Deadline wait -------------------------------------------
+            if (!is_max_rate && has_data &&
+                deadline != Clock::time_point::max() && Clock::now() < deadline)
+            {
+                std::this_thread::sleep_until(deadline);
+            }
+
+            // -- Step B': Shutdown observation + cleanup INSIDE the wrap.
+            //    Atomic-flag reads do not need the GIL; cleanup_on_shutdown
+            //    is audited GIL-free.  This must happen BEFORE the dtor
+            //    reacquires the GIL — see comment block above.
+            if (!core.is_running() ||
+                core.is_shutdown_requested() ||
+                core.is_critical_error() ||
+                core.is_process_exit_requested())
+            {
+                ops.cleanup_on_shutdown();
+                shutdown_observed = true;
+            }
         }
 
-        // -- Step B': Shutdown check after potential sleep --------------------
-        if (!core.is_running() ||
-            core.is_shutdown_requested() ||
-            core.is_critical_error())
-        {
-            ops.cleanup_on_shutdown();
+        if (shutdown_observed)
             break;
-        }
-        if (core.is_process_exit_requested())
-        {
-            ops.cleanup_on_shutdown();
-            break;
-        }
 
         // -- Step C: Drain messages + inbox ----------------------------------
         auto msgs = core.drain_messages();

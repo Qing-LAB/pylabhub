@@ -541,16 +541,14 @@ asymmetric sides.
     // copy.  `heartbeat_interval_ms` is the **maximum tolerated
     // silence** the hub will accept; roles may run faster (HEP-0023 §2.5.1
     // role-side preferred cadence vs. hub authority).  REG_ACK / CONSUMER_REG_ACK
-    // surface these four multiplier fields to the registering role.
+    // surface these three multiplier fields to the registering role.
     "heartbeat_interval_ms":    500,
     "ready_miss_heartbeats":     10,
     "pending_miss_heartbeats":   10,
-    "grace_heartbeats":           4,
 
     // Optional explicit overrides (null = derive from interval × miss).
     "ready_timeout_ms":   null,
-    "pending_timeout_ms": null,
-    "grace_ms":           null
+    "pending_timeout_ms": null
   },
   // NOTE: `broker.known_roles[]` and `broker.federation_trust_mode` are
   // deferred to HEP-CORE-0035 (Hub-Role Authentication & Federation
@@ -594,13 +592,13 @@ asymmetric sides.
 - `hub_admin_config.hpp` — endpoint/enabled/token_required.
 - `hub_broker_config.hpp` — heartbeat-multiplier role-liveness timeouts
   (HEP-CORE-0023 §2.5): `heartbeat_interval_ms`,
-  `ready_miss_heartbeats`, `pending_miss_heartbeats`, `grace_heartbeats`,
-  plus three optional explicit overrides (`ready_timeout_ms` /
-  `pending_timeout_ms` / `grace_ms`).  Field-for-field parity with
+  `ready_miss_heartbeats`, `pending_miss_heartbeats`, plus two
+  optional explicit overrides (`ready_timeout_ms` /
+  `pending_timeout_ms`).  Field-for-field parity with
   `BrokerService::Config`'s heartbeat block — the `HubBrokerConfig` →
   `BrokerService::Config` wiring is a literal copy, no translation
   layer.  REG_ACK / CONSUMER_REG_ACK
-  surface the four multiplier fields to the registering role for the
+  surface the three multiplier fields to the registering role for the
   cadence-negotiation contract in HEP-0023 §2.5.1.  Auth/access fields
   (`known_roles[]`, `federation_trust_mode`) deferred to **HEP-CORE-0035**;
   see that HEP for the full design and §5 for the eventual hub.json shape.
@@ -715,18 +713,20 @@ struct HubState
 
 | Entry | Updated by | Holds |
 |---|---|---|
-| `ChannelEntry` | REG_REQ / producer-presence HEARTBEAT_REQ (drives FSM) / CONSUMER_REG_REQ / CONSUMER_DEREG_REQ / CHANNEL_CLOSING / broker-internal | name, **schema_owner**, **schema_id**, producer PID, consumers[], `last_heartbeat` (refreshed only by the channel's producer-presence heartbeat — HEP-CORE-0023 §2.1 / §2.5.2), created_at, status |
-| `RoleEntry` | REG / per-presence HEARTBEAT_REQ / DISC / role-side timeout | uid, name, role_tag, channels[], state, first_seen, `last_heartbeat` (informational; refreshed by any presence's heartbeat from this uid — see HEP-CORE-0019 §2.3 / Phase 6 per-presence keying), `latest_metrics`, `metrics_collected_at`, pubkey.  Note: `MetricsStore` is keyed `(channel_name, uid, role_type)` not just `uid` — see §18.4. |
+| `ChannelEntry` | REG_REQ / CONSUMER_REG_REQ / CONSUMER_DEREG_REQ / CHANNEL_CLOSING / broker-internal | name, **schema_owner**, **schema_id**, producer PID, consumers[], created_at.  **Does NOT store `status` or `last_heartbeat`** — channel observability is derived from the producer-presence's state in `RoleEntry` (HEP-CORE-0023 §2.6).  Channel teardown is atomic on producer-presence Disconnected; no separate channel FSM. |
+| `RoleEntry` | REG / per-presence HEARTBEAT_REQ / DISC / role-side timeout | uid, name, role_tag, first_seen, **`presences[]`** — one row per `(channel, role_type)` carrying the FSM `state` (Connected / Pending / Disconnected per HEP-CORE-0023 §2.1), `last_heartbeat`, `state_since`, `latest_metrics`, `metrics_collected_at`.  Each heartbeat refreshes only its matching presence row.  `MetricsStore` is keyed `(channel_name, uid, role_type)` — see §18.4. |
 | `BandEntry` | BAND_JOIN / BAND_LEAVE | name, members[], last_activity |
 | `PeerEntry` | HUB_PEER_HELLO / HUB_PEER_BYE / federation heartbeat | uid, endpoint, state, last_seen |
 | `ShmBlockRef` | channel registration with SHM transport | channel name, block path; metrics collected via `collect_shm_info(channel)` at query time |
 | `SchemaRecord` | hub-startup (globals) / REG_REQ (private) / `_on_role_deregistered` (cascade evict) | owner_uid, schema_id, hash, packing, blds, registered_at — see HEP-CORE-0034 §4 |
 | `BrokerCounters` | broker internal | `RoleStateMetrics` (HEP-0023 §2.5), ctrl queue depth, byte counts, per-msg-type counts, **schema counters (HEP-0034 §11.3)** |
 
-**Retention**: disconnected roles linger `state.disconnected_grace_ms` (default
-60s) with `status: "disconnected"` before eviction; LRU cap
-`state.max_disconnected_entries` prevents unbounded growth. Closed channels
-evict immediately.
+**Retention**: a `RoleEntry` whose presences are all `Disconnected`
+lingers `state.disconnected_grace_ms` (default 60s) before eviction
+from the `roles` map (so that a brief reconnect can recover its
+metrics history); LRU cap `state.max_disconnected_entries` prevents
+unbounded growth. Closed channels evict immediately on producer-
+presence Disconnected (HEP-CORE-0023 §2.1).
 
 **Consistency**: single internal mutex; accessors return snapshot structs. No
 cross-field consistency guarantee; each metric entry carries `_collected_at`.
@@ -2152,13 +2152,15 @@ can land in parallel once P1 lands.
   remains in `BrokerService::Config` (settable by tests directly, not by
   hub.json) until HEP-CORE-0035 retires it.
 
-  **Heartbeat alignment with HEP-CORE-0023 §2.5 (2026-04-29 follow-up).**
-  `HubBrokerConfig` now carries the four heartbeat-multiplier fields
+  **Heartbeat alignment with HEP-CORE-0023 §2.5 (2026-04-29 follow-up;
+  reduced from four to three multiplier fields 2026-05-07 — `Closing`
+  state and `grace_heartbeats` removed in HEP-0023 §2 rewrite).**
+  `HubBrokerConfig` now carries the three heartbeat-multiplier fields
   (`heartbeat_interval_ms`, `ready_miss_heartbeats`,
-  `pending_miss_heartbeats`, `grace_heartbeats`) plus three optional
-  explicit overrides — field-for-field parity with `BrokerService::Config`.
+  `pending_miss_heartbeats`) plus two optional explicit overrides —
+  field-for-field parity with `BrokerService::Config`.
   REG_ACK / CONSUMER_REG_ACK now carry a `heartbeat` block surfacing
-  these four multiplier fields so the registering role can validate
+  these three multiplier fields so the registering role can validate
   its configured cadence against the hub's max (HEP-0023 §2.5.1
   "Role-side preferred cadence vs. hub authority"); a slower role logs
   a WARN and resets to the hub's value to avoid liveness reaping.
@@ -2516,7 +2518,7 @@ classes are also disjoint — no message dual-classifies.
 | `CHANNEL_NOTIFY_REQ` | A | Fire-and-forget channel-targeted event. |
 | `CHANNEL_BROADCAST_REQ` | A | Fan-out broadcast on a channel. |
 | `CHECKSUM_ERROR_REPORT` | A | Consumer-detected; routes by channel. |
-| `HEARTBEAT_REQ` (per-presence — HEP-CORE-0019 §2.3) | A | Producer-presence drives the channel FSM (§2.5 of HEP-CORE-0023); consumer-presence refreshes per-presence metrics row only. |
+| `HEARTBEAT_REQ` (per-presence — HEP-CORE-0019 §2.3) | A | Refreshes the `(uid, role_type)` presence row in `RoleEntry` (§2.1 of HEP-CORE-0023) and writes the matching `MetricsStore` row.  Each heartbeat refreshes only its own presence row — channel observability is derived from the producer-presence's state. |
 | `BAND_JOIN_REQ` / `BAND_LEAVE_REQ` / `BAND_BROADCAST_REQ` / `BAND_MEMBERS_REQ` | D | Band lives on the hub the role chooses at join time. |
 | `ROLE_PRESENCE_REQ` | B | "Is uid X alive?" — fall-through. |
 | `ROLE_INFO_REQ` | B | Inbox-discovery — fall-through (HEP-CORE-0027 §4.2). |
@@ -2534,7 +2536,7 @@ classes are also disjoint — no message dual-classifies.
 | `CHANNEL_BROADCAST_NOTIFY` | A | Fan-out result of `CHANNEL_BROADCAST_REQ`. |
 | `CHANNEL_ERROR_NOTIFY` | A | Schema mismatch, etc. |
 | `CONSUMER_DIED_NOTIFY` | A | Producer of channel (when broker detects a consumer process is dead). |
-| `FORCE_SHUTDOWN` | A | Channel-level forced close (after grace expires). |
+| ~~`FORCE_SHUTDOWN`~~ | — | **Removed 2026-05-07** — the prior design used this to force-close lingering consumers after a `Closing` grace window expired; that whole grace path was removed when the channel-FSM was retired (HEP-CORE-0023 §2.1).  Channel teardown is now atomic on producer-presence Disconnected; consumers learn via `CHANNEL_CLOSING_NOTIFY` (best-effort) and any subsequent `DISC_REQ` returns `CHANNEL_NOT_FOUND`. |
 | `BAND_JOIN_NOTIFY` / `BAND_LEAVE_NOTIFY` / `BAND_BROADCAST_NOTIFY` | D | Band members. |
 
 (`HUB_TARGETED_MSG`, `HUB_RELAY_MSG`, `HUB_PEER_HELLO`, `HUB_PEER_BYE`
@@ -2573,13 +2575,14 @@ it.
 
 For Class A messages that carry a `(uid, role_type)` tuple in the
 payload (notably `HEARTBEAT_REQ` per HEP-CORE-0019 Phase 6), the
-broker handler keys per-presence rows in `MetricsStore` on
-`(channel_name, uid, role_type)`.  The channel FSM
-(`ChannelEntry.last_heartbeat` in §8) is refreshed only when
-`role_type == "producer"`; consumer-presence heartbeats refresh
-`RoleEntry.last_heartbeat` (informational) and
-`MetricsStore[(channel, uid, "consumer")]` only.  See HEP-CORE-0023
-§2.1 + §2.5.2 for the full handler split.
+broker handler looks up the matching presence row in
+`RoleEntry(uid)`, refreshes that presence's `last_heartbeat` and
+advances its Connected/Pending/Disconnected FSM, and writes
+metrics under `MetricsStore[(channel_name, uid, role_type)]`.  No
+heartbeat ever touches another presence's bookkeeping; channel
+observability is derived from the producer-presence's state, not
+from a separate `ChannelEntry` field.  See HEP-CORE-0023 §2.1 +
+§2.5.2 + §2.6 for the full handler model.
 
 For Class B messages, the broker walks its local `HubState.channels`
 + `HubState.roles` and answers from its own view.  No cross-hub
@@ -2781,10 +2784,11 @@ Pre-Phase-6 code (current as of 2026-05-06) had a single implicit
 assumption — "each role talks to one broker via a single
 `BrokerRequestComm`" — which silently created five distinct bugs:
 
-1. Consumer's heartbeat masks producer-death (refreshes
-   `channel.last_heartbeat` because the broker derives the producer
-   uid from the channel and treats every heartbeat for the channel
-   as producer-attribution).
+1. Consumer's heartbeat refreshes the producer-role's liveness
+   bookkeeping (the broker derives the producer uid from the channel
+   and treats every heartbeat for the channel as producer-
+   attribution), masking producer-death so the producer's presence
+   row never demotes Connected → Pending.
 2. Consumer's metrics are written into the producer's `RoleEntry`
    row (same root cause).
 3. Dual-hub processor is invisible on its `in_hub`: today's

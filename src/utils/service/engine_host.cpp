@@ -18,7 +18,9 @@
  */
 #include "utils/engine_host.hpp"
 #include "utils/debug_info.hpp"   // PLH_PANIC
+#include "utils/logger.hpp"       // LOGGER_SYSTEM_SYNC on GIL-stolen leak
 #include "utils/role_api_base.hpp"
+#include "utils/script_engine.hpp"   // engine().release_global_lock_during_wait()
 #include "utils/thread_manager.hpp"  // api_->thread_manager() inside startup_
 
 #include <atomic>
@@ -31,11 +33,10 @@ namespace pylabhub::scripting
 template <typename ApiT>
 EngineHost<ApiT>::EngineHost(std::string_view role_tag,
                               ConfigT config,
-                              std::unique_ptr<ScriptEngine> engine,
                               std::atomic<bool> *shutdown_flag)
     : role_tag_(role_tag)
     , config_(std::move(config))
-    , engine_(std::move(engine))
+    , engine_(nullptr)  // constructed in derived's worker_main_ Step 0
 {
     // Extract uid via the per-ApiT trait helper AFTER the move into
     // `config_`.  Reading through the trait + the moved-in `config_`
@@ -182,8 +183,81 @@ void EngineHost<ApiT>::shutdown_() noexcept
     // transition above is the sole correctness gate.
     core_.request_stop();
     core_.notify_incoming();
-    // api_.reset() → ApiT dtor → ThreadManager dtor →
-    // bounded join of every host-scope thread (worker, ctrl, custom).
+
+    // Shutdown ordering — HEP-CORE-0011 step 14.
+    //
+    // The worker thread exits its main loop on `shutdown_requested_`
+    // (above) and then runs its post-loop cleanup which still calls
+    // `api().dispatch_event(...)` / `api().dispatch_tick()` /
+    // `engine().invoke_on_stop()` etc.  Those calls read `*api_` —
+    // i.e. the unique_ptr's internal pointer — at the start of every
+    // dispatch.
+    //
+    // We therefore must NOT use `api_.reset()` directly here.  The
+    // libstdc++ implementation of `unique_ptr::reset()` writes the
+    // internal pointer to nullptr BEFORE invoking the deleter (which
+    // is what runs `~ApiT → ~ThreadManager → join(worker)`).  During
+    // the blocking join, the worker is still alive and can read
+    // `api()` between two `dispatch_event` calls — and that read
+    // returns a null reference, causing a SIGSEGV in
+    // `HubAPI::dispatch_event(this=0x0)`.  This race actually fires
+    // in practice (~25% of HubLuaIntegrationTest runs).
+    //
+    // Correct order:
+    //   1. Explicitly drain ApiT's ThreadManager while api_ is still
+    //      a valid live unique_ptr (the worker reads api() through
+    //      the still-non-null internal pointer until it exits).
+    //   2. Only after every worker / ctrl / custom thread has joined
+    //      is it safe to nullify api_.  No surviving thread can
+    //      observe the null window because no surviving thread
+    //      exists.
+    api_->thread_manager().drain();
+
+    // Layer 2 — bounded shutdown diagnostic.  ThreadManager::drain()
+    // already ran a per-thread bounded join with detach-on-timeout
+    // (default 5 s = `kMidTimeoutMs`) and emitted its own ERROR log.
+    // If the worker leaked AND the engine had opted into
+    // `release_global_lock_during_wait`, surface a CRITICAL message
+    // pointing at the most likely cause so the operator can find it
+    // quickly without having to correlate the generic ThreadManager
+    // log with the per-engine config.
+    //
+    // **CPython context** (HEP-CORE-0011 §"Engine Thread Affinity"):
+    // CPython's `take_gil` (called by `PyEval_RestoreThread` during
+    // the optional's dtor) wakes every `sys.setswitchinterval()`
+    // (default 5 ms in 3.10+) and signals the holder to drop the
+    // GIL.  Pure Python code yields within ~5 ms.  Only a script-
+    // spawned C extension that holds the GIL without yielding (long
+    // NumPy op without `with nogil:`, native module with a long
+    // pure-C path, etc.) can wedge the reacquire.  This is exactly
+    // the case the message below is calling out.
+    if (api_ && api_->thread_manager().detached_count_last_drain() > 0
+        && has_engine() && engine().release_global_lock_during_wait())
+    {
+        // SYSTEM_SYNC — bypass the async log queue.  This message is
+        // emitted on the shutdown path; the async logger is still
+        // alive at this point but its queue may not flush before the
+        // process exits if a downstream lifecycle module also wedges.
+        // Sync delivery guarantees the operator-diagnostic message
+        // reaches the sink (file / stderr) before any further teardown.
+        LOGGER_SYSTEM_SYNC(
+            "[EngineHost:{}] worker thread did not exit within "
+            "ThreadManager's bounded join AND this engine has "
+            "`script.release_global_lock_during_wait` enabled.  Most "
+            "likely cause: a script-spawned thread is holding the "
+            "Python GIL across the worker's reacquire.  Look for "
+            "non-yielding C extensions in the script's sub-threads "
+            "(NumPy/SciPy ops without `with nogil:`, native modules "
+            "with long pure-C paths, or `time.sleep` from a C "
+            "library that does not drop the GIL).  Pure Python code "
+            "yields the GIL every ~5 ms (sys.setswitchinterval) and "
+            "would NOT wedge here.  The worker thread has been "
+            "DETACHED; the OS will reap it on process exit.  Some "
+            "engine-owned resources (Python objects, sockets) may "
+            "leak until then.",
+            role_tag_);
+    }
+
     api_.reset();
 }
 

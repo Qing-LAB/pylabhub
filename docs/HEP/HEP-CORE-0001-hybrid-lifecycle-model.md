@@ -380,6 +380,8 @@ When the flag is `true`, a validator-fail at unload time is treated as a **succe
 
 The canonical example is `pylabhub::utils::ThreadManager`: its destructor calls `drain()` (synchronous bounded-join of all spawned threads) BEFORE flipping `impl_alive=false`; the lifecycle-dispatched `tm_shutdown` thunk is a documented no-op (see `src/utils/service/thread_manager.cpp::tm_shutdown` and `tm_impl_validate`). Without the flag, every `~ThreadManager` would log a WARN as the lifecycle layer treated the deliberate validator-fail as anomaly.
 
+**Counter-example — modules that perform real teardown in the lifecycle callback** (added 2026-05-07): `pylabhub::scripting::PythonInterpreter` (HEP-CORE-0011 §"Engine Construction Lifecycle") does NOT use `set_owner_managed_teardown(true)` because the module IS the owner of the resource: the embedded CPython interpreter (`py::scoped_interpreter`) lives in module userdata, and the registered shutdown callback is the one that runs `~py::scoped_interpreter` → `Py_Finalize`.  No external owner exists, so the standard refcounted-load / refcounted-unload pattern is the right shape — `ensure_python_interpreter_loaded()` on the first dependent loads + runs startup; `release_python_interpreter()` on the last dependent triggers shutdown.
+
 **When NOT to use the flag:**
 
 - If the validator's failure could mean genuine corruption (memory bug, double-destroy, bad userdata pointer), the flag would silently mask it. Modules with that failure-mode profile must NOT opt in — keep the default anomaly classification so corruption surfaces as a WARN.

@@ -520,11 +520,34 @@ void LifecycleManagerImpl::dynShutdownThreadMain()
             m_shutdown_queue.pop();
         }
         // m_shutdown_queue_mutex is released here.
-        PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}] Shutdown thread processing '{}'.", m_app_name,
-                  m_pid, name_to_process);
+        //
+        // ASYNC PATH: runs on the dedicated dynamic-shutdown thread,
+        // NOT on the LifecycleGuard destructor thread.  Reached only
+        // for non-persistent dynamic modules whose refcount dropped to
+        // zero mid-process (the application called UnloadModule and
+        // its closure became free for unload).  Persistent dynamic
+        // modules (e.g. PythonInterpreter) are NEVER scheduled here —
+        // they're torn down SYNCHRONOUSLY in
+        // LifecycleManagerImpl::finalize() Phase 2 on the
+        // ~LifecycleGuard thread.
+        //
+        // Dependency order is preserved: `unloadModule` only schedules
+        // a module once its refcount has hit 0, and `computeUnloadClosure`
+        // expands the closure in BFS order.  Sync and async paths thus
+        // honour the same dependency-order guarantee — they differ only
+        // in dispatch (direct call vs queue + thread).
+        PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}] [ASYNC|dyn-shutdown-thread"
+                  "|thread={}] processing '{}' (mid-process refcount-driven "
+                  "unload, dep-safe per closure expansion).",
+                  m_app_name, m_pid,
+                  pylabhub::platform::get_native_thread_id(),
+                  name_to_process);
         processOneUnloadInThread(name_to_process);
     }
-    PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}] Dynamic shutdown thread exiting.", m_app_name, m_pid);
+    PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}] [ASYNC|dyn-shutdown-thread"
+              "|thread={}] dynamic shutdown thread exiting.",
+              m_app_name, m_pid,
+              pylabhub::platform::get_native_thread_id());
 }
 
 /**

@@ -81,13 +81,13 @@ public:
     ///                    Phase 7 Option E, the runner does NOT own a
     ///                    HubConfig — it reads timing/identity through
     ///                    `host.config()` inside `worker_main_()`.
-    /// @param engine      ScriptEngine instance — caller (HubHost)
-    ///                    creates via `make_engine_from_script_config`
-    ///                    and moves in.
+    /// Per HEP-CORE-0011 §"Engine Construction Lifecycle" (2026-05-07):
+    /// the engine is NOT passed in.  The runner's `worker_main_` Step 0
+    /// constructs it on the worker thread via
+    /// `scripting::create_engine(host_.config().script())`.
     /// @param shutdown_flag  External shutdown atomic shared with main
     ///                       and HubHost; nullptr ok in tests.
     HubScriptRunner(pylabhub::hub_host::HubHost  &host,
-                    std::unique_ptr<ScriptEngine> engine,
                     std::atomic<bool>            *shutdown_flag = nullptr);
 
     /// Destructor calls shutdown_() (per EngineHost contract — must be

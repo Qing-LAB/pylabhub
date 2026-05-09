@@ -40,6 +40,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace pylabhub::hub_host { class HubAPI; }  // fwd decl — defined in
@@ -293,7 +294,54 @@ class ScriptEngine
 
     // ── Queries ──────────────────────────────────────────────────────────
 
-    [[nodiscard]] virtual bool has_callback(const std::string &name) const = 0;
+    /**
+     * @brief Is `name` registered as a script-side callback?
+     *
+     * **THREAD-SAFETY (HEP-CORE-0011 §"Engine Thread Affinity"): any
+     * thread.**  Callers include the worker thread (per-frame cycle
+     * gating), the broker control thread
+     * (`RoleAPIBase::on_heartbeat_tick_`), and admin RPC handler
+     * threads (`HubAPI::augment_*`).  This default implementation
+     * reads the pre-populated `standard_callback_presence_` cache —
+     * plain `unordered_map<string, bool>` lookup, no language-runtime
+     * access (no Python GIL, no `lua_State`).
+     *
+     * Subclasses populate the cache during `load_script()` (worker
+     * thread, runtime lock held) by calling
+     * `set_standard_callback_present(name, found)` for each name in
+     * the standard set, then `freeze_standard_callback_cache()` to
+     * publish.  `NativeEngine` overrides this method instead — its
+     * function pointers ARE atomic-safe to read, so no cache needed.
+     *
+     * Subclasses MAY override to provide faster lookups (NativeEngine
+     * pattern) but the override MUST also be thread-safe — touching
+     * py::object / lua_State here is a contract violation.
+     *
+     * @see HEP-CORE-0011 §"Engine Thread Affinity"
+     * @see docs/tech_draft/engine_callback_tiers.md (Tier 1)
+     */
+    [[nodiscard]] virtual bool has_callback(const std::string &name) const noexcept
+    {
+        if (name.empty())
+            return false;
+        if (standard_callback_cache_ready_.load(std::memory_order_acquire))
+        {
+            // Map is read-only after the flag flips (publish-once
+            // pattern); safe to read concurrently from any thread
+            // without a lock.
+            auto it = standard_callback_presence_.find(name);
+            if (it != standard_callback_presence_.end())
+                return it->second;
+        }
+        // Name not in the standard cache.  Defer to the subclass
+        // hook for arbitrary-name probing.  The default implementation
+        // returns false (safe across all threads); subclasses MAY
+        // override IFF they can probe safely — typically by guarding
+        // on the calling thread being the owner thread (where the
+        // language-runtime lock is held), and returning false from any
+        // other thread.
+        return probe_uncached_callback_(name);
+    }
 
     // ── Schema / type building ───────────────────────────────────────────
 
@@ -545,6 +593,75 @@ class ScriptEngine
      */
     [[nodiscard]] virtual bool supports_multi_state() const noexcept = 0;
 
+    /**
+     * @brief Should the worker loop release the engine's global
+     *        interpreter lock during idle waits?
+     *
+     * **Default: false.**  Multi-state engines (LuaEngine — independent
+     * `lua_State` per thread, no GIL-equivalent) and engines without an
+     * interpreter (NativeEngine) MUST keep this false.  Single-state
+     * engines (PythonEngine — one shared interpreter, GIL gates every
+     * touch) MAY override to return true when the user has set
+     * `script.release_global_lock_during_wait = true` in config.
+     *
+     * **Effect when true:** the worker loop wraps its idle-wait sites
+     * (queue I/O wait, deadline sleep, hub event wait) with
+     * `EngineGlobalLockRelease` — the GIL is released across the wait
+     * and reacquired before any subsequent engine touch.  This lets
+     * cooperative sub-threads on the same interpreter (e.g. a Flask
+     * server, asyncio event loop, `threading.Thread`) make progress.
+     *
+     * **Effect when false (default):** the worker holds the GIL for
+     * the entire iteration including the idle wait.  Sub-threads on
+     * the same Python interpreter are starved.  This is the
+     * historical behaviour and the cheapest hot path.
+     *
+     * **Threading: any thread.**  Read once per worker startup and
+     * cached as a local bool in the loop frame; this method is not
+     * called per iteration.
+     */
+    [[nodiscard]] virtual bool release_global_lock_during_wait() const noexcept
+    {
+        return false;
+    }
+
+    /**
+     * @brief Capability flag — does this engine support DYNAMIC callback
+     *        registration from script code at runtime?
+     *
+     * **Default: false.**  pylabhub's standard callback set
+     * (`on_init`, `on_stop`, `on_produce`, `on_consume`, `on_process`,
+     * `on_inbox`, `on_heartbeat`, `augment_*`) is **discovered by
+     * `load_script()` for every engine**, regardless of this flag.
+     * The standard set covers the cycle ops + lifecycle + hub
+     * augmentation hooks, and is fixed by pylabhub's
+     * inter-component protocol; growing it is a coordinated change
+     * across HEPs.
+     *
+     * When this flag is true, the engine ALSO exposes a script-side
+     * binding (e.g. Python's `api.register_callback(name, fn)`) that
+     * lets scripts register arbitrary additional callback names at
+     * runtime, plus a generic C++-side invocation surface
+     * (`invoke_event(name, args)` / `invoke_query(name, args, timeout)`)
+     * for content-agnostic event dispatch.  This is the "Tier 2"
+     * extensibility surface described in
+     * `docs/tech_draft/engine_callback_tiers.md` (HEP-CORE-0011 §"Engine
+     * Thread Affinity" + §"Callback Tiers — Standard vs Dynamic" once
+     * promoted).
+     *
+     * **Currently: every engine returns false — Tier 2 is reserved.**
+     * The flag is plumbed now as the public capability marker so callers
+     * can already write `if (engine->supports_dynamic_callbacks())` once
+     * a real consumer materialises (admin RPC handler with custom
+     * commands, hot-loadable script extensions, etc.).  When that
+     * happens, the engine that opts in (likely `PythonEngine` first)
+     * flips this to `true` and adds the registry + binding surface.
+     */
+    [[nodiscard]] virtual bool supports_dynamic_callbacks() const noexcept
+    {
+        return false;
+    }
+
     // ── Script reload (future) ────────────────────────────────────────────
 
     /**
@@ -640,6 +757,86 @@ class ScriptEngine
     /// Thread that called initialize(). Engines use this to detect whether
     /// invoke() is called from the owner (hot path) or another thread.
     std::thread::id owner_thread_id_;
+
+    // ── Standard callback presence cache (HEP-CORE-0011 §"Engine
+    //    Thread Affinity"; Tier 1) ─────────────────────────────────────
+    //
+    // Populated ONCE during `load_script()` on the worker thread under
+    // the runtime's lock (Python GIL, Lua state mutex).  Read by any
+    // thread thereafter via `has_callback()` — plain map lookup, no
+    // language-runtime access.  After
+    // `freeze_standard_callback_cache()` flips the ready flag, the map
+    // is read-only for the engine's lifetime; readers see the
+    // already-populated map under the release/acquire pair on the
+    // ready flag.
+    //
+    // Subclass usage from `load_script()` (Python: under GIL via
+    // PythonGilLease; Lua: under state mutex):
+    //
+    //     set_standard_callback_present("on_init", is_callable(py_on_init_));
+    //     set_standard_callback_present("on_stop", is_callable(py_on_stop_));
+    //     ... (the seven cycle/lifecycle hooks + augment_query_* family)
+    //     freeze_standard_callback_cache();
+    //
+    // See `docs/tech_draft/engine_callback_tiers.md` for the standard
+    // callback set and the rationale for Tier 1 vs Tier 2.
+
+    /// Set whether callback `name` is present.  Called by subclasses
+    /// during `load_script()` BEFORE `freeze_standard_callback_cache`.
+    /// Idempotent; safe to call multiple times for the same name (last
+    /// write wins).
+    void set_standard_callback_present(std::string name, bool present)
+    {
+        standard_callback_presence_[std::move(name)] = present;
+    }
+
+    /// Publish the standard callback cache.  After this returns, every
+    /// `has_callback()` reader sees the populated map via release /
+    /// acquire ordering on the ready flag.
+    void freeze_standard_callback_cache() noexcept
+    {
+        standard_callback_cache_ready_.store(true, std::memory_order_release);
+    }
+
+    /// Reset the cache (used on script reload to re-populate from
+    /// scratch).  Subclass calls this BEFORE re-running its
+    /// `set_standard_callback_present()` block on a reload path.
+    void reset_standard_callback_cache() noexcept
+    {
+        standard_callback_cache_ready_.store(false, std::memory_order_release);
+        standard_callback_presence_.clear();
+    }
+
+    /**
+     * @brief Subclass hook for `has_callback()` arbitrary-name probing.
+     *
+     * Called by `has_callback()` when @p name is NOT in the standard
+     * callback cache.  Default implementation returns false — safe on
+     * any thread.
+     *
+     * **Subclass override contract:** an override MAY probe the
+     * language runtime IFF the calling thread is the engine's owner
+     * thread (i.e., currently holds the runtime lock — Python's GIL
+     * via `PythonGilLease`, Lua's state mutex via the worker's
+     * scope).  Off-owner-thread calls MUST return false.  A typical
+     * impl guards on `std::this_thread::get_id() == owner_thread_id_`.
+     *
+     * This keeps `has_callback()` any-thread-safe (the principle
+     * established by HEP-CORE-0011 §"Engine Thread Affinity") while
+     * preserving the historical convenience that worker-thread
+     * callers can ask about user-defined script functions outside the
+     * pre-cached standard set.
+     */
+    [[nodiscard]] virtual bool probe_uncached_callback_(const std::string &) const noexcept
+    {
+        return false;
+    }
+
+private:
+    std::unordered_map<std::string, bool> standard_callback_presence_;
+    std::atomic<bool>                     standard_callback_cache_ready_{false};
+
+protected:
 
     /// Role API — single source of truth for identity, infrastructure, and operations.
     /// Non-owning pointer, set by `build_api(RoleAPIBase&)`.  Owned by role host.

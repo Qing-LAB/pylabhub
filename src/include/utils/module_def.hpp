@@ -216,6 +216,30 @@ class PYLABHUB_UTILS_EXPORT ModuleDef
      */
     void set_owner_managed_teardown(bool enabled = true);
 
+    /**
+     * @brief Opt in to synchronous shutdown.
+     *
+     * When `true`, the framework invokes the registered shutdown
+     * callback DIRECTLY on the calling thread — no `timedShutdown`
+     * worker-thread spawn, no deadline enforcement.  This is required
+     * for resources whose teardown has hard thread-affinity (CPython's
+     * `Py_FinalizeEx` is the canonical example: it MUST run on the
+     * thread that called `Py_Initialize`).
+     *
+     * Combine with `set_as_persistent(true)` so the only path to
+     * shutdown is the synchronous one in `LifecycleManager::finalize()`,
+     * called from `~LifecycleGuard` on the application's main thread.
+     *
+     * **Cost.**  No deadline enforcement.  A hang inside the shutdown
+     * callback hangs the calling thread (process exit on main).  Use
+     * ONLY when the resource genuinely needs same-thread teardown;
+     * the default false path provides the standard
+     * "wall-clock-bounded shutdown" property.
+     *
+     * @param enabled `true` (default) to enable synchronous shutdown.
+     */
+    void set_synchronous_shutdown(bool enabled = true);
+
   private:
     // LifecycleManager is the sole consumer of the pImpl internals.
     friend class LifecycleManager;

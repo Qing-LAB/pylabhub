@@ -42,7 +42,15 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
 
     // ── Queries ──────────────────────────────────────────────────────────
 
-    [[nodiscard]] bool has_callback(const std::string &name) const override;
+    /// THREAD-SAFETY: any thread.  Reads atomic-loadable function
+    /// pointers (set once at `load_script` time, not mutated after);
+    /// no language-runtime state involvement.  See HEP-CORE-0011
+    /// §"Engine Thread Affinity" + Tier 1 in
+    /// `docs/tech_draft/engine_callback_tiers.md`.  Overrides the
+    /// base-class `ScriptEngine::has_callback` cache lookup —
+    /// NativeEngine doesn't populate the cache; the function-pointer
+    /// check is faster and equally thread-safe.
+    [[nodiscard]] bool has_callback(const std::string &name) const noexcept override;
 
     // ── Schema / type building ───────────────────────────────────────────
 

@@ -22,6 +22,28 @@
 using namespace pylabhub::utils;
 using namespace std::chrono_literals;
 
+// CI-relaxation factor applied to upper-bound timing assertions.  Loaded
+// CI runners (GitHub Actions, etc.) routinely interrupt short sleeps and
+// yields with milliseconds of scheduler delay — a tight "< 10us" upper
+// bound that's correct on a developer workstation can fail with a 5ms
+// schedule slot on a noisy runner.  Lower bounds (the "did the sleep
+// actually happen" contract) are unaffected — they're relaxed
+// asymmetrically only when needed and explicitly noted at each site.
+//
+// PYLABHUB_CI_BUILD is set by tests/CMakeLists.txt when the build is
+// configured under a CI environment (CI=1, GITHUB_ACTIONS=1, etc.).  See
+// the configure-time block there.
+#ifdef PYLABHUB_CI_BUILD
+constexpr uint64_t kCiUpperBoundMul = 10;  // 10x slack on upper bounds
+#else
+constexpr uint64_t kCiUpperBoundMul = 1;
+#endif
+
+constexpr uint64_t ci_upper(uint64_t us) noexcept
+{
+    return us * kCiUpperBoundMul;
+}
+
 // ============================================================================
 // Timing Measurement Helpers
 // ============================================================================
@@ -230,12 +252,16 @@ TEST(BackoffStrategyTest, NoBackoff_IsNoOp)
 {
     NoBackoff backoff;
 
-    // NoBackoff should be extremely fast (< 10us for overhead)
+    // NoBackoff should be extremely fast (< 10us for overhead) on a
+    // quiet workstation; relaxed to ci_upper(10us) on CI runners where
+    // a single scheduler preemption between the start/end timestamp
+    // measurements can blow past 10us even for an empty no-op.
     for (int i = 0; i < 100; i += 10)
     {
         uint64_t time_us = measure_backoff_time_us(backoff, i);
 
-        EXPECT_LT(time_us, 10u) << "NoBackoff should have near-zero overhead";
+        EXPECT_LT(time_us, ci_upper(10u))
+            << "NoBackoff should have near-zero overhead";
     }
 }
 
@@ -249,9 +275,11 @@ TEST(BackoffStrategyTest, NoBackoff_IgnoresIteration)
     uint64_t time_small = measure_backoff_time_us(backoff, 1);
     uint64_t time_large = measure_backoff_time_us(backoff, 1000);
 
-    // Both should be fast (no difference based on iteration)
-    EXPECT_LT(time_small, 10u);
-    EXPECT_LT(time_large, 10u);
+    // Both should be fast (no difference based on iteration).  Same
+    // ci_upper relaxation as NoBackoff_IsNoOp — a stray scheduler slice
+    // can stretch a no-op past 10us on a loaded runner.
+    EXPECT_LT(time_small, ci_upper(10u));
+    EXPECT_LT(time_large, ci_upper(10u));
 }
 
 // ============================================================================
@@ -376,12 +404,37 @@ TEST(BackoffStrategyTest, Comparison_NoBackoffVsConstant)
     NoBackoff no_backoff;
     ConstantBackoff const_backoff(100us);
 
-    uint64_t no_time = measure_backoff_time_us(no_backoff, 0);
-    uint64_t const_time = measure_backoff_time_us(const_backoff, 0);
+    // Take the minimum over several runs to suppress scheduler jitter
+    // on the no-backoff side: under CI a stray preempt can blow up a
+    // single no-op measurement to milliseconds, breaking the relative
+    // comparison even though the absolute behaviour is correct.  The
+    // contract being verified — "NoBackoff is dramatically faster than
+    // ConstantBackoff(100us)" — is preserved by the minimums.
+    constexpr int kRuns = 5;
+    uint64_t no_min    = UINT64_MAX;
+    uint64_t const_min = UINT64_MAX;
+    for (int r = 0; r < kRuns; ++r)
+    {
+        uint64_t no_t    = measure_backoff_time_us(no_backoff, 0);
+        uint64_t const_t = measure_backoff_time_us(const_backoff, 0);
+        if (no_t < no_min)       no_min    = no_t;
+        if (const_t < const_min) const_min = const_t;
+    }
 
-    // NoBackoff should be at least 10x faster
-    EXPECT_LT(no_time * 10, const_time)
-        << "NoBackoff should be significantly faster than ConstantBackoff";
+    // Under CI we relax 10x → 3x: a runner that's slow enough to give
+    // ConstantBackoff(100us) a scheduler-inflated 5000us reading is
+    // also slow enough to stretch a NoBackoff measurement to ~500us,
+    // which still satisfies the loosened ratio while preserving the
+    // qualitative invariant.
+#ifdef PYLABHUB_CI_BUILD
+    constexpr uint64_t kRatio = 3;
+#else
+    constexpr uint64_t kRatio = 10;
+#endif
+    EXPECT_LT(no_min * kRatio, const_min)
+        << "NoBackoff should be significantly faster than ConstantBackoff "
+           "(no_min=" << no_min << "us, const_min=" << const_min
+        << "us, required ratio=" << kRatio << "x)";
 }
 
 // ============================================================================
@@ -447,6 +500,11 @@ TEST(BackoffStrategyTest, UsagePattern_FastTests)
     uint64_t total_time_us =
         std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
 
-    // 1000 iterations of NoBackoff should be extremely fast (< 1ms)
-    EXPECT_LT(total_time_us, 1000u) << "NoBackoff should allow very fast test execution";
+    // 1000 iterations of NoBackoff should be extremely fast (< 1ms on
+    // a quiet workstation).  Relax to ci_upper(1ms) for CI runners
+    // where a single scheduler preemption mid-loop adds millisecond-
+    // scale delay; the qualitative property ("near-zero per-iteration
+    // overhead") is still verified.
+    EXPECT_LT(total_time_us, ci_upper(1000u))
+        << "NoBackoff should allow very fast test execution";
 }

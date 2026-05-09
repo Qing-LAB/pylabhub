@@ -232,6 +232,47 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir,
     ref_on_process_ = extract_callback_ref_("on_process");
     ref_on_inbox_ = extract_callback_ref_("on_inbox");
 
+    // Populate the standard-callback presence cache on `ScriptEngine`
+    // (HEP-CORE-0011 §"Engine Thread Affinity"; Tier 1 — see
+    // docs/tech_draft/engine_callback_tiers.md).  Probes touch
+    // lua_State — done HERE on the worker thread under the Lua state
+    // lock (load_script's contract).  After freeze, `has_callback()`
+    // is any-thread-safe via base-class plain map lookup, which is
+    // what `RoleAPIBase::on_heartbeat_tick_` (ctrl thread) and
+    // `HubAPI::augment_*` (admin RPC thread) rely on.
+    reset_standard_callback_cache();
+    set_standard_callback_present("on_init",    state_.is_ref_callable(ref_on_init_));
+    set_standard_callback_present("on_stop",    state_.is_ref_callable(ref_on_stop_));
+    set_standard_callback_present("on_produce", state_.is_ref_callable(ref_on_produce_));
+    set_standard_callback_present("on_consume", state_.is_ref_callable(ref_on_consume_));
+    set_standard_callback_present("on_process", state_.is_ref_callable(ref_on_process_));
+    set_standard_callback_present("on_inbox",   state_.is_ref_callable(ref_on_inbox_));
+    {
+        // Probe the additional standard names by global lookup on
+        // lua_State.  Same set as PythonEngine — adding entries here
+        // is a coordinated change with the HEP and the Python list.
+        lua_State *L = state_.raw();
+        // Keep synchronised with `python_engine.cpp` probe list — both
+        // populate the same base-class `has_callback()` cache.  Names
+        // from `HubAPI::augment_*` (`src/utils/service/hub_api.cpp`)
+        // and `RoleAPIBase::on_heartbeat_tick_`.
+        const char *const probe_names[] = {
+            "on_heartbeat",
+            "on_query_metrics",
+            "on_list_roles",
+            "on_get_channel",
+            "on_peer_message",
+        };
+        for (const char *probe : probe_names)
+        {
+            lua_getglobal(L, probe);
+            const bool is_fn = lua_isfunction(L, -1);
+            lua_pop(L, 1);
+            set_standard_callback_present(probe, is_fn);
+        }
+    }
+    freeze_standard_callback_cache();
+
     // Check that the required callback is present.
     if (!required_callback_.empty() && !has_callback(required_callback_))
     {
@@ -822,30 +863,29 @@ void LuaEngine::process_pending()
 // has_callback
 // ============================================================================
 
-bool LuaEngine::has_callback(const std::string &name) const
+// has_callback inherited from ScriptEngine — populated by load_script
+// above (HEP-CORE-0011 §"Engine Thread Affinity"; Tier 1).
+//
+// Arbitrary-name probing falls through to here.  Worker-thread-only:
+// `lua_getglobal` + `lua_isfunction` touch lua_State, which requires
+// the Lua state lock held by the worker.  Off-thread callers get
+// false (consistent with the Python engine's policy).
+bool LuaEngine::probe_uncached_callback_(const std::string &name) const noexcept
 {
-    if (name.empty())
+    if (std::this_thread::get_id() != owner_thread_id_)
         return false;
-
-    if (name == "on_init")
-        return state_.is_ref_callable(ref_on_init_);
-    if (name == "on_stop")
-        return state_.is_ref_callable(ref_on_stop_);
-    if (name == "on_produce")
-        return state_.is_ref_callable(ref_on_produce_);
-    if (name == "on_consume")
-        return state_.is_ref_callable(ref_on_consume_);
-    if (name == "on_process")
-        return state_.is_ref_callable(ref_on_process_);
-    if (name == "on_inbox")
-        return state_.is_ref_callable(ref_on_inbox_);
-
-    // Unknown callback name — check as a global function.
-    lua_State *L = state_.raw();
-    lua_getglobal(L, name.c_str());
-    bool is_fn = lua_isfunction(L, -1);
-    lua_pop(L, 1);
-    return is_fn;
+    try
+    {
+        lua_State *L = state_.raw();
+        lua_getglobal(L, name.c_str());
+        const bool is_fn = lua_isfunction(L, -1);
+        lua_pop(L, 1);
+        return is_fn;
+    }
+    catch (...)
+    {
+        return false;
+    }
 }
 
 // ============================================================================

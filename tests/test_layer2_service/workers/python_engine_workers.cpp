@@ -16,16 +16,20 @@
 #include "python_engine_workers.h"
 
 #include "python_engine.hpp"
+#include "python_interpreter_module.hpp"      // ensure_python_interpreter_loaded
 #include "utils/engine_module_params.hpp"
 #include "utils/role_api_base.hpp"
 #include "utils/role_host_core.hpp"
 #include "utils/schema_utils.hpp"
+#include "utils/script_engine_factory.hpp"    // PythonGilLease
 
 #include "plh_service.hpp"
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
 #include "test_schema_helpers.h"
 #include "test_sync_utils.h"
+
+#include <pybind11/pybind11.h>                 // py::gil_scoped_acquire (direct, see helper below)
 
 #include <fmt/core.h>
 #include <gtest/gtest.h>
@@ -63,6 +67,56 @@ namespace pylabhub::tests::worker
 {
 namespace python_engine
 {
+
+namespace
+{
+
+/// Python-aware variant of `run_gtest_worker`.  Per HEP-CORE-0011
+/// §"Engine Construction Lifecycle" (Option E, 2026-05-08),
+/// `PythonEngine`'s ctor requires:
+///   (1) PythonInterpreter dynamic lifecycle module loaded.
+///   (2) GIL held by the constructing thread.
+///
+/// Production code (plh_role / plh_hub) satisfies (1) via main()'s
+/// `ensure_python_interpreter_loaded()` call after config parse, and
+/// (2) via `PythonGilLease` at the top of each worker's `worker_main_`.
+///
+/// Pattern-3 isolated test workers in this file run in a forked
+/// subprocess and call `PythonEngine engine;` directly — they bypass
+/// `worker_main_` and the production main(), so they need to satisfy
+/// both contracts themselves.  This wrapper does that:
+///   - Spins up `LifecycleGuard` via the underlying `run_gtest_worker`.
+///   - Inside the worker lambda: loads PythonInterpreter (pi_startup
+///     runs on this subprocess thread, recording it as the owner —
+///     same thread that destructs `LifecycleGuard` in
+///     `run_gtest_worker`'s scope, so finalize() Phase 2's sync
+///     pi_shutdown also runs here).
+///   - Acquires GIL on this thread for the body's lifetime via
+///     `py::gil_scoped_acquire` (released when the body returns,
+///     before `LifecycleGuard` tears down — Py_FinalizeEx runs on
+///     this thread and re-acquires GIL via the parked
+///     `main_gil_release` inside pi_shutdown).
+///
+/// We use `py::gil_scoped_acquire` directly rather than
+/// `PythonGilLease` because PythonGilLease dispatches via a function
+/// pointer registered by `init_scripting()` in pylabhub-scripting,
+/// and these standalone test workers don't go through `init_scripting()`.
+template <typename Fn, typename... Mods>
+int run_python_gtest_worker(Fn body, const char *test_name, Mods &&...mods)
+{
+    return run_gtest_worker(
+        [body = std::forward<Fn>(body)]() mutable
+        {
+            ASSERT_TRUE(::pylabhub::scripting::ensure_python_interpreter_loaded())
+                << "PythonInterpreter failed to load — Python tests cannot run";
+            ::pybind11::gil_scoped_acquire gil;
+            body();
+        },
+        test_name, std::forward<Mods>(mods)...);
+}
+
+} // namespace
+
 namespace
 {
 
@@ -154,7 +208,7 @@ template <typename F>
 int script_worker(const std::string &dir, const char *scenario_name,
                   RoleKind kind, const std::string &py_source, F &&body)
 {
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]()
         {
             const fs::path script_dir(dir);
@@ -235,7 +289,7 @@ int full_lifecycle(const std::string &dir)
     // build_api time (python_engine.cpp) as the
     // role-specific C++ wrapper (ProducerAPI/ConsumerAPI/ProcessorAPI)
     // that exposes report_metric as a pybind11 method.
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
@@ -289,7 +343,7 @@ int initialize_and_finalize_succeeds(const std::string &dir)
     // set_python_venv("") pins empty-venv → embedded interpreter
     // (no venv activation), per PythonEngine's set_python_venv
     // inline at python_engine.hpp.
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             (void)script_dir;  // no script loaded
@@ -308,7 +362,7 @@ int initialize_and_finalize_succeeds(const std::string &dir)
 
 int register_slot_type_sizeof_correct(const std::string &dir)
 {
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir,
@@ -340,7 +394,7 @@ int register_slot_type_sizeof_correct(const std::string &dir)
 
 int register_slot_type_multi_field(const std::string &dir)
 {
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir,
@@ -392,7 +446,7 @@ int register_slot_type_packed_packing(const std::string &dir)
     // pinning the size anchor (5 bytes) for this specific
     // bool+int32 combination so that a compute_schema_size drift
     // for this schema would surface.
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir,
@@ -440,7 +494,7 @@ int register_slot_type_packed_packing(const std::string &dir)
 
 int register_slot_type_has_schema_false_returns_false(const std::string &dir)
 {
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir,
@@ -498,7 +552,7 @@ int register_slot_type_all_supported_types(const std::string &dir)
     // Single packing ("aligned") is sufficient: the internal check
     // guards against per-packing layout bugs; this test guards
     // against per-type-dispatcher bugs.  No need to test both.
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir,
@@ -535,7 +589,7 @@ int register_slot_type_all_supported_types(const std::string &dir)
 
 int alias_slot_frame_producer(const std::string &dir)
 {
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir,
@@ -570,7 +624,7 @@ int alias_slot_frame_producer(const std::string &dir)
 
 int alias_slot_frame_consumer(const std::string &dir)
 {
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir,
@@ -605,7 +659,7 @@ int alias_slot_frame_consumer(const std::string &dir)
 
 int alias_no_alias_processor(const std::string &dir)
 {
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir,
@@ -643,7 +697,7 @@ int alias_no_alias_processor(const std::string &dir)
 
 int alias_flex_frame_producer(const std::string &dir)
 {
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir,
@@ -680,7 +734,7 @@ int alias_flex_frame_producer(const std::string &dir)
 
 int alias_producer_no_fz_no_flex_frame_alias(const std::string &dir)
 {
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir,
@@ -736,7 +790,7 @@ int supports_multi_state_returns_false(const std::string &dir)
     // any role setup) and once after build_api (fully-built engine),
     // to pin that the property is STRUCTURAL (not dependent on
     // role/script/schema state).
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir,
@@ -1942,7 +1996,7 @@ int stop_on_script_error_sets_shutdown_on_error(const std::string &dir)
     // helper's make_api sets stop_on_script_error(false) by default;
     // we need true for this test.  Mirrors the Lua equivalent at
     // lua_engine_workers.cpp.
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
@@ -2168,7 +2222,7 @@ int load_script_missing_file(const std::string &dir)
     // path at python_engine.cpp logs ERROR "Failed to load
     // script from '<dir>': <exc>".  Pin that ERROR fragment at
     // parent level.
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             RoleHostCore core;
@@ -2190,7 +2244,7 @@ int load_script_missing_required_callback(const std::string &dir)
     // logs ERROR "Script has no 'on_produce' function"
     // (python_engine.cpp) when required_callback is absent.
     // Pin the exact fragment at parent level.
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
@@ -2229,7 +2283,7 @@ int register_slot_type_bad_field_type(const std::string &dir)
     //
     // Log fragment: "register_slot_type('OutSlotFrame') failed:
     // <exc>" from python_engine.cpp.
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir,
@@ -2270,7 +2324,7 @@ int load_script_syntax_error(const std::string &dir)
     // python_engine.cpp as "Failed to load script from
     // '<dir>': <exc>" where <exc> includes "SyntaxError".  Pin the
     // "SyntaxError" fragment.
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             // Missing colon after signature → SyntaxError.
@@ -2303,7 +2357,7 @@ int has_callback(const std::string &dir)
     //
     // This test pins that contract so a regression restricting
     // Python to canonical-only would surface.
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
@@ -2414,7 +2468,7 @@ int invoke_on_inbox_script_error(const std::string &dir)
     //       caught by the script_error_count still == 1 but the
     //       "inbox exploded" ERROR substring pinning at the parent
     //       level would miss.
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
@@ -2600,7 +2654,7 @@ int invoke_produce_slot_only_no_flexzone_on_invoke(const std::string &dir)
     // real hub::ShmQueue / hub::ZmqQueue writers are wired.  The L2
     // engine test here pins the engine's interface contract
     // independent of the queue backing.
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
@@ -2777,7 +2831,7 @@ int invoke_on_inbox_typed_data(const std::string &dir)
     //   (3) sender_uid and seq projection paths.
     //   (4) Read-only enforcement — one per field — catches any
     //       regression that unwrapped the read-only guard.
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             // Inbox schema: multifield_schema (adversarial padding,
@@ -2960,7 +3014,7 @@ int type_sizeof_inbox_frame_returns_correct_size(const std::string &dir)
     //       for all registrations) would return the SAME size for
     //       both.  Using distinct specs + distinct expected sizes
     //       turns a false-positive test into a real one.
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir,
@@ -3093,7 +3147,7 @@ int invoke_on_inbox_missing_type_reports_error(const std::string &dir)
     // script anyway with a None data, which would raise in the
     // assertion-free script body below), script_error_count would be
     // >= 2 and the EQ assertion would fail loudly.
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
@@ -3537,7 +3591,7 @@ int invoke_after_finalize_returns_false(const std::string &dir)
     //   (2) Non-owner thread: invoke after finalize → false,
     //       completes immediately (is_accepting() returns false
     //       before ever touching the queue).
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
@@ -4139,7 +4193,7 @@ int api_identity_accessors_return_correct_values(const std::string &dir)
     // derive as role_dir + "/logs" and role_dir + "/run" per
     // role_api_base.cpp:678-686.  Empty-role_dir fall-through case
     // is covered by api_environment_strings_logs_dir_run_dir.
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
@@ -4207,7 +4261,7 @@ int api_environment_strings_logs_dir_run_dir(const std::string &dir)
     // itself rather than from a hardcoded constant — so whatever
     // the C++ side sets for role_dir, the expected derivation
     // follows.  No cross-language magic string to keep in sync.
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
@@ -4744,7 +4798,7 @@ int api_processor_channels_in_out(const std::string &dir)
     // Inline setup (run_gtest_worker) needed because make_api does
     // not set out_channel by default, and the test-channel defaults
     // do not match the values the script asserts against.
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
@@ -4888,7 +4942,7 @@ int api_as_numpy_array_field(const std::string &dir)
     //
     // Depends on numpy being importable in the staged Python
     // environment — GTEST_SKIP if not.
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
@@ -5106,7 +5160,7 @@ int full_startup_producer_slot_only(const std::string &dir)
     // (pybind11 alias binding, not a separate independent type).
     // Also pins shutdown idempotency via two consecutive shutdowns
     // with no assertion failure.
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir,
@@ -5156,7 +5210,7 @@ int full_startup_producer_slot_and_flexzone(const std::string &dir)
 {
     // Strengthened over V2 — adds engine-type-size vs compute_schema_size
     // cross-check for FlexFrame alias (V2 only checked > 0).
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir,
@@ -5227,7 +5281,7 @@ int full_startup_consumer(const std::string &dir)
     //       ctypes view actually maps onto the caller's buffer
     //       (from_buffer view, not from_buffer_copy or a stale
     //       pointer).
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir,
@@ -5284,7 +5338,7 @@ int full_startup_processor(const std::string &dir)
     // compute_schema_size exactly (V2 only checked > 0).  Keeps V2's
     // key pin: SlotFrame is NOT an alias on processor (dual-slot role
     // has distinct In/OutSlotFrame, disambiguated by direction).
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir,
@@ -5385,7 +5439,7 @@ int slot_logical_size_aligned_padding_sensitive(const std::string &dir)
     // cross-check (engine.type_sizeof == core.out_slot_logical_size
     // == 16) into the shared helper so all 3 SlotLogicalSize variants
     // enforce it consistently.
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             run_slot_logical_size_case(
                 fs::path(dir),
@@ -5417,7 +5471,7 @@ int slot_logical_size_packed_no_padding(const std::string &dir)
     // aligned variant (16 bytes) which has a 3-byte interior pad.
     // A regression where the "packed" flag was ignored would return
     // 16, and the in-script assertion would fire.
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             run_slot_logical_size_case(
                 fs::path(dir),
@@ -5443,7 +5497,7 @@ int slot_logical_size_complex_mixed_aligned(const std::string &dir)
     // complex_mixed_schema (aligned) = 56 bytes — exercises multi-
     // boundary padding (float64 + float32[3] + uint16 + bytes[5] +
     // string[16] + 5-byte pad + int64).
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             run_slot_logical_size_case(
                 fs::path(dir),
@@ -5472,7 +5526,7 @@ int flexzone_logical_size_array_fields(const std::string &dir)
     // Python-specific strengthening over V2: ALSO verify the two
     // are NOT equal (pins that each accessor returns its own side's
     // size, not a shared snapshot).
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir,
@@ -5557,7 +5611,7 @@ int full_startup_producer_multifield(const std::string &dir)
     // between flag and count is NOT overwritten (regression: a
     // misaligned ctypes Structure could write into pad bytes,
     // corrupting them from their initial 0 state).
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir,
@@ -5618,7 +5672,7 @@ int full_startup_consumer_multifield(const std::string &dir)
     // Consumer side: C struct is pre-filled, script reads fields.
     // V2 parity — already covers the key round-trip (read each of ts,
     // flag, count at its correct offset).
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir,
@@ -5666,7 +5720,7 @@ int full_startup_processor_multifield(const std::string &dir)
     // Processor side: rx → tx field transform.  V2 parity, plus
     // pad-byte pin on tx buffer (same as producer test — misaligned
     // ctypes writes would corrupt pad bytes).
-    return run_gtest_worker(
+    return run_python_gtest_worker(
         [&]() {
             const fs::path script_dir(dir);
             write_script(script_dir,
@@ -5772,6 +5826,128 @@ def on_produce(tx, msgs, api):
         });
 }
 
+// ============================================================================
+// GIL-release-during-wait — verify the EngineGlobalLockRelease RAII
+// actually releases the GIL so a Python sub-thread can run.
+//
+// Path discrimination: compares two identical 100 ms C++ sleeps, one
+// with the GIL held (control), one with EngineGlobalLockRelease
+// active (test).  The Python sub-thread increments `counter` every
+// ~5 ms via `time.sleep(0.005)`.  Counter delta during the held
+// sleep should be ~0; during the released sleep should be ~10–20.
+//
+// This is the regression guard for HEP-CORE-0011 §"Engine Thread
+// Affinity" → "Optional global-lock release during idle waits".  If
+// EngineGlobalLockRelease is broken (returns nullptr token, fails
+// to register, or doesn't release), the released_delta will match
+// the held_delta and the test fails with a specific diagnostic.
+// ============================================================================
+
+int release_global_lock_during_wait_lets_subthread_run(
+    const std::string & /*dir*/)
+{
+    return run_python_gtest_worker(
+        [&]()
+        {
+            // Production binaries call init_scripting() from main();
+            // workers don't go through main, so we register the
+            // helpers explicitly here.  Idempotent.
+            ::pylabhub::scripting::init_scripting();
+
+            py::dict ns;
+            py::exec(R"PY(
+import threading, time
+counter = 0
+running = True
+def _bump():
+    global counter
+    while running:
+        counter += 1
+        time.sleep(0.005)
+t = threading.Thread(target=_bump, daemon=True)
+t.start()
+# Yield once so the sub-thread actually starts.
+time.sleep(0.05)
+)PY",
+                     ns);
+
+            const int counter_after_warmup = py::cast<int>(ns["counter"]);
+
+            // CONTROL: hold GIL across a 100 ms C++ sleep.  The
+            // sub-thread cannot acquire the GIL and starves.
+            const auto t0 = std::chrono::steady_clock::now();
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            const auto t_held = std::chrono::steady_clock::now();
+            const int counter_after_held = py::cast<int>(ns["counter"]);
+
+            // TEST: release GIL across a 100 ms C++ sleep.  The
+            // sub-thread can now acquire the GIL and runs ~20
+            // iterations of `counter += 1; time.sleep(0.005)`.
+            {
+                ::pylabhub::scripting::EngineGlobalLockRelease release;
+                ASSERT_TRUE(release.released())
+                    << "EngineGlobalLockRelease did not actually release "
+                       "the GIL.  Either python_interpreter_is_alive() "
+                       "returned false (interpreter not loaded) or "
+                       "init_scripting() did not register the impl.";
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            const auto t_released = std::chrono::steady_clock::now();
+            const int counter_after_released = py::cast<int>(ns["counter"]);
+
+            // Stop the sub-thread.  daemon=True means it would exit
+            // on interpreter teardown anyway, but explicit join makes
+            // the test clean.
+            py::exec("running = False\nt.join(timeout=1.0)", ns);
+
+            const int held_delta     = counter_after_held    - counter_after_warmup;
+            const int released_delta = counter_after_released - counter_after_held;
+
+            // Apparatus check: the C++ sleeps actually slept ~100 ms.
+            const auto held_dur_ms = std::chrono::duration_cast<
+                std::chrono::milliseconds>(t_held - t0).count();
+            const auto released_dur_ms = std::chrono::duration_cast<
+                std::chrono::milliseconds>(t_released - t_held).count();
+            EXPECT_GE(held_dur_ms, 100)
+                << "control sleep_for ran too short: " << held_dur_ms << "ms";
+            EXPECT_GE(released_dur_ms, 100)
+                << "test sleep_for ran too short: " << released_dur_ms << "ms";
+            // Upper bound — pin against runaway sleep regressions.
+            EXPECT_LT(held_dur_ms, 500);
+            EXPECT_LT(released_dur_ms, 500);
+
+            // Path discrimination: with vs without release.  Holding
+            // the GIL across a C++ sleep starves the sub-thread —
+            // CPython's eval-breaker only fires while running Python
+            // bytecode, which `std::this_thread::sleep_for` is not.
+            EXPECT_LT(held_delta, 5)
+                << "Sub-thread advanced unexpectedly while GIL was held: "
+                << held_delta << " ticks (expected ~0).  Either the GIL "
+                "is not actually held or the test apparatus is broken.";
+
+            // Releasing the GIL for 100 ms with the sub-thread sleeping
+            // 5 ms per tick: theoretical 20, real-world 10–18 once
+            // scheduler overhead is accounted for.  Bound is generous
+            // to keep the test stable on busy CI machines.
+            EXPECT_GT(released_delta, 10)
+                << "Sub-thread did not advance enough during GIL release: "
+                << released_delta << " ticks (expected >10).  "
+                "EngineGlobalLockRelease may be a no-op.";
+
+            // Cross-check: the released path must produce a
+            // qualitatively bigger delta than the held path.  Catches
+            // the case where both paths happen to advance similarly
+            // (e.g., a test environment where threading is broken).
+            EXPECT_GT(released_delta, held_delta * 5)
+                << "GIL release did not produce a meaningful difference "
+                   "(held=" << held_delta << ", released="
+                << released_delta << ").  EngineGlobalLockRelease "
+                "appears non-functional.";
+        },
+        "release_global_lock_during_wait_lets_subthread_run",
+        Logger::GetLifecycleModule());
+}
+
 } // namespace python_engine
 } // namespace pylabhub::tests::worker
 
@@ -5830,6 +6006,8 @@ struct PythonEngineWorkerRegistrar
                     return alias_producer_no_fz_no_flex_frame_alias(dir);
                 if (sc == "supports_multi_state_returns_false")
                     return supports_multi_state_returns_false(dir);
+                if (sc == "release_global_lock_during_wait_lets_subthread_run")
+                    return release_global_lock_during_wait_lets_subthread_run(dir);
 
                 if (sc == "invoke_produce_commit_on_true")
                     return invoke_produce_commit_on_true(dir);

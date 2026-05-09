@@ -15,6 +15,7 @@
  * its setup_infrastructure_() / teardown_infrastructure_() helpers.
  */
 #include "producer_role_host.hpp"
+#include "utils/script_engine_factory.hpp"  // scripting::create_engine — worker_main_ Step 0
 #include "utils/thread_manager.hpp"
 #include "producer_fields.hpp"
 #include "utils/broker_request_comm.hpp"
@@ -50,13 +51,13 @@ using Clock = std::chrono::steady_clock;
 // ============================================================================
 
 ProducerRoleHost::ProducerRoleHost(config::RoleConfig config,
-                                     std::unique_ptr<scripting::ScriptEngine> engine,
                                      std::atomic<bool> *shutdown_flag)
     : scripting::RoleHostBase("prod",
                               std::move(config),
-                              std::move(engine),
                               shutdown_flag)
 {
+    // Engine is constructed in worker_main_ Step 0 (HEP-CORE-0011
+    // §"Engine Construction Lifecycle").  Not constructed here.
 }
 
 ProducerRoleHost::~ProducerRoleHost()
@@ -78,11 +79,33 @@ ProducerRoleHost::~ProducerRoleHost()
 
 void ProducerRoleHost::worker_main_()
 {
-    auto       &core_        = core();
-    const auto &config_      = config();
-    auto       &engine_ref   = engine();
-    auto       &api_ref      = api();
-    auto       &promise_ref  = ready_promise();
+    // GIL pickup (HEP-CORE-0011 §"Engine Construction Lifecycle",
+    // Option E final design).  PythonInterpreter is owned by main();
+    // pi_startup released the GIL via a stored py::gil_scoped_release
+    // so workers can acquire it.  The lease holds the GIL on THIS
+    // thread for the entire worker_main_ lifetime; it's a no-op for
+    // Lua/Native deployments where the interpreter is not loaded.
+    pylabhub::scripting::PythonGilLease gil_lease;
+
+    // Step 0: Construct the script engine ON THIS WORKER THREAD.  The
+    // worker holds the GIL via the lease above iff Python is in play,
+    // so PythonEngine's `py::object{py::none()}` member-default-
+    // initializers run under GIL safely.  Lua / Native engines have
+    // no module dependency; they construct self-contained.
+    auto       &core_       = core();
+    const auto &config_     = config();
+    auto       &promise_ref = ready_promise();
+
+    set_engine_(scripting::create_engine(config_.script()));
+    if (!has_engine())
+    {
+        LOGGER_ERROR("[prod] scripting::create_engine returned null for "
+                     "script.type='{}'", config_.script().type);
+        promise_ref.set_value(false);
+        return;
+    }
+    auto &engine_ref = engine();
+    auto &api_ref    = api();
 
     const auto &id   = config_.identity();
     const auto &sc   = config_.script();
@@ -310,6 +333,8 @@ void ProducerRoleHost::worker_main_()
         lcfg.period_us                   = tc_loop.period_us;
         lcfg.loop_timing                 = tc_loop.loop_timing;
         lcfg.queue_io_wait_timeout_ratio = tc_loop.queue_io_wait_timeout_ratio;
+        lcfg.release_global_lock_during_wait =
+            engine_ref.release_global_lock_during_wait();
         scripting::run_data_loop(api_ref, core_, lcfg, ops);
     }
 

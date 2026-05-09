@@ -39,8 +39,15 @@ namespace pylabhub::producer
 class PYLABHUB_UTILS_EXPORT ProducerRoleHost final : public scripting::RoleHostBase
 {
   public:
+    /// Per HEP-CORE-0011 §"Engine Construction Lifecycle" (2026-05-07):
+    /// the host takes config + shutdown flag.  The script engine is
+    /// constructed on the host's worker thread inside `worker_main_`
+    /// Step 0 (via `scripting::create_engine(config_.script())`),
+    /// NOT pre-constructed by main().  This guarantees the
+    /// PythonInterpreter dynamic lifecycle module — and thus
+    /// `py::scoped_interpreter` — initialises on the worker, making
+    /// the worker the GIL holder.
     explicit ProducerRoleHost(config::RoleConfig config,
-                              std::unique_ptr<scripting::ScriptEngine> engine,
                               std::atomic<bool> *shutdown_flag = nullptr);
     ~ProducerRoleHost() override;
 

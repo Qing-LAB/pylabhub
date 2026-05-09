@@ -13,6 +13,8 @@
  */
 #include "python_engine.hpp"
 
+#include "python_interpreter_module.hpp"  // ensure_python_interpreter_loaded / release_python_interpreter
+#include "utils/debug_info.hpp"            // PLH_PANIC
 #include "utils/format_tools.hpp"
 
 #include "utils/hub_inbox_queue.hpp"
@@ -36,6 +38,7 @@
 #include <pybind11/stl.h>
 
 #include <cassert>
+#include <stdexcept>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -58,97 +61,69 @@ using detail::py_to_json;
 // Destructor
 // ============================================================================
 
-PythonEngine::PythonEngine() = default;
+// PythonEngine ctor — runs on the worker thread, which has acquired
+// the GIL via `py::gil_scoped_acquire` at the top of `worker_main_`
+// (HEP-CORE-0011 §"Engine Construction Lifecycle", Option E).  We
+// validate that contract loudly here as defence-in-depth: if the
+// interpreter is not alive OR the calling thread does not actually
+// hold the GIL, fail early with a located panic rather than crash
+// deep inside CPython at the first py::object access.
+PythonEngine::PythonEngine()
+{
+    if (!::pylabhub::scripting::validate_python_interpreter())
+    {
+        PLH_PANIC("PythonEngine constructed without a valid PythonInterpreter "
+                  "module / GIL state.  Required: (1) main() called "
+                  "ensure_python_interpreter_loaded() after config parse; "
+                  "(2) the constructing thread (the role host's worker, in "
+                  "production) opened a py::gil_scoped_acquire BEFORE this "
+                  "ctor.  Failing early to avoid a cryptic CPython UB at the "
+                  "first py::object access.");
+    }
+    // After this point, py::object member-default-initializers (above
+    // in declaration order) run under GIL — safe.
+}
 
+// PythonEngine dtor — finalize() clears py::objects under GIL on the
+// worker thread (or on whichever thread the caller invoked it from
+// before construction was complete); after finalize() every member
+// `py::object` has been DETACHED (m_ptr == nullptr) so its subsequent
+// destructor is a pure no-op and ~PythonEngine is safe to run on any
+// thread.  See `clear_pyobjects_` for the release/detach contract.
+// PythonInterpreter ownership is held by main() (HEP-CORE-0011 Option E,
+// 2026-05-08) — engine destruction does NOT release a refcount and
+// does NOT trigger Py_FinalizeEx; that runs in
+// LifecycleManager::finalize() Phase 2 dispatch on the
+// `~LifecycleGuard` thread.
 PythonEngine::~PythonEngine()
 {
+    // ~PythonEngine may run on any thread.  Production path: the
+    // worker has already called engine().finalize() in H3 (see
+    // hub_script_runner / role_host worker_main_), which under the
+    // worker's GIL ran clear_pyobjects_() — every py::object member is
+    // detached (m_ptr == nullptr).  Subsequent finalize() here is a
+    // state-guarded no-op; subsequent ~py::object members are no-ops;
+    // dtor is GIL-free safe.
+    //
+    // Defensive path: if no one called finalize() before us AND the
+    // interpreter is still alive, finalize() will run clear_pyobjects_()
+    // for the first time HERE, which requires GIL.  Acquire it lazily
+    // — costs nothing on the production path (state already Finalized,
+    // so finalize() short-circuits before clear_pyobjects_ runs anyway,
+    // and we still hold the gil_scoped_acquire harmlessly).
+    std::optional<py::gil_scoped_acquire> gil;
+    if (::pylabhub::scripting::python_interpreter_is_alive() &&
+        PyGILState_Check() == 0)
+    {
+        gil.emplace();
+    }
     finalize();
 }
 
 // ============================================================================
-// resolve_python_home — 3-tier Python home resolution (same as python_script_host.cpp)
+// resolve_python_home — moved to python_interpreter_module.cpp.
+// See HEP-CORE-0011 §"Engine Construction Lifecycle".
 // ============================================================================
-
-static fs::path resolve_python_home_for_engine(const fs::path &exe_path)
-{
-    const fs::path prefix = fs::weakly_canonical(exe_path.parent_path() / "..");
-
-    // --- Tier 1: Environment variable override ---
-    const char *env_home = std::getenv("PYLABHUB_PYTHON_HOME");
-    if (env_home && *env_home)
-    {
-        fs::path home(env_home);
-        if (home.is_relative())
-            home = fs::weakly_canonical(prefix / home);
-        if (fs::is_directory(home))
-        {
-            LOGGER_INFO("PythonEngine: Python home from $PYLABHUB_PYTHON_HOME: '{}'",
-                        home.string());
-            return home;
-        }
-        LOGGER_WARN("PythonEngine: $PYLABHUB_PYTHON_HOME='{}' is not a directory — "
-                    "falling through to config file",
-                    home.string());
-    }
-
-    // --- Tier 2: System config file ---
-    const fs::path config_file = prefix / "config" / "pylabhub.json";
-    if (fs::is_regular_file(config_file))
-    {
-        try
-        {
-            std::ifstream ifs(config_file);
-            const auto    j = nlohmann::json::parse(ifs);
-
-            if (j.contains("python_home") && j["python_home"].is_string())
-            {
-                const auto val = j["python_home"].get<std::string>();
-                if (!val.empty())
-                {
-                    fs::path home(val);
-                    if (home.is_relative())
-                        home = fs::weakly_canonical(prefix / home);
-                    else
-                        home = fs::weakly_canonical(home);
-                    if (fs::is_directory(home))
-                    {
-                        LOGGER_INFO("PythonEngine: Python home from '{}': '{}'",
-                                    config_file.string(), home.string());
-                        return home;
-                    }
-                    LOGGER_WARN("PythonEngine: python_home='{}' from config is not "
-                                "a directory — falling through to standalone",
-                                home.string());
-                }
-            }
-        }
-        catch (const nlohmann::json::exception &e)
-        {
-            LOGGER_WARN("PythonEngine: failed to parse '{}': {} — falling through",
-                        config_file.string(), e.what());
-        }
-    }
-
-    // --- Tier 3: Standalone default ---
-    const fs::path standalone = prefix / "opt" / "python";
-    if (fs::is_directory(standalone))
-    {
-        LOGGER_INFO("PythonEngine: Python home (standalone): '{}'",
-                    standalone.string());
-        return standalone;
-    }
-
-    // --- All tiers exhausted ---
-    throw std::runtime_error(
-        "PythonEngine: cannot locate a Python installation.\n"
-        "  Checked:\n"
-        "    1. $PYLABHUB_PYTHON_HOME (not set or invalid)\n"
-        "    2. " + config_file.string() + " (missing or no python_home)\n"
-        "    3. " + standalone.string() + " (not found)\n\n"
-        "  For standalone builds:  cmake --build build --target stage_all\n"
-        "  For system Python:      create " + config_file.string() + " with:\n"
-        "    {\"python_home\": \"/usr/local\"}\n");
-}
 
 // ============================================================================
 // resolve_venvs_dir — where virtual environments are stored
@@ -168,56 +143,33 @@ bool PythonEngine::init_engine_(const std::string &log_tag, RoleHostCore *core)
     log_tag_ = log_tag.empty() ? "python" : log_tag;
     // owner_thread_id_, accepting_, api_->core() set by base class initialize().
 
+    // Per HEP-CORE-0011 §"Engine Construction Lifecycle" (2026-05-07):
+    // The embedded CPython interpreter is owned by the
+    // PythonInterpreter dynamic lifecycle module, NOT by this engine.
+    // The module was loaded by THIS engine's constructor (via
+    // ensure_python_interpreter_loaded), so by the time init_engine_
+    // runs the interpreter is alive on this (worker) thread and the
+    // GIL is held.  We therefore do NOT call Py_InitializeFromConfig
+    // / py::scoped_interpreter / similar here.  Per-instance Python
+    // config (the venv) IS still applied here — it's per-engine, not
+    // per-process.
+
     try
     {
-        // Resolve Python home.
-        const fs::path exe_path(platform::get_executable_name(/*include_path=*/true));
-        const fs::path python_home = resolve_python_home_for_engine(exe_path);
-
-        LOGGER_INFO("[{}] PythonEngine: Python home '{}'", log_tag_, python_home.string());
-
-        // Force unbuffered Python I/O.
-#if defined(_WIN32)
-        _putenv_s("PYTHONUNBUFFERED", "1");
-#else
-        setenv("PYTHONUNBUFFERED", "1", 1);
-#endif
-
-        // Configure PyConfig.
-        PyConfig config;
-        PyConfig_InitPythonConfig(&config);
-        config.parse_argv             = 0;
-        config.install_signal_handlers = 0;
-
-        const std::string home_str  = python_home.string();
-        wchar_t          *home_wstr = Py_DecodeLocale(home_str.c_str(), nullptr);
-        if (!home_wstr)
-        {
-            PyConfig_Clear(&config);
-            LOGGER_ERROR("[{}] PythonEngine: Py_DecodeLocale failed for '{}'",
-                         log_tag_, home_str);
-            return false;
-        }
-        PyConfig_SetString(&config, &config.home, home_wstr);
-        PyMem_RawFree(home_wstr);
-
-        // Create the interpreter. GIL is held after this.
-        interp_.emplace(&config);
-        PyConfig_Clear(&config); // Free wchar strings allocated by PyConfig_Init.
-
-        LOGGER_INFO("[{}] PythonEngine: Python {} initialized",
-                    log_tag_, Py_GetVersion());
-
-        // Activate venv if configured.
+        // Activate venv if configured.  The interpreter is alive (set
+        // up by the PythonInterpreter module's startup callback) and
+        // the GIL is held on this thread (the worker), so the
+        // py::module_::import("site") call below is safe.
         if (!python_venv_.empty())
         {
+            const fs::path exe_path(
+                platform::get_executable_name(/*include_path=*/true));
             const fs::path venvs_dir = resolve_venvs_dir_for_engine(exe_path);
             const fs::path venv_dir  = venvs_dir / python_venv_;
             if (!fs::is_directory(venv_dir))
             {
                 LOGGER_ERROR("[{}] PythonEngine: venv '{}' not found at '{}'",
                              log_tag_, python_venv_, venv_dir.string());
-                interp_.reset(); // Destroy interpreter on this thread before returning.
                 return false;
             }
 
@@ -244,7 +196,6 @@ bool PythonEngine::init_engine_(const std::string &log_tag, RoleHostCore *core)
             {
                 LOGGER_ERROR("[{}] PythonEngine: venv '{}' site-packages not found",
                              log_tag_, python_venv_);
-                interp_.reset(); // Destroy interpreter on this thread before returning.
                 return false;
             }
 
@@ -256,14 +207,12 @@ bool PythonEngine::init_engine_(const std::string &log_tag, RoleHostCore *core)
     catch (const std::exception &e)
     {
         LOGGER_ERROR("[{}] PythonEngine: initialization failed: {}", log_tag_, e.what());
-        interp_.reset(); // Destroy interpreter on this thread if it was created.
         return false;
     }
 
-    // GIL is held at this point. It will be released after build_api() completes,
-    // before the data loop starts. The role host is responsible for calling
-    // the engine's methods in order: initialize → load_script → build_api →
-    // (release GIL) → invoke loop → finalize.
+    // GIL held on this thread (worker) for the engine's lifetime via
+    // the PythonInterpreter module's py::scoped_interpreter.  See
+    // HEP-CORE-0011 §"Thread Safety" for the request-queue model.
     return true;
 }
 
@@ -331,6 +280,42 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
         py_on_consume_ = py::getattr(module_, "on_consume", py::none());
         py_on_process_ = py::getattr(module_, "on_process", py::none());
         py_on_inbox_   = py::getattr(module_, "on_inbox",   py::none());
+
+        // Populate the standard-callback-presence cache on the
+        // `ScriptEngine` base (HEP-CORE-0011 §"Engine Thread Affinity";
+        // `docs/tech_draft/engine_callback_tiers.md` Tier 1).  Probes
+        // touch pybind11 — done HERE on the worker thread under GIL.
+        // After freeze, `has_callback()` is any-thread-safe via plain
+        // map lookup, which is what `RoleAPIBase::on_heartbeat_tick_`
+        // (ctrl thread) and `HubAPI::augment_*` (admin thread) rely on.
+        reset_standard_callback_cache();
+        set_standard_callback_present("on_init",    is_callable(py_on_init_));
+        set_standard_callback_present("on_stop",    is_callable(py_on_stop_));
+        set_standard_callback_present("on_produce", is_callable(py_on_produce_));
+        set_standard_callback_present("on_consume", is_callable(py_on_consume_));
+        set_standard_callback_present("on_process", is_callable(py_on_process_));
+        set_standard_callback_present("on_inbox",   is_callable(py_on_inbox_));
+        // Probe additional standard names whose presence is queried by
+        // ctrl-thread / admin-thread callers — adding entries here when
+        // new standard callbacks are introduced is a coordinated change
+        // (HEP + this list).
+        // Names from `HubAPI::augment_*` (`src/utils/service/hub_api.cpp`)
+        // and `RoleAPIBase::on_heartbeat_tick_`.  Keep this list
+        // synchronised with the LuaEngine probe list below — both
+        // power the same `has_callback()` cache in the base class.
+        const char *const probe_names[] = {
+            "on_heartbeat",
+            "on_query_metrics",
+            "on_list_roles",
+            "on_get_channel",
+            "on_peer_message",
+        };
+        for (const char *probe : probe_names)
+        {
+            py::object fn = py::getattr(module_, probe, py::none());
+            set_standard_callback_present(probe, is_callable(fn));
+        }
+        freeze_standard_callback_cache();
 
         // Check required callback.
         if (!required_callback_.empty() && !has_callback(required_callback_))
@@ -544,12 +529,13 @@ bool PythonEngine::build_api_(::pylabhub::hub_host::HubAPI &api)
 
 void PythonEngine::finalize_engine_()
 {
-    if (!interp_.has_value())
-        return;
+    // The base class ScriptEngine::finalize() already guards on
+    // EngineState::Finalized (idempotency).  No own guard needed.
+    //
+    // The interpreter is still alive — owned by the PythonInterpreter
+    // module, ref held by this engine until ~PythonEngine.  All
+    // py::object operations below run with GIL held by the worker.
 
-    // GIL is held (py::scoped_interpreter holds it on the creating thread).
-    // accepting_ already set false by base class finalize().
-    // Cancel all pending generic invoke requests.
     {
         std::lock_guard lk(queue_mu_);
         for (auto &req : request_queue_)
@@ -557,24 +543,28 @@ void PythonEngine::finalize_engine_()
         request_queue_.clear();
     }
 
-    // Clear all Python objects before destroying the interpreter.
     clear_pyobjects_();
 
-    // Clear inbox caches before role host tears down infrastructure.
-    if (producer_api_)
-        producer_api_->clear_inbox_cache();
-    if (consumer_api_)
-        consumer_api_->clear_inbox_cache();
-    if (processor_api_)
-        processor_api_->clear_inbox_cache();
+    if (producer_api_)  producer_api_->clear_inbox_cache();
+    if (consumer_api_)  consumer_api_->clear_inbox_cache();
+    if (processor_api_) processor_api_->clear_inbox_cache();
 
     producer_api_.reset();
     consumer_api_.reset();
     processor_api_.reset();
-    api_ = nullptr;  // non-owning — role host destroys the base
+    api_ = nullptr;
 
-    // Destroy interpreter (calls Py_Finalize).
-    interp_.reset();
+    // PythonInterpreter is owned by main() — finalize_engine_ does NOT
+    // release a refcount or trigger Py_FinalizeEx (HEP-CORE-0011
+    // §"Engine Construction Lifecycle", Option E).  The interpreter
+    // outlives this engine; main() drops its ref via
+    // release_python_interpreter() AFTER the host is torn down,
+    // running Py_FinalizeEx on main itself.
+    //
+    // The detach work in clear_pyobjects_() above is what makes
+    // ~PythonEngine safe on a non-GIL thread (e.g. main during
+    // HubHost destruction): every py::object member's m_ptr is
+    // nullptr after release_to_none, so ~py::object is a no-op.
 }
 
 // ============================================================================
@@ -885,31 +875,30 @@ void PythonEngine::process_pending_()
 // has_callback
 // ============================================================================
 
-bool PythonEngine::has_callback(const std::string &name) const
+
+bool PythonEngine::probe_uncached_callback_(const std::string &name) const noexcept
 {
-    if (name.empty())
+    // Worker-thread-only: probing module attributes touches pybind11
+    // (`py::getattr` constructs a `py::none()` sentinel which inc_refs
+    // `Py_None`; that requires the GIL).  Reject off-thread callers
+    // safely so the caller sees a deterministic `false` rather than a
+    // GIL violation.  See HEP-CORE-0011 §"Engine Thread Affinity"
+    // and `docs/tech_draft/engine_callback_tiers.md` Tier 1.
+    if (std::this_thread::get_id() != owner_thread_id_)
         return false;
-
-    if (name == "on_init")
-        return is_callable(py_on_init_);
-    if (name == "on_stop")
-        return is_callable(py_on_stop_);
-    if (name == "on_produce")
-        return is_callable(py_on_produce_);
-    if (name == "on_consume")
-        return is_callable(py_on_consume_);
-    if (name == "on_process")
-        return is_callable(py_on_process_);
-    if (name == "on_inbox")
-        return is_callable(py_on_inbox_);
-
-    // Unknown callback — try getattr on the module.
-    if (!module_.is_none())
+    try
     {
+        if (module_.is_none())
+            return false;
         py::object fn = py::getattr(module_, name.c_str(), py::none());
         return is_callable(fn);
     }
-    return false;
+    catch (...)
+    {
+        // pybind11 / Python may throw — preserve noexcept by mapping
+        // any exception to "callback not present".
+        return false;
+    }
 }
 
 // ============================================================================
@@ -1442,23 +1431,57 @@ InvokeResult PythonEngine::handle_script_error_(const char *callback_tag)
 
 void PythonEngine::clear_pyobjects_()
 {
-    module_        = py::none();
-    py_on_init_    = py::none();
-    py_on_stop_    = py::none();
-    py_on_produce_ = py::none();
-    py_on_consume_ = py::none();
-    py_on_process_ = py::none();
-    py_on_inbox_   = py::none();
-    api_obj_       = py::none();
+    // **Two-step "release + detach" pattern.**  Each py::object member
+    // is first reassigned to `py::none()` — which decrements the
+    // refcount of whatever it was holding (the script module's
+    // callable, the cast wrapper around HubAPI, the cached schema
+    // type, etc.) and then increments None's refcount.  This step
+    // requires the GIL — and is safe here because clear_pyobjects_
+    // is only called from finalize_engine_(), which runs either on
+    // the worker thread (worker_main_'s H3 step) or in
+    // ~PythonEngine's body (which then acquires GIL via
+    // PyGILState_Ensure if needed — but the production path always
+    // hits the worker_main_ call first, so the dtor's call is
+    // idempotent and the assignments below are no-ops).
+    //
+    // We then call `.release()` on each member: pybind11 detaches
+    // the wrapped PyObject pointer (sets m_ptr to nullptr) and
+    // returns it as a raw handle which we discard.  This LEAKS a
+    // strong ref to `Py_None`, but Py_None is a static singleton
+    // whose refcount is irrelevant for correctness and Py_FinalizeEx
+    // (run inside the PythonInterpreter module's shutdown) reclaims
+    // all interpreter memory anyway.
+    //
+    // **Why detach:**  the destructors of py::object members run
+    // when ~PythonEngine destructs the C++ object — which can be on
+    // *any* thread (e.g. main thread tearing down a HubHost during
+    // process shutdown).  pybind11's ~py::object calls dec_ref()
+    // and asserts the GIL is held; without the detach, that
+    // assertion fires on a non-worker thread and the process aborts.
+    // After release(), m_ptr is null and ~py::object becomes a pure
+    // no-op safe for any thread.
+    auto release_to_none = [](py::object &o) noexcept {
+        o = py::none();   // dec_ref old holder, take None (under GIL)
+        o.release();      // detach — m_ptr → nullptr, ~o becomes no-op
+    };
 
-    in_slot_type_ro_ = py::none();
-    out_slot_type_   = py::none();
-    in_fz_type_      = py::none();
-    out_fz_type_     = py::none();
-    inbox_type_ro_   = py::none();
-    slot_alias_      = py::none();
-    slot_alias_ro_   = py::none();
-    fz_alias_        = py::none();
+    release_to_none(module_);
+    release_to_none(py_on_init_);
+    release_to_none(py_on_stop_);
+    release_to_none(py_on_produce_);
+    release_to_none(py_on_consume_);
+    release_to_none(py_on_process_);
+    release_to_none(py_on_inbox_);
+    release_to_none(api_obj_);
+
+    release_to_none(in_slot_type_ro_);
+    release_to_none(out_slot_type_);
+    release_to_none(in_fz_type_);
+    release_to_none(out_fz_type_);
+    release_to_none(inbox_type_ro_);
+    release_to_none(slot_alias_);
+    release_to_none(slot_alias_ro_);
+    release_to_none(fz_alias_);
 }
 
 // ============================================================================
