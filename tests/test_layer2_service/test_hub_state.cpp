@@ -882,21 +882,33 @@ TEST(HubStateOps, HeartbeatTimeout_DemotesChannelOnly_RoleStillConnected)
     EXPECT_EQ(s.counters().ready_to_pending_total, 1u);
 }
 
-// Counter must not bump when the channel is not in Ready (e.g. already
-// Pending, or already gone).  Avoids over-counting under sweep races.
-TEST(HubStateOps, HeartbeatTimeout_NotReady_NoCounterBump)
+// HEP-CORE-0023 §2.1 / M1.2: counter bumps once per real
+// Connected → Pending transition; subsequent timeout calls on a
+// presence already in Pending are no-ops (no double-bump).  Unknown
+// channels are also no-ops.  Pre-M1.2 this test used to verify
+// "skip-on-not-Ready" against `ChannelEntry.status`; under the
+// presence-FSM model the equivalent guarantee is "skip-when-presence-
+// not-Connected", verified below.
+TEST(HubStateOps, HeartbeatTimeout_NotConnected_NoCounterBump)
 {
     HubState s;
     HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
-    // Channel is freshly registered: status=PendingReady, not Ready.
+    // After M1.2 eager presence creation: producer-presence is
+    // Connected with first_heartbeat_seen=false.  First
+    // on_heartbeat_timeout call SHOULD transition (Connected →
+    // Pending) and bump the counter.
     HubStateTestAccess::on_heartbeat_timeout(s, "ch1", "prod.main.test");
-    EXPECT_EQ(s.channel("ch1")->status, ChannelStatus::PendingReady);
-    EXPECT_EQ(s.counters().ready_to_pending_total, 0u);
+    EXPECT_EQ(s.counters().ready_to_pending_total, 1u);
 
-    // Unknown channel: also no-op + no counter bump.
+    // Second call: presence already Pending, no transition, no bump.
+    HubStateTestAccess::on_heartbeat_timeout(s, "ch1", "prod.main.test");
+    EXPECT_EQ(s.counters().ready_to_pending_total, 1u)
+        << "Pending → Pending must not double-bump the counter";
+
+    // Unknown channel: no role lookup match → no-op.
     HubStateTestAccess::on_heartbeat_timeout(s, "no.such.channel.uid00000001",
                                               "prod.main.test");
-    EXPECT_EQ(s.counters().ready_to_pending_total, 0u);
+    EXPECT_EQ(s.counters().ready_to_pending_total, 1u);
 }
 
 // HEP-CORE-0023 §2.1: Pending -> deregistered (no grace, no Closing).

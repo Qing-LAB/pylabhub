@@ -246,9 +246,18 @@ int stuck_in_pending_reclaimed()
             BrokerService::Config cfg;
             cfg.endpoint                         = "tcp://127.0.0.1:0";
             cfg.use_curve                        = true;
-            // Ready timeout irrelevant — role never transitions past PendingReady.
-            cfg.ready_timeout_override           = std::chrono::seconds(10);
-            cfg.pending_timeout_override         = std::chrono::milliseconds(200);
+            // Per HEP-CORE-0023 §2.1 the registered-but-never-heartbeat
+            // case is `Connected` with `first_heartbeat_seen=false`
+            // (sub-state "registering").  Reclamation goes through both
+            // sweep passes: Connected → Pending after `ready_timeout`,
+            // then Pending → Disconnected after `pending_timeout`.  So
+            // both timeouts apply here — keep them short so the total
+            // (~150 ms) fits in a 2 s poll window.  The pre-M1.2
+            // version of this test exploited the OLD `ChannelStatus::PendingReady`
+            // initial state which skipped pass 1 entirely; that
+            // shortcut no longer exists.
+            cfg.ready_timeout_override           = std::chrono::milliseconds(50);
+            cfg.pending_timeout_override         = std::chrono::milliseconds(100);
             cfg.grace_override                   = std::chrono::milliseconds(1);
             cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
             auto broker = start_broker_with_cfg(std::move(cfg));
@@ -261,20 +270,23 @@ int stuck_in_pending_reclaimed()
 
             auto reg = bh.brc.register_channel(make_reg_opts(ch, uid), 3000);
             ASSERT_TRUE(reg.has_value());
-            // Deliberately NO heartbeat — stays PendingReady.
+            // Deliberately NO heartbeat sent — presence is registered but
+            // remains in the "registering" sub-state until ready_timeout
+            // demotes it.
 
             auto reclaimed = [&]() {
                 auto m = broker.service->query_role_state_metrics();
                 return m.pending_to_deregistered_total >= 1;
             };
             ASSERT_TRUE(poll_until(reclaimed, std::chrono::seconds(2)))
-                << "Stuck-pending role was not reclaimed after pending_timeout";
+                << "Registered-no-heartbeat role was not reclaimed within 2s";
 
             auto m = broker.service->query_role_state_metrics();
             EXPECT_EQ(m.pending_to_ready_total, 0u)
                 << "Should never have transitioned to Ready (no heartbeat sent)";
-            EXPECT_EQ(m.ready_to_pending_total, 0u)
-                << "Should not have been demoted (was never Ready)";
+            EXPECT_GE(m.ready_to_pending_total, 1u)
+                << "Connected -> Pending demotion should have fired (no "
+                   "heartbeats within ready_timeout)";
 
             bh.stop();
             broker.stop_and_join();
