@@ -230,6 +230,7 @@ using pylabhub::hub::BandEntry;
 using pylabhub::hub::BandMember;
 using pylabhub::hub::ChannelCloseReason;
 using pylabhub::hub::ChannelEntry;
+using pylabhub::hub::ChannelObservable;
 using pylabhub::hub::ChannelStatus;
 using pylabhub::hub::ConsumerEntry;
 using pylabhub::hub::HandlerId;
@@ -352,9 +353,11 @@ TEST(HubStateSkeleton, ChannelStatusChange_FiresOnce)
     HubStateTestAccess::set_channel_opened(s, make_channel("ch1"));
 
     int fired = 0;
-    s.subscribe_channel_status_changed([&](const ChannelEntry &e) {
+    s.subscribe_channel_status_changed([&](const ChannelEntry &e,
+                                            ChannelObservable obs) {
         EXPECT_EQ(e.name, "ch1");
         EXPECT_EQ(e.status, ChannelStatus::Ready);
+        EXPECT_EQ(obs, ChannelObservable::kLive);
         ++fired;
     });
 
@@ -370,7 +373,8 @@ TEST(HubStateSkeleton, ChannelStatusChange_MissingChannelIsNoop)
 {
     HubState s;
     int      fired = 0;
-    s.subscribe_channel_status_changed([&](const ChannelEntry &) { ++fired; });
+    s.subscribe_channel_status_changed(
+        [&](const ChannelEntry &, ChannelObservable) { ++fired; });
     HubStateTestAccess::set_channel_status(s, "nope", ChannelStatus::Ready);
     EXPECT_EQ(fired, 0);
 }
@@ -826,8 +830,10 @@ TEST(HubStateOps, Heartbeat_TransitionsPendingToReady_FiresOnce)
     HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
 
     int ready_fires = 0;
-    s.subscribe_channel_status_changed([&](const ChannelEntry &e) {
+    s.subscribe_channel_status_changed([&](const ChannelEntry &e,
+                                            ChannelObservable obs) {
         EXPECT_EQ(e.status, ChannelStatus::Ready);
+        EXPECT_EQ(obs, ChannelObservable::kLive);
         ++ready_fires;
     });
 
@@ -1270,7 +1276,7 @@ TEST(HubStateHeartbeatB1, HeartbeatStatusFlowAndFireSemantics)
 
     int ready_fires = 0;
     s.subscribe_channel_status_changed(
-        [&](const ChannelEntry &) { ++ready_fires; });
+        [&](const ChannelEntry &, ChannelObservable) { ++ready_fires; });
 
     auto t1 = std::chrono::steady_clock::now();
     HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", t1, std::nullopt);

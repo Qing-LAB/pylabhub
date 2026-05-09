@@ -83,6 +83,22 @@ const char *to_string(ChannelCloseReason r) noexcept
     return "Unknown";
 }
 
+/// Map the legacy `ChannelStatus` (still stored on `ChannelEntry` in
+/// the M1.2 transition window) to the new `ChannelObservable`.  Fire
+/// sites for `ChannelStatusChangedHandler` use this until the
+/// `ChannelEntry.status` field is retired and observability is
+/// derived directly from the producer-presence.
+inline ChannelObservable observable_from_legacy_status(ChannelStatus s) noexcept
+{
+    switch (s)
+    {
+    case ChannelStatus::PendingReady: return ChannelObservable::kRegistering;
+    case ChannelStatus::Ready:        return ChannelObservable::kLive;
+    case ChannelStatus::Closing:      return ChannelObservable::kAbsent;
+    }
+    return ChannelObservable::kAbsent;
+}
+
 const char *to_string(ChannelObservable o) noexcept
 {
     switch (o)
@@ -352,7 +368,9 @@ void HubState::_set_channel_status(const std::string &name, ChannelStatus s)
         it->second.state_since = std::chrono::steady_clock::now();
         fired                  = it->second;
     }
-    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->ch_status_changed)) h(fired);
+    const auto observable = observable_from_legacy_status(fired.status);
+    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->ch_status_changed))
+        h(fired, observable);
 }
 
 void HubState::_set_channel_closed(const std::string &name)
@@ -911,9 +929,10 @@ void HubState::_on_heartbeat(const std::string                   &channel,
             auto             it = pImpl->channels.find(channel);
             if (it != pImpl->channels.end()) fired = it->second;
         }
+        const auto observable = observable_from_legacy_status(fired.status);
         for (auto &h : snapshot_handlers(pImpl->handlers_mu,
                                          pImpl->ch_status_changed))
-            h(fired);
+            h(fired, observable);
     }
 
     // 2. Role liveness (legacy per-uid path — kept for back-compat in M1.1):
@@ -1017,9 +1036,10 @@ void HubState::_on_heartbeat_timeout(const std::string &channel,
     }
     if (transitioned)
     {
+        const auto observable = observable_from_legacy_status(fired_entry.status);
         for (auto &h : snapshot_handlers(pImpl->handlers_mu,
                                          pImpl->ch_status_changed))
-            h(fired_entry);
+            h(fired_entry, observable);
     }
 }
 
