@@ -612,19 +612,25 @@ TEST_F(BrokerProtocolTest, HeartbeatKeying_ProducerVsConsumer_DistinctRows)
     prod_h.brc.send_heartbeat(channel, prod_uid, "producer", prod_metrics);
     cons_h.brc.send_heartbeat(channel, cons_uid, "consumer", cons_metrics);
 
-    // Both presence rows must materialise in HubState (lazy creation in
-    // M1.1; M1.2 will move creation to REG_REQ / CONSUMER_REG_REQ).
+    // Both presence rows must reflect heartbeat processing.  Presence
+    // rows are now created EAGERLY at REG_REQ / CONSUMER_REG_REQ time
+    // (HEP-CORE-0023 §2.6 — M1.2 moved creation off the lazy
+    // first-heartbeat path) so we poll on `first_heartbeat_seen=true`
+    // — the only signal that the heartbeat with metrics has actually
+    // been processed by the broker.
     using pylabhub::tests::helper::poll_until;
-    auto presences_landed = [&] {
+    auto heartbeats_processed = [&] {
         auto prod_re = broker_->hub_state->role(prod_uid);
         auto cons_re = broker_->hub_state->role(cons_uid);
         if (!prod_re.has_value() || !cons_re.has_value()) return false;
-        return prod_re->find_presence(channel, "producer") != nullptr &&
-               cons_re->find_presence(channel, "consumer") != nullptr;
+        const auto *prod_p = prod_re->find_presence(channel, "producer");
+        const auto *cons_p = cons_re->find_presence(channel, "consumer");
+        return prod_p && cons_p
+            && prod_p->first_heartbeat_seen
+            && cons_p->first_heartbeat_seen;
     };
-    EXPECT_TRUE(poll_until(presences_landed, std::chrono::seconds(2)))
-        << "presence rows for both producer-uid and consumer-uid did not "
-           "materialise in HubState within 2s";
+    EXPECT_TRUE(poll_until(heartbeats_processed, std::chrono::seconds(2)))
+        << "presence rows did not record first_heartbeat_seen within 2s";
 
     // ── Producer presence row contract ──────────────────────────────────
     auto prod_re = broker_->hub_state->role(prod_uid);

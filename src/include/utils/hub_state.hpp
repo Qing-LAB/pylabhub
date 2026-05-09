@@ -106,6 +106,26 @@ PYLABHUB_UTILS_EXPORT const char *to_string(RoleState          s) noexcept;
 PYLABHUB_UTILS_EXPORT const char *to_string(PeerState          s) noexcept;
 PYLABHUB_UTILS_EXPORT const char *to_string(ChannelCloseReason r) noexcept;
 
+/// Derived view of a channel's current observability, computed from the
+/// producer-role's presence FSM (HEP-CORE-0023 §2.2 + §2.6).  Channel
+/// state is NOT stored on `ChannelEntry`; this enum is the result of
+/// `ChannelEntry::observe(producer_presence)`.
+///
+/// Mapping (producer-presence state -> channel observable):
+///   - producer-presence absent / Disconnected → kAbsent
+///   - Connected + !first_heartbeat_seen       → kRegistering
+///   - Pending                                 → kStalled
+///   - Connected +  first_heartbeat_seen       → kLive
+enum class ChannelObservable
+{
+    kAbsent,       ///< No producer registered, or producer-presence Disconnected.
+    kRegistering,  ///< Producer registered, no heartbeat received yet.
+    kStalled,      ///< Producer-presence Pending (heartbeats stalled but recoverable).
+    kLive,         ///< Producer-presence Connected with fresh heartbeats.
+};
+
+PYLABHUB_UTILS_EXPORT const char *to_string(ChannelObservable o) noexcept;
+
 // ─── Entry types (HEP-CORE-0033 §8) ─────────────────────────────────────────
 
 /// Consumer attached to a channel.
@@ -177,6 +197,18 @@ struct ChannelEntry
 
     std::chrono::system_clock::time_point created_at{
         std::chrono::system_clock::now()};
+
+    /// Derived: compute this channel's current observability from the
+    /// producer-role's presence (HEP-CORE-0023 §2.2 + §2.6).  Pure
+    /// function — no HubState lookup, no locking.  The caller resolves
+    /// the producer-presence pointer (via
+    /// `RoleEntry::find_presence(name, "producer")`) and passes it in;
+    /// `nullptr` means "no producer-presence registered" → kAbsent.
+    ///
+    /// Why a pointer parameter rather than a HubState reach-in: keeps
+    /// this a pure function with no implicit lock acquisition, callable
+    /// from broker sweep loops that already hold a snapshot.
+    inline ChannelObservable observe(const struct RolePresence *producer) const noexcept;
 };
 
 /// A single band member.
@@ -281,7 +313,34 @@ struct RoleEntry
             if (p.channel == channel && p.role_type == role_type) return &p;
         return nullptr;
     }
+
+    /// Per-uid liveness: is ANY presence still alive (not Disconnected)?
+    /// Per HEP-CORE-0023 §2.6 line 504-507 — derived, not stored.
+    /// Used by admin queries that ask "is this role still around?" and by
+    /// the role-reaper to decide whether to delete the whole `RoleEntry`
+    /// when its last presence transitions Disconnected.
+    [[nodiscard]] bool any_presence_alive() const noexcept
+    {
+        for (const auto &p : presences)
+            if (p.state != RoleState::Disconnected) return true;
+        return false;
+    }
 };
+
+// ChannelEntry::observe — defined inline after RolePresence is complete.
+inline ChannelObservable
+ChannelEntry::observe(const RolePresence *producer) const noexcept
+{
+    if (producer == nullptr)
+        return ChannelObservable::kAbsent;
+    if (producer->state == RoleState::Disconnected)
+        return ChannelObservable::kAbsent;
+    if (!producer->first_heartbeat_seen)
+        return ChannelObservable::kRegistering;
+    if (producer->state == RoleState::Pending)
+        return ChannelObservable::kStalled;
+    return ChannelObservable::kLive;  // Connected + first_heartbeat_seen
+}
 
 /// Federation peer (direct-connected hub, HEP-CORE-0022).
 ///
