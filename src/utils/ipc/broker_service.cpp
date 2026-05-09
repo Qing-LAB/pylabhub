@@ -2263,40 +2263,55 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
     const auto snap = hub_state_->snapshot();
     const auto now  = std::chrono::steady_clock::now();
 
-    // ── Pass 1: Ready -> Pending demotion (HEP-CORE-0023 §2.1) ───────────
-    // Single capability op: HubState atomically transitions + bumps
-    // `ready_to_pending_total`.  Role state stays Connected — Pending is
-    // "suspicious, may recover via the next heartbeat", not "gone".
+    // ── Pass 1: Connected (live) -> Pending demotion (HEP-CORE-0023 §2.1) ─
+    // Iterate channels and read the PRODUCER-presence state directly.
+    // Channel "Ready" in legacy terms = producer-presence Connected with
+    // first_heartbeat_seen.  No producer-presence (or Disconnected) = no
+    // producer = no demotion needed.  HubState's `_on_heartbeat_timeout`
+    // does the actual transition (demotes the producer-presence and the
+    // legacy `ChannelStatus` field while M1.2 still keeps it).
     for (const auto& [channel_name, entry] : snap.channels)
     {
-        if (entry.status != pylabhub::hub::ChannelStatus::Ready)
-            continue;
-        if (now - entry.last_heartbeat < ready_timeout)
-            continue;
+        if (entry.producer_role_uid.empty()) continue;
+        auto role_it = snap.roles.find(entry.producer_role_uid);
+        if (role_it == snap.roles.end()) continue;
+        const auto *p = role_it->second.find_presence(channel_name, "producer");
+        if (p == nullptr) continue;
+        if (p->state != pylabhub::hub::RoleState::Connected) continue;
+        // Per HEP-CORE-0023 §2.1: `last_heartbeat` is the timeout anchor
+        // regardless of `first_heartbeat_seen`.  At REG_REQ time the
+        // presence is created with `last_heartbeat = now`, so a role
+        // that registers and never heartbeats DOES demote here once
+        // ready_timeout elapses (then Pending → Disconnected via the
+        // pass-2 sweep).
+        if (now - p->last_heartbeat < ready_timeout) continue;
         LOGGER_WARN("Broker: role '{}' demoted Ready -> Pending "
                     "(no heartbeat within {} ms)",
                     channel_name, ready_timeout.count());
         hub_state_->_on_heartbeat_timeout(channel_name, entry.producer_role_uid);
     }
 
-    // ── Pass 2: Pending -> deregistered (HEP-CORE-0023 §2.1, no grace) ──
-    // Re-snapshot to observe pass 1's transitions: channels demoted Ready
-    // -> Pending in this same call appear here with their freshly-stamped
-    // state_since (≈ now), so `now - state_since < pending_timeout` skips
-    // them — they get one full pending_timeout window before reclaim.
+    // ── Pass 2: Pending -> Disconnected (HEP-CORE-0023 §2.1, no grace) ──
+    // Re-snapshot to observe pass 1's transitions: presences demoted to
+    // Pending in this same call appear here with their freshly-stamped
+    // `state_since` (≈ now), so `now - state_since < pending_timeout`
+    // skips them — they get one full pending_timeout window before reclaim.
     const auto snap2 = hub_state_->snapshot();
     for (const auto& [channel_name, entry] : snap2.channels)
     {
-        if (entry.status != pylabhub::hub::ChannelStatus::PendingReady)
-            continue;
-        if (now - entry.state_since < pending_timeout)
-            continue;
+        if (entry.producer_role_uid.empty()) continue;
+        auto role_it = snap2.roles.find(entry.producer_role_uid);
+        if (role_it == snap2.roles.end()) continue;
+        const auto *p = role_it->second.find_presence(channel_name, "producer");
+        if (p == nullptr) continue;
+        if (p->state != pylabhub::hub::RoleState::Pending) continue;
+        if (now - p->state_since < pending_timeout) continue;
         LOGGER_WARN("Broker: role '{}' reclaimed from Pending "
                     "(no heartbeat within {} ms); sending CHANNEL_CLOSING_NOTIFY + dereg",
                     channel_name, pending_timeout.count());
-        // Transport sends + federation/band cleanup happen first, while the
-        // entry is still in HubState; `_on_pending_timeout` then erases the
-        // entry and bumps `pending_to_deregistered_total`.
+        // Transport sends + federation/band cleanup happen first, while
+        // the entry is still in HubState; `_on_pending_timeout` then
+        // erases the entry and bumps `pending_to_deregistered_total`.
         send_closing_notify(socket, channel_name, entry, "pending_timeout");
         on_channel_closed(socket, channel_name, entry, "pending_timeout");
         hub_state_->_on_pending_timeout(channel_name);

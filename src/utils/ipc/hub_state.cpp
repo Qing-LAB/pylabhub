@@ -1023,15 +1023,42 @@ void HubState::_on_heartbeat_timeout(const std::string &channel,
     ChannelEntry fired_entry;
     {
         std::unique_lock lk(pImpl->mu);
-        auto             it = pImpl->channels.find(channel);
-        if (it != pImpl->channels.end() &&
-            it->second.status == ChannelStatus::Ready)
+        const auto       now = std::chrono::steady_clock::now();
+
+        // Authoritative transition: producer-presence Connected → Pending
+        // (HEP-CORE-0023 §2.1).  `first_heartbeat_seen` is NOT a gate —
+        // the registered-but-never-heartbeat case demotes via this same
+        // path once `last_heartbeat` (stamped at REG_REQ time) ages
+        // past ready_timeout.  The counter bump tracks the presence-FSM
+        // transition, not the legacy ChannelEntry.status update below.
+        bool presence_transitioned = false;
+        if (!role_uid.empty())
+        {
+            auto rit = pImpl->roles.find(role_uid);
+            if (rit != pImpl->roles.end())
+            {
+                auto *p = rit->second.find_presence(channel, "producer");
+                if (p != nullptr && p->state == RoleState::Connected)
+                {
+                    p->state              = RoleState::Pending;
+                    p->state_since        = now;
+                    presence_transitioned = true;
+                }
+            }
+        }
+        if (presence_transitioned)
+            ++pImpl->counters.ready_to_pending_total;
+
+        // Legacy back-compat: also update ChannelEntry.status for any
+        // M1.1-era reader that hasn't been migrated yet.  Mirrors the
+        // presence transition.  Removed in the M1.2 deletion phase.
+        auto it = pImpl->channels.find(channel);
+        if (it != pImpl->channels.end() && presence_transitioned)
         {
             it->second.status      = ChannelStatus::PendingReady;
-            it->second.state_since = std::chrono::steady_clock::now();
-            ++pImpl->counters.ready_to_pending_total;
-            fired_entry  = it->second;
-            transitioned = true;
+            it->second.state_since = now;
+            fired_entry            = it->second;
+            transitioned           = true;
         }
     }
     if (transitioned)
@@ -1061,7 +1088,8 @@ void HubState::_on_pending_timeout(const std::string &channel)
     // — only the first transition increments the counter.  The actual
     // close work runs after the lock is released because
     // `_on_channel_closed` takes its own writer-lock and fires handlers.
-    bool eligible = false;
+    bool        eligible = false;
+    std::string producer_uid;
     {
         std::unique_lock lk(pImpl->mu);
         auto             it = pImpl->channels.find(channel);
@@ -1070,13 +1098,32 @@ void HubState::_on_pending_timeout(const std::string &channel)
         {
             // Mark Closing under the same lock so a concurrent
             // `_on_pending_timeout` immediately fails the
-            // `status == PendingReady` check (`Closing` is reserved for
-            // voluntary-close, but at this point the role is gone — using
-            // it as a "winner takes all" flag is benign because
-            // `_on_channel_closed` will erase the entry shortly).
+            // `status == PendingReady` check.  M1.3 retires the Closing
+            // state — atomic teardown via `_on_channel_closed` below
+            // erases the entry; the brief Closing marker exists only to
+            // make this writer-lock window single-shot.
             it->second.status = ChannelStatus::Closing;
             ++pImpl->counters.pending_to_deregistered_total;
+            producer_uid      = it->second.producer_role_uid;
             eligible          = true;
+        }
+        // M1.2 — also transition the producer-presence row to Disconnected
+        // (HEP-CORE-0023 §2.1).  The presence is the authoritative FSM
+        // owner.  We do this BEFORE `_on_channel_closed` so subscribers
+        // observe the channel removal with the producer-presence already
+        // marked terminal.
+        if (eligible && !producer_uid.empty())
+        {
+            auto rit = pImpl->roles.find(producer_uid);
+            if (rit != pImpl->roles.end())
+            {
+                auto *p = rit->second.find_presence(channel, "producer");
+                if (p != nullptr && p->state == RoleState::Pending)
+                {
+                    p->state       = RoleState::Disconnected;
+                    p->state_since = std::chrono::steady_clock::now();
+                }
+            }
         }
     }
     if (eligible)
