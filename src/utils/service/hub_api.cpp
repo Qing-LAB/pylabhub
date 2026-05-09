@@ -240,9 +240,13 @@ nlohmann::json HubAPI::list_channels() const
 {
     if (!impl_->host)
         return nlohmann::json::array();
+    const auto snap = impl_->host->state().snapshot();
     nlohmann::json arr = nlohmann::json::array();
-    for (const auto &kv : impl_->host->state().snapshot().channels)
-        arr.push_back(pylabhub::hub::channel_to_json(kv.second));
+    for (const auto &kv : snap.channels)
+    {
+        const auto obs = pylabhub::hub::observe_channel(kv.second, snap);
+        arr.push_back(pylabhub::hub::channel_to_json(kv.second, obs));
+    }
     return arr;
 }
 
@@ -250,10 +254,16 @@ nlohmann::json HubAPI::get_channel(const std::string &name) const
 {
     if (!impl_->host)
         return nullptr;
-    const auto opt = impl_->host->state().channel(name);
-    if (!opt.has_value())
+    // Take a single snapshot so the channel + producer-presence lookup
+    // see consistent state; per HEP-CORE-0023 §2.2 the `observable`
+    // field is derived from the producer-presence row keyed under the
+    // channel's `producer_role_uid`.
+    const auto snap = impl_->host->state().snapshot();
+    const auto cit  = snap.channels.find(name);
+    if (cit == snap.channels.end())
         return nullptr;
-    return pylabhub::hub::channel_to_json(*opt);
+    const auto obs = pylabhub::hub::observe_channel(cit->second, snap);
+    return pylabhub::hub::channel_to_json(cit->second, obs);
 }
 
 nlohmann::json HubAPI::list_roles() const

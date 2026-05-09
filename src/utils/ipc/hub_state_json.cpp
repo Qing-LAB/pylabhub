@@ -38,11 +38,17 @@ inline std::string fmt_time(std::chrono::system_clock::time_point tp)
 
 } // namespace
 
-nlohmann::json channel_to_json(const ChannelEntry &c)
+namespace
+{
+
+/// Body shared by the single-arg and two-arg `channel_to_json`
+/// overloads.  Emits everything except the state key(s); each public
+/// overload then appends `"status"` and/or `"observable"` per its
+/// contract.
+inline nlohmann::json channel_to_json_body(const ChannelEntry &c)
 {
     nlohmann::json j;
     j["name"]                = c.name;
-    j["status"]              = to_string(c.status);
     j["shm_name"]            = c.shm_name;
     j["schema_hash"]         = c.schema_hash;
     j["schema_version"]      = c.schema_version;
@@ -68,6 +74,23 @@ nlohmann::json channel_to_json(const ChannelEntry &c)
         consumers.push_back(std::move(cj));
     }
     j["consumers"] = std::move(consumers);
+    return j;
+}
+
+} // namespace
+
+nlohmann::json channel_to_json(const ChannelEntry &c)
+{
+    nlohmann::json j         = channel_to_json_body(c);
+    j["status"]              = to_string(c.status);
+    return j;
+}
+
+nlohmann::json channel_to_json(const ChannelEntry &c, ChannelObservable obs)
+{
+    nlohmann::json j         = channel_to_json_body(c);
+    j["status"]              = to_string(c.status);
+    j["observable"]          = to_string(obs);
     return j;
 }
 

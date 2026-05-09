@@ -1440,39 +1440,76 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
         return make_error(corr_id, "INVALID_REQUEST", "Missing or empty 'channel_name'");
     }
 
-    auto entry = hub_state_->channel(channel_name);
+    // Take a single snapshot so the channel + producer-presence lookup
+    // observe consistent state — channel teardown is atomic with the
+    // producer-presence Disconnected transition (HEP-CORE-0023 §2.1).
+    const auto snap   = hub_state_->snapshot();
+    const auto cit    = snap.channels.find(channel_name);
 
     // ── HEP-CORE-0023 §2.2: Three-response state-machine dispatch ──────
-    // Broker replies immediately based on current role state. No queuing.
-    if (!entry.has_value())
+    // Broker replies immediately based on the producer-presence state.
+    // No queuing.
+    if (cit == snap.channels.end())
     {
-        // No role registered for this channel.
+        // No channel registered.
         LOGGER_DEBUG("Broker: DISC_REQ for '{}' -> CHANNEL_NOT_FOUND", channel_name);
         return make_error(corr_id, "CHANNEL_NOT_FOUND",
                           "Channel '" + channel_name + "' is not registered");
     }
+    const auto &entry_ref = cit->second;
 
-    if (entry->status == pylabhub::hub::ChannelStatus::PendingReady)
+    // Resolve the producer-presence row that owns this channel.  Per
+    // HEP-CORE-0023 §2.2 the response variant is derived from the
+    // presence's FSM state, not the legacy ChannelEntry.status.
+    const pylabhub::hub::RolePresence *presence = nullptr;
     {
-        // Role registered but not yet Ready (no heartbeat received).
-        // Client is responsible for retry.
-        LOGGER_DEBUG("Broker: DISC_REQ for '{}' -> DISC_PENDING (awaiting heartbeat)",
-                     channel_name);
+        auto rit = snap.roles.find(entry_ref.producer_role_uid);
+        if (rit != snap.roles.end())
+            presence = rit->second.find_presence(channel_name, "producer");
+    }
+
+    if (presence == nullptr ||
+        presence->state == pylabhub::hub::RoleState::Disconnected)
+    {
+        // Channel exists but its producer is gone (either never had a
+        // presence row in a pre-M0 leftover, or the presence has been
+        // reaped while atomic teardown is in flight).  From the
+        // consumer's perspective this channel is not discoverable.
+        LOGGER_DEBUG("Broker: DISC_REQ for '{}' -> CHANNEL_NOT_FOUND "
+                     "(producer-presence absent/Disconnected)", channel_name);
+        return make_error(corr_id, "CHANNEL_NOT_FOUND",
+                          "Channel '" + channel_name + "' is not registered");
+    }
+
+    if (!presence->first_heartbeat_seen ||
+        presence->state == pylabhub::hub::RoleState::Pending)
+    {
+        // Producer registered but not yet Live — either we're still
+        // awaiting the first heartbeat (presence Connected without
+        // first_heartbeat_seen), or the heartbeat has stalled (presence
+        // Pending).  Client is responsible for retry; reason field
+        // distinguishes the two for diagnostics.
+        const char *reason = !presence->first_heartbeat_seen
+                                 ? "awaiting_first_heartbeat"
+                                 : "heartbeat_stalled";
+        LOGGER_DEBUG("Broker: DISC_REQ for '{}' -> DISC_PENDING ({})",
+                     channel_name, reason);
         nlohmann::json resp;
         resp["status"]       = "pending";
         resp["channel_name"] = channel_name;
-        resp["reason"]       = "awaiting_first_heartbeat";
+        resp["reason"]       = reason;
         if (!corr_id.empty())
             resp["correlation_id"] = corr_id;
         return resp;
     }
 
-    // entry->status == Ready — fall through to normal DISC_ACK payload.
+    // presence->state == Connected with first_heartbeat_seen — channel
+    // is Live, fall through to DISC_ACK.
 
     // HEP-0021 §16: reject if ZMQ endpoint has unresolved port 0.
-    if (entry->data_transport == "zmq" && !entry->zmq_node_endpoint.empty())
+    if (entry_ref.data_transport == "zmq" && !entry_ref.zmq_node_endpoint.empty())
     {
-        auto ep_check = pylabhub::validate_tcp_endpoint(entry->zmq_node_endpoint);
+        auto ep_check = pylabhub::validate_tcp_endpoint(entry_ref.zmq_node_endpoint);
         if (ep_check.ok() && ep_check.port == 0)
         {
             LOGGER_INFO("Broker: DISC_REQ channel '{}' ZMQ endpoint has port 0 (not ready)",
@@ -1486,20 +1523,20 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
     LOGGER_INFO("Broker: discovered channel '{}'", channel_name);
     nlohmann::json resp;
     resp["status"]            = "success";
-    resp["shm_name"]          = entry->shm_name;
-    resp["schema_hash"]       = entry->schema_hash;
-    resp["schema_version"]    = entry->schema_version;
-    resp["metadata"]          = entry->metadata;
+    resp["shm_name"]          = entry_ref.shm_name;
+    resp["schema_hash"]       = entry_ref.schema_hash;
+    resp["schema_version"]    = entry_ref.schema_version;
+    resp["metadata"]          = entry_ref.metadata;
     resp["consumer_count"]    =
-        static_cast<uint32_t>(entry->consumers.size());
-    resp["has_shared_memory"] = entry->has_shared_memory;
-    resp["channel_pattern"]   = channel_pattern_to_str(entry->pattern);
-    resp["zmq_ctrl_endpoint"]  = entry->zmq_ctrl_endpoint;
-    resp["zmq_data_endpoint"]  = entry->zmq_data_endpoint;
-    resp["zmq_pubkey"]         = entry->zmq_pubkey;
+        static_cast<uint32_t>(entry_ref.consumers.size());
+    resp["has_shared_memory"] = entry_ref.has_shared_memory;
+    resp["channel_pattern"]   = channel_pattern_to_str(entry_ref.pattern);
+    resp["zmq_ctrl_endpoint"]  = entry_ref.zmq_ctrl_endpoint;
+    resp["zmq_data_endpoint"]  = entry_ref.zmq_data_endpoint;
+    resp["zmq_pubkey"]         = entry_ref.zmq_pubkey;
     // HEP-CORE-0021: ZMQ endpoint registry (echo stored peer endpoint for discovery).
-    resp["data_transport"]     = entry->data_transport;
-    resp["zmq_node_endpoint"]  = entry->zmq_node_endpoint;
+    resp["data_transport"]     = entry_ref.data_transport;
+    resp["zmq_node_endpoint"]  = entry_ref.zmq_node_endpoint;
     if (!corr_id.empty())
     {
         resp["correlation_id"] = corr_id;
@@ -1820,23 +1857,48 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
         LOGGER_WARN("Broker: HEARTBEAT_REQ missing channel_name");
         return;
     }
-    // Peek existence + status before applying the heartbeat so we can log
-    // the Pending->Ready transition (the actual mutation + counter bump
-    // happens inside hub_state_->_on_heartbeat below).
-    auto pre = hub_state_->channel(channel_name);
-    if (!pre.has_value())
+    // Peek existence + producer-presence state before applying the
+    // heartbeat so we can log the Pending->Live channel-observable
+    // transition (the actual mutation + counter bump happens inside
+    // hub_state_->_on_heartbeat below).  Per HEP-CORE-0023 §2.2 the
+    // channel observable is derived from the producer-presence FSM,
+    // so a transition is only "channel-level" when this heartbeat is
+    // the producer's; consumer heartbeats refresh their own presence
+    // and never flip the channel observable.
+    const auto snap = hub_state_->snapshot();
+    const auto cit  = snap.channels.find(channel_name);
+    if (cit == snap.channels.end())
     {
         LOGGER_WARN("Broker: HEARTBEAT_REQ for unknown channel '{}'", channel_name);
         return;
     }
-    const bool        was_pending       = (pre->status == pylabhub::hub::ChannelStatus::PendingReady);
-    const std::string producer_role_uid = pre->producer_role_uid;
+    const std::string producer_role_uid = cit->second.producer_role_uid;
+    const pylabhub::hub::RolePresence *prod_presence = nullptr;
+    {
+        auto rit = snap.roles.find(producer_role_uid);
+        if (rit != snap.roles.end())
+            prod_presence = rit->second.find_presence(channel_name, "producer");
+    }
+    // True iff the producer-presence is currently in a sub-Live state
+    // (Pending, or Connected without first_heartbeat_seen yet) — the
+    // upcoming `_on_heartbeat` will transition it to Live only when
+    // this heartbeat itself is the producer's (matching role_type).
+    const bool was_pending = (prod_presence != nullptr) &&
+                             (prod_presence->state ==
+                                  pylabhub::hub::RoleState::Pending ||
+                              !prod_presence->first_heartbeat_seen);
 
     if (was_pending)
     {
         // `pending_to_ready_total` is bumped by `_on_heartbeat` itself
-        // when the PendingReady -> Ready transition fires.
-        LOGGER_INFO("Broker: role '{}' transitioned Pending -> Ready", channel_name);
+        // when the producer-presence transitions to Live.  This LOG is
+        // pre-emptive — fires for every heartbeat that finds the
+        // producer-presence in a sub-Live state, even when this
+        // heartbeat is the consumer's (which won't actually transition
+        // the producer-presence).  Acceptable for diagnostics; a
+        // tighter test happens inside _on_heartbeat.
+        LOGGER_INFO("Broker: channel '{}' producer-presence sub-Live "
+                    "(may transition to Live on this heartbeat)", channel_name);
     }
     // Wire-format observability — HEP-CORE-0019 §4.1 (Phase 6).  The
     // role-side `BrokerRequestComm::send_heartbeat(channel, uid,
@@ -2765,6 +2827,12 @@ nlohmann::json BrokerServiceImpl::handle_channel_list_req()
             case pylabhub::hub::ChannelStatus::Ready:        ch["status"] = "Ready";        break;
             case pylabhub::hub::ChannelStatus::Closing:      ch["status"] = "Closing";      break;
         }
+        // HEP-CORE-0023 §2.2 protocol-defined observable, derived from
+        // the producer-presence row.  Emitted alongside the legacy
+        // `status` during the M1.2 transition; new admin clients should
+        // prefer `observable`.
+        ch["observable"] = pylabhub::hub::to_string(
+            pylabhub::hub::observe_channel(entry, snap));
         channels.push_back(std::move(ch));
     }
     resp["channels"] = std::move(channels);
@@ -3038,12 +3106,17 @@ std::string BrokerService::list_channels_json_str() const
     nlohmann::json result = nlohmann::json::array();
     for (const auto &[name, entry] : snap.channels)
     {
+        // HEP-CORE-0023 §2.2: `observable` is the protocol-defined
+        // wire field; legacy `status` is preserved during the M1.2
+        // transition (Phase 6 deletes it).
         result.push_back(nlohmann::json{
             {"name",           name},
             {"schema_hash",    entry.schema_hash},
             {"consumer_count", static_cast<int>(entry.consumers.size())},
             {"producer_pid",   entry.producer_pid},
-            {"status",         pylabhub::hub::to_string(entry.status)}
+            {"status",         pylabhub::hub::to_string(entry.status)},
+            {"observable",     pylabhub::hub::to_string(
+                                   pylabhub::hub::observe_channel(entry, snap))}
         });
     }
     return result.dump();
@@ -3279,7 +3352,7 @@ BrokerService::query_metrics(const pylabhub::hub::MetricsFilter &filter) const
         {
             if (!include(filter.channels, name))
                 continue;
-            auto cj = channel_to_json(ch);
+            auto cj = channel_to_json(ch, observe_channel(ch, snap));
             // Merge in role-pushed metrics (HEP-0019).
             auto mit = metrics_copy.find(name);
             if (mit != metrics_copy.end())

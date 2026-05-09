@@ -372,7 +372,10 @@ json AdminService::Impl::handle_list_channels(const json & /*request*/)
     const auto snap = host.state().snapshot();
     json channels = json::object();
     for (const auto &[name, ch] : snap.channels)
-        channels[name] = pylabhub::hub::channel_to_json(ch);
+    {
+        const auto obs = pylabhub::hub::observe_channel(ch, snap);
+        channels[name] = pylabhub::hub::channel_to_json(ch, obs);
+    }
     return make_ok(std::move(channels));
 }
 
@@ -384,11 +387,16 @@ json AdminService::Impl::handle_get_channel(const json &request)
         return make_error("invalid_params",
                           "get_channel requires params.channel (string)");
     const auto &name = (*pit)["channel"].get_ref<const std::string &>();
-    auto ch = host.state().channel(name);
-    if (!ch)
+    // Single snapshot keeps the channel + producer-presence lookup
+    // consistent (HEP-CORE-0023 §2.2 derives `observable` from the
+    // producer-presence row under the channel's producer_role_uid).
+    const auto snap = host.state().snapshot();
+    const auto cit  = snap.channels.find(name);
+    if (cit == snap.channels.end())
         return make_error("not_found",
                           std::string("channel '") + name + "' not registered");
-    json result = pylabhub::hub::channel_to_json(*ch);
+    const auto obs = pylabhub::hub::observe_channel(cit->second, snap);
+    json result    = pylabhub::hub::channel_to_json(cit->second, obs);
     // HEP-CORE-0033 §12.2.2 — script-side response augmentation hook.
     // No-op when no script is loaded or the script doesn't define
     // `on_get_channel`; otherwise the script may mutate `result`.

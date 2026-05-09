@@ -33,8 +33,27 @@ namespace pylabhub::hub
 
 /// Serialize a single channel entry.  Includes the producer block,
 /// schema metadata, transport endpoints, and all attached consumers.
+///
+/// Single-arg overload — emits only the legacy `"status"` key, computed
+/// from `c.status`.  Used by call sites that genuinely cannot resolve
+/// the producer-presence (none today; reserved as a transitional
+/// fallback).  Slated for removal in M1.2 Phase 6 alongside the
+/// `ChannelEntry.status` field itself.
 [[nodiscard]] nlohmann::json
 channel_to_json(const ChannelEntry &c);
+
+/// Serialize a channel entry with the protocol-defined `observable`
+/// field appended (HEP-CORE-0023 §2.2 vocabulary:
+/// `absent | registering | stalled | live`).  The legacy `status` key
+/// is preserved alongside during the M1.2 transition; both keys are
+/// emitted so existing admin/script consumers keep working while new
+/// consumers can prefer the protocol field.
+///
+/// `obs` is typically computed via `observe_channel(c, snapshot)` at
+/// the call site.  Phase 6 drops the legacy `status` key and folds the
+/// two overloads back into one.
+[[nodiscard]] nlohmann::json
+channel_to_json(const ChannelEntry &c, ChannelObservable obs);
 
 /// Serialize a registered role.  Includes the latest pushed metrics
 /// payload so callers don't have to issue a separate fetch.
