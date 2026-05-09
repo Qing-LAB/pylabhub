@@ -167,9 +167,6 @@ add_executable(test_layer3_datahub
     # ── ZmqPollLoop + HeartbeatTracker unit tests ────────────────────────────
     test_datahub_zmq_poll_loop.cpp
 
-    # ── Two-tier graceful shutdown protocol tests ──────────────────────────
-    test_datahub_broker_shutdown.cpp
-
     # ── HEP-CORE-0019 Metrics Plane tests ────────────────────────────────
     test_datahub_metrics.cpp
 

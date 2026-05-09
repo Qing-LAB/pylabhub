@@ -7,6 +7,191 @@
 
 ---
 
+## Test Design Principles (MANDATORY — review every test against these)
+
+Agreed framework, 2026-05-09.  Every existing test SHOULD be auditable against
+this principle; every new test MUST be designed to fit it.  When a test fails
+the audit, the right move is to migrate the test to use real production
+classes (extending their observability surface if necessary), not to keep the
+mock running.
+
+### 1. Layer purpose
+
+| Layer | Purpose |
+|---|---|
+| **L1** | Test correctness of individual functions / APIs and correct handling of error paths. |
+| **L2** | Test collective behavior / function of a whole module. |
+| **L3** | Test correct handling of higher-level protocol / design / events spanning modules. |
+| **L4** | Final integration of multiple modules — the shipping system / binary. |
+
+### 2. Maximize use of real production modules; mocks only when absolutely necessary
+
+Creating production-shaped test scaffolding from scratch — mock modules,
+hand-rolled wrappers reimplementing production wiring, parallel structures
+mirroring a real class — is **only allowed when absolutely necessary**.
+
+"Necessary" is narrow:
+
+1. The real production class genuinely cannot expose the detail under test
+   through its API, logs, or debug surface, **AND**
+2. Extending the real class's observability surface to expose that detail
+   isn't the right move (the detail is genuinely outside the class's
+   responsibility, e.g. injected hardware peripherals, external network,
+   wall-clock).
+
+If neither holds, the mock is forbidden.  Project-internal classes (broker,
+host, state, admin, role host, thread manager, queues, processor, engine,
+…) **never** qualify — mocking them creates parallel production code in
+the test tree that drifts, requires its own maintenance, and produces
+false test signal (tests pass against the mock while production has
+changed).
+
+### 3. Audit checklist (apply to every test under review)
+
+For each test, walk the checklist.  Any "no" is a finding.
+
+- [ ] **Layer assignment is honest.**  The directory name (L1/L2/L3/L4)
+      matches the test's actual purpose per item 1 above.  A test that
+      validates cross-module event handling with real wire/event flow is
+      L3, not L2; a test that just checks one class's API contract is L2,
+      not L3 — even if it runs in a subprocess.
+- [ ] **No hand-rolled wrappers for project-internal classes.**  Search
+      the test file for `struct *Handle` / `struct *Wrapper` / `class Mock*`
+      / `std::thread` instantiations.  Each one is a finding unless it
+      meets the genuinely-necessary exceptions in item 2.
+- [ ] **Real production assembly at the right layer.**  L3 tests use the
+      real `HubHost` (or whatever the analogous module-owner is); L4 tests
+      drive the real shipping binary (`plh_hub` / `plh_role` / etc.) via
+      `WorkerProcess`.  No re-derivation of host wiring.
+- [ ] **Friend-shim, not mock, when private surface is needed.**  L2 tests
+      reaching private methods use a `friend struct *TestAccess` shim (the
+      pattern `pylabhub::hub::test::HubStateTestAccess` already follows).
+      That is an extension of the real class's observability — adding a
+      `friend` declaration — not a fork.
+- [ ] **Observability gap → extend real class, never mock.**  If the test
+      can't assert what it needs to assert through the real class's public
+      API, logs, or accessors, the fix is to add the missing accessor /
+      log line / debug snapshot to the real class (which then helps
+      production diagnostics too).  Writing a mock to expose the detail is
+      the wrong direction.
+- [ ] **Test scenario fits real production wire/event paths.**  A test
+      that constructs request payloads (e.g., REG_REQ JSON) without going
+      through the same wire-encoding helpers production uses is a finding
+      — it pins the broker's behavior against test-only payload shapes
+      that diverge from what production roles actually send.
+
+### 4. Cautionary case (the reason this rule was crystallized)
+
+The 8 hand-rolled `BrokerHandle` HubHost-mocks in
+`tests/test_layer3_datahub/workers/datahub_*_workers.cpp` reimplement
+HubHost's threading/lifecycle/state-ownership job from scratch.  They
+drifted past post-refactor architectural changes (ThreadManager rollout,
+AdminService, HubScriptRunner integration, `role_uid` derivation) and
+produced false signal — tests pass against the mock while production
+behavior had diverged.  Replacing them with real-`HubHost`-backed
+scaffolding is open work (see "Audit work" subsection below).
+
+### 5. Audit work (open)
+
+- [x] **Suite-wide audit** completed 2026-05-09.  Findings below.
+- [x] **Deleted `test_datahub_broker_shutdown.cpp`** (2026-05-09): 6 tests
+      pinning the grace-escalation shutdown protocol that M1.3 retires.
+      Fresh tests for the post-M1.3 force-disconnect notification semantic
+      will be designed when M1.5 lands.
+- [ ] **Migrate the 8 BrokerHandle mock-host instances** in
+      `tests/test_layer3_datahub/workers/` to real `HubHost`.  Keep the
+      wire-protocol round-trip pattern (the broker is real, the ZMQ is
+      real); only the host wrapper is wrong.
+
+#### Known failing tests pending broker-cluster migration (2026-05-09)
+
+The following 3 tests fail under the `BrokerHandle` mock-host
+scaffolding because M1.2 Phase 4 (DISC_REQ + heartbeat sweep now
+derive from producer-presence per HEP-CORE-0023 §2.2) exposes the
+mock host's gap around `role_uid` derivation.  They are correct test
+intents but their scaffolding doesn't represent the post-refactor
+architecture.  Fix lands when the broker cluster migrates to real
+`HubHost` (see plan `docs/tech_draft/broker_test_migration_plan.md`).
+
+- `DatahubBrokerTest.DeregPidMismatch`
+- `DatahubBrokerConsumerTest.ConsumerDeregHappyPath`
+- `DatahubBrokerConsumerTest.ConsumerDeregPidMismatch`
+
+Working test count: 1782 - 3 known-failing = **1779 passing** until
+migration completes.
+- [ ] **Adopt `BrokerRequestComm` for payload construction** in the
+      same 15 test files affected by hand-rolled JSON `make_reg_opts`
+      builders (overlaps heavily with the 8 BrokerHandle files;
+      remediating the broker-cluster lets us close most of this in one
+      pass).
+- [ ] **Add L2 BrokerService coverage** via a `BrokerServiceTestAccess`
+      friend shim mirroring `HubStateTestAccess`.  L2 today has zero
+      direct `BrokerService` coverage — every wire-protocol handler
+      (REG_REQ / DISC_REQ / HEARTBEAT_REQ / DEREG_REQ /
+      CONSUMER_REG_REQ / FORCE_SHUTDOWN / HUB_PEER_HELLO /
+      HUB_TARGETED_MSG) is tested only at L3 through the mock host.
+
+### 6. Audit findings (2026-05-09)
+
+| Severity | Count | Pattern |
+|---|---|---|
+| Severe | 8 | `BrokerHandle` / `LocalBrokerHandle` HubHost-mocks |
+| Moderate | 0 | (none) |
+| Minor | 15 | Hand-rolled JSON payload builders (`make_reg_opts` etc.) |
+
+**Severe — 8 files** (`struct BrokerHandle` / `struct LocalBrokerHandle`
+that wires `BrokerService` + `HubState` directly with a hand-rolled
+`std::thread`, bypassing real `HubHost`/ThreadManager/AdminService/
+HubScriptRunner/lifecycle integration).  Checklist violations: **(b) +
+(c)**.
+
+`tests/test_layer3_datahub/`:
+- `test_datahub_broker_admin.cpp`
+- `test_datahub_broker_schema.cpp`
+- `test_datahub_broker_protocol.cpp`
+- `test_datahub_broker_shutdown.cpp`
+- `workers/datahub_broker_workers.cpp`
+- `workers/datahub_broker_consumer_workers.cpp`
+- `workers/datahub_broker_health_workers.cpp`
+- `workers/datahub_broker_request_comm_workers.cpp`
+
+**Minor — 15 files** with hand-rolled JSON payload builders.  Pattern:
+
+```cpp
+json make_reg_opts(const std::string &channel, const std::string &role_uid) {
+    json opts;
+    opts["channel_name"] = channel;
+    opts["pattern"]      = "PubSub";
+    // ... 8+ more manual assignments
+    return opts;
+}
+```
+
+This builds REG_REQ / CONSUMER_REG_REQ payloads by hand instead of going
+through `BrokerRequestComm` (the production wire-encoding helper).  The
+broker is then pinned against test-only payload shapes that don't match
+what production roles actually send.  Checklist violation: **(f)**.
+
+Test files: `test_datahub_broker_admin.cpp`, `test_datahub_broker_protocol.cpp`,
+`test_datahub_broker_schema.cpp`, `test_datahub_broker_shutdown.cpp`,
+`test_datahub_channel_access_policy.cpp`, `test_datahub_hub_host_integration.cpp`,
+`test_datahub_metrics.cpp`, `test_datahub_zmq_endpoint_registry.cpp`,
+`test_hub_lua_integration.cpp`.
+
+Worker files: `datahub_broker_consumer_workers.cpp`, `datahub_broker_health_workers.cpp`,
+`datahub_broker_request_comm_workers.cpp`, `datahub_broker_workers.cpp`,
+`datahub_e2e_workers.cpp`, `datahub_role_state_workers.cpp`.
+
+**Compliance baseline (no findings):** L1 tests (no broker-class touches);
+L2 tests (real classes + `HubStateTestAccess` friend shim — exemplary);
+L3 tests outside the broker cluster (`test_datahub_hub_host_integration.cpp`
+host-positive paths, `test_hub_lua_integration.cpp`, `test_hub_python_integration.cpp`
+all use real `HubHost`); L4 tests (drive real binaries via `WorkerProcess`);
+test framework utilities (`LogCaptureFixture`, `TmpDir`, `IsolatedProcessTest`
+— production-agnostic, not mocks).
+
+---
+
 ## Current Focus
 
 ### Open 2026-05-03: PlhRoleCliTest.LogBackupsBelowSentinelRejectedByValidate stalls under parallel load (framework concern)
