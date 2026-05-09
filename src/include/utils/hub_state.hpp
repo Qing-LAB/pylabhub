@@ -431,6 +431,23 @@ struct HubStateSnapshot
         std::chrono::system_clock::now()};
 };
 
+/// Resolve a channel's current observable from a hub snapshot.  Looks
+/// up the channel's producer-role and the matching producer-presence
+/// row, then delegates to `ChannelEntry::observe(producer)`.  Returns
+/// `kAbsent` when the producer-role is missing from the snapshot.
+///
+/// Used by every JSON serializer that surfaces channel state on the
+/// wire (HEP-CORE-0023 §2.2 — `observable` is the protocol-defined
+/// field; the legacy `status` key remains during the M1.2 transition).
+inline ChannelObservable
+observe_channel(const ChannelEntry &ch, const HubStateSnapshot &snap) noexcept
+{
+    auto rit = snap.roles.find(ch.producer_role_uid);
+    if (rit == snap.roles.end())
+        return ch.observe(nullptr);
+    return ch.observe(rit->second.find_presence(ch.name, "producer"));
+}
+
 // ─── Event subscription ─────────────────────────────────────────────────────
 
 using HandlerId = uint64_t;

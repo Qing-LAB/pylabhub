@@ -244,14 +244,16 @@ void HubScriptRunner::worker_main_()
 
     state.subscribe_channel_opened(
         [enqueue](const pylabhub::hub::ChannelEntry &ch) {
-            enqueue("channel_opened", ch.name, js::channel_to_json(ch));
+            // Eager presence creation (Phase 1) means the producer-presence
+            // exists at REG_REQ time but has not seen its first heartbeat
+            // yet — observable is `kRegistering` per HEP-CORE-0023 §2.2.
+            enqueue("channel_opened", ch.name,
+                    js::channel_to_json(ch, pylabhub::hub::ChannelObservable::kRegistering));
         });
     state.subscribe_channel_status_changed(
         [enqueue](const pylabhub::hub::ChannelEntry &ch,
                   pylabhub::hub::ChannelObservable obs) {
-            auto j = js::channel_to_json(ch);
-            j["observable"] = pylabhub::hub::to_string(obs);
-            enqueue("channel_status_changed", ch.name, std::move(j));
+            enqueue("channel_status_changed", ch.name, js::channel_to_json(ch, obs));
         });
     state.subscribe_channel_closed(
         [enqueue](const std::string &name) {
