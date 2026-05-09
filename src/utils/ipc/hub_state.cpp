@@ -83,6 +83,18 @@ const char *to_string(ChannelCloseReason r) noexcept
     return "Unknown";
 }
 
+const char *to_string(ChannelObservable o) noexcept
+{
+    switch (o)
+    {
+    case ChannelObservable::kAbsent:      return "absent";
+    case ChannelObservable::kRegistering: return "registering";
+    case ChannelObservable::kStalled:     return "stalled";
+    case ChannelObservable::kLive:        return "live";
+    }
+    return "unknown";
+}
+
 // ─── Impl ───────────────────────────────────────────────────────────────────
 
 struct HubState::Impl
@@ -603,10 +615,34 @@ namespace
 /// Callers must hold no lock on entry; this helper takes the state
 /// writer lock briefly and returns the post-mutation entry for event
 /// dispatch.
+/// Insert-or-update a `RolePresence` row on @p role.  Idempotent: if the
+/// `(channel, role_type)` row already exists, it is left untouched
+/// (re-registration after voluntary close is handled by the heartbeat
+/// path which transitions Disconnected → Connected when a fresh
+/// heartbeat arrives).  Pure helper — caller must hold the impl mutex.
+inline void upsert_presence_row_locked(
+    RoleEntry          &role,
+    const std::string  &channel,
+    const std::string  &role_type,
+    std::chrono::steady_clock::time_point now)
+{
+    if (channel.empty() || role_type.empty()) return;
+    if (role.find_presence(channel, role_type) != nullptr) return;
+    RolePresence p;
+    p.channel               = channel;
+    p.role_type             = role_type;
+    p.state                 = RoleState::Connected;
+    p.first_heartbeat_seen  = false;          // "registering" sub-state
+    p.last_heartbeat        = now;            // re-stamped on first HB
+    p.state_since           = now;
+    role.presences.push_back(std::move(p));
+}
+
 template <typename Impl>
 RoleEntry upsert_role_locked(Impl &impl, const std::string &uid,
                              const std::string &pubkey_z85,
                              const std::string &added_channel,
+                             const std::string &role_type,
                              std::chrono::steady_clock::time_point heartbeat_when)
 {
     // Derived fields from uid — uid is the source of truth for tag/name
@@ -633,6 +669,11 @@ RoleEntry upsert_role_locked(Impl &impl, const std::string &uid,
         r.state          = RoleState::Connected;
         r.last_heartbeat = heartbeat_when;
         if (!added_channel.empty()) r.channels.push_back(added_channel);
+        // M1.2 — eager presence creation per HEP-CORE-0023 §2.6.  The
+        // presence row is created at REG time so DISC_REQ before the
+        // first heartbeat resolves to "registering"
+        // (`!first_heartbeat_seen`) → DISC_PENDING.
+        upsert_presence_row_locked(r, added_channel, role_type, heartbeat_when);
         auto [new_it, _] = impl.roles.emplace(uid, std::move(r));
         return new_it->second;
     }
@@ -650,6 +691,7 @@ RoleEntry upsert_role_locked(Impl &impl, const std::string &uid,
     {
         ex.channels.push_back(added_channel);
     }
+    upsert_presence_row_locked(ex, added_channel, role_type, heartbeat_when);
     return ex;
 }
 
@@ -706,6 +748,7 @@ void HubState::_on_channel_registered(ChannelEntry entry)
     {
         RoleEntry fired = upsert_role_locked(
             *pImpl, producer_uid, producer_pubkey, channel_name,
+            /*role_type=*/"producer",
             std::chrono::steady_clock::now());
         for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_reg))
             h(fired);
@@ -781,6 +824,7 @@ void HubState::_on_consumer_joined(const std::string &channel, ConsumerEntry con
     {
         RoleEntry fired = upsert_role_locked(
             *pImpl, consumer_uid, /*pubkey*/ {}, channel,
+            /*role_type=*/"consumer",
             std::chrono::steady_clock::now());
         for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_reg))
             h(fired);
@@ -1058,6 +1102,7 @@ void HubState::_on_band_joined(const std::string &band, BandMember member)
     {
         RoleEntry fired = upsert_role_locked(
             *pImpl, role_uid, /*pubkey*/ {}, /*channel*/ {},
+            /*role_type=*/{},   // band membership; no presence row
             std::chrono::steady_clock::now());
         for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_reg))
             h(fired);
