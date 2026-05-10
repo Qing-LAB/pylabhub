@@ -304,8 +304,14 @@ int consumer_auto_deregisters(int /*argc*/, char ** /*argv*/)
             auto cons_reg = cons_bh.brc.register_consumer(make_cons_opts(ch_name, cons_uid), 3000);
             ASSERT_TRUE(cons_reg.has_value());
 
-            // Consumer deregisters
-            EXPECT_TRUE(cons_bh.brc.deregister_consumer(ch_name));
+            // Consumer deregisters.  Post-Bucket-C: assert on
+            // status="success" rather than relying on optional<json>
+            // implicit-to-bool, which is true for ERROR responses too.
+            {
+                auto dereg = cons_bh.brc.deregister_consumer(ch_name);
+                ASSERT_TRUE(dereg.has_value());
+                EXPECT_EQ(dereg->value("status", std::string{}), "success");
+            }
 
             // Wait until the broker reflects consumer_count=0 in its
             // admin snapshot.  Replaces a bare sleep_for(200ms) Class B
@@ -364,8 +370,12 @@ int producer_auto_deregisters(int /*argc*/, char ** /*argv*/)
                 auto reg = bh.brc.register_channel(make_reg_opts(ch_name, "prod.a." + ch_name), 3000);
                 ASSERT_TRUE(reg.has_value());
 
-                // Deregister
-                EXPECT_TRUE(bh.brc.deregister_channel(ch_name));
+                // Deregister (assert status="success" explicitly).
+                {
+                    auto dereg = bh.brc.deregister_channel(ch_name);
+                    ASSERT_TRUE(dereg.has_value());
+                    EXPECT_EQ(dereg->value("status", std::string{}), "success");
+                }
                 bh.stop();
 
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));

@@ -2855,12 +2855,13 @@ nlohmann::json BrokerServiceImpl::handle_role_presence_req(const nlohmann::json&
     const std::string uid     = req.value("role_uid", "");
     if (uid.empty())
     {
-        nlohmann::json resp;
-        resp["present"] = false;
-        resp["error"]   = "missing role_uid";
-        if (!corr_id.empty())
-            resp["correlation_id"] = corr_id;
-        return resp;
+        // Standard error envelope per HEP-CORE-0007 §12.3 + §12.4a
+        // (`MISSING_ROLE_UID`).  Pre-2026-05-10 this handler emitted
+        // an ad-hoc `{"present": false, "error": "..."}` shape that
+        // diverged from the broker-wide error envelope.  Now goes
+        // through `make_error` for uniform `{status, error_code,
+        // message, correlation_id}` shape.
+        return make_error(corr_id, "MISSING_ROLE_UID", "missing role_uid");
     }
 
     // Scan all channels: check producer_role_uid and each consumer's role_uid.
@@ -2913,12 +2914,11 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
     const std::string uid     = req.value("role_uid", "");
     if (uid.empty())
     {
-        nlohmann::json resp;
-        resp["found"] = false;
-        resp["error"] = "missing role_uid";
-        if (!corr_id.empty())
-            resp["correlation_id"] = corr_id;
-        return resp;
+        // Standard error envelope per HEP-CORE-0007 §12.3 + §12.4a
+        // (`MISSING_ROLE_UID`).  Pre-2026-05-10 this handler emitted
+        // an ad-hoc `{"found": false, "error": "..."}` shape that
+        // diverged from the broker-wide error envelope.
+        return make_error(corr_id, "MISSING_ROLE_UID", "missing role_uid");
     }
 
     // Search for a channel whose producer_role_uid matches.

@@ -1214,9 +1214,13 @@ Payload (ROLE_PRESENCE_ACK) — when found:
 Payload (ROLE_PRESENCE_ACK) — when not found:
   present               bool     false
 
-Payload (ROLE_PRESENCE_ACK) — when role_uid missing/empty in request:
-  present               bool     false
-  error                 string   "missing role_uid"
+Payload — when role_uid missing/empty in request, broker emits the
+standard ERROR envelope (HEP-CORE-0007 §12.3 + §12.4a) instead of an
+ROLE_PRESENCE_ACK:
+  status                string   "error"
+  error_code            string   "MISSING_ROLE_UID"
+  message               string   "missing role_uid"
+  correlation_id        string   (opt) Echo of request correlation_id if provided.
 ```
 
 #### ROLE_INFO_REQ / ROLE_INFO_ACK — Query Role Details (added 2026-03-10, updated 2026-03-30)
@@ -1248,9 +1252,13 @@ Payload (ROLE_INFO_ACK) — when role found but has no inbox:
 Payload (ROLE_INFO_ACK) — when not found:
   found                 bool     false
 
-Payload (ROLE_INFO_ACK) — when role_uid missing/empty in request:
-  found                 bool     false
-  error                 string   "missing role_uid"
+Payload — when role_uid missing/empty in request, broker emits the
+standard ERROR envelope (HEP-CORE-0007 §12.3 + §12.4a) instead of an
+ROLE_INFO_ACK:
+  status                string   "error"
+  error_code            string   "MISSING_ROLE_UID"
+  message               string   "missing role_uid"
+  correlation_id        string   (opt) Echo of request correlation_id if provided.
 ```
 
 **Broker search order** (2026-03-30):

@@ -333,8 +333,13 @@ int band_membership_cleaned_on_role_close()
             EXPECT_EQ((*members1)["members"].size(), 2u) << "Expected 2 members after join";
 
             // Voluntarily deregister A's channel — on_channel_closed fires,
-            // cleanup hook removes A from the band.
-            EXPECT_TRUE(a.brc.deregister_channel(ch_a));
+            // cleanup hook removes A from the band.  Post-Bucket-C: assert
+            // status="success" explicitly.
+            {
+                auto dereg = a.brc.deregister_channel(ch_a);
+                ASSERT_TRUE(dereg.has_value());
+                EXPECT_EQ(dereg->value("status", std::string{}), "success");
+            }
 
             auto only_b_left = [&]() {
                 auto m = b.brc.band_members(band, 1000);
