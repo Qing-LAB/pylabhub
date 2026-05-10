@@ -237,44 +237,100 @@ in phase MP5:
   `entry.producer_role_uid` → either `entry.producers[k].role_uid`
   (specific producer) or a scan helper (any producer).
 
-### 9. Unresolved test failures (no investigation yet)
+### 9. Unresolved test failures — investigated, fix deferred to post-M2
 
 #### `PlhHubCliTest.RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters` — SIGSEGV exit 139
 
-**Status:** unresolved, **mechanism unknown**, not yet investigated.
+**Status:** root cause identified 2026-05-10 via gdb-batch capture of a
+real reproduction.  Fix deferred until after Wave M2 lands (user
+directive: "address this bug once we have the role/channel
+bookkeeping milestone finished").  Not Python/GIL related.
 
-**Observation (raw — do not extrapolate):**
-- Two trial runs of the same test on the same binary:
-  - Run set A: 2 fail / 13 pass.
-  - Run set B: 0 fail / 20 pass.
-- Sample sizes are small; per-run rate is not characterised.
-- Failing-run duration ~2s vs passing-run ~5.5s ⇒ SIGTERM arrives
-  before the test's normal hand-off point.
-- ctest reports exit code 139 (SIGSEGV).
-- Single fail-stderr available shows the role process log ending at
-  "plh_role: signal received, shutting down" then no further output.
+**Root cause — use-after-free race between role teardown and
+BrokerRequestComm ctrl-thread poll loop.**
 
-**What is NOT known:**
-- Whether this is in plh_role startup, dynamic-module load, or
-  shutdown.
-- Whether it predates `a41ce71` (no bisect performed; the previous
-  bisect attempt was destructive and reverted).
-- Whether `c2973ef`'s `disconnected_fired` patch correlates.
-- Stack trace at the SEGV — never captured.
+`do_role_teardown` (`src/utils/service/role_host_lifecycle.cpp`)
+sequences:
+```
+Step 12: broker_comm->stop()        // sets stop flag; does NOT wait
+Step 13: teardown_infrastructure()  // role-specific cleanup
+Step 14: api.thread_manager().drain()  // joins ctrl thread
+```
 
-**What needs doing:**
-- A real reproduction harness — plh_role invoked outside ctest, under
-  gdb in batch mode, with a backtrace dump on SIGSEGV.
-- Once a backtrace exists, classify whether this is a regression
-  introduced by a recent commit (bisect via `git worktree`) or a
-  long-standing race surfaced by changing load order.
+The producer-side `teardown_infrastructure_`
+(`src/producer/producer_role_host.cpp:462-466`) destroys
+`broker_comm_` (BrokerRequestComm) in Step 13:
+```cpp
+if (broker_comm_) {
+    broker_comm_->disconnect();
+    broker_comm_.reset();        // ← destroys BrokerRequestComm.pImpl
+}
+```
+The comment immediately above this block claims "Ctrl thread already
+joined" — that is wrong.  The ctrl thread is joined only in Step 14,
+*after* this destruction.
 
-**Discipline note (added by this entry, 2026-05-10):**  Two recent
-commit messages (`a41ce71`, `c2973ef`) referred to this failure as a
-"known flake" / "pre-existing race".  Both characterisations were
-unsupported by evidence.  Until a stack trace exists, this entry is
-the canonical state: **mechanism unknown**.  Do not refer to it as
-a "flake" in future commit messages.
+The ctrl thread is spawned by
+`RoleAPIBase::start_ctrl_thread`
+(`src/utils/service/role_api_base.cpp:597-612`) and runs
+`bc->run_poll_loop(...)` where `bc = pImpl->broker_channel`.  After
+`run_poll_loop`'s internal `loop.run()` returns
+(`src/utils/network_comm/broker_request_comm.cpp:592`), the thread
+falls through to:
+```cpp
+// broker_request_comm.cpp:594
+pImpl->poll_loop_running.store(false, std::memory_order_release);
+```
+By the time this store executes, Step 13 has already destroyed
+`broker_comm_`, freeing `pImpl`.  The atomic store dereferences freed
+memory → SIGSEGV.
+
+**Captured stack trace (gdb-batch, 2026-05-10):**
+```
+Thread 9 SIGSEGV:
+  #0  std::__atomic_base<bool>::store (this=0x7ff81bf66dd2 — freed memory)
+  #1  std::atomic<bool>::store
+  #2  pylabhub::hub::BrokerRequestComm::run_poll_loop  ← broker_request_comm.cpp:594
+  #3  RoleAPIBase::start_ctrl_thread lambda            ← role_api_base.cpp:607
+
+Thread 5 (concurrent teardown):
+  ZmqQueue::stop  ← (called from RoleAPIBase::close_queues)
+  RoleAPIBase::close_queues                            ← role_api_base.cpp:321
+  scripting::do_role_teardown                          ← role_host_lifecycle.cpp:52
+  ProducerRoleHost::worker_main_
+```
+
+(Crash log preserved at `/tmp/last_role_crash.log` and
+`/tmp/captured_crash.log` for the session.)
+
+**Reproduction:**
+- Standalone harness: 0/30 crashes when run sequentially.
+- 2-parallel harness (mimics `ctest -j2`): 1/13 crashes.  The race
+  needs concurrent CPU pressure to expose.
+
+**Fix sketch (deferred to post-M2):**
+- Either swap Step 13 ↔ Step 14 in `do_role_teardown` (drain ctrl
+  thread before destroying broker_comm), or split
+  `teardown_infrastructure_` into a pre-drain phase
+  (queues / inbox stop signal) and a post-drain phase (BrokerRequestComm
+  destruction), or have `BrokerRequestComm::disconnect()` itself
+  synchronously wait for any external thread currently in
+  `run_poll_loop`.
+- Producer/consumer/processor host comments at the broker_comm.reset()
+  site falsely claim "Ctrl thread already joined" — must be updated
+  or made true.
+
+**Confirmed: NOT related to:**
+- M1.2 atomic-deletion sweep (`a41ce71`).
+- `disconnected_fired` patch (`c2973ef`).
+- Python GIL / interpreter lifecycle (Python is loaded in the trace
+  but not on either of the relevant stacks).
+
+**Discipline note (2026-05-10):**  Two earlier commit messages
+(`a41ce71`, `c2973ef`) referred to this failure as a "known flake" /
+"pre-existing race" without evidence.  This entry is now backed by a
+real stack trace — refer to it as a *use-after-free race in role
+teardown* in future commit messages, not a "flake".
 
 ### 7. Code review findings (2026-05-10) — strand plan
 
