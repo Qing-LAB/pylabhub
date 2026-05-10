@@ -2845,12 +2845,15 @@ nlohmann::json BrokerServiceImpl::handle_channel_list_req()
 
 nlohmann::json BrokerServiceImpl::handle_role_presence_req(const nlohmann::json& req)
 {
-    const std::string uid = req.value("uid", "");
+    // HEP-CORE-0007 §"ROLE_PRESENCE_REQ" — wire field `role_uid`
+    // (unified with REG_REQ / CONSUMER_REG_REQ; old `uid` form retired
+    // 2026-05-09 as part of the protocol-doc-vs-code unification).
+    const std::string uid = req.value("role_uid", "");
     if (uid.empty())
     {
         nlohmann::json resp;
         resp["present"] = false;
-        resp["error"]   = "missing uid";
+        resp["error"]   = "missing role_uid";
         return resp;
     }
 
@@ -2891,12 +2894,15 @@ nlohmann::json BrokerServiceImpl::handle_role_presence_req(const nlohmann::json&
 
 nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req)
 {
-    const std::string uid = req.value("uid", "");
+    // HEP-CORE-0007 §"ROLE_INFO_REQ" — wire field `role_uid`
+    // (unified with REG_REQ / CONSUMER_REG_REQ / ROLE_PRESENCE_REQ;
+    // old `uid` form retired 2026-05-09).
+    const std::string uid = req.value("role_uid", "");
     if (uid.empty())
     {
         nlohmann::json resp;
         resp["found"] = false;
-        resp["error"] = "missing uid";
+        resp["error"] = "missing role_uid";
         return resp;
     }
 
