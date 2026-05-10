@@ -200,16 +200,25 @@ LOGGER_INFO("[consumer] Channel '{}' — producer: {} ({}), hub: {} ({})",
 
 ## 4. Connection Policy Integration
 
-The `ConnectionPolicy` system (HEP-CORE-0009) uses `producer_uid` from the broker registry
+The `ConnectionPolicy` system (HEP-CORE-0009) uses producer identity from the broker registry
 (populated during `REG_REQ` handling) and from the `SharedMemoryHeader` identity block to
 enforce access rules.
+
+> **Multi-producer note (HEP-CORE-0023 §2.1.1).**  ChannelEntry now
+> tracks producers as a list (`ChannelEntry.producers[]`).  For SHM
+> channels the list always has exactly one element (the SHM ring is
+> physically single-producer), so the diagram below remains accurate.
+> For ZMQ Fan-In channels (HEP-CORE-0017 §4.6) policy enforcement
+> applies per-producer at REG_REQ admission time — each producer's
+> ConnectionPolicy gate is independent.
 
 ### 4.1 Policy enforcement flow
 
 ```
 Consumer → DISC_REQ → BrokerService
-  BrokerService looks up channel.producer_uid in KnownProducers table
-  Applies ConnectionPolicy:
+  BrokerService looks up the channel's admitted producer(s) and
+  applies ConnectionPolicy per producer (single-producer for SHM;
+  per ProducerEntry for ZMQ Fan-In):
     Open:     any producer allowed
     Tracked:  log producer_uid; allow all
     Required: producer_uid must be in KnownProducers; else DISC_NACK
