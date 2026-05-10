@@ -53,34 +53,33 @@ Two complementary coordination mechanisms:
 >   parallel channel FSM.
 > - The DISC_REQ three-response pattern in §2.2 derives its three
 >   outcomes from the producer-role's state.
-> - Channel close is **atomic**: when the producer-role transitions
->   to `Disconnected` (heartbeat timeout OR explicit `DEREG_REQ`),
->   the broker fires `CHANNEL_CLOSING_NOTIFY` to all channel
->   members and removes the channel entry.  No separate grace
->   window.  No `FORCE_SHUTDOWN` escalation.  The role's
->   `pending_miss_heartbeats` window IS the grace.
-> - `ChannelEntry` does not store its own `status` or
->   `last_heartbeat`.  Either field is a derived query over the
->   producer's `RoleEntry` (§2.6).
->
-> Pre-this-correction code currently keeps `ChannelEntry.status`
-> + `ChannelEntry.last_heartbeat` as primary fields, refreshed by
-> any heartbeat for the channel.  That is duplication of state
-> that should live entirely on `RoleEntry` — and it created the
-> consumer-corrupts-channel-status bug documented in HEP-CORE-0019
-> §2.3.  The Wave B M1 migration in
-> `docs/tech_draft/role_host_template_design.md` deletes the
-> redundant `ChannelEntry` storage and routes channel-status
-> queries through the producer-role.
+> - Channel close is **atomic**: when the **last live**
+>   producer-presence on a channel transitions to `Disconnected`
+>   (heartbeat timeout, explicit `DEREG_REQ`, admin force, or whole-
+>   role disconnect), the broker fires `CHANNEL_CLOSING_NOTIFY` to
+>   all remaining channel members and removes the channel entry.  No
+>   separate grace window.  No `FORCE_SHUTDOWN` escalation.  The
+>   role's `pending_miss_heartbeats` window IS the grace.  See
+>   §2.1.1 for the multi-producer predicate.
+> - `ChannelEntry` does not store its own FSM state.  Both channel
+>   observability and channel existence are derived queries over the
+>   producer-presences on `RoleEntry` (§2.6).
+> - `ChannelEntry.producers` and `ChannelEntry.consumers` are
+>   symmetric per-party bookkeeping lists.  Producer identity (pid,
+>   hostname, role_uid, zmq_identity) is stored per-`ProducerEntry`
+>   so multi-producer ZMQ channels keep accurate broker-side
+>   bookkeeping for fan-out and notify routing (§2.1.1).
 
 ### 2.1 Role Lifecycle States
 
 The state machine is **per role-presence**, owned by the broker's
-`RoleEntry.state` field and driven by that presence's
-`HEARTBEAT_REQ` (matched by `(uid, role_type)` per
-HEP-CORE-0019 §2.3 / Phase 6).  There is no separate channel-side
-FSM: channel observability — "is this channel still serving data?"
-— is a **derived** query over the producer-role's state (§2.6).
+per-`(channel, role_type)` presence row on `RoleEntry.presences` and
+driven by that presence's `HEARTBEAT_REQ` (matched by `(uid,
+role_type)` per HEP-CORE-0019 §2.3 / Phase 6).  There is no separate
+channel-side FSM: both **channel observability** ("is this channel
+still serving data?") and **channel existence** ("is this channel
+still registered with the hub?") are **derived** queries over the
+producer-role-presences (§2.1.1, §2.6).
 
 A role-presence has three states: **Connected** (heartbeats fresh),
 **Pending** (heartbeats stalled but recoverable), **Disconnected**
@@ -108,15 +107,78 @@ per **presence** — a processor with `(uid, "producer")` and
 | Matching `HEARTBEAT_REQ` received | Connected | Connected | refresh `RoleEntry.last_heartbeat`, write metrics |
 | Matching `HEARTBEAT_REQ` received | Pending | Connected | refresh `RoleEntry.last_heartbeat`, reset `state_since`, bump `pending_to_connected_total` |
 | Missed heartbeats for `effective_ready_timeout` | Connected | Pending | set `state_since`, bump `connected_to_pending_total` |
-| Missed heartbeats for `effective_pending_timeout` | Pending | Disconnected | bump `pending_to_disconnected_total`; **if `role_type == producer`**: fan-out `CHANNEL_CLOSING_NOTIFY`(reason=`pending_timeout`) and remove `ChannelEntry`; remove presence from `RoleEntry` (or whole `RoleEntry` if last presence) |
-| `DEREG_REQ` accepted | Connected/Pending | Disconnected | bump `voluntary_disconnect_total`; **if `role_type == producer`**: fan-out `CHANNEL_CLOSING_NOTIFY`(reason=`voluntary_close`) and remove `ChannelEntry`; remove presence |
+| Missed heartbeats for `effective_pending_timeout` | Pending | Disconnected | bump `pending_to_disconnected_total`; **if `role_type == producer`**: fan-out `CHANNEL_CLOSING_NOTIFY`(reason=`pending_timeout`) **to all remaining channel members** and remove `ChannelEntry` **if no other producer-presence remains alive on this channel** (§2.1.1); remove presence from `RoleEntry` (or whole `RoleEntry` if last presence) |
+| `DEREG_REQ` accepted | Connected/Pending | Disconnected | bump `voluntary_disconnect_total`; **if `role_type == producer`**: fan-out `CHANNEL_CLOSING_NOTIFY`(reason=`voluntary_close`) and remove `ChannelEntry` **if no other producer-presence remains alive on this channel** (§2.1.1); remove presence |
 
 **No channel-side grace or FORCE_SHUTDOWN.**  The role's
-`pending_miss_heartbeats` window IS the grace.  Once a producer-role
-presence is `Disconnected`, the channel is removed atomically;
-consumers learn via `CHANNEL_CLOSING_NOTIFY` (best-effort) and any
-future `DISC_REQ` returns `CHANNEL_NOT_FOUND` (consumers treat
-either signal as "channel gone, stop"; see §2.2).
+`pending_miss_heartbeats` window IS the grace.  Once the **last**
+producer-role-presence on a channel reaches `Disconnected`, the
+channel is removed atomically; consumers learn via
+`CHANNEL_CLOSING_NOTIFY` (best-effort) and any future `DISC_REQ`
+returns `CHANNEL_NOT_FOUND` (consumers treat either signal as
+"channel gone, stop"; see §2.2).
+
+#### 2.1.1 Multi-producer channels (transport-agnostic)
+
+A data channel may have **one or more producers**.  HEP-CORE-0008's
+abstract queue (QueueReader/QueueWriter) is the contract role/hub
+code operates against; multi-producer is a queue-pattern question,
+not a control-plane assumption.
+
+- **ZMQ-backed channels** support multiple producers natively
+  (PUSH–PULL with multiple PUSHers, PUB–SUB with multiple PUBs,
+  etc.).  Each producer issues its own REG_REQ on the same
+  `channel_name` and is admitted as an independent
+  `ProducerEntry` on `ChannelEntry.producers`.  Per-producer
+  identity (pid, hostname, role_uid, zmq_identity) is preserved.
+- **SHM-backed channels** are physically single-producer (one
+  writer to the shared-memory ring).  The broker rejects a second
+  REG_REQ on an SHM channel with
+  `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM` (HEP-CORE-0007 §12.4a).
+
+**Channel-existence predicate (the source of truth):**
+
+> A `ChannelEntry` exists iff at least one producer-presence is
+> currently alive (state ≠ Disconnected).  When the last live
+> producer-presence transitions to Disconnected, HubState removes
+> the entry and broadcasts `CHANNEL_CLOSING_NOTIFY` to every
+> remaining member (consumers and any peer hubs that relay this
+> channel).
+
+Mechanically: every path that transitions a producer-presence to
+Disconnected (pending-timeout sweep, voluntary DEREG_REQ, admin
+force-close, whole-role disconnect) invokes a single HubState
+invariant-maintenance step.  That step scans the producer-presences
+attached to the channel; if none remain alive, the channel is
+removed.  Consumers leaving (`CONSUMER_DEREG_REQ`) does **not**
+trigger channel removal regardless of how many consumers were
+attached.
+
+**Cross-tag admission.**  Per HEP-CORE-0017 (Pipeline Architecture),
+processors are producers on their `out_channel`.  A channel may have
+mixed-tag producers — e.g., `prod.X` and `proc.Y` may both be
+producers of channel `C`.  All producers on the same channel MUST
+agree on the channel-wide schema invariant (same
+`schema_hash`/`schema_blds`/`packing`); REG_REQ that fails the
+schema-mismatch check is rejected.
+
+**Same-uid restart.**  REG_REQ on an existing channel from the same
+`role_uid` as an already-admitted producer is treated as a
+**restart-replace** of that producer's `ProducerEntry` (the prior
+producer-presence is reset to a fresh Connected sub-state).  No
+duplicate ProducerEntry is appended.  Same-uid restart is distinct
+from new-uid admission both on the wire (same uid) and in HubState
+(same key in `presences`).
+
+**Schema-record ownership in multi-producer.**  Per HEP-CORE-0034
+namespace-by-owner, each producer owns its own
+`(role_uid, schema_id)` schema record under the owner-keyed
+registry.  Multi-producer same-channel does **not** create a shared
+schema record; cross-citation across producers on the same channel
+is rejected by the existing fingerprint-equality gate.  When a
+producer's role is fully disconnected, its private schema records
+are evicted per HEP-CORE-0034 §7.2; hub-globals (owner=`"hub"`)
+remain.
 
 **Rationale:**
 
@@ -477,8 +539,9 @@ own an independent FSM.
 | Struct | Map | Keyed by | Owns the FSM? | Last-heartbeat semantics |
 |---|---|---|---|---|
 | `RoleEntry` | `HubState.roles` | role uid | **yes** — one FSM per **presence** under this uid (§2.1) | each presence row carries its own `last_heartbeat` (refreshed only by heartbeats matching its `(uid, role_type)`) |
-| `ChannelEntry` | `HubState.channels` | channel name | no — topology + endpoints only | does not store `status` or `last_heartbeat`; both are derived from `RoleEntry[producer_role_uid]` |
-| `ConsumerEntry` (nested in `ChannelEntry.consumers`) | per-channel vector | (channel, consumer_uid) | no — index back into the consumer-presence in `RoleEntry` | no own field; defers to `RoleEntry[consumer_uid]` |
+| `ChannelEntry` | `HubState.channels` | channel name | no — topology + endpoints + per-party bookkeeping (producers + consumers lists) only | does not store FSM state; channel observability + existence are derived from scanning producer-presences across roles (§2.1, §2.1.1) |
+| `ProducerEntry` (nested in `ChannelEntry.producers`) | per-channel vector | (channel, role_uid) | no — index back into the producer-presence in `RoleEntry` | no own field; defers to `RoleEntry[role_uid].find_presence(channel,"producer")` |
+| `ConsumerEntry` (nested in `ChannelEntry.consumers`) | per-channel vector | (channel, role_uid) | no — index back into the consumer-presence in `RoleEntry` | no own field; defers to `RoleEntry[role_uid].find_presence(channel,"consumer")` |
 
 ```cpp
 // Schematic — see hub_state.hpp for exact fields.
@@ -507,22 +570,34 @@ struct RoleEntry {
     //   bool any_presence_alive() const noexcept;
 };
 
+struct ProducerEntry {                    // mirrors ConsumerEntry shape
+    std::string  role_uid;                // index back into RoleEntry[role_uid]
+    std::string  role_name;
+    uint64_t     producer_pid;
+    std::string  producer_hostname;
+    std::string  zmq_identity;            // ROUTER routing for direct notify
+    std::chrono::system_clock::time_point connected_at;
+};
+
 struct ChannelEntry {
     std::string                            name;
-    std::string                            producer_role_uid;       // producer-presence is RoleEntry[uid][(name,"producer")]
-    std::string                            producer_zmq_identity;
+    std::vector<ProducerEntry>             producers;                // 1..N (§2.1.1)
     std::vector<ConsumerEntry>             consumers;
-    // No status field, no last_heartbeat field.
-    // Derived accessors (helpers, not storage):
-    //   ChannelObservable observe(const HubState&) const;
-    //     -> { kAbsent | kRegistering | kStalled | kLive } based on
-    //        RoleEntry[producer_role_uid].find_presence(name,"producer").state
+    // No status field, no last_heartbeat field — FSM is on RoleEntry.
+    // Channel existence is derived:
+    //   bool exists = !producers.empty() &&
+    //                 std::any_of(producers, [&](const auto &p){
+    //                     auto *pp = roles[p.role_uid].find_presence(name,"producer");
+    //                     return pp && pp->state != RoleState::Disconnected;
+    //                 });
+    // Channel observability (kAbsent|kRegistering|kStalled|kLive) is
+    // derived per HEP-0023 §2.2 from the producer-presence FSM(s).
     // ... data-plane endpoint / schema metadata
 };
 
 struct ConsumerEntry {
-    std::string  consumer_uid;            // index back into RoleEntry[consumer_uid]
-    std::string  consumer_name;
+    std::string  role_uid;                // index back into RoleEntry[role_uid]
+    std::string  role_name;
     uint64_t     consumer_pid;
     std::string  zmq_identity;            // ROUTER routing for direct notify
     // ... inbox metadata, connected_at
