@@ -1,15 +1,56 @@
 # M1.2 + M1.3 (and beyond) — handoff document
 
-> **Status:** in flight, mid-implementation, branch `feature/lua-role-support`
-> **As of:** 2026-05-09 — three M1.2 phase commits landed, ~5 phases remain
+> **Status:** Phase 4 + L3 broker test migration COMPLETE 2026-05-10;
+>   Phases 5-8 + M1.3 + M1.4 + M1.5 still pending.
+> **As of:** 2026-05-10 — Phase 4 + 4 follow-on commits landed
+>   (HEP-0007 unification, BrokerRequestComm error surfacing,
+>   Bucket C harmonization, full broker test cluster migration).
 > **Authoritative design:** `docs/HEP/HEP-CORE-0023-Startup-Coordination.md` §2,
 > `docs/HEP/HEP-CORE-0019-Metrics-Plane.md` §2-3 (Phase 6), `docs/HEP/HEP-CORE-0033-Hub-Character.md` §18-19
 > **Wave plan reference:** `docs/tech_draft/role_host_template_design.md` §14
-> **Tests baseline:** 1788/1788 passing at HEAD (`2d3271a`)
+> **Strand plan (next-step direction):** `docs/todo/TESTING_TODO.md` §7
+>   "Code review findings (2026-05-10) — strand plan"
+> **Tests baseline:** 1782/1782 passing at HEAD (`4e30618`)
 
-This document hands off the in-flight FSM-consolidation work and locks
-in the bigger-picture pathway so nothing dangles.  Read top-to-bottom
-on resume.
+This document originally handed off in-flight Phase 4 work; that work
+is now closed and committed.  The remaining wave-plan steps (Phases
+5-8, M1.3, M1.4, M1.5) are the foundation for the next session.
+Read §3 for closed work, §4 for what's next; the consolidated
+strand plan lives in `docs/todo/TESTING_TODO.md` §7 and the
+high-level snapshot in `docs/TODO_MASTER.md` "Snapshot — 2026-05-10".
+
+## Status update — 2026-05-10
+
+**Closed since the original 2026-05-09 handoff was written:**
+
+- **Phase 4** committed (`4fa5f32`).  All 7 reader sites migrated;
+  `observe_channel(c, snap)` helper landed; `channel_to_json` two-arg
+  overload emits both `status` (legacy) + `observable` (protocol)
+  during the transition.
+- **HEP-CORE-0007 protocol-doc unification** (`6972696`).  5 severe
+  + 7 moderate + 1 minor doc/code drift fixed.  ROLE_*_REQ wire field
+  unified to `role_uid`; ERROR field is `error_code`; DISC_PENDING
+  reasons enumerate both values; CHANNEL_LIST_ACK uses `observable`;
+  new §12.4a Error Code Taxonomy.
+- **Stage 2 — BrokerRequestComm surfaces ERROR body** (`5755ebe`).
+  Information-loss bug in `recv_and_dispatch` fixed; `optional<json>`
+  now carries the broker's response (success or error);
+  `correlation_id` echoed by 4 previously-asymmetric handlers.
+- **Bucket C — `optional<json>` harmonization** (`22b2d8a`).  Every
+  request-reply method on `BrokerRequestComm` and `RoleAPIBase`
+  returns `optional<json>` uniformly; bool returns retired.
+- **L3 broker test cluster migration** off mock-host scaffolding
+  (`f472e4c`, `62ca573`, `4e30618`).  All 7 surviving broker test
+  files migrated to real `HubHost`; `test_datahub_broker_shutdown.cpp`
+  deleted (its 6 grace-escalation tests are slated for M1.3 deletion
+  anyway).  Two production gaps surfaced and fixed:
+  - `HubHost` wires `<hub_dir>/schemas/` to broker's
+    `schema_search_dirs` per HEP-CORE-0034 §12.
+  - `HubBrokerConfig::checksum_repair_policy` field exposed per
+    HEP-CORE-0007 §12.4 (broker had it; HubConfig didn't surface it).
+
+**Open per the wave plan + 2026-05-10 review:** see Phase 5 onward
+below + the strand plan in `docs/todo/TESTING_TODO.md` §7.
 
 ---
 

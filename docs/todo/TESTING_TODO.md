@@ -98,52 +98,47 @@ scaffolding is open work (see "Audit work" subsection below).
       pinning the grace-escalation shutdown protocol that M1.3 retires.
       Fresh tests for the post-M1.3 force-disconnect notification semantic
       will be designed when M1.5 lands.
-- [ ] **Migrate the 8 BrokerHandle mock-host instances** in
-      `tests/test_layer3_datahub/workers/` to real `HubHost`.  Keep the
-      wire-protocol round-trip pattern (the broker is real, the ZMQ is
-      real); only the host wrapper is wrong.
+- [x] **Migrated all 8 BrokerHandle mock-host instances** to real `HubHost`
+      (closed 2026-05-10).  All 6 `test_datahub_broker*.cpp` files (the
+      `broker_shutdown` 7th was deleted) + their workers now use real
+      `HubHost` via a `HubHostHandle`/`BrokerHandle` RAII wrapper that
+      owns a `pylabhub::hub_host::HubHost` and translates legacy
+      `BrokerService::Config` fields to `HubConfig` overrides written
+      to a per-test on-disk `hub.json`.  Two production gaps surfaced
+      and fixed in the migration: `HubHost` now wires
+      `<hub_dir>/schemas/` per HEP-CORE-0034 §12; `HubBrokerConfig`
+      gained a `checksum_repair_policy` field per HEP-CORE-0007 §12.4.
 
-#### Known failing tests pending broker-cluster migration (2026-05-09)
+#### Migration result (2026-05-10) — broker test cluster fully migrated
 
-Pending Stages 2 + 3 of the broker test migration (see plan
-`docs/tech_draft/broker_test_migration_plan.md`):
+All previously-known failing tests are now passing.  Test count:
+**1782/1782 green** at HEAD `4e30618`.
 
-**M1 (in progress) — `test_datahub_broker_consumer.cpp` migrated to
-real `HubHost`, 3 of 5 tests fail pending follow-up:**
-- `DatahubBrokerConsumerTest.ConsumerRegChannelNotFound` — Stage 2:
-  `BrokerRequestComm` currently drops the broker's ERROR body
-  (broker_request_comm.cpp:205-217 sets `result = nullopt` instead
-  of returning the error JSON); test asserts on `error_code` which
-  is unreachable until that's fixed.
-- `DatahubBrokerConsumerTest.ConsumerDeregHappyPath` — Stage 3:
-  test uses fake `consumer_pid` (literal `55100`) for registration;
-  real `BrokerRequestComm::deregister_consumer` uses `::getpid()`,
-  pid mismatch causes broker to reject the dereg.  Fix is purely
-  test-side — register with `::getpid()`.
-- `DatahubBrokerConsumerTest.DiscShowsConsumerCount` — Stage 3:
-  same fake-pid issue as above.
+The migration also surfaced two production gaps (closed in the same
+session) and an audit-residual to-do:
 
-**Pre-existing — `test_datahub_broker.cpp` still on `BrokerHandle`
-mock host (M2 will migrate):**
-- `DatahubBrokerTest.DeregPidMismatch` — Phase 4's DISC_REQ
-  derivation from producer-presence exposes the mock host's gap
-  around empty `role_uid` (mock REG_REQ has no role_uid; presence
-  row never created; new DISC_REQ resolves to CHANNEL_NOT_FOUND).
-  Fix lands when the file migrates to real `HubHost` in M2.
+- `HubHost` now wires `<hub_dir>/schemas/` to broker's
+  `schema_search_dirs` per HEP-CORE-0034 §12 (commit `f472e4c`).
+- `HubBrokerConfig::checksum_repair_policy` field added per
+  HEP-CORE-0007 §12.4 (commit `62ca573`).
 
-Working test count: 1782 - 4 known-failing = **1778 passing** until
-Stage 2 + 3 (and M2) complete.
+Remaining audit items are folded into §6 (Code review findings,
+2026-05-10) below as actionable strands.
 - [ ] **Adopt `BrokerRequestComm` for payload construction** in the
       same 15 test files affected by hand-rolled JSON `make_reg_opts`
-      builders (overlaps heavily with the 8 BrokerHandle files;
-      remediating the broker-cluster lets us close most of this in one
-      pass).
+      builders.  Most of the broker-cluster files now use the
+      production helpers post-migration; the remaining inline payload
+      construction at the broker-cluster boundary is intentional
+      (raw-ZMQ tests verifying error paths the real `BrokerRequestComm`
+      can't reach, e.g. `broker_dereg_pid_mismatch` testing wire
+      pid-mismatch defense).  Audit and shrink to the genuinely-needed
+      raw-ZMQ cases.
 - [ ] **Add L2 BrokerService coverage** via a `BrokerServiceTestAccess`
       friend shim mirroring `HubStateTestAccess`.  L2 today has zero
       direct `BrokerService` coverage — every wire-protocol handler
       (REG_REQ / DISC_REQ / HEARTBEAT_REQ / DEREG_REQ /
       CONSUMER_REG_REQ / FORCE_SHUTDOWN / HUB_PEER_HELLO /
-      HUB_TARGETED_MSG) is tested only at L3 through the mock host.
+      HUB_TARGETED_MSG) is tested only at L3 through real `HubHost`.
 
 ### 6. Audit findings (2026-05-09)
 
@@ -203,6 +198,179 @@ host-positive paths, `test_hub_lua_integration.cpp`, `test_hub_python_integratio
 all use real `HubHost`); L4 tests (drive real binaries via `WorkerProcess`);
 test framework utilities (`LogCaptureFixture`, `TmpDir`, `IsolatedProcessTest`
 — production-agnostic, not mocks).
+
+---
+
+### 7. Code review findings (2026-05-10) — strand plan
+
+A 3-agent review of the test suite + production code at HEAD
+`4e30618` identified 4 severe + 9 moderate + 2 minor issues.  The
+remediation clusters into 5 strands.  Recommended ordering: **S1 →
+S2 → S4 → S3 (parallel with S4) → S5**.
+
+**Detailed file/line references and suggested assertion shapes for
+each finding live in this section so they survive context resets.**
+
+#### Strand S1 — Severe immediate fixes (< 1 hour)
+
+- [ ] **S1a. Replace 4 `EXPECT_TRUE(brc.deregister_*(...))` patterns**.
+      Post-Bucket-C, these methods return `optional<json>`; `optional →
+      bool` is `has_value()`, true for both ACK and ERROR — silent
+      false-pass risk if production starts emitting an error here.
+      Sites:
+        - `tests/test_layer3_datahub/workers/datahub_broker_workers.cpp:461`
+        - `tests/test_layer3_datahub/workers/datahub_broker_health_workers.cpp:307, 367`
+        - `tests/test_layer3_datahub/workers/datahub_role_state_workers.cpp:337`
+      Fix shape: `auto r = brc.deregister_*(...); ASSERT_TRUE(r.has_value());
+      EXPECT_EQ(r->value("status",""), "success");`
+- [ ] **S1b. ROLE_PRESENCE_REQ + ROLE_INFO_REQ error envelope drift**.
+      Both handlers emit ad-hoc `resp["error"] = "missing role_uid"`
+      instead of HEP-CORE-0007 §12.3 standard envelope (`status: "error",
+      error_code, message, correlation_id`).  Inconsistent with every
+      other handler (which uses `make_error()`).
+      Sites:
+        - `src/utils/ipc/broker_service.cpp:2860` (ROLE_PRESENCE_REQ)
+        - `src/utils/ipc/broker_service.cpp:2918` (ROLE_INFO_REQ)
+      Fix shape: replace inline `resp["error"] = ...` with
+      `return make_error(corr_id, "MISSING_ROLE_UID", "missing role_uid");`
+      (the §12.4a taxonomy already enumerates `MISSING_ROLE_UID`).
+      Update HEP-CORE-0007 §"ROLE_PRESENCE_ACK" / "ROLE_INFO_ACK"
+      missing-uid response examples to match.
+
+#### Strand S2 — M1.2 Phase 8 + observable coverage (0.5–1 day)
+
+- [ ] **S2a. `ConsumerHeartbeat_DoesNotRefreshProducerPresence`** — the
+      canonical regression test for the original cross-presence
+      bookkeeping bug (HEP-CORE-0019 §2.3 pre-Phase-6).  Per the M1
+      handoff doc this was scheduled as Phase 8 work and was never
+      landed.  Without it, a future regression that re-introduces
+      cross-presence bookkeeping passes silently.
+      Setup: producer + consumer registered, both alive.  Stop
+      producer heartbeats but keep consumer heartbeats.  Assert:
+      producer-presence transitions Connected → Pending → Disconnected
+      as if consumer heartbeats didn't exist.  Belongs in
+      `tests/test_layer3_datahub/test_datahub_broker_protocol.cpp`.
+- [ ] **S2b. `DiscReq_ChannelStalled_ReturnsDiscPendingWithReason`**
+      (HEP-CORE-0023 §2.2).  Phase 4 introduced the `kStalled`
+      observable + the `"heartbeat_stalled"` DISC_PENDING reason.
+      Other 3 observables (`absent`, `registering`, `live`) have
+      coverage; `stalled` does not.
+      Setup: producer registered + first heartbeat seen; let
+      `ready_timeout` expire so producer-presence transitions to
+      Pending; DISC_REQ → assert `status == "pending"` AND
+      `reason == "heartbeat_stalled"`.
+- [ ] **S2c. Atomic-teardown contract assertion** (HEP-CORE-0023 §2.1).
+      Tests verify CHANNEL_CLOSING_NOTIFY delivery but don't assert
+      the channel is removed atomically.  Modify
+      `ClosingNotify_DeliveredToProducerAndConsumer` to also assert
+      `query_channel_snapshot()` shows no entry for the channel
+      immediately after the teardown trigger.
+- [ ] **S2d. `ChannelEntry_HasNoStoredFSMFields`** structural test
+      (also from M1 handoff Phase 8).  Add after Phase 6 deletion
+      lands: `static_assert` (or runtime equivalent) that
+      `ChannelEntry` has no `status`, `last_heartbeat`, `state_since`,
+      `closing_deadline` members.
+
+#### Strand S3 — Error-code taxonomy coverage (1–2 days)
+
+- [ ] **New `tests/test_layer3_datahub/test_datahub_error_codes.cpp`**.
+      Per HEP-CORE-0007 §12.4a, 30 distinct `error_code` values
+      exist; only 6 (`CHANNEL_NOT_FOUND`, `TRANSPORT_MISMATCH`,
+      `NOT_REGISTERED`, `SCHEMA_MISMATCH`, `SCHEMA_HASH_MISMATCH_SELF`,
+      `SCHEMA_ID_MISMATCH`) have dedicated coverage today.  The other
+      24 have no test verifying both the trigger condition AND the
+      surfaced `error_code` on the wire response.
+
+      **Codes to cover** (one TEST_F per code, preferably grouped by
+      handler):
+      - General: `UNKNOWN_MSG_TYPE`, `INVALID_REQUEST`,
+        `IDENTITY_REQUIRED`, `MISSING_ROLE_UID`, `NOT_IN_KNOWN_ROLES`
+      - Channel state: `CHANNEL_NOT_READY`, `NOT_CHANNEL_OWNER`
+      - Schema: `SCHEMA_FORBIDDEN_OWNER`, `SCHEMA_UNKNOWN`,
+        `SCHEMA_CITATION_REJECTED`, `FINGERPRINT_INCONSISTENT`,
+        `MISSING_BLDS`, `MISSING_PACKING`, `MISSING_HASH`,
+        `MISSING_HASH_FOR_NAMED_CITATION`,
+        `MISSING_BLDS_FOR_ANONYMOUS_CITATION`,
+        `MISSING_PACKING_FOR_ANONYMOUS_CITATION`
+      - Inbox: `INVALID_INBOX_ENDPOINT`, `INVALID_INBOX_PACKING`,
+        `INBOX_SCHEMA_INVALID`, `INBOX_UPDATE_NOT_SUPPORTED`
+      - Endpoint: `INVALID_ENDPOINT`, `UNKNOWN_ENDPOINT_TYPE`,
+        `ENDPOINT_ALREADY_SET`
+
+      Assertion shape: `EXPECT_EQ(resp->value("status",""), "error");
+      EXPECT_EQ(resp->value("error_code",""), "<expected>");
+      EXPECT_FALSE(resp->value("message","").empty());`
+
+#### Strand S4 — M1.2 Phase 5-7 production cleanup (2–3 days, on plan)
+
+This was always the next M1.2 wave step; the review just confirms
+the punch list.  See `docs/tech_draft/M1_FSM_consolidation_handoff_2026-05-09.md`
+§4 for full sites + redirect rules.
+
+- [ ] **Phase 5** — drop legacy writes in `_on_heartbeat` body
+      (`hub_state.cpp:828-984`) so heartbeats only refresh per-presence
+      rows, not the legacy channel/role-level fields.  Refit
+      `_set_role_disconnected` to walk `role.presences` instead of
+      writing `RoleEntry.state` (single caller in
+      `_on_schemas_evicted_for_owner` line 13).
+- [ ] **Phase 6** — delete legacy fields, enum, mutators:
+      - `enum class ChannelStatus` (hub_state.hpp:65-70)
+      - `ChannelEntry.{status, last_heartbeat, state_since,
+        closing_deadline}` (hub_state.hpp:178-183)
+      - `RoleEntry.{state, last_heartbeat, latest_metrics,
+        metrics_collected_at}` (hub_state.hpp:278-286)
+      - `to_string(ChannelStatus)`, `_set_channel_status`,
+        `_set_channel_closing_deadline`, `_update_role_heartbeat`,
+        `_update_role_metrics`
+      - `observable_from_legacy_status` shim in `hub_state.cpp:86-100`
+        — replace 3 fire-site call patterns with direct
+        `observe_channel(entry, snap)` calls.
+      - Dual channel-JSON serializer in `handle_channel_list_req`
+        (`broker_service.cpp:2825-2839`) — drop the ad-hoc switch;
+        use `channel_to_json(entry, observe_channel(entry, snap))`.
+      - Phase 4 transitional `j["status"]` emission (legacy + new
+        `j["observable"]`) — collapse to `j["observable"]` only
+        once consumers no longer read `j["status"]`.
+- [ ] **Phase 7 (M1.3)** — retire FORCE_SHUTDOWN-as-grace-escalation:
+      - `BrokerServiceImpl::check_closing_deadlines()` (broker_service.cpp:2403-2444)
+      - `cfg.effective_grace()`, `cfg.grace_heartbeats`, `kDefaultGraceHeartbeats`,
+        `PYLABHUB_DEFAULT_GRACE_HEARTBEATS`
+      - `grace_heartbeats` / `grace_ms` config fields + parsing
+      - `bcfg.grace_heartbeats = ...` line in `hub_host.cpp:177`
+      - `case ChannelStatus::Closing:` arms (gone with the enum)
+      - Rewire FORCE_SHUTDOWN as best-effort "you have been forcibly
+        removed by the broker" notification (per M1 handoff §2 "What
+        FORCE_SHUTDOWN means in the new design").  Receiver-side
+        handler + `on_forced_disconnect` script callback + automatic
+        shutdown is **M1.5** (separate phase).
+
+#### Strand S5 — Coverage broadening (lower priority)
+
+- [ ] **HEP-CORE-0034 §12 multi-file hub-globals test**.  Drop 2+
+      JSON schema files into `<hub_dir>/schemas/`, verify all loaded
+      and accessible via path-C citation.  Test belongs in
+      `tests/test_layer3_datahub/test_datahub_broker_schema.cpp` (now
+      on real `HubHost`, so the canonical location is reachable).
+- [ ] **Admin RPC positive-path tests for `close_channel` +
+      `broadcast_channel`** (HEP-CORE-0033 §11.2).  Today only
+      error-path tests exist (missing params, 404).  Add positive
+      paths verifying the channel actually closes / message actually
+      fans out to subscribers.
+- [ ] **Processor two-presence asymmetric-failure test** (HEP-CORE-0023
+      §2.6).  Processor with `(uid, "consumer")` on in-channel and
+      `(uid, "producer")` on out-channel: stop one side's heartbeats,
+      keep the other; assert the stalled presence transitions
+      Pending → Disconnected while the live one stays Connected.
+- [ ] **HEP-CORE-0030 band protocol round-trip tests**.  State cleanup
+      on role close is tested; BAND_JOIN/LEAVE/SEND wire-frame
+      contract isn't pinned.
+- [ ] **Header-comment cleanup sweep** (cosmetic).  Migrated files
+      still have stale references to the retired `LocalBrokerHandle`
+      pattern in their top-of-file comments
+      (`test_datahub_broker_admin.cpp:8`,
+      `test_datahub_broker_protocol.cpp:15`).  Scan all migrated
+      broker test files and update the descriptive header text to
+      match the post-migration `HubHostHandle` shape.
 
 ---
 
