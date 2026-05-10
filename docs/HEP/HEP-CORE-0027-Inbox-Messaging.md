@@ -174,11 +174,12 @@ federation required.
      queries each of its hub connections in turn; first hub that
      answers "found" wins.  If no hub returns a match within the
      timeout, the call fails with "uid not found".
-4. The hub that answers searches its own ChannelEntry (by
-   producer_role_uid), then its ConsumerEntry list (by role_uid).
-   Returns the first match.  Other hubs (if the target is registered
-   there too) hold a duplicate copy with the same inbox_endpoint
-   string — first answer wins.
+4. The hub that answers searches its own `ChannelEntry.producers[]`
+   (by ProducerEntry.role_uid; covers all 1..N producers per
+   HEP-CORE-0023 §2.1.1), then its `ChannelEntry.consumers[]`
+   (by ConsumerEntry.role_uid).  Returns the first match.  Other
+   hubs (if the target is registered there too) hold a duplicate
+   copy with the same inbox_endpoint string — first answer wins.
 5. ROLE_INFO_ACK: inbox_endpoint, inbox_schema, inbox_packing, inbox_checksum
 6. InboxClient::connect_to(endpoint, my_uid, schema, packing) → shared_ptr
 7. client->start()                          — connect DEALER socket

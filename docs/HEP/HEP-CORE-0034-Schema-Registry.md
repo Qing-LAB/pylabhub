@@ -516,14 +516,23 @@ stateDiagram-v2
 There is deliberately no consumer/processor refcount on schema records.
 Justification:
 
-1. A consumer reading from producer P uses P's channel; if P deregisters, the
-   channel itself closes. The consumer's loss of the schema record is already
-   covered by channel teardown — no separate "schema unavailable" event is
-   needed.
-2. A consumer wanting a schema independent of any producer must use a hub
+1. **Single-producer channel:** a consumer reading from producer P uses P's
+   channel; when P deregisters, the channel itself closes (P was the only
+   producer-presence — see HEP-CORE-0023 §2.1.1).  The consumer's loss of
+   P's schema record is covered by channel teardown.
+2. **Multi-producer channel (ZMQ Fan-In, HEP-CORE-0017 §4.6):** a consumer
+   may cite producer P's schema, and P may deregister while co-producer Q
+   stays alive — so the channel remains open.  P's records evict per §7.2;
+   the consumer's already-admitted connection continues unaffected (the
+   channel-wide schema invariant in HEP-CORE-0007 REG_REQ admission
+   guarantees Q's wire format matches the shape the consumer was admitted
+   under).  Citations are validated at admission time only; there is no
+   live re-validation that the eviction would race with.  A consumer that
+   reconnects later cites a still-alive producer's schema, or a hub-global.
+3. A consumer wanting a schema independent of any producer must use a hub
    global. Globals never evict.
-3. Refcount would re-introduce bookkeeping (per-citer references, leak hunts
-   on role crashes) for a problem cases (1) and (2) already solve.
+4. Refcount would re-introduce bookkeeping (per-citer references, leak hunts
+   on role crashes) for a problem cases (1)–(3) already solve.
 
 ### 7.4 Mutator surface
 
@@ -1387,7 +1396,7 @@ broker-side gates.  The end-to-end story is gated on Phase 4b's
 | HEP | Relationship |
 |---|---|
 | HEP-CORE-0002 (DataHub) | BLDS canonical form unchanged. Fingerprint inputs gain packing. |
-| HEP-CORE-0013 (Channel Identity) | Channel still has one producer authority. Schema authority now follows: producer or hub. |
+| HEP-CORE-0013 (Channel Identity) | Channels admit 1..N producers per HEP-CORE-0023 §2.1.1; each producer is an independent schema authority under namespace-by-owner.  Channel identity (HEP-CORE-0013) is name + transport — independent of how many producers are admitted. |
 | HEP-CORE-0016 (Named Schema Registry) | **Superseded by this HEP.** |
 | HEP-CORE-0023 (Startup Coordination) | `_on_role_deregistered` cascade extended to schemas. State machine unchanged. |
 | HEP-CORE-0024 (Role Directory Service) | Role-side `<role_dir>/schemas/` is local cache only — see §13. |

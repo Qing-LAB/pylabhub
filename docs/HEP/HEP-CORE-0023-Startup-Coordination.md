@@ -92,8 +92,8 @@ stateDiagram-v2
     Connected --> Connected : HEARTBEAT_REQ<br/>(refresh last_heartbeat, update metrics)
     Connected --> Pending : ready_timeout<br/>(missed heartbeats)
     Pending --> Connected : HEARTBEAT_REQ (recovery)<br/>bump pending_to_ready_total
-    Pending --> [*] : pending_timeout<br/>presence Disconnected;<br/>fan-out CHANNEL_CLOSING_NOTIFY<br/>iff role_type=producer
-    Connected --> [*] : DEREG_REQ accepted<br/>presence Disconnected;<br/>fan-out CHANNEL_CLOSING_NOTIFY<br/>iff role_type=producer
+    Pending --> [*] : pending_timeout<br/>presence Disconnected;<br/>fan-out CHANNEL_CLOSING_NOTIFY<br/>iff role_type=producer AND<br/>last live producer (§2.1.1)
+    Connected --> [*] : DEREG_REQ accepted<br/>presence Disconnected;<br/>fan-out CHANNEL_CLOSING_NOTIFY<br/>iff role_type=producer AND<br/>last live producer (§2.1.1)
     Pending --> [*] : DEREG_REQ accepted (same path)
 ```
 

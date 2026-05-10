@@ -842,22 +842,35 @@ Pattern:    Synchronous request/reply. Broker always replies immediately —
 Payload (DISC_REQ):
   channel_name          string
 
-Broker dispatch logic:
+Broker dispatch logic (multi-producer aware per HEP-CORE-0023 §2.1.1):
   let ch = HubState.channels[channel_name]
   if ch == nullptr:
       reply ERROR "CHANNEL_NOT_FOUND"
-  let prod = HubState.roles[ch.producer_role_uid]
-            .find_presence(channel_name, "producer")
-  if prod == nullptr or prod.state == Disconnected:
-      // ChannelEntry is removed atomically on producer-presence
-      // Disconnected (HEP-CORE-0023 §2.1), so this branch is rare;
-      // it can only happen during the brief window between FSM
-      // transition and channel removal.
-      reply ERROR "CHANNEL_NOT_FOUND"
-  elif prod.state == Connected and prod.last_heartbeat.is_set():
-      reply DISC_ACK with connection info
-  else:                  // Connected (no heartbeat yet) OR Pending
+
+  // Scan every ProducerEntry on the channel.  In single-producer
+  // channels this is a 1-element loop; in ZMQ Fan-In channels
+  // (HEP-CORE-0017 §4.6) it visits each co-producer.
+  let live_producer = first p in ch.producers such that
+       HubState.roles[p.role_uid]
+           .find_presence(channel_name, "producer")
+           ≠ nullptr AND state == Connected AND first_heartbeat_seen
+  let any_pending  = exists p in ch.producers such that
+       presence is Connected (no heartbeat yet) OR Pending
+
+  if live_producer present:
+      reply DISC_ACK with connection info (pick one live producer's
+      endpoint; for Fan-In channels with multiple endpoints, return
+      the canonical first or a list — see "DISC_ACK fan-in payload"
+      below)
+  elif any_pending:
       reply DISC_PENDING (no connection info — client MUST retry)
+  else:
+      // No producer-presence currently alive; ChannelEntry is
+      // removed atomically when the LAST producer transitions
+      // Disconnected (HEP-CORE-0023 §2.1.1), so this branch is
+      // rare — only the brief window between presence transition
+      // and channel removal.
+      reply ERROR "CHANNEL_NOT_FOUND"
 ```
 
 **Reply variant 1 — DISC_ACK (producer-presence Connected, heartbeats fresh):**
@@ -1294,10 +1307,15 @@ ROLE_INFO_ACK:
   correlation_id        string   (opt) Echo of request correlation_id if provided.
 ```
 
-**Broker search order** (2026-03-30):
-1. Search `ChannelEntry::producer_role_uid` across all channels (producer/processor)
-2. Search `ConsumerEntry::role_uid` across all channels (consumer)
-3. Return first match. If no match, `found=false`.
+**Broker search order** (2026-03-30, multi-producer aware per
+HEP-CORE-0023 §2.1.1):
+1. Search every `ProducerEntry::role_uid` across all channels
+   (producer / processor on out_channel).  Returns the first
+   matching `(channel, producer)` pair; a uid registered as a
+   producer on multiple channels resolves to whichever match the
+   broker visits first.
+2. Search every `ConsumerEntry::role_uid` across all channels (consumer).
+3. Return first match.  If no match, `found=false`.
 
 **Inbox registration sources:**
 - Producer: inbox fields in `REG_REQ` → stored on `ChannelEntry`
@@ -1348,7 +1366,7 @@ same change.
 | `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM` | Second REG_REQ on a `data_transport == "shm"` channel from a different `role_uid` (HEP-CORE-0023 §2.1.1: SHM is physically single-producer; multi-producer channels require ZMQ transport).  Same-`role_uid` restart is admitted as restart-replace and does not trigger this error. | Choose a different channel name, or use ZMQ transport for multi-producer Fan-In topologies (HEP-CORE-0017 §4.6). |
 | `SCHEMA_HASH_MISMATCH_SELF` | Same `(role_uid, schema_id)` re-registered with a different schema_hash (HEP-CORE-0034 §8 namespace-by-owner self-conflict). | Reconcile your own producer's schema; do not re-register conflicting versions under the same id. |
 | `SCHEMA_ID_MISMATCH` | CONSUMER_REG_REQ with `expected_schema_id` that disagrees with the producer's stored schema_id. | Programming error or version drift; reconcile expected schema_id. |
-| `SCHEMA_FORBIDDEN_OWNER` | REG_REQ / CONSUMER_REG_REQ citing `schema_owner` that is neither `"hub"` nor the channel's producer uid (HEP-CORE-0034 §9.1). | Cite hub-globals or the producer's own schema only. |
+| `SCHEMA_FORBIDDEN_OWNER` | REG_REQ / CONSUMER_REG_REQ citing `schema_owner` that is neither `"hub"` nor a `role_uid` of any producer currently admitted on the channel (HEP-CORE-0034 §9.1; multi-producer-aware per HEP-CORE-0023 §2.1.1). | Cite hub-globals or one of the channel's registered producer's schemas only. |
 | `SCHEMA_UNKNOWN` | REG_REQ path-C citing `schema_owner="hub"` + `schema_id=X` where the broker has no record for that key. | Producer must register the schema (path-B) or wait for the hub-global to be loaded.  Verify schema_search_dirs at hub startup. |
 | `SCHEMA_CITATION_REJECTED` | CONSUMER_REG_REQ where the cited schema's stored fingerprint disagrees with the consumer's expected fingerprint (HEP-CORE-0034 §9.3). | Reconcile schemas; do not retry without aligning fingerprints. |
 | `FINGERPRINT_INCONSISTENT` | REG_REQ where `schema_hash` doesn't match `compute_schema_hash(blds, packing)` (broker re-derives and rejects). | Programming error in producer's hash computation; fix and retry. |
