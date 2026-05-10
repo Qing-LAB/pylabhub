@@ -105,20 +105,34 @@ scaffolding is open work (see "Audit work" subsection below).
 
 #### Known failing tests pending broker-cluster migration (2026-05-09)
 
-The following 3 tests fail under the `BrokerHandle` mock-host
-scaffolding because M1.2 Phase 4 (DISC_REQ + heartbeat sweep now
-derive from producer-presence per HEP-CORE-0023 §2.2) exposes the
-mock host's gap around `role_uid` derivation.  They are correct test
-intents but their scaffolding doesn't represent the post-refactor
-architecture.  Fix lands when the broker cluster migrates to real
-`HubHost` (see plan `docs/tech_draft/broker_test_migration_plan.md`).
+Pending Stages 2 + 3 of the broker test migration (see plan
+`docs/tech_draft/broker_test_migration_plan.md`):
 
-- `DatahubBrokerTest.DeregPidMismatch`
-- `DatahubBrokerConsumerTest.ConsumerDeregHappyPath`
-- `DatahubBrokerConsumerTest.ConsumerDeregPidMismatch`
+**M1 (in progress) — `test_datahub_broker_consumer.cpp` migrated to
+real `HubHost`, 3 of 5 tests fail pending follow-up:**
+- `DatahubBrokerConsumerTest.ConsumerRegChannelNotFound` — Stage 2:
+  `BrokerRequestComm` currently drops the broker's ERROR body
+  (broker_request_comm.cpp:205-217 sets `result = nullopt` instead
+  of returning the error JSON); test asserts on `error_code` which
+  is unreachable until that's fixed.
+- `DatahubBrokerConsumerTest.ConsumerDeregHappyPath` — Stage 3:
+  test uses fake `consumer_pid` (literal `55100`) for registration;
+  real `BrokerRequestComm::deregister_consumer` uses `::getpid()`,
+  pid mismatch causes broker to reject the dereg.  Fix is purely
+  test-side — register with `::getpid()`.
+- `DatahubBrokerConsumerTest.DiscShowsConsumerCount` — Stage 3:
+  same fake-pid issue as above.
 
-Working test count: 1782 - 3 known-failing = **1779 passing** until
-migration completes.
+**Pre-existing — `test_datahub_broker.cpp` still on `BrokerHandle`
+mock host (M2 will migrate):**
+- `DatahubBrokerTest.DeregPidMismatch` — Phase 4's DISC_REQ
+  derivation from producer-presence exposes the mock host's gap
+  around empty `role_uid` (mock REG_REQ has no role_uid; presence
+  row never created; new DISC_REQ resolves to CHANNEL_NOT_FOUND).
+  Fix lands when the file migrates to real `HubHost` in M2.
+
+Working test count: 1782 - 4 known-failing = **1778 passing** until
+Stage 2 + 3 (and M2) complete.
 - [ ] **Adopt `BrokerRequestComm` for payload construction** in the
       same 15 test files affected by hand-rolled JSON `make_reg_opts`
       builders (overlaps heavily with the 8 BrokerHandle files;
