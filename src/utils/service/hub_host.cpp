@@ -188,16 +188,12 @@ void HubHost::startup()
         std::chrono::milliseconds(hb.heartbeat_interval_ms);
     bcfg.ready_miss_heartbeats   = hb.ready_miss_heartbeats;
     bcfg.pending_miss_heartbeats = hb.pending_miss_heartbeats;
-    bcfg.grace_heartbeats        = hb.grace_heartbeats;
     if (hb.ready_timeout_ms.has_value())
         bcfg.ready_timeout_override =
             std::chrono::milliseconds(*hb.ready_timeout_ms);
     if (hb.pending_timeout_ms.has_value())
         bcfg.pending_timeout_override =
             std::chrono::milliseconds(*hb.pending_timeout_ms);
-    if (hb.grace_ms.has_value())
-        bcfg.grace_override =
-            std::chrono::milliseconds(*hb.grace_ms);
 
     // Checksum-repair policy (HEP-CORE-0007 §12.4 +
     // `BrokerService::Config::checksum_repair_policy`).  Translate the

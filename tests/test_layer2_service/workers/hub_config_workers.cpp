@@ -96,7 +96,6 @@ nlohmann::json full_hub_json()
             {"heartbeat_interval_ms",    250},
             {"ready_miss_heartbeats",     12},
             {"pending_miss_heartbeats",    8},
-            {"grace_heartbeats",           2},
             {"ready_timeout_ms",        4000},  // explicit override
         }},
         {"federation", {
@@ -141,11 +140,9 @@ int load_full(const char *tmpdir)
             EXPECT_EQ(cfg.broker().heartbeat_interval_ms,     250);
             EXPECT_EQ(cfg.broker().ready_miss_heartbeats,      12u);
             EXPECT_EQ(cfg.broker().pending_miss_heartbeats,     8u);
-            EXPECT_EQ(cfg.broker().grace_heartbeats,            2u);
             ASSERT_TRUE(cfg.broker().ready_timeout_ms.has_value());
             EXPECT_EQ(*cfg.broker().ready_timeout_ms, 4000);
             EXPECT_FALSE(cfg.broker().pending_timeout_ms.has_value());
-            EXPECT_FALSE(cfg.broker().grace_ms.has_value());
 
             EXPECT_TRUE(cfg.federation().enabled);
             EXPECT_EQ(cfg.federation().forward_timeout_ms, 1500);
@@ -199,11 +196,8 @@ int load_minimal(const char *tmpdir)
                       ::pylabhub::kDefaultReadyMissHeartbeats);
             EXPECT_EQ(cfg.broker().pending_miss_heartbeats,
                       ::pylabhub::kDefaultPendingMissHeartbeats);
-            EXPECT_EQ(cfg.broker().grace_heartbeats,
-                      ::pylabhub::kDefaultGraceHeartbeats);
             EXPECT_FALSE(cfg.broker().ready_timeout_ms.has_value());
             EXPECT_FALSE(cfg.broker().pending_timeout_ms.has_value());
-            EXPECT_FALSE(cfg.broker().grace_ms.has_value());
 
             EXPECT_FALSE(cfg.federation().enabled);
             EXPECT_TRUE(cfg.federation().peers.empty());

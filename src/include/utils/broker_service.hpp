@@ -51,7 +51,9 @@ enum class ChecksumRepairPolicy
 struct ChannelSnapshotEntry
 {
     std::string name;
-    std::string status;               ///< "Ready" | "PendingReady" | "Closing"
+    /// HEP-CORE-0023 §2.2 — derived observable.
+    /// One of: "absent" | "registering" | "stalled" | "live".
+    std::string observable;
     int         consumer_count{0};
     uint64_t    producer_pid{0};
     std::string schema_hash;
@@ -64,11 +66,12 @@ struct ChannelSnapshot
 {
     std::vector<ChannelSnapshotEntry> channels;
 
-    int count_by_status(const std::string& s) const noexcept
+    /// Count of channels whose `observable` matches `o` (e.g. "live").
+    int count_by_observable(const std::string& o) const noexcept
     {
         int n = 0;
         for (const auto& ch : channels)
-            if (ch.status == s) ++n;
+            if (ch.observable == o) ++n;
         return n;
     }
 };
@@ -147,13 +150,9 @@ public:
         /// (counted from the moment the role entered Pending).
         uint32_t pending_miss_heartbeats{::pylabhub::kDefaultPendingMissHeartbeats};
 
-        /// CHANNEL_CLOSING_NOTIFY -> FORCE_SHUTDOWN grace window, in heartbeats.
-        uint32_t grace_heartbeats{::pylabhub::kDefaultGraceHeartbeats};
-
-        /// Optional explicit overrides. When set, the value is used verbatim
-        /// (including 0, which is meaningful for `grace_override` = "no grace,
-        /// FORCE_SHUTDOWN immediately"). When std::nullopt, the effective
-        /// timeout is derived as `heartbeat_interval * <miss_heartbeats>`.
+        /// Optional explicit overrides. When set, the value is used verbatim.
+        /// When std::nullopt, the effective timeout is derived as
+        /// `heartbeat_interval * <miss_heartbeats>`.
         ///
         /// For `ready_timeout_override` / `pending_timeout_override`, a value
         /// of 0 ms means the timeout check in `check_heartbeat_timeouts()` is
@@ -161,7 +160,6 @@ public:
         /// reclaim should use a small positive value (e.g. 1 ms), not 0.
         std::optional<std::chrono::milliseconds> ready_timeout_override  {};
         std::optional<std::chrono::milliseconds> pending_timeout_override{};
-        std::optional<std::chrono::milliseconds> grace_override          {};
 
         /// Derived effective timeouts used by the heartbeat check loop.
         /// FLOORED at `heartbeat_interval`: a stuck role must always be
@@ -178,15 +176,6 @@ public:
             const auto v = pending_timeout_override.value_or(
                 heartbeat_interval * pending_miss_heartbeats);
             return (v < heartbeat_interval) ? heartbeat_interval : v;
-        }
-        /// Grace between CHANNEL_CLOSING_NOTIFY and FORCE_SHUTDOWN on the
-        /// voluntary-close path. Zero is allowed here ("immediate FORCE_SHUTDOWN")
-        /// because voluntary close starts from a live role — consumers already
-        /// had the chance to hear the initial CLOSING_NOTIFY.
-        [[nodiscard]] std::chrono::milliseconds effective_grace() const noexcept
-        {
-            return grace_override.value_or(
-                heartbeat_interval * grace_heartbeats);
         }
 
         /// How often broker checks whether registered consumer PIDs are still alive.

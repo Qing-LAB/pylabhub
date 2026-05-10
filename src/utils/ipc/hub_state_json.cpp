@@ -38,14 +38,7 @@ inline std::string fmt_time(std::chrono::system_clock::time_point tp)
 
 } // namespace
 
-namespace
-{
-
-/// Body shared by the single-arg and two-arg `channel_to_json`
-/// overloads.  Emits everything except the state key(s); each public
-/// overload then appends `"status"` and/or `"observable"` per its
-/// contract.
-inline nlohmann::json channel_to_json_body(const ChannelEntry &c)
+nlohmann::json channel_to_json(const ChannelEntry &c, ChannelObservable obs)
 {
     nlohmann::json j;
     j["name"]                = c.name;
@@ -61,6 +54,7 @@ inline nlohmann::json channel_to_json_body(const ChannelEntry &c)
     j["data_transport"]      = c.data_transport;
     j["zmq_node_endpoint"]   = c.zmq_node_endpoint;
     j["_collected_at"]       = fmt_time(c.created_at);
+    j["observable"]          = to_string(obs);
 
     nlohmann::json consumers = nlohmann::json::array();
     for (const auto &cons : c.consumers)
@@ -77,35 +71,44 @@ inline nlohmann::json channel_to_json_body(const ChannelEntry &c)
     return j;
 }
 
-} // namespace
-
-nlohmann::json channel_to_json(const ChannelEntry &c)
-{
-    nlohmann::json j         = channel_to_json_body(c);
-    j["status"]              = to_string(c.status);
-    return j;
-}
-
-nlohmann::json channel_to_json(const ChannelEntry &c, ChannelObservable obs)
-{
-    nlohmann::json j         = channel_to_json_body(c);
-    j["status"]              = to_string(c.status);
-    j["observable"]          = to_string(obs);
-    return j;
-}
-
 nlohmann::json role_to_json(const RoleEntry &r)
 {
     nlohmann::json j;
     j["uid"]            = r.uid;
     j["name"]           = r.name;
     j["role_tag"]       = r.role_tag;
-    j["state"]          = to_string(r.state);
     j["channels"]       = r.channels;
     j["pubkey_z85"]     = r.pubkey_z85;
-    j["latest_metrics"] = r.latest_metrics;
-    j["_collected_at"]  = fmt_time(r.metrics_collected_at);
     j["first_seen"]     = fmt_time(r.first_seen);
+
+    // Per-presence rows (HEP-CORE-0023 §2.6).  Each row carries its own
+    // FSM state, latest_metrics, and timestamps; the role-level fields
+    // are derived from these.
+    nlohmann::json presences = nlohmann::json::array();
+    nlohmann::json latest_metrics_agg = nlohmann::json::object();
+    std::chrono::system_clock::time_point latest_collected{};
+    for (const auto &p : r.presences)
+    {
+        nlohmann::json pj;
+        pj["channel"]              = p.channel;
+        pj["role_type"]            = p.role_type;
+        pj["state"]                = to_string(p.state);
+        pj["first_heartbeat_seen"] = p.first_heartbeat_seen;
+        pj["latest_metrics"]       = p.latest_metrics;
+        pj["_collected_at"]        = fmt_time(p.metrics_collected_at);
+        presences.push_back(std::move(pj));
+
+        if (!p.latest_metrics.is_null() &&
+            p.metrics_collected_at > latest_collected)
+        {
+            latest_collected   = p.metrics_collected_at;
+            latest_metrics_agg = p.latest_metrics;
+        }
+    }
+    j["presences"]      = std::move(presences);
+    // Aggregate convenience fields — pick the freshest presence's metrics.
+    j["latest_metrics"] = std::move(latest_metrics_agg);
+    j["_collected_at"]  = fmt_time(latest_collected);
     return j;
 }
 

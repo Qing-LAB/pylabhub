@@ -145,7 +145,6 @@ inline void write_minimal_config(const fs::path &cfg_path,
     j["broker"]["heartbeat_interval_ms"]    = 500;
     j["broker"]["ready_miss_heartbeats"]    = 10;
     j["broker"]["pending_miss_heartbeats"]  = 10;
-    j["broker"]["grace_heartbeats"]         = 4;
 
     j["federation"]["enabled"]           = false;
     j["federation"]["forward_timeout_ms"] = 2000;

@@ -311,7 +311,6 @@ public:
 
     void check_heartbeat_timeouts(zmq::socket_t& socket);
     void check_dead_consumers(zmq::socket_t& socket);
-    void check_closing_deadlines(zmq::socket_t& socket);
 
     // ── Role-close cleanup API (HEP-CORE-0023 §2.5) ───────────────────────
     // Central hooks called at every dereg site so federation/band/future
@@ -339,9 +338,6 @@ public:
                              const std::string&                        channel_name,
                              const pylabhub::hub::ChannelEntry&        entry,
                              const std::string&                        reason);
-    void send_force_shutdown(zmq::socket_t&                            socket,
-                             const std::string&                        channel_name,
-                             const pylabhub::hub::ChannelEntry&        entry);
 
     void handle_checksum_error_report(zmq::socket_t&        socket,
                                       const nlohmann::json& req);
@@ -543,18 +539,18 @@ void BrokerServiceImpl::run()
             for (const auto& ch : pending_closes)
             {
                 auto hub_entry = hub_state_->channel(ch);
-                if (hub_entry.has_value() &&
-                    hub_entry->status != pylabhub::hub::ChannelStatus::Closing)
+                if (hub_entry.has_value())
                 {
+                    // HEP-CORE-0023 §2.1 atomic teardown: emit a best-effort
+                    // CHANNEL_CLOSING_NOTIFY (informational; consumers may
+                    // race with the close), then call _on_channel_closed
+                    // which marks the producer-presence Disconnected, fires
+                    // CHANNEL_CLOSED handlers, and erases the channel entry.
                     LOGGER_INFO("Broker: script-requested close for channel '{}'", ch);
                     send_closing_notify(router, ch, *hub_entry, "script_requested");
-                    // Transition to Closing with a grace deadline — don't deregister yet.
-                    // Clients have until the deadline to process queued messages and deregister.
-                    const auto deadline =
-                        std::chrono::steady_clock::now() + cfg.effective_grace();
-                    hub_state_->_set_channel_status(
-                        ch, pylabhub::hub::ChannelStatus::Closing);
-                    hub_state_->_set_channel_closing_deadline(ch, deadline);
+                    on_channel_closed(router, ch, *hub_entry, "script_requested");
+                    hub_state_->_on_channel_closed(
+                        ch, pylabhub::hub::ChannelCloseReason::AdminClose);
                 }
             }
 
@@ -624,7 +620,6 @@ void BrokerServiceImpl::run()
             // Check heartbeat timeouts and consumer liveness every poll cycle (~100ms resolution).
             check_heartbeat_timeouts(router);
             check_dead_consumers(router);
-            check_closing_deadlines(router);
             prune_relay_dedup();
 
             // --- Handle ROUTER socket (local clients + inbound peer DEALERs) ---
@@ -1920,34 +1915,21 @@ void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
                      channel_name);
     }
 
-    // `_on_heartbeat` does the following (M1.1 transitional behaviour):
-    //   1. Refresh ChannelEntry.last_heartbeat + PendingReady→Ready FSM
-    //      transition (legacy back-compat — sweep loop still reads this).
-    //   2. Refresh per-uid RoleEntry.last_heartbeat + latest_metrics
-    //      (legacy back-compat).
-    //   3. NEW: refresh the per-presence row keyed on
-    //      `(role_uid, channel, role_type)` — the new source of truth
-    //      per HEP-CORE-0023 §2.6 + HEP-CORE-0019 §2.3 / Phase 6.
-    //
-    // For M1.1 we pass the WIRE-DECODED uid + role_type into step 3.
-    // The legacy steps 1+2 still use `producer_role_uid` derived from
-    // the channel — that is the latent pre-Phase-6 behaviour M1.2 will
-    // retire when the FSM moves entirely onto the per-presence row.
+    // Refresh the presence row keyed on `(role_uid, channel, role_type)`
+    // per HEP-CORE-0023 §2.5.2 + HEP-CORE-0019 §2.3.  Each heartbeat
+    // refreshes ONLY its own presence row.
     std::optional<nlohmann::json> metrics_opt;
     if (req.contains("metrics") && req["metrics"].is_object())
         metrics_opt = req["metrics"];
-    // Step 3's keyed lookup needs the WIRE uid (the actual sender);
-    // steps 1+2 use the channel's producer uid for back-compat.
-    // When wire_uid is non-empty AND differs from producer_role_uid
-    // (the consumer-presence case), the legacy refresh still attributes
-    // to the channel's producer — this is the documented latent bug
-    // M1.2 fixes.  M1.1's job is only to add the new per-presence path
-    // alongside.
+    // Pre-M0 fallback: heartbeat without `uid`/`role_type` on the wire
+    // is attributed to the channel's producer-presence.
     const std::string &hb_uid =
         wire_uid.empty() ? producer_role_uid : wire_uid;
+    const std::string &hb_role_type =
+        wire_role_type.empty() ? std::string("producer") : wire_role_type;
     hub_state_->_on_heartbeat(channel_name,
                              hb_uid,
-                             wire_role_type,
+                             hb_role_type,
                              std::chrono::steady_clock::now(),
                              metrics_opt);
 
@@ -2304,7 +2286,6 @@ nlohmann::json BrokerServiceImpl::heartbeat_ack_block() const
         cfg.heartbeat_interval.count());
     hb["ready_miss_heartbeats"]    = cfg.ready_miss_heartbeats;
     hb["pending_miss_heartbeats"]  = cfg.pending_miss_heartbeats;
-    hb["grace_heartbeats"]         = cfg.grace_heartbeats;
     return hb;
 }
 
@@ -2327,11 +2308,8 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
 
     // ── Pass 1: Connected (live) -> Pending demotion (HEP-CORE-0023 §2.1) ─
     // Iterate channels and read the PRODUCER-presence state directly.
-    // Channel "Ready" in legacy terms = producer-presence Connected with
-    // first_heartbeat_seen.  No producer-presence (or Disconnected) = no
-    // producer = no demotion needed.  HubState's `_on_heartbeat_timeout`
-    // does the actual transition (demotes the producer-presence and the
-    // legacy `ChannelStatus` field while M1.2 still keeps it).
+    // No producer-presence (or Disconnected) = no producer = no demotion.
+    // HubState's `_on_heartbeat_timeout` performs the transition.
     for (const auto& [channel_name, entry] : snap.channels)
     {
         if (entry.producer_role_uid.empty()) continue;
@@ -2477,51 +2455,6 @@ void BrokerServiceImpl::send_closing_notify(zmq::socket_t&                     s
 }
 
 // ============================================================================
-// check_closing_deadlines — escalate Closing channels past grace period
-// ============================================================================
-
-void BrokerServiceImpl::check_closing_deadlines(zmq::socket_t& socket)
-{
-    const auto now = std::chrono::steady_clock::now();
-    std::vector<std::string> to_remove;
-
-    const auto snap = hub_state_->snapshot();
-    for (const auto& [name, entry] : snap.channels)
-    {
-        if (entry.status != pylabhub::hub::ChannelStatus::Closing)
-            continue;
-
-        // Grace period not yet expired.
-        // Note: if all consumers deregister AND the producer sends DEREG_REQ,
-        // _on_channel_closed() erases the entry from HubState — so no
-        // explicit early-cleanup check is needed here. We only act on deadline.
-        if (now < entry.closing_deadline)
-            continue;
-
-        // Deadline elapsed — escalate to FORCE_SHUTDOWN for remaining members.
-        LOGGER_WARN("Broker: channel '{}' — grace period expired with {} consumers "
-                    "still registered, sending FORCE_SHUTDOWN",
-                    name, entry.consumers.size());
-        send_force_shutdown(socket, name, entry);
-        to_remove.push_back(name);
-    }
-
-    for (const auto& name : to_remove)
-    {
-        auto entry = hub_state_->channel(name);
-        if (entry.has_value())
-        {
-            on_channel_closed(socket, name, *entry, "grace_expired");
-            // HubState authoritative grace-expired close.  Reason =
-            // HeartbeatTimeout (this path only triggers for channels
-            // already in Closing from a heartbeat timeout).
-            hub_state_->_on_channel_closed(
-                name, pylabhub::hub::ChannelCloseReason::HeartbeatTimeout);
-        }
-    }
-}
-
-// ============================================================================
 // Role-close cleanup API (HEP-CORE-0023 §2.5)
 // ============================================================================
 
@@ -2591,51 +2524,6 @@ void BrokerServiceImpl::band_on_role_closed(zmq::socket_t& socket,
         {
             if (!m.zmq_identity.empty())
                 send_to_identity(socket, m.zmq_identity, "BAND_LEAVE_NOTIFY", notify);
-        }
-    }
-}
-
-// ============================================================================
-// send_force_shutdown — bypass client message queue, immediate shutdown
-// ============================================================================
-
-void BrokerServiceImpl::send_force_shutdown(zmq::socket_t&                     socket,
-                                             const std::string&                 channel_name,
-                                             const pylabhub::hub::ChannelEntry& entry)
-{
-    nlohmann::json body;
-    body["channel_name"] = channel_name;
-    body["reason"]       = "grace_period_expired";
-
-    for (const auto& consumer : entry.consumers)
-    {
-        if (consumer.zmq_identity.empty())
-            continue;
-        try
-        {
-            send_to_identity(socket, consumer.zmq_identity, "FORCE_SHUTDOWN", body);
-            LOGGER_INFO("Broker: FORCE_SHUTDOWN for '{}' ->consumer pid={}",
-                        channel_name, consumer.consumer_pid);
-        }
-        catch (const zmq::error_t& e)
-        {
-            LOGGER_WARN("Broker: failed to send FORCE_SHUTDOWN to consumer pid={}: {}",
-                        consumer.consumer_pid, e.what());
-        }
-    }
-
-    if (!entry.producer_zmq_identity.empty())
-    {
-        try
-        {
-            send_to_identity(socket, entry.producer_zmq_identity, "FORCE_SHUTDOWN", body);
-            LOGGER_INFO("Broker: FORCE_SHUTDOWN for '{}' ->producer pid={}",
-                        channel_name, entry.producer_pid);
-        }
-        catch (const zmq::error_t& e)
-        {
-            LOGGER_WARN("Broker: failed to send FORCE_SHUTDOWN to producer: {}",
-                        e.what());
         }
     }
 }
@@ -2822,16 +2710,8 @@ nlohmann::json BrokerServiceImpl::handle_channel_list_req(const nlohmann::json &
         ch["producer_uid"]   = entry.producer_role_uid;
         ch["schema_id"]      = entry.schema_id;
         ch["consumer_count"] = entry.consumers.size();
-        switch (entry.status)
-        {
-            case pylabhub::hub::ChannelStatus::PendingReady: ch["status"] = "PendingReady"; break;
-            case pylabhub::hub::ChannelStatus::Ready:        ch["status"] = "Ready";        break;
-            case pylabhub::hub::ChannelStatus::Closing:      ch["status"] = "Closing";      break;
-        }
-        // HEP-CORE-0023 §2.2 protocol-defined observable, derived from
-        // the producer-presence row.  Emitted alongside the legacy
-        // `status` during the M1.2 transition; new admin clients should
-        // prefer `observable`.
+        // HEP-CORE-0023 §2.2 — channel state is the protocol-defined
+        // `observable`, derived from the producer-presence row.
         ch["observable"] = pylabhub::hub::to_string(
             pylabhub::hub::observe_channel(entry, snap));
         channels.push_back(std::move(ch));
@@ -3134,14 +3014,12 @@ std::string BrokerService::list_channels_json_str() const
     for (const auto &[name, entry] : snap.channels)
     {
         // HEP-CORE-0023 §2.2: `observable` is the protocol-defined
-        // wire field; legacy `status` is preserved during the M1.2
-        // transition (Phase 6 deletes it).
+        // wire field — derived from the producer-presence row.
         result.push_back(nlohmann::json{
             {"name",           name},
             {"schema_hash",    entry.schema_hash},
             {"consumer_count", static_cast<int>(entry.consumers.size())},
             {"producer_pid",   entry.producer_pid},
-            {"status",         pylabhub::hub::to_string(entry.status)},
             {"observable",     pylabhub::hub::to_string(
                                    pylabhub::hub::observe_channel(entry, snap))}
         });
@@ -3158,7 +3036,8 @@ ChannelSnapshot BrokerService::query_channel_snapshot() const
     {
         ChannelSnapshotEntry e;
         e.name               = name;
-        e.status             = pylabhub::hub::to_string(entry.status);
+        e.observable         = pylabhub::hub::to_string(
+            pylabhub::hub::observe_channel(entry, hub_snap));
         e.consumer_count     = static_cast<int>(entry.consumers.size());
         e.producer_pid       = entry.producer_pid;
         e.schema_hash        = entry.schema_hash;

@@ -40,12 +40,9 @@ struct HubBrokerConfig
     /// Ready → Pending demotion after this many consecutive missed heartbeats.
     uint32_t ready_miss_heartbeats{::pylabhub::kDefaultReadyMissHeartbeats};
 
-    /// Pending → deregistered (+ CHANNEL_CLOSING_NOTIFY) after this many
-    /// additional missed heartbeats, counted from entry into Pending.
+    /// Pending → deregistered atomic teardown (HEP-CORE-0023 §2.1) after
+    /// this many additional missed heartbeats, counted from entry into Pending.
     uint32_t pending_miss_heartbeats{::pylabhub::kDefaultPendingMissHeartbeats};
-
-    /// CHANNEL_CLOSING_NOTIFY → FORCE_SHUTDOWN grace window, in heartbeats.
-    uint32_t grace_heartbeats{::pylabhub::kDefaultGraceHeartbeats};
 
     // ── Optional explicit overrides (null = derive from interval × miss) ─
     /// When set, used verbatim for the Ready→Pending wall-clock timeout
@@ -53,9 +50,6 @@ struct HubBrokerConfig
     std::optional<int32_t> ready_timeout_ms;
     /// Same shape, for Pending→deregistered.
     std::optional<int32_t> pending_timeout_ms;
-    /// Same shape, for CLOSING_NOTIFY→FORCE_SHUTDOWN grace.  `0` is meaningful
-    /// here ("FORCE_SHUTDOWN immediately on voluntary close").
-    std::optional<int32_t> grace_ms;
 
     /// Checksum-repair policy for slot integrity errors reported via
     /// CHECKSUM_ERROR_REPORT (HEP-CORE-0007 §12.4).
@@ -82,10 +76,8 @@ inline HubBrokerConfig parse_hub_broker_config(const nlohmann::json &j)
         if (k != "heartbeat_interval_ms" &&
             k != "ready_miss_heartbeats" &&
             k != "pending_miss_heartbeats" &&
-            k != "grace_heartbeats" &&
             k != "ready_timeout_ms" &&
             k != "pending_timeout_ms" &&
-            k != "grace_ms" &&
             k != "checksum_repair_policy")
             throw std::runtime_error("hub: unknown config key 'broker." + k + "'");
     }
@@ -96,8 +88,6 @@ inline HubBrokerConfig parse_hub_broker_config(const nlohmann::json &j)
                                             bc.ready_miss_heartbeats);
     bc.pending_miss_heartbeats = sect.value("pending_miss_heartbeats",
                                             bc.pending_miss_heartbeats);
-    bc.grace_heartbeats        = sect.value("grace_heartbeats",
-                                            bc.grace_heartbeats);
 
     auto load_optional = [&](const char *k, std::optional<int32_t> &out)
     {
@@ -106,7 +96,6 @@ inline HubBrokerConfig parse_hub_broker_config(const nlohmann::json &j)
     };
     load_optional("ready_timeout_ms",   bc.ready_timeout_ms);
     load_optional("pending_timeout_ms", bc.pending_timeout_ms);
-    load_optional("grace_ms",           bc.grace_ms);
 
     if (bc.heartbeat_interval_ms <= 0)
         throw std::runtime_error(
@@ -118,7 +107,6 @@ inline HubBrokerConfig parse_hub_broker_config(const nlohmann::json &j)
     if (bc.pending_miss_heartbeats == 0)
         throw std::runtime_error(
             "hub: 'broker.pending_miss_heartbeats' must be >= 1");
-    // grace_heartbeats == 0 is allowed — meaningful as "no grace, FORCE_SHUTDOWN immediately".
 
     auto check_optional_nonneg = [](const char *name,
                                      const std::optional<int32_t> &v)
@@ -130,7 +118,6 @@ inline HubBrokerConfig parse_hub_broker_config(const nlohmann::json &j)
     };
     check_optional_nonneg("ready_timeout_ms",   bc.ready_timeout_ms);
     check_optional_nonneg("pending_timeout_ms", bc.pending_timeout_ms);
-    check_optional_nonneg("grace_ms",           bc.grace_ms);
 
     bc.checksum_repair_policy = sect.value("checksum_repair_policy",
                                             bc.checksum_repair_policy);

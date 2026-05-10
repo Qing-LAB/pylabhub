@@ -161,7 +161,6 @@ nlohmann::json build_hub_json_template(const std::string &uid,
             {"heartbeat_interval_ms",   ::pylabhub::kDefaultHeartbeatIntervalMs},
             {"ready_miss_heartbeats",   ::pylabhub::kDefaultReadyMissHeartbeats},
             {"pending_miss_heartbeats", ::pylabhub::kDefaultPendingMissHeartbeats},
-            {"grace_heartbeats",        ::pylabhub::kDefaultGraceHeartbeats},
         }},
         {"federation", {
             {"enabled",            false},
