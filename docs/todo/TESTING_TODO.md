@@ -308,17 +308,39 @@ Thread 5 (concurrent teardown):
 - 2-parallel harness (mimics `ctest -j2`): 1/13 crashes.  The race
   needs concurrent CPU pressure to expose.
 
-**Fix sketch (deferred to post-M2):**
-- Either swap Step 13 ↔ Step 14 in `do_role_teardown` (drain ctrl
-  thread before destroying broker_comm), or split
-  `teardown_infrastructure_` into a pre-drain phase
-  (queues / inbox stop signal) and a post-drain phase (BrokerRequestComm
-  destruction), or have `BrokerRequestComm::disconnect()` itself
-  synchronously wait for any external thread currently in
-  `run_poll_loop`.
-- Producer/consumer/processor host comments at the broker_comm.reset()
-  site falsely claim "Ctrl thread already joined" — must be updated
-  or made true.
+**Fix (deferred to post-M2) — design principle locked 2026-05-10:**
+
+> **Stop the machine before disassembling it.**  No object may be
+> destroyed while another thread is still using it.  The owning side
+> must guarantee that all in-flight uses have observed "stop" *and
+> returned* before destruction proceeds.
+
+Two acceptable shapes — both enforce the invariant; choice is local
+ergonomics:
+
+1. **`BrokerRequestComm::disconnect()` becomes synchronous w.r.t.
+   external poll loops.**  It already signals `stop_requested`;
+   extend it to also *wait* until any thread currently inside
+   `run_poll_loop` has exited the function.  After `disconnect()`
+   returns, `BrokerRequestComm` is guaranteed quiescent and safe to
+   destroy.  Caller (the role host) keeps its current single-shot
+   `disconnect(); reset();` idiom.  This is the more locally-correct
+   shape because the object's own contract enforces the invariant.
+
+2. **Split `teardown_infrastructure_` into two phases.**  Pre-drain:
+   signal-only (broker_comm->stop, queue stop signals).  Drain ctrl
+   thread (`api.thread_manager().drain()`).  Post-drain: destructive
+   (`broker_comm_.reset()`, queue .reset()).  Requires editing
+   `do_role_teardown` to call into the role host twice with the drain
+   in between.
+
+Option 1 is preferred: it makes the invariant a property of the
+class, so future callers can't reintroduce the race.
+
+Producer / consumer / processor host comments at the
+`broker_comm_.reset()` site falsely claim "Ctrl thread already joined"
+— must be removed (option 1) or made true (option 2) when the fix
+lands.
 
 **Confirmed: NOT related to:**
 - M1.2 atomic-deletion sweep (`a41ce71`).

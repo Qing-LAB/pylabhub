@@ -113,6 +113,7 @@ through a single helper.
 - **Next:** MP1 → MP2 → MP3 → MP4 → MP5 (sequential; each builds on the previous).
 - **After MP5:** unified-cascade tests + multi-producer admission tests green ⇒ M1.2 wave fully closed.
 - **Then:** M1.4 (retire `metrics_store_`), M1.5 (role-side `on_forced_disconnect`).
+- **Then:** **MD1 — Role teardown sequence fix** (deferred since 2026-05-10 per user directive).  Use-after-free race in `do_role_teardown`: BrokerRequestComm destroyed in Step 13 while its ctrl-thread is still in `run_poll_loop`; ctrl thread joined only in Step 14.  Design principle locked: **"stop the machine before disassembling it"** — no object may be destroyed while another thread is still using it; the owning side guarantees all in-flight uses have observed stop *and returned* before destruction.  Preferred fix: make `BrokerRequestComm::disconnect()` synchronous with respect to external poll loops (signal + wait), so caller's `disconnect(); reset();` idiom is already correct by construction.  Full diagnosis in `docs/todo/TESTING_TODO.md` §9.
 - **Then:** Wave B M8 / MP6 — dual-hub processor B3-B5 scenarios — depends on MP1-MP5 landing first.
 
 #### Tracking
