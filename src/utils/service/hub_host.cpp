@@ -168,6 +168,20 @@ void HubHost::startup()
     bcfg.server_secret_key = impl_->cfg.auth().client_seckey;
     bcfg.server_public_key = impl_->cfg.auth().client_pubkey;
 
+    // Hub-global schema records live at `<hub_dir>/schemas/` per
+    // HEP-CORE-0034 §12 — "the only filesystem-authoritative source".
+    // The broker's `load_hub_globals_()` walks `cfg.schema_search_dirs`
+    // at startup; production HubHost wires the canonical location here
+    // so operators only need to drop schema JSON files into the hub
+    // directory's `schemas/` subdir.  When the subdir is absent or
+    // empty, the broker logs `registered 0 hub-global schema record(s)`
+    // and continues — no error.
+    {
+        std::filesystem::path schemas_dir =
+            impl_->cfg.base_dir() / "schemas";
+        bcfg.schema_search_dirs.push_back(schemas_dir.string());
+    }
+
     // Heartbeat-multiplier timeouts (HEP-CORE-0023 §2.5; HEP-0033 §6.4).
     const auto &hb = impl_->cfg.broker();
     bcfg.heartbeat_interval =
