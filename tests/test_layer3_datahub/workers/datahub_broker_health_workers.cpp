@@ -8,7 +8,12 @@
 
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
+#include "utils/config/hub_config.hpp"
+#include "utils/file_lock.hpp"
+#include "utils/hub_directory.hpp"
+#include "utils/hub_host.hpp"
 #include "utils/hub_state.hpp"
+#include "utils/json_config.hpp"
 #include "plh_datahub.hpp"
 
 #include <gtest/gtest.h>
@@ -17,6 +22,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <future>
 #include <memory>
@@ -31,9 +37,11 @@ using pylabhub::broker::ChannelSnapshot;
 namespace pylabhub::tests::worker::broker_health
 {
 
-static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
-static auto zmq_module()    { return ::pylabhub::hub::GetZMQContextModule(); }
+static auto logger_module()    { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
+static auto file_lock_module() { return ::pylabhub::utils::FileLock::GetLifecycleModule(); }
+static auto json_module()      { return ::pylabhub::utils::JsonConfig::GetLifecycleModule(); }
+static auto crypto_module()    { return ::pylabhub::crypto::GetLifecycleModule(); }
+static auto zmq_module()       { return ::pylabhub::hub::GetZMQContextModule(); }
 
 // ============================================================================
 // Shared helpers
@@ -42,25 +50,21 @@ static auto zmq_module()    { return ::pylabhub::hub::GetZMQContextModule(); }
 namespace
 {
 
+// Real-HubHost RAII wrapper — replaces the legacy BrokerHandle mock per
+// the test-design principle in `docs/todo/TESTING_TODO.md`
+// §"Test Design Principles".  The wire entry points (endpoint, pubkey)
+// are preserved; the assembly behind them is now the production
+// HubHost (HubConfig → ThreadManager-launched broker thread).
 struct BrokerHandle
 {
-    std::unique_ptr<pylabhub::hub::HubState> hub_state;
-    std::unique_ptr<BrokerService> service;
-    std::thread                    thread;
-    std::string                    endpoint;
-    std::string                    pubkey;
+    std::filesystem::path                            hub_dir;
+    std::unique_ptr<::pylabhub::hub_host::HubHost>   host;
+    std::string                                      endpoint;
+    std::string                                      pubkey;
 
-    ~BrokerHandle()
-    {
-        if (thread.joinable())
-        {
-            if (service)
-                service->stop();
-            thread.join();
-        }
-    }
+    ~BrokerHandle() { stop_and_join(); }
 
-    BrokerHandle()                               = default;
+    BrokerHandle()                                = default;
     BrokerHandle(const BrokerHandle &)            = delete;
     BrokerHandle &operator=(const BrokerHandle &) = delete;
     BrokerHandle(BrokerHandle &&)                 = default;
@@ -68,36 +72,82 @@ struct BrokerHandle
 
     void stop_and_join()
     {
-        if (service)
-            service->stop();
-        if (thread.joinable())
-            thread.join();
+        if (host)
+            host->shutdown();
+        host.reset();
+        if (!hub_dir.empty())
+        {
+            std::error_code ec;
+            std::filesystem::remove_all(hub_dir, ec);
+            hub_dir.clear();
+        }
     }
+
+    /// Convenience accessor — preserves the `broker.service->method()`
+    /// shape the existing scenarios use, now backed by HubHost::broker().
+    BrokerService &service_ref() { return host->broker(); }
 };
 
-BrokerHandle start_broker_with_cfg(BrokerService::Config cfg)
+namespace fs = std::filesystem;
+
+BrokerHandle start_broker_with_cfg(BrokerService::Config legacy_cfg)
 {
-    using ReadyInfo = std::pair<std::string, std::string>;
-    auto promise = std::make_shared<std::promise<ReadyInfo>>();
-    auto future  = promise->get_future();
+    static std::atomic<int> ctr{0};
+    fs::path dir = fs::temp_directory_path() /
+                   ("plh_l3_health_" + std::to_string(::getpid()) + "_" +
+                    std::to_string(ctr.fetch_add(1)));
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    ::pylabhub::utils::HubDirectory::init_directory(dir, "HealthTestHub");
 
-    cfg.on_ready = [promise](const std::string &ep, const std::string &pk) {
-        promise->set_value({ep, pk});
-    };
-
-    auto state   = std::make_unique<pylabhub::hub::HubState>();
-    auto service = std::make_unique<BrokerService>(std::move(cfg), *state);
-    auto *raw    = service.get();
-    std::thread t([raw]() { raw->run(); });
-
-    auto info = future.get();
+    const fs::path hub_json = dir / "hub.json";
+    nlohmann::json j;
+    {
+        std::ifstream f(hub_json);
+        if (f.is_open())
+            j = nlohmann::json::parse(f);
+    }
+    j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
+    j["admin"]["enabled"]           = false;
+    j["script"]["path"]             = "";
+    // Translate broker config overrides from the legacy
+    // `BrokerService::Config` shape into HubConfig.broker.
+    if (legacy_cfg.heartbeat_interval.count() > 0)
+        j["broker"]["heartbeat_interval_ms"] =
+            static_cast<int>(legacy_cfg.heartbeat_interval.count());
+    if (legacy_cfg.ready_miss_heartbeats > 0)
+        j["broker"]["ready_miss_heartbeats"] = legacy_cfg.ready_miss_heartbeats;
+    if (legacy_cfg.pending_miss_heartbeats > 0)
+        j["broker"]["pending_miss_heartbeats"] =
+            legacy_cfg.pending_miss_heartbeats;
+    if (legacy_cfg.grace_heartbeats > 0)
+        j["broker"]["grace_heartbeats"] = legacy_cfg.grace_heartbeats;
+    if (legacy_cfg.grace_override.has_value())
+        j["broker"]["grace_ms"] =
+            static_cast<int>(legacy_cfg.grace_override->count());
+    if (legacy_cfg.ready_timeout_override.has_value())
+        j["broker"]["ready_timeout_ms"] =
+            static_cast<int>(legacy_cfg.ready_timeout_override->count());
+    if (legacy_cfg.pending_timeout_override.has_value())
+        j["broker"]["pending_timeout_ms"] =
+            static_cast<int>(legacy_cfg.pending_timeout_override->count());
+    if (legacy_cfg.checksum_repair_policy ==
+        ::pylabhub::broker::ChecksumRepairPolicy::NotifyOnly)
+        j["broker"]["checksum_repair_policy"] = "notify_only";
+    {
+        std::ofstream f(hub_json);
+        f << j.dump(2);
+    }
+    fs::create_directories(dir / "schemas");
 
     BrokerHandle h;
-    h.hub_state = std::move(state);
-    h.service   = std::move(service);
-    h.thread    = std::move(t);
-    h.endpoint  = info.first;
-    h.pubkey    = info.second;
+    h.hub_dir = std::move(dir);
+    h.host    = std::make_unique<::pylabhub::hub_host::HubHost>(
+        ::pylabhub::config::HubConfig::load_from_directory(
+            h.hub_dir.string()));
+    h.host->startup();
+    h.endpoint = h.host->broker_endpoint();
+    h.pubkey   = h.host->broker_pubkey();
     return h;
 }
 
@@ -105,7 +155,7 @@ BrokerHandle start_broker()
 {
     BrokerService::Config cfg;
     cfg.endpoint  = "tcp://127.0.0.1:0";
-    cfg.use_curve = true;
+    cfg.use_curve = true;  // legacy flag — ignored under real HubHost
     return start_broker_with_cfg(std::move(cfg));
 }
 
@@ -221,7 +271,8 @@ int producer_gets_closing_notify(int /*argc*/, char ** /*argv*/)
             broker.stop_and_join();
         },
         "broker_health.producer_gets_closing_notify",
-        logger_module(), crypto_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), zmq_module());
 }
 
 // ============================================================================
@@ -263,7 +314,7 @@ int consumer_auto_deregisters(int /*argc*/, char ** /*argv*/)
             // count rather than failing here with a clear timeout
             // diagnostic.
             const auto consumer_count_for = [&](const std::string &name) -> int {
-                ChannelSnapshot snap = broker.service->query_channel_snapshot();
+                ChannelSnapshot snap = broker.service_ref().query_channel_snapshot();
                 for (const auto &ch : snap.channels)
                     if (ch.name == name) return ch.consumer_count;
                 return -1;
@@ -284,7 +335,8 @@ int consumer_auto_deregisters(int /*argc*/, char ** /*argv*/)
             broker.stop_and_join();
         },
         "broker_health.consumer_auto_deregisters",
-        logger_module(), crypto_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), zmq_module());
 }
 
 // ============================================================================
@@ -332,7 +384,8 @@ int producer_auto_deregisters(int /*argc*/, char ** /*argv*/)
             broker.stop_and_join();
         },
         "broker_health.producer_auto_deregisters",
-        logger_module(), crypto_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), zmq_module());
 }
 
 // ============================================================================
@@ -407,7 +460,8 @@ int dead_consumer_orchestrator(int argc, char **argv)
             broker.stop_and_join();
         },
         "broker_health.dead_consumer_orchestrator",
-        logger_module(), crypto_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), zmq_module());
 }
 
 // ============================================================================
@@ -450,7 +504,8 @@ int dead_consumer_exiter(int argc, char **argv)
             _exit(0);
         },
         "broker_health.dead_consumer_exiter",
-        logger_module(), crypto_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), zmq_module());
 }
 
 // ============================================================================
@@ -518,7 +573,8 @@ int schema_mismatch_notify(int /*argc*/, char ** /*argv*/)
             broker.stop_and_join();
         },
         "broker_health.schema_mismatch_notify",
-        logger_module(), crypto_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), zmq_module());
 }
 
 } // namespace pylabhub::tests::worker::broker_health
