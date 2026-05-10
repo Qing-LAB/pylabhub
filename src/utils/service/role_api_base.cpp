@@ -374,9 +374,19 @@ RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_m
         return std::nullopt;
     }
     auto result = bc->register_channel(opts, timeout_ms);
+    // Per HEP-CORE-0007 §12.3, a request-reply method's optional<json>
+    // now carries the broker's response body (success OR error).  nullopt
+    // means no response (timeout/disconnect).  Status field discriminates
+    // the success vs error branch; error_code (HEP-0007 §12.4a taxonomy)
+    // tells the caller what specifically failed.
     if (!result.has_value())
-        LOGGER_ERROR("[{}] REG_REQ failed for channel '{}'",
+        LOGGER_ERROR("[{}] REG_REQ no response for channel '{}' (timeout/disconnect)",
                      pImpl->role_tag, opts.value("channel_name", "?"));
+    else if (result->value("status", std::string{}) != "success")
+        LOGGER_ERROR("[{}] REG_REQ failed for channel '{}': error_code='{}' message='{}'",
+                     pImpl->role_tag, opts.value("channel_name", "?"),
+                     result->value("error_code", std::string{}),
+                     result->value("message", std::string{}));
     else
         LOGGER_INFO("[{}] Registered producer channel '{}' with broker",
                     pImpl->role_tag, opts.value("channel_name", "?"));
@@ -394,7 +404,13 @@ RoleAPIBase::discover_channel(const std::string &channel, int timeout_ms)
     }
     auto result = bc->discover_channel(channel, {}, timeout_ms);
     if (!result.has_value())
-        LOGGER_ERROR("[{}] DISC_REQ failed for channel '{}'", pImpl->role_tag, channel);
+        LOGGER_ERROR("[{}] DISC_REQ no response for channel '{}' (timeout/disconnect)",
+                     pImpl->role_tag, channel);
+    else if (result->value("status", std::string{}) != "success")
+        LOGGER_ERROR("[{}] DISC_REQ failed for channel '{}': error_code='{}' message='{}'",
+                     pImpl->role_tag, channel,
+                     result->value("error_code", std::string{}),
+                     result->value("message", std::string{}));
     else
         LOGGER_INFO("[{}] Discovered channel '{}' from broker", pImpl->role_tag, channel);
     return result;
@@ -411,8 +427,13 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
     }
     auto result = bc->register_consumer(opts, timeout_ms);
     if (!result.has_value())
-        LOGGER_ERROR("[{}] CONSUMER_REG_REQ failed for channel '{}'",
+        LOGGER_ERROR("[{}] CONSUMER_REG_REQ no response for channel '{}' (timeout/disconnect)",
                      pImpl->role_tag, opts.value("channel_name", "?"));
+    else if (result->value("status", std::string{}) != "success")
+        LOGGER_ERROR("[{}] CONSUMER_REG_REQ failed for channel '{}': error_code='{}' message='{}'",
+                     pImpl->role_tag, opts.value("channel_name", "?"),
+                     result->value("error_code", std::string{}),
+                     result->value("message", std::string{}));
     else
         LOGGER_INFO("[{}] Registered consumer on channel '{}' with broker",
                     pImpl->role_tag, opts.value("channel_name", "?"));

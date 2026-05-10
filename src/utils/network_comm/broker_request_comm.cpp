@@ -202,6 +202,15 @@ struct BrokerRequestComm::Impl
             // The broker sends ERROR when a request fails. We deliver it
             // to the oldest pending request (FIFO order not guaranteed by
             // unordered_map, but in practice only one request is outstanding).
+            //
+            // Per HEP-CORE-0007 §12.3 ERROR payload — the broker sends a
+            // structured response (`status="error"`, `error_code`,
+            // `message`, optional `correlation_id`).  The client is
+            // responsible for switching on `error_code` to choose recovery
+            // behavior (HEP-0007 §12.4a Error Code Taxonomy).  Preserve
+            // the body so callers can inspect it; `optional<json>` now
+            // means "broker responded" — `nullopt` is reserved for
+            // timeout/disconnect.
             if (msg_type == "ERROR" && !pending_requests.empty())
             {
                 auto first = pending_requests.begin();
@@ -209,7 +218,7 @@ struct BrokerRequestComm::Impl
                 remove_from_pending(req);
                 {
                     std::lock_guard<std::mutex> lk(req->mu);
-                    req->result = std::nullopt;
+                    req->result = std::move(body);
                     req->done = true;
                 }
                 req->cv.notify_one();

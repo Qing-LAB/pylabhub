@@ -419,7 +419,14 @@ TEST_F(BrokerProtocolTest, DuplicateReg_DifferentSchemaHash_Rejected)
     auto opts2 = make_reg_opts(channel, uid2);
     opts2["schema_hash"] = hash_b;
     auto h2 = bh2.brc.register_channel(opts2, 3000);
-    EXPECT_FALSE(h2.has_value()) << "Different schema hash re-registration should be rejected";
+    // Per HEP-CORE-0007 §12.3 (post-Stage-2 contract): broker now surfaces
+    // its ERROR body via the optional<json> return; assert on status +
+    // error_code rather than on optional emptiness.  Schema-hash conflict
+    // on re-registration → SCHEMA_MISMATCH per HEP-0007 §12.4a taxonomy.
+    ASSERT_TRUE(h2.has_value())
+        << "Broker should respond with ERROR, not silent timeout";
+    EXPECT_EQ(h2->value("status", std::string{}), "error");
+    EXPECT_EQ(h2->value("error_code", std::string{}), "SCHEMA_MISMATCH");
 
     bh2.stop();
     bh1.stop();
@@ -807,8 +814,11 @@ TEST_F(BrokerProtocolTest, TransportMismatch_ShmProducer_ZmqConsumer_Fails)
     auto cons_opts = make_cons_opts(channel, cons_uid);
     cons_opts["consumer_queue_type"] = "zmq";
     auto cons_reg = cons_bh.brc.register_consumer(cons_opts, 3000);
-    EXPECT_FALSE(cons_reg.has_value())
-        << "Consumer wants ZMQ but producer uses SHM — should fail";
+    // Transport mismatch → TRANSPORT_MISMATCH per HEP-CORE-0007 §12.4a.
+    ASSERT_TRUE(cons_reg.has_value())
+        << "Broker should respond with ERROR, not silent timeout";
+    EXPECT_EQ(cons_reg->value("status", std::string{}), "error");
+    EXPECT_EQ(cons_reg->value("error_code", std::string{}), "TRANSPORT_MISMATCH");
 
     cons_bh.stop();
     prod_bh.stop();
