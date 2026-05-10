@@ -19,7 +19,12 @@
 #include "plh_service.hpp"
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
+#include "utils/config/hub_config.hpp"
+#include "utils/file_lock.hpp"
+#include "utils/hub_directory.hpp"
+#include "utils/hub_host.hpp"
 #include "utils/hub_state.hpp"
+#include "utils/json_config.hpp"
 #include "utils/scope_guard.hpp"
 #include "utils/timeout_constants.hpp"
 #include "test_sync_utils.h"
@@ -28,6 +33,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <filesystem>
 #include <fstream>
 #include <future>
 #include <iterator>
@@ -44,57 +50,99 @@
 using namespace pylabhub::utils;
 using namespace pylabhub::hub;
 using namespace pylabhub::broker;
+using pylabhub::config::HubConfig;
+using pylabhub::hub_host::HubHost;
 using json = nlohmann::json;
+namespace fs = std::filesystem;
 
 namespace
 {
 
-struct LocalBrokerHandle
+// Real-HubHost RAII wrapper — replaces the legacy `LocalBrokerHandle` mock
+// per the test-design principle in `docs/todo/TESTING_TODO.md`
+// §"Test Design Principles".
+struct HubHostHandle
 {
-    std::unique_ptr<pylabhub::hub::HubState> hub_state;
-    std::unique_ptr<BrokerService> service;
-    std::thread                    thread;
-    std::string                    endpoint;
-    std::string                    pubkey;
+    fs::path                 hub_dir;
+    std::unique_ptr<HubHost> host;
+    std::string              endpoint;
+    std::string              pubkey;
 
-    LocalBrokerHandle() = default;
-    LocalBrokerHandle(LocalBrokerHandle &&) noexcept = default;
-    LocalBrokerHandle &operator=(LocalBrokerHandle &&) noexcept = default;
-    ~LocalBrokerHandle() { stop_and_join(); }
-
-    void stop_and_join()
+    HubHostHandle() = default;
+    HubHostHandle(HubHostHandle &&) noexcept = default;
+    HubHostHandle &operator=(HubHostHandle &&) noexcept = default;
+    ~HubHostHandle()
     {
-        if (service)
+        if (host)
+            host->shutdown();
+        host.reset();
+        if (!hub_dir.empty())
         {
-            service->stop();
-            if (thread.joinable())
-                thread.join();
+            std::error_code ec;
+            fs::remove_all(hub_dir, ec);
         }
     }
 };
 
-LocalBrokerHandle start_local_broker(BrokerService::Config cfg)
+HubHostHandle start_local_broker(BrokerService::Config legacy_cfg)
 {
-    using ReadyInfo = std::pair<std::string, std::string>;
-    auto promise = std::make_shared<std::promise<ReadyInfo>>();
-    auto future  = promise->get_future();
+    static std::atomic<int> ctr{0};
+    fs::path dir = fs::temp_directory_path() /
+                   ("plh_l3_proto_" + std::to_string(::getpid()) + "_" +
+                    std::to_string(ctr.fetch_add(1)));
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    pylabhub::utils::HubDirectory::init_directory(dir, "ProtoTestHub");
 
-    cfg.on_ready = [promise](const std::string &ep, const std::string &pk)
-    { promise->set_value({ep, pk}); };
+    const fs::path hub_json = dir / "hub.json";
+    json j;
+    {
+        std::ifstream f(hub_json);
+        if (f.is_open())
+            j = json::parse(f);
+    }
+    j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
+    j["admin"]["enabled"]           = false;
+    j["script"]["path"]             = "";
 
-    auto state     = std::make_unique<pylabhub::hub::HubState>();
-    auto svc     = std::make_unique<BrokerService>(std::move(cfg), *state);
-    auto raw_ptr = svc.get();
-    std::thread t([raw_ptr] { raw_ptr->run(); });
+    // Translate legacy `BrokerService::Config` heartbeat/grace fields
+    // into the HubConfig broker section so callers that customise
+    // these values continue to work under real HubHost.
+    j["broker"]["grace_ms"] = 0;  // default for L3 tests (immediate)
+    if (legacy_cfg.heartbeat_interval.count() > 0)
+        j["broker"]["heartbeat_interval_ms"] =
+            static_cast<int>(legacy_cfg.heartbeat_interval.count());
+    if (legacy_cfg.ready_miss_heartbeats > 0)
+        j["broker"]["ready_miss_heartbeats"] = legacy_cfg.ready_miss_heartbeats;
+    if (legacy_cfg.pending_miss_heartbeats > 0)
+        j["broker"]["pending_miss_heartbeats"] = legacy_cfg.pending_miss_heartbeats;
+    if (legacy_cfg.grace_heartbeats > 0)
+        j["broker"]["grace_heartbeats"] = legacy_cfg.grace_heartbeats;
+    if (legacy_cfg.grace_override.has_value())
+        j["broker"]["grace_ms"] =
+            static_cast<int>(legacy_cfg.grace_override->count());
+    if (legacy_cfg.ready_timeout_override.has_value())
+        j["broker"]["ready_timeout_ms"] =
+            static_cast<int>(legacy_cfg.ready_timeout_override->count());
+    if (legacy_cfg.pending_timeout_override.has_value())
+        j["broker"]["pending_timeout_ms"] =
+            static_cast<int>(legacy_cfg.pending_timeout_override->count());
+    if (legacy_cfg.checksum_repair_policy ==
+        ChecksumRepairPolicy::NotifyOnly)
+        j["broker"]["checksum_repair_policy"] = "notify_only";
+    {
+        std::ofstream f(hub_json);
+        f << j.dump(2);
+    }
+    fs::create_directories(dir / "schemas");
 
-    auto info = future.get();
-
-    LocalBrokerHandle h;
-    h.hub_state  = std::move(state);
-    h.service  = std::move(svc);
-    h.thread   = std::move(t);
-    h.endpoint = info.first;
-    h.pubkey   = info.second;
+    HubHostHandle h;
+    h.hub_dir = std::move(dir);
+    h.host    = std::make_unique<HubHost>(
+        HubConfig::load_from_directory(h.hub_dir.string()));
+    h.host->startup();
+    h.endpoint = h.host->broker_endpoint();
+    h.pubkey   = h.host->broker_pubkey();
     return h;
 }
 
@@ -203,7 +251,10 @@ public:
     static void SetUpTestSuite()
     {
         s_lifecycle_ = std::make_unique<LifecycleGuard>(MakeModDefList(
-            Logger::GetLifecycleModule(), pylabhub::crypto::GetLifecycleModule(),
+            Logger::GetLifecycleModule(),
+            FileLock::GetLifecycleModule(),
+            JsonConfig::GetLifecycleModule(),
+            pylabhub::crypto::GetLifecycleModule(),
             pylabhub::hub::GetZMQContextModule()), std::source_location::current());
     }
     static void TearDownTestSuite() { s_lifecycle_.reset(); }
@@ -212,11 +263,7 @@ protected:
     void SetUp() override
     {
         LogCaptureFixture::Install();
-        BrokerService::Config cfg;
-        cfg.endpoint               = "tcp://127.0.0.1:0";
-        cfg.schema_search_dirs     = {};
-        cfg.grace_override         = std::chrono::milliseconds(0);
-        broker_.emplace(start_local_broker(std::move(cfg)));
+        broker_.emplace(start_local_broker({}));
     }
 
     void TearDown() override
@@ -228,9 +275,9 @@ protected:
 
     const std::string &ep() const { return broker_->endpoint; }
     const std::string &pk() const { return broker_->pubkey; }
-    BrokerService     &svc() { return *broker_->service; }
+    BrokerService     &svc() { return broker_->host->broker(); }
 
-    std::optional<LocalBrokerHandle> broker_;
+    std::optional<HubHostHandle> broker_;
 
 private:
     static std::unique_ptr<LifecycleGuard> s_lifecycle_;
@@ -627,8 +674,8 @@ TEST_F(BrokerProtocolTest, HeartbeatKeying_ProducerVsConsumer_DistinctRows)
     // been processed by the broker.
     using pylabhub::tests::helper::poll_until;
     auto heartbeats_processed = [&] {
-        auto prod_re = broker_->hub_state->role(prod_uid);
-        auto cons_re = broker_->hub_state->role(cons_uid);
+        auto prod_re = broker_->host->state().role(prod_uid);
+        auto cons_re = broker_->host->state().role(cons_uid);
         if (!prod_re.has_value() || !cons_re.has_value()) return false;
         const auto *prod_p = prod_re->find_presence(channel, "producer");
         const auto *cons_p = cons_re->find_presence(channel, "consumer");
@@ -640,7 +687,7 @@ TEST_F(BrokerProtocolTest, HeartbeatKeying_ProducerVsConsumer_DistinctRows)
         << "presence rows did not record first_heartbeat_seen within 2s";
 
     // ── Producer presence row contract ──────────────────────────────────
-    auto prod_re = broker_->hub_state->role(prod_uid);
+    auto prod_re = broker_->host->state().role(prod_uid);
     ASSERT_TRUE(prod_re.has_value());
     const RolePresence *prod_p = prod_re->find_presence(channel, "producer");
     ASSERT_NE(prod_p, nullptr) << "producer-presence row missing";
@@ -659,7 +706,7 @@ TEST_F(BrokerProtocolTest, HeartbeatKeying_ProducerVsConsumer_DistinctRows)
     EXPECT_EQ(prod_p->latest_metrics.value("out_written", 0), 100);
 
     // ── Consumer presence row contract ──────────────────────────────────
-    auto cons_re = broker_->hub_state->role(cons_uid);
+    auto cons_re = broker_->host->state().role(cons_uid);
     ASSERT_TRUE(cons_re.has_value());
     const RolePresence *cons_p = cons_re->find_presence(channel, "consumer");
     ASSERT_NE(cons_p, nullptr) << "consumer-presence row missing";
@@ -1255,13 +1302,17 @@ TEST_F(BrokerProtocolTest, BroadcastFanOut_HubQueuePath_FansOutSame)
     ASSERT_TRUE(cons_evts->wait_for(1, 5000))
         << "consumer did not receive in-process broadcast";
 
-    // sender_uid in this path is the hub's self_hub_uid, with "hub"
-    // as the fallback when self_hub_uid is unset.  The L3 fixture
-    // leaves self_hub_uid unset → expect "hub".
+    // sender_uid in this path is the hub's self_hub_uid (fallback to
+    // "hub" only when unset).  Real `HubHost` always populates
+    // self_hub_uid from `HubConfig::identity().uid` (hub_host.cpp:189),
+    // so the broadcast carries the actual hub uid generated when the
+    // test hub directory was initialised by `HubDirectory::init_directory`.
+    const std::string self_uid = broker_->host->config().identity().uid;
+    ASSERT_FALSE(self_uid.empty()) << "real HubHost must populate self_hub_uid";
     auto check_hub_payload = [&](const json &b, const char *who) {
         EXPECT_EQ(b.value("channel_name", ""), channel) << who;
         EXPECT_EQ(b.value("event", ""),        "broadcast") << who;
-        EXPECT_EQ(b.value("sender_uid", ""),   "hub") << who;
+        EXPECT_EQ(b.value("sender_uid", ""),   self_uid) << who;
         EXPECT_EQ(b.value("message", ""),      msg) << who;
         EXPECT_EQ(b.value("data", ""),         data) << who;
     };

@@ -199,6 +199,15 @@ void HubHost::startup()
         bcfg.grace_override =
             std::chrono::milliseconds(*hb.grace_ms);
 
+    // Checksum-repair policy (HEP-CORE-0007 §12.4 +
+    // `BrokerService::Config::checksum_repair_policy`).  Translate the
+    // HubConfig string to the production enum.
+    if (hb.checksum_repair_policy == "notify_only")
+        bcfg.checksum_repair_policy =
+            broker::ChecksumRepairPolicy::NotifyOnly;
+    else
+        bcfg.checksum_repair_policy = broker::ChecksumRepairPolicy::None;
+
     // Federation peers (HEP-CORE-0022; HEP-0033 §6.4).
     bcfg.self_hub_uid = impl_->cfg.identity().uid;
     for (const auto &p : impl_->cfg.federation().peers)
