@@ -22,6 +22,73 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
+### Snapshot — 2026-05-10 (M1.2 Phase 4 + L3 broker test migration COMPLETE)
+
+**Full suite: 1782/1782 green** at HEAD `4e30618`.  Branch `feature/lua-role-support`.
+
+**Major closures this session:**
+
+1. **M1.2 Phase 4** — readers now derive `ChannelObservable` from
+   producer-presence per HEP-CORE-0023 §2.2.  `hub_state.hpp` gained
+   `observe_channel(c, snap)` helper; 7 reader sites migrated; new
+   `channel_to_json(c, obs)` overload emits both legacy `status` and
+   protocol-defined `observable` for the M1.2 transition window.
+2. **HEP-CORE-0007 protocol-doc unification** — 5 severe + 7 moderate
+   + 1 minor doc/code drift findings closed.  ERROR field renamed
+   `error` → `error_code`; DISC_PENDING `reason` enumerates
+   `awaiting_first_heartbeat` + `heartbeat_stalled`; CHANNEL_LIST_ACK
+   uses `observable`; ROLE_PRESENCE_REQ + ROLE_INFO_REQ unified to
+   `role_uid`; new §12.4a Error Code Taxonomy enumerates 30 codes.
+3. **`BrokerRequestComm` API harmonization (Bucket C)** — every
+   request-reply method returns `optional<json>` carrying the
+   broker's response body; `nullopt` means transport failure.
+   `RoleAPIBase` wrappers harmonized.  Production callers + tests
+   updated.
+4. **L3 broker test cluster migration off mock-host pattern** —
+   8 files (`broker.cpp`, `broker_admin`, `broker_consumer`,
+   `broker_health`, `broker_protocol`, `broker_request_comm`,
+   `broker_schema`, plus the deleted `broker_shutdown.cpp`) migrated
+   from `BrokerHandle`/`LocalBrokerHandle` mock-host scaffolding to
+   real `HubHost`.  Two production gaps surfaced and fixed:
+   (a) `HubHost` now wires `<hub_dir>/schemas/` per HEP-CORE-0034 §12,
+   (b) `HubBrokerConfig::checksum_repair_policy` field exposed per
+   HEP-CORE-0007 §12.4.
+
+**Code review findings (2026-05-10) — strand plan for next moves.**
+A thorough 3-agent code review at HEAD identified 4 severe + 9
+moderate + 2 minor issues.  The remediation clusters into 5 strands;
+recommend pulling in this order (smallest blast radius first):
+
+| Strand | Scope | Severity | Effort |
+|---|---|---|---|
+| **S1** Severe fixes — small immediate | (a) 4 false-pass `EXPECT_TRUE(brc.deregister_*())` patterns in worker tests; (b) ROLE_PRESENCE_REQ + ROLE_INFO_REQ error-envelope unification (use `make_error("MISSING_ROLE_UID", ...)`) | 2 severe | < 1 hour |
+| **S2** M1.2 Phase 8 + observable coverage | `BrokerProtocolTest.ConsumerHeartbeat_DoesNotRefreshProducerPresence` (canonical regression — HEP-0019 §2.3); `DiscReq_ChannelStalled_ReturnsDiscPendingWithReason` (HEP-0023 §2.2 stalled case); atomic-teardown contract assertion (HEP-0023 §2.1) | 1 severe + 2 moderate | 0.5–1 day |
+| **S3** Error-code taxonomy coverage | New `tests/test_layer3_datahub/test_datahub_error_codes.cpp` — 24 missing error_code tests per HEP-0007 §12.4a (only 6 of 30 codes have dedicated coverage today) | 1 severe (24 codes) | 1–2 days |
+| **S4** M1.2 Phase 5-7 production cleanup | Phase 5: drop legacy writes in `_on_heartbeat`. Phase 6: delete `ChannelEntry.{status, last_heartbeat, state_since}`, `RoleEntry.{state, last_heartbeat, latest_metrics, metrics_collected_at}`, `ChannelStatus` enum, `_update_role_*` mutators, `observable_from_legacy_status` shim, dual channel-JSON serializer in `handle_channel_list_req`. Phase 7 (M1.3): retire FORCE_SHUTDOWN-as-grace-escalation, `closing_deadline`, `grace_heartbeats`, `effective_grace()`, `Closing` state arms. | All planned cleanup | 2–3 days |
+| **S5** Coverage broadening (lower priority) | HEP-0034 §12 multi-file hub-globals; positive-path `close_channel` + `broadcast_channel` admin RPCs; processor two-presence asymmetric failure; HEP-0030 band protocol round-trip | 4 moderate | 1 day |
+
+**Recommended sequence:** S1 → S2 → S4 (large but on the existing
+M1.2 wave plan; closes phases 5-8) → S3 (error-code coverage, can
+parallelise with S4) → S5.  After S2 + S4, the M1.2 + M1.3 work in
+the wave plan is closed; M1.4 (retire `metrics_store_`) and M1.5
+(role-side `on_forced_disconnect`) become the next milestones, then
+M2-M9 in `docs/tech_draft/role_host_template_design.md` §14.
+
+**Detailed findings + suggested assertion shapes:** see
+`docs/todo/TESTING_TODO.md` §"Code review findings (2026-05-10)".
+
+---
+
+### 2026-05-07 — Python lifecycle redesign (CLOSED 2026-05-07/08)
+
+**Status:** complete and committed in `49b65e5` "Wave A.5 — Python
+lifecycle redesign + Tier 1 callback cache + opt-in GIL release".
+PythonInterpreter is a dynamic lifecycle module; engine constructed
+on worker thread; Tier 1 has-callback cache landed; opt-in
+GIL-release-during-wait flag added for Flask/asyncio compat.  Below
+left in place for archival; the original problem statement / pending
+items list is no longer load-bearing.
+
 ### 🔥 2026-05-07 — HIGHEST PRIORITY: Python lifecycle redesign (in progress)
 
 **Status**: partially landed; MUST finish before resuming any other work.
