@@ -17,11 +17,18 @@
 #include "plh_service.hpp"
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
+#include "utils/config/hub_config.hpp"
+#include "utils/file_lock.hpp"
+#include "utils/hub_directory.hpp"
+#include "utils/hub_host.hpp"
 #include "utils/hub_state.hpp"
+#include "utils/json_config.hpp"
 #include "test_sync_utils.h"
 #include "log_capture_fixture.h"
 
 #include <atomic>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <memory>
 #include <optional>
@@ -34,59 +41,85 @@
 using namespace pylabhub::utils;
 using namespace pylabhub::hub;
 using namespace pylabhub::broker;
+using pylabhub::config::HubConfig;
+using pylabhub::hub_host::HubHost;
 using json = nlohmann::json;
+namespace fs = std::filesystem;
 
 namespace
 {
 
-// ── LocalBrokerHandle — same pattern as BrokerSchemaTest ─────────────────────
+// ── HubHostHandle — RAII wrapper around the real production HubHost ──────────
+//
+// Replaces the legacy `LocalBrokerHandle` mock-host pattern (raw HubState
+// + raw BrokerService + raw std::thread) per the test-design principle in
+// `docs/todo/TESTING_TODO.md` §"Test Design Principles": broker tests
+// must run against the real production assembly.
+//
+// The wire-protocol entry points (broker endpoint + pubkey) are the same;
+// the assembly behind them is now the same code production runs (HubConfig
+// → HubHost → ThreadManager-launched broker thread).
 
-struct LocalBrokerHandle
+struct HubHostHandle
 {
-    std::unique_ptr<pylabhub::hub::HubState> hub_state;
-    std::unique_ptr<BrokerService> service;
-    std::thread                    thread;
-    std::string                    endpoint;
-    std::string                    pubkey;
+    fs::path                 hub_dir;
+    std::unique_ptr<HubHost> host;
+    std::string              endpoint;
+    std::string              pubkey;
 
-    LocalBrokerHandle() = default;
-    LocalBrokerHandle(LocalBrokerHandle &&) noexcept = default;
-    LocalBrokerHandle &operator=(LocalBrokerHandle &&) noexcept = default;
-    ~LocalBrokerHandle() { stop_and_join(); }
-
-    void stop_and_join()
+    HubHostHandle() = default;
+    HubHostHandle(HubHostHandle &&) noexcept = default;
+    HubHostHandle &operator=(HubHostHandle &&) noexcept = default;
+    ~HubHostHandle()
     {
-        if (service)
+        if (host)
+            host->shutdown();
+        host.reset();
+        if (!hub_dir.empty())
         {
-            service->stop();
-            if (thread.joinable())
-                thread.join();
+            std::error_code ec;
+            fs::remove_all(hub_dir, ec);
         }
     }
 };
 
-LocalBrokerHandle start_local_broker(BrokerService::Config cfg)
+fs::path make_test_hub_dir(int grace_ms = 0)
 {
-    using ReadyInfo = std::pair<std::string, std::string>;
-    auto promise = std::make_shared<std::promise<ReadyInfo>>();
-    auto future  = promise->get_future();
+    static std::atomic<int> ctr{0};
+    fs::path dir = fs::temp_directory_path() /
+                   ("plh_l3_admin_" + std::to_string(::getpid()) + "_" +
+                    std::to_string(ctr.fetch_add(1)));
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    pylabhub::utils::HubDirectory::init_directory(dir, "AdminTestHub");
 
-    cfg.on_ready = [promise](const std::string &ep, const std::string &pk)
-    { promise->set_value({ep, pk}); };
+    const fs::path hub_json = dir / "hub.json";
+    json j;
+    {
+        std::ifstream f(hub_json);
+        if (f.is_open())
+            j = json::parse(f);
+    }
+    j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
+    j["admin"]["enabled"]           = false;
+    j["script"]["path"]             = "";
+    j["broker"]["grace_ms"]         = grace_ms;  // immediate force on close in L3
+    {
+        std::ofstream f(hub_json);
+        f << j.dump(2);
+    }
+    return dir;
+}
 
-    auto state     = std::make_unique<pylabhub::hub::HubState>();
-    auto svc     = std::make_unique<BrokerService>(std::move(cfg), *state);
-    auto raw_ptr = svc.get();
-    std::thread t([raw_ptr] { raw_ptr->run(); });
-
-    auto info = future.get();
-
-    LocalBrokerHandle h;
-    h.hub_state = std::move(state);
-    h.service = std::move(svc);
-    h.thread  = std::move(t);
-    h.endpoint = info.first;
-    h.pubkey   = info.second;
+HubHostHandle start_local_broker(BrokerService::Config /*legacy_cfg*/)
+{
+    HubHostHandle h;
+    h.hub_dir = make_test_hub_dir(/*grace_ms=*/0);
+    h.host    = std::make_unique<HubHost>(
+        HubConfig::load_from_directory(h.hub_dir.string()));
+    h.host->startup();
+    h.endpoint = h.host->broker_endpoint();
+    h.pubkey   = h.host->broker_pubkey();
     return h;
 }
 
@@ -168,7 +201,10 @@ public:
     static void SetUpTestSuite()
     {
         s_lifecycle_ = std::make_unique<LifecycleGuard>(MakeModDefList(
-            Logger::GetLifecycleModule(), pylabhub::crypto::GetLifecycleModule(),
+            Logger::GetLifecycleModule(),
+            FileLock::GetLifecycleModule(),
+            JsonConfig::GetLifecycleModule(),
+            pylabhub::crypto::GetLifecycleModule(),
             pylabhub::hub::GetDataBlockModule(),
             pylabhub::hub::GetZMQContextModule()), std::source_location::current());
     }
@@ -178,11 +214,7 @@ protected:
     void SetUp() override
     {
         LogCaptureFixture::Install();
-        BrokerService::Config cfg;
-        cfg.endpoint                = "tcp://127.0.0.1:0";
-        cfg.schema_search_dirs      = {};
-        cfg.grace_override          = std::chrono::milliseconds(0); // immediate deregister in L3 tests
-        broker_.emplace(start_local_broker(std::move(cfg)));
+        broker_.emplace(start_local_broker({})); // legacy cfg ignored
     }
 
     void TearDown() override
@@ -194,9 +226,9 @@ protected:
 
     const std::string &ep() const { return broker_->endpoint; }
     const std::string &pk() const { return broker_->pubkey; }
-    BrokerService     &svc() { return *broker_->service; }
+    BrokerService     &svc() { return broker_->host->broker(); }
 
-    std::optional<LocalBrokerHandle> broker_;
+    std::optional<HubHostHandle> broker_;
 
 private:
     static std::unique_ptr<LifecycleGuard> s_lifecycle_;

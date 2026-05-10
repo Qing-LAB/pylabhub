@@ -56,6 +56,15 @@ struct HubBrokerConfig
     /// Same shape, for CLOSING_NOTIFY→FORCE_SHUTDOWN grace.  `0` is meaningful
     /// here ("FORCE_SHUTDOWN immediately on voluntary close").
     std::optional<int32_t> grace_ms;
+
+    /// Checksum-repair policy for slot integrity errors reported via
+    /// CHECKSUM_ERROR_REPORT (HEP-CORE-0007 §12.4).
+    /// Values:
+    ///   "none"        — log the report and ignore (default).
+    ///   "notify_only" — log + forward to all channel parties via
+    ///                   CHANNEL_EVENT_NOTIFY (HEP-CORE-0030 §5.1).
+    /// Maps to `BrokerService::Config::checksum_repair_policy`.
+    std::string checksum_repair_policy{"none"};
 };
 
 inline HubBrokerConfig parse_hub_broker_config(const nlohmann::json &j)
@@ -76,7 +85,8 @@ inline HubBrokerConfig parse_hub_broker_config(const nlohmann::json &j)
             k != "grace_heartbeats" &&
             k != "ready_timeout_ms" &&
             k != "pending_timeout_ms" &&
-            k != "grace_ms")
+            k != "grace_ms" &&
+            k != "checksum_repair_policy")
             throw std::runtime_error("hub: unknown config key 'broker." + k + "'");
     }
 
@@ -121,6 +131,14 @@ inline HubBrokerConfig parse_hub_broker_config(const nlohmann::json &j)
     check_optional_nonneg("ready_timeout_ms",   bc.ready_timeout_ms);
     check_optional_nonneg("pending_timeout_ms", bc.pending_timeout_ms);
     check_optional_nonneg("grace_ms",           bc.grace_ms);
+
+    bc.checksum_repair_policy = sect.value("checksum_repair_policy",
+                                            bc.checksum_repair_policy);
+    if (bc.checksum_repair_policy != "none" &&
+        bc.checksum_repair_policy != "notify_only")
+        throw std::runtime_error(
+            "hub: 'broker.checksum_repair_policy' must be \"none\" or "
+            "\"notify_only\" (got \"" + bc.checksum_repair_policy + "\")");
 
     return bc;
 }
