@@ -404,6 +404,49 @@ The SHM ring buffer supports multiple consumers natively (`ConsumerSyncPolicy`).
 Each consumer/processor registers independently. The producer's `zmq_thread_`
 tracks all registered consumers and handles BYE/disconnect for each.
 
+### 4.6 Fan-In Pipeline (multi-producer ZMQ data channels)
+
+Multiple producers, one or more consumers — supported by **ZMQ-backed**
+data channels (PUSH–PULL, PUB–SUB with multiple PUBs, etc.):
+
+```
+  plh_role --role producer (sensor A) ─┐
+                                       ├─[ZMQ]──► plh_role --role consumer (aggregator)
+  plh_role --role producer (sensor B) ─┘                            │
+                                                                    └─► plh_role --role processor (analysis)
+```
+
+Each producer issues its own `REG_REQ` on the same `channel_name`.  The
+broker admits the second-and-subsequent producer as an additional
+`ProducerEntry` on `ChannelEntry.producers` (HEP-CORE-0023 §2.1.1).
+All producers MUST agree on the channel-wide schema invariant
+(`schema_hash` / `schema_blds` / `packing`); REG_REQ that fails this
+gate is rejected with `SCHEMA_MISMATCH`.
+
+Cross-tag producers are allowed — a processor's `out_channel` makes
+it a producer side, so `prod.X` + `proc.Y` may both be producers of
+the same channel (e.g. data sensor X interleaved with a synthetic
+data injector that is itself a processor's output).
+
+The channel exists for as long as at least one producer-presence is
+alive (HEP-CORE-0023 §2.1.1).  Individual producer drops do not
+close the channel; only the LAST producer's transition to
+`Disconnected` triggers atomic teardown.  Consumers learn via
+`CHANNEL_CLOSING_NOTIFY` (best-effort) and `CHANNEL_NOT_FOUND` on
+any subsequent `DISC_REQ`.
+
+**SHM-backed channels remain single-producer** — the shared-memory
+ring buffer is physically bound to one writer.  The broker rejects a
+second REG_REQ on an SHM channel with
+`MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM` (HEP-CORE-0007 §12.4a).
+
+> **Transport-agnostic principle.**  Role/hub code operates against
+> the abstract queue base classes (HEP-CORE-0008 `QueueReader` /
+> `QueueWriter`).  Whether a channel admits N producers is a
+> queue-pattern property of the chosen transport, not a control-
+> plane assumption — the broker-side bookkeeping (this section's
+> Fan-In) matches the queue's natural admit-count.
+
 ---
 
 ## 5. Schema Integration

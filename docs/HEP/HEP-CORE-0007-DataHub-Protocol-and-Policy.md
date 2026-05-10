@@ -748,9 +748,49 @@ Direction:  Producer → Broker → Producer
 Trigger:    BrokerRequestComm::register_channel() (called from RoleAPIBase during role startup)
 Sequence:
   1. Producer sends REG_REQ with channel identity, schema, and SHM info
-  2. Broker validates connection policy, stores ChannelEntry
+  2. Broker validates connection policy, admits or restart-replaces the
+     producer in ChannelEntry.producers per the admission table below
   3. Broker sends REG_ACK (status="success") or ERROR
   4. Producer registers heartbeat on success
+
+Admission semantics (HEP-CORE-0023 §2.1.1 multi-producer model):
+  ┌─────────────────────────────────────┬──────────────────────────────────────────┐
+  │ State when REG_REQ arrives          │ Broker action                             │
+  ├─────────────────────────────────────┼──────────────────────────────────────────┤
+  │ Channel does not exist              │ Create ChannelEntry; admit the producer   │
+  │                                     │ as the first ProducerEntry.               │
+  ├─────────────────────────────────────┼──────────────────────────────────────────┤
+  │ Channel exists; new role_uid;       │ ZMQ transport: append the producer as a   │
+  │ schema_hash + packing match         │   new ProducerEntry on                    │
+  │ existing channel-wide invariant     │   ChannelEntry.producers.  Channel becomes│
+  │                                     │   multi-producer (Fan-In, HEP-0017 §4.6). │
+  │                                     │ SHM transport: reject with                │
+  │                                     │   MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM    │
+  │                                     │   (§12.4a) — SHM is physically            │
+  │                                     │   single-producer.                        │
+  ├─────────────────────────────────────┼──────────────────────────────────────────┤
+  │ Channel exists; same role_uid as an │ Restart-replace: replace that producer's  │
+  │ already-admitted ProducerEntry      │ ProducerEntry in place; reset its         │
+  │ (producer restart case)             │ producer-presence to fresh Connected      │
+  │                                     │ (first_heartbeat_seen=false).  No new     │
+  │                                     │ ProducerEntry is appended.                │
+  ├─────────────────────────────────────┼──────────────────────────────────────────┤
+  │ Channel exists; schema_hash or      │ Reject with SCHEMA_MISMATCH.              │
+  │ packing differs from the channel-   │ Broker also fires a one-shot              │
+  │ wide invariant                      │ CHANNEL_ERROR_NOTIFY to every existing    │
+  │                                     │ ProducerEntry as diagnostic.              │
+  └─────────────────────────────────────┴──────────────────────────────────────────┘
+
+Channel-wide schema invariant: every producer on the same channel
+MUST publish identical schema_hash + schema_blds + packing.  Per-
+producer private-schema records (HEP-CORE-0034 namespace-by-owner)
+remain owner-keyed per producer role_uid; the invariant gate is the
+channel-wide hash/packing equality, not record-instance equality.
+
+Cross-tag admission: ZMQ Fan-In channels admit producers from
+heterogeneous role tags (prod.X, proc.Y, etc.) per HEP-CORE-0017
+§4.6 (a processor's out_channel makes it a producer side).  The
+schema invariant applies uniformly.
 
 Payload (REG_REQ):
   channel_name          string   Channel identifier (e.g. "lab.sensors.raw")
@@ -1304,7 +1344,8 @@ same change.
 | `TRANSPORT_MISMATCH` | CONSUMER_REG_REQ where the consumer's declared transport (`shm`/`zmq`) doesn't match the producer's. | Programming error or misconfiguration; reconcile the channel's transport setting. |
 | `NOT_REGISTERED` | DEREG_REQ where `producer_pid` doesn't match the registered producer's pid; CONSUMER_DEREG_REQ where `consumer_pid` doesn't match any registered consumer's pid. | Verify the calling process actually registered first.  No retry — the request itself is logically wrong. |
 | `NOT_CHANNEL_OWNER` | An admin / control request (e.g. ENDPOINT_UPDATE_REQ) issued by a role whose uid doesn't match the channel's owner. | Cannot recover from non-owner side. |
-| `SCHEMA_MISMATCH` | REG_REQ for an existing channel where the new producer's schema_hash differs from the current one. | Reconcile schemas across producers; the channel cannot be re-registered with a different schema. |
+| `SCHEMA_MISMATCH` | REG_REQ for an existing channel where the new producer's schema_hash differs from the channel-wide invariant (HEP-CORE-0023 §2.1.1: all producers on a channel must agree). | Reconcile schemas across producers; the channel cannot be re-registered with a different schema. |
+| `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM` | Second REG_REQ on a `data_transport == "shm"` channel from a different `role_uid` (HEP-CORE-0023 §2.1.1: SHM is physically single-producer; multi-producer channels require ZMQ transport).  Same-`role_uid` restart is admitted as restart-replace and does not trigger this error. | Choose a different channel name, or use ZMQ transport for multi-producer Fan-In topologies (HEP-CORE-0017 §4.6). |
 | `SCHEMA_HASH_MISMATCH_SELF` | Same `(role_uid, schema_id)` re-registered with a different schema_hash (HEP-CORE-0034 §8 namespace-by-owner self-conflict). | Reconcile your own producer's schema; do not re-register conflicting versions under the same id. |
 | `SCHEMA_ID_MISMATCH` | CONSUMER_REG_REQ with `expected_schema_id` that disagrees with the producer's stored schema_id. | Programming error or version drift; reconcile expected schema_id. |
 | `SCHEMA_FORBIDDEN_OWNER` | REG_REQ / CONSUMER_REG_REQ citing `schema_owner` that is neither `"hub"` nor the channel's producer uid (HEP-CORE-0034 §9.1). | Cite hub-globals or the producer's own schema only. |
@@ -1346,14 +1387,25 @@ dispatch behaviour.
 #### CHANNEL_CLOSING_NOTIFY — Graceful Channel Shutdown (Tier 1)
 
 ```
-Direction:  Broker → All channel participants (producer + consumers)
-Trigger:    request_close_channel(); DEREG_REQ from producer-role;
-            producer-presence transition to Disconnected
-            (heartbeat-timeout reap per HEP-CORE-0023 §2.1).
+Direction:  Broker → All channel participants
+              (every ProducerEntry on `ChannelEntry.producers`,
+               every ConsumerEntry on `ChannelEntry.consumers`,
+               and federated peers relaying the channel)
+Trigger:    request_close_channel(); DEREG_REQ from the LAST live
+            producer-role (multi-producer channels stay open until
+            the last producer drops); producer-presence transition
+            to Disconnected from heartbeat-timeout reap of the LAST
+            live producer (HEP-CORE-0023 §2.1, §2.1.1).
 Effect:     Channel is removed from the broker's registry atomically
             with the fan-out.  Recipients receive the event in their
             message queue (FIFO); script is expected to call
             `api.stop()` after cleanup.
+
+Multi-producer note: when a non-last producer drops (DEREG_REQ or
+heartbeat timeout), CHANNEL_CLOSING_NOTIFY is NOT emitted — the
+channel remains open with the surviving producers.  Per-producer
+disconnect events are observable via role_disconnected /
+ROLE_DEREGISTERED_NOTIFY but do not cascade to a channel close.
 Dispatch:   `on_notification(cb)` callback receives msg_type
             "CHANNEL_CLOSING_NOTIFY"; role host queues an
             `IncomingMessage{event="channel_closing", ...}` for the script.
@@ -1420,9 +1472,16 @@ Script host delivery: Event dict in msgs:
 #### CHANNEL_ERROR_NOTIFY — Category 1 Error (Invariant Violation)
 
 ```
-Direction:  Broker → Affected client
-Trigger:    Schema mismatch on REG_REQ, connection policy rejection
-Effect:     Informs client of a protocol-level error
+Direction:  Broker → All existing producers on the affected channel
+              (every ProducerEntry on `ChannelEntry.producers` —
+               multi-producer channels notify every co-producer so
+               that any of them can react to a downstream policy
+               event).  Consumers are NOT in the fan-out set —
+               their channel-error path is the existing
+               CHANNEL_CLOSING_NOTIFY / CHANNEL_NOT_FOUND signal.
+Trigger:    Schema mismatch on REG_REQ (channel-wide invariant —
+            HEP-CORE-0023 §2.1.1), connection-policy rejection.
+Effect:     Informs producer(s) of a protocol-level error.
 Dispatch:   `on_notification(cb)` callback receives msg_type
             "CHANNEL_ERROR_NOTIFY"; role host queues an event for the script.
 

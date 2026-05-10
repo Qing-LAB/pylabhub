@@ -69,7 +69,7 @@ implemented:
 | Reality | Conflict with HEP-0016 |
 |---|---|
 | **Hub is the single mutator** (HEP-CORE-0033 §G2). All authoritative state lives in `HubState`. There is no neutral "library" that can speak for a schema independently of the hub. | HEP-0016's `SchemaLibrary` + `SchemaRegistry` two-class split has no place to live in a hub-mutator architecture. |
-| **Schemas describe channel data**, and channels have a single producer-owner (HEP-CORE-0013, HEP-CORE-0023). | A floating "anyone with the hash wins" registry creates a class of identity dispute that the channel model does not have. The channel's authority should also be the schema's authority. |
+| **Schemas describe channel data**, and a channel's data shape is the union of what its producers agree on (HEP-CORE-0017 §4.6, HEP-CORE-0023 §2.1.1: channels may have 1..N producers on ZMQ transport). | A floating "anyone with the hash wins" registry creates a class of identity dispute that the producer-keyed model does not have. Each producer is the authoritative owner of its own schema records; the channel-wide schema invariant (HEP-CORE-0007 REG_REQ admission) ensures all producers on the same channel agree on hash + packing, while their records remain independent owner-keyed entries. |
 | **Fingerprint omits packing** (`compute_schema_hash` today). Two schemas with the same fields and different packing produce identical hashes but distinct memory layouts. | Hash-as-truth fails on this case — two layouts are conflated under one identity. |
 
 This HEP redefines the schema registry around three principles that fit the
@@ -98,9 +98,19 @@ collide unrelated layouts.
 
 When a participant cites a schema for a channel, it asserts "this channel's
 data conforms to **owner X's** schema with id `id`". The hub validates that
-owner X is the channel's authority — which is either the producer of that
-channel, or the hub itself for hub-globals adopted by the channel. Hash
-equality alone does **not** authorise a third-party citation.
+owner X is **a channel's authority** — which is either *any* producer
+currently admitted on that channel (HEP-CORE-0023 §2.1.1: channels may have
+1..N producers), or the hub itself for hub-globals adopted by the channel.
+Hash equality alone does **not** authorise a third-party citation.
+
+**Multi-producer note.**  Each producer on a multi-producer channel owns its
+own `(role_uid, schema_id)` records under namespace-by-owner; the broker
+admits a citation if the cited `owner_uid` matches **any** registered
+producer of the channel (or `"hub"`).  Citations remain owner-keyed —
+consumers must choose one producer's record to cite, not "the channel's
+schema" as a shared resource.  Cross-citation across producers on the same
+channel is still rejected (§9.3) unless the cited owner is a registered
+producer of that channel.
 
 ### 2.4 Module ownership and runtime invariants
 
@@ -533,9 +543,16 @@ public:
     size_t _on_schemas_evicted_for_owner(const std::string& owner_uid);
 
     // Validate citation. Returns CitationOutcome { ok, reason }.
+    //
+    // Multi-producer note (Wave M2 MP3): `channel_producer_uids` is a
+    // set/list — channels admit 1..N producers (HEP-CORE-0023 §2.1.1).
+    // A citation is accepted when `cited_owner` equals `"hub"` or any
+    // element of `channel_producer_uids`.  The pre-M2 single-string
+    // shape is retained as a convenience overload for the common
+    // single-producer case; new code paths use the set form.
     CitationOutcome _validate_schema_citation(
         const std::string& citer_uid,
-        const std::string& channel_producer_uid,
+        const std::unordered_set<std::string>& channel_producer_uids,
         const std::string& cited_owner,
         const std::string& cited_id,
         const std::array<uint8_t, 32>& expected_hash,
@@ -570,16 +587,17 @@ the lifetime simple and the citation unambiguous.
 ### 9.1 The citation invariant
 
 > A connection's schema reference must resolve to a record whose owner is
-> either (i) the producer of the channel being connected to, or (ii) the hub
-> itself. Cross-citation of a third role's schema is rejected even when the
-> hash matches.
+> either (i) **any** producer currently admitted on the channel being
+> connected to (HEP-CORE-0023 §2.1.1 — channels may have 1..N producers),
+> or (ii) the hub itself.  Cross-citation of a non-producer role's schema
+> is rejected even when the hash matches.
 
 ```mermaid
 flowchart TB
     REG[REG_REQ / CONSUMER_REG_REQ / PROC_REG_REQ\nwith schema_owner, schema_id, hash, packing]
     REG --> Q1{cited owner = hub?}
     Q1 -- yes --> Lookup1[lookup hub.schemas&#91;hub,id&#93;]
-    Q1 -- no --> Q2{cited owner = channel.producer_uid?}
+    Q1 -- no --> Q2{cited owner ∈\nchannel.producers&#91;*&#93;.role_uid?}
     Q2 -- yes --> Lookup2[lookup hub.schemas&#91;owner,id&#93;]
     Q2 -- no --> Reject[SCHEMA_REG_NACK\nreason=cross_citation]
     Lookup1 --> Q3{hash + packing match?}
