@@ -440,19 +440,21 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
     return result;
 }
 
-bool RoleAPIBase::deregister_producer_channel(const std::string &channel, int timeout_ms)
+std::optional<nlohmann::json>
+RoleAPIBase::deregister_producer_channel(const std::string &channel, int timeout_ms)
 {
     auto *bc = pImpl->broker_channel;
     if (!bc || !bc->is_connected())
-        return false;
+        return std::nullopt;
     return bc->deregister_channel(channel, timeout_ms);
 }
 
-bool RoleAPIBase::deregister_consumer(const std::string &channel, int timeout_ms)
+std::optional<nlohmann::json>
+RoleAPIBase::deregister_consumer(const std::string &channel, int timeout_ms)
 {
     auto *bc = pImpl->broker_channel;
     if (!bc || !bc->is_connected())
-        return false;
+        return std::nullopt;
     return bc->deregister_consumer(channel, timeout_ms);
 }
 
@@ -813,10 +815,11 @@ std::optional<nlohmann::json> RoleAPIBase::band_join(const std::string &channel)
     return pImpl->broker_channel->band_join(channel);
 }
 
-bool RoleAPIBase::band_leave(const std::string &channel)
+std::optional<nlohmann::json>
+RoleAPIBase::band_leave(const std::string &channel)
 {
     if (!pImpl->broker_channel)
-        return false;
+        return std::nullopt;
     return pImpl->broker_channel->band_leave(channel);
 }
 
@@ -919,7 +922,13 @@ bool RoleAPIBase::wait_for_role(const std::string &uid, int timeout_ms)
     static constexpr int kPollMs = 200;
     while (std::chrono::steady_clock::now() < deadline)
     {
-        if (pImpl->broker_channel->query_role_presence(uid, kPollMs))
+        // Per HEP-CORE-0007 §12.3 (post-Bucket-C contract):
+        // `query_role_presence` returns the broker's response body
+        // (`{present: true, channel, role}` on found, `{present: false}`
+        // on not-found, or `{present: false, error}` on missing role_uid)
+        // or `nullopt` on transport failure.
+        auto resp = pImpl->broker_channel->query_role_presence(uid, kPollMs);
+        if (resp.has_value() && resp->value("present", false))
             return true;
     }
     return false;

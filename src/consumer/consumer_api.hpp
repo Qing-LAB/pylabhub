@@ -46,7 +46,12 @@ class ConsumerAPI
 
     // Band pub/sub (HEP-CORE-0030)
     py::object band_join(const std::string &channel);
-    bool band_leave(const std::string &channel) { return base_->band_leave(channel); }
+    /// Python-side ergonomic wrapper — see ProducerAPI::band_leave for rationale.
+    bool band_leave(const std::string &channel) {
+        auto resp = base_->band_leave(channel);
+        return resp.has_value() &&
+               resp->value("status", std::string{}) == "success";
+    }
     void band_broadcast(const std::string &channel, py::dict body);
     py::object band_members(const std::string &channel);
 

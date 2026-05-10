@@ -66,7 +66,12 @@ inline bool wait_for_roles(hub::BrokerRequestComm        &brc,
             if (remaining <= 0)
                 break;
             const int poll_ms = static_cast<int>(std::min<long long>(kPollMs, remaining));
-            if (brc.query_role_presence(wr.uid, poll_ms))
+            // Post-Bucket-C contract: query_role_presence returns
+            // `optional<json>` carrying the broker's response body or
+            // `nullopt` on transport failure.  "present" is the field
+            // that signals the role was found.
+            auto resp = brc.query_role_presence(wr.uid, poll_ms);
+            if (resp.has_value() && resp->value("present", false))
             {
                 found = true;
                 break;

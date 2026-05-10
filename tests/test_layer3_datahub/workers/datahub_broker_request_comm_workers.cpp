@@ -169,9 +169,15 @@ int register_and_discover()
     if (disc_result)
         EXPECT_EQ(disc_result->value("status", ""), "success");
 
-    // List channels.
-    auto channels = ch.list_channels(5000);
-    EXPECT_GE(channels.size(), 1u);
+    // List channels — post-Bucket-C contract: returns optional<json>
+    // carrying the broker's response body or nullopt on transport failure.
+    auto list_resp = ch.list_channels(5000);
+    EXPECT_TRUE(list_resp.has_value());
+    if (list_resp.has_value())
+    {
+        auto channels = list_resp->value("channels", nlohmann::json::array());
+        EXPECT_GE(channels.size(), 1u);
+    }
 
     running.store(false);
     ch.stop();
@@ -199,9 +205,13 @@ int role_presence()
         ch.run_poll_loop([&] { return running.load(); });
     });
 
-    // Not present yet.
-    bool present = ch.query_role_presence("nonexistent_uid", 3000);
-    EXPECT_FALSE(present);
+    // Not present yet.  Post-Bucket-C: query_role_presence returns
+    // optional<json>; "present" is the response body field that signals
+    // the role was found.
+    auto presence_resp = ch.query_role_presence("nonexistent_uid", 3000);
+    EXPECT_TRUE(presence_resp.has_value());
+    if (presence_resp.has_value())
+        EXPECT_FALSE(presence_resp->value("present", false));
 
     // Register a channel so a role exists.
     nlohmann::json reg_opts;
@@ -219,8 +229,10 @@ int role_presence()
     EXPECT_TRUE(reg.has_value());
 
     // Now query — should be present.
-    present = ch.query_role_presence("prod.my.uid00000042", 3000);
-    EXPECT_TRUE(present);
+    presence_resp = ch.query_role_presence("prod.my.uid00000042", 3000);
+    EXPECT_TRUE(presence_resp.has_value());
+    if (presence_resp.has_value())
+        EXPECT_TRUE(presence_resp->value("present", false));
 
     running.store(false);
     ch.stop();

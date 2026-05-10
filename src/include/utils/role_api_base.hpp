@@ -244,8 +244,10 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] std::optional<nlohmann::json>
     band_join(const std::string &channel);
 
-    /// Leave a band.
-    bool band_leave(const std::string &channel);
+    /// Leave a band.  Returns the broker's response body (success or
+    /// error per HEP-CORE-0007 §12.3) or `nullopt` on transport failure.
+    [[nodiscard]] std::optional<nlohmann::json>
+    band_leave(const std::string &channel);
 
     /// Send JSON message to all band members.
     void band_broadcast(const std::string &channel,
@@ -423,11 +425,17 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] std::optional<nlohmann::json>
     register_consumer(const nlohmann::json &opts, int timeout_ms = 5000);
 
-    /// Deregister a producer channel (DEREG_REQ).
-    bool deregister_producer_channel(const std::string &channel, int timeout_ms = 5000);
+    /// Deregister a producer channel (DEREG_REQ → DEREG_ACK or ERROR).
+    /// Returns the broker's response body (success or error per HEP-CORE-0007
+    /// §12.3) or `nullopt` on transport failure.
+    [[nodiscard]] std::optional<nlohmann::json>
+    deregister_producer_channel(const std::string &channel, int timeout_ms = 5000);
 
-    /// Deregister a consumer (CONSUMER_DEREG_REQ).
-    bool deregister_consumer(const std::string &channel, int timeout_ms = 5000);
+    /// Deregister a consumer (CONSUMER_DEREG_REQ → CONSUMER_DEREG_ACK or ERROR).
+    /// Returns the broker's response body (success or error per HEP-CORE-0007
+    /// §12.3) or `nullopt` on transport failure.
+    [[nodiscard]] std::optional<nlohmann::json>
+    deregister_consumer(const std::string &channel, int timeout_ms = 5000);
 
     // ── Inbox drain ─────────────────────────────────────────────────────────
     //

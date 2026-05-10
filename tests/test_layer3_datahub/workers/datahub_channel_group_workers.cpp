@@ -139,9 +139,11 @@ int channel_join_leave()
         EXPECT_EQ(members.size(), 2u);
     }
 
-    // Role A leaves.
-    bool left = c1.ch.band_leave("!test_ch", 5000);
-    EXPECT_TRUE(left);
+    // Role A leaves.  Post-Bucket-C: band_leave returns optional<json>;
+    // success is `status == "success"`.
+    auto leave_resp = c1.ch.band_leave("!test_ch", 5000);
+    EXPECT_TRUE(leave_resp.has_value() &&
+                leave_resp->value("status", std::string{}) == "success");
 
     // Query again — should have 1 member.
     auto mq2 = c2.ch.band_members("!test_ch", 5000);
@@ -377,9 +379,10 @@ int roleapi_channel()
         EXPECT_EQ(mlist.size(), 2u);
     }
 
-    // Leave via RoleAPIBase.
-    bool left = api1->band_leave("!api_test_ch");
-    EXPECT_TRUE(left);
+    // Leave via RoleAPIBase.  Post-Bucket-C: returns optional<json>.
+    auto leave_resp = api1->band_leave("!api_test_ch");
+    EXPECT_TRUE(leave_resp.has_value() &&
+                leave_resp->value("status", std::string{}) == "success");
 
     running1.store(false);
     running2.store(false);

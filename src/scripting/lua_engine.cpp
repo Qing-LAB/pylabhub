@@ -2276,7 +2276,12 @@ int LuaEngine::lua_api_band_leave(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     const char *channel = luaL_checkstring(L, 1);
-    bool ok = self->api_->band_leave(channel);
+    // Lua-side ergonomic wrapper: collapse the optional<json> response
+    // (HEP-CORE-0007 §12.3 / Bucket-C contract) to a boolean for scripts
+    // that just want yes/no.
+    auto resp = self->api_->band_leave(channel);
+    const bool ok = resp.has_value() &&
+                    resp->value("status", std::string{}) == "success";
     lua_pushboolean(L, ok ? 1 : 0);
     return 1;
 }
