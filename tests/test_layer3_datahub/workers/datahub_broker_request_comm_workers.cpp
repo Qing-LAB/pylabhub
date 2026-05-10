@@ -13,7 +13,12 @@
 #include "utils/broker_request_comm.hpp"
 #include "utils/logger.hpp"
 #include "utils/broker_service.hpp"
+#include "utils/config/hub_config.hpp"
+#include "utils/file_lock.hpp"
+#include "utils/hub_directory.hpp"
+#include "utils/hub_host.hpp"
 #include "utils/hub_state.hpp"
+#include "utils/json_config.hpp"
 #include "utils/lifecycle.hpp"
 #include "utils/zmq_context.hpp"
 #include "plh_datahub.hpp"
@@ -23,6 +28,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <thread>
 
@@ -30,54 +37,92 @@ using namespace pylabhub;
 using namespace pylabhub::hub;
 using namespace pylabhub::broker;
 
-static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
-static auto hub_module()    { return ::pylabhub::hub::GetDataBlockModule(); }
-static auto zmq_module()    { return ::pylabhub::hub::GetZMQContextModule(); }
+static auto logger_module()    { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
+static auto file_lock_module() { return ::pylabhub::utils::FileLock::GetLifecycleModule(); }
+static auto json_module()      { return ::pylabhub::utils::JsonConfig::GetLifecycleModule(); }
+static auto crypto_module()    { return ::pylabhub::crypto::GetLifecycleModule(); }
+static auto hub_module()       { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto zmq_module()       { return ::pylabhub::hub::GetZMQContextModule(); }
 
 // ============================================================================
-// Broker helper
+// Broker helper — real HubHost wrapper (replaces legacy mock per
+// docs/todo/TESTING_TODO.md §"Test Design Principles")
 // ============================================================================
+
+namespace fs = std::filesystem;
 
 namespace
 {
 
 struct BrokerHandle
 {
-    std::unique_ptr<pylabhub::hub::HubState> hub_state;
-    std::unique_ptr<BrokerService>           service;
-    std::thread                              thread;
-    std::string                              endpoint;
-    std::string                              pubkey;
+    fs::path                                       hub_dir;
+    std::unique_ptr<::pylabhub::hub_host::HubHost> host;
+    std::string                                    endpoint;
+    std::string                                    pubkey;
+
+    ~BrokerHandle() { stop_and_join(); }
+
+    BrokerHandle()                                = default;
+    BrokerHandle(const BrokerHandle &)            = delete;
+    BrokerHandle &operator=(const BrokerHandle &) = delete;
+    BrokerHandle(BrokerHandle &&)                 = default;
+    BrokerHandle &operator=(BrokerHandle &&)      = default;
 
     void stop_and_join()
     {
-        service->stop();
-        if (thread.joinable())
-            thread.join();
+        if (host)
+            host->shutdown();
+        host.reset();
+        if (!hub_dir.empty())
+        {
+            std::error_code ec;
+            fs::remove_all(hub_dir, ec);
+            hub_dir.clear();
+        }
     }
+
+    BrokerService &service_ref() { return host->broker(); }
 };
 
 BrokerHandle start_broker()
 {
-    using ReadyInfo = std::pair<std::string, std::string>;
-    auto ready_promise = std::make_shared<std::promise<ReadyInfo>>();
-    auto ready_future  = ready_promise->get_future();
+    static std::atomic<int> ctr{0};
+    fs::path dir = fs::temp_directory_path() /
+                   ("plh_l3_brc_" + std::to_string(::getpid()) + "_" +
+                    std::to_string(ctr.fetch_add(1)));
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    ::pylabhub::utils::HubDirectory::init_directory(dir, "BrcTestHub");
 
-    BrokerService::Config bcfg;
-    bcfg.endpoint = "tcp://127.0.0.1:0";
-    bcfg.use_curve = true;
-    bcfg.on_ready = [ready_promise](const std::string &ep, const std::string &pk)
-    { ready_promise->set_value({ep, pk}); };
+    const fs::path hub_json = dir / "hub.json";
+    nlohmann::json j;
+    {
+        std::ifstream f(hub_json);
+        if (f.is_open())
+            j = nlohmann::json::parse(f);
+    }
+    j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
+    j["admin"]["enabled"]           = false;
+    j["script"]["path"]             = "";
+    // Default grace (no override) — `NotificationDispatch` test
+    // relies on CHANNEL_CLOSING_NOTIFY landing before the grace
+    // expiry FORCE_SHUTDOWN.  With grace_ms=0 they race; keeping
+    // the heartbeat-multiplied default gives a stable window.
+    {
+        std::ofstream f(hub_json);
+        f << j.dump(2);
+    }
+    fs::create_directories(dir / "schemas");
 
-    auto state = std::make_unique<pylabhub::hub::HubState>();
-    auto svc   = std::make_unique<BrokerService>(std::move(bcfg), *state);
-    auto *raw  = svc.get();
-    std::thread t([raw] { raw->run(); });
-
-    auto info = ready_future.get();
-    return {std::move(state), std::move(svc), std::move(t),
-            info.first, info.second};
+    BrokerHandle h;
+    h.hub_dir = std::move(dir);
+    h.host    = std::make_unique<::pylabhub::hub_host::HubHost>(
+        ::pylabhub::config::HubConfig::load_from_directory(h.hub_dir.string()));
+    h.host->startup();
+    h.endpoint = h.host->broker_endpoint();
+    h.pubkey   = h.host->broker_pubkey();
+    return h;
 }
 
 // ============================================================================
@@ -86,7 +131,9 @@ BrokerHandle start_broker()
 
 int connect_and_heartbeat()
 {
-    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
+    auto mods = utils::MakeModDefList(logger_module(), file_lock_module(),
+                                          json_module(), crypto_module(),
+                                          hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     auto broker = start_broker();
@@ -121,7 +168,9 @@ int connect_and_heartbeat()
 
 int register_and_discover()
 {
-    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
+    auto mods = utils::MakeModDefList(logger_module(), file_lock_module(),
+                                          json_module(), crypto_module(),
+                                          hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     auto broker = start_broker();
@@ -189,7 +238,9 @@ int register_and_discover()
 
 int role_presence()
 {
-    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
+    auto mods = utils::MakeModDefList(logger_module(), file_lock_module(),
+                                          json_module(), crypto_module(),
+                                          hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     auto broker = start_broker();
@@ -244,7 +295,9 @@ int role_presence()
 
 int notification_dispatch()
 {
-    auto mods = utils::MakeModDefList(logger_module(), crypto_module(), hub_module(), zmq_module());
+    auto mods = utils::MakeModDefList(logger_module(), file_lock_module(),
+                                          json_module(), crypto_module(),
+                                          hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     auto broker = start_broker();
@@ -283,7 +336,7 @@ int notification_dispatch()
     EXPECT_TRUE(reg.has_value());
 
     // Request broker to close the channel → should trigger CHANNEL_CLOSING_NOTIFY.
-    broker.service->request_close_channel("notify_ch");
+    broker.service_ref().request_close_channel("notify_ch");
 
     bool got = pylabhub::tests::helper::poll_until(
         [&] { return notify_count.load() > 0; },
