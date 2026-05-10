@@ -458,8 +458,15 @@ int broker_dereg_happy_path()
             auto found = brc.discover_channel(channel, {}, 5000);
             ASSERT_TRUE(found.has_value()) << "Channel must be discoverable before deregister";
 
-            // Deregister
-            EXPECT_TRUE(brc.deregister_channel(channel));
+            // Deregister.  Post-Bucket-C contract: assert on
+            // status="success" explicitly; the implicit optional<json>
+            // → bool conversion only checks `has_value()` (true for
+            // both ACK and ERROR responses).
+            {
+                auto dereg = brc.deregister_channel(channel);
+                ASSERT_TRUE(dereg.has_value());
+                EXPECT_EQ(dereg->value("status", std::string{}), "success");
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
             // After deregistration, discover must return nullopt
