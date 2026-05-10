@@ -10,6 +10,33 @@
 
 ## Current Status
 
+### 🔥 Wave M2 — Multi-Producer Channel Bookkeeping (2026-05-10)
+
+Canonical plan in `docs/TODO_MASTER.md` "Wave M2".  Broker-layer items
+this wave touches (MP4 phase):
+
+- REG_REQ admission semantics — same channel + new role_uid ⇒ append a
+  new `ProducerEntry`; same role_uid ⇒ restart-replace.  Reject second
+  producer REG_REQ on `data_transport == "shm"` channels with
+  `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`.
+- DEREG_REQ — routes to `_on_producer_dropped(channel, requester_uid,
+  VoluntaryDereg)`.  HubState's invariant maintenance removes the
+  channel only when the last producer's `ProducerEntry` is gone.
+- Script-requested admin close — call `_on_producer_dropped` once per
+  producer in `entry.producers` (atomic teardown per HEP-CORE-0023
+  §2.1).
+- CHANNEL_ERROR_NOTIFY — fan-out to every producer in
+  `entry.producers`, not just the most recent registrant.
+- CHANNEL_CLOSING_NOTIFY — fan-out to every producer + every consumer.
+- Heartbeat sweep — scan every `(channel, "producer")` presence across
+  roles for ready/pending timeouts, not just
+  `entry.producer_role_uid` (which no longer exists).
+- ROLE_INFO_REQ / ROLE_PRESENCE_REQ — search `entry.producers` list.
+- DISC_REQ — semantically unchanged (still asks "is the producer live
+  on this channel?"); the answer becomes "any producer-presence live
+  on this channel" rather than "the single producer presence".
+
+
 > **2026-05-07 architectural correction (docs only — implementation
 > work is Wave B M1).**  HEP-CORE-0023 §2 was rewritten: the Pending /
 > Ready / **Closing** channel FSM was retired in favour of a per-
