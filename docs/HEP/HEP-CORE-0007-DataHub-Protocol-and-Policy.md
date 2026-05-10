@@ -774,6 +774,16 @@ Payload (REG_REQ):
 
 Payload (REG_ACK):
   status                string   "success"
+  channel_id            string   Echo of the requested channel_name.
+  message               string   "Producer registered successfully" (informational).
+  heartbeat             object   Per-presence heartbeat configuration block
+                                 (HEP-CORE-0023 §2.5):
+                                   interval_ms             int     Heartbeat cadence
+                                   ready_miss_heartbeats   int     Misses before Connected→Pending
+                                   pending_miss_heartbeats int     Misses before Pending→Disconnected
+                                   grace_heartbeats        int     Force-shutdown grace
+                                   grace_ms                int     Grace deadline in ms
+  correlation_id        string   (opt) Echo of request correlation_id if provided.
 
 role_type field (added 2026-03-10):
   role_type             string   (opt) "producer" | "consumer" | "processor"
@@ -824,7 +834,14 @@ Payload:
   schema_id             string   (opt) Named schema ID
   blds                  string   (opt) BLDS string
   data_transport        string   "shm" or "zmq"
-  zmq_node_endpoint     string   (if data_transport="zmq")
+  metadata              object   Channel metadata (free-form JSON object;
+                                 producer-supplied via REG_REQ).
+  channel_pattern       string   "PubSub" or other ChannelPattern variant.
+  zmq_ctrl_endpoint     string   (if data_transport="zmq") Control-plane endpoint
+  zmq_data_endpoint     string   (if data_transport="zmq") Data-plane endpoint
+  zmq_pubkey            string   (if CURVE) Server public key (Z85, 40 chars)
+  zmq_node_endpoint     string   (if data_transport="zmq") Producer's node endpoint
+  correlation_id        string   (opt) Echo of request correlation_id if provided.
 ```
 
 **Reply variant 2 — DISC_PENDING (producer-presence registered but heartbeats not fresh):**
@@ -832,20 +849,31 @@ Payload:
 Payload:
   status                string   "pending"
   channel_name          string   Echo of the requested channel
-  reason                string   "awaiting_first_heartbeat"
+  reason                string   One of:
+                                   "awaiting_first_heartbeat" — producer-presence
+                                       Connected but `first_heartbeat_seen=false`
+                                       (REG_REQ accepted but no HEARTBEAT_REQ yet).
+                                   "heartbeat_stalled" — producer-presence in
+                                       state Pending (heartbeats stopped past the
+                                       ready_timeout but recoverable; see
+                                       HEP-CORE-0023 §2.2).
+  correlation_id        string   (opt) Echo of request correlation_id if provided.
 
-Meaning: the producer has sent REG_REQ but has not yet emitted its first
-HEARTBEAT_REQ. The broker has NOT queued this request; the client must retry
-DISC_REQ after a short delay. The retry cadence is a client policy (default
-100ms) and is bounded by the client's overall discover timeout.
+Meaning: the producer has been registered but its presence is not Live.  The
+broker does NOT queue this request; the client must retry DISC_REQ after a
+short delay.  The retry cadence is a client policy (default 100ms) and is
+bounded by the client's overall discover timeout.  The two reason values let
+the client distinguish "still starting up" from "was live but stalled" for
+diagnostics; both require the same retry behavior.
 ```
 
 **Reply variant 3 — ERROR CHANNEL_NOT_FOUND (channel not registered):**
 ```
 Payload:
   status                string   "error"
-  error                 string   "CHANNEL_NOT_FOUND"
-  message               string   Human-readable description
+  error_code            string   "CHANNEL_NOT_FOUND"
+  message               string   Human-readable description.
+  correlation_id        string   (opt) Echo of request correlation_id if provided.
 
 Meaning: no producer has sent REG_REQ for this channel_name. Client should
 retry if it is within its own discover timeout (producer may register later);
@@ -897,6 +925,11 @@ Payload (CONSUMER_REG_REQ):
 
 Payload (CONSUMER_REG_ACK):
   status                string   "success"
+  channel_name          string   Echo of the requested channel_name.
+  message               string   "Consumer registered successfully" (informational).
+  heartbeat             object   Per-presence heartbeat configuration block — same
+                                 shape as REG_ACK.heartbeat (HEP-CORE-0023 §2.5).
+  correlation_id        string   (opt) Echo of request correlation_id if provided.
 
 role_type field (added 2026-03-10):
   role_type             string   (opt) "producer" | "consumer" | "processor"
@@ -909,10 +942,18 @@ role_type field (added 2026-03-10):
 ```
 Direction:  Consumer → Broker → Consumer
 Trigger:    Consumer::close() or graceful shutdown
+Effect:     Broker removes the consumer matching (channel_name, consumer_pid) from
+            ChannelEntry.consumers[].  If pid does not match any registered
+            consumer, broker replies ERROR with error_code="NOT_REGISTERED".
 
 Payload (CONSUMER_DEREG_REQ):
   channel_name          string
   consumer_pid          uint64
+
+Payload (CONSUMER_DEREG_ACK):
+  status                string   "success"
+  message               string   "Consumer deregistered successfully" (informational).
+  correlation_id        string   (opt) Echo of request correlation_id if provided.
 ```
 
 #### DEREG_REQ / DEREG_ACK — Deregister Channel
@@ -920,11 +961,18 @@ Payload (CONSUMER_DEREG_REQ):
 ```
 Direction:  Producer → Broker → Producer
 Trigger:    BrokerRequestComm::deregister_channel() during role shutdown
-Effect:     Removes channel from registry; triggers CHANNEL_CLOSING_NOTIFY to consumers
+Effect:     Removes channel from registry; triggers CHANNEL_CLOSING_NOTIFY to consumers.
+            If producer_pid does not match the registered producer's pid, broker
+            replies ERROR with error_code="NOT_REGISTERED".
 
 Payload (DEREG_REQ):
   channel_name          string
   producer_pid          uint64
+
+Payload (DEREG_ACK):
+  status                string   "success"
+  message               string   "Producer deregistered successfully" (informational).
+  correlation_id        string   (opt) Echo of request correlation_id if provided.
 ```
 
 #### SCHEMA_REQ / SCHEMA_ACK — Fetch Schema Record (HEP-CORE-0034 §10.3)
@@ -951,6 +999,15 @@ Payload (SCHEMA_ACK):
                                  reconstruction (HEP-CORE-0034 §6.3 form,
                                  NOT the HEP-CORE-0002 BLDS short-token form
                                  used in SHM-header SchemaInfo)
+  correlation_id        string   (opt) Echo of request correlation_id if provided.
+
+Legacy `channel_name` form additionally carries:
+  channel_name          string   Echo of the requested channel_name
+  schema_owner          string   Owner key under which the schema record
+                                 lives ("hub" for hub-globals, or the
+                                 producer's role uid for path-B records).
+                                 Empty when the channel adopts an anonymous
+                                 schema.
 ```
 
 The HEP-0016-era channel-keyed lookup (`SCHEMA_REQ { channel_name }`) is
@@ -1104,8 +1161,9 @@ Payload (CHANNEL_LIST_ACK):
   status                string   "success"
   channels              array    Array of channel objects:
     name                string   Channel identifier
-    observability       string   Derived from the producer-presence's
-                                 state in RoleEntry (HEP-CORE-0023 §2.6):
+    observable          string   Protocol-defined channel observable, derived
+                                 from the producer-presence's FSM state in
+                                 RoleEntry (HEP-CORE-0023 §2.2 + §2.6):
                                    "live"        — producer-presence Connected,
                                                    heartbeats fresh
                                    "stalled"     — producer-presence Pending
@@ -1114,10 +1172,20 @@ Payload (CHANNEL_LIST_ACK):
                                    "registering" — producer-presence
                                                    Connected, no heartbeat
                                                    seen yet (just registered)
-                                 Channels whose producer-presence is
+                                   "absent"      — channel registered but
+                                                   producer-presence is missing
+                                                   or Disconnected (rare; brief
+                                                   window during atomic teardown)
+                                 The "absent" case is normally not visible —
+                                 channels whose producer-presence is fully
                                  Disconnected are removed atomically
-                                 (HEP-CORE-0023 §2.1) and do not appear
-                                 in this list.
+                                 (HEP-CORE-0023 §2.1) before the next
+                                 CHANNEL_LIST_REQ.
+    status              string   Internal channel-state field retained for
+                                 the M1.2 transition (one of "PendingReady",
+                                 "Ready", "Closing").  Slated for removal
+                                 once Phase 6 of the FSM consolidation lands;
+                                 new clients should prefer `observable`.
     producer_uid        string   Producer UID
     schema_id           string   Named schema ID (empty if anonymous)
     consumer_count      int      Number of registered consumer-presences
@@ -1136,11 +1204,19 @@ Trigger:    api.wait_for_role() polling loop; or direct BrokerRequestComm call
 Pattern:    Synchronous request/response
 
 Payload (ROLE_PRESENCE_REQ):
-  role_uid              string   Exact UID or UID prefix pattern (e.g. "PROD-SENSOR-*")
+  role_uid              string   Exact UID match (no prefix patterns).
 
-Payload (ROLE_PRESENCE_ACK):
-  status                string   "success"
-  present               bool     true if any matching role is currently registered
+Payload (ROLE_PRESENCE_ACK) — when found:
+  present               bool     true
+  channel               string   Channel the role is registered on
+  role                  string   "producer" | "consumer"
+
+Payload (ROLE_PRESENCE_ACK) — when not found:
+  present               bool     false
+
+Payload (ROLE_PRESENCE_ACK) — when role_uid missing/empty in request:
+  present               bool     false
+  error                 string   "missing role_uid"
 ```
 
 #### ROLE_INFO_REQ / ROLE_INFO_ACK — Query Role Details (added 2026-03-10, updated 2026-03-30)
@@ -1151,15 +1227,30 @@ Trigger:    api.open_inbox(uid): needs inbox_endpoint + schema + checksum policy
 Pattern:    Synchronous request/response
 
 Payload (ROLE_INFO_REQ):
-  role_uid              string   Exact UID match
+  role_uid              string   Exact UID match.
 
-Payload (ROLE_INFO_ACK):
-  found                 bool     true if role found, false otherwise
+Payload (ROLE_INFO_ACK) — when found and role has an inbox:
+  found                 bool     true
   channel               string   Channel name the role is registered on
-  inbox_endpoint        string   ZMQ ROUTER bind endpoint (empty if no inbox)
-  inbox_schema          json     Array of {type,count,length} field defs (empty = no inbox)
-  inbox_packing         string   "aligned" | "packed" (empty if no inbox)
-  inbox_checksum        string   "enforced" | "manual" | "none" (empty = enforced)
+  inbox_endpoint        string   ZMQ ROUTER bind endpoint
+  inbox_schema          json     Array of {type, count, length} field defs;
+                                 empty array if the stored inbox_schema_json
+                                 is malformed (broker logs WARN in that case
+                                 — see broker_service.cpp:handle_role_info_req).
+  inbox_packing         string   "aligned" | "packed"
+  inbox_checksum        string   "enforced" | "manual" | "none"
+
+Payload (ROLE_INFO_ACK) — when role found but has no inbox:
+  found                 bool     false
+  channel               string   Channel name the role is registered on
+  inbox_*               (empty fields)
+
+Payload (ROLE_INFO_ACK) — when not found:
+  found                 bool     false
+
+Payload (ROLE_INFO_ACK) — when role_uid missing/empty in request:
+  found                 bool     false
+  error                 string   "missing role_uid"
 ```
 
 **Broker search order** (2026-03-30):
@@ -1187,6 +1278,57 @@ The inbox owner dictates the checksum policy. The sender (InboxClient) reads
 ```
   inbox_checksum        string   Optional. "enforced", "manual", "none".
 ```
+
+### 12.4a Error Code Taxonomy
+
+Every ERROR reply carries a structured `error_code` (HEP-0007 §12.3 ERROR
+payload).  Clients SHOULD switch on `error_code` to choose recovery
+behavior; `message` is human-readable only.  This table enumerates every
+code the broker emits and the contract it signals.
+
+The ground truth is `BrokerServiceImpl::make_error(...)` call sites in
+`src/utils/ipc/broker_service.cpp`; this section is regenerated from
+those.  Adding a new `error_code` requires adding a row here in the
+same change.
+
+| `error_code` | Triggering condition (which handler emits) | Recommended client action |
+|---|---|---|
+| `UNKNOWN_MSG_TYPE` | Dispatcher received an msg_type not in the known-list (cardinality-attack mitigation, HEP-0033 §9.3 R1). | Stop sending the unknown type.  Treat as a programming error; do not retry. |
+| `INVALID_REQUEST` | Generic field-validation failure: missing/empty `channel_name`, malformed required field, etc.  Catches REG_REQ / DISC_REQ / DEREG_REQ / CONSUMER_DEREG_REQ / CHECKSUM_ERROR_REPORT field guards. | Programming error in client.  Fix the request payload and retry. |
+| `IDENTITY_REQUIRED` | REG_REQ / CONSUMER_REG_REQ from a connection whose ZMQ identity is empty (broker cannot route notifications back without identity). | Reconnect with a non-empty ZMQ identity. |
+| `MISSING_ROLE_UID` | REG_REQ / CONSUMER_REG_REQ without a `role_uid` field when the broker's connection-policy requires one. | Generate or supply a `role_uid` per HEP-CORE-0033 §G2.2.0a. |
+| `NOT_IN_KNOWN_ROLES` | REG_REQ from a `role_uid` not on the broker's `known_roles` allowlist (closed connection-policy mode). | Cannot recover from client side; broker-admin must add the role. |
+| `CHANNEL_NOT_FOUND` | DISC_REQ / CONSUMER_REG_REQ / DEREG_REQ / CONSUMER_DEREG_REQ for a channel that is not registered, OR for a channel whose producer-presence has just been reaped (rare race per HEP-CORE-0023 §2.1). | Retry within the client's discover budget; producer may register shortly.  Give up after the timeout. |
+| `CHANNEL_NOT_READY` | DISC_REQ / CONSUMER_REG_REQ for a channel whose `data_transport=zmq` but `zmq_node_endpoint` has unresolved port `0`. | Wait briefly and retry; producer is still resolving its endpoint. |
+| `TRANSPORT_MISMATCH` | CONSUMER_REG_REQ where the consumer's declared transport (`shm`/`zmq`) doesn't match the producer's. | Programming error or misconfiguration; reconcile the channel's transport setting. |
+| `NOT_REGISTERED` | DEREG_REQ where `producer_pid` doesn't match the registered producer's pid; CONSUMER_DEREG_REQ where `consumer_pid` doesn't match any registered consumer's pid. | Verify the calling process actually registered first.  No retry — the request itself is logically wrong. |
+| `NOT_CHANNEL_OWNER` | An admin / control request (e.g. ENDPOINT_UPDATE_REQ) issued by a role whose uid doesn't match the channel's owner. | Cannot recover from non-owner side. |
+| `SCHEMA_MISMATCH` | REG_REQ for an existing channel where the new producer's schema_hash differs from the current one. | Reconcile schemas across producers; the channel cannot be re-registered with a different schema. |
+| `SCHEMA_HASH_MISMATCH_SELF` | Same `(role_uid, schema_id)` re-registered with a different schema_hash (HEP-CORE-0034 §8 namespace-by-owner self-conflict). | Reconcile your own producer's schema; do not re-register conflicting versions under the same id. |
+| `SCHEMA_ID_MISMATCH` | CONSUMER_REG_REQ with `expected_schema_id` that disagrees with the producer's stored schema_id. | Programming error or version drift; reconcile expected schema_id. |
+| `SCHEMA_FORBIDDEN_OWNER` | REG_REQ / CONSUMER_REG_REQ citing `schema_owner` that is neither `"hub"` nor the channel's producer uid (HEP-CORE-0034 §9.1). | Cite hub-globals or the producer's own schema only. |
+| `SCHEMA_UNKNOWN` | REG_REQ path-C citing `schema_owner="hub"` + `schema_id=X` where the broker has no record for that key. | Producer must register the schema (path-B) or wait for the hub-global to be loaded.  Verify schema_search_dirs at hub startup. |
+| `SCHEMA_CITATION_REJECTED` | CONSUMER_REG_REQ where the cited schema's stored fingerprint disagrees with the consumer's expected fingerprint (HEP-CORE-0034 §9.3). | Reconcile schemas; do not retry without aligning fingerprints. |
+| `FINGERPRINT_INCONSISTENT` | REG_REQ where `schema_hash` doesn't match `compute_schema_hash(blds, packing)` (broker re-derives and rejects). | Programming error in producer's hash computation; fix and retry. |
+| `MISSING_BLDS` | REG_REQ that should carry `schema_blds` but doesn't (named-citation path that requires structure). | Add the field; retry. |
+| `MISSING_PACKING` | REG_REQ with `schema_id` set but no `schema_packing`. | Add `"aligned"` or `"packed"` per HEP-CORE-0034 §6.3; retry. |
+| `MISSING_HASH` | REG_REQ that should carry `schema_hash` but doesn't. | Compute and supply hash; retry. |
+| `MISSING_HASH_FOR_NAMED_CITATION` | CONSUMER_REG_REQ in named-citation mode without `expected_schema_hash`. | Supply `expected_schema_hash` along with `expected_schema_id`. |
+| `MISSING_BLDS_FOR_ANONYMOUS_CITATION` | CONSUMER_REG_REQ in anonymous-citation mode without `expected_schema_blds`. | Supply BLDS + packing for anonymous mode. |
+| `MISSING_PACKING_FOR_ANONYMOUS_CITATION` | Same — without `expected_schema_packing`. | Supply BLDS + packing. |
+| `INVALID_INBOX_ENDPOINT` | REG_REQ / CONSUMER_REG_REQ `inbox_endpoint` failed `validate_tcp_endpoint`. | Fix endpoint syntax; retry. |
+| `INVALID_INBOX_PACKING` | REG_REQ / CONSUMER_REG_REQ `inbox_packing` not in `{"aligned","packed"}`. | Use one of the two valid values. |
+| `INBOX_SCHEMA_INVALID` | REG_REQ / CONSUMER_REG_REQ `inbox_schema_json` failed JSON parse or schema-shape validation. | Fix the inbox schema; retry. |
+| `INBOX_UPDATE_NOT_SUPPORTED` | ENDPOINT_UPDATE_REQ requesting an inbox endpoint update (currently a one-time set, not updateable). | Programming error; design currently doesn't allow inbox endpoint mutation post-registration. |
+| `INVALID_ENDPOINT` | ENDPOINT_UPDATE_REQ with malformed `endpoint`. | Fix endpoint syntax; retry. |
+| `UNKNOWN_ENDPOINT_TYPE` | ENDPOINT_UPDATE_REQ with `key` not in the supported endpoint-key whitelist. | Programming error; check the whitelist in HEP-CORE-0021. |
+| `ENDPOINT_ALREADY_SET` | ENDPOINT_UPDATE_REQ for an endpoint that has already been set (one-time-set fields). | Programming error; endpoints are write-once. |
+
+**Adding a new error_code** — when introducing a new code path that
+emits via `make_error`, also add a row above with: triggering handler,
+recommended client action, severity (transient/programming/admin).
+This taxonomy is the wire-protocol contract the client side relies on
+to choose recovery behavior.
 
 ### 12.5 Unsolicited Broker Notifications
 

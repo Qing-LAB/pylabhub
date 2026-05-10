@@ -788,8 +788,11 @@ bool BrokerRequestComm::deregister_consumer(const std::string &channel, int time
 
 bool BrokerRequestComm::query_role_presence(const std::string &uid, int timeout_ms)
 {
+    // HEP-CORE-0007 §"ROLE_PRESENCE_REQ" — wire field `role_uid`
+    // (unified with REG_REQ / CONSUMER_REG_REQ; old `uid` form retired
+    // 2026-05-09 as part of the protocol-doc-vs-code unification).
     nlohmann::json payload;
-    payload["uid"] = uid;
+    payload["role_uid"] = uid;
     auto result = pImpl->do_request("ROLE_PRESENCE_REQ", "ROLE_PRESENCE_ACK",
                              std::move(payload), timeout_ms);
     return result.has_value() && result->value("present", false);
@@ -798,8 +801,11 @@ bool BrokerRequestComm::query_role_presence(const std::string &uid, int timeout_
 std::optional<nlohmann::json>
 BrokerRequestComm::query_role_info(const std::string &uid, int timeout_ms)
 {
+    // HEP-CORE-0007 §"ROLE_INFO_REQ" — wire field `role_uid`
+    // (unified with REG_REQ / CONSUMER_REG_REQ / ROLE_PRESENCE_REQ;
+    // old `uid` form retired 2026-05-09).
     nlohmann::json payload;
-    payload["uid"] = uid;
+    payload["role_uid"] = uid;
     return pImpl->do_request( "ROLE_INFO_REQ", "ROLE_INFO_ACK",
                       std::move(payload), timeout_ms);
 }
