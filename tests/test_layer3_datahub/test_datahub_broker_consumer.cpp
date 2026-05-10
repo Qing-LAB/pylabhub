@@ -226,8 +226,9 @@ std::unique_ptr<LifecycleGuard> DatahubBrokerConsumerTest::s_lifecycle_;
 TEST_F(DatahubBrokerConsumerTest, ConsumerRegChannelNotFound)
 {
     // CONSUMER_REG_REQ for an unknown channel → CHANNEL_NOT_FOUND error.
-    // Broker logs LOGGER_WARN only; declared as expected.
-    ExpectLogWarn("CONSUMER_REG_REQ failed");
+    // Broker logs LOGGER_WARN with the substring "channel '<X>' not found";
+    // declare the substring of the actual WARN text.
+    ExpectLogWarn("CONSUMER_REG_REQ channel");
 
     BrcHandle bh;
     bh.start(ep(), pk(), "cons.unknown.uid001");
@@ -275,17 +276,21 @@ TEST_F(DatahubBrokerConsumerTest, ConsumerDeregHappyPath)
     const std::string channel = pid_chan("consumer.dereg_happy");
     const std::string prod_uid = "prod." + channel;
     const std::string cons_uid = "cons." + channel;
-    constexpr uint64_t cons_pid = 55100;
+    // Use the test process's real pid for both registration and dereg —
+    // production `BrokerRequestComm::deregister_consumer` always sends
+    // `consumer_pid = ::getpid()`, so the registered pid must match for
+    // the broker to accept the dereg.
+    const uint64_t my_pid = static_cast<uint64_t>(::getpid());
 
     BrcHandle prod;
     prod.start(ep(), pk(), prod_uid);
-    ASSERT_TRUE(prod.brc.register_channel(make_reg_opts(channel, prod_uid, 55001), 3000)
+    ASSERT_TRUE(prod.brc.register_channel(make_reg_opts(channel, prod_uid, my_pid), 3000)
                     .has_value());
     prod.brc.send_heartbeat(channel, prod_uid, "producer", json::object());
 
     BrcHandle cons;
     cons.start(ep(), pk(), cons_uid);
-    ASSERT_TRUE(cons.brc.register_consumer(make_cons_opts(channel, cons_uid, cons_pid), 3000)
+    ASSERT_TRUE(cons.brc.register_consumer(make_cons_opts(channel, cons_uid, my_pid), 3000)
                     .has_value());
 
     // consumer_count == 1 after register
@@ -293,7 +298,7 @@ TEST_F(DatahubBrokerConsumerTest, ConsumerDeregHappyPath)
     ASSERT_TRUE(disc1.has_value());
     EXPECT_EQ(disc1->value("consumer_count", uint32_t{99}), 1u);
 
-    // Deregister consumer (correct uid → success)
+    // Deregister consumer (pid matches → success)
     EXPECT_TRUE(cons.brc.deregister_consumer(channel, 3000));
 
     // consumer_count == 0 after deregister
@@ -342,10 +347,11 @@ TEST_F(DatahubBrokerConsumerTest, DiscShowsConsumerCount)
     const std::string channel = pid_chan("consumer.disc_count");
     const std::string prod_uid = "prod." + channel;
     const std::string cons_uid = "cons." + channel;
+    const uint64_t my_pid = static_cast<uint64_t>(::getpid());
 
     BrcHandle prod;
     prod.start(ep(), pk(), prod_uid);
-    ASSERT_TRUE(prod.brc.register_channel(make_reg_opts(channel, prod_uid, 57000), 3000)
+    ASSERT_TRUE(prod.brc.register_channel(make_reg_opts(channel, prod_uid, my_pid), 3000)
                     .has_value());
     prod.brc.send_heartbeat(channel, prod_uid, "producer", json::object());
 
@@ -358,7 +364,7 @@ TEST_F(DatahubBrokerConsumerTest, DiscShowsConsumerCount)
 
     BrcHandle cons;
     cons.start(ep(), pk(), cons_uid);
-    ASSERT_TRUE(cons.brc.register_consumer(make_cons_opts(channel, cons_uid, 57100), 3000)
+    ASSERT_TRUE(cons.brc.register_consumer(make_cons_opts(channel, cons_uid, my_pid), 3000)
                     .has_value());
 
     auto disc1 = observer.brc.discover_channel(channel, json::object(), 3000);

@@ -127,7 +127,12 @@ bool try_register(const std::string &endpoint,
         t.join();
     brc.disconnect();
 
-    return result.has_value();
+    // Per HEP-CORE-0007 §12.3 (post-Stage-2 contract): `optional<json>`
+    // carries the broker's response (ACK or ERROR); `nullopt` means no
+    // response (transport failure).  This helper returns true only when
+    // the broker accepted the registration (`status == "success"`).
+    return result.has_value() &&
+           result->value("status", std::string{}) == "success";
 }
 
 std::string pid_chan(const std::string &base)

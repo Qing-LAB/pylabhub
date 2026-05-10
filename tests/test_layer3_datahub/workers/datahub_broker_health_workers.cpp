@@ -492,8 +492,14 @@ int schema_mismatch_notify(int /*argc*/, char ** /*argv*/)
             auto opts_b = make_reg_opts(ch_name, uid_b);
             opts_b["schema_hash"] = hash_b;
             auto reg_b = bh_b.brc.register_channel(opts_b, 3000);
-            EXPECT_FALSE(reg_b.has_value())
-                << "Producer B should have been rejected due to schema mismatch";
+            // Schema-hash conflict on duplicate registration → SCHEMA_MISMATCH
+            // per HEP-CORE-0007 §12.4a.  Post-Stage-2 contract: broker
+            // surfaces ERROR body via optional<json>; nullopt is reserved
+            // for transport failure.
+            ASSERT_TRUE(reg_b.has_value())
+                << "Broker should respond with ERROR, not silent timeout";
+            EXPECT_EQ(reg_b->value("status", std::string{}), "error");
+            EXPECT_EQ(reg_b->value("error_code", std::string{}), "SCHEMA_MISMATCH");
 
             // Wait for CHANNEL_EVENT_NOTIFY to reach producer A
             const auto deadline =

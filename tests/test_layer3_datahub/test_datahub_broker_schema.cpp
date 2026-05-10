@@ -357,7 +357,11 @@ TEST_F(BrokerSchemaTest, ConsumerSchemaId_Mismatch_Fails)
     cons_opts["expected_schema_id"]   = cons_sid;
     cons_opts["expected_schema_hash"] = sch.hash;
     auto cons_reg = cons_bh.brc.register_consumer(cons_opts, 3000);
-    EXPECT_FALSE(cons_reg.has_value()) << "Consumer should fail on schema_id mismatch";
+    // schema_id mismatch → SCHEMA_ID_MISMATCH per HEP-CORE-0007 §12.4a.
+    ASSERT_TRUE(cons_reg.has_value())
+        << "Broker should respond with ERROR, not silent timeout";
+    EXPECT_EQ(cons_reg->value("status", std::string{}), "error");
+    EXPECT_EQ(cons_reg->value("error_code", std::string{}), "SCHEMA_ID_MISMATCH");
 
     cons_bh.stop();
     prod_bh.stop();
@@ -387,8 +391,16 @@ TEST_F(BrokerSchemaTest, ConsumerSchemaId_EmptyProducer_Fails)
     auto cons_opts = make_cons_opts(channel, cons_uid);
     cons_opts["expected_schema_id"] = cons_sid;
     auto cons_reg = cons_bh.brc.register_consumer(cons_opts, 3000);
-    EXPECT_FALSE(cons_reg.has_value())
-        << "Consumer should fail when producer is anonymous and schema_id expected";
+    // Consumer cites named-mode `expected_schema_id` without supplying
+    // `expected_schema_hash`; per HEP-CORE-0034 §10.2 named-mode
+    // requires both, so the broker rejects with
+    // MISSING_HASH_FOR_NAMED_CITATION (§12.4a taxonomy) before reaching
+    // the schema-id-mismatch check.
+    ASSERT_TRUE(cons_reg.has_value())
+        << "Broker should respond with ERROR, not silent timeout";
+    EXPECT_EQ(cons_reg->value("status", std::string{}), "error");
+    EXPECT_EQ(cons_reg->value("error_code", std::string{}),
+              "MISSING_HASH_FOR_NAMED_CITATION");
 
     cons_bh.stop();
     prod_bh.stop();

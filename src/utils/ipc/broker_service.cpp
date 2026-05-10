@@ -352,7 +352,7 @@ public:
     void handle_channel_broadcast_req(zmq::socket_t&        socket,
                                       const nlohmann::json& req);
 
-    nlohmann::json handle_channel_list_req();
+    nlohmann::json handle_channel_list_req(const nlohmann::json &req);
 
     // ── Band pub/sub (HEP-CORE-0030) ───────────────────────────────────
     nlohmann::json handle_band_join_req(const nlohmann::json& req,
@@ -868,7 +868,7 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
     else if (msg_type == "CHANNEL_LIST_REQ")
     {
         // Synchronous: return list of registered channels.
-        nlohmann::json resp = handle_channel_list_req();
+        nlohmann::json resp = handle_channel_list_req(payload);
         LOGGER_TRACE("Broker: CHANNEL_LIST_ACK channels={}",
                      resp.value("channels", nlohmann::json::array()).size());
         send_reply(socket, identity, "CHANNEL_LIST_ACK", resp);
@@ -2807,8 +2807,9 @@ void BrokerServiceImpl::handle_channel_broadcast_req(zmq::socket_t&        socke
 // CHANNEL_LIST_REQ — return list of registered channels
 // ============================================================================
 
-nlohmann::json BrokerServiceImpl::handle_channel_list_req()
+nlohmann::json BrokerServiceImpl::handle_channel_list_req(const nlohmann::json &req)
 {
+    const std::string corr_id = req.value("correlation_id", "");
     nlohmann::json resp;
     resp["status"] = "success";
 
@@ -2836,6 +2837,8 @@ nlohmann::json BrokerServiceImpl::handle_channel_list_req()
         channels.push_back(std::move(ch));
     }
     resp["channels"] = std::move(channels);
+    if (!corr_id.empty())
+        resp["correlation_id"] = corr_id;
     return resp;
 }
 
@@ -2848,12 +2851,15 @@ nlohmann::json BrokerServiceImpl::handle_role_presence_req(const nlohmann::json&
     // HEP-CORE-0007 §"ROLE_PRESENCE_REQ" — wire field `role_uid`
     // (unified with REG_REQ / CONSUMER_REG_REQ; old `uid` form retired
     // 2026-05-09 as part of the protocol-doc-vs-code unification).
-    const std::string uid = req.value("role_uid", "");
+    const std::string corr_id = req.value("correlation_id", "");
+    const std::string uid     = req.value("role_uid", "");
     if (uid.empty())
     {
         nlohmann::json resp;
         resp["present"] = false;
         resp["error"]   = "missing role_uid";
+        if (!corr_id.empty())
+            resp["correlation_id"] = corr_id;
         return resp;
     }
 
@@ -2867,6 +2873,8 @@ nlohmann::json BrokerServiceImpl::handle_role_presence_req(const nlohmann::json&
             resp["present"] = true;
             resp["channel"] = name;
             resp["role"]    = "producer";
+            if (!corr_id.empty())
+                resp["correlation_id"] = corr_id;
             LOGGER_DEBUG("Broker: ROLE_PRESENCE_REQ uid='{}' found as producer on '{}'",
                          uid, name);
             return resp;
@@ -2879,6 +2887,8 @@ nlohmann::json BrokerServiceImpl::handle_role_presence_req(const nlohmann::json&
                 resp["present"] = true;
                 resp["channel"] = name;
                 resp["role"]    = "consumer";
+                if (!corr_id.empty())
+                    resp["correlation_id"] = corr_id;
                 LOGGER_DEBUG("Broker: ROLE_PRESENCE_REQ uid='{}' found as consumer on '{}'",
                              uid, name);
                 return resp;
@@ -2889,6 +2899,8 @@ nlohmann::json BrokerServiceImpl::handle_role_presence_req(const nlohmann::json&
     LOGGER_DEBUG("Broker: ROLE_PRESENCE_REQ uid='{}' not found", uid);
     nlohmann::json resp;
     resp["present"] = false;
+    if (!corr_id.empty())
+        resp["correlation_id"] = corr_id;
     return resp;
 }
 
@@ -2897,12 +2909,15 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
     // HEP-CORE-0007 §"ROLE_INFO_REQ" — wire field `role_uid`
     // (unified with REG_REQ / CONSUMER_REG_REQ / ROLE_PRESENCE_REQ;
     // old `uid` form retired 2026-05-09).
-    const std::string uid = req.value("role_uid", "");
+    const std::string corr_id = req.value("correlation_id", "");
+    const std::string uid     = req.value("role_uid", "");
     if (uid.empty())
     {
         nlohmann::json resp;
         resp["found"] = false;
         resp["error"] = "missing role_uid";
+        if (!corr_id.empty())
+            resp["correlation_id"] = corr_id;
         return resp;
     }
 
@@ -2943,6 +2958,8 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
             {
                 resp["inbox_schema"] = nlohmann::json::array();
             }
+            if (!corr_id.empty())
+                resp["correlation_id"] = corr_id;
             LOGGER_DEBUG("Broker: ROLE_INFO_REQ uid='{}' found on '{}', inbox='{}'",
                          uid, name, entry.inbox_endpoint);
             return resp;
@@ -2986,6 +3003,8 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
                 {
                     resp["inbox_schema"] = nlohmann::json::array();
                 }
+                if (!corr_id.empty())
+                    resp["correlation_id"] = corr_id;
                 LOGGER_DEBUG("Broker: ROLE_INFO_REQ uid='{}' found as consumer on '{}', inbox='{}'",
                              uid, name, cons.inbox_endpoint);
                 return resp;
@@ -2996,6 +3015,8 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
     LOGGER_DEBUG("Broker: ROLE_INFO_REQ uid='{}' not found", uid);
     nlohmann::json resp;
     resp["found"] = false;
+    if (!corr_id.empty())
+        resp["correlation_id"] = corr_id;
     return resp;
 }
 
@@ -3541,12 +3562,15 @@ void BrokerServiceImpl::handle_metrics_report_req(const nlohmann::json &req)
 
 nlohmann::json BrokerServiceImpl::handle_metrics_req(const nlohmann::json &req)
 {
+    const std::string corr_id = req.value("correlation_id", "");
     const std::string channel = req.value("channel_name", "");
     nlohmann::json resp       = query_metrics(channel);
     // HEP-CORE-0019 §3.2: merge live SHM-derived block metrics into the response.
     // When a channel name is given we can look up the SHM block(s) directly.
     // For the all-channels case the shm_info map is also populated.
     resp["shm_blocks"] = collect_shm_info(channel);
+    if (!corr_id.empty())
+        resp["correlation_id"] = corr_id;
     return resp;
 }
 
