@@ -353,11 +353,13 @@ public:
      *
      * Thread-safe: may be called from any thread while run() is executing.
      * The response is a JSON array; each element has:
-     *   "name", "schema_hash", "consumer_count", "producer_pid", "status"
+     *   "name", "schema_hash", "consumer_count", "producer_pid", "observable"
+     * (observable is the HEP-CORE-0023 §2.2 derived state:
+     *  "absent" | "registering" | "stalled" | "live").
      *
      * Example return value:
      * @code
-     * [{"name":"sensor_data","schema_hash":"abc123","consumer_count":2,"producer_pid":1234,"status":"Ready"}]
+     * [{"name":"sensor_data","schema_hash":"abc123","consumer_count":2,"producer_pid":1234,"observable":"live"}]
      * @endcode
      */
     [[nodiscard]] std::string list_channels_json_str() const;
