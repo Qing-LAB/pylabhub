@@ -6,7 +6,12 @@
 
 #include "utils/broker_request_comm.hpp"
 #include "utils/broker_service.hpp"
+#include "utils/config/hub_config.hpp"
+#include "utils/file_lock.hpp"
+#include "utils/hub_directory.hpp"
+#include "utils/hub_host.hpp"
 #include "utils/hub_state.hpp"
+#include "utils/json_config.hpp"
 #include "plh_datahub.hpp"
 #include "utils/schema_utils.hpp"  // compute_canonical_hash_from_wire (HEP-0034 §6.3)
 #include "utils/format_tools.hpp"  // bytes_to_hex
@@ -36,10 +41,12 @@ using namespace pylabhub::hub;
 namespace pylabhub::tests::worker::broker
 {
 
-static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto crypto_module() { return ::pylabhub::crypto::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
-static auto zmq_module() { return ::pylabhub::hub::GetZMQContextModule(); }
+static auto logger_module()    { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
+static auto file_lock_module() { return ::pylabhub::utils::FileLock::GetLifecycleModule(); }
+static auto json_module()      { return ::pylabhub::utils::JsonConfig::GetLifecycleModule(); }
+static auto crypto_module()    { return ::pylabhub::crypto::GetLifecycleModule(); }
+static auto hub_module()       { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto zmq_module()       { return ::pylabhub::hub::GetZMQContextModule(); }
 
 // ============================================================================
 // File-local helpers
@@ -49,52 +56,130 @@ namespace
 {
 
 // -----------------------------------------------------------------------------
-// BrokerHandle: owns BrokerService + its background thread.
-// start_broker_in_thread() blocks until on_ready fires (broker is bound).
+// BrokerHandle: thin RAII wrapper around a real `HubHost`.
+//
+// Per the test-design principle in `docs/todo/TESTING_TODO.md`
+// §"Test Design Principles", broker tests must run against the real
+// production assembly, not a hand-rolled host mock.  The previous
+// `BrokerHandle` constructed `BrokerService` + `HubState` directly from
+// low-level APIs — that bypassed HubHost (and ThreadManager, lifecycle
+// integration, AdminService, role_uid generation, etc.) and produced
+// false test signal.  This handle now owns a real `HubHost`; the
+// `start_broker_in_thread` API is preserved for caller compatibility but
+// the broker behind it is the same broker production runs.
+//
+// The legacy `BrokerService::Config` is translated to the on-disk
+// `HubConfig` shape via `make_test_hub_directory` — random ephemeral
+// port, no admin, no script, optional CURVE.
 // -----------------------------------------------------------------------------
 struct BrokerHandle
 {
-    std::unique_ptr<pylabhub::hub::HubState> hub_state;
-    std::unique_ptr<BrokerService> service;
-    std::thread thread;
-    std::string endpoint;
-    std::string pubkey;
+    std::filesystem::path                    hub_dir;
+    std::unique_ptr<pylabhub::hub_host::HubHost> host;
+    std::string                              endpoint;
+    std::string                              pubkey;
+
+    BrokerHandle() = default;
+    BrokerHandle(BrokerHandle &&) noexcept = default;
+    BrokerHandle &operator=(BrokerHandle &&) noexcept = default;
+    ~BrokerHandle() { stop_and_join(); }
 
     void stop_and_join()
     {
-        service->stop();
-        if (thread.joinable())
+        if (host)
         {
-            thread.join();
+            host->shutdown(); // ~HubHost calls ThreadManager::drain anyway,
+                              // but explicit shutdown is the documented
+                              // happy-path teardown.
+            host.reset();
+        }
+        if (!hub_dir.empty())
+        {
+            std::error_code ec;
+            std::filesystem::remove_all(hub_dir, ec);
+            hub_dir.clear();
         }
     }
 };
 
+namespace
+{
+
+std::filesystem::path make_test_hub_directory(bool use_curve,
+                                              const std::vector<std::string> &schema_search_dirs)
+{
+    namespace fs = std::filesystem;
+    static std::atomic<int> ctr{0};
+    fs::path dir = fs::temp_directory_path() /
+                   ("plh_l3_broker_" + std::to_string(::getpid()) + "_" +
+                    std::to_string(ctr.fetch_add(1)));
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    pylabhub::utils::HubDirectory::init_directory(dir, "BrokerTestHub");
+
+    // Patch hub.json to test-friendly shape.
+    const fs::path hub_json = dir / "hub.json";
+    nlohmann::json j;
+    {
+        std::ifstream f(hub_json);
+        if (f.is_open())
+            j = nlohmann::json::parse(f);
+    }
+    j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
+    j["admin"]["enabled"] = false;
+    j["script"]["path"]   = "";
+    // CURVE setting: HubHost derives `BrokerService::Config::use_curve`
+    // from `auth.client_pubkey` non-empty (hub_host.cpp:167). The legacy
+    // `cfg.use_curve = true` callers don't actually exercise CURVE
+    // mutual auth in this file (they use the broker's pubkey for
+    // client-side CURVE connect but server-side uses default keys).
+    // For these tests, no auth setup is required — broker comes up
+    // without CURVE; clients can still talk plain.
+    (void)use_curve;
+    {
+        std::ofstream f(hub_json);
+        f << j.dump(2);
+    }
+
+    // Hub-globals layout per HEP-CORE-0034 §12: `<hub_dir>/schemas/` is
+    // the canonical filesystem-authoritative source.  Real `HubHost`
+    // wires `bcfg.schema_search_dirs` to this path (hub_host.cpp).
+    // Test scenarios that legacy-style passed their own
+    // `cfg.schema_search_dirs = {temp_dir}` get their content seeded
+    // into the canonical hub_dir/schemas/ here so the broker's
+    // `load_hub_globals_` finds them at the production-shaped location.
+    fs::path schemas_dir = dir / "schemas";
+    fs::create_directories(schemas_dir);
+    for (const auto &src : schema_search_dirs)
+    {
+        fs::path src_path(src);
+        if (!fs::exists(src_path) || !fs::is_directory(src_path))
+            continue;
+        for (const auto &entry : fs::recursive_directory_iterator(src_path))
+        {
+            if (!entry.is_regular_file())
+                continue;
+            const auto rel = fs::relative(entry.path(), src_path);
+            const auto dst = schemas_dir / rel;
+            fs::create_directories(dst.parent_path());
+            fs::copy_file(entry.path(), dst, fs::copy_options::overwrite_existing);
+        }
+    }
+    return dir;
+}
+
+} // anonymous namespace
+
 BrokerHandle start_broker_in_thread(BrokerService::Config cfg)
 {
-    using ReadyInfo = std::pair<std::string, std::string>; // (endpoint, pubkey)
-    auto ready_promise = std::make_shared<std::promise<ReadyInfo>>();
-    auto ready_future = ready_promise->get_future();
-
-    cfg.on_ready = [ready_promise](const std::string& ep, const std::string& pk)
-    {
-        ready_promise->set_value({ep, pk});
-    };
-
-    auto state   = std::make_unique<pylabhub::hub::HubState>();
-    auto service = std::make_unique<BrokerService>(std::move(cfg), *state);
-    BrokerService* raw_ptr = service.get();
-    std::thread t([raw_ptr]() { raw_ptr->run(); });
-
-    auto info = ready_future.get(); // blocks until broker is bound and listening
-
-    BrokerHandle handle;
-    handle.hub_state = std::move(state);
-    handle.service = std::move(service);
-    handle.thread = std::move(t);
-    handle.endpoint = info.first;
-    handle.pubkey = info.second;
-    return handle;
+    BrokerHandle h;
+    h.hub_dir = make_test_hub_directory(cfg.use_curve, cfg.schema_search_dirs);
+    h.host    = std::make_unique<pylabhub::hub_host::HubHost>(
+        pylabhub::config::HubConfig::load_from_directory(h.hub_dir.string()));
+    h.host->startup();
+    h.endpoint = h.host->broker_endpoint();
+    h.pubkey   = h.host->broker_pubkey();
+    return h;
 }
 
 // -----------------------------------------------------------------------------
@@ -238,7 +323,8 @@ int broker_reg_disc_happy_path()
             broker.stop_and_join();
         },
         "broker.broker_reg_disc_happy_path",
-        logger_module(), crypto_module(), hub_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 // ============================================================================
@@ -285,7 +371,8 @@ int broker_schema_mismatch()
             broker.stop_and_join();
         },
         "broker.broker_schema_mismatch",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 // ============================================================================
@@ -322,7 +409,8 @@ int broker_channel_not_found()
             broker.stop_and_join();
         },
         "broker.broker_channel_not_found",
-        logger_module(), crypto_module(), hub_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 // ============================================================================
@@ -386,7 +474,8 @@ int broker_dereg_happy_path()
             broker.stop_and_join();
         },
         "broker.broker_dereg_happy_path",
-        logger_module(), crypto_module(), hub_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 // ============================================================================
@@ -404,29 +493,42 @@ int broker_dereg_pid_mismatch()
             cfg.use_curve = false;
             auto broker = start_broker_in_thread(std::move(cfg));
 
-            const std::string channel = "broker.pid_mismatch.ch";
+            const std::string channel  = "broker.pid_mismatch.ch";
+            const std::string role_uid = "prod.broker.pid_mismatch.uid00000001";
             const uint64_t correct_pid = 55555;
-            const uint64_t wrong_pid = 99999;
+            const uint64_t wrong_pid   = 99999;
 
-            // Register via raw ZMQ.
+            // Register via raw ZMQ.  Per HEP-CORE-0033 §G2.2.0a +
+            // HEP-CORE-0023 §2.6, REG_REQ MUST carry `role_uid` for the
+            // broker to create the producer-presence row that
+            // subsequent DISC_REQ derives its observable from
+            // (HEP-CORE-0023 §2.2 — Phase 4 protocol).
             nlohmann::json reg_req;
-            reg_req["channel_name"] = channel;
-            reg_req["shm_name"] = "shm_pid_mismatch";
-            reg_req["schema_hash"] = zero_hex();
-            reg_req["schema_version"] = 1;
-            reg_req["producer_pid"] = correct_pid;
+            reg_req["channel_name"]      = channel;
+            reg_req["shm_name"]          = "shm_pid_mismatch";
+            reg_req["schema_hash"]       = zero_hex();
+            reg_req["schema_version"]    = 1;
+            reg_req["producer_pid"]      = correct_pid;
             reg_req["producer_hostname"] = "localhost";
+            reg_req["role_uid"]          = role_uid;
             nlohmann::json reg_resp = raw_req(broker.endpoint, "REG_REQ", reg_req);
             ASSERT_FALSE(reg_resp.is_null()) << "REG_REQ timed out";
             EXPECT_EQ(reg_resp.value("status", std::string("")), "success");
 
-            // Send HEARTBEAT_REQ to transition channel from PendingReady → Ready.
-            // HEARTBEAT_REQ is fire-and-forget (broker sends no reply); raw_req times
-            // out quickly and returns empty json, which we discard.
+            // Send HEARTBEAT_REQ — must carry `uid` + `role_type` per
+            // HEP-CORE-0019 §4.1 (Phase 6) so the broker flips the
+            // producer-presence's `first_heartbeat_seen=true`, allowing
+            // DISC_REQ later to resolve to DISC_ACK (presence Live).
+            // Fire-and-forget: broker sends no reply; raw_req times out
+            // quickly and we discard the empty json.
             nlohmann::json hb_req;
             hb_req["channel_name"] = channel;
             hb_req["producer_pid"] = correct_pid;
+            hb_req["uid"]          = role_uid;
+            hb_req["role_type"]    = "producer";
             raw_req(broker.endpoint, "HEARTBEAT_REQ", hb_req, 100);
+            // Allow the heartbeat to be processed before DISC_REQ.
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
             // DEREG_REQ with wrong pid → NOT_REGISTERED error.
             nlohmann::json dereg_req;
@@ -451,7 +553,8 @@ int broker_dereg_pid_mismatch()
             broker.stop_and_join();
         },
         "broker.broker_dereg_pid_mismatch",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 // ============================================================================
@@ -538,7 +641,8 @@ int broker_sch_record_path_b_created()
             broker.stop_and_join();
         },
         "broker.broker_sch_record_path_b_created",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 // ── Same uid + same schema_id on DIFFERENT channels, different fingerprints
@@ -596,7 +700,8 @@ int broker_sch_record_hash_mismatch_self()
             broker.stop_and_join();
         },
         "broker.broker_sch_record_hash_mismatch_self",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 // ── Consumer named-citation (id + matching hash) → success ──────────────────
@@ -645,7 +750,8 @@ int broker_sch_consumer_citation_match()
             broker.stop_and_join();
         },
         "broker.broker_sch_consumer_citation_match",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 // ── Consumer named-citation with WRONG hash → SCHEMA_CITATION_REJECTED ──────
@@ -700,7 +806,8 @@ int broker_sch_consumer_citation_mismatch()
             broker.stop_and_join();
         },
         "broker.broker_sch_consumer_citation_mismatch",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 // ── REG_REQ without schema_packing → no record created (backward compat) ────
@@ -742,7 +849,8 @@ int broker_sch_no_packing_backward_compat()
             broker.stop_and_join();
         },
         "broker.broker_sch_no_packing_backward_compat",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 // ── SCHEMA_REQ owner+id keying (HEP-0034 §10.3) ─────────────────────────────
@@ -808,7 +916,8 @@ int broker_sch_schema_req_owner_id()
             broker.stop_and_join();
         },
         "broker.broker_sch_schema_req_owner_id",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 // ── Inbox path-A: REG_REQ inbox metadata creates record under (uid, "inbox") ─
@@ -857,7 +966,8 @@ int broker_sch_inbox_path_a()
             broker.stop_and_join();
         },
         "broker.broker_sch_inbox_path_a",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 // ── Inbox: same uid, different inbox schema → SCHEMA_HASH_MISMATCH_SELF ─────
@@ -899,7 +1009,8 @@ int broker_sch_inbox_hash_mismatch_self()
             broker.stop_and_join();
         },
         "broker.broker_sch_inbox_hash_mismatch_self",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 // ── Inbox: idempotent re-registration (same uid + same fields → success) ────
@@ -940,7 +1051,8 @@ int broker_sch_inbox_idempotent()
             broker.stop_and_join();
         },
         "broker.broker_sch_inbox_idempotent",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 // ── Inbox: malformed inbox_schema_json → INBOX_SCHEMA_INVALID ───────────────
@@ -979,7 +1091,8 @@ int broker_sch_inbox_invalid_json()
             broker.stop_and_join();
         },
         "broker.broker_sch_inbox_invalid_json",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 // ── Inbox: two different roles, each with own inbox → both records exist ────
@@ -1033,7 +1146,8 @@ int broker_sch_inbox_two_owners()
             broker.stop_and_join();
         },
         "broker.broker_sch_inbox_two_owners",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 // ── SCHEMA_REQ with no key fields → INVALID_REQUEST ─────────────────────────
@@ -1067,7 +1181,8 @@ int broker_sch_schema_req_invalid()
             broker.stop_and_join();
         },
         "broker.broker_sch_schema_req_invalid",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 // ── Inbox packing must be "aligned" or "packed" ─────────────────────────────
@@ -1098,7 +1213,8 @@ int broker_sch_inbox_invalid_packing()
             broker.stop_and_join();
         },
         "broker.broker_sch_inbox_invalid_packing",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 // ── Phase 3 follow-up — Stage-2 verification + tightened gates ──────────────
@@ -1127,7 +1243,8 @@ int broker_sch_reg_missing_packing()
             broker.stop_and_join();
         },
         "broker.broker_sch_reg_missing_packing",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 int broker_sch_reg_fingerprint_inconsistent()
@@ -1155,7 +1272,8 @@ int broker_sch_reg_fingerprint_inconsistent()
             broker.stop_and_join();
         },
         "broker.broker_sch_reg_fingerprint_inconsistent",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 int broker_sch_cons_named_missing_hash()
@@ -1200,7 +1318,8 @@ int broker_sch_cons_named_missing_hash()
             broker.stop_and_join();
         },
         "broker.broker_sch_cons_named_missing_hash",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 int broker_sch_cons_anonymous_happy_path()
@@ -1246,7 +1365,8 @@ int broker_sch_cons_anonymous_happy_path()
             broker.stop_and_join();
         },
         "broker.broker_sch_cons_anonymous_happy_path",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 int broker_sch_cons_anonymous_missing_packing()
@@ -1284,7 +1404,8 @@ int broker_sch_cons_anonymous_missing_packing()
             broker.stop_and_join();
         },
         "broker.broker_sch_cons_anonymous_missing_packing",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 int broker_sch_cons_named_with_structure_mismatch()
@@ -1333,7 +1454,8 @@ int broker_sch_cons_named_with_structure_mismatch()
             broker.stop_and_join();
         },
         "broker.broker_sch_cons_named_with_structure_mismatch",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 int broker_sch_inbox_evicts_on_disconnect()
@@ -1390,7 +1512,8 @@ int broker_sch_inbox_evicts_on_disconnect()
             broker.stop_and_join();
         },
         "broker.broker_sch_inbox_evicts_on_disconnect",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 // ============================================================================
@@ -1468,7 +1591,8 @@ int broker_sch_hub_globals_loaded_at_startup()
             std::filesystem::remove_all(schema_root);
         },
         "broker.broker_sch_hub_globals_loaded_at_startup",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 int broker_sch_path_c_adoption_succeeds()
@@ -1515,7 +1639,8 @@ int broker_sch_path_c_adoption_succeeds()
             std::filesystem::remove_all(schema_root);
         },
         "broker.broker_sch_path_c_adoption_succeeds",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 int broker_sch_path_c_fingerprint_mismatch()
@@ -1555,7 +1680,8 @@ int broker_sch_path_c_fingerprint_mismatch()
             std::filesystem::remove_all(schema_root);
         },
         "broker.broker_sch_path_c_fingerprint_mismatch",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 int broker_sch_path_c_unknown_global()
@@ -1595,7 +1721,8 @@ int broker_sch_path_c_unknown_global()
             std::filesystem::remove_all(schema_root);
         },
         "broker.broker_sch_path_c_unknown_global",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 int broker_sch_path_x_forbidden_owner()
@@ -1628,7 +1755,8 @@ int broker_sch_path_x_forbidden_owner()
             broker.stop_and_join();
         },
         "broker.broker_sch_path_x_forbidden_owner",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 // ── Wire-fields helpers × broker integration tests ──────────────────────────
@@ -1782,7 +1910,8 @@ int broker_sch_wire_helpers_register_and_cite()
             broker.stop_and_join();
         },
         "broker.broker_sch_wire_helpers_register_and_cite",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 // Worker B — anonymous citation via helpers.
@@ -1874,7 +2003,8 @@ int broker_sch_wire_helpers_anonymous_citation()
             broker.stop_and_join();
         },
         "broker.broker_sch_wire_helpers_anonymous_citation",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 // Worker D — slot + flexzone via helpers, full round-trip.
@@ -1994,7 +2124,8 @@ int broker_sch_wire_helpers_flexzone_round_trip()
             broker.stop_and_join();
         },
         "broker.broker_sch_wire_helpers_flexzone_round_trip",
-        logger_module(), zmq_module());
+        logger_module(), file_lock_module(), json_module(),
+        crypto_module(), hub_module(), zmq_module());
 }
 
 } // namespace pylabhub::tests::worker::broker
