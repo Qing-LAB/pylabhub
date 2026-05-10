@@ -86,7 +86,7 @@ struct ComponentVersions
     // --- Broker control-plane protocol (was "wire" before 2026-04-22).
     //     Covers the JSON message set between BrokerRequestComm and
     //     BrokerService: REG_REQ, DISC_REQ, DISC_ACK, HEARTBEAT_REQ,
-    //     CHANNEL_CLOSING_NOTIFY, FORCE_SHUTDOWN, ROLE_PRESENCE_REQ,
+    //     CHANNEL_CLOSING_NOTIFY, ROLE_PRESENCE_REQ,
     //     ROLE_INFO_REQ, METRICS_REPORT_REQ, CHECKSUM_ERROR_REPORT,
     //     HUB_PEER_HELLO/BYE, HUB_RELAY_MSG, CONSUMER_REG_REQ, ...
     //     Spec: HEP-CORE-0007.  Bump major on removed/renamed fields or

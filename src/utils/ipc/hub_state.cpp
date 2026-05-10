@@ -404,33 +404,37 @@ void HubState::_set_role_disconnected(const std::string &uid)
         std::unique_lock lk(pImpl->mu);
         auto             it = pImpl->roles.find(uid);
         if (it == pImpl->roles.end()) return;
-        // The role is disconnected when every presence row is Disconnected.
-        // We mark all of them here; schema eviction follows in the same lock.
-        bool any_alive_to_kill = false;
+        // 🚧 PATCH (2026-05-10) — uses `disconnected_fired` memoization.
+        // Full fix pending in Wave M2 MP3 (unified
+        // `_dispatch_role_disconnected_if_dead` helper).  See
+        // `docs/TODO_MASTER.md` "Wave M2".
+        //
+        // Idempotency: fire role_disconnected exactly once per
+        // (registration → disconnect) cycle.  Memoized on
+        // `RoleEntry::disconnected_fired`; cleared by revival paths
+        // (upsert / heartbeat).  Event-emit memoization, not a duplicate
+        // FSM state — `any_presence_alive()` remains the source of truth
+        // for liveness.
+        //
+        // Mark all presences Disconnected (the FSM expression of "this
+        // role is gone"); then, on the first call only, evict the
+        // owner's schemas (HEP-CORE-0034 §7.2 — schemas evict
+        // atomically with role transition to Disconnected; hub-globals
+        // never touched here) and fire role_disconnected.  Schemas-
+        // already-gone is a no-op; the second-call early-return avoids
+        // a redundant handler invocation.
         for (auto &p : it->second.presences)
         {
             if (p.state != RoleState::Disconnected)
             {
                 p.state       = RoleState::Disconnected;
                 p.state_since = std::chrono::steady_clock::now();
-                any_alive_to_kill = true;
             }
         }
-        if (any_alive_to_kill || it->second.presences.empty())
+        if (!it->second.disconnected_fired)
         {
-            fire = true;
-
-            // HEP-CORE-0034 §7.2 — schemas evict atomically with the
-            // producer's role transition to Disconnected.  The schema's
-            // lifetime is the role's process lifetime; once the role is
-            // gone from the network, its private records have no
-            // authority and must be removed before any later citer can
-            // observe a stale entry.  Hub-globals (owner=="hub") are
-            // never touched here.
-            //
-            // We do the eviction inside the same lock as the state
-            // transition, so a snapshot taken after this op sees a
-            // consistent (Disconnected role, no orphan schemas) view.
+            it->second.disconnected_fired = true;
+            fire                          = true;
             for (auto sit = pImpl->schemas.begin(); sit != pImpl->schemas.end(); )
             {
                 if (sit->first.first == uid)
@@ -642,6 +646,12 @@ RoleEntry upsert_role_locked(Impl &impl, const std::string &uid,
         ex.channels.push_back(added_channel);
     }
     upsert_presence_row_locked(ex, added_channel, role_type, heartbeat_when);
+    // 🚧 PATCH (2026-05-10) — full fix pending in Wave M2 MP3.
+    // Revival: the role is being re-touched (REG_REQ, CONSUMER_REG_REQ,
+    // or band-join after a prior disconnect).  Reset the event-emit
+    // memoization so a future disconnect can fire `role_disconnected`
+    // again.
+    ex.disconnected_fired = false;
     return ex;
 }
 
@@ -872,6 +882,10 @@ void HubState::_on_heartbeat(const std::string                   &channel,
             // (HEP-CORE-0023 §2.5).
             if (prev == RoleState::Pending)
                 ++pImpl->counters.pending_to_ready_total;
+            // 🚧 PATCH (2026-05-10) — full fix pending in Wave M2 MP3.
+            // Revival: clear the role's role_disconnected-already-fired
+            // memoization so a future disconnect can re-emit.
+            rit->second.disconnected_fired = false;
         }
         if (metrics.has_value())
         {

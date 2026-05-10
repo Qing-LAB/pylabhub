@@ -832,7 +832,8 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
     }
     else if (msg_type == "HEARTBEAT_REQ")
     {
-        // Fire-and-forget from client. State transitions (PendingReady -> Ready)
+        // Fire-and-forget from client.  Presence FSM transitions (e.g.
+        // first-heartbeat sub-Live → Live; Pending → Connected recovery)
         // happen inside hub_state_->_on_heartbeat() called from the handler.
         handle_heartbeat_req(payload);
     }
@@ -1097,7 +1098,8 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // Producer ZMQ identity: captured here for future unsolicited pushes.
     entry.producer_zmq_identity.assign(static_cast<const char*>(identity.data()),
                                         identity.size());
-    // status starts as PendingReady (default); last_heartbeat = now() (default).
+    // Producer-presence is created in `_on_channel_registered` (Connected,
+    // first_heartbeat_seen=false) — channel observable starts at kRegistering.
 
     // ── Wire schema fields (HEP-CORE-0034 §10.1) ────────────────────────────
     //
@@ -1455,7 +1457,7 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
 
     // Resolve the producer-presence row that owns this channel.  Per
     // HEP-CORE-0023 §2.2 the response variant is derived from the
-    // presence's FSM state, not the legacy ChannelEntry.status.
+    // producer-presence's FSM state.
     const pylabhub::hub::RolePresence *presence = nullptr;
     {
         auto rit = snap.roles.find(entry_ref.producer_role_uid);
@@ -1466,8 +1468,7 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
     if (presence == nullptr ||
         presence->state == pylabhub::hub::RoleState::Disconnected)
     {
-        // Channel exists but its producer is gone (either never had a
-        // presence row in a pre-M0 leftover, or the presence has been
+        // Channel exists but its producer is gone (presence row absent or
         // reaped while atomic teardown is in flight).  From the
         // consumer's perspective this channel is not discoverable.
         LOGGER_DEBUG("Broker: DISC_REQ for '{}' -> CHANNEL_NOT_FOUND "
