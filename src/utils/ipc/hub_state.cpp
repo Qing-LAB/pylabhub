@@ -38,17 +38,6 @@ namespace pylabhub::hub
 
 // ─── Enum → string helpers ──────────────────────────────────────────────────
 
-const char *to_string(ChannelStatus s) noexcept
-{
-    switch (s)
-    {
-    case ChannelStatus::PendingReady: return "PendingReady";
-    case ChannelStatus::Ready:        return "Ready";
-    case ChannelStatus::Closing:      return "Closing";
-    }
-    return "Unknown";
-}
-
 const char *to_string(RoleState s) noexcept
 {
     switch (s)
@@ -81,22 +70,6 @@ const char *to_string(ChannelCloseReason r) noexcept
     case ChannelCloseReason::BrokerShutdown:   return "BrokerShutdown";
     }
     return "Unknown";
-}
-
-/// Map the legacy `ChannelStatus` (still stored on `ChannelEntry` in
-/// the M1.2 transition window) to the new `ChannelObservable`.  Fire
-/// sites for `ChannelStatusChangedHandler` use this until the
-/// `ChannelEntry.status` field is retired and observability is
-/// derived directly from the producer-presence.
-inline ChannelObservable observable_from_legacy_status(ChannelStatus s) noexcept
-{
-    switch (s)
-    {
-    case ChannelStatus::PendingReady: return ChannelObservable::kRegistering;
-    case ChannelStatus::Ready:        return ChannelObservable::kLive;
-    case ChannelStatus::Closing:      return ChannelObservable::kAbsent;
-    }
-    return ChannelObservable::kAbsent;
 }
 
 const char *to_string(ChannelObservable o) noexcept
@@ -357,22 +330,6 @@ void HubState::_set_channel_opened(ChannelEntry entry)
     for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->ch_opened)) h(fired);
 }
 
-void HubState::_set_channel_status(const std::string &name, ChannelStatus s)
-{
-    ChannelEntry fired;
-    {
-        std::unique_lock lk(pImpl->mu);
-        auto             it = pImpl->channels.find(name);
-        if (it == pImpl->channels.end()) return;
-        it->second.status      = s;
-        it->second.state_since = std::chrono::steady_clock::now();
-        fired                  = it->second;
-    }
-    const auto observable = observable_from_legacy_status(fired.status);
-    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->ch_status_changed))
-        h(fired, observable);
-}
-
 void HubState::_set_channel_closed(const std::string &name)
 {
     bool erased = false;
@@ -439,28 +396,6 @@ void HubState::_set_role_registered(RoleEntry entry)
     for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_reg)) h(fired);
 }
 
-void HubState::_update_role_heartbeat(const std::string                     &uid,
-                                      std::chrono::steady_clock::time_point  when)
-{
-    std::unique_lock lk(pImpl->mu);
-    auto             it = pImpl->roles.find(uid);
-    if (it == pImpl->roles.end()) return;
-    it->second.last_heartbeat = when;
-    if (it->second.state == RoleState::Disconnected)
-        it->second.state = RoleState::Connected;
-}
-
-void HubState::_update_role_metrics(const std::string                     &uid,
-                                    nlohmann::json                         metrics,
-                                    std::chrono::system_clock::time_point  when)
-{
-    std::unique_lock lk(pImpl->mu);
-    auto             it = pImpl->roles.find(uid);
-    if (it == pImpl->roles.end()) return;
-    it->second.latest_metrics       = std::move(metrics);
-    it->second.metrics_collected_at = when;
-}
-
 void HubState::_set_role_disconnected(const std::string &uid)
 {
     bool        fire           = false;
@@ -469,10 +404,21 @@ void HubState::_set_role_disconnected(const std::string &uid)
         std::unique_lock lk(pImpl->mu);
         auto             it = pImpl->roles.find(uid);
         if (it == pImpl->roles.end()) return;
-        if (it->second.state != RoleState::Disconnected)
+        // The role is disconnected when every presence row is Disconnected.
+        // We mark all of them here; schema eviction follows in the same lock.
+        bool any_alive_to_kill = false;
+        for (auto &p : it->second.presences)
         {
-            it->second.state = RoleState::Disconnected;
-            fire             = true;
+            if (p.state != RoleState::Disconnected)
+            {
+                p.state       = RoleState::Disconnected;
+                p.state_since = std::chrono::steady_clock::now();
+                any_alive_to_kill = true;
+            }
+        }
+        if (any_alive_to_kill || it->second.presences.empty())
+        {
+            fire = true;
 
             // HEP-CORE-0034 §7.2 — schemas evict atomically with the
             // producer's role transition to Disconnected.  The schema's
@@ -573,16 +519,6 @@ void HubState::_set_peer_disconnected(const std::string &hub_uid)
     for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->peer_disc)) h(hub_uid);
 }
 
-void HubState::_set_channel_closing_deadline(
-    const std::string                    &name,
-    std::chrono::steady_clock::time_point deadline)
-{
-    std::unique_lock lk(pImpl->mu);
-    auto             it = pImpl->channels.find(name);
-    if (it == pImpl->channels.end()) return;
-    it->second.closing_deadline = deadline;
-}
-
 void HubState::_set_channel_zmq_node_endpoint(const std::string &name,
                                               std::string        endpoint)
 {
@@ -680,17 +616,15 @@ RoleEntry upsert_role_locked(Impl &impl, const std::string &uid,
     if (it == impl.roles.end())
     {
         RoleEntry r;
-        r.uid            = uid;
-        r.name           = derived_name;
-        r.role_tag       = derived_tag;
-        r.pubkey_z85     = pubkey_z85;
-        r.state          = RoleState::Connected;
-        r.last_heartbeat = heartbeat_when;
+        r.uid        = uid;
+        r.name       = derived_name;
+        r.role_tag   = derived_tag;
+        r.pubkey_z85 = pubkey_z85;
         if (!added_channel.empty()) r.channels.push_back(added_channel);
-        // M1.2 — eager presence creation per HEP-CORE-0023 §2.6.  The
-        // presence row is created at REG time so DISC_REQ before the
-        // first heartbeat resolves to "registering"
-        // (`!first_heartbeat_seen`) → DISC_PENDING.
+        // Eager presence creation per HEP-CORE-0023 §2.6: the presence
+        // row is created at REG time so DISC_REQ before the first
+        // heartbeat resolves to "registering" (`!first_heartbeat_seen`)
+        // → DISC_PENDING.
         upsert_presence_row_locked(r, added_channel, role_type, heartbeat_when);
         auto [new_it, _] = impl.roles.emplace(uid, std::move(r));
         return new_it->second;
@@ -701,8 +635,6 @@ RoleEntry upsert_role_locked(Impl &impl, const std::string &uid,
     ex.name     = derived_name;
     ex.role_tag = derived_tag;
     if (!pubkey_z85.empty()) ex.pubkey_z85 = pubkey_z85;
-    ex.state          = RoleState::Connected;
-    ex.last_heartbeat = heartbeat_when;
     if (!added_channel.empty() &&
         std::find(ex.channels.begin(), ex.channels.end(), added_channel) ==
             ex.channels.end())
@@ -801,14 +733,30 @@ void HubState::_on_channel_closed(const std::string &name, ChannelCloseReason wh
     }
 
     _set_channel_closed(name);
-    // Remove channel from each role's channels list (so a dropped channel
-    // no longer appears under roles[*].channels).
+    // Remove channel from each role's channels list and atomically mark
+    // the producer-presence on this channel as Disconnected (HEP-CORE-0023
+    // §2.1 atomic teardown — channel teardown drives the producer's
+    // presence FSM to its terminal state).  Other presences belonging to
+    // the same role on different channels are left alone.
     {
         std::unique_lock lk(pImpl->mu);
         for (auto &[uid, role] : pImpl->roles)
         {
             auto it = std::find(role.channels.begin(), role.channels.end(), name);
             if (it != role.channels.end()) role.channels.erase(it);
+        }
+        if (!producer_uid.empty())
+        {
+            auto rit = pImpl->roles.find(producer_uid);
+            if (rit != pImpl->roles.end())
+            {
+                if (auto *p = rit->second.find_presence(name, "producer");
+                    p != nullptr && p->state != RoleState::Disconnected)
+                {
+                    p->state       = RoleState::Disconnected;
+                    p->state_since = std::chrono::steady_clock::now();
+                }
+            }
         }
         pImpl->shm_blocks.erase(name);
     }
@@ -859,9 +807,10 @@ void HubState::_on_consumer_left(const std::string &channel, const std::string &
         return;
     }
     _remove_consumer(channel, role_uid);
-    // Remove this channel from the role's channels list; do NOT mark the
-    // role disconnected — the role may still be producing on other
-    // channels or reachable via bands / peer federation.
+    // Remove this channel from the role's channels list and mark the
+    // consumer-presence Disconnected (HEP-CORE-0023 §2.1).  Do NOT mark
+    // the whole role disconnected — the role may still be producing on
+    // other channels or attached as a consumer elsewhere.
     if (!role_uid.empty())
     {
         std::unique_lock lk(pImpl->mu);
@@ -871,6 +820,12 @@ void HubState::_on_consumer_left(const std::string &channel, const std::string &
             auto &chs = it->second.channels;
             auto  rm  = std::find(chs.begin(), chs.end(), channel);
             if (rm != chs.end()) chs.erase(rm);
+            if (auto *p = it->second.find_presence(channel, "consumer");
+                p != nullptr && p->state != RoleState::Disconnected)
+            {
+                p->state       = RoleState::Disconnected;
+                p->state_since = std::chrono::steady_clock::now();
+            }
         }
     }
 }
@@ -887,118 +842,65 @@ void HubState::_on_heartbeat(const std::string                   &channel,
         bump_invalid_identifier(*pImpl);
         return;
     }
-    // M1.1 transitional model — per HEP-CORE-0023 §2.6 + §2.5.2.
-    //
-    // The presence row on `RoleEntry.presences[]` is the new source of
-    // truth (M1.2 will retire the legacy ChannelEntry.status /
-    // last_heartbeat below).  Until then we maintain BOTH the per-
-    // presence row AND the legacy fields so the sweep loop (which still
-    // reads ChannelEntry.last_heartbeat) and existing admin-query
-    // consumers keep working.
-    //
-    // role_type empty → legacy behaviour only (no presence row touched).
-    // This is the M0-era fallback for the brief window before all
-    // role-host call sites pass role_type through.
+    // Per HEP-CORE-0023 §2.5.2: each heartbeat refreshes ONLY the
+    // matching `(uid, channel, role_type)` presence row.  Presence
+    // rows are created eagerly at REG time (§2.6); a heartbeat
+    // for an unknown presence is a no-op.
+    if (role_uid.empty() || role_type.empty()) return;
 
-    // 1. Channel liveness (legacy path — kept for back-compat in M1.1):
-    //    first heartbeat transitions PendingReady -> Ready; subsequent
-    //    heartbeats update last_heartbeat without a status change.
-    //    Per HEP-CORE-0023 §2.5, every PendingReady -> Ready transition
-    //    (first heartbeat OR recovery) increments `pending_to_ready_total`.
-    bool fire_channel_ready = false;
-    {
-        std::unique_lock lk(pImpl->mu);
-        auto             it = pImpl->channels.find(channel);
-        if (it != pImpl->channels.end())
-        {
-            it->second.last_heartbeat = when;
-            if (it->second.status == ChannelStatus::PendingReady)
-            {
-                it->second.status      = ChannelStatus::Ready;
-                it->second.state_since = when;
-                ++pImpl->counters.pending_to_ready_total;
-                fire_channel_ready     = true;
-            }
-        }
-    }
-    if (fire_channel_ready)
-    {
-        ChannelEntry fired;
-        {
-            std::shared_lock rlk(pImpl->mu);
-            auto             it = pImpl->channels.find(channel);
-            if (it != pImpl->channels.end()) fired = it->second;
-        }
-        const auto observable = observable_from_legacy_status(fired.status);
-        for (auto &h : snapshot_handlers(pImpl->handlers_mu,
-                                         pImpl->ch_status_changed))
-            h(fired, observable);
-    }
-
-    // 2. Role liveness (legacy per-uid path — kept for back-compat in M1.1):
-    //    advance last_heartbeat; if Disconnected, revive.  M1.2 will drop
-    //    the per-uid `state` and route this through the per-presence row.
-    if (!role_uid.empty())
-        _update_role_heartbeat(role_uid, when);
-
-    // 3. Role metrics — legacy per-uid path (kept for back-compat).
-    //    The per-presence row in step 4 also stores the same metrics
-    //    snapshot; M1.2 will remove this duplication.
-    if (metrics.has_value() && !role_uid.empty())
-        _update_role_metrics(role_uid, *metrics,
-                             std::chrono::system_clock::now());
-
-    // 4. Per-presence refresh (NEW — HEP-CORE-0023 §2.6 + §2.5.2).
-    //    Only fires when the wire payload carried `(uid, role_type)`
-    //    (M0+ broker handlers always populate; pre-M0 fallback skips).
-    //    Lookup is keyed on `(uid, channel, role_type)`; each heartbeat
-    //    refreshes ONLY its own presence row.  Lazy creation in M1.1 —
-    //    M1.2 will move creation to REG_REQ / CONSUMER_REG_REQ time.
-    if (!role_uid.empty() && !role_type.empty())
+    bool              observable_changed = false;
+    ChannelEntry      fired_entry;
+    ChannelObservable new_obs = ChannelObservable::kAbsent;
     {
         std::unique_lock lk(pImpl->mu);
         auto             rit = pImpl->roles.find(role_uid);
-        if (rit != pImpl->roles.end())
+        if (rit == pImpl->roles.end()) return;
+        auto *p = rit->second.find_presence(channel, role_type);
+        if (p == nullptr) return;
+
+        const bool      was_first = !p->first_heartbeat_seen;
+        const RoleState was_state = p->state;
+
+        p->last_heartbeat       = when;
+        p->first_heartbeat_seen = true;
+        if (p->state != RoleState::Connected)
         {
-            auto *p = rit->second.find_presence(channel, role_type);
-            if (p == nullptr)
+            const RoleState prev = p->state;
+            p->state             = RoleState::Connected;
+            p->state_since       = when;
+            // Recovery from Pending counts as pending_to_ready
+            // (HEP-CORE-0023 §2.5).
+            if (prev == RoleState::Pending)
+                ++pImpl->counters.pending_to_ready_total;
+        }
+        if (metrics.has_value())
+        {
+            p->latest_metrics       = *metrics;
+            p->metrics_collected_at = std::chrono::system_clock::now();
+        }
+
+        // Fire ChannelStatusChangedHandler when the producer-presence
+        // transition flips the channel's observable
+        // (kRegistering→kLive on first heartbeat; kStalled→kLive on
+        // recovery from Pending; kAbsent→kLive on revival from
+        // Disconnected).  Consumer-presence transitions are not
+        // visible on the channel observable.
+        if (role_type == "producer" && (was_first || was_state != RoleState::Connected))
+        {
+            auto cit = pImpl->channels.find(channel);
+            if (cit != pImpl->channels.end())
             {
-                RolePresence np;
-                np.channel              = channel;
-                np.role_type            = role_type;
-                np.state                = RoleState::Connected;
-                np.first_heartbeat_seen = true;
-                np.last_heartbeat       = when;
-                np.state_since          = when;
-                if (metrics.has_value())
-                {
-                    np.latest_metrics       = *metrics;
-                    np.metrics_collected_at = std::chrono::system_clock::now();
-                }
-                rit->second.presences.push_back(std::move(np));
-            }
-            else
-            {
-                p->last_heartbeat       = when;
-                p->first_heartbeat_seen = true;
-                if (p->state == RoleState::Pending)
-                {
-                    p->state       = RoleState::Connected;
-                    p->state_since = when;
-                    // M1.2 will bump pending_to_connected_total here.
-                }
-                else if (p->state == RoleState::Disconnected)
-                {
-                    p->state       = RoleState::Connected;
-                    p->state_since = when;
-                }
-                if (metrics.has_value())
-                {
-                    p->latest_metrics       = *metrics;
-                    p->metrics_collected_at = std::chrono::system_clock::now();
-                }
+                fired_entry        = cit->second;
+                new_obs            = cit->second.observe(p);
+                observable_changed = true;
             }
         }
+    }
+    if (observable_changed)
+    {
+        for (auto &h : snapshot_handlers(pImpl->handlers_mu,
+                                         pImpl->ch_status_changed))
+            h(fired_entry, new_obs);
     }
 }
 
@@ -1011,62 +913,43 @@ void HubState::_on_heartbeat_timeout(const std::string &channel,
         bump_invalid_identifier(*pImpl);
         return;
     }
-    // HEP-CORE-0023 §2.1: Ready -> Pending demotion.  Role is NOT marked
-    // Disconnected here — Pending means "suspicious, may recover via the
-    // next heartbeat".  Role disconnect (if any) happens at Pending ->
-    // deregistered (`_on_pending_timeout`).  `role_uid` is informational
-    // only at this layer; the broker uses it for logging.
-    //
-    // Atomic transition + counter under a single writer-lock so the
-    // counter only bumps when an actual Ready -> Pending demotion fires.
-    bool         transitioned = false;
-    ChannelEntry fired_entry;
+    // HEP-CORE-0023 §2.1: producer-presence Connected → Pending.  The
+    // role is NOT marked Disconnected here — Pending means "suspicious,
+    // may recover via the next heartbeat".  Disconnection (if any)
+    // happens at `_on_pending_timeout`.
+    bool              transitioned = false;
+    ChannelEntry      fired_entry;
+    ChannelObservable new_obs = ChannelObservable::kAbsent;
     {
         std::unique_lock lk(pImpl->mu);
         const auto       now = std::chrono::steady_clock::now();
+        if (role_uid.empty()) return;
+        auto rit = pImpl->roles.find(role_uid);
+        if (rit == pImpl->roles.end()) return;
+        auto *p = rit->second.find_presence(channel, "producer");
+        if (p == nullptr || p->state != RoleState::Connected) return;
 
-        // Authoritative transition: producer-presence Connected → Pending
-        // (HEP-CORE-0023 §2.1).  `first_heartbeat_seen` is NOT a gate —
-        // the registered-but-never-heartbeat case demotes via this same
-        // path once `last_heartbeat` (stamped at REG_REQ time) ages
-        // past ready_timeout.  The counter bump tracks the presence-FSM
-        // transition, not the legacy ChannelEntry.status update below.
-        bool presence_transitioned = false;
-        if (!role_uid.empty())
-        {
-            auto rit = pImpl->roles.find(role_uid);
-            if (rit != pImpl->roles.end())
-            {
-                auto *p = rit->second.find_presence(channel, "producer");
-                if (p != nullptr && p->state == RoleState::Connected)
-                {
-                    p->state              = RoleState::Pending;
-                    p->state_since        = now;
-                    presence_transitioned = true;
-                }
-            }
-        }
-        if (presence_transitioned)
-            ++pImpl->counters.ready_to_pending_total;
+        // `first_heartbeat_seen` is NOT a gate — the registered-but-
+        // never-heartbeat case demotes via this same path once
+        // `last_heartbeat` (stamped at REG_REQ time) ages past
+        // ready_timeout.
+        p->state       = RoleState::Pending;
+        p->state_since = now;
+        ++pImpl->counters.ready_to_pending_total;
+        transitioned = true;
 
-        // Legacy back-compat: also update ChannelEntry.status for any
-        // M1.1-era reader that hasn't been migrated yet.  Mirrors the
-        // presence transition.  Removed in the M1.2 deletion phase.
         auto it = pImpl->channels.find(channel);
-        if (it != pImpl->channels.end() && presence_transitioned)
+        if (it != pImpl->channels.end())
         {
-            it->second.status      = ChannelStatus::PendingReady;
-            it->second.state_since = now;
-            fired_entry            = it->second;
-            transitioned           = true;
+            fired_entry = it->second;
+            new_obs     = it->second.observe(p);
         }
     }
     if (transitioned)
     {
-        const auto observable = observable_from_legacy_status(fired_entry.status);
         for (auto &h : snapshot_handlers(pImpl->handlers_mu,
                                          pImpl->ch_status_changed))
-            h(fired_entry, observable);
+            h(fired_entry, new_obs);
     }
 }
 
@@ -1077,54 +960,30 @@ void HubState::_on_pending_timeout(const std::string &channel)
         bump_invalid_identifier(*pImpl);
         return;
     }
-    // HEP-CORE-0023 §2.1: Pending -> deregistered, **no grace, no Closing
-    // intermediate**.  Closing is reserved for the voluntary-close path
-    // (DEREG_REQ / admin / script close).
+    // HEP-CORE-0023 §2.1: producer-presence Pending → Disconnected, with
+    // atomic channel teardown in the same handler.  No grace window, no
+    // intermediate Closing state.
     //
-    // Atomicity (matches the `_on_heartbeat_timeout` Ready→Pending pattern):
-    // eligibility check + counter bump live under a single writer-lock so
-    // two concurrent timer fires can't both observe `PendingReady`, both
-    // call `_on_channel_closed`, and both bump `pending_to_deregistered_total`
-    // — only the first transition increments the counter.  The actual
-    // close work runs after the lock is released because
-    // `_on_channel_closed` takes its own writer-lock and fires handlers.
-    bool        eligible = false;
-    std::string producer_uid;
+    // The producer-presence's `Pending` state is the single-shot gate —
+    // a concurrent timer fire that loses the writer-lock race observes
+    // Disconnected (or no presence) and bails without re-entering
+    // teardown or double-bumping the counter.
+    bool eligible = false;
     {
         std::unique_lock lk(pImpl->mu);
         auto             it = pImpl->channels.find(channel);
-        if (it != pImpl->channels.end() &&
-            it->second.status == ChannelStatus::PendingReady)
-        {
-            // Mark Closing under the same lock so a concurrent
-            // `_on_pending_timeout` immediately fails the
-            // `status == PendingReady` check.  M1.3 retires the Closing
-            // state — atomic teardown via `_on_channel_closed` below
-            // erases the entry; the brief Closing marker exists only to
-            // make this writer-lock window single-shot.
-            it->second.status = ChannelStatus::Closing;
-            ++pImpl->counters.pending_to_deregistered_total;
-            producer_uid      = it->second.producer_role_uid;
-            eligible          = true;
-        }
-        // M1.2 — also transition the producer-presence row to Disconnected
-        // (HEP-CORE-0023 §2.1).  The presence is the authoritative FSM
-        // owner.  We do this BEFORE `_on_channel_closed` so subscribers
-        // observe the channel removal with the producer-presence already
-        // marked terminal.
-        if (eligible && !producer_uid.empty())
-        {
-            auto rit = pImpl->roles.find(producer_uid);
-            if (rit != pImpl->roles.end())
-            {
-                auto *p = rit->second.find_presence(channel, "producer");
-                if (p != nullptr && p->state == RoleState::Pending)
-                {
-                    p->state       = RoleState::Disconnected;
-                    p->state_since = std::chrono::steady_clock::now();
-                }
-            }
-        }
+        if (it == pImpl->channels.end()) return;
+        const std::string producer_uid = it->second.producer_role_uid;
+        if (producer_uid.empty()) return;
+        auto rit = pImpl->roles.find(producer_uid);
+        if (rit == pImpl->roles.end()) return;
+        auto *p = rit->second.find_presence(channel, "producer");
+        if (p == nullptr || p->state != RoleState::Pending) return;
+
+        p->state       = RoleState::Disconnected;
+        p->state_since = std::chrono::steady_clock::now();
+        ++pImpl->counters.pending_to_deregistered_total;
+        eligible = true;
     }
     if (eligible)
         _on_channel_closed(channel, ChannelCloseReason::HeartbeatTimeout);
@@ -1142,13 +1001,24 @@ void HubState::_on_metrics_reported(const std::string                    &channe
         return;
     }
     // HEP-0033 §9.1 "Metrics report tick" — dedicated METRICS_REPORT_REQ
-    // path. No liveness effect: a role could be stalled on the heartbeat
-    // axis but still drip metrics on this channel. `channel` is part of
-    // the wire schema; at the HubState level it's informational for the
-    // counter key only (metrics collapse onto RoleEntry per HEP §8).
-    if (!role_uid.empty())
-        _update_role_metrics(role_uid, std::move(metrics), when);
-    (void)channel; // reserved for future per-channel metrics splitting (G2.2.4)
+    // path.  No liveness effect: a role could be stalled on the heartbeat
+    // axis but still drip metrics on this channel.  Metrics live on the
+    // per-presence row (HEP-CORE-0019 §2.3); we update every presence
+    // matching `(channel, role_uid)` — typically exactly one row, but a
+    // role registered on the same channel as both producer AND consumer
+    // would have two.
+    if (role_uid.empty()) return;
+    std::unique_lock lk(pImpl->mu);
+    auto             rit = pImpl->roles.find(role_uid);
+    if (rit == pImpl->roles.end()) return;
+    for (auto &p : rit->second.presences)
+    {
+        if (p.channel == channel)
+        {
+            p.latest_metrics       = metrics;
+            p.metrics_collected_at = when;
+        }
+    }
 }
 
 void HubState::_on_band_joined(const std::string &band, BandMember member)

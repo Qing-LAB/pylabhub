@@ -95,7 +95,6 @@ HubHostHandle start_local_broker(BrokerService::Config /*legacy_cfg*/)
     j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
     j["admin"]["enabled"]           = false;
     j["script"]["path"]             = "";
-    j["broker"]["grace_ms"]         = 0;
     {
         std::ofstream f(hub_json);
         f << j.dump(2);

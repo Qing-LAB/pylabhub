@@ -105,10 +105,9 @@ HubHostHandle start_local_broker(BrokerService::Config legacy_cfg)
     j["admin"]["enabled"]           = false;
     j["script"]["path"]             = "";
 
-    // Translate legacy `BrokerService::Config` heartbeat/grace fields
-    // into the HubConfig broker section so callers that customise
-    // these values continue to work under real HubHost.
-    j["broker"]["grace_ms"] = 0;  // default for L3 tests (immediate)
+    // Translate legacy `BrokerService::Config` heartbeat fields into the
+    // HubConfig broker section so callers that customise these values
+    // continue to work under real HubHost.
     if (legacy_cfg.heartbeat_interval.count() > 0)
         j["broker"]["heartbeat_interval_ms"] =
             static_cast<int>(legacy_cfg.heartbeat_interval.count());
@@ -116,11 +115,6 @@ HubHostHandle start_local_broker(BrokerService::Config legacy_cfg)
         j["broker"]["ready_miss_heartbeats"] = legacy_cfg.ready_miss_heartbeats;
     if (legacy_cfg.pending_miss_heartbeats > 0)
         j["broker"]["pending_miss_heartbeats"] = legacy_cfg.pending_miss_heartbeats;
-    if (legacy_cfg.grace_heartbeats > 0)
-        j["broker"]["grace_heartbeats"] = legacy_cfg.grace_heartbeats;
-    if (legacy_cfg.grace_override.has_value())
-        j["broker"]["grace_ms"] =
-            static_cast<int>(legacy_cfg.grace_override->count());
     if (legacy_cfg.ready_timeout_override.has_value())
         j["broker"]["ready_timeout_ms"] =
             static_cast<int>(legacy_cfg.ready_timeout_override->count());
@@ -368,7 +362,6 @@ TEST_F(BrokerProtocolTest, ClosingNotify_DeliveredToProducerAndConsumer)
     BrokerService::Config cfg;
     cfg.endpoint               = "tcp://127.0.0.1:0";
     cfg.schema_search_dirs     = {};
-    cfg.grace_override         = std::chrono::seconds(10);
     broker_.emplace(start_local_broker(std::move(cfg)));
 
     const std::string channel  = pid_chan("proto.close.all");
@@ -493,26 +486,26 @@ TEST_F(BrokerProtocolTest, Heartbeat_TransitionsToReady)
     auto reg = bh.brc.register_channel(make_reg_opts(channel, uid), 3000);
     ASSERT_TRUE(reg.has_value());
 
-    // Before heartbeat: PendingReady
+    // Before heartbeat: registering (producer registered, no heartbeat yet).
     ChannelSnapshot snap = svc().query_channel_snapshot();
     for (const auto &ch : snap.channels)
     {
         if (ch.name == channel)
-            EXPECT_EQ(ch.status, "PendingReady");
+            EXPECT_EQ(ch.observable, "registering");
     }
 
-    // Send heartbeat — broker flips status PendingReady → Ready asynchronously.
+    // Send heartbeat — broker flips observable registering → live asynchronously.
     bh.brc.send_heartbeat(channel, uid, "producer", {});
 
     using pylabhub::tests::helper::poll_until;
-    auto channel_is_ready = [&] {
+    auto channel_is_live = [&] {
         auto s = svc().query_channel_snapshot();
         for (const auto &ch : s.channels)
-            if (ch.name == channel) return ch.status == "Ready";
+            if (ch.name == channel) return ch.observable == "live";
         return false;
     };
-    EXPECT_TRUE(poll_until(channel_is_ready, std::chrono::seconds(3)))
-        << "channel did not transition to Ready within 3s after heartbeat";
+    EXPECT_TRUE(poll_until(channel_is_live, std::chrono::seconds(3)))
+        << "channel did not transition to live within 3s after heartbeat";
 
     bh.stop();
 }
@@ -950,8 +943,6 @@ TEST_F(BrokerProtocolTest, RegAck_ContainsHeartbeatBlock_Defaults)
               ::pylabhub::kDefaultReadyMissHeartbeats);
     EXPECT_EQ(hb.value("pending_miss_heartbeats", uint32_t{0}),
               ::pylabhub::kDefaultPendingMissHeartbeats);
-    EXPECT_EQ(hb.value("grace_heartbeats",        uint32_t{99}),
-              ::pylabhub::kDefaultGraceHeartbeats);
 
     bh.stop();
 }
@@ -965,8 +956,6 @@ TEST_F(BrokerProtocolTest, RegAck_HeartbeatBlock_HonorsCustomConfig)
     cfg.heartbeat_interval      = std::chrono::milliseconds(250);
     cfg.ready_miss_heartbeats   = 12;
     cfg.pending_miss_heartbeats = 8;
-    cfg.grace_heartbeats        = 2;
-    cfg.grace_override          = std::chrono::milliseconds(0);
     broker_.emplace(start_local_broker(std::move(cfg)));
 
     const std::string channel = pid_chan("proto.regack.hb_custom");
@@ -982,7 +971,6 @@ TEST_F(BrokerProtocolTest, RegAck_HeartbeatBlock_HonorsCustomConfig)
     EXPECT_EQ(hb.value("heartbeat_interval_ms",   -1),    250);
     EXPECT_EQ(hb.value("ready_miss_heartbeats",    uint32_t{0}),  12u);
     EXPECT_EQ(hb.value("pending_miss_heartbeats",  uint32_t{0}),  8u);
-    EXPECT_EQ(hb.value("grace_heartbeats",         uint32_t{99}), 2u);
 
     bh.stop();
 }
@@ -1011,7 +999,6 @@ TEST_F(BrokerProtocolTest, ConsumerRegAck_ContainsHeartbeatBlock)
     EXPECT_TRUE(hb.contains("heartbeat_interval_ms"));
     EXPECT_TRUE(hb.contains("ready_miss_heartbeats"));
     EXPECT_TRUE(hb.contains("pending_miss_heartbeats"));
-    EXPECT_TRUE(hb.contains("grace_heartbeats"));
 
     cons_bh.stop();
     prod_bh.stop();

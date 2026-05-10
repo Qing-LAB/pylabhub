@@ -120,11 +120,6 @@ BrokerHandle start_broker_with_cfg(BrokerService::Config legacy_cfg)
     if (legacy_cfg.pending_miss_heartbeats > 0)
         j["broker"]["pending_miss_heartbeats"] =
             legacy_cfg.pending_miss_heartbeats;
-    if (legacy_cfg.grace_heartbeats > 0)
-        j["broker"]["grace_heartbeats"] = legacy_cfg.grace_heartbeats;
-    if (legacy_cfg.grace_override.has_value())
-        j["broker"]["grace_ms"] =
-            static_cast<int>(legacy_cfg.grace_override->count());
     if (legacy_cfg.ready_timeout_override.has_value())
         j["broker"]["ready_timeout_ms"] =
             static_cast<int>(legacy_cfg.ready_timeout_override->count());

@@ -780,9 +780,7 @@ Payload (REG_ACK):
                                  (HEP-CORE-0023 §2.5):
                                    interval_ms             int     Heartbeat cadence
                                    ready_miss_heartbeats   int     Misses before Connected→Pending
-                                   pending_miss_heartbeats int     Misses before Pending→Disconnected
-                                   grace_heartbeats        int     Force-shutdown grace
-                                   grace_ms                int     Grace deadline in ms
+                                   pending_miss_heartbeats int     Misses before Pending→Disconnected (atomic teardown)
   correlation_id        string   (opt) Echo of request correlation_id if provided.
 
 role_type field (added 2026-03-10):
@@ -1181,11 +1179,6 @@ Payload (CHANNEL_LIST_ACK):
                                  Disconnected are removed atomically
                                  (HEP-CORE-0023 §2.1) before the next
                                  CHANNEL_LIST_REQ.
-    status              string   Internal channel-state field retained for
-                                 the M1.2 transition (one of "PendingReady",
-                                 "Ready", "Closing").  Slated for removal
-                                 once Phase 6 of the FSM consolidation lands;
-                                 new clients should prefer `observable`.
     producer_uid        string   Producer UID
     schema_id           string   Named schema ID (empty if anonymous)
     consumer_count      int      Number of registered consumer-presences

@@ -105,10 +105,9 @@ BrokerHandle start_broker()
     j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
     j["admin"]["enabled"]           = false;
     j["script"]["path"]             = "";
-    // Default grace (no override) — `NotificationDispatch` test
-    // relies on CHANNEL_CLOSING_NOTIFY landing before the grace
-    // expiry FORCE_SHUTDOWN.  With grace_ms=0 they race; keeping
-    // the heartbeat-multiplied default gives a stable window.
+    // HEP-CORE-0023 §2.1 atomic teardown: voluntary close emits
+    // CHANNEL_CLOSING_NOTIFY (best-effort) and removes the channel
+    // entry in the same handler — no grace window.
     {
         std::ofstream f(hub_json);
         f << j.dump(2);

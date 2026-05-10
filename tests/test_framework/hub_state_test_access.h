@@ -40,11 +40,6 @@ struct HubStateTestAccess
     {
         s._set_channel_opened(std::move(e));
     }
-    static void set_channel_status(HubState &s, const std::string &name,
-                                    ChannelStatus st)
-    {
-        s._set_channel_status(name, st);
-    }
     static void set_channel_closed(HubState &s, const std::string &name)
     {
         s._set_channel_closed(name);
@@ -61,12 +56,6 @@ struct HubStateTestAccess
     static void set_role_registered(HubState &s, RoleEntry e)
     {
         s._set_role_registered(std::move(e));
-    }
-    static void update_role_heartbeat(HubState                             &s,
-                                      const std::string                    &uid,
-                                      std::chrono::steady_clock::time_point when)
-    {
-        s._update_role_heartbeat(uid, when);
     }
     static void set_role_disconnected(HubState &s, const std::string &uid)
     {
@@ -92,12 +81,6 @@ struct HubStateTestAccess
     static void set_shm_block(HubState &s, ShmBlockRef r)
     {
         s._set_shm_block(std::move(r));
-    }
-    static void set_channel_closing_deadline(
-        HubState &s, const std::string &name,
-        std::chrono::steady_clock::time_point deadline)
-    {
-        s._set_channel_closing_deadline(name, deadline);
     }
     static void set_channel_zmq_node_endpoint(
         HubState &s, const std::string &name, std::string endpoint)
@@ -134,26 +117,12 @@ struct HubStateTestAccess
     {
         s._on_consumer_left(ch, uid);
     }
-    static void on_heartbeat(HubState                                 &s,
-                             const std::string                        &ch,
-                             const std::string                        &uid,
-                             std::chrono::steady_clock::time_point     when,
-                             const std::optional<nlohmann::json>      &m)
-    {
-        // Legacy 4-arg overload — preserves call sites written before
-        // M1.1 added the role_type parameter.  Routes the heartbeat
-        // through the per-uid back-compat path (legacy steps 1-3 only;
-        // no per-presence row touched).  New tests should call
-        // `on_heartbeat_typed` below to also exercise the per-presence
-        // refresh.
-        s._on_heartbeat(ch, uid, /*role_type=*/std::string{}, when, m);
-    }
-    static void on_heartbeat_typed(HubState                             &s,
-                                   const std::string                    &ch,
-                                   const std::string                    &uid,
-                                   const std::string                    &role_type,
-                                   std::chrono::steady_clock::time_point when,
-                                   const std::optional<nlohmann::json>  &m)
+    static void on_heartbeat(HubState                             &s,
+                             const std::string                    &ch,
+                             const std::string                    &uid,
+                             const std::string                    &role_type,
+                             std::chrono::steady_clock::time_point when,
+                             const std::optional<nlohmann::json>  &m)
     {
         s._on_heartbeat(ch, uid, role_type, when, m);
     }

@@ -1,28 +1,14 @@
 /**
  * @file test_hub_state.cpp
- * @brief L2 unit tests for HubState skeleton (HEP-0033 §G2.1).
+ * @brief L2 unit tests for HubState (HEP-0033 §G2 + HEP-CORE-0023 §2 +
+ *        HEP-CORE-0034 schema registry).
  *
- * Phase G2.1 ships HubState with its full read/write/event surface, but
- * nothing calls mutators from production code yet — that's G2.2. These
- * tests exercise the surface directly via a `friend` test-shim
- * (`HubStateTestAccess`, forward-declared in hub_state.hpp) so that
- * private `_set_*` mutators can be driven from test code without
- * loosening access on the public API.
- *
- * What's covered here:
- *   - empty snapshot / missing-lookup shape
- *   - set_channel_opened → snapshot + channel(name) agree; handler fires
- *   - status transition + close → handlers fire exactly once per op
- *   - consumer add / remove → list + handler match
- *   - role register / heartbeat / disconnect → state + handler agree
- *   - band join / leave → members list + handlers agree; empty band evicted
- *   - peer connect / disconnect → state + handler agree
- *   - unsubscribe stops further handler invocations
- *   - concurrent reader while single writer mutates — basic sanity
- *     (no data race detectable under TSan; handlers still fire)
- *
- * G2.2 will add end-to-end tests driven through BrokerService inbound
- * handlers; this file intentionally stops at the mutator contract.
+ * Covers the post-M1.2 contract: per-presence FSM is the single source of
+ * truth; channel state surfaces only as the derived `ChannelObservable`
+ * (HEP-CORE-0023 §2.2).  The legacy `ChannelEntry.status`,
+ * `ChannelEntry.last_heartbeat`, `RoleEntry.last_heartbeat`, and the
+ * grace/closing/FORCE_SHUTDOWN paths have been retired — tests for them
+ * were removed alongside the production code.
  */
 
 #include "utils/broker_service.hpp"
@@ -36,202 +22,11 @@
 #include <thread>
 #include <vector>
 
-namespace pylabhub::hub::test
-{
-
-#if 0   // Definition lives in tests/test_framework/hub_state_test_access.h.
-/// Friend shim. Forwards to private `_set_*` mutators so the tests do
-/// not need broker plumbing. HubState declares this `friend`.
-struct HubStateTestAccess
-{
-    static void set_channel_opened(HubState &s, ChannelEntry e)
-    {
-        s._set_channel_opened(std::move(e));
-    }
-    static void set_channel_status(HubState &s, const std::string &name, ChannelStatus st)
-    {
-        s._set_channel_status(name, st);
-    }
-    static void set_channel_closed(HubState &s, const std::string &name)
-    {
-        s._set_channel_closed(name);
-    }
-    static void add_consumer(HubState &s, const std::string &ch, ConsumerEntry c)
-    {
-        s._add_consumer(ch, std::move(c));
-    }
-    static void remove_consumer(HubState &s, const std::string &ch, const std::string &uid)
-    {
-        s._remove_consumer(ch, uid);
-    }
-    static void set_role_registered(HubState &s, RoleEntry e)
-    {
-        s._set_role_registered(std::move(e));
-    }
-    static void update_role_heartbeat(HubState                             &s,
-                                      const std::string                    &uid,
-                                      std::chrono::steady_clock::time_point when)
-    {
-        s._update_role_heartbeat(uid, when);
-    }
-    static void set_role_disconnected(HubState &s, const std::string &uid)
-    {
-        s._set_role_disconnected(uid);
-    }
-    static void set_band_joined(HubState &s, const std::string &b, BandMember m)
-    {
-        s._set_band_joined(b, std::move(m));
-    }
-    static void set_band_left(HubState &s, const std::string &b, const std::string &uid)
-    {
-        s._set_band_left(b, uid);
-    }
-    static void set_peer_connected(HubState &s, PeerEntry e)
-    {
-        s._set_peer_connected(std::move(e));
-    }
-    static void set_peer_disconnected(HubState &s, const std::string &uid)
-    {
-        s._set_peer_disconnected(uid);
-    }
-    static void set_shm_block(HubState &s, ShmBlockRef r)
-    {
-        s._set_shm_block(std::move(r));
-    }
-    static void set_channel_closing_deadline(
-        HubState &s, const std::string &name,
-        std::chrono::steady_clock::time_point deadline)
-    {
-        s._set_channel_closing_deadline(name, deadline);
-    }
-    static void set_channel_zmq_node_endpoint(
-        HubState &s, const std::string &name, std::string endpoint)
-    {
-        s._set_channel_zmq_node_endpoint(name, std::move(endpoint));
-    }
-    static void bump_counter(HubState &s, const std::string &k, uint64_t n = 1)
-    {
-        s._bump_counter(k, n);
-    }
-
-    // ── Capability-operation forwarders (HEP-0033 §G2, G2.2.0) ──────────
-    static void on_channel_registered(HubState &s, ChannelEntry e)
-    {
-        s._on_channel_registered(std::move(e));
-    }
-    static void on_channel_closed(HubState &s, const std::string &n,
-                                  ChannelCloseReason why)
-    {
-        s._on_channel_closed(n, why);
-    }
-    static void on_consumer_joined(HubState &s, const std::string &ch,
-                                   ConsumerEntry c)
-    {
-        s._on_consumer_joined(ch, std::move(c));
-    }
-    static void on_consumer_left(HubState &s, const std::string &ch,
-                                 const std::string &uid)
-    {
-        s._on_consumer_left(ch, uid);
-    }
-    static void on_heartbeat(HubState                                 &s,
-                             const std::string                        &ch,
-                             const std::string                        &uid,
-                             std::chrono::steady_clock::time_point     when,
-                             const std::optional<nlohmann::json>      &m)
-    {
-        // Legacy 4-arg overload (M1.1) — routes through the per-uid
-        // back-compat path; no presence row touched.  See the shared
-        // shim at tests/test_framework/hub_state_test_access.h.
-        s._on_heartbeat(ch, uid, /*role_type=*/std::string{}, when, m);
-    }
-    static void on_heartbeat_typed(HubState                             &s,
-                                   const std::string                    &ch,
-                                   const std::string                    &uid,
-                                   const std::string                    &role_type,
-                                   std::chrono::steady_clock::time_point when,
-                                   const std::optional<nlohmann::json>  &m)
-    {
-        s._on_heartbeat(ch, uid, role_type, when, m);
-    }
-    static void on_heartbeat_timeout(HubState &s, const std::string &ch,
-                                     const std::string &uid)
-    {
-        s._on_heartbeat_timeout(ch, uid);
-    }
-    static void on_pending_timeout(HubState &s, const std::string &ch)
-    {
-        s._on_pending_timeout(ch);
-    }
-    static void on_metrics_reported(HubState                             &s,
-                                    const std::string                    &ch,
-                                    const std::string                    &uid,
-                                    nlohmann::json                        m,
-                                    std::chrono::system_clock::time_point when)
-    {
-        s._on_metrics_reported(ch, uid, std::move(m), when);
-    }
-    static void on_band_joined(HubState &s, const std::string &band,
-                               BandMember m)
-    {
-        s._on_band_joined(band, std::move(m));
-    }
-    static void on_band_left(HubState &s, const std::string &band,
-                             const std::string &uid)
-    {
-        s._on_band_left(band, uid);
-    }
-    static void on_peer_connected(HubState &s, PeerEntry p)
-    {
-        s._on_peer_connected(std::move(p));
-    }
-    static void on_peer_disconnected(HubState &s, const std::string &uid)
-    {
-        s._on_peer_disconnected(uid);
-    }
-    static void on_message_processed(HubState          &s,
-                                     const std::string &msg_type,
-                                     std::size_t        in,
-                                     std::size_t        out)
-    {
-        s._on_message_processed(msg_type, in, out);
-    }
-
-    // ── Schema-registry forwarders (HEP-CORE-0034 §11) ──────────────────
-    static ::pylabhub::schema::SchemaRegOutcome
-    on_schema_registered(HubState &s, ::pylabhub::schema::SchemaRecord rec)
-    {
-        return s._on_schema_registered(std::move(rec));
-    }
-    static std::size_t on_schemas_evicted_for_owner(HubState          &s,
-                                                    const std::string &owner_uid)
-    {
-        return s._on_schemas_evicted_for_owner(owner_uid);
-    }
-    static ::pylabhub::schema::CitationOutcome validate_schema_citation(
-        HubState                       &s,
-        const std::string              &citer_uid,
-        const std::string              &channel_producer_uid,
-        const std::string              &cited_owner,
-        const std::string              &cited_id,
-        const std::array<uint8_t, 32>  &expected_hash,
-        const std::string              &expected_packing)
-    {
-        return s._validate_schema_citation(citer_uid, channel_producer_uid,
-                                           cited_owner, cited_id,
-                                           expected_hash, expected_packing);
-    }
-};
-#endif  // duplicate definition removed; see hub_state_test_access.h
-
-} // namespace pylabhub::hub::test
-
 using pylabhub::hub::BandEntry;
 using pylabhub::hub::BandMember;
 using pylabhub::hub::ChannelCloseReason;
 using pylabhub::hub::ChannelEntry;
 using pylabhub::hub::ChannelObservable;
-using pylabhub::hub::ChannelStatus;
 using pylabhub::hub::ConsumerEntry;
 using pylabhub::hub::HandlerId;
 using pylabhub::hub::HubState;
@@ -240,9 +35,11 @@ using pylabhub::hub::kInvalidHandlerId;
 using pylabhub::hub::PeerEntry;
 using pylabhub::hub::PeerState;
 using pylabhub::hub::RoleEntry;
+using pylabhub::hub::RolePresence;
 using pylabhub::hub::RoleState;
 using pylabhub::hub::SchemaKey;
 using pylabhub::hub::ShmBlockRef;
+using pylabhub::hub::observe_channel;
 using pylabhub::schema::CitationOutcome;
 using pylabhub::schema::SchemaRecord;
 using pylabhub::schema::SchemaRegOutcome;
@@ -266,7 +63,6 @@ ChannelEntry make_channel(const std::string &name)
     e.producer_pid       = 4242;
     e.producer_role_uid  = "prod.main.test";
     e.producer_role_name = "main";
-    e.status             = ChannelStatus::PendingReady;
     return e;
 }
 
@@ -274,8 +70,8 @@ ConsumerEntry make_consumer(const std::string &uid, uint64_t pid = 1234)
 {
     ConsumerEntry c;
     c.consumer_pid = pid;
-    c.role_uid     = uid;  // must be a valid role.uid per caller
-    c.role_name    = uid;  // display; tests that care override
+    c.role_uid     = uid;
+    c.role_name    = uid;
     return c;
 }
 
@@ -291,9 +87,36 @@ RoleEntry make_role(const std::string &uid, const std::string &tag = "prod")
 PeerEntry make_peer(const std::string &uid)
 {
     PeerEntry p;
-    p.uid      = uid;  // must be a valid peer id per caller (leading '@')
+    p.uid      = uid;
     p.endpoint = "tcp://hub.test:5570";
     return p;
+}
+
+ChannelObservable channel_observable(const HubState &s, const std::string &name)
+{
+    auto snap = s.snapshot();
+    auto cit  = snap.channels.find(name);
+    if (cit == snap.channels.end()) return ChannelObservable::kAbsent;
+    return observe_channel(cit->second, snap);
+}
+
+// Look up a presence row inside an already-captured snapshot.  Callers
+// MUST hold the snapshot in scope for the lifetime of the returned
+// pointer — the snapshot owns the underlying RoleEntry.
+const RolePresence *
+find_presence_in(const HubStateSnapshot &snap, const std::string &channel,
+                 const std::string &uid, const std::string &role_type)
+{
+    auto rit = snap.roles.find(uid);
+    if (rit == snap.roles.end()) return nullptr;
+    return rit->second.find_presence(channel, role_type);
+}
+
+const RolePresence *
+find_producer_in(const HubStateSnapshot &snap, const std::string &channel,
+                 const std::string &uid)
+{
+    return find_presence_in(snap, channel, uid, "producer");
 }
 
 } // namespace
@@ -338,45 +161,16 @@ TEST(HubStateSkeleton, ChannelOpened_PopulatesAndFires)
     auto got = s.channel("ch1");
     ASSERT_TRUE(got.has_value());
     EXPECT_EQ(got->name, "ch1");
-    EXPECT_EQ(got->status, ChannelStatus::PendingReady);
+    // Newly opened with no producer-presence yet → kAbsent.  After the
+    // producer's RoleEntry + presence row land via _on_channel_registered
+    // the observable becomes kRegistering.  Tested in HubStateOps below.
+    EXPECT_EQ(channel_observable(s, "ch1"), ChannelObservable::kAbsent);
 
     ASSERT_EQ(fired.size(), 1u);
     EXPECT_EQ(fired[0], "ch1");
 
     auto snap = s.snapshot();
     EXPECT_EQ(snap.channels.count("ch1"), 1u);
-}
-
-TEST(HubStateSkeleton, ChannelStatusChange_FiresOnce)
-{
-    HubState s;
-    HubStateTestAccess::set_channel_opened(s, make_channel("ch1"));
-
-    int fired = 0;
-    s.subscribe_channel_status_changed([&](const ChannelEntry &e,
-                                            ChannelObservable obs) {
-        EXPECT_EQ(e.name, "ch1");
-        EXPECT_EQ(e.status, ChannelStatus::Ready);
-        EXPECT_EQ(obs, ChannelObservable::kLive);
-        ++fired;
-    });
-
-    HubStateTestAccess::set_channel_status(s, "ch1", ChannelStatus::Ready);
-    EXPECT_EQ(fired, 1);
-
-    auto got = s.channel("ch1");
-    ASSERT_TRUE(got.has_value());
-    EXPECT_EQ(got->status, ChannelStatus::Ready);
-}
-
-TEST(HubStateSkeleton, ChannelStatusChange_MissingChannelIsNoop)
-{
-    HubState s;
-    int      fired = 0;
-    s.subscribe_channel_status_changed(
-        [&](const ChannelEntry &, ChannelObservable) { ++fired; });
-    HubStateTestAccess::set_channel_status(s, "nope", ChannelStatus::Ready);
-    EXPECT_EQ(fired, 0);
 }
 
 TEST(HubStateSkeleton, ChannelClosed_RemovesAndFires)
@@ -391,7 +185,6 @@ TEST(HubStateSkeleton, ChannelClosed_RemovesAndFires)
     EXPECT_EQ(last, "ch1");
     EXPECT_FALSE(s.channel("ch1").has_value());
 
-    // Closing a missing channel is silently dropped — handler does not refire.
     last.clear();
     HubStateTestAccess::set_channel_closed(s, "ch1");
     EXPECT_EQ(last, "");
@@ -453,40 +246,32 @@ TEST(HubStateSkeleton, RoleRegistered_FiresAndStored)
     EXPECT_EQ(last_uid, "prod.r1.test");
     auto r = s.role("prod.r1.test");
     ASSERT_TRUE(r.has_value());
-    EXPECT_EQ(r->state, RoleState::Connected);
+    EXPECT_EQ(r->uid, "prod.r1.test");
 }
 
-TEST(HubStateSkeleton, RoleHeartbeat_RevivesDisconnected)
+TEST(HubStateSkeleton, RoleDisconnected_FiresOnceUntilNewRegistration)
 {
+    // _set_role_disconnected marks every presence row Disconnected and
+    // fires the role_disconnected handler.  Calling it twice in a row is
+    // idempotent (no second fire).
     HubState s;
-    HubStateTestAccess::set_role_registered(s, make_role("prod.r1.test"));
-    HubStateTestAccess::set_role_disconnected(s, "prod.r1.test");
-    ASSERT_EQ(s.role("prod.r1.test")->state, RoleState::Disconnected);
-
-    HubStateTestAccess::update_role_heartbeat(s, "prod.r1.test",
-                                              std::chrono::steady_clock::now());
-    EXPECT_EQ(s.role("prod.r1.test")->state, RoleState::Connected);
-}
-
-TEST(HubStateSkeleton, RoleDisconnected_FiresOnlyOnceUntilRevived)
-{
-    HubState s;
-    HubStateTestAccess::set_role_registered(s, make_role("prod.r1.test"));
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
 
     int fired = 0;
     s.subscribe_role_disconnected([&](const std::string &uid) {
-        EXPECT_EQ(uid, "prod.r1.test");
+        EXPECT_EQ(uid, "prod.main.test");
         ++fired;
     });
 
-    HubStateTestAccess::set_role_disconnected(s, "prod.r1.test");
-    HubStateTestAccess::set_role_disconnected(s, "prod.r1.test"); // idempotent
+    HubStateTestAccess::set_role_disconnected(s, "prod.main.test");
+    HubStateTestAccess::set_role_disconnected(s, "prod.main.test");
     EXPECT_EQ(fired, 1);
 
-    HubStateTestAccess::update_role_heartbeat(s, "prod.r1.test",
-                                              std::chrono::steady_clock::now());
-    HubStateTestAccess::set_role_disconnected(s, "prod.r1.test");
-    EXPECT_EQ(fired, 2);
+    // Producer-presence is now Disconnected.
+    auto snap = s.snapshot();
+    const auto *p = find_producer_in(snap, "ch1", "prod.main.test");
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(p->state, RoleState::Disconnected);
 }
 
 // ─── Bands ──────────────────────────────────────────────────────────────────
@@ -525,7 +310,6 @@ TEST(HubStateSkeleton, BandJoinLeave_MembershipAndHandlers)
     EXPECT_EQ(b->members[0].role_uid, "prod.r2.test");
 
     HubStateTestAccess::set_band_left(s, "!band", "prod.r2.test");
-    // Band empties → entry evicted per G2 spec.
     EXPECT_FALSE(s.band("!band").has_value());
 
     EXPECT_EQ(joined, (std::vector<std::string>{"prod.r1.test", "prod.r2.test"}));
@@ -597,7 +381,6 @@ TEST(HubStateSkeleton, Unsubscribe_StopsFurtherCalls)
     HubStateTestAccess::set_channel_opened(s, make_channel("ch2"));
     EXPECT_EQ(fired, 1);
 
-    // Unsubscribing an invalid / already-removed id is a silent noop.
     s.unsubscribe(id);
     s.unsubscribe(kInvalidHandlerId);
     s.unsubscribe(999999);
@@ -608,7 +391,7 @@ TEST(HubStateSkeleton, Unsubscribe_StopsFurtherCalls)
 TEST(HubStateSkeleton, ConcurrentReadersDoNotRaceWithSingleWriter)
 {
     HubState s;
-    HubStateTestAccess::set_channel_opened(s, make_channel("ch1"));
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
 
     std::atomic<bool> stop{false};
     std::atomic<int>  readers_ready{0};
@@ -618,31 +401,24 @@ TEST(HubStateSkeleton, ConcurrentReadersDoNotRaceWithSingleWriter)
     for (int t = 0; t < kReaderCount; ++t)
     {
         readers.emplace_back([&] {
-            // Handshake: signal readiness so the writer doesn't race ahead.
             readers_ready.fetch_add(1);
             while (!stop.load())
             {
-                auto ch = s.channel("ch1");
-                if (ch.has_value())
-                {
-                    // Value-copy; must be a valid enum regardless of writer race.
-                    auto st = ch->status;
-                    EXPECT_TRUE(st == ChannelStatus::Ready ||
-                                st == ChannelStatus::PendingReady);
-                }
+                auto snap = s.snapshot();
+                (void)snap.channels.size();
+                (void)snap.counters.msg_type_counts.size();
             }
         });
     }
 
-    // Wait for all readers to be in the poll loop before the writer races.
     while (readers_ready.load() < kReaderCount) std::this_thread::yield();
 
     std::thread writer([&] {
         for (int i = 0; i < 2000 && !stop.load(); ++i)
         {
-            HubStateTestAccess::set_channel_status(
-                s, "ch1",
-                (i & 1) ? ChannelStatus::Ready : ChannelStatus::PendingReady);
+            HubStateTestAccess::on_heartbeat(
+                s, "ch1", "prod.main.test", "producer",
+                std::chrono::steady_clock::now(), std::nullopt);
             HubStateTestAccess::bump_counter(s, "tick");
         }
         stop.store(true);
@@ -650,16 +426,10 @@ TEST(HubStateSkeleton, ConcurrentReadersDoNotRaceWithSingleWriter)
 
     writer.join();
     for (auto &r : readers) r.join();
-
-    // No EXPECT on read count — ASan/TSan builds catch data races directly;
-    // "how many reads happened" is a timing property, not a correctness one.
+    // ASan/TSan catches the data-race contract directly.
 }
 
-// ═══ Capability-operation layer (HEP-0033 §G2, G2.2.0) ══════════════════════
-//
-// These tests verify that each `_on_*` op composes its primitives correctly.
-// The primitives themselves are exercised above; here we only check that the
-// op wires them together in the right order with the right field derivations.
+// ═══ Capability-operation layer (HEP-0033 §G2 + HEP-CORE-0023) ══════════════
 
 TEST(HubStateOps, ChannelRegistered_ComposesChannelAndRoleAndShmAndCounter)
 {
@@ -672,39 +442,37 @@ TEST(HubStateOps, ChannelRegistered_ComposesChannelAndRoleAndShmAndCounter)
     s.subscribe_role_registered(
         [&](const RoleEntry &r) { role_fired.push_back(r.uid); });
 
-    auto ch            = make_channel("ch1");
+    auto ch              = make_channel("ch1");
     ch.has_shared_memory = true;
-    ch.zmq_pubkey      = "pubkey-xyz";
+    ch.zmq_pubkey        = "pubkey-xyz";
     HubStateTestAccess::on_channel_registered(s, ch);
 
-    // Channel present.
     auto got = s.channel("ch1");
     ASSERT_TRUE(got.has_value());
     EXPECT_EQ(got->name, "ch1");
 
-    // Producer RoleEntry derived.  Name + role_tag are derived from
-    // uid's components, not copied from `ChannelEntry.producer_role_name`
-    // (which is only a hint — the uid is the source of truth).
     auto r = s.role("prod.main.test");
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(r->role_tag,   "prod");
-    EXPECT_EQ(r->name,       "main");    // second uid component
+    EXPECT_EQ(r->name,       "main");
     EXPECT_EQ(r->pubkey_z85, "pubkey-xyz");
-    EXPECT_EQ(r->state, RoleState::Connected);
     ASSERT_EQ(r->channels.size(), 1u);
     EXPECT_EQ(r->channels[0], "ch1");
 
-    // SHM block registered.
+    // HEP-CORE-0023 §2.6 — eager presence creation on REG.  Producer-
+    // presence exists in Connected state with first_heartbeat_seen=false,
+    // so the channel observable is kRegistering.
+    const auto *p = r->find_presence("ch1", "producer");
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(p->state, RoleState::Connected);
+    EXPECT_FALSE(p->first_heartbeat_seen);
+    EXPECT_EQ(channel_observable(s, "ch1"), ChannelObservable::kRegistering);
+
     auto shm = s.shm_block("ch1");
     ASSERT_TRUE(shm.has_value());
     EXPECT_EQ(shm->block_path, "ch1-shm");
 
-    // Per HEP-CORE-0033 §9.4, msg_type_counts is bumped at the dispatcher
-    // level (broker), NOT inside HubState capability ops.  The op-only
-    // L2 path here exercises the state mutation, not the wire counter.
     EXPECT_EQ(s.counters().msg_type_counts.count("REG_REQ"), 0u);
-
-    // Events for channel + role both fired.
     EXPECT_EQ(opened_fired, (std::vector<std::string>{"ch1"}));
     EXPECT_EQ(role_fired, (std::vector<std::string>{"prod.main.test"}));
 }
@@ -712,7 +480,7 @@ TEST(HubStateOps, ChannelRegistered_ComposesChannelAndRoleAndShmAndCounter)
 TEST(HubStateOps, ChannelRegistered_NoShm_SkipsShmBlock)
 {
     HubState s;
-    auto     ch            = make_channel("ch1");
+    auto     ch         = make_channel("ch1");
     ch.has_shared_memory = false;
     HubStateTestAccess::on_channel_registered(s, ch);
     EXPECT_FALSE(s.shm_block("ch1").has_value());
@@ -721,30 +489,30 @@ TEST(HubStateOps, ChannelRegistered_NoShm_SkipsShmBlock)
 TEST(HubStateOps, ChannelRegistered_SameProducerOnTwoChannels_MergesRoleChannels)
 {
     HubState s;
-    auto     c1            = make_channel("ch1");
-    auto     c2            = make_channel("ch2");
-    // Both share producer_role_uid = "prod.main.test" from make_channel helper.
+    auto     c1 = make_channel("ch1");
+    auto     c2 = make_channel("ch2");
     HubStateTestAccess::on_channel_registered(s, c1);
     HubStateTestAccess::on_channel_registered(s, c2);
 
     auto r = s.role("prod.main.test");
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(r->channels.size(), 2u);
-    EXPECT_EQ(r->state, RoleState::Connected);
+    // Two presence rows — one per channel.
+    ASSERT_NE(r->find_presence("ch1", "producer"), nullptr);
+    ASSERT_NE(r->find_presence("ch2", "producer"), nullptr);
 }
 
 TEST(HubStateOps, ChannelRegistered_EmptyProducerUid_SkipsRole)
 {
     HubState s;
-    auto     ch                = make_channel("ch1");
+    auto     ch              = make_channel("ch1");
     ch.producer_role_uid     = "";
     HubStateTestAccess::on_channel_registered(s, ch);
-    // Channel present; no RoleEntry inserted.
     EXPECT_TRUE(s.channel("ch1").has_value());
     EXPECT_TRUE(s.snapshot().roles.empty());
 }
 
-TEST(HubStateOps, ChannelClosed_RemovesChannelAndRolesChannelRef)
+TEST(HubStateOps, ChannelClosed_RemovesChannelAndScrubsRole)
 {
     HubState s;
     HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
@@ -758,23 +526,22 @@ TEST(HubStateOps, ChannelClosed_RemovesChannelAndRolesChannelRef)
     auto r = s.role("prod.main.test");
     ASSERT_TRUE(r.has_value());
     EXPECT_TRUE(r->channels.empty());
+    // HEP-CORE-0023 §2.1 atomic teardown — producer-presence on the
+    // closed channel transitions Disconnected.
+    const auto *p = r->find_presence("ch1", "producer");
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(p->state, RoleState::Disconnected);
 
-    // Counter key encodes reason.
     EXPECT_EQ(s.counters().msg_type_counts.at("close:VoluntaryDereg"), 1u);
 }
 
-TEST(HubStateOps, ChannelClosed_MultiChannel_OnlyScrubsClosedChannelFromRole)
+TEST(HubStateOps, ChannelClosed_MultiChannel_LeavesOtherPresences)
 {
     HubState s;
-    auto     c1 = make_channel("ch1");
-    auto     c2 = make_channel("ch2");
-    // Both carry producer_role_uid = "prod.main.test" (via make_channel helper),
-    // so the same RoleEntry ends up with channels = ["ch1","ch2"].
-    HubStateTestAccess::on_channel_registered(s, c1);
-    HubStateTestAccess::on_channel_registered(s, c2);
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch2"));
     ASSERT_EQ(s.role("prod.main.test")->channels.size(), 2u);
 
-    // Close only ch1; ch2 must remain in the role's channels list.
     HubStateTestAccess::on_channel_closed(
         s, "ch1", ChannelCloseReason::VoluntaryDereg);
     EXPECT_FALSE(s.channel("ch1").has_value());
@@ -784,6 +551,13 @@ TEST(HubStateOps, ChannelClosed_MultiChannel_OnlyScrubsClosedChannelFromRole)
     ASSERT_TRUE(r.has_value());
     ASSERT_EQ(r->channels.size(), 1u);
     EXPECT_EQ(r->channels[0], "ch2");
+    // ch1 presence Disconnected, ch2 presence still Connected.
+    const auto *p1 = r->find_presence("ch1", "producer");
+    const auto *p2 = r->find_presence("ch2", "producer");
+    ASSERT_NE(p1, nullptr);
+    ASSERT_NE(p2, nullptr);
+    EXPECT_EQ(p1->state, RoleState::Disconnected);
+    EXPECT_EQ(p2->state, RoleState::Connected);
 }
 
 TEST(HubStateOps, ConsumerJoined_UpsertsConsumerAndConsumerRole)
@@ -800,12 +574,14 @@ TEST(HubStateOps, ConsumerJoined_UpsertsConsumerAndConsumerRole)
     auto r = s.role("cons.A.test");
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(r->role_tag, "cons");
-    EXPECT_EQ(r->name,     "A");        // derived from uid's second component
+    EXPECT_EQ(r->name,     "A");
     EXPECT_EQ(r->channels.size(), 1u);
     EXPECT_EQ(r->channels[0], "ch1");
+    // Consumer-presence created at REG time per HEP-CORE-0023 §2.6.
+    ASSERT_NE(r->find_presence("ch1", "consumer"), nullptr);
 }
 
-TEST(HubStateOps, ConsumerLeft_RemovesFromChannelAndRoleChannelsList)
+TEST(HubStateOps, ConsumerLeft_RemovesFromChannelAndDisconnectsPresence)
 {
     HubState s;
     HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
@@ -816,162 +592,164 @@ TEST(HubStateOps, ConsumerLeft_RemovesFromChannelAndRoleChannelsList)
     ASSERT_TRUE(ch.has_value());
     EXPECT_TRUE(ch->consumers.empty());
 
-    // Role remains (consumer role may still be active elsewhere) but its
-    // channel reference for ch1 is gone.
     auto r = s.role("cons.A.test");
     ASSERT_TRUE(r.has_value());
     EXPECT_TRUE(r->channels.empty());
-    EXPECT_EQ(r->state, RoleState::Connected);
+    const auto *p = r->find_presence("ch1", "consumer");
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(p->state, RoleState::Disconnected);
 }
 
-TEST(HubStateOps, Heartbeat_TransitionsPendingToReady_FiresOnce)
+TEST(HubStateOps, Heartbeat_FirstTickFlipsObservableToLive)
 {
     HubState s;
     HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
+    ASSERT_EQ(channel_observable(s, "ch1"), ChannelObservable::kRegistering);
 
-    int ready_fires = 0;
+    int fires = 0;
     s.subscribe_channel_status_changed([&](const ChannelEntry &e,
                                             ChannelObservable obs) {
-        EXPECT_EQ(e.status, ChannelStatus::Ready);
+        EXPECT_EQ(e.name, "ch1");
         EXPECT_EQ(obs, ChannelObservable::kLive);
-        ++ready_fires;
+        ++fires;
     });
 
     const auto t1 = std::chrono::steady_clock::now();
-    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", t1, std::nullopt);
-    EXPECT_EQ(ready_fires, 1);
-    EXPECT_EQ(s.channel("ch1")->status, ChannelStatus::Ready);
+    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", "producer",
+                                     t1, std::nullopt);
+    EXPECT_EQ(fires, 1);
+    EXPECT_EQ(channel_observable(s, "ch1"), ChannelObservable::kLive);
 
-    // Second heartbeat is a plain last_heartbeat refresh — no further fire.
-    const auto t2 = t1 + std::chrono::milliseconds(10);
-    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", t2, std::nullopt);
-    EXPECT_EQ(ready_fires, 1);
+    // Subsequent tick: same observable → no re-fire.
+    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", "producer",
+                                     t1 + std::chrono::milliseconds(10),
+                                     std::nullopt);
+    EXPECT_EQ(fires, 1);
 }
 
-TEST(HubStateOps, Heartbeat_WithMetrics_StoresOnRole)
+TEST(HubStateOps, Heartbeat_WithMetrics_StoresOnPresence)
 {
     HubState s;
     HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
 
     nlohmann::json metrics = {{"qps", 123}, {"errors", 0}};
-    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test",
+    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", "producer",
                                      std::chrono::steady_clock::now(), metrics);
 
-    auto r = s.role("prod.main.test");
-    ASSERT_TRUE(r.has_value());
-    EXPECT_EQ(r->latest_metrics, metrics);
-    EXPECT_NE(r->metrics_collected_at, std::chrono::system_clock::time_point{});
+    auto snap = s.snapshot();
+    const auto *p = find_producer_in(snap, "ch1", "prod.main.test");
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(p->latest_metrics, metrics);
+    EXPECT_NE(p->metrics_collected_at,
+              std::chrono::system_clock::time_point{});
 }
 
-// HEP-CORE-0023 §2.1: Ready -> Pending demotion on heartbeat timeout.
-// Role is NOT marked Disconnected — Pending means "suspicious, may recover".
-// Counter bumps only when an actual Ready -> Pending transition fires.
-TEST(HubStateOps, HeartbeatTimeout_DemotesChannelOnly_RoleStillConnected)
+TEST(HubStateOps, HeartbeatTimeout_DemotesProducerPresence)
 {
     HubState s;
     HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
     HubStateTestAccess::on_heartbeat(
-        s, "ch1", "prod.main.test", std::chrono::steady_clock::now(), std::nullopt);
-    ASSERT_EQ(s.channel("ch1")->status, ChannelStatus::Ready);
-    ASSERT_EQ(s.role("prod.main.test")->state, RoleState::Connected);
+        s, "ch1", "prod.main.test", "producer",
+        std::chrono::steady_clock::now(), std::nullopt);
+    ASSERT_EQ(channel_observable(s, "ch1"), ChannelObservable::kLive);
 
     HubStateTestAccess::on_heartbeat_timeout(s, "ch1", "prod.main.test");
-    EXPECT_EQ(s.channel("ch1")->status, ChannelStatus::PendingReady);
-    EXPECT_EQ(s.role("prod.main.test")->state, RoleState::Connected)
-        << "Per HEP-0023 §2.1, Ready->Pending demote does NOT disconnect the role";
+    EXPECT_EQ(channel_observable(s, "ch1"), ChannelObservable::kStalled);
+    auto snap = s.snapshot();
+    const auto *p = find_producer_in(snap, "ch1", "prod.main.test");
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(p->state, RoleState::Pending);
     EXPECT_EQ(s.counters().ready_to_pending_total, 1u);
 }
 
-// HEP-CORE-0023 §2.1 / M1.2: counter bumps once per real
-// Connected → Pending transition; subsequent timeout calls on a
-// presence already in Pending are no-ops (no double-bump).  Unknown
-// channels are also no-ops.  Pre-M1.2 this test used to verify
-// "skip-on-not-Ready" against `ChannelEntry.status`; under the
-// presence-FSM model the equivalent guarantee is "skip-when-presence-
-// not-Connected", verified below.
-TEST(HubStateOps, HeartbeatTimeout_NotConnected_NoCounterBump)
+TEST(HubStateOps, HeartbeatTimeout_AlreadyPending_NoDoubleCounter)
 {
     HubState s;
     HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
-    // After M1.2 eager presence creation: producer-presence is
-    // Connected with first_heartbeat_seen=false.  First
-    // on_heartbeat_timeout call SHOULD transition (Connected →
-    // Pending) and bump the counter.
+    // Eager presence: Connected + first_heartbeat_seen=false.
     HubStateTestAccess::on_heartbeat_timeout(s, "ch1", "prod.main.test");
     EXPECT_EQ(s.counters().ready_to_pending_total, 1u);
 
-    // Second call: presence already Pending, no transition, no bump.
     HubStateTestAccess::on_heartbeat_timeout(s, "ch1", "prod.main.test");
     EXPECT_EQ(s.counters().ready_to_pending_total, 1u)
         << "Pending → Pending must not double-bump the counter";
 
-    // Unknown channel: no role lookup match → no-op.
     HubStateTestAccess::on_heartbeat_timeout(s, "no.such.channel.uid00000001",
                                               "prod.main.test");
     EXPECT_EQ(s.counters().ready_to_pending_total, 1u);
 }
 
-// HEP-CORE-0023 §2.1: Pending -> deregistered (no grace, no Closing).
-TEST(HubStateOps, PendingTimeout_DeregistersChannelAndBumpsCounter)
+TEST(HubStateOps, PendingTimeout_AtomicallyTearsDownChannel)
 {
     HubState s;
     HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
-    ASSERT_TRUE(s.channel("ch1").has_value());
-    ASSERT_EQ(s.channel("ch1")->status, ChannelStatus::PendingReady);
+    // Force producer-presence to Pending via heartbeat timeout.
+    HubStateTestAccess::on_heartbeat_timeout(s, "ch1", "prod.main.test");
+    {
+        auto snap = s.snapshot();
+        ASSERT_EQ(find_producer_in(snap, "ch1", "prod.main.test")->state,
+                  RoleState::Pending);
+    }
 
     HubStateTestAccess::on_pending_timeout(s, "ch1");
     EXPECT_FALSE(s.channel("ch1").has_value())
-        << "Per HEP-0023 §2.1, Pending->deregistered fully removes the channel "
-           "(no Closing intermediate)";
+        << "HEP-CORE-0023 §2.1 atomic teardown — Pending->Disconnected "
+           "removes the channel in the same handler";
     EXPECT_EQ(s.counters().pending_to_deregistered_total, 1u);
 }
 
-// Counter must not bump when the channel is not in PendingReady state.
 TEST(HubStateOps, PendingTimeout_NotPending_NoOpAndNoCounterBump)
 {
     HubState s;
     HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
     HubStateTestAccess::on_heartbeat(
-        s, "ch1", "prod.main.test", std::chrono::steady_clock::now(), std::nullopt);
-    ASSERT_EQ(s.channel("ch1")->status, ChannelStatus::Ready);
+        s, "ch1", "prod.main.test", "producer",
+        std::chrono::steady_clock::now(), std::nullopt);
+    {
+        auto snap = s.snapshot();
+        ASSERT_EQ(find_producer_in(snap, "ch1", "prod.main.test")->state,
+                  RoleState::Connected);
+    }
 
-    // Channel is Ready, not Pending — _on_pending_timeout must be no-op.
     HubStateTestAccess::on_pending_timeout(s, "ch1");
-    EXPECT_EQ(s.channel("ch1")->status, ChannelStatus::Ready);
+    EXPECT_TRUE(s.channel("ch1").has_value());
     EXPECT_EQ(s.counters().pending_to_deregistered_total, 0u);
 
-    // Unknown channel: also no-op.
     HubStateTestAccess::on_pending_timeout(s, "no.such.channel.uid00000001");
     EXPECT_EQ(s.counters().pending_to_deregistered_total, 0u);
 }
 
-// HEP-CORE-0023 §2.5: every PendingReady -> Ready transition (first heartbeat
-// OR recovery from Pending) bumps `pending_to_ready_total`.
-TEST(HubStateOps, Heartbeat_PendingToReady_BumpsRecoveryCounter)
+TEST(HubStateOps, Heartbeat_PendingToConnected_BumpsRecoveryCounter)
 {
     HubState s;
     HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
-    ASSERT_EQ(s.channel("ch1")->status, ChannelStatus::PendingReady);
     ASSERT_EQ(s.counters().pending_to_ready_total, 0u);
 
-    // First heartbeat: PendingReady -> Ready (counts as "first heartbeat" recovery).
+    // First heartbeat: kRegistering → kLive (was_first==true) — counts.
     HubStateTestAccess::on_heartbeat(
-        s, "ch1", "prod.main.test", std::chrono::steady_clock::now(), std::nullopt);
-    EXPECT_EQ(s.channel("ch1")->status, ChannelStatus::Ready);
-    EXPECT_EQ(s.counters().pending_to_ready_total, 1u);
+        s, "ch1", "prod.main.test", "producer",
+        std::chrono::steady_clock::now(), std::nullopt);
+    EXPECT_EQ(channel_observable(s, "ch1"), ChannelObservable::kLive);
+    // Note: pending_to_ready bumps only on Pending→Connected recovery,
+    // not on first-heartbeat.  Verified next.
 
-    // Subsequent Ready->Ready heartbeat: no transition, no counter bump.
     HubStateTestAccess::on_heartbeat(
-        s, "ch1", "prod.main.test", std::chrono::steady_clock::now(), std::nullopt);
-    EXPECT_EQ(s.counters().pending_to_ready_total, 1u);
+        s, "ch1", "prod.main.test", "producer",
+        std::chrono::steady_clock::now(), std::nullopt);
+    EXPECT_EQ(s.counters().pending_to_ready_total, 0u);
 
-    // Demote, then heartbeat to recover: another Pending->Ready, counter bumps.
+    // Demote, then heartbeat to recover — Pending→Connected.
     HubStateTestAccess::on_heartbeat_timeout(s, "ch1", "prod.main.test");
-    ASSERT_EQ(s.channel("ch1")->status, ChannelStatus::PendingReady);
+    {
+        auto snap = s.snapshot();
+        ASSERT_EQ(find_producer_in(snap, "ch1", "prod.main.test")->state,
+                  RoleState::Pending);
+    }
     HubStateTestAccess::on_heartbeat(
-        s, "ch1", "prod.main.test", std::chrono::steady_clock::now(), std::nullopt);
-    EXPECT_EQ(s.channel("ch1")->status, ChannelStatus::Ready);
-    EXPECT_EQ(s.counters().pending_to_ready_total, 2u);
+        s, "ch1", "prod.main.test", "producer",
+        std::chrono::steady_clock::now(), std::nullopt);
+    EXPECT_EQ(channel_observable(s, "ch1"), ChannelObservable::kLive);
+    EXPECT_EQ(s.counters().pending_to_ready_total, 1u);
 }
 
 TEST(HubStateOps, BandJoined_UpsertsMemberRole)
@@ -990,12 +768,9 @@ TEST(HubStateOps, BandJoined_UpsertsMemberRole)
 
     auto r = s.role("prod.r1.test");
     ASSERT_TRUE(r.has_value());
-    // name is derived from uid's second component ('r1'), not from the
-    // separate role_name field on BandMember.
     EXPECT_EQ(r->name, "r1");
     EXPECT_EQ(r->role_tag, "prod");
-    EXPECT_TRUE(r->channels.empty()); // band membership doesn't populate channels
-    // Per HEP-CORE-0033 §9.4, msg_type counters live at dispatcher level.
+    EXPECT_TRUE(r->channels.empty());
     EXPECT_EQ(s.counters().msg_type_counts.count("BAND_JOIN_REQ"), 0u);
 }
 
@@ -1006,33 +781,34 @@ TEST(HubStateOps, PeerConnected_Inserts)
     auto p = s.peer("hub.p1.test");
     ASSERT_TRUE(p.has_value());
     EXPECT_EQ(p->state, PeerState::Connected);
-    // Per HEP-CORE-0033 §9.4, msg_type counters live at dispatcher level.
     EXPECT_EQ(s.counters().msg_type_counts.count("HUB_PEER_HELLO"), 0u);
 }
 
-TEST(HubStateOps, MetricsReported_StoresOnRoleWithoutLivenessSideEffect)
+TEST(HubStateOps, MetricsReported_StoresOnPresenceWithoutLivenessSideEffect)
 {
     HubState s;
-    // Role enters via channel registration + one heartbeat so it's Ready.
     HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
     const auto hb_time = std::chrono::steady_clock::now();
-    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", hb_time, std::nullopt);
-    const auto role_hb_before = s.role("prod.main.test")->last_heartbeat;
+    HubStateTestAccess::on_heartbeat(
+        s, "ch1", "prod.main.test", "producer", hb_time, std::nullopt);
+    std::chrono::steady_clock::time_point presence_hb_before;
+    {
+        auto snap = s.snapshot();
+        presence_hb_before =
+            find_producer_in(snap, "ch1", "prod.main.test")->last_heartbeat;
+    }
 
-    // METRICS_REPORT_REQ arrives later.
     nlohmann::json m   = {{"rx_count", 42}};
     const auto     now = std::chrono::system_clock::now();
     HubStateTestAccess::on_metrics_reported(s, "ch1", "prod.main.test", m, now);
 
-    auto r = s.role("prod.main.test");
-    ASSERT_TRUE(r.has_value());
-    // Metrics got stored.
-    EXPECT_EQ(r->latest_metrics, m);
-    EXPECT_EQ(r->metrics_collected_at, now);
-    // Crucially: metrics report does NOT bump the role's liveness clock.
-    EXPECT_EQ(r->last_heartbeat, role_hb_before);
-
-    // Per HEP-CORE-0033 §9.4, msg_type counters live at dispatcher level.
+    auto snap = s.snapshot();
+    const auto *p = find_producer_in(snap, "ch1", "prod.main.test");
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(p->latest_metrics, m);
+    EXPECT_EQ(p->metrics_collected_at, now);
+    // Metrics report must NOT advance the presence's last_heartbeat.
+    EXPECT_EQ(p->last_heartbeat, presence_hb_before);
     EXPECT_EQ(s.counters().msg_type_counts.count("METRICS_REPORT_REQ"), 0u);
 }
 
@@ -1050,18 +826,12 @@ TEST(HubStateOps, MessageProcessed_BumpsCounterAndBytes)
     EXPECT_EQ(c.bytes_out_total, 64u  + 64u  + 16u);
 }
 
-// ═══ HubState validator wiring (HEP-0033 §G2.2.0b) ═════════════════════════
-//
-// Every `_on_*` op validates its identifiers at entry and drops the
-// mutation if any is malformed, bumping the `sys.invalid_identifier_rejected`
-// counter. These two tests pin that wiring: a future change that
-// accidentally removes the guard would make them fail, even though
-// the naming validator tests (test_naming.cpp) would still pass.
+// ═══ Validator wiring (HEP-0033 §G2.2.0b) ═══════════════════════════════════
 
 TEST(HubStateValidation, ChannelRegistered_InvalidChannelName_DroppedAndCounted)
 {
     HubState s;
-    ChannelEntry bad = make_channel("prod.oops"); // reserved first component → invalid channel
+    ChannelEntry bad = make_channel("prod.oops"); // reserved first component
     HubStateTestAccess::on_channel_registered(s, bad);
 
     EXPECT_FALSE(s.channel("prod.oops").has_value());
@@ -1072,7 +842,6 @@ TEST(HubStateValidation, ChannelRegistered_InvalidChannelName_DroppedAndCounted)
     auto it = counts.find("sys.invalid_identifier_rejected");
     ASSERT_NE(it, counts.end());
     EXPECT_EQ(it->second, 1u);
-    // REG_REQ counter must NOT be bumped — the op bailed before the tail.
     EXPECT_EQ(counts.count("REG_REQ"), 0u);
 }
 
@@ -1083,14 +852,12 @@ TEST(HubStateValidation, ConsumerJoined_InvalidRoleUid_DroppedAndCounted)
 
     ConsumerEntry c;
     c.consumer_pid = 1;
-    c.role_uid     = "bogus-uid"; // missing tag prefix → invalid RoleUid
+    c.role_uid     = "bogus-uid"; // missing tag prefix
     HubStateTestAccess::on_consumer_joined(s, "ch1", c);
 
     auto ch = s.channel("ch1");
     ASSERT_TRUE(ch.has_value());
     EXPECT_TRUE(ch->consumers.empty());
-
-    // No RoleEntry for the bogus uid.
     EXPECT_FALSE(s.role("bogus-uid").has_value());
 
     const auto &counts = s.counters().msg_type_counts;
@@ -1098,18 +865,10 @@ TEST(HubStateValidation, ConsumerJoined_InvalidRoleUid_DroppedAndCounted)
     EXPECT_EQ(counts.count("CONSUMER_REG_REQ"), 0u);
 }
 
-// ═══ BrokerService plumbing (HEP-0033 §G2.2.0) ══════════════════════════════
+// ═══ BrokerService plumbing ═════════════════════════════════════════════════
 
-/// G2.2.0 only plumbs `HubState` into `BrokerServiceImpl` and exposes it;
-/// no broker handler is yet mutating it. The accessor test verifies the
-/// reference is stable and the state starts empty. End-to-end "broker
-/// mutates HubState via `_on_*`" coverage lands in G2.2.1+.
 TEST(BrokerServicePlumbing, HubStateAccessorReturnsExternalAggregate)
 {
-    // HEP-CORE-0033 §4 — HubState is owned by HubHost, not by the broker.
-    // Construct it externally (here, on the stack) and pass to the broker;
-    // the broker stores a non-owning pointer.  In production this is what
-    // `HubHost` does at startup.
     pylabhub::hub::HubState state;
 
     pylabhub::broker::BrokerService::Config cfg;
@@ -1125,235 +884,108 @@ TEST(BrokerServicePlumbing, HubStateAccessorReturnsExternalAggregate)
     EXPECT_TRUE(snap.peers.empty());
     EXPECT_TRUE(snap.shm_blocks.empty());
 
-    // The accessor must return the externally-owned object (same address).
     EXPECT_EQ(&state_ref, &state);
     EXPECT_EQ(&state_ref, &broker.hub_state());
 }
 
-// ═══ G2.2.1.b.1 — closing_deadline / zmq_node_endpoint primitives ══════════
-//
-// These primitives close the field-divergence land-mines identified in the
-// G2.2.1.b code review.  Tests cover happy path, no-op-on-unknown, idempotence
-// across repeated calls, and that the two primitives are independent
-// (changing one doesn't disturb the other).
+// ═══ Heartbeat/observable contract ══════════════════════════════════════════
 
-TEST(HubStatePrimitivesB1, SetChannelClosingDeadline_HappyPath)
-{
-    HubState s;
-    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
-    const auto t0 = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    HubStateTestAccess::set_channel_closing_deadline(s, "ch1", t0);
-
-    auto got = s.channel("ch1");
-    ASSERT_TRUE(got.has_value());
-    EXPECT_EQ(got->closing_deadline, t0);
-}
-
-TEST(HubStatePrimitivesB1, SetChannelClosingDeadline_UnknownChannelIsNoop)
-{
-    HubState s;
-    // No channel registered — call must not crash, must not insert.
-    const auto t0 = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    HubStateTestAccess::set_channel_closing_deadline(s, "nope", t0);
-    EXPECT_FALSE(s.channel("nope").has_value());
-}
-
-TEST(HubStatePrimitivesB1, SetChannelClosingDeadline_OverwritesPriorValue)
-{
-    HubState s;
-    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
-    const auto t1 = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-    const auto t2 = std::chrono::steady_clock::now() + std::chrono::seconds(60);
-    HubStateTestAccess::set_channel_closing_deadline(s, "ch1", t1);
-    HubStateTestAccess::set_channel_closing_deadline(s, "ch1", t2);
-    EXPECT_EQ(s.channel("ch1")->closing_deadline, t2);
-}
-
-TEST(HubStatePrimitivesB1, SetChannelClosingDeadline_DoesNotChangeStatus)
-{
-    HubState s;
-    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
-    // Channel currently in PendingReady (default after _on_channel_registered).
-    HubStateTestAccess::set_channel_closing_deadline(
-        s, "ch1", std::chrono::steady_clock::now() + std::chrono::seconds(5));
-    // The deadline-only primitive must NOT change status.  Caller is
-    // expected to call _set_channel_status(Closing) separately.
-    EXPECT_EQ(s.channel("ch1")->status, ChannelStatus::PendingReady);
-}
-
-TEST(HubStatePrimitivesB1, SetChannelZmqNodeEndpoint_HappyPath)
-{
-    HubState s;
-    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
-    HubStateTestAccess::set_channel_zmq_node_endpoint(
-        s, "ch1", "tcp://10.0.0.1:5555");
-    EXPECT_EQ(s.channel("ch1")->zmq_node_endpoint, "tcp://10.0.0.1:5555");
-}
-
-TEST(HubStatePrimitivesB1, SetChannelZmqNodeEndpoint_UnknownChannelIsNoop)
-{
-    HubState s;
-    HubStateTestAccess::set_channel_zmq_node_endpoint(s, "nope", "tcp://x:1");
-    EXPECT_FALSE(s.channel("nope").has_value());
-}
-
-TEST(HubStatePrimitivesB1, SetChannelZmqNodeEndpoint_OverwritesPriorValue)
-{
-    HubState s;
-    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
-    HubStateTestAccess::set_channel_zmq_node_endpoint(s, "ch1", "tcp://a:1");
-    HubStateTestAccess::set_channel_zmq_node_endpoint(s, "ch1", "tcp://b:2");
-    EXPECT_EQ(s.channel("ch1")->zmq_node_endpoint, "tcp://b:2");
-}
-
-TEST(HubStatePrimitivesB1, SetChannelZmqNodeEndpoint_EmptyValueAccepted)
-{
-    // Endpoint "validation" is the broker handler's job; the primitive
-    // should not editorialize.  Empty string is a meaningful sentinel
-    // ("no endpoint set yet") and must round-trip.
-    HubState s;
-    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
-    HubStateTestAccess::set_channel_zmq_node_endpoint(s, "ch1", "tcp://x:1");
-    HubStateTestAccess::set_channel_zmq_node_endpoint(s, "ch1", "");
-    EXPECT_EQ(s.channel("ch1")->zmq_node_endpoint, "");
-}
-
-TEST(HubStatePrimitivesB1, ClosingDeadlineAndEndpoint_AreIndependent)
-{
-    // Setting one primitive must not perturb the other field.
-    HubState s;
-    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
-
-    const auto t0 = std::chrono::steady_clock::now() + std::chrono::seconds(7);
-    HubStateTestAccess::set_channel_closing_deadline(s, "ch1", t0);
-    HubStateTestAccess::set_channel_zmq_node_endpoint(s, "ch1", "tcp://q:9");
-
-    auto got = s.channel("ch1");
-    ASSERT_TRUE(got.has_value());
-    EXPECT_EQ(got->closing_deadline,    t0);
-    EXPECT_EQ(got->zmq_node_endpoint,   "tcp://q:9");
-
-    // Mutate one — the other stays.
-    HubStateTestAccess::set_channel_zmq_node_endpoint(s, "ch1", "tcp://r:10");
-    auto got2 = s.channel("ch1");
-    ASSERT_TRUE(got2.has_value());
-    EXPECT_EQ(got2->closing_deadline,    t0);
-    EXPECT_EQ(got2->zmq_node_endpoint,   "tcp://r:10");
-}
-
-TEST(HubStatePrimitivesB1, ClosingDeadline_PostChannelClose_ChannelGoneIsNoop)
-{
-    // After _on_channel_closed, the channel is erased from HubState.
-    // Subsequent _set_channel_closing_deadline must NOT resurrect it.
-    HubState s;
-    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
-    HubStateTestAccess::on_channel_closed(s, "ch1",
-        ChannelCloseReason::HeartbeatTimeout);
-    HubStateTestAccess::set_channel_closing_deadline(
-        s, "ch1", std::chrono::steady_clock::now() + std::chrono::seconds(5));
-    EXPECT_FALSE(s.channel("ch1").has_value());
-}
-
-// ═══ G2.2.1.b.1 — heartbeat: last_heartbeat updated every tick ═════════════
-//
-// The pre-fix behavior updated `last_heartbeat` only on the Pending→Ready
-// transition (via `_set_channel_status`).  The fix routes through
-// `_on_heartbeat` which updates `last_heartbeat` unconditionally.
-
-TEST(HubStateHeartbeatB1, EveryTickUpdatesLastHeartbeat)
+TEST(HubStateHeartbeat, EveryTickUpdatesPresenceLastHeartbeat)
 {
     HubState s;
     HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
     auto t1 = std::chrono::steady_clock::now();
-    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", t1, std::nullopt);
-    EXPECT_EQ(s.channel("ch1")->last_heartbeat, t1);
+    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", "producer",
+                                     t1, std::nullopt);
+    {
+        auto snap = s.snapshot();
+        EXPECT_EQ(find_producer_in(snap, "ch1", "prod.main.test")->last_heartbeat, t1);
+    }
 
     auto t2 = t1 + std::chrono::milliseconds(500);
-    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", t2, std::nullopt);
-    EXPECT_EQ(s.channel("ch1")->last_heartbeat, t2)
-        << "second heartbeat must refresh last_heartbeat";
-
-    auto t3 = t2 + std::chrono::milliseconds(500);
-    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", t3, std::nullopt);
-    EXPECT_EQ(s.channel("ch1")->last_heartbeat, t3);
+    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", "producer",
+                                     t2, std::nullopt);
+    {
+        auto snap = s.snapshot();
+        EXPECT_EQ(find_producer_in(snap, "ch1", "prod.main.test")->last_heartbeat, t2);
+    }
 }
 
-TEST(HubStateHeartbeatB1, HeartbeatStatusFlowAndFireSemantics)
+TEST(HubStateHeartbeat, ObservableFlowAndFireSemantics)
 {
-    // Status flow: PendingReady (registered) → Ready (first heartbeat) →
-    // Ready (subsequent ticks; no re-fire) → PendingReady (timeout) →
-    // Ready (recovery heartbeat; fires again).
     HubState s;
     HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
 
-    int ready_fires = 0;
+    int fires = 0;
     s.subscribe_channel_status_changed(
-        [&](const ChannelEntry &, ChannelObservable) { ++ready_fires; });
+        [&](const ChannelEntry &, ChannelObservable) { ++fires; });
 
     auto t1 = std::chrono::steady_clock::now();
-    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", t1, std::nullopt);
-    EXPECT_EQ(s.channel("ch1")->status, ChannelStatus::Ready);
-    EXPECT_EQ(ready_fires, 1);
+    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", "producer",
+                                     t1, std::nullopt);
+    EXPECT_EQ(channel_observable(s, "ch1"), ChannelObservable::kLive);
+    EXPECT_EQ(fires, 1);
 
-    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test",
+    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", "producer",
                                      t1 + std::chrono::milliseconds(10),
                                      std::nullopt);
-    EXPECT_EQ(ready_fires, 1) << "subsequent heartbeats must not re-fire status_changed";
+    EXPECT_EQ(fires, 1)
+        << "subsequent heartbeats must not re-fire status_changed";
 
     HubStateTestAccess::on_heartbeat_timeout(s, "ch1", "prod.main.test");
-    EXPECT_EQ(s.channel("ch1")->status, ChannelStatus::PendingReady);
+    EXPECT_EQ(channel_observable(s, "ch1"), ChannelObservable::kStalled);
 
-    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test",
+    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", "producer",
                                      t1 + std::chrono::seconds(5),
                                      std::nullopt);
-    EXPECT_EQ(s.channel("ch1")->status, ChannelStatus::Ready);
-    // Recovery via _on_heartbeat performs the same Pending→Ready
-    // transition that fires status_changed.
+    EXPECT_EQ(channel_observable(s, "ch1"), ChannelObservable::kLive);
 }
 
-TEST(HubStateHeartbeatB1, HeartbeatOnUnknownChannelDropsSilently)
+TEST(HubStateHeartbeat, HeartbeatOnUnknownPresenceIsNoop)
 {
     HubState s;
-    HubStateTestAccess::on_heartbeat(s, "no.such.ch", "prod.x.y",
+    HubStateTestAccess::on_heartbeat(s, "no.such.ch", "prod.x.y", "producer",
                                      std::chrono::steady_clock::now(),
                                      std::nullopt);
     EXPECT_FALSE(s.channel("no.such.ch").has_value());
-    // Per HEP-CORE-0033 §9.4, msg_type counters are dispatcher-level
-    // (not bumped by HubState ops directly).  This test exercises the
-    // op-only path; the channel doesn't exist so no state mutation
-    // happened — verified above.
     EXPECT_EQ(s.counters().msg_type_counts.count("HEARTBEAT_REQ"), 0u);
 }
 
-TEST(HubStateHeartbeatB1, HeartbeatRefreshesRoleLastHeartbeat)
+TEST(HubStateHeartbeat, ConsumerHeartbeatDoesNotRefreshProducerPresence)
 {
-    // Capability-op layered semantic: a heartbeat on the channel side
-    // also bumps the role's last_heartbeat clock.  Verifies the
-    // bonus role-side liveness tracking we promised in the design doc.
+    // HEP-CORE-0019 §2.3 — per-presence keying.  A consumer heartbeat
+    // refreshes ONLY the consumer-presence row, never the producer's.
     HubState s;
     HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
+    HubStateTestAccess::on_consumer_joined(s, "ch1",
+                                            make_consumer("cons.A.test"));
 
-    auto t0 = s.role("prod.main.test")->last_heartbeat;
+    auto t1 = std::chrono::steady_clock::now();
+    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", "producer",
+                                     t1, std::nullopt);
+    std::chrono::steady_clock::time_point producer_t1;
+    {
+        auto snap = s.snapshot();
+        producer_t1 =
+            find_producer_in(snap, "ch1", "prod.main.test")->last_heartbeat;
+    }
 
-    // Sleep-free: stamp explicit later time to avoid wall-clock flake.
-    auto t1 = t0 + std::chrono::milliseconds(100);
-    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", t1, std::nullopt);
+    auto t2 = t1 + std::chrono::seconds(1);
+    HubStateTestAccess::on_heartbeat(s, "ch1", "cons.A.test", "consumer",
+                                     t2, std::nullopt);
 
-    auto t_after = s.role("prod.main.test")->last_heartbeat;
-    EXPECT_GE(t_after, t1)
-        << "role.last_heartbeat should advance to at least the heartbeat timestamp";
+    auto snap = s.snapshot();
+    auto producer_after =
+        find_producer_in(snap, "ch1", "prod.main.test")->last_heartbeat;
+    EXPECT_EQ(producer_after, producer_t1)
+        << "consumer heartbeat must not refresh producer-presence";
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Schema-registry capability ops (HEP-CORE-0034 §11)
-// ────────────────────────────────────────────────────────────────────────────
+// ─── Schema-registry capability ops (HEP-CORE-0034 §11) ─────────────────────
 
 namespace
 {
 
-/// Build a SchemaRecord with deterministic content for a test.  Hash bytes
-/// derive from a single seed so two records produced with the same seed
-/// compare equal at the byte level.
 SchemaRecord make_schema_rec(std::string owner_uid, std::string schema_id,
                              std::string packing = "aligned",
                              uint8_t     seed    = 0x11)
@@ -1377,7 +1009,6 @@ TEST(HubStateSchemas, OnSchemaRegistered_NewRecord_Created)
     auto out = HubStateTestAccess::on_schema_registered(s, rec);
     EXPECT_EQ(out, SchemaRegOutcome::kCreated);
 
-    // Record visible via accessor.
     auto fetched = s.schema("prod.cam.uid01234567", "frame");
     ASSERT_TRUE(fetched.has_value());
     EXPECT_EQ(fetched->owner_uid, "prod.cam.uid01234567");
@@ -1385,7 +1016,6 @@ TEST(HubStateSchemas, OnSchemaRegistered_NewRecord_Created)
     EXPECT_EQ(fetched->packing,   "aligned");
     EXPECT_EQ(fetched->hash,      rec.hash);
 
-    // schema_count + counter both reflect the insert.
     EXPECT_EQ(s.schema_count(), 1u);
     EXPECT_EQ(s.counters().schema_registered_total, 1u);
     EXPECT_EQ(s.counters().schema_evicted_total,    0u);
@@ -1397,13 +1027,10 @@ TEST(HubStateSchemas, OnSchemaRegistered_SameRecord_Idempotent)
     auto rec = make_schema_rec("prod.cam.uid01234567", "frame");
     HubStateTestAccess::on_schema_registered(s, rec);
 
-    // Second insert with identical hash + packing → idempotent, no extra
-    // counter bump, single record.
     auto out2 = HubStateTestAccess::on_schema_registered(s, rec);
     EXPECT_EQ(out2, SchemaRegOutcome::kIdempotent);
     EXPECT_EQ(s.schema_count(), 1u);
-    EXPECT_EQ(s.counters().schema_registered_total, 1u)
-        << "idempotent re-registration must NOT bump the registered counter";
+    EXPECT_EQ(s.counters().schema_registered_total, 1u);
 }
 
 TEST(HubStateSchemas, OnSchemaRegistered_DifferentHash_RejectedAsHashMismatchSelf)
@@ -1416,7 +1043,6 @@ TEST(HubStateSchemas, OnSchemaRegistered_DifferentHash_RejectedAsHashMismatchSel
     auto out = HubStateTestAccess::on_schema_registered(s, rec2);
     EXPECT_EQ(out, SchemaRegOutcome::kHashMismatchSelf);
 
-    // Original record preserved; counter unchanged.
     auto fetched = s.schema("prod.cam.uid01234567", "frame");
     ASSERT_TRUE(fetched.has_value());
     EXPECT_EQ(fetched->hash, rec.hash);
@@ -1428,10 +1054,6 @@ TEST(HubStateSchemas, OnSchemaRegistered_DifferentPacking_RejectedAsHashMismatch
     HubState s;
     auto rec_a = make_schema_rec("prod.cam.uid01234567", "frame", "aligned", 0x11);
     auto rec_p = make_schema_rec("prod.cam.uid01234567", "frame", "packed",  0x11);
-    // Same hash bytes (seed 0x11) but different packing → still rejected,
-    // because in real wire flow the hash WOULD differ; this test pins the
-    // store-level invariant that packing is part of the equality check
-    // even when the hash bytes happen to coincide.
     HubStateTestAccess::on_schema_registered(s, rec_a);
     auto out = HubStateTestAccess::on_schema_registered(s, rec_p);
     EXPECT_EQ(out, SchemaRegOutcome::kHashMismatchSelf);
@@ -1440,9 +1062,6 @@ TEST(HubStateSchemas, OnSchemaRegistered_DifferentPacking_RejectedAsHashMismatch
 TEST(HubStateSchemas, ConflictPolicy_NamespaceByOwner_TwoRolesSameId)
 {
     HubState s;
-    // Two different producers register `frame` with different hashes.
-    // HEP-CORE-0034 §8 — namespace-by-owner; both records exist
-    // independently, no collision.
     auto rec_a = make_schema_rec("prod.cam_a.uid00000001", "frame", "aligned", 0xAA);
     auto rec_b = make_schema_rec("prod.cam_b.uid00000002", "frame", "aligned", 0xBB);
 
@@ -1460,15 +1079,12 @@ TEST(HubStateSchemas, ConflictPolicy_NamespaceByOwner_TwoRolesSameId)
 TEST(HubStateSchemas, OnSchemaRegistered_EmptyOwnerOrId_ForbiddenOwner)
 {
     HubState s;
-    // Empty owner: rejected.
     EXPECT_EQ(HubStateTestAccess::on_schema_registered(
                   s, make_schema_rec("", "frame")),
               SchemaRegOutcome::kForbiddenOwner);
-    // Empty id: rejected.
     EXPECT_EQ(HubStateTestAccess::on_schema_registered(
                   s, make_schema_rec("prod.x.uid00000001", "")),
               SchemaRegOutcome::kForbiddenOwner);
-    // Empty packing: rejected (packing is part of the fingerprint).
     EXPECT_EQ(HubStateTestAccess::on_schema_registered(
                   s, make_schema_rec("prod.x.uid00000001", "frame", "")),
               SchemaRegOutcome::kForbiddenOwner);
@@ -1478,8 +1094,6 @@ TEST(HubStateSchemas, OnSchemaRegistered_EmptyOwnerOrId_ForbiddenOwner)
 TEST(HubStateSchemas, OnSchemasEvictedForOwner_RemovesAllOwnerRecords)
 {
     HubState s;
-    // One owner with two records, one other-owner record that must NOT
-    // be evicted.
     HubStateTestAccess::on_schema_registered(
         s, make_schema_rec("prod.cam.uid01234567", "frame_v1", "aligned", 0xAA));
     HubStateTestAccess::on_schema_registered(
@@ -1513,9 +1127,6 @@ TEST(HubStateSchemas, OnSchemasEvictedForOwner_HubGlobalNeverEvicted)
 
 TEST(HubStateSchemas, RoleDisconnect_CascadeEvictsOwnedSchemas)
 {
-    // HEP-CORE-0034 §7.2 — schemas evict atomically with role state
-    // transition to Disconnected.  Producer's role record is registered;
-    // its schemas are too; on _set_role_disconnected the schemas vanish.
     HubState s;
 
     HubStateTestAccess::set_role_registered(s, make_role("prod.cam.uid01234567"));
@@ -1534,8 +1145,6 @@ TEST(HubStateSchemas, RoleDisconnect_CascadeEvictsOwnedSchemas)
     EXPECT_FALSE(s.schema("prod.cam.uid01234567", "frame").has_value());
     EXPECT_FALSE(s.schema("prod.cam.uid01234567", "inbox").has_value());
 
-    // The cascade went through _set_role_disconnected, which adds 2 to
-    // schema_evicted_total (one per record removed).
     EXPECT_EQ(s.counters().schema_evicted_total, 2u);
 }
 
@@ -1548,12 +1157,8 @@ TEST(HubStateSchemas, ValidateCitation_SelfOwnedRecord_Ok)
     HubStateTestAccess::on_schema_registered(s, rec);
 
     auto out = HubStateTestAccess::validate_schema_citation(
-        s, /*citer_uid=*/"cons.viewer.uid00000005",
-        /*channel_producer_uid=*/prod_uid,
-        /*cited_owner=*/prod_uid,
-        /*cited_id=*/"frame",
-        /*expected_hash=*/rec.hash,
-        /*expected_packing=*/"aligned");
+        s, "cons.viewer.uid00000005", prod_uid, prod_uid, "frame",
+        rec.hash, "aligned");
     EXPECT_TRUE(out.ok()) << "self-owned-record citation should validate; reason=" << out.detail;
     EXPECT_EQ(s.counters().schema_citation_rejected_total, 0u);
 }
@@ -1565,20 +1170,14 @@ TEST(HubStateSchemas, ValidateCitation_HubGlobal_Ok)
     HubStateTestAccess::on_schema_registered(s, rec);
 
     auto out = HubStateTestAccess::validate_schema_citation(
-        s, /*citer_uid=*/"prod.cam.uid01234567",
-        /*channel_producer_uid=*/"prod.cam.uid01234567",
-        /*cited_owner=*/"hub",
-        /*cited_id=*/"lab.demo.frame@1",
-        /*expected_hash=*/rec.hash,
-        /*expected_packing=*/"aligned");
+        s, "prod.cam.uid01234567", "prod.cam.uid01234567", "hub",
+        "lab.demo.frame@1", rec.hash, "aligned");
     EXPECT_TRUE(out.ok()) << "hub-global citation should validate";
     EXPECT_EQ(s.counters().schema_citation_rejected_total, 0u);
 }
 
 TEST(HubStateSchemas, ValidateCitation_CrossCitation_Rejected)
 {
-    // Consumer connects to producer A but cites producer B's schema.
-    // HEP-CORE-0034 §9.1 — rejected even if hashes match.
     HubState s;
     const std::string prod_a = "prod.cam_a.uid00000001";
     const std::string prod_b = "prod.cam_b.uid00000002";
@@ -1587,17 +1186,13 @@ TEST(HubStateSchemas, ValidateCitation_CrossCitation_Rejected)
     HubStateTestAccess::set_role_registered(s, make_role(prod_b));
 
     auto rec_a = make_schema_rec(prod_a, "frame", "aligned", 0x11);
-    auto rec_b = make_schema_rec(prod_b, "frame", "aligned", 0x11);  // same hash bytes
+    auto rec_b = make_schema_rec(prod_b, "frame", "aligned", 0x11);
     HubStateTestAccess::on_schema_registered(s, rec_a);
     HubStateTestAccess::on_schema_registered(s, rec_b);
 
     auto out = HubStateTestAccess::validate_schema_citation(
-        s, /*citer_uid=*/"cons.viewer.uid00000005",
-        /*channel_producer_uid=*/prod_a,           // connecting to A
-        /*cited_owner=*/prod_b,                    // citing B → rejected
-        /*cited_id=*/"frame",
-        /*expected_hash=*/rec_b.hash,              // even though hashes match!
-        /*expected_packing=*/"aligned");
+        s, "cons.viewer.uid00000005", prod_a, prod_b, "frame",
+        rec_b.hash, "aligned");
     EXPECT_FALSE(out.ok());
     EXPECT_EQ(out.reason, CitationOutcome::Reason::kCrossCitation);
     EXPECT_EQ(s.counters().schema_citation_rejected_total, 1u);
@@ -1612,7 +1207,6 @@ TEST(HubStateSchemas, ValidateCitation_FingerprintMismatch_Rejected)
     auto rec = make_schema_rec(prod_uid, "frame", "aligned", 0x11);
     HubStateTestAccess::on_schema_registered(s, rec);
 
-    // Hash mismatch:
     std::array<uint8_t, 32> wrong_hash;
     wrong_hash.fill(0x99);
     auto out_h = HubStateTestAccess::validate_schema_citation(
@@ -1621,7 +1215,6 @@ TEST(HubStateSchemas, ValidateCitation_FingerprintMismatch_Rejected)
     EXPECT_FALSE(out_h.ok());
     EXPECT_EQ(out_h.reason, CitationOutcome::Reason::kFingerprintMismatch);
 
-    // Packing mismatch:
     auto out_p = HubStateTestAccess::validate_schema_citation(
         s, "cons.viewer.uid00000005", prod_uid, prod_uid, "frame",
         rec.hash, "packed");
@@ -1636,7 +1229,6 @@ TEST(HubStateSchemas, ValidateCitation_UnknownSchema_Rejected)
     HubState s;
     const std::string prod_uid = "prod.cam.uid01234567";
     HubStateTestAccess::set_role_registered(s, make_role(prod_uid));
-    // No schema registered.
 
     std::array<uint8_t, 32> any_hash{};
     auto out = HubStateTestAccess::validate_schema_citation(
@@ -1650,7 +1242,6 @@ TEST(HubStateSchemas, ValidateCitation_UnknownSchema_Rejected)
 TEST(HubStateSchemas, ValidateCitation_UnknownOwner_Rejected)
 {
     HubState s;
-    // No role registered; cited owner is neither hub nor a registered role.
     const std::string ghost = "prod.ghost.uid00000099";
     std::array<uint8_t, 32> any_hash{};
     auto out = HubStateTestAccess::validate_schema_citation(

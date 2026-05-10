@@ -50,9 +50,6 @@
 #ifndef PYLABHUB_DEFAULT_PENDING_MISS_HEARTBEATS
 #  define PYLABHUB_DEFAULT_PENDING_MISS_HEARTBEATS 10  ///< Pending -> deregistered after +10 missed
 #endif
-#ifndef PYLABHUB_DEFAULT_GRACE_HEARTBEATS
-#  define PYLABHUB_DEFAULT_GRACE_HEARTBEATS 4          ///< CLOSING_NOTIFY -> FORCE_SHUTDOWN window
-#endif
 
 namespace pylabhub {
 
@@ -85,10 +82,6 @@ inline constexpr uint32_t kDefaultReadyMissHeartbeats =
 /// Default missed-heartbeat count before Pending -> deregistered + CHANNEL_CLOSING_NOTIFY.
 inline constexpr uint32_t kDefaultPendingMissHeartbeats =
     PYLABHUB_DEFAULT_PENDING_MISS_HEARTBEATS;
-
-/// Default grace window (in heartbeats) between CHANNEL_CLOSING_NOTIFY and FORCE_SHUTDOWN.
-inline constexpr uint32_t kDefaultGraceHeartbeats =
-    PYLABHUB_DEFAULT_GRACE_HEARTBEATS;
 
 /// discover_producer() / DISC_REQ retry sleep slice.
 /// Defaults to kDefaultHeartbeatIntervalMs so the client retries roughly once

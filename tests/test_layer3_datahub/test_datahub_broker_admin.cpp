@@ -83,7 +83,7 @@ struct HubHostHandle
     }
 };
 
-fs::path make_test_hub_dir(int grace_ms = 0)
+fs::path make_test_hub_dir()
 {
     static std::atomic<int> ctr{0};
     fs::path dir = fs::temp_directory_path() /
@@ -103,7 +103,6 @@ fs::path make_test_hub_dir(int grace_ms = 0)
     j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
     j["admin"]["enabled"]           = false;
     j["script"]["path"]             = "";
-    j["broker"]["grace_ms"]         = grace_ms;  // immediate force on close in L3
     {
         std::ofstream f(hub_json);
         f << j.dump(2);
@@ -114,7 +113,7 @@ fs::path make_test_hub_dir(int grace_ms = 0)
 HubHostHandle start_local_broker(BrokerService::Config /*legacy_cfg*/)
 {
     HubHostHandle h;
-    h.hub_dir = make_test_hub_dir(/*grace_ms=*/0);
+    h.hub_dir = make_test_hub_dir();
     h.host    = std::make_unique<HubHost>(
         HubConfig::load_from_directory(h.hub_dir.string()));
     h.host->startup();
@@ -303,9 +302,10 @@ TEST_F(BrokerAdminTest, ListChannels_FieldPresence)
     }
     ASSERT_NE(entry, nullptr) << "Channel not found in JSON";
 
-    // Verify required fields are present
+    // Verify required fields are present.  HEP-CORE-0023 §2.2 — channel
+    // state surfaces only as `observable` (legacy `status` retired).
     EXPECT_TRUE(entry->contains("name"));
-    EXPECT_TRUE(entry->contains("status"));
+    EXPECT_TRUE(entry->contains("observable"));
     EXPECT_TRUE(entry->contains("consumer_count"));
     EXPECT_TRUE(entry->contains("producer_pid"));
 
@@ -345,7 +345,7 @@ TEST_F(BrokerAdminTest, Snapshot_OneChannel)
         }
     }
     ASSERT_NE(found, nullptr) << "Channel not in snapshot";
-    EXPECT_FALSE(found->status.empty());
+    EXPECT_FALSE(found->observable.empty());
     EXPECT_EQ(found->consumer_count, 0);
 
     bh.stop();
@@ -395,9 +395,9 @@ TEST_F(BrokerAdminTest, Snapshot_AfterConsumer)
 
 TEST_F(BrokerAdminTest, CloseChannel_Existing)
 {
-    // Close-channel admin path expires the grace timer with 0 consumers
-    // → expected WARN before FORCE_SHUTDOWN.
-    ExpectLogWarn("grace period expired");
+    // Atomic teardown per HEP-CORE-0023 §2.1 — voluntary close emits a
+    // best-effort CHANNEL_CLOSING_NOTIFY then immediately removes the
+    // channel entry; no grace window, no FORCE_SHUTDOWN escalation.
     const std::string channel = pid_chan("admin.close.existing");
 
     BrcHandle bh;
@@ -408,19 +408,17 @@ TEST_F(BrokerAdminTest, CloseChannel_Existing)
     // Request close
     svc().request_close_channel(channel);
 
-    // Poll until the channel is either gone from the snapshot or marked
-    // "Closing" (both are legitimate end-states of request_close_channel:
-    // gone when members dereg'd, Closing while grace timer is active).
+    // Atomic teardown per HEP-CORE-0023 §2.1 — the channel must be gone
+    // from the snapshot.  No intermediate Closing state.
     using pylabhub::tests::helper::poll_until;
-    auto channel_closed_or_gone = [&] {
+    auto channel_gone = [&] {
         auto s = svc().query_channel_snapshot();
         for (const auto &ch : s.channels)
-            if (ch.name == channel && ch.status != "Closing") return false;
+            if (ch.name == channel) return false;
         return true;
     };
-    EXPECT_TRUE(poll_until(channel_closed_or_gone, std::chrono::seconds(3)))
-        << "Channel neither removed nor in Closing state within 3s of "
-           "request_close_channel";
+    EXPECT_TRUE(poll_until(channel_gone, std::chrono::seconds(3)))
+        << "Channel still present 3s after request_close_channel";
 
     bh.stop();
 }

@@ -141,7 +141,6 @@ int metrics_reclaim_cycle()
             cfg.use_curve                        = true;
             cfg.ready_timeout_override           = std::chrono::milliseconds(150);
             cfg.pending_timeout_override         = std::chrono::milliseconds(150);
-            cfg.grace_override                   = std::chrono::milliseconds(1);
             cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
             auto broker = start_broker_with_cfg(std::move(cfg));
 
@@ -166,8 +165,12 @@ int metrics_reclaim_cycle()
                 << "pending_to_deregistered_total did not increment within 3s";
 
             auto m = broker.service->query_role_state_metrics();
-            EXPECT_GE(m.pending_to_ready_total, 1u)
-                << "pending_to_ready_total should be >=1 (first heartbeat)";
+            // HEP-CORE-0023 §2.5 — pending_to_ready counts genuine
+            // Pending→Connected recoveries.  First-heartbeat (kRegistering
+            // → kLive sub-state flip) is NOT a Pending→Connected transition
+            // and does not bump this counter.
+            EXPECT_EQ(m.pending_to_ready_total, 0u)
+                << "no recovery happened in this scenario";
             EXPECT_GE(m.ready_to_pending_total, 1u)
                 << "ready_to_pending_total should be >=1 (demotion on timeout)";
             EXPECT_GE(m.pending_to_deregistered_total, 1u)
@@ -252,13 +255,9 @@ int stuck_in_pending_reclaimed()
             // sweep passes: Connected → Pending after `ready_timeout`,
             // then Pending → Disconnected after `pending_timeout`.  So
             // both timeouts apply here — keep them short so the total
-            // (~150 ms) fits in a 2 s poll window.  The pre-M1.2
-            // version of this test exploited the OLD `ChannelStatus::PendingReady`
-            // initial state which skipped pass 1 entirely; that
-            // shortcut no longer exists.
+            // (~150 ms) fits in a 2 s poll window.
             cfg.ready_timeout_override           = std::chrono::milliseconds(50);
             cfg.pending_timeout_override         = std::chrono::milliseconds(100);
-            cfg.grace_override                   = std::chrono::milliseconds(1);
             cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
             auto broker = start_broker_with_cfg(std::move(cfg));
 
