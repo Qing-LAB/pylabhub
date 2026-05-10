@@ -775,36 +775,36 @@ BrokerRequestComm::register_consumer(const nlohmann::json &opts, int timeout_ms)
     return pImpl->do_request( "CONSUMER_REG_REQ", "CONSUMER_REG_ACK", opts, timeout_ms);
 }
 
-bool BrokerRequestComm::deregister_channel(const std::string &channel, int timeout_ms)
+std::optional<nlohmann::json>
+BrokerRequestComm::deregister_channel(const std::string &channel, int timeout_ms)
 {
     nlohmann::json payload;
     payload["channel_name"] = channel;
     payload["producer_pid"] = static_cast<uint64_t>(::getpid());
-    auto result = pImpl->do_request("DEREG_REQ", "DEREG_ACK",
+    return pImpl->do_request("DEREG_REQ", "DEREG_ACK",
                              std::move(payload), timeout_ms);
-    return result.has_value() && result->value("status", "") == "success";
 }
 
-bool BrokerRequestComm::deregister_consumer(const std::string &channel, int timeout_ms)
+std::optional<nlohmann::json>
+BrokerRequestComm::deregister_consumer(const std::string &channel, int timeout_ms)
 {
     nlohmann::json payload;
     payload["channel_name"] = channel;
     payload["consumer_pid"] = static_cast<uint64_t>(::getpid());
-    auto result = pImpl->do_request("CONSUMER_DEREG_REQ", "CONSUMER_DEREG_ACK",
+    return pImpl->do_request("CONSUMER_DEREG_REQ", "CONSUMER_DEREG_ACK",
                              std::move(payload), timeout_ms);
-    return result.has_value() && result->value("status", "") == "success";
 }
 
-bool BrokerRequestComm::query_role_presence(const std::string &uid, int timeout_ms)
+std::optional<nlohmann::json>
+BrokerRequestComm::query_role_presence(const std::string &uid, int timeout_ms)
 {
     // HEP-CORE-0007 §"ROLE_PRESENCE_REQ" — wire field `role_uid`
     // (unified with REG_REQ / CONSUMER_REG_REQ; old `uid` form retired
     // 2026-05-09 as part of the protocol-doc-vs-code unification).
     nlohmann::json payload;
     payload["role_uid"] = uid;
-    auto result = pImpl->do_request("ROLE_PRESENCE_REQ", "ROLE_PRESENCE_ACK",
+    return pImpl->do_request("ROLE_PRESENCE_REQ", "ROLE_PRESENCE_ACK",
                              std::move(payload), timeout_ms);
-    return result.has_value() && result->value("present", false);
 }
 
 std::optional<nlohmann::json>
@@ -819,17 +819,11 @@ BrokerRequestComm::query_role_info(const std::string &uid, int timeout_ms)
                       std::move(payload), timeout_ms);
 }
 
-std::vector<nlohmann::json>
+std::optional<nlohmann::json>
 BrokerRequestComm::list_channels(int timeout_ms)
 {
-    auto result = pImpl->do_request("CHANNEL_LIST_REQ", "CHANNEL_LIST_ACK",
+    return pImpl->do_request("CHANNEL_LIST_REQ", "CHANNEL_LIST_ACK",
                              nlohmann::json::object(), timeout_ms);
-    if (!result.has_value())
-        return {};
-    auto it = result->find("channels");
-    if (it == result->end() || !it->is_array())
-        return {};
-    return it->get<std::vector<nlohmann::json>>();
 }
 
 std::optional<nlohmann::json>
@@ -856,14 +850,14 @@ BrokerRequestComm::band_join(const std::string &channel, int timeout_ms)
                              std::move(payload), timeout_ms);
 }
 
-bool BrokerRequestComm::band_leave(const std::string &channel, int timeout_ms)
+std::optional<nlohmann::json>
+BrokerRequestComm::band_leave(const std::string &channel, int timeout_ms)
 {
     nlohmann::json payload;
     payload["channel"] = channel;
     payload["role_uid"] = pImpl->role_uid;
-    auto result = pImpl->do_request("BAND_LEAVE_REQ", "BAND_LEAVE_ACK",
-                                    std::move(payload), timeout_ms);
-    return result.has_value() && result->value("status", "") == "success";
+    return pImpl->do_request("BAND_LEAVE_REQ", "BAND_LEAVE_ACK",
+                             std::move(payload), timeout_ms);
 }
 
 void BrokerRequestComm::band_broadcast(const std::string &channel,

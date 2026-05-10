@@ -701,7 +701,11 @@ TEST_F(BrokerProtocolTest, RolePresenceReq_UnknownUid_ReturnsFalse)
 {
     BrcHandle bh;
     bh.start(ep(), pk(), "QUERIER-unknown");
-    EXPECT_FALSE(bh.brc.query_role_presence("prod.unknown.uiddeadbeef", 2000));
+    // Post-Bucket-C: query_role_presence returns optional<json> with the
+    // broker's response body (`{"present": false}` for unknown UID).
+    auto resp = bh.brc.query_role_presence("prod.unknown.uiddeadbeef", 2000);
+    ASSERT_TRUE(resp.has_value()) << "Broker should respond, not time out";
+    EXPECT_FALSE(resp->value("present", true)) << "Unknown uid → present=false";
     bh.stop();
 }
 

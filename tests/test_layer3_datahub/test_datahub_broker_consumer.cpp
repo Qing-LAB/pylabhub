@@ -298,8 +298,15 @@ TEST_F(DatahubBrokerConsumerTest, ConsumerDeregHappyPath)
     ASSERT_TRUE(disc1.has_value());
     EXPECT_EQ(disc1->value("consumer_count", uint32_t{99}), 1u);
 
-    // Deregister consumer (pid matches → success)
-    EXPECT_TRUE(cons.brc.deregister_consumer(channel, 3000));
+    // Deregister consumer (pid matches → success).  Post-Bucket-C contract:
+    // assert on status="success" explicitly rather than relying on
+    // implicit `optional<json>` conversion, which would silently pass on
+    // any broker response (including errors).
+    {
+        auto dereg_resp = cons.brc.deregister_consumer(channel, 3000);
+        ASSERT_TRUE(dereg_resp.has_value());
+        EXPECT_EQ(dereg_resp->value("status", std::string{}), "success");
+    }
 
     // consumer_count == 0 after deregister
     auto disc2 = cons.brc.discover_channel(channel, json::object(), 3000);
@@ -330,10 +337,15 @@ TEST_F(DatahubBrokerConsumerTest, ConsumerDeregPidMismatch)
                        make_cons_opts(channel, cons_uid_correct, 56001), 3000)
                     .has_value());
 
-    // Mismatched dereg sender → broker rejects.
+    // Mismatched dereg sender → broker rejects with NOT_REGISTERED
+    // per HEP-CORE-0007 §12.4a (post-Bucket-C contract: deregister_consumer
+    // returns optional<json> carrying the broker's response body).
     BrcHandle cons_wrong;
     cons_wrong.start(ep(), pk(), cons_uid_wrong);
-    EXPECT_FALSE(cons_wrong.brc.deregister_consumer(channel, 3000));
+    auto dereg_resp = cons_wrong.brc.deregister_consumer(channel, 3000);
+    ASSERT_TRUE(dereg_resp.has_value()) << "Broker should respond, not time out";
+    EXPECT_EQ(dereg_resp->value("status", std::string{}), "error");
+    EXPECT_EQ(dereg_resp->value("error_code", std::string{}), "NOT_REGISTERED");
 
     // Original consumer still registered (consumer_count remains 1).
     auto disc = cons_correct.brc.discover_channel(channel, json::object(), 3000);
@@ -371,7 +383,11 @@ TEST_F(DatahubBrokerConsumerTest, DiscShowsConsumerCount)
     ASSERT_TRUE(disc1.has_value());
     EXPECT_EQ(disc1->value("consumer_count", uint32_t{99}), 1u);
 
-    EXPECT_TRUE(cons.brc.deregister_consumer(channel, 3000));
+    {
+        auto dereg_resp = cons.brc.deregister_consumer(channel, 3000);
+        ASSERT_TRUE(dereg_resp.has_value());
+        EXPECT_EQ(dereg_resp->value("status", std::string{}), "success");
+    }
 
     auto disc2 = observer.brc.discover_channel(channel, json::object(), 3000);
     ASSERT_TRUE(disc2.has_value());

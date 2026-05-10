@@ -149,19 +149,27 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     [[nodiscard]] std::optional<nlohmann::json>
     register_consumer(const nlohmann::json &opts, int timeout_ms = 5000);
 
-    [[nodiscard]] bool
+    // ─── Harmonized return shape (HEP-CORE-0007 §12.3 + Stage 2 contract) ──
+    //
+    // All request-reply methods return `optional<json>`:
+    //   - `nullopt`               — transport failure (timeout, disconnect).
+    //   - `result->status=="success"` — broker accepted request; success
+    //     body fields per the §12.3 ACK shape.
+    //   - `result->status=="error"`  — broker rejected; inspect
+    //     `result->error_code` per the §12.4a taxonomy + `result->message`.
+    [[nodiscard]] std::optional<nlohmann::json>
     deregister_channel(const std::string &channel, int timeout_ms = 5000);
 
-    [[nodiscard]] bool
+    [[nodiscard]] std::optional<nlohmann::json>
     deregister_consumer(const std::string &channel, int timeout_ms = 5000);
 
-    [[nodiscard]] bool
+    [[nodiscard]] std::optional<nlohmann::json>
     query_role_presence(const std::string &uid, int timeout_ms = 5000);
 
     [[nodiscard]] std::optional<nlohmann::json>
     query_role_info(const std::string &uid, int timeout_ms = 5000);
 
-    [[nodiscard]] std::vector<nlohmann::json>
+    [[nodiscard]] std::optional<nlohmann::json>
     list_channels(int timeout_ms = 5000);
 
     [[nodiscard]] std::optional<nlohmann::json>
@@ -173,8 +181,10 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     [[nodiscard]] std::optional<nlohmann::json>
     band_join(const std::string &channel, int timeout_ms = 5000);
 
-    /// Leave a band.
-    bool band_leave(const std::string &channel, int timeout_ms = 5000);
+    /// Leave a band.  Returns the broker's response body (success or
+    /// error per HEP-CORE-0007 §12.3) or `nullopt` on transport failure.
+    [[nodiscard]] std::optional<nlohmann::json>
+    band_leave(const std::string &channel, int timeout_ms = 5000);
 
     /// Broadcast JSON message to all band members (fire-and-forget).
     void band_broadcast(const std::string &channel,
