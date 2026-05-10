@@ -10,6 +10,26 @@
 
 ## Current Focus
 
+### 🔥 Wave M2 — Multi-Producer Channel Bookkeeping (2026-05-10)
+
+Canonical plan in `docs/TODO_MASTER.md` "Wave M2".  API-layer items
+this wave touches:
+
+- **MP2** Data structure — `ProducerEntry` parallel to `ConsumerEntry`;
+  `ChannelEntry.producers` vector (replaces scalar `producer_*` fields).
+  Public-facing because `ChannelEntry` is part of the read-only snapshot
+  API (`HubState::snapshot()` returns it; `channel_to_json` emits it).
+- **MP3** Bookkeeping ops — new internal `_on_producer_dropped` op;
+  new `_dispatch_role_disconnected_if_dead` helper (private).  Public
+  API of `HubState` unchanged at the surface level (`channel()`,
+  `role()`, `subscribe_*`), but the producer field on the returned
+  `ChannelEntry` changes shape.
+- **MP4** Broker handlers — REG_REQ admission semantics for
+  multi-producer; new error code `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`
+  added to HEP-CORE-0007 §12.4a.
+
+Open design decisions to lock in MP1 are listed in the master plan.
+
 ### Open: pylabhub Python client SDK (deferred until hub C++ design is closed)
 
 External operator/script access to a running hub is provided via a

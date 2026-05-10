@@ -22,7 +22,109 @@ The Data Exchange Hub (DataHub) is a cross-platform IPC framework using shared m
 
 ## Current Sprint Focus
 
-### Snapshot — 2026-05-10 (M1.2 Phase 4 + L3 broker test migration COMPLETE)
+### Snapshot — 2026-05-10 (M1.2 atomic sweep COMPLETE; Wave M2 multi-producer refactor planned)
+
+**HEAD: `a41ce71`** on branch `feature/lua-role-support`.
+
+**Closed this session:**
+- M1.2 Phase 5+6+7 atomic deletion sweep (24 files, +551/-1385):
+  retired `FORCE_SHUTDOWN`, `Closing` channel state,
+  `ChannelEntry.{status, last_heartbeat, state_since, closing_deadline}`,
+  `RoleEntry.{state, last_heartbeat, latest_metrics, metrics_collected_at}`,
+  the `grace_*` config knobs, the `check_closing_deadlines` /
+  `send_force_shutdown` paths, the legacy `j["status"]` JSON emission,
+  and the matching test scaffolding.  Per-presence FSM is now the
+  single source of truth; channel state is derived
+  (`ChannelObservable` per HEP-CORE-0023 §2.2).  1768/1769 tests green
+  (the lone failure was a stale-binary artefact, see
+  `MEMORY.md` 2026-05-10 incident note — current binaries pass 20/20).
+- Code review on `a41ce71` (this same session) identified:
+  - Several stale comments / doc strings referencing removed concepts
+    (`PendingReady` literals, `legacy ChannelEntry.status`, `FORCE_SHUTDOWN`
+    in version-registry comment, `status:"Ready"` in
+    `broker_service.hpp` example, `e.status` admin-snapshot mismatch).
+    All fixed in working tree, pending commit.
+  - **Idempotency bug** in `_set_role_disconnected`: rewrite used a
+    flag (`any_alive_to_kill`) that double-fired the
+    `role_disconnected` handler on empty-presence roles.  Replaced
+    with `was_alive && now_dead` predicate based on
+    `RoleEntry::any_presence_alive()`.  Then dropped in favour of the
+    M2 unified cascade (see below).
+  - **Structural inconsistency** in `role_disconnected` semantics:
+    `_set_role_disconnected` fires the handler; `_on_channel_closed`
+    and `_on_consumer_left` don't, even when killing the role's last
+    presence.  Fix is part of M2 (unified cascade through one helper).
+  - **Multi-producer ZMQ control-plane bug** — see Wave M2 below.
+
+---
+
+### Wave M2 — Multi-Producer Channel Bookkeeping (2026-05-10)
+
+**Cause:** code review during M1.2 Phase 5+6+7 sweep exposed a latent
+design bug in the broker control plane.  `ChannelEntry`'s producer
+bookkeeping is **asymmetric** vs. consumer bookkeeping:
+
+| | Consumer | Producer |
+|---|---|---|
+| Container | `std::vector<ConsumerEntry>` | scalar `producer_pid` / `_hostname` / `_role_name` / `_role_uid` / `_zmq_identity` |
+| Multi-party | naturally supported | single only — second REG_REQ silently overwrites |
+
+REG_REQ from a second producer-role on an existing channel (same
+schema) is treated as "producer restart" and OVERWRITES the prior
+producer's bookkeeping (`broker_service.cpp:1131`).  The orphaned
+role-presence row stays in HubState but is invisible to the
+channel-driven sweep / timeout / notify paths.  Data plane (ZMQ
+queue) works; control plane is broken.
+
+The bug is **latent (predates M1.2)** and was masked by SHM channels
+being physically single-producer.  ZMQ multi-producer (PUSH–PULL,
+multi-PUB PUB–SUB) is supported by the queue abstraction but the
+broker control plane was never adapted to match — violating the
+HEP-CORE-0008 principle that role/hub code should operate
+transport-agnostically through the abstract queue base classes.
+
+**Goal:** restore symmetry; channel existence becomes "any live
+producer-presence (scan)" — naturally 1- or N-valued.  Unify the
+`role_disconnected` cascade so every presence-killing path goes
+through a single helper.
+
+#### Phase order (no skipping — document → data → ops → broker → tests)
+
+| Phase | Scope | Primary files |
+|---|---|---|
+| **MP1** Design (HEPs) | HEP-CORE-0017 §pipeline-architecture: explicit "1..N producers per ZMQ data channel" wording, transport-agnostic.  HEP-CORE-0023 §2.1: channel-existence predicate = "any producer-presence alive (scan across roles)".  HEP-CORE-0007: REG_REQ admission semantics (same channel + new role_uid ⇒ append; same role_uid ⇒ restart-replace); CHANNEL_ERROR_NOTIFY / CHANNEL_CLOSING_NOTIFY fan-out to all producers + all consumers.  HEP-CORE-0033 §8 ChannelEntry data shape (producers as vector).  HEP-CORE-0034: schemas remain owner-keyed under namespace-by-owner; multi-producer = each producer has its own (uid, schema_id) record. | `docs/HEP/HEP-CORE-0007/0017/0023/0033/0034.md` |
+| **MP2** Data structures | Define `ProducerEntry` (parallel to `ConsumerEntry`: pid, hostname, role_name, role_uid, zmq_identity, connected_at).  Replace `ChannelEntry` scalar producer_* fields with `std::vector<ProducerEntry> producers`.  Update `channel_to_json(c, obs)` to emit producers list. | `src/include/utils/hub_state.hpp`, `src/utils/ipc/hub_state_json.{hpp,cpp}` |
+| **MP3** Bookkeeping ops (HubState) | New private `_dispatch_role_disconnected_if_dead(uid, was_alive_before, lk)` helper — single fire site.  New primary op `_on_producer_dropped(channel, role_uid, reason)`: mark this producer-presence Disconnected, remove the matching `ProducerEntry`; if `entry.producers.empty()`, remove channel + fire CHANNEL_CLOSED; call role-disconnect helper.  Rewrite `_on_pending_timeout(channel, role_uid)` as thin wrapper over `_on_producer_dropped`.  Rewrite `_on_consumer_left` to call role-disconnect helper after marking consumer-presence Disconnected.  Rewrite `_set_role_disconnected` to iterate this role's `(channel, "producer")` presences via `_on_producer_dropped`, then a single role-disconnect helper call. | `src/include/utils/hub_state.hpp`, `src/utils/ipc/hub_state.cpp` |
+| **MP4** Broker handlers | REG_REQ admission: same channel + same role_uid ⇒ restart-replace that producer's `ProducerEntry`; same channel + new role_uid ⇒ append.  Reject second REG_REQ when `data_transport == "shm"` (physical single-producer) with `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`.  DEREG_REQ → `_on_producer_dropped(channel, requester_uid, VoluntaryDereg)`.  Script-requested admin close → call `_on_producer_dropped` per producer in `entry.producers`.  CHANNEL_ERROR_NOTIFY iterates `entry.producers`.  Sweep loop scans all `(channel, "producer")` presences across roles for ready/pending timeouts.  ROLE_INFO_REQ / ROLE_PRESENCE_REQ search producers list.  CHANNEL_CLOSING_NOTIFY fan-out to all producers + all consumers. | `src/include/utils/broker_service.hpp`, `src/utils/ipc/broker_service.cpp` |
+| **MP5** Tests (L2 + L3) | L2: multi-producer admission, role_disconnected cascade unification, asymmetric expiry (A timeout / B alive ⇒ channel stays, observable stays `kLive`), atomic teardown on last-producer-drop, channel_to_json producers list shape, SHM-rejection of second producer.  L3: end-to-end multi-producer REG_REQ; CHANNEL_ERROR_NOTIFY fan-out; sweep covers all producers; CONSUMER_REG_REQ + DISC_REQ semantics on multi-producer channels.  Update all L2/L3 sites accessing `entry.producer_role_uid` to read `entry.producers[k].role_uid`. | `tests/test_layer2_service/test_hub_state.cpp`, `tests/test_layer3_datahub/*.cpp` |
+| **MP6** Federation/dual-hub (deferred to Wave B M8) | HEP-CORE-0022 peer-hub producer-presence handling — how peers replicate / observe producer-presence updates across hubs.  B3-B5 dual-hub processor scenarios in `docs/tech_draft/role_host_template_design.md` Wave B M8.  Depends on MP1-MP5 landing first because multi-producer presence model interacts with federation peer replication. | `docs/HEP/HEP-CORE-0022.md`, `src/utils/ipc/broker_service.cpp` peer-relay code |
+
+#### Open design decisions (lock during MP1 doc revision)
+
+1. **Same-uid restart semantics:** replace-in-place vs idempotent-on-equal-fields (no-op when identical)?  Current code does replace; lean toward keeping that for simplicity unless a use case demands idempotent.
+2. **Cross-tag admission:** can `prod.X` + `proc.Y` both be producers of channel C?  Per HEP-CORE-0017 pipeline architecture (processor's `out_channel` is a producer side), yes.  Document explicitly.
+3. **SHM physical-single-producer enforcement:** broker rejects second producer REG_REQ when `data_transport == "shm"` with `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`.  Lean: yes; document in HEP-CORE-0007 §12.4a Error Code Taxonomy.
+4. **Schema-record ownership in multi-producer:** per HEP-CORE-0034 namespace-by-owner, each producer owns its own `(uid, schema_id)` record.  Multi-producer same-channel ≠ shared schema record.  Document explicitly to prevent path-B citers from cross-citing across producers on the same channel.
+5. **Channel-level schema invariant:** all producers on the same channel MUST agree on `schema_hash` + `schema_blds` + `packing` (channel-wide invariant).  REG_REQ that fails this gate is rejected.  Already enforced by the existing schema-mismatch check at `broker_service.cpp:1131` — keep, but extend to also verify when admitting a new producer (not restart-replace).
+
+#### Where M2 fits in the wave plan
+
+- **Done:** M1.2 Phase 5+6+7 atomic sweep at `a41ce71`.
+- **Next:** MP1 → MP2 → MP3 → MP4 → MP5 (sequential; each builds on the previous).
+- **After MP5:** unified-cascade tests + multi-producer admission tests green ⇒ M1.2 wave fully closed.
+- **Then:** M1.4 (retire `metrics_store_`), M1.5 (role-side `on_forced_disconnect`).
+- **Then:** Wave B M8 / MP6 — dual-hub processor B3-B5 scenarios — depends on MP1-MP5 landing first.
+
+#### Tracking
+
+This wave plan is the canonical reference; detail per-phase issues live here.  Subtopic TODOs cross-reference back to this section:
+- `docs/todo/API_TODO.md` — adds an "MP3 Bookkeeping Ops" pointer
+- `docs/todo/TESTING_TODO.md` — adds an "MP5 Multi-Producer Coverage" section
+- `docs/todo/MESSAGEHUB_TODO.md` — adds an "MP4 Broker Handlers" pointer
+
+---
+
+### Snapshot — 2026-05-10 EARLIER (M1.2 Phase 4 + L3 broker test migration COMPLETE)
 
 **Full suite: 1782/1782 green** at HEAD `4e30618`.  Branch `feature/lua-role-support`.
 

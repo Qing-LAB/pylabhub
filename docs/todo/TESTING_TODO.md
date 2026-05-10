@@ -201,6 +201,81 @@ test framework utilities (`LogCaptureFixture`, `TmpDir`, `IsolatedProcessTest`
 
 ---
 
+### 8. Wave M2 — Multi-Producer Channel Bookkeeping coverage (2026-05-10)
+
+Canonical plan in `docs/TODO_MASTER.md` "Wave M2".  Test-layer scope
+in phase MP5:
+
+- L2 (`tests/test_layer2_service/test_hub_state.cpp`):
+  - Multi-producer REG_REQ admission: second producer-role-uid on the
+    same channel appends a new `ProducerEntry`.
+  - Same-uid restart: REG_REQ from the same role-uid replaces that
+    one `ProducerEntry`, doesn't append.
+  - SHM single-producer enforcement: second producer-role-uid on a
+    `data_transport == "shm"` channel rejected with
+    `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`.
+  - Role_disconnected cascade unification: drop one producer-presence
+    that is the role's last presence ⇒ role_disconnected fires once;
+    drop one that is NOT the last presence ⇒ no fire; explicit
+    `_set_role_disconnected` ⇒ fires once; combinations are
+    idempotent.
+  - Asymmetric expiry: A timeout / B still alive ⇒ channel stays,
+    observable stays `kLive`.  Both timeout ⇒ atomic teardown.
+  - `channel_to_json` shape: emits `producers: [...]` array.
+
+- L3 (`tests/test_layer3_datahub/*.cpp`):
+  - End-to-end multi-producer REG_REQ via `BrokerRequestComm` against
+    real `HubHost`.
+  - CHANNEL_ERROR_NOTIFY fan-out: schema-mismatch attempt notifies
+    every producer registered on the channel.
+  - CHANNEL_CLOSING_NOTIFY fan-out on atomic teardown: every producer
+    + every consumer.
+  - Sweep loop covers all producer-presences (asymmetric heartbeat
+    timing among co-producers).
+
+- Migration of existing test sites: any read of
+  `entry.producer_role_uid` → either `entry.producers[k].role_uid`
+  (specific producer) or a scan helper (any producer).
+
+### 9. Unresolved test failures (no investigation yet)
+
+#### `PlhHubCliTest.RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters` — SIGSEGV exit 139
+
+**Status:** unresolved, **mechanism unknown**, not yet investigated.
+
+**Observation (raw — do not extrapolate):**
+- Two trial runs of the same test on the same binary:
+  - Run set A: 2 fail / 13 pass.
+  - Run set B: 0 fail / 20 pass.
+- Sample sizes are small; per-run rate is not characterised.
+- Failing-run duration ~2s vs passing-run ~5.5s ⇒ SIGTERM arrives
+  before the test's normal hand-off point.
+- ctest reports exit code 139 (SIGSEGV).
+- Single fail-stderr available shows the role process log ending at
+  "plh_role: signal received, shutting down" then no further output.
+
+**What is NOT known:**
+- Whether this is in plh_role startup, dynamic-module load, or
+  shutdown.
+- Whether it predates `a41ce71` (no bisect performed; the previous
+  bisect attempt was destructive and reverted).
+- Whether `c2973ef`'s `disconnected_fired` patch correlates.
+- Stack trace at the SEGV — never captured.
+
+**What needs doing:**
+- A real reproduction harness — plh_role invoked outside ctest, under
+  gdb in batch mode, with a backtrace dump on SIGSEGV.
+- Once a backtrace exists, classify whether this is a regression
+  introduced by a recent commit (bisect via `git worktree`) or a
+  long-standing race surfaced by changing load order.
+
+**Discipline note (added by this entry, 2026-05-10):**  Two recent
+commit messages (`a41ce71`, `c2973ef`) referred to this failure as a
+"known flake" / "pre-existing race".  Both characterisations were
+unsupported by evidence.  Until a stack trace exists, this entry is
+the canonical state: **mechanism unknown**.  Do not refer to it as
+a "flake" in future commit messages.
+
 ### 7. Code review findings (2026-05-10) — strand plan
 
 A 3-agent review of the test suite + production code at HEAD
