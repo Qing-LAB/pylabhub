@@ -138,9 +138,15 @@ InvariantSetResult set_invariant_schema(std::string hash, std::string blds,
 InvariantSetResult set_invariant_transport(std::string data_transport,
                                             bool has_shm, ChannelPattern pattern);
 
-// Per-producer admission:
-struct AddProducerResult { ProducerEntry* entry; bool was_restart_replace; };
-AddProducerResult upsert_producer(ProducerEntry p);  // append-or-restart by role_uid
+// Per-producer admission — strictly additive, no restart-replace (§6.2).
+enum class AddProducerResult {
+    Created,                  // appended; entry pointer returned via out param
+    RejectedUidConflict,      // a ProducerEntry with this role_uid already exists
+                              // (regardless of liveness state) — bookkeeping
+                              // residue or active producer; admission refused
+    RejectedShmCardinality    // data_transport=="shm" + producers.size()>=1
+};
+AddProducerResult add_producer(ProducerEntry p, ProducerEntry** out = nullptr);
 
 struct RemoveProducerResult { bool removed; bool channel_now_empty; };
 RemoveProducerResult remove_producer(std::string_view role_uid);
@@ -157,10 +163,16 @@ bool set_producer_metadata(std::string_view uid, nlohmann::json blob);
 const nlohmann::json* producer_metadata(std::string_view uid) const noexcept;
 nlohmann::json        aggregate_metadata_tree() const;  // { "<uid>": blob, ... }
 
-// Per-consumer:
-bool upsert_consumer(ConsumerEntry c);   // dedup by role_uid/pid (existing semantics)
+// Per-consumer — symmetric with add_producer (§6.2 uniform reject rule).
+enum class AddConsumerResult {
+    Created,
+    RejectedUidConflict       // existing ConsumerEntry with this role_uid
+                              // (residue or active) — admission refused
+};
+AddConsumerResult add_consumer(ConsumerEntry c, ConsumerEntry** out = nullptr);
+
 bool remove_consumer(std::string_view role_uid);
-bool set_consumer_inbox(std::string_view uid, /* same shape */);
+bool set_consumer_inbox(std::string_view uid, /* same shape as producer */);
 ```
 
 Direct write to fields like `entry.zmq_node_endpoint = req.value(...)`
@@ -176,9 +188,14 @@ const RolePresence* find_presence(std::string_view channel,
 std::span<const RolePresence> presences() const noexcept;
 bool any_presence_alive() const noexcept;     // (existing)
 
-// Mutation:
-RolePresence& upsert_presence(std::string channel, std::string role_type);
-bool          remove_presence(std::string_view channel, std::string_view role_type);
+// Mutation — strict additive at the presence layer (a `RoleEntry`
+// admits at most one presence per (channel, role_type) tuple; a
+// re-add is bookkeeping residue, same class as §6.2):
+enum class AddPresenceResult { Created, RejectedDuplicate };
+AddPresenceResult add_presence(std::string channel, std::string role_type,
+                               RolePresence** out = nullptr);
+bool              remove_presence(std::string_view channel,
+                                  std::string_view role_type);
 
 // Transition primitives (called by sweep / heartbeat / dereg):
 enum class TransitionEffect { NoChange, Refreshed, NewlyConnected, ToPending, ToDisconnected };
@@ -229,16 +246,41 @@ bool try_consume_disconnect_event() noexcept;
    metadata is per-producer, so two producers (different uids) on the
    same channel may disagree without rejection.
 
-2. **Same-uid restart.**  **DECIDED 2026-05-10 — there should be no
-   residue, so same-uid restart should never legitimately occur.  If
-   it does, treat as a safety signal: WARN + cleanup-prior + admit.**
+2. **Same-uid REG_REQ — REJECT, always.**  **DECIDED 2026-05-10 (refined) —
+   any incoming REG_REQ with a uid that exists in HubState is rejected
+   with `UID_CONFLICT`, regardless of whether the existing entry is
+   active or stale-residue.  Logged at `LOGGER_ERROR`.  Wire message:
+   `"uid conflict, not trusting this connection, try again with clean state"`.
+   No replace-in-place anywhere.**
 
-   User directive: "when a role dies, its entry should be removed,
-   there is no 'residue' in principle.  If there is a residue, there
-   should be a warning — could be a safety breach so we should be
-   careful about this."
+   User directive (refined): "when a role is disconnected, its entry
+   should be cleaned correctly.  When a new connection comes with
+   conflicting information with the same uid (or even with the
+   consistent information but also the same uid), that means
+   something is wrong either on the remote side or on the
+   bookkeeping side on the hub, and I think this should be rejected
+   with clear message 'uid conflict, not trusting this connection,
+   try again with clean state' and should be clearly logged —
+   bookkeeping should not have conflicting uid if disconnection has
+   happened.  If uid is still active then clearly it is an attempt
+   to breach or the role is violating something."
 
-   **Current code (verified 2026-05-10) has the residue bug:**
+   **Reasoning chain (uniform across the two interpretations):**
+   - Existing entry is **stale-residue** → bookkeeping is in a bad
+     state; cannot safely admit.  Operator/role must retry once the
+     residue is cleared.
+   - Existing entry is **active** → either spoofing attempt or
+     role-side protocol violation; reject defensively.
+   - There is no third "legitimate restart" case because proper
+     uid construction (`tag.name.unique` per HEP-CORE-0033 §G2.2.0b)
+     makes same-uid collision effectively impossible.
+
+   **Symmetry rule:** the same policy applies to `CONSUMER_REG_REQ`.
+   Current code dedups by uid/pid (`_add_consumer`, `hub_state.cpp:351-364`)
+   — that becomes reject-with-`UID_CONFLICT`.  No silent replace
+   anywhere in admission.
+
+   **The cleanup side (M3) — current code has the residue bug:**
    - `_set_role_disconnected` (`hub_state.cpp:399`) marks all
      presences `Disconnected` but **never erases the `RoleEntry`**
      from `pImpl->roles`.  Confirmed via grep: zero `roles.erase`
@@ -253,32 +295,29 @@ bool try_consume_disconnect_event() noexcept;
      it is dead.  This is a latent bug today.
 
    **Design call for M2.5 + M3:**
-   - **M2.5** (`ChannelEntry`): `upsert_producer(uid)` finding an
-     existing `ProducerEntry` for the same uid → `LOGGER_WARN(...)`
-     + replace-in-place + return `was_restart_replace=true`.  Callers
-     (broker REG_REQ handler) propagate the warning as a diagnostic.
+   - **M2.5** (`ChannelEntry`): `add_producer(p)` is purely additive.
+     If `find_producer(p.role_uid) != nullptr` → return
+     `RejectedUidConflict`; broker handler emits `LOGGER_ERROR` and
+     replies with wire error `UID_CONFLICT`.  No replace path exists.
+     (Note: name changed from `upsert_producer` to `add_producer` —
+     "upsert" implied insert-or-update, which is exactly the
+     restart-replace pattern this rule eliminates.)
    - **M3** (`RoleEntry`): `_set_role_disconnected` becomes a true
      terminal cleanup — when the role's last presence transitions to
      `Disconnected`, the `RoleEntry` is erased from `pImpl->roles`
      and any cascade evictions (schemas, presence rows) run before
-     erase.  `upsert_role` finding a residual `RoleEntry` for the
-     same uid is treated as a should-not-happen condition: WARN,
-     atomic cleanup of the residual entry, then create a fresh one.
+     erase.  `add_role(uid)` finding any residual `RoleEntry` → return
+     `RejectedUidConflict` (same shape as `add_producer`).
    - **MP3 implication:** the in-flight `disconnected_fired` 🚧 PATCH
      at `hub_state.hpp:339-360` retires naturally — once erase is
      the terminal operation, there is no "fire-twice" risk because
      there is no surviving entry to re-fire from.
-
-   **In practice (what same-uid restart actually means):** per
-   HEP-CORE-0033 §G2.2.0b, `role_uid = tag.name.unique` where
-   `unique` typically carries the OS pid or a timestamp.  Two
-   independent processes producing the same uid string requires
-   identical `tag` + `name` + `unique` — effectively impossible
-   unless the OS recycles a PID to the exact prior value or an
-   operator constructs uids by hand without uniqueness.  The
-   "restart" code path therefore exists only to handle the residue
-   bug — once M3 removes the residue, same-uid restart becomes a
-   genuine anomaly that warrants the warning.
+   - **Test-access escape hatch** (per §6.5): tests that need to set
+     up "channel with a Disconnected-residue presence before a fresh
+     REG_REQ arrives" use `HubStateTestAccess::inject_orphan_role`
+     to construct the residue state, then assert the REG_REQ rejects
+     with `UID_CONFLICT`.  The reject path itself becomes a tested
+     contract, not a comment.
 
 3. **SHM physical constraint.**  **DECIDED 2026-05-10 — enforce in
    the API; SHM channels admit exactly one producer.**
@@ -354,7 +393,7 @@ bool try_consume_disconnect_event() noexcept;
 | **5** | Rewrite ENDPOINT_UPDATE_REQ to scope by `(channel, role_uid)`. | `broker_service.cpp:handle_endpoint_update_req` | L2: A's update doesn't mutate B's endpoint. |
 | **6** | Rewrite sweep / heartbeat-timeout paths to iterate `producers[]` and call `_on_producer_dropped` on the matched producer only. | `broker_service.cpp` sweep + heartbeat handlers | L2: A timeout / B alive ⇒ channel stays kLive (already in MP5 plan; promote here). |
 | **7** | Make state-bearing fields private (or move into `Impl`). Compile-fail any remaining direct field write. | `hub_state.hpp` | Build must remain clean. |
-| **8** | HEP doc sweep. Update HEP-CORE-0023 §2.6, HEP-CORE-0021, HEP-CORE-0033 §8 to reflect the final classification. | `docs/HEP/*.md` | — |
+| **8** | HEP doc sweep.  Update HEP-CORE-0023 §2.6 (struct schematic), HEP-CORE-0021 (per-producer endpoint registry), HEP-CORE-0033 §8 (entry-type table) to reflect the final classification.  Update HEP-CORE-0007 §12.4 (DISC_REQ_ACK metadata wire shape — tree keyed by producer uid) and §12.4a Error Code Taxonomy (add new `UID_CONFLICT` code, both producer + consumer admission paths; add `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM` if not present).  Cross-reference between the HEPs and the new API surface. | `docs/HEP/*.md` | — |
 
 Steps 1-8 are sequenced — each must build and test clean before the
 next. Multi-producer L2 tests (step 2) are written **first** and must
