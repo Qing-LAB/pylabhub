@@ -447,7 +447,11 @@ TEST(HubStateOps, ChannelRegistered_ComposesChannelAndRoleAndShmAndCounter)
 
     auto ch              = make_channel("ch1");
     ch.has_shared_memory = true;
-    ch.zmq_pubkey        = "pubkey-xyz";
+    // Wave M2.5 step 6.5: zmq_pubkey is per-producer (HEP-CORE-0021
+    // §5.2), not channel-scope.  The legacy _on_channel_registered
+    // test-only path now reads from the FIRST producer's pubkey.
+    ASSERT_FALSE(ch.producers.empty());
+    ch.producers.front().zmq_pubkey = "pubkey-xyz";
     HubStateTestAccess::on_channel_registered(s, ch);
 
     auto got = s.channel("ch1");

@@ -340,50 +340,24 @@ struct ChannelEntry
     /// `schema_owner` and `schema_id` empty.
     std::string schema_owner;
 
-    /// **DEPRECATED 2026-05-10 — channel-scope `metadata` is being
-    /// retired by Wave M2.5 step 3.**  Per-producer metadata lives on
-    /// `ProducerEntry.metadata` and is set via
-    /// `set_producer_metadata(uid, blob)`.  Channel-level read uses
-    /// `aggregate_metadata_tree()`.  Direct write to this field is a
-    /// transitional carry-over for handlers not yet migrated; new
-    /// code MUST NOT read or write this field.  See
-    /// `docs/tech_draft/controlled_access_api_design.md` §3.2 + §6.1
-    /// and `docs/code_review/REVIEW_WaveM2.5_2026-05-10.md` F6.
-    nlohmann::json             metadata;
+    // Channel-scope `metadata` retired in Wave M2.5 step 6.5
+    // (2026-05-10).  Per-producer metadata lives on
+    // `ProducerEntry.metadata`; channel-level read aggregates them
+    // via `aggregate_metadata_tree()` (per-producer tree keyed by
+    // role_uid; HEP-CORE-0007 §12.4 + design §6.1).
+
     std::vector<ProducerEntry> producers; ///< 1..N producers (HEP-0023 §2.1.1).
     std::vector<ConsumerEntry> consumers;
 
     bool           has_shared_memory{false};
     ChannelPattern pattern{ChannelPattern::PubSub};
-    // zmq_ctrl_endpoint / zmq_data_endpoint retired in Wave M2.5 step
-    // 2c (2026-05-10) — both were design-dead.  zmq_ctrl_endpoint:
-    // hub-mediated control plane (HEP-CORE-0017 / HEP-CORE-0033) means
-    // no per-channel ZMQ control endpoint exists in the architecture.
-    // zmq_data_endpoint: function fully replaced by per-producer
-    // `ProducerEntry.zmq_node_endpoint` (HEP-CORE-0021 §16).
-    //
-    // **DEPRECATED 2026-05-10 — `ChannelEntry.zmq_pubkey` is being
-    // retired by Wave M2.5 step 3.**  HEP-CORE-0021 §5.2 specifies the
-    // CURVE pubkey is per-producer (`producer_zmq_pubkey` in
-    // CONSUMER_REG_ACK).  Channel-scope placement here is the same
-    // overwrite-class bug as inbox/metadata.  Per-producer storage
-    // lives on `ProducerEntry.zmq_pubkey`; setter is
-    // `set_producer_zmq_pubkey(uid, key)`.  Direct write to this
-    // field is a transitional carry-over for the REG_REQ handler
-    // until step 3; new code MUST NOT read or write it.  See
-    // `docs/code_review/REVIEW_WaveM2.5_2026-05-10.md` F7.
-    std::string    zmq_pubkey;
+    // zmq_ctrl_endpoint / zmq_data_endpoint retired Wave M2.5 step 2c.
+    // zmq_pubkey retired Wave M2.5 step 6.5 — per-producer CURVE
+    // pubkey lives on `ProducerEntry.zmq_pubkey` (HEP-CORE-0021 §5.2).
     std::string    data_transport{"shm"};
-    /// **DEPRECATED 2026-05-10 — channel-scope `zmq_node_endpoint` is being
-    /// retired by Wave M2.5 step 3.**  Per-producer endpoint lives on
-    /// `ProducerEntry.zmq_node_endpoint` and is set via
-    /// `set_producer_zmq_node_endpoint(uid, ep)`; ENDPOINT_UPDATE_REQ
-    /// keys by `(channel, role_uid)` per HEP-CORE-0021 §16.3.  Direct
-    /// write to this field is a transitional carry-over for handlers
-    /// not yet migrated; new code MUST NOT read or write this field.
-    /// See `docs/tech_draft/controlled_access_api_design.md` §3.2
-    /// and `docs/code_review/REVIEW_WaveM2.5_2026-05-10.md` F6.
-    std::string    zmq_node_endpoint;
+    // Channel-scope `zmq_node_endpoint` retired in Wave M2.5 step 6.5
+    // (2026-05-10).  Per-producer endpoint lives on
+    // `ProducerEntry.zmq_node_endpoint` (HEP-CORE-0021 §16.3).
 
     // Inbox info is per-producer (HEP-CORE-0023 §2.1.1 + HEP-CORE-0027);
     // see ProducerEntry.inbox_*.  Removed from ChannelEntry 2026-05-10
@@ -1073,15 +1047,6 @@ class PYLABHUB_UTILS_EXPORT HubState
     void _set_band_left(const std::string &band, const std::string &role_uid);
     void _set_peer_connected(PeerEntry entry);
     void _set_peer_disconnected(const std::string &hub_uid);
-
-    /// **DEPRECATED 2026-05-10 — superseded by
-    /// `_set_producer_zmq_node_endpoint` per Wave M2.5 step 5.**
-    /// Wraps the per-producer op for the FIRST producer (transitional
-    /// shape).  No new callers should use this; existing callers will
-    /// migrate as step 5 lands.  Kept as a thin shim so external
-    /// callers (if any) don't break.
-    void _set_channel_zmq_node_endpoint(const std::string &name,
-                                         std::string        endpoint);
 
     /// Update one producer's `zmq_node_endpoint` on a channel
     /// (HEP-CORE-0021 §16.3 — ENDPOINT_UPDATE_REQ keyed by
