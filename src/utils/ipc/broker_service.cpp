@@ -3136,10 +3136,15 @@ ChannelSnapshot BrokerService::query_channel_snapshot() const
             pylabhub::hub::observe_channel(entry, hub_snap));
         e.consumer_count     = static_cast<int>(entry.consumers.size());
         e.schema_hash        = entry.schema_hash;
-        // Producer-side fields surface the first producer for back-compat
-        // with single-producer admin clients; multi-producer admin
-        // tooling reads `producers[]` from `list_channels_json_str`
-        // (HEP-CORE-0023 §2.1.1).
+        // Multi-producer (HEP-CORE-0023 §2.1.1): full lists + scalar
+        // back-compat fields populated from the first producer.
+        e.producer_uids.reserve(entry.producers.size());
+        e.producer_pids.reserve(entry.producers.size());
+        for (const auto &prod : entry.producers)
+        {
+            e.producer_uids.push_back(prod.role_uid);
+            e.producer_pids.push_back(prod.producer_pid);
+        }
         if (const auto *fp = entry.first_producer())
         {
             e.producer_pid       = fp->producer_pid;

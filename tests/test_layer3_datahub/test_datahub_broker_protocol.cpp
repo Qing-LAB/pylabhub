@@ -719,7 +719,7 @@ TEST_F(BrokerProtocolTest, HeartbeatKeying_ProducerVsConsumer_DistinctRows)
     // wire_uid is what the broker keys on, not a derived producer_uid.
     EXPECT_EQ(prod_re->find_presence(channel, "consumer"), nullptr)
         << "producer's RoleEntry incorrectly contains a consumer-presence "
-           "row — broker keyed off the channel's producer_role_uid instead "
+           "row — broker keyed off the channel's first producer instead "
            "of the wire-decoded uid (B1+B2 latent bug returned)";
     EXPECT_EQ(cons_re->find_presence(channel, "producer"), nullptr)
         << "consumer's RoleEntry incorrectly contains a producer-presence "
