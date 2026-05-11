@@ -266,6 +266,15 @@ struct ChannelEntry
     /// `schema_owner` and `schema_id` empty.
     std::string schema_owner;
 
+    /// **DEPRECATED 2026-05-10 — channel-scope `metadata` is being
+    /// retired by Wave M2.5 step 3.**  Per-producer metadata lives on
+    /// `ProducerEntry.metadata` and is set via
+    /// `set_producer_metadata(uid, blob)`.  Channel-level read uses
+    /// `aggregate_metadata_tree()`.  Direct write to this field is a
+    /// transitional carry-over for handlers not yet migrated; new
+    /// code MUST NOT read or write this field.  See
+    /// `docs/tech_draft/controlled_access_api_design.md` §3.2 + §6.1
+    /// and `docs/code_review/REVIEW_WaveM2.5_2026-05-10.md` F6.
     nlohmann::json             metadata;
     std::vector<ProducerEntry> producers; ///< 1..N producers (HEP-0023 §2.1.1).
     std::vector<ConsumerEntry> consumers;
@@ -276,6 +285,15 @@ struct ChannelEntry
     std::string    zmq_data_endpoint;
     std::string    zmq_pubkey;
     std::string    data_transport{"shm"};
+    /// **DEPRECATED 2026-05-10 — channel-scope `zmq_node_endpoint` is being
+    /// retired by Wave M2.5 step 3.**  Per-producer endpoint lives on
+    /// `ProducerEntry.zmq_node_endpoint` and is set via
+    /// `set_producer_zmq_node_endpoint(uid, ep)`; ENDPOINT_UPDATE_REQ
+    /// keys by `(channel, role_uid)` per HEP-CORE-0021 §16.3.  Direct
+    /// write to this field is a transitional carry-over for handlers
+    /// not yet migrated; new code MUST NOT read or write this field.
+    /// See `docs/tech_draft/controlled_access_api_design.md` §3.2
+    /// and `docs/code_review/REVIEW_WaveM2.5_2026-05-10.md` F6.
     std::string    zmq_node_endpoint;
 
     // Inbox info is per-producer (HEP-CORE-0023 §2.1.1 + HEP-CORE-0027);

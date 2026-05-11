@@ -631,8 +631,10 @@ void BrokerRequestComm::send_heartbeat(const std::string &channel,
     // HEP-CORE-0019 §4.1 / HEP-CORE-0023 §2.5.2 / HEP-CORE-0033 §18
     // (Phase 6 per-presence wire format).  The `uid` and `role_type`
     // fields are required as of M0; the broker handler reads them
-    // from the payload (rather than deriving uid from
-    // `channel.producer_role_uid` as in pre-Phase-6) once M1 ships.
+    // from the payload and resolves the matching `ProducerEntry` /
+    // `ConsumerEntry` row in the channel's `producers[]` /
+    // `consumers[]` list per HEP-CORE-0023 §2.1.1 (multi-producer
+    // model — no channel-scope producer scalar exists post-MP2).
     // `producer_pid` is retained from the Phase 1 wire format for
     // backward audit / diagnostics; the broker uses it only for an
     // ERROR log when missing or zero.

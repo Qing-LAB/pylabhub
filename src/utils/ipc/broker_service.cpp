@@ -1430,9 +1430,12 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
                                   ", inbox) rejected — missing required fields");
         }
         // Created or Idempotent → success.  No need to set anything on
-        // `entry`: the inbox is keyed by role uid (not by channel name),
-        // so citers always look up `(producer_role_uid, "inbox")` —
-        // there is no per-channel inbox-record reference to maintain.
+        // `entry`: the inbox schema record is keyed by the producer's
+        // role uid (not by channel name), so citers always look up
+        // `(<producer.role_uid>, "inbox")` against the matching
+        // `ProducerEntry` — there is no per-channel inbox-record
+        // reference to maintain.  See HEP-CORE-0027 §3
+        // (per-producer/per-consumer inbox ownership).
     }
 
     hub_state_->_on_channel_registered(std::move(entry));

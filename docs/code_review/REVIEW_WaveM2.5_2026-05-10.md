@@ -345,21 +345,21 @@ tests follow the same shape. No code change.
 
 | ID | Title | Severity | Status |
 |---|---|---|---|
-| F1 | HEP-0007 §12.4a missing UID_CONFLICT; MULTI_PRODUCER entry contradicts strict reject | Blocker | ❌ OPEN |
-| F2 | HEP-0007 §12.4 DISC_REQ_ACK metadata wire shape drift | Blocker | ❌ OPEN |
-| F3 | HEP-0021 still describes single channel-level zmq_node_endpoint | Blocker | ❌ OPEN |
-| F4 | ChannelSnapshotEntry back-compat scalars dead but populated | Medium | ❌ OPEN |
-| F5 | Stale `channel.producer_role_uid` comments in 5 files | Low | ❌ OPEN |
-| F6 | Field duplication during step 2a (transitional) | Medium | ❌ OPEN |
+| F1 | HEP-0007 §12.4a missing UID_CONFLICT; MULTI_PRODUCER entry contradicts strict reject | Blocker | ✅ FIXED 2026-05-10 |
+| F2 | HEP-0007 §12.4 DISC_REQ_ACK metadata wire shape drift | Blocker | ✅ FIXED 2026-05-10 |
+| F3 | HEP-0021 still describes single channel-level zmq_node_endpoint | Blocker | ✅ FIXED 2026-05-10 |
+| F4 | ChannelSnapshotEntry back-compat scalars dead but populated | Medium | ❌ OPEN (step 2c) |
+| F5 | Stale `channel.producer_role_uid` comments in 5 files | Low | ✅ FIXED 2026-05-10 |
+| F6 | Field duplication during step 2a (transitional) | Medium | ✅ FIXED 2026-05-10 (DEPRECATED comments added) |
 | F7 | Dead `zmq_data_endpoint` / `zmq_ctrl_endpoint` / `zmq_pubkey` fields | Low | ❌ OPEN (step 2c) |
-| F8 | `_set_channel_opened` insert_or_assign blocks step 3 mechanism | Critical | ❌ OPEN (step 3 prep) |
-| F9 | Test coverage gaps for accessors | Low | ❌ OPEN |
+| F8 | `_set_channel_opened` insert_or_assign blocks step 3 mechanism | Critical | ❌ OPEN (step 3 design pass next) |
+| F9 | Test coverage gaps for accessors | Low | ❌ OPEN (step 2c) |
 | F10 | `inject_orphan_role` helper promised in §6.5, not delivered | Low | ⚠️ DEFERRED to M3 |
-| F11 | Design doc §5.1 API methods (`set_invariant_*`, `observable(...)`) not delivered | Low | ⚠️ DEFERRED (step 2d) |
+| F11 | Design doc §5.1 API methods (`set_invariant_*`, `observable(...)`) not delivered | Low | ✅ RECORDED 2026-05-10 (step 2d row in design doc §7) |
 | F12 | `disconnected_fired` 🚧 PATCH still present | Tracked | ⚠️ DEFERRED to M3 |
 | F13 | `metrics_store_` legacy still in use | Tracked | ⚠️ DEFERRED to M1.4 |
 | F14 | Test naming convention | Trivial | ✅ KEPT |
-| F15 | HEP-0033 §8 entry-types table needs per-producer re-sweep | Medium | ❌ OPEN |
+| F15 | HEP-0033 §8 entry-types table needs per-producer re-sweep | Medium | ✅ FIXED 2026-05-10 |
 
 ## Items to fix in this audit pass
 
