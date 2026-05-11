@@ -241,12 +241,13 @@ bool try_consume_disconnect_event() noexcept;
    caller currently uses the field (verified 2026-05-10 — only the
    broker writes/echoes it).
 
-   **Same-producer restart:** if a producer with the same `role_uid`
-   re-registers with a different metadata blob, that producer's slot in
-   the tree is replaced (consistent with the same-uid restart policy
-   decided in §6.2).  This is **not** a Cat-1 invariant violation —
-   metadata is per-producer, so two producers (different uids) on the
-   same channel may disagree without rejection.
+   **Same-uid: cannot happen.**  Per §6.2 below, any incoming REG_REQ
+   carrying a uid that already exists in HubState is rejected with
+   `UID_CONFLICT` — same-uid restart is not a normal pathway, so the
+   metadata tree never sees a "slot replacement" by design.  Two
+   producers (different uids) on the same channel may publish
+   disagreeing metadata blobs without rejection — metadata is
+   per-producer, not a channel-wide invariant.
 
 2. **Same-uid REG_REQ — REJECT, always.**  **DECIDED 2026-05-10 (refined) —
    any incoming REG_REQ with a uid that exists in HubState is rejected
@@ -502,13 +503,38 @@ After step 3:
    - `Created` (producer) → emit any per-admission notifications
      (e.g., HEP-CORE-0034 schema record creation if `channel_opened`).
 6. The deprecated `ChannelEntry.metadata` / `.zmq_node_endpoint` /
-   `.zmq_pubkey` channel-scope fields stop being written here.  The
-   per-producer setters are called inside `_on_producer_added` (or just
-   after — the producer's `inbox_*`, `metadata`, `zmq_node_endpoint`,
-   `zmq_pubkey` are part of the `ProducerEntry` payload passed in).
-7. After verifying nothing else reads the channel-scope deprecated
-   fields, **delete them from `ChannelEntry`** (closes the F6 "field
-   duplication" risk).
+   `.zmq_pubkey` channel-scope fields stop being written **from the
+   REG_REQ path** in step 3.  They are NOT deleted in step 3 because:
+   - `_on_channel_registered` is retained as test-only legacy
+     primitive (§7.5.4); it still reads `entry.zmq_pubkey` to seed
+     `RoleEntry.pubkey_z85` and would break if the channel-scope
+     field disappears.
+   - `_set_channel_zmq_node_endpoint` is called by ENDPOINT_UPDATE_REQ
+     handler — that migration is step 5, not step 3.
+   - `ChannelEntry.metadata` still appears in DISC_REQ_ACK echo at
+     `broker_service.cpp:1565`; that emission becomes incorrect once
+     REG_REQ stops feeding it (returns the per-producer tree shape
+     decided in §6.1) — fix in step 3 or defer to step 5 dispatch.
+   The per-producer setters (`set_producer_metadata` /
+   `set_producer_zmq_node_endpoint` / `set_producer_zmq_pubkey`) are
+   called inside `_on_producer_added` from the producer payload —
+   the producer fields are part of the `ProducerEntry` argument.
+
+   **Step 3 DISC_REQ_ACK responsibility (decided):** rewrite the
+   metadata echo at `broker_service.cpp:1565` to emit
+   `aggregate_metadata_tree()` (the per-producer tree decided in
+   §6.1) — this closes the wire-shape contract the HEP doc-sweep
+   landed in commit `25dc376`.  The `zmq_node_endpoint` + `zmq_pubkey`
+   echoes stay as-is (first-producer transitional shape) until
+   step 5 (ENDPOINT_UPDATE_REQ rewrite) lands the per-producer wire
+   shape for those too.
+
+7. **Channel-scope field deletion deferred to a dedicated "step 6.5"
+   sub-pass** (not step 3) — only safe AFTER step 5 retires
+   `_set_channel_zmq_node_endpoint` AND step 3's test-side migration
+   of `_on_channel_registered` to read per-producer pubkey lands.
+   F6 "field duplication" risk remains visible (`[[deprecated]]`-style
+   comments in place) until then.  Tracked.
 
 ### 7.5.4 Deletion of `_on_channel_registered`?
 
