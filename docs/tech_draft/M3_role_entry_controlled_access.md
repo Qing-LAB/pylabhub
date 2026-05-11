@@ -102,6 +102,14 @@ All four open items locked.  All chose the recommended option.
    contributors don't write a stale-cache bug; add a maintenance
    invariant comment on the field.
 
+   **Cache-refresh discipline (note added 2026-05-11):** the hub's
+   script-level `on_tick` hook can run periodic tasks that re-sync
+   the `channels[]` cache from `presences[]` to defend against any
+   transient drift.  This is normal hub-script work — treat it as a
+   recoverable invariant, not a hard guarantee.  The expectation is
+   that the cache is correct after every controlled-access mutation;
+   `on_tick` is a backstop, not the primary mechanism.
+
 2. **Schema cascade — FIRE FROM BOTH PATHS (idempotent).**
    `_on_channel_closed` continues to fire the per-producer cascade
    (M2.5 ordering preserved); `_set_role_disconnected` adds a
