@@ -1199,19 +1199,20 @@ void HubState::_on_heartbeat_timeout(const std::string &channel,
     ChannelObservable new_obs = ChannelObservable::kAbsent;
     {
         std::unique_lock lk(pImpl->mu);
-        const auto       now = std::chrono::steady_clock::now();
         if (role_uid.empty()) return;
         auto rit = pImpl->roles.find(role_uid);
         if (rit == pImpl->roles.end()) return;
-        auto *p = rit->second.find_presence(channel, "producer");
-        if (p == nullptr || p->state != RoleState::Connected) return;
 
-        // `first_heartbeat_seen` is NOT a gate — the registered-but-
-        // never-heartbeat case demotes via this same path once
-        // `last_heartbeat` (stamped at REG_REQ time) ages past
-        // ready_timeout.
-        p->state       = RoleState::Pending;
-        p->state_since = now;
+        // Wave M3 step 3: route FSM transition through the controlled-
+        // access API.  `first_heartbeat_seen` is NOT a gate — the
+        // registered-but-never-heartbeat case demotes via this same
+        // path once `last_heartbeat` (stamped at REG_REQ time) ages
+        // past ready_timeout.  HubState retains: the counter bump
+        // (Connected→Pending counts as ready_to_pending) and the
+        // ChannelStatusChangedHandler fan-out for producer presences.
+        const TransitionEffect te =
+            rit->second.on_heartbeat_timeout(channel, "producer");
+        if (te != TransitionEffect::ToPending) return;
         ++pImpl->counters.ready_to_pending_total;
         transitioned = true;
 
@@ -1266,11 +1267,14 @@ HubState::_on_pending_timeout(const std::string &channel,
 
         auto rit = pImpl->roles.find(role_uid);
         if (rit == pImpl->roles.end()) return result;
-        auto *p = rit->second.find_presence(channel, "producer");
-        if (p == nullptr || p->state != RoleState::Pending) return result;
 
-        p->state       = RoleState::Disconnected;
-        p->state_since = std::chrono::steady_clock::now();
+        // Wave M3 step 3: route FSM transition through the controlled-
+        // access API.  `on_pending_timeout` is a no-op when the
+        // presence is not Pending — handles the lost-race case
+        // (concurrent timer fires) without re-entering teardown.
+        const TransitionEffect te =
+            rit->second.on_pending_timeout(channel, "producer");
+        if (te != TransitionEffect::ToDisconnected) return result;
         ++pImpl->counters.pending_to_deregistered_total;
         eligible         = true;
         is_last_producer = (it->second.producer_count() == 1);
