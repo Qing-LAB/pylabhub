@@ -47,14 +47,24 @@ nlohmann::json channel_to_json(const ChannelEntry &c, ChannelObservable obs)
     j["schema_version"]      = c.schema_version;
     j["schema_id"]           = c.schema_id;
     j["schema_owner"]        = c.schema_owner;
-    j["producer_pid"]        = c.producer_pid;
-    j["producer_role_uid"]   = c.producer_role_uid;
-    j["producer_role_name"]  = c.producer_role_name;
     j["has_shared_memory"]   = c.has_shared_memory;
     j["data_transport"]      = c.data_transport;
     j["zmq_node_endpoint"]   = c.zmq_node_endpoint;
     j["_collected_at"]       = fmt_time(c.created_at);
     j["observable"]          = to_string(obs);
+
+    // Producers (HEP-CORE-0023 §2.1.1 — 1..N producers per channel).
+    nlohmann::json producers = nlohmann::json::array();
+    for (const auto &prod : c.producers)
+    {
+        nlohmann::json pj;
+        pj["producer_pid"]   = prod.producer_pid;
+        pj["role_uid"]       = prod.role_uid;
+        pj["role_name"]      = prod.role_name;
+        pj["_collected_at"]  = fmt_time(prod.connected_at);
+        producers.push_back(std::move(pj));
+    }
+    j["producers"] = std::move(producers);
 
     nlohmann::json consumers = nlohmann::json::array();
     for (const auto &cons : c.consumers)

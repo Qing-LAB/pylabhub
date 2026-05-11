@@ -28,6 +28,7 @@ using pylabhub::hub::ChannelCloseReason;
 using pylabhub::hub::ChannelEntry;
 using pylabhub::hub::ChannelObservable;
 using pylabhub::hub::ConsumerEntry;
+using pylabhub::hub::ProducerEntry;
 using pylabhub::hub::HandlerId;
 using pylabhub::hub::HubState;
 using pylabhub::hub::HubStateSnapshot;
@@ -56,13 +57,15 @@ namespace
 ChannelEntry make_channel(const std::string &name)
 {
     ChannelEntry e;
-    e.name               = name;
-    e.shm_name           = name + "-shm";
-    e.schema_hash        = std::string(64, 'a');
-    e.schema_version     = 1;
-    e.producer_pid       = 4242;
-    e.producer_role_uid  = "prod.main.test";
-    e.producer_role_name = "main";
+    e.name           = name;
+    e.shm_name       = name + "-shm";
+    e.schema_hash    = std::string(64, 'a');
+    e.schema_version = 1;
+    ProducerEntry p;
+    p.producer_pid = 4242;
+    p.role_uid     = "prod.main.test";
+    p.role_name    = "main";
+    e.producers.push_back(std::move(p));
     return e;
 }
 
@@ -505,8 +508,8 @@ TEST(HubStateOps, ChannelRegistered_SameProducerOnTwoChannels_MergesRoleChannels
 TEST(HubStateOps, ChannelRegistered_EmptyProducerUid_SkipsRole)
 {
     HubState s;
-    auto     ch              = make_channel("ch1");
-    ch.producer_role_uid     = "";
+    auto     ch = make_channel("ch1");
+    ch.producers.clear();  // No producers admitted — exercise the empty-producers path.
     HubStateTestAccess::on_channel_registered(s, ch);
     EXPECT_TRUE(s.channel("ch1").has_value());
     EXPECT_TRUE(s.snapshot().roles.empty());
