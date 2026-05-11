@@ -694,7 +694,9 @@ TEST(HubStateOps, PendingTimeout_AtomicallyTearsDownChannel)
                   RoleState::Pending);
     }
 
-    HubStateTestAccess::on_pending_timeout(s, "ch1");
+    auto pt = HubStateTestAccess::on_pending_timeout(s, "ch1", "prod.main.test");
+    EXPECT_TRUE(pt.removed);
+    EXPECT_TRUE(pt.channel_now_empty);
     EXPECT_FALSE(s.channel("ch1").has_value())
         << "HEP-CORE-0023 §2.1 atomic teardown — Pending->Disconnected "
            "removes the channel in the same handler";
@@ -714,11 +716,17 @@ TEST(HubStateOps, PendingTimeout_NotPending_NoOpAndNoCounterBump)
                   RoleState::Connected);
     }
 
-    HubStateTestAccess::on_pending_timeout(s, "ch1");
+    // Not-Pending presence → no-op; counter unchanged.
+    auto pt = HubStateTestAccess::on_pending_timeout(s, "ch1", "prod.main.test");
+    EXPECT_FALSE(pt.removed);
+    EXPECT_FALSE(pt.channel_now_empty);
     EXPECT_TRUE(s.channel("ch1").has_value());
     EXPECT_EQ(s.counters().pending_to_deregistered_total, 0u);
 
-    HubStateTestAccess::on_pending_timeout(s, "no.such.channel.uid00000001");
+    // Unknown channel → no-op.
+    auto pt2 = HubStateTestAccess::on_pending_timeout(
+        s, "no.such.channel.uid00000001", "prod.main.test");
+    EXPECT_FALSE(pt2.removed);
     EXPECT_EQ(s.counters().pending_to_deregistered_total, 0u);
 }
 
@@ -2079,6 +2087,85 @@ TEST(HubStateProducerEndpointUpdate, KnownChannelUnknownUid_ReturnsFalse_NoSibli
     auto ch = s.channel("ch.fanin.ep-update-ghost");
     ASSERT_TRUE(ch.has_value());
     EXPECT_EQ(ch->find_producer("prod.camA.uid00000001")->zmq_node_endpoint, "");
+}
+
+// ─── Wave M2.5 step 6 — multi-producer _on_pending_timeout ──────────
+//
+// Pin the contract that on a Fan-In channel, one producer's Pending
+// timeout drops just that producer; the channel stays alive (HEP-
+// CORE-0023 §2.1.1).  The previous channel-level _on_pending_timeout
+// would tear the whole channel down on any producer's timeout.
+
+TEST(HubStateProducerPendingTimeout, NonLastProducer_DropsOnlyOne_ChannelSurvives)
+{
+    HubState s;
+    int closed_count = 0;
+    s.subscribe_channel_closed([&](const std::string&) { ++closed_count; });
+
+    // Register two producers via the controlled API.
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.fanin.pending-survive",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.camA.uid00000001", 1001))
+                  .producer_result,
+              AddProducerResult::Created);
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.fanin.pending-survive",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.camB.uid00000002", 1002))
+                  .producer_result,
+              AddProducerResult::Created);
+
+    // First heartbeat for both, then force A → Pending via timeout.
+    HubStateTestAccess::on_heartbeat(
+        s, "ch.fanin.pending-survive", "prod.camA.uid00000001", "producer",
+        std::chrono::steady_clock::now(), std::nullopt);
+    HubStateTestAccess::on_heartbeat(
+        s, "ch.fanin.pending-survive", "prod.camB.uid00000002", "producer",
+        std::chrono::steady_clock::now(), std::nullopt);
+    HubStateTestAccess::on_heartbeat_timeout(
+        s, "ch.fanin.pending-survive", "prod.camA.uid00000001");
+
+    auto pt = HubStateTestAccess::on_pending_timeout(
+        s, "ch.fanin.pending-survive", "prod.camA.uid00000001");
+    EXPECT_TRUE(pt.removed);
+    EXPECT_FALSE(pt.channel_now_empty);
+    EXPECT_EQ(closed_count, 0) << "Channel must survive while B remains alive";
+
+    // Channel still exists; A is gone, B remains.
+    auto ch = s.channel("ch.fanin.pending-survive");
+    ASSERT_TRUE(ch.has_value());
+    EXPECT_EQ(ch->producer_count(), 1u);
+    EXPECT_EQ(ch->find_producer("prod.camA.uid00000001"), nullptr);
+    EXPECT_NE(ch->find_producer("prod.camB.uid00000002"), nullptr);
+    EXPECT_EQ(s.counters().pending_to_deregistered_total, 1u);
+}
+
+TEST(HubStateProducerPendingTimeout, LastProducer_TearsChannelDown)
+{
+    HubState s;
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.fanin.pending-last",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.camA.uid00000001", 1001))
+                  .producer_result,
+              AddProducerResult::Created);
+
+    HubStateTestAccess::on_heartbeat(
+        s, "ch.fanin.pending-last", "prod.camA.uid00000001", "producer",
+        std::chrono::steady_clock::now(), std::nullopt);
+    HubStateTestAccess::on_heartbeat_timeout(
+        s, "ch.fanin.pending-last", "prod.camA.uid00000001");
+
+    auto pt = HubStateTestAccess::on_pending_timeout(
+        s, "ch.fanin.pending-last", "prod.camA.uid00000001");
+    EXPECT_TRUE(pt.removed);
+    EXPECT_TRUE(pt.channel_now_empty);
+    EXPECT_FALSE(s.channel("ch.fanin.pending-last").has_value());
+    EXPECT_EQ(s.counters().pending_to_deregistered_total, 1u);
 }
 
 TEST(HubStateProducerAdmission, SecondProducer_ShmChannel_RejectedShmCardinality)

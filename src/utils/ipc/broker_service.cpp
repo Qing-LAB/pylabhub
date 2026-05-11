@@ -2582,36 +2582,66 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
         }
     }
 
-    // ── Pass 2: Pending -> Disconnected (HEP-CORE-0023 §2.1, no grace) ──
-    // Re-snapshot to observe pass 1's transitions.  Atomic teardown
-    // fires when the LAST live producer-presence transitions
-    // Disconnected (HEP-CORE-0023 §2.1.1) — handled inside
-    // `_on_pending_timeout`.  Iterate per-(channel, producer):
+    // ── Pass 2: Pending -> Disconnected (HEP-CORE-0023 §2.1.1) ──
+    //
+    // Wave M2.5 step 6: per-producer sweep.  Re-snapshot to observe
+    // pass 1's transitions, then iterate (channel × producer) and
+    // call `_on_pending_timeout(channel, role_uid)` for each
+    // producer-presence in Pending state past the deadline.  Atomic
+    // channel teardown fires ONLY when the LAST producer transitions
+    // Disconnected; non-last drops just remove that producer from
+    // `producers[]` and let the channel survive (HEP-CORE-0023 §2.1.1).
+    //
+    // Notification fan-out (CHANNEL_CLOSING_NOTIFY +
+    // on_channel_closed federation relay) only fires when
+    // channel_now_empty == true; the `pre_drop` snapshot preserves
+    // the full party list for the fan-out target.
     const auto snap2 = hub_state_->snapshot();
     for (const auto& [channel_name, entry] : snap2.channels)
     {
-        // Wave M2.5 step 6 (sweep / heartbeat-timeout per-producer)
-        // will rework `_on_pending_timeout` to be per-producer; today
-        // it picks the first producer (transitional, OK for
-        // single-producer-only channels until step 6 lands).
-        if (entry.producers.empty()) continue;
-        const std::string &producer_uid = entry.producers.front().role_uid;
-        if (producer_uid.empty()) continue;
-        auto role_it = snap2.roles.find(producer_uid);
-        if (role_it == snap2.roles.end()) continue;
-        const auto *p = role_it->second.find_presence(channel_name, "producer");
-        if (p == nullptr) continue;
-        if (p->state != pylabhub::hub::RoleState::Pending) continue;
-        if (now - p->state_since < pending_timeout) continue;
-        LOGGER_WARN("Broker: role '{}' reclaimed from Pending "
-                    "(no heartbeat within {} ms); sending CHANNEL_CLOSING_NOTIFY + dereg",
-                    channel_name, pending_timeout.count());
-        // Transport sends + federation/band cleanup happen first, while
-        // the entry is still in HubState; `_on_pending_timeout` then
-        // erases the entry and bumps `pending_to_deregistered_total`.
-        send_closing_notify(socket, channel_name, entry, "pending_timeout");
-        on_channel_closed(socket, channel_name, entry, "pending_timeout");
-        hub_state_->_on_pending_timeout(channel_name);
+        for (const auto &prod : entry.producers)
+        {
+            if (prod.role_uid.empty()) continue;
+            auto role_it = snap2.roles.find(prod.role_uid);
+            if (role_it == snap2.roles.end()) continue;
+            const auto *p = role_it->second.find_presence(channel_name, "producer");
+            if (p == nullptr) continue;
+            if (p->state != pylabhub::hub::RoleState::Pending) continue;
+            if (now - p->state_since < pending_timeout) continue;
+
+            // Capture pre-drop state for the fan-out target list (the
+            // channel record will be erased by the op iff this drop
+            // is the last producer).
+            const pylabhub::hub::ChannelEntry pre_drop = entry;
+
+            LOGGER_WARN(
+                "Broker: producer '{}' on '{}' reclaimed from Pending "
+                "(no heartbeat within {} ms)",
+                prod.role_uid, channel_name, pending_timeout.count());
+
+            auto drop = hub_state_->_on_pending_timeout(channel_name, prod.role_uid);
+            if (drop.removed && drop.channel_now_empty)
+            {
+                // Last-producer drop → atomic channel teardown.
+                // Notify consumers + federation peers using the
+                // pre_drop snapshot (the channel record is now gone).
+                send_closing_notify(socket, channel_name, pre_drop, "pending_timeout");
+                on_channel_closed(socket, channel_name, pre_drop, "pending_timeout");
+                metrics_store_.erase(channel_name);
+                LOGGER_INFO("Broker: channel '{}' torn down (last producer "
+                            "presence-timeout)", channel_name);
+                // Stop iterating producers — the channel record is gone.
+                break;
+            }
+            else if (drop.removed)
+            {
+                LOGGER_INFO("Broker: producer '{}' dropped on '{}' "
+                            "(presence-timeout; {} producer(s) remain — "
+                            "channel survives)",
+                            prod.role_uid, channel_name,
+                            static_cast<uint32_t>(pre_drop.producer_count() - 1));
+            }
+        }
     }
 }
 

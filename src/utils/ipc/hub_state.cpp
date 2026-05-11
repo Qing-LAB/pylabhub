@@ -1229,49 +1229,72 @@ void HubState::_on_heartbeat_timeout(const std::string &channel,
     }
 }
 
-void HubState::_on_pending_timeout(const std::string &channel)
+RemoveProducerResult
+HubState::_on_pending_timeout(const std::string &channel,
+                               const std::string &role_uid)
 {
-    if (!is_valid_identifier(channel, IdentifierKind::Channel))
+    RemoveProducerResult result{false, false};
+
+    if (!is_valid_identifier(channel, IdentifierKind::Channel) ||
+        !is_valid_identifier(role_uid, IdentifierKind::RoleUid))
     {
         bump_invalid_identifier(*pImpl);
-        return;
+        return result;
     }
-    // HEP-CORE-0023 §2.1: producer-presence Pending → Disconnected, with
-    // atomic channel teardown in the same handler.  No grace window, no
-    // intermediate Closing state.
+    // HEP-CORE-0023 §2.1 + §2.1.1: producer-presence Pending →
+    // Disconnected; atomic channel teardown fires ONLY on the LAST
+    // producer's transition.  No grace window, no Closing state.
     //
-    // The producer-presence's `Pending` state is the single-shot gate —
-    // a concurrent timer fire that loses the writer-lock race observes
-    // Disconnected (or no presence) and bails without re-entering
-    // teardown or double-bumping the counter.
-    bool eligible = false;
+    // The producer-presence's `Pending` state is the single-shot gate
+    // — a concurrent timer fire that loses the writer-lock race
+    // observes Disconnected (or no presence) and bails without
+    // re-entering teardown or double-bumping the counter.
+    //
+    // Ordering note: we transition the presence FSM AND probe whether
+    // this is the last producer BEFORE removing the producer from
+    // `ChannelEntry.producers[]`.  Removal-before-close-cascade would
+    // empty `producers[]` and skip schema eviction in
+    // `_on_channel_closed` (same bug class as Wave M2.5 step 4 fix).
+    bool is_last_producer = false;
+    bool eligible         = false;
     {
         std::unique_lock lk(pImpl->mu);
         auto             it = pImpl->channels.find(channel);
-        if (it == pImpl->channels.end()) return;
-        // Single-producer transition today: pick the channel's first
-        // producer.  Wave M2.5 step 4 (DEREG_REQ rewrite) + step 6
-        // (sweep/heartbeat-timeout rewrite) will replace this op with
-        // `_on_producer_dropped(channel, role_uid, reason)` so the
-        // caller targets a specific producer-presence; channel close
-        // then fires only when the LAST live producer transitions
-        // Disconnected (HEP-CORE-0023 §2.1.1).
-        const ProducerEntry *first = it->second.first_producer();
-        if (first == nullptr) return;
-        const std::string producer_uid = first->role_uid;
-        if (producer_uid.empty()) return;
-        auto rit = pImpl->roles.find(producer_uid);
-        if (rit == pImpl->roles.end()) return;
+        if (it == pImpl->channels.end()) return result;
+        if (it->second.find_producer(role_uid) == nullptr) return result;
+
+        auto rit = pImpl->roles.find(role_uid);
+        if (rit == pImpl->roles.end()) return result;
         auto *p = rit->second.find_presence(channel, "producer");
-        if (p == nullptr || p->state != RoleState::Pending) return;
+        if (p == nullptr || p->state != RoleState::Pending) return result;
 
         p->state       = RoleState::Disconnected;
         p->state_since = std::chrono::steady_clock::now();
         ++pImpl->counters.pending_to_deregistered_total;
-        eligible = true;
+        eligible         = true;
+        is_last_producer = (it->second.producer_count() == 1);
+        if (!is_last_producer)
+        {
+            // Multi-producer channel — drop just this one; channel
+            // survives.  Producer-presence FSM already transitioned
+            // above; the row stays on RoleEntry (Wave M3 routes
+            // cleanup through the RoleEntry API).
+            auto rm                  = it->second.remove_producer(role_uid);
+            result.removed           = rm.removed;
+            result.channel_now_empty = false;
+            return result;
+        }
+        // Last-producer path: leave the producer in producers[] so
+        // _on_channel_closed's cascade eviction can read its uid.
     }
+
     if (eligible)
+    {
         _on_channel_closed(channel, ChannelCloseReason::HeartbeatTimeout);
+        result.removed           = true;
+        result.channel_now_empty = true;
+    }
+    return result;
 }
 
 void HubState::_on_metrics_reported(const std::string                    &channel,
