@@ -2010,6 +2010,77 @@ TEST(HubStateProducerDrop, ChannelClose_FiresOncePerCloseEvent)
     EXPECT_EQ(closed, (std::vector<std::string>{"ch.fanin.drop-sequence"}));
 }
 
+// ─── Wave M2.5 step 5 — _set_producer_zmq_node_endpoint HubState op ──────
+//
+// Pin the contract that ENDPOINT_UPDATE_REQ at the HubState layer
+// mutates ONLY the targeted producer's endpoint; sibling producers
+// on the same Fan-In channel are unaffected (HEP-CORE-0021 §16.3).
+
+TEST(HubStateProducerEndpointUpdate, KnownChannelKnownUid_UpdatesOnlyTarget)
+{
+    HubState s;
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.fanin.ep-update",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.camA.uid00000001", 1001))
+                  .producer_result,
+              AddProducerResult::Created);
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.fanin.ep-update",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.camB.uid00000002", 1002))
+                  .producer_result,
+              AddProducerResult::Created);
+
+    // Both producers start with no endpoint.
+    auto ch_pre = s.channel("ch.fanin.ep-update");
+    ASSERT_TRUE(ch_pre.has_value());
+    EXPECT_EQ(ch_pre->find_producer("prod.camA.uid00000001")->zmq_node_endpoint, "");
+    EXPECT_EQ(ch_pre->find_producer("prod.camB.uid00000002")->zmq_node_endpoint, "");
+
+    // Updating A's endpoint must NOT touch B.
+    EXPECT_TRUE(HubStateTestAccess::set_producer_zmq_node_endpoint(
+        s, "ch.fanin.ep-update", "prod.camA.uid00000001",
+        "tcp://10.0.0.1:5111"));
+
+    auto ch_post = s.channel("ch.fanin.ep-update");
+    ASSERT_TRUE(ch_post.has_value());
+    EXPECT_EQ(ch_post->find_producer("prod.camA.uid00000001")->zmq_node_endpoint,
+              "tcp://10.0.0.1:5111");
+    EXPECT_EQ(ch_post->find_producer("prod.camB.uid00000002")->zmq_node_endpoint, "");
+}
+
+TEST(HubStateProducerEndpointUpdate, UnknownChannel_ReturnsFalse)
+{
+    HubState s;
+    EXPECT_FALSE(HubStateTestAccess::set_producer_zmq_node_endpoint(
+        s, "ch.nonexistent.test", "prod.x.uid00000001",
+        "tcp://10.0.0.1:5111"));
+}
+
+TEST(HubStateProducerEndpointUpdate, KnownChannelUnknownUid_ReturnsFalse_NoSiblingPerturbation)
+{
+    HubState s;
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.fanin.ep-update-ghost",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.camA.uid00000001", 1001))
+                  .producer_result,
+              AddProducerResult::Created);
+
+    EXPECT_FALSE(HubStateTestAccess::set_producer_zmq_node_endpoint(
+        s, "ch.fanin.ep-update-ghost", "prod.ghost.uid00000099",
+        "tcp://10.0.0.99:5111"));
+
+    // A's endpoint must remain empty (unset).
+    auto ch = s.channel("ch.fanin.ep-update-ghost");
+    ASSERT_TRUE(ch.has_value());
+    EXPECT_EQ(ch->find_producer("prod.camA.uid00000001")->zmq_node_endpoint, "");
+}
+
 TEST(HubStateProducerAdmission, SecondProducer_ShmChannel_RejectedShmCardinality)
 {
     HubState s;

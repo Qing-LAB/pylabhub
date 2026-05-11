@@ -1074,13 +1074,26 @@ class PYLABHUB_UTILS_EXPORT HubState
     void _set_peer_connected(PeerEntry entry);
     void _set_peer_disconnected(const std::string &hub_uid);
 
-    /// Update the producer's `zmq_node_endpoint` for a channel
-    /// (HEP-CORE-0021 ZMQ endpoint registry — ENDPOINT_UPDATE_REQ).
-    /// No-op if the channel is unknown.  Endpoint validation is the
-    /// caller's responsibility (broker handler runs validate_tcp_endpoint
-    /// before calling this).
+    /// **DEPRECATED 2026-05-10 — superseded by
+    /// `_set_producer_zmq_node_endpoint` per Wave M2.5 step 5.**
+    /// Wraps the per-producer op for the FIRST producer (transitional
+    /// shape).  No new callers should use this; existing callers will
+    /// migrate as step 5 lands.  Kept as a thin shim so external
+    /// callers (if any) don't break.
     void _set_channel_zmq_node_endpoint(const std::string &name,
                                          std::string        endpoint);
+
+    /// Update one producer's `zmq_node_endpoint` on a channel
+    /// (HEP-CORE-0021 §16.3 — ENDPOINT_UPDATE_REQ keyed by
+    /// `(channel, role_uid)`).  Per-producer scope per Wave M2.5
+    /// step 5: each Fan-In producer has its own bound endpoint.
+    /// Returns true iff the channel exists AND the producer is
+    /// admitted on it.  Endpoint validation is the caller's
+    /// responsibility (broker handler runs `validate_tcp_endpoint`
+    /// before calling this).
+    bool _set_producer_zmq_node_endpoint(const std::string &channel_name,
+                                          const std::string &role_uid,
+                                          std::string        endpoint);
 
     void _set_shm_block(ShmBlockRef ref);
     void _bump_counter(const std::string &key, uint64_t n = 1);
