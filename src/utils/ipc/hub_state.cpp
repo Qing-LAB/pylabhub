@@ -1113,41 +1113,55 @@ void HubState::_on_heartbeat(const std::string                   &channel,
         std::unique_lock lk(pImpl->mu);
         auto             rit = pImpl->roles.find(role_uid);
         if (rit == pImpl->roles.end()) return;
-        auto *p = rit->second.find_presence(channel, role_type);
-        if (p == nullptr) return;
 
-        const bool      was_first = !p->first_heartbeat_seen;
-        const RoleState was_state = p->state;
+        // Wave M3 step 2 (commit forthcoming): route the presence-row
+        // mutation through the controlled-access API.  The method
+        // updates last_heartbeat + first_heartbeat_seen, transitions
+        // FSM to Connected if not already, and returns a rich
+        // HeartbeatEffect for counter decisions.  HubState retains
+        // ownership of: (a) the pending_to_ready_total counter bump
+        // (depends on prev_state); (b) the `disconnected_fired`
+        // memoization reset (🚧 PATCH; retired in M3 step 4); (c)
+        // metrics update (presence-row direct write — still here
+        // because the new API doesn't yet expose a per-presence
+        // metrics setter, M3 step-2 scope is FSM-only).
+        const HeartbeatEffect eff =
+            rit->second.on_heartbeat(channel, role_type, when);
+        if (!eff.presence_found) return;
 
-        p->last_heartbeat       = when;
-        p->first_heartbeat_seen = true;
-        if (p->state != RoleState::Connected)
-        {
-            const RoleState prev = p->state;
-            p->state             = RoleState::Connected;
-            p->state_since       = when;
-            // Recovery from Pending counts as pending_to_ready
-            // (HEP-CORE-0023 §2.5).
-            if (prev == RoleState::Pending)
-                ++pImpl->counters.pending_to_ready_total;
-            // 🚧 PATCH (2026-05-10) — full fix pending in Wave M3 (RoleEntry API).
-            // Revival: clear the role's role_disconnected-already-fired
-            // memoization so a future disconnect can re-emit.
+        // Recovery from Pending counts as pending_to_ready (HEP-0023 §2.5).
+        if (eff.prev_state == RoleState::Pending)
+            ++pImpl->counters.pending_to_ready_total;
+        // 🚧 PATCH (2026-05-10) — retired in Wave M3 step 4 (terminal
+        // cleanup makes the memoization structural).  Revival: clear
+        // the role's role_disconnected-already-fired memoization so a
+        // future disconnect can re-emit.  Only do this when the
+        // presence transitioned out of non-Connected (matches
+        // pre-M3-step-2 behavior).
+        if (eff.prev_state != RoleState::Connected)
             rit->second.disconnected_fired = false;
-        }
+
+        // Metrics write — still a direct presence-row mutation.
+        // (M3 step-2 scope is FSM-only.  A future
+        // `entry.set_presence_metrics(channel, role_type, metrics)`
+        // method could absorb this; not in step 2.)
         if (metrics.has_value())
         {
-            p->latest_metrics       = *metrics;
-            p->metrics_collected_at = std::chrono::system_clock::now();
+            auto *p = rit->second.find_presence(channel, role_type);
+            if (p != nullptr)
+            {
+                p->latest_metrics       = *metrics;
+                p->metrics_collected_at = std::chrono::system_clock::now();
+            }
         }
 
         // Fire ChannelStatusChangedHandler when the producer-presence
-        // transition flips the channel's observable
-        // (kRegistering→kLive on first heartbeat; kStalled→kLive on
-        // recovery from Pending; kAbsent→kLive on revival from
-        // Disconnected).  Consumer-presence transitions are not
-        // visible on the channel observable.
-        if (role_type == "producer" && (was_first || was_state != RoleState::Connected))
+        // transition flips the channel's observable.  Producer-presences
+        // only — consumer transitions don't affect channel observability.
+        const bool transitioned_to_live =
+            !eff.was_first_heartbeat_seen ||
+            eff.prev_state != RoleState::Connected;
+        if (role_type == "producer" && transitioned_to_live)
         {
             auto cit = pImpl->channels.find(channel);
             if (cit != pImpl->channels.end())
