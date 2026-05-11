@@ -529,7 +529,17 @@ void HubState::_set_channel_zmq_node_endpoint(const std::string &name,
     std::unique_lock lk(pImpl->mu);
     auto             it = pImpl->channels.find(name);
     if (it == pImpl->channels.end()) return;
-    it->second.zmq_node_endpoint = std::move(endpoint);
+    // Wave M2.5 step 3 transitional: write the endpoint on the channel
+    // record's FIRST producer (per-producer scope per HEP-CORE-0021
+    // §16.3 + controlled_access_api_design.md §3.2).  Step 5
+    // (ENDPOINT_UPDATE_REQ wire-shape migration) adds an explicit
+    // role_uid parameter so the right producer can be targeted on
+    // Fan-In channels.  For now: single-producer channels — there is
+    // exactly one to update — so first-producer is unambiguous.
+    if (auto *p = it->second.first_producer())
+    {
+        p->zmq_node_endpoint = std::move(endpoint);
+    }
 }
 
 void HubState::_set_shm_block(ShmBlockRef ref)

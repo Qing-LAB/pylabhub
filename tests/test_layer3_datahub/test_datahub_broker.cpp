@@ -60,10 +60,16 @@ TEST_F(DatahubBrokerTest, DeregPidMismatch)
 TEST_F(DatahubBrokerTest, Sch_RegPathBCreated)
 {
     // REG_REQ with `schema_packing` → broker records under
-    // (role_uid, schema_id); re-registering same fields succeeds
-    // (idempotent at the registry level).
+    // (role_uid, schema_id).  Wave M2.5 (controlled-access API
+    // design §6.2): re-registering the same uid is REJECTED with
+    // UID_CONFLICT — the strict-reject policy treats any same-uid
+    // re-admission as a bookkeeping anomaly (residue or breach),
+    // not as a benign restart.  The schema record stays Created
+    // from the first REG_REQ; only the admission fails.  Worker
+    // updated 2026-05-10 to assert the new wire error.
     auto proc = SpawnWorker("broker.broker_sch_record_path_b_created", {});
-    ExpectWorkerOk(proc);
+    ExpectWorkerOk(proc, /*required=*/{},
+                   /*expected_errors=*/{"UID_CONFLICT"});
 }
 
 TEST_F(DatahubBrokerTest, Sch_RegHashMismatchSelf)
@@ -263,11 +269,15 @@ TEST_F(DatahubBrokerTest, Sch_PathX_ForbiddenOwner)
 
 TEST_F(DatahubBrokerTest, Sch_WireHelpers_RegisterAndCite)
 {
-    // Named-citation path: helper-built REG_REQ + CONSUMER_REG_REQ accepted
-    // by real broker; SCHEMA_REQ round-trip pins helper hash == broker
-    // hash; idempotent re-register succeeds.
+    // Named-citation path: helper-built REG_REQ + CONSUMER_REG_REQ
+    // accepted by real broker; SCHEMA_REQ round-trip pins helper hash
+    // == broker hash.  Wave M2.5 (controlled-access API design §6.2):
+    // re-registering the same uid is REJECTED with UID_CONFLICT
+    // (strict-reject policy).  Worker updated 2026-05-10 to assert
+    // the new wire error.
     auto proc = SpawnWorker("broker.broker_sch_wire_helpers_register_and_cite", {});
-    ExpectWorkerOk(proc);
+    ExpectWorkerOk(proc, /*required=*/{},
+                   /*expected_errors=*/{"UID_CONFLICT"});
 }
 
 TEST_F(DatahubBrokerTest, Sch_WireHelpers_AnonymousCitation)

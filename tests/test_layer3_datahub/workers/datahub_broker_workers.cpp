@@ -638,12 +638,17 @@ int broker_sch_record_path_b_created()
             EXPECT_EQ(resp.value("status", std::string{}), "success")
                 << "REG_REQ with full structure must succeed; got: " << resp.dump();
 
-            // Re-register with identical fields → still success.  At the
-            // registry level this is kIdempotent; at the channel level it
-            // is a same-hash re-registration that preserves consumers.
+            // Wave M2.5 (controlled-access API design §6.2): same-uid
+            // re-register is REJECTED with UID_CONFLICT, regardless of
+            // whether the existing entry is active or stale-residue.
+            // The schema record stays Created from the first REG_REQ
+            // (the broker's anomaly handling preserves it); only the
+            // admission itself fails.
             auto resp2 = raw_req(broker.endpoint, "REG_REQ", req);
-            EXPECT_EQ(resp2.value("status", std::string{}), "success")
-                << "Idempotent re-register must succeed; got: " << resp2.dump();
+            EXPECT_EQ(resp2.value("status", std::string{}), "error")
+                << "Same-uid re-register must reject; got: " << resp2.dump();
+            EXPECT_EQ(resp2.value("error_code", std::string{}), "UID_CONFLICT")
+                << "Same-uid re-register error must be UID_CONFLICT; got: " << resp2.dump();
 
             broker.stop_and_join();
         },
@@ -1897,22 +1902,25 @@ int broker_sch_wire_helpers_register_and_cite()
                 << "Helper-built CONSUMER_REG_REQ (named, with defense-in-depth "
                    "structure) must succeed; got: " << creg_resp.dump();
 
-            // ── Idempotent re-register: same producer, same payload, same channel.
-            // Channel-mismatch gate sees identical schema_hash → preserves
-            // existing consumers; SchemaRecord layer sees kIdempotent.
+            // Wave M2.5 (controlled-access API design §6.2): same-uid
+            // re-register is REJECTED with UID_CONFLICT.  The schema
+            // record stays Created from the first REG_REQ; the channel
+            // record and the already-admitted consumer are unaffected
+            // (admission fails before any state mutation).
             //
-            // NOTE: this asserts only the broker's success status, not that
-            // the previously-registered consumer was actually preserved on
-            // the channel.  Direct preservation verification needs a
-            // broker-side admin API to list/inspect ChannelEntry.consumers
-            // (currently no such RPC exists — `SCHEMA_REQ(owner, id)`
-            // resolves the schema record but not the channel's consumer
-            // list).  Tracked in TODO_MASTER under Priority 2.
+            // Pre-MP2.5 contract was "idempotent re-register succeeds";
+            // the new policy treats same-uid re-registration as a
+            // bookkeeping anomaly (residue or breach) — see
+            // docs/tech_draft/controlled_access_api_design.md §6.2.
             auto reg_resp2 = raw_req(broker.endpoint, "REG_REQ", reg);
             ASSERT_FALSE(reg_resp2.is_null());
-            EXPECT_EQ(reg_resp2.value("status", std::string{}), "success")
-                << "Idempotent re-register with helper-built payload must succeed; "
-                   "got: " << reg_resp2.dump();
+            EXPECT_EQ(reg_resp2.value("status", std::string{}), "error")
+                << "Same-uid re-register must reject; got: "
+                << reg_resp2.dump();
+            EXPECT_EQ(reg_resp2.value("error_code", std::string{}),
+                      "UID_CONFLICT")
+                << "Same-uid re-register error must be UID_CONFLICT; got: "
+                << reg_resp2.dump();
 
             broker.stop_and_join();
         },

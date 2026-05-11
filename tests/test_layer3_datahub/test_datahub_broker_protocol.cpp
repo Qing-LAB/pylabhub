@@ -412,8 +412,19 @@ TEST_F(BrokerProtocolTest, ClosingNotify_DeliveredToProducerAndConsumer)
 // 3. Duplicate REG_REQ — schema hash conflict
 // ============================================================================
 
-TEST_F(BrokerProtocolTest, DuplicateReg_SameSchemaHash_Succeeds)
+TEST_F(BrokerProtocolTest, DuplicateReg_TwoDistinctProducers_OnShmChannel_RejectedShmCardinality)
 {
+    // Wave M2.5 (controlled-access API design §6.3 + HEP-CORE-0023
+    // §2.1.1): SHM channels admit exactly one producer.  Pre-MP2.5
+    // this test passed because the second REG_REQ silently overwrote
+    // the channel record (the original multi-producer overwrite-class
+    // bug we're eliminating).  Post-MP2.5 the second admission is
+    // rejected with MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM — the SHM
+    // physical constraint is enforced at the controlled-access API
+    // (`ChannelEntry::add_producer`).  ZMQ Fan-In allows two distinct
+    // producers; that contract is pinned in
+    // `HubStateProducerAdmission.SecondDistinctUid_MatchingInvariants_Appends`.
+    ExpectLogWarn("SHM channels are physically single-producer");
     const std::string channel  = pid_chan("proto.dup.same");
     const std::string hash_hex = std::string(64, 'a');
     const std::string uid1     = "prod.proto.dup.same.uid00000001";
@@ -431,7 +442,14 @@ TEST_F(BrokerProtocolTest, DuplicateReg_SameSchemaHash_Succeeds)
     auto opts2 = make_reg_opts(channel, uid2);
     opts2["schema_hash"] = hash_hex;
     auto h2 = bh2.brc.register_channel(opts2, 3000);
-    EXPECT_TRUE(h2.has_value()) << "Same schema hash re-registration should succeed";
+    ASSERT_TRUE(h2.has_value())
+        << "Broker must return a structured error envelope, not transport failure";
+    EXPECT_EQ(h2->value("status", std::string{}), "error")
+        << "Second SHM producer must reject; got: " << h2->dump();
+    EXPECT_EQ(h2->value("error_code", std::string{}),
+              "MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM")
+        << "SHM cardinality reject must surface as "
+           "MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM; got: " << h2->dump();
 
     bh2.stop();
     bh1.stop();
