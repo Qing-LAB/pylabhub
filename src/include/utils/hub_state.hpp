@@ -213,6 +213,32 @@ struct ProducerEntry
 // collision indicates either bookkeeping residue (a hub-side bug — to
 // be fixed in M3 cleanup) or a remote-side breach attempt.
 
+/// Aggregate of channel-wide schema invariants supplied by REG_REQ.
+/// Used by `HubState::_on_producer_added` to compare-and-set against
+/// the existing channel record (HEP-CORE-0023 §2.1.1 + HEP-CORE-0034).
+/// First admission on a fresh channel sets these; subsequent admissions
+/// must match byte-for-byte or the admission is rejected with
+/// `SCHEMA_MISMATCH` (see `InvariantSetResult`).
+struct ChannelSchemaInvariants
+{
+    std::string schema_hash;
+    uint32_t    schema_version{0};
+    std::string schema_id;
+    std::string schema_blds;
+    std::string schema_owner;
+};
+
+/// Aggregate of channel-wide transport invariants supplied by REG_REQ.
+/// Like `ChannelSchemaInvariants`, these are set on first admission and
+/// validated equal on subsequent admissions.
+struct ChannelTransportInvariants
+{
+    bool           has_shared_memory{false};
+    std::string    shm_name;
+    ChannelPattern pattern{ChannelPattern::PubSub};
+    std::string    data_transport{"shm"};
+};
+
 enum class AddProducerResult
 {
     Created,                 ///< Appended; out-pointer (if requested) points
@@ -254,6 +280,44 @@ enum class InvariantSetResult
     RejectedMismatch,        ///< Existing value differs.  Channel state
                              ///< unchanged.  Broker surfaces the appropriate
                              ///< Cat-1 error (e.g., `SCHEMA_MISMATCH`).
+};
+
+/// Composite result from `HubState::_on_producer_added` — the
+/// controlled-access entry point for REG_REQ admission per Wave M2.5
+/// step 3 (see `docs/tech_draft/controlled_access_api_design.md` §7.5).
+/// The broker handler switches on these three pieces to dispatch the
+/// correct wire-error code or success response.
+struct ProducerAdmissionResult
+{
+    /// `Created` iff the producer was appended;
+    /// `RejectedUidConflict` (UID_CONFLICT wire error) or
+    /// `RejectedShmCardinality` (MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM
+    /// wire error) otherwise.  When this is anything other than
+    /// `Created`, channel state is unchanged.
+    AddProducerResult  producer_result{AddProducerResult::Created};
+
+    /// `Created` for a fresh channel; `IdempotentEqual` when the
+    /// incoming invariants match the existing channel's;
+    /// `RejectedMismatch` (SCHEMA_MISMATCH / TRANSPORT_MISMATCH wire
+    /// errors) when they differ.  When `RejectedMismatch`, channel
+    /// state is unchanged AND `producer_result` is `Created` only by
+    /// convention — the broker MUST inspect `invariant_result` first.
+    InvariantSetResult invariant_result{InvariantSetResult::Created};
+
+    /// True iff this admission opened a fresh channel record (first
+    /// producer).  Caller uses this to decide whether to fire the
+    /// `ch_opened` handler chain + emit HEP-CORE-0034 schema-record
+    /// creation events.  False when admitting onto an existing channel.
+    bool               channel_opened{false};
+
+    /// Names which invariant didn't match, when `invariant_result ==
+    /// RejectedMismatch`.  One of: `"schema_hash"`, `"schema_version"`,
+    /// `"schema_id"`, `"schema_blds"`, `"schema_owner"`, `"shm_name"`,
+    /// `"has_shared_memory"`, `"pattern"`, `"data_transport"`.  Empty
+    /// on success.  Allows the broker to surface a specific reason
+    /// (SCHEMA_MISMATCH vs TRANSPORT_MISMATCH) without re-reading
+    /// HubState.
+    std::string        mismatched_invariant;
 };
 
 /// Channel registered with the broker.
@@ -1050,6 +1114,29 @@ class PYLABHUB_UTILS_EXPORT HubState
     // messages.  Admin / script paths may fill it in later.
 
     void _on_channel_registered(ChannelEntry entry);
+
+    /// Wave M2.5 step 3 controlled-access REG_REQ admission entry point.
+    /// Replaces the broker handler's prior "build fresh ChannelEntry +
+    /// `_on_channel_registered`" pattern with an additive op that:
+    /// - on a fresh channel: composes the channel record from the
+    ///   supplied invariants + admits the producer as the first
+    ///   `ProducerEntry`, fires `ch_opened` handler + `role_reg`
+    ///   handler;
+    /// - on an existing channel: validates invariants match the
+    ///   stored record (returns `RejectedMismatch` with the
+    ///   `mismatched_invariant` name set on first divergence); if
+    ///   invariants match, appends the producer via
+    ///   `ChannelEntry::add_producer` and fires `role_reg`.
+    ///
+    /// Per `docs/tech_draft/controlled_access_api_design.md` §7.5.2.
+    /// `_on_channel_registered` is retained for L2 test scaffolding;
+    /// production REG_REQ migrates to this op.
+    ProducerAdmissionResult
+    _on_producer_added(const std::string&                channel_name,
+                       ChannelSchemaInvariants           schema,
+                       ChannelTransportInvariants        transport,
+                       ProducerEntry                     producer);
+
     void _on_channel_closed(const std::string &name, ChannelCloseReason why);
     void _on_consumer_joined(const std::string &channel, ConsumerEntry consumer);
     void _on_consumer_left(const std::string &channel, const std::string &role_uid);

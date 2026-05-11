@@ -102,6 +102,23 @@ struct HubStateTestAccess
     {
         s._on_channel_registered(std::move(e));
     }
+    /// Wave M2.5 step 3 — additive REG_REQ admission entry point.
+    /// See `docs/tech_draft/controlled_access_api_design.md` §7.5.
+    /// Tests drive multi-producer admission scenarios through this
+    /// forwarder; the production REG_REQ handler routes the same
+    /// way.
+    static ProducerAdmissionResult
+    on_producer_added(HubState&                  s,
+                       const std::string&         channel_name,
+                       ChannelSchemaInvariants    schema,
+                       ChannelTransportInvariants transport,
+                       ProducerEntry              producer)
+    {
+        return s._on_producer_added(channel_name,
+                                     std::move(schema),
+                                     std::move(transport),
+                                     std::move(producer));
+    }
     static void on_channel_closed(HubState &s, const std::string &n,
                                   ChannelCloseReason why)
     {
