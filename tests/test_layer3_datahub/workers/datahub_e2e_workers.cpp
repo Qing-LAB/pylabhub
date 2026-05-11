@@ -186,9 +186,6 @@ int e2e_producer(int argc, char** argv)
             reg_opts["producer_pid"]      = ::getpid();
             reg_opts["shm_name"]          = channel;
             reg_opts["schema_version"]    = 1;
-            reg_opts["zmq_ctrl_endpoint"] = "tcp://127.0.0.1:0";
-            reg_opts["zmq_data_endpoint"] = "tcp://127.0.0.1:0";
-            reg_opts["zmq_pubkey"]        = "";
             reg_opts["role_uid"]          = uid;
             auto reg = brc.register_channel(reg_opts, 3000);
             ASSERT_TRUE(reg.has_value()) << "e2e_producer: register_channel failed";

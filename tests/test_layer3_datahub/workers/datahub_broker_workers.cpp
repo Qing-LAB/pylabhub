@@ -299,9 +299,6 @@ int broker_reg_disc_happy_path()
             reg_opts["pattern"]           = "PubSub";
             reg_opts["has_shared_memory"] = false;
             reg_opts["producer_pid"]      = ::getpid();
-            reg_opts["zmq_ctrl_endpoint"] = "tcp://127.0.0.1:0";
-            reg_opts["zmq_data_endpoint"] = "tcp://127.0.0.1:0";
-            reg_opts["zmq_pubkey"]        = "";
             reg_opts["role_uid"]          = uid;
             reg_opts["shm_name"]          = "broker_reg_disc.shm";
             reg_opts["schema_version"]    = 7;
@@ -444,9 +441,6 @@ int broker_dereg_happy_path()
             reg_opts["pattern"]           = "PubSub";
             reg_opts["has_shared_memory"] = false;
             reg_opts["producer_pid"]      = ::getpid();
-            reg_opts["zmq_ctrl_endpoint"] = "tcp://127.0.0.1:0";
-            reg_opts["zmq_data_endpoint"] = "tcp://127.0.0.1:0";
-            reg_opts["zmq_pubkey"]        = "";
             reg_opts["role_uid"]          = uid;
             auto reg = brc.register_channel(reg_opts, 3000);
             ASSERT_TRUE(reg.has_value()) << "register_channel must succeed";

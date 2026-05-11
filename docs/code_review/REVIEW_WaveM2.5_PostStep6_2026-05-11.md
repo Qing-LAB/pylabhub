@@ -313,7 +313,7 @@ files import the helper.
 | ID | Title | Severity | Status |
 |---|---|---|---|
 | G1 | `ChannelMetrics::producer` single-producer scalar (overwrite-class bug) | Bug | ❌ OPEN |
-| G2 | 17 test files set obsolete REG_REQ wire keys | Cruft | ❌ OPEN |
+| G2 | 17 test files set obsolete REG_REQ wire keys | Cruft | ✅ FIXED 2026-05-11 (14 files swept, 51 lines deleted) |
 | G3 | Direct `producers[]` access still common (step 7 deferred) | Deferred | ⚠️ TRACKED |
 | G4 | Design doc §5.1 API methods never delivered (step 2d) | Deferred | ⚠️ TRACKED |
 | G5 | `_on_channel_registered` legacy path correctness | Verified | ✅ OK |
@@ -326,7 +326,7 @@ files import the helper.
 | G12 | `metrics_store_` overall is "legacy"; mixed pattern | Tracked | ⚠️ DEFERRED to M1.4 |
 | G13 | `ChannelSnapshotEntry` post-step-2c | Verified | ✅ OK |
 | G14 | DISC_REQ_ACK first-producer transitional shape | OK by design | ✅ OK |
-| G15 | `make_reg_opts` consolidation opportunity | Cruft | ❌ OPEN (couples with G2) |
+| G15 | `make_reg_opts` consolidation opportunity | Cruft | ✅ FIXED 2026-05-11 (3 obsolete keys removed from helper) |
 
 ## Fix-in-this-pass set (proposed)
 

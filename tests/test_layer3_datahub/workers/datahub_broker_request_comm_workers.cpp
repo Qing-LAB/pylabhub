@@ -191,9 +191,6 @@ int register_and_discover()
     reg_opts["pattern"]           = "PubSub";
     reg_opts["has_shared_memory"] = false;
     reg_opts["producer_pid"]      = 12345;
-    reg_opts["zmq_ctrl_endpoint"] = "tcp://127.0.0.1:0";
-    reg_opts["zmq_data_endpoint"] = "tcp://127.0.0.1:0";
-    reg_opts["zmq_pubkey"]        = "";
     reg_opts["role_uid"]          = "prod.test.uid00000001";
     reg_opts["role_name"]         = "test_producer";
 
@@ -269,9 +266,6 @@ int role_presence()
     reg_opts["pattern"]           = "PubSub";
     reg_opts["has_shared_memory"] = false;
     reg_opts["producer_pid"]      = 12345;
-    reg_opts["zmq_ctrl_endpoint"] = "tcp://127.0.0.1:0";
-    reg_opts["zmq_data_endpoint"] = "tcp://127.0.0.1:0";
-    reg_opts["zmq_pubkey"]        = "";
     reg_opts["role_uid"]          = "prod.my.uid00000042";
     reg_opts["role_name"]         = "my_producer";
 
@@ -325,9 +319,6 @@ int notification_dispatch()
     reg_opts["pattern"]           = "PubSub";
     reg_opts["has_shared_memory"] = false;
     reg_opts["producer_pid"]      = 12345;
-    reg_opts["zmq_ctrl_endpoint"] = "tcp://127.0.0.1:0";
-    reg_opts["zmq_data_endpoint"] = "tcp://127.0.0.1:0";
-    reg_opts["zmq_pubkey"]        = "";
     reg_opts["role_uid"]          = "prod.notify.uid00000001";
     reg_opts["role_name"]         = "notify_producer";
 
