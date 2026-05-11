@@ -405,7 +405,7 @@ void HubState::_set_role_disconnected(const std::string &uid)
         auto             it = pImpl->roles.find(uid);
         if (it == pImpl->roles.end()) return;
         // 🚧 PATCH (2026-05-10) — uses `disconnected_fired` memoization.
-        // Full fix pending in Wave M2 MP3 (unified
+        // Full fix pending in Wave M3 (RoleEntry API; unified
         // `_dispatch_role_disconnected_if_dead` helper).  See
         // `docs/TODO_MASTER.md` "Wave M2".
         //
@@ -653,7 +653,7 @@ RoleEntry upsert_role_locked(Impl &impl, const std::string &uid,
         ex.channels.push_back(added_channel);
     }
     upsert_presence_row_locked(ex, added_channel, role_type, heartbeat_when);
-    // 🚧 PATCH (2026-05-10) — full fix pending in Wave M2 MP3.
+    // 🚧 PATCH (2026-05-10) — full fix pending in Wave M3 (RoleEntry API).
     // Revival: the role is being re-touched (REG_REQ, CONSUMER_REG_REQ,
     // or band-join after a prior disconnect).  Reset the event-emit
     // memoization so a future disconnect can fire `role_disconnected`
@@ -1130,7 +1130,7 @@ void HubState::_on_heartbeat(const std::string                   &channel,
             // (HEP-CORE-0023 §2.5).
             if (prev == RoleState::Pending)
                 ++pImpl->counters.pending_to_ready_total;
-            // 🚧 PATCH (2026-05-10) — full fix pending in Wave M2 MP3.
+            // 🚧 PATCH (2026-05-10) — full fix pending in Wave M3 (RoleEntry API).
             // Revival: clear the role's role_disconnected-already-fired
             // memoization so a future disconnect can re-emit.
             rit->second.disconnected_fired = false;

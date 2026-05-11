@@ -730,7 +730,7 @@ struct RoleEntry
     /// and metrics live here; nothing is duplicated at the role level.
     std::vector<RolePresence> presences;
 
-    /// 🚧 PATCH (2026-05-10) — stopgap; full fix pending in Wave M2 MP3.
+    /// 🚧 PATCH (2026-05-10) — stopgap; full fix pending in Wave M3 (RoleEntry controlled-access API).
     ///
     /// Event-emit memoization: has `role_disconnected` already fired for
     /// this role since it was registered (or last revived)?  Set by the
