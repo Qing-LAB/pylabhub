@@ -1072,30 +1072,32 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // new-role-uid REG_REQ.  For now, build a single-element producers
     // list.
     pylabhub::hub::ProducerEntry primary_producer;
-    primary_producer.producer_pid     = attempted_pid;
+    primary_producer.producer_pid      = attempted_pid;
     primary_producer.producer_hostname = req.value("producer_hostname", "");
-    primary_producer.role_name        = role_name;
-    primary_producer.role_uid         = role_uid;
+    primary_producer.role_name         = role_name;
+    primary_producer.role_uid          = role_uid;
+    // Inbox info is per-producer (HEP-CORE-0023 §2.1.1 + HEP-CORE-0027).
+    primary_producer.inbox_endpoint    = req.value("inbox_endpoint", "");
+    primary_producer.inbox_schema_json = req.value("inbox_schema_json", "");
+    primary_producer.inbox_packing     = req.value("inbox_packing", "");
+    primary_producer.inbox_checksum    = req.value("inbox_checksum", "");
     // zmq_identity stamped below after `identity` is in scope.
     entry.producers.push_back(std::move(primary_producer));
     // HEP-CORE-0021: ZMQ endpoint registry (broker records peer endpoint for discovery).
     entry.data_transport        = req.value("data_transport", std::string{"shm"});
     entry.zmq_node_endpoint     = req.value("zmq_node_endpoint", "");
-    entry.inbox_endpoint        = req.value("inbox_endpoint", "");
-    entry.inbox_schema_json     = req.value("inbox_schema_json", "");
-    entry.inbox_packing         = req.value("inbox_packing", "");
-    entry.inbox_checksum        = req.value("inbox_checksum", "");
 
     // HEP-0021 §16: reject registration if inbox_endpoint has unresolved port 0.
-    if (!entry.inbox_endpoint.empty())
+    if (!entry.producers.front().inbox_endpoint.empty())
     {
-        auto inbox_ep = pylabhub::validate_tcp_endpoint(entry.inbox_endpoint);
+        auto inbox_ep = pylabhub::validate_tcp_endpoint(
+            entry.producers.front().inbox_endpoint);
         if (inbox_ep.ok() && inbox_ep.port == 0)
         {
             LOGGER_WARN("Broker: REG_REQ for '{}' rejected — inbox_endpoint '{}' has port 0",
-                        channel_name, entry.inbox_endpoint);
+                        channel_name, entry.producers.front().inbox_endpoint);
             return make_error(corr_id, "INVALID_INBOX_ENDPOINT",
-                              "inbox_endpoint '" + entry.inbox_endpoint +
+                              "inbox_endpoint '" + entry.producers.front().inbox_endpoint +
                                   "' has unresolved port 0");
         }
     }
@@ -1347,11 +1349,15 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // bytewise (tag = hash[0..7]).
     //
     // Backward compat: REG_REQs without `inbox_packing` skip this block;
-    // inbox metadata is still stored on `entry` but no SchemaRecord
-    // exists for it.
-    if (!entry.inbox_endpoint.empty() &&
-        !entry.inbox_schema_json.empty() &&
-        !entry.inbox_packing.empty() &&
+    // inbox metadata is still stored on `entry.producers.front()` but no
+    // SchemaRecord exists for it.
+    //
+    // Inbox info lives on ProducerEntry (HEP-CORE-0023 §2.1.1 + §2.6 +
+    // HEP-CORE-0027) — read from the ProducerEntry we just built.
+    const auto &p_inbox = entry.producers.front();
+    if (!p_inbox.inbox_endpoint.empty() &&
+        !p_inbox.inbox_schema_json.empty() &&
+        !p_inbox.inbox_packing.empty() &&
         !role_uid.empty())
     {
         // Reject invalid packing strings up-front — mirrors the queue-layer
@@ -1359,13 +1365,13 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         // this, the broker would compute a canonical form with a bogus
         // packing string and persist it, but no inbox queue could later
         // bind/connect against it.
-        if (entry.inbox_packing != "aligned" && entry.inbox_packing != "packed")
+        if (p_inbox.inbox_packing != "aligned" && p_inbox.inbox_packing != "packed")
         {
             LOGGER_WARN("Broker: REG_REQ for '{}' rejected — inbox_packing '{}' "
                         "must be 'aligned' or 'packed'",
-                        channel_name, entry.inbox_packing);
+                        channel_name, p_inbox.inbox_packing);
             return make_error(corr_id, "INVALID_INBOX_PACKING",
-                              "inbox_packing '" + entry.inbox_packing +
+                              "inbox_packing '" + p_inbox.inbox_packing +
                                   "' must be 'aligned' or 'packed'");
         }
 
@@ -1373,7 +1379,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         std::string canonical;
         try
         {
-            const auto schema_arr = nlohmann::json::parse(entry.inbox_schema_json);
+            const auto schema_arr = nlohmann::json::parse(p_inbox.inbox_schema_json);
             if (!schema_arr.is_array())
                 throw std::runtime_error("inbox_schema_json is not an array");
             canonical.reserve(schema_arr.size() * 16 + 16);
@@ -1395,15 +1401,15 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
                               std::string("inbox_schema_json parse error: ") + ex.what());
         }
         canonical += "|pack:";
-        canonical += entry.inbox_packing;
+        canonical += p_inbox.inbox_packing;
 
         pylabhub::schema::SchemaRecord rec;
         rec.owner_uid = role_uid;
         rec.schema_id = "inbox";
         rec.hash      = pylabhub::crypto::compute_blake2b_array(
             canonical.data(), canonical.size());
-        rec.packing   = entry.inbox_packing;
-        rec.blds      = entry.inbox_schema_json;
+        rec.packing   = p_inbox.inbox_packing;
+        rec.blds      = p_inbox.inbox_schema_json;
 
         using O = pylabhub::schema::SchemaRegOutcome;
         const auto outcome = hub_state_->_on_schema_registered(rec);
@@ -2045,14 +2051,19 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
     if (endpoint_type == "inbox")
     {
         // Inbox endpoints must be resolved before REG_REQ — runtime update is not
-        // supported. If the inbox port is 0, that's a registration bug, not an
-        // update scenario.
-        auto inbox_check = pylabhub::validate_tcp_endpoint(entry->inbox_endpoint);
-        if (inbox_check.ok() && inbox_check.port == 0)
+        // supported.  If any producer's inbox port is 0, that's a registration
+        // bug, not an update scenario.  HEP-CORE-0023 §2.1.1 + HEP-CORE-0027:
+        // inbox lives per-ProducerEntry; scan each.
+        for (const auto &prod : entry->producers)
         {
-            LOGGER_ERROR("Broker: ENDPOINT_UPDATE_REQ for '{}' inbox — current port is 0; "
-                         "inbox endpoint should be resolved before registration",
-                         channel_name);
+            if (prod.inbox_endpoint.empty()) continue;
+            auto inbox_check = pylabhub::validate_tcp_endpoint(prod.inbox_endpoint);
+            if (inbox_check.ok() && inbox_check.port == 0)
+            {
+                LOGGER_ERROR("Broker: ENDPOINT_UPDATE_REQ for '{}' inbox (producer '{}') — "
+                             "current port is 0; inbox endpoint should be resolved before "
+                             "registration", channel_name, prod.role_uid);
+            }
         }
         LOGGER_WARN("Broker: ENDPOINT_UPDATE_REQ for '{}' inbox rejected — "
                     "inbox endpoint update is not supported; "
@@ -2888,23 +2899,25 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
     }
 
     // Search for a channel where `uid` is a registered producer
-    // (HEP-CORE-0023 §2.1.1 multi-producer aware).
+    // (HEP-CORE-0023 §2.1.1 multi-producer aware).  Inbox info lives
+    // per-ProducerEntry (HEP-CORE-0027) — read from the matched producer.
     const auto snap = hub_state_->snapshot();
     for (const auto& [name, entry] : snap.channels)
     {
-        if (entry.find_producer(uid) != nullptr)
+        const auto *prod = entry.find_producer(uid);
+        if (prod != nullptr)
         {
             nlohmann::json resp;
-            resp["found"]           = !entry.inbox_endpoint.empty();
+            resp["found"]           = !prod->inbox_endpoint.empty();
             resp["channel"]         = name;
-            resp["inbox_endpoint"]  = entry.inbox_endpoint;
-            resp["inbox_packing"]   = entry.inbox_packing;
-            resp["inbox_checksum"]  = entry.inbox_checksum;
-            if (!entry.inbox_schema_json.empty())
+            resp["inbox_endpoint"]  = prod->inbox_endpoint;
+            resp["inbox_packing"]   = prod->inbox_packing;
+            resp["inbox_checksum"]  = prod->inbox_checksum;
+            if (!prod->inbox_schema_json.empty())
             {
                 try
                 {
-                    resp["inbox_schema"] = nlohmann::json::parse(entry.inbox_schema_json);
+                    resp["inbox_schema"] = nlohmann::json::parse(prod->inbox_schema_json);
                 }
                 catch (const nlohmann::json::exception &je)
                 {
@@ -2915,9 +2928,9 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
                     // returning an empty schema (which the consumer
                     // would happily use, masking the corruption).
                     LOGGER_WARN("Broker: stored inbox_schema_json for "
-                                "channel '{}' is malformed: {}; "
+                                "channel '{}' producer '{}' is malformed: {}; "
                                 "returning empty array",
-                                name, je.what());
+                                name, uid, je.what());
                     resp["inbox_schema"] = nlohmann::json::array();
                 }
             }
@@ -2928,7 +2941,7 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
             if (!corr_id.empty())
                 resp["correlation_id"] = corr_id;
             LOGGER_DEBUG("Broker: ROLE_INFO_REQ uid='{}' found on '{}', inbox='{}'",
-                         uid, name, entry.inbox_endpoint);
+                         uid, name, prod->inbox_endpoint);
             return resp;
         }
     }

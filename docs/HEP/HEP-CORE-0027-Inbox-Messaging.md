@@ -75,7 +75,7 @@ Role A (sender)                          Role B (receiver)
 |-----------|-------------|
 | Data queue (SHM/ZMQ) | Orthogonal. Inbox is a separate ZMQ channel. Both can be active simultaneously. |
 | BrokerRequestComm | Discovery only.  Routes ROLE_INFO_REQ to broker; not involved in inbox data flow.  Per HEP-CORE-0033 §18, the lookup is a Class B fall-through across all the asker's hub connections. |
-| Broker | Metadata storage only.  Stores `inbox_endpoint` + schema fields per-presence (from REG_REQ / CONSUMER_REG_REQ — see §4.1); serves via ROLE_INFO_REQ.  Not in the inbox data path. |
+| Broker | Metadata storage only.  Stores `inbox_endpoint` + schema fields per-presence — on `ChannelEntry.producers[i]` for producers and on the `ConsumerEntry` row for consumers (NOT channel-wide; supports Fan-In where each producer has its own inbox).  Populated from REG_REQ / CONSUMER_REG_REQ (§4.1); served via ROLE_INFO_REQ.  Not in the inbox data path. |
 | RoleHostCore | Owns the InboxQueue (one per role) + the inbox cache for outbound `InboxClient`s.  Inbox metrics serialised through the RoleHostCore metrics pipeline (HEP-CORE-0019 §5.4). |
 
 ---
@@ -144,12 +144,16 @@ The DEALER/ROUTER envelope uses ZMQ's built-in identity routing:
    inbox_checksum.  Same `inbox_endpoint` string is sent in every
    presence's payload — there is one InboxQueue per role, regardless
    of how many hubs the role registers with.
-7. Broker stores the metadata once per presence:
-     - producer-presence registration → ChannelEntry.inbox_*  (per channel)
-     - consumer-presence registration → ConsumerEntry.inbox_* (per channel)
-   For dual-hub processor, this means in_hub holds the ConsumerEntry copy
-   (under in_channel) and out_hub holds the ChannelEntry copy (under
-   out_channel) — both with identical inbox_endpoint strings.
+7. Broker stores the metadata once **per producer-presence / per consumer-presence** —
+   inbox lives on the party row, NOT on the channel:
+     - producer-presence registration → `ChannelEntry.producers[i].inbox_*`
+     - consumer-presence registration → `ConsumerEntry.inbox_*`
+   For Fan-In (multi-producer) channels each `ProducerEntry` carries its own
+   inbox fields; a second producer joining the channel does NOT overwrite the
+   first one's inbox.  For dual-hub processor, this means in_hub holds the
+   ConsumerEntry copy (under in_channel) and out_hub holds the producer-row
+   copy on the corresponding `ChannelEntry.producers[*]` (under out_channel) —
+   both with identical inbox_endpoint strings.
 8. inbox_thread_ started: loop { recv_one() → invoke_on_inbox() → send_ack() }
 ```
 
@@ -485,7 +489,7 @@ elif ack == 255:
 - **HEP-CORE-0019 §2.3**: Per-presence heartbeat protocol (Phase 6) — inbox metadata flows on every presence's registration as part of the same per-presence model
 - **HEP-CORE-0019 §5.4**: Metrics serialization architecture
 - **HEP-CORE-0023 §2.5.2**: Per-presence heartbeat contract — explains the "every presence registers on its hub" pattern that §4.1 relies on
-- **HEP-CORE-0033 §8**: HubState entry types — `ChannelEntry.inbox_*` and `ConsumerEntry.inbox_*` are where per-presence inbox metadata lives broker-side
+- **HEP-CORE-0033 §8**: HubState entry types — broker-side inbox metadata lives on `ChannelEntry.producers[i].inbox_*` (per-producer) and `ConsumerEntry.inbox_*` (per-consumer); **not** at channel scope.  This per-party placement is required for Fan-In: each producer on a multi-producer channel keeps its own inbox endpoint.
 - **HEP-CORE-0033 §18**: Broker message routing classes — ROLE_INFO_REQ is Class B (role-bound, fall-through query)
 - **HEP-CORE-0033 §19**: Multi-presence roles — defines presence list + per-hub registration that drives §4.1's per-presence advertisement
 - **HEP-CORE-0015 §4, §6.4** (SUPERSEDED — see HEP-CORE-0033 §19): historical processor inbox config fields + InboxHandle API

@@ -141,6 +141,11 @@ struct ConsumerEntry
 /// Producer attached to a channel.  Parallel shape to ConsumerEntry —
 /// channels admit 1..N producers per HEP-CORE-0023 §2.1.1 (ZMQ
 /// Fan-In; SHM stays single-producer by physical constraint).
+///
+/// Each producer carries its own inbox (HEP-CORE-0027): the endpoint
+/// other roles send to in order to reach THIS producer.  Inbox info is
+/// per-producer, not channel-wide, so that multi-producer channels
+/// preserve each producer's distinct inbox routing.
 struct ProducerEntry
 {
     uint64_t    producer_pid{0};
@@ -149,6 +154,12 @@ struct ProducerEntry
 
     std::string role_name;
     std::string role_uid;
+
+    // Inbox (HEP-CORE-0027) — symmetric with ConsumerEntry's inbox_*.
+    std::string inbox_endpoint;
+    std::string inbox_schema_json;
+    std::string inbox_packing;  ///< "aligned" | "packed"
+    std::string inbox_checksum; ///< "enforced" | "manual" | "none"
 
     std::chrono::system_clock::time_point connected_at{
         std::chrono::system_clock::now()};
@@ -186,10 +197,11 @@ struct ChannelEntry
     std::string    data_transport{"shm"};
     std::string    zmq_node_endpoint;
 
-    std::string    inbox_endpoint;
-    std::string    inbox_schema_json;
-    std::string    inbox_packing;
-    std::string    inbox_checksum;
+    // Inbox info is per-producer (HEP-CORE-0023 §2.1.1 + HEP-CORE-0027);
+    // see ProducerEntry.inbox_*.  Removed from ChannelEntry 2026-05-10
+    // as part of Wave M2 MP2 because multi-producer channels need
+    // distinct inbox routing per producer — the prior channel-wide
+    // scalar fields would have silently overwritten on second REG_REQ.
 
     std::chrono::system_clock::time_point created_at{
         std::chrono::system_clock::now()};
