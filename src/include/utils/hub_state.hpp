@@ -714,6 +714,64 @@ struct RolePresence
     std::chrono::system_clock::time_point metrics_collected_at{};
 };
 
+// ─── Wave M3 — RoleEntry controlled-access API result types ─────────────
+//
+// Per `docs/tech_draft/M3_role_entry_controlled_access.md` §3 (locked
+// 2026-05-11).  Mirrors the M2.5 pattern at role/presence scope:
+// presence admission is purely additive (no re-add), FSM transitions
+// go through typed methods, and `_set_role_disconnected` becomes
+// terminal cleanup (the `disconnected_fired` memoization PATCH retires
+// by construction — decision #3).
+
+enum class AddPresenceResult
+{
+    Created,              ///< Appended a new RolePresence row.
+    RejectedDuplicate,    ///< A presence for `(channel, role_type)` already
+                          ///< exists.  Same-tuple re-add is bookkeeping
+                          ///< residue — admission refused.  Caller path
+                          ///< depends on context; this surface is purely
+                          ///< data-structure consistency.
+};
+
+/// Coarse transition outcome from RoleEntry FSM-transition methods.
+/// Mirrors HEP-CORE-0023 §2.1 state machine.  Callers that need finer-
+/// grained "prev_state" detail use the richer `HeartbeatEffect` return
+/// type (heartbeat-only — counters depend on prev_state).
+enum class TransitionEffect
+{
+    NoChange,        ///< Presence not found, or already in target state.
+    Refreshed,       ///< last_heartbeat updated; no FSM transition.
+    NewlyConnected,  ///< First heartbeat seen, or recovery from Pending
+                     ///< or Disconnected — caller reads `prev_state` on
+                     ///< the result struct for counter decisions.
+    ToPending,       ///< Connected → Pending (heartbeat timeout).
+    ToDisconnected,  ///< Pending → Disconnected (pending timeout) or
+                     ///< Connected → Disconnected (DEREG / forced).
+};
+
+/// Rich return for `RoleEntry::on_heartbeat`.  Callers that need
+/// `prev_state` (e.g., to bump `pending_to_ready_total` only on a
+/// Pending→Connected recovery) read it from here directly.  The
+/// post-mutation presence state is always Connected when
+/// `presence_found` is true (heartbeats unconditionally transition
+/// to Connected per HEP-CORE-0023 §2.1).
+struct HeartbeatEffect
+{
+    bool      presence_found{false};
+    RoleState prev_state{RoleState::Disconnected};
+    bool      was_first_heartbeat_seen{false};  ///< Before this heartbeat.
+
+    /// Coarse classification for callers that only need the enum.
+    TransitionEffect to_transition_effect() const noexcept
+    {
+        if (!presence_found) return TransitionEffect::NoChange;
+        // First-heartbeat OR recovery from non-Connected.
+        if (!was_first_heartbeat_seen) return TransitionEffect::NewlyConnected;
+        if (prev_state != RoleState::Connected) return TransitionEffect::NewlyConnected;
+        return TransitionEffect::Refreshed;
+    }
+};
+
 /// Registered role (plh_role process). Independent of channel membership.
 struct RoleEntry
 {
@@ -785,6 +843,134 @@ struct RoleEntry
         for (const auto &p : presences)
             if (p.state != RoleState::Disconnected) return true;
         return false;
+    }
+
+    // ── Wave M3 controlled-access API (additive step 1, 2026-05-11) ──
+    //
+    // Additive: methods that callers should migrate to over Wave M3
+    // steps 2-5.  Existing helpers (find_presence, any_presence_alive,
+    // upsert_presence_row_locked) stay; existing direct field-mutation
+    // paths in hub_state.cpp also stay until the migration steps.
+    // See `docs/tech_draft/M3_role_entry_controlled_access.md`.
+
+    /// Strict additive presence admission.  Same-(channel, role_type)
+    /// re-add returns `RejectedDuplicate` — a duplicate row would be
+    /// bookkeeping residue (M2.5 §6.2 strict-uid policy applied at
+    /// presence scope).  Caller maintains the `channels` cache
+    /// invariant (decision #1, 2026-05-11): on `Created`, append
+    /// the channel to `channels` if not already present.
+    AddPresenceResult add_presence(std::string channel_,
+                                    std::string role_type_,
+                                    RolePresence **out = nullptr)
+    {
+        if (find_presence(channel_, role_type_) != nullptr)
+            return AddPresenceResult::RejectedDuplicate;
+        RolePresence p;
+        p.channel              = std::move(channel_);
+        p.role_type            = std::move(role_type_);
+        p.state                = RoleState::Connected;
+        p.first_heartbeat_seen = false;
+        p.last_heartbeat       = std::chrono::steady_clock::now();
+        p.state_since          = p.last_heartbeat;
+        presences.push_back(std::move(p));
+        if (out != nullptr) *out = &presences.back();
+        return AddPresenceResult::Created;
+    }
+
+    /// Remove a presence row.  Returns true iff erased.  Caller
+    /// maintains `channels` cache: drop the channel from `channels`
+    /// when no other presence references it (decision #1).
+    bool remove_presence(std::string_view channel_,
+                          std::string_view role_type_) noexcept
+    {
+        for (auto it = presences.begin(); it != presences.end(); ++it)
+        {
+            if (it->channel == channel_ && it->role_type == role_type_)
+            {
+                presences.erase(it);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Heartbeat handler.  Updates last_heartbeat + first_heartbeat_seen;
+    /// transitions FSM to Connected if not already; returns a rich
+    /// `HeartbeatEffect` so callers can inspect `prev_state` for counter
+    /// decisions (e.g., `pending_to_ready_total` on Pending → Connected).
+    /// Mutating only the matched (channel, role_type) presence — never
+    /// touches sibling rows.  Per HEP-CORE-0023 §2.5.2.
+    HeartbeatEffect on_heartbeat(std::string_view channel_,
+                                  std::string_view role_type_,
+                                  std::chrono::steady_clock::time_point when)
+    {
+        HeartbeatEffect r;
+        for (auto &p : presences)
+        {
+            if (p.channel != channel_ || p.role_type != role_type_) continue;
+            r.presence_found            = true;
+            r.prev_state                = p.state;
+            r.was_first_heartbeat_seen  = p.first_heartbeat_seen;
+            p.last_heartbeat            = when;
+            p.first_heartbeat_seen      = true;
+            if (p.state != RoleState::Connected)
+            {
+                p.state       = RoleState::Connected;
+                p.state_since = when;
+            }
+            return r;
+        }
+        return r;  // presence_found == false
+    }
+
+    /// Heartbeat-timeout handler.  Connected → Pending only; any other
+    /// state is a no-op.  Per HEP-CORE-0023 §2.1 first-pass demotion.
+    TransitionEffect on_heartbeat_timeout(std::string_view channel_,
+                                           std::string_view role_type_) noexcept
+    {
+        for (auto &p : presences)
+        {
+            if (p.channel != channel_ || p.role_type != role_type_) continue;
+            if (p.state != RoleState::Connected) return TransitionEffect::NoChange;
+            p.state       = RoleState::Pending;
+            p.state_since = std::chrono::steady_clock::now();
+            return TransitionEffect::ToPending;
+        }
+        return TransitionEffect::NoChange;
+    }
+
+    /// Pending-timeout handler.  Pending → Disconnected only; any other
+    /// state is a no-op.  Per HEP-CORE-0023 §2.1 second-pass terminal
+    /// transition.  Channel teardown is HubState's responsibility — this
+    /// method only flips the FSM bit on this presence row.
+    TransitionEffect on_pending_timeout(std::string_view channel_,
+                                         std::string_view role_type_) noexcept
+    {
+        for (auto &p : presences)
+        {
+            if (p.channel != channel_ || p.role_type != role_type_) continue;
+            if (p.state != RoleState::Pending) return TransitionEffect::NoChange;
+            p.state       = RoleState::Disconnected;
+            p.state_since = std::chrono::steady_clock::now();
+            return TransitionEffect::ToDisconnected;
+        }
+        return TransitionEffect::NoChange;
+    }
+
+    /// DEREG / voluntary-disconnect handler.  Any-state → Disconnected
+    /// (no-op if already Disconnected).  Per HEP-CORE-0023 §2.1.
+    TransitionEffect on_dereg(std::string_view channel_,
+                               std::string_view role_type_) noexcept
+    {
+        for (auto &p : presences)
+        {
+            if (p.channel != channel_ || p.role_type != role_type_) continue;
+            if (p.state == RoleState::Disconnected) return TransitionEffect::NoChange;
+            p.state       = RoleState::Disconnected;
+            p.state_since = std::chrono::steady_clock::now();
+            return TransitionEffect::ToDisconnected;
+        }
+        return TransitionEffect::NoChange;
     }
 };
 
