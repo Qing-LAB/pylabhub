@@ -77,7 +77,7 @@ category.
 |---|---|---|
 | `inbox_endpoint` / `inbox_schema_json` / `inbox_packing` / `inbox_checksum` | Already moved to `ProducerEntry` in `91bd657`. | Done. |
 | `zmq_node_endpoint` | HEP-CORE-0021 endpoint registry — each Fan-In producer publishes from its own endpoint. Currently scalar on `ChannelEntry`. | **Move to `ProducerEntry`**. ENDPOINT_UPDATE_REQ keys by `(channel, role_uid)`. |
-| `metadata` | Producer-supplied free-form JSON; intent ambiguous. | **Open design decision** — see §6. |
+| `metadata` | Producer-supplied free-form JSON.  Decided 2026-05-10: per-producer (§6.1). | **Move to `ProducerEntry`** as `metadata` (nlohmann::json).  Wire shape on DISC_REQ_ACK: tree keyed by producer `role_uid` — see §6.1. |
 | `zmq_data_endpoint` / `zmq_ctrl_endpoint` / `zmq_pubkey` | Dead — hard-coded placeholder values in `role_reg_payload.hpp`. | **Delete** the channel-level fields. If revived later, add to `ProducerEntry` from the start. |
 
 ## 4. Field classification — `RoleEntry` / `RolePresence`
@@ -150,6 +150,12 @@ bool set_producer_inbox(std::string_view uid,
                         std::string endpoint, std::string schema_json,
                         std::string packing,  std::string checksum);
 bool set_producer_zmq_node_endpoint(std::string_view uid, std::string endpoint);
+bool set_producer_metadata(std::string_view uid, nlohmann::json blob);
+
+// Read accessors for metadata (§6.1 decision — per-producer storage + tree
+// aggregation on the channel-level read path):
+const nlohmann::json* producer_metadata(std::string_view uid) const noexcept;
+nlohmann::json        aggregate_metadata_tree() const;  // { "<uid>": blob, ... }
 
 // Per-consumer:
 bool upsert_consumer(ConsumerEntry c);   // dedup by role_uid/pid (existing semantics)
@@ -187,12 +193,41 @@ bool try_consume_disconnect_event() noexcept;
 
 ## 6. Open design decisions (must lock before code)
 
-1. **`metadata` classification.** Channel-wide invariant (set once, all
-   producers must agree) or per-producer (each producer carries its
-   own blob)? Current callers: only DISC_REQ_ACK echoes it. Lean:
-   per-producer; rationale: the blob is producer-supplied and there is
-   no consumer of "channel-wide metadata" today, so per-producer is
-   safer and matches Fan-In intent.
+1. **`metadata` classification.**  **DECIDED 2026-05-10 — per-producer.**
+   Rationale (user directive): the JSON shape means producers can publish
+   orthogonal metadata blobs, and the channel API must organise them under
+   each producer's key so a consumer sees the full set in one place.
+
+   **Storage:** `ProducerEntry.metadata` (nlohmann::json, default `null`).
+   Set via `set_producer_metadata(uid, blob)` from REG_REQ.
+
+   **Wire shape on DISC_REQ_ACK** (channel-level read path —
+   `aggregate_metadata_tree()`):
+   ```json
+   {
+     "metadata": {
+       "<producer_role_uid_1>": { ... producer 1's blob ... },
+       "<producer_role_uid_2>": { ... producer 2's blob ... }
+     }
+   }
+   ```
+   A producer that did not supply metadata is omitted from the tree (its
+   key is absent — not present-as-`null`).  An empty tree is `{}`, never
+   `null`, so consumers can rely on the field being an object.
+
+   **HEP work owed (M2.5 step 8):** update HEP-CORE-0007 §12.4 to spell
+   out the tree shape; mark the old "free-form object at channel scope"
+   wording as superseded.  This is a wire-shape change to DISC_REQ_ACK;
+   it is free in practice because no producer-side or consumer-side
+   caller currently uses the field (verified 2026-05-10 — only the
+   broker writes/echoes it).
+
+   **Same-producer restart:** if a producer with the same `role_uid`
+   re-registers with a different metadata blob, that producer's slot in
+   the tree is replaced (consistent with the same-uid restart policy
+   decided in §6.2).  This is **not** a Cat-1 invariant violation —
+   metadata is per-producer, so two producers (different uids) on the
+   same channel may disagree without rejection.
 
 2. **Same-uid restart vs idempotent.** When a producer with the same
    `role_uid` re-registers, do we (a) replace its `ProducerEntry`
