@@ -892,6 +892,72 @@ HubState::_on_producer_added(const std::string&         channel_name,
     return result;
 }
 
+// Wave M2.5 step 4 — additive producer-drop op.  See
+// `docs/tech_draft/controlled_access_api_design.md` §7 step 4 +
+// HEP-CORE-0023 §2.1.1 atomic teardown rule.
+RemoveProducerResult
+HubState::_on_producer_dropped(const std::string& channel_name,
+                                const std::string& role_uid,
+                                ChannelCloseReason reason)
+{
+    RemoveProducerResult result{false, false};
+
+    // Identifier validation at the op-entry boundary.
+    if (!is_valid_identifier(channel_name, IdentifierKind::Channel) ||
+        !is_valid_identifier(role_uid,    IdentifierKind::RoleUid))
+    {
+        bump_invalid_identifier(*pImpl);
+        return result;
+    }
+
+    bool is_last_producer = false;
+    {
+        std::unique_lock lk(pImpl->mu);
+        auto             it = pImpl->channels.find(channel_name);
+        if (it == pImpl->channels.end()) return result;  // removed=false
+
+        // Probe before mutating: is the uid registered, and is it the
+        // LAST producer on this channel?  This ordering matters for
+        // the cascade eviction in `_on_channel_closed`: that function
+        // captures `producer_uids` by reading the channel's
+        // `producers[]` list to evict each owner's schemas (HEP-
+        // CORE-0034 §7.2).  If we removed the producer FIRST and then
+        // called `_on_channel_closed`, the producers list would be
+        // empty and no schemas would be evicted.  Two cases:
+        //
+        //  - Non-last (>=2 producers remain): remove now; channel
+        //    survives; return.
+        //  - Last (this drop empties the channel): leave the producer
+        //    in the list and call `_on_channel_closed` below, which
+        //    captures the uid + runs the schema cascade + erases the
+        //    channel record (including the lingering producer).
+        if (it->second.find_producer(role_uid) == nullptr) return result;
+        is_last_producer = (it->second.producer_count() == 1);
+        if (!is_last_producer)
+        {
+            auto rm = it->second.remove_producer(role_uid);
+            result.removed             = rm.removed;
+            result.channel_now_empty   = false;  // by construction
+            return result;
+        }
+        // Last-producer path: fall through to _on_channel_closed
+        // (after lock release).  The producer stays in producers[]
+        // until then so the cascade can see it.
+    }
+
+    // Last-producer path: atomic teardown per HEP-CORE-0023 §2.1.1.
+    // `_on_channel_closed` re-takes the writer lock; reads producers[]
+    // (with our uid still admitted); runs the schema-record cascade
+    // (HEP-CORE-0034 §7.2); fires `ch_closed` handler; erases the
+    // channel record.  Producer-presence row on RoleEntry stays until
+    // heartbeat-timeout / DEREG of the presence (Wave M3 routes this
+    // through the RoleEntry controlled-access API).
+    _on_channel_closed(channel_name, reason);
+    result.removed           = true;
+    result.channel_now_empty = true;
+    return result;
+}
+
 void HubState::_on_channel_closed(const std::string &name, ChannelCloseReason why)
 {
     if (!is_valid_identifier(name, IdentifierKind::Channel))

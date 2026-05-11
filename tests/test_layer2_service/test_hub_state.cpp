@@ -1861,6 +1861,155 @@ TEST(HubStateProducerAdmission, SameUidRedo_Rejected_UidConflict)
     EXPECT_EQ(ch->find_producer("prod.camA.uid00000001")->producer_pid, 1001u);
 }
 
+// ─── Wave M2.5 step 4 — _on_producer_dropped admission op ──────────
+//
+// Pin the contract that DEREG of one producer on a multi-producer
+// channel leaves the channel alive iff other producers remain.  Only
+// the LAST producer's leave triggers atomic teardown (HEP-CORE-0023
+// §2.1.1).  See controlled_access_api_design.md §7 step 4.
+
+TEST(HubStateProducerDrop, NotFound_ChannelMissing_NoStateMutation)
+{
+    HubState s;
+    auto r = HubStateTestAccess::on_producer_dropped(
+        s, "ch.nonexistent.test", "prod.ghost.uid00000001",
+        ChannelCloseReason::VoluntaryDereg);
+    EXPECT_FALSE(r.removed);
+    EXPECT_FALSE(r.channel_now_empty);
+}
+
+TEST(HubStateProducerDrop, NotFound_UidMissingOnChannel_NoStateMutation)
+{
+    HubState s;
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.fanin.drop-missing",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.camA.uid00000001", 1001))
+                  .producer_result,
+              AddProducerResult::Created);
+
+    auto r = HubStateTestAccess::on_producer_dropped(
+        s, "ch.fanin.drop-missing", "prod.ghost.uid00000099",
+        ChannelCloseReason::VoluntaryDereg);
+    EXPECT_FALSE(r.removed);
+    EXPECT_FALSE(r.channel_now_empty);
+
+    // Channel and the original producer still present.
+    auto ch = s.channel("ch.fanin.drop-missing");
+    ASSERT_TRUE(ch.has_value());
+    EXPECT_EQ(ch->producer_count(), 1u);
+    EXPECT_NE(ch->find_producer("prod.camA.uid00000001"), nullptr);
+}
+
+TEST(HubStateProducerDrop, NonLastProducer_DropLeavesChannelAlive_NoCloseFired)
+{
+    // Two producers on a Fan-In channel; drop A.  Channel must
+    // survive (channel_now_empty=false) AND the ch_closed handler
+    // must NOT fire (atomic teardown is reserved for last-producer-
+    // leave per HEP-CORE-0023 §2.1.1).
+    HubState s;
+    int closed_count = 0;
+    s.subscribe_channel_closed([&](const std::string&) { ++closed_count; });
+
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.fanin.drop-keep",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.camA.uid00000001", 1001))
+                  .producer_result,
+              AddProducerResult::Created);
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.fanin.drop-keep",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.camB.uid00000002", 1002))
+                  .producer_result,
+              AddProducerResult::Created);
+    ASSERT_EQ(closed_count, 0);
+
+    auto r = HubStateTestAccess::on_producer_dropped(
+        s, "ch.fanin.drop-keep", "prod.camA.uid00000001",
+        ChannelCloseReason::VoluntaryDereg);
+    EXPECT_TRUE(r.removed);
+    EXPECT_FALSE(r.channel_now_empty);
+    EXPECT_EQ(closed_count, 0) << "ch_closed must NOT fire when producers remain";
+
+    auto ch = s.channel("ch.fanin.drop-keep");
+    ASSERT_TRUE(ch.has_value());
+    EXPECT_EQ(ch->producer_count(), 1u);
+    EXPECT_EQ(ch->find_producer("prod.camA.uid00000001"), nullptr);
+    EXPECT_NE(ch->find_producer("prod.camB.uid00000002"), nullptr);
+}
+
+TEST(HubStateProducerDrop, LastProducer_DropTearsChannelDown_FiresClose)
+{
+    // Atomic teardown contract: the LAST producer's drop fires the
+    // close cascade — channel record is gone after the call.
+    HubState s;
+    std::vector<std::string> closed;
+    s.subscribe_channel_closed(
+        [&](const std::string &name) { closed.push_back(name); });
+
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.fanin.drop-last",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.camA.uid00000001", 1001))
+                  .producer_result,
+              AddProducerResult::Created);
+
+    auto r = HubStateTestAccess::on_producer_dropped(
+        s, "ch.fanin.drop-last", "prod.camA.uid00000001",
+        ChannelCloseReason::VoluntaryDereg);
+    EXPECT_TRUE(r.removed);
+    EXPECT_TRUE(r.channel_now_empty);
+
+    // ch_closed fires; channel record is gone.
+    EXPECT_EQ(closed, (std::vector<std::string>{"ch.fanin.drop-last"}));
+    EXPECT_FALSE(s.channel("ch.fanin.drop-last").has_value());
+}
+
+TEST(HubStateProducerDrop, ChannelClose_FiresOncePerCloseEvent)
+{
+    // Two-producer setup, drop A then B.  ch_closed must fire EXACTLY
+    // ONCE (on the second drop — the last producer's leave).  No
+    // partial fire on the first drop, no double-fire after the close.
+    HubState s;
+    std::vector<std::string> closed;
+    s.subscribe_channel_closed(
+        [&](const std::string &name) { closed.push_back(name); });
+
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.fanin.drop-sequence",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.camA.uid00000001", 1001))
+                  .producer_result,
+              AddProducerResult::Created);
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.fanin.drop-sequence",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.camB.uid00000002", 1002))
+                  .producer_result,
+              AddProducerResult::Created);
+
+    auto r1 = HubStateTestAccess::on_producer_dropped(
+        s, "ch.fanin.drop-sequence", "prod.camA.uid00000001",
+        ChannelCloseReason::VoluntaryDereg);
+    EXPECT_TRUE(r1.removed);
+    EXPECT_FALSE(r1.channel_now_empty);
+    EXPECT_EQ(closed.size(), 0u);
+
+    auto r2 = HubStateTestAccess::on_producer_dropped(
+        s, "ch.fanin.drop-sequence", "prod.camB.uid00000002",
+        ChannelCloseReason::VoluntaryDereg);
+    EXPECT_TRUE(r2.removed);
+    EXPECT_TRUE(r2.channel_now_empty);
+    EXPECT_EQ(closed, (std::vector<std::string>{"ch.fanin.drop-sequence"}));
+}
+
 TEST(HubStateProducerAdmission, SecondProducer_ShmChannel_RejectedShmCardinality)
 {
     HubState s;

@@ -1137,6 +1137,34 @@ class PYLABHUB_UTILS_EXPORT HubState
                        ChannelTransportInvariants        transport,
                        ProducerEntry                     producer);
 
+    /// Wave M2.5 step 4 controlled-access DEREG_REQ / producer-drop
+    /// entry point.  Replaces `_on_channel_closed`-as-DEREG-handler:
+    /// removes the matching `ProducerEntry` from
+    /// `ChannelEntry.producers[]` and fires `_on_channel_closed`
+    /// ONLY when the last producer leaves (HEP-CORE-0023 §2.1.1
+    /// atomic teardown).
+    ///
+    /// Returns the typed `RemoveProducerResult` so the caller can:
+    /// - `removed == false` → producer not found; surface
+    ///   `NOT_REGISTERED` wire error (no state mutation).
+    /// - `removed == true && !channel_now_empty` → producer dropped,
+    ///   channel survives.  Caller should NOT fan-out
+    ///   CHANNEL_CLOSING_NOTIFY (channel is still alive); may
+    ///   optionally notify peer producers that producer X left.
+    /// - `removed == true && channel_now_empty` → last producer
+    ///   dropped, channel torn down.  Caller fan-out
+    ///   CHANNEL_CLOSING_NOTIFY + on_channel_closed for federation
+    ///   relay.  Implementation has already fired
+    ///   `_on_channel_closed` internally; the channel record is
+    ///   gone from `pImpl->channels` on return.
+    ///
+    /// Pre-conditions: writer lock taken internally.  Channel-mismatch
+    /// validation done by the op-entry boundary; `reason` is logged.
+    RemoveProducerResult
+    _on_producer_dropped(const std::string&    channel_name,
+                          const std::string&    role_uid,
+                          ChannelCloseReason    reason);
+
     void _on_channel_closed(const std::string &name, ChannelCloseReason why);
     void _on_consumer_joined(const std::string &channel, ConsumerEntry consumer);
     void _on_consumer_left(const std::string &channel, const std::string &role_uid);

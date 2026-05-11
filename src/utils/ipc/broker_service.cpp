@@ -1689,20 +1689,29 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
 
     const uint64_t producer_pid = req.value("producer_pid", uint64_t{0});
 
-    // HubState is the sole channel store.  Apply the deregister
-    // NOT_REGISTERED gate: channel must exist AND producer_pid must
-    // match one of the channel's admitted producers (rejecting
-    // cross-producer deregister requests).  HEP-CORE-0023 §2.1.1 —
-    // multi-producer channels may have several producers; DEREG_REQ
-    // targets the one whose pid matches.
+    // Wave M2.5 step 4: resolve which producer the DEREG_REQ targets
+    // by matching `producer_pid` against the channel's admitted
+    // producers (the wire still carries pid only; per-presence
+    // role_uid migration is HEP-CORE-0021 §16.3 step 5 territory).
+    //
+    // HEP-CORE-0023 §2.1.1 + atomic-teardown contract: removing one
+    // producer leaves the channel alive iff other producers remain;
+    // channel teardown fires only when the LAST producer leaves.
+    // The new `_on_producer_dropped` op encapsulates this contract.
     auto entry = hub_state_->channel(channel_name);
-    bool pid_matches = false;
+    std::string target_role_uid;
     if (entry.has_value())
     {
         for (const auto &prod : entry->producers)
-            if (prod.producer_pid == producer_pid) { pid_matches = true; break; }
+        {
+            if (prod.producer_pid == producer_pid)
+            {
+                target_role_uid = prod.role_uid;
+                break;
+            }
+        }
     }
-    if (!entry.has_value() || !pid_matches)
+    if (!entry.has_value() || target_role_uid.empty())
     {
         LOGGER_WARN("Broker: DEREG_REQ failed for channel '{}' (pid={})", channel_name,
                     producer_pid);
@@ -1710,18 +1719,56 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
                           "Channel '" + channel_name + "' not registered or pid mismatch");
     }
 
-    // Notify consumers BEFORE removing the entry so the consumer list is still intact.
-    send_closing_notify(socket, channel_name, *entry, "producer_deregistered");
-    on_channel_closed(socket, channel_name, *entry, "producer_deregistered");
+    // Capture the channel state (with the to-be-dropped producer
+    // still admitted) so we can fan-out CHANNEL_CLOSING_NOTIFY to
+    // every party iff this is the LAST producer's leave.  The
+    // snapshot is from before the drop; `_on_producer_dropped`
+    // tells us whether the channel was torn down or not.
+    const pylabhub::hub::ChannelEntry pre_drop = *entry;
 
-    // Producer voluntarily closed the channel — HubState authoritative remove.
-    hub_state_->_on_channel_closed(channel_name,
-                                  pylabhub::hub::ChannelCloseReason::VoluntaryDereg);
+    auto drop = hub_state_->_on_producer_dropped(
+        channel_name, target_role_uid,
+        pylabhub::hub::ChannelCloseReason::VoluntaryDereg);
 
-    // Remove accumulated metrics so the store doesn't grow unboundedly.
-    metrics_store_.erase(channel_name);
+    if (!drop.removed)
+    {
+        // Should not happen — we just resolved a matching producer
+        // before the call.  Race condition (presence already reaped
+        // between resolve and drop) → treat as NOT_REGISTERED.
+        LOGGER_WARN("Broker: DEREG_REQ for '{}' uid='{}' lost the race "
+                    "(producer no longer admitted)", channel_name, target_role_uid);
+        return make_error(corr_id, "NOT_REGISTERED",
+                          "Channel '" + channel_name +
+                              "' producer no longer admitted (race)");
+    }
 
-    LOGGER_INFO("Broker: deregistered channel '{}'", channel_name);
+    if (drop.channel_now_empty)
+    {
+        // Last producer's leave — atomic channel teardown per
+        // HEP-CORE-0023 §2.1.1.  Notify consumers + federation peers
+        // BEFORE the channel record is gone (we use the captured
+        // pre_drop snapshot for the fan-out target list — channels
+        // map already has the channel erased by _on_producer_dropped).
+        send_closing_notify(socket, channel_name, pre_drop, "producer_deregistered");
+        on_channel_closed(socket, channel_name, pre_drop, "producer_deregistered");
+
+        // Remove accumulated metrics so the store doesn't grow unboundedly.
+        metrics_store_.erase(channel_name);
+        LOGGER_INFO("Broker: deregistered channel '{}' (last producer left — channel torn down)",
+                    channel_name);
+    }
+    else
+    {
+        // Multi-producer channel survives: producer X left, the rest
+        // continue.  No CHANNEL_CLOSING_NOTIFY (channel is still
+        // alive).  Metrics for the channel stay (other producers'
+        // metrics still accumulate).
+        LOGGER_INFO("Broker: deregistered producer uid='{}' on channel '{}' "
+                    "({} producer(s) remain — channel survives)",
+                    target_role_uid, channel_name,
+                    static_cast<uint32_t>(pre_drop.producer_count() - 1));
+    }
+
     nlohmann::json resp;
     resp["status"]  = "success";
     resp["message"] = "Producer deregistered successfully";

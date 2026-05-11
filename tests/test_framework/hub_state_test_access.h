@@ -119,6 +119,17 @@ struct HubStateTestAccess
                                      std::move(transport),
                                      std::move(producer));
     }
+    /// Wave M2.5 step 4 — additive DEREG_REQ / producer-drop entry
+    /// point.  Tests drive multi-producer drop scenarios through this
+    /// forwarder; the production DEREG_REQ handler routes the same way.
+    static RemoveProducerResult
+    on_producer_dropped(HubState&             s,
+                         const std::string&    channel_name,
+                         const std::string&    role_uid,
+                         ChannelCloseReason    reason)
+    {
+        return s._on_producer_dropped(channel_name, role_uid, reason);
+    }
     static void on_channel_closed(HubState &s, const std::string &n,
                                   ChannelCloseReason why)
     {
