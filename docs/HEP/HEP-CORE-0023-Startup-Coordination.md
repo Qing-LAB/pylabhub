@@ -110,6 +110,27 @@ per **presence** — a processor with `(uid, "producer")` and
 | Missed heartbeats for `effective_pending_timeout` | Pending | Disconnected | bump `pending_to_disconnected_total`; **if `role_type == producer`**: fan-out `CHANNEL_CLOSING_NOTIFY`(reason=`pending_timeout`) **to all remaining channel members** and remove `ChannelEntry` **if no other producer-presence remains alive on this channel** (§2.1.1); remove presence from `RoleEntry` (or whole `RoleEntry` if last presence) |
 | `DEREG_REQ` accepted | Connected/Pending | Disconnected | bump `voluntary_disconnect_total`; **if `role_type == producer`**: fan-out `CHANNEL_CLOSING_NOTIFY`(reason=`voluntary_close`) and remove `ChannelEntry` **if no other producer-presence remains alive on this channel** (§2.1.1); remove presence |
 
+**Wave M3 transition primitives (2026-05-11).** The transitions in
+the table above are implemented on `RoleEntry` as the controlled-
+access mutators added in M3 step 1 (commit `3cf5074`); HubState ops
+route through them rather than poking presence fields directly:
+
+| Transition | RoleEntry method | Returns |
+|---|---|---|
+| Connected ↔ Connected (refresh) / Pending → Connected (recovery) / first heartbeat | `on_heartbeat(channel, role_type, when)` | `HeartbeatEffect { presence_found, prev_state, was_first_heartbeat_seen }` — caller reads `prev_state` to bump `pending_to_ready_total` only on Pending→Connected. |
+| Connected → Pending | `on_heartbeat_timeout(channel, role_type)` | `TransitionEffect::ToPending` (or `NoChange` if not Connected) |
+| Pending → Disconnected | `on_pending_timeout(channel, role_type)` | `TransitionEffect::ToDisconnected` (or `NoChange` if not Pending) |
+| Any → Disconnected (DEREG / forced) | `on_dereg(channel, role_type)` | `TransitionEffect::ToDisconnected` (or `NoChange` if already Disconnected) |
+
+`_set_role_disconnected(uid)` is the role-lifetime trigger
+(typically called when `any_presence_alive() == false` becomes
+true).  Per Wave M3 step 4, this op is now **terminal cleanup**:
+it runs the schema-cascade eviction (HEP-CORE-0034 §7.2) and
+ERASES the `RoleEntry` from `HubState.roles`.  Subscribers
+to `role_disconnected` receive the uid by value; the entry is
+already gone by the time the handler runs (do not attempt
+`HubState::role(uid)` from inside the handler).
+
 **No channel-side grace or FORCE_SHUTDOWN.**  The role's
 `pending_miss_heartbeats` window IS the grace.  Once the **last**
 producer-role-presence on a channel reaches `Disconnected`, the
