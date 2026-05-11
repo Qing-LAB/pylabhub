@@ -82,11 +82,8 @@ struct HubStateTestAccess
     {
         s._set_shm_block(std::move(r));
     }
-    static void set_channel_zmq_node_endpoint(
-        HubState &s, const std::string &name, std::string endpoint)
-    {
-        s._set_channel_zmq_node_endpoint(name, std::move(endpoint));
-    }
+    // set_channel_zmq_node_endpoint retired Wave M2.5 step 6.5 — use
+    // `set_producer_zmq_node_endpoint(uid, ...)` instead.
     static void bump_counter(HubState &s, const std::string &k, uint64_t n = 1)
     {
         s._bump_counter(k, n);

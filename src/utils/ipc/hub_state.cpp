@@ -523,24 +523,6 @@ void HubState::_set_peer_disconnected(const std::string &hub_uid)
     for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->peer_disc)) h(hub_uid);
 }
 
-void HubState::_set_channel_zmq_node_endpoint(const std::string &name,
-                                              std::string        endpoint)
-{
-    // Wave M2.5 step 5 — this op is now a thin shim over the
-    // per-producer op (the channel-scope concept is retired).  Targets
-    // the FIRST producer for backwards compat with any caller not yet
-    // migrated to `_set_producer_zmq_node_endpoint`.  The broker's
-    // ENDPOINT_UPDATE_REQ handler routes directly to the per-producer
-    // op via the sender's resolved role_uid.
-    std::unique_lock lk(pImpl->mu);
-    auto             it = pImpl->channels.find(name);
-    if (it == pImpl->channels.end()) return;
-    if (auto *p = it->second.first_producer())
-    {
-        p->zmq_node_endpoint = std::move(endpoint);
-    }
-}
-
 bool HubState::_set_producer_zmq_node_endpoint(const std::string &channel_name,
                                                 const std::string &role_uid,
                                                 std::string        endpoint)
@@ -739,7 +721,12 @@ void HubState::_on_channel_registered(ChannelEntry entry)
     const std::string producer_uid    = entry.producers.empty()
                                            ? std::string{}
                                            : entry.producers.front().role_uid;
-    const std::string producer_pubkey = entry.zmq_pubkey;
+    // Wave M2.5 step 6.5: pubkey lives on ProducerEntry, not channel-
+    // scope.  Read from the first producer (test-only legacy path
+    // accepts one producer per call).
+    const std::string producer_pubkey = entry.producers.empty()
+                                           ? std::string{}
+                                           : entry.producers.front().zmq_pubkey;
     const bool        has_shm         = entry.has_shared_memory;
     const std::string shm_name        = entry.shm_name;
 
