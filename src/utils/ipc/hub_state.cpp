@@ -398,57 +398,50 @@ void HubState::_set_role_registered(RoleEntry entry)
 
 void HubState::_set_role_disconnected(const std::string &uid)
 {
+    // Wave M3 step 4 (2026-05-11): TERMINAL CLEANUP.
+    //
+    // Per design decision #3, the role-entry erase IS the memoization:
+    // a second call to this function finds no entry and returns
+    // without firing — no `disconnected_fired` flag needed.
+    //
+    // Schema cascade (HEP-CORE-0034 §7.2 — hub-globals immune,
+    // owned-by-uid records evicted on owner Disconnected) runs
+    // BEFORE erase so it can capture the uid.  Per design decision
+    // #2, this firing path co-exists with the per-producer cascade
+    // already firing from `_on_channel_closed`; eviction is
+    // idempotent (second iteration on an already-gone record is a
+    // no-op).
+    //
+    // Handler fires AFTER lock release.  Subscribers receive the
+    // uid by value — they MUST NOT attempt to look up the entry
+    // through `HubState::role(uid)` from inside the handler; the
+    // entry is already gone by the time the handler runs.
     bool        fire           = false;
     std::size_t schemas_evicted = 0;
     {
         std::unique_lock lk(pImpl->mu);
         auto             it = pImpl->roles.find(uid);
-        if (it == pImpl->roles.end()) return;
-        // 🚧 PATCH (2026-05-10) — uses `disconnected_fired` memoization.
-        // Full fix pending in Wave M3 (RoleEntry API; unified
-        // `_dispatch_role_disconnected_if_dead` helper).  See
-        // `docs/TODO_MASTER.md` "Wave M2".
-        //
-        // Idempotency: fire role_disconnected exactly once per
-        // (registration → disconnect) cycle.  Memoized on
-        // `RoleEntry::disconnected_fired`; cleared by revival paths
-        // (upsert / heartbeat).  Event-emit memoization, not a duplicate
-        // FSM state — `any_presence_alive()` remains the source of truth
-        // for liveness.
-        //
-        // Mark all presences Disconnected (the FSM expression of "this
-        // role is gone"); then, on the first call only, evict the
-        // owner's schemas (HEP-CORE-0034 §7.2 — schemas evict
-        // atomically with role transition to Disconnected; hub-globals
-        // never touched here) and fire role_disconnected.  Schemas-
-        // already-gone is a no-op; the second-call early-return avoids
-        // a redundant handler invocation.
-        for (auto &p : it->second.presences)
+        if (it == pImpl->roles.end()) return;  // idempotent — already gone
+        fire = true;
+        for (auto sit = pImpl->schemas.begin(); sit != pImpl->schemas.end(); )
         {
-            if (p.state != RoleState::Disconnected)
+            if (sit->first.first == uid)
             {
-                p.state       = RoleState::Disconnected;
-                p.state_since = std::chrono::steady_clock::now();
+                sit = pImpl->schemas.erase(sit);
+                ++schemas_evicted;
+            }
+            else
+            {
+                ++sit;
             }
         }
-        if (!it->second.disconnected_fired)
-        {
-            it->second.disconnected_fired = true;
-            fire                          = true;
-            for (auto sit = pImpl->schemas.begin(); sit != pImpl->schemas.end(); )
-            {
-                if (sit->first.first == uid)
-                {
-                    sit = pImpl->schemas.erase(sit);
-                    ++schemas_evicted;
-                }
-                else
-                {
-                    ++sit;
-                }
-            }
-            pImpl->counters.schema_evicted_total += schemas_evicted;
-        }
+        pImpl->counters.schema_evicted_total += schemas_evicted;
+        // Erase the role entry.  No need to walk presences and mark
+        // them Disconnected first — the snapshot view they
+        // contributed to before this call is preserved; readers that
+        // query AFTER this call observe no entry, which is the
+        // correct post-disconnect state.
+        pImpl->roles.erase(it);
     }
     if (!fire) return;
     for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_disc)) h(uid);
@@ -653,12 +646,13 @@ RoleEntry upsert_role_locked(Impl &impl, const std::string &uid,
         ex.channels.push_back(added_channel);
     }
     upsert_presence_row_locked(ex, added_channel, role_type, heartbeat_when);
-    // 🚧 PATCH (2026-05-10) — full fix pending in Wave M3 (RoleEntry API).
-    // Revival: the role is being re-touched (REG_REQ, CONSUMER_REG_REQ,
-    // or band-join after a prior disconnect).  Reset the event-emit
-    // memoization so a future disconnect can fire `role_disconnected`
-    // again.
-    ex.disconnected_fired = false;
+    // `disconnected_fired` reset retired by Wave M3 step 4
+    // (commit forthcoming).  Terminal cleanup of `_set_role_disconnected`
+    // means a "revival" path through this function would only fire
+    // if `it != impl.roles.end()` — which itself requires that the
+    // role had NOT been fully disconnected (any_presence_alive was
+    // still true).  So no memoization reset is needed; the field is
+    // gone.
     return ex;
 }
 
@@ -1132,14 +1126,14 @@ void HubState::_on_heartbeat(const std::string                   &channel,
         // Recovery from Pending counts as pending_to_ready (HEP-0023 §2.5).
         if (eff.prev_state == RoleState::Pending)
             ++pImpl->counters.pending_to_ready_total;
-        // 🚧 PATCH (2026-05-10) — retired in Wave M3 step 4 (terminal
-        // cleanup makes the memoization structural).  Revival: clear
-        // the role's role_disconnected-already-fired memoization so a
-        // future disconnect can re-emit.  Only do this when the
-        // presence transitioned out of non-Connected (matches
-        // pre-M3-step-2 behavior).
-        if (eff.prev_state != RoleState::Connected)
-            rit->second.disconnected_fired = false;
+        // `disconnected_fired` memoization retired by Wave M3 step 4
+        // (commit forthcoming).  Terminal cleanup of
+        // `_set_role_disconnected` means that if the role had been
+        // fully disconnected, the entry would be GONE — _on_heartbeat
+        // would have already returned via `rit == roles.end()` above.
+        // Reaching this point implies the role entry is still alive
+        // (at least one presence was non-Disconnected when the disc
+        // op last ran), so no memoization reset is needed.
 
         // Metrics write — still a direct presence-row mutation.
         // (M3 step-2 scope is FSM-only.  A future

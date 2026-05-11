@@ -791,28 +791,12 @@ struct RoleEntry
     /// and metrics live here; nothing is duplicated at the role level.
     std::vector<RolePresence> presences;
 
-    /// 🚧 PATCH (2026-05-10) — stopgap; full fix pending in Wave M3 (RoleEntry controlled-access API).
-    ///
-    /// Event-emit memoization: has `role_disconnected` already fired for
-    /// this role since it was registered (or last revived)?  Set by the
-    /// disconnect cascade after a successful emit; cleared whenever a
-    /// fresh presence is added / an existing presence transitions back
-    /// to Connected.  Idempotency contract for `_set_role_disconnected`
-    /// and the unified cascade (HEP-CORE-0023 §2.1).  NOT a duplicate
-    /// FSM state — `any_presence_alive()` remains the source of truth
-    /// for whether the role is currently live.
-    ///
-    /// **Why this is a patch:** M1.2 deleted `RoleEntry.state` (the
-    /// pre-sweep idempotency gate); the per-presence FSM is the source
-    /// of truth for liveness, but "has the role_disconnected event
-    /// already been emitted?" is a separate concern that the deleted
-    /// `state` field also tracked.  M2 MP3 (`_dispatch_role_disconnected_if_dead`
-    /// helper called from every cascade path) will own this exclusively;
-    /// the right home for the memoization (this flag vs. an
-    /// `HubState::Impl`-level set vs. caller-supplied "was-alive" signal)
-    /// is locked in MP3.  Until MP3 lands, this flag is the temporary
-    /// home — see `docs/TODO_MASTER.md` "Wave M2".
-    bool disconnected_fired{false};
+    // `disconnected_fired` PATCH retired by Wave M3 step 4 (2026-05-11).
+    // Per design decision #3: terminal-erase of `RoleEntry` on
+    // last-presence-Disconnected IS the memoization.  A second call
+    // to `_set_role_disconnected` finds no entry to re-fire from —
+    // the structural invariant replaces the flag.  See
+    // `docs/tech_draft/M3_role_entry_controlled_access.md` §6.
 
     /// Find the presence row matching `(channel, role_type)`.  Returns
     /// nullptr if not found.  Linear scan — `presences` is small

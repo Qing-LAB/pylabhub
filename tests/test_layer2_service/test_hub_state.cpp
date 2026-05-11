@@ -252,11 +252,14 @@ TEST(HubStateSkeleton, RoleRegistered_FiresAndStored)
     EXPECT_EQ(r->uid, "prod.r1.test");
 }
 
-TEST(HubStateSkeleton, RoleDisconnected_FiresOnceUntilNewRegistration)
+TEST(HubStateSkeleton, RoleDisconnected_FiresOnceThenEntryGone)
 {
-    // _set_role_disconnected marks every presence row Disconnected and
-    // fires the role_disconnected handler.  Calling it twice in a row is
-    // idempotent (no second fire).
+    // Wave M3 step 4 contract (2026-05-11): _set_role_disconnected is
+    // TERMINAL cleanup — fires the role_disconnected handler exactly
+    // once and ERASES the RoleEntry from pImpl->roles.  Second call
+    // finds no entry and returns without firing (idempotent by
+    // construction — the entry being gone IS the memoization,
+    // retiring the previous `disconnected_fired` PATCH).
     HubState s;
     HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
 
@@ -266,15 +269,18 @@ TEST(HubStateSkeleton, RoleDisconnected_FiresOnceUntilNewRegistration)
         ++fired;
     });
 
+    // Role + presence row exist before disconnect.
+    ASSERT_TRUE(s.role("prod.main.test").has_value());
+
     HubStateTestAccess::set_role_disconnected(s, "prod.main.test");
     HubStateTestAccess::set_role_disconnected(s, "prod.main.test");
     EXPECT_EQ(fired, 1);
 
-    // Producer-presence is now Disconnected.
+    // Role entry is now ERASED.  Snapshot lookup returns nullopt;
+    // find_producer_in returns nullptr (no role in snap.roles).
+    EXPECT_FALSE(s.role("prod.main.test").has_value());
     auto snap = s.snapshot();
-    const auto *p = find_producer_in(snap, "ch1", "prod.main.test");
-    ASSERT_NE(p, nullptr);
-    EXPECT_EQ(p->state, RoleState::Disconnected);
+    EXPECT_EQ(find_producer_in(snap, "ch1", "prod.main.test"), nullptr);
 }
 
 // ─── Bands ──────────────────────────────────────────────────────────────────
