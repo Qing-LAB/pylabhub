@@ -1055,105 +1055,81 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         return *err;
     }
 
-    pylabhub::hub::ChannelEntry entry;
-    entry.name                  = channel_name;
-    entry.shm_name              = req.value("shm_name", "");
-    entry.schema_hash           = attempted_schema;
-    entry.schema_version        = req.value("schema_version", uint32_t{0});
-    entry.has_shared_memory     = req.value("has_shared_memory", false);
-    entry.pattern               = channel_pattern_from_str(req.value("channel_pattern", "PubSub"));
-    // zmq_ctrl_endpoint / zmq_data_endpoint REG_REQ fields retired in
-    // Wave M2.5 step 2c (dead placeholders; never populated with real
-    // values, never read anywhere).  See REVIEW_WaveM2.5_2026-05-10.md F7.
-    entry.zmq_pubkey            = req.value("zmq_pubkey", "");
-
-    // Producer admission — HEP-CORE-0023 §2.1.1.  Today's REG_REQ admits
-    // one producer; Wave M2 MP4 will admit additional producers (ZMQ
-    // Fan-In) by appending another ProducerEntry on a same-channel +
-    // new-role-uid REG_REQ.  For now, build a single-element producers
-    // list.
+    // Wave M2.5 step 3 — build the new producer entry from the wire
+    // payload.  All per-producer attributes (inbox_*, zmq_node_endpoint,
+    // zmq_pubkey, metadata) live on `ProducerEntry`; the deprecated
+    // channel-scope versions on `ChannelEntry` are no longer written
+    // from REG_REQ.  See `docs/tech_draft/controlled_access_api_design.md`
+    // §7.5.3 + `REVIEW_WaveM2.5_2026-05-10.md` F6/F7.
     pylabhub::hub::ProducerEntry primary_producer;
     primary_producer.producer_pid      = attempted_pid;
     primary_producer.producer_hostname = req.value("producer_hostname", "");
     primary_producer.role_name         = role_name;
     primary_producer.role_uid          = role_uid;
-    // Inbox info is per-producer (HEP-CORE-0023 §2.1.1 + HEP-CORE-0027).
     primary_producer.inbox_endpoint    = req.value("inbox_endpoint", "");
     primary_producer.inbox_schema_json = req.value("inbox_schema_json", "");
     primary_producer.inbox_packing     = req.value("inbox_packing", "");
     primary_producer.inbox_checksum    = req.value("inbox_checksum", "");
-    // zmq_identity stamped below after `identity` is in scope.
-    entry.producers.push_back(std::move(primary_producer));
-    // HEP-CORE-0021: ZMQ endpoint registry (broker records peer endpoint for discovery).
-    entry.data_transport        = req.value("data_transport", std::string{"shm"});
-    entry.zmq_node_endpoint     = req.value("zmq_node_endpoint", "");
+    primary_producer.zmq_node_endpoint = req.value("zmq_node_endpoint", "");
+    primary_producer.zmq_pubkey        = req.value("zmq_pubkey", "");
+    if (req.contains("metadata") && req["metadata"].is_object())
+    {
+        primary_producer.metadata = req["metadata"];
+    }
+    // Producer ZMQ identity: captured here for future unsolicited pushes
+    // (CHANNEL_CLOSING_NOTIFY / CHANNEL_ERROR_NOTIFY etc.).
+    primary_producer.zmq_identity.assign(
+        static_cast<const char*>(identity.data()), identity.size());
 
     // HEP-0021 §16: reject registration if inbox_endpoint has unresolved port 0.
-    if (!entry.producers.front().inbox_endpoint.empty())
+    if (!primary_producer.inbox_endpoint.empty())
     {
         auto inbox_ep = pylabhub::validate_tcp_endpoint(
-            entry.producers.front().inbox_endpoint);
+            primary_producer.inbox_endpoint);
         if (inbox_ep.ok() && inbox_ep.port == 0)
         {
             LOGGER_WARN("Broker: REG_REQ for '{}' rejected — inbox_endpoint '{}' has port 0",
-                        channel_name, entry.producers.front().inbox_endpoint);
+                        channel_name, primary_producer.inbox_endpoint);
             return make_error(corr_id, "INVALID_INBOX_ENDPOINT",
-                              "inbox_endpoint '" + entry.producers.front().inbox_endpoint +
+                              "inbox_endpoint '" + primary_producer.inbox_endpoint +
                                   "' has unresolved port 0");
         }
     }
 
-    if (req.contains("metadata") && req["metadata"].is_object())
-    {
-        entry.metadata = req["metadata"];
-    }
-    // Producer ZMQ identity: captured here for future unsolicited pushes.
-    if (!entry.producers.empty())
-        entry.producers.front().zmq_identity.assign(
-            static_cast<const char*>(identity.data()), identity.size());
-    // Producer-presence is created in `_on_channel_registered` (Connected,
-    // first_heartbeat_seen=false) — channel observable starts at kRegistering.
-
     // ── Wire schema fields (HEP-CORE-0034 §10.1) ────────────────────────────
     //
     // The producer's wire `schema_blds` is the slot's HEP-0034 canonical
-    // form; copy it into the channel entry so the channel-mismatch gate
-    // below can compare prior vs new BLDS for re-registration.  Schema
-    // record creation (path B) and adoption (path C) happen in the
-    // dedicated HEP-CORE-0034 block further below; this assignment is
-    // purely the wire-field passthrough.
-    //
-    // Legacy HEP-CORE-0016 Case A (lookup-by-id against SchemaLibrary)
-    // and Case B (reverse-by-hash auto-annotation) were removed in HEP-CORE-0034
-    // Phase 4: Case A used HEP-0002 BLDS form vs HEP-0034 wire form
-    // (different by design — §2.4 I6); Case B is forbidden under
-    // namespace-by-owner (§2.4 I7).  All schema authority now routes
-    // through the HEP-CORE-0034 path B/C block (paths and storage owned
-    // by HubState — §2.4 I1+I3).
-    entry.schema_blds = req.value("schema_blds", "");
+    // form; held here so the schema-mismatch gate below can compare
+    // prior vs new BLDS for re-registration.  Schema record creation
+    // (path B) and adoption (path C) happen in the dedicated
+    // HEP-CORE-0034 block further below.
+    const std::string schema_blds_in = req.value("schema_blds", "");
 
-    // ── Channel-mismatch gate (audit fix — must precede schema-record
-    //    creation so a failed REG_REQ leaves no orphan records in
-    //    HubState.schemas) ────────────────────────────────────────────────
+    // ── Channel-mismatch early gate (audit fix — must precede
+    //    schema-record creation so a failed REG_REQ leaves no orphan
+    //    records in HubState.schemas) ─────────────────────────────────
     //
     // HEP-0007 Cat-1 invariant: re-registration of an existing channel
-    // with a different schema_hash is rejected.  Same hash → preserve
-    // existing consumers (producer-restart scenario).  This check used
-    // to run AFTER the schema-record creation — moved up in the
-    // Phase 3 follow-up so a NACK here cannot leave a half-baked record.
+    // with a different schema_hash is rejected.  `_on_producer_added`
+    // would also catch this as RejectedMismatch on `schema_hash`, but
+    // running the check here lets us short-circuit BEFORE creating
+    // schema records (path B/C / inbox), preventing orphans.  The
+    // other invariant mismatches (schema_version / schema_blds /
+    // schema_owner / schema_id / transport_*) are caught by
+    // `_on_producer_added` after record creation; an orphan record
+    // there is a rare anomaly the broker logs as an ERROR.
+    //
+    // CHANNEL_ERROR_NOTIFY fan-out per HEP-CORE-0007: notify every
+    // existing producer so all co-producers on this channel see the
+    // schema-mismatch event from the rejected newcomer.
     if (auto existing_opt = hub_state_->channel(channel_name); existing_opt.has_value())
     {
-        if (existing_opt->schema_hash != entry.schema_hash)
+        if (existing_opt->schema_hash != attempted_schema)
         {
-            // Cat 1: schema mismatch — invariant violation.
             const std::string &existing_schema = existing_opt->schema_hash;
             LOGGER_ERROR(
                 "Broker: Cat1 schema mismatch on '{}': existing={} attempted={} attempted_pid={}",
                 channel_name, existing_schema, attempted_schema, attempted_pid);
-            // CHANNEL_ERROR_NOTIFY fan-out per HEP-CORE-0007: notify
-            // every existing producer so all co-producers on this
-            // channel see the schema-mismatch event from the rejected
-            // newcomer.
             nlohmann::json err;
             err["channel_name"]          = channel_name;
             err["event"]                 = "schema_mismatch_attempt";
@@ -1175,9 +1151,8 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
                               "Schema hash differs from existing registration for channel '" +
                                   channel_name + "'");
         }
-        // Same schema — re-registration (producer restart).  Preserve
-        // existing consumers so they are still notified on close.
-        entry.consumers = std::move(existing_opt->consumers);
+        // Same schema — admission will append to existing producers[]
+        // via _on_producer_added; consumers are preserved automatically.
     }
 
     // ── HEP-CORE-0034 Phase 3+4b — named schema record (paths B + C) ───
@@ -1215,13 +1190,19 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     const std::string req_schema_packing = req.value("schema_packing", "");
     const std::string req_schema_id_raw  = req.value("schema_id", "");
     const std::string req_schema_owner   = req.value("schema_owner", "");
+
+    // Resolved schema_id / schema_owner for the channel invariants; set
+    // by the path B/C blocks below, or left empty for anonymous channels.
+    std::string final_schema_id;
+    std::string final_schema_owner;
+
     if (!req_schema_id_raw.empty())
     {
         if (req_schema_packing.empty())
             return make_error(corr_id, "MISSING_PACKING",
                               "REG_REQ with schema_id requires schema_packing "
                               "(HEP-CORE-0034 §10.1)");
-        if (entry.schema_blds.empty())
+        if (schema_blds_in.empty())
             return make_error(corr_id, "MISSING_BLDS",
                               "REG_REQ with schema_id requires schema_blds "
                               "(HEP-CORE-0034 §10.1)");
@@ -1240,7 +1221,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         const std::string req_flexzone_blds    = req.value("flexzone_blds", "");
         const std::string req_flexzone_packing = req.value("flexzone_packing", "");
         const auto h_recomputed = pylabhub::hub::compute_canonical_hash_from_wire(
-            entry.schema_blds, req_schema_packing,
+            schema_blds_in, req_schema_packing,
             req_flexzone_blds, req_flexzone_packing);
         const auto h_claimed = hex_to_hash_array(attempted_schema);
         if (h_recomputed != h_claimed)
@@ -1299,8 +1280,8 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
             }
             // Adoption succeeds.  Channel is owned by the hub-global,
             // not by the producer.
-            entry.schema_id    = req_schema_id_raw;
-            entry.schema_owner = "hub";
+            final_schema_id    = req_schema_id_raw;
+            final_schema_owner = "hub";
         }
         else
         {
@@ -1310,7 +1291,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
             rec.schema_id = req_schema_id_raw;
             rec.hash      = h_recomputed;
             rec.packing   = req_schema_packing;
-            rec.blds      = entry.schema_blds;
+            rec.blds      = schema_blds_in;
 
             using O = pylabhub::schema::SchemaRegOutcome;
             const auto outcome = hub_state_->_on_schema_registered(rec);
@@ -1333,8 +1314,8 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
                                       "missing required fields");
             }
             // Created or Idempotent → success.
-            entry.schema_id    = req_schema_id_raw;
-            entry.schema_owner = role_uid;
+            final_schema_id    = req_schema_id_raw;
+            final_schema_owner = role_uid;
         }
     }
 
@@ -1355,7 +1336,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     //
     // Inbox info lives on ProducerEntry (HEP-CORE-0023 §2.1.1 + §2.6 +
     // HEP-CORE-0027) — read from the ProducerEntry we just built.
-    const auto &p_inbox = entry.producers.front();
+    const auto &p_inbox = primary_producer;
     if (!p_inbox.inbox_endpoint.empty() &&
         !p_inbox.inbox_schema_json.empty() &&
         !p_inbox.inbox_packing.empty() &&
@@ -1439,9 +1420,106 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         // (per-producer/per-consumer inbox ownership).
     }
 
-    hub_state_->_on_channel_registered(std::move(entry));
+    // ── Wave M2.5 step 3: controlled-access admission ───────────────
+    //
+    // Build channel-wide invariants from the wire payload and call
+    // _on_producer_added.  The op appends `primary_producer` to the
+    // channel's `producers[]` (or opens a fresh channel if this is the
+    // first admission) and returns a typed ProducerAdmissionResult that
+    // tells us which wire error code, if any, to surface.
+    //
+    // The early Cat-1 schema_hash gate above caught the most common
+    // re-registration failure mode (with CHANNEL_ERROR_NOTIFY fan-out).
+    // Remaining reject modes are: UID_CONFLICT (uid spoof or hub-side
+    // residue), MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM (SHM cardinality),
+    // and the broader invariant-mismatch class (schema_version,
+    // schema_blds, schema_owner, schema_id, has_shared_memory,
+    // shm_name, channel_pattern, data_transport).  A reject in those
+    // remaining cases CAN leave an orphan schema record in
+    // HubState.schemas (rare anomaly); broker logs ERROR.
+    pylabhub::hub::ChannelSchemaInvariants schema_inv;
+    schema_inv.schema_hash    = attempted_schema;
+    schema_inv.schema_version = req.value("schema_version", uint32_t{0});
+    schema_inv.schema_id      = final_schema_id;
+    schema_inv.schema_blds    = schema_blds_in;
+    schema_inv.schema_owner   = final_schema_owner;
 
-    LOGGER_INFO("Broker: registered channel '{}' (pending first heartbeat)", channel_name);
+    pylabhub::hub::ChannelTransportInvariants transport_inv;
+    transport_inv.has_shared_memory = req.value("has_shared_memory", false);
+    transport_inv.shm_name          = req.value("shm_name", "");
+    transport_inv.pattern           = channel_pattern_from_str(
+        req.value("channel_pattern", "PubSub"));
+    transport_inv.data_transport    = req.value("data_transport", std::string{"shm"});
+
+    const auto admission = hub_state_->_on_producer_added(
+        channel_name,
+        std::move(schema_inv),
+        std::move(transport_inv),
+        std::move(primary_producer));
+
+    // Typed result dispatch:
+    if (admission.invariant_result ==
+        pylabhub::hub::InvariantSetResult::RejectedMismatch)
+    {
+        const auto &field = admission.mismatched_invariant;
+        // schema_* mismatches → SCHEMA_MISMATCH (the schema_hash case
+        // was already handled by the early gate above; this path
+        // catches schema_version / schema_id / schema_blds /
+        // schema_owner divergences).
+        if (field == "schema_hash" || field == "schema_version" ||
+            field == "schema_id"   || field == "schema_blds"    ||
+            field == "schema_owner")
+        {
+            LOGGER_ERROR(
+                "Broker: REG_REQ for '{}' rejected — invariant mismatch on '{}' "
+                "(schema-class).  Anomaly: orphan schema record possible.",
+                channel_name, field);
+            return make_error(corr_id, "SCHEMA_MISMATCH",
+                              "REG_REQ rejected — schema invariant '" + field +
+                                  "' differs from existing channel registration");
+        }
+        // Transport-class mismatches → TRANSPORT_MISMATCH (HEP-CORE-0007
+        // §12.4a — same code as the consumer-side transport check).
+        LOGGER_ERROR(
+            "Broker: REG_REQ for '{}' rejected — invariant mismatch on '{}' "
+            "(transport-class)", channel_name, field);
+        return make_error(corr_id, "TRANSPORT_MISMATCH",
+                          "REG_REQ rejected — transport invariant '" + field +
+                              "' differs from existing channel registration");
+    }
+    if (admission.producer_result ==
+        pylabhub::hub::AddProducerResult::RejectedUidConflict)
+    {
+        // HEP-CORE-0007 §12.4a `UID_CONFLICT` — strict reject per
+        // controlled_access_api_design.md §6.2.  Logged at ERROR
+        // because either a uid collision (effectively impossible with
+        // proper construction → indicates hub-side residue or remote
+        // spoof) or a same-uid re-register attempt.
+        LOGGER_ERROR(
+            "Broker: REG_REQ for '{}' uid='{}' rejected — UID_CONFLICT "
+            "(uid already exists in HubState; possible residue or spoof)",
+            channel_name, role_uid);
+        return make_error(corr_id, "UID_CONFLICT",
+                          "uid conflict, not trusting this connection, "
+                          "try again with clean state");
+    }
+    if (admission.producer_result ==
+        pylabhub::hub::AddProducerResult::RejectedShmCardinality)
+    {
+        // HEP-CORE-0007 §12.4a `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`.
+        LOGGER_WARN(
+            "Broker: REG_REQ for '{}' uid='{}' rejected — SHM channels are "
+            "physically single-producer (HEP-CORE-0023 §2.1.1)",
+            channel_name, role_uid);
+        return make_error(corr_id, "MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM",
+                          "Channel uses SHM transport which admits exactly "
+                          "one producer; use ZMQ transport for Fan-In");
+    }
+
+    // Created.
+    LOGGER_INFO("Broker: registered channel '{}' (pending first heartbeat){}",
+                channel_name,
+                admission.channel_opened ? " — channel opened" : " — appended to existing");
     nlohmann::json resp;
     resp["status"]     = "success";
     resp["channel_id"] = channel_name;
@@ -1542,10 +1620,25 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
     // presence->state == Connected with first_heartbeat_seen — channel
     // is Live, fall through to DISC_ACK.
 
-    // HEP-0021 §16: reject if ZMQ endpoint has unresolved port 0.
-    if (entry_ref.data_transport == "zmq" && !entry_ref.zmq_node_endpoint.empty())
+    // Resolve the first producer's per-producer fields for the
+    // transitional wire shape (Wave M2.5 step 3 — see
+    // controlled_access_api_design.md §7.5.3).  REG_REQ now writes
+    // zmq_node_endpoint / zmq_pubkey / metadata to ProducerEntry,
+    // not ChannelEntry.  DISC_REQ_ACK returns the FIRST admitted
+    // producer's endpoint + pubkey (legacy single-producer wire
+    // shape) and the aggregated tree of all producers' metadata
+    // blobs (per §6.1).  Step 5 will lift the endpoint + pubkey to
+    // per-producer arrays when ENDPOINT_UPDATE_REQ migrates.
+    const auto *first_prod = entry_ref.first_producer();
+
+    // HEP-0021 §16: reject if NO producer has a resolved endpoint.
+    // Multi-producer channels are reachable iff at least one producer
+    // is ready; here we approximate via the first-producer transitional
+    // shape (step 5 expands to the full any-ready scan).
+    if (entry_ref.data_transport == "zmq" && first_prod != nullptr &&
+        !first_prod->zmq_node_endpoint.empty())
     {
-        auto ep_check = pylabhub::validate_tcp_endpoint(entry_ref.zmq_node_endpoint);
+        auto ep_check = pylabhub::validate_tcp_endpoint(first_prod->zmq_node_endpoint);
         if (ep_check.ok() && ep_check.port == 0)
         {
             LOGGER_INFO("Broker: DISC_REQ channel '{}' ZMQ endpoint has port 0 (not ready)",
@@ -1562,18 +1655,21 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
     resp["shm_name"]          = entry_ref.shm_name;
     resp["schema_hash"]       = entry_ref.schema_hash;
     resp["schema_version"]    = entry_ref.schema_version;
-    resp["metadata"]          = entry_ref.metadata;
+    // metadata wire shape decided in §6.1: per-producer tree keyed by
+    // role_uid (HEP-CORE-0007 §12.4 commit 25dc376).
+    resp["metadata"]          = entry_ref.aggregate_metadata_tree();
     resp["consumer_count"]    =
         static_cast<uint32_t>(entry_ref.consumers.size());
     resp["has_shared_memory"] = entry_ref.has_shared_memory;
     resp["channel_pattern"]   = channel_pattern_to_str(entry_ref.pattern);
-    // zmq_ctrl_endpoint / zmq_data_endpoint DISC_REQ_ACK echoes retired
-    // in Wave M2.5 step 2c (source fields never populated with real
-    // values).  See REVIEW_WaveM2.5_2026-05-10.md F7.
-    resp["zmq_pubkey"]         = entry_ref.zmq_pubkey;
-    // HEP-CORE-0021: ZMQ endpoint registry (echo stored peer endpoint for discovery).
-    resp["data_transport"]     = entry_ref.data_transport;
-    resp["zmq_node_endpoint"]  = entry_ref.zmq_node_endpoint;
+    // zmq_ctrl_endpoint / zmq_data_endpoint retired in Wave M2.5 step 2c.
+    // zmq_pubkey + zmq_node_endpoint use first-producer transitional shape
+    // until step 5 lifts them to per-producer arrays.
+    resp["zmq_pubkey"]        = (first_prod != nullptr ? first_prod->zmq_pubkey
+                                                       : std::string{});
+    resp["data_transport"]    = entry_ref.data_transport;
+    resp["zmq_node_endpoint"] = (first_prod != nullptr ? first_prod->zmq_node_endpoint
+                                                       : std::string{});
     if (!corr_id.empty())
     {
         resp["correlation_id"] = corr_id;
@@ -1654,10 +1750,14 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
                           "Channel '" + channel_name + "' is not registered");
     }
 
-    // HEP-0021 §16: reject if ZMQ endpoint has unresolved port 0.
-    if (channel_entry->data_transport == "zmq" && !channel_entry->zmq_node_endpoint.empty())
+    // HEP-0021 §16: reject if first producer's ZMQ endpoint has unresolved
+    // port 0 (Wave M2.5 transitional — single-producer shape; step 5 expands
+    // to "any ready producer" scan per HEP-CORE-0021 §16.4).
+    const auto *cons_first_prod = channel_entry->first_producer();
+    if (channel_entry->data_transport == "zmq" && cons_first_prod != nullptr &&
+        !cons_first_prod->zmq_node_endpoint.empty())
     {
-        auto ep_check = pylabhub::validate_tcp_endpoint(channel_entry->zmq_node_endpoint);
+        auto ep_check = pylabhub::validate_tcp_endpoint(cons_first_prod->zmq_node_endpoint);
         if (ep_check.ok() && ep_check.port == 0)
         {
             LOGGER_INFO("Broker: CONSUMER_REG_REQ channel '{}' ZMQ endpoint has port 0 (not ready)",
