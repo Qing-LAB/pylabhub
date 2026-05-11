@@ -229,31 +229,118 @@ bool try_consume_disconnect_event() noexcept;
    metadata is per-producer, so two producers (different uids) on the
    same channel may disagree without rejection.
 
-2. **Same-uid restart vs idempotent.** When a producer with the same
-   `role_uid` re-registers, do we (a) replace its `ProducerEntry`
-   in-place — preserves position in `producers[]`, or (b) reject if
-   any field differs from the existing record — forces explicit
-   DEREG-then-REG. Lean: (a) restart-replace, keep current semantics.
+2. **Same-uid restart.**  **DECIDED 2026-05-10 — there should be no
+   residue, so same-uid restart should never legitimately occur.  If
+   it does, treat as a safety signal: WARN + cleanup-prior + admit.**
 
-3. **SHM physical constraint.** Should `upsert_producer` on
-   `data_transport == "shm"` channels reject the second producer with
-   `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`, or is this a broker-handler
-   concern? Lean: enforce in the API (the rule is a structural
-   invariant of SHM, not a protocol policy) — broker just surfaces
-   the result.
+   User directive: "when a role dies, its entry should be removed,
+   there is no 'residue' in principle.  If there is a residue, there
+   should be a warning — could be a safety breach so we should be
+   careful about this."
 
-4. **Cross-tag admission** (already noted in Wave M2 §"Open design
-   decisions"). Per HEP-CORE-0017 a processor's `out_channel` registers
-   as a producer; `prod.X` + `proc.Y` can both be producers of channel
-   `C`. Document explicitly in the `upsert_producer` contract.
+   **Current code (verified 2026-05-10) has the residue bug:**
+   - `_set_role_disconnected` (`hub_state.cpp:399`) marks all
+     presences `Disconnected` but **never erases the `RoleEntry`**
+     from `pImpl->roles`.  Confirmed via grep: zero `roles.erase`
+     call sites anywhere in `src/`.
+   - `upsert_role_locked` (`hub_state.cpp:619`) finds the existing
+     entry and updates in-place — the residual `Disconnected`
+     presences remain in `presences[]`.
+   - Worse, `upsert_presence_row_locked` (line 588) returns early
+     if the presence row already exists.  So same-uid re-register
+     on the same channel **leaves the presence FSM stuck in
+     `Disconnected`** — the new producer is alive but the FSM says
+     it is dead.  This is a latent bug today.
 
-5. **Test-access escape hatch.** `test::HubStateTestAccess` already
-   exists as a friend shim. Either (a) extend it with mutation helpers
-   that bypass the public API (for unit tests that need to construct
-   pathological states), or (b) require all tests to go through the
-   public API. Lean: (a) — tests need to set up "channel with
-   producer-presence Disconnected before any heartbeat" scenarios that
-   the API path won't reach cleanly.
+   **Design call for M2.5 + M3:**
+   - **M2.5** (`ChannelEntry`): `upsert_producer(uid)` finding an
+     existing `ProducerEntry` for the same uid → `LOGGER_WARN(...)`
+     + replace-in-place + return `was_restart_replace=true`.  Callers
+     (broker REG_REQ handler) propagate the warning as a diagnostic.
+   - **M3** (`RoleEntry`): `_set_role_disconnected` becomes a true
+     terminal cleanup — when the role's last presence transitions to
+     `Disconnected`, the `RoleEntry` is erased from `pImpl->roles`
+     and any cascade evictions (schemas, presence rows) run before
+     erase.  `upsert_role` finding a residual `RoleEntry` for the
+     same uid is treated as a should-not-happen condition: WARN,
+     atomic cleanup of the residual entry, then create a fresh one.
+   - **MP3 implication:** the in-flight `disconnected_fired` 🚧 PATCH
+     at `hub_state.hpp:339-360` retires naturally — once erase is
+     the terminal operation, there is no "fire-twice" risk because
+     there is no surviving entry to re-fire from.
+
+   **In practice (what same-uid restart actually means):** per
+   HEP-CORE-0033 §G2.2.0b, `role_uid = tag.name.unique` where
+   `unique` typically carries the OS pid or a timestamp.  Two
+   independent processes producing the same uid string requires
+   identical `tag` + `name` + `unique` — effectively impossible
+   unless the OS recycles a PID to the exact prior value or an
+   operator constructs uids by hand without uniqueness.  The
+   "restart" code path therefore exists only to handle the residue
+   bug — once M3 removes the residue, same-uid restart becomes a
+   genuine anomaly that warrants the warning.
+
+3. **SHM physical constraint.**  **DECIDED 2026-05-10 — enforce in
+   the API; SHM channels admit exactly one producer.**
+
+   User directive: "the SHM is special — only one producer; API
+   would not have any exposure to a second producer connecting to
+   it.  Only consumer is allowed.  Check API to confirm."
+
+   **Current code (verified 2026-05-10) does NOT enforce this:**
+   - `broker_service.cpp:1063` (REG_REQ handler) reads
+     `has_shared_memory` and `data_transport` from the payload but
+     **performs no SHM-specific producer-cardinality check**.
+     Confirmed via grep: zero matches for "shm" + "MULTI_PRODUCER" /
+     "reject" / "single" near REG_REQ handling.
+   - A second producer's REG_REQ on a SHM channel today passes the
+     schema gate (same hash) and triggers the `_set_channel_opened`
+     overwrite path described in §1 of this doc.  Protection exists
+     only at the SHM data-plane (segment ownership), not at the
+     broker control-plane.
+
+   **Design call:** `ChannelEntry::upsert_producer(p)` rejects when
+   `data_transport == "shm"` and `producers.size() >= 1` (and the
+   incoming uid is not a same-uid restart, which is handled per §6.2
+   above).  Returns a typed reject result; broker handler surfaces
+   `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM` on the wire.
+
+4. **Cross-tag admission.**  **DECIDED 2026-05-10 — allow any tag;
+   document only.**
+
+   User directive: "allow any tag, document only."  Per HEP-CORE-0017
+   a processor's `out_channel` registers as a producer; `prod.X` +
+   `proc.Y` may both be producers of channel `C`.  `upsert_producer`
+   docstring documents the rule; HEP-CORE-0017 §pipeline-architecture
+   cross-references.
+
+5. **Test-access escape hatch.**  **DECIDED 2026-05-10 — keep the
+   friend shim with documented mutation helpers.  Already satisfies
+   the user's gating constraints by file location.**
+
+   User directive: "choose option 1 to keep the friend shim, confirm
+   that this will not compile into final product when WITH_TEST is
+   set to false, and in addition, this is not exposed in public
+   header."
+
+   **Verified 2026-05-10:**
+   - `HubStateTestAccess` is defined in
+     `tests/test_framework/hub_state_test_access.h` — under
+     `tests/`, NOT under `src/include/`.  Production headers contain
+     only a forward declaration (`hub_state.hpp:563`) and the
+     `friend struct ::pylabhub::hub::test::HubStateTestAccess;`
+     line at `hub_state.hpp:640`.
+   - The forward decl is a no-op when the struct is never defined
+     in a TU (i.e., production builds that don't include the test
+     header).  The friend statement compiles harmlessly without the
+     struct being instantiated.
+   - This file layout already satisfies both constraints: the shim
+     does not link into the production library, and no production
+     header exposes its surface.
+
+   M2.5 extends the existing pattern with explicit per-API mutation
+   helpers (e.g., `force_presence_state`, `inject_orphan_role`),
+   each annotated `// test-only; production must use the public API`.
 
 ## 7. Migration plan — M2.5
 
