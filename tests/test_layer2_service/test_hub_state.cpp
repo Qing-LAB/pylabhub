@@ -1254,3 +1254,257 @@ TEST(HubStateSchemas, ValidateCitation_UnknownOwner_Rejected)
     EXPECT_EQ(out.reason, CitationOutcome::Reason::kUnknownOwner);
     EXPECT_EQ(s.counters().schema_citation_rejected_total, 1u);
 }
+
+// ─── Wave M2.5 — controlled-access API on ChannelEntry ─────────────────────
+//
+// These tests pin the contract laid out in
+// docs/tech_draft/controlled_access_api_design.md §5.1 + §6.  They are
+// the FIRST tests in this codebase to exercise multi-producer
+// admission — the pre-M2 scalar producer fields made it structurally
+// impossible to write such a test, so the entire overwrite-class bug
+// family was hidden by absence.  Until step 3 migrates the broker
+// REG_REQ handler to use these methods, the tests drive the API
+// directly on a `ChannelEntry` instance — no HubState plumbing
+// involved, so the tests are pure API contracts.
+
+namespace
+{
+using pylabhub::hub::AddConsumerResult;
+using pylabhub::hub::AddProducerResult;
+using pylabhub::hub::RemoveProducerResult;
+
+ProducerEntry make_producer(const std::string &uid, uint64_t pid)
+{
+    ProducerEntry p;
+    p.role_uid       = uid;
+    p.role_name      = uid + "-name";
+    p.producer_pid   = pid;
+    return p;
+}
+} // namespace
+
+TEST(ChannelEntryApi, AddProducer_FirstSucceeds)
+{
+    ChannelEntry ch;
+    ch.name = "ch.camera.test";
+    ch.data_transport = "zmq";
+
+    auto r = ch.add_producer(make_producer("prod.camA.uid00000001", 1001));
+    EXPECT_EQ(r, AddProducerResult::Created);
+    EXPECT_EQ(ch.producer_count(), 1u);
+    ASSERT_NE(ch.find_producer("prod.camA.uid00000001"), nullptr);
+}
+
+TEST(ChannelEntryApi, AddProducer_SameUidRejected_NoStateMutation)
+{
+    // §6.2 contract: same-uid is rejected with RejectedUidConflict
+    // regardless of whether the existing entry is active or
+    // stale-residue.  The reject path must NOT mutate any state on
+    // ChannelEntry (no overwrite, no append, no inbox/metadata
+    // change).
+    ChannelEntry ch;
+    ch.name = "ch.camera.test";
+    ch.data_transport = "zmq";
+
+    ProducerEntry first  = make_producer("prod.camA.uid00000001", 1001);
+    first.inbox_endpoint  = "tcp://10.0.0.1:9001";
+    first.zmq_node_endpoint = "tcp://10.0.0.1:5001";
+    ASSERT_EQ(ch.add_producer(first), AddProducerResult::Created);
+
+    ProducerEntry collision = make_producer("prod.camA.uid00000001", 9999);
+    collision.inbox_endpoint    = "tcp://10.0.0.2:9999";  // different — must NOT overwrite
+    collision.zmq_node_endpoint = "tcp://10.0.0.2:5999";  // different — must NOT overwrite
+
+    auto r = ch.add_producer(std::move(collision));
+    EXPECT_EQ(r, AddProducerResult::RejectedUidConflict);
+
+    // State unchanged after reject:
+    ASSERT_EQ(ch.producer_count(), 1u);
+    const auto *p = ch.find_producer("prod.camA.uid00000001");
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(p->producer_pid,       1001u);
+    EXPECT_EQ(p->inbox_endpoint,     "tcp://10.0.0.1:9001");
+    EXPECT_EQ(p->zmq_node_endpoint,  "tcp://10.0.0.1:5001");
+}
+
+TEST(ChannelEntryApi, AddProducer_TwoDistinctUidsOnZmqChannel_BothLive_IndependentFields)
+{
+    // The CONTRACT LOCK: a Fan-In channel admits two distinct
+    // producers; each keeps its own data-plane endpoint, inbox
+    // metadata, and metadata blob.  Pre-M2.5 the scalar
+    // ChannelEntry fields silently overwrote on the second
+    // registration; this test fails on that legacy behaviour and
+    // passes on the new API.
+    ChannelEntry ch;
+    ch.name = "ch.camera.fanin";
+    ch.data_transport = "zmq";
+
+    ProducerEntry a = make_producer("prod.camA.uid00000001", 1001);
+    a.zmq_node_endpoint = "tcp://10.0.0.1:5001";
+    a.inbox_endpoint    = "tcp://10.0.0.1:9001";
+    a.metadata          = nlohmann::json::object({{"camera", "A"}, {"serial", "SN-001"}});
+
+    ProducerEntry b = make_producer("prod.camB.uid00000002", 1002);
+    b.zmq_node_endpoint = "tcp://10.0.0.2:5002";
+    b.inbox_endpoint    = "tcp://10.0.0.2:9002";
+    b.metadata          = nlohmann::json::object({{"camera", "B"}, {"serial", "SN-002"}});
+
+    ASSERT_EQ(ch.add_producer(std::move(a)), AddProducerResult::Created);
+    ASSERT_EQ(ch.add_producer(std::move(b)), AddProducerResult::Created);
+    ASSERT_EQ(ch.producer_count(), 2u);
+
+    const auto *pa = ch.find_producer("prod.camA.uid00000001");
+    const auto *pb = ch.find_producer("prod.camB.uid00000002");
+    ASSERT_NE(pa, nullptr);
+    ASSERT_NE(pb, nullptr);
+
+    EXPECT_EQ(pa->zmq_node_endpoint, "tcp://10.0.0.1:5001");
+    EXPECT_EQ(pb->zmq_node_endpoint, "tcp://10.0.0.2:5002");
+    EXPECT_EQ(pa->inbox_endpoint,    "tcp://10.0.0.1:9001");
+    EXPECT_EQ(pb->inbox_endpoint,    "tcp://10.0.0.2:9002");
+    EXPECT_EQ(pa->metadata.at("serial").get<std::string>(), "SN-001");
+    EXPECT_EQ(pb->metadata.at("serial").get<std::string>(), "SN-002");
+}
+
+TEST(ChannelEntryApi, AddProducer_ShmCardinality_SecondRejected)
+{
+    // §6.3 contract: SHM channels admit exactly one producer; the
+    // second add_producer must reject with RejectedShmCardinality,
+    // even when the uid is distinct (the SHM physical constraint is
+    // separate from the same-uid rule).
+    ChannelEntry ch;
+    ch.name = "ch.thermo.shm";
+    ch.data_transport = "shm";
+
+    ASSERT_EQ(ch.add_producer(make_producer("prod.thermoA.uid00000003", 3001)),
+              AddProducerResult::Created);
+
+    auto r = ch.add_producer(make_producer("prod.thermoB.uid00000004", 3002));
+    EXPECT_EQ(r, AddProducerResult::RejectedShmCardinality);
+    EXPECT_EQ(ch.producer_count(), 1u);
+    EXPECT_NE(ch.find_producer("prod.thermoA.uid00000003"), nullptr);
+    EXPECT_EQ(ch.find_producer("prod.thermoB.uid00000004"), nullptr);
+}
+
+TEST(ChannelEntryApi, AddConsumer_SameUidRejected_NoStateMutation)
+{
+    ChannelEntry ch;
+    ch.name = "ch.viewer.test";
+    ch.data_transport = "zmq";
+
+    ConsumerEntry first = make_consumer("cons.view1.uid00000010");
+    first.inbox_endpoint = "tcp://10.0.1.1:8001";
+    ASSERT_EQ(ch.add_consumer(std::move(first)), AddConsumerResult::Created);
+
+    ConsumerEntry collision = make_consumer("cons.view1.uid00000010");
+    collision.inbox_endpoint = "tcp://10.0.1.2:8002";  // must NOT overwrite
+
+    auto r = ch.add_consumer(std::move(collision));
+    EXPECT_EQ(r, AddConsumerResult::RejectedUidConflict);
+    ASSERT_EQ(ch.consumer_count(), 1u);
+    EXPECT_EQ(ch.find_consumer("cons.view1.uid00000010")->inbox_endpoint,
+              "tcp://10.0.1.1:8001");
+}
+
+TEST(ChannelEntryApi, RemoveProducer_TracksChannelEmpty)
+{
+    // Atomic teardown (HEP-CORE-0023 §2.1.1) hinges on remove_producer
+    // returning channel_now_empty so the caller can drop the channel
+    // only when the last producer leaves.
+    ChannelEntry ch;
+    ch.name = "ch.camera.fanin";
+    ch.data_transport = "zmq";
+    ASSERT_EQ(ch.add_producer(make_producer("prod.camA.uid00000001", 1001)),
+              AddProducerResult::Created);
+    ASSERT_EQ(ch.add_producer(make_producer("prod.camB.uid00000002", 1002)),
+              AddProducerResult::Created);
+
+    auto r = ch.remove_producer("prod.camA.uid00000001");
+    EXPECT_TRUE(r.removed);
+    EXPECT_FALSE(r.channel_now_empty);
+    EXPECT_EQ(ch.producer_count(), 1u);
+
+    auto r2 = ch.remove_producer("prod.camB.uid00000002");
+    EXPECT_TRUE(r2.removed);
+    EXPECT_TRUE(r2.channel_now_empty);
+    EXPECT_EQ(ch.producer_count(), 0u);
+
+    // Removing a non-present uid is a no-op; channel_now_empty
+    // reflects the current state (empty), but `removed` is false.
+    auto r3 = ch.remove_producer("prod.ghost.uid00000099");
+    EXPECT_FALSE(r3.removed);
+    EXPECT_TRUE(r3.channel_now_empty);
+}
+
+TEST(ChannelEntryApi, AggregateMetadataTree_KeyedByProducerUid)
+{
+    // §6.1 wire-shape contract: aggregate_metadata_tree() returns
+    // a JSON object keyed by producer role_uid.  Producers with
+    // null metadata are omitted (NOT present-as-null), so consumers
+    // can rely on the result being an object whose keys map to
+    // non-null blobs.
+    ChannelEntry ch;
+    ch.name = "ch.fanin.meta";
+    ch.data_transport = "zmq";
+
+    ProducerEntry a = make_producer("prod.alpha.uid00000020", 5001);
+    a.metadata = nlohmann::json::object({{"role", "alpha"}, {"build", "2026-05-10"}});
+    ProducerEntry b = make_producer("prod.beta.uid00000021",  5002);
+    b.metadata = nlohmann::json::object({{"role", "beta"}});
+    ProducerEntry c = make_producer("prod.gamma.uid00000022", 5003);
+    // c.metadata remains null — must be omitted from the tree.
+
+    ASSERT_EQ(ch.add_producer(std::move(a)), AddProducerResult::Created);
+    ASSERT_EQ(ch.add_producer(std::move(b)), AddProducerResult::Created);
+    ASSERT_EQ(ch.add_producer(std::move(c)), AddProducerResult::Created);
+
+    nlohmann::json tree = ch.aggregate_metadata_tree();
+    ASSERT_TRUE(tree.is_object());
+    EXPECT_EQ(tree.size(), 2u);
+    EXPECT_TRUE(tree.contains("prod.alpha.uid00000020"));
+    EXPECT_TRUE(tree.contains("prod.beta.uid00000021"));
+    EXPECT_FALSE(tree.contains("prod.gamma.uid00000022"));
+    EXPECT_EQ(tree["prod.alpha.uid00000020"]["build"].get<std::string>(),
+              "2026-05-10");
+}
+
+TEST(ChannelEntryApi, AggregateMetadataTree_Empty_ReturnsEmptyObject)
+{
+    // The contract: result is `{}`, never `null`, so consumers can
+    // rely on the field being an object.
+    ChannelEntry ch;
+    ch.name = "ch.empty.meta";
+    nlohmann::json tree = ch.aggregate_metadata_tree();
+    EXPECT_TRUE(tree.is_object());
+    EXPECT_EQ(tree.size(), 0u);
+}
+
+TEST(ChannelEntryApi, SetProducerZmqNodeEndpoint_KeyedByUid)
+{
+    // ENDPOINT_UPDATE_REQ scoping: a producer's endpoint update must
+    // not mutate any other producer's endpoint on the same channel.
+    ChannelEntry ch;
+    ch.name = "ch.camera.fanin";
+    ch.data_transport = "zmq";
+
+    ProducerEntry a = make_producer("prod.camA.uid00000001", 1001);
+    a.zmq_node_endpoint = "tcp://10.0.0.1:0";  // unresolved port
+    ProducerEntry b = make_producer("prod.camB.uid00000002", 1002);
+    b.zmq_node_endpoint = "tcp://10.0.0.2:5002";
+
+    ASSERT_EQ(ch.add_producer(std::move(a)), AddProducerResult::Created);
+    ASSERT_EQ(ch.add_producer(std::move(b)), AddProducerResult::Created);
+
+    EXPECT_TRUE(ch.set_producer_zmq_node_endpoint(
+        "prod.camA.uid00000001", "tcp://10.0.0.1:5111"));
+
+    EXPECT_EQ(ch.find_producer("prod.camA.uid00000001")->zmq_node_endpoint,
+              "tcp://10.0.0.1:5111");
+    // B's endpoint must NOT have been disturbed:
+    EXPECT_EQ(ch.find_producer("prod.camB.uid00000002")->zmq_node_endpoint,
+              "tcp://10.0.0.2:5002");
+
+    // Updating a non-present uid is a no-op (returns false).
+    EXPECT_FALSE(ch.set_producer_zmq_node_endpoint(
+        "prod.ghost.uid00000099", "tcp://10.0.0.99:5099"));
+}
