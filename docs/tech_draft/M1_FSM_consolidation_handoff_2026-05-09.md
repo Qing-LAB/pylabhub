@@ -1,5 +1,22 @@
 # M1.2 + M1.3 (and beyond) — handoff document
 
+> **NAMING CLARIFICATION (added 2026-05-11):** The labels `M1`/`M2`/`M3`
+> below refer to **Wave B** sub-phases (architectural role-side
+> refactor; see §1 Mermaid).  They are DISTINCT from the labels used
+> elsewhere in the project:
+> - **Wave M2 / MP1-MP6** = multi-producer channel bookkeeping (see
+>   `docs/TODO_MASTER.md` "Wave M2").
+> - **Wave M2.5** = controlled-access API on `ChannelEntry`
+>   (see `docs/tech_draft/controlled_access_api_design.md`).
+> - **Wave M3** = controlled-access API on `RoleEntry` (see
+>   `docs/tech_draft/M3_role_entry_controlled_access.md`).
+> - **Wave B M1-M9** (this doc) = RoleHandler skeleton + RoleAPIBase
+>   pImpl + per-role migrations + template-based role-host frame.
+>
+> When citing `M3` in this doc, mean **Wave B M3** (RoleHandler
+> skeleton).  When citing `M3` elsewhere, mean **Wave M3** (RoleEntry
+> API).  Use the full prefix in new docs and commit messages.
+
 > **Status:** Phase 4 + L3 broker test migration COMPLETE 2026-05-10;
 >   Phases 5-8 + M1.3 + M1.4 + M1.5 still pending.
 > **As of:** 2026-05-10 — Phase 4 + 4 follow-on commits landed
