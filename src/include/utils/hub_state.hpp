@@ -495,19 +495,27 @@ struct HubStateSnapshot
 /// Used by every JSON serializer that surfaces channel state on the
 /// wire (HEP-CORE-0023 §2.2 — `observable` is the protocol-defined
 /// field).
+///
+/// Templated on the roles-map type so the SAME logic serves both the
+/// snapshot path (`HubStateSnapshot::roles`) and any internal caller
+/// that needs to compute the observable while holding a writer lock
+/// over the live HubState (e.g., `_on_heartbeat` after a presence
+/// transition).  Both paths use `std::unordered_map<std::string,
+/// RoleEntry>` — the template avoids duplicating the scan logic.
+template <typename RolesMap>
 inline ChannelObservable
-observe_channel(const ChannelEntry &ch, const HubStateSnapshot &snap) noexcept
+compute_channel_observable(const ChannelEntry &ch, const RolesMap &roles) noexcept
 {
     if (ch.producers.empty()) return ChannelObservable::kAbsent;
 
-    bool any_live       = false;
+    bool any_live        = false;
     bool any_registering = false;
-    bool any_stalled    = false;
+    bool any_stalled     = false;
     for (const auto &prod : ch.producers)
     {
-        auto rit = snap.roles.find(prod.role_uid);
-        if (rit == snap.roles.end()) continue;
-        auto *p = rit->second.find_presence(ch.name, "producer");
+        auto rit = roles.find(prod.role_uid);
+        if (rit == roles.end()) continue;
+        const auto *p = rit->second.find_presence(ch.name, "producer");
         if (p == nullptr) continue;
         switch (ch.observe(p))
         {
@@ -521,6 +529,16 @@ observe_channel(const ChannelEntry &ch, const HubStateSnapshot &snap) noexcept
     if (any_registering) return ChannelObservable::kRegistering;
     if (any_stalled)     return ChannelObservable::kStalled;
     return ChannelObservable::kAbsent;
+}
+
+/// Snapshot-side wrapper for the common caller pattern: pass in a
+/// `HubStateSnapshot` and get the channel's observable.  Delegates to
+/// the templated `compute_channel_observable`; kept for source-level
+/// compatibility with existing call sites.
+inline ChannelObservable
+observe_channel(const ChannelEntry &ch, const HubStateSnapshot &snap) noexcept
+{
+    return compute_channel_observable(ch, snap.roles);
 }
 
 // ─── Event subscription ─────────────────────────────────────────────────────

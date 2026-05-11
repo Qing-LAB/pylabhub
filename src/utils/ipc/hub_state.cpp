@@ -242,39 +242,6 @@ auto snapshot_handlers(std::mutex &mu, const Vec &v)
     return out;
 }
 
-/// Multi-producer-aware channel observable, computed against an
-/// already-locked role map (HEP-CORE-0023 §2.1.1).  Mirrors
-/// `observe_channel(c, snap)` from the public header but works on the
-/// live `roles` map under a writer-held lock — so call sites inside
-/// `_on_heartbeat` / `_on_heartbeat_timeout` (which need the channel's
-/// observable after a single presence transition) get the correct
-/// best-of-all-producers answer without copying state.
-template <typename RolesMap>
-ChannelObservable compute_observable_locked(const ChannelEntry &ch,
-                                            const RolesMap     &roles)
-{
-    if (ch.producers.empty()) return ChannelObservable::kAbsent;
-    bool any_live = false, any_reg = false, any_stalled = false;
-    for (const auto &prod : ch.producers)
-    {
-        auto rit = roles.find(prod.role_uid);
-        if (rit == roles.end()) continue;
-        const auto *pp = rit->second.find_presence(ch.name, "producer");
-        if (pp == nullptr) continue;
-        switch (ch.observe(pp))
-        {
-        case ChannelObservable::kLive:        any_live    = true; break;
-        case ChannelObservable::kRegistering: any_reg     = true; break;
-        case ChannelObservable::kStalled:     any_stalled = true; break;
-        case ChannelObservable::kAbsent:                          break;
-        }
-    }
-    if (any_live)    return ChannelObservable::kLive;
-    if (any_reg)     return ChannelObservable::kRegistering;
-    if (any_stalled) return ChannelObservable::kStalled;
-    return ChannelObservable::kAbsent;
-}
-
 } // namespace
 
 HandlerId HubState::subscribe_channel_opened(ChannelOpenedHandler h) const
@@ -955,7 +922,7 @@ void HubState::_on_heartbeat(const std::string                   &channel,
             if (cit != pImpl->channels.end())
             {
                 fired_entry        = cit->second;
-                new_obs            = compute_observable_locked(
+                new_obs            = compute_channel_observable(
                                          cit->second, pImpl->roles);
                 observable_changed = true;
             }
@@ -1007,7 +974,7 @@ void HubState::_on_heartbeat_timeout(const std::string &channel,
         if (it != pImpl->channels.end())
         {
             fired_entry = it->second;
-            new_obs     = compute_observable_locked(it->second, pImpl->roles);
+            new_obs     = compute_channel_observable(it->second, pImpl->roles);
         }
     }
     if (transitioned)
