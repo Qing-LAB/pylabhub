@@ -734,6 +734,153 @@ void HubState::_on_channel_registered(ChannelEntry entry)
 
 }
 
+// Wave M2.5 step 3 — additive producer admission op.  See
+// `docs/tech_draft/controlled_access_api_design.md` §7.5.2.
+ProducerAdmissionResult
+HubState::_on_producer_added(const std::string&         channel_name,
+                              ChannelSchemaInvariants    schema,
+                              ChannelTransportInvariants transport,
+                              ProducerEntry              producer)
+{
+    ProducerAdmissionResult result;
+
+    // Identifier validation at the op-entry boundary (mirrors
+    // `_on_channel_registered`).  Invalid identifiers bump
+    // sys.invalid_identifier_rejected and silent-drop; the wire layer
+    // returns a typed error.
+    if (!is_valid_identifier(channel_name, IdentifierKind::Channel))
+    {
+        bump_invalid_identifier(*pImpl);
+        result.invariant_result = InvariantSetResult::RejectedMismatch;
+        result.mismatched_invariant = "channel_name";
+        return result;
+    }
+    if (!producer.role_uid.empty() &&
+        !is_valid_identifier(producer.role_uid, IdentifierKind::RoleUid))
+    {
+        bump_invalid_identifier(*pImpl);
+        result.producer_result = AddProducerResult::RejectedUidConflict;
+        return result;
+    }
+    if (!schema.schema_id.empty() &&
+        !is_valid_identifier(schema.schema_id, IdentifierKind::Schema))
+    {
+        bump_invalid_identifier(*pImpl);
+        result.invariant_result = InvariantSetResult::RejectedMismatch;
+        result.mismatched_invariant = "schema_id";
+        return result;
+    }
+
+    // Capture pieces needed for role/shm side-effects before taking the
+    // writer lock (so we don't hold the writer lock across handler
+    // dispatch).  Use the producer's own pubkey now (M2.5 step 3 — the
+    // pubkey lives per-producer per HEP-CORE-0021 §5.2).
+    const std::string producer_uid     = producer.role_uid;
+    const std::string producer_pubkey  = producer.zmq_pubkey;
+    const bool        has_shm          = transport.has_shared_memory;
+    const std::string shm_name         = transport.shm_name;
+
+    ChannelEntry fired_entry;
+    bool         did_fire_open = false;
+
+    {
+        std::unique_lock lk(pImpl->mu);
+        auto             it = pImpl->channels.find(channel_name);
+
+        if (it == pImpl->channels.end())
+        {
+            // Fresh channel — first producer.  Compose the record from
+            // the supplied invariants + producer, insert, then fire
+            // ch_opened outside the lock.
+            ChannelEntry entry;
+            entry.name              = channel_name;
+            entry.schema_hash       = schema.schema_hash;
+            entry.schema_version    = schema.schema_version;
+            entry.schema_id         = schema.schema_id;
+            entry.schema_blds       = schema.schema_blds;
+            entry.schema_owner      = schema.schema_owner;
+            entry.has_shared_memory = transport.has_shared_memory;
+            entry.shm_name          = transport.shm_name;
+            entry.pattern           = transport.pattern;
+            entry.data_transport    = transport.data_transport;
+            // Append the producer via the controlled API (Created by
+            // construction since producers is empty + we just checked
+            // shm cardinality is fine for the first entry).  Capture
+            // the typed result for the caller's switch.
+            result.producer_result  = entry.add_producer(std::move(producer));
+            if (result.producer_result != AddProducerResult::Created)
+            {
+                // Shouldn't happen on a fresh entry (no uid conflict
+                // possible, SHM cardinality is 1<=1), but if it does
+                // we leave channel unopened and propagate the result.
+                return result;
+            }
+            auto [new_it, _] = pImpl->channels.insert_or_assign(
+                channel_name, std::move(entry));
+            fired_entry             = new_it->second;
+            did_fire_open           = true;
+            result.invariant_result = InvariantSetResult::Created;
+            result.channel_opened   = true;
+        }
+        else
+        {
+            // Existing channel — validate invariants match.  Return on
+            // first mismatch so the caller can surface a specific code
+            // (SCHEMA_MISMATCH for schema_*; TRANSPORT_MISMATCH for
+            // has_shared_memory / data_transport / pattern / shm_name).
+            const auto &cur = it->second;
+            auto reject = [&](const char *name) {
+                result.invariant_result     = InvariantSetResult::RejectedMismatch;
+                result.mismatched_invariant = name;
+            };
+            if (cur.schema_hash    != schema.schema_hash)    { reject("schema_hash");    return result; }
+            if (cur.schema_version != schema.schema_version) { reject("schema_version"); return result; }
+            if (cur.schema_id      != schema.schema_id)      { reject("schema_id");      return result; }
+            if (cur.schema_blds    != schema.schema_blds)    { reject("schema_blds");    return result; }
+            if (cur.schema_owner   != schema.schema_owner)   { reject("schema_owner");   return result; }
+            if (cur.has_shared_memory != transport.has_shared_memory)
+                                                              { reject("has_shared_memory"); return result; }
+            if (cur.shm_name       != transport.shm_name)    { reject("shm_name");       return result; }
+            if (cur.pattern        != transport.pattern)     { reject("pattern");        return result; }
+            if (cur.data_transport != transport.data_transport)
+                                                              { reject("data_transport"); return result; }
+
+            // Invariants match — append the producer via the controlled
+            // API.  Typed result (Created / RejectedUidConflict /
+            // RejectedShmCardinality) propagates straight through.
+            result.invariant_result = InvariantSetResult::IdempotentEqual;
+            result.producer_result  = it->second.add_producer(std::move(producer));
+            if (result.producer_result != AddProducerResult::Created)
+            {
+                // No state change on either reject; return as-is.
+                return result;
+            }
+            result.channel_opened = false;
+        }
+    } // release writer lock before firing handlers.
+
+    if (did_fire_open)
+    {
+        for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->ch_opened))
+            h(fired_entry);
+    }
+
+    if (!producer_uid.empty())
+    {
+        RoleEntry fired = upsert_role_locked(
+            *pImpl, producer_uid, producer_pubkey, channel_name,
+            /*role_type=*/"producer",
+            std::chrono::steady_clock::now());
+        for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_reg))
+            h(fired);
+    }
+
+    if (did_fire_open && has_shm)
+        _set_shm_block(ShmBlockRef{channel_name, shm_name});
+
+    return result;
+}
+
 void HubState::_on_channel_closed(const std::string &name, ChannelCloseReason why)
 {
     if (!is_valid_identifier(name, IdentifierKind::Channel))

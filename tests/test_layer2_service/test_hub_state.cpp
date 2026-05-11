@@ -1689,3 +1689,200 @@ TEST(ChannelEntryApi, SetProducerZmqNodeEndpoint_KeyedByUid)
     EXPECT_FALSE(ch.set_producer_zmq_node_endpoint(
         "prod.ghost.uid00000099", "tcp://10.0.0.99:5099"));
 }
+
+// ─── Wave M2.5 step 3 — _on_producer_added admission op ─────────────
+//
+// These tests pin the controlled-access REG_REQ admission contract
+// per docs/tech_draft/controlled_access_api_design.md §7.5.5.  Each
+// scenario verifies: (1) typed ProducerAdmissionResult, (2) channel
+// state after the call (no partial mutation on reject), (3) handler
+// fanout (ch_opened fires only on first producer; role_reg fires on
+// every Created).
+
+namespace
+{
+using pylabhub::hub::ChannelSchemaInvariants;
+using pylabhub::hub::ChannelTransportInvariants;
+using pylabhub::hub::InvariantSetResult;
+using pylabhub::hub::ProducerAdmissionResult;
+
+ChannelSchemaInvariants make_schema_invariants(const std::string &hash =
+                                                  std::string(64, 'a'))
+{
+    ChannelSchemaInvariants s;
+    s.schema_hash    = hash;
+    s.schema_version = 1;
+    return s;
+}
+
+ChannelTransportInvariants make_zmq_transport()
+{
+    ChannelTransportInvariants t;
+    t.has_shared_memory = false;
+    t.shm_name          = "";
+    t.pattern           = pylabhub::hub::ChannelPattern::PubSub;
+    t.data_transport    = "zmq";
+    return t;
+}
+
+ChannelTransportInvariants make_shm_transport(const std::string &shm_name)
+{
+    ChannelTransportInvariants t;
+    t.has_shared_memory = true;
+    t.shm_name          = shm_name;
+    t.pattern           = pylabhub::hub::ChannelPattern::PubSub;
+    t.data_transport    = "shm";
+    return t;
+}
+} // namespace
+
+TEST(HubStateProducerAdmission, FirstProducer_FreshChannel_OpensAndFires)
+{
+    HubState s;
+    std::vector<std::string> opened, role_reg;
+    s.subscribe_channel_opened(
+        [&](const ChannelEntry &e) { opened.push_back(e.name); });
+    s.subscribe_role_registered(
+        [&](const RoleEntry &r) { role_reg.push_back(r.uid); });
+
+    auto r = HubStateTestAccess::on_producer_added(
+        s, "ch.fanin.first",
+        make_schema_invariants(),
+        make_zmq_transport(),
+        make_producer("prod.camA.uid00000001", 1001));
+
+    EXPECT_EQ(r.producer_result,  AddProducerResult::Created);
+    EXPECT_EQ(r.invariant_result, InvariantSetResult::Created);
+    EXPECT_TRUE(r.channel_opened);
+    EXPECT_TRUE(r.mismatched_invariant.empty());
+
+    EXPECT_EQ(opened, (std::vector<std::string>{"ch.fanin.first"}));
+    EXPECT_EQ(role_reg, (std::vector<std::string>{"prod.camA.uid00000001"}));
+
+    auto ch = s.channel("ch.fanin.first");
+    ASSERT_TRUE(ch.has_value());
+    EXPECT_EQ(ch->producer_count(), 1u);
+    EXPECT_EQ(ch->find_producer("prod.camA.uid00000001")->producer_pid, 1001u);
+    EXPECT_EQ(ch->schema_hash, std::string(64, 'a'));
+}
+
+TEST(HubStateProducerAdmission, SecondDistinctUid_MatchingInvariants_Appends)
+{
+    HubState s;
+    int opened_count = 0;
+    std::vector<std::string> role_reg;
+    s.subscribe_channel_opened([&](const ChannelEntry &) { ++opened_count; });
+    s.subscribe_role_registered(
+        [&](const RoleEntry &r) { role_reg.push_back(r.uid); });
+
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.fanin.append",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.camA.uid00000001", 1001))
+                  .producer_result,
+              AddProducerResult::Created);
+
+    auto r = HubStateTestAccess::on_producer_added(
+        s, "ch.fanin.append",
+        make_schema_invariants(),        // same hash
+        make_zmq_transport(),
+        make_producer("prod.camB.uid00000002", 1002));
+
+    EXPECT_EQ(r.producer_result,  AddProducerResult::Created);
+    EXPECT_EQ(r.invariant_result, InvariantSetResult::IdempotentEqual);
+    EXPECT_FALSE(r.channel_opened);
+    EXPECT_TRUE(r.mismatched_invariant.empty());
+
+    // ch_opened fired exactly once (only on the first admission).
+    EXPECT_EQ(opened_count, 1);
+    // role_reg fired twice (once per producer).
+    EXPECT_EQ(role_reg, (std::vector<std::string>{
+                            "prod.camA.uid00000001",
+                            "prod.camB.uid00000002"}));
+
+    auto ch = s.channel("ch.fanin.append");
+    ASSERT_TRUE(ch.has_value());
+    EXPECT_EQ(ch->producer_count(), 2u);
+}
+
+TEST(HubStateProducerAdmission, SecondProducer_SchemaMismatch_Rejected_NoStateMutation)
+{
+    HubState s;
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.fanin.schema-mismatch",
+                  make_schema_invariants(std::string(64, 'a')),
+                  make_zmq_transport(),
+                  make_producer("prod.camA.uid00000001", 1001))
+                  .producer_result,
+              AddProducerResult::Created);
+
+    auto schema_b = make_schema_invariants(std::string(64, 'b'));
+    auto r = HubStateTestAccess::on_producer_added(
+        s, "ch.fanin.schema-mismatch",
+        schema_b,
+        make_zmq_transport(),
+        make_producer("prod.camB.uid00000002", 1002));
+
+    EXPECT_EQ(r.invariant_result, InvariantSetResult::RejectedMismatch);
+    EXPECT_EQ(r.mismatched_invariant, "schema_hash");
+
+    // No state mutation — producer count unchanged, B's uid absent.
+    auto ch = s.channel("ch.fanin.schema-mismatch");
+    ASSERT_TRUE(ch.has_value());
+    EXPECT_EQ(ch->producer_count(), 1u);
+    EXPECT_EQ(ch->find_producer("prod.camB.uid00000002"), nullptr);
+}
+
+TEST(HubStateProducerAdmission, SameUidRedo_Rejected_UidConflict)
+{
+    HubState s;
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.fanin.uid-redo",
+                  make_schema_invariants(),
+                  make_zmq_transport(),
+                  make_producer("prod.camA.uid00000001", 1001))
+                  .producer_result,
+              AddProducerResult::Created);
+
+    auto r = HubStateTestAccess::on_producer_added(
+        s, "ch.fanin.uid-redo",
+        make_schema_invariants(),
+        make_zmq_transport(),
+        make_producer("prod.camA.uid00000001", 9999));  // same uid
+
+    EXPECT_EQ(r.invariant_result, InvariantSetResult::IdempotentEqual);
+    EXPECT_EQ(r.producer_result,  AddProducerResult::RejectedUidConflict);
+
+    // Channel state unchanged — original pid 1001 preserved.
+    auto ch = s.channel("ch.fanin.uid-redo");
+    ASSERT_TRUE(ch.has_value());
+    EXPECT_EQ(ch->producer_count(), 1u);
+    EXPECT_EQ(ch->find_producer("prod.camA.uid00000001")->producer_pid, 1001u);
+}
+
+TEST(HubStateProducerAdmission, SecondProducer_ShmChannel_RejectedShmCardinality)
+{
+    HubState s;
+    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+                  s, "ch.thermo.shm-cardinality",
+                  make_schema_invariants(),
+                  make_shm_transport("ch.thermo.shm-cardinality-shm"),
+                  make_producer("prod.thermoA.uid00000003", 3001))
+                  .producer_result,
+              AddProducerResult::Created);
+
+    auto r = HubStateTestAccess::on_producer_added(
+        s, "ch.thermo.shm-cardinality",
+        make_schema_invariants(),
+        make_shm_transport("ch.thermo.shm-cardinality-shm"),
+        make_producer("prod.thermoB.uid00000004", 3002));  // distinct uid
+
+    EXPECT_EQ(r.invariant_result, InvariantSetResult::IdempotentEqual);
+    EXPECT_EQ(r.producer_result,  AddProducerResult::RejectedShmCardinality);
+
+    auto ch = s.channel("ch.thermo.shm-cardinality");
+    ASSERT_TRUE(ch.has_value());
+    EXPECT_EQ(ch->producer_count(), 1u);
+    EXPECT_EQ(ch->find_producer("prod.thermoB.uid00000004"), nullptr);
+}
