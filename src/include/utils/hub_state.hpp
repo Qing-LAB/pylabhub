@@ -47,6 +47,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>  // std::pair
 #include <vector>
@@ -165,6 +166,62 @@ struct ProducerEntry
         std::chrono::system_clock::now()};
 };
 
+// ─── Controlled-access API result types (Wave M2.5) ───────────────────────
+//
+// Producer + consumer admission is strictly additive — no restart-replace
+// path exists.  Any incoming admission carrying a `role_uid` that already
+// exists in the channel's `producers[]` / `consumers[]` is refused with
+// `RejectedUidConflict`, regardless of whether the existing entry is
+// active or stale-residue.  The contract is documented in
+// `docs/tech_draft/controlled_access_api_design.md` §6.2; the rationale
+// is that proper uid construction (`tag.name.unique` per HEP-CORE-0033
+// §G2.2.0b) makes a same-uid collision effectively impossible, so any
+// collision indicates either bookkeeping residue (a hub-side bug — to
+// be fixed in M3 cleanup) or a remote-side breach attempt.
+
+enum class AddProducerResult
+{
+    Created,                 ///< Appended; out-pointer (if requested) points
+                             ///< to the new ProducerEntry in `producers[]`.
+    RejectedUidConflict,     ///< `find_producer(role_uid)` returned non-null.
+                             ///< Channel state unchanged.  Broker surfaces
+                             ///< `UID_CONFLICT` on the wire.
+    RejectedShmCardinality,  ///< `data_transport == "shm"` and
+                             ///< `producers.size() >= 1`.  Channel state
+                             ///< unchanged.  Broker surfaces
+                             ///< `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`.
+};
+
+enum class AddConsumerResult
+{
+    Created,                 ///< Appended; out-pointer (if requested) points
+                             ///< to the new ConsumerEntry in `consumers[]`.
+    RejectedUidConflict,     ///< Existing ConsumerEntry with this role_uid.
+};
+
+struct RemoveProducerResult
+{
+    bool removed;             ///< True iff a producer with the given uid
+                              ///< was present and has been erased.
+    bool channel_now_empty;   ///< True iff `producers.empty()` after the
+                              ///< removal.  Broker uses this to decide
+                              ///< whether to trigger `_on_channel_closed`.
+};
+
+/// Result of a `ChannelEntry::set_invariant_*` call.  Channel-wide
+/// invariants are values that all producers must agree on (schema,
+/// transport choice, pattern).  First setter creates; subsequent
+/// setters either match byte-for-byte (idempotent) or are rejected.
+enum class InvariantSetResult
+{
+    Created,                 ///< Field(s) had no prior value; set succeeded.
+    IdempotentEqual,         ///< Existing value equals the requested value;
+                             ///< no change made.
+    RejectedMismatch,        ///< Existing value differs.  Channel state
+                             ///< unchanged.  Broker surfaces the appropriate
+                             ///< Cat-1 error (e.g., `SCHEMA_MISMATCH`).
+};
+
 /// Channel registered with the broker.
 struct ChannelEntry
 {
@@ -259,6 +316,131 @@ struct ChannelEntry
     /// retained for callers that already know which presence they
     /// care about (e.g., DISC_REQ probing a specific producer).
     inline ChannelObservable observe(const struct RolePresence *producer) const noexcept;
+
+    // ── Wave M2.5 controlled-access API ─────────────────────────────
+    //
+    // Additive: methods that callers should migrate to.  Fields above
+    // remain public during this wave; once all callers go through
+    // these methods, the state-bearing fields move private (M2.5
+    // step 7).  See `docs/tech_draft/controlled_access_api_design.md`.
+
+    [[nodiscard]] std::size_t producer_count() const noexcept { return producers.size(); }
+    [[nodiscard]] std::size_t consumer_count() const noexcept { return consumers.size(); }
+    [[nodiscard]] bool        is_shm() const noexcept { return data_transport == "shm"; }
+
+    /// Find the ConsumerEntry for `role_uid`, or nullptr.  Mirror of
+    /// `find_producer` for symmetry — used by the new `add_consumer`
+    /// reject path and by DEREG-handler call sites.
+    const ConsumerEntry *find_consumer(const std::string &role_uid) const noexcept
+    {
+        for (const auto &c : consumers)
+            if (c.role_uid == role_uid) return &c;
+        return nullptr;
+    }
+    ConsumerEntry *find_consumer(const std::string &role_uid) noexcept
+    {
+        for (auto &c : consumers)
+            if (c.role_uid == role_uid) return &c;
+        return nullptr;
+    }
+
+    /// Strict additive producer admission (HEP-CORE-0023 §2.1.1 + M2.5).
+    /// See `AddProducerResult` doc above for the contract.  When the
+    /// reply is `Created`, the new entry is at `producers.back()` and
+    /// (if `out` is non-null) `*out` points to it.
+    AddProducerResult add_producer(ProducerEntry p,
+                                    ProducerEntry **out = nullptr)
+    {
+        if (find_producer(p.role_uid) != nullptr)
+            return AddProducerResult::RejectedUidConflict;
+        if (is_shm() && !producers.empty())
+            return AddProducerResult::RejectedShmCardinality;
+        producers.push_back(std::move(p));
+        if (out != nullptr) *out = &producers.back();
+        return AddProducerResult::Created;
+    }
+
+    /// Remove the producer entry whose role_uid matches.  Reports
+    /// whether the channel is now empty (no remaining producers) so
+    /// callers can trigger atomic teardown per HEP-CORE-0023 §2.1.1.
+    RemoveProducerResult remove_producer(std::string_view role_uid) noexcept
+    {
+        for (auto it = producers.begin(); it != producers.end(); ++it)
+        {
+            if (it->role_uid == role_uid)
+            {
+                producers.erase(it);
+                return {true, producers.empty()};
+            }
+        }
+        return {false, producers.empty()};
+    }
+
+    /// Strict additive consumer admission (symmetric to add_producer).
+    AddConsumerResult add_consumer(ConsumerEntry c,
+                                    ConsumerEntry **out = nullptr)
+    {
+        if (find_consumer(c.role_uid) != nullptr)
+            return AddConsumerResult::RejectedUidConflict;
+        consumers.push_back(std::move(c));
+        if (out != nullptr) *out = &consumers.back();
+        return AddConsumerResult::Created;
+    }
+
+    /// Remove the consumer entry whose role_uid matches.  Returns
+    /// true iff an entry was erased.
+    bool remove_consumer(std::string_view role_uid) noexcept
+    {
+        for (auto it = consumers.begin(); it != consumers.end(); ++it)
+        {
+            if (it->role_uid == role_uid)
+            {
+                consumers.erase(it);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Update the per-producer inbox metadata (HEP-CORE-0027 §3).
+    /// Returns true iff the producer was found.  Inbox is per-producer:
+    /// each producer on a Fan-In channel keeps its own inbox routing.
+    bool set_producer_inbox(std::string_view role_uid,
+                             std::string endpoint, std::string schema_json,
+                             std::string packing,  std::string checksum) noexcept
+    {
+        for (auto &p : producers)
+        {
+            if (p.role_uid == role_uid)
+            {
+                p.inbox_endpoint    = std::move(endpoint);
+                p.inbox_schema_json = std::move(schema_json);
+                p.inbox_packing     = std::move(packing);
+                p.inbox_checksum    = std::move(checksum);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Symmetric per-consumer inbox setter.
+    bool set_consumer_inbox(std::string_view role_uid,
+                             std::string endpoint, std::string schema_json,
+                             std::string packing,  std::string checksum) noexcept
+    {
+        for (auto &c : consumers)
+        {
+            if (c.role_uid == role_uid)
+            {
+                c.inbox_endpoint    = std::move(endpoint);
+                c.inbox_schema_json = std::move(schema_json);
+                c.inbox_packing     = std::move(packing);
+                c.inbox_checksum    = std::move(checksum);
+                return true;
+            }
+        }
+        return false;
+    }
 };
 
 /// A single band member.
