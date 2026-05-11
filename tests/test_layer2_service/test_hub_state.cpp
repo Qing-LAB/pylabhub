@@ -2203,3 +2203,255 @@ TEST(HubStateProducerAdmission, SecondProducer_ShmChannel_RejectedShmCardinality
     EXPECT_EQ(ch->producer_count(), 1u);
     EXPECT_EQ(ch->find_producer("prod.thermoB.uid00000004"), nullptr);
 }
+
+// ─── Wave M3 — RoleEntry controlled-access API ─────────────────────────────
+//
+// Pin the contract for RoleEntry::add_presence / on_heartbeat /
+// on_heartbeat_timeout / on_pending_timeout / on_dereg + terminal
+// cleanup of _set_role_disconnected.  Mirrors the M2.5 contract-lock
+// pattern at role/presence scope.  See
+// docs/tech_draft/M3_role_entry_controlled_access.md.
+
+namespace
+{
+using pylabhub::hub::AddPresenceResult;
+using pylabhub::hub::HeartbeatEffect;
+using pylabhub::hub::TransitionEffect;
+} // namespace
+
+TEST(RoleEntryApi, AddPresence_Created)
+{
+    RoleEntry r = make_role("prod.cam.uid00000001");
+    RolePresence *out = nullptr;
+    auto eff = r.add_presence("ch.test", "producer", &out);
+    EXPECT_EQ(eff, AddPresenceResult::Created);
+    ASSERT_EQ(r.presences.size(), 1u);
+    ASSERT_NE(out, nullptr);
+    EXPECT_EQ(out->channel, "ch.test");
+    EXPECT_EQ(out->role_type, "producer");
+    EXPECT_EQ(out->state, RoleState::Connected);
+    EXPECT_FALSE(out->first_heartbeat_seen);
+}
+
+TEST(RoleEntryApi, AddPresence_DuplicateRejected_NoStateMutation)
+{
+    RoleEntry r = make_role("prod.cam.uid00000001");
+    ASSERT_EQ(r.add_presence("ch.test", "producer"), AddPresenceResult::Created);
+
+    // Same (channel, role_type) re-add → RejectedDuplicate; presences
+    // count unchanged.
+    auto eff = r.add_presence("ch.test", "producer");
+    EXPECT_EQ(eff, AddPresenceResult::RejectedDuplicate);
+    EXPECT_EQ(r.presences.size(), 1u);
+
+    // Different (channel, role_type) tuple → Created (multi-presence).
+    EXPECT_EQ(r.add_presence("ch.test", "consumer"), AddPresenceResult::Created);
+    EXPECT_EQ(r.presences.size(), 2u);
+
+    // Yet another tuple — different channel — also OK (cross-channel role).
+    EXPECT_EQ(r.add_presence("ch.other", "producer"), AddPresenceResult::Created);
+    EXPECT_EQ(r.presences.size(), 3u);
+}
+
+TEST(RoleEntryApi, RemovePresence_PresentAndMissing)
+{
+    RoleEntry r = make_role("prod.cam.uid00000001");
+    ASSERT_EQ(r.add_presence("ch.test", "producer"), AddPresenceResult::Created);
+    ASSERT_EQ(r.add_presence("ch.test", "consumer"), AddPresenceResult::Created);
+
+    EXPECT_TRUE(r.remove_presence("ch.test", "producer"));
+    EXPECT_EQ(r.presences.size(), 1u);
+    EXPECT_EQ(r.find_presence("ch.test", "producer"), nullptr);
+    EXPECT_NE(r.find_presence("ch.test", "consumer"), nullptr);
+
+    EXPECT_FALSE(r.remove_presence("ch.test", "producer"));  // already gone
+    EXPECT_FALSE(r.remove_presence("ch.ghost", "producer"));
+    EXPECT_EQ(r.presences.size(), 1u);
+}
+
+TEST(RoleEntryApi, OnHeartbeat_FirstHeartbeat_NewlyConnected)
+{
+    // Newly-added presence has first_heartbeat_seen=false; first
+    // heartbeat flips it true.  HeartbeatEffect captures this via
+    // was_first_heartbeat_seen=false → coarse enum NewlyConnected.
+    RoleEntry r = make_role("prod.cam.uid00000001");
+    ASSERT_EQ(r.add_presence("ch.test", "producer"), AddPresenceResult::Created);
+
+    auto eff = r.on_heartbeat("ch.test", "producer",
+                              std::chrono::steady_clock::now());
+    EXPECT_TRUE(eff.presence_found);
+    EXPECT_EQ(eff.prev_state, RoleState::Connected);
+    EXPECT_FALSE(eff.was_first_heartbeat_seen);
+    EXPECT_EQ(eff.to_transition_effect(), TransitionEffect::NewlyConnected);
+
+    // Post-condition: state Connected + first_heartbeat_seen true.
+    const auto *p = r.find_presence("ch.test", "producer");
+    ASSERT_NE(p, nullptr);
+    EXPECT_TRUE(p->first_heartbeat_seen);
+    EXPECT_EQ(p->state, RoleState::Connected);
+}
+
+TEST(RoleEntryApi, OnHeartbeat_SteadyState_Refreshed)
+{
+    // Second heartbeat on already-Connected + first_heartbeat_seen presence
+    // → Refreshed (just an update; no transition).
+    RoleEntry r = make_role("prod.cam.uid00000001");
+    ASSERT_EQ(r.add_presence("ch.test", "producer"), AddPresenceResult::Created);
+    r.on_heartbeat("ch.test", "producer", std::chrono::steady_clock::now());
+
+    auto eff = r.on_heartbeat("ch.test", "producer",
+                              std::chrono::steady_clock::now());
+    EXPECT_TRUE(eff.presence_found);
+    EXPECT_EQ(eff.prev_state, RoleState::Connected);
+    EXPECT_TRUE(eff.was_first_heartbeat_seen);
+    EXPECT_EQ(eff.to_transition_effect(), TransitionEffect::Refreshed);
+}
+
+TEST(RoleEntryApi, OnHeartbeat_PendingRecovery_NewlyConnected_PrevPending)
+{
+    // Pending → Connected via heartbeat.  prev_state == Pending is the
+    // signal callers (HubState::_on_heartbeat) use to bump
+    // pending_to_ready_total.
+    RoleEntry r = make_role("prod.cam.uid00000001");
+    ASSERT_EQ(r.add_presence("ch.test", "producer"), AddPresenceResult::Created);
+    r.on_heartbeat("ch.test", "producer", std::chrono::steady_clock::now());
+    ASSERT_EQ(r.on_heartbeat_timeout("ch.test", "producer"),
+              TransitionEffect::ToPending);
+
+    auto eff = r.on_heartbeat("ch.test", "producer",
+                              std::chrono::steady_clock::now());
+    EXPECT_TRUE(eff.presence_found);
+    EXPECT_EQ(eff.prev_state, RoleState::Pending);
+    EXPECT_TRUE(eff.was_first_heartbeat_seen);
+    EXPECT_EQ(eff.to_transition_effect(), TransitionEffect::NewlyConnected);
+}
+
+TEST(RoleEntryApi, OnHeartbeat_PresenceNotFound_NoChange)
+{
+    RoleEntry r = make_role("prod.cam.uid00000001");
+    auto eff = r.on_heartbeat("ch.ghost", "producer",
+                              std::chrono::steady_clock::now());
+    EXPECT_FALSE(eff.presence_found);
+    EXPECT_EQ(eff.to_transition_effect(), TransitionEffect::NoChange);
+}
+
+TEST(RoleEntryApi, OnHeartbeatTimeout_ConnectedToPending_OnlyConnected)
+{
+    RoleEntry r = make_role("prod.cam.uid00000001");
+    ASSERT_EQ(r.add_presence("ch.test", "producer"), AddPresenceResult::Created);
+
+    // Connected → Pending.
+    EXPECT_EQ(r.on_heartbeat_timeout("ch.test", "producer"),
+              TransitionEffect::ToPending);
+    EXPECT_EQ(r.find_presence("ch.test", "producer")->state, RoleState::Pending);
+
+    // Already Pending → NoChange (handles lost-race case).
+    EXPECT_EQ(r.on_heartbeat_timeout("ch.test", "producer"),
+              TransitionEffect::NoChange);
+
+    // After Disconnect, also NoChange.
+    EXPECT_EQ(r.on_pending_timeout("ch.test", "producer"),
+              TransitionEffect::ToDisconnected);
+    EXPECT_EQ(r.on_heartbeat_timeout("ch.test", "producer"),
+              TransitionEffect::NoChange);
+
+    // Missing presence → NoChange.
+    EXPECT_EQ(r.on_heartbeat_timeout("ch.ghost", "producer"),
+              TransitionEffect::NoChange);
+}
+
+TEST(RoleEntryApi, OnPendingTimeout_PendingToDisconnected_OnlyPending)
+{
+    RoleEntry r = make_role("prod.cam.uid00000001");
+    ASSERT_EQ(r.add_presence("ch.test", "producer"), AddPresenceResult::Created);
+
+    // Connected (not Pending) → NoChange.
+    EXPECT_EQ(r.on_pending_timeout("ch.test", "producer"),
+              TransitionEffect::NoChange);
+
+    // Connected → Pending → Disconnected.
+    ASSERT_EQ(r.on_heartbeat_timeout("ch.test", "producer"),
+              TransitionEffect::ToPending);
+    EXPECT_EQ(r.on_pending_timeout("ch.test", "producer"),
+              TransitionEffect::ToDisconnected);
+    EXPECT_EQ(r.find_presence("ch.test", "producer")->state,
+              RoleState::Disconnected);
+
+    // Already Disconnected → NoChange.
+    EXPECT_EQ(r.on_pending_timeout("ch.test", "producer"),
+              TransitionEffect::NoChange);
+}
+
+TEST(RoleEntryApi, OnDereg_AnyStateToDisconnected_NoOpIfAlreadyDisconnected)
+{
+    RoleEntry r = make_role("prod.cam.uid00000001");
+    ASSERT_EQ(r.add_presence("ch.a", "producer"), AddPresenceResult::Created);
+    ASSERT_EQ(r.add_presence("ch.b", "producer"), AddPresenceResult::Created);
+    r.on_heartbeat("ch.a", "producer", std::chrono::steady_clock::now());
+
+    // Connected → Disconnected.
+    EXPECT_EQ(r.on_dereg("ch.a", "producer"),
+              TransitionEffect::ToDisconnected);
+    EXPECT_EQ(r.find_presence("ch.a", "producer")->state,
+              RoleState::Disconnected);
+
+    // Already-Disconnected → NoChange.
+    EXPECT_EQ(r.on_dereg("ch.a", "producer"),
+              TransitionEffect::NoChange);
+
+    // Sibling (ch.b) untouched.
+    EXPECT_EQ(r.find_presence("ch.b", "producer")->state,
+              RoleState::Connected);
+}
+
+// ─── Terminal cleanup contract (M3 step 4) ─────────────────────────────────
+
+TEST(RoleEntryApi, SetRoleDisconnected_TerminalErase_IdempotentSecondCall)
+{
+    // The contract that retires the disconnected_fired PATCH:
+    // _set_role_disconnected fires the handler exactly once AND
+    // erases the RoleEntry.  Second call finds no entry and is a
+    // no-op (idempotent BY CONSTRUCTION — terminal-erase IS the
+    // memoization).
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch.term"));
+    ASSERT_TRUE(s.role("prod.main.test").has_value());
+
+    int fired = 0;
+    s.subscribe_role_disconnected([&](const std::string &) { ++fired; });
+
+    HubStateTestAccess::set_role_disconnected(s, "prod.main.test");
+    EXPECT_EQ(fired, 1);
+    EXPECT_FALSE(s.role("prod.main.test").has_value())
+        << "Role entry must be erased after disconnect (M3 step 4 contract)";
+
+    HubStateTestAccess::set_role_disconnected(s, "prod.main.test");
+    EXPECT_EQ(fired, 1) << "Second call is idempotent — no entry to re-fire from";
+}
+
+TEST(RoleEntryApi, SetRoleDisconnected_SchemaCascadeFires_HubGlobalsImmune)
+{
+    // The schema-cascade contract was already tested in
+    // HubStateSchemas.RoleDisconnect_CascadeEvictsOwnedSchemas (which
+    // continues to pass post-M3 step 4).  This test re-pins the
+    // contract under the terminal-erase semantics: cascade fires
+    // BEFORE the entry is erased, so SchemaRecords keyed by the
+    // owner uid are evicted; hub-globals (owner=="hub") are immune.
+    HubState s;
+    const std::string uid = "prod.cam.uid01234567";
+    HubStateTestAccess::set_role_registered(s, make_role(uid));
+    HubStateTestAccess::on_schema_registered(
+        s, make_schema_rec(uid, "frame", "aligned", 0xAA));
+    HubStateTestAccess::on_schema_registered(
+        s, make_schema_rec("hub", "lab.demo.frame@1"));
+    ASSERT_EQ(s.schema_count(), 2u);
+
+    HubStateTestAccess::set_role_disconnected(s, uid);
+
+    EXPECT_FALSE(s.role(uid).has_value())
+        << "Role entry erased (M3 terminal cleanup)";
+    EXPECT_EQ(s.schema_count(), 1u) << "Hub-global survives";
+    EXPECT_TRUE(s.schema("hub", "lab.demo.frame@1").has_value());
+    EXPECT_FALSE(s.schema(uid, "frame").has_value())
+        << "Owner-uid schema evicted by cascade";
+}
