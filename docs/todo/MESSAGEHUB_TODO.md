@@ -12,8 +12,21 @@
 
 ### 🔥 Wave M2 — Multi-Producer Channel Bookkeeping (2026-05-10)
 
-Canonical plan in `docs/TODO_MASTER.md` "Wave M2".  Broker-layer items
-this wave touches (MP4 phase):
+Canonical plan in `docs/TODO_MASTER.md` "Wave M2".
+
+**Scope expansion (2026-05-10):** new phase **MP2.5 — Controlled-access
+API on `ChannelEntry`** inserted between MP2 (done) and MP3.  Driven
+by three consecutive review passes that each found the same overwrite-
+class bug on a different `ChannelEntry` scalar field.  Design doc:
+`docs/tech_draft/controlled_access_api_design.md` (full 8-step
+migration in §7).  MP3/MP4 below shrink materially after M2.5 — most
+of the broker handler rewrites listed below are absorbed as side
+effects of M2.5 steps 3-6 (REG_REQ, DEREG_REQ, ENDPOINT_UPDATE_REQ,
+sweep).  Remaining MP4 work after M2.5 lands: ROLE_INFO_REQ /
+ROLE_PRESENCE_REQ search behaviour, CHANNEL_ERROR_NOTIFY +
+CHANNEL_CLOSING_NOTIFY fan-out.
+
+Broker-layer items this wave touches (MP4 phase — most absorbed by M2.5):
 
 - REG_REQ admission semantics — same channel + new role_uid ⇒ append a
   new `ProducerEntry`; same role_uid ⇒ restart-replace.  Reject second

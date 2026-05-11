@@ -1,0 +1,278 @@
+# Controlled-Access API Design — `ChannelEntry` + `RoleEntry`
+
+| | |
+|---|---|
+| **Status**  | Draft — design phase. **No code changes yet.** |
+| **Created** | 2026-05-10 |
+| **Wave**    | M2 (MP2.5 + MP3) and M3 (RoleEntry follow-up) |
+| **Drives**  | Eliminating the multi-producer / multi-presence "scalar-where-should-be-per-party" bug class structurally instead of fixing instances reactively. |
+| **Resume point — return to main line of work** | After this design is approved and implemented (M2.5), the original Wave M2 phase plan resumes at **MP3 Bookkeeping ops** (see `docs/TODO_MASTER.md` "Wave M2"). MP3 → MP4 → MP5 are unchanged in *intent*, but their implementation rewrites every handler to go through this API surface instead of touching `ChannelEntry` fields directly. |
+
+---
+
+## 1. Why this exists
+
+In three consecutive review passes during Wave M2 we found the same
+bug class: a field declared at channel scope that should have lived
+per-party. Concretely:
+
+1. `ChannelEntry.producer_*` scalars (`pid` / `hostname` / `role_uid` /
+   `role_name` / `zmq_identity`) — caught in MP2 pass 1.
+2. `ChannelEntry`'s lack of `producers[]` cardinality reasoning in
+   `observe` / fan-out — caught in MP2 pass 2.
+3. `ChannelEntry.inbox_*` (4 fields) — caught in MP2 pass 3
+   (committed at `91bd657`).
+
+The **next layer** is wider than just `inbox_*`. The same overwrite
+pattern applies to `zmq_node_endpoint`, `metadata`, and three dead
+placeholder fields (`zmq_data_endpoint`, `zmq_ctrl_endpoint`,
+`zmq_pubkey`). On top of that:
+
+- REG_REQ re-registration discards the existing `producers[]` entirely
+  by building a fresh `ChannelEntry` and calling `insert_or_assign`
+  (`hub_state.cpp:327`).
+- DEREG_REQ tears down the channel on any single producer's leave,
+  ignoring HEP-CORE-0023 §2.1.1's "atomic teardown on **last**
+  producer-presence Disconnected" rule.
+- Zero tests register two distinct producers on the same channel
+  (96 `register_channel` sites are all single-producer or same-uid
+  restart). The scalar field design **prevented** anyone from writing
+  such tests, so the bug class is hidden by absence.
+
+The structural fix is a controlled-access API that encodes the
+classification — "channel-wide invariant" vs "per-party attribute" —
+in the type system, so future fields can't be misclassified by accident.
+
+## 2. Scope
+
+| Struct | Why it qualifies | Wave |
+|---|---|---|
+| **`ChannelEntry`** | 1..N producers + N consumers; channel-wide invariants (schema, transport) coexist with per-party fields (inbox, endpoint); coordinated teardown across parties | **M2.5** (this wave) |
+| **`RoleEntry` / `RolePresence`** | 1..N presences per role uid; each presence runs its own FSM; per-uid liveness is derived (`any_presence_alive()`); in-flight `disconnected_fired` PATCH at `hub_state.hpp:339-360` is exactly the bug class this API would prevent | **M3** (next wave) |
+| **`HubState.schemas_`** (schema registry) | Owner-keyed cascade lifecycle, path A/B/C/X dispatch | M4 (later — partial encapsulation already exists) |
+| `PeerEntry` | Single party but has FSM transitions; same shape | Defer; pick up after M3 if pattern proves useful |
+| `BandEntry` | Members join/leave; no per-member FSM | Defer; add only on concrete need |
+| `ConsumerEntry` / `ProducerEntry` / `BandMember` | Leaf rows accessed through parent | No own API |
+
+## 3. Field classification — `ChannelEntry`
+
+Two-column model: every concrete field is either a **channel-wide
+invariant** (one value per channel, all parties must agree) or a
+**per-producer attribute** (lives on `ProducerEntry`). No third
+category.
+
+### 3.1 Channel-wide invariants
+
+| Field | Reason | Validation rule on re-set |
+|---|---|---|
+| `name` | Identity. | Immutable post-create. |
+| `shm_name` | SHM channels have one segment by physical constraint. | Immutable post-create. |
+| `schema_hash` / `schema_version` / `schema_id` / `schema_blds` / `schema_owner` | All producers MUST agree (HEP-CORE-0023 §2.1.1, HEP-CORE-0034 §9.1). | Existing Cat-1 mismatch reject path; reuse. |
+| `has_shared_memory` / `data_transport` / `pattern` | Channel topology choice; not per-producer. | Immutable post-create. |
+| `created_at` | Captured on first REG. | Immutable. |
+
+### 3.2 Per-producer attributes (move to `ProducerEntry`)
+
+| Field | Current state | Action |
+|---|---|---|
+| `inbox_endpoint` / `inbox_schema_json` / `inbox_packing` / `inbox_checksum` | Already moved to `ProducerEntry` in `91bd657`. | Done. |
+| `zmq_node_endpoint` | HEP-CORE-0021 endpoint registry — each Fan-In producer publishes from its own endpoint. Currently scalar on `ChannelEntry`. | **Move to `ProducerEntry`**. ENDPOINT_UPDATE_REQ keys by `(channel, role_uid)`. |
+| `metadata` | Producer-supplied free-form JSON; intent ambiguous. | **Open design decision** — see §6. |
+| `zmq_data_endpoint` / `zmq_ctrl_endpoint` / `zmq_pubkey` | Dead — hard-coded placeholder values in `role_reg_payload.hpp`. | **Delete** the channel-level fields. If revived later, add to `ProducerEntry` from the start. |
+
+## 4. Field classification — `RoleEntry` / `RolePresence`
+
+`RoleEntry` already has the right shape (`presences[]` vector). The
+unresolved item is the per-uid event-emit memoization currently
+patched as `disconnected_fired` (line 339-360, marked 🚧 PATCH).
+
+| Concern | Current home | M3 home |
+|---|---|---|
+| Per-presence FSM state | `RolePresence.state` / `.last_heartbeat` / `.state_since` | Same; correct shape. |
+| Per-presence metrics | `RolePresence.latest_metrics` / `.metrics_collected_at` | Same. |
+| Per-uid liveness | derived via `any_presence_alive()` | Same; correct. |
+| `role_disconnected` event already emitted? | `RoleEntry.disconnected_fired` (PATCH) | Method on `RoleEntry`: `try_consume_disconnect_event() -> bool` — atomically returns true the first time it's called after the role transitions to all-presences-disconnected, false thereafter. Resets on first new presence add. |
+
+## 5. API surface (proposed)
+
+The design uses a **uniform pattern** so M2.5 (`ChannelEntry`) and M3
+(`RoleEntry`) share the mental model. Methods live as `ChannelEntry` /
+`RoleEntry` member functions; HubState op-helpers (e.g.,
+`_on_channel_registered`, `_set_role_disconnected`) call them under
+the writer lock. Public direct field access is removed by making the
+state-bearing fields private (or `_private` by convention with
+`friend HubState` and `friend test::HubStateTestAccess`).
+
+### 5.1 `ChannelEntry` — proposed methods
+
+Reading:
+
+```cpp
+const std::string& name() const noexcept;
+const std::string& schema_hash() const noexcept;          // and the other invariants
+const std::string& shm_name() const noexcept;
+ChannelPattern     pattern() const noexcept;
+std::string_view   data_transport() const noexcept;
+
+// Per-party access:
+const ProducerEntry*       find_producer(std::string_view uid) const noexcept;
+const ProducerEntry*       first_producer() const noexcept;
+std::span<const ProducerEntry> producers() const noexcept;     // for iteration only
+std::span<const ConsumerEntry> consumers() const noexcept;
+size_t                     producer_count() const noexcept;
+size_t                     consumer_count() const noexcept;
+
+// Derived:
+ChannelObservable observable(const RolesMap&) const noexcept; // moved from free fn
+bool              is_alive(const RolesMap&) const noexcept;   // any producer-presence live
+```
+
+Mutation (under writer lock; called only from HubState ops):
+
+```cpp
+// Channel-wide invariant set / re-set:
+enum class InvariantSetResult { Created, IdempotentEqual, RejectedMismatch };
+InvariantSetResult set_invariant_schema(std::string hash, std::string blds,
+                                        std::string packing, std::string owner,
+                                        std::string id);
+InvariantSetResult set_invariant_transport(std::string data_transport,
+                                            bool has_shm, ChannelPattern pattern);
+
+// Per-producer admission:
+struct AddProducerResult { ProducerEntry* entry; bool was_restart_replace; };
+AddProducerResult upsert_producer(ProducerEntry p);  // append-or-restart by role_uid
+
+struct RemoveProducerResult { bool removed; bool channel_now_empty; };
+RemoveProducerResult remove_producer(std::string_view role_uid);
+
+// Per-producer field setters (keyed by uid; nullopt return = uid not found):
+bool set_producer_inbox(std::string_view uid,
+                        std::string endpoint, std::string schema_json,
+                        std::string packing,  std::string checksum);
+bool set_producer_zmq_node_endpoint(std::string_view uid, std::string endpoint);
+
+// Per-consumer:
+bool upsert_consumer(ConsumerEntry c);   // dedup by role_uid/pid (existing semantics)
+bool remove_consumer(std::string_view role_uid);
+bool set_consumer_inbox(std::string_view uid, /* same shape */);
+```
+
+Direct write to fields like `entry.zmq_node_endpoint = req.value(...)`
+becomes impossible — the only way is `entry.set_producer_zmq_node_endpoint(uid, ep)`.
+A REG_REQ handler with the wrong shape fails to compile.
+
+### 5.2 `RoleEntry` — proposed methods (M3)
+
+```cpp
+// Reading:
+const RolePresence* find_presence(std::string_view channel,
+                                  std::string_view role_type) const noexcept;
+std::span<const RolePresence> presences() const noexcept;
+bool any_presence_alive() const noexcept;     // (existing)
+
+// Mutation:
+RolePresence& upsert_presence(std::string channel, std::string role_type);
+bool          remove_presence(std::string_view channel, std::string_view role_type);
+
+// Transition primitives (called by sweep / heartbeat / dereg):
+enum class TransitionEffect { NoChange, Refreshed, NewlyConnected, ToPending, ToDisconnected };
+TransitionEffect on_heartbeat(std::string_view channel, std::string_view role_type,
+                              std::chrono::steady_clock::time_point now);
+TransitionEffect on_pending_timeout(std::string_view channel, std::string_view role_type);
+TransitionEffect on_dereg(std::string_view channel, std::string_view role_type);
+
+// Event-emit memoization (retires the `disconnected_fired` PATCH):
+bool try_consume_disconnect_event() noexcept;
+```
+
+## 6. Open design decisions (must lock before code)
+
+1. **`metadata` classification.** Channel-wide invariant (set once, all
+   producers must agree) or per-producer (each producer carries its
+   own blob)? Current callers: only DISC_REQ_ACK echoes it. Lean:
+   per-producer; rationale: the blob is producer-supplied and there is
+   no consumer of "channel-wide metadata" today, so per-producer is
+   safer and matches Fan-In intent.
+
+2. **Same-uid restart vs idempotent.** When a producer with the same
+   `role_uid` re-registers, do we (a) replace its `ProducerEntry`
+   in-place — preserves position in `producers[]`, or (b) reject if
+   any field differs from the existing record — forces explicit
+   DEREG-then-REG. Lean: (a) restart-replace, keep current semantics.
+
+3. **SHM physical constraint.** Should `upsert_producer` on
+   `data_transport == "shm"` channels reject the second producer with
+   `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`, or is this a broker-handler
+   concern? Lean: enforce in the API (the rule is a structural
+   invariant of SHM, not a protocol policy) — broker just surfaces
+   the result.
+
+4. **Cross-tag admission** (already noted in Wave M2 §"Open design
+   decisions"). Per HEP-CORE-0017 a processor's `out_channel` registers
+   as a producer; `prod.X` + `proc.Y` can both be producers of channel
+   `C`. Document explicitly in the `upsert_producer` contract.
+
+5. **Test-access escape hatch.** `test::HubStateTestAccess` already
+   exists as a friend shim. Either (a) extend it with mutation helpers
+   that bypass the public API (for unit tests that need to construct
+   pathological states), or (b) require all tests to go through the
+   public API. Lean: (a) — tests need to set up "channel with
+   producer-presence Disconnected before any heartbeat" scenarios that
+   the API path won't reach cleanly.
+
+## 7. Migration plan — M2.5
+
+| Step | Scope | Files | Tests |
+|---|---|---|---|
+| **0** | This design doc lands; field classification + open-decisions locked with user. | (this file) | — |
+| **1** | Add the proposed methods to `ChannelEntry` (header-only inline where possible; .cpp for non-trivial ones). Fields stay public for now — additive change. | `src/include/utils/hub_state.hpp` (+`.cpp`) | Existing 1769 tests must still pass; no behaviour change. |
+| **2** | Migrate the field migrations agreed in §3 (`zmq_node_endpoint` → per-producer; `metadata` per §6.1; delete dead `zmq_data_endpoint` / `zmq_ctrl_endpoint` / `zmq_pubkey`). | `hub_state.hpp`, `broker_service.cpp`, `hub_state_json.cpp`, HEP-CORE-0021 / HEP-CORE-0023 §2.6 / HEP-CORE-0033 §8 | Multi-producer L2 tests (write the FIRST one — two distinct producer uids on a ZMQ channel; assert endpoints are independent). |
+| **3** | Rewrite REG_REQ handler to use `upsert_producer` + per-producer setters. Eliminate the build-fresh-entry-and-replace-channel pattern. | `broker_service.cpp:handle_reg_req` | L2: same-uid restart preserves channel topology; new-uid append preserves first producer. |
+| **4** | Rewrite DEREG_REQ to call `remove_producer` and only close the channel when `channel_now_empty`. | `broker_service.cpp:handle_dereg_req` | L2: DEREG of A on A+B channel leaves B alive; DEREG of last producer tears channel down. |
+| **5** | Rewrite ENDPOINT_UPDATE_REQ to scope by `(channel, role_uid)`. | `broker_service.cpp:handle_endpoint_update_req` | L2: A's update doesn't mutate B's endpoint. |
+| **6** | Rewrite sweep / heartbeat-timeout paths to iterate `producers[]` and call `_on_producer_dropped` on the matched producer only. | `broker_service.cpp` sweep + heartbeat handlers | L2: A timeout / B alive ⇒ channel stays kLive (already in MP5 plan; promote here). |
+| **7** | Make state-bearing fields private (or move into `Impl`). Compile-fail any remaining direct field write. | `hub_state.hpp` | Build must remain clean. |
+| **8** | HEP doc sweep. Update HEP-CORE-0023 §2.6, HEP-CORE-0021, HEP-CORE-0033 §8 to reflect the final classification. | `docs/HEP/*.md` | — |
+
+Steps 1-8 are sequenced — each must build and test clean before the
+next. Multi-producer L2 tests (step 2) are written **first** and must
+fail against the pre-M2.5 codebase, then pass after each step that
+should make them pass; this is the contract lock.
+
+## 8. Return to main line — what M2.5 unblocks
+
+Once M2.5 lands, the rest of Wave M2 from `docs/TODO_MASTER.md`
+resumes:
+
+- **MP3** — Bookkeeping ops (HubState). Implementation becomes
+  trivial because `_on_producer_dropped` is just `remove_producer` +
+  conditional `_on_channel_closed`; `_set_role_disconnected` becomes
+  iterate-and-call. The `disconnected_fired` PATCH retires.
+- **MP4** — Broker handlers. Most of MP4 is already accomplished by
+  M2.5 steps 3-6 (REG_REQ, DEREG_REQ, ENDPOINT_UPDATE_REQ, sweep).
+  Remaining MP4 work: ROLE_INFO_REQ / ROLE_PRESENCE_REQ /
+  CHANNEL_ERROR_NOTIFY / CHANNEL_CLOSING_NOTIFY fan-out.
+- **MP5** — Tests. Multi-producer L2 + L3 coverage. Some of this lands
+  alongside M2.5 steps 2-6 (locks contracts); the rest is end-to-end
+  L3 scenarios.
+- **MP6** — Federation/dual-hub (Wave B M8). Unchanged.
+
+Wave M3 (`RoleEntry` API per §5.2) follows MP3-MP5 closure. The
+shared design pattern means M3 is mostly mechanical.
+
+## 9. Risks / non-goals
+
+- **Not** a rewrite of HubState. The class stays; the API gains
+  encapsulation at the entry-struct level.
+- **Not** a wire-protocol change. REG_REQ / DEREG_REQ / heartbeat
+  payloads are unchanged; only the broker-side bookkeeping shape
+  changes.
+- **Not** a federation change. MP6 / Wave B M8 / HEP-CORE-0022 still
+  follow the same plan.
+- **Risk:** 66+ call sites get refactored. Mitigation: phased
+  migration in §7 keeps tests green at every step. Steps 1-2 are
+  additive; steps 3-7 are per-handler.
+- **Risk:** test-access escape hatch could become a back-door that
+  re-introduces the bug class. Mitigation: confine test-access to
+  `test::HubStateTestAccess` and require any new mutation helper there
+  to be documented as "test-only; production must use the public API".
