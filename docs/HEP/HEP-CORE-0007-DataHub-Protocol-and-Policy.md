@@ -885,8 +885,16 @@ Payload:
   schema_id             string   (opt) Named schema ID
   blds                  string   (opt) BLDS string
   data_transport        string   "shm" or "zmq"
-  metadata              object   Channel metadata (free-form JSON object;
-                                 producer-supplied via REG_REQ).
+  metadata              object   Per-producer metadata tree.  Each key is a
+                                 producer `role_uid` (HEP-CORE-0033 §G2.2.0b);
+                                 each value is that producer's REG_REQ-supplied
+                                 free-form JSON blob.  Producers with null
+                                 metadata are omitted from the tree (not
+                                 present-as-`null`).  Empty tree is `{}`,
+                                 never `null` — consumers may rely on the
+                                 field being an object.  See
+                                 docs/tech_draft/controlled_access_api_design.md
+                                 §6.1.
   channel_pattern       string   "PubSub" or other ChannelPattern variant.
   zmq_ctrl_endpoint     string   (if data_transport="zmq") Control-plane endpoint
   zmq_data_endpoint     string   (if data_transport="zmq") Data-plane endpoint
@@ -1363,7 +1371,8 @@ same change.
 | `NOT_REGISTERED` | DEREG_REQ where `producer_pid` doesn't match the registered producer's pid; CONSUMER_DEREG_REQ where `consumer_pid` doesn't match any registered consumer's pid. | Verify the calling process actually registered first.  No retry — the request itself is logically wrong. |
 | `NOT_CHANNEL_OWNER` | An admin / control request (e.g. ENDPOINT_UPDATE_REQ) issued by a role whose uid doesn't match the channel's owner. | Cannot recover from non-owner side. |
 | `SCHEMA_MISMATCH` | REG_REQ for an existing channel where the new producer's schema_hash differs from the channel-wide invariant (HEP-CORE-0023 §2.1.1: all producers on a channel must agree). | Reconcile schemas across producers; the channel cannot be re-registered with a different schema. |
-| `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM` | Second REG_REQ on a `data_transport == "shm"` channel from a different `role_uid` (HEP-CORE-0023 §2.1.1: SHM is physically single-producer; multi-producer channels require ZMQ transport).  Same-`role_uid` restart is admitted as restart-replace and does not trigger this error. | Choose a different channel name, or use ZMQ transport for multi-producer Fan-In topologies (HEP-CORE-0017 §4.6). |
+| `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM` | Second REG_REQ on a `data_transport == "shm"` channel from a different `role_uid` (HEP-CORE-0023 §2.1.1: SHM is physically single-producer; multi-producer channels require ZMQ transport).  Same-`role_uid` does NOT reach this code path — the broker resolves same-uid first and rejects with `UID_CONFLICT` (see next row).  See `docs/tech_draft/controlled_access_api_design.md` §6.3 for the structural rationale (the check lives in `ChannelEntry::add_producer` itself, not the wire layer). | Choose a different channel name, or use ZMQ transport for multi-producer Fan-In topologies (HEP-CORE-0017 §4.6). |
+| `UID_CONFLICT` | REG_REQ / CONSUMER_REG_REQ carrying a `role_uid` that already exists in HubState — regardless of whether the existing entry is active (HEP-CORE-0023 §2.1 Connected/Pending) or stale-residue (hub-side cleanup gap pending Wave M3).  Per `docs/tech_draft/controlled_access_api_design.md` §6.2: proper uid construction (`tag.name.unique` per HEP-CORE-0033 §G2.2.0b) makes a same-uid collision effectively impossible, so any collision indicates either bookkeeping residue (hub-side bug) or a remote-side breach/violation.  Broker logs at `LOGGER_ERROR`. | Retry with a clean state — if your role process restarted, regenerate a fresh `unique` component for the uid.  Persistent failures after restart mean hub-side residue (file a bug). |
 | `SCHEMA_HASH_MISMATCH_SELF` | Same `(role_uid, schema_id)` re-registered with a different schema_hash (HEP-CORE-0034 §8 namespace-by-owner self-conflict). | Reconcile your own producer's schema; do not re-register conflicting versions under the same id. |
 | `SCHEMA_ID_MISMATCH` | CONSUMER_REG_REQ with `expected_schema_id` that disagrees with the producer's stored schema_id. | Programming error or version drift; reconcile expected schema_id. |
 | `SCHEMA_FORBIDDEN_OWNER` | REG_REQ / CONSUMER_REG_REQ citing `schema_owner` that is neither `"hub"` nor a `role_uid` of any producer currently admitted on the channel (HEP-CORE-0034 §9.1; multi-producer-aware per HEP-CORE-0023 §2.1.1). | Cite hub-globals or one of the channel's registered producer's schemas only. |

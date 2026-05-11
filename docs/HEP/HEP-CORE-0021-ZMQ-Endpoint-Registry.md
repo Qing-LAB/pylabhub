@@ -746,24 +746,36 @@ After the ZmqQueue binds and starts (step 7), `establish_channel` sends an
 | Field | Type | Description |
 |-------|------|-------------|
 | `channel_name` | string | Channel to update |
-| `zmq_node_endpoint` | string | Resolved endpoint (e.g., `tcp://127.0.0.1:45782`) |
+| `role_uid`     | string | Producer whose endpoint is being updated (HEP-CORE-0023 §2.1.1 — channels admit 1..N producers; each Fan-In producer has its own bound endpoint).  The broker resolves the producer by `(channel_name, role_uid)` and only mutates that producer's `ProducerEntry.zmq_node_endpoint`. |
+| `zmq_node_endpoint` | string | Resolved endpoint for THIS producer (e.g., `tcp://127.0.0.1:45782`) |
 
 **Broker response:** `ENDPOINT_UPDATE_ACK` with status `"ok"` or `"error"`.
 
+> **Per-producer endpoint scope (Wave M2.5, 2026-05-10):** `zmq_node_endpoint`
+> lives on `ProducerEntry`, not on `ChannelEntry`.  Each producer in a
+> Fan-In channel publishes from its own bound socket and advertises its
+> own endpoint string.  ENDPOINT_UPDATE_REQ updates **one** producer's
+> endpoint at a time; sibling producers on the same channel are
+> untouched.  See
+> `docs/tech_draft/controlled_access_api_design.md` §3.2.
+
 ### 16.4 Broker Readiness Guard
 
-The broker maintains a **readiness flag** on each ZMQ channel entry:
+The broker maintains a **readiness flag** per producer on each ZMQ channel:
 
-- On `CREATE_CHANNEL` with `transport=zmq`: if the registered `zmq_node_endpoint`
-  contains port `0` (parsed), mark the channel as **not ready**.
-- On `ENDPOINT_UPDATE_REQ`: validate the new endpoint (non-zero port), update the
-  stored endpoint, mark the channel as **ready**.
-- On `CONSUMER_REG_REQ` (discovery): if the target channel is ZMQ and **not ready**,
-  reject with a clear error (`CHANNEL_NOT_READY`). The consumer can retry after a
-  short delay.
+- On REG_REQ with `data_transport == "zmq"`: if the producer's
+  `zmq_node_endpoint` contains port `0` (parsed), that producer's entry
+  is **not ready**.
+- On `ENDPOINT_UPDATE_REQ`: validate the new endpoint (non-zero port),
+  update the matched producer's `ProducerEntry.zmq_node_endpoint`, mark
+  that producer as **ready**.
+- On `CONSUMER_REG_REQ` (discovery): if **all** registered producers on
+  the target channel are not ready, reject with `CHANNEL_NOT_READY`.
+  The consumer can retry after a short delay.  A channel with at least
+  one ready producer is reachable.
 
-For channels registered with a specific port (not `:0`), the channel is immediately
-**ready** — no update required.
+For channels whose producers register with specific ports (not `:0`),
+no update is required — each such producer is immediately **ready**.
 
 ### 16.5 Updated Factory Flow
 

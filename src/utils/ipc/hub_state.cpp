@@ -678,9 +678,13 @@ void HubState::_on_channel_registered(ChannelEntry entry)
         bump_invalid_identifier(*pImpl);
         return;
     }
-    // Validate every producer_role_uid in `entry.producers` per HEP-CORE-0023
-    // §2.1.1.  REG_REQ admission today populates `producers` with the single
-    // producer; future multi-producer admission (Wave M2 MP4) appends.
+    // Validate every `role_uid` in `entry.producers` per HEP-CORE-0023
+    // §2.1.1 (multi-producer model).  Wave M2 MP2 made `producers` a
+    // vector; Wave M2.5 + MP3/MP4 will migrate the broker REG_REQ
+    // handler to append on subsequent admissions via
+    // `ChannelEntry::add_producer` rather than overwriting the channel
+    // record.  Until then, this op may be called with `producers`
+    // containing one entry per call.
     for (const auto &prod : entry.producers)
     {
         if (!prod.role_uid.empty() &&

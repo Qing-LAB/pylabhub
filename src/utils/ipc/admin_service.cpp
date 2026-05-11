@@ -388,8 +388,10 @@ json AdminService::Impl::handle_get_channel(const json &request)
                           "get_channel requires params.channel (string)");
     const auto &name = (*pit)["channel"].get_ref<const std::string &>();
     // Single snapshot keeps the channel + producer-presence lookup
-    // consistent (HEP-CORE-0023 §2.2 derives `observable` from the
-    // producer-presence row under the channel's producer_role_uid).
+    // consistent.  HEP-CORE-0023 §2.2 derives `observable` by scanning
+    // every producer-presence row keyed under each
+    // `ChannelEntry.producers[i].role_uid` and returning the
+    // "best of all producers" observable (multi-producer, §2.1.1).
     const auto snap = host.state().snapshot();
     const auto cit  = snap.channels.find(name);
     if (cit == snap.channels.end())

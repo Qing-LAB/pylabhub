@@ -256,8 +256,10 @@ nlohmann::json HubAPI::get_channel(const std::string &name) const
         return nullptr;
     // Take a single snapshot so the channel + producer-presence lookup
     // see consistent state; per HEP-CORE-0023 §2.2 the `observable`
-    // field is derived from the producer-presence row keyed under the
-    // channel's `producer_role_uid`.
+    // field is derived by scanning every producer-presence row keyed
+    // under each `ChannelEntry.producers[i].role_uid` and returning
+    // the "best of all producers" observable (HEP-CORE-0023 §2.1.1,
+    // multi-producer).
     const auto snap = impl_->host->state().snapshot();
     const auto cit  = snap.channels.find(name);
     if (cit == snap.channels.end())
