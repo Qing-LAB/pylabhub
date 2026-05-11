@@ -746,17 +746,27 @@ After the ZmqQueue binds and starts (step 7), `establish_channel` sends an
 | Field | Type | Description |
 |-------|------|-------------|
 | `channel_name` | string | Channel to update |
-| `role_uid`     | string | Producer whose endpoint is being updated (HEP-CORE-0023 §2.1.1 — channels admit 1..N producers; each Fan-In producer has its own bound endpoint).  The broker resolves the producer by `(channel_name, role_uid)` and only mutates that producer's `ProducerEntry.zmq_node_endpoint`. |
-| `zmq_node_endpoint` | string | Resolved endpoint for THIS producer (e.g., `tcp://127.0.0.1:45782`) |
+| `endpoint_type` | string | `"zmq_node"` (only this type is mutable post-registration). |
+| `endpoint` | string | Resolved endpoint for THIS producer (e.g., `tcp://127.0.0.1:45782`) |
 
 **Broker response:** `ENDPOINT_UPDATE_ACK` with status `"ok"` or `"error"`.
 
-> **Per-producer endpoint scope (Wave M2.5, 2026-05-10):** `zmq_node_endpoint`
-> lives on `ProducerEntry`, not on `ChannelEntry`.  Each producer in a
-> Fan-In channel publishes from its own bound socket and advertises its
-> own endpoint string.  ENDPOINT_UPDATE_REQ updates **one** producer's
-> endpoint at a time; sibling producers on the same channel are
-> untouched.  See
+> **Producer resolution is identity-based (Wave M2.5, 2026-05-11).**
+> The broker identifies which producer is calling by matching the
+> request's ZMQ identity to a registered producer's `zmq_identity`
+> on the channel.  This is more secure than a wire `role_uid` field
+> (which could be spoofed by a producer claiming to be someone else);
+> ZMQ identity is bound to the actual connection by ZMTP and cannot
+> be spoofed without attacking the transport.  If the sender's
+> identity does not match any admitted producer on the channel,
+> the broker rejects with `NOT_CHANNEL_OWNER` (HEP-CORE-0007 §12.4a).
+>
+> **Per-producer endpoint scope:** `zmq_node_endpoint` lives on
+> `ProducerEntry`, not on `ChannelEntry`.  Each producer in a Fan-In
+> channel publishes from its own bound socket and advertises its own
+> endpoint string.  ENDPOINT_UPDATE_REQ updates **one** producer's
+> endpoint at a time (the sender's own); sibling producers on the
+> same channel are untouched.  See
 > `docs/tech_draft/controlled_access_api_design.md` §3.2.
 
 ### 16.4 Broker Readiness Guard

@@ -596,12 +596,33 @@ struct ProducerEntry {                    // mirrors ConsumerEntry shape
 };
 
 struct ChannelEntry {
-    std::string                            name;
-    std::vector<ProducerEntry>             producers;                // 1..N (§2.1.1)
+    std::string                            name;          // channel-wide identifier
+    std::string                            shm_name;      // SHM channels only
+
+    // Channel-wide schema invariants (HEP-CORE-0023 §2.1.1: all
+    // producers MUST agree).  Anonymous channels leave id+owner empty.
+    std::string                            schema_hash;
+    uint32_t                               schema_version{0};
+    std::string                            schema_id;     // HEP-CORE-0034
+    std::string                            schema_blds;
+    std::string                            schema_owner;  // "hub" | <role_uid>
+
+    // Channel-wide transport invariants.
+    bool                                   has_shared_memory{false};
+    ChannelPattern                         pattern{ChannelPattern::PubSub};
+    std::string                            data_transport{"shm"};
+
+    // Per-party rows (1..N producers per HEP-CORE-0023 §2.1.1).  All
+    // per-producer attributes — inbox_*, zmq_node_endpoint (HEP-0021
+    // §16.3), zmq_pubkey (HEP-0021 §5.2), metadata (HEP-0007 §12.4) —
+    // live on the rows below, NOT at channel scope (Wave M2.5).
+    std::vector<ProducerEntry>             producers;
     std::vector<ConsumerEntry>             consumers;
-    // No status field, no last_heartbeat field — FSM is on RoleEntry.
-    // No inbox_* fields — inbox is per-producer / per-consumer (see
-    // ProducerEntry / ConsumerEntry above; HEP-CORE-0027 §3).
+
+    std::chrono::system_clock::time_point  created_at;
+
+    // No FSM state, no status, no last_heartbeat — per-presence FSM
+    // on RoleEntry is the source of truth (HEP-CORE-0023 §2.6).
     // Channel existence is derived:
     //   bool exists = !producers.empty() &&
     //                 std::any_of(producers, [&](const auto &p){
@@ -609,8 +630,8 @@ struct ChannelEntry {
     //                     return pp && pp->state != RoleState::Disconnected;
     //                 });
     // Channel observability (kAbsent|kRegistering|kStalled|kLive) is
-    // derived per HEP-0023 §2.2 from the producer-presence FSM(s).
-    // ... data-plane endpoint / schema metadata
+    // derived per HEP-0023 §2.2 from the producer-presence FSM(s)
+    // via `compute_channel_observable(ch, roles)`.
 };
 
 struct ConsumerEntry {

@@ -162,17 +162,20 @@ struct ProducerEntry
     std::string inbox_packing;  ///< "aligned" | "packed"
     std::string inbox_checksum; ///< "enforced" | "manual" | "none"
 
-    // ── Wave M2.5 step 2a — per-producer fields ────────────────────────
+    // ── Per-producer fields (Wave M2.5) ──────────────────────────────
     //
-    // Migrated from `ChannelEntry` because they are producer
-    // attributes, not channel-wide invariants.  Each Fan-In producer
-    // can carry its own endpoint + metadata blob (see
-    // docs/tech_draft/controlled_access_api_design.md §3.2 + §6.1).
+    // These fields live on `ProducerEntry` (not channel-scope) because
+    // they are producer attributes — each Fan-In producer carries its
+    // own endpoint, CURVE pubkey, and metadata blob.  See
+    // docs/tech_draft/controlled_access_api_design.md §3.2 + §6.1 for
+    // the design rationale and HEP-CORE-0021 §16.3 + §5.2 for the
+    // wire-protocol references.
     //
-    // STEP 2a ADDITIVE: these fields are added here; the matching
-    // fields on `ChannelEntry` remain until step 2b/3 migrates the
-    // callers (REG_REQ handler, DISC_REQ_ACK, ENDPOINT_UPDATE_REQ).
-    // After step 2b/3 those channel-scope copies are deleted.
+    // Channel-level read paths aggregate when needed: metadata uses
+    // `ChannelEntry::aggregate_metadata_tree()` (tree keyed by uid);
+    // endpoints + pubkeys can be enumerated via `producers()` /
+    // `find_producer(uid)`.  The legacy first-producer transitional
+    // shape on DISC_REQ_ACK is documented in §7.5.3.
 
     /// HEP-CORE-0021 §16 — this producer's data-plane bound endpoint.
     /// For SHM channels this is empty; for ZMQ channels it is the

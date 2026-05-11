@@ -317,10 +317,10 @@ files import the helper.
 | G3 | Direct `producers[]` access still common (step 7 deferred) | Deferred | ⚠️ TRACKED |
 | G4 | Design doc §5.1 API methods never delivered (step 2d) | Deferred | ⚠️ TRACKED |
 | G5 | `_on_channel_registered` legacy path correctness | Verified | ✅ OK |
-| G6 | HEP-CORE-0021 §16.3 `role_uid` wire vs identity-based resolution | Doc drift | ❌ OPEN |
-| G7 | Stale "STEP 2a ADDITIVE" comments on `ProducerEntry` | Stale | ❌ OPEN |
+| G6 | HEP-CORE-0021 §16.3 `role_uid` wire vs identity-based resolution | Doc drift | ✅ FIXED 2026-05-11 |
+| G7 | Stale "STEP 2a ADDITIVE" comments on `ProducerEntry` | Stale | ✅ FIXED 2026-05-11 |
 | G8 | Missing L2 test for `ChannelMetrics` multi-producer | Coverage | ❌ OPEN (couples with G1) |
-| G9 | HEP-CORE-0023 §2.6 schematic placeholder for `ChannelEntry` | Doc precision | ❌ OPEN |
+| G9 | HEP-CORE-0023 §2.6 schematic placeholder for `ChannelEntry` | Doc precision | ✅ FIXED 2026-05-11 |
 | G10 | `compute_channel_observable` template direct-field access | OK by design | ✅ OK |
 | G11 | `RoleEntry.disconnected_fired` 🚧 PATCH | Tracked | ⚠️ DEFERRED to M3 |
 | G12 | `metrics_store_` overall is "legacy"; mixed pattern | Tracked | ⚠️ DEFERRED to M1.4 |
